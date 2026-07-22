@@ -24,6 +24,7 @@ export const MOCK_VISION_SCENARIOS = [
   "presence_absent",
   "departure_after_presence",
   "controlled",
+  "recommendation_unmatched",
   "disconnect_once",
   "camera_unavailable",
   "try_on_unavailable_handshake",
@@ -113,7 +114,7 @@ function createPongMessage(): VisionServerMessage {
   return message;
 }
 
-function createResultMessage(): VisionServerMessage {
+function createResultMessage(heightCm = 172): VisionServerMessage {
   const detectedAt = nowIso();
   const message = {
     ...baseEnvelope("result"),
@@ -128,7 +129,7 @@ function createResultMessage(): VisionServerMessage {
       },
       profile: {
         personPresent: true,
-        heightCm: 172,
+        heightCm,
         shoulderWidthCm: 43,
         ageRange: "adult",
         gender: "unknown",
@@ -357,7 +358,12 @@ async function pushScenarioEvents(
   if (options.scenario === "presence_only") {
     return;
   }
-  sendServerMessage(socket, createResultMessage());
+  sendServerMessage(
+    socket,
+    createResultMessage(
+      options.scenario === "recommendation_unmatched" ? 190 : 172,
+    ),
+  );
 }
 
 function handleClientRawMessage(

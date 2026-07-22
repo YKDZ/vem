@@ -400,6 +400,44 @@ export function normalizeSeededVisionAcceptance(raw) {
         };
       })
     : [];
+  const recommendationVariants = Array.isArray(input.recommendationVariants)
+    ? input.recommendationVariants.map((entry, index) => {
+        const facts = requiredObject(
+          entry,
+          `visionAcceptance.recommendationVariants[${index}]`,
+        );
+        return {
+          productId: required(
+            optionalString(facts.productId),
+            `visionAcceptance.recommendationVariants[${index}].productId`,
+          ),
+          variantId: required(
+            optionalString(facts.variantId),
+            `visionAcceptance.recommendationVariants[${index}].variantId`,
+          ),
+          sku: required(
+            optionalString(facts.sku),
+            `visionAcceptance.recommendationVariants[${index}].sku`,
+          ),
+          size: required(
+            optionalString(facts.size),
+            `visionAcceptance.recommendationVariants[${index}].size`,
+          ),
+          slotId: required(
+            optionalString(facts.slotId),
+            `visionAcceptance.recommendationVariants[${index}].slotId`,
+          ),
+          inventoryId: required(
+            optionalString(facts.inventoryId),
+            `visionAcceptance.recommendationVariants[${index}].inventoryId`,
+          ),
+          onHandQty: positiveNumber(
+            facts.onHandQty,
+            `visionAcceptance.recommendationVariants[${index}].onHandQty`,
+          ),
+        };
+      })
+    : [];
   return {
     tryOnCategoryKey: optionalString(input.tryOnCategoryKey),
     selectedCatalogKey: optionalString(input.selectedCatalogKey),
@@ -410,6 +448,7 @@ export function normalizeSeededVisionAcceptance(raw) {
     tryOnSilhouettePublicUrl: optionalString(
       input.selectedSilhouettePublicUrl ?? input.tryOnSilhouettePublicUrl,
     ),
+    recommendationVariants,
     seededTryOnVariants,
   };
 }
@@ -421,9 +460,10 @@ function resolveSelectedSeededEntry(
 ) {
   const runtime = normalizeSeededVisionAcceptance(runtimeExpectation);
   const variantId = required(selectedVariantId, label);
-  const matches = runtime.seededTryOnVariants.filter(
-    (entry) => entry.variantId === variantId,
-  );
+  const matches = [
+    ...runtime.seededTryOnVariants,
+    ...runtime.recommendationVariants,
+  ].filter((entry) => entry.variantId === variantId);
   if (matches.length !== 1) {
     throw new Error(
       `${label} must uniquely match exactly one seeded try-on entry`,
@@ -437,6 +477,38 @@ function resolveSelectedSeededEntry(
       `${label} seeded productId`,
     ),
   };
+}
+
+export function validateSeededRecommendationVariants(runtimeExpectation) {
+  const runtime = normalizeSeededVisionAcceptance(runtimeExpectation);
+  const variants = runtime.recommendationVariants;
+  if (variants.length !== 2) {
+    throw new Error(
+      "Vision recommendation fixture must provide exactly M and L variants",
+    );
+  }
+  const bySize = new Map(variants.map((variant) => [variant.size, variant]));
+  const matched = bySize.get("M");
+  const alternate = bySize.get("L");
+  if (!matched || !alternate || bySize.size !== 2) {
+    throw new Error(
+      "Vision recommendation fixture must provide one M and one L variant",
+    );
+  }
+  if (matched.productId !== alternate.productId) {
+    throw new Error(
+      "Vision recommendation fixture variants must share one product identity",
+    );
+  }
+  if (
+    runtime.selectedCatalogKey !== catalogKeyForProductId(matched.productId) ||
+    runtime.selectedVariantId !== matched.variantId
+  ) {
+    throw new Error(
+      "Vision recommendation fixture must select the seeded M variant",
+    );
+  }
+  return { matched, alternate };
 }
 
 export function combineCleanupFailure(
@@ -715,6 +787,9 @@ export function validateRecommendationProjection({
 }) {
   const expected = normalizeVisionExpectedResults(expectedResults);
   const runtime = normalizeSeededVisionAcceptance(runtimeExpectation);
+  const requiresRecommendation =
+    expected.recommendation.required ||
+    runtime.recommendationVariants.length > 0;
   const beforeCatalogKeys = beforeProducts.map((product) => product.catalogKey);
   const afterCatalogKeys = afterProducts.map((product) => product.catalogKey);
   if (Array.isArray(expected.recommendation.orderedCatalogKeys)) {
@@ -747,7 +822,7 @@ export function validateRecommendationProjection({
     );
   }
   if (
-    expected.recommendation.required &&
+    requiresRecommendation &&
     runtime.selectedVariantId &&
     selected.preferredVariantId !== runtime.selectedVariantId
   ) {
@@ -761,13 +836,13 @@ export function validateRecommendationProjection({
     );
   }
   if (
-    expected.recommendation.required &&
+    requiresRecommendation &&
     selected.recommendationScore < expected.recommendation.minimumScore
   ) {
     throw new Error("recommended score did not exceed the expected threshold");
   }
   if (
-    expected.recommendation.required &&
+    requiresRecommendation &&
     beforeCatalogKeys.join("\n") === afterCatalogKeys.join("\n")
   ) {
     throw new Error("catalog recommendation order did not actually change");
@@ -802,7 +877,14 @@ export function validateRecommendationPresentation({
   expectedVariantId = null,
 }) {
   const detail = requiredObject(state, "product detail recommendation state");
-  if (!new Set(["automatic", "manual", "vision_unavailable"]).has(phase)) {
+  if (
+    !new Set([
+      "automatic",
+      "manual",
+      "online_unmatched",
+      "vision_unavailable",
+    ]).has(phase)
+  ) {
     throw new Error("recommendation presentation phase is invalid");
   }
   if (
@@ -2420,6 +2502,8 @@ async function runVisionTryOnAcceptance(options) {
   const runtimeExpectation = normalizeSeededVisionAcceptance(
     guestInput.visionAcceptance,
   );
+  const recommendationFixture =
+    validateSeededRecommendationVariants(runtimeExpectation);
   const allocatedFixture = guestInput.fixtureAllocation?.[options.fixtureKey];
   if (!allocatedFixture?.slotDisplayLabel || !allocatedFixture?.inventoryId) {
     throw new Error(`fixture allocation is absent for ${options.fixtureKey}`);
@@ -2439,6 +2523,7 @@ async function runVisionTryOnAcceptance(options) {
   let report = null;
   let pendingError = null;
   let realVisionStopped = false;
+  let recommendationMock = null;
   let restoredRuntimeVerification = null;
   try {
     hardwareSession = await controlPlaneRequest(
@@ -2500,6 +2585,12 @@ async function runVisionTryOnAcceptance(options) {
     await enablePageRuntime(client);
     await waitForRoute(client, "#/catalog", { timeoutMs: 30_000, pollMs: 250 });
 
+    stage = "clear-existing-vision-before-recommendation-baseline";
+    await stopVisionRuntime();
+    realVisionStopped = true;
+    await waitForVisionPortRelease();
+    await waitForVisionDegradation(handoff, 45_000);
+
     stage = "open-tshirt-category-baseline";
     await activateVisibleSelector(
       client,
@@ -2508,10 +2599,7 @@ async function runVisionTryOnAcceptance(options) {
     );
     const baselineCatalogProjection = await waitForCatalogProducts(client);
 
-    stage = "reset-installed-vision-fixture-source";
-    await stopVisionRuntime();
-    realVisionStopped = true;
-    await waitForVisionPortRelease();
+    stage = "start-installed-vision-fixture-source";
     await startInstalledVisionRuntime();
     await waitForCondition(
       "restarted Vision health",
@@ -2527,23 +2615,27 @@ async function runVisionTryOnAcceptance(options) {
     realVisionStopped = false;
 
     stage = "observe-vision-protocol-and-catalog-recommendation";
-    const protocolEvidencePromise = collectVisionProtocolEvidence({
+    const protocolEvidence = await collectVisionProtocolEvidence({
       machineCode: guestInput.machineCode,
     });
-    const catalogRecommendationPromise = waitForCatalogRecommendationProjection(
-      client,
-      baselineCatalogProjection.products.map((product) => product.catalogKey),
-      expectedResults.recommendation.required,
-    );
-    const [protocolEvidence, catalogRecommendation] = await Promise.all([
-      protocolEvidencePromise,
-      catalogRecommendationPromise,
-    ]);
     const protocolSummary = compareObservedVisionProtocolToExpected({
       expectedResults,
       protocolEvidence,
       installedBinding: installedBindingSummary,
     });
+
+    stage = "start-controlled-matched-recommendation";
+    await stopVisionRuntime();
+    realVisionStopped = true;
+    await waitForVisionPortRelease();
+    await waitForVisionDegradation(handoff, 45_000);
+    recommendationMock = await startVisionMockScenario("success");
+    await waitForVisionOnline(handoff, 45_000);
+    const catalogRecommendation = await waitForCatalogRecommendationProjection(
+      client,
+      baselineCatalogProjection.products.map((product) => product.catalogKey),
+      true,
+    );
 
     stage = "validate-catalog-recommendation-projection";
     const recommendationSummary = validateRecommendationProjection({
@@ -2553,13 +2645,7 @@ async function runVisionTryOnAcceptance(options) {
       expectedResults,
       runtimeExpectation,
     });
-    const ordinaryVariantId = required(
-      baselineCatalogProjection.products.find(
-        (product) =>
-          product.catalogKey === recommendationSummary.selectedCatalogKey,
-      )?.variantId,
-      "ordinary selected product variantId",
-    );
+    const ordinaryVariantId = recommendationFixture.matched.variantId;
     checkpoints.push(
       await captureCheckpoint(client, "catalog-recommendation", {
         screenshot: true,
@@ -2608,17 +2694,51 @@ async function runVisionTryOnAcceptance(options) {
       }),
     );
 
+    stage = "validate-online-unmatched-recommendation-presentation";
+    await stopVisionChild(recommendationMock);
+    recommendationMock = await startVisionMockScenario(
+      "recommendation_unmatched",
+    );
+    await waitForVisionOnline(handoff, 45_000);
+    const onlineUnmatchedRecommendationPresentation =
+      await waitForRecommendationPresentation(
+        client,
+        "online_unmatched",
+        recommendationFixture.matched.variantId,
+      );
+    checkpoints.push(
+      await captureCheckpoint(
+        client,
+        "online-unmatched-recommendation-detail",
+        {
+          screenshot: true,
+          validatePng: true,
+          screenshotSink: sink,
+        },
+      ),
+    );
+
+    stage = "restore-controlled-matched-recommendation";
+    await stopVisionChild(recommendationMock);
+    recommendationMock = await startVisionMockScenario("success");
+    await waitForVisionOnline(handoff, 45_000);
+    await waitForRecommendationPresentation(
+      client,
+      "automatic",
+      recommendationFixture.matched.variantId,
+    );
+
     stage = "validate-manual-recommendation-override";
     await activateVisibleSelector(
       client,
-      `[data-test="product-size-option"][data-size="${automaticRecommendationPresentation.presentation.recommendedSize}"]`,
+      `[data-test="product-size-option"][data-size="${recommendationFixture.alternate.size}"]`,
       { kind: "touch", timeoutMs: 30_000 },
     );
     const manualRecommendationPresentation =
       await waitForRecommendationPresentation(
         client,
         "manual",
-        recommendationSummary.selectedVariantId,
+        recommendationFixture.alternate.variantId,
       );
     checkpoints.push(
       await captureCheckpoint(client, "manual-size-detail", {
@@ -2627,6 +2747,13 @@ async function runVisionTryOnAcceptance(options) {
         screenshotSink: sink,
       }),
     );
+
+    stage = "restore-real-vision-for-try-on";
+    await stopVisionChild(recommendationMock);
+    recommendationMock = null;
+    await startInstalledVisionRuntime();
+    realVisionStopped = false;
+    await waitForVisionOnline(handoff, 45_000);
 
     const tryOnAttempts = [];
     let tryOnSurface = null;
@@ -2707,14 +2834,6 @@ async function runVisionTryOnAcceptance(options) {
       timeoutMs: 30_000,
       pollMs: 250,
     });
-
-    stage = "reestablish-automatic-recommendation";
-    const reestablishedAutomaticRecommendation =
-      await waitForRecommendationPresentation(
-        client,
-        "automatic",
-        recommendationSummary.selectedVariantId,
-      );
 
     const capabilityBeforeDegradation = await daemonGet(
       handoff,
@@ -2807,9 +2926,9 @@ async function runVisionTryOnAcceptance(options) {
         productDetail,
         recommendationPresentation: {
           automatic: automaticRecommendationPresentation.presentation,
+          onlineUnmatched:
+            onlineUnmatchedRecommendationPresentation.presentation,
           manual: manualRecommendationPresentation.presentation,
-          reestablishedAutomatic:
-            reestablishedAutomaticRecommendation.presentation,
           visionUnavailable: unavailableRecommendationPresentation.presentation,
         },
         tryOnSurface,
@@ -2886,6 +3005,17 @@ async function runVisionTryOnAcceptance(options) {
   }
 
   const cleanupErrors = [];
+  if (recommendationMock) {
+    try {
+      await stopVisionChild(recommendationMock);
+    } catch (error) {
+      cleanupErrors.push(
+        new Error(
+          `controlled recommendation Vision cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
+    }
+  }
   try {
     await client?.close();
   } catch (error) {

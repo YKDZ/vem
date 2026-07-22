@@ -16,6 +16,7 @@ import {
   stopVisionChild,
   validateRecommendationProjection,
   validateRecommendationPresentation,
+  validateSeededRecommendationVariants,
   validateSizeControlPresentation,
   validateTryOnPresentation,
   validateVisionInstalledBinding,
@@ -118,14 +119,19 @@ describe("vision try-on acceptance script", () => {
     );
   });
 
-  it("reestablishes automatic recommendation before Vision degradation and validates detail screenshots", () => {
+  it("proves matched, manual, online-unmatched, and unavailable recommendation states", () => {
     const source = readFileSync(
       new URL("./vision-try-on-acceptance.mjs", import.meta.url),
       "utf8",
     );
+    assert.match(source, /startVisionMockScenario\("success"\)/);
     assert.match(
       source,
-      /stage = "reestablish-automatic-recommendation"[\s\S]*waitForRecommendationPresentation\([\s\S]*"automatic"[\s\S]*stage = "stop-real-vision-runtime"/,
+      /startVisionMockScenario\(\s*"recommendation_unmatched"/,
+    );
+    assert.match(
+      source,
+      /"online_unmatched"[\s\S]*recommendationFixture\.matched\.variantId/,
     );
     assert.match(
       source,
@@ -134,14 +140,10 @@ describe("vision try-on acceptance script", () => {
     for (const label of [
       "automatic-recommendation-detail",
       "manual-size-detail",
+      "online-unmatched-recommendation-detail",
       "vision-degraded-product",
     ]) {
-      assert.match(
-        source,
-        new RegExp(
-          `captureCheckpoint\\(client, "${label}", \\{[\\s\\S]*validatePng: true`,
-        ),
-      );
+      assert.match(source, new RegExp(`"${label}"[\\s\\S]*validatePng: true`));
     }
   });
 
@@ -498,6 +500,7 @@ describe("vision try-on acceptance script", () => {
         tryOnSilhouetteAssetId: "550e8400-e29b-41d4-a716-446655440125",
         tryOnSilhouettePublicUrl:
           "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+        recommendationVariants: [],
         seededTryOnVariants: [
           {
             sourceRow: 31,
@@ -518,6 +521,7 @@ describe("vision try-on acceptance script", () => {
         tryOnSilhouetteAssetId: "550e8400-e29b-41d4-a716-446655440125",
         tryOnSilhouettePublicUrl:
           "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+        recommendationVariants: [],
         seededTryOnVariants: [
           {
             sourceRow: 31,
@@ -530,6 +534,52 @@ describe("vision try-on acceptance script", () => {
               "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
           },
         ],
+      },
+    );
+    assert.deepEqual(
+      validateSeededRecommendationVariants({
+        selectedCatalogKey: "product:product-seeded",
+        selectedVariantId: "variant-m",
+        recommendationVariants: [
+          {
+            productId: "product-seeded",
+            variantId: "variant-m",
+            sku: "TSC-LOCAL-032-VISION-M",
+            size: "M",
+            slotId: "slot-m",
+            inventoryId: "inventory-m",
+            onHandQty: 3,
+          },
+          {
+            productId: "product-seeded",
+            variantId: "variant-l",
+            sku: "TSC-LOCAL-032-VISION-L",
+            size: "L",
+            slotId: "slot-l",
+            inventoryId: "inventory-l",
+            onHandQty: 3,
+          },
+        ],
+      }),
+      {
+        matched: {
+          productId: "product-seeded",
+          variantId: "variant-m",
+          sku: "TSC-LOCAL-032-VISION-M",
+          size: "M",
+          slotId: "slot-m",
+          inventoryId: "inventory-m",
+          onHandQty: 3,
+        },
+        alternate: {
+          productId: "product-seeded",
+          variantId: "variant-l",
+          sku: "TSC-LOCAL-032-VISION-L",
+          size: "L",
+          slotId: "slot-l",
+          inventoryId: "inventory-l",
+          onHandQty: 3,
+        },
       },
     );
     assert.throws(

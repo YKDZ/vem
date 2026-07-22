@@ -63,6 +63,50 @@ describe("useVisionRecommendations", () => {
     document.body.innerHTML = "";
   });
 
+  it("keeps the shared recommendation profile after a consumer unmounts", async () => {
+    const profiles: Array<
+      (payload: VisionProfileResultPayload) => void | Promise<void>
+    > = [];
+    const close = vi.fn();
+    subscribeVisionProfilesMock.mockImplementation(
+      (
+        _config: unknown,
+        handlers: {
+          onProfile: (
+            payload: VisionProfileResultPayload,
+          ) => void | Promise<void>;
+        },
+      ) => {
+        profiles.push(handlers.onProfile);
+        return { close };
+      },
+    );
+    const Consumer = defineComponent({
+      setup() {
+        const recommendations = useVisionRecommendations();
+        return () => recommendations.currentProfile.value?.heightCm ?? null;
+      },
+    });
+
+    const catalog = createApp(Consumer).use(pinia);
+    catalog.mount(host);
+    await nextTick();
+    await Promise.resolve(profiles[0]?.(profilePayload("VISION-SHARED-001")));
+    await nextTick();
+
+    catalog.unmount();
+    expect(close).toHaveBeenCalledOnce();
+
+    const detailHost = document.createElement("div");
+    document.body.appendChild(detailHost);
+    const detail = createApp(Consumer).use(pinia);
+    detail.mount(detailHost);
+    await nextTick();
+
+    expect(detailHost.textContent).toContain("172");
+    detail.unmount();
+  });
+
   it("keeps only the non-identifying recommendation signal in runtime state", async () => {
     const captured: Partial<ReturnType<typeof useVisionRecommendations>> = {};
     let onProfile:

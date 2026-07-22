@@ -98,6 +98,10 @@ const COMMAND_ENV_PASSTHROUGH = Object.freeze([
   "XDG_RUNTIME_DIR",
 ]);
 const SERVICE_API_LOG_TAIL_MAX_CHARS = 16_000;
+const VISION_RECOMMENDATION_VARIANTS = Object.freeze([
+  { size: "M", rowNo: 2, cellNo: 3 },
+  { size: "L", rowNo: 2, cellNo: 4 },
+]);
 const HOST_SIMULATOR_CACHE_DIRECTORY = "host-lower-controller-sim";
 const INSTALLATION_ALIPAY_SANDBOX_FIXTURE_ENV =
   "VEM_LOCAL_TESTBED_ALIPAY_SANDBOX_FIXTURE";
@@ -1323,32 +1327,111 @@ export async function seedThroughSupportedApis({
     });
     seededSlots.push({ slot, product, machineSlot, inventory });
   }
+  const recommendationBase = seededSlots.find(
+    (entry) => entry.slot.slotDisplayLabel === "A3",
+  );
+  if (!recommendationBase || recommendationBase.product.category !== "T恤") {
+    throw new Error(
+      "Vision recommendation fixture requires the seeded A3 T-shirt",
+    );
+  }
+  const recommendationVariants = [];
+  const planogramSeededSlots = [...seededSlots];
+  for (const definition of VISION_RECOMMENDATION_VARIANTS) {
+    const variant = await request(baseUrl, "/product-variants", {
+      method: "POST",
+      token,
+      body: {
+        productId: recommendationBase.product.product.id,
+        sku: `${recommendationBase.product.variant.sku}-VISION-${definition.size}`,
+        size: definition.size,
+        color: null,
+        priceCents: recommendationBase.slot.priceCents,
+        status: "active",
+        tryOnSilhouetteMediaAssetId: tryOnSilhouetteAsset.id,
+      },
+    });
+    const machineSlot = await request(
+      baseUrl,
+      `/machines/${machine.id}/slots`,
+      {
+        method: "POST",
+        token,
+        body: {
+          rowNo: definition.rowNo,
+          cellNo: definition.cellNo,
+          capacity: recommendationBase.slot.capacity,
+          status: "enabled",
+        },
+      },
+    );
+    const inventory = await request(baseUrl, "/inventories", {
+      method: "POST",
+      token,
+      body: {
+        machineId: machine.id,
+        slotId: machineSlot.id,
+        variantId: variant.id,
+        onHandQty: recommendationBase.slot.onHandQty,
+        reservedQty: 0,
+        lowStockThreshold: recommendationBase.slot.lowStockThreshold,
+        note: "local testbed vision recommendation fixture",
+      },
+    });
+    const slot = {
+      ...recommendationBase.slot,
+      rowNo: definition.rowNo,
+      cellNo: definition.cellNo,
+      slotDisplayLabel: `R${definition.rowNo}C${definition.cellNo}`,
+    };
+    planogramSeededSlots.push({
+      slot,
+      product: {
+        ...recommendationBase.product,
+        size: definition.size,
+        variant,
+      },
+      machineSlot,
+      inventory,
+    });
+    recommendationVariants.push({
+      productId: recommendationBase.product.product.id,
+      variantId: variant.id,
+      sku: variant.sku,
+      size: definition.size,
+      slotId: machineSlot.id,
+      inventoryId: inventory.id,
+      onHandQty: recommendationBase.slot.onHandQty,
+    });
+  }
   const planogramVersion = "LOCAL-TESTBED-V1";
   await request(baseUrl, `/machines/${machine.id}/planogram-versions`, {
     method: "POST",
     token,
     body: {
       planogramVersion,
-      slots: seededSlots.map(({ slot, product, machineSlot, inventory }) => ({
-        slotId: machineSlot.id,
-        rowNo: slot.rowNo,
-        cellNo: slot.cellNo,
-        inventoryId: inventory.id,
-        variantId: product.variant.id,
-        productId: product.product.id,
-        productName: product.name,
-        productDescription: `${product.category} normalized testbed fixture`,
-        coverImageUrl: null,
-        categoryId: null,
-        categoryName: null,
-        sku: product.variant.sku,
-        size: product.size,
-        color: null,
-        priceCents: slot.priceCents,
-        productSortOrder: product.sourceRow,
-        capacity: slot.capacity,
-        parLevel: slot.lowStockThreshold,
-      })),
+      slots: planogramSeededSlots.map(
+        ({ slot, product, machineSlot, inventory }) => ({
+          slotId: machineSlot.id,
+          rowNo: slot.rowNo,
+          cellNo: slot.cellNo,
+          inventoryId: inventory.id,
+          variantId: product.variant.id,
+          productId: product.product.id,
+          productName: product.name,
+          productDescription: `${product.category} normalized testbed fixture`,
+          coverImageUrl: null,
+          categoryId: null,
+          categoryName: null,
+          sku: product.variant.sku,
+          size: product.size,
+          color: null,
+          priceCents: slot.priceCents,
+          productSortOrder: product.sourceRow,
+          capacity: slot.capacity,
+          parLevel: slot.lowStockThreshold,
+        }),
+      ),
     },
   });
   const claim = await request(baseUrl, `/machines/${machine.id}/claim-codes`, {
@@ -1377,6 +1460,9 @@ export async function seedThroughSupportedApis({
       tryOnSilhouetteAssetId: tryOnSilhouetteAsset.id,
       tryOnSilhouettePublicUrl: tryOnSilhouetteAsset.publicUrl,
       tryOnCategoryKey: "tshirts",
+      selectedCatalogKey: `product:${recommendationBase.product.product.id}`,
+      selectedVariantId: recommendationVariants[0].variantId,
+      recommendationVariants,
       seededTryOnVariants,
     },
     slots: seededSlots.map(({ slot, product, machineSlot, inventory }) => ({

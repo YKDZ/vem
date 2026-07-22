@@ -1119,14 +1119,16 @@ describe("supported API seeding", () => {
         call.body.tryOnSilhouetteMediaAssetId ===
           "550e8400-e29b-41d4-a716-446655440125",
     );
-    assert.equal(tshirtVariantCalls.length, 14);
-    assert.deepEqual(result.visionAcceptance, {
-      tryOnSilhouetteAssetId: "550e8400-e29b-41d4-a716-446655440125",
-      tryOnSilhouettePublicUrl:
-        "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
-      tryOnCategoryKey: "tshirts",
-      seededTryOnVariants: result.visionAcceptance.seededTryOnVariants,
-    });
+    assert.equal(tshirtVariantCalls.length, 16);
+    assert.equal(
+      result.visionAcceptance.tryOnSilhouetteAssetId,
+      "550e8400-e29b-41d4-a716-446655440125",
+    );
+    assert.equal(
+      result.visionAcceptance.tryOnSilhouettePublicUrl,
+      "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+    );
+    assert.equal(result.visionAcceptance.tryOnCategoryKey, "tshirts");
     assert.equal(result.visionAcceptance.seededTryOnVariants.length, 14);
     for (const entry of result.visionAcceptance.seededTryOnVariants) {
       assert.match(entry.variantId, /^variant-\d+$/);
@@ -1141,6 +1143,48 @@ describe("supported API seeding", () => {
         "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
       );
     }
+    assert.deepEqual(
+      result.visionAcceptance.recommendationVariants.map((entry) => ({
+        productId: entry.productId,
+        variantId: entry.variantId,
+        size: entry.size,
+        slotId: entry.slotId,
+        inventoryId: entry.inventoryId,
+        onHandQty: entry.onHandQty,
+      })),
+      [
+        {
+          productId:
+            result.visionAcceptance.recommendationVariants[0].productId,
+          variantId:
+            result.visionAcceptance.recommendationVariants[0].variantId,
+          size: "M",
+          slotId: result.visionAcceptance.recommendationVariants[0].slotId,
+          inventoryId:
+            result.visionAcceptance.recommendationVariants[0].inventoryId,
+          onHandQty: 3,
+        },
+        {
+          productId:
+            result.visionAcceptance.recommendationVariants[0].productId,
+          variantId:
+            result.visionAcceptance.recommendationVariants[1].variantId,
+          size: "L",
+          slotId: result.visionAcceptance.recommendationVariants[1].slotId,
+          inventoryId:
+            result.visionAcceptance.recommendationVariants[1].inventoryId,
+          onHandQty: 3,
+        },
+      ],
+    );
+    assert.equal(
+      new Set(
+        result.visionAcceptance.recommendationVariants.map(
+          (entry) => entry.productId,
+        ),
+      ).size,
+      1,
+    );
     const seededTryOnVariantIds = new Set(
       result.visionAcceptance.seededTryOnVariants.map(
         (entry) => entry.variantId,

@@ -784,10 +784,20 @@ function validateVisionTrack(report, reportPath) {
   const visionDown = report.degradations?.visionDown ?? {};
   const protocol = report.health?.vision?.protocolSummary ?? null;
   const tryOnSummary = report.ui?.tryOnSummary ?? null;
+  const recommendation = report.ui?.recommendationPresentation ?? {};
+  const recommendationComplete =
+    typeof recommendation.automatic?.recommendedSize === "string" &&
+    recommendation.manual?.recommendedSize === null &&
+    recommendation.onlineUnmatched?.recommendedSize === null &&
+    recommendation.visionUnavailable?.recommendedSize === null &&
+    typeof recommendation.automatic?.variantId === "string" &&
+    typeof recommendation.manual?.variantId === "string" &&
+    recommendation.manual.variantId !== recommendation.automatic.variantId;
   const vision =
     protocol &&
     visionDown.experienceCapabilityDegraded === true &&
-    visionDown.saleStartStillAvailable === true
+    visionDown.saleStartStillAvailable === true &&
+    recommendationComplete
       ? passedTrack("vision", "Vision", reportPath, {
           experienceCapabilityDegraded: true,
           saleStartStillAvailable: true,
@@ -797,7 +807,7 @@ function validateVisionTrack(report, reportPath) {
           "Vision",
           reportPath,
           "vision degradation evidence is incomplete",
-          { protocol, visionDown },
+          { protocol, visionDown, recommendation },
         );
   const tryOn =
     tryOnSummary &&

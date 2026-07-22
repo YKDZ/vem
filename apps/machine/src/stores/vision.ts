@@ -1,4 +1,5 @@
 import {
+  type VisionProfile,
   type VisionPresenceOccupancyState,
   type VisionProfileNotUsableReason,
   visionErrorPayloadSchema,
@@ -50,6 +51,8 @@ type VisionPresenceState = {
 };
 
 const PROFILE_CONFIDENCE_THRESHOLD = 0.5;
+const RECOMMENDATION_PROFILE_EXPIRE_MS = 60_000;
+let recommendationExpiryTimer: ReturnType<typeof setTimeout> | null = null;
 
 const EMPTY_PRESENCE: VisionPresenceState = {
   eventId: null,
@@ -74,6 +77,9 @@ export const useVisionStore = defineStore("vision", {
     latestDiagnosticPayload: null as unknown,
     tryOnCapability: "unknown" as VisionTryOnCapability,
     presence: { ...EMPTY_PRESENCE } as VisionPresenceState,
+    recommendationProfile: null as VisionProfile | null,
+    lastRecommendationResult: null as VisionProfileResultPayload | null,
+    recommendationProfileExpiresAt: null as string | null,
   }),
   getters: {
     isSinglePersonPresent: (state): boolean =>
@@ -123,6 +129,12 @@ export const useVisionStore = defineStore("vision", {
       this.updatedAt = new Date().toISOString();
       this.applyPresenceFromProfileResult(payload);
     },
+    applyRecommendationProfileResult(
+      payload: VisionProfileResultPayload,
+    ): void {
+      this.applyLatestProfileResult(payload);
+      this.updateRecommendationProfile(payload);
+    },
     applyPresenceStatus(payload: VisionPresenceStatusPayload): void {
       const parsed = visionPresenceStatusPayloadSchema.parse(payload);
       this.latestDiagnosticPayload = {
@@ -133,6 +145,9 @@ export const useVisionStore = defineStore("vision", {
       this.online = true;
       this.updatedAt = new Date().toISOString();
       this.applyPresenceFromPresenceStatus(parsed);
+      if (!parsed.personPresent) {
+        this.clearRecommendationState();
+      }
     },
     applyPersonDeparted(payload: VisionPersonDepartedPayload): void {
       const parsed = visionPersonDepartedPayloadSchema.parse(payload);
@@ -144,6 +159,7 @@ export const useVisionStore = defineStore("vision", {
       this.online = true;
       this.updatedAt = new Date().toISOString();
       this.applyPresenceFromPersonDeparted(parsed);
+      this.clearRecommendationState();
     },
     applyVisionReady(payload: unknown): void {
       const result = visionReadyPayloadSchema.safeParse(payload);
@@ -160,6 +176,48 @@ export const useVisionStore = defineStore("vision", {
     clearLatestDiagnosticPayload(): void {
       this.latestDiagnosticPayload = null;
       this.presence = { ...EMPTY_PRESENCE };
+      this.clearRecommendationState();
+    },
+    clearRecommendationForVisionFailure(): void {
+      this.clearRecommendationState();
+      this.clearLatestDiagnosticPayload();
+    },
+    clearRecommendationState(): void {
+      if (recommendationExpiryTimer !== null) {
+        clearTimeout(recommendationExpiryTimer);
+        recommendationExpiryTimer = null;
+      }
+      this.recommendationProfile = null;
+      this.lastRecommendationResult = null;
+      this.recommendationProfileExpiresAt = null;
+    },
+    updateRecommendationProfile(payload: VisionProfileResultPayload): void {
+      this.lastRecommendationResult = sanitizeRecommendationResult(payload);
+      this.restartRecommendationExpiryTimer();
+      if (!this.canUseLatestProfileForRecommendation) {
+        this.recommendationProfile = null;
+        return;
+      }
+      const profile = sanitizeRecommendationProfile(payload.profile);
+      if (
+        profile.confidence !== undefined &&
+        profile.confidence < PROFILE_CONFIDENCE_THRESHOLD
+      ) {
+        this.recommendationProfile = null;
+        return;
+      }
+      this.recommendationProfile = profile;
+    },
+    restartRecommendationExpiryTimer(): void {
+      if (recommendationExpiryTimer !== null) {
+        clearTimeout(recommendationExpiryTimer);
+      }
+      this.recommendationProfileExpiresAt = new Date(
+        Date.now() + RECOMMENDATION_PROFILE_EXPIRE_MS,
+      ).toISOString();
+      recommendationExpiryTimer = setTimeout(() => {
+        this.clearRecommendationState();
+      }, RECOMMENDATION_PROFILE_EXPIRE_MS);
     },
     applyTryOnCapabilityFromDiagnostic(value: unknown): void {
       if (isVisionReadyDiagnostic(value)) {
@@ -177,6 +235,7 @@ export const useVisionStore = defineStore("vision", {
       const profileDiagnostic = parseProfileResultDiagnostic(value);
       if (profileDiagnostic) {
         this.applyPresenceFromProfileResult(profileDiagnostic.payload);
+        this.updateRecommendationProfile(profileDiagnostic.payload);
         this.presence.restoredFromRefresh =
           options.restoredFromRefresh === true;
         return;
@@ -184,6 +243,9 @@ export const useVisionStore = defineStore("vision", {
       const presenceDiagnostic = parsePresenceStatusDiagnostic(value);
       if (presenceDiagnostic) {
         this.applyPresenceFromPresenceStatus(presenceDiagnostic.payload);
+        if (!presenceDiagnostic.payload.personPresent) {
+          this.clearRecommendationState();
+        }
         this.presence.restoredFromRefresh =
           options.restoredFromRefresh === true;
         return;
@@ -191,6 +253,7 @@ export const useVisionStore = defineStore("vision", {
       const departureDiagnostic = parsePersonDepartedDiagnostic(value);
       if (departureDiagnostic) {
         this.applyPresenceFromPersonDeparted(departureDiagnostic.payload);
+        this.clearRecommendationState();
         this.presence.restoredFromRefresh =
           options.restoredFromRefresh === true;
         return;
@@ -274,6 +337,33 @@ export const useVisionStore = defineStore("vision", {
     },
   },
 });
+
+function sanitizeRecommendationProfile(profile: VisionProfile): VisionProfile {
+  return {
+    personPresent: profile.personPresent,
+    heightCm: profile.heightCm ?? undefined,
+    bodyType: profile.bodyType,
+    upperColor: profile.upperColor,
+    confidence: profile.confidence,
+  };
+}
+
+function sanitizeRecommendationResult(
+  payload: VisionProfileResultPayload,
+): VisionProfileResultPayload {
+  return {
+    source: payload.source,
+    eventId: payload.eventId,
+    detectedAt: payload.detectedAt,
+    profile: sanitizeRecommendationProfile(payload.profile),
+    quality: {
+      overall: payload.quality.overall,
+      warnings: [],
+      profileUsable: payload.quality.profileUsable,
+      notUsableReason: payload.quality.notUsableReason,
+    },
+  };
+}
 
 function normalizeOccupancy(
   occupancy: VisionPresenceStatusPayload["occupancy"] | undefined,

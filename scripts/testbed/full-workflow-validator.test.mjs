@@ -33,6 +33,30 @@ function descriptor(name) {
   return BUSINESS_CHECK_REGISTRY.find((entry) => entry.name === name);
 }
 
+function visionExperienceReport() {
+  return {
+    schemaVersion: "vem-vision-try-on-acceptance/v1",
+    ok: true,
+    health: { vision: { protocolSummary: { protocol: "vem.vision.v1" } } },
+    degradations: {
+      visionDown: {
+        experienceCapabilityDegraded: true,
+        saleStartStillAvailable: true,
+      },
+    },
+    ui: {
+      recommendationPresentation: {
+        automatic: { variantId: "variant-m", recommendedSize: "M" },
+        onlineUnmatched: { variantId: "variant-m", recommendedSize: null },
+        manual: { variantId: "variant-l", recommendedSize: null },
+        visionUnavailable: { variantId: "variant-m", recommendedSize: null },
+      },
+      tryOnSummary: { width: 640, height: 480, silhouetteHttpStatus: 200 },
+      tryOnAttempts: [{ result: "passed" }],
+    },
+  };
+}
+
 function stockMaintenanceReport() {
   return {
     schemaVersion: "vem-stock-maintenance-guest-full/v1",
@@ -1006,6 +1030,25 @@ function passingExecution(descriptors) {
 }
 
 describe("full workflow aggregate validator", () => {
+  it("rejects vision experience reports without each recommendation presentation state", () => {
+    const complete = validateBusinessCheckReport(
+      descriptor("visionExperience"),
+      visionExperienceReport(),
+      "vision-experience.json",
+    );
+    assert.equal(complete.status, "passed");
+
+    const incomplete = visionExperienceReport();
+    delete incomplete.ui.recommendationPresentation.onlineUnmatched;
+    const rejected = validateBusinessCheckReport(
+      descriptor("visionExperience"),
+      incomplete,
+      "vision-experience.json",
+    );
+    assert.equal(rejected.status, "failed");
+    assert.match(rejected.reason, /vision degradation evidence is incomplete/);
+  });
+
   it("lets the owning sale validator decide its business claim", () => {
     assert.equal(
       validateBusinessCheckReport(

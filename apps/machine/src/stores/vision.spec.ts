@@ -119,6 +119,52 @@ describe("useVisionStore", () => {
     expect(visionStore.presence.personPresent).toBe(false);
   });
 
+  it("keeps a sanitized recommendation profile at application scope until absence, failure, or expiry", () => {
+    vi.useFakeTimers();
+    const visionStore = useVisionStore();
+
+    visionStore.applyRecommendationProfileResult({
+      ...profilePayload(),
+      profile: {
+        personPresent: true,
+        heightCm: 172,
+        bodyType: "regular",
+        upperColor: "blue",
+        confidence: 0.91,
+        rawImageBase64: "data:image/jpeg;base64,raw",
+        faceEmbedding: [0.1, 0.2],
+        identity: { id: "customer-1" },
+      },
+    } as VisionProfileResultPayload);
+
+    expect(visionStore.recommendationProfile).toEqual({
+      personPresent: true,
+      heightCm: 172,
+      bodyType: "regular",
+      upperColor: "blue",
+      confidence: 0.91,
+    });
+    expect(JSON.stringify(visionStore.lastRecommendationResult)).not.toContain(
+      "raw",
+    );
+    expect(JSON.stringify(visionStore.lastRecommendationResult)).not.toContain(
+      "identity",
+    );
+
+    visionStore.applyPresenceStatus(presencePayload(false));
+    expect(visionStore.recommendationProfile).toBeNull();
+
+    visionStore.applyRecommendationProfileResult(profilePayload());
+    visionStore.clearRecommendationForVisionFailure();
+    expect(visionStore.recommendationProfile).toBeNull();
+
+    visionStore.applyRecommendationProfileResult(profilePayload());
+    vi.advanceTimersByTime(60_000);
+    expect(visionStore.recommendationProfile).toBeNull();
+    expect(visionStore.lastRecommendationResult).toBeNull();
+    vi.useRealTimers();
+  });
+
   it("applies explicit presence status diagnostics without requiring a profile result", () => {
     const visionStore = useVisionStore();
 
