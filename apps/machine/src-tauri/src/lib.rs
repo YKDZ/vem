@@ -135,7 +135,9 @@ pub fn run() {
             #[cfg(windows)]
             if _payload.event() == tauri::webview::PageLoadEvent::Finished {
                 if let Some(window) = _webview.app_handle().get_webview_window("main") {
-                    enforce_kiosk_window(&window).expect("failed to enforce kiosk window bounds");
+                    if let Err(error) = enforce_kiosk_window(&window) {
+                        eprintln!("failed to enforce kiosk window bounds: {error}");
+                    }
                 }
             }
         })

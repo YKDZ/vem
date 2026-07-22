@@ -489,9 +489,9 @@ async function commandEnvironment({
     "/events/environment-control-result",
   );
   const protocolFrames = serialProtocolFrames(afterEvidence, beforeFrameCount);
-  const protocolFrame = (afterEvidence?.rawFrames ?? [])
-    .slice(beforeFrameCount)
-    .find((frame) => frame?.parsedOpcode === expectedOpcode);
+  const protocolFrame = serialFramesSince(afterEvidence, beforeFrameCount).find(
+    (frame) => frame?.parsedOpcode === expectedOpcode,
+  );
   return {
     action,
     request: body,

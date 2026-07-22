@@ -596,7 +596,8 @@ export async function ensureFixtureStockReady({
       slotId: item.slotId,
       sku: item.sku,
       quantity: desiredBySlotId.get(item.slotId) ?? item.physicalStock,
-      enabled: true,
+      enabled:
+        desiredBySlotId.has(item.slotId) || item.slotSalesState !== "frozen",
     }));
   const taskSlotsById = new Map(
     (task.slots ?? []).map((slot) => [slot?.slotId, slot]),
