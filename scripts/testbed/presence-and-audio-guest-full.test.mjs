@@ -5,6 +5,8 @@ import {
   observeGuestRuntimeIdentity,
   parsePresenceAndAudioGuestArgs,
   runPresenceAndAudioGuestFull,
+  serialEvidenceCursor,
+  serialFramesSince,
   validatePresenceAndAudioGuestReport,
 } from "./presence-and-audio-guest-full.mjs";
 
@@ -324,6 +326,26 @@ function report() {
 }
 
 describe("presence and audio guest full", () => {
+  it("observes new serial frames after a bounded evidence buffer rolls over", () => {
+    const before = {
+      rawFrames: Array.from({ length: 64 }, (_, index) => ({
+        sequence: index + 1,
+        parsedOpcode: "A1",
+      })),
+    };
+    const cursor = serialEvidenceCursor(before);
+    const after = {
+      rawFrames: Array.from({ length: 64 }, (_, index) => ({
+        sequence: index + 2,
+        parsedOpcode: index === 63 ? "B3" : "A1",
+      })),
+    };
+
+    assert.deepEqual(serialFramesSince(after, cursor), [
+      { sequence: 65, parsedOpcode: "B3" },
+    ]);
+  });
+
   it("falls back to the shared CDP identity helper when the client lacks observeIdentity", async () => {
     const identity = await observeGuestRuntimeIdentity(
       { webSocketUrl: "ws://127.0.0.1:9222/devtools/page/target-1" },

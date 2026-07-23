@@ -2951,6 +2951,7 @@ async function runVisionTryOnAcceptance(options) {
     let observedProfileEventId = null;
     await startInstalledVisionRuntime();
     realVisionStopped = false;
+    await waitForVisionOnline(handoff, 45_000);
 
     stage = "observe-fenced-recorded-video-chronology-in-machine-catalog";
     const [protocolEvidence, catalogRecommendation] = await Promise.all([

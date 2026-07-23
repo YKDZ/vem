@@ -382,15 +382,41 @@ function stableEdgeId(transitionId) {
   return `presence-${match[1]}:${match[2] === "welcome" ? "arrival" : "departure"}`;
 }
 
-function b3FramesSince(evidence, beforeFrameCount) {
-  return (evidence?.rawFrames ?? [])
-    .slice(beforeFrameCount)
-    .filter((frame) => frame?.parsedOpcode === "B3")
-    .map((frame) => ({ ...frame, speed: b3Speed(frame) }));
+function serialFrameSequence(frame) {
+  if (Number.isInteger(frame?.sequence)) return frame.sequence;
+  const match = String(frame?.boundaryId ?? "").match(/:(\d+)$/);
+  return match ? Number(match[1]) : null;
 }
 
-function serialFrameCount(evidence) {
-  return Array.isArray(evidence?.rawFrames) ? evidence.rawFrames.length : 0;
+export function serialEvidenceCursor(evidence) {
+  const frames = Array.isArray(evidence?.rawFrames) ? evidence.rawFrames : [];
+  const sequences = frames
+    .map((frame) => serialFrameSequence(frame))
+    .filter(Number.isInteger);
+  return {
+    frameCount: frames.length,
+    lastSequence: sequences.length > 0 ? Math.max(...sequences) : null,
+  };
+}
+
+export function serialFramesSince(evidence, cursor) {
+  const frames = Array.isArray(evidence?.rawFrames) ? evidence.rawFrames : [];
+  if (Number.isInteger(cursor?.lastSequence)) {
+    return frames.filter((frame) => {
+      const sequence = serialFrameSequence(frame);
+      return sequence !== null && sequence > cursor.lastSequence;
+    });
+  }
+  const frameCount = Number.isInteger(cursor?.frameCount)
+    ? cursor.frameCount
+    : cursor;
+  return frames.slice(frameCount > frames.length ? 0 : frameCount);
+}
+
+function b3FramesSince(evidence, cursor) {
+  return serialFramesSince(evidence, cursor)
+    .filter((frame) => frame?.parsedOpcode === "B3")
+    .map((frame) => ({ ...frame, speed: b3Speed(frame) }));
 }
 
 async function waitForB3Sequence(
@@ -786,9 +812,7 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
       guestInput,
       `/v1/serial-sessions/${sessionId}/evidence`,
     );
-    const ventFrameCount = Array.isArray(ventEvidenceBefore?.rawFrames)
-      ? ventEvidenceBefore.rawFrames.length
-      : 0;
+    const ventFrameCursor = serialEvidenceCursor(ventEvidenceBefore);
     let boundary = traceId(await readTrace());
     const initialFenceTraceId = boundary;
     const initialCapture = await startCueCapture("initial-welcome");
@@ -806,7 +830,7 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
     await waitForB3Sequence(
       guestInput,
       sessionId,
-      ventFrameCount,
+      ventFrameCursor,
       [2],
       dependencies,
     );
@@ -817,7 +841,7 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
     const afterAdminB3 = await waitForB3Sequence(
       guestInput,
       sessionId,
-      ventFrameCount,
+      ventFrameCursor,
       [2, 3],
       dependencies,
     );
@@ -855,9 +879,9 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
       `/v1/serial-sessions/${sessionId}/evidence`,
     );
     if (
-      serialFrameCount(duplicateB3) !==
-        serialFrameCount(afterAdminB3.evidence) ||
-      b3FramesSince(duplicateB3, ventFrameCount).length !== 2
+      b3FramesSince(duplicateB3, serialEvidenceCursor(afterAdminB3.evidence))
+        .length !== 0 ||
+      b3FramesSince(duplicateB3, ventFrameCursor).length !== 2
     ) {
       throw new Error("duplicate stable edge emitted an unexpected B3 frame");
     }
@@ -899,7 +923,7 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
     const completeB3 = await waitForB3Sequence(
       guestInput,
       sessionId,
-      ventFrameCount,
+      ventFrameCursor,
       [2, 3, 0],
       dependencies,
     );
