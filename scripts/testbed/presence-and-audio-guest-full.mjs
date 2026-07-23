@@ -866,11 +866,13 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
     await dependencies.sleep(500);
     runtimeTrace = await readTrace();
     if (
-      runtimeTrace.filter(
+      traceEntryAfter(
+        runtimeTrace,
+        duplicateFenceTraceId,
         (entry) =>
           entry?.type === "audio_started" &&
           String(entry?.transitionId).endsWith(":welcome"),
-      ).length !== 1
+      )
     ) {
       throw new Error("duplicate initial Vision approach replayed welcome");
     }
@@ -896,12 +898,15 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
     await injectVisionPresence(guestInput, "approach", dependencies);
     await dependencies.sleep(500);
     runtimeTrace = await readTrace();
-    const transientWelcomes = runtimeTrace.filter(
-      (entry) =>
-        entry?.type === "audio_started" &&
-        String(entry?.transitionId).endsWith(":welcome"),
-    );
-    if (transientWelcomes.length !== 1)
+    if (
+      traceEntryAfter(
+        runtimeTrace,
+        transientFenceTraceId,
+        (entry) =>
+          entry?.type === "audio_started" &&
+          String(entry?.transitionId).endsWith(":welcome"),
+      )
+    )
       throw new Error("transient Vision empty rearmed welcome");
     checkpoints.push({
       label: "transient-empty-recovered",
