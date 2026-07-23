@@ -276,6 +276,88 @@ describe("Customer journey audio runtime", () => {
     vi.useRealTimers();
   });
 
+  it("retries a transient automatic-vent IPC failure with the same stable edge and submits departure once", async () => {
+    vi.useFakeTimers();
+    submitAutomaticVentIntent
+      .mockRejectedValueOnce(new Error("daemon starting"))
+      .mockResolvedValue({ outcome: "accepted" });
+    runtime = createCustomerJourneyAudioRuntime(pinia);
+    const visionStore = useVisionStore(pinia);
+
+    visionStore.applyPresenceStatus({
+      source: "top",
+      eventId: "VISION-PRESENT-RETRY-001",
+      state: "approach",
+      reason: "person_present_but_not_close",
+      detectedAt: "2026-07-19T08:00:00.000Z",
+      personPresent: true,
+      closeNow: false,
+      close: false,
+      closeTrigger: null,
+      proximity: { present: true },
+      occupancy: { state: "single", confidence: 0.91 },
+    });
+    await nextTick();
+    await vi.advanceTimersByTimeAsync(250);
+    expect(submitAutomaticVentIntent).toHaveBeenNthCalledWith(1, {
+      edgeId: "presence-1:arrival",
+      ventSpeed: 2,
+    });
+    expect(submitAutomaticVentIntent).toHaveBeenNthCalledWith(2, {
+      edgeId: "presence-1:arrival",
+      ventSpeed: 2,
+    });
+
+    visionStore.applyPersonDeparted({
+      source: "top",
+      eventId: "VISION-DEPARTED-RETRY-001",
+      detectedAt: "2026-07-19T08:00:01.000Z",
+      lastSeenAt: "2026-07-19T08:00:00.000Z",
+      reason: "left_frame",
+    });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(submitAutomaticVentIntent).toHaveBeenLastCalledWith({
+      edgeId: "presence-2:departure",
+      ventSpeed: 0,
+    });
+    expect(submitAutomaticVentIntent).toHaveBeenCalledTimes(3);
+    vi.useRealTimers();
+  });
+
+  it("does not retry an in-flight automatic-vent request after disposal", async () => {
+    vi.useFakeTimers();
+    const pendingRequest: { reject?: (error: Error) => void } = {};
+    submitAutomaticVentIntent.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          pendingRequest.reject = reject;
+        }),
+    );
+    runtime = createCustomerJourneyAudioRuntime(pinia);
+    useVisionStore(pinia).applyPresenceStatus({
+      source: "top",
+      eventId: "VISION-PRESENT-DISPOSE-001",
+      state: "approach",
+      reason: "person_present_but_not_close",
+      detectedAt: "2026-07-19T08:00:00.000Z",
+      personPresent: true,
+      closeNow: false,
+      close: false,
+      closeTrigger: null,
+      proximity: { present: true },
+      occupancy: { state: "single", confidence: 0.91 },
+    });
+    await nextTick();
+    await runtime.dispose();
+    runtime = null;
+    pendingRequest.reject?.(new Error("daemon stopped"));
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(submitAutomaticVentIntent).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
   it("does not project touchscreen inactivity as a Vision departure cue", async () => {
     vi.useFakeTimers();
     useMachineStore(pinia).applyEffectiveRuntimeConfiguration(

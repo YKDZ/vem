@@ -24,6 +24,9 @@ import { useCustomerJourneyStore } from "@/stores/customer-journey";
 import { useMachineStore } from "@/stores/machine";
 import { useNaturalContextStore } from "@/stores/natural-context";
 
+const AUTOMATIC_VENT_SUBMIT_RETRY_DELAY_MS = 250;
+const AUTOMATIC_VENT_SUBMIT_MAX_ATTEMPTS = 3;
+
 export type CustomerJourneyAudioRuntime = {
   requestTestPlayback(
     sourceUrl: string,
@@ -38,6 +41,9 @@ export function createCustomerJourneyAudioRuntime(
   trace?: MachineRuntimeTrace,
 ): CustomerJourneyAudioRuntime {
   const scope = effectScope();
+  let disposed = false;
+  let automaticVentRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let latestStableVentEdgeId: string | null = null;
   const projector = createCustomerJourneyTransitionProjector();
   const coordinator = createCustomerJourneyAudioCoordinator({
     preferences: () => useMachineStore(pinia).customerAudio,
@@ -55,6 +61,30 @@ export function createCustomerJourneyAudioRuntime(
     const session = getCustomerInteractionSession();
     const stableVisionSession = getStableVisionPresenceSession();
     let submittedStableVentEdgeId: string | null = null;
+
+    const submitStableVentIntent = (
+      edgeId: string,
+      ventSpeed: 0 | 2,
+      attempt: number,
+    ): void => {
+      void daemonClient
+        .submitAutomaticVentIntent({ edgeId, ventSpeed })
+        .catch(() => {
+          if (
+            disposed ||
+            latestStableVentEdgeId !== edgeId ||
+            attempt + 1 >= AUTOMATIC_VENT_SUBMIT_MAX_ATTEMPTS
+          ) {
+            return;
+          }
+          automaticVentRetryTimer = setTimeout(() => {
+            automaticVentRetryTimer = null;
+            if (latestStableVentEdgeId === edgeId) {
+              submitStableVentIntent(edgeId, ventSpeed, attempt + 1);
+            }
+          }, AUTOMATIC_VENT_SUBMIT_RETRY_DELAY_MS);
+        });
+    };
 
     watch(
       () =>
@@ -78,12 +108,15 @@ export function createCustomerJourneyAudioRuntime(
         if (!edge || !edgeId) return;
         if (submittedStableVentEdgeId === edgeId) return;
         submittedStableVentEdgeId = edgeId;
+        latestStableVentEdgeId = edgeId;
+        if (automaticVentRetryTimer !== null) {
+          clearTimeout(automaticVentRetryTimer);
+          automaticVentRetryTimer = null;
+        }
         const ventSpeed = edge === "arrival" ? 2 : 0;
-        // Presence experience must remain responsive when the daemon or lower
-        // controller cannot accept this optional environmental intent.
-        void daemonClient
-          .submitAutomaticVentIntent({ edgeId, ventSpeed })
-          .catch(() => undefined);
+        // The daemon deduplicates an edge id. Retrying transient IPC startup
+        // failures therefore cannot produce another B3 command for this edge.
+        submitStableVentIntent(edgeId, ventSpeed, 0);
       },
       { immediate: true, flush: "sync" },
     );
@@ -101,6 +134,11 @@ export function createCustomerJourneyAudioRuntime(
     },
     trace: () => coordinator.trace(),
     async dispose(): Promise<void> {
+      disposed = true;
+      if (automaticVentRetryTimer !== null) {
+        clearTimeout(automaticVentRetryTimer);
+        automaticVentRetryTimer = null;
+      }
       scope.stop();
       await coordinator.dispose();
     },
