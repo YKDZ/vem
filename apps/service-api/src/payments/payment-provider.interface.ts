@@ -1,5 +1,12 @@
 import type { PaymentStatus, RefundStatus } from "@vem/shared";
 
+export class PaymentProviderRequestNotSentError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PaymentProviderRequestNotSentError";
+  }
+}
+
 export type PaymentProviderRuntimeConfig = {
   id?: string;
   providerCode: string;

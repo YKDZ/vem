@@ -66,8 +66,6 @@ import {
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
-import type { PaymentReconciliationState } from "../payments/payment-provider.interface";
-
 import { AuditService } from "../audit/audit.service";
 import { createBusinessNo } from "../common/business-no.util";
 import { getOffset, toPageResult } from "../common/pagination.util";
@@ -79,6 +77,10 @@ import {
 } from "../database/machine-transaction-lock";
 import { InventoryService } from "../inventory/inventory.service";
 import { PaymentProviderConfigService } from "../payments/payment-provider-config.service";
+import {
+  PaymentProviderRequestNotSentError,
+  type PaymentReconciliationState,
+} from "../payments/payment-provider.interface";
 import { PaymentProviderRegistry } from "../payments/payment-provider.registry";
 import { buildStoredEventPayload } from "../payments/payment-redaction.util";
 import { PaymentsService } from "../payments/payments.service";
@@ -186,6 +188,7 @@ function isTradeNotFoundError(error: unknown): boolean {
 
 function isIndeterminateProviderError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
+  if (error instanceof PaymentProviderRequestNotSentError) return false;
   const lower = message.toLowerCase();
   return (
     lower.includes("timeout") ||

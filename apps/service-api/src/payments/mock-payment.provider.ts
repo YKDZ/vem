@@ -30,6 +30,7 @@ import {
   MockPaymentCodeTradeStore,
   type MockPaymentCodeTrade,
 } from "./mock-payment-code-trade.store";
+import { PaymentProviderRequestNotSentError } from "./payment-provider.interface";
 
 @Injectable()
 export class MockPaymentProvider implements PaymentProvider {
@@ -89,7 +90,7 @@ export class MockPaymentProvider implements PaymentProvider {
     } finally {
       await rm(pendingPath, { force: true }).catch(() => undefined);
     }
-    throw new Error(
+    throw new PaymentProviderRequestNotSentError(
       `mock payment create gate timed out before release for ${paymentNo}`,
     );
   }

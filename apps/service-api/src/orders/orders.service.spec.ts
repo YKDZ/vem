@@ -9,6 +9,7 @@ import type { PaymentProviderRegistry } from "../payments/payment-provider.regis
 import type { PaymentsService } from "../payments/payments.service";
 import type { RefundsService } from "../refunds/refunds.service";
 
+import { PaymentProviderRequestNotSentError } from "../payments/payment-provider.interface";
 import { OrdersService } from "./orders.service";
 
 function makeDb() {
@@ -2363,6 +2364,8 @@ type OrdersDbHarness = {
   transaction: ReturnType<typeof vi.fn>;
   insertedPaymentStatus?: string;
   updatedPaymentStatus?: string;
+  updatedOrderStatus?: string;
+  updatedOrderPaymentState?: string;
   orderStatusEvents: Array<{
     orderId: string;
     toStatus: string;
@@ -2626,10 +2629,19 @@ function makeGenericTxForCancellation(db: OrdersDbHarness) {
   });
 
   tx.update.mockReturnValue({
-    set: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({
-        returning: vi.fn().mockResolvedValue([{ id: "pay-001" }]),
-      }),
+    set: vi.fn().mockImplementation((vals: Record<string, unknown>) => {
+      if (typeof vals.paymentState === "string") {
+        db.updatedOrderPaymentState = vals.paymentState;
+        db.updatedOrderStatus =
+          typeof vals.status === "string" ? vals.status : undefined;
+      } else if (typeof vals.status === "string") {
+        db.updatedPaymentStatus = vals.status;
+      }
+      return {
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: "pay-001" }]),
+        }),
+      };
     }),
   });
 
@@ -3032,6 +3044,63 @@ describe("OrdersService (transaction boundary)", () => {
         }),
       );
       expect(createPaymentIntent).toHaveBeenCalledOnce();
+      expect(db.orderStatusEvents).toContainEqual(
+        expect.objectContaining({
+          orderId: "ord-001",
+          toStatus: "canceled",
+          reason: "provider_create_failed",
+        }),
+      );
+    });
+
+    it("cancels local order and releases reservation when provider create times out before release", async () => {
+      const createPaymentIntent = vi
+        .fn()
+        .mockRejectedValue(
+          new PaymentProviderRequestNotSentError(
+            "mock payment create gate timed out before release",
+          ),
+        );
+      const releaseReservation = vi.fn().mockResolvedValue(undefined);
+
+      const db = makeOrdersDbForSuccessfulLocalDraft();
+      const service = makeOrdersService({
+        db,
+        inventoryService: { releaseReservation },
+        paymentProviderRegistry: {
+          get: vi.fn().mockReturnValue({ createPaymentIntent }),
+          has: vi.fn().mockReturnValue(true),
+        },
+      });
+
+      await expect(
+        service.createMachineOrder({
+          machineCode: "M-001",
+          items: [
+            {
+              inventoryId: "inv-001",
+              quantity: 1,
+              planogramVersion: "PLAN-ACTIVE",
+              slotId: "slot-001",
+            },
+          ],
+          paymentMethod: "qr_code",
+          paymentProviderCode: "alipay",
+        }),
+      ).rejects.toThrow("mock payment create gate timed out before release");
+
+      expect(releaseReservation).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          orderId: "ord-001",
+          inventoryId: "inv-001",
+          quantity: 1,
+          reason: "payment_failed",
+        }),
+      );
+      expect(db.updatedPaymentStatus).toBe("failed");
+      expect(db.updatedOrderStatus).toBe("canceled");
+      expect(db.updatedOrderPaymentState).toBe("payment_failed");
       expect(db.orderStatusEvents).toContainEqual(
         expect.objectContaining({
           orderId: "ord-001",
