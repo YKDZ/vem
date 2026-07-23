@@ -574,11 +574,7 @@ async function waitForDaemonCleanup(handoff, paymentNo) {
   return await waitFor(
     `daemon create failure cleanup ${paymentNo}`,
     () => daemon(handoff, "/v1/transactions/current"),
-    (transaction) =>
-      transaction?.orderId === null &&
-      transaction?.paymentId === null &&
-      transaction?.paymentStatus === null &&
-      transaction?.nextAction === null,
+    (transaction) => transaction?.paymentNo !== paymentNo,
   );
 }
 

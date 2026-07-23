@@ -415,7 +415,11 @@ export function serialFramesSince(evidence, cursor) {
 
 function b3FramesSince(evidence, cursor) {
   return serialFramesSince(evidence, cursor)
-    .filter((frame) => frame?.parsedOpcode === "B3")
+    .filter(
+      (frame) =>
+        frame?.direction === "daemon-to-controller" &&
+        frame?.parsedOpcode === "B3",
+    )
     .map((frame) => ({ ...frame, speed: b3Speed(frame) }));
 }
 

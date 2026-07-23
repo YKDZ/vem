@@ -625,6 +625,7 @@ describe("presence and audio guest full", () => {
                   : serialEvidenceReads === 2
                     ? [
                         {
+                          direction: "daemon-to-controller",
                           parsedOpcode: "B3",
                           rawFrameHex: "55b302",
                           capturedAt: "2026-07-22T08:00:00.000Z",
@@ -633,11 +634,13 @@ describe("presence and audio guest full", () => {
                     : serialEvidenceReads < 5
                       ? [
                           {
+                            direction: "daemon-to-controller",
                             parsedOpcode: "B3",
                             rawFrameHex: "55b302",
                             capturedAt: "2026-07-22T08:00:00.000Z",
                           },
                           {
+                            direction: "daemon-to-controller",
                             parsedOpcode: "B3",
                             rawFrameHex: "55b303",
                             capturedAt: "2026-07-22T08:00:05.000Z",
@@ -645,16 +648,19 @@ describe("presence and audio guest full", () => {
                         ]
                       : [
                           {
+                            direction: "daemon-to-controller",
                             parsedOpcode: "B3",
                             rawFrameHex: "55b302",
                             capturedAt: "2026-07-22T08:00:00.000Z",
                           },
                           {
+                            direction: "daemon-to-controller",
                             parsedOpcode: "B3",
                             rawFrameHex: "55b303",
                             capturedAt: "2026-07-22T08:00:05.000Z",
                           },
                           {
+                            direction: "daemon-to-controller",
                             parsedOpcode: "B3",
                             rawFrameHex: "55b300",
                             capturedAt: "2026-07-22T08:00:10.000Z",
