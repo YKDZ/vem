@@ -106,6 +106,7 @@ const DEFAULT_UNCONFIRMED_QR_DISPLAY_DELAY_MS = 30_000;
 const PAYMENT_INTENT_CREATION_LEASE_MS = 90_000;
 const PAYMENT_INTENT_CREATION_LEASE_HEARTBEAT_MS = 30_000;
 const PAYMENT_INTENT_PROVIDER_DEADLINE_MS = 20_000;
+const MOCK_PAYMENT_INTENT_PROVIDER_DEADLINE_MS = 35_000;
 const RECOVERY_ACTIONS = [
   "confirm_dispensed",
   "confirm_not_dispensed",
@@ -2612,6 +2613,10 @@ export class OrdersService {
       | null,
   ) {
     const provider = this.paymentProviderRegistry.get(method);
+    const providerDeadlineMs =
+      provider.code === "mock"
+        ? MOCK_PAYMENT_INTENT_PROVIDER_DEADLINE_MS
+        : PAYMENT_INTENT_PROVIDER_DEADLINE_MS;
     const config = resolvedConfig ?? {
       providerCode: method,
       merchantNo: null,
@@ -2623,7 +2628,7 @@ export class OrdersService {
     const timeout = new Promise<never>((_, reject) => {
       timeoutId = setTimeout(() => {
         reject(new Error("payment provider request timeout"));
-      }, PAYMENT_INTENT_PROVIDER_DEADLINE_MS);
+      }, providerDeadlineMs);
     });
     try {
       return await Promise.race([

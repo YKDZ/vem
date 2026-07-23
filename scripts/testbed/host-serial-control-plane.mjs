@@ -542,11 +542,19 @@ export {
   paymentMockQueryFaultPaths as mockPaymentQueryFaultPaths,
 } from "./mock-payment-create-gate.mjs";
 
-function armMockPaymentCreateGate(server) {
-  writePaymentMockCreateGateState(server.options.stateRoot, { state: "hold" });
+function armMockPaymentCreateGate(server, input) {
+  const timeoutMs = Number(input?.timeoutMs);
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 30_000) {
+    throw new Error("mock payment create gate timeoutMs must be 100..30000");
+  }
+  writePaymentMockCreateGateState(server.options.stateRoot, {
+    state: "hold",
+    timeoutMs,
+  });
   return {
     armedAt: new Date().toISOString(),
     state: "hold",
+    timeoutMs,
   };
 }
 
@@ -1741,7 +1749,10 @@ export function createHostSerialControlPlane(options, dependencies = {}) {
       ) {
         jsonResponse(response, 200, {
           ok: true,
-          ...armMockPaymentCreateGate(serverState),
+          ...armMockPaymentCreateGate(
+            serverState,
+            await readRequestBody(request),
+          ),
         });
         return;
       }

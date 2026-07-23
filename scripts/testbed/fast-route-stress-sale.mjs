@@ -168,6 +168,7 @@ async function armCreateOrderGate(guestInput) {
   const armed = await controlPlaneRequest(
     guestInput,
     "/v1/mock-payment-create-gate/arm",
+    { timeoutMs: 30_000 },
   );
   return {
     controlPlane: "mock-payment-create-gate",

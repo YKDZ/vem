@@ -295,13 +295,14 @@ describe("host serial control plane", () => {
       const arm = await fetch(`${baseUrl}/v1/mock-payment-create-gate/arm`, {
         method: "POST",
         headers,
-        body: "{}",
+        body: JSON.stringify({ timeoutMs: 30_000 }),
       }).then((response) => response.json());
       assert.equal(arm.ok, true);
       assert.equal(arm.state, "hold");
+      assert.equal(arm.timeoutMs, 30_000);
 
       const armedState = JSON.parse(readFileSync(gate.statePath, "utf8"));
-      assert.deepEqual(armedState, { state: "hold" });
+      assert.deepEqual(armedState, { state: "hold", timeoutMs: 30_000 });
       assert.equal(existsSync(gate.pendingPath), false);
 
       const status = await fetch(
@@ -313,6 +314,7 @@ describe("host serial control plane", () => {
         },
       ).then((response) => response.json());
       assert.equal(status.ok, true);
+      assert.equal(status.timeoutMs, 30_000);
       assert.equal(status.pending, null);
 
       const release = await fetch(

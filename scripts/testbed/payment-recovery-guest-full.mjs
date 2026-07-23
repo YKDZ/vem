@@ -876,7 +876,9 @@ export async function runPaymentRecoveryGuest(options) {
       let idempotencyKey = `${runId}-payment-recovery-${kind}`;
       if (kind === "create_failure") {
         idempotencyKey = await prepareCustomerCreateFailure(customer, slot);
-        await control(input, "/v1/mock-payment-create-gate/arm");
+        await control(input, "/v1/mock-payment-create-gate/arm", {
+          timeoutMs: 10_000,
+        });
         let pending = null;
         let openedAfterFailure = false;
         try {

@@ -32,7 +32,7 @@ import {
 } from "./mock-payment-code-trade.store";
 import { PaymentProviderRequestNotSentError } from "./payment-provider.interface";
 
-const MOCK_CREATE_GATE_TIMEOUT_MS = 15_000;
+const DEFAULT_MOCK_CREATE_GATE_TIMEOUT_MS = 30_000;
 
 @Injectable()
 export class MockPaymentProvider implements PaymentProvider {
@@ -78,7 +78,8 @@ export class MockPaymentProvider implements PaymentProvider {
     // This gate fails before the provider request is sent, so it must settle
     // before the OrdersService provider deadline can classify the outcome as
     // indeterminate.
-    const deadline = Date.now() + MOCK_CREATE_GATE_TIMEOUT_MS;
+    const deadline =
+      Date.now() + (state.timeoutMs ?? DEFAULT_MOCK_CREATE_GATE_TIMEOUT_MS);
     try {
       while (Date.now() < deadline) {
         // oxlint-disable-next-line no-await-in-loop -- bounded gate polling is intentionally sequential
@@ -100,9 +101,11 @@ export class MockPaymentProvider implements PaymentProvider {
     );
   }
 
-  private async readCreateGateState(
-    gatePath: string,
-  ): Promise<{ state: "open" | "hold" | "release"; paymentNo?: string }> {
+  private async readCreateGateState(gatePath: string): Promise<{
+    state: "open" | "hold" | "release";
+    paymentNo?: string;
+    timeoutMs?: number;
+  }> {
     let parsed: unknown;
     try {
       parsed = JSON.parse(await readFile(gatePath, "utf8"));
@@ -116,6 +119,7 @@ export class MockPaymentProvider implements PaymentProvider {
     const schema = z.strictObject({
       state: z.enum(["open", "hold", "release"]),
       paymentNo: z.string().min(1).optional(),
+      timeoutMs: z.number().int().min(100).max(30_000).optional(),
     });
     const result = schema.safeParse(parsed);
     if (!result.success) {
