@@ -418,6 +418,7 @@ function Write-RecordedVisionSiteConfiguration([string]$Path) {
       "http://tauri.localhost",
       "http://127.0.0.1:7892"
     )
+    profile_push_interval_ms = 600
     cameras = @{
       top = @{
         source = "recorded_video"

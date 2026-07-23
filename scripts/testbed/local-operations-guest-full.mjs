@@ -248,38 +248,44 @@ export async function readMachineUiAudioPreferences(client) {
   return normalizeAudioPreferences(value);
 }
 async function setMachineUiCheckbox(client, selector, expected) {
-  const current = await evaluateExpression(
-    client,
-    `(() => {
-      const element = document.querySelector(${JSON.stringify(selector)});
-      return element
-        ? { checked: Boolean(element.checked), disabled: Boolean(element.disabled) }
-        : null;
-    })()`,
-  );
-  if (current == null)
-    throw new Error(`machine UI control is unavailable: ${selector}`);
-  if (current.checked !== expected) {
+  const readState = () =>
+    evaluateExpression(
+      client,
+      `(() => {
+        const element = document.querySelector(${JSON.stringify(selector)});
+        return element
+          ? { checked: Boolean(element.checked), disabled: Boolean(element.disabled) }
+          : null;
+      })()`,
+    );
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const current = await readState();
+    if (current == null)
+      throw new Error(`machine UI control is unavailable: ${selector}`);
+    if (current.checked === expected && current.disabled === false) return;
+    if (current.disabled) {
+      await waitForState(
+        `machine UI checkbox ${selector} enabled`,
+        readState,
+        (value) => value?.disabled === false,
+      );
+    }
     await activateVisibleSelector(client, selector, {
       kind: "touch",
       timeoutMs: AUDIO_PREFERENCE_TIMEOUT_MS,
       pollMs: 150,
     });
+    try {
+      await waitForState(
+        `machine UI checkbox ${selector}`,
+        readState,
+        (value) => value?.checked === expected && value?.disabled === false,
+      );
+      return;
+    } catch (error) {
+      if (attempt === 1) throw error;
+    }
   }
-  await waitForState(
-    `machine UI checkbox ${selector}`,
-    async () =>
-      evaluateExpression(
-        client,
-        `(() => {
-          const element = document.querySelector(${JSON.stringify(selector)});
-          return element
-            ? { checked: Boolean(element.checked), disabled: Boolean(element.disabled) }
-            : null;
-        })()`,
-      ),
-    (value) => value?.checked === expected && value?.disabled === false,
-  );
 }
 async function setMachineUiVolumePercent(client, expectedVolume) {
   const percent = Math.round(
