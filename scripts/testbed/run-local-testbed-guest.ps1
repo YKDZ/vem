@@ -423,7 +423,7 @@ function Write-RecordedVisionSiteConfiguration([string]$Path) {
         source = "recorded_video"
         role = "presence"
         video_path = "recorded-video/top.mp4"
-        loop = $true
+        loop = $false
       }
       front = @{
         source = "recorded_video"

@@ -23,6 +23,12 @@ test("run-full emits origins accepted by the managed Vision schema", () => {
   assert.doesNotMatch(contents, /"https:\/\/tauri\.localhost"/);
 });
 
+test("run-full preserves the fixture chronology while looping only front video", () => {
+  const contents = source();
+  assert.equal(contents.match(/loop = \$false/g)?.length, 1);
+  assert.equal(contents.match(/loop = \$true/g)?.length, 1);
+});
+
 test("run-full resolves commit via D:\\runtime-cache\\v1\\vision-main index first", () => {
   const contents = source();
   assert.match(

@@ -1251,22 +1251,28 @@ describe("Windows D cache contract", () => {
       /visionMockOwnerIds[\s\S]*LocalPort -eq \$visionMockControlPort[\s\S]*ExecutablePath -match[\s\S]*vision-mock[\s\S]*Stop-Process -Id \$ownerId/,
     );
     assert.doesNotMatch(guestScript, /Get-Process vending-vision/);
-    assert.doesNotMatch(guestScript, /Stop-ScheduledTask -TaskName "StartVisionServer"/);
+    assert.doesNotMatch(
+      guestScript,
+      /Stop-ScheduledTask -TaskName "StartVisionServer"/,
+    );
     assert.match(
       guestScript,
       /unknownVisionListeners[\s\S]*throw "Vision bootstrap found unknown listener owners/,
     );
-    assert.match(
-      guestScript,
-      /Vision bootstrap cleanup did not release ports/,
-    );
+    assert.match(guestScript, /Vision bootstrap cleanup did not release ports/);
     const windowsHarness = readFileSync(
-      new URL("../windows/vision-main-consumer.windows-harness.ps1", import.meta.url),
+      new URL(
+        "../windows/vision-main-consumer.windows-harness.ps1",
+        import.meta.url,
+      ),
       "utf8",
     );
     assert.match(windowsHarness, /canonical listener was not stopped/);
     assert.match(windowsHarness, /canonical non-listener was not stopped/);
-    assert.match(windowsHarness, /wrong-config canonical process did not fail closed/);
+    assert.match(
+      windowsHarness,
+      /wrong-config canonical process did not fail closed/,
+    );
     assert.match(windowsHarness, /canonical exit race was not tolerated/);
     assert.match(windowsHarness, /mock listener was not stopped/);
     assert.match(windowsHarness, /unknown listener owner did not fail closed/);
@@ -1760,9 +1766,10 @@ describe("Windows D cache contract", () => {
     assert.match(guest, /function Write-RecordedVisionSiteConfiguration/);
     assert.equal(
       guest.match(/loop = \$true/g)?.length,
-      2,
-      "both recorded Vision sources must loop during horizontal acceptance",
+      1,
+      "only the front try-on source loops during horizontal acceptance",
     );
+    assert.equal(guest.match(/loop = \$false/g)?.length, 1);
     assert.match(guest, /function Invoke-FullVisionTryOnAcceptance/);
     assert.match(
       guest,
