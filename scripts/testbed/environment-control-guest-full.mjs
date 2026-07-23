@@ -771,8 +771,8 @@ export async function runEnvironmentControlGuest(options) {
     }
 
     for (const step of [
-      ["airConditionerOnTrue", { airConditionerOn: true }],
       ["airConditionerOnFalse", { airConditionerOn: false }],
+      ["airConditionerOnTrue", { airConditionerOn: true }],
     ]) {
       report.commands.push(
         await commandEnvironment({
