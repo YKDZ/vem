@@ -10,7 +10,6 @@ import {
   combineCleanupError,
   dispatchRepeatedPaymentTouch,
   parseFastRouteStressSaleArgs,
-  personPresentFromVisionStatus,
   runCleanupStep,
   settlePendingCreateOrder,
   shutdownControlledVisionMock,
@@ -508,33 +507,6 @@ function validEvidence() {
 }
 
 describe("fast route stress sale tracer", () => {
-  it("reads current presence from the daemon Vision projection", () => {
-    assert.equal(
-      personPresentFromVisionStatus({
-        latestDiagnosticPayload: {
-          type: "vision.presence_status",
-          payload: { personPresent: true },
-        },
-      }),
-      true,
-    );
-    assert.equal(
-      personPresentFromVisionStatus({
-        latestDiagnosticPayload: {
-          type: "vision.person_departed",
-          payload: {},
-        },
-      }),
-      false,
-    );
-    assert.equal(
-      personPresentFromVisionStatus({
-        latestDiagnosticPayload: { type: "vision.ready", payload: {} },
-      }),
-      null,
-    );
-  });
-
   it("awaits a new stable Vision arrival after the control-request boundary", async () => {
     let reads = 0;
     const boundary = {

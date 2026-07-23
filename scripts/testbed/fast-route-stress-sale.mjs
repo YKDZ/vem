@@ -2139,30 +2139,18 @@ async function dispatchVisionArrival(guestInput) {
   });
 }
 
-export function personPresentFromVisionStatus(status) {
-  const diagnostic = status?.latestDiagnosticPayload;
-  if (diagnostic?.type === "vision.person_departed") return false;
-  if (
-    diagnostic?.type === "vision.presence_status" &&
-    typeof diagnostic?.payload?.personPresent === "boolean"
-  ) {
-    return diagnostic.payload.personPresent;
-  }
-  return null;
-}
-
-async function establishVisionPresenceForSale(guestInput, handoff, client) {
-  const personPresent = personPresentFromVisionStatus(
-    await daemonGet(handoff, "/v1/vision/status"),
+async function establishVisionPresenceForSale(guestInput, client) {
+  const resetBoundary = await captureRuntimeTraceBoundary(
+    client,
+    "Vision presence reset boundary",
   );
-  if (personPresent === true) {
-    const resetBoundary = await captureRuntimeTraceBoundary(
-      client,
-      "Vision presence reset boundary",
-    );
-    await dispatchVisionDeparture(guestInput);
-    await waitForStableVisionDepartureTransition(client, resetBoundary);
-  }
+  // The daemon's latest Vision diagnostic can be replaced by a profile or
+  // connectivity event while the UI still holds a stable presence session.
+  // Drive one complete controlled edge cycle so every sale starts from a
+  // proven departure instead of inferring current UI state from that payload.
+  await dispatchVisionArrival(guestInput);
+  await dispatchVisionDeparture(guestInput);
+  await waitForStableVisionDepartureTransition(client, resetBoundary);
   const arrivalTraceBoundary = await captureRuntimeTraceBoundary(
     client,
     "Vision arrival control-request trace boundary",
@@ -2305,11 +2293,7 @@ async function runFastRouteStressSale(options) {
       }),
     );
     stage = "establish-stable-vision-presence";
-    visionArrival = await establishVisionPresenceForSale(
-      guestInput,
-      handoff,
-      client,
-    );
+    visionArrival = await establishVisionPresenceForSale(guestInput, client);
     continuousCdpLocationHashObserver =
       await startContinuousCdpLocationHashObservation(client);
     stage = "physical-catalog-to-checkout";

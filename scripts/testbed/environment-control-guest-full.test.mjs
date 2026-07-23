@@ -6,7 +6,9 @@ import { describe, it } from "node:test";
 
 import {
   automaticSerialEvidence,
+  collectAutomaticVentPrecedence,
   isReplacementSessionB3,
+  waitForExpectedProtocolFrame,
   replaceEnvironmentSerialHandoff,
   serialFramesSince,
   unwrapServiceApiEnvelope,
@@ -143,6 +145,167 @@ describe("environment control guest full", () => {
 
     assert.equal(isReplacementSessionB3(frame, "serial-replacement", 2), true);
     assert.equal(isReplacementSessionB3(frame, "serial-stale", 2), false);
+  });
+
+  it("waits for the requested B3 speed before advancing", async () => {
+    const evidenceResponses = [
+      {
+        rawFrames: [
+          {
+            sessionId: "serial-replacement",
+            parsedOpcode: "B3",
+            rawFrameHex: "55b302",
+          },
+        ],
+      },
+      {
+        rawFrames: [
+          {
+            sessionId: "serial-replacement",
+            parsedOpcode: "B3",
+            rawFrameHex: "55b302",
+          },
+          {
+            sessionId: "serial-replacement",
+            parsedOpcode: "B3",
+            rawFrameHex: "55b303",
+          },
+        ],
+      },
+    ];
+
+    const observed = await waitForExpectedProtocolFrame({
+      guestInput: {},
+      sessionId: "serial-replacement",
+      beforeFrameCount: 0,
+      expectedOpcode: "B3",
+      expectedSpeed: 3,
+      pollMs: 0,
+      timeoutMs: 100,
+      controlRequest: async () => evidenceResponses.shift(),
+    });
+
+    assert.equal(observed.frame.rawFrameHex, "55b303");
+  });
+
+  it("resets vent speed to zero before collecting automatic vent precedence", async () => {
+    const report = {
+      commands: [],
+      daemon: { automaticVent: { outcomes: [] } },
+      precedence: null,
+    };
+    const calls = [];
+    let commandNo = 0;
+    const commandEnvironmentRequest = async ({ action, body }) => {
+      calls.push({ kind: "command", action, body });
+      commandNo += 1;
+      return {
+        action,
+        request: body,
+        admin: { commandNo: `command-${commandNo}`, status: "sent" },
+        result: { status: "succeeded" },
+        mqtt: {
+          commandNo: `command-${commandNo}`,
+          resultCommandNo: `command-${commandNo}`,
+        },
+        serial: {
+          protocolFrame: {
+            sessionId: "serial-replacement",
+            parsedOpcode: "B3",
+            rawFrameHex: `55b30${body.ventSpeed}`,
+          },
+        },
+      };
+    };
+    const requestAutomaticVentIntentRequest = async ({ edgeId, ventSpeed }) => {
+      calls.push({ kind: "automatic", edgeId, ventSpeed });
+      if (edgeId.endsWith(":arrival")) {
+        return {
+          edgeId,
+          requestedSpeed: ventSpeed,
+          outcome: "accepted",
+          beforeFrameCount: 1,
+          b3FrameCountDelta: 1,
+          protocolFrames: ["B3"],
+          frame: {
+            sessionId: "serial-replacement",
+            parsedOpcode: "B3",
+            rawFrameHex: "55b302",
+          },
+        };
+      }
+      if (edgeId.endsWith(":departure")) {
+        return {
+          edgeId,
+          requestedSpeed: ventSpeed,
+          outcome: "accepted",
+          beforeFrameCount: 3,
+          b3FrameCountDelta: 1,
+          protocolFrames: ["B3"],
+          frame: {
+            sessionId: "serial-replacement",
+            parsedOpcode: "B3",
+            rawFrameHex: "55b300",
+          },
+        };
+      }
+      return {
+        edgeId,
+        requestedSpeed: ventSpeed,
+        outcome: "deduplicated",
+        beforeFrameCount: 2,
+        b3FrameCountDelta: 0,
+        protocolFrames: [],
+      };
+    };
+    const observeAdminOverrideGuardRequest = async ({ beforeFrameCount }) => {
+      calls.push({ kind: "guard", beforeFrameCount });
+      return {
+        completed: true,
+        durationMs: 5_000,
+        b3FrameCountDelta: 0,
+        protocolFrames: [],
+      };
+    };
+
+    const result = await collectAutomaticVentPrecedence({
+      guestInput: {},
+      handoff: {},
+      token: "admin-token",
+      machineId: "machine-1",
+      sessionId: "serial-replacement",
+      runId: "RUN-1784767229481",
+      report,
+      commandEnvironmentRequest,
+      requestAutomaticVentIntentRequest,
+      observeAdminOverrideGuardRequest,
+    });
+
+    assert.deepEqual(calls, [
+      { kind: "command", action: "ventSpeed", body: { ventSpeed: 0 } },
+      {
+        kind: "automatic",
+        edgeId: "environment-control:RUN-1784767229481:arrival",
+        ventSpeed: 2,
+      },
+      { kind: "command", action: "ventSpeed", body: { ventSpeed: 3 } },
+      {
+        kind: "automatic",
+        edgeId: "environment-control:RUN-1784767229481:arrival",
+        ventSpeed: 2,
+      },
+      { kind: "guard", beforeFrameCount: 1 },
+      {
+        kind: "automatic",
+        edgeId: "environment-control:RUN-1784767229481:departure",
+        ventSpeed: 0,
+      },
+    ]);
+    assert.equal(report.commands[0].request.ventSpeed, 0);
+    assert.equal(report.commands[1].request.ventSpeed, 3);
+    assert.equal(report.daemon.automaticVent.outcomes.length, 3);
+    assert.equal(report.precedence.initialVentReset.request.ventSpeed, 0);
+    assert.equal(result.nextStableEdge.requestedSpeed, 0);
   });
 
   it("replaces the serial session published by the current handoff", async () => {

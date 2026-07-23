@@ -806,6 +806,88 @@ describe("full workflow serial lifecycle", () => {
     );
   });
 
+  it("uses physical stock attestation when a pending refill projection is still not submitted", async () => {
+    const posts = [];
+    const reads = [];
+    let saleViewReads = 0;
+    const result = await ensureFixtureStockReady({
+      fixtureAllocation: {
+        stockMaintenance: {
+          slotId: "slot-1",
+          slotDisplayLabel: "A1",
+          onHandQty: 3,
+        },
+      },
+      async daemonGet(path) {
+        reads.push(path);
+        if (path === "/v1/stock/maintenance-task") {
+          return {
+            taskId: "historical-refill-01",
+            mode: "routine_refill",
+            status: "pending",
+            slots: [{ slotId: "slot-1", currentQuantity: 3 }],
+          };
+        }
+        if (
+          path === "/v1/stock/maintenance-tasks/historical-refill-01/projection"
+        ) {
+          return {
+            taskId: "historical-refill-01",
+            mode: "routine_refill",
+            status: "complete",
+            slots: [
+              {
+                slotId: "slot-1",
+                submittedAddition: 0,
+                previewQuantity: 3,
+                syncStatus: "not_submitted",
+              },
+            ],
+          };
+        }
+        saleViewReads += 1;
+        return {
+          planogramVersion: "PLAN-01",
+          items: [
+            {
+              slotId: "slot-1",
+              slotDisplayLabel: "A1",
+              sku: "SKU-01",
+              slotSalesState: saleViewReads > 1 ? "sale_ready" : "frozen",
+              saleableStock: saleViewReads > 1 ? 3 : 0,
+              physicalStock: 3,
+            },
+          ],
+        };
+      },
+      async daemonPost(path, body) {
+        posts.push({ path, body });
+        return {};
+      },
+      pollMs: 0,
+    });
+
+    assert.equal(result.changed, true);
+    assert.equal(result.mode, "physical_stock_attestation");
+    assert.equal(posts[0].path, "/v1/stock/attestation");
+    assert.deepEqual(posts[0].body.slots, [
+      {
+        slotId: "slot-1",
+        sku: "SKU-01",
+        quantity: 3,
+        enabled: true,
+      },
+    ]);
+    assert.equal(
+      reads.filter(
+        (path) =>
+          path ===
+          "/v1/stock/maintenance-tasks/historical-refill-01/projection",
+      ).length,
+      1,
+    );
+  });
+
   it("restores an overstocked warm fixture to its exact baseline through physical stock attestation", async () => {
     const posts = [];
     let saleViewReads = 0;

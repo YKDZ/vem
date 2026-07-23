@@ -366,29 +366,40 @@ export function automaticSerialEvidence(evidence, beforeFrameCount) {
   };
 }
 
-async function waitForB3Frame({
+export async function waitForExpectedProtocolFrame({
   guestInput,
   sessionId,
   beforeFrameCount,
-  expectedSpeed,
+  expectedOpcode,
+  expectedSpeed = null,
   timeoutMs = 45_000,
+  pollMs = 100,
+  controlRequest = control,
 }) {
   const deadline = Date.now() + timeoutMs;
   let evidence = null;
   do {
-    evidence = await control(
+    evidence = await controlRequest(
       guestInput,
       `/v1/serial-sessions/${sessionId}/evidence`,
       {},
     );
-    const frame = b3FramesSince(evidence, beforeFrameCount).find((entry) =>
-      isReplacementSessionB3(entry, sessionId, expectedSpeed),
+    const frame = serialFramesSince(evidence, beforeFrameCount).find(
+      (entry) =>
+        entry?.sessionId === sessionId &&
+        entry?.parsedOpcode === expectedOpcode &&
+        (expectedOpcode !== "B3" ||
+          !Number.isInteger(expectedSpeed) ||
+          b3Speed(entry) === expectedSpeed),
     );
     if (frame) return { evidence, frame };
-    await sleep(100);
+    await sleep(pollMs);
   } while (Date.now() < deadline);
+  const observed = serialFramesSince(evidence, beforeFrameCount).filter(
+    (entry) => entry?.parsedOpcode === expectedOpcode,
+  );
   throw new Error(
-    `automatic B3=${expectedSpeed} was not observed: ${JSON.stringify(b3FramesSince(evidence, beforeFrameCount))}`,
+    `${expectedOpcode}${Number.isInteger(expectedSpeed) ? `=${expectedSpeed}` : ""} was not observed: ${JSON.stringify(observed)}`,
   );
 }
 
@@ -428,10 +439,11 @@ async function requestAutomaticVentIntent({
       ...automaticSerialEvidence(evidence, beforeCursor),
     };
   }
-  const { evidence, frame } = await waitForB3Frame({
+  const { evidence, frame } = await waitForExpectedProtocolFrame({
     guestInput,
     sessionId,
     beforeFrameCount: beforeCursor,
+    expectedOpcode: "B3",
     expectedSpeed: ventSpeed,
   });
   return {
@@ -507,17 +519,21 @@ async function commandEnvironment({
     machineId,
     admin.commandNo,
   );
-  const afterEvidence = await control(
-    guestInput,
-    `/v1/serial-sessions/${sessionId}/evidence`,
-    {},
-  );
   const expectedOpcode =
     action === "airConditionerOnTrue" || action === "airConditionerOnFalse"
       ? "B2"
       : action === "ventSpeed"
         ? "B3"
         : "B1";
+  const expectedSpeed = action === "ventSpeed" ? body.ventSpeed : null;
+  const { evidence: afterEvidence, frame: protocolFrame } =
+    await waitForExpectedProtocolFrame({
+      guestInput,
+      sessionId,
+      beforeFrameCount: beforeCursor,
+      expectedOpcode,
+      expectedSpeed,
+    });
   const commandMqtt = mqttMessage(
     afterEvidence,
     admin.commandNo,
@@ -529,9 +545,6 @@ async function commandEnvironment({
     "/events/environment-control-result",
   );
   const protocolFrames = serialProtocolFrames(afterEvidence, beforeCursor);
-  const protocolFrame = serialFramesSince(afterEvidence, beforeCursor).find(
-    (frame) => frame?.parsedOpcode === expectedOpcode,
-  );
   return {
     action,
     request: body,
@@ -562,6 +575,98 @@ async function commandEnvironment({
       protocolFrameObserved: protocolFrames.includes(expectedOpcode),
       automaticB3FrameCount: b3FramesSince(afterEvidence, beforeCursor).length,
     },
+  };
+}
+
+export async function collectAutomaticVentPrecedence({
+  guestInput,
+  handoff,
+  token,
+  machineId,
+  sessionId,
+  runId,
+  report,
+  commandEnvironmentRequest = commandEnvironment,
+  requestAutomaticVentIntentRequest = requestAutomaticVentIntent,
+  observeAdminOverrideGuardRequest = observeAdminOverrideGuard,
+}) {
+  const initialVentReset = await commandEnvironmentRequest({
+    guestInput,
+    token,
+    machineId,
+    sessionId,
+    action: "ventSpeed",
+    body: { ventSpeed: 0 },
+  });
+  report.commands.push(initialVentReset);
+  const automaticArrival = await requestAutomaticVentIntentRequest({
+    guestInput,
+    handoff,
+    sessionId,
+    edgeId: `environment-control:${runId}:arrival`,
+    ventSpeed: 2,
+  });
+  report.daemon.automaticVent.outcomes.push(automaticArrival);
+  const adminVent = await commandEnvironmentRequest({
+    guestInput,
+    token,
+    machineId,
+    sessionId,
+    action: "ventSpeed",
+    body: { ventSpeed: 3 },
+  });
+  report.commands.push(adminVent);
+  const sameEdgeAfterAdmin = await requestAutomaticVentIntentRequest({
+    guestInput,
+    handoff,
+    sessionId,
+    edgeId: automaticArrival.edgeId,
+    ventSpeed: 2,
+  });
+  report.daemon.automaticVent.outcomes.push(sameEdgeAfterAdmin);
+  sameEdgeAfterAdmin.guardWindow = await observeAdminOverrideGuardRequest({
+    guestInput,
+    sessionId,
+    beforeFrameCount: sameEdgeAfterAdmin.beforeFrameCount,
+  });
+  if (sameEdgeAfterAdmin.guardWindow.completed !== true) {
+    const { protocolFrames, b3FrameCountDelta } =
+      sameEdgeAfterAdmin.guardWindow;
+    const reason =
+      b3FrameCountDelta > 0
+        ? "delayed automatic B3 rebound"
+        : "lower-controller activity";
+    throw new Error(
+      `Admin B3 override guard observed ${reason}: ${JSON.stringify(protocolFrames)}`,
+    );
+  }
+  const nextStableEdge = await requestAutomaticVentIntentRequest({
+    guestInput,
+    handoff,
+    sessionId,
+    edgeId: `environment-control:${runId}:departure`,
+    ventSpeed: 0,
+  });
+  report.daemon.automaticVent.outcomes.push(nextStableEdge);
+  report.precedence = {
+    initialVentReset,
+    automaticArrival,
+    adminB3: {
+      commandNo: adminVent.admin.commandNo,
+      resultStatus: adminVent.result.status,
+      mqttCommandNo: adminVent.mqtt.commandNo,
+      mqttResultNo: adminVent.mqtt.resultCommandNo,
+      frame: adminVent.serial.protocolFrame ?? null,
+    },
+    sameEdgeAfterAdmin,
+    nextStableEdge,
+  };
+  return {
+    initialVentReset,
+    automaticArrival,
+    adminVent,
+    sameEdgeAfterAdmin,
+    nextStableEdge,
   };
 }
 
@@ -680,67 +785,21 @@ export async function runEnvironmentControlGuest(options) {
         }),
       );
     }
-    const automaticArrival = await requestAutomaticVentIntent({
+    const {
+      initialVentReset,
+      automaticArrival,
+      adminVent,
+      sameEdgeAfterAdmin,
+      nextStableEdge,
+    } = await collectAutomaticVentPrecedence({
       guestInput,
       handoff,
-      sessionId: session.sessionId,
-      edgeId: `environment-control:${runId}:arrival`,
-      ventSpeed: 2,
-    });
-    report.daemon.automaticVent.outcomes.push(automaticArrival);
-    const adminVent = await commandEnvironment({
-      guestInput,
       token,
       machineId: machine.id,
       sessionId: session.sessionId,
-      action: "ventSpeed",
-      body: { ventSpeed: 3 },
+      runId,
+      report,
     });
-    report.commands.push(adminVent);
-    const sameEdgeAfterAdmin = await requestAutomaticVentIntent({
-      guestInput,
-      handoff,
-      sessionId: session.sessionId,
-      edgeId: automaticArrival.edgeId,
-      ventSpeed: 2,
-    });
-    report.daemon.automaticVent.outcomes.push(sameEdgeAfterAdmin);
-    sameEdgeAfterAdmin.guardWindow = await observeAdminOverrideGuard({
-      guestInput,
-      sessionId: session.sessionId,
-      beforeFrameCount: sameEdgeAfterAdmin.beforeFrameCount,
-    });
-    report.precedence = {
-      automaticArrival,
-      adminB3: {
-        commandNo: adminVent.admin.commandNo,
-        resultStatus: adminVent.result.status,
-        mqttCommandNo: adminVent.mqtt.commandNo,
-        mqttResultNo: adminVent.mqtt.resultCommandNo,
-        frame: adminVent.serial.protocolFrame ?? null,
-      },
-      sameEdgeAfterAdmin,
-      nextStableEdge: null,
-    };
-    if (sameEdgeAfterAdmin.guardWindow.completed !== true) {
-      const { protocolFrames, b3FrameCountDelta } =
-        sameEdgeAfterAdmin.guardWindow;
-      const reason =
-        b3FrameCountDelta > 0
-          ? "delayed automatic B3 rebound"
-          : "lower-controller activity";
-      throw new Error(
-        `Admin B3 override guard observed ${reason}: ${JSON.stringify(protocolFrames)}`,
-      );
-    }
-    const nextStableEdge = await requestAutomaticVentIntent({
-      guestInput,
-      handoff,
-      sessionId: session.sessionId,
-      edgeId: `environment-control:${runId}:departure`,
-      ventSpeed: 0,
-    });
-    report.daemon.automaticVent.outcomes.push(nextStableEdge);
     report.commands.push(
       await commandEnvironment({
         guestInput,
@@ -751,7 +810,6 @@ export async function runEnvironmentControlGuest(options) {
         body: { targetTemperatureCelsius: 23 },
       }),
     );
-    report.precedence.nextStableEdge = nextStableEdge;
     const health = await daemonGet(handoff, "/healthz");
     report.daemon = {
       ...report.daemon,
@@ -790,6 +848,11 @@ export async function runEnvironmentControlGuest(options) {
       report.daemon.readiness?.ready === true &&
       automaticArrival.outcome === "accepted" &&
       automaticArrival.requestedSpeed === 2 &&
+      isReplacementSessionB3(
+        initialVentReset.serial.protocolFrame,
+        report.serialSessionReplacement.replacementControlPlaneSessionId,
+        0,
+      ) &&
       isReplacementSessionB3(
         automaticArrival.frame,
         report.serialSessionReplacement.replacementControlPlaneSessionId,
