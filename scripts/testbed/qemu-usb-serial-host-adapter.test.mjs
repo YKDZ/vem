@@ -219,6 +219,26 @@ describe("repo QEMU USB serial host adapter", () => {
     );
   });
 
+  it("accepts production environment control commands and echoes", () => {
+    for (const [direction, rawFrameHex, opcode] of [
+      ["controller-to-daemon", "55B10118", 0xb1],
+      ["daemon-to-controller", "55B2AA", 0xb2],
+      ["controller-to-daemon", "55B2AA", 0xb2],
+      ["daemon-to-controller", "55B303", 0xb3],
+      ["controller-to-daemon", "55B303", 0xb3],
+    ]) {
+      assert.equal(
+        validateProductionRawSerialFrame({
+          direction,
+          rawFrameHex,
+          opcode,
+          parsedOpcode: opcode.toString(16).toUpperCase(),
+        }).bytes.length,
+        opcode === 0xb1 ? 4 : 3,
+      );
+    }
+  });
+
   it("parses timestamped bytes from the host PTY bridge rather than simulator JSONL", () => {
     const root = makeTempDir("vem-qemu-pty-trace");
     const tracePath = join(root, "qemu-pty.trace");

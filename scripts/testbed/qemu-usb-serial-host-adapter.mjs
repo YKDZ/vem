@@ -158,6 +158,37 @@ export function validateProductionRawSerialFrame(
     }
     return { ...record, bytes };
   }
+  if (expectedOpcode === 0xb1) {
+    if (
+      ![2, 4].includes(bytes.length) ||
+      bytes[1] !== expectedOpcode ||
+      record.opcode !== expectedOpcode
+    ) {
+      throw new Error(
+        `${label} B1 must match a production air-conditioner state query or response frame`,
+      );
+    }
+    return { ...record, bytes };
+  }
+  if ([0xb2, 0xb3].includes(expectedOpcode)) {
+    const validLength = bytes.length === 2 || bytes.length === 3;
+    const validValue =
+      bytes.length === 2 ||
+      (expectedOpcode === 0xb3
+        ? bytes[2] >= 0 && bytes[2] <= 4
+        : [0x00, 0xaa, 0xff].includes(bytes[2]));
+    if (
+      !validLength ||
+      !validValue ||
+      bytes[1] !== expectedOpcode ||
+      record.opcode !== expectedOpcode
+    ) {
+      throw new Error(
+        `${label} ${record.parsedOpcode} must match a production environment query, command, or response frame`,
+      );
+    }
+    return { ...record, bytes };
+  }
   if (
     bytes.length !== 2 ||
     bytes[1] !== expectedOpcode ||
@@ -710,11 +741,15 @@ export function readRawSerialJournal(path) {
             ? direction === "daemon-to-controller"
               ? 3
               : 4
-            : pending[0] === FRAME_HEAD && [0xb1, 0xb2, 0xb3].includes(opcode)
-              ? pending.length >= 3 && pending[2] !== FRAME_HEAD
-                ? 3
+            : pending[0] === FRAME_HEAD && opcode === 0xb1
+              ? pending.length >= 4 && pending[2] !== FRAME_HEAD
+                ? 4
                 : 2
-              : 2;
+              : pending[0] === FRAME_HEAD && [0xb2, 0xb3].includes(opcode)
+                ? pending.length >= 3 && pending[2] !== FRAME_HEAD
+                  ? 3
+                  : 2
+                : 2;
       if (pending.length < frameLength) return;
       const bytes = pending.subarray(0, frameLength);
       pending = pending.subarray(frameLength);
