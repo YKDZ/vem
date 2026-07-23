@@ -929,15 +929,15 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
       label: "sustained-empty-departed",
       traceId: Number(departure.entry.id),
     });
-    const completeB3 = await waitForB3Sequence(
+    const departureB3 = await waitForB3Sequence(
       guestInput,
       sessionId,
-      ventFrameCursor,
-      [2, 3, 0],
+      serialEvidenceCursor(afterAdminB3.evidence),
+      [0],
       dependencies,
     );
     const automaticVent = automaticVentEvidence({
-      frames: completeB3.frames,
+      frames: [...afterAdminB3.frames, ...departureB3.frames],
       initialTransitionId: initialWelcome.transitionId,
       departureTransitionId: departure.entry.transitionId,
       adminOverride,

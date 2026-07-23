@@ -677,7 +677,7 @@ async function proveOverlapRejection({ guestInput, token, machineId }) {
     {
       token,
       method: "POST",
-      body: { airConditionerOn: true },
+      body: { targetTemperatureCelsius: 22 },
     },
   );
   try {
@@ -771,8 +771,8 @@ export async function runEnvironmentControlGuest(options) {
     }
 
     for (const step of [
-      ["airConditionerOnFalse", { airConditionerOn: false }],
       ["airConditionerOnTrue", { airConditionerOn: true }],
+      ["airConditionerOnFalse", { airConditionerOn: false }],
     ]) {
       report.commands.push(
         await commandEnvironment({
