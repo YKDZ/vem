@@ -698,17 +698,23 @@ export function readRawSerialJournal(path) {
   const records = [];
   let direction = null;
   let capturedAt = null;
+  let declaredLength = null;
   let pending = Buffer.alloc(0);
   const flush = () => {
     while (pending.length >= 2) {
+      const opcode = pending[1];
       const frameLength =
-        pending[0] === FRAME_HEAD && pending[1] >= 1 && pending[1] <= 9
+        pending[0] === FRAME_HEAD && opcode >= 1 && opcode <= 9
           ? 4
-          : pending[0] === FRAME_HEAD && pending[1] === 0xb0
+          : pending[0] === FRAME_HEAD && opcode === 0xb0
             ? direction === "daemon-to-controller"
               ? 3
               : 4
-            : 2;
+            : pending[0] === FRAME_HEAD && [0xb1, 0xb2, 0xb3].includes(opcode)
+              ? pending.length >= 3 && pending[2] !== FRAME_HEAD
+                ? 3
+                : 2
+              : 2;
       if (pending.length < frameLength) return;
       const bytes = pending.subarray(0, frameLength);
       pending = pending.subarray(frameLength);
@@ -729,11 +735,13 @@ export function readRawSerialJournal(path) {
   };
   for (const line of source.split(/\r?\n/)) {
     const header = line.match(
-      /^([<>])\s+(\d{4}\/\d{2}\/\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?)/,
+      /^([<>])\s+(\d{4}\/\d{2}\/\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?)(?:\s+length=(\d+))?/,
     );
     if (header) {
+      flush();
       direction =
         header[1] === ">" ? "controller-to-daemon" : "daemon-to-controller";
+      declaredLength = header[3] ? Number.parseInt(header[3], 10) : null;
       const [, seconds, fraction = ""] = header[2].match(/^(.*?)(?:\.(\d+))?$/);
       capturedAt = new Date(
         `${seconds.replaceAll("/", "-").replace(" ", "T")}.${fraction.padEnd(3, "0").slice(0, 3)}Z`,
@@ -746,9 +754,10 @@ export function readRawSerialJournal(path) {
     );
     if (bytes.length) {
       pending = Buffer.concat([pending, Buffer.from(bytes)]);
-      flush();
+      if (declaredLength === null || pending.length >= declaredLength) flush();
     }
   }
+  flush();
   return records;
 }
 

@@ -321,11 +321,17 @@ async function openStockMaintenance(client) {
     );
   }
   for (let count = 0; count < 7; count += 1) {
-    await activateVisibleSelector(client, MAINTENANCE_ENTRY_SELECTOR, {
-      kind: "touch",
-      timeoutMs: TIMEOUT_MS,
-      pollMs: POLL_MS,
-    });
+    const dispatched = await evaluateExpression(
+      client,
+      `(() => {
+        const target = document.querySelector(${JSON.stringify(MAINTENANCE_ENTRY_SELECTOR)});
+        if (!target) return false;
+        target.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        return true;
+      })()`,
+    );
+    if (!dispatched) throw new Error("maintenance entry is unavailable");
+    await new Promise((resolve) => setTimeout(resolve, 80));
   }
   await waitForRoute(client, "#/maintenance?source=operator", {
     timeoutMs: TIMEOUT_MS,
