@@ -32,6 +32,8 @@ import {
 } from "./mock-payment-code-trade.store";
 import { PaymentProviderRequestNotSentError } from "./payment-provider.interface";
 
+const MOCK_CREATE_GATE_TIMEOUT_MS = 15_000;
+
 @Injectable()
 export class MockPaymentProvider implements PaymentProvider {
   readonly code = "mock";
@@ -73,7 +75,10 @@ export class MockPaymentProvider implements PaymentProvider {
       "utf8",
     );
 
-    const deadline = Date.now() + 30_000;
+    // This gate fails before the provider request is sent, so it must settle
+    // before the OrdersService provider deadline can classify the outcome as
+    // indeterminate.
+    const deadline = Date.now() + MOCK_CREATE_GATE_TIMEOUT_MS;
     try {
       while (Date.now() < deadline) {
         // oxlint-disable-next-line no-await-in-loop -- bounded gate polling is intentionally sequential
