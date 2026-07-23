@@ -108,6 +108,32 @@ describe("environment control guest full", () => {
     });
   });
 
+  it("falls back to frame count when fresh frames do not carry sequence metadata", () => {
+    const beforeCursor = { frameCount: 1, lastSequence: 9 };
+    const evidence = {
+      rawFrames: [
+        {
+          boundaryId: "host-pty:serial-replacement:9",
+          parsedOpcode: "AB",
+          rawFrameHex: "55ab",
+        },
+        {
+          sessionId: "serial-replacement",
+          parsedOpcode: "B3",
+          rawFrameHex: "55b302",
+        },
+      ],
+    };
+
+    assert.deepEqual(serialFramesSince(evidence, beforeCursor), [
+      evidence.rawFrames[1],
+    ]);
+    assert.deepEqual(automaticSerialEvidence(evidence, beforeCursor), {
+      b3FrameCountDelta: 1,
+      protocolFrames: ["B3"],
+    });
+  });
+
   it("requires B3 evidence from the replacement serial session", () => {
     const frame = {
       sessionId: "serial-replacement",

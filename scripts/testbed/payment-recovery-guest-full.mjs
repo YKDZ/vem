@@ -244,6 +244,14 @@ export function runtimeTraceTechnicalMessage(entry) {
   return typeof nested === "string" && nested !== "" ? nested : null;
 }
 
+function semanticBackendApiError(message) {
+  return (
+    typeof message === "string" &&
+    /^BACKEND_API_ERROR:\s+[45]\d{2}(?:\s|$)/.test(message) &&
+    !message.includes("mock payment create gate timed out before release")
+  );
+}
+
 export function validatePaymentRecoveryEvidence(report) {
   if (report?.schemaVersion !== SCHEMA_VERSION || report.ok !== true) {
     throw new Error("payment recovery report is not successful");
@@ -336,9 +344,11 @@ export function validatePaymentRecoveryEvidence(report) {
         attempt.technicalEvidence.runtimeTrace
           ?.checkoutAttemptIdempotencyKey !== attempt.idempotencyKey ||
         !Number.isFinite(attempt.technicalEvidence.runtimeTrace?.entry?.id) ||
-        !runtimeTraceTechnicalMessage(
-          attempt.technicalEvidence.runtimeTrace?.entry,
-        )?.includes("mock payment create gate timed out before release")
+        !semanticBackendApiError(
+          runtimeTraceTechnicalMessage(
+            attempt.technicalEvidence.runtimeTrace?.entry,
+          ),
+        )
       ) {
         throw new Error(
           "payment recovery create failure did not prove installed customer copy and durable technical evidence",
@@ -921,12 +931,12 @@ export async function runPaymentRecoveryGuest(options) {
             RECOVERY_TERMINALS.create_failure,
           );
           if (
-            !runtimeTraceTechnicalMessage(customerSurface.trace)?.includes(
-              "mock payment create gate timed out before release",
+            !semanticBackendApiError(
+              runtimeTraceTechnicalMessage(customerSurface.trace),
             )
           ) {
             throw new Error(
-              "customer create failure did not retain gate error",
+              "customer create failure did not retain semantic backend error",
             );
           }
         } finally {

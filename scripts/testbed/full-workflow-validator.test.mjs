@@ -525,18 +525,7 @@ function paymentRecoveryReport() {
                   entry: {
                     id: 1,
                     technicalMessage:
-                      "mock payment create gate timed out before release",
-                  },
-                },
-                localOperations: {
-                  source:
-                    "installed_machine_local_operations_cdp_after_refresh",
-                  checkoutAttemptIdempotencyKey: "checkout:create-failure",
-                  orderId: `order-${kind}`,
-                  paymentId: `payment-${kind}`,
-                  entry: {
-                    technicalMessage:
-                      "mock payment create gate timed out before release",
+                      "BACKEND_API_ERROR: 502 支付通道暂不可用，请稍后重试",
                   },
                 },
               }

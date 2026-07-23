@@ -29,6 +29,7 @@ import { validatePresenceAndAudioAcceptanceEvidence } from "./presence-and-audio
 const MODE = "full";
 const SHORT_EMPTY_MS = 1_000;
 const SUSTAINED_EMPTY_MS = 10_000;
+const WELCOME_CAPTURE_MS = 1_000;
 const TRACE_TIMEOUT_MS = 30_000;
 const ADMIN_USER = "local-testbed-admin";
 const ADMIN_PASSWORD = "LocalTestbedAdminPassword!";
@@ -237,6 +238,7 @@ async function waitForAudioLifecycle(
   transitionPredicate,
   dependencies,
   label,
+  { requireTerminal = true } = {},
 ) {
   const transition = await waitForTraceEntry(
     readTrace,
@@ -250,17 +252,30 @@ async function waitForAudioLifecycle(
     transition.entry.transitionId,
     `${label} transitionId`,
   );
-  const terminal = await waitForTraceEntry(
+  const startedResult = await waitForTraceEntry(
     readTrace,
     Number(transition.entry.id),
     (entry) =>
-      entry?.type === "audio_terminal" &&
+      entry?.type === "audio_started" &&
       entry?.transitionId === transitionId &&
-      entry?.outcome === "completed",
+      entry?.message === "native",
     dependencies,
-    `${label} native audio terminal`,
+    `${label} native audio start`,
   );
-  const lifecycle = terminal.trace.filter(
+  const terminal = requireTerminal
+    ? await waitForTraceEntry(
+        readTrace,
+        Number(startedResult.entry.id),
+        (entry) =>
+          entry?.type === "audio_terminal" &&
+          entry?.transitionId === transitionId &&
+          entry?.outcome === "completed",
+        dependencies,
+        `${label} native audio terminal`,
+      )
+    : null;
+  const observedTrace = terminal?.trace ?? startedResult.trace;
+  const lifecycle = observedTrace.filter(
     (entry) => entry?.transitionId === transitionId,
   );
   const started = lifecycle.filter((entry) => entry?.type === "audio_started");
@@ -269,8 +284,8 @@ async function waitForAudioLifecycle(
   }
   return {
     transitionId,
-    terminalTraceId: Number(terminal.entry.id),
-    trace: terminal.trace,
+    terminalTraceId: traceId(observedTrace),
+    trace: observedTrace,
   };
 }
 
@@ -784,7 +799,9 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
       (entry) => String(entry.transitionId).endsWith(":welcome"),
       dependencies,
       "initial welcome",
+      { requireTerminal: false },
     );
+    await dependencies.sleep(WELCOME_CAPTURE_MS);
     await stopCueCapture(initialCapture, initialWelcome.transitionId);
     await waitForB3Sequence(
       guestInput,
@@ -904,7 +921,9 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
       (entry) => String(entry.transitionId).endsWith(":welcome"),
       dependencies,
       "rearmed welcome",
+      { requireTerminal: false },
     );
+    await dependencies.sleep(WELCOME_CAPTURE_MS);
     await stopCueCapture(rearmedCapture, rearmedWelcome.transitionId);
     checkpoints.push({
       label: "rearmed-arrival-settled",

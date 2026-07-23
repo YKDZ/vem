@@ -333,10 +333,17 @@ export function serialFramesSince(evidence, beforeFrameCount) {
       ? beforeFrameCount.lastSequence
       : null;
     if (lastSequence !== null) {
-      return frames.filter((frame) => {
+      const bySequence = frames.filter((frame) => {
         const sequence = serialFrameSequence(frame);
         return sequence !== null && sequence > lastSequence;
       });
+      if (bySequence.length > 0) return bySequence;
+      if (
+        Number.isInteger(beforeFrameCount.frameCount) &&
+        frames.length <= beforeFrameCount.frameCount
+      ) {
+        return [];
+      }
     }
     beforeFrameCount = beforeFrameCount.frameCount;
   }

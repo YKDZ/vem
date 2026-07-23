@@ -32,6 +32,10 @@ const VISION_INSTALLED_RECORD_PATH =
 const VISION_FIXTURE_ROOT = "C:\\ProgramData\\VEM\\vision\\fixtures";
 const VISION_TASK_PATH = "\\VEM\\";
 const VISION_TASK_NAME = "StartVisionServer";
+const POWERSHELL_EXECUTABLE =
+  process.platform === "win32"
+    ? "powershell.exe"
+    : (process.env.PWSH ?? "pwsh");
 const PLATFORM_LOG_REFERENCE = Object.freeze({
   unit: "vem-local-testbed-service-api",
   command: "journalctl -u vem-local-testbed-service-api --no-pager -n 200",
@@ -144,6 +148,43 @@ function compactRuntimeTrace(trace, maxEntries = 96) {
 
 function sleep(ms) {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
+}
+
+function runPowerShell(command, label, stdio = ["ignore", "pipe", "pipe"]) {
+  return new Promise((resolvePromise, reject) => {
+    let stdout = "";
+    let stderr = "";
+    const child = spawn(
+      POWERSHELL_EXECUTABLE,
+      ["-NoProfile", "-Command", command],
+      { stdio },
+    );
+    if (child.stdout) {
+      child.stdout.setEncoding("utf8");
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk;
+      });
+    }
+    if (child.stderr) {
+      child.stderr.setEncoding("utf8");
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk;
+      });
+    }
+    child.once("error", reject);
+    child.once("exit", (code, signal) => {
+      if (code === 0) {
+        resolvePromise({ stdout, stderr });
+        return;
+      }
+      const detail = [stderr.trim(), stdout.trim()].filter(Boolean)[0];
+      reject(
+        new Error(
+          `${POWERSHELL_EXECUTABLE} exited with ${code ?? `signal ${signal ?? "unknown"}`} while ${label}${detail ? `: ${detail}` : ""}`,
+        ),
+      );
+    });
+  });
 }
 
 function daemonBaseUrl(handoff) {
@@ -2367,37 +2408,11 @@ async function collectVisionInstalledBinding() {
       `$taskDetails = [pscustomobject]@{ path = '${VISION_TASK_PATH}'; name = '${VISION_TASK_NAME}'; state = [string]$task.State; user = [string]$task.Principal.UserId; command = if ($action.Count -gt 0) { [string]$action[0].Execute } else { $null }; arguments = if ($action.Count -gt 0) { [string]$action[0].Arguments } else { $null }; workingDirectory = if ($action.Count -gt 0) { [string]$action[0].WorkingDirectory } else { $null } }`,
       "[Console]::Out.Write((@{ canonicalProcesses = $visionProcesses; listeners = $listenerDetails; processOwner = $processOwner; task = $taskDetails } | ConvertTo-Json -Compress -Depth 4))",
     ].join("; ");
-    return new Promise((resolvePromise, reject) => {
-      let stdout = "";
-      let stderr = "";
-      const child = spawn("pwsh", ["-NoProfile", "-Command", command], {
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      child.stdout.setEncoding("utf8");
-      child.stderr.setEncoding("utf8");
-      child.stdout.on("data", (chunk) => {
-        stdout += chunk;
-      });
-      child.stderr.on("data", (chunk) => {
-        stderr += chunk;
-      });
-      child.once("error", reject);
-      child.once("exit", (code) => {
-        if (code === 0) {
-          try {
-            resolvePromise(JSON.parse(stdout));
-          } catch (error) {
-            reject(error);
-          }
-        } else {
-          reject(
-            new Error(
-              `pwsh exited with ${code ?? "signal"} while collecting Vision binding: ${stderr || stdout}`,
-            ),
-          );
-        }
-      });
-    });
+    const { stdout } = await runPowerShell(
+      command,
+      "collecting Vision binding",
+    );
+    return JSON.parse(stdout);
   };
   const observation = await waitForVisionInstalledBindingObservation({
     collectObservation: collectRuntimeBinding,
@@ -2462,21 +2477,7 @@ async function stopVisionRuntime() {
     "$remaining = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath -and [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonicalExecutablePath -and $_.CommandLine -and ([string]$_.CommandLine).Replace([char]34, '').ToLowerInvariant().Contains('--config') -and ([string]$_.CommandLine).Replace([char]34, '').ToLowerInvariant().Contains($canonicalConfigPath.ToLowerInvariant()) })",
     "if ($remaining.Count -ne 0) { throw 'canonical Vision process did not stop' }",
   ].join("; ");
-  await new Promise((resolvePromise, reject) => {
-    const child = spawn("pwsh", ["-NoProfile", "-Command", command], {
-      stdio: "ignore",
-    });
-    child.once("error", reject);
-    child.once("exit", (code) => {
-      if (code === 0) resolvePromise();
-      else
-        reject(
-          new Error(
-            `pwsh exited with ${code ?? "signal"} while stopping Vision runtime`,
-          ),
-        );
-    });
-  });
+  await runPowerShell(command, "stopping Vision runtime");
 }
 
 async function startInstalledVisionRuntime() {
@@ -2486,21 +2487,7 @@ async function startInstalledVisionRuntime() {
     "if ([string]$task.State -eq 'Running') { throw 'Vision scheduled task is still running before start' }",
     `Start-ScheduledTask -TaskName '${VISION_TASK_NAME}' -TaskPath '${VISION_TASK_PATH}' -ErrorAction Stop`,
   ].join("; ");
-  await new Promise((resolvePromise, reject) => {
-    const child = spawn("pwsh", ["-NoProfile", "-Command", command], {
-      stdio: "ignore",
-    });
-    child.once("error", reject);
-    child.once("exit", (code) => {
-      if (code === 0) resolvePromise();
-      else
-        reject(
-          new Error(
-            `pwsh exited with ${code ?? "signal"} while starting Vision runtime`,
-          ),
-        );
-    });
-  });
+  await runPowerShell(command, "starting Vision runtime");
 }
 
 async function probeLoopbackPortRelease(port, host = "127.0.0.1") {

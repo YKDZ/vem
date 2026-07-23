@@ -17,6 +17,7 @@ import {
   waitForSaleStartReady,
   waitForGuardedVisionDepartureTrace,
   waitForStableVisionArrivalTrace,
+  waitForStableVisionDepartureTransition,
   validateFastRouteStressSaleEvidence,
 } from "./fast-route-stress-sale.mjs";
 
@@ -532,6 +533,39 @@ describe("fast route stress sale tracer", () => {
       }),
     });
     assert.equal(result.transitionId, "vision:presence-8:welcome");
+    assert.equal(reads, 2);
+  });
+
+  it("awaits a stable Vision departure before establishing another arrival", async () => {
+    let reads = 0;
+    const boundary = {
+      source: "installed_machine_runtime_trace_cdp",
+      lastEntryId: 4,
+      capturedAt: "2026-07-18T03:59:59.000Z",
+      runtimeGenerationId: "runtime-generation-1",
+    };
+    const result = await waitForStableVisionDepartureTransition(
+      null,
+      boundary,
+      {
+        timeoutMs: 100,
+        sleepFn: async () => {},
+        readTrace: async () => ({
+          runtimeGenerationId: "runtime-generation-1",
+          entries:
+            reads++ === 0
+              ? []
+              : [
+                  {
+                    id: 5,
+                    type: "journey_transition",
+                    transitionId: "vision:presence-9:departed",
+                  },
+                ],
+        }),
+      },
+    );
+    assert.equal(result.transitionId, "vision:presence-9:departed");
     assert.equal(reads, 2);
   });
 

@@ -386,16 +386,15 @@ describe("payment recovery guest full", () => {
     );
   });
 
-  it("accepts raw create failure evidence from the installed runtime trace, not the customer DOM", () => {
+  it("accepts semantic backend create failure evidence from the installed runtime trace, not the customer DOM", () => {
     const report = recoveryReport();
     const createFailure = report.attempts.find(
       (attempt) => attempt.kind === "create_failure",
     );
     createFailure.technicalEvidence.runtimeTrace.entry = {
       id: 1,
-      technicalMessage: "mock payment create gate timed out before release",
+      technicalMessage: "BACKEND_API_ERROR: 502 支付通道暂不可用，请稍后重试",
     };
-    delete createFailure.technicalEvidence.localOperations;
 
     assert.equal(validatePaymentRecoveryEvidence(report).attemptCount, 4);
   });
@@ -408,7 +407,7 @@ describe("payment recovery guest full", () => {
     createFailure.technicalEvidence.runtimeTrace.entry = {
       id: 1,
       technical: {
-        message: "mock payment create gate timed out before release",
+        message: "BACKEND_API_ERROR: 502 支付通道暂不可用，请稍后重试",
       },
     };
 
@@ -417,7 +416,39 @@ describe("payment recovery guest full", () => {
       runtimeTraceTechnicalMessage(
         createFailure.technicalEvidence.runtimeTrace.entry,
       ),
-      "mock payment create gate timed out before release",
+      "BACKEND_API_ERROR: 502 支付通道暂不可用，请稍后重试",
+    );
+  });
+
+  it("rejects create_failure runtime trace that leaks the provider gate timeout", () => {
+    const report = recoveryReport();
+    const createFailure = report.attempts.find(
+      (attempt) => attempt.kind === "create_failure",
+    );
+    createFailure.technicalEvidence.runtimeTrace.entry = {
+      id: 1,
+      technicalMessage: "mock payment create gate timed out before release",
+    };
+
+    assert.throws(
+      () => validatePaymentRecoveryEvidence(report),
+      /durable technical evidence/,
+    );
+  });
+
+  it("rejects a backend marker without an HTTP failure status", () => {
+    const report = recoveryReport();
+    const createFailure = report.attempts.find(
+      (attempt) => attempt.kind === "create_failure",
+    );
+    createFailure.technicalEvidence.runtimeTrace.entry = {
+      id: 1,
+      technicalMessage: "BACKEND_API_ERROR: 200 success",
+    };
+
+    assert.throws(
+      () => validatePaymentRecoveryEvidence(report),
+      /durable technical evidence/,
     );
   });
 });
@@ -541,7 +572,7 @@ function recoveryReport() {
                 entry: {
                   id: 1,
                   technicalMessage:
-                    "mock payment create gate timed out before release",
+                    "BACKEND_API_ERROR: 502 支付通道暂不可用，请稍后重试",
                 },
               },
             }

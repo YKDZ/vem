@@ -1547,6 +1547,38 @@ export async function waitForStableVisionArrivalTrace(
   );
 }
 
+export async function waitForStableVisionDepartureTransition(
+  client,
+  traceBoundary,
+  {
+    timeoutMs = 15_000,
+    readTrace = readRuntimeTraceSnapshot,
+    sleepFn = sleep,
+    now = () => Date.now(),
+  } = {},
+) {
+  const deadline = now() + timeoutMs;
+  let lastTrace = [];
+  do {
+    const snapshot = await readTrace(client);
+    lastTrace = snapshot.entries;
+    const departure = traceEntriesAfterBoundary(
+      snapshot,
+      traceBoundary,
+      "Vision presence reset boundary",
+    ).find(
+      (entry) =>
+        entry?.type === "journey_transition" &&
+        /^vision:presence-\d+:departed$/.test(entry?.transitionId ?? ""),
+    );
+    if (departure) return departure;
+    await sleepFn(25);
+  } while (now() < deadline);
+  throw new Error(
+    `installed runtime did not settle the previous Vision presence before a fresh sale: ${JSON.stringify(lastTrace.slice(-8))}`,
+  );
+}
+
 async function readInstalledUiViewport(client) {
   return evaluateExpression(
     client,
@@ -2107,6 +2139,38 @@ async function dispatchVisionArrival(guestInput) {
   });
 }
 
+async function establishVisionPresenceForSale(guestInput, client) {
+  const snapshot = await readRuntimeTraceSnapshot(client);
+  const latestPresenceTransition = snapshot.entries.findLast(
+    (entry) =>
+      entry?.type === "journey_transition" &&
+      /^vision:presence-\d+:(welcome|departed)$/.test(
+        entry?.transitionId ?? "",
+      ),
+  );
+  if (latestPresenceTransition?.transitionId?.endsWith(":welcome")) {
+    const resetBoundary = traceBoundary(
+      snapshot,
+      "Vision presence reset boundary",
+    );
+    await dispatchVisionDeparture(guestInput);
+    await waitForStableVisionDepartureTransition(client, resetBoundary);
+  }
+  const traceBoundary = await captureRuntimeTraceBoundary(
+    client,
+    "Vision arrival control-request trace boundary",
+  );
+  const delivery = await dispatchVisionArrival(guestInput);
+  const trace = await waitForStableVisionArrivalTrace(client, traceBoundary);
+  return {
+    precondition: "fresh-arrival",
+    ...delivery,
+    traceBoundary,
+    transitionId: trace.transitionId,
+    completedAt: new Date().toISOString(),
+  };
+}
+
 async function completeMockPayment(guestInput, paymentNo) {
   const provisioningApiBaseUrl = required(
     guestInput?.runtimeBootstrap?.provisioningApiBaseUrl,
@@ -2231,21 +2295,7 @@ async function runFastRouteStressSale(options) {
       }),
     );
     stage = "establish-stable-vision-presence";
-    const visionArrivalTraceBoundary = await captureRuntimeTraceBoundary(
-      client,
-      "Vision arrival control-request trace boundary",
-    );
-    const visionArrivalDelivery = await dispatchVisionArrival(guestInput);
-    const visionArrivalTrace = await waitForStableVisionArrivalTrace(
-      client,
-      visionArrivalTraceBoundary,
-    );
-    visionArrival = {
-      ...visionArrivalDelivery,
-      traceBoundary: visionArrivalTraceBoundary,
-      transitionId: visionArrivalTrace.transitionId,
-      completedAt: new Date().toISOString(),
-    };
+    visionArrival = await establishVisionPresenceForSale(guestInput, client);
     continuousCdpLocationHashObserver =
       await startContinuousCdpLocationHashObservation(client);
     stage = "physical-catalog-to-checkout";

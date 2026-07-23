@@ -157,6 +157,11 @@ describe("vision try-on acceptance script", () => {
     );
     assert.match(
       source,
+      /const POWERSHELL_EXECUTABLE =[\s\S]*process\.platform === "win32"[\s\S]*"powershell\.exe"[\s\S]*process\.env\.PWSH \?\? "pwsh"/,
+    );
+    assert.doesNotMatch(source, /spawn\("pwsh"/);
+    assert.match(
+      source,
       /while \(\[DateTime\]::UtcNow -lt \$deadline\)[\s\S]*Get-ScheduledTask[\s\S]*task\.State -ne 'Running'/,
     );
     assert.match(
@@ -167,6 +172,8 @@ describe("vision try-on acceptance script", () => {
       source,
       /`\$canonicalExecutablePath = \[IO\.Path\]::GetFullPath\('\$\{VISION_ENTRYPOINT_PATH\}'\)`/,
     );
+    assert.match(source, /runPowerShell\(command, "stopping Vision runtime"\)/);
+    assert.match(source, /runPowerShell\(command, "starting Vision runtime"\)/);
   });
 
   it("proves matched, manual, online-unmatched, and unavailable recommendation states", () => {
