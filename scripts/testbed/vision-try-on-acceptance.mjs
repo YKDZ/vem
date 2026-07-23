@@ -2465,7 +2465,7 @@ async function stopVisionRuntime() {
     "if ($null -ne $task -and [string]$task.State -eq 'Running') { Stop-ScheduledTask -InputObject $task -ErrorAction SilentlyContinue }",
     `$canonicalExecutablePath = [IO.Path]::GetFullPath('${VISION_ENTRYPOINT_PATH}')`,
     `$canonicalConfigPath = [IO.Path]::GetFullPath('${VISION_SITE_CONFIGURATION_PATH}')`,
-    "$ownedVisionProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath -and [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonicalExecutablePath -and $_.CommandLine -and ([string]$_.CommandLine).Replace([char]34, '').ToLowerInvariant().Contains('--config') -and ([string]$_.CommandLine).Replace([char]34, '').ToLowerInvariant().Contains($canonicalConfigPath.ToLowerInvariant()) })",
+    "$ownedVisionProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath -and [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonicalExecutablePath -and $_.CommandLine -and ([string]$_.CommandLine).ToLowerInvariant().Contains('--config') -and ([string]$_.CommandLine).ToLowerInvariant().Contains($canonicalConfigPath.ToLowerInvariant()) })",
     "foreach ($process in $ownedVisionProcesses) { Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction SilentlyContinue }",
     "$deadline = [DateTime]::UtcNow.AddSeconds(15)",
     "while ([DateTime]::UtcNow -lt $deadline) {",
@@ -2474,7 +2474,7 @@ async function stopVisionRuntime() {
     "  Start-Sleep -Milliseconds 250",
     "}",
     "if ($null -ne $task -and [string]$task.State -eq 'Running') { throw 'Vision scheduled task did not stop' }",
-    "$remaining = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath -and [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonicalExecutablePath -and $_.CommandLine -and ([string]$_.CommandLine).Replace([char]34, '').ToLowerInvariant().Contains('--config') -and ([string]$_.CommandLine).Replace([char]34, '').ToLowerInvariant().Contains($canonicalConfigPath.ToLowerInvariant()) })",
+    "$remaining = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath -and [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonicalExecutablePath -and $_.CommandLine -and ([string]$_.CommandLine).ToLowerInvariant().Contains('--config') -and ([string]$_.CommandLine).ToLowerInvariant().Contains($canonicalConfigPath.ToLowerInvariant()) })",
     "if ($remaining.Count -ne 0) { throw 'canonical Vision process did not stop' }",
   ].join("; ");
   await runPowerShell(command, "stopping Vision runtime");

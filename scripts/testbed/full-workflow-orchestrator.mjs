@@ -622,13 +622,6 @@ export async function ensureFixtureStockReady({
       addition: Math.max(0, fixture.onHandQty - taskSlot.currentQuantity),
     };
   });
-  const fixtureInventorySatisfied = [...desiredBySlotId.keys()].every(
-    (slotId) => {
-      const item = initialBySlot.get(slotId);
-      const desired = desiredBySlotId.get(slotId);
-      return item?.saleableStock === desired && item?.physicalStock === desired;
-    },
-  );
   const requiresAttestation = [...desiredBySlotId.keys()].some((slotId) => {
     const item = initialBySlot.get(slotId);
     const desired = desiredBySlotId.get(slotId);
@@ -640,29 +633,41 @@ export async function ensureFixtureStockReady({
   });
   if (
     task.mode === "routine_refill" &&
-    (fixtureInventorySatisfied ||
-      ["pending", "complete"].includes(task.status)) &&
+    (!requiresAttestation || ["pending", "complete"].includes(task.status)) &&
     routineRefillSlots.every((slot) => slot.addition === 0)
   ) {
-    const projectionPath = `/v1/stock/maintenance-tasks/${encodeURIComponent(task.taskId)}/projection`;
-    let projection = await get(projectionPath);
-    let projectedSlots = new Map(
+    let projection = null;
+    while (Date.now() < deadline) {
+      projection = await get(
+        `/v1/stock/maintenance-tasks/${encodeURIComponent(task.taskId)}/projection`,
+      );
+      if (projection?.status === "complete") break;
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, pollMs));
+    }
+    const projectedSlots = new Map(
       (projection?.slots ?? []).map((slot) => [slot?.slotId, slot]),
     );
-    const noOpProjectionMatchesFixtures =
+    const projectionMatchesFixtures =
       projection?.taskId === task.taskId &&
       projection?.mode === "routine_refill" &&
-      projection?.status === "ready" &&
+      projection?.status === "complete" &&
       fixtures.every((fixture) => {
         const slot = projectedSlots.get(fixture.slotId);
         return (
-          slot?.syncStatus === "not_submitted" &&
-          slot?.submittedAddition == null &&
-          slot?.previewQuantity == null
+          slot?.syncStatus === "accepted" &&
+          slot?.previewQuantity === fixture.onHandQty &&
+          Number.isInteger(slot?.submittedAddition) &&
+          slot.submittedAddition >= 0
         );
       });
-    if (noOpProjectionMatchesFixtures) {
-      const projectedSaleView = await get("/v1/sale-view");
+    if (!projectionMatchesFixtures) {
+      throw new Error(
+        `fixture stock routine_refill projection does not satisfy allocated fixtures: ${JSON.stringify(projection)}`,
+      );
+    }
+    let projectedSaleView = initialSaleView;
+    while (Date.now() < deadline) {
+      projectedSaleView = await get("/v1/sale-view");
       if (targetIsReady(projectedSaleView)) {
         return {
           changed: false,
@@ -671,58 +676,15 @@ export async function ensureFixtureStockReady({
           projection,
         };
       }
-    } else {
-      while (Date.now() < deadline) {
-        if (projection?.status === "complete") break;
-        await new Promise((resolvePromise) =>
-          setTimeout(resolvePromise, pollMs),
-        );
-        projection = await get(projectionPath);
-      }
-      projectedSlots = new Map(
-        (projection?.slots ?? []).map((slot) => [slot?.slotId, slot]),
-      );
-      const completedProjectionMatchesFixtures =
-        projection?.taskId === task.taskId &&
-        projection?.mode === "routine_refill" &&
-        projection?.status === "complete" &&
-        fixtures.every((fixture) => {
-          const slot = projectedSlots.get(fixture.slotId);
-          return (
-            slot?.syncStatus === "accepted" &&
-            slot?.previewQuantity === fixture.onHandQty &&
-            Number.isInteger(slot?.submittedAddition) &&
-            slot.submittedAddition >= 0
-          );
-        });
-      if (!completedProjectionMatchesFixtures) {
-        throw new Error(
-          `fixture stock routine_refill projection does not satisfy allocated fixtures: ${JSON.stringify(projection)}`,
-        );
-      }
-      let projectedSaleView = initialSaleView;
-      while (Date.now() < deadline) {
-        projectedSaleView = await get("/v1/sale-view");
-        if (targetIsReady(projectedSaleView)) {
-          return {
-            changed: false,
-            taskId: task.taskId,
-            mode: task.mode,
-            projection,
-          };
-        }
-        await new Promise((resolvePromise) =>
-          setTimeout(resolvePromise, pollMs),
-        );
-      }
-      throw new Error(
-        `fixture stock routine_refill projection did not become sale-ready without a positive addition: ${JSON.stringify(
-          (projectedSaleView?.items ?? []).filter((item) =>
-            desiredBySlotId.has(item?.slotId),
-          ),
-        )}`,
-      );
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, pollMs));
     }
+    throw new Error(
+      `fixture stock routine_refill projection did not become sale-ready without a positive addition: ${JSON.stringify(
+        (projectedSaleView?.items ?? []).filter((item) =>
+          desiredBySlotId.has(item?.slotId),
+        ),
+      )}`,
+    );
   }
   let operationMode = task.mode;
   let operationId = task.taskId;

@@ -2139,33 +2139,43 @@ async function dispatchVisionArrival(guestInput) {
   });
 }
 
-async function establishVisionPresenceForSale(guestInput, client) {
-  const snapshot = await readRuntimeTraceSnapshot(client);
-  const latestPresenceTransition = snapshot.entries.findLast(
-    (entry) =>
-      entry?.type === "journey_transition" &&
-      /^vision:presence-\d+:(welcome|departed)$/.test(
-        entry?.transitionId ?? "",
-      ),
+export function personPresentFromVisionStatus(status) {
+  const diagnostic = status?.latestDiagnosticPayload;
+  if (diagnostic?.type === "vision.person_departed") return false;
+  if (
+    diagnostic?.type === "vision.presence_status" &&
+    typeof diagnostic?.payload?.personPresent === "boolean"
+  ) {
+    return diagnostic.payload.personPresent;
+  }
+  return null;
+}
+
+async function establishVisionPresenceForSale(guestInput, handoff, client) {
+  const personPresent = personPresentFromVisionStatus(
+    await daemonGet(handoff, "/v1/vision/status"),
   );
-  if (latestPresenceTransition?.transitionId?.endsWith(":welcome")) {
-    const resetBoundary = traceBoundary(
-      snapshot,
+  if (personPresent === true) {
+    const resetBoundary = await captureRuntimeTraceBoundary(
+      client,
       "Vision presence reset boundary",
     );
     await dispatchVisionDeparture(guestInput);
     await waitForStableVisionDepartureTransition(client, resetBoundary);
   }
-  const traceBoundary = await captureRuntimeTraceBoundary(
+  const arrivalTraceBoundary = await captureRuntimeTraceBoundary(
     client,
     "Vision arrival control-request trace boundary",
   );
   const delivery = await dispatchVisionArrival(guestInput);
-  const trace = await waitForStableVisionArrivalTrace(client, traceBoundary);
+  const trace = await waitForStableVisionArrivalTrace(
+    client,
+    arrivalTraceBoundary,
+  );
   return {
     precondition: "fresh-arrival",
     ...delivery,
-    traceBoundary,
+    traceBoundary: arrivalTraceBoundary,
     transitionId: trace.transitionId,
     completedAt: new Date().toISOString(),
   };
@@ -2295,7 +2305,11 @@ async function runFastRouteStressSale(options) {
       }),
     );
     stage = "establish-stable-vision-presence";
-    visionArrival = await establishVisionPresenceForSale(guestInput, client);
+    visionArrival = await establishVisionPresenceForSale(
+      guestInput,
+      handoff,
+      client,
+    );
     continuousCdpLocationHashObserver =
       await startContinuousCdpLocationHashObservation(client);
     stage = "physical-catalog-to-checkout";
