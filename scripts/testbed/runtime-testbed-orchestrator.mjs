@@ -712,9 +712,14 @@ async function executeRun(options, config) {
         const existingGuestInput = await readJson(
           join(config.stateRoot, "guest-input.json"),
         );
+        const reconstructionMarker = await readJson(
+          join(config.stateRoot, "reconstruction.json"),
+        );
         const fixtureIsCurrent =
           existingGuestInput?.fixtureIdentity?.sha256 ===
-          currentFixtureIdentity.sha256;
+            currentFixtureIdentity.sha256 &&
+          reconstructionMarker?.guestInput?.fixtureIdentity?.sha256 ===
+            currentFixtureIdentity.sha256;
         const preparationOut = fixtureIsCurrent
           ? join(root, `host-runtime-refresh-pass-${pass}.json`)
           : join(root, `reconstruction-pass-${pass}.json`);

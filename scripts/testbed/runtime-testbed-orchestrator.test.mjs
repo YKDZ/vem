@@ -239,6 +239,7 @@ describe("runtime testbed scheduler contract", () => {
     );
     assert.match(source, /fixtureIdentityForWorkspace\(workspace\)/);
     assert.match(source, /existingGuestInput\?\.fixtureIdentity\?\.sha256/);
+    assert.match(source, /reconstructionMarker\?\.guestInput\?\.fixtureIdentity\?\.sha256/);
     assert.match(source, /reconstruct-stale-fixture-pass-\$\{pass\}/);
     assert.match(
       source,
