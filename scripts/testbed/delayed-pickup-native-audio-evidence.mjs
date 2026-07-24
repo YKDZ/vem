@@ -626,16 +626,22 @@ export function analyzeDelayedPickupRuntimeTrace(
   return { ok: diagnostics.length === 0, diagnostics, cues };
 }
 
-export function pickupCueWithinPickupPhase({ playback, controller }) {
+export function pickupCueWithinPickupPhase({
+  playback,
+  controller,
+  clockOffsetMs = 0,
+  toleranceMs = 0,
+}) {
   const pickupAt = timestamp(playback?.at);
   const pickupStartedAt = timestamp(controller?.f0?.at);
   const resetStartedAt = timestamp(controller?.f1?.at);
+  const adjustedPickupAt = pickupAt === null ? null : pickupAt - clockOffsetMs;
   return (
-    pickupAt !== null &&
+    adjustedPickupAt !== null &&
     pickupStartedAt !== null &&
     resetStartedAt !== null &&
-    pickupAt >= pickupStartedAt &&
-    pickupAt < resetStartedAt
+    adjustedPickupAt >= pickupStartedAt - toleranceMs &&
+    adjustedPickupAt < resetStartedAt
   );
 }
 

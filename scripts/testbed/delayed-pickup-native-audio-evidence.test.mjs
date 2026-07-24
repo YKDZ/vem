@@ -196,6 +196,21 @@ describe("delayed pickup production evidence algorithms", () => {
     );
   });
 
+  it("normalizes guest runtime audio time to host serial time before comparing pickup phase", () => {
+    assert.equal(
+      pickupCueWithinPickupPhase({
+        playback: { at: "2026-07-18T08:00:08.968Z" },
+        controller: {
+          f0: { at: "2026-07-18T08:00:20.000Z" },
+          f1: { at: "2026-07-18T08:00:50.000Z" },
+        },
+        clockOffsetMs: -10_596,
+        toleranceMs: 1_500,
+      }),
+      true,
+    );
+  });
+
   it("fails closed for fabricated headers, invalid dispense CRC, and non-canonical timestamps", () => {
     const valid = [
       dispenseFrame(),

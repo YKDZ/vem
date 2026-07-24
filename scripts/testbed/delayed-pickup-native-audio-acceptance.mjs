@@ -339,6 +339,10 @@ export function verifyDelayedPickupNativeAudioProductionEvidence({
     !pickupCueWithinPickupPhase({
       playback: trace.cues?.pickup_started?.started,
       controller: controller.events,
+      clockOffsetMs:
+        Date.parse(trace.cues?.dispense_succeeded?.journey?.at ?? "") -
+        controller.events.f2.atMs,
+      toleranceMs: timing.controllerTimingToleranceMs,
     })
   ) {
     diagnostics.push(diagnostic("pickup_playback_outside_pickup_phase"));
