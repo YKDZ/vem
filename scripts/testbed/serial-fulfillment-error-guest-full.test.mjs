@@ -110,6 +110,12 @@ describe("serial fulfillment error guest full", () => {
     assert.match(source, /waitForHardwareBindings/);
     assert.match(source, /handoff,\s*session/);
     assert.match(source, /waitForSaleStartCapability/);
+    assert.match(source, /async function selectMockPaymentAndSubmit/);
+    assert.match(source, /payment-option-selected/);
+    assert.match(
+      source,
+      /payment submit touch did not reach the payment route/,
+    );
   });
 
   it("recovers a persisted machine lock through a healthy controller session", async () => {

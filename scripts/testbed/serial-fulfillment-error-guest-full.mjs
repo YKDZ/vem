@@ -180,6 +180,56 @@ function platform(guestInput, runId, machineCode, sessionId) {
   }).then((value) => value.report);
 }
 
+async function selectMockPaymentAndSubmit(client) {
+  const paymentSelector =
+    '[data-test="payment-option"][data-payment-option-key="mock:mock"]:not(:disabled)';
+  let selected = false;
+  for (let attempt = 0; attempt < 3 && !selected; attempt += 1) {
+    await activateVisibleSelector(client, paymentSelector, {
+      kind: "touch",
+      timeoutMs: 30_000,
+    });
+    selected = await evaluateExpression(
+      client,
+      `(() => {
+        const option = document.querySelector(${JSON.stringify(paymentSelector)});
+        const submit = document.querySelector('[data-test="checkout-submit"]');
+        return Boolean(option?.classList.contains('payment-option-selected') && !submit?.hasAttribute('disabled'));
+      })()`,
+    );
+    if (!selected) await sleep(250);
+  }
+  if (!selected) {
+    throw new Error("mock payment option did not become actionable");
+  }
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const alreadyPayment = await waitForRoute(client, /^#\/payment/, {
+      timeoutMs: 250,
+      pollMs: 50,
+    })
+      .then(() => true)
+      .catch(() => false);
+    if (alreadyPayment) return;
+    await activateVisibleSelector(
+      client,
+      '[data-test="checkout-submit"]:not(:disabled)',
+      {
+        kind: "touch",
+        timeoutMs: 30_000,
+      },
+    );
+    const reachedPayment = await waitForRoute(client, /^#\/payment/, {
+      timeoutMs: attempt === 2 ? 30_000 : 2_000,
+      pollMs: 250,
+    })
+      .then(() => true)
+      .catch(() => false);
+    if (reachedPayment) return;
+  }
+  throw new Error("payment submit touch did not reach the payment route");
+}
+
 export async function recoverWholeMachineLockAfterFulfillmentFailure({
   guestInput,
   handoff,
@@ -587,10 +637,6 @@ export async function runSerialFulfillmentErrorGuest(options) {
         /^#\/products\//,
       ],
       ['[data-test="product-buy"]', "#/checkout"],
-      [
-        '[data-test="payment-option"][data-payment-option-key="mock:mock"]:not(:disabled)',
-        "#/checkout",
-      ],
     ]) {
       await activateVisibleSelector(client, step[0], {
         kind: "touch",
@@ -598,14 +644,7 @@ export async function runSerialFulfillmentErrorGuest(options) {
       });
       await waitForRoute(client, step[1], { timeoutMs: 30_000, pollMs: 250 });
     }
-    await activateVisibleSelector(client, '[data-test="checkout-submit"]', {
-      kind: "touch",
-      timeoutMs: 30_000,
-    });
-    await waitForRoute(client, /^#\/payment/, {
-      timeoutMs: 30_000,
-      pollMs: 250,
-    });
+    await selectMockPaymentAndSubmit(client);
     sale = await readPaymentSurface(client);
     report.sale = sale;
     await snapshot("payment-before-e6");
