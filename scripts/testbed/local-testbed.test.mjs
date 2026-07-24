@@ -506,6 +506,10 @@ describe("local testbed orchestration", () => {
         schemaVersion: "vem-local-testbed-guest-input/v1",
         machineCode: "VEM-TESTBED-LOCAL",
         claimCode: "ABCD-EFGH",
+        fixtureIdentity: {
+          schemaVersion: "vem-local-testbed-fixture/v1",
+          sha256: "sha256:current-fixture",
+        },
         fixtureAllocation: { sale: { slotDisplayLabel: "A1" } },
         hostControlPlane: {
           endpoint: "http://10.0.0.15:26851",
@@ -513,8 +517,19 @@ describe("local testbed orchestration", () => {
         },
       };
       assert.equal(
-        validateRefreshGuestInput(guestInput, parsedOptions),
+        validateRefreshGuestInput(guestInput, parsedOptions, {
+          schemaVersion: "vem-local-testbed-fixture/v1",
+          sha256: "sha256:current-fixture",
+        }),
         guestInput,
+      );
+      assert.throws(
+        () =>
+          validateRefreshGuestInput(guestInput, parsedOptions, {
+            schemaVersion: "vem-local-testbed-fixture/v1",
+            sha256: "sha256:new-fixture",
+          }),
+        /fixture identity is stale/,
       );
       assert.throws(
         () =>

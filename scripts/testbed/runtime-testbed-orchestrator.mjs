@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { closeSync, openSync, readFileSync } from "node:fs";
 import {
   mkdir,
@@ -249,6 +250,17 @@ async function capture(command, args, options = {}) {
 
 function runDirectory(config, runId) {
   return join(config.stateRoot, "runs", runId);
+}
+
+function fixtureIdentityForWorkspace(workspace) {
+  const raw = readFileSync(
+    join(workspace, "scripts/testbed/fixtures/local-testbed-catalog.json"),
+    "utf8",
+  );
+  return {
+    schemaVersion: "vem-local-testbed-fixture/v1",
+    sha256: `sha256:${createHash("sha256").update(raw).digest("hex")}`,
+  };
 }
 
 export function createRunId(commit, mode, now = Date.now()) {
@@ -661,6 +673,7 @@ async function executeRun(options, config) {
       await writeJson(materializedMarker, { lockHash });
     }
     const contract = JSON.parse(readFileSync(config.baselineContract, "utf8"));
+    const currentFixtureIdentity = fixtureIdentityForWorkspace(workspace);
     const passes = options.mode === "full" ? 2 : 1;
     for (let pass = 1; pass <= passes; pass += 1) {
       if (options.mode === "full") {
@@ -696,41 +709,60 @@ async function executeRun(options, config) {
         );
       }
       if (options.mode === "fast") {
-        await update({ phase: `refresh-host-runtime-pass-${pass}`, pass });
-        const refreshOut = join(root, `host-runtime-refresh-pass-${pass}.json`);
+        const existingGuestInput = await readJson(
+          join(config.stateRoot, "guest-input.json"),
+        );
+        const fixtureIsCurrent =
+          existingGuestInput?.fixtureIdentity?.sha256 ===
+          currentFixtureIdentity.sha256;
+        const preparationOut = fixtureIsCurrent
+          ? join(root, `host-runtime-refresh-pass-${pass}.json`)
+          : join(root, `reconstruction-pass-${pass}.json`);
+        await update({
+          phase: fixtureIsCurrent
+            ? `refresh-host-runtime-pass-${pass}`
+            : `reconstruct-stale-fixture-pass-${pass}`,
+          pass,
+        });
         await runProcess(
           process.execPath,
           [
             "scripts/testbed/local-testbed.mjs",
-            "refresh-host-runtime",
+            fixtureIsCurrent ? "refresh-host-runtime" : "reconstruct",
             "--workspace",
             workspace,
             "--state-root",
             config.stateRoot,
             "--run-id",
-            options.runId,
+            fixtureIsCurrent ? options.runId : `${options.runId}-PASS-${pass}`,
+            ...(fixtureIsCurrent ? [] : ["--mode", options.mode]),
             "--baseline-contract",
             config.baselineContract,
             "--host-private-address",
             config.hostPrivateAddress,
             "--out",
-            refreshOut,
+            preparationOut,
           ],
           {
             cwd: workspace,
             env: { ...environment, GITHUB_SHA: options.commit },
           },
         );
-        const refresh = JSON.parse(await readFile(refreshOut, "utf8"));
+        const preparation = JSON.parse(await readFile(preparationOut, "utf8"));
         await update({
           hostRuntimeRefresh: {
-            workspace: refresh.workspace,
+            kind: fixtureIsCurrent ? "refresh" : "reconstruct",
+            workspace: preparation.workspace,
             guestInput: {
-              sha256: refresh.guestInput.sha256,
-              machineCode: refresh.guestInput.machineCode,
-              hostControlPlane: refresh.guestInput.hostControlPlane,
+              sha256: preparation.guestInput.sha256,
+              machineCode: preparation.guestInput.machineCode,
+              hostControlPlane:
+                preparation.guestInput.hostControlPlane ??
+                preparation.runtimeTestbed?.hostControlPlane,
+              fixtureIdentity:
+                preparation.guestInput.fixtureIdentity ?? currentFixtureIdentity,
             },
-            timing: refresh.timing,
+            timing: preparation.timing,
           },
         });
       }

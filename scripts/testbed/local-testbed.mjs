@@ -351,7 +351,19 @@ export function validateBaselineContract(contract) {
 }
 
 async function loadFixture() {
-  const fixture = JSON.parse(await readFile(FIXTURE_PATH, "utf8"));
+  return (await loadFixtureDocument()).fixture;
+}
+
+function fixtureIdentityFromRaw(raw) {
+  return {
+    schemaVersion: "vem-local-testbed-fixture/v1",
+    sha256: `sha256:${createHash("sha256").update(raw).digest("hex")}`,
+  };
+}
+
+async function loadFixtureDocument() {
+  const raw = await readFile(FIXTURE_PATH, "utf8");
+  const fixture = JSON.parse(raw);
   if (
     fixture.schemaVersion !== "vem-local-testbed-catalog/v1" ||
     !Array.isArray(fixture.products)
@@ -364,7 +376,7 @@ async function loadFixture() {
       "local testbed catalog must contain the 44 normalized spreadsheet rows",
     );
   }
-  return fixture;
+  return { fixture, identity: fixtureIdentityFromRaw(raw) };
 }
 
 function commandLine(command, args, extra = {}) {
@@ -1752,7 +1764,7 @@ export function buildRefreshHostRuntimePlan(options) {
   ];
 }
 
-export function validateRefreshGuestInput(input, options) {
+export function validateRefreshGuestInput(input, options, expectedFixtureIdentity) {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     throw new Error("existing guest input must be an object");
   }
@@ -1778,6 +1790,12 @@ export function validateRefreshGuestInput(input, options) {
     throw new Error(
       "existing guest input host control plane endpoint is invalid",
     );
+  }
+  if (
+    expectedFixtureIdentity &&
+    input.fixtureIdentity?.sha256 !== expectedFixtureIdentity.sha256
+  ) {
+    throw new Error("existing guest input fixture identity is stale");
   }
   return input;
 }
@@ -1821,13 +1839,20 @@ async function stageExistingGuestInput(options, contract) {
 }
 
 export async function refreshHostRuntime(options) {
-  const contract = await readFile(options.baselineContract, "utf8")
-    .then(JSON.parse)
-    .then(validateBaselineContract);
+  const [contract, fixtureDocument] = await Promise.all([
+    readFile(options.baselineContract, "utf8")
+      .then(JSON.parse)
+      .then(validateBaselineContract),
+    loadFixtureDocument(),
+  ]);
   const guestInputPath = join(options.stateRoot, "guest-input.json");
   const existingGuestInputRaw = await readFile(guestInputPath, "utf8");
   let guestInput = refreshGuestInputForRun(
-    validateRefreshGuestInput(JSON.parse(existingGuestInputRaw), options),
+    validateRefreshGuestInput(
+      JSON.parse(existingGuestInputRaw),
+      options,
+      fixtureDocument.identity,
+    ),
     options.runId,
   );
   let guestInputRaw = `${JSON.stringify(guestInput, null, 2)}\n`;
@@ -1923,12 +1948,13 @@ export async function refreshHostRuntime(options) {
 }
 
 async function reconstruct(options) {
-  const [contract, fixture] = await Promise.all([
+  const [contract, fixtureDocument] = await Promise.all([
     readFile(options.baselineContract, "utf8")
       .then(JSON.parse)
       .then(validateBaselineContract),
-    loadFixture(),
+    loadFixtureDocument(),
   ]);
+  const fixture = fixtureDocument.fixture;
   await Promise.all([
     mkdir(options.stateRoot, { recursive: true }),
     mkdir(join(options.stateRoot, "service-api-runtime"), {
@@ -2055,6 +2081,7 @@ async function reconstruct(options) {
         paymentOptionKey: "mock:mock",
       },
       paymentProvider,
+      fixtureIdentity: fixtureDocument.identity,
       fixtureAllocation: allocateFullWorkflowFixtures(seeded.slots),
       claimCode: seeded.claim.claimCode,
       machineCode: seeded.machine.code,
@@ -2080,6 +2107,7 @@ async function reconstruct(options) {
       schemaVersion: "vem-local-testbed-reconstruction/v1",
       mode: options.mode,
       runId: options.runId,
+      workspace: options.workspace,
       workflowIdentity: identity,
       services: SERVICE_NAMES,
       fixture: {
@@ -2088,9 +2116,11 @@ async function reconstruct(options) {
         slots: seeded.slots,
       },
       guestInput: {
+        sha256: `sha256:${createHash("sha256").update(guestInputRaw).digest("hex")}`,
         machineCode: seeded.machine.code,
         planogramVersion: seeded.planogramVersion,
         bootstrapPath: contract.testbed.guest.stagingPath,
+        fixtureIdentity: fixtureDocument.identity,
       },
       runtimeTestbed: {
         hostPrivateAddress: options.hostPrivateAddress,
@@ -2142,6 +2172,21 @@ async function reconstruct(options) {
             durationMs:
               Date.parse(admissionFinishedAt) - Date.parse(admissionStartedAt),
           },
+        },
+      },
+      timing: {
+        reconstruct: {
+          startedAt: reconstructionStartedAt,
+          finishedAt: reconstructionFinishedAt,
+          durationMs:
+            Date.parse(reconstructionFinishedAt) -
+            Date.parse(reconstructionStartedAt),
+        },
+        admission: {
+          startedAt: admissionStartedAt,
+          finishedAt: admissionFinishedAt,
+          durationMs:
+            Date.parse(admissionFinishedAt) - Date.parse(admissionStartedAt),
         },
       },
     };

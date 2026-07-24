@@ -221,11 +221,28 @@ describe("runtime testbed scheduler contract", () => {
     const guest = source.indexOf("await stageAndRunGuest({", refresh);
     assert.ok(refresh >= 0 && refresh < guest);
     assert.match(source, /host-runtime-refresh-pass-\$\{pass\}\.json/);
-    assert.match(source, /hostRuntimeRefresh:[\s\S]*timing: refresh\.timing/);
-    assert.match(source.slice(refresh, guest), /"--run-id",\s*options\.runId/);
+    assert.match(source, /hostRuntimeRefresh:[\s\S]*timing: preparation\.timing/);
+    assert.match(
+      source.slice(refresh, guest),
+      /"--run-id",\s*fixtureIsCurrent \? options\.runId : `\$\{options\.runId\}-PASS-\$\{pass\}`/,
+    );
     assert.match(
       source,
-      /guestInput:[\s\S]*sha256: refresh\.guestInput\.sha256/,
+      /guestInput:[\s\S]*sha256: preparation\.guestInput\.sha256/,
+    );
+  });
+
+  it("reconstructs a fast host when the cached platform fixture is stale", () => {
+    const source = readFileSync(
+      new URL("./runtime-testbed-orchestrator.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(source, /fixtureIdentityForWorkspace\(workspace\)/);
+    assert.match(source, /existingGuestInput\?\.fixtureIdentity\?\.sha256/);
+    assert.match(source, /reconstruct-stale-fixture-pass-\$\{pass\}/);
+    assert.match(
+      source,
+      /fixtureIsCurrent \? "refresh-host-runtime" : "reconstruct"/,
     );
   });
 
