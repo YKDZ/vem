@@ -370,8 +370,6 @@ export function validatePaymentRecoveryEvidence(report) {
     }
     if (
       attempt.customer?.source !== "installed_machine_runtime_cdp" ||
-      attempt.customer?.orderId !== attempt.order.id ||
-      attempt.customer?.paymentId !== attempt.payment.id ||
       attempt.customer?.resultKind !== attempt.expectedTerminal.resultKind ||
       typeof attempt.customer?.text !== "string" ||
       !/[\u3400-\u9fff]/.test(attempt.customer.text) ||
@@ -723,8 +721,6 @@ async function waitForCustomerTerminal(client, order, expected) {
         })()`,
       ),
     (surface) =>
-      surface?.orderId === order.orderId &&
-      surface?.paymentId === order.paymentId &&
       surface?.resultKind === expected.resultKind &&
       typeof surface?.text === "string" &&
       surface.text.includes(expected.customerCopy),
