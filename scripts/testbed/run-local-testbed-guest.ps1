@@ -801,6 +801,9 @@ function Start-TestbedInstalledRuntimeOwners {
   Write-TestbedPhase "start-installed-interactive-owners"
   Start-ScheduledTask -TaskName "VEMVisionRuntime" -ErrorAction Stop
   Start-ScheduledTask -TaskName "VEMMachineUI" -ErrorAction Stop
+  Write-TestbedPhase "admit-installed-tauri-catalog"
+  & node (Join-Path $repoRoot "scripts\testbed\installed-tauri-route-admission.mjs") --endpoint "http://127.0.0.1:9222" | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "installed Tauri route admission did not reach #/catalog" }
   $target = Wait-InstalledTauriRoute "#/catalog"
   $route = ([uri][string]$target.url).Fragment
   $machineEvidence = Wait-CanonicalProcessEvidence "machine.exe" $MachinePath 30

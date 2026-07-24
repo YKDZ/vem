@@ -225,6 +225,8 @@ describe("installed production runtime smoke", () => {
       guest,
       /function Wait-InstalledTauriTarget \{[\s\S]*AddMinutes\(1\)/,
     );
+    assert.match(guest, /installed-tauri-route-admission\.mjs/);
+    assert.match(guest, /Write-TestbedPhase "admit-installed-tauri-catalog"/);
     assert.match(guest, /Wait-InstalledTauriRoute "#\/catalog"/);
     assert.match(guest, /Wait-CanonicalProcessEvidence "vending-vision\.exe"/);
     assert.match(
