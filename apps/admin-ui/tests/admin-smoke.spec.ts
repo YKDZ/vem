@@ -1,7 +1,12 @@
 import { expect, test } from "@playwright/test";
 
-const ADMIN_USERNAME = process.env.E2E_ADMIN_USERNAME ?? "admin";
-const ADMIN_PASSWORD = process.env.E2E_ADMIN_PASSWORD ?? "AdminPassword123!";
+import {
+  ADMIN_PASSWORD,
+  ADMIN_USERNAME,
+  installAdminBrowserContractMonitor,
+  loginAsAdmin,
+  waitForAdminUiSettled,
+} from "./support/admin-browser-contract";
 const ENVIRONMENT_MACHINE_ID = "11111111-1111-4111-8111-111111111111";
 const ENVIRONMENT_COMMAND_ID = "22222222-2222-4222-8222-222222222222";
 const ENVIRONMENT_NOW = "2026-07-22T08:00:00.000Z";
@@ -34,33 +39,13 @@ test.describe("admin-smoke", () => {
 
   test.describe("authenticated page smoke tests", () => {
     test.beforeEach(async ({ page }) => {
-      await page.goto("/login");
-      await page.getByLabel("用户名").fill(ADMIN_USERNAME);
-      await page.getByLabel("密码").fill(ADMIN_PASSWORD);
-      await page.getByRole("button", { name: /登录/ }).click();
-      await expect(page).toHaveURL(/\/dashboard/, { timeout: 10_000 });
+      await loginAsAdmin(page);
     });
 
     test("every visible sidebar destination settles without browser or API failures", async ({
       page,
     }) => {
-      const failures: string[] = [];
-      page.on("pageerror", (error) => failures.push(`page: ${error.message}`));
-      page.on("console", (message) => {
-        if (message.type() === "error") {
-          failures.push(`console: ${message.text()}`);
-        }
-      });
-      page.on("requestfailed", (request) => {
-        failures.push(
-          `request: ${request.method()} ${request.url()} ${request.failure()?.errorText ?? "failed"}`,
-        );
-      });
-      page.on("response", (response) => {
-        if (response.url().includes("/api/") && response.status() >= 400) {
-          failures.push(`response: ${response.status()} ${response.url()}`);
-        }
-      });
+      const monitor = await installAdminBrowserContractMonitor(page);
 
       const sidebar = page.locator(".ant-layout-sider");
       await expect(sidebar).toBeVisible({ timeout: 10_000 });
@@ -71,11 +56,12 @@ test.describe("admin-smoke", () => {
           timeout: 10_000,
         });
         await expect(sidebar).toBeVisible();
-        await page.waitForTimeout(250);
+        await waitForAdminUiSettled(page);
+        await monitor.assertNoFailures();
       }
       /* eslint-enable no-await-in-loop */
 
-      expect(failures).toEqual([]);
+      await monitor.assertNoFailures();
     });
 
     test("creates a product", async ({ page }) => {

@@ -1,8 +1,26 @@
+import { generateKeyPairSync } from "node:crypto";
+
 import { expect, type Page, test } from "@playwright/test";
 import { paymentProviderConfigSchema } from "@vem/shared";
 
 const ADMIN_USERNAME = process.env.E2E_ADMIN_USERNAME ?? "admin";
 const ADMIN_PASSWORD = process.env.E2E_ADMIN_PASSWORD ?? "AdminPassword123!";
+const TEST_CERTIFICATE_PEM = [
+  "-----BEGIN CERTIFICATE-----",
+  "MIICGjCCAYOgAwIBAgIUUUroCd7Tcfhw8LiUotQwSuGaQkYwDQYJKoZIhvcNAQEL",
+  "BQAwHzEdMBsGA1UEAwwUVkVNIFRlc3QgQ2VydGlmaWNhdGUwHhcNMjYwNTA2MDUw",
+  "MzIwWhcNMjcwNTA2MDUwMzIwWjAfMR0wGwYDVQQDDBRWRU0gVGVzdCBDZXJ0aWZp",
+  "Y2F0ZTCBnzANBgkqhkiG9w0BAQEFAAOBjQAwgYkCgYEA2GWhrrFq7TCKMHSzlNt4",
+  "8RP76RC0gRiVB5SgdDBJpQFT/ijn274zc5FpAkMBpa1weXeMQnzfu3AmBtpd8Ngu",
+  "T6YrEY7LXkG+d9CukcidcEoTd3qdEig4aQr0CjupDFN7hAPWT4fxLQpikBr/4HeV",
+  "IpYCVJsldn8ft4F18qJQMzMCAwEAAaNTMFEwHQYDVR0OBBYEFLrM+UtsnitLTiFZ",
+  "k8shSRTFOJDaMB8GA1UdIwQYMBaAFLrM+UtsnitLTiFZk8shSRTFOJDaMA8GA1Ud",
+  "EwEB/wQFMAMBAf8wDQYJKoZIhvcNAQELBQADgYEACrb5ti4ca2y0t+CqcbRJ2hkt",
+  "Q6IgvaB8o//IgXh1OiARj77yDlIpjbGNPbizPdHazsoNxgAkrM0ZXF0QBYRTasXD",
+  "MBSg5izad5GrLVcOOJJFkyOdLWRrOkoEiD3EdVqbryxYAkVfCthk0IJde+uGl2kK",
+  "fle74W8/qV53VzGPjlI=",
+  "-----END CERTIFICATE-----",
+].join("\n");
 
 async function login(page: Page): Promise<void> {
   await page.goto("/login");
@@ -19,12 +37,17 @@ test.describe("Payment Operations admin API contract", () => {
     const unique = Date.now().toString(36);
     const merchantNo = `e2e-mch-${unique}`;
     const appId = `e2e-app-${unique}`;
+    const { privateKey } = generateKeyPairSync("rsa", {
+      modulusLength: 1024,
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      publicKeyEncoding: { type: "spki", format: "pem" },
+    });
 
     await login(page);
     await page.goto("/payments");
 
     const configPayload = await page.evaluate(
-      async ({ appId, merchantNo }) => {
+      async ({ appId, merchantNo, privateKey, testCertificate }) => {
         const token = localStorage.getItem("vem.admin.accessToken");
         const response = await fetch("/api/payments/provider-configs", {
           method: "POST",
@@ -45,10 +68,10 @@ test.describe("Payment Operations admin API contract", () => {
               qrExpiresMinutes: 10,
             },
             sensitiveConfigJson: {
-              privateKeyPem: "test-key",
-              appCertPem: "test-cert",
-              alipayPublicCertPem: "test-alipay-cert",
-              alipayRootCertPem: "test-root-cert",
+              privateKeyPem: privateKey,
+              appCertPem: testCertificate,
+              alipayPublicCertPem: testCertificate,
+              alipayRootCertPem: testCertificate,
             },
           }),
         });
@@ -59,7 +82,7 @@ test.describe("Payment Operations admin API contract", () => {
         if (!response.ok) throw new Error(payload.message ?? "payment config");
         return payload.data;
       },
-      { appId, merchantNo },
+      { appId, merchantNo, privateKey, testCertificate: TEST_CERTIFICATE_PEM },
     );
 
     const config = paymentProviderConfigSchema.parse(configPayload);
