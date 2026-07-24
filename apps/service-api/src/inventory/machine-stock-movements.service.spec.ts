@@ -664,6 +664,38 @@ describe("MachineStockMovementsService", () => {
     ]);
   });
 
+  it("restores faulted platform slot after accepted physical stock attestation", async () => {
+    const repo = new InMemoryMovementRepository();
+    const service = new MachineStockMovementsService(repo as never);
+    const attestedCount: RawMachineStockMovement = {
+      ...movement,
+      movementId: "MOVE-PHYSICAL-COUNT-ACCEPTED",
+      movementType: "stock_count_correction",
+      quantity: 4,
+      beforeQuantity: 6,
+      afterQuantity: 4,
+      source: "physical_stock_attestation",
+      attributedTo: "front-panel",
+    };
+
+    const result = await service.receiveRawMovement(machine, attestedCount);
+
+    expect(result.status).toBe("accepted");
+    expect(repo.fieldStockApplicationInputs).toEqual([
+      {
+        machineId: machine.id,
+        rawMovementId: result.receipt?.rawMovementId,
+        input: attestedCount,
+      },
+    ]);
+    expect(repo.localMaintenanceSlotRestoreInputs).toEqual([
+      {
+        machineId: machine.id,
+        slotId: movement.slotId,
+      },
+    ]);
+  });
+
   it("routes unattributed local maintenance stock count correction to reconciliation", async () => {
     const repo = new InMemoryMovementRepository();
     const service = new MachineStockMovementsService(repo as never);

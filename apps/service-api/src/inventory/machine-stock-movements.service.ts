@@ -222,7 +222,7 @@ export class MachineStockMovementsService {
             reconciliation,
           );
         }
-        if (isLocalMaintenanceRecoveryMovement(trustedInput)) {
+        if (isOperatorVerifiedRecoveryMovement(trustedInput)) {
           await this.repository.restoreSlotAfterAcceptedLocalMaintenance({
             machineId: machine.id,
             slotId: trustedInput.slotId,
@@ -560,10 +560,14 @@ function isAutoAppliedFieldStockMovement(
   return isFieldStockMovement(input);
 }
 
-function isLocalMaintenanceRecoveryMovement(
+function isOperatorVerifiedRecoveryMovement(
   input: RawMachineStockMovement,
 ): input is FieldStockMovement {
-  return isFieldStockMovement(input) && input.source === "local_maintenance";
+  return (
+    isFieldStockMovement(input) &&
+    (input.source === "local_maintenance" ||
+      input.source === "physical_stock_attestation")
+  );
 }
 
 function fieldStockApplicationFailedReconciliation(
