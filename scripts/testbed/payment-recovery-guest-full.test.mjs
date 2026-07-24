@@ -11,6 +11,7 @@ import {
   unwrapServiceApiEnvelope,
   waitForMachineOnline,
   parsePaymentRecoveryGuestArgs,
+  returnCustomerToCatalog,
   selectFixtureSlot,
   validatePaymentRecoveryEvidence,
 } from "./payment-recovery-guest-full.mjs";
@@ -201,6 +202,42 @@ describe("payment recovery guest full", () => {
         }),
       /expected Catalog category socks is unavailable/,
     );
+  });
+  it("returns from checkout to catalog through visible customer navigation", async () => {
+    const states = [
+      {
+        route: "#/checkout",
+        catalogVisible: false,
+        returnSelector: "[data-test='checkout-back-product']",
+      },
+      {
+        route: "#/product/product-1",
+        catalogVisible: false,
+        returnSelector: "[data-test='product-detail-return-catalog']",
+      },
+      {
+        route: "#/catalog",
+        catalogVisible: true,
+        returnSelector: null,
+      },
+    ];
+    const clicks = [];
+    let index = 0;
+    const result = await returnCustomerToCatalog(
+      { id: "customer" },
+      {
+        evaluateExpressionFn: async () => states[index],
+        activateVisibleSelectorFn: async (_client, selector) => {
+          clicks.push(selector);
+          index += 1;
+        },
+      },
+    );
+    assert.deepEqual(clicks, [
+      "[data-test='checkout-back-product']",
+      "[data-test='product-detail-return-catalog']",
+    ]);
+    assert.equal(result.route, "#/catalog");
   });
   it("builds strict create-order payloads without a slot display label", () => {
     assert.deepEqual(

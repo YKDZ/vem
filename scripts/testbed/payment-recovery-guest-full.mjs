@@ -726,14 +726,21 @@ async function waitForCustomerTerminal(client, order, expected) {
   );
 }
 
-async function returnCustomerToCatalog(client) {
+export async function returnCustomerToCatalog(
+  client,
+  {
+    evaluateExpressionFn = evaluateExpression,
+    activateVisibleSelectorFn = activateVisibleSelector,
+  } = {},
+) {
   const selectors = [
     "[data-test='result-return-catalog']",
+    "[data-test='checkout-back-product']",
     "[data-test='product-detail-return-catalog']",
     "[data-test='checkout-empty-return-catalog']",
   ];
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const state = await evaluateExpression(
+  const observe = () =>
+    evaluateExpressionFn(
       client,
       `(() => ({
         route: location.hash,
@@ -746,6 +753,8 @@ async function returnCustomerToCatalog(client) {
         }) || null
       }))()`,
     );
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const state = await observe();
     if (state?.route === "#/catalog" && state.catalogVisible === true) {
       return state;
     }
@@ -754,11 +763,18 @@ async function returnCustomerToCatalog(client) {
         `installed customer runtime cannot return to Catalog from ${JSON.stringify(state)}`,
       );
     }
-    await activateVisibleSelector(client, state.returnSelector, {
+    await activateVisibleSelectorFn(client, state.returnSelector, {
       kind: "touch",
       timeoutMs: 30_000,
     });
-    await waitForRoute(client, "#/catalog", { timeoutMs: 30_000 });
+    await waitFor(
+      `installed customer navigation after ${state.returnSelector}`,
+      observe,
+      (next) =>
+        next?.route === "#/catalog" ||
+        (typeof next?.route === "string" && next.route !== state.route),
+      30_000,
+    );
   }
   throw new Error("installed customer runtime did not settle on Catalog");
 }
