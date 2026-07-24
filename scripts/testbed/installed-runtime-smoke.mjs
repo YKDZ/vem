@@ -107,8 +107,16 @@ export function validateInstalledRuntimeEvidence(value) {
       "installed runtime handoff must prove the clean claim result",
     );
   }
-  if (value.daemon?.console !== true) {
-    throw new Error("ordinary production daemon process must use --console");
+  const daemonRuntimeMode =
+    value.daemon?.service?.name === "VemVendingDaemon"
+      ? "windows_service"
+      : value.daemon?.console === true
+        ? "console_process"
+        : null;
+  if (!daemonRuntimeMode) {
+    throw new Error(
+      "installed runtime handoff must declare a daemon service owner",
+    );
   }
   const principal = required(value.machine?.principal, "machine principal");
   const healthzUrl = loopbackUrl(
@@ -147,7 +155,17 @@ export function validateInstalledRuntimeEvidence(value) {
         "daemon executablePath",
       ),
       processId: positiveInteger(value.daemon.processId, "daemon processId"),
-      console: true,
+      runtimeMode: daemonRuntimeMode,
+      service:
+        daemonRuntimeMode === "windows_service"
+          ? {
+              name: "VemVendingDaemon",
+              status: required(
+                value.daemon.service?.status,
+                "daemon service status",
+              ),
+            }
+          : null,
       ready: {
         healthzUrl,
         readyzUrl,
@@ -259,6 +277,7 @@ export async function runInstalledRuntimeSmoke({
       daemon: {
         executablePath: runtime.daemon.executablePath,
         processId: runtime.daemon.processId,
+        runtimeMode: runtime.daemon.runtimeMode,
         ready: true,
         healthStatus: health.status,
       },

@@ -502,6 +502,196 @@ function Invoke-FullVisionTryOnAcceptance(
   if ($LASTEXITCODE -ne 0) { throw "vision try-on acceptance failed" }
 }
 
+function Get-TestbedKioskPassword {
+  $winlogon = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" -ErrorAction Stop
+  if ([string]$winlogon.DefaultUserName -ine "VEMKiosk" -or [string]$winlogon.DefaultDomainName -ne ".") {
+    throw "startup owner acceptance requires the baseline VEMKiosk AutoAdminLogon identity"
+  }
+  if ([string]::IsNullOrWhiteSpace([string]$winlogon.DefaultPassword)) {
+    throw "startup owner acceptance requires the baseline VEMKiosk AutoAdminLogon password"
+  }
+  return [string]$winlogon.DefaultPassword
+}
+
+function Clear-TestbedLegacyRuntimeOwnersForStartup {
+  foreach ($taskSpec in @(
+    @{ Name = "VEMLocalTestbedInstalledRuntime"; Path = "\" },
+    @{ Name = "StartVisionServer"; Path = "\VEM\" }
+  )) {
+    Stop-ScheduledTask -TaskName $taskSpec.Name -TaskPath $taskSpec.Path -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName $taskSpec.Name -TaskPath $taskSpec.Path -Confirm:$false -ErrorAction SilentlyContinue
+  }
+  Stop-Service -Name "VemVendingDaemon" -Force -ErrorAction SilentlyContinue
+  Stop-ScheduledTask -TaskName "VEMMachineUI" -ErrorAction SilentlyContinue
+  Stop-ScheduledTask -TaskName "VEMVisionRuntime" -ErrorAction SilentlyContinue
+  Get-Process vending-daemon, machine, vending-vision -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+}
+
+function Get-ResolvedVisionMainCommit([string]$CacheRoot) {
+  $indexPath = Join-Path $CacheRoot "resolved-vision-main-commit.txt"
+  if (-not (Test-Path -LiteralPath $indexPath -PathType Leaf)) {
+    $cached = @(Get-ChildItem -LiteralPath $CacheRoot -Directory -ErrorAction SilentlyContinue |
+      Where-Object { $_.Name -match '^[a-f0-9]{40}$' } |
+      Sort-Object LastWriteTimeUtc -Descending |
+      Select-Object -First 1)
+    if ($cached.Count -eq 1) { return [string]$cached[0].Name }
+    return ""
+  }
+  try {
+    $candidate = (Get-Content -Raw -LiteralPath $indexPath).Trim()
+  } catch {
+    Remove-Item -LiteralPath $indexPath -Force -ErrorAction SilentlyContinue
+    return ""
+  }
+  if ($candidate -match '^[a-f0-9]{40}$') {
+    return $candidate
+  }
+  Remove-Item -LiteralPath $indexPath -Force -ErrorAction SilentlyContinue
+  return ""
+}
+
+function Set-ResolvedVisionMainCommit([string]$CacheRoot, [string]$Commit) {
+  $indexPath = Join-Path $CacheRoot "resolved-vision-main-commit.txt"
+  New-Item -ItemType Directory -Force -Path $CacheRoot | Out-Null
+  Set-Content -LiteralPath $indexPath -Value $Commit -NoNewline -Encoding utf8
+}
+
+function Install-TestbedStartupVisionArtifact {
+  $visionModulePath = Join-Path $PSScriptRoot "..\windows\vision-main-artifacts.psm1"
+  Import-Module $visionModulePath -Force
+  $visionCacheRoot = Join-Path $cacheRoot "vision-main"
+  $visionSiteConfigurationSourcePath = Join-Path $handoffRoot "vision-recorded-site-config.json"
+  Write-RecordedVisionSiteConfiguration $visionSiteConfigurationSourcePath
+  $visionCommit = Get-ResolvedVisionMainCommit -CacheRoot $visionCacheRoot
+  if ([string]::IsNullOrWhiteSpace($visionCommit)) {
+    $visionCache = Get-VisionMainArtifactCache -CacheRoot $visionCacheRoot
+    Set-ResolvedVisionMainCommit -CacheRoot $visionCacheRoot -Commit ([string]$visionCache.commit)
+  } else {
+    try {
+      $visionCache = Get-VisionMainArtifactCache -CacheRoot $visionCacheRoot -CommitSha $visionCommit
+    } catch {
+      Remove-Item -LiteralPath (Join-Path $visionCacheRoot "resolved-vision-main-commit.txt") -Force -ErrorAction SilentlyContinue
+      $visionCache = Get-VisionMainArtifactCache -CacheRoot $visionCacheRoot
+      Set-ResolvedVisionMainCommit -CacheRoot $visionCacheRoot -Commit ([string]$visionCache.commit)
+    }
+  }
+  $visionInstallation = Install-VisionMainArtifact `
+    -RuntimeArchive ([string]$visionCache.runtimeArchive) `
+    -FixtureArchive ([string]$visionCache.fixtureArchive) `
+    -Commit ([string]$visionCache.commit) `
+    -SiteConfigurationPath $visionSiteConfigurationSourcePath `
+    -SkipRuntimeOwnerTask
+  if ([string]$visionInstallation.commit -ne [string]$visionCache.commit) {
+    throw "installed startup Vision commit does not match the resolved cached commit"
+  }
+  return $visionInstallation
+}
+
+function Convert-TestbedStartupProbeToReadiness(
+  [object]$Probe,
+  [object]$OwnerManifest,
+  [object]$MachineEvidence,
+  [object]$VisionEvidence,
+  [string]$Route
+) {
+  $sessionId = [int]$MachineEvidence.sessionId
+  return [ordered]@{
+    schemaVersion = "vem-installed-runtime-startup-acceptance/v1"
+    ok = $true
+    mode = $Mode
+    ownerManifest = $OwnerManifest
+    observation = [ordered]@{
+      source = "windows_service_task_process_session_probe"
+      daemon = [ordered]@{
+        status = [string]$Probe.service.state
+        processCount = @($Probe.processes.daemon).Count
+        ready = [bool]$Probe.daemon.readiness.ok
+      }
+      kioskSession = [ordered]@{
+        user = "VEMKiosk"
+        sessionId = $sessionId
+        active = $true
+      }
+      machineUi = [ordered]@{
+        taskState = [string](@($Probe.tasks | Where-Object { [string]$_.name -eq "VEMMachineUI" })[0].state)
+        processCount = @($Probe.processes.machineUi).Count
+        sessionId = $sessionId
+        route = $Route
+      }
+      vision = [ordered]@{
+        taskState = [string](@($Probe.tasks | Where-Object { [string]$_.name -eq "VEMVisionRuntime" })[0].state)
+        processCount = @($Probe.processes.vision).Count
+        sessionId = [int]$VisionEvidence.sessionId
+      }
+    }
+    modeEvidence = [ordered]@{
+      mode = $Mode
+      source = "installed_owner_stop_start"
+      ownerRestartMarker = "owner-restart:${Commit}:$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
+    }
+  }
+}
+
+function Start-TestbedInstalledRuntimeOwners {
+  param(
+    [object]$GuestInput,
+    [string]$DaemonPath,
+    [string]$MachinePath,
+    [switch]$ClaimBeforeInteractiveOwners
+  )
+  Write-TestbedPhase "install-startup-vision"
+  Install-TestbedStartupVisionArtifact | Out-Null
+  Write-TestbedPhase "install-runtime-owners"
+  Clear-TestbedLegacyRuntimeOwnersForStartup
+  [Environment]::SetEnvironmentVariable("VEM_TESTBED_SERIAL_DISCOVERY_FILE", $env:VEM_TESTBED_SERIAL_DISCOVERY_FILE, "Machine")
+  [Environment]::SetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--remote-debugging-port=9222", "Machine")
+  $ownerManifestPath = Join-Path $runtimeRoot "runtime-owners\owner-manifest.json"
+  $ownerManifest = & (Join-Path $repoRoot "scripts\windows\install-vem-runtime-owners.ps1") `
+    -RuntimeDirectory $deploymentRoot `
+    -DaemonDataDirectory $daemonDataRoot `
+    -VisionAppDirectory "C:\VEM\vision\app" `
+    -VisionDataDirectory "C:\ProgramData\VEM\vision" `
+    -KioskPassword (Get-TestbedKioskPassword) `
+    -OwnerManifestPath $ownerManifestPath | ConvertFrom-Json
+
+  Remove-Item -LiteralPath (Join-Path $daemonDataRoot "daemon-ready.json") -Force -ErrorAction SilentlyContinue
+  Write-TestbedPhase "start-installed-daemon-owner"
+  Start-Service -Name "VemVendingDaemon" -ErrorAction Stop
+  $runtimeReady = Wait-RuntimeReady
+  $ownerClaim = $null
+  if ($ClaimBeforeInteractiveOwners) {
+    Write-TestbedPhase "claim-installed-runtime-owner"
+    $ownerClaim = Invoke-Claim $GuestInput
+    if (-not [bool]$ownerClaim.restartRequested) { throw "clean Runtime Bootstrap claim did not request the required daemon owner restart" }
+    Write-TestbedPhase "restart-claimed-installed-runtime-owner"
+    Restart-Service -Name "VemVendingDaemon" -Force -ErrorAction Stop
+    $runtimeReady = Wait-RuntimeReady
+  }
+  Write-TestbedPhase "bind-installed-owner-hardware"
+  Initialize-TestbedHardwareBindings
+  $runtimeReady = Wait-RuntimeReady
+  Write-TestbedPhase "start-installed-interactive-owners"
+  Start-ScheduledTask -TaskName "VEMVisionRuntime" -ErrorAction Stop
+  Start-ScheduledTask -TaskName "VEMMachineUI" -ErrorAction Stop
+  $target = Wait-InstalledTauriTarget
+  $route = ([uri][string]$target.url).Fragment
+  $machineEvidence = Get-CanonicalProcessEvidence "machine.exe" $MachinePath
+  $visionEvidence = Get-CanonicalProcessEvidence "vending-vision.exe" "C:\VEM\vision\app\vending-vision.exe"
+  $probeRaw = & (Join-Path $repoRoot "scripts\windows\probe-vem-runtime.ps1") -RequireHealthy
+  $probe = $probeRaw | ConvertFrom-Json
+  $readiness = Convert-TestbedStartupProbeToReadiness $probe $ownerManifest $machineEvidence $visionEvidence $route
+  return [ordered]@{
+    readiness = $readiness
+    ownerManifest = $ownerManifest
+    probe = $probe
+    claim = $ownerClaim
+    runtimeReady = $runtimeReady
+    machineEvidence = $machineEvidence
+    visionEvidence = $visionEvidence
+    target = $target
+  }
+}
+
 function Stop-TestbedCanonicalVision([string]$AppDirectory, [string]$ConfigurationPath) {
   $visionModule = Import-Module (Join-Path $PSScriptRoot "..\windows\vision-main-artifacts.psm1") -Force -PassThru
   try {
@@ -835,14 +1025,15 @@ $guestInput | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $GuestInputPat
 Write-TestbedPhase "deploy-runtime"
 $daemonPath = Join-Path $deploymentRoot "vending-daemon.exe"
 $machinePath = Join-Path $deploymentRoot "machine.exe"
+Clear-TestbedLegacyRuntimeOwnersForStartup
 Get-Process vending-daemon -ErrorAction SilentlyContinue | Stop-Process -Force
-Get-Process machine -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process machine, vending-vision -ErrorAction SilentlyContinue | Stop-Process -Force
 $processStopDeadline = (Get-Date).AddSeconds(10)
 while (
-  (Get-Process vending-daemon, machine -ErrorAction SilentlyContinue) -and
+  (Get-Process vending-daemon, machine, vending-vision -ErrorAction SilentlyContinue) -and
   (Get-Date) -lt $processStopDeadline
 ) { Start-Sleep -Milliseconds 100 }
-if (Get-Process vending-daemon, machine -ErrorAction SilentlyContinue) {
+if (Get-Process vending-daemon, machine, vending-vision -ErrorAction SilentlyContinue) {
   throw "installed runtime processes did not stop before deployment"
 }
 Copy-Item -LiteralPath $daemonSource -Destination $daemonPath -Force
@@ -854,57 +1045,25 @@ Write-TestbedSerialDiscoveryAdapter
 if ($Mode -eq "full" -or -not $isWarmFastRun) {
   $guestInput.runtimeBootstrap | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runtimeRoot "runtime-bootstrap.json") -Encoding utf8
 }
-Remove-Item -LiteralPath (Join-Path $daemonDataRoot "daemon-ready.json") -Force -ErrorAction SilentlyContinue
-$daemonStdout = Join-Path $handoffRoot "vending-daemon.stdout.log"
-$daemonStderr = Join-Path $handoffRoot "vending-daemon.stderr.log"
-$daemonProcess = Start-Process -FilePath $daemonPath -ArgumentList @("--console", "--data-dir", $daemonDataRoot) -WorkingDirectory $deploymentRoot -RedirectStandardOutput $daemonStdout -RedirectStandardError $daemonStderr -PassThru
-if ($Mode -eq "full" -or -not $isWarmFastRun) {
-  Write-TestbedPhase "claim-runtime"
-  $claim = Invoke-Claim $guestInput
-  if (-not [bool]$claim.restartRequested) { throw "clean Runtime Bootstrap claim did not request the required daemon restart" }
-  Write-TestbedPhase "restart-claimed-runtime"
-  $daemonProcess | Stop-Process -Force
-  if (-not $daemonProcess.WaitForExit(5000)) { throw "pre-claim daemon did not stop for the requested restart" }
-  Remove-Item -LiteralPath (Join-Path $daemonDataRoot "daemon-ready.json") -Force -ErrorAction SilentlyContinue
-  $daemonProcess = Start-Process -FilePath $daemonPath -ArgumentList @("--console", "--data-dir", $daemonDataRoot) -WorkingDirectory $deploymentRoot -RedirectStandardOutput $daemonStdout -RedirectStandardError $daemonStderr -PassThru
-} else {
-  Write-TestbedPhase "restart-warm-runtime"
+$startupState = Start-TestbedInstalledRuntimeOwners `
+  -GuestInput $guestInput `
+  -DaemonPath $daemonPath `
+  -MachinePath $machinePath `
+  -ClaimBeforeInteractiveOwners:($Mode -eq "full" -or -not $isWarmFastRun)
+if ($null -ne $startupState.claim) {
+  $claim = $startupState.claim
 }
-$runtimeReady = Wait-RuntimeReady
-Write-TestbedPhase "bind-simulated-hardware"
-Initialize-TestbedHardwareBindings
 Stop-TestbedScannerBindingProbe $guestInput $commissioningSerialSession
 Write-TestbedPhase "wait-bound-runtime-ready"
 $runtimeReady = Wait-RuntimeReady
-$daemonEvidence = Get-CanonicalProcessEvidence "vending-daemon.exe" $daemonPath
-if ($daemonEvidence.processId -ne $daemonProcess.Id -or $daemonEvidence.commandLine -notmatch '(?i)(?:^|\s)--console(?:\s|$)') {
-  throw "deployed daemon process is not the claimed production --console process"
-}
-
-$machineTaskName = "VEMLocalTestbedInstalledRuntime"
-$machineLauncher = Join-Path $handoffRoot "launch-installed-machine.cmd"
-Stop-ScheduledTask -TaskName $machineTaskName -ErrorAction SilentlyContinue
-Unregister-ScheduledTask -TaskName $machineTaskName -Confirm:$false -ErrorAction SilentlyContinue
-@(
-  "@echo off",
-  "set `"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`"",
-  "cd /d `"$deploymentRoot`"",
-  "`"$machinePath`""
-) | Set-Content -LiteralPath $machineLauncher -Encoding ascii
-$machineAction = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/d /c `"$machineLauncher`"" -WorkingDirectory $deploymentRoot
-$machinePrincipal = New-ScheduledTaskPrincipal -UserId ([string]$guestInput.interactiveUser) -LogonType Interactive -RunLevel Limited
-Register-ScheduledTask -TaskName $machineTaskName -Action $machineAction -Principal $machinePrincipal -Force | Out-Null
-Start-ScheduledTask -TaskName $machineTaskName
-Write-TestbedPhase "wait-installed-ui"
-$target = Wait-InstalledTauriTarget
-$machineEvidence = Get-CanonicalProcessEvidence "machine.exe" $machinePath
+$target = $startupState.target
+$machineEvidence = $startupState.machineEvidence
 $expectedInteractiveUser = ([string]$guestInput.interactiveUser -split '\\')[-1]
 $observedInteractiveUser = ([string]$machineEvidence.principal -split '\\')[-1]
 if ($observedInteractiveUser -ine $expectedInteractiveUser) {
   throw "installed Tauri process is not owned by the baseline interactive user"
 }
 $cdpBinding = Get-CdpProcessBinding $machineEvidence.processId
-$runtimeReady = Wait-RuntimeReady
 $smokeOutPath = Join-Path $handoffRoot "installed-runtime-smoke.json"
 [string]$fastRouteOutPath = Join-Path $handoffRoot "fast-route-stress-sale.json"
 [string]$ipcRecoveryOutPath = Join-Path $handoffRoot "installed-ipc-recovery.json"
@@ -918,22 +1077,18 @@ $smokeOutPath = Join-Path $handoffRoot "installed-runtime-smoke.json"
   machineCode = [string]$guestInput.machineCode
   claim = [ordered]@{ status = [string]$claim.status; machineCode = [string]$claim.machineCode }
   commissioningSerialSession = $commissioningSerialSession
+  startupOwnerReadiness = $startupState.readiness
   daemon = [ordered]@{
-    executablePath = $daemonEvidence.executablePath
-    processId = $daemonEvidence.processId
-    console = $true
+    executablePath = $daemonPath
+    processId = [int]$startupState.probe.processes.daemon[0].id
+    console = $false
     dataDirectory = $daemonDataRoot
     workingDirectory = $deploymentRoot
-    stdoutPath = $daemonStdout
-    stderrPath = $daemonStderr
+    service = [ordered]@{ name = "VemVendingDaemon"; status = [string]$startupState.probe.service.state }
     ready = [ordered]@{
       healthzUrl = [string]$runtimeReady.ready.healthzUrl
       readyzUrl = [string]$runtimeReady.ready.readyzUrl
       ipcToken = [string]$runtimeReady.ready.ipcToken
-    }
-    logs = [ordered]@{
-      stdout = $daemonStdout
-      stderr = $daemonStderr
     }
   }
   machine = [ordered]@{

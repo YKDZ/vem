@@ -60,7 +60,8 @@ function evidence() {
     daemon: {
       executablePath: "C:\\VEM\\bringup\\vending-daemon.exe",
       processId: 101,
-      console: true,
+      console: false,
+      service: { name: "VemVendingDaemon", status: "Running" },
       ready: {
         healthzUrl: "http://127.0.0.1:43101/healthz",
         readyzUrl: "http://127.0.0.1:43101/readyz",
@@ -169,6 +170,7 @@ describe("installed production runtime smoke", () => {
     assert.equal(result.tauri.readyState, "complete");
     assert.equal(result.tauri.listenerProcessId, 303);
     assert.equal(result.daemon.healthStatus, "healthy");
+    assert.equal(result.daemon.runtimeMode, "windows_service");
     assert.deepEqual(
       result.completedTracks,
       declaredInstalledRuntimeTracks("full"),
@@ -211,20 +213,23 @@ describe("installed production runtime smoke", () => {
       "utf8",
     );
     assert.match(guest, /C:\\VEM\\bringup/);
-    assert.match(guest, /vending-daemon\.exe.*--console/s);
+    assert.match(guest, /install-vem-runtime-owners\.ps1/);
+    assert.match(guest, /Start-Service -Name "VemVendingDaemon"/);
+    assert.match(guest, /Start-ScheduledTask -TaskName "VEMMachineUI"/);
+    assert.match(guest, /Start-ScheduledTask -TaskName "VEMVisionRuntime"/);
+    assert.match(guest, /Unregister-ScheduledTask -TaskName \$taskSpec\.Name/);
+    assert.doesNotMatch(guest, /\$daemonProcess = Start-Process/);
+    assert.doesNotMatch(guest, /Register-ScheduledTask -TaskName \$machineTaskName/);
+    assert.doesNotMatch(guest, /Start-ScheduledTask -TaskName \$machineTaskName/);
     assert.match(guest, /installed-runtime-smoke\.mjs/);
     assert.match(guest, /full-workflow-orchestrator\.mjs/);
     assert.match(guest, /installed-ipc-recovery\.json/);
     assert.match(guest, /serial-fulfillment-error\.json/);
     assert.match(guest, /scanner-payment-code\.json/);
-    assert.match(
-      guest,
-      /New-ScheduledTaskPrincipal[\s\S]*-LogonType Interactive/,
-    );
-    assert.match(guest, /\$guestInput\.interactiveUser/);
+    assert.match(guest, /startupOwnerReadiness/);
     assert.doesNotMatch(
       guest,
-      /test:e2e:real-daemon|playwright|vite|fake[_ -]?platform|simulatedHardwareSaleFlow/i,
+      /pnpm[^\\n]+test:e2e:real-daemon|pnpm[^\\n]+playwright|pnpm[^\\n]+vite|fake[_ -]?platform|simulatedHardwareSaleFlow/i,
     );
   });
 });
