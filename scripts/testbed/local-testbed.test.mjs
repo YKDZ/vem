@@ -1849,7 +1849,7 @@ describe("Windows D cache contract", () => {
     assert.doesNotMatch(guest, /Remove-Item -LiteralPath \$daemonDataRoot/);
     assert.match(
       guest,
-      /Get-CanonicalProcessEvidence "machine\.exe" \$MachinePath/,
+      /Wait-CanonicalProcessEvidence "machine\.exe" \$MachinePath 30/,
     );
     assert.match(guest, /Get-CdpProcessBinding \$machineEvidence\.processId/);
   });

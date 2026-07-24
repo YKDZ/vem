@@ -481,6 +481,17 @@ function Get-CanonicalProcessEvidence([string]$Name, [string]$ExpectedPath) {
   }
 }
 
+function Wait-CanonicalProcessEvidence([string]$Name, [string]$ExpectedPath, [int]$TimeoutSeconds = 30) {
+  $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+  do {
+    try {
+      return Get-CanonicalProcessEvidence $Name $ExpectedPath
+    } catch { $lastError = $_ }
+    Start-Sleep -Milliseconds 500
+  } while ([DateTime]::UtcNow -lt $deadline)
+  throw "canonical $Name process did not become observable: $lastError"
+}
+
 function Get-CdpProcessBinding([int]$MachineProcessId) {
   $listeners = @(Get-NetTCPConnection -LocalAddress "127.0.0.1" -LocalPort 9222 -State Listen -ErrorAction Stop)
   if ($listeners.Count -ne 1) { throw "expected one installed Tauri CDP listener, found $($listeners.Count)" }
@@ -792,8 +803,8 @@ function Start-TestbedInstalledRuntimeOwners {
   Start-ScheduledTask -TaskName "VEMMachineUI" -ErrorAction Stop
   $target = Wait-InstalledTauriRoute "#/catalog"
   $route = ([uri][string]$target.url).Fragment
-  $machineEvidence = Get-CanonicalProcessEvidence "machine.exe" $MachinePath
-  $visionEvidence = Get-CanonicalProcessEvidence "vending-vision.exe" "C:\VEM\vision\app\vending-vision.exe"
+  $machineEvidence = Wait-CanonicalProcessEvidence "machine.exe" $MachinePath 30
+  $visionEvidence = Wait-CanonicalProcessEvidence "vending-vision.exe" "C:\VEM\vision\app\vending-vision.exe" 30
   $probeRaw = & (Join-Path $repoRoot "scripts\windows\probe-vem-runtime.ps1") -RequireHealthy
   $probe = $probeRaw | ConvertFrom-Json
   $readiness = Convert-TestbedStartupProbeToReadiness $probe $ownerManifest $machineEvidence $visionEvidence $route
