@@ -222,6 +222,12 @@ describe("installed production runtime smoke", () => {
     assert.match(guest, /Wait-InstalledTauriTarget \$deadline/);
     assert.doesNotMatch(guest, /function Wait-InstalledTauriTarget \{[\s\S]*AddMinutes\(1\)/);
     assert.match(guest, /Wait-InstalledTauriRoute "#\/catalog"/);
+    assert.match(guest, /SetEnvironmentVariable\("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", \$null, \$scope\)/);
+    assert.match(guest, /-MachineUiWebViewDebugPort 9222/);
+    assert.doesNotMatch(
+      guest,
+      /SetEnvironmentVariable\("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--remote-debugging-port=9222", "Machine"\)/,
+    );
     assert.match(guest, /function Get-TestbedStartupModeEvidence/);
     assert.match(guest, /source = "windows_reboot_logon_probe"/);
     assert.match(guest, /source = "installed_owner_stop_start"/);

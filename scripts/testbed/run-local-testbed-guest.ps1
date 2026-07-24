@@ -564,6 +564,10 @@ function Get-TestbedKioskPassword([object]$GuestInput) {
 }
 
 function Clear-TestbedLegacyRuntimeOwnersForStartup {
+  foreach ($scope in @("Process", "User", "Machine")) {
+    [Environment]::SetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", $null, $scope)
+  }
+  Remove-Item -LiteralPath "Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS" -ErrorAction SilentlyContinue
   foreach ($taskSpec in @(
     @{ Name = "VEMLocalTestbedInstalledRuntime"; Path = "\" },
     @{ Name = "StartVisionServer"; Path = "\VEM\" }
@@ -575,6 +579,9 @@ function Clear-TestbedLegacyRuntimeOwnersForStartup {
   Stop-ScheduledTask -TaskName "VEMMachineUI" -ErrorAction SilentlyContinue
   Stop-ScheduledTask -TaskName "VEMVisionRuntime" -ErrorAction SilentlyContinue
   Get-Process vending-daemon, machine, vending-vision -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+  Get-CimInstance Win32_Process -Filter "Name = 'msedgewebview2.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { [string]$_.CommandLine -match '--remote-debugging-port=9222\b' } |
+    ForEach-Object { Stop-Process -Id ([int]$_.ProcessId) -Force -ErrorAction SilentlyContinue }
 }
 
 function Restart-TestbedDaemonServiceOwner([string]$DaemonPath) {
@@ -754,7 +761,6 @@ function Start-TestbedInstalledRuntimeOwners {
   Write-TestbedPhase "install-runtime-owners"
   Clear-TestbedLegacyRuntimeOwnersForStartup
   [Environment]::SetEnvironmentVariable("VEM_TESTBED_SERIAL_DISCOVERY_FILE", $env:VEM_TESTBED_SERIAL_DISCOVERY_FILE, "Machine")
-  [Environment]::SetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--remote-debugging-port=9222", "Machine")
   $ownerManifestPath = Join-Path $runtimeRoot "runtime-owners\owner-manifest.json"
   $ownerManifest = & (Join-Path $repoRoot "scripts\windows\install-vem-runtime-owners.ps1") `
     -RuntimeDirectory $deploymentRoot `
@@ -762,6 +768,7 @@ function Start-TestbedInstalledRuntimeOwners {
     -VisionAppDirectory "C:\VEM\vision\app" `
     -VisionDataDirectory "C:\ProgramData\VEM\vision" `
     -KioskPassword (Get-TestbedKioskPassword $GuestInput) `
+    -MachineUiWebViewDebugPort 9222 `
     -OwnerManifestPath $ownerManifestPath | ConvertFrom-Json
 
   Remove-Item -LiteralPath (Join-Path $daemonDataRoot "daemon-ready.json") -Force -ErrorAction SilentlyContinue

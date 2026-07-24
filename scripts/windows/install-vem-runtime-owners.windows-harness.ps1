@@ -79,6 +79,7 @@ try {
     -VisionAppDirectory $visionApp `
     -VisionDataDirectory $visionData `
     -KioskPassword "prototype-password" `
+    -MachineUiWebViewDebugPort 9222 `
     -OwnerManifestPath $manifestPath | Out-Null
 
   $manifest = Get-Content -Raw -LiteralPath $manifestPath -Encoding UTF8 | ConvertFrom-Json

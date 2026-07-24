@@ -39,8 +39,10 @@ test("interactive owner launchers replace stale component processes without watc
   assert.match(installer, /Diagnostics\.ProcessStartInfo/);
   assert.match(installer, /Diagnostics\.Process\]::Start/);
   assert.match(installer, /InheritedEnvironmentVariableNames/);
+  assert.match(installer, /ExplicitEnvironmentVariables/);
+  assert.match(installer, /MachineUiWebViewDebugPort/);
   assert.match(installer, /WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS/);
-  assert.match(installer, /GetEnvironmentVariable\(`\$name, "Machine"\)/);
+  assert.match(installer, /Write-InteractiveLauncher \$machineLauncher "machine\.exe" \$machineExecutable @\(\) @\(\) \$machineUiEnvironment/);
   assert.match(installer, /Set-Item -LiteralPath "Env:`\$name"/);
   assert.match(installer, /EnvironmentVariables\[`\$name\]/);
   assert.doesNotMatch(installer, /Register-ObjectEvent/);
@@ -86,8 +88,9 @@ test("owner installer writes one manifest through its public PowerShell entrypoi
     output.daemonDataDirectory,
   ]);
   assert.match(output.machineLauncher, /WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS/);
+  assert.match(output.machineLauncher, /--remote-debugging-port=9222/);
   assert.match(output.machineLauncher, /Diagnostics\.ProcessStartInfo/);
-  assert.match(output.machineLauncher, /EnvironmentVariables\[\$name\]/);
+  assert.match(output.machineLauncher, /EnvironmentVariables\[\[string\]\$entry\.Key\]/);
   assert.doesNotMatch(output.machineLauncher, /-ArgumentList @\(\)/);
   assert.match(output.visionLauncher, /\$startInfo\.Arguments = '"--config" "/);
   assert.equal(output.manifest.owners.machineUi.trigger, "AtLogon");

@@ -6,6 +6,7 @@ param(
   [string]$VisionDataDirectory = "C:\ProgramData\VEM\vision",
   [string]$KioskUser = "VEMKiosk",
   [string]$KioskPassword,
+  [ValidateRange(1, 65535)][int]$MachineUiWebViewDebugPort = 0,
   [string]$OwnerManifestPath = "C:\ProgramData\VEM\runtime-owners\owner-manifest.json"
 )
 
@@ -35,7 +36,8 @@ function Write-InteractiveLauncher(
   [string]$ProcessName,
   [string]$ExecutablePath,
   [string[]]$ArgumentList,
-  [string[]]$InheritedEnvironmentVariableNames = @()
+  [string[]]$InheritedEnvironmentVariableNames = @(),
+  [hashtable]$ExplicitEnvironmentVariables = @{}
 ) {
   New-Item -ItemType Directory -Force -Path (Split-Path -Parent $LauncherPath) | Out-Null
   $argumentString = ($ArgumentList | ForEach-Object { '"' + $_.Replace('"', '\"') + '"' }) -join " "
@@ -44,6 +46,13 @@ function Write-InteractiveLauncher(
     "@()"
   } else {
     "@(" + (($InheritedEnvironmentVariableNames | ForEach-Object { "'" + $_.Replace("'", "''") + "'" }) -join ", ") + ")"
+  }
+  $explicitEnvironmentLiteral = if ($ExplicitEnvironmentVariables.Count -eq 0) {
+    "@{}"
+  } else {
+    "@{" + (($ExplicitEnvironmentVariables.GetEnumerator() | Sort-Object Name | ForEach-Object {
+      "'" + ([string]$_.Key).Replace("'", "''") + "' = '" + ([string]$_.Value).Replace("'", "''") + "'"
+    }) -join "; ") + "}"
   }
   $content = @"
 `$ErrorActionPreference = "Stop"
@@ -56,9 +65,17 @@ foreach (`$name in $environmentNamesLiteral) {
   `$userValue = [Environment]::GetEnvironmentVariable(`$name, "User")
   `$machineValue = [Environment]::GetEnvironmentVariable(`$name, "Machine")
   `$value = if (-not [string]::IsNullOrWhiteSpace(`$userValue)) { `$userValue } else { `$machineValue }
+	  if (-not [string]::IsNullOrWhiteSpace(`$value)) {
+	    Set-Item -LiteralPath "Env:`$name" -Value `$value
+	    `$startInfo.EnvironmentVariables[`$name] = `$value
+	  }
+	}
+`$explicitEnvironment = $explicitEnvironmentLiteral
+foreach (`$entry in `$explicitEnvironment.GetEnumerator()) {
+  `$value = [string]`$entry.Value
   if (-not [string]::IsNullOrWhiteSpace(`$value)) {
-    Set-Item -LiteralPath "Env:`$name" -Value `$value
-    `$startInfo.EnvironmentVariables[`$name] = `$value
+    Set-Item -LiteralPath "Env:`$(`$entry.Key)" -Value `$value
+    `$startInfo.EnvironmentVariables[[string]`$entry.Key] = `$value
   }
 }
 `$staleProcesses = @(Get-CimInstance Win32_Process -Filter "Name = '$ProcessName'" -ErrorAction SilentlyContinue)
@@ -257,7 +274,11 @@ Grant-OwnerAccess $DaemonDataDirectory "(M)"
 Grant-OwnerAccess $VisionAppDirectory "(RX)"
 Grant-OwnerAccess $VisionDataDirectory "(M)"
 
-Write-InteractiveLauncher $machineLauncher "machine.exe" $machineExecutable @() @("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS")
+$machineUiEnvironment = @{}
+if ($MachineUiWebViewDebugPort -gt 0) {
+  $machineUiEnvironment["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = "--remote-debugging-port=$MachineUiWebViewDebugPort"
+}
+Write-InteractiveLauncher $machineLauncher "machine.exe" $machineExecutable @() @() $machineUiEnvironment
 Write-InteractiveLauncher $visionLauncher "vending-vision.exe" $visionExecutable @("--config", (Join-Path $VisionDataDirectory "site.json"))
 Register-InteractiveOwnerTask "VEMMachineUI" $machineLauncher $RuntimeDirectory
 Register-InteractiveOwnerTask "VEMVisionRuntime" $visionLauncher $VisionAppDirectory
