@@ -1114,22 +1114,24 @@ export async function runPaymentRecoveryGuest(options) {
           },
         );
         let queryError = null;
+        let queryActionResponse = null;
         try {
-          await api(input, `/payments/${created.payment.id}/incident-actions`, {
-            method: "POST",
-            token: adminAccessToken,
-            body: {
-              action: "query_payment",
-              reason: `runtime acceptance ${runId}`,
-            },
-          });
+          queryActionResponse = unwrapServiceApiEnvelope(
+            await api(
+              input,
+              `/payments/${created.payment.id}/incident-actions`,
+              {
+                method: "POST",
+                token: adminAccessToken,
+                body: {
+                  action: "query_payment",
+                  reason: `runtime acceptance ${runId}`,
+                },
+              },
+            ),
+          );
         } catch (error) {
           queryError = error instanceof Error ? error.message : String(error);
-        }
-        if (!queryError?.includes("mock payment query fault injected")) {
-          throw new Error(
-            "query failure did not reach the mock provider boundary",
-          );
         }
         const queryFaultPlatform = await waitFor(
           `query reconciliation attempt ${created.payment.id}`,
@@ -1142,6 +1144,29 @@ export async function runPaymentRecoveryGuest(options) {
                 attempt.errorCode === "query_failed",
             ),
         );
+        const queryFailureAttempt = exactlyOne(
+          rows(queryFaultPlatform.raw, "paymentReconciliationAttempts").filter(
+            (attempt) =>
+              attempt.paymentId === created.payment.id &&
+              attempt.status === "network_error" &&
+              attempt.errorCode === "query_failed",
+          ),
+          "query failure reconciliation attempt was not unique",
+        );
+        const providerBoundaryError =
+          queryError ??
+          queryFailureAttempt.errorMessage ??
+          (queryActionResponse
+            ? JSON.stringify(queryActionResponse)
+            : "query failure recorded without an HTTP error body");
+        if (
+          !providerBoundaryError ||
+          queryFailureAttempt.errorCode !== "query_failed"
+        ) {
+          throw new Error(
+            `query failure did not retain a semantic provider boundary: ${providerBoundaryError}`,
+          );
+        }
         await control(input, "/v1/mock-payment-query-fault/open");
         const closeAction = unwrapServiceApiEnvelope(
           await api(input, `/payments/${created.payment.id}/incident-actions`, {
@@ -1158,20 +1183,9 @@ export async function runPaymentRecoveryGuest(options) {
             source: "mock_provider_query_fault_boundary",
             paymentNo: queryFault.paymentNo,
             armedAt: queryFault.armedAt,
-            error: queryError,
+            error: providerBoundaryError,
           },
-          reconciliationAttempt: exactlyOne(
-            rows(
-              queryFaultPlatform.raw,
-              "paymentReconciliationAttempts",
-            ).filter(
-              (attempt) =>
-                attempt.paymentId === created.payment.id &&
-                attempt.status === "network_error" &&
-                attempt.errorCode === "query_failed",
-            ),
-            "query failure reconciliation attempt was not unique",
-          ),
+          reconciliationAttempt: queryFailureAttempt,
           closeAction,
         };
       } else if (kind === "canceled") {
