@@ -1,5 +1,5 @@
 import { Inject, Injectable } from "@nestjs/common";
-import { createHash, X509Certificate } from "node:crypto";
+import { createHash, createPrivateKey, X509Certificate } from "node:crypto";
 
 import { AppConfigService } from "../config/app-config.service";
 import {
@@ -31,6 +31,27 @@ function certificateExpiresAt(value: string): string | null {
   return expiresAtValues.sort()[0] ?? null;
 }
 
+const alipayCertificateKeys = [
+  "appCertPem",
+  "alipayPublicCertPem",
+  "alipayRootCertPem",
+] as const;
+
+function isPem(value: string): boolean {
+  return /-----BEGIN [A-Z0-9 ]+-----/.test(value);
+}
+
+function toPem(value: string, label: string): string {
+  const trimmed = value.trim().replace(/\r\n/g, "\n");
+  if (isPem(trimmed)) return `${trimmed}\n`;
+  const body = trimmed.replace(/\s+/g, "");
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(body) || body.length % 4 !== 0) {
+    return trimmed;
+  }
+  const lines = body.match(/.{1,64}/g)?.join("\n") ?? body;
+  return `-----BEGIN ${label}-----\n${lines}\n-----END ${label}-----\n`;
+}
+
 @Injectable()
 export class PaymentConfigSecretService {
   constructor(
@@ -43,6 +64,55 @@ export class PaymentConfigSecretService {
 
   decrypt(input: EncryptedJson): Record<string, unknown> {
     return decryptJson(input, this.config.paymentConfigEncryptionKey);
+  }
+
+  normalizeAlipaySensitiveConfig(
+    input: Record<string, unknown>,
+    keyType: "PKCS8" | "PKCS1",
+  ): Record<string, unknown> {
+    const normalized = { ...input };
+    const privateKey = normalized["privateKeyPem"];
+    if (typeof privateKey === "string" && privateKey.trim().length > 0) {
+      normalized["privateKeyPem"] = toPem(
+        privateKey,
+        keyType === "PKCS1" ? "RSA PRIVATE KEY" : "PRIVATE KEY",
+      );
+    }
+    for (const key of alipayCertificateKeys) {
+      const value = normalized[key];
+      if (typeof value === "string" && value.trim().length > 0) {
+        normalized[key] = toPem(value, "CERTIFICATE");
+      }
+    }
+    return normalized;
+  }
+
+  assertAlipaySensitiveConfigParseable(input: Record<string, unknown>): void {
+    const invalid: string[] = [];
+    const privateKey = input["privateKeyPem"];
+    if (typeof privateKey === "string" && privateKey.trim().length > 0) {
+      try {
+        createPrivateKey(privateKey);
+      } catch {
+        invalid.push("privateKeyPem");
+      }
+    }
+    for (const key of alipayCertificateKeys) {
+      const value = input[key];
+      if (typeof value !== "string" || value.trim().length === 0) continue;
+      try {
+        const certificates = value.match(
+          /-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g,
+        );
+        if (!certificates?.length) throw new Error("missing certificate");
+        certificates.forEach((certificate) => new X509Certificate(certificate));
+      } catch {
+        invalid.push(key);
+      }
+    }
+    if (invalid.length > 0) {
+      throw new Error(`invalid Alipay sensitive config: ${invalid.join(", ")}`);
+    }
   }
 
   summarize(

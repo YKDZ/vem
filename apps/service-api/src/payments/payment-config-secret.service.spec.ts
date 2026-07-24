@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import { decryptJson, encryptJson } from "../crypto/encrypted-json.util";
@@ -105,5 +106,47 @@ describe("PaymentConfigSecretService", () => {
     );
     expect(summary["appCertPem"]?.errorCode).toBe("certificate_parse_failed");
     expect(JSON.stringify(summary)).not.toContain("invalid");
+  });
+
+  it("normalizes bare Base64 Alipay keys and certificate bodies to PEM", () => {
+    const service = makeSecretService();
+    const { privateKey } = generateKeyPairSync("rsa", {
+      modulusLength: 1024,
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      publicKeyEncoding: { type: "spki", format: "pem" },
+    });
+    const bareKey = privateKey
+      .replace(/-----[^-]+-----/g, "")
+      .replace(/\s/g, "");
+
+    const normalized = service.normalizeAlipaySensitiveConfig(
+      { privateKeyPem: bareKey, appCertPem: "AQID" },
+      "PKCS8",
+    );
+
+    expect(normalized["privateKeyPem"]).toContain("BEGIN PRIVATE KEY");
+    expect(normalized["appCertPem"]).toBe(
+      "-----BEGIN CERTIFICATE-----\nAQID\n-----END CERTIFICATE-----\n",
+    );
+    expect(() =>
+      service.assertAlipaySensitiveConfigParseable(normalized),
+    ).toThrow("appCertPem");
+    expect(() =>
+      service.assertAlipaySensitiveConfigParseable({
+        privateKeyPem: normalized["privateKeyPem"],
+      }),
+    ).not.toThrow();
+  });
+
+  it("rejects unparseable Alipay secrets before they can enable a config", () => {
+    const service = makeSecretService();
+
+    expect(() =>
+      service.assertAlipaySensitiveConfigParseable({
+        privateKeyPem: "not a private key",
+        appCertPem:
+          "-----BEGIN CERTIFICATE-----\ninvalid\n-----END CERTIFICATE-----",
+      }),
+    ).toThrow("privateKeyPem, appCertPem");
   });
 });

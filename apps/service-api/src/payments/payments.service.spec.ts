@@ -149,6 +149,8 @@ function makeService(overrides: {
   const secretService: PaymentConfigSecretService = {
     encrypt: vi.fn().mockReturnValue({ encrypted: "xxx" }),
     decrypt: vi.fn().mockReturnValue({}),
+    normalizeAlipaySensitiveConfig: vi.fn((input) => input),
+    assertAlipaySensitiveConfigParseable: vi.fn(),
     summarize: vi.fn().mockReturnValue({}),
   } as unknown as PaymentConfigSecretService;
   const refundsService: RefundsService = {

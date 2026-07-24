@@ -1237,6 +1237,17 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       requireString(input.sensitiveConfigJson, "appCertPem");
       requireString(input.sensitiveConfigJson, "alipayPublicCertPem");
       requireString(input.sensitiveConfigJson, "alipayRootCertPem");
+      try {
+        this.paymentConfigSecrets.assertAlipaySensitiveConfigParseable(
+          input.sensitiveConfigJson,
+        );
+      } catch (error) {
+        throw new ConflictException(
+          error instanceof Error
+            ? error.message
+            : "Alipay sensitive config is invalid",
+        );
+      }
     }
 
     if (missing.length > 0) {
@@ -1326,9 +1337,19 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         : {}
       : {};
 
+    const sensitivePatch =
+      input.providerCode === "alipay" && input.sensitiveConfigJson
+        ? this.paymentConfigSecrets.normalizeAlipaySensitiveConfig(
+            input.sensitiveConfigJson as Record<string, unknown>,
+            input.publicConfigJson?.keyType === "PKCS1" ||
+              existingRow?.publicConfigJson?.["keyType"] === "PKCS1"
+              ? "PKCS1"
+              : "PKCS8",
+          )
+        : (input.sensitiveConfigJson as Record<string, unknown> | undefined);
     const mergedSensitive = this.mergeSensitiveConfig(
       existingSensitive,
-      input.sensitiveConfigJson as Record<string, unknown> | undefined,
+      sensitivePatch,
     );
 
     const nextStatus = input.status ?? existingRow?.status ?? "enabled";

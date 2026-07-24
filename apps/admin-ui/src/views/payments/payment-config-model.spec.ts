@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  alipayGatewayForMode,
   buildProviderConfigPayload,
   createDefaultProviderConfigForm,
 } from "./payment-config-model";
@@ -88,16 +89,19 @@ describe("payment-config-model", () => {
   });
 
   describe("buildProviderConfigPayload (alipay)", () => {
-    it("includes mode and gatewayUrl in publicConfigJson", () => {
+    it("derives the canonical gateway instead of accepting an edited URL", () => {
       const form = createDefaultProviderConfigForm("alipay");
       form.mode = "production";
-      form.gatewayUrl = "https://openapi.alipay.com/gateway.do";
+      form.gatewayUrl = "https://operator.example.invalid/gateway.do";
 
       const payload = buildProviderConfigPayload(form);
 
       expect(payload.publicConfigJson["mode"]).toBe("production");
       expect(payload.publicConfigJson["gatewayUrl"]).toBe(
         "https://openapi.alipay.com/gateway.do",
+      );
+      expect(alipayGatewayForMode("sandbox")).toBe(
+        "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
       );
     });
 
@@ -113,6 +117,20 @@ describe("payment-config-model", () => {
         terminalId: "TERM-01",
       });
       expect(payload.publicConfigJson).not.toHaveProperty("paymentCodeEnabled");
+    });
+
+    it("submits only non-empty pasted certificate and private-key text", () => {
+      const form = createDefaultProviderConfigForm("alipay");
+      form.privateKeyPem = "pasted private key";
+      form.appCertPem = "";
+      form.alipayPublicCertPem = "pasted provider certificate";
+
+      const payload = buildProviderConfigPayload(form);
+
+      expect(payload.sensitiveConfigJson).toEqual({
+        privateKeyPem: "pasted private key",
+        alipayPublicCertPem: "pasted provider certificate",
+      });
     });
   });
 });

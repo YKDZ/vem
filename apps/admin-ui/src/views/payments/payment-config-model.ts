@@ -28,6 +28,12 @@ export type ProviderConfigForm = {
   alipayRootCertPem: string;
 };
 
+export function alipayGatewayForMode(mode: "sandbox" | "production"): string {
+  return mode === "production"
+    ? "https://openapi.alipay.com/gateway.do"
+    : "https://openapi-sandbox.dl.alipaydev.com/gateway.do";
+}
+
 export function createDefaultProviderConfigForm(
   providerCode: RealPaymentProviderCode = "alipay",
 ): ProviderConfigForm {
@@ -44,9 +50,7 @@ export function createDefaultProviderConfigForm(
     platformCertificateSerialNo: "",
     platformCertificatePem: "",
     gatewayUrl:
-      providerCode === "alipay"
-        ? "https://openapi-sandbox.dl.alipaydev.com/gateway.do"
-        : "",
+      providerCode === "alipay" ? alipayGatewayForMode("sandbox") : "",
     keyType: "PKCS8",
     mode: providerCode === "wechat_pay" ? "direct_merchant" : "sandbox",
     storeId: "",
@@ -119,8 +123,9 @@ export function buildProviderConfigPayload(form: ProviderConfigForm): {
       form.merchantApiKeyPem,
     );
   } else {
-    publicConfigJson["mode"] = form.mode;
-    publicConfigJson["gatewayUrl"] = form.gatewayUrl;
+    const mode = form.mode === "production" ? "production" : "sandbox";
+    publicConfigJson["mode"] = mode;
+    publicConfigJson["gatewayUrl"] = alipayGatewayForMode(mode);
     publicConfigJson["keyType"] = form.keyType;
     publicConfigJson["storeId"] = form.storeId || undefined;
     publicConfigJson["terminalId"] = form.terminalId || undefined;
