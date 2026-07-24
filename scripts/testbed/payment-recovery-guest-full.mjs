@@ -438,6 +438,15 @@ export function validatePaymentRecoveryEvidence(report) {
     report.subsequentSale?.inventory?.afterOnHandQty !==
       report.subsequentSale?.inventory?.beforeOnHandQty - 1 ||
     report.subsequentSale?.inventory?.movementCount !== 1 ||
+    report.subsequentSale?.customer?.route !== "#/result/success" ||
+    report.subsequentSale.customer.orderId !== report.subsequentSale.order.id ||
+    report.subsequentSale.customer.paymentId !==
+      report.subsequentSale.order.paymentId ||
+    report.subsequentSale.customer.orderNo !==
+      report.subsequentSale.order.orderNo ||
+    report.subsequentSale.customer.commandId !==
+      report.subsequentSale.order.commandId ||
+    report.subsequentSale.customer.resultKind !== "success" ||
     report.subsequentSale?.serial?.stopped !== true ||
     !["VEND", "F0", "F1", "F2"].every((frame) =>
       report.subsequentSale?.serial?.protocol?.includes(frame),
@@ -727,6 +736,37 @@ async function waitForCustomerTerminal(client, order, expected) {
     (surface) =>
       typeof surface?.text === "string" &&
       surface.text.includes(expected.customerCopy),
+    60_000,
+  );
+}
+
+async function waitForSuccessfulCustomerResult(client, expected) {
+  return await waitFor(
+    `installed customer success result ${expected.paymentId}`,
+    () =>
+      evaluateExpression(
+        client,
+        `(() => {
+          const el = document.querySelector("[data-installed-kiosk-sale-result-surface]");
+          return el ? {
+            route: location.hash,
+            orderId: el.dataset.orderId || null,
+            paymentId: el.dataset.paymentId || null,
+            orderNo: el.dataset.orderNo || null,
+            commandId: el.dataset.commandId || null,
+            resultKind: el.dataset.resultKind || null,
+            displayIntent: el.dataset.resultDisplayIntent || null,
+            text: (el.textContent || "").replace(/\\s+/g, " ").trim()
+          } : { route: location.hash };
+        })()`,
+      ),
+    (surface) =>
+      surface?.route === "#/result/success" &&
+      surface.orderId === expected.orderId &&
+      surface.paymentId === expected.paymentId &&
+      surface.orderNo === expected.orderNo &&
+      surface.commandId === expected.commandId &&
+      surface.resultKind === "success",
     60_000,
   );
 }
@@ -1526,6 +1566,12 @@ export async function runPaymentRecoveryGuest(options) {
       subsequentOrder.orderId,
       subsequentOrder.paymentId,
     );
+    const customerResult = await waitForSuccessfulCustomerResult(customer, {
+      orderId: subsequentOrder.orderId,
+      paymentId: subsequentOrder.paymentId,
+      orderNo: subsequentOrder.orderNo,
+      commandId: vendingCommandId,
+    });
     const subsequentInventoryAfter = inventorySnapshot(
       fulfilledPlatform,
       slot.inventoryId,
@@ -1548,7 +1594,9 @@ export async function runPaymentRecoveryGuest(options) {
     report.subsequentSale = {
       order: {
         id: subsequentOrder.orderId,
+        orderNo: subsequentOrder.orderNo,
         paymentId: subsequentOrder.paymentId,
+        commandId: vendingCommandId,
         inventoryId: slot.inventoryId,
       },
       terminal: {
@@ -1567,6 +1615,7 @@ export async function runPaymentRecoveryGuest(options) {
         evidence: serialEvidence,
         stopped: true,
       },
+      customer: customerResult,
     };
     report.ok = true;
     validatePaymentRecoveryEvidence(report);

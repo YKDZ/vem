@@ -549,6 +549,16 @@ describe("payment recovery guest full", () => {
       /payment-expiry[\s\S]{0,220}Date\.now\(\) - 60_000/,
     );
   });
+
+  it("requires the subsequent sale to reach the correlated customer success result", () => {
+    const report = recoveryReport();
+    report.subsequentSale.customer.route = "#/dispensing";
+
+    assert.throws(
+      () => validatePaymentRecoveryEvidence(report),
+      /fulfilled subsequent sale/,
+    );
+  });
 });
 
 function recoveryReport() {
@@ -723,7 +733,9 @@ function recoveryReport() {
     subsequentSale: {
       order: {
         id: "order-paid",
+        orderNo: "order-no-paid",
         paymentId: "pay-paid",
+        commandId: "command-paid",
         inventoryId: "inventory-1",
       },
       inventory: { beforeOnHandQty: 3, afterOnHandQty: 2, movementCount: 1 },
@@ -733,6 +745,14 @@ function recoveryReport() {
         fulfillmentState: "dispensed",
       },
       serial: { protocol: ["VEND", "F0", "F1", "F2"], stopped: true },
+      customer: {
+        route: "#/result/success",
+        orderId: "order-paid",
+        paymentId: "pay-paid",
+        orderNo: "order-no-paid",
+        commandId: "command-paid",
+        resultKind: "success",
+      },
     },
     saleabilityRecovery: {
       source: "daemon_sale_view_and_installed_machine_runtime_cdp",
