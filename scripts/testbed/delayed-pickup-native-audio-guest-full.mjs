@@ -304,18 +304,11 @@ async function waitForTransactionAudioSettled(
             terminal: entries.some((entry) => entry.type === "audio_terminal"),
           };
         });
-        const pickupCompleted = trace.filter(
-          (entry) => entry.transitionId === prefix + "pickup-completed",
-        );
         const pickupWaiting = trace.filter(
           (entry) => entry.transitionId === prefix + "pickup-waiting",
         );
         return {
           playback,
-          pickupCompleted: {
-            queued: pickupCompleted.some((entry) => entry.type === "audio_queued"),
-            terminal: pickupCompleted.some((entry) => entry.type === "audio_terminal"),
-          },
           pickupWaitingQueued: pickupWaiting.some(
             (entry) => entry.type === "audio_queued",
           ),
@@ -327,8 +320,6 @@ async function waitForTransactionAudioSettled(
       last.playback.every(
         (entry) => entry.queued && entry.started && entry.terminal,
       ) &&
-      last.pickupCompleted?.queued === true &&
-      last.pickupCompleted?.terminal === true &&
       last.pickupWaitingQueued === false
     ) {
       return last;

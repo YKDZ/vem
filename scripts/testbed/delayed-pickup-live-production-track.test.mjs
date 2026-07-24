@@ -83,6 +83,23 @@ describe("delayed pickup live production track", () => {
     assert.ok(waitForCommand > paymentInject);
   });
 
+  it("does not wait for the removed pickup-completed audio cue", () => {
+    const source = readFileSync(
+      new URL("./delayed-pickup-native-audio-guest-full.mjs", import.meta.url),
+      "utf8",
+    );
+    const audioWaiter = source.slice(
+      source.indexOf("async function waitForTransactionAudioSettled"),
+      source.indexOf("async function waitForPaymentCodeArm"),
+    );
+    assert.match(audioWaiter, /pickup-outlet-opened/);
+    assert.match(audioWaiter, /pickup-warning-1/);
+    assert.match(audioWaiter, /pickup-warning-2/);
+    assert.match(audioWaiter, /dispense-succeeded/);
+    assert.match(audioWaiter, /pickup-waiting/);
+    assert.doesNotMatch(audioWaiter, /pickup-completed/);
+  });
+
   it("owns producers around the live sale and awaits the real F1/F2 control-plane checkpoints", async () => {
     const root = makeTempDir("vem-delayed-live");
     const operations = [];
