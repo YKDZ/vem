@@ -31,6 +31,7 @@ function makeOrdersDbForSuccessfulLocalDraft() {
       select: vi.fn(),
       insert: vi.fn(),
       update: vi.fn(),
+      execute: vi.fn().mockResolvedValue({ rowCount: 1 }),
     };
 
     tx.select.mockReturnValueOnce({

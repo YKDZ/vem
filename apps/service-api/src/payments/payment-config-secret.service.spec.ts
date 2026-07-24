@@ -128,25 +128,25 @@ describe("PaymentConfigSecretService", () => {
     expect(normalized["appCertPem"]).toBe(
       "-----BEGIN CERTIFICATE-----\nAQID\n-----END CERTIFICATE-----\n",
     );
-    expect(() =>
-      service.assertAlipaySensitiveConfigParseable(normalized),
-    ).toThrow("appCertPem");
-    expect(() =>
+    expect(() => {
+      service.assertAlipaySensitiveConfigParseable(normalized);
+    }).toThrow("appCertPem");
+    expect(() => {
       service.assertAlipaySensitiveConfigParseable({
         privateKeyPem: normalized["privateKeyPem"],
-      }),
-    ).not.toThrow();
+      });
+    }).not.toThrow();
   });
 
   it("rejects unparseable Alipay secrets before they can enable a config", () => {
     const service = makeSecretService();
 
-    expect(() =>
+    expect(() => {
       service.assertAlipaySensitiveConfigParseable({
         privateKeyPem: "not a private key",
         appCertPem:
           "-----BEGIN CERTIFICATE-----\ninvalid\n-----END CERTIFICATE-----",
-      }),
-    ).toThrow("privateKeyPem, appCertPem");
+      });
+    }).toThrow("privateKeyPem, appCertPem");
   });
 });
