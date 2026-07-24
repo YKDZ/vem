@@ -36,11 +36,13 @@ test("interactive owner launchers replace stale component processes without watc
   assert.match(installer, /launch-vem-vision\.ps1/);
   assert.match(installer, /Get-CimInstance Win32_Process/);
   assert.match(installer, /Stop-Process/);
-  assert.match(installer, /Start-Process/);
+  assert.match(installer, /Diagnostics\.ProcessStartInfo/);
+  assert.match(installer, /Diagnostics\.Process\]::Start/);
   assert.match(installer, /InheritedEnvironmentVariableNames/);
   assert.match(installer, /WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS/);
   assert.match(installer, /GetEnvironmentVariable\(`\$name, "Machine"\)/);
   assert.match(installer, /Set-Item -LiteralPath "Env:`\$name"/);
+  assert.match(installer, /EnvironmentVariables\[`\$name\]/);
   assert.doesNotMatch(installer, /Register-ObjectEvent/);
   assert.doesNotMatch(installer, /RestartOnFailure/);
   assert.doesNotMatch(installer, /while \(\$true\)/);
@@ -84,9 +86,10 @@ test("owner installer writes one manifest through its public PowerShell entrypoi
     output.daemonDataDirectory,
   ]);
   assert.match(output.machineLauncher, /WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS/);
-  assert.match(output.machineLauncher, /Start-Process -FilePath/);
+  assert.match(output.machineLauncher, /Diagnostics\.ProcessStartInfo/);
+  assert.match(output.machineLauncher, /EnvironmentVariables\[\$name\]/);
   assert.doesNotMatch(output.machineLauncher, /-ArgumentList @\(\)/);
-  assert.match(output.visionLauncher, /-ArgumentList @\('--config', /);
+  assert.match(output.visionLauncher, /\$startInfo\.Arguments = '"--config" "/);
   assert.equal(output.manifest.owners.machineUi.trigger, "AtLogon");
   assert.equal(output.manifest.owners.vision.trigger, "AtLogon");
   assert.equal(output.registeredTasks.length, 2);

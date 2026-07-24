@@ -38,36 +38,34 @@ function Write-InteractiveLauncher(
   [string[]]$InheritedEnvironmentVariableNames = @()
 ) {
   New-Item -ItemType Directory -Force -Path (Split-Path -Parent $LauncherPath) | Out-Null
-  $argumentsLiteral = if ($ArgumentList.Count -eq 0) {
-    "@()"
-  } else {
-    "@(" + (($ArgumentList | ForEach-Object { "'" + $_.Replace("'", "''") + "'" }) -join ", ") + ")"
-  }
+  $argumentString = ($ArgumentList | ForEach-Object { '"' + $_.Replace('"', '\"') + '"' }) -join " "
+  $argumentStringLiteral = "'" + $argumentString.Replace("'", "''") + "'"
   $environmentNamesLiteral = if ($InheritedEnvironmentVariableNames.Count -eq 0) {
     "@()"
   } else {
     "@(" + (($InheritedEnvironmentVariableNames | ForEach-Object { "'" + $_.Replace("'", "''") + "'" }) -join ", ") + ")"
   }
-  $startProcessCommand = if ($ArgumentList.Count -eq 0) {
-    "Start-Process -FilePath '$ExecutablePath' -WorkingDirectory '$(Split-Path -Parent $ExecutablePath)'"
-  } else {
-    "Start-Process -FilePath '$ExecutablePath' -WorkingDirectory '$(Split-Path -Parent $ExecutablePath)' -ArgumentList $argumentsLiteral"
-  }
   $content = @"
 `$ErrorActionPreference = "Stop"
+`$startInfo = [Diagnostics.ProcessStartInfo]::new()
+`$startInfo.FileName = '$ExecutablePath'
+`$startInfo.WorkingDirectory = '$(Split-Path -Parent $ExecutablePath)'
+`$startInfo.UseShellExecute = `$false
+`$startInfo.Arguments = $argumentStringLiteral
 foreach (`$name in $environmentNamesLiteral) {
   `$userValue = [Environment]::GetEnvironmentVariable(`$name, "User")
   `$machineValue = [Environment]::GetEnvironmentVariable(`$name, "Machine")
   `$value = if (-not [string]::IsNullOrWhiteSpace(`$userValue)) { `$userValue } else { `$machineValue }
   if (-not [string]::IsNullOrWhiteSpace(`$value)) {
     Set-Item -LiteralPath "Env:`$name" -Value `$value
+    `$startInfo.EnvironmentVariables[`$name] = `$value
   }
 }
 `$staleProcesses = @(Get-CimInstance Win32_Process -Filter "Name = '$ProcessName'" -ErrorAction SilentlyContinue)
 foreach (`$staleProcess in `$staleProcesses) {
   Stop-Process -Id ([int]`$staleProcess.ProcessId) -Force -ErrorAction SilentlyContinue
 }
-$startProcessCommand
+[Diagnostics.Process]::Start(`$startInfo) | Out-Null
 "@
   [IO.File]::WriteAllText($LauncherPath, $content, [Text.UTF8Encoding]::new($false))
 }
