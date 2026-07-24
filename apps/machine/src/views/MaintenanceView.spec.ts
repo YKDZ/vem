@@ -501,6 +501,43 @@ describe("Local Operations", () => {
     expect(host.querySelector("input[aria-label='认领码']")).not.toBeNull();
   });
 
+  it("keeps structured failed network responses editable and does not reload runtime config", async () => {
+    client.applyNetworkSettings.mockResolvedValueOnce({
+      status: "failed",
+      ssid: "Venue-Wifi",
+      hidden: false,
+      diagnostics: [],
+      operatorGuidance: "Wi-Fi 身份验证失败。请核对密码后重试。",
+      updatedAt: "2026-07-17T00:00:00.000Z",
+    });
+    const host = await render();
+    const initialReloads =
+      client.getEffectiveRuntimeConfiguration.mock.calls.length;
+    const ssid = host.querySelector<HTMLInputElement>(
+      "input[aria-label='网络名称']",
+    );
+    const password = host.querySelector<HTMLInputElement>(
+      "input[aria-label='网络密码']",
+    );
+    if (!ssid || !password) throw new Error("network inputs not found");
+    ssid.value = "Venue-Wifi";
+    ssid.dispatchEvent(new Event("input", { bubbles: true }));
+    password.value = "wrong-password";
+    password.dispatchEvent(new Event("input", { bubbles: true }));
+    await nextTick();
+
+    button(host, "应用网络").click();
+    await flush();
+
+    expect(password.value).toBe("wrong-password");
+    expect(host.textContent).toContain(
+      "Wi-Fi 身份验证失败。请核对密码后重试。",
+    );
+    expect(client.getEffectiveRuntimeConfiguration).toHaveBeenCalledTimes(
+      initialReloads,
+    );
+  });
+
   it("keeps a rejected claim in Local Operations with direct operator feedback", async () => {
     client.claimMachine.mockRejectedValueOnce(new Error("claim code rejected"));
     const host = await render();

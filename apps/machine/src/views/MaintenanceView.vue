@@ -271,8 +271,9 @@ async function submitNetworkSettings(): Promise<void> {
       password: commissioning.password,
       hidden: commissioning.hidden,
     });
-    commissioning.password = "";
     commissioning.message = result.operatorGuidance;
+    if (result.status !== "connected") return;
+    commissioning.password = "";
     await reloadEffectiveRuntimeConfiguration();
   } catch (error) {
     commissioning.message = operatorErrorMessage(
