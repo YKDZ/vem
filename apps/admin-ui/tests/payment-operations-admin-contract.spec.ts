@@ -1,7 +1,6 @@
-import { generateKeyPairSync } from "node:crypto";
-
 import { expect, type Page, test } from "@playwright/test";
 import { paymentProviderConfigSchema } from "@vem/shared";
+import { generateKeyPairSync } from "node:crypto";
 
 const ADMIN_USERNAME = process.env.E2E_ADMIN_USERNAME ?? "admin";
 const ADMIN_PASSWORD = process.env.E2E_ADMIN_PASSWORD ?? "AdminPassword123!";

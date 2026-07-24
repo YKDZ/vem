@@ -40,7 +40,9 @@ function validateModeEvidence(evidence, mode, sessionId) {
   }
   if (mode === "fast") {
     if (modeEvidence.source !== "installed_owner_stop_start") {
-      throw new Error("fast startup requires installed owner stop/start evidence");
+      throw new Error(
+        "fast startup requires installed owner stop/start evidence",
+      );
     }
     return {
       source: modeEvidence.source,
@@ -51,13 +53,17 @@ function validateModeEvidence(evidence, mode, sessionId) {
     };
   }
   if (modeEvidence.source !== "windows_reboot_logon_probe") {
-    throw new Error("full startup requires Windows reboot/logon probe evidence");
+    throw new Error(
+      "full startup requires Windows reboot/logon probe evidence",
+    );
   }
   if (
     modeEvidence.logon?.user !== "VEMKiosk" ||
     modeEvidence.logon?.sessionId !== sessionId
   ) {
-    throw new Error("full startup logon identity must match the active VEMKiosk session");
+    throw new Error(
+      "full startup logon identity must match the active VEMKiosk session",
+    );
   }
   return {
     source: modeEvidence.source,
@@ -112,9 +118,7 @@ export function validateStartupOwnerReadinessEvidence(evidence, mode = "fast") {
     user: "VEMKiosk",
   });
   const observation = evidence.observation;
-  if (
-    observation?.source !== "windows_service_task_process_session_probe"
-  ) {
+  if (observation?.source !== "windows_service_task_process_session_probe") {
     throw new Error("startup owner readiness must use the Windows owner probe");
   }
   if (observation?.daemon?.status !== "Running") {
@@ -166,7 +170,9 @@ export function validateStartupOwnerReadinessEvidence(evidence, mode = "fast") {
 export function runStartupOwnerAcceptance({ mode, handoff, fixtureKey }) {
   if (!MODES.has(mode)) throw new Error("startup mode must be fast or full");
   if (fixtureKey !== "startup") {
-    throw new Error("startup owner acceptance requires the startup fixture key");
+    throw new Error(
+      "startup owner acceptance requires the startup fixture key",
+    );
   }
   const evidence = handoff?.startupOwnerReadiness;
   if (!evidence) {

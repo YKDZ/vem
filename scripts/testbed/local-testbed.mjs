@@ -379,7 +379,9 @@ async function loadFixture() {
 }
 
 function fixtureIdentityFromRaw(raw) {
-  const seedSource = readFileSync(new URL("./local-testbed.mjs", import.meta.url));
+  const seedSource = readFileSync(
+    new URL("./local-testbed.mjs", import.meta.url),
+  );
   return {
     schemaVersion: "vem-local-testbed-fixture/v1",
     sha256: `sha256:${createHash("sha256")
@@ -1654,25 +1656,23 @@ export async function seedThroughSupportedApis({
       silhouetteAssetId: tryOnSilhouetteAsset.id,
       silhouettePublicUrl: tryOnSilhouetteAsset.publicUrl,
     }));
-  const productMedia = ["socks", "underwear", "tshirts"].map(
-    (categoryKey) => {
-      const seededSlot = seededSlots.find(
-        (entry) => categoryKeyForFixtureProduct(entry.product) === categoryKey,
+  const productMedia = ["socks", "underwear", "tshirts"].map((categoryKey) => {
+    const seededSlot = seededSlots.find(
+      (entry) => categoryKeyForFixtureProduct(entry.product) === categoryKey,
+    );
+    if (!seededSlot) {
+      throw new Error(
+        `local testbed fixture requires a ${categoryKey} product media binding`,
       );
-      if (!seededSlot) {
-        throw new Error(
-          `local testbed fixture requires a ${categoryKey} product media binding`,
-        );
-      }
-      const product = seededSlot.product;
-      return {
-        categoryKey,
-        catalogKey: `product:${product.product.id}`,
-        productId: product.product.id,
-        coverImageUrl: product.displayImageAsset.publicUrl,
-      };
-    },
-  );
+    }
+    const product = seededSlot.product;
+    return {
+      categoryKey,
+      catalogKey: `product:${product.product.id}`,
+      productId: product.product.id,
+      coverImageUrl: product.displayImageAsset.publicUrl,
+    };
+  });
   return {
     machine,
     claim,
@@ -1793,7 +1793,11 @@ export function buildRefreshHostRuntimePlan(options) {
   ];
 }
 
-export function validateRefreshGuestInput(input, options, expectedFixtureIdentity) {
+export function validateRefreshGuestInput(
+  input,
+  options,
+  expectedFixtureIdentity,
+) {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     throw new Error("existing guest input must be an object");
   }

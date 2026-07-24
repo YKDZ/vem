@@ -94,7 +94,9 @@ export async function installAdminBrowserContractMonitor(
         }
       })
       .catch((error: unknown) => {
-        failures.push(`api-body-unreadable: ${response.url()} ${String(error)}`);
+        failures.push(
+          `api-body-unreadable: ${response.url()} ${String(error)}`,
+        );
       });
     pendingResponses.add(pending);
     void pending.finally(() => pendingResponses.delete(pending));

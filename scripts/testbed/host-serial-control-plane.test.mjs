@@ -441,10 +441,10 @@ describe("host serial control plane", () => {
       implementation,
       /vem\/machines\/\$\{required\(machineCode, "machineCode"\)\}\/#/,
     );
-	    assert.match(implementation, /collect-serial-evidence/);
-	    assert.match(implementation, /rawFrameLimit/);
-	    assert.doesNotMatch(implementation, /simulatedHardwareSaleFlow/);
-	  });
+    assert.match(implementation, /collect-serial-evidence/);
+    assert.match(implementation, /rawFrameLimit/);
+    assert.doesNotMatch(implementation, /simulatedHardwareSaleFlow/);
+  });
 
   it("selects lifecycle devices by target port after libvirt normalizes aliases", () => {
     const domainXml = `<domain><devices>

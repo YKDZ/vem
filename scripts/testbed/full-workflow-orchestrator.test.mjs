@@ -288,8 +288,7 @@ describe("full workflow serial lifecycle", () => {
     const calls = [];
     const tracks = FULL_WORKFLOW_TRACK_DESCRIPTORS.filter(
       (track) =>
-        track.runner &&
-        !["commissioning", "startup"].includes(track.name),
+        track.runner && !["commissioning", "startup"].includes(track.name),
     ).slice(0, 2);
     const result = await runSerialTrackLifecycle({
       tracks,
@@ -343,8 +342,7 @@ describe("full workflow serial lifecycle", () => {
     const calls = [];
     const tracks = FULL_WORKFLOW_TRACK_DESCRIPTORS.filter(
       (track) =>
-        track.runner &&
-        !["commissioning", "startup"].includes(track.name),
+        track.runner && !["commissioning", "startup"].includes(track.name),
     ).slice(0, 2);
     const result = await runSerialTrackLifecycle({
       tracks,

@@ -584,15 +584,14 @@ async function stageAndRunGuest({
       mode === "clear_cache"
         ? "C:/ProgramData/VEM/testbed/clear-cache-report.json"
         : "C:/ProgramData/VEM/testbed/full-workflow-evidence-bundle";
-    await runProcess("scp", [
-      ...scp,
-      "-r",
-      `${remote}:${remoteEvidence}`,
-      evidence,
-    ], {
-      timeoutMs: GUEST_TRANSFER_TIMEOUT_MS,
-      timeoutLabel: "guest evidence transfer",
-    }).catch(() => undefined);
+    await runProcess(
+      "scp",
+      [...scp, "-r", `${remote}:${remoteEvidence}`, evidence],
+      {
+        timeoutMs: GUEST_TRANSFER_TIMEOUT_MS,
+        timeoutLabel: "guest evidence transfer",
+      },
+    ).catch(() => undefined);
   }
 }
 
@@ -772,7 +771,8 @@ async function executeRun(options, config) {
                 preparation.guestInput.hostControlPlane ??
                 preparation.runtimeTestbed?.hostControlPlane,
               fixtureIdentity:
-                preparation.guestInput.fixtureIdentity ?? currentFixtureIdentity,
+                preparation.guestInput.fixtureIdentity ??
+                currentFixtureIdentity,
             },
             timing: preparation.timing,
           },

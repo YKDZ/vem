@@ -95,7 +95,10 @@ describe("installed runtime startup-owner acceptance", () => {
     evidence.observation.machineUi.taskState = "Ready";
     evidence.observation.vision.taskState = "Ready";
 
-    assert.equal(validateStartupOwnerReadinessEvidence(evidence).catalogRoute, "#/catalog");
+    assert.equal(
+      validateStartupOwnerReadinessEvidence(evidence).catalogRoute,
+      "#/catalog",
+    );
   });
 
   it("rejects an absent owner projection instead of accepting direct-launch smoke", () => {

@@ -221,10 +221,16 @@ describe("installed production runtime smoke", () => {
     assert.match(guest, /function Wait-CanonicalProcessEvidence/);
     assert.match(guest, /function Get-InstalledTauriTargetOnce/);
     assert.match(guest, /Wait-InstalledTauriTarget \$deadline/);
-    assert.doesNotMatch(guest, /function Wait-InstalledTauriTarget \{[\s\S]*AddMinutes\(1\)/);
+    assert.doesNotMatch(
+      guest,
+      /function Wait-InstalledTauriTarget \{[\s\S]*AddMinutes\(1\)/,
+    );
     assert.match(guest, /Wait-InstalledTauriRoute "#\/catalog"/);
     assert.match(guest, /Wait-CanonicalProcessEvidence "vending-vision\.exe"/);
-    assert.match(guest, /SetEnvironmentVariable\("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", \$null, \$scope\)/);
+    assert.match(
+      guest,
+      /SetEnvironmentVariable\("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", \$null, \$scope\)/,
+    );
     assert.match(guest, /-MachineUiWebViewDebugPort 9222/);
     assert.doesNotMatch(
       guest,

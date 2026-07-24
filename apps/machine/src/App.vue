@@ -4,8 +4,8 @@ import { onMounted, onUnmounted } from "vue";
 import { RouterView, useRoute } from "vue-router";
 
 import TransactionRecoveryBoundary from "@/components/TransactionRecoveryBoundary.vue";
-import { installActiveTransactionSync } from "@/composables/useActiveTransactionSync";
 import { installStableVisionPresenceDepartureNavigation } from "@/composables/stable-vision-presence-session";
+import { installActiveTransactionSync } from "@/composables/useActiveTransactionSync";
 import { installActiveUiDebugRuntimeScenario } from "@/dev/runtime-scenario-loader";
 import { installInstalledKioskSaleRouteObserver } from "@/dev/ui-debug-daemon";
 import { router } from "@/router";

@@ -1,10 +1,11 @@
-import type { MachineCatalogItem } from "@/types/catalog";
 import {
   catalogTopCategories,
   topCategoryForCatalogItem,
   type CatalogTopCategory,
   type CatalogTopCategoryKey,
 } from "@vem/shared/catalog-top-category";
+
+import type { MachineCatalogItem } from "@/types/catalog";
 
 export { catalogTopCategories };
 export type { CatalogTopCategory, CatalogTopCategoryKey };

@@ -1284,7 +1284,10 @@ describe("machine-ui-cdp-driver", () => {
   it("rejects payment-window checkpoints split across capture generations", () => {
     const capture = { checkpoints: [{ ordinal: 11 }] };
     const first = { capture, stopped: false };
-    const second = { capture: { checkpoints: [{ ordinal: 12 }] }, stopped: false };
+    const second = {
+      capture: { checkpoints: [{ ordinal: 12 }] },
+      stopped: false,
+    };
     assert.equal(
       findContinuousPaymentCheckpoint({
         startSegment: first,

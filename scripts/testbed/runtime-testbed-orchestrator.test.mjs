@@ -195,7 +195,10 @@ describe("runtime testbed scheduler contract", () => {
     );
     assert.match(source, /const GUEST_SETUP_TIMEOUT_MS = 120_000/);
     assert.match(source, /const GUEST_TRANSFER_TIMEOUT_MS = 300_000/);
-    assert.match(source, /const GUEST_FAST_EXECUTION_TIMEOUT_MS = 15 \* 60_000/);
+    assert.match(
+      source,
+      /const GUEST_FAST_EXECUTION_TIMEOUT_MS = 15 \* 60_000/,
+    );
     assert.match(source, /error\.timedOut = true/);
     assert.match(source, /timeoutLabel: "guest acceptance execution"/);
     assert.match(
@@ -222,7 +225,10 @@ describe("runtime testbed scheduler contract", () => {
     const guest = source.indexOf("await stageAndRunGuest({", refresh);
     assert.ok(refresh >= 0 && refresh < guest);
     assert.match(source, /host-runtime-refresh-pass-\$\{pass\}\.json/);
-    assert.match(source, /hostRuntimeRefresh:[\s\S]*timing: preparation\.timing/);
+    assert.match(
+      source,
+      /hostRuntimeRefresh:[\s\S]*timing: preparation\.timing/,
+    );
     assert.match(
       source.slice(refresh, guest),
       /"--run-id",\s*fixtureIsCurrent \? options\.runId : `\$\{options\.runId\}-PASS-\$\{pass\}`/,
@@ -240,7 +246,10 @@ describe("runtime testbed scheduler contract", () => {
     );
     assert.match(source, /fixtureIdentityForWorkspace\(workspace\)/);
     assert.match(source, /existingGuestInput\?\.fixtureIdentity\?\.sha256/);
-    assert.match(source, /reconstructionMarker\?\.guestInput\?\.fixtureIdentity\?\.sha256/);
+    assert.match(
+      source,
+      /reconstructionMarker\?\.guestInput\?\.fixtureIdentity\?\.sha256/,
+    );
     assert.match(source, /reconstruct-stale-fixture-pass-\$\{pass\}/);
     assert.match(
       source,

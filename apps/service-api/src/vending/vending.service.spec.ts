@@ -77,9 +77,11 @@ describe("VendingService durable command dispatcher", () => {
       execute: vi.fn().mockResolvedValue({ rowCount: 1 }),
       select: vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue([
-            { id: command.id, machineId: "machine-1", orderId: "order-1" },
-          ]),
+          where: vi
+            .fn()
+            .mockResolvedValue([
+              { id: command.id, machineId: "machine-1", orderId: "order-1" },
+            ]),
         }),
       }),
       update: vi.fn().mockReturnValue({
@@ -105,8 +107,9 @@ describe("VendingService durable command dispatcher", () => {
       })),
       transaction: vi
         .fn()
-        .mockImplementation(async (callback: (tx: typeof transitionTx) => unknown) =>
-          await callback(transitionTx),
+        .mockImplementation(
+          async (callback: (tx: typeof transitionTx) => unknown) =>
+            await callback(transitionTx),
         ),
     };
     const publish = vi
@@ -206,7 +209,9 @@ describe("VendingService durable command dispatcher", () => {
       }),
       update: vi.fn().mockReturnValue({
         set: () => ({
-          where: () => ({ returning: async () => [{ ...created, status: "sent" }] }),
+          where: () => ({
+            returning: async () => [{ ...created, status: "sent" }],
+          }),
         }),
       }),
     };
@@ -239,11 +244,13 @@ describe("VendingService durable command dispatcher", () => {
       }),
       transaction: vi
         .fn()
-        .mockImplementationOnce(async (callback: (tx: typeof compensationTx) => unknown) =>
-          await callback(compensationTx),
+        .mockImplementationOnce(
+          async (callback: (tx: typeof compensationTx) => unknown) =>
+            await callback(compensationTx),
         )
-        .mockImplementationOnce(async (callback: (tx: typeof dispatchTx) => unknown) =>
-          await callback(dispatchTx),
+        .mockImplementationOnce(
+          async (callback: (tx: typeof dispatchTx) => unknown) =>
+            await callback(dispatchTx),
         ),
     };
     const signForMachine = vi.fn().mockResolvedValue({ signed: true });

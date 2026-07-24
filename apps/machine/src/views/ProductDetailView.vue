@@ -482,7 +482,10 @@ async function enterTryOn(): Promise<void> {
 
           <section class="detail-section stock-copy">
             <h2>♧ 商品库存</h2>
-            <p data-test="product-detail-stock" :data-saleable-stock="stockText">
+            <p
+              data-test="product-detail-stock"
+              :data-saleable-stock="stockText"
+            >
               库存：<strong>{{ stockText }}</strong>
             </p>
           </section>

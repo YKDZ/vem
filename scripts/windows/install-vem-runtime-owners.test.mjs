@@ -10,7 +10,11 @@ function source(path) {
 }
 
 test("installs the production runtime owners and emits their shared manifest", () => {
-  assert.equal(existsSync(installerPath), true, "runtime owner installer is present");
+  assert.equal(
+    existsSync(installerPath),
+    true,
+    "runtime owner installer is present",
+  );
 
   const installer = source(installerPath);
   assert.match(installer, /VemVendingDaemon/);
@@ -42,7 +46,10 @@ test("interactive owner launchers replace stale component processes without watc
   assert.match(installer, /ExplicitEnvironmentVariables/);
   assert.match(installer, /MachineUiWebViewDebugPort/);
   assert.match(installer, /WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS/);
-  assert.match(installer, /Write-InteractiveLauncher \$machineLauncher "machine\.exe" \$machineExecutable @\(\) @\(\) \$machineUiEnvironment/);
+  assert.match(
+    installer,
+    /Write-InteractiveLauncher \$machineLauncher "machine\.exe" \$machineExecutable @\(\) @\(\) \$machineUiEnvironment/,
+  );
   assert.match(installer, /Set-Item -LiteralPath "Env:`\$name"/);
   assert.match(installer, /EnvironmentVariables\[`\$name\]/);
   assert.doesNotMatch(installer, /Register-ObjectEvent/);
@@ -90,7 +97,10 @@ test("owner installer writes one manifest through its public PowerShell entrypoi
   assert.match(output.machineLauncher, /WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS/);
   assert.match(output.machineLauncher, /--remote-debugging-port=9222/);
   assert.match(output.machineLauncher, /Diagnostics\.ProcessStartInfo/);
-  assert.match(output.machineLauncher, /EnvironmentVariables\[\[string\]\$entry\.Key\]/);
+  assert.match(
+    output.machineLauncher,
+    /EnvironmentVariables\[\[string\]\$entry\.Key\]/,
+  );
   assert.doesNotMatch(output.machineLauncher, /-ArgumentList @\(\)/);
   assert.match(output.visionLauncher, /\$startInfo\.Arguments = '"--config" "/);
   assert.equal(output.manifest.owners.machineUi.trigger, "AtLogon");

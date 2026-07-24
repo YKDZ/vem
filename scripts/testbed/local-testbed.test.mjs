@@ -1409,7 +1409,7 @@ describe("Windows D cache contract", () => {
       /warm fast run requires the existing commissioning serial session/,
     );
     const mainSerialStart = guestScript.indexOf(
-      '$commissioningSerialSession = Start-TestbedCommissioningSerialSession $guestInput',
+      "$commissioningSerialSession = Start-TestbedCommissioningSerialSession $guestInput",
     );
     const mainOwnerStart = guestScript.indexOf(
       "$startupState = Start-TestbedInstalledRuntimeOwners",

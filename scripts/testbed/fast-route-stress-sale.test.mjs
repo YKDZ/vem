@@ -576,7 +576,10 @@ describe("fast route stress sale tracer", () => {
       "utf8",
     );
     assert.match(source, /resetArrivalDelivery = await dispatchVisionArrival/);
-    assert.match(source, /resetArrivalTrace = await waitForStableVisionArrivalTrace/);
+    assert.match(
+      source,
+      /resetArrivalTrace = await waitForStableVisionArrivalTrace/,
+    );
     assert.match(source, /resetTransitionId: resetTrace\.transitionId/);
   });
 

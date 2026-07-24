@@ -60,7 +60,10 @@ test("installs one fixed app directory and probes health plus machine protocol",
   );
   assert.match(module, /Split-VisionWindowsCommandLine/);
   assert.match(module, /Test-VisionMainCanonicalConfigurationCommandLine/);
-  assert.doesNotMatch(module, /CommandLine\)\.Replace\(\[string\]\[char\]34, ''\)\.ToLowerInvariant\(\)\.Contains/);
+  assert.doesNotMatch(
+    module,
+    /CommandLine\)\.Replace\(\[string\]\[char\]34, ''\)\.ToLowerInvariant\(\)\.Contains/,
+  );
   assert.doesNotMatch(module, /Get-Process -Name "vending-vision"/);
   assert.match(module, /Start-VisionMainTask/);
   assert.match(module, /\/health/);
@@ -106,7 +109,10 @@ test("can install Vision files without defining a second runtime owner", () => {
   const installer = source(installerPath);
 
   assert.match(module, /\[switch\]\$SkipRuntimeOwnerTask/);
-  assert.match(module, /if \(-not \$SkipRuntimeOwnerTask\)[\s\S]*Ensure-VisionMainTask[\s\S]*Start-VisionMainTask/);
+  assert.match(
+    module,
+    /if \(-not \$SkipRuntimeOwnerTask\)[\s\S]*Ensure-VisionMainTask[\s\S]*Start-VisionMainTask/,
+  );
   assert.match(module, /kind = "delegated"/);
   assert.match(module, /launcher = if \(\$null -ne \$legacyOwner\)/);
   assert.match(module, /startTask = if \(\$null -ne \$legacyOwner\)/);

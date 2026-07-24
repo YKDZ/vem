@@ -1,9 +1,10 @@
+import type { VisionProfile } from "@vem/shared";
 import type { Ref } from "vue";
 
 import { storeToRefs } from "pinia";
-import type { VisionProfile } from "@vem/shared";
 
 import type { VisionProfileResultPayload } from "@/native/vision";
+
 import { useVisionStore } from "@/stores/vision";
 
 export function useVisionRecommendations(): {
