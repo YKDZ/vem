@@ -122,6 +122,8 @@ try {
   [ordered]@{
     schemaVersion = "vem-runtime-owners-harness/v2"
     manifest = $manifest
+    machineLauncher = Get-Content -Raw -LiteralPath (Join-Path $runtime "launch-vem-machine-ui.ps1")
+    visionLauncher = Get-Content -Raw -LiteralPath (Join-Path $runtime "launch-vem-vision.ps1")
     daemonDataDirectory = $daemonData
     missingPasswordRejected = $missingPasswordRejected
     legacyOwnerRejected = $legacyOwnerRejected

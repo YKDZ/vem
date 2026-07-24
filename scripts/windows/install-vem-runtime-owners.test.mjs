@@ -83,6 +83,10 @@ test("owner installer writes one manifest through its public PowerShell entrypoi
     "--data-dir",
     output.daemonDataDirectory,
   ]);
+  assert.match(output.machineLauncher, /WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS/);
+  assert.match(output.machineLauncher, /Start-Process -FilePath/);
+  assert.doesNotMatch(output.machineLauncher, /-ArgumentList @\(\)/);
+  assert.match(output.visionLauncher, /-ArgumentList @\('--config', /);
   assert.equal(output.manifest.owners.machineUi.trigger, "AtLogon");
   assert.equal(output.manifest.owners.vision.trigger, "AtLogon");
   assert.equal(output.registeredTasks.length, 2);

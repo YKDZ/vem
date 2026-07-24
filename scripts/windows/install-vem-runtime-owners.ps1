@@ -48,6 +48,11 @@ function Write-InteractiveLauncher(
   } else {
     "@(" + (($InheritedEnvironmentVariableNames | ForEach-Object { "'" + $_.Replace("'", "''") + "'" }) -join ", ") + ")"
   }
+  $startProcessCommand = if ($ArgumentList.Count -eq 0) {
+    "Start-Process -FilePath '$ExecutablePath' -WorkingDirectory '$(Split-Path -Parent $ExecutablePath)'"
+  } else {
+    "Start-Process -FilePath '$ExecutablePath' -WorkingDirectory '$(Split-Path -Parent $ExecutablePath)' -ArgumentList $argumentsLiteral"
+  }
   $content = @"
 `$ErrorActionPreference = "Stop"
 foreach (`$name in $environmentNamesLiteral) {
@@ -62,7 +67,7 @@ foreach (`$name in $environmentNamesLiteral) {
 foreach (`$staleProcess in `$staleProcesses) {
   Stop-Process -Id ([int]`$staleProcess.ProcessId) -Force -ErrorAction SilentlyContinue
 }
-Start-Process -FilePath '$ExecutablePath' -WorkingDirectory '$(Split-Path -Parent $ExecutablePath)' -ArgumentList $argumentsLiteral
+$startProcessCommand
 "@
   [IO.File]::WriteAllText($LauncherPath, $content, [Text.UTF8Encoding]::new($false))
 }
