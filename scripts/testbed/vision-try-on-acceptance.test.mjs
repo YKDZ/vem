@@ -216,6 +216,21 @@ describe("vision try-on acceptance script", () => {
     }
   });
 
+  it("waits for product-owned media through the shared condition contract", () => {
+    const source = readFileSync(
+      new URL("./vision-try-on-acceptance.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(
+      source,
+      /product-owned media card \$\{expected\.catalogKey\}[\s\S]*return \{\s+ok:[\s\S]*state\.complete === true[\s\S]*value: state,[\s\S]*\};[\s\S]*60_000,[\s\S]*250,/,
+    );
+    assert.doesNotMatch(
+      source,
+      /product-owned media card \$\{expected\.catalogKey\}[\s\S]*\(state\) =>[\s\S]*state\.naturalWidth >= 64/,
+    );
+  });
+
   it("accepts only full mode with absolute Windows inputs", () => {
     assert.deepEqual(
       parseVisionTryOnAcceptanceArgs([

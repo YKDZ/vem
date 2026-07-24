@@ -2428,31 +2428,40 @@ async function collectProductMediaPresentation(client, runtimeExpectation) {
     });
     const card = await waitForCondition(
       `product-owned media card ${expected.catalogKey}`,
-      async () =>
-        await evaluateExpression(
+      async () => {
+        const state = await evaluateExpression(
           client,
-          `(() => {
+          `(async () => {
             const page = document.querySelector("[data-test='catalog-page']");
             const card = document.querySelector(${JSON.stringify(`[data-test="catalog-product"][data-catalog-key=${JSON.stringify(expected.catalogKey)}]`)});
             const image = card?.querySelector("img");
+            if (image && image.complete !== true && typeof image.decode === "function") {
+              await image.decode().catch(() => undefined);
+            }
             return {
               route: location.hash,
               activeCategoryKey: page?.dataset.categoryKey ?? null,
               catalogKey: card?.getAttribute("data-catalog-key") ?? null,
               mainImageUrl: image?.getAttribute("src") ?? null,
+              complete: image?.complete === true,
               naturalWidth: Number(image?.naturalWidth ?? 0),
               naturalHeight: Number(image?.naturalHeight ?? 0),
             };
           })()`,
-        ),
-      (state) =>
-        state?.route === "#/catalog" &&
-        state?.activeCategoryKey === expected.categoryKey &&
-        state?.catalogKey === expected.catalogKey &&
-        typeof state?.mainImageUrl === "string" &&
-        state.naturalWidth >= 64 &&
-        state.naturalHeight >= 64,
-      30_000,
+        );
+        return {
+          ok:
+            state?.route === "#/catalog" &&
+            state?.activeCategoryKey === expected.categoryKey &&
+            state?.catalogKey === expected.catalogKey &&
+            typeof state?.mainImageUrl === "string" &&
+            state.complete === true &&
+            state.naturalWidth >= 64 &&
+            state.naturalHeight >= 64,
+          value: state,
+        };
+      },
+      60_000,
       250,
     );
     const http = await readImageHttpEvidence(card.mainImageUrl);
