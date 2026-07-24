@@ -390,7 +390,8 @@ async function returnCustomerResultToCatalog(client) {
       returnVisible: Boolean(document.querySelector("[data-test='result-return-catalog']")?.getClientRects().length)
     }))()`,
   );
-  if (state?.route === "#/catalog" && state.catalogVisible === true) return state;
+  if (state?.route === "#/catalog" && state.catalogVisible === true)
+    return state;
   if (!state?.returnVisible) {
     throw new Error(
       `stock maintenance cannot return customer runtime to Catalog from ${JSON.stringify(state)}`,
@@ -424,7 +425,7 @@ async function observeProductDetailStock(client, identity, expectedQuantity) {
     timeoutMs: TIMEOUT_MS,
     pollMs: POLL_MS,
   });
-  await waitForRoute(client, "#/product/", {
+  await waitForRoute(client, /^#\/products\//, {
     timeoutMs: TIMEOUT_MS,
     pollMs: POLL_MS,
   });
@@ -451,11 +452,15 @@ async function observeProductDetailStock(client, identity, expectedQuantity) {
       typeof value.text === "string" &&
       value.text.includes(String(expectedQuantity)),
   );
-  await activateVisibleSelector(client, "[data-test='product-detail-return-catalog']", {
-    kind: "touch",
-    timeoutMs: TIMEOUT_MS,
-    pollMs: POLL_MS,
-  });
+  await activateVisibleSelector(
+    client,
+    "[data-test='product-detail-return-catalog']",
+    {
+      kind: "touch",
+      timeoutMs: TIMEOUT_MS,
+      pollMs: POLL_MS,
+    },
+  );
   await waitForRoute(client, "#/catalog", {
     timeoutMs: TIMEOUT_MS,
     pollMs: POLL_MS,
@@ -674,11 +679,11 @@ export function validateStockMaintenanceReport(report) {
     report.handoffSerialSessionId === "" ||
     report?.fixture?.initialQuantity !== 1 ||
     typeof report?.fixture?.slotDisplayLabel !== "string" ||
-	    typeof report?.fixture?.sku !== "string" ||
-	    typeof report?.fixture?.slotId !== "string" ||
-	    typeof report?.fixture?.inventoryId !== "string" ||
-	    typeof report?.fixture?.catalogKey !== "string" ||
-	    report?.movementCursor?.inventoryId !== report.fixture.inventoryId ||
+    typeof report?.fixture?.sku !== "string" ||
+    typeof report?.fixture?.slotId !== "string" ||
+    typeof report?.fixture?.inventoryId !== "string" ||
+    typeof report?.fixture?.catalogKey !== "string" ||
+    report?.movementCursor?.inventoryId !== report.fixture.inventoryId ||
     !Number.isFinite(Date.parse(report?.movementCursor?.capturedAt)) ||
     !Array.isArray(report?.movementCursor?.baselineItemIds) ||
     new Set(report.movementCursor.baselineItemIds).size !==

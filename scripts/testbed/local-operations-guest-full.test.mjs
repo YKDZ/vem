@@ -162,6 +162,8 @@ describe("local operations guest full", () => {
     assert.match(script, /--data-dir/);
     assert.match(script, /daemonDataDirectory/);
     assert.match(script, /Start-ScheduledTask/);
+    assert.match(script, /VEMMachineUI/);
+    assert.doesNotMatch(script, /VEMLocalTestbedInstalledRuntime/);
   });
   it("refreshes handoff daemon and CDP facts after the runtime restarts", () => {
     const handoff = {

@@ -198,7 +198,7 @@ function stockMaintenanceReport() {
       },
       platform: { onHandQty: 2, reservedQty: 0 },
       visibleDetailStock: {
-        route: "#/product/product:stock-product-1",
+        route: "#/products/product:stock-product-1",
         catalogKey: "product:stock-product-1",
         variantId: "variant-stock-1",
         saleableStock: 2,
@@ -214,7 +214,7 @@ function stockMaintenanceReport() {
       },
       platform: { onHandQty: 1, reservedQty: 0 },
       visibleDetailStock: {
-        route: "#/product/product:stock-product-1",
+        route: "#/products/product:stock-product-1",
         catalogKey: "product:stock-product-1",
         variantId: "variant-stock-1",
         saleableStock: 1,

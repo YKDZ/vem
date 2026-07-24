@@ -33,7 +33,7 @@ const AUDIO_PERSISTENCE_TARGET = Object.freeze({
   presenceCuesEnabled: false,
   transactionCuesEnabled: false,
 });
-const INSTALLED_RUNTIME_TASK = "VEMLocalTestbedInstalledRuntime";
+const INSTALLED_RUNTIME_TASK = "VEMMachineUI";
 const CANONICAL_DAEMON_PATH = "C:\\VEM\\bringup\\vending-daemon.exe";
 const CANONICAL_MACHINE_PATH = "C:\\VEM\\bringup\\machine.exe";
 const CANONICAL_CDP_ENDPOINT = "http://127.0.0.1:9222";
