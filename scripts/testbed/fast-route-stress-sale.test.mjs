@@ -569,6 +569,16 @@ describe("fast route stress sale tracer", () => {
     assert.equal(reads, 2);
   });
 
+  it("does not dispatch synthetic Vision departure before the reset arrival is observed", () => {
+    const source = readFileSync(
+      new URL("./fast-route-stress-sale.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(source, /resetArrivalDelivery = await dispatchVisionArrival/);
+    assert.match(source, /resetArrivalTrace = await waitForStableVisionArrivalTrace/);
+    assert.match(source, /resetTransitionId: resetTrace\.transitionId/);
+  });
+
   it("awaits a new stable Vision departure after the control-request trace boundary", async () => {
     let reads = 0;
     const traceBoundary = {

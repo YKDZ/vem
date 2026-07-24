@@ -2145,13 +2145,38 @@ async function establishVisionPresenceForSale(guestInput, client) {
     client,
     "Vision presence reset boundary",
   );
-  // The daemon's latest Vision diagnostic can be replaced by a profile or
-  // connectivity event while the UI still holds a stable presence session.
-  // Drive one complete controlled edge cycle so every sale starts from a
-  // proven departure instead of inferring current UI state from that payload.
-  await dispatchVisionArrival(guestInput);
-  await dispatchVisionDeparture(guestInput);
-  await waitForStableVisionDepartureTransition(client, resetBoundary);
+  let resetPrecondition = "existing-presence-departed";
+  let resetDelivery = await dispatchVisionDeparture(guestInput);
+  let resetTrace;
+  try {
+    resetTrace = await waitForStableVisionDepartureTransition(
+      client,
+      resetBoundary,
+      { timeoutMs: 7_000 },
+    );
+  } catch (initialDepartureError) {
+    resetPrecondition = "synthetic-arrival-departed";
+    const resetArrivalDelivery = await dispatchVisionArrival(guestInput);
+    const resetArrivalTrace = await waitForStableVisionArrivalTrace(
+      client,
+      resetBoundary,
+      { timeoutMs: 7_000 },
+    );
+    resetDelivery = {
+      firstDepartureError:
+        initialDepartureError instanceof Error
+          ? initialDepartureError.message
+          : String(initialDepartureError),
+      resetArrivalDelivery,
+      resetArrivalTrace,
+      ...(await dispatchVisionDeparture(guestInput)),
+    };
+    resetTrace = await waitForStableVisionDepartureTransition(
+      client,
+      resetBoundary,
+      { timeoutMs: 7_000 },
+    );
+  }
   const arrivalTraceBoundary = await captureRuntimeTraceBoundary(
     client,
     "Vision arrival control-request trace boundary",
@@ -2163,6 +2188,9 @@ async function establishVisionPresenceForSale(guestInput, client) {
   );
   return {
     precondition: "fresh-arrival",
+    resetPrecondition,
+    resetDelivery,
+    resetTransitionId: resetTrace.transitionId,
     ...delivery,
     traceBoundary: arrivalTraceBoundary,
     transitionId: trace.transitionId,
