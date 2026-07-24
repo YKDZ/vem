@@ -18,7 +18,7 @@ import {
 import {
   activateVisibleSelector,
   CdpClient,
-  discoverMachineUiTarget,
+  discoverCanonicalMachineUiTarget,
   enablePageRuntime,
   evaluateExpression,
   rewriteWebSocketDebuggerUrl,
@@ -364,6 +364,44 @@ async function boundedFetch(
   }
 }
 
+function sleepMs(milliseconds) {
+  return new Promise((resolvePromise) =>
+    setTimeout(resolvePromise, milliseconds),
+  );
+}
+
+function isTransientBoundaryError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    error instanceof TypeError ||
+    /fetch failed|timed out|ECONNRESET|ECONNREFUSED|socket hang up|CDP WebSocket failed to open/i.test(
+      message,
+    )
+  );
+}
+
+async function retryTransientBoundary(
+  label,
+  operation,
+  { timeoutMs = 10_000, pollMs = 250 } = {},
+) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError;
+  do {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (!isTransientBoundaryError(error) || Date.now() >= deadline) break;
+      await sleepMs(Math.min(pollMs, Math.max(0, deadline - Date.now())));
+    }
+  } while (Date.now() < deadline);
+  throw new Error(
+    `${label} failed: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
+    { cause: lastError },
+  );
+}
+
 function controlPlaneRequest(guestInput, path, body = {}) {
   const controlPlane = guestInput?.hostControlPlane;
   if (!controlPlane?.endpoint || !controlPlane?.token) {
@@ -371,21 +409,23 @@ function controlPlaneRequest(guestInput, path, body = {}) {
       "guest input is missing hostControlPlane endpoint and token",
     );
   }
-  return boundedFetch(`${controlPlane.endpoint}${path}`, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${controlPlane.token}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify(body),
-  }).then(async (response) => {
-    const payload = await response.json().catch(() => null);
-    if (!response.ok)
-      throw new Error(
-        `${path} returned HTTP ${response.status}: ${JSON.stringify(payload)}`,
-      );
-    return payload;
-  });
+  return retryTransientBoundary(`host control-plane ${path}`, () =>
+    boundedFetch(`${controlPlane.endpoint}${path}`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${controlPlane.token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body),
+    }).then(async (response) => {
+      const payload = await response.json().catch(() => null);
+      if (!response.ok)
+        throw new Error(
+          `${path} returned HTTP ${response.status}: ${JSON.stringify(payload)}`,
+        );
+      return payload;
+    }),
+  );
 }
 
 function daemonGet(handoff, path) {
@@ -396,18 +436,20 @@ function daemonGet(handoff, path) {
   const baseUrl = healthzUrl.endsWith("/healthz")
     ? healthzUrl.slice(0, -"/healthz".length)
     : healthzUrl;
-  return boundedFetch(`${baseUrl}${path}`, {
-    headers: {
-      authorization: `Bearer ${required(handoff?.daemon?.ready?.ipcToken, "daemon ipcToken")}`,
-    },
-  }).then(async (response) => {
-    const payload = await response.json().catch(() => null);
-    if (!response.ok)
-      throw new Error(
-        `${path} returned HTTP ${response.status}: ${JSON.stringify(payload)}`,
-      );
-    return payload;
-  });
+  return retryTransientBoundary(`daemon GET ${path}`, () =>
+    boundedFetch(`${baseUrl}${path}`, {
+      headers: {
+        authorization: `Bearer ${required(handoff?.daemon?.ready?.ipcToken, "daemon ipcToken")}`,
+      },
+    }).then(async (response) => {
+      const payload = await response.json().catch(() => null);
+      if (!response.ok)
+        throw new Error(
+          `${path} returned HTTP ${response.status}: ${JSON.stringify(payload)}`,
+        );
+      return payload;
+    }),
+  );
 }
 
 function daemonPost(handoff, path, body) {
@@ -418,21 +460,23 @@ function daemonPost(handoff, path, body) {
   const baseUrl = healthzUrl.endsWith("/healthz")
     ? healthzUrl.slice(0, -"/healthz".length)
     : healthzUrl;
-  return boundedFetch(`${baseUrl}${path}`, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${required(handoff?.daemon?.ready?.ipcToken, "daemon ipcToken")}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify(body),
-  }).then(async (response) => {
-    const payload = await response.json().catch(() => null);
-    if (!response.ok)
-      throw new Error(
-        `${path} returned HTTP ${response.status}: ${JSON.stringify(payload)}`,
-      );
-    return payload;
-  });
+  return retryTransientBoundary(`daemon POST ${path}`, () =>
+    boundedFetch(`${baseUrl}${path}`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${required(handoff?.daemon?.ready?.ipcToken, "daemon ipcToken")}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body),
+    }).then(async (response) => {
+      const payload = await response.json().catch(() => null);
+      if (!response.ok)
+        throw new Error(
+          `${path} returned HTTP ${response.status}: ${JSON.stringify(payload)}`,
+        );
+      return payload;
+    }),
+  );
 }
 
 function unwrapServiceApiEnvelope(payload) {
@@ -1063,19 +1107,32 @@ export async function waitForCatalogHomeState({
 
 function terminalOperations(guestInput, handoff, handoffPath) {
   const withClient = async (operation) => {
-    const endpoint = required(handoff?.cdp?.endpoint, "handoff cdp endpoint");
-    const target = await discoverMachineUiTarget({
-      endpoint,
-      expectedTargetId: required(
-        handoff?.cdp?.targetId,
-        "handoff cdp targetId",
-      ),
-    });
-    const client = new CdpClient(
-      rewriteWebSocketDebuggerUrl(target.webSocketDebuggerUrl, endpoint),
+    reloadRuntimeHandoff(handoffPath, handoff);
+    const { client } = await retryTransientBoundary(
+      "machine UI CDP attach",
+      async () => {
+        const endpoint = required(
+          handoff?.cdp?.endpoint,
+          "handoff cdp endpoint",
+        );
+        const target = await discoverCanonicalMachineUiTarget({
+          endpoint,
+        });
+        handoff.cdp.targetId = target.id;
+        writeJson(handoffPath, handoff);
+        const client = new CdpClient(
+          rewriteWebSocketDebuggerUrl(target.webSocketDebuggerUrl, endpoint),
+        );
+        try {
+          await client.connect();
+          await enablePageRuntime(client);
+          return { client, target };
+        } catch (error) {
+          await client.close().catch(() => undefined);
+          throw error;
+        }
+      },
     );
-    await client.connect();
-    await enablePageRuntime(client);
     try {
       return await operation(client);
     } finally {
