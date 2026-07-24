@@ -477,6 +477,7 @@ $service = Get-Service -Name 'VemVendingDaemon' -ErrorAction SilentlyContinue
 $consoleRuntime = '${daemonRuntimeJson}' | ConvertFrom-Json
 $expectedTransaction = '${expectedTransactionJson}' | ConvertFrom-Json
 $runtimeMode = if ($null -ne $service) { 'windows_service' } elseif ($null -ne $consoleRuntime -and [bool]$consoleRuntime.console) { 'console_process' } else { throw 'daemon runtime owner is unavailable' }
+$daemonExecutablePath = if ($null -ne $consoleRuntime -and -not [string]::IsNullOrWhiteSpace([string]$consoleRuntime.executablePath)) { [IO.Path]::GetFullPath([string]$consoleRuntime.executablePath) } else { '' }
 if ($phase -eq 'recover') {
   if ($runtimeMode -eq 'windows_service') {
     Start-Service -Name 'VemVendingDaemon' -ErrorAction Stop
@@ -511,7 +512,35 @@ if ($operation -eq 'vision_departure') {
   $catalogInvalidationId = "catalog-invalidation:$($guestOperationId):$catalogRevision"
 } elseif ($phase -eq 'interrupt') {
   if ($runtimeMode -eq 'windows_service') {
-    Stop-Service -Name 'VemVendingDaemon' -Force -ErrorAction Stop
+    $serviceStopError = $null
+    try {
+      Stop-Service -Name 'VemVendingDaemon' -Force -ErrorAction Stop
+    } catch {
+      $serviceStopError = $_
+    }
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    do {
+      $service = Get-Service -Name 'VemVendingDaemon' -ErrorAction SilentlyContinue
+      if ($null -eq $service -or [string]$service.Status -eq 'Stopped') { break }
+      Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $deadline)
+    $service = Get-Service -Name 'VemVendingDaemon' -ErrorAction SilentlyContinue
+    if ($null -ne $service -and [string]$service.Status -ne 'Stopped') {
+      Get-CimInstance Win32_Process -Filter "Name = 'vending-daemon.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.ExecutablePath -and -not [string]::IsNullOrWhiteSpace($daemonExecutablePath) -and [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $daemonExecutablePath } |
+        ForEach-Object { Stop-Process -Id ([int]$_.ProcessId) -Force -ErrorAction SilentlyContinue }
+    }
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    do {
+      $service = Get-Service -Name 'VemVendingDaemon' -ErrorAction SilentlyContinue
+      if ($null -eq $service -or [string]$service.Status -eq 'Stopped') { break }
+      Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $deadline)
+    $service = Get-Service -Name 'VemVendingDaemon' -ErrorAction SilentlyContinue
+    if ($null -ne $service -and [string]$service.Status -ne 'Stopped') {
+      $stopErrorText = if ($null -ne $serviceStopError) { [string]$serviceStopError.Exception.Message } else { '' }
+      throw "VemVendingDaemon did not stop for daemon transport interrupt; status=$($service.Status); stopError=$stopErrorText"
+    }
   } else {
     Stop-Process -Id ([int]$consoleRuntime.processId) -Force -ErrorAction Stop
   }

@@ -41,7 +41,7 @@ test("run-full only stops the task-owned Vision executable and verifies port 789
   const contents = source();
   assert.match(
     contents,
-    /function Stop-ManagedVision\(\[int\[\]\]\$OwnedProcessIds\) \{[\s\S]*Stop-ScheduledTask[\s\S]*Stop-Process -Id \$processId/s,
+    /function Stop-ManagedVision\(\[int\[\]\]\$OwnedProcessIds\) \{[\s\S]*Stop-ScheduledTask[\s\S]*\$null -eq \$processId[\s\S]*Stop-Process -Id \(\[int\]\$processId\)/s,
   );
   assert.doesNotMatch(contents, /Get-Process -Name "vending-vision"/);
   assert.match(

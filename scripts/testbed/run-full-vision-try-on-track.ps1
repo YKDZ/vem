@@ -89,7 +89,8 @@ function Stop-ManagedVision([int[]]$OwnedProcessIds) {
     }
   }
   foreach ($processId in @($OwnedProcessIds)) {
-    Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+    if ($null -eq $processId -or [int]$processId -le 0) { continue }
+    Stop-Process -Id ([int]$processId) -Force -ErrorAction SilentlyContinue
   }
   $deadline = [DateTime]::UtcNow.AddSeconds(15)
   do {

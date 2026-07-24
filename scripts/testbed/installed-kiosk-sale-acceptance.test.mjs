@@ -91,6 +91,9 @@ describe("installed kiosk sale preflight", () => {
 
     assert.ok(transactionRead >= 0);
     assert.ok(serviceStop > transactionRead);
+    assert.match(script, /daemonExecutablePath/);
+    assert.match(script, /Name = 'vending-daemon\.exe'/);
+    assert.match(script, /VemVendingDaemon did not stop for daemon transport interrupt/);
     assert.match(script, /transactionBefore/);
   });
 
