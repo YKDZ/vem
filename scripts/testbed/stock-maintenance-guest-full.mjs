@@ -250,6 +250,7 @@ function fixtureIdentity(saleView, fixture) {
     sku,
     slotId,
     inventoryId: item.inventoryId,
+    catalogKey: `product:${item.productId}`,
   };
 }
 
@@ -870,7 +871,12 @@ export async function runStockMaintenanceGuest(options) {
       () =>
         evaluateExpression(
           client,
-          `Boolean(document.querySelector(${JSON.stringify(`[data-test='catalog-product'][data-slot-id='${identity.slotId}']`)})?.getClientRects().length)`,
+          `(() => {
+            const card = document.querySelector(${JSON.stringify(`[data-test='catalog-product'][data-catalog-key='${identity.catalogKey}']`)});
+            if (!card || !card.getClientRects().length) return false;
+            const saleableStock = Number(card.getAttribute("data-saleable-stock"));
+            return card.getAttribute("data-slot-sales-state") === "sale_ready" && saleableStock > 0;
+          })()`,
         ),
       (visible) => visible === true,
     );

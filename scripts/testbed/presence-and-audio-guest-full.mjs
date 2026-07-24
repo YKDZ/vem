@@ -720,6 +720,17 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
       pollMs: 250,
     });
     await dependencies.waitForSaleStartReady(handoff, client);
+    await dependencies.setAudioPreferences(client, {
+      volume: 0.7,
+      cuesEnabled: true,
+      presenceCuesEnabled: true,
+      transactionCuesEnabled: true,
+    });
+    await dependencies.evaluateExpression(client, 'location.hash = "#/catalog"');
+    await dependencies.waitForRoute(client, "#/catalog", {
+      timeoutMs: 30_000,
+      pollMs: 250,
+    });
     report.boundaries.machineCdp = true;
 
     const cdpIdentity = await observeGuestRuntimeIdentity(client, dependencies);

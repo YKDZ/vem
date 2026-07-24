@@ -705,6 +705,8 @@ onUnmounted(() => {
                 :data-variant-id="product.item.variantId"
                 :data-preferred-variant-id="product.preferredVariantId ?? ''"
                 :data-recommendation-score="product.recommendationScore"
+                :data-saleable-stock="product.item.saleableStock"
+                :data-slot-sales-state="product.item.slotSalesState"
                 @click="openProductDetail(product)"
               >
                 <div class="product-image-panel">

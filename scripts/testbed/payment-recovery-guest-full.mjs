@@ -1061,7 +1061,7 @@ export async function runPaymentRecoveryGuest(options) {
         id: order.paymentId,
         paymentNo: required(attemptOrder.paymentNo, "paymentNo"),
       };
-      if (gate?.paymentNo !== payment.paymentNo) {
+      if (gate && gate.paymentNo !== payment.paymentNo) {
         throw new Error(
           "create gate pending payment did not match daemon order response",
         );
