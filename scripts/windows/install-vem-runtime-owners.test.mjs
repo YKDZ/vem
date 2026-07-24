@@ -91,7 +91,11 @@ test("owner installer writes one manifest through its public PowerShell entrypoi
   );
   assert.ok(
     output.scCalls.some(
-      (call) => call.includes("obj= LocalSystem") && call.includes("start= auto"),
+      (call) =>
+        call.includes("obj=") &&
+        call.includes("LocalSystem") &&
+        call.includes("start=") &&
+        call.includes("auto"),
     ),
   );
   assert.ok(

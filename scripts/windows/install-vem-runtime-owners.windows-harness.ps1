@@ -87,8 +87,8 @@ try {
   Assert-Equal $manifest.owners.machineUi.name "VEMMachineUI" "Machine UI owner"
   Assert-Equal $manifest.owners.vision.name "VEMVisionRuntime" "Vision owner"
   Assert-Equal $global:OwnerHarnessTasks.Count 2 "registered task count"
-  Assert-True (@($global:OwnerHarnessScCalls | Where-Object { $_[0] -eq "config" -and $_ -contains "obj= LocalSystem" -and $_ -contains "start= auto" }).Count -eq 1) "daemon service did not configure LocalSystem automatic startup"
-  Assert-True (@($global:OwnerHarnessScCalls | Where-Object { $_[0] -eq "failure" -and $_ -contains 'actions= restart/5000/""/0/""/0' }).Count -eq 1) "daemon crash recovery call was not captured"
+  Assert-True (@($global:OwnerHarnessScCalls | Where-Object { $_[0] -eq "config" -and $_ -contains "obj=" -and $_ -contains "LocalSystem" -and $_ -contains "start=" -and $_ -contains "auto" }).Count -eq 1) "daemon service did not configure LocalSystem automatic startup"
+  Assert-True (@($global:OwnerHarnessScCalls | Where-Object { $_[0] -eq "failure" -and $_ -contains "actions=" -and $_ -contains 'restart/5000/""/0/""/0' }).Count -eq 1) "daemon crash recovery call was not captured"
   Assert-Equal $global:OwnerHarnessAclCalls.Count 4 "runtime ACL call count"
   Assert-True (@($global:OwnerHarnessRegistryWrites | Where-Object { $_.name -eq "DefaultPassword" -and $_.value -eq "<redacted>" }).Count -eq 1) "DefaultPassword was not written"
   foreach ($task in @($global:OwnerHarnessTasks)) {

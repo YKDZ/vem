@@ -18,8 +18,10 @@ function Assert-OwnerPath([string]$Path, [string]$Label) {
 }
 
 function Invoke-Sc([string[]]$Arguments, [string]$Operation) {
-  & sc.exe @Arguments | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw "failed to $Operation" }
+  $output = & sc.exe @Arguments 2>&1
+  if ($LASTEXITCODE -ne 0) {
+    throw "failed to $Operation ($LASTEXITCODE): $($output -join "`n")"
+  }
 }
 
 function Grant-OwnerAccess([string]$Path, [string]$Rights) {
@@ -219,11 +221,11 @@ $daemonService = Get-Service -Name "VemVendingDaemon" -ErrorAction SilentlyConti
 if ($null -eq $daemonService) {
   New-Service -Name "VemVendingDaemon" -BinaryPathName $daemonArguments -DisplayName "VEM Vending Daemon" -StartupType Automatic | Out-Null
 } else {
-  Invoke-Sc @("config", "VemVendingDaemon", "binPath= $daemonArguments") "update daemon service binary path"
+  Invoke-Sc @("config", "VemVendingDaemon", "binPath=", $daemonArguments) "update daemon service binary path"
 }
-Invoke-Sc @("config", "VemVendingDaemon", "obj= LocalSystem", "start= auto") "configure daemon service account and startup"
+Invoke-Sc @("config", "VemVendingDaemon", "obj=", "LocalSystem", "start=", "auto") "configure daemon service account and startup"
 Set-Service -Name "VemVendingDaemon" -StartupType Automatic
-Invoke-Sc @("failure", "VemVendingDaemon", "reset= 86400", 'actions= restart/5000/""/0/""/0') "configure daemon crash recovery"
+Invoke-Sc @("failure", "VemVendingDaemon", "reset=", "86400", "actions=", 'restart/5000/""/0/""/0') "configure daemon crash recovery"
 Invoke-Sc @("failureflag", "VemVendingDaemon", "1") "enable daemon crash recovery"
 
 $winlogon = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
