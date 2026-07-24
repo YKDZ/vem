@@ -1677,7 +1677,7 @@ describe("Windows D cache contract", () => {
     assert.ok(ownerFunction);
     assert.match(
       ownerFunction,
-      /if \(\$ClaimBeforeInteractiveOwners\) \{[\s\S]*\$ownerClaim = Invoke-Claim \$GuestInput[\s\S]*restart-claimed-installed-runtime-owner[\s\S]*Restart-Service -Name "VemVendingDaemon"[\s\S]*\$runtimeReady = Wait-RuntimeReady[\s\S]*\}[\s\S]*Write-TestbedPhase "bind-installed-owner-hardware"[\s\S]*Initialize-TestbedHardwareBindings[\s\S]*\$runtimeReady = Wait-RuntimeReady/,
+      /if \(\$ClaimBeforeInteractiveOwners\) \{[\s\S]*\$ownerClaim = Invoke-Claim \$GuestInput[\s\S]*restart-claimed-installed-runtime-owner[\s\S]*Restart-TestbedDaemonServiceOwner \$DaemonPath[\s\S]*\$runtimeReady = Wait-RuntimeReady[\s\S]*\}[\s\S]*Write-TestbedPhase "bind-installed-owner-hardware"[\s\S]*Initialize-TestbedHardwareBindings[\s\S]*\$runtimeReady = Wait-RuntimeReady/,
     );
     assert.match(
       ownerFunction,

@@ -571,6 +571,32 @@ function Clear-TestbedLegacyRuntimeOwnersForStartup {
   Get-Process vending-daemon, machine, vending-vision -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 }
 
+function Restart-TestbedDaemonServiceOwner([string]$DaemonPath) {
+  $canonicalDaemonPath = [IO.Path]::GetFullPath($DaemonPath)
+  $service = Get-Service -Name "VemVendingDaemon" -ErrorAction Stop
+  if ($service.Status -ne "Stopped") {
+    try {
+      Stop-Service -Name "VemVendingDaemon" -Force -ErrorAction Stop
+      $service.WaitForStatus("Stopped", [TimeSpan]::FromSeconds(15))
+    } catch {
+      Get-CimInstance Win32_Process -Filter "Name = 'vending-daemon.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq $canonicalDaemonPath) } |
+        ForEach-Object { Stop-Process -Id ([int]$_.ProcessId) -Force -ErrorAction SilentlyContinue }
+    }
+  }
+  $deadline = [DateTime]::UtcNow.AddSeconds(20)
+  do {
+    $service = Get-Service -Name "VemVendingDaemon" -ErrorAction Stop
+    if ($service.Status -eq "Stopped") { break }
+    Start-Sleep -Milliseconds 500
+  } while ([DateTime]::UtcNow -lt $deadline)
+  $service = Get-Service -Name "VemVendingDaemon" -ErrorAction Stop
+  if ($service.Status -ne "Stopped") {
+    throw "VemVendingDaemon did not stop before service-owner restart; status=$($service.Status)"
+  }
+  Start-Service -Name "VemVendingDaemon" -ErrorAction Stop
+}
+
 function Get-ResolvedVisionMainCommit([string]$CacheRoot) {
   $indexPath = Join-Path $CacheRoot "resolved-vision-main-commit.txt"
   if (-not (Test-Path -LiteralPath $indexPath -PathType Leaf)) {
@@ -708,7 +734,7 @@ function Start-TestbedInstalledRuntimeOwners {
     $ownerClaim = Invoke-Claim $GuestInput
     if (-not [bool]$ownerClaim.restartRequested) { throw "clean Runtime Bootstrap claim did not request the required daemon owner restart" }
     Write-TestbedPhase "restart-claimed-installed-runtime-owner"
-    Restart-Service -Name "VemVendingDaemon" -Force -ErrorAction Stop
+    Restart-TestbedDaemonServiceOwner $DaemonPath
     $runtimeReady = Wait-RuntimeReady
   }
   Write-TestbedPhase "bind-installed-owner-hardware"
