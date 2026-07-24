@@ -32,18 +32,19 @@ describe("environment control guest full", () => {
     assert.strictEqual(unwrapServiceApiEnvelope(failure), failure);
   });
 
-  it("preserves every lower-controller opcode for an automatic intent", () => {
+  it("counts only outbound B3 control frames for an automatic intent", () => {
     const evidence = {
       rawFrames: [
-        { parsedOpcode: "B3" },
-        { parsedOpcode: "B1" },
-        { parsedOpcode: "B2" },
+        { direction: "daemon-to-controller", parsedOpcode: "B3" },
+        { direction: "controller-to-daemon", parsedOpcode: "B3" },
+        { direction: "daemon-to-controller", parsedOpcode: "B1" },
+        { direction: "daemon-to-controller", parsedOpcode: "B2" },
       ],
     };
 
     assert.deepEqual(automaticSerialEvidence(evidence, 0), {
       b3FrameCountDelta: 1,
-      protocolFrames: ["B3", "B1", "B2"],
+      protocolFrames: ["B3"],
     });
   });
 
@@ -52,6 +53,7 @@ describe("environment control guest full", () => {
       rawFrames: [
         {
           sessionId: "serial-replacement",
+          direction: "daemon-to-controller",
           parsedOpcode: "B3",
           rawFrameHex: "55b302",
         },
@@ -116,11 +118,13 @@ describe("environment control guest full", () => {
       rawFrames: [
         {
           boundaryId: "host-pty:serial-replacement:64",
+          direction: "daemon-to-controller",
           parsedOpcode: "B3",
           rawFrameHex: "55b303",
         },
         {
           boundaryId: "host-pty:serial-replacement:65",
+          direction: "daemon-to-controller",
           parsedOpcode: "B3",
           rawFrameHex: "55b302",
         },
@@ -147,6 +151,7 @@ describe("environment control guest full", () => {
         },
         {
           sessionId: "serial-replacement",
+          direction: "daemon-to-controller",
           parsedOpcode: "B3",
           rawFrameHex: "55b302",
         },

@@ -381,14 +381,19 @@ export function serialFramesSince(evidence, beforeFrameCount) {
 
 function b3FramesSince(evidence, beforeFrameCount) {
   return serialFramesSince(evidence, beforeFrameCount)
-    .filter((frame) => frame?.parsedOpcode === "B3")
+    .filter(
+      (frame) =>
+        frame?.direction === "daemon-to-controller" &&
+        frame?.parsedOpcode === "B3",
+    )
     .map((frame) => ({ ...frame, speed: b3Speed(frame) }));
 }
 
 export function automaticSerialEvidence(evidence, beforeFrameCount) {
+  const b3Frames = b3FramesSince(evidence, beforeFrameCount);
   return {
-    b3FrameCountDelta: b3FramesSince(evidence, beforeFrameCount).length,
-    protocolFrames: serialProtocolFrames(evidence, beforeFrameCount),
+    b3FrameCountDelta: b3Frames.length,
+    protocolFrames: b3Frames.map((frame) => frame.parsedOpcode),
   };
 }
 

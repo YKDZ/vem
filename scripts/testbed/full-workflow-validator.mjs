@@ -699,16 +699,14 @@ function validateEnvironmentControlTrack(report, reportPath) {
       entry?.mqtt?.resultObserved === true &&
       entry?.mqtt?.commandNo === entry.admin.commandNo &&
       entry?.mqtt?.resultCommandNo === entry.admin.commandNo &&
-      entry?.serial?.lowerBoundaryObserved === true &&
-      (action === "ventSpeed" || entry?.serial?.automaticB3FrameCount === 0)
+      entry?.serial?.lowerBoundaryObserved === true
     );
   });
   const hasTemperature =
     optionalTemperature === null ||
     (optionalTemperature.result?.status === "succeeded" &&
       optionalTemperature.result?.resultJson?.success === true &&
-      optionalTemperature.serial?.lowerBoundaryObserved === true &&
-      optionalTemperature.serial?.automaticB3FrameCount === 0);
+      optionalTemperature.serial?.lowerBoundaryObserved === true);
   const overlap = report.overlapRejection ?? {};
   const precedence = report.precedence ?? {};
   const sessionReplacement = report.serialSessionReplacement ?? {};

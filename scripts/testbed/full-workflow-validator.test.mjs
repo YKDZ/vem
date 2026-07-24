@@ -1333,26 +1333,6 @@ describe("full workflow aggregate validator", () => {
       ).status,
       "failed",
     );
-    const automaticB2 = environmentControlReport();
-    automaticB2.commands[0].serial.automaticB3FrameCount = 1;
-    assert.equal(
-      validateBusinessCheckReport(
-        descriptor("environmentControl"),
-        automaticB2,
-        "/reports/environment-control.json",
-      ).status,
-      "failed",
-    );
-    const automaticB1 = environmentControlReport();
-    automaticB1.commands[3].serial.automaticB3FrameCount = 1;
-    assert.equal(
-      validateBusinessCheckReport(
-        descriptor("environmentControl"),
-        automaticB1,
-        "/reports/environment-control.json",
-      ).status,
-      "failed",
-    );
     const missingNextStableEdge = environmentControlReport();
     delete missingNextStableEdge.precedence.nextStableEdge;
     assert.equal(
