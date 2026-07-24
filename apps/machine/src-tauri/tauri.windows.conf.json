@@ -15,6 +15,7 @@
         "maximizable": false,
         "minimizable": false,
         "zoomHotkeysEnabled": false,
+        "additionalBrowserArgs": "--remote-debugging-port=9222 --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection",
         "center": true
       }
     ]

@@ -15,4 +15,20 @@ describe("installed machine managed-media policy", () => {
     expect(csp).toContain("connect-src 'self' http: https: ws: wss: mqtt:");
     expect(csp).not.toMatch(/\b\d{1,3}(?:\.\d{1,3}){3}\b/);
   });
+
+  it("keeps installed Windows WebView observable without dropping default disabled features", () => {
+    const configuration = JSON.parse(
+      readFileSync(
+        new URL("../../src-tauri/tauri.windows.conf.json", import.meta.url),
+        "utf8",
+      ),
+    ) as { app?: { windows?: Array<{ additionalBrowserArgs?: string }> } };
+    const additionalBrowserArgs =
+      configuration.app?.windows?.[0]?.additionalBrowserArgs ?? "";
+
+    expect(additionalBrowserArgs).toContain("--remote-debugging-port=9222");
+    expect(additionalBrowserArgs).toContain(
+      "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection",
+    );
+  });
 });
