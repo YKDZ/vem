@@ -126,8 +126,12 @@ pub fn run() {
                 let window = _app
                     .get_webview_window("main")
                     .ok_or("main kiosk window is missing")?;
-                window.set_fullscreen(true)?;
-                enforce_kiosk_window(&window)?;
+                if let Err(error) = window.set_fullscreen(true) {
+                    eprintln!("failed to set kiosk window fullscreen during setup: {error}");
+                }
+                if let Err(error) = enforce_kiosk_window(&window) {
+                    eprintln!("failed to enforce kiosk window bounds during setup: {error}");
+                }
             }
             Ok(())
         })
