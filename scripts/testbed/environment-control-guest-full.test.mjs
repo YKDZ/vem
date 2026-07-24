@@ -84,6 +84,32 @@ describe("environment control guest full", () => {
     });
   });
 
+  it("uses capture time when host serial directions roll sequence counters independently", () => {
+    const beforeCursor = {
+      frameCount: 64,
+      lastSequence: 104,
+      lastCapturedAt: "2026-07-24T17:25:00.000Z",
+      lastIdentity:
+        "host-pty:serial-replacement:104:2026-07-24T17:25:00.000Z:controller-to-daemon:55aa:AA",
+    };
+    const evidence = {
+      rawFrames: [
+        {
+          boundaryId: "host-pty:serial-replacement:8",
+          capturedAt: "2026-07-24T17:25:01.000Z",
+          direction: "daemon-to-controller",
+          sessionId: "serial-session://sha256-replacement",
+          parsedOpcode: "B2",
+          rawFrameHex: "55b200",
+        },
+      ],
+    };
+
+    assert.deepEqual(serialFramesSince(evidence, beforeCursor), [
+      evidence.rawFrames[0],
+    ]);
+  });
+
   it("tracks new automatic frames by sequence when the 64-frame evidence window rolls", () => {
     const beforeCursor = { frameCount: 64, lastSequence: 64 };
     const evidence = {
@@ -145,6 +171,14 @@ describe("environment control guest full", () => {
 
     assert.equal(isReplacementSessionB3(frame, "serial-replacement", 2), true);
     assert.equal(isReplacementSessionB3(frame, "serial-stale", 2), false);
+    assert.equal(
+      isReplacementSessionB3(
+        { ...frame, sessionId: "serial-session://sha256-replacement" },
+        "serial-replacement",
+        2,
+      ),
+      true,
+    );
   });
 
   it("waits for the requested B3 speed before advancing", async () => {

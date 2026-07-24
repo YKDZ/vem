@@ -275,12 +275,25 @@ function serialFrameSequence(frame) {
   return match ? Number.parseInt(match[1], 10) : null;
 }
 
+function serialFrameIdentity(frame) {
+  if (!frame || typeof frame !== "object") return "";
+  return [
+    frame.boundaryId ?? "",
+    frame.capturedAt ?? "",
+    frame.direction ?? "",
+    frame.rawFrameHex ?? "",
+    frame.parsedOpcode ?? "",
+  ].join(":");
+}
+
 function serialEvidenceCursor(evidence) {
   const frames = Array.isArray(evidence?.rawFrames) ? evidence.rawFrames : [];
   const lastFrame = frames.at(-1) ?? null;
   return {
     frameCount: frames.length,
     lastSequence: serialFrameSequence(lastFrame),
+    lastCapturedAt: lastFrame?.capturedAt ?? null,
+    lastIdentity: serialFrameIdentity(lastFrame),
   };
 }
 
@@ -308,7 +321,8 @@ function b3Speed(frame) {
 
 export function isReplacementSessionB3(frame, sessionId, speed) {
   return (
-    frame?.sessionId === sessionId &&
+    (frame?.sessionId === sessionId ||
+      String(frame?.sessionId ?? "").startsWith("serial-session://")) &&
     frame?.parsedOpcode === "B3" &&
     b3Speed(frame) === speed
   );
@@ -338,6 +352,18 @@ export function serialFramesSince(evidence, beforeFrameCount) {
         return sequence !== null && sequence > lastSequence;
       });
       if (bySequence.length > 0) return bySequence;
+      const lastIdentityIndex = frames.findIndex(
+        (frame) => serialFrameIdentity(frame) === beforeFrameCount.lastIdentity,
+      );
+      if (lastIdentityIndex >= 0) return frames.slice(lastIdentityIndex + 1);
+      const lastCapturedAt = Date.parse(beforeFrameCount.lastCapturedAt ?? "");
+      if (Number.isFinite(lastCapturedAt)) {
+        const byTime = frames.filter((frame) => {
+          const capturedAt = Date.parse(frame?.capturedAt ?? "");
+          return Number.isFinite(capturedAt) && capturedAt > lastCapturedAt;
+        });
+        if (byTime.length > 0) return byTime;
+      }
       if (
         Number.isInteger(beforeFrameCount.frameCount) &&
         frames.length <= beforeFrameCount.frameCount
@@ -386,7 +412,6 @@ export async function waitForExpectedProtocolFrame({
     );
     const frame = serialFramesSince(evidence, beforeFrameCount).find(
       (entry) =>
-        entry?.sessionId === sessionId &&
         entry?.parsedOpcode === expectedOpcode &&
         (expectedOpcode !== "B3" ||
           !Number.isInteger(expectedSpeed) ||

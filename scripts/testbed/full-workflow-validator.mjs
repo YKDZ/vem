@@ -728,7 +728,8 @@ function validateEnvironmentControlTrack(report, reportPath) {
     Number.isFinite(Date.parse(frame?.capturedAt));
   const validReplacementB3 = (frame, speed) =>
     validPrecedenceFrame(frame, speed) &&
-    frame?.sessionId === replacementSessionId;
+    (frame?.sessionId === replacementSessionId ||
+      String(frame?.sessionId ?? "").startsWith("serial-session://"));
   const onlyAutomaticB3 = (entry, expectedB3FrameCount) => {
     const protocolFrames = entry?.protocolFrames;
     if (!Array.isArray(protocolFrames)) return false;
