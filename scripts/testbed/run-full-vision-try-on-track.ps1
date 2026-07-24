@@ -81,18 +81,24 @@ function Get-ManagedVisionProcessIds() {
   )
 }
 
-function Stop-ManagedVision([int[]]$OwnedProcessIds) {
-  foreach ($taskName in @("VEMVisionRuntime", "StartVisionServer")) {
-    $task = Get-ScheduledTask -TaskName $taskName -TaskPath "\VEM\" -ErrorAction SilentlyContinue
-    if ($null -ne $task -and [string]$task.State -eq "Running") {
-      Stop-ScheduledTask -InputObject $task -ErrorAction Stop
+function Get-ManagedVisionTasks() {
+  return @(
+    Get-ScheduledTask -ErrorAction SilentlyContinue |
+      Where-Object { [string]$_.TaskName -in @("VEMVisionRuntime", "StartVisionServer") }
+  )
+}
+
+function Stop-ManagedVision() {
+  foreach ($task in @(Get-ManagedVisionTasks)) {
+    if ([string]$task.State -eq "Running") {
+      Stop-ScheduledTask -InputObject $task -ErrorAction SilentlyContinue
     }
   }
-  foreach ($processId in @($OwnedProcessIds)) {
+  foreach ($processId in @(Get-ManagedVisionProcessIds)) {
     if ($null -eq $processId -or [int]$processId -le 0) { continue }
-    Stop-Process -Id ([int]$processId) -Force -ErrorAction SilentlyContinue
     try { & taskkill.exe /PID ([int]$processId) /T /F *> $null } catch { }
     $global:LASTEXITCODE = 0
+    Stop-Process -Id ([int]$processId) -Force -ErrorAction SilentlyContinue
   }
   $deadline = [DateTime]::UtcNow.AddSeconds(30)
   do {
@@ -144,7 +150,7 @@ try {
     }
   }
   Write-RecordedVisionSiteConfiguration $visionSiteConfigurationSourcePath
-  Stop-ManagedVision -OwnedProcessIds (Get-ManagedVisionProcessIds)
+  Stop-ManagedVision
   Wait-ForVisionPortRebind
   $visionInstallation = Install-VisionMainArtifact `
     -RuntimeArchive ([string]$visionCache.runtimeArchive) `
@@ -164,7 +170,7 @@ try {
 } finally {
   $cleanupFailures = @()
   try {
-    Stop-ManagedVision -OwnedProcessIds (Get-ManagedVisionProcessIds)
+    Stop-ManagedVision
   } catch {
     $cleanupFailures += $_
   }

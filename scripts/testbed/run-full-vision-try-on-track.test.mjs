@@ -41,7 +41,15 @@ test("run-full only stops the task-owned Vision executable and verifies port 789
   const contents = source();
   assert.match(
     contents,
-    /function Stop-ManagedVision\(\[int\[\]\]\$OwnedProcessIds\) \{[\s\S]*Stop-ScheduledTask[\s\S]*\$null -eq \$processId[\s\S]*Stop-Process -Id \(\[int\]\$processId\)[\s\S]*try \{ & taskkill\.exe \/PID \(\[int\]\$processId\) \/T \/F \*>\s*\$null \} catch \{ \}/s,
+    /function Get-ManagedVisionTasks\(\) \{[\s\S]*Get-ScheduledTask[\s\S]*TaskName -in @\("VEMVisionRuntime", "StartVisionServer"\)/s,
+  );
+  assert.doesNotMatch(
+    contents,
+    /Get-ScheduledTask -TaskName \$taskName -TaskPath "\\VEM\\"/,
+  );
+  assert.match(
+    contents,
+    /function Stop-ManagedVision\(\) \{[\s\S]*foreach \(\$task in @\(Get-ManagedVisionTasks\)\)[\s\S]*Stop-ScheduledTask -InputObject \$task[\s\S]*foreach \(\$processId in @\(Get-ManagedVisionProcessIds\)\)[\s\S]*try \{ & taskkill\.exe \/PID \(\[int\]\$processId\) \/T \/F \*>\s*\$null \} catch \{ \}[\s\S]*Stop-Process -Id \(\[int\]\$processId\)/s,
   );
   assert.doesNotMatch(contents, /Get-Process -Name "vending-vision"/);
   assert.match(
