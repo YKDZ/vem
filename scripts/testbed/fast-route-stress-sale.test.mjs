@@ -13,6 +13,7 @@ import {
   runCleanupStep,
   settlePendingCreateOrder,
   shutdownControlledVisionMock,
+  stopInstalledVisionOwnerForControlledMock,
   startContinuousCdpLocationHashObservation,
   waitForSaleStartReady,
   waitForGuardedVisionDepartureTrace,
@@ -1253,6 +1254,21 @@ describe("fast route stress sale tracer", () => {
 
   it("exports an explicit controlled vision mock shutdown path", () => {
     assert.equal(typeof shutdownControlledVisionMock, "function");
+  });
+
+  it("stops the installed Vision owner before binding the controlled Vision mock", () => {
+    assert.equal(typeof stopInstalledVisionOwnerForControlledMock, "function");
+    const source = readFileSync(
+      new URL("./fast-route-stress-sale.mjs", import.meta.url),
+      "utf8",
+    );
+
+    assert.match(source, /Stop-ScheduledTask -TaskName "VEMVisionRuntime"/);
+    assert.match(source, /verifyPortCanBeRebound\(7892\)/);
+    assert.ok(
+      source.indexOf("await stopInstalledVisionOwnerForControlledMock()") <
+        source.indexOf("await ensureControlledVisionMock"),
+    );
   });
 
   it("retries controlled departure until the persistent runtime client accepts it", () => {

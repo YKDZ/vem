@@ -1960,6 +1960,62 @@ async function collectPlatformLog(guestInput, sessionId, outPath) {
   };
 }
 
+async function runPowerShellScript(script, label) {
+  const child = spawn(
+    "powershell.exe",
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk.toString();
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk.toString();
+  });
+  const exitCode = await new Promise((resolvePromise) => {
+    child.once("exit", (code) => resolvePromise(code ?? 1));
+  });
+  if (exitCode !== 0) {
+    throw new Error(
+      `${label} failed with exit code ${exitCode}: ${stderr || stdout}`,
+    );
+  }
+  return stdout;
+}
+
+export async function stopInstalledVisionOwnerForControlledMock() {
+  await runPowerShellScript(
+    String.raw`
+$ErrorActionPreference = "Stop"
+Stop-ScheduledTask -TaskName "VEMVisionRuntime" -ErrorAction SilentlyContinue
+$canonicalExecutablePath = [IO.Path]::GetFullPath("C:\VEM\vision\app\vending-vision.exe")
+$canonicalConfigurationPath = [IO.Path]::GetFullPath("C:\ProgramData\VEM\vision\site.json").ToLowerInvariant()
+$deadline = [DateTime]::UtcNow.AddSeconds(10)
+do {
+  $ownedProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+    $_.ExecutablePath -and
+    [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonicalExecutablePath -and
+    $_.CommandLine -and
+    ([string]$_.CommandLine).ToLowerInvariant().Contains("--config") -and
+    ([string]$_.CommandLine).ToLowerInvariant().Contains($canonicalConfigurationPath)
+  })
+  foreach ($process in $ownedProcesses) {
+    Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction SilentlyContinue
+  }
+  if ($ownedProcesses.Count -eq 0) { break }
+  Start-Sleep -Milliseconds 250
+} while ([DateTime]::UtcNow -lt $deadline)
+if ($ownedProcesses.Count -ne 0) {
+  throw "installed Vision owner did not stop before controlled mock startup"
+}
+`,
+    "stop installed Vision owner",
+  );
+  await verifyPortCanBeRebound(7892);
+}
+
 export async function ensureControlledVisionMock(controlPort) {
   try {
     const status = await fetchJson(
@@ -2263,6 +2319,8 @@ async function runFastRouteStressSale(options) {
         : undefined,
     );
     createOrderGate = await armCreateOrderGate(guestInput);
+    stage = "stop-installed-vision-owner";
+    await stopInstalledVisionOwnerForControlledMock();
     stage = "start-controlled-vision";
     vision = await ensureControlledVisionMock(
       guestInput.hostControlPlane?.visionMockControlPort ??
