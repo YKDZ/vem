@@ -84,6 +84,12 @@ describe("runtime business-check registry", () => {
       )?.allowActiveTransactionHandoff,
       true,
     );
+    assert.equal(
+      BUSINESS_CHECK_REGISTRY.find(
+        (descriptor) => descriptor.name === "fulfillmentRecovery",
+      )?.restoreFixtureStock,
+      true,
+    );
     const paymentProvider = BUSINESS_CHECK_REGISTRY.find(
       (descriptor) => descriptor.name === "paymentProvider",
     );

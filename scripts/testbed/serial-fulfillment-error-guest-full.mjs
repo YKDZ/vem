@@ -194,7 +194,7 @@ async function selectMockPaymentAndSubmit(client) {
       `(() => {
         const option = document.querySelector(${JSON.stringify(paymentSelector)});
         const submit = document.querySelector('[data-test="checkout-submit"]');
-        return Boolean(option?.classList.contains('payment-option-selected') && !submit?.hasAttribute('disabled'));
+        return Boolean(option?.classList.contains('payment-option-selected') && submit && !submit.hasAttribute('disabled'));
       })()`,
     );
     if (!selected) await sleep(250);

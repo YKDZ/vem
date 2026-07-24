@@ -138,6 +138,7 @@ export const BUSINESS_CHECK_REGISTRY = Object.freeze([
   }),
   descriptor({
     name: "fulfillmentRecovery",
+    restoreFixtureStock: true,
     runner: {
       kind: "node",
       script: "scripts/testbed/serial-fulfillment-error-guest-full.mjs",
