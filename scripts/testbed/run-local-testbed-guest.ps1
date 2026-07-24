@@ -441,6 +441,23 @@ function Wait-InstalledTauriTarget {
   throw "installed Tauri CDP target did not become observable: $lastError"
 }
 
+function Wait-InstalledTauriRoute([string]$ExpectedRoute) {
+  $deadline = [DateTime]::UtcNow.AddSeconds(30)
+  do {
+    try {
+      $target = Wait-InstalledTauriTarget
+      $route = ([uri][string]$target.url).Fragment
+      if ($route -eq $ExpectedRoute) { return $target }
+      $lastRoute = $route
+    } catch { $lastError = $_ }
+    Start-Sleep -Milliseconds 500
+  } while ([DateTime]::UtcNow -lt $deadline)
+  if ($null -ne $lastError) {
+    throw "installed Tauri route did not reach ${ExpectedRoute}: $lastError"
+  }
+  throw "installed Tauri route did not reach ${ExpectedRoute}; last route was $lastRoute"
+}
+
 function Get-CanonicalProcessEvidence([string]$Name, [string]$ExpectedPath) {
   $matches = @(Get-CimInstance Win32_Process -Filter "Name = '$Name'" | Where-Object {
     $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq $ExpectedPath)
@@ -700,7 +717,7 @@ function Start-TestbedInstalledRuntimeOwners {
   Write-TestbedPhase "start-installed-interactive-owners"
   Start-ScheduledTask -TaskName "VEMVisionRuntime" -ErrorAction Stop
   Start-ScheduledTask -TaskName "VEMMachineUI" -ErrorAction Stop
-  $target = Wait-InstalledTauriTarget
+  $target = Wait-InstalledTauriRoute "#/catalog"
   $route = ([uri][string]$target.url).Fragment
   $machineEvidence = Get-CanonicalProcessEvidence "machine.exe" $MachinePath
   $visionEvidence = Get-CanonicalProcessEvidence "vending-vision.exe" "C:\VEM\vision\app\vending-vision.exe"

@@ -217,6 +217,8 @@ describe("installed production runtime smoke", () => {
     assert.match(guest, /Start-Service -Name "VemVendingDaemon"/);
     assert.match(guest, /Start-ScheduledTask -TaskName "VEMMachineUI"/);
     assert.match(guest, /Start-ScheduledTask -TaskName "VEMVisionRuntime"/);
+    assert.match(guest, /function Wait-InstalledTauriRoute/);
+    assert.match(guest, /Wait-InstalledTauriRoute "#\/catalog"/);
     assert.match(guest, /Unregister-ScheduledTask -TaskName \$taskSpec\.Name/);
     assert.doesNotMatch(guest, /\$daemonProcess = Start-Process/);
     assert.doesNotMatch(guest, /Register-ScheduledTask -TaskName \$machineTaskName/);
