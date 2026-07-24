@@ -9,6 +9,7 @@ import { listCustomerErrorEvidence } from "@/local/command-log";
 import { saleCapabilitySnapshot } from "@/test-support/sale-capability";
 
 const {
+  getSaleStartCapabilityMock,
   getSaleViewMock,
   installedMachineRuntimeTraceMock,
   routeParams,
@@ -16,6 +17,7 @@ const {
   routerReplaceMock,
   submitMachineNavigationIntentMock,
 } = vi.hoisted(() => ({
+  getSaleStartCapabilityMock: vi.fn(),
   getSaleViewMock: vi.fn(),
   installedMachineRuntimeTraceMock: vi.fn(),
   routeParams: { kind: "dispense_failed" },
@@ -40,6 +42,7 @@ vi.mock("@/layouts/KioskLayout.vue", () => ({
 
 vi.mock("@/daemon/client", () => ({
   daemonClient: {
+    getSaleStartCapability: getSaleStartCapabilityMock,
     getSaleView: getSaleViewMock,
   },
 }));
@@ -256,6 +259,9 @@ beforeEach(() => {
   installedMachineRuntimeTraceMock.mockReturnValue({
     record: runtimeTraceRecordMock,
   });
+  getSaleStartCapabilityMock.mockRejectedValue(
+    new Error("capability refresh not arranged"),
+  );
   submitMachineNavigationIntentMock.mockImplementation(async (intent) => {
     if (intent.type === "transaction.dismiss") {
       useCheckoutStore().dismissCurrentTerminalTransaction();
@@ -433,6 +439,25 @@ describe("ResultView", () => {
     });
     await vi.advanceTimersByTimeAsync(8_000);
 
+    expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
+    expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(true);
+  });
+
+  it("refreshes sale capability on mount so a restored payment timeout can return to catalog", async () => {
+    routeParams.kind = "payment_expired";
+    const transaction = paymentExpiredTransaction();
+    const checkoutStore = useCheckoutStore();
+    checkoutStore.applyTransaction(transaction);
+    getSaleStartCapabilityMock.mockResolvedValueOnce(capabilityFixture(true));
+
+    const host = await mountView();
+
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("8 秒后自动返回首页。");
+    });
+    await vi.advanceTimersByTimeAsync(8_000);
+
+    expect(getSaleStartCapabilityMock).toHaveBeenCalledOnce();
     expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
     expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(true);
   });

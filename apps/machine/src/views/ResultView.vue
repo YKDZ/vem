@@ -176,6 +176,13 @@ function syncAutoReturn(): void {
   stopAutoReturn();
 }
 
+async function refreshReturnCapability(): Promise<void> {
+  const outcome = await saleCapabilityStore.refresh();
+  if (outcome.status === "refreshed") {
+    syncAutoReturn();
+  }
+}
+
 async function backToCatalog(): Promise<void> {
   if (returningToCatalog) return;
   stopAutoReturn();
@@ -258,7 +265,10 @@ watch(
   { immediate: true },
 );
 
-onMounted(syncAutoReturn);
+onMounted(() => {
+  syncAutoReturn();
+  void refreshReturnCapability();
+});
 
 onUnmounted(stopAutoReturn);
 </script>
