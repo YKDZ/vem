@@ -50,7 +50,6 @@ describe("customer journey audio presentation", () => {
     ["pickup.outlet_opened", "dispensing/succeeded.mp3", 40],
     ["pickup.warning", "pickup/reminder_10s.mp3", 45],
     ["pickup.urgent", "pickup/reminder_25s.mp3", 70],
-    ["pickup.completed", "effects/pickup_beep.mp3", 50],
     ["dispense.succeeded", "dispensing/succeeded.mp3", 60],
     ["dispense.failed", "error/dispense_failed.mp3", 90],
     ["refund.pending", "refund/pending.mp3", 70],
@@ -74,19 +73,13 @@ describe("customer journey audio presentation", () => {
     ).toBeNull();
   });
 
-  it("lets the terminal dispense success cue supersede pickup completion", () => {
-    const pickupCompleted = mapCustomerJourneyAudioPresentation(
-      transition("pickup.completed"),
-      defaultContext,
-    );
-    const dispenseSucceeded = mapCustomerJourneyAudioPresentation(
-      transition("dispense.succeeded"),
-      defaultContext,
-    );
-
-    expect(dispenseSucceeded?.priority).toBeGreaterThan(
-      pickupCompleted?.priority ?? Number.MAX_SAFE_INTEGER,
-    );
+  it("does not speak between pickup closure and the terminal dispense result", () => {
+    expect(
+      mapCustomerJourneyAudioPresentation(
+        transition("pickup.completed"),
+        defaultContext,
+      ),
+    ).toBeNull();
   });
 
   it.each([
