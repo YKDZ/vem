@@ -380,6 +380,88 @@ async function selectStockFixtureCategory(client) {
   );
 }
 
+async function returnCustomerResultToCatalog(client) {
+  const state = await evaluateExpression(
+    client,
+    `(() => ({
+      route: location.hash,
+      catalogVisible: Boolean(document.querySelector("[data-test='catalog-page']")),
+      returnVisible: Boolean(document.querySelector("[data-test='result-return-catalog']")?.getClientRects().length)
+    }))()`,
+  );
+  if (state?.route === "#/catalog" && state.catalogVisible === true) return state;
+  if (!state?.returnVisible) {
+    throw new Error(
+      `stock maintenance cannot return customer runtime to Catalog from ${JSON.stringify(state)}`,
+    );
+  }
+  await activateVisibleSelector(client, "[data-test='result-return-catalog']", {
+    kind: "touch",
+    timeoutMs: TIMEOUT_MS,
+    pollMs: POLL_MS,
+  });
+  return await waitForRoute(client, "#/catalog", {
+    timeoutMs: TIMEOUT_MS,
+    pollMs: POLL_MS,
+  });
+}
+
+async function observeProductDetailStock(client, identity, expectedQuantity) {
+  await selectStockFixtureCategory(client);
+  const productSelector = `[data-test='catalog-product'][data-catalog-key='${identity.catalogKey}']`;
+  await waitFor(
+    `visible stock fixture ${identity.catalogKey}`,
+    () =>
+      evaluateExpression(
+        client,
+        `Boolean(document.querySelector(${JSON.stringify(productSelector)})?.getClientRects().length)`,
+      ),
+    (visible) => visible === true,
+  );
+  await activateVisibleSelector(client, productSelector, {
+    kind: "touch",
+    timeoutMs: TIMEOUT_MS,
+    pollMs: POLL_MS,
+  });
+  await waitForRoute(client, "#/product/", {
+    timeoutMs: TIMEOUT_MS,
+    pollMs: POLL_MS,
+  });
+  const detail = await waitFor(
+    `visible product detail stock ${expectedQuantity}`,
+    () =>
+      evaluateExpression(
+        client,
+        `(() => {
+          const page = document.querySelector("[data-test='product-detail-page']");
+          const stock = document.querySelector("[data-test='product-detail-stock']");
+          return {
+            route: location.hash,
+            catalogKey: page?.getAttribute("data-catalog-key") || null,
+            variantId: page?.getAttribute("data-variant-id") || null,
+            saleableStock: Number(stock?.getAttribute("data-saleable-stock")),
+            text: (stock?.textContent || "").replace(/\\s+/g, " ").trim()
+          };
+        })()`,
+      ),
+    (value) =>
+      value?.catalogKey === identity.catalogKey &&
+      value.saleableStock === expectedQuantity &&
+      typeof value.text === "string" &&
+      value.text.includes(String(expectedQuantity)),
+  );
+  await activateVisibleSelector(client, "[data-test='product-detail-return-catalog']", {
+    kind: "touch",
+    timeoutMs: TIMEOUT_MS,
+    pollMs: POLL_MS,
+  });
+  await waitForRoute(client, "#/catalog", {
+    timeoutMs: TIMEOUT_MS,
+    pollMs: POLL_MS,
+  });
+  return detail;
+}
+
 async function captureStockScreenshot(client, sink, label, route, identity) {
   return {
     ...(await captureScreenshot(client, {
@@ -564,6 +646,11 @@ export function validateStockMaintenanceReport(report) {
   const salePlatformMovements = movements?.salePlatformMovements;
   const stock = (value, quantity) =>
     value?.physicalStock === quantity && value?.saleableStock === quantity;
+  const visibleStock = (value, quantity) =>
+    value?.catalogKey === report?.fixture?.catalogKey &&
+    value?.saleableStock === quantity &&
+    typeof value?.text === "string" &&
+    value.text.includes(String(quantity));
   const validSale = (sale) =>
     sale?.runId === runId &&
     [
@@ -587,10 +674,11 @@ export function validateStockMaintenanceReport(report) {
     report.handoffSerialSessionId === "" ||
     report?.fixture?.initialQuantity !== 1 ||
     typeof report?.fixture?.slotDisplayLabel !== "string" ||
-    typeof report?.fixture?.sku !== "string" ||
-    typeof report?.fixture?.slotId !== "string" ||
-    typeof report?.fixture?.inventoryId !== "string" ||
-    report?.movementCursor?.inventoryId !== report.fixture.inventoryId ||
+	    typeof report?.fixture?.sku !== "string" ||
+	    typeof report?.fixture?.slotId !== "string" ||
+	    typeof report?.fixture?.inventoryId !== "string" ||
+	    typeof report?.fixture?.catalogKey !== "string" ||
+	    report?.movementCursor?.inventoryId !== report.fixture.inventoryId ||
     !Number.isFinite(Date.parse(report?.movementCursor?.capturedAt)) ||
     !Array.isArray(report?.movementCursor?.baselineItemIds) ||
     new Set(report.movementCursor.baselineItemIds).size !==
@@ -628,8 +716,10 @@ export function validateStockMaintenanceReport(report) {
       `machine_stock_movement:${projection.platformRawMovementId}` ||
     !stock(report?.restored?.daemon, 2) ||
     report?.restored?.platform?.onHandQty !== 2 ||
+    !visibleStock(report?.restored?.visibleDetailStock, 2) ||
     !stock(report?.terminal?.daemon, 1) ||
     report?.terminal?.platform?.onHandQty !== 1 ||
+    !visibleStock(report?.terminal?.visibleDetailStock, 1) ||
     !Array.isArray(movements?.saleDecrementOrderIds) ||
     new Set(movements.saleDecrementOrderIds).size !== 2 ||
     !movements.saleDecrementOrderIds.includes(firstOrderId) ||
@@ -879,7 +969,6 @@ export async function runStockMaintenanceGuest(options) {
       platform: restoredPlatform,
     };
     await returnToCatalogFromMaintenance(client);
-    await selectStockFixtureCategory(client);
     await waitFor(
       "visible restored fixture saleability",
       () =>
@@ -893,6 +982,11 @@ export async function runStockMaintenanceGuest(options) {
           })()`,
         ),
       (visible) => visible === true,
+    );
+    report.restored.visibleDetailStock = await observeProductDetailStock(
+      client,
+      identity,
+      2,
     );
     report.screenshots.restoredSaleability = await captureStockScreenshot(
       client,
@@ -925,6 +1019,15 @@ export async function runStockMaintenanceGuest(options) {
       () => inventory(input, token, identity.inventoryId),
       (value) => value?.onHandQty === 1 && value?.reservedQty === 0,
     );
+    client = await connectUi(handoff);
+    await returnCustomerResultToCatalog(client);
+    const terminalVisibleDetailStock = await observeProductDetailStock(
+      client,
+      identity,
+      1,
+    );
+    await client.close();
+    client = null;
     const terminalMovements = await waitFor(
       "two correlated sale decrements",
       () => inventoryMovements(input, token, identity.inventoryId),
@@ -958,6 +1061,7 @@ export async function runStockMaintenanceGuest(options) {
     report.terminal = {
       daemon: stockFact(terminalView, identity),
       platform: terminalPlatform,
+      visibleDetailStock: terminalVisibleDetailStock,
       movements: {
         saleDecrementOrderIds: salePlatformMovements.map(
           (movement) => movement.orderId,

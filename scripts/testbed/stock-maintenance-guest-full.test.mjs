@@ -19,6 +19,7 @@ function report() {
       sku: "TSC-LOCAL-007",
       slotId: "550e8400-e29b-41d4-a716-446655440007",
       inventoryId: "inventory-stock-1",
+      catalogKey: "product:stock-product-1",
       initialQuantity: 1,
     },
     movementCursor: {
@@ -77,6 +78,13 @@ function report() {
         slotSalesState: "sale_ready",
       },
       platform: { onHandQty: 2, reservedQty: 0 },
+      visibleDetailStock: {
+        route: "#/product/product:stock-product-1",
+        catalogKey: "product:stock-product-1",
+        variantId: "variant-stock-1",
+        saleableStock: 2,
+        text: "库存：2",
+      },
     },
     secondSale: {
       runId: "RUN-STOCK-1",
@@ -98,6 +106,13 @@ function report() {
         slotSalesState: "sale_ready",
       },
       platform: { onHandQty: 1, reservedQty: 0 },
+      visibleDetailStock: {
+        route: "#/product/product:stock-product-1",
+        catalogKey: "product:stock-product-1",
+        variantId: "variant-stock-1",
+        saleableStock: 1,
+        text: "库存：1",
+      },
       movements: {
         saleDecrementOrderIds: ["order-stock-1", "order-stock-2"],
         salePlatformMovementIds: [
