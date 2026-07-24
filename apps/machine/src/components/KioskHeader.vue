@@ -9,7 +9,7 @@ const props = withDefaults(
     enableMaintenanceEntry?: boolean;
   }>(),
   {
-    enableMaintenanceEntry: false,
+    enableMaintenanceEntry: true,
   },
 );
 

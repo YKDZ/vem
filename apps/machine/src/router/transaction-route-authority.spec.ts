@@ -174,6 +174,42 @@ describe("transaction route authority", () => {
     authority.dispose();
   });
 
+  it("lets explicit operator maintenance entry pass through an active transaction without clearing it", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: "/catalog", name: "catalog", component: {} },
+        { path: "/payment", name: "payment", component: {} },
+        { path: "/maintenance", name: "maintenance", component: {} },
+      ],
+    });
+    const authority = createMachineNavigationAuthority(router, pinia);
+    const checkoutStore = useCheckoutStore(pinia);
+
+    await router.push("/payment");
+    checkoutStore.applyTransaction(activePaymentTransaction());
+    await authority.submit({
+      type: "operator.navigate",
+      target: { path: "/maintenance", query: { source: "operator" } },
+    });
+
+    expect(router.currentRoute.value.fullPath).toBe(
+      "/maintenance?source=operator",
+    );
+    expect(checkoutStore.customerCheckoutView.stage).toBe("payment");
+    expect(authority.trace.snapshot()).toContainEqual(
+      expect.objectContaining({
+        intentType: "browser.navigate",
+        decision: "accepted",
+        reasonCode: "operator_navigation_override",
+        targetRoute: "/maintenance?source=operator",
+      }),
+    );
+    authority.dispose();
+  });
+
   it("requires explicit terminal dismissal before a completed transaction can leave its result route", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);

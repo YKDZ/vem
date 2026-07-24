@@ -214,6 +214,7 @@ async function flush(): Promise<void> {
 
 async function eventually(assertion: () => void): Promise<void> {
   let lastError: unknown;
+  /* eslint-disable no-await-in-loop -- this helper intentionally waits for Vue state to settle between assertions */
   for (let index = 0; index < 10; index += 1) {
     try {
       assertion();
@@ -223,6 +224,7 @@ async function eventually(assertion: () => void): Promise<void> {
       await flush();
     }
   }
+  /* eslint-enable no-await-in-loop */
   throw lastError;
 }
 

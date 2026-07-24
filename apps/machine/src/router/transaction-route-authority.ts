@@ -104,6 +104,7 @@ export function createMachineNavigationAuthority(
   let touchscreenSessionActive = false;
   let lastTouchAtMs: number | null = null;
   let inactivityTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
+  let operatorNavigationOverrideRoute: string | null = null;
 
   function transactionStage(): string {
     return checkoutStore.customerCheckoutView.stage;
@@ -203,6 +204,17 @@ export function createMachineNavigationAuthority(
     }
 
     const transactionTarget = routeTargetForTransaction(checkoutStore);
+    if (intent.type === "operator.navigate") {
+      recordDecision("accepted", "operator_navigation_accepted", intent.target);
+      operatorNavigationOverrideRoute = routePath(router, intent.target);
+      try {
+        await writeRoute(intent.target);
+      } finally {
+        operatorNavigationOverrideRoute = null;
+      }
+      return;
+    }
+
     if (transactionTarget && intent.type !== "customer.touch") {
       if (intent.type === "transaction.projection") {
         recordDecision("accepted", "transaction_projection", transactionTarget);
@@ -337,6 +349,14 @@ export function createMachineNavigationAuthority(
       transactionTarget &&
       router.resolve(transactionTarget).fullPath !== to.fullPath
     ) {
+      if (operatorNavigationOverrideRoute === to.fullPath) {
+        record(intent, "accepted", "operator_navigation_override", {
+          fromRoute,
+          requested,
+          decided: to,
+        });
+        return;
+      }
       record(intent, "rejected", "active_transaction_route", {
         fromRoute,
         requested,
