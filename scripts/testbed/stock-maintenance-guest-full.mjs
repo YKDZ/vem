@@ -969,20 +969,6 @@ export async function runStockMaintenanceGuest(options) {
       platform: restoredPlatform,
     };
     await returnToCatalogFromMaintenance(client);
-    await waitFor(
-      "visible restored fixture saleability",
-      () =>
-        evaluateExpression(
-          client,
-          `(() => {
-            const card = document.querySelector(${JSON.stringify(`[data-test='catalog-product'][data-catalog-key='${identity.catalogKey}']`)});
-            if (!card || !card.getClientRects().length) return false;
-            const saleableStock = Number(card.getAttribute("data-saleable-stock"));
-            return card.getAttribute("data-slot-sales-state") === "sale_ready" && saleableStock > 0;
-          })()`,
-        ),
-      (visible) => visible === true,
-    );
     report.restored.visibleDetailStock = await observeProductDetailStock(
       client,
       identity,

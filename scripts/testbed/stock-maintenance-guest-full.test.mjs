@@ -218,6 +218,18 @@ describe("stock maintenance guest full", () => {
     );
   });
 
+  it("verifies restored saleability through the category detail flow", () => {
+    const source = readFileSync(
+      new URL("./stock-maintenance-guest-full.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(
+      source,
+      /await returnToCatalogFromMaintenance\(client\);\s*report\.restored\.visibleDetailStock = await observeProductDetailStock\(/,
+    );
+    assert.doesNotMatch(source, /visible restored fixture saleability/);
+  });
+
   it("requires two identity-correlated sale decrements and one +2 refill", () => {
     assert.deepEqual(validateStockMaintenanceReport(report()), {
       slotDisplayLabel: "B2",
