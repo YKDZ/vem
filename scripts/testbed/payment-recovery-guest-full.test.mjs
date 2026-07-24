@@ -534,6 +534,21 @@ describe("payment recovery guest full", () => {
       /durable technical evidence/,
     );
   });
+
+  it("forces expiry past the provider compensation window for deterministic release", () => {
+    const source = readFileSync(
+      new URL("./payment-recovery-guest-full.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(
+      source,
+      /expiresAt: new Date\(Date\.now\(\) - 200_000\)\.toISOString\(\)/,
+    );
+    assert.doesNotMatch(
+      source,
+      /payment-expiry[\s\S]{0,220}Date\.now\(\) - 60_000/,
+    );
+  });
 });
 
 function recoveryReport() {

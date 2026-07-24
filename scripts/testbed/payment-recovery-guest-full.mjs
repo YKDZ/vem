@@ -1256,7 +1256,7 @@ export async function runPaymentRecoveryGuest(options) {
             runId,
             machineCode,
             paymentId: created.payment.id,
-            expiresAt: new Date(Date.now() - 60_000).toISOString(),
+            expiresAt: new Date(Date.now() - 200_000).toISOString(),
           })
         ).report;
       }
