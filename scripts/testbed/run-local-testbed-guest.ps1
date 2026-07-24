@@ -702,6 +702,13 @@ function New-TestbedCanonicalUtcTimestamp {
   return [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fff'Z'", [Globalization.CultureInfo]::InvariantCulture)
 }
 
+function Convert-TestbedCimDateTimeToUtc($Value) {
+  if ($Value -is [DateTime]) {
+    return $Value.ToUniversalTime()
+  }
+  return [Management.ManagementDateTimeConverter]::ToDateTime([string]$Value).ToUniversalTime()
+}
+
 function Get-TestbedStartupModeEvidence([int]$SessionId) {
   if ($Mode -ne "full") {
     return [ordered]@{
@@ -711,7 +718,7 @@ function Get-TestbedStartupModeEvidence([int]$SessionId) {
     }
   }
   $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
-  $bootTime = [Management.ManagementDateTimeConverter]::ToDateTime([string]$os.LastBootUpTime).ToUniversalTime()
+  $bootTime = Convert-TestbedCimDateTimeToUtc $os.LastBootUpTime
   $observedAt = New-TestbedCanonicalUtcTimestamp
   return [ordered]@{
     mode = $Mode
