@@ -694,10 +694,37 @@ function Convert-TestbedStartupProbeToReadiness(
         sessionId = [int]$VisionEvidence.sessionId
       }
     }
-    modeEvidence = [ordered]@{
+    modeEvidence = Get-TestbedStartupModeEvidence $sessionId
+  }
+}
+
+function New-TestbedCanonicalUtcTimestamp {
+  return [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fff'Z'", [Globalization.CultureInfo]::InvariantCulture)
+}
+
+function Get-TestbedStartupModeEvidence([int]$SessionId) {
+  if ($Mode -ne "full") {
+    return [ordered]@{
       mode = $Mode
       source = "installed_owner_stop_start"
       ownerRestartMarker = "owner-restart:${Commit}:$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
+    }
+  }
+  $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+  $bootTime = [Management.ManagementDateTimeConverter]::ToDateTime([string]$os.LastBootUpTime).ToUniversalTime()
+  $observedAt = New-TestbedCanonicalUtcTimestamp
+  return [ordered]@{
+    mode = $Mode
+    source = "windows_reboot_logon_probe"
+    boot = [ordered]@{
+      marker = "boot:${env:COMPUTERNAME}:$($bootTime.ToString("yyyyMMddHHmmssfff'Z'", [Globalization.CultureInfo]::InvariantCulture))"
+      observedAt = $observedAt
+    }
+    logon = [ordered]@{
+      marker = "logon:VEMKiosk:${SessionId}:$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
+      user = "VEMKiosk"
+      sessionId = $SessionId
+      observedAt = $observedAt
     }
   }
 }

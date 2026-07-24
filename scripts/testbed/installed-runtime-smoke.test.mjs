@@ -219,10 +219,19 @@ describe("installed production runtime smoke", () => {
     assert.match(guest, /Start-ScheduledTask -TaskName "VEMVisionRuntime"/);
     assert.match(guest, /function Wait-InstalledTauriRoute/);
     assert.match(guest, /Wait-InstalledTauriRoute "#\/catalog"/);
+    assert.match(guest, /function Get-TestbedStartupModeEvidence/);
+    assert.match(guest, /source = "windows_reboot_logon_probe"/);
+    assert.match(guest, /source = "installed_owner_stop_start"/);
     assert.match(guest, /Unregister-ScheduledTask -TaskName \$taskSpec\.Name/);
     assert.doesNotMatch(guest, /\$daemonProcess = Start-Process/);
-    assert.doesNotMatch(guest, /Register-ScheduledTask -TaskName \$machineTaskName/);
-    assert.doesNotMatch(guest, /Start-ScheduledTask -TaskName \$machineTaskName/);
+    assert.doesNotMatch(
+      guest,
+      /Register-ScheduledTask -TaskName \$machineTaskName/,
+    );
+    assert.doesNotMatch(
+      guest,
+      /Start-ScheduledTask -TaskName \$machineTaskName/,
+    );
     assert.match(guest, /installed-runtime-smoke\.mjs/);
     assert.match(guest, /full-workflow-orchestrator\.mjs/);
     assert.match(guest, /installed-ipc-recovery\.json/);
