@@ -350,6 +350,30 @@ export function validateBaselineContract(contract) {
   return contract;
 }
 
+function baselineInteractiveUserPasswordPath(contract) {
+  const guest = contract.testbed.guest;
+  const passwordPath =
+    guest.interactiveUserPasswordFile ??
+    guest.administratorPasswordFile ??
+    join(dirname(guest.identityFile), "administrator-password");
+  if (!isAbsolute(passwordPath)) {
+    throw new Error(
+      "baseline contract guest interactive user password file must be absolute",
+    );
+  }
+  return passwordPath;
+}
+
+async function readBaselineInteractiveUserPassword(contract) {
+  const password = (
+    await readFile(baselineInteractiveUserPasswordPath(contract), "utf8")
+  ).replace(/\r?\n$/, "");
+  if (password.length === 0) {
+    throw new Error("baseline interactive user password file is empty");
+  }
+  return password;
+}
+
 async function loadFixture() {
   return (await loadFixtureDocument()).fixture;
 }
@@ -1800,11 +1824,19 @@ export function validateRefreshGuestInput(input, options, expectedFixtureIdentit
   return input;
 }
 
-export function refreshGuestInputForRun(input, runId, paymentProvider) {
+export function refreshGuestInputForRun(
+  input,
+  runId,
+  paymentProvider,
+  interactiveUserPassword,
+) {
   return {
     ...input,
     runId: required(runId, "--run-id"),
     ...(paymentProvider === undefined ? {} : { paymentProvider }),
+    ...(interactiveUserPassword === undefined
+      ? {}
+      : { interactiveUserPassword }),
   };
 }
 
@@ -1870,6 +1902,8 @@ export async function refreshHostRuntime(options) {
       },
     };
   }
+  const interactiveUserPassword =
+    await readBaselineInteractiveUserPassword(contract);
   const buildStartedAt = new Date().toISOString();
   for (const step of plan) {
     await run(step.command, step.args, {
@@ -1898,6 +1932,12 @@ export async function refreshHostRuntime(options) {
       runId: options.runId,
       baseUrl: apiBaseUrl,
     });
+    guestInput = refreshGuestInputForRun(
+      guestInput,
+      options.runId,
+      undefined,
+      interactiveUserPassword,
+    );
     guestInputRaw = `${JSON.stringify(guestInput, null, 2)}\n`;
   } catch (error) {
     throw await serviceApiFailure(error);
@@ -2039,6 +2079,8 @@ async function reconstruct(options) {
     );
     let seeded;
     let paymentProvider;
+    const interactiveUserPassword =
+      await readBaselineInteractiveUserPassword(contract);
     try {
       seeded = await seedThroughSupportedApis({
         baseUrl: apiBaseUrl,
@@ -2087,6 +2129,7 @@ async function reconstruct(options) {
       machineCode: seeded.machine.code,
       planogramVersion: seeded.planogramVersion,
       interactiveUser: "VEMKiosk",
+      interactiveUserPassword,
       visionAcceptance: seeded.visionAcceptance,
     };
     const guestInputRaw = `${JSON.stringify(guestInput, null, 2)}\n`;

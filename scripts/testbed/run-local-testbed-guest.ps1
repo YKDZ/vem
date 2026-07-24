@@ -258,6 +258,30 @@ function New-BoundedEvidenceBundle([string]$ManifestPath, [string]$BundleRoot) {
   }
 }
 
+function Clear-TestbedRunReports {
+  foreach ($path in @(
+    (Join-Path $handoffRoot "installed-runtime-smoke.json"),
+    (Join-Path $handoffRoot "fast-route-stress-sale.json"),
+    (Join-Path $handoffRoot "installed-ipc-recovery.json"),
+    (Join-Path $handoffRoot "serial-fulfillment-error.json"),
+    (Join-Path $handoffRoot "scanner-payment-code.json"),
+    (Join-Path $handoffRoot "delayed-pickup-native-audio.json"),
+    (Join-Path $handoffRoot "vision-try-on-acceptance.json"),
+    (Join-Path $handoffRoot "full-workflow-tracks.json"),
+    (Join-Path $handoffRoot "full-workflow-evidence-manifest.json"),
+    (Join-Path $handoffRoot "payment-provider.json"),
+    (Join-Path $handoffRoot "payment-recovery.json"),
+    (Join-Path $handoffRoot "hardware-lifecycle.json"),
+    (Join-Path $handoffRoot "environment-control.json"),
+    (Join-Path $handoffRoot "local-operations.json"),
+    (Join-Path $handoffRoot "presence-and-audio.json"),
+    (Join-Path $handoffRoot "stock-maintenance.json")
+  )) {
+    Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+  }
+  Remove-Item -LiteralPath (Join-Path $handoffRoot "full-workflow-evidence-bundle") -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 function Assert-DeclaredCachePath([string]$Path, [string]$Name) {
   $resolvedRoot = [IO.Path]::GetFullPath($cacheRoot)
   $resolvedPath = [IO.Path]::GetFullPath($Path)
@@ -502,7 +526,10 @@ function Invoke-FullVisionTryOnAcceptance(
   if ($LASTEXITCODE -ne 0) { throw "vision try-on acceptance failed" }
 }
 
-function Get-TestbedKioskPassword {
+function Get-TestbedKioskPassword([object]$GuestInput) {
+  if (-not [string]::IsNullOrWhiteSpace([string]$GuestInput.interactiveUserPassword)) {
+    return [string]$GuestInput.interactiveUserPassword
+  }
   $winlogon = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" -ErrorAction Stop
   if ([string]$winlogon.DefaultUserName -ine "VEMKiosk" -or [string]$winlogon.DefaultDomainName -ne ".") {
     throw "startup owner acceptance requires the baseline VEMKiosk AutoAdminLogon identity"
@@ -651,7 +678,7 @@ function Start-TestbedInstalledRuntimeOwners {
     -DaemonDataDirectory $daemonDataRoot `
     -VisionAppDirectory "C:\VEM\vision\app" `
     -VisionDataDirectory "C:\ProgramData\VEM\vision" `
-    -KioskPassword (Get-TestbedKioskPassword) `
+    -KioskPassword (Get-TestbedKioskPassword $GuestInput) `
     -OwnerManifestPath $ownerManifestPath | ConvertFrom-Json
 
   Remove-Item -LiteralPath (Join-Path $daemonDataRoot "daemon-ready.json") -Force -ErrorAction SilentlyContinue
@@ -870,6 +897,7 @@ if (-not [string]::IsNullOrWhiteSpace($machinePath)) {
 }
 
 New-Item -ItemType Directory -Force -Path $deploymentRoot, $daemonDataRoot, $handoffRoot | Out-Null
+Clear-TestbedRunReports
 $env:CARGO_TARGET_DIR = Join-Path $cacheRoot "target"
 $env:SCCACHE_DIR = Join-Path $cacheRoot "sccache"
 $env:TURBO_CACHE_DIR = Join-Path $cacheRoot "turbo"

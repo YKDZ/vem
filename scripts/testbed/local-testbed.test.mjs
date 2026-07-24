@@ -1408,9 +1408,16 @@ describe("Windows D cache contract", () => {
       guestScript,
       /warm fast run requires the existing commissioning serial session/,
     );
+    const mainSerialStart = guestScript.indexOf(
+      '$commissioningSerialSession = Start-TestbedCommissioningSerialSession $guestInput',
+    );
+    const mainOwnerStart = guestScript.indexOf(
+      "$startupState = Start-TestbedInstalledRuntimeOwners",
+      mainSerialStart,
+    );
     assert.ok(
-      guestScript.indexOf('Write-TestbedPhase "start-simulated-hardware"') <
-        guestScript.indexOf("$daemonProcess = Start-Process"),
+      mainSerialStart >= 0 && mainOwnerStart > mainSerialStart,
+      "the main runtime path must open simulated serial before installed owners",
     );
     assert.match(
       guestScript,
@@ -1639,7 +1646,7 @@ describe("Windows D cache contract", () => {
       "$commissioningSerialSession = Start-TestbedCommissioningSerialSession",
     );
     const hardwareBinding = guest.indexOf(
-      "Initialize-TestbedHardwareBindings",
+      "$startupState = Start-TestbedInstalledRuntimeOwners",
       serialStart,
     );
     assert.ok(serialStart >= 0 && hardwareBinding > serialStart);
@@ -1664,31 +1671,22 @@ describe("Windows D cache contract", () => {
       guest,
       /Stop-TestbedScannerBindingProbe \$guestInput \$commissioningSerialSession/,
     );
-    const claim = guest.indexOf("$claim = Invoke-Claim $guestInput");
-    const claimedRestart = guest.indexOf("restart-claimed-runtime", claim);
-    const claimedReady = guest.indexOf(
-      "$runtimeReady = Wait-RuntimeReady",
-      claimedRestart,
+    const ownerFunction = guest.match(
+      /function Start-TestbedInstalledRuntimeOwners \{[\s\S]*?\n\}/,
+    )?.[0];
+    assert.ok(ownerFunction);
+    assert.match(
+      ownerFunction,
+      /if \(\$ClaimBeforeInteractiveOwners\) \{[\s\S]*\$ownerClaim = Invoke-Claim \$GuestInput[\s\S]*restart-claimed-installed-runtime-owner[\s\S]*Restart-Service -Name "VemVendingDaemon"[\s\S]*\$runtimeReady = Wait-RuntimeReady[\s\S]*\}[\s\S]*Write-TestbedPhase "bind-installed-owner-hardware"[\s\S]*Initialize-TestbedHardwareBindings[\s\S]*\$runtimeReady = Wait-RuntimeReady/,
     );
-    const reboundReady = guest.indexOf(
-      "$runtimeReady = Wait-RuntimeReady",
-      hardwareBinding,
+    assert.match(
+      ownerFunction,
+      /if \(-not \[bool\]\$ownerClaim\.restartRequested\)/,
     );
-    const daemonEvidence = guest.indexOf(
-      '$daemonEvidence = Get-CanonicalProcessEvidence "vending-daemon.exe"',
-      hardwareBinding,
+    assert.doesNotMatch(guest, /\$daemonProcess \| Stop-Process -Force/);
+    const claimedRestart = guest.indexOf(
+      'Write-TestbedPhase "restart-claimed-installed-runtime-owner"',
     );
-    assert.ok(
-      claim >= 0 &&
-        serialStart < claim &&
-        claimedRestart > claim &&
-        claimedReady > claimedRestart &&
-        hardwareBinding > claimedReady &&
-        reboundReady > hardwareBinding &&
-        daemonEvidence > reboundReady,
-    );
-    assert.match(guest, /if \(-not \[bool\]\$claim\.restartRequested\)/);
-    assert.match(guest, /\$daemonProcess \| Stop-Process -Force/);
     const finalReadyRefresh = guest.lastIndexOf(
       "$runtimeReady = Wait-RuntimeReady",
     );
@@ -1841,17 +1839,17 @@ describe("Windows D cache contract", () => {
     );
     assert.match(
       guest,
-      /if \(\$Mode -eq "full" -or -not \$isWarmFastRun\) \{[\s\S]*Invoke-Claim \$guestInput/,
+      /-ClaimBeforeInteractiveOwners:\(\$Mode -eq "full" -or -not \$isWarmFastRun\)/,
     );
     assert.match(
       guest,
       /Start-TestbedCommissioningSerialSession \$guestInput[\s\S]*Stop-TestbedScannerBindingProbe/,
     );
-    assert.match(guest, /Write-TestbedPhase "restart-warm-runtime"/);
+    assert.match(guest, /Start-TestbedInstalledRuntimeOwners `/);
     assert.doesNotMatch(guest, /Remove-Item -LiteralPath \$daemonDataRoot/);
     assert.match(
       guest,
-      /Get-CanonicalProcessEvidence "machine\.exe" \$machinePath/,
+      /Get-CanonicalProcessEvidence "machine\.exe" \$MachinePath/,
     );
     assert.match(guest, /Get-CdpProcessBinding \$machineEvidence\.processId/);
   });
