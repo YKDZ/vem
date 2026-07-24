@@ -397,6 +397,46 @@ describe("ResultView", () => {
     expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(true);
   });
 
+  it("auto-returns a payment timeout result when sale capability is already ready", async () => {
+    routeParams.kind = "payment_expired";
+    const transaction = paymentExpiredTransaction();
+    const checkoutStore = useCheckoutStore();
+    checkoutStore.applyTransaction(transaction);
+    applyCapability(true);
+
+    const host = await mountView();
+
+    expect(host.textContent).toContain("支付超时");
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("8 秒后自动返回首页。");
+    });
+    await vi.advanceTimersByTimeAsync(8_000);
+
+    expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
+    expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(true);
+  });
+
+  it("starts payment timeout auto-return when sale capability arrives after the result view", async () => {
+    routeParams.kind = "payment_expired";
+    const transaction = paymentExpiredTransaction();
+    const checkoutStore = useCheckoutStore();
+    checkoutStore.applyTransaction(transaction);
+
+    const host = await mountView();
+
+    expect(host.textContent).toContain("支付超时");
+    expect(host.textContent).not.toContain("秒后自动返回首页");
+    applyCapability(true);
+    await nextTick();
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("8 秒后自动返回首页。");
+    });
+    await vi.advanceTimersByTimeAsync(8_000);
+
+    expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
+    expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(true);
+  });
+
   it("allows a recovered dispense failure result to be dismissed back to catalog", async () => {
     const transaction = terminalDispenseFailedTransaction();
     const checkoutStore = useCheckoutStore();

@@ -164,6 +164,18 @@ function startAutoReturn(): void {
   }, 1_000);
 }
 
+function syncAutoReturn(): void {
+  if (
+    saleCapabilityStore.hasAcceptedCapability &&
+    saleCapabilityStore.canStartSale &&
+    activeReturnPolicy.value?.canAutoReturn === true
+  ) {
+    startAutoReturn();
+    return;
+  }
+  stopAutoReturn();
+}
+
 async function backToCatalog(): Promise<void> {
   if (returningToCatalog) return;
   stopAutoReturn();
@@ -234,9 +246,19 @@ watch(
   { immediate: true },
 );
 
-onMounted(() => {
-  if (saleCapabilityStore.hasAcceptedCapability) startAutoReturn();
-});
+watch(
+  () => ({
+    canStartSale: saleCapabilityStore.canStartSale,
+    hasAcceptedCapability: saleCapabilityStore.hasAcceptedCapability,
+    resultKind: kind.value,
+    canAutoReturn: activeReturnPolicy.value?.canAutoReturn === true,
+    targetRoute: activeReturnPolicy.value?.targetRoute ?? null,
+  }),
+  syncAutoReturn,
+  { immediate: true },
+);
+
+onMounted(syncAutoReturn);
 
 onUnmounted(stopAutoReturn);
 </script>

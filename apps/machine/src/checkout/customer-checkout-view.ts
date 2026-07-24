@@ -235,12 +235,21 @@ function exceptionalReturnPolicy(
     resultKind === "dispense_failed" ||
     resultKind === "refunded" ||
     resultKind === "closed";
+  const canAutoDismissWhenReady =
+    resultKind === "payment_failed" ||
+    resultKind === "payment_expired" ||
+    resultKind === "refunded" ||
+    resultKind === "closed";
   const alwaysDismissibleFailure =
     resultKind === "dispense_failed" || resultKind === "refunded";
   const highRiskResult =
     resultKind === "refund_pending" || resultKind === "manual_handling";
   return {
-    canAutoReturn: false,
+    canAutoReturn:
+      canAutoDismissWhenReady &&
+      saleReady &&
+      targetRoute === "catalog" &&
+      !requiresMaintenanceReview,
     canManualReturn: alwaysDismissibleFailure
       ? true
       : canDismissWhenReady

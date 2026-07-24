@@ -488,6 +488,7 @@ describe("Customer Checkout View Projection", () => {
       detailIntent: NonNullable<
         ReturnType<typeof projectCustomerCheckoutView>["result"]
       >["detailIntent"];
+      canAutoReturnWhenReady: boolean;
       canManualReturnWhenReady: boolean;
       canManualReturnWhenUnknown: boolean;
       canManualReturnWhenMaintenanceLocked: boolean;
@@ -498,6 +499,7 @@ describe("Customer Checkout View Projection", () => {
         paymentStatus: "succeeded",
         displayIntent: "dispense_failure",
         detailIntent: "dispense_failure",
+        canAutoReturnWhenReady: false,
         canManualReturnWhenReady: true,
         canManualReturnWhenUnknown: true,
         canManualReturnWhenMaintenanceLocked: true,
@@ -508,6 +510,7 @@ describe("Customer Checkout View Projection", () => {
         paymentStatus: "refund_pending",
         displayIntent: "refund_pending",
         detailIntent: null,
+        canAutoReturnWhenReady: false,
         canManualReturnWhenReady: false,
         canManualReturnWhenUnknown: false,
         canManualReturnWhenMaintenanceLocked: false,
@@ -518,6 +521,7 @@ describe("Customer Checkout View Projection", () => {
         paymentStatus: "refunded",
         displayIntent: "refunded",
         detailIntent: null,
+        canAutoReturnWhenReady: true,
         canManualReturnWhenReady: true,
         canManualReturnWhenUnknown: true,
         canManualReturnWhenMaintenanceLocked: true,
@@ -528,6 +532,7 @@ describe("Customer Checkout View Projection", () => {
         paymentStatus: "succeeded",
         displayIntent: "manual_handling",
         detailIntent: "dispense_result_unknown",
+        canAutoReturnWhenReady: false,
         canManualReturnWhenReady: false,
         canManualReturnWhenUnknown: false,
         canManualReturnWhenMaintenanceLocked: false,
@@ -538,6 +543,7 @@ describe("Customer Checkout View Projection", () => {
         paymentStatus: "failed",
         displayIntent: "payment_failed",
         detailIntent: null,
+        canAutoReturnWhenReady: true,
         canManualReturnWhenReady: true,
         canManualReturnWhenUnknown: false,
         canManualReturnWhenMaintenanceLocked: true,
@@ -548,6 +554,7 @@ describe("Customer Checkout View Projection", () => {
         paymentStatus: "expired",
         displayIntent: "payment_expired",
         detailIntent: null,
+        canAutoReturnWhenReady: true,
         canManualReturnWhenReady: true,
         canManualReturnWhenUnknown: false,
         canManualReturnWhenMaintenanceLocked: true,
@@ -558,6 +565,7 @@ describe("Customer Checkout View Projection", () => {
         paymentStatus: "canceled",
         displayIntent: "closed",
         detailIntent: null,
+        canAutoReturnWhenReady: true,
         canManualReturnWhenReady: true,
         canManualReturnWhenUnknown: false,
         canManualReturnWhenMaintenanceLocked: true,
@@ -612,7 +620,7 @@ describe("Customer Checkout View Projection", () => {
           detailIntent: testCase.detailIntent,
           orderCredentialBehavior: "shown",
           returnPolicy: {
-            canAutoReturn: false,
+            canAutoReturn: testCase.canAutoReturnWhenReady,
             canManualReturn: testCase.canManualReturnWhenReady,
             targetRoute: "catalog",
             requiresMaintenanceReview: false,
