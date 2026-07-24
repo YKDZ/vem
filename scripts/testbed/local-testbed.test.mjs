@@ -1947,7 +1947,22 @@ describe("local testbed fixture", () => {
     assert.equal(fixture.products.length, 44);
     assert.deepEqual(
       fixture.slots.map((slot) => slot.slotDisplayLabel),
-      ["A1", "A2", "A3", "A4", "A5", "A6", "B1", "B2"],
+      ["A1", "A2", "A3", "A4", "A5", "B5", "B1", "B2"],
+    );
+    assert.deepEqual(
+      fixture.slots.map((slot) => `${slot.rowNo}:${slot.cellNo}`),
+      ["1:1", "1:2", "1:3", "1:4", "1:5", "2:5", "2:1", "2:2"],
+    );
+    assert.ok(
+      fixture.slots.every(
+        (slot) =>
+          Number.isInteger(slot.rowNo) &&
+          Number.isInteger(slot.cellNo) &&
+          slot.rowNo >= 1 &&
+          slot.rowNo <= 9 &&
+          slot.cellNo >= 1 &&
+          slot.cellNo <= (slot.rowNo <= 6 ? 5 : slot.rowNo <= 8 ? 4 : 3),
+      ),
     );
     const implementation = readFileSync(
       new URL("./local-testbed.mjs", import.meta.url),

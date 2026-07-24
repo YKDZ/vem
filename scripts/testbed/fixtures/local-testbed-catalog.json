@@ -320,10 +320,10 @@
       "priceCents": 4900
     },
     {
-      "slotDisplayLabel": "A6",
+      "slotDisplayLabel": "B5",
       "sourceRow": 10,
-      "rowNo": 1,
-      "cellNo": 6,
+      "rowNo": 2,
+      "cellNo": 5,
       "capacity": 8,
       "onHandQty": 3,
       "lowStockThreshold": 1,
