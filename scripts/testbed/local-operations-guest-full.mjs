@@ -44,6 +44,13 @@ const AUDIO_SELECTORS = Object.freeze({
   transactionCuesEnabled: "[data-test='machine-audio-transaction-enabled']",
   volumePercent: "[data-test='machine-audio-volume-percent']",
 });
+const MAINTENANCE_ENTRY_SELECTOR =
+  "[data-test='maintenance-entry-brand'], [data-test='maintenance-entry-header']";
+const MAINTENANCE_ENTRY_ROUTES = Object.freeze([
+  "#/catalog",
+  "#/offline",
+  "#/payment",
+]);
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "")
@@ -345,6 +352,44 @@ export async function setMachineUiAudioPreferences(client, expected) {
     () => readMachineUiAudioPreferences(client),
     target,
   );
+}
+export async function collectMaintenanceEntryEvidence(
+  handoff,
+  dependencies = {},
+) {
+  const withUiClientFn =
+    dependencies.withUiClient ??
+    ((runtimeHandoff, operation) =>
+      withMachineUiClient(runtimeHandoff, dependencies, operation));
+  return withUiClientFn(handoff, async (client) => {
+    const entries = [];
+    for (const route of MAINTENANCE_ENTRY_ROUTES) {
+      await setRoute(client, route);
+      for (let index = 0; index < 7; index += 1) {
+        await activateVisibleSelector(client, MAINTENANCE_ENTRY_SELECTOR, {
+          kind: "touch",
+          timeoutMs: AUDIO_PREFERENCE_TIMEOUT_MS,
+          pollMs: 150,
+        });
+      }
+      const finalRoute = await waitForRoute(
+        client,
+        "#/maintenance?source=operator",
+        {
+          timeoutMs: AUDIO_PREFERENCE_TIMEOUT_MS,
+          pollMs: 150,
+          forbiddenRoutes: [],
+        },
+      );
+      entries.push({
+        route,
+        selector: MAINTENANCE_ENTRY_SELECTOR,
+        finalRoute,
+        ok: true,
+      });
+    }
+    return entries;
+  });
 }
 async function withMachineUiClient(
   handoff,
@@ -783,6 +828,17 @@ export function validateLocalOperationsEvidence(report) {
     )
   )
     throw new Error("manual dispense diagnostic outcome is missing");
+  if (
+    !Array.isArray(report.maintenanceEntry) ||
+    report.maintenanceEntry.length < MAINTENANCE_ENTRY_ROUTES.length ||
+    report.maintenanceEntry.some(
+      (entry) =>
+        entry?.ok !== true ||
+        !MAINTENANCE_ENTRY_ROUTES.includes(entry.route) ||
+        entry.finalRoute !== "#/maintenance?source=operator",
+    )
+  )
+    throw new Error("maintenance entry evidence is incomplete");
   return {
     slotId: report.planogram.slotId,
     slotDisplayLabel: report.manualDispense.slotDisplayLabel,
@@ -821,6 +877,7 @@ export async function runLocalOperationsGuest(options, dependencies = {}) {
     hardware: null,
     systemTouchKeyboard: null,
     audioPreferencePersistence: null,
+    maintenanceEntry: null,
   };
   let session = null;
   try {
@@ -914,6 +971,10 @@ export async function runLocalOperationsGuest(options, dependencies = {}) {
       },
       dependencies,
     );
+    report.maintenanceEntry = await (
+      dependencies.collectMaintenanceEntryEvidence ??
+      collectMaintenanceEntryEvidence
+    )(handoff, dependencies);
     const keyboardOutPath = options.outPath.replace(
       /[^\\]+$/,
       "system-touch-keyboard.json",

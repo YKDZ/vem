@@ -13,6 +13,16 @@ import {
   validateLocalOperationsEvidence,
 } from "./local-operations-guest-full.mjs";
 
+function maintenanceEntryEvidence() {
+  return ["#/catalog", "#/offline", "#/payment"].map((route) => ({
+    route,
+    selector:
+      "[data-test='maintenance-entry-brand'], [data-test='maintenance-entry-header']",
+    finalRoute: "#/maintenance?source=operator",
+    ok: true,
+  }));
+}
+
 describe("local operations guest full", () => {
   it("parses the installed guest contract", () => {
     assert.equal(
@@ -101,6 +111,7 @@ describe("local operations guest full", () => {
         blocking: false,
         error: "Windows input pane rejected the virtual-keyboard host",
       },
+      maintenanceEntry: maintenanceEntryEvidence(),
     };
     assert.equal(validateLocalOperationsEvidence(report).canonical, true);
     assert.throws(
@@ -118,6 +129,14 @@ describe("local operations guest full", () => {
           planogram: { ...report.planogram, canonical: false },
         }),
       /boundary/,
+    );
+    assert.throws(
+      () =>
+        validateLocalOperationsEvidence({
+          ...report,
+          maintenanceEntry: maintenanceEntryEvidence().slice(0, 2),
+        }),
+      /maintenance entry/,
     );
   });
   it("normalizes and compares audio preferences deterministically", () => {
@@ -398,6 +417,7 @@ describe("local operations guest full", () => {
           ok: true,
           blocking: false,
         }),
+        collectMaintenanceEntryEvidence: async () => maintenanceEntryEvidence(),
       },
     );
 
@@ -419,6 +439,7 @@ describe("local operations guest full", () => {
       rowNo: 1,
       cellNo: 1,
     });
+    assert.equal(writes.at(-1).value.maintenanceEntry.length, 3);
     assert.deepEqual(manualDispenseRequests, [
       {
         idempotencyKey: "RUN-07-local-operations",

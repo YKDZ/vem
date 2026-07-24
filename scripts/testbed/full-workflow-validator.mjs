@@ -555,7 +555,14 @@ function validateLocalOperationsTrack(report, reportPath) {
     !["completed", "failed", "result_unknown"].includes(
       report.manualDispense?.outcome,
     ) ||
-    report.manualDispense?.slotId !== report.planogram.slotId
+    report.manualDispense?.slotId !== report.planogram.slotId ||
+    !Array.isArray(report.maintenanceEntry) ||
+    report.maintenanceEntry.length < 3 ||
+    report.maintenanceEntry.some(
+      (entry) =>
+        entry?.ok !== true ||
+        entry.finalRoute !== "#/maintenance?source=operator",
+    )
   ) {
     return failedTrack(
       "localOperations",
@@ -704,7 +711,8 @@ function validateEnvironmentControlTrack(report, reportPath) {
   const overlap = report.overlapRejection ?? {};
   const precedence = report.precedence ?? {};
   const sessionReplacement = report.serialSessionReplacement ?? {};
-  const replacementSessionId = sessionReplacement.replacementControlPlaneSessionId;
+  const replacementSessionId =
+    sessionReplacement.replacementControlPlaneSessionId;
   const automaticArrival = precedence.automaticArrival ?? {};
   const adminB3 = precedence.adminB3 ?? {};
   const sameEdgeAfterAdmin = precedence.sameEdgeAfterAdmin ?? {};
@@ -718,7 +726,8 @@ function validateEnvironmentControlTrack(report, reportPath) {
     b3Speed(frame) === speed &&
     Number.isFinite(Date.parse(frame?.capturedAt));
   const validReplacementB3 = (frame, speed) =>
-    validPrecedenceFrame(frame, speed) && frame?.sessionId === replacementSessionId;
+    validPrecedenceFrame(frame, speed) &&
+    frame?.sessionId === replacementSessionId;
   const onlyAutomaticB3 = (entry, expectedB3FrameCount) => {
     const protocolFrames = entry?.protocolFrames;
     if (!Array.isArray(protocolFrames)) return false;

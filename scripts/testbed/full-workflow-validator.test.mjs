@@ -60,9 +60,21 @@ function visionExperienceReport() {
           { productId: "product-t", variantId: "variant-m", size: "M" },
         ],
         productMedia: [
-          { categoryKey: "socks", catalogKey: "product-socks", coverImageUrl: "/api/media-assets/main-socks/content" },
-          { categoryKey: "underwear", catalogKey: "product-underwear", coverImageUrl: "/api/media-assets/main-underwear/content" },
-          { categoryKey: "tshirts", catalogKey: "product-tshirts", coverImageUrl: "/api/media-assets/main-tshirts/content" },
+          {
+            categoryKey: "socks",
+            catalogKey: "product-socks",
+            coverImageUrl: "/api/media-assets/main-socks/content",
+          },
+          {
+            categoryKey: "underwear",
+            catalogKey: "product-underwear",
+            coverImageUrl: "/api/media-assets/main-underwear/content",
+          },
+          {
+            categoryKey: "tshirts",
+            catalogKey: "product-tshirts",
+            coverImageUrl: "/api/media-assets/main-tshirts/content",
+          },
         ],
       },
     },
@@ -138,6 +150,7 @@ function stockMaintenanceReport() {
       sku: "TSC-LOCAL-007",
       slotId: "slot-stock-1",
       inventoryId: "inventory-stock-1",
+      catalogKey: "product:stock-product-1",
       initialQuantity: 1,
     },
     movementCursor: {
@@ -184,6 +197,13 @@ function stockMaintenanceReport() {
         slotSalesState: "sale_ready",
       },
       platform: { onHandQty: 2, reservedQty: 0 },
+      visibleDetailStock: {
+        route: "#/product/product:stock-product-1",
+        catalogKey: "product:stock-product-1",
+        variantId: "variant-stock-1",
+        saleableStock: 2,
+        text: "库存：2",
+      },
     },
     secondSale: stockSale("2"),
     terminal: {
@@ -193,6 +213,13 @@ function stockMaintenanceReport() {
         slotSalesState: "sale_ready",
       },
       platform: { onHandQty: 1, reservedQty: 0 },
+      visibleDetailStock: {
+        route: "#/product/product:stock-product-1",
+        catalogKey: "product:stock-product-1",
+        variantId: "variant-stock-1",
+        saleableStock: 1,
+        text: "库存：1",
+      },
       movements: {
         saleDecrementOrderIds: ["order-stock-1", "order-stock-2"],
         salePlatformMovementIds: [
@@ -625,7 +652,9 @@ function paymentRecoveryReport() {
     subsequentSale: {
       order: {
         id: "order-paid",
+        orderNo: "order-no-paid",
         paymentId: "payment-paid",
+        commandId: "command-paid",
         inventoryId: "inventory-payment-recovery",
       },
       terminal: {
@@ -635,13 +664,25 @@ function paymentRecoveryReport() {
       },
       inventory: { beforeOnHandQty: 3, afterOnHandQty: 2, movementCount: 1 },
       serial: { protocol: ["VEND", "F0", "F1", "F2"], stopped: true },
+      customer: {
+        route: "#/result/success",
+        orderId: "order-paid",
+        paymentId: "payment-paid",
+        orderNo: "order-no-paid",
+        commandId: "command-paid",
+        resultKind: "success",
+      },
     },
     saleabilityRecovery: {
       source: "daemon_sale_view_and_installed_machine_runtime_cdp",
       route: "#/catalog",
       categories: [
         { key: "socks", daemonSaleableItemCount: 4, saleableProductCount: 4 },
-        { key: "underwear", daemonSaleableItemCount: 4, saleableProductCount: 4 },
+        {
+          key: "underwear",
+          daemonSaleableItemCount: 4,
+          saleableProductCount: 4,
+        },
         { key: "tshirts", daemonSaleableItemCount: 4, saleableProductCount: 4 },
       ],
     },
@@ -772,6 +813,13 @@ function localOperationsReport() {
       slotDisplayLabel: "R7C1",
       outcome: "completed",
     },
+    maintenanceEntry: ["#/catalog", "#/offline", "#/payment"].map((route) => ({
+      route,
+      selector:
+        "[data-test='maintenance-entry-brand'], [data-test='maintenance-entry-header']",
+      finalRoute: "#/maintenance?source=operator",
+      ok: true,
+    })),
   };
 }
 
@@ -1412,7 +1460,11 @@ describe("full workflow aggregate validator", () => {
       route: "#/catalog",
       categories: [
         { key: "socks", daemonSaleableItemCount: 4, saleableProductCount: 0 },
-        { key: "underwear", daemonSaleableItemCount: 4, saleableProductCount: 0 },
+        {
+          key: "underwear",
+          daemonSaleableItemCount: 4,
+          saleableProductCount: 0,
+        },
         { key: "tshirts", daemonSaleableItemCount: 4, saleableProductCount: 0 },
       ],
     };
@@ -1445,6 +1497,23 @@ describe("full workflow aggregate validator", () => {
             slotDisplayLabel: "R7C1",
             outcome: "completed",
           },
+        },
+        "/reports/local-operations.json",
+      ).status,
+      "failed",
+    );
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("localOperations"),
+        {
+          ...localOperationsReport(),
+          maintenanceEntry: [
+            {
+              route: "#/catalog",
+              finalRoute: "#/catalog",
+              ok: true,
+            },
+          ],
         },
         "/reports/local-operations.json",
       ).status,
