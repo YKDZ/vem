@@ -75,6 +75,10 @@ test("owner installer writes one manifest through its public PowerShell entrypoi
   const output = JSON.parse(result.stdout);
   assert.equal(output.schemaVersion, "vem-runtime-owners-harness/v2");
   assert.equal(output.manifest.owners.daemon.name, "VemVendingDaemon");
+  assert.deepEqual(output.manifest.owners.daemon.arguments, [
+    "--data-dir",
+    output.daemonDataDirectory,
+  ]);
   assert.equal(output.manifest.owners.machineUi.trigger, "AtLogon");
   assert.equal(output.manifest.owners.vision.trigger, "AtLogon");
   assert.equal(output.registeredTasks.length, 2);

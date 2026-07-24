@@ -122,6 +122,7 @@ try {
   [ordered]@{
     schemaVersion = "vem-runtime-owners-harness/v2"
     manifest = $manifest
+    daemonDataDirectory = $daemonData
     missingPasswordRejected = $missingPasswordRejected
     legacyOwnerRejected = $legacyOwnerRejected
     registeredTasks = @($global:OwnerHarnessTasks)

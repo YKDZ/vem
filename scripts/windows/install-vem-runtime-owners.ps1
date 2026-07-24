@@ -151,7 +151,7 @@ function Write-OwnerManifest(
         account = "LocalSystem"
         startType = "Automatic"
         executablePath = $DaemonExecutable
-        arguments = @("--console", "--data-dir", $DaemonDataDirectory)
+        arguments = @("--data-dir", $DaemonDataDirectory)
         crashRecovery = [ordered]@{ firstFailure = "restart"; delayMilliseconds = 5000 }
       }
       machineUi = [ordered]@{
@@ -216,7 +216,7 @@ if ($conflicts.Count -gt 0) {
 }
 Assert-NoDuplicateRuntimeProcesses
 
-$daemonArguments = "`"$daemonExecutable`" --console --data-dir `"$DaemonDataDirectory`""
+$daemonArguments = "`"$daemonExecutable`" --data-dir `"$DaemonDataDirectory`""
 $daemonService = Get-Service -Name "VemVendingDaemon" -ErrorAction SilentlyContinue
 if ($null -eq $daemonService) {
   New-Service -Name "VemVendingDaemon" -BinaryPathName $daemonArguments -DisplayName "VEM Vending Daemon" -StartupType Automatic | Out-Null
