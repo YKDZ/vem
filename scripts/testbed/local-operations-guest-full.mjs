@@ -380,7 +380,7 @@ export async function collectMaintenanceEntryEvidence(
       entries.push({
         route,
         selector: MAINTENANCE_ENTRY_SELECTOR,
-        finalRoute,
+        finalRoute: finalRoute?.route ?? finalRoute,
         ok: true,
       });
     }
