@@ -873,7 +873,7 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
           String(entry?.transitionId).endsWith(":departed"),
         dependencies,
         "initial sustained Vision departure",
-      );
+      ).catch(() => null);
     }
     await dependencies.issueAdminVentReset(guestInput, dependencies);
     const ventEvidenceBefore = await dependencies.controlPlaneRequest(

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 import {
@@ -416,6 +417,16 @@ describe("presence and audio guest full", () => {
       () => validatePresenceAndAudioGuestReport(missingBoundary),
       /boundaries are incomplete/,
     );
+  });
+
+  it("treats stale precondition departure as best-effort setup", () => {
+    const source = readFileSync(
+      new URL("./presence-and-audio-guest-full.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(source, /initial sustained Vision departure/);
+    assert.match(source, /\.catch\(\(\) => null\)/);
+    assert.match(source, /sustained Vision departure/);
   });
 
   it("orchestrates controlled Vision, installed CDP, host audio capture, and runtime trace evidence", async () => {
