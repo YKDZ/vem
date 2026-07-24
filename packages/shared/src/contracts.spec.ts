@@ -2908,6 +2908,34 @@ describe("shared API contract", () => {
       expect(result.providerCode).toBe("alipay");
     });
 
+    it("rejects alipay sandbox config with production gateway", () => {
+      expect(() =>
+        upsertPaymentProviderConfigSchema.parse({
+          providerCode: "alipay",
+          merchantNo: "2088721101045878",
+          appId: "9021000163629927",
+          publicConfigJson: {
+            mode: "sandbox",
+            gatewayUrl: "https://openapi.alipay.com/gateway.do",
+          },
+        }),
+      ).toThrow(/canonical gateway/);
+    });
+
+    it("rejects alipay production config with sandbox gateway", () => {
+      expect(() =>
+        upsertPaymentProviderConfigSchema.parse({
+          providerCode: "alipay",
+          merchantNo: "2088721101045878",
+          appId: "9021000163629927",
+          publicConfigJson: {
+            mode: "production",
+            gatewayUrl: "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
+          },
+        }),
+      ).toThrow(/canonical gateway/);
+    });
+
     it("accepts machine-level disabled override without secrets", () => {
       expect(() =>
         upsertPaymentProviderConfigSchema.parse({

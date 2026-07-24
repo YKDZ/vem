@@ -61,9 +61,7 @@ test.describe("Admin tabbed page contract acceptance", () => {
       /* eslint-disable no-await-in-loop -- each tab must settle before the next tab triggers its own API loads */
       for (const tabName of adminPage.tabs) {
         const tab = page.getByRole("tab", { name: tabName });
-        const visibleCount = await tab.count();
-        if (visibleCount === 0) continue;
-
+        await expect(tab).toBeVisible({ timeout: 10_000 });
         await tab.click();
         await expect(tab).toHaveAttribute("aria-selected", "true", {
           timeout: 10_000,
