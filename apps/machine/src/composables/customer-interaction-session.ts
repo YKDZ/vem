@@ -1,6 +1,8 @@
 import { onUnmounted, readonly, ref, type Ref } from "vue";
 
 const DEFAULT_INACTIVITY_MS = 45_000;
+const CUSTOMER_INTERACTION_IGNORED_SCOPE_SELECTOR =
+  "[data-customer-interaction-scope='operator']";
 
 export type CustomerInteractionState = {
   active: boolean;
@@ -25,7 +27,15 @@ function clearInactivityTimer(): void {
   inactivityTimer = null;
 }
 
-function registerInteraction(): void {
+function eventWithinIgnoredScope(event: Event | undefined): boolean {
+  if (!event?.target || typeof Element === "undefined") return false;
+  const target = event.target;
+  if (!(target instanceof Element)) return false;
+  return target.closest(CUSTOMER_INTERACTION_IGNORED_SCOPE_SELECTOR) !== null;
+}
+
+function registerInteraction(event?: Event): void {
+  if (eventWithinIgnoredScope(event)) return;
   clearInactivityTimer();
   state.value = {
     active: true,

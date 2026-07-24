@@ -1245,7 +1245,11 @@ async function submitStockMaintenanceTask(): Promise<void> {
 </script>
 
 <template>
-  <main ref="maintenanceRoot" class="kiosk-shell maintenance-page">
+  <main
+    ref="maintenanceRoot"
+    class="kiosk-shell maintenance-page"
+    data-customer-interaction-scope="operator"
+  >
     <KioskHeader />
     <div class="maintenance-layout">
       <aside class="maintenance-task-nav" aria-label="维护任务">
@@ -1756,9 +1760,7 @@ async function submitStockMaintenanceTask(): Promise<void> {
             class="mt-4 rounded-2xl bg-amber-500/15 p-4 text-amber-100"
             aria-live="polite"
           >
-            {{
-              catalogNavigation.message
-            }}
+            {{ catalogNavigation.message }}
           </p>
 
           <div

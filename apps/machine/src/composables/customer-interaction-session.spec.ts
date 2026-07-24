@@ -27,4 +27,32 @@ describe("customer interaction session", () => {
     await vi.advanceTimersByTimeAsync(45_000);
     expect(session.state.value.active).toBe(false);
   });
+
+  it("ignores operator maintenance input as a customer presence signal", async () => {
+    const session = getCustomerInteractionSession();
+    const operatorRoot = document.createElement("main");
+    operatorRoot.dataset.customerInteractionScope = "operator";
+    const input = document.createElement("input");
+    operatorRoot.append(input);
+    document.body.append(operatorRoot);
+
+    input.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true }));
+
+    expect(session.state.value.active).toBe(false);
+
+    document.body.removeChild(operatorRoot);
+  });
+
+  it("keeps customer surface input eligible for presence cues", () => {
+    const session = getCustomerInteractionSession();
+    const customerButton = document.createElement("button");
+    document.body.append(customerButton);
+
+    customerButton.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+
+    expect(session.state.value.active).toBe(true);
+
+    document.body.removeChild(customerButton);
+  });
 });

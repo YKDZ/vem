@@ -276,6 +276,51 @@ describe("Customer journey audio runtime", () => {
     vi.useRealTimers();
   });
 
+  it("does not let operator maintenance input consume the first Vision welcome cue", async () => {
+    useMachineStore(pinia).applyEffectiveRuntimeConfiguration(
+      effectiveConfiguration({ volume: 0.7, transactionCuesEnabled: true }),
+    );
+    const operatorRoot = document.createElement("main");
+    operatorRoot.dataset.customerInteractionScope = "operator";
+    const button = document.createElement("button");
+    operatorRoot.append(button);
+    document.body.append(operatorRoot);
+    runtime = createCustomerJourneyAudioRuntime(pinia);
+
+    button.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    await nextTick();
+    useVisionStore(pinia).applyPresenceStatus({
+      source: "top",
+      eventId: "VISION-PRESENT-AFTER-MAINTENANCE-001",
+      state: "approach",
+      reason: "person_present_but_not_close",
+      detectedAt: "2026-07-19T08:00:00.000Z",
+      personPresent: true,
+      closeNow: false,
+      close: false,
+      closeTrigger: null,
+      proximity: { present: true },
+      occupancy: { state: "single", confidence: 0.91 },
+    });
+
+    await vi.waitFor(() => {
+      expect(nativePlaybackDriver.playLocal).toHaveBeenCalledWith(
+        "/audio/voice/interaction/awakened.mp3",
+        expect.any(Object),
+      );
+    });
+    expect(
+      runtime
+        ?.trace()
+        .filter((entry) => entry.type === "journey_transition")
+        .map((entry) =>
+          entry.type === "journey_transition" ? entry.transitionId : null,
+        ),
+    ).toEqual(["vision:presence-1:welcome"]);
+
+    document.body.removeChild(operatorRoot);
+  });
+
   it("retries a transient automatic-vent IPC failure with the same stable edge and submits departure once", async () => {
     vi.useFakeTimers();
     submitAutomaticVentIntent
