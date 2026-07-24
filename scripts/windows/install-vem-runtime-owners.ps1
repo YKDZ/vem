@@ -34,7 +34,8 @@ function Write-InteractiveLauncher(
   [string]$LauncherPath,
   [string]$ProcessName,
   [string]$ExecutablePath,
-  [string[]]$ArgumentList
+  [string[]]$ArgumentList,
+  [string[]]$InheritedEnvironmentVariableNames = @()
 ) {
   New-Item -ItemType Directory -Force -Path (Split-Path -Parent $LauncherPath) | Out-Null
   $argumentsLiteral = if ($ArgumentList.Count -eq 0) {
@@ -42,8 +43,21 @@ function Write-InteractiveLauncher(
   } else {
     "@(" + (($ArgumentList | ForEach-Object { "'" + $_.Replace("'", "''") + "'" }) -join ", ") + ")"
   }
+  $environmentNamesLiteral = if ($InheritedEnvironmentVariableNames.Count -eq 0) {
+    "@()"
+  } else {
+    "@(" + (($InheritedEnvironmentVariableNames | ForEach-Object { "'" + $_.Replace("'", "''") + "'" }) -join ", ") + ")"
+  }
   $content = @"
 `$ErrorActionPreference = "Stop"
+foreach (`$name in $environmentNamesLiteral) {
+  `$userValue = [Environment]::GetEnvironmentVariable(`$name, "User")
+  `$machineValue = [Environment]::GetEnvironmentVariable(`$name, "Machine")
+  `$value = if (-not [string]::IsNullOrWhiteSpace(`$userValue)) { `$userValue } else { `$machineValue }
+  if (-not [string]::IsNullOrWhiteSpace(`$value)) {
+    Set-Item -LiteralPath "Env:`$name" -Value `$value
+  }
+}
 `$staleProcesses = @(Get-CimInstance Win32_Process -Filter "Name = '$ProcessName'" -ErrorAction SilentlyContinue)
 foreach (`$staleProcess in `$staleProcesses) {
   Stop-Process -Id ([int]`$staleProcess.ProcessId) -Force -ErrorAction SilentlyContinue
@@ -240,7 +254,7 @@ Grant-OwnerAccess $DaemonDataDirectory "(M)"
 Grant-OwnerAccess $VisionAppDirectory "(RX)"
 Grant-OwnerAccess $VisionDataDirectory "(M)"
 
-Write-InteractiveLauncher $machineLauncher "machine.exe" $machineExecutable @()
+Write-InteractiveLauncher $machineLauncher "machine.exe" $machineExecutable @() @("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS")
 Write-InteractiveLauncher $visionLauncher "vending-vision.exe" $visionExecutable @("--config", (Join-Path $VisionDataDirectory "site.json"))
 Register-InteractiveOwnerTask "VEMMachineUI" $machineLauncher $RuntimeDirectory
 Register-InteractiveOwnerTask "VEMVisionRuntime" $visionLauncher $VisionAppDirectory

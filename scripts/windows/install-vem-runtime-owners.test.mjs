@@ -37,6 +37,10 @@ test("interactive owner launchers replace stale component processes without watc
   assert.match(installer, /Get-CimInstance Win32_Process/);
   assert.match(installer, /Stop-Process/);
   assert.match(installer, /Start-Process/);
+  assert.match(installer, /InheritedEnvironmentVariableNames/);
+  assert.match(installer, /WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS/);
+  assert.match(installer, /GetEnvironmentVariable\(`\$name, "Machine"\)/);
+  assert.match(installer, /Set-Item -LiteralPath "Env:`\$name"/);
   assert.doesNotMatch(installer, /Register-ObjectEvent/);
   assert.doesNotMatch(installer, /RestartOnFailure/);
   assert.doesNotMatch(installer, /while \(\$true\)/);
