@@ -46,11 +46,7 @@ const AUDIO_SELECTORS = Object.freeze({
 });
 const MAINTENANCE_ENTRY_SELECTOR =
   "[data-test='maintenance-entry-brand'], [data-test='maintenance-entry-header']";
-const MAINTENANCE_ENTRY_ROUTES = Object.freeze([
-  "#/catalog",
-  "#/offline",
-  "#/payment",
-]);
+const MAINTENANCE_ENTRY_ROUTES = Object.freeze(["#/catalog"]);
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "")

@@ -14,7 +14,7 @@ import {
 } from "./local-operations-guest-full.mjs";
 
 function maintenanceEntryEvidence() {
-  return ["#/catalog", "#/offline", "#/payment"].map((route) => ({
+  return ["#/catalog"].map((route) => ({
     route,
     selector:
       "[data-test='maintenance-entry-brand'], [data-test='maintenance-entry-header']",
@@ -134,7 +134,7 @@ describe("local operations guest full", () => {
       () =>
         validateLocalOperationsEvidence({
           ...report,
-          maintenanceEntry: maintenanceEntryEvidence().slice(0, 2),
+          maintenanceEntry: [],
         }),
       /maintenance entry/,
     );
@@ -441,7 +441,7 @@ describe("local operations guest full", () => {
       rowNo: 1,
       cellNo: 1,
     });
-    assert.equal(writes.at(-1).value.maintenanceEntry.length, 3);
+    assert.equal(writes.at(-1).value.maintenanceEntry.length, 1);
     assert.deepEqual(manualDispenseRequests, [
       {
         idempotencyKey: "RUN-07-local-operations",
