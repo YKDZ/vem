@@ -961,6 +961,11 @@ export async function returnToCatalogFromClient({
   };
   let route = await evaluateExpressionFn(client, "location.hash");
   if (route === "#/catalog") return route;
+  if (route === "" || route === "#" || route === "#/") {
+    route = (await waitForRouteWithTimeout(/^(?:#\/boot|#\/catalog)$/, 30_000))
+      .route;
+    if (route === "#/catalog") return "#/catalog";
+  }
   if (route === "#/boot") {
     return (await waitForRouteWithTimeout("#/catalog", 30_000)).route;
   }

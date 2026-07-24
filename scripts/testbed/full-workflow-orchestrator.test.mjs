@@ -1143,6 +1143,32 @@ describe("full workflow serial lifecycle", () => {
     ]);
   });
 
+  it("waits for the just-started root hash to settle before returning to catalog", async () => {
+    const calls = [];
+    const result = await returnToCatalogFromClient({
+      client: { id: "client" },
+      evaluateExpressionFn: async () => "#/",
+      activateVisibleSelectorFn: async () => {
+        throw new Error("root startup must not use a customer control");
+      },
+      waitForRouteFn: async (_client, expected, options) => {
+        calls.push({ expected: expected.source || expected, options });
+        return { route: calls.length === 1 ? "#/boot" : "#/catalog" };
+      },
+    });
+    assert.equal(result, "#/catalog");
+    assert.deepEqual(calls, [
+      {
+        expected: "^(?:#\\/boot|#\\/catalog)$",
+        options: { timeoutMs: 30_000, pollMs: 250 },
+      },
+      {
+        expected: "#/catalog",
+        options: { timeoutMs: 30_000, pollMs: 250 },
+      },
+    ]);
+  });
+
   it("returns from an empty checkout state through the visible catalog control", async () => {
     const calls = [];
     const result = await returnToCatalogFromClient({
