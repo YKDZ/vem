@@ -1797,7 +1797,7 @@ describe("Windows D cache contract", () => {
     );
     assert.match(
       guest,
-      /requirePass1RuntimeArtifacts[\s\S]*runtime artifact digest mismatch/,
+      /runtimeArtifactSourceDigest = Get-RuntimeArtifactSourceDigest[\s\S]*runtime artifact manifest does not match the requested runtime source digest[\s\S]*runtime artifact digest mismatch/,
     );
     assert.match(
       guest,
@@ -1806,6 +1806,10 @@ describe("Windows D cache contract", () => {
     assert.match(
       guest,
       /reusedFromCommitCache = \$runtimeArtifactReuseSource -eq "commit_cache"/,
+    );
+    assert.match(
+      guest,
+      /function Get-RuntimeArtifactSourceDigest[\s\S]*apps\\machine\\src[\s\S]*packages\\shared\\src[\s\S]*\.Name -notmatch '\\\.\(spec\|test\)\\\.\[\^.\]\+\$'/,
     );
     assert.match(
       guest,

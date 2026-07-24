@@ -80,6 +80,48 @@ function Get-LocalRustSourceDigest {
   }
 }
 
+function Get-RuntimeArtifactSourceDigest {
+  $paths = @(
+    "Cargo.toml",
+    "Cargo.lock",
+    "package.json",
+    "pnpm-lock.yaml",
+    "turbo.json",
+    "tsconfig.json",
+    "apps\machine\package.json",
+    "apps\machine\index.html",
+    "apps\machine\vite.config.ts",
+    "apps\machine\src",
+    "apps\machine\src-tauri",
+    "apps\vending-daemon",
+    "crates\vending-core",
+    "crates\daemon-ipc-contracts",
+    "packages\shared\package.json",
+    "packages\shared\src"
+  ) | ForEach-Object { Join-Path $repoRoot $_ }
+  $files = @($paths | Where-Object { Test-Path -LiteralPath $_ } | ForEach-Object {
+    if (Test-Path -LiteralPath $_ -PathType Leaf) { Get-Item -LiteralPath $_ }
+    else {
+      Get-ChildItem -LiteralPath $_ -Recurse -File | Where-Object {
+        $_.FullName -notmatch '\\node_modules\\|\\target\\|\\dist\\' -and
+        $_.Name -notmatch '\.(spec|test)\.[^.]+$'
+      }
+    }
+  } | Sort-Object FullName -Unique)
+  $entries = @($files | ForEach-Object {
+    $relative = [IO.Path]::GetRelativePath($repoRoot, $_.FullName)
+    $digest = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+    "$relative`0$digest"
+  })
+  $hasher = [Security.Cryptography.SHA256]::Create()
+  try {
+    $bytes = [Text.Encoding]::UTF8.GetBytes($entries -join "`n")
+    return [Convert]::ToHexString($hasher.ComputeHash($bytes)).ToLowerInvariant()
+  } finally {
+    $hasher.Dispose()
+  }
+}
+
 function Get-TestbedSccache {
   $version = "0.16.0"
   $toolRoot = Join-Path $cacheRoot "sccache\bin\$version"
@@ -644,7 +686,8 @@ $env:CARGO_HOME = Join-Path $cacheRoot "cargo-home"
 $sccache = Get-TestbedSccache
 Write-TestbedPhase "sccache-ready"
 $env:RUSTC_WRAPPER = $sccache
-$runtimeArtifactManifestPath = Join-Path $env:CARGO_TARGET_DIR ".vem-runtime-artifacts-$Commit.json"
+$runtimeArtifactSourceDigest = Get-RuntimeArtifactSourceDigest
+$runtimeArtifactManifestPath = Join-Path $env:CARGO_TARGET_DIR ".vem-runtime-artifacts-$runtimeArtifactSourceDigest.json"
 $removedUndeclaredCaches = Remove-UndeclaredCacheDirectories
 Write-TestbedPhase "cache-cleanup"
 foreach ($path in $declaredCachePaths) { New-Item -ItemType Directory -Force -Path $path | Out-Null }
@@ -697,8 +740,8 @@ if (Test-Path -LiteralPath $runtimeArtifactManifestPath -PathType Leaf) {
   try {
     $candidateManifest = Get-Content -Raw -LiteralPath $runtimeArtifactManifestPath -Encoding utf8 | ConvertFrom-Json
     if ($candidateManifest.schemaVersion -ne "vem-runtime-artifacts/v1" -or
-      [string]$candidateManifest.commit -ne $Commit) {
-      throw "runtime artifact manifest does not match the requested commit"
+      [string]$candidateManifest.sourceDigest -ne $runtimeArtifactSourceDigest) {
+      throw "runtime artifact manifest does not match the requested runtime source digest"
     }
     foreach ($artifactName in $expectedRuntimeArtifactPaths.Keys) {
       $artifact = $candidateManifest.artifacts.$artifactName
@@ -756,10 +799,11 @@ if ($reuseRuntimeArtifacts) {
   Copy-Item -LiteralPath $resolvedWebViewLoader -Destination $webViewLoaderSource -Force
   Require-Path $daemonSource
   Require-Path $machineSource
-  $runtimeArtifactManifest = [ordered]@{
-    schemaVersion = "vem-runtime-artifacts/v1"
-    commit = $Commit
-    artifacts = [ordered]@{
+	  $runtimeArtifactManifest = [ordered]@{
+	    schemaVersion = "vem-runtime-artifacts/v1"
+	    commit = $Commit
+	    sourceDigest = $runtimeArtifactSourceDigest
+	    artifacts = [ordered]@{
       daemon = [ordered]@{ path = $daemonSource; sha256 = (Get-FileHash -LiteralPath $daemonSource -Algorithm SHA256).Hash.ToLowerInvariant() }
       machine = [ordered]@{ path = $machineSource; sha256 = (Get-FileHash -LiteralPath $machineSource -Algorithm SHA256).Hash.ToLowerInvariant() }
       webViewLoader = [ordered]@{ path = $webViewLoaderSource; sha256 = (Get-FileHash -LiteralPath $webViewLoaderSource -Algorithm SHA256).Hash.ToLowerInvariant() }
@@ -772,6 +816,7 @@ Require-Path $machineSource
 Require-Path $webViewLoaderSource
 $runtimeArtifactEvidence = [ordered]@{
   commit = $Commit
+  sourceDigest = $runtimeArtifactSourceDigest
   reusedFromPass1 = $runtimeArtifactReuseSource -eq "pass_1"
   reusedFromCommitCache = $runtimeArtifactReuseSource -eq "commit_cache"
   artifacts = [ordered]@{}

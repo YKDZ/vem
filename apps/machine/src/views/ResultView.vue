@@ -325,6 +325,7 @@ onUnmounted(stopAutoReturn);
         v-if="canManuallyReturn"
         class="failure-return-button kiosk-touch-target"
         type="button"
+        data-test="result-return-catalog"
         @click="backToCatalog"
       >
         返回首页
@@ -406,6 +407,7 @@ onUnmounted(stopAutoReturn);
         v-if="canManuallyReturn"
         class="result-return-button kiosk-touch-target"
         type="button"
+        data-test="result-return-catalog"
         @click="backToCatalog"
       >
         返回首页

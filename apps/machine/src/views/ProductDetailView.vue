@@ -322,6 +322,7 @@ async function enterTryOn(): Promise<void> {
         class="detail-back-button kiosk-touch-target"
         type="button"
         aria-label="返回商品列表"
+        data-test="product-detail-return-catalog"
         @click="
           submitMachineNavigationIntent({
             type: 'customer.navigate',
@@ -481,7 +482,7 @@ async function enterTryOn(): Promise<void> {
 
           <section class="detail-section stock-copy">
             <h2>♧ 商品库存</h2>
-            <p>
+            <p data-test="product-detail-stock" :data-saleable-stock="stockText">
               库存：<strong>{{ stockText }}</strong>
             </p>
           </section>

@@ -1240,6 +1240,39 @@ describe("sale-start capability UI flow", () => {
     expectRecognitionDetailsHidden(host);
   });
 
+  it("updates the visible product detail stock when sale-view stock changes", async () => {
+    const item = makeCatalogItem();
+    const catalogStore = useCatalogStore();
+    catalogStore.applySnapshot({
+      items: [{ ...item, saleableStock: 2, physicalStock: 2 }],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    routeParams.catalogKey = item.catalogKey;
+    useSaleCapabilityStore().acceptSnapshot(saleCapability(true));
+
+    const host = await mountView(ProductDetailView);
+
+    const stock = requireElement<HTMLElement>(
+      host,
+      '[data-test="product-detail-stock"]',
+    );
+    expect(stock.getAttribute("data-saleable-stock")).toBe("2");
+    expect(stock.textContent).toContain("2");
+
+    catalogStore.applySnapshot({
+      items: [{ ...item, saleableStock: 1, physicalStock: 1 }],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:01Z",
+    });
+    await nextTick();
+
+    expect(stock.getAttribute("data-saleable-stock")).toBe("1");
+    expect(stock.textContent).toContain("1");
+  });
+
   it("presents only a matched automatic size recommendation until the customer chooses manually", async () => {
     const mediumItem = makeCatalogItem();
     const largeItem: MachineCatalogItem = {

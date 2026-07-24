@@ -137,6 +137,7 @@ async function submitOrder(): Promise<void> {
           class="checkout-back kiosk-touch-target"
           type="button"
           aria-label="返回"
+          data-test="checkout-back-product"
           @click="
             submitMachineNavigationIntent({
               type: 'customer.navigate',
@@ -339,6 +340,7 @@ async function submitOrder(): Promise<void> {
         <button
           class="kiosk-touch-target"
           type="button"
+          data-test="checkout-empty-return-catalog"
           @click="
             submitMachineNavigationIntent({
               type: 'customer.navigate',

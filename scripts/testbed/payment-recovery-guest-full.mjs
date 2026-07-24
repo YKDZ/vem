@@ -726,6 +726,43 @@ async function waitForCustomerTerminal(client, order, expected) {
   );
 }
 
+async function returnCustomerToCatalog(client) {
+  const selectors = [
+    "[data-test='result-return-catalog']",
+    "[data-test='product-detail-return-catalog']",
+    "[data-test='checkout-empty-return-catalog']",
+  ];
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const state = await evaluateExpression(
+      client,
+      `(() => ({
+        route: location.hash,
+        catalogVisible: Boolean(document.querySelector("[data-test='catalog-page']")),
+        returnSelector: ${JSON.stringify(selectors)}.find((selector) => {
+          const element = document.querySelector(selector);
+          if (!element || element.disabled) return false;
+          const rect = element.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        }) || null
+      }))()`,
+    );
+    if (state?.route === "#/catalog" && state.catalogVisible === true) {
+      return state;
+    }
+    if (!state?.returnSelector) {
+      throw new Error(
+        `installed customer runtime cannot return to Catalog from ${JSON.stringify(state)}`,
+      );
+    }
+    await activateVisibleSelector(client, state.returnSelector, {
+      kind: "touch",
+      timeoutMs: 30_000,
+    });
+    await waitForRoute(client, "#/catalog", { timeoutMs: 30_000 });
+  }
+  throw new Error("installed customer runtime did not settle on Catalog");
+}
+
 export async function openFixtureProductFromCatalog({
   client,
   slotId,
@@ -952,6 +989,7 @@ export async function runPaymentRecoveryGuest(options) {
     await waitForMachineOnline(input, machineCode, adminAccessToken);
 
     const createAttempt = async (kind) => {
+      await returnCustomerToCatalog(customer);
       const baselinePlatform = await platformReport(
         input,
         runId,
