@@ -1115,12 +1115,11 @@ describe("Local Operations", () => {
     );
   });
 
-  it("keeps return-to-catalog unavailable until Local Operations is sellable", async () => {
+  it("keeps return-to-catalog available while Local Operations recovers configuration", async () => {
     const host = await render();
     const returnToCatalog = button(host, "返回商品目录");
 
-    expect(returnToCatalog.disabled).toBe(true);
-    expect(host.textContent).toContain("暂不能回到目录");
+    expect(returnToCatalog.disabled).toBe(false);
   });
 
   it("refreshes catalog sale-view before returning to the customer catalog", async () => {

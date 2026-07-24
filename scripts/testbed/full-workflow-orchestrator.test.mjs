@@ -1206,8 +1206,8 @@ describe("full workflow serial lifecycle", () => {
     );
   });
 
-  it("does not treat persistent boot, offline, or maintenance routes as catalog", async () => {
-    for (const route of ["#/boot", "#/offline", "#/maintenance"]) {
+  it("does not treat persistent boot or offline routes as catalog", async () => {
+    for (const route of ["#/boot", "#/offline"]) {
       await assert.rejects(
         () =>
           returnToCatalogFromClient({
@@ -1223,6 +1223,33 @@ describe("full workflow serial lifecycle", () => {
         /did not reach catalog|no supported customer return control/,
       );
     }
+  });
+
+  it("returns from maintenance through the operator return control", async () => {
+    const calls = [];
+    const result = await returnToCatalogFromClient({
+      client: { id: "client" },
+      evaluateExpressionFn: async () => "#/maintenance?source=operator",
+      activateVisibleSelectorFn: async (_client, selector, options) => {
+        calls.push({ selector, options });
+        return { selector };
+      },
+      waitForRouteFn: async (_client, expected, options) => {
+        calls.push({ expected, options });
+        return { route: "#/catalog" };
+      },
+    });
+    assert.equal(result, "#/catalog");
+    assert.deepEqual(calls, [
+      {
+        selector: '[data-test="maintenance-return-catalog"]:not(:disabled)',
+        options: { kind: "touch", timeoutMs: 10_000 },
+      },
+      {
+        expected: "#/catalog",
+        options: { timeoutMs: 30_000, pollMs: 250 },
+      },
+    ]);
   });
 
   it("accepts an automatic return to catalog while activating a stale route control", async () => {

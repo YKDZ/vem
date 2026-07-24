@@ -986,6 +986,19 @@ export async function returnToCatalogFromClient({
       return (await waitForRouteWithTimeout("#/catalog")).route;
     }
   }
+  if (/^#\/maintenance(?:\?|$|\/)/.test(route)) {
+    if (
+      !(await activateUnlessAlreadyCatalog(
+        '[data-test="maintenance-return-catalog"]:not(:disabled)',
+        {
+          kind: "touch",
+          timeoutMs: 10_000,
+        },
+      ))
+    )
+      return "#/catalog";
+    return (await waitForRouteWithTimeout("#/catalog", 30_000)).route;
+  }
   throw new Error(
     `no supported customer return control was available for ${route}`,
   );

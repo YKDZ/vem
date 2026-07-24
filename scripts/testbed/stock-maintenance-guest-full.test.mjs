@@ -203,16 +203,16 @@ describe("stock maintenance guest full", () => {
     );
   });
 
-  it("sets the refill input through DOM input and change events before submitting", () => {
+  it("sets the refill input through the installed UI input path before submitting", () => {
     const source = readFileSync(
       new URL("./stock-maintenance-guest-full.mjs", import.meta.url),
       "utf8",
     );
     assert.match(
       source,
-      /async function enterRoutineRefill[\s\S]*element\.value = "2";[\s\S]*dispatchEvent\(new Event\("input", \{ bubbles: true \}\)\)[\s\S]*dispatchEvent\(new Event\("change", \{ bubbles: true \}\)\)/,
+      /async function enterRoutineRefill[\s\S]*element\.value = "";[\s\S]*dispatchEvent\(new Event\("input", \{ bubbles: true \}\)\)/,
     );
-    assert.doesNotMatch(
+    assert.match(
       source,
       /async function enterRoutineRefill[\s\S]*Input\.insertText[\s\S]*stock-maintenance-submit/,
     );

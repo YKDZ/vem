@@ -204,11 +204,6 @@ const clearWholeMachineLockDisabled = computed(
     !wholeMachineLockMaintenance.selfCheckEvidence?.online ||
     wholeMachineLockMaintenance.operatorNote.trim().length === 0,
 );
-const returnToCatalogBlockedReason = computed(() => {
-  return hasAcceptedProvisioningProfile.value
-    ? null
-    : "机器尚未接受有效的配置档案。";
-});
 const hasAcceptedProvisioningProfile = computed(() => {
   const configuration = machineStore.effectiveRuntimeConfiguration;
   return Boolean(
@@ -1118,10 +1113,6 @@ function operatorMessageLabel(message: string): string {
 }
 
 async function returnToCatalog(): Promise<void> {
-  if (returnToCatalogBlockedReason.value) {
-    catalogNavigation.message = `暂不能回到目录：${returnToCatalogBlockedReason.value}`;
-    return;
-  }
   catalogNavigation.message = null;
   try {
     await catalogStore.refresh();
@@ -1285,7 +1276,6 @@ async function submitStockMaintenanceTask(): Promise<void> {
             class="maintenance-primary-button"
             data-test="maintenance-return-catalog"
             type="button"
-            :disabled="Boolean(returnToCatalogBlockedReason)"
             @click="returnToCatalog"
           >
             返回商品目录
@@ -1762,13 +1752,12 @@ async function submitStockMaintenanceTask(): Promise<void> {
           </div>
 
           <p
-            v-if="returnToCatalogBlockedReason || catalogNavigation.message"
+            v-if="catalogNavigation.message"
             class="mt-4 rounded-2xl bg-amber-500/15 p-4 text-amber-100"
             aria-live="polite"
           >
             {{
-              catalogNavigation.message ??
-              `暂不能回到目录：${returnToCatalogBlockedReason}`
+              catalogNavigation.message
             }}
           </p>
 

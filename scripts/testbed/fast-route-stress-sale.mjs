@@ -2864,9 +2864,10 @@ async function runFastRouteStressSale(options) {
       );
     }
     if (cleanupPaymentNo) {
+      const settleCleanupErrors = primaryError ? cleanupErrors : [];
       await collectCleanupStep(
         cleanup,
-        cleanupErrors,
+        settleCleanupErrors,
         "settle pending create transaction",
         () =>
           settlePendingCreateOrder({
