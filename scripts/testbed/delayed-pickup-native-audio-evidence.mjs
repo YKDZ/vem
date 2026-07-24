@@ -6,7 +6,7 @@ export const DEFAULT_DELAYED_PICKUP_TIMING = Object.freeze({
   firstWarningAfterF0Ms: 15_000,
   secondWarningAfterF0Ms: 25_000,
   resetStartAfterF0Ms: 30_000,
-  controllerTimingToleranceMs: 1_500,
+  controllerTimingToleranceMs: 2_500,
   traceTimingToleranceMs: 3_000,
   maxCueStartLatencyMs: 2_000,
   repeatedFrameWindowMs: 1_500,

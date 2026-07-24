@@ -172,6 +172,10 @@ describe("vision try-on acceptance script", () => {
       source,
       /`\$canonicalExecutablePath = \[IO\.Path\]::GetFullPath\('\$\{VISION_ENTRYPOINT_PATH\}'\)`/,
     );
+    assert.match(
+      source,
+      /taskkill\.exe \/PID \(\[int\]\$process\.ProcessId\) \/T \/F/,
+    );
     assert.match(source, /runPowerShell\(command, "stopping Vision runtime"\)/);
     assert.match(source, /runPowerShell\(command, "starting Vision runtime"\)/);
   });

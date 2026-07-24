@@ -694,6 +694,7 @@ export async function collectAudioPreferencePersistenceEvidence(
       restartInstalledRuntime(runtimeHandoff, path, dependencies));
   const target = { ...AUDIO_PERSISTENCE_TARGET };
   const defaults = { ...MACHINE_AUDIO_DEFAULTS };
+  let activeHandoff = handoff;
   let restoreError = null;
   let customApplied = false;
   const evidence = {
@@ -705,48 +706,66 @@ export async function collectAudioPreferencePersistenceEvidence(
     restartedRuntime: null,
   };
   try {
-    evidence.preRestart = await withUiClientFn(handoff, async (client) => {
-      const uiAfterSave = await setUiAudioPreferences(client, target);
-      const daemonAfterSave = await waitForMatch(
-        "daemon effective audio preferences before restart",
-        () => readDaemonAudioPreferences(handoff, daemonRequest),
-        target,
-      );
-      customApplied = true;
-      return {
-        ui: normalizeAudioPreferences(uiAfterSave),
-        daemon: normalizeAudioPreferences(daemonAfterSave),
-      };
-    });
-    evidence.restartedRuntime = await restartRuntime(handoff, handoffPath);
-    evidence.postRestart = await withUiClientFn(handoff, async (client) => {
-      await ensureMaintenanceExperienceTaskFn(client);
-      const uiAfterRestart = await waitForMatch(
-        "machine UI audio preferences after restart",
-        () => readUiAudioPreferences(client),
-        target,
-      );
-      const daemonAfterRestart = await waitForMatch(
-        "daemon effective audio preferences after restart",
-        () => readDaemonAudioPreferences(handoff, daemonRequest),
-        target,
-      );
-      return {
-        ui: normalizeAudioPreferences(uiAfterRestart),
-        daemon: normalizeAudioPreferences(daemonAfterRestart),
-      };
-    });
+    evidence.preRestart = await withUiClientFn(
+      activeHandoff,
+      async (client) => {
+        const uiAfterSave = await setUiAudioPreferences(client, target);
+        const daemonAfterSave = await waitForMatch(
+          "daemon effective audio preferences before restart",
+          () => readDaemonAudioPreferences(activeHandoff, daemonRequest),
+          target,
+        );
+        customApplied = true;
+        return {
+          ui: normalizeAudioPreferences(uiAfterSave),
+          daemon: normalizeAudioPreferences(daemonAfterSave),
+        };
+      },
+    );
+    evidence.restartedRuntime = await restartRuntime(
+      activeHandoff,
+      handoffPath,
+    );
+    activeHandoff = {
+      ...activeHandoff,
+      daemon: evidence.restartedRuntime.daemon,
+      machine: evidence.restartedRuntime.machine,
+      cdp: evidence.restartedRuntime.cdp,
+    };
+    handoff.daemon = activeHandoff.daemon;
+    handoff.machine = activeHandoff.machine;
+    handoff.cdp = activeHandoff.cdp;
+    evidence.postRestart = await withUiClientFn(
+      activeHandoff,
+      async (client) => {
+        await ensureMaintenanceExperienceTaskFn(client);
+        const uiAfterRestart = await waitForMatch(
+          "machine UI audio preferences after restart",
+          () => readUiAudioPreferences(client),
+          target,
+        );
+        const daemonAfterRestart = await waitForMatch(
+          "daemon effective audio preferences after restart",
+          () => readDaemonAudioPreferences(activeHandoff, daemonRequest),
+          target,
+        );
+        return {
+          ui: normalizeAudioPreferences(uiAfterRestart),
+          daemon: normalizeAudioPreferences(daemonAfterRestart),
+        };
+      },
+    );
     return evidence;
   } finally {
     if (!customApplied) return;
     try {
       evidence.restoredDefaults = await withUiClientFn(
-        handoff,
+        activeHandoff,
         async (client) => {
           const uiAfterRestore = await setUiAudioPreferences(client, defaults);
           const daemonAfterRestore = await waitForMatch(
             "daemon effective audio preferences after restore",
-            () => readDaemonAudioPreferences(handoff, daemonRequest),
+            () => readDaemonAudioPreferences(activeHandoff, daemonRequest),
             defaults,
           );
           return {

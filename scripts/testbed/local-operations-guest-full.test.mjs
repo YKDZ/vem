@@ -246,10 +246,14 @@ describe("local operations guest full", () => {
         transactionCuesEnabled: true,
       },
     };
+    const observedTargetIds = [];
     const evidence = await collectAudioPreferencePersistenceEvidence(
       { handoff, handoffPath: "C:\\handoff.json" },
       {
-        withUiClient: async (_handoff, operation) => operation({ fake: true }),
+        withUiClient: async (runtimeHandoff, operation) => {
+          observedTargetIds.push(runtimeHandoff.cdp.targetId);
+          return operation({ fake: true });
+        },
         ensureMaintenanceExperienceTask: async () => {},
         setUiAudioPreferences: async (_client, expected) => {
           state.audio = normalizeAudioPreferences(expected);
@@ -297,6 +301,8 @@ describe("local operations guest full", () => {
     });
     assert.deepEqual(evidence.postRestart.daemon, evidence.preRestart.daemon);
     assert.equal(evidence.restartedRuntime.ready.ipcToken, "token-2");
+    assert.deepEqual(observedTargetIds, ["target-1", "target-2", "target-2"]);
+    assert.equal(handoff.cdp.targetId, "target-2");
     assert.deepEqual(evidence.restoredDefaults.ui, {
       volume: 0.7,
       cuesEnabled: true,

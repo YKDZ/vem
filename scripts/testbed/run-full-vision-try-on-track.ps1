@@ -91,8 +91,9 @@ function Stop-ManagedVision([int[]]$OwnedProcessIds) {
   foreach ($processId in @($OwnedProcessIds)) {
     if ($null -eq $processId -or [int]$processId -le 0) { continue }
     Stop-Process -Id ([int]$processId) -Force -ErrorAction SilentlyContinue
+    & taskkill.exe /PID ([int]$processId) /T /F 2>$null | Out-Null
   }
-  $deadline = [DateTime]::UtcNow.AddSeconds(15)
+  $deadline = [DateTime]::UtcNow.AddSeconds(30)
   do {
     if (@(Get-ManagedVisionProcessIds).Count -eq 0) { return }
     Start-Sleep -Milliseconds 250

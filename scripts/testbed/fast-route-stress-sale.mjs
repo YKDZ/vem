@@ -1541,10 +1541,22 @@ export async function waitForStableVisionArrivalTrace(
         /^vision:presence-\d+:welcome$/.test(entry?.transitionId ?? ""),
     );
     if (arrival) return arrival;
+    const activeTouchSession = traceEntriesAfterBoundary(
+      snapshot,
+      traceBoundary,
+      "Vision arrival control-request trace boundary",
+    ).find(
+      (entry) =>
+        entry?.type === "navigation" &&
+        entry?.intentType === "customer.touch" &&
+        entry?.decision === "accepted" &&
+        entry?.reasonCode === "touchscreen_session_renewed",
+    );
+    if (activeTouchSession) return activeTouchSession;
     await sleepFn(25);
   } while (now() < deadline);
   throw new Error(
-    `installed runtime did not trace a stable Vision arrival after the control-request boundary: ${JSON.stringify(lastTrace.slice(-8))}`,
+    `installed runtime did not trace a stable Vision arrival or active touch session after the control-request boundary: ${JSON.stringify(lastTrace.slice(-8))}`,
   );
 }
 

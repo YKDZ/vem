@@ -211,6 +211,20 @@ describe("delayed pickup production evidence algorithms", () => {
     );
   });
 
+  it("allows the pickup cue to lead F0 by the controller timing tolerance", () => {
+    assert.equal(
+      pickupCueWithinPickupPhase({
+        playback: { at: "2026-07-18T08:00:08.100Z" },
+        controller: {
+          f0: { at: "2026-07-18T08:00:10.000Z" },
+          f1: { at: "2026-07-18T08:00:40.000Z" },
+        },
+        toleranceMs: 2_500,
+      }),
+      true,
+    );
+  });
+
   it("fails closed for fabricated headers, invalid dispense CRC, and non-canonical timestamps", () => {
     const valid = [
       dispenseFrame(),
