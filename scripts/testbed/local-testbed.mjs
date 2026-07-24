@@ -2089,9 +2089,10 @@ async function reconstruct(options) {
       interactiveUser: "VEMKiosk",
       visionAcceptance: seeded.visionAcceptance,
     };
+    const guestInputRaw = `${JSON.stringify(guestInput, null, 2)}\n`;
     await writeFile(
       join(options.stateRoot, "guest-input.json"),
-      `${JSON.stringify(guestInput, null, 2)}\n`,
+      guestInputRaw,
       "utf8",
     );
     for (const step of plan.slice(9, -1))
