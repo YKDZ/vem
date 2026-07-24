@@ -587,7 +587,7 @@ function unwrapServiceApiEnvelope(payload) {
   return payload;
 }
 
-async function issueAdminVentOverride(guestInput, dependencies) {
+async function issueAdminVentCommand(guestInput, ventSpeed, dependencies) {
   const request = async (path, options = {}) =>
     unwrapServiceApiEnvelope(
       await dependencies.fetchJson(`${apiBaseUrl(guestInput)}${path}`, options),
@@ -613,7 +613,7 @@ async function issueAdminVentOverride(guestInput, dependencies) {
         authorization: `Bearer ${token}`,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ ventSpeed: 3 }),
+      body: JSON.stringify({ ventSpeed }),
     },
   );
   const commandNo = required(command?.commandNo, "Admin environment commandNo");
@@ -629,16 +629,28 @@ async function issueAdminVentOverride(guestInput, dependencies) {
     ) {
       if (latest.status !== "succeeded") {
         throw new Error(
-          `Admin B3 override did not succeed: ${JSON.stringify(latest)}`,
+          `Admin B3 command did not succeed: ${JSON.stringify(latest)}`,
         );
       }
-      return { commandNo, resultStatus: latest.status, requestedSpeed: 3 };
+      return {
+        commandNo,
+        resultStatus: latest.status,
+        requestedSpeed: ventSpeed,
+      };
     }
     await dependencies.sleep(100);
   } while (dependencies.now() < deadline);
   throw new Error(
-    `Admin B3 override did not reach a terminal result: ${commandNo}`,
+    `Admin B3 command did not reach a terminal result: ${commandNo}`,
   );
+}
+
+async function issueAdminVentReset(guestInput, dependencies) {
+  return issueAdminVentCommand(guestInput, 0, dependencies);
+}
+
+async function issueAdminVentOverride(guestInput, dependencies) {
+  return issueAdminVentCommand(guestInput, 3, dependencies);
 }
 
 async function submitDuplicateAutomaticVentIntent(
@@ -691,6 +703,7 @@ function defaultDependencies() {
     sleep,
     now: () => Date.now(),
     randomUUID,
+    issueAdminVentReset,
     issueAdminVentOverride,
     submitDuplicateAutomaticVentIntent,
     artifactRoot: (outPath) =>
@@ -862,6 +875,7 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
         "initial sustained Vision departure",
       );
     }
+    await dependencies.issueAdminVentReset(guestInput, dependencies);
     const ventEvidenceBefore = await dependencies.controlPlaneRequest(
       guestInput,
       `/v1/serial-sessions/${sessionId}/evidence`,

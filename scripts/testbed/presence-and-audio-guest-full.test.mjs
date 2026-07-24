@@ -586,6 +586,11 @@ describe("presence and audio guest full", () => {
         },
         now: () => now,
         randomUUID: () => "operation-1",
+        issueAdminVentReset: async () => ({
+          commandNo: "environment-command-reset",
+          requestedSpeed: 0,
+          resultStatus: "succeeded",
+        }),
         controlPlaneRequest: async (_input, path, body) => {
           calls.push(path);
           if (path === "/v1/audio-captures/start") {
@@ -814,6 +819,7 @@ describe("presence and audio guest full", () => {
             return { audioCaptureId: "audio-1", startReport: {} };
           return { cancelled: true };
         },
+        issueAdminVentReset: async () => ({}),
         fetchJson: async (_url, request) => {
           if (JSON.parse(request.body).state === "empty") return { ok: true };
           throw new Error("controlled Vision unavailable");
