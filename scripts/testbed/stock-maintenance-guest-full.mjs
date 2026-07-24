@@ -858,6 +858,7 @@ export async function runStockMaintenanceGuest(options) {
       platform: unavailablePlatform,
     };
     client = await connectUi(handoff);
+    await returnCustomerResultToCatalog(client);
     await openStockMaintenance(client);
     const sink = screenshotSink(options.outPath);
     report.screenshots.unavailable = await captureStockScreenshot(

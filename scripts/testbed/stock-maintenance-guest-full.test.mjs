@@ -218,6 +218,17 @@ describe("stock maintenance guest full", () => {
     );
   });
 
+  it("returns the customer result page to Catalog before opening stock maintenance", () => {
+    const source = readFileSync(
+      new URL("./stock-maintenance-guest-full.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(
+      source,
+      /client = await connectUi\(handoff\);\s*await returnCustomerResultToCatalog\(client\);\s*await openStockMaintenance\(client\);/,
+    );
+  });
+
   it("verifies restored saleability through the category detail flow", () => {
     const source = readFileSync(
       new URL("./stock-maintenance-guest-full.mjs", import.meta.url),
