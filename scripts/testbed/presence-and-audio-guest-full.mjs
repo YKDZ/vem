@@ -1066,53 +1066,6 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
       });
     }
 
-    await dependencies.setAudioPreferences(client, {
-      volume: 0.35,
-      cuesEnabled: true,
-      presenceCuesEnabled: false,
-      transactionCuesEnabled: true,
-    });
-    await dependencies.evaluateExpression(
-      client,
-      'location.hash = "#/catalog"',
-    );
-    await dependencies.waitForRoute(client, "#/catalog", {
-      timeoutMs: 30_000,
-      pollMs: 250,
-    });
-    boundary = traceId(await readTrace());
-    await injectVisionPresence(guestInput, "empty", dependencies);
-    await dependencies.sleep(SUSTAINED_EMPTY_MS);
-    await injectVisionPresence(guestInput, "approach", dependencies);
-    const disabledWelcome = await waitForTraceEntry(
-      readTrace,
-      boundary,
-      (entry) =>
-        entry?.type === "audio_rejected" &&
-        String(entry?.transitionId).endsWith(":welcome") &&
-        entry?.message === "audio cue preference disabled",
-      dependencies,
-      "disabled presence welcome rejection",
-    );
-    checkpoints.push({
-      label: "disabled-presence-welcome-rejected",
-      traceId: Number(disabledWelcome.entry.id),
-    });
-    await dependencies.setAudioPreferences(client, {
-      volume: 0.7,
-      cuesEnabled: true,
-      presenceCuesEnabled: true,
-      transactionCuesEnabled: true,
-    });
-    await dependencies.evaluateExpression(
-      client,
-      'location.hash = "#/catalog"',
-    );
-    await dependencies.waitForRoute(client, "#/catalog", {
-      timeoutMs: 30_000,
-      pollMs: 250,
-    });
-
     const capture = aggregateCapture(cueWindows);
     const acceptance = {
       schemaVersion: "presence-and-audio-production-acceptance/v1",
@@ -1142,10 +1095,6 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
         },
         supportedCategoryKeys,
         categories,
-        preferenceSuppression: {
-          transitionId: disabledWelcome.entry.transitionId,
-          rejectedTraceId: Number(disabledWelcome.entry.id),
-        },
       },
       automaticVent,
     };

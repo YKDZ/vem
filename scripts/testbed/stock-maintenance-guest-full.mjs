@@ -25,6 +25,7 @@ const STOCK_TASK_SELECTOR = "[data-test='maintenance-task-stock']";
 const STOCK_PANEL_SELECTOR = "[data-test='stock-maintenance']";
 const MAINTENANCE_ENTRY_SELECTOR = "[data-test='maintenance-entry-header']";
 const MAINTENANCE_RETURN_SELECTOR = "[data-test='maintenance-return-catalog']";
+const STOCK_FIXTURE_CATEGORY_KEY = "socks";
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -365,6 +366,18 @@ async function returnToCatalogFromMaintenance(client) {
     timeoutMs: TIMEOUT_MS,
     pollMs: POLL_MS,
   });
+}
+
+async function selectStockFixtureCategory(client) {
+  await activateVisibleSelector(
+    client,
+    `[data-test="catalog-category"][data-category-key="${STOCK_FIXTURE_CATEGORY_KEY}"]:not(:disabled)`,
+    {
+      kind: "touch",
+      timeoutMs: TIMEOUT_MS,
+      pollMs: POLL_MS,
+    },
+  );
 }
 
 async function captureStockScreenshot(client, sink, label, route, identity) {
@@ -866,6 +879,7 @@ export async function runStockMaintenanceGuest(options) {
       platform: restoredPlatform,
     };
     await returnToCatalogFromMaintenance(client);
+    await selectStockFixtureCategory(client);
     await waitFor(
       "visible restored fixture saleability",
       () =>
