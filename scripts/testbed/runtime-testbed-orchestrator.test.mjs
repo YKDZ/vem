@@ -194,6 +194,7 @@ describe("runtime testbed scheduler contract", () => {
       "utf8",
     );
     assert.match(source, /const GUEST_SETUP_TIMEOUT_MS = 120_000/);
+    assert.match(source, /const GUEST_TRANSFER_TIMEOUT_MS = 300_000/);
     assert.match(source, /const GUEST_FAST_EXECUTION_TIMEOUT_MS = 15 \* 60_000/);
     assert.match(source, /error\.timedOut = true/);
     assert.match(source, /timeoutLabel: "guest acceptance execution"/);

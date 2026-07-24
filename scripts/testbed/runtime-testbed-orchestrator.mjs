@@ -26,7 +26,7 @@ const isTerminalStatus = (status) => TERMINAL.has(status);
 const STATUS_SCHEMA = "vem-runtime-testbed-run/v1";
 const CONFIG_SCHEMA = "vem-runtime-testbed-host/v1";
 const GUEST_SETUP_TIMEOUT_MS = 120_000;
-const GUEST_TRANSFER_TIMEOUT_MS = 120_000;
+const GUEST_TRANSFER_TIMEOUT_MS = 300_000;
 const GUEST_FAST_EXECUTION_TIMEOUT_MS = 15 * 60_000;
 const GUEST_FULL_EXECUTION_TIMEOUT_MS = 45 * 60_000;
 
