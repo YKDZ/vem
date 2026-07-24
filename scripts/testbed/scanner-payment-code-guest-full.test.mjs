@@ -12,6 +12,7 @@ import {
   scannerFrameBytes,
   runCleanupStep,
   validateSuccessfulOutcome,
+  waitForSuccessfulOutcomeSnapshot,
   waitForSaleStartCapability,
 } from "./scanner-payment-code-guest-full.mjs";
 
@@ -420,6 +421,144 @@ describe("scanner payment-code guest full", () => {
         }),
       /exactly one total movement for the order/,
     );
+  });
+
+  it("waits for platform persistence after the UI reaches the success surface", async () => {
+    const sale = {
+      orderId: "order-22",
+      paymentId: "payment-22",
+      orderNo: "ORDER-22",
+    };
+    const baseline = {
+      raw: {
+        payments: [
+          { id: sale.paymentId, orderId: sale.orderId, status: "created" },
+        ],
+        inventories: [{ id: "inventory-22", onHandQty: 2 }],
+      },
+    };
+    const stale = {
+      raw: {
+        orders: [
+          {
+            id: sale.orderId,
+            orderNo: sale.orderNo,
+            paymentState: "pending",
+            status: "payment_pending",
+            fulfillmentState: "pending",
+          },
+        ],
+        payments: [
+          { id: sale.paymentId, orderId: sale.orderId, status: "created" },
+        ],
+        inventories: [{ id: "inventory-22", onHandQty: 2 }],
+      },
+    };
+    const persisted = {
+      raw: {
+        orders: [
+          {
+            id: sale.orderId,
+            orderNo: sale.orderNo,
+            paymentState: "paid",
+            status: "fulfilled",
+            fulfillmentState: "dispensed",
+          },
+        ],
+        orderItems: [
+          {
+            id: "order-item-22",
+            orderId: sale.orderId,
+            inventoryId: "inventory-22",
+            slotId: "slot-22",
+            quantity: 1,
+            fulfillmentStatus: "dispensed",
+          },
+        ],
+        payments: [
+          { id: sale.paymentId, orderId: sale.orderId, status: "succeeded" },
+        ],
+        paymentCodeAttempts: [
+          {
+            paymentId: sale.paymentId,
+            orderId: sale.orderId,
+            status: "succeeded",
+            isActive: false,
+            source: "serial_text",
+            scannerEventId: "scanner-event-22",
+            attemptNo: 1,
+            idempotencyKey: "scanner-attempt-22",
+          },
+        ],
+        commands: [
+          {
+            id: "command-22",
+            commandNo: "COMMAND-22",
+            orderId: sale.orderId,
+            orderItemId: "order-item-22",
+            slotId: "slot-22",
+            commandKind: "dispatch",
+            status: "succeeded",
+          },
+        ],
+        movements: [
+          {
+            orderNo: sale.orderNo,
+            commandNo: "COMMAND-22",
+            orderItemId: "order-item-22",
+            inventoryId: "inventory-22",
+            slotId: "slot-22",
+            quantity: 1,
+            movementType: "dispense_succeeded",
+            status: "accepted",
+          },
+        ],
+        inventories: [{ id: "inventory-22", onHandQty: 1 }],
+      },
+    };
+    const calls = [];
+    const result = await waitForSuccessfulOutcomeSnapshot({
+      queryPlatformFn: async (...args) => {
+        calls.push(args);
+        return calls.length === 1 ? stale : persisted;
+      },
+      guestInput: { ok: true },
+      runId: "RUN-22",
+      machineCode: "VEM-22",
+      sessionId: "session-22",
+      baseline,
+      renderedSale: sale,
+      command: {
+        vendingCommandId: "command-22",
+        vendingCommandNo: "COMMAND-22",
+      },
+      attemptSnapshot: {
+        paymentCodeAttempt: {
+          scannerEventId: "scanner-event-22",
+          attemptNo: 1,
+          idempotencyKey: "scanner-attempt-22",
+        },
+      },
+      scannerEvent: {
+        type: "scanner_code",
+        source: "serial_text",
+        eventId: "scanner-event-22",
+      },
+      afterF2Ui: {
+        route: "#/result/success",
+        result: {
+          kind: "success",
+          orderId: sale.orderId,
+          paymentId: sale.paymentId,
+          commandId: "command-22",
+        },
+      },
+      pollMs: 1,
+    });
+
+    assert.equal(calls.length, 2);
+    assert.equal(result.postPlatform, persisted);
+    assert.equal(result.success.command.status, "succeeded");
   });
 
   it("rejects a movement that does not carry the completed command number", () => {

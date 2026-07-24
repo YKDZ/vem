@@ -963,6 +963,56 @@ export function validateSuccessfulOutcome({
   };
 }
 
+export async function waitForSuccessfulOutcomeSnapshot({
+  queryPlatformFn,
+  guestInput,
+  runId,
+  machineCode,
+  sessionId,
+  baseline,
+  renderedSale,
+  command,
+  attemptSnapshot,
+  scannerEvent,
+  afterF2Ui,
+  timeoutMs = 30_000,
+  pollMs = 500,
+}) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = null;
+  do {
+    const postPlatform = await queryPlatformFn(
+      guestInput,
+      runId,
+      machineCode,
+      sessionId,
+    );
+    try {
+      return {
+        postPlatform,
+        success: validateSuccessfulOutcome({
+          baseline,
+          post: postPlatform,
+          renderedSale,
+          command,
+          attemptSnapshot,
+          scannerEvent,
+          afterF2Ui,
+        }),
+      };
+    } catch (error) {
+      lastError = error;
+    }
+    await sleep(pollMs);
+  } while (Date.now() < deadline);
+  throw new Error(
+    `successful platform outcome did not become observable: ${
+      lastError instanceof Error ? lastError.message : String(lastError)
+    }`,
+    { cause: lastError },
+  );
+}
+
 export function parseScannerPaymentCodeGuestArgs(args) {
   const mode = required(option(args, "mode"), "--mode");
   if (!MODES.has(mode)) throw new Error("--mode must be full");
@@ -1214,26 +1264,24 @@ export async function runScannerPaymentCodeGuest(options) {
       },
       60_000,
     );
-    const postPlatform = await queryPlatform(
+    const { postPlatform, success } = await waitForSuccessfulOutcomeSnapshot({
+      queryPlatformFn: queryPlatform,
       guestInput,
       runId,
       machineCode,
-      sessionStart.sessionId,
-    );
-    const sessionEvidence = await controlPlaneRequest(
-      guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/evidence`,
-    );
-    const runtimeTrace = await readRuntimeTrace(client);
-    const success = validateSuccessfulOutcome({
+      sessionId: sessionStart.sessionId,
       baseline: paymentBaseline,
-      post: postPlatform,
       renderedSale,
       command,
       attemptSnapshot,
       scannerEvent,
       afterF2Ui,
     });
+    const sessionEvidence = await controlPlaneRequest(
+      guestInput,
+      `/v1/serial-sessions/${sessionStart.sessionId}/evidence`,
+    );
+    const runtimeTrace = await readRuntimeTrace(client);
 
     const stop = await controlPlaneRequest(
       guestInput,
