@@ -902,6 +902,7 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
       [2],
       dependencies,
     );
+    await dependencies.sleep(5_100);
     const adminOverride = await dependencies.issueAdminVentOverride(
       guestInput,
       dependencies,

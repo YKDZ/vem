@@ -82,9 +82,11 @@ function Get-ManagedVisionProcessIds() {
 }
 
 function Stop-ManagedVision([int[]]$OwnedProcessIds) {
-  $task = Get-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\VEM\" -ErrorAction SilentlyContinue
-  if ($null -ne $task -and [string]$task.State -eq "Running") {
-    Stop-ScheduledTask -InputObject $task -ErrorAction Stop
+  foreach ($taskName in @("VEMVisionRuntime", "StartVisionServer")) {
+    $task = Get-ScheduledTask -TaskName $taskName -TaskPath "\VEM\" -ErrorAction SilentlyContinue
+    if ($null -ne $task -and [string]$task.State -eq "Running") {
+      Stop-ScheduledTask -InputObject $task -ErrorAction Stop
+    }
   }
   foreach ($processId in @($OwnedProcessIds)) {
     Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
@@ -139,6 +141,8 @@ try {
     }
   }
   Write-RecordedVisionSiteConfiguration $visionSiteConfigurationSourcePath
+  Stop-ManagedVision -OwnedProcessIds (Get-ManagedVisionProcessIds)
+  Wait-ForVisionPortRebind
   $visionInstallation = Install-VisionMainArtifact `
     -RuntimeArchive ([string]$visionCache.runtimeArchive) `
     -FixtureArchive ([string]$visionCache.fixtureArchive) `
