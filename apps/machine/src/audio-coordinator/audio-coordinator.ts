@@ -152,6 +152,8 @@ export function createAudioCoordinator(
       }
       if (transition.category === "transaction") {
         discardSupersededQueuedRequests();
+      } else {
+        discardSupersededQueuedPresenceRequests();
       }
       if (queue.length >= maxQueueSize) {
         trace.record({
@@ -197,6 +199,18 @@ export function createAudioCoordinator(
           request.category === "presence"
             ? "superseded by transaction audio"
             : "superseded by newer transaction audio",
+      });
+    }
+  }
+
+  function discardSupersededQueuedPresenceRequests(): void {
+    for (let index = queue.length - 1; index >= 0; index -= 1) {
+      const request = queue[index];
+      if (!request || request.category !== "presence") continue;
+      queue.splice(index, 1);
+      recordTerminal(request, {
+        status: "stopped",
+        message: "superseded by newer presence audio",
       });
     }
   }

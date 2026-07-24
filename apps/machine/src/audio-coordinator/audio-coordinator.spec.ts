@@ -294,6 +294,47 @@ describe("Audio Coordinator", () => {
     );
   });
 
+  it("keeps only the newest queued presence cue while a presence cue is active", async () => {
+    const driver: AudioCoordinatorPlaybackDriver = {
+      name: "mock",
+      playLocal: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+    };
+    const coordinator = createAudioCoordinator({
+      driver,
+      preferences: () => ({
+        volume: 0.7,
+        cuesEnabled: true,
+        presenceCuesEnabled: true,
+        transactionCuesEnabled: true,
+      }),
+      mapTransition: () => ({ sourceUrl: "/audio/presence.mp3", priority: 20 }),
+    });
+
+    await coordinator.accept([transition("welcome-1", "presence")]);
+    await coordinator.accept([transition("touch-1", "presence")]);
+    await coordinator.accept([transition("departed-1", "presence")]);
+    await coordinator.accept([transition("welcome-2", "presence")]);
+
+    expect(driver.playLocal).toHaveBeenCalledOnce();
+    expect(coordinator.activeRequest()?.transitionId).toBe("welcome-1");
+    expect(coordinator.queuedRequestIds()).toEqual(["audio-request-4"]);
+    expect(coordinator.trace()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          transitionId: "touch-1",
+          outcome: "stopped",
+          message: "superseded by newer presence audio",
+        }),
+        expect.objectContaining({
+          transitionId: "departed-1",
+          outcome: "stopped",
+          message: "superseded by newer presence audio",
+        }),
+      ]),
+    );
+  });
+
   it("deduplicates a stable transition identity and preserves its trace correlation", async () => {
     let complete: (() => void) | null = null;
     const driver: AudioCoordinatorPlaybackDriver = {
@@ -485,14 +526,13 @@ describe("Audio Coordinator", () => {
         sourceUrl: `/audio/${item.transitionId}.mp3`,
         priority: 20,
       }),
-      maxQueueSize: 1,
+      maxQueueSize: 0,
     });
 
-    await coordinator.accept([transition("active", "presence")]);
-    await coordinator.accept([transition("queued", "presence")]);
-    await coordinator.accept([transition("rejected", "presence")]);
+    await coordinator.accept([transition("rejected", "transaction")]);
 
-    expect(coordinator.queuedRequestIds()).toEqual(["audio-request-2"]);
+    expect(driver.playLocal).not.toHaveBeenCalled();
+    expect(coordinator.queuedRequestIds()).toEqual([]);
     expect(coordinator.trace()).toContainEqual(
       expect.objectContaining({
         type: "audio_rejected",
