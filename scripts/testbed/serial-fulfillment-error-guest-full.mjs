@@ -6,7 +6,6 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
 import { waitForDaemonReadyRefresh } from "./daemon-ready-refresh.mjs";
-import { catalogProductSelectorForFixture } from "./full-workflow-fixtures.mjs";
 import {
   activateVisibleSelector,
   captureCheckpoint,
@@ -17,6 +16,7 @@ import {
   rewriteWebSocketDebuggerUrl,
   waitForRoute,
 } from "./machine-ui-cdp-driver.mjs";
+import { openFixtureProductFromCatalog } from "./payment-recovery-guest-full.mjs";
 import {
   waitForHardwareBindings,
   waitForSaleStartCapability,
@@ -625,25 +625,43 @@ export async function runSerialFulfillmentErrorGuest(options) {
       { paymentOptionKey: "mock:mock" },
     );
     stage = "physical-tauri-payment";
-    for (const step of [
-      ['[data-test="catalog-category"]:not(:disabled)', "#/catalog"],
-      [
-        options.fixtureKey
-          ? catalogProductSelectorForFixture(
-              guestInput.fixtureAllocation,
-              options.fixtureKey,
-            )
-          : '[data-test="catalog-product"]',
-        /^#\/products\//,
-      ],
-      ['[data-test="product-buy"]', "#/checkout"],
-    ]) {
-      await activateVisibleSelector(client, step[0], {
-        kind: "touch",
-        timeoutMs: 30_000,
+    if (options.fixtureKey) {
+      const fixture = guestInput.fixtureAllocation?.[options.fixtureKey];
+      await openFixtureProductFromCatalog({
+        client,
+        slotId: required(fixture?.slotId, `${options.fixtureKey} slotId`),
+        categoryKey: required(
+          fixture?.categoryKey,
+          `${options.fixtureKey} categoryKey`,
+        ),
       });
-      await waitForRoute(client, step[1], { timeoutMs: 30_000, pollMs: 250 });
+      await waitForRoute(client, /^#\/products\//, {
+        timeoutMs: 30_000,
+        pollMs: 250,
+      });
+    } else {
+      for (const step of [
+        ['[data-test="catalog-category"]:not(:disabled)', "#/catalog"],
+        ['[data-test="catalog-product"]', /^#\/products\//],
+      ]) {
+        await activateVisibleSelector(client, step[0], {
+          kind: "touch",
+          timeoutMs: 30_000,
+        });
+        await waitForRoute(client, step[1], {
+          timeoutMs: 30_000,
+          pollMs: 250,
+        });
+      }
     }
+    await activateVisibleSelector(client, '[data-test="product-buy"]', {
+      kind: "touch",
+      timeoutMs: 30_000,
+    });
+    await waitForRoute(client, "#/checkout", {
+      timeoutMs: 30_000,
+      pollMs: 250,
+    });
     await selectMockPaymentAndSubmit(client);
     sale = await readPaymentSurface(client);
     report.sale = sale;

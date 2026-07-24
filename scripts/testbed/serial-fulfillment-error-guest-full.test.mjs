@@ -113,6 +113,8 @@ describe("serial fulfillment error guest full", () => {
     assert.match(source, /async function selectMockPaymentAndSubmit/);
     assert.match(source, /payment-option-selected/);
     assert.match(source, /submit && !submit\.hasAttribute\('disabled'\)/);
+    assert.match(source, /openFixtureProductFromCatalog/);
+    assert.match(source, /fixture\?\.categoryKey/);
     assert.match(
       source,
       /payment submit touch did not reach the payment route/,
