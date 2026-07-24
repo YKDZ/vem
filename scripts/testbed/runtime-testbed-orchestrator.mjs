@@ -24,6 +24,10 @@ const TERMINAL = new Set([
 const isTerminalStatus = (status) => TERMINAL.has(status);
 const STATUS_SCHEMA = "vem-runtime-testbed-run/v1";
 const CONFIG_SCHEMA = "vem-runtime-testbed-host/v1";
+const GUEST_SETUP_TIMEOUT_MS = 120_000;
+const GUEST_TRANSFER_TIMEOUT_MS = 120_000;
+const GUEST_FAST_EXECUTION_TIMEOUT_MS = 15 * 60_000;
+const GUEST_FULL_EXECUTION_TIMEOUT_MS = 45 * 60_000;
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -170,14 +174,44 @@ async function loadConfig(path) {
 
 function runProcess(command, args, options = {}) {
   return new Promise((resolvePromise, reject) => {
+    let settled = false;
+    let timeout = null;
+    let killTimeout = null;
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: options.env,
       stdio: options.stdio ?? "inherit",
       detached: options.detached ?? false,
     });
-    child.once("error", reject);
+    const clearTimers = () => {
+      if (timeout) clearTimeout(timeout);
+      if (killTimeout) clearTimeout(killTimeout);
+    };
+    const rejectOnce = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimers();
+      reject(error);
+    };
+    if (Number.isInteger(options.timeoutMs) && options.timeoutMs > 0) {
+      timeout = setTimeout(() => {
+        const error = new Error(
+          `${command} timed out after ${options.timeoutMs}ms${options.timeoutLabel ? ` (${options.timeoutLabel})` : ""}`,
+        );
+        error.command = command;
+        error.exitCode = null;
+        error.signal = "SIGTERM";
+        error.timedOut = true;
+        child.kill("SIGTERM");
+        killTimeout = setTimeout(() => child.kill("SIGKILL"), 5_000);
+        rejectOnce(error);
+      }, options.timeoutMs);
+    }
+    child.once("error", rejectOnce);
     child.once("exit", (code, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimers();
       if (code === 0) resolvePromise({ code, signal, pid: child.pid });
       else {
         const error = new Error(
@@ -420,15 +454,25 @@ async function stageAndRunGuest({
     `$archive = '${remoteArchive.replaceAll("'", "''")}'`,
     "New-Item -ItemType Directory -Force -Path (Split-Path -Parent $archive) | Out-Null",
   ].join("\n");
-  await runProcess("ssh", [
-    ...ssh,
-    remote,
-    "powershell.exe",
-    "-NoProfile",
-    "-EncodedCommand",
-    encodedPowerShell(createArchiveParent),
-  ]);
-  await runProcess("scp", [...scp, archive, `${remote}:${remoteArchive}`]);
+  await runProcess(
+    "ssh",
+    [
+      ...ssh,
+      remote,
+      "powershell.exe",
+      "-NoProfile",
+      "-EncodedCommand",
+      encodedPowerShell(createArchiveParent),
+    ],
+    {
+      timeoutMs: GUEST_SETUP_TIMEOUT_MS,
+      timeoutLabel: "guest archive parent setup",
+    },
+  );
+  await runProcess("scp", [...scp, archive, `${remote}:${remoteArchive}`], {
+    timeoutMs: GUEST_TRANSFER_TIMEOUT_MS,
+    timeoutLabel: "guest source archive transfer",
+  });
   const prepare = [
     `$source = '${config.guestSourcePath.replaceAll("'", "''")}'`,
     `$archive = '${remoteArchive.replaceAll("'", "''")}'`,
@@ -438,29 +482,43 @@ async function stageAndRunGuest({
     "if ($LASTEXITCODE -ne 0) { throw 'source extraction failed' }",
     "Remove-Item -LiteralPath $archive -Force",
   ].join("\n");
-  await runProcess("ssh", [
-    ...ssh,
-    remote,
-    "powershell.exe",
-    "-NoProfile",
-    "-EncodedCommand",
-    encodedPowerShell(prepare),
-  ]);
+  await runProcess(
+    "ssh",
+    [
+      ...ssh,
+      remote,
+      "powershell.exe",
+      "-NoProfile",
+      "-EncodedCommand",
+      encodedPowerShell(prepare),
+    ],
+    {
+      timeoutMs: GUEST_SETUP_TIMEOUT_MS,
+      timeoutLabel: "guest source extraction",
+    },
+  );
   const ensurePowerShell = `${config.guestSourcePath}\\scripts\\testbed\\ensure-testbed-pwsh.ps1`;
   const preparePowerShell = [
     `$env:GITHUB_PATH = Join-Path $env:TEMP 'vem-testbed-pwsh-path.txt'`,
     `& '${ensurePowerShell.replaceAll("'", "''")}'`,
   ].join("\n");
-  await runProcess("ssh", [
-    ...ssh,
-    remote,
-    "powershell.exe",
-    "-NoProfile",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-EncodedCommand",
-    encodedPowerShell(preparePowerShell),
-  ]);
+  await runProcess(
+    "ssh",
+    [
+      ...ssh,
+      remote,
+      "powershell.exe",
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-EncodedCommand",
+      encodedPowerShell(preparePowerShell),
+    ],
+    {
+      timeoutMs: GUEST_SETUP_TIMEOUT_MS,
+      timeoutLabel: "guest PowerShell runtime setup",
+    },
+  );
   const guestScript = `${config.guestSourcePath}\\scripts\\testbed\\run-local-testbed-guest.ps1`;
   const focusArgument = powerShellFocusArgument(focus);
   const execute = `& '${guestScript.replaceAll("'", "''")}' -Mode '${mode}' -Commit '${commit}' -Pass ${pass}${focusArgument}`;
@@ -470,20 +528,30 @@ async function stageAndRunGuest({
     "exit $LASTEXITCODE",
   ].join("\n");
   try {
-    await runProcess("ssh", [
-      ...ssh,
-      remote,
-      "powershell.exe",
-      "-NoProfile",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-EncodedCommand",
-      encodedPowerShell(invokePowerShell7),
-    ]);
+    await runProcess(
+      "ssh",
+      [
+        ...ssh,
+        remote,
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-EncodedCommand",
+        encodedPowerShell(invokePowerShell7),
+      ],
+      {
+        timeoutMs:
+          mode === "full"
+            ? GUEST_FULL_EXECUTION_TIMEOUT_MS
+            : GUEST_FAST_EXECUTION_TIMEOUT_MS,
+        timeoutLabel: "guest acceptance execution",
+      },
+    );
   } catch (error) {
     if (
       (error.command === "ssh" || error.command === "scp") &&
-      error.exitCode === 255
+      (error.exitCode === 255 || error.timedOut === true)
     ) {
       error.businessFailure = false;
     } else {
@@ -502,7 +570,10 @@ async function stageAndRunGuest({
       "-r",
       `${remote}:${remoteEvidence}`,
       evidence,
-    ]).catch(() => undefined);
+    ], {
+      timeoutMs: GUEST_TRANSFER_TIMEOUT_MS,
+      timeoutLabel: "guest evidence transfer",
+    }).catch(() => undefined);
   }
 }
 

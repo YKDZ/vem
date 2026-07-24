@@ -188,6 +188,21 @@ describe("runtime testbed scheduler contract", () => {
     );
   });
 
+  it("fails bounded guest SSH work instead of waiting indefinitely", () => {
+    const source = readFileSync(
+      new URL("./runtime-testbed-orchestrator.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(source, /const GUEST_SETUP_TIMEOUT_MS = 120_000/);
+    assert.match(source, /const GUEST_FAST_EXECUTION_TIMEOUT_MS = 15 \* 60_000/);
+    assert.match(source, /error\.timedOut = true/);
+    assert.match(source, /timeoutLabel: "guest acceptance execution"/);
+    assert.match(
+      source,
+      /error\.exitCode === 255 \|\| error\.timedOut === true/,
+    );
+  });
+
   it("compresses the commit archive before the guest transfer", () => {
     const source = readFileSync(
       new URL("./runtime-testbed-orchestrator.mjs", import.meta.url),
@@ -256,18 +271,19 @@ describe("runtime testbed scheduler contract", () => {
     );
   });
 
-  it("treats ssh exit 255 as infrastructure failure", () => {
+  it("treats bounded ssh/scp failures as infrastructure failures", () => {
     const source = readFileSync(
       new URL("./runtime-testbed-orchestrator.mjs", import.meta.url),
       "utf8",
     );
     assert.match(
       source,
-      /\(error\.command === "ssh" \|\| error\.command === "scp"\)\s*&&\s*error\.exitCode === 255/,
+      /\(error\.command === "ssh" \|\| error\.command === "scp"\)\s*&&\s*\(\s*error\.exitCode === 255 \|\| error\.timedOut === true\s*\)/,
     );
     assert.ok(
       source.includes("error.command = command;") &&
-        source.includes("error.exitCode = code;"),
+        source.includes("error.exitCode = code;") &&
+        source.includes("error.timedOut = true;"),
     );
   });
 
