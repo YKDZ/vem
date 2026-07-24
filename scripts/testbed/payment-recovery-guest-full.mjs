@@ -437,11 +437,36 @@ export function validatePaymentRecoveryEvidence(report) {
     throw new Error(
       "payment recovery did not prove the fulfilled subsequent sale",
     );
+  const saleabilityRecovery = report.saleabilityRecovery ?? {};
+  const saleableCategories = Array.isArray(saleabilityRecovery.categories)
+    ? saleabilityRecovery.categories
+    : [];
+  const categoryKeys = new Set(
+    saleableCategories.map((category) => category?.key).filter(Boolean),
+  );
+  if (
+    saleabilityRecovery.source !==
+      "daemon_sale_view_and_installed_machine_runtime_cdp" ||
+    saleabilityRecovery.route !== "#/catalog" ||
+    categoryKeys.size < 3 ||
+    saleableCategories.some(
+      (category) =>
+        !Number.isInteger(category?.daemonSaleableItemCount) ||
+        category.daemonSaleableItemCount < 1 ||
+        !Number.isInteger(category?.saleableProductCount) ||
+        category.saleableProductCount < 1,
+    )
+  ) {
+    throw new Error(
+      "payment recovery did not prove saleability after failed payment attempts",
+    );
+  }
   return {
     paymentId: report.payment.id,
     action: "query_payment",
     duplicatePaymentCount: 0,
     attemptCount: attempts.length,
+    saleableCategoryKeys: [...categoryKeys].sort(),
   };
 }
 
@@ -576,6 +601,76 @@ async function waitForDaemonCleanup(handoff, paymentNo) {
     () => daemon(handoff, "/v1/transactions/current"),
     (transaction) => transaction?.paymentNo !== paymentNo,
   );
+}
+
+function saleableCategoriesFromDaemon(saleView) {
+  const categories = new Map();
+  for (const item of saleView?.items ?? []) {
+    if (typeof item?.inventoryId !== "string" || item.inventoryId === "")
+      continue;
+    const key = topCategoryKeyForCatalogItem({
+      categoryName: item.categoryName,
+      productName: item.productName,
+    });
+    if (!key) continue;
+    const entry = categories.get(key) ?? { key, daemonSaleableItemCount: 0 };
+    entry.daemonSaleableItemCount += 1;
+    categories.set(key, entry);
+  }
+  return [...categories.values()].sort((left, right) =>
+    left.key.localeCompare(right.key),
+  );
+}
+
+export async function observeSaleabilityRecovery({ client, handoff }) {
+  const saleView = await daemon(handoff, "/v1/sale-view");
+  const daemonCategories = saleableCategoriesFromDaemon(saleView);
+  const categories = [];
+  for (const daemonCategory of daemonCategories) {
+    const selector = `[data-test="catalog-category"][data-category-key=${JSON.stringify(daemonCategory.key)}]:not(:disabled)`;
+    const before = await evaluateExpression(
+      client,
+      `(() => ({
+        route: location.hash,
+        activeCategoryKey: document.querySelector("[data-test='catalog-page']")?.dataset.categoryKey || null,
+        enabled: Boolean(document.querySelector(${JSON.stringify(selector)})),
+      }))()`,
+    );
+    if (before?.enabled !== true) {
+      throw new Error(
+        `saleable daemon category ${daemonCategory.key} is disabled in installed Machine Runtime`,
+      );
+    }
+    if (before.activeCategoryKey !== daemonCategory.key) {
+      await activateVisibleSelector(client, selector, {
+        kind: "touch",
+        timeoutMs: 30_000,
+      });
+    }
+    const projection = await waitFor(
+      `installed Machine Runtime saleable category ${daemonCategory.key}`,
+      () =>
+        evaluateExpression(
+          client,
+          `(() => ({
+            route: location.hash,
+            activeCategoryKey: document.querySelector("[data-test='catalog-page']")?.dataset.categoryKey || null,
+            saleableProductCount: document.querySelectorAll("[data-test='catalog-product']").length,
+          }))()`,
+        ),
+      (state) =>
+        state?.route === "#/catalog" &&
+        state?.activeCategoryKey === daemonCategory.key &&
+        Number.isInteger(state?.saleableProductCount) &&
+        state.saleableProductCount > 0,
+    );
+    categories.push({ ...daemonCategory, ...projection });
+  }
+  return {
+    source: "daemon_sale_view_and_installed_machine_runtime_cdp",
+    route: "#/catalog",
+    categories,
+  };
 }
 
 async function connectInstalledCustomerRuntime(handoff) {
@@ -818,6 +913,7 @@ export async function runPaymentRecoveryGuest(options) {
     payment: null,
     attempts: [],
     recoveryMqttEvidence: null,
+    saleabilityRecovery: null,
     subsequentSale: null,
     assertions: { duplicatePaymentCount: null },
   };
@@ -1244,6 +1340,10 @@ export async function runPaymentRecoveryGuest(options) {
       `/v1/serial-sessions/${session.sessionId}/evidence`,
     );
     report.recoveryMqttEvidence = recoveryEvidence;
+    report.saleabilityRecovery = await observeSaleabilityRecovery({
+      client: customer,
+      handoff,
+    });
 
     const subsequentBaseline = await platformReport(
       input,

@@ -41,6 +41,14 @@ import {
   validateBaselineContract,
 } from "./local-testbed.mjs";
 
+function pngDimensions(buffer) {
+  assert.equal(buffer.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+  return {
+    width: buffer.readUInt32BE(16),
+    height: buffer.readUInt32BE(20),
+  };
+}
+
 function contract(root) {
   const hostScript = "{repository}/scripts/testbed/local-testbed-host.mjs";
   const commonHostArguments = [
@@ -1054,13 +1062,27 @@ describe("supported API seeding", () => {
       throw new Error(`unexpected path: ${path}`);
     };
     const upload = async (_base, path, input = {}) => {
-      uploads.push({ path, ...input });
-      return {
-        id: "550e8400-e29b-41d4-a716-446655440125",
-        publicUrl:
-          "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+      const productDisplayIds = [
+        "550e8400-e29b-41d4-a716-446655440124",
+        "550e8400-e29b-41d4-a716-446655440126",
+        "550e8400-e29b-41d4-a716-446655440127",
+      ];
+      const id =
+        path === "/media-assets/try-on-silhouettes"
+          ? "550e8400-e29b-41d4-a716-446655440125"
+          : productDisplayIds[
+              uploads.filter(
+                (upload) =>
+                  upload.path === "/media-assets/product-display-images",
+              ).length
+            ];
+      const asset = {
+        id,
+        publicUrl: `/api/media-assets/${id}/content`,
         contentType: "image/png",
       };
+      uploads.push({ path, ...input, asset });
+      return asset;
     };
     const result = await seedThroughSupportedApis({
       baseUrl: "http://127.0.0.1:26849/api",
@@ -1079,16 +1101,52 @@ describe("supported API seeding", () => {
         body: { status: "online" },
       },
     );
-    assert.equal(uploads.length, 1);
+    assert.equal(uploads.length, 4);
     assert.deepEqual(uploads[0], {
       path: "/media-assets/try-on-silhouettes",
       token: "admin-token",
       fileName: "local-testbed-try-on-silhouette.png",
       contentType: "image/png",
       buffer: uploads[0].buffer,
+      asset: uploads[0].asset,
     });
     assert.ok(Buffer.isBuffer(uploads[0].buffer));
-    assert.equal(calls.filter((call) => call.path === "/products").length, 44);
+    assert.deepEqual(pngDimensions(uploads[0].buffer), {
+      width: 320,
+      height: 420,
+    });
+    const productDisplayUploads = uploads.filter(
+      (upload) => upload.path === "/media-assets/product-display-images",
+    );
+    assert.equal(productDisplayUploads.length, 3);
+    assert.equal(
+      new Set(productDisplayUploads.map((upload) => upload.asset.id)).size,
+      3,
+    );
+    for (const upload of productDisplayUploads) {
+      assert.equal(upload.contentType, "image/png");
+      assert.ok(Buffer.isBuffer(upload.buffer));
+      assert.deepEqual(pngDimensions(upload.buffer), {
+        width: 240,
+        height: 240,
+      });
+    }
+    const productDisplayAssetIds = new Set(
+      productDisplayUploads.map((upload) => upload.asset.id),
+    );
+    const productCreateCalls = calls.filter(
+      (call) => call.path === "/products",
+    );
+    assert.equal(productCreateCalls.length, 44);
+    for (const call of productCreateCalls) {
+      assert.ok(productDisplayAssetIds.has(call.body.displayImageMediaAssetId));
+    }
+    assert.equal(
+      new Set(
+        productCreateCalls.map((call) => call.body.displayImageMediaAssetId),
+      ).size,
+      3,
+    );
     assert.deepEqual(
       calls.find((call) => call.path === "/payments/providers/mock-provider"),
       {
@@ -1129,6 +1187,18 @@ describe("supported API seeding", () => {
       "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
     );
     assert.equal(result.visionAcceptance.tryOnCategoryKey, "tshirts");
+    assert.deepEqual(
+      result.visionAcceptance.productMedia.map((entry) => ({
+        categoryKey: entry.categoryKey,
+        catalogKey: entry.catalogKey,
+        coverImageUrl: entry.coverImageUrl,
+      })),
+      ["socks", "underwear", "tshirts"].map((categoryKey, index) => ({
+        categoryKey,
+        catalogKey: `product:${result.visionAcceptance.productMedia[index].productId}`,
+        coverImageUrl: productDisplayUploads[index].asset.publicUrl,
+      })),
+    );
     assert.equal(result.visionAcceptance.seededTryOnVariants.length, 14);
     for (const entry of result.visionAcceptance.seededTryOnVariants) {
       assert.match(entry.variantId, /^variant-\d+$/);
@@ -1203,6 +1273,18 @@ describe("supported API seeding", () => {
       call.path.endsWith("/planogram-versions"),
     );
     assert.ok(
+      planogramCall.body.slots.every((slot) =>
+        productDisplayUploads.some(
+          (upload) => slot.coverImageUrl === upload.asset.publicUrl,
+        ),
+      ),
+      "every published slot must retain its product main-image managed reference",
+    );
+    assert.equal(
+      new Set(planogramCall.body.slots.map((slot) => slot.coverImageUrl)).size,
+      3,
+    );
+    assert.ok(
       planogramCall.body.slots.some(
         (slot) =>
           seededTryOnVariantIds.has(slot.variantId) &&
@@ -1236,7 +1318,7 @@ describe("Windows D cache contract", () => {
     );
     assert.match(
       guestScript,
-      /function Get-TestbedCanonicalVisionProcesses[\s\S]*Get-CimInstance Win32_Process[\s\S]*ExecutablePath[\s\S]*canonicalVisionExecutablePath[\s\S]*--config[\s\S]*canonicalVisionConfigurationPath/,
+      /function Get-TestbedCanonicalVisionProcesses[\s\S]*Get-CimInstance Win32_Process[\s\S]*ExecutablePath[\s\S]*canonicalVisionExecutablePath[\s\S]*Test-VisionMainCanonicalConfigurationCommandLine[\s\S]*canonicalVisionConfigurationPath/,
     );
     assert.match(
       guestScript,
@@ -1841,16 +1923,19 @@ describe("local testbed fixture", () => {
       ),
     );
     assert.equal(fixture.schemaVersion, "vem-local-testbed-catalog/v1");
+    assert.equal(fixture.source, "tracked_testbed_fixture");
     assert.equal(fixture.products.length, 44);
     assert.deepEqual(
       fixture.slots.map((slot) => slot.slotDisplayLabel),
-      ["A1", "A2", "A3", "A4", "A5", "B1", "B2"],
+      ["A1", "A2", "A3", "A4", "A5", "A6", "B1", "B2"],
     );
     const implementation = readFileSync(
       new URL("./local-testbed.mjs", import.meta.url),
       "utf8",
     );
+    assert.doesNotMatch(implementation, /docs\//);
     assert.doesNotMatch(implementation, /唐诗村商品列表\.xlsx/);
+    assert.match(implementation, /TESTBED_MEDIA_FIXTURES/);
     assert.match(implementation, /seedThroughSupportedApis/);
     assert.match(implementation, /allocateFullWorkflowFixtures/);
     assert.match(implementation, /\/auth\/login/);

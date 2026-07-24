@@ -226,6 +226,7 @@ describe("full workflow serial lifecycle", () => {
       FULL_WORKFLOW_TRACK_DESCRIPTORS.map((track) => track.name),
       [
         "commissioning",
+        "startup",
         "sale",
         "scannerPayment",
         "visionExperience",
@@ -252,7 +253,10 @@ describe("full workflow serial lifecycle", () => {
     )) {
       assert.match(track.runner.reportFileName, /\.json$/);
       assert.match(track.runner.artifactDirectory, /artifacts$/);
-      assert.equal(track.evidence.passed.screenshot, true);
+      assert.equal(
+        track.evidence.passed.screenshot,
+        track.name === "startup" ? false : true,
+      );
       assert.equal(track.evidence.failed.primaryReason, true);
       assert.equal(track.evidence.failed.diagnostic, true);
       assert.equal(track.evidence.failed.screenshot, false);
@@ -283,7 +287,9 @@ describe("full workflow serial lifecycle", () => {
   it("captures and judges each terminal state before bounded recovery while continuing after a failure", async () => {
     const calls = [];
     const tracks = FULL_WORKFLOW_TRACK_DESCRIPTORS.filter(
-      (track) => track.runner && track.name !== "commissioning",
+      (track) =>
+        track.runner &&
+        !["commissioning", "startup"].includes(track.name),
     ).slice(0, 2);
     const result = await runSerialTrackLifecycle({
       tracks,
@@ -336,7 +342,9 @@ describe("full workflow serial lifecycle", () => {
   it("halts a warm run after fixture recovery fails and retains its recovery evidence", async () => {
     const calls = [];
     const tracks = FULL_WORKFLOW_TRACK_DESCRIPTORS.filter(
-      (track) => track.runner && track.name !== "commissioning",
+      (track) =>
+        track.runner &&
+        !["commissioning", "startup"].includes(track.name),
     ).slice(0, 2);
     const result = await runSerialTrackLifecycle({
       tracks,

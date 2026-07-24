@@ -164,6 +164,40 @@ function validatePresenceAndAudioTrack(report, reportPath) {
   }
 }
 
+function validateStartupTrack(report, reportPath) {
+  const summary = report?.summary ?? {};
+  const modeEvidence = summary.modeEvidence ?? {};
+  const fullEvidenceComplete =
+    report?.mode !== "full" ||
+    (modeEvidence.source === "windows_reboot_logon_probe" &&
+      typeof modeEvidence.bootMarker === "string" &&
+      modeEvidence.bootMarker.length > 0 &&
+      typeof modeEvidence.logonMarker === "string" &&
+      modeEvidence.logonMarker.length > 0 &&
+      typeof modeEvidence.bootObservedAt === "string" &&
+      typeof modeEvidence.logonObservedAt === "string");
+  if (
+    report?.schemaVersion !== "vem-installed-runtime-startup-acceptance/v1" ||
+    report?.ok !== true ||
+    summary.daemonService !== "VemVendingDaemon" ||
+    summary.machineUiTask !== "VEMMachineUI" ||
+    summary.visionTask !== "VEMVisionRuntime" ||
+    !Number.isSafeInteger(summary.kioskSessionId) ||
+    summary.kioskSessionId < 1 ||
+    summary.catalogRoute !== "#/catalog" ||
+    !fullEvidenceComplete
+  ) {
+    return failedTrack(
+      "startup",
+      "startup",
+      reportPath,
+      "installed startup-owner readiness evidence is incomplete",
+      report ?? null,
+    );
+  }
+  return passedTrack("startup", "startup", reportPath, summary);
+}
+
 function validateScannerTrack(report, reportPath) {
   if (
     report?.schemaVersion !== "vem-scanner-payment-code-guest-full/v1" ||
@@ -835,6 +869,41 @@ function validateVisionTrack(report, reportPath) {
   const eventFence = protocol?.eventFence ?? null;
   const tryOnSummary = report.ui?.tryOnSummary ?? null;
   const recommendation = report.ui?.recommendationPresentation ?? {};
+  const mediaPresentation = report.ui?.mediaPresentation ?? {};
+  const productCards = Array.isArray(mediaPresentation.productCards)
+    ? mediaPresentation.productCards
+    : [];
+  const distinctCategoryKeys = new Set(
+    productCards.map((entry) => entry?.categoryKey).filter(Boolean),
+  );
+  const distinctMainImageUrls = new Set(
+    productCards.map((entry) => entry?.mainImageUrl).filter(Boolean),
+  );
+  const expectedMedia =
+    report.visionInstall?.runtimeExpectation?.productMedia ?? [];
+  const expectedMediaByCatalogKey = new Map(
+    expectedMedia.map((entry) => [entry?.catalogKey, entry]),
+  );
+  const mediaComplete =
+    mediaPresentation.source === "installed_machine_runtime_cdp" &&
+    expectedMediaByCatalogKey.size >= 3 &&
+    productCards.length >= 3 &&
+    distinctCategoryKeys.size >= 3 &&
+    distinctMainImageUrls.size >= 3 &&
+    productCards.every(
+      (entry) =>
+        expectedMediaByCatalogKey.get(entry?.catalogKey)?.categoryKey ===
+          entry?.categoryKey &&
+        expectedMediaByCatalogKey.get(entry?.catalogKey)?.coverImageUrl ===
+          entry?.expectedMainImageUrl &&
+        entry?.mainImageUrl === entry?.expectedMainImageUrl &&
+        entry?.finalUrl === entry?.expectedMainImageUrl &&
+        entry?.httpStatus === 200 &&
+        Number.isInteger(entry?.naturalWidth) &&
+        entry.naturalWidth >= 64 &&
+        Number.isInteger(entry?.naturalHeight) &&
+        entry.naturalHeight >= 64,
+    );
   const recommendationVariants =
     report.visionInstall?.runtimeExpectation?.recommendationVariants ?? [];
   const recommendationBySize = new Map(
@@ -870,7 +939,8 @@ function validateVisionTrack(report, reportPath) {
     typeof protocol.departureDetectedAt === "string" &&
     visionDown.experienceCapabilityDegraded === true &&
     visionDown.saleStartStillAvailable === true &&
-    recommendationComplete
+    recommendationComplete &&
+    mediaComplete
       ? passedTrack("vision", "Vision", reportPath, {
           experienceCapabilityDegraded: true,
           saleStartStillAvailable: true,
@@ -880,13 +950,23 @@ function validateVisionTrack(report, reportPath) {
           "Vision",
           reportPath,
           "vision degradation evidence is incomplete",
-          { protocol, eventFence, visionDown, recommendation },
+          {
+            protocol,
+            eventFence,
+            visionDown,
+            recommendation,
+            mediaPresentation,
+          },
         );
   const tryOn =
     tryOnSummary &&
     tryOnSummary.width > 0 &&
     tryOnSummary.height > 0 &&
     tryOnSummary.silhouetteHttpStatus === 200 &&
+    Number.isInteger(tryOnSummary.silhouetteNaturalWidth) &&
+    tryOnSummary.silhouetteNaturalWidth >= 160 &&
+    Number.isInteger(tryOnSummary.silhouetteNaturalHeight) &&
+    tryOnSummary.silhouetteNaturalHeight >= 160 &&
     report.ui?.tryOnSelectedProduct?.variantId === alternate?.variantId &&
     report.ui?.tryOnAttempts?.some((attempt) => attempt?.result === "passed") &&
     visionDown.saleStartStillAvailable === true
@@ -941,6 +1021,7 @@ export function validateBusinessCheckReport(descriptor, report, reportPath) {
             path,
             "commissioning admission evidence is incomplete",
           ),
+    startup: validateStartupTrack,
     sale: validateFastTrack,
     scannerPayment: validateScannerTrack,
     pickupProtocol: validateDelayedAudioTrack,

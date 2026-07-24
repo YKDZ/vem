@@ -64,7 +64,7 @@ describe("stable Vision presence session", () => {
     vi.useRealTimers();
   });
 
-  it("emits one arrival and one departure after ten continuous seconds of absence", async () => {
+  it("emits one arrival and one departure after five continuous seconds of absence", async () => {
     const session = getStableVisionPresenceSession();
 
     present("PRESENT-1");
@@ -77,7 +77,7 @@ describe("stable Vision presence session", () => {
 
     present("PRESENT-2");
     absent("ABSENT-1");
-    await vi.advanceTimersByTimeAsync(9_999);
+    await vi.advanceTimersByTimeAsync(4_999);
     expect(session.state.value.present).toBe(true);
 
     await vi.advanceTimersByTimeAsync(1);
@@ -95,7 +95,7 @@ describe("stable Vision presence session", () => {
     const session = getStableVisionPresenceSession();
     present("PRESENT-1");
     absent("ABSENT-1");
-    await vi.advanceTimersByTimeAsync(9_000);
+    await vi.advanceTimersByTimeAsync(4_000);
     present("PRESENT-2");
     await vi.advanceTimersByTimeAsync(2_000);
     expect(session.state.value).toMatchObject({
@@ -129,7 +129,7 @@ describe("stable Vision presence session", () => {
 
     present("PRESENT-1");
     absent("ABSENT-1");
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(4_000);
     useVisionStore().applyStatus({
       enabled: true,
       online: false,

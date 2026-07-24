@@ -100,3 +100,16 @@ test("runtime verification checks the installed Vision artifact", () => {
   assert.match(verify, /VisionSiteConfiguration/);
   assert.match(verify, /Invoke-VisionMainProbe/);
 });
+
+test("can install Vision files without defining a second runtime owner", () => {
+  const module = source(modulePath);
+  const installer = source(installerPath);
+
+  assert.match(module, /\[switch\]\$SkipRuntimeOwnerTask/);
+  assert.match(module, /if \(-not \$SkipRuntimeOwnerTask\)[\s\S]*Ensure-VisionMainTask[\s\S]*Start-VisionMainTask/);
+  assert.match(module, /kind = "delegated"/);
+  assert.match(module, /launcher = if \(\$null -ne \$legacyOwner\)/);
+  assert.match(module, /startTask = if \(\$null -ne \$legacyOwner\)/);
+  assert.match(installer, /\[switch\]\$SkipRuntimeOwnerTask/);
+  assert.match(installer, /Install-VisionMainArtifact @PSBoundParameters/);
+});

@@ -12,6 +12,7 @@ import {
   analyzeDelayedPickupRuntimeTrace,
   analyzeDelayedPickupUiEvidence,
   correlateDelayedPickupCueWindows,
+  pickupCueWithinPickupPhase,
 } from "./delayed-pickup-native-audio-evidence.mjs";
 import {
   inspectCompletedSaleAudioCapture,
@@ -312,7 +313,6 @@ export function verifyDelayedPickupNativeAudioProductionEvidence({
     trace.diagnostics,
     daemon.diagnostics,
   );
-
   let cueWindows = null;
   if (audioCapture && controller.events) {
     const capture = audioCapture.report.capture;
@@ -334,6 +334,15 @@ export function verifyDelayedPickupNativeAudioProductionEvidence({
     });
     collectDiagnostics(diagnostics, cueWindows.diagnostics);
   } else diagnostics.push(diagnostic("audio_cue_window_missing_or_empty"));
+  if (
+    controller.events &&
+    !pickupCueWithinPickupPhase({
+      playback: trace.cues?.pickup_started?.started,
+      controller: controller.events,
+    })
+  ) {
+    diagnostics.push(diagnostic("pickup_playback_outside_pickup_phase"));
+  }
 
   const compactSources = Object.fromEntries(
     Object.entries(artifacts).map(([name, artifact]) => [
@@ -356,6 +365,7 @@ export function verifyDelayedPickupNativeAudioProductionEvidence({
           cue.startLatencyMs ?? null,
         ]),
       ),
+      pickupPlaybackStartedAt: trace.cues?.pickup_started?.started?.at ?? null,
       frameCounts: audioCapture
         ? Object.fromEntries(
             ["f0", "e5", "f1", "af", "f2"].map((code) => [

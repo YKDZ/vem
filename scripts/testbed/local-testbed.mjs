@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { topCategoryKeyForCatalogItem } from "@vem/shared/catalog-top-category";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants, readFileSync } from "node:fs";
@@ -15,8 +16,7 @@ import { isIP } from "node:net";
 import { networkInterfaces } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-
-import { topCategoryKeyForCatalogItem } from "@vem/shared/catalog-top-category";
+import { deflateSync } from "node:zlib";
 
 import { allocateFullWorkflowFixtures } from "./full-workflow-fixtures.mjs";
 import {
@@ -1135,14 +1135,136 @@ export async function prepareInstallationOwnedPaymentProvider({
   };
 }
 
-const TESTBED_TRY_ON_SILHOUETTE_PNG_BASE64 =
-  "iVBORw0KGgoAAAANSUhEUgAAAEAAAACACAYAAAC7gW9qAAAEt0lEQVR4AexYPU9UQRSdeYhYWtlK4u+w0iCsmlBbgJWNEtZQGiM/gITlo6IC1NhqjEuM/gUtsJAfgIn2oIUu45y3Edbd2Xlv5s28nRnuZoe8fXPvueeee3bnhYyd8xcJUJcB3t1butqeW3y7N98UuoUYxNbFy7sD2jMLE3tzzWfZ+J8DzvmdosYQg1jkILcovuq+VwHa84+n+JWxA8bZMmP8Eiv9krEyB7nAKJ1mEehFgL37zUlYmTPxXnKalMv2PQkMYAHTFkSX51QAWBbWZUJ8hZV1hU32ciyJCWzUMMktinUmAKwKy5rbvYjiv30/XwsnAmAysKqkWsXuMr3UO/9aoGap6IKgygK05xeXulMvqOR6W/5I5rUr4lYSAAQ44ysVOVinozY4WAPIRGsBUBgEJMZI3+AALrYkrARAQRS2Leo6D1zAyQbXWAAUQkGbYj5zwAncTGsYCYACKGRapK54cANHk3qlBQAwCpiAjyIWHMF1WO3++6UEACCA+5ND/Qyu4FyGX6EAAAJgGbCQYsAZ3Is4aQUAAICKQELdB3f0oOM3VAAkAkCXHMMeekAvw7gqBUACEoclxXYfvaAnFe8BARCIBFVwzPfQE3rr72FAAC749f6gVD6rehsQ4CLjD+U/NI5Safq0DyGO8t5Ob3QvBgS4sbv6TQj+tLudzl/0hN76OxoQAAEz1y6vCyY+4TqFhV7Qk6oXpQB8efkk6/AHQoiOKimme+gBvaAnFW+lAAicftH6zBjfZNG/+Ga3F3UjQwVA+Ji48EQqeIjrGBe4owcdd60At56vHLOML+gAgt6T3PMeNCS1AiCvsd16zQR7g+uoluSccy8gnRXs59ui03lU7tlArOcJPv8ItlEI33PmF8WWEqDxcuMQ56gOTB41H6Z31pq6GBd707utRdTSYYGr6sxX5ZQSAIk4R2Vh9bOBEPudiV+znMkvC4I9LtRALenIfVUZcARX1Z7qXmkBcI7iPJW/rP89G8iC38d/s6m7W1s/VQV83EMt1ETtXnxwA0dw7b2vuy4tAEC652nPs4Fgx4JnUzdfrf3Afp0LNVFbeu74rK7+zD+LO7syEgBpOFel0oeCsRNpx9nb26tfcH8UC7XBAVzACdxMeRgLkJ+r8nyVyjflD9JH04Ku43MOgjWZ5JRzY2YvYwEA35DPBo3dVvFxhOAaFriAk02pzCYppRwSIKVp2vRCDrBRLaUcckBK07TphRxgo1rIOabcyAGmiqUWTw5IbaKm/ZADTBVLLZ4ckNpETfshB5gqllo8OSC1iZr2Qw4wVSy1eHJA7BOtyp8cUFXB2PPJAbFPsCp/ckBVBWPPJwfEPsGq/MkBVRWMPZ8cEPsEq/InB1RVMPZ8ckBsE3TNlxzgWtHY8MgBsU3MNV9ygGtFY8MjB8Q2Mdd8yQGuFY0NjxwQ28Rc8yUHuFY0NjxyQOgT882PHOBb4dDxyQGhT8g3P3KAb4VDxycHhD6hHzzIwf4Vjh0fHJAaBOqmw85oG7FQ6tHDghtInXzIQfUrXho9Zw7YGanxX0u1wI6F8A1Qd94JIBvhUPHJweEPiHf/MgBvhUOHZ8cMOoJjbr+XwAAAP//Umx9GAAAAAZJREFUAwAlVYwQwXgfGgAAAABJRU5ErkJggg==";
-
 function testbedTryOnSilhouetteAsset() {
   return {
     fileName: "local-testbed-try-on-silhouette.png",
     contentType: "image/png",
-    buffer: Buffer.from(TESTBED_TRY_ON_SILHOUETTE_PNG_BASE64, "base64"),
+    buffer: TESTBED_MEDIA_FIXTURES.tryOnSilhouette,
+  };
+}
+
+function crc32(buffer) {
+  let crc = 0xffffffff;
+  for (const byte of buffer) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = crc & 1 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1;
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, payload) {
+  const typeBuffer = Buffer.from(type, "ascii");
+  const chunk = Buffer.alloc(12 + payload.length);
+  chunk.writeUInt32BE(payload.length, 0);
+  typeBuffer.copy(chunk, 4);
+  payload.copy(chunk, 8);
+  chunk.writeUInt32BE(
+    crc32(Buffer.concat([typeBuffer, payload])),
+    8 + payload.length,
+  );
+  return chunk;
+}
+
+function createRgbaPng(width, height, pixel) {
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8;
+  header[9] = 6;
+  header[10] = 0;
+  header[11] = 0;
+  header[12] = 0;
+  const stride = 1 + width * 4;
+  const raw = Buffer.alloc(stride * height);
+  for (let y = 0; y < height; y += 1) {
+    raw[y * stride] = 0;
+    for (let x = 0; x < width; x += 1) {
+      const [red, green, blue, alpha] = pixel(x, y, width, height);
+      const offset = y * stride + 1 + x * 4;
+      raw[offset] = red;
+      raw[offset + 1] = green;
+      raw[offset + 2] = blue;
+      raw[offset + 3] = alpha;
+    }
+  }
+  return Buffer.concat([
+    Buffer.from("89504e470d0a1a0a", "hex"),
+    pngChunk("IHDR", header),
+    pngChunk("IDAT", deflateSync(raw, { level: 9 })),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+function createProductFixturePng({ background, accent }) {
+  return createRgbaPng(240, 240, (x, y, width, height) => {
+    const inAccentBand = x > width * 0.12 && x < width * 0.22;
+    const inProductBlock =
+      x > width * 0.32 &&
+      x < width * 0.84 &&
+      y > height * 0.22 &&
+      y < height * 0.78;
+    if (inAccentBand) return [...accent, 255];
+    if (inProductBlock) return [246, 248, 250, 255];
+    return [...background, 255];
+  });
+}
+
+function createTryOnSilhouettePng() {
+  return createRgbaPng(320, 420, (x, y, width, height) => {
+    const nx = (x - width / 2) / (width / 2);
+    const ny = y / height;
+    const torso = Math.abs(nx) < 0.38 && ny > 0.24 && ny < 0.92;
+    const shoulders = Math.abs(nx) < 0.68 && ny > 0.18 && ny < 0.34;
+    const sleeves =
+      ((nx < -0.38 && nx > -0.78) || (nx > 0.38 && nx < 0.78)) &&
+      ny > 0.24 &&
+      ny < 0.48;
+    const collar = Math.abs(nx) < 0.2 && ny > 0.17 && ny < 0.28;
+    if ((torso || shoulders || sleeves) && !collar) return [22, 24, 27, 255];
+    return [0, 0, 0, 0];
+  });
+}
+
+// Deterministic, visibly sized PNGs keep media seeding independent from ignored
+// authoring files while still proving real image rendering.
+const TESTBED_MEDIA_FIXTURES = Object.freeze({
+  tryOnSilhouette: createTryOnSilhouettePng(),
+  productDisplayImages: Object.freeze({
+    袜子: createProductFixturePng({
+      background: [32, 91, 76],
+      accent: [248, 193, 68],
+    }),
+    内裤: createProductFixturePng({
+      background: [95, 64, 137],
+      accent: [63, 198, 181],
+    }),
+    T恤: createProductFixturePng({
+      background: [163, 74, 58],
+      accent: [97, 151, 206],
+    }),
+  }),
+});
+
+const TESTBED_PRODUCT_DISPLAY_IMAGE_FIXTURES = Object.freeze({
+  袜子: "socks",
+  内裤: "underwear",
+  T恤: "tshirts",
+});
+
+function testbedProductDisplayImageAsset(category) {
+  const fixtureKey = TESTBED_PRODUCT_DISPLAY_IMAGE_FIXTURES[category];
+  const buffer = TESTBED_MEDIA_FIXTURES.productDisplayImages[category];
+  if (!fixtureKey || !buffer) {
+    throw new Error(
+      `local testbed has no product display image fixture for ${category}`,
+    );
+  }
+  return {
+    fileName: `local-testbed-${category}-main-image.png`,
+    contentType: "image/png",
+    buffer,
   };
 }
 
@@ -1251,14 +1373,33 @@ export async function seedThroughSupportedApis({
       ...testbedTryOnSilhouetteAsset(),
     },
   );
+  const productDisplayAssetsByCategory = new Map();
+  for (const category of Object.keys(TESTBED_PRODUCT_DISPLAY_IMAGE_FIXTURES)) {
+    productDisplayAssetsByCategory.set(
+      category,
+      await upload(baseUrl, "/media-assets/product-display-images", {
+        token,
+        ...testbedProductDisplayImageAsset(category),
+      }),
+    );
+  }
   const products = [];
   for (const [index, entry] of fixture.products.entries()) {
+    const displayImageAsset = productDisplayAssetsByCategory.get(
+      entry.category,
+    );
+    if (!displayImageAsset) {
+      throw new Error(
+        `local testbed fixture product category has no display image asset: ${entry.category}`,
+      );
+    }
     const product = await request(baseUrl, "/products", {
       method: "POST",
       token,
       body: {
         name: entry.name,
         description: `${entry.category} normalized testbed fixture`,
+        displayImageMediaAssetId: displayImageAsset.id,
         status: "active",
         sortOrder: index,
       },
@@ -1280,7 +1421,7 @@ export async function seedThroughSupportedApis({
           : null,
       },
     });
-    products.push({ ...entry, product, variant });
+    products.push({ ...entry, product, variant, displayImageAsset });
   }
   const providers = await request(baseUrl, "/payments/providers", { token });
   const mockProvider = providers.find((provider) => provider.code === "mock");
@@ -1442,7 +1583,7 @@ export async function seedThroughSupportedApis({
           productId: product.product.id,
           productName: product.name,
           productDescription: `${product.category} normalized testbed fixture`,
-          coverImageUrl: null,
+          coverImageUrl: product.displayImageAsset.publicUrl,
           categoryId: null,
           categoryName: null,
           sku: product.variant.sku,
@@ -1472,6 +1613,25 @@ export async function seedThroughSupportedApis({
       silhouetteAssetId: tryOnSilhouetteAsset.id,
       silhouettePublicUrl: tryOnSilhouetteAsset.publicUrl,
     }));
+  const productMedia = ["socks", "underwear", "tshirts"].map(
+    (categoryKey) => {
+      const seededSlot = seededSlots.find(
+        (entry) => categoryKeyForFixtureProduct(entry.product) === categoryKey,
+      );
+      if (!seededSlot) {
+        throw new Error(
+          `local testbed fixture requires a ${categoryKey} product media binding`,
+        );
+      }
+      const product = seededSlot.product;
+      return {
+        categoryKey,
+        catalogKey: `product:${product.product.id}`,
+        productId: product.product.id,
+        coverImageUrl: product.displayImageAsset.publicUrl,
+      };
+    },
+  );
   return {
     machine,
     claim,
@@ -1494,6 +1654,7 @@ export async function seedThroughSupportedApis({
         inventoryId: unmatchedRecommendation.inventory.id,
       },
       seededTryOnVariants,
+      productMedia,
     },
     slots: seededSlots.map(({ slot, product, machineSlot, inventory }) => ({
       slotId: machineSlot.id,

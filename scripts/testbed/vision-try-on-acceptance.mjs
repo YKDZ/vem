@@ -537,6 +537,32 @@ export function normalizeSeededVisionAcceptance(raw) {
         };
       })
     : [];
+  const productMedia = Array.isArray(input.productMedia)
+    ? input.productMedia.map((entry, index) => {
+        const facts = requiredObject(
+          entry,
+          `visionAcceptance.productMedia[${index}]`,
+        );
+        return {
+          categoryKey: required(
+            optionalString(facts.categoryKey),
+            `visionAcceptance.productMedia[${index}].categoryKey`,
+          ),
+          catalogKey: required(
+            optionalString(facts.catalogKey),
+            `visionAcceptance.productMedia[${index}].catalogKey`,
+          ),
+          productId: required(
+            optionalString(facts.productId),
+            `visionAcceptance.productMedia[${index}].productId`,
+          ),
+          coverImageUrl: normalizeUrlPath(
+            facts.coverImageUrl,
+            `visionAcceptance.productMedia[${index}].coverImageUrl`,
+          ),
+        };
+      })
+    : [];
   return {
     tryOnCategoryKey: optionalString(input.tryOnCategoryKey),
     selectedCatalogKey: optionalString(input.selectedCatalogKey),
@@ -549,6 +575,7 @@ export function normalizeSeededVisionAcceptance(raw) {
     ),
     recommendationVariants,
     seededTryOnVariants,
+    productMedia,
   };
 }
 
@@ -1252,6 +1279,11 @@ export function validateTryOnPresentation({
         : runtime.tryOnSilhouetteAssetId
           ? `/api/media-assets/${runtime.tryOnSilhouetteAssetId}/content`
           : null;
+  if (!expectedSilhouettePath) {
+    throw new Error(
+      "try-on presentation requires a configured silhouette for the selected variant",
+    );
+  }
   if (expectedSilhouettePath && !hasTryOnSilhouette) {
     throw new Error(
       "try-on silhouette configured for the selected variant was not rendered",
@@ -1293,11 +1325,11 @@ export function validateTryOnPresentation({
     }
     if (
       tryOnState.silhouetteLoaded !== true ||
-      tryOnState.silhouetteNaturalWidth < 1 ||
-      tryOnState.silhouetteNaturalHeight < 1
+      tryOnState.silhouetteNaturalWidth < 160 ||
+      tryOnState.silhouetteNaturalHeight < 160
     ) {
       throw new Error(
-        "try-on silhouette image did not load with natural dimensions",
+        "try-on silhouette image did not load with usable natural dimensions",
       );
     }
   }
@@ -2386,6 +2418,63 @@ async function readImageHttpEvidence(url) {
   }
 }
 
+async function collectProductMediaPresentation(client, runtimeExpectation) {
+  const productCards = [];
+  for (const expected of runtimeExpectation.productMedia) {
+    const categorySelector = `[data-test="catalog-category"][data-category-key=${JSON.stringify(expected.categoryKey)}]:not(:disabled)`;
+    await activateVisibleSelector(client, categorySelector, {
+      kind: "touch",
+      timeoutMs: 30_000,
+    });
+    const card = await waitForCondition(
+      `product-owned media card ${expected.catalogKey}`,
+      async () =>
+        await evaluateExpression(
+          client,
+          `(() => {
+            const page = document.querySelector("[data-test='catalog-page']");
+            const card = document.querySelector(${JSON.stringify(`[data-test="catalog-product"][data-catalog-key=${JSON.stringify(expected.catalogKey)}]`)});
+            const image = card?.querySelector("img");
+            return {
+              route: location.hash,
+              activeCategoryKey: page?.dataset.categoryKey ?? null,
+              catalogKey: card?.getAttribute("data-catalog-key") ?? null,
+              mainImageUrl: image?.getAttribute("src") ?? null,
+              naturalWidth: Number(image?.naturalWidth ?? 0),
+              naturalHeight: Number(image?.naturalHeight ?? 0),
+            };
+          })()`,
+        ),
+      (state) =>
+        state?.route === "#/catalog" &&
+        state?.activeCategoryKey === expected.categoryKey &&
+        state?.catalogKey === expected.catalogKey &&
+        typeof state?.mainImageUrl === "string" &&
+        state.naturalWidth >= 64 &&
+        state.naturalHeight >= 64,
+      30_000,
+      250,
+    );
+    const http = await readImageHttpEvidence(card.mainImageUrl);
+    productCards.push({
+      categoryKey: expected.categoryKey,
+      catalogKey: expected.catalogKey,
+      expectedMainImageUrl: expected.coverImageUrl,
+      mainImageUrl: normalizeUrlPath(card.mainImageUrl, "catalog product main image URL"),
+      httpStatus: http.httpStatus,
+      naturalWidth: card.naturalWidth,
+      naturalHeight: card.naturalHeight,
+      finalUrl: http.finalUrl
+        ? normalizeUrlPath(http.finalUrl, "catalog product main image final URL")
+        : null,
+    });
+  }
+  return {
+    source: "installed_machine_runtime_cdp",
+    productCards,
+  };
+}
+
 async function collectVisionInstalledBinding() {
   const installedRecord = readJson(
     VISION_INSTALLED_RECORD_PATH,
@@ -2925,6 +3014,12 @@ async function runVisionTryOnAcceptance(options) {
     await enablePageRuntime(client);
     await waitForRoute(client, "#/catalog", { timeoutMs: 30_000, pollMs: 250 });
 
+    stage = "capture-product-owned-catalog-media";
+    const mediaPresentation = await collectProductMediaPresentation(
+      client,
+      runtimeExpectation,
+    );
+
     stage = "clear-existing-vision-before-recommendation-baseline";
     await stopVisionRuntime();
     realVisionStopped = true;
@@ -3325,6 +3420,7 @@ async function runVisionTryOnAcceptance(options) {
           manual: manualRecommendationPresentation.presentation,
           visionUnavailable: unavailableRecommendationPresentation.presentation,
         },
+        mediaPresentation,
         tryOnSurface,
         tryOnAttempts,
         silhouetteEvidence,

@@ -1,6 +1,6 @@
 {
   "schemaVersion": "vem-local-testbed-catalog/v1",
-  "source": "docs/唐诗村商品列表.xlsx",
+  "source": "tracked_testbed_fixture",
   "normalizedAt": "2026-07-18",
   "products": [
     {
@@ -318,6 +318,16 @@
       "onHandQty": 3,
       "lowStockThreshold": 1,
       "priceCents": 4900
+    },
+    {
+      "slotDisplayLabel": "A6",
+      "sourceRow": 10,
+      "rowNo": 1,
+      "cellNo": 6,
+      "capacity": 8,
+      "onHandQty": 3,
+      "lowStockThreshold": 1,
+      "priceCents": 5900
     },
     {
       "slotDisplayLabel": "B1",

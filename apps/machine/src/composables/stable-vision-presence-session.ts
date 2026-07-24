@@ -3,7 +3,7 @@ import { readonly, ref, watch, type Ref, type WatchStopHandle } from "vue";
 import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useVisionStore } from "@/stores/vision";
 
-const ABSENCE_DEPARTURE_MS = 10_000;
+const ABSENCE_DEPARTURE_MS = 5_000;
 const MIN_OCCUPANCY_CONFIDENCE = 0.5;
 
 export type StableVisionPresenceEdge = "arrival" | "departure" | null;
@@ -96,7 +96,7 @@ function start(): void {
     ({ online, enabled, presence }) => {
       // Missing capability or an uncertain occupancy observation is not
       // absence. It also invalidates an in-flight absence interval: the next
-      // departure must be backed by ten continuous seconds of confirmed input.
+      // departure must be backed by five continuous seconds of confirmed input.
       if (
         !enabled ||
         !online ||

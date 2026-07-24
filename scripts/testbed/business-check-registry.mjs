@@ -21,6 +21,7 @@ function descriptor({
   blockedReason = null,
   allowActiveTransactionHandoff = false,
   restoreFixtureStock = false,
+  evidence = { passed: passedEvidence, failed: failedEvidence },
 }) {
   return Object.freeze({
     name,
@@ -33,7 +34,10 @@ function descriptor({
     blockedReason,
     allowActiveTransactionHandoff,
     restoreFixtureStock,
-    evidence: Object.freeze({ passed: passedEvidence, failed: failedEvidence }),
+    evidence: Object.freeze({
+      passed: Object.freeze(evidence.passed),
+      failed: Object.freeze(evidence.failed),
+    }),
   });
 }
 
@@ -48,6 +52,21 @@ export const BUSINESS_CHECK_REGISTRY = Object.freeze([
       artifactDirectory: "commissioning-artifacts",
     },
     validator: "commissioning",
+  }),
+  descriptor({
+    name: "startup",
+    runner: {
+      kind: "node",
+      script: "scripts/testbed/startup-owner-acceptance.mjs",
+      args: [],
+      reportFileName: "startup-owner-readiness.json",
+      artifactDirectory: "startup-owner-readiness-artifacts",
+    },
+    validator: "startup",
+    evidence: {
+      passed: { trace: false, logs: false, screenshot: false },
+      failed: failedEvidence,
+    },
   }),
   descriptor({
     name: "sale",

@@ -1,8 +1,7 @@
 <script setup lang="ts">
+import { storeToRefs } from "pinia";
 import { computed, ref, watch } from "vue";
 import { useRoute } from "vue-router";
-
-import { storeToRefs } from "pinia";
 
 import type { MachineCatalogVariantCandidate } from "@/types/catalog";
 
@@ -11,6 +10,7 @@ import iconTshirtImage from "@/assets/home/icon-tshirt.png";
 import iconUnderwearImage from "@/assets/home/icon-underwear.png";
 import listSloganImage from "@/assets/home/list-slogan.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
+import { resolveManagedMediaReference } from "@/catalog/managed-media";
 import ManagedMediaImage from "@/components/catalog/ManagedMediaImage.vue";
 import KioskHeader from "@/components/KioskHeader.vue";
 import KioskLayout from "@/layouts/KioskLayout.vue";
@@ -62,10 +62,14 @@ const selectedVariant = computed(
     variantCandidates.value[0] ??
     null,
 );
+const tryOnSilhouetteResolution = computed(() =>
+  resolveManagedMediaReference(
+    selectedVariant.value?.tryOnSilhouetteUrl,
+    machineStore.platformApiBaseUrl ?? "",
+  ),
+);
 const hasTryOnSilhouette = computed(
-  () =>
-    typeof selectedVariant.value?.tryOnSilhouetteUrl === "string" &&
-    selectedVariant.value.tryOnSilhouetteUrl.trim().length > 0,
+  () => tryOnSilhouetteResolution.value.url !== null,
 );
 const selectedConcreteItem = computed(() => {
   const current = item.value;
@@ -277,7 +281,11 @@ async function purchase(): Promise<void> {
 
 async function enterTryOn(): Promise<void> {
   const variant = selectedVariant.value;
-  if (!variant || visionStore.isTryOnCapabilityDegraded) {
+  if (
+    !variant ||
+    !hasTryOnSilhouette.value ||
+    visionStore.isTryOnCapabilityDegraded
+  ) {
     return;
   }
   await submitMachineNavigationIntent({

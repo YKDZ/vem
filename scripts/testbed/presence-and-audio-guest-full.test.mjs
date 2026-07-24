@@ -573,7 +573,7 @@ describe("presence and audio guest full", () => {
         },
         sleep: async (milliseconds) => {
           now += milliseconds;
-          if (milliseconds === 10_000) {
+          if (milliseconds === 5_000) {
             const at = traceTimestamp();
             trace.push({
               type: "journey_transition",

@@ -12,6 +12,7 @@ describe("runtime business-check registry", () => {
       BUSINESS_CHECK_REGISTRY.map((descriptor) => descriptor.name),
       [
         "commissioning",
+        "startup",
         "sale",
         "scannerPayment",
         "visionExperience",
@@ -39,6 +40,7 @@ describe("runtime business-check registry", () => {
       ).map((descriptor) => descriptor.name),
       [
         "commissioning",
+        "startup",
         "sale",
         "scannerPayment",
         "visionExperience",
@@ -126,6 +128,29 @@ describe("runtime business-check registry", () => {
     assert.throws(
       () => selectBusinessChecks({ mode: "full", focus: ["sale"] }),
       /--focus is only valid with --mode fast/,
+    );
+  });
+
+  it("keeps installed startup ownership independently focusable and full-required", () => {
+    const startup = BUSINESS_CHECK_REGISTRY.find(
+      (descriptor) => descriptor.name === "startup",
+    );
+    assert.equal(
+      startup?.runner?.script,
+      "scripts/testbed/startup-owner-acceptance.mjs",
+    );
+    assert.equal(startup?.core, false);
+    assert.equal(startup?.fullRequired, true);
+    assert.deepEqual(startup?.evidence.passed, {
+      trace: false,
+      logs: false,
+      screenshot: false,
+    });
+    assert.deepEqual(
+      selectBusinessChecks({ mode: "fast", focus: ["startup"] }).map(
+        (descriptor) => descriptor.name,
+      ),
+      ["startup"],
     );
   });
 

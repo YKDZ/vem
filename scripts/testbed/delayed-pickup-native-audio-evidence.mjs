@@ -626,6 +626,19 @@ export function analyzeDelayedPickupRuntimeTrace(
   return { ok: diagnostics.length === 0, diagnostics, cues };
 }
 
+export function pickupCueWithinPickupPhase({ playback, controller }) {
+  const pickupAt = timestamp(playback?.at);
+  const pickupStartedAt = timestamp(controller?.f0?.at);
+  const resetStartedAt = timestamp(controller?.f1?.at);
+  return (
+    pickupAt !== null &&
+    pickupStartedAt !== null &&
+    resetStartedAt !== null &&
+    pickupAt >= pickupStartedAt &&
+    pickupAt < resetStartedAt
+  );
+}
+
 function rawSnapshot(value, label, expectedRunId) {
   if (
     value?.schemaVersion !== "installed-kiosk-sale-platform-raw-records/v3" ||

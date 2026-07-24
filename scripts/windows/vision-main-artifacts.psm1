@@ -579,6 +579,7 @@ function Install-VisionMainArtifact {
     [string]$TaskName = "StartVisionServer",
     [string]$TaskPath = "\VEM\",
     [string]$TaskUser = "VEMKiosk",
+    [switch]$SkipRuntimeOwnerTask,
     [int]$ProbeTimeoutSeconds = 30
   )
   $Commit = Assert-VisionCommit $Commit
@@ -588,7 +589,9 @@ function Install-VisionMainArtifact {
   $deliveryManifest = Read-VisionJson $deliveryManifestPath "download manifest"
   Assert-VisionMainCondition ($deliveryManifest.commit -ceq $Commit) "download manifest does not bind commit $Commit"
   $staging = "$AppDirectory.staging-$([guid]::NewGuid().ToString('N'))"
-  Stop-VisionMainTask -AppDirectory $AppDirectory -ConfigurationPath $SiteConfigurationDestination -TaskName $TaskName -TaskPath $TaskPath
+  if (-not $SkipRuntimeOwnerTask) {
+    Stop-VisionMainTask -AppDirectory $AppDirectory -ConfigurationPath $SiteConfigurationDestination -TaskName $TaskName -TaskPath $TaskPath
+  }
   try {
     Expand-VisionRuntimeArchive $RuntimeArchive $staging $Commit
     $sourceConfiguration = Read-VisionJson $SiteConfigurationPath "site configuration"
@@ -614,12 +617,31 @@ function Install-VisionMainArtifact {
     }
     Assert-VisionSiteConfiguration $SiteConfigurationDestination $resolvedFixtureRoot | Out-Null
     Ensure-VisionMainRuntimeWorkDirectory $RuntimeWorkDirectory $TaskUser
-    Write-VisionMainLauncher $AppDirectory $SiteConfigurationDestination $RuntimeWorkDirectory $LauncherPath
-    Ensure-VisionMainTask -LauncherPath $LauncherPath -WorkingDirectory $AppDirectory -TaskUser $TaskUser -TaskName $TaskName -TaskPath $TaskPath
-    Start-VisionMainTask $TaskName $TaskPath
-    $probe = Invoke-VisionMainProbe $SiteConfigurationDestination $ProbeTimeoutSeconds $resolvedFixtureRoot
-    $healthVersion = if ($null -ne $probe.health.PSObject.Properties["version"]) { [string]$probe.health.version } else { $null }
-    $launcherArguments = "/c `"`"$LauncherPath`"`""
+    $probe = $null
+    if (-not $SkipRuntimeOwnerTask) {
+      Write-VisionMainLauncher $AppDirectory $SiteConfigurationDestination $RuntimeWorkDirectory $LauncherPath
+      Ensure-VisionMainTask -LauncherPath $LauncherPath -WorkingDirectory $AppDirectory -TaskUser $TaskUser -TaskName $TaskName -TaskPath $TaskPath
+      Start-VisionMainTask $TaskName $TaskPath
+      $probe = Invoke-VisionMainProbe $SiteConfigurationDestination $ProbeTimeoutSeconds $resolvedFixtureRoot
+    }
+    $healthVersion = if ($null -ne $probe -and $null -ne $probe.health.PSObject.Properties["version"]) { [string]$probe.health.version } else { $null }
+    $legacyOwner = if ($SkipRuntimeOwnerTask) {
+      $null
+    } else {
+      [ordered]@{
+        launcher = [ordered]@{
+          path = $LauncherPath
+          command = "C:\Windows\System32\cmd.exe"
+          arguments = "/c `"`"$LauncherPath`"`""
+          workingDirectory = $AppDirectory
+        }
+        startTask = [ordered]@{
+          path = $TaskPath
+          name = $TaskName
+          user = $TaskUser
+        }
+      }
+    }
     $installedRecord = [ordered]@{
       schemaVersion = "vem-vision-installed/v1"
       commit = $Commit
@@ -633,17 +655,14 @@ function Install-VisionMainArtifact {
         path = $SiteConfigurationDestination
         sha256 = Get-VisionSha256 $SiteConfigurationDestination
       }
-      launcher = [ordered]@{
-        path = $LauncherPath
-        command = "C:\Windows\System32\cmd.exe"
-        arguments = $launcherArguments
-        workingDirectory = $AppDirectory
+      # Delegated installs preserve artifact evidence without claiming the legacy task owns Vision.
+      runtimeOwner = if ($SkipRuntimeOwnerTask) {
+        [ordered]@{ kind = "delegated"; installer = "install-vem-runtime-owners.ps1"; taskName = "VEMVisionRuntime" }
+      } else {
+        [ordered]@{ kind = "legacyTask"; taskName = $TaskName; taskPath = $TaskPath }
       }
-      startTask = [ordered]@{
-        path = $TaskPath
-        name = $TaskName
-        user = $TaskUser
-      }
+      launcher = if ($null -ne $legacyOwner) { $legacyOwner.launcher } else { $null }
+      startTask = if ($null -ne $legacyOwner) { $legacyOwner.startTask } else { $null }
       downloadManifest = [ordered]@{
         path = $deliveryManifestPath
         sha256 = Get-VisionSha256 $deliveryManifestPath

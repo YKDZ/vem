@@ -1,0 +1,128 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import test from "node:test";
+
+const installerPath = "scripts/windows/install-vem-runtime-owners.ps1";
+
+function source(path) {
+  return readFileSync(path, "utf8");
+}
+
+test("installs the production runtime owners and emits their shared manifest", () => {
+  assert.equal(existsSync(installerPath), true, "runtime owner installer is present");
+
+  const installer = source(installerPath);
+  assert.match(installer, /VemVendingDaemon/);
+  assert.match(installer, /New-Service/);
+  assert.match(installer, /LocalSystem/);
+  assert.match(installer, /Set-Service[\s\S]*Automatic/);
+  assert.match(installer, /sc\.exe[\s\S]*failure/);
+  assert.match(installer, /VEMMachineUI/);
+  assert.match(installer, /VEMVisionRuntime/);
+  assert.match(installer, /New-ScheduledTaskTrigger[\s\S]*AtLogOn/);
+  assert.match(installer, /VEMKiosk/);
+  assert.match(installer, /AutoAdminLogon/);
+  assert.match(installer, /\[string\]\$KioskPassword/);
+  assert.match(installer, /DefaultPassword/);
+  assert.match(installer, /icacls\.exe/);
+  assert.match(installer, /vem-runtime-owners\/v1/);
+  assert.match(installer, /owner-manifest\.json/);
+});
+
+test("interactive owner launchers replace stale component processes without watchdogs", () => {
+  const installer = source(installerPath);
+  assert.match(installer, /launch-vem-machine-ui\.ps1/);
+  assert.match(installer, /launch-vem-vision\.ps1/);
+  assert.match(installer, /Get-CimInstance Win32_Process/);
+  assert.match(installer, /Stop-Process/);
+  assert.match(installer, /Start-Process/);
+  assert.doesNotMatch(installer, /Register-ObjectEvent/);
+  assert.doesNotMatch(installer, /RestartOnFailure/);
+  assert.doesNotMatch(installer, /while \(\$true\)/);
+});
+
+test("runtime owner probe consumes the installed owner manifest", () => {
+  const probe = source("scripts/windows/probe-vem-runtime.ps1");
+
+  assert.match(probe, /owner-manifest\.json/);
+  assert.match(probe, /vem-runtime-owners\/v1/);
+  assert.match(probe, /owners\.daemon/);
+  assert.match(probe, /owners\.machineUi/);
+  assert.match(probe, /owners\.vision/);
+  assert.doesNotMatch(probe, /VEMDaemonConsole/);
+  assert.match(probe, /StartVisionServer/);
+  assert.match(probe, /Test-RuntimeExecutableReference/);
+  assert.match(probe, /competingOwners/);
+  assert.match(probe, /duplicateProcesses/);
+  assert.match(probe, /unexpectedProcesses/);
+  assert.match(probe, /DefaultPassword/);
+  assert.match(probe, /TaskLogonTrigger/);
+  assert.match(probe, /LocalSystem/);
+});
+
+test("owner installer writes one manifest through its public PowerShell entrypoint", () => {
+  const result = spawnSync(
+    "pwsh",
+    [
+      "-NoProfile",
+      "-File",
+      "scripts/windows/install-vem-runtime-owners.windows-harness.ps1",
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.schemaVersion, "vem-runtime-owners-harness/v2");
+  assert.equal(output.manifest.owners.daemon.name, "VemVendingDaemon");
+  assert.equal(output.manifest.owners.machineUi.trigger, "AtLogon");
+  assert.equal(output.manifest.owners.vision.trigger, "AtLogon");
+  assert.equal(output.registeredTasks.length, 2);
+  assert.equal(output.missingPasswordRejected, true);
+  assert.equal(output.legacyOwnerRejected, true);
+  assert.equal(output.aclCalls.length, 4);
+  assert.deepEqual(
+    output.registeredTasks.map((task) => task.trigger.kind),
+    ["AtLogon", "AtLogon"],
+  );
+  assert.deepEqual(
+    output.registeredTasks.map((task) => task.principal.UserId),
+    ["VEMKiosk", "VEMKiosk"],
+  );
+  assert.ok(
+    output.scCalls.some(
+      (call) => call.includes("obj= LocalSystem") && call.includes("start= auto"),
+    ),
+  );
+  assert.ok(
+    output.registryWrites.some((write) => write.name === "DefaultPassword"),
+  );
+});
+
+test("field probe rejects incomplete or competing installed owner definitions", () => {
+  const result = spawnSync(
+    "pwsh",
+    [
+      "-NoProfile",
+      "-File",
+      "scripts/windows/probe-vem-runtime.windows-harness.ps1",
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.schemaVersion, "vem-runtime-probe-harness/v1");
+  assert.deepEqual(output.requireHealthyFailures, [
+    "non-localsystem-service",
+    "unexpected-service-path",
+    "missing-password",
+    "missing-logon-trigger",
+    "unexpected-task-action",
+    "task-restart-policy",
+    "legacy-vision-owner",
+    "legacy-runtime-task-owner",
+    "legacy-runtime-service-owner",
+    "non-interactive-session",
+    "unexpected-process-user",
+  ]);
+});

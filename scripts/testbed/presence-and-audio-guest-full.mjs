@@ -28,7 +28,7 @@ import { validatePresenceAndAudioAcceptanceEvidence } from "./presence-and-audio
 
 const MODE = "full";
 const SHORT_EMPTY_MS = 1_000;
-const SUSTAINED_EMPTY_MS = 10_000;
+const SUSTAINED_EMPTY_MS = 5_000;
 const WELCOME_CAPTURE_MS = 1_000;
 const TRACE_TIMEOUT_MS = 30_000;
 const ADMIN_USER = "local-testbed-admin";

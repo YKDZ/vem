@@ -241,7 +241,7 @@ describe("Customer journey audio runtime", () => {
       occupancy: { state: "none", confidence: 0.91 },
     });
     await nextTick();
-    await vi.advanceTimersByTimeAsync(9_999);
+    await vi.advanceTimersByTimeAsync(4_999);
     visionStore.applyPresenceStatus({
       source: "top",
       eventId: "VISION-PRESENT-002",
@@ -315,7 +315,7 @@ describe("Customer journey audio runtime", () => {
       lastSeenAt: "2026-07-19T08:00:00.000Z",
       reason: "left_frame",
     });
-    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(5_000);
     expect(submitAutomaticVentIntent).toHaveBeenLastCalledWith({
       edgeId: "presence-2:departure",
       ventSpeed: 0,

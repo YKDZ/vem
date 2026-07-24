@@ -75,6 +75,17 @@ onMounted(async () => {
   if (!selectedVariant.value) {
     await catalogStore.refresh().catch(() => undefined);
   }
+  if (!silhouetteUrl.value) {
+    await submitMachineNavigationIntent({
+      type: "customer.navigate",
+      target: {
+        name: "product-detail",
+        params: { catalogKey: catalogKey.value },
+        query: { variantId: variantId.value },
+      },
+    });
+    return;
+  }
   sessionSilhouetteUrl.value = silhouetteUrl.value;
   await startPreview({
     catalogKey: catalogKey.value,
@@ -99,10 +110,19 @@ async function exitTryOn(): Promise<void> {
   });
 }
 
-function useSilhouettePlaceholder(): void {
+async function useSilhouettePlaceholder(): Promise<void> {
   if (!silhouetteAvailable.value) return;
   silhouetteAvailable.value = false;
   recordSilhouetteDiagnostic("managed try-on silhouette failed to load");
+  await stopPreview("silhouette_load_failed");
+  await submitMachineNavigationIntent({
+    type: "customer.navigate",
+    target: {
+      name: "product-detail",
+      params: { catalogKey: catalogKey.value },
+      query: { variantId: variantId.value },
+    },
+  });
 }
 </script>
 
@@ -130,12 +150,6 @@ function useSilhouettePlaceholder(): void {
       data-test="try-on-silhouette"
       @error="useSilhouettePlaceholder"
     />
-    <div
-      v-else
-      class="try-on-silhouette try-on-silhouette-placeholder"
-      aria-hidden="true"
-      data-test="try-on-silhouette-placeholder"
-    ></div>
     <section v-if="errorMessage" class="try-on-error" data-test="try-on-error">
       <p>{{ errorMessage }}</p>
     </section>
@@ -183,14 +197,6 @@ function useSilhouettePlaceholder(): void {
   transform: translate(-50%, -50%);
   object-fit: contain;
   pointer-events: none;
-}
-
-.try-on-silhouette-placeholder {
-  width: min(42vw, 34rem);
-  height: min(78vh, 48rem);
-  border: 2px dashed rgba(255, 255, 255, 0.4);
-  border-radius: 999px 999px 2rem 2rem;
-  background: rgba(255, 255, 255, 0.08);
 }
 
 .try-on-error {

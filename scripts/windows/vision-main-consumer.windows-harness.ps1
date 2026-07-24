@@ -226,6 +226,14 @@ try {
   Assert-True ($installedRecord.runtimeWorkDirectory -eq $runtimeWorkDirectory) "install record omitted the runtime work directory"
   Assert-True ($installedRecord.health.version -eq "9.8.7") "install record omitted the runtime health version diagnostic"
 
+  $taskRegistrationsBeforeDelegatedInstall = $global:VisionHarnessTaskRegistrations
+  Install-VisionMainArtifact -RuntimeArchive $cache.runtimeArchive -Commit $commit -SiteConfigurationPath $config -AppDirectory (Join-Path $root "vision\app") -SiteConfigurationDestination (Join-Path $root "program-data\vision\site.json") -RuntimeWorkDirectory $runtimeWorkDirectory -LauncherPath (Join-Path $root "bringup\start_vision.bat") -SkipRuntimeOwnerTask | Out-Null
+  $delegatedInstalledRecord = Get-Content -LiteralPath (Join-Path $root "program-data\vision\installed.json") -Raw | ConvertFrom-Json
+  Assert-True ($delegatedInstalledRecord.runtimeOwner.kind -eq "delegated") "delegated Vision install did not record its owner handoff"
+  Assert-True ($delegatedInstalledRecord.runtimeOwner.taskName -eq "VEMVisionRuntime") "delegated Vision install did not name the installed owner"
+  Assert-True ($null -eq $delegatedInstalledRecord.launcher -and $null -eq $delegatedInstalledRecord.startTask) "delegated Vision install still claimed the legacy task"
+  Assert-True ($global:VisionHarnessTaskRegistrations -eq $taskRegistrationsBeforeDelegatedInstall) "delegated Vision install changed the legacy task"
+
   function Assert-VisionProbeRejected([string]$Name, [int]$Port, [string]$ReadyJson) {
     $server = Start-VisionProbeServer $Port "ok" $true "9.8.7" $true $ReadyJson
     Start-Sleep -Milliseconds 200

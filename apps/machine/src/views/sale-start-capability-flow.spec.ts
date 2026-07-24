@@ -1845,6 +1845,30 @@ describe("sale-start capability UI flow", () => {
     expect(returnTryOnEntry).toBeNull();
   });
 
+  it("hides the try-on entry for an unusable silhouette reference without blocking purchase", async () => {
+    const item = {
+      ...makeCatalogItem(),
+      tryOnSilhouetteUrl: "https://untrusted.example/silhouette.png",
+    };
+    useCatalogStore().applySnapshot({
+      items: [item],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    useSaleCapabilityStore().acceptSnapshot(saleCapability(true));
+    routeParams.catalogKey = item.catalogKey;
+
+    const host = await mountView(ProductDetailView);
+    const buy = requireElement<HTMLButtonElement>(
+      host,
+      '[data-test="product-buy"]',
+    );
+
+    expect(host.querySelector('[data-test="try-on-entry"]')).toBeNull();
+    expect(buy.disabled).toBe(false);
+  });
+
   it("disables only a degraded try-on capability while preserving ordinary purchase", async () => {
     const item = {
       ...makeCatalogItem(),
@@ -1961,7 +1985,7 @@ describe("sale-start capability UI flow", () => {
     ).toBe(`http://localhost:3000${tryOnSilhouetteUrl}`);
   });
 
-  it("starts virtual try-on when selected variant has no silhouette URL", async () => {
+  it("returns to product detail without starting try-on when the selected variant has no silhouette URL", async () => {
     const item: MachineCatalogItem = {
       ...makeCatalogItem(),
       tryOnSilhouetteUrl: null,
@@ -1977,32 +2001,22 @@ describe("sale-start capability UI flow", () => {
       lastUpdatedAt: "2026-06-04T00:00:00Z",
     });
     applyVisionTryOnConfig();
-    const { previewUrl } = mockTryOnSession();
     routeParams.catalogKey = item.catalogKey;
     routeQuery.variantId = item.variantId;
 
     const host = await mountView(VirtualTryOnView);
 
     await vi.waitFor(() => {
-      expect(openVisionTryOnSessionMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          machineCode: "MACHINE-001",
-        }),
-        {
-          catalogKey: item.catalogKey,
-          variantId: item.variantId,
-        },
-      );
+      expect(routerPushMock).toHaveBeenLastCalledWith({
+        name: "product-detail",
+        params: { catalogKey: item.catalogKey },
+        query: { variantId: item.variantId },
+      });
     });
-    const preview = host.querySelector<HTMLImageElement>(
-      '[data-test="try-on-preview"]',
-    );
-    const silhouette = host.querySelector<HTMLImageElement>(
-      '[data-test="try-on-silhouette"]',
-    );
-    expect(preview).toBeTruthy();
-    expect(preview?.getAttribute("src")).toBe(previewUrl);
-    expect(silhouette).toBeNull();
+    expect(openVisionTryOnSessionMock).not.toHaveBeenCalled();
+    expect(
+      host.querySelector('[data-test="try-on-silhouette-placeholder"]'),
+    ).toBeNull();
   });
 
   it("rejects a remote try-on preview URL at the UI boundary", async () => {
@@ -2034,7 +2048,7 @@ describe("sale-start capability UI flow", () => {
     expect(useVisionStore().isTryOnCapabilityDegraded).toBe(false);
   });
 
-  it("uses a local placeholder and operator diagnostic when the try-on silhouette cannot decode", async () => {
+  it("records an operator diagnostic without rendering a dashed silhouette placeholder when the try-on silhouette cannot decode", async () => {
     const item = {
       ...makeCatalogItem(),
       tryOnSilhouetteUrl:
@@ -2047,7 +2061,7 @@ describe("sale-start capability UI flow", () => {
       lastUpdatedAt: "2026-06-04T00:00:00Z",
     });
     applyVisionTryOnConfig();
-    mockTryOnSession();
+    const { stop } = mockTryOnSession();
     routeParams.catalogKey = item.catalogKey;
     routeQuery.variantId = item.variantId;
 
@@ -2057,12 +2071,21 @@ describe("sale-start capability UI flow", () => {
       '[data-test="try-on-silhouette"]',
     );
     silhouette.dispatchEvent(new Event("error"));
+    await vi.waitFor(() => {
+      expect(stop).toHaveBeenCalledWith("silhouette_load_failed");
+      expect(routerPushMock).toHaveBeenLastCalledWith({
+        name: "product-detail",
+        params: { catalogKey: item.catalogKey },
+        query: { variantId: item.variantId },
+      });
+    });
     await nextTick();
 
     expect(host.querySelector('[data-test="try-on-silhouette"]')).toBeNull();
+    expect(host.querySelector('[data-test="try-on-preview"]')).toBeNull();
     expect(
       host.querySelector('[data-test="try-on-silhouette-placeholder"]'),
-    ).toBeTruthy();
+    ).toBeNull();
     expect(useCatalogStore().operatorDiagnostics).toEqual([
       expect.objectContaining({
         kind: "media",

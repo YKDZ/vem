@@ -26,6 +26,8 @@ describe("payment recovery guest full", () => {
     assert.doesNotMatch(source, /Page\.reload|location\.hash\s*=/);
     assert.doesNotMatch(source, /maintenance-entry-header/);
     assert.doesNotMatch(source, /customer-error-evidence-entry/);
+    assert.match(source, /report\.saleabilityRecovery\s*=\s*await observeSaleabilityRecovery/);
+    assert.match(source, /daemon_sale_view_and_installed_machine_runtime_cdp/);
   });
   it("drives create_failure through the provider create gate timeout without release or mock fail", () => {
     const source = readFileSync(
@@ -290,6 +292,7 @@ describe("payment recovery guest full", () => {
       action: "query_payment",
       duplicatePaymentCount: 0,
       attemptCount: 4,
+      saleableCategoryKeys: ["socks", "tshirts", "underwear"],
     });
     assert.throws(
       () =>
@@ -635,6 +638,15 @@ function recoveryReport() {
         fulfillmentState: "dispensed",
       },
       serial: { protocol: ["VEND", "F0", "F1", "F2"], stopped: true },
+    },
+    saleabilityRecovery: {
+      source: "daemon_sale_view_and_installed_machine_runtime_cdp",
+      route: "#/catalog",
+      categories: [
+        { key: "socks", daemonSaleableItemCount: 4, saleableProductCount: 4 },
+        { key: "underwear", daemonSaleableItemCount: 4, saleableProductCount: 4 },
+        { key: "tshirts", daemonSaleableItemCount: 4, saleableProductCount: 4 },
+      ],
     },
     assertions: { duplicatePaymentCount: 0 },
   };

@@ -357,7 +357,7 @@ describe("Machine runtime coordinator", () => {
       },
     });
 
-    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(5_000);
 
     await vi.waitFor(() => {
       expect(getCurrentTransactionMock).toHaveBeenCalledOnce();

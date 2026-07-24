@@ -59,6 +59,11 @@ function visionExperienceReport() {
           { productId: "product-t", variantId: "variant-m", size: "M" },
           { productId: "product-t", variantId: "variant-l", size: "L" },
         ],
+        productMedia: [
+          { categoryKey: "socks", catalogKey: "product-socks", coverImageUrl: "/api/media-assets/main-socks/content" },
+          { categoryKey: "underwear", catalogKey: "product-underwear", coverImageUrl: "/api/media-assets/main-underwear/content" },
+          { categoryKey: "tshirts", catalogKey: "product-tshirts", coverImageUrl: "/api/media-assets/main-tshirts/content" },
+        ],
       },
     },
     degradations: {
@@ -75,8 +80,49 @@ function visionExperienceReport() {
         visionUnavailable: { variantId: "variant-l", recommendedSize: null },
       },
       tryOnSelectedProduct: { variantId: "variant-l" },
-      tryOnSummary: { width: 640, height: 480, silhouetteHttpStatus: 200 },
+      tryOnSummary: {
+        width: 640,
+        height: 480,
+        silhouetteHttpStatus: 200,
+        silhouetteNaturalWidth: 320,
+        silhouetteNaturalHeight: 420,
+      },
       tryOnAttempts: [{ result: "passed" }],
+      mediaPresentation: {
+        source: "installed_machine_runtime_cdp",
+        productCards: [
+          {
+            categoryKey: "socks",
+            catalogKey: "product-socks",
+            expectedMainImageUrl: "/api/media-assets/main-socks/content",
+            mainImageUrl: "/api/media-assets/main-socks/content",
+            finalUrl: "/api/media-assets/main-socks/content",
+            httpStatus: 200,
+            naturalWidth: 320,
+            naturalHeight: 320,
+          },
+          {
+            categoryKey: "underwear",
+            catalogKey: "product-underwear",
+            expectedMainImageUrl: "/api/media-assets/main-underwear/content",
+            mainImageUrl: "/api/media-assets/main-underwear/content",
+            finalUrl: "/api/media-assets/main-underwear/content",
+            httpStatus: 200,
+            naturalWidth: 320,
+            naturalHeight: 320,
+          },
+          {
+            categoryKey: "tshirts",
+            catalogKey: "product-tshirts",
+            expectedMainImageUrl: "/api/media-assets/main-tshirts/content",
+            mainImageUrl: "/api/media-assets/main-tshirts/content",
+            finalUrl: "/api/media-assets/main-tshirts/content",
+            httpStatus: 200,
+            naturalWidth: 320,
+            naturalHeight: 320,
+          },
+        ],
+      },
     },
   };
 }
@@ -589,6 +635,15 @@ function paymentRecoveryReport() {
       },
       inventory: { beforeOnHandQty: 3, afterOnHandQty: 2, movementCount: 1 },
       serial: { protocol: ["VEND", "F0", "F1", "F2"], stopped: true },
+    },
+    saleabilityRecovery: {
+      source: "daemon_sale_view_and_installed_machine_runtime_cdp",
+      route: "#/catalog",
+      categories: [
+        { key: "socks", daemonSaleableItemCount: 4, saleableProductCount: 4 },
+        { key: "underwear", daemonSaleableItemCount: 4, saleableProductCount: 4 },
+        { key: "tshirts", daemonSaleableItemCount: 4, saleableProductCount: 4 },
+      ],
     },
     assertions: { duplicatePaymentCount: 0 },
   };
@@ -1155,6 +1210,28 @@ describe("full workflow aggregate validator", () => {
       ).status,
       "failed",
     );
+    const reusedMedia = visionExperienceReport();
+    reusedMedia.ui.mediaPresentation.productCards[2].mainImageUrl =
+      reusedMedia.ui.mediaPresentation.productCards[1].mainImageUrl;
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("visionExperience"),
+        reusedMedia,
+        "/reports/vision.json",
+      ).status,
+      "failed",
+    );
+    const wrongOwnedMedia = visionExperienceReport();
+    wrongOwnedMedia.ui.mediaPresentation.productCards[0].expectedMainImageUrl =
+      "/api/media-assets/main-underwear/content";
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("visionExperience"),
+        wrongOwnedMedia,
+        "/reports/vision.json",
+      ).status,
+      "failed",
+    );
   });
 
   it("lets the owning sale validator decide its business claim", () => {
@@ -1329,6 +1406,24 @@ describe("full workflow aggregate validator", () => {
       ).status,
       "failed",
     );
+    const allProductsUnavailable = paymentRecoveryReport();
+    allProductsUnavailable.saleabilityRecovery = {
+      source: "daemon_sale_view_and_installed_machine_runtime_cdp",
+      route: "#/catalog",
+      categories: [
+        { key: "socks", daemonSaleableItemCount: 4, saleableProductCount: 0 },
+        { key: "underwear", daemonSaleableItemCount: 4, saleableProductCount: 0 },
+        { key: "tshirts", daemonSaleableItemCount: 4, saleableProductCount: 0 },
+      ],
+    };
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("paymentRecovery"),
+        allProductsUnavailable,
+        "/reports/payment-recovery.json",
+      ).status,
+      "failed",
+    );
   });
 
   it("accepts local operations only with canonical planogram and manual slot evidence", () => {
@@ -1383,6 +1478,51 @@ describe("full workflow aggregate validator", () => {
         descriptor("presenceAndAudio"),
         duplicateWelcome,
         "/reports/presence-and-audio.json",
+      ).status,
+      "failed",
+    );
+  });
+
+  it("accepts startup only from installed-owner readiness evidence", () => {
+    const report = {
+      schemaVersion: "vem-installed-runtime-startup-acceptance/v1",
+      ok: true,
+      mode: "fast",
+      summary: {
+        daemonService: "VemVendingDaemon",
+        machineUiTask: "VEMMachineUI",
+        visionTask: "VEMVisionRuntime",
+        kioskSessionId: 3,
+        catalogRoute: "#/catalog",
+        modeEvidence: {
+          source: "installed_owner_stop_start",
+          ownerRestartMarker: "owner-restart:001",
+        },
+      },
+    };
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("startup"),
+        report,
+        "/reports/startup-owner-readiness.json",
+      ).status,
+      "passed",
+    );
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("startup"),
+        { ...report, summary: { ...report.summary, visionTask: null } },
+        "/reports/startup-owner-readiness.json",
+      ).status,
+      "failed",
+    );
+    const falseFull = structuredClone(report);
+    falseFull.mode = "full";
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("startup"),
+        falseFull,
+        "/reports/startup-owner-readiness.json",
       ).status,
       "failed",
     );

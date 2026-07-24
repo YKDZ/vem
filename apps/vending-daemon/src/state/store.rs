@@ -3648,17 +3648,8 @@ impl LocalStateStore {
                         .to_string(),
                 ));
             }
-            if let Some(identity) = self
-                .stock_maintenance_task_identity_by_id(&input.task_id)
-                .await?
-            {
-                self.freeze_stale_stock_task_identity(&identity).await?;
-            } else {
-                self.freeze_stale_stock_task_slots(&input.slots).await?;
-            }
             return Err(StoreError::InvalidStockInput(
-                "stock maintenance task is stale; affected slots require reconciliation"
-                    .to_string(),
+                "stock maintenance task is stale; refresh the current task".to_string(),
             ));
         }
         let task_identity = self.stock_maintenance_task_identity(&task).await?;
@@ -3995,59 +3986,6 @@ impl LocalStateStore {
         .fetch_optional(&self.pool)
         .await?;
         Ok(tombstone.is_some())
-    }
-
-    async fn freeze_stale_stock_task_slots(
-        &self,
-        slots: &[StockMaintenanceBatchSlotInput],
-    ) -> Result<(), StoreError> {
-        let mut tx = self.begin_immediate_write_transaction().await?;
-        for slot in slots {
-            let active: Option<(String, String)> = sqlx::query_as(
-                "SELECT s.planogram_version,s.slot_id FROM machine_planogram_slots s
-                 JOIN machine_planogram_versions v ON v.planogram_version=s.planogram_version AND v.active=1
-                 WHERE s.slot_id=?1",
-            )
-            .bind(&slot.slot_id)
-            .fetch_optional(tx.as_mut())
-            .await?;
-            let Some((planogram_version, slot_id)) = active else {
-                continue;
-            };
-            upsert_sale_safety_blocker_marker_in_tx(
-                &mut tx,
-                &planogram_version,
-                &slot_id,
-                "needs_platform_review",
-                "stale_stock_maintenance_task",
-                "stock_maintenance_task",
-            )
-            .await?;
-            sqlx::query(
-                "UPDATE current_stock_projection SET saleable_stock=0,slot_sales_state='needs_platform_review',updated_at=?3
-                 WHERE planogram_version=?1 AND slot_id=?2",
-            )
-            .bind(&planogram_version)
-            .bind(&slot_id)
-            .bind(now_iso())
-            .execute(tx.as_mut())
-            .await?;
-            upsert_sale_view_projection_in_tx(&mut tx, &planogram_version, &slot_id).await?;
-        }
-        tx.commit().await?;
-        Ok(())
-    }
-
-    async fn freeze_stale_stock_task_identity(
-        &self,
-        identity: &StockMaintenanceTaskIdentity,
-    ) -> Result<(), StoreError> {
-        let mut tx = self.begin_immediate_write_transaction().await?;
-        let differences =
-            Self::stock_maintenance_identity_differences_in_tx(&mut tx, identity).await?;
-        Self::freeze_stock_identity_differences_in_tx(&mut tx, identity, &differences).await?;
-        tx.commit().await?;
-        Ok(())
     }
 
     pub async fn record_stock_movement(
@@ -5300,6 +5238,14 @@ impl LocalStateStore {
             } else {
                 0
             };
+            if matches!(slot.slot_sales_state.as_deref(), Some("sale_ready")) {
+                clear_explicit_stale_reconciliation_blocker_in_tx(
+                    &mut tx,
+                    &snapshot.planogram_version,
+                    &slot.slot_id,
+                )
+                .await?;
+            }
             upsert_stock_projection_with_state_in_tx(
                 &mut tx,
                 &snapshot.planogram_version,
@@ -6253,6 +6199,27 @@ async fn clear_sale_safety_blocker_marker_in_tx(
     Ok(())
 }
 
+async fn clear_explicit_stale_reconciliation_blocker_in_tx(
+    tx: &mut Transaction<'_, sqlx::Sqlite>,
+    planogram_version: &str,
+    slot_id: &str,
+) -> Result<(), StoreError> {
+    sqlx::query(
+        "DELETE FROM sale_safety_blockers
+         WHERE planogram_version = ?1
+           AND slot_id = ?2
+           AND (
+             (source = 'platform_reconciliation' AND reason = 'legacy_task_identity')
+             OR (source = 'stock_maintenance_task' AND reason = 'stale_stock_maintenance_task')
+           )",
+    )
+    .bind(planogram_version)
+    .bind(slot_id)
+    .execute(tx.as_mut())
+    .await?;
+    Ok(())
+}
+
 async fn clear_stock_ledger_loss_blocker_in_tx(
     tx: &mut Transaction<'_, sqlx::Sqlite>,
     planogram_version: &str,
@@ -6313,7 +6280,14 @@ async fn upsert_stock_projection_with_state_in_tx(
          ON CONFLICT(slot_id) DO UPDATE SET
            planogram_version=excluded.planogram_version,
            physical_stock=excluded.physical_stock,
-           saleable_stock=excluded.saleable_stock,
+           saleable_stock=CASE
+             WHEN EXISTS (
+               SELECT 1 FROM sale_safety_blockers b
+               WHERE b.planogram_version = current_stock_projection.planogram_version
+                 AND b.slot_id = current_stock_projection.slot_id
+             ) THEN 0
+             ELSE excluded.saleable_stock
+           END,
            slot_sales_state=CASE
              WHEN EXISTS (
                SELECT 1 FROM sale_safety_blockers b
@@ -8010,7 +7984,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stock_maintenance_rejects_same_version_slot_revision_change_without_any_batch_write() {
+    async fn stock_maintenance_rejects_same_version_slot_revision_change_without_mutating_saleability(
+    ) {
         let temp = TempDir::new().expect("temp");
         let store = LocalStateStore::open(&temp.path().join("state.db"))
             .await
@@ -8071,29 +8046,19 @@ mod tests {
                 .await
                 .expect("outbox count");
         assert_eq!((movement_count.0, outbox_count.0), (0, 0));
-        let sale_view = store.sale_view(None).await.expect("targeted freeze");
+        let sale_view = store.sale_view(None).await.expect("unchanged sale view");
         assert_eq!(
             sale_view.items[0].slot_id,
             "550e8400-e29b-41d4-a716-446655440001"
         );
-        assert_eq!(sale_view.items[0].saleable_stock, 0);
-        assert_eq!(sale_view.items[0].slot_sales_state, "needs_platform_review");
+        assert_eq!(sale_view.items[0].saleable_stock, 3);
+        assert_eq!(sale_view.items[0].slot_sales_state, "sale_ready");
         assert_eq!(
             sale_view.items[1].slot_id,
             "550e8400-e29b-41d4-a716-446655440011"
         );
         assert_eq!(sale_view.items[1].saleable_stock, 2);
         assert_eq!(sale_view.items[1].slot_sales_state, "sale_ready");
-        let audit: (String,) = sqlx::query_as(
-            "SELECT context_json FROM health_events
-             WHERE code='stale_stock_maintenance_task_slot_diff'
-             ORDER BY occurred_at DESC LIMIT 1",
-        )
-        .fetch_one(store.pool())
-        .await
-        .expect("slot diff audit");
-        assert!(audit.0.contains("sku_changed"));
-        assert!(audit.0.contains("capacity_changed"));
     }
 
     #[tokio::test]
@@ -8643,7 +8608,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stale_stock_task_freezes_only_named_current_slots() {
+    async fn stale_stock_task_does_not_refreeze_slots_with_accepted_stock() {
         let temp = TempDir::new().expect("temp");
         let store = LocalStateStore::open(&temp.path().join("state.db"))
             .await
@@ -8672,8 +8637,8 @@ mod tests {
             .await
             .is_err());
         let sale_view = store.sale_view(None).await.expect("sale view");
-        assert_eq!(sale_view.items[0].slot_sales_state, "needs_platform_review");
-        assert_eq!(sale_view.items[0].saleable_stock, 0);
+        assert_eq!(sale_view.items[0].slot_sales_state, "sale_ready");
+        assert_eq!(sale_view.items[0].saleable_stock, 3);
         assert_eq!(sale_view.items[1].slot_sales_state, "sale_ready");
         assert_eq!(sale_view.items[1].saleable_stock, 2);
     }
@@ -8906,6 +8871,43 @@ mod tests {
         }
     }
 
+    async fn seed_sale_safety_blocker_fixture(
+        store: &LocalStateStore,
+        planogram_version: &str,
+        slot_id: &str,
+        slot_sales_state: &str,
+        reason: &str,
+        source: &str,
+    ) {
+        let mut tx = store.pool().begin().await.expect("begin blocker fixture");
+        upsert_sale_safety_blocker_marker_in_tx(
+            &mut tx,
+            planogram_version,
+            slot_id,
+            slot_sales_state,
+            reason,
+            source,
+        )
+        .await
+        .expect("seed blocker");
+        sqlx::query(
+            "UPDATE current_stock_projection
+             SET saleable_stock = 0, slot_sales_state = ?3, updated_at = ?4
+             WHERE planogram_version = ?1 AND slot_id = ?2",
+        )
+        .bind(planogram_version)
+        .bind(slot_id)
+        .bind(slot_sales_state)
+        .bind(now_iso())
+        .execute(tx.as_mut())
+        .await
+        .expect("block slot");
+        upsert_sale_view_projection_in_tx(&mut tx, planogram_version, slot_id)
+            .await
+            .expect("refresh sale view");
+        tx.commit().await.expect("commit blocker fixture");
+    }
+
     #[tokio::test]
     async fn platform_stock_snapshot_updates_local_sale_view_without_upload_outbox() {
         let temp = TempDir::new().expect("temp");
@@ -8995,6 +8997,286 @@ mod tests {
         assert_eq!(sale_view.items[0].physical_stock, 5);
         assert_eq!(sale_view.items[0].saleable_stock, 0);
         assert_eq!(sale_view.items[0].slot_sales_state, "frozen");
+    }
+
+    #[tokio::test]
+    async fn platform_stock_snapshot_clears_stale_reconciliation_blocker_when_slot_is_sale_ready() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+        store
+            .record_stock_movement_with_upload(
+                StockMovementInput {
+                    movement_id: "MOVE-STALE-BLOCKER".to_string(),
+                    planogram_version: "PLAN-FAILURE".to_string(),
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                    movement_type: "stock_count_correction".to_string(),
+                    quantity: 5,
+                    source: "local_maintenance".to_string(),
+                    attributed_to: Some("operator-1".to_string()),
+                },
+                Some("M001"),
+                Some("https://platform.example/api"),
+            )
+            .await
+            .expect("submit stock count");
+        let event = store
+            .outbox_record("stock-movement:MOVE-STALE-BLOCKER")
+            .await
+            .expect("outbox lookup")
+            .expect("outbox event");
+        store
+            .record_stock_movement_upload_response(
+                &event,
+                &crate::backend::StockMovementUploadResponse {
+                    movement_id: "MOVE-STALE-BLOCKER".to_string(),
+                    status: "reconciliation".to_string(),
+                    accepted_at: None,
+                    receipt: None,
+                    rejection: None,
+                    reconciliation: Some(crate::backend::StockMovementReconciliation {
+                        reason: "legacy_task_identity".to_string(),
+                        platform_review: Some(json!({"required": true})),
+                        sale_safety_blocker: Some(crate::backend::StockMovementSaleSafetyBlocker {
+                            slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                            slot_sales_state: "needs_platform_review".to_string(),
+                            reason: "legacy_task_identity".to_string(),
+                        }),
+                    }),
+                },
+            )
+            .await
+            .expect("record reconciliation");
+        assert_eq!(
+            store
+                .sale_view(None)
+                .await
+                .expect("blocked sale view")
+                .items[0]
+                .slot_sales_state,
+            "needs_platform_review"
+        );
+
+        let retained = store
+            .apply_platform_stock_snapshot(&single_slot_stock_snapshot(5, 0, 5))
+            .await
+            .expect("implicit sale-ready snapshot updates inventory");
+        assert_eq!(retained.items[0].physical_stock, 5);
+        assert_eq!(retained.items[0].saleable_stock, 0);
+        assert_eq!(retained.items[0].slot_sales_state, "needs_platform_review");
+
+        let mut snapshot = single_slot_stock_snapshot(5, 0, 5);
+        snapshot.slots[0].slot_sales_state = Some("sale_ready".to_string());
+        let sale_view = store
+            .apply_platform_stock_snapshot(&snapshot)
+            .await
+            .expect("fresh platform stock snapshot");
+
+        assert_eq!(sale_view.items[0].physical_stock, 5);
+        assert_eq!(sale_view.items[0].saleable_stock, 5);
+        assert_eq!(sale_view.items[0].slot_sales_state, "sale_ready");
+    }
+
+    #[tokio::test]
+    async fn platform_stock_snapshot_keeps_stock_ledger_loss_blocker_when_slot_is_sale_ready() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        store
+            .put_metadata(STOCK_LEDGER_REBUILT_AFTER_QUARANTINE_KEY, &true)
+            .await
+            .expect("mark rebuilt ledger");
+        seed_single_slot_planogram(&store).await;
+
+        let mut snapshot = single_slot_stock_snapshot(5, 0, 5);
+        snapshot.slots[0].slot_sales_state = Some("sale_ready".to_string());
+        let sale_view = store
+            .apply_platform_stock_snapshot(&snapshot)
+            .await
+            .expect("platform snapshot updates inventory");
+
+        assert_eq!(sale_view.items[0].physical_stock, 5);
+        assert_eq!(sale_view.items[0].saleable_stock, 0);
+        assert_eq!(sale_view.items[0].slot_sales_state, "needs_count");
+        let blocker: (String,) = sqlx::query_as(
+            "SELECT reason FROM sale_safety_blockers
+             WHERE planogram_version = ?1 AND slot_id = ?2",
+        )
+        .bind("PLAN-FAILURE")
+        .bind("550e8400-e29b-41d4-a716-446655440001")
+        .fetch_one(store.pool())
+        .await
+        .expect("stock ledger blocker remains");
+        assert_eq!(blocker.0, "stock_ledger_loss");
+    }
+
+    #[tokio::test]
+    async fn platform_stock_snapshot_keeps_local_capacity_blocker_when_slot_is_sale_ready() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+        store
+            .record_stock_movement(StockMovementInput {
+                movement_id: "MOVE-CAPACITY-SEED".to_string(),
+                planogram_version: "PLAN-FAILURE".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 7,
+                source: "local_maintenance".to_string(),
+                attributed_to: None,
+            })
+            .await
+            .expect("seed stock");
+        assert!(store
+            .record_stock_movement(StockMovementInput {
+                movement_id: "MOVE-CAPACITY-OVERFLOW".to_string(),
+                planogram_version: "PLAN-FAILURE".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                movement_type: "planned_refill".to_string(),
+                quantity: 2,
+                source: "local_maintenance".to_string(),
+                attributed_to: None,
+            })
+            .await
+            .is_err());
+
+        let mut snapshot = single_slot_stock_snapshot(7, 0, 7);
+        snapshot.slots[0].slot_sales_state = Some("sale_ready".to_string());
+        let sale_view = store
+            .apply_platform_stock_snapshot(&snapshot)
+            .await
+            .expect("platform snapshot updates inventory");
+
+        assert_eq!(sale_view.items[0].physical_stock, 7);
+        assert_eq!(sale_view.items[0].saleable_stock, 0);
+        assert_eq!(sale_view.items[0].slot_sales_state, "needs_platform_review");
+        let blocker: (String,) = sqlx::query_as(
+            "SELECT reason FROM sale_safety_blockers
+             WHERE planogram_version = ?1 AND slot_id = ?2",
+        )
+        .bind("PLAN-FAILURE")
+        .bind("550e8400-e29b-41d4-a716-446655440001")
+        .fetch_one(store.pool())
+        .await
+        .expect("capacity blocker remains");
+        assert_eq!(blocker.0, "local_capacity_exceeded");
+    }
+
+    #[tokio::test]
+    async fn platform_stock_snapshot_keeps_mapping_and_rejection_blockers_when_slot_is_sale_ready()
+    {
+        for (slot_sales_state, reason) in [
+            ("needs_platform_review", "mapping_mismatch"),
+            ("movement_rejected", "movement_id_payload_conflict"),
+        ] {
+            let temp = TempDir::new().expect("temp");
+            let store = LocalStateStore::open(&temp.path().join("state.db"))
+                .await
+                .expect("open");
+            seed_single_slot_planogram(&store).await;
+            seed_sale_safety_blocker_fixture(
+                &store,
+                "PLAN-FAILURE",
+                "550e8400-e29b-41d4-a716-446655440001",
+                slot_sales_state,
+                reason,
+                "platform_reconciliation",
+            )
+            .await;
+
+            let mut snapshot = single_slot_stock_snapshot(5, 0, 5);
+            snapshot.slots[0].slot_sales_state = Some("sale_ready".to_string());
+            let sale_view = store
+                .apply_platform_stock_snapshot(&snapshot)
+                .await
+                .expect("platform snapshot updates inventory");
+
+            assert_eq!(sale_view.items[0].physical_stock, 5, "{reason}");
+            assert_eq!(sale_view.items[0].saleable_stock, 0, "{reason}");
+            assert_eq!(
+                sale_view.items[0].slot_sales_state, slot_sales_state,
+                "{reason}"
+            );
+            let blocker: (String,) = sqlx::query_as(
+                "SELECT reason FROM sale_safety_blockers
+                 WHERE planogram_version = ?1 AND slot_id = ?2",
+            )
+            .bind("PLAN-FAILURE")
+            .bind("550e8400-e29b-41d4-a716-446655440001")
+            .fetch_one(store.pool())
+            .await
+            .expect("blocker remains");
+            assert_eq!(blocker.0, reason);
+        }
+    }
+
+    #[tokio::test]
+    async fn platform_stock_snapshot_keeps_distinct_blockers_on_multiple_slots() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_two_slot_planogram(&store).await;
+        seed_sale_safety_blocker_fixture(
+            &store,
+            "PLAN-PARTIAL-ACK",
+            "550e8400-e29b-41d4-a716-446655440001",
+            "needs_platform_review",
+            "mapping_mismatch",
+            "platform_reconciliation",
+        )
+        .await;
+        seed_sale_safety_blocker_fixture(
+            &store,
+            "PLAN-PARTIAL-ACK",
+            "550e8400-e29b-41d4-a716-446655440011",
+            "needs_platform_review",
+            "local_capacity_exceeded",
+            "local_maintenance",
+        )
+        .await;
+        let snapshot = crate::backend::MachineStockSnapshot {
+            machine_code: "M001".to_string(),
+            planogram_version: "PLAN-PARTIAL-ACK".to_string(),
+            slots: vec![
+                crate::backend::MachineStockSnapshotSlot {
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                    inventory_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
+                    capacity: 8,
+                    on_hand_qty: 4,
+                    reserved_qty: 0,
+                    available_qty: 4,
+                    slot_sales_state: Some("sale_ready".to_string()),
+                },
+                crate::backend::MachineStockSnapshotSlot {
+                    slot_id: "550e8400-e29b-41d4-a716-446655440011".to_string(),
+                    inventory_id: "550e8400-e29b-41d4-a716-446655440012".to_string(),
+                    capacity: 8,
+                    on_hand_qty: 6,
+                    reserved_qty: 0,
+                    available_qty: 6,
+                    slot_sales_state: Some("sale_ready".to_string()),
+                },
+            ],
+            server_time: "2026-06-12T00:00:00.000Z".to_string(),
+        };
+
+        let sale_view = store
+            .apply_platform_stock_snapshot(&snapshot)
+            .await
+            .expect("platform snapshot updates both inventory records");
+
+        assert_eq!(sale_view.items[0].physical_stock, 4);
+        assert_eq!(sale_view.items[0].saleable_stock, 0);
+        assert_eq!(sale_view.items[0].slot_sales_state, "needs_platform_review");
+        assert_eq!(sale_view.items[1].physical_stock, 6);
+        assert_eq!(sale_view.items[1].saleable_stock, 0);
+        assert_eq!(sale_view.items[1].slot_sales_state, "needs_platform_review");
     }
 
     #[tokio::test]

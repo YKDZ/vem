@@ -55,7 +55,7 @@ describe("stable Vision presence navigation", () => {
     emitPresence(true, "PRESENT-1");
     emitPresence(false, "EMPTY-1");
     await nextTick();
-    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(5_000);
 
     expect(submitMachineNavigationIntentMock).toHaveBeenCalledTimes(1);
     expect(submitMachineNavigationIntentMock).toHaveBeenCalledWith({

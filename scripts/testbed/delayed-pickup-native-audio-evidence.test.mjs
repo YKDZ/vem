@@ -7,6 +7,7 @@ import {
   analyzeDelayedPickupRuntimeTrace,
   analyzeDelayedPickupUiEvidence,
   correlateDelayedPickupCueWindows,
+  pickupCueWithinPickupPhase,
 } from "./delayed-pickup-native-audio-evidence.mjs";
 
 const binding = {
@@ -170,6 +171,29 @@ describe("delayed pickup production evidence algorithms", () => {
 
     assert.equal(result.ok, true, JSON.stringify(result.diagnostics));
     assert.equal(result.events.af.length, 2);
+  });
+
+  it("rejects a pickup playback start after reset even when its journey transition was earlier", () => {
+    assert.equal(
+      pickupCueWithinPickupPhase({
+        playback: { at: "2026-07-18T08:00:30.000Z" },
+        controller: {
+          f0: { at: "2026-07-18T08:00:00.000Z" },
+          f1: { at: "2026-07-18T08:00:30.000Z" },
+        },
+      }),
+      false,
+    );
+    assert.equal(
+      pickupCueWithinPickupPhase({
+        playback: { at: "2026-07-18T08:00:29.999Z" },
+        controller: {
+          f0: { at: "2026-07-18T08:00:00.000Z" },
+          f1: { at: "2026-07-18T08:00:30.000Z" },
+        },
+      }),
+      true,
+    );
   });
 
   it("fails closed for fabricated headers, invalid dispense CRC, and non-canonical timestamps", () => {

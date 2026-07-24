@@ -11,6 +11,7 @@ param(
   [string]$TaskName = "StartVisionServer",
   [string]$TaskPath = "\VEM\",
   [string]$TaskUser = "VEMKiosk",
+  [switch]$SkipRuntimeOwnerTask,
   [int]$ProbeTimeoutSeconds = 30
 )
 
