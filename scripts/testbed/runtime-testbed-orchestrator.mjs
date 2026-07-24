@@ -368,6 +368,19 @@ function sshArguments(guest) {
   ];
 }
 
+function scpArguments(guest) {
+  return [
+    "-O",
+    ...sshArguments(guest),
+    "-o",
+    "ConnectTimeout=15",
+    "-o",
+    "ServerAliveInterval=5",
+    "-o",
+    "ServerAliveCountMax=3",
+  ];
+}
+
 function encodedPowerShell(script) {
   return Buffer.from(script, "utf16le").toString("base64");
 }
@@ -393,6 +406,7 @@ async function stageAndRunGuest({
   const guest = contract.testbed.guest;
   const remote = `${guest.user}@${guest.host}`;
   const ssh = sshArguments(guest);
+  const scp = scpArguments(guest);
   const archive = join(runRoot, `source-pass-${pass}.tar.gz`);
   await runProcess("git", [
     `--git-dir=${config.mirrorPath}`,
@@ -414,7 +428,7 @@ async function stageAndRunGuest({
     "-EncodedCommand",
     encodedPowerShell(createArchiveParent),
   ]);
-  await runProcess("scp", [...ssh, archive, `${remote}:${remoteArchive}`]);
+  await runProcess("scp", [...scp, archive, `${remote}:${remoteArchive}`]);
   const prepare = [
     `$source = '${config.guestSourcePath.replaceAll("'", "''")}'`,
     `$archive = '${remoteArchive.replaceAll("'", "''")}'`,
@@ -484,7 +498,7 @@ async function stageAndRunGuest({
         ? "C:/ProgramData/VEM/testbed/clear-cache-report.json"
         : "C:/ProgramData/VEM/testbed/full-workflow-evidence-bundle";
     await runProcess("scp", [
-      ...ssh,
+      ...scp,
       "-r",
       `${remote}:${remoteEvidence}`,
       evidence,

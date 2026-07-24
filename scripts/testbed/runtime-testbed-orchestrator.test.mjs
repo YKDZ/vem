@@ -173,6 +173,21 @@ describe("runtime testbed scheduler contract", () => {
     );
   });
 
+  it("bounds guest file transfers and avoids the Windows SFTP hang path", () => {
+    const source = readFileSync(
+      new URL("./runtime-testbed-orchestrator.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(
+      source,
+      /function scpArguments[\s\S]*"-O"[\s\S]*"ConnectTimeout=15"[\s\S]*"ServerAliveInterval=5"[\s\S]*"ServerAliveCountMax=3"/,
+    );
+    assert.match(
+      source,
+      /const scp = scpArguments\(guest\)[\s\S]*await runProcess\("scp", \[\.\.\.scp, archive/,
+    );
+  });
+
   it("compresses the commit archive before the guest transfer", () => {
     const source = readFileSync(
       new URL("./runtime-testbed-orchestrator.mjs", import.meta.url),
