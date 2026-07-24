@@ -1833,15 +1833,15 @@ describe("Windows D cache contract", () => {
     );
     assert.match(
       guest,
-      /if \(\$Mode -eq "full"\) \{\s+\$guestInput\.runtimeBootstrap[\s\S]*Set-Content -LiteralPath \(Join-Path \$runtimeRoot "runtime-bootstrap\.json"/,
+      /if \(\$Mode -eq "full" -or -not \$isWarmFastRun\) \{\s+\$guestInput\.runtimeBootstrap[\s\S]*Set-Content -LiteralPath \(Join-Path \$runtimeRoot "runtime-bootstrap\.json"/,
     );
     assert.match(
       guest,
-      /if \(\$Mode -eq "fast"\) \{[\s\S]*existingHandoff[\s\S]*claim\.status -ne "provisioned"[\s\S]*Require-Path \(Join-Path \$runtimeRoot "runtime-bootstrap\.json"\)/,
+      /\$isWarmFastRun = \$Mode -eq "fast" -and \(Test-Path -LiteralPath \$handoffPath -PathType Leaf\)[\s\S]*if \(\$isWarmFastRun\) \{[\s\S]*existingHandoff[\s\S]*claim\.status -ne "provisioned"[\s\S]*Require-Path \(Join-Path \$runtimeRoot "runtime-bootstrap\.json"\)[\s\S]*\} elseif \(\$Mode -eq "fast"\) \{\s+Write-TestbedPhase "cold-fast-bootstrap"/,
     );
     assert.match(
       guest,
-      /if \(\$Mode -eq "full"\) \{[\s\S]*Invoke-Claim \$guestInput/,
+      /if \(\$Mode -eq "full" -or -not \$isWarmFastRun\) \{[\s\S]*Invoke-Claim \$guestInput/,
     );
     assert.match(
       guest,

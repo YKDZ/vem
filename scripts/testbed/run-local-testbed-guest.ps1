@@ -658,7 +658,8 @@ Write-TestbedPhase "bootstrap"
 $handoffPath = Join-Path $handoffRoot "installed-runtime-handoff.json"
 $claim = $null
 $commissioningSerialSession = $null
-if ($Mode -eq "fast") {
+$isWarmFastRun = $Mode -eq "fast" -and (Test-Path -LiteralPath $handoffPath -PathType Leaf)
+if ($isWarmFastRun) {
   Require-Path $handoffPath
   $existingHandoff = Get-Content -Raw -LiteralPath $handoffPath -Encoding UTF8 | ConvertFrom-Json
   if ($existingHandoff.schemaVersion -ne "vem-installed-runtime-handoff/v1" -or
@@ -669,6 +670,8 @@ if ($Mode -eq "fast") {
   $claim = $existingHandoff.claim
   Require-Path (Join-Path $runtimeRoot "runtime-bootstrap.json")
   Write-TestbedPhase "warm-baseline-recovery"
+} elseif ($Mode -eq "fast") {
+  Write-TestbedPhase "cold-fast-bootstrap"
 }
 
 $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
@@ -848,14 +851,14 @@ Copy-Item -LiteralPath $webViewLoaderSource -Destination (Join-Path $deploymentR
 Write-TestbedPhase "start-simulated-hardware"
 $commissioningSerialSession = Start-TestbedCommissioningSerialSession $guestInput
 Write-TestbedSerialDiscoveryAdapter
-if ($Mode -eq "full") {
+if ($Mode -eq "full" -or -not $isWarmFastRun) {
   $guestInput.runtimeBootstrap | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runtimeRoot "runtime-bootstrap.json") -Encoding utf8
 }
 Remove-Item -LiteralPath (Join-Path $daemonDataRoot "daemon-ready.json") -Force -ErrorAction SilentlyContinue
 $daemonStdout = Join-Path $handoffRoot "vending-daemon.stdout.log"
 $daemonStderr = Join-Path $handoffRoot "vending-daemon.stderr.log"
 $daemonProcess = Start-Process -FilePath $daemonPath -ArgumentList @("--console", "--data-dir", $daemonDataRoot) -WorkingDirectory $deploymentRoot -RedirectStandardOutput $daemonStdout -RedirectStandardError $daemonStderr -PassThru
-if ($Mode -eq "full") {
+if ($Mode -eq "full" -or -not $isWarmFastRun) {
   Write-TestbedPhase "claim-runtime"
   $claim = Invoke-Claim $guestInput
   if (-not [bool]$claim.restartRequested) { throw "clean Runtime Bootstrap claim did not request the required daemon restart" }
