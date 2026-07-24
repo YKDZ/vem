@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 import {
@@ -188,6 +189,17 @@ describe("stock maintenance guest full", () => {
         "stockMaintenance",
       ]).fixtureKey,
       "stockMaintenance",
+    );
+  });
+
+  it("allows the maintenance route while waiting for the operator return to catalog", () => {
+    const source = readFileSync(
+      new URL("./stock-maintenance-guest-full.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(
+      source,
+      /async function returnToCatalogFromMaintenance[\s\S]*waitForRoute\(client, "#\/catalog"[\s\S]*forbiddenRoutes: \[\]/,
     );
   });
 

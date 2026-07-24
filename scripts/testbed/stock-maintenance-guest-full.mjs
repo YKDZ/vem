@@ -365,6 +365,7 @@ async function returnToCatalogFromMaintenance(client) {
   await waitForRoute(client, "#/catalog", {
     timeoutMs: TIMEOUT_MS,
     pollMs: POLL_MS,
+    forbiddenRoutes: [],
   });
 }
 
