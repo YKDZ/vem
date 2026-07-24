@@ -700,15 +700,17 @@ function spawnMqttCapture({
         firstSpace > 0 ? trimmed.slice(0, firstSpace) : topic;
       const payloadText =
         firstSpace > 0 ? trimmed.slice(firstSpace + 1).trim() : trimmed;
+      if (observedTopic === probeTopic) {
+        try {
+          const payload = JSON.parse(payloadText);
+          if (payload?.__vemTestbedMqttCaptureProbe === probeId) {
+            markReady();
+          }
+        } catch {}
+        continue;
+      }
       try {
         const payload = JSON.parse(payloadText);
-        if (
-          observedTopic === probeTopic &&
-          payload?.__vemTestbedMqttCaptureProbe === probeId
-        ) {
-          markReady();
-          continue;
-        }
         messages.push({
           topic: observedTopic,
           payload,
