@@ -237,11 +237,13 @@ export async function runSerialTrackLifecycle({
   recover,
   beforeTrack = () => undefined,
   haltOnRecoveryFailure = false,
+  emitTrackProgress = () => undefined,
   now = () => new Date(),
 }) {
   const executed = [];
   for (const track of tracks) {
     const startedAt = now().toISOString();
+    emitTrackProgress({ type: "started", track, startedAt });
     let child;
     try {
       if (!track.runner) {
@@ -299,7 +301,7 @@ export async function runSerialTrackLifecycle({
     }
     const recoveryFinishedAt = now().toISOString();
     const recoveryFailed = recovery?.ok !== true;
-    executed.push({
+    const entry = {
       key: track.key,
       reportPath: track.reportPath,
       status:
@@ -336,7 +338,9 @@ export async function runSerialTrackLifecycle({
         durationMs:
           Date.parse(recoveryFinishedAt) - Date.parse(recoveryStartedAt),
       },
-    });
+    };
+    executed.push(entry);
+    emitTrackProgress({ type: "finished", track, result: entry });
     if (recoveryFailed && haltOnRecoveryFailure) break;
   }
   return executed;
@@ -1243,6 +1247,20 @@ export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
         errors: ["handoff inputs are unavailable"],
       })),
     haltOnRecoveryFailure: options.mode === "fast",
+    emitTrackProgress:
+      dependencies.emitTrackProgress ??
+      ((event) => {
+        if (event.type === "started") {
+          process.stdout.write(
+            `track=${event.track.key} status=started startedAt=${event.startedAt}\n`,
+          );
+        } else if (event.type === "finished") {
+          const track = event.result;
+          process.stdout.write(
+            `track=${track.key} status=${track.businessStatus} durationMs=${track.durationMs} failureStage=${track.failureStage ?? "none"} error=${track.error ?? "none"}\n`,
+          );
+        }
+      }),
     now: dependencies.now,
   });
   const evidenceManifestPath = join(
@@ -1270,11 +1288,6 @@ export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const aggregate = await runFullWorkflowOrchestrator(options);
-  for (const track of aggregate.execution.executedTracks) {
-    process.stdout.write(
-      `track=${track.key} status=${track.businessStatus} durationMs=${track.durationMs} failureStage=${track.failureStage ?? "none"} error=${track.error ?? "none"}\n`,
-    );
-  }
   if (!aggregate.ok) process.exitCode = 1;
 }
 

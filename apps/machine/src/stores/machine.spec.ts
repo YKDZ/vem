@@ -11,6 +11,15 @@ beforeEach(() => {
 });
 
 describe("useMachineStore", () => {
+  it("keeps customer audio enabled before the daemon configuration arrives", () => {
+    expect(useMachineStore().customerAudio).toEqual({
+      volume: 0.7,
+      cuesEnabled: true,
+      presenceCuesEnabled: true,
+      transactionCuesEnabled: true,
+    });
+  });
+
   it("keeps effective runtime configuration as the cue preference authority", () => {
     const machineStore = useMachineStore();
     machineStore.applyEffectiveRuntimeConfiguration({

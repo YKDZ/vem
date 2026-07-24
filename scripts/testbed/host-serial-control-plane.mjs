@@ -615,6 +615,14 @@ function spawnMqttCapture({
   topic = buildMqttTopic(machineCode),
   limit = 4,
 }) {
+  const timeoutSeconds = Number.parseInt(
+    process.env.VEM_TESTBED_MQTT_CAPTURE_TIMEOUT_SECONDS ?? "45",
+    10,
+  );
+  const boundedTimeoutSeconds =
+    Number.isSafeInteger(timeoutSeconds) && timeoutSeconds >= 5
+      ? timeoutSeconds
+      : 45;
   const child = spawn(
     "docker",
     [
@@ -622,7 +630,7 @@ function spawnMqttCapture({
       MOSQUITTO_CONTAINER,
       "sh",
       "-lc",
-      `mosquitto_sub -h 127.0.0.1 -p 1883 -t '${topic}' -C ${limit} -W 180 -v`,
+      `mosquitto_sub -h 127.0.0.1 -p 1883 -t '${topic}' -C ${limit} -W ${boundedTimeoutSeconds} -v`,
     ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );

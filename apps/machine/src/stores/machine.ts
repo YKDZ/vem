@@ -17,9 +17,9 @@ type MachineState = {
 const defaultAudioPreferences: EffectiveMachineRuntimeConfiguration["experience"]["audio"] =
   {
     volume: 0.7,
-    cuesEnabled: false,
-    presenceCuesEnabled: false,
-    transactionCuesEnabled: false,
+    cuesEnabled: true,
+    presenceCuesEnabled: true,
+    transactionCuesEnabled: true,
   };
 
 export const useMachineStore = defineStore("machine", {
