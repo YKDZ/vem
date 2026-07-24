@@ -90,6 +90,14 @@ describe("installed runtime startup-owner acceptance", () => {
     });
   });
 
+  it("accepts AtLogon launcher tasks that return to Ready after starting their child process", () => {
+    const evidence = passingEvidence();
+    evidence.observation.machineUi.taskState = "Ready";
+    evidence.observation.vision.taskState = "Ready";
+
+    assert.equal(validateStartupOwnerReadinessEvidence(evidence).catalogRoute, "#/catalog");
+  });
+
   it("rejects an absent owner projection instead of accepting direct-launch smoke", () => {
     const report = runStartupOwnerAcceptance({
       mode: "fast",

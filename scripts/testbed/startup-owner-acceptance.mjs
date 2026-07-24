@@ -84,6 +84,10 @@ function assertOwner(manifest, key, expected) {
   return owner;
 }
 
+function taskHasStartedState(taskState) {
+  return taskState === "Ready" || taskState === "Running";
+}
+
 export function validateStartupOwnerReadinessEvidence(evidence, mode = "fast") {
   if (evidence?.schemaVersion !== REPORT_SCHEMA) {
     throw new Error("startup owner readiness schema is invalid");
@@ -133,7 +137,7 @@ export function validateStartupOwnerReadinessEvidence(evidence, mode = "fast") {
     "VEMKiosk sessionId",
   );
   if (
-    observation?.machineUi?.taskState !== "Running" ||
+    !taskHasStartedState(observation?.machineUi?.taskState) ||
     observation.machineUi?.processCount !== 1 ||
     observation.machineUi?.sessionId !== sessionId ||
     observation.machineUi?.route !== "#/catalog"
@@ -143,7 +147,7 @@ export function validateStartupOwnerReadinessEvidence(evidence, mode = "fast") {
     );
   }
   if (
-    observation?.vision?.taskState !== "Running" ||
+    !taskHasStartedState(observation?.vision?.taskState) ||
     observation.vision?.processCount !== 1 ||
     observation.vision?.sessionId !== sessionId
   ) {
