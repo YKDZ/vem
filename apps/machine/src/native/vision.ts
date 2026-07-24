@@ -83,6 +83,7 @@ export type VisionTryOnStopReason =
   | "user_exit"
   | "route_leave"
   | "replaced"
+  | "silhouette_load_failed"
   | "error"
   | "unknown";
 

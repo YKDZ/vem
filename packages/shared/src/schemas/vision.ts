@@ -254,7 +254,14 @@ export const visionTryOnStopPayloadSchema = z
   .object({
     sessionId: z.string().min(1).max(128),
     reason: z
-      .enum(["user_exit", "route_leave", "replaced", "error", "unknown"])
+      .enum([
+        "user_exit",
+        "route_leave",
+        "replaced",
+        "silhouette_load_failed",
+        "error",
+        "unknown",
+      ])
       .default("unknown"),
   })
   .loose();
