@@ -9,6 +9,7 @@ import { pathToFileURL } from "node:url";
 import {
   ensureControlledVisionMock,
   shutdownControlledVisionMock,
+  stopInstalledVisionOwnerForControlledMock,
   waitForControlledVisionRuntimeClient,
   waitForSaleStartReady,
 } from "./fast-route-stress-sale.mjs";
@@ -676,6 +677,7 @@ function defaultDependencies() {
     fetchJson,
     controlPlaneRequest,
     ensureControlledVisionMock,
+    stopInstalledVisionOwnerForControlledMock,
     waitForControlledVisionRuntimeClient,
     discoverTarget: discoverMachineUiTarget,
     createClient: (url) => new CdpClient(url),
@@ -729,6 +731,7 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
     artifactRoot = dependencies.artifactRoot(options.outPath);
     dependencies.makeDirectory(artifactRoot);
     const visionPort = visionControlPort(guestInput);
+    await dependencies.stopInstalledVisionOwnerForControlledMock();
     vision = await dependencies.ensureControlledVisionMock(visionPort);
     await dependencies.waitForControlledVisionRuntimeClient(visionPort);
     report.boundaries.visionMock = true;

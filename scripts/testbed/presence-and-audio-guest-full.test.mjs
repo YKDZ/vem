@@ -513,6 +513,8 @@ describe("presence and audio guest full", () => {
           calls.push("vision-start");
           return { child: null, started: false };
         },
+        stopInstalledVisionOwnerForControlledMock: async () =>
+          calls.push("vision-owner-stop"),
         waitForControlledVisionRuntimeClient: async () =>
           calls.push("vision-client"),
         fetchJson: async (_url, request) => {
@@ -783,6 +785,7 @@ describe("presence and audio guest full", () => {
           child: null,
           started: false,
         }),
+        stopInstalledVisionOwnerForControlledMock: async () => {},
         waitForControlledVisionRuntimeClient: async () => {},
         discoverTarget: async () => ({
           webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/target-1",
