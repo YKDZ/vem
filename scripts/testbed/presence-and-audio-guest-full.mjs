@@ -388,24 +388,57 @@ function serialFrameSequence(frame) {
   return match ? Number(match[1]) : null;
 }
 
+function serialFrameIdentity(frame) {
+  if (!frame || typeof frame !== "object") return "";
+  return [
+    frame.boundaryId ?? "",
+    frame.capturedAt ?? "",
+    frame.direction ?? "",
+    frame.rawFrameHex ?? "",
+    frame.parsedOpcode ?? "",
+  ].join(":");
+}
+
 export function serialEvidenceCursor(evidence) {
   const frames = Array.isArray(evidence?.rawFrames) ? evidence.rawFrames : [];
   const sequences = frames
     .map((frame) => serialFrameSequence(frame))
     .filter(Number.isInteger);
+  const lastFrame = frames.at(-1) ?? null;
   return {
     frameCount: frames.length,
     lastSequence: sequences.length > 0 ? Math.max(...sequences) : null,
+    lastCapturedAt: lastFrame?.capturedAt ?? null,
+    lastIdentity: serialFrameIdentity(lastFrame),
   };
 }
 
 export function serialFramesSince(evidence, cursor) {
   const frames = Array.isArray(evidence?.rawFrames) ? evidence.rawFrames : [];
   if (Number.isInteger(cursor?.lastSequence)) {
-    return frames.filter((frame) => {
+    const bySequence = frames.filter((frame) => {
       const sequence = serialFrameSequence(frame);
       return sequence !== null && sequence > cursor.lastSequence;
     });
+    if (bySequence.length > 0) return bySequence;
+    const lastIdentityIndex = frames.findIndex(
+      (frame) => serialFrameIdentity(frame) === cursor.lastIdentity,
+    );
+    if (lastIdentityIndex >= 0) return frames.slice(lastIdentityIndex + 1);
+    const lastCapturedAt = Date.parse(cursor.lastCapturedAt ?? "");
+    if (Number.isFinite(lastCapturedAt)) {
+      const byTime = frames.filter((frame) => {
+        const capturedAt = Date.parse(frame?.capturedAt ?? "");
+        return Number.isFinite(capturedAt) && capturedAt > lastCapturedAt;
+      });
+      if (byTime.length > 0) return byTime;
+    }
+    if (
+      Number.isInteger(cursor.frameCount) &&
+      frames.length <= cursor.frameCount
+    ) {
+      return [];
+    }
   }
   const frameCount = Number.isInteger(cursor?.frameCount)
     ? cursor.frameCount
@@ -726,7 +759,10 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
       presenceCuesEnabled: true,
       transactionCuesEnabled: true,
     });
-    await dependencies.evaluateExpression(client, 'location.hash = "#/catalog"');
+    await dependencies.evaluateExpression(
+      client,
+      'location.hash = "#/catalog"',
+    );
     await dependencies.waitForRoute(client, "#/catalog", {
       timeoutMs: 30_000,
       pollMs: 250,

@@ -330,6 +330,30 @@ describe("presence and audio guest full", () => {
     ]);
   });
 
+  it("observes outbound B3 frames when bidirectional host logs roll sequence counters", () => {
+    const cursor = {
+      frameCount: 64,
+      lastSequence: 104,
+      lastCapturedAt: "2026-07-24T17:25:00.000Z",
+      lastIdentity:
+        "host-pty:serial-session://sha256-presence:104:2026-07-24T17:25:00.000Z:controller-to-daemon:55aa:AA",
+    };
+    const after = {
+      rawFrames: [
+        {
+          sequence: 8,
+          boundaryId: "host-pty:serial-session://sha256-presence:8",
+          capturedAt: "2026-07-24T17:25:01.000Z",
+          direction: "daemon-to-controller",
+          parsedOpcode: "B3",
+          rawFrameHex: "55b302",
+        },
+      ],
+    };
+
+    assert.deepEqual(serialFramesSince(after, cursor), [after.rawFrames[0]]);
+  });
+
   it("falls back to the shared CDP identity helper when the client lacks observeIdentity", async () => {
     const identity = await observeGuestRuntimeIdentity(
       { webSocketUrl: "ws://127.0.0.1:9222/devtools/page/target-1" },
