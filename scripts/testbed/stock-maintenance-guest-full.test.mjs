@@ -203,6 +203,21 @@ describe("stock maintenance guest full", () => {
     );
   });
 
+  it("sets the refill input through DOM input and change events before submitting", () => {
+    const source = readFileSync(
+      new URL("./stock-maintenance-guest-full.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(
+      source,
+      /async function enterRoutineRefill[\s\S]*element\.value = "2";[\s\S]*dispatchEvent\(new Event\("input", \{ bubbles: true \}\)\)[\s\S]*dispatchEvent\(new Event\("change", \{ bubbles: true \}\)\)/,
+    );
+    assert.doesNotMatch(
+      source,
+      /async function enterRoutineRefill[\s\S]*Input\.insertText[\s\S]*stock-maintenance-submit/,
+    );
+  });
+
   it("requires two identity-correlated sale decrements and one +2 refill", () => {
     assert.deepEqual(validateStockMaintenanceReport(report()), {
       slotDisplayLabel: "B2",

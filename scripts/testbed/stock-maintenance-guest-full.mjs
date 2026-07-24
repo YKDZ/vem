@@ -488,24 +488,23 @@ async function enterRoutineRefill(client, identity) {
       ),
     (available) => available === true,
   );
-  await activateVisibleSelector(client, additionSelector, {
-    kind: "touch",
-    timeoutMs: TIMEOUT_MS,
-    pollMs: POLL_MS,
-  });
-  await client.send("Input.dispatchKeyEvent", {
-    type: "keyDown",
-    key: "a",
-    code: "KeyA",
-    modifiers: 2,
-  });
-  await client.send("Input.dispatchKeyEvent", {
-    type: "keyUp",
-    key: "a",
-    code: "KeyA",
-    modifiers: 2,
-  });
-  await client.send("Input.insertText", { text: "2" });
+  const inputSet = await evaluateExpression(
+    client,
+    `(() => {
+      const element = document.querySelector(${JSON.stringify(additionSelector)});
+      if (!element || element.disabled) return null;
+      element.focus();
+      element.value = "2";
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+      element.dispatchEvent(new Event("change", { bubbles: true }));
+      return { value: element.value, disabled: element.disabled };
+    })()`,
+  );
+  if (!inputSet || inputSet.value !== "2" || inputSet.disabled) {
+    throw new Error(
+      `stock maintenance refill input is unavailable: ${JSON.stringify(inputSet)}`,
+    );
+  }
   await waitFor(
     "visible +2 refill input",
     () =>
