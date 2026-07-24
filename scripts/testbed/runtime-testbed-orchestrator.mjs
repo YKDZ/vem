@@ -257,9 +257,16 @@ function fixtureIdentityForWorkspace(workspace) {
     join(workspace, "scripts/testbed/fixtures/local-testbed-catalog.json"),
     "utf8",
   );
+  const seedSource = readFileSync(
+    join(workspace, "scripts/testbed/local-testbed.mjs"),
+  );
   return {
     schemaVersion: "vem-local-testbed-fixture/v1",
-    sha256: `sha256:${createHash("sha256").update(raw).digest("hex")}`,
+    sha256: `sha256:${createHash("sha256")
+      .update(raw)
+      .update("\0")
+      .update(seedSource)
+      .digest("hex")}`,
   };
 }
 

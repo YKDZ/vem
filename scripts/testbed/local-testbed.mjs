@@ -379,9 +379,14 @@ async function loadFixture() {
 }
 
 function fixtureIdentityFromRaw(raw) {
+  const seedSource = readFileSync(new URL("./local-testbed.mjs", import.meta.url));
   return {
     schemaVersion: "vem-local-testbed-fixture/v1",
-    sha256: `sha256:${createHash("sha256").update(raw).digest("hex")}`,
+    sha256: `sha256:${createHash("sha256")
+      .update(raw)
+      .update("\0")
+      .update(seedSource)
+      .digest("hex")}`,
   };
 }
 
