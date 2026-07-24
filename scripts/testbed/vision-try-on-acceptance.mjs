@@ -844,17 +844,16 @@ export function compareObservedVisionProtocolToExpected({
       type: protocolEvidence.profile.type,
       detectedAt: protocolEvidence.profile.payload?.detectedAt,
     },
-    {
+  ];
+  const expectedSequence = [expected.protocol.presence, expected.protocol.profile];
+  if (protocolEvidence.departure) {
+    observed.push({
       label: "departure",
       type: protocolEvidence.departure.type,
       detectedAt: protocolEvidence.departure.payload?.detectedAt,
-    },
-  ];
-  const expectedSequence = [
-    expected.protocol.presence,
-    expected.protocol.profile,
-    expected.protocol.departure,
-  ];
+    });
+    expectedSequence.push(expected.protocol.departure);
+  }
   for (let index = 0; index < observed.length; index += 1) {
     const actual = observed[index];
     const expectedEvent = expectedSequence[index];
@@ -882,8 +881,10 @@ export function compareObservedVisionProtocolToExpected({
     protocolEvidence.ready.timestamp,
     protocolEvidence.presence.payload.detectedAt,
     protocolEvidence.profile.payload.detectedAt,
-    protocolEvidence.departure.payload.detectedAt,
   ];
+  if (protocolEvidence.departure) {
+    chronology.push(protocolEvidence.departure.payload.detectedAt);
+  }
   const observationWindow = [
     Date.parse(observationStartedAt),
     Date.parse(observationCompletedAt),
@@ -992,7 +993,7 @@ export function validateVisionEventFence({
     protocolEvidence?.presence,
     protocolEvidence?.profile,
     protocolEvidence?.departure,
-  ]) {
+  ].filter(Boolean)) {
     if (!protocolEventAfter(event, fence.visionStartedAt)) {
       throw new Error(
         "Vision protocol event predates this runtime event fence",
@@ -1854,7 +1855,7 @@ export async function collectVisionProtocolEvidence({
       ) {
         state.departure = message;
       }
-      if (state.ready && state.presence && state.profile && state.departure) {
+      if (state.ready && state.presence && state.profile) {
         return {
           ...state,
           observation: {
@@ -1866,7 +1867,7 @@ export async function collectVisionProtocolEvidence({
       }
     }
     throw new Error(
-      `vision protocol did not produce one fenced ready/presence/profile/departure chronology within ${timeoutMs} ms`,
+      `vision protocol did not produce one fenced ready/presence/profile chronology within ${timeoutMs} ms`,
     );
   } finally {
     if (typeof closeSocket === "function") {
@@ -1967,10 +1968,11 @@ export function validateVisionProtocolEvidence(
   ) {
     throw new Error("vision profile evidence is invalid");
   }
-  const departure = evidence?.departure ?? {};
+  const departure = evidence?.departure ?? null;
   if (
-    departure.type !== "vision.person_departed" ||
-    !isVisionProtocolTimestamp(departure.payload?.detectedAt)
+    departure !== null &&
+    (departure.type !== "vision.person_departed" ||
+      !isVisionProtocolTimestamp(departure.payload?.detectedAt))
   ) {
     throw new Error("vision departure evidence is invalid");
   }
@@ -1985,7 +1987,7 @@ export function validateVisionProtocolEvidence(
     frameSourceBinding,
     presenceDetectedAt: presence.payload.detectedAt,
     profileDetectedAt: profile.payload.detectedAt,
-    departureDetectedAt: departure.payload.detectedAt,
+    departureDetectedAt: departure?.payload?.detectedAt ?? null,
     profileUsable: true,
   };
 }

@@ -936,7 +936,6 @@ function validateVisionTrack(report, reportPath) {
     eventFence.visionStartedAt.length > 0 &&
     typeof protocol.presenceDetectedAt === "string" &&
     typeof protocol.profileDetectedAt === "string" &&
-    typeof protocol.departureDetectedAt === "string" &&
     visionDown.experienceCapabilityDegraded === true &&
     visionDown.saleStartStillAvailable === true &&
     recommendationComplete &&

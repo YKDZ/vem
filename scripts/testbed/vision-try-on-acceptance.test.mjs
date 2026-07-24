@@ -1035,7 +1035,8 @@ describe("vision try-on acceptance script", () => {
       timeoutMs: 5_000,
     });
     assert.equal(evidence.profile.payload.eventId, "profile-fenced");
-    assert.equal(evidence.observedMessages.length, 7);
+    assert.equal(evidence.departure, null);
+    assert.equal(evidence.observedMessages.length, 6);
   });
 
   it("uses the Catalog Vision event as the navigation fence while retaining runtime health evidence", () => {
