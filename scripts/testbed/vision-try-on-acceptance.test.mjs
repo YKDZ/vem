@@ -1156,7 +1156,38 @@ describe("vision try-on acceptance script", () => {
     );
   });
 
-  it("fails closed unless recommendation changes and the seeded variant matches", () => {
+  it("accepts a same-product size recommendation when the seeded variant matches", () => {
+    const summary = validateRecommendationProjection({
+      beforeProducts: [
+        {
+          catalogKey: "product:tee",
+          preferredVariantId: "",
+          recommendationScore: 0,
+        },
+      ],
+      afterProducts: [
+        {
+          catalogKey: "product:tee",
+          variantId: "variant-regular",
+          preferredVariantId: "variant-s",
+          recommendationScore: 0.88,
+        },
+      ],
+      pageText: "推荐尺码 基础T恤",
+      expectedResults: baseExpectedResults(),
+      runtimeExpectation: {
+        selectedVariantId: "variant-s",
+        seededTryOnVariants: [
+          { productId: "tee", variantId: "variant-s" },
+          { productId: "tee", variantId: "variant-m" },
+        ],
+      },
+    });
+    assert.equal(summary.selectedVariantId, "variant-s");
+    assert.equal(summary.seededSelection.catalogKey, "product:tee");
+  });
+
+  it("fails closed unless recommendation has a seeded variant match", () => {
     const summary = validateRecommendationProjection({
       beforeProducts: [
         {
@@ -1598,6 +1629,64 @@ describe("vision try-on acceptance script", () => {
         }),
       /redirect finalUrl drifted/,
     );
+  });
+
+  it("accepts try-on for the customer-selected seeded variant after a manual size override", () => {
+    const summary = validateTryOnPresentation({
+      selectedProduct: {
+        catalogKey: "product:tee",
+        variantId: "variant-m",
+      },
+      tryOnState: {
+        route: "#/products/product:tee/try-on?variantId=variant-m",
+        previewUrl: "http://127.0.0.1:7892/try-on/try-on-session-002.mjpeg",
+        silhouetteUrl:
+          "http://127.0.0.1:26849/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+        silhouetteLoaded: true,
+        silhouetteNaturalWidth: 640,
+        silhouetteNaturalHeight: 1280,
+      },
+      mjpegEvidence: {
+        contentType: "multipart/x-mixed-replace; boundary=frame",
+        frameByteLength: 2048,
+        width: 640,
+        height: 480,
+        nonBlackPixelCount: 12,
+        sessionId: "try-on-session-002",
+        sourceFrame: sourceFrame("front", "c".repeat(64), {
+          sessionId: "vision-runtime-internal-session",
+        }),
+      },
+      silhouetteEvidence: {
+        ok: true,
+        httpStatus: 200,
+        contentType: "image/png",
+        finalUrl:
+          "http://127.0.0.1:26849/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+      },
+      expectedResults: baseExpectedResults(),
+      installedBinding: { frameSourceBinding: frameSourceBinding() },
+      runtimeExpectation: {
+        selectedVariantId: "variant-s",
+        seededTryOnVariants: [
+          {
+            productId: "tee",
+            variantId: "variant-s",
+            silhouetteAssetId: "550e8400-e29b-41d4-a716-446655440125",
+            silhouettePublicUrl:
+              "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+          },
+          {
+            productId: "tee",
+            variantId: "variant-m",
+            silhouetteAssetId: "550e8400-e29b-41d4-a716-446655440125",
+            silhouettePublicUrl:
+              "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+          },
+        ],
+      },
+    });
+    assert.equal(summary.sessionId, "try-on-session-002");
   });
 
   it("rejects preview-only try-on when the selected variant has no silhouette", () => {
