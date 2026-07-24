@@ -244,6 +244,14 @@ export function runtimeTraceTechnicalMessage(entry) {
   return typeof nested === "string" && nested !== "" ? nested : null;
 }
 
+function daemonTransactionBelongsToAttempt(transaction, attempt) {
+  if (transaction == null) return false;
+  return (
+    transaction.orderId === attempt.order?.id ||
+    transaction.paymentId === attempt.payment?.id
+  );
+}
+
 function semanticBackendApiError(message) {
   return (
     typeof message === "string" &&
@@ -324,10 +332,7 @@ export function validatePaymentRecoveryEvidence(report) {
           "mock payment create gate timed out before release",
         ) ||
         attempt.daemon?.active !== null ||
-        attempt.daemon?.terminal?.orderId !== null ||
-        attempt.daemon?.terminal?.paymentId !== null ||
-        attempt.daemon?.terminal?.paymentStatus !== null ||
-        attempt.daemon?.terminal?.nextAction !== null ||
+        daemonTransactionBelongsToAttempt(attempt.daemon?.terminal, attempt) ||
         attempt.customer?.source !== "installed_machine_runtime_cdp" ||
         attempt.customer?.checkoutAttemptIdempotencyKey !==
           attempt.idempotencyKey ||

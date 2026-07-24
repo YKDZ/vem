@@ -364,6 +364,39 @@ describe("payment recovery guest full", () => {
     );
   });
 
+  it("accepts a stale daemon terminal snapshot after create failure", () => {
+    const report = recoveryReport();
+    const createFailure = report.attempts.find(
+      (attempt) => attempt.kind === "create_failure",
+    );
+    createFailure.daemon.terminal = {
+      orderId: "previous-order",
+      paymentId: "previous-payment",
+      paymentStatus: "expired",
+      nextAction: "payment_expired",
+    };
+
+    assert.equal(validatePaymentRecoveryEvidence(report).attemptCount, 4);
+  });
+
+  it("rejects a daemon terminal snapshot that belongs to the create failure attempt", () => {
+    const report = recoveryReport();
+    const createFailure = report.attempts.find(
+      (attempt) => attempt.kind === "create_failure",
+    );
+    createFailure.daemon.terminal = {
+      orderId: createFailure.order.id,
+      paymentId: createFailure.payment.id,
+      paymentStatus: "failed",
+      nextAction: "payment_failed",
+    };
+
+    assert.throws(
+      () => validatePaymentRecoveryEvidence(report),
+      /durable technical evidence/,
+    );
+  });
+
   it("requires every recovery attempt to reach its terminal state without retaining a reservation", () => {
     const report = recoveryReport();
 
