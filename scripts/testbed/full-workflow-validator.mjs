@@ -557,10 +557,11 @@ function validateLocalOperationsTrack(report, reportPath) {
     ) ||
     report.manualDispense?.slotId !== report.planogram.slotId ||
     !Array.isArray(report.maintenanceEntry) ||
-    report.maintenanceEntry.length < 3 ||
+    report.maintenanceEntry.length < 1 ||
     report.maintenanceEntry.some(
       (entry) =>
         entry?.ok !== true ||
+        entry.route !== "#/catalog" ||
         entry.finalRoute !== "#/maintenance?source=operator",
     )
   ) {

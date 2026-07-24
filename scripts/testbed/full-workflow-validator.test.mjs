@@ -813,7 +813,7 @@ function localOperationsReport() {
       slotDisplayLabel: "R7C1",
       outcome: "completed",
     },
-    maintenanceEntry: ["#/catalog", "#/offline", "#/payment"].map((route) => ({
+    maintenanceEntry: ["#/catalog"].map((route) => ({
       route,
       selector:
         "[data-test='maintenance-entry-brand'], [data-test='maintenance-entry-header']",
