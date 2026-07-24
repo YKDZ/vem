@@ -239,6 +239,16 @@ describe("payment recovery guest full", () => {
     ]);
     assert.equal(result.route, "#/catalog");
   });
+  it("returns to catalog before observing saleability recovery", () => {
+    const source = readFileSync(
+      new URL("./payment-recovery-guest-full.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(
+      source,
+      /report\.recoveryMqttEvidence = recoveryEvidence;\s+await returnCustomerToCatalog\(customer\);\s+report\.saleabilityRecovery = await observeSaleabilityRecovery/,
+    );
+  });
   it("builds strict create-order payloads without a slot display label", () => {
     assert.deepEqual(
       buildCreateOrderRequest({

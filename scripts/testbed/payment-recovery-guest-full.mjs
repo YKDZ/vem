@@ -1407,6 +1407,7 @@ export async function runPaymentRecoveryGuest(options) {
       `/v1/serial-sessions/${session.sessionId}/evidence`,
     );
     report.recoveryMqttEvidence = recoveryEvidence;
+    await returnCustomerToCatalog(customer);
     report.saleabilityRecovery = await observeSaleabilityRecovery({
       client: customer,
       handoff,
