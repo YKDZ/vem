@@ -529,6 +529,7 @@ async fn puback_drop_proxy_retransmits_durable_qos1_without_stranding_other_outb
         wait_for_outbox_event_removal(&data_dir, &first.id).await;
         wait_for_outbox_event_removal(&data_dir, &second.id).await;
         let publishes = wait_for_proxy_publishes(&proxy, 3).await;
+        wait_for_mqtt_connected(&daemon).await;
         assert!(
             proxy.dropped_before_puback(),
             "proxy did not cut the first PubAck"

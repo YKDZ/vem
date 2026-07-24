@@ -166,6 +166,33 @@ impl MqttSyncRuntime {
         )
     }
 
+    async fn subscribe_command_topics(
+        &self,
+        dispense_topic: &str,
+        environment_control_topic: &str,
+    ) {
+        if let Some(client) = &self.mqtt_client {
+            let client = client.read().await;
+            if let Err(error) = client
+                .subscribe(dispense_topic.to_string(), QoS::AtLeastOnce)
+                .await
+            {
+                self.set_connected(false, Some(format!("dispense subscribe failed: {error}")))
+                    .await;
+            }
+            if let Err(error) = client
+                .subscribe(environment_control_topic.to_string(), QoS::AtLeastOnce)
+                .await
+            {
+                self.set_connected(
+                    false,
+                    Some(format!("environment control subscribe failed: {error}")),
+                )
+                .await;
+            }
+        }
+    }
+
     async fn set_connected(&self, connected: bool, last_error: Option<String>) {
         let _ = self.events.send(DaemonEvent::MqttChanged {
             event_id: Uuid::new_v4().simple().to_string(),
@@ -1225,15 +1252,6 @@ impl MqttSyncRuntime {
             });
         }
 
-        if let Some(client) = &self.mqtt_client {
-            let client = client.read().await;
-            let _ = client
-                .subscribe(dispense_topic.clone(), QoS::AtLeastOnce)
-                .await;
-            let _ = client
-                .subscribe(environment_control_topic.clone(), QoS::AtLeastOnce)
-                .await;
-        }
         let _ = self.recover_journaled_dispense_side_effects().await;
         let _ = self.recover_stale_active_dispense_commands().await;
         // The bounded AsyncClient queue is drained only by event_loop.poll().
@@ -1298,6 +1316,11 @@ impl MqttSyncRuntime {
                         Ok(Event::Incoming(Packet::ConnAck(_))) => {
                             self.begin_mqtt_generation().await;
                             acknowledged_subscriptions = 0;
+                            self.subscribe_command_topics(
+                                &dispense_topic,
+                                &environment_control_topic,
+                            )
+                            .await;
                             self.set_connected(
                                 false,
                                 Some("waiting for command subscriptions".to_string()),
