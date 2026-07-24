@@ -422,6 +422,17 @@ describe("host serial control plane", () => {
     assert.match(implementation, /run-vm-host-adapter\.mjs/);
     assert.match(implementation, /vem-local-testbed-mosquitto/);
     assert.match(implementation, /commands\/dispense/);
+    assert.match(
+      implementation,
+      /VEM_TESTBED_MQTT_CAPTURE_TIMEOUT_SECONDS \?\? "180"/,
+    );
+    assert.match(implementation, /vem\/testbed\/capture-probes\/\$\{probeId\}/);
+    assert.match(implementation, /__vemTestbedMqttCaptureProbe/);
+    assert.match(implementation, /mosquitto_pub/);
+    assert.match(
+      implementation,
+      /await Promise\.all\(\[mqttCapture\.ready, machineMqttCapture\.ready\]\)/,
+    );
     assert.match(implementation, /device-lifecycle/);
     assert.match(implementation, /detach-device/);
     assert.match(implementation, /attach-device/);

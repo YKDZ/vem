@@ -616,26 +616,79 @@ function spawnMqttCapture({
   limit = 4,
 }) {
   const timeoutSeconds = Number.parseInt(
-    process.env.VEM_TESTBED_MQTT_CAPTURE_TIMEOUT_SECONDS ?? "45",
+    process.env.VEM_TESTBED_MQTT_CAPTURE_TIMEOUT_SECONDS ?? "180",
     10,
   );
   const boundedTimeoutSeconds =
-    Number.isSafeInteger(timeoutSeconds) && timeoutSeconds >= 5
+    Number.isSafeInteger(timeoutSeconds) && timeoutSeconds >= 30
       ? timeoutSeconds
-      : 45;
+      : 180;
+  const probeId = randomUUID();
+  const probeTopic = `vem/testbed/capture-probes/${probeId}`;
   const child = spawn(
     "docker",
     [
       "exec",
       MOSQUITTO_CONTAINER,
-      "sh",
-      "-lc",
-      `mosquitto_sub -h 127.0.0.1 -p 1883 -t '${topic}' -C ${limit} -W ${boundedTimeoutSeconds} -v`,
+      "mosquitto_sub",
+      "-h",
+      "127.0.0.1",
+      "-p",
+      "1883",
+      "-t",
+      topic,
+      "-t",
+      probeTopic,
+      "-C",
+      String(limit + 1),
+      "-W",
+      String(boundedTimeoutSeconds),
+      "-v",
     ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
   const messages = [];
   let stderr = "";
+  let readySettled = false;
+  let readyResolve;
+  let readyReject;
+  const ready = new Promise((resolve, reject) => {
+    readyResolve = resolve;
+    readyReject = reject;
+  });
+  const readyTimeout = setTimeout(() => {
+    if (readySettled) return;
+    readySettled = true;
+    readyReject(
+      new Error(
+        `MQTT capture did not subscribe to ${topic} within 5000ms; stderr: ${stderr.trim()}`,
+      ),
+    );
+  }, 5_000);
+  readyTimeout.unref?.();
+  const markReady = () => {
+    if (readySettled) return;
+    readySettled = true;
+    clearTimeout(readyTimeout);
+    spawn(
+      "docker",
+      [
+        "exec",
+        MOSQUITTO_CONTAINER,
+        "mosquitto_pub",
+        "-h",
+        "127.0.0.1",
+        "-p",
+        "1883",
+        "-t",
+        probeTopic,
+        "-r",
+        "-n",
+      ],
+      { stdio: "ignore" },
+    );
+    readyResolve({ topic, subscribedAt: new Date().toISOString() });
+  };
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
   child.stdout.on("data", (chunk) => {
@@ -648,9 +701,17 @@ function spawnMqttCapture({
       const payloadText =
         firstSpace > 0 ? trimmed.slice(firstSpace + 1).trim() : trimmed;
       try {
+        const payload = JSON.parse(payloadText);
+        if (
+          observedTopic === probeTopic &&
+          payload?.__vemTestbedMqttCaptureProbe === probeId
+        ) {
+          markReady();
+          continue;
+        }
         messages.push({
           topic: observedTopic,
-          payload: JSON.parse(payloadText),
+          payload,
         });
       } catch {
         messages.push({ topic: observedTopic, payload: payloadText });
@@ -660,10 +721,67 @@ function spawnMqttCapture({
   child.stderr.on("data", (chunk) => {
     stderr += chunk;
   });
+  child.once("error", (error) => {
+    if (readySettled) return;
+    readySettled = true;
+    clearTimeout(readyTimeout);
+    readyReject(error);
+  });
+  child.once("exit", (code, signal) => {
+    if (readySettled) return;
+    readySettled = true;
+    clearTimeout(readyTimeout);
+    readyReject(
+      new Error(
+        `MQTT capture exited before subscribing to ${topic}; exit=${code} signal=${signal} stderr: ${stderr.trim()}`,
+      ),
+    );
+  });
+  const publish = spawn(
+    "docker",
+    [
+      "exec",
+      MOSQUITTO_CONTAINER,
+      "mosquitto_pub",
+      "-h",
+      "127.0.0.1",
+      "-p",
+      "1883",
+      "-t",
+      probeTopic,
+      "-r",
+      "-m",
+      JSON.stringify({ __vemTestbedMqttCaptureProbe: probeId }),
+    ],
+    { stdio: ["ignore", "ignore", "pipe"] },
+  );
+  let publishStderr = "";
+  publish.stderr.setEncoding("utf8");
+  publish.stderr.on("data", (chunk) => {
+    publishStderr += chunk;
+  });
+  publish.once("error", (error) => {
+    if (readySettled) return;
+    readySettled = true;
+    clearTimeout(readyTimeout);
+    readyReject(error);
+  });
+  publish.once("exit", (code, signal) => {
+    if (readySettled || code === 0) return;
+    readySettled = true;
+    clearTimeout(readyTimeout);
+    readyReject(
+      new Error(
+        `MQTT capture probe publish failed for ${topic}; exit=${code} signal=${signal} stderr: ${publishStderr.trim()}`,
+      ),
+    );
+  });
   return {
     child,
+    ready,
     stop() {
       child.kill("SIGTERM");
+      publish.kill("SIGTERM");
     },
     snapshot() {
       return { topic, messages: [...messages], stderr: stderr.trim() };
@@ -1509,6 +1627,13 @@ async function createSerialSession(server, input) {
     topic: buildMachineMqttTopic(machineCode),
     limit: 40,
   });
+  try {
+    await Promise.all([mqttCapture.ready, machineMqttCapture.ready]);
+  } catch (error) {
+    mqttCapture.stop();
+    machineMqttCapture.stop();
+    throw error;
+  }
   const session = {
     id: sessionId,
     dir,
