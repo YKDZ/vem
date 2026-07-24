@@ -34,6 +34,12 @@ import {
 export { replaceSerialSessionAndUpdateHandoff } from "./serial-session-handoff.mjs";
 
 const PAYMENT_CANCEL_SELECTOR = '[data-test="payment-cancel"]:not(:disabled)';
+const CHECKOUT_EMPTY_RETURN_SELECTOR =
+  '[data-test="checkout-empty-return-catalog"]:not(:disabled)';
+const CHECKOUT_BACK_PRODUCT_SELECTOR =
+  '[data-test="checkout-back-product"]:not(:disabled), .checkout-back';
+const PRODUCT_DETAIL_RETURN_SELECTOR =
+  '[data-test="product-detail-return-catalog"]:not(:disabled), .detail-back-button';
 const PAYMENT_RETURN_WAIT_MS = 30_000;
 const CONTROL_PLANE_TIMEOUT_MS = 10_000;
 const CHILD_ERROR_TAIL_BYTES = 8 * 1024;
@@ -918,6 +924,41 @@ export async function returnToCatalogFromClient({
       throw error;
     }
   };
+  const returnFromProductToCatalog = async () => {
+    if (
+      !(await activateUnlessAlreadyCatalog(PRODUCT_DETAIL_RETURN_SELECTOR, {
+        kind: "touch",
+        timeoutMs: 10_000,
+      }))
+    )
+      return "#/catalog";
+    return (await waitForRouteWithTimeout("#/catalog")).route;
+  };
+  const returnFromCheckoutToCatalog = async () => {
+    const emptyCheckoutCanReturn = await evaluateExpressionFn(
+      client,
+      `Boolean(document.querySelector(${JSON.stringify(CHECKOUT_EMPTY_RETURN_SELECTOR)})?.getClientRects().length)`,
+    );
+    if (emptyCheckoutCanReturn) {
+      if (
+        !(await activateUnlessAlreadyCatalog(CHECKOUT_EMPTY_RETURN_SELECTOR, {
+          kind: "touch",
+          timeoutMs: 10_000,
+        }))
+      )
+        return "#/catalog";
+      return (await waitForRouteWithTimeout("#/catalog")).route;
+    }
+    if (
+      !(await activateUnlessAlreadyCatalog(CHECKOUT_BACK_PRODUCT_SELECTOR, {
+        kind: "touch",
+        timeoutMs: 10_000,
+      }))
+    )
+      return "#/catalog";
+    await waitForRouteWithTimeout(/^#\/products(?:\/|$)/, 10_000);
+    return returnFromProductToCatalog();
+  };
   let route = await evaluateExpressionFn(client, "location.hash");
   if (route === "#/catalog") return route;
   if (route === "#/boot") {
@@ -935,32 +976,10 @@ export async function returnToCatalogFromClient({
     return (await waitForRouteWithTimeout("#/catalog")).route;
   }
   if (route === "#/checkout") {
-    if (
-      !(await activateUnlessAlreadyCatalog(".checkout-back", {
-        kind: "touch",
-        timeoutMs: 10_000,
-      }))
-    )
-      return "#/catalog";
-    await waitForRouteWithTimeout(/^#\/products(?:\/|$)/, 10_000);
-    if (
-      !(await activateUnlessAlreadyCatalog(".detail-back-button", {
-        kind: "touch",
-        timeoutMs: 10_000,
-      }))
-    )
-      return "#/catalog";
-    return (await waitForRouteWithTimeout("#/catalog")).route;
+    return returnFromCheckoutToCatalog();
   }
   if (/^#\/products(?:\/|$)/.test(route)) {
-    if (
-      !(await activateUnlessAlreadyCatalog(".detail-back-button", {
-        kind: "touch",
-        timeoutMs: 10_000,
-      }))
-    )
-      return "#/catalog";
-    return (await waitForRouteWithTimeout("#/catalog")).route;
+    return returnFromProductToCatalog();
   }
   if (/^#\/payment(?:\/|$)/.test(route)) {
     try {
@@ -1002,32 +1021,10 @@ export async function returnToCatalogFromClient({
       return (await waitForRouteWithTimeout("#/catalog")).route;
     }
     if (route === "#/checkout") {
-      if (
-        !(await activateUnlessAlreadyCatalog(".checkout-back", {
-          kind: "touch",
-          timeoutMs: 10_000,
-        }))
-      )
-        return "#/catalog";
-      await waitForRouteWithTimeout(/^#\/products(?:\/|$)/, 10_000);
-      if (
-        !(await activateUnlessAlreadyCatalog(".detail-back-button", {
-          kind: "touch",
-          timeoutMs: 10_000,
-        }))
-      )
-        return "#/catalog";
-      return (await waitForRouteWithTimeout("#/catalog")).route;
+      return returnFromCheckoutToCatalog();
     }
     if (/^#\/products(?:\/|$)/.test(route)) {
-      if (
-        !(await activateUnlessAlreadyCatalog(".detail-back-button", {
-          kind: "touch",
-          timeoutMs: 10_000,
-        }))
-      )
-        return "#/catalog";
-      return (await waitForRouteWithTimeout("#/catalog")).route;
+      return returnFromProductToCatalog();
     }
   }
   if (/^#\/maintenance(?:\?|$|\/)/.test(route)) {

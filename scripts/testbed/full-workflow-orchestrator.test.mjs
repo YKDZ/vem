@@ -1143,6 +1143,39 @@ describe("full workflow serial lifecycle", () => {
     ]);
   });
 
+  it("returns from an empty checkout state through the visible catalog control", async () => {
+    const calls = [];
+    const result = await returnToCatalogFromClient({
+      client: { id: "client" },
+      evaluateExpressionFn: async (_client, expression) => {
+        calls.push(`evaluate:${expression}`);
+        if (expression === "location.hash") return "#/checkout";
+        return true;
+      },
+      activateVisibleSelectorFn: async (_client, selector, options) => {
+        calls.push({ selector, options });
+        return { selector };
+      },
+      waitForRouteFn: async (_client, expected, options) => {
+        calls.push({ expected, options });
+        return { route: "#/catalog" };
+      },
+    });
+    assert.equal(result, "#/catalog");
+    assert.deepEqual(calls, [
+      "evaluate:location.hash",
+      'evaluate:Boolean(document.querySelector("[data-test=\\"checkout-empty-return-catalog\\"]:not(:disabled)")?.getClientRects().length)',
+      {
+        selector: '[data-test="checkout-empty-return-catalog"]:not(:disabled)',
+        options: { kind: "touch", timeoutMs: 10_000 },
+      },
+      {
+        expected: "#/catalog",
+        options: { timeoutMs: 10_000, pollMs: 250 },
+      },
+    ]);
+  });
+
   it("returns from a selected category to the Catalog home through the visible control", async () => {
     const calls = [];
     const result = await restoreCatalogHomeFromClient({
