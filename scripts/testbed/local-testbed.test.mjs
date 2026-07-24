@@ -1692,6 +1692,7 @@ describe("Windows D cache contract", () => {
     );
     for (const required of [
       "$env:CARGO_HOME",
+      "$env:CARGO_BUILD_JOBS",
       "$env:RUSTC_WRAPPER",
       "sccache --show-stats",
       "& $pnpm config set store-dir",

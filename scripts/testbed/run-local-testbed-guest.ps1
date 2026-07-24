@@ -683,6 +683,7 @@ $env:TURBO_CACHE_DIR = Join-Path $cacheRoot "turbo"
 $env:PNPM_STORE_PATH = Join-Path $cacheRoot "pnpm-store"
 $env:PNPM_VIRTUAL_STORE_ROOT = Join-Path $cacheRoot "pnpm-virtual-store"
 $env:CARGO_HOME = Join-Path $cacheRoot "cargo-home"
+$env:CARGO_BUILD_JOBS = [string]([Math]::Max(2, [Math]::Min([Environment]::ProcessorCount, 16)))
 $sccache = Get-TestbedSccache
 Write-TestbedPhase "sccache-ready"
 $env:RUSTC_WRAPPER = $sccache
