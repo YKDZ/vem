@@ -56,8 +56,8 @@ function visionExperienceReport() {
     visionInstall: {
       runtimeExpectation: {
         recommendationVariants: [
+          { productId: "product-t", variantId: "variant-s", size: "S" },
           { productId: "product-t", variantId: "variant-m", size: "M" },
-          { productId: "product-t", variantId: "variant-l", size: "L" },
         ],
         productMedia: [
           { categoryKey: "socks", catalogKey: "product-socks", coverImageUrl: "/api/media-assets/main-socks/content" },
@@ -74,12 +74,12 @@ function visionExperienceReport() {
     },
     ui: {
       recommendationPresentation: {
-        automatic: { variantId: "variant-m", recommendedSize: "M" },
+        automatic: { variantId: "variant-s", recommendedSize: "S" },
         onlineUnmatched: { variantId: "variant-online", recommendedSize: null },
-        manual: { variantId: "variant-l", recommendedSize: null },
-        visionUnavailable: { variantId: "variant-l", recommendedSize: null },
+        manual: { variantId: "variant-m", recommendedSize: null },
+        visionUnavailable: { variantId: "variant-m", recommendedSize: null },
       },
-      tryOnSelectedProduct: { variantId: "variant-l" },
+      tryOnSelectedProduct: { variantId: "variant-m" },
       tryOnSummary: {
         width: 640,
         height: 480,
@@ -1178,7 +1178,7 @@ describe("full workflow aggregate validator", () => {
 
     const reusedRecommendationVariant = visionExperienceReport();
     reusedRecommendationVariant.ui.recommendationPresentation.onlineUnmatched.variantId =
-      "variant-m";
+      "variant-s";
     assert.equal(
       validateBusinessCheckReport(
         descriptor("visionExperience"),
@@ -1189,7 +1189,7 @@ describe("full workflow aggregate validator", () => {
     );
 
     const wrongTryOnIdentity = visionExperienceReport();
-    wrongTryOnIdentity.ui.tryOnSelectedProduct.variantId = "variant-m";
+    wrongTryOnIdentity.ui.tryOnSelectedProduct.variantId = "variant-s";
     assert.equal(
       validateBusinessCheckReport(
         descriptor("visionExperience"),
@@ -1201,7 +1201,7 @@ describe("full workflow aggregate validator", () => {
 
     const wrongUnavailableIdentity = visionExperienceReport();
     wrongUnavailableIdentity.ui.recommendationPresentation.visionUnavailable.variantId =
-      "variant-m";
+      "variant-s";
     assert.equal(
       validateBusinessCheckReport(
         descriptor("visionExperience"),

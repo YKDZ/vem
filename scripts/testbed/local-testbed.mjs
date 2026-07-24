@@ -110,8 +110,8 @@ const COMMAND_ENV_PASSTHROUGH = Object.freeze([
 ]);
 const SERVICE_API_LOG_TAIL_MAX_CHARS = 16_000;
 const VISION_RECOMMENDATION_VARIANTS = Object.freeze([
-  { size: "M", rowNo: 2, cellNo: 3 },
-  { size: "L", rowNo: 2, cellNo: 4 },
+  { size: "S", rowNo: 2, cellNo: 3 },
+  { size: "M", rowNo: 2, cellNo: 4 },
 ]);
 const VISION_RECOMMENDATION_BASE_SOURCE_ROW = 32;
 const VISION_RECOMMENDATION_UNMATCHED_SOURCE_ROW = 2;

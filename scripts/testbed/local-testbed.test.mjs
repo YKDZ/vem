@@ -1243,7 +1243,7 @@ describe("supported API seeding", () => {
             result.visionAcceptance.recommendationVariants[0].productId,
           variantId:
             result.visionAcceptance.recommendationVariants[0].variantId,
-          size: "M",
+          size: "S",
           slotId: result.visionAcceptance.recommendationVariants[0].slotId,
           inventoryId:
             result.visionAcceptance.recommendationVariants[0].inventoryId,
@@ -1254,7 +1254,7 @@ describe("supported API seeding", () => {
             result.visionAcceptance.recommendationVariants[0].productId,
           variantId:
             result.visionAcceptance.recommendationVariants[1].variantId,
-          size: "L",
+          size: "M",
           slotId: result.visionAcceptance.recommendationVariants[1].slotId,
           inventoryId:
             result.visionAcceptance.recommendationVariants[1].inventoryId,

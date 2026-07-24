@@ -610,15 +610,15 @@ export function validateSeededRecommendationVariants(runtimeExpectation) {
   const variants = runtime.recommendationVariants;
   if (variants.length !== 2) {
     throw new Error(
-      "Vision recommendation fixture must provide exactly M and L variants",
+      "Vision recommendation fixture must provide exactly S and M variants",
     );
   }
   const bySize = new Map(variants.map((variant) => [variant.size, variant]));
-  const matched = bySize.get("M");
-  const alternate = bySize.get("L");
+  const matched = bySize.get("S");
+  const alternate = bySize.get("M");
   if (!matched || !alternate || bySize.size !== 2) {
     throw new Error(
-      "Vision recommendation fixture must provide one M and one L variant",
+      "Vision recommendation fixture must provide one S and one M variant",
     );
   }
   if (matched.productId !== alternate.productId) {
@@ -631,7 +631,7 @@ export function validateSeededRecommendationVariants(runtimeExpectation) {
     runtime.selectedVariantId !== matched.variantId
   ) {
     throw new Error(
-      "Vision recommendation fixture must select the seeded M variant",
+      "Vision recommendation fixture must select the seeded S variant",
     );
   }
   return { matched, alternate };

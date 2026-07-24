@@ -909,13 +909,13 @@ function validateVisionTrack(report, reportPath) {
   const recommendationBySize = new Map(
     recommendationVariants.map((variant) => [variant?.size, variant]),
   );
-  const matched = recommendationBySize.get("M");
-  const alternate = recommendationBySize.get("L");
+  const matched = recommendationBySize.get("S");
+  const alternate = recommendationBySize.get("M");
   const recommendationComplete =
     recommendationVariants.length === 2 &&
     matched?.productId === alternate?.productId &&
     recommendation.automatic?.variantId === matched?.variantId &&
-    recommendation.automatic?.recommendedSize === "M" &&
+    recommendation.automatic?.recommendedSize === "S" &&
     recommendation.manual?.variantId === alternate?.variantId &&
     recommendation.manual?.recommendedSize === null &&
     typeof recommendation.onlineUnmatched?.variantId === "string" &&

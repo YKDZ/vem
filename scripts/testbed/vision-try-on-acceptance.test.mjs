@@ -624,8 +624,17 @@ describe("vision try-on acceptance script", () => {
     assert.deepEqual(
       validateSeededRecommendationVariants({
         selectedCatalogKey: "product:product-seeded",
-        selectedVariantId: "variant-m",
+        selectedVariantId: "variant-s",
         recommendationVariants: [
+          {
+            productId: "product-seeded",
+            variantId: "variant-s",
+            sku: "TSC-LOCAL-032-VISION-S",
+            size: "S",
+            slotId: "slot-s",
+            inventoryId: "inventory-s",
+            onHandQty: 3,
+          },
           {
             productId: "product-seeded",
             variantId: "variant-m",
@@ -635,34 +644,25 @@ describe("vision try-on acceptance script", () => {
             inventoryId: "inventory-m",
             onHandQty: 3,
           },
-          {
-            productId: "product-seeded",
-            variantId: "variant-l",
-            sku: "TSC-LOCAL-032-VISION-L",
-            size: "L",
-            slotId: "slot-l",
-            inventoryId: "inventory-l",
-            onHandQty: 3,
-          },
         ],
       }),
       {
         matched: {
+          productId: "product-seeded",
+          variantId: "variant-s",
+          sku: "TSC-LOCAL-032-VISION-S",
+          size: "S",
+          slotId: "slot-s",
+          inventoryId: "inventory-s",
+          onHandQty: 3,
+        },
+        alternate: {
           productId: "product-seeded",
           variantId: "variant-m",
           sku: "TSC-LOCAL-032-VISION-M",
           size: "M",
           slotId: "slot-m",
           inventoryId: "inventory-m",
-          onHandQty: 3,
-        },
-        alternate: {
-          productId: "product-seeded",
-          variantId: "variant-l",
-          sku: "TSC-LOCAL-032-VISION-L",
-          size: "L",
-          slotId: "slot-l",
-          inventoryId: "inventory-l",
           onHandQty: 3,
         },
       },
