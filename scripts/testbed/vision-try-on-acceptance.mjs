@@ -2561,7 +2561,7 @@ async function stopVisionRuntime() {
     `$canonicalExecutablePath = [IO.Path]::GetFullPath('${VISION_ENTRYPOINT_PATH}')`,
     `$canonicalConfigPath = [IO.Path]::GetFullPath('${VISION_SITE_CONFIGURATION_PATH}')`,
     "$ownedVisionProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath -and [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonicalExecutablePath -and $_.CommandLine -and ([string]$_.CommandLine).ToLowerInvariant().Contains('--config') -and ([string]$_.CommandLine).ToLowerInvariant().Contains($canonicalConfigPath.ToLowerInvariant()) })",
-    "foreach ($process in $ownedVisionProcesses) { Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction SilentlyContinue; & taskkill.exe /PID ([int]$process.ProcessId) /T /F 2>$null | Out-Null }",
+    "foreach ($process in $ownedVisionProcesses) { Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction SilentlyContinue; try { & taskkill.exe /PID ([int]$process.ProcessId) /T /F *> $null } catch { }; $global:LASTEXITCODE = 0 }",
     "$deadline = [DateTime]::UtcNow.AddSeconds(30)",
     "while ([DateTime]::UtcNow -lt $deadline) {",
     `  $task = Get-ScheduledTask -TaskName '${VISION_TASK_NAME}' -TaskPath '${VISION_TASK_PATH}' -ErrorAction SilentlyContinue`,

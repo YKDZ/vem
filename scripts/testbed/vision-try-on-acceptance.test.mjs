@@ -174,7 +174,7 @@ describe("vision try-on acceptance script", () => {
     );
     assert.match(
       source,
-      /taskkill\.exe \/PID \(\[int\]\$process\.ProcessId\) \/T \/F/,
+      /try \{ & taskkill\.exe \/PID \(\[int\]\$process\.ProcessId\) \/T \/F \*>\s*\$null \} catch \{ \}/,
     );
     assert.match(source, /runPowerShell\(command, "stopping Vision runtime"\)/);
     assert.match(source, /runPowerShell\(command, "starting Vision runtime"\)/);
