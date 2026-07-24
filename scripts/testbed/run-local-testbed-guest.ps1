@@ -428,24 +428,30 @@ function Write-TestbedSerialDiscoveryAdapter {
   $env:VEM_TESTBED_SERIAL_DISCOVERY_FILE = $path
 }
 
-function Wait-InstalledTauriTarget {
-  $deadline = [DateTime]::UtcNow.AddMinutes(1)
+function Get-InstalledTauriTargetOnce {
+  $targets = @(Invoke-RestMethod -Uri "http://127.0.0.1:9222/json" -TimeoutSec 2)
+  $tauriTargets = @($targets | Where-Object { [string]$_.url -match '^http://tauri\.localhost/#/' })
+  if ($tauriTargets.Count -eq 1) { return $tauriTargets[0] }
+  return $null
+}
+
+function Wait-InstalledTauriTarget([datetime]$Deadline) {
   do {
     try {
-      $targets = @(Invoke-RestMethod -Uri "http://127.0.0.1:9222/json" -TimeoutSec 3)
-      $tauriTargets = @($targets | Where-Object { [string]$_.url -match '^http://tauri\.localhost/#/' })
-      if ($tauriTargets.Count -eq 1) { return $tauriTargets[0] }
+      $target = Get-InstalledTauriTargetOnce
+      if ($null -ne $target) { return $target }
+      $lastError = "no strict tauri target was exposed"
     } catch { $lastError = $_ }
-    Start-Sleep -Seconds 1
-  } while ([DateTime]::UtcNow -lt $deadline)
+    Start-Sleep -Milliseconds 500
+  } while ([DateTime]::UtcNow -lt $Deadline)
   throw "installed Tauri CDP target did not become observable: $lastError"
 }
 
 function Wait-InstalledTauriRoute([string]$ExpectedRoute) {
-  $deadline = [DateTime]::UtcNow.AddSeconds(30)
+  $deadline = [DateTime]::UtcNow.AddSeconds(90)
   do {
     try {
-      $target = Wait-InstalledTauriTarget
+      $target = Wait-InstalledTauriTarget $deadline
       $route = ([uri][string]$target.url).Fragment
       if ($route -eq $ExpectedRoute) { return $target }
       $lastRoute = $route

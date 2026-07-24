@@ -218,6 +218,9 @@ describe("installed production runtime smoke", () => {
     assert.match(guest, /Start-ScheduledTask -TaskName "VEMMachineUI"/);
     assert.match(guest, /Start-ScheduledTask -TaskName "VEMVisionRuntime"/);
     assert.match(guest, /function Wait-InstalledTauriRoute/);
+    assert.match(guest, /function Get-InstalledTauriTargetOnce/);
+    assert.match(guest, /Wait-InstalledTauriTarget \$deadline/);
+    assert.doesNotMatch(guest, /function Wait-InstalledTauriTarget \{[\s\S]*AddMinutes\(1\)/);
     assert.match(guest, /Wait-InstalledTauriRoute "#\/catalog"/);
     assert.match(guest, /function Get-TestbedStartupModeEvidence/);
     assert.match(guest, /source = "windows_reboot_logon_probe"/);
