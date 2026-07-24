@@ -27,6 +27,7 @@ const client = vi.hoisted(() => ({
   getRemoteOpsStatus: vi.fn(),
   getDeviceBindings: vi.fn(),
   getPaymentEnvironmentDiagnostic: vi.fn(),
+  getSaleView: vi.fn(),
   scanWifiNetworks: vi.fn(),
   applyNetworkSettings: vi.fn(),
   claimMachine: vi.fn(),
@@ -211,6 +212,20 @@ async function flush(): Promise<void> {
   await nextTick();
 }
 
+async function eventually(assertion: () => void): Promise<void> {
+  let lastError: unknown;
+  for (let index = 0; index < 10; index += 1) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await flush();
+    }
+  }
+  throw lastError;
+}
+
 async function render(): Promise<HTMLElement> {
   document.body.innerHTML = "<div id='app'></div>";
   const app = createApp(MaintenanceView);
@@ -298,6 +313,14 @@ beforeEach(() => {
     readiness: "ready",
     errorCategory: "none",
     channels: [],
+  });
+  client.getSaleView.mockResolvedValue({
+    items: [],
+    cached: false,
+    source: "daemon",
+    planogramVersion: "P-1",
+    lastUpdatedAt: "2026-07-17T00:00:00.000Z",
+    lastError: null,
   });
   client.scanWifiNetworks.mockResolvedValue({
     status: "available",
@@ -1059,5 +1082,40 @@ describe("Local Operations", () => {
 
     expect(returnToCatalog.disabled).toBe(true);
     expect(host.textContent).toContain("暂不能回到目录");
+  });
+
+  it("refreshes catalog sale-view before returning to the customer catalog", async () => {
+    currentConfiguration = configuration(true);
+    const host = await render();
+
+    button(host, "返回商品目录").click();
+    await flush();
+
+    await eventually(() => {
+      expect(client.getSaleView).toHaveBeenCalled();
+      expect(submitMachineNavigationIntentMock).toHaveBeenCalledWith({
+        type: "operator.navigate",
+        target: { name: "catalog" },
+      });
+    });
+  });
+
+  it("still returns to catalog when the pre-return catalog refresh fails", async () => {
+    currentConfiguration = configuration(true);
+    client.getSaleView.mockRejectedValueOnce(new Error("sale-view timeout"));
+    const host = await render();
+
+    button(host, "返回商品目录").click();
+    await flush();
+
+    await eventually(() => {
+      expect(host.textContent).toContain(
+        "商品目录刷新失败，将返回并继续自动更新。",
+      );
+      expect(submitMachineNavigationIntentMock).toHaveBeenCalledWith({
+        type: "operator.navigate",
+        target: { name: "catalog" },
+      });
+    });
   });
 });

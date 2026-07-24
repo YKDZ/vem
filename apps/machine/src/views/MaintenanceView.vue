@@ -1122,6 +1122,11 @@ async function returnToCatalog(): Promise<void> {
     return;
   }
   catalogNavigation.message = null;
+  try {
+    await catalogStore.refresh();
+  } catch (error) {
+    reportOperatorAttention("商品目录刷新失败，将返回并继续自动更新。", error);
+  }
   await submitMachineNavigationIntent({
     type: "operator.navigate",
     target: { name: "catalog" },
