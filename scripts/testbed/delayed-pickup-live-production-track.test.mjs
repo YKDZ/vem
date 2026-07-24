@@ -100,6 +100,14 @@ describe("delayed pickup live production track", () => {
     assert.doesNotMatch(audioWaiter, /pickup-completed/);
   });
 
+  it("requests a long enough serial evidence window for delayed pickup", () => {
+    const source = readFileSync(
+      new URL("./delayed-pickup-native-audio-guest-full.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(source, /rawFrameLimit: 256/);
+  });
+
   it("owns producers around the live sale and awaits the real F1/F2 control-plane checkpoints", async () => {
     const root = makeTempDir("vem-delayed-live");
     const operations = [];

@@ -1042,11 +1042,17 @@ function boundedSessionEvidence(server, input) {
   const simulatorLog = existsSync(paths.logPath)
     ? readFileSync(paths.logPath, "utf8").slice(-64 * 1024)
     : "";
+  const rawFrameLimit =
+    Number.isSafeInteger(input.rawFrameLimit) &&
+    input.rawFrameLimit >= 64 &&
+    input.rawFrameLimit <= 1_024
+      ? input.rawFrameLimit
+      : 64;
   return {
     serialSessionId: session.binding.serialSessionId,
     saleBinding: session.sale ?? null,
     rawFrames: readRawSerialJournal(paths.journalPath)
-      .slice(-64)
+      .slice(-rawFrameLimit)
       .map((frame) => ({
         ...frame,
         boundaryId: `host-pty:${session.binding.serialSessionId}:${frame.sequence}`,

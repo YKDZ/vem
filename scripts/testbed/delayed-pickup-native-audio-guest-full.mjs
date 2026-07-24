@@ -1045,6 +1045,7 @@ async function runDelayedPickupGuestFull(options) {
     const controlPlaneEvidence = await controlPlaneRequest(
       guestInput,
       `/v1/serial-sessions/${sessionStart.sessionId}/evidence`,
+      { rawFrameLimit: 256 },
     );
     writeJson(controlPlaneEvidencePath, controlPlaneEvidence);
     const platformLog = await controlPlaneRequest(
@@ -1150,6 +1151,7 @@ async function runDelayedPickupGuestFull(options) {
       const controlPlaneEvidence = await controlPlaneRequest(
         guestInput,
         `/v1/serial-sessions/${sessionStart.sessionId}/evidence`,
+        { rawFrameLimit: 256 },
       );
       writeJson(controlPlaneEvidencePath, controlPlaneEvidence);
     });
