@@ -22,6 +22,7 @@ import {
   verifyDelayedPickupNativeAudioProductionEvidence,
 } from "./delayed-pickup-native-audio-acceptance.mjs";
 import { catalogProductSelectorForFixture } from "./full-workflow-fixtures.mjs";
+import { setMachineUiAudioPreferences } from "./local-operations-guest-full.mjs";
 import {
   activateVisibleSelector,
   captureCheckpoint,
@@ -37,6 +38,12 @@ const MODES = new Set(["full"]);
 const DEFAULT_SCANNER_CODE = "621234567890123456";
 const MACHINE_PATH = "C:\\VEM\\bringup\\machine.exe";
 const CLEANUP_TIMEOUT_MS = 10_000;
+export const REQUIRED_TRANSACTION_AUDIO_PREFERENCES = Object.freeze({
+  volume: 0.7,
+  cuesEnabled: true,
+  presenceCuesEnabled: true,
+  transactionCuesEnabled: true,
+});
 
 function scannerFrame(code) {
   return `${required(code, "scanner code").replace(/[\r\n]+$/u, "")}\r\n`;
@@ -175,6 +182,26 @@ async function daemonGet(handoff, path, timeoutMs = 30_000) {
     headers: daemonHeaders(handoff),
     timeoutMs,
   });
+}
+
+export async function restoreTransactionAudioPreferences(
+  client,
+  dependencies = {},
+) {
+  const setPreferences =
+    dependencies.setMachineUiAudioPreferences ?? setMachineUiAudioPreferences;
+  const evaluate = dependencies.evaluateExpression ?? evaluateExpression;
+  const waitForHashRoute = dependencies.waitForRoute ?? waitForRoute;
+  const restored = await setPreferences(
+    client,
+    REQUIRED_TRANSACTION_AUDIO_PREFERENCES,
+  );
+  await evaluate(client, 'location.hash = "#/catalog"');
+  await waitForHashRoute(client, "#/catalog", {
+    timeoutMs: 30_000,
+    pollMs: 250,
+  });
+  return restored;
 }
 
 async function prepareScannerForSale(handoff, guestInput, sessionStart) {
@@ -704,6 +731,7 @@ async function runDelayedPickupGuestFull(options) {
     await client.connect();
     await enablePageRuntime(client);
     await waitForRoute(client, "#/catalog", { timeoutMs: 30_000, pollMs: 250 });
+    await restoreTransactionAudioPreferences(client);
     sink = screenshotSink(screenshotRoot);
     sessionStart = await controlPlaneRequest(
       guestInput,
