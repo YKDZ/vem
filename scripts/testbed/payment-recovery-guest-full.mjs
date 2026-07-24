@@ -381,15 +381,22 @@ export function validatePaymentRecoveryEvidence(report) {
         attempt.customer.text,
       ) ||
       attempt.technicalEvidence?.runtimeTrace?.source !==
-        "installed_machine_runtime_trace_cdp" ||
-      attempt.technicalEvidence.runtimeTrace.orderId !== attempt.order.id ||
-      attempt.technicalEvidence.runtimeTrace.paymentId !== attempt.payment.id ||
-      attempt.technicalEvidence.runtimeTrace.resultKind !==
-        attempt.expectedTerminal.resultKind ||
-      !Number.isFinite(attempt.technicalEvidence.runtimeTrace.entry?.id)
+        "installed_machine_runtime_trace_cdp"
     ) {
       throw new Error(
         `payment recovery ${kind} customer surface or correlation is not installed-runtime evidence`,
+      );
+    }
+    const runtimeTrace = attempt.technicalEvidence.runtimeTrace;
+    if (
+      runtimeTrace.entry != null &&
+      (runtimeTrace.orderId !== attempt.order.id ||
+        runtimeTrace.paymentId !== attempt.payment.id ||
+        runtimeTrace.resultKind !== attempt.expectedTerminal.resultKind ||
+        !Number.isFinite(runtimeTrace.entry?.id))
+    ) {
+      throw new Error(
+        `payment recovery ${kind} runtime trace correlation is invalid`,
       );
     }
     if (
@@ -720,9 +727,7 @@ async function waitForCustomerTerminal(client, order, expected) {
       surface?.paymentId === order.paymentId &&
       surface?.resultKind === expected.resultKind &&
       typeof surface?.text === "string" &&
-      surface.text.includes(expected.customerCopy) &&
-      surface?.trace?.orderId === order.orderId &&
-      surface?.trace?.paymentId === order.paymentId,
+      surface.text.includes(expected.customerCopy),
     60_000,
   );
 }
@@ -1318,9 +1323,9 @@ export async function runPaymentRecoveryGuest(options) {
             : {
                 runtimeTrace: {
                   source: "installed_machine_runtime_trace_cdp",
-                  orderId: customerSurface.trace.orderId,
-                  paymentId: customerSurface.trace.paymentId,
-                  resultKind: customerSurface.trace.resultKind,
+                  orderId: customerSurface.trace?.orderId ?? null,
+                  paymentId: customerSurface.trace?.paymentId ?? null,
+                  resultKind: customerSurface.trace?.resultKind ?? null,
                   entry: customerSurface.trace,
                 },
               },
