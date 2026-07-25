@@ -414,6 +414,8 @@ impl TransactionStateMachine {
             return Ok(None);
         };
         if is_terminal_transaction(&current) {
+            self.clear_checkout_recovery_after_terminal_current(&current)
+                .await?;
             return Ok(Some(current));
         }
 
@@ -717,6 +719,8 @@ impl TransactionStateMachine {
                 self.sync_payment_code_scan_arm(Some(&current)).await;
                 return Ok(CheckoutCreationRole::Existing(current));
             }
+            self.clear_checkout_recovery_after_terminal_current(&current)
+                .await?;
         }
 
         let planogram_version = self
@@ -833,6 +837,19 @@ impl TransactionStateMachine {
         let _checkout_creation = self.checkout_creation_lock.lock().await;
         let _sale = self.acquire_checkout_sale_lease().await?;
         self.delete_checkout_recovery_if_owner(flight).await
+    }
+
+    async fn clear_checkout_recovery_after_terminal_current(
+        &self,
+        current: &vending_core::domain::InternalCurrentTransactionSnapshot,
+    ) -> Result<(), String> {
+        if !is_terminal_transaction(current) {
+            return Ok(());
+        }
+        self.state
+            .delete_metadata(CHECKOUT_CREATION_RECOVERY_KEY)
+            .await
+            .map_err(|error| error.to_string())
     }
 
     async fn finish_checkout_creation_flight(&self, flight: &CheckoutCreationFlight) {
@@ -1666,6 +1683,144 @@ mod tests {
             .await
             .expect("count");
         assert_eq!(order_count.0, 1);
+    }
+
+    #[tokio::test]
+    async fn restore_current_clears_checkout_recovery_marker_after_terminal_order() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        state
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-CANCELED",
+                payment_method: "qr_code",
+                payment_provider: Some("alipay"),
+                items_json: json!([{ "slotId": "A1", "quantity": 1 }]),
+                status: "canceled",
+                next_action: "closed",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: Some(json!({
+                    "orderNo": "ORDER-CANCELED",
+                    "machineCode": "M-1",
+                    "orderStatus": "canceled",
+                    "nextAction": "closed",
+                    "payment": {
+                        "paymentNo": "PAY-CANCELED",
+                        "method": "qr_code",
+                        "providerCode": "alipay",
+                        "status": "closed",
+                        "paymentUrl": "https://example.invalid/pay",
+                        "expiresAt": "2026-06-10T00:05:00.000Z"
+                    }
+                })),
+                last_error: None,
+            })
+            .await
+            .expect("seed terminal order");
+        state
+            .put_metadata(
+                CHECKOUT_CREATION_RECOVERY_KEY,
+                &CheckoutCreationRecovery {
+                    payment_method: "qr_code".to_string(),
+                    payment_provider_code: Some("alipay".to_string()),
+                    items: json!([{ "slotId": "A1", "quantity": 1 }]),
+                    profile_snapshot: None,
+                    idempotency_key: "checkout:stale-canceled".to_string(),
+                    generation: "generation-stale".to_string(),
+                    planogram_version: None,
+                },
+            )
+            .await
+            .expect("persist stale marker");
+
+        let (events_tx, _) = broadcast::channel(8);
+        let machine = TransactionStateMachine::new(
+            state.clone(),
+            Arc::new(BackendClient::new("http://127.0.0.1:9")),
+            Some("M-1".to_string()),
+            events_tx,
+        );
+
+        let current = machine
+            .restore_current()
+            .await
+            .expect("restore")
+            .expect("terminal current");
+        assert_eq!(current.order_no.as_deref(), Some("ORDER-CANCELED"));
+        assert!(state
+            .get_metadata::<CheckoutCreationRecovery>(CHECKOUT_CREATION_RECOVERY_KEY)
+            .await
+            .expect("marker read")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn terminal_order_releases_stale_checkout_recovery_for_next_order() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        state
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-CANCELED",
+                payment_method: "qr_code",
+                payment_provider: Some("alipay"),
+                items_json: json!([{ "slotId": "A1", "quantity": 1 }]),
+                status: "canceled",
+                next_action: "closed",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: None,
+                last_error: None,
+            })
+            .await
+            .expect("seed terminal order");
+        state
+            .put_metadata(
+                CHECKOUT_CREATION_RECOVERY_KEY,
+                &CheckoutCreationRecovery {
+                    payment_method: "qr_code".to_string(),
+                    payment_provider_code: Some("alipay".to_string()),
+                    items: json!([{ "slotId": "A1", "quantity": 1 }]),
+                    profile_snapshot: None,
+                    idempotency_key: "checkout:stale-canceled".to_string(),
+                    generation: "generation-stale".to_string(),
+                    planogram_version: None,
+                },
+            )
+            .await
+            .expect("persist stale marker");
+
+        let (events_tx, _) = broadcast::channel(8);
+        let machine = TransactionStateMachine::new(
+            state.clone(),
+            Arc::new(BackendClient::new("http://127.0.0.1:9")),
+            Some("M-1".to_string()),
+            events_tx,
+        );
+
+        let role = machine
+            .reserve_checkout_creation(
+                "payment_code",
+                Some("alipay".to_string()),
+                json!([{ "slotId": "B1", "quantity": 1 }]),
+                None,
+                "checkout:new-order".to_string(),
+            )
+            .await
+            .expect("new checkout may replace stale terminal recovery");
+        let CheckoutCreationRole::Owner(flight) = role else {
+            panic!("new checkout should own a fresh recovery marker");
+        };
+        assert_eq!(flight.idempotency_key, "checkout:new-order");
+        let recovery = state
+            .get_metadata::<CheckoutCreationRecovery>(CHECKOUT_CREATION_RECOVERY_KEY)
+            .await
+            .expect("marker read")
+            .expect("new recovery marker");
+        assert_eq!(recovery.idempotency_key, "checkout:new-order");
     }
 
     #[tokio::test]
