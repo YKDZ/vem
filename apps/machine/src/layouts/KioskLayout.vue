@@ -13,6 +13,7 @@ const { handleMaintenanceTap } = useMaintenanceEntry();
     <header class="flex items-center justify-between gap-3">
       <div
         class="flex h-14 items-center gap-3"
+        data-customer-interaction-scope="operator"
         data-test="maintenance-entry-header"
         @click="handleMaintenanceTap"
         @touchend.prevent="handleMaintenanceTap"

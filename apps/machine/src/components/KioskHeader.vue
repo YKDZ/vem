@@ -26,6 +26,7 @@ function handleBrandClick(): void {
   <header class="kiosk-header">
     <div
       class="kiosk-header-brand"
+      data-customer-interaction-scope="operator"
       data-test="maintenance-entry-brand"
       @click="handleBrandClick"
       @touchend.prevent="handleBrandClick"

@@ -60,6 +60,12 @@ describe("KioskHeader", () => {
   it("opens maintenance from the installed touch path", async () => {
     const { app, host } = await mountHeader();
 
+    expect(
+      host
+        .querySelector("[data-test='maintenance-entry-brand']")
+        ?.getAttribute("data-customer-interaction-scope"),
+    ).toBe("operator");
+
     for (let index = 0; index < 7; index += 1) {
       touchBrand(host);
     }

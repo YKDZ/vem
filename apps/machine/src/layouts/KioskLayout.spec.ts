@@ -50,6 +50,9 @@ describe("KioskLayout", () => {
       "[data-test='maintenance-entry-header']",
     );
     expect(hiddenMaintenanceTarget).not.toBeNull();
+    expect(
+      hiddenMaintenanceTarget?.getAttribute("data-customer-interaction-scope"),
+    ).toBe("operator");
 
     for (let index = 0; index < 7; index += 1) {
       hiddenMaintenanceTarget?.dispatchEvent(
