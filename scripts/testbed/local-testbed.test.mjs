@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
+import { parse as parseYaml } from "yaml";
 
 import { mockPaymentCreateGatePaths } from "./host-serial-control-plane.mjs";
 import {
@@ -21,6 +22,7 @@ import {
 import {
   buildBackendComposeCommand,
   buildBackendComposeEnvironment,
+  buildComposeServiceApiEnvironment,
   buildHeadlessVncActivatorUnitPlan,
   buildHostLocalServiceApiEnvironment,
   buildMigrationEnvironment,
@@ -29,7 +31,7 @@ import {
   buildReconstructionPlan,
   renderBackendComposeEnv,
   renderBackendComposeOverride,
-  buildServiceApiUnitPlan,
+  buildServiceApiComposePlan,
   ensureLowerControllerSimCached,
   interpretServiceApiJournalCapture,
   lowerControllerSimCacheLayout,
@@ -457,9 +459,30 @@ describe("local testbed orchestration", () => {
       assert.equal(serviceEnv.MQTT_USERNAME, composeEnv.MQTT_USERNAME);
       assert.equal(serviceEnv.MQTT_PASSWORD, composeEnv.MQTT_PASSWORD);
       assert.match(renderBackendComposeEnv(parsedOptions), /^POSTGRES_DB=/m);
-      assert.match(
-        renderBackendComposeOverride(),
-        /container_name: vem-local-testbed-mosquitto/,
+      const override = renderBackendComposeOverride(parsedOptions);
+      const parsedOverride = parseYaml(override);
+      const composeServiceEnv =
+        buildComposeServiceApiEnvironment(parsedOptions);
+      assert.match(override, /container_name: vem-local-testbed-mosquitto/);
+      assert.match(override, /service-api:/);
+      assert.match(override, /image: node:24-bookworm-slim/);
+      assert.deepEqual(parsedOverride.services["service-api"].volumes, [
+        `${root}:/workspace`,
+        `${join(root, "state")}:/testbed-state`,
+      ]);
+      assert.equal(
+        composeServiceEnv.DATABASE_URL,
+        "postgresql://vem:vem_local_testbed_password@postgres:5432/vem_local_testbed",
+      );
+      assert.equal(composeServiceEnv.MQTT_URL, "mqtt://mqtt:1883");
+      assert.equal(composeServiceEnv.SERVICE_PORT, "3000");
+      assert.equal(
+        composeServiceEnv.MACHINE_API_BASE_URL,
+        "http://10.0.0.15:26849/api",
+      );
+      assert.equal(
+        composeServiceEnv.PAYMENT_MOCK_PROVIDER_CREATE_GATE_PATH,
+        "/testbed-state/fast-route/mock-payment-create-gate.json",
       );
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -709,11 +732,11 @@ describe("local testbed orchestration", () => {
     }
   });
 
-  it("replaces the fixed Service API systemd unit and keeps readiness diagnostics in journald", () => {
+  it("runs host-local Service API through the same Compose backend lifecycle", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-local-testbed-"));
     try {
       const parsedOptions = options(root);
-      const plan = buildServiceApiUnitPlan(parsedOptions);
+      const plan = buildServiceApiComposePlan(parsedOptions);
       const serviceEnvironment =
         buildHostLocalServiceApiEnvironment(parsedOptions);
       const migrationEnvironment = buildMigrationEnvironment(parsedOptions, {
@@ -722,30 +745,12 @@ describe("local testbed orchestration", () => {
       const rendered = plan.map(
         (step) => `${step.command} ${step.args.join(" ")}`,
       );
-      assert.match(
-        rendered[0],
-        /systemctl stop vem-local-testbed-service-api\.service/,
-      );
+      assert.match(rendered[0], /docker compose .* rm -sf service-api/);
       assert.match(
         rendered.at(-1),
-        /systemd-run --unit=vem-local-testbed-service-api --collect/,
+        /docker compose .* up -d --force-recreate service-api/,
       );
-      assert.match(rendered.at(-1), /StandardOutput=journal/);
-      assert.match(rendered.at(-1), /StandardError=journal/);
-      assert.ok(
-        plan
-          .at(-1)
-          .args.includes(
-            `--property=WorkingDirectory=${join(root, "state", "service-api-runtime")}`,
-          ),
-      );
-      assert.equal(
-        plan.at(-1).args.at(-1),
-        join(root, "apps/service-api/dist/main.js"),
-      );
-      assert.notEqual(plan.at(-1).args.at(-1), "apps/service-api/dist/main.js");
       for (const [name, value] of Object.entries(serviceEnvironment)) {
-        assert.ok(plan.at(-1).args.includes(`--setenv=${name}=${value}`));
         assert.equal(migrationEnvironment[name], value);
       }
       assert.equal(
@@ -764,13 +769,13 @@ describe("local testbed orchestration", () => {
         new URL("./local-testbed.mjs", import.meta.url),
         "utf8",
       );
-      assert.match(implementation, /journalctl/);
-      assert.match(implementation, /serviceApiSystemdUnavailable/);
-      assert.match(implementation, /service-api\.pid/);
-      assert.match(implementation, /detached: true/);
+      assert.match(
+        implementation,
+        /logs"[\s\S]*"--tail"[\s\S]*"200"[\s\S]*"service-api"/,
+      );
       assert.doesNotMatch(
         implementation,
-        /child\.stdout\.pipe|child\.stderr\.pipe/,
+        /systemd-run --unit=vem-local-testbed-service-api|service-api\.pid|detached: true/,
       );
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -805,7 +810,7 @@ describe("local testbed orchestration", () => {
     }
   });
 
-  it("fails closed when journalctl exits non-zero and only exposes bounded stdout as platform log", () => {
+  it("fails closed when Service API log capture exits non-zero and only exposes bounded stdout as platform log", () => {
     const bounded = interpretServiceApiJournalCapture({
       ok: true,
       stdout: `stderr-looking-line\n${"x".repeat(20_000)}`,
@@ -815,11 +820,11 @@ describe("local testbed orchestration", () => {
 
     const unavailable = interpretServiceApiJournalCapture({
       ok: false,
-      error: "journalctl exited with 1: permission denied",
+      error: "docker compose logs exited with 1: permission denied",
     });
     assert.deepEqual(unavailable, {
       kind: "unavailable",
-      text: "journalctl exited with 1: permission denied",
+      text: "docker compose logs exited with 1: permission denied",
     });
   });
 

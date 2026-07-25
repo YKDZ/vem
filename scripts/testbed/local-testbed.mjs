@@ -3,13 +3,7 @@
 import { topCategoryKeyForCatalogItem } from "@vem/shared/catalog-top-category";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-  constants,
-  closeSync,
-  existsSync,
-  openSync,
-  readFileSync,
-} from "node:fs";
+import { constants, existsSync, readFileSync } from "node:fs";
 import {
   access,
   mkdir,
@@ -40,6 +34,9 @@ const SERVICE_NAMES = Object.freeze({
   mqtt: "vem-local-testbed-mosquitto",
 });
 const BACKEND_COMPOSE_PROJECT = "vem-local-testbed";
+const SERVICE_API_SOURCE_IMAGE = "node:24-bookworm-slim";
+const SERVICE_API_CONTAINER_WORKSPACE = "/workspace";
+const SERVICE_API_CONTAINER_STATE_ROOT = "/testbed-state";
 const LOCAL_TESTBED_POSTGRES_DB = "vem_local_testbed";
 const LOCAL_TESTBED_POSTGRES_USER = "vem";
 const LOCAL_TESTBED_POSTGRES_PASSWORD = "vem_local_testbed_password";
@@ -49,7 +46,6 @@ const VOLUME_NAMES = Object.freeze({
   postgres: "vem-local-testbed-postgres-data",
   mqtt: "vem-local-testbed-mosquitto-data",
 });
-const SERVICE_API_UNIT = "vem-local-testbed-service-api";
 const HOST_CONTROL_PLANE_UNIT = "vem-local-testbed-host-control-plane";
 const HEADLESS_VNC_ACTIVATOR_UNIT = "vem-local-testbed-headless-vnc-activator";
 const GUEST_HANDOFF_PATH =
@@ -518,13 +514,45 @@ export function buildBackendComposeEnvironment(options) {
   };
 }
 
+function containerStatePath(...parts) {
+  return [SERVICE_API_CONTAINER_STATE_ROOT, ...parts].join("/");
+}
+
+export function buildComposeServiceApiEnvironment(options) {
+  return {
+    ...buildHostLocalServiceApiEnvironment(options),
+    DATABASE_URL: `postgresql://${LOCAL_TESTBED_POSTGRES_USER}:${LOCAL_TESTBED_POSTGRES_PASSWORD}@postgres:5432/${LOCAL_TESTBED_POSTGRES_DB}`,
+    MQTT_URL: "mqtt://mqtt:1883",
+    PAYMENT_MOCK_PROVIDER_CREATE_GATE_PATH: containerStatePath(
+      "fast-route",
+      "mock-payment-create-gate.json",
+    ),
+    PAYMENT_MOCK_PROVIDER_QUERY_FAULT_PATH: containerStatePath(
+      "fast-route",
+      "mock-payment-query-fault.json",
+    ),
+    MEDIA_ASSET_STORAGE_ROOT: "/var/lib/vem/service-api/media-assets",
+    SERVICE_PORT: "3000",
+  };
+}
+
 export function renderBackendComposeEnv(options) {
   return `${Object.entries(buildBackendComposeEnvironment(options))
     .map(([name, value]) => `${name}=${quoteComposeEnv(value)}`)
     .join("\n")}\n`;
 }
 
-export function renderBackendComposeOverride() {
+function yamlString(value) {
+  return JSON.stringify(String(value));
+}
+
+function renderYamlEnvironment(values) {
+  return Object.entries(values)
+    .map(([name, value]) => `      ${name}: ${yamlString(value)}`)
+    .join("\n");
+}
+
+export function renderBackendComposeOverride(options) {
   return `services:
   postgres:
     container_name: ${SERVICE_NAMES.postgres}
@@ -534,6 +562,15 @@ export function renderBackendComposeOverride() {
     container_name: ${SERVICE_NAMES.mqtt}
     ports:
       - "18883:1883"
+  service-api:
+    image: ${SERVICE_API_SOURCE_IMAGE}
+    working_dir: ${SERVICE_API_CONTAINER_WORKSPACE}
+    command: ["node", "${SERVICE_API_CONTAINER_WORKSPACE}/apps/service-api/dist/main.js"]
+    volumes:
+      - ${yamlString(`${options.workspace}:${SERVICE_API_CONTAINER_WORKSPACE}`)}
+      - ${yamlString(`${options.stateRoot}:${SERVICE_API_CONTAINER_STATE_ROOT}`)}
+    environment:
+${renderYamlEnvironment(buildComposeServiceApiEnvironment(options))}
 `;
 }
 
@@ -542,7 +579,7 @@ export async function writeBackendComposeFiles(options) {
     writeFile(backendComposeEnvFile(options), renderBackendComposeEnv(options)),
     writeFile(
       backendComposeOverrideFile(options),
-      renderBackendComposeOverride(),
+      renderBackendComposeOverride(options),
     ),
   ]);
 }
@@ -866,27 +903,14 @@ export function buildMigrationEnvironment(
   };
 }
 
-export function buildServiceApiUnitPlan(options) {
-  const unit = `${SERVICE_API_UNIT}.service`;
-  const environment = buildHostLocalServiceApiEnvironment(options);
-  const workingDirectory = join(options.stateRoot, "service-api-runtime");
+export function buildServiceApiComposePlan(options) {
   return [
-    commandLine("sudo", ["systemctl", "stop", unit]),
-    commandLine("sudo", ["systemctl", "reset-failed", unit]),
-    commandLine("sudo", [
-      "systemd-run",
-      `--unit=${SERVICE_API_UNIT}`,
-      "--collect",
-      "--property=Type=simple",
-      "--property=Restart=no",
-      "--property=StandardOutput=journal",
-      "--property=StandardError=journal",
-      `--property=WorkingDirectory=${workingDirectory}`,
-      ...REQUIRED_SERVICE_API_ENV_KEYS.map(
-        (name) => `--setenv=${name}=${environment[name]}`,
-      ),
-      process.execPath,
-      join(options.workspace, "apps/service-api/dist/main.js"),
+    buildBackendComposeCommand(options, ["rm", "-sf", "service-api"]),
+    buildBackendComposeCommand(options, [
+      "up",
+      "-d",
+      "--force-recreate",
+      "service-api",
     ]),
   ];
 }
@@ -1400,70 +1424,36 @@ async function waitForHostControlPlane(endpoint, token) {
 }
 
 async function serviceApiFailure(error, options = null) {
-  let journal = { kind: "unavailable", text: "journalctl was not attempted" };
-  try {
-    const result = await runCapture("sudo", [
-      "journalctl",
-      "--unit",
-      `${SERVICE_API_UNIT}.service`,
-      "--no-pager",
-      "--lines",
-      "200",
-      "--output",
-      "short-iso-precise",
-    ]);
-    journal = interpretServiceApiJournalCapture({
-      ok: true,
-      stdout: result.stdout,
-    });
-  } catch (journalError) {
-    journal = interpretServiceApiJournalCapture({
-      ok: false,
-      error:
-        journalError instanceof Error
-          ? journalError.message
-          : String(journalError),
-    });
-  }
-  if (journal.kind !== "journal" && options) {
-    const logText = await readFile(serviceApiProcessLogPath(options), "utf8")
-      .then((text) => text.slice(-SERVICE_API_LOG_TAIL_MAX_CHARS))
-      .catch(() => "");
-    if (logText) journal = { kind: "journal", text: logText };
+  let log = {
+    kind: "unavailable",
+    text: "docker compose logs was not attempted",
+  };
+  if (options) {
+    try {
+      const command = buildBackendComposeCommand(options, [
+        "logs",
+        "--no-color",
+        "--tail",
+        "200",
+        "service-api",
+      ]);
+      const result = await runCapture(command.command, command.args);
+      log = interpretServiceApiJournalCapture({
+        ok: true,
+        stdout: result.stdout,
+      });
+    } catch (logError) {
+      log = interpretServiceApiJournalCapture({
+        ok: false,
+        error: logError instanceof Error ? logError.message : String(logError),
+      });
+    }
   }
   const suffix =
-    journal.kind === "journal"
-      ? `--- local Service API log ---\n${journal.text}`
-      : `--- local Service API log unavailable ---\n${journal.text}`;
+    log.kind === "journal"
+      ? `--- local Service API compose log ---\n${log.text}`
+      : `--- local Service API compose log unavailable ---\n${log.text}`;
   return new Error(`${error.message}\n${suffix}`);
-}
-
-function serviceApiProcessPidPath(options) {
-  return join(options.stateRoot, "service-api-runtime", "service-api.pid");
-}
-
-function serviceApiProcessLogPath(options) {
-  return join(options.stateRoot, "service-api-runtime", "service-api.log");
-}
-
-function systemdUnavailableText(text) {
-  return String(text ?? "").includes('"systemd" is not running');
-}
-
-async function serviceApiSystemdUnavailable() {
-  const state = await runCapture("sudo", [
-    "systemctl",
-    "show",
-    "--property=LoadState",
-    "--value",
-    `${SERVICE_API_UNIT}.service`,
-  ]).catch((error) => ({
-    stdout: "",
-    stderr: error instanceof Error ? error.message : String(error),
-  }));
-  return (
-    systemdUnavailableText(state.stdout) || systemdUnavailableText(state.stderr)
-  );
 }
 
 export async function seedThroughSupportedApis({
@@ -1788,90 +1778,15 @@ export async function seedThroughSupportedApis({
 }
 
 async function stopServiceApiUnit(options) {
-  if (await serviceApiSystemdUnavailable()) {
-    await stopServiceApiProcessFallback(options);
-    return;
-  }
-  const [stop, reset] = buildServiceApiUnitPlan(options);
+  const stop = buildServiceApiComposePlan(options)[0];
   await run(stop.command, stop.args, { stdio: "ignore" }).catch(
     () => undefined,
   );
-  await run(reset.command, reset.args, { stdio: "ignore" }).catch(
-    () => undefined,
-  );
-  for (let attempt = 0; attempt < 50; attempt += 1) {
-    const state = await runCapture("sudo", [
-      "systemctl",
-      "show",
-      "--property=LoadState",
-      "--value",
-      `${SERVICE_API_UNIT}.service`,
-    ]).catch(() => ({ stdout: "not-found" }));
-    if (systemdUnavailableText(state.stdout)) {
-      await stopServiceApiProcessFallback(options);
-      return;
-    }
-    if (state.stdout.trim() === "not-found") return;
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
-  }
-  throw new Error(`fixed Service API unit ${SERVICE_API_UNIT} did not unload`);
 }
 
 async function startServiceApiUnit(options) {
-  if (await serviceApiSystemdUnavailable()) {
-    await startServiceApiProcessFallback(options);
-    return;
-  }
-  const start = buildServiceApiUnitPlan(options).at(-1);
+  const start = buildServiceApiComposePlan(options).at(-1);
   await run(start.command, start.args, { cwd: options.workspace });
-}
-
-async function stopServiceApiProcessFallback(options) {
-  const pidPath = serviceApiProcessPidPath(options);
-  const raw = await readFile(pidPath, "utf8").catch(() => "");
-  const pid = Number.parseInt(raw.trim(), 10);
-  if (Number.isSafeInteger(pid) && pid > 1) {
-    try {
-      process.kill(pid, "SIGTERM");
-      for (let attempt = 0; attempt < 50; attempt += 1) {
-        try {
-          process.kill(pid, 0);
-          await new Promise((resolvePromise) =>
-            setTimeout(resolvePromise, 100),
-          );
-        } catch {
-          break;
-        }
-      }
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {}
-    } catch {}
-  }
-  await rm(pidPath, { force: true }).catch(() => undefined);
-}
-
-async function startServiceApiProcessFallback(options) {
-  await stopServiceApiProcessFallback(options);
-  const workingDirectory = join(options.stateRoot, "service-api-runtime");
-  await mkdir(workingDirectory, { recursive: true });
-  const logPath = serviceApiProcessLogPath(options);
-  const output = openSync(logPath, "a", 0o600);
-  const child = spawn(
-    process.execPath,
-    [join(options.workspace, "apps/service-api/dist/main.js")],
-    {
-      cwd: workingDirectory,
-      detached: true,
-      env: mergeCommandEnvironment(
-        buildHostLocalServiceApiEnvironment(options),
-      ),
-      stdio: ["ignore", output, output],
-    },
-  );
-  child.unref();
-  closeSync(output);
-  await writeFile(serviceApiProcessPidPath(options), `${child.pid}\n`, "utf8");
 }
 
 async function stopHostControlPlaneUnit(options, contract) {
