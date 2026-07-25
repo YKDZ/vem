@@ -537,6 +537,16 @@ async function cancelVisibleMachineOrder(client, timeoutMs) {
   });
 }
 
+export function isCleanAuthoritativeTransaction(current) {
+  if (current == null || current?.orderId == null) return true;
+  const paymentStatus = current?.paymentStatus ?? null;
+  const orderStatus = current?.orderStatus ?? null;
+  if (["canceled", "failed", "expired", "refunded"].includes(paymentStatus)) {
+    return true;
+  }
+  return paymentStatus === "succeeded" && orderStatus === "fulfilled";
+}
+
 async function cleanAuthoritativeOrderBeforeDiagnostics(
   client,
   handoff,
@@ -570,10 +580,7 @@ async function cleanAuthoritativeOrderBeforeDiagnostics(
   }
   const transaction = await waitForCondition(
     () => daemon(handoff, "/v1/transactions/current"),
-    (current) =>
-      current == null ||
-      current?.orderId == null ||
-      ["canceled", "failed", "expired"].includes(current?.paymentStatus),
+    isCleanAuthoritativeTransaction,
     { timeoutMs, label: "authoritative order cleanup before diagnostics" },
   );
   const route = await evaluateExpression(client, "location.hash");

@@ -8,6 +8,7 @@ import {
   buildProviderFailureReport,
   classifyProviderFailureOutcome,
   collectPaymentProviderFailureEvidence,
+  isCleanAuthoritativeTransaction,
   parsePaymentProviderGuestArgs,
   sanitizeProviderEvidence,
   validateInstallationOwnedAlipaySandboxFixture,
@@ -26,6 +27,35 @@ describe("payment provider guest full", () => {
     );
     assert.ok(dismissIndex > 0);
     assert.ok(waitIndex > dismissIndex);
+  });
+
+  it("treats a completed previous sale as clean provider diagnostics state", () => {
+    assert.equal(isCleanAuthoritativeTransaction(null), true);
+    assert.equal(isCleanAuthoritativeTransaction({ orderId: null }), true);
+    assert.equal(
+      isCleanAuthoritativeTransaction({
+        orderId: "order-1",
+        paymentStatus: "succeeded",
+        orderStatus: "fulfilled",
+      }),
+      true,
+    );
+    assert.equal(
+      isCleanAuthoritativeTransaction({
+        orderId: "order-2",
+        paymentStatus: "succeeded",
+        orderStatus: "paid",
+      }),
+      false,
+    );
+    assert.equal(
+      isCleanAuthoritativeTransaction({
+        orderId: "order-3",
+        paymentStatus: "canceled",
+        orderStatus: "canceled",
+      }),
+      true,
+    );
   });
 
   it("classifies only explicit cleaned Alipay boundary failures as provider unavailable", () => {
