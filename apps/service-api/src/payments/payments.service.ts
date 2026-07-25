@@ -2847,6 +2847,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             ),
             eq(payments.intentCreationLeaseFence, reconciliationLease.fence),
             gt(payments.intentCreationLeaseExpiresAt, new Date()),
+            inArray(payments.status, ["pending", "processing", "unknown"]),
           ),
         )
         .returning({ id: payments.id });
@@ -4275,7 +4276,12 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     await this.db.transaction(async (tx) => {
       await tx
         .update(payments)
-        .set({ status, updatedAt: new Date() })
+        .set({
+          status,
+          intentCreationLeaseOwnerToken: null,
+          intentCreationLeaseExpiresAt: null,
+          updatedAt: new Date(),
+        })
         .where(eq(payments.id, payment.paymentId));
       await tx
         .update(orders)
