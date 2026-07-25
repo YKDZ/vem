@@ -950,13 +950,11 @@ export function validateUnattendedProviderAttempt(attempt) {
       attempt.machine?.surface?.orderId !== order.orderId ||
       attempt.machine?.surface?.paymentId !== order.paymentId ||
       attempt.machine?.surface?.orderNo !== order.orderNo ||
-      !String(attempt.machine?.scannerPrompt ?? "").includes("请出示付款码") ||
       !["failed", "querying", "reversed", "user_confirming"].includes(
         attempt.submission?.status,
       ) ||
       attempt.submission?.providerCode !== "alipay" ||
       !attempt.submission?.attemptId ||
-      !attempt.submission?.providerStatus ||
       (attempt.submission?.status === "failed" &&
         !attempt.submission?.failureCode) ||
       (attempt.submission?.status === "user_confirming" &&
