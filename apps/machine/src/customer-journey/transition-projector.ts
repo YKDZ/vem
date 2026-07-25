@@ -131,7 +131,10 @@ function projectCandidates(
   const touchscreenActive = Boolean(
     touchscreen?.personPresent && touchscreen.source === "local_interaction",
   );
-  if (semanticEdges.observeTouchscreen(touchscreenActive)) {
+  if (
+    semanticEdges.observeTouchscreen(touchscreenActive) &&
+    semanticEdges.claimPresenceGreeting()
+  ) {
     candidates.push(
       transition({
         transitionId: semanticEdges.nextTouchscreenTransitionId(),
@@ -148,25 +151,37 @@ function projectCandidates(
     vision?.edge ?? null,
     vision?.occupancyState ?? "none",
   );
+  if (
+    !touchscreenActive &&
+    vision?.personPresent !== true &&
+    visionEdge !== "departed"
+  ) {
+    semanticEdges.releasePresenceGreeting();
+  }
   if (visionEdge === "crowd") {
-    candidates.push(
-      transition({
-        transitionId: visionTransitionId(vision?.edgeId, "crowd"),
-        kind: "privacy.crowd_detected",
-        category: "presence",
-        occurredAt: vision?.lastChangedAt ?? vision?.lastSeenAt ?? null,
-      }),
-    );
+    if (semanticEdges.claimPresenceGreeting()) {
+      candidates.push(
+        transition({
+          transitionId: visionTransitionId(vision?.edgeId, "crowd"),
+          kind: "privacy.crowd_detected",
+          category: "presence",
+          occurredAt: vision?.lastChangedAt ?? vision?.lastSeenAt ?? null,
+        }),
+      );
+    }
   } else if (visionEdge === "welcome") {
-    candidates.push(
-      transition({
-        transitionId: visionTransitionId(vision?.edgeId, "welcome"),
-        kind: "presence.welcome",
-        category: "presence",
-        occurredAt: vision?.lastChangedAt ?? vision?.lastSeenAt ?? null,
-      }),
-    );
+    if (semanticEdges.claimPresenceGreeting()) {
+      candidates.push(
+        transition({
+          transitionId: visionTransitionId(vision?.edgeId, "welcome"),
+          kind: "presence.welcome",
+          category: "presence",
+          occurredAt: vision?.lastChangedAt ?? vision?.lastSeenAt ?? null,
+        }),
+      );
+    }
   } else if (visionEdge === "departed") {
+    semanticEdges.releasePresenceGreeting();
     candidates.push(
       transition({
         transitionId: visionTransitionId(vision?.edgeId, "departed"),
@@ -410,6 +425,8 @@ type SemanticEdgeMemory = {
     edge: "arrival" | "departure" | null,
     occupancyState: "none" | "single" | "multiple" | "unknown",
   ): VisionEdge;
+  claimPresenceGreeting(): boolean;
+  releasePresenceGreeting(): void;
   observeCategory(entryId: string | null): boolean;
   observeProduct(selectionId: string | null): boolean;
 };
@@ -420,6 +437,7 @@ function createSemanticEdgeMemory(): SemanticEdgeMemory {
   const claimedVisionEdges = new Set<string>();
   let categoryEntryId: string | null = null;
   let selectedProductId: string | null = null;
+  let presenceGreetingClaimed = false;
 
   return {
     observeTouchscreen(active) {
@@ -440,6 +458,14 @@ function createSemanticEdgeMemory(): SemanticEdgeMemory {
       }
       if (edge === "departure") return "departed";
       return occupancyState === "multiple" ? "crowd" : "welcome";
+    },
+    claimPresenceGreeting() {
+      if (presenceGreetingClaimed) return false;
+      presenceGreetingClaimed = true;
+      return true;
+    },
+    releasePresenceGreeting() {
+      presenceGreetingClaimed = false;
     },
     observeCategory(entryId) {
       const entered = entryId !== null && entryId !== categoryEntryId;

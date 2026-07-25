@@ -129,10 +129,11 @@ const requiresMaintenanceReview = computed(() => {
 const canManuallyReturn = computed(
   () => activeReturnPolicy.value?.canManualReturn === true,
 );
-const AUTO_RETURN_SECONDS = 8;
+const AUTO_RETURN_SECONDS = 5;
 const autoReturnRemainingSeconds = ref<number | null>(null);
 let returningToCatalog = false;
 let autoReturnTimer: ReturnType<typeof globalThis.setInterval> | null = null;
+let autoReturnSessionKey: string | null = null;
 let lastRuntimeTraceCorrelationKey: string | null = null;
 
 function stopAutoReturn(): void {
@@ -141,6 +142,19 @@ function stopAutoReturn(): void {
     autoReturnTimer = null;
   }
   autoReturnRemainingSeconds.value = null;
+  autoReturnSessionKey = null;
+}
+
+function currentAutoReturnSessionKey(): string | null {
+  const returnPolicy = activeReturnPolicy.value;
+  if (!returnPolicy) return null;
+  return JSON.stringify({
+    orderId: checkoutStore.transaction?.orderId ?? null,
+    paymentId: checkoutStore.transaction?.paymentId ?? null,
+    orderNo: checkoutStore.transaction?.orderNo ?? null,
+    resultKind: kind.value,
+    targetRoute: returnPolicy.targetRoute,
+  });
 }
 
 function startAutoReturn(): void {
@@ -150,7 +164,17 @@ function startAutoReturn(): void {
   ) {
     return;
   }
+  const sessionKey = currentAutoReturnSessionKey();
+  if (
+    sessionKey !== null &&
+    sessionKey === autoReturnSessionKey &&
+    autoReturnTimer !== null &&
+    autoReturnRemainingSeconds.value !== null
+  ) {
+    return;
+  }
   stopAutoReturn();
+  autoReturnSessionKey = sessionKey;
   autoReturnRemainingSeconds.value = AUTO_RETURN_SECONDS;
   autoReturnTimer = globalThis.setInterval(() => {
     const remaining = autoReturnRemainingSeconds.value;

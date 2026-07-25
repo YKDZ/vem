@@ -319,7 +319,7 @@ describe("ResultView", () => {
     expect(host.textContent).toContain("欢迎再次使用。");
     expect(host.textContent).not.toContain("请及时取走商品");
     await vi.waitFor(() => {
-      expect(host.textContent).toContain("8 秒后自动返回首页。");
+      expect(host.textContent).toContain("5 秒后自动返回首页。");
     });
     expect(host.textContent).not.toContain("订单凭证 ORD-SUCCESS-001");
     expect(host.textContent).not.toContain("等待人工处理");
@@ -405,6 +405,43 @@ describe("ResultView", () => {
     expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(true);
   });
 
+  it("does not restart the visible auto-return countdown when readiness refreshes", async () => {
+    routeParams.kind = "success";
+    const transaction = successfulTransaction();
+    const checkoutStore = useCheckoutStore();
+    let resolveCapability!: (
+      snapshot: ReturnType<typeof capabilityFixture>,
+    ) => void;
+    getSaleStartCapabilityMock.mockReturnValueOnce(
+      new Promise<ReturnType<typeof capabilityFixture>>((resolve) => {
+        resolveCapability = resolve;
+      }),
+    );
+    checkoutStore.applyTransaction(transaction);
+    applyCapability(true);
+
+    const host = await mountView();
+
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("5 秒后自动返回首页。");
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await nextTick();
+    expect(host.textContent).toContain("4 秒后自动返回首页。");
+
+    resolveCapability(capabilityFixture(true));
+    await vi.waitFor(() => {
+      expect(getSaleStartCapabilityMock).toHaveBeenCalledOnce();
+    });
+    await nextTick();
+
+    expect(host.textContent).toContain("4 秒后自动返回首页。");
+    await vi.advanceTimersByTimeAsync(4_000);
+
+    expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
+    expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(true);
+  });
+
   it("auto-returns a payment timeout result when sale capability is already ready", async () => {
     routeParams.kind = "payment_expired";
     const transaction = paymentExpiredTransaction();
@@ -416,9 +453,9 @@ describe("ResultView", () => {
 
     expect(host.textContent).toContain("支付超时");
     await vi.waitFor(() => {
-      expect(host.textContent).toContain("8 秒后自动返回首页。");
+      expect(host.textContent).toContain("5 秒后自动返回首页。");
     });
-    await vi.advanceTimersByTimeAsync(8_000);
+    await vi.advanceTimersByTimeAsync(5_000);
 
     expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
     expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(true);
@@ -437,9 +474,9 @@ describe("ResultView", () => {
     applyCapability(true);
     await nextTick();
     await vi.waitFor(() => {
-      expect(host.textContent).toContain("8 秒后自动返回首页。");
+      expect(host.textContent).toContain("5 秒后自动返回首页。");
     });
-    await vi.advanceTimersByTimeAsync(8_000);
+    await vi.advanceTimersByTimeAsync(5_000);
 
     expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
     expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(true);
@@ -455,9 +492,9 @@ describe("ResultView", () => {
     const host = await mountView();
 
     await vi.waitFor(() => {
-      expect(host.textContent).toContain("8 秒后自动返回首页。");
+      expect(host.textContent).toContain("5 秒后自动返回首页。");
     });
-    await vi.advanceTimersByTimeAsync(8_000);
+    await vi.advanceTimersByTimeAsync(5_000);
 
     expect(getSaleStartCapabilityMock).toHaveBeenCalledOnce();
     expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");

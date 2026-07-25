@@ -301,7 +301,7 @@ describe("Customer Journey Transition Projector", () => {
     expect(repeated).toEqual([]);
   });
 
-  it("projects stable Vision edges once even while a touchscreen session is active", () => {
+  it("does not replay a Vision welcome while the touchscreen greeting session is active", () => {
     const projector = createCustomerJourneyTransitionProjector();
     const touchscreen = {
       personPresent: true,
@@ -323,7 +323,7 @@ describe("Customer Journey Transition Projector", () => {
           edgeId: "presence-1:arrival",
         },
       }),
-    ).toContainEqual(expect.objectContaining({ kind: "presence.welcome" }));
+    ).toEqual([]);
     expect(
       projector.project({
         touchscreen,
@@ -401,6 +401,15 @@ describe("Customer Journey Transition Projector", () => {
       { transitionId: "touchscreen:session-1:awakened" },
     ]);
     expect(repeatedTouch).toEqual([]);
+    expect(
+      projector.project({
+        touchscreen: {
+          personPresent: false,
+          source: "local_interaction",
+          lastInteractionAt: "2026-07-18T08:20:10.000Z",
+        },
+      }),
+    ).toEqual([]);
 
     const welcome = projector.project({
       vision: {
@@ -455,6 +464,124 @@ describe("Customer Journey Transition Projector", () => {
       { transitionId: "vision:presence-2:departed" },
     ]);
     expect(repeatedDeparture).toEqual([]);
+  });
+
+  it("keeps touchscreen and Vision welcome in one presence greeting session", () => {
+    const projector = createCustomerJourneyTransitionProjector();
+
+    expect(
+      projector.project({
+        touchscreen: {
+          personPresent: true,
+          source: "local_interaction",
+          lastInteractionAt: "2026-07-18T08:20:00.000Z",
+        },
+      }),
+    ).toMatchObject([{ kind: "touchscreen.awakened" }]);
+
+    expect(
+      projector.project({
+        touchscreen: {
+          personPresent: true,
+          source: "local_interaction",
+          lastInteractionAt: "2026-07-18T08:20:01.000Z",
+        },
+        vision: {
+          personPresent: true,
+          occupancyState: "single",
+          lastSeenAt: "2026-07-18T08:20:01.000Z",
+          departedAt: null,
+          lastChangedAt: "2026-07-18T08:20:01.000Z",
+          edge: "arrival",
+          edgeId: "presence-1:arrival",
+        },
+      }),
+    ).toEqual([]);
+  });
+
+  it("does not replay touchscreen welcome before a confirmed Vision departure", () => {
+    const projector = createCustomerJourneyTransitionProjector();
+
+    expect(
+      projector.project({
+        touchscreen: {
+          personPresent: true,
+          source: "local_interaction",
+          lastInteractionAt: "2026-07-18T08:20:00.000Z",
+        },
+      }),
+    ).toMatchObject([{ transitionId: "touchscreen:session-1:awakened" }]);
+
+    expect(
+      projector.project({
+        touchscreen: {
+          personPresent: false,
+          source: "local_interaction",
+          lastInteractionAt: "2026-07-18T08:20:00.000Z",
+        },
+        vision: {
+          personPresent: true,
+          occupancyState: "single",
+          lastSeenAt: "2026-07-18T08:20:30.000Z",
+          departedAt: null,
+          lastChangedAt: "2026-07-18T08:20:30.000Z",
+          edge: null,
+          edgeId: "presence-1:arrival",
+        },
+      }),
+    ).toEqual([]);
+
+    expect(
+      projector.project({
+        touchscreen: {
+          personPresent: true,
+          source: "local_interaction",
+          lastInteractionAt: "2026-07-18T08:21:00.000Z",
+        },
+        vision: {
+          personPresent: true,
+          occupancyState: "single",
+          lastSeenAt: "2026-07-18T08:21:00.000Z",
+          departedAt: null,
+          lastChangedAt: "2026-07-18T08:21:00.000Z",
+          edge: null,
+          edgeId: "presence-1:arrival",
+        },
+      }),
+    ).toEqual([]);
+
+    expect(
+      projector.project({
+        vision: {
+          personPresent: false,
+          occupancyState: "none",
+          lastSeenAt: "2026-07-18T08:21:00.000Z",
+          departedAt: "2026-07-18T08:21:05.000Z",
+          lastChangedAt: "2026-07-18T08:21:05.000Z",
+          edge: "departure",
+          edgeId: "presence-2:departure",
+        },
+      }),
+    ).toMatchObject([{ kind: "presence.departed" }]);
+
+    expect(
+      projector.project({
+        touchscreen: {
+          personPresent: false,
+          source: "local_interaction",
+          lastInteractionAt: "2026-07-18T08:21:00.000Z",
+        },
+      }),
+    ).toEqual([]);
+    expect(
+      projector.project({
+        touchscreen: {
+          personPresent: true,
+          source: "local_interaction",
+          lastInteractionAt: "2026-07-18T08:22:00.000Z",
+        },
+      }),
+    ).toMatchObject([{ transitionId: "touchscreen:session-3:awakened" }]);
   });
 
   it("remembers a restored product selection without replaying it", () => {
