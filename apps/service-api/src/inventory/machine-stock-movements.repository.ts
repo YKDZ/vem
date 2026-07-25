@@ -819,17 +819,37 @@ export class MachineStockMovementsRepository {
     machineId: string;
     slotId: string;
   }): Promise<void> {
-    await this.db
-      .update(machineSlots)
-      .set({ status: "enabled", updatedAt: new Date() })
-      .where(
-        and(
-          eq(machineSlots.machineId, input.machineId),
-          eq(machineSlots.id, input.slotId),
-          eq(machineSlots.status, "faulted"),
-          isNull(machineSlots.deletedAt),
-        ),
-      );
+    await this.db.transaction(async (tx) => {
+      await tx
+        .update(machineSlots)
+        .set({ status: "enabled", updatedAt: new Date() })
+        .where(
+          and(
+            eq(machineSlots.machineId, input.machineId),
+            eq(machineSlots.id, input.slotId),
+            eq(machineSlots.status, "faulted"),
+            isNull(machineSlots.deletedAt),
+          ),
+        );
+      await tx
+        .update(machineRawStockMovements)
+        .set({ platformReviewStatus: "resolved" })
+        .where(sql`
+          ${machineRawStockMovements.machineId} = ${input.machineId}
+          and ${machineRawStockMovements.saleSafetyBlockerSlotId} = ${input.slotId}
+          and ${machineRawStockMovements.platformReviewStatus} = 'open'
+          and ${machineRawStockMovements.saleSafetyBlockerState} is not null
+        `);
+      await tx
+        .update(machineRawStockMovementConflicts)
+        .set({ platformReviewStatus: "resolved" })
+        .where(sql`
+          ${machineRawStockMovementConflicts.machineId} = ${input.machineId}
+          and ${machineRawStockMovementConflicts.saleSafetyBlockerSlotId} = ${input.slotId}
+          and ${machineRawStockMovementConflicts.platformReviewStatus} = 'open'
+          and ${machineRawStockMovementConflicts.saleSafetyBlockerState} is not null
+        `);
+    });
   }
 
   private async insertRaw(
