@@ -38,6 +38,7 @@ describe("MachinesService", () => {
   let service: MachinesService;
 
   const mockDb = {
+    execute: vi.fn(),
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
@@ -54,6 +55,7 @@ describe("MachinesService", () => {
 
   beforeEach(async () => {
     vi.resetAllMocks();
+    mockDb.execute.mockResolvedValue({ rowCount: 0 });
     mockDb.select.mockReturnValue({
       from: () => ({
         where: () => ({
@@ -1919,6 +1921,7 @@ describe("MachinesService planogram lifecycle", () => {
   let service: MachinesService;
 
   const mockDb = {
+    execute: vi.fn(),
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
@@ -1930,6 +1933,7 @@ describe("MachinesService planogram lifecycle", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    mockDb.execute.mockResolvedValue({ rowCount: 0 });
     const module = await Test.createTestingModule({
       providers: [
         MachinesService,

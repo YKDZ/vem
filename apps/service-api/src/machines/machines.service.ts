@@ -77,6 +77,7 @@ import { getOffset, toPageResult } from "../common/pagination.util";
 import { AppConfigService } from "../config/app-config.service";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { lockMachineForVendingMutation } from "../database/machine-transaction-lock";
+import { releaseExpiredInventoryReservations } from "../inventory/expired-inventory-reservations";
 import { MachineCredentialService } from "../machine-auth/machine-credential.service";
 import { MqttSignatureService } from "../mqtt/mqtt-signature.service";
 import { MqttService } from "../mqtt/mqtt.service";
@@ -1654,6 +1655,8 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
   }
 
   async getCatalogByMachineCode(code: string) {
+    await releaseExpiredInventoryReservations(this.db);
+
     const rows = await this.db
       .select({
         machineCode: machines.code,
@@ -1743,6 +1746,8 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
   }
 
   async getStockSnapshotByMachineCode(code: string) {
+    await releaseExpiredInventoryReservations(this.db);
+
     const rows = await this.db
       .select({
         machineCode: machines.code,

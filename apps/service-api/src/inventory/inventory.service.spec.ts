@@ -59,6 +59,7 @@ function makeMockTx(
 describe("InventoryService.compensateDispenseFailure", () => {
   let service: InventoryService;
   const mockDb = {
+    execute: vi.fn(),
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
@@ -67,6 +68,7 @@ describe("InventoryService.compensateDispenseFailure", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    mockDb.execute.mockResolvedValue({ rowCount: 0 });
     const module = await Test.createTestingModule({
       providers: [
         InventoryService,
@@ -157,6 +159,7 @@ describe("InventoryService.compensateDispenseFailure", () => {
 describe("InventoryService.releaseReservation", () => {
   let service: InventoryService;
   const mockDb = {
+    execute: vi.fn(),
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
@@ -165,6 +168,7 @@ describe("InventoryService.releaseReservation", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    mockDb.execute.mockResolvedValue({ rowCount: 0 });
     const module = await Test.createTestingModule({
       providers: [
         InventoryService,
@@ -224,6 +228,7 @@ describe("InventoryService.listMovements", () => {
     const listOffset = vi.fn().mockResolvedValue([]);
     const totalWhere = vi.fn().mockResolvedValue([{ total: 0 }]);
     const db = {
+      execute: vi.fn().mockResolvedValue({ rowCount: 0 }),
       select: vi
         .fn()
         .mockReturnValueOnce({

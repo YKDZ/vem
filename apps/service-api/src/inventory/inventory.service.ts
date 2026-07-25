@@ -44,6 +44,7 @@ import {
   toAdminInventoryMovementResponse,
   toAdminInventoryResponse,
 } from "./inventory.contract-mappers";
+import { releaseExpiredInventoryReservations } from "./expired-inventory-reservations";
 
 type InventoryQuery = z.infer<typeof inventoryQuerySchema> &
   z.infer<typeof pageQuerySchema>;
@@ -60,6 +61,8 @@ export class InventoryService {
   ) {}
 
   async listInventories(query: InventoryQuery) {
+    await releaseExpiredInventoryReservations(this.db);
+
     const filters: SQL[] = [];
     if (query.machineId) {
       filters.push(eq(inventories.machineId, query.machineId));
