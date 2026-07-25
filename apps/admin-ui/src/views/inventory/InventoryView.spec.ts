@@ -440,6 +440,7 @@ describe("InventoryView", () => {
     await nextTick();
     expect(apiMocks.listProductVariants).toHaveBeenCalledWith(
       "33333333-3333-4333-8333-333333333333",
+      { page: 1, pageSize: 100 },
     );
     expect(root.textContent).toContain("TSHIRT-BLACK-L");
 
@@ -557,6 +558,171 @@ describe("InventoryView", () => {
     });
     expect(root.textContent).toContain("第 101 台机器");
     expect(root.textContent).toContain("第 101 个商品");
+  });
+
+  it("loads every product variant page needed by the binding selector", async () => {
+    apiMocks.listProductVariants
+      .mockResolvedValueOnce({
+        items: Array.from({ length: 100 }, (_, index) => ({
+          id: `44444444-4444-4444-8444-${String(index).padStart(12, "0")}`,
+          productId: "33333333-3333-4333-8333-333333333333",
+          sku: `TSHIRT-BLACK-${index}`,
+          size: "L",
+          color: "黑色",
+          barcode: null,
+          priceCents: 6900,
+          costCents: null,
+          status: "active",
+          targetGender: null,
+          tryOnSilhouetteMediaAssetId: null,
+          tryOnSilhouetteMediaAsset: null,
+          createdAt: "2026-07-25T00:00:00.000Z",
+          updatedAt: "2026-07-25T00:00:00.000Z",
+        })),
+        total: 101,
+        page: 1,
+        pageSize: 100,
+      })
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: "55555555-5555-4555-8555-555555555555",
+            productId: "33333333-3333-4333-8333-333333333333",
+            sku: "TSHIRT-BLACK-101",
+            size: "XL",
+            color: "黑色",
+            barcode: null,
+            priceCents: 6900,
+            costCents: null,
+            status: "active",
+            targetGender: null,
+            tryOnSilhouetteMediaAssetId: null,
+            tryOnSilhouetteMediaAsset: null,
+            createdAt: "2026-07-25T00:00:00.000Z",
+            updatedAt: "2026-07-25T00:00:00.000Z",
+          },
+        ],
+        total: 101,
+        page: 2,
+        pageSize: 100,
+      });
+    const { root } = await mountView(["inventory.adjust"]);
+
+    root.querySelector("button")?.click();
+    await flushPromises();
+    await nextTick();
+
+    const selects = Array.from(root.querySelectorAll("select"));
+    setSelect(selects[2], "33333333-3333-4333-8333-333333333333");
+    await flushPromises();
+    await nextTick();
+
+    expect(apiMocks.listProductVariants).toHaveBeenCalledWith(
+      "33333333-3333-4333-8333-333333333333",
+      { page: 2, pageSize: 100 },
+    );
+    expect(root.textContent).toContain("TSHIRT-BLACK-101");
+  });
+
+  it("keeps stale binding option responses from replacing a reopened modal", async () => {
+    const slowMachines = deferred<Record<string, unknown>>();
+    const slowProducts = deferred<Record<string, unknown>>();
+    apiMocks.listMachines
+      .mockImplementationOnce(async () => await slowMachines.promise)
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            code: "VEM-B",
+            name: "机器 B",
+            locationLabel: null,
+            geoLocation: null,
+            status: "online",
+            mqttClientId: null,
+            lastSeenAt: null,
+            createdAt: "2026-07-25T00:00:00.000Z",
+            updatedAt: "2026-07-25T00:00:00.000Z",
+          },
+        ],
+        total: 1,
+        page: 1,
+        pageSize: 100,
+      });
+    apiMocks.listProducts
+      .mockImplementationOnce(async () => await slowProducts.promise)
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            name: "商品 B",
+            categoryId: null,
+            description: null,
+            displayImageMediaAssetId: null,
+            displayImageMediaAsset: null,
+            status: "active",
+            sortOrder: 0,
+            createdAt: "2026-07-25T00:00:00.000Z",
+            updatedAt: "2026-07-25T00:00:00.000Z",
+          },
+        ],
+        total: 1,
+        page: 1,
+        pageSize: 100,
+      });
+    const { root } = await mountView(["inventory.adjust"]);
+    const openButton = root.querySelector("button");
+    openButton?.click();
+    openButton?.click();
+    await flushPromises();
+    await nextTick();
+    expect(root.textContent).toContain("VEM-B · 机器 B");
+    expect(root.textContent).toContain("商品 B");
+
+    slowMachines.resolve({
+      items: [
+        {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          code: "VEM-A",
+          name: "机器 A",
+          locationLabel: null,
+          geoLocation: null,
+          status: "online",
+          mqttClientId: null,
+          lastSeenAt: null,
+          createdAt: "2026-07-25T00:00:00.000Z",
+          updatedAt: "2026-07-25T00:00:00.000Z",
+        },
+      ],
+      total: 1,
+      page: 1,
+      pageSize: 100,
+    });
+    slowProducts.resolve({
+      items: [
+        {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          name: "商品 A",
+          categoryId: null,
+          description: null,
+          displayImageMediaAssetId: null,
+          displayImageMediaAsset: null,
+          status: "active",
+          sortOrder: 0,
+          createdAt: "2026-07-25T00:00:00.000Z",
+          updatedAt: "2026-07-25T00:00:00.000Z",
+        },
+      ],
+      total: 1,
+      page: 1,
+      pageSize: 100,
+    });
+    await flushPromises();
+    await nextTick();
+
+    expect(root.textContent).toContain("VEM-B · 机器 B");
+    expect(root.textContent).toContain("商品 B");
+    expect(root.textContent).not.toContain("VEM-A · 机器 A");
+    expect(root.textContent).not.toContain("商品 A");
   });
 
   it("keeps stale slot responses from crossing the selected machine", async () => {

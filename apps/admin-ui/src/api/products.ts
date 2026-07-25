@@ -17,6 +17,7 @@ import {
   type AdminProductListQuery,
   type AdminProductPageResponse,
   type AdminProductResponse,
+  type AdminProductVariantListQuery,
   type AdminProductVariantPageResponse,
   type AdminProductVariantResponse,
   type PageResult,
@@ -90,12 +91,13 @@ export async function uploadTryOnSilhouette(
 
 export async function listProductVariants(
   productId: string,
+  query?: Omit<AdminProductVariantListQuery, "productId">,
 ): Promise<AdminProductVariantPageResponse> {
   return await getContract(
     "/product-variants",
     adminProductVariantListQuerySchema,
     adminProductVariantPageResponseSchema,
-    { productId, pageSize: 100 },
+    { productId, pageSize: 100, ...query },
   );
 }
 

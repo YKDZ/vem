@@ -91,6 +91,7 @@ const bindMachines = ref<Machine[]>([]);
 const bindSlots = ref<MachineSlot[]>([]);
 const bindProducts = ref<Product[]>([]);
 const bindVariants = ref<ProductVariant[]>([]);
+let bindOptionsRequestSequence = 0;
 let bindSlotsRequestSequence = 0;
 let bindVariantsRequestSequence = 0;
 
@@ -118,6 +119,20 @@ async function listAllProductsForBinding(): Promise<Product[]> {
   return items;
 }
 
+async function listAllProductVariantsForBinding(
+  productId: string,
+): Promise<ProductVariant[]> {
+  const pageSize = 100;
+  const firstPage = await listProductVariants(productId, { page: 1, pageSize });
+  const items = [...firstPage.items];
+  for (let page = 2; items.length < firstPage.total; page += 1) {
+    const nextPage = await listProductVariants(productId, { page, pageSize });
+    if (nextPage.items.length === 0) break;
+    items.push(...nextPage.items);
+  }
+  return items;
+}
+
 function resetBindForm(): void {
   bindForm.value = {
     machineId: "",
@@ -129,11 +144,14 @@ function resetBindForm(): void {
     lowStockThreshold: 1,
     note: "",
   };
+  bindMachines.value = [];
   bindSlots.value = [];
+  bindProducts.value = [];
   bindVariants.value = [];
 }
 
 async function openBindForm(): Promise<void> {
+  const requestSequence = ++bindOptionsRequestSequence;
   resetBindForm();
   bindFormOpen.value = true;
   bindOptionsLoading.value = true;
@@ -142,10 +160,14 @@ async function openBindForm(): Promise<void> {
       listAllMachinesForBinding(),
       listAllProductsForBinding(),
     ]);
-    bindMachines.value = machines;
-    bindProducts.value = products;
+    if (requestSequence === bindOptionsRequestSequence) {
+      bindMachines.value = machines;
+      bindProducts.value = products;
+    }
   } finally {
-    bindOptionsLoading.value = false;
+    if (requestSequence === bindOptionsRequestSequence) {
+      bindOptionsLoading.value = false;
+    }
   }
 }
 
@@ -177,7 +199,7 @@ async function onBindProductChanged(productId: string): Promise<void> {
   if (!productId) return;
   bindVariantsLoading.value = true;
   try {
-    const variants = (await listProductVariants(productId)).items;
+    const variants = await listAllProductVariantsForBinding(productId);
     if (
       requestSequence === bindVariantsRequestSequence &&
       bindForm.value.productId === productId

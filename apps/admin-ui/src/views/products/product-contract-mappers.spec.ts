@@ -87,6 +87,51 @@ describe("Product Variant Catalog form contract mappers", () => {
     ).toMatchObject({ priceCents: 456, costCents: 123 });
   });
 
+  it("does not silently turn cleared numeric inputs into zero", () => {
+    expect(() =>
+      mapProductFormToContract({
+        name: "Tea",
+        description: "",
+        displayImageMediaAssetId: null,
+        displayImagePublicUrl: null,
+        status: "active",
+        sortOrder: "",
+      } as unknown as ProductForm),
+    ).toThrow();
+
+    expect(() =>
+      mapVariantFormToContract({
+        productId: "550e8400-e29b-41d4-a716-446655440224",
+        sku: "TEA-EMPTY-PRICE",
+        priceCents: "",
+        costCents: null,
+        status: "active",
+        size: "",
+        color: "",
+        barcode: "",
+        targetGender: null,
+        tryOnSilhouetteMediaAssetId: null,
+        tryOnSilhouettePublicUrl: null,
+      } as unknown as VariantForm),
+    ).toThrow();
+
+    expect(
+      mapVariantFormToContract({
+        productId: "550e8400-e29b-41d4-a716-446655440224",
+        sku: "TEA-EMPTY-COST",
+        priceCents: "456",
+        costCents: "",
+        status: "active",
+        size: "",
+        color: "",
+        barcode: "",
+        targetGender: null,
+        tryOnSilhouetteMediaAssetId: null,
+        tryOnSilhouettePublicUrl: null,
+      } as unknown as VariantForm),
+    ).toMatchObject({ priceCents: 456, costCents: null });
+  });
+
   it("preserves nullable variant cost when opening an edit form", () => {
     expect(
       mapVariantResponseToForm({

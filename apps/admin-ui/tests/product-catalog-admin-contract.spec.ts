@@ -144,6 +144,9 @@ test.describe("Product Variant Catalog admin API contract", () => {
       }),
     ]);
     expect(imageUploadResponse.ok()).toBe(true);
+    await expect(productDrawer.getByAltText(productName)).toBeVisible({
+      timeout: 10_000,
+    });
     const [productUpdateResponse] = await Promise.all([
       page.waitForResponse(
         (response) =>

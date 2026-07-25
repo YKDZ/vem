@@ -40,7 +40,26 @@ function emptyStringToNull(value: string): string | null {
   return trimmed === "" ? null : trimmed;
 }
 
-const formIntegerSchema = z.coerce.number().int();
+function emptyStringToUndefined(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  return trimmed === "" ? undefined : trimmed;
+}
+
+function emptyStringToNullableInteger(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  return trimmed === "" ? null : trimmed;
+}
+
+const formIntegerSchema = z.preprocess(
+  emptyStringToUndefined,
+  z.coerce.number().int(),
+);
+const nullableFormIntegerSchema = z.preprocess(
+  emptyStringToNullableInteger,
+  z.coerce.number().int().nullable(),
+);
 
 const productFormSchema = z.strictObject({
   name: z.string(),
@@ -55,7 +74,7 @@ const variantFormSchema = z.strictObject({
   productId: z.string(),
   sku: z.string(),
   priceCents: formIntegerSchema,
-  costCents: formIntegerSchema.nullable(),
+  costCents: nullableFormIntegerSchema,
   status: z.enum(["active", "inactive"]),
   size: z.string(),
   color: z.string(),
