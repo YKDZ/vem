@@ -35,6 +35,11 @@ import {
 } from "./sale-audio-capture-host-adapter.mjs";
 
 const MOSQUITTO_CONTAINER = "vem-local-testbed-mosquitto";
+const TESTBED_MQTT_USERNAME =
+  process.env.VEM_LOCAL_TESTBED_MQTT_USERNAME ?? "vem_local_testbed_mqtt";
+const TESTBED_MQTT_PASSWORD =
+  process.env.VEM_LOCAL_TESTBED_MQTT_PASSWORD ??
+  "vem_local_testbed_mqtt_password";
 const PLATFORM_DATABASE_URL =
   process.env.VEM_LOCAL_TESTBED_PLATFORM_DATABASE_URL ??
   "postgresql://vem:vem_local_testbed_password@127.0.0.1:55432/vem_local_testbed";
@@ -650,6 +655,7 @@ function spawnMqttCapture({
       : 180;
   const probeId = randomUUID();
   const probeTopic = `vem/testbed/capture-probes/${probeId}`;
+  const authArgs = ["-u", TESTBED_MQTT_USERNAME, "-P", TESTBED_MQTT_PASSWORD];
   const child = spawn(
     "docker",
     [
@@ -660,6 +666,7 @@ function spawnMqttCapture({
       "127.0.0.1",
       "-p",
       "1883",
+      ...authArgs,
       "-t",
       topic,
       "-t",
@@ -705,6 +712,7 @@ function spawnMqttCapture({
         "127.0.0.1",
         "-p",
         "1883",
+        ...authArgs,
         "-t",
         probeTopic,
         "-r",
@@ -774,6 +782,7 @@ function spawnMqttCapture({
       "127.0.0.1",
       "-p",
       "1883",
+      ...authArgs,
       "-t",
       probeTopic,
       "-r",

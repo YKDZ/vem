@@ -19,12 +19,16 @@ import {
   runtimeProfileForPublishedRelease,
 } from "./kvm-baseline/linux-kvm-baseline.mjs";
 import {
+  buildBackendComposeCommand,
+  buildBackendComposeEnvironment,
   buildHeadlessVncActivatorUnitPlan,
   buildHostLocalServiceApiEnvironment,
   buildMigrationEnvironment,
   buildHostControlPlaneUnitPlan,
   buildRefreshHostRuntimePlan,
   buildReconstructionPlan,
+  renderBackendComposeEnv,
+  renderBackendComposeOverride,
   buildServiceApiUnitPlan,
   ensureLowerControllerSimCached,
   interpretServiceApiJournalCapture,
@@ -423,7 +427,7 @@ describe("local testbed orchestration", () => {
         .join("\n");
       assert.match(
         rendered,
-        /docker start vem-local-testbed-postgres vem-local-testbed-mosquitto/,
+        /docker compose .*apps\/service-api\/docker-compose\.yml .*backend\.compose\.override\.yml .* up -d postgres mqtt/,
       );
       assert.match(
         rendered,
@@ -431,6 +435,44 @@ describe("local testbed orchestration", () => {
       );
       assert.match(rendered, /pnpm --filter @vem\/db migrate/);
       assert.doesNotMatch(rendered, /docker rm|volume|reconstruct|seed/i);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("derives local backend runtime from the static backend Compose file", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-local-testbed-"));
+    try {
+      const parsedOptions = options(root);
+      const command = buildBackendComposeCommand(parsedOptions, [
+        "up",
+        "-d",
+        "postgres",
+        "mqtt",
+      ]);
+      const rendered = `${command.command} ${command.args.join(" ")}`;
+      const composeEnv = buildBackendComposeEnvironment(parsedOptions);
+      const serviceEnv = buildHostLocalServiceApiEnvironment(parsedOptions);
+      assert.match(
+        rendered,
+        /docker compose --env-file .*backend\.compose\.env -f .*apps\/service-api\/docker-compose\.yml -f .*backend\.compose\.override\.yml -p vem-local-testbed up -d postgres mqtt/,
+      );
+      assert.equal(composeEnv.POSTGRES_DB, "vem_local_testbed");
+      assert.equal(
+        composeEnv.POSTGRES_DATA_SOURCE,
+        "vem-local-testbed-postgres-data",
+      );
+      assert.equal(
+        composeEnv.MQTT_DATA_SOURCE,
+        "vem-local-testbed-mosquitto-data",
+      );
+      assert.equal(serviceEnv.MQTT_USERNAME, composeEnv.MQTT_USERNAME);
+      assert.equal(serviceEnv.MQTT_PASSWORD, composeEnv.MQTT_PASSWORD);
+      assert.match(renderBackendComposeEnv(parsedOptions), /^POSTGRES_DB=/m);
+      assert.match(
+        renderBackendComposeOverride(),
+        /container_name: vem-local-testbed-mosquitto/,
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -572,7 +614,7 @@ describe("local testbed orchestration", () => {
     );
     assert.match(
       source,
-      /plan\.slice\(3, 7\)[\s\S]*waitForPostgres\(\)[\s\S]*plan\.slice\(7, 9\)/,
+      /run\(plan\[2\]\.command, plan\[2\]\.args[\s\S]*waitForPostgres\(\)[\s\S]*plan\.slice\(3, 5\)/,
     );
   });
   it("requires the generic baseline contract to separate reconstruction from guest admission", () => {
@@ -646,7 +688,10 @@ describe("local testbed orchestration", () => {
         ),
       );
       assert.ok(
-        rendered.some((step) => step.includes("postgres:16")) &&
+        rendered.some((step) =>
+          step.includes("apps/service-api/docker-compose.yml"),
+        ) &&
+          rendered.some((step) => step.includes("up -d postgres mqtt")) &&
           rendered.some((step) =>
             step.includes("local-testbed-host.mjs admit"),
           ),
@@ -823,6 +868,14 @@ describe("local testbed orchestration", () => {
         rendered.at(-1),
         /--setenv=VEM_VM_HOST_ADAPTER_STATE_ROOT=.*host-adapter/,
       );
+      assert.match(
+        rendered.at(-1),
+        /--setenv=VEM_LOCAL_TESTBED_MQTT_USERNAME=vem_local_testbed_mqtt/,
+      );
+      assert.match(
+        rendered.at(-1),
+        /--setenv=VEM_LOCAL_TESTBED_MQTT_PASSWORD=vem_local_testbed_mqtt_password/,
+      );
       assert.match(rendered.at(-1), /--libvirt-uri qemu:\/\/\/system/);
       assert.match(rendered.at(-1), /--domain-name win10-runtime-testbed/);
       const retainedTokenPlan = buildHostControlPlaneUnitPlan(
@@ -902,23 +955,17 @@ describe("local testbed orchestration", () => {
         step.includes("local-testbed-host.mjs reconstruct"),
       );
       const postgresIndex = rendered.findIndex((step) =>
-        step.includes("postgres:16"),
+        step.includes("up -d postgres mqtt"),
       );
       const admissionIndex = rendered.findIndex((step) =>
         step.includes("local-testbed-host.mjs admit"),
       );
       assert.ok(
-        rendered.some((step) =>
-          step.includes(
-            "docker rm -f vem-local-testbed-postgres vem-local-testbed-mosquitto",
-          ),
-        ),
+        rendered.some((step) => step.includes("docker compose --env-file")),
       );
       assert.ok(
         rendered.some((step) =>
-          step.includes(
-            "docker volume rm -f vem-local-testbed-postgres-data vem-local-testbed-mosquitto-data",
-          ),
+          step.includes("down --remove-orphans --volumes"),
         ),
       );
       assert.ok(

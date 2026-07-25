@@ -450,6 +450,12 @@ describe("host serial control plane", () => {
     assert.match(implementation, /vem\/testbed\/capture-probes\/\$\{probeId\}/);
     assert.match(implementation, /__vemTestbedMqttCaptureProbe/);
     assert.match(implementation, /mosquitto_pub/);
+    assert.match(implementation, /VEM_LOCAL_TESTBED_MQTT_USERNAME/);
+    assert.match(implementation, /VEM_LOCAL_TESTBED_MQTT_PASSWORD/);
+    assert.match(
+      implementation,
+      /"-u", TESTBED_MQTT_USERNAME, "-P", TESTBED_MQTT_PASSWORD/,
+    );
     assert.match(
       implementation,
       /class TestbedInfrastructureError extends Error/,

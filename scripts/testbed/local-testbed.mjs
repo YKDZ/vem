@@ -34,6 +34,12 @@ const SERVICE_NAMES = Object.freeze({
   postgres: "vem-local-testbed-postgres",
   mqtt: "vem-local-testbed-mosquitto",
 });
+const BACKEND_COMPOSE_PROJECT = "vem-local-testbed";
+const LOCAL_TESTBED_POSTGRES_DB = "vem_local_testbed";
+const LOCAL_TESTBED_POSTGRES_USER = "vem";
+const LOCAL_TESTBED_POSTGRES_PASSWORD = "vem_local_testbed_password";
+const LOCAL_TESTBED_MQTT_USERNAME = "vem_local_testbed_mqtt";
+const LOCAL_TESTBED_MQTT_PASSWORD = "vem_local_testbed_mqtt_password";
 const VOLUME_NAMES = Object.freeze({
   postgres: "vem-local-testbed-postgres-data",
   mqtt: "vem-local-testbed-mosquitto-data",
@@ -72,6 +78,8 @@ const REQUIRED_SERVICE_API_ENV_KEYS = Object.freeze([
   "CORS_ORIGINS",
   "MQTT_URL",
   "MACHINE_MQTT_URL",
+  "MQTT_USERNAME",
+  "MQTT_PASSWORD",
   "PAYMENT_MOCK_ENABLED",
   "PAYMENT_MOCK_PROVIDER_CREATE_GATE_PATH",
   "PAYMENT_MOCK_PROVIDER_QUERY_FAULT_PATH",
@@ -494,6 +502,95 @@ function renderPublishedCommand(command, options, contract) {
   return commandLine(rendered[0], rendered.slice(1));
 }
 
+function backendComposeFile(options) {
+  return join(options.workspace, "apps/service-api/docker-compose.yml");
+}
+
+function backendComposeEnvFile(options) {
+  return join(options.stateRoot, "backend.compose.env");
+}
+
+function backendComposeOverrideFile(options) {
+  return join(options.stateRoot, "backend.compose.override.yml");
+}
+
+function quoteComposeEnv(value) {
+  return String(value).replaceAll("\\", "\\\\").replaceAll("\n", "\\n");
+}
+
+export function buildBackendComposeEnvironment(options) {
+  return {
+    POSTGRES_DB: LOCAL_TESTBED_POSTGRES_DB,
+    POSTGRES_USER: LOCAL_TESTBED_POSTGRES_USER,
+    POSTGRES_PASSWORD: LOCAL_TESTBED_POSTGRES_PASSWORD,
+    POSTGRES_IMAGE: "postgres:16",
+    POSTGRES_DATA_SOURCE: VOLUME_NAMES.postgres,
+    MQTT_IMAGE: "eclipse-mosquitto:2",
+    MQTT_USERNAME: LOCAL_TESTBED_MQTT_USERNAME,
+    MQTT_PASSWORD: LOCAL_TESTBED_MQTT_PASSWORD,
+    MQTT_PORT: "18883",
+    MQTT_DATA_SOURCE: VOLUME_NAMES.mqtt,
+    SERVICE_API_IMAGE: "ghcr.io/ykdz/vem-service-api:local-testbed-unused",
+    ADMIN_UI_IMAGE: "ghcr.io/ykdz/vem-admin-ui:local-testbed-unused",
+    SERVICE_API_PORT: "26849",
+    ADMIN_UI_PORT: "26850",
+    JWT_SECRET: "local-testbed-jwt-secret-at-least-32-characters",
+    JWT_REFRESH_SECRET: "local-testbed-refresh-secret-at-least-32-characters",
+    BOOTSTRAP_ADMIN_PASSWORD: LOCAL_TESTBED_ADMIN_PASSWORD,
+    MACHINE_JWT_SECRET: "local-testbed-machine-jwt-secret-at-least-32-chars",
+    MACHINE_CREDENTIAL_ENCRYPTION_KEY:
+      "local-testbed-machine-credential-key-32-chars",
+    MACHINE_CLAIM_LOOKUP_HMAC_KEY: "local-testbed-machine-claim-lookup-key-v1",
+    PAYMENT_WEBHOOK_BASE_URL: `http://${options.hostPrivateAddress}:26849`,
+    PAYMENT_CONFIG_ENCRYPTION_KEY:
+      "local-payment-config-encryption-key-32-chars",
+  };
+}
+
+export function renderBackendComposeEnv(options) {
+  return `${Object.entries(buildBackendComposeEnvironment(options))
+    .map(([name, value]) => `${name}=${quoteComposeEnv(value)}`)
+    .join("\n")}\n`;
+}
+
+export function renderBackendComposeOverride() {
+  return `services:
+  postgres:
+    container_name: ${SERVICE_NAMES.postgres}
+    ports:
+      - "55432:5432"
+  mqtt:
+    container_name: ${SERVICE_NAMES.mqtt}
+    ports:
+      - "18883:1883"
+`;
+}
+
+export async function writeBackendComposeFiles(options) {
+  await Promise.all([
+    writeFile(backendComposeEnvFile(options), renderBackendComposeEnv(options)),
+    writeFile(
+      backendComposeOverrideFile(options),
+      renderBackendComposeOverride(),
+    ),
+  ]);
+}
+
+export function buildBackendComposeCommand(options, args) {
+  return commandLine("docker", [
+    "compose",
+    "--env-file",
+    backendComposeEnvFile(options),
+    "-f",
+    backendComposeFile(options),
+    "-f",
+    backendComposeOverrideFile(options),
+    "-p",
+    BACKEND_COMPOSE_PROJECT,
+    ...args,
+  ]);
+}
+
 export function buildReconstructionPlan(options, contract) {
   const state = options.stateRoot;
   const binding = contract.testbed;
@@ -505,56 +602,13 @@ export function buildReconstructionPlan(options, contract) {
     `${binding.guest.user}@${binding.guest.host}`,
   ];
   return [
-    commandLine("docker", [
-      "rm",
-      "-f",
-      SERVICE_NAMES.postgres,
-      SERVICE_NAMES.mqtt,
-    ]),
-    commandLine("docker", [
-      "volume",
-      "rm",
-      "-f",
-      VOLUME_NAMES.postgres,
-      VOLUME_NAMES.mqtt,
+    buildBackendComposeCommand(options, [
+      "down",
+      "--remove-orphans",
+      "--volumes",
     ]),
     renderPublishedCommand(binding.reconstructCommand, options, contract),
-    commandLine("docker", ["volume", "create", VOLUME_NAMES.postgres]),
-    commandLine("docker", ["volume", "create", VOLUME_NAMES.mqtt]),
-    commandLine("docker", [
-      "run",
-      "-d",
-      "--name",
-      SERVICE_NAMES.postgres,
-      "--restart",
-      "no",
-      "-e",
-      "POSTGRES_DB=vem_local_testbed",
-      "-e",
-      "POSTGRES_USER=vem",
-      "-e",
-      "POSTGRES_PASSWORD=vem_local_testbed_password",
-      "-v",
-      `${VOLUME_NAMES.postgres}:/var/lib/postgresql/data`,
-      "-p",
-      "55432:5432",
-      "postgres:16",
-    ]),
-    commandLine("docker", [
-      "run",
-      "-d",
-      "--name",
-      SERVICE_NAMES.mqtt,
-      "--restart",
-      "no",
-      "-v",
-      `${join(state, "mosquitto.conf")}:/mosquitto/config/mosquitto.conf:ro`,
-      "-v",
-      `${VOLUME_NAMES.mqtt}:/mosquitto/data`,
-      "-p",
-      "18883:1883",
-      "eclipse-mosquitto:2",
-    ]),
+    buildBackendComposeCommand(options, ["up", "-d", "postgres", "mqtt"]),
     commandLine("pnpm", [
       "turbo",
       "build",
@@ -762,10 +816,11 @@ export function buildHostLocalServiceApiEnvironment(options) {
   const queryFault = paymentMockQueryFaultPaths(options.stateRoot);
   return {
     NODE_ENV: "development",
-    DATABASE_URL:
-      "postgresql://vem:vem_local_testbed_password@127.0.0.1:55432/vem_local_testbed",
+    DATABASE_URL: `postgresql://${LOCAL_TESTBED_POSTGRES_USER}:${LOCAL_TESTBED_POSTGRES_PASSWORD}@127.0.0.1:55432/${LOCAL_TESTBED_POSTGRES_DB}`,
     MQTT_URL: "mqtt://127.0.0.1:18883",
     MACHINE_MQTT_URL: `mqtt://${options.hostPrivateAddress}:18883`,
+    MQTT_USERNAME: LOCAL_TESTBED_MQTT_USERNAME,
+    MQTT_PASSWORD: LOCAL_TESTBED_MQTT_PASSWORD,
     MACHINE_API_BASE_URL: `http://${options.hostPrivateAddress}:26849/api`,
     PAYMENT_WEBHOOK_BASE_URL: `http://${options.hostPrivateAddress}:26849`,
     PAYMENT_MOCK_ENABLED: "true",
@@ -899,6 +954,8 @@ export function buildHostControlPlaneUnitPlan(
       "--property=StandardError=journal",
       `--property=WorkingDirectory=${options.workspace}`,
       "--setenv=VEM_LOCAL_TESTBED_PLATFORM_DATABASE_URL=postgresql://vem:vem_local_testbed_password@127.0.0.1:55432/vem_local_testbed",
+      `--setenv=VEM_LOCAL_TESTBED_MQTT_USERNAME=${LOCAL_TESTBED_MQTT_USERNAME}`,
+      `--setenv=VEM_LOCAL_TESTBED_MQTT_PASSWORD=${LOCAL_TESTBED_MQTT_PASSWORD}`,
       `--setenv=VEM_VM_HOST_ADAPTER=${adapterPath}`,
       "--setenv=VEM_VM_HOST_ADAPTER_VERSION=1.0.0",
       `--setenv=VEM_VM_HOST_ADAPTER_SHA256=sha256:${adapterDigest}`,
@@ -1781,11 +1838,7 @@ async function startHeadlessVncActivatorUnit(options, contract) {
 
 export function buildRefreshHostRuntimePlan(options) {
   return [
-    commandLine("docker", [
-      "start",
-      SERVICE_NAMES.postgres,
-      SERVICE_NAMES.mqtt,
-    ]),
+    buildBackendComposeCommand(options, ["up", "-d", "postgres", "mqtt"]),
     commandLine("pnpm", [
       "turbo",
       "build",
@@ -1923,6 +1976,7 @@ export async function refreshHostRuntime(options) {
   const interactiveUserPassword =
     await readBaselineInteractiveUserPassword(contract);
   const buildStartedAt = new Date().toISOString();
+  await writeBackendComposeFiles(options);
   for (const step of plan) {
     await run(step.command, step.args, {
       cwd: options.workspace,
@@ -2019,11 +2073,7 @@ async function reconstruct(options) {
       recursive: true,
     }),
   ]);
-  await writeFile(
-    join(options.stateRoot, "mosquitto.conf"),
-    "listener 1883 0.0.0.0\nallow_anonymous true\npersistence false\n",
-    "utf8",
-  );
+  await writeBackendComposeFiles(options);
   await writeFile(
     join(options.stateRoot, "service-api.local-testbed.env"),
     "",
@@ -2050,20 +2100,13 @@ async function reconstruct(options) {
   await stopServiceApiUnit(options);
   await stopHostControlPlaneUnit(options, contract);
   await stopHeadlessVncActivatorUnit(options, contract);
-  await run(
-    "docker",
-    ["rm", "-f", SERVICE_NAMES.postgres, SERVICE_NAMES.mqtt],
-    { stdio: "ignore" },
-  ).catch(() => undefined);
-  await run(
-    "docker",
-    ["volume", "rm", "-f", VOLUME_NAMES.postgres, VOLUME_NAMES.mqtt],
-    { stdio: "ignore" },
-  ).catch(() => undefined);
+  await run(plan[0].command, plan[0].args, { stdio: "ignore" }).catch(
+    () => undefined,
+  );
   try {
     const hostSimulator = await ensureLowerControllerSimCached({ options });
     const reconstructionStartedAt = new Date().toISOString();
-    const reconstructHost = await runCapture(plan[2].command, plan[2].args, {
+    const reconstructHost = await runCapture(plan[1].command, plan[1].args, {
       cwd: options.workspace,
     });
     const reconstructionFinishedAt = new Date().toISOString();
@@ -2072,13 +2115,9 @@ async function reconstruct(options) {
       "host reconstruction",
     );
     await startHeadlessVncActivatorUnit(options, contract);
-    for (const step of plan.slice(3, 7))
-      await run(step.command, step.args, {
-        cwd: options.workspace,
-        env: step.env,
-      });
+    await run(plan[2].command, plan[2].args, { cwd: options.workspace });
     await waitForPostgres();
-    for (const step of plan.slice(7, 9))
+    for (const step of plan.slice(3, 5))
       await run(step.command, step.args, {
         cwd: options.workspace,
         env: step.env,
@@ -2156,7 +2195,7 @@ async function reconstruct(options) {
       guestInputRaw,
       "utf8",
     );
-    for (const step of plan.slice(9, -1))
+    for (const step of plan.slice(5, -1))
       await run(step.command, step.args, { cwd: options.workspace });
     const admitGuest = plan.at(-1);
     const admissionStartedAt = new Date().toISOString();
