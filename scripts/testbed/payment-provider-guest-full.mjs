@@ -498,21 +498,35 @@ async function readPaymentFlowDiagnostic(client, method) {
           selectedOptionKey: selected?.dataset.paymentOptionKey ?? null,
         },
         customerMessages: visibleText('[role="alert"], .ant-message, .ant-alert, .checkout-error, .payment-error, [data-test*="error"]'),
+        runtimeTrace: typeof window.__VEM_MACHINE_RUNTIME_TRACE_SNAPSHOT__ === 'function'
+          ? window.__VEM_MACHINE_RUNTIME_TRACE_SNAPSHOT__().slice(-12)
+          : null,
       };
     })()`,
   );
 }
 
 async function dispatchCheckoutSubmitDomClick(client) {
-  return await evaluateExpression(
-    client,
-    `(() => {
+  const result = await client.send(
+    "Runtime.evaluate",
+    {
+      expression: `(() => {
       const el = document.querySelector('[data-test="checkout-submit"]');
       if (!el || el.disabled || !el.getClientRects().length) return false;
       el.click();
       return true;
     })()`,
+      awaitPromise: true,
+      returnByValue: true,
+      userGesture: true,
+    },
   );
+  if (result.exceptionDetails) {
+    throw new Error(
+      `Runtime.evaluate failed: ${result.exceptionDetails.text ?? "exception"}`,
+    );
+  }
+  return result.result?.value === true;
 }
 
 async function submitUntilPaymentSurface(client, method, timeoutMs) {
