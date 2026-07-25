@@ -261,9 +261,18 @@ async function setRoute(client, route) {
   });
 }
 export function maintenanceEntryRoutesForSaleView(saleView) {
-  const catalogKey = (saleView?.items ?? []).find(
-    (item) => typeof item?.catalogKey === "string" && item.catalogKey !== "",
-  )?.catalogKey;
+  const item = (saleView?.items ?? []).find(
+    (candidate) =>
+      (typeof candidate?.catalogKey === "string" &&
+        candidate.catalogKey !== "") ||
+      (typeof candidate?.productId === "string" && candidate.productId !== ""),
+  );
+  const catalogKey =
+    typeof item?.catalogKey === "string" && item.catalogKey !== ""
+      ? item.catalogKey
+      : typeof item?.productId === "string" && item.productId !== ""
+        ? `product:${item.productId}`
+        : null;
   return [
     ...DEFAULT_MAINTENANCE_ENTRY_ROUTES,
     ...(catalogKey ? [`#/products/${encodeURIComponent(catalogKey)}`] : []),

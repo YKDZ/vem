@@ -61,6 +61,12 @@ describe("local operations guest full", () => {
       }),
       ["#/catalog", "#/products/product%3Ashirt-1"],
     );
+    assert.deepEqual(
+      maintenanceEntryRoutesForSaleView({
+        items: [{ productId: "shirt-2" }],
+      }),
+      ["#/catalog", "#/products/product%3Ashirt-2"],
+    );
     assert.deepEqual(maintenanceEntryRoutesForSaleView({ items: [] }), [
       "#/catalog",
     ]);
