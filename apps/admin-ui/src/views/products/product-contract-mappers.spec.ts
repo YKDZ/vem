@@ -58,6 +58,35 @@ describe("Product Variant Catalog form contract mappers", () => {
     });
   });
 
+  it("normalizes numeric form fields that browser controls provide as strings", () => {
+    expect(
+      mapProductFormToContract({
+        name: "Tea",
+        description: "",
+        displayImageMediaAssetId: null,
+        displayImagePublicUrl: null,
+        status: "active",
+        sortOrder: "12",
+      } as unknown as ProductForm),
+    ).toMatchObject({ sortOrder: 12 });
+
+    expect(
+      mapVariantFormToContract({
+        productId: "550e8400-e29b-41d4-a716-446655440224",
+        sku: "TEA-STRING-NUMBER",
+        priceCents: "456",
+        costCents: "123",
+        status: "active",
+        size: "",
+        color: "",
+        barcode: "",
+        targetGender: null,
+        tryOnSilhouetteMediaAssetId: null,
+        tryOnSilhouettePublicUrl: null,
+      } as unknown as VariantForm),
+    ).toMatchObject({ priceCents: 456, costCents: 123 });
+  });
+
   it("preserves nullable variant cost when opening an edit form", () => {
     expect(
       mapVariantResponseToForm({

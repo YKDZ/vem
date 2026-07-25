@@ -40,20 +40,22 @@ function emptyStringToNull(value: string): string | null {
   return trimmed === "" ? null : trimmed;
 }
 
+const formIntegerSchema = z.coerce.number().int();
+
 const productFormSchema = z.strictObject({
   name: z.string(),
   description: z.string(),
   displayImageMediaAssetId: z.string().nullable(),
   displayImagePublicUrl: z.string().nullable(),
   status: z.enum(["draft", "active", "inactive"]),
-  sortOrder: z.number(),
+  sortOrder: formIntegerSchema,
 });
 
 const variantFormSchema = z.strictObject({
   productId: z.string(),
   sku: z.string(),
-  priceCents: z.number(),
-  costCents: z.number().nullable(),
+  priceCents: formIntegerSchema,
+  costCents: formIntegerSchema.nullable(),
   status: z.enum(["active", "inactive"]),
   size: z.string(),
   color: z.string(),

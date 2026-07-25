@@ -7,6 +7,7 @@ import {
 } from "@vem/shared";
 import { z as zod } from "zod";
 
+import { installAdminBrowserContractMonitor } from "./support/admin-browser-contract";
 import { skipUnlessAdminMutationE2eEnabled } from "./support/admin-mutation-e2e";
 
 const ADMIN_USERNAME = process.env.E2E_ADMIN_USERNAME ?? "admin";
@@ -46,12 +47,20 @@ test.describe("Product Variant Catalog admin API contract", () => {
   test("creates a product and variant through the browser against the real admin API", async ({
     page,
   }) => {
+    test.setTimeout(60_000);
     const unique = Date.now().toString(36);
     const productName = `E2E契约商品-${unique}`;
     const sku = `E2E-CONTRACT-${unique}`;
 
     await login(page);
     await page.goto("/products");
+    const monitor = await installAdminBrowserContractMonitor(page);
+    const observedVariantRequests: string[] = [];
+    page.on("request", (request) => {
+      const url = request.url();
+      if (!url.includes("/api/product-variants")) return;
+      observedVariantRequests.push(`${request.method()} ${url}`);
+    });
     await page.getByRole("button", { name: /新增商品/ }).click();
     await expect(
       page.locator(".ant-drawer").filter({ hasText: "新增商品" }),
@@ -106,12 +115,13 @@ test.describe("Product Variant Catalog admin API contract", () => {
     expect(variant.priceCents).toBe(321);
     expect(variant.costCents).toBe(123);
 
-    await page
-      .locator(".ant-modal")
-      .filter({ hasText: "新增 SKU" })
-      .getByRole("button", { name: /OK|确 定|确定/ })
-      .waitFor({ state: "detached", timeout: 10_000 })
-      .catch(() => {});
+    await expect(
+      page.locator(".ant-modal").filter({ hasText: "新增 SKU" }),
+    ).toBeHidden({ timeout: 10_000 });
+    await page.keyboard.press("Escape");
+    await expect(
+      page.locator(".ant-drawer").filter({ hasText: "SKU 列表" }),
+    ).toBeHidden({ timeout: 10_000 });
 
     await productRow.getByRole("button", { name: "编辑" }).click();
     const productDrawer = page
@@ -147,16 +157,29 @@ test.describe("Product Variant Catalog admin API contract", () => {
       adminProductResponseSchema,
     );
     expect(updatedProduct.displayImageMediaAsset).toEqual(expect.any(Object));
+    await expect(productDrawer).toBeHidden({ timeout: 10_000 });
 
-    await productRow.getByRole("button", { name: "SKU" }).click();
-    const variantRow = page.locator(".ant-table-row").filter({ hasText: sku });
+    const updatedProductRow = page
+      .locator(".ant-table-row")
+      .filter({ hasText: productName })
+      .first();
+    await updatedProductRow.getByRole("button", { name: "SKU" }).click();
+    const variantDrawer = page
+      .locator(".ant-drawer")
+      .filter({ hasText: "SKU 列表" });
+    await expect(variantDrawer).toBeVisible({ timeout: 10_000 });
+    const variantRow = variantDrawer
+      .locator(".ant-table-row")
+      .filter({ hasText: sku });
     await expect(variantRow).toBeVisible({ timeout: 10_000 });
-    await variantRow.getByRole("button", { name: "编辑" }).click();
+    await variantRow.getByRole("button", { name: /编\s*辑/ }).click();
     const editVariantModal = page
       .locator(".ant-modal")
       .filter({ hasText: "编辑 SKU" });
     await expect(editVariantModal).toBeVisible({ timeout: 10_000 });
-    await formItem(page, "售价(分)").locator("input").fill("456");
+    const variantPriceInput = formItem(page, "售价(分)").locator("input");
+    await variantPriceInput.fill("456");
+    await variantPriceInput.blur();
     const [silhouetteUploadResponse] = await Promise.all([
       page.waitForResponse(
         (response) =>
@@ -173,14 +196,31 @@ test.describe("Product Variant Catalog admin API contract", () => {
       }),
     ]);
     expect(silhouetteUploadResponse.ok()).toBe(true);
-    const [variantUpdateResponse] = await Promise.all([
-      page.waitForResponse(
-        (response) =>
-          response.url().endsWith(`/api/product-variants/${variant.id}`) &&
-          response.request().method() === "PATCH",
-      ),
-      editVariantModal.locator(".ant-btn-primary").click(),
-    ]);
+    await expect(editVariantModal.getByAltText(`${sku} 试穿剪影`)).toBeVisible({
+      timeout: 10_000,
+    });
+    const saveVariantButton = editVariantModal.getByRole("button", {
+      name: /确\s*定/,
+    });
+    await expect(saveVariantButton).toBeEnabled({ timeout: 10_000 });
+    const variantUpdateResponsePromise = page.waitForResponse(
+      (response) =>
+        response.url().endsWith(`/api/product-variants/${variant.id}`) &&
+        response.request().method() === "PATCH",
+      { timeout: 10_000 },
+    );
+    await saveVariantButton.click();
+    const variantUpdateResponse = await variantUpdateResponsePromise.catch(
+      async (error: unknown) => {
+        await monitor.assertNoFailures();
+        throw new Error(
+          [
+            `SKU 编辑保存未发出 PATCH: ${String(error)}`,
+            `observed=${JSON.stringify(observedVariantRequests)}`,
+          ].join("\n"),
+        );
+      },
+    );
     const updatedVariant = await parseAdminData(
       variantUpdateResponse,
       adminProductVariantResponseSchema,
@@ -189,5 +229,6 @@ test.describe("Product Variant Catalog admin API contract", () => {
     expect(updatedVariant.tryOnSilhouetteMediaAsset).toEqual(
       expect.any(Object),
     );
+    await monitor.assertNoFailures();
   });
 });

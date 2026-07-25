@@ -467,6 +467,7 @@ watch(
       v-model:open="variantFormOpen"
       :title="editingVariant ? '编辑 SKU' : '新增 SKU'"
       :confirm-loading="variantSaving"
+      :z-index="1200"
       @ok="saveVariant"
     >
       <a-form layout="vertical">

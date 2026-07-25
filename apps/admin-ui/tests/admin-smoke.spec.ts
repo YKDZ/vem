@@ -120,7 +120,7 @@ test.describe("admin-smoke", () => {
               response.url().endsWith("/claim-codes") &&
               response.request().method() === "POST",
           ),
-          page.getByRole("button", { name: "生成重新领取码" }).click(),
+          page.getByRole("button", { name: "生成领取码" }).click(),
         ]);
         expect(claimCodeResponse.ok()).toBe(true);
         await expect(page.getByText("请立即保存领取码")).toBeVisible();
