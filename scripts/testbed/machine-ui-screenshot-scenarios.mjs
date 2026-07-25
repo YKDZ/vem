@@ -8,6 +8,7 @@ import {
   captureRuntimeOperationObservation,
   captureScreenshot,
   CdpClient,
+  discoverCanonicalMachineUiTarget,
   discoverMachineUiTarget,
   enablePageRuntime,
   evaluateExpression,
@@ -83,6 +84,10 @@ const MAINTENANCE_TASK_LABELS = Object.freeze({
   diagnostics: "诊断工具",
 });
 
+function routeWaitOptionsForScreenshotScenario(scenario) {
+  return scenario.maintenanceTask ? { forbiddenRoutes: [] } : {};
+}
+
 async function prepareDirectScenario({ client, scenario, timeoutMs }) {
   const directlyReachable = new Set(["boot", "catalog", "offline"]);
   if (!directlyReachable.has(scenario.name) && !scenario.maintenanceTask) {
@@ -95,7 +100,10 @@ async function prepareDirectScenario({ client, scenario, timeoutMs }) {
     `location.hash = ${JSON.stringify(scenario.route.slice(1))}`,
     { timeoutMs },
   );
-  await waitForRoute(client, scenario.route, { timeoutMs });
+  await waitForRoute(client, scenario.route, {
+    timeoutMs,
+    ...routeWaitOptionsForScreenshotScenario(scenario),
+  });
   if (scenario.maintenanceTask) {
     const label = MAINTENANCE_TASK_LABELS[scenario.maintenanceTask];
     const selected = await evaluateExpression(
@@ -133,9 +141,18 @@ export async function runMachineUiScreenshotBatch(
   const captures = [];
   const failures = [];
   try {
+    const expectedTargetId =
+      options.expectedTargetId ??
+      (
+        await discoverCanonicalMachineUiTarget({
+          endpoint: sidecar.endpoint,
+          fetchImpl: dependencies.fetchImpl,
+          timeoutMs,
+        })
+      ).id;
     const target = await discoverMachineUiTarget({
       endpoint: sidecar.endpoint,
-      expectedTargetId: options.expectedTargetId,
+      expectedTargetId,
       fetchImpl: dependencies.fetchImpl,
       timeoutMs,
     });
@@ -159,10 +176,13 @@ export async function runMachineUiScreenshotBatch(
         const identity = await waitForRoute(client, scenario.route, {
           timeoutMs,
           pollMs: options.routePollMs,
+          ...routeWaitOptionsForScreenshotScenario(scenario),
         });
-        const observation = await captureRuntimeOperationObservation(client, {
-          timeoutMs,
-        });
+        const observation = scenario.transactionRequired
+          ? await captureRuntimeOperationObservation(client, {
+              timeoutMs,
+            })
+          : null;
         const transaction = transactionIdentity(observation);
         if (
           scenario.transactionRequired &&
@@ -243,8 +263,11 @@ export function parseScreenshotScenarioArgs(args) {
     else if (arg === "--identity") options.tunnelOptions.identityFile = next();
     else if (arg === "--certificate")
       options.tunnelOptions.certificateFile = next();
+    else if (arg === "--known-hosts")
+      options.tunnelOptions.sshKnownHostsPath = next();
     else if (arg === "--ssh-port")
       options.tunnelOptions.sshPort = Number(next());
+    else if (arg === "--machine-path") options.expectedMachinePath = next();
     else if (arg === "--fail-fast") options.failFast = true;
     else throw new Error(`unknown argument: ${arg}`);
   }
@@ -262,7 +285,11 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     const runtime = handoff?.machine ?? {};
     const cdp = handoff?.cdp ?? {};
     const inspected = await inspectWindowsMachineUiRuntime(
-      options.tunnelOptions,
+      {
+        ...options.tunnelOptions,
+        expectedMachinePath:
+          options.expectedMachinePath ?? runtime.executablePath ?? null,
+      },
     );
     const result = await runMachineUiScreenshotBatch({
       ...options,

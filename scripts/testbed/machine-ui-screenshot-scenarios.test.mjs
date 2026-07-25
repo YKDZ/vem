@@ -53,10 +53,21 @@ describe("Machine UI screenshot scenarios", () => {
         "catalog",
         "--scenario",
         "payment",
+        "--known-hosts",
+        "/tmp/known_hosts",
+        "--machine-path",
+        "C:\\VEM\\bringup\\machine.exe",
         "--out",
         "/tmp/shots",
-      ]).scenarios,
-      ["catalog", "payment"],
+      ]),
+      {
+        scenarios: ["catalog", "payment"],
+        tunnelOptions: {
+          sshKnownHostsPath: "/tmp/known_hosts",
+        },
+        expectedMachinePath: "C:\\VEM\\bringup\\machine.exe",
+        outputRoot: "/tmp/shots",
+      },
     );
     assert.throws(
       () => selectMachineUiScreenshotScenarios(["unknown"]),
