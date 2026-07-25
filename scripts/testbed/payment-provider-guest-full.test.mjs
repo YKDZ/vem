@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 import {
@@ -14,6 +15,19 @@ import {
 } from "./payment-provider-guest-full.mjs";
 
 describe("payment provider guest full", () => {
+  it("dismisses terminal result UI before awaiting authoritative cleanup", () => {
+    const source = readFileSync(
+      new URL("./payment-provider-guest-full.mjs", import.meta.url),
+      "utf8",
+    );
+    const dismissIndex = source.indexOf("routeBeforeCleanup");
+    const waitIndex = source.indexOf(
+      'label: "authoritative order cleanup before diagnostics"',
+    );
+    assert.ok(dismissIndex > 0);
+    assert.ok(waitIndex > dismissIndex);
+  });
+
   it("classifies only explicit cleaned Alipay boundary failures as provider unavailable", () => {
     assert.equal(
       classifyProviderFailureOutcome({

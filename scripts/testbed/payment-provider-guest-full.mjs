@@ -556,16 +556,8 @@ async function cleanAuthoritativeOrderBeforeDiagnostics(
       await cancelVisibleMachineOrder(client, timeoutMs);
     }
   }
-  const transaction = await waitForCondition(
-    () => daemon(handoff, "/v1/transactions/current"),
-    (current) =>
-      current == null ||
-      current?.orderId == null ||
-      ["canceled", "failed", "expired"].includes(current?.paymentStatus),
-    { timeoutMs, label: "authoritative order cleanup before diagnostics" },
-  );
-  const route = await evaluateExpression(client, "location.hash");
-  if (/^#\/result\//.test(route)) {
+  const routeBeforeCleanup = await evaluateExpression(client, "location.hash");
+  if (/^#\/result\//.test(routeBeforeCleanup)) {
     await activateVisibleSelector(
       client,
       ".result-return-button, .failure-return-button",
@@ -575,7 +567,17 @@ async function cleanAuthoritativeOrderBeforeDiagnostics(
       timeoutMs,
       pollMs: POLL_INTERVAL_MS,
     });
-  } else if (!["#/catalog", "#/products"].includes(route)) {
+  }
+  const transaction = await waitForCondition(
+    () => daemon(handoff, "/v1/transactions/current"),
+    (current) =>
+      current == null ||
+      current?.orderId == null ||
+      ["canceled", "failed", "expired"].includes(current?.paymentStatus),
+    { timeoutMs, label: "authoritative order cleanup before diagnostics" },
+  );
+  const route = await evaluateExpression(client, "location.hash");
+  if (!["#/catalog", "#/products"].includes(route)) {
     await evaluateExpression(client, "location.hash = '#/catalog'");
     await waitForRoute(client, "#/catalog", {
       timeoutMs,
