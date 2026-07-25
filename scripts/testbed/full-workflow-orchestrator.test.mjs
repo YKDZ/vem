@@ -622,7 +622,63 @@ describe("full workflow serial lifecycle", () => {
       pollMs: 0,
     });
     assert.deepEqual(result, { changed: false });
-    assert.equal(taskReads, 2);
+    assert.equal(taskReads, 3);
+  });
+
+  it("submits the initial count when sale view is ready but stock attestation is missing", async () => {
+    const posts = [];
+    let saleViewReads = 0;
+    const result = await ensureFixtureStockReady({
+      fixtureAllocation: {
+        fast: { slotId: "slot-1", slotDisplayLabel: "A1", onHandQty: 3 },
+      },
+      async daemonGet(path) {
+        if (path === "/v1/stock/maintenance-task") {
+          return {
+            taskId: "stock-count-01",
+            mode: "initial_count",
+            slots: [
+              { slotId: "slot-1", slotDisplayLabel: "A1", currentQuantity: 3 },
+            ],
+          };
+        }
+        saleViewReads += 1;
+        return {
+          items: [
+            {
+              slotId: "slot-1",
+              slotDisplayLabel: "A1",
+              sku: "SKU-01",
+              slotSalesState: "sale_ready",
+              saleableStock: 3,
+              physicalStock: 3,
+            },
+          ],
+        };
+      },
+      async daemonPost(path, body) {
+        posts.push({ path, body });
+        return {};
+      },
+      pollMs: 0,
+    });
+
+    assert.deepEqual(result, {
+      changed: true,
+      taskId: "stock-count-01",
+      mode: "initial_count",
+    });
+    assert.equal(saleViewReads, 2);
+    assert.deepEqual(posts, [
+      {
+        path: "/v1/stock/maintenance-task",
+        body: {
+          taskId: "stock-count-01",
+          mode: "initial_count",
+          slots: [{ slotId: "slot-1", quantity: 3 }],
+        },
+      },
+    ]);
   });
 
   it("refills a consumed fixture through the production maintenance task", async () => {
@@ -914,9 +970,7 @@ describe("full workflow serial lifecycle", () => {
             slots: [{ slotId: "slot-1", currentQuantity: 3 }],
           };
         }
-        if (
-          path === "/v1/stock/maintenance-tasks/stale-refill-01/projection"
-        ) {
+        if (path === "/v1/stock/maintenance-tasks/stale-refill-01/projection") {
           return {
             taskId: "stale-refill-01",
             mode: "routine_refill",

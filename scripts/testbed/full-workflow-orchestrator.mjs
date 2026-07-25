@@ -667,12 +667,18 @@ export async function ensureFixtureStockReady({
   let taskError = null;
   while (Date.now() < deadline) {
     initialSaleView = await get("/v1/sale-view");
-    if (targetIsReady(initialSaleView)) return { changed: false };
     try {
       task = await get("/v1/stock/maintenance-task");
+      if (
+        targetIsReady(initialSaleView) &&
+        !["initial_count", "recovery_count"].includes(task?.mode)
+      ) {
+        return { changed: false };
+      }
       break;
     } catch (error) {
       taskError = error;
+      if (targetIsReady(initialSaleView)) return { changed: false };
     }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, pollMs));
   }
