@@ -27,6 +27,7 @@ services:
     command:
       - >-
         printf 'listener 1883\nallow_anonymous false\npassword_file /mosquitto/data/passwordfile\n' > /tmp/mosquitto.conf
+        && rm -f /mosquitto/data/passwordfile
         && mosquitto_passwd -b -c /mosquitto/data/passwordfile "$${MQTT_USERNAME}" "$${MQTT_PASSWORD}"
         && chown mosquitto:mosquitto /mosquitto/data/passwordfile
         && exec mosquitto -c /tmp/mosquitto.conf
