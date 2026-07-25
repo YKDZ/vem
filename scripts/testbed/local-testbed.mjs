@@ -13,7 +13,6 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { isIP } from "node:net";
-import { networkInterfaces } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { deflateSync } from "node:zlib";
@@ -195,55 +194,16 @@ function option(args, name, optional = false) {
   return value;
 }
 
-function isObservedIpv4(entry) {
-  return entry?.family === "IPv4" || entry?.family === 4;
-}
-
-function observedNonLoopbackIpv4Addresses(observeNetworkInterfaces) {
-  const observed = observeNetworkInterfaces();
-  const addresses = new Set();
-  for (const entries of Object.values(observed ?? {})) {
-    if (!Array.isArray(entries)) continue;
-    for (const entry of entries) {
-      if (
-        entry &&
-        typeof entry.address === "string" &&
-        isObservedIpv4(entry) &&
-        entry.internal !== true &&
-        !entry.address.startsWith("127.")
-      ) {
-        addresses.add(entry.address);
-      }
-    }
-  }
-  return addresses;
-}
-
-export function validateHostPrivateAddress(
-  hostPrivateAddress,
-  { observeNetworkInterfaces = networkInterfaces } = {},
-) {
+export function validateHostPrivateAddress(hostPrivateAddress) {
   if (isIP(hostPrivateAddress) !== 4 || hostPrivateAddress.startsWith("127.")) {
     throw new Error(
       "--host-private-address must be a non-loopback IPv4 address",
     );
   }
-  if (
-    !observedNonLoopbackIpv4Addresses(observeNetworkInterfaces).has(
-      hostPrivateAddress,
-    )
-  ) {
-    throw new Error(
-      "--host-private-address must match a non-loopback IPv4 interface on this host",
-    );
-  }
   return hostPrivateAddress;
 }
 
-export function parseOptions(
-  args,
-  { observeNetworkInterfaces = networkInterfaces } = {},
-) {
+export function parseOptions(args) {
   const command = args[0];
   if (!new Set(["reconstruct", "refresh-host-runtime"]).has(command)) {
     throw new Error(
@@ -252,7 +212,6 @@ export function parseOptions(
   }
   const hostPrivateAddress = validateHostPrivateAddress(
     option(args, "host-private-address"),
-    { observeNetworkInterfaces },
   );
   const common = {
     command,

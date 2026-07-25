@@ -131,33 +131,24 @@ function contract(root) {
   };
 }
 
-function observedNetworkInterfaces() {
-  return {
-    eth0: [{ address: "10.0.0.15", family: "IPv4", internal: false }],
-  };
-}
-
 function options(root, mode = "full") {
-  return parseOptions(
-    [
-      "reconstruct",
-      "--mode",
-      mode,
-      "--run-id",
-      "run-15",
-      "--workspace",
-      root,
-      "--state-root",
-      join(root, "state"),
-      "--baseline-contract",
-      join(root, "baseline.json"),
-      "--host-private-address",
-      "10.0.0.15",
-      "--out",
-      join(root, "out.json"),
-    ],
-    { observeNetworkInterfaces: observedNetworkInterfaces },
-  );
+  return parseOptions([
+    "reconstruct",
+    "--mode",
+    mode,
+    "--run-id",
+    "run-15",
+    "--workspace",
+    root,
+    "--state-root",
+    join(root, "state"),
+    "--baseline-contract",
+    join(root, "baseline.json"),
+    "--host-private-address",
+    "10.0.0.15",
+    "--out",
+    join(root, "out.json"),
+  ]);
 }
 
 function producerConfig(root) {
@@ -401,24 +392,21 @@ describe("local testbed orchestration", () => {
   it("plans a non-destructive host runtime refresh from the committed workspace", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-local-testbed-"));
     try {
-      const parsedOptions = parseOptions(
-        [
-          "refresh-host-runtime",
-          "--workspace",
-          root,
-          "--state-root",
-          join(root, "state"),
-          "--run-id",
-          "RUN-CURRENT-FAST",
-          "--baseline-contract",
-          join(root, "baseline.json"),
-          "--host-private-address",
-          "10.0.0.15",
-          "--out",
-          join(root, "refresh.json"),
-        ],
-        { observeNetworkInterfaces: observedNetworkInterfaces },
-      );
+      const parsedOptions = parseOptions([
+        "refresh-host-runtime",
+        "--workspace",
+        root,
+        "--state-root",
+        join(root, "state"),
+        "--run-id",
+        "RUN-CURRENT-FAST",
+        "--baseline-contract",
+        join(root, "baseline.json"),
+        "--host-private-address",
+        "10.0.0.15",
+        "--out",
+        join(root, "refresh.json"),
+      ]);
       assert.equal(parsedOptions.command, "refresh-host-runtime");
       assert.equal(parsedOptions.runId, "RUN-CURRENT-FAST");
       assert.equal("mode" in parsedOptions, false);
@@ -1046,49 +1034,44 @@ describe("local testbed orchestration", () => {
     try {
       assert.throws(() => options(root, "invalid"), /--mode/);
       assert.throws(() => {
-        parseOptions(
-          [
-            "reconstruct",
-            "--mode",
-            "fast",
-            "--run-id",
-            "x",
-            "--workspace",
-            root,
-            "--state-root",
-            join(root, "state"),
-            "--baseline-contract",
-            join(root, "contract"),
-            "--host-private-address",
-            "127.0.0.1",
-            "--out",
-            join(root, "out"),
-          ],
-          { observeNetworkInterfaces: observedNetworkInterfaces },
-        );
+        parseOptions([
+          "reconstruct",
+          "--mode",
+          "fast",
+          "--run-id",
+          "x",
+          "--workspace",
+          root,
+          "--state-root",
+          join(root, "state"),
+          "--baseline-contract",
+          join(root, "contract"),
+          "--host-private-address",
+          "127.0.0.1",
+          "--out",
+          join(root, "out"),
+        ]);
       }, /non-loopback IPv4/);
-      assert.throws(() => {
-        parseOptions(
-          [
-            "reconstruct",
-            "--mode",
-            "fast",
-            "--run-id",
-            "x",
-            "--workspace",
-            root,
-            "--state-root",
-            join(root, "state"),
-            "--baseline-contract",
-            join(root, "contract"),
-            "--host-private-address",
-            "10.0.0.16",
-            "--out",
-            join(root, "out"),
-          ],
-          { observeNetworkInterfaces: observedNetworkInterfaces },
-        );
-      }, /must match a non-loopback IPv4 interface on this host/);
+      assert.equal(
+        parseOptions([
+          "reconstruct",
+          "--mode",
+          "fast",
+          "--run-id",
+          "x",
+          "--workspace",
+          root,
+          "--state-root",
+          join(root, "state"),
+          "--baseline-contract",
+          join(root, "contract"),
+          "--host-private-address",
+          "10.0.0.16",
+          "--out",
+          join(root, "out"),
+        ]).hostPrivateAddress,
+        "10.0.0.16",
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
