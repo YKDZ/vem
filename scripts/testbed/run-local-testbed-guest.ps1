@@ -492,6 +492,28 @@ function Wait-CanonicalProcessEvidence([string]$Name, [string]$ExpectedPath, [in
   throw "canonical $Name process did not become observable: $lastError"
 }
 
+function Invoke-InstalledTauriRouteAdmission([string]$Endpoint, [int]$TimeoutSeconds = 120) {
+  $stdoutPath = Join-Path $handoffRoot "installed-tauri-route-admission.stdout.log"
+  $stderrPath = Join-Path $handoffRoot "installed-tauri-route-admission.stderr.log"
+  Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+  $process = Start-Process `
+    -FilePath "node" `
+    -ArgumentList @((Join-Path $repoRoot "scripts\testbed\installed-tauri-route-admission.mjs"), "--endpoint", $Endpoint) `
+    -WorkingDirectory $repoRoot `
+    -RedirectStandardOutput $stdoutPath `
+    -RedirectStandardError $stderrPath `
+    -NoNewWindow `
+    -PassThru
+  if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+    Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+    throw "installed Tauri route admission timed out after $TimeoutSeconds seconds; stdout=$stdoutPath stderr=$stderrPath"
+  }
+  if ($process.ExitCode -ne 0) {
+    $stderr = if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw } else { "" }
+    throw "installed Tauri route admission failed with exit code $($process.ExitCode): $stderr"
+  }
+}
+
 function Get-CdpProcessBinding([int]$MachineProcessId) {
   $listeners = @(Get-NetTCPConnection -LocalAddress "127.0.0.1" -LocalPort 9222 -State Listen -ErrorAction Stop)
   if ($listeners.Count -ne 1) { throw "expected one installed Tauri CDP listener, found $($listeners.Count)" }
@@ -802,8 +824,7 @@ function Start-TestbedInstalledRuntimeOwners {
   Start-ScheduledTask -TaskName "VEMVisionRuntime" -ErrorAction Stop
   Start-ScheduledTask -TaskName "VEMMachineUI" -ErrorAction Stop
   Write-TestbedPhase "admit-installed-tauri-catalog"
-  & node (Join-Path $repoRoot "scripts\testbed\installed-tauri-route-admission.mjs") --endpoint "http://127.0.0.1:9222" | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw "installed Tauri route admission did not reach #/catalog" }
+  Invoke-InstalledTauriRouteAdmission "http://127.0.0.1:9222"
   $target = Wait-InstalledTauriRoute "#/catalog"
   $route = ([uri][string]$target.url).Fragment
   $machineEvidence = Wait-CanonicalProcessEvidence "machine.exe" $MachinePath 30
