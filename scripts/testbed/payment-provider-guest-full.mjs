@@ -960,9 +960,8 @@ export function validateUnattendedProviderAttempt(attempt) {
       ["failed", "canceled", "expired"].includes(terminal.paymentStatus) ||
       (terminal.paymentStatus === "unknown" &&
         terminal.orderStatus === "manual_handling");
-    const closureHandled =
-      attempt.cleanup?.closure?.handled === true ||
-      (attempt.submission?.status === "reversed" && terminalCleaned);
+    const closureObservedCleanTerminal =
+      attempt.cleanup?.closure?.handled === true || terminalCleaned;
     if (
       attempt.machine?.boundary !== "installed_machine_ui_cdp" ||
       attempt.machine?.paymentMethod !== "payment_code" ||
@@ -986,7 +985,7 @@ export function validateUnattendedProviderAttempt(attempt) {
           attempt.submission?.failureCode !==
             "payment_code_reverse_confirmed")) ||
       attempt.cleanup?.action !== "close_or_reverse_uncertain_payment" ||
-      !closureHandled ||
+      !closureObservedCleanTerminal ||
       !attempt.cleanup?.providerConfigId ||
       attempt.cleanup?.serialSession?.action !== "abort" ||
       attempt.cleanup?.serialSession?.aborted !== true ||

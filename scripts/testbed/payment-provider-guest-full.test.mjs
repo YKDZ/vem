@@ -271,6 +271,50 @@ describe("payment provider guest full", () => {
     );
   });
 
+  it("accepts a queued payment-code cleanup once the durable worker reaches a clean terminal state", () => {
+    assert.doesNotThrow(() =>
+      validateUnattendedProviderAttempt({
+        channel: "payment_code:alipay",
+        order: {
+          providerCode: "alipay",
+          orderId: "order-1",
+          paymentId: "payment-1",
+          orderNo: "order-no-1",
+        },
+        machine: {
+          boundary: "installed_machine_ui_cdp",
+          paymentMethod: "payment_code",
+          providerCode: "alipay",
+          surface: {
+            orderId: "order-1",
+            paymentId: "payment-1",
+            orderNo: "order-no-1",
+          },
+          scannerPrompt: "请出示付款码",
+        },
+        submission: {
+          status: "user_confirming",
+          providerCode: "alipay",
+          attemptId: "attempt-1",
+          providerStatus: "WAIT_BUYER_PAY",
+          failureCode: null,
+        },
+        cleanup: {
+          action: "close_or_reverse_uncertain_payment",
+          closure: { handled: false, status: "reversing" },
+          providerConfigId: "provider-config-1",
+          serialSession: { action: "abort", aborted: true },
+        },
+        terminal: {
+          paymentStatus: "failed",
+          orderStatus: "canceled",
+          paymentState: "payment_failed",
+          reservedInventory: false,
+        },
+      }),
+    );
+  });
+
   it("places the provider status at the payment-code submission contract path", () => {
     assert.deepEqual(
       buildPaymentCodeSubmission({
