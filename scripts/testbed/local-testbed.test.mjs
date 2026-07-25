@@ -628,6 +628,19 @@ describe("local testbed orchestration", () => {
       /run\(plan\[3\]\.command, plan\[3\]\.args[\s\S]*waitForPostgres\(\)[\s\S]*plan\.slice\(4, 6\)/,
     );
   });
+
+  it("waits for PostgreSQL before refresh migrations and avoids transient readiness", () => {
+    const source = readFileSync(
+      new URL("./local-testbed.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(
+      source,
+      /await run\(plan\[0\]\.command, plan\[0\]\.args[\s\S]*await waitForPostgres\(\)[\s\S]*plan\.slice\(1\)/,
+    );
+    assert.match(source, /consecutiveReadyChecks >= 2/);
+  });
+
   it("requires the generic baseline contract to separate reconstruction from guest admission", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-local-testbed-"));
     try {

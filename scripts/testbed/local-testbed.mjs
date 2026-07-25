@@ -1092,6 +1092,7 @@ export function interpretServiceApiJournalCapture(input) {
 }
 
 async function waitForPostgres() {
+  let consecutiveReadyChecks = 0;
   for (let attempt = 0; attempt < 60; attempt += 1) {
     try {
       await run(
@@ -1107,10 +1108,12 @@ async function waitForPostgres() {
         ],
         { stdio: "ignore" },
       );
-      return;
+      consecutiveReadyChecks += 1;
+      if (consecutiveReadyChecks >= 2) return;
     } catch {
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, 1_000));
+      consecutiveReadyChecks = 0;
     }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 1_000));
   }
   throw new Error("local testbed Postgres did not become ready");
 }
@@ -1968,7 +1971,12 @@ export async function refreshHostRuntime(options) {
     await readBaselineInteractiveUserPassword(contract);
   const buildStartedAt = new Date().toISOString();
   await writeBackendComposeFiles(options);
-  for (const step of plan) {
+  await run(plan[0].command, plan[0].args, {
+    cwd: options.workspace,
+    env: plan[0].env,
+  });
+  await waitForPostgres();
+  for (const step of plan.slice(1)) {
     await run(step.command, step.args, {
       cwd: options.workspace,
       env: step.env,
