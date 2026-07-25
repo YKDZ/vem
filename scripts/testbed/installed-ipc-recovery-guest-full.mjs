@@ -97,17 +97,42 @@ function parseArgs(args) {
 }
 
 async function fetchJson(url, options = {}) {
-  const response = await fetch(url, {
-    ...options,
-    signal: options.signal ?? AbortSignal.timeout(LOCAL_REQUEST_TIMEOUT_MS),
-  });
-  const payload = await response.json().catch(() => null);
-  if (!response.ok) {
-    throw new Error(
-      `${options.method ?? "GET"} ${url} failed with HTTP ${response.status}: ${JSON.stringify(payload)}`,
-    );
+  const {
+    retryTimeoutMs = LOCAL_REQUEST_TIMEOUT_MS,
+    signal,
+    ...fetchOptions
+  } = options;
+  const deadline = Date.now() + retryTimeoutMs;
+  let lastTransportError = null;
+  while (Date.now() < deadline) {
+    let response;
+    try {
+      response = await fetch(url, {
+        ...fetchOptions,
+        signal:
+          signal ??
+          AbortSignal.timeout(
+            Math.max(
+              1,
+              Math.min(LOCAL_REQUEST_TIMEOUT_MS, deadline - Date.now()),
+            ),
+          ),
+      });
+    } catch (error) {
+      if (!(error instanceof TypeError)) throw error;
+      lastTransportError = error;
+      await sleep(Math.min(250, Math.max(1, deadline - Date.now())));
+      continue;
+    }
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(
+        `${fetchOptions.method ?? "GET"} ${url} failed with HTTP ${response.status}: ${JSON.stringify(payload)}`,
+      );
+    }
+    return payload;
   }
-  return payload;
+  throw lastTransportError ?? new Error(`fetch timed out: ${url}`);
 }
 
 function daemonBaseUrl(handoff) {

@@ -13,6 +13,7 @@ const SCHEMA_VERSION = "vem-environment-control-guest-full/v1";
 const ADMIN_USER = "local-testbed-admin";
 const ADMIN_PASSWORD = "LocalTestbedAdminPassword!";
 const ADMIN_OVERRIDE_GUARD_MS = 5_000;
+const HARDWARE_BINDING_READY_TIMEOUT_MS = 60_000;
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "")
@@ -776,7 +777,11 @@ export async function runEnvironmentControlGuest(options) {
       "environment control serial session id",
     );
     await waitForDaemonReadyRefresh(handoff);
-    await waitForHardwareBindings(handoff, session);
+    await waitForHardwareBindings(
+      handoff,
+      session,
+      HARDWARE_BINDING_READY_TIMEOUT_MS,
+    );
     const hardware = await daemonPost(handoff, "/v1/hardware/self-check", {});
     if (hardware?.online !== true) {
       throw new Error(

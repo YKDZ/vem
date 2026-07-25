@@ -12,7 +12,6 @@ import {
   activateVisibleSelector,
   CdpClient,
   discoverCanonicalMachineUiTarget,
-  discoverMachineUiTarget,
   enablePageRuntime,
   evaluateExpression,
   rewriteWebSocketDebuggerUrl,
@@ -390,7 +389,7 @@ export async function collectMaintenanceEntryEvidence(
 async function withMachineUiClient(
   handoff,
   {
-    discoverMachineUiTargetFn = discoverMachineUiTarget,
+    discoverMachineUiTargetFn = discoverCanonicalMachineUiTarget,
     webSocketFactory,
     cdpClientClass = CdpClient,
   } = {},
@@ -399,8 +398,9 @@ async function withMachineUiClient(
   const endpoint = required(handoff?.cdp?.endpoint, "handoff cdp endpoint");
   const target = await discoverMachineUiTargetFn({
     endpoint,
-    expectedTargetId: required(handoff?.cdp?.targetId, "handoff cdp targetId"),
+    expectedTargetId: handoff?.cdp?.targetId,
   });
+  if (handoff?.cdp) handoff.cdp.targetId = target.id;
   const client = new cdpClientClass(
     rewriteWebSocketDebuggerUrl(target.webSocketDebuggerUrl, endpoint),
     { webSocketFactory },
