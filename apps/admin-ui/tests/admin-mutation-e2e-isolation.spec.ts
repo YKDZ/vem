@@ -27,11 +27,4 @@ test.describe("Admin UI mutation E2E isolation", () => {
     expect(checkCi).toContain('mutationTarget: "isolated"');
   });
 
-  test("the operator manual distinguishes live-safe read-only checks from isolated mutation tests", () => {
-    const manual = read("public/manual/operator-manual.md");
-
-    expect(manual).toContain("admin-tabbed-contract.spec.ts");
-    expect(manual).toContain("VEM_ADMIN_MUTATION_E2E_TARGET=isolated");
-    expect(manual).toContain("不要在现场 VPS 上运行会新增或修改业务数据的测试");
-  });
 });

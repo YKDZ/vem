@@ -27,7 +27,7 @@
 - 视口尺寸或屏幕方向
 - 期望出现的中文界面文字
 - 截图时间与提交版本
-- 质检结果：`passed`、`manual-review`、`rejected`
+- 质检结果：通过、需人工复核、拒绝使用
 
 已采集截图使用图片和相邻证据说明；尚未采集的截图位统一写成如下形式，待真实截图补齐后替换：
 
@@ -37,11 +37,11 @@
 
 ## 4. 手册维护者验收说明
 
-手册维护者可以用后台只读页面验收来确认当前界面仍能打开并符合前端/后端契约。允许打现场 VPS 的后台只读验收入口是：
+手册维护者可以用后台只读页面验收来确认当前界面仍能打开并符合前端/后端契约。允许连接现场后台的只读验收入口是：
 
 - `admin-tabbed-contract.spec.ts`
 
-不要在现场 VPS 上运行会新增或修改业务数据的测试。商品、机器、支付机构配置、库存等写入型测试必须使用隔离后端，或在命令中显式设置 `VEM_ADMIN_MUTATION_E2E_TARGET=isolated` 并确认目标不是现场 VPS。
+不要在现场后台运行会新增或修改业务数据的测试。商品、机器、支付机构配置、库存等写入型测试必须使用隔离后端，或在命令中显式设置 `VEM_ADMIN_MUTATION_E2E_TARGET=isolated` 并确认目标不是现场后台。
 
 ## 5. 商品与规格管理
 
@@ -59,11 +59,11 @@
 
 ![商品管理页面](screenshots/admin-products-list.png)
 
-截图证据：`admin-products-list` / 期望文字：`商品管理`、`新增商品` / 质检：`passed`
+截图证据：`admin-products-list` / 期望文字：`商品管理`、`新增商品` / 质检：通过
 
 ![新增商品表单](screenshots/admin-product-create-drawer.png)
 
-截图证据：`admin-product-create-drawer` / 期望文字：`新增商品`、`商品名称`、`保存` / 质检：`passed`
+截图证据：`admin-product-create-drawer` / 期望文字：`新增商品`、`商品名称`、`保存` / 质检：通过
 
 ### 5.2 规格维护
 
@@ -83,7 +83,7 @@
 
 ![规格维护区域](screenshots/admin-product-sku-editor.png)
 
-截图证据：`admin-product-sku-editor` / 期望文字：`SKU`、`新增 SKU` / 质检：`passed`
+截图证据：`admin-product-sku-editor` / 期望文字：`SKU`、`新增 SKU` / 质检：通过
 
 ### 5.3 价格调整
 
@@ -169,7 +169,7 @@
 
 ![机器管理页面](screenshots/admin-machines-list.png)
 
-截图证据：`admin-machines-list` / 期望文字：`机器管理` / 质检：`passed`
+截图证据：`admin-machines-list` / 期望文字：`机器管理` / 质检：通过
 
 具体货道绑定页面仍待采集。
 
@@ -194,7 +194,7 @@
 
 ![机器端库存维护](screenshots/machine-maintenance-stock.png)
 
-截图证据：`machine-maintenance-stock` / 期望文字：`库存维护`、`提交` / 质检：`manual-review`
+截图证据：`machine-maintenance-stock` / 期望文字：`库存维护`、`提交` / 质检：需人工复核
 
 本截图证明机器端库存维护入口可达。完整补货录入走查仍待在带可维护货道的验收数据上补齐。
 
@@ -218,11 +218,11 @@
 
 ![支付管理页面](screenshots/admin-payments-tabs.png)
 
-截图证据：`admin-payments-tabs` / 期望文字：`支付管理`、`支付流水`、`退款管理` / 质检：`passed`
+截图证据：`admin-payments-tabs` / 期望文字：`支付管理`、`支付流水`、`退款管理` / 质检：通过
 
 ![支付宝配置表单](screenshots/admin-alipay-config-drawer.png)
 
-截图证据：`admin-alipay-config-drawer` / 期望文字：`支付宝配置`、`商户号`、`应用私钥 PEM`、`二维码有效期` / 质检：`passed`
+截图证据：`admin-alipay-config-drawer` / 期望文字：`支付宝配置`、`商户号`、`应用私钥 PEM`、`二维码有效期` / 质检：通过
 
 ### 8.2 支付渠道启用
 
@@ -242,7 +242,7 @@
 
 ![支付管理页面](screenshots/admin-payments-tabs.png)
 
-截图证据：`admin-payments-tabs` / 期望文字：`支付管理`、`支付流水`、`退款管理` / 质检：`passed`
+截图证据：`admin-payments-tabs` / 期望文字：`支付管理`、`支付流水`、`退款管理` / 质检：通过
 
 支付渠道启用的具体编辑状态仍待采集。
 
@@ -261,13 +261,13 @@
 
 ![机器管理页面](screenshots/admin-machines-list.png)
 
-截图证据：`admin-machines-list` / 期望文字：`机器管理` / 质检：`passed`
+截图证据：`admin-machines-list` / 期望文字：`机器管理` / 质检：通过
 
 认领码生成窗口仍待采集。
 
 ![机器端网络与认领](screenshots/machine-maintenance-commissioning.png)
 
-截图证据：`machine-maintenance-commissioning` / 期望文字：`网络与认领`、`认领` / 质检：`manual-review`
+截图证据：`machine-maintenance-commissioning` / 期望文字：`网络与认领`、`认领` / 质检：需人工复核
 
 ### 9.2 重领
 
@@ -305,11 +305,11 @@
 
 ![机器管理页面](screenshots/admin-machines-list.png)
 
-截图证据：`admin-machines-list` / 期望文字：`机器管理` / 质检：`passed`
+截图证据：`admin-machines-list` / 期望文字：`机器管理` / 质检：通过
 
 ![机器环境控制](screenshots/admin-machine-environment-control.png)
 
-截图证据：`admin-machine-environment-control` / 期望文字：`环境`、`空调`、`出风口`、`设定` / 质检：`passed`
+截图证据：`admin-machine-environment-control` / 期望文字：`环境`、`空调`、`出风口`、`设定` / 质检：通过
 
 ### 10.2 机器端基础检查
 
@@ -322,23 +322,23 @@
 
 ![机器端运行状态](screenshots/machine-maintenance-status.png)
 
-截图证据：`machine-maintenance-status` / 期望文字：`运行状态`、`返回选购` / 质检：`manual-review`
+截图证据：`machine-maintenance-status` / 期望文字：`运行状态`、`返回选购` / 质检：需人工复核
 
 ![机器端设备检查](screenshots/machine-maintenance-hardware.png)
 
-截图证据：`machine-maintenance-hardware` / 期望文字：`设备检查`、`出货一件` / 质检：`manual-review`
+截图证据：`machine-maintenance-hardware` / 期望文字：`设备检查`、`出货一件` / 质检：需人工复核
 
 ![机器端环境控制](screenshots/machine-maintenance-experience.png)
 
-截图证据：`machine-maintenance-experience` / 期望文字：`声音与视觉`、`音量` / 质检：`manual-review`
+截图证据：`machine-maintenance-experience` / 期望文字：`声音与视觉`、`音量` / 质检：需人工复核
 
 ![机器端诊断工具](screenshots/machine-maintenance-diagnostics.png)
 
-截图证据：`machine-maintenance-diagnostics` / 期望文字：`诊断工具`、`日志` / 质检：`manual-review`
+截图证据：`machine-maintenance-diagnostics` / 期望文字：`诊断工具`、`日志` / 质检：需人工复核
 
 ![机器端商品目录](screenshots/machine-catalog.png)
 
-截图证据：`machine-catalog` / 期望文字：`唐诗村`、`选购` / 质检：`manual-review`
+截图证据：`machine-catalog` / 期望文字：`唐诗村`、`选购` / 质检：需人工复核
 
 ## 11. 订单、支付与出货异常查看
 
@@ -362,11 +362,11 @@
 
 ![订单管理页面](screenshots/admin-orders-list.png)
 
-截图证据：`admin-orders-list` / 期望文字：`订单管理` / 质检：`passed`
+截图证据：`admin-orders-list` / 期望文字：`订单管理` / 质检：通过
 
 ![订单详情](screenshots/admin-order-detail.png)
 
-截图证据：`admin-order-detail` / 期望文字：`订单号`、`支付`、`出货` / 质检：`passed`
+截图证据：`admin-order-detail` / 期望文字：`订单号`、`支付`、`出货` / 质检：通过
 
 ### 11.2 支付异常查看
 
@@ -386,7 +386,7 @@
 
 ![支付管理页面](screenshots/admin-payments-tabs.png)
 
-截图证据：`admin-payments-tabs` / 期望文字：`支付管理`、`支付流水`、`退款管理` / 质检：`passed`
+截图证据：`admin-payments-tabs` / 期望文字：`支付管理`、`支付流水`、`退款管理` / 质检：通过
 
 支付异常详情与人工处理入口仍待采集。
 
@@ -421,9 +421,8 @@
 
 以下内容在本版仍未完成，不能视为已验收：
 
-- Admin UI 细节交互截图采集：图片上传、剪影上传、货道绑定、机器认领、支付异常详情
+- 后台细节交互截图采集：图片上传、剪影上传、货道绑定、机器认领、支付异常详情、价格调整、支付渠道启用
 - 机器端日常补货的完整录入走查：当前截图只证明入口可达，截图数据中没有可提交货道。
-- Admin UI 细节交互截图采集：图片上传、剪影上传、货道绑定、机器认领、支付异常详情。
 - 按手册逐条完成的运营工作流验收证据。
 
 在这些证据补齐前，本手册属于“结构初版”，可用于统一术语和操作边界，但不能单独作为最终交付验收凭据。
