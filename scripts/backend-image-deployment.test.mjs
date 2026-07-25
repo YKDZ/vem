@@ -7,7 +7,10 @@ import { describe, it } from "node:test";
 import YAML from "yaml";
 
 import {
+  deploy,
   deploymentRecord,
+  renderDigestComposeOverride,
+  renderDigestPinnedCompose,
   validateAdminProxyHealth,
   validateCommit as validateDeployCommit,
 } from "./deploy-backend-stack.mjs";
@@ -116,6 +119,45 @@ describe("backend image publishing", () => {
 });
 
 describe("backend deployment record", () => {
+  it("renders the digest override used by target-host compose deployment", () => {
+    assert.equal(
+      renderDigestComposeOverride({
+        serviceApi: "registry/vem-service-api@sha256:service",
+        adminUi: "registry/vem-admin-ui@sha256:admin",
+      }),
+      [
+        "services:",
+        "  service-api:",
+        "    image: registry/vem-service-api@sha256:service",
+        "  admin-ui:",
+        "    image: registry/vem-admin-ui@sha256:admin",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("renders a single digest-pinned compose artifact from the runtime definition", () => {
+    const rendered = renderDigestPinnedCompose(
+      readFileSync(composePath, "utf8"),
+      {
+        serviceApi: "registry/vem-service-api@sha256:service",
+        adminUi: "registry/vem-admin-ui@sha256:admin",
+      },
+    );
+    const compose = YAML.parse(rendered);
+    assert.equal(
+      compose.services["service-api"].image,
+      "registry/vem-service-api@sha256:service",
+    );
+    assert.equal(
+      compose.services["admin-ui"].image,
+      "registry/vem-admin-ui@sha256:admin",
+    );
+    assert.ok("postgres" in compose.services);
+    assert.ok("mqtt" in compose.services);
+    assert.ok("vem-service-api-media-assets" in compose.volumes);
+  });
+
   it("records the requested commit and repository digests", () => {
     const record = deploymentRecord({
       commit,
@@ -130,6 +172,7 @@ describe("backend deployment record", () => {
       composeFile: "/compose.yml",
       envFile: "/env",
       digestOverride: "/override.yml",
+      releaseComposeFile: "/compose.release.yml",
       deployedAt: "2026-07-21T00:00:00.000Z",
     });
     assert.equal(validateDeployCommit(record.requestedCommit), commit);
@@ -259,5 +302,127 @@ describe("backend deployment record", () => {
         ),
       /healthy backend state/,
     );
+  });
+
+  it("drives the pull-only compose deployment in digest-pinned order", async () => {
+    const temp = mkdtempSync(join(tmpdir(), "vem-backend-deploy-"));
+    const calls = [];
+    const outputs = [];
+    const serviceImage = `registry/vem-service-api:sha-${commit}`;
+    const adminImage = `registry/vem-admin-ui:sha-${commit}`;
+    const fakeExec = (command, args) => {
+      calls.push([command, ...args]);
+      const joined = [command, ...args].join(" ");
+      if (joined.endsWith(" config --images")) {
+        return `${serviceImage}\n${adminImage}\n`;
+      }
+      if (args[0] === "inspect" && args.at(-1) === serviceImage) {
+        return "registry/vem-service-api@sha256:service\n";
+      }
+      if (args[0] === "inspect" && args.at(-1) === adminImage) {
+        return "registry/vem-admin-ui@sha256:admin\n";
+      }
+      if (args[0] === "compose" && args.at(-2) === "-q") {
+        return `container-${args.at(-1)}\n`;
+      }
+      if (args[0] === "inspect" && args[3]?.startsWith("container-")) {
+        return "healthy\n";
+      }
+      if (args[0] === "exec" && args[1] === "container-admin-ui") {
+        return JSON.stringify({
+          data: { database: "ok", mqtt: "connected" },
+        });
+      }
+      if (args[0] === "compose" && args.at(-1) === "ps") return "";
+      return "";
+    };
+    try {
+      const record = await deploy(
+        [
+          "--commit",
+          commit,
+          "--env",
+          join(temp, "backend.env"),
+          "--compose",
+          composePath.pathname,
+          "--state-dir",
+          temp,
+        ],
+        {},
+        {
+          execFileSync: fakeExec,
+          writeFileSync: (path, content) => {
+            writeFileSync(path, content);
+            outputs.push([path, content]);
+          },
+          stdout: { write: () => undefined },
+          now: () => new Date("2026-07-21T00:00:00.000Z"),
+        },
+      );
+      assert.deepEqual(record.repoDigests, {
+        serviceApi: "registry/vem-service-api@sha256:service",
+        adminUi: "registry/vem-admin-ui@sha256:admin",
+      });
+      assert.match(
+        outputs.find(([path]) => path.endsWith("digest-compose.yml"))?.[1] ??
+          "",
+        /registry\/vem-service-api@sha256:service/,
+      );
+      assert.match(
+        outputs.find(([path]) => path.endsWith("compose.release.yml"))?.[1] ??
+          "",
+        /registry\/vem-admin-ui@sha256:admin/,
+      );
+      const commandLines = calls.map((call) => call.join(" "));
+      assert.match(commandLines[0] ?? "", /docker compose .* pull$/);
+      assert.match(commandLines[1] ?? "", /docker compose .* config --images$/);
+      assert.match(commandLines[2] ?? "", /docker inspect .*service-api/);
+      assert.match(commandLines[3] ?? "", /docker inspect .*admin-ui/);
+      assert.ok(commandLines[4]?.includes("compose"));
+      assert.ok(commandLines[4]?.endsWith("up -d --remove-orphans"));
+      assert.ok(
+        commandLines.some((line) => line.includes("exec container-admin-ui")),
+      );
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects mutable app image tags before compose up", async () => {
+    const temp = mkdtempSync(join(tmpdir(), "vem-backend-deploy-"));
+    const calls = [];
+    const fakeExec = (command, args) => {
+      calls.push([command, ...args]);
+      if (args[0] === "compose" && args.at(-2) === "config") {
+        return "registry/vem-service-api:latest\nregistry/vem-admin-ui:latest\n";
+      }
+      return "";
+    };
+    try {
+      await assert.rejects(
+        () =>
+          deploy(
+            [
+              "--commit",
+              commit,
+              "--env",
+              join(temp, "backend.env"),
+              "--compose",
+              composePath.pathname,
+              "--state-dir",
+              temp,
+            ],
+            {},
+            { execFileSync: fakeExec },
+          ),
+        /image must use sha-/,
+      );
+      assert.equal(
+        calls.some((call) => call.join(" ").includes("up -d")),
+        false,
+      );
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
   });
 });

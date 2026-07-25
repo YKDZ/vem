@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import YAML from "yaml";
 
-function run(command, args, options = {}) {
-  const output = execFileSync(command, args, {
+function runWith(exec, command, args, options = {}) {
+  const output = exec(command, args, {
     encoding: "utf8",
     stdio: options.quiet ? ["ignore", "pipe", "pipe"] : "inherit",
   });
@@ -37,6 +38,7 @@ export function deploymentRecord({
   composeFile,
   envFile,
   digestOverride,
+  releaseComposeFile,
   deployedAt,
 }) {
   return {
@@ -48,6 +50,7 @@ export function deploymentRecord({
     composeFile,
     envFile,
     digestOverride,
+    releaseComposeFile,
   };
 }
 
@@ -64,7 +67,32 @@ export function validateAdminProxyHealth(raw) {
   return body;
 }
 
-export async function deploy(args = process.argv.slice(2), env = process.env) {
+export function renderDigestComposeOverride({ serviceApi, adminUi }) {
+  return `services:\n  service-api:\n    image: ${serviceApi}\n  admin-ui:\n    image: ${adminUi}\n`;
+}
+
+export function renderDigestPinnedCompose(
+  composeText,
+  { serviceApi, adminUi },
+) {
+  const compose = YAML.parse(composeText);
+  compose.services["service-api"].image = serviceApi;
+  compose.services["admin-ui"].image = adminUi;
+  return YAML.stringify(compose);
+}
+
+export async function deploy(
+  args = process.argv.slice(2),
+  env = process.env,
+  io = {},
+) {
+  const exec = io.execFileSync ?? execFileSync;
+  const mkdir = io.mkdirSync ?? mkdirSync;
+  const write = io.writeFileSync ?? writeFileSync;
+  const stdout = io.stdout ?? process.stdout;
+  const now = io.now ?? (() => new Date());
+  const run = (command, commandArgs, options) =>
+    runWith(exec, command, commandArgs, options);
   const requestedCommit = validateCommit(option(args, "--commit"));
   const envFile = resolve(
     option(args, "--env", env.BACKEND_ENV_FILE ?? ".env.backend-stack"),
@@ -75,8 +103,9 @@ export async function deploy(args = process.argv.slice(2), env = process.env) {
   const stateDirectory = resolve(
     option(args, "--state-dir", env.BACKEND_STATE_DIR ?? ".vem-backend"),
   );
-  mkdirSync(stateDirectory, { recursive: true });
+  mkdir(stateDirectory, { recursive: true });
   const override = resolve(stateDirectory, "digest-compose.yml");
+  const releaseCompose = resolve(stateDirectory, "compose.release.yml");
   const recordPath = resolve(stateDirectory, "deployment.json");
   const compose = ["compose", "--env-file", envFile, "-f", composeFile];
 
@@ -104,9 +133,10 @@ export async function deploy(args = process.argv.slice(2), env = process.env) {
     serviceApi: repoDigest(configured.serviceApi),
     adminUi: repoDigest(configured.adminUi),
   };
-  writeFileSync(
-    override,
-    `services:\n  service-api:\n    image: ${digests.serviceApi}\n  admin-ui:\n    image: ${digests.adminUi}\n`,
+  write(override, renderDigestComposeOverride(digests));
+  write(
+    releaseCompose,
+    renderDigestPinnedCompose(readFileSync(composeFile, "utf8"), digests),
   );
   const pinned = [...compose, "-f", override];
   run("docker", [...pinned, "up", "-d", "--remove-orphans"]);
@@ -150,11 +180,12 @@ export async function deploy(args = process.argv.slice(2), env = process.env) {
     composeFile,
     envFile,
     digestOverride: override,
-    deployedAt: new Date().toISOString(),
+    releaseComposeFile: releaseCompose,
+    deployedAt: now().toISOString(),
   });
-  writeFileSync(recordPath, `${JSON.stringify(record, null, 2)}\n`);
+  write(recordPath, `${JSON.stringify(record, null, 2)}\n`);
   run("docker", [...pinned, "ps"]);
-  process.stdout.write(`${JSON.stringify(record, null, 2)}\n`);
+  stdout.write(`${JSON.stringify(record, null, 2)}\n`);
   return record;
 }
 
