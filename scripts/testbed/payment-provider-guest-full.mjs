@@ -604,6 +604,11 @@ async function cancelVisibleMachineOrder(client, timeoutMs) {
   });
 }
 
+async function cancelCurrentDaemonOrder(handoff, current) {
+  const orderNo = required(current?.orderNo, "current transaction orderNo");
+  return await daemon(handoff, "/v1/intents/cancel-order", { orderNo });
+}
+
 export function isCleanAuthoritativeTransaction(current) {
   if (current == null || current?.orderId == null) return true;
   const paymentStatus = current?.paymentStatus ?? null;
@@ -645,6 +650,11 @@ async function cleanAuthoritativeOrderBeforeDiagnostics(
       pollMs: POLL_INTERVAL_MS,
     });
   }
+  const currentBeforeCleanup = await daemon(handoff, "/v1/transactions/current");
+  let daemonCancel = null;
+  if (!isCleanAuthoritativeTransaction(currentBeforeCleanup)) {
+    daemonCancel = await cancelCurrentDaemonOrder(handoff, currentBeforeCleanup);
+  }
   const transaction = await waitForCondition(
     () => daemon(handoff, "/v1/transactions/current"),
     isCleanAuthoritativeTransaction,
@@ -658,7 +668,7 @@ async function cleanAuthoritativeOrderBeforeDiagnostics(
       pollMs: POLL_INTERVAL_MS,
     });
   }
-  return { machineBoundary: "installed_machine_ui_cdp", transaction };
+  return { machineBoundary: "installed_machine_ui_cdp", transaction, daemonCancel };
 }
 
 async function paymentCodeAttemptFromApi(input, token, order, timeoutMs) {

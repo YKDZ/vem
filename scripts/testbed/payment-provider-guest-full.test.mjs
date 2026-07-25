@@ -22,11 +22,30 @@ describe("payment provider guest full", () => {
       "utf8",
     );
     const dismissIndex = source.indexOf("routeBeforeCleanup");
+    const daemonCancelIndex = source.indexOf(
+      "daemonCancel = await cancelCurrentDaemonOrder",
+    );
     const waitIndex = source.indexOf(
       'label: "authoritative order cleanup before diagnostics"',
     );
     assert.ok(dismissIndex > 0);
-    assert.ok(waitIndex > dismissIndex);
+    assert.ok(daemonCancelIndex > dismissIndex);
+    assert.ok(waitIndex > daemonCancelIndex);
+  });
+
+  it("cancels daemon-owned active transactions even when no payment surface rendered", () => {
+    const source = readFileSync(
+      new URL("./payment-provider-guest-full.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.ok(
+      source.includes(
+        'currentBeforeCleanup = await daemon(handoff, "/v1/transactions/current")',
+      ),
+    );
+    assert.ok(source.includes("!isCleanAuthoritativeTransaction(currentBeforeCleanup)"));
+    assert.ok(source.includes('"/v1/intents/cancel-order"'));
+    assert.ok(source.includes("current transaction orderNo"));
   });
 
   it("returns the installed Machine UI to catalog after provider attempts", () => {
