@@ -10,6 +10,7 @@ import {
   enablePageRuntime,
   evaluateExpression,
   rewriteWebSocketDebuggerUrl,
+  waitForRoute,
 } from "./machine-ui-cdp-driver.mjs";
 
 const DEFAULT_ENDPOINT = "http://127.0.0.1:9222";
@@ -48,6 +49,7 @@ export async function admitInstalledTauriCatalog(
   const evaluate = dependencies.evaluate ?? evaluateExpression;
   const returnToCatalog =
     dependencies.returnToCatalog ?? returnToCatalogFromClient;
+  const waitForRouteFn = dependencies.waitForRoute ?? waitForRoute;
   const rewriteUrl = dependencies.rewriteUrl ?? rewriteWebSocketDebuggerUrl;
 
   const now = dependencies.now ?? (() => Date.now());
@@ -78,10 +80,24 @@ export async function admitInstalledTauriCatalog(
   try {
     await enableRuntime(client);
     const initialRoute = await evaluate(client, "location.hash");
-    const route = await returnToCatalog({
-      client,
-      evaluateExpressionFn: evaluate,
-    });
+    let route;
+    let staleResultFallback = false;
+    try {
+      route = await returnToCatalog({
+        client,
+        evaluateExpressionFn: evaluate,
+      });
+    } catch (error) {
+      if (!/^#\/result(?:\/|$)/.test(initialRoute ?? "")) throw error;
+      staleResultFallback = true;
+      await evaluate(client, 'location.hash = "#/catalog"');
+      route = (
+        await waitForRouteFn(client, "#/catalog", {
+          timeoutMs: 10_000,
+          pollMs,
+        })
+      ).route;
+    }
     const finalRoute = await evaluate(client, "location.hash");
     return {
       schemaVersion: "vem-installed-tauri-route-admission/v1",
@@ -91,6 +107,7 @@ export async function admitInstalledTauriCatalog(
       initialRoute,
       route,
       finalRoute,
+      staleResultFallback,
     };
   } finally {
     await client.close().catch(() => {});

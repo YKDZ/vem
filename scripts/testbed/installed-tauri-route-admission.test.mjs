@@ -112,4 +112,60 @@ describe("installed Tauri route admission", () => {
     assert.equal(result.ok, true);
     assert.equal(attempts, 2);
   });
+
+  it("falls back to direct catalog admission for a stale result page without return controls", async () => {
+    const calls = [];
+    const client = {
+      async connect() {
+        calls.push("connect");
+      },
+      async close() {
+        calls.push("close");
+      },
+    };
+    let route = "#/result/manual_handling";
+
+    const result = await admitInstalledTauriCatalog(
+      { endpoint: "http://127.0.0.1:9222", pollMs: 250 },
+      {
+        discoverTarget: async () => ({
+          id: "tauri-page-1",
+          webSocketDebuggerUrl:
+            "ws://127.0.0.1:9222/devtools/page/tauri-page-1",
+        }),
+        rewriteUrl: (webSocketUrl) => webSocketUrl,
+        createClient: () => client,
+        enableRuntime: async () => {},
+        evaluate: async (_client, expression) => {
+          calls.push(["evaluate", expression]);
+          if (expression === 'location.hash = "#/catalog"') {
+            route = "#/catalog";
+            return route;
+          }
+          return route;
+        },
+        returnToCatalog: async () => {
+          throw new Error("selector is not physically actionable");
+        },
+        waitForRoute: async (_client, expected, options) => {
+          calls.push(["wait", expected, options]);
+          assert.equal(route, "#/catalog");
+          return { route };
+        },
+      },
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(result.initialRoute, "#/result/manual_handling");
+    assert.equal(result.finalRoute, "#/catalog");
+    assert.equal(result.staleResultFallback, true);
+    assert.deepEqual(calls, [
+      "connect",
+      ["evaluate", "location.hash"],
+      ["evaluate", 'location.hash = "#/catalog"'],
+      ["wait", "#/catalog", { timeoutMs: 10_000, pollMs: 250 }],
+      ["evaluate", "location.hash"],
+      "close",
+    ]);
+  });
 });
