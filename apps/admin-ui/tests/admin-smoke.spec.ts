@@ -7,6 +7,7 @@ import {
   loginAsAdmin,
   waitForAdminUiSettled,
 } from "./support/admin-browser-contract";
+import { skipUnlessAdminMutationE2eEnabled } from "./support/admin-mutation-e2e";
 const ENVIRONMENT_MACHINE_ID = "11111111-1111-4111-8111-111111111111";
 const ENVIRONMENT_COMMAND_ID = "22222222-2222-4222-8222-222222222222";
 const ENVIRONMENT_NOW = "2026-07-22T08:00:00.000Z";
@@ -64,38 +65,42 @@ test.describe("admin-smoke", () => {
       await monitor.assertNoFailures();
     });
 
-    test("creates a product", async ({ page }) => {
-      await page.goto("/products");
-      await page.getByRole("button", { name: /新增商品/ }).click();
-      await expect(page.getByRole("dialog")).toBeVisible({ timeout: 10_000 });
-      await page
-        .locator(".ant-form-item")
-        .filter({ hasText: "商品名称" })
-        .locator("input")
-        .fill("E2E测试饮料");
-      await page.getByRole("button", { name: /保存/ }).click();
-      await expect(page.getByText("E2E测试饮料")).toBeVisible({
-        timeout: 5_000,
-      });
-    });
+    test.describe("mutation workflows", () => {
+      skipUnlessAdminMutationE2eEnabled(test);
 
-    test("creates a machine", async ({ page }) => {
-      await page.goto("/machines");
-      await page.getByRole("button", { name: /新增机器/ }).click();
-      await expect(page.getByRole("dialog")).toBeVisible({ timeout: 10_000 });
-      await page
-        .locator(".ant-form-item")
-        .filter({ hasText: "编码" })
-        .locator("input")
-        .fill("E2E-MACHINE-001");
-      await page
-        .locator(".ant-form-item")
-        .filter({ hasText: "名称" })
-        .locator("input")
-        .fill("E2E测试机器");
-      await page.getByRole("button", { name: /保存/ }).click();
-      await expect(page.getByText("E2E-MACHINE-001")).toBeVisible({
-        timeout: 5_000,
+      test("creates a product", async ({ page }) => {
+        await page.goto("/products");
+        await page.getByRole("button", { name: /新增商品/ }).click();
+        await expect(page.getByRole("dialog")).toBeVisible({ timeout: 10_000 });
+        await page
+          .locator(".ant-form-item")
+          .filter({ hasText: "商品名称" })
+          .locator("input")
+          .fill("E2E测试饮料");
+        await page.getByRole("button", { name: /保存/ }).click();
+        await expect(page.getByText("E2E测试饮料")).toBeVisible({
+          timeout: 5_000,
+        });
+      });
+
+      test("creates a machine", async ({ page }) => {
+        await page.goto("/machines");
+        await page.getByRole("button", { name: /新增机器/ }).click();
+        await expect(page.getByRole("dialog")).toBeVisible({ timeout: 10_000 });
+        await page
+          .locator(".ant-form-item")
+          .filter({ hasText: "编码" })
+          .locator("input")
+          .fill("E2E-MACHINE-001");
+        await page
+          .locator(".ant-form-item")
+          .filter({ hasText: "名称" })
+          .locator("input")
+          .fill("E2E测试机器");
+        await page.getByRole("button", { name: /保存/ }).click();
+        await expect(page.getByText("E2E-MACHINE-001")).toBeVisible({
+          timeout: 5_000,
+        });
       });
     });
 

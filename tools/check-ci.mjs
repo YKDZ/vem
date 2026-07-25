@@ -363,6 +363,7 @@ async function runAdminBrowserE2e({
   serviceLog,
   adminLog,
   testScript,
+  mutationTarget = "",
 }) {
   printStep(name);
   let serviceApi;
@@ -420,7 +421,12 @@ async function runAdminBrowserE2e({
     );
     await waitForUrl("http://localhost:5173", "Admin UI", adminLog);
 
-    await run("pnpm", [testScript], { cwd: join(root, "apps/admin-ui") });
+    await run("pnpm", [testScript], {
+      cwd: join(root, "apps/admin-ui"),
+      env: mutationTarget
+        ? { VEM_ADMIN_MUTATION_E2E_TARGET: mutationTarget }
+        : {},
+    });
   } finally {
     await stopProcess(adminUi);
     await stopProcess(serviceApi);
@@ -488,6 +494,7 @@ async function runAdminE2eJob() {
     serviceLog: "service-api.log",
     adminLog: "admin-ui.log",
     testScript: "test:e2e",
+    mutationTarget: "isolated",
   });
 }
 

@@ -2,6 +2,8 @@ import { expect, type Page, test } from "@playwright/test";
 import { paymentProviderConfigSchema } from "@vem/shared";
 import { generateKeyPairSync } from "node:crypto";
 
+import { skipUnlessAdminMutationE2eEnabled } from "./support/admin-mutation-e2e";
+
 const ADMIN_USERNAME = process.env.E2E_ADMIN_USERNAME ?? "admin";
 const ADMIN_PASSWORD = process.env.E2E_ADMIN_PASSWORD ?? "AdminPassword123!";
 const TEST_CERTIFICATE_PEM = [
@@ -30,6 +32,8 @@ async function login(page: Page): Promise<void> {
 }
 
 test.describe("Payment Operations admin API contract", () => {
+  skipUnlessAdminMutationE2eEnabled(test);
+
   test("upserts an Alipay provider config through the deployed UI session against the real admin API", async ({
     page,
   }) => {

@@ -7,6 +7,8 @@ import {
 } from "@vem/shared";
 import { z as zod } from "zod";
 
+import { skipUnlessAdminMutationE2eEnabled } from "./support/admin-mutation-e2e";
+
 const ADMIN_USERNAME = process.env.E2E_ADMIN_USERNAME ?? "admin";
 const ADMIN_PASSWORD = process.env.E2E_ADMIN_PASSWORD ?? "AdminPassword123!";
 
@@ -39,6 +41,8 @@ function formItem(page: Page, label: string) {
 }
 
 test.describe("Product Variant Catalog admin API contract", () => {
+  skipUnlessAdminMutationE2eEnabled(test);
+
   test("creates a product and variant through the browser against the real admin API", async ({
     page,
   }) => {
