@@ -45,7 +45,7 @@ describe("full workflow evidence manifest", () => {
     assert.equal(manifest.tracks[0].key, "sale");
     assert.match(manifest.tracks[0].machineRuntimeTrace, /#runtimeTrace$/);
     assert.equal(manifest.tracks[0].logs.length, 1);
-    assert.equal(manifest.tracks[0].screenshots.length, 1);
+    assert.equal(manifest.tracks[0].screenshots.length, 2);
     assert.match(manifest.tracks[0].screenshots[0], /failure\.png$/);
     assert.deepEqual(validateFullWorkflowEvidenceManifest(manifest), []);
     const tampered = structuredClone(manifest);

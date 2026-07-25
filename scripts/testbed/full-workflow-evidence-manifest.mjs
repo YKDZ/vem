@@ -202,7 +202,7 @@ function physicalEvidence(track, artifactFiles) {
         screenshotScore(right) - screenshotScore(left) ||
         right.path.localeCompare(left.path),
     )
-    .slice(0, 1);
+    .slice(0, 3);
   return { supporting, logs, screenshots };
 }
 
