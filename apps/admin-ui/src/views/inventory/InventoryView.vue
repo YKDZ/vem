@@ -13,6 +13,18 @@ import {
   type InventoryMovement,
   type PageResult,
 } from "@/api/inventory";
+import {
+  listMachines,
+  listMachineSlots,
+  type Machine,
+  type MachineSlot,
+} from "@/api/machines";
+import {
+  listProducts,
+  listProductVariants,
+  type Product,
+  type ProductVariant,
+} from "@/api/products";
 import OrderDetailDrawerComponent from "@/components/OrderDetailDrawer.vue";
 import { useAuthStore } from "@/stores/auth";
 import { formatDateTime } from "@/utils/format";
@@ -64,6 +76,7 @@ const bindFormOpen = ref(false);
 const bindForm = ref({
   machineId: "",
   slotId: "",
+  productId: "",
   variantId: "",
   onHandQty: 0,
   reservedQty: 0,
@@ -71,8 +84,78 @@ const bindForm = ref({
   note: "",
 });
 const bindSaving = ref(false);
+const bindOptionsLoading = ref(false);
+const bindSlotsLoading = ref(false);
+const bindVariantsLoading = ref(false);
+const bindMachines = ref<Machine[]>([]);
+const bindSlots = ref<MachineSlot[]>([]);
+const bindProducts = ref<Product[]>([]);
+const bindVariants = ref<ProductVariant[]>([]);
+
+function resetBindForm(): void {
+  bindForm.value = {
+    machineId: "",
+    slotId: "",
+    productId: "",
+    variantId: "",
+    onHandQty: 0,
+    reservedQty: 0,
+    lowStockThreshold: 1,
+    note: "",
+  };
+  bindSlots.value = [];
+  bindVariants.value = [];
+}
+
+async function openBindForm(): Promise<void> {
+  resetBindForm();
+  bindFormOpen.value = true;
+  bindOptionsLoading.value = true;
+  try {
+    const [machinesPage, productsPage] = await Promise.all([
+      listMachines({ page: 1, pageSize: 100 }),
+      listProducts({ page: 1, pageSize: 100 }),
+    ]);
+    bindMachines.value = machinesPage.items;
+    bindProducts.value = productsPage.items;
+  } finally {
+    bindOptionsLoading.value = false;
+  }
+}
+
+async function onBindMachineChanged(machineId: string): Promise<void> {
+  bindForm.value.slotId = "";
+  bindSlots.value = [];
+  if (!machineId) return;
+  bindSlotsLoading.value = true;
+  try {
+    bindSlots.value = await listMachineSlots(machineId);
+  } finally {
+    bindSlotsLoading.value = false;
+  }
+}
+
+async function onBindProductChanged(productId: string): Promise<void> {
+  bindForm.value.variantId = "";
+  bindVariants.value = [];
+  if (!productId) return;
+  bindVariantsLoading.value = true;
+  try {
+    bindVariants.value = (await listProductVariants(productId)).items;
+  } finally {
+    bindVariantsLoading.value = false;
+  }
+}
 
 async function saveBind(): Promise<void> {
+  if (
+    !bindForm.value.machineId ||
+    !bindForm.value.slotId ||
+    !bindForm.value.variantId
+  ) {
+    void message.error("请先选择机器、货道和商品规格");
+    return;
+  }
   bindSaving.value = true;
   try {
     await createInventory({
@@ -90,6 +173,20 @@ async function saveBind(): Promise<void> {
   } finally {
     bindSaving.value = false;
   }
+}
+
+function slotOptionLabel(slot: MachineSlot): string {
+  return `第 ${slot.rowNo} 层 / 第 ${slot.cellNo} 格 · 容量 ${slot.capacity}`;
+}
+
+function variantOptionLabel(variant: ProductVariant): string {
+  return [
+    variant.sku,
+    variant.color ? `颜色 ${variant.color}` : null,
+    variant.size ? `尺码 ${variant.size}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 // Adjust
@@ -163,7 +260,7 @@ onMounted(() => {
   <section class="space-y-4">
     <a-card title="库存列表">
       <div class="mb-4 flex gap-3">
-        <a-button v-if="canAdjust" type="primary" @click="bindFormOpen = true">
+        <a-button v-if="canAdjust" type="primary" @click="openBindForm">
           绑定库存
         </a-button>
       </div>
@@ -273,18 +370,80 @@ onMounted(() => {
       v-model:open="bindFormOpen"
       title="绑定库存"
       :confirm-loading="bindSaving"
+      :ok-button-props="{
+        disabled:
+          bindOptionsLoading ||
+          !bindForm.machineId ||
+          !bindForm.slotId ||
+          !bindForm.variantId,
+      }"
       @ok="saveBind"
     >
       <a-form layout="vertical">
-        <a-form-item label="机器ID"
-          ><a-input v-model:value="bindForm.machineId"
-        /></a-form-item>
-        <a-form-item label="格口ID"
-          ><a-input v-model:value="bindForm.slotId"
-        /></a-form-item>
-        <a-form-item label="SKU ID"
-          ><a-input v-model:value="bindForm.variantId"
-        /></a-form-item>
+        <a-form-item label="机器">
+          <a-select
+            v-model:value="bindForm.machineId"
+            :loading="bindOptionsLoading"
+            placeholder="选择机器"
+            @change="onBindMachineChanged"
+          >
+            <a-select-option
+              v-for="machine in bindMachines"
+              :key="machine.id"
+              :value="machine.id"
+            >
+              {{ machine.code }} · {{ machine.name }}
+            </a-select-option>
+          </a-select>
+        </a-form-item>
+        <a-form-item label="货道">
+          <a-select
+            v-model:value="bindForm.slotId"
+            :disabled="!bindForm.machineId"
+            :loading="bindSlotsLoading"
+            placeholder="选择货道"
+          >
+            <a-select-option
+              v-for="slot in bindSlots"
+              :key="slot.id"
+              :value="slot.id"
+            >
+              {{ slotOptionLabel(slot) }}
+            </a-select-option>
+          </a-select>
+        </a-form-item>
+        <a-form-item label="商品">
+          <a-select
+            v-model:value="bindForm.productId"
+            :loading="bindOptionsLoading"
+            placeholder="选择商品"
+            @change="onBindProductChanged"
+          >
+            <a-select-option
+              v-for="product in bindProducts"
+              :key="product.id"
+              :value="product.id"
+            >
+              {{ product.name }}
+            </a-select-option>
+          </a-select>
+        </a-form-item>
+        <a-form-item label="商品规格">
+          <a-select
+            v-model:value="bindForm.variantId"
+            :disabled="!bindForm.productId"
+            :loading="bindVariantsLoading"
+            placeholder="选择规格"
+          >
+            <a-select-option
+              v-for="variant in bindVariants"
+              :key="variant.id"
+              :value="variant.id"
+            >
+              {{ variantOptionLabel(variant) }}
+            </a-select-option>
+          </a-select>
+        </a-form-item>
         <a-form-item label="在库数量">
           <a-input-number
             v-model:value="bindForm.onHandQty"

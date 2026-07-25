@@ -587,6 +587,32 @@ describe("Local Operations", () => {
     });
   });
 
+  it("allows a claimed machine to submit a reclaim code through the same Local Operations task", async () => {
+    currentConfiguration = configuration(true);
+    const host = await render();
+
+    expect(host.textContent).toContain("MACHINE-001");
+    expect(host.textContent).toContain("重新认领");
+    expect(host.querySelector("input[aria-label='认领码']")).toBeNull();
+
+    const reclaimCode = host.querySelector<HTMLInputElement>(
+      "input[aria-label='重领码']",
+    );
+    if (!reclaimCode) throw new Error("reclaim input not found");
+    reclaimCode.value = "reclaim-001";
+    reclaimCode.dispatchEvent(new Event("input", { bubbles: true }));
+    await nextTick();
+    button(host, "重新认领").click();
+    await flush();
+
+    expect(client.claimMachine).toHaveBeenCalledWith("reclaim-001");
+    expect(client.getEffectiveRuntimeConfiguration).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => {
+      expect(reclaimCode.value).toBe("");
+      expect(host.textContent).toContain("机器认领已接受");
+    });
+  });
+
   it("renders the generated whole-machine lock snapshot and exposes its clear action", async () => {
     const host = await render();
     useSaleCapabilityStore().acceptSnapshot(

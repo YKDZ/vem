@@ -1459,6 +1459,24 @@ async function submitStockMaintenanceTask(): Promise<void> {
             <p>机器认领</p>
             <strong>{{ machineStore.machineCode ?? "已认领" }}</strong>
             <span>平台配置已接受，本地界面不重复编辑平台字段。</span>
+            <form class="grid gap-3" @submit.prevent="submitClaim">
+              <p class="font-semibold text-white">重新认领</p>
+              <input
+                v-model.trim="commissioning.claimCode"
+                class="kiosk-touch-target rounded-xl bg-slate-950/60 p-3 text-white"
+                autocomplete="off"
+                placeholder="重领码"
+                aria-label="重领码"
+                required
+              />
+              <button
+                class="kiosk-touch-target rounded-xl bg-emerald-300 px-4 py-3 font-bold text-slate-950 disabled:opacity-50"
+                type="submit"
+                :disabled="commissioning.claiming || !commissioning.claimCode"
+              >
+                {{ commissioning.claiming ? "重领中" : "重新认领" }}
+              </button>
+            </form>
           </div>
           <p
             v-if="commissioning.message"
