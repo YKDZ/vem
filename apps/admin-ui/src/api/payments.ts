@@ -27,8 +27,6 @@ import {
   paymentProviderConfigSchema,
   paymentProviderSchema,
   paymentMachinePreflightSchema,
-  paymentOpsMetricsSchema,
-  paymentOpsReadinessSchema,
   updatePaymentChannelPolicySchema,
   updatePaymentProviderConfigSchema,
   updatePaymentProviderSchema,
@@ -39,8 +37,6 @@ import {
   type PaymentIncidentActionResponse,
   type PaymentMachinePreflight,
   type PaymentChannelPolicyResponse,
-  type PaymentOpsMetrics,
-  type PaymentOpsReadiness,
   type PaymentProviderConfigResponse,
   type PaymentProviderNotifyUrlCheckResponse,
   type PaymentProviderResponse,
@@ -81,7 +77,7 @@ export type PaymentProviderNotifyUrlCheck =
 export type PaymentSecretStatus =
   PaymentProviderConfigResponse["secretStatusJson"][string];
 export type PaymentEvent = PaymentEventAdminResponse;
-export type { PaymentMachinePreflight, PaymentOpsMetrics, PaymentOpsReadiness };
+export type { PaymentMachinePreflight };
 export type { PageResult };
 
 export async function listPayments(
@@ -323,32 +319,6 @@ export async function manualReconcile(
     paymentOperatorReasonSchema,
     paymentAdminActionResultSchema,
     { reason },
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Payment Ops
-// ---------------------------------------------------------------------------
-
-export async function getPaymentOpsReadiness(): Promise<PaymentOpsReadiness> {
-  return await getContract(
-    "/payments/ops/readiness",
-    paymentAdminNoBodySchema,
-    paymentOpsReadinessSchema,
-    {},
-  );
-}
-
-export async function getPaymentOpsMetrics(
-  windowMinutes = 60,
-): Promise<PaymentOpsMetrics> {
-  return await getContract(
-    "/payments/ops/metrics",
-    paymentAdminNoBodySchema.extend({
-      windowMinutes: z.number().int().min(5).max(1440).optional(),
-    }),
-    paymentOpsMetricsSchema,
-    { windowMinutes },
   );
 }
 

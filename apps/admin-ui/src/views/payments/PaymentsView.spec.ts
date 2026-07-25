@@ -60,9 +60,6 @@ vi.mock("@/components/OrderDetailDrawer.vue", () => ({
 vi.mock("./PaymentChannelPolicyPanel.vue", () => ({
   default: defineComponent({ setup: () => () => h("section") }),
 }));
-vi.mock("./PaymentOpsPanel.vue", () => ({
-  default: defineComponent({ setup: () => () => h("section") }),
-}));
 vi.mock("./PaymentProviderConfigDrawer.vue", () => ({
   default: defineComponent({ setup: () => () => h("section") }),
 }));
@@ -78,6 +75,18 @@ const PassthroughStub = defineComponent({
     (_, { slots }) =>
     () =>
       h("section", slots.default?.()),
+});
+
+const TabPaneStub = defineComponent({
+  props: {
+    tab: {
+      type: String,
+      default: "",
+    },
+  },
+  setup(props, { slots }) {
+    return () => h("section", [props.tab, slots.default?.()]);
+  },
 });
 
 const ButtonStub = defineComponent({
@@ -156,16 +165,10 @@ async function mountPaymentsView(): Promise<HTMLElement> {
   const host = document.createElement("div");
   document.body.append(host);
   const app = createApp(PaymentsView);
-  for (const name of [
-    "a-card",
-    "a-tab-pane",
-    "a-space",
-    "a-modal",
-    "a-tag",
-    "a-textarea",
-  ]) {
+  for (const name of ["a-card", "a-space", "a-modal", "a-tag", "a-textarea"]) {
     app.component(name, PassthroughStub);
   }
+  app.component("a-tab-pane", TabPaneStub);
   app.component("a-button", ButtonStub);
   app.component("a-tabs", TabsStub);
   app.component("a-table", TableStub);
@@ -191,16 +194,10 @@ async function mountPaymentsViewWithInitialTab(
   const host = document.createElement("div");
   document.body.append(host);
   const app = createApp(PaymentsView);
-  for (const name of [
-    "a-card",
-    "a-tab-pane",
-    "a-space",
-    "a-modal",
-    "a-tag",
-    "a-textarea",
-  ]) {
+  for (const name of ["a-card", "a-space", "a-modal", "a-tag", "a-textarea"]) {
     app.component(name, PassthroughStub);
   }
+  app.component("a-tab-pane", TabPaneStub);
   app.component("a-button", ButtonStub);
   app.component(
     "a-tabs",
@@ -314,5 +311,13 @@ describe("PaymentsView", () => {
     expect(host.textContent).toContain("已配置");
     expect(host.textContent).toContain("编辑");
     expect(host.textContent).not.toContain("商户配置");
+  });
+
+  it("does not render the retired payment go-live gate tab", async () => {
+    apiMocks.listPayments.mockResolvedValue(emptyPage);
+
+    const host = await mountPaymentsView();
+
+    expect(host.textContent).not.toContain("上线门禁");
   });
 });

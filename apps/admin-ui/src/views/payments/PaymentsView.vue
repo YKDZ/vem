@@ -33,7 +33,6 @@ import { formatCents, formatDateTime } from "@/utils/format";
 import type { RealPaymentProviderCode } from "./payment-config-model";
 
 import PaymentChannelPolicyPanel from "./PaymentChannelPolicyPanel.vue";
-import PaymentOpsPanel from "./PaymentOpsPanel.vue";
 import PaymentProviderConfigDrawer from "./PaymentProviderConfigDrawer.vue";
 
 const authStore = useAuthStore();
@@ -828,10 +827,6 @@ onMounted(() => {
             </template>
           </template>
         </a-table>
-      </a-tab-pane>
-
-      <a-tab-pane key="ops" tab="上线门禁">
-        <PaymentOpsPanel />
       </a-tab-pane>
     </a-tabs>
     <PaymentProviderConfigDrawer

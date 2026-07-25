@@ -10,6 +10,7 @@ type TabbedAdminPage = {
   path: string;
   routeLabel: string;
   tabs: string[];
+  hiddenTabs?: string[];
 };
 
 const TABBED_ADMIN_PAGES: TabbedAdminPage[] = [
@@ -25,8 +26,8 @@ const TABBED_ADMIN_PAGES: TabbedAdminPage[] = [
       "对账记录",
       "退款管理",
       "付款码尝试",
-      "上线门禁",
     ],
+    hiddenTabs: ["上线门禁"],
   },
   {
     path: "/system-settings",
@@ -70,6 +71,12 @@ test.describe("Admin tabbed page contract acceptance", () => {
         await monitor.assertNoFailures();
       }
       /* eslint-enable no-await-in-loop */
+
+      for (const hiddenTabName of adminPage.hiddenTabs ?? []) {
+        await expect(
+          page.getByRole("tab", { name: hiddenTabName }),
+        ).toHaveCount(0);
+      }
     });
   }
 });

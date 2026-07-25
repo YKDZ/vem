@@ -11,8 +11,6 @@ import {
 
 import {
   getPaymentMachinePreflight,
-  getPaymentOpsMetrics,
-  getPaymentOpsReadiness,
   getPaymentChannelPolicy,
   listPaymentProviderConfigs,
   listPaymentProviderNotifyUrlChecks,
@@ -120,23 +118,9 @@ describe("payments api operator actions", () => {
   });
 
   it("parses payment operations read responses through shared schemas", async () => {
-    await getPaymentOpsReadiness();
-    await getPaymentOpsMetrics(30);
     await getPaymentMachinePreflight("550e8400-e29b-41d4-a716-446655440010");
     await getPaymentChannelPolicy();
 
-    expect(getContract).toHaveBeenCalledWith(
-      "/payments/ops/readiness",
-      expect.any(Object),
-      expect.any(Object),
-      {},
-    );
-    expect(getContract).toHaveBeenCalledWith(
-      "/payments/ops/metrics",
-      expect.any(Object),
-      expect.any(Object),
-      { windowMinutes: 30 },
-    );
     expect(getContract).toHaveBeenCalledWith(
       "/payments/ops/machines/550e8400-e29b-41d4-a716-446655440010/preflight",
       expect.any(Object),
