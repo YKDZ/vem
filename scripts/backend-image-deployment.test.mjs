@@ -7,6 +7,10 @@ import { describe, it } from "node:test";
 import YAML from "yaml";
 
 import {
+  backendComposeSmokeEnv,
+  composeCommand,
+} from "./backend-compose-smoke.mjs";
+import {
   deploy,
   deploymentRecord,
   renderDigestComposeOverride,
@@ -119,6 +123,51 @@ describe("backend image publishing", () => {
 });
 
 describe("backend deployment record", () => {
+  it("builds a bounded production-like Compose smoke env", () => {
+    const env = backendComposeSmokeEnv({
+      serviceApiImage: "registry/vem-service-api@sha256:service",
+      adminUiImage: "registry/vem-admin-ui@sha256:admin",
+      ports: {
+        serviceApi: 33001,
+        adminUi: 34001,
+        postgres: 35001,
+        mqtt: 36001,
+      },
+      volumePrefix: "smoke-volume",
+    });
+    assert.equal(env.PAYMENT_MOCK_ENABLED, "false");
+    assert.equal(env.SERVICE_API_PORT, "33001");
+    assert.equal(env.ADMIN_UI_PORT, "34001");
+    assert.equal(env.MACHINE_MQTT_URL, "mqtt://127.0.0.1:36001");
+    assert.equal(env.POSTGRES_DATA_SOURCE, "smoke-volume-postgres-data");
+    assert.equal(env.MQTT_DATA_SOURCE, "smoke-volume-mqtt-data");
+    assert.equal(
+      env.SERVICE_API_MEDIA_VOLUME_NAME,
+      "smoke-volume-service-api-media-assets",
+    );
+    assert.equal(env.JWT_SECRET.length, 64);
+    assert.equal(env.MACHINE_JWT_SECRET.length, 64);
+  });
+
+  it("uses one Compose file and env file for the smoke command", () => {
+    assert.deepEqual(
+      composeCommand({
+        project: "vem-backend-smoke",
+        envFile: "/tmp/backend.env",
+        composeFile: "/repo/apps/service-api/docker-compose.yml",
+      }),
+      [
+        "compose",
+        "-p",
+        "vem-backend-smoke",
+        "--env-file",
+        "/tmp/backend.env",
+        "-f",
+        "/repo/apps/service-api/docker-compose.yml",
+      ],
+    );
+  });
+
   it("renders the digest override used by target-host compose deployment", () => {
     assert.equal(
       renderDigestComposeOverride({
@@ -231,6 +280,18 @@ describe("backend deployment record", () => {
     assert.deepEqual(compose.services["service-api"].volumes, [
       "vem-service-api-media-assets:/var/lib/vem/service-api/media-assets",
     ]);
+    assert.equal(
+      compose.volumes["vem-postgres-data"].name,
+      "${POSTGRES_DATA_SOURCE:-vem-postgres-data}",
+    );
+    assert.equal(
+      compose.volumes["vem-mqtt-data"].name,
+      "${MQTT_DATA_SOURCE:-vem-mqtt-data}",
+    );
+    assert.equal(
+      compose.volumes["vem-service-api-media-assets"].name,
+      "${SERVICE_API_MEDIA_VOLUME_NAME:-vem-service-api-media-assets}",
+    );
     assert.equal(
       compose.services["service-api"].environment.MEDIA_ASSET_STORAGE_ROOT,
       "/var/lib/vem/service-api/media-assets",

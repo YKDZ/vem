@@ -100,5 +100,8 @@ services:
 
 volumes:
   vem-postgres-data:
+    name: ${POSTGRES_DATA_SOURCE:-vem-postgres-data}
   vem-mqtt-data:
+    name: ${MQTT_DATA_SOURCE:-vem-mqtt-data}
   vem-service-api-media-assets:
+    name: ${SERVICE_API_MEDIA_VOLUME_NAME:-vem-service-api-media-assets}

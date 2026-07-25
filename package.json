@@ -15,6 +15,7 @@
     "check:static-quality-workflow": "node --test scripts/check-static-quality-workflow.test.mjs",
     "check:vision-main-consumer": "node --test scripts/windows/vision-main-consumer.test.mjs",
     "check:vm-host-adapter": "node --test scripts/testbed/default-audio-evidence.test.mjs scripts/testbed/display-evidence.test.mjs scripts/testbed/windows-native-audio-evidence.test.mjs scripts/testbed/vm-host-adapter-contract.test.mjs scripts/testbed/local-testbed-host.test.mjs scripts/testbed/local-testbed.test.mjs scripts/testbed/runtime-testbed-orchestrator.test.mjs scripts/testbed/installed-runtime-smoke.test.mjs scripts/check-ci-workflow-needs.test.mjs",
+    "compose-smoke:backend": "node scripts/backend-compose-smoke.mjs",
     "deploy:backend": "node scripts/deploy-backend-stack.mjs",
     "fmt": "tsx node_modules/oxfmt/dist/cli.js . && cargo fmt --all",
     "fmt:check": "node tools/check-format.mjs",
