@@ -117,6 +117,47 @@ describe("payments api operator actions", () => {
     );
   });
 
+  it("accepts mock payment-code attempts returned by the runtime testbed", async () => {
+    vi.mocked(getContract).mockImplementationOnce(
+      async (_url, _querySchema, responseSchema, query) => {
+        (_querySchema as { parse(value: unknown): unknown }).parse(query);
+        return (responseSchema as { parse(value: unknown): unknown }).parse({
+          items: [
+            {
+              id: "attempt-1",
+              orderId: "order-1",
+              orderNo: "ORD-1",
+              paymentNo: "PAY-1",
+              providerCode: "mock",
+              attemptNo: 1,
+              providerPaymentNo: "MOCK-PAY-1",
+              status: "succeeded",
+              authCodeMasked: "2800********1234",
+              source: "serial_text",
+              providerTradeNo: null,
+              providerStatus: null,
+              failureCode: null,
+              failureMessage: null,
+              manualReason: null,
+              submittedAt: "2026-07-25T05:00:00.000Z",
+              lastCheckedAt: null,
+              reversedAt: null,
+              finishedAt: "2026-07-25T05:00:01.000Z",
+              createdAt: "2026-07-25T05:00:00.000Z",
+            },
+          ],
+          total: 1,
+          page: 1,
+          pageSize: 20,
+        });
+      },
+    );
+
+    const page = await listPaymentCodeAttempts({ providerCode: "mock" });
+
+    expect(page.items[0]?.providerCode).toBe("mock");
+  });
+
   it("parses payment operations read responses through shared schemas", async () => {
     await getPaymentMachinePreflight("550e8400-e29b-41d4-a716-446655440010");
     await getPaymentChannelPolicy();

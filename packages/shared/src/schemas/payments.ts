@@ -472,7 +472,7 @@ export const refundListQuerySchema = refundQuerySchema.extend(
 export const paymentCodeAttemptQuerySchema = z.object({
   orderNo: z.string().max(64).optional(),
   paymentNo: z.string().max(64).optional(),
-  providerCode: z.enum(["wechat_pay", "alipay"]).optional(),
+  providerCode: z.enum(["wechat_pay", "alipay", "mock"]).optional(),
   status: paymentCodeAttemptStatusSchema.optional(),
   manualOnly: z.coerce.boolean().optional(),
   createdFrom: z.iso.datetime().optional(),
@@ -686,7 +686,7 @@ export const paymentCodeAttemptAdminResponseSchema = z.strictObject({
   orderId: z.string().min(1),
   orderNo: z.string().min(1),
   paymentNo: z.string().min(1),
-  providerCode: z.enum(["wechat_pay", "alipay"]),
+  providerCode: z.enum(["wechat_pay", "alipay", "mock"]),
   attemptNo: z.int().positive(),
   providerPaymentNo: z.string().min(1),
   status: paymentCodeAttemptStatusSchema,
