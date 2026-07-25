@@ -1781,6 +1781,11 @@ async function startHeadlessVncActivatorUnit(options, contract) {
 
 export function buildRefreshHostRuntimePlan(options) {
   return [
+    commandLine("docker", [
+      "start",
+      SERVICE_NAMES.postgres,
+      SERVICE_NAMES.mqtt,
+    ]),
     commandLine("pnpm", [
       "turbo",
       "build",

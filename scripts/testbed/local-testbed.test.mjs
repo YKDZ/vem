@@ -423,10 +423,14 @@ describe("local testbed orchestration", () => {
         .join("\n");
       assert.match(
         rendered,
+        /docker start vem-local-testbed-postgres vem-local-testbed-mosquitto/,
+      );
+      assert.match(
+        rendered,
         /pnpm turbo build --filter @vem\/shared --filter @vem\/db --filter service-api/,
       );
       assert.match(rendered, /pnpm --filter @vem\/db migrate/);
-      assert.doesNotMatch(rendered, /docker|volume|reconstruct|seed/i);
+      assert.doesNotMatch(rendered, /docker rm|volume|reconstruct|seed/i);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
