@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+const emptyStringAsUndefined = (value: unknown) =>
+  value === "" ? undefined : value;
+
 const baseEnvSchema = z.object({
   NODE_ENV: z
     .enum(["development", "test", "production"])
@@ -77,7 +80,10 @@ const baseEnvSchema = z.object({
     .string()
     .min(1)
     .default("/var/lib/vem/service-api/media-assets"),
-  MEDIA_ASSET_PUBLIC_BASE_URL: z.url().optional(),
+  MEDIA_ASSET_PUBLIC_BASE_URL: z.preprocess(
+    emptyStringAsUndefined,
+    z.url().optional(),
+  ),
   PAYMENT_CONFIG_ENCRYPTION_KEY: z
     .string()
     .min(32)
@@ -100,16 +106,34 @@ const baseEnvSchema = z.object({
     .min(1)
     .max(90)
     .default(30),
-  QWEATHER_API_KEY: z.string().min(1).optional(),
-  QWEATHER_API_HOST: z
-    .string()
-    .min(1)
-    .regex(/^[a-zA-Z0-9.-]+$/)
-    .optional(),
-  QWEATHER_JWT_KEY_ID: z.string().min(1).optional(),
-  QWEATHER_JWT_PROJECT_ID: z.string().min(1).optional(),
-  QWEATHER_JWT_PRIVATE_KEY: z.string().min(1).optional(),
-  QWEATHER_JWT_PRIVATE_KEY_PATH: z.string().min(1).optional(),
+  QWEATHER_API_KEY: z.preprocess(
+    emptyStringAsUndefined,
+    z.string().min(1).optional(),
+  ),
+  QWEATHER_API_HOST: z.preprocess(
+    emptyStringAsUndefined,
+    z
+      .string()
+      .min(1)
+      .regex(/^[a-zA-Z0-9.-]+$/)
+      .optional(),
+  ),
+  QWEATHER_JWT_KEY_ID: z.preprocess(
+    emptyStringAsUndefined,
+    z.string().min(1).optional(),
+  ),
+  QWEATHER_JWT_PROJECT_ID: z.preprocess(
+    emptyStringAsUndefined,
+    z.string().min(1).optional(),
+  ),
+  QWEATHER_JWT_PRIVATE_KEY: z.preprocess(
+    emptyStringAsUndefined,
+    z.string().min(1).optional(),
+  ),
+  QWEATHER_JWT_PRIVATE_KEY_PATH: z.preprocess(
+    emptyStringAsUndefined,
+    z.string().min(1).optional(),
+  ),
   QWEATHER_WEATHER_NOW_PATH: z
     .string()
     .regex(/^\/.+/)

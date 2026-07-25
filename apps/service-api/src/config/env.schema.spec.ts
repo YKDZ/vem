@@ -56,6 +56,25 @@ describe("validateEnv", () => {
     expect(env.QWEATHER_TIMEOUT_MS).toBe(2500);
   });
 
+  it("treats empty optional deployment values as unset", () => {
+    const env = validateEnv({
+      ...baseValidEnv,
+      MEDIA_ASSET_PUBLIC_BASE_URL: "",
+      QWEATHER_API_HOST: "",
+      QWEATHER_JWT_KEY_ID: "",
+      QWEATHER_JWT_PROJECT_ID: "",
+      QWEATHER_JWT_PRIVATE_KEY: "",
+      QWEATHER_JWT_PRIVATE_KEY_PATH: "",
+    });
+
+    expect(env.MEDIA_ASSET_PUBLIC_BASE_URL).toBeUndefined();
+    expect(env.QWEATHER_API_HOST).toBeUndefined();
+    expect(env.QWEATHER_JWT_KEY_ID).toBeUndefined();
+    expect(env.QWEATHER_JWT_PROJECT_ID).toBeUndefined();
+    expect(env.QWEATHER_JWT_PRIVATE_KEY).toBeUndefined();
+    expect(env.QWEATHER_JWT_PRIVATE_KEY_PATH).toBeUndefined();
+  });
+
   it("rejects legacy QWeather API key config", () => {
     expect(() =>
       validateEnv({
