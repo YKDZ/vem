@@ -1,0 +1,17 @@
+{
+  "id": "machine-maintenance-hardware",
+  "source": "machine-runtime",
+  "route": "#/maintenance",
+  "capturedAt": "2026-07-25T19:04:20.282Z",
+  "commit": "c89a204e2cbdecf9a2c62aba33923ee534d548c9",
+  "viewport": {
+    "width": 1080,
+    "height": 1920
+  },
+  "expectedOrientation": "portrait",
+  "expectedTexts": [
+    "设备检查",
+    "出货一件"
+  ],
+  "manualReviewReason": "机器端截图来自 VM Runtime Console 批次；中文文本由人工对照截图复核。"
+}

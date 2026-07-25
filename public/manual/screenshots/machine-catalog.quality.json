@@ -1,0 +1,36 @@
+{
+  "schemaVersion": "vem-documentation-screenshot-metadata/v1",
+  "status": "manual-review",
+  "reasons": [
+    "expected text metadata is present but no detected text evidence was supplied",
+    "manual review reason recorded: 机器端截图来自 VM Runtime Console 批次；中文文本由人工对照截图复核。"
+  ],
+  "metadata": {
+    "id": "machine-catalog",
+    "source": "machine-runtime",
+    "route": "#/catalog",
+    "capturedAt": "2026-07-25T19:04:19.044Z",
+    "commit": "c89a204e2cbdecf9a2c62aba33923ee534d548c9",
+    "viewport": {
+      "width": 1080,
+      "height": 1920
+    },
+    "expectedOrientation": "portrait",
+    "expectedTexts": [
+      "唐诗村",
+      "选购"
+    ],
+    "detectedTexts": null,
+    "manualReviewReason": "机器端截图来自 VM Runtime Console 批次；中文文本由人工对照截图复核。"
+  },
+  "capture": {
+    "format": "png",
+    "widthPx": 1080,
+    "heightPx": 1920,
+    "pixelCount": 2073600,
+    "nonTransparentPixelCount": 2073600,
+    "nonTransparentPixelRatio": 1,
+    "distinctPixelCount": 35790,
+    "orientation": "portrait"
+  }
+}
