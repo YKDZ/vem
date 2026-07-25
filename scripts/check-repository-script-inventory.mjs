@@ -170,6 +170,18 @@ export const DEFAULT_INVENTORY = [
     workflows: ["runtime acceptance"],
   },
   {
+    path: "scripts/testbed/documentation-screenshot-quality.mjs",
+    owner: "machine-runtime-console",
+    category: "test support operation",
+    workflows: ["runtime acceptance"],
+  },
+  {
+    path: "scripts/testbed/documentation-screenshot-quality.test.mjs",
+    owner: "machine-runtime-console",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance"],
+  },
+  {
     path: "scripts/testbed/host-serial-control-plane.mjs",
     owner: "field-operations",
     category: "canonical entrypoint",
