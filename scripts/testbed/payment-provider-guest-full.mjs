@@ -480,6 +480,18 @@ async function readPaymentFlowDiagnostic(client, method) {
         .map((el) => (el.textContent || '').trim())
         .filter(Boolean)
         .slice(0, 6);
+      const submitEvents = Array.isArray(window.__VEM_PAYMENT_PROVIDER_SUBMIT_EVENTS__)
+        ? window.__VEM_PAYMENT_PROVIDER_SUBMIT_EVENTS__
+        : [];
+      const submitEventSummary = submitEvents.reduce((summary, event) => {
+        const key = event.type === 'click' && event.trusted === false
+          ? 'domClick'
+          : event.type;
+        summary[key] = (summary[key] || 0) + 1;
+        summary.lastType = event.type;
+        summary.lastTrusted = event.trusted;
+        return summary;
+      }, {});
       return {
         expectedMethod: ${JSON.stringify(method)},
         route: location.hash,
@@ -498,9 +510,8 @@ async function readPaymentFlowDiagnostic(client, method) {
           selectedOptionKey: selected?.dataset.paymentOptionKey ?? null,
         },
         customerMessages: visibleText('[role="alert"], .ant-message, .ant-alert, .checkout-error, .payment-error, [data-test*="error"]'),
-        submitEvents: Array.isArray(window.__VEM_PAYMENT_PROVIDER_SUBMIT_EVENTS__)
-          ? window.__VEM_PAYMENT_PROVIDER_SUBMIT_EVENTS__.slice(-12)
-          : null,
+        submitEventSummary,
+        submitEvents: submitEvents.slice(-4),
         runtimeTrace: window.__VEM_MACHINE_RUNTIME_TRACE_SNAPSHOT__?.entries?.slice?.(-12) ?? null,
       };
     })()`,
@@ -559,6 +570,7 @@ async function dispatchCheckoutSubmitDomClick(client) {
 async function submitUntilPaymentSurface(client, method, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   let submitCount = 0;
+  let mouseClickCount = 0;
   let domClickCount = 0;
   await installCheckoutSubmitEventProbe(client);
   while (Date.now() < deadline) {
@@ -585,6 +597,13 @@ async function submitUntilPaymentSurface(client, method, timeoutMs) {
         { kind: "touch", timeoutMs: 5_000, pollMs: POLL_INTERVAL_MS },
       );
       submitCount += 1;
+    } else if (submitReady && mouseClickCount < 1) {
+      await activateVisibleSelector(
+        client,
+        '[data-test="checkout-submit"]:not(:disabled)',
+        { kind: "mouse", timeoutMs: 5_000, pollMs: POLL_INTERVAL_MS },
+      );
+      mouseClickCount += 1;
     } else if (submitReady && domClickCount < 1) {
       const dispatched = await dispatchCheckoutSubmitDomClick(client);
       if (dispatched) domClickCount += 1;
@@ -593,7 +612,7 @@ async function submitUntilPaymentSurface(client, method, timeoutMs) {
   }
   const diagnostic = await readPaymentFlowDiagnostic(client, method);
   throw new Error(
-    `visible ${method} Alipay payment surface did not appear after submit attempts: ${JSON.stringify(sanitizeProviderEvidence({ ...diagnostic, submitCount, domClickCount }))}`,
+    `visible ${method} Alipay payment surface did not appear after submit attempts: ${JSON.stringify(sanitizeProviderEvidence({ ...diagnostic, submitCount, mouseClickCount, domClickCount }))}`,
   );
 }
 

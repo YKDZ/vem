@@ -82,7 +82,7 @@ describe("payment provider guest full", () => {
     assert.ok(source.includes("customerMessages"));
   });
 
-  it("keeps a DOM click fallback for checkout submit driver flakiness", () => {
+  it("keeps mouse and DOM fallbacks for checkout submit driver flakiness", () => {
     const source = readFileSync(
       new URL("./payment-provider-guest-full.mjs", import.meta.url),
       "utf8",
@@ -90,12 +90,16 @@ describe("payment provider guest full", () => {
     const physicalIndex = source.indexOf(
       "await activateVisibleSelector(\n        client,\n        '[data-test=\"checkout-submit\"]:not(:disabled)'",
     );
+    const mouseIndex = source.indexOf('kind: "mouse"', physicalIndex);
     const fallbackIndex = source.indexOf(
       "const dispatched = await dispatchCheckoutSubmitDomClick",
     );
     assert.ok(physicalIndex > 0);
-    assert.ok(fallbackIndex > physicalIndex);
+    assert.ok(mouseIndex > physicalIndex);
+    assert.ok(fallbackIndex > mouseIndex);
+    assert.ok(source.includes("mouseClickCount"));
     assert.ok(source.includes("domClickCount"));
+    assert.ok(source.includes("submitEventSummary"));
   });
 
   it("treats a completed previous sale as clean provider diagnostics state", () => {
