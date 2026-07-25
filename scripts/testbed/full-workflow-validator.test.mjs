@@ -420,14 +420,14 @@ function environmentControlReport() {
     precedence: {
       automaticArrival: {
         edgeId: "presence-1:arrival",
-        requestedSpeed: 2,
+        requestedSpeed: 3,
         outcome: "accepted",
         b3FrameCountDelta: 1,
         protocolFrames: ["B3"],
         frame: {
           sessionId: "serial-replacement",
           parsedOpcode: "B3",
-          rawFrameHex: "55b302",
+          rawFrameHex: "55b303",
           capturedAt: "2026-07-22T08:00:00.000Z",
         },
       },
@@ -1084,7 +1084,7 @@ function presenceAndAudioReport() {
         protocolFrames: [
           {
             parsedOpcode: "B3",
-            rawFrameHex: "55b302",
+            rawFrameHex: "55b303",
             capturedAt: "2026-07-22T08:00:00.000Z",
           },
           {
@@ -1093,16 +1093,16 @@ function presenceAndAudioReport() {
             capturedAt: "2026-07-22T08:00:10.000Z",
           },
         ],
-        speeds: [2, 0],
+        speeds: [3, 0],
         guardElapsedMs: 10_000,
         edgeCorrelation: [
           {
             edgeId: "presence-1:arrival",
             transitionId: "vision:presence-1:welcome",
-            speed: 2,
+            speed: 3,
             frame: {
               parsedOpcode: "B3",
-              rawFrameHex: "55b302",
+              rawFrameHex: "55b303",
               capturedAt: "2026-07-22T08:00:00.000Z",
             },
           },

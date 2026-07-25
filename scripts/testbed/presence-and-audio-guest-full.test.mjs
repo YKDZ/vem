@@ -258,7 +258,7 @@ function report() {
         protocolFrames: [
           {
             parsedOpcode: "B3",
-            rawFrameHex: "55b302",
+            rawFrameHex: "55b303",
             capturedAt: "2026-07-22T08:00:00.000Z",
           },
           {
@@ -267,16 +267,16 @@ function report() {
             capturedAt: "2026-07-22T08:00:10.000Z",
           },
         ],
-        speeds: [2, 0],
+        speeds: [3, 0],
         guardElapsedMs: 10_000,
         edgeCorrelation: [
           {
             edgeId: "presence-1:arrival",
             transitionId: "vision:presence-1:welcome",
-            speed: 2,
+            speed: 3,
             frame: {
               parsedOpcode: "B3",
-              rawFrameHex: "55b302",
+              rawFrameHex: "55b303",
               capturedAt: "2026-07-22T08:00:00.000Z",
             },
           },
@@ -347,7 +347,7 @@ describe("presence and audio guest full", () => {
           capturedAt: "2026-07-24T17:25:01.000Z",
           direction: "daemon-to-controller",
           parsedOpcode: "B3",
-          rawFrameHex: "55b302",
+          rawFrameHex: "55b303",
         },
       ],
     };
@@ -666,7 +666,7 @@ describe("presence and audio guest full", () => {
                         {
                           direction: "daemon-to-controller",
                           parsedOpcode: "B3",
-                          rawFrameHex: "55b302",
+                          rawFrameHex: "55b303",
                           capturedAt: "2026-07-22T08:00:00.000Z",
                         },
                       ]
@@ -675,7 +675,7 @@ describe("presence and audio guest full", () => {
                           {
                             direction: "daemon-to-controller",
                             parsedOpcode: "B3",
-                            rawFrameHex: "55b302",
+                            rawFrameHex: "55b303",
                             capturedAt: "2026-07-22T08:00:00.000Z",
                           },
                           {
@@ -689,7 +689,7 @@ describe("presence and audio guest full", () => {
                           {
                             direction: "daemon-to-controller",
                             parsedOpcode: "B3",
-                            rawFrameHex: "55b302",
+                            rawFrameHex: "55b303",
                             capturedAt: "2026-07-22T08:00:00.000Z",
                           },
                           {

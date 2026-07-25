@@ -635,7 +635,7 @@ export async function collectAutomaticVentPrecedence({
     handoff,
     sessionId,
     edgeId: `environment-control:${runId}:arrival`,
-    ventSpeed: 2,
+    ventSpeed: 3,
   });
   report.daemon.automaticVent.outcomes.push(automaticArrival);
   const adminVent = await commandEnvironmentRequest({
@@ -652,7 +652,7 @@ export async function collectAutomaticVentPrecedence({
     handoff,
     sessionId,
     edgeId: automaticArrival.edgeId,
-    ventSpeed: 2,
+    ventSpeed: 3,
   });
   report.daemon.automaticVent.outcomes.push(sameEdgeAfterAdmin);
   sameEdgeAfterAdmin.guardWindow = await observeAdminOverrideGuardRequest({
@@ -718,7 +718,7 @@ async function proveOverlapRejection({ guestInput, token, machineId }) {
       {
         token,
         method: "POST",
-        body: { ventSpeed: 2 },
+        body: { ventSpeed: 3 },
       },
     );
     return {
@@ -882,7 +882,7 @@ export async function runEnvironmentControlGuest(options) {
       report.daemon.health?.hardwareOnline === true &&
       report.daemon.readiness?.ready === true &&
       automaticArrival.outcome === "accepted" &&
-      automaticArrival.requestedSpeed === 2 &&
+      automaticArrival.requestedSpeed === 3 &&
       isReplacementSessionB3(
         initialVentReset.serial.protocolFrame,
         report.serialSessionReplacement.replacementControlPlaneSessionId,
@@ -891,7 +891,7 @@ export async function runEnvironmentControlGuest(options) {
       isReplacementSessionB3(
         automaticArrival.frame,
         report.serialSessionReplacement.replacementControlPlaneSessionId,
-        2,
+        3,
       ) &&
       isReplacementSessionB3(
         adminVent.serial.protocolFrame,

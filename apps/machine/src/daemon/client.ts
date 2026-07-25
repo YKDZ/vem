@@ -500,7 +500,7 @@ export class DaemonApiClient {
 
   async submitAutomaticVentIntent(input: {
     edgeId: string;
-    ventSpeed: 0 | 2;
+    ventSpeed: 0 | 3;
   }): Promise<unknown> {
     return this.request("/v1/intents/automatic-vent", {
       method: "POST",

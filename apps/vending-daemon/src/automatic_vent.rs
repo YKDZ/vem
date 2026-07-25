@@ -200,8 +200,8 @@ impl AutomaticVentController {
         if edge_id.trim().is_empty() {
             return Err("automatic vent edge id is required".to_string());
         }
-        if !matches!(speed, 0 | 2) {
-            return Err("automatic vent speed must be either 0 or 2".to_string());
+        if !matches!(speed, 0 | 3) {
+            return Err("automatic vent speed must be either 0 or 3".to_string());
         }
         let mut state = self.state.lock().await;
         if state.closed || self.shutdown.is_cancelled() {
@@ -799,7 +799,7 @@ mod tests {
         );
 
         controller
-            .request("presence-1:arrival", 2)
+            .request("presence-1:arrival", 3)
             .await
             .expect("arrival request");
         controller
@@ -826,7 +826,7 @@ mod tests {
         );
 
         controller
-            .request("presence-1:arrival", 2)
+            .request("presence-1:arrival", 3)
             .await
             .expect("arrival request");
         controller.supersede_by_admin().await;
@@ -852,7 +852,7 @@ mod tests {
         );
 
         controller
-            .request("presence-1:arrival", 2)
+            .request("presence-1:arrival", 3)
             .await
             .expect("automatic arrival");
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -864,7 +864,7 @@ mod tests {
         let attempts = adapter.vent_attempts.lock().expect("attempts").clone();
         assert_eq!(
             attempts.iter().map(|(speed, _)| *speed).collect::<Vec<_>>(),
-            vec![2, 3]
+            vec![3, 3]
         );
         assert!(
             attempts[1].1.duration_since(attempts[0].1) >= std::time::Duration::from_millis(50)
@@ -883,7 +883,7 @@ mod tests {
         let admin_guard = controller.b3_protocol_guard.lock().await;
 
         controller
-            .request("presence-1:arrival", 2)
+            .request("presence-1:arrival", 3)
             .await
             .expect("automatic intent accepted");
         tokio::time::sleep(Duration::from_millis(30)).await;
@@ -893,7 +893,7 @@ mod tests {
         drop(admin_guard);
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
-                if *adapter.vent_speeds.lock().expect("speeds") == vec![2] {
+                if *adapter.vent_speeds.lock().expect("speeds") == vec![3] {
                     return;
                 }
                 tokio::time::sleep(Duration::from_millis(5)).await;
@@ -986,7 +986,7 @@ mod tests {
         let non_b3_hardware_owner = controller.hardware.acquire_environment_hardware().await;
 
         controller
-            .request("presence-1:arrival", 2)
+            .request("presence-1:arrival", 3)
             .await
             .expect("first automatic intent accepted");
         tokio::time::sleep(Duration::from_millis(30)).await;
@@ -995,7 +995,7 @@ mod tests {
         drop(non_b3_hardware_owner);
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
-                if *adapter.vent_speeds.lock().expect("speeds") == vec![2] {
+                if *adapter.vent_speeds.lock().expect("speeds") == vec![3] {
                     return;
                 }
                 tokio::time::sleep(Duration::from_millis(5)).await;
@@ -1018,7 +1018,7 @@ mod tests {
         let admin_guard = controller.b3_protocol_guard.lock().await;
 
         controller
-            .request("presence-1:arrival", 2)
+            .request("presence-1:arrival", 3)
             .await
             .expect("first automatic edge");
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -1057,7 +1057,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fresh_automatic_edge_reapplies_speed_after_successful_admin_b3() {
+    async fn fresh_automatic_edge_keeps_confirmed_high_speed_after_admin_b3() {
         let adapter = Arc::new(RecordingHardware::default());
         let controller = AutomaticVentController::new_with_guard(
             HardwareSupervisor::from_adapter(adapter.clone()),
@@ -1066,7 +1066,7 @@ mod tests {
         );
 
         controller
-            .request("presence-1:arrival", 2)
+            .request("presence-1:arrival", 3)
             .await
             .expect("initial automatic edge");
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -1076,12 +1076,12 @@ mod tests {
             .await
             .expect("successful Admin B3");
         controller
-            .request("presence-2:arrival", 2)
+            .request("presence-2:arrival", 3)
             .await
             .expect("fresh automatic edge");
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 
-        assert_eq!(*adapter.vent_speeds.lock().expect("speeds"), vec![2, 3, 2]);
+        assert_eq!(*adapter.vent_speeds.lock().expect("speeds"), vec![3, 3]);
     }
 
     #[tokio::test]
@@ -1094,18 +1094,18 @@ mod tests {
         );
 
         controller
-            .request("presence-1:arrival", 2)
+            .request("presence-1:arrival", 3)
             .await
             .expect("initial arrival");
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         controller.supersede_by_admin().await;
         controller
-            .request("presence-1:arrival", 2)
+            .request("presence-1:arrival", 3)
             .await
             .expect("duplicate arrival");
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 
-        assert_eq!(*adapter.vent_speeds.lock().expect("speeds"), vec![2]);
+        assert_eq!(*adapter.vent_speeds.lock().expect("speeds"), vec![3]);
         controller.cancel_admin_one_shot().await;
 
         controller
@@ -1114,7 +1114,7 @@ mod tests {
             .expect("next stable edge");
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 
-        assert_eq!(*adapter.vent_speeds.lock().expect("speeds"), vec![2, 0]);
+        assert_eq!(*adapter.vent_speeds.lock().expect("speeds"), vec![3, 0]);
     }
 
     #[tokio::test]
@@ -1127,13 +1127,13 @@ mod tests {
         );
 
         controller
-            .request("presence-0:arrival", 2)
+            .request("presence-0:arrival", 3)
             .await
             .expect("initial arrival");
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         for index in 1..=65 {
             controller
-                .request(&format!("presence-{index}:arrival"), 2)
+                .request(&format!("presence-{index}:arrival"), 3)
                 .await
                 .expect("new edge");
         }
@@ -1141,13 +1141,13 @@ mod tests {
 
         assert_eq!(
             controller
-                .request("presence-0:arrival", 2)
+                .request("presence-0:arrival", 3)
                 .await
                 .expect("old edge retry"),
             AutomaticVentRequestOutcome::Deduplicated,
         );
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-        assert_eq!(*adapter.vent_speeds.lock().expect("speeds"), vec![2]);
+        assert_eq!(*adapter.vent_speeds.lock().expect("speeds"), vec![3]);
     }
 
     #[tokio::test]
@@ -1160,7 +1160,7 @@ mod tests {
         );
 
         controller
-            .request("presence-1:arrival", 2)
+            .request("presence-1:arrival", 3)
             .await
             .expect("arrival request");
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -1169,7 +1169,7 @@ mod tests {
             .await
             .expect("lifecycle close");
 
-        assert_eq!(*adapter.vent_speeds.lock().expect("speeds"), vec![2, 0]);
+        assert_eq!(*adapter.vent_speeds.lock().expect("speeds"), vec![3, 0]);
     }
 
     #[tokio::test]
@@ -1186,7 +1186,7 @@ mod tests {
         let b3_guard = controller.b3_protocol_guard.lock().await;
 
         controller
-            .request("presence-1:arrival", 2)
+            .request("presence-1:arrival", 3)
             .await
             .expect("automatic intent accepted");
 
@@ -1259,7 +1259,7 @@ mod tests {
         .with_evidence(state, temp.path().join("logs").join("machine-events.jsonl"));
 
         controller
-            .request("presence-1:arrival", 2)
+            .request("presence-1:arrival", 3)
             .await
             .expect("intent accepted even when B3 later fails");
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -1298,7 +1298,7 @@ mod tests {
 
         let first_vent_started = adapter.first_vent_started.notified();
         controller
-            .request("presence-1:arrival", 2)
+            .request("presence-1:arrival", 3)
             .await
             .expect("first intent accepted");
         first_vent_started.await;
@@ -1333,7 +1333,7 @@ mod tests {
         .await
         .expect("next intent must run after the timeout");
 
-        assert_eq!(*adapter.vent_speeds.lock().expect("speeds"), vec![2, 0]);
+        assert_eq!(*adapter.vent_speeds.lock().expect("speeds"), vec![3, 0]);
         let log = tokio::fs::read_to_string(temp.path().join("logs").join("machine-events.jsonl"))
             .await
             .expect("automatic vent log");
@@ -1356,7 +1356,7 @@ mod tests {
 
         let first_vent_started = adapter.first_vent_started.notified();
         controller
-            .request("presence-1:arrival", 2)
+            .request("presence-1:arrival", 3)
             .await
             .expect("first intent accepted");
         first_vent_started.await;

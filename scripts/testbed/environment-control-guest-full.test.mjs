@@ -55,7 +55,7 @@ describe("environment control guest full", () => {
           sessionId: "serial-replacement",
           direction: "daemon-to-controller",
           parsedOpcode: "B3",
-          rawFrameHex: "55b302",
+          rawFrameHex: "55b303",
         },
       ],
     };
@@ -74,7 +74,7 @@ describe("environment control guest full", () => {
         {
           boundaryId: "host-pty:serial-replacement:1",
           parsedOpcode: "B3",
-          rawFrameHex: "55b302",
+          rawFrameHex: "55b303",
         },
       ],
     };
@@ -126,7 +126,7 @@ describe("environment control guest full", () => {
           boundaryId: "host-pty:serial-replacement:65",
           direction: "daemon-to-controller",
           parsedOpcode: "B3",
-          rawFrameHex: "55b302",
+          rawFrameHex: "55b303",
         },
       ],
     };
@@ -153,7 +153,7 @@ describe("environment control guest full", () => {
           sessionId: "serial-replacement",
           direction: "daemon-to-controller",
           parsedOpcode: "B3",
-          rawFrameHex: "55b302",
+          rawFrameHex: "55b303",
         },
       ],
     };
@@ -171,16 +171,16 @@ describe("environment control guest full", () => {
     const frame = {
       sessionId: "serial-replacement",
       parsedOpcode: "B3",
-      rawFrameHex: "55b302",
+      rawFrameHex: "55b303",
     };
 
-    assert.equal(isReplacementSessionB3(frame, "serial-replacement", 2), true);
-    assert.equal(isReplacementSessionB3(frame, "serial-stale", 2), false);
+    assert.equal(isReplacementSessionB3(frame, "serial-replacement", 3), true);
+    assert.equal(isReplacementSessionB3(frame, "serial-stale", 3), false);
     assert.equal(
       isReplacementSessionB3(
         { ...frame, sessionId: "serial-session://sha256-replacement" },
         "serial-replacement",
-        2,
+        3,
       ),
       true,
     );
@@ -193,7 +193,7 @@ describe("environment control guest full", () => {
           {
             sessionId: "serial-replacement",
             parsedOpcode: "B3",
-            rawFrameHex: "55b302",
+            rawFrameHex: "55b303",
           },
         ],
       },
@@ -202,7 +202,7 @@ describe("environment control guest full", () => {
           {
             sessionId: "serial-replacement",
             parsedOpcode: "B3",
-            rawFrameHex: "55b302",
+            rawFrameHex: "55b303",
           },
           {
             sessionId: "serial-replacement",
@@ -269,7 +269,7 @@ describe("environment control guest full", () => {
           frame: {
             sessionId: "serial-replacement",
             parsedOpcode: "B3",
-            rawFrameHex: "55b302",
+            rawFrameHex: "55b303",
           },
         };
       }
@@ -325,13 +325,13 @@ describe("environment control guest full", () => {
       {
         kind: "automatic",
         edgeId: "environment-control:RUN-1784767229481:arrival",
-        ventSpeed: 2,
+        ventSpeed: 3,
       },
       { kind: "command", action: "ventSpeed", body: { ventSpeed: 3 } },
       {
         kind: "automatic",
         edgeId: "environment-control:RUN-1784767229481:arrival",
-        ventSpeed: 2,
+        ventSpeed: 3,
       },
       { kind: "guard", beforeFrameCount: 1 },
       {

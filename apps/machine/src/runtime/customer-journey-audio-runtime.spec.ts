@@ -270,7 +270,7 @@ describe("Customer journey audio runtime", () => {
     ).toHaveLength(1);
     expect(submitAutomaticVentIntent).toHaveBeenCalledWith({
       edgeId: "presence-1:arrival",
-      ventSpeed: 2,
+      ventSpeed: 3,
     });
     expect(submitAutomaticVentIntent).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
@@ -346,11 +346,11 @@ describe("Customer journey audio runtime", () => {
     await vi.advanceTimersByTimeAsync(250);
     expect(submitAutomaticVentIntent).toHaveBeenNthCalledWith(1, {
       edgeId: "presence-1:arrival",
-      ventSpeed: 2,
+      ventSpeed: 3,
     });
     expect(submitAutomaticVentIntent).toHaveBeenNthCalledWith(2, {
       edgeId: "presence-1:arrival",
-      ventSpeed: 2,
+      ventSpeed: 3,
     });
 
     visionStore.applyPersonDeparted({

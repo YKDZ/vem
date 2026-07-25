@@ -482,9 +482,9 @@ function automaticVentEvidence({
   duplicateSameEdge,
 }) {
   const speeds = frames.map((frame) => frame.speed);
-  if (speeds.join(",") !== "2,3,0") {
+  if (speeds.join(",") !== "3,3,0") {
     throw new Error(
-      `automatic B3 evidence must be exactly 2,3,0: ${JSON.stringify(frames)}`,
+      `automatic B3 evidence must be exactly 3,3,0: ${JSON.stringify(frames)}`,
     );
   }
   const [arrivalFrame, adminFrame, departureFrame] = frames;
@@ -513,13 +513,13 @@ function automaticVentEvidence({
   }
   return {
     protocolFrames: [arrivalFrame, departureFrame],
-    speeds: [2, 0],
+    speeds: [3, 0],
     guardElapsedMs,
     edgeCorrelation: [
       {
         edgeId: stableEdgeId(initialTransitionId),
         transitionId: initialTransitionId,
-        speed: 2,
+        speed: 3,
         frame: arrivalFrame,
       },
       {
@@ -656,7 +656,7 @@ async function submitDuplicateAutomaticVentIntent(
         authorization: `Bearer ${required(handoff?.daemon?.ready?.ipcToken, "daemon ipcToken")}`,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ edgeId, ventSpeed: 2 }),
+      body: JSON.stringify({ edgeId, ventSpeed: 3 }),
     },
   );
   if (response?.edgeId !== edgeId || response?.outcome !== "deduplicated") {
@@ -901,7 +901,7 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
       guestInput,
       sessionId,
       ventFrameCursor,
-      [2],
+      [3],
       dependencies,
     );
     await dependencies.sleep(5_100);
@@ -913,7 +913,7 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
       guestInput,
       sessionId,
       ventFrameCursor,
-      [2, 3],
+      [3, 3],
       dependencies,
     );
     const checkpoints = [

@@ -64,7 +64,7 @@ export function createCustomerJourneyAudioRuntime(
 
     const submitStableVentIntent = (
       edgeId: string,
-      ventSpeed: 0 | 2,
+      ventSpeed: 0 | 3,
       attempt: number,
     ): void => {
       void daemonClient
@@ -113,7 +113,7 @@ export function createCustomerJourneyAudioRuntime(
           clearTimeout(automaticVentRetryTimer);
           automaticVentRetryTimer = null;
         }
-        const ventSpeed = edge === "arrival" ? 2 : 0;
+        const ventSpeed = edge === "arrival" ? 3 : 0;
         // The daemon deduplicates an edge id. Retrying transient IPC startup
         // failures therefore cannot produce another B3 command for this edge.
         submitStableVentIntent(edgeId, ventSpeed, 0);

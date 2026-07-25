@@ -164,7 +164,7 @@ function assertAutomaticVentEvidence(
   if (
     protocolFrames.length !== 2 ||
     speeds.length !== 2 ||
-    speeds[0] !== 2 ||
+    speeds[0] !== 3 ||
     speeds[1] !== 0 ||
     protocolFrames.some(
       (frame, index) =>
@@ -172,7 +172,7 @@ function assertAutomaticVentEvidence(
     )
   ) {
     throw new Error(
-      "automatic B3 evidence must contain exactly one 2 then one 0",
+      "automatic B3 evidence must contain exactly one 3 then one 0",
     );
   }
   const frameTimes = protocolFrames.map((frame) =>
@@ -191,7 +191,7 @@ function assertAutomaticVentEvidence(
     "automaticVent.edgeCorrelation",
   );
   const expected = [
-    [expectedStableEdgeId(initialTransitionId), initialTransitionId, 2],
+    [expectedStableEdgeId(initialTransitionId), initialTransitionId, 3],
     [expectedStableEdgeId(departureTransitionId), departureTransitionId, 0],
   ];
   if (

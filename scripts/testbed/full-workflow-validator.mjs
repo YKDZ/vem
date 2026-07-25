@@ -753,11 +753,11 @@ function validateEnvironmentControlTrack(report, reportPath) {
   };
   const precedenceCorrelated =
     automaticArrival.edgeId &&
-    automaticArrival.requestedSpeed === 2 &&
+    automaticArrival.requestedSpeed === 3 &&
     automaticArrival.outcome === "accepted" &&
     automaticArrival.b3FrameCountDelta === 1 &&
     onlyAutomaticB3(automaticArrival, 1) &&
-    validReplacementB3(automaticArrival.frame, 2) &&
+    validReplacementB3(automaticArrival.frame, 3) &&
     adminB3.commandNo === byAction.get("ventSpeed")?.admin?.commandNo &&
     adminB3.resultStatus === "succeeded" &&
     adminB3.mqttCommandNo === adminB3.commandNo &&
