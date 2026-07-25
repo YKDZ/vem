@@ -501,25 +501,90 @@ async function submitUntilPaymentSurface(client, method, timeoutMs) {
   return await visiblePaymentSurface(client, method, 1);
 }
 
+async function readCheckoutPaymentSelection(client) {
+  return await evaluateExpression(
+    client,
+    `(() => {
+      const submit = document.querySelector('[data-test="checkout-submit"]');
+      const selected = document.querySelector('[data-test="payment-option"].payment-option-selected');
+      return {
+        route: location.hash,
+        submitVisible: Boolean(submit?.getClientRects().length),
+        submitDisabled: Boolean(submit?.disabled),
+        submitMethod: submit?.dataset.paymentMethod ?? null,
+        submitProvider: submit?.dataset.paymentProvider ?? null,
+        selectedOptionKey: selected?.dataset.paymentOptionKey ?? null,
+      };
+    })()`,
+  );
+}
+
+async function waitForCheckoutPaymentSelection(client, method, timeoutMs) {
+  return await waitForCondition(
+    () => readCheckoutPaymentSelection(client),
+    (selection) =>
+      selection?.route === "#/checkout" &&
+      selection?.submitVisible === true &&
+      selection?.submitDisabled === false &&
+      selection?.submitMethod === method &&
+      selection?.submitProvider === "alipay",
+    { timeoutMs, label: `checkout ${method} Alipay selection` },
+  );
+}
+
 async function beginMachineUiOrder(client, input, fixture, method, timeoutMs) {
   await evaluateExpression(client, "location.hash = '#/catalog'");
   await waitForRoute(client, "#/catalog", {
     timeoutMs,
     pollMs: POLL_INTERVAL_MS,
   });
-  const steps = [
+  await activateVisibleSelector(
+    client,
     '[data-test="catalog-category"]:not(:disabled)',
-    catalogProductSelectorForFixture(fixture, "sale"),
-    '[data-test="product-buy"]:not(:disabled)',
-    `[data-test="payment-option"][data-payment-option-key="${method}:alipay"]:not(:disabled)`,
-  ];
-  for (const selector of steps) {
-    await activateVisibleSelector(client, selector, {
+    {
       kind: "touch",
       timeoutMs,
       pollMs: POLL_INTERVAL_MS,
-    });
+    },
+  );
+  await activateVisibleSelector(
+    client,
+    catalogProductSelectorForFixture(fixture, "sale"),
+    {
+      kind: "touch",
+      timeoutMs,
+      pollMs: POLL_INTERVAL_MS,
+    },
+  );
+  await waitForRoute(client, /^#\/products\//, {
+    timeoutMs,
+    pollMs: POLL_INTERVAL_MS,
+  });
+  await activateVisibleSelector(client, '[data-test="product-buy"]:not(:disabled)', {
+    kind: "touch",
+    timeoutMs,
+    pollMs: POLL_INTERVAL_MS,
+  });
+  await waitForRoute(client, "#/checkout", {
+    timeoutMs,
+    pollMs: POLL_INTERVAL_MS,
+  });
+  const selected = await readCheckoutPaymentSelection(client);
+  if (
+    selected?.submitMethod !== method ||
+    selected?.submitProvider !== "alipay"
+  ) {
+    await activateVisibleSelector(
+      client,
+      `[data-test="payment-option"][data-payment-option-key="${method}:alipay"]:not(:disabled)`,
+      {
+        kind: "touch",
+        timeoutMs,
+        pollMs: POLL_INTERVAL_MS,
+      },
+    );
   }
+  await waitForCheckoutPaymentSelection(client, method, timeoutMs);
   return await submitUntilPaymentSurface(client, method, timeoutMs);
 }
 
