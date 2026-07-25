@@ -150,7 +150,7 @@ describe("vision try-on acceptance script", () => {
     );
   });
 
-  it("waits for the scheduled Vision task to stop before restarting it", () => {
+  it("waits for managed Vision tasks and processes to stop before restarting it", () => {
     const source = readFileSync(
       new URL("./vision-try-on-acceptance.mjs", import.meta.url),
       "utf8",
@@ -162,7 +162,15 @@ describe("vision try-on acceptance script", () => {
     assert.doesNotMatch(source, /spawn\("pwsh"/);
     assert.match(
       source,
-      /while \(\[DateTime\]::UtcNow -lt \$deadline\)[\s\S]*Get-ScheduledTask[\s\S]*task\.State -ne 'Running'/,
+      /MANAGED_VISION_TASK_NAMES = \["VEMVisionRuntime", "StartVisionServer"\]/,
+    );
+    assert.match(
+      source,
+      /\$tasks = @\(Get-ScheduledTask[\s\S]*TaskName -in \$managedTaskNames/,
+    );
+    assert.match(
+      source,
+      /while \(\[DateTime\]::UtcNow -lt \$deadline\)[\s\S]*\$runningTasks = @\(Get-ScheduledTask[\s\S]*\$remaining = @\(& \$getOwnedVisionProcessIds\)[\s\S]*\$runningTasks\.Count -eq 0 -and \$remaining\.Count -eq 0/,
     );
     assert.match(
       source,
@@ -174,7 +182,7 @@ describe("vision try-on acceptance script", () => {
     );
     assert.match(
       source,
-      /try \{ & taskkill\.exe \/PID \(\[int\]\$process\.ProcessId\) \/T \/F \*>\s*\$null \} catch \{ \}/,
+      /try \{ & taskkill\.exe \/PID \(\[int\]\$processId\) \/T \/F \*>\s*\$null \} catch \{ \}/,
     );
     assert.match(source, /runPowerShell\(command, "stopping Vision runtime"\)/);
     assert.match(source, /runPowerShell\(command, "starting Vision runtime"\)/);

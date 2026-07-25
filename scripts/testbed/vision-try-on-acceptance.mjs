@@ -32,6 +32,7 @@ const VISION_INSTALLED_RECORD_PATH =
 const VISION_FIXTURE_ROOT = "C:\\ProgramData\\VEM\\vision\\fixtures";
 const VISION_TASK_PATH = "\\VEM\\";
 const VISION_TASK_NAME = "StartVisionServer";
+const MANAGED_VISION_TASK_NAMES = ["VEMVisionRuntime", "StartVisionServer"];
 const POWERSHELL_EXECUTABLE =
   process.platform === "win32"
     ? "powershell.exe"
@@ -2556,20 +2557,23 @@ async function collectVisionInstalledBinding() {
 async function stopVisionRuntime() {
   const command = [
     "$ErrorActionPreference = 'Stop'",
-    `$task = Get-ScheduledTask -TaskName '${VISION_TASK_NAME}' -TaskPath '${VISION_TASK_PATH}' -ErrorAction SilentlyContinue`,
-    "if ($null -ne $task -and [string]$task.State -eq 'Running') { Stop-ScheduledTask -InputObject $task -ErrorAction SilentlyContinue }",
+    `$managedTaskNames = @(${MANAGED_VISION_TASK_NAMES.map((name) => `'${name}'`).join(", ")})`,
+    "$tasks = @(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { [string]$_.TaskName -in $managedTaskNames })",
+    "foreach ($task in $tasks) { if ([string]$task.State -eq 'Running') { Stop-ScheduledTask -InputObject $task -ErrorAction SilentlyContinue } }",
     `$canonicalExecutablePath = [IO.Path]::GetFullPath('${VISION_ENTRYPOINT_PATH}')`,
     `$canonicalConfigPath = [IO.Path]::GetFullPath('${VISION_SITE_CONFIGURATION_PATH}')`,
-    "$ownedVisionProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath -and [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonicalExecutablePath -and $_.CommandLine -and ([string]$_.CommandLine).ToLowerInvariant().Contains('--config') -and ([string]$_.CommandLine).ToLowerInvariant().Contains($canonicalConfigPath.ToLowerInvariant()) })",
-    "foreach ($process in $ownedVisionProcesses) { Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction SilentlyContinue; try { & taskkill.exe /PID ([int]$process.ProcessId) /T /F *> $null } catch { }; $global:LASTEXITCODE = 0 }",
+    "$getOwnedVisionProcessIds = { @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath -and [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonicalExecutablePath -and $_.CommandLine -and ([string]$_.CommandLine).Replace('\"', '').ToLowerInvariant().Contains('--config') -and ([string]$_.CommandLine).Replace('\"', '').ToLowerInvariant().Contains($canonicalConfigPath.ToLowerInvariant()) } | ForEach-Object { [int]$_.ProcessId }) }",
+    "foreach ($processId in @(& $getOwnedVisionProcessIds)) { try { & taskkill.exe /PID ([int]$processId) /T /F *> $null } catch { }; $global:LASTEXITCODE = 0; Stop-Process -Id ([int]$processId) -Force -ErrorAction SilentlyContinue }",
     "$deadline = [DateTime]::UtcNow.AddSeconds(30)",
     "while ([DateTime]::UtcNow -lt $deadline) {",
-    `  $task = Get-ScheduledTask -TaskName '${VISION_TASK_NAME}' -TaskPath '${VISION_TASK_PATH}' -ErrorAction SilentlyContinue`,
-    "  if ($null -eq $task -or [string]$task.State -ne 'Running') { break }",
+    "  $runningTasks = @(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { [string]$_.TaskName -in $managedTaskNames -and [string]$_.State -eq 'Running' })",
+    "  $remaining = @(& $getOwnedVisionProcessIds)",
+    "  if ($runningTasks.Count -eq 0 -and $remaining.Count -eq 0) { return }",
     "  Start-Sleep -Milliseconds 250",
     "}",
-    "if ($null -ne $task -and [string]$task.State -eq 'Running') { throw 'Vision scheduled task did not stop' }",
-    "$remaining = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath -and [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonicalExecutablePath -and $_.CommandLine -and ([string]$_.CommandLine).ToLowerInvariant().Contains('--config') -and ([string]$_.CommandLine).ToLowerInvariant().Contains($canonicalConfigPath.ToLowerInvariant()) })",
+    "$runningTasks = @(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { [string]$_.TaskName -in $managedTaskNames -and [string]$_.State -eq 'Running' })",
+    "if ($runningTasks.Count -ne 0) { throw 'Vision scheduled task did not stop' }",
+    "$remaining = @(& $getOwnedVisionProcessIds)",
     "if ($remaining.Count -ne 0) { throw 'canonical Vision process did not stop' }",
   ].join("; ");
   await runPowerShell(command, "stopping Vision runtime");
