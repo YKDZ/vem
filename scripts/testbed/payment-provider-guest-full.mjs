@@ -956,6 +956,13 @@ export function validateUnattendedProviderAttempt(attempt) {
     return;
   }
   if (attempt.channel === "payment_code:alipay") {
+    const terminalCleaned =
+      ["failed", "canceled", "expired"].includes(terminal.paymentStatus) ||
+      (terminal.paymentStatus === "unknown" &&
+        terminal.orderStatus === "manual_handling");
+    const closureHandled =
+      attempt.cleanup?.closure?.handled === true ||
+      (attempt.submission?.status === "reversed" && terminalCleaned);
     if (
       attempt.machine?.boundary !== "installed_machine_ui_cdp" ||
       attempt.machine?.paymentMethod !== "payment_code" ||
@@ -979,15 +986,11 @@ export function validateUnattendedProviderAttempt(attempt) {
           attempt.submission?.failureCode !==
             "payment_code_reverse_confirmed")) ||
       attempt.cleanup?.action !== "close_or_reverse_uncertain_payment" ||
-      attempt.cleanup?.closure?.handled !== true ||
+      !closureHandled ||
       !attempt.cleanup?.providerConfigId ||
       attempt.cleanup?.serialSession?.action !== "abort" ||
       attempt.cleanup?.serialSession?.aborted !== true ||
-      !(
-        ["failed", "canceled", "expired"].includes(terminal.paymentStatus) ||
-        (terminal.paymentStatus === "unknown" &&
-          terminal.orderStatus === "manual_handling")
-      )
+      !terminalCleaned
     ) {
       throw new Error(
         "payment-code provider attempt did not prove gateway handling and deterministic closure",

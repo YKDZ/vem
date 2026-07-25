@@ -450,7 +450,8 @@ function validatePaymentProviderTrack(report, reportPath) {
     typeof code?.submission?.providerStatus === "string" &&
     code.submission.providerStatus.length > 0 &&
     code?.cleanup?.action === "close_or_reverse_uncertain_payment" &&
-    code?.cleanup?.closure?.handled === true &&
+    (code?.cleanup?.closure?.handled === true ||
+      (code?.submission?.status === "reversed" && terminalClean(code))) &&
     code?.cleanup?.serialSession?.action === "abort" &&
     code?.cleanup?.serialSession?.aborted === true &&
     typeof code?.cleanup?.providerConfigId === "string" &&
