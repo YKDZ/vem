@@ -12,6 +12,7 @@ import {
   parseLocalOperationsGuestArgs,
   runLocalOperationsGuest,
   selectPlanogramSlot,
+  serialBoundaryWaitRequest,
   validateLocalOperationsEvidence,
 } from "./local-operations-guest-full.mjs";
 
@@ -114,6 +115,16 @@ describe("local operations guest full", () => {
         },
       ),
       [{ parsedOpcode: "B3", rawFrameHex: "55b303" }],
+    );
+  });
+  it("waits for serial boundaries without forcing the normal dispense scenario", () => {
+    assert.deepEqual(serialBoundaryWaitRequest("B3"), {
+      parsedOpcode: "B3",
+      timeoutMs: 30_000,
+    });
+    assert.equal(
+      Object.hasOwn(serialBoundaryWaitRequest("B3"), "serialScenario"),
+      false,
     );
   });
   it("requires business evidence without gating on VM touch-keyboard support", () => {
@@ -347,6 +358,7 @@ describe("local operations guest full", () => {
     const manualDispenseRequests = [];
     let evidenceReads = 0;
     const localEnvironmentControlRequests = [];
+    const waitFrameRequests = [];
     const input = {
       runId: "RUN-07",
       machineCode: "VEM-TESTBED-01",
@@ -380,8 +392,11 @@ describe("local operations guest full", () => {
       {
         readJson: (path) => (path === "C:\\guest-input.json" ? input : handoff),
         writeJson: (path, value) => writes.push({ path, value }),
-        waitForSerialBoundary: async () => ({ ok: true }),
-        controlRequest: async (_input, path) => {
+        waitForSerialBoundary: async (_input, _sessionId, parsedOpcode) => {
+          waitFrameRequests.push(serialBoundaryWaitRequest(parsedOpcode));
+          return { ok: true };
+        },
+        controlRequest: async (_input, path, body) => {
           if (path === "/v1/serial-sessions/start")
             return { sessionId: "serial-07" };
           if (path === "/v1/serial-sessions/serial-07/evidence") {
@@ -430,6 +445,7 @@ describe("local operations guest full", () => {
             return { ok: true };
           }
           if (path === "/v1/serial-sessions/serial-07/wait-frame") {
+            waitFrameRequests.push(body);
             return { ok: true };
           }
           throw new Error(`unexpected control path: ${path}`);
@@ -512,6 +528,14 @@ describe("local operations guest full", () => {
     });
     assert.equal(writes.at(-1).value.maintenanceEntry.length, 1);
     assert.deepEqual(localEnvironmentControlRequests, [{ ventSpeed: 3 }]);
+    assert.deepEqual(
+      waitFrameRequests.map((entry) => entry.parsedOpcode),
+      ["VEND", "F0", "F1", "F2", "B3"],
+    );
+    assert.equal(
+      waitFrameRequests.some((entry) => entry.serialScenario === "normal"),
+      false,
+    );
     assert.deepEqual(writes.at(-1).value.localEnvironmentControl, {
       request: { ventSpeed: 3 },
       result: {

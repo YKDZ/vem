@@ -549,6 +549,20 @@ describe("host serial control plane", () => {
 
       writeFileSync(
         journalPath,
+        `${JSON.stringify({ direction: "daemon-to-controller", rawFrameHex: "55B303", opcode: 179, parsedOpcode: "B3" })}\n`,
+      );
+      const environmentBoundary = await waitForRawSerialFrame({
+        journalPath,
+        parsedOpcode: "B3",
+        timeoutMs: 100,
+      });
+      assert.deepEqual(
+        environmentBoundary.protocolFrames.map(({ parsedOpcode }) => parsedOpcode),
+        ["B3"],
+      );
+
+      writeFileSync(
+        journalPath,
         [
           {
             direction: "daemon-to-controller",

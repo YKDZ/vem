@@ -786,12 +786,19 @@ export async function collectAudioPreferencePersistenceEvidence(
   }
 }
 
-async function waitForSerialBoundary(input, sessionId, parsedOpcode) {
-  return control(input, `/v1/serial-sessions/${sessionId}/wait-frame`, {
+export function serialBoundaryWaitRequest(parsedOpcode) {
+  return {
     parsedOpcode,
     timeoutMs: 30_000,
-    serialScenario: "normal",
-  });
+  };
+}
+
+async function waitForSerialBoundary(input, sessionId, parsedOpcode) {
+  return control(
+    input,
+    `/v1/serial-sessions/${sessionId}/wait-frame`,
+    serialBoundaryWaitRequest(parsedOpcode),
+  );
 }
 export function selectPlanogramSlot(saleView, fixture) {
   const slotId = required(fixture?.slotId, "fixture.slotId");

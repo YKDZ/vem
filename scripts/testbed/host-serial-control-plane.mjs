@@ -836,6 +836,7 @@ function summarizeReport(report) {
 
 const RAW_PROTOCOL_DIRECTIONS = Object.freeze({
   VEND: "daemon-to-controller",
+  B3: "daemon-to-controller",
   F0: "controller-to-daemon",
   E5: "controller-to-daemon",
   F1: "controller-to-daemon",
@@ -879,6 +880,7 @@ export async function waitForRawSerialFrame({
   const expected = {
     [SERIAL_SCENARIOS.NORMAL]: {
       VEND: ["VEND"],
+      B3: ["B3"],
       F0: ["VEND", "F0"],
       F1: ["VEND", "F0", "F1"],
       F2: ["VEND", "F0", "F1", "AF", "F2"],
