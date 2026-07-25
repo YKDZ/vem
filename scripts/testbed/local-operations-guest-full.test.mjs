@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 import {
@@ -25,6 +26,15 @@ function maintenanceEntryEvidence() {
 }
 
 describe("local operations guest full", () => {
+  it("uses the semantic maintenance experience task selector", () => {
+    const source = readFileSync(
+      new URL("./local-operations-guest-full.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(source, /\[data-test='maintenance-task-experience'\]/);
+    assert.doesNotMatch(source, /maintenance-task-nav button:nth-of-type/);
+  });
+
   it("parses the installed guest contract", () => {
     assert.equal(
       parseLocalOperationsGuestArgs([

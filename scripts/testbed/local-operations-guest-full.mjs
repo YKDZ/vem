@@ -36,7 +36,7 @@ const INSTALLED_RUNTIME_TASK = "VEMMachineUI";
 const CANONICAL_DAEMON_PATH = "C:\\VEM\\bringup\\vending-daemon.exe";
 const CANONICAL_MACHINE_PATH = "C:\\VEM\\bringup\\machine.exe";
 const CANONICAL_CDP_ENDPOINT = "http://127.0.0.1:9222";
-const EXPERIENCE_TASK_SELECTOR = ".maintenance-task-nav button:nth-of-type(5)";
+const EXPERIENCE_TASK_SELECTOR = "[data-test='maintenance-task-experience']";
 const AUDIO_SELECTORS = Object.freeze({
   cuesEnabled: "[data-test='machine-audio-enabled']",
   presenceCuesEnabled: "[data-test='machine-audio-presence-enabled']",
