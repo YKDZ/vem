@@ -533,7 +533,7 @@ describe("Customer Checkout View Projection", () => {
         displayIntent: "manual_handling",
         detailIntent: "dispense_result_unknown",
         canAutoReturnWhenReady: false,
-        canManualReturnWhenReady: false,
+        canManualReturnWhenReady: true,
         canManualReturnWhenUnknown: false,
         canManualReturnWhenMaintenanceLocked: false,
       },

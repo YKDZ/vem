@@ -668,7 +668,7 @@ describe("ResultView", () => {
     expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(false);
   });
 
-  it("shows manual handling copy and customer order credential for result_unknown", async () => {
+  it("shows manual handling copy and allows explicit return when sales are ready", async () => {
     routeParams.kind = "manual_handling";
     const transaction = terminalUnknownDispenseTransaction();
     const checkoutStore = useCheckoutStore();
@@ -693,7 +693,18 @@ describe("ResultView", () => {
     expect(page?.getAttribute("data-result-display-intent")).toBe(
       "manual_handling",
     );
-    expect(host.textContent).not.toContain("返回首页");
+    expect(host.textContent).toContain("返回首页");
+
+    const returnButton = host.querySelector<HTMLButtonElement>(
+      '[data-test="result-return-catalog"]',
+    );
+    returnButton?.click();
+    await nextTick();
+
+    await vi.waitFor(() => {
+      expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
+    });
+    expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(true);
   });
 
   it("does not render route-param result copy after the projected result is cleared", async () => {

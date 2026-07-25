@@ -242,6 +242,8 @@ function exceptionalReturnPolicy(
     resultKind === "closed";
   const alwaysDismissibleFailure =
     resultKind === "dispense_failed" || resultKind === "refunded";
+  const manuallyDismissibleWhenReady =
+    canDismissWhenReady || resultKind === "manual_handling";
   const highRiskResult =
     resultKind === "refund_pending" || resultKind === "manual_handling";
   return {
@@ -252,7 +254,7 @@ function exceptionalReturnPolicy(
       !requiresMaintenanceReview,
     canManualReturn: alwaysDismissibleFailure
       ? true
-      : canDismissWhenReady
+      : manuallyDismissibleWhenReady
         ? saleReady && targetRoute === "catalog"
           ? !requiresMaintenanceReview
           : targetRoute === "maintenance" && !highRiskResult
