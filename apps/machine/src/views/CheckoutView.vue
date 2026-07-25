@@ -90,21 +90,14 @@ function paymentDisplayName(displayName: string, method: string): string {
   return `${displayName}${method === "payment_code" ? "付款码" : "扫码"}`;
 }
 
-function paymentDescription(description: string, method: string): string {
-  if (description) return description;
+function paymentDescription(method: string): string {
   return method === "payment_code"
     ? "展示付款码扫码界面"
     : "展示二维码支付界面";
 }
 
-function paymentOptionDescription(
-  disabled: boolean,
-  description: string,
-  method: string,
-): string {
-  return disabled
-    ? deviceUnavailableCopy
-    : paymentDescription(description, method);
+function paymentOptionDescription(disabled: boolean, method: string): string {
+  return disabled ? deviceUnavailableCopy : paymentDescription(method);
 }
 
 async function submitOrder(): Promise<void> {
@@ -246,13 +239,7 @@ async function submitOrder(): Promise<void> {
                   {{ paymentDisplayName(option.displayName, option.method) }}
                 </strong>
                 <small>
-                  {{
-                    paymentOptionDescription(
-                      option.disabled,
-                      option.description,
-                      option.method,
-                    )
-                  }}
+                  {{ paymentOptionDescription(option.disabled, option.method) }}
                 </small>
               </span>
               <span v-if="option.recommended" class="payment-recommended">

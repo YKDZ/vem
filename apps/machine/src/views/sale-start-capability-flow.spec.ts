@@ -2755,4 +2755,56 @@ describe("sale-start capability UI flow", () => {
     expect(submitButton).toBeTruthy();
     expect(submitButton?.disabled).toBe(true);
   });
+
+  it("keeps payment option copy customer-safe in checkout", async () => {
+    const item = makeCatalogItem();
+    useCatalogStore().applySnapshot({
+      items: [item],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    useCheckoutStore().selectItem(item);
+    useSaleCapabilityStore().acceptSnapshot({
+      ...saleCapability(true),
+      paymentOptions: {
+        ready: true,
+        defaultOptionKey: "qr_code:alipay",
+        defaultProviderCode: "alipay",
+        options: [
+          {
+            optionKey: "qr_code:alipay",
+            providerCode: "alipay",
+            method: "qr_code",
+            displayName: "支付宝",
+            description:
+              "Provider HTTP 502: scan endpoint unavailable, retry with fallback",
+            icon: "alipay",
+            recommended: true,
+            ready: true,
+            disabledReason: null,
+          },
+          {
+            optionKey: "payment_code:alipay",
+            providerCode: "alipay",
+            method: "payment_code",
+            displayName: "支付宝付款码",
+            description: "serial COM3 scanner raw timeout",
+            icon: "alipay",
+            recommended: false,
+            ready: true,
+            disabledReason: null,
+          },
+        ],
+      },
+    });
+
+    const host = await mountView(CheckoutView);
+
+    expect(host.textContent).toContain("展示二维码支付界面");
+    expect(host.textContent).toContain("展示付款码扫码界面");
+    expect(host.textContent).not.toContain("Provider HTTP 502");
+    expect(host.textContent).not.toContain("scan endpoint unavailable");
+    expect(host.textContent).not.toContain("serial COM3");
+  });
 });
