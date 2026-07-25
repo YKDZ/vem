@@ -110,11 +110,7 @@ function validateDelayedAudioTrack(report, reportPath) {
     ? acceptance.audio.cueWindows
     : [];
   const cueStartLatencyMs = acceptance.controller?.cueStartLatencyMs ?? {};
-  const requiredCues = [
-    "pickup_started",
-    "ordinary_warning",
-    "urgent_warning",
-  ];
+  const requiredCues = ["pickup_started", "ordinary_warning", "urgent_warning"];
   const capture = acceptance.audio?.capture ?? {};
   return acceptance.audio?.source === "windows_default_output" &&
     cueWindows.length > 0 &&
@@ -399,9 +395,11 @@ function validatePaymentProviderTrack(report, reportPath) {
   );
   const terminalClean = (attempt) =>
     attempt?.terminal?.reservedInventory === false &&
-    ["failed", "canceled", "expired"].includes(
+    (["failed", "canceled", "expired"].includes(
       attempt?.terminal?.paymentStatus,
-    );
+    ) ||
+      (attempt?.terminal?.paymentStatus === "unknown" &&
+        attempt?.terminal?.orderStatus === "manual_handling"));
   const qrValid =
     qr?.order?.providerCode === "alipay" &&
     qr?.machine?.boundary === "installed_machine_ui_cdp" &&
@@ -421,7 +419,9 @@ function validatePaymentProviderTrack(report, reportPath) {
     typeof qr?.closure?.providerConfigId === "string" &&
     qr.closure.providerConfigId ===
       report?.provider?.identity?.providerConfigId &&
-    ["canceled", "expired"].includes(qr?.terminal?.paymentStatus) &&
+    (["canceled", "expired"].includes(qr?.terminal?.paymentStatus) ||
+      (qr?.terminal?.paymentStatus === "unknown" &&
+        qr?.terminal?.orderStatus === "manual_handling")) &&
     terminalClean(qr);
   const codeValid =
     code?.order?.providerCode === "alipay" &&

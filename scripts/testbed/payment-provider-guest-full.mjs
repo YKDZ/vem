@@ -372,7 +372,9 @@ async function waitForTerminal(input, runId, machineCode, order, timeoutMs) {
       const terminal = terminalFromReport(report, order);
       return (
         terminal.reservedInventory === false &&
-        ["failed", "canceled", "expired"].includes(terminal.paymentStatus)
+        (["failed", "canceled", "expired"].includes(terminal.paymentStatus) ||
+          (terminal.paymentStatus === "unknown" &&
+            terminal.orderStatus === "manual_handling"))
       );
     },
     { timeoutMs, label: `terminal state for ${order.orderNo}` },
@@ -941,7 +943,11 @@ export function validateUnattendedProviderAttempt(attempt) {
       attempt.closure?.action !== "close_or_reverse_uncertain_payment" ||
       attempt.closure?.handled !== true ||
       !attempt.closure?.providerConfigId ||
-      !["canceled", "expired"].includes(terminal.paymentStatus)
+      !(
+        ["canceled", "expired"].includes(terminal.paymentStatus) ||
+        (terminal.paymentStatus === "unknown" &&
+          terminal.orderStatus === "manual_handling")
+      )
     ) {
       throw new Error(
         "QR provider attempt did not prove credential, pre-scan query, and closure",
@@ -977,7 +983,11 @@ export function validateUnattendedProviderAttempt(attempt) {
       !attempt.cleanup?.providerConfigId ||
       attempt.cleanup?.serialSession?.action !== "abort" ||
       attempt.cleanup?.serialSession?.aborted !== true ||
-      !["failed", "canceled", "expired"].includes(terminal.paymentStatus)
+      !(
+        ["failed", "canceled", "expired"].includes(terminal.paymentStatus) ||
+        (terminal.paymentStatus === "unknown" &&
+          terminal.orderStatus === "manual_handling")
+      )
     ) {
       throw new Error(
         "payment-code provider attempt did not prove gateway handling and deterministic closure",

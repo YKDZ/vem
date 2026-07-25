@@ -308,6 +308,46 @@ describe("payment provider guest full", () => {
         },
       }),
     );
+    assert.doesNotThrow(() =>
+      validateUnattendedProviderAttempt({
+        channel: "qr_code:alipay",
+        order: {
+          providerCode: "alipay",
+          orderId: "order-1",
+          paymentId: "payment-1",
+          orderNo: "order-no-1",
+        },
+        machine: {
+          boundary: "installed_machine_ui_cdp",
+          paymentMethod: "qr_code",
+          providerCode: "alipay",
+          surface: {
+            orderId: "order-1",
+            paymentId: "payment-1",
+            orderNo: "order-no-1",
+          },
+        },
+        credential: { paymentUrlSha256: "sha256:credential" },
+        query: {
+          reconciliationAttemptId: "reconciliation-1",
+          providerCode: "alipay",
+          status: "provider_trade_not_exist",
+          providerPaymentStatus: "pending",
+        },
+        closure: {
+          action: "close_or_reverse_uncertain_payment",
+          status: "manual_handling",
+          handled: true,
+          providerConfigId: "provider-config-1",
+        },
+        terminal: {
+          paymentStatus: "unknown",
+          orderStatus: "manual_handling",
+          paymentState: "manual_handling",
+          reservedInventory: false,
+        },
+      }),
+    );
     assert.throws(
       () =>
         validateUnattendedProviderAttempt({

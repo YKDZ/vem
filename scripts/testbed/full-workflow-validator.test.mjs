@@ -1612,6 +1612,22 @@ describe("full workflow aggregate validator", () => {
       ).status,
       "passed",
     );
+    const manualHandling = paymentProviderReport();
+    manualHandling.authoritative.attempts[0].closure.status = "manual_handling";
+    manualHandling.authoritative.attempts[0].terminal = {
+      paymentStatus: "unknown",
+      orderStatus: "manual_handling",
+      paymentState: "manual_handling",
+      reservedInventory: false,
+    };
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("paymentProvider"),
+        manualHandling,
+        "/reports/payment-provider.json",
+      ).status,
+      "passed",
+    );
     const paid = paymentProviderReport();
     paid.authoritative.attempts[0].terminal.paymentStatus = "succeeded";
     assert.equal(
