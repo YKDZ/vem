@@ -322,6 +322,25 @@ describe("DaemonApiClient direct runtime intents", () => {
     expect(lastFetchRequest()).toMatchObject({ signal });
   });
 
+  it("rejects daemon requests that do not settle even when the runtime fetch does not abort", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(globalThis.fetch).mockReturnValueOnce(
+        new Promise<Response>(() => undefined),
+      );
+
+      const result = new DaemonApiClient().getHealth();
+      const expectation = expect(result).rejects.toMatchObject({
+        message: "daemon request timed out",
+      });
+      await vi.advanceTimersByTimeAsync(15_000);
+
+      await expectation;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("recognizes only daemon transport failures as recoverable claim disconnects", () => {
     expect(
       isDaemonTransportFailure(

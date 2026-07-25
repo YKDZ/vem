@@ -83,9 +83,23 @@ fn run_service_inner() -> Result<(), String> {
                 bind: SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 7891),
                 print_ready_file: Some(ready_file),
             };
-            crate::shutdown::run_console_with_token(config, stop_token.clone())
-                .await
-                .map_err(|error| format!("daemon runtime failed: {error}"))
+            loop {
+                match crate::shutdown::run_console_with_token(config.clone(), stop_token.clone())
+                    .await
+                {
+                    Ok(()) if stop_token.is_cancelled() => return Ok(()),
+                    Ok(()) => {
+                        eprintln!("daemon runtime exited without service stop; restarting runtime");
+                    }
+                    Err(error) if stop_token.is_cancelled() => {
+                        return Err(format!("daemon runtime failed: {error}"));
+                    }
+                    Err(error) => {
+                        eprintln!("daemon runtime failed: {error}; restarting runtime");
+                    }
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
         })
     })();
 

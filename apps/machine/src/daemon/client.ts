@@ -158,6 +158,30 @@ export function isDaemonTransportFailure(error: unknown): boolean {
   );
 }
 
+async function withDefaultDaemonRequestTimeout<T>(
+  request: Promise<T>,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  if (signal) {
+    return await request;
+  }
+  return await new Promise<T>((resolve, reject) => {
+    const timeout = globalThis.setTimeout(() => {
+      reject(new DaemonUnavailableError("daemon request timed out"));
+    }, DEFAULT_DAEMON_REQUEST_TIMEOUT_MS);
+    request.then(
+      (value) => {
+        globalThis.clearTimeout(timeout);
+        resolve(value);
+      },
+      (error: unknown) => {
+        globalThis.clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
+}
+
 type RequestOptions = {
   method?: string;
   body?: unknown;
@@ -239,18 +263,24 @@ export class DaemonApiClient {
     options: RequestOptions = {},
   ): Promise<unknown> {
     const connection = await this.initialize();
-    const response = await fetch(`${connection.baseUrl}${path}`, {
-      method: options.method ?? "GET",
-      headers: {
-        Authorization: `Bearer ${connection.token}`,
-        "Content-Type": "application/json",
-      },
-      body:
-        options.body === undefined ? undefined : JSON.stringify(options.body),
-      signal:
-        options.signal ??
-        AbortSignal.timeout(DEFAULT_DAEMON_REQUEST_TIMEOUT_MS),
-    }).catch((error: unknown) => {
+    const response = await withDefaultDaemonRequestTimeout(
+      fetch(`${connection.baseUrl}${path}`, {
+        method: options.method ?? "GET",
+        headers: {
+          Authorization: `Bearer ${connection.token}`,
+          "Content-Type": "application/json",
+        },
+        body:
+          options.body === undefined ? undefined : JSON.stringify(options.body),
+        signal:
+          options.signal ??
+          AbortSignal.timeout(DEFAULT_DAEMON_REQUEST_TIMEOUT_MS),
+      }),
+      options.signal,
+    ).catch((error: unknown) => {
+      if (error instanceof DaemonUnavailableError) {
+        throw error;
+      }
       throw new DaemonUnavailableError("daemon request failed", error);
     });
 
