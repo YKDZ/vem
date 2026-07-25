@@ -258,19 +258,19 @@ describe("validateEnv", () => {
     expect(env.PAYMENT_WEBHOOK_BASE_URL).toBe("https://pay.example.com");
   });
 
-  it("rejects production config with http webhook base URL", () => {
-    expect(() =>
-      validateEnv({
-        ...baseValidEnv,
-        NODE_ENV: "production",
-        PAYMENT_MOCK_ENABLED: "false",
-        PAYMENT_WEBHOOK_BASE_URL: "http://pay.example.com",
-        MACHINE_API_BASE_URL: "https://platform.example.com/api",
-        PAYMENT_CONFIG_ENCRYPTION_KEY: productionPaymentConfigEncryptionKey,
-        MQTT_USERNAME: "u",
-        MQTT_PASSWORD: "p",
-      }),
-    ).toThrow("PAYMENT_WEBHOOK_BASE_URL must use https in production");
+  it("accepts production config with http webhook base URL for controlled validation hosts", () => {
+    const env = validateEnv({
+      ...baseValidEnv,
+      NODE_ENV: "production",
+      PAYMENT_MOCK_ENABLED: "false",
+      PAYMENT_WEBHOOK_BASE_URL: "http://pay.example.com",
+      MACHINE_API_BASE_URL: "https://platform.example.com/api",
+      PAYMENT_CONFIG_ENCRYPTION_KEY: productionPaymentConfigEncryptionKey,
+      MQTT_USERNAME: "u",
+      MQTT_PASSWORD: "p",
+    });
+
+    expect(env.PAYMENT_WEBHOOK_BASE_URL).toBe("http://pay.example.com");
   });
 
   it("accepts production config with an HTTPS webhook", () => {

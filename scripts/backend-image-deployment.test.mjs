@@ -439,9 +439,16 @@ describe("backend Compose deployment contract", () => {
     );
     assert.match(manual, /SERVICE_API_IMAGE=.*@sha256:/);
     assert.match(manual, /ADMIN_UI_IMAGE=.*@sha256:/);
-    assert.match(manual, /MACHINE_API_BASE_URL=https:\/\/<public-host>\/api/);
+    assert.match(
+      manual,
+      /MACHINE_API_BASE_URL=http:\/\/<public-host>:26849\/api/,
+    );
     assert.match(manual, /MACHINE_MQTT_URL=mqtt:\/\/<public-host>:1883/);
-    assert.match(manual, /PAYMENT_WEBHOOK_BASE_URL=https:\/\/<public-host>/);
+    assert.match(
+      manual,
+      /PAYMENT_WEBHOOK_BASE_URL=http:\/\/<public-host>:26849/,
+    );
+    assert.match(manual, /正式公网部署优先使用 HTTPS/);
     assert.match(manual, /不发布宿主机 `5432`/);
     assert.doesNotMatch(manual, /pnpm deploy:backend/);
     assert.doesNotMatch(manual, /compose\.release\.yml/);

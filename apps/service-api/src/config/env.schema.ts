@@ -193,16 +193,6 @@ export const envSchema = baseEnvSchema.superRefine((env, ctx) => {
         "PAYMENT_CONFIG_ENCRYPTION_KEY must be set explicitly in production",
     });
   }
-  if (env.NODE_ENV === "production") {
-    const webhookBase = new URL(env.PAYMENT_WEBHOOK_BASE_URL);
-    if (webhookBase.protocol !== "https:") {
-      ctx.addIssue({
-        code: "custom",
-        path: ["PAYMENT_WEBHOOK_BASE_URL"],
-        message: "PAYMENT_WEBHOOK_BASE_URL must use https in production",
-      });
-    }
-  }
   if (env.QWEATHER_API_KEY) {
     ctx.addIssue({
       code: "custom",

@@ -37,9 +37,9 @@ BOOTSTRAP_ADMIN_PASSWORD=<bootstrap-admin-password>
 MACHINE_JWT_SECRET=<machine-jwt-secret>
 MACHINE_CREDENTIAL_ENCRYPTION_KEY=<64-hex-key>
 MACHINE_CLAIM_LOOKUP_HMAC_KEY=<claim-lookup-hmac-key>
-MACHINE_API_BASE_URL=https://<public-host>/api
+MACHINE_API_BASE_URL=http://<public-host>:26849/api
 MACHINE_MQTT_URL=mqtt://<public-host>:1883
-PAYMENT_WEBHOOK_BASE_URL=https://<public-host>
+PAYMENT_WEBHOOK_BASE_URL=http://<public-host>:26849
 PAYMENT_CONFIG_ENCRYPTION_KEY=<64-hex-key>
 ```
 
@@ -51,7 +51,7 @@ MQTT_DATA_SOURCE=<existing-mqtt-volume>
 SERVICE_API_MEDIA_VOLUME_NAME=<existing-media-volume>
 ```
 
-`MACHINE_API_BASE_URL` 和 `MACHINE_MQTT_URL` 必须填写为现场机器可访问的地址，VPS 迁移时不要保留容器内地址或 `localhost`。`PAYMENT_WEBHOOK_BASE_URL` 推荐直接填写公网 origin（例如 `https://pay.example.com`）；只有在外部反向代理已将 webhook 基址固定到复数路径时，才填写 `https://pay.example.com/api/payments/webhooks`，不要写成单数 `/api/payments/webhook`，也不要手工重复拼接 provider 路径。
+`MACHINE_API_BASE_URL` 和 `MACHINE_MQTT_URL` 必须填写为现场机器可访问的地址，VPS 迁移时不要保留容器内地址或 `localhost`。`PAYMENT_WEBHOOK_BASE_URL` 推荐直接填写公网 origin（例如 `http://118.25.104.160:26849` 或 `https://pay.example.com`）；只有在外部反向代理已将 webhook 基址固定到复数路径时，才填写 `https://pay.example.com/api/payments/webhooks`，不要写成单数 `/api/payments/webhook`，也不要手工重复拼接 provider 路径。正式公网部署优先使用 HTTPS；受控验收主机可以先使用当前可访问的 HTTP 地址，避免证书和域名阻塞业务验收。
 
 端口如需保持现有对外地址，也在同一文件设置 `SERVICE_API_PORT`、`ADMIN_UI_PORT` 和 `MQTT_PORT`。PostgreSQL 在该 Compose 形态下默认仅供容器内部访问，不发布宿主机 `5432`；未设置前述端口时 Compose 使用其文件中定义的默认值。
 
