@@ -198,15 +198,20 @@ async function waitForText(client, label, predicateSource) {
   throw new Error(`${label} did not converge: ${JSON.stringify(last)}`);
 }
 
-async function openCommissioningTask(client) {
-  await waitForRoute(client, "#/catalog", {
+async function setRoute(client, route) {
+  await evaluateExpression(client, `location.hash = ${JSON.stringify(route)}`);
+  return waitForRoute(client, route, {
     timeoutMs: TIMEOUT_MS,
     pollMs: POLL_MS,
-    forbiddenRoutes: [],
+    forbiddenRoutes: route.startsWith("#/maintenance") ? [] : undefined,
   });
+}
+
+async function openCommissioningTask(client) {
+  await setRoute(client, "#/catalog");
   for (let count = 0; count < 7; count += 1) {
     await activateVisibleSelector(client, MAINTENANCE_ENTRY_SELECTOR, {
-      kind: "touch",
+      kind: "mouse",
       timeoutMs: TIMEOUT_MS,
       pollMs: POLL_MS,
     });
@@ -299,6 +304,7 @@ export function validateMachineClaimWorkflowReport(report) {
     typeof report?.reclaim?.claimCodeId !== "string" ||
     report.reclaim.claimCodeId === "" ||
     report?.submission?.accepted !== true ||
+    !Array.isArray(report?.reclaim?.revokedPendingClaimCodeIds) ||
     typeof report?.screenshots?.beforeSubmit?.sha256 !== "string" ||
     typeof report?.screenshots?.afterSubmit?.sha256 !== "string"
   ) {
@@ -337,7 +343,7 @@ export async function runMachineClaimWorkflowGuest(options) {
       reclaim: {
         claimCodeId: reclaim.id,
         purpose: reclaim.purpose,
-        revokedPendingClaimCodeIds,
+        revokedPendingClaimCodeIds: revokedClaimCodeIds,
       },
       submission: { accepted: true, observedText: submission.text },
       screenshots: { beforeSubmit, afterSubmit },

@@ -410,7 +410,7 @@ export async function collectMaintenanceEntryEvidence(
       await setRoute(client, route);
       for (let index = 0; index < 7; index += 1) {
         await activateVisibleSelector(client, MAINTENANCE_ENTRY_SELECTOR, {
-          kind: "touch",
+          kind: "mouse",
           timeoutMs: AUDIO_PREFERENCE_TIMEOUT_MS,
           pollMs: 150,
         });
@@ -992,10 +992,7 @@ export async function runLocalOperationsGuest(options, dependencies = {}) {
       rowNo: slot.rowNo,
       cellNo: slot.cellNo,
     };
-    report.hardware = await waitForLowerControllerReady(
-      handoff,
-      daemonRequest,
-    );
+    report.hardware = await waitForLowerControllerReady(handoff, daemonRequest);
     report.boundaries.daemon = true;
     report.boundaries.hardwareSelfCheck =
       report.hardware.selfCheck?.online === true;

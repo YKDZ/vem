@@ -59,7 +59,11 @@ describe("machine claim workflow guest acceptance", () => {
         schemaVersion: "vem-machine-claim-workflow-guest-full/v1",
         ok: true,
         machine: { id: "machine-1", code: "VEM-TESTBED-LOCAL" },
-        reclaim: { claimCodeId: "claim-1", purpose: "reclaim" },
+        reclaim: {
+          claimCodeId: "claim-1",
+          purpose: "reclaim",
+          revokedPendingClaimCodeIds: [],
+        },
         submission: { accepted: true },
         screenshots: {
           beforeSubmit: { sha256: "a".repeat(64) },
