@@ -6,7 +6,11 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { validateAdminProxyHealth } from "./deploy-backend-stack.mjs";
+import {
+  validateAdminProxyHealth,
+  validateDigestPinnedImage,
+  validatePaymentWebhookBaseUrl,
+} from "./backend-deployment-validation.mjs";
 
 const LONG_SECRET_A =
   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -53,32 +57,43 @@ export function backendComposeSmokeEnv({
   ports = {},
   volumePrefix = "vem-backend-smoke",
 } = {}) {
+  const serviceApiPort = ports.serviceApi ?? randomPort(33_000);
   const adminPort = ports.adminUi ?? randomPort(34_000);
   const mqttPort = ports.mqtt ?? randomPort(36_000);
+  const paymentWebhookBaseUrl = "https://payments.example";
+  validateDigestPinnedImage(
+    required(serviceApiImage, "serviceApiImage"),
+    "serviceApiImage",
+  );
+  validateDigestPinnedImage(
+    required(adminUiImage, "adminUiImage"),
+    "adminUiImage",
+  );
+  validatePaymentWebhookBaseUrl(paymentWebhookBaseUrl);
   return {
-    POSTGRES_PORT: String(ports.postgres ?? randomPort(35_000)),
     POSTGRES_DATA_SOURCE: `${volumePrefix}-postgres-data`,
     MQTT_PORT: String(mqttPort),
     MQTT_DATA_SOURCE: `${volumePrefix}-mqtt-data`,
-    SERVICE_API_PORT: String(ports.serviceApi ?? randomPort(33_000)),
+    SERVICE_API_PORT: String(serviceApiPort),
     ADMIN_UI_PORT: String(adminPort),
     SERVICE_API_MEDIA_VOLUME_NAME: `${volumePrefix}-service-api-media-assets`,
     POSTGRES_PASSWORD: "postgres-password",
     MQTT_USERNAME: "vem",
     MQTT_PASSWORD: "mqtt-password",
-    SERVICE_API_IMAGE: required(serviceApiImage, "serviceApiImage"),
-    ADMIN_UI_IMAGE: required(adminUiImage, "adminUiImage"),
+    SERVICE_API_IMAGE: serviceApiImage,
+    ADMIN_UI_IMAGE: adminUiImage,
     JWT_SECRET: LONG_SECRET_A,
     JWT_REFRESH_SECRET: LONG_SECRET_B,
     BOOTSTRAP_ADMIN_PASSWORD: "admin-password",
     MACHINE_JWT_SECRET: LONG_SECRET_C,
     MACHINE_CREDENTIAL_ENCRYPTION_KEY: LONG_SECRET_D,
     MACHINE_CLAIM_LOOKUP_HMAC_KEY: LONG_SECRET_A,
-    PAYMENT_WEBHOOK_BASE_URL: "https://payments.example/webhooks",
+    MACHINE_API_BASE_URL: `http://127.0.0.1:${serviceApiPort}/api`,
+    MACHINE_MQTT_URL: `mqtt://127.0.0.1:${mqttPort}`,
+    PAYMENT_WEBHOOK_BASE_URL: paymentWebhookBaseUrl,
     PAYMENT_CONFIG_ENCRYPTION_KEY: LONG_SECRET_B,
     PAYMENT_MOCK_ENABLED: "false",
     CORS_ORIGINS: `http://localhost:${adminPort}`,
-    MACHINE_MQTT_URL: `mqtt://127.0.0.1:${mqttPort}`,
   };
 }
 
@@ -93,6 +108,10 @@ function writeEnvFile(path, values, write = writeFileSync) {
 
 export function composeCommand({ project, envFile, composeFile }) {
   return ["compose", "-p", project, "--env-file", envFile, "-f", composeFile];
+}
+
+export function targetHostComposeCommand({ envFile, composeFile }) {
+  return ["compose", "--env-file", envFile, "-f", composeFile];
 }
 
 export async function runBackendComposeSmoke(

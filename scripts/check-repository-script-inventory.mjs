@@ -224,9 +224,9 @@ export const DEFAULT_INVENTORY = [
     workflows: ["backend deployment"],
   },
   {
-    path: "scripts/deploy-backend-stack.mjs",
+    path: "scripts/backend-deployment-validation.mjs",
     owner: "backend-operations",
-    category: "canonical entrypoint",
+    category: "test support operation",
     workflows: ["backend deployment"],
   },
   {

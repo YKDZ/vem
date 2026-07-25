@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -9,15 +15,13 @@ import YAML from "yaml";
 import {
   backendComposeSmokeEnv,
   composeCommand,
+  targetHostComposeCommand,
 } from "./backend-compose-smoke.mjs";
 import {
-  deploy,
-  deploymentRecord,
-  renderDigestComposeOverride,
-  renderDigestPinnedCompose,
   validateAdminProxyHealth,
-  validateCommit as validateDeployCommit,
-} from "./deploy-backend-stack.mjs";
+  validateDigestPinnedImage,
+  validatePaymentWebhookBaseUrl,
+} from "./backend-deployment-validation.mjs";
 import {
   imageNames,
   registryBuildArgs,
@@ -29,21 +33,32 @@ const composePath = new URL(
   "../apps/service-api/docker-compose.yml",
   import.meta.url,
 );
+const packagePath = new URL("../package.json", import.meta.url);
+const legacyDeploymentScript = new URL(
+  "./deploy-backend-stack.mjs",
+  import.meta.url,
+);
+const deploymentManual = new URL(
+  "../public/deployment/backend-deployment.md",
+  import.meta.url,
+);
 
 function backendEnv(overrides = {}) {
   return {
     POSTGRES_PASSWORD: "postgres-password",
     MQTT_USERNAME: "vem",
     MQTT_PASSWORD: "mqtt-password",
-    SERVICE_API_IMAGE: `registry.example/vem-service-api:sha-${commit}`,
-    ADMIN_UI_IMAGE: `registry.example/vem-admin-ui:sha-${commit}`,
+    SERVICE_API_IMAGE: `registry.example/vem-service-api@sha256:${"a".repeat(64)}`,
+    ADMIN_UI_IMAGE: `registry.example/vem-admin-ui@sha256:${"b".repeat(64)}`,
     JWT_SECRET: "jwt-secret",
     JWT_REFRESH_SECRET: "jwt-refresh-secret",
     BOOTSTRAP_ADMIN_PASSWORD: "admin-password",
     MACHINE_JWT_SECRET: "machine-jwt-secret",
     MACHINE_CREDENTIAL_ENCRYPTION_KEY: "a".repeat(64),
     MACHINE_CLAIM_LOOKUP_HMAC_KEY: "claim-hmac-key",
-    PAYMENT_WEBHOOK_BASE_URL: "https://payments.example/webhooks",
+    MACHINE_API_BASE_URL: "https://machines.example.com/api",
+    MACHINE_MQTT_URL: "mqtt://machines.example.com:1883",
+    PAYMENT_WEBHOOK_BASE_URL: "https://payments.example",
     PAYMENT_CONFIG_ENCRYPTION_KEY: "b".repeat(64),
     ...overrides,
   };
@@ -122,15 +137,20 @@ describe("backend image publishing", () => {
   });
 });
 
-describe("backend deployment record", () => {
+describe("backend Compose deployment contract", () => {
+  it("exposes no repository command that deploys the backend stack", () => {
+    const packageJson = JSON.parse(readFileSync(packagePath, "utf8"));
+    assert.equal(packageJson.scripts["deploy:backend"], undefined);
+    assert.equal(existsSync(legacyDeploymentScript), false);
+  });
+
   it("builds a bounded production-like Compose smoke env", () => {
     const env = backendComposeSmokeEnv({
-      serviceApiImage: "registry/vem-service-api@sha256:service",
-      adminUiImage: "registry/vem-admin-ui@sha256:admin",
+      serviceApiImage: `registry/vem-service-api@sha256:${"c".repeat(64)}`,
+      adminUiImage: `registry/vem-admin-ui@sha256:${"d".repeat(64)}`,
       ports: {
         serviceApi: 33001,
         adminUi: 34001,
-        postgres: 35001,
         mqtt: 36001,
       },
       volumePrefix: "smoke-volume",
@@ -138,7 +158,9 @@ describe("backend deployment record", () => {
     assert.equal(env.PAYMENT_MOCK_ENABLED, "false");
     assert.equal(env.SERVICE_API_PORT, "33001");
     assert.equal(env.ADMIN_UI_PORT, "34001");
+    assert.equal(env.MACHINE_API_BASE_URL, "http://127.0.0.1:33001/api");
     assert.equal(env.MACHINE_MQTT_URL, "mqtt://127.0.0.1:36001");
+    assert.equal(env.PAYMENT_WEBHOOK_BASE_URL, "https://payments.example");
     assert.equal(env.POSTGRES_DATA_SOURCE, "smoke-volume-postgres-data");
     assert.equal(env.MQTT_DATA_SOURCE, "smoke-volume-mqtt-data");
     assert.equal(
@@ -168,78 +190,53 @@ describe("backend deployment record", () => {
     );
   });
 
-  it("renders the digest override used by target-host compose deployment", () => {
+  it("uses only the host env file and static Compose file on the target host", () => {
     assert.equal(
-      renderDigestComposeOverride({
-        serviceApi: "registry/vem-service-api@sha256:service",
-        adminUi: "registry/vem-admin-ui@sha256:admin",
-      }),
-      [
-        "services:",
-        "  service-api:",
-        "    image: registry/vem-service-api@sha256:service",
-        "  admin-ui:",
-        "    image: registry/vem-admin-ui@sha256:admin",
-        "",
-      ].join("\n"),
+      JSON.stringify(
+        targetHostComposeCommand({
+          envFile: "/etc/vem/backend.env",
+          composeFile: "/opt/vem-backend/apps/service-api/docker-compose.yml",
+        }),
+      ),
+      JSON.stringify([
+        "compose",
+        "--env-file",
+        "/etc/vem/backend.env",
+        "-f",
+        "/opt/vem-backend/apps/service-api/docker-compose.yml",
+      ]),
     );
-  });
-
-  it("renders a single digest-pinned compose artifact from the runtime definition", () => {
-    const rendered = renderDigestPinnedCompose(
-      readFileSync(composePath, "utf8"),
-      {
-        serviceApi: "registry/vem-service-api@sha256:service",
-        adminUi: "registry/vem-admin-ui@sha256:admin",
-      },
-    );
-    const compose = YAML.parse(rendered);
-    assert.equal(
-      compose.services["service-api"].image,
-      "registry/vem-service-api@sha256:service",
-    );
-    assert.equal(
-      compose.services["admin-ui"].image,
-      "registry/vem-admin-ui@sha256:admin",
-    );
-    assert.ok("postgres" in compose.services);
-    assert.ok("mqtt" in compose.services);
-    assert.ok("vem-service-api-media-assets" in compose.volumes);
-  });
-
-  it("records the requested commit and repository digests", () => {
-    const record = deploymentRecord({
-      commit,
-      configured: {
-        serviceApi: `registry/vem-service-api:sha-${commit}`,
-        adminUi: `registry/vem-admin-ui:sha-${commit}`,
-      },
-      repoDigests: {
-        serviceApi: "registry/vem-service-api@sha256:a",
-        adminUi: "registry/vem-admin-ui@sha256:b",
-      },
-      composeFile: "/compose.yml",
-      envFile: "/env",
-      digestOverride: "/override.yml",
-      releaseComposeFile: "/compose.release.yml",
-      deployedAt: "2026-07-21T00:00:00.000Z",
-    });
-    assert.equal(validateDeployCommit(record.requestedCommit), commit);
-    assert.deepEqual(record.repoDigests, {
-      serviceApi: "registry/vem-service-api@sha256:a",
-      adminUi: "registry/vem-admin-ui@sha256:b",
-    });
   });
 
   it("passes every required production endpoint and key into Service API", () => {
     const compose = readFileSync(composePath, "utf8");
     for (const variable of [
+      "MACHINE_API_BASE_URL",
       "MACHINE_MQTT_URL",
       "MACHINE_CLAIM_LOOKUP_HMAC_KEY",
       "PAYMENT_WEBHOOK_BASE_URL",
       "PAYMENT_CONFIG_ENCRYPTION_KEY",
     ]) {
       assert.match(compose, new RegExp(`^\\s+${variable}:`, "m"));
+    }
+  });
+
+  it("declares the host-owned secrets required by the static Compose file", () => {
+    const compose = readFileSync(composePath, "utf8");
+    for (const variable of [
+      "POSTGRES_PASSWORD",
+      "MQTT_USERNAME",
+      "MQTT_PASSWORD",
+      "JWT_SECRET",
+      "JWT_REFRESH_SECRET",
+      "BOOTSTRAP_ADMIN_PASSWORD",
+      "MACHINE_JWT_SECRET",
+      "MACHINE_CREDENTIAL_ENCRYPTION_KEY",
+      "MACHINE_CLAIM_LOOKUP_HMAC_KEY",
+      "PAYMENT_WEBHOOK_BASE_URL",
+      "PAYMENT_CONFIG_ENCRYPTION_KEY",
+    ]) {
+      assert.match(compose, new RegExp(`\\$\\{${variable}:\\?`));
     }
   });
 
@@ -259,13 +256,14 @@ describe("backend deployment record", () => {
       compose.services.mqtt.image,
       "${MQTT_IMAGE:-eclipse-mosquitto:2}",
     );
+    assert.equal(compose.services.postgres.ports, undefined);
     assert.match(
       compose.services["service-api"].image,
-      /\$\{SERVICE_API_IMAGE:\?SERVICE_API_IMAGE must be sha-<40-character-commit>\}/,
+      /\$\{SERVICE_API_IMAGE:\?SERVICE_API_IMAGE is required\}/,
     );
     assert.match(
       compose.services["admin-ui"].image,
-      /\$\{ADMIN_UI_IMAGE:\?ADMIN_UI_IMAGE must be sha-<40-character-commit>\}/,
+      /\$\{ADMIN_UI_IMAGE:\?ADMIN_UI_IMAGE is required\}/,
     );
     assert.ok(compose.services.postgres.healthcheck);
     assert.ok(compose.services.mqtt.healthcheck);
@@ -310,8 +308,11 @@ describe("backend deployment record", () => {
         const envPath = join(temp, "backend.env");
         writeEnvFile(envPath, backendEnv());
         const rendered = dockerComposeConfig(envPath);
-        assert.match(rendered, /registry\.example\/vem-service-api:sha-/);
-        assert.match(rendered, /registry\.example\/vem-admin-ui:sha-/);
+        assert.match(
+          rendered,
+          /registry\.example\/vem-service-api@sha256:a{64}/,
+        );
+        assert.match(rendered, /registry\.example\/vem-admin-ui@sha256:b{64}/);
         assert.match(rendered, /vem-service-api-media-assets/);
         assert.match(rendered, /MEDIA_ASSET_STORAGE_ROOT/);
       } finally {
@@ -331,7 +332,26 @@ describe("backend deployment record", () => {
         writeEnvFile(envPath, env);
         assert.throws(
           () => dockerComposeConfig(envPath),
-          /SERVICE_API_IMAGE must be sha-<40-character-commit>/,
+          /SERVICE_API_IMAGE is required/,
+        );
+      } finally {
+        rmSync(temp, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it(
+    "rejects a target-host Compose env missing required secrets",
+    { skip: dockerComposeSkip },
+    () => {
+      const temp = mkdtempSync(join(tmpdir(), "vem-backend-compose-"));
+      try {
+        const envPath = join(temp, "backend.env");
+        const { POSTGRES_PASSWORD: _removed, ...env } = backendEnv();
+        writeEnvFile(envPath, env);
+        assert.throws(
+          () => dockerComposeConfig(envPath),
+          /POSTGRES_PASSWORD is required/,
         );
       } finally {
         rmSync(temp, { recursive: true, force: true });
@@ -365,125 +385,65 @@ describe("backend deployment record", () => {
     );
   });
 
-  it("drives the pull-only compose deployment in digest-pinned order", async () => {
-    const temp = mkdtempSync(join(tmpdir(), "vem-backend-deploy-"));
-    const calls = [];
-    const outputs = [];
-    const serviceImage = `registry/vem-service-api:sha-${commit}`;
-    const adminImage = `registry/vem-admin-ui:sha-${commit}`;
-    const fakeExec = (command, args) => {
-      calls.push([command, ...args]);
-      const joined = [command, ...args].join(" ");
-      if (joined.endsWith(" config --images")) {
-        return `${serviceImage}\n${adminImage}\n`;
-      }
-      if (args[0] === "inspect" && args.at(-1) === serviceImage) {
-        return "registry/vem-service-api@sha256:service\n";
-      }
-      if (args[0] === "inspect" && args.at(-1) === adminImage) {
-        return "registry/vem-admin-ui@sha256:admin\n";
-      }
-      if (args[0] === "compose" && args.at(-2) === "-q") {
-        return `container-${args.at(-1)}\n`;
-      }
-      if (args[0] === "inspect" && args[3]?.startsWith("container-")) {
-        return "healthy\n";
-      }
-      if (args[0] === "exec" && args[1] === "container-admin-ui") {
-        return JSON.stringify({
-          data: { database: "ok", mqtt: "connected" },
-        });
-      }
-      if (args[0] === "compose" && args.at(-1) === "ps") return "";
-      return "";
-    };
-    try {
-      const record = await deploy(
-        [
-          "--commit",
-          commit,
-          "--env",
-          join(temp, "backend.env"),
-          "--compose",
-          composePath.pathname,
-          "--state-dir",
-          temp,
-        ],
-        {},
-        {
-          execFileSync: fakeExec,
-          writeFileSync: (path, content) => {
-            writeFileSync(path, content);
-            outputs.push([path, content]);
-          },
-          stdout: { write: () => undefined },
-          now: () => new Date("2026-07-21T00:00:00.000Z"),
-        },
-      );
-      assert.deepEqual(record.repoDigests, {
-        serviceApi: "registry/vem-service-api@sha256:service",
-        adminUi: "registry/vem-admin-ui@sha256:admin",
-      });
-      assert.match(
-        outputs.find(([path]) => path.endsWith("digest-compose.yml"))?.[1] ??
-          "",
-        /registry\/vem-service-api@sha256:service/,
-      );
-      assert.match(
-        outputs.find(([path]) => path.endsWith("compose.release.yml"))?.[1] ??
-          "",
-        /registry\/vem-admin-ui@sha256:admin/,
-      );
-      const commandLines = calls.map((call) => call.join(" "));
-      assert.match(commandLines[0] ?? "", /docker compose .* pull$/);
-      assert.match(commandLines[1] ?? "", /docker compose .* config --images$/);
-      assert.match(commandLines[2] ?? "", /docker inspect .*service-api/);
-      assert.match(commandLines[3] ?? "", /docker inspect .*admin-ui/);
-      assert.ok(commandLines[4]?.includes("compose"));
-      assert.ok(commandLines[4]?.endsWith("up -d --remove-orphans"));
-      assert.ok(
-        commandLines.some((line) => line.includes("exec container-admin-ui")),
-      );
-    } finally {
-      rmSync(temp, { recursive: true, force: true });
-    }
+  it("accepts only digest-pinned app images for deployment helpers", () => {
+    assert.equal(
+      validateDigestPinnedImage(
+        `ghcr.io/ykdz/vem-service-api@sha256:${"e".repeat(64)}`,
+        "SERVICE_API_IMAGE",
+      ),
+      `ghcr.io/ykdz/vem-service-api@sha256:${"e".repeat(64)}`,
+    );
+    assert.throws(
+      () =>
+        validateDigestPinnedImage(
+          "ghcr.io/ykdz/vem-service-api:latest",
+          "SERVICE_API_IMAGE",
+        ),
+      /@sha256:<64hex>/,
+    );
+    assert.throws(
+      () =>
+        validateDigestPinnedImage(
+          `ghcr.io/ykdz/vem-admin-ui:sha-${commit}`,
+          "ADMIN_UI_IMAGE",
+        ),
+      /@sha256:<64hex>/,
+    );
   });
 
-  it("rejects mutable app image tags before compose up", async () => {
-    const temp = mkdtempSync(join(tmpdir(), "vem-backend-deploy-"));
-    const calls = [];
-    const fakeExec = (command, args) => {
-      calls.push([command, ...args]);
-      if (args[0] === "compose" && args.at(-2) === "config") {
-        return "registry/vem-service-api:latest\nregistry/vem-admin-ui:latest\n";
-      }
-      return "";
-    };
-    try {
-      await assert.rejects(
-        () =>
-          deploy(
-            [
-              "--commit",
-              commit,
-              "--env",
-              join(temp, "backend.env"),
-              "--compose",
-              composePath.pathname,
-              "--state-dir",
-              temp,
-            ],
-            {},
-            { execFileSync: fakeExec },
-          ),
-        /image must use sha-/,
-      );
-      assert.equal(
-        calls.some((call) => call.join(" ").includes("up -d")),
-        false,
-      );
-    } finally {
-      rmSync(temp, { recursive: true, force: true });
-    }
+  it("accepts webhook base URLs only as origin or plural webhook base path", () => {
+    assert.equal(
+      validatePaymentWebhookBaseUrl("https://pay.example.com"),
+      "https://pay.example.com",
+    );
+    assert.equal(
+      validatePaymentWebhookBaseUrl(
+        "https://pay.example.com/api/payments/webhooks",
+      ),
+      "https://pay.example.com/api/payments/webhooks",
+    );
+    assert.throws(
+      () =>
+        validatePaymentWebhookBaseUrl(
+          "https://pay.example.com/api/payments/webhook",
+        ),
+      /service origin or \/api\/payments\/webhooks/,
+    );
+  });
+
+  it("keeps the operator manual on the static Compose plus host env path", () => {
+    const manual = readFileSync(deploymentManual, "utf8");
+    assert.match(
+      manual,
+      /docker compose --env-file "\$ENV_FILE" -f "\$COMPOSE_FILE" config/,
+    );
+    assert.match(manual, /SERVICE_API_IMAGE=.*@sha256:/);
+    assert.match(manual, /ADMIN_UI_IMAGE=.*@sha256:/);
+    assert.match(manual, /MACHINE_API_BASE_URL=https:\/\/<public-host>\/api/);
+    assert.match(manual, /MACHINE_MQTT_URL=mqtt:\/\/<public-host>:1883/);
+    assert.match(manual, /PAYMENT_WEBHOOK_BASE_URL=https:\/\/<public-host>/);
+    assert.match(manual, /不发布宿主机 `5432`/);
+    assert.doesNotMatch(manual, /pnpm deploy:backend/);
+    assert.doesNotMatch(manual, /compose\.release\.yml/);
   });
 });

@@ -7,8 +7,6 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-vem}
       POSTGRES_USER: ${POSTGRES_USER:-vem}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - vem-postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -45,7 +43,7 @@ services:
       retries: 20
 
   service-api:
-    image: ${SERVICE_API_IMAGE:?SERVICE_API_IMAGE must be sha-<40-character-commit>}
+    image: ${SERVICE_API_IMAGE:?SERVICE_API_IMAGE is required}
     environment:
       NODE_ENV: production
       SERVICE_PORT: 3000
@@ -107,7 +105,7 @@ services:
       retries: 30
 
   admin-ui:
-    image: ${ADMIN_UI_IMAGE:?ADMIN_UI_IMAGE must be sha-<40-character-commit>}
+    image: ${ADMIN_UI_IMAGE:?ADMIN_UI_IMAGE is required}
     environment:
       API_URL: ${API_URL:-http://service-api:3000}
     ports:
