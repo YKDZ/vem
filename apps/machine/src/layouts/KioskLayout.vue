@@ -15,6 +15,7 @@ const { handleMaintenanceTap } = useMaintenanceEntry();
         class="flex h-14 items-center gap-3"
         data-test="maintenance-entry-header"
         @click="handleMaintenanceTap"
+        @touchend.prevent="handleMaintenanceTap"
       >
         <img :src="logoImage" alt="唐诗村" class="h-10 w-auto object-contain" />
         <img

@@ -28,6 +28,7 @@ function handleBrandClick(): void {
       class="kiosk-header-brand"
       data-test="maintenance-entry-brand"
       @click="handleBrandClick"
+      @touchend.prevent="handleBrandClick"
     >
       <img :src="logoImage" alt="唐诗村" class="kiosk-header-logo" />
       <img

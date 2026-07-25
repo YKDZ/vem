@@ -28,6 +28,12 @@ function tapBrand(host: HTMLElement): void {
     ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 }
 
+function touchBrand(host: HTMLElement): void {
+  host
+    .querySelector("[data-test='maintenance-entry-brand']")
+    ?.dispatchEvent(new Event("touchend", { bubbles: true, cancelable: true }));
+}
+
 describe("KioskHeader", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -38,6 +44,24 @@ describe("KioskHeader", () => {
 
     for (let index = 0; index < 7; index += 1) {
       tapBrand(host);
+    }
+
+    expect(submitMachineNavigationIntentMock).toHaveBeenCalledWith({
+      type: "operator.navigate",
+      target: {
+        path: "/maintenance",
+        query: { source: "operator" },
+      },
+    });
+
+    app.unmount();
+  });
+
+  it("opens maintenance from the installed touch path", async () => {
+    const { app, host } = await mountHeader();
+
+    for (let index = 0; index < 7; index += 1) {
+      touchBrand(host);
     }
 
     expect(submitMachineNavigationIntentMock).toHaveBeenCalledWith({

@@ -67,4 +67,36 @@ describe("KioskLayout", () => {
 
     app.unmount();
   });
+
+  it("opens maintenance from the installed touch path", async () => {
+    const host = document.createElement("div");
+    const app = createApp({
+      components: { KioskLayout },
+      template: "<KioskLayout>catalog content</KioskLayout>",
+    });
+    app.use(createPinia());
+    app.mount(host);
+    await nextTick();
+
+    const hiddenMaintenanceTarget = host.querySelector(
+      "[data-test='maintenance-entry-header']",
+    );
+    expect(hiddenMaintenanceTarget).not.toBeNull();
+
+    for (let index = 0; index < 7; index += 1) {
+      hiddenMaintenanceTarget?.dispatchEvent(
+        new Event("touchend", { bubbles: true, cancelable: true }),
+      );
+    }
+
+    expect(submitMachineNavigationIntentMock).toHaveBeenCalledWith({
+      type: "operator.navigate",
+      target: {
+        path: "/maintenance",
+        query: { source: "operator" },
+      },
+    });
+
+    app.unmount();
+  });
 });
