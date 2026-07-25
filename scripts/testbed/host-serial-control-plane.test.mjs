@@ -87,6 +87,27 @@ function wavWithTone(frameCount = 48_000, sampleRate = 48_000, channels = 2) {
   return bytes;
 }
 
+function createReadyMqttCapture({ topic }) {
+  const messages = [];
+  return {
+    ready: Promise.resolve({ topic, subscribedAt: new Date().toISOString() }),
+    stop() {},
+    snapshot() {
+      return { topic, messages: [...messages], stderr: "" };
+    },
+  };
+}
+
+function createFailedMqttCapture({ topic }) {
+  return {
+    ready: Promise.reject(new Error(`capture failed for ${topic}`)),
+    stop() {},
+    snapshot() {
+      return { topic, messages: [], stderr: "capture stderr" };
+    },
+  };
+}
+
 async function requestJson(baseUrl, token, path, body = {}) {
   const response = await fetch(`${baseUrl}${path}`, {
     method: "POST",
@@ -429,6 +450,13 @@ describe("host serial control plane", () => {
     assert.match(implementation, /vem\/testbed\/capture-probes\/\$\{probeId\}/);
     assert.match(implementation, /__vemTestbedMqttCaptureProbe/);
     assert.match(implementation, /mosquitto_pub/);
+    assert.match(
+      implementation,
+      /class TestbedInfrastructureError extends Error/,
+    );
+    assert.match(implementation, /code = "testbed_infra_failed"/);
+    assert.match(implementation, /stage: "mqtt_capture_ready"/);
+    assert.match(implementation, /errorResponsePayload\(error\)/);
     assert.match(
       implementation,
       /await Promise\.all\(\[mqttCapture\.ready, machineMqttCapture\.ready\]\)/,
@@ -984,6 +1012,7 @@ describe("host serial control plane", () => {
                 createFileBackedAudioCaptureTestBackend(capturedWavPath),
             }),
           abortSaleAudioCapture: async () => ({ aborted: true }),
+          mqttCaptureFactory: createReadyMqttCapture,
         },
       );
       server = controlPlane.listen();
@@ -1289,6 +1318,112 @@ describe("host serial control plane", () => {
         if (value === undefined) delete process.env[name];
         else process.env[name] = value;
       }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("classifies MQTT capture readiness failure as testbed infrastructure failure", async () => {
+    const root = makeTempDir("vem-host-mqtt-infra-failure");
+    const workspace = new URL("../..", import.meta.url).pathname;
+    const stateRoot = join(root, "state");
+    const bin = join(root, "bin");
+    const token = "control-plane-token";
+    const previousEnvironment = {
+      PATH: process.env.PATH,
+      RUNNER_TEMP: process.env.RUNNER_TEMP,
+      VEM_VM_HOST_ADAPTER: process.env.VEM_VM_HOST_ADAPTER,
+      VEM_VM_HOST_ADAPTER_VERSION: process.env.VEM_VM_HOST_ADAPTER_VERSION,
+      VEM_VM_HOST_ADAPTER_SHA256: process.env.VEM_VM_HOST_ADAPTER_SHA256,
+      VEM_VM_HOST_ADAPTER_DOMAIN: process.env.VEM_VM_HOST_ADAPTER_DOMAIN,
+      VEM_VM_HOST_ADAPTER_STATE_ROOT:
+        process.env.VEM_VM_HOST_ADAPTER_STATE_ROOT,
+      VEM_LOWER_CONTROLLER_SIM: process.env.VEM_LOWER_CONTROLLER_SIM,
+    };
+    const domainXml = `<domain type="kvm"><devices>
+      <serial type="pty"><source path="/dev/pts/41"/><target type="usb-serial" port="0"/><alias name="serial-lower-controller"/><address type="usb" bus="0" port="3.1"/></serial>
+      <serial type="pty"><source path="/dev/pts/42"/><target type="usb-serial" port="1"/><alias name="serial-scanner"/><address type="usb" bus="0" port="3.2"/></serial>
+    </devices></domain>`;
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(
+      join(bin, "virsh"),
+      `#!/bin/sh\ncat <<'XML'\n${domainXml}\nXML\n`,
+    );
+    writeFileSync(
+      join(bin, "lower-controller-sim"),
+      "#!/bin/sh\nexec sleep 60\n",
+    );
+    writeFileSync(
+      join(bin, "socat"),
+      '#!/bin/sh\nfor value in "$@"; do case "$value" in PTY,link=*) path=${value#PTY,link=}; path=${path%%,*}; touch "$path";; esac; done\nexec sleep 60\n',
+    );
+    chmodSync(join(bin, "virsh"), 0o755);
+    chmodSync(join(bin, "lower-controller-sim"), 0o755);
+    chmodSync(join(bin, "socat"), 0o755);
+    let controlPlane;
+    let server;
+    try {
+      process.env.PATH = `${bin}:${process.env.PATH}`;
+      process.env.RUNNER_TEMP = join(root, "runner-temp");
+      process.env.VEM_VM_HOST_ADAPTER = adapterPath;
+      process.env.VEM_VM_HOST_ADAPTER_VERSION = QEMU_USB_SERIAL_ADAPTER_VERSION;
+      process.env.VEM_VM_HOST_ADAPTER_SHA256 = `sha256:${createHash("sha256").update(readFileSync(adapterPath)).digest("hex")}`;
+      process.env.VEM_VM_HOST_ADAPTER_DOMAIN = "win10-runtime-testbed";
+      process.env.VEM_VM_HOST_ADAPTER_STATE_ROOT = join(stateRoot, "adapter");
+      process.env.VEM_LOWER_CONTROLLER_SIM = join(bin, "lower-controller-sim");
+      controlPlane = createHostSerialControlPlane(
+        {
+          workspace,
+          stateRoot,
+          bind: "127.0.0.1",
+          port: 0,
+          token,
+          libvirtUri: "qemu:///system",
+          domainName: "win10-runtime-testbed",
+        },
+        { mqttCaptureFactory: createFailedMqttCapture },
+      );
+      server = controlPlane.listen();
+      await new Promise((resolve) => server.once("listening", resolve));
+      const address = server.address();
+      const response = await fetch(
+        `http://127.0.0.1:${address.port}/v1/serial-sessions/start`,
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            runId: "RUN-17-CONTROL-PLANE",
+            machineCode: "MACHINE-17",
+            targetIdentity: "vm-target://runtime-testbed",
+            runtimeBase: `runtime-base://sha256/${"a".repeat(64)}`,
+            saleCorrelationId: "sale-correlation://run-17-control-plane",
+            serialScenario: "delayed-pickup",
+          }),
+        },
+      );
+      const payload = await response.json();
+      assert.equal(response.status, 500);
+      assert.equal(payload.ok, false);
+      assert.equal(
+        payload.code,
+        "testbed_infra_failed",
+        JSON.stringify(payload),
+      );
+      assert.equal(payload.stage, "mqtt_capture_ready");
+      assert.equal(payload.details.machineCode, "MACHINE-17");
+      assert.equal(payload.details.mqtt.stderr, "capture stderr");
+      assert.equal(payload.details.sessionCleanup.aborted, true);
+      assert.equal(payload.details.sessionCleanupError, null);
+      const health = await fetch(`http://127.0.0.1:${address.port}/healthz`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      const healthPayload = await health.json();
+      assert.equal(healthPayload.sessionCount, 0);
+    } finally {
+      if (server) await controlPlane.close();
+      Object.assign(process.env, previousEnvironment);
       rmSync(root, { recursive: true, force: true });
     }
   });

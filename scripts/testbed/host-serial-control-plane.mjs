@@ -104,6 +104,31 @@ function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+class TestbedInfrastructureError extends Error {
+  constructor(message, details = {}) {
+    super(message);
+    this.name = "TestbedInfrastructureError";
+    this.code = "testbed_infra_failed";
+    this.details = details;
+  }
+}
+
+function errorResponsePayload(error) {
+  if (error instanceof TestbedInfrastructureError) {
+    return {
+      ok: false,
+      error: error.message,
+      code: error.code,
+      stage: error.details.stage ?? "unknown",
+      details: error.details,
+    };
+  }
+  return {
+    ok: false,
+    error: error instanceof Error ? error.message : String(error),
+  };
+}
+
 export function parseHostSerialControlPlaneArgs(args) {
   return {
     workspace: absolute(option(args, "workspace"), "--workspace"),
@@ -1629,19 +1654,14 @@ async function createSerialSession(server, input) {
   });
   const { stdout } = await runJsonCommand(command);
   const report = parseJsonLine(stdout, outPath);
-  const mqttCapture = spawnMqttCapture({ machineCode });
-  const machineMqttCapture = spawnMqttCapture({
+  const mqttCaptureFactory =
+    server.dependencies.mqttCaptureFactory ?? spawnMqttCapture;
+  const mqttCapture = mqttCaptureFactory({ machineCode });
+  const machineMqttCapture = mqttCaptureFactory({
     machineCode,
     topic: buildMachineMqttTopic(machineCode),
     limit: 40,
   });
-  try {
-    await Promise.all([mqttCapture.ready, machineMqttCapture.ready]);
-  } catch (error) {
-    mqttCapture.stop();
-    machineMqttCapture.stop();
-    throw error;
-  }
   const session = {
     id: sessionId,
     dir,
@@ -1667,6 +1687,44 @@ async function createSerialSession(server, input) {
     stopReports: [],
   };
   server.sessions.set(sessionId, session);
+  try {
+    await Promise.all([mqttCapture.ready, machineMqttCapture.ready]);
+  } catch (error) {
+    const mqttSnapshot = mqttCapture.snapshot();
+    const machineMqttSnapshot = machineMqttCapture.snapshot();
+    let cleanup = null;
+    let cleanupError = null;
+    try {
+      cleanup = await abortSession(server, { sessionId });
+    } catch (abortError) {
+      cleanupError =
+        abortError instanceof Error ? abortError.message : String(abortError);
+      mqttCapture.stop();
+      machineMqttCapture.stop();
+    } finally {
+      server.sessions.delete(sessionId);
+    }
+    throw new TestbedInfrastructureError(
+      `MQTT capture readiness failed before customer flow: ${error instanceof Error ? error.message : String(error)}`,
+      {
+        stage: "mqtt_capture_ready",
+        machineCode,
+        serialSessionId: report.serialSession?.serialSessionId ?? null,
+        sessionCleanup: cleanup,
+        sessionCleanupError: cleanupError,
+        mqtt: {
+          topic: mqttSnapshot.topic,
+          stderr: mqttSnapshot.stderr,
+          messageCount: mqttSnapshot.messages.length,
+        },
+        machineMqtt: {
+          topic: machineMqttSnapshot.topic,
+          stderr: machineMqttSnapshot.stderr,
+          messageCount: machineMqttSnapshot.messages.length,
+        },
+      },
+    );
+  }
   return {
     sessionId,
     saleCorrelationId,
@@ -1849,6 +1907,7 @@ export function createHostSerialControlPlane(options, dependencies = {}) {
         dependencies.stopDefaultAudioCapture ?? stopDefaultAudioCaptureSession,
       abortSaleAudioCapture:
         dependencies.abortSaleAudioCapture ?? abortSaleAudioCaptureSession,
+      mqttCaptureFactory: dependencies.mqttCaptureFactory,
     },
   };
   const server = createServer(async (request, response) => {
@@ -2159,10 +2218,7 @@ export function createHostSerialControlPlane(options, dependencies = {}) {
       }
       jsonResponse(response, 404, { ok: false, error: "not_found" });
     } catch (error) {
-      jsonResponse(response, 500, {
-        ok: false,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      jsonResponse(response, 500, errorResponsePayload(error));
     }
   });
   return {
