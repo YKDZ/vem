@@ -498,10 +498,37 @@ async function readPaymentFlowDiagnostic(client, method) {
           selectedOptionKey: selected?.dataset.paymentOptionKey ?? null,
         },
         customerMessages: visibleText('[role="alert"], .ant-message, .ant-alert, .checkout-error, .payment-error, [data-test*="error"]'),
-        runtimeTrace: typeof window.__VEM_MACHINE_RUNTIME_TRACE_SNAPSHOT__ === 'function'
-          ? window.__VEM_MACHINE_RUNTIME_TRACE_SNAPSHOT__().slice(-12)
+        submitEvents: Array.isArray(window.__VEM_PAYMENT_PROVIDER_SUBMIT_EVENTS__)
+          ? window.__VEM_PAYMENT_PROVIDER_SUBMIT_EVENTS__.slice(-12)
           : null,
+        runtimeTrace: window.__VEM_MACHINE_RUNTIME_TRACE_SNAPSHOT__?.entries?.slice?.(-12) ?? null,
       };
+    })()`,
+  );
+}
+
+async function installCheckoutSubmitEventProbe(client) {
+  await evaluateExpression(
+    client,
+    `(() => {
+      window.__VEM_PAYMENT_PROVIDER_SUBMIT_EVENTS__ = [];
+      if (window.__VEM_PAYMENT_PROVIDER_SUBMIT_PROBE_INSTALLED__) return true;
+      const record = (event) => {
+        const target = event.target?.closest?.('[data-test="checkout-submit"]');
+        if (!target) return;
+        window.__VEM_PAYMENT_PROVIDER_SUBMIT_EVENTS__.push({
+          type: event.type,
+          route: location.hash,
+          trusted: event.isTrusted,
+          disabled: Boolean(target.disabled),
+          time: Date.now(),
+        });
+      };
+      document.addEventListener('pointerdown', record, true);
+      document.addEventListener('pointerup', record, true);
+      document.addEventListener('click', record, true);
+      window.__VEM_PAYMENT_PROVIDER_SUBMIT_PROBE_INSTALLED__ = true;
+      return true;
     })()`,
   );
 }
@@ -533,6 +560,7 @@ async function submitUntilPaymentSurface(client, method, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   let submitCount = 0;
   let domClickCount = 0;
+  await installCheckoutSubmitEventProbe(client);
   while (Date.now() < deadline) {
     const surface = await readVisiblePaymentSurface(client);
     if (
