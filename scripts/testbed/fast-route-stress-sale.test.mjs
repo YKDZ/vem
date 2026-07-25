@@ -19,6 +19,7 @@ import {
   waitForGuardedVisionDepartureTrace,
   waitForStableVisionArrivalTrace,
   waitForStableVisionDepartureTransition,
+  waitForVisionArrivalOrTouchSession,
   validateFastRouteStressSaleEvidence,
 } from "./fast-route-stress-sale.mjs";
 
@@ -561,6 +562,37 @@ describe("fast route stress sale tracer", () => {
       }),
     });
     assert.equal(result.intentType, "customer.touch");
+  });
+
+  it("falls back to physical touch when Vision arrival is deduped", async () => {
+    const boundary = {
+      source: "installed_machine_runtime_trace_cdp",
+      lastEntryId: 4,
+      capturedAt: "2026-07-18T03:59:59.000Z",
+      runtimeGenerationId: "runtime-generation-1",
+    };
+    let touched = false;
+    const result = await waitForVisionArrivalOrTouchSession(null, boundary, {
+      arrivalTimeoutMs: 100,
+      touchTimeoutMs: 100,
+      dispatchTouch: async () => {
+        touched = true;
+        return { input: { method: "Input.dispatchTouchEvent" } };
+      },
+      waitArrival: async (_client, _boundary, options) => {
+        if (!touched) throw new Error(`deduped after ${options.timeoutMs}`);
+        return {
+          id: 5,
+          type: "navigation",
+          intentType: "customer.touch",
+          decision: "accepted",
+          reasonCode: "touchscreen_session_renewed",
+        };
+      },
+    });
+    assert.equal(result.trace.intentType, "customer.touch");
+    assert.equal(result.fallback.kind, "touchscreen_session");
+    assert.match(result.fallback.arrivalError, /deduped/);
   });
 
   it("awaits a stable Vision departure before establishing another arrival", async () => {

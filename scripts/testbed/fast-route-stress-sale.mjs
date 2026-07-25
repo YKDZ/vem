@@ -2208,6 +2208,64 @@ async function dispatchVisionArrival(guestInput) {
   });
 }
 
+async function dispatchCatalogTouchSession(client) {
+  const point = await evaluateExpression(
+    client,
+    `(() => {
+      const target =
+        document.querySelector("[data-test='catalog-page']") ??
+        document.body ??
+        document.documentElement;
+      const rect = target.getBoundingClientRect();
+      const x = Math.max(1, Math.min(innerWidth - 1, rect.left + Math.min(64, Math.max(16, rect.width / 2))));
+      const y = Math.max(1, Math.min(innerHeight - 1, rect.top + Math.min(64, Math.max(16, rect.height / 2))));
+      return { x, y, selector: target.getAttribute?.("data-test") ?? target.tagName };
+    })()`,
+  );
+  return {
+    ...point,
+    input: await dispatchPhysicalInput(client, point, {
+      kind: "touch",
+      timeoutMs: 5_000,
+    }),
+  };
+}
+
+export async function waitForVisionArrivalOrTouchSession(
+  client,
+  traceBoundary,
+  {
+    waitArrival = waitForStableVisionArrivalTrace,
+    dispatchTouch = dispatchCatalogTouchSession,
+    arrivalTimeoutMs = 5_000,
+    touchTimeoutMs = 3_000,
+  } = {},
+) {
+  try {
+    return {
+      trace: await waitArrival(client, traceBoundary, {
+        timeoutMs: arrivalTimeoutMs,
+      }),
+      fallback: null,
+    };
+  } catch (arrivalError) {
+    const touch = await dispatchTouch(client);
+    return {
+      trace: await waitArrival(client, traceBoundary, {
+        timeoutMs: touchTimeoutMs,
+      }),
+      fallback: {
+        kind: "touchscreen_session",
+        touch,
+        arrivalError:
+          arrivalError instanceof Error
+            ? arrivalError.message
+            : String(arrivalError),
+      },
+    };
+  }
+}
+
 async function establishVisionPresenceForSale(guestInput, client) {
   const resetBoundary = await captureRuntimeTraceBoundary(
     client,
@@ -2250,10 +2308,11 @@ async function establishVisionPresenceForSale(guestInput, client) {
     "Vision arrival control-request trace boundary",
   );
   const delivery = await dispatchVisionArrival(guestInput);
-  const trace = await waitForStableVisionArrivalTrace(
+  const arrivalOrTouch = await waitForVisionArrivalOrTouchSession(
     client,
     arrivalTraceBoundary,
   );
+  const trace = arrivalOrTouch.trace;
   return {
     precondition: "fresh-arrival",
     resetPrecondition,
@@ -2261,7 +2320,9 @@ async function establishVisionPresenceForSale(guestInput, client) {
     resetTransitionId: resetTrace.transitionId,
     ...delivery,
     traceBoundary: arrivalTraceBoundary,
+    fallback: arrivalOrTouch.fallback,
     transitionId: trace.transitionId,
+    touchNavigationTraceId: trace.intentType === "customer.touch" ? trace.id : null,
     completedAt: new Date().toISOString(),
   };
 }
