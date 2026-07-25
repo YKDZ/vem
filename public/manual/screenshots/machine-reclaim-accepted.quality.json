@@ -1,0 +1,37 @@
+{
+  "schemaVersion": "vem-documentation-screenshot-metadata/v1",
+  "status": "manual-review",
+  "reasons": [
+    "expected text metadata is present but no detected text evidence was supplied",
+    "manual review reason recorded: 机器端重领截图来自 VM Runtime Acceptance；中文文本由人工对照截图复核。"
+  ],
+  "metadata": {
+    "id": "machine-reclaim-accepted",
+    "source": "machine-runtime",
+    "route": "#/maintenance?source=operator",
+    "capturedAt": "2026-07-25T23:17:00.000Z",
+    "commit": "63ff7ddd2f8c41021e472bc0ee80e50f633a8faf",
+    "viewport": {
+      "width": 1080,
+      "height": 1920
+    },
+    "expectedOrientation": "portrait",
+    "expectedTexts": [
+      "网络与认领",
+      "机器认领已接受",
+      "VEM-TESTBED-LOCAL"
+    ],
+    "detectedTexts": null,
+    "manualReviewReason": "机器端重领截图来自 VM Runtime Acceptance；中文文本由人工对照截图复核。"
+  },
+  "capture": {
+    "format": "png",
+    "widthPx": 1080,
+    "heightPx": 1920,
+    "pixelCount": 2073600,
+    "nonTransparentPixelCount": 2073600,
+    "nonTransparentPixelRatio": 1,
+    "distinctPixelCount": 6548,
+    "orientation": "portrait"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "id": "machine-reclaim-accepted",
+  "source": "machine-runtime",
+  "route": "#/maintenance?source=operator",
+  "capturedAt": "2026-07-25T23:17:00.000Z",
+  "commit": "63ff7ddd2f8c41021e472bc0ee80e50f633a8faf",
+  "viewport": {
+    "width": 1080,
+    "height": 1920
+  },
+  "expectedOrientation": "portrait",
+  "expectedTexts": [
+    "网络与认领",
+    "机器认领已接受",
+    "VEM-TESTBED-LOCAL"
+  ],
+  "manualReviewReason": "机器端重领截图来自 VM Runtime Acceptance；中文文本由人工对照截图复核。"
+}
