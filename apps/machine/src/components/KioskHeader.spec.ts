@@ -29,6 +29,12 @@ function tapBrand(host: HTMLElement): void {
     ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 }
 
+function pointerBrand(host: HTMLElement): void {
+  host
+    .querySelector("[data-test='maintenance-entry-brand']")
+    ?.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+}
+
 function touchBrand(host: HTMLElement): void {
   host
     .querySelector("[data-test='maintenance-entry-brand']")
@@ -71,6 +77,29 @@ describe("KioskHeader", () => {
       touchBrand(host);
     }
 
+    expect(submitMachineNavigationIntentMock).toHaveBeenCalledWith({
+      type: "operator.navigate",
+      target: {
+        path: "/maintenance",
+        query: { source: "operator" },
+      },
+    });
+
+    app.unmount();
+  });
+
+  it("opens maintenance from physical pointer input without double-counting the follow-up click", async () => {
+    const { app, host } = await mountHeader();
+
+    for (let index = 0; index < 6; index += 1) {
+      pointerBrand(host);
+      tapBrand(host);
+    }
+    expect(submitMachineNavigationIntentMock).not.toHaveBeenCalled();
+
+    pointerBrand(host);
+
+    expect(submitMachineNavigationIntentMock).toHaveBeenCalledTimes(1);
     expect(submitMachineNavigationIntentMock).toHaveBeenCalledWith({
       type: "operator.navigate",
       target: {
