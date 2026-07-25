@@ -1183,11 +1183,16 @@ async fn claim_machine(
             );
         }
     };
-    let _ = ctx.events.send(DaemonEvent::RuntimeReconfigureRequested {
-        event_id: uuid::Uuid::new_v4().simple().to_string(),
-        updated_at: crate::state::store::now_iso(),
-        reason: "machine_claimed".to_string(),
-        machine_code: Some(machine_code.clone()),
+    let events = ctx.events.clone();
+    let reconfigure_machine_code = machine_code.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let _ = events.send(DaemonEvent::RuntimeReconfigureRequested {
+            event_id: uuid::Uuid::new_v4().simple().to_string(),
+            updated_at: crate::state::store::now_iso(),
+            reason: "machine_claimed".to_string(),
+            machine_code: Some(reconfigure_machine_code),
+        });
     });
     (
         StatusCode::OK,
@@ -2528,16 +2533,14 @@ async fn manual_dispense_diagnostic(
         }
     };
     let cached_controller = ctx.ui.status_cache.hardware.read().await.clone();
-    let controller = if manual_dispense_controller_matches_bound_runtime(
-        &cached_controller,
-        &resolved_port,
-    ) {
-        cached_controller
-    } else {
-        let checked = ctx.hardware.self_check().await;
-        *ctx.ui.status_cache.hardware.write().await = checked.clone();
-        checked
-    };
+    let controller =
+        if manual_dispense_controller_matches_bound_runtime(&cached_controller, &resolved_port) {
+            cached_controller
+        } else {
+            let checked = ctx.hardware.self_check().await;
+            *ctx.ui.status_cache.hardware.write().await = checked.clone();
+            checked
+        };
     if !manual_dispense_controller_matches_bound_runtime(&controller, &resolved_port) {
         return error_response(
             StatusCode::CONFLICT,

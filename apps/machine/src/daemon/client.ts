@@ -170,6 +170,7 @@ type Subscription = {
 };
 
 const MAX_SEEN_EVENT_IDS = 1000;
+const DEFAULT_DAEMON_REQUEST_TIMEOUT_MS = 15_000;
 // Network setup failures carry five independently typed diagnostics.  Leave
 // ample room for all operator guidance while bounding untrusted daemon output
 // in the kiosk renderer.  Never parse a truncated JSON prefix.
@@ -246,7 +247,9 @@ export class DaemonApiClient {
       },
       body:
         options.body === undefined ? undefined : JSON.stringify(options.body),
-      signal: options.signal,
+      signal:
+        options.signal ??
+        AbortSignal.timeout(DEFAULT_DAEMON_REQUEST_TIMEOUT_MS),
     }).catch((error: unknown) => {
       throw new DaemonUnavailableError("daemon request failed", error);
     });

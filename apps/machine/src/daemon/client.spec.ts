@@ -309,6 +309,19 @@ describe("DaemonApiClient direct runtime intents", () => {
     );
   });
 
+  it("applies a default timeout to daemon requests so operator actions cannot stay pending forever", async () => {
+    const signal = AbortSignal.abort();
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(signal);
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(
+      jsonResponse(healthFixture()),
+    );
+
+    await new DaemonApiClient().getHealth();
+
+    expect(timeout).toHaveBeenCalledWith(15_000);
+    expect(lastFetchRequest()).toMatchObject({ signal });
+  });
+
   it("recognizes only daemon transport failures as recoverable claim disconnects", () => {
     expect(
       isDaemonTransportFailure(

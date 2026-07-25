@@ -1,8 +1,8 @@
 import type { EffectiveMachineRuntimeConfiguration } from "@vem/shared";
 
-const CLAIM_RECONNECT_ATTEMPTS = 8;
-const CLAIM_RECONNECT_INITIAL_DELAY_MS = 100;
-const CLAIM_RECONNECT_MAX_DELAY_MS = 1_000;
+const CLAIM_RECONNECT_ATTEMPTS = 24;
+const CLAIM_RECONNECT_INITIAL_DELAY_MS = 250;
+const CLAIM_RECONNECT_MAX_DELAY_MS = 2_000;
 
 type ClaimRecoveryClient = {
   initialize(force?: boolean): Promise<unknown>;

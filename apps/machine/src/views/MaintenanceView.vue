@@ -1448,6 +1448,7 @@ async function submitStockMaintenanceTask(): Promise<void> {
               required
             />
             <button
+              data-test="machine-claim-submit"
               class="kiosk-touch-target rounded-xl bg-emerald-300 px-4 py-3 font-bold text-slate-950 disabled:opacity-50"
               type="submit"
               :disabled="commissioning.claiming || !commissioning.claimCode"
@@ -1470,6 +1471,7 @@ async function submitStockMaintenanceTask(): Promise<void> {
                 required
               />
               <button
+                data-test="machine-reclaim-submit"
                 class="kiosk-touch-target rounded-xl bg-emerald-300 px-4 py-3 font-bold text-slate-950 disabled:opacity-50"
                 type="submit"
                 :disabled="commissioning.claiming || !commissioning.claimCode"
