@@ -1,0 +1,22 @@
+{
+  "id": "admin-notifications-tabs",
+  "source": "admin-ui",
+  "route": "/notifications",
+  "capturedAt": "2026-07-25T14:18:42.813Z",
+  "commit": "b55bbc7c7334e2eff44a4262d8810c7dec53e507",
+  "viewport": {
+    "width": 1440,
+    "height": 1080
+  },
+  "expectedOrientation": "landscape",
+  "expectedTexts": [
+    "通知中心",
+    "通知列表",
+    "维护工单"
+  ],
+  "detectedTexts": [
+    "通知中心",
+    "通知列表",
+    "维护工单"
+  ]
+}

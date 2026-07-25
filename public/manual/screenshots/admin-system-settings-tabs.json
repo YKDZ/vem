@@ -1,0 +1,22 @@
+{
+  "id": "admin-system-settings-tabs",
+  "source": "admin-ui",
+  "route": "/system-settings",
+  "capturedAt": "2026-07-25T14:18:44.272Z",
+  "commit": "b55bbc7c7334e2eff44a4262d8810c7dec53e507",
+  "viewport": {
+    "width": 1440,
+    "height": 1080
+  },
+  "expectedOrientation": "landscape",
+  "expectedTexts": [
+    "系统配置",
+    "天气服务",
+    "用户管理"
+  ],
+  "detectedTexts": [
+    "系统配置",
+    "天气服务",
+    "用户管理"
+  ]
+}

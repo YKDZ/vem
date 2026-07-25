@@ -16,7 +16,7 @@
 - 后台页面名称以当前 Admin Operations Console 为准。
 - 机器端操作以 Machine Runtime Console 的本地运维入口为准。
 - 本手册中的“补货”仅指机器端 `Routine Refill`。后台 `库存调整` 只用于异常核对，不作为日常补货流程。
-- 本版先建立结构、步骤和截图占位规则；真实 UI 截图仍待采集与质检，未完成前不得把占位图当正式证据。
+- 本版先建立结构、步骤和截图规则；已通过质检的截图可作为当前界面证据，仍标为占位的步骤不得当作已验收证据。
 
 ## 3. 截图使用约定
 
@@ -29,7 +29,7 @@
 - 截图时间与提交版本
 - 质检结果：`passed`、`manual-review`、`rejected`
 
-当前手册中的截图位统一写成如下形式，待真实截图补齐后替换：
+已采集截图使用图片和相邻证据说明；尚未采集的截图位统一写成如下形式，待真实截图补齐后替换：
 
 > 截图占位：`admin-products-list`
 > 期望文字：`商品管理`、`新增商品`
@@ -51,7 +51,9 @@
 
 截图占位：
 
-> `admin-products-list` / 期望文字：`商品管理`、`新增商品` / 状态：待采集
+![商品管理页面](screenshots/admin-products-list.png)
+
+截图证据：`admin-products-list` / 期望文字：`商品管理`、`新增商品` / 质检：`passed`
 
 ### 4.2 SKU 维护
 
@@ -155,7 +157,11 @@
 
 截图占位：
 
-> `admin-machine-slot-binding` / 期望文字：`货道`、`商品绑定` / 状态：待采集
+![机器管理页面](screenshots/admin-machines-list.png)
+
+截图证据：`admin-machines-list` / 期望文字：`机器管理` / 质检：`passed`
+
+具体货道绑定页面仍待采集。
 
 ### 6.2 机器端 Routine Refill 日常补货
 
@@ -202,7 +208,11 @@
 
 截图占位：
 
-> `admin-alipay-config` / 期望文字：`支付宝`、`商户配置` / 状态：待采集
+![支付管理页面](screenshots/admin-payments-tabs.png)
+
+截图证据：`admin-payments-tabs` / 期望文字：`支付管理`、`支付流水`、`退款管理` / 质检：`passed`
+
+支付宝商户配置弹窗或详情页仍待采集。
 
 ### 7.2 支付渠道启用
 
@@ -220,7 +230,11 @@
 
 截图占位：
 
-> `admin-payment-channel-policy` / 期望文字：`支付渠道`、`启用` / 状态：待采集
+![支付管理页面](screenshots/admin-payments-tabs.png)
+
+截图证据：`admin-payments-tabs` / 期望文字：`支付管理`、`支付流水`、`退款管理` / 质检：`passed`
+
+支付渠道启用的具体编辑状态仍待采集。
 
 ## 8. 机器认领与重领
 
@@ -235,7 +249,11 @@
 
 截图占位：
 
-> `admin-machine-claim-code` / 期望文字：`认领码`、`生成` / 状态：待采集
+![机器管理页面](screenshots/admin-machines-list.png)
+
+截图证据：`admin-machines-list` / 期望文字：`机器管理` / 质检：`passed`
+
+认领码生成窗口仍待采集。
 
 > `machine-claim-entry` / 期望文字：`认领`、`提交` / 状态：待采集
 
@@ -275,7 +293,11 @@
 
 截图占位：
 
-> `admin-machine-environment-control` / 期望文字：`环境控制`、`发送` / 状态：待采集
+![机器管理页面](screenshots/admin-machines-list.png)
+
+截图证据：`admin-machines-list` / 期望文字：`机器管理` / 质检：`passed`
+
+机器详情内的环境控制区域仍待采集。
 
 ### 9.2 机器端基础检查
 
@@ -310,7 +332,11 @@
 
 截图占位：
 
-> `admin-order-detail` / 期望文字：`订单详情`、`支付状态` / 状态：待采集
+![订单管理页面](screenshots/admin-orders-list.png)
+
+截图证据：`admin-orders-list` / 期望文字：`订单管理` / 质检：`passed`
+
+订单详情抽屉仍待采集。
 
 ### 10.2 支付异常查看
 
@@ -328,7 +354,11 @@
 
 截图占位：
 
-> `admin-payment-incident` / 期望文字：`支付事件`、`人工处理` / 状态：待采集
+![支付管理页面](screenshots/admin-payments-tabs.png)
+
+截图证据：`admin-payments-tabs` / 期望文字：`支付管理`、`支付流水`、`退款管理` / 质检：`passed`
+
+支付异常详情与人工处理入口仍待采集。
 
 ### 10.3 出货异常查看
 
@@ -361,9 +391,9 @@
 
 以下内容在本版仍未完成，不能视为已验收：
 
-- 真实 Admin UI 截图采集
+- Admin UI 细节交互截图采集：商品/SKU 编辑、图片上传、剪影上传、货道绑定、支付配置编辑、机器认领、环境控制、订单详情、支付异常详情
 - 真实机器端截图采集
-- 截图质量门槛在实际截图批次上的跑批结果
+- 机器端截图质量门槛在实际截图批次上的跑批结果
 - 按手册逐条完成的运营工作流验收证据
 
 在这些证据补齐前，本手册属于“结构初版”，可用于统一术语和操作边界，但不能单独作为最终交付验收凭据。

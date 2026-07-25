@@ -1,0 +1,38 @@
+{
+  "schemaVersion": "vem-documentation-screenshot-metadata/v1",
+  "status": "passed",
+  "reasons": [],
+  "metadata": {
+    "id": "admin-system-settings-tabs",
+    "source": "admin-ui",
+    "route": "/system-settings",
+    "capturedAt": "2026-07-25T14:18:44.272Z",
+    "commit": "b55bbc7c7334e2eff44a4262d8810c7dec53e507",
+    "viewport": {
+      "width": 1440,
+      "height": 1080
+    },
+    "expectedOrientation": "landscape",
+    "expectedTexts": [
+      "系统配置",
+      "天气服务",
+      "用户管理"
+    ],
+    "detectedTexts": [
+      "系统配置",
+      "天气服务",
+      "用户管理"
+    ],
+    "manualReviewReason": null
+  },
+  "capture": {
+    "format": "png",
+    "widthPx": 1440,
+    "heightPx": 1080,
+    "pixelCount": 1555200,
+    "nonTransparentPixelCount": 1555200,
+    "nonTransparentPixelRatio": 1,
+    "distinctPixelCount": 1508,
+    "orientation": "landscape"
+  }
+}

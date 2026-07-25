@@ -1,0 +1,20 @@
+{
+  "id": "admin-products-list",
+  "source": "admin-ui",
+  "route": "/products",
+  "capturedAt": "2026-07-25T14:18:36.832Z",
+  "commit": "b55bbc7c7334e2eff44a4262d8810c7dec53e507",
+  "viewport": {
+    "width": 1440,
+    "height": 1080
+  },
+  "expectedOrientation": "landscape",
+  "expectedTexts": [
+    "商品管理",
+    "新增商品"
+  ],
+  "detectedTexts": [
+    "商品管理",
+    "新增商品"
+  ]
+}

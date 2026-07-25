@@ -1,0 +1,38 @@
+{
+  "schemaVersion": "vem-documentation-screenshot-metadata/v1",
+  "status": "passed",
+  "reasons": [],
+  "metadata": {
+    "id": "admin-payments-tabs",
+    "source": "admin-ui",
+    "route": "/payments",
+    "capturedAt": "2026-07-25T14:18:39.815Z",
+    "commit": "b55bbc7c7334e2eff44a4262d8810c7dec53e507",
+    "viewport": {
+      "width": 1440,
+      "height": 1080
+    },
+    "expectedOrientation": "landscape",
+    "expectedTexts": [
+      "支付管理",
+      "支付流水",
+      "退款管理"
+    ],
+    "detectedTexts": [
+      "支付管理",
+      "支付流水",
+      "退款管理"
+    ],
+    "manualReviewReason": null
+  },
+  "capture": {
+    "format": "png",
+    "widthPx": 1440,
+    "heightPx": 1080,
+    "pixelCount": 1555200,
+    "nonTransparentPixelCount": 1555200,
+    "nonTransparentPixelRatio": 1,
+    "distinctPixelCount": 1087,
+    "orientation": "landscape"
+  }
+}
