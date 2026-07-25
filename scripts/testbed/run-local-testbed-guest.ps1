@@ -495,7 +495,9 @@ function Wait-CanonicalProcessEvidence([string]$Name, [string]$ExpectedPath, [in
 function Invoke-InstalledTauriRouteAdmission([string]$Endpoint, [int]$TimeoutSeconds = 120) {
   $stdoutPath = Join-Path $handoffRoot "installed-tauri-route-admission.stdout.log"
   $stderrPath = Join-Path $handoffRoot "installed-tauri-route-admission.stderr.log"
+  $diagnosticsPath = Join-Path $handoffRoot "installed-tauri-route-admission.diagnostics.json"
   Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $diagnosticsPath -Force -ErrorAction SilentlyContinue
   $process = Start-Process `
     -FilePath "node" `
     -ArgumentList @((Join-Path $repoRoot "scripts\testbed\installed-tauri-route-admission.mjs"), "--endpoint", $Endpoint) `
@@ -510,7 +512,31 @@ function Invoke-InstalledTauriRouteAdmission([string]$Endpoint, [int]$TimeoutSec
   }
   if ($process.ExitCode -ne 0) {
     $stderr = if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw } else { "" }
-    throw "installed Tauri route admission failed with exit code $($process.ExitCode): $stderr"
+    $diagnostics = [ordered]@{
+      endpoint = $Endpoint
+      tasks = @("VEMMachineUI", "VEMVisionRuntime") | ForEach-Object {
+        $name = $_
+        $task = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+        $info = Get-ScheduledTaskInfo -TaskName $name -ErrorAction SilentlyContinue
+        [ordered]@{
+          name = $name
+          state = if ($null -eq $task) { $null } else { [string]$task.State }
+          lastTaskResult = if ($null -eq $info) { $null } else { [int]$info.LastTaskResult }
+          lastRunTime = if ($null -eq $info) { $null } else { [string]$info.LastRunTime.ToUniversalTime().ToString("o") }
+        }
+      }
+      processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        [string]$_.Name -match '^(machine|vending-daemon|vending-vision|msedgewebview2)\.exe$' -or
+        [string]$_.CommandLine -match 'remote-debugging-port=9222'
+      } | Select-Object ProcessId, ParentProcessId, Name, ExecutablePath, CommandLine)
+      cdpListeners = @(Get-NetTCPConnection -LocalAddress "127.0.0.1" -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue |
+        Select-Object LocalAddress, LocalPort, State, OwningProcess)
+      deploymentFiles = @(Get-ChildItem -LiteralPath $deploymentRoot -ErrorAction SilentlyContinue |
+        Select-Object Name, Length, LastWriteTimeUtc)
+    }
+    $diagnostics | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $diagnosticsPath -Encoding utf8
+    $diagnosticsSummary = $diagnostics | ConvertTo-Json -Compress -Depth 4
+    throw "installed Tauri route admission failed with exit code $($process.ExitCode): $stderr diagnostics=$diagnosticsSummary"
   }
 }
 
