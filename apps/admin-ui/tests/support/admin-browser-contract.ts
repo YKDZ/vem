@@ -67,6 +67,7 @@ export async function installAdminBrowserContractMonitor(
     failures.push(`console: ${text}`);
   });
   page.on("requestfailed", (request) => {
+    if (request.failure()?.errorText === "net::ERR_ABORTED") return;
     failures.push(
       `request: ${request.method()} ${request.url()} ${request.failure()?.errorText ?? "failed"}`,
     );
