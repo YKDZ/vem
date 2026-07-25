@@ -1,5 +1,8 @@
 import { NotFoundException } from "@nestjs/common";
-import { paymentProviderConfigSchema } from "@vem/shared";
+import {
+  paymentProviderConfigSchema,
+  refundAdminPageResponseSchema,
+} from "@vem/shared";
 import { describe, expect, it, vi } from "vitest";
 
 import type { AuditService } from "../audit/audit.service";
@@ -305,6 +308,87 @@ describe("PaymentsService", () => {
           latestReconciliationStatus: expect.anything(),
           reconciliationAttempts: expect.anything(),
         }),
+      );
+    });
+
+    it("normalizes refund reconciliation timestamps to the public API contract", async () => {
+      const db = makeDb();
+      const offsetTimestamp = "2026-07-25T10:20:30.123+00:00";
+      const item = {
+        id: "550e8400-e29b-41d4-a716-446655440001",
+        refundNo: "R202607250001",
+        paymentId: "550e8400-e29b-41d4-a716-446655440002",
+        paymentNo: "P202607250001",
+        orderId: "550e8400-e29b-41d4-a716-446655440003",
+        orderNo: "O202607250001",
+        providerCode: "alipay",
+        status: "processing",
+        amountCents: 1200,
+        reason: "admin_refund",
+        providerRefundNo: null,
+        refundedAt: offsetTimestamp,
+        latestReconciliationStatus: "failed",
+        latestProviderRefundStatus: null,
+        latestReconciliationError: "provider pending",
+        latestReconciliationAt: offsetTimestamp,
+        reconciliationAttempts: [
+          {
+            trigger: "manual",
+            attemptNo: 1,
+            status: "failed",
+            providerRefundStatus: null,
+            providerRefundNo: null,
+            errorCode: "provider_pending",
+            errorMessage: "provider pending",
+            nextRetryAt: offsetTimestamp,
+            startedAt: offsetTimestamp,
+            finishedAt: offsetTimestamp,
+            createdAt: offsetTimestamp,
+          },
+        ],
+        createdAt: offsetTimestamp,
+        updatedAt: offsetTimestamp,
+      };
+
+      db.select
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                innerJoin: vi.fn().mockReturnValue({
+                  where: vi.fn().mockReturnValue({
+                    orderBy: vi.fn().mockReturnValue({
+                      limit: vi.fn().mockReturnValue({
+                        offset: vi.fn().mockResolvedValue([item]),
+                      }),
+                    }),
+                  }),
+                }),
+              }),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                innerJoin: vi.fn().mockReturnValue({
+                  where: vi.fn().mockResolvedValue([{ total: 1 }]),
+                }),
+              }),
+            }),
+          }),
+        });
+
+      const service = makeService({ db });
+      const result = await service.listRefunds({ page: 1, pageSize: 20 });
+
+      expect(() => refundAdminPageResponseSchema.parse(result)).not.toThrow();
+      expect(result.items[0]?.latestReconciliationAt).toBe(
+        "2026-07-25T10:20:30.123Z",
+      );
+      expect(result.items[0]?.reconciliationAttempts[0]?.startedAt).toBe(
+        "2026-07-25T10:20:30.123Z",
       );
     });
 

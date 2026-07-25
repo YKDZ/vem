@@ -1498,7 +1498,46 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
   }
 
   private toIsoString(value: Date | string): string {
-    return value instanceof Date ? value.toISOString() : value;
+    if (value instanceof Date) return value.toISOString();
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString();
+  }
+
+  private toNullableIsoString(value: Date | string | null): string | null {
+    return value === null ? null : this.toIsoString(value);
+  }
+
+  private toRefundAdminDto<
+    TAttempt extends {
+      nextRetryAt: Date | string | null;
+      startedAt: Date | string;
+      finishedAt: Date | string | null;
+      createdAt: Date | string;
+    },
+    TRow extends {
+      refundedAt: Date | string | null;
+      latestReconciliationAt: Date | string | null;
+      reconciliationAttempts: TAttempt[];
+      createdAt: Date | string;
+      updatedAt: Date | string;
+    },
+  >(row: TRow) {
+    return {
+      ...row,
+      refundedAt: this.toNullableIsoString(row.refundedAt),
+      latestReconciliationAt: this.toNullableIsoString(
+        row.latestReconciliationAt,
+      ),
+      reconciliationAttempts: row.reconciliationAttempts.map((attempt) => ({
+        ...attempt,
+        nextRetryAt: this.toNullableIsoString(attempt.nextRetryAt),
+        startedAt: this.toIsoString(attempt.startedAt),
+        finishedAt: this.toNullableIsoString(attempt.finishedAt),
+        createdAt: this.toIsoString(attempt.createdAt),
+      })),
+      createdAt: this.toIsoString(row.createdAt),
+      updatedAt: this.toIsoString(row.updatedAt),
+    };
   }
 
   private toRecord(value: unknown): Record<string, unknown> {
@@ -3758,7 +3797,11 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       .innerJoin(paymentProviders, eq(paymentProviders.id, payments.providerId))
       .where(whereClause);
 
-    return toPageResult(items, query, Number(totalRow.total));
+    return toPageResult(
+      items.map((item) => this.toRefundAdminDto(item)),
+      query,
+      Number(totalRow.total),
+    );
   }
 
   async manualReconcileRefund(
