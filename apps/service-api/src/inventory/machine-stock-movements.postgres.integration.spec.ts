@@ -1,6 +1,7 @@
 import {
   DrizzleDB,
   inventories,
+  inventoryMovements,
   inventoryReservations,
   machinePlanogramSlots,
   machinePlanogramVersions,
@@ -12,6 +13,7 @@ import {
   products,
   vendingCommands,
 } from "@vem/db";
+import { eq } from "@vem/db";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -175,5 +177,88 @@ postgresDescribe("machine stock movement PostgreSQL identity binding", () => {
       quantity: 1,
       vendingCommandId: commandId,
     });
+  });
+
+  it("applies stock count correction as an absolute platform inventory count", async () => {
+    const suffix = randomUUID();
+    const machineId = randomUUID();
+    const productId = randomUUID();
+    const variantId = randomUUID();
+    const slotId = randomUUID();
+    const inventoryId = randomUUID();
+
+    await database.client.insert(machines).values({
+      id: machineId,
+      code: `PG-COUNT-${suffix}`,
+      name: "Stock count correction regression",
+      status: "online",
+    });
+    await database.client.insert(products).values({
+      id: productId,
+      name: "Count product",
+      status: "active",
+    });
+    await database.client.insert(productVariants).values({
+      id: variantId,
+      productId,
+      sku: `PG-COUNT-SKU-${suffix}`,
+      priceCents: 100,
+      status: "active",
+    });
+    await database.client.insert(machineSlots).values({
+      id: slotId,
+      machineId,
+      rowNo: 1,
+      cellNo: 1,
+      capacity: 8,
+      status: "enabled",
+    });
+    await database.client.insert(inventories).values({
+      id: inventoryId,
+      machineId,
+      slotId,
+      variantId,
+      onHandQty: 2,
+      reservedQty: 0,
+    });
+
+    const repository = new MachineStockMovementsRepository(
+      database.client,
+      {} as never,
+    );
+    const applied = await repository.applyTrustedFieldStockMovement({
+      machineId,
+      rawMovementId: randomUUID(),
+      input: {
+        movementId: `COUNT-${suffix}`,
+        machineCode: `PG-COUNT-${suffix}`,
+        planogramVersion: "PG-COUNT-V1",
+        slotId,
+        movementType: "stock_count_correction",
+        quantity: 3,
+        beforeQuantity: 3,
+        afterQuantity: 3,
+        slotMappingSnapshot: {
+          capacity: 8,
+          inventoryId,
+          variantId,
+        },
+        source: "physical_stock_attestation",
+        attributedTo: "operator-1",
+        occurredAt: new Date().toISOString(),
+      },
+    });
+
+    expect(applied).toBe(true);
+    const [inventory] = await database.client
+      .select({ onHandQty: inventories.onHandQty })
+      .from(inventories)
+      .where(eq(inventories.id, inventoryId));
+    expect(inventory?.onHandQty).toBe(3);
+    const [movement] = await database.client
+      .select({ deltaQty: inventoryMovements.deltaQty })
+      .from(inventoryMovements)
+      .where(eq(inventoryMovements.inventoryId, inventoryId));
+    expect(movement?.deltaQty).toBe(1);
   });
 });

@@ -786,21 +786,51 @@ export class MachineStockMovementsRepository {
     const variantId = snapshot.variantId;
     const beforeQuantity = input.input.beforeQuantity;
     const afterQuantity = input.input.afterQuantity;
-    const deltaQty = afterQuantity - beforeQuantity;
 
     return await this.db.transaction(async (tx) => {
-      const result = await tx.execute(sql`
-        update inventories
-        set
-          on_hand_qty = ${afterQuantity},
-          updated_at = now()
-        where id = ${inventoryId}
-          and machine_id = ${input.machineId}
-          and slot_id = ${input.input.slotId}
-          and variant_id = ${variantId}
-          and on_hand_qty = ${beforeQuantity}
-        returning id
-      `);
+      let deltaQty = afterQuantity - beforeQuantity;
+      let result;
+      if (input.input.movementType === "stock_count_correction") {
+        result = await tx.execute(sql`
+          with target as (
+            select id, on_hand_qty
+            from inventories
+            where id = ${inventoryId}
+              and machine_id = ${input.machineId}
+              and slot_id = ${input.input.slotId}
+              and variant_id = ${variantId}
+            for update
+          ),
+          updated as (
+            update inventories
+            set
+              on_hand_qty = ${afterQuantity},
+              updated_at = now()
+            where id in (select id from target)
+            returning id
+          )
+          select updated.id, target.on_hand_qty as before_qty
+          from updated
+          join target on target.id = updated.id
+        `);
+        const beforeQty = Number(result.rows[0]?.before_qty);
+        if (Number.isFinite(beforeQty)) {
+          deltaQty = afterQuantity - beforeQty;
+        }
+      } else {
+        result = await tx.execute(sql`
+          update inventories
+          set
+            on_hand_qty = ${afterQuantity},
+            updated_at = now()
+          where id = ${inventoryId}
+            and machine_id = ${input.machineId}
+            and slot_id = ${input.input.slotId}
+            and variant_id = ${variantId}
+            and on_hand_qty = ${beforeQuantity}
+          returning id
+        `);
+      }
       if ((result.rowCount ?? 0) !== 1) {
         return false;
       }
