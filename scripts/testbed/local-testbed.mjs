@@ -3,7 +3,7 @@
 import { topCategoryKeyForCatalogItem } from "@vem/shared/catalog-top-category";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { constants, readFileSync } from "node:fs";
+import { constants, closeSync, openSync, readFileSync } from "node:fs";
 import {
   access,
   mkdir,
@@ -1376,7 +1376,7 @@ async function waitForHostControlPlane(endpoint, token) {
   throw new Error("local testbed host control plane did not become ready");
 }
 
-async function serviceApiFailure(error) {
+async function serviceApiFailure(error, options = null) {
   let journal = { kind: "unavailable", text: "journalctl was not attempted" };
   try {
     const result = await runCapture("sudo", [
@@ -1402,11 +1402,45 @@ async function serviceApiFailure(error) {
           : String(journalError),
     });
   }
+  if (journal.kind !== "journal" && options) {
+    const logText = await readFile(serviceApiProcessLogPath(options), "utf8")
+      .then((text) => text.slice(-SERVICE_API_LOG_TAIL_MAX_CHARS))
+      .catch(() => "");
+    if (logText) journal = { kind: "journal", text: logText };
+  }
   const suffix =
     journal.kind === "journal"
       ? `--- local Service API log ---\n${journal.text}`
       : `--- local Service API log unavailable ---\n${journal.text}`;
   return new Error(`${error.message}\n${suffix}`);
+}
+
+function serviceApiProcessPidPath(options) {
+  return join(options.stateRoot, "service-api-runtime", "service-api.pid");
+}
+
+function serviceApiProcessLogPath(options) {
+  return join(options.stateRoot, "service-api-runtime", "service-api.log");
+}
+
+function systemdUnavailableText(text) {
+  return String(text ?? "").includes('"systemd" is not running');
+}
+
+async function serviceApiSystemdUnavailable() {
+  const state = await runCapture("sudo", [
+    "systemctl",
+    "show",
+    "--property=LoadState",
+    "--value",
+    `${SERVICE_API_UNIT}.service`,
+  ]).catch((error) => ({
+    stdout: "",
+    stderr: error instanceof Error ? error.message : String(error),
+  }));
+  return (
+    systemdUnavailableText(state.stdout) || systemdUnavailableText(state.stderr)
+  );
 }
 
 export async function seedThroughSupportedApis({
@@ -1731,6 +1765,10 @@ export async function seedThroughSupportedApis({
 }
 
 async function stopServiceApiUnit(options) {
+  if (await serviceApiSystemdUnavailable()) {
+    await stopServiceApiProcessFallback(options);
+    return;
+  }
   const [stop, reset] = buildServiceApiUnitPlan(options);
   await run(stop.command, stop.args, { stdio: "ignore" }).catch(
     () => undefined,
@@ -1746,6 +1784,10 @@ async function stopServiceApiUnit(options) {
       "--value",
       `${SERVICE_API_UNIT}.service`,
     ]).catch(() => ({ stdout: "not-found" }));
+    if (systemdUnavailableText(state.stdout)) {
+      await stopServiceApiProcessFallback(options);
+      return;
+    }
     if (state.stdout.trim() === "not-found") return;
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
   }
@@ -1753,8 +1795,60 @@ async function stopServiceApiUnit(options) {
 }
 
 async function startServiceApiUnit(options) {
+  if (await serviceApiSystemdUnavailable()) {
+    await startServiceApiProcessFallback(options);
+    return;
+  }
   const start = buildServiceApiUnitPlan(options).at(-1);
   await run(start.command, start.args, { cwd: options.workspace });
+}
+
+async function stopServiceApiProcessFallback(options) {
+  const pidPath = serviceApiProcessPidPath(options);
+  const raw = await readFile(pidPath, "utf8").catch(() => "");
+  const pid = Number.parseInt(raw.trim(), 10);
+  if (Number.isSafeInteger(pid) && pid > 1) {
+    try {
+      process.kill(pid, "SIGTERM");
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        try {
+          process.kill(pid, 0);
+          await new Promise((resolvePromise) =>
+            setTimeout(resolvePromise, 100),
+          );
+        } catch {
+          break;
+        }
+      }
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {}
+    } catch {}
+  }
+  await rm(pidPath, { force: true }).catch(() => undefined);
+}
+
+async function startServiceApiProcessFallback(options) {
+  await stopServiceApiProcessFallback(options);
+  const workingDirectory = join(options.stateRoot, "service-api-runtime");
+  await mkdir(workingDirectory, { recursive: true });
+  const logPath = serviceApiProcessLogPath(options);
+  const output = openSync(logPath, "a", 0o600);
+  const child = spawn(
+    process.execPath,
+    [join(options.workspace, "apps/service-api/dist/main.js")],
+    {
+      cwd: workingDirectory,
+      detached: true,
+      env: mergeCommandEnvironment(
+        buildHostLocalServiceApiEnvironment(options),
+      ),
+      stdio: ["ignore", output, output],
+    },
+  );
+  child.unref();
+  closeSync(output);
+  await writeFile(serviceApiProcessPidPath(options), `${child.pid}\n`, "utf8");
 }
 
 async function stopHostControlPlaneUnit(options, contract) {
@@ -1955,7 +2049,7 @@ export async function refreshHostRuntime(options) {
   try {
     await waitForApi(apiBaseUrl);
   } catch (error) {
-    throw await serviceApiFailure(error);
+    throw await serviceApiFailure(error, options);
   }
   try {
     guestInput = await reprepareGuestInputForRefresh({
@@ -1971,7 +2065,7 @@ export async function refreshHostRuntime(options) {
     );
     guestInputRaw = `${JSON.stringify(guestInput, null, 2)}\n`;
   } catch (error) {
-    throw await serviceApiFailure(error);
+    throw await serviceApiFailure(error, options);
   }
   await writeFile(guestInputPath, guestInputRaw, "utf8");
   await startHostControlPlaneUnit(
@@ -2086,7 +2180,7 @@ async function reconstruct(options) {
     try {
       await waitForApi(apiBaseUrl);
     } catch (error) {
-      throw await serviceApiFailure(error);
+      throw await serviceApiFailure(error, options);
     }
     await startHostControlPlaneUnit(
       options,
@@ -2107,7 +2201,7 @@ async function reconstruct(options) {
         baseUrl: apiBaseUrl,
       });
     } catch (error) {
-      throw await serviceApiFailure(error);
+      throw await serviceApiFailure(error, options);
     }
     const guestInput = {
       schemaVersion: "vem-local-testbed-guest-input/v1",

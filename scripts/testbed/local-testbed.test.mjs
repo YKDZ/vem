@@ -745,9 +745,12 @@ describe("local testbed orchestration", () => {
         "utf8",
       );
       assert.match(implementation, /journalctl/);
+      assert.match(implementation, /serviceApiSystemdUnavailable/);
+      assert.match(implementation, /service-api\.pid/);
+      assert.match(implementation, /detached: true/);
       assert.doesNotMatch(
         implementation,
-        /service-api\.pid|detached:\s*true|child\.stdout\.pipe|child\.stderr\.pipe/,
+        /child\.stdout\.pipe|child\.stderr\.pipe/,
       );
     } finally {
       rmSync(root, { recursive: true, force: true });
