@@ -168,4 +168,73 @@ describe("installed Tauri route admission", () => {
       "close",
     ]);
   });
+
+  it("dismisses a stale terminal order when direct result routing is projected back", async () => {
+    const calls = [];
+    const client = {
+      async connect() {
+        calls.push("connect");
+      },
+      async close() {
+        calls.push("close");
+      },
+    };
+    let route = "#/result/manual_handling";
+    let waitCount = 0;
+
+    const result = await admitInstalledTauriCatalog(
+      { endpoint: "http://127.0.0.1:9222", pollMs: 250 },
+      {
+        discoverTarget: async () => ({
+          id: "tauri-page-1",
+          webSocketDebuggerUrl:
+            "ws://127.0.0.1:9222/devtools/page/tauri-page-1",
+        }),
+        rewriteUrl: (webSocketUrl) => webSocketUrl,
+        createClient: () => client,
+        enableRuntime: async () => {},
+        evaluate: async (_client, expression) => {
+          calls.push(["evaluate", expression]);
+          if (expression === 'location.hash = "#/catalog"') {
+            route = "#/result/manual_handling";
+            return "#/catalog";
+          }
+          if (expression.includes("dismissedTerminalOrderNos")) {
+            route = "#/catalog";
+            return "ORD-MANUAL-001";
+          }
+          return route;
+        },
+        returnToCatalog: async () => {
+          throw new Error("selector is not physically actionable");
+        },
+        waitForRoute: async (_client, expected, options) => {
+          calls.push(["wait", expected, options]);
+          waitCount += 1;
+          if (waitCount === 1) {
+            throw new Error(
+              'route did not reach "#/catalog"; last route was #/result/manual_handling',
+            );
+          }
+          return { route };
+        },
+      },
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(result.finalRoute, "#/catalog");
+    assert.equal(result.staleResultFallback, true);
+    assert.equal(result.dismissedTerminalOrderNo, "ORD-MANUAL-001");
+    assert.deepEqual(calls, [
+      "connect",
+      ["evaluate", "location.hash"],
+      ["evaluate", 'location.hash = "#/catalog"'],
+      ["wait", "#/catalog", { timeoutMs: 10_000, pollMs: 250 }],
+      ["evaluate", calls[4][1]],
+      ["wait", "#/catalog", { timeoutMs: 30_000, pollMs: 250 }],
+      ["evaluate", "location.hash"],
+      "close",
+    ]);
+    assert.match(calls[4][1], /dismissedTerminalOrderNos/);
+  });
 });

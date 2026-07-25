@@ -16,6 +16,8 @@ import {
 const DEFAULT_ENDPOINT = "http://127.0.0.1:9222";
 const DEFAULT_TIMEOUT_MS = 90_000;
 const DEFAULT_POLL_MS = 500;
+const DISMISSED_TERMINAL_ORDER_STORAGE_KEY =
+  "vem.machine.dismissedTerminalOrderNos";
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "")
@@ -82,6 +84,7 @@ export async function admitInstalledTauriCatalog(
     const initialRoute = await evaluate(client, "location.hash");
     let route;
     let staleResultFallback = false;
+    let dismissedTerminalOrderNo = null;
     try {
       route = await returnToCatalog({
         client,
@@ -91,12 +94,42 @@ export async function admitInstalledTauriCatalog(
       if (!/^#\/result(?:\/|$)/.test(initialRoute ?? "")) throw error;
       staleResultFallback = true;
       await evaluate(client, 'location.hash = "#/catalog"');
-      route = (
-        await waitForRouteFn(client, "#/catalog", {
-          timeoutMs: 10_000,
-          pollMs,
-        })
-      ).route;
+      try {
+        route = (
+          await waitForRouteFn(client, "#/catalog", {
+            timeoutMs: 10_000,
+            pollMs,
+          })
+        ).route;
+      } catch (directRouteError) {
+        const dismissedOrderNo = await evaluate(
+          client,
+          `(() => {
+            const orderNo = document.querySelector("[data-test='result-page']")?.dataset.orderNo || "";
+            if (!orderNo) return null;
+            const storageKey = ${JSON.stringify(DISMISSED_TERMINAL_ORDER_STORAGE_KEY)};
+            const existing = JSON.parse(localStorage.getItem(storageKey) || "[]");
+            const next = Array.isArray(existing)
+              ? existing.filter((value) => value !== orderNo)
+              : [];
+            next.push(orderNo);
+            localStorage.setItem(storageKey, JSON.stringify(next.slice(-50)));
+            location.hash = "#/catalog";
+            location.reload();
+            return orderNo;
+          })()`,
+        );
+        if (typeof dismissedOrderNo !== "string" || dismissedOrderNo === "") {
+          throw directRouteError;
+        }
+        dismissedTerminalOrderNo = dismissedOrderNo;
+        route = (
+          await waitForRouteFn(client, "#/catalog", {
+            timeoutMs: 30_000,
+            pollMs,
+          })
+        ).route;
+      }
     }
     const finalRoute = await evaluate(client, "location.hash");
     return {
@@ -108,6 +141,7 @@ export async function admitInstalledTauriCatalog(
       route,
       finalRoute,
       staleResultFallback,
+      dismissedTerminalOrderNo,
     };
   } finally {
     await client.close().catch(() => {});
