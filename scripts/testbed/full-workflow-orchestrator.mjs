@@ -586,26 +586,81 @@ export async function ensureFixtureStockReady({
   pollMs = 500,
 }) {
   const fixtures = Object.values(fixtureAllocation ?? {});
-  const desiredBySlotId = new Map(
-    fixtures.map((fixture) => [fixture.slotId, fixture.onHandQty]),
+  const hasCoordinateIdentity = (fixture) =>
+    Number.isInteger(fixture?.rowNo) &&
+    Number.isInteger(fixture?.cellNo) &&
+    typeof fixture?.sku === "string" &&
+    fixture.sku !== "";
+  const fixtureKey = (fixture) =>
+    hasCoordinateIdentity(fixture)
+      ? `${fixture.rowNo}:${fixture.cellNo}:${fixture.sku}`
+      : `slot:${fixture.slotId}`;
+  const itemMatchesFixture = (item, fixture) =>
+    hasCoordinateIdentity(fixture)
+      ? item?.rowNo === fixture.rowNo &&
+        item?.cellNo === fixture.cellNo &&
+        item?.sku === fixture.sku
+      : item?.slotId === fixture.slotId;
+  const itemForFixture = (saleView, fixture) =>
+    (saleView?.items ?? []).find((item) => itemMatchesFixture(item, fixture));
+  const desiredByFixtureKey = new Map(
+    fixtures.map((fixture) => [fixtureKey(fixture), fixture.onHandQty]),
   );
-  if (desiredBySlotId.size === 0 || desiredBySlotId.has(undefined)) {
+  if (
+    desiredByFixtureKey.size === 0 ||
+    fixtures.some(
+      (fixture) =>
+        (!hasCoordinateIdentity(fixture) &&
+          (typeof fixture?.slotId !== "string" || fixture.slotId === "")) ||
+        !Number.isInteger(fixture?.onHandQty),
+    )
+  ) {
     throw new Error("fixture stock preflight requires allocated slots");
   }
 
   const targetIsReady = (saleView) => {
-    const bySlot = new Map(
-      (saleView?.items ?? []).map((item) => [item.slotId, item]),
-    );
-    return [...desiredBySlotId.keys()].every((slotId) => {
-      const item = bySlot.get(slotId);
+    return fixtures.every((fixture) => {
+      const item = itemForFixture(saleView, fixture);
+      const desired = desiredByFixtureKey.get(fixtureKey(fixture));
       return (
         item?.slotSalesState === "sale_ready" &&
-        item.saleableStock === desiredBySlotId.get(slotId) &&
-        item.physicalStock === desiredBySlotId.get(slotId)
+        item.saleableStock === desired &&
+        item.physicalStock === desired
       );
     });
   };
+  const fixtureReadinessSnapshot = (saleView) =>
+    fixtures.map((fixture) => {
+      const item = itemForFixture(saleView, fixture);
+      const desired = desiredByFixtureKey.get(fixtureKey(fixture));
+      return {
+        fixture: {
+          slotId: fixture.slotId,
+          rowNo: fixture.rowNo,
+          cellNo: fixture.cellNo,
+          sku: fixture.sku,
+          onHandQty: fixture.onHandQty,
+        },
+        matched: item
+          ? {
+              slotId: item.slotId,
+              inventoryId: item.inventoryId,
+              rowNo: item.rowNo,
+              cellNo: item.cellNo,
+              sku: item.sku,
+              slotDisplayLabel: item.slotDisplayLabel,
+              slotSalesState: item.slotSalesState,
+              saleableStock: item.saleableStock,
+              physicalStock: item.physicalStock,
+            }
+          : null,
+        desired,
+        ready:
+          item?.slotSalesState === "sale_ready" &&
+          item.saleableStock === desired &&
+          item.physicalStock === desired,
+      };
+    });
   const deadline = Date.now() + timeoutMs;
   let initialSaleView = null;
   let task = null;
@@ -635,8 +690,27 @@ export async function ensureFixtureStockReady({
       `fixture stock requires a maintenance task, received ${task?.mode ?? "missing"}`,
     );
   }
-  const initialBySlot = new Map(
-    (initialSaleView?.items ?? []).map((item) => [item.slotId, item]),
+  const initialFixtureItems = fixtures.map((fixture) => ({
+    fixture,
+    item: itemForFixture(initialSaleView, fixture),
+  }));
+  if (initialFixtureItems.some(({ item }) => !item?.slotId)) {
+    throw new Error(
+      `fixture stock preflight could not resolve current sale-view slots: ${JSON.stringify(
+        fixtures.map((fixture) => ({
+          rowNo: fixture.rowNo,
+          cellNo: fixture.cellNo,
+          sku: fixture.sku,
+          slotId: fixture.slotId,
+        })),
+      )}`,
+    );
+  }
+  const desiredByCurrentSlotId = new Map(
+    initialFixtureItems.map(({ fixture, item }) => [
+      item.slotId,
+      fixture.onHandQty,
+    ]),
   );
   const activeAttestationSlots = (initialSaleView?.items ?? [])
     .filter(
@@ -649,18 +723,22 @@ export async function ensureFixtureStockReady({
     .map((item) => ({
       slotId: item.slotId,
       sku: item.sku,
-      quantity: desiredBySlotId.get(item.slotId) ?? item.physicalStock,
+      quantity: desiredByCurrentSlotId.get(item.slotId) ?? item.physicalStock,
       enabled:
-        desiredBySlotId.has(item.slotId) || item.slotSalesState !== "frozen",
+        desiredByCurrentSlotId.has(item.slotId) ||
+        item.slotSalesState !== "frozen",
     }));
   const taskSlotsById = new Map(
     (task.slots ?? []).map((slot) => [slot?.slotId, slot]),
   );
   const fixtureTaskSlots = fixtures.map((fixture) => {
-    const taskSlot = taskSlotsById.get(fixture.slotId);
+    const currentItem = initialFixtureItems.find(
+      (entry) => entry.fixture === fixture,
+    )?.item;
+    const taskSlot = taskSlotsById.get(currentItem?.slotId);
     if (!taskSlot) {
       throw new Error(
-        `fixture stock ${task.mode} task does not contain fixture slot ${fixture.slotId}`,
+        `fixture stock ${task.mode} task does not contain fixture slot R${fixture.rowNo}C${fixture.cellNo}`,
       );
     }
     return { fixture, taskSlot };
@@ -676,28 +754,26 @@ export async function ensureFixtureStockReady({
       addition: Math.max(0, fixture.onHandQty - taskSlot.currentQuantity),
     };
   });
-  const requiresAttestation = [...desiredBySlotId.keys()].some((slotId) => {
-    const item = initialBySlot.get(slotId);
-    const desired = desiredBySlotId.get(slotId);
+  const requiresAttestation = initialFixtureItems.some(({ fixture, item }) => {
+    const desired = desiredByFixtureKey.get(fixtureKey(fixture));
     return (
       item?.slotSalesState !== "sale_ready" ||
       item?.saleableStock > desired ||
       item?.physicalStock > desired
     );
   });
+  let requiresFreshAttestation = false;
   if (
     task.mode === "routine_refill" &&
     (!requiresAttestation || ["pending", "complete"].includes(task.status)) &&
     routineRefillSlots.every((slot) => slot.addition === 0)
   ) {
     let projection = null;
-    let requiresFreshAttestation = false;
     while (Date.now() < deadline) {
       projection = await get(
         `/v1/stock/maintenance-tasks/${encodeURIComponent(task.taskId)}/projection`,
       );
       if (
-        requiresAttestation &&
         projection?.taskId === task.taskId &&
         projection?.mode === "routine_refill"
       ) {
@@ -705,11 +781,18 @@ export async function ensureFixtureStockReady({
           (projection?.slots ?? []).map((slot) => [slot?.slotId, slot]),
         );
         const projectionStillNotSubmitted = fixtures.every((fixture) => {
-          const slot = projectedSlots.get(fixture.slotId);
+          const currentItem = initialFixtureItems.find(
+            (entry) => entry.fixture === fixture,
+          )?.item;
+          const slot = projectedSlots.get(currentItem?.slotId);
           return (
             slot?.syncStatus === "not_submitted" &&
-            slot?.previewQuantity === fixture.onHandQty &&
-            slot?.submittedAddition === 0
+            (slot?.previewQuantity === fixture.onHandQty ||
+              slot?.previewQuantity === null) &&
+            (slot?.submittedAddition === 0 ||
+              slot?.submittedAddition === null) &&
+            (slot?.platformRawMovementId === null ||
+              slot?.platformRawMovementId === undefined)
           );
         });
         if (projectionStillNotSubmitted) {
@@ -729,7 +812,10 @@ export async function ensureFixtureStockReady({
         projection?.mode === "routine_refill" &&
         projection?.status === "complete" &&
         fixtures.every((fixture) => {
-          const slot = projectedSlots.get(fixture.slotId);
+          const currentItem = initialFixtureItems.find(
+            (entry) => entry.fixture === fixture,
+          )?.item;
+          const slot = projectedSlots.get(currentItem?.slotId);
           return (
             slot?.syncStatus === "accepted" &&
             slot?.previewQuantity === fixture.onHandQty &&
@@ -760,7 +846,7 @@ export async function ensureFixtureStockReady({
       throw new Error(
         `fixture stock routine_refill projection did not become sale-ready without a positive addition: ${JSON.stringify(
           (projectedSaleView?.items ?? []).filter((item) =>
-            desiredBySlotId.has(item?.slotId),
+            desiredByCurrentSlotId.has(item?.slotId),
           ),
         )}`,
       );
@@ -768,7 +854,10 @@ export async function ensureFixtureStockReady({
   }
   let operationMode = task.mode;
   let operationId = task.taskId;
-  if (task.mode === "routine_refill" && requiresAttestation) {
+  if (
+    task.mode === "routine_refill" &&
+    (requiresAttestation || requiresFreshAttestation)
+  ) {
     operationMode = "physical_stock_attestation";
     operationId = `testbed-stock-recovery-${Date.now()}`;
     const slots = activeAttestationSlots;
@@ -793,7 +882,8 @@ export async function ensureFixtureStockReady({
         ? routineRefillSlots.filter((slot) => slot.addition > 0)
         : (task.slots ?? []).map((slot) => ({
             slotId: slot.slotId,
-            quantity: desiredBySlotId.get(slot.slotId) ?? slot.currentQuantity,
+            quantity:
+              desiredByCurrentSlotId.get(slot.slotId) ?? slot.currentQuantity,
           }));
     if (slots.length === 0) {
       throw new Error(`fixture stock ${task.mode} task has no restoring slots`);
@@ -814,14 +904,7 @@ export async function ensureFixtureStockReady({
     await new Promise((resolvePromise) => setTimeout(resolvePromise, pollMs));
   }
   throw new Error(
-    `fixture stock did not become sale-ready after ${operationMode}: ${JSON.stringify(
-      (saleView?.items ?? []).map((item) => ({
-        slotDisplayLabel: item.slotDisplayLabel,
-        slotSalesState: item.slotSalesState,
-        saleableStock: item.saleableStock,
-        physicalStock: item.physicalStock,
-      })),
-    )}`,
+    `fixture stock did not become sale-ready after ${operationMode}: ${JSON.stringify(fixtureReadinessSnapshot(saleView))}`,
   );
 }
 
