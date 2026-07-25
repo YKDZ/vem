@@ -91,6 +91,32 @@ const bindMachines = ref<Machine[]>([]);
 const bindSlots = ref<MachineSlot[]>([]);
 const bindProducts = ref<Product[]>([]);
 const bindVariants = ref<ProductVariant[]>([]);
+let bindSlotsRequestSequence = 0;
+let bindVariantsRequestSequence = 0;
+
+async function listAllMachinesForBinding(): Promise<Machine[]> {
+  const pageSize = 100;
+  const firstPage = await listMachines({ page: 1, pageSize });
+  const items = [...firstPage.items];
+  for (let page = 2; items.length < firstPage.total; page += 1) {
+    const nextPage = await listMachines({ page, pageSize });
+    if (nextPage.items.length === 0) break;
+    items.push(...nextPage.items);
+  }
+  return items;
+}
+
+async function listAllProductsForBinding(): Promise<Product[]> {
+  const pageSize = 100;
+  const firstPage = await listProducts({ page: 1, pageSize });
+  const items = [...firstPage.items];
+  for (let page = 2; items.length < firstPage.total; page += 1) {
+    const nextPage = await listProducts({ page, pageSize });
+    if (nextPage.items.length === 0) break;
+    items.push(...nextPage.items);
+  }
+  return items;
+}
 
 function resetBindForm(): void {
   bindForm.value = {
@@ -112,38 +138,56 @@ async function openBindForm(): Promise<void> {
   bindFormOpen.value = true;
   bindOptionsLoading.value = true;
   try {
-    const [machinesPage, productsPage] = await Promise.all([
-      listMachines({ page: 1, pageSize: 100 }),
-      listProducts({ page: 1, pageSize: 100 }),
+    const [machines, products] = await Promise.all([
+      listAllMachinesForBinding(),
+      listAllProductsForBinding(),
     ]);
-    bindMachines.value = machinesPage.items;
-    bindProducts.value = productsPage.items;
+    bindMachines.value = machines;
+    bindProducts.value = products;
   } finally {
     bindOptionsLoading.value = false;
   }
 }
 
 async function onBindMachineChanged(machineId: string): Promise<void> {
+  const requestSequence = ++bindSlotsRequestSequence;
   bindForm.value.slotId = "";
   bindSlots.value = [];
   if (!machineId) return;
   bindSlotsLoading.value = true;
   try {
-    bindSlots.value = await listMachineSlots(machineId);
+    const slots = await listMachineSlots(machineId);
+    if (
+      requestSequence === bindSlotsRequestSequence &&
+      bindForm.value.machineId === machineId
+    ) {
+      bindSlots.value = slots;
+    }
   } finally {
-    bindSlotsLoading.value = false;
+    if (requestSequence === bindSlotsRequestSequence) {
+      bindSlotsLoading.value = false;
+    }
   }
 }
 
 async function onBindProductChanged(productId: string): Promise<void> {
+  const requestSequence = ++bindVariantsRequestSequence;
   bindForm.value.variantId = "";
   bindVariants.value = [];
   if (!productId) return;
   bindVariantsLoading.value = true;
   try {
-    bindVariants.value = (await listProductVariants(productId)).items;
+    const variants = (await listProductVariants(productId)).items;
+    if (
+      requestSequence === bindVariantsRequestSequence &&
+      bindForm.value.productId === productId
+    ) {
+      bindVariants.value = variants;
+    }
   } finally {
-    bindVariantsLoading.value = false;
+    if (requestSequence === bindVariantsRequestSequence) {
+      bindVariantsLoading.value = false;
+    }
   }
 }
 
@@ -154,6 +198,20 @@ async function saveBind(): Promise<void> {
     !bindForm.value.variantId
   ) {
     void message.error("请先选择机器、货道和商品规格");
+    return;
+  }
+  const selectedSlot = bindSlots.value.find(
+    (slot) =>
+      slot.id === bindForm.value.slotId &&
+      slot.machineId === bindForm.value.machineId,
+  );
+  const selectedVariant = bindVariants.value.find(
+    (variant) =>
+      variant.id === bindForm.value.variantId &&
+      variant.productId === bindForm.value.productId,
+  );
+  if (!selectedSlot || !selectedVariant) {
+    void message.error("当前选择已变化，请重新选择货道和商品规格");
     return;
   }
   bindSaving.value = true;

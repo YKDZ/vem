@@ -105,5 +105,89 @@ test.describe("Product Variant Catalog admin API contract", () => {
     expect(variant.sku).toBe(sku);
     expect(variant.priceCents).toBe(321);
     expect(variant.costCents).toBe(123);
+
+    await page
+      .locator(".ant-modal")
+      .filter({ hasText: "新增 SKU" })
+      .getByRole("button", { name: /OK|确 定|确定/ })
+      .waitFor({ state: "detached", timeout: 10_000 })
+      .catch(() => {});
+
+    await productRow.getByRole("button", { name: "编辑" }).click();
+    const productDrawer = page
+      .locator(".ant-drawer")
+      .filter({ hasText: "编辑商品" });
+    await expect(productDrawer).toBeVisible({ timeout: 10_000 });
+    const [imageUploadResponse] = await Promise.all([
+      page.waitForResponse(
+        (response) =>
+          response.url().endsWith("/api/media-assets/product-display-images") &&
+          response.request().method() === "POST",
+      ),
+      productDrawer.locator("input[type='file']").setInputFiles({
+        name: "product.png",
+        mimeType: "image/png",
+        buffer: Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+          "base64",
+        ),
+      }),
+    ]);
+    expect(imageUploadResponse.ok()).toBe(true);
+    const [productUpdateResponse] = await Promise.all([
+      page.waitForResponse(
+        (response) =>
+          response.url().endsWith(`/api/products/${product.id}`) &&
+          response.request().method() === "PATCH",
+      ),
+      productDrawer.getByRole("button", { name: /保存/ }).click(),
+    ]);
+    const updatedProduct = await parseAdminData(
+      productUpdateResponse,
+      adminProductResponseSchema,
+    );
+    expect(updatedProduct.displayImageMediaAsset).toEqual(expect.any(Object));
+
+    await productRow.getByRole("button", { name: "SKU" }).click();
+    const variantRow = page.locator(".ant-table-row").filter({ hasText: sku });
+    await expect(variantRow).toBeVisible({ timeout: 10_000 });
+    await variantRow.getByRole("button", { name: "编辑" }).click();
+    const editVariantModal = page
+      .locator(".ant-modal")
+      .filter({ hasText: "编辑 SKU" });
+    await expect(editVariantModal).toBeVisible({ timeout: 10_000 });
+    await formItem(page, "售价(分)").locator("input").fill("456");
+    const [silhouetteUploadResponse] = await Promise.all([
+      page.waitForResponse(
+        (response) =>
+          response.url().endsWith("/api/media-assets/try-on-silhouettes") &&
+          response.request().method() === "POST",
+      ),
+      editVariantModal.locator("input[type='file']").setInputFiles({
+        name: "silhouette.png",
+        mimeType: "image/png",
+        buffer: Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+          "base64",
+        ),
+      }),
+    ]);
+    expect(silhouetteUploadResponse.ok()).toBe(true);
+    const [variantUpdateResponse] = await Promise.all([
+      page.waitForResponse(
+        (response) =>
+          response.url().endsWith(`/api/product-variants/${variant.id}`) &&
+          response.request().method() === "PATCH",
+      ),
+      editVariantModal.locator(".ant-btn-primary").click(),
+    ]);
+    const updatedVariant = await parseAdminData(
+      variantUpdateResponse,
+      adminProductVariantResponseSchema,
+    );
+    expect(updatedVariant.priceCents).toBe(456);
+    expect(updatedVariant.tryOnSilhouetteMediaAsset).toEqual(
+      expect.any(Object),
+    );
   });
 });

@@ -159,4 +159,37 @@ describe("PaymentChannelPolicyPanel", () => {
     expect(root.textContent).not.toContain("保存");
     expect(apiMocks.updatePaymentChannelPolicy).not.toHaveBeenCalled();
   });
+
+  it("saves channel enablement changes through the shared channel policy contract", async () => {
+    apiMocks.updatePaymentChannelPolicy.mockImplementation(async (payload) => ({
+      channels: payload.channels,
+      defaultChannelKey: payload.defaultChannelKey,
+      updatedAt: "2026-07-25T00:00:00.000Z",
+      updatedByAdminUserId: "admin-1",
+    }));
+    const { root } = await mountPanel(["payments.read", "payments.configure"]);
+
+    expect(root.textContent).toContain("支付宝扫码");
+    const switches = Array.from(
+      root.querySelectorAll<HTMLButtonElement>("button[aria-label='启用']"),
+    );
+    expect(switches.length).toBeGreaterThan(0);
+    switches[0].click();
+    await nextTick();
+    Array.from(root.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("保存"))
+      ?.click();
+    await flushPromises();
+
+    expect(apiMocks.updatePaymentChannelPolicy).toHaveBeenCalledWith({
+      channels: expect.arrayContaining([
+        expect.objectContaining({
+          channelKey: "qr_code:alipay",
+          enabled: false,
+          rank: 1,
+        }),
+      ]),
+      defaultChannelKey: "qr_code:alipay",
+    });
+  });
 });

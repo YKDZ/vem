@@ -84,6 +84,8 @@ test.describe("admin-smoke", () => {
       });
 
       test("creates a machine", async ({ page }) => {
+        const unique = Date.now().toString(36);
+        const machineCode = `E2E-MACHINE-${unique}`;
         await page.goto("/machines");
         await page.getByRole("button", { name: /新增机器/ }).click();
         await expect(page.getByRole("dialog")).toBeVisible({ timeout: 10_000 });
@@ -91,16 +93,37 @@ test.describe("admin-smoke", () => {
           .locator(".ant-form-item")
           .filter({ hasText: "编码" })
           .locator("input")
-          .fill("E2E-MACHINE-001");
+          .fill(machineCode);
         await page
           .locator(".ant-form-item")
           .filter({ hasText: "名称" })
           .locator("input")
           .fill("E2E测试机器");
         await page.getByRole("button", { name: /保存/ }).click();
-        await expect(page.getByText("E2E-MACHINE-001")).toBeVisible({
+        await expect(page.getByText(machineCode)).toBeVisible({
           timeout: 5_000,
         });
+
+        const machineRow = page
+          .locator(".ant-table-row")
+          .filter({ hasText: machineCode });
+        await machineRow.getByRole("button", { name: "领取码" }).click();
+        await expect(
+          page.getByRole("dialog", {
+            name: new RegExp(`领取码 - ${machineCode}`),
+          }),
+        ).toBeVisible({ timeout: 10_000 });
+        const [claimCodeResponse] = await Promise.all([
+          page.waitForResponse(
+            (response) =>
+              response.url().includes("/api/machines/") &&
+              response.url().endsWith("/claim-codes") &&
+              response.request().method() === "POST",
+          ),
+          page.getByRole("button", { name: "生成重新领取码" }).click(),
+        ]);
+        expect(claimCodeResponse.ok()).toBe(true);
+        await expect(page.getByText("请立即保存领取码")).toBeVisible();
       });
     });
 

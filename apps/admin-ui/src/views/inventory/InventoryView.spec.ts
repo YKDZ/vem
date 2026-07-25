@@ -265,6 +265,14 @@ function setInput(input: HTMLInputElement, value: string): void {
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((innerResolve) => {
+    resolve = innerResolve;
+  });
+  return { promise, resolve };
+}
+
 async function mountView(permissions: PermissionCode[]) {
   const pinia = createPinia();
   setActivePinia(pinia);
@@ -456,5 +464,181 @@ describe("InventoryView", () => {
       lowStockThreshold: 1,
       note: undefined,
     });
+  });
+
+  it("loads every machine and product page needed by the binding selector", async () => {
+    apiMocks.listMachines
+      .mockResolvedValueOnce({
+        items: Array.from({ length: 100 }, (_, index) => ({
+          id: `11111111-1111-4111-8111-${String(index).padStart(12, "0")}`,
+          code: `VEM-${index}`,
+          name: `机器 ${index}`,
+          locationLabel: null,
+          geoLocation: null,
+          status: "online",
+          mqttClientId: null,
+          lastSeenAt: null,
+          createdAt: "2026-07-25T00:00:00.000Z",
+          updatedAt: "2026-07-25T00:00:00.000Z",
+        })),
+        total: 101,
+        page: 1,
+        pageSize: 100,
+      })
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: "99999999-9999-4999-8999-999999999999",
+            code: "VEM-101",
+            name: "第 101 台机器",
+            locationLabel: null,
+            geoLocation: null,
+            status: "online",
+            mqttClientId: null,
+            lastSeenAt: null,
+            createdAt: "2026-07-25T00:00:00.000Z",
+            updatedAt: "2026-07-25T00:00:00.000Z",
+          },
+        ],
+        total: 101,
+        page: 2,
+        pageSize: 100,
+      });
+    apiMocks.listProducts
+      .mockResolvedValueOnce({
+        items: Array.from({ length: 100 }, (_, index) => ({
+          id: `33333333-3333-4333-8333-${String(index).padStart(12, "0")}`,
+          name: `商品 ${index}`,
+          categoryId: null,
+          description: null,
+          displayImageMediaAssetId: null,
+          displayImageMediaAsset: null,
+          status: "active",
+          sortOrder: 0,
+          createdAt: "2026-07-25T00:00:00.000Z",
+          updatedAt: "2026-07-25T00:00:00.000Z",
+        })),
+        total: 101,
+        page: 1,
+        pageSize: 100,
+      })
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: "88888888-8888-4888-8888-888888888888",
+            name: "第 101 个商品",
+            categoryId: null,
+            description: null,
+            displayImageMediaAssetId: null,
+            displayImageMediaAsset: null,
+            status: "active",
+            sortOrder: 0,
+            createdAt: "2026-07-25T00:00:00.000Z",
+            updatedAt: "2026-07-25T00:00:00.000Z",
+          },
+        ],
+        total: 101,
+        page: 2,
+        pageSize: 100,
+      });
+    const { root } = await mountView(["inventory.adjust"]);
+
+    root.querySelector("button")?.click();
+    await flushPromises();
+    await nextTick();
+
+    expect(apiMocks.listMachines).toHaveBeenCalledWith({
+      page: 2,
+      pageSize: 100,
+    });
+    expect(apiMocks.listProducts).toHaveBeenCalledWith({
+      page: 2,
+      pageSize: 100,
+    });
+    expect(root.textContent).toContain("第 101 台机器");
+    expect(root.textContent).toContain("第 101 个商品");
+  });
+
+  it("keeps stale slot responses from crossing the selected machine", async () => {
+    apiMocks.listMachines.mockResolvedValueOnce({
+      items: [
+        {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          code: "VEM-A",
+          name: "机器 A",
+          locationLabel: null,
+          geoLocation: null,
+          status: "online",
+          mqttClientId: null,
+          lastSeenAt: null,
+          createdAt: "2026-07-25T00:00:00.000Z",
+          updatedAt: "2026-07-25T00:00:00.000Z",
+        },
+        {
+          id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          code: "VEM-B",
+          name: "机器 B",
+          locationLabel: null,
+          geoLocation: null,
+          status: "online",
+          mqttClientId: null,
+          lastSeenAt: null,
+          createdAt: "2026-07-25T00:00:00.000Z",
+          updatedAt: "2026-07-25T00:00:00.000Z",
+        },
+      ],
+      total: 2,
+      page: 1,
+      pageSize: 100,
+    });
+    const slowA = deferred<Array<Record<string, unknown>>>();
+    apiMocks.listMachineSlots.mockImplementation(async (machineId: string) => {
+      if (machineId === "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa") {
+        return await slowA.promise;
+      }
+      return [
+        {
+          id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+          machineId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          rowNo: 8,
+          cellNo: 1,
+          capacity: 10,
+          status: "active",
+          createdAt: "2026-07-25T00:00:00.000Z",
+          updatedAt: "2026-07-25T00:00:00.000Z",
+          deletedAt: null,
+        },
+      ];
+    });
+    const { root } = await mountView(["inventory.adjust"]);
+    root.querySelector("button")?.click();
+    await flushPromises();
+    await nextTick();
+
+    const selects = Array.from(root.querySelectorAll("select"));
+    setSelect(selects[0], "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+    setSelect(selects[0], "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+    await flushPromises();
+    await nextTick();
+    expect(root.textContent).toContain("第 8 层 / 第 1 格");
+
+    slowA.resolve([
+      {
+        id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        machineId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        rowNo: 7,
+        cellNo: 1,
+        capacity: 10,
+        status: "active",
+        createdAt: "2026-07-25T00:00:00.000Z",
+        updatedAt: "2026-07-25T00:00:00.000Z",
+        deletedAt: null,
+      },
+    ]);
+    await flushPromises();
+    await nextTick();
+
+    expect(root.textContent).toContain("第 8 层 / 第 1 格");
+    expect(root.textContent).not.toContain("第 7 层 / 第 1 格");
   });
 });
