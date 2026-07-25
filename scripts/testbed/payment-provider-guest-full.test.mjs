@@ -82,6 +82,22 @@ describe("payment provider guest full", () => {
     assert.ok(source.includes("customerMessages"));
   });
 
+  it("keeps a DOM click fallback for checkout submit driver flakiness", () => {
+    const source = readFileSync(
+      new URL("./payment-provider-guest-full.mjs", import.meta.url),
+      "utf8",
+    );
+    const physicalIndex = source.indexOf(
+      "await activateVisibleSelector(\n        client,\n        '[data-test=\"checkout-submit\"]:not(:disabled)'",
+    );
+    const fallbackIndex = source.indexOf(
+      "const dispatched = await dispatchCheckoutSubmitDomClick",
+    );
+    assert.ok(physicalIndex > 0);
+    assert.ok(fallbackIndex > physicalIndex);
+    assert.ok(source.includes("domClickCount"));
+  });
+
   it("treats a completed previous sale as clean provider diagnostics state", () => {
     assert.equal(isCleanAuthoritativeTransaction(null), true);
     assert.equal(isCleanAuthoritativeTransaction({ orderId: null }), true);

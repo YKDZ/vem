@@ -503,9 +503,22 @@ async function readPaymentFlowDiagnostic(client, method) {
   );
 }
 
+async function dispatchCheckoutSubmitDomClick(client) {
+  return await evaluateExpression(
+    client,
+    `(() => {
+      const el = document.querySelector('[data-test="checkout-submit"]');
+      if (!el || el.disabled || !el.getClientRects().length) return false;
+      el.click();
+      return true;
+    })()`,
+  );
+}
+
 async function submitUntilPaymentSurface(client, method, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   let submitCount = 0;
+  let domClickCount = 0;
   while (Date.now() < deadline) {
     const surface = await readVisiblePaymentSurface(client);
     if (
@@ -530,12 +543,15 @@ async function submitUntilPaymentSurface(client, method, timeoutMs) {
         { kind: "touch", timeoutMs: 5_000, pollMs: POLL_INTERVAL_MS },
       );
       submitCount += 1;
+    } else if (submitReady && domClickCount < 1) {
+      const dispatched = await dispatchCheckoutSubmitDomClick(client);
+      if (dispatched) domClickCount += 1;
     }
     await sleep(Math.min(POLL_INTERVAL_MS, Math.max(1, deadline - Date.now())));
   }
   const diagnostic = await readPaymentFlowDiagnostic(client, method);
   throw new Error(
-    `visible ${method} Alipay payment surface did not appear after submit attempts: ${JSON.stringify(sanitizeProviderEvidence(diagnostic))}`,
+    `visible ${method} Alipay payment surface did not appear after submit attempts: ${JSON.stringify(sanitizeProviderEvidence({ ...diagnostic, submitCount, domClickCount }))}`,
   );
 }
 
