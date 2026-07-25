@@ -868,31 +868,21 @@ export async function runStockMaintenanceGuest(options) {
       "#/maintenance?source=operator",
       identity,
     );
-    await enterRoutineRefill(client, identity);
-    const submittedTask = await waitFor(
-      "submitted +2 routine refill",
+    const refillTask = await waitFor(
+      "routine refill task before submit",
       () => daemon(handoff, "/v1/stock/maintenance-task"),
       (task) =>
         task?.mode === "routine_refill" &&
+        typeof task?.taskId === "string" &&
+        task.taskId !== "" &&
         task?.slots?.some(
           (slot) =>
             slot?.slotId === identity.slotId &&
-            slot?.submittedAddition === 2 &&
-            slot?.previewQuantity === 2 &&
-            slot?.movementId === `${task.taskId}:${identity.slotId}`,
+            slot?.currentQuantity === 0 &&
+            slot?.syncStatus === "not_submitted",
         ),
     );
-    const submittedSlot = submittedTask.slots.find(
-      (slot) => slot.slotId === identity.slotId,
-    );
-    report.maintenance = {
-      taskId: submittedTask.taskId,
-      addition: submittedSlot.submittedAddition,
-      previewQuantity: submittedSlot.previewQuantity,
-      refillMovementCount: null,
-      projection: null,
-      platformMovement: null,
-    };
+    await enterRoutineRefill(client, identity);
     report.screenshots.refillConfirmed = await captureStockScreenshot(
       client,
       sink,
@@ -917,10 +907,10 @@ export async function runStockMaintenanceGuest(options) {
       () =>
         daemon(
           handoff,
-          `/v1/stock/maintenance-tasks/${encodeURIComponent(submittedTask.taskId)}/projection`,
+          `/v1/stock/maintenance-tasks/${encodeURIComponent(refillTask.taskId)}/projection`,
         ),
       (task) =>
-        task?.taskId === submittedTask.taskId &&
+        task?.taskId === refillTask.taskId &&
         task?.mode === "routine_refill" &&
         task?.status === "complete" &&
         task?.slots?.some(
@@ -928,7 +918,7 @@ export async function runStockMaintenanceGuest(options) {
             slot?.slotId === identity.slotId &&
             slot?.submittedAddition === 2 &&
             slot?.previewQuantity === 2 &&
-            slot?.movementId === `${submittedTask.taskId}:${identity.slotId}` &&
+            slot?.movementId === `${refillTask.taskId}:${identity.slotId}` &&
             slot?.movementType === "planned_refill" &&
             slot?.source === "local_maintenance" &&
             slot?.attributedTo === "local_operations" &&
@@ -940,14 +930,21 @@ export async function runStockMaintenanceGuest(options) {
     const completedSlot = completedTask.slots.find(
       (slot) => slot.slotId === identity.slotId,
     );
-    report.maintenance.projection = {
-      taskStatus: completedTask.status,
-      slotSyncStatus: completedSlot.syncStatus,
-      movementId: completedSlot.movementId,
-      movementType: completedSlot.movementType,
-      source: completedSlot.source,
-      attributedTo: completedSlot.attributedTo,
-      platformRawMovementId: completedSlot.platformRawMovementId,
+    report.maintenance = {
+      taskId: refillTask.taskId,
+      addition: completedSlot.submittedAddition,
+      previewQuantity: completedSlot.previewQuantity,
+      refillMovementCount: null,
+      projection: {
+        taskStatus: completedTask.status,
+        slotSyncStatus: completedSlot.syncStatus,
+        movementId: completedSlot.movementId,
+        movementType: completedSlot.movementType,
+        source: completedSlot.source,
+        attributedTo: completedSlot.attributedTo,
+        platformRawMovementId: completedSlot.platformRawMovementId,
+      },
+      platformMovement: null,
     };
     const afterRefillMovements = await waitFor(
       "one correlated platform refill movement",
@@ -976,7 +973,7 @@ export async function runStockMaintenanceGuest(options) {
     report.maintenance.refillMovementCount = refillMovements.length;
     report.maintenance.platformMovement = {
       ...refillMovements[0],
-      taskId: submittedTask.taskId,
+      taskId: refillTask.taskId,
     };
     report.restored = {
       daemon: stockFact(restoredView, identity),
