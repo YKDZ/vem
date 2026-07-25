@@ -1,0 +1,22 @@
+{
+  "id": "admin-product-price-edit",
+  "source": "admin-ui",
+  "route": "/products#sku-price",
+  "capturedAt": "2026-07-25T21:43:32.445Z",
+  "commit": "6fa03df16e07",
+  "viewport": {
+    "width": 1440,
+    "height": 1080
+  },
+  "expectedOrientation": "landscape",
+  "expectedTexts": [
+    "编辑 SKU",
+    "售价(分)",
+    "确定"
+  ],
+  "detectedTexts": [
+    "编辑 SKU",
+    "售价(分)",
+    "确定"
+  ]
+}

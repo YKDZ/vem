@@ -1,0 +1,40 @@
+{
+  "schemaVersion": "vem-documentation-screenshot-metadata/v1",
+  "status": "passed",
+  "reasons": [],
+  "metadata": {
+    "id": "admin-inventory-slot-binding",
+    "source": "admin-ui",
+    "route": "/inventory#bind",
+    "capturedAt": "2026-07-25T21:43:36.272Z",
+    "commit": "6fa03df16e07",
+    "viewport": {
+      "width": 1440,
+      "height": 1080
+    },
+    "expectedOrientation": "landscape",
+    "expectedTexts": [
+      "绑定库存",
+      "机器",
+      "货道",
+      "商品规格"
+    ],
+    "detectedTexts": [
+      "绑定库存",
+      "机器",
+      "货道",
+      "商品规格"
+    ],
+    "manualReviewReason": null
+  },
+  "capture": {
+    "format": "png",
+    "widthPx": 1440,
+    "heightPx": 1080,
+    "pixelCount": 1555200,
+    "nonTransparentPixelCount": 1555200,
+    "nonTransparentPixelRatio": 1,
+    "distinctPixelCount": 658,
+    "orientation": "landscape"
+  }
+}

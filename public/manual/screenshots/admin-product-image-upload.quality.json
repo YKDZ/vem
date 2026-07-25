@@ -1,0 +1,38 @@
+{
+  "schemaVersion": "vem-documentation-screenshot-metadata/v1",
+  "status": "passed",
+  "reasons": [],
+  "metadata": {
+    "id": "admin-product-image-upload",
+    "source": "admin-ui",
+    "route": "/products#product-image",
+    "capturedAt": "2026-07-25T21:43:29.094Z",
+    "commit": "6fa03df16e07",
+    "viewport": {
+      "width": 1440,
+      "height": 1080
+    },
+    "expectedOrientation": "landscape",
+    "expectedTexts": [
+      "展示图",
+      "上传图片",
+      "保存"
+    ],
+    "detectedTexts": [
+      "展示图",
+      "上传图片",
+      "保存"
+    ],
+    "manualReviewReason": null
+  },
+  "capture": {
+    "format": "png",
+    "widthPx": 1440,
+    "heightPx": 1080,
+    "pixelCount": 1555200,
+    "nonTransparentPixelCount": 1555200,
+    "nonTransparentPixelRatio": 1,
+    "distinctPixelCount": 1100,
+    "orientation": "landscape"
+  }
+}

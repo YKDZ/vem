@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 
 const MUTATION_SPECS = [
   "apps/admin-ui/tests/admin-smoke.spec.ts",
+  "apps/admin-ui/tests/operator-manual-screenshots.spec.ts",
   "apps/admin-ui/tests/payment-operations-admin-contract.spec.ts",
   "apps/admin-ui/tests/product-catalog-admin-contract.spec.ts",
 ];
@@ -26,5 +27,4 @@ test.describe("Admin UI mutation E2E isolation", () => {
     expect(checkCi).toContain("VEM_ADMIN_MUTATION_E2E_TARGET");
     expect(checkCi).toContain('mutationTarget: "isolated"');
   });
-
 });

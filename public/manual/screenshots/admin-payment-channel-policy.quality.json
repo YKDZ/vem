@@ -1,0 +1,40 @@
+{
+  "schemaVersion": "vem-documentation-screenshot-metadata/v1",
+  "status": "passed",
+  "reasons": [],
+  "metadata": {
+    "id": "admin-payment-channel-policy",
+    "source": "admin-ui",
+    "route": "/payments#channels",
+    "capturedAt": "2026-07-25T21:43:37.221Z",
+    "commit": "6fa03df16e07",
+    "viewport": {
+      "width": 1440,
+      "height": 1080
+    },
+    "expectedOrientation": "landscape",
+    "expectedTexts": [
+      "支付渠道管理",
+      "启用",
+      "默认",
+      "保存"
+    ],
+    "detectedTexts": [
+      "支付渠道管理",
+      "启用",
+      "默认",
+      "保存"
+    ],
+    "manualReviewReason": null
+  },
+  "capture": {
+    "format": "png",
+    "widthPx": 1440,
+    "heightPx": 1080,
+    "pixelCount": 1555200,
+    "nonTransparentPixelCount": 1555200,
+    "nonTransparentPixelRatio": 1,
+    "distinctPixelCount": 1336,
+    "orientation": "landscape"
+  }
+}

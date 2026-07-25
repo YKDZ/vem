@@ -1,0 +1,24 @@
+{
+  "id": "admin-inventory-slot-binding",
+  "source": "admin-ui",
+  "route": "/inventory#bind",
+  "capturedAt": "2026-07-25T21:43:36.272Z",
+  "commit": "6fa03df16e07",
+  "viewport": {
+    "width": 1440,
+    "height": 1080
+  },
+  "expectedOrientation": "landscape",
+  "expectedTexts": [
+    "绑定库存",
+    "机器",
+    "货道",
+    "商品规格"
+  ],
+  "detectedTexts": [
+    "绑定库存",
+    "机器",
+    "货道",
+    "商品规格"
+  ]
+}

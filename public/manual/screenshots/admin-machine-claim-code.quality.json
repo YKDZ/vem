@@ -1,0 +1,38 @@
+{
+  "schemaVersion": "vem-documentation-screenshot-metadata/v1",
+  "status": "passed",
+  "reasons": [],
+  "metadata": {
+    "id": "admin-machine-claim-code",
+    "source": "admin-ui",
+    "route": "/machines#claim-code",
+    "capturedAt": "2026-07-25T21:43:39.922Z",
+    "commit": "6fa03df16e07",
+    "viewport": {
+      "width": 1440,
+      "height": 1080
+    },
+    "expectedOrientation": "landscape",
+    "expectedTexts": [
+      "领取码",
+      "请立即保存领取码",
+      "首次领取"
+    ],
+    "detectedTexts": [
+      "领取码",
+      "请立即保存领取码",
+      "首次领取"
+    ],
+    "manualReviewReason": null
+  },
+  "capture": {
+    "format": "png",
+    "widthPx": 1440,
+    "heightPx": 1080,
+    "pixelCount": 1555200,
+    "nonTransparentPixelCount": 1555200,
+    "nonTransparentPixelRatio": 1,
+    "distinctPixelCount": 1359,
+    "orientation": "landscape"
+  }
+}

@@ -97,9 +97,9 @@
 - 调价前先确认影响范围，避免误改同系列多个规格。
 - 价格调整后，建议抽查对应机器的商品展示页。
 
-截图占位：
+![价格调整](screenshots/admin-product-price-edit.png)
 
-> `admin-product-price-edit` / 期望文字：`售价`、`保存` / 状态：待采集
+截图证据：`admin-product-price-edit` / 期望文字：`编辑 SKU`、`售价(分)`、`确定` / 质检：通过
 
 ## 6. 商品图与试衣剪影
 
@@ -119,9 +119,9 @@
 2. 上传或替换商品图。
 3. 保存后检查列表与详情页是否能正确显示。
 
-截图占位：
+![商品图上传](screenshots/admin-product-image-upload.png)
 
-> `admin-product-image-upload` / 期望文字：`商品图片`、`上传` / 状态：待采集
+截图证据：`admin-product-image-upload` / 期望文字：`展示图`、`上传图片`、`保存` / 质检：通过
 
 ### 6.2 试衣剪影
 
@@ -139,9 +139,9 @@
 - 没有试衣能力的商品无需上传剪影。
 - 同款同色不同尺码通常共用一份剪影资源。
 
-截图占位：
+![试衣剪影上传](screenshots/admin-try-on-silhouette-upload.png)
 
-> `admin-try-on-silhouette-upload` / 期望文字：`试衣剪影`、`上传` / 状态：待采集
+截图证据：`admin-try-on-silhouette-upload` / 期望文字：`编辑 SKU`、`试穿剪影`、`确定` / 质检：通过
 
 ## 7. 机器商品上架与补货
 
@@ -161,13 +161,13 @@
 - 先确认货道位置，再确认商品，不要只看商品名称。
 - 绑定调整后应同时复核售价和库存记录是否与现场一致。
 
-截图占位：
-
 ![机器管理页面](screenshots/admin-machines-list.png)
 
 截图证据：`admin-machines-list` / 期望文字：`机器管理` / 质检：通过
 
-具体货道绑定页面仍待采集。
+![货道绑定商品规格](screenshots/admin-inventory-slot-binding.png)
+
+截图证据：`admin-inventory-slot-binding` / 期望文字：`绑定库存`、`机器`、`货道`、`商品规格` / 质检：通过
 
 ### 7.2 机器端日常补货
 
@@ -234,13 +234,13 @@
 - 先确认商户配置已就绪，再启用渠道。
 - 启用后应抽查目标机器是否出现预期支付方式。
 
-截图占位：
-
 ![支付管理页面](screenshots/admin-payments-tabs.png)
 
 截图证据：`admin-payments-tabs` / 期望文字：`支付管理`、`支付流水`、`退款管理` / 质检：通过
 
-支付渠道启用的具体编辑状态仍待采集。
+![支付渠道启用](screenshots/admin-payment-channel-policy.png)
+
+截图证据：`admin-payment-channel-policy` / 期望文字：`支付渠道管理`、`启用`、`默认`、`保存` / 质检：通过
 
 ## 9. 机器认领与重领
 
@@ -253,13 +253,13 @@
 3. 到机器端本地运维入口输入或完成认领。
 4. 返回后台确认机器身份、位置和在线状态已关联到正确机器。
 
-截图占位：
-
 ![机器管理页面](screenshots/admin-machines-list.png)
 
 截图证据：`admin-machines-list` / 期望文字：`机器管理` / 质检：通过
 
-认领码生成窗口仍待采集。
+![机器认领码](screenshots/admin-machine-claim-code.png)
+
+截图证据：`admin-machine-claim-code` / 期望文字：`领取码`、`请立即保存领取码`、`首次领取` / 质检：通过
 
 ![机器端网络与认领](screenshots/machine-maintenance-commissioning.png)
 
@@ -354,8 +354,6 @@
 - 当前订单状态
 - 是否已见到支付事件、退款动作或人工处理入口
 
-截图占位：
-
 ![订单管理页面](screenshots/admin-orders-list.png)
 
 截图证据：`admin-orders-list` / 期望文字：`订单管理` / 质检：通过
@@ -378,13 +376,13 @@
 - 不直接修改数据库或支付状态。
 - 页面缺少安全操作时，应记录为产品缺口，不用线下变通替代。
 
-截图占位：
-
 ![支付管理页面](screenshots/admin-payments-tabs.png)
 
 截图证据：`admin-payments-tabs` / 期望文字：`支付管理`、`支付流水`、`退款管理` / 质检：通过
 
-支付异常详情与人工处理入口仍待采集。
+![支付异常处理入口](screenshots/admin-payment-incident-actions.png)
+
+截图证据：`admin-payment-incident-actions` / 期望文字：`订单调查`、`查询支付`、`申请退款处理`、`标记人工处理` / 质检：通过
 
 ### 11.3 出货异常查看
 
@@ -417,7 +415,6 @@
 
 以下内容在本版仍未完成，不能视为已验收：
 
-- 后台细节交互截图采集：图片上传、剪影上传、货道绑定、机器认领、支付异常详情、价格调整、支付渠道启用
 - 机器端日常补货的完整录入走查：当前截图只证明入口可达，截图数据中没有可提交货道。
 - 按手册逐条完成的运营工作流验收证据。
 

@@ -1,0 +1,40 @@
+{
+  "schemaVersion": "vem-documentation-screenshot-metadata/v1",
+  "status": "passed",
+  "reasons": [],
+  "metadata": {
+    "id": "admin-payment-incident-actions",
+    "source": "admin-ui",
+    "route": "/orders#payment-incident",
+    "capturedAt": "2026-07-25T21:43:41.391Z",
+    "commit": "6fa03df16e07",
+    "viewport": {
+      "width": 1440,
+      "height": 1080
+    },
+    "expectedOrientation": "landscape",
+    "expectedTexts": [
+      "订单调查",
+      "查询支付",
+      "申请退款处理",
+      "标记人工处理"
+    ],
+    "detectedTexts": [
+      "订单调查",
+      "查询支付",
+      "申请退款处理",
+      "标记人工处理"
+    ],
+    "manualReviewReason": null
+  },
+  "capture": {
+    "format": "png",
+    "widthPx": 1440,
+    "heightPx": 1080,
+    "pixelCount": 1555200,
+    "nonTransparentPixelCount": 1555200,
+    "nonTransparentPixelRatio": 1,
+    "distinctPixelCount": 612,
+    "orientation": "landscape"
+  }
+}
