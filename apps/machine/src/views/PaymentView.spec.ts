@@ -20,6 +20,7 @@ const {
 }));
 
 vi.mock("@/router/transaction-route-authority", () => ({
+  installedMachineRuntimeTrace: () => null,
   submitMachineNavigationIntent: submitMachineNavigationIntentMock,
 }));
 

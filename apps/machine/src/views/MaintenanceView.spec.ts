@@ -49,6 +49,7 @@ vi.mock("@/daemon/client", () => ({
   isDaemonTransportFailure: isDaemonTransportFailureMock,
 }));
 vi.mock("@/router/transaction-route-authority", () => ({
+  installedMachineRuntimeTrace: () => null,
   submitMachineNavigationIntent: submitMachineNavigationIntentMock,
 }));
 vi.mock("@/components/VisionCameraMaintenancePanel.vue", () => ({

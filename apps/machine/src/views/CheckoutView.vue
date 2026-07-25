@@ -12,7 +12,10 @@ import ManagedMediaImage from "@/components/catalog/ManagedMediaImage.vue";
 import KioskHeader from "@/components/KioskHeader.vue";
 import { projectCustomerError } from "@/customer-error-projection/customer-error-projection";
 import KioskLayout from "@/layouts/KioskLayout.vue";
-import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
+import {
+  installedMachineRuntimeTrace,
+  submitMachineNavigationIntent,
+} from "@/router/transaction-route-authority";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useMachineStore } from "@/stores/machine";
@@ -100,12 +103,46 @@ function paymentOptionDescription(disabled: boolean, method: string): string {
   return disabled ? deviceUnavailableCopy : paymentDescription(method);
 }
 
+function recordCheckoutSubmitTrace(
+  phase:
+    | "entered"
+    | "blocked"
+    | "create_order_started"
+    | "create_order_succeeded"
+    | "create_order_failed",
+  orderNo: string | null = null,
+): void {
+  const selected = checkoutStore.selectedPaymentOption;
+  installedMachineRuntimeTrace()?.record({
+    type: "checkout_submit",
+    phase,
+    route: window.location.hash || "#/checkout",
+    canSubmit: canSubmit.value,
+    loading: checkoutStore.loading,
+    selectedPaymentOptionKey: selected?.optionKey ?? null,
+    selectedPaymentMethod: selected?.method ?? null,
+    selectedPaymentProvider: selected?.providerCode ?? null,
+    customerErrorMessage: checkoutStore.customerErrorMessage,
+    orderNo,
+  });
+}
+
 async function submitOrder(): Promise<void> {
-  if (!canSubmit.value) return;
+  recordCheckoutSubmitTrace("entered");
+  if (!canSubmit.value) {
+    recordCheckoutSubmitTrace("blocked");
+    return;
+  }
   try {
-    await checkoutStore.createOrder();
+    recordCheckoutSubmitTrace("create_order_started");
+    const order = await checkoutStore.createOrder();
+    recordCheckoutSubmitTrace(
+      "create_order_succeeded",
+      order?.orderNo ?? checkoutStore.transaction?.orderNo ?? null,
+    );
     await submitMachineNavigationIntent({ type: "transaction.projection" });
   } catch {
+    recordCheckoutSubmitTrace("create_order_failed");
     // checkoutStore.customerErrorMessage is rendered in the page.
   }
 }

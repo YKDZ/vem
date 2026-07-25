@@ -10,6 +10,7 @@ const { submitMachineNavigationIntentMock } = vi.hoisted(() => ({
 }));
 
 vi.mock("@/router/transaction-route-authority", () => ({
+  installedMachineRuntimeTrace: () => null,
   submitMachineNavigationIntent: submitMachineNavigationIntentMock,
 }));
 

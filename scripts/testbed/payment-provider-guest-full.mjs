@@ -492,6 +492,18 @@ async function readPaymentFlowDiagnostic(client, method) {
         summary.lastTrusted = event.trusted;
         return summary;
       }, {});
+      const runtimeEntries = window.__VEM_MACHINE_RUNTIME_TRACE_SNAPSHOT__?.entries ?? [];
+      const checkoutSubmitTrace = runtimeEntries
+        .filter((entry) => entry?.type === 'checkout_submit')
+        .slice(-8)
+        .map((entry) => ({
+          phase: entry.phase,
+          canSubmit: entry.canSubmit,
+          loading: entry.loading,
+          selectedPaymentOptionKey: entry.selectedPaymentOptionKey,
+          customerErrorMessage: entry.customerErrorMessage,
+          orderNo: entry.orderNo ?? null,
+        }));
       return {
         expectedMethod: ${JSON.stringify(method)},
         route: location.hash,
@@ -511,8 +523,8 @@ async function readPaymentFlowDiagnostic(client, method) {
         },
         customerMessages: visibleText('[role="alert"], .ant-message, .ant-alert, .checkout-error, .payment-error, [data-test*="error"]'),
         submitEventSummary,
+        checkoutSubmitTrace,
         submitEvents: submitEvents.slice(-4),
-        runtimeTrace: window.__VEM_MACHINE_RUNTIME_TRACE_SNAPSHOT__?.entries?.slice?.(-12) ?? null,
       };
     })()`,
   );
