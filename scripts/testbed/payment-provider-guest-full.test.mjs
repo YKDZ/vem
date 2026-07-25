@@ -67,6 +67,21 @@ describe("payment provider guest full", () => {
     assert.ok(passIndex > finalCleanupIndex);
   });
 
+  it("reports checkout diagnostics when a payment surface never appears", () => {
+    const source = readFileSync(
+      new URL("./payment-provider-guest-full.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.ok(source.includes("readPaymentFlowDiagnostic"));
+    assert.ok(
+      source.includes(
+        "Alipay payment surface did not appear after submit attempts",
+      ),
+    );
+    assert.ok(source.includes("submitMethod"));
+    assert.ok(source.includes("customerMessages"));
+  });
+
   it("treats a completed previous sale as clean provider diagnostics state", () => {
     assert.equal(isCleanAuthoritativeTransaction(null), true);
     assert.equal(isCleanAuthoritativeTransaction({ orderId: null }), true);

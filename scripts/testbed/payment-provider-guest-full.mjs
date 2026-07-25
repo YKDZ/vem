@@ -468,6 +468,41 @@ async function visiblePaymentSurface(client, method, timeoutMs) {
   );
 }
 
+async function readPaymentFlowDiagnostic(client, method) {
+  return await evaluateExpression(
+    client,
+    `(() => {
+      const submit = document.querySelector('[data-test="checkout-submit"]');
+      const selected = document.querySelector('[data-test="payment-option"].payment-option-selected');
+      const surface = document.querySelector('[data-installed-kiosk-sale-payment-surface]');
+      const visibleText = (selector) => Array.from(document.querySelectorAll(selector))
+        .filter((el) => el && el.getClientRects().length)
+        .map((el) => (el.textContent || '').trim())
+        .filter(Boolean)
+        .slice(0, 6);
+      return {
+        expectedMethod: ${JSON.stringify(method)},
+        route: location.hash,
+        paymentSurface: surface && surface.getClientRects().length ? {
+          orderId: surface.dataset.orderId || null,
+          paymentId: surface.dataset.paymentId || null,
+          paymentMethod: surface.dataset.paymentMethod || null,
+          providerCode: surface.dataset.paymentProvider || null,
+        } : null,
+        checkout: {
+          submitVisible: Boolean(submit?.getClientRects().length),
+          submitDisabled: Boolean(submit?.disabled),
+          submitText: (submit?.textContent || '').trim() || null,
+          submitMethod: submit?.dataset.paymentMethod ?? null,
+          submitProvider: submit?.dataset.paymentProvider ?? null,
+          selectedOptionKey: selected?.dataset.paymentOptionKey ?? null,
+        },
+        customerMessages: visibleText('[role="alert"], .ant-message, .ant-alert, .checkout-error, .payment-error, [data-test*="error"]'),
+      };
+    })()`,
+  );
+}
+
 async function submitUntilPaymentSurface(client, method, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   let submitCount = 0;
@@ -498,7 +533,10 @@ async function submitUntilPaymentSurface(client, method, timeoutMs) {
     }
     await sleep(Math.min(POLL_INTERVAL_MS, Math.max(1, deadline - Date.now())));
   }
-  return await visiblePaymentSurface(client, method, 1);
+  const diagnostic = await readPaymentFlowDiagnostic(client, method);
+  throw new Error(
+    `visible ${method} Alipay payment surface did not appear after submit attempts: ${JSON.stringify(sanitizeProviderEvidence(diagnostic))}`,
+  );
 }
 
 async function readCheckoutPaymentSelection(client) {
