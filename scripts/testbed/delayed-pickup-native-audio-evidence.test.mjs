@@ -84,7 +84,6 @@ function runtimeTraceFixture() {
     "pickup-outlet-opened",
     "pickup-warning-1",
     "pickup-warning-2",
-    "dispense-succeeded",
   ].forEach((suffix, index) => {
     const transitionId = `transaction:${binding.orderNo}:${suffix}`;
     const requestId = `audio-request-${index + 1}`;
@@ -108,6 +107,17 @@ function runtimeTraceFixture() {
         outcome: type === "audio_terminal" ? "completed" : null,
       });
     }
+  });
+  const terminalAt = "2026-07-18T08:00:12.000Z";
+  trace.push({
+    type: "journey_transition",
+    id: id++,
+    at: terminalAt,
+    recordedAt: terminalAt,
+    transitionId: `transaction:${binding.orderNo}:dispense-succeeded`,
+    requestId: null,
+    terminalOutcomeId: null,
+    outcome: null,
   });
   return trace;
 }
@@ -193,6 +203,40 @@ describe("delayed pickup production evidence algorithms", () => {
         },
       }),
       true,
+    );
+  });
+
+  it("requires terminal success to remain silent after the pickup phase", () => {
+    const trace = runtimeTraceFixture();
+    const terminalTransitionId = `transaction:${binding.orderNo}:dispense-succeeded`;
+    trace.push({
+      type: "audio_queued",
+      id: trace.length + 1,
+      at: "2026-07-18T08:00:31.010Z",
+      recordedAt: "2026-07-18T08:00:31.010Z",
+      transitionId: terminalTransitionId,
+      requestId: "audio-request-9",
+      terminalOutcomeId: null,
+      outcome: null,
+    });
+    const result = analyzeDelayedPickupRuntimeTrace(
+      {
+        schemaVersion: "machine-production-evidence/v2",
+        binding: { ...binding },
+        runtime: { ...runtime },
+        captureStartedAt: "2026-07-18T07:59:59.000Z",
+        captureCompletedAt: "2026-07-18T08:00:32.000Z",
+        runtimeTrace: trace,
+      },
+      binding,
+      runtime,
+    );
+
+    assert.equal(result.ok, false);
+    assert.ok(
+      result.diagnostics.some(
+        (entry) => entry.code === "runtime_terminal_success_audio_present",
+      ),
     );
   });
 
@@ -450,7 +494,7 @@ describe("delayed pickup production evidence algorithms", () => {
     );
   });
 
-  it("keeps valid cue windows and reports only missing windows for incomplete cue timing", () => {
+  it("requires all pickup-phase cue windows while terminal success remains silent", () => {
     const sampleRateHz = 48_000;
     const signalDurationMs = 1_500;
     const samples = Array.from(
@@ -482,14 +526,10 @@ describe("delayed pickup production evidence algorithms", () => {
           started: { at: "2026-07-18T08:00:00.650Z" },
           terminal: { at: "2026-07-18T08:00:00.820Z" },
         },
-        dispense_succeeded: {
-          started: { at: "2026-07-18T08:00:01.500Z" },
-          terminal: { at: null },
-        },
       },
     });
 
-    assert.equal(result.ok, false);
+    assert.equal(result.ok, true);
     assert.deepEqual(
       result.cueTimings.map((entry) => entry.label),
       ["pickup_started", "ordinary_warning", "urgent_warning"],
@@ -497,14 +537,6 @@ describe("delayed pickup production evidence algorithms", () => {
     assert.equal(result.inspections.length, 1);
     assert.equal(result.inspections[0].label, "default_output_capture");
     assert.equal(result.inspections[0].kind, "passed");
-    assert.ok(
-      result.diagnostics.some(
-        (entry) =>
-          entry.code === "audio_cue_window_missing_or_empty" &&
-          entry.detail?.label === "dispense_succeeded",
-      ),
-      "missing cue timing should be reported per-label",
-    );
   });
 
   it("enforces the maximum cue start latency after its production transition", () => {
@@ -573,7 +605,7 @@ describe("delayed pickup production evidence algorithms", () => {
     });
 
     assert.equal(result.ok, true);
-    assert.equal(result.cueTimings.length, 4);
+    assert.equal(result.cueTimings.length, 3);
     assert.equal(result.inspections.length, 1);
     assert.equal(result.inspections[0].label, "default_output_capture");
     assert.equal(result.inspections[0].kind, "passed");

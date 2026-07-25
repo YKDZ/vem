@@ -114,7 +114,6 @@ function validateDelayedAudioTrack(report, reportPath) {
     "pickup_started",
     "ordinary_warning",
     "urgent_warning",
-    "dispense_succeeded",
   ];
   const capture = acceptance.audio?.capture ?? {};
   return acceptance.audio?.source === "windows_default_output" &&

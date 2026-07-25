@@ -27,12 +27,12 @@ const CODES = new Map([
   ["f2", "F2"],
 ]);
 const UI_SURFACES = ["ordinary_warning", "urgent_warning", "reset_progress"];
-const TRACE_CUES = [
+const PICKUP_TRACE_CUES = [
   ["pickup_started", "pickup-outlet-opened"],
   ["ordinary_warning", "pickup-warning-1"],
   ["urgent_warning", "pickup-warning-2"],
-  ["dispense_succeeded", "dispense-succeeded"],
 ];
+const TERMINAL_SUCCESS_TRACE = ["dispense_succeeded", "dispense-succeeded"];
 const CANONICAL_UTC_RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -541,7 +541,7 @@ export function analyzeDelayedPickupRuntimeTrace(
       diagnostic("runtime_audio_request_id_duplicate_or_missing"),
     );
   const cues = {};
-  for (const [label, suffix] of TRACE_CUES) {
+  for (const [label, suffix] of PICKUP_TRACE_CUES) {
     const transitionId = `transaction:${expectedBinding.orderNo}:${suffix}`;
     const entries = trace.filter(
       (entry) => entry?.transitionId === transitionId,
@@ -623,6 +623,39 @@ export function analyzeDelayedPickupRuntimeTrace(
         times[0] === null || times[2] === null ? null : times[2] - times[0],
     };
   }
+  const [terminalLabel, terminalSuffix] = TERMINAL_SUCCESS_TRACE;
+  const terminalTransitionId = `${transitionPrefix}${terminalSuffix}`;
+  const terminalEntries = trace.filter(
+    (entry) => entry?.transitionId === terminalTransitionId,
+  );
+  const terminalJourney = terminalEntries.filter(
+    (entry) => entry.type === "journey_transition",
+  );
+  const terminalAudio = terminalEntries.filter(
+    (entry) => entry.type !== "journey_transition",
+  );
+  if (terminalJourney.length !== 1)
+    diagnostics.push(
+      diagnostic("runtime_terminal_success_transition_invalid", {
+        transitionId: terminalTransitionId,
+        count: terminalJourney.length,
+      }),
+    );
+  if (terminalAudio.length !== 0)
+    diagnostics.push(
+      diagnostic("runtime_terminal_success_audio_present", {
+        transitionId: terminalTransitionId,
+        types: terminalAudio.map((entry) => entry.type),
+      }),
+    );
+  cues[terminalLabel] = {
+    transitionId: terminalTransitionId,
+    journey: terminalJourney[0] ?? null,
+    queued: null,
+    started: null,
+    terminal: null,
+    startLatencyMs: null,
+  };
   return { ok: diagnostics.length === 0, diagnostics, cues };
 }
 
@@ -1013,7 +1046,7 @@ export function correlateDelayedPickupCueWindows({
       inspections: [],
     };
   const windows = [];
-  TRACE_CUES.forEach(([label]) => {
+  PICKUP_TRACE_CUES.forEach(([label]) => {
     const rawStarted = timestamp(cues?.[label]?.started?.at);
     const rawTerminal = timestamp(cues?.[label]?.terminal?.at);
     const started = rawStarted === null ? null : rawStarted - clockOffsetMs;
@@ -1094,7 +1127,14 @@ export function correlateDelayedPickupCueWindows({
 }
 
 export function expectedDelayedPickupTraceCues() {
-  return TRACE_CUES.map(([label, suffix]) => ({ label, suffix }));
+  return [
+    ...PICKUP_TRACE_CUES.map(([label, suffix]) => ({ label, suffix })),
+    {
+      label: TERMINAL_SUCCESS_TRACE[0],
+      suffix: TERMINAL_SUCCESS_TRACE[1],
+      silent: true,
+    },
+  ];
 }
 
 export function bindingEquals(left, right) {

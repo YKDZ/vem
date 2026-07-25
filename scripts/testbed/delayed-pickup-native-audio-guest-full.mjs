@@ -310,7 +310,6 @@ async function waitForTransactionAudioSettled(
     "pickup-outlet-opened",
     "pickup-warning-1",
     "pickup-warning-2",
-    "dispense-succeeded",
   ];
   const deadline = Date.now() + timeoutMs;
   let last = null;
@@ -339,6 +338,9 @@ async function waitForTransactionAudioSettled(
           pickupWaitingQueued: pickupWaiting.some(
             (entry) => entry.type === "audio_queued",
           ),
+          terminalSuccess: trace.filter(
+            (entry) => entry.transitionId === prefix + "dispense-succeeded",
+          ),
         };
       })()`,
     );
@@ -347,13 +349,21 @@ async function waitForTransactionAudioSettled(
       last.playback.every(
         (entry) => entry.queued && entry.started && entry.terminal,
       ) &&
-      last.pickupWaitingQueued === false
+      last.pickupWaitingQueued === false &&
+      last.terminalSuccess?.filter(
+        (entry) => entry.type === "journey_transition",
+      ).length === 1 &&
+      last.terminalSuccess?.every(
+        (entry) => entry.type === "journey_transition",
+      )
     ) {
       return last;
     }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
   }
-  throw new Error(`transaction audio did not settle: ${JSON.stringify(last)}`);
+  throw new Error(
+    `transaction audio did not settle with silent terminal success: ${JSON.stringify(last)}`,
+  );
 }
 
 async function waitForPaymentCodeArm(

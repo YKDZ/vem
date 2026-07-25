@@ -299,7 +299,7 @@ function fixture(root) {
 
   const captureStartedAt = "2026-07-18T07:59:59.000Z";
   const captureCompletedAt = "2026-07-18T08:00:33.000Z";
-  const cueOffsets = [1_100, 16_100, 26_100, 31_100, 32_300];
+  const cueOffsets = [1_100, 16_100, 26_100];
   const wavBytes = wav(
     34_000,
     cueOffsets.map((offset) => [offset, offset + 500]),
@@ -417,7 +417,6 @@ function fixture(root) {
     ["pickup-outlet-opened", 100],
     ["pickup-warning-1", 15_100],
     ["pickup-warning-2", 25_100],
-    ["dispense-succeeded", 31_300],
   ];
   let traceId = 1;
   const runtimeTrace = traceDefinitions.flatMap(
@@ -448,6 +447,18 @@ function fixture(root) {
       }));
     },
   );
+  const terminalAt = new Date(base + 31_300).toISOString();
+  runtimeTrace.push({
+    type: "journey_transition",
+    id: traceId++,
+    at: terminalAt,
+    recordedAt: terminalAt,
+    transitionId: `transaction:${binding.orderNo}:dispense-succeeded`,
+    requestId: null,
+    terminalOutcomeId: null,
+    outcome: null,
+    message: null,
+  });
   const machinePath = join(root, "machine.json");
   writeJson(machinePath, {
     schemaVersion: "machine-production-evidence/v2",
@@ -556,6 +567,7 @@ describe("delayed pickup native audio production track", () => {
         "urgent_warning",
         "dispense_succeeded",
       ]);
+      assert.equal(report.controller.cueStartLatencyMs.dispense_succeeded, null);
       assert.equal(JSON.stringify(report).includes('"data"'), false);
       assert.equal(JSON.stringify(report).includes('"wavBytes"'), false);
       assert.equal(
