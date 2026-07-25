@@ -1188,6 +1188,7 @@ export async function runPaymentProviderGuest(options) {
         },
       }),
     );
+    await cleanAuthoritativeOrderBeforeDiagnostics(client, handoff, timeoutMs);
     report.authoritative.ok = true;
     report.ok = true;
     report.outcome = "passed";

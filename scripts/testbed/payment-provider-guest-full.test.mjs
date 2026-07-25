@@ -29,6 +29,25 @@ describe("payment provider guest full", () => {
     assert.ok(waitIndex > dismissIndex);
   });
 
+  it("returns the installed Machine UI to catalog after provider attempts", () => {
+    const source = readFileSync(
+      new URL("./payment-provider-guest-full.mjs", import.meta.url),
+      "utf8",
+    );
+    const paymentCodeIndex = source.indexOf(
+      "await paymentCodeAttempt({",
+      source.indexOf("runPaymentProviderGuest"),
+    );
+    const finalCleanupIndex = source.indexOf(
+      "await cleanAuthoritativeOrderBeforeDiagnostics(client, handoff, timeoutMs);",
+      paymentCodeIndex,
+    );
+    const passIndex = source.indexOf('report.outcome = "passed"', paymentCodeIndex);
+    assert.ok(paymentCodeIndex > 0);
+    assert.ok(finalCleanupIndex > paymentCodeIndex);
+    assert.ok(passIndex > finalCleanupIndex);
+  });
+
   it("treats a completed previous sale as clean provider diagnostics state", () => {
     assert.equal(isCleanAuthoritativeTransaction(null), true);
     assert.equal(isCleanAuthoritativeTransaction({ orderId: null }), true);
