@@ -472,6 +472,7 @@ export async function collectMaintenanceEntryEvidence(
       const finalRoute = await waitForRoute(client, "#/catalog", {
         timeoutMs: AUDIO_PREFERENCE_TIMEOUT_MS,
         pollMs: 150,
+        forbiddenRoutes: [],
       });
       taskReturns.push({
         task,
