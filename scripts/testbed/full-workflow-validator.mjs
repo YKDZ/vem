@@ -556,6 +556,9 @@ function validateLocalOperationsTrack(report, reportPath) {
       report.manualDispense?.outcome,
     ) ||
     report.manualDispense?.slotId !== report.planogram.slotId ||
+    report.localEnvironmentControl?.request?.ventSpeed !== 3 ||
+    report.localEnvironmentControl?.result?.success !== true ||
+    report.localEnvironmentControl?.protocolFrame?.parsedOpcode !== "B3" ||
     !Array.isArray(report.maintenanceEntry) ||
     report.maintenanceEntry.length < 1 ||
     report.maintenanceEntry.some(
@@ -574,6 +577,7 @@ function validateLocalOperationsTrack(report, reportPath) {
         boundaries: report.boundaries ?? null,
         planogram: report.planogram ?? null,
         manualDispense: report.manualDispense ?? null,
+        localEnvironmentControl: report.localEnvironmentControl ?? null,
       },
     );
   }
@@ -582,6 +586,7 @@ function validateLocalOperationsTrack(report, reportPath) {
     slotDisplayLabel: report.planogram.slotDisplayLabel,
     planogramVersion: report.planogram.planogramVersion,
     manualOutcome: report.manualDispense.outcome,
+    localVentSpeed: report.localEnvironmentControl.request.ventSpeed,
   });
 }
 

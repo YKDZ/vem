@@ -1849,7 +1849,10 @@ describe("sale-start capability UI flow", () => {
     expect(tryOnEntry).toBeTruthy();
     expect(tryOnEntry?.disabled).toBe(false);
     expect(tryOnEntry?.getAttribute("aria-label")).toBe("虚拟试穿");
-    expect(tryOnEntry?.querySelector("img")).toBeTruthy();
+    const tryOnIcon = tryOnEntry?.querySelector("img");
+    expect(tryOnIcon).toBeTruthy();
+    expect(tryOnIcon?.getAttribute("src")).toContain("image/svg+xml");
+    expect(tryOnIcon?.getAttribute("src")).not.toContain("icon-tshirt");
     expect(tryOnEntry?.previousElementSibling?.getAttribute("data-test")).toBe(
       "product-buy",
     );

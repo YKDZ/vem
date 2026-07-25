@@ -113,6 +113,7 @@ impl MqttSyncRuntime {
     pub fn with_readiness_context(mut self, context: crate::ipc::IpcContext) -> Self {
         self.environment = context.ui.status_cache.environment.clone();
         self.automatic_vent = Some(context.automatic_vent.clone());
+        self.environment_command_in_progress = context.environment_command_in_progress.clone();
         self.readiness_context = Some(context);
         self
     }
@@ -1468,7 +1469,7 @@ fn parse_command_log_time(value: Option<&str>) -> Option<DateTime<Utc>> {
         .map(|at| at.with_timezone(&Utc))
 }
 
-fn validate_environment_control_command(
+pub(crate) fn validate_environment_control_command(
     command: &EnvironmentControlCommandPayload,
 ) -> Result<(), String> {
     let action_count = command.air_conditioner_on.is_some() as u8

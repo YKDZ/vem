@@ -50,6 +50,7 @@ type MaintenanceTask =
   | "status"
   | "commissioning"
   | "hardware"
+  | "environment"
   | "stock"
   | "experience"
   | "diagnostics";
@@ -111,6 +112,11 @@ const maintenanceTasks = computed(() => [
       machineStore.health?.hardwareOnline && scannerStore.online
         ? "设备正常"
         : "检查设备",
+  },
+  {
+    key: "environment" as const,
+    label: "环境控制",
+    value: localEnvironmentControl.loadingAction ? "执行中" : "空调与出风",
   },
   {
     key: "stock" as const,
@@ -626,6 +632,71 @@ const visionMaintenance = reactive({
   loading: false,
   message: null as string | null,
 });
+
+type LocalEnvironmentControlAction =
+  | "airConditionerOn"
+  | "targetTemperatureCelsius"
+  | "ventSpeed";
+
+const localEnvironmentControl = reactive({
+  loadingAction: null as LocalEnvironmentControlAction | null,
+  message: null as string | null,
+  targetTemperatureCelsius: 24,
+  ventSpeed: 2,
+});
+
+const targetTemperatureInvalid = computed(() => {
+  return (
+    !Number.isInteger(localEnvironmentControl.targetTemperatureCelsius) ||
+    localEnvironmentControl.targetTemperatureCelsius < 18 ||
+    localEnvironmentControl.targetTemperatureCelsius > 30
+  );
+});
+
+function localEnvironmentSuccessMessage(
+  action: LocalEnvironmentControlAction,
+  value: boolean | number,
+): string {
+  if (action === "airConditionerOn") {
+    return value ? "空调已开启。" : "空调已关闭。";
+  }
+  if (action === "targetTemperatureCelsius") {
+    return `目标温度已设为 ${Number(value)}°C。`;
+  }
+  const speed = Number(value);
+  return speed === 0 ? "出风口已关闭。" : `出风口风速已设为 ${speed} 档。`;
+}
+
+async function submitLocalEnvironmentControl(
+  action: LocalEnvironmentControlAction,
+  value: boolean | number,
+): Promise<void> {
+  if (localEnvironmentControl.loadingAction) return;
+  localEnvironmentControl.loadingAction = action;
+  localEnvironmentControl.message = null;
+  try {
+    const result = await daemonClient.submitLocalEnvironmentControl(
+      action === "airConditionerOn"
+        ? { airConditionerOn: Boolean(value) }
+        : action === "targetTemperatureCelsius"
+          ? {
+              targetTemperatureCelsius: Number(value),
+            }
+          : { ventSpeed: Number(value) },
+    );
+    localEnvironmentControl.message = result.success
+      ? localEnvironmentSuccessMessage(action, value)
+      : "环境控制未完成，请检查设备后重试。";
+  } catch (error) {
+    localEnvironmentControl.message = operatorErrorMessage(
+      "环境控制未完成，请检查下位机后重试。",
+      error,
+      "environment",
+    );
+  } finally {
+    localEnvironmentControl.loadingAction = null;
+  }
+}
 
 const wholeMachineLockMaintenance = reactive({
   loading: false,
@@ -1627,6 +1698,118 @@ async function submitStockMaintenanceTask(): Promise<void> {
               </div>
             </dl>
           </div>
+        </section>
+
+        <section
+          v-show="activeTask === 'environment'"
+          class="maintenance-panel"
+          aria-label="本地环境控制"
+        >
+          <div class="maintenance-panel-heading">
+            <div>
+              <h2>环境控制</h2>
+              <p>调整空调、目标温度和出风口风速。</p>
+            </div>
+          </div>
+          <div class="grid gap-4">
+            <div
+              class="grid gap-3 rounded-2xl border border-white/10 bg-slate-950/40 p-4"
+            >
+              <p class="font-semibold text-white">空调开关</p>
+              <div class="flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  :disabled="localEnvironmentControl.loadingAction !== null"
+                  @click="
+                    submitLocalEnvironmentControl('airConditionerOn', true)
+                  "
+                >
+                  空调开
+                </button>
+                <button
+                  type="button"
+                  :disabled="localEnvironmentControl.loadingAction !== null"
+                  @click="
+                    submitLocalEnvironmentControl('airConditionerOn', false)
+                  "
+                >
+                  空调关
+                </button>
+              </div>
+            </div>
+            <div
+              class="grid gap-3 rounded-2xl border border-white/10 bg-slate-950/40 p-4 md:grid-cols-[minmax(0,1fr)_auto]"
+            >
+              <label class="grid gap-2 text-sm text-slate-200">
+                <span class="font-semibold text-white">目标温度</span>
+                <input
+                  v-model.number="
+                    localEnvironmentControl.targetTemperatureCelsius
+                  "
+                  aria-label="目标温度"
+                  class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-white outline-none focus:border-sky-300"
+                  max="30"
+                  min="18"
+                  step="1"
+                  type="number"
+                />
+              </label>
+              <button
+                class="self-end"
+                type="button"
+                :disabled="
+                  localEnvironmentControl.loadingAction !== null ||
+                  targetTemperatureInvalid
+                "
+                @click="
+                  submitLocalEnvironmentControl(
+                    'targetTemperatureCelsius',
+                    localEnvironmentControl.targetTemperatureCelsius,
+                  )
+                "
+              >
+                应用目标温度
+              </button>
+            </div>
+            <div
+              class="grid gap-3 rounded-2xl border border-white/10 bg-slate-950/40 p-4 md:grid-cols-[minmax(0,1fr)_auto]"
+            >
+              <label class="grid gap-2 text-sm text-slate-200">
+                <span class="font-semibold text-white">出风口与风速</span>
+                <select
+                  v-model.number="localEnvironmentControl.ventSpeed"
+                  aria-label="风速"
+                  class="rounded-xl bg-slate-950/60 p-3"
+                >
+                  <option :value="0">关闭出风</option>
+                  <option :value="1">1 档</option>
+                  <option :value="2">2 档</option>
+                  <option :value="3">3 档</option>
+                  <option :value="4">4 档</option>
+                </select>
+              </label>
+              <button
+                class="self-end"
+                type="button"
+                :disabled="localEnvironmentControl.loadingAction !== null"
+                @click="
+                  submitLocalEnvironmentControl(
+                    'ventSpeed',
+                    localEnvironmentControl.ventSpeed,
+                  )
+                "
+              >
+                应用风速
+              </button>
+            </div>
+          </div>
+          <p
+            v-if="localEnvironmentControl.message"
+            class="maintenance-message"
+            aria-live="polite"
+          >
+            {{ localEnvironmentControl.message }}
+          </p>
         </section>
 
         <div

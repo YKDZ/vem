@@ -813,6 +813,11 @@ function localOperationsReport() {
       slotDisplayLabel: "R7C1",
       outcome: "completed",
     },
+    localEnvironmentControl: {
+      request: { ventSpeed: 3 },
+      result: { success: true },
+      protocolFrame: { parsedOpcode: "B3", rawFrameHex: "55b303" },
+    },
     maintenanceEntry: ["#/catalog"].map((route) => ({
       route,
       selector:

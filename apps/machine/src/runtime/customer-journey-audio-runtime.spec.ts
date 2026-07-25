@@ -35,6 +35,11 @@ const { nativePlaybackDriver, nativePlaybackFactory } = vi.hoisted(() => {
       activeTerminal = null;
       terminal?.({ status: "stopped" });
     }),
+    complete: () => {
+      const terminal = activeTerminal;
+      activeTerminal = null;
+      terminal?.({ status: "completed" });
+    },
   };
 
   return {
@@ -108,6 +113,64 @@ function transaction(
         ? "2026-07-19T08:00:00.000Z"
         : "2026-07-19T08:00:01.000Z",
   };
+}
+
+function dispensingTransaction(input: {
+  updatedAt: string;
+  pickupReminder: {
+    stage:
+      | "outlet_opened"
+      | "pickup_waiting"
+      | "pickup_completed"
+      | "pickup_timeout_warning";
+    level: "info" | "warning" | "urgent";
+    warningNo: number | null;
+    reportedAt: string;
+  } | null;
+}): TransactionSnapshot {
+  return {
+    orderId: "550e8400-e29b-41d4-a716-446655440200",
+    orderNo: "ORD-AUDIO-PICKUP-001",
+    productSummary: null,
+    paymentId: "550e8400-e29b-41d4-a716-446655440201",
+    paymentNo: "PAY-AUDIO-PICKUP-001",
+    paymentMethod: "qr_code",
+    paymentProvider: "alipay",
+    paymentUrl: "https://pay.example/audio-pickup",
+    paymentStatus: "succeeded",
+    orderStatus: "paid",
+    totalAmountCents: 4900,
+    vending: {
+      commandId: "550e8400-e29b-41d4-a716-446655440202",
+      commandNo: "CMD-AUDIO-PICKUP-001",
+      status: "sent",
+      lastError: null,
+      pickupReminder: input.pickupReminder,
+    },
+    nextAction: "dispensing",
+    maskedAuthCode: null,
+    paymentCodeAttempt: null,
+    expiresAt: "2026-07-19T08:15:00.000Z",
+    errorCode: null,
+    errorMessage: null,
+    operatorHint: null,
+    updatedAt: input.updatedAt,
+  } as TransactionSnapshot;
+}
+
+function successfulDispenseTransaction(updatedAt: string): TransactionSnapshot {
+  return {
+    ...dispensingTransaction({ updatedAt, pickupReminder: null }),
+    orderStatus: "fulfilled",
+    vending: {
+      commandId: "550e8400-e29b-41d4-a716-446655440202",
+      commandNo: "CMD-AUDIO-PICKUP-001",
+      status: "succeeded",
+      lastError: null,
+      pickupReminder: null,
+    },
+    nextAction: "success",
+  } as TransactionSnapshot;
 }
 
 describe("Customer journey audio runtime", () => {
@@ -428,5 +491,60 @@ describe("Customer journey audio runtime", () => {
       expect.any(Object),
     );
     vi.useRealTimers();
+  });
+
+  it("plays the pickup outlet cue during pickup phase and does not replay it after terminal success", async () => {
+    useMachineStore(pinia).applyEffectiveRuntimeConfiguration(
+      effectiveConfiguration({ volume: 0.44, transactionCuesEnabled: true }),
+    );
+    runtime = createCustomerJourneyAudioRuntime(pinia);
+    const checkoutStore = useCheckoutStore(pinia);
+
+    checkoutStore.applyTransaction(
+      dispensingTransaction({
+        updatedAt: "2026-07-19T08:00:00.000Z",
+        pickupReminder: {
+          stage: "outlet_opened",
+          level: "info",
+          warningNo: null,
+          reportedAt: "2026-07-19T08:00:00.000Z",
+        },
+      }),
+    );
+
+    await vi.waitFor(() => {
+      expect(nativePlaybackDriver.playLocal).toHaveBeenCalledWith(
+        "/audio/voice/dispensing/succeeded.mp3",
+        expect.objectContaining({ volume: 0.44 }),
+      );
+    });
+    nativePlaybackDriver.complete();
+
+    checkoutStore.applyTransaction(
+      successfulDispenseTransaction("2026-07-19T08:00:31.000Z"),
+    );
+    await nextTick();
+
+    expect(nativePlaybackDriver.playLocal).toHaveBeenCalledTimes(1);
+    expect(
+      runtime
+        ?.trace()
+        .filter(
+          (entry) =>
+            entry.type === "journey_transition" &&
+            entry.transitionId ===
+              "transaction:ORD-AUDIO-PICKUP-001:dispense-succeeded",
+        ),
+    ).toHaveLength(1);
+    expect(
+      runtime
+        ?.trace()
+        .filter(
+          (entry) =>
+            entry.type === "audio_queued" &&
+            entry.transitionId ===
+              "transaction:ORD-AUDIO-PICKUP-001:dispense-succeeded",
+        ),
+    ).toHaveLength(0);
   });
 });

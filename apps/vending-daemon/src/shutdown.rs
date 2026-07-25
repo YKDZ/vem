@@ -232,6 +232,7 @@ async fn run_console_cycle(
         serial_device_platform: serial_device_platform.clone(),
         device_binding_test_evidence: Arc::new(ipc::DeviceBindingTestEvidenceStore::default()),
         sale_binding_gate,
+        environment_command_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         disk_pressure_probe: Arc::new(crate::health::DataDirDiskPressureProbe::from_env()),
         network_adapter: crate::network::adapter_from_env(),
         ui,

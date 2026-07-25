@@ -10,6 +10,7 @@ import iconTshirtImage from "@/assets/home/icon-tshirt.png";
 import iconUnderwearImage from "@/assets/home/icon-underwear.png";
 import listSloganImage from "@/assets/home/list-slogan.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
+import tryOnHangerIcon from "@/assets/product/try-on-hanger.svg";
 import { resolveManagedMediaReference } from "@/catalog/managed-media";
 import ManagedMediaImage from "@/components/catalog/ManagedMediaImage.vue";
 import KioskHeader from "@/components/KioskHeader.vue";
@@ -516,7 +517,7 @@ async function enterTryOn(): Promise<void> {
               title="虚拟试穿"
               @click="enterTryOn"
             >
-              <img :src="iconTshirtImage" alt="" aria-hidden="true" />
+              <img :src="tryOnHangerIcon" alt="" aria-hidden="true" />
             </button>
           </div>
         </section>

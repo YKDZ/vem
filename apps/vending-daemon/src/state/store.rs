@@ -3681,39 +3681,115 @@ impl LocalStateStore {
         }
 
         if input.mode == "initial_count" || input.mode == "recovery_count" {
-            if input.slots.len() != rows.len()
-                || input
-                    .slots
-                    .iter()
-                    .any(|slot| slot.quantity.is_none() || slot.addition.is_some())
+            if input
+                .slots
+                .iter()
+                .any(|slot| slot.quantity.is_none() || slot.addition.is_some())
             {
                 return Err(StoreError::InvalidStockInput(
                     "count task must submit one final quantity for every active slot".to_string(),
+                ));
+            }
+            let pending = self
+                .get_metadata::<PendingPhysicalStockAttestation>(
+                    PENDING_PHYSICAL_STOCK_ATTESTATION_KEY,
+                )
+                .await?;
+            let accepted_carried_slots = if task_identity
+                .predecessor_task_id
+                .as_deref()
+                .is_some_and(|predecessor| {
+                    pending
+                        .as_ref()
+                        .is_some_and(|pending| pending.input.attestation_id == predecessor)
+                }) {
+                let pending = pending.as_ref().expect("checked pending predecessor");
+                let sync_rows: Vec<(String, String)> = sqlx::query_as(
+                    "SELECT movement_id,status
+                     FROM stock_movement_sync
+                     WHERE movement_id IN (SELECT value FROM json_each(?1))",
+                )
+                .bind(serde_json::to_string(&pending.movement_ids)?)
+                .fetch_all(&self.pool)
+                .await?;
+                let statuses = sync_rows
+                    .iter()
+                    .map(|(movement_id, status)| (movement_id.as_str(), status.as_str()))
+                    .collect::<HashMap<_, _>>();
+                pending
+                    .input
+                    .slots
+                    .iter()
+                    .filter(|slot| {
+                        let movement_id = pending
+                            .slot_generations
+                            .iter()
+                            .find(|generation| generation.slot_id == slot.slot_id)
+                            .map(|generation| generation.movement_id.clone())
+                            .unwrap_or_else(|| {
+                                // Legacy pending attestations used the
+                                // attestation id as the slot generation.
+                                format!("{}:{}", pending.input.attestation_id, slot.slot_id)
+                            });
+                        statuses.get(movement_id.as_str()) == Some(&"accepted")
+                    })
+                    .map(|slot| (slot.slot_id.as_str(), slot))
+                    .collect::<HashMap<_, _>>()
+            } else {
+                HashMap::new()
+            };
+            let submitted_by_slot = input
+                .slots
+                .iter()
+                .map(|slot| (slot.slot_id.as_str(), slot))
+                .collect::<HashMap<_, _>>();
+            if rows.iter().any(|row| {
+                !submitted_by_slot.contains_key(row.0.as_str())
+                    && !accepted_carried_slots.contains_key(row.0.as_str())
+            }) {
+                return Err(StoreError::InvalidStockInput(
+                    "count task must submit corrected quantities for every non-accepted active slot"
+                        .to_string(),
                 ));
             }
             let requested_attestation = PhysicalStockAttestationInput {
                 attestation_id: input.task_id,
                 planogram_version,
                 operator_id: operator_id.to_string(),
-                slots: input
-                    .slots
+                slots: rows
                     .iter()
-                    .map(|slot| {
-                        let row = by_slot_id[slot.slot_id.as_str()];
-                        PhysicalStockAttestationSlotInput {
+                    .map(|row| {
+                        if let Some(accepted) = accepted_carried_slots.get(row.0.as_str()) {
+                            if let Some(submitted) = submitted_by_slot.get(row.0.as_str()) {
+                                if submitted.quantity != Some(accepted.quantity) {
+                                    return Err(StoreError::InvalidStockInput(format!(
+                                        "Platform-accepted attested slot {} cannot be changed; retry only rejected slots",
+                                        row.0
+                                    )));
+                                }
+                            }
+                            return Ok(PhysicalStockAttestationSlotInput {
+                                slot_id: accepted.slot_id.clone(),
+                                sku: accepted.sku.clone(),
+                                quantity: accepted.quantity,
+                                enabled: accepted.enabled,
+                            });
+                        }
+                        let Some(slot) = submitted_by_slot.get(row.0.as_str()) else {
+                            return Err(StoreError::InvalidStockInput(format!(
+                                "missing corrected quantity for stock task slot {}",
+                                row.0
+                            )));
+                        };
+                        Ok(PhysicalStockAttestationSlotInput {
                             slot_id: row.0.clone(),
                             sku: row.1.clone(),
                             quantity: slot.quantity.unwrap_or_default(),
                             enabled: true,
-                        }
+                        })
                     })
-                    .collect(),
+                    .collect::<Result<Vec<_>, StoreError>>()?,
             };
-            let pending = self
-                .get_metadata::<PendingPhysicalStockAttestation>(
-                    PENDING_PHYSICAL_STOCK_ATTESTATION_KEY,
-                )
-                .await?;
             let duplicate = pending.as_ref().is_some_and(|pending| {
                 pending.input.attestation_id == requested_attestation.attestation_id
                     && pending.input.planogram_version == requested_attestation.planogram_version
@@ -4475,6 +4551,7 @@ impl LocalStateStore {
         if let Some(pending) = self
             .get_metadata::<PendingPhysicalStockAttestation>(PENDING_PHYSICAL_STOCK_ATTESTATION_KEY)
             .await?
+            .filter(|pending| pending.input.planogram_version == input.planogram_version)
         {
             if pending.input == input {
                 // This is the response-loss retry path.  Do not manufacture a
@@ -5630,7 +5707,18 @@ impl LocalStateStore {
             .as_ref()
             .and_then(|reconciliation| reconciliation.sale_safety_blocker.as_ref())
         {
-            apply_sale_safety_blocker_in_tx(&mut tx, blocker).await?;
+            let event_planogram_version = event
+                .payload_json
+                .get("planogramVersion")
+                .and_then(serde_json::Value::as_str);
+            let active: Option<(String,)> = sqlx::query_as(
+                "SELECT planogram_version FROM machine_planogram_versions WHERE active = 1 LIMIT 1",
+            )
+            .fetch_optional(tx.as_mut())
+            .await?;
+            if active.as_ref().map(|(version,)| version.as_str()) == event_planogram_version {
+                apply_sale_safety_blocker_in_tx(&mut tx, blocker).await?;
+            }
         }
         if status == "accepted" && response.receipt.is_some() {
             let counted_slot: Option<(String, i64, i64)> = sqlx::query_as(
@@ -8605,6 +8693,269 @@ mod tests {
             .await
             .expect("retry lookup")
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn count_task_retry_accepts_only_reconciled_slots_and_restores_saleability_once() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_two_slot_planogram(&store).await;
+        let first = store.stock_maintenance_task().await.expect("first task");
+        store
+            .submit_stock_maintenance_batch(
+                StockMaintenanceBatchInput {
+                    task_id: first.task_id.clone(),
+                    mode: first.mode.clone(),
+                    slots: vec![
+                        StockMaintenanceBatchSlotInput {
+                            slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                            quantity: Some(3),
+                            addition: None,
+                        },
+                        StockMaintenanceBatchSlotInput {
+                            slot_id: "550e8400-e29b-41d4-a716-446655440011".to_string(),
+                            quantity: Some(4),
+                            addition: None,
+                        },
+                    ],
+                },
+                "operator",
+                "MACHINE-1",
+                "https://platform.example/api",
+            )
+            .await
+            .expect("stage first batch");
+
+        let accepted_id = format!(
+            "{}:{}",
+            first.task_id, "550e8400-e29b-41d4-a716-446655440001"
+        );
+        let reconciled_id = format!(
+            "{}:{}",
+            first.task_id, "550e8400-e29b-41d4-a716-446655440011"
+        );
+        for (movement_id, response) in [
+            (
+                accepted_id.clone(),
+                crate::backend::StockMovementUploadResponse {
+                    movement_id: accepted_id.clone(),
+                    status: "accepted".to_string(),
+                    accepted_at: Some("2026-07-15T00:00:00.000Z".to_string()),
+                    receipt: Some(json!({"rawMovementId":"raw-a1"})),
+                    rejection: None,
+                    reconciliation: None,
+                },
+            ),
+            (
+                reconciled_id.clone(),
+                crate::backend::StockMovementUploadResponse {
+                    movement_id: reconciled_id.clone(),
+                    status: "reconciliation".to_string(),
+                    accepted_at: None,
+                    receipt: None,
+                    rejection: None,
+                    reconciliation: Some(crate::backend::StockMovementReconciliation {
+                        reason: "mapping_mismatch".to_string(),
+                        platform_review: Some(json!({"required":true,"status":"open"})),
+                        sale_safety_blocker: Some(crate::backend::StockMovementSaleSafetyBlocker {
+                            slot_id: "550e8400-e29b-41d4-a716-446655440011".to_string(),
+                            slot_sales_state: "needs_platform_review".to_string(),
+                            reason: "mapping_mismatch".to_string(),
+                        }),
+                    }),
+                },
+            ),
+        ] {
+            let event = store
+                .outbox_record(&format!("stock-movement:{movement_id}"))
+                .await
+                .expect("outbox")
+                .expect("event");
+            store
+                .record_stock_movement_upload_response(&event, &response)
+                .await
+                .expect("receipt");
+        }
+
+        let blocked = store.sale_view(None).await.expect("blocked sale view");
+        assert_eq!(blocked.items[0].saleable_stock, 0);
+        assert_eq!(blocked.items[0].slot_sales_state, "needs_count");
+        assert_eq!(blocked.items[1].saleable_stock, 0);
+        assert_eq!(blocked.items[1].slot_sales_state, "needs_platform_review");
+
+        let retry = store.stock_maintenance_task().await.expect("retry task");
+        assert_eq!(retry.status, "reconciliation");
+        store
+            .submit_stock_maintenance_batch(
+                StockMaintenanceBatchInput {
+                    task_id: retry.task_id.clone(),
+                    mode: retry.mode.clone(),
+                    slots: vec![StockMaintenanceBatchSlotInput {
+                        slot_id: "550e8400-e29b-41d4-a716-446655440011".to_string(),
+                        quantity: Some(6),
+                        addition: None,
+                    }],
+                },
+                "operator",
+                "MACHINE-1",
+                "https://platform.example/api",
+            )
+            .await
+            .expect("retry only corrected slot");
+
+        let corrected_id = format!(
+            "{}:{}",
+            retry.task_id, "550e8400-e29b-41d4-a716-446655440011"
+        );
+        let event = store
+            .outbox_record(&format!("stock-movement:{corrected_id}"))
+            .await
+            .expect("corrected outbox lookup")
+            .expect("corrected outbox event");
+        store
+            .record_stock_movement_upload_response(
+                &event,
+                &crate::backend::StockMovementUploadResponse {
+                    movement_id: corrected_id.clone(),
+                    status: "accepted".to_string(),
+                    accepted_at: Some("2026-07-15T00:01:00.000Z".to_string()),
+                    receipt: Some(json!({"rawMovementId":"raw-a2"})),
+                    rejection: None,
+                    reconciliation: None,
+                },
+            )
+            .await
+            .expect("accept corrected slot");
+
+        let completed = store.stock_maintenance_task().await.expect("finalize");
+        assert_eq!(completed.mode, "routine_refill");
+        let sale_view = store.sale_view(None).await.expect("recovered sale view");
+        assert_eq!(sale_view.items[0].physical_stock, 3);
+        assert_eq!(sale_view.items[0].saleable_stock, 3);
+        assert_eq!(sale_view.items[0].slot_sales_state, "sale_ready");
+        assert_eq!(sale_view.items[1].physical_stock, 6);
+        assert_eq!(sale_view.items[1].saleable_stock, 6);
+        assert_eq!(sale_view.items[1].slot_sales_state, "sale_ready");
+
+        let movements: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT slot_id, COUNT(1) FROM stock_movements
+             WHERE source='physical_stock_attestation'
+             GROUP BY slot_id ORDER BY slot_id",
+        )
+        .fetch_all(store.pool())
+        .await
+        .expect("movement counts");
+        assert_eq!(
+            movements,
+            vec![
+                ("550e8400-e29b-41d4-a716-446655440001".to_string(), 1),
+                ("550e8400-e29b-41d4-a716-446655440011".to_string(), 1),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn count_task_for_active_planogram_supersedes_old_pending_attestation_cursor() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+        store
+            .record_physical_stock_attestation_with_upload(
+                PhysicalStockAttestationInput {
+                    attestation_id: "ATT-OLD-PENDING".to_string(),
+                    planogram_version: "PLAN-FAILURE".to_string(),
+                    operator_id: "operator-old".to_string(),
+                    slots: vec![PhysicalStockAttestationSlotInput {
+                        slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                        sku: "WATER-001".to_string(),
+                        quantity: 3,
+                        enabled: true,
+                    }],
+                },
+                Some("MACHINE-1"),
+                Some("https://platform.example/api"),
+            )
+            .await
+            .expect("stage old pending attestation");
+        seed_two_slot_planogram(&store).await;
+
+        let task = store.stock_maintenance_task().await.expect("active task");
+        assert_eq!(task.mode, "initial_count");
+        let response = store
+            .submit_stock_maintenance_batch(
+                StockMaintenanceBatchInput {
+                    task_id: task.task_id.clone(),
+                    mode: task.mode,
+                    slots: vec![
+                        StockMaintenanceBatchSlotInput {
+                            slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                            quantity: Some(5),
+                            addition: None,
+                        },
+                        StockMaintenanceBatchSlotInput {
+                            slot_id: "550e8400-e29b-41d4-a716-446655440011".to_string(),
+                            quantity: Some(6),
+                            addition: None,
+                        },
+                    ],
+                },
+                "operator-current",
+                "MACHINE-1",
+                "https://platform.example/api",
+            )
+            .await
+            .expect("new active planogram count must not be blocked by old pending cursor");
+        assert!(!response.duplicate);
+
+        let pending = store
+            .get_metadata::<PendingPhysicalStockAttestation>(PENDING_PHYSICAL_STOCK_ATTESTATION_KEY)
+            .await
+            .expect("pending cursor")
+            .expect("current pending cursor");
+        assert_eq!(pending.input.planogram_version, "PLAN-PARTIAL-ACK");
+        assert_eq!(pending.input.slots[0].quantity, 5);
+        assert_eq!(pending.input.slots[1].quantity, 6);
+
+        let old_event = store
+            .outbox_record("stock-movement:ATT-OLD-PENDING:550e8400-e29b-41d4-a716-446655440001")
+            .await
+            .expect("old outbox lookup")
+            .expect("old outbox event");
+        store
+            .record_stock_movement_upload_response(
+                &old_event,
+                &crate::backend::StockMovementUploadResponse {
+                    movement_id: "ATT-OLD-PENDING:550e8400-e29b-41d4-a716-446655440001".to_string(),
+                    status: "reconciliation".to_string(),
+                    accepted_at: None,
+                    receipt: None,
+                    rejection: None,
+                    reconciliation: Some(crate::backend::StockMovementReconciliation {
+                        reason: "old_planogram_mapping_mismatch".to_string(),
+                        platform_review: Some(json!({"required":true,"status":"open"})),
+                        sale_safety_blocker: Some(crate::backend::StockMovementSaleSafetyBlocker {
+                            slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                            slot_sales_state: "needs_platform_review".to_string(),
+                            reason: "old_planogram_mapping_mismatch".to_string(),
+                        }),
+                    }),
+                },
+            )
+            .await
+            .expect("old response is recorded for old sync state");
+        let sale_view = store
+            .sale_view(None)
+            .await
+            .expect("active planogram sale view");
+        assert_eq!(
+            sale_view.planogram_version.as_deref(),
+            Some("PLAN-PARTIAL-ACK")
+        );
+        assert_ne!(sale_view.items[0].slot_sales_state, "needs_platform_review");
     }
 
     #[tokio::test]

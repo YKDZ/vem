@@ -34,8 +34,8 @@ type ResultCopy = {
 
 const copyMap: Record<CustomerCheckoutResultDisplayIntent, ResultCopy> = {
   success: {
-    title: "出货成功",
-    subtitle: "请及时取走商品，欢迎再次使用。",
+    title: "出货完成",
+    subtitle: "欢迎再次使用。",
     tone: "success",
     icon: "✓",
   },

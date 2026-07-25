@@ -2,11 +2,13 @@ import {
   type ClearHardwareBindingRequest,
   type ConfirmHardwareBindingRequest,
   type EffectiveMachineRuntimeConfiguration,
+  type MachineEnvironmentControlRequest,
   type SetAudioPreferencesRequest,
   type SetScannerProtocolParametersRequest,
   clearHardwareBindingRequestSchema,
   confirmHardwareBindingRequestSchema,
   effectiveMachineRuntimeConfigurationSchema,
+  machineEnvironmentControlRequestSchema,
   setAudioPreferencesRequestSchema,
   setScannerProtocolParametersRequestSchema,
   isManagedMediaReference,
@@ -34,6 +36,7 @@ import {
   deviceBindingActivationSchema,
   deviceBindingSnapshotSchema,
   deviceBindingTestResultSchema,
+  environmentControlResultSchema,
   healthSnapshotSchema,
   paymentProviderEnvironmentDiagnosticSchema,
   saleStartCapabilitySnapshotSchema,
@@ -55,6 +58,7 @@ import {
   type DeviceBindingActivation,
   type DeviceBindingSnapshot,
   type DeviceBindingTestResult,
+  type EnvironmentControlResult,
   type SaleStartCapabilitySnapshot,
   type PaymentProviderEnvironmentDiagnostic,
   type NaturalContextSnapshot,
@@ -506,6 +510,17 @@ export class DaemonApiClient {
       method: "POST",
       body: input,
     });
+  }
+
+  async submitLocalEnvironmentControl(
+    input: MachineEnvironmentControlRequest,
+  ): Promise<EnvironmentControlResult> {
+    return environmentControlResultSchema.parse(
+      await this.request("/v1/maintenance/environment-control", {
+        method: "POST",
+        body: machineEnvironmentControlRequestSchema.parse(input),
+      }),
+    );
   }
 
   async getCurrentTransaction(): Promise<TransactionSnapshot> {

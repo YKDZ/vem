@@ -1493,7 +1493,11 @@ export async function seedThroughSupportedApis({
     body: { status: "online" },
   });
   const seededSlots = [];
-  for (const slot of fixture.slots) {
+  for (const fixtureSlot of fixture.slots) {
+    const slot = {
+      ...fixtureSlot,
+      onHandQty: Math.min(fixtureSlot.onHandQty, fixtureSlot.capacity),
+    };
     const machineSlot = await request(
       baseUrl,
       `/machines/${machine.id}/slots`,

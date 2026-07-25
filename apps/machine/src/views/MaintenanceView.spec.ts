@@ -40,6 +40,8 @@ const client = vi.hoisted(() => ({
   submitStockMaintenanceBatch: vi.fn(),
   runHardwareSelfCheck: vi.fn(),
   runManualDispenseDiagnostic: vi.fn(),
+  submitLocalEnvironmentControl: vi.fn(),
+  submitAutomaticVentIntent: vi.fn(),
 }));
 
 vi.mock("@/daemon/client", () => ({
@@ -398,6 +400,12 @@ beforeEach(() => {
     reconciliationStatus: "open",
     replayed: false,
   });
+  client.submitLocalEnvironmentControl.mockResolvedValue({
+    success: true,
+    message: "environment control completed",
+    reportedAt: "2026-07-17T00:00:00.000Z",
+  });
+  client.submitAutomaticVentIntent.mockResolvedValue({ outcome: "accepted" });
 });
 
 afterEach(() => {
@@ -632,6 +640,70 @@ describe("Local Operations", () => {
     expect(client.confirmDeviceBinding).not.toHaveBeenCalled();
     expect(client.clearDeviceBinding).not.toHaveBeenCalled();
     expect(client.setScannerProtocolParameters).not.toHaveBeenCalled();
+  });
+
+  it("submits a local air-conditioner one-shot control through daemon IPC only", async () => {
+    const host = await render();
+
+    button(host, "环境控制").click();
+    await flush();
+
+    expect(host.textContent).toContain("调整空调、目标温度和出风口风速。");
+    expect(host.textContent).not.toContain("daemon IPC");
+    expect(host.textContent).not.toContain("environment control");
+
+    button(host, "空调开").click();
+    await flush();
+
+    expect(client.submitLocalEnvironmentControl).toHaveBeenCalledWith({
+      airConditionerOn: true,
+    });
+    expect(client.submitAutomaticVentIntent).not.toHaveBeenCalled();
+    expect(host.textContent).toContain("空调已开启。");
+  });
+
+  it("submits a local target-temperature one-shot payload without bundling other environment fields", async () => {
+    const host = await render();
+
+    button(host, "环境控制").click();
+    await flush();
+
+    const input = host.querySelector<HTMLInputElement>(
+      "input[aria-label='目标温度']",
+    );
+    if (!input) throw new Error("target temperature input not found");
+    input.value = "26";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+
+    button(host, "应用目标温度").click();
+    await flush();
+
+    expect(client.submitLocalEnvironmentControl).toHaveBeenCalledWith({
+      targetTemperatureCelsius: 26,
+    });
+  });
+
+  it("submits a local vent-speed one-shot payload through the local maintenance control", async () => {
+    const host = await render();
+
+    button(host, "环境控制").click();
+    await flush();
+
+    const select = host.querySelector<HTMLSelectElement>(
+      "select[aria-label='风速']",
+    );
+    if (!select) throw new Error("vent speed select not found");
+    select.value = "3";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await flush();
+
+    button(host, "应用风速").click();
+    await flush();
+
+    expect(client.submitLocalEnvironmentControl).toHaveBeenCalledWith({
+      ventSpeed: 3,
+    });
   });
 
   it("refreshes the daemon-owned audio preferences after each save", async () => {

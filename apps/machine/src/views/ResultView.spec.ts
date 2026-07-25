@@ -315,7 +315,9 @@ describe("ResultView", () => {
 
     const host = await mountView();
 
-    expect(host.textContent).toContain("出货成功");
+    expect(host.textContent).toContain("出货完成");
+    expect(host.textContent).toContain("欢迎再次使用。");
+    expect(host.textContent).not.toContain("请及时取走商品");
     await vi.waitFor(() => {
       expect(host.textContent).toContain("8 秒后自动返回首页。");
     });
@@ -353,7 +355,7 @@ describe("ResultView", () => {
 
     const host = await mountView();
 
-    expect(host.textContent).toContain("出货成功");
+    expect(host.textContent).toContain("出货完成");
     await vi.advanceTimersByTimeAsync(10_000);
     expect(host.textContent).not.toContain("秒后自动返回首页");
     expect(submitMachineNavigationIntentMock).not.toHaveBeenCalledWith(
@@ -368,7 +370,7 @@ describe("ResultView", () => {
 
     const host = await mountView();
 
-    expect(host.textContent).toContain("出货成功");
+    expect(host.textContent).toContain("出货完成");
     expect(host.textContent).not.toContain("秒后自动返回首页");
 
     const returnButton = Array.from(host.querySelectorAll("button")).find(

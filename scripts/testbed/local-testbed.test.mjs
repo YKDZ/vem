@@ -1052,6 +1052,8 @@ describe("supported API seeding", () => {
         "utf8",
       ),
     );
+    fixture.slots[0].capacity = 2;
+    fixture.slots[0].onHandQty = 10;
     const calls = [];
     const uploads = [];
     const request = async (_base, path, input = {}) => {
@@ -1185,6 +1187,19 @@ describe("supported API seeding", () => {
       calls.some(
         (call) => call.path === "/inventories" && call.body.onHandQty === 3,
       ),
+    );
+    assert.ok(
+      calls.some(
+        (call) =>
+          call.path === "/inventories" &&
+          call.body.slotId != null &&
+          call.body.onHandQty === 2,
+      ),
+    );
+    assert.ok(
+      calls
+        .find((call) => call.path.endsWith("/planogram-versions"))
+        .body.slots.some((slot) => slot.capacity === 2 && slot.slotId != null),
     );
     const tshirtVariantCalls = calls.filter(
       (call) =>

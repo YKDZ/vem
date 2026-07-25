@@ -821,6 +821,13 @@ export function manualDispenseFrames(beforeEvidence, afterEvidence) {
   const beforeCount = beforeEvidence?.rawFrames?.length ?? 0;
   return (afterEvidence?.rawFrames ?? []).slice(beforeCount);
 }
+
+export function localEnvironmentControlFrames(beforeEvidence, afterEvidence) {
+  return manualDispenseFrames(beforeEvidence, afterEvidence).filter(
+    (frame) => frame?.parsedOpcode === "B3",
+  );
+}
+
 export function validateLocalOperationsEvidence(report) {
   if (report?.schemaVersion !== SCHEMA_VERSION || report.ok !== true)
     throw new Error("local operations report is not successful");
@@ -843,6 +850,12 @@ export function validateLocalOperationsEvidence(report) {
     )
   )
     throw new Error("manual dispense diagnostic outcome is missing");
+  if (
+    report.localEnvironmentControl?.request?.ventSpeed !== 3 ||
+    report.localEnvironmentControl?.result?.success !== true ||
+    report.localEnvironmentControl?.protocolFrame?.parsedOpcode !== "B3"
+  )
+    throw new Error("local environment control evidence is incomplete");
   if (
     !Array.isArray(report.maintenanceEntry) ||
     report.maintenanceEntry.length < MAINTENANCE_ENTRY_ROUTES.length ||
@@ -889,6 +902,7 @@ export async function runLocalOperationsGuest(options, dependencies = {}) {
     boundaries: { daemon: false, hardwareSelfCheck: false, serial: false },
     planogram: { canonical: false },
     manualDispense: null,
+    localEnvironmentControl: null,
     hardware: null,
     systemTouchKeyboard: null,
     audioPreferencePersistence: null,
@@ -978,6 +992,30 @@ export async function runLocalOperationsGuest(options, dependencies = {}) {
       throw new Error(
         `manual dispense did not complete the lower-controller protocol: ${JSON.stringify({ outcome: diagnostic.outcome, frames: operationFrames.map((frame) => frame?.parsedOpcode) })}`,
       );
+    const environmentBeforeEvidence = await controlRequest(
+      input,
+      `/v1/serial-sessions/${session.sessionId}/evidence`,
+    );
+    const environmentResult = await daemonRequest(
+      handoff,
+      "/v1/maintenance/environment-control",
+      { ventSpeed: 3 },
+    );
+    await waitForSerialBoundaryFn(input, session.sessionId, "B3");
+    const environmentAfterEvidence = await controlRequest(
+      input,
+      `/v1/serial-sessions/${session.sessionId}/evidence`,
+    );
+    const environmentFrames = localEnvironmentControlFrames(
+      environmentBeforeEvidence,
+      environmentAfterEvidence,
+    );
+    report.localEnvironmentControl = {
+      request: { ventSpeed: 3 },
+      result: environmentResult,
+      protocolFrame: environmentFrames.at(-1) ?? null,
+      protocolFrames: environmentFrames,
+    };
     report.audioPreferencePersistence = await runAudioPreferencePersistence(
       {
         input,

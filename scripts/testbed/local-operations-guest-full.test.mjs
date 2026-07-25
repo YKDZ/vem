@@ -5,6 +5,7 @@ import {
   applyRestartedRuntimeHandoff,
   buildInstalledRuntimeRestartScript,
   collectAudioPreferencePersistenceEvidence,
+  localEnvironmentControlFrames,
   manualDispenseFrames,
   normalizeAudioPreferences,
   parseLocalOperationsGuestArgs,
@@ -90,6 +91,21 @@ describe("local operations guest full", () => {
       [vend],
     );
   });
+  it("isolates local environment B3 control evidence", () => {
+    assert.deepEqual(
+      localEnvironmentControlFrames(
+        { rawFrames: [{ parsedOpcode: "AB" }] },
+        {
+          rawFrames: [
+            { parsedOpcode: "AB" },
+            { parsedOpcode: "B1" },
+            { parsedOpcode: "B3", rawFrameHex: "55b303" },
+          ],
+        },
+      ),
+      [{ parsedOpcode: "B3", rawFrameHex: "55b303" }],
+    );
+  });
   it("requires business evidence without gating on VM touch-keyboard support", () => {
     const report = {
       schemaVersion: "vem-local-operations-guest-full/v1",
@@ -105,6 +121,11 @@ describe("local operations guest full", () => {
         slotId: "slot-7",
         slotDisplayLabel: "R7C1",
         outcome: "completed",
+      },
+      localEnvironmentControl: {
+        request: { ventSpeed: 3 },
+        result: { success: true },
+        protocolFrame: { parsedOpcode: "B3", rawFrameHex: "55b303" },
       },
       systemTouchKeyboard: {
         ok: false,
@@ -315,6 +336,7 @@ describe("local operations guest full", () => {
     const writes = [];
     const manualDispenseRequests = [];
     let evidenceReads = 0;
+    const localEnvironmentControlRequests = [];
     const input = {
       runId: "RUN-07",
       machineCode: "VEM-TESTBED-01",
@@ -354,18 +376,41 @@ describe("local operations guest full", () => {
             return { sessionId: "serial-07" };
           if (path === "/v1/serial-sessions/serial-07/evidence") {
             evidenceReads += 1;
-            return evidenceReads === 1
-              ? { rawFrames: [{ parsedOpcode: "AB" }] }
-              : {
-                  rawFrames: [
-                    { parsedOpcode: "AB" },
-                    { parsedOpcode: "VEND" },
-                    { parsedOpcode: "F0" },
-                    { parsedOpcode: "F1" },
-                    { parsedOpcode: "AF" },
-                    { parsedOpcode: "F2" },
-                  ],
-                };
+            if (evidenceReads === 1)
+              return { rawFrames: [{ parsedOpcode: "AB" }] };
+            if (evidenceReads === 2)
+              return {
+                rawFrames: [
+                  { parsedOpcode: "AB" },
+                  { parsedOpcode: "VEND" },
+                  { parsedOpcode: "F0" },
+                  { parsedOpcode: "F1" },
+                  { parsedOpcode: "AF" },
+                  { parsedOpcode: "F2" },
+                ],
+              };
+            if (evidenceReads === 3)
+              return {
+                rawFrames: [
+                  { parsedOpcode: "AB" },
+                  { parsedOpcode: "VEND" },
+                  { parsedOpcode: "F0" },
+                  { parsedOpcode: "F1" },
+                  { parsedOpcode: "AF" },
+                  { parsedOpcode: "F2" },
+                ],
+              };
+            return {
+              rawFrames: [
+                { parsedOpcode: "AB" },
+                { parsedOpcode: "VEND" },
+                { parsedOpcode: "F0" },
+                { parsedOpcode: "F1" },
+                { parsedOpcode: "AF" },
+                { parsedOpcode: "F2" },
+                { parsedOpcode: "B3", rawFrameHex: "55b303" },
+              ],
+            };
           }
           if (
             path === "/v1/serial-sessions/serial-07/release-f0" ||
@@ -400,6 +445,14 @@ describe("local operations guest full", () => {
           if (path === "/v1/maintenance/manual-dispense-diagnostic") {
             manualDispenseRequests.push(body);
             return { outcome: "completed", diagnosticId: "diag-07" };
+          }
+          if (path === "/v1/maintenance/environment-control") {
+            localEnvironmentControlRequests.push(body);
+            return {
+              success: true,
+              commandNo: "LOCAL-ENV-07",
+              ventSpeed: body.ventSpeed,
+            };
           }
           throw new Error(`unexpected daemon path: ${path}`);
         },
@@ -448,6 +501,17 @@ describe("local operations guest full", () => {
       cellNo: 1,
     });
     assert.equal(writes.at(-1).value.maintenanceEntry.length, 1);
+    assert.deepEqual(localEnvironmentControlRequests, [{ ventSpeed: 3 }]);
+    assert.deepEqual(writes.at(-1).value.localEnvironmentControl, {
+      request: { ventSpeed: 3 },
+      result: {
+        success: true,
+        commandNo: "LOCAL-ENV-07",
+        ventSpeed: 3,
+      },
+      protocolFrame: { parsedOpcode: "B3", rawFrameHex: "55b303" },
+      protocolFrames: [{ parsedOpcode: "B3", rawFrameHex: "55b303" }],
+    });
     assert.deepEqual(manualDispenseRequests, [
       {
         idempotencyKey: "RUN-07-local-operations",
