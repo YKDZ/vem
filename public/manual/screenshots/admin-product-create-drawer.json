@@ -1,0 +1,22 @@
+{
+  "id": "admin-product-create-drawer",
+  "source": "admin-ui",
+  "route": "/products#new-product",
+  "capturedAt": "2026-07-25T14:29:19.154Z",
+  "commit": "f107fa903c239fb514d374688764b1cfa197169d",
+  "viewport": {
+    "width": 1440,
+    "height": 1080
+  },
+  "expectedOrientation": "landscape",
+  "expectedTexts": [
+    "新增商品",
+    "商品名称",
+    "保存"
+  ],
+  "detectedTexts": [
+    "新增商品",
+    "商品名称",
+    "保存"
+  ]
+}

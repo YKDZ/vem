@@ -1,0 +1,24 @@
+{
+  "id": "admin-alipay-config-drawer",
+  "source": "admin-ui",
+  "route": "/payments#alipay-config",
+  "capturedAt": "2026-07-25T14:29:22.587Z",
+  "commit": "f107fa903c239fb514d374688764b1cfa197169d",
+  "viewport": {
+    "width": 1440,
+    "height": 1080
+  },
+  "expectedOrientation": "landscape",
+  "expectedTexts": [
+    "支付宝配置",
+    "商户号",
+    "应用私钥 PEM",
+    "二维码有效期"
+  ],
+  "detectedTexts": [
+    "支付宝配置",
+    "商户号",
+    "应用私钥 PEM",
+    "二维码有效期"
+  ]
+}

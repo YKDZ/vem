@@ -1,0 +1,20 @@
+{
+  "id": "admin-product-sku-editor",
+  "source": "admin-ui",
+  "route": "/products#sku",
+  "capturedAt": "2026-07-25T14:29:20.417Z",
+  "commit": "f107fa903c239fb514d374688764b1cfa197169d",
+  "viewport": {
+    "width": 1440,
+    "height": 1080
+  },
+  "expectedOrientation": "landscape",
+  "expectedTexts": [
+    "SKU",
+    "新增 SKU"
+  ],
+  "detectedTexts": [
+    "SKU",
+    "新增 SKU"
+  ]
+}

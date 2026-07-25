@@ -1,0 +1,24 @@
+{
+  "id": "admin-machine-environment-control",
+  "source": "admin-ui",
+  "route": "/machines#environment-control",
+  "capturedAt": "2026-07-25T14:29:25.098Z",
+  "commit": "f107fa903c239fb514d374688764b1cfa197169d",
+  "viewport": {
+    "width": 1440,
+    "height": 1080
+  },
+  "expectedOrientation": "landscape",
+  "expectedTexts": [
+    "环境",
+    "空调",
+    "出风口",
+    "设定"
+  ],
+  "detectedTexts": [
+    "环境",
+    "空调",
+    "出风口",
+    "设定"
+  ]
+}

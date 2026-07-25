@@ -57,11 +57,13 @@
 4. 检查商品展示名称是否便于顾客识别。
 5. 保存后返回列表，确认状态与展示信息正确。
 
-截图占位：
-
 ![商品管理页面](screenshots/admin-products-list.png)
 
 截图证据：`admin-products-list` / 期望文字：`商品管理`、`新增商品` / 质检：`passed`
+
+![新增商品表单](screenshots/admin-product-create-drawer.png)
+
+截图证据：`admin-product-create-drawer` / 期望文字：`新增商品`、`商品名称`、`保存` / 质检：`passed`
 
 ### 5.2 SKU 维护
 
@@ -79,9 +81,9 @@
 - SKU 是库存绑定、价格销售和上架售卖的基础单位。
 - 同款不同尺码应分别维护 SKU。
 
-截图占位：
+![SKU 维护区域](screenshots/admin-product-sku-editor.png)
 
-> `admin-product-sku-editor` / 期望文字：`规格`、`新增 SKU` / 状态：待采集
+截图证据：`admin-product-sku-editor` / 期望文字：`SKU`、`新增 SKU` / 质检：`passed`
 
 ### 5.3 价格调整
 
@@ -214,13 +216,13 @@
 - 商户配置与支付渠道启用是两个动作，不能混为一步。
 - 若配置状态异常，应记录页面提示并转交实施或技术支持处理。
 
-截图占位：
-
 ![支付管理页面](screenshots/admin-payments-tabs.png)
 
 截图证据：`admin-payments-tabs` / 期望文字：`支付管理`、`支付流水`、`退款管理` / 质检：`passed`
 
-支付宝商户配置弹窗或详情页仍待采集。
+![支付宝配置表单](screenshots/admin-alipay-config-drawer.png)
+
+截图证据：`admin-alipay-config-drawer` / 期望文字：`支付宝配置`、`商户号`、`应用私钥 PEM`、`二维码有效期` / 质检：`passed`
 
 ### 8.2 支付渠道启用
 
@@ -299,13 +301,13 @@
 - 环境控制是一次性操作，不表示持续托管状态。
 - 如需再次调整，应重新发起新的控制动作。
 
-截图占位：
-
 ![机器管理页面](screenshots/admin-machines-list.png)
 
 截图证据：`admin-machines-list` / 期望文字：`机器管理` / 质检：`passed`
 
-机器详情内的环境控制区域仍待采集。
+![机器环境控制](screenshots/admin-machine-environment-control.png)
+
+截图证据：`admin-machine-environment-control` / 期望文字：`环境`、`空调`、`出风口`、`设定` / 质检：`passed`
 
 ### 10.2 机器端基础检查
 
@@ -344,7 +346,9 @@
 
 截图证据：`admin-orders-list` / 期望文字：`订单管理` / 质检：`passed`
 
-订单详情抽屉仍待采集。
+![订单详情](screenshots/admin-order-detail.png)
+
+截图证据：`admin-order-detail` / 期望文字：`订单号`、`支付`、`出货` / 质检：`passed`
 
 ### 11.2 支付异常查看
 
@@ -399,7 +403,7 @@
 
 以下内容在本版仍未完成，不能视为已验收：
 
-- Admin UI 细节交互截图采集：商品/SKU 编辑、图片上传、剪影上传、货道绑定、支付配置编辑、机器认领、环境控制、订单详情、支付异常详情
+- Admin UI 细节交互截图采集：图片上传、剪影上传、货道绑定、机器认领、支付异常详情
 - 真实机器端截图采集
 - 机器端截图质量门槛在实际截图批次上的跑批结果
 - 按手册逐条完成的运营工作流验收证据

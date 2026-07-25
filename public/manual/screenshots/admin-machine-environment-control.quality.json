@@ -1,0 +1,40 @@
+{
+  "schemaVersion": "vem-documentation-screenshot-metadata/v1",
+  "status": "passed",
+  "reasons": [],
+  "metadata": {
+    "id": "admin-machine-environment-control",
+    "source": "admin-ui",
+    "route": "/machines#environment-control",
+    "capturedAt": "2026-07-25T14:29:25.098Z",
+    "commit": "f107fa903c239fb514d374688764b1cfa197169d",
+    "viewport": {
+      "width": 1440,
+      "height": 1080
+    },
+    "expectedOrientation": "landscape",
+    "expectedTexts": [
+      "环境",
+      "空调",
+      "出风口",
+      "设定"
+    ],
+    "detectedTexts": [
+      "环境",
+      "空调",
+      "出风口",
+      "设定"
+    ],
+    "manualReviewReason": null
+  },
+  "capture": {
+    "format": "png",
+    "widthPx": 1440,
+    "heightPx": 1080,
+    "pixelCount": 1555200,
+    "nonTransparentPixelCount": 1555200,
+    "nonTransparentPixelRatio": 1,
+    "distinctPixelCount": 1030,
+    "orientation": "landscape"
+  }
+}
