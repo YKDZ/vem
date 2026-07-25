@@ -1,0 +1,20 @@
+{
+  "id": "machine-stock-refill-restored",
+  "source": "machine-runtime",
+  "route": "#/catalog",
+  "capturedAt": "2026-07-25T22:21:23.137Z",
+  "commit": "ed4fbd77df7e4d43d3e883befc4a33b326fe2ee5",
+  "viewport": {
+    "width": 1080,
+    "height": 1920
+  },
+  "expectedOrientation": "portrait",
+  "expectedTexts": [
+    "请选择商品类别",
+    "点击选购",
+    "袜子",
+    "内裤",
+    "T恤"
+  ],
+  "manualReviewReason": "机器端补货截图来自 VM Runtime Acceptance；中文文本由人工对照截图复核。"
+}

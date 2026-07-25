@@ -1,0 +1,37 @@
+{
+  "schemaVersion": "vem-documentation-screenshot-metadata/v1",
+  "status": "manual-review",
+  "reasons": [
+    "expected text metadata is present but no detected text evidence was supplied",
+    "manual review reason recorded: 机器端补货截图来自 VM Runtime Acceptance；中文文本由人工对照截图复核。"
+  ],
+  "metadata": {
+    "id": "machine-stock-refill-unavailable",
+    "source": "machine-runtime",
+    "route": "#/maintenance?source=operator",
+    "capturedAt": "2026-07-25T22:21:23.137Z",
+    "commit": "ed4fbd77df7e4d43d3e883befc4a33b326fe2ee5",
+    "viewport": {
+      "width": 1080,
+      "height": 1920
+    },
+    "expectedOrientation": "portrait",
+    "expectedTexts": [
+      "库存维护",
+      "刷新库存",
+      "提交盘点"
+    ],
+    "detectedTexts": null,
+    "manualReviewReason": "机器端补货截图来自 VM Runtime Acceptance；中文文本由人工对照截图复核。"
+  },
+  "capture": {
+    "format": "png",
+    "widthPx": 1080,
+    "heightPx": 1920,
+    "pixelCount": 2073600,
+    "nonTransparentPixelCount": 2073600,
+    "nonTransparentPixelRatio": 1,
+    "distinctPixelCount": 4784,
+    "orientation": "portrait"
+  }
+}
