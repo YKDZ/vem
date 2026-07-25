@@ -53,6 +53,7 @@ use crate::{
         },
         LocalStateStore,
     },
+    stock_upload::StockMovementUploadRuntime,
     transaction::TransactionStateMachine,
 };
 use vending_core::hardware::{EnvironmentControlCommandPayload, EnvironmentControlResultPayload};
@@ -2148,6 +2149,7 @@ async fn submit_stock_maintenance_batch(
         .await
     {
         Ok(value) => {
+            let _ = reconcile_stock_uploads_after_local_stock_change(&ctx).await;
             invalidate_sale_start_capability(&ctx).await;
             (StatusCode::CREATED, Json(value)).into_response()
         }
@@ -2181,6 +2183,9 @@ async fn record_physical_stock_attestation(
         .await
     {
         Ok(value) => {
+            let value = reconcile_stock_uploads_after_local_stock_change(&ctx)
+                .await
+                .unwrap_or(value);
             invalidate_sale_start_capability(&ctx).await;
             (StatusCode::CREATED, Json(value)).into_response()
         }
@@ -2189,6 +2194,49 @@ async fn record_physical_stock_attestation(
             "physical_stock_attestation_failed",
             error.to_string(),
         ),
+    }
+}
+
+async fn reconcile_stock_uploads_after_local_stock_change(
+    ctx: &IpcContext,
+) -> Option<crate::state::store::SaleViewSnapshot> {
+    let uploader = StockMovementUploadRuntime::new(
+        ctx.state.clone(),
+        ctx.ui.backend.clone(),
+        CancellationToken::new(),
+    )
+    .with_events(ctx.events.clone());
+    match tokio::time::timeout(Duration::from_secs(10), uploader.flush_due_once()).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => {
+            eprintln!("stock maintenance immediate upload flush failed: {error}");
+            return None;
+        }
+        Err(_) => {
+            eprintln!("stock maintenance immediate upload flush timed out");
+            return None;
+        }
+    }
+
+    let Ok(profile) = ctx.runtime_sources.require_profile().await else {
+        return None;
+    };
+    let machine_code = profile.profile.machine.code.to_string();
+    match ctx.ui.backend.get_stock_snapshot(&machine_code).await {
+        Ok(snapshot) => match ctx.state.apply_platform_stock_snapshot(&snapshot).await {
+            Ok(value) => {
+                refresh_sale_start_capability(ctx).await;
+                Some(value)
+            }
+            Err(error) => {
+                eprintln!("stock maintenance immediate platform stock refresh failed: {error}");
+                None
+            }
+        },
+        Err(error) => {
+            eprintln!("stock maintenance immediate platform stock snapshot failed: {error}");
+            None
+        }
     }
 }
 
@@ -3543,7 +3591,7 @@ fn error_response(
 
 #[cfg(test)]
 mod tests {
-    use crate::state::store::StockMovementInput;
+    use crate::state::store::{MachinePlanogramSlotInput, StockMovementInput};
     use axum::{
         body::Body,
         http::{Request, StatusCode},
@@ -4661,6 +4709,130 @@ mod tests {
             retired_shape_response.status(),
             StatusCode::UNPROCESSABLE_ENTITY
         );
+    }
+
+    #[tokio::test]
+    async fn stock_attestation_flushes_platform_upload_and_returns_fresh_sale_view() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machine-stock-movements"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "movementId": "ATT-IPC:550e8400-e29b-41d4-a716-446655440011",
+                "status": "accepted",
+                "acceptedAt": "2026-07-25T00:00:00.000Z",
+                "receipt": { "rawMovementId": "raw-att-ipc" },
+                "rejection": null,
+                "reconciliation": null
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/machines/VEM-CLAIM-01/stock-snapshot"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "machineCode": "VEM-CLAIM-01",
+                "planogramVersion": "PLAN-ATTEST-IPC",
+                "slots": [{
+                    "slotId": "550e8400-e29b-41d4-a716-446655440011",
+                    "inventoryId": "550e8400-e29b-41d4-a716-446655440012",
+                    "capacity": 8,
+                    "onHandQty": 5,
+                    "reservedQty": 0,
+                    "availableQty": 5,
+                    "slotSalesState": "sale_ready"
+                }],
+                "serverTime": "2026-07-25T00:00:01.000Z"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let temp = tempfile::tempdir().expect("temp");
+        let data_dir = temp.path().join("vending-daemon");
+        tokio::fs::create_dir_all(&data_dir)
+            .await
+            .expect("data dir");
+        let (ctx, _) = test_context(data_dir, server.uri()).await;
+        let profile: daemon_ipc_contracts::MachineProvisioningProfile =
+            serde_json::from_value(claim_profile(&server.uri())).expect("profile");
+        ctx.runtime_sources
+            .clean_runtime_configuration()
+            .accept_profile(&profile)
+            .await
+            .expect("accepted profile");
+        ctx.ui
+            .backend
+            .set_access_token_for_tests("operations-token")
+            .await;
+        ctx.state
+            .apply_planogram(MachinePlanogramInput {
+                planogram_version: "PLAN-ATTEST-IPC".to_string(),
+                source: "test".to_string(),
+                applied_by: None,
+                slots: vec![MachinePlanogramSlotInput {
+                    slot_id: "550e8400-e29b-41d4-a716-446655440011".to_string(),
+                    row_no: 1,
+                    cell_no: 1,
+                    capacity: 8,
+                    par_level: 6,
+                    inventory_id: "550e8400-e29b-41d4-a716-446655440012".to_string(),
+                    variant_id: "550e8400-e29b-41d4-a716-446655440013".to_string(),
+                    product_id: "550e8400-e29b-41d4-a716-446655440014".to_string(),
+                    product_name: "Water".to_string(),
+                    product_description: None,
+                    cover_image_url: None,
+                    try_on_silhouette_url: None,
+                    category_id: None,
+                    category_name: None,
+                    sku: "WATER-001".to_string(),
+                    size: None,
+                    color: None,
+                    price_cents: 200,
+                    product_sort_order: 1,
+                    target_gender: None,
+                }],
+            })
+            .await
+            .expect("planogram");
+
+        let response = build_router(ctx.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/stock/attestation")
+                    .header(AUTHORIZATION, "Bearer test-token")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "attestationId": "ATT-IPC",
+                            "planogramVersion": "PLAN-ATTEST-IPC",
+                            "operatorId": "operator-1",
+                            "slots": [{
+                                "slotId": "550e8400-e29b-41d4-a716-446655440011",
+                                "sku": "WATER-001",
+                                "quantity": 5,
+                                "enabled": true
+                            }]
+                        })
+                        .to_string(),
+                    ))
+                    .expect("attestation request"),
+            )
+            .await
+            .expect("attestation response");
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("attestation body");
+        let payload: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(payload["items"][0]["saleableStock"], 5);
+        assert_eq!(payload["items"][0]["slotSalesState"], "sale_ready");
+
+        let sale_view = ctx.state.sale_view(None).await.expect("sale view");
+        assert_eq!(sale_view.items[0].physical_stock, 5);
+        assert_eq!(sale_view.items[0].saleable_stock, 5);
+        assert_eq!(sale_view.items[0].slot_sales_state, "sale_ready");
+        assert_eq!(ctx.state.outbox_size().await.expect("outbox"), 0);
     }
 
     fn profile_cache(
