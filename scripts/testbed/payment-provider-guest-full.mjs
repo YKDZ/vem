@@ -616,10 +616,14 @@ async function paymentCodeAttemptFromApi(input, token, order, timeoutMs) {
       const uncertain =
         attempt?.status === "querying" &&
         ALIPAY_SANDBOX_UNCERTAIN_CODES.has(attempt?.failureCode);
+      const reversed =
+        attempt?.status === "reversed" &&
+        attempt?.providerStatus === "cancel" &&
+        attempt?.failureCode === "payment_code_reverse_confirmed";
       return (
         typeof attempt?.id === "string" &&
         attempt.id.length > 0 &&
-        (rejected || awaitingBuyer || uncertain)
+        (rejected || awaitingBuyer || uncertain || reversed)
       );
     },
     {
@@ -947,7 +951,7 @@ export function validateUnattendedProviderAttempt(attempt) {
       attempt.machine?.surface?.paymentId !== order.paymentId ||
       attempt.machine?.surface?.orderNo !== order.orderNo ||
       !String(attempt.machine?.scannerPrompt ?? "").includes("请出示付款码") ||
-      !["failed", "querying", "user_confirming"].includes(
+      !["failed", "querying", "reversed", "user_confirming"].includes(
         attempt.submission?.status,
       ) ||
       attempt.submission?.providerCode !== "alipay" ||
@@ -959,6 +963,10 @@ export function validateUnattendedProviderAttempt(attempt) {
         attempt.submission?.providerStatus !== "WAIT_BUYER_PAY") ||
       (attempt.submission?.status === "querying" &&
         !ALIPAY_SANDBOX_UNCERTAIN_CODES.has(attempt.submission?.failureCode)) ||
+      (attempt.submission?.status === "reversed" &&
+        (attempt.submission?.providerStatus !== "cancel" ||
+          attempt.submission?.failureCode !==
+            "payment_code_reverse_confirmed")) ||
       attempt.cleanup?.action !== "close_or_reverse_uncertain_payment" ||
       attempt.cleanup?.closure?.handled !== true ||
       !attempt.cleanup?.providerConfigId ||
