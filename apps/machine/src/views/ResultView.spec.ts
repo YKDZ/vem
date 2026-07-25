@@ -613,17 +613,29 @@ describe("ResultView", () => {
     expect(host.textContent).not.toContain("返回首页");
   });
 
-  it("keeps dismissible exceptional results visible when capability is unknown", async () => {
+  it("lets customers leave a payment failure result even when capability is unknown", async () => {
     routeParams.kind = "payment_failed";
     const transaction = paymentFailedTransaction();
-    useCheckoutStore().applyTransaction(transaction);
+    const checkoutStore = useCheckoutStore();
+    checkoutStore.applyTransaction(transaction);
 
     const host = await mountView();
 
     expect(host.textContent).toContain("支付失败");
-    expect(host.textContent).not.toContain("返回首页");
+    expect(host.textContent).toContain("返回首页");
     expect(host.textContent).not.toContain("payment_failed");
     expect(host.textContent).not.toContain("ZodError");
+
+    const returnButton = Array.from(host.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("返回首页"),
+    );
+    returnButton?.click();
+    await nextTick();
+
+    await vi.waitFor(() => {
+      expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
+    });
+    expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(true);
   });
 
   it("dismisses a terminal dispense failure despite a later capability change", async () => {
@@ -649,7 +661,7 @@ describe("ResultView", () => {
     expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(true);
   });
 
-  it("keeps terminal results retained when severe blockers remain", async () => {
+  it("lets customers leave a payment failure result when severe blockers remain", async () => {
     routeParams.kind = "payment_failed";
     const transaction = paymentFailedTransaction();
     const checkoutStore = useCheckoutStore();
@@ -662,10 +674,14 @@ describe("ResultView", () => {
     const returnButton = Array.from(host.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("返回首页"),
     );
-    expect(returnButton).toBeUndefined();
-    expect(routerReplaceMock).not.toHaveBeenCalled();
-    expect(getSaleViewMock).not.toHaveBeenCalled();
-    expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(false);
+    expect(returnButton).toBeDefined();
+    returnButton?.click();
+    await nextTick();
+    await vi.waitFor(() => {
+      expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
+    });
+    expect(getSaleViewMock).toHaveBeenCalledOnce();
+    expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(true);
   });
 
   it("shows manual handling copy and allows explicit return when sales are ready", async () => {

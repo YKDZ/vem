@@ -545,7 +545,7 @@ describe("Customer Checkout View Projection", () => {
         detailIntent: null,
         canAutoReturnWhenReady: true,
         canManualReturnWhenReady: true,
-        canManualReturnWhenUnknown: false,
+        canManualReturnWhenUnknown: true,
         canManualReturnWhenMaintenanceLocked: true,
       },
       {
@@ -556,7 +556,7 @@ describe("Customer Checkout View Projection", () => {
         detailIntent: null,
         canAutoReturnWhenReady: true,
         canManualReturnWhenReady: true,
-        canManualReturnWhenUnknown: false,
+        canManualReturnWhenUnknown: true,
         canManualReturnWhenMaintenanceLocked: true,
       },
       {
@@ -567,7 +567,7 @@ describe("Customer Checkout View Projection", () => {
         detailIntent: null,
         canAutoReturnWhenReady: true,
         canManualReturnWhenReady: true,
-        canManualReturnWhenUnknown: false,
+        canManualReturnWhenUnknown: true,
         canManualReturnWhenMaintenanceLocked: true,
       },
     ];
@@ -640,7 +640,10 @@ describe("Customer Checkout View Projection", () => {
         canManualReturn: testCase.canManualReturnWhenUnknown,
         targetRoute:
           testCase.nextAction === "dispense_failed" ||
-          testCase.nextAction === "refunded"
+          testCase.nextAction === "refunded" ||
+          testCase.nextAction === "payment_failed" ||
+          testCase.nextAction === "payment_expired" ||
+          testCase.nextAction === "closed"
             ? "catalog"
             : "offline",
       });
@@ -662,7 +665,10 @@ describe("Customer Checkout View Projection", () => {
         canManualReturn: testCase.canManualReturnWhenMaintenanceLocked,
         targetRoute:
           testCase.nextAction === "dispense_failed" ||
-          testCase.nextAction === "refunded"
+          testCase.nextAction === "refunded" ||
+          testCase.nextAction === "payment_failed" ||
+          testCase.nextAction === "payment_expired" ||
+          testCase.nextAction === "closed"
             ? "catalog"
             : "maintenance",
         requiresMaintenanceReview: true,

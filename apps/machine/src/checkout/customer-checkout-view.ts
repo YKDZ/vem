@@ -240,8 +240,14 @@ function exceptionalReturnPolicy(
     resultKind === "payment_expired" ||
     resultKind === "refunded" ||
     resultKind === "closed";
+  const alwaysDismissibleCustomerTerminal =
+    resultKind === "payment_failed" ||
+    resultKind === "payment_expired" ||
+    resultKind === "closed";
   const alwaysDismissibleFailure =
-    resultKind === "dispense_failed" || resultKind === "refunded";
+    alwaysDismissibleCustomerTerminal ||
+    resultKind === "dispense_failed" ||
+    resultKind === "refunded";
   const manuallyDismissibleWhenReady =
     canDismissWhenReady || resultKind === "manual_handling";
   const highRiskResult =
