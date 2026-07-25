@@ -64,8 +64,11 @@ services:
       MACHINE_CLAIM_LOOKUP_HMAC_KEY: ${MACHINE_CLAIM_LOOKUP_HMAC_KEY:?MACHINE_CLAIM_LOOKUP_HMAC_KEY is required}
       PAYMENT_WEBHOOK_BASE_URL: ${PAYMENT_WEBHOOK_BASE_URL:?PAYMENT_WEBHOOK_BASE_URL is required}
       PAYMENT_CONFIG_ENCRYPTION_KEY: ${PAYMENT_CONFIG_ENCRYPTION_KEY:?PAYMENT_CONFIG_ENCRYPTION_KEY is required}
+      MEDIA_ASSET_STORAGE_ROOT: /var/lib/vem/service-api/media-assets
     ports:
       - "${SERVICE_API_PORT:-3000}:3000"
+    volumes:
+      - vem-service-api-media-assets:/var/lib/vem/service-api/media-assets
     depends_on:
       postgres: { condition: service_healthy }
       mqtt: { condition: service_healthy }
@@ -98,3 +101,4 @@ services:
 volumes:
   vem-postgres-data:
   vem-mqtt-data:
+  vem-service-api-media-assets:
