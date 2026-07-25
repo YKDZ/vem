@@ -689,6 +689,26 @@ describe("local testbed orchestration", () => {
     }
   });
 
+  it("uses the current Node runtime when the published baseline Node path is missing", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-local-testbed-node-"));
+    try {
+      const current = await publishCurrentManifest(root);
+      current.testbed.reconstructCommand[0] = join(root, "missing", "node");
+      current.testbed.admitGuestCommand[0] = join(root, "missing", "node");
+      assert.deepEqual(validateBaselineContract(current), current);
+
+      const plan = buildReconstructionPlan(options(root), current);
+      assert.equal(plan[1].command, process.execPath);
+      assert.equal(plan.at(-1).command, process.execPath);
+      assert.equal(
+        plan[1].args[0],
+        join(root, "scripts/testbed/local-testbed-host.mjs"),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("replaces the fixed Service API systemd unit and keeps readiness diagnostics in journald", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-local-testbed-"));
     try {

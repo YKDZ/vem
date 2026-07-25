@@ -3,7 +3,13 @@
 import { topCategoryKeyForCatalogItem } from "@vem/shared/catalog-top-category";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { constants, closeSync, openSync, readFileSync } from "node:fs";
+import {
+  constants,
+  closeSync,
+  existsSync,
+  openSync,
+  readFileSync,
+} from "node:fs";
 import {
   access,
   mkdir,
@@ -381,6 +387,12 @@ function commandLine(command, args, extra = {}) {
   return { command, args: args.map(String), ...extra };
 }
 
+function renderNodeExecutable(command) {
+  if (!["node", "nodejs"].includes(basename(command))) return command;
+  if (!isAbsolute(command) || existsSync(command)) return command;
+  return process.execPath;
+}
+
 function runtimeBaseIdentity(contract) {
   return `runtime-base://sha256/${createHash("sha256")
     .update(
@@ -458,7 +470,7 @@ function renderPublishedCommand(command, options, contract) {
       `baseline testbed command has an unknown placeholder: ${unresolved}`,
     );
   }
-  return commandLine(rendered[0], rendered.slice(1));
+  return commandLine(renderNodeExecutable(rendered[0]), rendered.slice(1));
 }
 
 function backendComposeFile(options) {
