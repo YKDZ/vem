@@ -602,7 +602,7 @@ describe("local testbed orchestration", () => {
     );
     assert.match(
       source,
-      /run\(plan\[2\]\.command, plan\[2\]\.args[\s\S]*waitForPostgres\(\)[\s\S]*plan\.slice\(3, 5\)/,
+      /run\(plan\[3\]\.command, plan\[3\]\.args[\s\S]*waitForPostgres\(\)[\s\S]*plan\.slice\(4, 6\)/,
     );
   });
   it("requires the generic baseline contract to separate reconstruction from guest admission", () => {
@@ -698,10 +698,10 @@ describe("local testbed orchestration", () => {
       assert.deepEqual(validateBaselineContract(current), current);
 
       const plan = buildReconstructionPlan(options(root), current);
-      assert.equal(plan[1].command, process.execPath);
+      assert.equal(plan[2].command, process.execPath);
       assert.equal(plan.at(-1).command, process.execPath);
       assert.equal(
-        plan[1].args[0],
+        plan[2].args[0],
         join(root, "scripts/testbed/local-testbed-host.mjs"),
       );
     } finally {
@@ -965,6 +965,9 @@ describe("local testbed orchestration", () => {
       const resetIndex = rendered.findIndex((step) =>
         step.includes("local-testbed-host.mjs reconstruct"),
       );
+      const cleanupIndex = rendered.findIndex((step) =>
+        step.includes("docker rm -f vem-local-testbed-postgres"),
+      );
       const postgresIndex = rendered.findIndex((step) =>
         step.includes("up -d postgres mqtt"),
       );
@@ -980,7 +983,13 @@ describe("local testbed orchestration", () => {
         ),
       );
       assert.ok(
-        resetIndex >= 0 &&
+        cleanupIndex >= 0 &&
+          rendered[cleanupIndex].includes(
+            "docker volume rm -f vem-local-testbed-postgres-data",
+          ),
+      );
+      assert.ok(
+        cleanupIndex < resetIndex &&
           resetIndex < postgresIndex &&
           postgresIndex < admissionIndex,
       );

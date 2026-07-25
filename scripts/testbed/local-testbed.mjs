@@ -562,6 +562,16 @@ export function buildBackendComposeCommand(options, args) {
   ]);
 }
 
+function buildLegacyBackendResourceCleanupCommand() {
+  return commandLine("sh", [
+    "-c",
+    [
+      `docker rm -f ${SERVICE_NAMES.postgres} ${SERVICE_NAMES.mqtt} >/dev/null 2>&1 || true`,
+      `docker volume rm -f ${VOLUME_NAMES.postgres} ${VOLUME_NAMES.mqtt} >/dev/null 2>&1 || true`,
+    ].join("; "),
+  ]);
+}
+
 export function buildReconstructionPlan(options, contract) {
   const state = options.stateRoot;
   const binding = contract.testbed;
@@ -578,6 +588,7 @@ export function buildReconstructionPlan(options, contract) {
       "--remove-orphans",
       "--volumes",
     ]),
+    buildLegacyBackendResourceCleanupCommand(),
     renderPublishedCommand(binding.reconstructCommand, options, contract),
     buildBackendComposeCommand(options, ["up", "-d", "postgres", "mqtt"]),
     commandLine("pnpm", [
@@ -2168,10 +2179,13 @@ async function reconstruct(options) {
   await run(plan[0].command, plan[0].args, { stdio: "ignore" }).catch(
     () => undefined,
   );
+  await run(plan[1].command, plan[1].args, { stdio: "ignore" }).catch(
+    () => undefined,
+  );
   try {
     const hostSimulator = await ensureLowerControllerSimCached({ options });
     const reconstructionStartedAt = new Date().toISOString();
-    const reconstructHost = await runCapture(plan[1].command, plan[1].args, {
+    const reconstructHost = await runCapture(plan[2].command, plan[2].args, {
       cwd: options.workspace,
     });
     const reconstructionFinishedAt = new Date().toISOString();
@@ -2180,9 +2194,9 @@ async function reconstruct(options) {
       "host reconstruction",
     );
     await startHeadlessVncActivatorUnit(options, contract);
-    await run(plan[2].command, plan[2].args, { cwd: options.workspace });
+    await run(plan[3].command, plan[3].args, { cwd: options.workspace });
     await waitForPostgres();
-    for (const step of plan.slice(3, 5))
+    for (const step of plan.slice(4, 6))
       await run(step.command, step.args, {
         cwd: options.workspace,
         env: step.env,
@@ -2260,7 +2274,7 @@ async function reconstruct(options) {
       guestInputRaw,
       "utf8",
     );
-    for (const step of plan.slice(5, -1))
+    for (const step of plan.slice(6, -1))
       await run(step.command, step.args, { cwd: options.workspace });
     const admitGuest = plan.at(-1);
     const admissionStartedAt = new Date().toISOString();
