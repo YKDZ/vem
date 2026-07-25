@@ -183,7 +183,16 @@ async function seedCatalogForScreenshots(page: Page): Promise<SeededCatalog> {
   return { machine, slot, product, variant };
 }
 
-async function installOrderIncidentRoutes(page: Page): Promise<void> {
+type IncidentActionRequest = {
+  action: string;
+  reason: string;
+  refundId?: string;
+};
+
+async function installOrderIncidentRoutes(
+  page: Page,
+): Promise<IncidentActionRequest[]> {
+  const incidentActions: IncidentActionRequest[] = [];
   const now = "2026-07-25T12:00:00.000Z";
   const order = {
     id: "manual-order-incident",
@@ -345,6 +354,30 @@ async function installOrderIncidentRoutes(page: Page): Promise<void> {
     }
     await route.fallback();
   });
+  await page.route("**/api/payments/*/incident-actions", async (route) => {
+    const request = route.request();
+    if (request.method() !== "POST") {
+      await route.fallback();
+      return;
+    }
+    const body = request.postDataJSON() as IncidentActionRequest;
+    incidentActions.push(body);
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        code: 0,
+        message: "ok",
+        data: {
+          action: body.action,
+          status: "submitted",
+          handled: true,
+          message: "处理动作已提交",
+          protectedDiagnostics: {},
+        },
+      }),
+    });
+  });
+  return incidentActions;
 }
 
 function formItem(page: Page, label: string) {
@@ -367,8 +400,9 @@ test.describe("Operator manual Admin UI screenshots", () => {
   test("captures product, inventory, payment, machine, and incident details", async ({
     page,
   }) => {
-    test.setTimeout(90_000);
-    const { machine, product, variant } = await seedCatalogForScreenshots(page);
+    test.setTimeout(150_000);
+    const { machine, slot, product, variant } =
+      await seedCatalogForScreenshots(page);
 
     await page.goto("/products");
     await waitForAdminUiSettled(page);
@@ -433,7 +467,21 @@ test.describe("Operator manual Admin UI screenshots", () => {
 
     await page.goto("/inventory");
     await waitForAdminUiSettled(page);
-    await page.getByRole("button", { name: "绑定库存" }).click();
+    const [bindMachinesResponse, bindProductsResponse] = await Promise.all([
+      page.waitForResponse(
+        (response) =>
+          response.url().includes("/api/machines") &&
+          response.request().method() === "GET",
+      ),
+      page.waitForResponse(
+        (response) =>
+          response.url().includes("/api/products") &&
+          response.request().method() === "GET",
+      ),
+      page.getByRole("button", { name: "绑定库存" }).click(),
+    ]);
+    expect(bindMachinesResponse.ok()).toBe(true);
+    expect(bindProductsResponse.ok()).toBe(true);
     const inventoryModal = page.locator(".ant-modal").filter({
       hasText: "绑定库存",
     });
@@ -447,6 +495,23 @@ test.describe("Operator manual Admin UI screenshots", () => {
     });
     await page.keyboard.press("Escape");
     await expect(inventoryModal).toBeHidden({ timeout: 10_000 });
+    await adminApi(page, "/inventories", {
+      method: "POST",
+      body: {
+        machineId: machine.id,
+        slotId: slot.id,
+        variantId: variant.id,
+        onHandQty: 5,
+        reservedQty: 0,
+        lowStockThreshold: 1,
+        note: "手册工作流验收",
+      },
+    });
+    await page.goto("/inventory");
+    await waitForAdminUiSettled(page);
+    await expect(
+      page.locator(".ant-table-row").filter({ hasText: variant.sku }),
+    ).toBeVisible({ timeout: 10_000 });
 
     await page.goto("/payments");
     await page.getByRole("tab", { name: "支付渠道" }).click();
@@ -458,6 +523,15 @@ test.describe("Operator manual Admin UI screenshots", () => {
       route: "/payments#channels",
       expectedTexts: ["支付渠道管理", "启用", "默认", "保存"],
     });
+    const [paymentPolicyResponse] = await Promise.all([
+      page.waitForResponse(
+        (response) =>
+          response.url().endsWith("/api/payments/channel-policy") &&
+          response.request().method() === "PUT",
+      ),
+      page.getByRole("button", { name: "保存" }).click(),
+    ]);
+    expect(paymentPolicyResponse.ok()).toBe(true);
 
     await page.goto("/machines");
     await waitForAdminUiSettled(page);
@@ -481,7 +555,7 @@ test.describe("Operator manual Admin UI screenshots", () => {
     await page.keyboard.press("Escape");
     await expect(claimDrawer).toBeHidden({ timeout: 10_000 });
 
-    await installOrderIncidentRoutes(page);
+    const incidentActions = await installOrderIncidentRoutes(page);
     await page.goto("/orders");
     await expect(page.getByText("ORD-MANUAL-INCIDENT")).toBeVisible({
       timeout: 10_000,
@@ -495,5 +569,24 @@ test.describe("Operator manual Admin UI screenshots", () => {
       route: "/orders#payment-incident",
       expectedTexts: ["订单调查", "查询支付", "申请退款处理", "标记人工处理"],
     });
+    await orderDrawer.locator("textarea").first().fill("手册工作流验收");
+    const [incidentActionResponse] = await Promise.all([
+      page.waitForResponse(
+        (response) =>
+          response
+            .url()
+            .endsWith(
+              "/api/payments/manual-payment-unknown/incident-actions",
+            ) && response.request().method() === "POST",
+      ),
+      orderDrawer.getByRole("button", { name: "查询支付" }).click(),
+    ]);
+    expect(incidentActionResponse.ok()).toBe(true);
+    expect(incidentActions).toContainEqual(
+      expect.objectContaining({
+        action: "query_payment",
+        reason: "手册工作流验收",
+      }),
+    );
   });
 });

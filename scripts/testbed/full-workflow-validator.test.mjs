@@ -818,13 +818,22 @@ function localOperationsReport() {
       result: { success: true },
       protocolFrame: { parsedOpcode: "B3", rawFrameHex: "55b303" },
     },
-    maintenanceEntry: ["#/catalog"].map((route) => ({
-      route,
-      selector:
-        "[data-test='maintenance-entry-brand'], [data-test='maintenance-entry-header']",
-      finalRoute: "#/maintenance?source=operator",
-      ok: true,
-    })),
+    maintenanceEntry: {
+      entries: ["#/catalog"].map((route) => ({
+        route,
+        selector:
+          "[data-test='maintenance-entry-brand'], [data-test='maintenance-entry-header']",
+        finalRoute: "#/maintenance?source=operator",
+        ok: true,
+      })),
+      taskReturns: ["status"].map((task) => ({
+        task,
+        selector: `[data-test='maintenance-task-${task}']`,
+        returnSelector: "[data-test='maintenance-return-catalog']",
+        finalRoute: "#/catalog",
+        ok: true,
+      })),
+    },
   };
 }
 
@@ -1492,13 +1501,18 @@ describe("full workflow aggregate validator", () => {
         descriptor("localOperations"),
         {
           ...localOperationsReport(),
-          maintenanceEntry: [
-            {
-              route: "#/catalog",
-              finalRoute: "#/catalog",
-              ok: true,
-            },
-          ],
+          maintenanceEntry: {
+            entries: [
+              {
+                route: "#/catalog",
+                finalRoute: "#/catalog",
+                ok: true,
+              },
+            ],
+            taskReturns: [
+              { task: "status", finalRoute: "#/catalog", ok: true },
+            ],
+          },
         },
         "/reports/local-operations.json",
       ).status,

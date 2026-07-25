@@ -10,7 +10,7 @@
     "source": "machine-runtime",
     "route": "#/maintenance?source=operator",
     "capturedAt": "2026-07-25T23:17:00.000Z",
-    "commit": "63ff7ddd2f8c41021e472bc0ee80e50f633a8faf",
+    "commit": "63ff7ddd2f8ccf6a99a498418eb9cb1edbc73db2",
     "viewport": {
       "width": 1080,
       "height": 1920

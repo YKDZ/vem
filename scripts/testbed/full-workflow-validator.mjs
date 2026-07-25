@@ -558,13 +558,20 @@ function validateLocalOperationsTrack(report, reportPath) {
     report.localEnvironmentControl?.request?.ventSpeed !== 3 ||
     report.localEnvironmentControl?.result?.success !== true ||
     report.localEnvironmentControl?.protocolFrame?.parsedOpcode !== "B3" ||
-    !Array.isArray(report.maintenanceEntry) ||
-    report.maintenanceEntry.length < 1 ||
-    report.maintenanceEntry.some(
+    !Array.isArray(report.maintenanceEntry?.entries) ||
+    report.maintenanceEntry.entries.length < 1 ||
+    report.maintenanceEntry.entries.some(
       (entry) =>
         entry?.ok !== true ||
-        entry.route !== "#/catalog" ||
         entry.finalRoute !== "#/maintenance?source=operator",
+    ) ||
+    !report.maintenanceEntry.entries.some(
+      (entry) => entry.route === "#/catalog",
+    ) ||
+    !Array.isArray(report.maintenanceEntry?.taskReturns) ||
+    report.maintenanceEntry.taskReturns.length < 1 ||
+    report.maintenanceEntry.taskReturns.some(
+      (entry) => entry?.ok !== true || entry.finalRoute !== "#/catalog",
     )
   ) {
     return failedTrack(

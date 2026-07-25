@@ -2,8 +2,8 @@
   "id": "admin-payment-channel-policy",
   "source": "admin-ui",
   "route": "/payments#channels",
-  "capturedAt": "2026-07-25T21:43:37.221Z",
-  "commit": "6fa03df16e07",
+  "capturedAt": "2026-07-25T23:40:24.356Z",
+  "commit": "f41df7236dcc",
   "viewport": {
     "width": 1440,
     "height": 1080

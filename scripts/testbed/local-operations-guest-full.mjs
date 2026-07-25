@@ -45,7 +45,17 @@ const AUDIO_SELECTORS = Object.freeze({
 });
 const MAINTENANCE_ENTRY_SELECTOR =
   "[data-test='maintenance-entry-brand'], [data-test='maintenance-entry-header']";
-const MAINTENANCE_ENTRY_ROUTES = Object.freeze(["#/catalog"]);
+const MAINTENANCE_RETURN_SELECTOR = "[data-test='maintenance-return-catalog']";
+const MAINTENANCE_TASK_KEYS = Object.freeze([
+  "status",
+  "commissioning",
+  "hardware",
+  "environment",
+  "stock",
+  "experience",
+  "diagnostics",
+]);
+const DEFAULT_MAINTENANCE_ENTRY_ROUTES = Object.freeze(["#/catalog"]);
 const HARDWARE_READY_TIMEOUT_MS = 30_000;
 const HARDWARE_READY_POLL_MS = 500;
 
@@ -250,6 +260,15 @@ async function setRoute(client, route) {
     forbiddenRoutes: route.startsWith("#/maintenance") ? [] : undefined,
   });
 }
+export function maintenanceEntryRoutesForSaleView(saleView) {
+  const catalogKey = (saleView?.items ?? []).find(
+    (item) => typeof item?.catalogKey === "string" && item.catalogKey !== "",
+  )?.catalogKey;
+  return [
+    ...DEFAULT_MAINTENANCE_ENTRY_ROUTES,
+    ...(catalogKey ? [`#/products/${encodeURIComponent(catalogKey)}`] : []),
+  ];
+}
 async function ensureMaintenanceExperienceTask(client) {
   await setRoute(client, "#/maintenance?source=operator");
   await activateVisibleSelector(client, EXPERIENCE_TASK_SELECTOR, {
@@ -406,7 +425,9 @@ export async function collectMaintenanceEntryEvidence(
       withMachineUiClient(runtimeHandoff, dependencies, operation));
   return withUiClientFn(handoff, async (client) => {
     const entries = [];
-    for (const route of MAINTENANCE_ENTRY_ROUTES) {
+    const routes =
+      dependencies.maintenanceEntryRoutes ?? DEFAULT_MAINTENANCE_ENTRY_ROUTES;
+    for (const route of routes) {
       await setRoute(client, route);
       for (let index = 0; index < 7; index += 1) {
         await activateVisibleSelector(client, MAINTENANCE_ENTRY_SELECTOR, {
@@ -431,7 +452,36 @@ export async function collectMaintenanceEntryEvidence(
         ok: true,
       });
     }
-    return entries;
+    const taskReturns = [];
+    for (const task of MAINTENANCE_TASK_KEYS) {
+      await setRoute(client, "#/maintenance?source=operator");
+      await activateVisibleSelector(
+        client,
+        `[data-test='maintenance-task-${task}']`,
+        {
+          kind: "touch",
+          timeoutMs: AUDIO_PREFERENCE_TIMEOUT_MS,
+          pollMs: 150,
+        },
+      );
+      await activateVisibleSelector(client, MAINTENANCE_RETURN_SELECTOR, {
+        kind: "touch",
+        timeoutMs: AUDIO_PREFERENCE_TIMEOUT_MS,
+        pollMs: 150,
+      });
+      const finalRoute = await waitForRoute(client, "#/catalog", {
+        timeoutMs: AUDIO_PREFERENCE_TIMEOUT_MS,
+        pollMs: 150,
+      });
+      taskReturns.push({
+        task,
+        selector: `[data-test='maintenance-task-${task}']`,
+        returnSelector: MAINTENANCE_RETURN_SELECTOR,
+        finalRoute: finalRoute?.route ?? finalRoute,
+        ok: true,
+      });
+    }
+    return { entries, taskReturns };
   });
 }
 async function withMachineUiClient(
@@ -912,13 +962,25 @@ export function validateLocalOperationsEvidence(report) {
   )
     throw new Error("local environment control evidence is incomplete");
   if (
-    !Array.isArray(report.maintenanceEntry) ||
-    report.maintenanceEntry.length < MAINTENANCE_ENTRY_ROUTES.length ||
-    report.maintenanceEntry.some(
+    !Array.isArray(report.maintenanceEntry?.entries) ||
+    report.maintenanceEntry.entries.length <
+      DEFAULT_MAINTENANCE_ENTRY_ROUTES.length ||
+    report.maintenanceEntry.entries.some(
       (entry) =>
         entry?.ok !== true ||
-        !MAINTENANCE_ENTRY_ROUTES.includes(entry.route) ||
+        typeof entry.route !== "string" ||
         entry.finalRoute !== "#/maintenance?source=operator",
+    ) ||
+    !DEFAULT_MAINTENANCE_ENTRY_ROUTES.every((route) =>
+      report.maintenanceEntry.entries.some((entry) => entry.route === route),
+    ) ||
+    !Array.isArray(report.maintenanceEntry?.taskReturns) ||
+    report.maintenanceEntry.taskReturns.length < MAINTENANCE_TASK_KEYS.length ||
+    report.maintenanceEntry.taskReturns.some(
+      (entry) =>
+        entry?.ok !== true ||
+        !MAINTENANCE_TASK_KEYS.includes(entry.task) ||
+        entry.finalRoute !== "#/catalog",
     )
   )
     throw new Error("maintenance entry evidence is incomplete");
@@ -1079,7 +1141,10 @@ export async function runLocalOperationsGuest(options, dependencies = {}) {
     report.maintenanceEntry = await (
       dependencies.collectMaintenanceEntryEvidence ??
       collectMaintenanceEntryEvidence
-    )(handoff, dependencies);
+    )(handoff, {
+      ...dependencies,
+      maintenanceEntryRoutes: maintenanceEntryRoutesForSaleView(saleView),
+    });
     const keyboardOutPath = options.outPath.replace(
       /[^\\]+$/,
       "system-touch-keyboard.json",

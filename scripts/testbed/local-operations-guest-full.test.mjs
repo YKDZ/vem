@@ -8,6 +8,7 @@ import {
   collectAudioPreferencePersistenceEvidence,
   localEnvironmentControlFrames,
   manualDispenseFrames,
+  maintenanceEntryRoutesForSaleView,
   normalizeAudioPreferences,
   parseLocalOperationsGuestArgs,
   runLocalOperationsGuest,
@@ -18,13 +19,30 @@ import {
 } from "./local-operations-guest-full.mjs";
 
 function maintenanceEntryEvidence() {
-  return ["#/catalog"].map((route) => ({
-    route,
-    selector:
-      "[data-test='maintenance-entry-brand'], [data-test='maintenance-entry-header']",
-    finalRoute: "#/maintenance?source=operator",
-    ok: true,
-  }));
+  return {
+    entries: ["#/catalog"].map((route) => ({
+      route,
+      selector:
+        "[data-test='maintenance-entry-brand'], [data-test='maintenance-entry-header']",
+      finalRoute: "#/maintenance?source=operator",
+      ok: true,
+    })),
+    taskReturns: [
+      "status",
+      "commissioning",
+      "hardware",
+      "environment",
+      "stock",
+      "experience",
+      "diagnostics",
+    ].map((task) => ({
+      task,
+      selector: `[data-test='maintenance-task-${task}']`,
+      returnSelector: "[data-test='maintenance-return-catalog']",
+      finalRoute: "#/catalog",
+      ok: true,
+    })),
+  };
 }
 
 describe("local operations guest full", () => {
@@ -35,6 +53,17 @@ describe("local operations guest full", () => {
     );
     assert.match(source, /\[data-test='maintenance-task-experience'\]/);
     assert.doesNotMatch(source, /maintenance-task-nav button:nth-of-type/);
+  });
+  it("derives maintenance entry routes from the sale view without fixed product keys", () => {
+    assert.deepEqual(
+      maintenanceEntryRoutesForSaleView({
+        items: [{ catalogKey: "product:shirt-1" }],
+      }),
+      ["#/catalog", "#/products/product%3Ashirt-1"],
+    );
+    assert.deepEqual(maintenanceEntryRoutesForSaleView({ items: [] }), [
+      "#/catalog",
+    ]);
   });
 
   it("parses the installed guest contract", () => {
@@ -495,6 +524,7 @@ describe("local operations guest full", () => {
                   slotDisplayLabel: "R1C1",
                   slotId: "slot-7",
                   inventoryId: "inv-7",
+                  catalogKey: "product:slot-7",
                   rowNo: 1,
                   cellNo: 1,
                 },
@@ -571,7 +601,8 @@ describe("local operations guest full", () => {
       rowNo: 1,
       cellNo: 1,
     });
-    assert.equal(writes.at(-1).value.maintenanceEntry.length, 1);
+    assert.equal(writes.at(-1).value.maintenanceEntry.entries.length, 1);
+    assert.equal(writes.at(-1).value.maintenanceEntry.taskReturns.length, 7);
     assert.deepEqual(localEnvironmentControlRequests, [{ ventSpeed: 3 }]);
     assert.deepEqual(
       waitFrameRequests.map((entry) => entry.parsedOpcode),

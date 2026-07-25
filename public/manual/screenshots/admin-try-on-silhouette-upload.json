@@ -2,8 +2,8 @@
   "id": "admin-try-on-silhouette-upload",
   "source": "admin-ui",
   "route": "/products#try-on-silhouette",
-  "capturedAt": "2026-07-25T21:43:32.843Z",
-  "commit": "6fa03df16e07",
+  "capturedAt": "2026-07-25T23:40:19.829Z",
+  "commit": "f41df7236dcc",
   "viewport": {
     "width": 1440,
     "height": 1080
