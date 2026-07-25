@@ -103,6 +103,8 @@ struct LocalEnvironmentControlRequest {
     vent_speed: Option<u8>,
 }
 
+const LOCAL_ENVIRONMENT_CONTROL_TIMEOUT_SECONDS: u64 = 10;
+
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DeviceBindingTestRequest {
@@ -666,7 +668,7 @@ fn local_environment_control_command(
         air_conditioner_on: request.air_conditioner_on,
         target_temperature_celsius: request.target_temperature_celsius,
         vent_speed: request.vent_speed,
-        timeout_seconds: 5,
+        timeout_seconds: LOCAL_ENVIRONMENT_CONTROL_TIMEOUT_SECONDS,
     };
     crate::mqtt::validate_environment_control_command(&command)?;
     Ok(command)
@@ -2525,11 +2527,18 @@ async fn manual_dispense_diagnostic(
             );
         }
     };
-    let controller = ctx.hardware.self_check().await;
-    if !controller.online
-        || controller.adapter == "mock"
-        || controller.port_path.as_deref() != Some(resolved_port.as_str())
-    {
+    let cached_controller = ctx.ui.status_cache.hardware.read().await.clone();
+    let controller = if manual_dispense_controller_matches_bound_runtime(
+        &cached_controller,
+        &resolved_port,
+    ) {
+        cached_controller
+    } else {
+        let checked = ctx.hardware.self_check().await;
+        *ctx.ui.status_cache.hardware.write().await = checked.clone();
+        checked
+    };
+    if !manual_dispense_controller_matches_bound_runtime(&controller, &resolved_port) {
         return error_response(
             StatusCode::CONFLICT,
             "manual_dispense_controller_unresolved",
@@ -2670,6 +2679,15 @@ async fn manual_dispense_diagnostic(
         "replayed": false,
     }))
     .into_response()
+}
+
+fn manual_dispense_controller_matches_bound_runtime(
+    controller: &vending_core::hardware::HardwareStatus,
+    resolved_port: &str,
+) -> bool {
+    controller.online
+        && controller.adapter == "serial"
+        && controller.port_path.as_deref() == Some(resolved_port)
 }
 
 async fn device_binding_snapshot(
@@ -3615,7 +3633,14 @@ mod tests {
 
         assert!(command.command_no.starts_with("LOCAL-ENV-"));
         assert_eq!(command.vent_speed, Some(3));
-        assert_eq!(command.timeout_seconds, 5);
+        assert_eq!(
+            command.timeout_seconds,
+            LOCAL_ENVIRONMENT_CONTROL_TIMEOUT_SECONDS
+        );
+        assert!(
+            command.timeout_seconds > 5,
+            "local B3 commands must outlive the automatic vent guard window"
+        );
     }
 
     #[test]
@@ -3628,6 +3653,41 @@ mod tests {
         .expect_err("local command must contain exactly one action");
 
         assert!(error.contains("exactly one action"));
+    }
+
+    #[test]
+    fn manual_dispense_accepts_only_online_bound_serial_runtime() {
+        let status = vending_core::hardware::HardwareStatus {
+            adapter: "serial".to_string(),
+            online: true,
+            message: "ready".to_string(),
+            port_path: Some("COM4".to_string()),
+            resolution_source: Some("manual_port".to_string()),
+            bound_usb_identity: None,
+            candidates: vec![],
+            lower_controller_fault: None,
+        };
+
+        assert!(manual_dispense_controller_matches_bound_runtime(
+            &status, "COM4"
+        ));
+        assert!(!manual_dispense_controller_matches_bound_runtime(
+            &vending_core::hardware::HardwareStatus {
+                adapter: "mock".to_string(),
+                ..status.clone()
+            },
+            "COM4"
+        ));
+        assert!(!manual_dispense_controller_matches_bound_runtime(
+            &vending_core::hardware::HardwareStatus {
+                online: false,
+                ..status.clone()
+            },
+            "COM4"
+        ));
+        assert!(!manual_dispense_controller_matches_bound_runtime(
+            &status, "COM3"
+        ));
     }
 
     #[tokio::test]

@@ -265,9 +265,6 @@ impl AutomaticVentController {
         }
         let result = async {
             let _protocol_guard = self.b3_protocol_guard.lock().await;
-            if !self.wait_for_protocol_guard().await {
-                return Err("automatic vent controller is closed".to_string());
-            }
             let hardware = tokio::select! {
                 _ = self.shutdown.cancelled() => return Err("automatic vent controller is closed".to_string()),
                 hardware = self.hardware.acquire_environment_hardware() => hardware,
@@ -675,7 +672,7 @@ mod tests {
             atomic::{AtomicBool, Ordering},
             Arc, Mutex,
         },
-        time::Duration,
+        time::{Duration, Instant},
     };
 
     use async_trait::async_trait;
@@ -843,12 +840,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn admin_b3_waits_for_the_same_protocol_guard_as_automatic_b3() {
+    async fn admin_b3_waits_for_the_current_b3_owner_but_not_the_automatic_guard_window() {
         let adapter = Arc::new(RecordingHardware::default());
         let controller = AutomaticVentController::new_with_guard(
             HardwareSupervisor::from_adapter(adapter.clone()),
             CancellationToken::new(),
-            std::time::Duration::from_millis(50),
+            std::time::Duration::from_millis(500),
         );
 
         controller
@@ -856,6 +853,7 @@ mod tests {
             .await
             .expect("automatic arrival");
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let started_at = Instant::now();
         controller
             .execute_admin_one_shot(3)
             .await
@@ -867,7 +865,8 @@ mod tests {
             vec![3, 3]
         );
         assert!(
-            attempts[1].1.duration_since(attempts[0].1) >= std::time::Duration::from_millis(50)
+            started_at.elapsed() < std::time::Duration::from_millis(200),
+            "explicit Admin B3 must not inherit the automatic debounce window"
         );
     }
 

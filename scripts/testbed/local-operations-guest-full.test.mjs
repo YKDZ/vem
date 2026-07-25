@@ -14,6 +14,7 @@ import {
   selectPlanogramSlot,
   serialBoundaryWaitRequest,
   validateLocalOperationsEvidence,
+  waitForLowerControllerReady,
 } from "./local-operations-guest-full.mjs";
 
 function maintenanceEntryEvidence() {
@@ -126,6 +127,41 @@ describe("local operations guest full", () => {
       Object.hasOwn(serialBoundaryWaitRequest("B3"), "serialScenario"),
       false,
     );
+  });
+  it("waits for the lower controller binding and runtime to converge", async () => {
+    let attempt = 0;
+    const sleeps = [];
+    const result = await waitForLowerControllerReady(
+      {},
+      async (_handoff, path) => {
+        if (path === "/v1/hardware/self-check") {
+          return attempt++ === 0
+            ? { online: false, adapter: "serial", portPath: "COM4" }
+            : { online: true, adapter: "serial", portPath: "COM4" };
+        }
+        if (path === "/v1/hardware-bindings") {
+          return {
+            roles: [
+              {
+                role: "lower_controller",
+                ready: attempt > 1,
+                currentPort: "COM4",
+              },
+            ],
+          };
+        }
+        throw new Error(`unexpected path ${path}`);
+      },
+      {
+        timeoutMs: 1_000,
+        pollMs: 25,
+        sleepFn: async (ms) => sleeps.push(ms),
+      },
+    );
+
+    assert.equal(result.selfCheck.online, true);
+    assert.equal(result.lowerController.currentPort, "COM4");
+    assert.deepEqual(sleeps, [25]);
   });
   it("requires business evidence without gating on VM touch-keyboard support", () => {
     const report = {
@@ -465,9 +501,18 @@ describe("local operations guest full", () => {
               ],
             };
           }
-          if (path === "/v1/hardware/self-check") return { online: true };
+          if (path === "/v1/hardware/self-check")
+            return { online: true, adapter: "serial", portPath: "COM4" };
           if (path === "/v1/hardware-bindings")
-            return { lowerController: true };
+            return {
+              roles: [
+                {
+                  role: "lower_controller",
+                  ready: true,
+                  currentPort: "COM4",
+                },
+              ],
+            };
           if (path === "/v1/maintenance/manual-dispense-diagnostic") {
             manualDispenseRequests.push(body);
             return { outcome: "completed", diagnosticId: "diag-07" };

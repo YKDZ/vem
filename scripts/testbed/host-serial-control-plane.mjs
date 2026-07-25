@@ -836,7 +836,7 @@ function summarizeReport(report) {
 
 const RAW_PROTOCOL_DIRECTIONS = Object.freeze({
   VEND: "daemon-to-controller",
-  B3: "daemon-to-controller",
+  B3: ["daemon-to-controller", "controller-to-daemon"],
   F0: "controller-to-daemon",
   E5: "controller-to-daemon",
   F1: "controller-to-daemon",
@@ -908,7 +908,11 @@ export async function waitForRawSerialFrame({
       Object.hasOwn(RAW_PROTOCOL_DIRECTIONS, frame.parsedOpcode),
     );
     for (const frame of protocolFrames) {
-      if (frame.direction !== RAW_PROTOCOL_DIRECTIONS[frame.parsedOpcode]) {
+      const expectedDirections = RAW_PROTOCOL_DIRECTIONS[frame.parsedOpcode];
+      const allowedDirections = Array.isArray(expectedDirections)
+        ? expectedDirections
+        : [expectedDirections];
+      if (!allowedDirections.includes(frame.direction)) {
         throw new Error(
           `${frame.parsedOpcode} has invalid serial direction ${frame.direction}`,
         );

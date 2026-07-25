@@ -46,6 +46,8 @@ const AUDIO_SELECTORS = Object.freeze({
 const MAINTENANCE_ENTRY_SELECTOR =
   "[data-test='maintenance-entry-brand'], [data-test='maintenance-entry-header']";
 const MAINTENANCE_ENTRY_ROUTES = Object.freeze(["#/catalog"]);
+const HARDWARE_READY_TIMEOUT_MS = 30_000;
+const HARDWARE_READY_POLL_MS = 500;
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "")
@@ -122,6 +124,52 @@ function control(input, path, body = {}) {
       },
       body: JSON.stringify(body),
     },
+  );
+}
+function lowerControllerBinding(snapshot) {
+  return (
+    snapshot?.roles?.find(
+      (role) =>
+        role?.role === "lower_controller" || role?.role === "lower-controller",
+    ) ?? null
+  );
+}
+export async function waitForLowerControllerReady(
+  handoff,
+  daemonRequest = daemon,
+  {
+    timeoutMs = HARDWARE_READY_TIMEOUT_MS,
+    pollMs = HARDWARE_READY_POLL_MS,
+    sleepFn = sleep,
+  } = {},
+) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  do {
+    const selfCheck = await daemonRequest(
+      handoff,
+      "/v1/hardware/self-check",
+      {},
+    ).catch((error) => ({ error: error.message }));
+    const bindings = await daemonRequest(
+      handoff,
+      "/v1/hardware-bindings",
+    ).catch((error) => ({ error: error.message }));
+    const lower = lowerControllerBinding(bindings);
+    last = { selfCheck, bindings, lowerController: lower };
+    if (
+      selfCheck?.online === true &&
+      selfCheck?.adapter === "serial" &&
+      lower?.ready === true &&
+      typeof lower.currentPort === "string" &&
+      lower.currentPort === selfCheck.portPath
+    ) {
+      return last;
+    }
+    await sleepFn(pollMs);
+  } while (Date.now() < deadline);
+  throw new Error(
+    `lower controller did not become ready for local operations: ${JSON.stringify(last)}`,
   );
 }
 function boundedNumber(value, label) {
@@ -944,10 +992,10 @@ export async function runLocalOperationsGuest(options, dependencies = {}) {
       rowNo: slot.rowNo,
       cellNo: slot.cellNo,
     };
-    report.hardware = {
-      selfCheck: await daemonRequest(handoff, "/v1/hardware/self-check", {}),
-      bindings: await daemonRequest(handoff, "/v1/hardware-bindings"),
-    };
+    report.hardware = await waitForLowerControllerReady(
+      handoff,
+      daemonRequest,
+    );
     report.boundaries.daemon = true;
     report.boundaries.hardwareSelfCheck =
       report.hardware.selfCheck?.online === true;
