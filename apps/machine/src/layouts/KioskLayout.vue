@@ -3,7 +3,8 @@ import logoImage from "@/assets/home/logo.png";
 import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
 import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
 
-const { handleMaintenanceTap } = useMaintenanceEntry();
+const { handleMaintenancePointerDown, handleMaintenanceTap } =
+  useMaintenanceEntry();
 </script>
 
 <template>
@@ -15,6 +16,7 @@ const { handleMaintenanceTap } = useMaintenanceEntry();
         class="flex h-14 items-center gap-3"
         data-customer-interaction-scope="operator"
         data-test="maintenance-entry-header"
+        @pointerdown="handleMaintenancePointerDown"
         @click="handleMaintenanceTap"
         @touchend.prevent="handleMaintenanceTap"
       >

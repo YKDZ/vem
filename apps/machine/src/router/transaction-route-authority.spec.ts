@@ -127,6 +127,45 @@ describe("transaction route authority", () => {
     authority.dispose();
   });
 
+  it("does not treat operator-scoped pointer input as a customer session", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: "/catalog", name: "catalog", component: {} },
+        { path: "/products/:id", name: "product-detail", component: {} },
+      ],
+    });
+    const authority = createMachineNavigationAuthority(router, pinia);
+    await authority.submit({
+      type: "customer.navigate",
+      target: { name: "product-detail", params: { id: "product-1" } },
+    });
+
+    const operatorTarget = document.createElement("button");
+    operatorTarget.dataset.customerInteractionScope = "operator";
+    document.body.append(operatorTarget);
+    operatorTarget.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await authority.submit({
+      type: "presence.departed",
+      eventId: "departure-after-operator-touch",
+    });
+
+    expect(router.currentRoute.value.name).toBe("catalog");
+    expect(authority.trace.snapshot()).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          intentType: "customer.touch",
+        }),
+      ]),
+    );
+
+    operatorTarget.remove();
+    authority.dispose();
+  });
+
   it("keeps an active daemon payment projection ahead of generic catalog navigation", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);

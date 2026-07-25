@@ -14,7 +14,8 @@ const props = withDefaults(
 );
 
 const { clockText, dateText } = useKioskClock();
-const { handleMaintenanceTap } = useMaintenanceEntry();
+const { handleMaintenancePointerDown, handleMaintenanceTap } =
+  useMaintenanceEntry();
 
 function handleBrandClick(): void {
   if (!props.enableMaintenanceEntry) return;
@@ -28,6 +29,7 @@ function handleBrandClick(): void {
       class="kiosk-header-brand"
       data-customer-interaction-scope="operator"
       data-test="maintenance-entry-brand"
+      @pointerdown="handleMaintenancePointerDown"
       @click="handleBrandClick"
       @touchend.prevent="handleBrandClick"
     >

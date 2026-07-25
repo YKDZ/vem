@@ -15,6 +15,8 @@ import { useCheckoutStore } from "@/stores/checkout";
 import { useSaleCapabilityStore } from "@/stores/sale-capability";
 
 const DEFAULT_TOUCHSCREEN_SESSION_INACTIVITY_MS = 45_000;
+const CUSTOMER_INTERACTION_IGNORED_SCOPE_SELECTOR =
+  "[data-customer-interaction-scope='operator']";
 const CUSTOMER_SESSION_ROUTE_NAMES = new Set([
   "product-detail",
   "virtual-try-on",
@@ -87,6 +89,13 @@ function routeName(router: Router): string {
 
 function routePath(router: Router, target: RouteLocationRaw): string {
   return router.resolve(target).fullPath;
+}
+
+function eventWithinIgnoredInteractionScope(event: Event): boolean {
+  if (typeof Element === "undefined") return false;
+  const target = event.target;
+  if (!(target instanceof Element)) return false;
+  return target.closest(CUSTOMER_INTERACTION_IGNORED_SCOPE_SELECTOR) !== null;
 }
 
 export function createMachineNavigationAuthority(
@@ -371,6 +380,7 @@ export function createMachineNavigationAuthority(
     });
   });
   const onDirectPointerInteraction = (event: PointerEvent | Event): void => {
+    if (eventWithinIgnoredInteractionScope(event)) return;
     if (
       "pointerType" in event &&
       typeof event.pointerType === "string" &&
