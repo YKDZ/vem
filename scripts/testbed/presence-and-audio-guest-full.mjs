@@ -32,6 +32,7 @@ const SHORT_EMPTY_MS = 1_000;
 const SUSTAINED_EMPTY_MS = 5_000;
 const WELCOME_CAPTURE_MS = 1_000;
 const TRACE_TIMEOUT_MS = 30_000;
+const PRESENCE_PRECONDITION_TIMEOUT_MS = SUSTAINED_EMPTY_MS + 2_000;
 const ADMIN_USER = "local-testbed-admin";
 const ADMIN_PASSWORD = "LocalTestbedAdminPassword!";
 
@@ -195,18 +196,6 @@ function traceId(trace) {
   );
 }
 
-function latestPresenceTransition(trace) {
-  return [...trace]
-    .reverse()
-    .find(
-      (entry) =>
-        entry?.type === "journey_transition" &&
-        /^vision:presence-.+:(?:welcome|departed)$/.test(
-          String(entry?.transitionId ?? ""),
-        ),
-    );
-}
-
 function traceEntryAfter(trace, boundary, predicate) {
   return trace.find(
     (entry) => Number(entry?.id) > boundary && predicate(entry),
@@ -219,14 +208,15 @@ async function waitForTraceEntry(
   predicate,
   dependencies,
   label,
+  { timeoutMs = TRACE_TIMEOUT_MS, pollMs = 100 } = {},
 ) {
-  const deadline = dependencies.now() + TRACE_TIMEOUT_MS;
+  const deadline = dependencies.now() + timeoutMs;
   let last = [];
   do {
     last = await readTrace();
     const entry = traceEntryAfter(last, boundary, predicate);
     if (entry) return { entry, trace: last };
-    await dependencies.sleep(100);
+    await dependencies.sleep(pollMs);
   } while (dependencies.now() < deadline);
   throw new Error(
     `${label} was not observed in Machine runtimeTrace: ${JSON.stringify(last.slice(-12))}`,
@@ -859,22 +849,34 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
       return runtimeTrace;
     };
     // A previous business set may leave the shared journey in a present state.
-    // Observe its real departure before proving a fresh arrival.
+    // Observe a real departure when present state is still armed, even if the
+    // bounded runtime trace no longer contains the original welcome edge.
     const preconditionTrace = await readTrace();
     const preconditionBoundary = traceId(preconditionTrace);
-    const priorPresence = latestPresenceTransition(preconditionTrace);
+    let presencePrecondition = {
+      boundaryTraceId: preconditionBoundary,
+      outcome: "already_empty_or_unobserved",
+      departureTransitionId: null,
+    };
     await injectVisionPresence(guestInput, "empty", dependencies);
-    if (String(priorPresence?.transitionId ?? "").endsWith(":welcome")) {
-      await waitForTraceEntry(
-        readTrace,
-        preconditionBoundary,
-        (entry) =>
-          entry?.type === "journey_transition" &&
-          String(entry?.transitionId).endsWith(":departed"),
-        dependencies,
-        "initial sustained Vision departure",
-      ).catch(() => null);
-    }
+    await waitForTraceEntry(
+      readTrace,
+      preconditionBoundary,
+      (entry) =>
+        entry?.type === "journey_transition" &&
+        String(entry?.transitionId).endsWith(":departed"),
+      dependencies,
+      "initial sustained Vision departure",
+      { timeoutMs: PRESENCE_PRECONDITION_TIMEOUT_MS },
+    )
+      .then((departure) => {
+        presencePrecondition = {
+          boundaryTraceId: preconditionBoundary,
+          outcome: "existing_presence_departed",
+          departureTransitionId: String(departure.entry.transitionId),
+        };
+      })
+      .catch(() => null);
     await dependencies.issueAdminVentReset(guestInput, dependencies);
     const ventEvidenceBefore = await dependencies.controlPlaneRequest(
       guestInput,
@@ -1140,6 +1142,7 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
       scenario: {
         welcome: {
           initialFenceTraceId,
+          precondition: presencePrecondition,
           duplicateFenceTraceId,
           transientFenceTraceId,
           initialTransitionId: initialWelcome.transitionId,

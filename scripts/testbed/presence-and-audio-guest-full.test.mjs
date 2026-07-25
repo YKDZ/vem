@@ -468,6 +468,8 @@ describe("presence and audio guest full", () => {
       }
     };
     let approachCount = 0;
+    let pendingHiddenPresenceDeparture = false;
+    let hiddenPresenceDepartureObserved = false;
     let serialEvidenceReads = 0;
     let audioCaptureOrdinal = 0;
     let now = 0;
@@ -531,6 +533,13 @@ describe("presence and audio guest full", () => {
         fetchJson: async (_url, request) => {
           const { state } = JSON.parse(request.body);
           calls.push(`vision:${state}`);
+          if (
+            state === "empty" &&
+            approachCount === 0 &&
+            !hiddenPresenceDepartureObserved
+          ) {
+            pendingHiddenPresenceDeparture = true;
+          }
           if (state === "approach") {
             approachCount += 1;
             if (approachCount === 1)
@@ -580,7 +589,25 @@ describe("presence and audio guest full", () => {
         },
         sleep: async (milliseconds) => {
           now += milliseconds;
-          if (milliseconds === 5_000) {
+          if (
+            pendingHiddenPresenceDeparture &&
+            !hiddenPresenceDepartureObserved
+          ) {
+            pendingHiddenPresenceDeparture = false;
+            hiddenPresenceDepartureObserved = true;
+            const at = traceTimestamp();
+            trace.push({
+              type: "journey_transition",
+              id: nextId++,
+              at,
+              recordedAt: at,
+              transitionId: "vision:presence-0:departed",
+              requestId: null,
+              terminalOutcomeId: null,
+              outcome: null,
+              message: null,
+            });
+          } else if (milliseconds === 5_000) {
             const at = traceTimestamp();
             trace.push({
               type: "journey_transition",
@@ -699,12 +726,17 @@ describe("presence and audio guest full", () => {
       "underwear",
     ]);
     assert.deepEqual(report.presenceAndAudio.scenario.welcome, {
-      initialFenceTraceId: 0,
-      duplicateFenceTraceId: 4,
+      initialFenceTraceId: 1,
+      precondition: {
+        boundaryTraceId: 0,
+        outcome: "existing_presence_departed",
+        departureTransitionId: "vision:presence-0:departed",
+      },
+      duplicateFenceTraceId: 5,
       initialTransitionId: "vision:presence-1:welcome",
       departureTransitionId: "vision:presence-2:departed",
-      transientFenceTraceId: 4,
-      rearmedFenceTraceId: 5,
+      transientFenceTraceId: 5,
+      rearmedFenceTraceId: 6,
       rearmedTransitionId: "vision:presence-3:welcome",
     });
     assert.equal(report.presenceAndAudio.scenario.categories.length, 2);
