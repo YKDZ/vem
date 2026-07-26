@@ -1206,6 +1206,12 @@ export async function runLocalOperationsGuest(options, dependencies = {}) {
       protocolFrame: environmentFrames.at(-1) ?? null,
       protocolFrames: environmentFrames,
     };
+    await controlRequest(
+      input,
+      `/v1/serial-sessions/${session.sessionId}/abort`,
+    );
+    session = null;
+    report.hardware = await waitForLowerControllerReady(handoff, daemonRequest);
     report.audioPreferencePersistence = await runAudioPreferencePersistence(
       {
         input,

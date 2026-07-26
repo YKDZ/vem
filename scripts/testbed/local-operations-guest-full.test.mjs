@@ -427,6 +427,7 @@ describe("local operations guest full", () => {
   it("adds audio persistence evidence to the runner report", async () => {
     const writes = [];
     const manualDispenseRequests = [];
+    const controlPaths = [];
     let evidenceReads = 0;
     const localEnvironmentControlRequests = [];
     const waitFrameRequests = [];
@@ -468,6 +469,7 @@ describe("local operations guest full", () => {
           return { ok: true };
         },
         controlRequest: async (_input, path, body) => {
+          controlPaths.push(path);
           if (path === "/v1/serial-sessions/start")
             return { sessionId: "serial-07" };
           if (path === "/v1/serial-sessions/serial-07/evidence") {
@@ -563,24 +565,30 @@ describe("local operations guest full", () => {
           }
           throw new Error(`unexpected daemon path: ${path}`);
         },
-        collectAudioPreferencePersistenceEvidence: async () => ({
-          target: {
-            volume: 0.35,
-            cuesEnabled: false,
-            presenceCuesEnabled: false,
-            transactionCuesEnabled: false,
-          },
-          defaults: {
-            volume: 0.7,
-            cuesEnabled: true,
-            presenceCuesEnabled: true,
-            transactionCuesEnabled: true,
-          },
-          preRestart: { ui: { ok: true }, daemon: { ok: true } },
-          postRestart: { ui: { ok: true }, daemon: { ok: true } },
-          restoredDefaults: { ui: { ok: true }, daemon: { ok: true } },
-          restartedRuntime: { ready: { ipcToken: "token-2" } },
-        }),
+        collectAudioPreferencePersistenceEvidence: async () => {
+          assert.equal(
+            controlPaths.at(-1),
+            "/v1/serial-sessions/serial-07/abort",
+          );
+          return {
+            target: {
+              volume: 0.35,
+              cuesEnabled: false,
+              presenceCuesEnabled: false,
+              transactionCuesEnabled: false,
+            },
+            defaults: {
+              volume: 0.7,
+              cuesEnabled: true,
+              presenceCuesEnabled: true,
+              transactionCuesEnabled: true,
+            },
+            preRestart: { ui: { ok: true }, daemon: { ok: true } },
+            postRestart: { ui: { ok: true }, daemon: { ok: true } },
+            restoredDefaults: { ui: { ok: true }, daemon: { ok: true } },
+            restartedRuntime: { ready: { ipcToken: "token-2" } },
+          };
+        },
         runInstalledSystemTouchKeyboardAcceptance: async () => ({
           ok: true,
           blocking: false,

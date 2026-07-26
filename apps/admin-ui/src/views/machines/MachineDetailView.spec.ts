@@ -275,20 +275,21 @@ async function advanceTimersUntil(
   assertion: () => void,
   { timeoutMs = 3_000, stepMs = 50 } = {},
 ): Promise<void> {
-  let lastError: unknown;
-  for (let elapsedMs = 0; elapsedMs <= timeoutMs; elapsedMs += stepMs) {
+  const attempt = async (elapsedMs: number): Promise<void> => {
     try {
       assertion();
       return;
     } catch (error) {
-      lastError = error;
+      if (elapsedMs >= timeoutMs) {
+        throw error instanceof Error ? error : new Error(String(error));
+      }
     }
     await vi.advanceTimersByTimeAsync(stepMs);
     await Promise.resolve();
     await nextTick();
-  }
-  if (lastError) throw lastError;
-  assertion();
+    return attempt(elapsedMs + stepMs);
+  };
+  await attempt(0);
 }
 
 async function mountView(
