@@ -290,6 +290,16 @@ function Assert-DeclaredCachePath([string]$Path, [string]$Name) {
   }
 }
 
+function Invoke-TestbedQuietCommand([string]$Label, [string]$LogPath, [scriptblock]$Command) {
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $LogPath) | Out-Null
+  & $Command *> $LogPath
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "$Label failed; last log lines from $LogPath"
+    Get-Content -LiteralPath $LogPath -Tail 120 -ErrorAction SilentlyContinue
+    throw "$Label failed"
+  }
+}
+
 function Invoke-Claim([object]$GuestInput) {
   $claimCode = [string]$GuestInput.claimCode
   if ($claimCode -notmatch '^[A-Z0-9]{4}-[A-Z0-9]{4}$') {
@@ -1112,14 +1122,16 @@ if ((& $pnpm config get store-dir).Trim() -ne $env:PNPM_STORE_PATH) { throw "pnp
 if ($LASTEXITCODE -ne 0) { throw "pnpm virtual store configuration failed" }
 if ((& $pnpm config get virtual-store-dir).Trim() -ne $pnpmVirtualStorePath) { throw "pnpm virtual-store-dir did not resolve to lock-keyed D: cache" }
 if (-not (Test-Path -LiteralPath $pnpmFetchCompletePath -PathType Leaf)) {
-  & $pnpm --reporter=silent fetch --frozen-lockfile --trust-lockfile
-  if ($LASTEXITCODE -ne 0) { throw "pnpm fetch failed" }
+  Invoke-TestbedQuietCommand "pnpm fetch" (Join-Path $cacheRoot "logs\pnpm-fetch-$pnpmLockDigest.log") {
+    & $pnpm --reporter=silent fetch --frozen-lockfile --trust-lockfile
+  }
   Set-Content -LiteralPath $pnpmFetchCompletePath -Value $pnpmLockDigest -Encoding ascii
 }
 if (-not (Test-Path -LiteralPath $pnpmWorkspaceMarker -PathType Leaf) -or
   (Get-Content -Raw -LiteralPath $pnpmWorkspaceMarker).Trim() -ne $pnpmLockDigest) {
-  & $pnpm --reporter=silent install --frozen-lockfile --offline --trust-lockfile
-  if ($LASTEXITCODE -ne 0) { throw "pnpm install failed" }
+  Invoke-TestbedQuietCommand "pnpm install" (Join-Path $cacheRoot "logs\pnpm-install-$pnpmLockDigest.log") {
+    & $pnpm --reporter=silent install --frozen-lockfile --offline --trust-lockfile
+  }
   Set-Content -LiteralPath $pnpmWorkspaceMarker -Value $pnpmLockDigest -Encoding ascii
 }
 $daemonSource = Join-Path $env:CARGO_TARGET_DIR "release\vending-daemon.exe"
@@ -1165,7 +1177,7 @@ if (Test-Path -LiteralPath $runtimeArtifactManifestPath -PathType Leaf) {
 if ($reuseRuntimeArtifacts) {
   Write-TestbedPhase $(if ($runtimeArtifactReuseSource -eq "pass_1") { "reuse-pass-1-runtime-artifacts" } else { "reuse-commit-runtime-artifacts" })
 } else {
-  & $pnpm turbo run build --filter @vem/shared --cache-dir $env:TURBO_CACHE_DIR
+  & $pnpm turbo run build --filter @vem/shared --cache-dir $env:TURBO_CACHE_DIR --output-logs=errors-only --log-order=grouped --log-prefix=task
   if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $env:TURBO_CACHE_DIR)) { throw "Turbo cache was not created on D:" }
   $localRustSourceDigest = Get-LocalRustSourceDigest
   $localRustSourceMarker = Join-Path $env:CARGO_TARGET_DIR ".vem-local-rust-source.sha256"

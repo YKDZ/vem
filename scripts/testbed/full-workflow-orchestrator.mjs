@@ -47,6 +47,7 @@ const DAEMON_READY_FILE =
   "C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready.json";
 const STOCK_READY_TIMEOUT_MS = 30_000;
 const PLATFORM_STOCK_READY_TIMEOUT_MS = 30_000;
+const STOCK_ATTESTATION_READY_TIMEOUT_MS = 180_000;
 const HARDWARE_READY_TIMEOUT_MS = 30_000;
 
 // This is the one canonical registry for business acceptance.
@@ -629,6 +630,46 @@ export async function ensureFixtureStockReady({
       );
     });
   };
+  const attestationStatusSummary = (status) =>
+    status
+      ? {
+          status: status.status,
+          code: status.code,
+          attestationId: status.attestationId,
+          planogramVersion: status.planogramVersion,
+          inconsistentSlots: status.inconsistentSlots,
+        }
+      : null;
+  const waitForAttestationReady = async (attestationId) => {
+    const attestationDeadline =
+      Date.now() + Math.max(timeoutMs, STOCK_ATTESTATION_READY_TIMEOUT_MS);
+    let status = null;
+    while (Date.now() < attestationDeadline) {
+      status = await get("/v1/stock/attestation");
+      if (
+        status?.status === "ready" &&
+        status?.attestationId === attestationId &&
+        (status?.inconsistentSlots ?? []).length === 0
+      ) {
+        return status;
+      }
+      if (
+        ["failed", "rejected", "inconsistent", "stale"].includes(status?.status)
+      ) {
+        throw new Error(
+          `fixture stock attestation did not complete: ${JSON.stringify(
+            attestationStatusSummary(status),
+          )}`,
+        );
+      }
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, pollMs));
+    }
+    throw new Error(
+      `fixture stock attestation did not become ready: ${JSON.stringify(
+        attestationStatusSummary(status),
+      )}`,
+    );
+  };
   const fixtureReadinessSnapshot = (saleView) =>
     fixtures.map((fixture) => {
       const item = itemForFixture(saleView, fixture);
@@ -882,6 +923,7 @@ export async function ensureFixtureStockReady({
       operatorId: "testbed-orchestrator",
       slots,
     });
+    await waitForAttestationReady(operationId);
   } else {
     const slots =
       task.mode === "routine_refill"

@@ -573,7 +573,7 @@ pub fn build_router(ctx: IpcContext) -> Router {
         )
         .route(
             "/v1/stock/attestation",
-            post(record_physical_stock_attestation),
+            get(physical_stock_attestation_status).post(record_physical_stock_attestation),
         )
         .route(
             "/v1/maintenance/whole-machine-lock/clear",
@@ -2199,6 +2199,23 @@ async fn record_physical_stock_attestation(
         Err(error) => error_response(
             StatusCode::BAD_REQUEST,
             "physical_stock_attestation_failed",
+            error.to_string(),
+        ),
+    }
+}
+
+async fn physical_stock_attestation_status(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(error) = require_token(&headers, &ctx.token).await {
+        return error.into_response();
+    }
+    match ctx.state.physical_stock_attestation_status().await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "physical_stock_attestation_status_failed",
             error.to_string(),
         ),
     }
@@ -4896,6 +4913,26 @@ mod tests {
         assert_eq!(sale_view.items[0].saleable_stock, 5);
         assert_eq!(sale_view.items[0].slot_sales_state, "sale_ready");
         assert_eq!(ctx.state.outbox_size().await.expect("outbox"), 0);
+
+        let status_response = build_router(ctx.clone())
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/stock/attestation")
+                    .header(AUTHORIZATION, "Bearer test-token")
+                    .body(Body::empty())
+                    .expect("attestation status request"),
+            )
+            .await
+            .expect("attestation status response");
+        assert_eq!(status_response.status(), StatusCode::OK);
+        let status_body = axum::body::to_bytes(status_response.into_body(), usize::MAX)
+            .await
+            .expect("attestation status body");
+        let status: serde_json::Value = serde_json::from_slice(&status_body).expect("json");
+        assert_eq!(status["status"], "ready");
+        assert_eq!(status["attestationId"], "ATT-IPC");
+        assert_eq!(status["inconsistentSlots"], serde_json::json!([]));
     }
 
     fn profile_cache(

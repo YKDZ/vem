@@ -1953,8 +1953,10 @@ describe("Windows D cache contract", () => {
       "& $pnpm config get store-dir",
       "& $pnpm config set virtual-store-dir",
       "& $pnpm config get virtual-store-dir",
+      "Invoke-TestbedQuietCommand",
       "& $pnpm --reporter=silent fetch --frozen-lockfile --trust-lockfile",
       "& $pnpm --reporter=silent install --frozen-lockfile --offline --trust-lockfile",
+      "--output-logs=errors-only --log-order=grouped --log-prefix=task",
       "--cache-dir $env:TURBO_CACHE_DIR",
       "$env:CARGO_TARGET_DIR",
       "$env:SCCACHE_DIR",
@@ -1996,7 +1998,11 @@ describe("Windows D cache contract", () => {
     );
     assert.match(
       guest,
-      /if \(-not \(Test-Path -LiteralPath \$pnpmFetchCompletePath -PathType Leaf\)\) \{[\s\S]*pnpm --reporter=silent fetch --frozen-lockfile --trust-lockfile[\s\S]*Set-Content -LiteralPath \$pnpmFetchCompletePath/,
+      /if \(-not \(Test-Path -LiteralPath \$pnpmFetchCompletePath -PathType Leaf\)\) \{[\s\S]*Invoke-TestbedQuietCommand "pnpm fetch" \(Join-Path \$cacheRoot "logs\\pnpm-fetch-\$pnpmLockDigest\.log"\)[\s\S]*Set-Content -LiteralPath \$pnpmFetchCompletePath/,
+    );
+    assert.match(
+      guest,
+      /Invoke-TestbedQuietCommand "pnpm install" \(Join-Path \$cacheRoot "logs\\pnpm-install-\$pnpmLockDigest\.log"\)/,
     );
     assert.match(
       guest,

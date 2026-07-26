@@ -22,6 +22,16 @@ import {
   waitForBusinessHardwareReady,
 } from "./full-workflow-orchestrator.mjs";
 
+function readyPhysicalStockAttestation(attestationId) {
+  return {
+    status: "ready",
+    code: "PHYSICAL_STOCK_ATTESTATION_READY",
+    attestationId,
+    planogramVersion: "PLAN-01",
+    inconsistentSlots: [],
+  };
+}
+
 describe("full workflow serial lifecycle", () => {
   it("reloads runtime identities changed by a track restart", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-workflow-handoff-reload-"));
@@ -772,6 +782,9 @@ describe("full workflow serial lifecycle", () => {
             ],
           };
         }
+        if (path === "/v1/stock/attestation") {
+          return readyPhysicalStockAttestation(posts[0]?.body?.attestationId);
+        }
         saleViewReads += 1;
         return {
           items: [
@@ -907,6 +920,9 @@ describe("full workflow serial lifecycle", () => {
             ],
           };
         }
+        if (path === "/v1/stock/attestation") {
+          return readyPhysicalStockAttestation(posts[0]?.body?.attestationId);
+        }
         saleViewReads += 1;
         return {
           planogramVersion: "PLAN-01",
@@ -990,6 +1006,9 @@ describe("full workflow serial lifecycle", () => {
             ],
           };
         }
+        if (path === "/v1/stock/attestation") {
+          return readyPhysicalStockAttestation(posts[0]?.body?.attestationId);
+        }
         saleViewReads += 1;
         return {
           planogramVersion: "PLAN-01",
@@ -1063,6 +1082,9 @@ describe("full workflow serial lifecycle", () => {
               },
             ],
           };
+        }
+        if (path === "/v1/stock/attestation") {
+          return readyPhysicalStockAttestation(posts[0]?.body?.attestationId);
         }
         saleViewReads += 1;
         return {
@@ -1139,6 +1161,9 @@ describe("full workflow serial lifecycle", () => {
             ],
           };
         }
+        if (path === "/v1/stock/attestation") {
+          return readyPhysicalStockAttestation(posts[0]?.body?.attestationId);
+        }
         saleViewReads += 1;
         return {
           planogramVersion: "PLAN-01",
@@ -1194,6 +1219,9 @@ describe("full workflow serial lifecycle", () => {
               { slotId: "slot-01", slotDisplayLabel: "A1", currentQuantity: 2 },
             ],
           };
+        }
+        if (path === "/v1/stock/attestation") {
+          return readyPhysicalStockAttestation(posts[0]?.body?.attestationId);
         }
         saleViewReads += 1;
         return {
@@ -1267,6 +1295,9 @@ describe("full workflow serial lifecycle", () => {
               { slotId: "slot-01", slotDisplayLabel: "A1", currentQuantity: 3 },
             ],
           };
+        }
+        if (path === "/v1/stock/attestation") {
+          return readyPhysicalStockAttestation(posts[0]?.body?.attestationId);
         }
         saleViewReads += 1;
         return {
