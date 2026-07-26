@@ -476,6 +476,7 @@ describe("presence and audio guest full", () => {
     let audioCaptureOrdinal = 0;
     let now = 0;
     let audioStopBody = null;
+    let presenceCuesEnabled = true;
     const report = await runPresenceAndAudioGuestFull(
       {
         mode: "full",
@@ -532,7 +533,22 @@ describe("presence and audio guest full", () => {
           calls.push("vision-owner-stop"),
         waitForControlledVisionRuntimeClient: async () =>
           calls.push("vision-client"),
-        fetchJson: async (_url, request) => {
+        fetchJson: async (url, request) => {
+          if (url.includes("/control/departure")) {
+            const at = traceTimestamp();
+            trace.push({
+              type: "journey_transition",
+              id: nextId++,
+              at,
+              recordedAt: at,
+              transitionId: "vision:presence-0:departed",
+              requestId: null,
+              terminalOutcomeId: null,
+              outcome: null,
+              message: null,
+            });
+            return { ok: true };
+          }
           const { state } = JSON.parse(request.body);
           calls.push(`vision:${state}`);
           if (
@@ -544,9 +560,10 @@ describe("presence and audio guest full", () => {
           }
           if (state === "approach") {
             approachCount += 1;
-            if (approachCount === 1)
+            if (!presenceCuesEnabled) return { ok: true };
+            if (approachCount === 2)
               appendLifecycle("vision:presence-1:welcome");
-            if (approachCount === 4)
+            if (approachCount === 5)
               appendLifecycle("vision:presence-3:welcome");
           }
           return { ok: true };
@@ -584,6 +601,7 @@ describe("presence and audio guest full", () => {
             : structuredClone(trace),
         readTrace: async () => structuredClone(trace),
         setAudioPreferences: async (_client, preferences) => {
+          presenceCuesEnabled = preferences.presenceCuesEnabled;
           calls.push(
             `audio-preferences:${preferences.presenceCuesEnabled ? "enabled" : "disabled"}`,
           );
@@ -758,11 +776,12 @@ describe("presence and audio guest full", () => {
         "vision:approach",
         "vision:approach",
         "vision:approach",
+        "vision:approach",
       ],
     );
     assert.deepEqual(
       calls.filter((value) => value === "vision:empty"),
-      ["vision:empty", "vision:empty", "vision:empty"],
+      ["vision:empty", "vision:empty"],
     );
     assert.ok(
       calls.includes(
@@ -795,7 +814,7 @@ describe("presence and audio guest full", () => {
     assert.equal(writes.get("C:\\out.json").ok, true);
   });
 
-  it("fails closed and cancels an active host audio capture when Vision injection fails", async () => {
+  it("fails closed before host audio capture when precondition Vision injection fails", async () => {
     const calls = [];
     const writes = new Map();
     const report = await runPresenceAndAudioGuestFull(
@@ -873,7 +892,7 @@ describe("presence and audio guest full", () => {
     );
     assert.equal(report.ok, false);
     assert.match(report.error.message, /controlled Vision unavailable/);
-    assert.ok(calls.includes("/v1/audio-captures/audio-1/cancel"));
+    assert.equal(calls.includes("/v1/audio-captures/start"), false);
     assert.equal(writes.get("C:\\out.json").ok, false);
   });
 

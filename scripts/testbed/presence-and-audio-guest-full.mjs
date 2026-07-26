@@ -189,6 +189,15 @@ async function injectVisionPresence(guestInput, state, dependencies) {
   });
 }
 
+async function injectVisionDeparture(guestInput, dependencies) {
+  const port = visionControlPort(guestInput);
+  return dependencies.fetchJson(`http://127.0.0.1:${port}/control/departure`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ source: "presence-and-audio-precondition" }),
+  });
+}
+
 function traceId(trace) {
   return trace.reduce(
     (maximum, entry) => Math.max(maximum, Number(entry?.id) || 0),
@@ -883,6 +892,12 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
     // A previous business set may leave the shared journey in a present state.
     // Observe a real departure when present state is still armed, even if the
     // bounded runtime trace no longer contains the original welcome edge.
+    await dependencies.setAudioPreferences(client, {
+      volume: 0.7,
+      cuesEnabled: true,
+      presenceCuesEnabled: false,
+      transactionCuesEnabled: true,
+    });
     const preconditionTrace = await readTrace();
     const preconditionBoundary = traceId(preconditionTrace);
     let presencePrecondition = {
@@ -890,7 +905,11 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
       outcome: "already_empty_or_unobserved",
       departureTransitionId: null,
     };
-    await injectVisionPresence(guestInput, "empty", dependencies);
+    await injectVisionPresence(guestInput, "approach", dependencies);
+    await dependencies.sleep(250);
+    await injectVisionDeparture(guestInput, dependencies).catch(() =>
+      injectVisionPresence(guestInput, "empty", dependencies),
+    );
     await waitForTraceEntry(
       readTrace,
       preconditionBoundary,
@@ -915,6 +934,12 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
       dependencies,
       "initial presence precondition",
     );
+    await dependencies.setAudioPreferences(client, {
+      volume: 0.7,
+      cuesEnabled: true,
+      presenceCuesEnabled: true,
+      transactionCuesEnabled: true,
+    });
     await dependencies.issueAdminVentReset(guestInput, dependencies);
     const ventEvidenceBefore = await dependencies.controlPlaneRequest(
       guestInput,
