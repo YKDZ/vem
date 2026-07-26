@@ -20,6 +20,7 @@ export async function replaceSerialSessionAndUpdateHandoff({
   handoffPath,
   sessionId,
   control,
+  writeJsonFile = writeJson,
 }) {
   if (typeof control !== "function") {
     throw new Error("serial session handoff control is required");
@@ -43,6 +44,6 @@ export async function replaceSerialSessionAndUpdateHandoff({
   });
   required(replacement.sessionId, "replacement serial session id");
   handoff.commissioningSerialSession = replacement;
-  writeJson(handoffPath, handoff);
+  writeJsonFile(handoffPath, handoff);
   return { aborted, replacement };
 }

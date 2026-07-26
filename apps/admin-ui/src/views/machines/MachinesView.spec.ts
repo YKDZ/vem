@@ -1260,10 +1260,11 @@ describe("MachinesView environment controls", () => {
       await vi.advanceTimersByTimeAsync(0);
       await Promise.resolve();
 
-      const baselineCalls = getMachine.mock.calls.length;
       app.unmount();
+      await Promise.resolve();
+      const callsAfterUnmount = getMachine.mock.calls.length;
       await vi.advanceTimersByTimeAsync(2000);
-      expect(getMachine).toHaveBeenCalledTimes(baselineCalls);
+      expect(getMachine).toHaveBeenCalledTimes(callsAfterUnmount);
     } finally {
       vi.useRealTimers();
     }

@@ -17,6 +17,7 @@ import {
   rewriteWebSocketDebuggerUrl,
   waitForRoute,
 } from "./machine-ui-cdp-driver.mjs";
+import { replaceSerialSessionAndUpdateHandoff } from "./serial-session-handoff.mjs";
 
 const SCHEMA_VERSION = "vem-local-operations-guest-full/v1";
 const AUDIO_PREFERENCE_TIMEOUT_MS = 30_000;
@@ -1097,6 +1098,7 @@ export async function runLocalOperationsGuest(options, dependencies = {}) {
     manualDispense: null,
     localEnvironmentControl: null,
     hardware: null,
+    serialSessionReplacement: null,
     systemTouchKeyboard: null,
     audioPreferencePersistence: null,
     maintenanceEntry: null,
@@ -1206,11 +1208,23 @@ export async function runLocalOperationsGuest(options, dependencies = {}) {
       protocolFrame: environmentFrames.at(-1) ?? null,
       protocolFrames: environmentFrames,
     };
-    await controlRequest(
-      input,
-      `/v1/serial-sessions/${session.sessionId}/abort`,
-    );
-    session = null;
+    const replacement = await replaceSerialSessionAndUpdateHandoff({
+      guestInput: input,
+      handoff,
+      handoffPath: options.handoffPath,
+      sessionId: session.sessionId,
+      control: controlRequest,
+      writeJsonFile: writeJsonFn,
+    });
+    report.serialSessionReplacement = {
+      previousControlPlaneSessionId: session.sessionId,
+      replacementControlPlaneSessionId: required(
+        replacement?.replacement?.sessionId,
+        "local operations replacement serial session id",
+      ),
+    };
+    session = replacement.replacement;
+    report.handoffSerialSessionId = session.sessionId;
     report.hardware = await waitForLowerControllerReady(handoff, daemonRequest);
     report.audioPreferencePersistence = await runAudioPreferencePersistence(
       {

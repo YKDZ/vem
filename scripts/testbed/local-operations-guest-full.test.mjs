@@ -429,6 +429,7 @@ describe("local operations guest full", () => {
     const manualDispenseRequests = [];
     const controlPaths = [];
     let evidenceReads = 0;
+    let serialStartCount = 0;
     const localEnvironmentControlRequests = [];
     const waitFrameRequests = [];
     const input = {
@@ -470,8 +471,13 @@ describe("local operations guest full", () => {
         },
         controlRequest: async (_input, path, body) => {
           controlPaths.push(path);
-          if (path === "/v1/serial-sessions/start")
-            return { sessionId: "serial-07" };
+          if (path === "/v1/serial-sessions/start") {
+            serialStartCount += 1;
+            return {
+              sessionId:
+                serialStartCount === 1 ? "serial-07" : "serial-07-replacement",
+            };
+          }
           if (path === "/v1/serial-sessions/serial-07/evidence") {
             evidenceReads += 1;
             if (evidenceReads === 1)
@@ -513,7 +519,8 @@ describe("local operations guest full", () => {
           if (
             path === "/v1/serial-sessions/serial-07/release-f0" ||
             path === "/v1/serial-sessions/serial-07/release-f2" ||
-            path === "/v1/serial-sessions/serial-07/abort"
+            path === "/v1/serial-sessions/serial-07/abort" ||
+            path === "/v1/serial-sessions/serial-07-replacement/abort"
           ) {
             return { ok: true };
           }
@@ -566,9 +573,12 @@ describe("local operations guest full", () => {
           throw new Error(`unexpected daemon path: ${path}`);
         },
         collectAudioPreferencePersistenceEvidence: async () => {
-          assert.equal(
-            controlPaths.at(-1),
+          const abortIndex = controlPaths.lastIndexOf(
             "/v1/serial-sessions/serial-07/abort",
+          );
+          assert.equal(
+            controlPaths[abortIndex + 1],
+            "/v1/serial-sessions/start",
           );
           return {
             target: {
@@ -635,6 +645,10 @@ describe("local operations guest full", () => {
       },
       protocolFrame: { parsedOpcode: "B3", rawFrameHex: "55b303" },
       protocolFrames: [{ parsedOpcode: "B3", rawFrameHex: "55b303" }],
+    });
+    assert.deepEqual(writes.at(-1).value.serialSessionReplacement, {
+      previousControlPlaneSessionId: "serial-07",
+      replacementControlPlaneSessionId: "serial-07-replacement",
     });
     assert.deepEqual(manualDispenseRequests, [
       {

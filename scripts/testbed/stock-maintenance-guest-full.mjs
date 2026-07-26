@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
@@ -574,8 +574,25 @@ function runSale(options, outPath) {
     child.once("error", reject);
     child.once("close", (code) => {
       if (code === 0) return resolvePromise(readJson(outPath));
+      const report = existsSync(outPath) ? readJson(outPath) : null;
+      const reportError =
+        report?.error?.message ??
+        report?.summary?.error ??
+        report?.validator?.reason ??
+        null;
+      const reportSummary = report
+        ? {
+            ok: report.ok,
+            stage: report.stage ?? report.summary?.stage ?? null,
+            route: report.ui?.afterF2?.route ?? report.summary?.route ?? null,
+            orderNo: report.summary?.orderNo ?? report.order?.orderNo ?? null,
+            error: reportError,
+          }
+        : null;
       reject(
-        new Error(`installed stock sale failed with exit ${code}: ${stderr}`),
+        new Error(
+          `installed stock sale failed with exit ${code}: ${JSON.stringify({ report: reportSummary, stderr: stderr.slice(-2_048) })}`,
+        ),
       );
     });
   });
