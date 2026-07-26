@@ -1799,7 +1799,7 @@ describe("full workflow stability gate", () => {
     }
   });
 
-  it("accepts observed retained caches regardless of filesystem enumeration order", () => {
+  it("retains observed cache evidence without making it a drift gate", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-workflow-stability-"));
     try {
       const report = (reconstruction) => {

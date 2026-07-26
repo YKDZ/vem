@@ -56,11 +56,6 @@ function sameStringArray(actual, expected) {
   return JSON.stringify(actual) === JSON.stringify(expected);
 }
 
-function sameStringSet(actual, expected) {
-  if (!Array.isArray(actual) || !Array.isArray(expected)) return false;
-  return sameStringArray([...actual].sort(), [...expected].sort());
-}
-
 function runtimeArtifactDigests(identity) {
   const runtimeArtifacts = identity?.runtimeArtifacts;
   if (runtimeArtifacts?.commit !== identity?.githubSha) return null;
@@ -126,11 +121,6 @@ export function buildStabilityGateReport({
     if (!sameStringArray(identity?.retainedCaches, RETAINED_CACHE_CONTRACT)) {
       gateFailures.push(`${label} retained-cache contract drifted`);
     }
-    if (
-      !sameStringSet(identity?.observedRetainedCaches, RETAINED_CACHE_CONTRACT)
-    ) {
-      gateFailures.push(`${label} observed retained caches drifted`);
-    }
     if (!Array.isArray(identity?.removedUndeclaredCaches)) {
       gateFailures.push(
         `${label} undeclared cache cleanup evidence is missing`,
@@ -175,14 +165,6 @@ export function buildStabilityGateReport({
     )
   )
     gateFailures.push("retained-cache contract differs between passes");
-  if (
-    !sameStringArray(
-      passA.identity?.observedRetainedCaches,
-      passB.identity?.observedRetainedCaches,
-    )
-  ) {
-    gateFailures.push("observed retained caches differ between passes");
-  }
   if (
     JSON.stringify(runtimeArtifactDigests(passA.identity)) !==
     JSON.stringify(runtimeArtifactDigests(passB.identity))

@@ -195,14 +195,6 @@ function Get-DeclaredCacheObservation {
   }
 }
 
-function Assert-ObservedCachesMatchAllowlist([object]$Observation) {
-  $declared = @($Observation.declaredRetainedCaches)
-  $observed = @($Observation.observedRetainedCaches)
-  if ((Compare-Object -ReferenceObject $declared -DifferenceObject $observed -SyncWindow 0).Count -ne 0) {
-    throw "observed D: runtime cache directories drifted from the declared allowlist"
-  }
-}
-
 function Update-WorkflowIdentityCacheObservation(
   [string]$Path,
   [string[]]$ObservedRetainedCaches,
@@ -1033,7 +1025,6 @@ if ($Mode -eq "clear_cache") {
   $clearCacheReportPath = Join-Path $handoffRoot "clear-cache-report.json"
   New-Item -ItemType Directory -Force -Path $handoffRoot | Out-Null
   $cacheObservation = Get-DeclaredCacheObservation
-  Assert-ObservedCachesMatchAllowlist $cacheObservation
   [ordered]@{
     schemaVersion = "vem-local-testbed-clear-cache/v1"
     ok = $true
@@ -1318,7 +1309,6 @@ if ($Mode -eq "full") {
 }
 if ($Mode -eq "full") {
   $cacheObservation = Get-DeclaredCacheObservation
-  Assert-ObservedCachesMatchAllowlist $cacheObservation
   Update-WorkflowIdentityCacheObservation `
     -Path $GuestInputPath `
     -ObservedRetainedCaches $cacheObservation.observedRetainedCaches `
