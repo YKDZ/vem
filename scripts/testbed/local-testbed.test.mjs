@@ -41,6 +41,7 @@ import {
   paymentMockQueryFaultPaths,
   prepareInstallationOwnedPaymentProvider,
   reprepareGuestInputForRefresh,
+  refreshPlatformFixtureForRun,
   refreshGuestInputForRun,
   seedThroughSupportedApis,
   validateRefreshGuestInput,
@@ -551,6 +552,143 @@ describe("local testbed orchestration", () => {
       refreshed.paymentProvider.identity.providerConfigId,
       "fresh-config",
     );
+  });
+
+  it("reseeds the platform fixture when a fast refresh finds no current machine", async () => {
+    const input = {
+      runId: "RUN-PREVIOUS",
+      machineCode: "VEM-TESTBED-LOCAL",
+      claimCode: "OLD-0001",
+      fixtureAllocation: { sale: { slotDisplayLabel: "A1" } },
+      visionAcceptance: { selectedCatalogKey: "old" },
+    };
+    const calls = [];
+    const refreshed = await refreshPlatformFixtureForRun({
+      input,
+      baseUrl: "http://127.0.0.1:26849/api",
+      fixture: { schemaVersion: "fixture" },
+      hostPrivateAddress: "10.0.0.15",
+      request: async (_base, path, options = {}) => {
+        calls.push({ path, ...options });
+        if (path === "/auth/login") return { accessToken: "admin-token" };
+        if (path === "/machines?page=1&pageSize=100") return { items: [] };
+        throw new Error(`unexpected request: ${path}`);
+      },
+      seedPlatform: async ({ baseUrl, hostPrivateAddress }) => {
+        assert.equal(baseUrl, "http://127.0.0.1:26849/api");
+        assert.equal(hostPrivateAddress, "10.0.0.15");
+        return {
+          machine: { code: "VEM-TESTBED-LOCAL" },
+          claim: { claimCode: "NEW-0001" },
+          planogramVersion: "LOCAL-TESTBED-V2",
+          visionAcceptance: { selectedCatalogKey: "new" },
+          slots: [
+            {
+              slotId: "slot-sale",
+              rowNo: 1,
+              cellNo: 1,
+              slotDisplayLabel: "A1",
+              categoryKey: "socks",
+              inventoryId: "inventory-sale",
+              onHandQty: 3,
+              sku: "SKU-SALE",
+            },
+            {
+              slotId: "slot-scanner",
+              rowNo: 1,
+              cellNo: 2,
+              slotDisplayLabel: "A2",
+              categoryKey: "socks",
+              inventoryId: "inventory-scanner",
+              onHandQty: 3,
+              sku: "SKU-SCANNER",
+            },
+            {
+              slotId: "slot-vision",
+              rowNo: 1,
+              cellNo: 3,
+              slotDisplayLabel: "A3",
+              categoryKey: "tshirts",
+              inventoryId: "inventory-vision",
+              onHandQty: 3,
+              sku: "SKU-VISION",
+            },
+            {
+              slotId: "slot-failure",
+              rowNo: 1,
+              cellNo: 4,
+              slotDisplayLabel: "A4",
+              categoryKey: "socks",
+              inventoryId: "inventory-failure",
+              onHandQty: 3,
+              sku: "SKU-FAILURE",
+            },
+            {
+              slotId: "slot-pickup",
+              rowNo: 1,
+              cellNo: 5,
+              slotDisplayLabel: "A5",
+              categoryKey: "socks",
+              inventoryId: "inventory-pickup",
+              onHandQty: 3,
+              sku: "SKU-PICKUP",
+            },
+            {
+              slotId: "slot-ipc",
+              rowNo: 2,
+              cellNo: 1,
+              slotDisplayLabel: "B1",
+              categoryKey: "socks",
+              inventoryId: "inventory-ipc",
+              onHandQty: 3,
+              sku: "SKU-IPC",
+            },
+            {
+              slotId: "slot-stock",
+              rowNo: 2,
+              cellNo: 2,
+              slotDisplayLabel: "B2",
+              categoryKey: "socks",
+              inventoryId: "inventory-stock",
+              onHandQty: 1,
+              sku: "SKU-STOCK",
+            },
+          ],
+        };
+      },
+    });
+    assert.equal(calls.at(0).path, "/auth/login");
+    assert.equal(refreshed.claimCode, "NEW-0001");
+    assert.equal(refreshed.planogramVersion, "LOCAL-TESTBED-V2");
+    assert.equal(refreshed.visionAcceptance.selectedCatalogKey, "new");
+    assert.equal(
+      refreshed.fixtureAllocation.stockMaintenance.slotId,
+      "slot-stock",
+    );
+  });
+
+  it("keeps the refresh fixture when the current machine is still present", async () => {
+    const input = {
+      machineCode: "VEM-TESTBED-LOCAL",
+      claimCode: "OLD-0001",
+      fixtureAllocation: { sale: { slotDisplayLabel: "A1" } },
+    };
+    const refreshed = await refreshPlatformFixtureForRun({
+      input,
+      baseUrl: "http://127.0.0.1:26849/api",
+      fixture: { schemaVersion: "fixture" },
+      hostPrivateAddress: "10.0.0.15",
+      request: async (_base, path) => {
+        if (path === "/auth/login") return { accessToken: "admin-token" };
+        if (path === "/machines?page=1&pageSize=100")
+          return { items: [{ code: "VEM-TESTBED-LOCAL" }] };
+        throw new Error(`unexpected request: ${path}`);
+      },
+      seedPlatform: async () => {
+        throw new Error("seed should not run when the machine is present");
+      },
+    });
+    assert.equal(refreshed, input);
   });
 
   it("requires refresh to retain the existing guest identity and control-plane token", () => {
@@ -1482,7 +1620,7 @@ describe("Windows D cache contract", () => {
     );
     assert.ok(
       guestScript.indexOf("Clear-TestbedVisionProcesses $guestInput") <
-        guestScript.indexOf('if ($Mode -eq "fast")'),
+        guestScript.indexOf("$isWarmFastRun ="),
     );
     assert.equal(
       (
@@ -1900,7 +2038,7 @@ describe("Windows D cache contract", () => {
       new URL("./run-local-testbed-guest.ps1", import.meta.url),
       "utf8",
     );
-    const fast = guest.indexOf('if ($Mode -eq "fast")');
+    const fast = guest.indexOf("$isWarmFastRun =");
     const dependencies = guest.indexOf('Write-TestbedPhase "dependencies"');
     const machineBuild = guest.indexOf('Write-TestbedPhase "machine-build"');
     const deploy = guest.indexOf('Write-TestbedPhase "deploy-runtime"');
@@ -1938,7 +2076,11 @@ describe("Windows D cache contract", () => {
     );
     assert.match(
       guest,
-      /\$isWarmFastRun = \$Mode -eq "fast" -and \(Test-Path -LiteralPath \$handoffPath -PathType Leaf\)[\s\S]*if \(\$isWarmFastRun\) \{[\s\S]*existingHandoff[\s\S]*claim\.status -ne "provisioned"[\s\S]*Require-Path \(Join-Path \$runtimeRoot "runtime-bootstrap\.json"\)[\s\S]*\} elseif \(\$Mode -eq "fast"\) \{\s+Write-TestbedPhase "cold-fast-bootstrap"/,
+      /\$isWarmFastRun = \$Mode -eq "fast" -and \(Test-Path -LiteralPath \$handoffPath -PathType Leaf\)[\s\S]*\$existingClaimMatchesInput[\s\S]*claim\.claimCode -eq \$guestInput\.claimCode[\s\S]*if \(\$Mode -eq "fast" -and -not \$isWarmFastRun\) \{\s+Write-TestbedPhase "cold-fast-bootstrap"/,
+    );
+    assert.match(
+      guest,
+      /claim = \[ordered\]@\{ status = \[string\]\$claim\.status; machineCode = \[string\]\$claim\.machineCode; claimCode = \[string\]\$guestInput\.claimCode \}/,
     );
     assert.match(
       guest,

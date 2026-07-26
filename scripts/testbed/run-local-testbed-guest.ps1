@@ -1030,15 +1030,19 @@ $isWarmFastRun = $Mode -eq "fast" -and (Test-Path -LiteralPath $handoffPath -Pat
 if ($isWarmFastRun) {
   Require-Path $handoffPath
   $existingHandoff = Get-Content -Raw -LiteralPath $handoffPath -Encoding UTF8 | ConvertFrom-Json
-  if ($existingHandoff.schemaVersion -ne "vem-installed-runtime-handoff/v1" -or
-    $existingHandoff.claim.status -ne "provisioned" -or
-    $existingHandoff.claim.machineCode -ne $guestInput.machineCode) {
-    throw "warm fast run requires the existing provisioned runtime handoff"
+  $existingClaimMatchesInput = $existingHandoff.schemaVersion -eq "vem-installed-runtime-handoff/v1" -and
+    $existingHandoff.claim.status -eq "provisioned" -and
+    $existingHandoff.claim.machineCode -eq $guestInput.machineCode -and
+    $existingHandoff.claim.claimCode -eq $guestInput.claimCode
+  if (-not $existingClaimMatchesInput) {
+    $isWarmFastRun = $false
+  } else {
+    $claim = $existingHandoff.claim
+    Require-Path (Join-Path $runtimeRoot "runtime-bootstrap.json")
+    Write-TestbedPhase "warm-baseline-recovery"
   }
-  $claim = $existingHandoff.claim
-  Require-Path (Join-Path $runtimeRoot "runtime-bootstrap.json")
-  Write-TestbedPhase "warm-baseline-recovery"
-} elseif ($Mode -eq "fast") {
+}
+if ($Mode -eq "fast" -and -not $isWarmFastRun) {
   Write-TestbedPhase "cold-fast-bootstrap"
 }
 
@@ -1254,7 +1258,7 @@ $smokeOutPath = Join-Path $handoffRoot "installed-runtime-smoke.json"
 [ordered]@{
   schemaVersion = "vem-installed-runtime-handoff/v1"
   machineCode = [string]$guestInput.machineCode
-  claim = [ordered]@{ status = [string]$claim.status; machineCode = [string]$claim.machineCode }
+  claim = [ordered]@{ status = [string]$claim.status; machineCode = [string]$claim.machineCode; claimCode = [string]$guestInput.claimCode }
   commissioningSerialSession = $commissioningSerialSession
   startupOwnerReadiness = $startupState.readiness
   daemon = [ordered]@{

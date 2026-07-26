@@ -1904,6 +1904,48 @@ export async function reprepareGuestInputForRefresh({
   return refreshGuestInputForRun(input, runId, paymentProvider);
 }
 
+export async function refreshPlatformFixtureForRun({
+  input,
+  baseUrl,
+  fixture,
+  hostPrivateAddress,
+  request = requestJson,
+  upload = uploadMultipartFile,
+  seedPlatform = seedThroughSupportedApis,
+}) {
+  const login = await request(baseUrl, "/auth/login", {
+    method: "POST",
+    body: {
+      username: LOCAL_TESTBED_ADMIN_USERNAME,
+      password: LOCAL_TESTBED_ADMIN_PASSWORD,
+    },
+  });
+  const token = login.accessToken;
+  const machinesPage = await request(baseUrl, "/machines?page=1&pageSize=100", {
+    token,
+  });
+  const existingMachine = (machinesPage.items ?? []).find(
+    (machine) => machine.code === input.machineCode,
+  );
+  if (existingMachine) return input;
+
+  const seeded = await seedPlatform({
+    baseUrl,
+    fixture,
+    hostPrivateAddress,
+    request,
+    upload,
+  });
+  return {
+    ...input,
+    fixtureAllocation: allocateFullWorkflowFixtures(seeded.slots),
+    claimCode: seeded.claim.claimCode,
+    machineCode: seeded.machine.code,
+    planogramVersion: seeded.planogramVersion,
+    visionAcceptance: seeded.visionAcceptance,
+  };
+}
+
 async function stageExistingGuestInput(options, contract) {
   const guest = contract.testbed.guest;
   const ssh = [
@@ -1987,6 +2029,13 @@ export async function refreshHostRuntime(options) {
     throw await serviceApiFailure(error, options);
   }
   try {
+    guestInput = await refreshPlatformFixtureForRun({
+      input: guestInput,
+      runId: options.runId,
+      baseUrl: apiBaseUrl,
+      fixture: fixtureDocument.fixture,
+      hostPrivateAddress: options.hostPrivateAddress,
+    });
     guestInput = await reprepareGuestInputForRefresh({
       input: guestInput,
       runId: options.runId,
