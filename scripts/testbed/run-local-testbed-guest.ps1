@@ -643,6 +643,26 @@ function Clear-TestbedLegacyRuntimeOwnersForStartup {
     ForEach-Object { Stop-Process -Id ([int]$_.ProcessId) -Force -ErrorAction SilentlyContinue }
 }
 
+function Stop-TestbedInstalledRuntimeBeforeDeployment {
+  Clear-TestbedLegacyRuntimeOwnersForStartup
+  foreach ($name in @("vending-daemon", "machine", "vending-vision")) {
+    Get-Process -Name $name -ErrorAction SilentlyContinue |
+      Stop-Process -Force -ErrorAction SilentlyContinue
+  }
+  $processStopDeadline = (Get-Date).AddSeconds(30)
+  do {
+    $remaining = @(Get-Process -Name "vending-daemon", "machine", "vending-vision" -ErrorAction SilentlyContinue)
+    if ($remaining.Count -eq 0) { return }
+    Start-Sleep -Milliseconds 250
+  } while ((Get-Date) -lt $processStopDeadline)
+
+  $diagnostics = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+    [string]$_.Name -match '^(machine|vending-daemon|vending-vision)\.exe$'
+  } | Select-Object ProcessId, Name, ExecutablePath, CommandLine)
+  $summary = $diagnostics | ConvertTo-Json -Compress -Depth 4
+  throw "installed runtime processes did not stop before deployment: $summary"
+}
+
 function Restart-TestbedDaemonServiceOwner([string]$DaemonPath) {
   $canonicalDaemonPath = [IO.Path]::GetFullPath($DaemonPath)
   $service = Get-Service -Name "VemVendingDaemon" -ErrorAction Stop
@@ -1092,13 +1112,13 @@ if ((& $pnpm config get store-dir).Trim() -ne $env:PNPM_STORE_PATH) { throw "pnp
 if ($LASTEXITCODE -ne 0) { throw "pnpm virtual store configuration failed" }
 if ((& $pnpm config get virtual-store-dir).Trim() -ne $pnpmVirtualStorePath) { throw "pnpm virtual-store-dir did not resolve to lock-keyed D: cache" }
 if (-not (Test-Path -LiteralPath $pnpmFetchCompletePath -PathType Leaf)) {
-  & $pnpm fetch --frozen-lockfile --trust-lockfile
+  & $pnpm fetch --frozen-lockfile --trust-lockfile --reporter=silent
   if ($LASTEXITCODE -ne 0) { throw "pnpm fetch failed" }
   Set-Content -LiteralPath $pnpmFetchCompletePath -Value $pnpmLockDigest -Encoding ascii
 }
 if (-not (Test-Path -LiteralPath $pnpmWorkspaceMarker -PathType Leaf) -or
   (Get-Content -Raw -LiteralPath $pnpmWorkspaceMarker).Trim() -ne $pnpmLockDigest) {
-  & $pnpm install --frozen-lockfile --offline --trust-lockfile
+  & $pnpm install --frozen-lockfile --offline --trust-lockfile --reporter=silent
   if ($LASTEXITCODE -ne 0) { throw "pnpm install failed" }
   Set-Content -LiteralPath $pnpmWorkspaceMarker -Value $pnpmLockDigest -Encoding ascii
 }
@@ -1208,17 +1228,7 @@ $guestInput | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $GuestInputPat
 Write-TestbedPhase "deploy-runtime"
 $daemonPath = Join-Path $deploymentRoot "vending-daemon.exe"
 $machinePath = Join-Path $deploymentRoot "machine.exe"
-Clear-TestbedLegacyRuntimeOwnersForStartup
-Get-Process vending-daemon -ErrorAction SilentlyContinue | Stop-Process -Force
-Get-Process machine, vending-vision -ErrorAction SilentlyContinue | Stop-Process -Force
-$processStopDeadline = (Get-Date).AddSeconds(10)
-while (
-  (Get-Process vending-daemon, machine, vending-vision -ErrorAction SilentlyContinue) -and
-  (Get-Date) -lt $processStopDeadline
-) { Start-Sleep -Milliseconds 100 }
-if (Get-Process vending-daemon, machine, vending-vision -ErrorAction SilentlyContinue) {
-  throw "installed runtime processes did not stop before deployment"
-}
+Stop-TestbedInstalledRuntimeBeforeDeployment
 Copy-Item -LiteralPath $daemonSource -Destination $daemonPath -Force
 Copy-Item -LiteralPath $machineSource -Destination $machinePath -Force
 Copy-Item -LiteralPath $webViewLoaderSource -Destination (Join-Path $deploymentRoot "WebView2Loader.dll") -Force

@@ -1953,8 +1953,8 @@ describe("Windows D cache contract", () => {
       "& $pnpm config get store-dir",
       "& $pnpm config set virtual-store-dir",
       "& $pnpm config get virtual-store-dir",
-      "& $pnpm fetch --frozen-lockfile --trust-lockfile",
-      "& $pnpm install --frozen-lockfile --offline --trust-lockfile",
+      "& $pnpm fetch --frozen-lockfile --trust-lockfile --reporter=silent",
+      "& $pnpm install --frozen-lockfile --offline --trust-lockfile --reporter=silent",
       "--cache-dir $env:TURBO_CACHE_DIR",
       "$env:CARGO_TARGET_DIR",
       "$env:SCCACHE_DIR",
@@ -1996,7 +1996,7 @@ describe("Windows D cache contract", () => {
     );
     assert.match(
       guest,
-      /if \(-not \(Test-Path -LiteralPath \$pnpmFetchCompletePath -PathType Leaf\)\) \{[\s\S]*pnpm fetch --frozen-lockfile --trust-lockfile[\s\S]*Set-Content -LiteralPath \$pnpmFetchCompletePath/,
+      /if \(-not \(Test-Path -LiteralPath \$pnpmFetchCompletePath -PathType Leaf\)\) \{[\s\S]*pnpm fetch --frozen-lockfile --trust-lockfile --reporter=silent[\s\S]*Set-Content -LiteralPath \$pnpmFetchCompletePath/,
     );
     assert.match(
       guest,
@@ -2049,6 +2049,10 @@ describe("Windows D cache contract", () => {
     assert.match(
       guest,
       /reuse-pass-1-runtime-artifacts[\s\S]*reuse-commit-runtime-artifacts/,
+    );
+    assert.match(
+      guest,
+      /function Stop-TestbedInstalledRuntimeBeforeDeployment[\s\S]*AddSeconds\(30\)[\s\S]*installed runtime processes did not stop before deployment: \$summary/,
     );
     assert.match(
       guest,
