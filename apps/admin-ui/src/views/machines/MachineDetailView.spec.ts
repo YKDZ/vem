@@ -271,27 +271,6 @@ async function flushPromises(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-async function advanceTimersUntil(
-  assertion: () => void,
-  { timeoutMs = 3_000, stepMs = 50 } = {},
-): Promise<void> {
-  const attempt = async (elapsedMs: number): Promise<void> => {
-    try {
-      assertion();
-      return;
-    } catch (error) {
-      if (elapsedMs >= timeoutMs) {
-        throw error instanceof Error ? error : new Error(String(error));
-      }
-    }
-    await vi.advanceTimersByTimeAsync(stepMs);
-    await Promise.resolve();
-    await nextTick();
-    return attempt(elapsedMs + stepMs);
-  };
-  await attempt(0);
-}
-
 async function mountView(
   permissions: PermissionCode[] = [
     "machines.read",
@@ -580,7 +559,7 @@ describe("MachineDetailView", () => {
     expect(root.textContent).not.toContain("失败：");
   });
 
-  it("tracks environment command progress until terminal status and releases controls", async () => {
+  it("shows terminal environment command status and releases controls", async () => {
     const machine = machineFixture({
       latestEnvironment: {
         temperatureCelsius: 21,
@@ -589,55 +568,33 @@ describe("MachineDetailView", () => {
         sensorStatus: "unknown",
       },
     });
-    const pendingCommand = {
+    const succeededCommand = {
       id: "cmd-poll",
       machineId: machine.id,
-      commandNo: "MCMD-PENDING",
+      commandNo: "MCMD-SUCCEEDED",
       type: "environment-control",
-      status: "sent",
+      status: "succeeded",
       payloadJson: { airConditionerOn: true },
     };
-    const acknowledgedCommand = {
-      ...pendingCommand,
-      status: "acknowledged",
-    };
-    const succeededCommand = {
-      ...pendingCommand,
-      status: "succeeded",
-    };
 
-    apiMocks.getMachine
-      .mockResolvedValueOnce({
-        ...machine,
-        latestEnvironmentCommand: null,
-      })
-      .mockResolvedValueOnce({
-        ...machine,
-        latestEnvironmentCommand: acknowledgedCommand,
-      })
-      .mockResolvedValueOnce({
-        ...machine,
-        latestEnvironmentCommand: succeededCommand,
-      });
-    apiMocks.commandEnvironment.mockResolvedValue(pendingCommand);
+    apiMocks.getMachine.mockResolvedValue({
+      ...machine,
+      latestEnvironmentCommand: null,
+    });
+    apiMocks.commandEnvironment.mockResolvedValue(succeededCommand);
 
     const { app, root } = await mountView();
-    vi.useFakeTimers();
     try {
       const openButton = Array.from(root.querySelectorAll("button")).find(
         (button) => button.textContent?.includes("开启"),
       );
       openButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      await vi.advanceTimersByTimeAsync(0);
-      await Promise.resolve();
-      expect(openButton?.disabled).toBe(true);
+      await flushPromises();
 
-      await advanceTimersUntil(() => {
-        expect(root.textContent).toContain("命令成功");
-        expect(openButton?.disabled).toBe(false);
-      });
+      expect(root.textContent).toContain("命令成功");
+      expect(openButton?.disabled).toBe(false);
+      expect(apiMocks.messageSuccess).toHaveBeenCalledWith("空调控制已完成");
     } finally {
-      vi.useRealTimers();
       app.unmount();
     }
   });

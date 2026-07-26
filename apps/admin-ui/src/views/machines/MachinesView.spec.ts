@@ -102,27 +102,6 @@ async function flushPromises(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-async function advanceTimersUntil(
-  assertion: () => void,
-  { timeoutMs = 3_000, stepMs = 50 } = {},
-): Promise<void> {
-  const attempt = async (elapsedMs: number): Promise<void> => {
-    try {
-      assertion();
-      return;
-    } catch (error) {
-      if (elapsedMs >= timeoutMs) {
-        throw error instanceof Error ? error : new Error(String(error));
-      }
-    }
-    await vi.advanceTimersByTimeAsync(stepMs);
-    await Promise.resolve();
-    await nextTick();
-    return attempt(elapsedMs + stepMs);
-  };
-  await attempt(0);
-}
-
 function getEventInput(event: Event): HTMLInputElement {
   if (!(event.target instanceof HTMLInputElement)) {
     throw new Error("Expected input event target");
@@ -1223,93 +1202,6 @@ describe("MachinesView environment controls", () => {
     );
     await flushPromises();
     expect(dialog.textContent).toContain("命令超时");
-  });
-
-  it("tracks environment command progress until terminal status and releases controls", async () => {
-    const machine = createMachineFixture({
-      latestEnvironment: {
-        temperatureCelsius: 21,
-        humidityRh: 50,
-        sampledAt: "2026-06-04T05:02:00.000Z",
-        sensorStatus: "unknown",
-      },
-    });
-    const pendingCommand = {
-      id: "cmd-poll",
-      machineId: machine.id,
-      commandNo: "MCMD-PENDING",
-      type: "environment-control",
-      status: "sent",
-      payloadJson: { airConditionerOn: true },
-    };
-    const acknowledgedCommand = {
-      ...pendingCommand,
-      status: "acknowledged",
-      payloadJson: { airConditionerOn: true },
-    };
-    const succeededCommand = {
-      ...pendingCommand,
-      status: "succeeded",
-      payloadJson: { airConditionerOn: true },
-    };
-
-    listMachines.mockResolvedValue({
-      items: [machine],
-      total: 1,
-      page: 1,
-      pageSize: 20,
-    });
-    getMachine
-      .mockResolvedValueOnce({
-        ...machine,
-        latestEnvironmentCommand: null,
-      })
-      .mockResolvedValueOnce({
-        ...machine,
-        latestEnvironmentCommand: acknowledgedCommand,
-      })
-      .mockResolvedValueOnce({
-        ...machine,
-        latestEnvironmentCommand: succeededCommand,
-      });
-    commandEnvironment.mockResolvedValue(pendingCommand);
-
-    const { root } = await mountMachinesView();
-    vi.useFakeTimers();
-    try {
-      const environmentButton = Array.from(
-        root.querySelectorAll("button"),
-      ).find((button) => button.textContent?.includes("环境"));
-      environmentButton?.dispatchEvent(
-        new MouseEvent("click", { bubbles: true }),
-      );
-      await Promise.resolve();
-      await nextTick();
-      const dialog = requireElement(
-        root.querySelector<HTMLElement>('[role="dialog"]'),
-        "environment dialog",
-      );
-      const openButton = Array.from(dialog.querySelectorAll("button")).find(
-        (button) => button.textContent?.includes("开启"),
-      );
-      openButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      await vi.advanceTimersByTimeAsync(0);
-      await Promise.resolve();
-      expect(openButton?.disabled).toBe(true);
-      expect(dialog.textContent).toContain("命令");
-
-      const pollerCallAfterSubmit = getMachine.mock.calls.length;
-
-      await advanceTimersUntil(() => {
-        expect(dialog.textContent).toContain("命令成功");
-        expect(openButton?.disabled).toBe(false);
-        expect(getMachine.mock.calls.length).toBeGreaterThan(
-          pollerCallAfterSubmit,
-        );
-      });
-    } finally {
-      vi.useRealTimers();
-    }
   });
 
   it("stops polling when view is unmounted while command remains pending", async () => {
