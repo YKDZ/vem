@@ -191,9 +191,9 @@ async function useSilhouettePlaceholder(): Promise<void> {
 .try-on-silhouette {
   position: absolute;
   left: 50%;
-  top: 50%;
-  max-width: min(42vw, 34rem);
-  max-height: min(78vh, 48rem);
+  top: 58%;
+  max-width: min(58vw, 46rem);
+  max-height: min(88vh, 58rem);
   transform: translate(-50%, -50%);
   object-fit: contain;
   pointer-events: none;
