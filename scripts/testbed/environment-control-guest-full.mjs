@@ -6,7 +6,6 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
 import { waitForDaemonReadyRefresh } from "./daemon-ready-refresh.mjs";
-import { waitForHardwareBindings } from "./scanner-payment-code-guest-full.mjs";
 import { replaceSerialSessionAndUpdateHandoff } from "./serial-session-handoff.mjs";
 
 const SCHEMA_VERSION = "vem-environment-control-guest-full/v1";
@@ -137,6 +136,36 @@ function daemonPost(handoff, path, body = {}) {
     },
     body: JSON.stringify(body),
   });
+}
+
+async function waitForLowerControllerReady(handoff, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    const [selfCheck, bindings] = await Promise.all([
+      daemonPost(handoff, "/v1/hardware/self-check", {}).catch((error) => ({
+        error: error instanceof Error ? error.message : String(error),
+      })),
+      daemonGet(handoff, "/v1/hardware-bindings").catch((error) => ({
+        error: error instanceof Error ? error.message : String(error),
+      })),
+    ]);
+    const lower = Array.isArray(bindings?.roles)
+      ? bindings.roles.find((role) => role?.role === "lower_controller")
+      : null;
+    last = { selfCheck, lower };
+    if (
+      selfCheck?.online === true &&
+      lower?.ready === true &&
+      /^COM[1-9][0-9]*$/.test(lower.currentPort ?? "")
+    ) {
+      return { selfCheck, bindings, lower };
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `lower controller was not ready before environment commands: ${JSON.stringify(last)}`,
+  );
 }
 
 function control(guestInput, path, body = {}) {
@@ -777,17 +806,10 @@ export async function runEnvironmentControlGuest(options) {
       "environment control serial session id",
     );
     await waitForDaemonReadyRefresh(handoff);
-    await waitForHardwareBindings(
+    report.lowerControllerReady = await waitForLowerControllerReady(
       handoff,
-      session,
       HARDWARE_BINDING_READY_TIMEOUT_MS,
     );
-    const hardware = await daemonPost(handoff, "/v1/hardware/self-check", {});
-    if (hardware?.online !== true) {
-      throw new Error(
-        `lower-controller was not ready before environment commands: ${JSON.stringify(hardware)}`,
-      );
-    }
     const token = await adminLogin(guestInput);
     const machine = await findMachine(guestInput, token);
 

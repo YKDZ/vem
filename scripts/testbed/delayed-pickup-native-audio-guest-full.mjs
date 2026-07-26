@@ -306,11 +306,11 @@ async function waitForTransactionAudioSettled(
   orderNo,
   timeoutMs = 45_000,
 ) {
-  const requiredPlaybackSuffixes = [
+  const alwaysRequiredPlaybackSuffixes = [
     "pickup-outlet-opened",
     "pickup-warning-1",
-    "pickup-warning-2",
   ];
+  const conditionalPlaybackSuffixes = ["pickup-warning-2"];
   const deadline = Date.now() + timeoutMs;
   let last = null;
   while (Date.now() < deadline) {
@@ -321,7 +321,7 @@ async function waitForTransactionAudioSettled(
         const trace = (window.__VEM_MACHINE_RUNTIME_TRACE__ || []).filter(
           (entry) => typeof entry?.transitionId === "string" && entry.transitionId.startsWith(prefix),
         );
-        const playback = ${JSON.stringify(requiredPlaybackSuffixes)}.map((suffix) => {
+        const playbackFor = (suffixes) => suffixes.map((suffix) => {
           const entries = trace.filter((entry) => entry.transitionId === prefix + suffix);
           return {
             suffix,
@@ -334,7 +334,8 @@ async function waitForTransactionAudioSettled(
           (entry) => entry.transitionId === prefix + "pickup-waiting",
         );
         return {
-          playback,
+          playback: playbackFor(${JSON.stringify(alwaysRequiredPlaybackSuffixes)}),
+          conditionalPlayback: playbackFor(${JSON.stringify(conditionalPlaybackSuffixes)}),
           pickupWaitingQueued: pickupWaiting.some(
             (entry) => entry.type === "audio_queued",
           ),
@@ -348,6 +349,14 @@ async function waitForTransactionAudioSettled(
       Array.isArray(last?.playback) &&
       last.playback.every(
         (entry) => entry.queued && entry.started && entry.terminal,
+      ) &&
+      Array.isArray(last?.conditionalPlayback) &&
+      last.conditionalPlayback.every(
+        (entry) =>
+          (entry.queued && entry.started && entry.terminal) ||
+          last.terminalSuccess?.some(
+            (terminal) => terminal.type === "journey_transition",
+          ),
       ) &&
       last.pickupWaitingQueued === false &&
       last.terminalSuccess?.filter(

@@ -372,32 +372,46 @@ async function setMachineUiVolumePercent(client, expectedVolume) {
       volume: expectedVolume,
     }).volume * 100,
   );
-  const result = await evaluateExpression(
-    client,
-    `(() => {
-      const element = document.querySelector(${JSON.stringify(AUDIO_SELECTORS.volumePercent)});
-      if (!element) return null;
-      element.value = ${percent};
-      element.dispatchEvent(new Event("input", { bubbles: true }));
-      element.dispatchEvent(new Event("change", { bubbles: true }));
-      return { value: Number(element.value) };
-    })()`,
-  );
-  if (!result) throw new Error("machine UI volume control is unavailable");
-  await waitForState(
-    "machine UI volume",
-    async () =>
-      evaluateExpression(
-        client,
-        `(() => {
-          const element = document.querySelector(${JSON.stringify(AUDIO_SELECTORS.volumePercent)});
-          return element
-            ? { value: Number(element.value), disabled: Boolean(element.disabled) }
-            : null;
-        })()`,
-      ),
-    (value) => value?.value === percent && value?.disabled === false,
-  );
+  const readState = () =>
+    evaluateExpression(
+      client,
+      `(() => {
+        const element = document.querySelector(${JSON.stringify(AUDIO_SELECTORS.volumePercent)});
+        return element
+          ? { value: Number(element.value), disabled: Boolean(element.disabled) }
+          : null;
+      })()`,
+    );
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const current = await waitForState(
+      "machine UI volume control enabled",
+      readState,
+      (value) => value != null && value.disabled === false,
+    );
+    if (current.value === percent) return;
+    const result = await evaluateExpression(
+      client,
+      `(() => {
+        const element = document.querySelector(${JSON.stringify(AUDIO_SELECTORS.volumePercent)});
+        if (!element) return null;
+        element.value = ${percent};
+        element.dispatchEvent(new Event("input", { bubbles: true }));
+        element.dispatchEvent(new Event("change", { bubbles: true }));
+        return { value: Number(element.value), disabled: Boolean(element.disabled) };
+      })()`,
+    );
+    if (!result) throw new Error("machine UI volume control is unavailable");
+    try {
+      await waitForState(
+        "machine UI volume",
+        readState,
+        (value) => value?.value === percent && value?.disabled === false,
+      );
+      return;
+    } catch (error) {
+      if (attempt === 1) throw error;
+    }
+  }
 }
 export async function setMachineUiAudioPreferences(client, expected) {
   const target = normalizeAudioPreferences(expected);
