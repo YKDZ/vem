@@ -17,4 +17,12 @@ export default defineConfig({
       conditions: serverConditions,
     },
   },
+  test: {
+    exclude: [
+      "**/*.e2e-spec.ts",
+      "**/*.postgres.integration.spec.ts",
+      "**/node_modules/**",
+      "**/dist/**",
+    ],
+  },
 });

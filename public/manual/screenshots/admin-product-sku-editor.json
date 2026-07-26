@@ -9,12 +9,6 @@
     "height": 1080
   },
   "expectedOrientation": "landscape",
-  "expectedTexts": [
-    "SKU",
-    "新增 SKU"
-  ],
-  "detectedTexts": [
-    "SKU",
-    "新增 SKU"
-  ]
+  "expectedTexts": ["SKU", "新增 SKU"],
+  "detectedTexts": ["SKU", "新增 SKU"]
 }

@@ -13,12 +13,8 @@
       "height": 1080
     },
     "expectedOrientation": "landscape",
-    "expectedTexts": [
-      "机器管理"
-    ],
-    "detectedTexts": [
-      "机器管理"
-    ],
+    "expectedTexts": ["机器管理"],
+    "detectedTexts": ["机器管理"],
     "manualReviewReason": null
   },
   "capture": {

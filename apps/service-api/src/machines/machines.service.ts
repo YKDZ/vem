@@ -119,6 +119,29 @@ type PageQueryInput = z.infer<typeof pageQuerySchema>;
 type CreateMachineInput = z.infer<typeof createMachineSchema>;
 type UpdateMachineInput = z.infer<typeof updateMachineSchema>;
 type CreateMachineSlotInput = z.infer<typeof createMachineSlotSchema>;
+
+function isPostgresDeadlock(error: unknown): boolean {
+  let current: unknown = error;
+  while (current && typeof current === "object") {
+    if ((current as { code?: unknown }).code === "40P01") {
+      return true;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+async function withDeadlockRetry<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (!isPostgresDeadlock(error)) {
+      throw error;
+    }
+    return await operation();
+  }
+}
+
 type MachineGeoLocation = {
   latitude: number;
   longitude: number;
@@ -1892,56 +1915,85 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       return;
     }
 
-    await this.db.transaction(async (tx) => {
-      await tx
-        .insert(machineEvents)
-        .values({
-          machineId: verified.machineId,
-          eventType: "environment_control_result",
-          payloadJson: { ...verified.payload },
-          mqttTopic: topic,
-          messageId: verified.messageId,
-        })
-        .onConflictDoNothing()
-        .returning({ id: machineEvents.id });
+    await withDeadlockRetry(async () =>
+      this.db.transaction(async (tx) => {
+        await tx
+          .insert(machineEvents)
+          .values({
+            machineId: verified.machineId,
+            eventType: "environment_control_result",
+            payloadJson: { ...verified.payload },
+            mqttTopic: topic,
+            messageId: verified.messageId,
+          })
+          .onConflictDoNothing()
+          .returning({ id: machineEvents.id });
 
-      const [activeCommand] = await tx
-        .select({
-          id: machineCommands.id,
-          status: machineCommands.status,
-          timeoutAt: machineCommands.timeoutAt,
-        })
-        .from(machineCommands)
-        .where(
-          and(
-            eq(machineCommands.commandNo, verified.payload.commandNo),
-            eq(machineCommands.machineId, verified.machineId),
-            eq(machineCommands.type, "environment-control"),
-            inArray(machineCommands.status, [
-              "pending",
-              "sent",
-              "acknowledged",
-            ]),
-          ),
-        )
-        .limit(1);
-      if (!activeCommand) {
-        return;
-      }
+        const [activeCommand] = await tx
+          .select({
+            id: machineCommands.id,
+            status: machineCommands.status,
+            timeoutAt: machineCommands.timeoutAt,
+          })
+          .from(machineCommands)
+          .where(
+            and(
+              eq(machineCommands.commandNo, verified.payload.commandNo),
+              eq(machineCommands.machineId, verified.machineId),
+              eq(machineCommands.type, "environment-control"),
+              inArray(machineCommands.status, [
+                "pending",
+                "sent",
+                "acknowledged",
+              ]),
+            ),
+          )
+          .limit(1);
+        if (!activeCommand) {
+          return;
+        }
 
-      const now = new Date();
-      if (activeCommand.timeoutAt && activeCommand.timeoutAt <= now) {
+        const now = new Date();
+        if (activeCommand.timeoutAt && activeCommand.timeoutAt <= now) {
+          await tx
+            .update(machineCommands)
+            .set({
+              status: "timeout",
+              resultAt: now,
+              lastError: "machine command timeout",
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(machineCommands.id, activeCommand.id),
+                inArray(machineCommands.status, [
+                  "pending",
+                  "sent",
+                  "acknowledged",
+                ]),
+              ),
+            );
+          return;
+        }
+
         await tx
           .update(machineCommands)
           .set({
-            status: "timeout",
-            resultAt: now,
-            lastError: "machine command timeout",
-            updatedAt: now,
+            status: verified.payload.success ? "succeeded" : "failed",
+            resultJson: { ...verified.payload },
+            resultAt: new Date(verified.payload.reportedAt),
+            lastError: verified.payload.success
+              ? null
+              : (verified.payload.message ??
+                verified.payload.errorCode ??
+                "environment control failed"),
+            updatedAt: new Date(),
           })
           .where(
             and(
-              eq(machineCommands.id, activeCommand.id),
+              eq(machineCommands.commandNo, verified.payload.commandNo),
+              eq(machineCommands.machineId, verified.machineId),
+              eq(machineCommands.type, "environment-control"),
               inArray(machineCommands.status, [
                 "pending",
                 "sent",
@@ -1949,35 +2001,8 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
               ]),
             ),
           );
-        return;
-      }
-
-      await tx
-        .update(machineCommands)
-        .set({
-          status: verified.payload.success ? "succeeded" : "failed",
-          resultJson: { ...verified.payload },
-          resultAt: new Date(verified.payload.reportedAt),
-          lastError: verified.payload.success
-            ? null
-            : (verified.payload.message ??
-              verified.payload.errorCode ??
-              "environment control failed"),
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(machineCommands.commandNo, verified.payload.commandNo),
-            eq(machineCommands.machineId, verified.machineId),
-            eq(machineCommands.type, "environment-control"),
-            inArray(machineCommands.status, [
-              "pending",
-              "sent",
-              "acknowledged",
-            ]),
-          ),
-        );
-    });
+      }),
+    );
   }
 
   private async handleCommandAck(
@@ -2005,35 +2030,37 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       return;
     }
 
-    await this.db.transaction(async (tx) => {
-      await tx
-        .insert(machineEvents)
-        .values({
-          machineId: verified.machineId,
-          eventType: "command_ack",
-          payloadJson: { ...verified.payload },
-          mqttTopic: topic,
-          messageId: verified.messageId,
-        })
-        .onConflictDoNothing()
-        .returning({ id: machineEvents.id });
+    await withDeadlockRetry(async () =>
+      this.db.transaction(async (tx) => {
+        await tx
+          .insert(machineEvents)
+          .values({
+            machineId: verified.machineId,
+            eventType: "command_ack",
+            payloadJson: { ...verified.payload },
+            mqttTopic: topic,
+            messageId: verified.messageId,
+          })
+          .onConflictDoNothing()
+          .returning({ id: machineEvents.id });
 
-      await tx
-        .update(machineCommands)
-        .set({
-          status: "acknowledged",
-          ackAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(machineCommands.commandNo, commandNo),
-            eq(machineCommands.machineId, verified.machineId),
-            eq(machineCommands.type, "environment-control"),
-            inArray(machineCommands.status, ["pending", "sent"]),
-          ),
-        );
-    });
+        await tx
+          .update(machineCommands)
+          .set({
+            status: "acknowledged",
+            ackAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(machineCommands.commandNo, commandNo),
+              eq(machineCommands.machineId, verified.machineId),
+              eq(machineCommands.type, "environment-control"),
+              inArray(machineCommands.status, ["pending", "sent"]),
+            ),
+          );
+      }),
+    );
   }
 
   private parsePayload(payloadText: string): unknown {

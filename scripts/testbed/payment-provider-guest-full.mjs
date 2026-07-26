@@ -23,7 +23,7 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const POLL_INTERVAL_MS = 250;
 const MAX_DIAGNOSTIC_ATTEMPTS = 2;
 const PAYMENT_CODE_CLEANUP_TIMEOUT_MS = 360_000;
-export const UNATTENDED_ALIPAY_CUSTOMER_CODE = "288888888888888888\r\n";
+export const UNATTENDED_ALIPAY_CUSTOMER_CODE = "288888888888888888\r";
 const PROVIDER_FAILURE_STAGES = new Set([
   "host-preparation",
   "readiness",
@@ -557,20 +557,17 @@ async function installCheckoutSubmitEventProbe(client) {
 }
 
 async function dispatchCheckoutSubmitDomClick(client) {
-  const result = await client.send(
-    "Runtime.evaluate",
-    {
-      expression: `(() => {
+  const result = await client.send("Runtime.evaluate", {
+    expression: `(() => {
       const el = document.querySelector('[data-test="checkout-submit"]');
       if (!el || el.disabled || !el.getClientRects().length) return false;
       el.click();
       return true;
     })()`,
-      awaitPromise: true,
-      returnByValue: true,
-      userGesture: true,
-    },
-  );
+    awaitPromise: true,
+    returnByValue: true,
+    userGesture: true,
+  });
   if (result.exceptionDetails) {
     throw new Error(
       `Runtime.evaluate failed: ${result.exceptionDetails.text ?? "exception"}`,
@@ -687,11 +684,15 @@ async function beginMachineUiOrder(client, input, fixture, method, timeoutMs) {
     timeoutMs,
     pollMs: POLL_INTERVAL_MS,
   });
-  await activateVisibleSelector(client, '[data-test="product-buy"]:not(:disabled)', {
-    kind: "touch",
-    timeoutMs,
-    pollMs: POLL_INTERVAL_MS,
-  });
+  await activateVisibleSelector(
+    client,
+    '[data-test="product-buy"]:not(:disabled)',
+    {
+      kind: "touch",
+      timeoutMs,
+      pollMs: POLL_INTERVAL_MS,
+    },
+  );
   await waitForRoute(client, "#/checkout", {
     timeoutMs,
     pollMs: POLL_INTERVAL_MS,
@@ -777,10 +778,16 @@ async function cleanAuthoritativeOrderBeforeDiagnostics(
       pollMs: POLL_INTERVAL_MS,
     });
   }
-  const currentBeforeCleanup = await daemon(handoff, "/v1/transactions/current");
+  const currentBeforeCleanup = await daemon(
+    handoff,
+    "/v1/transactions/current",
+  );
   let daemonCancel = null;
   if (!isCleanAuthoritativeTransaction(currentBeforeCleanup)) {
-    daemonCancel = await cancelCurrentDaemonOrder(handoff, currentBeforeCleanup);
+    daemonCancel = await cancelCurrentDaemonOrder(
+      handoff,
+      currentBeforeCleanup,
+    );
   }
   const transaction = await waitForCondition(
     () => daemon(handoff, "/v1/transactions/current"),
@@ -795,7 +802,11 @@ async function cleanAuthoritativeOrderBeforeDiagnostics(
       pollMs: POLL_INTERVAL_MS,
     });
   }
-  return { machineBoundary: "installed_machine_ui_cdp", transaction, daemonCancel };
+  return {
+    machineBoundary: "installed_machine_ui_cdp",
+    transaction,
+    daemonCancel,
+  };
 }
 
 async function paymentCodeAttemptFromApi(input, token, order, timeoutMs) {

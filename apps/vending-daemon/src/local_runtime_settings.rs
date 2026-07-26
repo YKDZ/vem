@@ -41,7 +41,7 @@ pub fn effective_scanner_protocol(
                 .clone()
                 .unwrap_or(ScannerProtocolParameters {
                     baud_rate: 9_600,
-                    frame_suffix: vending_core::scanner::ScannerFrameSuffix::Crlf,
+                    frame_suffix: vending_core::scanner::ScannerFrameSuffix::Cr,
                 }))
         }
         _ => Err(HardwareModelRoleError::unsupported(
@@ -366,7 +366,7 @@ mod tests {
         assert_eq!(production.baud_rate, 9_600);
         assert_eq!(
             production.frame_suffix,
-            vending_core::scanner::ScannerFrameSuffix::Crlf
+            vending_core::scanner::ScannerFrameSuffix::Cr
         );
         assert_eq!(unsupported.code(), "HARDWARE_MODEL_UNSUPPORTED");
     }

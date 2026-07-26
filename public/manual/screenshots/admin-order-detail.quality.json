@@ -13,16 +13,8 @@
       "height": 1080
     },
     "expectedOrientation": "landscape",
-    "expectedTexts": [
-      "订单号",
-      "支付",
-      "出货"
-    ],
-    "detectedTexts": [
-      "订单号",
-      "支付",
-      "出货"
-    ],
+    "expectedTexts": ["订单号", "支付", "出货"],
+    "detectedTexts": ["订单号", "支付", "出货"],
     "manualReviewReason": null
   },
   "capture": {

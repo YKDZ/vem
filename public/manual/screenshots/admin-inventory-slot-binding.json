@@ -9,16 +9,6 @@
     "height": 1080
   },
   "expectedOrientation": "landscape",
-  "expectedTexts": [
-    "绑定库存",
-    "机器",
-    "货道",
-    "商品规格"
-  ],
-  "detectedTexts": [
-    "绑定库存",
-    "机器",
-    "货道",
-    "商品规格"
-  ]
+  "expectedTexts": ["绑定库存", "机器", "货道", "商品规格"],
+  "detectedTexts": ["绑定库存", "机器", "货道", "商品规格"]
 }

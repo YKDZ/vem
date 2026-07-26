@@ -43,7 +43,9 @@ describe("payment provider guest full", () => {
         'currentBeforeCleanup = await daemon(handoff, "/v1/transactions/current")',
       ),
     );
-    assert.ok(source.includes("!isCleanAuthoritativeTransaction(currentBeforeCleanup)"));
+    assert.ok(
+      source.includes("!isCleanAuthoritativeTransaction(currentBeforeCleanup)"),
+    );
     assert.ok(source.includes('"/v1/intents/cancel-order"'));
     assert.ok(source.includes("current transaction orderNo"));
   });
@@ -61,7 +63,10 @@ describe("payment provider guest full", () => {
       "await cleanAuthoritativeOrderBeforeDiagnostics(client, handoff, timeoutMs);",
       paymentCodeIndex,
     );
-    const passIndex = source.indexOf('report.outcome = "passed"', paymentCodeIndex);
+    const passIndex = source.indexOf(
+      'report.outcome = "passed"',
+      paymentCodeIndex,
+    );
     assert.ok(paymentCodeIndex > 0);
     assert.ok(finalCleanupIndex > paymentCodeIndex);
     assert.ok(passIndex > finalCleanupIndex);
@@ -158,10 +163,10 @@ describe("payment provider guest full", () => {
     );
   });
 
-  it("submits the unattended Alipay customer code with real CRLF bytes", () => {
+  it("submits the unattended Alipay customer code with real CR bytes", () => {
     const bytes = Buffer.from(UNATTENDED_ALIPAY_CUSTOMER_CODE, "utf8");
-    assert.deepEqual([...bytes.subarray(-2)], [0x0d, 0x0a]);
-    assert.equal(bytes.length, 20);
+    assert.deepEqual([...bytes.subarray(-1)], [0x0d]);
+    assert.equal(bytes.length, 19);
   });
 
   it("accepts a real WAIT_BUYER_PAY response when it is deterministically closed", () => {

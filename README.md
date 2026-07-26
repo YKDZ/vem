@@ -32,8 +32,8 @@ vem/
 ├── packages/
 │   ├── db/
 │   └── shared/
-├── docs/
 ├── protocol/
+├── public/
 ├── scripts/
 ├── CONTRIBUTING.md
 ├── Cargo.toml
@@ -100,23 +100,22 @@ pnpm turbo lint
 pnpm turbo test
 ```
 
-机器端触屏 E2E：
+机器端真实运行时验收通过可重置 Windows VM 执行。详细搭建和使用方式见 [VM 运行时验收平台](./public/development/vm-runtime-acceptance.md)。
 
 ```bash
-pnpm -F machine test:e2e:touch-smoke
+node scripts/testbed/runtime-testbed-trigger.mjs run \
+  --mode fast \
+  --commit "$(git rev-parse HEAD)" \
+  --config /abs/path/to/runtime-testbed-host.json \
+  --out /abs/path/to/runtime-testbed-result.json
 ```
 
-机器端截图巡检：
+后端 Compose 部署冒烟：
 
 ```bash
-pnpm -F machine test:e2e:screenshots
-pnpm -F machine screenshots:runtime:stitch
+node scripts/backend-compose-smoke.mjs \
+  --service-api-image ghcr.io/ykdz/vem-service-api@sha256:<64-hex> \
+  --admin-ui-image ghcr.io/ykdz/vem-admin-ui@sha256:<64-hex>
 ```
 
-截图产物写入：
-
-```text
-apps/machine/runtime-screenshot-artifacts/
-```
-
-更多协作、PR、CI 和截图系统说明见 [CONTRIBUTING.md](./CONTRIBUTING.md)。
+共享操作文档位于 `public/`：后端部署见 [后端部署](./public/deployment/backend-deployment.md)，运营操作见 [VEM 运营操作手册](./public/manual/operator-manual.md)。更多协作、PR 和 CI 说明见 [CONTRIBUTING.md](./CONTRIBUTING.md)。

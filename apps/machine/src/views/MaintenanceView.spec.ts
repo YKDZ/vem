@@ -103,7 +103,7 @@ function configuration(claimed: boolean): EffectiveMachineRuntimeConfiguration {
       expectedProfile: null,
       lowerControllerBinding: null,
       scannerBinding: null,
-      scannerProtocol: { baudRate: 9600, frameSuffix: "crlf" },
+      scannerProtocol: { baudRate: 9600, frameSuffix: "cr" },
     },
     experience: {
       audio: {

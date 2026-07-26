@@ -284,13 +284,11 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
       : null;
     const runtime = handoff?.machine ?? {};
     const cdp = handoff?.cdp ?? {};
-    const inspected = await inspectWindowsMachineUiRuntime(
-      {
-        ...options.tunnelOptions,
-        expectedMachinePath:
-          options.expectedMachinePath ?? runtime.executablePath ?? null,
-      },
-    );
+    const inspected = await inspectWindowsMachineUiRuntime({
+      ...options.tunnelOptions,
+      expectedMachinePath:
+        options.expectedMachinePath ?? runtime.executablePath ?? null,
+    });
     const result = await runMachineUiScreenshotBatch({
       ...options,
       expectedTargetId: options.expectedTargetId ?? cdp.targetId,

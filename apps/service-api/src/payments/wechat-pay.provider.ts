@@ -111,12 +111,11 @@ function parseWeChatPayConfig(
   if (input.merchantNo) source["mchId"] ??= input.merchantNo;
   if (input.appId) source["appId"] ??= input.appId;
 
-  // merchantCertificateSerialNo: new field, fall back to deprecated certificateSerialNo
-  const merchantCertificateSerialNo =
-    typeof source["merchantCertificateSerialNo"] === "string" &&
-    source["merchantCertificateSerialNo"].length > 0
-      ? source["merchantCertificateSerialNo"]
-      : readRequiredString(source, "certificateSerialNo", "WeChat Pay");
+  const merchantCertificateSerialNo = readRequiredString(
+    source,
+    "merchantCertificateSerialNo",
+    "WeChat Pay",
+  );
 
   // platformCertificateSerialNo: must come from new field; no fallback to merchantCertificateSerialNo
   const platformCertificateSerialNo = readRequiredString(

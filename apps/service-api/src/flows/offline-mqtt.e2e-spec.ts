@@ -107,36 +107,41 @@ describe("offline-mqtt.e2e", { concurrent: false }, () => {
       .select({ status: orders.status })
       .from(orders)
       .where(eq(orders.id, createdOrder.data.orderId));
-    expect(orderRow.status).toBe("refunded");
+    expect(orderRow.status).toBe("paid");
 
     const [commandRow] = await db.client
       .select({
         status: vendingCommands.status,
         lastError: vendingCommands.lastError,
+        retryCount: vendingCommands.retryCount,
       })
       .from(vendingCommands)
       .where(eq(vendingCommands.orderId, createdOrder.data.orderId))
       .orderBy(desc(vendingCommands.createdAt));
-    expect(commandRow.status).toBe("failed");
+    expect(commandRow.status).toBe("pending");
     expect(commandRow.lastError).toContain("MQTT offline in e2e");
+    expect(commandRow.retryCount).toBe(1);
 
     const [refundRow] = await db.client
       .select({ total: count() })
       .from(refunds)
       .where(eq(refunds.orderId, createdOrder.data.orderId));
-    expect(Number(refundRow.total)).toBe(1);
+    expect(Number(refundRow.total)).toBe(0);
 
     const [inventoryRow] = await db.client
-      .select({ onHandQty: inventories.onHandQty })
+      .select({
+        onHandQty: inventories.onHandQty,
+        reservedQty: inventories.reservedQty,
+      })
       .from(inventories)
       .where(eq(inventories.id, seeded.inventoryId));
-    expect(inventoryRow.onHandQty).toBe(1); // restored to original
+    expect(inventoryRow).toEqual({ onHandQty: 1, reservedQty: 1 });
 
     const [notificationRow] = await db.client
       .select({ total: count() })
       .from(notifications)
       .where(eq(notifications.resourceId, createdOrder.data.orderId));
-    expect(Number(notificationRow.total)).toBe(1);
+    expect(Number(notificationRow.total)).toBe(0);
   }, 60_000);
 
   it("marks sent vending command timeout as manual handling without auto refund", async () => {
@@ -179,7 +184,7 @@ describe("offline-mqtt.e2e", { concurrent: false }, () => {
       payloadJson: {
         commandNo: "CMD-TIMEOUT-E2E",
         orderNo: createdOrder.data.orderNo,
-        slot: { rowNo: 1, cellNo: 1, slotDisplayLabel: "TO1" },
+        slot: { rowNo: 1, cellNo: 1 },
         quantity: 1,
         timeoutSeconds: 1,
       },

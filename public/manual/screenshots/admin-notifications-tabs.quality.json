@@ -13,16 +13,8 @@
       "height": 1080
     },
     "expectedOrientation": "landscape",
-    "expectedTexts": [
-      "通知中心",
-      "通知列表",
-      "维护工单"
-    ],
-    "detectedTexts": [
-      "通知中心",
-      "通知列表",
-      "维护工单"
-    ],
+    "expectedTexts": ["通知中心", "通知列表", "维护工单"],
+    "detectedTexts": ["通知中心", "通知列表", "维护工单"],
     "manualReviewReason": null
   },
   "capture": {

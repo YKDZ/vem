@@ -139,7 +139,7 @@ async fn pty_scanner_watcher_submits_only_current_frames_to_the_real_service_api
             port_path: Some(scanner_pty.slave_path.to_string_lossy().to_string()),
             baud_rate: 9_600,
             source: vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT.to_string(),
-            frame_suffix: vending_core::scanner::ScannerFrameSuffix::Crlf,
+            frame_suffix: vending_core::scanner::ScannerFrameSuffix::Cr,
         },
         raw_tx,
         events_tx,
@@ -164,16 +164,14 @@ async fn pty_scanner_watcher_submits_only_current_frames_to_the_real_service_api
     scanner_pty.write(&code[..10]).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
     armer.arm_for_order(&fixture.order_b).await;
-    scanner_pty.write(b"\r\n").await;
+    scanner_pty.write(b"\r").await;
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(
         guard_blocks_once.load(Ordering::SeqCst),
         "partial bytes from a replaced arm must not enter the watcher"
     );
 
-    scanner_pty
-        .write(&[code.as_slice(), b"\r\n"].concat())
-        .await;
+    scanner_pty.write(&[code.as_slice(), b"\r"].concat()).await;
     tokio::time::timeout(Duration::from_secs(2), guard_entered.wait())
         .await
         .expect("B scanner frame did not reach the production submit guard");
@@ -198,21 +196,15 @@ async fn pty_scanner_watcher_submits_only_current_frames_to_the_real_service_api
 
     seed_waiting_payment(&state, &fixture.order_c).await;
     armer.arm_for_order(&fixture.order_c).await;
-    scanner_pty.write(b"\xffunhealthy-frame\r\n").await;
-    scanner_pty
-        .write(&[code.as_slice(), b"\r\n"].concat())
-        .await;
+    scanner_pty.write(b"\xffunhealthy-frame\r").await;
+    scanner_pty.write(&[code.as_slice(), b"\r"].concat()).await;
     wait_for_attempt_status(&state, &fixture.order_c, "succeeded").await;
-    scanner_pty
-        .write(&[code.as_slice(), b"\r\n"].concat())
-        .await;
+    scanner_pty.write(&[code.as_slice(), b"\r"].concat()).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     seed_waiting_payment(&state, &fixture.order_d).await;
     armer.arm_for_order(&fixture.order_d).await;
-    scanner_pty
-        .write(&[code.as_slice(), b"\r\n"].concat())
-        .await;
+    scanner_pty.write(&[code.as_slice(), b"\r"].concat()).await;
     wait_for_attempt_status(&state, &fixture.order_d, "submitting").await;
     drop(scanner_pty);
     wait_for_attempt_status(&state, &fixture.order_d, "succeeded").await;

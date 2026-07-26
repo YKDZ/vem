@@ -668,12 +668,12 @@ describe("scanner payment-code guest full", () => {
     );
   });
 
-  it("preserves a string or Buffer frame with exactly one CRLF suffix", () => {
-    const expected = Buffer.from("621234567890123456\r\n");
-    assert.deepEqual(scannerFrameBytes("621234567890123456\r\n"), expected);
+  it("preserves a string or Buffer frame with exactly one CR suffix", () => {
+    const expected = Buffer.from("621234567890123456\r");
+    assert.deepEqual(scannerFrameBytes("621234567890123456\r"), expected);
     assert.deepEqual(scannerFrameBytes(expected), expected);
     assert.throws(() => scannerFrameBytes("621234567890123456"));
-    assert.throws(() => scannerFrameBytes("6212\r\n3456\r\n"));
+    assert.throws(() => scannerFrameBytes("6212\r3456\r"));
   });
 
   it("fails closed when cleanup abort fails and preserves the primary error", async () => {

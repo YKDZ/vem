@@ -9,10 +9,6 @@
     "height": 1920
   },
   "expectedOrientation": "portrait",
-  "expectedTexts": [
-    "网络与认领",
-    "重新认领",
-    "重领码"
-  ],
+  "expectedTexts": ["网络与认领", "重新认领", "重领码"],
   "manualReviewReason": "机器端重领截图来自 VM Runtime Acceptance；中文文本由人工对照截图复核。"
 }

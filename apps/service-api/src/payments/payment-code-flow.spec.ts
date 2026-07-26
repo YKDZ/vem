@@ -7,6 +7,26 @@ import type { PaymentProviderRegistry } from "./payment-provider.registry";
 
 import { OrdersService } from "../orders/orders.service";
 
+function makeSelectRowsResult(rows: unknown[]) {
+  const result = {
+    from: vi.fn(() => result),
+    innerJoin: vi.fn(() => result),
+    leftJoin: vi.fn(() => result),
+    where: vi.fn(() => result),
+    orderBy: vi.fn(() => result),
+    limit: vi.fn(() => result),
+    then: <TResult1 = unknown[], TResult2 = never>(
+      onfulfilled?:
+        | ((value: unknown[]) => TResult1 | PromiseLike<TResult1>)
+        | null,
+      onrejected?:
+        | ((reason: unknown) => TResult2 | PromiseLike<TResult2>)
+        | null,
+    ) => Promise.resolve(rows).then(onfulfilled, onrejected),
+  };
+  return result;
+}
+
 function makeOrdersDbForSuccessfulLocalDraft() {
   const db = {
     select: vi.fn(),
@@ -16,14 +36,12 @@ function makeOrdersDbForSuccessfulLocalDraft() {
     updatedPaymentStatus: undefined as string | undefined,
   };
 
-  db.select.mockReturnValue({
-    from: vi.fn().mockReturnValue({
-      where: vi
-        .fn()
-        .mockResolvedValue([
-          { id: "mach-001", code: "M-001", status: "online" },
-        ]),
-    }),
+  const selectRows = [
+    [{ id: "mach-001", code: "M-001", status: "online" }],
+    [],
+  ];
+  db.select.mockImplementation(() => {
+    return makeSelectRowsResult(selectRows.shift() ?? []);
   });
 
   db.transaction.mockImplementation(async (fn: (tx: unknown) => unknown) => {
@@ -204,6 +222,7 @@ describe("payment code flow", () => {
 
     const result = await service.createMachineOrder({
       machineCode: "M-001",
+      idempotencyKey: "checkout:test-required",
       items: [
         {
           inventoryId: "inv-001",

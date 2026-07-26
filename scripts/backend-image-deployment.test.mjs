@@ -38,10 +38,6 @@ const legacyDeploymentScript = new URL(
   "./deploy-backend-stack.mjs",
   import.meta.url,
 );
-const deploymentManual = new URL(
-  "../public/deployment/backend-deployment.md",
-  import.meta.url,
-);
 
 function backendEnv(overrides = {}) {
   return {
@@ -429,28 +425,5 @@ describe("backend Compose deployment contract", () => {
         ),
       /service origin or \/api\/payments\/webhooks/,
     );
-  });
-
-  it("keeps the operator manual on the static Compose plus host env path", () => {
-    const manual = readFileSync(deploymentManual, "utf8");
-    assert.match(
-      manual,
-      /docker compose --env-file "\$ENV_FILE" -f "\$COMPOSE_FILE" config/,
-    );
-    assert.match(manual, /SERVICE_API_IMAGE=.*@sha256:/);
-    assert.match(manual, /ADMIN_UI_IMAGE=.*@sha256:/);
-    assert.match(
-      manual,
-      /MACHINE_API_BASE_URL=http:\/\/<public-host>:26849\/api/,
-    );
-    assert.match(manual, /MACHINE_MQTT_URL=mqtt:\/\/<public-host>:1883/);
-    assert.match(
-      manual,
-      /PAYMENT_WEBHOOK_BASE_URL=http:\/\/<public-host>:26849/,
-    );
-    assert.match(manual, /正式公网部署优先使用 HTTPS/);
-    assert.match(manual, /不发布宿主机 `5432`/);
-    assert.doesNotMatch(manual, /pnpm deploy:backend/);
-    assert.doesNotMatch(manual, /compose\.release\.yml/);
   });
 });

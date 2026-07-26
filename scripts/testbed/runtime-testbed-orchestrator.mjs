@@ -88,7 +88,7 @@ export function parseOrchestratorOptions(args) {
     throw new Error("--commit must be a full 40-character Git SHA");
   }
   const focus = repeatableOption(args, "focus");
-  if (mode === "full" && focus.length > 0) {
+  if (mode !== "fast" && focus.length > 0) {
     throw new Error("--focus is only valid with --mode fast");
   }
   return {

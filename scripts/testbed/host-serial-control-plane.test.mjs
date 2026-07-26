@@ -557,7 +557,9 @@ describe("host serial control plane", () => {
         timeoutMs: 100,
       });
       assert.deepEqual(
-        environmentBoundary.protocolFrames.map(({ parsedOpcode }) => parsedOpcode),
+        environmentBoundary.protocolFrames.map(
+          ({ parsedOpcode }) => parsedOpcode,
+        ),
         ["B3"],
       );
       writeFileSync(

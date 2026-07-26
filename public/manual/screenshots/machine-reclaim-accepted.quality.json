@@ -16,11 +16,7 @@
       "height": 1920
     },
     "expectedOrientation": "portrait",
-    "expectedTexts": [
-      "网络与认领",
-      "机器认领已接受",
-      "VEM-TESTBED-LOCAL"
-    ],
+    "expectedTexts": ["网络与认领", "机器认领已接受", "VEM-TESTBED-LOCAL"],
     "detectedTexts": null,
     "manualReviewReason": "机器端重领截图来自 VM Runtime Acceptance；中文文本由人工对照截图复核。"
   },

@@ -169,14 +169,14 @@ async function withDefaultDaemonRequestTimeout<T>(
     const timeout = globalThis.setTimeout(() => {
       reject(new DaemonUnavailableError("daemon request timed out"));
     }, DEFAULT_DAEMON_REQUEST_TIMEOUT_MS);
-    request.then(
+    void request.then(
       (value) => {
         globalThis.clearTimeout(timeout);
         resolve(value);
       },
       (error: unknown) => {
         globalThis.clearTimeout(timeout);
-        reject(error);
+        reject(error instanceof Error ? error : new Error(String(error)));
       },
     );
   });

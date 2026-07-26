@@ -13,12 +13,8 @@
       "height": 1080
     },
     "expectedOrientation": "landscape",
-    "expectedTexts": [
-      "订单管理"
-    ],
-    "detectedTexts": [
-      "订单管理"
-    ],
+    "expectedTexts": ["订单管理"],
+    "detectedTexts": ["订单管理"],
     "manualReviewReason": null
   },
   "capture": {

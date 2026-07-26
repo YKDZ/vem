@@ -240,6 +240,7 @@ describe("fulfillment recovery e2e", { concurrent: false }, () => {
           slotId: item.slotId,
         })),
         paymentMethod: "mock",
+        idempotencyKey: `flow-e2e-two-line-${Date.now()}-${Math.random()}`,
       });
     expect(createOrderResponse.status).toBe(201);
     const createdOrder =

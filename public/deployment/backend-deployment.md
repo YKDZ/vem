@@ -1,12 +1,12 @@
 # 后端部署
 
-本手册用于部署 PostgreSQL、MQTT、Service API 和 Admin UI。目标宿主机只使用一份静态 Compose 文件和一份宿主机持有的环境文件；不需要仓库检出、Node 或 pnpm，且不在宿主机构建镜像。
+本手册用于部署 PostgreSQL、MQTT、Service API 和 Admin UI。目标宿主机使用一份静态 Compose 文件和一份宿主机持有的环境文件；发布工作站负责准备文件和镜像，目标宿主机只负责拉取和运行镜像。
 
 唯一运行定义是 `apps/service-api/docker-compose.yml`。应用镜像必须填写不可变 digest 引用，例如 `ghcr.io/ykdz/vem-service-api@sha256:<64-hex>`，不能使用 `latest` 或仅使用可变 tag。
 
 ## 准备文件
 
-在发布工作站执行以下命令，将静态文件复制到宿主机。以下路径是运行目录约定，环境文件不复制回仓库。
+在发布工作站执行以下命令，将 Compose 文件安装到目标宿主机的固定位置。环境文件由目标宿主机单独保存。
 
 ```bash
 ssh <host> 'sudo install -d -m 0755 /opt/vem-backend/apps/service-api /etc/vem'
@@ -14,7 +14,7 @@ scp apps/service-api/docker-compose.yml <host>:/tmp/vem-backend-docker-compose.y
 ssh <host> 'sudo install -m 0644 /tmp/vem-backend-docker-compose.yml /opt/vem-backend/apps/service-api/docker-compose.yml && rm /tmp/vem-backend-docker-compose.yml'
 ```
 
-在宿主机设置路径，并由受控的密钥管理流程创建仅 root 可读的 `/etc/vem/backend.env`：
+在宿主机设置路径，并创建仅 root 可读的 `/etc/vem/backend.env`：
 
 ```bash
 export COMPOSE_FILE=/opt/vem-backend/apps/service-api/docker-compose.yml
@@ -23,7 +23,7 @@ sudo install -m 0600 /dev/null "$ENV_FILE"
 sudoedit "$ENV_FILE"
 ```
 
-环境文件必须至少包含下列 Compose 要求的值。`<...>` 表示从发布记录或密钥管理系统取得的实际值，不能提交或输出到共享日志。
+环境文件必须至少包含下列 Compose 要求的值。`<...>` 表示发布时填写的实际值，不要写入仓库或公开日志。
 
 ```dotenv
 POSTGRES_PASSWORD=<postgres-password>
@@ -43,7 +43,7 @@ PAYMENT_WEBHOOK_BASE_URL=http://<public-host>:26849
 PAYMENT_CONFIG_ENCRYPTION_KEY=<64-hex-key>
 ```
 
-需要沿用既有数据时，再由切换前检查记录填写以下卷名。它们对应静态 Compose 中的 PostgreSQL、MQTT 和受管媒体卷；不要为了迁移而创建空白生产卷。
+需要沿用既有数据时，再按切换前检查记录填写以下卷名。它们对应静态 Compose 中的 PostgreSQL、MQTT 和受管媒体卷；迁移既有环境时，先确认这些卷名指向原有数据。
 
 ```dotenv
 POSTGRES_DATA_SOURCE=<existing-postgres-volume>
@@ -56,6 +56,14 @@ SERVICE_API_MEDIA_VOLUME_NAME=<existing-media-volume>
 端口如需保持现有对外地址，也在同一文件设置 `SERVICE_API_PORT`、`ADMIN_UI_PORT` 和 `MQTT_PORT`。PostgreSQL 在该 Compose 形态下默认仅供容器内部访问，不发布宿主机 `5432`；未设置前述端口时 Compose 使用其文件中定义的默认值。
 
 ## 校验与启动
+
+发布前可在有 Docker 的工作站执行 Compose 冒烟测试，确认静态 Compose 文件和镜像入口仍可启动：
+
+```bash
+node scripts/backend-compose-smoke.mjs \
+  --service-api-image ghcr.io/ykdz/vem-service-api@sha256:<64-hex> \
+  --admin-ui-image ghcr.io/ykdz/vem-admin-ui@sha256:<64-hex>
+```
 
 先只渲染配置。该命令是目标宿主机的最小可验证接口，失败时补齐环境文件而不要改写 Compose 文件：
 
@@ -88,16 +96,4 @@ sudo docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs --tail=200 se
 sudo docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps
 ```
 
-Service API 未就绪时先检查数据库迁移和数据库连接；MQTT 显示未连接时先检查账号密码和容器网络；Admin UI 能打开但代理健康失败时检查 `API_URL` 与 Service API 健康状态。不要在宿主机重建镜像、改为可变 tag，或增加第二套部署脚本。
-
-## 从旧 Docker Run 回滚
-
-首次从旧 `docker run` 形态切换前，必须保存容器名称、镜像 digest、端口、环境、卷或 bind mount、网络和完整启动参数；同时确认现有媒体文件已复制或已验证在 `SERVICE_API_MEDIA_VOLUME_NAME` 指向的卷中。检查记录不得包含明文密钥。
-
-若 Compose 启动或健康检查失败，停止 Compose 项目但不要删除数据卷：
-
-```bash
-sudo docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" down --remove-orphans
-```
-
-然后按切换前记录的原始 `docker run` 启动参数和原始卷/bind mount 恢复旧的 PostgreSQL、MQTT、Service API 与 Admin UI 容器。恢复后重复旧系统的 Service API `/api/health`、Admin UI `/` 和 Admin UI `/api/health` 代理检查。回滚记录必须说明使用的旧镜像 digest、容器状态和检查结果；不要臆造新的旧容器命令。
+Service API 未就绪时先检查数据库迁移和数据库连接；MQTT 显示未连接时先检查账号密码和容器网络；Admin UI 能打开但代理健康失败时检查 `API_URL` 与 Service API 健康状态。部署失败时优先检查配置和服务日志，继续使用 digest 固定的预构建镜像。

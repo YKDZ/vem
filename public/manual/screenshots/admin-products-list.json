@@ -9,12 +9,6 @@
     "height": 1080
   },
   "expectedOrientation": "landscape",
-  "expectedTexts": [
-    "商品管理",
-    "新增商品"
-  ],
-  "detectedTexts": [
-    "商品管理",
-    "新增商品"
-  ]
+  "expectedTexts": ["商品管理", "新增商品"],
+  "detectedTexts": ["商品管理", "新增商品"]
 }

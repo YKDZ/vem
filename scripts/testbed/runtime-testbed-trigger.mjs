@@ -58,7 +58,7 @@ export function parseTriggerOptions(args) {
     throw new Error("--config and --out must be absolute paths");
   }
   const focus = repeatableOption(args, "focus");
-  if (mode === "full" && focus.length > 0) {
+  if (mode !== "fast" && focus.length > 0) {
     throw new Error("--focus is only valid with --mode fast");
   }
   return { mode, focus, commit, config: resolve(config), out: resolve(out) };

@@ -16,12 +16,7 @@
       "height": 1920
     },
     "expectedOrientation": "portrait",
-    "expectedTexts": [
-      "库存维护",
-      "补货数量",
-      "确认补货",
-      "行 2 / 格 2"
-    ],
+    "expectedTexts": ["库存维护", "补货数量", "确认补货", "行 2 / 格 2"],
     "detectedTexts": null,
     "manualReviewReason": "机器端补货截图来自 VM Runtime Acceptance；中文文本由人工对照截图复核。"
   },

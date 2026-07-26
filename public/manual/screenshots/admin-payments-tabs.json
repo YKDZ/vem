@@ -9,14 +9,6 @@
     "height": 1080
   },
   "expectedOrientation": "landscape",
-  "expectedTexts": [
-    "支付管理",
-    "支付流水",
-    "退款管理"
-  ],
-  "detectedTexts": [
-    "支付管理",
-    "支付流水",
-    "退款管理"
-  ]
+  "expectedTexts": ["支付管理", "支付流水", "退款管理"],
+  "detectedTexts": ["支付管理", "支付流水", "退款管理"]
 }

@@ -9,16 +9,6 @@
     "height": 1080
   },
   "expectedOrientation": "landscape",
-  "expectedTexts": [
-    "订单调查",
-    "查询支付",
-    "申请退款处理",
-    "标记人工处理"
-  ],
-  "detectedTexts": [
-    "订单调查",
-    "查询支付",
-    "申请退款处理",
-    "标记人工处理"
-  ]
+  "expectedTexts": ["订单调查", "查询支付", "申请退款处理", "标记人工处理"],
+  "detectedTexts": ["订单调查", "查询支付", "申请退款处理", "标记人工处理"]
 }

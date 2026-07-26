@@ -25,7 +25,7 @@ async fn serial_text_scanner_pty_rejects_invalid_frame_and_emits_only_masked_eve
             port_path: Some(scanner_pty.slave_path.to_string_lossy().to_string()),
             baud_rate: 9_600,
             source: vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT.to_string(),
-            frame_suffix: vending_core::scanner::ScannerFrameSuffix::Crlf,
+            frame_suffix: vending_core::scanner::ScannerFrameSuffix::Cr,
         },
         raw_tx,
         events_tx,
@@ -45,7 +45,7 @@ async fn serial_text_scanner_pty_rejects_invalid_frame_and_emits_only_masked_eve
         }
     }
 
-    scanner_pty.write(b"stale-before-arm\r\n").await;
+    scanner_pty.write(b"stale-before-arm\r").await;
     assert!(
         tokio::time::timeout(Duration::from_millis(250), raw_rx.recv())
             .await
@@ -73,7 +73,7 @@ async fn serial_text_scanner_pty_rejects_invalid_frame_and_emits_only_masked_eve
         .await;
 
     scanner_pty
-        .write(b"\xffinvalid\r\n621234567890123456\r\n")
+        .write(b"\xffinvalid\r621234567890123456\r")
         .await;
     let raw = tokio::time::timeout(Duration::from_secs(2), raw_rx.recv())
         .await
@@ -128,7 +128,7 @@ async fn serial_text_scanner_pty_resets_partial_and_duplicate_state_for_the_next
             port_path: Some(scanner_pty.slave_path.to_string_lossy().to_string()),
             baud_rate: 9_600,
             source: vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT.to_string(),
-            frame_suffix: vending_core::scanner::ScannerFrameSuffix::Crlf,
+            frame_suffix: vending_core::scanner::ScannerFrameSuffix::Cr,
         },
         raw_tx,
         events_tx,
@@ -156,7 +156,7 @@ async fn serial_text_scanner_pty_resets_partial_and_duplicate_state_for_the_next
     // Replacement is itself an arm epoch boundary. The A frame terminator
     // must not complete its prefix as a payment for B.
     payment_code_scan_armer.arm_for_order("ORDER-B").await;
-    scanner_pty.write(b"\r\n").await;
+    scanner_pty.write(b"\r").await;
     assert!(
         tokio::time::timeout(Duration::from_millis(250), raw_rx.recv())
             .await
@@ -164,18 +164,14 @@ async fn serial_text_scanner_pty_resets_partial_and_duplicate_state_for_the_next
         "A's prefix must not complete after B replaces its arm"
     );
 
-    scanner_pty
-        .write(&[code.as_slice(), b"\r\n"].concat())
-        .await;
+    scanner_pty.write(&[code.as_slice(), b"\r"].concat()).await;
     let raw = tokio::time::timeout(Duration::from_secs(2), raw_rx.recv())
         .await
         .expect("B frame timeout")
         .expect("scanner raw channel closed");
     assert_eq!(raw.raw.auth_code, "621234567890123456");
 
-    scanner_pty
-        .write(&[code.as_slice(), b"\r\n"].concat())
-        .await;
+    scanner_pty.write(&[code.as_slice(), b"\r"].concat()).await;
     assert!(
         tokio::time::timeout(Duration::from_millis(250), raw_rx.recv())
             .await
@@ -184,9 +180,7 @@ async fn serial_text_scanner_pty_resets_partial_and_duplicate_state_for_the_next
     );
 
     payment_code_scan_armer.arm_for_order("ORDER-C").await;
-    scanner_pty
-        .write(&[code.as_slice(), b"\r\n"].concat())
-        .await;
+    scanner_pty.write(&[code.as_slice(), b"\r"].concat()).await;
     let next_order = tokio::time::timeout(Duration::from_secs(2), raw_rx.recv())
         .await
         .expect("C frame timeout")

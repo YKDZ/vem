@@ -137,16 +137,28 @@ function makeJoinedSelectResult(rows: unknown[]) {
   };
 }
 
-function makeEmptyLatestSelectResult() {
-  return {
-    from: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({
-        orderBy: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([]),
-        }),
-      }),
-    }),
+function makeSelectRowsResult(rows: unknown[]) {
+  const result = {
+    from: vi.fn(() => result),
+    innerJoin: vi.fn(() => result),
+    leftJoin: vi.fn(() => result),
+    where: vi.fn(() => result),
+    orderBy: vi.fn(() => result),
+    limit: vi.fn(() => result),
+    then: <TResult1 = unknown[], TResult2 = never>(
+      onfulfilled?:
+        | ((value: unknown[]) => TResult1 | PromiseLike<TResult1>)
+        | null,
+      onrejected?:
+        | ((reason: unknown) => TResult2 | PromiseLike<TResult2>)
+        | null,
+    ) => Promise.resolve(rows).then(onfulfilled, onrejected),
   };
+  return result;
+}
+
+function makeEmptyLatestSelectResult() {
+  return makeSelectRowsResult([]);
 }
 
 function makeQueuedDb(rowsBySelect: unknown[][]) {
@@ -1241,6 +1253,7 @@ describe("OrdersService", () => {
       await expect(
         service.createMachineOrder({
           machineCode: "M001",
+          idempotencyKey: "checkout:test-required",
           items: [
             {
               inventoryId: "inv-1",
@@ -1271,6 +1284,7 @@ describe("OrdersService", () => {
       await expect(
         service.createMachineOrder({
           machineCode: "M001",
+          idempotencyKey: "checkout:test-required",
           items: [
             {
               inventoryId: "inv-1",
@@ -1301,6 +1315,7 @@ describe("OrdersService", () => {
       await expect(
         service.createMachineOrder({
           machineCode: "M001",
+          idempotencyKey: "checkout:test-required",
           items: [
             {
               inventoryId: "550e8400-e29b-41d4-a716-446655440000",
@@ -1332,6 +1347,7 @@ describe("OrdersService", () => {
       await expect(
         service.createMachineOrder({
           machineCode: "M001",
+          idempotencyKey: "checkout:test-required",
           items: [
             {
               inventoryId: "550e8400-e29b-41d4-a716-446655440000",
@@ -1478,6 +1494,7 @@ describe("OrdersService", () => {
 
       await service.createMachineOrder({
         machineCode: "M001",
+        idempotencyKey: "checkout:test-required",
         items: [
           {
             inventoryId: "inv-1",
@@ -1615,6 +1632,7 @@ describe("OrdersService", () => {
 
       await service.createMachineOrder({
         machineCode: "M001",
+        idempotencyKey: "checkout:test-required",
         items: [
           {
             inventoryId: "inv-2",
@@ -1643,6 +1661,7 @@ describe("OrdersService", () => {
 
       const result = await service.createMachineOrder({
         machineCode: "M-001",
+        idempotencyKey: "checkout:test-required",
         items: [
           {
             inventoryId: "inv-001",
@@ -1677,6 +1696,7 @@ describe("OrdersService", () => {
       await expect(
         service.createMachineOrder({
           machineCode: "M001",
+          idempotencyKey: "checkout:test-required",
           items: [
             {
               inventoryId: "550e8400-e29b-41d4-a716-446655440000",
@@ -1720,6 +1740,7 @@ describe("OrdersService", () => {
       await expect(
         service.createMachineOrder({
           machineCode: "M001",
+          idempotencyKey: "checkout:test-required",
           items: [
             {
               inventoryId: "550e8400-e29b-41d4-a716-446655440000",
@@ -1771,6 +1792,7 @@ describe("OrdersService", () => {
       await expect(
         service.createMachineOrder({
           machineCode: "M001",
+          idempotencyKey: "checkout:test-required",
           items: [
             {
               inventoryId: "550e8400-e29b-41d4-a716-446655440000",
@@ -2675,15 +2697,13 @@ function makeOrdersDbForSuccessfulLocalDraft(options?: {
     ],
   };
 
-  // Machine lookup: returns online machine
+  // Machine lookup returns an online machine; the next outer select is the
+  // required idempotency replay lookup and returns empty for new attempts.
   const machineRows = [{ id: "mach-001", code: "M-001", status: "online" }];
-  const machineWhereResult = Object.assign(Promise.resolve(machineRows), {
-    limit: vi.fn().mockResolvedValue([{ id: "pay-claim" }]),
-  });
-  harness.select.mockReturnValue({
-    from: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue(machineWhereResult),
-    }),
+  let selectCallCount = 0;
+  harness.select.mockImplementation(() => {
+    selectCallCount += 1;
+    return makeSelectRowsResult(selectCallCount === 1 ? machineRows : []);
   });
 
   // Transaction runs callback and calls transactionFinished after
@@ -2729,6 +2749,12 @@ function makeOrdersDbForSuccessfulLocalDraft(options?: {
 
 function makeOrdersDbForPaymentUpdateFailure(): OrdersDbHarness {
   const db = makeOrdersDbForSuccessfulLocalDraft();
+  const selectRows = [
+    [{ id: "mach-001", code: "M-001", status: "online" }],
+    [],
+    [{ id: "pay-001" }],
+  ];
+  db.select = vi.fn(() => makeSelectRowsResult(selectRows.shift() ?? []));
   let updateCalls = 0;
   db.update = vi.fn(() => ({
     set: vi.fn(() => {
@@ -2767,6 +2793,7 @@ describe("OrdersService (transaction boundary)", () => {
       await expect(
         service.createMachineOrder({
           machineCode: "M-001",
+          idempotencyKey: "checkout:test-required",
           items: [{ inventoryId: "inv-001", quantity: 1 } as never],
           paymentMethod: "payment_code",
           paymentProviderCode: "alipay",
@@ -2787,6 +2814,7 @@ describe("OrdersService (transaction boundary)", () => {
       await expect(
         service.createMachineOrder({
           machineCode: "M-001",
+          idempotencyKey: "checkout:test-required",
           items: [
             {
               inventoryId: "inv-001",
@@ -2833,6 +2861,7 @@ describe("OrdersService (transaction boundary)", () => {
       await expect(
         service.createMachineOrder({
           machineCode: "M-001",
+          idempotencyKey: "checkout:test-required",
           items: [
             {
               inventoryId: "inv-001",
@@ -2862,6 +2891,7 @@ describe("OrdersService (transaction boundary)", () => {
       await expect(
         service.createMachineOrder({
           machineCode: "M-001",
+          idempotencyKey: "checkout:test-required",
           items: [
             {
               inventoryId: "inv-001",
@@ -2896,6 +2926,7 @@ describe("OrdersService (transaction boundary)", () => {
 
       const result = await service.createMachineOrder({
         machineCode: "M-001",
+        idempotencyKey: "checkout:test-required",
         items: [
           {
             inventoryId: "inv-001",
@@ -2933,6 +2964,7 @@ describe("OrdersService (transaction boundary)", () => {
 
       await service.createMachineOrder({
         machineCode: "M-001",
+        idempotencyKey: "checkout:test-required",
         items: [
           {
             inventoryId: "inv-001",
@@ -2981,6 +3013,7 @@ describe("OrdersService (transaction boundary)", () => {
 
       await service.createMachineOrder({
         machineCode: "M-001",
+        idempotencyKey: "checkout:test-required",
         items: [
           {
             inventoryId: "inv-001",
@@ -3021,6 +3054,7 @@ describe("OrdersService (transaction boundary)", () => {
       await expect(
         service.createMachineOrder({
           machineCode: "M-001",
+          idempotencyKey: "checkout:test-required",
           items: [
             {
               inventoryId: "inv-001",
@@ -3076,6 +3110,7 @@ describe("OrdersService (transaction boundary)", () => {
       await expect(
         service.createMachineOrder({
           machineCode: "M-001",
+          idempotencyKey: "checkout:test-required",
           items: [
             {
               inventoryId: "inv-001",
@@ -3129,6 +3164,7 @@ describe("OrdersService (transaction boundary)", () => {
       await expect(
         service.createMachineOrder({
           machineCode: "M-001",
+          idempotencyKey: "checkout:test-required",
           items: [
             {
               inventoryId: "inv-001",
@@ -3190,6 +3226,7 @@ describe("OrdersService (transaction boundary)", () => {
       await expect(
         service.createMachineOrder({
           machineCode: "M-001",
+          idempotencyKey: "checkout:test-required",
           items: [
             {
               inventoryId: "inv-001",

@@ -965,6 +965,15 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         return null;
       }
       if (payload.success) {
+        if (command.status === "succeeded") {
+          await this.insertDispenseResultInboxEvent(tx, {
+            machineId: machine.id,
+            payload,
+            topic,
+            messageId,
+          });
+          return { kind: "refund_recovery" as const };
+        }
         if (command.status === "failed") {
           await this.insertDispenseResultInboxEvent(tx, {
             machineId: machine.id,
@@ -1108,17 +1117,12 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     });
 
     if (resultContext?.kind === "success") {
-      const successResult = await this.resolveCommandAsDispensed(
-        resultContext.command,
-        {
-          movementId: `mqtt-dispense:${payload.commandNo}`,
-          source: "vending_command",
-          occurredAt: payload.reportedAt,
-        },
-      );
-      if (!("stockMovementStatus" in successResult)) {
-        await this.refundsService.dispatchPendingRefunds();
-      }
+      await this.resolveCommandAsDispensed(resultContext.command, {
+        movementId: `mqtt-dispense:${payload.commandNo}`,
+        source: "vending_command",
+        occurredAt: payload.reportedAt,
+      });
+      await this.refundsService.dispatchPendingRefunds();
       // Success projection is itself idempotent (movementId + command CAS).
       // Persist the inbox receipt only after it commits, so a crash or
       // transient failure is resumed by the same messageId instead of being

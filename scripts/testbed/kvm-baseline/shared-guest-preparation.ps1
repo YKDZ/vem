@@ -25,11 +25,20 @@ function Set-BaselineService {
 }
 
 function Disable-BaselineService {
-  param([string] $Name)
+  param([string] $Name, [int] $TimeoutSeconds = 20)
   $service = Get-Service -Name $Name -ErrorAction SilentlyContinue
   if ($null -ne $service) {
-    if ($service.Status -ne "Stopped") { Stop-Service -Name $Name -Force -ErrorAction Stop }
     Set-Service -Name $Name -StartupType Disabled
+    if ($service.Status -ne "Stopped") {
+      $stopOutput = & sc.exe stop $Name 2>&1
+      $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+      do {
+        Start-Sleep -Seconds 1
+        $service = Get-Service -Name $Name -ErrorAction SilentlyContinue
+        if ($null -eq $service -or $service.Status -eq "Stopped") { return }
+      } while ((Get-Date) -lt $deadline)
+      Write-Warning "$Name did not stop within $TimeoutSeconds seconds; startup is disabled and baseline preparation will continue. sc.exe output: $stopOutput"
+    }
   }
 }
 

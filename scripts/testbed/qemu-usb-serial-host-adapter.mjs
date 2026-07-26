@@ -31,10 +31,7 @@ const SELF_PATH = fileURLToPath(import.meta.url);
 const REQUIRED_ROLES = ["lower-controller", "scanner"];
 const FRAME_HEAD = 0x55;
 const SALE_AUDIO_EXTENSION = "capture-sale-audio/v1";
-const SCANNER_BINDING_PROBE_BYTES = Buffer.from(
-  "VEM-BINDING-PROBE\r\n",
-  "utf8",
-);
+const SCANNER_BINDING_PROBE_BYTES = Buffer.from("VEM-BINDING-PROBE\r", "utf8");
 const TERMINATE_GRACE_MS = 3_000;
 const KILL_GRACE_MS = 1_000;
 const SALE_AUDIO_THRESHOLD = Object.freeze({

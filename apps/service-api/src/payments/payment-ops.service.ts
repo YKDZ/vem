@@ -992,10 +992,7 @@ export class PaymentOpsService {
     }
 
     if (row.providerCode === "wechat_pay") {
-      if (
-        !hasNonEmptyString(row.publicConfig, "merchantCertificateSerialNo") &&
-        !hasNonEmptyString(row.publicConfig, "certificateSerialNo")
-      ) {
+      if (!hasNonEmptyString(row.publicConfig, "merchantCertificateSerialNo")) {
         missing.push("merchantCertificateSerialNo");
       }
       if (!hasNonEmptyString(row.publicConfig, "platformCertificateSerialNo")) {

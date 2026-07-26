@@ -2718,7 +2718,7 @@ describe("PaymentsService", () => {
         merchantNo: "MCH001",
         appId: "APP001",
         publicConfigJson: {
-          certificateSerialNo: "ABCDEF",
+          merchantCertificateSerialNo: "ABCDEF",
           paymentCodeEnabled: true,
           paymentCodePollIntervalSeconds: 3,
           paymentCodeMaxConfirmSeconds: 30,
@@ -2752,7 +2752,7 @@ describe("PaymentsService", () => {
         "paymentCodeEnabled",
       );
       expect(results[0]?.publicConfigJson).toEqual({
-        certificateSerialNo: "ABCDEF",
+        merchantCertificateSerialNo: "ABCDEF",
         paymentCodePollIntervalSeconds: 3,
         paymentCodeMaxConfirmSeconds: 30,
         paymentCodeReverseDelaySeconds: 0,
@@ -3073,7 +3073,7 @@ describe("PaymentsService", () => {
         merchantNo: "MCH001",
         appId: "APP001",
         publicConfigJson: {
-          certificateSerialNo: "SN123",
+          merchantCertificateSerialNo: "SN123",
           platformCertificateSerialNo: "PLAT_SN123",
         },
         sensitiveConfigJson: {

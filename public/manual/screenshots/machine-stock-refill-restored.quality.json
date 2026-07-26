@@ -16,13 +16,7 @@
       "height": 1920
     },
     "expectedOrientation": "portrait",
-    "expectedTexts": [
-      "请选择商品类别",
-      "点击选购",
-      "袜子",
-      "内裤",
-      "T恤"
-    ],
+    "expectedTexts": ["请选择商品类别", "点击选购", "袜子", "内裤", "T恤"],
     "detectedTexts": null,
     "manualReviewReason": "机器端补货截图来自 VM Runtime Acceptance；中文文本由人工对照截图复核。"
   },

@@ -46,7 +46,7 @@ export const REQUIRED_TRANSACTION_AUDIO_PREFERENCES = Object.freeze({
 });
 
 function scannerFrame(code) {
-  return `${required(code, "scanner code").replace(/[\r\n]+$/u, "")}\r\n`;
+  return `${required(code, "scanner code").replace(/[\r\n]+$/u, "")}\r`;
 }
 
 function required(value, label) {

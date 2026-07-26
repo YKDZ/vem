@@ -587,7 +587,7 @@ function prepareScannerCode(options, root) {
   const path = join(root, "scanner-code.txt");
   const scannerCode = options.scanner_code_file
     ? readFileSync(options.scanner_code_file)
-    : Buffer.from(`TEST-${randomBytes(8).toString("hex")}\r\n`, "utf8");
+    : Buffer.from(`TEST-${randomBytes(8).toString("hex")}\r`, "utf8");
   if (scannerCode.length === 0) {
     throw new Error("--scanner-code-file must not be empty");
   }

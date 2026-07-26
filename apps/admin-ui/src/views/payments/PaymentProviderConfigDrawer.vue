@@ -141,16 +141,10 @@ function applyConfig(config: PaymentProviderConfig | null): void {
       typeof publicConfig["timeoutCompensationSeconds"] === "number"
         ? publicConfig["timeoutCompensationSeconds"]
         : 120,
-    certificateSerialNo:
-      typeof publicConfig["certificateSerialNo"] === "string"
-        ? publicConfig["certificateSerialNo"]
-        : "",
     merchantCertificateSerialNo:
       typeof publicConfig["merchantCertificateSerialNo"] === "string"
         ? publicConfig["merchantCertificateSerialNo"]
-        : typeof publicConfig["certificateSerialNo"] === "string"
-          ? publicConfig["certificateSerialNo"]
-          : "",
+        : "",
     platformCertificateSerialNo:
       typeof publicConfig["platformCertificateSerialNo"] === "string"
         ? publicConfig["platformCertificateSerialNo"]

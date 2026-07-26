@@ -330,12 +330,12 @@ describe("DaemonApiClient direct runtime intents", () => {
       );
 
       const result = new DaemonApiClient().getHealth();
-      const expectation = expect(result).rejects.toMatchObject({
-        message: "daemon request timed out",
-      });
+      const observedError = result.catch((error: unknown) => error);
       await vi.advanceTimersByTimeAsync(15_000);
 
-      await expectation;
+      await expect(observedError).resolves.toMatchObject({
+        message: "daemon request timed out",
+      });
     } finally {
       vi.useRealTimers();
     }

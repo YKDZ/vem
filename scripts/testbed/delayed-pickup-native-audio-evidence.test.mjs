@@ -80,34 +80,32 @@ function dispenseFrame() {
 function runtimeTraceFixture() {
   const trace = [];
   let id = 1;
-  [
-    "pickup-outlet-opened",
-    "pickup-warning-1",
-    "pickup-warning-2",
-  ].forEach((suffix, index) => {
-    const transitionId = `transaction:${binding.orderNo}:${suffix}`;
-    const requestId = `audio-request-${index + 1}`;
-    const base = Date.parse("2026-07-18T08:00:00.000Z") + index * 4_000;
-    for (const [entryIndex, type] of [
-      "journey_transition",
-      "audio_queued",
-      "audio_started",
-      "audio_terminal",
-    ].entries()) {
-      const at = new Date(base + [0, 10, 100, 500][entryIndex]).toISOString();
-      trace.push({
-        type,
-        id: id++,
-        at,
-        recordedAt: at,
-        transitionId,
-        requestId: entryIndex === 0 ? null : requestId,
-        terminalOutcomeId:
-          type === "audio_terminal" ? `audio-terminal:${requestId}` : null,
-        outcome: type === "audio_terminal" ? "completed" : null,
-      });
-    }
-  });
+  ["pickup-outlet-opened", "pickup-warning-1", "pickup-warning-2"].forEach(
+    (suffix, index) => {
+      const transitionId = `transaction:${binding.orderNo}:${suffix}`;
+      const requestId = `audio-request-${index + 1}`;
+      const base = Date.parse("2026-07-18T08:00:00.000Z") + index * 4_000;
+      for (const [entryIndex, type] of [
+        "journey_transition",
+        "audio_queued",
+        "audio_started",
+        "audio_terminal",
+      ].entries()) {
+        const at = new Date(base + [0, 10, 100, 500][entryIndex]).toISOString();
+        trace.push({
+          type,
+          id: id++,
+          at,
+          recordedAt: at,
+          transitionId,
+          requestId: entryIndex === 0 ? null : requestId,
+          terminalOutcomeId:
+            type === "audio_terminal" ? `audio-terminal:${requestId}` : null,
+          outcome: type === "audio_terminal" ? "completed" : null,
+        });
+      }
+    },
+  );
   const terminalAt = "2026-07-18T08:00:12.000Z";
   trace.push({
     type: "journey_transition",

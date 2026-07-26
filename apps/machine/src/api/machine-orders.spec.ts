@@ -77,6 +77,7 @@ describe("machine order api", () => {
     const client = createMockClient();
     const result = await createMachineOrder(client, {
       machineCode: "M001",
+      idempotencyKey: "checkout:api-mock",
       items: [
         {
           inventoryId: "00000000-0000-4000-8000-000000000010",
@@ -92,6 +93,7 @@ describe("machine order api", () => {
     expect(result.paymentId).toBe("550e8400-e29b-41d4-a716-446655440011");
     expect(client.lastPostBody).toEqual({
       machineCode: "M001",
+      idempotencyKey: "checkout:api-mock",
       items: [
         {
           inventoryId: "00000000-0000-4000-8000-000000000010",
@@ -119,6 +121,7 @@ describe("machine order api", () => {
     });
     const result = await createMachineOrder(client, {
       machineCode: "M001",
+      idempotencyKey: "checkout:api-alipay",
       items: [
         {
           inventoryId: "00000000-0000-4000-8000-000000000011",
@@ -134,6 +137,7 @@ describe("machine order api", () => {
     expect(result.paymentProviderCode).toBe("alipay");
     expect(client.lastPostBody).toEqual({
       machineCode: "M001",
+      idempotencyKey: "checkout:api-alipay",
       items: [
         {
           inventoryId: "00000000-0000-4000-8000-000000000011",

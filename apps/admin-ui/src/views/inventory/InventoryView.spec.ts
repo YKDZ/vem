@@ -97,7 +97,9 @@ const ButtonStub = defineComponent({
         "button",
         {
           disabled: props.disabled || props.loading,
-          onClick: () => emit("click"),
+          onClick: () => {
+            emit("click");
+          },
         },
         slots.default?.(),
       );
@@ -126,7 +128,9 @@ const ModalStub = defineComponent({
               {
                 disabled:
                   props.confirmLoading || props.okButtonProps.disabled === true,
-                onClick: () => emit("ok"),
+                onClick: () => {
+                  emit("ok");
+                },
               },
               "确定",
             ),

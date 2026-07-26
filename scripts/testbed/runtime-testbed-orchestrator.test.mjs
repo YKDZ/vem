@@ -83,6 +83,38 @@ describe("runtime testbed scheduler contract", () => {
         ]),
       /--focus is only valid with --mode fast/,
     );
+    assert.throws(
+      () =>
+        parseOrchestratorOptions([
+          "run",
+          "--mode",
+          "clear_cache",
+          "--focus",
+          "sale",
+          "--commit",
+          sha,
+          "--config",
+          "/etc/vem/testbed.json",
+        ]),
+      /--focus is only valid with --mode fast/,
+    );
+    assert.throws(
+      () =>
+        parseTriggerOptions([
+          "run",
+          "--mode",
+          "clear_cache",
+          "--focus",
+          "sale",
+          "--commit",
+          sha,
+          "--config",
+          "/etc/vem/testbed.json",
+          "--out",
+          "/tmp/result.json",
+        ]),
+      /--focus is only valid with --mode fast/,
+    );
   });
 
   it("passes multiple focused sets as one PowerShell array parameter", () => {

@@ -1209,14 +1209,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     if (!input.appId) missing.push("appId");
 
     if (input.providerCode === "wechat_pay") {
-      // merchantCertificateSerialNo or deprecated certificateSerialNo
-      const hasMerchantSerial =
-        (typeof input.publicConfigJson["merchantCertificateSerialNo"] ===
-          "string" &&
-          input.publicConfigJson["merchantCertificateSerialNo"].length > 0) ||
-        (typeof input.publicConfigJson["certificateSerialNo"] === "string" &&
-          input.publicConfigJson["certificateSerialNo"].length > 0);
-      if (!hasMerchantSerial) missing.push("merchantCertificateSerialNo");
+      requireString(input.publicConfigJson, "merchantCertificateSerialNo");
       requireString(input.publicConfigJson, "platformCertificateSerialNo");
       requireString(input.sensitiveConfigJson, "apiV3Key");
       requireString(input.sensitiveConfigJson, "privateKeyPem");

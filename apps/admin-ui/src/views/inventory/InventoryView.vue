@@ -99,11 +99,14 @@ async function listAllMachinesForBinding(): Promise<Machine[]> {
   const pageSize = 100;
   const firstPage = await listMachines({ page: 1, pageSize });
   const items = [...firstPage.items];
-  for (let page = 2; items.length < firstPage.total; page += 1) {
+  async function appendPage(page: number): Promise<void> {
+    if (items.length >= firstPage.total) return;
     const nextPage = await listMachines({ page, pageSize });
-    if (nextPage.items.length === 0) break;
+    if (nextPage.items.length === 0) return;
     items.push(...nextPage.items);
+    await appendPage(page + 1);
   }
+  await appendPage(2);
   return items;
 }
 
@@ -111,11 +114,14 @@ async function listAllProductsForBinding(): Promise<Product[]> {
   const pageSize = 100;
   const firstPage = await listProducts({ page: 1, pageSize });
   const items = [...firstPage.items];
-  for (let page = 2; items.length < firstPage.total; page += 1) {
+  async function appendPage(page: number): Promise<void> {
+    if (items.length >= firstPage.total) return;
     const nextPage = await listProducts({ page, pageSize });
-    if (nextPage.items.length === 0) break;
+    if (nextPage.items.length === 0) return;
     items.push(...nextPage.items);
+    await appendPage(page + 1);
   }
+  await appendPage(2);
   return items;
 }
 
@@ -125,11 +131,14 @@ async function listAllProductVariantsForBinding(
   const pageSize = 100;
   const firstPage = await listProductVariants(productId, { page: 1, pageSize });
   const items = [...firstPage.items];
-  for (let page = 2; items.length < firstPage.total; page += 1) {
+  async function appendPage(page: number): Promise<void> {
+    if (items.length >= firstPage.total) return;
     const nextPage = await listProductVariants(productId, { page, pageSize });
-    if (nextPage.items.length === 0) break;
+    if (nextPage.items.length === 0) return;
     items.push(...nextPage.items);
+    await appendPage(page + 1);
   }
+  await appendPage(2);
   return items;
 }
 
@@ -151,7 +160,8 @@ function resetBindForm(): void {
 }
 
 async function openBindForm(): Promise<void> {
-  const requestSequence = ++bindOptionsRequestSequence;
+  bindOptionsRequestSequence += 1;
+  const requestSequence = bindOptionsRequestSequence;
   resetBindForm();
   bindFormOpen.value = true;
   bindOptionsLoading.value = true;
@@ -172,7 +182,8 @@ async function openBindForm(): Promise<void> {
 }
 
 async function onBindMachineChanged(machineId: string): Promise<void> {
-  const requestSequence = ++bindSlotsRequestSequence;
+  bindSlotsRequestSequence += 1;
+  const requestSequence = bindSlotsRequestSequence;
   bindForm.value.slotId = "";
   bindSlots.value = [];
   if (!machineId) return;
@@ -193,7 +204,8 @@ async function onBindMachineChanged(machineId: string): Promise<void> {
 }
 
 async function onBindProductChanged(productId: string): Promise<void> {
-  const requestSequence = ++bindVariantsRequestSequence;
+  bindVariantsRequestSequence += 1;
+  const requestSequence = bindVariantsRequestSequence;
   bindForm.value.variantId = "";
   bindVariants.value = [];
   if (!productId) return;

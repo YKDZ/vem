@@ -41,13 +41,14 @@ async function adminApi<T>(
   return (await page.evaluate(
     async ({ path, init }) => {
       const token = localStorage.getItem("vem.admin.accessToken");
+      const hasBody = init.body !== null && init.body !== undefined;
       const response = await fetch(`/api${path}`, {
         method: init.method ?? "GET",
         headers: {
-          ...(init.body == null ? {} : { "content-type": "application/json" }),
+          ...(hasBody ? { "content-type": "application/json" } : {}),
           authorization: `Bearer ${token}`,
         },
-        body: init.body == null ? undefined : JSON.stringify(init.body),
+        body: hasBody ? JSON.stringify(init.body) : undefined,
       });
       const payload = (await response.json()) as AdminApiResponse<unknown>;
       if (!response.ok || payload.code !== 0) {
@@ -87,11 +88,15 @@ async function captureManualScreenshot(
   const pngPath = resolve(SCREENSHOT_ROOT, `${input.id}.png`);
   const metadataPath = resolve(SCREENSHOT_ROOT, `${input.id}.json`);
   const viewport = page.viewportSize();
-  for (const text of input.expectedTexts) {
-    await expect(page.getByText(visibleTextPattern(text)).first()).toBeVisible({
-      timeout: 10_000,
-    });
-  }
+  await Promise.all(
+    input.expectedTexts.map(async (text) => {
+      await expect(
+        page.getByText(visibleTextPattern(text)).first(),
+      ).toBeVisible({
+        timeout: 10_000,
+      });
+    }),
+  );
   await page
     .waitForFunction(
       () =>

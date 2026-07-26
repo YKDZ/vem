@@ -13,16 +13,8 @@
       "height": 1080
     },
     "expectedOrientation": "landscape",
-    "expectedTexts": [
-      "编辑 SKU",
-      "试穿剪影",
-      "确定"
-    ],
-    "detectedTexts": [
-      "编辑 SKU",
-      "试穿剪影",
-      "确定"
-    ],
+    "expectedTexts": ["编辑 SKU", "试穿剪影", "确定"],
+    "detectedTexts": ["编辑 SKU", "试穿剪影", "确定"],
     "manualReviewReason": null
   },
   "capture": {

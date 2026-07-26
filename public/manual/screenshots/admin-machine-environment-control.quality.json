@@ -13,18 +13,8 @@
       "height": 1080
     },
     "expectedOrientation": "landscape",
-    "expectedTexts": [
-      "环境",
-      "空调",
-      "出风口",
-      "设定"
-    ],
-    "detectedTexts": [
-      "环境",
-      "空调",
-      "出风口",
-      "设定"
-    ],
+    "expectedTexts": ["环境", "空调", "出风口", "设定"],
+    "detectedTexts": ["环境", "空调", "出风口", "设定"],
     "manualReviewReason": null
   },
   "capture": {

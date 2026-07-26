@@ -37,6 +37,7 @@ import { getOffset, toPageResult } from "../common/pagination.util";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { HardwareErrorPoliciesService } from "../hardware-error-policies/hardware-error-policies.service";
 import { NotificationsService } from "../notifications/notifications.service";
+import { releaseExpiredInventoryReservations } from "./expired-inventory-reservations";
 import {
   mapAdjustInventoryDtoToMovementInsert,
   mapCreateInventoryDtoToInsert,
@@ -44,7 +45,6 @@ import {
   toAdminInventoryMovementResponse,
   toAdminInventoryResponse,
 } from "./inventory.contract-mappers";
-import { releaseExpiredInventoryReservations } from "./expired-inventory-reservations";
 
 type InventoryQuery = z.infer<typeof inventoryQuerySchema> &
   z.infer<typeof pageQuerySchema>;

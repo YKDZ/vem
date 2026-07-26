@@ -863,8 +863,7 @@ export class MachineStockMovementsRepository {
         );
       await tx
         .update(machineRawStockMovements)
-        .set({ platformReviewStatus: "resolved" })
-        .where(sql`
+        .set({ platformReviewStatus: "resolved" }).where(sql`
           ${machineRawStockMovements.machineId} = ${input.machineId}
           and ${machineRawStockMovements.saleSafetyBlockerSlotId} = ${input.slotId}
           and ${machineRawStockMovements.platformReviewStatus} = 'open'
@@ -872,8 +871,7 @@ export class MachineStockMovementsRepository {
         `);
       await tx
         .update(machineRawStockMovementConflicts)
-        .set({ platformReviewStatus: "resolved" })
-        .where(sql`
+        .set({ platformReviewStatus: "resolved" }).where(sql`
           ${machineRawStockMovementConflicts.machineId} = ${input.machineId}
           and ${machineRawStockMovementConflicts.saleSafetyBlockerSlotId} = ${input.slotId}
           and ${machineRawStockMovementConflicts.platformReviewStatus} = 'open'

@@ -38,7 +38,7 @@ jobs:
             ${{ runner.os }}-turbo-
 
       - name: Run Admin browser acceptance
-        run: node tools/check-ci.mjs --job admin-e2e
+        run: pnpm ci:admin-browser
 
       - name: Upload Playwright report
         if: failure()

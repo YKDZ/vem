@@ -13,18 +13,8 @@
       "height": 1080
     },
     "expectedOrientation": "landscape",
-    "expectedTexts": [
-      "支付宝配置",
-      "商户号",
-      "应用私钥 PEM",
-      "二维码有效期"
-    ],
-    "detectedTexts": [
-      "支付宝配置",
-      "商户号",
-      "应用私钥 PEM",
-      "二维码有效期"
-    ],
+    "expectedTexts": ["支付宝配置", "商户号", "应用私钥 PEM", "二维码有效期"],
+    "detectedTexts": ["支付宝配置", "商户号", "应用私钥 PEM", "二维码有效期"],
     "manualReviewReason": null
   },
   "capture": {

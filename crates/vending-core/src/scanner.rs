@@ -55,7 +55,7 @@ pub struct ScannerFramer {
 
 impl Default for ScannerFramer {
     fn default() -> Self {
-        Self::new(ScannerFrameSuffix::Crlf)
+        Self::new(ScannerFrameSuffix::Cr)
     }
 }
 
@@ -214,9 +214,9 @@ mod tests {
     #[test]
     fn scanner_framer_debounce_duplicates() {
         let mut framer = ScannerFramer::default();
-        let first = framer.push_bytes(b"621234567890123456\r\n", 1_000);
+        let first = framer.push_bytes(b"621234567890123456\r", 1_000);
         assert_eq!(first.len(), 1);
-        let second = framer.push_bytes(b"621234567890123456\r\n", 2_000);
+        let second = framer.push_bytes(b"621234567890123456\r", 2_000);
         assert!(second.is_empty());
     }
 
@@ -225,7 +225,7 @@ mod tests {
         let mut framer = ScannerFramer::default();
         assert!(framer.push_bytes(b"stale-partial", 1_000).is_empty());
 
-        let scanned = framer.push_bytes(b"621234567890123456\r\n", 2_000);
+        let scanned = framer.push_bytes(b"621234567890123456\r", 2_000);
 
         assert_eq!(scanned.len(), 1);
         assert_eq!(scanned[0].auth_code, "621234567890123456");
@@ -247,13 +247,13 @@ mod tests {
         let mut framer = ScannerFramer::default();
 
         assert!(framer
-            .push_bytes(b" 621234567890123456\r\n", 1_000)
+            .push_bytes(b" 621234567890123456\r", 1_000)
             .is_empty());
         assert!(framer
-            .push_bytes(b"621234567890123456 \r\n", 1_001)
+            .push_bytes(b"621234567890123456 \r", 1_001)
             .is_empty());
 
-        let scanned = framer.push_bytes(b"6212 34567890123456\r\n", 1_002);
+        let scanned = framer.push_bytes(b"6212 34567890123456\r", 1_002);
         assert_eq!(scanned.len(), 1);
         assert_eq!(scanned[0].auth_code, "6212 34567890123456");
     }
@@ -262,11 +262,8 @@ mod tests {
     fn scanner_framer_rejects_short_payloads_under_the_shared_contract() {
         let mut framer = ScannerFramer::default();
 
-        assert!(framer.push_bytes(b"12345\r\n", 1_000).is_empty());
-        assert_eq!(
-            framer.push_bytes(b"123456\r\n", 1_001)[0].auth_code,
-            "123456"
-        );
+        assert!(framer.push_bytes(b"12345\r", 1_000).is_empty());
+        assert_eq!(framer.push_bytes(b"123456\r", 1_001)[0].auth_code, "123456");
     }
 
     #[test]
@@ -275,7 +272,7 @@ mod tests {
         let oversized = vec![b'1'; SCANNER_MAX_FRAME_BYTES + 1];
         assert!(framer.push_bytes(&oversized, 1_000).is_empty());
 
-        let scanned = framer.push_bytes(b"621234567890123456\r\n", 2_000);
+        let scanned = framer.push_bytes(b"621234567890123456\r", 2_000);
 
         assert_eq!(scanned.len(), 1);
         assert_eq!(scanned[0].auth_code, "621234567890123456");
@@ -284,9 +281,9 @@ mod tests {
     #[test]
     fn scanner_framer_discards_a_malformed_frame_before_the_next_attempt() {
         let mut framer = ScannerFramer::default();
-        assert!(framer.push_bytes(b"6212\xffbad\r\n", 1_000).is_empty());
+        assert!(framer.push_bytes(b"6212\xffbad\r", 1_000).is_empty());
 
-        let scanned = framer.push_bytes(b"621234567890123456\r\n", 1_001);
+        let scanned = framer.push_bytes(b"621234567890123456\r", 1_001);
 
         assert_eq!(scanned.len(), 1);
         assert_eq!(scanned[0].auth_code, "621234567890123456");
@@ -343,9 +340,9 @@ mod tests {
     #[test]
     fn scanner_framer_reset_clears_duplicate_debounce() {
         let mut framer = ScannerFramer::default();
-        assert_eq!(framer.push_bytes(b"621234567890123456\r\n", 1_000).len(), 1);
+        assert_eq!(framer.push_bytes(b"621234567890123456\r", 1_000).len(), 1);
         framer.reset();
-        assert_eq!(framer.push_bytes(b"621234567890123456\r\n", 1_001).len(), 1);
+        assert_eq!(framer.push_bytes(b"621234567890123456\r", 1_001).len(), 1);
     }
 
     #[test]

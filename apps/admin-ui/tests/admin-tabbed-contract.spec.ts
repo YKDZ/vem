@@ -59,8 +59,8 @@ test.describe("Admin tabbed page contract acceptance", () => {
       await waitForAdminUiSettled(page);
       await monitor.assertNoFailures();
 
-      /* eslint-disable no-await-in-loop -- each tab must settle before the next tab triggers its own API loads */
-      for (const tabName of adminPage.tabs) {
+      await adminPage.tabs.reduce<Promise<void>>(async (previous, tabName) => {
+        await previous;
         const tab = page.getByRole("tab", { name: tabName });
         await expect(tab).toBeVisible({ timeout: 10_000 });
         await tab.click();
@@ -69,14 +69,15 @@ test.describe("Admin tabbed page contract acceptance", () => {
         });
         await waitForAdminUiSettled(page);
         await monitor.assertNoFailures();
-      }
-      /* eslint-enable no-await-in-loop */
+      }, Promise.resolve());
 
-      for (const hiddenTabName of adminPage.hiddenTabs ?? []) {
-        await expect(
-          page.getByRole("tab", { name: hiddenTabName }),
-        ).toHaveCount(0);
-      }
+      await Promise.all(
+        (adminPage.hiddenTabs ?? []).map(async (hiddenTabName) => {
+          await expect(
+            page.getByRole("tab", { name: hiddenTabName }),
+          ).toHaveCount(0);
+        }),
+      );
     });
   }
 });

@@ -244,15 +244,23 @@ function compactCustomerErrorEvidence(
   entries: CustomerErrorEvidence[],
 ): CustomerErrorEvidence[] {
   const compacted: CustomerErrorEvidence[] = [];
+  let serializedBytes = serializedCustomerErrorEvidenceByteLength("[]");
   for (const entry of entries.slice(0, COMMAND_LOG_MAX_ENTRIES)) {
-    const candidate = [...compacted, entry];
+    const entryBytes = serializedCustomerErrorEvidenceByteLength(
+      JSON.stringify(entry),
+    );
+    const separatorBytes =
+      compacted.length === 0
+        ? 0
+        : serializedCustomerErrorEvidenceByteLength(",");
     if (
-      serializedCustomerErrorEvidenceByteLength(JSON.stringify(candidate)) >
+      serializedBytes + separatorBytes + entryBytes >
       CUSTOMER_ERROR_EVIDENCE_MAX_BYTES
     ) {
       continue;
     }
     compacted.push(entry);
+    serializedBytes += separatorBytes + entryBytes;
   }
   return compacted;
 }

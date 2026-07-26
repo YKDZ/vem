@@ -9,14 +9,6 @@
     "height": 1080
   },
   "expectedOrientation": "landscape",
-  "expectedTexts": [
-    "系统配置",
-    "天气服务",
-    "用户管理"
-  ],
-  "detectedTexts": [
-    "系统配置",
-    "天气服务",
-    "用户管理"
-  ]
+  "expectedTexts": ["系统配置", "天气服务", "用户管理"],
+  "detectedTexts": ["系统配置", "天气服务", "用户管理"]
 }

@@ -321,7 +321,8 @@ describe(
         status: string;
         slots: Array<{
           slotId: string;
-          slotDisplayLabel?: string;
+          rowNo: number;
+          cellNo: number;
           inventoryId: string;
           sku: string;
         }>;
@@ -330,9 +331,9 @@ describe(
         second.seededData.planogram.planogramVersion,
       );
       expect(published.data.status).toBe("published");
-      expect(published.data.slots.map((slot) => slot.slotDisplayLabel)).toEqual(
-        ["A1", "A2"],
-      );
+      expect(
+        published.data.slots.map((slot) => `${slot.rowNo}/${slot.cellNo}`),
+      ).toEqual(["1/1", "1/2"]);
       expect(published.data.slots.map((slot) => slot.sku)).toEqual(
         second.seededData.products.map((product) => product.sku),
       );
@@ -418,11 +419,11 @@ describe(
               quantity: 1,
               planogramVersion: published.data.planogramVersion,
               slotId: saleSlot.slotId,
-              slotDisplayLabel: saleSlot.slotDisplayLabel,
             },
           ],
           paymentMethod: "payment_code",
           paymentProviderCode: "mock",
+          idempotencyKey: `testbed-order-${second.runId}`,
         });
       expect(createOrderResponse.status).toBe(201);
       const createdOrder = createOrderResponse.body as ApiResponse<{
@@ -477,11 +478,11 @@ describe(
               quantity: 1,
               planogramVersion: published.data.planogramVersion,
               slotId: providerCompletionSaleSlot.slotId,
-              slotDisplayLabel: providerCompletionSaleSlot.slotDisplayLabel,
             },
           ],
           paymentMethod: "mock",
           paymentProviderCode: "mock",
+          idempotencyKey: `testbed-provider-complete-${second.runId}`,
         });
       expect(providerCompletionOrderResponse.status).toBe(201);
       const providerCompletionOrder =

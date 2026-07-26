@@ -16,10 +16,7 @@
       "height": 1920
     },
     "expectedOrientation": "portrait",
-    "expectedTexts": [
-      "唐诗村",
-      "选购"
-    ],
+    "expectedTexts": ["唐诗村", "选购"],
     "detectedTexts": null,
     "manualReviewReason": "机器端截图来自 VM Runtime Console 批次；中文文本由人工对照截图复核。"
   },

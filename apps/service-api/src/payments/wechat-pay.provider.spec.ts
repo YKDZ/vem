@@ -1151,8 +1151,8 @@ describe("WeChatPayProvider", () => {
     });
   });
 
-  describe("parseWeChatPayConfig backward compat", () => {
-    it("falls back to deprecated certificateSerialNo for merchant serial", async () => {
+  describe("parseWeChatPayConfig merchant certificate serial", () => {
+    it("requires merchantCertificateSerialNo", async () => {
       const legacyConfig: PaymentProviderRuntimeConfig = {
         providerCode: "wechat_pay",
         merchantNo: "MCH_LEGACY",
@@ -1168,31 +1168,15 @@ describe("WeChatPayProvider", () => {
           platformPublicKeyPem: platformPublicKey,
         },
       };
-
-      const fetchSpy = vi
-        .fn()
-        .mockResolvedValue(
-          createSignedApiResponse(
-            { code_url: "weixin://wxpay/bizpayurl?pr=legacy" },
-            platformPrivateKey,
-          ),
-        );
-      vi.stubGlobal("fetch", fetchSpy);
-
-      await provider.createPaymentIntent({
-        config: legacyConfig,
-        paymentNo: "PAY_LEGACY",
-        orderNo: "ORD_LEGACY",
-        amountCents: 100,
-        expiresAt: new Date(Date.now() + 900_000),
-      });
-
-      const [, requestInit] = fetchSpy.mock.calls[0] as [string, RequestInit];
-      const authHeader = (requestInit.headers as Record<string, string>)[
-        "Authorization"
-      ];
-      expect(authHeader).toContain("LEGACY_MERCHANT_SERIAL");
-      vi.unstubAllGlobals();
+      await expect(
+        provider.createPaymentIntent({
+          config: legacyConfig,
+          paymentNo: "PAY_LEGACY",
+          orderNo: "ORD_LEGACY",
+          amountCents: 100,
+          expiresAt: new Date(Date.now() + 900_000),
+        }),
+      ).rejects.toThrow(/merchantCertificateSerialNo/);
     });
 
     it("throws ConflictException when apiV3Key is not 32 bytes", async () => {

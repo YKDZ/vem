@@ -394,16 +394,6 @@ export type OrderRefundRequestResponse = z.infer<
   typeof orderRefundRequestResponseSchema
 >;
 
-export const legacyOrderRecoveryActionSchema = z.object({
-  action: z.enum([
-    "confirm_dispensed",
-    "confirm_not_dispensed",
-    "request_refund",
-    "compensation_dispense",
-  ]),
-  note: z.string().trim().min(1).max(500),
-});
-
 export type OrderRecoveryAction = z.infer<typeof orderRecoveryActionSchema>;
 
 export const machineOrderItemSchema = z.object({
@@ -428,7 +418,7 @@ export const createMachineOrderSchema = z
     paymentMethod: paymentMethodSchema,
     paymentProviderCode: machinePaymentProviderCodeSchema.optional(),
     profileSnapshot: machineOrderProfileSnapshotSchema.optional(),
-    idempotencyKey: z.string().trim().min(8).max(128).optional(),
+    idempotencyKey: z.string().trim().min(8).max(128),
   })
   .superRefine((value, ctx) => {
     if (value.paymentMethod === "mock") {

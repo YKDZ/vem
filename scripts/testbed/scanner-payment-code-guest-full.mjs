@@ -21,9 +21,9 @@ import {
 } from "./machine-ui-cdp-driver.mjs";
 
 const MODES = new Set(["full"]);
-const DEFAULT_VALID_SCANNER_CODE = "621234567890123456\r\n";
+const DEFAULT_VALID_SCANNER_CODE = "621234567890123456\r";
 const MALFORMED_SCANNER_BYTES = Buffer.from([
-  0x36, 0x32, 0x31, 0x32, 0xff, 0x62, 0x61, 0x64, 0x0d, 0x0a,
+  0x36, 0x32, 0x31, 0x32, 0xff, 0x62, 0x61, 0x64, 0x0d,
 ]);
 const TIMEOUT_PARTIAL_SCANNER_BYTES = Buffer.from("621234567890123456", "utf8");
 const CLEANUP_TIMEOUT_MS = 10_000;
@@ -37,17 +37,17 @@ export function scannerFrameBytes(value = DEFAULT_VALID_SCANNER_CODE) {
       : null;
   if (
     !bytes ||
-    bytes.length <= 2 ||
-    !bytes.subarray(-2).equals(Buffer.from("\r\n"))
+    bytes.length <= 1 ||
+    !bytes.subarray(-1).equals(Buffer.from("\r"))
   ) {
     throw new Error(
-      "scannerAcceptance.validCode must end with exactly one CRLF frame suffix",
+      "scannerAcceptance.validCode must end with exactly one CR frame suffix",
     );
   }
-  const body = bytes.subarray(0, -2);
+  const body = bytes.subarray(0, -1);
   if (body.includes(0x0d) || body.includes(0x0a)) {
     throw new Error(
-      "scannerAcceptance.validCode must contain exactly one trailing CRLF frame suffix",
+      "scannerAcceptance.validCode must contain exactly one trailing CR frame suffix",
     );
   }
   return bytes;

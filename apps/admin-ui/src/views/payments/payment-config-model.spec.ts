@@ -63,18 +63,6 @@ describe("payment-config-model", () => {
       });
     });
 
-    it("falls back to certificateSerialNo when merchantCertificateSerialNo is empty", () => {
-      const form = createDefaultProviderConfigForm("wechat_pay");
-      form.certificateSerialNo = "OLD_SERIAL";
-      form.merchantCertificateSerialNo = "";
-
-      const payload = buildProviderConfigPayload(form);
-
-      expect(payload.publicConfigJson["merchantCertificateSerialNo"]).toBe(
-        "OLD_SERIAL",
-      );
-    });
-
     it("does not include platformPublicKeyPem in sensitiveConfigJson when empty", () => {
       const form = createDefaultProviderConfigForm("wechat_pay");
       form.platformPublicKeyPem = "";

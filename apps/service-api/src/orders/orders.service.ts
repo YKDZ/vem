@@ -451,20 +451,16 @@ export class OrdersService {
       throw new ConflictException("Machine is not accepting orders");
     }
 
-    const idempotencyKey =
-      input.idempotencyKey ?? `legacy-checkout:${createBusinessNo("ORD")}`;
-    const idempotentInput = { ...input, idempotencyKey };
-    const existing = input.idempotencyKey
-      ? await this.findPaymentCreationByIdempotencyKey(
-          machine.id,
-          idempotencyKey,
-        )
-      : null;
+    const idempotencyKey = input.idempotencyKey;
+    const existing = await this.findPaymentCreationByIdempotencyKey(
+      machine.id,
+      idempotencyKey,
+    );
     if (existing) {
       return await this.restorePaymentCreation(existing);
     }
 
-    const paymentSelection = resolvePaymentSelection(idempotentInput);
+    const paymentSelection = resolvePaymentSelection(input);
 
     // Resolve provider config before entering the transaction
     let resolvedProviderConfig:
@@ -501,7 +497,7 @@ export class OrdersService {
       let draft: LocalPaymentDraft;
       try {
         draft = await this.createLocalMachineOrderDraft(
-          idempotentInput,
+          input,
           machine.id,
           paymentExpiresAt,
           paymentSelection,
@@ -540,7 +536,7 @@ export class OrdersService {
     let draft: LocalPaymentDraft;
     try {
       draft = await this.createLocalMachineOrderDraft(
-        idempotentInput,
+        input,
         machine.id,
         paymentExpiresAt,
         paymentSelection,
@@ -705,7 +701,7 @@ export class OrdersService {
           fulfillmentState: "awaiting_fulfillment",
           totalAmountCents,
           currency: "CNY",
-          paymentCreationIdempotencyKey: input.idempotencyKey ?? null,
+          paymentCreationIdempotencyKey: input.idempotencyKey,
           profileSnapshot: input.profileSnapshot ?? null,
           createdFrom: "machine_ui",
         })

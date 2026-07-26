@@ -8,7 +8,6 @@ export type ProviderConfigForm = {
   appId: string;
   qrExpiresMinutes: number;
   timeoutCompensationSeconds: number;
-  certificateSerialNo: string;
   merchantCertificateSerialNo: string;
   platformCertificateSerialNo: string;
   platformCertificatePem: string;
@@ -45,7 +44,6 @@ export function createDefaultProviderConfigForm(
     appId: "",
     qrExpiresMinutes: 15,
     timeoutCompensationSeconds: 120,
-    certificateSerialNo: "",
     merchantCertificateSerialNo: "",
     platformCertificateSerialNo: "",
     platformCertificatePem: "",
@@ -96,7 +94,7 @@ export function buildProviderConfigPayload(form: ProviderConfigForm): {
   if (form.providerCode === "wechat_pay") {
     publicConfigJson["mode"] = "direct_merchant";
     publicConfigJson["merchantCertificateSerialNo"] =
-      form.merchantCertificateSerialNo || form.certificateSerialNo;
+      form.merchantCertificateSerialNo;
     publicConfigJson["platformCertificateSerialNo"] =
       form.platformCertificateSerialNo;
     addIfFilled(sensitiveConfigJson, "apiV3Key", form.apiV3Key);

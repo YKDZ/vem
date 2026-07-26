@@ -9,14 +9,6 @@
     "height": 1080
   },
   "expectedOrientation": "landscape",
-  "expectedTexts": [
-    "领取码",
-    "请立即保存领取码",
-    "首次领取"
-  ],
-  "detectedTexts": [
-    "领取码",
-    "请立即保存领取码",
-    "首次领取"
-  ]
+  "expectedTexts": ["领取码", "请立即保存领取码", "首次领取"],
+  "detectedTexts": ["领取码", "请立即保存领取码", "首次领取"]
 }

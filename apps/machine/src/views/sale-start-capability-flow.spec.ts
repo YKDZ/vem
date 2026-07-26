@@ -364,7 +364,7 @@ function effectiveRuntimeConfigurationFixture(
         confirmedBy: "test",
         testEvidenceCode: "SCANNER_READY",
       },
-      scannerProtocol: { baudRate: 9600, frameSuffix: "crlf" },
+      scannerProtocol: { baudRate: 9600, frameSuffix: "cr" },
     },
     experience: {
       audio: {

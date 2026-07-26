@@ -198,8 +198,6 @@ export const wechatPayPublicConfigSchema = paymentTimingConfigSchema
     mode: z.literal("direct_merchant").default("direct_merchant"),
     /** 商户 API 证书序列号，用于 Authorization serial_no 请求签名 */
     merchantCertificateSerialNo: z.string().min(1).max(128).optional(),
-    /** @deprecated 旧别名，与 merchantCertificateSerialNo 等效；新配置请使用 merchantCertificateSerialNo */
-    certificateSerialNo: z.string().min(1).max(128).optional(),
     /** 微信支付平台证书/公钥序列号，用于匹配 wechatpay-serial 响应/回调头 */
     platformCertificateSerialNo: z.string().min(1).max(128).optional(),
     paymentCodeSignType: z.enum(["MD5", "HMAC-SHA256"]).optional(),
@@ -274,7 +272,6 @@ const wechatPayPublicConfigPatchSchema = paymentTimingConfigPatchSchema
   .extend({
     mode: z.literal("direct_merchant").optional(),
     merchantCertificateSerialNo: z.string().min(1).max(128).optional(),
-    certificateSerialNo: z.string().min(1).max(128).optional(),
     platformCertificateSerialNo: z.string().min(1).max(128).optional(),
     paymentCodeSignType: z.enum(["MD5", "HMAC-SHA256"]).optional(),
     paymentCodeDeviceInfo: z.string().min(1).max(32).optional(),

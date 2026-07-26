@@ -107,6 +107,7 @@ describe("core-flow.e2e", { concurrent: false }, () => {
         machineCode: seeded.machineCode,
         items: [{ inventoryId: seeded.inventoryId, quantity: 1 }],
         paymentMethod: "mock",
+        idempotencyKey: "missing-planogram-context",
       });
 
     expect(response.status).toBe(400);
@@ -157,6 +158,7 @@ describe("core-flow.e2e", { concurrent: false }, () => {
           slotId: item.slotId,
         })),
         paymentMethod: "mock",
+        idempotencyKey: "two-line-order-context",
       });
     expect(createOrderResponse.status).toBe(201);
     const createdOrder =
@@ -176,7 +178,7 @@ describe("core-flow.e2e", { concurrent: false }, () => {
             payload: {
               commandNo: string;
               quantity: number;
-              slot: { slotDisplayLabel: string };
+              slot: { rowNo: number; cellNo: number };
             };
           },
       ),
@@ -185,9 +187,12 @@ describe("core-flow.e2e", { concurrent: false }, () => {
     const commandPayloads = await commandEnvelopes;
     expect(
       commandPayloads
-        .map((message) => message.payload.slot.slotDisplayLabel)
+        .map(
+          (message) =>
+            `${message.payload.slot.rowNo}/${message.payload.slot.cellNo}`,
+        )
         .sort(),
-    ).toEqual(["L1", "L2"]);
+    ).toEqual(["1/1", "1/2"]);
 
     const orderItemRows = await db.client
       .select({
@@ -210,8 +215,8 @@ describe("core-flow.e2e", { concurrent: false }, () => {
       seeded.planogramVersion,
     ]);
     expect(orderItemRows.map((item) => item.fulfillmentStatus)).toEqual([
-      "dispensing",
-      "dispensing",
+      "pending",
+      "pending",
     ]);
     expect(
       orderItemRows.map((item) => ({
@@ -255,6 +260,7 @@ describe("core-flow.e2e", { concurrent: false }, () => {
       .select({
         orderItemId: vendingCommands.orderItemId,
         slotId: vendingCommands.slotId,
+        status: vendingCommands.status,
         payloadJson: vendingCommands.payloadJson,
       })
       .from(vendingCommands)
@@ -276,6 +282,10 @@ describe("core-flow.e2e", { concurrent: false }, () => {
         .map((item) => item.slotId)
         .sort((a, b) => a.localeCompare(b)),
     );
+    expect(commandRows.map((row) => row.status).sort()).toEqual([
+      "sent",
+      "sent",
+    ]);
   }, 60_000);
 
   it("handles succeed callback idempotently and reaches fulfilled", async () => {
@@ -515,16 +525,20 @@ describe("core-flow.e2e", { concurrent: false }, () => {
       cellNo: 1,
     });
 
-    const requestBody = machineOrderBody(seeded);
-
     const machineAuthHeader = await getMachineAuthHeader(
       api,
       seeded.machineCode,
       seeded.machineSecret,
     );
     const [firstResponse, secondResponse] = await Promise.all([
-      api.post("/api/machine-orders").set(machineAuthHeader).send(requestBody),
-      api.post("/api/machine-orders").set(machineAuthHeader).send(requestBody),
+      api
+        .post("/api/machine-orders")
+        .set(machineAuthHeader)
+        .send(machineOrderBody(seeded)),
+      api
+        .post("/api/machine-orders")
+        .set(machineAuthHeader)
+        .send(machineOrderBody(seeded)),
     ]);
 
     const successResponses = [firstResponse, secondResponse].filter(

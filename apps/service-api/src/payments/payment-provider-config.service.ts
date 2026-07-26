@@ -733,8 +733,7 @@ export class PaymentProviderConfigService {
       if (
         !this.hasNonBlankString(
           config.publicConfigJson["merchantCertificateSerialNo"],
-        ) &&
-        !this.hasNonBlankString(config.publicConfigJson["certificateSerialNo"])
+        )
       ) {
         missing.push("merchantCertificateSerialNo");
       }

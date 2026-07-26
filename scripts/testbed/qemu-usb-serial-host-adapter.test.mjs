@@ -57,7 +57,7 @@ function libvirtNormalizedDomainXml() {
 describe("repo QEMU USB serial host adapter", () => {
   it("accepts a scanner descriptor when the request also carries its operation nonce", () => {
     const descriptor = createScannerCodeDescriptor(
-      Buffer.from("2860123456789\r\n", "utf8"),
+      Buffer.from("2860123456789\r", "utf8"),
     );
     assert.equal(
       scannerDescriptorMatchesRequest(descriptor, {

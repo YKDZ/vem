@@ -83,7 +83,9 @@ export function normalizeDocumentationScreenshotMetadata(input) {
     throw new Error("documentation screenshot metadata must be an object");
   }
   const expectedOrientation =
-    input.expectedOrientation == null ? null : String(input.expectedOrientation);
+    input.expectedOrientation == null
+      ? null
+      : String(input.expectedOrientation);
   if (
     expectedOrientation !== null &&
     !["portrait", "landscape"].includes(expectedOrientation)
@@ -102,9 +104,7 @@ export function normalizeDocumentationScreenshotMetadata(input) {
       input.source === "admin-ui" || input.source === "machine-runtime"
         ? input.source
         : (() => {
-            throw new Error(
-              "source must be admin-ui or machine-runtime",
-            );
+            throw new Error("source must be admin-ui or machine-runtime");
           })(),
     route: isNonEmptyString(input.route)
       ? input.route.trim()
@@ -126,20 +126,23 @@ export function normalizeDocumentationScreenshotMetadata(input) {
     viewport: normalizeViewport(input.viewport),
     expectedOrientation,
     expectedTexts: normalizeStringList(input.expectedTexts, "expectedTexts"),
-    detectedTexts: normalizeOptionalStringList(input.detectedTexts, "detectedTexts"),
-    manualReviewReason: input.manualReviewReason == null
-      ? null
-      : isNonEmptyString(input.manualReviewReason)
-        ? input.manualReviewReason.trim()
-        : (() => {
-            throw new Error("manualReviewReason must be a non-empty string");
-          })(),
+    detectedTexts: normalizeOptionalStringList(
+      input.detectedTexts,
+      "detectedTexts",
+    ),
+    manualReviewReason:
+      input.manualReviewReason == null
+        ? null
+        : isNonEmptyString(input.manualReviewReason)
+          ? input.manualReviewReason.trim()
+          : (() => {
+              throw new Error("manualReviewReason must be a non-empty string");
+            })(),
   };
 }
 
 export function evaluateDocumentationScreenshot({ bytes, metadata }) {
-  const normalizedMetadata =
-    normalizeDocumentationScreenshotMetadata(metadata);
+  const normalizedMetadata = normalizeDocumentationScreenshotMetadata(metadata);
   const inspected = inspectPng(bytes);
   if (!inspected.ok) {
     return {

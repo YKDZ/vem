@@ -13,16 +13,8 @@
       "height": 1080
     },
     "expectedOrientation": "landscape",
-    "expectedTexts": [
-      "展示图",
-      "上传图片",
-      "保存"
-    ],
-    "detectedTexts": [
-      "展示图",
-      "上传图片",
-      "保存"
-    ],
+    "expectedTexts": ["展示图", "上传图片", "保存"],
+    "detectedTexts": ["展示图", "上传图片", "保存"],
     "manualReviewReason": null
   },
   "capture": {

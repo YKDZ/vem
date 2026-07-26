@@ -2826,22 +2826,23 @@ describe("shared API contract", () => {
       expect(result.publicConfigJson).not.toHaveProperty("paymentCodeEnabled");
     });
 
-    it("accepts wechat_pay config using deprecated certificateSerialNo alias for merchant serial", () => {
-      const result = upsertPaymentProviderConfigSchema.parse({
-        providerCode: "wechat_pay",
-        merchantNo: "1900000109",
-        appId: "wx1234567890abcdef",
-        publicConfigJson: {
-          certificateSerialNo: "LEGACY_MERCHANT_SERIAL",
-          platformCertificateSerialNo: "PLATFORM_CERT_SERIAL",
-        },
-        sensitiveConfigJson: {
-          apiV3Key: "0123456789abcdef0123456789abcdef",
-          privateKeyPem: "dev-key",
-          platformPublicKeyPem: "dev-pub",
-        },
-      });
-      expect(result.providerCode).toBe("wechat_pay");
+    it("rejects deprecated wechat_pay certificateSerialNo alias", () => {
+      expect(() =>
+        upsertPaymentProviderConfigSchema.parse({
+          providerCode: "wechat_pay",
+          merchantNo: "1900000109",
+          appId: "wx1234567890abcdef",
+          publicConfigJson: {
+            certificateSerialNo: "LEGACY_MERCHANT_SERIAL",
+            platformCertificateSerialNo: "PLATFORM_CERT_SERIAL",
+          },
+          sensitiveConfigJson: {
+            apiV3Key: "0123456789abcdef0123456789abcdef",
+            privateKeyPem: "dev-key",
+            platformPublicKeyPem: "dev-pub",
+          },
+        }),
+      ).toThrow();
     });
 
     it("allows partial wechat_pay config updates for server-side secret merge", () => {
@@ -2964,6 +2965,7 @@ describe("shared API contract", () => {
       expect(() =>
         createMachineOrderSchema.parse({
           machineCode: "M001",
+          idempotencyKey: "checkout:test-required",
           items: [
             {
               inventoryId: "550e8400-e29b-41d4-a716-446655440000",
@@ -2978,6 +2980,7 @@ describe("shared API contract", () => {
     it("accepts paymentProviderCode alongside paymentMethod", () => {
       const result = createMachineOrderSchema.parse({
         machineCode: "M001",
+        idempotencyKey: "checkout:test-required",
         items: [
           {
             inventoryId: "550e8400-e29b-41d4-a716-446655440000",
@@ -3014,9 +3017,29 @@ describe("shared API contract", () => {
       expect(result.idempotencyKey).toBe("checkout:attempt-001");
     });
 
+    it("rejects machine checkout requests without a stable idempotency key", () => {
+      expect(() =>
+        createMachineOrderSchema.parse({
+          machineCode: "M001",
+          items: [
+            {
+              inventoryId: "550e8400-e29b-41d4-a716-446655440000",
+              quantity: 1,
+              planogramVersion: "PLAN-1",
+              slotId: "550e8400-e29b-41d4-a716-446655440001",
+              slotDisplayLabel: "A1",
+            },
+          ],
+          paymentMethod: "qr_code",
+          paymentProviderCode: "alipay",
+        }),
+      ).toThrow();
+    });
+
     it("accepts mock without paymentProviderCode", () => {
       const result = createMachineOrderSchema.parse({
         machineCode: "M001",
+        idempotencyKey: "checkout:test-required",
         items: [
           {
             inventoryId: "550e8400-e29b-41d4-a716-446655440000",
@@ -3036,6 +3059,7 @@ describe("shared API contract", () => {
       expect(() =>
         createMachineOrderSchema.parse({
           machineCode: "M001",
+          idempotencyKey: "checkout:test-required",
           items: [
             {
               inventoryId: "550e8400-e29b-41d4-a716-446655440000",
@@ -3055,6 +3079,7 @@ describe("shared API contract", () => {
       expect(() =>
         createMachineOrderSchema.parse({
           machineCode: "M001",
+          idempotencyKey: "checkout:test-required",
           items: [
             {
               inventoryId: "550e8400-e29b-41d4-a716-446655440000",
@@ -3074,6 +3099,7 @@ describe("shared API contract", () => {
     it("accepts payment_code with alipay provider", () => {
       const result = createMachineOrderSchema.parse({
         machineCode: "M001",
+        idempotencyKey: "checkout:test-required",
         items: [
           {
             inventoryId: "550e8400-e29b-41d4-a716-446655440000",
@@ -3093,6 +3119,7 @@ describe("shared API contract", () => {
     it("accepts null profileSnapshot from machine clients", () => {
       const result = createMachineOrderSchema.parse({
         machineCode: "M001",
+        idempotencyKey: "checkout:test-required",
         items: [
           {
             inventoryId: "550e8400-e29b-41d4-a716-446655440000",
@@ -3112,6 +3139,7 @@ describe("shared API contract", () => {
     it("strips sensitive profileSnapshot fields from machine orders", () => {
       const result = createMachineOrderSchema.parse({
         machineCode: "M001",
+        idempotencyKey: "checkout:test-required",
         items: [
           {
             inventoryId: "550e8400-e29b-41d4-a716-446655440000",
@@ -3149,6 +3177,7 @@ describe("shared API contract", () => {
     it("falls back to null for unknown legacy profileSnapshot shapes", () => {
       const result = createMachineOrderSchema.parse({
         machineCode: "M001",
+        idempotencyKey: "checkout:test-required",
         items: [
           {
             inventoryId: "550e8400-e29b-41d4-a716-446655440000",
@@ -3174,6 +3203,7 @@ describe("shared API contract", () => {
     it("sanitizes invalid profileSnapshot metadata without rejecting machine orders", () => {
       const result = createMachineOrderSchema.parse({
         machineCode: "M001",
+        idempotencyKey: "checkout:test-required",
         items: [
           {
             inventoryId: "550e8400-e29b-41d4-a716-446655440000",
@@ -3201,6 +3231,7 @@ describe("shared API contract", () => {
       expect(
         createMachineOrderSchema.parse({
           machineCode: "M001",
+          idempotencyKey: "checkout:test-required",
           items: [
             {
               inventoryId: "550e8400-e29b-41d4-a716-446655440000",

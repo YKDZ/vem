@@ -567,7 +567,10 @@ describe("delayed pickup native audio production track", () => {
         "urgent_warning",
         "dispense_succeeded",
       ]);
-      assert.equal(report.controller.cueStartLatencyMs.dispense_succeeded, null);
+      assert.equal(
+        report.controller.cueStartLatencyMs.dispense_succeeded,
+        null,
+      );
       assert.equal(JSON.stringify(report).includes('"data"'), false);
       assert.equal(JSON.stringify(report).includes('"wavBytes"'), false);
       assert.equal(

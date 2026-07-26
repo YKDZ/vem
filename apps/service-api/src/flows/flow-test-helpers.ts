@@ -61,6 +61,7 @@ export function machineOrderBody(
     slotDisplayLabel?: string;
   }>;
   paymentMethod: "mock" | "qr_code" | "payment_code";
+  idempotencyKey: string;
 } {
   return {
     machineCode: seeded.machineCode,
@@ -73,6 +74,7 @@ export function machineOrderBody(
       },
     ],
     paymentMethod,
+    idempotencyKey: `flow-e2e-${randomUUID()}`,
   };
 }
 
@@ -261,14 +263,22 @@ export async function cleanupBusinessTables(db: DrizzleDB): Promise<void> {
   await db.client.execute(sql`
     TRUNCATE TABLE
       mock_payment_code_trades,
+      payment_code_attempts,
+      payment_reconciliation_attempts,
+      payment_user_snapshots,
+      payment_webhook_attempts,
       notification_deliveries,
       notifications,
       payment_channel_policies,
       machine_heartbeats,
-	      machine_events,
-	      machine_commands,
-	      order_recovery_actions,
-	      vending_commands,
+      machine_log_artifacts,
+      machine_events,
+      machine_commands,
+      machine_remote_ops,
+      order_recovery_actions,
+      vending_commands,
+      refund_events,
+      refund_reconciliation_attempts,
       refunds,
       payment_events,
       payments,
@@ -276,7 +286,9 @@ export async function cleanupBusinessTables(db: DrizzleDB): Promise<void> {
       order_status_events,
       inventory_reservations,
       inventory_movements,
+      machine_raw_stock_movement_conflicts,
       machine_raw_stock_movements,
+      maintenance_work_orders,
       orders,
       inventories,
       machine_planogram_slots,
@@ -348,6 +360,7 @@ export async function seedSingleSlotInventory(
       code: input.machineCode,
       name: `机器-${input.machineCode}`,
       status: input.machineStatus ?? "online",
+      lastSeenAt: (input.machineStatus ?? "online") === "online" ? now : null,
       secretHash,
       secretVersion: 1,
       secretRotatedAt: now,
@@ -467,6 +480,7 @@ export async function seedMultiSlotInventory(
       code: input.machineCode,
       name: `机器-${input.machineCode}`,
       status: input.machineStatus ?? "online",
+      lastSeenAt: (input.machineStatus ?? "online") === "online" ? now : null,
       secretHash,
       secretVersion: 1,
       secretRotatedAt: now,

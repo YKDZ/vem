@@ -22,9 +22,17 @@ test.describe("Admin UI mutation E2E isolation", () => {
   }
 
   test("the CI admin browser job explicitly runs mutation tests only on its isolated backend", () => {
-    const checkCi = read("tools/check-ci.mjs");
+    const packageJson = read("package.json");
+    const workflow = read(".github/workflows/admin-browser-acceptance.yml");
+    const adminBrowserCi = read("scripts/admin-browser-acceptance-ci.mjs");
 
-    expect(checkCi).toContain("VEM_ADMIN_MUTATION_E2E_TARGET");
-    expect(checkCi).toContain('mutationTarget: "isolated"');
+    expect(packageJson).toContain(
+      '"ci:admin-browser": "node scripts/admin-browser-acceptance-ci.mjs"',
+    );
+    expect(workflow).toContain("pnpm ci:admin-browser");
+    expect(adminBrowserCi).toContain("VEM_ADMIN_MUTATION_E2E_TARGET");
+    expect(adminBrowserCi).toContain(
+      'env: { VEM_ADMIN_MUTATION_E2E_TARGET: "isolated" }',
+    );
   });
 });

@@ -9,9 +9,6 @@
     "height": 1920
   },
   "expectedOrientation": "portrait",
-  "expectedTexts": [
-    "声音与视觉",
-    "音量"
-  ],
+  "expectedTexts": ["声音与视觉", "音量"],
   "manualReviewReason": "机器端截图来自 VM Runtime Console 批次；中文文本由人工对照截图复核。"
 }
