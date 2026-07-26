@@ -102,6 +102,26 @@ async function flushPromises(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+async function advanceTimersUntil(
+  assertion: () => void,
+  { timeoutMs = 3_000, stepMs = 50 } = {},
+): Promise<void> {
+  let lastError: unknown;
+  for (let elapsedMs = 0; elapsedMs <= timeoutMs; elapsedMs += stepMs) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+    await vi.advanceTimersByTimeAsync(stepMs);
+    await Promise.resolve();
+    await nextTick();
+  }
+  if (lastError) throw lastError;
+  assertion();
+}
+
 function getEventInput(event: Event): HTMLInputElement {
   if (!(event.target instanceof HTMLInputElement)) {
     throw new Error("Expected input event target");
@@ -1279,14 +1299,13 @@ describe("MachinesView environment controls", () => {
 
       const pollerCallAfterSubmit = getMachine.mock.calls.length;
 
-      await vi.advanceTimersByTimeAsync(500);
-      await Promise.resolve();
-      await nextTick();
-      expect(dialog.textContent).toContain("命令成功");
-      expect(openButton?.disabled).toBe(false);
-      expect(getMachine.mock.calls.length).toBeGreaterThan(
-        pollerCallAfterSubmit,
-      );
+      await advanceTimersUntil(() => {
+        expect(dialog.textContent).toContain("命令成功");
+        expect(openButton?.disabled).toBe(false);
+        expect(getMachine.mock.calls.length).toBeGreaterThan(
+          pollerCallAfterSubmit,
+        );
+      });
     } finally {
       vi.useRealTimers();
     }

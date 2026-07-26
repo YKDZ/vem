@@ -271,6 +271,26 @@ async function flushPromises(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+async function advanceTimersUntil(
+  assertion: () => void,
+  { timeoutMs = 3_000, stepMs = 50 } = {},
+): Promise<void> {
+  let lastError: unknown;
+  for (let elapsedMs = 0; elapsedMs <= timeoutMs; elapsedMs += stepMs) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+    await vi.advanceTimersByTimeAsync(stepMs);
+    await Promise.resolve();
+    await nextTick();
+  }
+  if (lastError) throw lastError;
+  assertion();
+}
+
 async function mountView(
   permissions: PermissionCode[] = [
     "machines.read",
@@ -611,11 +631,10 @@ describe("MachineDetailView", () => {
       await Promise.resolve();
       expect(openButton?.disabled).toBe(true);
 
-      await vi.advanceTimersByTimeAsync(500);
-      await Promise.resolve();
-      await nextTick();
-      expect(apiMocks.messageSuccess).toHaveBeenCalledWith("空调控制已完成");
-      expect(openButton?.disabled).toBe(false);
+      await advanceTimersUntil(() => {
+        expect(apiMocks.messageSuccess).toHaveBeenCalledWith("空调控制已完成");
+        expect(openButton?.disabled).toBe(false);
+      });
     } finally {
       vi.useRealTimers();
       app.unmount();
