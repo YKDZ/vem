@@ -247,6 +247,10 @@ describe("stock maintenance guest full", () => {
       source,
       /await primeCatalogTouchSession\(client\);\s*await client\.close\(\);\s*client = null;\s*const second = await runSale/,
     );
+    assert.doesNotMatch(
+      source,
+      /touchscreenSessionActive\s*===\s*true\)\s*return boundary/,
+    );
   });
 
   it("verifies restored saleability through the category detail flow", () => {

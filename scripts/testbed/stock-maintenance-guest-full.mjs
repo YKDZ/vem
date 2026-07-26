@@ -425,7 +425,6 @@ async function primeCatalogTouchSession(client) {
       };
     })()`,
   );
-  if (boundary?.touchscreenSessionActive === true) return boundary;
   await activateVisibleSelector(client, "[data-test='catalog-page']", {
     kind: "touch",
     timeoutMs: TIMEOUT_MS,
