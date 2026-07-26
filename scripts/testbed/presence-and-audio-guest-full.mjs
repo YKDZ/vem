@@ -358,6 +358,14 @@ async function readSupportedCategoryKeys(client, dependencies) {
   return normalized;
 }
 
+async function returnToCatalogHome(client, dependencies) {
+  await dependencies.evaluateExpression(client, 'location.hash = "#/catalog"');
+  await dependencies.waitForRoute(client, "#/catalog", {
+    timeoutMs: 30_000,
+    pollMs: 250,
+  });
+}
+
 function runtimeBinding(handoff, cdpIdentity) {
   const machine = handoff?.machine ?? {};
   return {
@@ -941,6 +949,7 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
       transactionCuesEnabled: true,
     });
     await dependencies.issueAdminVentReset(guestInput, dependencies);
+    await returnToCatalogHome(client, dependencies);
     const ventEvidenceBefore = await dependencies.controlPlaneRequest(
       guestInput,
       `/v1/serial-sessions/${sessionId}/evidence`,
