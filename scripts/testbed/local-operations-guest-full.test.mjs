@@ -274,6 +274,9 @@ describe("local operations guest full", () => {
     });
     assert.match(script, /--data-dir/);
     assert.match(script, /daemonDataDirectory/);
+    assert.match(script, /VemVendingDaemon/);
+    assert.match(script, /Stop-Service/);
+    assert.match(script, /Start-Service/);
     assert.match(script, /Start-ScheduledTask/);
     assert.match(script, /VEMMachineUI/);
     assert.doesNotMatch(script, /VEMLocalTestbedInstalledRuntime/);

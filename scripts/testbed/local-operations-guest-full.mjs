@@ -635,6 +635,11 @@ $daemonPath = [System.IO.Path]::GetFullPath([System.Text.Encoding]::UTF8.GetStri
 $daemonDataDirectory = [System.IO.Path]::GetFullPath([System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${encodedDaemonDataDirectory}')))
 $machinePath = [System.IO.Path]::GetFullPath([System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${encodedMachinePath}')))
 $taskName = ${JSON.stringify(machineTaskName)}
+$daemonServiceName = 'VemVendingDaemon'
+$daemonService = Get-Service -Name $daemonServiceName -ErrorAction SilentlyContinue
+if ($null -ne $daemonService) {
+  Stop-Service -Name $daemonServiceName -Force -ErrorAction SilentlyContinue
+}
 $task = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
 Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 Get-CimInstance Win32_Process -Filter "Name = 'machine.exe'" | Where-Object {
@@ -657,10 +662,28 @@ for ($attempt = 0; $attempt -lt 100; $attempt += 1) {
   if ($machineAlive.Count -eq 0 -and $daemonAlive.Count -eq 0) { break }
   Start-Sleep -Milliseconds 200
 }
-$daemonProcess = Start-Process -FilePath $daemonPath -ArgumentList @('--console', '--data-dir', $daemonDataDirectory) -WorkingDirectory ([System.IO.Path]::GetDirectoryName($daemonPath)) -PassThru
+if ($null -ne $daemonService) {
+  Start-Service -Name $daemonServiceName -ErrorAction Stop
+  $daemonProcess = $null
+  for ($attempt = 0; $attempt -lt 100; $attempt += 1) {
+    $daemonAlive = @(Get-CimInstance Win32_Process -Filter "Name = 'vending-daemon.exe'" | Where-Object {
+      $_.ExecutablePath -and ([System.IO.Path]::GetFullPath($_.ExecutablePath) -ieq $daemonPath)
+    })
+    if ($daemonAlive.Count -eq 1) {
+      $daemonProcess = Get-Process -Id ([int]$daemonAlive[0].ProcessId) -ErrorAction Stop
+      break
+    }
+    if ($daemonAlive.Count -gt 1) { throw "daemon_count:$($daemonAlive.Count)" }
+    Start-Sleep -Milliseconds 200
+  }
+  if ($null -eq $daemonProcess) { throw 'daemon_service_start_timeout' }
+} else {
+  $daemonProcess = Start-Process -FilePath $daemonPath -ArgumentList @('--console', '--data-dir', $daemonDataDirectory) -WorkingDirectory ([System.IO.Path]::GetDirectoryName($daemonPath)) -PassThru
+}
 Start-ScheduledTask -TaskName $taskName
 [Console]::Out.WriteLine(([ordered]@{
   daemonProcessId = [int]$daemonProcess.Id
+  daemonService = if ($null -ne $daemonService) { $daemonServiceName } else { $null }
   taskName = $taskName
 } | ConvertTo-Json -Compress))
 `.trim();
