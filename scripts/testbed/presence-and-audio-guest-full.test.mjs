@@ -3,12 +3,14 @@ import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 import {
+  latestTouchscreenSessionActive,
   observeGuestRuntimeIdentity,
   parsePresenceAndAudioGuestArgs,
   runPresenceAndAudioGuestFull,
   serialEvidenceCursor,
   serialFramesSince,
   validatePresenceAndAudioGuestReport,
+  waitForTouchscreenSessionIdle,
 } from "./presence-and-audio-guest-full.mjs";
 
 function report() {
@@ -873,5 +875,63 @@ describe("presence and audio guest full", () => {
     assert.match(report.error.message, /controlled Vision unavailable/);
     assert.ok(calls.includes("/v1/audio-captures/audio-1/cancel"));
     assert.equal(writes.get("C:\\out.json").ok, false);
+  });
+
+  it("waits for the prior touchscreen session to become idle before asserting a fresh welcome", async () => {
+    let reads = 0;
+    let sleeps = 0;
+    let now = 0;
+    const result = await waitForTouchscreenSessionIdle(
+      async () => {
+        reads += 1;
+        return reads < 3
+          ? [
+              {
+                id: reads,
+                touchscreenSessionActive: true,
+              },
+            ]
+          : [
+              {
+                id: reads,
+                touchscreenSessionActive: false,
+              },
+            ];
+      },
+      {
+        now: () => now,
+        sleep: async (milliseconds) => {
+          sleeps += 1;
+          now += milliseconds;
+        },
+      },
+      "presence precondition",
+      { timeoutMs: 1_000, pollMs: 100 },
+    );
+
+    assert.equal(result.waited, true);
+    assert.equal(sleeps, 2);
+    assert.equal(latestTouchscreenSessionActive(result.trace), false);
+  });
+
+  it("does not wait when the runtime trace is already idle or has no touchscreen evidence", async () => {
+    let reads = 0;
+    const result = await waitForTouchscreenSessionIdle(
+      async () => {
+        reads += 1;
+        return [{ id: 1, type: "navigation" }];
+      },
+      {
+        now: () => 0,
+        sleep: async () => {
+          throw new Error("idle precondition should not sleep");
+        },
+      },
+      "presence precondition",
+    );
+
+    assert.equal(reads, 1);
+    assert.equal(result.waited, false);
+    assert.equal(latestTouchscreenSessionActive(result.trace), null);
   });
 });

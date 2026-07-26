@@ -202,6 +202,38 @@ function traceEntryAfter(trace, boundary, predicate) {
   );
 }
 
+export function latestTouchscreenSessionActive(trace) {
+  for (const entry of [...trace].reverse()) {
+    if (typeof entry?.touchscreenSessionActive === "boolean") {
+      return entry.touchscreenSessionActive;
+    }
+  }
+  return null;
+}
+
+export async function waitForTouchscreenSessionIdle(
+  readTrace,
+  dependencies,
+  label,
+  { timeoutMs = 50_000, pollMs = 250 } = {},
+) {
+  const deadline = dependencies.now() + timeoutMs;
+  let last = await readTrace();
+  if (latestTouchscreenSessionActive(last) !== true) {
+    return { waited: false, trace: last };
+  }
+  do {
+    await dependencies.sleep(pollMs);
+    last = await readTrace();
+    if (latestTouchscreenSessionActive(last) !== true) {
+      return { waited: true, trace: last };
+    }
+  } while (dependencies.now() < deadline);
+  throw new Error(
+    `${label} touchscreen session did not become idle: ${JSON.stringify(last.slice(-12))}`,
+  );
+}
+
 async function waitForTraceEntry(
   readTrace,
   boundary,
@@ -878,6 +910,11 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
       })
       .catch(() => null);
     await dependencies.sleep(SUSTAINED_EMPTY_MS);
+    await waitForTouchscreenSessionIdle(
+      readTrace,
+      dependencies,
+      "initial presence precondition",
+    );
     await dependencies.issueAdminVentReset(guestInput, dependencies);
     const ventEvidenceBefore = await dependencies.controlPlaneRequest(
       guestInput,
