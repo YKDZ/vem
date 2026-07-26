@@ -245,11 +245,15 @@ describe("stock maintenance guest full", () => {
     );
     assert.match(
       source,
-      /await primeCatalogTouchSession\(client\);\s*await client\.close\(\);\s*client = null;\s*const second = await runSale/,
+      /await primeCatalogTouchSession\(client\);\s*await client\.close\(\);\s*client = null;\s*await openPaymentCreateGate\(input\);\s*const second = await runSale/,
     );
     assert.doesNotMatch(
       source,
       /touchscreenSessionActive\s*===\s*true\)\s*return boundary/,
+    );
+    assert.equal(
+      source.match(/await openPaymentCreateGate\(input\);/g)?.length,
+      2,
     );
   });
 

@@ -136,6 +136,10 @@ async function hostControlRequest(input, path, body = {}) {
   return payload;
 }
 
+async function openPaymentCreateGate(input) {
+  return await hostControlRequest(input, "/v1/mock-payment-create-gate/open");
+}
+
 function daemonBase(handoff) {
   const healthzUrl = required(
     handoff?.daemon?.ready?.healthzUrl,
@@ -900,6 +904,7 @@ export async function runStockMaintenanceGuest(options) {
     await primeCatalogTouchSession(client);
     await client.close();
     client = null;
+    await openPaymentCreateGate(input);
     const firstReportPath = join(
       dirname(localPath(options.outPath)),
       "stock-maintenance-first-sale.json",
@@ -1071,6 +1076,7 @@ export async function runStockMaintenanceGuest(options) {
     await primeCatalogTouchSession(client);
     await client.close();
     client = null;
+    await openPaymentCreateGate(input);
     const second = await runSale(options, secondReportPath);
     report.secondSale = saleEvidence(second, report.runId, secondHandoff);
     const terminalView = await waitFor(
