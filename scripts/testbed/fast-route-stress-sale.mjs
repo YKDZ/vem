@@ -2396,6 +2396,25 @@ async function establishVisionPresenceForSale(guestInput, client) {
       completedAt: new Date().toISOString(),
     };
   }
+  if (resetBoundary.touchscreenSessionActive === true) {
+    return {
+      precondition: "existing-touchscreen-session",
+      resetPrecondition: "existing-touchscreen-session-retained",
+      resetDelivery: null,
+      resetTransitionId: null,
+      ok: true,
+      eventId: null,
+      connectedRuntimeClients: null,
+      acceptedDeliveries: null,
+      traceBoundary: resetBoundary,
+      fallback: {
+        kind: "existing_touchscreen_session",
+      },
+      transitionId: null,
+      touchNavigationTraceId: resetBoundary.lastEntryId,
+      completedAt: new Date().toISOString(),
+    };
+  }
   let resetPrecondition = "existing-presence-departed";
   let resetDelivery = await dispatchVisionDeparture(guestInput);
   let resetTrace;

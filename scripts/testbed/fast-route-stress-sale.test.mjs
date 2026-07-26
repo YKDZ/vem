@@ -709,6 +709,22 @@ describe("fast route stress sale tracer", () => {
     assert.match(source, /resetTransitionId: resetTrace\.transitionId/);
   });
 
+  it("treats an existing touchscreen customer session as a valid sale presence precondition", () => {
+    const source = readFileSync(
+      new URL("./fast-route-stress-sale.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(
+      source,
+      /resetBoundary\.touchscreenSessionActive\s*===\s*true/,
+    );
+    assert.match(source, /existing-touchscreen-session-retained/);
+    assert.match(
+      source,
+      /touchNavigationTraceId:\s*resetBoundary\.lastEntryId/,
+    );
+  });
+
   it("derives existing stable Vision presence from the latest journey transition", () => {
     assert.deepEqual(
       latestVisionPresence([
