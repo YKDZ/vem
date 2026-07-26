@@ -250,6 +250,15 @@ function compactRuntimeTrace(trace, maxEntries = 64) {
   return Array.isArray(trace) ? trace.slice(-maxEntries) : [];
 }
 
+function latestTouchscreenSessionActive(entries) {
+  for (const entry of [...entries].reverse()) {
+    if (typeof entry?.touchscreenSessionActive === "boolean") {
+      return entry.touchscreenSessionActive;
+    }
+  }
+  return false;
+}
+
 function runtimeTraceSnapshot(snapshot, label) {
   if (
     !snapshot ||
@@ -293,6 +302,7 @@ function traceBoundary(snapshot, label) {
     lastEntryId,
     capturedAt: new Date().toISOString(),
     runtimeGenerationId,
+    touchscreenSessionActive: latestTouchscreenSessionActive(entries),
   };
 }
 
@@ -2283,6 +2293,24 @@ export async function waitForVisionArrivalOrTouchSession(
       fallback: null,
     };
   } catch (arrivalError) {
+    if (traceBoundary?.touchscreenSessionActive === true) {
+      return {
+        trace: {
+          type: "navigation",
+          intentType: "customer.touch",
+          decision: "accepted",
+          reasonCode: "touchscreen_session_already_active",
+          id: traceBoundary.lastEntryId,
+        },
+        fallback: {
+          kind: "existing_touchscreen_session",
+          arrivalError:
+            arrivalError instanceof Error
+              ? arrivalError.message
+              : String(arrivalError),
+        },
+      };
+    }
     const touch = await dispatchTouch(client);
     return {
       trace: await waitArrival(client, traceBoundary, {
