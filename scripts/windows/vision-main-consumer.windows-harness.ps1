@@ -42,9 +42,26 @@ function New-VisionArchiveFixture([string]$Root, [string]$Commit) {
   return [pscustomobject]@{ runtime = $runtime; fixtures = $fixtures; actionZip = $actionZip }
 }
 
-function Start-VisionProbeServer([int]$Port, [string]$Status = "ok", [bool]$CameraReady = $true, [string]$Version = "9.8.7", [bool]$ExpectWebSocket = $true, [string]$ReadyJson = "", [int]$FragmentBytes = 0) {
-  return Start-Job -ArgumentList $Port, $Status, $CameraReady, $Version, $ExpectWebSocket, $ReadyJson, $FragmentBytes -ScriptBlock {
-    param($Port, $Status, $CameraReady, $Version, $ExpectWebSocket, $ReadyJson, $FragmentBytes)
+function New-VisionHarnessPort() {
+  $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+  $listener.Start()
+  try {
+    return [int]$listener.LocalEndpoint.Port
+  } finally {
+    $listener.Stop()
+  }
+}
+
+function Set-VisionHarnessSitePort([string]$ConfigurationPath, [int]$Port) {
+  $configuration = Get-Content -LiteralPath $ConfigurationPath -Raw | ConvertFrom-Json
+  $configuration.port = $Port
+  $configuration.allowed_origins = @("http://127.0.0.1:$Port")
+  [IO.File]::WriteAllText($ConfigurationPath, ($configuration | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
+}
+
+function Start-VisionProbeServer([int]$Port, [string]$Status = "ok", [bool]$CameraReady = $true, [string]$Version = "9.8.7", [bool]$ExpectWebSocket = $true, [string]$ReadyJson = "", [int]$FragmentBytes = 0, [string]$ReadyMarker = "") {
+  return Start-Job -ArgumentList $Port, $Status, $CameraReady, $Version, $ExpectWebSocket, $ReadyJson, $FragmentBytes, $ReadyMarker -ScriptBlock {
+    param($Port, $Status, $CameraReady, $Version, $ExpectWebSocket, $ReadyJson, $FragmentBytes, $ReadyMarker)
     function Write-WebSocketFrame($Stream, [byte[]]$Payload, [int]$Opcode, [bool]$Final) {
       $header = [Collections.Generic.List[byte]]::new()
       $firstByte = [byte]$Opcode
@@ -65,6 +82,9 @@ function Start-VisionProbeServer([int]$Port, [string]$Status = "ok", [bool]$Came
     }
     $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $Port)
     $listener.Start()
+    if (-not [string]::IsNullOrWhiteSpace($ReadyMarker)) {
+      [IO.File]::WriteAllText($ReadyMarker, "ready", [Text.Encoding]::ASCII)
+    }
     try {
       $client = $listener.AcceptTcpClient(); $stream = $client.GetStream(); $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::ASCII, $false, 4096, $true)
       try { while (($line = $reader.ReadLine()) -ne "") {} } finally { $reader.Dispose() }
@@ -104,6 +124,27 @@ function Start-VisionProbeServer([int]$Port, [string]$Status = "ok", [bool]$Came
       $client.Dispose()
     } finally { $listener.Stop() }
   }
+}
+
+function Wait-VisionProbeServer([System.Management.Automation.Job]$Job, [string]$ReadyMarker) {
+  $deadline = [DateTime]::UtcNow.AddSeconds(10)
+  do {
+    if (Test-Path -LiteralPath $ReadyMarker) { return }
+    if ($Job.State -ne "Running") {
+      $diagnostic = @(Receive-Job $Job -Keep -ErrorAction SilentlyContinue) -join "`n"
+      throw "probe server exited before listening; state=$($Job.State); diagnostic=$diagnostic"
+    }
+    Start-Sleep -Milliseconds 100
+  } while ([DateTime]::UtcNow -lt $deadline)
+  throw "probe server did not start listening within 10s; state=$($Job.State)"
+}
+
+function Start-ReadyVisionProbeServer([string]$Name, [int]$Port, [string]$Status = "ok", [bool]$CameraReady = $true, [string]$Version = "9.8.7", [bool]$ExpectWebSocket = $true, [string]$ReadyJson = "", [int]$FragmentBytes = 0) {
+  $marker = Join-Path $root ("probe-$Name.ready")
+  Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+  $server = Start-VisionProbeServer $Port $Status $CameraReady $Version $ExpectWebSocket $ReadyJson $FragmentBytes $marker
+  Wait-VisionProbeServer $server $marker
+  return $server
 }
 
 $root = Join-Path ([IO.Path]::GetTempPath()) ("vem-vision-harness-" + [guid]::NewGuid().ToString("N"))
@@ -189,10 +230,10 @@ try {
   Assert-True ($ipv6Uris.httpBaseUrl -eq "http://[::1]:7892") "IPv6 HTTP URI authority was not bracketed"
   Assert-True ($ipv6Uris.webSocketUrl -eq "ws://[::1]:7892/ws") "IPv6 WebSocket URI authority was not bracketed"
   $config = Join-Path $root "site-input.json"
-  @{ schemaVersion = "vending-vision-site-config/v1"; host = "127.0.0.1"; port = 17892; allowed_origins = @("http://127.0.0.1:17892"); cameras = @{ top = @{ source = "dshow"; role = "presence" }; front = @{ source = "dshow"; role = "profile_tryon" } } } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $config -Encoding utf8
+  $dshowPort = New-VisionHarnessPort
+  @{ schemaVersion = "vending-vision-site-config/v1"; host = "127.0.0.1"; port = $dshowPort; allowed_origins = @("http://127.0.0.1:$dshowPort"); cameras = @{ top = @{ source = "dshow"; role = "presence" }; front = @{ source = "dshow"; role = "profile_tryon" } } } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $config -Encoding utf8
   $runtimeWorkDirectory = Join-Path $root "program-data\vision\runtime"
-  $server = Start-VisionProbeServer 17892 "degraded" $false "9.8.7"
-  Start-Sleep -Seconds 1
+  $server = Start-ReadyVisionProbeServer "dshow" $dshowPort "degraded" $false "9.8.7"
   try {
     $install = Install-VisionMainArtifact -RuntimeArchive $cache.runtimeArchive -Commit $commit -SiteConfigurationPath $config -AppDirectory (Join-Path $root "vision\app") -SiteConfigurationDestination (Join-Path $root "program-data\vision\site.json") -RuntimeWorkDirectory $runtimeWorkDirectory -LauncherPath (Join-Path $root "bringup\start_vision.bat") -ProbeTimeoutSeconds 15
   } catch {
@@ -235,12 +276,13 @@ try {
   Assert-True ($null -eq $delegatedInstalledRecord.launcher -and $null -eq $delegatedInstalledRecord.startTask) "delegated Vision install still claimed the legacy task"
   Assert-True ($global:VisionHarnessTaskRegistrations -eq $taskRegistrationsBeforeDelegatedInstall) "delegated Vision install changed the legacy task"
 
-  function Assert-VisionProbeRejected([string]$Name, [int]$Port, [string]$ReadyJson) {
-    $server = Start-VisionProbeServer $Port "ok" $true "9.8.7" $true $ReadyJson
-    Start-Sleep -Milliseconds 200
+  function Assert-VisionProbeRejected([string]$Name, [string]$ConfigurationPath, [string]$ReadyJson) {
+    $port = New-VisionHarnessPort
+    Set-VisionHarnessSitePort $ConfigurationPath $port
+    $server = Start-ReadyVisionProbeServer $Name $port "ok" $true "9.8.7" $true $ReadyJson
     $rejected = $false
     try {
-      Invoke-VisionMainProbe -ConfigurationPath $install.siteConfiguration -TimeoutSeconds 1 | Out-Null
+      Invoke-VisionMainProbe -ConfigurationPath $ConfigurationPath -TimeoutSeconds 1 | Out-Null
     } catch {
       $rejected = $true
     }
@@ -250,37 +292,42 @@ try {
     Assert-True $rejected "$Name was accepted by the strict Vision WebSocket probe"
   }
 
-  $fragmentedServer = Start-VisionProbeServer 17892 "ok" $true "9.8.7" $true "" 32
-  Start-Sleep -Seconds 1
+  $fragmentedPort = New-VisionHarnessPort
+  Set-VisionHarnessSitePort $install.siteConfiguration $fragmentedPort
+  $fragmentedServer = Start-ReadyVisionProbeServer "fragmented" $fragmentedPort "ok" $true "9.8.7" $true "" 32
   $fragmentedProbe = Invoke-VisionMainProbe -ConfigurationPath $install.siteConfiguration -TimeoutSeconds 15
   Wait-Job $fragmentedServer | Out-Null; Receive-Job $fragmentedServer | Out-Null; Remove-Job $fragmentedServer
   Assert-True ($fragmentedProbe.ready.type -eq "vision.ready") "fragmented Vision ready envelope was not assembled"
 
   $independentVersionReady = '{"protocol":"vem.vision.v1","type":"vision.ready","messageId":"ready-version-diagnostic","timestamp":"2026-07-17T00:00:00.000Z","payload":{"serverName":"vision-harness","serverVersion":"independent-version","cameraReady":true,"modelReady":true,"capabilities":["profile_push","presence_status","person_departed","try_on_session"]}}'
-  $versionDiagnosticServer = Start-VisionProbeServer 17892 "ok" $true "9.8.7" $true $independentVersionReady
-  Start-Sleep -Seconds 1
+  $versionDiagnosticPort = New-VisionHarnessPort
+  Set-VisionHarnessSitePort $install.siteConfiguration $versionDiagnosticPort
+  $versionDiagnosticServer = Start-ReadyVisionProbeServer "version" $versionDiagnosticPort "ok" $true "9.8.7" $true $independentVersionReady
   $versionDiagnosticProbe = Invoke-VisionMainProbe -ConfigurationPath $install.siteConfiguration -TimeoutSeconds 15
   Wait-Job $versionDiagnosticServer | Out-Null; Receive-Job $versionDiagnosticServer | Out-Null; Remove-Job $versionDiagnosticServer
   Assert-True ($versionDiagnosticProbe.ready.payload.serverVersion -eq "independent-version") "probe unexpectedly gated readiness on server version"
 
-  Assert-VisionProbeRejected "malformed ready envelope" 17892 '{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"ready-malformed","timestamp":"2026-07-17T00:00:00.000Z","payload":{"serverName":"vision-harness","cameraReady":true,"modelReady":true,"capabilities":["profile_push","presence_status","person_departed","try_on_session"]}}'
-  Assert-VisionProbeRejected "string cameraReady" 17892 '{"protocol":"vem.vision.v1","type":"vision.ready","messageId":"ready-camera-string","timestamp":"2026-07-17T00:00:00.000Z","payload":{"serverName":"vision-harness","cameraReady":"true","modelReady":true,"capabilities":["profile_push","presence_status","person_departed","try_on_session"]}}'
-  Assert-VisionProbeRejected "string modelReady" 17892 '{"protocol":"vem.vision.v1","type":"vision.ready","messageId":"ready-model-string","timestamp":"2026-07-17T00:00:00.000Z","payload":{"serverName":"vision-harness","cameraReady":true,"modelReady":"true","capabilities":["profile_push","presence_status","person_departed","try_on_session"]}}'
-  Assert-VisionProbeRejected "missing try-on capability" 17892 '{"protocol":"vem.vision.v1","type":"vision.ready","messageId":"ready-missing-tryon","timestamp":"2026-07-17T00:00:00.000Z","payload":{"serverName":"vision-harness","cameraReady":true,"modelReady":true,"capabilities":["profile_push","presence_status","person_departed"]}}'
+  Assert-VisionProbeRejected "malformed" $install.siteConfiguration '{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"ready-malformed","timestamp":"2026-07-17T00:00:00.000Z","payload":{"serverName":"vision-harness","cameraReady":true,"modelReady":true,"capabilities":["profile_push","presence_status","person_departed","try_on_session"]}}'
+  Assert-VisionProbeRejected "camera-string" $install.siteConfiguration '{"protocol":"vem.vision.v1","type":"vision.ready","messageId":"ready-camera-string","timestamp":"2026-07-17T00:00:00.000Z","payload":{"serverName":"vision-harness","cameraReady":"true","modelReady":true,"capabilities":["profile_push","presence_status","person_departed","try_on_session"]}}'
+  Assert-VisionProbeRejected "model-string" $install.siteConfiguration '{"protocol":"vem.vision.v1","type":"vision.ready","messageId":"ready-model-string","timestamp":"2026-07-17T00:00:00.000Z","payload":{"serverName":"vision-harness","cameraReady":true,"modelReady":"true","capabilities":["profile_push","presence_status","person_departed","try_on_session"]}}'
+  Assert-VisionProbeRejected "missing-tryon" $install.siteConfiguration '{"protocol":"vem.vision.v1","type":"vision.ready","messageId":"ready-missing-tryon","timestamp":"2026-07-17T00:00:00.000Z","payload":{"serverName":"vision-harness","cameraReady":true,"modelReady":true,"capabilities":["profile_push","presence_status","person_departed"]}}'
 
   $recordedConfig = Join-Path $root "recorded-site-input.json"
-  @{ schemaVersion = "vending-vision-site-config/v1"; host = "127.0.0.1"; port = 17893; allowed_origins = @("http://127.0.0.1:17893"); cameras = @{ top = @{ source = "recorded_video"; role = "presence"; video_path = "source-relative/top.mp4" }; front = @{ source = "recorded_video"; role = "profile_tryon"; video_path = "source-relative/front.mp4" } } } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $recordedConfig -Encoding utf8
+  $recordedPort = New-VisionHarnessPort
+  @{ schemaVersion = "vending-vision-site-config/v1"; host = "127.0.0.1"; port = $recordedPort; allowed_origins = @("http://127.0.0.1:$recordedPort"); cameras = @{ top = @{ source = "recorded_video"; role = "presence"; video_path = "source-relative/top.mp4" }; front = @{ source = "recorded_video"; role = "profile_tryon"; video_path = "source-relative/front.mp4" } } } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $recordedConfig -Encoding utf8
   $missingFixtureRejected = $false
   try { Install-VisionMainArtifact -RuntimeArchive $cache.runtimeArchive -Commit $commit -SiteConfigurationPath $recordedConfig -AppDirectory (Join-Path $root "vision\app") -SiteConfigurationDestination (Join-Path $root "program-data\vision\site.json") -LauncherPath (Join-Path $root "bringup\start_vision.bat") -ProbeTimeoutSeconds 1 | Out-Null } catch { $missingFixtureRejected = $true }
   Assert-True $missingFixtureRejected "recorded-video configuration did not require the separate fixture archive"
-  $server = Start-VisionProbeServer 17893 "degraded" $false "9.8.8" $false
-  Start-Sleep -Milliseconds 200
+  $recordedDegradedPort = New-VisionHarnessPort
+  Set-VisionHarnessSitePort $recordedConfig $recordedDegradedPort
+  $server = Start-ReadyVisionProbeServer "recorded-degraded" $recordedDegradedPort "degraded" $false "9.8.8" $false
   $recordedCameraRejected = $false
   try { Install-VisionMainArtifact -RuntimeArchive $cache.runtimeArchive -Commit $commit -SiteConfigurationPath $recordedConfig -FixtureArchive $cache.fixtureArchive -AppDirectory (Join-Path $root "vision\app") -SiteConfigurationDestination (Join-Path $root "program-data\vision\site.json") -FixtureDirectory (Join-Path $root "program-data\vision\fixtures") -RuntimeWorkDirectory $runtimeWorkDirectory -LauncherPath (Join-Path $root "bringup\start_vision.bat") -ProbeTimeoutSeconds 1 | Out-Null } catch { $recordedCameraRejected = $true }
   Wait-Job $server | Out-Null; Receive-Job $server | Out-Null; Remove-Job $server
   Assert-True $recordedCameraRejected "recorded-video install accepted degraded camera readiness"
-  $server = Start-VisionProbeServer 17893 "ok" $true "9.8.9"
-  Start-Sleep -Seconds 1
+  $recordedOkPort = New-VisionHarnessPort
+  Set-VisionHarnessSitePort $recordedConfig $recordedOkPort
+  $server = Start-ReadyVisionProbeServer "recorded-ok" $recordedOkPort "ok" $true "9.8.9"
   $fixtureCommitRoot = Join-Path $root "program-data\vision\fixtures\$commit"
   New-Item -ItemType Directory -Force -Path (Join-Path $fixtureCommitRoot "recorded-video") | Out-Null
   [IO.File]::WriteAllText((Join-Path $fixtureCommitRoot "recorded-video\top.mp4"), "stale", [Text.Encoding]::UTF8)
