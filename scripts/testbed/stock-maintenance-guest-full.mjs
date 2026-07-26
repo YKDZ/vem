@@ -611,6 +611,8 @@ function runSale(options, outPath) {
         outPath,
         "--fixture-key",
         options.fixtureKey,
+        "--scenario",
+        "sale-only",
       ],
       { stdio: ["ignore", "ignore", "pipe"] },
     );
@@ -633,7 +635,10 @@ function runSale(options, outPath) {
             stage: report.stage ?? report.summary?.stage ?? null,
             route: report.ui?.afterF2?.route ?? report.summary?.route ?? null,
             orderNo: report.summary?.orderNo ?? report.order?.orderNo ?? null,
-            error: reportError,
+            error:
+              typeof reportError === "string"
+                ? reportError.slice(0, 2_048)
+                : reportError,
           }
         : null;
       reject(

@@ -1112,13 +1112,13 @@ if ((& $pnpm config get store-dir).Trim() -ne $env:PNPM_STORE_PATH) { throw "pnp
 if ($LASTEXITCODE -ne 0) { throw "pnpm virtual store configuration failed" }
 if ((& $pnpm config get virtual-store-dir).Trim() -ne $pnpmVirtualStorePath) { throw "pnpm virtual-store-dir did not resolve to lock-keyed D: cache" }
 if (-not (Test-Path -LiteralPath $pnpmFetchCompletePath -PathType Leaf)) {
-  & $pnpm fetch --frozen-lockfile --trust-lockfile --reporter=silent
+  & $pnpm --reporter=silent fetch --frozen-lockfile --trust-lockfile
   if ($LASTEXITCODE -ne 0) { throw "pnpm fetch failed" }
   Set-Content -LiteralPath $pnpmFetchCompletePath -Value $pnpmLockDigest -Encoding ascii
 }
 if (-not (Test-Path -LiteralPath $pnpmWorkspaceMarker -PathType Leaf) -or
   (Get-Content -Raw -LiteralPath $pnpmWorkspaceMarker).Trim() -ne $pnpmLockDigest) {
-  & $pnpm install --frozen-lockfile --offline --trust-lockfile --reporter=silent
+  & $pnpm --reporter=silent install --frozen-lockfile --offline --trust-lockfile
   if ($LASTEXITCODE -ne 0) { throw "pnpm install failed" }
   Set-Content -LiteralPath $pnpmWorkspaceMarker -Value $pnpmLockDigest -Encoding ascii
 }

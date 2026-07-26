@@ -856,6 +856,7 @@ describe("fast route stress sale tracer", () => {
     ]);
 
     assert.equal(options.mode, "fast");
+    assert.equal(options.scenario, "route-stress");
     assert.equal(
       options.guestInputPath,
       "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
@@ -864,6 +865,35 @@ describe("fast route stress sale tracer", () => {
       options.handoffPath,
       "C:\\ProgramData\\VEM\\testbed\\installed-runtime-handoff.json",
     );
+  });
+
+  it("accepts sale-only evidence without the route-stress Vision departure", () => {
+    const evidence = validEvidence();
+    evidence.scenario = "sale-only";
+    evidence.visionDelivery = {
+      scenario: "sale-only",
+      skippedReason: "route_stress_not_requested",
+      arrival: null,
+      traceBoundary: null,
+      requestedAt: null,
+      completedAt: null,
+    };
+    evidence.repeatedPaymentTouch = {
+      scenario: "sale-only",
+      traceEntryId: null,
+      preDispatchTraceBoundary: null,
+      pendingConfirmedAt: "2026-07-18T03:59:59.900Z",
+      releaseRequestedAt: "2026-07-18T04:00:00.200Z",
+    };
+    evidence.machineRuntimeTrace.entries =
+      evidence.machineRuntimeTrace.entries.filter(
+        (entry) =>
+          entry.intentType !== "presence.departed" &&
+          entry.id !== 3 &&
+          entry.intentType !== "transaction.projection",
+      );
+
+    assert.doesNotThrow(() => validateFastRouteStressSaleEvidence(evidence));
   });
 
   it("drives only physical touch navigation and repeats checkout submit during payment creation", () => {

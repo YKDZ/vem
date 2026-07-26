@@ -84,11 +84,18 @@ function optionalOption(args, name) {
   return index === -1 ? null : required(args[index + 1], `--${name}`);
 }
 
+const SCENARIOS = new Set(["route-stress", "sale-only"]);
+
 export function parseFastRouteStressSaleArgs(args) {
   const mode = required(option(args, "mode"), "--mode");
   if (!MODES.has(mode)) throw new Error("--mode must be fast or full");
+  const scenario = optionalOption(args, "scenario") ?? "route-stress";
+  if (!SCENARIOS.has(scenario)) {
+    throw new Error("--scenario must be route-stress or sale-only");
+  }
   return {
     mode,
+    scenario,
     guestInputPath: windowsAbsolute(
       option(args, "guest-input"),
       "--guest-input",
@@ -849,6 +856,7 @@ export function validateFastRouteStressSaleEvidence(input) {
   }
   const vision = input.visionDelivery ?? {};
   const repeatedPaymentTouch = input.repeatedPaymentTouch ?? {};
+  const routeStressScenario = input.scenario !== "sale-only";
   const pendingConfirmedAt = timestamp(
     repeatedPaymentTouch.pendingConfirmedAt,
     "guest-local payment gate pending confirmation",
@@ -862,35 +870,38 @@ export function validateFastRouteStressSaleEvidence(input) {
       "guest-local payment gate sequence must confirm pending before release",
     );
   }
-  if (
-    vision.ok !== true ||
-    typeof vision.eventId !== "string" ||
-    vision.eventId === "" ||
-    vision.connectedRuntimeClients < 1 ||
-    vision.acceptedDeliveries < 1
-  ) {
-    throw new Error(
-      "Vision departure requires a connected installed runtime client and accepted delivery",
+  let repeatedTouch = null;
+  if (routeStressScenario) {
+    if (
+      vision.ok !== true ||
+      typeof vision.eventId !== "string" ||
+      vision.eventId === "" ||
+      vision.connectedRuntimeClients < 1 ||
+      vision.acceptedDeliveries < 1
+    ) {
+      throw new Error(
+        "Vision departure requires a connected installed runtime client and accepted delivery",
+      );
+    }
+    const visionRequestedAt = timestamp(
+      vision.requestedAt,
+      "guest-local Vision departure request",
     );
-  }
-  const visionRequestedAt = timestamp(
-    vision.requestedAt,
-    "guest-local Vision departure request",
-  );
-  const visionCompletedAt = timestamp(
-    vision.completedAt,
-    "guest-local Vision departure completion",
-  );
-  if (
-    !(
-      pendingConfirmedAt <= visionRequestedAt &&
-      visionRequestedAt <= visionCompletedAt &&
-      visionCompletedAt <= releaseRequestedAt
-    )
-  ) {
-    throw new Error(
-      "Vision departure must occur while payment creation is explicitly pending",
+    const visionCompletedAt = timestamp(
+      vision.completedAt,
+      "guest-local Vision departure completion",
     );
+    if (
+      !(
+        pendingConfirmedAt <= visionRequestedAt &&
+        visionRequestedAt <= visionCompletedAt &&
+        visionCompletedAt <= releaseRequestedAt
+      )
+    ) {
+      throw new Error(
+        "Vision departure must occur while payment creation is explicitly pending",
+      );
+    }
   }
   const continuousHash = input.continuousCdpLocationHash ?? {};
   if (
@@ -973,63 +984,69 @@ export function validateFastRouteStressSaleEvidence(input) {
     input.noCatalogTraceBoundary,
     "no-Catalog trace boundary",
   );
-  const repeatedTouchTrace = traceEntriesAfterBoundary(
-    runtimeSnapshot,
-    repeatedPaymentTouch.preDispatchTraceBoundary,
-    "repeated payment touch pre-dispatch trace boundary",
-  );
-  const repeatedTouch = repeatedTouchTrace.find(
-    (entry) =>
-      entry?.type === "navigation" &&
-      entry?.intentType === "customer.touch" &&
-      entry?.decision === "accepted" &&
-      entry?.reasonCode === "touchscreen_session_renewed" &&
-      entry?.id === repeatedPaymentTouch.traceEntryId,
-  );
-  if (!repeatedTouch) {
-    throw new Error(
-      "installed runtime trace must record the repeated physical customer.touch after its pre-dispatch boundary",
+  if (routeStressScenario) {
+    const repeatedTouchTrace = traceEntriesAfterBoundary(
+      runtimeSnapshot,
+      repeatedPaymentTouch.preDispatchTraceBoundary,
+      "repeated payment touch pre-dispatch trace boundary",
     );
+    repeatedTouch = repeatedTouchTrace.find(
+      (entry) =>
+        entry?.type === "navigation" &&
+        entry?.intentType === "customer.touch" &&
+        entry?.decision === "accepted" &&
+        entry?.reasonCode === "touchscreen_session_renewed" &&
+        entry?.id === repeatedPaymentTouch.traceEntryId,
+    );
+    if (!repeatedTouch) {
+      throw new Error(
+        "installed runtime trace must record the repeated physical customer.touch after its pre-dispatch boundary",
+      );
+    }
   }
-  const guardedDepartureTrace = traceEntriesAfterBoundary(
-    runtimeSnapshot,
-    vision.traceBoundary,
-    "Vision departure control-request trace boundary",
-  );
-  const guardedDeparture = guardedDepartureTrace.find(
-    (entry) =>
-      entry.type === "navigation" &&
-      entry.intentType === "presence.departed" &&
-      /^presence-\d+:departure$/.test(entry.sourceEventId ?? "") &&
-      ["touchscreen_session_active", "active_transaction_route"].includes(
-        entry.reasonCode,
-      ) &&
-      entry.decision === "rejected" &&
-      entry.finalRoute !== "#/catalog",
-  );
-  if (!guardedDeparture) {
-    throw new Error(
-      "installed runtime trace must contain the guarded stable Vision departure navigation effect after the control-request boundary",
+  let guardedDeparture = null;
+  let projectionRefresh = null;
+  if (routeStressScenario) {
+    const guardedDepartureTrace = traceEntriesAfterBoundary(
+      runtimeSnapshot,
+      vision.traceBoundary,
+      "Vision departure control-request trace boundary",
     );
-  }
-  const projectionRefresh = runtimeTrace.find(
-    (entry) =>
-      entry?.type === "navigation" &&
-      entry?.intentType === "transaction.projection" &&
-      entry?.decision === "accepted" &&
-      ["transaction_projection", "transaction_projection_current"].includes(
-        entry?.reasonCode,
-      ) &&
-      entry?.transactionOrderNo === order.orderNo &&
-      entry?.finalRoute !== "#/catalog" &&
-      Number.isFinite(entry?.id) &&
-      Number.isFinite(guardedDeparture?.id) &&
-      entry.id > guardedDeparture.id,
-  );
-  if (!projectionRefresh) {
-    throw new Error(
-      "runtime trace must contain the real transaction projection refresh for the correlated order after Vision departure",
+    guardedDeparture = guardedDepartureTrace.find(
+      (entry) =>
+        entry.type === "navigation" &&
+        entry.intentType === "presence.departed" &&
+        /^presence-\d+:departure$/.test(entry.sourceEventId ?? "") &&
+        ["touchscreen_session_active", "active_transaction_route"].includes(
+          entry.reasonCode,
+        ) &&
+        entry.decision === "rejected" &&
+        entry.finalRoute !== "#/catalog",
     );
+    if (!guardedDeparture) {
+      throw new Error(
+        "installed runtime trace must contain the guarded stable Vision departure navigation effect after the control-request boundary",
+      );
+    }
+    projectionRefresh = runtimeTrace.find(
+      (entry) =>
+        entry?.type === "navigation" &&
+        entry?.intentType === "transaction.projection" &&
+        entry?.decision === "accepted" &&
+        ["transaction_projection", "transaction_projection_current"].includes(
+          entry?.reasonCode,
+        ) &&
+        entry?.transactionOrderNo === order.orderNo &&
+        entry?.finalRoute !== "#/catalog" &&
+        Number.isFinite(entry?.id) &&
+        Number.isFinite(guardedDeparture?.id) &&
+        entry.id > guardedDeparture.id,
+    );
+    if (!projectionRefresh) {
+      throw new Error(
+        "runtime trace must contain the real transaction projection refresh for the correlated order after Vision departure",
+      );
+    }
   }
   const result = input.ui?.afterF2?.result;
   if (
@@ -1104,11 +1121,11 @@ export function validateFastRouteStressSaleEvidence(input) {
       platformAfter.onHandQty - platformMiddle.onHandQty,
     movementId: movement.id,
     visionEventId: vision.eventId,
-    repeatedPhysicalTouchTraceId: repeatedTouch.id ?? null,
-    repeatedPhysicalTouchAt: repeatedTouch.at,
-    guardedNavigationReason: guardedDeparture.reasonCode,
-    projectionRefreshReason: projectionRefresh.reasonCode,
-    projectionRefreshRoute: projectionRefresh.finalRoute,
+    repeatedPhysicalTouchTraceId: repeatedTouch?.id ?? null,
+    repeatedPhysicalTouchAt: repeatedTouch?.at ?? null,
+    guardedNavigationReason: guardedDeparture?.reasonCode ?? null,
+    projectionRefreshReason: projectionRefresh?.reasonCode ?? null,
+    projectionRefreshRoute: projectionRefresh?.finalRoute ?? null,
     saleStartCapabilityRevision: saleStartCapability.revision,
     mockPaymentOptionKey: mockOption.optionKey,
     uiViewport: {
@@ -2488,6 +2505,7 @@ async function completeMockPayment(guestInput, paymentNo) {
 }
 
 async function runFastRouteStressSale(options) {
+  const routeStressScenario = options.scenario !== "sale-only";
   let guestInput = null;
   let handoff = null;
   let vision = null;
@@ -2647,59 +2665,85 @@ async function runFastRouteStressSale(options) {
       throw new Error(
         "mock create-order gate did not observe a pending payment creation",
       );
-    stage = "vision-departure-during-create-order";
     const pendingConfirmedAt = new Date().toISOString();
-    const visionDepartureTraceBoundary = await captureRuntimeTraceBoundary(
-      client,
-      "Vision departure control-request trace boundary",
-    );
-    const visionRequestedAt = new Date().toISOString();
-    let visionDeliveryResult;
-    try {
-      visionDeliveryResult = await dispatchVisionDeparture(guestInput);
-    } catch {
-      await shutdownControlledVisionMock(vision?.child).catch(() => undefined);
-      vision = await ensureControlledVisionMock(
-        guestInput.hostControlPlane?.visionMockControlPort ??
-          guestInput.visionMockControlPort,
-      );
-      await waitForControlledVisionRuntimeClient(
-        guestInput.hostControlPlane?.visionMockControlPort ??
-          guestInput.visionMockControlPort,
-      );
-      visionDeliveryResult = await dispatchVisionDeparture(guestInput);
-    }
-    const visionDelivery = {
-      ...visionDeliveryResult,
+    let releaseRequestedAt = new Date().toISOString();
+    let visionDelivery = {
+      scenario: "sale-only",
+      skippedReason: "route_stress_not_requested",
       arrival: visionArrival,
-      traceBoundary: visionDepartureTraceBoundary,
-      requestedAt: visionRequestedAt,
-      completedAt: new Date().toISOString(),
+      traceBoundary: null,
+      requestedAt: null,
+      completedAt: null,
     };
-    await waitForGuardedVisionDepartureTrace(
-      client,
-      visionDepartureTraceBoundary,
-    );
-    const preDispatchTraceBoundary = await captureRuntimeTraceBoundary(
-      client,
-      "repeated payment touch pre-dispatch trace boundary",
-    );
-    const secondSubmit = await dispatchRepeatedPaymentTouch(
-      client,
-      firstSubmit,
-    );
-    assert.match(secondSubmit.input.method, /Input\.dispatchTouchEvent/);
-    const repeatedTouchTrace = await waitForRepeatedCustomerTouchTrace(
-      client,
-      preDispatchTraceBoundary,
-    );
-    const releaseRequestedAt = new Date().toISOString();
     repeatedPaymentTouch = {
-      preDispatchTraceBoundary,
-      traceEntryId: repeatedTouchTrace.id,
+      scenario: "sale-only",
+      preDispatchTraceBoundary: null,
+      traceEntryId: null,
       pendingConfirmedAt,
       releaseRequestedAt,
     };
+    if (routeStressScenario) {
+      stage = "vision-departure-during-create-order";
+      const visionDepartureTraceBoundary = await captureRuntimeTraceBoundary(
+        client,
+        "Vision departure control-request trace boundary",
+      );
+      const visionRequestedAt = new Date().toISOString();
+      let visionDeliveryResult;
+      try {
+        visionDeliveryResult = await dispatchVisionDeparture(guestInput);
+      } catch {
+        await shutdownControlledVisionMock(vision?.child).catch(
+          () => undefined,
+        );
+        vision = await ensureControlledVisionMock(
+          guestInput.hostControlPlane?.visionMockControlPort ??
+            guestInput.visionMockControlPort,
+        );
+        await waitForControlledVisionRuntimeClient(
+          guestInput.hostControlPlane?.visionMockControlPort ??
+            guestInput.visionMockControlPort,
+        );
+        visionDeliveryResult = await dispatchVisionDeparture(guestInput);
+      }
+      visionDelivery = {
+        ...visionDeliveryResult,
+        scenario: "route-stress",
+        arrival: visionArrival,
+        traceBoundary: visionDepartureTraceBoundary,
+        requestedAt: visionRequestedAt,
+        completedAt: new Date().toISOString(),
+      };
+      await waitForGuardedVisionDepartureTrace(
+        client,
+        visionDepartureTraceBoundary,
+      );
+      const preDispatchTraceBoundary = await captureRuntimeTraceBoundary(
+        client,
+        "repeated payment touch pre-dispatch trace boundary",
+      );
+      const secondSubmit = await dispatchRepeatedPaymentTouch(
+        client,
+        firstSubmit,
+      );
+      assert.match(secondSubmit.input.method, /Input\.dispatchTouchEvent/);
+      const repeatedTouchTrace = await waitForRepeatedCustomerTouchTrace(
+        client,
+        preDispatchTraceBoundary,
+      );
+      releaseRequestedAt = new Date().toISOString();
+      repeatedPaymentTouch = {
+        scenario: "route-stress",
+        preDispatchTraceBoundary,
+        traceEntryId: repeatedTouchTrace.id,
+        pendingConfirmedAt,
+        releaseRequestedAt,
+      };
+    }
+    if (!routeStressScenario) {
+      releaseRequestedAt = new Date().toISOString();
+      repeatedPaymentTouch.releaseRequestedAt = releaseRequestedAt;
+    }
     const releasedCreateOrderGate = await releaseCreateOrderGate(
       guestInput,
       pendingCreate.paymentNo,
@@ -2877,6 +2921,7 @@ async function runFastRouteStressSale(options) {
       options.outPath,
     );
     const evidence = {
+      scenario: options.scenario,
       saleCorrelationId,
       controlPlaneSessionId: sessionStart.sessionId,
       machineCode,

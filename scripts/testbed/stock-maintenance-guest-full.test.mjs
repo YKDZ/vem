@@ -255,6 +255,8 @@ describe("stock maintenance guest full", () => {
       source.match(/await openPaymentCreateGate\(input\);/g)?.length,
       2,
     );
+    assert.match(source, /"--scenario",\s*"sale-only"/);
+    assert.match(source, /reportError\.slice\(0, 2_048\)/);
   });
 
   it("verifies restored saleability through the category detail flow", () => {
