@@ -20,7 +20,7 @@
     }
   },
   "scripts": {
-    "build": "vite build",
+    "build": "vite build --logLevel warn",
     "fmt": "oxfmt",
     "generate": "drizzle-kit generate",
     "lint": "oxlint --quiet --format=unix --type-aware --config ../../oxlint.config.ts .",

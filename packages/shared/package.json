@@ -53,7 +53,7 @@
     }
   },
   "scripts": {
-    "build": "vite build",
+    "build": "vite build --logLevel warn",
     "fmt": "oxfmt",
     "lint": "oxlint --quiet --format=unix --type-aware --config ../../oxlint.config.ts .",
     "lint-fix": "oxlint --format=unix --fix --type-aware --config ../../oxlint.config.ts .",
