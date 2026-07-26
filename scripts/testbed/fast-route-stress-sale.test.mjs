@@ -596,6 +596,50 @@ describe("fast route stress sale tracer", () => {
     assert.match(result.fallback.arrivalError, /deduped/);
   });
 
+  it("accepts an active touch session after physical touch when no new trace is emitted", async () => {
+    const boundary = {
+      source: "installed_machine_runtime_trace_cdp",
+      lastEntryId: 10,
+      capturedAt: "2026-07-18T03:59:59.000Z",
+      runtimeGenerationId: "runtime-generation-1",
+    };
+    let touched = false;
+    const result = await waitForVisionArrivalOrTouchSession(null, boundary, {
+      arrivalTimeoutMs: 100,
+      touchTimeoutMs: 100,
+      dispatchTouch: async () => {
+        touched = true;
+        return { input: { method: "Input.dispatchTouchEvent" } };
+      },
+      waitArrival: async () => {
+        throw new Error(touched ? "no post-boundary trace" : "deduped");
+      },
+      readTrace: async () => ({
+        runtimeGenerationId: "runtime-generation-1",
+        entries: [
+          {
+            id: 9,
+            type: "navigation",
+            intentType: "customer.touch",
+            decision: "accepted",
+            reasonCode: "touchscreen_session_renewed",
+            touchscreenSessionActive: true,
+          },
+        ],
+      }),
+    });
+    assert.equal(result.trace.intentType, "customer.touch");
+    assert.equal(
+      result.trace.reasonCode,
+      "touchscreen_session_active_after_dispatch",
+    );
+    assert.equal(
+      result.fallback.kind,
+      "touchscreen_session_active_after_dispatch",
+    );
+    assert.match(result.fallback.touchArrivalError, /no post-boundary trace/);
+  });
+
   it("accepts an existing active touch session when no new trace is emitted", async () => {
     const boundary = {
       source: "installed_machine_runtime_trace_cdp",

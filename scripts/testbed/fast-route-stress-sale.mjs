@@ -2298,6 +2298,7 @@ export async function waitForVisionArrivalOrTouchSession(
   {
     waitArrival = waitForStableVisionArrivalTrace,
     dispatchTouch = dispatchCatalogTouchSession,
+    readTrace = readRuntimeTraceSnapshot,
     arrivalTimeoutMs = 5_000,
     touchTimeoutMs = 3_000,
   } = {},
@@ -2329,19 +2330,47 @@ export async function waitForVisionArrivalOrTouchSession(
       };
     }
     const touch = await dispatchTouch(client);
-    return {
-      trace: await waitArrival(client, traceBoundary, {
-        timeoutMs: touchTimeoutMs,
-      }),
-      fallback: {
-        kind: "touchscreen_session",
-        touch,
-        arrivalError:
-          arrivalError instanceof Error
-            ? arrivalError.message
-            : String(arrivalError),
-      },
-    };
+    try {
+      return {
+        trace: await waitArrival(client, traceBoundary, {
+          timeoutMs: touchTimeoutMs,
+        }),
+        fallback: {
+          kind: "touchscreen_session",
+          touch,
+          arrivalError:
+            arrivalError instanceof Error
+              ? arrivalError.message
+              : String(arrivalError),
+        },
+      };
+    } catch (touchArrivalError) {
+      const snapshot = await readTrace(client);
+      if (latestTouchscreenSessionActive(snapshot.entries)) {
+        return {
+          trace: {
+            type: "navigation",
+            intentType: "customer.touch",
+            decision: "accepted",
+            reasonCode: "touchscreen_session_active_after_dispatch",
+            id: traceBoundary.lastEntryId,
+          },
+          fallback: {
+            kind: "touchscreen_session_active_after_dispatch",
+            touch,
+            arrivalError:
+              arrivalError instanceof Error
+                ? arrivalError.message
+                : String(arrivalError),
+            touchArrivalError:
+              touchArrivalError instanceof Error
+                ? touchArrivalError.message
+                : String(touchArrivalError),
+          },
+        };
+      }
+      throw touchArrivalError;
+    }
   }
 }
 
