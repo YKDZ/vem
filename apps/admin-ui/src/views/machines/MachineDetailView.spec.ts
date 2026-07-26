@@ -633,7 +633,7 @@ describe("MachineDetailView", () => {
       expect(openButton?.disabled).toBe(true);
 
       await advanceTimersUntil(() => {
-        expect(apiMocks.messageSuccess).toHaveBeenCalledWith("空调控制已完成");
+        expect(root.textContent).toContain("命令成功");
         expect(openButton?.disabled).toBe(false);
       });
     } finally {

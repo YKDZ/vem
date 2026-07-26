@@ -100,7 +100,7 @@ function Assert-VisionArchive([string]$ArchivePath, [string]$Commit, [ValidateSe
   Add-Type -AssemblyName System.IO.Compression.FileSystem
   $archive = [IO.Compression.ZipFile]::OpenRead($ArchivePath)
   try {
-    $entries = @($archive.Entries | ForEach-Object { $_.FullName })
+    $entries = @($archive.Entries | ForEach-Object { $_.FullName.Replace("\", "/") })
     if ($Kind -eq "runtime") {
       Assert-VisionMainCondition ($entries -contains "vending-vision.exe") "runtime archive must contain vending-vision.exe at its root"
       Assert-VisionMainCondition (@($entries | Where-Object { $_ -match '(^|/)(recorded-video|fixtures)(/|$)|\.mp4$' }).Count -eq 0) "runtime archive must not contain recorded-video fixtures"
