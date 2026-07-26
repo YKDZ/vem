@@ -835,6 +835,10 @@ export async function runStockMaintenanceGuest(options) {
     report.handoffSerialSessionId =
       firstHandoff.replacementControlPlaneSessionId;
     handoff = readJson(options.handoffPath);
+    client = await connectUi(handoff);
+    await returnCustomerResultToCatalog(client);
+    await client.close();
+    client = null;
     const firstReportPath = join(
       dirname(localPath(options.outPath)),
       "stock-maintenance-first-sale.json",
