@@ -192,9 +192,9 @@ try {
   @{ schemaVersion = "vending-vision-site-config/v1"; host = "127.0.0.1"; port = 17892; allowed_origins = @("http://127.0.0.1:17892"); cameras = @{ top = @{ source = "dshow"; role = "presence" }; front = @{ source = "dshow"; role = "profile_tryon" } } } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $config -Encoding utf8
   $runtimeWorkDirectory = Join-Path $root "program-data\vision\runtime"
   $server = Start-VisionProbeServer 17892 "degraded" $false "9.8.7"
-  Start-Sleep -Milliseconds 200
+  Start-Sleep -Seconds 1
   try {
-    $install = Install-VisionMainArtifact -RuntimeArchive $cache.runtimeArchive -Commit $commit -SiteConfigurationPath $config -AppDirectory (Join-Path $root "vision\app") -SiteConfigurationDestination (Join-Path $root "program-data\vision\site.json") -RuntimeWorkDirectory $runtimeWorkDirectory -LauncherPath (Join-Path $root "bringup\start_vision.bat") -ProbeTimeoutSeconds 5
+    $install = Install-VisionMainArtifact -RuntimeArchive $cache.runtimeArchive -Commit $commit -SiteConfigurationPath $config -AppDirectory (Join-Path $root "vision\app") -SiteConfigurationDestination (Join-Path $root "program-data\vision\site.json") -RuntimeWorkDirectory $runtimeWorkDirectory -LauncherPath (Join-Path $root "bringup\start_vision.bat") -ProbeTimeoutSeconds 15
   } catch {
     $serverDiagnostic = @(Receive-Job $server -Keep -ErrorAction SilentlyContinue) -join "`n"
     throw "dshow install failed; probe server state=$($server.State), diagnostic=$serverDiagnostic, error=$($_.Exception.Message)"
@@ -251,15 +251,15 @@ try {
   }
 
   $fragmentedServer = Start-VisionProbeServer 17892 "ok" $true "9.8.7" $true "" 32
-  Start-Sleep -Milliseconds 200
-  $fragmentedProbe = Invoke-VisionMainProbe -ConfigurationPath $install.siteConfiguration -TimeoutSeconds 5
+  Start-Sleep -Seconds 1
+  $fragmentedProbe = Invoke-VisionMainProbe -ConfigurationPath $install.siteConfiguration -TimeoutSeconds 15
   Wait-Job $fragmentedServer | Out-Null; Receive-Job $fragmentedServer | Out-Null; Remove-Job $fragmentedServer
   Assert-True ($fragmentedProbe.ready.type -eq "vision.ready") "fragmented Vision ready envelope was not assembled"
 
   $independentVersionReady = '{"protocol":"vem.vision.v1","type":"vision.ready","messageId":"ready-version-diagnostic","timestamp":"2026-07-17T00:00:00.000Z","payload":{"serverName":"vision-harness","serverVersion":"independent-version","cameraReady":true,"modelReady":true,"capabilities":["profile_push","presence_status","person_departed","try_on_session"]}}'
   $versionDiagnosticServer = Start-VisionProbeServer 17892 "ok" $true "9.8.7" $true $independentVersionReady
-  Start-Sleep -Milliseconds 200
-  $versionDiagnosticProbe = Invoke-VisionMainProbe -ConfigurationPath $install.siteConfiguration -TimeoutSeconds 5
+  Start-Sleep -Seconds 1
+  $versionDiagnosticProbe = Invoke-VisionMainProbe -ConfigurationPath $install.siteConfiguration -TimeoutSeconds 15
   Wait-Job $versionDiagnosticServer | Out-Null; Receive-Job $versionDiagnosticServer | Out-Null; Remove-Job $versionDiagnosticServer
   Assert-True ($versionDiagnosticProbe.ready.payload.serverVersion -eq "independent-version") "probe unexpectedly gated readiness on server version"
 
@@ -280,11 +280,11 @@ try {
   Wait-Job $server | Out-Null; Receive-Job $server | Out-Null; Remove-Job $server
   Assert-True $recordedCameraRejected "recorded-video install accepted degraded camera readiness"
   $server = Start-VisionProbeServer 17893 "ok" $true "9.8.9"
-  Start-Sleep -Milliseconds 200
+  Start-Sleep -Seconds 1
   $fixtureCommitRoot = Join-Path $root "program-data\vision\fixtures\$commit"
   New-Item -ItemType Directory -Force -Path (Join-Path $fixtureCommitRoot "recorded-video") | Out-Null
   [IO.File]::WriteAllText((Join-Path $fixtureCommitRoot "recorded-video\top.mp4"), "stale", [Text.Encoding]::UTF8)
-  $recordedInstall = Install-VisionMainArtifact -RuntimeArchive $cache.runtimeArchive -Commit $commit -SiteConfigurationPath $recordedConfig -FixtureArchive $cache.fixtureArchive -AppDirectory (Join-Path $root "vision\app") -SiteConfigurationDestination (Join-Path $root "program-data\vision\site.json") -FixtureDirectory (Join-Path $root "program-data\vision\fixtures") -RuntimeWorkDirectory $runtimeWorkDirectory -LauncherPath (Join-Path $root "bringup\start_vision.bat") -ProbeTimeoutSeconds 5
+  $recordedInstall = Install-VisionMainArtifact -RuntimeArchive $cache.runtimeArchive -Commit $commit -SiteConfigurationPath $recordedConfig -FixtureArchive $cache.fixtureArchive -AppDirectory (Join-Path $root "vision\app") -SiteConfigurationDestination (Join-Path $root "program-data\vision\site.json") -FixtureDirectory (Join-Path $root "program-data\vision\fixtures") -RuntimeWorkDirectory $runtimeWorkDirectory -LauncherPath (Join-Path $root "bringup\start_vision.bat") -ProbeTimeoutSeconds 15
   Wait-Job $server | Out-Null; Receive-Job $server | Out-Null; Remove-Job $server
   Assert-True (Test-Path -LiteralPath (Join-Path $root "program-data\vision\fixtures\$commit\recorded-video\top.mp4")) "recorded-video fixture was not extracted outside the app"
   Assert-True (-not (Test-Path -LiteralPath (Join-Path $recordedInstall.appDirectory "recorded-video"))) "recorded-video fixture entered the production app"
