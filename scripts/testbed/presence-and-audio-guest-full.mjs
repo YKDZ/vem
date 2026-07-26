@@ -359,11 +359,34 @@ async function readSupportedCategoryKeys(client, dependencies) {
 }
 
 async function returnToCatalogHome(client, dependencies) {
-  await dependencies.evaluateExpression(client, 'location.hash = "#/catalog"');
-  await dependencies.waitForRoute(client, "#/catalog", {
-    timeoutMs: 30_000,
-    pollMs: 250,
-  });
+  const deadline = dependencies.now() + 30_000;
+  let lastError = null;
+  do {
+    await dependencies.evaluateExpression(
+      client,
+      'location.hash = "#/catalog"',
+    );
+    try {
+      await dependencies.waitForRoute(client, "#/catalog", {
+        timeoutMs: 5_000,
+        pollMs: 100,
+      });
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        await dependencies.sleep(250);
+        await dependencies.waitForRoute(client, "#/catalog", {
+          timeoutMs: 500,
+          pollMs: 100,
+        });
+      }
+      return;
+    } catch (error) {
+      lastError = error;
+      await dependencies.sleep(250);
+    }
+  } while (dependencies.now() < deadline);
+  throw new Error(
+    `Catalog route did not stay stable after maintenance recovery: ${lastError?.message ?? "unknown route error"}`,
+  );
 }
 
 function runtimeBinding(handoff, cdpIdentity) {
