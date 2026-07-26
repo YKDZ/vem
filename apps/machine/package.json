@@ -12,7 +12,7 @@
     "preview": "vite preview --host 0.0.0.0",
     "tauri": "tauri",
     "tauri:build:kiosk:windows": "tauri build --config src-tauri/tauri.windows.conf.json",
-    "test": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=vem-source\" vitest run",
+    "test": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=vem-source\" vitest run --reporter=agent --silent=passed-only",
     "typecheck": "tsc --noEmit && vue-tsc --noEmit"
   },
   "dependencies": {

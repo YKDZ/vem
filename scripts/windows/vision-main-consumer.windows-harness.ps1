@@ -28,7 +28,8 @@ function New-VisionArchiveFixture([string]$Root, [string]$Commit) {
   $manifest = @{ schemaVersion = "vending-vision-main-artifacts/v1"; commit = $Commit; runtimeArchive = "vending-vision-windows-x86_64.zip"; fixtureArchive = "vending-vision-test-fixtures.zip" } | ConvertTo-Json
   [IO.File]::WriteAllText((Join-Path $runtimeSource "vending-vision.exe"), "fixture", [Text.Encoding]::ASCII)
   [IO.File]::WriteAllText((Join-Path $runtimeSource "vision-artifact.json"), $manifest, [Text.Encoding]::UTF8)
-  foreach ($name in @("top.mp4", "front.mp4", "expected-results.json")) { [IO.File]::WriteAllText((Join-Path $fixtureSource "recorded-video\$name"), "fixture", [Text.Encoding]::UTF8) }
+  $recordedVideoSource = Join-Path $fixtureSource "recorded-video"
+  foreach ($name in @("top.mp4", "front.mp4", "expected-results.json")) { [IO.File]::WriteAllText((Join-Path $recordedVideoSource $name), "fixture", [Text.Encoding]::UTF8) }
   [IO.File]::WriteAllText((Join-Path $fixtureSource "vision-artifact.json"), $manifest, [Text.Encoding]::UTF8)
   $runtime = Join-Path $artifactSource "vending-vision-windows-x86_64.zip"
   $fixtures = Join-Path $artifactSource "vending-vision-test-fixtures.zip"

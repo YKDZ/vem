@@ -160,10 +160,24 @@ postgresDescribe(
     const services: ServiceProcess[] = [];
 
     beforeAll(async () => {
-      await execFile("pnpm", ["--filter", "@vem/db", "build"], {
-        cwd: resolve(process.cwd(), "../.."),
-        timeout: 30_000,
-      });
+      await execFile(
+        "pnpm",
+        [
+          "turbo",
+          "build",
+          "--filter",
+          "@vem/shared",
+          "--filter",
+          "@vem/db",
+          "--output-logs=errors-only",
+          "--log-order=grouped",
+          "--log-prefix=task",
+        ],
+        {
+          cwd: resolve(process.cwd(), "../.."),
+          timeout: 30_000,
+        },
+      );
       db = new DrizzleDB(databaseUrl);
       await db.connect();
       await cleanupBusinessTables(db);

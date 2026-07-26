@@ -23,7 +23,7 @@
     "fmt": "oxfmt",
     "lint": "oxlint --quiet --format=unix --type-aware --config ../../oxlint.config.ts .",
     "lint-fix": "oxlint --format=unix --fix --type-aware --config ../../oxlint.config.ts .",
-    "test": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=vem-source\" vitest run",
+    "test": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=vem-source\" vitest run --reporter=agent --silent=passed-only",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

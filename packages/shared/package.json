@@ -57,7 +57,7 @@
     "fmt": "oxfmt",
     "lint": "oxlint --quiet --format=unix --type-aware --config ../../oxlint.config.ts .",
     "lint-fix": "oxlint --format=unix --fix --type-aware --config ../../oxlint.config.ts .",
-    "test": "vitest run",
+    "test": "vitest run --reporter=agent --silent=passed-only",
     "typecheck": "tsc -p tsconfig.lib.json --noEmit"
   },
   "dependencies": {

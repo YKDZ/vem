@@ -10,8 +10,8 @@
     "start:debug": "nest start --debug --watch",
     "start:dev": "pnpm run build && tsx dist/main.js",
     "start:prod": "pnpm run start",
-    "test": "vitest run",
-    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "test": "vitest run --reporter=agent --silent=passed-only",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts --reporter=agent --silent=passed-only",
     "testbed:prepare-ephemeral-platform": "tsx src/testbed/prepare-ephemeral-platform-stack.cli.ts",
     "testbed:prepare-vps-machine": "tsx src/testbed/prepare-vps-testbed-machine.cli.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"

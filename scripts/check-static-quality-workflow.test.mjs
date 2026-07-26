@@ -53,10 +53,12 @@ test("GitHub jobs invoke repository quality entrypoints", () => {
 });
 
 test("Service API flow e2e is separated from the unit test entrypoint", () => {
-  assert.equal(
-    packageJson.scripts["ci:service-api-e2e"],
-    "pnpm --filter service-api test:e2e",
-  );
+  const serviceE2eCommand = packageJson.scripts["ci:service-api-e2e"];
+  assert.match(serviceE2eCommand, /pnpm turbo build/);
+  assert.match(serviceE2eCommand, /--filter @vem\/shared/);
+  assert.match(serviceE2eCommand, /--filter @vem\/db/);
+  assert.match(serviceE2eCommand, /--output-logs=errors-only/);
+  assert.match(serviceE2eCommand, /pnpm --filter service-api test:e2e/);
   assert.match(serviceApiVitest, /\*\*\/\*\.e2e-spec\.ts/);
   assert.match(serviceApiVitest, /\*\*\/\*\.postgres\.integration\.spec\.ts/);
 });

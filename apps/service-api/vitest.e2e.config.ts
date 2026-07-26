@@ -20,5 +20,6 @@ export default defineConfig({
   test: {
     include: ["src/**/*.e2e-spec.ts"],
     fileParallelism: false,
+    setupFiles: ["src/flows/vitest-e2e.setup.ts"],
   },
 });

@@ -19,6 +19,7 @@ const serviceApiEnv = {
   PAYMENT_MOCK_ENABLED: "true",
   PAYMENT_WEBHOOK_BASE_URL: "http://localhost:3000",
   BOOTSTRAP_ADMIN_PASSWORD: "AdminPassword123!",
+  MEDIA_ASSET_STORAGE_ROOT: join(root, ".tmp", "admin-browser-media-assets"),
 };
 
 function run(command, args, options = {}) {
@@ -332,7 +333,13 @@ async function main() {
       "service-api",
       "--filter",
       "admin-ui",
+      "--output-logs=errors-only",
+      "--log-order=grouped",
+      "--log-prefix=task",
     ]);
+    await run("pnpm", ["exec", "playwright", "install", "chromium"], {
+      cwd: join(root, "apps/admin-ui"),
+    });
     await run("pnpm", ["--filter", "@vem/db", "migrate"], {
       env: { DATABASE_URL: databaseUrl },
     });
