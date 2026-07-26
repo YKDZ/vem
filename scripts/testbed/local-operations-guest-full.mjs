@@ -438,14 +438,23 @@ export async function collectMaintenanceEntryEvidence(
       dependencies.maintenanceEntryRoutes ?? DEFAULT_MAINTENANCE_ENTRY_ROUTES;
     for (const route of routes) {
       await setRoute(client, route);
+      let finalRoute = null;
       for (let index = 0; index < 7; index += 1) {
         await activateVisibleSelector(client, MAINTENANCE_ENTRY_SELECTOR, {
           kind: "mouse",
           timeoutMs: AUDIO_PREFERENCE_TIMEOUT_MS,
           pollMs: 150,
         });
+        await sleep(180);
+        const currentRoute = await evaluateExpression(client, "location.hash", {
+          timeoutMs: AUDIO_PREFERENCE_TIMEOUT_MS,
+        });
+        if (currentRoute === "#/maintenance?source=operator") {
+          finalRoute = { route: currentRoute };
+          break;
+        }
       }
-      const finalRoute = await waitForRoute(
+      finalRoute ??= await waitForRoute(
         client,
         "#/maintenance?source=operator",
         {
