@@ -1213,9 +1213,13 @@ describe("supported API seeding", () => {
     });
     assert.ok(Buffer.isBuffer(uploads[0].buffer));
     assert.deepEqual(pngDimensions(uploads[0].buffer), {
-      width: 320,
-      height: 420,
+      width: 1158,
+      height: 1253,
     });
+    assert.equal(
+      createHash("sha256").update(uploads[0].buffer).digest("hex"),
+      "57b5872801b884b6125078eb7cdb54f0be40e34677046214d1c4d8b155740222",
+    );
     const productDisplayUploads = uploads.filter(
       (upload) => upload.path === "/media-assets/product-display-images",
     );

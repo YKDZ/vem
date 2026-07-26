@@ -29,6 +29,10 @@ const FIXTURE_PATH = new URL(
   "./fixtures/local-testbed-catalog.json",
   import.meta.url,
 );
+const TESTBED_TRY_ON_SILHOUETTE_PATH = new URL(
+  "./fixtures/try-on-silhouette.png",
+  import.meta.url,
+);
 const SERVICE_NAMES = Object.freeze({
   postgres: "vem-local-testbed-postgres",
   mqtt: "vem-local-testbed-mosquitto",
@@ -1320,26 +1324,11 @@ function createProductFixturePng({ background, accent }) {
   });
 }
 
-function createTryOnSilhouettePng() {
-  return createRgbaPng(320, 420, (x, y, width, height) => {
-    const nx = (x - width / 2) / (width / 2);
-    const ny = y / height;
-    const torso = Math.abs(nx) < 0.38 && ny > 0.24 && ny < 0.92;
-    const shoulders = Math.abs(nx) < 0.68 && ny > 0.18 && ny < 0.34;
-    const sleeves =
-      ((nx < -0.38 && nx > -0.78) || (nx > 0.38 && nx < 0.78)) &&
-      ny > 0.24 &&
-      ny < 0.48;
-    const collar = Math.abs(nx) < 0.2 && ny > 0.17 && ny < 0.28;
-    if ((torso || shoulders || sleeves) && !collar) return [22, 24, 27, 255];
-    return [0, 0, 0, 0];
-  });
-}
-
-// Deterministic, visibly sized PNGs keep media seeding independent from ignored
-// authoring files while still proving real image rendering.
+// Product display images remain deterministic generated fixtures. The try-on
+// silhouette uses the maintained real test asset so screenshot tuning reflects
+// the operator-visible garment overlay rather than a synthetic block shape.
 const TESTBED_MEDIA_FIXTURES = Object.freeze({
-  tryOnSilhouette: createTryOnSilhouettePng(),
+  tryOnSilhouette: readFileSync(TESTBED_TRY_ON_SILHOUETTE_PATH),
   productDisplayImages: Object.freeze({
     袜子: createProductFixturePng({
       background: [32, 91, 76],
