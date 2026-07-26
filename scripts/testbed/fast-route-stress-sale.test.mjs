@@ -9,6 +9,7 @@ import {
   buildFastRouteStressScenarioSteps,
   combineCleanupError,
   dispatchRepeatedPaymentTouch,
+  latestVisionPresence,
   parseFastRouteStressSaleArgs,
   runCleanupStep,
   settlePendingCreateOrder,
@@ -662,6 +663,32 @@ describe("fast route stress sale tracer", () => {
       /resetArrivalTrace = await waitForStableVisionArrivalTrace/,
     );
     assert.match(source, /resetTransitionId: resetTrace\.transitionId/);
+  });
+
+  it("derives existing stable Vision presence from the latest journey transition", () => {
+    assert.deepEqual(
+      latestVisionPresence([
+        {
+          type: "journey_transition",
+          transitionId: "vision:presence-1:welcome",
+        },
+        { type: "audio_started", transitionId: "vision:presence-1:welcome" },
+      ]),
+      { active: true, transitionId: "vision:presence-1:welcome" },
+    );
+    assert.deepEqual(
+      latestVisionPresence([
+        {
+          type: "journey_transition",
+          transitionId: "vision:presence-1:welcome",
+        },
+        {
+          type: "journey_transition",
+          transitionId: "vision:presence-2:departed",
+        },
+      ]),
+      { active: false, transitionId: "vision:presence-2:departed" },
+    );
   });
 
   it("awaits a new stable Vision departure after the control-request trace boundary", async () => {

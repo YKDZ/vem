@@ -259,6 +259,20 @@ function latestTouchscreenSessionActive(entries) {
   return false;
 }
 
+export function latestVisionPresence(entries) {
+  for (const entry of [...entries].reverse()) {
+    const transitionId = String(entry?.transitionId ?? "");
+    if (!transitionId.startsWith("vision:presence-")) continue;
+    if (transitionId.endsWith(":welcome")) {
+      return { active: true, transitionId };
+    }
+    if (transitionId.endsWith(":departed")) {
+      return { active: false, transitionId };
+    }
+  }
+  return { active: false, transitionId: null };
+}
+
 function runtimeTraceSnapshot(snapshot, label) {
   if (
     !snapshot ||
@@ -297,12 +311,15 @@ function traceBoundary(snapshot, label) {
   ) {
     throw new Error(`${label} requires monotonically increasing trace ids`);
   }
+  const visionPresence = latestVisionPresence(entries);
   return {
     source: "installed_machine_runtime_trace_cdp",
     lastEntryId,
     capturedAt: new Date().toISOString(),
     runtimeGenerationId,
     touchscreenSessionActive: latestTouchscreenSessionActive(entries),
+    visionPresenceActive: visionPresence.active,
+    visionPresenceTransitionId: visionPresence.transitionId,
   };
 }
 
@@ -2333,6 +2350,23 @@ async function establishVisionPresenceForSale(guestInput, client) {
     client,
     "Vision presence reset boundary",
   );
+  if (resetBoundary.visionPresenceActive === true) {
+    return {
+      precondition: "existing-arrival",
+      resetPrecondition: "existing-presence-retained",
+      resetDelivery: null,
+      resetTransitionId: null,
+      ok: true,
+      eventId: null,
+      connectedRuntimeClients: null,
+      acceptedDeliveries: null,
+      traceBoundary: resetBoundary,
+      fallback: null,
+      transitionId: resetBoundary.visionPresenceTransitionId,
+      touchNavigationTraceId: null,
+      completedAt: new Date().toISOString(),
+    };
+  }
   let resetPrecondition = "existing-presence-departed";
   let resetDelivery = await dispatchVisionDeparture(guestInput);
   let resetTrace;
