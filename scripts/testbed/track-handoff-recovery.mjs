@@ -116,29 +116,41 @@ export async function captureTrackTerminalFacts({
   platformQuery,
 }) {
   const diagnostics = [];
-  const observe = async (label, operation) => {
-    try {
-      return await operation();
-    } catch (error) {
-      diagnostics.push(
-        `${label}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-      return null;
+  const observe = async (label, operation, { attempts = 1 } = {}) => {
+    let lastError = null;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      try {
+        return await operation();
+      } catch (error) {
+        lastError = error;
+        if (attempt + 1 < attempts)
+          await new Promise((resolve) => setTimeout(resolve, 500));
+      }
     }
+    diagnostics.push(
+      `${label}: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
+    );
+    return null;
   };
   const facts = {
     route: await observe("route", readRoute),
-    transaction: await observe("transaction", () =>
-      daemonGet("/v1/transactions/current"),
+    transaction: await observe(
+      "transaction",
+      () => daemonGet("/v1/transactions/current"),
+      { attempts: 3 },
     ),
-    saleStartCapability: await observe("saleStartCapability", () =>
-      daemonGet("/v1/sale-start-capability"),
+    saleStartCapability: await observe(
+      "saleStartCapability",
+      () => daemonGet("/v1/sale-start-capability"),
+      { attempts: 3 },
     ),
     saleView: await observe("saleView", () => daemonGet("/v1/sale-view")),
-    hardwareBindings: await observe("hardwareBindings", () =>
-      daemonGet("/v1/hardware-bindings"),
+    hardwareBindings: await observe(
+      "hardwareBindings",
+      () => daemonGet("/v1/hardware-bindings"),
+      { attempts: 3 },
     ),
-    inventory: await observe("inventory", platformQuery),
+    inventory: await observe("inventory", platformQuery, { attempts: 3 }),
     handoffSerialSessionId: publishedHandoffSerialSessionId(context?.report),
   };
   if (diagnostics.length > 0) {

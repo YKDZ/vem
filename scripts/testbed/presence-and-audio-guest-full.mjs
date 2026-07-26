@@ -877,6 +877,7 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
         };
       })
       .catch(() => null);
+    await dependencies.sleep(SUSTAINED_EMPTY_MS);
     await dependencies.issueAdminVentReset(guestInput, dependencies);
     const ventEvidenceBefore = await dependencies.controlPlaneRequest(
       guestInput,

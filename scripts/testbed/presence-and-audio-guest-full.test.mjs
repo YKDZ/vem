@@ -726,17 +726,17 @@ describe("presence and audio guest full", () => {
       "underwear",
     ]);
     assert.deepEqual(report.presenceAndAudio.scenario.welcome, {
-      initialFenceTraceId: 1,
+      initialFenceTraceId: 2,
       precondition: {
         boundaryTraceId: 0,
         outcome: "existing_presence_departed",
         departureTransitionId: "vision:presence-0:departed",
       },
-      duplicateFenceTraceId: 5,
+      duplicateFenceTraceId: 6,
       initialTransitionId: "vision:presence-1:welcome",
       departureTransitionId: "vision:presence-2:departed",
-      transientFenceTraceId: 5,
-      rearmedFenceTraceId: 6,
+      transientFenceTraceId: 6,
+      rearmedFenceTraceId: 7,
       rearmedTransitionId: "vision:presence-3:welcome",
     });
     assert.equal(report.presenceAndAudio.scenario.categories.length, 2);

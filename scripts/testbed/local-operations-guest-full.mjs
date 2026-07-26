@@ -252,6 +252,14 @@ async function readDaemonAudioPreferences(handoff, daemonRequest = daemon) {
   );
   return normalizeAudioPreferences(configuration?.experience?.audio);
 }
+async function setDaemonAudioPreferences(handoff, preferences, daemonRequest) {
+  const configuration = await daemonRequest(
+    handoff,
+    "/v1/runtime-configuration/intents/audio-preferences",
+    normalizeAudioPreferences(preferences),
+  );
+  return normalizeAudioPreferences(configuration?.experience?.audio);
+}
 async function setRoute(client, route) {
   await evaluateExpression(client, `location.hash = ${JSON.stringify(route)}`);
   return waitForRoute(client, route, {
@@ -853,6 +861,7 @@ export async function collectAudioPreferencePersistenceEvidence(
     preRestart: null,
     postRestart: null,
     restoredDefaults: null,
+    restoreWarning: null,
     restartedRuntime: null,
   };
   try {
@@ -928,10 +937,25 @@ export async function collectAudioPreferencePersistenceEvidence(
       restoreError = error;
     }
     if (restoreError) {
-      throw new Error(
-        `audio preference default restoration failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`,
-        { cause: restoreError },
+      evidence.restoreWarning =
+        restoreError instanceof Error
+          ? restoreError.message
+          : String(restoreError);
+      const daemonAfterForcedRestore = await setDaemonAudioPreferences(
+        activeHandoff,
+        defaults,
+        daemonRequest,
       );
+      const daemonAfterRestore = await waitForMatch(
+        "daemon effective audio preferences after forced restore",
+        () => readDaemonAudioPreferences(activeHandoff, daemonRequest),
+        defaults,
+      );
+      evidence.restoredDefaults = {
+        ui: null,
+        daemon: daemonAfterRestore,
+        forcedDaemonWrite: daemonAfterForcedRestore,
+      };
     }
   }
 }
