@@ -229,6 +229,26 @@ describe("stock maintenance guest full", () => {
     );
   });
 
+  it("primes a real Catalog touch session before each stock sale child flow", () => {
+    const source = readFileSync(
+      new URL("./stock-maintenance-guest-full.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(source, /async function primeCatalogTouchSession/);
+    assert.match(
+      source,
+      /activateVisibleSelector\(client, "\[data-test='catalog-page'\]"/,
+    );
+    assert.match(
+      source,
+      /await returnCustomerResultToCatalog\(client\);\s*await primeCatalogTouchSession\(client\);/,
+    );
+    assert.match(
+      source,
+      /await primeCatalogTouchSession\(client\);\s*await client\.close\(\);\s*client = null;\s*const second = await runSale/,
+    );
+  });
+
   it("verifies restored saleability through the category detail flow", () => {
     const source = readFileSync(
       new URL("./stock-maintenance-guest-full.mjs", import.meta.url),

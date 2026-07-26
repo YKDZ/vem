@@ -408,6 +408,50 @@ async function returnCustomerResultToCatalog(client) {
   });
 }
 
+async function primeCatalogTouchSession(client) {
+  await waitForRoute(client, "#/catalog", {
+    timeoutMs: TIMEOUT_MS,
+    pollMs: POLL_MS,
+    forbiddenRoutes: [],
+  });
+  const boundary = await evaluateExpression(
+    client,
+    `(() => {
+      const entries = window.__VEM_MACHINE_RUNTIME_TRACE_SNAPSHOT__?.entries ?? [];
+      const last = entries.at(-1);
+      return {
+        id: Number(last?.id ?? 0),
+        touchscreenSessionActive: Boolean(last?.touchscreenSessionActive)
+      };
+    })()`,
+  );
+  if (boundary?.touchscreenSessionActive === true) return boundary;
+  await activateVisibleSelector(client, "[data-test='catalog-page']", {
+    kind: "touch",
+    timeoutMs: TIMEOUT_MS,
+    pollMs: POLL_MS,
+  });
+  return await waitFor(
+    "catalog touch session before stock sale",
+    () =>
+      evaluateExpression(
+        client,
+        `(() => {
+          const entries = window.__VEM_MACHINE_RUNTIME_TRACE_SNAPSHOT__?.entries ?? [];
+          const touch = entries.findLast((entry) =>
+            Number(entry?.id ?? 0) > ${Number(boundary?.id ?? 0)} &&
+            entry?.type === "navigation" &&
+            entry?.intentType === "customer.touch" &&
+            entry?.decision === "accepted" &&
+            entry?.reasonCode === "touchscreen_session_renewed"
+          );
+          return touch ? { id: touch.id, touchscreenSessionActive: touch.touchscreenSessionActive } : null;
+        })()`,
+      ),
+    (touch) => touch?.touchscreenSessionActive === true,
+  );
+}
+
 async function observeProductDetailStock(client, identity, expectedQuantity) {
   await selectStockFixtureCategory(client);
   const productSelector = `[data-test='catalog-product'][data-catalog-key='${identity.catalogKey}']`;
@@ -854,6 +898,7 @@ export async function runStockMaintenanceGuest(options) {
     handoff = readJson(options.handoffPath);
     client = await connectUi(handoff);
     await returnCustomerResultToCatalog(client);
+    await primeCatalogTouchSession(client);
     await client.close();
     client = null;
     const firstReportPath = join(
@@ -1023,6 +1068,10 @@ export async function runStockMaintenanceGuest(options) {
     report.handoffSerialSessionId =
       secondHandoff.replacementControlPlaneSessionId;
     handoff = readJson(options.handoffPath);
+    client = await connectUi(handoff);
+    await primeCatalogTouchSession(client);
+    await client.close();
+    client = null;
     const second = await runSale(options, secondReportPath);
     report.secondSale = saleEvidence(second, report.runId, secondHandoff);
     const terminalView = await waitFor(
