@@ -1681,6 +1681,40 @@ async function waitForPlatformMovement(
   );
 }
 
+async function waitForDaemonSaleViewAfterF2(
+  handoff,
+  identity,
+  middle,
+  quantity,
+  timeoutMs = 30_000,
+) {
+  const expectedPhysicalStock = Math.max(0, middle.physicalStock - quantity);
+  const expectedSaleableStock = middle.saleableStock;
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  do {
+    last = await daemonGet(handoff, "/v1/sale-view");
+    const item = matchingItem(last, identity);
+    if (
+      item?.physicalStock === expectedPhysicalStock &&
+      item?.saleableStock === expectedSaleableStock
+    ) {
+      return last;
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
+  } while (Date.now() < deadline);
+  throw new Error(
+    `daemon sale-view did not reach terminal post-F2 stock projection for ${JSON.stringify(
+      {
+        identity,
+        expectedPhysicalStock,
+        expectedSaleableStock,
+        last: matchingItem(last, identity) ?? null,
+      },
+    )}`,
+  );
+}
+
 async function waitForBeforeF0Boundary(
   guestInput,
   input,
@@ -2322,7 +2356,8 @@ async function establishVisionPresenceForSale(guestInput, client) {
     traceBoundary: arrivalTraceBoundary,
     fallback: arrivalOrTouch.fallback,
     transitionId: trace.transitionId,
-    touchNavigationTraceId: trace.intentType === "customer.touch" ? trace.id : null,
+    touchNavigationTraceId:
+      trace.intentType === "customer.touch" ? trace.id : null,
     completedAt: new Date().toISOString(),
   };
 }
@@ -2680,7 +2715,6 @@ async function runFastRouteStressSale(options) {
       guestInput,
       `/v1/serial-sessions/${sessionStart.sessionId}/evidence`,
     );
-    afterF2SaleView = await daemonGet(handoff, "/v1/sale-view");
     afterF2Platform = await waitForPlatformMovement(
       guestInput,
       {
@@ -2695,6 +2729,35 @@ async function runFastRouteStressSale(options) {
         paymentNo: pendingCreate.paymentNo,
         commandId: liveSale.vendingCommandId,
       },
+    );
+    const terminalRaw = afterF2Platform.raw ?? {};
+    const terminalOrderItem = rows(terminalRaw, "orderItems").find(
+      (row) => row.orderId === renderedSale.orderId,
+    );
+    const terminalIdentity = {
+      inventoryId: required(
+        terminalOrderItem?.inventoryId,
+        "terminal order item inventoryId",
+      ),
+      slotId: required(terminalOrderItem?.slotId, "terminal order item slotId"),
+    };
+    const terminalQuantity = Number(terminalOrderItem?.quantity);
+    if (!Number.isInteger(terminalQuantity) || terminalQuantity < 1) {
+      throw new Error(
+        `terminal order item quantity is invalid: ${JSON.stringify(terminalOrderItem)}`,
+      );
+    }
+    const terminalMiddleItem = matchingItem(afterF1SaleView, terminalIdentity);
+    if (!terminalMiddleItem) {
+      throw new Error(
+        `daemon sale-view is missing the terminal order item before F2: ${JSON.stringify(terminalIdentity)}`,
+      );
+    }
+    afterF2SaleView = await waitForDaemonSaleViewAfterF2(
+      handoff,
+      terminalIdentity,
+      terminalMiddleItem,
+      terminalQuantity,
     );
     const afterF2Ui = resultSurface;
     const runtimeTrace = await readRuntimeTraceSnapshot(client);
