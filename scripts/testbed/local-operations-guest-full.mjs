@@ -438,35 +438,54 @@ export async function collectMaintenanceEntryEvidence(
       dependencies.maintenanceEntryRoutes ?? DEFAULT_MAINTENANCE_ENTRY_ROUTES;
     for (const route of routes) {
       await setRoute(client, route);
+      await sleep(800);
       let finalRoute = null;
-      for (let index = 0; index < 7; index += 1) {
-        await activateVisibleSelector(client, MAINTENANCE_ENTRY_SELECTOR, {
-          kind: "mouse",
-          timeoutMs: AUDIO_PREFERENCE_TIMEOUT_MS,
-          pollMs: 150,
-        });
-        await sleep(180);
+      const attempts = [];
+      for (let index = 0; index < 10; index += 1) {
+        const activation = await activateVisibleSelector(
+          client,
+          MAINTENANCE_ENTRY_SELECTOR,
+          {
+            kind: "mouse",
+            timeoutMs: AUDIO_PREFERENCE_TIMEOUT_MS,
+            pollMs: 150,
+          },
+        );
+        await sleep(220);
         const currentRoute = await evaluateExpression(client, "location.hash", {
           timeoutMs: AUDIO_PREFERENCE_TIMEOUT_MS,
+        });
+        attempts.push({
+          attempt: index + 1,
+          route: currentRoute,
+          center: activation.center,
         });
         if (currentRoute === "#/maintenance?source=operator") {
           finalRoute = { route: currentRoute };
           break;
         }
       }
-      finalRoute ??= await waitForRoute(
-        client,
-        "#/maintenance?source=operator",
-        {
-          timeoutMs: AUDIO_PREFERENCE_TIMEOUT_MS,
-          pollMs: 150,
-          forbiddenRoutes: [],
-        },
-      );
+      try {
+        finalRoute ??= await waitForRoute(
+          client,
+          "#/maintenance?source=operator",
+          {
+            timeoutMs: 5_000,
+            pollMs: 150,
+            forbiddenRoutes: [],
+          },
+        );
+      } catch (error) {
+        throw new Error(
+          `${error.message}; attempts=${JSON.stringify(attempts)}`,
+          { cause: error },
+        );
+      }
       entries.push({
         route,
         selector: MAINTENANCE_ENTRY_SELECTOR,
         finalRoute: finalRoute?.route ?? finalRoute,
+        attempts,
         ok: true,
       });
     }
