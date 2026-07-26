@@ -102,7 +102,7 @@ function Register-InteractiveOwnerTask(
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
     -StartWhenAvailable `
-    -MultipleInstances IgnoreNew `
+    -MultipleInstances Parallel `
     -ExecutionTimeLimit (New-TimeSpan -Seconds 0)
   Register-ScheduledTask `
     -TaskName $TaskName `

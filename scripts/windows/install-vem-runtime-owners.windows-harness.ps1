@@ -97,7 +97,7 @@ try {
     Assert-Equal $task.trigger.kind "AtLogon" "interactive owner trigger"
     Assert-Equal $task.trigger.UserId "VEMKiosk" "interactive owner trigger user"
     Assert-Equal $task.principal.UserId "VEMKiosk" "interactive owner principal"
-    Assert-Equal $task.settings.MultipleInstances "IgnoreNew" "interactive owner multiple-instance policy"
+    Assert-Equal $task.settings.MultipleInstances "Parallel" "interactive owner multiple-instance policy"
   }
 
   $global:OwnerHarnessScheduledTasks = @(
