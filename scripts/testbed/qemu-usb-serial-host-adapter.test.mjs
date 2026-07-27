@@ -10,6 +10,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
@@ -31,8 +32,8 @@ const adapterPath = new URL(
 
 function makeTempDir(prefix) {
   const path = join(
-    process.cwd(),
-    "test-artifacts",
+    tmpdir(),
+    "vem-test-artifacts",
     `${prefix}-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
   );
   mkdirSync(path, { recursive: true });

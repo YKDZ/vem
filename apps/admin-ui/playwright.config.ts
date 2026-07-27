@@ -9,11 +9,21 @@ const chromiumUse = {
 
 export default defineConfig({
   testDir: "./tests",
+  outputDir: process.env.PLAYWRIGHT_OUTPUT_DIR ?? "test-results",
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: 0,
   workers: 1,
-  reporter: "list",
+  reporter: [
+    ["list"],
+    [
+      "html",
+      {
+        open: "never",
+        outputFolder: process.env.PLAYWRIGHT_HTML_REPORT ?? "playwright-report",
+      },
+    ],
+  ],
   timeout: 30_000,
   use: {
     baseURL: process.env.PLAYWRIGHT_BASE_URL ?? "http://localhost:5173",

@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 
 import {
@@ -15,20 +18,29 @@ const guardPaths = [
 
 describe("effective configuration hard-migration guard", () => {
   it("rejects the explicit negative legacy fixture", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-effective-config-guard-"));
+    writeFileSync(
+      join(root, "legacy-path.txt"),
+      `${["machine", "config.json"].join("-")}\n`,
+    );
     const findings = findLegacyEffectiveConfigReferences({
-      root: "scripts/fixtures/architecture-guard",
-      paths: ["negative-effective-config"],
+      root,
+      paths: ["."],
     });
 
-    assert.equal(findings.length, 1);
-    assert.throws(
-      () =>
-        assertNoLegacyEffectiveConfigReferences({
-          root: "scripts/fixtures/architecture-guard",
-          paths: ["negative-effective-config"],
-        }),
-      /legacy effective-config references found/,
-    );
+    try {
+      assert.equal(findings.length, 1);
+      assert.throws(
+        () =>
+          assertNoLegacyEffectiveConfigReferences({
+            root,
+            paths: ["."],
+          }),
+        /legacy effective-config references found/,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("keeps daemon, machine, scripts, and workflows free of removed configuration paths", () => {

@@ -271,9 +271,10 @@ function formatGeneratorJsonInputs(
   spawnSync: SpawnSync,
 ) {
   const oxfmt = spawnSync(
-    "node",
+    "pnpm",
     [
-      resolve(repoRoot, "node_modules/oxfmt/dist/cli.js"),
+      "exec",
+      "oxfmt",
       paths.transactionSchemaPath,
       paths.transactionValidFixturePath,
       paths.transactionInvalidFixturePath,

@@ -1,78 +1,78 @@
 # VEM
 
-VEM 是智能服装自动售货机软件系统，覆盖机器端触屏 UI、机器本地 daemon、后端 API、运营管理后台、视觉模拟服务、下位机模拟器和共享类型契约。真实视觉代码来自 [hbhjt/vending-vision](https://github.com/hbhjt/vending-vision)。
+VEM 是面向服装零售场景的智能售货机软件系统。仓库包含售货机触屏端、本机 daemon、后端 API、运营管理后台、共享契约、硬件模拟器和验收工具。真实视觉运行程序由 `hbhjt/vending-vision` 仓库交付、下位机程序由 `Luminescence114/F4_shoppingmach` 仓库交付，本仓库负责安装、配置和集成。
 
-## 模块
+## 主要模块
 
-| 模块         | 位置                        | 说明                                                                                                       |
-| ------------ | --------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| 机器端 UI    | `apps/machine`              | Vue 3 + Tauri shell。面向 1080x1920 触屏售货体验，包含目录、支付、出货、结果、离线和维护界面。             |
-| 机器 daemon  | `apps/vending-daemon`       | Rust 本地运行时。负责机器配置、daemon IPC、硬件/扫码器适配、MQTT、心跳、出货指令、离线 outbox 和本地状态。 |
-| 核心领域库   | `crates/vending-core`       | Rust 共享领域逻辑。                                                                                        |
-| 后端 API     | `apps/service-api`          | NestJS 11 + PostgreSQL。负责管理接口、机器鉴权、目录/库存/订单、支付、MQTT 桥接和审计。                    |
-| 管理后台     | `apps/admin-ui`             | Vue 3 + Ant Design Vue。负责商品、库存、订单、机器和运维管理。                                             |
-| 视觉模拟服务 | `apps/vision-mock`          | WebSocket 视觉 runtime mock，用于本地开发和测试。                                                          |
-| 下位机模拟器 | `apps/lower-controller-sim` | 下位机协议/硬件模拟辅助。                                                                                  |
-| 共享类型     | `packages/shared`           | TypeScript + Zod 契约，被前后端共享。                                                                      |
-| 数据库包     | `packages/db`               | Drizzle schema、migration 和 DB 客户端。                                                                   |
+| 模块         | 位置                                             | 说明                                                            |
+| ------------ | ------------------------------------------------ | --------------------------------------------------------------- |
+| 售货机触屏端 | `apps/machine`                                   | Vue 3 + Tauri，提供商品浏览、支付、出货、结果页和维护界面。     |
+| 本机 daemon  | `apps/vending-daemon`                            | Rust 运行时，负责硬件通信、扫码器、MQTT、出货、库存和本地 IPC。 |
+| 后端 API     | `apps/service-api`                               | NestJS 服务，负责商品、库存、订单、支付、机器管理和 MQTT 桥接。 |
+| 运营管理后台 | `apps/admin-ui`                                  | Vue 3 + Ant Design Vue，提供商品、订单、机器、支付和运维管理。  |
+| 共享契约     | `packages/shared`、`crates/daemon-ipc-contracts` | 前后端、daemon 和机器端共享的数据契约。                         |
+| 数据库       | `packages/db`                                    | Drizzle schema、migration 和数据库客户端。                      |
+| 核心领域库   | `crates/vending-core`                            | Rust 共享领域逻辑和协议实现。                                   |
+| 视觉模拟服务 | `apps/vision-mock`                               | VM 验收和本地测试使用的视觉边界模拟。                           |
+| 下位机模拟器 | `apps/lower-controller-sim`                      | 下位机串口协议模拟器。                                          |
 
-## 仓库结构
+## 运行依赖
 
-```text
-vem/
-├── apps/
-│   ├── admin-ui/
-│   ├── lower-controller-sim/
-│   ├── machine/
-│   ├── service-api/
-│   ├── vending-daemon/
-│   └── vision-mock/
-├── crates/
-│   └── vending-core/
-├── packages/
-│   ├── db/
-│   └── shared/
-├── protocol/
-├── public/
-├── scripts/
-├── CONTRIBUTING.md
-├── Cargo.toml
-├── package.json
-├── pnpm-workspace.yaml
-└── turbo.json
-```
+开发环境建议使用 Dev Container。手动配置时需要：
 
-## 环境要求
-
-推荐使用仓库内置 Dev Container。手动配置时需要：
-
-- Node.js 24+
-- pnpm 11.9.0
+- Node.js 24
+- pnpm 11.9
 - Rust stable
-- Docker（本地 PostgreSQL / MQTT）
-- Chrome 或 Playwright 浏览器依赖
+- Docker 和 Docker Compose
+- Playwright Chromium 运行依赖
 
-安装依赖：
+机器端验收依赖可重置的 Windows 10 VM。基线构建和运行说明见 [VM 运行时验收平台](public/development/vm-runtime-acceptance.md)。
+
+## 安装依赖
 
 ```bash
 pnpm install
 ```
 
-## 常用开发命令
+## 常用命令
 
-启动后端基础设施：
+```bash
+pnpm fmt:check
+pnpm typecheck
+pnpm lint
+pnpm ci:unit
+pnpm ci:static
+```
+
+格式化：
+
+```bash
+pnpm fmt
+```
+
+后端 Compose 冒烟：
+
+```bash
+pnpm compose-smoke:backend \
+  --service-api-image ghcr.io/ykdz/vem-service-api@sha256:<64-hex> \
+  --admin-ui-image ghcr.io/ykdz/vem-admin-ui@sha256:<64-hex>
+```
+
+后台浏览器验收：
+
+```bash
+pnpm ci:admin-browser
+```
+
+## 本地开发
+
+后端依赖 PostgreSQL 和 Mosquitto。仓库维护的部署入口是：
 
 ```bash
 docker compose -f apps/service-api/docker-compose.yml up -d
 ```
 
-运行数据库迁移：
-
-```bash
-pnpm --filter @vem/db migrate
-```
-
-启动服务：
+常用开发服务：
 
 ```bash
 pnpm --filter service-api dev
@@ -81,41 +81,40 @@ pnpm --filter machine dev
 pnpm --filter vision-mock dev
 ```
 
-启动本地机器 daemon console：
+数据库迁移：
 
 ```bash
-cargo run -p vending-daemon -- --console --data-dir ./.local/vending-daemon --bind 127.0.0.1:7891
+pnpm --filter @vem/db migrate
 ```
 
-daemon console 会在数据目录写入 ready file、token、SQLite state 和日志。浏览器 UI 通过 ready file 中的 token 访问 daemon IPC。
+## 验收方式
 
-## 检查与测试
-
-推送前优先运行：
-
-```bash
-pnpm fmt:check
-pnpm turbo typecheck
-pnpm turbo lint
-pnpm turbo test
-```
-
-机器端真实运行时验收通过可重置 Windows VM 执行。详细搭建和使用方式见 [VM 运行时验收平台](./public/development/vm-runtime-acceptance.md)。
+机器端购买、支付、出货、视觉、语音、维护和错误恢复以 Windows VM 安装态验收为准。运行当前提交的 full 验收：
 
 ```bash
 node scripts/testbed/runtime-testbed-trigger.mjs run \
-  --mode fast \
+  --mode full \
   --commit "$(git rev-parse HEAD)" \
   --config /abs/path/to/runtime-testbed-host.json \
   --out /abs/path/to/runtime-testbed-result.json
 ```
 
-后端 Compose 部署冒烟：
+日常调试可使用 fast 模式选择一个或多个业务集合：
 
 ```bash
-node scripts/backend-compose-smoke.mjs \
-  --service-api-image ghcr.io/ykdz/vem-service-api@sha256:<64-hex> \
-  --admin-ui-image ghcr.io/ykdz/vem-admin-ui@sha256:<64-hex>
+node scripts/testbed/runtime-testbed-trigger.mjs run \
+  --mode fast \
+  --focus sale \
+  --focus scannerPayment \
+  --commit "$(git rev-parse HEAD)" \
+  --config /abs/path/to/runtime-testbed-host.json \
+  --out /abs/path/to/runtime-testbed-result.json
 ```
 
-共享操作文档位于 `public/`：后端部署见 [后端部署](./public/deployment/backend-deployment.md)，运营操作见 [VEM 运营操作手册](./public/manual/operator-manual.md)。更多协作、PR 和 CI 说明见 [CONTRIBUTING.md](./CONTRIBUTING.md)。
+后台管理端使用 Playwright 浏览器验收，机器端不再维护独立浏览器 E2E 路径。
+
+## 部署和操作文档
+
+- 后端部署：[public/deployment/backend-deployment.md](public/deployment/backend-deployment.md)
+- 运营操作：[public/manual/operator-manual.md](public/manual/operator-manual.md)
+- 开发协作：[CONTRIBUTING.md](CONTRIBUTING.md)

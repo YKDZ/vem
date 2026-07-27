@@ -38,6 +38,8 @@ jobs:
             ${{ runner.os }}-turbo-
 
       - name: Run Admin browser acceptance
+        env:
+          VEM_ADMIN_BROWSER_ARTIFACT_DIR: ${{ runner.temp }}/vem-admin-browser-acceptance
         run: pnpm ci:admin-browser
 
       - name: Upload Playwright report
@@ -46,8 +48,8 @@ jobs:
         with:
           name: admin-browser-playwright-report
           path: |
-            apps/admin-ui/playwright-report/
-            apps/admin-ui/test-results/
+            ${{ runner.temp }}/vem-admin-browser-acceptance/playwright-report/
+            ${{ runner.temp }}/vem-admin-browser-acceptance/test-results/
           if-no-files-found: warn
           retention-days: 7
 
@@ -57,7 +59,7 @@ jobs:
         with:
           name: admin-browser-logs
           path: |
-            service-api.log
-            admin-ui.log
+            ${{ runner.temp }}/vem-admin-browser-acceptance/service-api.log
+            ${{ runner.temp }}/vem-admin-browser-acceptance/admin-ui.log
           if-no-files-found: warn
           retention-days: 3

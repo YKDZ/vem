@@ -4,9 +4,15 @@ import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { connect } from "node:net";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const root = process.cwd();
+const artifactRoot =
+  process.env.VEM_ADMIN_BROWSER_ARTIFACT_DIR ??
+  join(process.env.RUNNER_TEMP ?? tmpdir(), "vem-admin-browser-acceptance");
+const serviceApiLogPath = join(artifactRoot, "service-api.log");
+const adminUiLogPath = join(artifactRoot, "admin-ui.log");
 const localContainers = new Set();
 const localProcesses = new Set();
 
@@ -19,7 +25,7 @@ const serviceApiEnv = {
   PAYMENT_MOCK_ENABLED: "true",
   PAYMENT_WEBHOOK_BASE_URL: "http://localhost:3000",
   BOOTSTRAP_ADMIN_PASSWORD: "AdminPassword123!",
-  MEDIA_ASSET_STORAGE_ROOT: join(root, ".tmp", "admin-browser-media-assets"),
+  MEDIA_ASSET_STORAGE_ROOT: join(artifactRoot, "media-assets"),
 };
 
 function run(command, args, options = {}) {
@@ -235,7 +241,7 @@ async function waitForTcp(host, port, label) {
 }
 
 function startProcess(command, args, options = {}) {
-  const out = createWriteStream(join(root, options.logPath), { flags: "w" });
+  const out = createWriteStream(options.logPath, { flags: "w" });
   const child = spawn(command, args, {
     cwd: options.cwd ?? root,
     env: { ...process.env, ...options.env },
@@ -315,6 +321,7 @@ process.on("SIGTERM", async () => {
 async function main() {
   console.log("\n==> Admin UI browser E2E");
   await requireCommand("docker");
+  await mkdir(artifactRoot, { recursive: true });
 
   let serviceApi;
   let adminUi;
@@ -346,7 +353,7 @@ async function main() {
 
     serviceApi = startProcess("node", ["dist/main.js"], {
       cwd: join(root, "apps/service-api"),
-      logPath: "service-api.log",
+      logPath: serviceApiLogPath,
       env: {
         ...serviceApiEnv,
         DATABASE_URL: databaseUrl,
@@ -356,7 +363,7 @@ async function main() {
     await waitForUrl(
       "http://localhost:3000/api/health",
       "Service API",
-      "service-api.log",
+      serviceApiLogPath,
     );
 
     adminUi = startProcess(
@@ -373,14 +380,18 @@ async function main() {
       ],
       {
         cwd: join(root, "apps/admin-ui"),
-        logPath: "admin-ui.log",
+        logPath: adminUiLogPath,
       },
     );
-    await waitForUrl("http://localhost:5173", "Admin UI", "admin-ui.log");
+    await waitForUrl("http://localhost:5173", "Admin UI", adminUiLogPath);
 
     await run("pnpm", ["test:e2e"], {
       cwd: join(root, "apps/admin-ui"),
-      env: { VEM_ADMIN_MUTATION_E2E_TARGET: "isolated" },
+      env: {
+        VEM_ADMIN_MUTATION_E2E_TARGET: "isolated",
+        PLAYWRIGHT_OUTPUT_DIR: join(artifactRoot, "test-results"),
+        PLAYWRIGHT_HTML_REPORT: join(artifactRoot, "playwright-report"),
+      },
     });
   } finally {
     await stopProcess(adminUi);

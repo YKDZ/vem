@@ -90,9 +90,10 @@ describe("Daemon IPC contract generator", () => {
       expect(result.changedPaths).toEqual([]);
       expect(spawnCalls).toEqual([
         expect.objectContaining({
-          command: "node",
+          command: "pnpm",
           args: expect.arrayContaining([
-            expect.stringContaining("node_modules/oxfmt/dist/cli.js"),
+            "exec",
+            "oxfmt",
             expect.stringContaining("transaction_checkout.schema.json"),
             expect.stringContaining("scanner_status_invalid.snapshots.json"),
             expect.stringContaining("device_binding_activation.schema.json"),
