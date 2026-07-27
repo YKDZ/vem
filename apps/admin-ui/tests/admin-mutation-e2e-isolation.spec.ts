@@ -32,7 +32,7 @@ test.describe("Admin UI mutation E2E isolation", () => {
     expect(workflow).toContain("pnpm ci:admin-browser");
     expect(adminBrowserCi).toContain("VEM_ADMIN_MUTATION_E2E_TARGET");
     expect(adminBrowserCi).toContain(
-      'env: { VEM_ADMIN_MUTATION_E2E_TARGET: "isolated" }',
+      'VEM_ADMIN_MUTATION_E2E_TARGET: "isolated"',
     );
   });
 });
