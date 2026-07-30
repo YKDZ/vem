@@ -43,7 +43,7 @@ export function setupRouterGuards(router: Router): void {
 
   router.afterEach((to) => {
     if (typeof to.meta.title === "string") {
-      document.title = `${to.meta.title} - VEM 管理后台`;
+      document.title = `${to.meta.title} - 智能售货机管理后台`;
     }
   });
 }

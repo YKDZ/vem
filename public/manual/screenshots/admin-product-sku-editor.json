@@ -1,14 +1,14 @@
 {
   "id": "admin-product-sku-editor",
   "source": "admin-ui",
-  "route": "/products#sku",
-  "capturedAt": "2026-07-25T14:29:20.417Z",
-  "commit": "f107fa903c239fb514d374688764b1cfa197169d",
+  "route": "/products#sku-list",
+  "capturedAt": "2026-07-30T03:51:22.301Z",
+  "commit": "7d6a7fea316b",
   "viewport": {
     "width": 1440,
     "height": 1080
   },
   "expectedOrientation": "landscape",
-  "expectedTexts": ["SKU", "新增 SKU"],
-  "detectedTexts": ["SKU", "新增 SKU"]
+  "expectedTexts": ["SKU 列表", "新增 SKU", "价格(分)", "编辑"],
+  "detectedTexts": ["SKU 列表", "新增 SKU", "价格(分)", "编辑"]
 }

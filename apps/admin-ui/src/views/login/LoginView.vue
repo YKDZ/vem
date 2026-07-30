@@ -32,7 +32,7 @@ async function submit(): Promise<void> {
 <template>
   <main class="grid min-h-screen place-items-center bg-slate-950 px-4">
     <section class="w-full max-w-md rounded-2xl bg-white p-8 shadow-2xl">
-      <h1 class="text-2xl font-semibold text-slate-950">VEM 管理后台</h1>
+      <h1 class="text-2xl font-semibold text-slate-950">智能售货机管理后台</h1>
       <p class="mt-2 text-sm text-slate-500">请使用后台管理员账号登录</p>
       <a-form
         class="mt-8"

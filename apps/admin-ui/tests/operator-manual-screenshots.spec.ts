@@ -440,6 +440,11 @@ test.describe("Operator manual Admin UI screenshots", () => {
       .locator(".ant-drawer")
       .filter({ hasText: "SKU 列表" });
     await expect(skuDrawer).toBeVisible({ timeout: 10_000 });
+    await captureManualScreenshot(page, {
+      id: "admin-product-sku-editor",
+      route: "/products#sku-list",
+      expectedTexts: ["SKU 列表", "新增 SKU", "价格(分)", "编辑"],
+    });
     const skuRow = skuDrawer.locator(".ant-table-row").filter({
       hasText: variant.sku,
     });

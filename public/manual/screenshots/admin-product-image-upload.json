@@ -2,8 +2,8 @@
   "id": "admin-product-image-upload",
   "source": "admin-ui",
   "route": "/products#product-image",
-  "capturedAt": "2026-07-25T23:40:16.081Z",
-  "commit": "f41df7236dcc",
+  "capturedAt": "2026-07-30T03:51:19.327Z",
+  "commit": "7d6a7fea316b",
   "viewport": {
     "width": 1440,
     "height": 1080
