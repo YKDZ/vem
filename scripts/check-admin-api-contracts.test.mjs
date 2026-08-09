@@ -306,6 +306,46 @@ describe("admin api contract guard", () => {
     });
   });
 
+  it("rejects a named contract helper transported into a wrong-contract decoy", () => {
+    const bypass = completeCatalogContractFixture();
+    bypass["apps/admin-ui/src/api/try-on-garments.ts"] = bypass[
+      "apps/admin-ui/src/api/try-on-garments.ts"
+    ]
+      .replace(
+        'import { callAdminEndpointContract } from "./request";',
+        'import { callAdminEndpointContract as helper } from "./request";',
+      )
+      .replaceAll("callAdminEndpointContract(", "helper(")
+      .concat(
+        "\nconst invoke = helper;\nconst { helper: destructuredHelper } = { helper };\nfunction acceptHelper(value: unknown) { return value; }\nacceptHelper(helper);\nfunction returnHelper() { return helper; }\nexport async function wrongContractDecoy() { return invoke(adminCreateTryOnGarmentContract, {}); }\n",
+      );
+    withFixture(bypass, (root) => {
+      const result = checkAdminApiContracts({ root });
+      assert.equal(result.ok, false);
+      assert.match(
+        result.failures.join("\n"),
+        /migration API named contract misuse: apps\/admin-ui\/src\/api\/try-on-garments\.ts uses helper outside direct callAdminEndpointContract/,
+      );
+    });
+  });
+
+  it("rejects every runtime fetch reference, including computed global properties", () => {
+    const bypass = completeCatalogContractFixture();
+    bypass["apps/admin-ui/src/api/try-on-garments.ts"] = bypass[
+      "apps/admin-ui/src/api/try-on-garments.ts"
+    ].concat(
+      '\nconst rawFetch = fetch;\nconst globalFetch = globalThis["fetch"];\nconst windowFetch = window["fetch"];\n',
+    );
+    withFixture(bypass, (root) => {
+      const result = checkAdminApiContracts({ root });
+      assert.equal(result.ok, false);
+      assert.match(
+        result.failures.join("\n"),
+        /migration API network entry denied: apps\/admin-ui\/src\/api\/try-on-garments\.ts uses fetch/,
+      );
+    });
+  });
+
   it("rejects every file-level migration transport escape hatch", () => {
     const escapeHatches = [
       {

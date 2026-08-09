@@ -693,12 +693,81 @@ function isAllowedRequestNamespaceUse(identifier) {
   );
 }
 
+function isAllowedNamedContractUse(identifier) {
+  let current = identifier;
+  while (current.parent && isTransparentWrapper(current.parent)) {
+    current = current.parent;
+  }
+  return (
+    ts.isCallExpression(current.parent) && current.parent.expression === current
+  );
+}
+
+function isDeclarationOrImportIdentifier(identifier) {
+  const parent = identifier.parent;
+  return (
+    ts.isImportClause(parent) ||
+    ts.isImportSpecifier(parent) ||
+    ts.isNamespaceImport(parent) ||
+    ts.isFunctionDeclaration(parent) ||
+    ts.isClassDeclaration(parent) ||
+    ts.isEnumDeclaration(parent) ||
+    ts.isVariableDeclaration(parent) ||
+    ts.isParameter(parent) ||
+    ts.isBindingElement(parent)
+  );
+}
+
+function isTypeOnlyUsage(identifier) {
+  let current = identifier;
+  while (current.parent) {
+    if (ts.isTypeNode(current.parent)) return true;
+    if (
+      ts.isAsExpression(current.parent) ||
+      ts.isSatisfiesExpression(current.parent)
+    ) {
+      return current !== current.parent.expression;
+    }
+    current = current.parent;
+  }
+  return false;
+}
+
+function isForbiddenFetchReference(node) {
+  if (ts.isPropertyAccessExpression(node)) {
+    return (
+      ts.isIdentifier(node.expression) &&
+      ["globalThis", "window"].includes(node.expression.text) &&
+      node.name.text === "fetch"
+    );
+  }
+  if (ts.isElementAccessExpression(node)) {
+    return (
+      ts.isIdentifier(node.expression) &&
+      ["globalThis", "window"].includes(node.expression.text) &&
+      node.argumentExpression !== undefined &&
+      ts.isStringLiteral(
+        unwrapTransparentExpression(node.argumentExpression),
+      ) &&
+      unwrapTransparentExpression(node.argumentExpression).text === "fetch"
+    );
+  }
+  return (
+    ts.isIdentifier(node) &&
+    node.text === "fetch" &&
+    !isDeclarationOrImportIdentifier(node) &&
+    !isTypeOnlyUsage(node) &&
+    !(ts.isPropertyAccessExpression(node.parent) && node.parent.name === node)
+  );
+}
+
 function checkMigrationApiImportAllowlist(root) {
   const failures = [];
   for (const path of MIGRATION_ADMIN_API_PATHS) {
     if (!pathExists(root, path)) continue;
     const file = parseTypeScript(path, readText(root, path));
     const requestNamespaces = new Set();
+    const requestNamedContracts = new Set();
     file.forEachChild((node) => {
       if (
         !ts.isImportDeclaration(node) ||
@@ -729,6 +798,8 @@ function checkMigrationApiImportAllowlist(root) {
             failures.push(
               `migration API import denied: ${path} imports ${importedName} from ./request`,
             );
+          } else {
+            requestNamedContracts.add(element.name.text);
           }
         }
         return;
@@ -767,9 +838,17 @@ function checkMigrationApiImportAllowlist(root) {
         );
       }
       if (
-        ts.isCallExpression(node) &&
-        isForbiddenGlobalFetch(node.expression)
+        ts.isIdentifier(node) &&
+        requestNamedContracts.has(node.text) &&
+        !ts.isImportSpecifier(node.parent) &&
+        !isTypeOnlyUsage(node) &&
+        !isAllowedNamedContractUse(node)
       ) {
+        failures.push(
+          `migration API named contract misuse: ${path} uses ${node.text} outside direct callAdminEndpointContract`,
+        );
+      }
+      if (isForbiddenFetchReference(node)) {
         failures.push(`migration API network entry denied: ${path} uses fetch`);
       }
       ts.forEachChild(node, visit);
@@ -777,17 +856,6 @@ function checkMigrationApiImportAllowlist(root) {
     visit(file);
   }
   return failures;
-}
-
-function isForbiddenGlobalFetch(expression) {
-  const current = unwrapTransparentExpression(expression);
-  if (ts.isIdentifier(current)) return current.text === "fetch";
-  return (
-    ts.isPropertyAccessExpression(current) &&
-    ts.isIdentifier(current.expression) &&
-    ["globalThis", "window"].includes(current.expression.text) &&
-    current.name.text === "fetch"
-  );
 }
 
 function importedNetworkBindings(file) {
