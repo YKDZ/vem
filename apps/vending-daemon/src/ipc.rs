@@ -1397,14 +1397,9 @@ async fn refresh_catalog(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
             // A catalog endpoint may remain array-shaped for sale compatibility.
             // Derive the complete media interest generation deterministically
             // instead of minting a timestamp or falling back to a fake revision.
-            let mut generation_inputs = descriptors.clone();
-            generation_inputs.sort_by(|left, right| {
-                (&left.digest, &left.id, &left.reference).cmp(&(
-                    &right.digest,
-                    &right.id,
-                    &right.reference,
-                ))
-            });
+            let generation_inputs =
+                crate::managed_media::canonical_media_objects(descriptors.clone())
+                    .unwrap_or_default();
             let generation = format!(
                 "sha256:{:x}",
                 sha2::Sha256::digest(serde_json::to_vec(&generation_inputs).unwrap_or_default())
@@ -1415,28 +1410,40 @@ async fn refresh_catalog(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
                 "generation": generation,
                 "interests": descriptors,
             });
-            let Ok(reconcile_request) = serde_json::from_value::<
+            let media_error = match serde_json::from_value::<
                 daemon_ipc_contracts::ManagedMediaReconcileRequest,
-            >(reconcile_value) else {
-                return error_response(
-                    StatusCode::BAD_GATEWAY,
-                    "catalog_media_contract_invalid",
-                    "catalog media reconciliation contract is invalid",
-                );
+            >(reconcile_value)
+            {
+                Ok(reconcile_request) => ctx
+                    .media_cache
+                    .reconcile_boundary(reconcile_request)
+                    .await
+                    .err(),
+                Err(_) => Some("catalog media reconciliation contract is invalid".to_string()),
             };
-            if let Err(error) = ctx.media_cache.reconcile_boundary(reconcile_request).await {
-                return error_response(
-                    StatusCode::BAD_GATEWAY,
-                    "catalog_media_contract_invalid",
-                    error,
-                );
+            if let Some(error) = &media_error {
+                let reason = catalog_media_failure_reason(error);
+                for item in &mut items {
+                    let Some(object) = item.as_object_mut() else {
+                        continue;
+                    };
+                    if object
+                        .get("coverImageMedia")
+                        .is_some_and(serde_json::Value::is_object)
+                    {
+                        object.insert(
+                            "coverImageMediaDiagnostic".to_string(),
+                            serde_json::json!({ "reason": reason, "message": error }),
+                        );
+                    }
+                }
             }
             let value = CatalogSnapshot {
                 items,
                 cached: true,
                 last_updated_at: Some(crate::state::store::now_iso()),
                 source: "backend".to_string(),
-                last_error: None,
+                last_error: media_error,
             };
             // Descriptor extraction is intentionally best effort: malformed media
             // degrades its presentation projection and never rejects catalog data.
@@ -1444,6 +1451,19 @@ async fn refresh_catalog(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
             Json(value).into_response()
         }
         Err(error) => error_response(StatusCode::BAD_GATEWAY, "catalog_refresh_failed", error),
+    }
+}
+
+fn catalog_media_failure_reason(error: &str) -> &'static str {
+    if error.contains("manifest") {
+        "manifest_persistence_failed"
+    } else if error.contains("budget")
+        || error.contains("object limit")
+        || error.contains("reconciliation contract")
+    {
+        "cache_budget_exceeded"
+    } else {
+        "download_failed"
     }
 }
 
@@ -4058,6 +4078,94 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(crossed_token.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn catalog_keeps_new_sale_presentation_when_media_reconciliation_is_rejected() {
+        let server = MockServer::start().await;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (ctx, _) = test_context(temp.path().join("daemon"), server.uri()).await;
+        let profile: daemon_ipc_contracts::MachineProvisioningProfile =
+            serde_json::from_value(claim_profile(&server.uri())).expect("profile");
+        ctx.runtime_sources
+            .clean_runtime_configuration()
+            .accept_profile(&profile)
+            .await
+            .expect("accepted profile");
+        ctx.ui
+            .backend
+            .set_access_token_for_tests("catalog-test-token")
+            .await;
+        let bytes = b"\x89PNG\r\n\x1a\ncatalog".to_vec();
+        let descriptor = serde_json::to_value(ready_media_descriptor(&bytes)).expect("descriptor");
+        let mut items = (0..258)
+            .map(|index| {
+                serde_json::json!({
+                    "productId": format!("product-{index}"),
+                    "variantId": format!("variant-{index}"),
+                    "name": format!("new product {index}"),
+                    "coverImageMedia": descriptor,
+                })
+            })
+            .collect::<Vec<_>>();
+        items[0]["coverImageMedia"] = serde_json::json!({
+            "id": "not-a-media-id",
+            "reference": "https://unsafe.example/image.png"
+        });
+        Mock::given(method("GET"))
+            .and(path("/machines/VEM-CLAIM-01/catalog"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": items
+            })))
+            .mount(&server)
+            .await;
+
+        let response = build_router(ctx.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/catalog")
+                    .header(AUTHORIZATION, "Bearer test-token")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let catalog: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body"),
+        )
+        .expect("catalog json");
+        assert_eq!(catalog["items"][0]["name"], "new product 0");
+        assert_eq!(
+            catalog["items"][0]["coverImageMedia"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            catalog["items"][0]["coverImageMediaDiagnostic"]["reason"],
+            "descriptor_invalid"
+        );
+        assert_eq!(
+            catalog["items"][1]["coverImageMediaDiagnostic"]["reason"],
+            "cache_budget_exceeded"
+        );
+        assert_eq!(
+            build_router(ctx)
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri("/v1/catalog")
+                        .header(AUTHORIZATION, "Bearer test-token")
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("snapshot response")
+                .status(),
+            StatusCode::OK
+        );
     }
 
     #[test]
