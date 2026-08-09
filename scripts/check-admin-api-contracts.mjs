@@ -30,6 +30,10 @@ const REQUEST_HELPERS = new Set([
   ...LEGACY_CONTRACT_HELPERS,
   "callAdminEndpointContract",
 ]);
+const MIGRATION_ADMIN_API_PATHS = new Set([
+  "apps/admin-ui/src/api/products.ts",
+  "apps/admin-ui/src/api/try-on-garments.ts",
+]);
 const WRITE_CALL_PATTERN =
   /\b(?:post|patch|postContract|patchContract|postResponseContract|callAdminEndpointContract)\s*(?:<[\s\S]*?>)?\s*\(/;
 const BROAD_TYPE_PATTERN = /\b(?:Record\s*<\s*string\s*,\s*unknown\s*>|any)\b/;
@@ -639,7 +643,8 @@ function requestImportBindings(file) {
       !ts.isImportDeclaration(node) ||
       !ts.isStringLiteral(node.moduleSpecifier) ||
       node.moduleSpecifier.text !== "./request" ||
-      !node.importClause?.namedBindings
+      !node.importClause?.namedBindings ||
+      node.importClause.isTypeOnly
     ) {
       return;
     }
@@ -649,6 +654,7 @@ function requestImportBindings(file) {
       return;
     }
     for (const element of bindings.elements) {
+      if (element.isTypeOnly) continue;
       named.set(
         element.name.text,
         element.propertyName?.text ?? element.name.text,
@@ -656,6 +662,125 @@ function requestImportBindings(file) {
     }
   });
   return { named, namespaces };
+}
+
+function importedNetworkBindings(file) {
+  const bindings = new Map();
+  file.forEachChild((node) => {
+    if (
+      !ts.isImportDeclaration(node) ||
+      !ts.isStringLiteral(node.moduleSpecifier) ||
+      !node.importClause ||
+      node.importClause.isTypeOnly
+    ) {
+      return;
+    }
+    const moduleName = node.moduleSpecifier.text;
+    const clause = node.importClause;
+    if (
+      clause.name &&
+      (moduleName === "axios" ||
+        moduleName.includes("fetch") ||
+        clause.name.text === "fetch")
+    ) {
+      bindings.set(
+        clause.name.text,
+        moduleName === "axios" ? "axios" : "fetch",
+      );
+    }
+    if (clause.namedBindings && ts.isNamespaceImport(clause.namedBindings)) {
+      if (moduleName === "axios") {
+        bindings.set(clause.namedBindings.name.text, "axios");
+      }
+    } else if (
+      clause.namedBindings &&
+      ts.isNamedImports(clause.namedBindings)
+    ) {
+      for (const element of clause.namedBindings.elements) {
+        if (element.isTypeOnly) continue;
+        const importedName = element.propertyName?.text ?? element.name.text;
+        if (importedName === "fetch" || importedName === "axios") {
+          bindings.set(element.name.text, importedName);
+        }
+      }
+    }
+  });
+  return bindings;
+}
+
+function propertyAccessPath(expression) {
+  const names = [];
+  let current = expression;
+  while (ts.isPropertyAccessExpression(current)) {
+    names.unshift(current.name.text);
+    current = current.expression;
+  }
+  if (!ts.isIdentifier(current)) return undefined;
+  names.unshift(current.text);
+  return names;
+}
+
+function migrationNetworkEntry(expression, requestBindings, importedBindings) {
+  const path = propertyAccessPath(expression);
+  if (!path) return undefined;
+  const [root, ...properties] = path;
+  const importedRequest = requestBindings.named.get(root);
+  if (importedRequest) {
+    return [importedRequest, ...properties].join(".");
+  }
+  if (requestBindings.namespaces.has(root)) {
+    return properties[0] === "request"
+      ? ["request", ...properties].join(".")
+      : properties.join(".");
+  }
+  const importedNetwork = importedBindings.get(root);
+  if (importedNetwork) {
+    return [importedNetwork, ...properties].join(".");
+  }
+  return undefined;
+}
+
+function migrationNetworkCalls(root) {
+  const calls = [];
+  for (const path of MIGRATION_ADMIN_API_PATHS) {
+    if (!pathExists(root, path)) continue;
+    const file = parseTypeScript(path, readText(root, path));
+    const requestBindings = requestImportBindings(file);
+    const importedBindings = importedNetworkBindings(file);
+    const visit = (node, enclosingFunction) => {
+      let currentFunction = enclosingFunction;
+      if (
+        (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node)) &&
+        node.name &&
+        ts.isIdentifier(node.name)
+      ) {
+        currentFunction = node.name.text;
+      }
+      if (ts.isCallExpression(node) && !isStaticallyDead(node)) {
+        const entry = migrationNetworkEntry(
+          node.expression,
+          requestBindings,
+          importedBindings,
+        );
+        if (entry) {
+          calls.push({
+            path,
+            method: currentFunction,
+            entry,
+            contract:
+              entry === "callAdminEndpointContract" &&
+              node.arguments.length > 0 &&
+              ts.isIdentifier(node.arguments[0])
+                ? node.arguments[0].text
+                : undefined,
+          });
+        }
+      }
+      ts.forEachChild(node, (child) => visit(child, currentFunction));
+    };
+    visit(file, undefined);
+  }
+  return calls;
 }
 
 function requestHelperName(expression, bindings) {
@@ -777,6 +902,7 @@ function checkTryOnContractCoverage(root) {
   );
   const registered = registeredControllers(root);
   const requestCalls = requestHelperCalls(root);
+  const migrationCalls = migrationNetworkCalls(root);
   const callers = requestCalls.filter(
     (call) => call.helper === "callAdminEndpointContract" && call.contract,
   );
@@ -793,6 +919,13 @@ function checkTryOnContractCoverage(root) {
     );
   if (!targetsTryOn) {
     return { failures, callerHits, providerHits };
+  }
+
+  for (const call of migrationCalls) {
+    if (call.entry === "callAdminEndpointContract") continue;
+    failures.push(
+      `migration API network entry denied: ${call.path}#${call.method} uses ${call.entry}`,
+    );
   }
 
   for (const name of TRY_ON_CONTRACT_NAMES) {
@@ -861,14 +994,14 @@ function checkTryOnContractCoverage(root) {
     const callerPath = PRODUCT_CATALOG_CONTRACT_NAMES.has(name)
       ? "apps/admin-ui/src/api/products.ts"
       : "apps/admin-ui/src/api/try-on-garments.ts";
-    const callerNetworkCalls = requestCalls.filter(
+    const callerNetworkCalls = migrationCalls.filter(
       (candidate) =>
         candidate.path === callerPath &&
         expected.callerMethods.includes(candidate.method),
     );
     const matchingCalls = callerNetworkCalls.filter(
       (candidate) =>
-        candidate.helper === "callAdminEndpointContract" &&
+        candidate.entry === "callAdminEndpointContract" &&
         candidate.contract === name,
     );
     if (matchingCalls.length === 0) {
@@ -883,11 +1016,11 @@ function checkTryOnContractCoverage(root) {
       callerHits.push(name);
     }
     const rawBypasses = callerNetworkCalls.filter(
-      (candidate) => candidate.helper !== "callAdminEndpointContract",
+      (candidate) => candidate.entry !== "callAdminEndpointContract",
     );
     if (rawBypasses.length > 0) {
       failures.push(
-        `try-on endpoint contract caller raw helper bypass: ${name} uses ${rawBypasses.map((candidate) => candidate.helper).join(", ")}`,
+        `try-on endpoint contract caller raw helper bypass: ${name} uses ${rawBypasses.map((candidate) => candidate.entry).join(", ")}`,
       );
     }
   }

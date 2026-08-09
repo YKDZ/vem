@@ -178,9 +178,20 @@ export class TryOnGarmentsService {
       const [confirmed] = await tx
         .update(tryOnGarments)
         .set({ confirmedAt: new Date(), updatedAt: new Date() })
-        .where(and(eq(tryOnGarments.id, id), isNull(tryOnGarments.deletedAt)))
+        .where(
+          and(
+            eq(tryOnGarments.id, id),
+            eq(tryOnGarments.status, "draft"),
+            isNull(tryOnGarments.confirmedAt),
+            isNull(tryOnGarments.deletedAt),
+          ),
+        )
         .returning();
-      if (!confirmed) throw new NotFoundException("Try-On Garment not found");
+      if (!confirmed) {
+        const current = await this.readTransactionalById(id, tx);
+        if (current.confirmedAt) return current;
+        throw new BadRequestException("TRY_ON_GARMENT_CONFIRMATION_INVALID");
+      }
       await this.auditService.record(
         {
           adminUserId,
@@ -470,6 +481,27 @@ export class TryOnGarmentsService {
       garment,
       toTryOnGarmentMediaAsset(source),
       await this.readAssociatedVariantIds(garment.id, executor),
+    );
+  }
+
+  private async readTransactionalById(
+    id: string,
+    executor: Pick<DrizzleClient, "select">,
+  ): Promise<TryOnGarmentResponse> {
+    const [row] = await executor
+      .select({ garment: tryOnGarments, sourceMediaAsset: mediaAssets })
+      .from(tryOnGarments)
+      .innerJoin(
+        mediaAssets,
+        eq(mediaAssets.id, tryOnGarments.sourceMediaAssetId),
+      )
+      .where(and(eq(tryOnGarments.id, id), isNull(tryOnGarments.deletedAt)))
+      .limit(1);
+    if (!row) throw new NotFoundException("Try-On Garment not found");
+    return toTryOnGarmentResponse(
+      row.garment,
+      toTryOnGarmentMediaAsset(row.sourceMediaAsset),
+      await this.readAssociatedVariantIds(id, executor),
     );
   }
 

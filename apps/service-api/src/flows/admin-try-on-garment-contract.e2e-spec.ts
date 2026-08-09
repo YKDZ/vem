@@ -1103,6 +1103,152 @@ describe("admin-try-on-garment-contract.e2e", { concurrent: false }, () => {
     60_000,
   );
 
+  it("linearizes concurrent confirmation and keeps late confirmations idempotent", async () => {
+    const token = await loginAndGetToken(api, appConfig);
+    const auth = { Authorization: `Bearer ${token}` };
+    const product = await api
+      .post("/api/products")
+      .set(auth)
+      .send({ name: "确认线性化商品", status: "draft", sortOrder: 0 })
+      .expect(201);
+    const productId = (product.body as ApiResponse<{ id: string }>).data.id;
+    const upload = await api
+      .post(`/api${adminTryOnGarmentUploadContract.path}`)
+      .set(auth)
+      .attach("file", rgbaPng(768, 1024, 0), {
+        filename: "confirmation-race.png",
+        contentType: "image/png",
+      })
+      .expect(201);
+    const source = adminTryOnGarmentUploadContract.responseSchema.parse(
+      (upload.body as ApiResponse<unknown>).data,
+    );
+    const created = await api
+      .post(`/api${adminCreateTryOnGarmentContract.path}`)
+      .set(auth)
+      .send({
+        productId,
+        colorLabel: "紫色",
+        sourceMediaAssetId: source.id,
+        template: "tshirt_short_sleeve",
+      })
+      .expect(201);
+    const garment = adminCreateTryOnGarmentContract.responseSchema.parse(
+      (created.body as ApiResponse<unknown>).data,
+    );
+    const confirmationPath = `/api${adminTryOnGarmentConfirmationContract.path.replace(":id", garment.id)}`;
+    const service = app.get(TryOnGarmentsService);
+    const originalGetById = service.getById.bind(service);
+    const bothPreRead = deferred<void>();
+    const resume = deferred<void>();
+    let preReadCount = 0;
+    const getById = vi
+      .spyOn(service, "getById")
+      .mockImplementation(async (id) => {
+        const current = await originalGetById(id);
+        if (id === garment.id && preReadCount < 2) {
+          preReadCount += 1;
+          if (preReadCount === 2) bothPreRead.resolve();
+          await resume.promise;
+        }
+        return current;
+      });
+    try {
+      const first = api
+        .post(confirmationPath)
+        .set(auth)
+        .send({})
+        .then((response) => response);
+      const second = api
+        .post(confirmationPath)
+        .set(auth)
+        .send({})
+        .then((response) => response);
+      await bothPreRead.promise;
+      resume.resolve();
+      const [firstResponse, secondResponse] = await Promise.all([
+        first,
+        second,
+      ]);
+      expect(firstResponse.status).toBe(201);
+      expect(secondResponse.status).toBe(201);
+      const firstConfirmed =
+        adminTryOnGarmentConfirmationContract.responseSchema.parse(
+          (firstResponse.body as ApiResponse<unknown>).data,
+        );
+      const secondConfirmed =
+        adminTryOnGarmentConfirmationContract.responseSchema.parse(
+          (secondResponse.body as ApiResponse<unknown>).data,
+        );
+      expect(firstConfirmed.confirmedAt).toEqual(secondConfirmed.confirmedAt);
+
+      const countConfirmAudits = async () => {
+        const audits = await api
+          .get(`/api/audit-logs?resourceId=${garment.id}&page=1&pageSize=100`)
+          .set(auth)
+          .expect(200);
+        return (
+          audits.body as ApiResponse<{
+            items: Array<{ action: string }>;
+          }>
+        ).data.items.filter(
+          (entry) => entry.action === "try_on_garments.source.confirm",
+        ).length;
+      };
+      expect(await countConfirmAudits()).toBe(1);
+      const activated = await api
+        .post(
+          `/api${adminTryOnGarmentActivationContract.path.replace(":id", garment.id)}`,
+        )
+        .set(auth)
+        .send({})
+        .expect(201);
+      expect(
+        adminTryOnGarmentActivationContract.responseSchema.parse(
+          (activated.body as ApiResponse<unknown>).data,
+        ).confirmedAt,
+      ).toEqual(firstConfirmed.confirmedAt);
+      const activeLateConfirmation = await api
+        .post(confirmationPath)
+        .set(auth)
+        .send({})
+        .expect(201);
+      expect(
+        adminTryOnGarmentConfirmationContract.responseSchema.parse(
+          (activeLateConfirmation.body as ApiResponse<unknown>).data,
+        ),
+      ).toMatchObject({
+        status: "active",
+        confirmedAt: firstConfirmed.confirmedAt,
+      });
+      expect(await countConfirmAudits()).toBe(1);
+
+      await api
+        .post(
+          `/api${adminTryOnGarmentRetirementContract.path.replace(":id", garment.id)}`,
+        )
+        .set(auth)
+        .send({})
+        .expect(201);
+      const retiredLateConfirmation = await api
+        .post(confirmationPath)
+        .set(auth)
+        .send({})
+        .expect(201);
+      expect(
+        adminTryOnGarmentConfirmationContract.responseSchema.parse(
+          (retiredLateConfirmation.body as ApiResponse<unknown>).data,
+        ),
+      ).toMatchObject({
+        status: "retired",
+        confirmedAt: firstConfirmed.confirmedAt,
+      });
+      expect(await countConfirmAudits()).toBe(1);
+    } finally {
+      getById.mockRestore();
+    }
+  }, 60_000);
+
   it("caps a product at 256 garments, including concurrent final creates", async () => {
     const token = await loginAndGetToken(api, appConfig);
     const auth = { Authorization: `Bearer ${token}` };

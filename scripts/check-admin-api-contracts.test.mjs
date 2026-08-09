@@ -87,6 +87,7 @@ describe("admin api contract guard", () => {
     ...(caller
       ? {
           "apps/admin-ui/src/api/try-on-garments.ts": `
+            import { callAdminEndpointContract } from "./request";
             export async function uploadTryOnGarment() { return callAdminEndpointContract(adminTryOnGarmentUploadContract, {}); }
             export async function createTryOnGarmentDraft() { return callAdminEndpointContract(adminCreateTryOnGarmentContract, {}); }
             export async function getTryOnGarment() { return callAdminEndpointContract(adminGetTryOnGarmentContract, {}); }
@@ -261,6 +262,145 @@ describe("admin api contract guard", () => {
         result.failures.join("\n"),
         /caller ambiguous: adminGetTryOnGarmentContract/,
       );
+    });
+  });
+
+  it("rejects postAdminApiContract beside the required migration contract call", () => {
+    const bypass = completeCatalogContractFixture();
+    bypass["apps/admin-ui/src/api/try-on-garments.ts"] = bypass[
+      "apps/admin-ui/src/api/try-on-garments.ts"
+    ]
+      .replace(
+        'import { callAdminEndpointContract } from "./request";',
+        'import { callAdminEndpointContract, postAdminApiContract } from "./request";',
+      )
+      .replace(
+        "return await callAdminEndpointContract(adminGetTryOnGarmentContract, {",
+        "await postAdminApiContract({});\n  return await callAdminEndpointContract(adminGetTryOnGarmentContract, {",
+      );
+    withFixture(bypass, (root) => {
+      const result = checkAdminApiContracts({ root });
+      assert.equal(result.ok, false);
+      assert.match(
+        result.failures.join("\n"),
+        /migration API network entry denied: apps\/admin-ui\/src\/api\/try-on-garments\.ts#getTryOnGarment uses postAdminApiContract/,
+      );
+    });
+  });
+
+  it("rejects a raw request entry even outside a registry caller", () => {
+    const bypass = completeCatalogContractFixture();
+    bypass["apps/admin-ui/src/api/try-on-garments.ts"] = bypass[
+      "apps/admin-ui/src/api/try-on-garments.ts"
+    ]
+      .replace(
+        'import { callAdminEndpointContract } from "./request";',
+        'import { callAdminEndpointContract, get } from "./request";',
+      )
+      .concat(
+        '\nexport async function unregisteredRawRequest() { await get("/raw"); }\n',
+      );
+    withFixture(bypass, (root) => {
+      const result = checkAdminApiContracts({ root });
+      assert.equal(result.ok, false);
+      assert.match(
+        result.failures.join("\n"),
+        /migration API network entry denied: apps\/admin-ui\/src\/api\/try-on-garments\.ts#unregisteredRawRequest uses get/,
+      );
+    });
+  });
+
+  for (const [replacementImport, bypassCall, expectedEntry] of [
+    [
+      'import { callAdminEndpointContract, request } from "./request";',
+      'await request.get("/raw");',
+      "request.get",
+    ],
+    [
+      'import { callAdminEndpointContract, request as rawRequest } from "./request";',
+      'await rawRequest.post("/raw", {});',
+      "request.post",
+    ],
+    [
+      'import { callAdminEndpointContract } from "./request";\nimport * as requestApi from "./request";',
+      'await requestApi.request.get("/raw");',
+      "request.request.get",
+    ],
+  ]) {
+    it(`rejects request instance network entry ${expectedEntry}`, () => {
+      const bypass = completeCatalogContractFixture();
+      bypass["apps/admin-ui/src/api/try-on-garments.ts"] = bypass[
+        "apps/admin-ui/src/api/try-on-garments.ts"
+      ]
+        .replace(
+          'import { callAdminEndpointContract } from "./request";',
+          replacementImport,
+        )
+        .replace(
+          "return await callAdminEndpointContract(adminGetTryOnGarmentContract, {",
+          `${bypassCall}\n  return await callAdminEndpointContract(adminGetTryOnGarmentContract, {`,
+        );
+      withFixture(bypass, (root) => {
+        const result = checkAdminApiContracts({ root });
+        assert.equal(result.ok, false);
+        assert.match(
+          result.failures.join("\n"),
+          new RegExp(
+            `migration API network entry denied: apps/admin-ui/src/api/try-on-garments\\.ts#getTryOnGarment uses ${expectedEntry.replace(".", "\\.")}`,
+          ),
+        );
+      });
+    });
+  }
+
+  it("rejects imported fetch and axios while ignoring type-only request names", () => {
+    for (const [importStatement, bypassCall, expectedEntry] of [
+      ['import fetch from "node-fetch";', 'await fetch("/raw");', "fetch"],
+      [
+        'import axiosClient from "axios";',
+        'await axiosClient.get("/raw");',
+        "axios.get",
+      ],
+      [
+        'import httpFetch from "node-fetch";',
+        'await httpFetch("/raw");',
+        "fetch",
+      ],
+    ]) {
+      const bypass = completeCatalogContractFixture();
+      bypass["apps/admin-ui/src/api/try-on-garments.ts"] = bypass[
+        "apps/admin-ui/src/api/try-on-garments.ts"
+      ]
+        .replace(
+          'import { callAdminEndpointContract } from "./request";',
+          `import { callAdminEndpointContract } from "./request";\n${importStatement}`,
+        )
+        .replace(
+          "return await callAdminEndpointContract(adminGetTryOnGarmentContract, {",
+          `${bypassCall}\n  return await callAdminEndpointContract(adminGetTryOnGarmentContract, {`,
+        );
+      withFixture(bypass, (root) => {
+        const result = checkAdminApiContracts({ root });
+        assert.equal(result.ok, false);
+        assert.match(
+          result.failures.join("\n"),
+          new RegExp(
+            `migration API network entry denied: apps/admin-ui/src/api/try-on-garments\\.ts#getTryOnGarment uses ${expectedEntry.replace(".", "\\.")}`,
+          ),
+        );
+      });
+    }
+
+    const typeOnly = completeCatalogContractFixture();
+    typeOnly["apps/admin-ui/src/api/try-on-garments.ts"] = typeOnly[
+      "apps/admin-ui/src/api/try-on-garments.ts"
+    ].replace(
+      'import { callAdminEndpointContract } from "./request";',
+      'import type { request } from "./request";\nimport { callAdminEndpointContract } from "./request";',
+    );
+    withFixture(typeOnly, (root) => {
+      const result = checkAdminApiContracts({ root });
+      assert.equal(result.ok, true, result.failures.join("\n"));
     });
   });
 
