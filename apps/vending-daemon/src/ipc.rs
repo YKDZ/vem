@@ -4329,6 +4329,181 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn media_body_quarantine_requeues_the_current_warming_generation_without_deleting_its_repair(
+    ) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (mut ctx, _) = test_context(
+            temp.path().to_path_buf(),
+            "http://platform.invalid/api".to_string(),
+        )
+        .await;
+        let root = temp.path().join("publication-version-media");
+        let bytes = b"\x89PNG\r\n\x1a\npublication-version".to_vec();
+        let descriptor = ready_media_descriptor(&bytes);
+        let cache = crate::managed_media::ManagedMediaCache::new(
+            root.clone(),
+            "http://127.0.0.1:4312",
+            Arc::new(ReadyMediaFetcher(bytes.clone())),
+        )
+        .expect("cache");
+        cache
+            .reconcile_active_catalog("v1", vec![descriptor.clone()])
+            .await
+            .expect("v1 accepted");
+        for _ in 0..100 {
+            if cache.snapshot().await.1[0].readiness == crate::managed_media::MediaReadiness::Ready
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        ctx.media_cache = cache.clone();
+        let grant = cache.read_grant();
+        let v1_body = build_router(ctx.clone())
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/media/{}?grant={grant}", descriptor.digest))
+                    .body(Body::empty())
+                    .expect("v1 request"),
+            )
+            .await
+            .expect("v1 response");
+        assert_eq!(v1_body.status(), StatusCode::OK);
+
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(root.join(format!("{}.bin", &descriptor.digest[7..])))
+            .expect("published object")
+            .set_len(100_000_001)
+            .expect("expand beyond cache high water");
+        let rejected = build_router(ctx.clone())
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/media/{}?grant={grant}", descriptor.digest))
+                    .body(Body::empty())
+                    .expect("defensive request"),
+            )
+            .await
+            .expect("defensive response");
+        assert_eq!(rejected.status(), StatusCode::NOT_FOUND);
+        cache
+            .reconcile_active_catalog("v2", vec![descriptor.clone()])
+            .await
+            .expect("same digest v2 accepted for warming");
+
+        // v2's first warm cannot publish while the v1 inode is still over
+        // high-water.  Its held response body is the only authority allowed
+        // to quarantine that old publication.
+        for _ in 0..100 {
+            if cache.snapshot().await.1[0].readiness
+                == crate::managed_media::MediaReadiness::Unavailable
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        drop(v1_body);
+        for _ in 0..160 {
+            if cache.snapshot().await.1[0].readiness == crate::managed_media::MediaReadiness::Ready
+            {
+                let repaired = std::fs::read(root.join(format!("{}.bin", &descriptor.digest[7..])))
+                    .expect("v2 replacement remains published");
+                assert_eq!(repaired, bytes);
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("dropping the v1 body did not requeue and publish v2");
+    }
+
+    #[tokio::test]
+    async fn late_axum_body_drop_after_cycle_shutdown_cannot_delete_a_new_cycle_publication() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (mut ctx, _) = test_context(
+            temp.path().to_path_buf(),
+            "http://platform.invalid/api".to_string(),
+        )
+        .await;
+        let root = temp.path().join("cross-cycle-media");
+        let bytes = b"\x89PNG\r\n\x1a\ncross-cycle".to_vec();
+        let descriptor = ready_media_descriptor(&bytes);
+        let old = crate::managed_media::ManagedMediaCache::new(
+            root.clone(),
+            "http://127.0.0.1:4312",
+            Arc::new(ReadyMediaFetcher(bytes.clone())),
+        )
+        .expect("old cache");
+        old.reconcile_active_catalog("old", vec![descriptor.clone()])
+            .await
+            .expect("old accepted");
+        for _ in 0..100 {
+            if old.snapshot().await.1[0].readiness == crate::managed_media::MediaReadiness::Ready {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        ctx.media_cache = old.clone();
+        let old_grant = old.read_grant();
+        let old_body = build_router(ctx.clone())
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/media/{}?grant={old_grant}", descriptor.digest))
+                    .body(Body::empty())
+                    .expect("old request"),
+            )
+            .await
+            .expect("old response");
+        assert_eq!(old_body.status(), StatusCode::OK);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(root.join(format!("{}.bin", &descriptor.digest[7..])))
+            .expect("old object")
+            .set_len(100_000_001)
+            .expect("corrupt old publication");
+        let rejected = build_router(ctx.clone())
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/media/{}?grant={old_grant}", descriptor.digest))
+                    .body(Body::empty())
+                    .expect("defensive request"),
+            )
+            .await
+            .expect("defensive response");
+        assert_eq!(rejected.status(), StatusCode::NOT_FOUND);
+        old.shutdown().await;
+
+        // The new cache replaces bytes at the same digest path while the old
+        // response still owns a file handle to the quarantined inode.
+        std::fs::remove_file(root.join(format!("{}.bin", &descriptor.digest[7..])))
+            .expect("remove old corrupt path before new reconstruction");
+        let new = crate::managed_media::ManagedMediaCache::new(
+            root.clone(),
+            "http://127.0.0.1:4312",
+            Arc::new(ReadyMediaFetcher(bytes.clone())),
+        )
+        .expect("new cache");
+        new.reconcile_active_catalog("new", vec![descriptor.clone()])
+            .await
+            .expect("new accepted");
+        for _ in 0..100 {
+            if new.snapshot().await.1[0].readiness == crate::managed_media::MediaReadiness::Ready {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        drop(old_body);
+        assert_eq!(
+            std::fs::read(root.join(format!("{}.bin", &descriptor.digest[7..])))
+                .expect("new publication remains"),
+            bytes
+        );
+    }
+
+    #[tokio::test]
     async fn catalog_keeps_new_sale_presentation_when_media_reconciliation_is_rejected() {
         let server = MockServer::start().await;
         let temp = tempfile::tempdir().expect("tempdir");

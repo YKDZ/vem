@@ -846,11 +846,7 @@ impl ManagedMediaCache {
         {
             let state = self.state.lock().await;
             for object in &interest.objects {
-                if let Some(existing) = state
-                    .entries
-                    .get(&object.descriptor.digest)
-                    .filter(|entry| entry.active || entry.leases > 0)
-                {
+                if let Some(existing) = state.entries.get(&object.descriptor.digest) {
                     if media_identity(&existing.descriptor) != media_identity(&object.descriptor) {
                         return Err(
                             "managed media digest conflicts with known immutable facts".to_string()
@@ -935,8 +931,11 @@ impl ManagedMediaCache {
                     MediaReadiness::Warming
                 };
                 entry.warming_generation = (!published).then(|| generation.clone());
-                entry.read_version = entry.read_version.wrapping_add(1);
-                entry.pending_quarantine = None;
+                // Catalog adoption describes interest, not a new inode.  A
+                // publication revision advances only after `publish_staged`
+                // atomically replaces bytes.  In particular, do not erase a
+                // pending quarantine from an older body lease merely because
+                // the current interest becomes Warming or Unavailable.
             }
             state.generation = generation.clone();
             state.epoch = state.epoch.wrapping_add(1);
@@ -1089,6 +1088,11 @@ impl ManagedMediaCache {
             entry.last_used = SystemTime::now();
             let descriptor = entry.descriptor.clone();
             let read_version = entry.read_version;
+            debug_assert_eq!(
+                entry.leases,
+                entry.lease_reservations.values().sum::<usize>(),
+                "lease count must equal publication reservations"
+            );
             state.epoch = state.epoch.wrapping_add(1);
             (descriptor, read_version)
         };
@@ -1116,6 +1120,10 @@ impl ManagedMediaCache {
             identity,
             read_version,
             reconcile_gate: self.reconcile_gate.clone(),
+            tasks: self.tasks.clone(),
+            queue: self.queue.clone(),
+            inflight: self.inflight.clone(),
+            queue_notify: self.queue_notify.clone(),
         })
     }
 
@@ -1152,6 +1160,11 @@ impl ManagedMediaCache {
                 if no_matching_leases {
                     entry.lease_reservations.remove(&read_version);
                 }
+                debug_assert_eq!(
+                    entry.leases,
+                    entry.lease_reservations.values().sum::<usize>(),
+                    "lease count must equal publication reservations"
+                );
                 let current_publication = entry.read_version == read_version;
                 if current_publication {
                     entry.readiness = MediaReadiness::Unavailable;
@@ -1682,6 +1695,10 @@ impl ManagedMediaCache {
                         entry.warming_generation = None;
                         match publish {
                             Ok(()) => {
+                                // This is the sole publication-version
+                                // transition: `atomic_replace` succeeded.
+                                entry.read_version = entry.read_version.wrapping_add(1);
+                                entry.pending_quarantine = None;
                                 entry.readiness = MediaReadiness::Ready;
                                 entry.diagnostic = None;
                             }
@@ -1866,6 +1883,10 @@ pub struct MediaReadLease {
     identity: MediaIdentity,
     read_version: u64,
     reconcile_gate: Arc<Mutex<()>>,
+    tasks: Arc<std::sync::Mutex<OwnedTasks>>,
+    queue: Arc<Mutex<VecDeque<WarmJob>>>,
+    inflight: Arc<Mutex<HashSet<WarmIdentity>>>,
+    queue_notify: Arc<Notify>,
 }
 
 impl MediaReadLease {
@@ -1889,10 +1910,17 @@ impl Drop for MediaReadLease {
         let read_version = self.read_version;
         let path = self.quarantine_path.clone();
         let reconcile_gate = self.reconcile_gate.clone();
-        tokio::spawn(async move {
+        let queue = self.queue.clone();
+        let inflight = self.inflight.clone();
+        let queue_notify = self.queue_notify.clone();
+        // Response bodies may outlive the router.  Their drop is still cache
+        // lifecycle work, so it must pass the owner gate: after shutdown has
+        // closed registration, a late body cannot mutate the next cycle's
+        // directory.
+        let release = async move {
             let _publication_gate = reconcile_gate.lock().await;
             let mut state = state.lock().await;
-            let quarantine = if let Some(entry) = state
+            let (quarantine, requeue) = if let Some(entry) = state
                 .entries
                 .get_mut(&digest)
                 .filter(|entry| media_identity(&entry.descriptor) == identity)
@@ -1907,20 +1935,59 @@ impl Drop for MediaReadLease {
                 let quarantine = entry.read_version == read_version
                     && entry.pending_quarantine == Some(read_version)
                     && no_matching_leases;
+                let requeue = if quarantine && entry.active && entry.warming_generation.is_some() {
+                    entry.readiness = MediaReadiness::Warming;
+                    entry.diagnostic = None;
+                    Some(WarmJob {
+                        generation: entry.warming_generation.clone().expect("checked"),
+                        descriptor: entry.descriptor.clone(),
+                        candidates: entry.candidates.clone(),
+                    })
+                } else {
+                    None
+                };
                 if quarantine {
                     entry.pending_quarantine = None;
                 }
+                debug_assert_eq!(
+                    entry.leases,
+                    entry.lease_reservations.values().sum::<usize>(),
+                    "lease count must equal publication reservations"
+                );
                 state.epoch = state.epoch.wrapping_add(1);
-                quarantine
+                (quarantine, requeue)
             } else {
-                false
+                (false, None)
             };
             drop(state);
             if quarantine {
                 let _ = tokio::task::spawn_blocking(move || remove_optional_file(&path)).await;
             }
-        });
+            if let Some(job) = requeue {
+                enqueue_warm_resources(job, queue, inflight, queue_notify).await;
+            }
+        };
+        let _ = self.tasks.lock().expect("media task owner").spawn(release);
     }
+}
+
+async fn enqueue_warm_resources(
+    job: WarmJob,
+    queue: Arc<Mutex<VecDeque<WarmJob>>>,
+    inflight: Arc<Mutex<HashSet<WarmIdentity>>>,
+    queue_notify: Arc<Notify>,
+) {
+    let identity = WarmIdentity {
+        generation: job.generation.clone(),
+        media: media_identity(&job.descriptor),
+    };
+    let mut inflight = inflight.lock().await;
+    if !inflight.insert(identity) {
+        return;
+    }
+    drop(inflight);
+    queue.lock().await.push_back(job);
+    queue_notify.notify_one();
 }
 
 #[cfg(test)]
@@ -2475,10 +2542,20 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(1), entered.notified())
             .await
             .expect("old defensive read entered verifier");
+        // A catalog re-adoption alone is not a publication revision.  Force
+        // a real replacement so the warm path advances `read_version` only
+        // after its atomic replace succeeds.
+        fs::remove_file(cache.content_path(&expected.digest)).expect("remove old publication");
         cache
             .reconcile_active_catalog("republished", vec![expected.clone()])
             .await
-            .expect("same digest republished while old read is slow");
+            .expect("same digest rewarms while old read is slow");
+        for _ in 0..400 {
+            if cache.snapshot().await.1[0].readiness == MediaReadiness::Ready {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
         assert_eq!(cache.snapshot().await.1[0].readiness, MediaReadiness::Ready);
         let (ready, wake) = release.as_ref();
         *ready.lock().expect("release mutex") = true;
@@ -4612,5 +4689,57 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         panic!("old publication lease did not release its own reservation");
+    }
+
+    #[tokio::test]
+    async fn inactive_known_digest_rejects_changed_immutable_facts_before_manifest_mutation() {
+        let root = tempdir().expect("tempdir").keep();
+        let bytes = b"\x89PNG\r\n\x1a\ninactive-facts".to_vec();
+        let original = descriptor(&bytes, "image/png");
+        let cache = ManagedMediaCache::new(
+            root.clone(),
+            "http://127.0.0.1:1234",
+            Arc::new(FixtureFetcher {
+                bytes: bytes.clone(),
+                content_type: "image/png".to_string(),
+            }),
+        )
+        .expect("cache");
+        cache
+            .reconcile_active_catalog("a", vec![original.clone()])
+            .await
+            .expect("A");
+        cache
+            .reconcile_active_catalog("empty", vec![])
+            .await
+            .expect("inactive but retained");
+        let disk_before = fs::read(root.join("active-media.json")).expect("A manifest");
+        let mut conflict = original.clone();
+        conflict.content_type = "image/jpeg".to_string();
+        assert!(cache
+            .reconcile_active_catalog("b", vec![conflict])
+            .await
+            .expect_err("known inactive digest cannot change facts")
+            .contains("immutable facts"));
+        assert_eq!(
+            fs::read(root.join("active-media.json")).expect("manifest"),
+            disk_before
+        );
+        assert_eq!(cache.snapshot().await.0, "empty");
+        assert_eq!(
+            ManagedMediaCache::new(
+                root,
+                "http://127.0.0.1:1234",
+                Arc::new(FixtureFetcher {
+                    bytes,
+                    content_type: "image/png".to_string()
+                }),
+            )
+            .expect("restart")
+            .snapshot()
+            .await
+            .0,
+            "empty"
+        );
     }
 }
