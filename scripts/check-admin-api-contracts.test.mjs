@@ -310,6 +310,105 @@ describe("admin api contract guard", () => {
     });
   });
 
+  it("rejects global, computed, and transparently wrapped migration network bypasses", () => {
+    for (const [replacementImport, bypassCall, expectedEntry] of [
+      [
+        'import { callAdminEndpointContract } from "./request";',
+        'await fetch("/raw");',
+        "fetch",
+      ],
+      [
+        'import { callAdminEndpointContract, request } from "./request";',
+        'await request["get"]("/raw");',
+        "request.get",
+      ],
+      [
+        'import { callAdminEndpointContract } from "./request";\nimport * as requestApi from "./request";',
+        'await requestApi["request"]["post"]("/raw", {});',
+        "request.request.post",
+      ],
+      [
+        'import { callAdminEndpointContract, request } from "./request";',
+        'await (request["patch"] as typeof request.patch)("/raw", {});',
+        "request.patch",
+      ],
+      [
+        'import { callAdminEndpointContract, request } from "./request";',
+        'await <typeof request.put>request["put"]("/raw", {});',
+        "request.put",
+      ],
+      [
+        'import { callAdminEndpointContract, request } from "./request";',
+        'await request["delete"]!("/raw");',
+        "request.delete",
+      ],
+      [
+        'import { callAdminEndpointContract, request } from "./request";',
+        'await (request["get"] satisfies typeof request.get)("/raw");',
+        "request.get",
+      ],
+    ]) {
+      const bypass = completeCatalogContractFixture();
+      bypass["apps/admin-ui/src/api/try-on-garments.ts"] = bypass[
+        "apps/admin-ui/src/api/try-on-garments.ts"
+      ]
+        .replace(
+          'import { callAdminEndpointContract } from "./request";',
+          replacementImport,
+        )
+        .replace(
+          "return await callAdminEndpointContract(adminGetTryOnGarmentContract, {",
+          `${bypassCall}\n  return await callAdminEndpointContract(adminGetTryOnGarmentContract, {`,
+        );
+      withFixture(bypass, (root) => {
+        const result = checkAdminApiContracts({ root });
+        assert.equal(result.ok, false);
+        assert.match(
+          result.failures.join("\n"),
+          new RegExp(
+            `migration API network entry denied: apps/admin-ui/src/api/try-on-garments\\.ts#getTryOnGarment uses ${expectedEntry.replaceAll(".", "\\.")}`,
+          ),
+        );
+      });
+    }
+  });
+
+  it("accepts alias and namespace contract callers through transparent wrappers", () => {
+    const alias = completeCatalogContractFixture();
+    alias["apps/admin-ui/src/api/try-on-garments.ts"] = alias[
+      "apps/admin-ui/src/api/try-on-garments.ts"
+    ]
+      .replace(
+        'import { callAdminEndpointContract } from "./request";',
+        'import { callAdminEndpointContract as callContract } from "./request";',
+      )
+      .replaceAll(
+        "callAdminEndpointContract(",
+        "(callContract as typeof callContract)(",
+      );
+    withFixture(alias, (root) => {
+      const result = checkAdminApiContracts({ root });
+      assert.equal(result.ok, true, result.failures.join("\n"));
+    });
+
+    const namespace = completeCatalogContractFixture();
+    namespace["apps/admin-ui/src/api/try-on-garments.ts"] = namespace[
+      "apps/admin-ui/src/api/try-on-garments.ts"
+    ]
+      .replace(
+        'import { callAdminEndpointContract } from "./request";',
+        'import * as requestApi from "./request";',
+      )
+      .replaceAll(
+        "callAdminEndpointContract(",
+        "(requestApi.callAdminEndpointContract!)(",
+      );
+    withFixture(namespace, (root) => {
+      const result = checkAdminApiContracts({ root });
+      assert.equal(result.ok, true, result.failures.join("\n"));
+    });
+  });
+
   for (const [replacementImport, bypassCall, expectedEntry] of [
     [
       'import { callAdminEndpointContract, request } from "./request";',

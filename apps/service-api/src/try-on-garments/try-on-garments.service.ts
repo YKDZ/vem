@@ -172,9 +172,19 @@ export class TryOnGarmentsService {
     id: string,
     adminUserId: string,
   ): Promise<TryOnGarmentResponse> {
-    const garment = await this.getById(id);
-    if (garment.confirmedAt) return garment;
-    const updated = await this.db.transaction(async (tx) => {
+    return await this.db.transaction(async (tx) => {
+      const [locked] = await tx
+        .select()
+        .from(tryOnGarments)
+        .where(and(eq(tryOnGarments.id, id), isNull(tryOnGarments.deletedAt)))
+        .for("update", { of: tryOnGarments });
+      if (!locked) throw new NotFoundException("Try-On Garment not found");
+      if (locked.confirmedAt) {
+        return await this.readTransactionalSnapshot(locked, tx);
+      }
+      if (locked.status !== "draft") {
+        throw new BadRequestException("TRY_ON_GARMENT_CONFIRMATION_INVALID");
+      }
       const [confirmed] = await tx
         .update(tryOnGarments)
         .set({ confirmedAt: new Date(), updatedAt: new Date() })
@@ -205,7 +215,6 @@ export class TryOnGarmentsService {
       );
       return await this.readTransactionalSnapshot(confirmed, tx);
     });
-    return updated;
   }
 
   async activate(

@@ -708,19 +708,95 @@ function importedNetworkBindings(file) {
   return bindings;
 }
 
+function declaredValueNames(file) {
+  const names = new Set();
+  const addBindingName = (binding) => {
+    if (ts.isIdentifier(binding)) names.add(binding.text);
+    if (
+      ts.isObjectBindingPattern(binding) ||
+      ts.isArrayBindingPattern(binding)
+    ) {
+      for (const element of binding.elements) {
+        if (ts.isBindingElement(element)) addBindingName(element.name);
+      }
+    }
+  };
+  const visit = (node) => {
+    if (
+      ts.isImportDeclaration(node) &&
+      node.importClause &&
+      !node.importClause.isTypeOnly
+    ) {
+      if (node.importClause.name) names.add(node.importClause.name.text);
+      const bindings = node.importClause.namedBindings;
+      if (bindings && ts.isNamespaceImport(bindings))
+        names.add(bindings.name.text);
+      if (bindings && ts.isNamedImports(bindings)) {
+        for (const element of bindings.elements) {
+          if (!element.isTypeOnly) names.add(element.name.text);
+        }
+      }
+    }
+    if (ts.isVariableDeclaration(node)) addBindingName(node.name);
+    if (
+      (ts.isFunctionDeclaration(node) ||
+        ts.isClassDeclaration(node) ||
+        ts.isEnumDeclaration(node)) &&
+      node.name
+    ) {
+      names.add(node.name.text);
+    }
+    if (ts.isParameter(node)) addBindingName(node.name);
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return names;
+}
+
+function unwrapTransparentExpression(expression) {
+  let current = expression;
+  while (
+    ts.isParenthesizedExpression(current) ||
+    ts.isAsExpression(current) ||
+    ts.isTypeAssertionExpression(current) ||
+    ts.isNonNullExpression(current) ||
+    ts.isSatisfiesExpression(current)
+  ) {
+    current = current.expression;
+  }
+  return current;
+}
+
 function propertyAccessPath(expression) {
   const names = [];
-  let current = expression;
-  while (ts.isPropertyAccessExpression(current)) {
-    names.unshift(current.name.text);
-    current = current.expression;
+  let current = unwrapTransparentExpression(expression);
+  while (
+    ts.isPropertyAccessExpression(current) ||
+    ts.isElementAccessExpression(current)
+  ) {
+    if (ts.isPropertyAccessExpression(current)) {
+      names.unshift(current.name.text);
+      current = unwrapTransparentExpression(current.expression);
+      continue;
+    }
+    const argument = current.argumentExpression
+      ? unwrapTransparentExpression(current.argumentExpression)
+      : undefined;
+    if (!argument || !ts.isStringLiteral(argument)) return undefined;
+    names.unshift(argument.text);
+    current = unwrapTransparentExpression(current.expression);
   }
   if (!ts.isIdentifier(current)) return undefined;
   names.unshift(current.text);
   return names;
 }
 
-function migrationNetworkEntry(expression, requestBindings, importedBindings) {
+function migrationNetworkEntry(
+  expression,
+  requestBindings,
+  importedBindings,
+  declaredNames,
+) {
   const path = propertyAccessPath(expression);
   if (!path) return undefined;
   const [root, ...properties] = path;
@@ -737,6 +813,9 @@ function migrationNetworkEntry(expression, requestBindings, importedBindings) {
   if (importedNetwork) {
     return [importedNetwork, ...properties].join(".");
   }
+  if (root === "fetch" && properties.length === 0 && !declaredNames.has(root)) {
+    return "fetch";
+  }
   return undefined;
 }
 
@@ -747,6 +826,7 @@ function migrationNetworkCalls(root) {
     const file = parseTypeScript(path, readText(root, path));
     const requestBindings = requestImportBindings(file);
     const importedBindings = importedNetworkBindings(file);
+    const declaredNames = declaredValueNames(file);
     const visit = (node, enclosingFunction) => {
       let currentFunction = enclosingFunction;
       if (
@@ -761,6 +841,7 @@ function migrationNetworkCalls(root) {
           node.expression,
           requestBindings,
           importedBindings,
+          declaredNames,
         );
         if (entry) {
           calls.push({
@@ -770,8 +851,8 @@ function migrationNetworkCalls(root) {
             contract:
               entry === "callAdminEndpointContract" &&
               node.arguments.length > 0 &&
-              ts.isIdentifier(node.arguments[0])
-                ? node.arguments[0].text
+              ts.isIdentifier(unwrapTransparentExpression(node.arguments[0]))
+                ? unwrapTransparentExpression(node.arguments[0]).text
                 : undefined,
           });
         }

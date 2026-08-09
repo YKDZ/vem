@@ -1,7 +1,13 @@
 import type { INestApplication } from "@nestjs/common";
 
 import { Test } from "@nestjs/testing";
-import { DrizzleDB, eq, inventories, productVariants } from "@vem/db";
+import {
+  DrizzleDB,
+  eq,
+  inventories,
+  productVariants,
+  tryOnGarments,
+} from "@vem/db";
 import {
   adminCreateTryOnGarmentContract,
   adminGetTryOnGarmentContract,
@@ -980,7 +986,7 @@ describe("admin-try-on-garment-contract.e2e", { concurrent: false }, () => {
     }
   }, 60_000);
 
-  it.each(["confirm", "activate", "retire"] as const)(
+  it.each(["activate", "retire"] as const)(
     "returns the source committed after its %s pre-read",
     async (action) => {
       const token = await loginAndGetToken(api, appConfig);
@@ -1025,24 +1031,12 @@ describe("admin-try-on-garment-contract.e2e", { concurrent: false }, () => {
       const confirmationPath = `/api${adminTryOnGarmentConfirmationContract.path.replace(":id", garment.id)}`;
       const activationPath = `/api${adminTryOnGarmentActivationContract.path.replace(":id", garment.id)}`;
       const retirementPath = `/api${adminTryOnGarmentRetirementContract.path.replace(":id", garment.id)}`;
-      if (action !== "confirm") {
-        await api.post(confirmationPath).set(auth).send({}).expect(201);
-      }
+      await api.post(confirmationPath).set(auth).send({}).expect(201);
       if (action === "retire") {
         await api.post(activationPath).set(auth).send({}).expect(201);
       }
-      const path =
-        action === "confirm"
-          ? confirmationPath
-          : action === "activate"
-            ? activationPath
-            : retirementPath;
-      const expectedStatus =
-        action === "confirm"
-          ? "draft"
-          : action === "activate"
-            ? "active"
-            : "retired";
+      const path = action === "activate" ? activationPath : retirementPath;
+      const expectedStatus = action === "activate" ? "active" : "retired";
       const service = app.get(TryOnGarmentsService);
       const originalGetById = service.getById.bind(service);
       const preRead = deferred<void>();
@@ -1137,116 +1131,205 @@ describe("admin-try-on-garment-contract.e2e", { concurrent: false }, () => {
       (created.body as ApiResponse<unknown>).data,
     );
     const confirmationPath = `/api${adminTryOnGarmentConfirmationContract.path.replace(":id", garment.id)}`;
-    const service = app.get(TryOnGarmentsService);
-    const originalGetById = service.getById.bind(service);
-    const bothPreRead = deferred<void>();
-    const resume = deferred<void>();
-    let preReadCount = 0;
-    const getById = vi
-      .spyOn(service, "getById")
-      .mockImplementation(async (id) => {
-        const current = await originalGetById(id);
-        if (id === garment.id && preReadCount < 2) {
-          preReadCount += 1;
-          if (preReadCount === 2) bothPreRead.resolve();
-          await resume.promise;
-        }
-        return current;
-      });
-    try {
-      const first = api
-        .post(confirmationPath)
-        .set(auth)
-        .send({})
-        .then((response) => response);
-      const second = api
-        .post(confirmationPath)
-        .set(auth)
-        .send({})
-        .then((response) => response);
-      await bothPreRead.promise;
-      resume.resolve();
-      const [firstResponse, secondResponse] = await Promise.all([
-        first,
-        second,
-      ]);
-      expect(firstResponse.status).toBe(201);
-      expect(secondResponse.status).toBe(201);
-      const firstConfirmed =
-        adminTryOnGarmentConfirmationContract.responseSchema.parse(
-          (firstResponse.body as ApiResponse<unknown>).data,
-        );
-      const secondConfirmed =
-        adminTryOnGarmentConfirmationContract.responseSchema.parse(
-          (secondResponse.body as ApiResponse<unknown>).data,
-        );
-      expect(firstConfirmed.confirmedAt).toEqual(secondConfirmed.confirmedAt);
+    const first = api
+      .post(confirmationPath)
+      .set(auth)
+      .send({})
+      .then((response) => response);
+    const second = api
+      .post(confirmationPath)
+      .set(auth)
+      .send({})
+      .then((response) => response);
+    const [firstResponse, secondResponse] = await Promise.all([first, second]);
+    expect(firstResponse.status).toBe(201);
+    expect(secondResponse.status).toBe(201);
+    const firstConfirmed =
+      adminTryOnGarmentConfirmationContract.responseSchema.parse(
+        (firstResponse.body as ApiResponse<unknown>).data,
+      );
+    const secondConfirmed =
+      adminTryOnGarmentConfirmationContract.responseSchema.parse(
+        (secondResponse.body as ApiResponse<unknown>).data,
+      );
+    expect(firstConfirmed.confirmedAt).toEqual(secondConfirmed.confirmedAt);
 
-      const countConfirmAudits = async () => {
-        const audits = await api
-          .get(`/api/audit-logs?resourceId=${garment.id}&page=1&pageSize=100`)
-          .set(auth)
-          .expect(200);
-        return (
-          audits.body as ApiResponse<{
-            items: Array<{ action: string }>;
-          }>
-        ).data.items.filter(
-          (entry) => entry.action === "try_on_garments.source.confirm",
-        ).length;
-      };
-      expect(await countConfirmAudits()).toBe(1);
-      const activated = await api
-        .post(
-          `/api${adminTryOnGarmentActivationContract.path.replace(":id", garment.id)}`,
-        )
+    const countConfirmAudits = async () => {
+      const audits = await api
+        .get(`/api/audit-logs?resourceId=${garment.id}&page=1&pageSize=100`)
         .set(auth)
-        .send({})
-        .expect(201);
-      expect(
-        adminTryOnGarmentActivationContract.responseSchema.parse(
-          (activated.body as ApiResponse<unknown>).data,
-        ).confirmedAt,
-      ).toEqual(firstConfirmed.confirmedAt);
-      const activeLateConfirmation = await api
-        .post(confirmationPath)
-        .set(auth)
-        .send({})
-        .expect(201);
-      expect(
-        adminTryOnGarmentConfirmationContract.responseSchema.parse(
-          (activeLateConfirmation.body as ApiResponse<unknown>).data,
-        ),
-      ).toMatchObject({
-        status: "active",
-        confirmedAt: firstConfirmed.confirmedAt,
-      });
-      expect(await countConfirmAudits()).toBe(1);
+        .expect(200);
+      return (
+        audits.body as ApiResponse<{
+          items: Array<{ action: string }>;
+        }>
+      ).data.items.filter(
+        (entry) => entry.action === "try_on_garments.source.confirm",
+      ).length;
+    };
+    expect(await countConfirmAudits()).toBe(1);
+    const activated = await api
+      .post(
+        `/api${adminTryOnGarmentActivationContract.path.replace(":id", garment.id)}`,
+      )
+      .set(auth)
+      .send({})
+      .expect(201);
+    expect(
+      adminTryOnGarmentActivationContract.responseSchema.parse(
+        (activated.body as ApiResponse<unknown>).data,
+      ).confirmedAt,
+    ).toEqual(firstConfirmed.confirmedAt);
+    const activeLateConfirmation = await api
+      .post(confirmationPath)
+      .set(auth)
+      .send({})
+      .expect(201);
+    expect(
+      adminTryOnGarmentConfirmationContract.responseSchema.parse(
+        (activeLateConfirmation.body as ApiResponse<unknown>).data,
+      ),
+    ).toMatchObject({
+      status: "active",
+      confirmedAt: firstConfirmed.confirmedAt,
+    });
+    expect(await countConfirmAudits()).toBe(1);
 
-      await api
-        .post(
-          `/api${adminTryOnGarmentRetirementContract.path.replace(":id", garment.id)}`,
-        )
+    await api
+      .post(
+        `/api${adminTryOnGarmentRetirementContract.path.replace(":id", garment.id)}`,
+      )
+      .set(auth)
+      .send({})
+      .expect(201);
+    const retiredLateConfirmation = await api
+      .post(confirmationPath)
+      .set(auth)
+      .send({})
+      .expect(201);
+    expect(
+      adminTryOnGarmentConfirmationContract.responseSchema.parse(
+        (retiredLateConfirmation.body as ApiResponse<unknown>).data,
+      ),
+    ).toMatchObject({
+      status: "retired",
+      confirmedAt: firstConfirmed.confirmedAt,
+    });
+    expect(await countConfirmAudits()).toBe(1);
+  }, 60_000);
+
+  it("returns the locked current source and association snapshot for a stale confirmed read", async () => {
+    const token = await loginAndGetToken(api, appConfig);
+    const auth = { Authorization: `Bearer ${token}` };
+    const product = await api
+      .post("/api/products")
+      .set(auth)
+      .send({ name: "确认快照锁商品", status: "draft", sortOrder: 0 })
+      .expect(201);
+    const productId = (product.body as ApiResponse<{ id: string }>).data.id;
+    const createVariant = async (sku: string, size: string) => {
+      const response = await api
+        .post("/api/product-variants")
         .set(auth)
-        .send({})
+        .send({ productId, sku, size, color: "蓝色", priceCents: 1000 })
         .expect(201);
-      const retiredLateConfirmation = await api
-        .post(confirmationPath)
+      return (response.body as ApiResponse<{ id: string }>).data.id;
+    };
+    const source = async (name: string) => {
+      const response = await api
+        .post(`/api${adminTryOnGarmentUploadContract.path}`)
         .set(auth)
-        .send({})
+        .attach("file", rgbaPng(768, 1024, 0), {
+          filename: name,
+          contentType: "image/png",
+        })
         .expect(201);
-      expect(
-        adminTryOnGarmentConfirmationContract.responseSchema.parse(
-          (retiredLateConfirmation.body as ApiResponse<unknown>).data,
-        ),
-      ).toMatchObject({
-        status: "retired",
-        confirmedAt: firstConfirmed.confirmedAt,
-      });
-      expect(await countConfirmAudits()).toBe(1);
-    } finally {
-      getById.mockRestore();
-    }
+      return adminTryOnGarmentUploadContract.responseSchema.parse(
+        (response.body as ApiResponse<unknown>).data,
+      );
+    };
+    const smallId = await createVariant("CONFIRM-S", "S");
+    const largeId = await createVariant("CONFIRM-L", "L");
+    const sourceA = await source("confirm-source-a.png");
+    const created = await api
+      .post(`/api${adminCreateTryOnGarmentContract.path}`)
+      .set(auth)
+      .send({
+        productId,
+        colorLabel: "蓝色",
+        sourceMediaAssetId: sourceA.id,
+        template: "tshirt_short_sleeve",
+      })
+      .expect(201);
+    const garment = adminCreateTryOnGarmentContract.responseSchema.parse(
+      (created.body as ApiResponse<unknown>).data,
+    );
+    const confirmationPath = `/api${adminTryOnGarmentConfirmationContract.path.replace(":id", garment.id)}`;
+    await api.post(confirmationPath).set(auth).send({}).expect(201);
+    await api
+      .post(
+        `/api${adminTryOnGarmentActivationContract.path.replace(":id", garment.id)}`,
+      )
+      .set(auth)
+      .send({})
+      .expect(201);
+    await api
+      .put(
+        `/api${adminTryOnGarmentAssociationContract.path.replace(":id", garment.id)}`,
+      )
+      .set(auth)
+      .send({ variantIds: [smallId] })
+      .expect(200);
+
+    const sourceB = await source("confirm-source-b.png");
+    const mutationReady = deferred<void>();
+    const commitMutation = deferred<void>();
+    const mutation = db.client.transaction(async (tx) => {
+      await tx
+        .select({ id: tryOnGarments.id })
+        .from(tryOnGarments)
+        .where(eq(tryOnGarments.id, garment.id))
+        .for("update", { of: tryOnGarments });
+      await tx
+        .update(tryOnGarments)
+        .set({
+          sourceMediaAssetId: sourceB.id,
+          template: "tshirt_long_sleeve",
+          updatedAt: new Date(),
+        })
+        .where(eq(tryOnGarments.id, garment.id));
+      await tx
+        .update(productVariants)
+        .set({ tryOnGarmentId: null, updatedAt: new Date() })
+        .where(eq(productVariants.tryOnGarmentId, garment.id));
+      await tx
+        .update(productVariants)
+        .set({ tryOnGarmentId: garment.id, updatedAt: new Date() })
+        .where(eq(productVariants.id, largeId));
+      mutationReady.resolve();
+      await commitMutation.promise;
+    });
+    await mutationReady.promise;
+    const confirmation = api
+      .post(confirmationPath)
+      .set(auth)
+      .send({})
+      .then((response) => response);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    commitMutation.resolve();
+    await mutation;
+    const response = await confirmation;
+    expect(response.status).toBe(201);
+    expect(
+      adminTryOnGarmentConfirmationContract.responseSchema.parse(
+        (response.body as ApiResponse<unknown>).data,
+      ),
+    ).toMatchObject({
+      status: "active",
+      sourceMediaAsset: { id: sourceB.id },
+      template: "tshirt_long_sleeve",
+      associatedVariantIds: [largeId],
+    });
   }, 60_000);
 
   it("caps a product at 256 garments, including concurrent final creates", async () => {
