@@ -264,6 +264,8 @@ pub struct CatalogSnapshot {
     pub last_updated_at: Option<String>,
     pub source: String,
     pub last_error: Option<String>,
+    #[serde(skip)]
+    media_reconcile_token: String,
 }
 
 #[derive(Clone)]
@@ -350,6 +352,7 @@ impl RuntimeStatusCache {
                 last_updated_at: None,
                 source: "uninitialized".to_string(),
                 last_error: None,
+                media_reconcile_token: String::new(),
             })),
             environment: Arc::new(tokio::sync::RwLock::new(
                 vending_core::environment::EnvironmentHeartbeatCache::default(),
@@ -1410,20 +1413,43 @@ async fn refresh_catalog(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
                 "generation": generation,
                 "interests": descriptors,
             });
-            let media_error = match serde_json::from_value::<
+            let reconcile_request = serde_json::from_value::<
                 daemon_ipc_contracts::ManagedMediaReconcileRequest,
             >(reconcile_value)
-            {
-                Ok(reconcile_request) => ctx
-                    .media_cache
-                    .reconcile_boundary(reconcile_request)
-                    .await
-                    .err(),
-                Err(_) => Some("catalog media reconciliation contract is invalid".to_string()),
+            .map_err(|_| "catalog media reconciliation contract is invalid".to_string());
+            // Product presentation becomes current before any cache directory
+            // operation.  Media warming is deliberately a degraded
+            // background concern and cannot hold catalog POST or sale-view.
+            let media_reconcile_token = uuid::Uuid::new_v4().simple().to_string();
+            let value = CatalogSnapshot {
+                items,
+                cached: true,
+                last_updated_at: Some(crate::state::store::now_iso()),
+                source: "backend".to_string(),
+                last_error: None,
+                media_reconcile_token: media_reconcile_token.clone(),
             };
-            if let Some(error) = &media_error {
-                let reason = catalog_media_failure_reason(error);
-                for item in &mut items {
+            // Descriptor extraction is intentionally best effort: malformed media
+            // degrades its presentation projection and never rejects catalog data.
+            *ctx.ui.status_cache.catalog.write().await = value.clone();
+            let catalog = ctx.ui.status_cache.catalog.clone();
+            let media_cache = ctx.media_cache.clone();
+            tokio::spawn(async move {
+                let media_error = match reconcile_request {
+                    Ok(request) => media_cache.reconcile_boundary(request).await.err(),
+                    Err(error) => Some(error),
+                };
+                let Some(error) = media_error else {
+                    return;
+                };
+                let mut current = catalog.write().await;
+                // A late failure belongs only to the catalog revision which
+                // scheduled it; a newer catalog must never inherit it.
+                if current.media_reconcile_token != media_reconcile_token {
+                    return;
+                }
+                let reason = catalog_media_failure_reason(&error);
+                for item in &mut current.items {
                     let Some(object) = item.as_object_mut() else {
                         continue;
                     };
@@ -1437,17 +1463,8 @@ async fn refresh_catalog(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
                         );
                     }
                 }
-            }
-            let value = CatalogSnapshot {
-                items,
-                cached: true,
-                last_updated_at: Some(crate::state::store::now_iso()),
-                source: "backend".to_string(),
-                last_error: media_error,
-            };
-            // Descriptor extraction is intentionally best effort: malformed media
-            // degrades its presentation projection and never rejects catalog data.
-            *ctx.ui.status_cache.catalog.write().await = value.clone();
+                current.last_error = Some(error);
+            });
             Json(value).into_response()
         }
         Err(error) => error_response(StatusCode::BAD_GATEWAY, "catalog_refresh_failed", error),
@@ -1495,25 +1512,35 @@ async fn sale_view(State(ctx): State<IpcContext>, headers: HeaderMap) -> impl In
                 else {
                     continue;
                 };
-                let Some(descriptor) = source.get("coverImageMedia") else {
-                    continue;
-                };
-                let Some(digest) = descriptor.get("digest").and_then(serde_json::Value::as_str)
-                else {
-                    continue;
-                };
-                let projection = media.iter().find(|asset| asset.descriptor.digest == digest);
+                let descriptor = source
+                    .get("coverImageMedia")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                let projection = descriptor
+                    .get("digest")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|digest| {
+                        media.iter().find(|asset| asset.descriptor.digest == digest)
+                    });
+                // Source diagnostics describe boundary and adoption failures
+                // before a digest can have a cache projection.  A projection
+                // may refine that reason, but must never erase the source.
+                let diagnostic = projection
+                    .and_then(|asset| {
+                        asset.diagnostic.as_ref().map(|message| {
+                            serde_json::json!({
+                                "reason": asset.diagnostic_reason.as_deref().unwrap_or("download_failed"),
+                                "message": message,
+                            })
+                        })
+                    })
+                    .or_else(|| source.get("coverImageMediaDiagnostic").cloned());
                 overlays.insert(
                     format!("{product_id}:{variant_id}"),
                     serde_json::json!({
                         "coverImageMedia": descriptor,
                         "coverImageReadyUrl": projection.and_then(|asset| asset.ready_url.clone()),
-                        "coverImageMediaDiagnostic": projection.and_then(|asset| {
-                            asset.diagnostic.as_ref().map(|message| serde_json::json!({
-                                "reason": asset.diagnostic_reason.as_deref().unwrap_or("download_failed"),
-                                "message": message,
-                            }))
-                        }),
+                        "coverImageMediaDiagnostic": diagnostic,
                     }),
                 );
             }
@@ -3887,6 +3914,7 @@ mod tests {
         body::Body,
         http::{Method, Request, StatusCode},
     };
+    use tokio::sync::Notify;
     use tower::ServiceExt;
     use wiremock::{
         matchers::{body_json, method, path},
@@ -4147,8 +4175,34 @@ mod tests {
             catalog["items"][0]["coverImageMediaDiagnostic"]["reason"],
             "descriptor_invalid"
         );
+        let mut reconciled_catalog = catalog.clone();
+        for _ in 0..40 {
+            let response = build_router(ctx.clone())
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri("/v1/catalog")
+                        .header(AUTHORIZATION, "Bearer test-token")
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("snapshot response");
+            reconciled_catalog = serde_json::from_slice(
+                &axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .expect("body"),
+            )
+            .expect("catalog json");
+            if reconciled_catalog["items"][1]["coverImageMediaDiagnostic"]["reason"]
+                == "cache_budget_exceeded"
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
         assert_eq!(
-            catalog["items"][1]["coverImageMediaDiagnostic"]["reason"],
+            reconciled_catalog["items"][1]["coverImageMediaDiagnostic"]["reason"],
             "cache_budget_exceeded"
         );
         assert_eq!(
@@ -4166,6 +4220,255 @@ mod tests {
                 .status(),
             StatusCode::OK
         );
+    }
+
+    #[tokio::test]
+    async fn catalog_post_and_concurrent_sale_view_do_not_wait_for_hung_media_work() {
+        struct HungFetcher(Arc<Notify>);
+        #[async_trait]
+        impl crate::managed_media::MediaFetcher for HungFetcher {
+            async fn fetch_to(
+                &self,
+                _: &crate::managed_media::MediaDescriptor,
+                _: &Path,
+            ) -> Result<crate::managed_media::MediaFetchResult, String> {
+                self.0.notified().await;
+                unreachable!("test fetch is intentionally hung")
+            }
+        }
+        let server = MockServer::start().await;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (mut ctx, _) = test_context(temp.path().join("daemon"), server.uri()).await;
+        let profile: daemon_ipc_contracts::MachineProvisioningProfile =
+            serde_json::from_value(claim_profile(&server.uri())).expect("profile");
+        ctx.runtime_sources
+            .clean_runtime_configuration()
+            .accept_profile(&profile)
+            .await
+            .expect("accepted profile");
+        ctx.ui
+            .backend
+            .set_access_token_for_tests("catalog-test-token")
+            .await;
+        let block_fetch = Arc::new(Notify::new());
+        ctx.media_cache = crate::managed_media::ManagedMediaCache::new(
+            temp.path().join("hung-media-cache"),
+            "http://127.0.0.1:1234",
+            Arc::new(HungFetcher(block_fetch)),
+        )
+        .expect("media cache");
+        let bytes = b"\x89PNG\r\n\x1a\nhung".to_vec();
+        let descriptor = serde_json::to_value(ready_media_descriptor(&bytes)).expect("descriptor");
+        let product_id = "550e8400-e29b-41d4-a716-446655440024";
+        let variant_id = "550e8400-e29b-41d4-a716-446655440023";
+        ctx.state
+            .apply_planogram(MachinePlanogramInput {
+                planogram_version: "PLAN-MEDIA-ASYNC".to_string(),
+                source: "test".to_string(),
+                applied_by: None,
+                slots: vec![MachinePlanogramSlotInput {
+                    slot_id: "550e8400-e29b-41d4-a716-446655440021".to_string(),
+                    row_no: 1,
+                    cell_no: 1,
+                    capacity: 8,
+                    par_level: 6,
+                    inventory_id: "550e8400-e29b-41d4-a716-446655440022".to_string(),
+                    variant_id: variant_id.to_string(),
+                    product_id: product_id.to_string(),
+                    product_name: "Current product".to_string(),
+                    product_description: None,
+                    cover_image_url: Some(
+                        "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content"
+                            .to_string(),
+                    ),
+                    try_on_silhouette_url: None,
+                    category_id: None,
+                    category_name: None,
+                    sku: "CURRENT-001".to_string(),
+                    size: None,
+                    color: None,
+                    price_cents: 200,
+                    product_sort_order: 1,
+                    target_gender: None,
+                }],
+            })
+            .await
+            .expect("planogram");
+        ctx.state
+            .record_stock_movement(StockMovementInput {
+                movement_id: "MEDIA-ASYNC-STOCK".to_string(),
+                planogram_version: "PLAN-MEDIA-ASYNC".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440021".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 1,
+                source: "test".to_string(),
+                attributed_to: None,
+            })
+            .await
+            .expect("stock");
+        Mock::given(method("GET"))
+            .and(path("/machines/VEM-CLAIM-01/catalog"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{
+                    "productId": product_id,
+                    "variantId": variant_id,
+                    "name": "Current product",
+                    "coverImageMedia": descriptor,
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let catalog = tokio::time::timeout(
+            Duration::from_millis(100),
+            build_router(ctx.clone()).oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/catalog")
+                    .header(AUTHORIZATION, "Bearer test-token")
+                    .body(Body::empty())
+                    .expect("catalog request"),
+            ),
+        )
+        .await
+        .expect("catalog must not wait for media")
+        .expect("catalog response");
+        assert_eq!(catalog.status(), StatusCode::OK);
+        let sale_view = tokio::time::timeout(
+            Duration::from_millis(100),
+            build_router(ctx).oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/sale-view")
+                    .header(AUTHORIZATION, "Bearer test-token")
+                    .body(Body::empty())
+                    .expect("sale-view request"),
+            ),
+        )
+        .await
+        .expect("sale-view must not wait for media")
+        .expect("sale-view response");
+        let sale_view: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(sale_view.into_body(), usize::MAX)
+                .await
+                .expect("body"),
+        )
+        .expect("sale view json");
+        assert_eq!(sale_view["items"][0]["productName"], "Current product");
+        assert_eq!(sale_view["items"][0]["saleableStock"], 1);
+    }
+
+    #[tokio::test]
+    async fn actual_sale_view_keeps_invalid_catalog_media_diagnostic_without_a_digest() {
+        let server = MockServer::start().await;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (ctx, _) = test_context(temp.path().join("daemon"), server.uri()).await;
+        let profile: daemon_ipc_contracts::MachineProvisioningProfile =
+            serde_json::from_value(claim_profile(&server.uri())).expect("profile");
+        ctx.runtime_sources
+            .clean_runtime_configuration()
+            .accept_profile(&profile)
+            .await
+            .expect("accepted profile");
+        ctx.ui
+            .backend
+            .set_access_token_for_tests("catalog-test-token")
+            .await;
+        let product_id = "550e8400-e29b-41d4-a716-446655440034";
+        let variant_id = "550e8400-e29b-41d4-a716-446655440033";
+        ctx.state
+            .apply_planogram(MachinePlanogramInput {
+                planogram_version: "PLAN-MEDIA-DIAGNOSTIC".to_string(),
+                source: "test".to_string(),
+                applied_by: None,
+                slots: vec![MachinePlanogramSlotInput {
+                    slot_id: "550e8400-e29b-41d4-a716-446655440031".to_string(),
+                    row_no: 1,
+                    cell_no: 1,
+                    capacity: 8,
+                    par_level: 6,
+                    inventory_id: "550e8400-e29b-41d4-a716-446655440032".to_string(),
+                    variant_id: variant_id.to_string(),
+                    product_id: product_id.to_string(),
+                    product_name: "Checkout remains available".to_string(),
+                    product_description: None,
+                    cover_image_url: Some(
+                        "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content"
+                            .to_string(),
+                    ),
+                    try_on_silhouette_url: None,
+                    category_id: None,
+                    category_name: None,
+                    sku: "DIAGNOSTIC-001".to_string(),
+                    size: None,
+                    color: None,
+                    price_cents: 200,
+                    product_sort_order: 1,
+                    target_gender: None,
+                }],
+            })
+            .await
+            .expect("planogram");
+        ctx.state
+            .record_stock_movement(StockMovementInput {
+                movement_id: "MEDIA-DIAGNOSTIC-STOCK".to_string(),
+                planogram_version: "PLAN-MEDIA-DIAGNOSTIC".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440031".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 1,
+                source: "test".to_string(),
+                attributed_to: None,
+            })
+            .await
+            .expect("stock");
+        Mock::given(method("GET"))
+            .and(path("/machines/VEM-CLAIM-01/catalog"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{
+                    "productId": product_id,
+                    "variantId": variant_id,
+                    "name": "Checkout remains available",
+                    "coverImageMedia": { "id": "not-a-media-id" },
+                }]
+            })))
+            .mount(&server)
+            .await;
+        let catalog = build_router(ctx.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/catalog")
+                    .header(AUTHORIZATION, "Bearer test-token")
+                    .body(Body::empty())
+                    .expect("catalog request"),
+            )
+            .await
+            .expect("catalog response");
+        assert_eq!(catalog.status(), StatusCode::OK);
+        let sale_view = build_router(ctx)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/sale-view")
+                    .header(AUTHORIZATION, "Bearer test-token")
+                    .body(Body::empty())
+                    .expect("sale-view request"),
+            )
+            .await
+            .expect("sale-view response");
+        let sale_view: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(sale_view.into_body(), usize::MAX)
+                .await
+                .expect("body"),
+        )
+        .expect("sale view json");
+        let item = &sale_view["items"][0];
+        assert_eq!(item["coverImageMedia"], serde_json::Value::Null);
+        assert_eq!(
+            item["coverImageMediaDiagnostic"]["reason"],
+            "descriptor_invalid"
+        );
+        assert_eq!(item["saleableStock"], 1, "media did not block checkout");
     }
 
     #[test]

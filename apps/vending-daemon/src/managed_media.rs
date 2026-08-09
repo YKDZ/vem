@@ -87,18 +87,14 @@ pub fn parse_media_descriptor_boundary(
     Ok(descriptor)
 }
 
-/// Canonical object collection used by catalog generation derivation.  This is
-/// intentionally the same normalization that reconciliation, receipts and
-/// snapshots use, so duplicate source references cannot mint a different
-/// generation for unchanged immutable cache objects.
+/// Canonical source collection used by catalog generation derivation.  The
+/// generation fences source-set adoption, not only bytes: adding a second
+/// current source for an existing digest must schedule a fresh warm attempt.
+/// The complete sorted candidates retain all identity, reference and facts.
 pub fn canonical_media_objects(
     descriptors: Vec<MediaDescriptor>,
 ) -> Result<Vec<MediaDescriptor>, String> {
-    Ok(normalize_interest_set(descriptors)?
-        .objects
-        .into_iter()
-        .map(|object| object.descriptor)
-        .collect())
+    Ok(normalize_interest_set(descriptors)?.candidates)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +111,25 @@ pub trait MediaFetcher: Send + Sync {
         descriptor: &MediaDescriptor,
         staging: &Path,
     ) -> Result<MediaFetchResult, String>;
+}
+
+/// The manifest replacement is durable only after the parent directory has
+/// been flushed.  Keeping this small boundary injectable lets the cache prove
+/// that a post-rename flush failure is never acknowledged as an adoption.
+#[async_trait]
+pub(crate) trait ManifestDirectorySync: Send + Sync {
+    async fn sync(&self, directory: &Path) -> Result<(), String>;
+}
+
+struct PlatformManifestDirectorySync;
+
+#[async_trait]
+impl ManifestDirectorySync for PlatformManifestDirectorySync {
+    async fn sync(&self, directory: &Path) -> Result<(), String> {
+        crate::platform_fs::sync_directory(directory)
+            .await
+            .map_err(|error| format!("sync manifest parent directory: {error}"))
+    }
 }
 
 pub struct BackendMediaFetcher {
@@ -198,6 +213,7 @@ pub struct ManagedMediaCache {
     read_url_base: Arc<std::sync::RwLock<String>>,
     grant: Arc<String>,
     fetcher: Arc<dyn MediaFetcher>,
+    manifest_directory_sync: Arc<dyn ManifestDirectorySync>,
     state: Arc<Mutex<CacheState>>,
     /// Serializes the complete durable adoption transaction.  It deliberately
     /// does not guard reads or warming: only next-state construction, manifest
@@ -246,6 +262,20 @@ impl ManagedMediaCache {
         root: impl Into<PathBuf>,
         read_url_base: impl Into<String>,
         fetcher: Arc<dyn MediaFetcher>,
+    ) -> Result<Self, String> {
+        Self::new_with_manifest_directory_sync(
+            root,
+            read_url_base,
+            fetcher,
+            Arc::new(PlatformManifestDirectorySync),
+        )
+    }
+
+    pub(crate) fn new_with_manifest_directory_sync(
+        root: impl Into<PathBuf>,
+        read_url_base: impl Into<String>,
+        fetcher: Arc<dyn MediaFetcher>,
+        manifest_directory_sync: Arc<dyn ManifestDirectorySync>,
     ) -> Result<Self, String> {
         let root = root.into();
         fs::create_dir_all(&root).map_err(|error| format!("create media cache: {error}"))?;
@@ -335,6 +365,7 @@ impl ManagedMediaCache {
             )),
             grant: Arc::new(uuid::Uuid::new_v4().to_string()),
             fetcher,
+            manifest_directory_sync,
             state: Arc::new(Mutex::new(initial_state)),
             reconcile_gate: Arc::new(Mutex::new(())),
             queue: Arc::new(Mutex::new(VecDeque::new())),
@@ -428,7 +459,7 @@ impl ManagedMediaCache {
                 generation: generation.clone(),
                 assets: interest.candidates.clone(),
             };
-            self.persist_manifest(&manifest)?;
+            self.persist_manifest(&manifest).await?;
             let mut state = self.state.lock().await;
             if state.epoch != epoch {
                 continue;
@@ -549,6 +580,7 @@ impl ManagedMediaCache {
         }
         entry.leases += 1;
         entry.last_used = SystemTime::now();
+        state.epoch = state.epoch.wrapping_add(1);
         let path = self.content_path(digest);
         drop(state);
         let entry = self.state.lock().await;
@@ -578,6 +610,7 @@ impl ManagedMediaCache {
     }
 
     pub async fn cleanup_bounded(&self, max_remove: usize) -> usize {
+        let _publication_gate = self.reconcile_gate.lock().await;
         self.remove_untracked_files().await;
         let mut candidates = {
             let state = self.state.lock().await;
@@ -610,6 +643,7 @@ impl ManagedMediaCache {
             {
                 removed += 1;
                 disk_bytes = disk_bytes.saturating_sub(object_bytes);
+                state.epoch = state.epoch.wrapping_add(1);
             }
         }
         removed
@@ -679,7 +713,7 @@ impl ManagedMediaCache {
         self.root.join(format!("{}.bin", object_key(digest)))
     }
 
-    fn persist_manifest(&self, manifest: &ActiveMediaManifest) -> Result<(), String> {
+    async fn persist_manifest(&self, manifest: &ActiveMediaManifest) -> Result<(), String> {
         let temp = self.root.join(format!(
             ".active-media.{}.tmp",
             uuid::Uuid::new_v4().simple()
@@ -691,7 +725,10 @@ impl ManagedMediaCache {
         .map_err(|error| format!("manifest persistence: {error}"))?;
         let target = self.root.join("active-media.json");
         atomic_replace(&temp, &target).map_err(|error| format!("manifest persistence: {error}"))?;
-        sync_parent_dir(&self.root);
+        self.manifest_directory_sync
+            .sync(self.root.as_ref())
+            .await
+            .map_err(|error| format!("manifest persistence: {error}"))?;
         Ok(())
     }
 
@@ -743,7 +780,10 @@ impl ManagedMediaCache {
         self.staging.lock().await.insert(stage.clone());
         let mut failures = Vec::new();
         let mut result = Err("managed media has no candidate source".to_string());
-        for candidate in &job.candidates {
+        let mut candidates = job.candidates.clone();
+        let mut candidate_index = 0;
+        while let Some(candidate) = candidates.get(candidate_index) {
+            candidate_index += 1;
             result = self
                 .fetcher
                 .fetch_to(candidate, &stage)
@@ -756,7 +796,34 @@ impl ManagedMediaCache {
                 });
             match &result {
                 Ok(()) => break,
-                Err(error) => failures.push(format!("{}: {error}", candidate.reference)),
+                Err(error) => {
+                    failures.push(format!("{}: {error}", candidate.reference));
+                    // Refreshes may add a source for the same immutable
+                    // object while this fetch is in flight.  Continue from
+                    // the latest current candidate set rather than allowing
+                    // an obsolete job snapshot to suppress the fallback.
+                    if let Some(latest) = self
+                        .state
+                        .lock()
+                        .await
+                        .entries
+                        .get(&job.descriptor.digest)
+                        .filter(|entry| {
+                            entry.active
+                                && media_identity(&entry.descriptor)
+                                    == media_identity(&job.descriptor)
+                                && entry.warming_generation.as_deref()
+                                    == Some(job.generation.as_str())
+                        })
+                        .map(|entry| entry.candidates.clone())
+                    {
+                        for source in latest {
+                            if !candidates.contains(&source) {
+                                candidates.push(source);
+                            }
+                        }
+                    }
+                }
             }
         }
         if result.is_err() && !failures.is_empty() {
@@ -771,6 +838,11 @@ impl ManagedMediaCache {
                 // replacement itself must never run under the Tokio mutex:
                 // snapshots and sale-view stay responsive while large objects
                 // are being published.
+                // Reconciliation, publication and cleanup share this short
+                // gate.  Once a job has passed its current fence, no newer
+                // adoption can publish or reclaim the digest until the same
+                // job has atomically replaced the file and marked it ready.
+                let _publication_gate = self.reconcile_gate.lock().await;
                 let current = {
                     let state = self.state.lock().await;
                     state
@@ -827,16 +899,13 @@ impl ManagedMediaCache {
                                 entry.diagnostic = Some(error);
                             }
                         }
+                        state.epoch = state.epoch.wrapping_add(1);
                     }
                 } else {
-                    // A late completion may have published after its
-                    // generation was replaced.  Remove its unreferenced
-                    // target immediately so it cannot become an orphan.
-                    if publish.is_ok() {
-                        let _ = fs::remove_file(self.content_path(&job.descriptor.digest));
-                    } else {
-                        let _ = fs::remove_file(&stage);
-                    }
+                    // A stale job owns only its staging path.  In particular
+                    // it must never bare-delete a digest-addressed target:
+                    // that target may already be the newer publisher's file.
+                    let _ = fs::remove_file(&stage);
                 }
             }
             Err(error) => {
@@ -854,6 +923,7 @@ impl ManagedMediaCache {
                     entry.warming_generation = None;
                     entry.readiness = MediaReadiness::Unavailable;
                     entry.diagnostic = Some(error);
+                    state.epoch = state.epoch.wrapping_add(1);
                 }
             }
         }
@@ -966,14 +1036,6 @@ fn atomic_replace(from: &Path, to: &Path) -> Result<(), String> {
     }
     Ok(())
 }
-
-#[cfg(unix)]
-fn sync_parent_dir(path: &Path) {
-    let _ = fs::File::open(path).and_then(|dir| dir.sync_all());
-}
-
-#[cfg(not(unix))]
-fn sync_parent_dir(_: &Path) {}
 
 pub struct MediaReadLease {
     pub content_type: String,
@@ -1204,6 +1266,10 @@ fn verify_staged_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        sync::atomic::{AtomicUsize, Ordering},
+        time::Duration,
+    };
     use tempfile::tempdir;
 
     struct FixtureFetcher {
@@ -1715,6 +1781,123 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn post_rename_manifest_directory_sync_failure_is_not_adopted_or_receipted() {
+        struct FailingAfterRename;
+        #[async_trait]
+        impl ManifestDirectorySync for FailingAfterRename {
+            async fn sync(&self, _: &Path) -> Result<(), String> {
+                Err("injected post-rename directory sync failure".to_string())
+            }
+        }
+        let root = tempdir().expect("tempdir").keep();
+        let cache = ManagedMediaCache::new_with_manifest_directory_sync(
+            root.clone(),
+            "http://127.0.0.1:1234",
+            Arc::new(FixtureFetcher {
+                bytes: b"\x89PNG\r\n\x1a\nmanifest".to_vec(),
+                content_type: "image/png".to_string(),
+            }),
+            Arc::new(FailingAfterRename),
+        )
+        .expect("cache");
+        let request = serde_json::from_value(serde_json::json!({
+            "generation": "generation-not-durable",
+            "interests": [descriptor(b"\x89PNG\r\n\x1a\nmanifest", "image/png")],
+        }))
+        .expect("request");
+
+        assert!(cache.reconcile_boundary(request).await.is_err());
+        assert!(cache.snapshot().await.0.is_empty(), "memory did not swap");
+        assert!(cache.snapshot().await.1.is_empty());
+        assert!(
+            root.join("active-media.json").exists(),
+            "failure was after rename"
+        );
+    }
+
+    #[tokio::test]
+    async fn adoption_retries_its_swap_when_a_read_lease_arrives_during_manifest_persistence() {
+        struct SecondSyncBarrier {
+            calls: AtomicUsize,
+            persisted: Arc<Notify>,
+            release: Arc<Notify>,
+        }
+        #[async_trait]
+        impl ManifestDirectorySync for SecondSyncBarrier {
+            async fn sync(&self, _: &Path) -> Result<(), String> {
+                if self.calls.fetch_add(1, Ordering::SeqCst) == 1 {
+                    self.persisted.notify_one();
+                    self.release.notified().await;
+                }
+                Ok(())
+            }
+        }
+        let bytes = b"\x89PNG\r\n\x1a\nlease-merge".to_vec();
+        let descriptor = descriptor(&bytes, "image/png");
+        let persisted = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let cache = ManagedMediaCache::new_with_manifest_directory_sync(
+            tempdir().expect("tempdir").keep(),
+            "http://127.0.0.1:1234",
+            Arc::new(FixtureFetcher {
+                bytes,
+                content_type: "image/png".to_string(),
+            }),
+            Arc::new(SecondSyncBarrier {
+                calls: AtomicUsize::new(0),
+                persisted: persisted.clone(),
+                release: release.clone(),
+            }),
+        )
+        .expect("cache");
+        cache
+            .reconcile_active_catalog("generation-1", vec![descriptor.clone()])
+            .await
+            .expect("first adoption");
+        for _ in 0..40 {
+            if cache.snapshot().await.1[0].readiness == MediaReadiness::Ready {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let adoption = {
+            let cache = cache.clone();
+            let descriptor = descriptor.clone();
+            tokio::spawn(async move {
+                cache
+                    .reconcile_active_catalog("generation-2", vec![descriptor])
+                    .await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(1), persisted.notified())
+            .await
+            .expect("second manifest persistence reached barrier");
+        let lease = cache
+            .read_ready(
+                &cache.read_grant(),
+                MediaReadMethod::Get,
+                &descriptor.digest,
+            )
+            .await
+            .expect("lease while manifest is persisting");
+        release.notify_waiters();
+        adoption.await.expect("join").expect("second adoption");
+        assert_eq!(
+            cache
+                .state
+                .lock()
+                .await
+                .entries
+                .get(&descriptor.digest)
+                .expect("entry")
+                .leases,
+            1,
+            "the old clone did not erase the concurrent lease"
+        );
+        drop(lease);
+    }
+
+    #[tokio::test]
     async fn concurrent_reconciles_leave_manifest_memory_and_accepted_receipt_on_one_generation() {
         let root = tempdir().expect("tempdir").keep();
         let cache = ManagedMediaCache::new(
@@ -1829,6 +2012,237 @@ mod tests {
         let (generation, snapshot) = cache.snapshot().await;
         assert_eq!(generation, "generation-current");
         assert_eq!(snapshot[0].readiness, MediaReadiness::Ready);
+    }
+
+    #[tokio::test]
+    async fn adding_a_same_digest_source_mints_a_new_adoption_and_warms_it() {
+        struct AThenBFetcher {
+            bytes: Vec<u8>,
+            a_started: Arc<Notify>,
+            release_a: Arc<Notify>,
+            a_attempts: Arc<AtomicUsize>,
+            b_attempts: Arc<AtomicUsize>,
+        }
+        #[async_trait]
+        impl MediaFetcher for AThenBFetcher {
+            async fn fetch_to(
+                &self,
+                descriptor: &MediaDescriptor,
+                staging: &Path,
+            ) -> Result<MediaFetchResult, String> {
+                if descriptor.id.ends_with("124") {
+                    if self.a_attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                        self.a_started.notify_one();
+                        self.release_a.notified().await;
+                    }
+                    return Err("A is unavailable".to_string());
+                }
+                self.b_attempts.fetch_add(1, Ordering::SeqCst);
+                write_durable(staging, &self.bytes)?;
+                Ok(MediaFetchResult {
+                    content_type: "image/png".to_string(),
+                })
+            }
+        }
+
+        let bytes = b"\x89PNG\r\n\x1a\nsource-set".to_vec();
+        let a = descriptor(&bytes, "image/png");
+        let mut b = a.clone();
+        b.id = "550e8400-e29b-41d4-a716-446655440125".to_string();
+        b.reference = "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content".to_string();
+        let a_generation = format!(
+            "sha256:{:x}",
+            Sha256::digest(
+                serde_json::to_vec(&canonical_media_objects(vec![a.clone()]).unwrap()).unwrap()
+            )
+        );
+        let ab_generation = format!(
+            "sha256:{:x}",
+            Sha256::digest(
+                serde_json::to_vec(&canonical_media_objects(vec![a.clone(), b.clone()]).unwrap())
+                    .unwrap()
+            )
+        );
+        assert_ne!(a_generation, ab_generation, "candidate set fences adoption");
+
+        let a_started = Arc::new(Notify::new());
+        let release_a = Arc::new(Notify::new());
+        let a_attempts = Arc::new(AtomicUsize::new(0));
+        let b_attempts = Arc::new(AtomicUsize::new(0));
+        let cache = ManagedMediaCache::new(
+            tempdir().expect("tempdir").keep(),
+            "http://127.0.0.1:1234",
+            Arc::new(AThenBFetcher {
+                bytes,
+                a_started: a_started.clone(),
+                release_a: release_a.clone(),
+                a_attempts,
+                b_attempts: b_attempts.clone(),
+            }),
+        )
+        .expect("cache");
+        cache
+            .reconcile_active_catalog(a_generation, vec![a.clone()])
+            .await
+            .expect("A adoption");
+        tokio::time::timeout(Duration::from_secs(1), a_started.notified())
+            .await
+            .expect("A fetch started");
+        cache
+            .reconcile_active_catalog(ab_generation.clone(), vec![a, b.clone()])
+            .await
+            .expect("B adoption");
+        release_a.notify_waiters();
+        for _ in 0..40 {
+            let (generation, snapshot) = cache.snapshot().await;
+            if generation == ab_generation && snapshot[0].readiness == MediaReadiness::Ready {
+                assert!(b_attempts.load(Ordering::SeqCst) > 0, "B was attempted");
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("new candidate did not become ready");
+    }
+
+    #[tokio::test]
+    async fn stale_publisher_cannot_remove_a_new_same_digest_publication() {
+        struct RacingFetcher {
+            bytes: Vec<u8>,
+            a_staged: Arc<Notify>,
+            release_a: Arc<Notify>,
+            b_attempted: Arc<Notify>,
+        }
+        #[async_trait]
+        impl MediaFetcher for RacingFetcher {
+            async fn fetch_to(
+                &self,
+                descriptor: &MediaDescriptor,
+                staging: &Path,
+            ) -> Result<MediaFetchResult, String> {
+                write_durable(staging, &self.bytes)?;
+                if descriptor.id.ends_with("124") {
+                    self.a_staged.notify_one();
+                    self.release_a.notified().await;
+                } else {
+                    self.b_attempted.notify_one();
+                }
+                Ok(MediaFetchResult {
+                    content_type: "image/png".to_string(),
+                })
+            }
+        }
+        let root = tempdir().expect("tempdir").keep();
+        let bytes = b"\x89PNG\r\n\x1a\npublish-race".to_vec();
+        let a = descriptor(&bytes, "image/png");
+        let mut b = a.clone();
+        b.id = "550e8400-e29b-41d4-a716-446655440125".to_string();
+        b.reference = "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content".to_string();
+        let a_staged = Arc::new(Notify::new());
+        let release_a = Arc::new(Notify::new());
+        let b_attempted = Arc::new(Notify::new());
+        let cache = ManagedMediaCache::new(
+            root.clone(),
+            "http://127.0.0.1:1234",
+            Arc::new(RacingFetcher {
+                bytes: bytes.clone(),
+                a_staged: a_staged.clone(),
+                release_a: release_a.clone(),
+                b_attempted: b_attempted.clone(),
+            }),
+        )
+        .expect("cache");
+        cache
+            .reconcile_active_catalog("generation-a", vec![a])
+            .await
+            .expect("A adoption");
+        tokio::time::timeout(Duration::from_secs(1), a_staged.notified())
+            .await
+            .expect("A staged");
+        cache
+            .reconcile_active_catalog("generation-b", vec![b.clone()])
+            .await
+            .expect("B adoption");
+        tokio::time::timeout(Duration::from_secs(1), b_attempted.notified())
+            .await
+            .expect("B attempted");
+        release_a.notify_waiters();
+        for _ in 0..40 {
+            let (generation, snapshot) = cache.snapshot().await;
+            if generation == "generation-b" && snapshot[0].readiness == MediaReadiness::Ready {
+                assert_eq!(
+                    fs::read(cache.content_path(&b.digest)).expect("B file"),
+                    bytes
+                );
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("B publication was removed by stale A");
+    }
+
+    #[tokio::test]
+    async fn removed_generation_stale_job_leaves_no_published_or_staging_orphan() {
+        struct BlockedFetcher {
+            bytes: Vec<u8>,
+            staged: Arc<Notify>,
+            release: Arc<Notify>,
+        }
+        #[async_trait]
+        impl MediaFetcher for BlockedFetcher {
+            async fn fetch_to(
+                &self,
+                _: &MediaDescriptor,
+                staging: &Path,
+            ) -> Result<MediaFetchResult, String> {
+                write_durable(staging, &self.bytes)?;
+                self.staged.notify_one();
+                self.release.notified().await;
+                Ok(MediaFetchResult {
+                    content_type: "image/png".to_string(),
+                })
+            }
+        }
+        let root = tempdir().expect("tempdir").keep();
+        let bytes = b"\x89PNG\r\n\x1a\nremoved-generation".to_vec();
+        let descriptor = descriptor(&bytes, "image/png");
+        let staged = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let cache = ManagedMediaCache::new(
+            root.clone(),
+            "http://127.0.0.1:1234",
+            Arc::new(BlockedFetcher {
+                bytes,
+                staged: staged.clone(),
+                release: release.clone(),
+            }),
+        )
+        .expect("cache");
+        cache
+            .reconcile_active_catalog("generation-old", vec![descriptor.clone()])
+            .await
+            .expect("old adoption");
+        tokio::time::timeout(Duration::from_secs(1), staged.notified())
+            .await
+            .expect("old staging");
+        cache
+            .reconcile_active_catalog("generation-empty", vec![])
+            .await
+            .expect("remove old generation");
+        release.notify_waiters();
+        for _ in 0..40 {
+            if !root
+                .join(format!("{}.bin", object_key(&descriptor.digest)))
+                .exists()
+                && fs::read_dir(&root)
+                    .expect("cache root")
+                    .flatten()
+                    .all(|entry| !entry.file_name().to_string_lossy().ends_with(".tmp"))
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("stale job left an orphan");
     }
 
     #[tokio::test]
