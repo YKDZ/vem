@@ -1,7 +1,7 @@
 import type { CallHandler, ExecutionContext } from "@nestjs/common";
 
 import { Reflector } from "@nestjs/core";
-import { adminTryOnSilhouetteUploadContract } from "@vem/shared";
+import { adminProductDisplayImageUploadContract } from "@vem/shared";
 import { firstValueFrom, of } from "rxjs";
 import { describe, expect, it, vi } from "vitest";
 
@@ -20,7 +20,7 @@ const summary = {
 describe("ApiResponseInterceptor", () => {
   it("validates declared Admin responses before wrapping the envelope", async () => {
     const reflector = {
-      get: vi.fn().mockReturnValue(adminTryOnSilhouetteUploadContract),
+      get: vi.fn().mockReturnValue(adminProductDisplayImageUploadContract),
     } as unknown as Reflector;
     const interceptor = new ApiResponseInterceptor(reflector);
 
@@ -35,7 +35,7 @@ describe("ApiResponseInterceptor", () => {
 
   it("rejects database fields that leak across a declared response seam", async () => {
     const reflector = {
-      get: vi.fn().mockReturnValue(adminTryOnSilhouetteUploadContract),
+      get: vi.fn().mockReturnValue(adminProductDisplayImageUploadContract),
     } as unknown as Reflector;
     const interceptor = new ApiResponseInterceptor(reflector);
 

@@ -1,6 +1,9 @@
 import { z } from "zod";
 
-import { defineAdminEndpointContract } from "../admin-api-contract";
+import {
+  adminMultipartFileSchema,
+  defineAdminEndpointContract,
+} from "../admin-api-contract";
 import {
   tryOnGarmentStatusSchema,
   tryOnGarmentTemplateSchema,
@@ -16,36 +19,6 @@ const garmentPathParamsSchema = z.strictObject({ id: z.uuid() });
  * two transport representations in one contract rather than making the
  * request body an unconstrained unknown value.
  */
-export type AdminMultipartFile =
-  | Blob
-  | {
-      originalname: string;
-      mimetype: string;
-      size: number;
-      buffer: Uint8Array;
-    };
-
-export const adminMultipartFileSchema = z.custom<AdminMultipartFile>(
-  (value) => {
-    if (typeof Blob !== "undefined" && value instanceof Blob) return true;
-    if (!isRecord(value)) return false;
-    const candidate = value;
-    return (
-      typeof candidate.originalname === "string" &&
-      typeof candidate.mimetype === "string" &&
-      typeof candidate.size === "number" &&
-      Number.isInteger(candidate.size) &&
-      candidate.size >= 0 &&
-      candidate.buffer instanceof Uint8Array
-    );
-  },
-  "a multipart file is required",
-);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 export const tryOnGarmentMediaAssetSchema = z.strictObject({
   id: z.uuid(),
   managedReference: z
@@ -67,6 +40,16 @@ export const tryOnGarmentDraftRequestSchema = z.strictObject({
   template: tryOnGarmentTemplateSchema,
 });
 
+/** Association, not product metadata, is the sole eligibility authority. */
+export const tryOnGarmentVariantAssociationRequestSchema = z.strictObject({
+  variantIds: z.array(z.uuid()).min(1).max(256),
+});
+
+export const tryOnGarmentSourceReplacementRequestSchema = z.strictObject({
+  sourceMediaAssetId: z.uuid(),
+  template: tryOnGarmentTemplateSchema,
+});
+
 export const tryOnGarmentResponseSchema = z.strictObject({
   id: z.uuid(),
   productId: z.uuid(),
@@ -74,6 +57,8 @@ export const tryOnGarmentResponseSchema = z.strictObject({
   sourceMediaAsset: tryOnGarmentMediaAssetSchema,
   template: tryOnGarmentTemplateSchema,
   status: tryOnGarmentStatusSchema,
+  /** Bounded UI impact list; absence means no explicit eligibility. */
+  associatedVariantIds: z.array(z.uuid()).max(256).default([]),
   confirmedAt: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -119,23 +104,42 @@ export const adminTryOnGarmentConfirmationContract =
 
 /** Activating is distinct from source confirmation: only a confirmed draft
  * may become eligible through an explicit association. */
-export const adminTryOnGarmentActivationContract =
-  defineAdminEndpointContract({
-    method: "POST",
-    path: "/try-on-garments/:id/activation",
-    pathParamsSchema: garmentPathParamsSchema,
-    querySchema: noQuerySchema,
-    bodySchema: noBodySchema,
-    responseSchema: tryOnGarmentResponseSchema,
-  });
+export const adminTryOnGarmentActivationContract = defineAdminEndpointContract({
+  method: "POST",
+  path: "/try-on-garments/:id/activation",
+  pathParamsSchema: garmentPathParamsSchema,
+  querySchema: noQuerySchema,
+  bodySchema: noBodySchema,
+  responseSchema: tryOnGarmentResponseSchema,
+});
 
-export const adminTryOnGarmentRetirementContract =
-  defineAdminEndpointContract({
-    method: "POST",
-    path: "/try-on-garments/:id/retirement",
+export const adminTryOnGarmentRetirementContract = defineAdminEndpointContract({
+  method: "POST",
+  path: "/try-on-garments/:id/retirement",
+  pathParamsSchema: garmentPathParamsSchema,
+  querySchema: noQuerySchema,
+  bodySchema: noBodySchema,
+  responseSchema: tryOnGarmentResponseSchema,
+});
+
+export const adminTryOnGarmentAssociationContract = defineAdminEndpointContract(
+  {
+    method: "PUT",
+    path: "/try-on-garments/:id/variant-associations",
     pathParamsSchema: garmentPathParamsSchema,
     querySchema: noQuerySchema,
-    bodySchema: noBodySchema,
+    bodySchema: tryOnGarmentVariantAssociationRequestSchema,
+    responseSchema: tryOnGarmentResponseSchema,
+  },
+);
+
+export const adminTryOnGarmentSourceReplacementContract =
+  defineAdminEndpointContract({
+    method: "PATCH",
+    path: "/try-on-garments/:id/source",
+    pathParamsSchema: garmentPathParamsSchema,
+    querySchema: noQuerySchema,
+    bodySchema: tryOnGarmentSourceReplacementRequestSchema,
     responseSchema: tryOnGarmentResponseSchema,
   });
 
@@ -144,5 +148,11 @@ export type TryOnGarmentMediaAsset = z.infer<
 >;
 export type TryOnGarmentDraftRequest = z.infer<
   typeof tryOnGarmentDraftRequestSchema
+>;
+export type TryOnGarmentVariantAssociationRequest = z.infer<
+  typeof tryOnGarmentVariantAssociationRequestSchema
+>;
+export type TryOnGarmentSourceReplacementRequest = z.infer<
+  typeof tryOnGarmentSourceReplacementRequestSchema
 >;
 export type TryOnGarmentResponse = z.infer<typeof tryOnGarmentResponseSchema>;

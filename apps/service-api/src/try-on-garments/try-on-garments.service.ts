@@ -2,6 +2,8 @@ import type {
   TryOnGarmentDraftRequest,
   TryOnGarmentMediaAsset,
   TryOnGarmentResponse,
+  TryOnGarmentSourceReplacementRequest,
+  TryOnGarmentVariantAssociationRequest,
 } from "@vem/shared";
 
 import {
@@ -14,7 +16,10 @@ import {
   and,
   eq,
   isNull,
+  inArray,
   mediaAssets,
+  or,
+  productVariants,
   products,
   tryOnGarments,
   type DrizzleClient,
@@ -80,9 +85,19 @@ export class TryOnGarmentsService {
       .where(and(eq(tryOnGarments.id, id), isNull(tryOnGarments.deletedAt)))
       .limit(1);
     if (!row) throw new NotFoundException("Try-On Garment not found");
+    const associatedVariants = await this.db
+      .select({ id: productVariants.id })
+      .from(productVariants)
+      .where(
+        and(
+          eq(productVariants.tryOnGarmentId, id),
+          isNull(productVariants.deletedAt),
+        ),
+      );
     return toTryOnGarmentResponse(
       row.garment,
       toTryOnGarmentMediaAsset(row.sourceMediaAsset),
+      associatedVariants.map((variant) => variant.id),
     );
   }
 
@@ -115,7 +130,10 @@ export class TryOnGarmentsService {
     return toTryOnGarmentResponse(updated, garment.sourceMediaAsset);
   }
 
-  async activate(id: string, adminUserId: string): Promise<TryOnGarmentResponse> {
+  async activate(
+    id: string,
+    adminUserId: string,
+  ): Promise<TryOnGarmentResponse> {
     const garment = await this.getById(id);
     if (!garment.confirmedAt) {
       throw new BadRequestException("TRY_ON_GARMENT_CONFIRMATION_REQUIRED");
@@ -125,12 +143,23 @@ export class TryOnGarmentsService {
       throw new BadRequestException("TRY_ON_GARMENT_ACTIVATION_INVALID");
     }
     const updated = await this.db.transaction(async (tx) => {
-      const [active] = await tx.update(tryOnGarments)
+      const [active] = await tx
+        .update(tryOnGarments)
         .set({ status: "active", updatedAt: new Date() })
         .where(and(eq(tryOnGarments.id, id), isNull(tryOnGarments.deletedAt)))
         .returning();
       if (!active) throw new NotFoundException("Try-On Garment not found");
-      await this.auditService.record({ adminUserId, action: "try_on_garments.activate", resourceType: "try_on_garment", resourceId: active.id, beforeJson: tryOnGarmentAuditSnapshot({ ...active, status: "draft" }), afterJson: tryOnGarmentAuditSnapshot(active) }, tx);
+      await this.auditService.record(
+        {
+          adminUserId,
+          action: "try_on_garments.activate",
+          resourceType: "try_on_garment",
+          resourceId: active.id,
+          beforeJson: tryOnGarmentAuditSnapshot({ ...active, status: "draft" }),
+          afterJson: tryOnGarmentAuditSnapshot(active),
+        },
+        tx,
+      );
       return active;
     });
     return toTryOnGarmentResponse(updated, garment.sourceMediaAsset);
@@ -143,15 +172,150 @@ export class TryOnGarmentsService {
       throw new BadRequestException("TRY_ON_GARMENT_RETIREMENT_INVALID");
     }
     const updated = await this.db.transaction(async (tx) => {
-      const [retired] = await tx.update(tryOnGarments)
+      const [retired] = await tx
+        .update(tryOnGarments)
         .set({ status: "retired", updatedAt: new Date() })
         .where(and(eq(tryOnGarments.id, id), isNull(tryOnGarments.deletedAt)))
         .returning();
       if (!retired) throw new NotFoundException("Try-On Garment not found");
-      await this.auditService.record({ adminUserId, action: "try_on_garments.retire", resourceType: "try_on_garment", resourceId: retired.id, beforeJson: tryOnGarmentAuditSnapshot({ ...retired, status: "active" }), afterJson: tryOnGarmentAuditSnapshot(retired) }, tx);
+      await this.auditService.record(
+        {
+          adminUserId,
+          action: "try_on_garments.retire",
+          resourceType: "try_on_garment",
+          resourceId: retired.id,
+          beforeJson: tryOnGarmentAuditSnapshot({
+            ...retired,
+            status: "active",
+          }),
+          afterJson: tryOnGarmentAuditSnapshot(retired),
+        },
+        tx,
+      );
       return retired;
     });
     return toTryOnGarmentResponse(updated, garment.sourceMediaAsset);
+  }
+
+  /** Replaces the exact association set atomically; product traits are never
+   * consulted to infer an association. */
+  async replaceVariantAssociations(
+    id: string,
+    input: TryOnGarmentVariantAssociationRequest,
+    adminUserId: string,
+  ): Promise<TryOnGarmentResponse> {
+    if (new Set(input.variantIds).size !== input.variantIds.length) {
+      throw new BadRequestException("TRY_ON_GARMENT_VARIANT_DUPLICATE");
+    }
+    return await this.db.transaction(async (tx) => {
+      // The garment lock serializes replacement sets for this shared source;
+      // variant row locks make the product check and the following writes one
+      // decision, rather than a read-then-write race with variant edits.
+      const [row] = await tx
+        .select({ garment: tryOnGarments, sourceMediaAsset: mediaAssets })
+        .from(tryOnGarments)
+        .innerJoin(
+          mediaAssets,
+          eq(mediaAssets.id, tryOnGarments.sourceMediaAssetId),
+        )
+        .where(and(eq(tryOnGarments.id, id), isNull(tryOnGarments.deletedAt)))
+        .for("update", { of: tryOnGarments });
+      if (!row) throw new NotFoundException("Try-On Garment not found");
+
+      const variants = await tx
+        .select({
+          id: productVariants.id,
+          productId: productVariants.productId,
+        })
+        .from(productVariants)
+        .where(
+          and(
+            or(
+              inArray(productVariants.id, input.variantIds),
+              eq(productVariants.tryOnGarmentId, id),
+            ),
+            isNull(productVariants.deletedAt),
+          ),
+        )
+        .for("update");
+      const requested = variants.filter((variant) =>
+        input.variantIds.includes(variant.id),
+      );
+      if (
+        requested.length !== input.variantIds.length ||
+        requested.some((variant) => variant.productId !== row.garment.productId)
+      ) {
+        throw new BadRequestException(
+          "TRY_ON_GARMENT_VARIANT_PRODUCT_MISMATCH",
+        );
+      }
+
+      await tx
+        .update(productVariants)
+        .set({ tryOnGarmentId: null, updatedAt: new Date() })
+        .where(eq(productVariants.tryOnGarmentId, id));
+      await tx
+        .update(productVariants)
+        .set({ tryOnGarmentId: id, updatedAt: new Date() })
+        .where(inArray(productVariants.id, input.variantIds));
+      await this.auditService.record(
+        {
+          adminUserId,
+          action: "try_on_garments.variant_associations.replace",
+          resourceType: "try_on_garment",
+          resourceId: id,
+          afterJson: { variantIds: input.variantIds },
+        },
+        tx,
+      );
+      return toTryOnGarmentResponse(
+        row.garment,
+        toTryOnGarmentMediaAsset(row.sourceMediaAsset),
+        input.variantIds,
+      );
+    });
+  }
+
+  /** Validate the new immutable source before the sole garment row is changed,
+   * so every associated variant observes either the old or new reference. */
+  async replaceSource(
+    id: string,
+    input: TryOnGarmentSourceReplacementRequest,
+    adminUserId: string,
+  ): Promise<TryOnGarmentResponse> {
+    const current = await this.getById(id);
+    const sourceMediaAsset = await this.requireSourceMediaAsset(
+      input.sourceMediaAssetId,
+    );
+    const updated = await this.db.transaction(async (tx) => {
+      const [garment] = await tx
+        .update(tryOnGarments)
+        .set({
+          sourceMediaAssetId: input.sourceMediaAssetId,
+          template: input.template,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(tryOnGarments.id, id), isNull(tryOnGarments.deletedAt)))
+        .returning();
+      if (!garment) throw new NotFoundException("Try-On Garment not found");
+      await this.auditService.record(
+        {
+          adminUserId,
+          action: "try_on_garments.source.replace",
+          resourceType: "try_on_garment",
+          resourceId: id,
+          beforeJson: tryOnGarmentAuditSnapshot({
+            ...garment,
+            sourceMediaAssetId: current.sourceMediaAsset.id,
+            template: current.template,
+          }),
+          afterJson: tryOnGarmentAuditSnapshot(garment),
+        },
+        tx,
+      );
+      return garment;
+    });
+    return toTryOnGarmentResponse(updated, sourceMediaAsset);
   }
 
   private async requireProduct(id: string): Promise<void> {
@@ -221,6 +385,7 @@ function toTryOnGarmentMediaAsset(
 function toTryOnGarmentResponse(
   garment: typeof tryOnGarments.$inferSelect,
   sourceMediaAsset: TryOnGarmentMediaAsset,
+  associatedVariantIds: string[] = [],
 ): TryOnGarmentResponse {
   return tryOnGarmentResponseSchema.parse({
     id: garment.id,
@@ -229,6 +394,7 @@ function toTryOnGarmentResponse(
     sourceMediaAsset,
     template: garment.template,
     status: garment.status,
+    associatedVariantIds,
     confirmedAt: garment.confirmedAt?.toISOString() ?? null,
     createdAt: garment.createdAt.toISOString(),
     updatedAt: garment.updatedAt.toISOString(),

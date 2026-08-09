@@ -391,9 +391,10 @@ export const productVariants = t.pgTable(
     targetGender: t.varchar("target_gender", { length: 8 }),
     priceCents: t.integer("price_cents").notNull(),
     costCents: t.integer("cost_cents"),
-    tryOnSilhouetteMediaAssetId: t
-      .uuid("try_on_silhouette_media_asset_id")
-      .references(() => mediaAssets.id),
+    /** An explicit association is the only try-on eligibility authority. */
+    tryOnGarmentId: t
+      .uuid("try_on_garment_id")
+      .references(() => tryOnGarments.id),
     status: variantStatus("status").default("active").notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -403,9 +404,7 @@ export const productVariants = t.pgTable(
     t.uniqueIndex("product_variants_sku_unique").on(table.sku),
     t.index("product_variants_product_id_idx").on(table.productId),
     t.index("product_variants_status_idx").on(table.status),
-    t
-      .index("product_variants_try_on_silhouette_media_asset_id_idx")
-      .on(table.tryOnSilhouetteMediaAssetId),
+    t.index("product_variants_try_on_garment_id_idx").on(table.tryOnGarmentId),
     t.check(
       "product_variants_price_cents_non_negative",
       sql`${table.priceCents} >= 0`,

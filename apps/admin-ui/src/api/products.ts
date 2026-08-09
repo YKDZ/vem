@@ -1,14 +1,13 @@
 import type { z } from "zod";
 
 import {
-  adminProductListQuerySchema,
-  adminProductPageResponseSchema,
-  adminProductResponseSchema,
-  adminProductVariantPageResponseSchema,
-  adminProductVariantResponseSchema,
-  adminProductVariantListQuerySchema,
+  adminListProductsContract,
+  adminCreateProductContract,
+  adminUpdateProductContract,
+  adminListProductVariantsContract,
+  adminCreateProductVariantContract,
+  adminUpdateProductVariantContract,
   adminProductDisplayImageUploadContract,
-  adminTryOnSilhouetteUploadContract,
   createProductSchema,
   createProductVariantSchema,
   updateProductSchema,
@@ -23,12 +22,7 @@ import {
   type PageResult,
 } from "@vem/shared";
 
-import {
-  getContract,
-  patchContract,
-  postContract,
-  postAdminApiContract,
-} from "./request";
+import { callAdminEndpointContract } from "./request";
 
 export type MediaAssetSummary = AdminMediaAssetSummary;
 export type Product = AdminProductResponse;
@@ -39,87 +33,61 @@ export type { PageResult };
 export async function listProducts(
   query?: ProductQuery,
 ): Promise<AdminProductPageResponse> {
-  return await getContract(
-    "/products",
-    adminProductListQuerySchema,
-    adminProductPageResponseSchema,
-    query ?? {},
-  );
+  return await callAdminEndpointContract(adminListProductsContract, {
+    query: query ?? {},
+  });
 }
 
 export async function createProduct(
   body: z.input<typeof createProductSchema>,
 ): Promise<Product> {
-  return await postContract(
-    "/products",
-    createProductSchema,
-    adminProductResponseSchema,
-    body,
-  );
+  return await callAdminEndpointContract(adminCreateProductContract, { body });
 }
 
 export async function updateProduct(
   id: string,
   body: z.input<typeof updateProductSchema>,
 ): Promise<Product> {
-  return await patchContract(
-    `/products/${id}`,
-    updateProductSchema,
-    adminProductResponseSchema,
+  return await callAdminEndpointContract(adminUpdateProductContract, {
+    pathParams: { id },
     body,
-  );
+  });
 }
 
 export async function uploadProductDisplayImage(
   file: File,
 ): Promise<MediaAssetSummary> {
-  const body = new FormData();
-  body.append("file", file);
-  return await postAdminApiContract(
+  return await callAdminEndpointContract(
     adminProductDisplayImageUploadContract,
-    body,
+    {
+      body: { file },
+    },
   );
-}
-
-export async function uploadTryOnSilhouette(
-  file: File,
-): Promise<MediaAssetSummary> {
-  const body = new FormData();
-  body.append("file", file);
-  return await postAdminApiContract(adminTryOnSilhouetteUploadContract, body);
 }
 
 export async function listProductVariants(
   productId: string,
   query?: Omit<AdminProductVariantListQuery, "productId">,
 ): Promise<AdminProductVariantPageResponse> {
-  return await getContract(
-    "/product-variants",
-    adminProductVariantListQuerySchema,
-    adminProductVariantPageResponseSchema,
-    { productId, pageSize: 100, ...query },
-  );
+  return await callAdminEndpointContract(adminListProductVariantsContract, {
+    query: { productId, pageSize: 100, ...query },
+  });
 }
 
 export async function createProductVariant(
   body: z.input<typeof createProductVariantSchema>,
 ): Promise<ProductVariant> {
-  return await postContract(
-    "/product-variants",
-    createProductVariantSchema,
-    adminProductVariantResponseSchema,
+  return await callAdminEndpointContract(adminCreateProductVariantContract, {
     body,
-  );
+  });
 }
 
 export async function updateProductVariant(
   id: string,
   body: z.input<typeof updateProductVariantSchema>,
 ): Promise<ProductVariant> {
-  return await patchContract(
-    `/product-variants/${id}`,
-    updateProductVariantSchema,
-    adminProductVariantResponseSchema,
+  return await callAdminEndpointContract(adminUpdateProductVariantContract, {
+    pathParams: { id },
     body,
-  );
+  });
 }

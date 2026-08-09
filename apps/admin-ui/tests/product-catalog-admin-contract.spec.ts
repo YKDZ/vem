@@ -183,25 +183,7 @@ test.describe("Product Variant Catalog admin API contract", () => {
     const variantPriceInput = formItem(page, "售价(分)").locator("input");
     await variantPriceInput.fill("456");
     await variantPriceInput.blur();
-    const [silhouetteUploadResponse] = await Promise.all([
-      page.waitForResponse(
-        (response) =>
-          response.url().endsWith("/api/media-assets/try-on-silhouettes") &&
-          response.request().method() === "POST",
-      ),
-      editVariantModal.locator("input[type='file']").setInputFiles({
-        name: "silhouette.png",
-        mimeType: "image/png",
-        buffer: Buffer.from(
-          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
-          "base64",
-        ),
-      }),
-    ]);
-    expect(silhouetteUploadResponse.ok()).toBe(true);
-    await expect(editVariantModal.getByAltText(`${sku} 试穿剪影`)).toBeVisible({
-      timeout: 10_000,
-    });
+    await expect(editVariantModal.getByText("试穿剪影")).toHaveCount(0);
     const saveVariantButton = editVariantModal.getByRole("button", {
       name: /确\s*定/,
     });
@@ -229,9 +211,6 @@ test.describe("Product Variant Catalog admin API contract", () => {
       adminProductVariantResponseSchema,
     );
     expect(updatedVariant.priceCents).toBe(456);
-    expect(updatedVariant.tryOnSilhouetteMediaAsset).toEqual(
-      expect.any(Object),
-    );
     await monitor.assertNoFailures();
   });
 });

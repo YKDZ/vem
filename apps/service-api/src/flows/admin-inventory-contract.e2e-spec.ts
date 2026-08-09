@@ -9,7 +9,6 @@ import {
   adminProductDisplayImageUploadContract,
   adminProductResponseSchema,
   adminProductVariantResponseSchema,
-  adminTryOnSilhouetteUploadContract,
   parseAdminApiResponse,
 } from "@vem/shared";
 import request from "supertest";
@@ -75,10 +74,7 @@ describe("admin-inventory-contract.e2e", { concurrent: false }, () => {
 
     const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
     await Promise.all(
-      [
-        adminProductDisplayImageUploadContract,
-        adminTryOnSilhouetteUploadContract,
-      ].map(async (contract) => {
+      [adminProductDisplayImageUploadContract].map(async (contract) => {
         const uploadResponse = await api
           .post(`/api${contract.path}`)
           .set(auth)

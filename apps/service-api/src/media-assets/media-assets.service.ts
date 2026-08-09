@@ -15,7 +15,6 @@ import { AppConfigService } from "../config/app-config.service";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
 
 export const MAX_PRODUCT_DISPLAY_IMAGE_BYTES = 5 * 1024 * 1024;
-export const MAX_TRY_ON_SILHOUETTE_BYTES = MAX_PRODUCT_DISPLAY_IMAGE_BYTES;
 export const MAX_TRY_ON_GARMENT_BYTES = 5 * 1024 * 1024;
 export const MIN_TRY_ON_GARMENT_DIMENSION = 256;
 export const MAX_TRY_ON_GARMENT_DIMENSION = 4096;
@@ -30,18 +29,11 @@ const MANAGED_IMAGE_TYPES = new Map([
   ["image/png", { extension: ".png", matches: isPng }],
   ["image/webp", { extension: ".webp", matches: isWebp }],
 ]);
-type ManagedImagePurpose =
-  | "product_display_image"
-  | "try_on_silhouette"
-  | "try_on_garment";
+type ManagedImagePurpose = "product_display_image" | "try_on_garment";
 const MANAGED_IMAGE_PURPOSE_CONFIG = {
   product_display_image: {
     directory: "product-display-images",
     label: "Product display image",
-  },
-  try_on_silhouette: {
-    directory: "try-on-silhouettes",
-    label: "Try-on silhouette",
   },
   try_on_garment: {
     directory: "try-on-garments",
@@ -82,10 +74,6 @@ export class MediaAssetsService {
 
   async storeProductDisplayImage(file: UploadedImage | undefined) {
     return await this.storeManagedImage("product_display_image", file);
-  }
-
-  async storeTryOnSilhouette(file: UploadedImage | undefined) {
-    return await this.storeManagedImage("try_on_silhouette", file);
   }
 
   async storeTryOnGarment(file: UploadedImage | undefined) {

@@ -31,8 +31,6 @@ export type VariantForm = {
   color: string;
   barcode: string;
   targetGender: "male" | "female" | null;
-  tryOnSilhouetteMediaAssetId: string | null;
-  tryOnSilhouettePublicUrl: string | null;
 };
 
 function emptyStringToNull(value: string): string | null {
@@ -80,8 +78,6 @@ const variantFormSchema = z.strictObject({
   color: z.string(),
   barcode: z.string(),
   targetGender: z.enum(["male", "female"]).nullable(),
-  tryOnSilhouetteMediaAssetId: z.string().nullable(),
-  tryOnSilhouettePublicUrl: z.string().nullable(),
 });
 
 export function mapProductFormToContract(
@@ -112,7 +108,6 @@ export function mapVariantFormToContract(
     color: emptyStringToNull(parsedForm.color),
     barcode: emptyStringToNull(parsedForm.barcode),
     targetGender: parsedForm.targetGender,
-    tryOnSilhouetteMediaAssetId: parsedForm.tryOnSilhouetteMediaAssetId,
   } satisfies AdminCreateProductVariantRequest;
   return createProductVariantSchema.parse(contract);
 }
@@ -145,8 +140,5 @@ export function mapVariantResponseToForm(
     color: parsed.color ?? "",
     barcode: parsed.barcode ?? "",
     targetGender: parsed.targetGender,
-    tryOnSilhouetteMediaAssetId: parsed.tryOnSilhouetteMediaAssetId,
-    tryOnSilhouettePublicUrl:
-      parsed.tryOnSilhouetteMediaAsset?.publicUrl ?? null,
   };
 }

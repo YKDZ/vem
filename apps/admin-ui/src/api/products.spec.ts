@@ -1,10 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import {
-  patchContract,
-  postAdminApiContract,
-  postContract,
-} from "@/api/request";
+import { callAdminEndpointContract } from "@/api/request";
 
 import {
   createProduct,
@@ -12,17 +8,14 @@ import {
   updateProduct,
   updateProductVariant,
   uploadProductDisplayImage,
-  uploadTryOnSilhouette,
 } from "./products";
 
 vi.mock("@/api/request", () => ({
   getContract: vi
     .fn()
     .mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 20 }),
-  patchContract: vi.fn().mockResolvedValue({}),
+  callAdminEndpointContract: vi.fn().mockResolvedValue({}),
   post: vi.fn(),
-  postContract: vi.fn().mockResolvedValue({}),
-  postAdminApiContract: vi.fn().mockResolvedValue({}),
 }));
 
 describe("products api", () => {
@@ -38,17 +31,18 @@ describe("products api", () => {
       description: null,
     });
 
-    expect(postContract).toHaveBeenCalledWith(
-      "/products",
-      expect.any(Object),
-      expect.any(Object),
-      expect.objectContaining({ name: "Tea" }),
+    expect(callAdminEndpointContract).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ method: "POST", path: "/products" }),
+      { body: expect.objectContaining({ name: "Tea" }) },
     );
-    expect(patchContract).toHaveBeenCalledWith(
-      "/products/550e8400-e29b-41d4-a716-446655440001",
-      expect.any(Object),
-      expect.any(Object),
-      { description: null },
+    expect(callAdminEndpointContract).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ method: "PATCH", path: "/products/:id" }),
+      {
+        pathParams: { id: "550e8400-e29b-41d4-a716-446655440001" },
+        body: { description: null },
+      },
     );
   });
 
@@ -62,41 +56,39 @@ describe("products api", () => {
       costCents: null,
     });
 
-    expect(postContract).toHaveBeenCalledWith(
-      "/product-variants",
-      expect.any(Object),
-      expect.any(Object),
-      expect.objectContaining({ sku: "TEA-001" }),
+    expect(callAdminEndpointContract).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({ method: "POST", path: "/product-variants" }),
+      { body: expect.objectContaining({ sku: "TEA-001" }) },
     );
-    expect(patchContract).toHaveBeenCalledWith(
-      "/product-variants/550e8400-e29b-41d4-a716-446655440002",
-      expect.any(Object),
-      expect.any(Object),
-      { costCents: null },
+    expect(callAdminEndpointContract).toHaveBeenNthCalledWith(
+      4,
+      expect.objectContaining({
+        method: "PATCH",
+        path: "/product-variants/:id",
+      }),
+      {
+        pathParams: { id: "550e8400-e29b-41d4-a716-446655440002" },
+        body: { costCents: null },
+      },
     );
   });
 
-  it("parses media upload responses through the shared media asset summary schema", async () => {
+  it("uses the complete shared endpoint contract for media uploads", async () => {
     const file = new File(["image"], "product.png", { type: "image/png" });
 
     await uploadProductDisplayImage(file);
-    await uploadTryOnSilhouette(file);
 
-    expect(postAdminApiContract).toHaveBeenCalledWith(
+    expect(callAdminEndpointContract).toHaveBeenLastCalledWith(
       expect.objectContaining({
         method: "POST",
         path: "/media-assets/product-display-images",
+        pathParamsSchema: expect.any(Object),
+        querySchema: expect.any(Object),
+        bodySchema: expect.any(Object),
         responseSchema: expect.any(Object),
       }),
-      expect.any(FormData),
-    );
-    expect(postAdminApiContract).toHaveBeenCalledWith(
-      expect.objectContaining({
-        method: "POST",
-        path: "/media-assets/try-on-silhouettes",
-        responseSchema: expect.any(Object),
-      }),
-      expect.any(FormData),
+      { body: { file } },
     );
   });
 });

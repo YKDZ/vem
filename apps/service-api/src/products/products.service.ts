@@ -184,23 +184,8 @@ export class ProductsService {
     const whereClause = and(...filters);
 
     const rows = await this.db
-      .select({
-        variant: productVariants,
-        tryOnSilhouetteMediaAsset: {
-          id: mediaAssets.id,
-          publicUrl: mediaAssets.publicUrl,
-          contentType: mediaAssets.contentType,
-        },
-      })
+      .select({ variant: productVariants })
       .from(productVariants)
-      .leftJoin(
-        mediaAssets,
-        and(
-          eq(mediaAssets.id, productVariants.tryOnSilhouetteMediaAssetId),
-          eq(mediaAssets.purpose, "try_on_silhouette"),
-          isNull(mediaAssets.deletedAt),
-        ),
-      )
       .where(whereClause)
       .orderBy(desc(productVariants.createdAt))
       .limit(query.pageSize)
@@ -211,37 +196,21 @@ export class ProductsService {
       .where(whereClause);
 
     return toPageResult(
-      rows.map((row) =>
-        toAdminProductVariantResponse(
-          row.variant,
-          row.tryOnSilhouetteMediaAsset?.id
-            ? row.tryOnSilhouetteMediaAsset
-            : null,
-        ),
-      ),
+      rows.map((row) => toAdminProductVariantResponse(row.variant)),
       query,
       Number(totalRow.total),
     );
   }
 
   async createVariant(input: AdminCreateProductVariantRequest) {
-    const tryOnSilhouetteMediaAsset =
-      await this.requireVariantTryOnSilhouetteAsset(
-        input.tryOnSilhouetteMediaAssetId ?? null,
-      );
     const [created] = await this.db
       .insert(productVariants)
       .values(mapCreateVariantDtoToInsert(input))
       .returning();
-    return toAdminProductVariantResponse(created, tryOnSilhouetteMediaAsset);
+    return toAdminProductVariantResponse(created);
   }
 
   async updateVariant(id: string, input: AdminUpdateProductVariantRequest) {
-    const requestedTryOnSilhouetteMediaAsset =
-      await this.requireVariantTryOnSilhouetteAsset(
-        input.tryOnSilhouetteMediaAssetId ?? null,
-        "tryOnSilhouetteMediaAssetId" in input,
-      );
     const [updated] = await this.db
       .update(productVariants)
       .set(mapUpdateVariantDtoToPatch(input))
@@ -251,48 +220,6 @@ export class ProductsService {
     if (!updated) {
       throw new NotFoundException("Product variant not found");
     }
-    return toAdminProductVariantResponse(
-      updated,
-      requestedTryOnSilhouetteMediaAsset ??
-        (await this.findVariantTryOnSilhouetteAsset(
-          updated.tryOnSilhouetteMediaAssetId,
-        )),
-    );
-  }
-
-  private async requireVariantTryOnSilhouetteAsset(
-    id: string | null,
-    validate = true,
-  ): Promise<AdminMediaAssetSummary | null> {
-    if (!validate || id === null) return null;
-    const asset = await this.findVariantTryOnSilhouetteAsset(id);
-    if (!asset) {
-      throw new BadRequestException(
-        "Variant try-on silhouette media asset not found",
-      );
-    }
-    return asset;
-  }
-
-  private async findVariantTryOnSilhouetteAsset(
-    id: string | null,
-  ): Promise<AdminMediaAssetSummary | null> {
-    if (!id) return null;
-    const [asset] = await this.db
-      .select({
-        id: mediaAssets.id,
-        publicUrl: mediaAssets.publicUrl,
-        contentType: mediaAssets.contentType,
-      })
-      .from(mediaAssets)
-      .where(
-        and(
-          eq(mediaAssets.id, id),
-          eq(mediaAssets.purpose, "try_on_silhouette"),
-          isNull(mediaAssets.deletedAt),
-        ),
-      )
-      .limit(1);
-    return asset ?? null;
+    return toAdminProductVariantResponse(updated);
   }
 }

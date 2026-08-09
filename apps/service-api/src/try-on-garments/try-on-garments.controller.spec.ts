@@ -5,7 +5,9 @@ import {
   adminGetTryOnGarmentContract,
   adminTryOnGarmentConfirmationContract,
   adminTryOnGarmentActivationContract,
+  adminTryOnGarmentAssociationContract,
   adminTryOnGarmentRetirementContract,
+  adminTryOnGarmentSourceReplacementContract,
 } from "@vem/shared";
 import { describe, expect, it } from "vitest";
 
@@ -19,6 +21,8 @@ describe("TryOnGarmentsController endpoint binding", () => {
     ["confirm", adminTryOnGarmentConfirmationContract],
     ["activate", adminTryOnGarmentActivationContract],
     ["retire", adminTryOnGarmentRetirementContract],
+    ["replaceVariantAssociations", adminTryOnGarmentAssociationContract],
+    ["replaceSource", adminTryOnGarmentSourceReplacementContract],
   ] as const)(
     "binds %s route directly to its shared contract",
     (method, contract) => {
@@ -28,7 +32,7 @@ describe("TryOnGarmentsController endpoint binding", () => {
       );
       expect(Reflect.getMetadata(PATH_METADATA, handler)).toBe(contract.path);
       expect(Reflect.getMetadata(METHOD_METADATA, handler)).toBe(
-        contract.method === "GET" ? 0 : 1,
+        ({ GET: 0, POST: 1, PUT: 2, PATCH: 4 } as const)[contract.method],
       );
     },
   );

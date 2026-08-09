@@ -1,6 +1,9 @@
 import { z } from "zod";
 
-import { defineAdminApiResponseContract } from "../admin-api-contract";
+import {
+  adminMultipartFileSchema,
+  defineAdminEndpointContract,
+} from "../admin-api-contract";
 import { productStatusSchema, variantStatusSchema } from "../enums/catalog";
 import { createPageResultSchema, pageQuerySchema } from "./pagination";
 
@@ -35,7 +38,6 @@ const productVariantWriteFields = {
   priceCents: z.int().min(0),
   costCents: z.int().min(0).nullable().optional(),
   targetGender: z.enum(["male", "female"]).nullable().optional(),
-  tryOnSilhouetteMediaAssetId: z.uuid().nullable().optional(),
 };
 
 export const createProductVariantSchema = z.strictObject({
@@ -53,8 +55,6 @@ export const updateProductVariantSchema = z.strictObject({
   costCents: productVariantWriteFields.costCents,
   status: variantStatusSchema.optional(),
   targetGender: productVariantWriteFields.targetGender,
-  tryOnSilhouetteMediaAssetId:
-    productVariantWriteFields.tryOnSilhouetteMediaAssetId,
 });
 
 export const adminProductListQuerySchema = pageQuerySchema.extend({
@@ -73,16 +73,12 @@ export const adminMediaAssetSummarySchema = z.strictObject({
 });
 
 export const adminProductDisplayImageUploadContract =
-  defineAdminApiResponseContract({
+  defineAdminEndpointContract({
     method: "POST",
     path: "/media-assets/product-display-images",
-    responseSchema: adminMediaAssetSummarySchema,
-  });
-
-export const adminTryOnSilhouetteUploadContract =
-  defineAdminApiResponseContract({
-    method: "POST",
-    path: "/media-assets/try-on-silhouettes",
+    pathParamsSchema: z.strictObject({}),
+    querySchema: z.strictObject({}),
+    bodySchema: z.strictObject({ file: adminMultipartFileSchema }),
     responseSchema: adminMediaAssetSummarySchema,
   });
 
@@ -110,8 +106,6 @@ export const adminProductVariantResponseSchema = z.strictObject({
   costCents: z.int().min(0).nullable(),
   status: variantStatusSchema,
   targetGender: z.enum(["male", "female"]).nullable(),
-  tryOnSilhouetteMediaAssetId: z.uuid().nullable(),
-  tryOnSilhouetteMediaAsset: adminMediaAssetSummarySchema.nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -123,6 +117,60 @@ export const adminProductPageResponseSchema = createPageResultSchema(
 export const adminProductVariantPageResponseSchema = createPageResultSchema(
   adminProductVariantResponseSchema,
 );
+
+const noProductPathParamsSchema = z.strictObject({});
+const productIdPathParamsSchema = z.strictObject({ id: z.uuid() });
+const noProductQuerySchema = z.strictObject({});
+const noProductBodySchema = z.strictObject({});
+
+export const adminListProductsContract = defineAdminEndpointContract({
+  method: "GET",
+  path: "/products",
+  pathParamsSchema: noProductPathParamsSchema,
+  querySchema: adminProductListQuerySchema,
+  bodySchema: noProductBodySchema,
+  responseSchema: adminProductPageResponseSchema,
+});
+export const adminCreateProductContract = defineAdminEndpointContract({
+  method: "POST",
+  path: "/products",
+  pathParamsSchema: noProductPathParamsSchema,
+  querySchema: noProductQuerySchema,
+  bodySchema: createProductSchema,
+  responseSchema: adminProductResponseSchema,
+});
+export const adminUpdateProductContract = defineAdminEndpointContract({
+  method: "PATCH",
+  path: "/products/:id",
+  pathParamsSchema: productIdPathParamsSchema,
+  querySchema: noProductQuerySchema,
+  bodySchema: updateProductSchema,
+  responseSchema: adminProductResponseSchema,
+});
+export const adminListProductVariantsContract = defineAdminEndpointContract({
+  method: "GET",
+  path: "/product-variants",
+  pathParamsSchema: noProductPathParamsSchema,
+  querySchema: adminProductVariantListQuerySchema,
+  bodySchema: noProductBodySchema,
+  responseSchema: adminProductVariantPageResponseSchema,
+});
+export const adminCreateProductVariantContract = defineAdminEndpointContract({
+  method: "POST",
+  path: "/product-variants",
+  pathParamsSchema: noProductPathParamsSchema,
+  querySchema: noProductQuerySchema,
+  bodySchema: createProductVariantSchema,
+  responseSchema: adminProductVariantResponseSchema,
+});
+export const adminUpdateProductVariantContract = defineAdminEndpointContract({
+  method: "PATCH",
+  path: "/product-variants/:id",
+  pathParamsSchema: productIdPathParamsSchema,
+  querySchema: noProductQuerySchema,
+  bodySchema: updateProductVariantSchema,
+  responseSchema: adminProductVariantResponseSchema,
+});
 
 export type AdminCreateProductRequest = z.infer<typeof createProductSchema>;
 export type AdminUpdateProductRequest = z.infer<typeof updateProductSchema>;

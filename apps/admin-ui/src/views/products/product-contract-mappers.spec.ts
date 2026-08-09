@@ -40,8 +40,6 @@ describe("Product Variant Catalog form contract mappers", () => {
       color: "green",
       barcode: "",
       targetGender: null,
-      tryOnSilhouetteMediaAssetId: "550e8400-e29b-41d4-a716-446655440125",
-      tryOnSilhouettePublicUrl: "/api/media-assets/silhouette/content",
     };
 
     expect(mapVariantFormToContract(form)).toEqual({
@@ -54,7 +52,6 @@ describe("Product Variant Catalog form contract mappers", () => {
       color: "green",
       barcode: null,
       targetGender: null,
-      tryOnSilhouetteMediaAssetId: "550e8400-e29b-41d4-a716-446655440125",
     });
   });
 
@@ -81,8 +78,6 @@ describe("Product Variant Catalog form contract mappers", () => {
         color: "",
         barcode: "",
         targetGender: null,
-        tryOnSilhouetteMediaAssetId: null,
-        tryOnSilhouettePublicUrl: null,
       } as unknown as VariantForm),
     ).toMatchObject({ priceCents: 456, costCents: 123 });
   });
@@ -110,8 +105,6 @@ describe("Product Variant Catalog form contract mappers", () => {
         color: "",
         barcode: "",
         targetGender: null,
-        tryOnSilhouetteMediaAssetId: null,
-        tryOnSilhouettePublicUrl: null,
       } as unknown as VariantForm),
     ).toThrow();
 
@@ -126,8 +119,6 @@ describe("Product Variant Catalog form contract mappers", () => {
         color: "",
         barcode: "",
         targetGender: null,
-        tryOnSilhouetteMediaAssetId: null,
-        tryOnSilhouettePublicUrl: null,
       } as unknown as VariantForm),
     ).toMatchObject({ priceCents: 456, costCents: null });
   });
@@ -145,8 +136,6 @@ describe("Product Variant Catalog form contract mappers", () => {
         color: "green",
         barcode: null,
         targetGender: null,
-        tryOnSilhouetteMediaAssetId: null,
-        tryOnSilhouetteMediaAsset: null,
         createdAt: "2026-07-01T00:00:00.000Z",
         updatedAt: "2026-07-01T00:00:00.000Z",
       }),
@@ -160,8 +149,6 @@ describe("Product Variant Catalog form contract mappers", () => {
       color: "green",
       barcode: "",
       targetGender: null,
-      tryOnSilhouetteMediaAssetId: null,
-      tryOnSilhouettePublicUrl: null,
     });
   });
 

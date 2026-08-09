@@ -36,7 +36,6 @@ describe("Product Variant Catalog admin contract mappers", () => {
       priceCents: 300,
       costCents: null,
       status: "active",
-      tryOnSilhouetteMediaAssetId: null,
     });
 
     expect(insert).toEqual({
@@ -47,11 +46,10 @@ describe("Product Variant Catalog admin contract mappers", () => {
       barcode: null,
       priceCents: 300,
       costCents: null,
-      tryOnSilhouetteMediaAssetId: null,
       status: "active",
       targetGender: null,
     });
-    expect(insert).not.toHaveProperty("tryOnSilhouetteMediaAsset");
+    expect(insert).not.toHaveProperty("tryOnSilhouetteMediaAssetId");
   });
 
   it("keeps omitted and nullable variant cost distinct for update patches", () => {

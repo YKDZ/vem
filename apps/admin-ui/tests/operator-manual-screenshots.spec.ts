@@ -181,7 +181,6 @@ async function seedCatalogForScreenshots(page: Page): Promise<SeededCatalog> {
         color: "黑色",
         barcode: null,
         targetGender: null,
-        tryOnSilhouetteMediaAssetId: null,
       },
     },
   );

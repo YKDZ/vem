@@ -5,8 +5,12 @@ import {
   adminGetTryOnGarmentContract,
   adminTryOnGarmentConfirmationContract,
   adminTryOnGarmentActivationContract,
+  adminTryOnGarmentAssociationContract,
   adminTryOnGarmentRetirementContract,
+  adminTryOnGarmentSourceReplacementContract,
   type TryOnGarmentDraftRequest,
+  type TryOnGarmentSourceReplacementRequest,
+  type TryOnGarmentVariantAssociationRequest,
 } from "@vem/shared";
 
 import type { AuthenticatedAdmin } from "../common/request-user";
@@ -71,9 +75,15 @@ export class TryOnGarmentsController {
   @RequirePermissions("products.write")
   @AdminEndpointContract(adminTryOnGarmentActivationContract)
   async activate(
-    @Param(new ZodValidationPipe(adminTryOnGarmentActivationContract.pathParamsSchema))
+    @Param(
+      new ZodValidationPipe(
+        adminTryOnGarmentActivationContract.pathParamsSchema,
+      ),
+    )
     params: { id: string },
-    @Query(new ZodValidationPipe(adminTryOnGarmentActivationContract.querySchema))
+    @Query(
+      new ZodValidationPipe(adminTryOnGarmentActivationContract.querySchema),
+    )
     _query: Record<string, never>,
     @Body(new ZodValidationPipe(adminTryOnGarmentActivationContract.bodySchema))
     _body: Record<string, never>,
@@ -85,14 +95,76 @@ export class TryOnGarmentsController {
   @RequirePermissions("products.write")
   @AdminEndpointContract(adminTryOnGarmentRetirementContract)
   async retire(
-    @Param(new ZodValidationPipe(adminTryOnGarmentRetirementContract.pathParamsSchema))
+    @Param(
+      new ZodValidationPipe(
+        adminTryOnGarmentRetirementContract.pathParamsSchema,
+      ),
+    )
     params: { id: string },
-    @Query(new ZodValidationPipe(adminTryOnGarmentRetirementContract.querySchema))
+    @Query(
+      new ZodValidationPipe(adminTryOnGarmentRetirementContract.querySchema),
+    )
     _query: Record<string, never>,
     @Body(new ZodValidationPipe(adminTryOnGarmentRetirementContract.bodySchema))
     _body: Record<string, never>,
     @CurrentAdmin() admin: AuthenticatedAdmin,
   ) {
     return await this.tryOnGarmentsService.retire(params.id, admin.id);
+  }
+
+  @RequirePermissions("products.write")
+  @AdminEndpointContract(adminTryOnGarmentAssociationContract)
+  async replaceVariantAssociations(
+    @Param(
+      new ZodValidationPipe(
+        adminTryOnGarmentAssociationContract.pathParamsSchema,
+      ),
+    )
+    params: { id: string },
+    @Query(
+      new ZodValidationPipe(adminTryOnGarmentAssociationContract.querySchema),
+    )
+    _query: Record<string, never>,
+    @Body(
+      new ZodValidationPipe(adminTryOnGarmentAssociationContract.bodySchema),
+    )
+    body: TryOnGarmentVariantAssociationRequest,
+    @CurrentAdmin() admin: AuthenticatedAdmin,
+  ) {
+    return await this.tryOnGarmentsService.replaceVariantAssociations(
+      params.id,
+      body,
+      admin.id,
+    );
+  }
+
+  @RequirePermissions("products.write")
+  @AdminEndpointContract(adminTryOnGarmentSourceReplacementContract)
+  async replaceSource(
+    @Param(
+      new ZodValidationPipe(
+        adminTryOnGarmentSourceReplacementContract.pathParamsSchema,
+      ),
+    )
+    params: { id: string },
+    @Query(
+      new ZodValidationPipe(
+        adminTryOnGarmentSourceReplacementContract.querySchema,
+      ),
+    )
+    _query: Record<string, never>,
+    @Body(
+      new ZodValidationPipe(
+        adminTryOnGarmentSourceReplacementContract.bodySchema,
+      ),
+    )
+    body: TryOnGarmentSourceReplacementRequest,
+    @CurrentAdmin() admin: AuthenticatedAdmin,
+  ) {
+    return await this.tryOnGarmentsService.replaceSource(
+      params.id,
+      body,
+      admin.id,
+    );
   }
 }

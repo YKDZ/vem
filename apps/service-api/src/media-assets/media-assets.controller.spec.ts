@@ -1,13 +1,13 @@
 import "reflect-metadata";
 import {
   adminProductDisplayImageUploadContract,
-  adminTryOnSilhouetteUploadContract,
+  adminTryOnGarmentUploadContract,
 } from "@vem/shared";
 import { describe, expect, it, vi } from "vitest";
 
 import { REQUIRED_PERMISSIONS_KEY } from "../access/permissions.decorator";
 import { IS_PUBLIC_KEY } from "../auth/public.decorator";
-import { ADMIN_RESPONSE_CONTRACT } from "../common/admin-response-contract.decorator";
+import { ADMIN_ENDPOINT_CONTRACT } from "../common/admin-endpoint-contract.decorator";
 import { MediaAssetsController } from "./media-assets.controller";
 
 describe("MediaAssetsController", () => {
@@ -26,30 +26,52 @@ describe("MediaAssetsController", () => {
     ).toBe(true);
   });
 
-  it("declares shared response contracts at both upload seams", () => {
+  it.each([
+    ["uploadProductDisplayImage", adminProductDisplayImageUploadContract],
+    ["uploadTryOnGarment", adminTryOnGarmentUploadContract],
+  ] as const)(
+    "binds %s directly to its complete shared endpoint contract",
+    (method, contract) => {
+      expect(
+        Reflect.getMetadata(
+          ADMIN_ENDPOINT_CONTRACT,
+          MediaAssetsController.prototype[method],
+        ),
+      ).toBe(contract);
+    },
+  );
+
+  it("does not retain the deleted silhouette upload operation", () => {
+    expect(MediaAssetsController.prototype).not.toHaveProperty(
+      "uploadTryOnSilhouette",
+    );
+  });
+
+  it("declares the complete product display upload contract", () => {
+    expect(
+      adminProductDisplayImageUploadContract.bodySchema.safeParse({
+        file: { unexpected: true },
+      }).success,
+    ).toBe(false);
+    expect(
+      adminProductDisplayImageUploadContract.bodySchema.safeParse({
+        file: new Blob([new Uint8Array([1])], { type: "image/png" }),
+      }).success,
+    ).toBe(true);
     expect(
       Reflect.getMetadata(
-        ADMIN_RESPONSE_CONTRACT,
+        ADMIN_ENDPOINT_CONTRACT,
         MediaAssetsController.prototype.uploadProductDisplayImage,
       ),
     ).toBe(adminProductDisplayImageUploadContract);
-    expect(
-      Reflect.getMetadata(
-        ADMIN_RESPONSE_CONTRACT,
-        MediaAssetsController.prototype.uploadTryOnSilhouette,
-      ),
-    ).toBe(adminTryOnSilhouetteUploadContract);
   });
 
-  it.each([
-    ["uploadProductDisplayImage", "storeProductDisplayImage"],
-    ["uploadTryOnSilhouette", "storeTryOnSilhouette"],
-  ] as const)(
+  it.each([["uploadProductDisplayImage", "storeProductDisplayImage"]] as const)(
     "projects %s responses to the strict admin media summary contract",
     async (controllerMethod, serviceMethod) => {
       const stored = {
         id: "550e8400-e29b-41d4-a716-446655440125",
-        purpose: "try_on_silhouette",
+        purpose: "product_display_image",
         storageKey: "private/storage-key.png",
         sha256: "private-digest",
         publicUrl:
@@ -58,7 +80,6 @@ describe("MediaAssetsController", () => {
       };
       const mediaAssetsService = {
         storeProductDisplayImage: vi.fn().mockResolvedValue(stored),
-        storeTryOnSilhouette: vi.fn().mockResolvedValue(stored),
       };
       const controller = new MediaAssetsController(mediaAssetsService as never);
 

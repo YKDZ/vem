@@ -8,11 +8,6 @@ const displayImageAsset = {
   publicUrl: "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
   contentType: "image/jpeg",
 };
-const tryOnSilhouetteAsset = {
-  id: "550e8400-e29b-41d4-a716-446655440125",
-  publicUrl: "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
-  contentType: "image/png",
-};
 const createdAt = new Date("2026-07-01T00:00:00.000Z");
 const updatedAt = new Date("2026-07-01T00:00:00.000Z");
 
@@ -44,7 +39,6 @@ function variantRow(overrides: Record<string, unknown> = {}) {
     costCents: null,
     status: "active",
     targetGender: null,
-    tryOnSilhouetteMediaAssetId: null,
     createdAt,
     updatedAt,
     ...overrides,
@@ -148,16 +142,11 @@ describe("ProductsService", () => {
     );
   });
 
-  it("validates and returns a bound variant try-on silhouette on create", async () => {
-    const returning = vi.fn().mockResolvedValue([
-      variantRow({
-        tryOnSilhouetteMediaAssetId: tryOnSilhouetteAsset.id,
-      }),
-    ]);
+  it("creates variants without any legacy media binding", async () => {
+    const returning = vi.fn().mockResolvedValue([variantRow()]);
     const values = vi.fn().mockReturnValue({ returning });
     const insert = vi.fn().mockReturnValue({ values });
     const db = {
-      select: vi.fn().mockReturnValueOnce(selectRows([tryOnSilhouetteAsset])),
       insert,
     };
     const service = new ProductsService(db as never);
@@ -167,89 +156,54 @@ describe("ProductsService", () => {
       sku: "TSHIRT-M-WHITE",
       priceCents: 1000,
       status: "active",
-      tryOnSilhouetteMediaAssetId: tryOnSilhouetteAsset.id,
     });
 
     expect(values).toHaveBeenCalledWith(
       expect.objectContaining({
-        tryOnSilhouetteMediaAssetId: tryOnSilhouetteAsset.id,
+        productId: "550e8400-e29b-41d4-a716-446655440224",
       }),
     );
     expect(variant).toEqual(
       expect.objectContaining({
-        tryOnSilhouetteMediaAssetId: tryOnSilhouetteAsset.id,
-        tryOnSilhouetteMediaAsset: tryOnSilhouetteAsset,
+        productId: "550e8400-e29b-41d4-a716-446655440224",
       }),
     );
   });
 
-  it("rejects binding a missing, deleted, or wrong-purpose variant try-on silhouette", async () => {
-    const db = {
-      select: vi.fn().mockReturnValueOnce(selectRows([])),
-      insert: vi.fn(),
-    };
-    const service = new ProductsService(db as never);
-
-    await expect(
-      service.createVariant({
-        productId: "550e8400-e29b-41d4-a716-446655440224",
-        sku: "TSHIRT-M-WHITE",
-        priceCents: 1000,
-        status: "active",
-        tryOnSilhouetteMediaAssetId: tryOnSilhouetteAsset.id,
-      }),
-    ).rejects.toBeInstanceOf(BadRequestException);
-    expect(db.insert).not.toHaveBeenCalled();
-  });
-
-  it("returns the bound variant try-on silhouette on update writes", async () => {
-    const updated = variantRow({
-      tryOnSilhouetteMediaAssetId: tryOnSilhouetteAsset.id,
-    });
+  it("updates variants without a legacy media binding", async () => {
+    const updated = variantRow();
     const returning = vi.fn().mockResolvedValue([updated]);
     const set = vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({ returning }),
     });
     const db = {
-      select: vi.fn().mockReturnValueOnce(selectRows([tryOnSilhouetteAsset])),
       update: vi.fn().mockReturnValue({ set }),
     };
     const service = new ProductsService(db as never);
 
     await expect(
-      service.updateVariant(updated.id, {
-        tryOnSilhouetteMediaAssetId: tryOnSilhouetteAsset.id,
-      }),
+      service.updateVariant(updated.id, { sku: "TSHIRT-L-WHITE" }),
     ).resolves.toEqual(
       expect.objectContaining({
         id: updated.id,
-        tryOnSilhouetteMediaAssetId: tryOnSilhouetteAsset.id,
-        tryOnSilhouetteMediaAsset: tryOnSilhouetteAsset,
+        sku: "TSHIRT-M-WHITE",
       }),
     );
     expect(set).toHaveBeenCalledWith(
       expect.objectContaining({
-        tryOnSilhouetteMediaAssetId: tryOnSilhouetteAsset.id,
+        sku: "TSHIRT-L-WHITE",
       }),
     );
   });
 
-  it("returns the bound variant try-on silhouette on list reads", async () => {
-    const variant = variantRow({
-      tryOnSilhouetteMediaAssetId: tryOnSilhouetteAsset.id,
-    });
+  it("lists variants without legacy media fields", async () => {
+    const variant = variantRow();
     const listQuery = {
       from: vi.fn(() => listQuery),
-      leftJoin: vi.fn(() => listQuery),
       where: vi.fn(() => listQuery),
       orderBy: vi.fn(() => listQuery),
       limit: vi.fn(() => listQuery),
-      offset: vi.fn(async () => [
-        {
-          variant,
-          tryOnSilhouetteMediaAsset: tryOnSilhouetteAsset,
-        },
-      ]),
+      offset: vi.fn(async () => [{ variant }]),
     };
     const countQuery = {
       from: vi.fn(() => ({
@@ -274,8 +228,6 @@ describe("ProductsService", () => {
       items: [
         {
           id: variant.id,
-          tryOnSilhouetteMediaAssetId: tryOnSilhouetteAsset.id,
-          tryOnSilhouetteMediaAsset: tryOnSilhouetteAsset,
         },
       ],
     });

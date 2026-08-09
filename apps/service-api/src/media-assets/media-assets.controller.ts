@@ -7,7 +7,6 @@ import {
   Header,
   Param,
   ParseUUIDPipe,
-  Post,
   Query,
   Res,
   UploadedFile,
@@ -18,17 +17,14 @@ import { ApiBearerAuth, ApiConsumes, ApiTags } from "@nestjs/swagger";
 import {
   adminProductDisplayImageUploadContract,
   adminTryOnGarmentUploadContract,
-  adminTryOnSilhouetteUploadContract,
 } from "@vem/shared";
 
 import { RequirePermissions } from "../access/permissions.decorator";
 import { Public } from "../auth/public.decorator";
 import { AdminEndpointContract } from "../common/admin-endpoint-contract.decorator";
-import { AdminResponseContract } from "../common/admin-response-contract.decorator";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
 import {
   MAX_PRODUCT_DISPLAY_IMAGE_BYTES,
-  MAX_TRY_ON_SILHOUETTE_BYTES,
   MAX_TRY_ON_GARMENT_BYTES,
   MediaAssetsService,
   managedMediaAssetReference,
@@ -52,9 +48,8 @@ export class MediaAssetsController {
   constructor(private readonly mediaAssetsService: MediaAssetsService) {}
 
   @RequirePermissions("products.write")
-  @Post(adminProductDisplayImageUploadContract.path)
+  @AdminEndpointContract(adminProductDisplayImageUploadContract)
   @ApiConsumes("multipart/form-data")
-  @AdminResponseContract(adminProductDisplayImageUploadContract)
   @UseInterceptors(
     FileInterceptor("file", {
       limits: { fileSize: MAX_PRODUCT_DISPLAY_IMAGE_BYTES },
@@ -66,24 +61,6 @@ export class MediaAssetsController {
   ) {
     return toAdminMediaAssetSummary(
       await this.mediaAssetsService.storeProductDisplayImage(file),
-    );
-  }
-
-  @RequirePermissions("products.write")
-  @Post(adminTryOnSilhouetteUploadContract.path)
-  @ApiConsumes("multipart/form-data")
-  @AdminResponseContract(adminTryOnSilhouetteUploadContract)
-  @UseInterceptors(
-    FileInterceptor("file", {
-      limits: { fileSize: MAX_TRY_ON_SILHOUETTE_BYTES },
-    }),
-  )
-  async uploadTryOnSilhouette(
-    @UploadedFile()
-    file: UploadedImageFile,
-  ) {
-    return toAdminMediaAssetSummary(
-      await this.mediaAssetsService.storeTryOnSilhouette(file),
     );
   }
 

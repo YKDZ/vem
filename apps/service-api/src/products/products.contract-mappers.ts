@@ -44,7 +44,6 @@ type ProductVariantResponseRow = Pick<
   | "costCents"
   | "status"
   | "targetGender"
-  | "tryOnSilhouetteMediaAssetId"
   | "createdAt"
   | "updatedAt"
 >;
@@ -124,7 +123,6 @@ export function mapCreateVariantDtoToInsert(
     costCents: input.costCents,
     status: input.status,
     targetGender: input.targetGender,
-    tryOnSilhouetteMediaAssetId: input.tryOnSilhouetteMediaAssetId,
   } satisfies ContractFieldCoverage<AdminCreateProductVariantRequest>;
 
   const insert = {
@@ -135,7 +133,6 @@ export function mapCreateVariantDtoToInsert(
     barcode: dto.barcode ?? null,
     priceCents: dto.priceCents,
     costCents: dto.costCents ?? null,
-    tryOnSilhouetteMediaAssetId: dto.tryOnSilhouetteMediaAssetId ?? null,
     status: dto.status,
     targetGender: dto.targetGender ?? null,
   } satisfies ProductVariantInsert;
@@ -155,7 +152,6 @@ export function mapUpdateVariantDtoToPatch(
     costCents: input.costCents,
     status: input.status,
     targetGender: input.targetGender,
-    tryOnSilhouetteMediaAssetId: input.tryOnSilhouetteMediaAssetId,
   } satisfies ContractFieldCoverage<AdminUpdateProductVariantRequest>;
 
   const patch = {
@@ -166,7 +162,6 @@ export function mapUpdateVariantDtoToPatch(
     barcode: dto.barcode,
     priceCents: dto.priceCents,
     costCents: dto.costCents,
-    tryOnSilhouetteMediaAssetId: dto.tryOnSilhouetteMediaAssetId,
     status: dto.status,
     targetGender: dto.targetGender,
     updatedAt: new Date(),
@@ -197,7 +192,6 @@ export function toAdminProductResponse(
 
 export function toAdminProductVariantResponse(
   row: ProductVariantResponseRow,
-  tryOnSilhouetteMediaAsset: AdminMediaAssetSummary | null,
 ): AdminProductVariantResponse {
   const response = {
     id: row.id,
@@ -210,10 +204,6 @@ export function toAdminProductVariantResponse(
     costCents: row.costCents,
     status: row.status,
     targetGender: toTargetGender(row.targetGender),
-    tryOnSilhouetteMediaAssetId: row.tryOnSilhouetteMediaAssetId,
-    tryOnSilhouetteMediaAsset: tryOnSilhouetteMediaAsset
-      ? adminMediaAssetSummarySchema.parse(tryOnSilhouetteMediaAsset)
-      : null,
     createdAt: toIsoString(row.createdAt),
     updatedAt: toIsoString(row.updatedAt),
   } satisfies AdminProductVariantResponse;

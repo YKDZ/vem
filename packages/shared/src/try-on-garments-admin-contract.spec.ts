@@ -6,6 +6,8 @@ import {
   adminTryOnGarmentUploadContract,
   adminTryOnGarmentConfirmationContract,
   adminTryOnGarmentActivationContract,
+  adminTryOnGarmentAssociationContract,
+  adminTryOnGarmentSourceReplacementContract,
 } from "./schemas/try-on-garments";
 
 const id = "550e8400-e29b-41d4-a716-446655440124";
@@ -106,5 +108,33 @@ describe("Try-On Garment Admin Endpoint Contracts", () => {
     expect(adminTryOnGarmentActivationContract.bodySchema.parse({})).toEqual(
       {},
     );
+  });
+
+  it("binds explicit same-product variant associations and atomic source replacement", () => {
+    expect(adminTryOnGarmentAssociationContract.method).toBe("PUT");
+    expect(adminTryOnGarmentAssociationContract.path).toBe(
+      "/try-on-garments/:id/variant-associations",
+    );
+    expect(
+      adminTryOnGarmentAssociationContract.bodySchema.parse({
+        variantIds: [id, "550e8400-e29b-41d4-a716-446655440125"],
+      }),
+    ).toEqual({
+      variantIds: [id, "550e8400-e29b-41d4-a716-446655440125"],
+    });
+    expect(() =>
+      adminTryOnGarmentAssociationContract.bodySchema.parse({ variantIds: [] }),
+    ).toThrow();
+
+    expect(adminTryOnGarmentSourceReplacementContract.method).toBe("PATCH");
+    expect(adminTryOnGarmentSourceReplacementContract.path).toBe(
+      "/try-on-garments/:id/source",
+    );
+    expect(
+      adminTryOnGarmentSourceReplacementContract.bodySchema.parse({
+        sourceMediaAssetId: id,
+        template: "tshirt_long_sleeve",
+      }),
+    ).toEqual({ sourceMediaAssetId: id, template: "tshirt_long_sleeve" });
   });
 });

@@ -38,6 +38,7 @@ import {
   productCategories,
   productVariants,
   products,
+  tryOnGarments,
   sql,
   type DrizzleClient,
 } from "@vem/db";
@@ -68,8 +69,14 @@ import {
   type GenerateMachineClaimCodeResponse,
   type PublishMachinePlanogramVersion,
 } from "@vem/shared";
+import { alias } from "drizzle-orm/pg-core";
 import { createHash } from "node:crypto";
 import { z } from "zod";
+
+const tryOnGarmentMediaAssets = alias(
+  mediaAssets,
+  "try_on_garment_media_assets",
+);
 
 import { AuditService } from "../audit/audit.service";
 import { createBusinessNo } from "../common/business-no.util";
@@ -1674,6 +1681,10 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         coverImageMediaAssetDigest: mediaAssets.sha256,
         coverImageMediaAssetContentType: mediaAssets.contentType,
         coverImageMediaAssetByteSize: mediaAssets.byteSize,
+        tryOnGarmentMediaAssetId: tryOnGarmentMediaAssets.id,
+        tryOnGarmentMediaAssetDigest: tryOnGarmentMediaAssets.sha256,
+        tryOnGarmentMediaAssetContentType: tryOnGarmentMediaAssets.contentType,
+        tryOnGarmentMediaAssetByteSize: tryOnGarmentMediaAssets.byteSize,
         categoryId: products.categoryId,
         categoryName: productCategories.name,
         sku: productVariants.sku,
@@ -1722,6 +1733,26 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
           isNull(mediaAssets.deletedAt),
         ),
       )
+      .leftJoin(
+        tryOnGarments,
+        and(
+          eq(tryOnGarments.id, productVariants.tryOnGarmentId),
+          eq(tryOnGarments.productId, products.id),
+          eq(tryOnGarments.status, "active"),
+          isNotNull(tryOnGarments.confirmedAt),
+          isNull(tryOnGarments.deletedAt),
+        ),
+      )
+      .leftJoin(
+        tryOnGarmentMediaAssets,
+        and(
+          eq(tryOnGarmentMediaAssets.id, tryOnGarments.sourceMediaAssetId),
+          eq(tryOnGarmentMediaAssets.purpose, "try_on_garment"),
+          eq(tryOnGarmentMediaAssets.contentType, "image/png"),
+          eq(tryOnGarmentMediaAssets.hasTransparency, true),
+          isNull(tryOnGarmentMediaAssets.deletedAt),
+        ),
+      )
       .where(
         and(
           eq(machines.code, code),
@@ -1732,12 +1763,20 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       )
       .orderBy(products.sortOrder, machineSlots.rowNo, machineSlots.cellNo);
     const descriptorInputs = rows
-      .map((row) => ({
-        id: row.coverImageMediaAssetId,
-        digest: row.coverImageMediaAssetDigest,
-        contentType: row.coverImageMediaAssetContentType,
-        byteSize: row.coverImageMediaAssetByteSize,
-      }))
+      .flatMap((row) => [
+        {
+          id: row.coverImageMediaAssetId,
+          digest: row.coverImageMediaAssetDigest,
+          contentType: row.coverImageMediaAssetContentType,
+          byteSize: row.coverImageMediaAssetByteSize,
+        },
+        {
+          id: row.tryOnGarmentMediaAssetId,
+          digest: row.tryOnGarmentMediaAssetDigest,
+          contentType: row.tryOnGarmentMediaAssetContentType,
+          byteSize: row.tryOnGarmentMediaAssetByteSize,
+        },
+      ])
       .filter((media): media is Required<typeof media> =>
         Boolean(
           media.id && media.digest && media.contentType && media.byteSize,
@@ -1774,6 +1813,25 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
               row.coverImageMediaAssetContentType,
               row.coverImageMediaAssetByteSize,
               "product_display_image",
+              catalogRevision,
+            ),
+          }
+        : {}),
+      ...(this.machineManagedMediaDescriptor(
+        row.tryOnGarmentMediaAssetId,
+        row.tryOnGarmentMediaAssetDigest,
+        row.tryOnGarmentMediaAssetContentType,
+        row.tryOnGarmentMediaAssetByteSize,
+        "try_on_garment",
+        catalogRevision,
+      )
+        ? {
+            tryOnGarmentMedia: this.machineManagedMediaDescriptor(
+              row.tryOnGarmentMediaAssetId,
+              row.tryOnGarmentMediaAssetDigest,
+              row.tryOnGarmentMediaAssetContentType,
+              row.tryOnGarmentMediaAssetByteSize,
+              "try_on_garment",
               catalogRevision,
             ),
           }

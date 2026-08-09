@@ -107,7 +107,21 @@ test.describe("Try-On Garment Admin UI contract", () => {
       modal.getByRole("button", { name: "确认来源" }).click(),
     ]);
     expect(confirmationResponse.ok()).toBe(true);
-    await expect(modal.getByText("来源已确认，仍保持草稿")).toBeVisible();
+    await expect(
+      modal.getByText(/来源已确认。请显式激活并选择共享的尺码规格/),
+    ).toBeVisible();
+    const [activationResponse] = await Promise.all([
+      page.waitForResponse(
+        (response) =>
+          response
+            .url()
+            .endsWith(`/api/try-on-garments/${draft.id}/activation`) &&
+          response.request().method() === "POST",
+      ),
+      modal.getByRole("button", { name: "激活 Garment" }).click(),
+    ]);
+    expect(activationResponse.ok()).toBe(true);
+    await expect(modal.getByText("共享尺码影响范围")).toBeVisible();
     await monitor.assertNoFailures();
   });
 

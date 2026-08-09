@@ -1,16 +1,13 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Param,
-  ParseUUIDPipe,
-  Patch,
-  Post,
-  Query,
-} from "@nestjs/common";
+import { Body, Controller, Param, Query } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import {
   adminProductListQuerySchema,
+  adminListProductsContract,
+  adminCreateProductContract,
+  adminUpdateProductContract,
+  adminListProductVariantsContract,
+  adminCreateProductVariantContract,
+  adminUpdateProductVariantContract,
   adminProductVariantListQuerySchema,
   createProductSchema,
   createProductVariantSchema,
@@ -25,6 +22,7 @@ import {
 } from "@vem/shared";
 
 import { RequirePermissions } from "../access/permissions.decorator";
+import { AdminEndpointContract } from "../common/admin-endpoint-contract.decorator";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
 import { ProductsService } from "./products.service";
 
@@ -35,7 +33,7 @@ export class ProductsController {
   constructor(private readonly productsService: ProductsService) {}
 
   @RequirePermissions("products.read")
-  @Get("products")
+  @AdminEndpointContract(adminListProductsContract)
   async listProducts(
     @Query(new ZodValidationPipe(adminProductListQuerySchema))
     query: AdminProductListQuery,
@@ -44,7 +42,7 @@ export class ProductsController {
   }
 
   @RequirePermissions("products.write")
-  @Post("products")
+  @AdminEndpointContract(adminCreateProductContract)
   async createProduct(
     @Body(new ZodValidationPipe(createProductSchema))
     body: AdminCreateProductRequest,
@@ -53,17 +51,18 @@ export class ProductsController {
   }
 
   @RequirePermissions("products.write")
-  @Patch("products/:id")
+  @AdminEndpointContract(adminUpdateProductContract)
   async updateProduct(
-    @Param("id", ParseUUIDPipe) id: string,
+    @Param(new ZodValidationPipe(adminUpdateProductContract.pathParamsSchema))
+    params: { id: string },
     @Body(new ZodValidationPipe(updateProductSchema))
     body: AdminUpdateProductRequest,
   ) {
-    return await this.productsService.updateProduct(id, body);
+    return await this.productsService.updateProduct(params.id, body);
   }
 
   @RequirePermissions("products.read")
-  @Get("product-variants")
+  @AdminEndpointContract(adminListProductVariantsContract)
   async listVariants(
     @Query(new ZodValidationPipe(adminProductVariantListQuerySchema))
     query: AdminProductVariantListQuery,
@@ -72,7 +71,7 @@ export class ProductsController {
   }
 
   @RequirePermissions("products.write")
-  @Post("product-variants")
+  @AdminEndpointContract(adminCreateProductVariantContract)
   async createVariant(
     @Body(new ZodValidationPipe(createProductVariantSchema))
     body: AdminCreateProductVariantRequest,
@@ -81,12 +80,15 @@ export class ProductsController {
   }
 
   @RequirePermissions("products.write")
-  @Patch("product-variants/:id")
+  @AdminEndpointContract(adminUpdateProductVariantContract)
   async updateVariant(
-    @Param("id", ParseUUIDPipe) id: string,
+    @Param(
+      new ZodValidationPipe(adminUpdateProductVariantContract.pathParamsSchema),
+    )
+    params: { id: string },
     @Body(new ZodValidationPipe(updateProductVariantSchema))
     body: AdminUpdateProductVariantRequest,
   ) {
-    return await this.productsService.updateVariant(id, body);
+    return await this.productsService.updateVariant(params.id, body);
   }
 }
