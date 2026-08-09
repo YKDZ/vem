@@ -3979,8 +3979,9 @@ mod tests {
         .await;
         let bytes = b"\x89PNG\r\n\x1a\nrouter".to_vec();
         let descriptor = ready_media_descriptor(&bytes);
+        let cache_root = temp.path().join("router-media");
         let cache = crate::managed_media::ManagedMediaCache::new(
-            temp.path().join("router-media"),
+            cache_root.clone(),
             "http://127.0.0.1:4312",
             Arc::new(ReadyMediaFetcher(bytes.clone())),
         )
@@ -4076,6 +4077,22 @@ mod tests {
         );
         assert_eq!(
             status(
+                "HEAD".to_string(),
+                format!("/media/sha256:missing?grant={grant}"),
+            )
+            .await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            status(
+                "HEAD".to_string(),
+                format!("/media/{}?grant=wrong", descriptor.digest),
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            status(
                 "GET".to_string(),
                 format!("/media/sha256:%2E%2E%2Fsecret?grant={grant}")
             )
@@ -4086,7 +4103,19 @@ mod tests {
             status("GET".to_string(), "/media".to_string()).await,
             StatusCode::NOT_FOUND
         );
-        for method in ["POST", "PUT", "PATCH", "DELETE", "OPTIONS"] {
+        for malformed in [
+            format!("/media/{}/extra?grant={grant}", descriptor.digest),
+            format!("/media/sha256:%252E%252E%252Fsecret?grant={grant}"),
+            format!("/media/sha256:%5Csecret?grant={grant}"),
+        ] {
+            assert_eq!(
+                status("GET".to_string(), malformed).await,
+                StatusCode::NOT_FOUND
+            );
+        }
+        for method in [
+            "POST", "PUT", "PATCH", "DELETE", "TRACE", "CONNECT", "OPTIONS",
+        ] {
             assert_eq!(
                 status(method.to_string(), uri.clone()).await,
                 if method == "OPTIONS" {
@@ -4108,7 +4137,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(snapshot.status(), StatusCode::OK);
-        let crossed_token = build_router(ctx)
+        let crossed_token = build_router(ctx.clone())
             .oneshot(
                 Request::builder()
                     .method("GET")
@@ -4120,6 +4149,71 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(crossed_token.status(), StatusCode::UNAUTHORIZED);
+        assert!(
+            !std::fs::read_to_string(cache_root.join("active-media.json"))
+                .unwrap_or_default()
+                .contains(&grant),
+            "the startup-only read grant is never persisted with catalog data"
+        );
+    }
+
+    #[tokio::test]
+    async fn media_get_body_holds_its_cache_lease_until_the_response_is_dropped() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (mut ctx, _) = test_context(
+            temp.path().to_path_buf(),
+            "http://platform.invalid/api".to_string(),
+        )
+        .await;
+        let bytes = b"\x89PNG\r\n\x1a\nleased-body".to_vec();
+        let descriptor = ready_media_descriptor(&bytes);
+        let cache = crate::managed_media::ManagedMediaCache::new(
+            temp.path().join("leased-media"),
+            "http://127.0.0.1:4312",
+            Arc::new(ReadyMediaFetcher(bytes)),
+        )
+        .expect("cache");
+        cache
+            .reconcile_active_catalog("leased", vec![descriptor.clone()])
+            .await
+            .expect("adopt");
+        for _ in 0..100 {
+            if cache.snapshot().await.1[0].readiness == crate::managed_media::MediaReadiness::Ready
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let grant = cache.read_grant();
+        ctx.media_cache = cache.clone();
+        let response = build_router(ctx)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/media/{}?grant={grant}", descriptor.digest))
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        cache
+            .reconcile_active_catalog("replacement", vec![])
+            .await
+            .expect("unpin old object");
+        assert_eq!(
+            cache.cleanup_bounded(10).await,
+            0,
+            "streaming body holds lease"
+        );
+        drop(response);
+        for _ in 0..100 {
+            if cache.cleanup_bounded(10).await == 1 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("dropped response did not release its media lease");
     }
 
     #[tokio::test]
@@ -4238,16 +4332,45 @@ mod tests {
 
     #[tokio::test]
     async fn catalog_post_and_concurrent_sale_view_do_not_wait_for_hung_media_work() {
-        struct HungFetcher(Arc<Notify>);
+        struct LargeFetcher(Vec<u8>);
         #[async_trait]
-        impl crate::managed_media::MediaFetcher for HungFetcher {
+        impl crate::managed_media::MediaFetcher for LargeFetcher {
             async fn fetch_to(
                 &self,
                 _: &crate::managed_media::MediaDescriptor,
-                _: &Path,
+                staging: &Path,
             ) -> Result<crate::managed_media::MediaFetchResult, String> {
-                self.0.notified().await;
-                unreachable!("test fetch is intentionally hung")
+                std::fs::write(staging, &self.0).map_err(|error| error.to_string())?;
+                Ok(crate::managed_media::MediaFetchResult {
+                    content_type: "image/png".to_string(),
+                })
+            }
+        }
+        struct BlockingVerifier {
+            entered: Arc<Notify>,
+            released: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+        }
+        impl crate::managed_media::MediaVerifier for BlockingVerifier {
+            fn verify(
+                &self,
+                path: &Path,
+                descriptor: &crate::managed_media::MediaDescriptor,
+                content_type: &str,
+            ) -> Result<(), String> {
+                if !path.exists() {
+                    return crate::managed_media::verify_staged_file(
+                        path,
+                        descriptor,
+                        content_type,
+                    );
+                }
+                self.entered.notify_one();
+                let (ready, wake) = self.released.as_ref();
+                let mut released = ready.lock().expect("release mutex");
+                while !*released {
+                    released = wake.wait(released).expect("release wait");
+                }
+                crate::managed_media::verify_staged_file(path, descriptor, content_type)
             }
         }
         let server = MockServer::start().await;
@@ -4264,23 +4387,22 @@ mod tests {
             .backend
             .set_access_token_for_tests("catalog-test-token")
             .await;
-        let block_fetch = Arc::new(Notify::new());
+        let mut bytes = vec![0; 95_000_000];
+        bytes[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+        let descriptor = serde_json::to_value(ready_media_descriptor(&bytes)).expect("descriptor");
+        let verifier_entered = Arc::new(Notify::new());
+        let verifier_release = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
         let media_cache_root = temp.path().join("hung-media-cache");
-        ctx.media_cache = crate::managed_media::ManagedMediaCache::new(
+        ctx.media_cache = crate::managed_media::ManagedMediaCache::new_with_verifier(
             media_cache_root.clone(),
             "http://127.0.0.1:1234",
-            Arc::new(HungFetcher(block_fetch)),
+            Arc::new(LargeFetcher(bytes)),
+            Arc::new(BlockingVerifier {
+                entered: verifier_entered.clone(),
+                released: verifier_release.clone(),
+            }),
         )
         .expect("media cache");
-        // Use a real 95 MB inventory entry.  Reconciliation must account for
-        // it on a blocking worker while cache snapshots and the SQLite-backed
-        // sale view remain schedulable on Tokio.
-        std::fs::File::create(media_cache_root.join("95mb-inventory.bin"))
-            .expect("inventory file")
-            .set_len(95 * 1024 * 1024)
-            .expect("95 MB inventory plan");
-        let bytes = b"\x89PNG\r\n\x1a\nhung".to_vec();
-        let descriptor = serde_json::to_value(ready_media_descriptor(&bytes)).expect("descriptor");
         let product_id = "550e8400-e29b-41d4-a716-446655440024";
         let variant_id = "550e8400-e29b-41d4-a716-446655440023";
         ctx.state
@@ -4356,6 +4478,9 @@ mod tests {
         .expect("catalog must not wait for media")
         .expect("catalog response");
         assert_eq!(catalog.status(), StatusCode::OK);
+        tokio::time::timeout(Duration::from_secs(5), verifier_entered.notified())
+            .await
+            .expect("tracked 95 MB verifier entered");
         tokio::time::timeout(Duration::from_millis(100), ctx.media_cache.snapshot())
             .await
             .expect("cache snapshot must not wait for inventory or verifier");
@@ -4381,6 +4506,9 @@ mod tests {
         .expect("sale view json");
         assert_eq!(sale_view["items"][0]["productName"], "Current product");
         assert_eq!(sale_view["items"][0]["saleableStock"], 1);
+        let (ready, wake) = verifier_release.as_ref();
+        *ready.lock().expect("release mutex") = true;
+        wake.notify_all();
     }
 
     #[tokio::test]

@@ -24,7 +24,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-const MAX_MEDIA_OBJECT_BYTES: u64 = 5_000_000;
+const MAX_MEDIA_OBJECT_BYTES: u64 = MAX_MEDIA_CACHE_BYTES - MEDIA_CACHE_RESERVED_BYTES;
 const MAX_MEDIA_OBJECTS: usize = 256;
 const MAX_MEDIA_CACHE_BYTES: u64 = 100_000_000;
 const MEDIA_CACHE_RESERVED_BYTES: u64 = 5_000_000;
@@ -118,6 +118,28 @@ pub trait MediaFetcher: Send + Sync {
         descriptor: &MediaDescriptor,
         staging: &Path,
     ) -> Result<MediaFetchResult, String>;
+}
+
+pub(crate) trait MediaVerifier: Send + Sync {
+    fn verify(
+        &self,
+        path: &Path,
+        descriptor: &MediaDescriptor,
+        content_type: &str,
+    ) -> Result<(), String>;
+}
+
+struct PlatformMediaVerifier;
+
+impl MediaVerifier for PlatformMediaVerifier {
+    fn verify(
+        &self,
+        path: &Path,
+        descriptor: &MediaDescriptor,
+        content_type: &str,
+    ) -> Result<(), String> {
+        verify_staged_file(path, descriptor, content_type)
+    }
 }
 
 /// The manifest replacement is durable only after the parent directory has
@@ -284,6 +306,7 @@ pub struct ManagedMediaCache {
     read_url_base: Arc<std::sync::RwLock<String>>,
     grant: Arc<String>,
     fetcher: Arc<dyn MediaFetcher>,
+    verifier: Arc<dyn MediaVerifier>,
     manifest_directory_sync: Arc<dyn ManifestDirectorySync>,
     state: Arc<Mutex<CacheState>>,
     /// Serializes the complete durable adoption transaction.  It deliberately
@@ -350,6 +373,7 @@ impl ManagedMediaCache {
             read_url_base,
             fetcher,
             Arc::new(PlatformManifestDirectorySync),
+            Arc::new(PlatformMediaVerifier),
             CancellationToken::new(),
         )
     }
@@ -368,6 +392,7 @@ impl ManagedMediaCache {
             read_url_base,
             fetcher,
             Arc::new(PlatformManifestDirectorySync),
+            Arc::new(PlatformMediaVerifier),
             cycle_shutdown,
         )
     }
@@ -384,6 +409,42 @@ impl ManagedMediaCache {
             read_url_base,
             fetcher,
             manifest_directory_sync,
+            Arc::new(PlatformMediaVerifier),
+            CancellationToken::new(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_manifest_directory_sync_and_verifier(
+        root: impl Into<PathBuf>,
+        read_url_base: impl Into<String>,
+        fetcher: Arc<dyn MediaFetcher>,
+        manifest_directory_sync: Arc<dyn ManifestDirectorySync>,
+        verifier: Arc<dyn MediaVerifier>,
+    ) -> Result<Self, String> {
+        Self::new_with_manifest_directory_sync_and_shutdown(
+            root,
+            read_url_base,
+            fetcher,
+            manifest_directory_sync,
+            verifier,
+            CancellationToken::new(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_verifier(
+        root: impl Into<PathBuf>,
+        read_url_base: impl Into<String>,
+        fetcher: Arc<dyn MediaFetcher>,
+        verifier: Arc<dyn MediaVerifier>,
+    ) -> Result<Self, String> {
+        Self::new_with_manifest_directory_sync_and_shutdown(
+            root,
+            read_url_base,
+            fetcher,
+            Arc::new(PlatformManifestDirectorySync),
+            verifier,
             CancellationToken::new(),
         )
     }
@@ -393,6 +454,7 @@ impl ManagedMediaCache {
         read_url_base: impl Into<String>,
         fetcher: Arc<dyn MediaFetcher>,
         manifest_directory_sync: Arc<dyn ManifestDirectorySync>,
+        verifier: Arc<dyn MediaVerifier>,
         cycle_shutdown: CancellationToken,
     ) -> Result<Self, String> {
         let root = root.into();
@@ -477,7 +539,8 @@ impl ManagedMediaCache {
                             && fs::metadata(&content)
                                 .map(|metadata| metadata.len() == descriptor.byte_size)
                                 .unwrap_or(false)
-                            && verify_staged_file(&content, &descriptor, &descriptor.content_type)
+                            && verifier
+                                .verify(&content, &descriptor, &descriptor.content_type)
                                 .is_ok();
                         if !ready {
                             // A manifest describes immutable bytes.  A corrupt
@@ -531,6 +594,7 @@ impl ManagedMediaCache {
             )),
             grant: Arc::new(uuid::Uuid::new_v4().to_string()),
             fetcher,
+            verifier,
             manifest_directory_sync,
             state: Arc::new(Mutex::new(initial_state)),
             reconcile_gate: Arc::new(Mutex::new(())),
@@ -638,11 +702,6 @@ impl ManagedMediaCache {
         // cache budget.  This is deliberately based on actual directory bytes,
         // not on a prior generation's declared descriptor sizes.
         self.remove_untracked_files().await;
-        if directory_usage_bytes_async(self.root.as_ref().clone()).await
-            > MEDIA_CACHE_HIGH_WATER_BYTES
-        {
-            return Err("managed media cache disk high-water mark exceeded".to_string());
-        }
 
         // Full object verification and hashing may take seconds for a large
         // cache.  Build this immutable plan before touching cache state and
@@ -738,7 +797,7 @@ impl ManagedMediaCache {
         for job in warm {
             self.enqueue_warm(job).await;
         }
-        let _ = self.cleanup_bounded(CLEANUP_BATCH_SIZE).await;
+        self.cleanup_to_low_water().await;
         Ok((interest.objects.len(), accepted_snapshot, commit))
     }
 
@@ -846,6 +905,7 @@ impl ManagedMediaCache {
         drop(entry);
         let descriptor = descriptor.ok_or(MediaReadError::NotFound)?;
         if verify_staged_file_async(
+            self.verifier.clone(),
             path.clone(),
             descriptor.clone(),
             descriptor.content_type.clone(),
@@ -912,6 +972,16 @@ impl ManagedMediaCache {
         removed
     }
 
+    async fn cleanup_to_low_water(&self) {
+        while directory_usage_bytes_async(self.root.as_ref().clone()).await
+            > MEDIA_CACHE_LOW_WATER_BYTES
+        {
+            if self.cleanup_bounded(CLEANUP_BATCH_SIZE).await == 0 {
+                break;
+            }
+        }
+    }
+
     /// Remove only files that are not represented by live cache state.  A
     /// lease always wins over reclamation, including when its generation is no
     /// longer active.  The filesystem work intentionally happens outside the
@@ -922,7 +992,6 @@ impl ManagedMediaCache {
             state
                 .entries
                 .iter()
-                .filter(|(_, entry)| entry.active || entry.leases > 0)
                 .map(|(digest, _)| object_key(digest))
                 .collect::<HashSet<_>>()
         };
@@ -1189,6 +1258,7 @@ impl ManagedMediaCache {
 
     async fn published_and_valid(&self, descriptor: &MediaDescriptor) -> bool {
         verify_staged_file_async(
+            self.verifier.clone(),
             self.content_path(&descriptor.digest),
             descriptor.clone(),
             descriptor.content_type.clone(),
@@ -1261,6 +1331,7 @@ impl ManagedMediaCache {
                 }
                 Ok(response) => {
                     verify_staged_file_async(
+                        self.verifier.clone(),
                         stage.clone(),
                         candidate.clone(),
                         response.content_type,
@@ -1476,11 +1547,12 @@ async fn directory_usage_bytes_async(root: PathBuf) -> u64 {
 }
 
 async fn verify_staged_file_async(
+    verifier: Arc<dyn MediaVerifier>,
     path: PathBuf,
     descriptor: MediaDescriptor,
     content_type: String,
 ) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || verify_staged_file(&path, &descriptor, &content_type))
+    tokio::task::spawn_blocking(move || verifier.verify(&path, &descriptor, &content_type))
         .await
         .map_err(|error| format!("managed media verifier task failed: {error}"))?
 }
@@ -1723,7 +1795,7 @@ fn managed_media_diagnostic_reason(message: &str) -> Option<&'static str> {
     }
 }
 
-fn verify_staged_file(
+pub(crate) fn verify_staged_file(
     path: &Path,
     descriptor: &MediaDescriptor,
     content_type: &str,
@@ -2156,6 +2228,206 @@ mod tests {
             .reconcile_active_catalog("replacement", vec![replacement])
             .await
             .expect("reconcile does not inherit a permanent high-water failure");
+    }
+
+    #[tokio::test]
+    async fn startup_rejects_an_over_aggregate_manifest_before_pinning_its_files() {
+        let root = tempdir().expect("tempdir").keep();
+        let bytes = b"\x89PNG\r\n\x1a\nmanifest".to_vec();
+        let base = descriptor(&bytes, "image/png");
+        let mut assets = Vec::new();
+        for index in 0..=MAX_MEDIA_OBJECTS {
+            let mut asset = base.clone();
+            asset.id = format!("550e8400-e29b-41d4-a716-{index:012x}");
+            asset.reference = format!("/api/media-assets/{}/content", asset.id);
+            assets.push(asset);
+        }
+        fs::write(
+            root.join("active-media.json"),
+            serde_json::to_vec(&ActiveMediaManifest {
+                generation: "oversized".to_string(),
+                assets,
+            })
+            .expect("manifest"),
+        )
+        .expect("seed manifest");
+        fs::write(
+            root.join(format!("{}.bin", object_key(&base.digest))),
+            bytes,
+        )
+        .expect("seed loose object");
+        let cache = ManagedMediaCache::new(
+            root.clone(),
+            "http://127.0.0.1:1234",
+            Arc::new(FixtureFetcher {
+                bytes: Vec::new(),
+                content_type: "image/png".to_string(),
+            }),
+        )
+        .expect("cache");
+        assert!(cache.snapshot().await.0.is_empty());
+        assert!(
+            !root
+                .join(format!("{}.bin", object_key(&base.digest)))
+                .exists(),
+            "an invalid aggregate manifest cannot pin a disk object"
+        );
+    }
+
+    #[tokio::test]
+    async fn replacement_cleanup_repeats_from_high_water_to_low_water_without_removing_leases() {
+        struct NeverFetcher;
+        #[async_trait]
+        impl MediaFetcher for NeverFetcher {
+            async fn fetch_to(
+                &self,
+                _: &MediaDescriptor,
+                _: &Path,
+            ) -> Result<MediaFetchResult, String> {
+                std::future::pending().await
+            }
+        }
+        let root = tempdir().expect("tempdir").keep();
+        let cache = ManagedMediaCache::new(
+            root.clone(),
+            "http://127.0.0.1:1234",
+            Arc::new(NeverFetcher),
+        )
+        .expect("cache");
+        let mut descriptors = Vec::new();
+        for index in 0..19u8 {
+            let mut bytes = vec![0; 5_000_000];
+            bytes[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+            bytes[8] = index;
+            let mut descriptor = descriptor(&bytes, "image/png");
+            descriptor.id = format!("550e8400-e29b-41d4-a716-{index:012x}");
+            descriptor.reference = format!("/api/media-assets/{}/content", descriptor.id);
+            descriptors.push(descriptor);
+        }
+        cache
+            .reconcile_active_catalog("old", descriptors.clone())
+            .await
+            .expect("old generation");
+        for (index, descriptor) in descriptors.iter().enumerate() {
+            let mut bytes = vec![0; 5_000_000];
+            bytes[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+            bytes[8] = index as u8;
+            fs::write(
+                root.join(format!("{}.bin", object_key(&descriptor.digest))),
+                bytes,
+            )
+            .expect("seed active object");
+            if index > 0 {
+                fs::OpenOptions::new()
+                    .write(true)
+                    .open(root.join(format!("{}.bin", object_key(&descriptor.digest))))
+                    .expect("expanded inactive object")
+                    .set_len(5_300_000)
+                    .expect("expand inactive object");
+            }
+            cache
+                .state
+                .lock()
+                .await
+                .entries
+                .get_mut(&descriptor.digest)
+                .expect("active entry")
+                .readiness = MediaReadiness::Ready;
+        }
+        let lease = cache
+            .read_ready(
+                &cache.read_grant(),
+                MediaReadMethod::Head,
+                &descriptors[0].digest,
+            )
+            .await
+            .expect("active lease");
+        cache
+            .reconcile_active_catalog("empty", vec![])
+            .await
+            .expect("replacement permits cleanup from high water");
+        assert!(
+            directory_usage_bytes(&root) <= MEDIA_CACHE_LOW_WATER_BYTES,
+            "scheduled cleanup repeats until low water"
+        );
+        assert!(
+            cache.content_path(&descriptors[0].digest).exists(),
+            "a stream lease is never removed during bounded cleanup"
+        );
+        drop(lease);
+        for _ in 0..100 {
+            if cache.cleanup_bounded(CLEANUP_BATCH_SIZE).await > 0 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("released lease was not eligible for later cleanup");
+    }
+
+    #[tokio::test]
+    async fn verified_ninety_five_mb_warm_does_not_block_cache_snapshot() {
+        struct BlockingVerifier {
+            entered: Arc<Notify>,
+            released: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+        }
+        impl MediaVerifier for BlockingVerifier {
+            fn verify(
+                &self,
+                path: &Path,
+                descriptor: &MediaDescriptor,
+                content_type: &str,
+            ) -> Result<(), String> {
+                if !path.exists() {
+                    return verify_staged_file(path, descriptor, content_type);
+                }
+                self.entered.notify_one();
+                let (ready, wake) = self.released.as_ref();
+                let mut released = ready.lock().expect("release mutex");
+                while !*released {
+                    released = wake.wait(released).expect("release wait");
+                }
+                verify_staged_file(path, descriptor, content_type)
+            }
+        }
+        let mut bytes = vec![
+            0;
+            (MAX_MEDIA_CACHE_BYTES - MEDIA_CACHE_RESERVED_BYTES)
+                .try_into()
+                .expect("95 MB fits usize")
+        ];
+        bytes[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+        let descriptor = descriptor(&bytes, "image/png");
+        let entered = Arc::new(Notify::new());
+        let released = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let cache = ManagedMediaCache::new_with_manifest_directory_sync_and_verifier(
+            tempdir().expect("tempdir").keep(),
+            "http://127.0.0.1:1234",
+            Arc::new(FixtureFetcher {
+                bytes,
+                content_type: "image/png".to_string(),
+            }),
+            Arc::new(PlatformManifestDirectorySync),
+            Arc::new(BlockingVerifier {
+                entered: entered.clone(),
+                released: released.clone(),
+            }),
+        )
+        .expect("cache");
+        cache
+            .reconcile_active_catalog("large", vec![descriptor])
+            .await
+            .expect("large warm is tracked");
+        tokio::time::timeout(Duration::from_secs(5), entered.notified())
+            .await
+            .expect("verifier entered on its blocking worker");
+        tokio::time::timeout(Duration::from_millis(100), cache.snapshot())
+            .await
+            .expect("cache snapshot stays responsive while verifier is blocked");
+        {
+            let (ready, wake) = released.as_ref();
+            *ready.lock().expect("release mutex") = true;
+            wake.notify_all();
+        }
     }
 
     #[tokio::test]

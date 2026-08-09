@@ -141,7 +141,10 @@ function normalizeSaleViewManagedMedia(payload: unknown): {
         // diagnostic for the same location before the catalog store projects
         // its placeholder.
         if (hasSuppliedDiagnostic) {
-          normalized[field] = isManagedMediaReference(reference) ? reference : null;
+          normalized[field] =
+            typeof reference === "string" && isManagedMediaReference(reference)
+              ? reference
+              : null;
           continue;
         }
       }
