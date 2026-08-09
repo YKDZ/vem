@@ -3,6 +3,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 
 const ADMIN_API_DIRECTORY = "apps/admin-ui/src/api";
 const EXCLUDED_API_FILES = new Set([
@@ -226,40 +227,263 @@ const TRY_ON_CONTRACT_NAMES = [
   "adminTryOnGarmentConfirmationContract",
 ];
 
+const TRY_ON_CONTRACT_EXPECTATIONS = {
+  adminTryOnGarmentUploadContract: {
+    method: "POST",
+    path: "/media-assets/try-on-garments",
+    providerMethod: "uploadTryOnGarment",
+    callerMethods: ["uploadTryOnGarment"],
+  },
+  adminCreateTryOnGarmentContract: {
+    method: "POST",
+    path: "/try-on-garments",
+    providerMethod: "createDraft",
+    callerMethods: ["createTryOnGarmentDraft"],
+  },
+  adminGetTryOnGarmentContract: {
+    method: "GET",
+    path: "/try-on-garments/:id",
+    providerMethod: "getById",
+    callerMethods: ["getTryOnGarment"],
+  },
+  adminTryOnGarmentConfirmationContract: {
+    method: "POST",
+    path: "/try-on-garments/:id/confirmation",
+    providerMethod: "confirm",
+    callerMethods: ["confirmTryOnGarment"],
+  },
+};
+
+function parseTypeScript(path, source) {
+  return ts.createSourceFile(
+    path,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+}
+
+function decoratorsOf(node) {
+  return ts.canHaveDecorators(node) ? (ts.getDecorators(node) ?? []) : [];
+}
+
+function decoratorCall(decorator) {
+  const expression = decorator.expression;
+  if (!ts.isCallExpression(expression)) return undefined;
+  const callee = expression.expression;
+  if (!ts.isIdentifier(callee)) return undefined;
+  return {
+    name: callee.text,
+    argument:
+      expression.arguments.length === 1 &&
+      ts.isIdentifier(expression.arguments[0])
+        ? expression.arguments[0].text
+        : undefined,
+  };
+}
+
+function contractDefinitions(root) {
+  const path = "packages/shared/src/schemas/try-on-garments.ts";
+  if (!pathExists(root, path)) return new Map();
+  const source = readText(root, path);
+  const file = parseTypeScript(path, source);
+  const definitions = new Map();
+  file.forEachChild((statement) => {
+    if (!ts.isVariableStatement(statement)) return;
+    for (const declaration of statement.declarationList.declarations) {
+      if (!ts.isIdentifier(declaration.name)) continue;
+      if (
+        !declaration.initializer ||
+        !ts.isCallExpression(declaration.initializer) ||
+        !ts.isIdentifier(declaration.initializer.expression) ||
+        declaration.initializer.expression.text !==
+          "defineAdminEndpointContract"
+      ) {
+        continue;
+      }
+      const argument = declaration.initializer.arguments[0];
+      if (!argument || !ts.isObjectLiteralExpression(argument)) continue;
+      const values = {};
+      for (const property of argument.properties) {
+        if (!ts.isPropertyAssignment(property)) continue;
+        if (!ts.isIdentifier(property.name)) continue;
+        if (!ts.isStringLiteral(property.initializer)) continue;
+        values[property.name.text] = property.initializer.text;
+      }
+      definitions.set(declaration.name.text, values);
+    }
+  });
+  return definitions;
+}
+
+function decoratedMethods(root, directory, decoratorName) {
+  const methods = [];
+  for (const path of listFiles(root, directory)) {
+    if (!path.endsWith(".controller.ts")) continue;
+    const source = readText(root, path);
+    const file = parseTypeScript(path, source);
+    const visit = (node) => {
+      if (
+        ts.isMethodDeclaration(node) &&
+        node.name &&
+        ts.isIdentifier(node.name)
+      ) {
+        for (const decorator of decoratorsOf(node)) {
+          const call = decoratorCall(decorator);
+          if (call?.name !== decoratorName) continue;
+          methods.push({
+            path,
+            method: node.name.text,
+            contract: call.argument,
+          });
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+  }
+  return methods;
+}
+
+function contractCalls(root) {
+  const calls = [];
+  for (const path of listFiles(root, ADMIN_API_DIRECTORY)) {
+    if (path.endsWith(".spec.ts")) continue;
+    const source = readText(root, path);
+    const file = parseTypeScript(path, source);
+    const visit = (node, enclosingFunction) => {
+      let currentFunction = enclosingFunction;
+      if (
+        (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node)) &&
+        node.name &&
+        ts.isIdentifier(node.name)
+      ) {
+        currentFunction = node.name.text;
+      }
+      if (
+        ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === "callAdminEndpointContract" &&
+        node.arguments.length > 0 &&
+        ts.isIdentifier(node.arguments[0]) &&
+        !isStaticallyDead(node)
+      ) {
+        calls.push({
+          path,
+          method: currentFunction,
+          contract: node.arguments[0].text,
+        });
+      }
+      ts.forEachChild(node, (child) => visit(child, currentFunction));
+    };
+    visit(file, undefined);
+  }
+  return calls;
+}
+
+function isStaticallyDead(node) {
+  let current = node;
+  while (current.parent) {
+    const parent = current.parent;
+    if (
+      ts.isIfStatement(parent) &&
+      parent.expression.kind === ts.SyntaxKind.FalseKeyword &&
+      isDescendantOf(current, parent.thenStatement)
+    ) {
+      return true;
+    }
+    current = parent;
+  }
+  return false;
+}
+
+function isDescendantOf(node, ancestor) {
+  let current = node;
+  while (current) {
+    if (current === ancestor) return true;
+    current = current.parent;
+  }
+  return false;
+}
+
 function checkTryOnContractCoverage(root) {
   const failures = [];
-  const callerSource = listFiles(root, ADMIN_API_DIRECTORY)
-    .filter((path) => !path.endsWith(".spec.ts"))
-    .map((path) => readText(root, path))
-    .join("\n");
-  const providerSource = listFiles(root, "apps/service-api/src")
-    .filter((path) => path.endsWith(".controller.ts"))
-    .map((path) => readText(root, path))
-    .join("\n");
-  const callerHits = TRY_ON_CONTRACT_NAMES.filter((name) =>
-    new RegExp(`callAdminEndpointContract\\(\\s*${name}\\b`).test(callerSource),
+  const definitions = contractDefinitions(root);
+  const providers = decoratedMethods(
+    root,
+    "apps/service-api/src",
+    "AdminEndpointContract",
   );
-  const providerHits = TRY_ON_CONTRACT_NAMES.filter((name) =>
-    new RegExp(`@AdminResponseContract\\(\\s*${name}\\s*\\)`).test(
-      providerSource,
-    ),
-  );
+  const callers = contractCalls(root);
+  const callerHits = [];
+  const providerHits = [];
+
   const targetsTryOn =
-    callerSource.includes("TryOnGarment") ||
-    providerSource.includes("TryOnGarment");
-  if (targetsTryOn && callerHits.length === 0) {
-    failures.push("try-on endpoint contract caller coverage is zero");
+    definitions.size > 0 ||
+    providers.some((candidate) =>
+      TRY_ON_CONTRACT_NAMES.includes(candidate.contract),
+    ) ||
+    callers.some((candidate) =>
+      TRY_ON_CONTRACT_NAMES.includes(candidate.contract),
+    );
+  if (!targetsTryOn) {
+    return { failures, callerHits, providerHits };
   }
-  if (targetsTryOn && providerHits.length === 0) {
-    failures.push("try-on endpoint contract provider coverage is zero");
-  }
+
   for (const name of TRY_ON_CONTRACT_NAMES) {
-    if (targetsTryOn && !callerHits.includes(name)) {
-      failures.push(`try-on endpoint contract caller missing: ${name}`);
+    const expected = TRY_ON_CONTRACT_EXPECTATIONS[name];
+    const definition = definitions.get(name);
+    if (!definition) {
+      failures.push(`try-on contract definition missing: ${name}`);
+    } else {
+      if (definition.method !== expected.method) {
+        failures.push(
+          `try-on contract method drift: ${name} expected ${expected.method}`,
+        );
+      }
+      if (definition.path !== expected.path) {
+        failures.push(
+          `try-on contract path drift: ${name} expected ${expected.path}`,
+        );
+      }
     }
-    if (targetsTryOn && !providerHits.includes(name)) {
+
+    const provider = providers.find(
+      (candidate) =>
+        candidate.contract === name &&
+        candidate.method === expected.providerMethod,
+    );
+    if (!provider) {
       failures.push(`try-on endpoint contract provider missing: ${name}`);
+    } else {
+      providerHits.push(name);
     }
+
+    const matchingCalls = callers.filter(
+      (candidate) =>
+        candidate.contract === name &&
+        expected.callerMethods.includes(candidate.method),
+    );
+    if (matchingCalls.length === 0) {
+      failures.push(`try-on endpoint contract caller missing: ${name}`);
+    } else {
+      callerHits.push(name);
+    }
+  }
+
+  const uploadSource = pathExists(
+    root,
+    "packages/shared/src/schemas/try-on-garments.ts",
+  )
+    ? readText(root, "packages/shared/src/schemas/try-on-garments.ts")
+    : "";
+  if (
+    /adminTryOnGarmentUploadContract[\s\S]*z\.unknown\s*\(\s*\)/.test(
+      uploadSource,
+    )
+  ) {
+    failures.push("try-on upload contract body must not use z.unknown");
   }
   return { failures, callerHits, providerHits };
 }

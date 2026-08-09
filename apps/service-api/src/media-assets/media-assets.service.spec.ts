@@ -298,6 +298,36 @@ describe("MediaAssetsService", () => {
     });
   });
 
+  it("keeps near-transparent and near-opaque alpha from satisfying both image facts", async () => {
+    const service = new MediaAssetsService(db as never, {
+      mediaAssetStorageRoot: storageRoot,
+      mediaAssetPublicBaseUrl: undefined,
+    });
+    const alphaOne = pngFromPixels(256, 256, () => [40, 80, 160, 1]);
+    const alpha254 = pngFromPixels(256, 256, () => [40, 80, 160, 254]);
+
+    await expect(
+      service.storeTryOnGarment({
+        originalname: "alpha-one.png",
+        mimetype: "image/png",
+        size: alphaOne.byteLength,
+        buffer: alphaOne,
+      }),
+    ).rejects.toMatchObject({
+      message: "TRY_ON_GARMENT_VISIBLE_PIXELS_REQUIRED",
+    });
+    await expect(
+      service.storeTryOnGarment({
+        originalname: "alpha-254.png",
+        mimetype: "image/png",
+        size: alpha254.byteLength,
+        buffer: alpha254,
+      }),
+    ).rejects.toMatchObject({
+      message: "TRY_ON_GARMENT_TRANSPARENCY_REQUIRED",
+    });
+  });
+
   it("decodes common transparent PNG forms and rejects damaged scanlines or unknown critical chunks", async () => {
     const service = new MediaAssetsService(db as never, {
       mediaAssetStorageRoot: storageRoot,
@@ -310,6 +340,16 @@ describe("MediaAssetsService", () => {
         mimetype: "image/png",
         size: grayscaleAlpha.byteLength,
         buffer: grayscaleAlpha,
+      }),
+    ).resolves.toBeDefined();
+
+    const paletteWithTransparency = paletteTransparencyPng(256, 256);
+    await expect(
+      service.storeTryOnGarment({
+        originalname: "shirt-palette.png",
+        mimetype: "image/png",
+        size: paletteWithTransparency.byteLength,
+        buffer: paletteWithTransparency,
       }),
     ).resolves.toBeDefined();
 
@@ -457,6 +497,37 @@ function grayscaleAlphaPng(width: number, height: number): Buffer {
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
     pngChunk("IHDR", ihdr),
     pngChunk("IDAT", deflateSync(pixels)),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+function paletteTransparencyPng(width: number, height: number): Buffer {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 3;
+  const rows = Buffer.alloc((width + 1) * height);
+  for (
+    let y = Math.floor(height / 4);
+    y < Math.ceil((height * 3) / 4);
+    y += 1
+  ) {
+    const rowOffset = y * (width + 1);
+    for (
+      let x = Math.floor(width / 4);
+      x < Math.ceil((width * 3) / 4);
+      x += 1
+    ) {
+      rows[rowOffset + 1 + x] = 1;
+    }
+  }
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("PLTE", Buffer.from([0, 0, 0, 40, 80, 160])),
+    pngChunk("tRNS", Buffer.from([0, 255])),
+    pngChunk("IDAT", deflateSync(rows)),
     pngChunk("IEND", Buffer.alloc(0)),
   ]);
 }

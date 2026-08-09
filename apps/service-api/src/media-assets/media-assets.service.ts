@@ -20,6 +20,11 @@ export const MAX_TRY_ON_GARMENT_BYTES = 5 * 1024 * 1024;
 export const MIN_TRY_ON_GARMENT_DIMENSION = 256;
 export const MAX_TRY_ON_GARMENT_DIMENSION = 4096;
 const MIN_TRY_ON_GARMENT_PIXEL_COVERAGE = 0.01;
+// Alpha values in the small antialiased fringe are not allowed to satisfy
+// both sides of the source-image invariant.  A pixel is background only when
+// it is effectively transparent, and garment ink must be visibly opaque.
+const MAX_TRANSPARENT_PIXEL_ALPHA = 16;
+const MIN_VISIBLE_PIXEL_ALPHA = 128;
 const MANAGED_IMAGE_TYPES = new Map([
   ["image/jpeg", { extension: ".jpg", matches: isJpeg }],
   ["image/png", { extension: ".png", matches: isPng }],
@@ -315,11 +320,11 @@ function readPngHeader(buffer: Buffer): PngHeader | undefined {
         ![0, 2, 3, 4, 6].includes(data[9]) ||
         data[10] !== 0 ||
         data[11] !== 0 ||
-        data[12] !== 0
+        ![0, 1].includes(data[12])
       ) {
         return undefined;
       }
-    } else if (type === "IDAT") {
+    } else if (type === "PLTE" || type === "IDAT") {
       if (width === undefined) return undefined;
     } else if (type === "IEND") {
       if (
@@ -372,8 +377,9 @@ function decodePngFacts(
   let transparentPixelCount = 0;
   let visiblePixelCount = 0;
   for (let index = 3; index < decoded.data.length; index += 4) {
-    if (decoded.data[index] < 255) transparentPixelCount += 1;
-    if (decoded.data[index] > 0) visiblePixelCount += 1;
+    const alpha = decoded.data[index];
+    if (alpha <= MAX_TRANSPARENT_PIXEL_ALPHA) transparentPixelCount += 1;
+    if (alpha >= MIN_VISIBLE_PIXEL_ALPHA) visiblePixelCount += 1;
   }
   return { transparentPixelCount, visiblePixelCount };
 }

@@ -1,8 +1,8 @@
 import type { Response } from "express";
 
 import {
-  Controller,
   Body,
+  Controller,
   Get,
   Header,
   Param,
@@ -23,6 +23,7 @@ import {
 
 import { RequirePermissions } from "../access/permissions.decorator";
 import { Public } from "../auth/public.decorator";
+import { AdminEndpointContract } from "../common/admin-endpoint-contract.decorator";
 import { AdminResponseContract } from "../common/admin-response-contract.decorator";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
 import {
@@ -46,12 +47,12 @@ const emptyMultipartFieldsSchema = adminTryOnGarmentUploadContract.querySchema
 
 @ApiTags("media-assets")
 @ApiBearerAuth()
-@Controller("media-assets")
+@Controller()
 export class MediaAssetsController {
   constructor(private readonly mediaAssetsService: MediaAssetsService) {}
 
   @RequirePermissions("products.write")
-  @Post("product-display-images")
+  @Post(adminProductDisplayImageUploadContract.path)
   @ApiConsumes("multipart/form-data")
   @AdminResponseContract(adminProductDisplayImageUploadContract)
   @UseInterceptors(
@@ -69,7 +70,7 @@ export class MediaAssetsController {
   }
 
   @RequirePermissions("products.write")
-  @Post("try-on-silhouettes")
+  @Post(adminTryOnSilhouetteUploadContract.path)
   @ApiConsumes("multipart/form-data")
   @AdminResponseContract(adminTryOnSilhouetteUploadContract)
   @UseInterceptors(
@@ -87,9 +88,8 @@ export class MediaAssetsController {
   }
 
   @RequirePermissions("products.write")
-  @Post(adminTryOnGarmentUploadContract.path.replace("/media-assets/", ""))
+  @AdminEndpointContract(adminTryOnGarmentUploadContract)
   @ApiConsumes("multipart/form-data")
-  @AdminResponseContract(adminTryOnGarmentUploadContract)
   @UseInterceptors(
     FileInterceptor("file", {
       limits: { fileSize: MAX_TRY_ON_GARMENT_BYTES },
@@ -109,7 +109,7 @@ export class MediaAssetsController {
   }
 
   @Public()
-  @Get(":id/content")
+  @Get("/media-assets/:id/content")
   @Header("Cache-Control", "public, max-age=31536000, immutable")
   async readPublicContent(
     @Param("id", ParseUUIDPipe) id: string,

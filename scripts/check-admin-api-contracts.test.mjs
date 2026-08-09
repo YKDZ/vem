@@ -21,6 +21,91 @@ function withFixture(files, callback) {
 }
 
 describe("admin api contract guard", () => {
+  const tryOnFixture = (
+    providerDecorator = "AdminEndpointContract",
+    caller = true,
+  ) => ({
+    "packages/shared/src/schemas/try-on-garments.ts": `
+      const z = { strictObject: () => ({}) };
+      const defineAdminEndpointContract = (value) => value;
+      export const adminTryOnGarmentUploadContract = defineAdminEndpointContract({ method: "POST", path: "/media-assets/try-on-garments" });
+      export const adminCreateTryOnGarmentContract = defineAdminEndpointContract({ method: "POST", path: "/try-on-garments" });
+      export const adminGetTryOnGarmentContract = defineAdminEndpointContract({ method: "GET", path: "/try-on-garments/:id" });
+      export const adminTryOnGarmentConfirmationContract = defineAdminEndpointContract({ method: "POST", path: "/try-on-garments/:id/confirmation" });
+    `,
+    "apps/service-api/src/try-on-garments/try-on-garments.controller.ts": `
+      class TryOnGarmentsController {
+        @${providerDecorator}(adminCreateTryOnGarmentContract) createDraft() {}
+        @${providerDecorator}(adminGetTryOnGarmentContract) getById() {}
+        @${providerDecorator}(adminTryOnGarmentConfirmationContract) confirm() {}
+      }
+    `,
+    "apps/service-api/src/media-assets/media-assets.controller.ts": `
+      class MediaAssetsController {
+        @${providerDecorator}(adminTryOnGarmentUploadContract) uploadTryOnGarment() {}
+      }
+    `,
+    ...(caller
+      ? {
+          "apps/admin-ui/src/api/try-on-garments.ts": `
+            export async function uploadTryOnGarment() { return callAdminEndpointContract(adminTryOnGarmentUploadContract, {}); }
+            export async function createTryOnGarmentDraft() { return callAdminEndpointContract(adminCreateTryOnGarmentContract, {}); }
+            export async function getTryOnGarment() { return callAdminEndpointContract(adminGetTryOnGarmentContract, {}); }
+            export async function confirmTryOnGarment() { return callAdminEndpointContract(adminTryOnGarmentConfirmationContract, {}); }
+          `,
+        }
+      : {}),
+  });
+
+  it("requires executable provider bindings, not response-only metadata", () => {
+    withFixture(tryOnFixture("AdminResponseContract"), (root) => {
+      const result = checkAdminApiContracts({ root });
+      assert.equal(result.ok, false);
+      assert.match(
+        result.failures.join("\n"),
+        /try-on endpoint contract provider missing: adminCreateTryOnGarmentContract/,
+      );
+    });
+  });
+
+  it("ignores comments and dead code and rejects a missing caller", () => {
+    const files = tryOnFixture();
+    files["apps/admin-ui/src/api/try-on-garments.ts"] = `
+      // callAdminEndpointContract(adminTryOnGarmentUploadContract, {})
+      export async function uploadTryOnGarment() {
+        if (false) return callAdminEndpointContract(adminTryOnGarmentUploadContract, {});
+        return undefined;
+      }
+      export async function createTryOnGarmentDraft() { return callAdminEndpointContract(adminCreateTryOnGarmentContract, {}); }
+      export async function getTryOnGarment() { return callAdminEndpointContract(adminGetTryOnGarmentContract, {}); }
+      export async function confirmTryOnGarment() { return callAdminEndpointContract(adminTryOnGarmentConfirmationContract, {}); }
+    `;
+    withFixture(files, (root) => {
+      const result = checkAdminApiContracts({ root });
+      assert.equal(result.ok, false);
+      assert.match(
+        result.failures.join("\n"),
+        /try-on endpoint contract caller missing: adminTryOnGarmentUploadContract/,
+      );
+    });
+  });
+
+  it("rejects method and path drift in the shared contract registry", () => {
+    const files = tryOnFixture();
+    files["packages/shared/src/schemas/try-on-garments.ts"] = files[
+      "packages/shared/src/schemas/try-on-garments.ts"
+    ].replace(
+      'method: "GET", path: "/try-on-garments/:id"',
+      'method: "POST", path: "/wrong"',
+    );
+    withFixture(files, (root) => {
+      const result = checkAdminApiContracts({ root });
+      assert.equal(result.ok, false);
+      assert.match(result.failures.join("\n"), /method drift/);
+      assert.match(result.failures.join("\n"), /path drift/);
+    });
+  });
+
   it("accepts a write caller that uses schema-bound helpers", () => {
     withFixture(
       {

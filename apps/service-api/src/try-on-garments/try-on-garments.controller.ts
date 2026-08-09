@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query } from "@nestjs/common";
+import { Body, Controller, Param, Query } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import {
   adminCreateTryOnGarmentContract,
@@ -11,7 +11,7 @@ import type { AuthenticatedAdmin } from "../common/request-user";
 
 import { RequirePermissions } from "../access/permissions.decorator";
 import { CurrentAdmin } from "../auth/current-admin.decorator";
-import { AdminResponseContract } from "../common/admin-response-contract.decorator";
+import { AdminEndpointContract } from "../common/admin-endpoint-contract.decorator";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
 import { TryOnGarmentsService } from "./try-on-garments.service";
 
@@ -22,8 +22,7 @@ export class TryOnGarmentsController {
   constructor(private readonly tryOnGarmentsService: TryOnGarmentsService) {}
 
   @RequirePermissions("products.write")
-  @Post(adminCreateTryOnGarmentContract.path)
-  @AdminResponseContract(adminCreateTryOnGarmentContract)
+  @AdminEndpointContract(adminCreateTryOnGarmentContract)
   async createDraft(
     @Body(new ZodValidationPipe(adminCreateTryOnGarmentContract.bodySchema))
     body: TryOnGarmentDraftRequest,
@@ -35,8 +34,7 @@ export class TryOnGarmentsController {
   }
 
   @RequirePermissions("products.read")
-  @Get(adminGetTryOnGarmentContract.path)
-  @AdminResponseContract(adminGetTryOnGarmentContract)
+  @AdminEndpointContract(adminGetTryOnGarmentContract)
   async getById(
     @Param(new ZodValidationPipe(adminGetTryOnGarmentContract.pathParamsSchema))
     params: { id: string },
@@ -47,8 +45,7 @@ export class TryOnGarmentsController {
   }
 
   @RequirePermissions("products.write")
-  @Post(adminTryOnGarmentConfirmationContract.path)
-  @AdminResponseContract(adminTryOnGarmentConfirmationContract)
+  @AdminEndpointContract(adminTryOnGarmentConfirmationContract)
   async confirm(
     @Param(
       new ZodValidationPipe(

@@ -83,6 +83,24 @@ function tryOnGarmentUploadFailure(
   ) {
     return "TRY_ON_GARMENT_FILE_TOO_LARGE";
   }
+  if (
+    typeof exception === "object" &&
+    exception !== null &&
+    "code" in exception &&
+    typeof exception.code === "string" &&
+    exception.code.startsWith("LIMIT_")
+  ) {
+    return "TRY_ON_GARMENT_MULTIPART_INVALID";
+  }
+  // Multer delegates malformed multipart framing to busboy, which reports a
+  // dynamic English message without a Multer error code.  Keep that transport
+  // detail behind the stable public contract reason code.
+  if (
+    exception instanceof Error &&
+    /multipart|form|boundary|unexpected end|part/i.test(exception.message)
+  ) {
+    return "TRY_ON_GARMENT_MULTIPART_INVALID";
+  }
   if (exception instanceof HttpException && exception.getStatus() === 413) {
     return "TRY_ON_GARMENT_FILE_TOO_LARGE";
   }

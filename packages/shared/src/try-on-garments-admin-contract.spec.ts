@@ -16,6 +16,22 @@ describe("Try-On Garment Admin Endpoint Contracts", () => {
       "/media-assets/try-on-garments",
     );
     expect(adminTryOnGarmentUploadContract.querySchema.parse({})).toEqual({});
+    expect(() =>
+      adminTryOnGarmentUploadContract.bodySchema.parse({
+        file: { unexpected: true },
+      }),
+    ).toThrow();
+    expect(() =>
+      adminTryOnGarmentUploadContract.bodySchema.parse({
+        file: new Blob([new Uint8Array([1])], { type: "image/png" }),
+        unexpected: true,
+      }),
+    ).toThrow();
+    expect(
+      adminTryOnGarmentUploadContract.bodySchema.parse({
+        file: new Blob([new Uint8Array([1])], { type: "image/png" }),
+      }).file,
+    ).toBeInstanceOf(Blob);
     expect(
       adminTryOnGarmentUploadContract.responseSchema.parse({
         id,

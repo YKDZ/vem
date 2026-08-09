@@ -257,6 +257,45 @@ describe("admin-try-on-garment-contract.e2e", { concurrent: false }, () => {
       )
       .set(auth);
     expect(extraQueryResponse.status).toBe(400);
+
+    const unexpectedFieldResponse = await api
+      .post(`/api${adminTryOnGarmentUploadContract.path}`)
+      .set(auth)
+      .field("unexpected", "true")
+      .attach("file", rgbaPng(512, 512, 0), {
+        filename: "shirt.png",
+        contentType: "image/png",
+      });
+    expect(unexpectedFieldResponse.status).toBe(400);
+    expect((unexpectedFieldResponse.body as ApiResponse<unknown>).message).toBe(
+      "TRY_ON_GARMENT_MULTIPART_INVALID",
+    );
+
+    const multipleFilesResponse = await api
+      .post(`/api${adminTryOnGarmentUploadContract.path}`)
+      .set(auth)
+      .attach("file", rgbaPng(512, 512, 0), {
+        filename: "shirt-a.png",
+        contentType: "image/png",
+      })
+      .attach("file", rgbaPng(512, 512, 0), {
+        filename: "shirt-b.png",
+        contentType: "image/png",
+      });
+    expect(multipleFilesResponse.status).toBe(400);
+    expect((multipleFilesResponse.body as ApiResponse<unknown>).message).toBe(
+      "TRY_ON_GARMENT_MULTIPART_INVALID",
+    );
+
+    const malformedFramingResponse = await api
+      .post(`/api${adminTryOnGarmentUploadContract.path}`)
+      .set(auth)
+      .set("Content-Type", "multipart/form-data; boundary=vem-boundary")
+      .send("--vem-boundary\r\n");
+    expect(malformedFramingResponse.status).toBe(400);
+    expect(
+      (malformedFramingResponse.body as ApiResponse<unknown>).message,
+    ).toBe("TRY_ON_GARMENT_MULTIPART_INVALID");
   }, 60_000);
 });
 

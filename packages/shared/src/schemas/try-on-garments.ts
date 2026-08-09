@@ -10,6 +10,42 @@ const noQuerySchema = z.strictObject({});
 const noBodySchema = z.strictObject({});
 const garmentPathParamsSchema = z.strictObject({ id: z.uuid() });
 
+/**
+ * The upload operation is transported as multipart in the browser and is
+ * represented by Multer's file object at the Service API boundary.  Keep the
+ * two transport representations in one contract rather than making the
+ * request body an unconstrained unknown value.
+ */
+export type AdminMultipartFile =
+  | Blob
+  | {
+      originalname: string;
+      mimetype: string;
+      size: number;
+      buffer: Uint8Array;
+    };
+
+export const adminMultipartFileSchema = z.custom<AdminMultipartFile>(
+  (value) => {
+    if (typeof Blob !== "undefined" && value instanceof Blob) return true;
+    if (!isRecord(value)) return false;
+    const candidate = value;
+    return (
+      typeof candidate.originalname === "string" &&
+      typeof candidate.mimetype === "string" &&
+      typeof candidate.size === "number" &&
+      Number.isInteger(candidate.size) &&
+      candidate.size >= 0 &&
+      candidate.buffer instanceof Uint8Array
+    );
+  },
+  "a multipart file is required",
+);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export const tryOnGarmentMediaAssetSchema = z.strictObject({
   id: z.uuid(),
   managedReference: z
@@ -49,8 +85,7 @@ export const adminTryOnGarmentUploadContract = defineAdminEndpointContract({
   path: "/media-assets/try-on-garments",
   pathParamsSchema: z.strictObject({}),
   querySchema: noQuerySchema,
-  // Multipart file bytes are validated by the upload endpoint after transport parsing.
-  bodySchema: z.strictObject({ file: z.unknown() }),
+  bodySchema: z.strictObject({ file: adminMultipartFileSchema }),
   responseSchema: tryOnGarmentMediaAssetSchema,
 });
 
