@@ -5,6 +5,7 @@ import {
   adminGetTryOnGarmentContract,
   adminTryOnGarmentUploadContract,
   adminTryOnGarmentConfirmationContract,
+  adminTryOnGarmentActivationContract,
 } from "./schemas/try-on-garments";
 
 const id = "550e8400-e29b-41d4-a716-446655440124";
@@ -91,6 +92,19 @@ describe("Try-On Garment Admin Endpoint Contracts", () => {
     expect(adminGetTryOnGarmentContract.path).toBe("/try-on-garments/:id");
     expect(adminGetTryOnGarmentContract.pathParamsSchema.parse({ id })).toEqual(
       { id },
+    );
+  });
+
+  it("defines an explicit confirmed-draft activation boundary", () => {
+    expect(adminTryOnGarmentActivationContract.method).toBe("POST");
+    expect(adminTryOnGarmentActivationContract.path).toBe(
+      "/try-on-garments/:id/activation",
+    );
+    expect(
+      adminTryOnGarmentActivationContract.pathParamsSchema.parse({ id }),
+    ).toEqual({ id });
+    expect(adminTryOnGarmentActivationContract.bodySchema.parse({})).toEqual(
+      {},
     );
   });
 });

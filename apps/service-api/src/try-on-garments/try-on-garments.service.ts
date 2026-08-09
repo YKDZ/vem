@@ -115,6 +115,45 @@ export class TryOnGarmentsService {
     return toTryOnGarmentResponse(updated, garment.sourceMediaAsset);
   }
 
+  async activate(id: string, adminUserId: string): Promise<TryOnGarmentResponse> {
+    const garment = await this.getById(id);
+    if (!garment.confirmedAt) {
+      throw new BadRequestException("TRY_ON_GARMENT_CONFIRMATION_REQUIRED");
+    }
+    if (garment.status === "active") return garment;
+    if (garment.status !== "draft") {
+      throw new BadRequestException("TRY_ON_GARMENT_ACTIVATION_INVALID");
+    }
+    const updated = await this.db.transaction(async (tx) => {
+      const [active] = await tx.update(tryOnGarments)
+        .set({ status: "active", updatedAt: new Date() })
+        .where(and(eq(tryOnGarments.id, id), isNull(tryOnGarments.deletedAt)))
+        .returning();
+      if (!active) throw new NotFoundException("Try-On Garment not found");
+      await this.auditService.record({ adminUserId, action: "try_on_garments.activate", resourceType: "try_on_garment", resourceId: active.id, beforeJson: tryOnGarmentAuditSnapshot({ ...active, status: "draft" }), afterJson: tryOnGarmentAuditSnapshot(active) }, tx);
+      return active;
+    });
+    return toTryOnGarmentResponse(updated, garment.sourceMediaAsset);
+  }
+
+  async retire(id: string, adminUserId: string): Promise<TryOnGarmentResponse> {
+    const garment = await this.getById(id);
+    if (garment.status === "retired") return garment;
+    if (garment.status !== "active") {
+      throw new BadRequestException("TRY_ON_GARMENT_RETIREMENT_INVALID");
+    }
+    const updated = await this.db.transaction(async (tx) => {
+      const [retired] = await tx.update(tryOnGarments)
+        .set({ status: "retired", updatedAt: new Date() })
+        .where(and(eq(tryOnGarments.id, id), isNull(tryOnGarments.deletedAt)))
+        .returning();
+      if (!retired) throw new NotFoundException("Try-On Garment not found");
+      await this.auditService.record({ adminUserId, action: "try_on_garments.retire", resourceType: "try_on_garment", resourceId: retired.id, beforeJson: tryOnGarmentAuditSnapshot({ ...retired, status: "active" }), afterJson: tryOnGarmentAuditSnapshot(retired) }, tx);
+      return retired;
+    });
+    return toTryOnGarmentResponse(updated, garment.sourceMediaAsset);
+  }
+
   private async requireProduct(id: string): Promise<void> {
     const [product] = await this.db
       .select({ id: products.id })

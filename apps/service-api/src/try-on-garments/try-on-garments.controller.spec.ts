@@ -4,6 +4,8 @@ import {
   adminCreateTryOnGarmentContract,
   adminGetTryOnGarmentContract,
   adminTryOnGarmentConfirmationContract,
+  adminTryOnGarmentActivationContract,
+  adminTryOnGarmentRetirementContract,
 } from "@vem/shared";
 import { describe, expect, it } from "vitest";
 
@@ -15,6 +17,8 @@ describe("TryOnGarmentsController endpoint binding", () => {
     ["createDraft", adminCreateTryOnGarmentContract],
     ["getById", adminGetTryOnGarmentContract],
     ["confirm", adminTryOnGarmentConfirmationContract],
+    ["activate", adminTryOnGarmentActivationContract],
+    ["retire", adminTryOnGarmentRetirementContract],
   ] as const)(
     "binds %s route directly to its shared contract",
     (method, contract) => {

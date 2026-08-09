@@ -117,6 +117,28 @@ export const adminTryOnGarmentConfirmationContract =
     responseSchema: tryOnGarmentResponseSchema,
   });
 
+/** Activating is distinct from source confirmation: only a confirmed draft
+ * may become eligible through an explicit association. */
+export const adminTryOnGarmentActivationContract =
+  defineAdminEndpointContract({
+    method: "POST",
+    path: "/try-on-garments/:id/activation",
+    pathParamsSchema: garmentPathParamsSchema,
+    querySchema: noQuerySchema,
+    bodySchema: noBodySchema,
+    responseSchema: tryOnGarmentResponseSchema,
+  });
+
+export const adminTryOnGarmentRetirementContract =
+  defineAdminEndpointContract({
+    method: "POST",
+    path: "/try-on-garments/:id/retirement",
+    pathParamsSchema: garmentPathParamsSchema,
+    querySchema: noQuerySchema,
+    bodySchema: noBodySchema,
+    responseSchema: tryOnGarmentResponseSchema,
+  });
+
 export type TryOnGarmentMediaAsset = z.infer<
   typeof tryOnGarmentMediaAssetSchema
 >;

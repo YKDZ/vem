@@ -4,6 +4,8 @@ import {
   adminCreateTryOnGarmentContract,
   adminGetTryOnGarmentContract,
   adminTryOnGarmentConfirmationContract,
+  adminTryOnGarmentActivationContract,
+  adminTryOnGarmentRetirementContract,
   adminTryOnGarmentUploadContract,
   type TryOnGarmentDraftRequest,
   type TryOnGarmentMediaAsset,
@@ -46,6 +48,18 @@ export async function confirmTryOnGarment(
       body: {},
     },
   );
+}
+
+export async function activateTryOnGarment(id: string): Promise<TryOnGarmentResponse> {
+  return await callAdminEndpointContract(adminTryOnGarmentActivationContract, {
+    pathParams: { id }, body: {},
+  });
+}
+
+export async function retireTryOnGarment(id: string): Promise<TryOnGarmentResponse> {
+  return await callAdminEndpointContract(adminTryOnGarmentRetirementContract, {
+    pathParams: { id }, body: {},
+  });
 }
 
 export type { TryOnGarmentDraftRequest, TryOnGarmentResponse };
