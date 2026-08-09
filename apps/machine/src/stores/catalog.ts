@@ -426,7 +426,7 @@ export const useCatalogStore = defineStore("catalog", {
         // replacement is visible in one customer refresh.  A platform outage
         // still leaves the last local sale view readable.
         const catalogRefresh = daemonClient.refreshCatalog?.();
-        if (catalogRefresh && typeof catalogRefresh.then === "function") {
+        if (catalogRefresh !== undefined) {
           await catalogRefresh.catch(() => undefined);
         }
         this.applySnapshot(await daemonClient.getSaleView());

@@ -182,6 +182,7 @@ pub struct ManagedMediaCache {
     state: Arc<Mutex<CacheState>>,
     queue: Arc<Mutex<VecDeque<WarmJob>>>,
     inflight: Arc<Mutex<HashSet<MediaIdentity>>>,
+    staging: Arc<Mutex<HashSet<PathBuf>>>,
     queue_notify: Arc<Notify>,
 }
 
@@ -291,6 +292,7 @@ impl ManagedMediaCache {
             state: Arc::new(Mutex::new(initial_state)),
             queue: Arc::new(Mutex::new(VecDeque::new())),
             inflight: Arc::new(Mutex::new(HashSet::new())),
+            staging: Arc::new(Mutex::new(HashSet::new())),
             queue_notify: Arc::new(Notify::new()),
         };
         for _ in 0..DOWNLOAD_WORKERS {
@@ -583,6 +585,7 @@ impl ManagedMediaCache {
                 .map(|(digest, _)| object_key(digest))
                 .collect::<HashSet<_>>()
         };
+        let staging = self.staging.lock().await.clone();
         let Ok(entries) = fs::read_dir(self.root.as_ref()) else {
             return;
         };
@@ -590,6 +593,9 @@ impl ManagedMediaCache {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
             if name == "active-media.json" {
+                continue;
+            }
+            if staging.contains(&path) {
                 continue;
             }
             let keep = name
@@ -689,6 +695,7 @@ impl ManagedMediaCache {
 
     async fn warm(&self, job: WarmJob) {
         let stage = self.staging_path(&job.descriptor.digest, &job.generation);
+        self.staging.lock().await.insert(stage.clone());
         let result = self
             .fetcher
             .fetch_to(&job.descriptor, &stage)
@@ -719,6 +726,7 @@ impl ManagedMediaCache {
                 };
                 let Some(current) = current else {
                     let _ = fs::remove_file(&stage);
+                    self.staging.lock().await.remove(&stage);
                     return;
                 };
                 if directory_usage_bytes(self.root.as_ref()) > MEDIA_CACHE_HIGH_WATER_BYTES {
@@ -783,6 +791,7 @@ impl ManagedMediaCache {
                 }
             }
         }
+        self.staging.lock().await.remove(&stage);
     }
 
     fn staging_path(&self, digest: &str, generation: &str) -> PathBuf {
@@ -1149,6 +1158,68 @@ mod tests {
                 .await,
             Err(MediaReadError::NotReady)
         ));
+    }
+
+    #[tokio::test]
+    async fn cleanup_never_removes_active_same_digest_staging_and_publish_is_atomic() {
+        struct StagedFetcher {
+            bytes: Vec<u8>,
+            staged: Arc<Notify>,
+            release: Arc<Notify>,
+        }
+
+        #[async_trait]
+        impl MediaFetcher for StagedFetcher {
+            async fn fetch_to(
+                &self,
+                _: &MediaDescriptor,
+                staging: &Path,
+            ) -> Result<MediaFetchResult, String> {
+                write_durable(staging, &self.bytes)?;
+                self.staged.notify_one();
+                self.release.notified().await;
+                Ok(MediaFetchResult {
+                    content_type: "image/png".to_string(),
+                })
+            }
+        }
+
+        let root = tempdir().expect("tempdir").keep();
+        let bytes = b"\x89PNG\r\n\x1a\nstaged".to_vec();
+        let expected = descriptor(&bytes, "image/png");
+        let staged = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let cache = ManagedMediaCache::new(
+            root.clone(),
+            "http://127.0.0.1:1234",
+            Arc::new(StagedFetcher {
+                bytes,
+                staged: staged.clone(),
+                release: release.clone(),
+            }),
+        )
+        .expect("cache");
+
+        cache
+            .reconcile_active_catalog("generation-1", vec![expected.clone()])
+            .await
+            .expect("adopt");
+        tokio::time::timeout(std::time::Duration::from_secs(1), staged.notified())
+            .await
+            .expect("staging started");
+        assert_eq!(cache.cleanup_bounded(10).await, 0);
+        release.notify_waiters();
+        for _ in 0..40 {
+            if cache.snapshot().await.1[0].readiness == MediaReadiness::Ready {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(cache.snapshot().await.1[0].readiness, MediaReadiness::Ready);
+        assert!(fs::read_dir(root)
+            .expect("cache files")
+            .flatten()
+            .all(|entry| !entry.file_name().to_string_lossy().ends_with(".tmp")));
     }
 
     #[tokio::test]

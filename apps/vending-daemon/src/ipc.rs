@@ -3865,7 +3865,7 @@ mod tests {
     use async_trait::async_trait;
     use axum::{
         body::Body,
-        http::{Request, StatusCode},
+        http::{Method, Request, StatusCode},
     };
     use tower::ServiceExt;
     use wiremock::{
@@ -3976,35 +3976,65 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
-        for invalid in [
-            Request::builder()
-                .method("GET")
-                .uri(format!("/media/{}", descriptor.digest))
-                .body(Body::empty())
-                .unwrap(),
-            Request::builder()
-                .method("POST")
-                .uri(&uri)
-                .body(Body::empty())
-                .unwrap(),
-            Request::builder()
-                .method("GET")
-                .uri("/media/sha256:../secret?grant=nope")
-                .body(Body::empty())
-                .unwrap(),
-            Request::builder()
-                .method("GET")
-                .uri("/media/sha256:missing?grant=nope")
-                .body(Body::empty())
-                .unwrap(),
-        ] {
-            let response = build_router(ctx.clone()).oneshot(invalid).await.unwrap();
-            assert!(matches!(
-                response.status(),
-                StatusCode::FORBIDDEN | StatusCode::METHOD_NOT_ALLOWED | StatusCode::NOT_FOUND
-            ));
+        let status = |method: String, uri: String| {
+            let ctx = ctx.clone();
+            async move {
+                build_router(ctx)
+                    .oneshot(
+                        Request::builder()
+                            .method(method.parse::<Method>().expect("method"))
+                            .uri(uri)
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap()
+                    .status()
+            }
+        };
+        assert_eq!(
+            status("GET".to_string(), format!("/media/{}", descriptor.digest)).await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            status(
+                "GET".to_string(),
+                format!("/media/{}?grant=test-token", descriptor.digest)
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            status(
+                "GET".to_string(),
+                format!("/media/sha256:missing?grant={grant}")
+            )
+            .await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            status(
+                "GET".to_string(),
+                format!("/media/sha256:%2E%2E%2Fsecret?grant={grant}")
+            )
+            .await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            status("GET".to_string(), "/media".to_string()).await,
+            StatusCode::NOT_FOUND
+        );
+        for method in ["POST", "PUT", "PATCH", "DELETE", "OPTIONS"] {
+            assert_eq!(
+                status(method.to_string(), uri.clone()).await,
+                if method == "OPTIONS" {
+                    StatusCode::OK
+                } else {
+                    StatusCode::METHOD_NOT_ALLOWED
+                }
+            );
         }
-        let snapshot = build_router(ctx)
+        let snapshot = build_router(ctx.clone())
             .oneshot(
                 Request::builder()
                     .method("GET")
@@ -4016,6 +4046,18 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(snapshot.status(), StatusCode::OK);
+        let crossed_token = build_router(ctx)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/media/snapshot")
+                    .header(AUTHORIZATION, format!("Bearer {grant}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(crossed_token.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[test]
