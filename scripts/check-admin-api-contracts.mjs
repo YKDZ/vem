@@ -706,15 +706,15 @@ function isAllowedNamedContractUse(identifier) {
 function isDeclarationOrImportIdentifier(identifier) {
   const parent = identifier.parent;
   return (
-    ts.isImportClause(parent) ||
-    ts.isImportSpecifier(parent) ||
-    ts.isNamespaceImport(parent) ||
-    ts.isFunctionDeclaration(parent) ||
-    ts.isClassDeclaration(parent) ||
-    ts.isEnumDeclaration(parent) ||
-    ts.isVariableDeclaration(parent) ||
-    ts.isParameter(parent) ||
-    ts.isBindingElement(parent)
+    (ts.isImportClause(parent) && parent.name === identifier) ||
+    (ts.isImportSpecifier(parent) && parent.name === identifier) ||
+    (ts.isNamespaceImport(parent) && parent.name === identifier) ||
+    (ts.isFunctionDeclaration(parent) && parent.name === identifier) ||
+    (ts.isClassDeclaration(parent) && parent.name === identifier) ||
+    (ts.isEnumDeclaration(parent) && parent.name === identifier) ||
+    (ts.isVariableDeclaration(parent) && parent.name === identifier) ||
+    (ts.isParameter(parent) && parent.name === identifier) ||
+    (ts.isBindingElement(parent) && parent.name === identifier)
   );
 }
 
@@ -733,28 +733,10 @@ function isTypeOnlyUsage(identifier) {
   return false;
 }
 
-function isForbiddenFetchReference(node) {
-  if (ts.isPropertyAccessExpression(node)) {
-    return (
-      ts.isIdentifier(node.expression) &&
-      ["globalThis", "window"].includes(node.expression.text) &&
-      node.name.text === "fetch"
-    );
-  }
-  if (ts.isElementAccessExpression(node)) {
-    return (
-      ts.isIdentifier(node.expression) &&
-      ["globalThis", "window"].includes(node.expression.text) &&
-      node.argumentExpression !== undefined &&
-      ts.isStringLiteral(
-        unwrapTransparentExpression(node.argumentExpression),
-      ) &&
-      unwrapTransparentExpression(node.argumentExpression).text === "fetch"
-    );
-  }
+function isForbiddenMigrationRuntimeIdentifier(node) {
   return (
     ts.isIdentifier(node) &&
-    node.text === "fetch" &&
+    ["fetch", "globalThis", "window"].includes(node.text) &&
     !isDeclarationOrImportIdentifier(node) &&
     !isTypeOnlyUsage(node) &&
     !(ts.isPropertyAccessExpression(node.parent) && node.parent.name === node)
@@ -848,8 +830,16 @@ function checkMigrationApiImportAllowlist(root) {
           `migration API named contract misuse: ${path} uses ${node.text} outside direct callAdminEndpointContract`,
         );
       }
-      if (isForbiddenFetchReference(node)) {
-        failures.push(`migration API network entry denied: ${path} uses fetch`);
+      if (isForbiddenMigrationRuntimeIdentifier(node)) {
+        failures.push(
+          `migration API network entry denied: ${path} uses ${node.text}`,
+        );
+      }
+      if (
+        ts.isCallExpression(node) &&
+        node.expression.kind === ts.SyntaxKind.ImportKeyword
+      ) {
+        failures.push(`migration API dynamic import denied: ${path}`);
       }
       ts.forEachChild(node, visit);
     };

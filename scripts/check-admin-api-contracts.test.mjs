@@ -346,6 +346,52 @@ describe("admin api contract guard", () => {
     });
   });
 
+  it("rejects global transport aliases and dynamic imports in migration API files", () => {
+    const escapeHatches = [
+      {
+        name: "globalThis destructuring",
+        addition: "\nconst { fetch: globalTransport } = globalThis;\n",
+        expected:
+          /migration API network entry denied: apps\/admin-ui\/src\/api\/try-on-garments\.ts uses globalThis/,
+      },
+      {
+        name: "window alias",
+        addition: "\nconst windowTransport = window;\n",
+        expected:
+          /migration API network entry denied: apps\/admin-ui\/src\/api\/try-on-garments\.ts uses window/,
+      },
+      {
+        name: "dynamic request import",
+        addition:
+          '\nexport async function dynamicRequestImport() { const request = await import("./request"); return request.get("/raw"); }\n',
+        expected:
+          /migration API dynamic import denied: apps\/admin-ui\/src\/api\/try-on-garments\.ts/,
+      },
+    ];
+
+    for (const { name, addition, expected } of escapeHatches) {
+      const bypass = completeCatalogContractFixture();
+      bypass["apps/admin-ui/src/api/try-on-garments.ts"] += addition;
+      withFixture(bypass, (root) => {
+        const result = checkAdminApiContracts({ root });
+        assert.equal(result.ok, false, name);
+        assert.match(result.failures.join("\n"), expected, name);
+      });
+    }
+  });
+
+  it("allows type-only globals and leaves non-migration API files outside this guard", () => {
+    const fixture = completeCatalogContractFixture();
+    fixture["apps/admin-ui/src/api/try-on-garments.ts"] +=
+      "\ntype BrowserTransportGlobals = [typeof globalThis, typeof window, typeof fetch];\n";
+    fixture["apps/admin-ui/src/api/unrelated.ts"] =
+      'const transport = globalThis; const request = import("./request"); void transport; void request;\n';
+    withFixture(fixture, (root) => {
+      const result = checkAdminApiContracts({ root });
+      assert.equal(result.ok, true, result.failures.join("\n"));
+    });
+  });
+
   it("rejects every file-level migration transport escape hatch", () => {
     const escapeHatches = [
       {
