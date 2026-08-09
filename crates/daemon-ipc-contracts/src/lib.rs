@@ -6,6 +6,7 @@ use std::fmt;
 mod generated {
     pub mod device_binding;
     pub mod device_binding_activation;
+    pub mod managed_media;
     pub mod runtime_configuration;
     pub mod sale_start_capability;
     pub mod scanner_protocol_request;
@@ -62,6 +63,8 @@ pub type MachineProvisioningProfile =
 pub type MachineProvisioningProfileSnapshot =
     generated::runtime_configuration::RuntimeConfigurationContractSubtype7;
 pub type VendingSummary = generated::transaction_checkout::CurrentTransactionSnapshotVending;
+pub type ManagedMediaDescriptor = generated::managed_media::ManagedMediaDescriptor;
+pub type ManagedMediaRevision = generated::managed_media::ManagedMediaDescriptorRevision;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoundaryValidationError {

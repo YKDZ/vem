@@ -344,6 +344,7 @@ async function enterTryOn(): Promise<void> {
               :api-base-url="machineStore.platformApiBaseUrl ?? ''"
               :fallback="fallbackImage"
               :alt="item.productName"
+              :ready-url="item.coverImageReadyUrl"
               :class="{ 'detail-image-fallback': !productImageReference }"
               @diagnostic="
                 catalogStore.recordMediaDiagnostic(

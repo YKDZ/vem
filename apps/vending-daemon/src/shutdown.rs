@@ -18,6 +18,7 @@ use crate::{
     hardware::HardwareSupervisor,
     ipc::{self, IpcContext, SaleBindingOperationGate},
     local_runtime_settings::{effective_scanner_protocol, LocalRuntimeSettings},
+    managed_media::{BackendMediaFetcher, ManagedMediaCache},
     mqtt::MqttSyncRuntime,
     provisioning,
     runtime::{DaemonRuntime, RuntimeStartInput},
@@ -193,6 +194,14 @@ async fn run_console_cycle(
             .await;
     }
 
+    let media_cache = ManagedMediaCache::new(
+        data_dir.join("media-cache"),
+        "http://127.0.0.1",
+        Arc::new(BackendMediaFetcher {
+            backend: backend.clone(),
+        }),
+    )?;
+
     let status_cache = ipc::RuntimeStatusCache::new(profile.as_ref(), state.clone()).await;
     let sale_binding_gate = Arc::new(ipc::SaleBindingOperationGate::default());
     let transaction = TransactionStateMachine::new(
@@ -236,9 +245,13 @@ async fn run_console_cycle(
         disk_pressure_probe: Arc::new(crate::health::DataDirDiskPressureProbe::from_env()),
         network_adapter: crate::network::adapter_from_env(),
         ui,
+        media_cache,
         background_shutdown: CancellationToken::new(),
     };
     let (ipc_handle, ipc_task) = ipc::run_server(config.bind, ipc_ctx.clone()).await?;
+    ipc_ctx
+        .media_cache
+        .set_read_url_base(format!("http://{}", ipc_handle.addr));
     let ready_file = config
         .print_ready_file
         .unwrap_or_else(|| default_ready_file_path(&data_dir));

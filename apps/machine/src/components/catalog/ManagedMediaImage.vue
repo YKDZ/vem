@@ -4,6 +4,7 @@ import { computed, ref, watch } from "vue";
 import {
   managedMediaDiagnosticKey,
   resolveManagedMediaReference,
+  resolveDaemonReadyUrl,
 } from "@/catalog/managed-media";
 
 const props = defineProps<{
@@ -12,6 +13,7 @@ const props = defineProps<{
   apiBaseUrl: string;
   fallback: string;
   alt: string;
+  readyUrl?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -19,7 +21,9 @@ const emit = defineEmits<{
 }>();
 
 const resolution = computed(() =>
-  resolveManagedMediaReference(props.reference, props.apiBaseUrl),
+  props.readyUrl !== undefined
+    ? resolveDaemonReadyUrl(props.readyUrl, props.fallback)
+    : resolveManagedMediaReference(props.reference, props.apiBaseUrl),
 );
 const source = ref(props.fallback);
 

@@ -575,6 +575,52 @@ impl BackendClient {
             .await
     }
 
+    pub async fn fetch_managed_media(
+        &self,
+        reference: &str,
+    ) -> Result<crate::managed_media::MediaBytes, String> {
+        if !reference.starts_with("/api/media-assets/") || reference.contains("..") {
+            return Err("managed media reference is outside the provisioned API path".to_string());
+        }
+        let token = self
+            .token
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| "backend token unavailable".to_string())?;
+        let response = self
+            .client
+            .get(format!("{}{}", self.base_url, reference))
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|error| format!("managed media request failed: {error}"))?;
+        if !response.status().is_success() {
+            return Err(format!(
+                "managed media request returned {}",
+                response.status()
+            ));
+        }
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("application/octet-stream")
+            .split(';')
+            .next()
+            .unwrap_or("application/octet-stream")
+            .trim()
+            .to_string();
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|error| format!("read managed media response failed: {error}"))?;
+        Ok(crate::managed_media::MediaBytes {
+            bytes: bytes.to_vec(),
+            content_type,
+        })
+    }
+
     pub async fn get_published_planogram(
         &self,
         machine_code: &str,

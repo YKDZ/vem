@@ -14,6 +14,7 @@ import {
   machinePaymentOptionsResponseSchema,
   paymentProviderEnvironmentDiagnosticSchema,
   machineSaleViewSnapshotSchema,
+  managedMediaProjectionSchema,
   parseDaemonIpcTransactionSnapshotBoundary,
   visionCameraMaintenanceConfirmResponseSchema,
   visionCameraMaintenanceContractSchema,
@@ -393,6 +394,11 @@ export const catalogSnapshotSchema = z.object({
   lastError: z.string().nullable(),
 });
 
+export const mediaSnapshotSchema = z.object({
+  generation: z.string().min(1),
+  assets: z.array(managedMediaProjectionSchema),
+});
+
 export const daemonEventSchema = daemonIpcEventNotificationSchema;
 
 export type HealthSnapshot = z.infer<typeof healthSnapshotSchema>;
@@ -446,6 +452,7 @@ export type PaymentProviderEnvironmentDiagnostic = z.infer<
   typeof paymentProviderEnvironmentDiagnosticSchema
 >;
 export type CatalogSnapshot = z.infer<typeof catalogSnapshotSchema>;
+export type MediaSnapshot = z.infer<typeof mediaSnapshotSchema>;
 export type SaleViewMediaDiagnostic = {
   reference: string | null;
   diagnosticKey: string;

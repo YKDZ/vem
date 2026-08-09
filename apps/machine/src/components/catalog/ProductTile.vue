@@ -54,9 +54,16 @@ const priceText = computed(() => {
       aria-hidden="true"
     >
       <img
-        v-if="item.coverImageUrl"
+        v-if="
+          item.coverImageReadyUrl ??
+          (item.coverImageMedia ? null : item.coverImageUrl)
+        "
         class="product-display-image h-full w-full"
-        :src="item.coverImageUrl"
+        :src="
+          item.coverImageReadyUrl ??
+          (item.coverImageMedia ? undefined : item.coverImageUrl) ??
+          undefined
+        "
         :alt="item.productName"
       />
       <span v-else>{{ item.productName.slice(0, 1) }}</span>

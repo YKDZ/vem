@@ -17,6 +17,7 @@ export * from "./schemas/inventory";
 export * from "./schemas/hardware-error-policies";
 export * from "./schemas/installed-kiosk-sale-acceptance";
 export * from "./schemas/machines";
+export * from "./schemas/managed-media";
 export * from "./schemas/machine-slot-coordinate";
 export * from "./schemas/mqtt";
 export * from "./schemas/notifications";

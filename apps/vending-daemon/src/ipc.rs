@@ -38,6 +38,7 @@ use crate::{
         ScannerProtocolParameters,
     },
     logs,
+    managed_media::{ManagedMediaCache, MediaReadError, MediaReadMethod},
     natural_context::MachineNaturalContextSnapshot,
     network::{
         NetworkAdapter, NetworkSettingsRequest, NetworkSettingsResponse, NetworkSetupStatus,
@@ -382,6 +383,7 @@ pub struct IpcContext {
     pub disk_pressure_probe: Arc<dyn crate::health::DiskPressureProbe>,
     pub network_adapter: Arc<dyn NetworkAdapter>,
     pub ui: UiRuntimeServices,
+    pub media_cache: ManagedMediaCache,
     pub background_shutdown: CancellationToken,
 }
 
@@ -527,6 +529,8 @@ pub struct IpcServerHandle {
 
 pub fn build_router(ctx: IpcContext) -> Router {
     Router::new()
+        .route("/media/:digest", get(media_get).head(media_head))
+        .route("/v1/media/snapshot", get(media_snapshot))
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/v1/runtime-configuration", get(runtime_configuration))
@@ -624,11 +628,71 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
-                .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+                .allow_methods([Method::GET, Method::HEAD, Method::POST, Method::OPTIONS])
                 .allow_headers([AUTHORIZATION, CONTENT_TYPE])
                 .allow_private_network(true),
         )
         .with_state(ctx)
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct MediaReadQuery {
+    grant: Option<String>,
+}
+
+async fn media_get(
+    State(ctx): State<IpcContext>,
+    AxumPath(digest): AxumPath<String>,
+    Query(query): Query<MediaReadQuery>,
+) -> impl IntoResponse {
+    serve_media(ctx.media_cache, digest, query.grant, MediaReadMethod::Get).await
+}
+
+async fn media_snapshot(State(ctx): State<IpcContext>, headers: HeaderMap) -> impl IntoResponse {
+    if let Err(error) = require_token(&headers, &ctx.token).await {
+        return error.into_response();
+    }
+    let (generation, assets) = ctx.media_cache.snapshot().await;
+    Json(serde_json::json!({ "generation": generation, "assets": assets })).into_response()
+}
+
+async fn media_head(
+    State(ctx): State<IpcContext>,
+    AxumPath(digest): AxumPath<String>,
+    Query(query): Query<MediaReadQuery>,
+) -> impl IntoResponse {
+    serve_media(ctx.media_cache, digest, query.grant, MediaReadMethod::Head).await
+}
+
+async fn serve_media(
+    cache: ManagedMediaCache,
+    digest: String,
+    grant: Option<String>,
+    method: MediaReadMethod,
+) -> axum::response::Response {
+    let Some(grant) = grant else {
+        return StatusCode::FORBIDDEN.into_response();
+    };
+    match cache.read_ready(&grant, method, &digest).await {
+        Ok(mut lease) => {
+            let mut headers = HeaderMap::new();
+            if let Ok(value) = lease.content_type.parse() {
+                headers.insert(CONTENT_TYPE, value);
+            }
+            if let Ok(value) = lease.byte_size.to_string().parse() {
+                headers.insert("content-length", value);
+            }
+            if let Ok(value) = format!("\"{}\"", digest).parse() {
+                headers.insert("etag", value);
+            }
+            (StatusCode::OK, headers, std::mem::take(&mut lease.bytes)).into_response()
+        }
+        Err(MediaReadError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
+        Err(MediaReadError::NotReady | MediaReadError::NotFound) => {
+            StatusCode::NOT_FOUND.into_response()
+        }
+        Err(MediaReadError::Io(_)) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
 
 async fn automatic_vent_intent(
@@ -1261,6 +1325,29 @@ async fn refresh_catalog(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
                 .and_then(|value| value.as_array())
                 .cloned()
                 .unwrap_or_else(|| payload.as_array().cloned().unwrap_or_default());
+            let descriptors = items
+                .iter()
+                .flat_map(|item| {
+                    ["coverImageMedia", "tryOnGarmentMedia"]
+                        .into_iter()
+                        .filter_map(move |field| {
+                            item.get(field).cloned().and_then(|value| {
+                                serde_json::from_value::<
+                                        crate::managed_media::ManagedMediaDescriptor,
+                                    >(value)
+                                    .ok()
+                            })
+                        })
+                })
+                .collect::<Vec<_>>();
+            let generation = payload
+                .get("catalogRevision")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("catalog-current")
+                .to_string();
+            ctx.media_cache
+                .reconcile_active_catalog(generation, descriptors)
+                .await;
             let value = CatalogSnapshot {
                 items,
                 cached: true,
@@ -1268,6 +1355,8 @@ async fn refresh_catalog(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
                 source: "backend".to_string(),
                 last_error: None,
             };
+            // Descriptor extraction is intentionally best effort: malformed media
+            // degrades its presentation projection and never rejects catalog data.
             *ctx.ui.status_cache.catalog.write().await = value.clone();
             Json(value).into_response()
         }
@@ -3809,6 +3898,14 @@ mod tests {
         let secrets = Arc::new(crate::secret::InMemorySecretStore::default());
         let sources = Arc::new(RuntimeSources::new(data_dir.clone(), secrets.clone()));
         let backend = Arc::new(BackendClient::new(api_base_url));
+        let media_cache = crate::managed_media::ManagedMediaCache::new(
+            data_dir.join("media-cache"),
+            "http://127.0.0.1",
+            Arc::new(crate::managed_media::BackendMediaFetcher {
+                backend: backend.clone(),
+            }),
+        )
+        .expect("media cache");
         let (events, _) = broadcast::channel(8);
         let (raw_tx, _) = mpsc::channel::<crate::transaction::ArmedPaymentCode>(2);
         let payment_code_scan_armer = crate::transaction::PaymentCodeScanArmer::default();
@@ -3843,6 +3940,7 @@ mod tests {
                     transaction,
                     status_cache: cache,
                 },
+                media_cache,
                 background_shutdown: CancellationToken::new(),
             },
             secrets,

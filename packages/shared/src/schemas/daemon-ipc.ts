@@ -7,11 +7,18 @@ import {
   paymentStatusSchema,
 } from "../enums/payment-status";
 import { vendingCommandStatusSchema } from "../enums/vending";
+import { managedMediaDescriptorSchema } from "./managed-media";
 
 // Remaining daemon snapshot convergence starts here: health, ready, config, bring-up,
 // scanner, vision, natural-context, sync, and remote-operation snapshots should
 // move through this Daemon IPC Contract Area in focused slices before a later
 // Daemon IPC Contract Generation refactor.
+
+export const daemonIpcManagedMediaDescriptorSchema =
+  managedMediaDescriptorSchema;
+export type DaemonIpcManagedMediaDescriptor = z.infer<
+  typeof daemonIpcManagedMediaDescriptorSchema
+>;
 
 const daemonIpcComponentHealthSchema = z
   .object({
@@ -767,6 +774,18 @@ export function exportDaemonIpcSaleStartCapabilityJsonSchema(): DaemonIpcJsonSch
   return {
     $schema: "https://json-schema.org/draft/2020-12/schema",
     title: "SaleStartCapabilitySnapshot",
+    ...root,
+  };
+}
+
+export function exportDaemonIpcManagedMediaDescriptorJsonSchema(): DaemonIpcJsonSchemaDocument {
+  const root = exportDaemonIpcJsonSchemaDefinition(
+    "ManagedMediaDescriptor",
+    daemonIpcManagedMediaDescriptorSchema,
+  );
+  return {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    title: "ManagedMediaDescriptor",
     ...root,
   };
 }

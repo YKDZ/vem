@@ -12,6 +12,7 @@ import {
   machineSlotCellNoSchema,
   machineSlotRowNoSchema,
 } from "./machine-slot-coordinate";
+import { managedMediaDescriptorSchema } from "./managed-media";
 
 function isIanaTimeZone(value: string): boolean {
   try {
@@ -527,6 +528,10 @@ const machineCatalogItemBaseSchema = z.object({
   productDescription: z.string().nullable(),
   coverImageUrl: managedMediaReferenceSchema.nullable(),
   tryOnSilhouetteUrl: managedMediaReferenceSchema.nullable().optional(),
+  coverImageMedia: managedMediaDescriptorSchema.nullable().optional(),
+  tryOnGarmentMedia: managedMediaDescriptorSchema.nullable().optional(),
+  coverImageReadyUrl: z.url().nullable().optional(),
+  tryOnGarmentReadyUrl: z.url().nullable().optional(),
   categoryId: z.uuid().nullable(),
   categoryName: z.string().nullable(),
   sku: z.string().min(1).max(64),

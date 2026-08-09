@@ -1692,8 +1692,35 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         productName: products.name,
         productDescription: products.description,
         coverImageMediaAssetId: mediaAssets.id,
+        coverImageMediaAssetDigest: mediaAssets.sha256,
+        coverImageMediaAssetContentType: mediaAssets.contentType,
+        coverImageMediaAssetByteSize: mediaAssets.byteSize,
         tryOnSilhouetteMediaAssetId: sql<string | null>`(
           select ${mediaAssets.id}
+          from ${mediaAssets}
+          where ${mediaAssets.id} = ${productVariants.tryOnSilhouetteMediaAssetId}
+            and ${mediaAssets.purpose} = 'try_on_silhouette'
+            and ${mediaAssets.deletedAt} is null
+          limit 1
+        )`,
+        tryOnSilhouetteMediaAssetDigest: sql<string | null>`(
+          select ${mediaAssets.sha256}
+          from ${mediaAssets}
+          where ${mediaAssets.id} = ${productVariants.tryOnSilhouetteMediaAssetId}
+            and ${mediaAssets.purpose} = 'try_on_silhouette'
+            and ${mediaAssets.deletedAt} is null
+          limit 1
+        )`,
+        tryOnSilhouetteMediaAssetContentType: sql<string | null>`(
+          select ${mediaAssets.contentType}
+          from ${mediaAssets}
+          where ${mediaAssets.id} = ${productVariants.tryOnSilhouetteMediaAssetId}
+            and ${mediaAssets.purpose} = 'try_on_silhouette'
+            and ${mediaAssets.deletedAt} is null
+          limit 1
+        )`,
+        tryOnSilhouetteMediaAssetByteSize: sql<number | null>`(
+          select ${mediaAssets.byteSize}
           from ${mediaAssets}
           where ${mediaAssets.id} = ${productVariants.tryOnSilhouetteMediaAssetId}
             and ${mediaAssets.purpose} = 'try_on_silhouette'
@@ -1757,6 +1784,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         ),
       )
       .orderBy(products.sortOrder, machineSlots.rowNo, machineSlots.cellNo);
+    const catalogRevision = new Date().toISOString();
     return rows.map((row) => ({
       ...row,
       coverImageUrl: this.machineManagedMediaReference(
@@ -1765,7 +1793,73 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       tryOnSilhouetteUrl: this.machineManagedMediaReference(
         row.tryOnSilhouetteMediaAssetId,
       ),
+      ...(this.machineManagedMediaDescriptor(
+        row.coverImageMediaAssetId,
+        row.coverImageMediaAssetDigest,
+        row.coverImageMediaAssetContentType,
+        row.coverImageMediaAssetByteSize,
+        "product_display_image",
+        catalogRevision,
+      )
+        ? {
+            coverImageMedia: this.machineManagedMediaDescriptor(
+              row.coverImageMediaAssetId,
+              row.coverImageMediaAssetDigest,
+              row.coverImageMediaAssetContentType,
+              row.coverImageMediaAssetByteSize,
+              "product_display_image",
+              catalogRevision,
+            ),
+          }
+        : {}),
+      ...(this.machineManagedMediaDescriptor(
+        row.tryOnSilhouetteMediaAssetId,
+        row.tryOnSilhouetteMediaAssetDigest,
+        row.tryOnSilhouetteMediaAssetContentType,
+        row.tryOnSilhouetteMediaAssetByteSize,
+        "try_on_garment",
+        catalogRevision,
+      )
+        ? {
+            tryOnGarmentMedia: this.machineManagedMediaDescriptor(
+              row.tryOnSilhouetteMediaAssetId,
+              row.tryOnSilhouetteMediaAssetDigest,
+              row.tryOnSilhouetteMediaAssetContentType,
+              row.tryOnSilhouetteMediaAssetByteSize,
+              "try_on_garment",
+              catalogRevision,
+            ),
+          }
+        : {}),
     }));
+  }
+
+  private machineManagedMediaDescriptor(
+    id: string | null,
+    digest: string | null,
+    contentType: string | null,
+    byteSize: number | null,
+    purpose: "product_display_image" | "try_on_garment",
+    catalogRevision: string,
+  ) {
+    if (
+      !id ||
+      !digest ||
+      !contentType ||
+      !byteSize ||
+      !z.uuid().safeParse(id).success
+    ) {
+      return null;
+    }
+    return {
+      id,
+      reference: `/api/media-assets/${id}/content`,
+      digest: `sha256:${digest}`,
+      contentType,
+      byteSize,
+      purpose,
+      revision: { catalogRevision, assetRevision: `sha256:${digest}` },
+    };
   }
 
   async getStockSnapshotByMachineCode(code: string) {

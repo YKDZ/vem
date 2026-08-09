@@ -12,6 +12,7 @@ import {
   exportDaemonIpcDeviceBindingActivationJsonSchema,
   exportDaemonIpcDeviceBindingJsonSchema,
   exportDaemonIpcSaleStartCapabilityJsonSchema,
+  exportDaemonIpcManagedMediaDescriptorJsonSchema,
   exportDaemonIpcTransactionCheckoutJsonSchema,
 } from "@vem/shared/schemas/daemon-ipc";
 import {
@@ -64,6 +65,8 @@ type GeneratorPaths = {
   scannerProtocolRequestGeneratedPath: string;
   saleStartCapabilitySchemaPath: string;
   saleStartCapabilityGeneratedPath: string;
+  managedMediaSchemaPath: string;
+  managedMediaGeneratedPath: string;
 };
 
 export type DaemonIpcGeneratedContractInputs = {
@@ -90,6 +93,9 @@ export type DaemonIpcGeneratedContractInputs = {
     schema: DaemonIpcJsonSchemaDocument;
   };
   saleStartCapability: {
+    schema: DaemonIpcJsonSchemaDocument;
+  };
+  managedMedia: {
     schema: DaemonIpcJsonSchemaDocument;
   };
 };
@@ -172,6 +178,14 @@ function defaultPaths(repoRoot: string): GeneratorPaths {
     saleStartCapabilityGeneratedPath: resolve(
       crateRoot,
       "src/generated/sale_start_capability.rs",
+    ),
+    managedMediaSchemaPath: resolve(
+      crateRoot,
+      "schemas/managed_media.schema.json",
+    ),
+    managedMediaGeneratedPath: resolve(
+      crateRoot,
+      "src/generated/managed_media.rs",
     ),
   };
 }
@@ -263,6 +277,7 @@ function writeGeneratorInputs(
     paths.saleStartCapabilitySchemaPath,
     inputs.saleStartCapability.schema,
   );
+  writeJson(paths.managedMediaSchemaPath, inputs.managedMedia.schema);
 }
 
 function formatGeneratorJsonInputs(
@@ -286,6 +301,7 @@ function formatGeneratorJsonInputs(
       paths.runtimeConfigurationSchemaPath,
       paths.scannerProtocolRequestSchemaPath,
       paths.saleStartCapabilitySchemaPath,
+      paths.managedMediaSchemaPath,
     ],
     {
       cwd: repoRoot,
@@ -417,6 +433,9 @@ export function buildDaemonIpcGeneratedContractInputs(): DaemonIpcGeneratedContr
     saleStartCapability: {
       schema: exportDaemonIpcSaleStartCapabilityJsonSchema(),
     },
+    managedMedia: {
+      schema: exportDaemonIpcManagedMediaDescriptorJsonSchema(),
+    },
   };
 }
 
@@ -510,6 +529,16 @@ export function generateDaemonIpcContracts(
       targetPaths.saleStartCapabilityGeneratedPath,
       cargoTypifyVersion,
     );
+    runCargoTypify(
+      repoRoot,
+      targetPaths.managedMediaSchemaPath,
+      targetPaths.managedMediaGeneratedPath,
+      spawnSync,
+    );
+    writeGeneratedHeader(
+      targetPaths.managedMediaGeneratedPath,
+      cargoTypifyVersion,
+    );
     return { mode, checkedPaths, changedPaths: [] };
   }
 
@@ -586,6 +615,16 @@ export function generateDaemonIpcContracts(
     );
     writeGeneratedHeader(
       actualPaths.saleStartCapabilityGeneratedPath,
+      cargoTypifyVersion,
+    );
+    runCargoTypify(
+      repoRoot,
+      actualPaths.managedMediaSchemaPath,
+      actualPaths.managedMediaGeneratedPath,
+      spawnSync,
+    );
+    writeGeneratedHeader(
+      actualPaths.managedMediaGeneratedPath,
       cargoTypifyVersion,
     );
     const changedPaths = assertFreshGeneratedOutputs(

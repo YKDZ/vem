@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 
 import type { SaleViewMediaDiagnostic } from "@/daemon/schemas";
+import type { SaleViewSnapshot } from "@/daemon/schemas";
 import type {
   MachineCatalogItem,
   MachineCatalogSlotCandidate,
@@ -56,6 +57,31 @@ function mediaDiagnosticKeysFor(
       }),
     ),
   );
+}
+
+function applyReadyMedia(
+  snapshot: SaleViewSnapshot,
+  media: Awaited<ReturnType<typeof daemonClient.getMediaSnapshot>>,
+): SaleViewSnapshot {
+  const byDigest = new Map(
+    media.assets.map((asset) => [asset.descriptor.digest, asset]),
+  );
+  return {
+    ...snapshot,
+    items: snapshot.items.map((item) => {
+      const cover = item.coverImageMedia
+        ? byDigest.get(item.coverImageMedia.digest)
+        : undefined;
+      const garment = item.tryOnGarmentMedia
+        ? byDigest.get(item.tryOnGarmentMedia.digest)
+        : undefined;
+      return {
+        ...item,
+        coverImageReadyUrl: cover?.readyUrl ?? null,
+        tryOnGarmentReadyUrl: garment?.readyUrl ?? null,
+      };
+    }),
+  };
 }
 
 function slotCandidateFor(
@@ -422,7 +448,18 @@ export const useCatalogStore = defineStore("catalog", {
       if (refreshInFlight) return refreshInFlight;
       this.loading = true;
       refreshInFlight = (async () => {
-        this.applySnapshot(await daemonClient.getSaleView());
+        void daemonClient.refreshCatalog?.().catch(() => undefined);
+        const [saleView, media] = await Promise.all([
+          daemonClient.getSaleView(),
+          (
+            daemonClient.getMediaSnapshot?.() ??
+            Promise.resolve({ generation: "none", assets: [] })
+          ).catch(() => ({
+            generation: "none",
+            assets: [],
+          })),
+        ]);
+        this.applySnapshot(applyReadyMedia(saleView, media));
         this.error = null;
         this.loading = false;
         refreshInFlight = null;

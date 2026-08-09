@@ -45,6 +45,7 @@ import {
   readySnapshotSchema,
   remoteOpsStatusSchema,
   machineSaleViewSnapshotSchema,
+  mediaSnapshotSchema,
   provisioningClaimResponseSchema,
   scannerStatusSchema,
   syncStatusSchema,
@@ -52,6 +53,7 @@ import {
   visionStatusSchema,
   wifiScanResponseSchema,
   type CatalogSnapshot,
+  type MediaSnapshot,
   type DaemonEvent,
   type HealthSnapshot,
   type HardwareSelfCheck,
@@ -461,6 +463,10 @@ export class DaemonApiClient {
 
   async getCatalog(): Promise<CatalogSnapshot> {
     return catalogSnapshotSchema.parse(await this.request("/v1/catalog"));
+  }
+
+  async getMediaSnapshot(): Promise<MediaSnapshot> {
+    return mediaSnapshotSchema.parse(await this.request("/v1/media/snapshot"));
   }
 
   async refreshCatalog(): Promise<CatalogSnapshot> {

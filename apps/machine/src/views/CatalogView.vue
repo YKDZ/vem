@@ -328,8 +328,14 @@ function toDisplayProduct(
     colors: Math.max(colorCount, 1),
     sizeLabel: sizeLabel || item.size || "常规码",
     price: formatCents(item.priceCents),
-    image: item.coverImageUrl || fallbackImageForCategory(categoryKey),
-    hasProductImage: Boolean(item.coverImageUrl),
+    image:
+      item.coverImageReadyUrl ??
+      (item.coverImageMedia ? null : item.coverImageUrl) ??
+      fallbackImageForCategory(categoryKey),
+    hasProductImage: Boolean(
+      item.coverImageReadyUrl ??
+      (item.coverImageMedia ? null : item.coverImageUrl),
+    ),
     item,
     preferredVariantId: null,
     recommendationScore: 0,
@@ -714,6 +720,7 @@ onUnmounted(() => {
                     :api-base-url="machineStore.platformApiBaseUrl ?? ''"
                     :fallback="fallbackImageForCategory(product.categoryKey)"
                     :alt="product.name"
+                    :ready-url="product.item.coverImageReadyUrl"
                     :class="{
                       'product-image-fallback': !product.hasProductImage,
                     }"

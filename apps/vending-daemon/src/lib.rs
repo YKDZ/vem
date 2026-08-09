@@ -8,6 +8,7 @@ pub mod health;
 pub mod ipc;
 pub mod local_runtime_settings;
 pub mod logs;
+pub mod managed_media;
 pub mod mqtt;
 pub mod natural_context;
 pub mod network;

@@ -205,6 +205,7 @@ async function submitOrder(): Promise<void> {
                 :api-base-url="machineStore.platformApiBaseUrl ?? ''"
                 :fallback="fallbackImage"
                 :alt="item.productName"
+                :ready-url="item.coverImageReadyUrl"
                 :class="{ 'product-image-fallback': !item.coverImageUrl }"
                 @diagnostic="
                   catalogStore.recordMediaDiagnostic(
