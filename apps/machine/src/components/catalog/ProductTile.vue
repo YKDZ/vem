@@ -3,6 +3,7 @@ import { computed } from "vue";
 
 import type { MachineCatalogItem } from "@/types/catalog";
 
+import ManagedMediaImage from "@/components/catalog/ManagedMediaImage.vue";
 import { formatCents } from "@/utils/format";
 
 const props = defineProps<{
@@ -53,20 +54,14 @@ const priceText = computed(() => {
       class="product-display-frame flex w-[88px] items-center justify-center overflow-hidden rounded-md bg-neutral-100 text-2xl font-black text-neutral-400"
       aria-hidden="true"
     >
-      <img
-        v-if="
-          item.coverImageReadyUrl ??
-          (item.coverImageMedia ? null : item.coverImageUrl)
-        "
+      <ManagedMediaImage
         class="product-display-image h-full w-full"
-        :src="
-          item.coverImageReadyUrl ??
-          (item.coverImageMedia ? undefined : item.coverImageUrl) ??
-          undefined
-        "
+        :reference="item.coverImageMedia?.reference ?? item.coverImageUrl"
+        :ready-url="item.coverImageReadyUrl"
+        :diagnostic-key="`media:${item.slotId}:coverImageUrl`"
+        fallback="/product-placeholder.svg"
         :alt="item.productName"
       />
-      <span v-else>{{ item.productName.slice(0, 1) }}</span>
     </span>
     <span class="flex min-w-0 flex-col">
       <span class="text-lg leading-tight font-black">{{

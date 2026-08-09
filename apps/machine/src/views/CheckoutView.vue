@@ -18,13 +18,11 @@ import {
 } from "@/router/transaction-route-authority";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
-import { useMachineStore } from "@/stores/machine";
 import { useSaleCapabilityStore } from "@/stores/sale-capability";
 import { formatCents } from "@/utils/format";
 
 const checkoutStore = useCheckoutStore();
 const catalogStore = useCatalogStore();
-const machineStore = useMachineStore();
 const saleCapabilityStore = useSaleCapabilityStore();
 const deviceUnavailableCopy = projectCustomerError("device").message;
 
@@ -202,7 +200,6 @@ async function submitOrder(): Promise<void> {
               <ManagedMediaImage
                 :reference="item.coverImageUrl"
                 :diagnostic-key="`media:${item.slotId}:coverImageUrl`"
-                :api-base-url="machineStore.platformApiBaseUrl ?? ''"
                 :fallback="fallbackImage"
                 :alt="item.productName"
                 :ready-url="item.coverImageReadyUrl"

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures_util::StreamExt;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
@@ -9,10 +10,38 @@ const BACKEND_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const BACKEND_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 const BACKEND_PAYMENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 
+fn canonical_managed_media_reference(reference: &str) -> Result<String, String> {
+    let parsed = reqwest::Url::parse("http://managed-media.invalid")
+        .and_then(|base| base.join(reference))
+        .map_err(|_| "managed media reference is outside the provisioned API path".to_string())?;
+    if parsed.origin().ascii_serialization() != "http://managed-media.invalid"
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return Err("managed media reference is outside the provisioned API path".to_string());
+    }
+    let segments = parsed
+        .path_segments()
+        .ok_or_else(|| "managed media reference is outside the provisioned API path".to_string())?
+        .collect::<Vec<_>>();
+    if segments.len() != 4
+        || segments[0] != "api"
+        || segments[1] != "media-assets"
+        || segments[3] != "content"
+        || uuid::Uuid::parse_str(segments[2]).is_err()
+    {
+        return Err("managed media reference is outside the provisioned API path".to_string());
+    }
+    Ok(format!("/api/media-assets/{}/content", segments[2]))
+}
+
 #[derive(Debug, Clone)]
 pub struct BackendClient {
     base_url: String,
     client: reqwest::Client,
+    media_client: reqwest::Client,
     token: Arc<RwLock<Option<String>>>,
     credentials: Arc<RwLock<Option<MachineCredentials>>>,
     auth_lock: Arc<Mutex<()>>,
@@ -127,9 +156,19 @@ impl BackendClient {
             .timeout(BACKEND_REQUEST_TIMEOUT)
             .build()
             .expect("build backend HTTP client");
+        // Media descriptors are constrained to the provisioned origin.  A
+        // redirect could silently cross that trust boundary, so this client
+        // deliberately has no redirect policy.
+        let media_client = reqwest::Client::builder()
+            .connect_timeout(BACKEND_CONNECT_TIMEOUT)
+            .timeout(BACKEND_REQUEST_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build managed media HTTP client");
         Self {
             base_url,
             client,
+            media_client,
             token: Arc::new(RwLock::new(None)),
             credentials: Arc::new(RwLock::new(None)),
             auth_lock: Arc::new(Mutex::new(())),
@@ -578,8 +617,27 @@ impl BackendClient {
     pub async fn fetch_managed_media(
         &self,
         reference: &str,
+        maximum_bytes: u64,
     ) -> Result<crate::managed_media::MediaBytes, String> {
-        if !reference.starts_with("/api/media-assets/") || reference.contains("..") {
+        let reference = canonical_managed_media_reference(reference)?;
+        let base = reqwest::Url::parse(&self.base_url)
+            .map_err(|_| "provisioned API origin is invalid for managed media".to_string())?;
+        if !matches!(base.scheme(), "http" | "https")
+            || !base.username().is_empty()
+            || base.password().is_some()
+            || base.host_str().is_none()
+        {
+            return Err("provisioned API origin is invalid for managed media".to_string());
+        }
+        let mut url = base;
+        url.set_path(&reference);
+        url.set_query(None);
+        url.set_fragment(None);
+        if url.origin()
+            != reqwest::Url::parse(&self.base_url)
+                .map_err(|_| "provisioned API origin is invalid for managed media".to_string())?
+                .origin()
+        {
             return Err("managed media reference is outside the provisioned API path".to_string());
         }
         let token = self
@@ -589,8 +647,8 @@ impl BackendClient {
             .clone()
             .ok_or_else(|| "backend token unavailable".to_string())?;
         let response = self
-            .client
-            .get(format!("{}{}", self.base_url, reference))
+            .media_client
+            .get(url)
             .bearer_auth(token)
             .send()
             .await
@@ -611,12 +669,25 @@ impl BackendClient {
             .unwrap_or("application/octet-stream")
             .trim()
             .to_string();
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|error| format!("read managed media response failed: {error}"))?;
+        if response
+            .content_length()
+            .is_some_and(|length| length > maximum_bytes)
+        {
+            return Err("managed media response exceeds descriptor byte limit".to_string());
+        }
+        let mut bytes =
+            Vec::with_capacity(response.content_length().unwrap_or(0).min(maximum_bytes) as usize);
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk =
+                chunk.map_err(|error| format!("read managed media response failed: {error}"))?;
+            if bytes.len().saturating_add(chunk.len()) > maximum_bytes as usize {
+                return Err("managed media response exceeds descriptor byte limit".to_string());
+            }
+            bytes.extend_from_slice(&chunk);
+        }
         Ok(crate::managed_media::MediaBytes {
-            bytes: bytes.to_vec(),
+            bytes,
             content_type,
         })
     }
@@ -741,6 +812,36 @@ mod tests {
     use wiremock::matchers::{body_partial_json, header, method, path, query_param};
     use wiremock::Request;
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn managed_media_resolves_against_provisioned_origin_without_duplicate_api_path() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
+            ))
+            .and(header("authorization", "Bearer token-123"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "image/png")
+                    .set_body_bytes(vec![137, 80, 78, 71]),
+            )
+            .mount(&server)
+            .await;
+
+        let client = BackendClient::new(format!("{}/api", server.uri()));
+        client.set_access_token_for_tests("token-123").await;
+        let media = client
+            .fetch_managed_media(
+                "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
+                32,
+            )
+            .await
+            .expect("canonical media response");
+
+        assert_eq!(media.content_type, "image/png");
+        assert_eq!(media.bytes, vec![137, 80, 78, 71]);
+    }
 
     #[tokio::test]
     async fn backend_auth_sets_bearer_token() {

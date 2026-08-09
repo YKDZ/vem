@@ -54,7 +54,7 @@ function item(): MachineCatalogItem {
 }
 
 describe("ProductTile", () => {
-  it("renders the managed product display image in the catalog", () => {
+  it("never resolves a platform media URL outside the daemon projection", () => {
     const host = document.createElement("div");
     document.body.appendChild(host);
 
@@ -62,9 +62,7 @@ describe("ProductTile", () => {
     app.mount(host);
 
     const image = host.querySelector("img");
-    expect(image?.getAttribute("src")).toBe(
-      "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
-    );
+    expect(image?.getAttribute("src")).toBe("/product-placeholder.svg");
     expect(image?.getAttribute("alt")).toBe("基础短袖");
 
     app.unmount();

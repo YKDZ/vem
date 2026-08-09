@@ -1703,30 +1703,6 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
             and ${mediaAssets.deletedAt} is null
           limit 1
         )`,
-        tryOnSilhouetteMediaAssetDigest: sql<string | null>`(
-          select ${mediaAssets.sha256}
-          from ${mediaAssets}
-          where ${mediaAssets.id} = ${productVariants.tryOnSilhouetteMediaAssetId}
-            and ${mediaAssets.purpose} = 'try_on_silhouette'
-            and ${mediaAssets.deletedAt} is null
-          limit 1
-        )`,
-        tryOnSilhouetteMediaAssetContentType: sql<string | null>`(
-          select ${mediaAssets.contentType}
-          from ${mediaAssets}
-          where ${mediaAssets.id} = ${productVariants.tryOnSilhouetteMediaAssetId}
-            and ${mediaAssets.purpose} = 'try_on_silhouette'
-            and ${mediaAssets.deletedAt} is null
-          limit 1
-        )`,
-        tryOnSilhouetteMediaAssetByteSize: sql<number | null>`(
-          select ${mediaAssets.byteSize}
-          from ${mediaAssets}
-          where ${mediaAssets.id} = ${productVariants.tryOnSilhouetteMediaAssetId}
-            and ${mediaAssets.purpose} = 'try_on_silhouette'
-            and ${mediaAssets.deletedAt} is null
-          limit 1
-        )`,
         categoryId: products.categoryId,
         categoryName: productCategories.name,
         sku: productVariants.sku,
@@ -1784,7 +1760,29 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         ),
       )
       .orderBy(products.sortOrder, machineSlots.rowNo, machineSlots.cellNo);
-    const catalogRevision = new Date().toISOString();
+    const descriptorInputs = rows
+      .map((row) => ({
+        id: row.coverImageMediaAssetId,
+        digest: row.coverImageMediaAssetDigest,
+        contentType: row.coverImageMediaAssetContentType,
+        byteSize: row.coverImageMediaAssetByteSize,
+      }))
+      .filter((media): media is Required<typeof media> =>
+        Boolean(
+          media.id && media.digest && media.contentType && media.byteSize,
+        ),
+      )
+      .sort((left, right) =>
+        `${left.id}:${left.digest}`.localeCompare(
+          `${right.id}:${right.digest}`,
+        ),
+      );
+    // Catalog media is a presentation overlay.  Its revision is a stable,
+    // complete interest-set digest, not a request timestamp and not a
+    // planogram revision.
+    const catalogRevision = createHash("sha256")
+      .update(JSON.stringify(descriptorInputs))
+      .digest("hex");
     return rows.map((row) => ({
       ...row,
       coverImageUrl: this.machineManagedMediaReference(
@@ -1808,25 +1806,6 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
               row.coverImageMediaAssetContentType,
               row.coverImageMediaAssetByteSize,
               "product_display_image",
-              catalogRevision,
-            ),
-          }
-        : {}),
-      ...(this.machineManagedMediaDescriptor(
-        row.tryOnSilhouetteMediaAssetId,
-        row.tryOnSilhouetteMediaAssetDigest,
-        row.tryOnSilhouetteMediaAssetContentType,
-        row.tryOnSilhouetteMediaAssetByteSize,
-        "try_on_garment",
-        catalogRevision,
-      )
-        ? {
-            tryOnGarmentMedia: this.machineManagedMediaDescriptor(
-              row.tryOnSilhouetteMediaAssetId,
-              row.tryOnSilhouetteMediaAssetDigest,
-              row.tryOnSilhouetteMediaAssetContentType,
-              row.tryOnSilhouetteMediaAssetByteSize,
-              "try_on_garment",
               catalogRevision,
             ),
           }

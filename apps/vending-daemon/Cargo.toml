@@ -16,7 +16,7 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 getrandom.workspace = true
 hmac.workspace = true
 keyring.workspace = true
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -48,7 +48,7 @@ assert_cmd = "2"
 config = "0.14"
 nix = { version = "0.29", features = ["fs", "term"] }
 portpicker = "0.1"
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"] }
 rumqttd = "0.20"
 tempfile = "3"
 tokio-tungstenite.workspace = true

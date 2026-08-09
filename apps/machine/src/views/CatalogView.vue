@@ -30,13 +30,11 @@ import { recommendVariant } from "@/recommendation/engine";
 import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCustomerJourneyStore } from "@/stores/customer-journey";
-import { useMachineStore } from "@/stores/machine";
 import { useVisionStore } from "@/stores/vision";
 import { formatCents } from "@/utils/format";
 
 const catalogStore = useCatalogStore();
 const customerJourneyStore = useCustomerJourneyStore();
-const machineStore = useMachineStore();
 const { recommendationProfile: currentProfile, lastRecommendationResult } =
   storeToRefs(useVisionStore());
 const interactionSession = useCustomerInteractionSession();
@@ -717,7 +715,6 @@ onUnmounted(() => {
                   <ManagedMediaImage
                     :reference="product.item.coverImageUrl"
                     :diagnostic-key="`media:${product.item.slotId}:coverImageUrl`"
-                    :api-base-url="machineStore.platformApiBaseUrl ?? ''"
                     :fallback="fallbackImageForCategory(product.categoryKey)"
                     :alt="product.name"
                     :ready-url="product.item.coverImageReadyUrl"

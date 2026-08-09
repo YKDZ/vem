@@ -13,7 +13,6 @@ describe("ManagedMediaImage", () => {
       reference:
         "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
       diagnosticKey: "media:slot-1:coverImageUrl",
-      apiBaseUrl: "http://118.25.104.160:26849/api",
       fallback: "/assets/placeholder.png",
       alt: "基础短袖",
       onDiagnostic: (event: { diagnosticKey: string; message: string }) =>
@@ -22,9 +21,7 @@ describe("ManagedMediaImage", () => {
     app.mount(host);
 
     const image = host.querySelector("img")!;
-    expect(image.getAttribute("src")).toBe(
-      "http://118.25.104.160:26849/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
-    );
+    expect(image.getAttribute("src")).toBe("/assets/placeholder.png");
 
     image.dispatchEvent(new Event("error"));
     await nextTick();
@@ -34,7 +31,7 @@ describe("ManagedMediaImage", () => {
       {
         diagnosticKey:
           "media:slot-1:coverImageUrl:managed:/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
-        message: "managed media failed to load",
+        message: "managed media is not ready",
       },
     ]);
     app.unmount();

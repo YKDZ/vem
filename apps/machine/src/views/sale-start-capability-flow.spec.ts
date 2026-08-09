@@ -910,7 +910,7 @@ describe("sale-start capability UI flow", () => {
     expect(useCatalogStore().mediaDiagnostics).toEqual([
       expect.objectContaining({
         reference: item.coverImageUrl,
-        message: "managed media failed to load",
+        message: "managed media is not ready",
       }),
     ]);
   });

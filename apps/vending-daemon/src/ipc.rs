@@ -1328,23 +1328,31 @@ async fn refresh_catalog(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
             let descriptors = items
                 .iter()
                 .flat_map(|item| {
-                    ["coverImageMedia", "tryOnGarmentMedia"]
-                        .into_iter()
-                        .filter_map(move |field| {
-                            item.get(field).cloned().and_then(|value| {
-                                serde_json::from_value::<
-                                        crate::managed_media::ManagedMediaDescriptor,
-                                    >(value)
-                                    .ok()
-                            })
+                    ["coverImageMedia"].into_iter().filter_map(move |field| {
+                        item.get(field).cloned().and_then(|value| {
+                            serde_json::from_value::<crate::managed_media::ManagedMediaDescriptor>(
+                                value,
+                            )
+                            .ok()
                         })
+                    })
                 })
                 .collect::<Vec<_>>();
-            let generation = payload
-                .get("catalogRevision")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("catalog-current")
-                .to_string();
+            // A catalog endpoint may remain array-shaped for sale compatibility.
+            // Derive the complete media interest generation deterministically
+            // instead of minting a timestamp or falling back to a fake revision.
+            let mut generation_inputs = descriptors.clone();
+            generation_inputs.sort_by(|left, right| {
+                (&left.digest, &left.id, &left.reference).cmp(&(
+                    &right.digest,
+                    &right.id,
+                    &right.reference,
+                ))
+            });
+            let generation = format!(
+                "sha256:{:x}",
+                sha2::Sha256::digest(serde_json::to_vec(&generation_inputs).unwrap_or_default())
+            );
             ctx.media_cache
                 .reconcile_active_catalog(generation, descriptors)
                 .await;
@@ -1375,7 +1383,62 @@ async fn sale_view(State(ctx): State<IpcContext>, headers: HeaderMap) -> impl In
         .ok()
         .map(|profile| profile.profile.machine.code.to_string());
     match ctx.state.sale_view(machine_code).await {
-        Ok(value) => Json(value).into_response(),
+        Ok(value) => {
+            // Sale stock and checkout authority remain the SQLite sale view.
+            // Media is joined only as an ephemeral presentation overlay keyed
+            // by the platform product/variant identity, so an image change
+            // neither rewrites planogram state nor changes sale eligibility.
+            let (_, media) = ctx.media_cache.snapshot().await;
+            let catalog = ctx.ui.status_cache.catalog.read().await;
+            let mut overlays = HashMap::new();
+            for source in &catalog.items {
+                let Some(product_id) = source.get("productId").and_then(serde_json::Value::as_str)
+                else {
+                    continue;
+                };
+                let Some(variant_id) = source.get("variantId").and_then(serde_json::Value::as_str)
+                else {
+                    continue;
+                };
+                let Some(descriptor) = source.get("coverImageMedia") else {
+                    continue;
+                };
+                let Some(digest) = descriptor.get("digest").and_then(serde_json::Value::as_str)
+                else {
+                    continue;
+                };
+                let projection = media.iter().find(|asset| asset.descriptor.digest == digest);
+                overlays.insert(
+                    format!("{product_id}:{variant_id}"),
+                    serde_json::json!({
+                        "coverImageMedia": descriptor,
+                        "coverImageReadyUrl": projection.and_then(|asset| asset.ready_url.clone()),
+                        "coverImageMediaDiagnostic": projection.and_then(|asset| asset.diagnostic.clone()),
+                    }),
+                );
+            }
+            let mut response = serde_json::to_value(value).unwrap_or_default();
+            if let Some(items) = response
+                .get_mut("items")
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                for item in items {
+                    let key = item
+                        .get("productId")
+                        .and_then(serde_json::Value::as_str)
+                        .zip(item.get("variantId").and_then(serde_json::Value::as_str))
+                        .map(|(product_id, variant_id)| format!("{product_id}:{variant_id}"));
+                    if let Some(overlay) = key.and_then(|key| overlays.get(&key)) {
+                        if let (Some(item), Some(overlay)) =
+                            (item.as_object_mut(), overlay.as_object())
+                        {
+                            item.extend(overlay.clone());
+                        }
+                    }
+                }
+            }
+            Json(response).into_response()
+        }
         Err(error) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "sale_view_failed",

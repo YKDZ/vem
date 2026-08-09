@@ -341,7 +341,6 @@ async function enterTryOn(): Promise<void> {
             <ManagedMediaImage
               :reference="productImageReference"
               :diagnostic-key="`media:${item.slotId}:coverImageUrl`"
-              :api-base-url="machineStore.platformApiBaseUrl ?? ''"
               :fallback="fallbackImage"
               :alt="item.productName"
               :ready-url="item.coverImageReadyUrl"

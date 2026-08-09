@@ -3,14 +3,12 @@ import { computed, ref, watch } from "vue";
 
 import {
   managedMediaDiagnosticKey,
-  resolveManagedMediaReference,
   resolveDaemonReadyUrl,
 } from "@/catalog/managed-media";
 
 const props = defineProps<{
   reference: string | null | undefined;
   diagnosticKey: string;
-  apiBaseUrl: string;
   fallback: string;
   alt: string;
   readyUrl?: string | null;
@@ -20,10 +18,11 @@ const emit = defineEmits<{
   diagnostic: [event: { diagnosticKey: string; message: string }];
 }>();
 
+// Catalog media has no browser/platform fallback.  Only the daemon-generated
+// grant URL can point an image element at bytes; absent or warming projections
+// stay on the stable local placeholder.
 const resolution = computed(() =>
-  props.readyUrl !== undefined
-    ? resolveDaemonReadyUrl(props.readyUrl, props.fallback)
-    : resolveManagedMediaReference(props.reference, props.apiBaseUrl),
+  resolveDaemonReadyUrl(props.readyUrl ?? null, props.fallback),
 );
 const source = ref(props.fallback);
 
