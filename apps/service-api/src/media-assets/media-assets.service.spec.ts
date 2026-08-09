@@ -15,7 +15,21 @@ function transparentPng(width = 256, height = 256): Buffer {
   ihdr[9] = 6;
   const pixels = Buffer.alloc((width * 4 + 1) * height);
   for (let row = 0; row < height; row += 1) {
-    pixels[row * (width * 4 + 1)] = 0;
+    const rowOffset = row * (width * 4 + 1);
+    pixels[rowOffset] = 0;
+    for (
+      let column = Math.floor(width / 4);
+      column < Math.ceil((width * 3) / 4);
+      column += 1
+    ) {
+      if (row < Math.floor(height / 4) || row >= Math.ceil((height * 3) / 4))
+        continue;
+      const pixelOffset = rowOffset + 1 + column * 4;
+      pixels[pixelOffset] = 20;
+      pixels[pixelOffset + 1] = 50;
+      pixels[pixelOffset + 2] = 180;
+      pixels[pixelOffset + 3] = 255;
+    }
   }
   return Buffer.concat([
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
@@ -252,6 +266,79 @@ describe("MediaAssetsService", () => {
     });
   });
 
+  it("rejects transparent-but-empty and one-transparent-pixel model-photo disguises", async () => {
+    const service = new MediaAssetsService(db as never, {
+      mediaAssetStorageRoot: storageRoot,
+      mediaAssetPublicBaseUrl: undefined,
+    });
+    const transparentOnly = pngFromPixels(256, 256, () => [0, 0, 0, 0]);
+    const oneTransparentPixel = pngFromPixels(256, 256, (x, y) =>
+      x === 0 && y === 0 ? [0, 0, 0, 0] : [40, 80, 160, 255],
+    );
+
+    await expect(
+      service.storeTryOnGarment({
+        originalname: "empty.png",
+        mimetype: "image/png",
+        size: transparentOnly.byteLength,
+        buffer: transparentOnly,
+      }),
+    ).rejects.toMatchObject({
+      message: "TRY_ON_GARMENT_VISIBLE_PIXELS_REQUIRED",
+    });
+    await expect(
+      service.storeTryOnGarment({
+        originalname: "model-photo.png",
+        mimetype: "image/png",
+        size: oneTransparentPixel.byteLength,
+        buffer: oneTransparentPixel,
+      }),
+    ).rejects.toMatchObject({
+      message: "TRY_ON_GARMENT_TRANSPARENCY_REQUIRED",
+    });
+  });
+
+  it("decodes common transparent PNG forms and rejects damaged scanlines or unknown critical chunks", async () => {
+    const service = new MediaAssetsService(db as never, {
+      mediaAssetStorageRoot: storageRoot,
+      mediaAssetPublicBaseUrl: undefined,
+    });
+    const grayscaleAlpha = grayscaleAlphaPng(256, 256);
+    await expect(
+      service.storeTryOnGarment({
+        originalname: "shirt-gray-alpha.png",
+        mimetype: "image/png",
+        size: grayscaleAlpha.byteLength,
+        buffer: grayscaleAlpha,
+      }),
+    ).resolves.toBeDefined();
+
+    const damaged = Buffer.from(transparentPng());
+    damaged[damaged.length - 16] ^= 0xff;
+    await expect(
+      service.storeTryOnGarment({
+        originalname: "damaged.png",
+        mimetype: "image/png",
+        size: damaged.byteLength,
+        buffer: damaged,
+      }),
+    ).rejects.toMatchObject({ message: "TRY_ON_GARMENT_PNG_INVALID" });
+
+    const unknownCritical = Buffer.concat([
+      transparentPng().subarray(0, 33),
+      pngChunk("ABCD", Buffer.alloc(0)),
+      transparentPng().subarray(33),
+    ]);
+    await expect(
+      service.storeTryOnGarment({
+        originalname: "unknown-critical.png",
+        mimetype: "image/png",
+        size: unknownCritical.byteLength,
+        buffer: unknownCritical,
+      }),
+    ).rejects.toMatchObject({ message: "TRY_ON_GARMENT_PNG_INVALID" });
+  });
+
   it.each([
     ["SVG", "image/svg+xml", Buffer.from("<svg />")],
     ["unsupported image type", "image/gif", Buffer.from("GIF89a")],
@@ -317,3 +404,59 @@ describe("MediaAssetsService", () => {
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 });
+
+function pngFromPixels(
+  width: number,
+  height: number,
+  pixel: (x: number, y: number) => [number, number, number, number],
+): Buffer {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
+  const pixels = Buffer.alloc((width * 4 + 1) * height);
+  for (let y = 0; y < height; y += 1) {
+    const rowOffset = y * (width * 4 + 1);
+    for (let x = 0; x < width; x += 1) {
+      const value = pixel(x, y);
+      pixels.set(value, rowOffset + 1 + x * 4);
+    }
+  }
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", deflateSync(pixels)),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+function grayscaleAlphaPng(width: number, height: number): Buffer {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 4;
+  const pixels = Buffer.alloc((width * 2 + 1) * height);
+  for (
+    let y = Math.floor(height / 4);
+    y < Math.ceil((height * 3) / 4);
+    y += 1
+  ) {
+    const rowOffset = y * (width * 2 + 1);
+    for (
+      let x = Math.floor(width / 4);
+      x < Math.ceil((width * 3) / 4);
+      x += 1
+    ) {
+      pixels[rowOffset + 1 + x * 2] = 90;
+      pixels[rowOffset + 1 + x * 2 + 1] = 255;
+    }
+  }
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", deflateSync(pixels)),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}

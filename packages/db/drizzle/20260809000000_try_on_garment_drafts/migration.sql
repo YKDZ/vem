@@ -12,6 +12,7 @@ CREATE TABLE "try_on_garments" (
   "confirmed_at" timestamp with time zone,
   "created_at" timestamp with time zone DEFAULT now() NOT NULL,
   "updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+  "deleted_at" timestamp with time zone,
   CONSTRAINT "try_on_garments_template_supported" CHECK ("try_on_garments"."template" IN ('tshirt_short_sleeve', 'tshirt_long_sleeve'))
 );--> statement-breakpoint
 ALTER TABLE "try_on_garments" ADD CONSTRAINT "try_on_garments_product_id_products_id_fkey" FOREIGN KEY ("product_id") REFERENCES "public"."products"("id");--> statement-breakpoint

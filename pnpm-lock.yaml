@@ -6,12 +6,57 @@ settings:
 
 catalogs:
   default:
+    '@playwright/test':
+      specifier: ^1.61.1
+      version: 1.61.1
+    '@tailwindcss/vite':
+      specifier: ^4.3.1
+      version: 4.3.1
     '@types/node':
       specifier: ^26.0.1
       version: 26.0.1
+    '@types/qrcode':
+      specifier: ^1.5.6
+      version: 1.5.6
+    '@vitejs/plugin-vue':
+      specifier: ^6.0.7
+      version: 6.0.7
+    antdv-next:
+      specifier: ^1.3.6
+      version: 1.3.6
+    axios:
+      specifier: ^1.18.1
+      version: 1.18.1
+    dotenv:
+      specifier: ^17.4.2
+      version: 17.4.2
+    drizzle-kit:
+      specifier: 1.0.0-rc.1
+      version: 1.0.0-rc.1
+    drizzle-orm:
+      specifier: 1.0.0-rc.1
+      version: 1.0.0-rc.1
+    echarts:
+      specifier: ^6.1.0
+      version: 6.1.0
+    oxfmt:
+      specifier: ^0.44.0
+      version: 0.44.0
+    oxlint:
+      specifier: ^1.60.0
+      version: 1.71.0
+    oxlint-tsgolint:
+      specifier: ^0.20.0
+      version: 0.20.0
     playwright:
       specifier: ^1.61.1
       version: 1.61.1
+    qrcode:
+      specifier: ^1.5.4
+      version: 1.5.4
+    tailwindcss:
+      specifier: ^4.3.1
+      version: 4.3.1
     tsx:
       specifier: ^4.22.4
       version: 4.22.4
@@ -27,6 +72,15 @@ catalogs:
     vitest:
       specifier: ^4.1.9
       version: 4.1.9
+    vue-router:
+      specifier: ^5.1.0
+      version: 5.1.0
+    vue-tsc:
+      specifier: ^3.3.5
+      version: 3.3.5
+    zod:
+      specifier: ^4.4.3
+      version: 4.4.3
 
 overrides:
   '@ast-grep/napi': ^0.42.1
@@ -285,6 +339,9 @@ importers:
       mqtt:
         specifier: ^5.15.1
         version: 5.15.1
+      pngjs:
+        specifier: 5.0.0
+        version: 5.0.0
       reflect-metadata:
         specifier: ^0.2.2
         version: 0.2.2
@@ -316,6 +373,9 @@ importers:
       '@types/node':
         specifier: ^26.0.1
         version: 26.0.1
+      '@types/pngjs':
+        specifier: ^6.0.5
+        version: 6.0.5
       '@types/supertest':
         specifier: ^7.2.0
         version: 7.2.0
@@ -2501,6 +2561,9 @@ packages:
 
   '@types/pg@8.20.0':
     resolution: {integrity: sha512-bEPFOaMAHTEP1EzpvHTbmwR8UsFyHSKsRisLIHVMXnpNefSbGA1bD6CVy+qKjGSqmZqNqBDV2azOBo8TgkcVow==}
+
+  '@types/pngjs@6.0.5':
+    resolution: {integrity: sha512-0k5eKfrA83JOZPppLtS2C7OUtyNAl2wKNxfyYl9Q5g9lPkgBl/9hNyAu6HuEH2J4XmIv2znEpkDd0SaZVxW6iQ==}
 
   '@types/qrcode@1.5.6':
     resolution: {integrity: sha512-te7NQcV2BOvdj2b1hCAHzAoMNuj65kNBMz0KBaxM6c3VGBOhU0dURQKOtH8CFNI/dsKkwlv32p26qYQTWoB5bw==}
@@ -4786,8 +4849,8 @@ packages:
     resolution: {integrity: sha512-GDhwkLfywWL2s6vEjyhri+eXmfH6j1L7JE27WhqLeYzoh/A3DBaYGEj2H/HFZCn/kMfim73FXxEJTw06WtxQwg==}
     engines: {node: '>= 14.18.0'}
 
-  readdirp@5.0.0:
-    resolution: {integrity: sha512-9u/XQ1pvrQtYyMpZe7DXKv2p5CNvyVwzUB6uhLAnQwHMSgKMBR62lc7AHljaeteeHXn11XTAaLLUVZYVZyuRBQ==}
+  readdirp@5.1.1:
+    resolution: {integrity: sha512-Kko+Y5XQ6fM+Ce3dq3m9YGxnacYZYl9cA1wZjaF3Vbry2L3i1qVg8+CAgNPsXRArPMUMCaOR7oa9Nqntc43JKA==}
     engines: {node: '>= 20.19.0'}
 
   reflect-metadata@0.2.2:
@@ -5345,8 +5408,8 @@ packages:
       webpack:
         optional: true
 
-  unplugin-utils@0.3.1:
-    resolution: {integrity: sha512-5lWVjgi6vuHhJ526bI4nlCOmkCIF3nnfXkCMDeMJrtdvxTs6ZFCM8oNufGTsDbKv/tJ/xj8RpvXjRuPBZJuJog==}
+  unplugin-utils@0.3.2:
+    resolution: {integrity: sha512-xVToRh2CTmLk2HnEG7ac4rl1MJTT3RFkpS8B++/SnB0kXvuaavD+n3m/vrzyWQOdJNSZQACnbz01pnppbwV5BA==}
     engines: {node: '>=20.19.0'}
 
   unplugin@2.3.2:
@@ -7178,6 +7241,10 @@ snapshots:
       pg-protocol: 1.15.0
       pg-types: 2.2.0
 
+  '@types/pngjs@6.0.5':
+    dependencies:
+      '@types/node': 26.0.1
+
   '@types/qrcode@1.5.6':
     dependencies:
       '@types/node': 26.0.1
@@ -7524,7 +7591,7 @@ snapshots:
       ast-kit: 2.1.2
       local-pkg: 1.2.1
       magic-string-ast: 1.0.2
-      unplugin-utils: 0.3.1
+      unplugin-utils: 0.3.2
     optionalDependencies:
       vue: 3.5.38(typescript@6.0.3)
 
@@ -8202,7 +8269,7 @@ snapshots:
 
   chokidar@5.0.0:
     dependencies:
-      readdirp: 5.0.0
+      readdirp: 5.1.1
 
   chrome-trace-event@1.0.4: {}
 
@@ -9639,7 +9706,7 @@ snapshots:
 
   readdirp@4.1.2: {}
 
-  readdirp@5.0.0: {}
+  readdirp@5.1.1: {}
 
   reflect-metadata@0.2.2: {}
 
@@ -10196,7 +10263,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  unplugin-utils@0.3.1:
+  unplugin-utils@0.3.2:
     dependencies:
       pathe: 2.0.3
       picomatch: 4.0.4
@@ -10313,7 +10380,7 @@ snapshots:
       scule: 1.3.0
       tinyglobby: 0.2.17
       unplugin: 3.2.0(esbuild@0.28.1)(rolldown@1.1.3)(vite@8.1.0(@types/node@26.0.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.48.0)(tsx@4.22.4)(yaml@2.9.0))(webpack@5.106.2(esbuild@0.28.1))
-      unplugin-utils: 0.3.1
+      unplugin-utils: 0.3.2
       vue: 3.5.38(typescript@6.0.3)
       yaml: 2.9.0
     optionalDependencies:

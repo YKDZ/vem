@@ -41,6 +41,7 @@ export const tryOnGarmentResponseSchema = z.strictObject({
   confirmedAt: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  deletedAt: z.string().nullable(),
 });
 
 export const adminTryOnGarmentUploadContract = defineAdminEndpointContract({

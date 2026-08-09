@@ -2,11 +2,13 @@ import type { Response } from "express";
 
 import {
   Controller,
+  Body,
   Get,
   Header,
   Param,
   ParseUUIDPipe,
   Post,
+  Query,
   Res,
   UploadedFile,
   UseInterceptors,
@@ -22,11 +24,13 @@ import {
 import { RequirePermissions } from "../access/permissions.decorator";
 import { Public } from "../auth/public.decorator";
 import { AdminResponseContract } from "../common/admin-response-contract.decorator";
+import { ZodValidationPipe } from "../common/zod-validation.pipe";
 import {
   MAX_PRODUCT_DISPLAY_IMAGE_BYTES,
   MAX_TRY_ON_SILHOUETTE_BYTES,
   MAX_TRY_ON_GARMENT_BYTES,
   MediaAssetsService,
+  managedMediaAssetReference,
 } from "./media-assets.service";
 
 type UploadedImageFile = {
@@ -35,6 +39,10 @@ type UploadedImageFile = {
   size: number;
   buffer: Buffer;
 };
+
+const emptyMultipartFieldsSchema = adminTryOnGarmentUploadContract.querySchema
+  .optional()
+  .transform(() => ({}));
 
 @ApiTags("media-assets")
 @ApiBearerAuth()
@@ -89,7 +97,11 @@ export class MediaAssetsController {
   )
   async uploadTryOnGarment(
     @UploadedFile()
-    file: UploadedImageFile,
+    file: UploadedImageFile | undefined,
+    @Query(new ZodValidationPipe(adminTryOnGarmentUploadContract.querySchema))
+    _query: Record<string, never>,
+    @Body(new ZodValidationPipe(emptyMultipartFieldsSchema))
+    _fields: Record<string, never>,
   ) {
     return toTryOnGarmentMediaAsset(
       await this.mediaAssetsService.storeTryOnGarment(file),
@@ -122,7 +134,7 @@ function toTryOnGarmentMediaAsset(asset: {
 }) {
   return {
     id: asset.id,
-    managedReference: asset.publicUrl,
+    managedReference: managedMediaAssetReference(asset.id),
     purpose: asset.purpose,
     contentType: asset.contentType,
     byteSize: asset.byteSize,

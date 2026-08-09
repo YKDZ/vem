@@ -67,7 +67,16 @@ test.describe("Try-On Garment Admin UI contract", () => {
       }),
     ]);
     expect(uploadResponse.ok()).toBe(true);
-    await expect(modal.getByAltText("Try-On Garment 来源预览")).toBeVisible();
+    const preview = modal.getByAltText("Try-On Garment 来源预览");
+    await expect(preview).toBeVisible();
+    await expect
+      .poll(() =>
+        preview.evaluate((image) => {
+          const previewImage = image as HTMLImageElement;
+          return [previewImage.naturalWidth, previewImage.naturalHeight];
+        }),
+      )
+      .toEqual([768, 1024]);
     await expect(modal.getByText(/校验通过：透明 PNG/)).toBeVisible();
 
     const [draftResponse] = await Promise.all([
@@ -147,6 +156,26 @@ function rgbaPng(width: number, height: number, alpha: number): Buffer {
     const offset = row * (width * 4 + 1);
     for (let pixel = 0; pixel < width; pixel += 1) {
       pixels[offset + 1 + pixel * 4 + 3] = alpha;
+    }
+  }
+  if (alpha === 0) {
+    for (
+      let row = Math.floor(height / 4);
+      row < Math.ceil((height * 3) / 4);
+      row += 1
+    ) {
+      const offset = row * (width * 4 + 1);
+      for (
+        let pixel = Math.floor(width / 4);
+        pixel < Math.ceil((width * 3) / 4);
+        pixel += 1
+      ) {
+        const pixelOffset = offset + 1 + pixel * 4;
+        pixels[pixelOffset] = 20;
+        pixels[pixelOffset + 1] = 50;
+        pixels[pixelOffset + 2] = 180;
+        pixels[pixelOffset + 3] = 255;
+      }
     }
   }
   return Buffer.concat([

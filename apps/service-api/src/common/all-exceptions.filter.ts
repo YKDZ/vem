@@ -17,11 +17,13 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const context = host.switchToHttp();
     const response = context.getResponse<Response>();
     const request = context.getRequest<Request>();
-    const status =
-      exception instanceof HttpException
+    const garmentUploadFailure = tryOnGarmentUploadFailure(exception, request);
+    const status = garmentUploadFailure
+      ? HttpStatus.BAD_REQUEST
+      : exception instanceof HttpException
         ? exception.getStatus()
         : HttpStatus.INTERNAL_SERVER_ERROR;
-    const message = this.getMessage(exception, status);
+    const message = garmentUploadFailure ?? this.getMessage(exception, status);
 
     if (status >= 500) {
       this.logger.error(
@@ -63,4 +65,26 @@ export class AllExceptionsFilter implements ExceptionFilter {
       ? "Internal server error"
       : "Request failed";
   }
+}
+
+function tryOnGarmentUploadFailure(
+  exception: unknown,
+  request: Request,
+): string | undefined {
+  if (request.method !== "POST") return undefined;
+  if (request.url.split("?", 1)[0] !== "/api/media-assets/try-on-garments") {
+    return undefined;
+  }
+  if (
+    typeof exception === "object" &&
+    exception !== null &&
+    "code" in exception &&
+    exception.code === "LIMIT_FILE_SIZE"
+  ) {
+    return "TRY_ON_GARMENT_FILE_TOO_LARGE";
+  }
+  if (exception instanceof HttpException && exception.getStatus() === 413) {
+    return "TRY_ON_GARMENT_FILE_TOO_LARGE";
+  }
+  return undefined;
 }

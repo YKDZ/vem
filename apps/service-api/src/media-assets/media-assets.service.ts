@@ -9,7 +9,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { inflateSync } from "node:zlib";
+import { PNG } from "pngjs";
 
 import { AppConfigService } from "../config/app-config.service";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
@@ -19,6 +19,7 @@ export const MAX_TRY_ON_SILHOUETTE_BYTES = MAX_PRODUCT_DISPLAY_IMAGE_BYTES;
 export const MAX_TRY_ON_GARMENT_BYTES = 5 * 1024 * 1024;
 export const MIN_TRY_ON_GARMENT_DIMENSION = 256;
 export const MAX_TRY_ON_GARMENT_DIMENSION = 4096;
+const MIN_TRY_ON_GARMENT_PIXEL_COVERAGE = 0.01;
 const MANAGED_IMAGE_TYPES = new Map([
   ["image/jpeg", { extension: ".jpg", matches: isJpeg }],
   ["image/png", { extension: ".png", matches: isPng }],
@@ -63,6 +64,10 @@ type MediaAssetsConfig = Pick<
   "mediaAssetStorageRoot" | "mediaAssetPublicBaseUrl"
 >;
 
+export function managedMediaAssetReference(id: string): string {
+  return `/api/media-assets/${id}/content`;
+}
+
 @Injectable()
 export class MediaAssetsService {
   constructor(
@@ -88,6 +93,9 @@ export class MediaAssetsService {
   ) {
     const config = MANAGED_IMAGE_PURPOSE_CONFIG[purpose];
     if (!file) {
+      if (purpose === "try_on_garment") {
+        throw new BadRequestException("TRY_ON_GARMENT_FILE_REQUIRED");
+      }
       throw new BadRequestException(`${config.label} file is required`);
     }
     const imageType =
@@ -193,37 +201,51 @@ export class MediaAssetsService {
       throw new BadRequestException("TRY_ON_GARMENT_SIZE_INVALID");
     }
 
-    const facts = readTransparentPngFacts(file.buffer);
-    if (!facts) {
+    const header = readPngHeader(file.buffer);
+    if (!header) {
       throw new BadRequestException("TRY_ON_GARMENT_PNG_INVALID");
     }
     if (
-      facts.width < MIN_TRY_ON_GARMENT_DIMENSION ||
-      facts.height < MIN_TRY_ON_GARMENT_DIMENSION
+      header.width < MIN_TRY_ON_GARMENT_DIMENSION ||
+      header.height < MIN_TRY_ON_GARMENT_DIMENSION
     ) {
       throw new BadRequestException("TRY_ON_GARMENT_DIMENSIONS_TOO_SMALL");
     }
     if (
-      facts.width > MAX_TRY_ON_GARMENT_DIMENSION ||
-      facts.height > MAX_TRY_ON_GARMENT_DIMENSION
+      header.width > MAX_TRY_ON_GARMENT_DIMENSION ||
+      header.height > MAX_TRY_ON_GARMENT_DIMENSION
     ) {
       throw new BadRequestException("TRY_ON_GARMENT_DIMENSIONS_UNSUPPORTED");
     }
-    if (!facts.hasTransparency) {
+    const facts = decodePngFacts(file.buffer, header);
+    if (!facts) {
+      throw new BadRequestException("TRY_ON_GARMENT_PNG_INVALID");
+    }
+    if (facts.transparentPixelCount < minimumGarmentPixelCount(header)) {
       throw new BadRequestException("TRY_ON_GARMENT_TRANSPARENCY_REQUIRED");
+    }
+    if (facts.visiblePixelCount < minimumGarmentPixelCount(header)) {
+      throw new BadRequestException("TRY_ON_GARMENT_VISIBLE_PIXELS_REQUIRED");
     }
     return {
       contentType: "image/png",
       extension: ".png",
-      width: facts.width,
-      height: facts.height,
+      width: header.width,
+      height: header.height,
       hasTransparency: true,
     };
   }
 }
 
+function minimumGarmentPixelCount({ width, height }: PngHeader): number {
+  return Math.max(
+    1,
+    Math.ceil(width * height * MIN_TRY_ON_GARMENT_PIXEL_COVERAGE),
+  );
+}
+
 function buildPublicAssetUrl(id: string, baseUrl: string | undefined): string {
-  const path = `/api/media-assets/${id}/content`;
+  const path = managedMediaAssetReference(id);
   if (!baseUrl) return path;
 
   const normalizedBase = baseUrl.replace(/\/+$/, "");
@@ -259,14 +281,13 @@ function isWebp(buffer: Buffer): boolean {
   );
 }
 
-function readTransparentPngFacts(
-  buffer: Buffer,
-): { width: number; height: number; hasTransparency: boolean } | undefined {
-  if (buffer.byteLength < 57) return undefined;
+type PngHeader = { width: number; height: number };
+
+function readPngHeader(buffer: Buffer): PngHeader | undefined {
+  if (!isPng(buffer) || buffer.byteLength < 57) return undefined;
   let offset = 8;
   let width: number | undefined;
   let height: number | undefined;
-  const idat: Buffer[] = [];
   let sawEnd = false;
 
   while (offset + 12 <= buffer.byteLength) {
@@ -283,14 +304,15 @@ function readTransparentPngFacts(
       return undefined;
     }
     if (type === "IHDR") {
-      if (width !== undefined || length !== 13) return undefined;
+      if (width !== undefined || length !== 13 || offset !== 8)
+        return undefined;
       width = data.readUInt32BE(0);
       height = data.readUInt32BE(4);
       if (
         width === 0 ||
         height === 0 ||
-        data[8] !== 8 ||
-        data[9] !== 6 ||
+        ![1, 2, 4, 8, 16].includes(data[8]) ||
+        ![0, 2, 3, 4, 6].includes(data[9]) ||
         data[10] !== 0 ||
         data[11] !== 0 ||
         data[12] !== 0
@@ -299,7 +321,6 @@ function readTransparentPngFacts(
       }
     } else if (type === "IDAT") {
       if (width === undefined) return undefined;
-      idat.push(data);
     } else if (type === "IEND") {
       if (
         length !== 0 ||
@@ -310,7 +331,10 @@ function readTransparentPngFacts(
         return undefined;
       }
       sawEnd = true;
+      offset = dataEnd + 4;
       break;
+    } else if (isCriticalPngChunk(type)) {
+      return undefined;
     }
     offset = dataEnd + 4;
   }
@@ -319,85 +343,39 @@ function readTransparentPngFacts(
     !sawEnd ||
     width === undefined ||
     height === undefined ||
-    idat.length === 0
+    offset !== buffer.byteLength
   ) {
     return undefined;
   }
-  const bytesPerRow = width * 4;
-  const expectedLength = height * (bytesPerRow + 1);
-  if (
-    !Number.isSafeInteger(expectedLength) ||
-    expectedLength > 68 * 1024 * 1024
-  ) {
-    return undefined;
-  }
-  let raw: Buffer;
+  return { width, height };
+}
+
+function isCriticalPngChunk(type: string): boolean {
+  return (
+    type.length === 4 && type.charCodeAt(0) >= 65 && type.charCodeAt(0) <= 90
+  );
+}
+
+function decodePngFacts(
+  buffer: Buffer,
+  header: PngHeader,
+): { transparentPixelCount: number; visiblePixelCount: number } | undefined {
+  let decoded: PNG;
   try {
-    raw = inflateSync(Buffer.concat(idat), { maxOutputLength: expectedLength });
+    decoded = PNG.sync.read(buffer, { checkCRC: true });
   } catch {
     return undefined;
   }
-  if (raw.byteLength !== expectedLength) return undefined;
-  try {
-    return {
-      width,
-      height,
-      hasTransparency: pngHasTransparency(raw, width, height),
-    };
-  } catch {
+  if (decoded.width !== header.width || decoded.height !== header.height) {
     return undefined;
   }
-}
-
-function pngHasTransparency(
-  raw: Buffer,
-  width: number,
-  height: number,
-): boolean {
-  const rowBytes = width * 4;
-  let previous = Buffer.alloc(rowBytes);
-  let offset = 0;
-  for (let row = 0; row < height; row += 1) {
-    const filter = raw[offset];
-    offset += 1;
-    const current = Buffer.alloc(rowBytes);
-    for (let index = 0; index < rowBytes; index += 1) {
-      const encoded = raw[offset];
-      offset += 1;
-      const left = index >= 4 ? current[index - 4] : 0;
-      const up = previous[index];
-      const upLeft = index >= 4 ? previous[index - 4] : 0;
-      current[index] = decodePngByte(filter, encoded, left, up, upLeft);
-      if (index % 4 === 3 && current[index] < 255) return true;
-    }
-    previous = current;
+  let transparentPixelCount = 0;
+  let visiblePixelCount = 0;
+  for (let index = 3; index < decoded.data.length; index += 4) {
+    if (decoded.data[index] < 255) transparentPixelCount += 1;
+    if (decoded.data[index] > 0) visiblePixelCount += 1;
   }
-  return false;
-}
-
-function decodePngByte(
-  filter: number,
-  encoded: number,
-  left: number,
-  up: number,
-  upLeft: number,
-): number {
-  if (filter === 0) return encoded;
-  if (filter === 1) return (encoded + left) & 0xff;
-  if (filter === 2) return (encoded + up) & 0xff;
-  if (filter === 3) return (encoded + Math.floor((left + up) / 2)) & 0xff;
-  if (filter === 4) return (encoded + paeth(left, up, upLeft)) & 0xff;
-  throw new Error("Unsupported PNG filter");
-}
-
-function paeth(left: number, up: number, upLeft: number): number {
-  const estimate = left + up - upLeft;
-  const leftDistance = Math.abs(estimate - left);
-  const upDistance = Math.abs(estimate - up);
-  const upLeftDistance = Math.abs(estimate - upLeft);
-  if (leftDistance <= upDistance && leftDistance <= upLeftDistance) return left;
-  if (upDistance <= upLeftDistance) return up;
-  return upLeft;
+  return { transparentPixelCount, visiblePixelCount };
 }
 
 function crc32(value: Buffer): number {

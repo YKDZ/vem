@@ -24,29 +24,48 @@ import {
   tryOnGarmentResponseSchema,
 } from "@vem/shared";
 
+import { AuditService } from "../audit/audit.service";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
+import { managedMediaAssetReference } from "../media-assets/media-assets.service";
 
 @Injectable()
 export class TryOnGarmentsService {
-  constructor(@Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient) {}
+  constructor(
+    @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
+    private readonly auditService: AuditService,
+  ) {}
 
   async createDraft(
     input: TryOnGarmentDraftRequest,
+    adminUserId: string,
   ): Promise<TryOnGarmentResponse> {
     await this.requireProduct(input.productId);
     const sourceMediaAsset = await this.requireSourceMediaAsset(
       input.sourceMediaAssetId,
     );
-    const [created] = await this.db
-      .insert(tryOnGarments)
-      .values({
-        productId: input.productId,
-        colorLabel: input.colorLabel,
-        sourceMediaAssetId: input.sourceMediaAssetId,
-        template: input.template,
-        status: "draft",
-      })
-      .returning();
+    const created = await this.db.transaction(async (tx) => {
+      const [garment] = await tx
+        .insert(tryOnGarments)
+        .values({
+          productId: input.productId,
+          colorLabel: input.colorLabel,
+          sourceMediaAssetId: input.sourceMediaAssetId,
+          template: input.template,
+          status: "draft",
+        })
+        .returning();
+      await this.auditService.record(
+        {
+          adminUserId,
+          action: "try_on_garments.draft.create",
+          resourceType: "try_on_garment",
+          resourceId: garment.id,
+          afterJson: tryOnGarmentAuditSnapshot(garment),
+        },
+        tx,
+      );
+      return garment;
+    });
     return toTryOnGarmentResponse(created, sourceMediaAsset);
   }
 
@@ -58,7 +77,7 @@ export class TryOnGarmentsService {
         mediaAssets,
         eq(mediaAssets.id, tryOnGarments.sourceMediaAssetId),
       )
-      .where(eq(tryOnGarments.id, id))
+      .where(and(eq(tryOnGarments.id, id), isNull(tryOnGarments.deletedAt)))
       .limit(1);
     if (!row) throw new NotFoundException("Try-On Garment not found");
     return toTryOnGarmentResponse(
@@ -67,15 +86,32 @@ export class TryOnGarmentsService {
     );
   }
 
-  async confirm(id: string): Promise<TryOnGarmentResponse> {
+  async confirm(
+    id: string,
+    adminUserId: string,
+  ): Promise<TryOnGarmentResponse> {
     const garment = await this.getById(id);
     if (garment.confirmedAt) return garment;
-    const [updated] = await this.db
-      .update(tryOnGarments)
-      .set({ confirmedAt: new Date(), updatedAt: new Date() })
-      .where(eq(tryOnGarments.id, id))
-      .returning();
-    if (!updated) throw new NotFoundException("Try-On Garment not found");
+    const updated = await this.db.transaction(async (tx) => {
+      const [confirmed] = await tx
+        .update(tryOnGarments)
+        .set({ confirmedAt: new Date(), updatedAt: new Date() })
+        .where(and(eq(tryOnGarments.id, id), isNull(tryOnGarments.deletedAt)))
+        .returning();
+      if (!confirmed) throw new NotFoundException("Try-On Garment not found");
+      await this.auditService.record(
+        {
+          adminUserId,
+          action: "try_on_garments.source.confirm",
+          resourceType: "try_on_garment",
+          resourceId: confirmed.id,
+          beforeJson: { confirmedAt: null },
+          afterJson: tryOnGarmentAuditSnapshot(confirmed),
+        },
+        tx,
+      );
+      return confirmed;
+    });
     return toTryOnGarmentResponse(updated, garment.sourceMediaAsset);
   }
 
@@ -112,12 +148,27 @@ export class TryOnGarmentsService {
   }
 }
 
+function tryOnGarmentAuditSnapshot(
+  garment: typeof tryOnGarments.$inferSelect,
+): Record<string, unknown> {
+  return {
+    id: garment.id,
+    productId: garment.productId,
+    colorLabel: garment.colorLabel,
+    sourceMediaAssetId: garment.sourceMediaAssetId,
+    template: garment.template,
+    status: garment.status,
+    confirmedAt: garment.confirmedAt?.toISOString() ?? null,
+    deletedAt: garment.deletedAt?.toISOString() ?? null,
+  };
+}
+
 function toTryOnGarmentMediaAsset(
   asset: typeof mediaAssets.$inferSelect,
 ): TryOnGarmentMediaAsset {
   return tryOnGarmentMediaAssetSchema.parse({
     id: asset.id,
-    managedReference: asset.publicUrl,
+    managedReference: managedMediaAssetReference(asset.id),
     purpose: asset.purpose,
     contentType: asset.contentType,
     byteSize: asset.byteSize,
@@ -142,5 +193,6 @@ function toTryOnGarmentResponse(
     confirmedAt: garment.confirmedAt?.toISOString() ?? null,
     createdAt: garment.createdAt.toISOString(),
     updatedAt: garment.updatedAt.toISOString(),
+    deletedAt: garment.deletedAt?.toISOString() ?? null,
   });
 }

@@ -9,7 +9,7 @@ import {
 import { Reflector } from "@nestjs/core";
 import {
   parseAdminApiResponse,
-  type AdminApiResponseContract,
+  type AdminApiEndpointContract,
 } from "@vem/shared";
 import { map, type Observable } from "rxjs";
 
@@ -33,9 +33,12 @@ export class ApiResponseInterceptor<T> implements NestInterceptor<
     next: CallHandler<T>,
   ): Observable<ApiResponse<unknown>> {
     const contract = this.reflector.get<
-      AdminApiResponseContract<
+      AdminApiEndpointContract<
         "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
         string,
+        z.ZodType,
+        z.ZodType,
+        z.ZodType,
         z.ZodType
       >
     >(ADMIN_RESPONSE_CONTRACT, context.getHandler());

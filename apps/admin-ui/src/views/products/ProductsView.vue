@@ -159,6 +159,7 @@ const tryOnGarmentUploading = ref(false);
 const tryOnGarmentSaving = ref(false);
 const tryOnGarmentConfirming = ref(false);
 const tryOnGarmentPreviewFailed = ref(false);
+const tryOnGarmentPreviewReady = ref(false);
 const tryOnGarmentFeedback = ref("");
 
 function openTryOnGarmentDraft(product: Product): void {
@@ -168,6 +169,7 @@ function openTryOnGarmentDraft(product: Product): void {
   tryOnGarmentColorLabel.value = "";
   tryOnGarmentTemplate.value = "tshirt_short_sleeve";
   tryOnGarmentPreviewFailed.value = false;
+  tryOnGarmentPreviewReady.value = false;
   tryOnGarmentFeedback.value = "上传透明 PNG 后，系统会显示确定性校验结果。";
   tryOnGarmentModalOpen.value = true;
 }
@@ -184,6 +186,7 @@ async function onTryOnGarmentSelected(event: Event): Promise<void> {
     const asset = await uploadTryOnGarment(file);
     tryOnGarmentAsset.value = asset;
     tryOnGarmentPreviewFailed.value = false;
+    tryOnGarmentPreviewReady.value = false;
     tryOnGarmentFeedback.value = [
       "校验通过：透明 PNG。",
       `尺寸 ${asset.width} × ${asset.height}，${asset.byteSize} bytes。`,
@@ -194,6 +197,18 @@ async function onTryOnGarmentSelected(event: Event): Promise<void> {
   } finally {
     tryOnGarmentUploading.value = false;
   }
+}
+
+function onTryOnGarmentPreviewLoaded(event: Event): void {
+  const image = event.currentTarget as HTMLImageElement;
+  tryOnGarmentPreviewReady.value =
+    image.naturalWidth > 0 && image.naturalHeight > 0;
+  tryOnGarmentPreviewFailed.value = !tryOnGarmentPreviewReady.value;
+}
+
+function onTryOnGarmentPreviewFailed(): void {
+  tryOnGarmentPreviewReady.value = false;
+  tryOnGarmentPreviewFailed.value = true;
 }
 
 async function saveTryOnGarmentDraft(): Promise<void> {
@@ -709,7 +724,8 @@ watch(
               class="h-48 w-full rounded border border-slate-200 bg-slate-50 object-contain"
               :src="tryOnGarmentAsset.managedReference"
               alt="Try-On Garment 来源预览"
-              @error="tryOnGarmentPreviewFailed = true"
+              @load="onTryOnGarmentPreviewLoaded"
+              @error="onTryOnGarmentPreviewFailed"
             />
             <div
               v-else
@@ -733,7 +749,8 @@ watch(
               上传并校验 PNG
             </a-button>
             <p class="text-xs leading-5 text-slate-500">
-              仅接受透明 PNG；不会自动抠图、生成来源或运行 Fast/AI 推理。
+              仅接受透明 PNG；不会自动抠图、生成来源或运行 Fast/AI
+              推理。请人工确认：正面单件服装、无人物/衣架/文字，并且预览可见后再继续。
             </p>
           </div>
         </a-form-item>
@@ -750,7 +767,11 @@ watch(
             v-if="!tryOnGarmentDraft"
             type="primary"
             :loading="tryOnGarmentSaving"
-            :disabled="!tryOnGarmentAsset || !tryOnGarmentColorLabel.trim()"
+            :disabled="
+              !tryOnGarmentAsset ||
+              !tryOnGarmentPreviewReady ||
+              !tryOnGarmentColorLabel.trim()
+            "
             @click="saveTryOnGarmentDraft"
           >
             创建草稿
@@ -759,7 +780,10 @@ watch(
             v-else
             type="primary"
             :loading="tryOnGarmentConfirming"
-            :disabled="Boolean(tryOnGarmentDraft.confirmedAt)"
+            :disabled="
+              Boolean(tryOnGarmentDraft.confirmedAt) ||
+              !tryOnGarmentPreviewReady
+            "
             @click="confirmTryOnGarmentSource"
           >
             {{ tryOnGarmentDraft.confirmedAt ? "来源已确认" : "确认来源" }}

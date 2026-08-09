@@ -26,8 +26,11 @@ describe("admin-try-on-garment-contract.e2e", { concurrent: false }, () => {
   let appConfig: AppConfigService;
   let db: DrizzleDB;
   let api: ReturnType<typeof request>;
+  const originalMediaAssetPublicBaseUrl =
+    process.env.MEDIA_ASSET_PUBLIC_BASE_URL;
 
   beforeAll(async () => {
+    process.env.MEDIA_ASSET_PUBLIC_BASE_URL = "https://media.example/api";
     const moduleRef = await Test.createTestingModule({
       imports: [AppModule],
     })
@@ -51,6 +54,11 @@ describe("admin-try-on-garment-contract.e2e", { concurrent: false }, () => {
   afterAll(async () => {
     await db?.disconnect();
     await app?.close();
+    if (originalMediaAssetPublicBaseUrl === undefined) {
+      delete process.env.MEDIA_ASSET_PUBLIC_BASE_URL;
+    } else {
+      process.env.MEDIA_ASSET_PUBLIC_BASE_URL = originalMediaAssetPublicBaseUrl;
+    }
   });
 
   beforeEach(async () => {
@@ -60,6 +68,10 @@ describe("admin-try-on-garment-contract.e2e", { concurrent: false }, () => {
   it("creates, previews, retrieves, and explicitly confirms a draft through the public Admin API", async () => {
     const token = await loginAndGetToken(api, appConfig);
     const auth = { Authorization: `Bearer ${token}` };
+    const currentAdminResponse = await api.get("/api/auth/me").set(auth);
+    expect(currentAdminResponse.status).toBe(200);
+    const adminId = (currentAdminResponse.body as ApiResponse<{ id: string }>)
+      .data.id;
     const productResponse = await api
       .post("/api/products")
       .set(auth)
@@ -87,6 +99,14 @@ describe("admin-try-on-garment-contract.e2e", { concurrent: false }, () => {
       hasTransparency: true,
     });
     expect(asset.sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(asset.managedReference).toBe(
+      `/api/media-assets/${asset.id}/content`,
+    );
+
+    const contentResponse = await api.get(asset.managedReference);
+    expect(contentResponse.status).toBe(200);
+    expect(contentResponse.headers["content-type"]).toContain("image/png");
+    expect(contentResponse.body).toEqual(rgbaPng(768, 1024, 0));
 
     const draftResponse = await api
       .post(`/api${adminCreateTryOnGarmentContract.path}`)
@@ -132,9 +152,33 @@ describe("admin-try-on-garment-contract.e2e", { concurrent: false }, () => {
       );
     expect(confirmed.status).toBe("draft");
     expect(confirmed.confirmedAt).toEqual(expect.any(String));
+    expect(confirmed.deletedAt).toBeNull();
+
+    const auditResponse = await api
+      .get(`/api/audit-logs?resourceId=${draft.id}&page=1&pageSize=10`)
+      .set(auth);
+    expect(auditResponse.status).toBe(200);
+    expect(
+      (
+        auditResponse.body as ApiResponse<{
+          items: Array<{ adminUserId: string; action: string }>;
+        }>
+      ).data.items,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "try_on_garments.draft.create",
+          adminUserId: adminId,
+        }),
+        expect.objectContaining({
+          action: "try_on_garments.source.confirm",
+          adminUserId: adminId,
+        }),
+      ]),
+    );
   }, 60_000);
 
-  it("returns stable validation failures for model-photo-like opacity and unsupported templates", async () => {
+  it("returns stable validation failures for multipart, opaque, malformed, and unsupported contract input", async () => {
     const token = await loginAndGetToken(api, appConfig);
     const auth = { Authorization: `Bearer ${token}` };
     const opaqueResponse = await api
@@ -147,6 +191,38 @@ describe("admin-try-on-garment-contract.e2e", { concurrent: false }, () => {
     expect(opaqueResponse.status).toBe(400);
     expect((opaqueResponse.body as ApiResponse<unknown>).message).toBe(
       "TRY_ON_GARMENT_TRANSPARENCY_REQUIRED",
+    );
+
+    const missingFileResponse = await api
+      .post(`/api${adminTryOnGarmentUploadContract.path}`)
+      .set(auth);
+    expect(missingFileResponse.status).toBe(400);
+    expect((missingFileResponse.body as ApiResponse<unknown>).message).toBe(
+      "TRY_ON_GARMENT_FILE_REQUIRED",
+    );
+
+    const oversizedResponse = await api
+      .post(`/api${adminTryOnGarmentUploadContract.path}`)
+      .set(auth)
+      .attach("file", Buffer.alloc(5 * 1024 * 1024 + 1), {
+        filename: "too-large.png",
+        contentType: "image/png",
+      });
+    expect(oversizedResponse.status).toBe(400);
+    expect((oversizedResponse.body as ApiResponse<unknown>).message).toBe(
+      "TRY_ON_GARMENT_FILE_TOO_LARGE",
+    );
+
+    const malformedResponse = await api
+      .post(`/api${adminTryOnGarmentUploadContract.path}`)
+      .set(auth)
+      .attach("file", Buffer.from("not a PNG"), {
+        filename: "corrupt.png",
+        contentType: "image/png",
+      });
+    expect(malformedResponse.status).toBe(400);
+    expect((malformedResponse.body as ApiResponse<unknown>).message).toBe(
+      "TRY_ON_GARMENT_PNG_REQUIRED",
     );
 
     const invalidTemplateResponse = await api
@@ -162,6 +238,25 @@ describe("admin-try-on-garment-contract.e2e", { concurrent: false }, () => {
     expect(
       (invalidTemplateResponse.body as ApiResponse<unknown>).message,
     ).toContain("TRY_ON_GARMENT_TEMPLATE_INVALID");
+
+    const extraBodyResponse = await api
+      .post(`/api${adminCreateTryOnGarmentContract.path}`)
+      .set(auth)
+      .send({
+        productId: "550e8400-e29b-41d4-a716-446655440124",
+        colorLabel: "海军蓝",
+        sourceMediaAssetId: "550e8400-e29b-41d4-a716-446655440125",
+        template: "tshirt_short_sleeve",
+        unexpected: true,
+      });
+    expect(extraBodyResponse.status).toBe(400);
+
+    const extraQueryResponse = await api
+      .get(
+        `/api${adminGetTryOnGarmentContract.path.replace(":id", "550e8400-e29b-41d4-a716-446655440124")}?unexpected=true`,
+      )
+      .set(auth);
+    expect(extraQueryResponse.status).toBe(400);
   }, 60_000);
 });
 
@@ -176,6 +271,26 @@ function rgbaPng(width: number, height: number, alpha: number): Buffer {
     const offset = row * (width * 4 + 1);
     for (let pixel = 0; pixel < width; pixel += 1) {
       pixels[offset + 1 + pixel * 4 + 3] = alpha;
+    }
+  }
+  if (alpha === 0) {
+    for (
+      let row = Math.floor(height / 4);
+      row < Math.ceil((height * 3) / 4);
+      row += 1
+    ) {
+      const offset = row * (width * 4 + 1);
+      for (
+        let pixel = Math.floor(width / 4);
+        pixel < Math.ceil((width * 3) / 4);
+        pixel += 1
+      ) {
+        const pixelOffset = offset + 1 + pixel * 4;
+        pixels[pixelOffset] = 20;
+        pixels[pixelOffset + 1] = 50;
+        pixels[pixelOffset + 2] = 180;
+        pixels[pixelOffset + 3] = 255;
+      }
     }
   }
   return Buffer.concat([

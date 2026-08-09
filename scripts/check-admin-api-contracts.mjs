@@ -14,9 +14,10 @@ const CONTRACT_WRITE_HELPERS = new Set([
   "postContract",
   "patchContract",
   "postResponseContract",
+  "callAdminEndpointContract",
 ]);
 const WRITE_CALL_PATTERN =
-  /\b(?:post|patch|postContract|patchContract|postResponseContract)\s*(?:<[\s\S]*?>)?\s*\(/;
+  /\b(?:post|patch|postContract|patchContract|postResponseContract|callAdminEndpointContract)\s*(?:<[\s\S]*?>)?\s*\(/;
 const BROAD_TYPE_PATTERN = /\b(?:Record\s*<\s*string\s*,\s*unknown\s*>|any)\b/;
 const SHARED_BODY_TYPE_PATTERN =
   /\b(?:z\.input\s*<|Admin[A-Z][A-Za-z0-9]*(?:Request|Input)|MachineEnvironmentControlRequest)\b/;
@@ -210,12 +211,57 @@ function findExpressionEnd(source, start) {
 function helperCalls(functionSource) {
   const calls = [];
   const callPattern =
-    /\b(post|patch|postContract|patchContract|postResponseContract)\s*(?:<[\s\S]*?>)?\s*\(/g;
+    /\b(post|patch|postContract|patchContract|postResponseContract|callAdminEndpointContract)\s*(?:<[\s\S]*?>)?\s*\(/g;
   let match;
   while ((match = callPattern.exec(functionSource)) !== null) {
     calls.push(match[1]);
   }
   return calls;
+}
+
+const TRY_ON_CONTRACT_NAMES = [
+  "adminTryOnGarmentUploadContract",
+  "adminCreateTryOnGarmentContract",
+  "adminGetTryOnGarmentContract",
+  "adminTryOnGarmentConfirmationContract",
+];
+
+function checkTryOnContractCoverage(root) {
+  const failures = [];
+  const callerSource = listFiles(root, ADMIN_API_DIRECTORY)
+    .filter((path) => !path.endsWith(".spec.ts"))
+    .map((path) => readText(root, path))
+    .join("\n");
+  const providerSource = listFiles(root, "apps/service-api/src")
+    .filter((path) => path.endsWith(".controller.ts"))
+    .map((path) => readText(root, path))
+    .join("\n");
+  const callerHits = TRY_ON_CONTRACT_NAMES.filter((name) =>
+    new RegExp(`callAdminEndpointContract\\(\\s*${name}\\b`).test(callerSource),
+  );
+  const providerHits = TRY_ON_CONTRACT_NAMES.filter((name) =>
+    new RegExp(`@AdminResponseContract\\(\\s*${name}\\s*\\)`).test(
+      providerSource,
+    ),
+  );
+  const targetsTryOn =
+    callerSource.includes("TryOnGarment") ||
+    providerSource.includes("TryOnGarment");
+  if (targetsTryOn && callerHits.length === 0) {
+    failures.push("try-on endpoint contract caller coverage is zero");
+  }
+  if (targetsTryOn && providerHits.length === 0) {
+    failures.push("try-on endpoint contract provider coverage is zero");
+  }
+  for (const name of TRY_ON_CONTRACT_NAMES) {
+    if (targetsTryOn && !callerHits.includes(name)) {
+      failures.push(`try-on endpoint contract caller missing: ${name}`);
+    }
+    if (targetsTryOn && !providerHits.includes(name)) {
+      failures.push(`try-on endpoint contract provider missing: ${name}`);
+    }
+  }
+  return { failures, callerHits, providerHits };
 }
 
 function functionUsesWriteHelper(fn) {
@@ -334,6 +380,8 @@ export function checkAdminApiContracts(options = {}) {
     failures.push(...checkWriteCaller(caller, indexed.fn));
   }
   failures.push(...checkWriteModuleQueryTypes(root, writeModulePaths));
+  const tryOnCoverage = checkTryOnContractCoverage(root);
+  failures.push(...tryOnCoverage.failures);
 
   checks.push({
     name: "admin-writes-use-schema-bound-contracts",
@@ -341,6 +389,11 @@ export function checkAdminApiContracts(options = {}) {
       failure.startsWith("admin write caller"),
     ),
     detail: "admin writes use schema-bound helpers and shared body types",
+  });
+  checks.push({
+    name: "try-on-providers-and-callers-share-complete-contracts",
+    passed: tryOnCoverage.failures.length === 0,
+    detail: `callers=${tryOnCoverage.callerHits.length}, providers=${tryOnCoverage.providerHits.length}`,
   });
   checks.push({
     name: "admin-write-modules-avoid-broad-query-shortcuts",
@@ -355,6 +408,7 @@ export function checkAdminApiContracts(options = {}) {
     checks,
     failures,
     writeCallers: [...callers.keys()].sort(),
+    tryOnCoverage,
   };
 }
 

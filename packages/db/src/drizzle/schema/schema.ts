@@ -439,6 +439,7 @@ export const tryOnGarments = t.pgTable(
     confirmedAt: t.timestamp("confirmed_at", { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
+    deletedAt: deletedAt(),
   },
   (table) => [
     t.index("try_on_garments_product_id_idx").on(table.productId),
