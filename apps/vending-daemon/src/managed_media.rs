@@ -173,6 +173,37 @@ impl ManifestDirectorySync for PlatformManifestDirectorySync {
     }
 }
 
+/// Post-commit maintenance is intentionally observable at one narrow seam:
+/// it runs outside catalog acceptance, so a slow directory cleanup can never
+/// extend the catalog registration/receipt linearization window.
+#[async_trait]
+pub(crate) trait MediaMaintenanceObserver: Send + Sync {
+    async fn before_cleanup(&self);
+}
+
+struct NoopMediaMaintenanceObserver;
+
+#[async_trait]
+impl MediaMaintenanceObserver for NoopMediaMaintenanceObserver {
+    async fn before_cleanup(&self) {}
+}
+
+/// Testable seam for the short, memory-only catalog publication critical
+/// section.  Production uses the no-op implementation; the observer exists
+/// to prove that a router cannot expose a presentation revision on one side
+/// of the adoption token and another revision on the other side.
+#[async_trait]
+pub(crate) trait CatalogPresentationObserver: Send + Sync {
+    async fn after_presentation_write(&self);
+}
+
+struct NoopCatalogPresentationObserver;
+
+#[async_trait]
+impl CatalogPresentationObserver for NoopCatalogPresentationObserver {
+    async fn after_presentation_write(&self) {}
+}
+
 pub struct BackendMediaFetcher {
     pub backend: Arc<crate::backend::BackendClient>,
 }
@@ -232,6 +263,10 @@ struct Entry {
     leases: usize,
     last_used: SystemTime,
     warming_generation: Option<String>,
+    /// Changes whenever an adoption republishes this digest.  A slow
+    /// defensive read may release its lease afterwards, but it must never
+    /// downgrade a newer Ready publication.
+    read_version: u64,
 }
 
 #[derive(Debug, Default)]
@@ -308,6 +343,8 @@ pub struct ManagedMediaCache {
     fetcher: Arc<dyn MediaFetcher>,
     verifier: Arc<dyn MediaVerifier>,
     manifest_directory_sync: Arc<dyn ManifestDirectorySync>,
+    maintenance_observer: Arc<dyn MediaMaintenanceObserver>,
+    catalog_presentation_observer: Arc<dyn CatalogPresentationObserver>,
     state: Arc<Mutex<CacheState>>,
     /// Serializes the complete durable adoption transaction.  It deliberately
     /// does not guard reads or warming: only next-state construction, manifest
@@ -335,6 +372,14 @@ struct WarmJob {
     generation: String,
     descriptor: MediaDescriptor,
     candidates: Vec<MediaDescriptor>,
+}
+
+/// Work which may be slow but is never part of a durable catalog acceptance.
+/// In particular, the receipt must release `adoption_linearization_gate`
+/// before download queueing or reclaiming cache bytes begins.
+#[derive(Debug)]
+struct PostCommitMaintenance {
+    warm: Vec<WarmJob>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -449,12 +494,73 @@ impl ManagedMediaCache {
         )
     }
 
+    #[cfg(test)]
+    pub(crate) fn new_with_maintenance_observer(
+        root: impl Into<PathBuf>,
+        read_url_base: impl Into<String>,
+        fetcher: Arc<dyn MediaFetcher>,
+        maintenance_observer: Arc<dyn MediaMaintenanceObserver>,
+    ) -> Result<Self, String> {
+        Self::new_with_components(
+            root,
+            read_url_base,
+            fetcher,
+            Arc::new(PlatformManifestDirectorySync),
+            Arc::new(PlatformMediaVerifier),
+            maintenance_observer,
+            Arc::new(NoopCatalogPresentationObserver),
+            CancellationToken::new(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_manifest_directory_sync_and_catalog_presentation_observer(
+        root: impl Into<PathBuf>,
+        read_url_base: impl Into<String>,
+        fetcher: Arc<dyn MediaFetcher>,
+        manifest_directory_sync: Arc<dyn ManifestDirectorySync>,
+        catalog_presentation_observer: Arc<dyn CatalogPresentationObserver>,
+    ) -> Result<Self, String> {
+        Self::new_with_components(
+            root,
+            read_url_base,
+            fetcher,
+            manifest_directory_sync,
+            Arc::new(PlatformMediaVerifier),
+            Arc::new(NoopMediaMaintenanceObserver),
+            catalog_presentation_observer,
+            CancellationToken::new(),
+        )
+    }
+
     pub(crate) fn new_with_manifest_directory_sync_and_shutdown(
         root: impl Into<PathBuf>,
         read_url_base: impl Into<String>,
         fetcher: Arc<dyn MediaFetcher>,
         manifest_directory_sync: Arc<dyn ManifestDirectorySync>,
         verifier: Arc<dyn MediaVerifier>,
+        cycle_shutdown: CancellationToken,
+    ) -> Result<Self, String> {
+        Self::new_with_components(
+            root,
+            read_url_base,
+            fetcher,
+            manifest_directory_sync,
+            verifier,
+            Arc::new(NoopMediaMaintenanceObserver),
+            Arc::new(NoopCatalogPresentationObserver),
+            cycle_shutdown,
+        )
+    }
+
+    fn new_with_components(
+        root: impl Into<PathBuf>,
+        read_url_base: impl Into<String>,
+        fetcher: Arc<dyn MediaFetcher>,
+        manifest_directory_sync: Arc<dyn ManifestDirectorySync>,
+        verifier: Arc<dyn MediaVerifier>,
+        maintenance_observer: Arc<dyn MediaMaintenanceObserver>,
+        catalog_presentation_observer: Arc<dyn CatalogPresentationObserver>,
         cycle_shutdown: CancellationToken,
     ) -> Result<Self, String> {
         let root = root.into();
@@ -565,6 +671,7 @@ impl ManagedMediaCache {
                                 leases: 0,
                                 last_used: SystemTime::now(),
                                 warming_generation: None,
+                                read_version: 1,
                             },
                         )
                     })
@@ -596,6 +703,8 @@ impl ManagedMediaCache {
             fetcher,
             verifier,
             manifest_directory_sync,
+            maintenance_observer,
+            catalog_presentation_observer,
             state: Arc::new(Mutex::new(initial_state)),
             reconcile_gate: Arc::new(Mutex::new(())),
             adoption_linearization_gate: Arc::new(Mutex::new(())),
@@ -624,6 +733,27 @@ impl ManagedMediaCache {
     pub async fn register_catalog_adoption(&self) -> u64 {
         let _linearization = self.adoption_linearization_gate.lock().await;
         self.latest_adoption.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// Publish a catalog's in-memory presentation and reserve its adoption
+    /// token under the same short gate.  The closure is intentionally limited
+    /// to presentation-memory work: filesystem reconciliation is detached by
+    /// the caller after this method returns.
+    pub async fn register_catalog_adoption_with_presentation<T, F, Fut>(
+        &self,
+        publish: F,
+    ) -> (u64, T)
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = T>,
+    {
+        let _linearization = self.adoption_linearization_gate.lock().await;
+        let token = self.latest_adoption.fetch_add(1, Ordering::SeqCst) + 1;
+        let presentation = publish().await;
+        self.catalog_presentation_observer
+            .after_presentation_write()
+            .await;
+        (token, presentation)
     }
 
     fn is_latest_adoption(&self, token: u64) -> bool {
@@ -668,9 +798,11 @@ impl ManagedMediaCache {
         }
         let interest = normalize_interest_set(descriptors)?;
         let token = self.register_catalog_adoption().await;
-        self.adopt_interest_set(generation, interest, token)
-            .await
-            .map(|_| ())
+        let (_, _, commit, maintenance) =
+            self.adopt_interest_set(generation, interest, token).await?;
+        drop(commit);
+        self.schedule_post_commit_maintenance(maintenance)?;
+        Ok(())
     }
 
     async fn adopt_interest_set(
@@ -683,6 +815,7 @@ impl ManagedMediaCache {
             usize,
             daemon_ipc_contracts::ManagedMediaSnapshot,
             tokio::sync::MutexGuard<'_, ()>,
+            PostCommitMaintenance,
         ),
         String,
     > {
@@ -757,6 +890,7 @@ impl ManagedMediaCache {
                         leases: 0,
                         last_used: SystemTime::now(),
                         warming_generation: None,
+                        read_version: 0,
                     });
                 entry.descriptor = descriptor.clone();
                 entry.candidates = object.candidates.clone();
@@ -769,6 +903,7 @@ impl ManagedMediaCache {
                     MediaReadiness::Warming
                 };
                 entry.warming_generation = (!published).then(|| generation.clone());
+                entry.read_version = entry.read_version.wrapping_add(1);
             }
             state.generation = generation.clone();
             state.epoch = state.epoch.wrapping_add(1);
@@ -794,11 +929,12 @@ impl ManagedMediaCache {
             (warm, snapshot)
         };
         drop(gate);
-        for job in warm {
-            self.enqueue_warm(job).await;
-        }
-        self.cleanup_to_low_water().await;
-        Ok((interest.objects.len(), accepted_snapshot, commit))
+        Ok((
+            interest.objects.len(),
+            accepted_snapshot,
+            commit,
+            PostCommitMaintenance { warm },
+        ))
     }
 
     /// Public reconciliation boundary: generated request in, generated
@@ -828,7 +964,7 @@ impl ManagedMediaCache {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let interest = normalize_interest_set(descriptors)?;
-        let (interest_count, snapshot, _commit) = self
+        let (interest_count, snapshot, commit, maintenance) = self
             .adopt_interest_set(generation.clone(), interest, adoption_token)
             .await?;
         let receipt = serde_json::from_value(serde_json::json!({
@@ -840,7 +976,25 @@ impl ManagedMediaCache {
         .map_err(|error| format!("managed media reconcile receipt boundary: {error}"))?;
         daemon_ipc_contracts::validate_managed_media_reconcile_receipt_boundary(&receipt)
             .map_err(|error| error.to_string())?;
+        // `commit` is deliberately released directly after final receipt
+        // construction.  Queueing a warm job or trimming old bytes is
+        // maintenance, not a condition of a visible catalog acceptance.
+        drop(commit);
+        self.schedule_post_commit_maintenance(maintenance)?;
         Ok(receipt)
+    }
+
+    fn schedule_post_commit_maintenance(
+        &self,
+        maintenance: PostCommitMaintenance,
+    ) -> Result<(), String> {
+        let cache = self.clone();
+        self.spawn_owned_task(async move {
+            for job in maintenance.warm {
+                cache.enqueue_warm(job).await;
+            }
+            cache.cleanup_to_low_water().await;
+        })
     }
 
     pub async fn snapshot(&self) -> (String, Vec<MediaProjection>) {
@@ -884,26 +1038,23 @@ impl ManagedMediaCache {
         {
             return Err(MediaReadError::Forbidden);
         }
-        let mut state = self.state.lock().await;
-        let entry = state
-            .entries
-            .get_mut(digest)
-            .ok_or(MediaReadError::NotFound)?;
-        if !entry.active || entry.readiness != MediaReadiness::Ready {
-            return Err(MediaReadError::NotReady);
-        }
-        entry.leases += 1;
-        entry.last_used = SystemTime::now();
-        state.epoch = state.epoch.wrapping_add(1);
         let path = self.content_path(digest);
-        drop(state);
-        let entry = self.state.lock().await;
-        let descriptor = entry
-            .entries
-            .get(digest)
-            .map(|entry| entry.descriptor.clone());
-        drop(entry);
-        let descriptor = descriptor.ok_or(MediaReadError::NotFound)?;
+        let (descriptor, read_version) = {
+            let mut state = self.state.lock().await;
+            let entry = state
+                .entries
+                .get_mut(digest)
+                .ok_or(MediaReadError::NotFound)?;
+            if !entry.active || entry.readiness != MediaReadiness::Ready {
+                return Err(MediaReadError::NotReady);
+            }
+            entry.leases += 1;
+            entry.last_used = SystemTime::now();
+            let descriptor = entry.descriptor.clone();
+            let read_version = entry.read_version;
+            state.epoch = state.epoch.wrapping_add(1);
+            (descriptor, read_version)
+        };
         if verify_staged_file_async(
             self.verifier.clone(),
             path.clone(),
@@ -913,23 +1064,62 @@ impl ManagedMediaCache {
         .await
         .is_err()
         {
-            let mut state = self.state.lock().await;
-            if let Some(entry) = state.entries.get_mut(digest) {
-                entry.leases = entry.leases.saturating_sub(1);
-                entry.readiness = MediaReadiness::Unavailable;
-                entry.diagnostic =
-                    Some("published media failed defensive read verification".to_string());
-                state.epoch = state.epoch.wrapping_add(1);
-            }
+            self.reject_defensive_read(digest, descriptor.clone(), read_version, path)
+                .await;
             return Err(MediaReadError::NotReady);
         }
+        let identity = media_identity(&descriptor);
         Ok(MediaReadLease {
             content_type: descriptor.content_type,
             byte_size: descriptor.byte_size,
             digest: digest.to_string(),
             path: matches!(method, MediaReadMethod::Get).then_some(path),
             state: self.state.clone(),
+            identity,
         })
+    }
+
+    /// Treat a failed re-read as corruption only if it still describes the
+    /// exact publication which granted this read.  Holding publication/cleanup
+    /// coordination while removing the bad inode prevents a concurrent warm
+    /// from being deleted, without ever holding the Tokio state mutex over
+    /// filesystem work.
+    async fn reject_defensive_read(
+        &self,
+        digest: &str,
+        descriptor: MediaDescriptor,
+        read_version: u64,
+        path: PathBuf,
+    ) {
+        let _publication_gate = self.reconcile_gate.lock().await;
+        let identity = media_identity(&descriptor);
+        let quarantine = {
+            let mut state = self.state.lock().await;
+            let (current_publication, no_leases) = {
+                let Some(entry) = state.entries.get_mut(digest) else {
+                    return;
+                };
+                // This read incremented exactly one lease.  Its completion must
+                // release that reservation even if the same immutable object was
+                // adopted again while the verifier was slow.
+                if media_identity(&entry.descriptor) != identity {
+                    return;
+                }
+                entry.leases = entry.leases.saturating_sub(1);
+                let current_publication = entry.read_version == read_version;
+                if current_publication {
+                    entry.readiness = MediaReadiness::Unavailable;
+                    entry.diagnostic =
+                        Some("published media failed defensive read verification".to_string());
+                }
+                (current_publication, entry.leases == 0)
+            };
+            state.epoch = state.epoch.wrapping_add(1);
+            current_publication && no_leases
+        };
+        if quarantine {
+            let _ = tokio::task::spawn_blocking(move || remove_optional_file(&path)).await;
+        }
     }
 
     pub async fn cleanup_bounded(&self, max_remove: usize) -> usize {
@@ -973,9 +1163,14 @@ impl ManagedMediaCache {
     }
 
     async fn cleanup_to_low_water(&self) {
+        let mut observed = false;
         while directory_usage_bytes_async(self.root.as_ref().clone()).await
             > MEDIA_CACHE_LOW_WATER_BYTES
         {
+            if !observed {
+                self.maintenance_observer.before_cleanup().await;
+                observed = true;
+            }
             if self.cleanup_bounded(CLEANUP_BATCH_SIZE).await == 0 {
                 break;
             }
@@ -1620,6 +1815,7 @@ pub struct MediaReadLease {
     pub digest: String,
     path: Option<PathBuf>,
     state: Arc<Mutex<CacheState>>,
+    identity: MediaIdentity,
 }
 
 impl MediaReadLease {
@@ -1639,9 +1835,14 @@ impl Drop for MediaReadLease {
     fn drop(&mut self) {
         let state = self.state.clone();
         let digest = self.digest.clone();
+        let identity = self.identity.clone();
         tokio::spawn(async move {
             let mut state = state.lock().await;
-            if let Some(entry) = state.entries.get_mut(&digest) {
+            if let Some(entry) = state
+                .entries
+                .get_mut(&digest)
+                .filter(|entry| media_identity(&entry.descriptor) == identity)
+            {
                 entry.leases = entry.leases.saturating_sub(1);
                 state.epoch = state.epoch.wrapping_add(1);
             }
@@ -2067,6 +2268,160 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn defensive_read_quarantines_an_expanded_active_file_so_same_digest_can_rewarm() {
+        let root = tempdir().expect("tempdir").keep();
+        let bytes = b"\x89PNG\r\n\x1a\nrepairable".to_vec();
+        let expected = descriptor(&bytes, "image/png");
+        let cache = ManagedMediaCache::new(
+            root,
+            "http://127.0.0.1:1234",
+            Arc::new(FixtureFetcher {
+                bytes: bytes.clone(),
+                content_type: "image/png".to_string(),
+            }),
+        )
+        .expect("cache");
+        cache
+            .reconcile_active_catalog("first", vec![expected.clone()])
+            .await
+            .expect("first adoption");
+        for _ in 0..400 {
+            if cache.snapshot().await.1[0].readiness == MediaReadiness::Ready {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(cache.content_path(&expected.digest))
+            .expect("published object")
+            .set_len(MEDIA_CACHE_HIGH_WATER_BYTES + 1)
+            .expect("expand corrupt object");
+        assert!(matches!(
+            cache
+                .read_ready(&cache.read_grant(), MediaReadMethod::Get, &expected.digest)
+                .await,
+            Err(MediaReadError::NotReady)
+        ));
+        assert_eq!(
+            cache.snapshot().await.1[0].readiness,
+            MediaReadiness::Unavailable
+        );
+
+        cache
+            .reconcile_active_catalog("repair", vec![expected.clone()])
+            .await
+            .expect("same digest is eligible for repair");
+        for _ in 0..400 {
+            if cache.snapshot().await.1[0].readiness == MediaReadiness::Ready {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            cache.snapshot().await.1[0].readiness,
+            MediaReadiness::Ready,
+            "the corrupt high-water object must not prevent a same-digest warm"
+        );
+        assert_eq!(
+            fs::metadata(cache.content_path(&expected.digest))
+                .expect("rewarmed object")
+                .len(),
+            bytes.len() as u64
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_defensive_read_failure_cannot_downgrade_a_republished_same_digest() {
+        struct OneBlockedFailureVerifier {
+            block_next: std::sync::atomic::AtomicBool,
+            entered: Arc<Notify>,
+            release: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+        }
+
+        impl MediaVerifier for OneBlockedFailureVerifier {
+            fn verify(
+                &self,
+                path: &Path,
+                descriptor: &MediaDescriptor,
+                content_type: &str,
+            ) -> Result<(), String> {
+                if self.block_next.swap(false, Ordering::SeqCst) {
+                    self.entered.notify_one();
+                    let (ready, wake) = self.release.as_ref();
+                    let mut released = ready.lock().expect("release mutex");
+                    while !*released {
+                        released = wake.wait(released).expect("release wait");
+                    }
+                    return Err("injected stale defensive read failure".to_string());
+                }
+                verify_staged_file(path, descriptor, content_type)
+            }
+        }
+
+        let root = tempdir().expect("tempdir").keep();
+        let bytes = b"\x89PNG\r\n\x1a\nversion-fence".to_vec();
+        let expected = descriptor(&bytes, "image/png");
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let verifier = Arc::new(OneBlockedFailureVerifier {
+            block_next: std::sync::atomic::AtomicBool::new(false),
+            entered: entered.clone(),
+            release: release.clone(),
+        });
+        let cache = ManagedMediaCache::new_with_verifier(
+            root,
+            "http://127.0.0.1:1234",
+            Arc::new(FixtureFetcher {
+                bytes,
+                content_type: "image/png".to_string(),
+            }),
+            verifier.clone(),
+        )
+        .expect("cache");
+        cache
+            .reconcile_active_catalog("first", vec![expected.clone()])
+            .await
+            .expect("first adoption");
+        for _ in 0..400 {
+            if cache.snapshot().await.1[0].readiness == MediaReadiness::Ready {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        verifier.block_next.store(true, Ordering::SeqCst);
+        let old_read = tokio::spawn({
+            let cache = cache.clone();
+            let digest = expected.digest.clone();
+            async move {
+                cache
+                    .read_ready(&cache.read_grant(), MediaReadMethod::Get, &digest)
+                    .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(1), entered.notified())
+            .await
+            .expect("old defensive read entered verifier");
+        cache
+            .reconcile_active_catalog("republished", vec![expected.clone()])
+            .await
+            .expect("same digest republished while old read is slow");
+        assert_eq!(cache.snapshot().await.1[0].readiness, MediaReadiness::Ready);
+        let (ready, wake) = release.as_ref();
+        *ready.lock().expect("release mutex") = true;
+        wake.notify_all();
+        assert!(matches!(
+            old_read.await.expect("old reader joined"),
+            Err(MediaReadError::NotReady)
+        ));
+        assert_eq!(
+            cache.snapshot().await.1[0].readiness,
+            MediaReadiness::Ready,
+            "an old verifier result must be fenced from the replacement publication"
+        );
+    }
+
+    #[tokio::test]
     async fn replacement_unpins_old_digest_and_cleanup_respects_read_lease() {
         let old_bytes = b"\x89PNG\r\n\x1a\nold".to_vec();
         let old = descriptor(&old_bytes, "image/png");
@@ -2346,9 +2701,15 @@ mod tests {
             .reconcile_active_catalog("empty", vec![])
             .await
             .expect("replacement permits cleanup from high water");
+        for _ in 0..400 {
+            if directory_usage_bytes(&root) <= MEDIA_CACHE_LOW_WATER_BYTES {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
         assert!(
             directory_usage_bytes(&root) <= MEDIA_CACHE_LOW_WATER_BYTES,
-            "scheduled cleanup repeats until low water"
+            "post-commit scheduled cleanup repeats until low water"
         );
         assert!(
             cache.content_path(&descriptors[0].digest).exists(),

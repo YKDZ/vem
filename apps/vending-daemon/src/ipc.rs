@@ -1432,13 +1432,22 @@ async fn refresh_catalog(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
             };
             // Descriptor extraction is intentionally best effort: malformed media
             // degrades its presentation projection and never rejects catalog data.
-            *ctx.ui.status_cache.catalog.write().await = value.clone();
+            // Publishing this revision and reserving its latest-wins token is
+            // one short, memory-only linearization point.  A delayed A route
+            // may therefore never write presentation A, let B register, then
+            // resume and reserve a newer A token for its detached task.
             let catalog = ctx.ui.status_cache.catalog.clone();
             let media_cache = ctx.media_cache.clone();
+            let presentation_catalog = catalog.clone();
+            let (adoption_token, value) = media_cache
+                .register_catalog_adoption_with_presentation(move || async move {
+                    *presentation_catalog.write().await = value.clone();
+                    value
+                })
+                .await;
             // Reserve latest-wins ordering before the task is scheduled.  A
             // delayed older task must not become "new" merely by running
             // after a newer catalog has already been adopted.
-            let adoption_token = media_cache.register_catalog_adoption().await;
             let shutdown = ctx.background_shutdown.clone();
             if let Err(error) = media_cache.clone().spawn_owned_task(async move {
                 if shutdown.is_cancelled() {
@@ -3932,7 +3941,7 @@ mod tests {
     use tower::ServiceExt;
     use wiremock::{
         matchers::{body_json, method, path},
-        Mock, MockServer, ResponseTemplate,
+        Mock, MockServer, Request as WiremockRequest, ResponseTemplate,
     };
 
     use super::*;
@@ -4154,6 +4163,109 @@ mod tests {
                 .unwrap_or_default()
                 .contains(&grant),
             "the startup-only read grant is never persisted with catalog data"
+        );
+    }
+
+    #[tokio::test]
+    async fn legal_absent_warming_and_unavailable_media_are_404_without_fetching() {
+        struct CountingFetcher(Arc<std::sync::atomic::AtomicUsize>);
+
+        #[async_trait]
+        impl crate::managed_media::MediaFetcher for CountingFetcher {
+            async fn fetch_to(
+                &self,
+                _: &crate::managed_media::MediaDescriptor,
+                _: &Path,
+            ) -> Result<crate::managed_media::MediaFetchResult, String> {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err("the public media route must never warm".to_string())
+            }
+        }
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (mut ctx, _) = test_context(
+            temp.path().to_path_buf(),
+            "http://platform.invalid/api".to_string(),
+        )
+        .await;
+        let ready_bytes = b"\x89PNG\r\n\x1a\nunavailable".to_vec();
+        let ready = ready_media_descriptor(&ready_bytes);
+        let warming = ready_media_descriptor(b"\x89PNG\r\n\x1a\nwarming");
+        let cache_root = temp.path().join("public-media-states");
+        std::fs::create_dir_all(&cache_root).expect("media root");
+        std::fs::write(
+            cache_root.join("active-media.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "generation": "public-state-test",
+                "assets": [ready.clone(), warming.clone()],
+            }))
+            .expect("manifest"),
+        )
+        .expect("manifest write");
+        std::fs::write(
+            cache_root.join(format!("{}.bin", &ready.digest[7..])),
+            &ready_bytes,
+        )
+        .expect("ready object");
+        let fetches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let cache = crate::managed_media::ManagedMediaCache::new(
+            cache_root.clone(),
+            "http://127.0.0.1:4312",
+            Arc::new(CountingFetcher(fetches.clone())),
+        )
+        .expect("cache");
+        assert_eq!(
+            cache
+                .snapshot()
+                .await
+                .1
+                .iter()
+                .find(|asset| asset.descriptor.digest == warming.digest)
+                .expect("warming asset")
+                .readiness,
+            crate::managed_media::MediaReadiness::Warming
+        );
+        std::fs::write(
+            cache_root.join(format!("{}.bin", &ready.digest[7..])),
+            b"corrupt",
+        )
+        .expect("corrupt ready object");
+        assert!(matches!(
+            cache
+                .read_ready(
+                    &cache.read_grant(),
+                    crate::managed_media::MediaReadMethod::Get,
+                    &ready.digest
+                )
+                .await,
+            Err(crate::managed_media::MediaReadError::NotReady)
+        ));
+        ctx.media_cache = cache.clone();
+        let grant = cache.read_grant();
+        let absent = format!("sha256:{}", "0".repeat(64));
+        for digest in [&absent, &warming.digest, &ready.digest] {
+            for method in ["GET", "HEAD"] {
+                let response = build_router(ctx.clone())
+                    .oneshot(
+                        Request::builder()
+                            .method(method)
+                            .uri(format!("/media/{digest}?grant={grant}"))
+                            .body(Body::empty())
+                            .expect("public media request"),
+                    )
+                    .await
+                    .expect("public media response");
+                assert_eq!(
+                    response.status(),
+                    StatusCode::NOT_FOUND,
+                    "{method} {digest}"
+                );
+            }
+        }
+        assert_eq!(
+            fetches.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "GET and HEAD are read-only and must not enqueue a warm"
         );
     }
 
@@ -4509,6 +4621,297 @@ mod tests {
         let (ready, wake) = verifier_release.as_ref();
         *ready.lock().expect("release mutex") = true;
         wake.notify_all();
+    }
+
+    #[tokio::test]
+    async fn next_catalog_post_does_not_wait_for_previous_post_commit_cleanup() {
+        struct BlockingCleanup {
+            armed: std::sync::atomic::AtomicBool,
+            entered: Arc<Notify>,
+            release: Arc<Notify>,
+        }
+
+        #[async_trait]
+        impl crate::managed_media::MediaMaintenanceObserver for BlockingCleanup {
+            async fn before_cleanup(&self) {
+                if self.armed.load(std::sync::atomic::Ordering::SeqCst) {
+                    self.entered.notify_one();
+                    self.release.notified().await;
+                }
+            }
+        }
+
+        let server = MockServer::start().await;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (mut ctx, _) = test_context(temp.path().join("daemon"), server.uri()).await;
+        let profile: daemon_ipc_contracts::MachineProvisioningProfile =
+            serde_json::from_value(claim_profile(&server.uri())).expect("profile");
+        ctx.runtime_sources
+            .clean_runtime_configuration()
+            .accept_profile(&profile)
+            .await
+            .expect("accepted profile");
+        ctx.ui
+            .backend
+            .set_access_token_for_tests("catalog-test-token")
+            .await;
+
+        let mut bytes = vec![0; 81_000_000];
+        bytes[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+        let descriptor = ready_media_descriptor(&bytes);
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let observer = Arc::new(BlockingCleanup {
+            armed: std::sync::atomic::AtomicBool::new(false),
+            entered: entered.clone(),
+            release: release.clone(),
+        });
+        let cache = crate::managed_media::ManagedMediaCache::new_with_maintenance_observer(
+            temp.path().join("cleanup-media"),
+            "http://127.0.0.1:4312",
+            Arc::new(ReadyMediaFetcher(bytes)),
+            observer.clone(),
+        )
+        .expect("cache");
+        cache
+            .reconcile_active_catalog("seed", vec![descriptor])
+            .await
+            .expect("seed active media");
+        for _ in 0..2_000 {
+            if cache.snapshot().await.1[0].readiness == crate::managed_media::MediaReadiness::Ready
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            cache.snapshot().await.1[0].readiness,
+            crate::managed_media::MediaReadiness::Ready
+        );
+        observer
+            .armed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        ctx.media_cache = cache.clone();
+        Mock::given(method("GET"))
+            .and(path("/machines/VEM-CLAIM-01/catalog"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": []
+            })))
+            .mount(&server)
+            .await;
+
+        let first = build_router(ctx.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/catalog")
+                    .header(AUTHORIZATION, "Bearer test-token")
+                    .body(Body::empty())
+                    .expect("first request"),
+            )
+            .await
+            .expect("first response");
+        assert_eq!(first.status(), StatusCode::OK);
+        tokio::time::timeout(Duration::from_secs(2), entered.notified())
+            .await
+            .expect("first post-commit cleanup entered");
+
+        let second = tokio::time::timeout(
+            Duration::from_millis(100),
+            build_router(ctx.clone()).oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/catalog")
+                    .header(AUTHORIZATION, "Bearer test-token")
+                    .body(Body::empty())
+                    .expect("second request"),
+            ),
+        )
+        .await
+        .expect("next catalog POST must not wait for old cleanup")
+        .expect("second response");
+        assert_eq!(second.status(), StatusCode::OK);
+        release.notify_waiters();
+        cache.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn catalog_presentation_and_adoption_share_one_router_linearization_point() {
+        struct PresentationBarrier {
+            calls: std::sync::atomic::AtomicUsize,
+            written: Arc<Notify>,
+            release: Arc<Notify>,
+        }
+
+        #[async_trait]
+        impl crate::managed_media::CatalogPresentationObserver for PresentationBarrier {
+            async fn after_presentation_write(&self) {
+                if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    self.written.notify_one();
+                    self.release.notified().await;
+                }
+            }
+        }
+
+        struct PersistBarrier {
+            calls: std::sync::atomic::AtomicUsize,
+            persisted: Arc<Notify>,
+            release: Arc<Notify>,
+        }
+
+        #[async_trait]
+        impl crate::managed_media::ManifestDirectorySync for PersistBarrier {
+            async fn sync(&self, _: &Path) -> Result<(), String> {
+                // A's replacement is already on disk at its second directory
+                // sync; B must still be able to present/register immediately.
+                if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+                    self.persisted.notify_one();
+                    self.release.notified().await;
+                }
+                Ok(())
+            }
+        }
+
+        let server = MockServer::start().await;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (mut ctx, _) = test_context(temp.path().join("daemon"), server.uri()).await;
+        let profile: daemon_ipc_contracts::MachineProvisioningProfile =
+            serde_json::from_value(claim_profile(&server.uri())).expect("profile");
+        ctx.runtime_sources
+            .clean_runtime_configuration()
+            .accept_profile(&profile)
+            .await
+            .expect("accepted profile");
+        ctx.ui
+            .backend
+            .set_access_token_for_tests("catalog-test-token")
+            .await;
+        let a_bytes = b"\x89PNG\r\n\x1a\nrouter-a".to_vec();
+        let b_bytes = b"\x89PNG\r\n\x1a\nrouter-b".to_vec();
+        let a_descriptor = ready_media_descriptor(&a_bytes);
+        let b_descriptor = ready_media_descriptor(&b_bytes);
+        let a_items = serde_json::json!([{
+            "productId": "550e8400-e29b-41d4-a716-446655440301",
+            "variantId": "550e8400-e29b-41d4-a716-446655440302",
+            "name": "catalog A",
+            "coverImageMedia": a_descriptor,
+        }]);
+        let b_items = serde_json::json!([{
+            "productId": "550e8400-e29b-41d4-a716-446655440303",
+            "variantId": "550e8400-e29b-41d4-a716-446655440304",
+            "name": "catalog B",
+            "coverImageMedia": b_descriptor,
+        }]);
+        let catalog_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        Mock::given(method("GET"))
+            .and(path("/machines/VEM-CLAIM-01/catalog"))
+            .respond_with({
+                let catalog_calls = catalog_calls.clone();
+                move |_: &WiremockRequest| {
+                    let items =
+                        if catalog_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                            a_items.clone()
+                        } else {
+                            b_items.clone()
+                        };
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({ "items": items }))
+                }
+            })
+            .mount(&server)
+            .await;
+        let presentation_written = Arc::new(Notify::new());
+        let presentation_release = Arc::new(Notify::new());
+        let persisted = Arc::new(Notify::new());
+        let persist_release = Arc::new(Notify::new());
+        let cache_root = temp.path().join("router-linearization-media");
+        let cache = crate::managed_media::ManagedMediaCache::new_with_manifest_directory_sync_and_catalog_presentation_observer(
+            cache_root.clone(),
+            "http://127.0.0.1:4312",
+            Arc::new(ReadyMediaFetcher(Vec::new())),
+            Arc::new(PersistBarrier {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+                persisted: persisted.clone(),
+                release: persist_release.clone(),
+            }),
+            Arc::new(PresentationBarrier {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+                written: presentation_written.clone(),
+                release: presentation_release.clone(),
+            }),
+        )
+        .expect("cache");
+        ctx.media_cache = cache.clone();
+        let a = tokio::spawn({
+            let ctx = ctx.clone();
+            async move {
+                build_router(ctx)
+                    .oneshot(
+                        Request::builder()
+                            .method("POST")
+                            .uri("/v1/catalog")
+                            .header(AUTHORIZATION, "Bearer test-token")
+                            .body(Body::empty())
+                            .expect("A request"),
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(1), presentation_written.notified())
+            .await
+            .expect("A presentation written before token release");
+        let b = tokio::spawn({
+            let ctx = ctx.clone();
+            async move {
+                build_router(ctx)
+                    .oneshot(
+                        Request::builder()
+                            .method("POST")
+                            .uri("/v1/catalog")
+                            .header(AUTHORIZATION, "Bearer test-token")
+                            .body(Body::empty())
+                            .expect("B request"),
+                    )
+                    .await
+            }
+        });
+        presentation_release.notify_waiters();
+        assert_eq!(
+            a.await.expect("A join").expect("A response").status(),
+            StatusCode::OK
+        );
+        tokio::time::timeout(Duration::from_secs(1), persisted.notified())
+            .await
+            .expect("A manifest replacement paused");
+        assert_eq!(
+            tokio::time::timeout(Duration::from_millis(100), b)
+                .await
+                .expect("B router must not wait for A disk persistence")
+                .expect("B join")
+                .expect("B response")
+                .status(),
+            StatusCode::OK
+        );
+        persist_release.notify_waiters();
+        for _ in 0..400 {
+            let (_, projection) = cache.snapshot().await;
+            if projection.len() == 1 && projection[0].descriptor.digest == b_descriptor.digest {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let (_, projection) = cache.snapshot().await;
+        assert_eq!(projection[0].descriptor.digest, b_descriptor.digest);
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(cache_root.join("active-media.json")).expect("manifest"),
+        )
+        .expect("manifest json");
+        assert_eq!(manifest["assets"][0]["digest"], b_descriptor.digest);
+        assert_eq!(
+            ctx.ui.status_cache.catalog.read().await.items[0]["name"],
+            "catalog B",
+            "the final presentation revision agrees with disk and cache state"
+        );
+        cache.shutdown().await;
     }
 
     #[tokio::test]
