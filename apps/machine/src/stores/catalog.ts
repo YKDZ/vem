@@ -47,12 +47,9 @@ function mediaDiagnosticKeysFor(
 ): Record<string, string> {
   return Object.fromEntries(
     items.flatMap((item) =>
-      ["coverImageUrl", "tryOnSilhouetteUrl"].map((field) => {
+      ["coverImageUrl"].map((field) => {
         const locationKey = `media:${item.slotId}:${field}`;
-        const reference =
-          field === "coverImageUrl"
-            ? item.coverImageUrl
-            : item.tryOnSilhouetteUrl;
+        const reference = item.coverImageUrl;
         return [locationKey, managedMediaDiagnosticKey(locationKey, reference)];
       }),
     ),
@@ -108,7 +105,6 @@ function asCatalogItem(
         size: item.size,
         color: item.color,
         priceCents: item.priceCents,
-        tryOnSilhouetteUrl: item.tryOnSilhouetteUrl ?? null,
         capacity: item.capacity,
         parLevel: item.parLevel,
         physicalStock: item.physicalStock,
@@ -181,7 +177,6 @@ function aggregateVariantCandidates(
         size: representative.size,
         color: representative.color,
         priceCents: representative.priceCents,
-        tryOnSilhouetteUrl: representative.tryOnSilhouetteUrl ?? null,
         capacity,
         parLevel,
         physicalStock,

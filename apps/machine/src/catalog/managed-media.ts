@@ -73,43 +73,6 @@ export function managedMediaDiagnosticKey(
 export function managedMediaDiagnosticLocation(
   diagnosticKey: string,
 ): string | null {
-  const match =
-    /^(media:[^:]+:(?:coverImageUrl|tryOnSilhouetteUrl))(?:$|:)/.exec(
-      diagnosticKey,
-    );
+  const match = /^(media:[^:]+:coverImageUrl)(?:$|:)/.exec(diagnosticKey);
   return match?.[1] ?? null;
-}
-
-export function resolveManagedMediaReference(
-  reference: string | null | undefined,
-  provisionedApiBaseUrl: string,
-): ManagedMediaResolution {
-  if (!reference) {
-    return {
-      url: null,
-      diagnostic: "managed media reference is missing",
-    };
-  }
-  if (!isManagedMediaReference(reference)) {
-    return {
-      url: null,
-      diagnostic: "managed media reference is outside the allowed content path",
-    };
-  }
-
-  try {
-    const origin = new URL(provisionedApiBaseUrl).origin;
-    return { url: new URL(reference, origin).toString(), diagnostic: null };
-  } catch {
-    if (typeof location !== "undefined" && location.origin) {
-      return {
-        url: new URL(reference, location.origin).toString(),
-        diagnostic: null,
-      };
-    }
-    return {
-      url: null,
-      diagnostic: "provisioned API origin is invalid for managed media",
-    };
-  }
 }

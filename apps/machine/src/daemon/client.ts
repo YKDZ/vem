@@ -103,7 +103,7 @@ function normalizeSaleViewManagedMedia(payload: unknown): {
       typeof normalized.slotId === "string"
         ? normalized.slotId
         : `index-${index}`;
-    for (const field of ["coverImageUrl", "tryOnSilhouetteUrl"] as const) {
+    for (const field of ["coverImageUrl"] as const) {
       const reference = normalized[field];
       if (field === "coverImageUrl") {
         const supplied = normalized.coverImageMediaDiagnostic;

@@ -10,8 +10,6 @@ import iconTshirtImage from "@/assets/home/icon-tshirt.png";
 import iconUnderwearImage from "@/assets/home/icon-underwear.png";
 import listSloganImage from "@/assets/home/list-slogan.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
-import tryOnHangerIcon from "@/assets/product/try-on-hanger.svg";
-import { resolveManagedMediaReference } from "@/catalog/managed-media";
 import ManagedMediaImage from "@/components/catalog/ManagedMediaImage.vue";
 import KioskHeader from "@/components/KioskHeader.vue";
 import KioskLayout from "@/layouts/KioskLayout.vue";
@@ -19,7 +17,6 @@ import { recommendVariant } from "@/recommendation/engine";
 import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
-import { useMachineStore } from "@/stores/machine";
 import { useSaleCapabilityStore } from "@/stores/sale-capability";
 import { useVisionStore } from "@/stores/vision";
 import { formatCents } from "@/utils/format";
@@ -33,7 +30,6 @@ type VariantOption = {
 const route = useRoute();
 const catalogStore = useCatalogStore();
 const checkoutStore = useCheckoutStore();
-const machineStore = useMachineStore();
 const visionStore = useVisionStore();
 const saleCapabilityStore = useSaleCapabilityStore();
 const {
@@ -62,15 +58,6 @@ const selectedVariant = computed(
     variantCandidates.value.find(variantIsSaleable) ??
     variantCandidates.value[0] ??
     null,
-);
-const tryOnSilhouetteResolution = computed(() =>
-  resolveManagedMediaReference(
-    selectedVariant.value?.tryOnSilhouetteUrl,
-    machineStore.platformApiBaseUrl ?? "",
-  ),
-);
-const hasTryOnSilhouette = computed(
-  () => tryOnSilhouetteResolution.value.url !== null,
 );
 const selectedConcreteItem = computed(() => {
   const current = item.value;
@@ -279,25 +266,6 @@ async function purchase(): Promise<void> {
     target: { name: "checkout" },
   });
 }
-
-async function enterTryOn(): Promise<void> {
-  const variant = selectedVariant.value;
-  if (
-    !variant ||
-    !hasTryOnSilhouette.value ||
-    visionStore.isTryOnCapabilityDegraded
-  ) {
-    return;
-  }
-  await submitMachineNavigationIntent({
-    type: "customer.navigate",
-    target: {
-      name: "virtual-try-on",
-      params: { catalogKey: catalogKey.value },
-      query: { variantId: variant.variantId },
-    },
-  });
-}
 </script>
 
 <template>
@@ -493,10 +461,7 @@ async function enterTryOn(): Promise<void> {
             </p>
           </section>
 
-          <div
-            class="detail-bottom-bar"
-            :class="{ 'has-try-on': selectedVariant && hasTryOnSilhouette }"
-          >
+          <div class="detail-bottom-bar">
             <button
               class="detail-buy-button kiosk-touch-target"
               type="button"
@@ -508,18 +473,6 @@ async function enterTryOn(): Promise<void> {
               @click="purchase"
             >
               {{ canBuy ? `立即购买 ${priceText}` : "该规格暂不可购买" }}
-            </button>
-            <button
-              v-if="selectedVariant && hasTryOnSilhouette"
-              class="try-on-button kiosk-touch-target"
-              type="button"
-              data-test="try-on-entry"
-              :disabled="visionStore.isTryOnCapabilityDegraded"
-              aria-label="虚拟试穿"
-              title="虚拟试穿"
-              @click="enterTryOn"
-            >
-              <img :src="tryOnHangerIcon" alt="" aria-hidden="true" />
             </button>
           </div>
         </section>
@@ -907,29 +860,6 @@ async function enterTryOn(): Promise<void> {
   font-size: 1.4rem;
 }
 
-.try-on-button {
-  display: grid;
-  width: 70px;
-  height: 70px;
-  place-items: center;
-  border: 1px solid rgba(154, 91, 101, 0.72);
-  border-radius: 8px;
-  background: #a76570;
-  box-shadow: 0 14px 24px rgba(126, 68, 78, 0.2);
-}
-
-.try-on-button img {
-  width: 38px;
-  height: 38px;
-  object-fit: contain;
-  filter: brightness(0) invert(1);
-}
-
-.try-on-button:disabled {
-  background: rgba(172, 170, 153, 0.65);
-  box-shadow: none;
-}
-
 .detail-mascot {
   position: absolute;
   bottom: 0.72rem;
@@ -946,10 +876,6 @@ async function enterTryOn(): Promise<void> {
   grid-template-columns: minmax(0, 1fr);
   gap: 0.8rem;
   margin-top: 1.85rem;
-}
-
-.detail-bottom-bar.has-try-on {
-  grid-template-columns: minmax(0, 1fr) auto;
 }
 
 .detail-buy-button {
@@ -1171,16 +1097,6 @@ async function enterTryOn(): Promise<void> {
     padding-right: 0.2rem;
   }
 
-  .try-on-button {
-    width: 56px;
-    height: 56px;
-  }
-
-  .try-on-button img {
-    width: 30px;
-    height: 30px;
-  }
-
   .detail-mascot {
     bottom: 0.6rem;
     left: 0.35rem;
@@ -1192,10 +1108,6 @@ async function enterTryOn(): Promise<void> {
   .detail-bottom-bar {
     min-height: 58px;
     gap: 0.55rem;
-  }
-
-  .detail-bottom-bar.has-try-on {
-    grid-template-columns: minmax(130px, 180px) auto;
   }
 
   .detail-buy-button {
