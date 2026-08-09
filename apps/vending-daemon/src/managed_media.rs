@@ -19,6 +19,8 @@ use tokio::sync::Mutex;
 
 const MAX_MEDIA_OBJECT_BYTES: u64 = 5_000_000;
 const MAX_MEDIA_OBJECTS: usize = 256;
+const MAX_MEDIA_CACHE_BYTES: u64 = 100_000_000;
+const MEDIA_CACHE_RESERVED_BYTES: u64 = 5_000_000;
 const CLEANUP_BATCH_SIZE: usize = 32;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -221,7 +223,7 @@ impl ManagedMediaCache {
     pub async fn reconcile_active_catalog(
         &self,
         generation: impl Into<String>,
-        descriptors: Vec<ManagedMediaDescriptor>,
+        mut descriptors: Vec<ManagedMediaDescriptor>,
     ) {
         let generation = generation.into();
         let mut state = self.state.lock().await;
@@ -234,9 +236,25 @@ impl ManagedMediaCache {
                 (digest, entry)
             })
             .collect::<HashMap<_, _>>();
-        for descriptor in descriptors.into_iter().take(MAX_MEDIA_OBJECTS) {
+        descriptors.sort_by(|left, right| {
+            (&left.digest, &left.id, &left.reference).cmp(&(
+                &right.digest,
+                &right.id,
+                &right.reference,
+            ))
+        });
+        let mut remaining_bytes = MAX_MEDIA_CACHE_BYTES.saturating_sub(MEDIA_CACHE_RESERVED_BYTES);
+        for (index, descriptor) in descriptors.into_iter().enumerate() {
             let digest = descriptor.digest.clone();
-            let validation = validate_descriptor(&descriptor);
+            let capacity_error = if index >= MAX_MEDIA_OBJECTS {
+                Some("managed media cache object limit exceeded".to_string())
+            } else if descriptor.byte_size > remaining_bytes {
+                Some("managed media cache byte budget exceeded".to_string())
+            } else {
+                remaining_bytes = remaining_bytes.saturating_sub(descriptor.byte_size);
+                None
+            };
+            let validation = validate_descriptor(&descriptor).or(capacity_error);
             let published = validation.is_none() && self.published_and_valid(&descriptor);
             if let Some(mut entry) = entries.remove(&digest) {
                 // Reconciliation of an unchanged digest must not discard a
@@ -913,6 +931,38 @@ mod tests {
             .await
             .expect("offline read");
         assert_eq!(lease.bytes, b"\x89PNG\r\n\x1a\noffline-ready");
+    }
+
+    #[tokio::test]
+    async fn corrupt_manifest_never_revives_an_old_cached_digest() {
+        let root = tempdir().expect("tempdir").keep();
+        let bytes = b"\x89PNG\r\n\x1a\nold".to_vec();
+        let old = descriptor(&bytes, "image/png");
+        fs::write(
+            root.join(format!("{}.bin", object_key(&old.digest))),
+            &bytes,
+        )
+        .expect("old object");
+        fs::write(root.join("active-media.json"), b"{not valid JSON").expect("corrupt manifest");
+        let cache = ManagedMediaCache::new(
+            root,
+            "http://127.0.0.1:1234",
+            Arc::new(FixtureFetcher {
+                media: MediaBytes {
+                    bytes,
+                    content_type: "image/png".to_string(),
+                },
+            }),
+        )
+        .expect("cache");
+
+        assert!(cache.snapshot().await.1.is_empty());
+        assert!(matches!(
+            cache
+                .read_ready(&cache.read_grant(), MediaReadMethod::Get, &old.digest)
+                .await,
+            Err(MediaReadError::NotFound)
+        ));
     }
 
     #[tokio::test]

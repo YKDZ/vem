@@ -3782,6 +3782,7 @@ fn error_response(
 #[cfg(test)]
 mod tests {
     use crate::state::store::{MachinePlanogramSlotInput, StockMovementInput};
+    use async_trait::async_trait;
     use axum::{
         body::Body,
         http::{Request, StatusCode},
@@ -3793,6 +3794,147 @@ mod tests {
     };
 
     use super::*;
+
+    #[derive(Clone)]
+    struct ReadyMediaFetcher(Vec<u8>);
+
+    #[async_trait]
+    impl crate::managed_media::MediaFetcher for ReadyMediaFetcher {
+        async fn fetch(
+            &self,
+            _: &crate::managed_media::ManagedMediaDescriptor,
+        ) -> Result<crate::managed_media::MediaBytes, String> {
+            Ok(crate::managed_media::MediaBytes {
+                bytes: self.0.clone(),
+                content_type: "image/png".to_string(),
+            })
+        }
+    }
+
+    fn ready_media_descriptor(bytes: &[u8]) -> crate::managed_media::ManagedMediaDescriptor {
+        crate::managed_media::ManagedMediaDescriptor {
+            id: "550e8400-e29b-41d4-a716-446655440124".to_string(),
+            reference: "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content".to_string(),
+            digest: format!("sha256:{:x}", sha2::Sha256::digest(bytes)),
+            content_type: "image/png".to_string(),
+            byte_size: bytes.len() as u64,
+            purpose: "product_display_image".to_string(),
+            revision: crate::managed_media::ManagedMediaRevision {
+                catalog_revision: "test-generation".to_string(),
+                asset_revision: None,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn media_router_keeps_startup_grant_separate_and_serves_only_ready_get_or_head() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (mut ctx, _) = test_context(
+            temp.path().to_path_buf(),
+            "http://platform.invalid/api".to_string(),
+        )
+        .await;
+        let bytes = b"\x89PNG\r\n\x1a\nrouter".to_vec();
+        let descriptor = ready_media_descriptor(&bytes);
+        let cache = crate::managed_media::ManagedMediaCache::new(
+            temp.path().join("router-media"),
+            "http://127.0.0.1:4312",
+            Arc::new(ReadyMediaFetcher(bytes.clone())),
+        )
+        .expect("cache");
+        cache
+            .reconcile_active_catalog("test-generation", vec![descriptor.clone()])
+            .await;
+        for _ in 0..20 {
+            if cache.snapshot().await.1[0].readiness == crate::managed_media::MediaReadiness::Ready
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let grant = cache.read_grant();
+        ctx.media_cache = cache;
+        let uri = format!("/media/{}?grant={grant}", descriptor.digest);
+
+        let get = build_router(ctx.clone())
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(&uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(get.status(), StatusCode::OK);
+        assert_eq!(get.headers().get(CONTENT_TYPE).unwrap(), "image/png");
+        assert_eq!(
+            get.headers().get("content-length").unwrap(),
+            bytes.len().to_string().as_str()
+        );
+        assert_eq!(
+            axum::body::to_bytes(get.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+            bytes
+        );
+
+        let head = build_router(ctx.clone())
+            .oneshot(
+                Request::builder()
+                    .method("HEAD")
+                    .uri(&uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(head.status(), StatusCode::OK);
+        assert!(axum::body::to_bytes(head.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .is_empty());
+        for invalid in [
+            Request::builder()
+                .method("GET")
+                .uri(format!("/media/{}", descriptor.digest))
+                .body(Body::empty())
+                .unwrap(),
+            Request::builder()
+                .method("POST")
+                .uri(&uri)
+                .body(Body::empty())
+                .unwrap(),
+            Request::builder()
+                .method("GET")
+                .uri("/media/sha256:../secret?grant=nope")
+                .body(Body::empty())
+                .unwrap(),
+            Request::builder()
+                .method("GET")
+                .uri("/media/sha256:missing?grant=nope")
+                .body(Body::empty())
+                .unwrap(),
+        ] {
+            let response = build_router(ctx.clone()).oneshot(invalid).await.unwrap();
+            assert!(matches!(
+                response.status(),
+                StatusCode::FORBIDDEN | StatusCode::METHOD_NOT_ALLOWED | StatusCode::NOT_FOUND
+            ));
+        }
+        let snapshot = build_router(ctx)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/media/snapshot")
+                    .header(AUTHORIZATION, "Bearer test-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(snapshot.status(), StatusCode::OK);
+    }
 
     #[test]
     fn local_environment_control_request_reuses_environment_validation() {
