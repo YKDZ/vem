@@ -1,5 +1,8 @@
 import { expect, type Locator, type Page, test } from "@playwright/test";
-import { tryOnGarmentResponseSchema } from "@vem/shared";
+import {
+  adminProductVariantResponseSchema,
+  tryOnGarmentResponseSchema,
+} from "@vem/shared";
 import { deflateSync } from "node:zlib";
 
 import { installAdminBrowserContractMonitor } from "./support/admin-browser-contract";
@@ -37,7 +40,7 @@ async function createProductVariant(
   row: Locator,
   sku: string,
   size: string,
-): Promise<void> {
+): Promise<ReturnType<typeof adminProductVariantResponseSchema.parse>> {
   await row.getByRole("button", { name: "SKU" }).click();
   const drawer = page.locator(".ant-drawer").filter({ hasText: "SKU 列表" });
   await drawer.getByRole("button", { name: /新增 SKU/ }).click();
@@ -45,7 +48,7 @@ async function createProductVariant(
   await formItem(modal, "SKU").locator("input").fill(sku);
   await formItem(modal, "尺码").locator("input").fill(size);
   await formItem(modal, "售价(分)").locator("input").fill("1000");
-  await Promise.all([
+  const [response] = await Promise.all([
     page.waitForResponse(
       (response) =>
         response.url().endsWith("/api/product-variants") &&
@@ -53,8 +56,12 @@ async function createProductVariant(
     ),
     modal.locator(".ant-btn-primary").click(),
   ]);
+  const variant = adminProductVariantResponseSchema.parse(
+    (await response.json()).data,
+  );
   await expect(modal).toBeHidden();
   await page.keyboard.press("Escape");
+  return variant;
 }
 
 test.describe("Try-On Garment Admin UI contract", () => {
@@ -72,8 +79,19 @@ test.describe("Try-On Garment Admin UI contract", () => {
     await createProduct(page, productName);
 
     const row = page.locator(".ant-table-row").filter({ hasText: productName });
-    await createProductVariant(page, row, `TRY-ON-S-${unique}`, "S");
-    await createProductVariant(page, row, `TRY-ON-L-${unique}`, "L");
+    const smallVariant = await createProductVariant(
+      page,
+      row,
+      `TRY-ON-S-${unique}`,
+      "S",
+    );
+    const largeVariant = await createProductVariant(
+      page,
+      row,
+      `TRY-ON-L-${unique}`,
+      "L",
+    );
+    const associatedVariantIds = [smallVariant.id, largeVariant.id].sort();
     await row.getByRole("button", { name: "新增试衣源" }).click();
     const modal = page
       .locator(".ant-modal")
@@ -166,6 +184,9 @@ test.describe("Try-On Garment Admin UI contract", () => {
       (await nonEmptyAssociation.json()).data,
     );
     expect(associatedDraft.associatedVariantIds).toHaveLength(2);
+    expect([...associatedDraft.associatedVariantIds].sort()).toEqual(
+      associatedVariantIds,
+    );
 
     // Closing or refreshing the operator surface must not discard the shared
     // source identity.  Reopen it from the product, then exercise the
@@ -246,13 +267,26 @@ test.describe("Try-On Garment Admin UI contract", () => {
     ]);
     expect(replacementUpload.ok()).toBe(true);
     expect(replacementPatch.ok()).toBe(true);
-    expect(
-      tryOnGarmentResponseSchema.parse((await replacementPatch.json()).data),
-    ).toMatchObject({
+    const replacedGarment = tryOnGarmentResponseSchema.parse(
+      (await replacementPatch.json()).data,
+    );
+    expect(replacedGarment).toMatchObject({
       template: "tshirt_long_sleeve",
-      associatedVariantIds: associatedDraft.associatedVariantIds,
     });
-    await Promise.all([
+    expect(replacedGarment.sourceMediaAsset.id).not.toBe(
+      draft.sourceMediaAsset.id,
+    );
+    expect(replacedGarment.associatedVariantIds).toHaveLength(2);
+    expect([...replacedGarment.associatedVariantIds].sort()).toEqual(
+      associatedVariantIds,
+    );
+    await restoredModal
+      .getByRole("checkbox", { name: `TRY-ON-S-${unique}` })
+      .uncheck();
+    await restoredModal
+      .getByRole("checkbox", { name: `TRY-ON-L-${unique}` })
+      .uncheck();
+    const [emptyAssociation] = await Promise.all([
       page.waitForResponse(
         (response) =>
           response
@@ -263,6 +297,11 @@ test.describe("Try-On Garment Admin UI contract", () => {
       ),
       restoredModal.getByRole("button", { name: "保存共享尺码关联" }).click(),
     ]);
+    const emptiedGarment = tryOnGarmentResponseSchema.parse(
+      (await emptyAssociation.json()).data,
+    );
+    expect(emptiedGarment.associatedVariantIds).toHaveLength(0);
+    expect([...emptiedGarment.associatedVariantIds].sort()).toEqual([]);
     await formItem(restoredModal, "已有试衣源").getByRole("combobox").click();
     await page.getByText("新建试衣源", { exact: true }).last().click();
     await expect(
@@ -297,6 +336,9 @@ test.describe("Try-On Garment Admin UI contract", () => {
     await expect(
       formItem(restoredModal, "可见颜色").locator("input"),
     ).toHaveValue("海军蓝");
+    await expect(
+      restoredModal.getByAltText("Try-On Garment 来源预览"),
+    ).toHaveAttribute("src", new RegExp(replacedGarment.sourceMediaAsset.id));
     await formItem(restoredModal, "已有试衣源").getByRole("combobox").click();
     await page.getByText("珊瑚红 · draft", { exact: true }).last().click();
     await expect(

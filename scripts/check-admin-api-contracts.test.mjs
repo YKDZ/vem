@@ -153,10 +153,15 @@ describe("admin api contract guard", () => {
     const rawBypass = completeCatalogContractFixture();
     rawBypass["apps/admin-ui/src/api/try-on-garments.ts"] = rawBypass[
       "apps/admin-ui/src/api/try-on-garments.ts"
-    ].replace(
-      "return await callAdminEndpointContract(adminGetTryOnGarmentContract, {",
-      'await get("/try-on-garments/raw");\n  await put("/try-on-garments/raw", {});\n  return await callAdminEndpointContract(adminGetTryOnGarmentContract, {',
-    );
+    ]
+      .replace(
+        'import { callAdminEndpointContract } from "./request";',
+        'import { callAdminEndpointContract, get as rawGet, put as rawPut } from "./request";',
+      )
+      .replace(
+        "return await callAdminEndpointContract(adminGetTryOnGarmentContract, {",
+        'await rawGet("/try-on-garments/raw");\n  await rawPut("/try-on-garments/raw", {});\n  return await callAdminEndpointContract(adminGetTryOnGarmentContract, {',
+      );
     withFixture(rawBypass, (root) => {
       const result = checkAdminApiContracts({ root });
       assert.equal(result.ok, false);
@@ -167,6 +172,94 @@ describe("admin api contract guard", () => {
       assert.doesNotMatch(
         result.failures.join("\n"),
         /caller missing: adminGetTryOnGarmentContract/,
+      );
+    });
+  });
+
+  it("resolves request helper aliases and namespace imports without mistaking local names for network calls", () => {
+    const namedAlias = completeCatalogContractFixture();
+    namedAlias["apps/admin-ui/src/api/try-on-garments.ts"] = namedAlias[
+      "apps/admin-ui/src/api/try-on-garments.ts"
+    ]
+      .replace(
+        'import { callAdminEndpointContract } from "./request";',
+        'import { callAdminEndpointContract as callContract } from "./request";',
+      )
+      .replaceAll("callAdminEndpointContract(", "callContract(");
+    withFixture(namedAlias, (root) => {
+      const result = checkAdminApiContracts({ root });
+      assert.equal(result.ok, true, result.failures.join("\n"));
+    });
+
+    const namespaceAlias = completeCatalogContractFixture();
+    namespaceAlias["apps/admin-ui/src/api/try-on-garments.ts"] = namespaceAlias[
+      "apps/admin-ui/src/api/try-on-garments.ts"
+    ]
+      .replace(
+        'import { callAdminEndpointContract } from "./request";',
+        'import * as requestApi from "./request";',
+      )
+      .replaceAll(
+        "callAdminEndpointContract(",
+        "requestApi.callAdminEndpointContract(",
+      );
+    withFixture(namespaceAlias, (root) => {
+      const result = checkAdminApiContracts({ root });
+      assert.equal(result.ok, true, result.failures.join("\n"));
+    });
+
+    const localGet = completeCatalogContractFixture();
+    localGet["apps/admin-ui/src/api/try-on-garments.ts"] = localGet[
+      "apps/admin-ui/src/api/try-on-garments.ts"
+    ]
+      .replace(
+        "return await callAdminEndpointContract(adminGetTryOnGarmentContract, {",
+        'await get("only-local");\n  return await callAdminEndpointContract(adminGetTryOnGarmentContract, {',
+      )
+      .concat("\nasync function get(_value: string): Promise<void> {}\n");
+    withFixture(localGet, (root) => {
+      const result = checkAdminApiContracts({ root });
+      assert.equal(result.ok, true, result.failures.join("\n"));
+    });
+  });
+
+  it("rejects every request helper imported from request beside a valid contract decoy", () => {
+    const allBypasses = completeCatalogContractFixture();
+    allBypasses["apps/admin-ui/src/api/try-on-garments.ts"] = allBypasses[
+      "apps/admin-ui/src/api/try-on-garments.ts"
+    ]
+      .replace(
+        'import { callAdminEndpointContract } from "./request";',
+        'import * as requestApi from "./request";',
+      )
+      .replaceAll(
+        "callAdminEndpointContract(",
+        "requestApi.callAdminEndpointContract(",
+      )
+      .replace(
+        "return await requestApi.callAdminEndpointContract(adminGetTryOnGarmentContract, {",
+        `await requestApi.get("/raw");
+  await requestApi.post("/raw", {});
+  await requestApi.put("/raw", {});
+  await requestApi.patch("/raw", {});
+  await requestApi.delete("/raw");
+  await requestApi.getContract("/raw");
+  await requestApi.postContract("/raw", {}, {}, {});
+  await requestApi.putContract("/raw", {}, {}, {});
+  await requestApi.patchContract("/raw", {}, {}, {});
+  await requestApi.postResponseContract("/raw", {}, {});
+  return await requestApi.callAdminEndpointContract(adminGetTryOnGarmentContract, {`,
+      );
+    withFixture(allBypasses, (root) => {
+      const result = checkAdminApiContracts({ root });
+      assert.equal(result.ok, false);
+      assert.match(
+        result.failures.join("\n"),
+        /caller raw helper bypass: adminGetTryOnGarmentContract uses get, post, put, patch, delete, getContract, postContract, putContract, patchContract, postResponseContract/,
+      );
+      assert.match(
+        result.failures.join("\n"),
+        /caller ambiguous: adminGetTryOnGarmentContract/,
       );
     });
   });

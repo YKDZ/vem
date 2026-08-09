@@ -18,6 +18,18 @@ const CONTRACT_WRITE_HELPERS = new Set([
   "callAdminEndpointContract",
 ]);
 const RAW_ADMIN_HELPERS = new Set(["get", "post", "put", "patch", "delete"]);
+const LEGACY_CONTRACT_HELPERS = new Set([
+  "getContract",
+  "postContract",
+  "putContract",
+  "patchContract",
+  "postResponseContract",
+]);
+const REQUEST_HELPERS = new Set([
+  ...RAW_ADMIN_HELPERS,
+  ...LEGACY_CONTRACT_HELPERS,
+  "callAdminEndpointContract",
+]);
 const WRITE_CALL_PATTERN =
   /\b(?:post|patch|postContract|patchContract|postResponseContract|callAdminEndpointContract)\s*(?:<[\s\S]*?>)?\s*\(/;
 const BROAD_TYPE_PATTERN = /\b(?:Record\s*<\s*string\s*,\s*unknown\s*>|any)\b/;
@@ -239,6 +251,9 @@ const TRY_ON_CONTRACT_NAMES = [
   "adminTryOnGarmentAssociationContract",
   "adminTryOnGarmentSourceReplacementContract",
 ];
+const PRODUCT_CATALOG_CONTRACT_NAMES = new Set(
+  TRY_ON_CONTRACT_NAMES.slice(0, 7),
+);
 
 const TRY_ON_CONTRACT_EXPECTATIONS = {
   adminProductDisplayImageUploadContract: {
@@ -616,12 +631,51 @@ function registeredControllers(root) {
   return registered;
 }
 
-function contractCalls(root) {
+function requestImportBindings(file) {
+  const named = new Map();
+  const namespaces = new Set();
+  file.forEachChild((node) => {
+    if (
+      !ts.isImportDeclaration(node) ||
+      !ts.isStringLiteral(node.moduleSpecifier) ||
+      node.moduleSpecifier.text !== "./request" ||
+      !node.importClause?.namedBindings
+    ) {
+      return;
+    }
+    const bindings = node.importClause.namedBindings;
+    if (ts.isNamespaceImport(bindings)) {
+      namespaces.add(bindings.name.text);
+      return;
+    }
+    for (const element of bindings.elements) {
+      named.set(
+        element.name.text,
+        element.propertyName?.text ?? element.name.text,
+      );
+    }
+  });
+  return { named, namespaces };
+}
+
+function requestHelperName(expression, bindings) {
+  if (ts.isIdentifier(expression)) return bindings.named.get(expression.text);
+  if (
+    ts.isPropertyAccessExpression(expression) &&
+    ts.isIdentifier(expression.expression) &&
+    bindings.namespaces.has(expression.expression.text)
+  ) {
+    return expression.name.text;
+  }
+  return undefined;
+}
+
+function requestHelperCalls(root) {
   const calls = [];
   for (const path of listFiles(root, ADMIN_API_DIRECTORY)) {
     if (path.endsWith(".spec.ts")) continue;
-    const source = readText(root, path);
-    const file = parseTypeScript(path, source);
+    const file = parseTypeScript(path, readText(root, path));
+    const bindings = requestImportBindings(file);
     const visit = (node, enclosingFunction) => {
       let currentFunction = enclosingFunction;
       if (
@@ -633,16 +687,20 @@ function contractCalls(root) {
       }
       if (
         ts.isCallExpression(node) &&
-        ts.isIdentifier(node.expression) &&
-        node.expression.text === "callAdminEndpointContract" &&
-        node.arguments.length > 0 &&
-        ts.isIdentifier(node.arguments[0]) &&
+        REQUEST_HELPERS.has(requestHelperName(node.expression, bindings)) &&
         !isStaticallyDead(node)
       ) {
         calls.push({
           path,
           method: currentFunction,
-          contract: node.arguments[0].text,
+          helper: requestHelperName(node.expression, bindings),
+          contract:
+            requestHelperName(node.expression, bindings) ===
+              "callAdminEndpointContract" &&
+            node.arguments.length > 0 &&
+            ts.isIdentifier(node.arguments[0])
+              ? node.arguments[0].text
+              : undefined,
         });
       }
       ts.forEachChild(node, (child) => visit(child, currentFunction));
@@ -652,39 +710,16 @@ function contractCalls(root) {
   return calls;
 }
 
-/** Parse, rather than regex-scan, raw request helpers so a valid contract call
- * in the same function cannot camouflage a bypass. */
+function contractCalls(root) {
+  return requestHelperCalls(root).filter(
+    (call) => call.helper === "callAdminEndpointContract" && call.contract,
+  );
+}
+
 function rawAdminHelperCalls(root) {
-  const calls = [];
-  for (const path of listFiles(root, ADMIN_API_DIRECTORY)) {
-    if (path.endsWith(".spec.ts")) continue;
-    const file = parseTypeScript(path, readText(root, path));
-    const visit = (node, enclosingFunction) => {
-      let currentFunction = enclosingFunction;
-      if (
-        (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node)) &&
-        node.name &&
-        ts.isIdentifier(node.name)
-      ) {
-        currentFunction = node.name.text;
-      }
-      if (
-        ts.isCallExpression(node) &&
-        ts.isIdentifier(node.expression) &&
-        RAW_ADMIN_HELPERS.has(node.expression.text) &&
-        !isStaticallyDead(node)
-      ) {
-        calls.push({
-          path,
-          method: currentFunction,
-          helper: node.expression.text,
-        });
-      }
-      ts.forEachChild(node, (child) => visit(child, currentFunction));
-    };
-    visit(file, undefined);
-  }
-  return calls;
+  return requestHelperCalls(root).filter(
+    (call) => call.helper !== "callAdminEndpointContract",
+  );
 }
 
 function isStaticallyDead(node) {
@@ -741,8 +776,10 @@ function checkTryOnContractCoverage(root) {
     "AdminEndpointContract",
   );
   const registered = registeredControllers(root);
-  const callers = contractCalls(root);
-  const rawCalls = rawAdminHelperCalls(root);
+  const requestCalls = requestHelperCalls(root);
+  const callers = requestCalls.filter(
+    (call) => call.helper === "callAdminEndpointContract" && call.contract,
+  );
   const callerHits = [];
   const providerHits = [];
 
@@ -821,25 +858,32 @@ function checkTryOnContractCoverage(root) {
       }
     }
 
-    const callerContractCalls = callers.filter((candidate) =>
-      expected.callerMethods.includes(candidate.method),
+    const callerPath = PRODUCT_CATALOG_CONTRACT_NAMES.has(name)
+      ? "apps/admin-ui/src/api/products.ts"
+      : "apps/admin-ui/src/api/try-on-garments.ts";
+    const callerNetworkCalls = requestCalls.filter(
+      (candidate) =>
+        candidate.path === callerPath &&
+        expected.callerMethods.includes(candidate.method),
     );
-    const matchingCalls = callerContractCalls.filter(
-      (candidate) => candidate.contract === name,
+    const matchingCalls = callerNetworkCalls.filter(
+      (candidate) =>
+        candidate.helper === "callAdminEndpointContract" &&
+        candidate.contract === name,
     );
     if (matchingCalls.length === 0) {
       failures.push(`try-on endpoint contract caller missing: ${name}`);
-    } else if (matchingCalls.length !== 1) {
+    } else if (matchingCalls.length !== 1 || callerNetworkCalls.length !== 1) {
       failures.push(`try-on endpoint contract caller ambiguous: ${name}`);
     } else if (
-      callerContractCalls.some((candidate) => candidate.contract !== name)
+      callerNetworkCalls.some((candidate) => candidate.contract !== name)
     ) {
       failures.push(`try-on endpoint contract caller identity drift: ${name}`);
     } else {
       callerHits.push(name);
     }
-    const rawBypasses = rawCalls.filter((candidate) =>
-      expected.callerMethods.includes(candidate.method),
+    const rawBypasses = callerNetworkCalls.filter(
+      (candidate) => candidate.helper !== "callAdminEndpointContract",
     );
     if (rawBypasses.length > 0) {
       failures.push(

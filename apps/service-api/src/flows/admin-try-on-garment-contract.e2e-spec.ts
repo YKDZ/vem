@@ -980,6 +980,129 @@ describe("admin-try-on-garment-contract.e2e", { concurrent: false }, () => {
     }
   }, 60_000);
 
+  it.each(["confirm", "activate", "retire"] as const)(
+    "returns the source committed after its %s pre-read",
+    async (action) => {
+      const token = await loginAndGetToken(api, appConfig);
+      const auth = { Authorization: `Bearer ${token}` };
+      const product = await api
+        .post("/api/products")
+        .set(auth)
+        .send({
+          name: `生命周期来源快照-${action}`,
+          status: "draft",
+          sortOrder: 0,
+        })
+        .expect(201);
+      const productId = (product.body as ApiResponse<{ id: string }>).data.id;
+      const upload = async (name: string) => {
+        const response = await api
+          .post(`/api${adminTryOnGarmentUploadContract.path}`)
+          .set(auth)
+          .attach("file", rgbaPng(768, 1024, 0), {
+            filename: name,
+            contentType: "image/png",
+          })
+          .expect(201);
+        return adminTryOnGarmentUploadContract.responseSchema.parse(
+          (response.body as ApiResponse<unknown>).data,
+        );
+      };
+      const sourceA = await upload(`${action}-a.png`);
+      const created = await api
+        .post(`/api${adminCreateTryOnGarmentContract.path}`)
+        .set(auth)
+        .send({
+          productId,
+          colorLabel: "黑色",
+          sourceMediaAssetId: sourceA.id,
+          template: "tshirt_short_sleeve",
+        })
+        .expect(201);
+      const garment = adminCreateTryOnGarmentContract.responseSchema.parse(
+        (created.body as ApiResponse<unknown>).data,
+      );
+      const confirmationPath = `/api${adminTryOnGarmentConfirmationContract.path.replace(":id", garment.id)}`;
+      const activationPath = `/api${adminTryOnGarmentActivationContract.path.replace(":id", garment.id)}`;
+      const retirementPath = `/api${adminTryOnGarmentRetirementContract.path.replace(":id", garment.id)}`;
+      if (action !== "confirm") {
+        await api.post(confirmationPath).set(auth).send({}).expect(201);
+      }
+      if (action === "retire") {
+        await api.post(activationPath).set(auth).send({}).expect(201);
+      }
+      const path =
+        action === "confirm"
+          ? confirmationPath
+          : action === "activate"
+            ? activationPath
+            : retirementPath;
+      const expectedStatus =
+        action === "confirm"
+          ? "draft"
+          : action === "activate"
+            ? "active"
+            : "retired";
+      const service = app.get(TryOnGarmentsService);
+      const originalGetById = service.getById.bind(service);
+      const preRead = deferred<void>();
+      const resume = deferred<void>();
+      let pauseOnce = true;
+      const getById = vi
+        .spyOn(service, "getById")
+        .mockImplementation(async (id) => {
+          const current = await originalGetById(id);
+          if (pauseOnce) {
+            pauseOnce = false;
+            preRead.resolve();
+            await resume.promise;
+          }
+          return current;
+        });
+      try {
+        const lifecycle = api
+          .post(path)
+          .set(auth)
+          .send({})
+          .then((response) => response);
+        await preRead.promise;
+        const sourceB = await upload(`${action}-b.png`);
+        await api
+          .patch(
+            `/api${adminTryOnGarmentSourceReplacementContract.path.replace(":id", garment.id)}`,
+          )
+          .set(auth)
+          .send({
+            sourceMediaAssetId: sourceB.id,
+            template: "tshirt_long_sleeve",
+          })
+          .expect(200);
+        resume.resolve();
+        const response = await lifecycle;
+        expect(response.status).toBe(201);
+        expect((response.body as ApiResponse<unknown>).data).toMatchObject({
+          status: expectedStatus,
+          sourceMediaAsset: { id: sourceB.id },
+          template: "tshirt_long_sleeve",
+        });
+        const finalState = await api
+          .get(
+            `/api${adminGetTryOnGarmentContract.path.replace(":id", garment.id)}`,
+          )
+          .set(auth)
+          .expect(200);
+        expect((finalState.body as ApiResponse<unknown>).data).toMatchObject({
+          status: expectedStatus,
+          sourceMediaAsset: { id: sourceB.id },
+          template: "tshirt_long_sleeve",
+        });
+      } finally {
+        getById.mockRestore();
+      }
+    },
+    60_000,
+  );
+
   it("caps a product at 256 garments, including concurrent final creates", async () => {
     const token = await loginAndGetToken(api, appConfig);
     const auth = { Authorization: `Bearer ${token}` };

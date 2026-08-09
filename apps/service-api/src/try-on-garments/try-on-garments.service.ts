@@ -192,19 +192,9 @@ export class TryOnGarmentsService {
         },
         tx,
       );
-      return {
-        garment: confirmed,
-        associatedVariantIds: await this.readAssociatedVariantIds(
-          confirmed.id,
-          tx,
-        ),
-      };
+      return await this.readTransactionalSnapshot(confirmed, tx);
     });
-    return toTryOnGarmentResponse(
-      updated.garment,
-      garment.sourceMediaAsset,
-      updated.associatedVariantIds,
-    );
+    return updated;
   }
 
   async activate(
@@ -244,13 +234,7 @@ export class TryOnGarmentsService {
         },
         tx,
       );
-      return {
-        garment: active,
-        associatedVariantIds: await this.readAssociatedVariantIds(
-          active.id,
-          tx,
-        ),
-      };
+      return await this.readTransactionalSnapshot(active, tx);
     });
     if (!updated) {
       const latest = await this.getById(id);
@@ -260,11 +244,7 @@ export class TryOnGarmentsService {
       }
       throw new BadRequestException("TRY_ON_GARMENT_ACTIVATION_INVALID");
     }
-    return toTryOnGarmentResponse(
-      updated.garment,
-      garment.sourceMediaAsset,
-      updated.associatedVariantIds,
-    );
+    return updated;
   }
 
   async retire(id: string, adminUserId: string): Promise<TryOnGarmentResponse> {
@@ -300,24 +280,14 @@ export class TryOnGarmentsService {
         },
         tx,
       );
-      return {
-        garment: retired,
-        associatedVariantIds: await this.readAssociatedVariantIds(
-          retired.id,
-          tx,
-        ),
-      };
+      return await this.readTransactionalSnapshot(retired, tx);
     });
     if (!updated) {
       const latest = await this.getById(id);
       if (latest.status === "retired") return latest;
       throw new BadRequestException("TRY_ON_GARMENT_RETIREMENT_INVALID");
     }
-    return toTryOnGarmentResponse(
-      updated.garment,
-      garment.sourceMediaAsset,
-      updated.associatedVariantIds,
-    );
+    return updated;
   }
 
   /** Replaces the exact association set atomically; product traits are never
@@ -484,6 +454,23 @@ export class TryOnGarmentsService {
         ),
       );
     return variants.map((variant) => variant.id);
+  }
+
+  private async readTransactionalSnapshot(
+    garment: typeof tryOnGarments.$inferSelect,
+    executor: Pick<DrizzleClient, "select">,
+  ): Promise<TryOnGarmentResponse> {
+    const [source] = await executor
+      .select()
+      .from(mediaAssets)
+      .where(eq(mediaAssets.id, garment.sourceMediaAssetId))
+      .limit(1);
+    if (!source) throw new NotFoundException("Try-On Garment source not found");
+    return toTryOnGarmentResponse(
+      garment,
+      toTryOnGarmentMediaAsset(source),
+      await this.readAssociatedVariantIds(garment.id, executor),
+    );
   }
 
   private async requireSourceMediaAsset(
