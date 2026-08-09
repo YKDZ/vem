@@ -271,7 +271,7 @@ impl OwnedTasks {
     }
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ActiveMediaManifest {
     generation: String,
@@ -398,23 +398,41 @@ impl ManagedMediaCache {
         let root = root.into();
         fs::create_dir_all(&root).map_err(|error| format!("create media cache: {error}"))?;
         let transaction = root.join(".active-media.transaction");
-        let (transaction_left_behind, marker_metadata_error) =
+        let (marker_present, marker_metadata_error) =
             match manifest_directory_sync.transaction_marker_present(&transaction) {
                 Ok(present) => (present, None),
                 Err(error) => (false, Some(error)),
             };
-        let persisted = (!transaction_left_behind && marker_metadata_error.is_none())
-            .then(|| fs::read(root.join("active-media.json")).ok())
-            .flatten()
-            .and_then(|bytes| serde_json::from_slice::<ActiveMediaManifest>(&bytes).ok())
-            .filter(|manifest| {
-                !manifest.generation.trim().is_empty()
-                    && manifest.assets.len() <= MAX_MEDIA_OBJECTS
-                    && manifest
-                        .assets
-                        .iter()
-                        .all(|asset| validate_descriptor(asset).is_none())
-            });
+        let (transaction_left_behind, completed_transaction_error) = if marker_present {
+            match fs::read(&transaction) {
+                Ok(phase) if phase == b"completed replacement\n" => (false, None),
+                Ok(_) => (true, None),
+                Err(error) => (
+                    true,
+                    Some(format!("read manifest transaction marker: {error}")),
+                ),
+            }
+        } else {
+            (false, None)
+        };
+        let persisted = (!transaction_left_behind
+            && marker_metadata_error.is_none()
+            && completed_transaction_error.is_none())
+        .then(|| fs::read(root.join("active-media.json")).ok())
+        .flatten()
+        .and_then(|bytes| serde_json::from_slice::<ActiveMediaManifest>(&bytes).ok())
+        .and_then(|manifest| {
+            (!manifest.generation.trim().is_empty())
+                .then_some(manifest)
+                .and_then(|manifest| {
+                    normalize_interest_set(manifest.assets)
+                        .ok()
+                        .map(|interest| ActiveMediaManifest {
+                            generation: manifest.generation,
+                            assets: interest.candidates,
+                        })
+                })
+        });
         // Inventory cache data during recovery.  A cache object without a
         // current valid manifest is never a recoverable source of truth.
         let allowed = persisted
@@ -454,13 +472,20 @@ impl ManagedMediaCache {
                     .map(|object| {
                         let descriptor = object.descriptor;
                         let valid = validate_descriptor(&descriptor).is_none();
+                        let content = root.join(format!("{}.bin", object_key(&descriptor.digest)));
                         let ready = valid
-                            && verify_staged_file(
-                                &root.join(format!("{}.bin", object_key(&descriptor.digest))),
-                                &descriptor,
-                                &descriptor.content_type,
-                            )
-                            .is_ok();
+                            && fs::metadata(&content)
+                                .map(|metadata| metadata.len() == descriptor.byte_size)
+                                .unwrap_or(false)
+                            && verify_staged_file(&content, &descriptor, &descriptor.content_type)
+                                .is_ok();
+                        if !ready {
+                            // A manifest describes immutable bytes.  A corrupt
+                            // or expanded active object is neither a pin nor a
+                            // recoverable cache asset; discard it so recovery
+                            // can warm a bounded replacement.
+                            let _ = fs::remove_file(&content);
+                        }
                         (
                             descriptor.digest.clone(),
                             Entry {
@@ -489,7 +514,7 @@ impl ManagedMediaCache {
                 }
             })
             .unwrap_or_default();
-        if let Some(error) = marker_metadata_error {
+        if let Some(error) = marker_metadata_error.or(completed_transaction_error) {
             initial_state.fatal_error = Some(format!(
                 "managed media cache cannot inspect manifest transaction marker; cache is unavailable: {error}"
             ));
@@ -579,7 +604,6 @@ impl ManagedMediaCache {
         }
         let interest = normalize_interest_set(descriptors)?;
         let token = self.register_catalog_adoption().await;
-        let _linearization = self.adoption_linearization_gate.lock().await;
         self.adopt_interest_set(generation, interest, token)
             .await
             .map(|_| ())
@@ -590,7 +614,14 @@ impl ManagedMediaCache {
         generation: String,
         interest: InterestSet,
         adoption_token: u64,
-    ) -> Result<(usize, daemon_ipc_contracts::ManagedMediaSnapshot), String> {
+    ) -> Result<
+        (
+            usize,
+            daemon_ipc_contracts::ManagedMediaSnapshot,
+            tokio::sync::MutexGuard<'_, ()>,
+        ),
+        String,
+    > {
         if !self.is_latest_adoption(adoption_token) {
             return Err("managed media catalog adoption superseded".to_string());
         }
@@ -632,12 +663,15 @@ impl ManagedMediaCache {
         if !self.is_latest_adoption(adoption_token) {
             return Err("managed media catalog adoption superseded".to_string());
         }
-        if let Err(error) = self.persist_manifest(&manifest, adoption_token).await {
-            if error.fatal {
-                self.enter_fatal(error.message.clone()).await;
+        let commit = match self.persist_manifest(&manifest, adoption_token).await {
+            Ok(commit) => commit,
+            Err(error) => {
+                if error.fatal {
+                    self.enter_fatal(error.message.clone()).await;
+                }
+                return Err(error.message);
             }
-            return Err(error.message);
-        }
+        };
         // `persist_manifest` completed the transaction marker removal only
         // while this request was current.  A later registration is ordered
         // after that durable acceptance and will take this same reconcile
@@ -705,7 +739,7 @@ impl ManagedMediaCache {
             self.enqueue_warm(job).await;
         }
         let _ = self.cleanup_bounded(CLEANUP_BATCH_SIZE).await;
-        Ok((interest.objects.len(), accepted_snapshot))
+        Ok((interest.objects.len(), accepted_snapshot, commit))
     }
 
     /// Public reconciliation boundary: generated request in, generated
@@ -735,11 +769,7 @@ impl ManagedMediaCache {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let interest = normalize_interest_set(descriptors)?;
-        // Keep the linearization gate through receipt construction: a later
-        // registration cannot make disk, state and the acknowledged receipt
-        // describe different accepted generations.
-        let _linearization = self.adoption_linearization_gate.lock().await;
-        let (interest_count, snapshot) = self
+        let (interest_count, snapshot, _commit) = self
             .adopt_interest_set(generation.clone(), interest, adoption_token)
             .await?;
         let receipt = serde_json::from_value(serde_json::json!({
@@ -956,7 +986,7 @@ impl ManagedMediaCache {
         &self,
         manifest: &ActiveMediaManifest,
         adoption_token: u64,
-    ) -> Result<(), ManifestPersistenceError> {
+    ) -> Result<tokio::sync::MutexGuard<'_, ()>, ManifestPersistenceError> {
         let temp = self.root.join(format!(
             ".active-media.{}.tmp",
             uuid::Uuid::new_v4().simple()
@@ -986,13 +1016,11 @@ impl ManagedMediaCache {
             }
         };
         let transaction = self.root.join(".active-media.transaction");
-        write_durable(&transaction, b"active-media replacement in progress\n").map_err(
-            |error| {
-                ManifestPersistenceError::ordinary(format!(
-                    "manifest persistence: write transaction marker: {error}"
-                ))
-            },
-        )?;
+        write_durable(&transaction, b"pending replacement\n").map_err(|error| {
+            ManifestPersistenceError::ordinary(format!(
+                "manifest persistence: write transaction marker: {error}"
+            ))
+        })?;
         self.manifest_directory_sync
             .sync(self.root.as_ref())
             .await
@@ -1022,9 +1050,9 @@ impl ManagedMediaCache {
                 )
                 .await;
         }
-        // Registration is the linearization point for latest-wins.  If a
-        // newer catalog appeared while this persist was blocked, restore the
-        // last receipt before releasing the reconcile gate.
+        // A newer catalog may register while this older durable replacement
+        // is blocked.  It must win without waiting for this reconciliation's
+        // whole persistence path.
         if !self.is_latest_adoption(adoption_token) {
             return self
                 .rollback_manifest(
@@ -1035,38 +1063,72 @@ impl ManagedMediaCache {
                 )
                 .await;
         }
-        if let Err(error) = remove_optional_file(&transaction) {
+        // Registration and the final durable commit share only this short
+        // gate.  Re-check after acquiring it so no later catalog can observe
+        // a receipt/state projection for a stale manifest.
+        let commit = self.adoption_linearization_gate.lock().await;
+        if !self.is_latest_adoption(adoption_token) {
+            drop(commit);
             return self
                 .rollback_manifest(
                     previous,
                     &target,
                     &transaction,
-                    format!("remove transaction marker: {error}"),
+                    "catalog adoption superseded before manifest completion".to_string(),
+                )
+                .await;
+        }
+        // Preserve a directory-durable *pending* phase before removing the
+        // pending marker.  A failed completion flush can therefore never
+        // erase the only evidence needed to fail closed after a failed
+        // rollback; successful restart recognizes this completed phase.
+        if let Err(error) = write_durable(&transaction, b"completion pending\n") {
+            drop(commit);
+            return self
+                .rollback_manifest(
+                    previous,
+                    &target,
+                    &transaction,
+                    format!("write completion-pending transaction marker: {error}"),
                 )
                 .await;
         }
         if let Err(error) = self.manifest_directory_sync.sync(self.root.as_ref()).await {
-            // The marker may still be durable even when its deletion has not
-            // reached the directory.  Treat this as unaccepted and restore C.
+            drop(commit);
             return self
                 .rollback_manifest(
                     previous,
                     &target,
                     &transaction,
-                    format!("sync transaction completion: {error}"),
+                    format!("sync completion transaction marker: {error}"),
                 )
                 .await;
         }
-        Ok(())
+        if let Err(error) = write_durable(&transaction, b"completed replacement\n") {
+            // The pending phase is already directory durable.  Do not remove
+            // it or roll back an accepted replacement if merely recording the
+            // completed label fails; startup will fail closed on pending.
+            return Err(ManifestPersistenceError::fatal(format!(
+                "managed media cache fatal: write completed transaction marker: {error}"
+            )));
+        }
+        // This is post-commit garbage collection.  The completed marker is
+        // already durable, so a removal or directory-sync failure cannot turn
+        // an accepted manifest into a rejected one.  Startup treats a
+        // remaining completed marker as evidence of that accepted state.
+        if remove_optional_file(&transaction).is_ok() {
+            let _ = self.manifest_directory_sync.sync(self.root.as_ref()).await;
+        }
+        Ok(commit)
     }
 
-    async fn rollback_manifest(
+    async fn rollback_manifest<T>(
         &self,
         previous: Option<Vec<u8>>,
         target: &Path,
         transaction: &Path,
         cause: String,
-    ) -> Result<(), ManifestPersistenceError> {
+    ) -> Result<T, ManifestPersistenceError> {
         let restore = match previous {
             Some(bytes) => {
                 let path = self.root.join(format!(
@@ -2055,6 +2117,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn startup_discards_an_expanded_active_object_before_reconcile_checks_high_water() {
+        let root = tempdir().expect("tempdir").keep();
+        let bytes = b"\x89PNG\r\n\x1a\nsmall-active".to_vec();
+        let active = descriptor(&bytes, "image/png");
+        fs::write(
+            root.join("active-media.json"),
+            serde_json::to_vec(&ActiveMediaManifest {
+                generation: "active".to_string(),
+                assets: vec![active.clone()],
+            })
+            .expect("manifest"),
+        )
+        .expect("manifest seed");
+        fs::File::create(root.join(format!("{}.bin", object_key(&active.digest))))
+            .expect("expanded active object")
+            .set_len(MEDIA_CACHE_HIGH_WATER_BYTES + 1)
+            .expect("expand active object");
+
+        let replacement_bytes = b"\x89PNG\r\n\x1a\nreplacement".to_vec();
+        let replacement = descriptor(&replacement_bytes, "image/png");
+        let cache = ManagedMediaCache::new(
+            root.clone(),
+            "http://127.0.0.1:1234",
+            Arc::new(FixtureFetcher {
+                bytes: replacement_bytes,
+                content_type: "image/png".to_string(),
+            }),
+        )
+        .expect("recovery cache");
+        assert!(
+            !root
+                .join(format!("{}.bin", object_key(&active.digest)))
+                .exists(),
+            "an expanded active object is not retained as an immutable pin"
+        );
+        cache
+            .reconcile_active_catalog("replacement", vec![replacement])
+            .await
+            .expect("reconcile does not inherit a permanent high-water failure");
+    }
+
+    #[tokio::test]
     async fn reconciliation_returns_while_proactive_fetch_is_still_pending() {
         struct PendingFetcher {
             started: Arc<Notify>,
@@ -2462,10 +2566,10 @@ mod tests {
         #[async_trait]
         impl ManifestDirectorySync for FailSecondDirectorySync {
             async fn sync(&self, _: &Path) -> Result<(), String> {
-                // A successful transaction synchronizes marker, replacement,
-                // and marker removal.  Fail the second transaction only
-                // after its replacement.
-                if self.0.fetch_add(1, Ordering::SeqCst) == 4 {
+                // A successful transaction synchronizes pending, replacement,
+                // completed phase and marker GC.  Fail the second transaction
+                // only after its replacement.
+                if self.0.fetch_add(1, Ordering::SeqCst) == 5 {
                     Err("injected post-rename directory sync failure".to_string())
                 } else {
                     Ok(())
@@ -2511,7 +2615,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn completion_sync_and_registration_have_one_legal_linear_order() {
+    async fn newer_registration_supersedes_a_persisting_catalog_without_waiting_for_it() {
         struct PersistBarrier {
             calls: AtomicUsize,
             persisted: Arc<Notify>,
@@ -2577,18 +2681,15 @@ mod tests {
             let cache = cache.clone();
             async move { cache.register_catalog_adoption().await }
         });
-        assert!(
-            tokio::time::timeout(Duration::from_millis(30), &mut b_registration)
-                .await
-                .is_err(),
-            "B cannot supersede A until it obtains the completion linearization gate"
-        );
+        let b_token = tokio::time::timeout(Duration::from_secs(1), &mut b_registration)
+            .await
+            .expect("B registration must not wait for A persistence")
+            .expect("B registration");
         release.notify_waiters();
         assert!(
-            a_task.await.expect("A task").is_ok(),
-            "A commits before B registers"
+            a_task.await.expect("A task").is_err(),
+            "A becomes stale after B registers"
         );
-        let b_token = b_registration.await.expect("B registration");
         assert!(
             cache
                 .reconcile_boundary_registered(
@@ -2601,15 +2702,15 @@ mod tests {
                 )
                 .await
                 .is_err(),
-            "B rejection cannot replace A"
+            "B rejection cannot replace C"
         );
 
         let manifest: ActiveMediaManifest = serde_json::from_slice(
             &fs::read(root.join("active-media.json")).expect("durable manifest"),
         )
         .expect("manifest");
-        assert_eq!(manifest.generation, "stale-a");
-        assert_eq!(cache.snapshot().await.0, "stale-a");
+        assert_eq!(manifest.generation, "accepted-c");
+        assert_eq!(cache.snapshot().await.0, "accepted-c");
 
         let restarted = ManagedMediaCache::new(
             root,
@@ -2620,7 +2721,91 @@ mod tests {
             }),
         )
         .expect("restart");
-        assert_eq!(restarted.snapshot().await.0, "stale-a");
+        assert_eq!(restarted.snapshot().await.0, "accepted-c");
+    }
+
+    #[tokio::test]
+    async fn newer_registered_catalog_commits_after_a_stale_persist_rolls_back() {
+        struct PersistBarrier {
+            calls: AtomicUsize,
+            entered: Arc<Notify>,
+            release: Arc<Notify>,
+        }
+        #[async_trait]
+        impl ManifestDirectorySync for PersistBarrier {
+            async fn sync(&self, _: &Path) -> Result<(), String> {
+                if self.calls.fetch_add(1, Ordering::SeqCst) == 1 {
+                    self.entered.notify_one();
+                    self.release.notified().await;
+                }
+                Ok(())
+            }
+        }
+        let root = tempdir().expect("tempdir").keep();
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let cache = ManagedMediaCache::new_with_manifest_directory_sync(
+            root.clone(),
+            "http://127.0.0.1:1234",
+            Arc::new(FixtureFetcher {
+                bytes: Vec::new(),
+                content_type: "image/png".to_string(),
+            }),
+            Arc::new(PersistBarrier {
+                calls: AtomicUsize::new(0),
+                entered: entered.clone(),
+                release: release.clone(),
+            }),
+        )
+        .expect("cache");
+        let a = descriptor(b"\x89PNG\r\n\x1a\nstale-a", "image/png");
+        let b = descriptor(b"\x89PNG\r\n\x1a\ncurrent-b", "image/png");
+        let request = |generation: &str, descriptor: MediaDescriptor| {
+            serde_json::from_value(serde_json::json!({
+                "generation": generation,
+                "interests": [descriptor],
+            }))
+            .expect("request")
+        };
+        let a_token = cache.register_catalog_adoption().await;
+        let a_task = tokio::spawn({
+            let cache = cache.clone();
+            let request = request("a", a);
+            async move { cache.reconcile_boundary_registered(request, a_token).await }
+        });
+        tokio::time::timeout(Duration::from_secs(1), entered.notified())
+            .await
+            .expect("A replacement persistence blocked");
+        let b_token =
+            tokio::time::timeout(Duration::from_secs(1), cache.register_catalog_adoption())
+                .await
+                .expect("B registration is not held by A persistence");
+        release.notify_waiters();
+        assert!(a_task.await.expect("A join").is_err());
+        let receipt = cache
+            .reconcile_boundary_registered(request("b", b.clone()), b_token)
+            .await
+            .expect("B receipt");
+        let manifest: ActiveMediaManifest =
+            serde_json::from_slice(&fs::read(root.join("active-media.json")).expect("manifest"))
+                .expect("manifest shape");
+        assert_eq!(manifest.generation, "b");
+        assert_eq!(cache.snapshot().await.0, "b");
+        assert_eq!(receipt.generation.as_str(), "b");
+        assert_eq!(
+            receipt.snapshot.assets[0].descriptor.digest.as_str(),
+            b.digest
+        );
+        let restarted = ManagedMediaCache::new(
+            root,
+            "http://127.0.0.1:1234",
+            Arc::new(FixtureFetcher {
+                bytes: Vec::new(),
+                content_type: "image/png".to_string(),
+            }),
+        )
+        .expect("restart");
+        assert_eq!(restarted.snapshot().await.0, "b");
     }
 
     #[tokio::test]
@@ -2629,10 +2814,10 @@ mod tests {
         #[async_trait]
         impl ManifestDirectorySync for FailReplaceAndRollbackSync {
             async fn sync(&self, _: &Path) -> Result<(), String> {
-                // C completes marker/replace/complete with 0,1,2.  Fail A's
-                // replacement flush and its mandatory rollback flush.
+                // C completes pending/replace/completed/GC with 0..3.  Fail
+                // A's replacement flush and its mandatory rollback flush.
                 match self.0.fetch_add(1, Ordering::SeqCst) {
-                    4 | 5 => Err("injected directory sync failure".to_string()),
+                    5 | 6 => Err("injected directory sync failure".to_string()),
                     _ => Ok(()),
                 }
             }
@@ -2680,6 +2865,62 @@ mod tests {
             }),
         )
         .expect("restart constructor stays conservative");
+        assert!(restarted.snapshot().await.0.is_empty());
+        assert!(restarted.snapshot().await.1.is_empty());
+    }
+
+    #[tokio::test]
+    async fn completion_and_rollback_sync_failures_retain_a_fatal_pending_marker() {
+        struct FailCompletionAndRollback(AtomicUsize);
+        #[async_trait]
+        impl ManifestDirectorySync for FailCompletionAndRollback {
+            async fn sync(&self, _: &Path) -> Result<(), String> {
+                // The first accepted generation consumes pending, replacement,
+                // completed and GC syncs 0..3.  The next generation fails its
+                // completion-pending sync (6) and rollback sync (7).
+                match self.0.fetch_add(1, Ordering::SeqCst) {
+                    6 | 7 => Err("injected completion/rollback sync failure".to_string()),
+                    _ => Ok(()),
+                }
+            }
+        }
+        let root = tempdir().expect("tempdir").keep();
+        let accepted = descriptor(b"\x89PNG\r\n\x1a\naccepted", "image/png");
+        let rejected = descriptor(b"\x89PNG\r\n\x1a\nrejected", "image/png");
+        let cache = ManagedMediaCache::new_with_manifest_directory_sync(
+            root.clone(),
+            "http://127.0.0.1:1234",
+            Arc::new(FixtureFetcher {
+                bytes: Vec::new(),
+                content_type: "image/png".to_string(),
+            }),
+            Arc::new(FailCompletionAndRollback(AtomicUsize::new(0))),
+        )
+        .expect("cache");
+        cache
+            .reconcile_active_catalog("accepted", vec![accepted])
+            .await
+            .expect("accepted generation");
+        assert!(cache
+            .reconcile_active_catalog("rejected", vec![rejected])
+            .await
+            .expect_err("double sync failure is fatal")
+            .contains("fatal"));
+        assert!(root.join(".active-media.transaction").exists());
+        assert_ne!(
+            fs::read_to_string(root.join(".active-media.transaction")).expect("marker"),
+            "completed replacement\n"
+        );
+
+        let restarted = ManagedMediaCache::new(
+            root,
+            "http://127.0.0.1:1234",
+            Arc::new(FixtureFetcher {
+                bytes: Vec::new(),
+                content_type: "image/png".to_string(),
+            }),
+        )
+        .expect("restart cache");
         assert!(restarted.snapshot().await.0.is_empty());
         assert!(restarted.snapshot().await.1.is_empty());
     }

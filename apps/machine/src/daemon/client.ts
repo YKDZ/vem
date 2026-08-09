@@ -107,6 +107,7 @@ function normalizeSaleViewManagedMedia(payload: unknown): {
       const reference = normalized[field];
       if (field === "coverImageUrl") {
         const supplied = normalized.coverImageMediaDiagnostic;
+        let hasSuppliedDiagnostic = false;
         if (isRecord(supplied) && typeof supplied.message === "string") {
           mediaDiagnostics.push({
             reference: typeof reference === "string" ? reference : null,
@@ -120,6 +121,7 @@ function normalizeSaleViewManagedMedia(payload: unknown): {
                 : "descriptor_invalid",
             message: supplied.message,
           });
+          hasSuppliedDiagnostic = true;
         } else if (supplied !== undefined && supplied !== null) {
           normalized.coverImageMediaDiagnostic = null;
           mediaDiagnostics.push({
@@ -132,6 +134,15 @@ function normalizeSaleViewManagedMedia(payload: unknown): {
             message:
               "daemon sale view contained an invalid cover image diagnostic",
           });
+          hasSuppliedDiagnostic = true;
+        }
+        // The daemon has already associated this slot with an exact media
+        // failure.  Do not append a second generic missing/invalid-reference
+        // diagnostic for the same location before the catalog store projects
+        // its placeholder.
+        if (hasSuppliedDiagnostic) {
+          normalized[field] = isManagedMediaReference(reference) ? reference : null;
+          continue;
         }
       }
       if (typeof reference === "string" && isManagedMediaReference(reference)) {

@@ -638,6 +638,33 @@ describe("DaemonApiClient direct runtime intents", () => {
     );
   });
 
+  it("keeps exactly the daemon-supplied diagnostic for one invalid media slot", async () => {
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(
+      jsonResponse({
+        items: [
+          saleViewItem({
+            coverImageUrl: null,
+            coverImageMediaDiagnostic: {
+              reason: "digest_mismatch",
+              message: "cached bytes no longer match the descriptor",
+            },
+          }),
+        ],
+        source: "local_stock",
+        planogramVersion: "PLAN-1",
+        lastUpdatedAt: "2026-07-14T00:00:00Z",
+      }),
+    );
+
+    const snapshot = await new DaemonApiClient().getSaleView();
+
+    expect(snapshot.mediaDiagnostics).toHaveLength(1);
+    expect(snapshot.mediaDiagnostics?.[0]).toMatchObject({
+      reason: "digest_mismatch",
+      message: "cached bytes no longer match the descriptor",
+    });
+  });
+
   it("posts customer cancellation with the current order number and validates its terminal snapshot", async () => {
     vi.mocked(globalThis.fetch).mockResolvedValueOnce(
       jsonResponse({
