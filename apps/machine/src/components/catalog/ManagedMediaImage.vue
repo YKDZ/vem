@@ -12,10 +12,13 @@ const props = defineProps<{
   fallback: string;
   alt: string;
   readyUrl?: string | null;
+  mediaDiagnostic?: { reason: string; message: string } | null;
 }>();
 
 const emit = defineEmits<{
-  diagnostic: [event: { diagnosticKey: string; message: string }];
+  diagnostic: [
+    event: { diagnosticKey: string; message: string; reason?: string },
+  ];
 }>();
 
 // Catalog media has no browser/platform fallback.  Only the daemon-generated
@@ -36,7 +39,8 @@ watch(
           props.diagnosticKey,
           props.reference,
         ),
-        message: next.diagnostic,
+        message: props.mediaDiagnostic?.message ?? next.diagnostic,
+        reason: props.mediaDiagnostic?.reason,
       });
     }
   },
@@ -52,6 +56,7 @@ function usePlaceholder(): void {
       props.reference,
     ),
     message: "managed media failed to load",
+    reason: props.mediaDiagnostic?.reason,
   });
 }
 </script>

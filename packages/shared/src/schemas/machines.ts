@@ -12,7 +12,10 @@ import {
   machineSlotCellNoSchema,
   machineSlotRowNoSchema,
 } from "./machine-slot-coordinate";
-import { managedMediaDescriptorSchema } from "./managed-media";
+import {
+  managedMediaDescriptorSchema,
+  managedMediaDiagnosticReasonSchema,
+} from "./managed-media";
 
 function isIanaTimeZone(value: string): boolean {
   try {
@@ -515,6 +518,12 @@ export const managedMediaReferenceSchema = z
     message: "media URL must point to a managed media asset content endpoint",
   });
 
+/** Stable, bounded presentation failure detail for one sale-view media item. */
+export const saleViewMediaDiagnosticSchema = z.strictObject({
+  reason: managedMediaDiagnosticReasonSchema,
+  message: z.string().min(1).max(256),
+});
+
 const machineCatalogItemBaseSchema = z.object({
   machineCode: z.string().min(1).max(64),
   slotId: z.uuid(),
@@ -529,6 +538,9 @@ const machineCatalogItemBaseSchema = z.object({
   coverImageUrl: managedMediaReferenceSchema.nullable(),
   tryOnSilhouetteUrl: managedMediaReferenceSchema.nullable().optional(),
   coverImageMedia: managedMediaDescriptorSchema.nullable().optional(),
+  coverImageMediaDiagnostic: saleViewMediaDiagnosticSchema
+    .nullable()
+    .optional(),
   tryOnGarmentMedia: managedMediaDescriptorSchema.nullable().optional(),
   coverImageReadyUrl: z.url().nullable().optional(),
   tryOnGarmentReadyUrl: z.url().nullable().optional(),

@@ -8,15 +8,26 @@ describe("ManagedMediaImage", () => {
   it("uses a placeholder and emits a diagnostic when the managed image cannot load", async () => {
     const host = document.createElement("div");
     document.body.appendChild(host);
-    const diagnostics: Array<{ diagnosticKey: string; message: string }> = [];
+    const diagnostics: Array<{
+      diagnosticKey: string;
+      message: string;
+      reason?: string;
+    }> = [];
     const app = createApp(ManagedMediaImage, {
       reference:
         "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
       diagnosticKey: "media:slot-1:coverImageUrl",
       fallback: "/assets/placeholder.png",
       alt: "基础短袖",
-      onDiagnostic: (event: { diagnosticKey: string; message: string }) =>
-        diagnostics.push(event),
+      mediaDiagnostic: {
+        reason: "digest_mismatch",
+        message: "cached bytes do not match the descriptor",
+      },
+      onDiagnostic: (event: {
+        diagnosticKey: string;
+        message: string;
+        reason?: string;
+      }) => diagnostics.push(event),
     });
     app.mount(host);
 
@@ -31,7 +42,8 @@ describe("ManagedMediaImage", () => {
       {
         diagnosticKey:
           "media:slot-1:coverImageUrl:managed:/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
-        message: "managed media is not ready",
+        message: "cached bytes do not match the descriptor",
+        reason: "digest_mismatch",
       },
     ]);
     app.unmount();

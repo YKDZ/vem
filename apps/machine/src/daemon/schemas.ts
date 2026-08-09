@@ -456,6 +456,7 @@ export type SaleViewMediaDiagnostic = {
   reference: string | null;
   diagnosticKey: string;
   message: string;
+  reason?: string;
 };
 
 export type SaleViewSnapshot = z.infer<typeof machineSaleViewSnapshotSchema> & {

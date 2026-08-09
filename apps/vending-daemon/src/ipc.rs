@@ -1488,7 +1488,12 @@ async fn sale_view(State(ctx): State<IpcContext>, headers: HeaderMap) -> impl In
                     serde_json::json!({
                         "coverImageMedia": descriptor,
                         "coverImageReadyUrl": projection.and_then(|asset| asset.ready_url.clone()),
-                        "coverImageMediaDiagnostic": projection.and_then(|asset| asset.diagnostic.clone()),
+                        "coverImageMediaDiagnostic": projection.and_then(|asset| {
+                            asset.diagnostic.as_ref().map(|message| serde_json::json!({
+                                "reason": asset.diagnostic_reason.as_deref().unwrap_or("download_failed"),
+                                "message": message,
+                            }))
+                        }),
                     }),
                 );
             }

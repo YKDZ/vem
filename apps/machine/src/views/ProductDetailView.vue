@@ -344,12 +344,14 @@ async function enterTryOn(): Promise<void> {
               :fallback="fallbackImage"
               :alt="item.productName"
               :ready-url="item.coverImageReadyUrl"
+              :media-diagnostic="item.coverImageMediaDiagnostic"
               :class="{ 'detail-image-fallback': !productImageReference }"
               @diagnostic="
                 catalogStore.recordMediaDiagnostic(
                   productImageReference,
                   $event.message,
                   $event.diagnosticKey,
+                  $event.reason,
                 )
               "
             />

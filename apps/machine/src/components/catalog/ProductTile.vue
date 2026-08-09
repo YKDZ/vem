@@ -58,6 +58,7 @@ const priceText = computed(() => {
         class="product-display-image h-full w-full"
         :reference="item.coverImageMedia?.reference ?? item.coverImageUrl"
         :ready-url="item.coverImageReadyUrl"
+        :media-diagnostic="item.coverImageMediaDiagnostic"
         :diagnostic-key="`media:${item.slotId}:coverImageUrl`"
         fallback="/product-placeholder.svg"
         :alt="item.productName"

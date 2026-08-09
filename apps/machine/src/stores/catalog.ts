@@ -22,6 +22,7 @@ export type CatalogMediaDiagnostic = {
   reference: string | null;
   diagnosticKey: string;
   message: string;
+  reason?: string;
   recordedAt: string;
 };
 
@@ -336,6 +337,7 @@ export const useCatalogStore = defineStore("catalog", {
           diagnostic.reference,
           diagnostic.message,
           diagnostic.diagnosticKey,
+          diagnostic.reason,
         );
       }
     },
@@ -343,6 +345,7 @@ export const useCatalogStore = defineStore("catalog", {
       reference: string | null | undefined,
       message: string,
       diagnosticKey = mediaDiagnosticKey(reference),
+      reason?: string,
     ): void {
       const locationKey = managedMediaDiagnosticLocation(diagnosticKey);
       const placeholderDiagnosticKey = locationKey
@@ -380,6 +383,7 @@ export const useCatalogStore = defineStore("catalog", {
           reference: reference ?? null,
           diagnosticKey: effectiveDiagnosticKey,
           message,
+          reason,
           recordedAt: new Date().toISOString(),
         },
       ];

@@ -66,6 +66,7 @@ pub struct MediaProjection {
     pub readiness: MediaReadiness,
     pub ready_url: Option<String>,
     pub diagnostic: Option<String>,
+    pub diagnostic_reason: Option<String>,
 }
 
 /// Parse an externally supplied descriptor through the generated strict IPC
@@ -616,6 +617,11 @@ impl ManagedMediaCache {
                 )
             }),
             diagnostic: entry.diagnostic.clone(),
+            diagnostic_reason: entry
+                .diagnostic
+                .as_deref()
+                .and_then(managed_media_diagnostic_reason)
+                .map(str::to_string),
         }
     }
 

@@ -105,6 +105,35 @@ function normalizeSaleViewManagedMedia(payload: unknown): {
         : `index-${index}`;
     for (const field of ["coverImageUrl", "tryOnSilhouetteUrl"] as const) {
       const reference = normalized[field];
+      if (field === "coverImageUrl") {
+        const supplied = normalized.coverImageMediaDiagnostic;
+        if (isRecord(supplied) && typeof supplied.message === "string") {
+          mediaDiagnostics.push({
+            reference: typeof reference === "string" ? reference : null,
+            diagnosticKey: managedMediaDiagnosticKey(
+              `media:${itemIdentity}:${field}`,
+              reference,
+            ),
+            reason:
+              typeof supplied.reason === "string"
+                ? supplied.reason
+                : "descriptor_invalid",
+            message: supplied.message,
+          });
+        } else if (supplied !== undefined && supplied !== null) {
+          normalized.coverImageMediaDiagnostic = null;
+          mediaDiagnostics.push({
+            reference: typeof reference === "string" ? reference : null,
+            diagnosticKey: managedMediaDiagnosticKey(
+              `media:${itemIdentity}:${field}`,
+              reference,
+            ),
+            reason: "descriptor_invalid",
+            message:
+              "daemon sale view contained an invalid cover image diagnostic",
+          });
+        }
+      }
       if (typeof reference === "string" && isManagedMediaReference(reference)) {
         continue;
       }

@@ -203,12 +203,14 @@ async function submitOrder(): Promise<void> {
                 :fallback="fallbackImage"
                 :alt="item.productName"
                 :ready-url="item.coverImageReadyUrl"
+                :media-diagnostic="item.coverImageMediaDiagnostic"
                 :class="{ 'product-image-fallback': !item.coverImageUrl }"
                 @diagnostic="
                   catalogStore.recordMediaDiagnostic(
                     item.coverImageUrl,
                     $event.message,
                     $event.diagnosticKey,
+                    $event.reason,
                   )
                 "
               />

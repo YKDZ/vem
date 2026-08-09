@@ -718,6 +718,7 @@ onUnmounted(() => {
                     :fallback="fallbackImageForCategory(product.categoryKey)"
                     :alt="product.name"
                     :ready-url="product.item.coverImageReadyUrl"
+                    :media-diagnostic="product.item.coverImageMediaDiagnostic"
                     :class="{
                       'product-image-fallback': !product.hasProductImage,
                     }"
@@ -726,6 +727,7 @@ onUnmounted(() => {
                         product.item.coverImageUrl,
                         $event.message,
                         $event.diagnosticKey,
+                        $event.reason,
                       )
                     "
                   />

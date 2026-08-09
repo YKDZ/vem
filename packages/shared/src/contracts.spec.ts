@@ -2679,6 +2679,27 @@ describe("shared API contract", () => {
     expect(() =>
       machineSaleViewItemSchema.parse({ ...base, slotSalesState: "saleable" }),
     ).toThrow();
+
+    expect(
+      machineSaleViewItemSchema.parse({
+        ...base,
+        slotSalesState: "sale_ready",
+        coverImageMediaDiagnostic: {
+          reason: "digest_mismatch",
+          message: "cached object digest did not match the descriptor",
+        },
+      }).coverImageMediaDiagnostic?.reason,
+    ).toBe("digest_mismatch");
+    expect(() =>
+      machineSaleViewItemSchema.parse({
+        ...base,
+        slotSalesState: "sale_ready",
+        coverImageMediaDiagnostic: {
+          reason: "unknown_reason",
+          message: "not a public diagnostic reason",
+        },
+      }),
+    ).toThrow();
   });
 
   describe("canonicalJson", () => {

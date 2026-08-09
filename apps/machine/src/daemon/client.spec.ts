@@ -601,6 +601,44 @@ describe("DaemonApiClient direct runtime intents", () => {
     );
   });
 
+  it("retains a daemon-managed media reason while another sale-view item remains usable", async () => {
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(
+      jsonResponse({
+        items: [
+          saleViewItem({
+            coverImageMediaDiagnostic: {
+              reason: "digest_mismatch",
+              message: "cached bytes no longer match the descriptor",
+            },
+          }),
+          saleViewItem({
+            slotId: "550e8400-e29b-41d4-a716-446655440011",
+            inventoryId: "550e8400-e29b-41d4-a716-446655440012",
+            productId: "550e8400-e29b-41d4-a716-446655440014",
+            productName: "正常可售商品",
+            sku: "SOCK-001",
+          }),
+        ],
+        source: "local_stock",
+        planogramVersion: "PLAN-1",
+        lastUpdatedAt: "2026-07-14T00:00:00Z",
+      }),
+    );
+
+    const snapshot = await new DaemonApiClient().getSaleView();
+
+    expect(snapshot.items).toHaveLength(2);
+    expect(snapshot.items[1]?.productName).toBe("正常可售商品");
+    expect(snapshot.mediaDiagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          reason: "digest_mismatch",
+          message: "cached bytes no longer match the descriptor",
+        }),
+      ]),
+    );
+  });
+
   it("posts customer cancellation with the current order number and validates its terminal snapshot", async () => {
     vi.mocked(globalThis.fetch).mockResolvedValueOnce(
       jsonResponse({
