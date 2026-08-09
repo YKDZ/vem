@@ -21,6 +21,12 @@ const MAX_MEDIA_OBJECT_BYTES: u64 = 5_000_000;
 const MAX_MEDIA_OBJECTS: usize = 256;
 const MAX_MEDIA_CACHE_BYTES: u64 = 100_000_000;
 const MEDIA_CACHE_RESERVED_BYTES: u64 = 5_000_000;
+// The cache may briefly contain the previous generation while a new
+// generation warms.  Cleanup therefore starts at the high watermark and
+// trims inactive objects down to the lower watermark rather than trusting the
+// descriptor declarations as a substitute for real disk accounting.
+const MEDIA_CACHE_HIGH_WATER_BYTES: u64 = MAX_MEDIA_CACHE_BYTES;
+const MEDIA_CACHE_LOW_WATER_BYTES: u64 = 80_000_000;
 const CLEANUP_BATCH_SIZE: usize = 32;
 const DOWNLOAD_WORKERS: usize = 4;
 const VERIFY_BUFFER_BYTES: usize = 64 * 1024;
@@ -322,6 +328,15 @@ impl ManagedMediaCache {
             remaining = remaining.saturating_sub(descriptor.byte_size);
         }
 
+        // Recovery and regular reconciliation share the same inventory rule:
+        // no loose object, metadata, or staging file is allowed to consume the
+        // cache budget.  This is deliberately based on actual directory bytes,
+        // not on a prior generation's declared descriptor sizes.
+        self.remove_untracked_files().await;
+        if directory_usage_bytes(self.root.as_ref()) > MEDIA_CACHE_HIGH_WATER_BYTES {
+            return Err("managed media cache disk high-water mark exceeded".to_string());
+        }
+
         // The potentially slow disk checks and fsync occur outside the state
         // mutex.  An epoch retry keeps the final in-memory replacement one
         // coherent swap even when refreshes race.
@@ -516,6 +531,7 @@ impl ManagedMediaCache {
     }
 
     pub async fn cleanup_bounded(&self, max_remove: usize) -> usize {
+        self.remove_untracked_files().await;
         let mut candidates = {
             let state = self.state.lock().await;
             state
@@ -527,8 +543,15 @@ impl ManagedMediaCache {
         };
         candidates.sort_by_key(|(_, used)| *used);
         let mut removed = 0;
+        let mut disk_bytes = directory_usage_bytes(self.root.as_ref());
         for (digest, _) in candidates.into_iter().take(max_remove) {
+            if disk_bytes <= MEDIA_CACHE_LOW_WATER_BYTES && removed > 0 {
+                break;
+            }
             // Disk mutation deliberately happens with no Tokio state lock.
+            let object_bytes = fs::metadata(self.content_path(&digest))
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
             let _ = fs::remove_file(self.content_path(&digest));
             let _ = fs::remove_file(self.meta_path(&digest));
             let mut state = self.state.lock().await;
@@ -539,9 +562,42 @@ impl ManagedMediaCache {
                 && state.entries.remove(&digest).is_some()
             {
                 removed += 1;
+                disk_bytes = disk_bytes.saturating_sub(object_bytes);
             }
         }
         removed
+    }
+
+    /// Remove only files that are not represented by live cache state.  A
+    /// lease always wins over reclamation, including when its generation is no
+    /// longer active.  The filesystem work intentionally happens outside the
+    /// Tokio cache-state mutex.
+    async fn remove_untracked_files(&self) {
+        let protected = {
+            let state = self.state.lock().await;
+            state
+                .entries
+                .iter()
+                .filter(|(_, entry)| entry.active || entry.leases > 0)
+                .map(|(digest, _)| object_key(digest))
+                .collect::<HashSet<_>>()
+        };
+        let Ok(entries) = fs::read_dir(self.root.as_ref()) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == "active-media.json" {
+                continue;
+            }
+            let keep = name
+                .strip_suffix(".bin")
+                .is_some_and(|key| protected.contains(key));
+            if !keep {
+                let _ = fs::remove_file(path);
+            }
+        }
     }
 
     fn projection(&self, entry: &Entry) -> MediaProjection {
@@ -639,10 +695,37 @@ impl ManagedMediaCache {
             });
         match result {
             Ok(()) => {
-                // This is deliberately the only short critical section in the
-                // publish path: a late result can publish only while the full
-                // current descriptor is still active.  MoveFileEx replaces a
-                // corrupt same-digest target on Windows without a visibility gap.
+                // First take a cheap fence snapshot.  The slow filesystem
+                // replacement itself must never run under the Tokio mutex:
+                // snapshots and sale-view stay responsive while large objects
+                // are being published.
+                let current = {
+                    let state = self.state.lock().await;
+                    state
+                        .entries
+                        .get(&job.descriptor.digest)
+                        .filter(|entry| {
+                            entry.active
+                                && media_identity(&entry.descriptor)
+                                    == media_identity(&job.descriptor)
+                        })
+                        .map(|entry| entry.descriptor.clone())
+                };
+                let Some(current) = current else {
+                    let _ = fs::remove_file(&stage);
+                    return;
+                };
+                if directory_usage_bytes(self.root.as_ref()) > MEDIA_CACHE_HIGH_WATER_BYTES {
+                    let _ = fs::remove_file(&stage);
+                    let mut state = self.state.lock().await;
+                    if let Some(entry) = state.entries.get_mut(&current.digest) {
+                        entry.readiness = MediaReadiness::Unavailable;
+                        entry.diagnostic =
+                            Some("managed media cache disk high-water mark exceeded".to_string());
+                    }
+                    return;
+                }
+                let publish = self.publish_staged(&current, &stage);
                 let mut state = self.state.lock().await;
                 let current = state
                     .entries
@@ -653,7 +736,6 @@ impl ManagedMediaCache {
                     })
                     .map(|entry| entry.descriptor.clone());
                 if let Some(current) = current {
-                    let publish = self.publish_staged(&current, &stage);
                     if let Some(entry) = state.entries.get_mut(&current.digest) {
                         entry.warming_generation = None;
                         match publish {
@@ -668,7 +750,14 @@ impl ManagedMediaCache {
                         }
                     }
                 } else {
-                    let _ = fs::remove_file(&stage);
+                    // A late completion may have published after its
+                    // generation was replaced.  Remove its unreferenced
+                    // target immediately so it cannot become an orphan.
+                    if publish.is_ok() {
+                        let _ = fs::remove_file(self.content_path(&job.descriptor.digest));
+                    } else {
+                        let _ = fs::remove_file(&stage);
+                    }
                 }
             }
             Err(error) => {
@@ -714,6 +803,18 @@ fn object_key(digest: &str) -> String {
         .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
         .unwrap_or("invalid")
         .to_ascii_lowercase()
+}
+
+fn directory_usage_bytes(root: &Path) -> u64 {
+    fs::read_dir(root)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.metadata().ok())
+        .filter(|metadata| metadata.is_file())
+        .map(|metadata| metadata.len())
+        .sum()
 }
 
 fn write_durable(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -1228,5 +1329,33 @@ mod tests {
         .await
         .expect("reconciliation must not await source fetch")
         .expect("adopt");
+    }
+
+    #[tokio::test]
+    async fn reconciliation_reclaims_untracked_disk_bytes_before_adopting_interest() {
+        let root = tempdir().expect("tempdir").keep();
+        let cache = ManagedMediaCache::new(
+            root.clone(),
+            "http://127.0.0.1:1234",
+            Arc::new(FixtureFetcher {
+                bytes: b"pending".to_vec(),
+                content_type: "image/png".to_string(),
+            }),
+        )
+        .expect("cache");
+        // Declared interest alone is not a capacity proof: an interrupted
+        // generation can leave a large, unreferenced object behind.
+        fs::write(
+            root.join(format!("{}.bin", "f".repeat(64))),
+            vec![0; 96_000_000],
+        )
+        .expect("orphan object");
+
+        cache
+            .reconcile_active_catalog("generation-1", vec![descriptor(b"pending", "image/png")])
+            .await
+            .expect("reclaim orphan and adopt");
+
+        assert!(!root.join(format!("{}.bin", "f".repeat(64))).exists());
     }
 }
