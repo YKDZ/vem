@@ -1440,7 +1440,7 @@ async fn refresh_catalog(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
             // after a newer catalog has already been adopted.
             let adoption_token = media_cache.register_catalog_adoption();
             let shutdown = ctx.background_shutdown.clone();
-            let task = tokio::spawn(async move {
+            if let Err(error) = media_cache.clone().spawn_owned_task(async move {
                 if shutdown.is_cancelled() {
                     return;
                 }
@@ -1476,8 +1476,9 @@ async fn refresh_catalog(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
                     }
                 }
                 current.last_error = Some(error);
-            });
-            ctx.media_cache.track_background_task(task);
+            }) {
+                eprintln!("managed media reconcile task rejected during shutdown: {error}");
+            }
             Json(value).into_response()
         }
         Err(error) => error_response(StatusCode::BAD_GATEWAY, "catalog_refresh_failed", error),
