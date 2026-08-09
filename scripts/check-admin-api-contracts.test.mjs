@@ -288,6 +288,98 @@ describe("admin api contract guard", () => {
     });
   });
 
+  it("rejects a disallowed request import even when no helper call uses it", () => {
+    const bypass = completeCatalogContractFixture();
+    bypass["apps/admin-ui/src/api/try-on-garments.ts"] = bypass[
+      "apps/admin-ui/src/api/try-on-garments.ts"
+    ].replace(
+      'import { callAdminEndpointContract } from "./request";',
+      'import { callAdminEndpointContract, request } from "./request";',
+    );
+    withFixture(bypass, (root) => {
+      const result = checkAdminApiContracts({ root });
+      assert.equal(result.ok, false);
+      assert.match(
+        result.failures.join("\n"),
+        /migration API import denied: apps\/admin-ui\/src\/api\/try-on-garments\.ts imports request from \.\/request/,
+      );
+    });
+  });
+
+  it("rejects every file-level migration transport escape hatch", () => {
+    const escapeHatches = [
+      {
+        name: "local-shadowed, globalThis, and window fetch",
+        mutate: (source) =>
+          `${source}\nasync function fetch(_url: string) {}\nexport async function otherNetworkCode() { await fetch("/local"); await globalThis.fetch("/global"); await window.fetch("/window"); }\n`,
+        expected:
+          /migration API network entry denied: apps\/admin-ui\/src\/api\/try-on-garments\.ts uses fetch/,
+      },
+      {
+        name: "dynamic request member",
+        mutate: (source) =>
+          source
+            .replace(
+              'import { callAdminEndpointContract } from "./request";',
+              'import { callAdminEndpointContract, request } from "./request";',
+            )
+            .concat(
+              '\nexport async function dynamicTransport(method: "get") { return request[method]("/raw"); }\n',
+            ),
+        expected: /imports request from \.\/request/,
+      },
+      {
+        name: "request transport assignment",
+        mutate: (source) =>
+          source
+            .replace(
+              'import { callAdminEndpointContract } from "./request";',
+              'import { callAdminEndpointContract, request } from "./request";',
+            )
+            .concat("\nconst transport = request;\n"),
+        expected: /imports request from \.\/request/,
+      },
+      {
+        name: "request transport destructuring",
+        mutate: (source) =>
+          source
+            .replace(
+              'import { callAdminEndpointContract } from "./request";',
+              'import { callAdminEndpointContract, request } from "./request";',
+            )
+            .concat("\nconst { get: transportGet } = request;\n"),
+        expected: /imports request from \.\/request/,
+      },
+      {
+        name: "namespace transport alias",
+        mutate: (source) =>
+          source
+            .replace(
+              'import { callAdminEndpointContract } from "./request";',
+              'import * as requestApi from "./request";',
+            )
+            .replaceAll(
+              "callAdminEndpointContract(",
+              "requestApi.callAdminEndpointContract(",
+            )
+            .concat("\nconst transport = requestApi;\n"),
+        expected:
+          /namespace misuse: apps\/admin-ui\/src\/api\/try-on-garments\.ts uses requestApi outside direct callAdminEndpointContract/,
+      },
+    ];
+    for (const { name, mutate, expected } of escapeHatches) {
+      const bypass = completeCatalogContractFixture();
+      bypass["apps/admin-ui/src/api/try-on-garments.ts"] = mutate(
+        bypass["apps/admin-ui/src/api/try-on-garments.ts"],
+      );
+      withFixture(bypass, (root) => {
+        const result = checkAdminApiContracts({ root });
+        assert.equal(result.ok, false, name);
+        assert.match(result.failures.join("\n"), expected, name);
+      });
+    }
+  });
+
   it("rejects a raw request entry even outside a registry caller", () => {
     const bypass = completeCatalogContractFixture();
     bypass["apps/admin-ui/src/api/try-on-garments.ts"] = bypass[

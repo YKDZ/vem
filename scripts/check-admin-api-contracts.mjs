@@ -664,6 +664,132 @@ function requestImportBindings(file) {
   return { named, namespaces };
 }
 
+function isTransparentWrapper(node) {
+  return (
+    ts.isParenthesizedExpression(node) ||
+    ts.isAsExpression(node) ||
+    ts.isTypeAssertionExpression(node) ||
+    ts.isNonNullExpression(node) ||
+    ts.isSatisfiesExpression(node)
+  );
+}
+
+function isAllowedRequestNamespaceUse(identifier) {
+  let current = identifier;
+  const property = current.parent;
+  if (
+    !ts.isPropertyAccessExpression(property) ||
+    property.expression !== current ||
+    property.name.text !== "callAdminEndpointContract"
+  ) {
+    return false;
+  }
+  current = property;
+  while (current.parent && isTransparentWrapper(current.parent)) {
+    current = current.parent;
+  }
+  return (
+    ts.isCallExpression(current.parent) && current.parent.expression === current
+  );
+}
+
+function checkMigrationApiImportAllowlist(root) {
+  const failures = [];
+  for (const path of MIGRATION_ADMIN_API_PATHS) {
+    if (!pathExists(root, path)) continue;
+    const file = parseTypeScript(path, readText(root, path));
+    const requestNamespaces = new Set();
+    file.forEachChild((node) => {
+      if (
+        !ts.isImportDeclaration(node) ||
+        !ts.isStringLiteral(node.moduleSpecifier) ||
+        !node.importClause ||
+        node.importClause.isTypeOnly
+      ) {
+        return;
+      }
+      const moduleName = node.moduleSpecifier.text;
+      const clause = node.importClause;
+      if (moduleName === "./request") {
+        if (clause.name) {
+          failures.push(
+            `migration API import denied: ${path} imports default from ./request`,
+          );
+        }
+        const bindings = clause.namedBindings;
+        if (!bindings) return;
+        if (ts.isNamespaceImport(bindings)) {
+          requestNamespaces.add(bindings.name.text);
+          return;
+        }
+        for (const element of bindings.elements) {
+          if (element.isTypeOnly) continue;
+          const importedName = element.propertyName?.text ?? element.name.text;
+          if (importedName !== "callAdminEndpointContract") {
+            failures.push(
+              `migration API import denied: ${path} imports ${importedName} from ./request`,
+            );
+          }
+        }
+        return;
+      }
+      const importsNetworkTransport =
+        moduleName === "axios" ||
+        moduleName.includes("fetch") ||
+        clause.name?.text === "axios" ||
+        clause.name?.text === "fetch" ||
+        (clause.namedBindings &&
+          ts.isNamedImports(clause.namedBindings) &&
+          clause.namedBindings.elements.some(
+            (element) =>
+              !element.isTypeOnly &&
+              ["axios", "fetch"].includes(
+                element.propertyName?.text ?? element.name.text,
+              ),
+          ));
+      if (importsNetworkTransport) {
+        failures.push(
+          `migration API import denied: ${path} imports transport ${moduleName}`,
+        );
+      }
+    });
+
+    const visit = (node) => {
+      if (
+        ts.isIdentifier(node) &&
+        requestNamespaces.has(node.text) &&
+        !ts.isImportClause(node.parent) &&
+        !ts.isNamespaceImport(node.parent) &&
+        !isAllowedRequestNamespaceUse(node)
+      ) {
+        failures.push(
+          `migration API namespace misuse: ${path} uses ${node.text} outside direct callAdminEndpointContract`,
+        );
+      }
+      if (
+        ts.isCallExpression(node) &&
+        isForbiddenGlobalFetch(node.expression)
+      ) {
+        failures.push(`migration API network entry denied: ${path} uses fetch`);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+  }
+  return failures;
+}
+
+function isForbiddenGlobalFetch(expression) {
+  const current = unwrapTransparentExpression(expression);
+  if (ts.isIdentifier(current)) return current.text === "fetch";
+  return (
+    ts.isPropertyAccessExpression(current) &&
+    ts.isIdentifier(current.expression) &&
+    ["globalThis", "window"].includes(current.expression.text) &&
+    current.name.text === "fetch"
+  );
+}
+
 function importedNetworkBindings(file) {
   const bindings = new Map();
   file.forEachChild((node) => {
@@ -984,6 +1110,7 @@ function checkTryOnContractCoverage(root) {
   const registered = registeredControllers(root);
   const requestCalls = requestHelperCalls(root);
   const migrationCalls = migrationNetworkCalls(root);
+  const migrationImportFailures = checkMigrationApiImportAllowlist(root);
   const callers = requestCalls.filter(
     (call) => call.helper === "callAdminEndpointContract" && call.contract,
   );
@@ -1001,6 +1128,8 @@ function checkTryOnContractCoverage(root) {
   if (!targetsTryOn) {
     return { failures, callerHits, providerHits };
   }
+
+  failures.push(...migrationImportFailures);
 
   for (const call of migrationCalls) {
     if (call.entry === "callAdminEndpointContract") continue;
