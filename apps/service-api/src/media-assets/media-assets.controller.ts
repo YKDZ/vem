@@ -15,6 +15,7 @@ import { FileInterceptor } from "@nestjs/platform-express";
 import { ApiBearerAuth, ApiConsumes, ApiTags } from "@nestjs/swagger";
 import {
   adminProductDisplayImageUploadContract,
+  adminTryOnGarmentUploadContract,
   adminTryOnSilhouetteUploadContract,
 } from "@vem/shared";
 
@@ -24,6 +25,7 @@ import { AdminResponseContract } from "../common/admin-response-contract.decorat
 import {
   MAX_PRODUCT_DISPLAY_IMAGE_BYTES,
   MAX_TRY_ON_SILHOUETTE_BYTES,
+  MAX_TRY_ON_GARMENT_BYTES,
   MediaAssetsService,
 } from "./media-assets.service";
 
@@ -76,6 +78,24 @@ export class MediaAssetsController {
     );
   }
 
+  @RequirePermissions("products.write")
+  @Post(adminTryOnGarmentUploadContract.path.replace("/media-assets/", ""))
+  @ApiConsumes("multipart/form-data")
+  @AdminResponseContract(adminTryOnGarmentUploadContract)
+  @UseInterceptors(
+    FileInterceptor("file", {
+      limits: { fileSize: MAX_TRY_ON_GARMENT_BYTES },
+    }),
+  )
+  async uploadTryOnGarment(
+    @UploadedFile()
+    file: UploadedImageFile,
+  ) {
+    return toTryOnGarmentMediaAsset(
+      await this.mediaAssetsService.storeTryOnGarment(file),
+    );
+  }
+
   @Public()
   @Get(":id/content")
   @Header("Cache-Control", "public, max-age=31536000, immutable")
@@ -87,6 +107,30 @@ export class MediaAssetsController {
     response.contentType(content.contentType);
     content.stream.pipe(response);
   }
+}
+
+function toTryOnGarmentMediaAsset(asset: {
+  id: string;
+  publicUrl: string;
+  purpose: string;
+  contentType: string;
+  byteSize: number;
+  width: number | null;
+  height: number | null;
+  hasTransparency: boolean | null;
+  sha256: string;
+}) {
+  return {
+    id: asset.id,
+    managedReference: asset.publicUrl,
+    purpose: asset.purpose,
+    contentType: asset.contentType,
+    byteSize: asset.byteSize,
+    width: asset.width,
+    height: asset.height,
+    hasTransparency: asset.hasTransparency,
+    sha256: asset.sha256,
+  };
 }
 
 function toAdminMediaAssetSummary(asset: {

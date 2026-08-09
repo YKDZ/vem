@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import type { ProductStatus } from "@vem/shared";
+import type { ProductStatus, TryOnGarmentMediaAsset } from "@vem/shared";
 
 import { PictureOutlined } from "@antdv-next/icons";
+import { isAxiosError } from "axios";
 import { onMounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 
@@ -18,6 +19,12 @@ import {
   type Product,
   type ProductVariant,
 } from "@/api/products";
+import {
+  confirmTryOnGarment,
+  createTryOnGarmentDraft,
+  uploadTryOnGarment,
+  type TryOnGarmentResponse,
+} from "@/api/try-on-garments";
 import { useAuthStore } from "@/stores/auth";
 import { formatDateTime } from "@/utils/format";
 
@@ -136,6 +143,102 @@ async function saveProduct(): Promise<void> {
   } finally {
     productSaving.value = false;
   }
+}
+
+// Try-On Garment draft
+const tryOnGarmentModalOpen = ref(false);
+const tryOnGarmentProduct = ref<Product | null>(null);
+const tryOnGarmentAsset = ref<TryOnGarmentMediaAsset | null>(null);
+const tryOnGarmentDraft = ref<TryOnGarmentResponse | null>(null);
+const tryOnGarmentColorLabel = ref("");
+const tryOnGarmentTemplate = ref<"tshirt_short_sleeve" | "tshirt_long_sleeve">(
+  "tshirt_short_sleeve",
+);
+const tryOnGarmentInput = ref<HTMLInputElement | null>(null);
+const tryOnGarmentUploading = ref(false);
+const tryOnGarmentSaving = ref(false);
+const tryOnGarmentConfirming = ref(false);
+const tryOnGarmentPreviewFailed = ref(false);
+const tryOnGarmentFeedback = ref("");
+
+function openTryOnGarmentDraft(product: Product): void {
+  tryOnGarmentProduct.value = product;
+  tryOnGarmentAsset.value = null;
+  tryOnGarmentDraft.value = null;
+  tryOnGarmentColorLabel.value = "";
+  tryOnGarmentTemplate.value = "tshirt_short_sleeve";
+  tryOnGarmentPreviewFailed.value = false;
+  tryOnGarmentFeedback.value = "上传透明 PNG 后，系统会显示确定性校验结果。";
+  tryOnGarmentModalOpen.value = true;
+}
+
+async function onTryOnGarmentSelected(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file) return;
+
+  tryOnGarmentUploading.value = true;
+  tryOnGarmentFeedback.value = "正在校验 PNG、尺寸和透明背景…";
+  try {
+    const asset = await uploadTryOnGarment(file);
+    tryOnGarmentAsset.value = asset;
+    tryOnGarmentPreviewFailed.value = false;
+    tryOnGarmentFeedback.value = [
+      "校验通过：透明 PNG。",
+      `尺寸 ${asset.width} × ${asset.height}，${asset.byteSize} bytes。`,
+      `SHA-256: ${asset.sha256}`,
+    ].join(" ");
+  } catch (error) {
+    tryOnGarmentFeedback.value = `校验失败：${errorMessage(error)}`;
+  } finally {
+    tryOnGarmentUploading.value = false;
+  }
+}
+
+async function saveTryOnGarmentDraft(): Promise<void> {
+  const product = tryOnGarmentProduct.value;
+  const asset = tryOnGarmentAsset.value;
+  if (!product || !asset) return;
+
+  tryOnGarmentSaving.value = true;
+  try {
+    tryOnGarmentDraft.value = await createTryOnGarmentDraft({
+      productId: product.id,
+      colorLabel: tryOnGarmentColorLabel.value,
+      sourceMediaAssetId: asset.id,
+      template: tryOnGarmentTemplate.value,
+    });
+    tryOnGarmentFeedback.value = "草稿已创建。请核对预览后显式确认来源。";
+  } catch (error) {
+    tryOnGarmentFeedback.value = `创建失败：${errorMessage(error)}`;
+  } finally {
+    tryOnGarmentSaving.value = false;
+  }
+}
+
+async function confirmTryOnGarmentSource(): Promise<void> {
+  const draft = tryOnGarmentDraft.value;
+  if (!draft) return;
+
+  tryOnGarmentConfirming.value = true;
+  try {
+    tryOnGarmentDraft.value = await confirmTryOnGarment(draft.id);
+    tryOnGarmentFeedback.value =
+      "来源已确认，仍保持草稿，未激活或关联任何 SKU。";
+  } catch (error) {
+    tryOnGarmentFeedback.value = `确认失败：${errorMessage(error)}`;
+  } finally {
+    tryOnGarmentConfirming.value = false;
+  }
+}
+
+function errorMessage(error: unknown): string {
+  if (isAxiosError<{ message?: unknown }>(error)) {
+    const message = error.response?.data?.message;
+    if (typeof message === "string" && message) return message;
+  }
+  return error instanceof Error ? error.message : "请求失败";
 }
 
 // Variants
@@ -332,6 +435,13 @@ watch(
               <a-button size="small" @click="openVariants(record)"
                 >SKU</a-button
               >
+              <a-button
+                v-if="canWrite"
+                size="small"
+                @click="openTryOnGarmentDraft(record)"
+              >
+                新增试衣源
+              </a-button>
               <a-button
                 v-if="canWrite"
                 size="small"
@@ -559,6 +669,102 @@ watch(
             <a-select-option value="inactive">下架</a-select-option>
           </a-select>
         </a-form-item>
+      </a-form>
+    </a-modal>
+
+    <a-modal
+      v-model:open="tryOnGarmentModalOpen"
+      title="新增 Try-On Garment 草稿"
+      :footer="null"
+      :destroy-on-hidden="true"
+    >
+      <a-form layout="vertical">
+        <a-form-item label="商品">
+          <a-input :value="tryOnGarmentProduct?.name" disabled />
+        </a-form-item>
+        <a-form-item label="可见颜色">
+          <a-input
+            v-model:value="tryOnGarmentColorLabel"
+            :disabled="Boolean(tryOnGarmentDraft)"
+            placeholder="例如：海军蓝"
+          />
+        </a-form-item>
+        <a-form-item label="T 恤模板">
+          <a-select
+            v-model:value="tryOnGarmentTemplate"
+            :disabled="Boolean(tryOnGarmentDraft)"
+          >
+            <a-select-option value="tshirt_short_sleeve">
+              短袖 T 恤
+            </a-select-option>
+            <a-select-option value="tshirt_long_sleeve">
+              长袖 T 恤
+            </a-select-option>
+          </a-select>
+        </a-form-item>
+        <a-form-item label="透明 PNG 来源">
+          <div class="space-y-3">
+            <img
+              v-if="tryOnGarmentAsset && !tryOnGarmentPreviewFailed"
+              class="h-48 w-full rounded border border-slate-200 bg-slate-50 object-contain"
+              :src="tryOnGarmentAsset.managedReference"
+              alt="Try-On Garment 来源预览"
+              @error="tryOnGarmentPreviewFailed = true"
+            />
+            <div
+              v-else
+              class="flex h-32 items-center justify-center rounded border border-dashed border-slate-300 bg-slate-50 text-sm text-slate-400"
+            >
+              请上传前视透明 T 恤 PNG
+            </div>
+            <input
+              ref="tryOnGarmentInput"
+              class="hidden"
+              type="file"
+              accept="image/png"
+              :disabled="Boolean(tryOnGarmentDraft)"
+              @change="onTryOnGarmentSelected"
+            />
+            <a-button
+              :loading="tryOnGarmentUploading"
+              :disabled="Boolean(tryOnGarmentDraft)"
+              @click="tryOnGarmentInput?.click()"
+            >
+              上传并校验 PNG
+            </a-button>
+            <p class="text-xs leading-5 text-slate-500">
+              仅接受透明 PNG；不会自动抠图、生成来源或运行 Fast/AI 推理。
+            </p>
+          </div>
+        </a-form-item>
+        <a-alert
+          v-if="tryOnGarmentFeedback"
+          :message="tryOnGarmentFeedback"
+          type="info"
+          show-icon
+          class="mb-4"
+        />
+        <div class="flex justify-end gap-2">
+          <a-button @click="tryOnGarmentModalOpen = false">取消</a-button>
+          <a-button
+            v-if="!tryOnGarmentDraft"
+            type="primary"
+            :loading="tryOnGarmentSaving"
+            :disabled="!tryOnGarmentAsset || !tryOnGarmentColorLabel.trim()"
+            @click="saveTryOnGarmentDraft"
+          >
+            创建草稿
+          </a-button>
+          <a-button
+            v-else
+            type="primary"
+            :loading="tryOnGarmentConfirming"
+            :disabled="Boolean(tryOnGarmentDraft.confirmedAt)"
+            @click="confirmTryOnGarmentSource"
+          >
+            {{ tryOnGarmentDraft.confirmedAt ? "来源已确认" : "确认来源" }}
+          </a-button>
+        </div>
       </a-form>
     </a-modal>
   </section>

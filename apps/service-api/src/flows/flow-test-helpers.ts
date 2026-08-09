@@ -262,6 +262,7 @@ export async function pollMachineHeartbeatCount(
 export async function cleanupBusinessTables(db: DrizzleDB): Promise<void> {
   await db.client.execute(sql`
     TRUNCATE TABLE
+      try_on_garments,
       mock_payment_code_trades,
       payment_code_attempts,
       payment_reconciliation_attempts,
@@ -296,7 +297,8 @@ export async function cleanupBusinessTables(db: DrizzleDB): Promise<void> {
       machine_slots,
       machines,
       product_variants,
-      products
+      products,
+      media_assets
     RESTART IDENTITY CASCADE
   `);
 }

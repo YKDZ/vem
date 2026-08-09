@@ -27,6 +27,7 @@ import { OrdersModule } from "./orders/orders.module";
 import { PaymentsModule } from "./payments/payments.module";
 import { ProductsModule } from "./products/products.module";
 import { RolesModule } from "./roles/roles.module";
+import { TryOnGarmentsModule } from "./try-on-garments/try-on-garments.module";
 import { VendingModule } from "./vending/vending.module";
 
 @Module({
@@ -54,6 +55,7 @@ import { VendingModule } from "./vending/vending.module";
     HardwareErrorPoliciesModule,
     MaintenanceWorkOrdersModule,
     MediaAssetsModule,
+    TryOnGarmentsModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: AllExceptionsFilter },

@@ -11,3 +11,14 @@ export const productStatuses = productStatusSchema.options;
 export const variantStatusSchema = z.enum(["active", "inactive"]);
 export type VariantStatus = z.infer<typeof variantStatusSchema>;
 export const variantStatuses = variantStatusSchema.options;
+
+export const tryOnGarmentTemplateSchema = z.enum(
+  ["tshirt_short_sleeve", "tshirt_long_sleeve"],
+  { error: "TRY_ON_GARMENT_TEMPLATE_INVALID" },
+);
+export type TryOnGarmentTemplate = z.infer<typeof tryOnGarmentTemplateSchema>;
+export const tryOnGarmentTemplates = tryOnGarmentTemplateSchema.options;
+
+export const tryOnGarmentStatusSchema = z.enum(["draft", "active", "retired"]);
+export type TryOnGarmentStatus = z.infer<typeof tryOnGarmentStatusSchema>;
+export const tryOnGarmentStatuses = tryOnGarmentStatusSchema.options;

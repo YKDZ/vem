@@ -2,9 +2,48 @@ import { BadRequestException } from "@nestjs/common";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { deflateSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MediaAssetsService } from "./media-assets.service";
+
+function transparentPng(width = 256, height = 256): Buffer {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
+  const pixels = Buffer.alloc((width * 4 + 1) * height);
+  for (let row = 0; row < height; row += 1) {
+    pixels[row * (width * 4 + 1)] = 0;
+  }
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", deflateSync(pixels)),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+function pngChunk(type: string, data: Buffer): Buffer {
+  const header = Buffer.alloc(8);
+  header.writeUInt32BE(data.byteLength, 0);
+  header.write(type, 4, "ascii");
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(Buffer.concat([Buffer.from(type), data])), 0);
+  return Buffer.concat([header, data, crc]);
+}
+
+function crc32(value: Buffer): number {
+  let crc = 0xffffffff;
+  for (const byte of value) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
 
 describe("MediaAssetsService", () => {
   let storageRoot: string;
@@ -132,6 +171,85 @@ describe("MediaAssetsService", () => {
           "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
       }),
     );
+  });
+
+  it("stores a transparent PNG try-on garment with immutable media facts", async () => {
+    const garment = transparentPng();
+    const values = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([
+        {
+          id: "550e8400-e29b-41d4-a716-446655440125",
+          purpose: "try_on_garment",
+          storageProvider: "local",
+          storageKey:
+            "try-on-garments/550e8400-e29b-41d4-a716-446655440125.png",
+          contentType: "image/png",
+          byteSize: garment.byteLength,
+          width: 256,
+          height: 256,
+          hasTransparency: true,
+          sha256: "a".repeat(64),
+        },
+      ]),
+    });
+    db.insert.mockReturnValue({ values });
+    const service = new MediaAssetsService(db as never, {
+      mediaAssetStorageRoot: storageRoot,
+      mediaAssetPublicBaseUrl: undefined,
+    });
+
+    await expect(
+      service.storeTryOnGarment({
+        originalname: "shirt.png",
+        mimetype: "image/png",
+        size: garment.byteLength,
+        buffer: garment,
+      }),
+    ).resolves.toMatchObject({
+      purpose: "try_on_garment",
+      contentType: "image/png",
+      byteSize: garment.byteLength,
+      width: 256,
+      height: 256,
+      hasTransparency: true,
+    });
+    expect(values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        purpose: "try_on_garment",
+        contentType: "image/png",
+        width: 256,
+        height: 256,
+        hasTransparency: true,
+        sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      }),
+    );
+  });
+
+  it("rejects unsupported and undersized Try-On Garment media with stable errors", async () => {
+    const service = new MediaAssetsService(db as never, {
+      mediaAssetStorageRoot: storageRoot,
+      mediaAssetPublicBaseUrl: undefined,
+    });
+    const undersized = transparentPng(1, 1);
+
+    await expect(
+      service.storeTryOnGarment({
+        originalname: "shirt.jpg",
+        mimetype: "image/jpeg",
+        size: 4,
+        buffer: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      }),
+    ).rejects.toMatchObject({ message: "TRY_ON_GARMENT_PNG_REQUIRED" });
+    await expect(
+      service.storeTryOnGarment({
+        originalname: "tiny-shirt.png",
+        mimetype: "image/png",
+        size: undersized.byteLength,
+        buffer: undersized,
+      }),
+    ).rejects.toMatchObject({
+      message: "TRY_ON_GARMENT_DIMENSIONS_TOO_SMALL",
+    });
   });
 
   it.each([

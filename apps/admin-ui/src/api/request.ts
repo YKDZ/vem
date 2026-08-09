@@ -1,4 +1,7 @@
-import type { AdminApiResponseContract } from "@vem/shared";
+import type {
+  AdminApiEndpointContract,
+  AdminApiResponseContract,
+} from "@vem/shared";
 
 import axios, {
   AxiosError,
@@ -291,6 +294,80 @@ export async function postAdminApiContract<TResponseSchema extends z.ZodType>(
     data,
     `${contract.path} response`,
   );
+}
+
+export async function callAdminEndpointContract<
+  TMethod extends "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
+  TPath extends string,
+  TPathParamsSchema extends z.ZodType,
+  TQuerySchema extends z.ZodType,
+  TBodySchema extends z.ZodType,
+  TResponseSchema extends z.ZodType,
+>(
+  contract: AdminApiEndpointContract<
+    TMethod,
+    TPath,
+    TPathParamsSchema,
+    TQuerySchema,
+    TBodySchema,
+    TResponseSchema
+  >,
+  input: {
+    pathParams?: z.input<TPathParamsSchema>;
+    query?: z.input<TQuerySchema>;
+    body?: z.input<TBodySchema>;
+  },
+): Promise<z.output<TResponseSchema>> {
+  const pathParams = parseAdminContract(
+    contract.pathParamsSchema,
+    input.pathParams ?? {},
+    `${contract.path} path parameters`,
+  );
+  const query = parseAdminContract(
+    contract.querySchema,
+    input.query ?? {},
+    `${contract.path} query`,
+  );
+  const body = parseAdminContract(
+    contract.bodySchema,
+    input.body ?? {},
+    `${contract.path} request`,
+  );
+  const data = await unwrap(
+    request.request<ApiResponse<unknown>>({
+      method: contract.method,
+      url: resolveContractPath(contract.path, pathParams),
+      params: query,
+      data: toContractTransportBody(body),
+    }),
+  );
+  return parseAdminContract(
+    contract.responseSchema,
+    data,
+    `${contract.path} response`,
+  );
+}
+
+function resolveContractPath(path: string, pathParams: unknown): string {
+  if (!isRecord(pathParams)) {
+    throw new Error("Admin API contract path parameters must be an object");
+  }
+  return path.replace(/:([A-Za-z0-9_]+)/g, (_placeholder, key: string) => {
+    const value = pathParams[key];
+    if (typeof value !== "string") {
+      throw new Error(`Admin API contract path parameter ${key} is missing`);
+    }
+    return encodeURIComponent(value);
+  });
+}
+
+function toContractTransportBody(value: unknown): unknown {
+  if (!isRecord(value) || !Object.hasOwn(value, "file")) return value;
+  const file = value.file;
+  if (!(file instanceof Blob)) return value;
+  const body = new FormData();
+  body.append("file", file);
+  return body;
 }
 
 export async function patchContract<

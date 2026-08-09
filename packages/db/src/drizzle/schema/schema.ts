@@ -27,6 +27,7 @@ import {
   paymentStatuses,
   permissionCodes,
   productStatuses,
+  tryOnGarmentStatuses,
   refundStatuses,
   roleStatuses,
   variantStatuses,
@@ -68,6 +69,10 @@ export const productStatus = t.pgEnum(
 export const variantStatus = t.pgEnum(
   "variant_status",
   asPgEnumValues(variantStatuses),
+);
+export const tryOnGarmentStatus = t.pgEnum(
+  "try_on_garment_status",
+  asPgEnumValues(tryOnGarmentStatuses),
 );
 export const machineStatus = t.pgEnum(
   "machine_status",
@@ -332,6 +337,9 @@ export const mediaAssets = t.pgTable(
     byteSize: t.integer("byte_size").notNull(),
     originalFilename: t.varchar("original_filename", { length: 255 }),
     sha256: t.varchar("sha256", { length: 64 }).notNull(),
+    width: t.integer("width"),
+    height: t.integer("height"),
+    hasTransparency: t.boolean("has_transparency"),
     publicUrl: t.text("public_url").notNull(),
     createdAt: createdAt(),
     deletedAt: deletedAt(),
@@ -409,6 +417,37 @@ export const productVariants = t.pgTable(
     t.check(
       "product_variants_target_gender_enum",
       sql`${table.targetGender} IS NULL OR ${table.targetGender} IN ('male', 'female')`,
+    ),
+  ],
+);
+
+export const tryOnGarments = t.pgTable(
+  "try_on_garments",
+  {
+    id: id(),
+    productId: t
+      .uuid("product_id")
+      .notNull()
+      .references(() => products.id),
+    colorLabel: t.varchar("color_label", { length: 32 }).notNull(),
+    sourceMediaAssetId: t
+      .uuid("source_media_asset_id")
+      .notNull()
+      .references(() => mediaAssets.id),
+    template: t.varchar("template", { length: 32 }).notNull(),
+    status: tryOnGarmentStatus("status").default("draft").notNull(),
+    confirmedAt: t.timestamp("confirmed_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    t.index("try_on_garments_product_id_idx").on(table.productId),
+    t
+      .index("try_on_garments_source_media_asset_id_idx")
+      .on(table.sourceMediaAssetId),
+    t.check(
+      "try_on_garments_template_supported",
+      sql`${table.template} IN ('tshirt_short_sleeve', 'tshirt_long_sleeve')`,
     ),
   ],
 );
