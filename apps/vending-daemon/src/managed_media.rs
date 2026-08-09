@@ -261,12 +261,20 @@ struct Entry {
     pinned: bool,
     active: bool,
     leases: usize,
+    /// Lease reservations are keyed by the publication that granted them.
+    /// A same-digest republication must never cause an old response body's
+    /// drop to release (or quarantine) the new publication.
+    lease_reservations: HashMap<u64, usize>,
     last_used: SystemTime,
     warming_generation: Option<String>,
     /// Changes whenever an adoption republishes this digest.  A slow
     /// defensive read may release its lease afterwards, but it must never
     /// downgrade a newer Ready publication.
     read_version: u64,
+    /// A defensive reread found corruption, but a response body from this
+    /// publication is still alive.  The last matching lease performs the
+    /// version-fenced quarantine under the publication gate.
+    pending_quarantine: Option<u64>,
 }
 
 #[derive(Debug, Default)]
@@ -669,9 +677,11 @@ impl ManagedMediaCache {
                                 pinned: true,
                                 active: true,
                                 leases: 0,
+                                lease_reservations: HashMap::new(),
                                 last_used: SystemTime::now(),
                                 warming_generation: None,
                                 read_version: 1,
+                                pending_quarantine: None,
                             },
                         )
                     })
@@ -829,6 +839,26 @@ impl ManagedMediaCache {
         if let Some(error) = self.state.lock().await.fatal_error.clone() {
             return Err(format!("managed media cache unavailable: {error}"));
         }
+        // A digest already known to this cache is immutable across catalog
+        // generations.  Reject before any disk/manifest mutation; accepting a
+        // changed type, size or canonical managed-media identity would make a
+        // held response lease ambiguous.
+        {
+            let state = self.state.lock().await;
+            for object in &interest.objects {
+                if let Some(existing) = state
+                    .entries
+                    .get(&object.descriptor.digest)
+                    .filter(|entry| entry.active || entry.leases > 0)
+                {
+                    if media_identity(&existing.descriptor) != media_identity(&object.descriptor) {
+                        return Err(
+                            "managed media digest conflicts with known immutable facts".to_string()
+                        );
+                    }
+                }
+            }
+        }
 
         // Recovery and regular reconciliation share the same inventory rule:
         // no loose object, metadata, or staging file is allowed to consume the
@@ -888,9 +918,11 @@ impl ManagedMediaCache {
                         pinned: false,
                         active: false,
                         leases: 0,
+                        lease_reservations: HashMap::new(),
                         last_used: SystemTime::now(),
                         warming_generation: None,
                         read_version: 0,
+                        pending_quarantine: None,
                     });
                 entry.descriptor = descriptor.clone();
                 entry.candidates = object.candidates.clone();
@@ -904,6 +936,7 @@ impl ManagedMediaCache {
                 };
                 entry.warming_generation = (!published).then(|| generation.clone());
                 entry.read_version = entry.read_version.wrapping_add(1);
+                entry.pending_quarantine = None;
             }
             state.generation = generation.clone();
             state.epoch = state.epoch.wrapping_add(1);
@@ -1049,6 +1082,10 @@ impl ManagedMediaCache {
                 return Err(MediaReadError::NotReady);
             }
             entry.leases += 1;
+            *entry
+                .lease_reservations
+                .entry(entry.read_version)
+                .or_default() += 1;
             entry.last_used = SystemTime::now();
             let descriptor = entry.descriptor.clone();
             let read_version = entry.read_version;
@@ -1074,8 +1111,11 @@ impl ManagedMediaCache {
             byte_size: descriptor.byte_size,
             digest: digest.to_string(),
             path: matches!(method, MediaReadMethod::Get).then_some(path),
+            quarantine_path: self.content_path(digest),
             state: self.state.clone(),
             identity,
+            read_version,
+            reconcile_gate: self.reconcile_gate.clone(),
         })
     }
 
@@ -1095,7 +1135,7 @@ impl ManagedMediaCache {
         let identity = media_identity(&descriptor);
         let quarantine = {
             let mut state = self.state.lock().await;
-            let (current_publication, no_leases) = {
+            let (current_publication, no_matching_leases) = {
                 let Some(entry) = state.entries.get_mut(digest) else {
                     return;
                 };
@@ -1106,16 +1146,23 @@ impl ManagedMediaCache {
                     return;
                 }
                 entry.leases = entry.leases.saturating_sub(1);
+                let reservations = entry.lease_reservations.entry(read_version).or_default();
+                *reservations = reservations.saturating_sub(1);
+                let no_matching_leases = *reservations == 0;
+                if no_matching_leases {
+                    entry.lease_reservations.remove(&read_version);
+                }
                 let current_publication = entry.read_version == read_version;
                 if current_publication {
                     entry.readiness = MediaReadiness::Unavailable;
                     entry.diagnostic =
                         Some("published media failed defensive read verification".to_string());
+                    entry.pending_quarantine = Some(read_version);
                 }
-                (current_publication, entry.leases == 0)
+                (current_publication, no_matching_leases)
             };
             state.epoch = state.epoch.wrapping_add(1);
-            current_publication && no_leases
+            current_publication && no_matching_leases
         };
         if quarantine {
             let _ = tokio::task::spawn_blocking(move || remove_optional_file(&path)).await;
@@ -1814,8 +1861,11 @@ pub struct MediaReadLease {
     pub byte_size: u64,
     pub digest: String,
     path: Option<PathBuf>,
+    quarantine_path: PathBuf,
     state: Arc<Mutex<CacheState>>,
     identity: MediaIdentity,
+    read_version: u64,
+    reconcile_gate: Arc<Mutex<()>>,
 }
 
 impl MediaReadLease {
@@ -1836,15 +1886,38 @@ impl Drop for MediaReadLease {
         let state = self.state.clone();
         let digest = self.digest.clone();
         let identity = self.identity.clone();
+        let read_version = self.read_version;
+        let path = self.quarantine_path.clone();
+        let reconcile_gate = self.reconcile_gate.clone();
         tokio::spawn(async move {
+            let _publication_gate = reconcile_gate.lock().await;
             let mut state = state.lock().await;
-            if let Some(entry) = state
+            let quarantine = if let Some(entry) = state
                 .entries
                 .get_mut(&digest)
                 .filter(|entry| media_identity(&entry.descriptor) == identity)
             {
                 entry.leases = entry.leases.saturating_sub(1);
+                let reservations = entry.lease_reservations.entry(read_version).or_default();
+                *reservations = reservations.saturating_sub(1);
+                let no_matching_leases = *reservations == 0;
+                if no_matching_leases {
+                    entry.lease_reservations.remove(&read_version);
+                }
+                let quarantine = entry.read_version == read_version
+                    && entry.pending_quarantine == Some(read_version)
+                    && no_matching_leases;
+                if quarantine {
+                    entry.pending_quarantine = None;
+                }
                 state.epoch = state.epoch.wrapping_add(1);
+                quarantine
+            } else {
+                false
+            };
+            drop(state);
+            if quarantine {
+                let _ = tokio::task::spawn_blocking(move || remove_optional_file(&path)).await;
             }
         });
     }
@@ -4394,5 +4467,150 @@ mod tests {
             .expect("reclaim orphan and adopt");
 
         assert!(!root.join(format!("{}.bin", "f".repeat(64))).exists());
+    }
+
+    #[tokio::test]
+    async fn pending_quarantine_waits_for_the_last_body_lease_then_allows_same_digest_repair() {
+        let root = tempdir().expect("tempdir").keep();
+        let bytes = b"\x89PNG\r\n\x1a\npending-quarantine".to_vec();
+        let descriptor = descriptor(&bytes, "image/png");
+        let cache = ManagedMediaCache::new(
+            root.clone(),
+            "http://127.0.0.1:1234",
+            Arc::new(FixtureFetcher {
+                bytes: bytes.clone(),
+                content_type: "image/png".to_string(),
+            }),
+        )
+        .expect("cache");
+        cache
+            .reconcile_active_catalog("one", vec![descriptor.clone()])
+            .await
+            .expect("one");
+        for _ in 0..80 {
+            if cache.snapshot().await.1[0].readiness == MediaReadiness::Ready {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let body_lease = cache
+            .read_ready(
+                &cache.read_grant(),
+                MediaReadMethod::Head,
+                &descriptor.digest,
+            )
+            .await
+            .expect("body lease");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(cache.content_path(&descriptor.digest))
+            .expect("object")
+            .set_len(MEDIA_CACHE_HIGH_WATER_BYTES + 1)
+            .expect("expand");
+        assert!(matches!(
+            cache
+                .read_ready(
+                    &cache.read_grant(),
+                    MediaReadMethod::Head,
+                    &descriptor.digest
+                )
+                .await,
+            Err(MediaReadError::NotReady)
+        ));
+        assert!(
+            cache.content_path(&descriptor.digest).exists(),
+            "body lease keeps corrupt publication until drop"
+        );
+        drop(body_lease);
+        for _ in 0..80 {
+            if !cache.content_path(&descriptor.digest).exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(
+            !cache.content_path(&descriptor.digest).exists(),
+            "last matching lease quarantines pending corrupt publication"
+        );
+        cache
+            .reconcile_active_catalog("repair", vec![descriptor.clone()])
+            .await
+            .expect("repair");
+        for _ in 0..80 {
+            if cache.snapshot().await.1[0].readiness == MediaReadiness::Ready {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("same digest did not rewarm after pending quarantine");
+    }
+
+    #[tokio::test]
+    async fn known_digest_rejects_changed_facts_without_consuming_its_lease_but_allows_same_facts()
+    {
+        let bytes = b"\x89PNG\r\n\x1a\nimmutable-facts".to_vec();
+        let descriptor = descriptor(&bytes, "image/png");
+        let cache = ManagedMediaCache::new(
+            tempdir().expect("tempdir").keep(),
+            "http://127.0.0.1:1234",
+            Arc::new(FixtureFetcher {
+                bytes,
+                content_type: "image/png".to_string(),
+            }),
+        )
+        .expect("cache");
+        cache
+            .reconcile_active_catalog("one", vec![descriptor.clone()])
+            .await
+            .expect("one");
+        for _ in 0..80 {
+            if cache.snapshot().await.1[0].readiness == MediaReadiness::Ready {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let lease = cache
+            .read_ready(
+                &cache.read_grant(),
+                MediaReadMethod::Head,
+                &descriptor.digest,
+            )
+            .await
+            .expect("lease");
+        let mut conflict = descriptor.clone();
+        conflict.byte_size += 1;
+        assert!(
+            cache
+                .reconcile_active_catalog("conflict", vec![conflict])
+                .await
+                .is_err(),
+            "known digest facts must be rejected before adoption"
+        );
+        assert_eq!(
+            cache.state.lock().await.entries[&descriptor.digest].leases,
+            1
+        );
+        cache
+            .reconcile_active_catalog("same-facts", vec![descriptor.clone()])
+            .await
+            .expect("same immutable facts may cross generations");
+        drop(lease);
+        for _ in 0..80 {
+            if cache.state.lock().await.entries[&descriptor.digest].leases == 0 {
+                cache
+                    .reconcile_active_catalog("empty", vec![])
+                    .await
+                    .expect("remove active interest");
+                for _ in 0..80 {
+                    if cache.cleanup_bounded(1).await == 1 {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                panic!("released old publication was not cleanup eligible");
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("old publication lease did not release its own reservation");
     }
 }
