@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -45,6 +45,17 @@ describe("Daemon IPC contract generator", () => {
     ).toEqual(["unknownField", "missingCode"]);
   });
 
+  it("exports the complete managed-media boundary as one generated contract root", () => {
+    const schema = buildDaemonIpcGeneratedContractInputs().managedMedia.schema;
+    expect(schema.title).toBe("ManagedMediaContract");
+    expect(schema).toHaveProperty("properties.reconcileRequest");
+    expect(schema).toHaveProperty("properties.reconcileReceipt");
+    expect(schema).toHaveProperty("properties.projection");
+    expect(schema).toHaveProperty("properties.snapshot");
+    expect(JSON.stringify(schema)).toContain("diagnosticReason");
+    expect(JSON.stringify(schema)).toContain("127\\\\.0\\\\.0\\\\.1");
+  });
+
   it("orchestrates schema, fixture, and Rust generation without requiring git state", async () => {
     const root = await mkdtemp(join(tmpdir(), "vem-daemon-ipc-generator-"));
     const spawnCalls: Array<{ command: string; args: string[]; cwd: string }> =
@@ -67,6 +78,9 @@ describe("Daemon IPC contract generator", () => {
               stderr: "",
             };
           }
+          if (command === "pnpm") {
+            return { status: 0, stdout: "", stderr: "" };
+          }
           if (args.includes("--version")) {
             return {
               status: 0,
@@ -88,6 +102,7 @@ describe("Daemon IPC contract generator", () => {
       });
 
       expect(result.changedPaths).toEqual([]);
+      expect(existsSync(join(root, "exec"))).toBe(false);
       expect(spawnCalls).toEqual([
         expect.objectContaining({
           command: "pnpm",
@@ -285,6 +300,9 @@ describe("Daemon IPC contract generator", () => {
         if (_command === "node") {
           return { status: 0, stdout: "", stderr: "" };
         }
+        if (_command === "pnpm") {
+          return { status: 0, stdout: "", stderr: "" };
+        }
 
         if (args.includes("--version")) {
           return {
@@ -345,6 +363,9 @@ describe("Daemon IPC contract generator", () => {
           _options: { cwd: string; encoding: "utf8" },
         ) => {
           if (_command === "node") {
+            return { status: 0, stdout: "", stderr: "" };
+          }
+          if (_command === "pnpm") {
             return { status: 0, stdout: "", stderr: "" };
           }
 

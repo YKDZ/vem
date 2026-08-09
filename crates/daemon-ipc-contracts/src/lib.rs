@@ -63,8 +63,17 @@ pub type MachineProvisioningProfile =
 pub type MachineProvisioningProfileSnapshot =
     generated::runtime_configuration::RuntimeConfigurationContractSubtype7;
 pub type VendingSummary = generated::transaction_checkout::CurrentTransactionSnapshotVending;
-pub type ManagedMediaDescriptor = generated::managed_media::ManagedMediaDescriptor;
-pub type ManagedMediaRevision = generated::managed_media::ManagedMediaDescriptorRevision;
+pub type ManagedMediaContract = generated::managed_media::ManagedMediaContract;
+pub type ManagedMediaDescriptor =
+    generated::managed_media::ManagedMediaContractProjectionDescriptor;
+pub type ManagedMediaRevision =
+    generated::managed_media::ManagedMediaContractProjectionDescriptorRevision;
+pub type ManagedMediaProjection = generated::managed_media::ManagedMediaContractProjection;
+pub type ManagedMediaSnapshot = generated::managed_media::ManagedMediaContractSnapshot;
+pub type ManagedMediaReconcileRequest =
+    generated::managed_media::ManagedMediaContractReconcileRequest;
+pub type ManagedMediaReconcileReceipt =
+    generated::managed_media::ManagedMediaContractReconcileReceipt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoundaryValidationError {
@@ -84,6 +93,29 @@ impl fmt::Display for BoundaryValidationError {
 }
 
 impl std::error::Error for BoundaryValidationError {}
+
+pub fn validate_managed_media_reconcile_receipt_boundary(
+    receipt: &ManagedMediaReconcileReceipt,
+) -> Result<(), BoundaryValidationError> {
+    let mut issues = Vec::new();
+    if !receipt.accepted {
+        issues.push("managed media reconcile receipts must be accepted");
+    }
+    if receipt.interest_count < 0 {
+        issues.push("managed media reconcile receipts must not have a negative interestCount");
+    }
+    if receipt.interest_count as usize != receipt.snapshot.assets.len() {
+        issues.push("managed media reconcile receipts must report the complete snapshot count");
+    }
+    if receipt.generation.as_str() != receipt.snapshot.generation.as_str() {
+        issues.push("managed media reconcile receipt and snapshot generations must match");
+    }
+    if issues.is_empty() {
+        Ok(())
+    } else {
+        Err(BoundaryValidationError { issues })
+    }
+}
 
 pub fn validate_current_transaction_snapshot_boundary(
     snapshot: &CurrentTransactionSnapshot,

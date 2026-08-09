@@ -10,7 +10,7 @@ const projection = {
     id: "550e8400-e29b-41d4-a716-446655440124",
     reference: "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
     digest: `sha256:${"a".repeat(64)}`,
-    contentType: "image/png",
+    contentType: "image/png" as const,
     byteSize: 1,
     purpose: "product_display_image" as const,
     revision: { catalogRevision: "catalog-1" },

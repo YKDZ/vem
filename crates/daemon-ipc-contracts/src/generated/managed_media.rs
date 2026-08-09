@@ -33,13 +33,734 @@ pub mod error {
         }
     }
 }
-#[doc = "`ManagedMediaDescriptor`"]
+#[doc = "`ManagedMediaContract`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
-#[doc = "  \"title\": \"ManagedMediaDescriptor\","]
+#[doc = "  \"title\": \"ManagedMediaContract\","]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"projection\","]
+#[doc = "    \"reconcileReceipt\","]
+#[doc = "    \"reconcileRequest\","]
+#[doc = "    \"snapshot\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"projection\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"descriptor\","]
+#[doc = "        \"diagnostic\","]
+#[doc = "        \"readiness\","]
+#[doc = "        \"readyUrl\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"descriptor\": {"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"byteSize\","]
+#[doc = "            \"contentType\","]
+#[doc = "            \"digest\","]
+#[doc = "            \"id\","]
+#[doc = "            \"purpose\","]
+#[doc = "            \"reference\","]
+#[doc = "            \"revision\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"byteSize\": {"]
+#[doc = "              \"type\": \"integer\","]
+#[doc = "              \"maximum\": 9007199254740991.0,"]
+#[doc = "              \"exclusiveMinimum\": 0.0"]
+#[doc = "            },"]
+#[doc = "            \"contentType\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"enum\": ["]
+#[doc = "                \"image/png\","]
+#[doc = "                \"image/jpeg\","]
+#[doc = "                \"image/webp\""]
+#[doc = "              ]"]
+#[doc = "            },"]
+#[doc = "            \"digest\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"pattern\": \"^sha256:[0-9a-f]{64}$\""]
+#[doc = "            },"]
+#[doc = "            \"id\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"format\": \"uuid\","]
+#[doc = "              \"pattern\": \"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$\""]
+#[doc = "            },"]
+#[doc = "            \"purpose\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"enum\": ["]
+#[doc = "                \"product_display_image\","]
+#[doc = "                \"try_on_garment\""]
+#[doc = "              ]"]
+#[doc = "            },"]
+#[doc = "            \"reference\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"pattern\": \"^\\\\/api\\\\/media-assets\\\\/[0-9a-f-]+\\\\/content$\""]
+#[doc = "            },"]
+#[doc = "            \"revision\": {"]
+#[doc = "              \"type\": \"object\","]
+#[doc = "              \"required\": ["]
+#[doc = "                \"catalogRevision\""]
+#[doc = "              ],"]
+#[doc = "              \"properties\": {"]
+#[doc = "                \"assetRevision\": {"]
+#[doc = "                  \"type\": \"string\","]
+#[doc = "                  \"maxLength\": 128,"]
+#[doc = "                  \"minLength\": 1"]
+#[doc = "                },"]
+#[doc = "                \"catalogRevision\": {"]
+#[doc = "                  \"type\": \"string\","]
+#[doc = "                  \"maxLength\": 128,"]
+#[doc = "                  \"minLength\": 1"]
+#[doc = "                }"]
+#[doc = "              },"]
+#[doc = "              \"additionalProperties\": false"]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        },"]
+#[doc = "        \"diagnostic\": {"]
+#[doc = "          \"anyOf\": ["]
+#[doc = "            {"]
+#[doc = "              \"type\": \"string\""]
+#[doc = "            },"]
+#[doc = "            {"]
+#[doc = "              \"type\": \"null\""]
+#[doc = "            }"]
+#[doc = "          ]"]
+#[doc = "        },"]
+#[doc = "        \"diagnosticReason\": {"]
+#[doc = "          \"anyOf\": ["]
+#[doc = "            {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"enum\": ["]
+#[doc = "                \"descriptor_invalid\","]
+#[doc = "                \"cache_budget_exceeded\","]
+#[doc = "                \"manifest_persistence_failed\","]
+#[doc = "                \"download_failed\","]
+#[doc = "                \"byte_size_mismatch\","]
+#[doc = "                \"content_type_mismatch\","]
+#[doc = "                \"media_facts_invalid\","]
+#[doc = "                \"digest_mismatch\","]
+#[doc = "                \"published_media_corrupt\","]
+#[doc = "                \"defensive_read_failed\""]
+#[doc = "              ]"]
+#[doc = "            },"]
+#[doc = "            {"]
+#[doc = "              \"type\": \"null\""]
+#[doc = "            }"]
+#[doc = "          ]"]
+#[doc = "        },"]
+#[doc = "        \"readiness\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"enum\": ["]
+#[doc = "            \"ready\","]
+#[doc = "            \"warming\","]
+#[doc = "            \"unavailable\""]
+#[doc = "          ]"]
+#[doc = "        },"]
+#[doc = "        \"readyUrl\": {"]
+#[doc = "          \"anyOf\": ["]
+#[doc = "            {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"pattern\": \"^https?:\\\\/\\\\/(?:127\\\\.0\\\\.0\\\\.1|localhost|\\\\[::1\\\\])(?::(?:[1-9][0-9]{0,4}))?\\\\/media\\\\/sha256:[0-9a-f]{64}\\\\?grant=[A-Za-z0-9._~-]{16,128}$\""]
+#[doc = "            },"]
+#[doc = "            {"]
+#[doc = "              \"type\": \"null\""]
+#[doc = "            }"]
+#[doc = "          ]"]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    \"reconcileReceipt\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"accepted\","]
+#[doc = "        \"generation\","]
+#[doc = "        \"interestCount\","]
+#[doc = "        \"snapshot\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"accepted\": {"]
+#[doc = "          \"type\": \"boolean\","]
+#[doc = "          \"const\": true"]
+#[doc = "        },"]
+#[doc = "        \"generation\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"maxLength\": 128,"]
+#[doc = "          \"minLength\": 1"]
+#[doc = "        },"]
+#[doc = "        \"interestCount\": {"]
+#[doc = "          \"type\": \"integer\","]
+#[doc = "          \"maximum\": 256.0,"]
+#[doc = "          \"minimum\": 0.0"]
+#[doc = "        },"]
+#[doc = "        \"snapshot\": {"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"assets\","]
+#[doc = "            \"generation\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"assets\": {"]
+#[doc = "              \"type\": \"array\","]
+#[doc = "              \"items\": {"]
+#[doc = "                \"type\": \"object\","]
+#[doc = "                \"required\": ["]
+#[doc = "                  \"descriptor\","]
+#[doc = "                  \"diagnostic\","]
+#[doc = "                  \"readiness\","]
+#[doc = "                  \"readyUrl\""]
+#[doc = "                ],"]
+#[doc = "                \"properties\": {"]
+#[doc = "                  \"descriptor\": {"]
+#[doc = "                    \"type\": \"object\","]
+#[doc = "                    \"required\": ["]
+#[doc = "                      \"byteSize\","]
+#[doc = "                      \"contentType\","]
+#[doc = "                      \"digest\","]
+#[doc = "                      \"id\","]
+#[doc = "                      \"purpose\","]
+#[doc = "                      \"reference\","]
+#[doc = "                      \"revision\""]
+#[doc = "                    ],"]
+#[doc = "                    \"properties\": {"]
+#[doc = "                      \"byteSize\": {"]
+#[doc = "                        \"type\": \"integer\","]
+#[doc = "                        \"maximum\": 9007199254740991.0,"]
+#[doc = "                        \"exclusiveMinimum\": 0.0"]
+#[doc = "                      },"]
+#[doc = "                      \"contentType\": {"]
+#[doc = "                        \"type\": \"string\","]
+#[doc = "                        \"enum\": ["]
+#[doc = "                          \"image/png\","]
+#[doc = "                          \"image/jpeg\","]
+#[doc = "                          \"image/webp\""]
+#[doc = "                        ]"]
+#[doc = "                      },"]
+#[doc = "                      \"digest\": {"]
+#[doc = "                        \"type\": \"string\","]
+#[doc = "                        \"pattern\": \"^sha256:[0-9a-f]{64}$\""]
+#[doc = "                      },"]
+#[doc = "                      \"id\": {"]
+#[doc = "                        \"type\": \"string\","]
+#[doc = "                        \"format\": \"uuid\","]
+#[doc = "                        \"pattern\": \"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$\""]
+#[doc = "                      },"]
+#[doc = "                      \"purpose\": {"]
+#[doc = "                        \"type\": \"string\","]
+#[doc = "                        \"enum\": ["]
+#[doc = "                          \"product_display_image\","]
+#[doc = "                          \"try_on_garment\""]
+#[doc = "                        ]"]
+#[doc = "                      },"]
+#[doc = "                      \"reference\": {"]
+#[doc = "                        \"type\": \"string\","]
+#[doc = "                        \"pattern\": \"^\\\\/api\\\\/media-assets\\\\/[0-9a-f-]+\\\\/content$\""]
+#[doc = "                      },"]
+#[doc = "                      \"revision\": {"]
+#[doc = "                        \"type\": \"object\","]
+#[doc = "                        \"required\": ["]
+#[doc = "                          \"catalogRevision\""]
+#[doc = "                        ],"]
+#[doc = "                        \"properties\": {"]
+#[doc = "                          \"assetRevision\": {"]
+#[doc = "                            \"type\": \"string\","]
+#[doc = "                            \"maxLength\": 128,"]
+#[doc = "                            \"minLength\": 1"]
+#[doc = "                          },"]
+#[doc = "                          \"catalogRevision\": {"]
+#[doc = "                            \"type\": \"string\","]
+#[doc = "                            \"maxLength\": 128,"]
+#[doc = "                            \"minLength\": 1"]
+#[doc = "                          }"]
+#[doc = "                        },"]
+#[doc = "                        \"additionalProperties\": false"]
+#[doc = "                      }"]
+#[doc = "                    },"]
+#[doc = "                    \"additionalProperties\": false"]
+#[doc = "                  },"]
+#[doc = "                  \"diagnostic\": {"]
+#[doc = "                    \"anyOf\": ["]
+#[doc = "                      {"]
+#[doc = "                        \"type\": \"string\""]
+#[doc = "                      },"]
+#[doc = "                      {"]
+#[doc = "                        \"type\": \"null\""]
+#[doc = "                      }"]
+#[doc = "                    ]"]
+#[doc = "                  },"]
+#[doc = "                  \"diagnosticReason\": {"]
+#[doc = "                    \"anyOf\": ["]
+#[doc = "                      {"]
+#[doc = "                        \"type\": \"string\","]
+#[doc = "                        \"enum\": ["]
+#[doc = "                          \"descriptor_invalid\","]
+#[doc = "                          \"cache_budget_exceeded\","]
+#[doc = "                          \"manifest_persistence_failed\","]
+#[doc = "                          \"download_failed\","]
+#[doc = "                          \"byte_size_mismatch\","]
+#[doc = "                          \"content_type_mismatch\","]
+#[doc = "                          \"media_facts_invalid\","]
+#[doc = "                          \"digest_mismatch\","]
+#[doc = "                          \"published_media_corrupt\","]
+#[doc = "                          \"defensive_read_failed\""]
+#[doc = "                        ]"]
+#[doc = "                      },"]
+#[doc = "                      {"]
+#[doc = "                        \"type\": \"null\""]
+#[doc = "                      }"]
+#[doc = "                    ]"]
+#[doc = "                  },"]
+#[doc = "                  \"readiness\": {"]
+#[doc = "                    \"type\": \"string\","]
+#[doc = "                    \"enum\": ["]
+#[doc = "                      \"ready\","]
+#[doc = "                      \"warming\","]
+#[doc = "                      \"unavailable\""]
+#[doc = "                    ]"]
+#[doc = "                  },"]
+#[doc = "                  \"readyUrl\": {"]
+#[doc = "                    \"anyOf\": ["]
+#[doc = "                      {"]
+#[doc = "                        \"type\": \"string\","]
+#[doc = "                        \"pattern\": \"^https?:\\\\/\\\\/(?:127\\\\.0\\\\.0\\\\.1|localhost|\\\\[::1\\\\])(?::(?:[1-9][0-9]{0,4}))?\\\\/media\\\\/sha256:[0-9a-f]{64}\\\\?grant=[A-Za-z0-9._~-]{16,128}$\""]
+#[doc = "                      },"]
+#[doc = "                      {"]
+#[doc = "                        \"type\": \"null\""]
+#[doc = "                      }"]
+#[doc = "                    ]"]
+#[doc = "                  }"]
+#[doc = "                },"]
+#[doc = "                \"additionalProperties\": false"]
+#[doc = "              },"]
+#[doc = "              \"maxItems\": 256"]
+#[doc = "            },"]
+#[doc = "            \"generation\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"maxLength\": 128,"]
+#[doc = "              \"minLength\": 1"]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    \"reconcileRequest\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"generation\","]
+#[doc = "        \"interests\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"generation\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"maxLength\": 128,"]
+#[doc = "          \"minLength\": 1"]
+#[doc = "        },"]
+#[doc = "        \"interests\": {"]
+#[doc = "          \"type\": \"array\","]
+#[doc = "          \"items\": {"]
+#[doc = "            \"type\": \"object\","]
+#[doc = "            \"required\": ["]
+#[doc = "              \"byteSize\","]
+#[doc = "              \"contentType\","]
+#[doc = "              \"digest\","]
+#[doc = "              \"id\","]
+#[doc = "              \"purpose\","]
+#[doc = "              \"reference\","]
+#[doc = "              \"revision\""]
+#[doc = "            ],"]
+#[doc = "            \"properties\": {"]
+#[doc = "              \"byteSize\": {"]
+#[doc = "                \"type\": \"integer\","]
+#[doc = "                \"maximum\": 9007199254740991.0,"]
+#[doc = "                \"exclusiveMinimum\": 0.0"]
+#[doc = "              },"]
+#[doc = "              \"contentType\": {"]
+#[doc = "                \"type\": \"string\","]
+#[doc = "                \"enum\": ["]
+#[doc = "                  \"image/png\","]
+#[doc = "                  \"image/jpeg\","]
+#[doc = "                  \"image/webp\""]
+#[doc = "                ]"]
+#[doc = "              },"]
+#[doc = "              \"digest\": {"]
+#[doc = "                \"type\": \"string\","]
+#[doc = "                \"pattern\": \"^sha256:[0-9a-f]{64}$\""]
+#[doc = "              },"]
+#[doc = "              \"id\": {"]
+#[doc = "                \"type\": \"string\","]
+#[doc = "                \"format\": \"uuid\","]
+#[doc = "                \"pattern\": \"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$\""]
+#[doc = "              },"]
+#[doc = "              \"purpose\": {"]
+#[doc = "                \"type\": \"string\","]
+#[doc = "                \"enum\": ["]
+#[doc = "                  \"product_display_image\","]
+#[doc = "                  \"try_on_garment\""]
+#[doc = "                ]"]
+#[doc = "              },"]
+#[doc = "              \"reference\": {"]
+#[doc = "                \"type\": \"string\","]
+#[doc = "                \"pattern\": \"^\\\\/api\\\\/media-assets\\\\/[0-9a-f-]+\\\\/content$\""]
+#[doc = "              },"]
+#[doc = "              \"revision\": {"]
+#[doc = "                \"type\": \"object\","]
+#[doc = "                \"required\": ["]
+#[doc = "                  \"catalogRevision\""]
+#[doc = "                ],"]
+#[doc = "                \"properties\": {"]
+#[doc = "                  \"assetRevision\": {"]
+#[doc = "                    \"type\": \"string\","]
+#[doc = "                    \"maxLength\": 128,"]
+#[doc = "                    \"minLength\": 1"]
+#[doc = "                  },"]
+#[doc = "                  \"catalogRevision\": {"]
+#[doc = "                    \"type\": \"string\","]
+#[doc = "                    \"maxLength\": 128,"]
+#[doc = "                    \"minLength\": 1"]
+#[doc = "                  }"]
+#[doc = "                },"]
+#[doc = "                \"additionalProperties\": false"]
+#[doc = "              }"]
+#[doc = "            },"]
+#[doc = "            \"additionalProperties\": false"]
+#[doc = "          },"]
+#[doc = "          \"maxItems\": 256"]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    \"snapshot\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"assets\","]
+#[doc = "        \"generation\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"assets\": {"]
+#[doc = "          \"type\": \"array\","]
+#[doc = "          \"items\": {"]
+#[doc = "            \"type\": \"object\","]
+#[doc = "            \"required\": ["]
+#[doc = "              \"descriptor\","]
+#[doc = "              \"diagnostic\","]
+#[doc = "              \"readiness\","]
+#[doc = "              \"readyUrl\""]
+#[doc = "            ],"]
+#[doc = "            \"properties\": {"]
+#[doc = "              \"descriptor\": {"]
+#[doc = "                \"type\": \"object\","]
+#[doc = "                \"required\": ["]
+#[doc = "                  \"byteSize\","]
+#[doc = "                  \"contentType\","]
+#[doc = "                  \"digest\","]
+#[doc = "                  \"id\","]
+#[doc = "                  \"purpose\","]
+#[doc = "                  \"reference\","]
+#[doc = "                  \"revision\""]
+#[doc = "                ],"]
+#[doc = "                \"properties\": {"]
+#[doc = "                  \"byteSize\": {"]
+#[doc = "                    \"type\": \"integer\","]
+#[doc = "                    \"maximum\": 9007199254740991.0,"]
+#[doc = "                    \"exclusiveMinimum\": 0.0"]
+#[doc = "                  },"]
+#[doc = "                  \"contentType\": {"]
+#[doc = "                    \"type\": \"string\","]
+#[doc = "                    \"enum\": ["]
+#[doc = "                      \"image/png\","]
+#[doc = "                      \"image/jpeg\","]
+#[doc = "                      \"image/webp\""]
+#[doc = "                    ]"]
+#[doc = "                  },"]
+#[doc = "                  \"digest\": {"]
+#[doc = "                    \"type\": \"string\","]
+#[doc = "                    \"pattern\": \"^sha256:[0-9a-f]{64}$\""]
+#[doc = "                  },"]
+#[doc = "                  \"id\": {"]
+#[doc = "                    \"type\": \"string\","]
+#[doc = "                    \"format\": \"uuid\","]
+#[doc = "                    \"pattern\": \"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$\""]
+#[doc = "                  },"]
+#[doc = "                  \"purpose\": {"]
+#[doc = "                    \"type\": \"string\","]
+#[doc = "                    \"enum\": ["]
+#[doc = "                      \"product_display_image\","]
+#[doc = "                      \"try_on_garment\""]
+#[doc = "                    ]"]
+#[doc = "                  },"]
+#[doc = "                  \"reference\": {"]
+#[doc = "                    \"type\": \"string\","]
+#[doc = "                    \"pattern\": \"^\\\\/api\\\\/media-assets\\\\/[0-9a-f-]+\\\\/content$\""]
+#[doc = "                  },"]
+#[doc = "                  \"revision\": {"]
+#[doc = "                    \"type\": \"object\","]
+#[doc = "                    \"required\": ["]
+#[doc = "                      \"catalogRevision\""]
+#[doc = "                    ],"]
+#[doc = "                    \"properties\": {"]
+#[doc = "                      \"assetRevision\": {"]
+#[doc = "                        \"type\": \"string\","]
+#[doc = "                        \"maxLength\": 128,"]
+#[doc = "                        \"minLength\": 1"]
+#[doc = "                      },"]
+#[doc = "                      \"catalogRevision\": {"]
+#[doc = "                        \"type\": \"string\","]
+#[doc = "                        \"maxLength\": 128,"]
+#[doc = "                        \"minLength\": 1"]
+#[doc = "                      }"]
+#[doc = "                    },"]
+#[doc = "                    \"additionalProperties\": false"]
+#[doc = "                  }"]
+#[doc = "                },"]
+#[doc = "                \"additionalProperties\": false"]
+#[doc = "              },"]
+#[doc = "              \"diagnostic\": {"]
+#[doc = "                \"anyOf\": ["]
+#[doc = "                  {"]
+#[doc = "                    \"type\": \"string\""]
+#[doc = "                  },"]
+#[doc = "                  {"]
+#[doc = "                    \"type\": \"null\""]
+#[doc = "                  }"]
+#[doc = "                ]"]
+#[doc = "              },"]
+#[doc = "              \"diagnosticReason\": {"]
+#[doc = "                \"anyOf\": ["]
+#[doc = "                  {"]
+#[doc = "                    \"type\": \"string\","]
+#[doc = "                    \"enum\": ["]
+#[doc = "                      \"descriptor_invalid\","]
+#[doc = "                      \"cache_budget_exceeded\","]
+#[doc = "                      \"manifest_persistence_failed\","]
+#[doc = "                      \"download_failed\","]
+#[doc = "                      \"byte_size_mismatch\","]
+#[doc = "                      \"content_type_mismatch\","]
+#[doc = "                      \"media_facts_invalid\","]
+#[doc = "                      \"digest_mismatch\","]
+#[doc = "                      \"published_media_corrupt\","]
+#[doc = "                      \"defensive_read_failed\""]
+#[doc = "                    ]"]
+#[doc = "                  },"]
+#[doc = "                  {"]
+#[doc = "                    \"type\": \"null\""]
+#[doc = "                  }"]
+#[doc = "                ]"]
+#[doc = "              },"]
+#[doc = "              \"readiness\": {"]
+#[doc = "                \"type\": \"string\","]
+#[doc = "                \"enum\": ["]
+#[doc = "                  \"ready\","]
+#[doc = "                  \"warming\","]
+#[doc = "                  \"unavailable\""]
+#[doc = "                ]"]
+#[doc = "              },"]
+#[doc = "              \"readyUrl\": {"]
+#[doc = "                \"anyOf\": ["]
+#[doc = "                  {"]
+#[doc = "                    \"type\": \"string\","]
+#[doc = "                    \"pattern\": \"^https?:\\\\/\\\\/(?:127\\\\.0\\\\.0\\\\.1|localhost|\\\\[::1\\\\])(?::(?:[1-9][0-9]{0,4}))?\\\\/media\\\\/sha256:[0-9a-f]{64}\\\\?grant=[A-Za-z0-9._~-]{16,128}$\""]
+#[doc = "                  },"]
+#[doc = "                  {"]
+#[doc = "                    \"type\": \"null\""]
+#[doc = "                  }"]
+#[doc = "                ]"]
+#[doc = "              }"]
+#[doc = "            },"]
+#[doc = "            \"additionalProperties\": false"]
+#[doc = "          },"]
+#[doc = "          \"maxItems\": 256"]
+#[doc = "        },"]
+#[doc = "        \"generation\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"maxLength\": 128,"]
+#[doc = "          \"minLength\": 1"]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedMediaContract {
+    pub projection: ManagedMediaContractProjection,
+    #[serde(rename = "reconcileReceipt")]
+    pub reconcile_receipt: ManagedMediaContractReconcileReceipt,
+    #[serde(rename = "reconcileRequest")]
+    pub reconcile_request: ManagedMediaContractReconcileRequest,
+    pub snapshot: ManagedMediaContractSnapshot,
+}
+#[doc = "`ManagedMediaContractProjection`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"descriptor\","]
+#[doc = "    \"diagnostic\","]
+#[doc = "    \"readiness\","]
+#[doc = "    \"readyUrl\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"descriptor\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"byteSize\","]
+#[doc = "        \"contentType\","]
+#[doc = "        \"digest\","]
+#[doc = "        \"id\","]
+#[doc = "        \"purpose\","]
+#[doc = "        \"reference\","]
+#[doc = "        \"revision\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"byteSize\": {"]
+#[doc = "          \"type\": \"integer\","]
+#[doc = "          \"maximum\": 9007199254740991.0,"]
+#[doc = "          \"exclusiveMinimum\": 0.0"]
+#[doc = "        },"]
+#[doc = "        \"contentType\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"enum\": ["]
+#[doc = "            \"image/png\","]
+#[doc = "            \"image/jpeg\","]
+#[doc = "            \"image/webp\""]
+#[doc = "          ]"]
+#[doc = "        },"]
+#[doc = "        \"digest\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"pattern\": \"^sha256:[0-9a-f]{64}$\""]
+#[doc = "        },"]
+#[doc = "        \"id\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"format\": \"uuid\","]
+#[doc = "          \"pattern\": \"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$\""]
+#[doc = "        },"]
+#[doc = "        \"purpose\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"enum\": ["]
+#[doc = "            \"product_display_image\","]
+#[doc = "            \"try_on_garment\""]
+#[doc = "          ]"]
+#[doc = "        },"]
+#[doc = "        \"reference\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"pattern\": \"^\\\\/api\\\\/media-assets\\\\/[0-9a-f-]+\\\\/content$\""]
+#[doc = "        },"]
+#[doc = "        \"revision\": {"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"catalogRevision\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"assetRevision\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"maxLength\": 128,"]
+#[doc = "              \"minLength\": 1"]
+#[doc = "            },"]
+#[doc = "            \"catalogRevision\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"maxLength\": 128,"]
+#[doc = "              \"minLength\": 1"]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    \"diagnostic\": {"]
+#[doc = "      \"anyOf\": ["]
+#[doc = "        {"]
+#[doc = "          \"type\": \"string\""]
+#[doc = "        },"]
+#[doc = "        {"]
+#[doc = "          \"type\": \"null\""]
+#[doc = "        }"]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    \"diagnosticReason\": {"]
+#[doc = "      \"anyOf\": ["]
+#[doc = "        {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"enum\": ["]
+#[doc = "            \"descriptor_invalid\","]
+#[doc = "            \"cache_budget_exceeded\","]
+#[doc = "            \"manifest_persistence_failed\","]
+#[doc = "            \"download_failed\","]
+#[doc = "            \"byte_size_mismatch\","]
+#[doc = "            \"content_type_mismatch\","]
+#[doc = "            \"media_facts_invalid\","]
+#[doc = "            \"digest_mismatch\","]
+#[doc = "            \"published_media_corrupt\","]
+#[doc = "            \"defensive_read_failed\""]
+#[doc = "          ]"]
+#[doc = "        },"]
+#[doc = "        {"]
+#[doc = "          \"type\": \"null\""]
+#[doc = "        }"]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    \"readiness\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"ready\","]
+#[doc = "        \"warming\","]
+#[doc = "        \"unavailable\""]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    \"readyUrl\": {"]
+#[doc = "      \"anyOf\": ["]
+#[doc = "        {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"pattern\": \"^https?:\\\\/\\\\/(?:127\\\\.0\\\\.0\\\\.1|localhost|\\\\[::1\\\\])(?::(?:[1-9][0-9]{0,4}))?\\\\/media\\\\/sha256:[0-9a-f]{64}\\\\?grant=[A-Za-z0-9._~-]{16,128}$\""]
+#[doc = "        },"]
+#[doc = "        {"]
+#[doc = "          \"type\": \"null\""]
+#[doc = "        }"]
+#[doc = "      ]"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedMediaContractProjection {
+    pub descriptor: ManagedMediaContractProjectionDescriptor,
+    pub diagnostic: ::std::option::Option<::std::string::String>,
+    #[serde(
+        rename = "diagnosticReason",
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub diagnostic_reason: ::std::option::Option<ManagedMediaContractProjectionDiagnosticReason>,
+    pub readiness: ManagedMediaContractProjectionReadiness,
+    #[serde(rename = "readyUrl")]
+    pub ready_url: ::std::option::Option<ManagedMediaContractProjectionReadyUrl>,
+}
+#[doc = "`ManagedMediaContractProjectionDescriptor`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"byteSize\","]
@@ -58,8 +779,11 @@ pub mod error {
 #[doc = "    },"]
 #[doc = "    \"contentType\": {"]
 #[doc = "      \"type\": \"string\","]
-#[doc = "      \"maxLength\": 128,"]
-#[doc = "      \"minLength\": 1"]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"image/png\","]
+#[doc = "        \"image/jpeg\","]
+#[doc = "        \"image/webp\""]
+#[doc = "      ]"]
 #[doc = "    },"]
 #[doc = "    \"digest\": {"]
 #[doc = "      \"type\": \"string\","]
@@ -107,62 +831,81 @@ pub mod error {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct ManagedMediaDescriptor {
+pub struct ManagedMediaContractProjectionDescriptor {
     #[serde(rename = "byteSize")]
     pub byte_size: ::std::num::NonZeroU64,
     #[serde(rename = "contentType")]
-    pub content_type: ManagedMediaDescriptorContentType,
-    pub digest: ManagedMediaDescriptorDigest,
+    pub content_type: ManagedMediaContractProjectionDescriptorContentType,
+    pub digest: ManagedMediaContractProjectionDescriptorDigest,
     pub id: ::uuid::Uuid,
-    pub purpose: ManagedMediaDescriptorPurpose,
-    pub reference: ManagedMediaDescriptorReference,
-    pub revision: ManagedMediaDescriptorRevision,
+    pub purpose: ManagedMediaContractProjectionDescriptorPurpose,
+    pub reference: ManagedMediaContractProjectionDescriptorReference,
+    pub revision: ManagedMediaContractProjectionDescriptorRevision,
 }
-#[doc = "`ManagedMediaDescriptorContentType`"]
+#[doc = "`ManagedMediaContractProjectionDescriptorContentType`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"type\": \"string\","]
-#[doc = "  \"maxLength\": 128,"]
-#[doc = "  \"minLength\": 1"]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"image/png\","]
+#[doc = "    \"image/jpeg\","]
+#[doc = "    \"image/webp\""]
+#[doc = "  ]"]
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[serde(transparent)]
-pub struct ManagedMediaDescriptorContentType(::std::string::String);
-impl ::std::ops::Deref for ManagedMediaDescriptorContentType {
-    type Target = ::std::string::String;
-    fn deref(&self) -> &::std::string::String {
-        &self.0
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum ManagedMediaContractProjectionDescriptorContentType {
+    #[serde(rename = "image/png")]
+    ImagePng,
+    #[serde(rename = "image/jpeg")]
+    ImageJpeg,
+    #[serde(rename = "image/webp")]
+    ImageWebp,
+}
+impl ::std::fmt::Display for ManagedMediaContractProjectionDescriptorContentType {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::ImagePng => f.write_str("image/png"),
+            Self::ImageJpeg => f.write_str("image/jpeg"),
+            Self::ImageWebp => f.write_str("image/webp"),
+        }
     }
 }
-impl ::std::convert::From<ManagedMediaDescriptorContentType> for ::std::string::String {
-    fn from(value: ManagedMediaDescriptorContentType) -> Self {
-        value.0
-    }
-}
-impl ::std::str::FromStr for ManagedMediaDescriptorContentType {
+impl ::std::str::FromStr for ManagedMediaContractProjectionDescriptorContentType {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        if value.chars().count() > 128usize {
-            return Err("longer than 128 characters".into());
+        match value {
+            "image/png" => Ok(Self::ImagePng),
+            "image/jpeg" => Ok(Self::ImageJpeg),
+            "image/webp" => Ok(Self::ImageWebp),
+            _ => Err("invalid value".into()),
         }
-        if value.chars().count() < 1usize {
-            return Err("shorter than 1 characters".into());
-        }
-        Ok(Self(value.to_string()))
     }
 }
-impl ::std::convert::TryFrom<&str> for ManagedMediaDescriptorContentType {
+impl ::std::convert::TryFrom<&str> for ManagedMediaContractProjectionDescriptorContentType {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         value.parse()
     }
 }
-impl ::std::convert::TryFrom<&::std::string::String> for ManagedMediaDescriptorContentType {
+impl ::std::convert::TryFrom<&::std::string::String>
+    for ManagedMediaContractProjectionDescriptorContentType
+{
     type Error = self::error::ConversionError;
     fn try_from(
         value: &::std::string::String,
@@ -170,7 +913,9 @@ impl ::std::convert::TryFrom<&::std::string::String> for ManagedMediaDescriptorC
         value.parse()
     }
 }
-impl ::std::convert::TryFrom<::std::string::String> for ManagedMediaDescriptorContentType {
+impl ::std::convert::TryFrom<::std::string::String>
+    for ManagedMediaContractProjectionDescriptorContentType
+{
     type Error = self::error::ConversionError;
     fn try_from(
         value: ::std::string::String,
@@ -178,19 +923,7 @@ impl ::std::convert::TryFrom<::std::string::String> for ManagedMediaDescriptorCo
         value.parse()
     }
 }
-impl<'de> ::serde::Deserialize<'de> for ManagedMediaDescriptorContentType {
-    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
-    where
-        D: ::serde::Deserializer<'de>,
-    {
-        ::std::string::String::deserialize(deserializer)?
-            .parse()
-            .map_err(|e: self::error::ConversionError| {
-                <D::Error as ::serde::de::Error>::custom(e.to_string())
-            })
-    }
-}
-#[doc = "`ManagedMediaDescriptorDigest`"]
+#[doc = "`ManagedMediaContractProjectionDescriptorDigest`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -203,19 +936,21 @@ impl<'de> ::serde::Deserialize<'de> for ManagedMediaDescriptorContentType {
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct ManagedMediaDescriptorDigest(::std::string::String);
-impl ::std::ops::Deref for ManagedMediaDescriptorDigest {
+pub struct ManagedMediaContractProjectionDescriptorDigest(::std::string::String);
+impl ::std::ops::Deref for ManagedMediaContractProjectionDescriptorDigest {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
         &self.0
     }
 }
-impl ::std::convert::From<ManagedMediaDescriptorDigest> for ::std::string::String {
-    fn from(value: ManagedMediaDescriptorDigest) -> Self {
+impl ::std::convert::From<ManagedMediaContractProjectionDescriptorDigest>
+    for ::std::string::String
+{
+    fn from(value: ManagedMediaContractProjectionDescriptorDigest) -> Self {
         value.0
     }
 }
-impl ::std::str::FromStr for ManagedMediaDescriptorDigest {
+impl ::std::str::FromStr for ManagedMediaContractProjectionDescriptorDigest {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
@@ -226,13 +961,15 @@ impl ::std::str::FromStr for ManagedMediaDescriptorDigest {
         Ok(Self(value.to_string()))
     }
 }
-impl ::std::convert::TryFrom<&str> for ManagedMediaDescriptorDigest {
+impl ::std::convert::TryFrom<&str> for ManagedMediaContractProjectionDescriptorDigest {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         value.parse()
     }
 }
-impl ::std::convert::TryFrom<&::std::string::String> for ManagedMediaDescriptorDigest {
+impl ::std::convert::TryFrom<&::std::string::String>
+    for ManagedMediaContractProjectionDescriptorDigest
+{
     type Error = self::error::ConversionError;
     fn try_from(
         value: &::std::string::String,
@@ -240,7 +977,9 @@ impl ::std::convert::TryFrom<&::std::string::String> for ManagedMediaDescriptorD
         value.parse()
     }
 }
-impl ::std::convert::TryFrom<::std::string::String> for ManagedMediaDescriptorDigest {
+impl ::std::convert::TryFrom<::std::string::String>
+    for ManagedMediaContractProjectionDescriptorDigest
+{
     type Error = self::error::ConversionError;
     fn try_from(
         value: ::std::string::String,
@@ -248,7 +987,7 @@ impl ::std::convert::TryFrom<::std::string::String> for ManagedMediaDescriptorDi
         value.parse()
     }
 }
-impl<'de> ::serde::Deserialize<'de> for ManagedMediaDescriptorDigest {
+impl<'de> ::serde::Deserialize<'de> for ManagedMediaContractProjectionDescriptorDigest {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
         D: ::serde::Deserializer<'de>,
@@ -260,7 +999,7 @@ impl<'de> ::serde::Deserialize<'de> for ManagedMediaDescriptorDigest {
             })
     }
 }
-#[doc = "`ManagedMediaDescriptorPurpose`"]
+#[doc = "`ManagedMediaContractProjectionDescriptorPurpose`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -286,13 +1025,13 @@ impl<'de> ::serde::Deserialize<'de> for ManagedMediaDescriptorDigest {
     PartialEq,
     PartialOrd,
 )]
-pub enum ManagedMediaDescriptorPurpose {
+pub enum ManagedMediaContractProjectionDescriptorPurpose {
     #[serde(rename = "product_display_image")]
     ProductDisplayImage,
     #[serde(rename = "try_on_garment")]
     TryOnGarment,
 }
-impl ::std::fmt::Display for ManagedMediaDescriptorPurpose {
+impl ::std::fmt::Display for ManagedMediaContractProjectionDescriptorPurpose {
     fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
         match *self {
             Self::ProductDisplayImage => f.write_str("product_display_image"),
@@ -300,7 +1039,7 @@ impl ::std::fmt::Display for ManagedMediaDescriptorPurpose {
         }
     }
 }
-impl ::std::str::FromStr for ManagedMediaDescriptorPurpose {
+impl ::std::str::FromStr for ManagedMediaContractProjectionDescriptorPurpose {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         match value {
@@ -310,13 +1049,15 @@ impl ::std::str::FromStr for ManagedMediaDescriptorPurpose {
         }
     }
 }
-impl ::std::convert::TryFrom<&str> for ManagedMediaDescriptorPurpose {
+impl ::std::convert::TryFrom<&str> for ManagedMediaContractProjectionDescriptorPurpose {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         value.parse()
     }
 }
-impl ::std::convert::TryFrom<&::std::string::String> for ManagedMediaDescriptorPurpose {
+impl ::std::convert::TryFrom<&::std::string::String>
+    for ManagedMediaContractProjectionDescriptorPurpose
+{
     type Error = self::error::ConversionError;
     fn try_from(
         value: &::std::string::String,
@@ -324,7 +1065,9 @@ impl ::std::convert::TryFrom<&::std::string::String> for ManagedMediaDescriptorP
         value.parse()
     }
 }
-impl ::std::convert::TryFrom<::std::string::String> for ManagedMediaDescriptorPurpose {
+impl ::std::convert::TryFrom<::std::string::String>
+    for ManagedMediaContractProjectionDescriptorPurpose
+{
     type Error = self::error::ConversionError;
     fn try_from(
         value: ::std::string::String,
@@ -332,7 +1075,7 @@ impl ::std::convert::TryFrom<::std::string::String> for ManagedMediaDescriptorPu
         value.parse()
     }
 }
-#[doc = "`ManagedMediaDescriptorReference`"]
+#[doc = "`ManagedMediaContractProjectionDescriptorReference`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -345,19 +1088,21 @@ impl ::std::convert::TryFrom<::std::string::String> for ManagedMediaDescriptorPu
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct ManagedMediaDescriptorReference(::std::string::String);
-impl ::std::ops::Deref for ManagedMediaDescriptorReference {
+pub struct ManagedMediaContractProjectionDescriptorReference(::std::string::String);
+impl ::std::ops::Deref for ManagedMediaContractProjectionDescriptorReference {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
         &self.0
     }
 }
-impl ::std::convert::From<ManagedMediaDescriptorReference> for ::std::string::String {
-    fn from(value: ManagedMediaDescriptorReference) -> Self {
+impl ::std::convert::From<ManagedMediaContractProjectionDescriptorReference>
+    for ::std::string::String
+{
+    fn from(value: ManagedMediaContractProjectionDescriptorReference) -> Self {
         value.0
     }
 }
-impl ::std::str::FromStr for ManagedMediaDescriptorReference {
+impl ::std::str::FromStr for ManagedMediaContractProjectionDescriptorReference {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
@@ -372,13 +1117,15 @@ impl ::std::str::FromStr for ManagedMediaDescriptorReference {
         Ok(Self(value.to_string()))
     }
 }
-impl ::std::convert::TryFrom<&str> for ManagedMediaDescriptorReference {
+impl ::std::convert::TryFrom<&str> for ManagedMediaContractProjectionDescriptorReference {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         value.parse()
     }
 }
-impl ::std::convert::TryFrom<&::std::string::String> for ManagedMediaDescriptorReference {
+impl ::std::convert::TryFrom<&::std::string::String>
+    for ManagedMediaContractProjectionDescriptorReference
+{
     type Error = self::error::ConversionError;
     fn try_from(
         value: &::std::string::String,
@@ -386,7 +1133,9 @@ impl ::std::convert::TryFrom<&::std::string::String> for ManagedMediaDescriptorR
         value.parse()
     }
 }
-impl ::std::convert::TryFrom<::std::string::String> for ManagedMediaDescriptorReference {
+impl ::std::convert::TryFrom<::std::string::String>
+    for ManagedMediaContractProjectionDescriptorReference
+{
     type Error = self::error::ConversionError;
     fn try_from(
         value: ::std::string::String,
@@ -394,7 +1143,7 @@ impl ::std::convert::TryFrom<::std::string::String> for ManagedMediaDescriptorRe
         value.parse()
     }
 }
-impl<'de> ::serde::Deserialize<'de> for ManagedMediaDescriptorReference {
+impl<'de> ::serde::Deserialize<'de> for ManagedMediaContractProjectionDescriptorReference {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
         D: ::serde::Deserializer<'de>,
@@ -406,7 +1155,7 @@ impl<'de> ::serde::Deserialize<'de> for ManagedMediaDescriptorReference {
             })
     }
 }
-#[doc = "`ManagedMediaDescriptorRevision`"]
+#[doc = "`ManagedMediaContractProjectionDescriptorRevision`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -434,17 +1183,18 @@ impl<'de> ::serde::Deserialize<'de> for ManagedMediaDescriptorReference {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct ManagedMediaDescriptorRevision {
+pub struct ManagedMediaContractProjectionDescriptorRevision {
     #[serde(
         rename = "assetRevision",
         default,
         skip_serializing_if = "::std::option::Option::is_none"
     )]
-    pub asset_revision: ::std::option::Option<ManagedMediaDescriptorRevisionAssetRevision>,
+    pub asset_revision:
+        ::std::option::Option<ManagedMediaContractProjectionDescriptorRevisionAssetRevision>,
     #[serde(rename = "catalogRevision")]
-    pub catalog_revision: ManagedMediaDescriptorRevisionCatalogRevision,
+    pub catalog_revision: ManagedMediaContractProjectionDescriptorRevisionCatalogRevision,
 }
-#[doc = "`ManagedMediaDescriptorRevisionAssetRevision`"]
+#[doc = "`ManagedMediaContractProjectionDescriptorRevisionAssetRevision`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -458,19 +1208,21 @@ pub struct ManagedMediaDescriptorRevision {
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct ManagedMediaDescriptorRevisionAssetRevision(::std::string::String);
-impl ::std::ops::Deref for ManagedMediaDescriptorRevisionAssetRevision {
+pub struct ManagedMediaContractProjectionDescriptorRevisionAssetRevision(::std::string::String);
+impl ::std::ops::Deref for ManagedMediaContractProjectionDescriptorRevisionAssetRevision {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
         &self.0
     }
 }
-impl ::std::convert::From<ManagedMediaDescriptorRevisionAssetRevision> for ::std::string::String {
-    fn from(value: ManagedMediaDescriptorRevisionAssetRevision) -> Self {
+impl ::std::convert::From<ManagedMediaContractProjectionDescriptorRevisionAssetRevision>
+    for ::std::string::String
+{
+    fn from(value: ManagedMediaContractProjectionDescriptorRevisionAssetRevision) -> Self {
         value.0
     }
 }
-impl ::std::str::FromStr for ManagedMediaDescriptorRevisionAssetRevision {
+impl ::std::str::FromStr for ManagedMediaContractProjectionDescriptorRevisionAssetRevision {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         if value.chars().count() > 128usize {
@@ -482,14 +1234,16 @@ impl ::std::str::FromStr for ManagedMediaDescriptorRevisionAssetRevision {
         Ok(Self(value.to_string()))
     }
 }
-impl ::std::convert::TryFrom<&str> for ManagedMediaDescriptorRevisionAssetRevision {
+impl ::std::convert::TryFrom<&str>
+    for ManagedMediaContractProjectionDescriptorRevisionAssetRevision
+{
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         value.parse()
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for ManagedMediaDescriptorRevisionAssetRevision
+    for ManagedMediaContractProjectionDescriptorRevisionAssetRevision
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -499,7 +1253,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for ManagedMediaDescriptorRevisionAssetRevision
+    for ManagedMediaContractProjectionDescriptorRevisionAssetRevision
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -508,7 +1262,9 @@ impl ::std::convert::TryFrom<::std::string::String>
         value.parse()
     }
 }
-impl<'de> ::serde::Deserialize<'de> for ManagedMediaDescriptorRevisionAssetRevision {
+impl<'de> ::serde::Deserialize<'de>
+    for ManagedMediaContractProjectionDescriptorRevisionAssetRevision
+{
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
         D: ::serde::Deserializer<'de>,
@@ -520,7 +1276,7 @@ impl<'de> ::serde::Deserialize<'de> for ManagedMediaDescriptorRevisionAssetRevis
             })
     }
 }
-#[doc = "`ManagedMediaDescriptorRevisionCatalogRevision`"]
+#[doc = "`ManagedMediaContractProjectionDescriptorRevisionCatalogRevision`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -534,19 +1290,21 @@ impl<'de> ::serde::Deserialize<'de> for ManagedMediaDescriptorRevisionAssetRevis
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct ManagedMediaDescriptorRevisionCatalogRevision(::std::string::String);
-impl ::std::ops::Deref for ManagedMediaDescriptorRevisionCatalogRevision {
+pub struct ManagedMediaContractProjectionDescriptorRevisionCatalogRevision(::std::string::String);
+impl ::std::ops::Deref for ManagedMediaContractProjectionDescriptorRevisionCatalogRevision {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
         &self.0
     }
 }
-impl ::std::convert::From<ManagedMediaDescriptorRevisionCatalogRevision> for ::std::string::String {
-    fn from(value: ManagedMediaDescriptorRevisionCatalogRevision) -> Self {
+impl ::std::convert::From<ManagedMediaContractProjectionDescriptorRevisionCatalogRevision>
+    for ::std::string::String
+{
+    fn from(value: ManagedMediaContractProjectionDescriptorRevisionCatalogRevision) -> Self {
         value.0
     }
 }
-impl ::std::str::FromStr for ManagedMediaDescriptorRevisionCatalogRevision {
+impl ::std::str::FromStr for ManagedMediaContractProjectionDescriptorRevisionCatalogRevision {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         if value.chars().count() > 128usize {
@@ -558,14 +1316,16 @@ impl ::std::str::FromStr for ManagedMediaDescriptorRevisionCatalogRevision {
         Ok(Self(value.to_string()))
     }
 }
-impl ::std::convert::TryFrom<&str> for ManagedMediaDescriptorRevisionCatalogRevision {
+impl ::std::convert::TryFrom<&str>
+    for ManagedMediaContractProjectionDescriptorRevisionCatalogRevision
+{
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         value.parse()
     }
 }
 impl ::std::convert::TryFrom<&::std::string::String>
-    for ManagedMediaDescriptorRevisionCatalogRevision
+    for ManagedMediaContractProjectionDescriptorRevisionCatalogRevision
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -575,7 +1335,7 @@ impl ::std::convert::TryFrom<&::std::string::String>
     }
 }
 impl ::std::convert::TryFrom<::std::string::String>
-    for ManagedMediaDescriptorRevisionCatalogRevision
+    for ManagedMediaContractProjectionDescriptorRevisionCatalogRevision
 {
     type Error = self::error::ConversionError;
     fn try_from(
@@ -584,7 +1344,3954 @@ impl ::std::convert::TryFrom<::std::string::String>
         value.parse()
     }
 }
-impl<'de> ::serde::Deserialize<'de> for ManagedMediaDescriptorRevisionCatalogRevision {
+impl<'de> ::serde::Deserialize<'de>
+    for ManagedMediaContractProjectionDescriptorRevisionCatalogRevision
+{
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`ManagedMediaContractProjectionDiagnosticReason`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"descriptor_invalid\","]
+#[doc = "    \"cache_budget_exceeded\","]
+#[doc = "    \"manifest_persistence_failed\","]
+#[doc = "    \"download_failed\","]
+#[doc = "    \"byte_size_mismatch\","]
+#[doc = "    \"content_type_mismatch\","]
+#[doc = "    \"media_facts_invalid\","]
+#[doc = "    \"digest_mismatch\","]
+#[doc = "    \"published_media_corrupt\","]
+#[doc = "    \"defensive_read_failed\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum ManagedMediaContractProjectionDiagnosticReason {
+    #[serde(rename = "descriptor_invalid")]
+    DescriptorInvalid,
+    #[serde(rename = "cache_budget_exceeded")]
+    CacheBudgetExceeded,
+    #[serde(rename = "manifest_persistence_failed")]
+    ManifestPersistenceFailed,
+    #[serde(rename = "download_failed")]
+    DownloadFailed,
+    #[serde(rename = "byte_size_mismatch")]
+    ByteSizeMismatch,
+    #[serde(rename = "content_type_mismatch")]
+    ContentTypeMismatch,
+    #[serde(rename = "media_facts_invalid")]
+    MediaFactsInvalid,
+    #[serde(rename = "digest_mismatch")]
+    DigestMismatch,
+    #[serde(rename = "published_media_corrupt")]
+    PublishedMediaCorrupt,
+    #[serde(rename = "defensive_read_failed")]
+    DefensiveReadFailed,
+}
+impl ::std::fmt::Display for ManagedMediaContractProjectionDiagnosticReason {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::DescriptorInvalid => f.write_str("descriptor_invalid"),
+            Self::CacheBudgetExceeded => f.write_str("cache_budget_exceeded"),
+            Self::ManifestPersistenceFailed => f.write_str("manifest_persistence_failed"),
+            Self::DownloadFailed => f.write_str("download_failed"),
+            Self::ByteSizeMismatch => f.write_str("byte_size_mismatch"),
+            Self::ContentTypeMismatch => f.write_str("content_type_mismatch"),
+            Self::MediaFactsInvalid => f.write_str("media_facts_invalid"),
+            Self::DigestMismatch => f.write_str("digest_mismatch"),
+            Self::PublishedMediaCorrupt => f.write_str("published_media_corrupt"),
+            Self::DefensiveReadFailed => f.write_str("defensive_read_failed"),
+        }
+    }
+}
+impl ::std::str::FromStr for ManagedMediaContractProjectionDiagnosticReason {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "descriptor_invalid" => Ok(Self::DescriptorInvalid),
+            "cache_budget_exceeded" => Ok(Self::CacheBudgetExceeded),
+            "manifest_persistence_failed" => Ok(Self::ManifestPersistenceFailed),
+            "download_failed" => Ok(Self::DownloadFailed),
+            "byte_size_mismatch" => Ok(Self::ByteSizeMismatch),
+            "content_type_mismatch" => Ok(Self::ContentTypeMismatch),
+            "media_facts_invalid" => Ok(Self::MediaFactsInvalid),
+            "digest_mismatch" => Ok(Self::DigestMismatch),
+            "published_media_corrupt" => Ok(Self::PublishedMediaCorrupt),
+            "defensive_read_failed" => Ok(Self::DefensiveReadFailed),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for ManagedMediaContractProjectionDiagnosticReason {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for ManagedMediaContractProjectionDiagnosticReason
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for ManagedMediaContractProjectionDiagnosticReason
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+#[doc = "`ManagedMediaContractProjectionReadiness`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"ready\","]
+#[doc = "    \"warming\","]
+#[doc = "    \"unavailable\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum ManagedMediaContractProjectionReadiness {
+    #[serde(rename = "ready")]
+    Ready,
+    #[serde(rename = "warming")]
+    Warming,
+    #[serde(rename = "unavailable")]
+    Unavailable,
+}
+impl ::std::fmt::Display for ManagedMediaContractProjectionReadiness {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::Ready => f.write_str("ready"),
+            Self::Warming => f.write_str("warming"),
+            Self::Unavailable => f.write_str("unavailable"),
+        }
+    }
+}
+impl ::std::str::FromStr for ManagedMediaContractProjectionReadiness {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "ready" => Ok(Self::Ready),
+            "warming" => Ok(Self::Warming),
+            "unavailable" => Ok(Self::Unavailable),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for ManagedMediaContractProjectionReadiness {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ManagedMediaContractProjectionReadiness {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ManagedMediaContractProjectionReadiness {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+#[doc = "`ManagedMediaContractProjectionReadyUrl`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"pattern\": \"^https?:\\\\/\\\\/(?:127\\\\.0\\\\.0\\\\.1|localhost|\\\\[::1\\\\])(?::(?:[1-9][0-9]{0,4}))?\\\\/media\\\\/sha256:[0-9a-f]{64}\\\\?grant=[A-Za-z0-9._~-]{16,128}$\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct ManagedMediaContractProjectionReadyUrl(::std::string::String);
+impl ::std::ops::Deref for ManagedMediaContractProjectionReadyUrl {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<ManagedMediaContractProjectionReadyUrl> for ::std::string::String {
+    fn from(value: ManagedMediaContractProjectionReadyUrl) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for ManagedMediaContractProjectionReadyUrl {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> = ::std::sync::LazyLock::new(
+            || {
+                :: regress :: Regex :: new ("^https?:\\/\\/(?:127\\.0\\.0\\.1|localhost|\\[::1\\])(?::(?:[1-9][0-9]{0,4}))?\\/media\\/sha256:[0-9a-f]{64}\\?grant=[A-Za-z0-9._~-]{16,128}$") . unwrap ()
+            },
+        );
+        if PATTERN.find(value).is_none() {
+            return Err ("doesn't match pattern \"^https?:\\/\\/(?:127\\.0\\.0\\.1|localhost|\\[::1\\])(?::(?:[1-9][0-9]{0,4}))?\\/media\\/sha256:[0-9a-f]{64}\\?grant=[A-Za-z0-9._~-]{16,128}$\"" . into ()) ;
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for ManagedMediaContractProjectionReadyUrl {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ManagedMediaContractProjectionReadyUrl {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ManagedMediaContractProjectionReadyUrl {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for ManagedMediaContractProjectionReadyUrl {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`ManagedMediaContractReconcileReceipt`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"accepted\","]
+#[doc = "    \"generation\","]
+#[doc = "    \"interestCount\","]
+#[doc = "    \"snapshot\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"accepted\": {"]
+#[doc = "      \"type\": \"boolean\","]
+#[doc = "      \"const\": true"]
+#[doc = "    },"]
+#[doc = "    \"generation\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 128,"]
+#[doc = "      \"minLength\": 1"]
+#[doc = "    },"]
+#[doc = "    \"interestCount\": {"]
+#[doc = "      \"type\": \"integer\","]
+#[doc = "      \"maximum\": 256.0,"]
+#[doc = "      \"minimum\": 0.0"]
+#[doc = "    },"]
+#[doc = "    \"snapshot\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"assets\","]
+#[doc = "        \"generation\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"assets\": {"]
+#[doc = "          \"type\": \"array\","]
+#[doc = "          \"items\": {"]
+#[doc = "            \"type\": \"object\","]
+#[doc = "            \"required\": ["]
+#[doc = "              \"descriptor\","]
+#[doc = "              \"diagnostic\","]
+#[doc = "              \"readiness\","]
+#[doc = "              \"readyUrl\""]
+#[doc = "            ],"]
+#[doc = "            \"properties\": {"]
+#[doc = "              \"descriptor\": {"]
+#[doc = "                \"type\": \"object\","]
+#[doc = "                \"required\": ["]
+#[doc = "                  \"byteSize\","]
+#[doc = "                  \"contentType\","]
+#[doc = "                  \"digest\","]
+#[doc = "                  \"id\","]
+#[doc = "                  \"purpose\","]
+#[doc = "                  \"reference\","]
+#[doc = "                  \"revision\""]
+#[doc = "                ],"]
+#[doc = "                \"properties\": {"]
+#[doc = "                  \"byteSize\": {"]
+#[doc = "                    \"type\": \"integer\","]
+#[doc = "                    \"maximum\": 9007199254740991.0,"]
+#[doc = "                    \"exclusiveMinimum\": 0.0"]
+#[doc = "                  },"]
+#[doc = "                  \"contentType\": {"]
+#[doc = "                    \"type\": \"string\","]
+#[doc = "                    \"enum\": ["]
+#[doc = "                      \"image/png\","]
+#[doc = "                      \"image/jpeg\","]
+#[doc = "                      \"image/webp\""]
+#[doc = "                    ]"]
+#[doc = "                  },"]
+#[doc = "                  \"digest\": {"]
+#[doc = "                    \"type\": \"string\","]
+#[doc = "                    \"pattern\": \"^sha256:[0-9a-f]{64}$\""]
+#[doc = "                  },"]
+#[doc = "                  \"id\": {"]
+#[doc = "                    \"type\": \"string\","]
+#[doc = "                    \"format\": \"uuid\","]
+#[doc = "                    \"pattern\": \"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$\""]
+#[doc = "                  },"]
+#[doc = "                  \"purpose\": {"]
+#[doc = "                    \"type\": \"string\","]
+#[doc = "                    \"enum\": ["]
+#[doc = "                      \"product_display_image\","]
+#[doc = "                      \"try_on_garment\""]
+#[doc = "                    ]"]
+#[doc = "                  },"]
+#[doc = "                  \"reference\": {"]
+#[doc = "                    \"type\": \"string\","]
+#[doc = "                    \"pattern\": \"^\\\\/api\\\\/media-assets\\\\/[0-9a-f-]+\\\\/content$\""]
+#[doc = "                  },"]
+#[doc = "                  \"revision\": {"]
+#[doc = "                    \"type\": \"object\","]
+#[doc = "                    \"required\": ["]
+#[doc = "                      \"catalogRevision\""]
+#[doc = "                    ],"]
+#[doc = "                    \"properties\": {"]
+#[doc = "                      \"assetRevision\": {"]
+#[doc = "                        \"type\": \"string\","]
+#[doc = "                        \"maxLength\": 128,"]
+#[doc = "                        \"minLength\": 1"]
+#[doc = "                      },"]
+#[doc = "                      \"catalogRevision\": {"]
+#[doc = "                        \"type\": \"string\","]
+#[doc = "                        \"maxLength\": 128,"]
+#[doc = "                        \"minLength\": 1"]
+#[doc = "                      }"]
+#[doc = "                    },"]
+#[doc = "                    \"additionalProperties\": false"]
+#[doc = "                  }"]
+#[doc = "                },"]
+#[doc = "                \"additionalProperties\": false"]
+#[doc = "              },"]
+#[doc = "              \"diagnostic\": {"]
+#[doc = "                \"anyOf\": ["]
+#[doc = "                  {"]
+#[doc = "                    \"type\": \"string\""]
+#[doc = "                  },"]
+#[doc = "                  {"]
+#[doc = "                    \"type\": \"null\""]
+#[doc = "                  }"]
+#[doc = "                ]"]
+#[doc = "              },"]
+#[doc = "              \"diagnosticReason\": {"]
+#[doc = "                \"anyOf\": ["]
+#[doc = "                  {"]
+#[doc = "                    \"type\": \"string\","]
+#[doc = "                    \"enum\": ["]
+#[doc = "                      \"descriptor_invalid\","]
+#[doc = "                      \"cache_budget_exceeded\","]
+#[doc = "                      \"manifest_persistence_failed\","]
+#[doc = "                      \"download_failed\","]
+#[doc = "                      \"byte_size_mismatch\","]
+#[doc = "                      \"content_type_mismatch\","]
+#[doc = "                      \"media_facts_invalid\","]
+#[doc = "                      \"digest_mismatch\","]
+#[doc = "                      \"published_media_corrupt\","]
+#[doc = "                      \"defensive_read_failed\""]
+#[doc = "                    ]"]
+#[doc = "                  },"]
+#[doc = "                  {"]
+#[doc = "                    \"type\": \"null\""]
+#[doc = "                  }"]
+#[doc = "                ]"]
+#[doc = "              },"]
+#[doc = "              \"readiness\": {"]
+#[doc = "                \"type\": \"string\","]
+#[doc = "                \"enum\": ["]
+#[doc = "                  \"ready\","]
+#[doc = "                  \"warming\","]
+#[doc = "                  \"unavailable\""]
+#[doc = "                ]"]
+#[doc = "              },"]
+#[doc = "              \"readyUrl\": {"]
+#[doc = "                \"anyOf\": ["]
+#[doc = "                  {"]
+#[doc = "                    \"type\": \"string\","]
+#[doc = "                    \"pattern\": \"^https?:\\\\/\\\\/(?:127\\\\.0\\\\.0\\\\.1|localhost|\\\\[::1\\\\])(?::(?:[1-9][0-9]{0,4}))?\\\\/media\\\\/sha256:[0-9a-f]{64}\\\\?grant=[A-Za-z0-9._~-]{16,128}$\""]
+#[doc = "                  },"]
+#[doc = "                  {"]
+#[doc = "                    \"type\": \"null\""]
+#[doc = "                  }"]
+#[doc = "                ]"]
+#[doc = "              }"]
+#[doc = "            },"]
+#[doc = "            \"additionalProperties\": false"]
+#[doc = "          },"]
+#[doc = "          \"maxItems\": 256"]
+#[doc = "        },"]
+#[doc = "        \"generation\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"maxLength\": 128,"]
+#[doc = "          \"minLength\": 1"]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedMediaContractReconcileReceipt {
+    pub accepted: bool,
+    pub generation: ManagedMediaContractReconcileReceiptGeneration,
+    #[serde(rename = "interestCount")]
+    pub interest_count: i64,
+    pub snapshot: ManagedMediaContractReconcileReceiptSnapshot,
+}
+#[doc = "`ManagedMediaContractReconcileReceiptGeneration`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 128,"]
+#[doc = "  \"minLength\": 1"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct ManagedMediaContractReconcileReceiptGeneration(::std::string::String);
+impl ::std::ops::Deref for ManagedMediaContractReconcileReceiptGeneration {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<ManagedMediaContractReconcileReceiptGeneration>
+    for ::std::string::String
+{
+    fn from(value: ManagedMediaContractReconcileReceiptGeneration) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for ManagedMediaContractReconcileReceiptGeneration {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 128usize {
+            return Err("longer than 128 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for ManagedMediaContractReconcileReceiptGeneration {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for ManagedMediaContractReconcileReceiptGeneration
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for ManagedMediaContractReconcileReceiptGeneration
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for ManagedMediaContractReconcileReceiptGeneration {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`ManagedMediaContractReconcileReceiptSnapshot`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"assets\","]
+#[doc = "    \"generation\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"assets\": {"]
+#[doc = "      \"type\": \"array\","]
+#[doc = "      \"items\": {"]
+#[doc = "        \"type\": \"object\","]
+#[doc = "        \"required\": ["]
+#[doc = "          \"descriptor\","]
+#[doc = "          \"diagnostic\","]
+#[doc = "          \"readiness\","]
+#[doc = "          \"readyUrl\""]
+#[doc = "        ],"]
+#[doc = "        \"properties\": {"]
+#[doc = "          \"descriptor\": {"]
+#[doc = "            \"type\": \"object\","]
+#[doc = "            \"required\": ["]
+#[doc = "              \"byteSize\","]
+#[doc = "              \"contentType\","]
+#[doc = "              \"digest\","]
+#[doc = "              \"id\","]
+#[doc = "              \"purpose\","]
+#[doc = "              \"reference\","]
+#[doc = "              \"revision\""]
+#[doc = "            ],"]
+#[doc = "            \"properties\": {"]
+#[doc = "              \"byteSize\": {"]
+#[doc = "                \"type\": \"integer\","]
+#[doc = "                \"maximum\": 9007199254740991.0,"]
+#[doc = "                \"exclusiveMinimum\": 0.0"]
+#[doc = "              },"]
+#[doc = "              \"contentType\": {"]
+#[doc = "                \"type\": \"string\","]
+#[doc = "                \"enum\": ["]
+#[doc = "                  \"image/png\","]
+#[doc = "                  \"image/jpeg\","]
+#[doc = "                  \"image/webp\""]
+#[doc = "                ]"]
+#[doc = "              },"]
+#[doc = "              \"digest\": {"]
+#[doc = "                \"type\": \"string\","]
+#[doc = "                \"pattern\": \"^sha256:[0-9a-f]{64}$\""]
+#[doc = "              },"]
+#[doc = "              \"id\": {"]
+#[doc = "                \"type\": \"string\","]
+#[doc = "                \"format\": \"uuid\","]
+#[doc = "                \"pattern\": \"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$\""]
+#[doc = "              },"]
+#[doc = "              \"purpose\": {"]
+#[doc = "                \"type\": \"string\","]
+#[doc = "                \"enum\": ["]
+#[doc = "                  \"product_display_image\","]
+#[doc = "                  \"try_on_garment\""]
+#[doc = "                ]"]
+#[doc = "              },"]
+#[doc = "              \"reference\": {"]
+#[doc = "                \"type\": \"string\","]
+#[doc = "                \"pattern\": \"^\\\\/api\\\\/media-assets\\\\/[0-9a-f-]+\\\\/content$\""]
+#[doc = "              },"]
+#[doc = "              \"revision\": {"]
+#[doc = "                \"type\": \"object\","]
+#[doc = "                \"required\": ["]
+#[doc = "                  \"catalogRevision\""]
+#[doc = "                ],"]
+#[doc = "                \"properties\": {"]
+#[doc = "                  \"assetRevision\": {"]
+#[doc = "                    \"type\": \"string\","]
+#[doc = "                    \"maxLength\": 128,"]
+#[doc = "                    \"minLength\": 1"]
+#[doc = "                  },"]
+#[doc = "                  \"catalogRevision\": {"]
+#[doc = "                    \"type\": \"string\","]
+#[doc = "                    \"maxLength\": 128,"]
+#[doc = "                    \"minLength\": 1"]
+#[doc = "                  }"]
+#[doc = "                },"]
+#[doc = "                \"additionalProperties\": false"]
+#[doc = "              }"]
+#[doc = "            },"]
+#[doc = "            \"additionalProperties\": false"]
+#[doc = "          },"]
+#[doc = "          \"diagnostic\": {"]
+#[doc = "            \"anyOf\": ["]
+#[doc = "              {"]
+#[doc = "                \"type\": \"string\""]
+#[doc = "              },"]
+#[doc = "              {"]
+#[doc = "                \"type\": \"null\""]
+#[doc = "              }"]
+#[doc = "            ]"]
+#[doc = "          },"]
+#[doc = "          \"diagnosticReason\": {"]
+#[doc = "            \"anyOf\": ["]
+#[doc = "              {"]
+#[doc = "                \"type\": \"string\","]
+#[doc = "                \"enum\": ["]
+#[doc = "                  \"descriptor_invalid\","]
+#[doc = "                  \"cache_budget_exceeded\","]
+#[doc = "                  \"manifest_persistence_failed\","]
+#[doc = "                  \"download_failed\","]
+#[doc = "                  \"byte_size_mismatch\","]
+#[doc = "                  \"content_type_mismatch\","]
+#[doc = "                  \"media_facts_invalid\","]
+#[doc = "                  \"digest_mismatch\","]
+#[doc = "                  \"published_media_corrupt\","]
+#[doc = "                  \"defensive_read_failed\""]
+#[doc = "                ]"]
+#[doc = "              },"]
+#[doc = "              {"]
+#[doc = "                \"type\": \"null\""]
+#[doc = "              }"]
+#[doc = "            ]"]
+#[doc = "          },"]
+#[doc = "          \"readiness\": {"]
+#[doc = "            \"type\": \"string\","]
+#[doc = "            \"enum\": ["]
+#[doc = "              \"ready\","]
+#[doc = "              \"warming\","]
+#[doc = "              \"unavailable\""]
+#[doc = "            ]"]
+#[doc = "          },"]
+#[doc = "          \"readyUrl\": {"]
+#[doc = "            \"anyOf\": ["]
+#[doc = "              {"]
+#[doc = "                \"type\": \"string\","]
+#[doc = "                \"pattern\": \"^https?:\\\\/\\\\/(?:127\\\\.0\\\\.0\\\\.1|localhost|\\\\[::1\\\\])(?::(?:[1-9][0-9]{0,4}))?\\\\/media\\\\/sha256:[0-9a-f]{64}\\\\?grant=[A-Za-z0-9._~-]{16,128}$\""]
+#[doc = "              },"]
+#[doc = "              {"]
+#[doc = "                \"type\": \"null\""]
+#[doc = "              }"]
+#[doc = "            ]"]
+#[doc = "          }"]
+#[doc = "        },"]
+#[doc = "        \"additionalProperties\": false"]
+#[doc = "      },"]
+#[doc = "      \"maxItems\": 256"]
+#[doc = "    },"]
+#[doc = "    \"generation\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 128,"]
+#[doc = "      \"minLength\": 1"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedMediaContractReconcileReceiptSnapshot {
+    pub assets: ::std::vec::Vec<ManagedMediaContractReconcileReceiptSnapshotAssetsItem>,
+    pub generation: ManagedMediaContractReconcileReceiptSnapshotGeneration,
+}
+#[doc = "`ManagedMediaContractReconcileReceiptSnapshotAssetsItem`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"descriptor\","]
+#[doc = "    \"diagnostic\","]
+#[doc = "    \"readiness\","]
+#[doc = "    \"readyUrl\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"descriptor\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"byteSize\","]
+#[doc = "        \"contentType\","]
+#[doc = "        \"digest\","]
+#[doc = "        \"id\","]
+#[doc = "        \"purpose\","]
+#[doc = "        \"reference\","]
+#[doc = "        \"revision\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"byteSize\": {"]
+#[doc = "          \"type\": \"integer\","]
+#[doc = "          \"maximum\": 9007199254740991.0,"]
+#[doc = "          \"exclusiveMinimum\": 0.0"]
+#[doc = "        },"]
+#[doc = "        \"contentType\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"enum\": ["]
+#[doc = "            \"image/png\","]
+#[doc = "            \"image/jpeg\","]
+#[doc = "            \"image/webp\""]
+#[doc = "          ]"]
+#[doc = "        },"]
+#[doc = "        \"digest\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"pattern\": \"^sha256:[0-9a-f]{64}$\""]
+#[doc = "        },"]
+#[doc = "        \"id\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"format\": \"uuid\","]
+#[doc = "          \"pattern\": \"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$\""]
+#[doc = "        },"]
+#[doc = "        \"purpose\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"enum\": ["]
+#[doc = "            \"product_display_image\","]
+#[doc = "            \"try_on_garment\""]
+#[doc = "          ]"]
+#[doc = "        },"]
+#[doc = "        \"reference\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"pattern\": \"^\\\\/api\\\\/media-assets\\\\/[0-9a-f-]+\\\\/content$\""]
+#[doc = "        },"]
+#[doc = "        \"revision\": {"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"catalogRevision\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"assetRevision\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"maxLength\": 128,"]
+#[doc = "              \"minLength\": 1"]
+#[doc = "            },"]
+#[doc = "            \"catalogRevision\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"maxLength\": 128,"]
+#[doc = "              \"minLength\": 1"]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    \"diagnostic\": {"]
+#[doc = "      \"anyOf\": ["]
+#[doc = "        {"]
+#[doc = "          \"type\": \"string\""]
+#[doc = "        },"]
+#[doc = "        {"]
+#[doc = "          \"type\": \"null\""]
+#[doc = "        }"]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    \"diagnosticReason\": {"]
+#[doc = "      \"anyOf\": ["]
+#[doc = "        {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"enum\": ["]
+#[doc = "            \"descriptor_invalid\","]
+#[doc = "            \"cache_budget_exceeded\","]
+#[doc = "            \"manifest_persistence_failed\","]
+#[doc = "            \"download_failed\","]
+#[doc = "            \"byte_size_mismatch\","]
+#[doc = "            \"content_type_mismatch\","]
+#[doc = "            \"media_facts_invalid\","]
+#[doc = "            \"digest_mismatch\","]
+#[doc = "            \"published_media_corrupt\","]
+#[doc = "            \"defensive_read_failed\""]
+#[doc = "          ]"]
+#[doc = "        },"]
+#[doc = "        {"]
+#[doc = "          \"type\": \"null\""]
+#[doc = "        }"]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    \"readiness\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"ready\","]
+#[doc = "        \"warming\","]
+#[doc = "        \"unavailable\""]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    \"readyUrl\": {"]
+#[doc = "      \"anyOf\": ["]
+#[doc = "        {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"pattern\": \"^https?:\\\\/\\\\/(?:127\\\\.0\\\\.0\\\\.1|localhost|\\\\[::1\\\\])(?::(?:[1-9][0-9]{0,4}))?\\\\/media\\\\/sha256:[0-9a-f]{64}\\\\?grant=[A-Za-z0-9._~-]{16,128}$\""]
+#[doc = "        },"]
+#[doc = "        {"]
+#[doc = "          \"type\": \"null\""]
+#[doc = "        }"]
+#[doc = "      ]"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedMediaContractReconcileReceiptSnapshotAssetsItem {
+    pub descriptor: ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptor,
+    pub diagnostic: ::std::option::Option<::std::string::String>,
+    #[serde(
+        rename = "diagnosticReason",
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub diagnostic_reason: ::std::option::Option<
+        ManagedMediaContractReconcileReceiptSnapshotAssetsItemDiagnosticReason,
+    >,
+    pub readiness: ManagedMediaContractReconcileReceiptSnapshotAssetsItemReadiness,
+    #[serde(rename = "readyUrl")]
+    pub ready_url:
+        ::std::option::Option<ManagedMediaContractReconcileReceiptSnapshotAssetsItemReadyUrl>,
+}
+#[doc = "`ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptor`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"byteSize\","]
+#[doc = "    \"contentType\","]
+#[doc = "    \"digest\","]
+#[doc = "    \"id\","]
+#[doc = "    \"purpose\","]
+#[doc = "    \"reference\","]
+#[doc = "    \"revision\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"byteSize\": {"]
+#[doc = "      \"type\": \"integer\","]
+#[doc = "      \"maximum\": 9007199254740991.0,"]
+#[doc = "      \"exclusiveMinimum\": 0.0"]
+#[doc = "    },"]
+#[doc = "    \"contentType\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"image/png\","]
+#[doc = "        \"image/jpeg\","]
+#[doc = "        \"image/webp\""]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    \"digest\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"pattern\": \"^sha256:[0-9a-f]{64}$\""]
+#[doc = "    },"]
+#[doc = "    \"id\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"format\": \"uuid\","]
+#[doc = "      \"pattern\": \"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$\""]
+#[doc = "    },"]
+#[doc = "    \"purpose\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"product_display_image\","]
+#[doc = "        \"try_on_garment\""]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    \"reference\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"pattern\": \"^\\\\/api\\\\/media-assets\\\\/[0-9a-f-]+\\\\/content$\""]
+#[doc = "    },"]
+#[doc = "    \"revision\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"catalogRevision\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"assetRevision\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"maxLength\": 128,"]
+#[doc = "          \"minLength\": 1"]
+#[doc = "        },"]
+#[doc = "        \"catalogRevision\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"maxLength\": 128,"]
+#[doc = "          \"minLength\": 1"]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptor {
+    #[serde(rename = "byteSize")]
+    pub byte_size: ::std::num::NonZeroU64,
+    #[serde(rename = "contentType")]
+    pub content_type: ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorContentType,
+    pub digest: ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorDigest,
+    pub id: ::uuid::Uuid,
+    pub purpose: ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorPurpose,
+    pub reference: ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorReference,
+    pub revision: ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorRevision,
+}
+#[doc = "`ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorContentType`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"image/png\","]
+#[doc = "    \"image/jpeg\","]
+#[doc = "    \"image/webp\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorContentType {
+    #[serde(rename = "image/png")]
+    ImagePng,
+    #[serde(rename = "image/jpeg")]
+    ImageJpeg,
+    #[serde(rename = "image/webp")]
+    ImageWebp,
+}
+impl ::std::fmt::Display
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorContentType
+{
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::ImagePng => f.write_str("image/png"),
+            Self::ImageJpeg => f.write_str("image/jpeg"),
+            Self::ImageWebp => f.write_str("image/webp"),
+        }
+    }
+}
+impl ::std::str::FromStr
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorContentType
+{
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "image/png" => Ok(Self::ImagePng),
+            "image/jpeg" => Ok(Self::ImageJpeg),
+            "image/webp" => Ok(Self::ImageWebp),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str>
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorContentType
+{
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorContentType
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorContentType
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+#[doc = "`ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorDigest`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"pattern\": \"^sha256:[0-9a-f]{64}$\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorDigest(
+    ::std::string::String,
+);
+impl ::std::ops::Deref for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorDigest {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorDigest>
+    for ::std::string::String
+{
+    fn from(value: ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorDigest) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorDigest
+{
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
+            ::std::sync::LazyLock::new(|| ::regress::Regex::new("^sha256:[0-9a-f]{64}$").unwrap());
+        if PATTERN.find(value).is_none() {
+            return Err("doesn't match pattern \"^sha256:[0-9a-f]{64}$\"".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str>
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorDigest
+{
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorDigest
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorDigest
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de>
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorDigest
+{
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorPurpose`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"product_display_image\","]
+#[doc = "    \"try_on_garment\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorPurpose {
+    #[serde(rename = "product_display_image")]
+    ProductDisplayImage,
+    #[serde(rename = "try_on_garment")]
+    TryOnGarment,
+}
+impl ::std::fmt::Display
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorPurpose
+{
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::ProductDisplayImage => f.write_str("product_display_image"),
+            Self::TryOnGarment => f.write_str("try_on_garment"),
+        }
+    }
+}
+impl ::std::str::FromStr
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorPurpose
+{
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "product_display_image" => Ok(Self::ProductDisplayImage),
+            "try_on_garment" => Ok(Self::TryOnGarment),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str>
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorPurpose
+{
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorPurpose
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorPurpose
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+#[doc = "`ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorReference`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"pattern\": \"^\\\\/api\\\\/media-assets\\\\/[0-9a-f-]+\\\\/content$\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorReference(
+    ::std::string::String,
+);
+impl ::std::ops::Deref
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorReference
+{
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorReference>
+    for ::std::string::String
+{
+    fn from(
+        value: ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorReference,
+    ) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorReference
+{
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
+            ::std::sync::LazyLock::new(|| {
+                ::regress::Regex::new("^\\/api\\/media-assets\\/[0-9a-f-]+\\/content$").unwrap()
+            });
+        if PATTERN.find(value).is_none() {
+            return Err(
+                "doesn't match pattern \"^\\/api\\/media-assets\\/[0-9a-f-]+\\/content$\"".into(),
+            );
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str>
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorReference
+{
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorReference
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorReference
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de>
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorReference
+{
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorRevision`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"catalogRevision\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"assetRevision\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 128,"]
+#[doc = "      \"minLength\": 1"]
+#[doc = "    },"]
+#[doc = "    \"catalogRevision\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 128,"]
+#[doc = "      \"minLength\": 1"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorRevision {
+    #[serde(
+        rename = "assetRevision",
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub asset_revision: ::std::option::Option<
+        ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorRevisionAssetRevision,
+    >,
+    #[serde(rename = "catalogRevision")]
+    pub catalog_revision:
+        ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorRevisionCatalogRevision,
+}
+#[doc = "`ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorRevisionAssetRevision`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 128,"]
+#[doc = "  \"minLength\": 1"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorRevisionAssetRevision(
+    ::std::string::String,
+);
+impl ::std::ops::Deref
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorRevisionAssetRevision
+{
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl
+    ::std::convert::From<
+        ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorRevisionAssetRevision,
+    > for ::std::string::String
+{
+    fn from(
+        value : ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorRevisionAssetRevision,
+    ) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorRevisionAssetRevision
+{
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 128usize {
+            return Err("longer than 128 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str>
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorRevisionAssetRevision
+{
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorRevisionAssetRevision
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorRevisionAssetRevision
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de>
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorRevisionAssetRevision
+{
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorRevisionCatalogRevision`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 128,"]
+#[doc = "  \"minLength\": 1"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorRevisionCatalogRevision(
+    ::std::string::String,
+);
+impl ::std::ops::Deref
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorRevisionCatalogRevision
+{
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl
+    ::std::convert::From<
+        ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorRevisionCatalogRevision,
+    > for ::std::string::String
+{
+    fn from(
+        value : ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorRevisionCatalogRevision,
+    ) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorRevisionCatalogRevision
+{
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 128usize {
+            return Err("longer than 128 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str>
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorRevisionCatalogRevision
+{
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorRevisionCatalogRevision
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorRevisionCatalogRevision
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de>
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDescriptorRevisionCatalogRevision
+{
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`ManagedMediaContractReconcileReceiptSnapshotAssetsItemDiagnosticReason`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"descriptor_invalid\","]
+#[doc = "    \"cache_budget_exceeded\","]
+#[doc = "    \"manifest_persistence_failed\","]
+#[doc = "    \"download_failed\","]
+#[doc = "    \"byte_size_mismatch\","]
+#[doc = "    \"content_type_mismatch\","]
+#[doc = "    \"media_facts_invalid\","]
+#[doc = "    \"digest_mismatch\","]
+#[doc = "    \"published_media_corrupt\","]
+#[doc = "    \"defensive_read_failed\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum ManagedMediaContractReconcileReceiptSnapshotAssetsItemDiagnosticReason {
+    #[serde(rename = "descriptor_invalid")]
+    DescriptorInvalid,
+    #[serde(rename = "cache_budget_exceeded")]
+    CacheBudgetExceeded,
+    #[serde(rename = "manifest_persistence_failed")]
+    ManifestPersistenceFailed,
+    #[serde(rename = "download_failed")]
+    DownloadFailed,
+    #[serde(rename = "byte_size_mismatch")]
+    ByteSizeMismatch,
+    #[serde(rename = "content_type_mismatch")]
+    ContentTypeMismatch,
+    #[serde(rename = "media_facts_invalid")]
+    MediaFactsInvalid,
+    #[serde(rename = "digest_mismatch")]
+    DigestMismatch,
+    #[serde(rename = "published_media_corrupt")]
+    PublishedMediaCorrupt,
+    #[serde(rename = "defensive_read_failed")]
+    DefensiveReadFailed,
+}
+impl ::std::fmt::Display
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDiagnosticReason
+{
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::DescriptorInvalid => f.write_str("descriptor_invalid"),
+            Self::CacheBudgetExceeded => f.write_str("cache_budget_exceeded"),
+            Self::ManifestPersistenceFailed => f.write_str("manifest_persistence_failed"),
+            Self::DownloadFailed => f.write_str("download_failed"),
+            Self::ByteSizeMismatch => f.write_str("byte_size_mismatch"),
+            Self::ContentTypeMismatch => f.write_str("content_type_mismatch"),
+            Self::MediaFactsInvalid => f.write_str("media_facts_invalid"),
+            Self::DigestMismatch => f.write_str("digest_mismatch"),
+            Self::PublishedMediaCorrupt => f.write_str("published_media_corrupt"),
+            Self::DefensiveReadFailed => f.write_str("defensive_read_failed"),
+        }
+    }
+}
+impl ::std::str::FromStr
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDiagnosticReason
+{
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "descriptor_invalid" => Ok(Self::DescriptorInvalid),
+            "cache_budget_exceeded" => Ok(Self::CacheBudgetExceeded),
+            "manifest_persistence_failed" => Ok(Self::ManifestPersistenceFailed),
+            "download_failed" => Ok(Self::DownloadFailed),
+            "byte_size_mismatch" => Ok(Self::ByteSizeMismatch),
+            "content_type_mismatch" => Ok(Self::ContentTypeMismatch),
+            "media_facts_invalid" => Ok(Self::MediaFactsInvalid),
+            "digest_mismatch" => Ok(Self::DigestMismatch),
+            "published_media_corrupt" => Ok(Self::PublishedMediaCorrupt),
+            "defensive_read_failed" => Ok(Self::DefensiveReadFailed),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str>
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDiagnosticReason
+{
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDiagnosticReason
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemDiagnosticReason
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+#[doc = "`ManagedMediaContractReconcileReceiptSnapshotAssetsItemReadiness`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"ready\","]
+#[doc = "    \"warming\","]
+#[doc = "    \"unavailable\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum ManagedMediaContractReconcileReceiptSnapshotAssetsItemReadiness {
+    #[serde(rename = "ready")]
+    Ready,
+    #[serde(rename = "warming")]
+    Warming,
+    #[serde(rename = "unavailable")]
+    Unavailable,
+}
+impl ::std::fmt::Display for ManagedMediaContractReconcileReceiptSnapshotAssetsItemReadiness {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::Ready => f.write_str("ready"),
+            Self::Warming => f.write_str("warming"),
+            Self::Unavailable => f.write_str("unavailable"),
+        }
+    }
+}
+impl ::std::str::FromStr for ManagedMediaContractReconcileReceiptSnapshotAssetsItemReadiness {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "ready" => Ok(Self::Ready),
+            "warming" => Ok(Self::Warming),
+            "unavailable" => Ok(Self::Unavailable),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str>
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemReadiness
+{
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemReadiness
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemReadiness
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+#[doc = "`ManagedMediaContractReconcileReceiptSnapshotAssetsItemReadyUrl`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"pattern\": \"^https?:\\\\/\\\\/(?:127\\\\.0\\\\.0\\\\.1|localhost|\\\\[::1\\\\])(?::(?:[1-9][0-9]{0,4}))?\\\\/media\\\\/sha256:[0-9a-f]{64}\\\\?grant=[A-Za-z0-9._~-]{16,128}$\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct ManagedMediaContractReconcileReceiptSnapshotAssetsItemReadyUrl(::std::string::String);
+impl ::std::ops::Deref for ManagedMediaContractReconcileReceiptSnapshotAssetsItemReadyUrl {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<ManagedMediaContractReconcileReceiptSnapshotAssetsItemReadyUrl>
+    for ::std::string::String
+{
+    fn from(value: ManagedMediaContractReconcileReceiptSnapshotAssetsItemReadyUrl) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for ManagedMediaContractReconcileReceiptSnapshotAssetsItemReadyUrl {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> = ::std::sync::LazyLock::new(
+            || {
+                :: regress :: Regex :: new ("^https?:\\/\\/(?:127\\.0\\.0\\.1|localhost|\\[::1\\])(?::(?:[1-9][0-9]{0,4}))?\\/media\\/sha256:[0-9a-f]{64}\\?grant=[A-Za-z0-9._~-]{16,128}$") . unwrap ()
+            },
+        );
+        if PATTERN.find(value).is_none() {
+            return Err ("doesn't match pattern \"^https?:\\/\\/(?:127\\.0\\.0\\.1|localhost|\\[::1\\])(?::(?:[1-9][0-9]{0,4}))?\\/media\\/sha256:[0-9a-f]{64}\\?grant=[A-Za-z0-9._~-]{16,128}$\"" . into ()) ;
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str>
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemReadyUrl
+{
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemReadyUrl
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemReadyUrl
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de>
+    for ManagedMediaContractReconcileReceiptSnapshotAssetsItemReadyUrl
+{
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`ManagedMediaContractReconcileReceiptSnapshotGeneration`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 128,"]
+#[doc = "  \"minLength\": 1"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct ManagedMediaContractReconcileReceiptSnapshotGeneration(::std::string::String);
+impl ::std::ops::Deref for ManagedMediaContractReconcileReceiptSnapshotGeneration {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<ManagedMediaContractReconcileReceiptSnapshotGeneration>
+    for ::std::string::String
+{
+    fn from(value: ManagedMediaContractReconcileReceiptSnapshotGeneration) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for ManagedMediaContractReconcileReceiptSnapshotGeneration {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 128usize {
+            return Err("longer than 128 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for ManagedMediaContractReconcileReceiptSnapshotGeneration {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for ManagedMediaContractReconcileReceiptSnapshotGeneration
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for ManagedMediaContractReconcileReceiptSnapshotGeneration
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for ManagedMediaContractReconcileReceiptSnapshotGeneration {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`ManagedMediaContractReconcileRequest`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"generation\","]
+#[doc = "    \"interests\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"generation\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 128,"]
+#[doc = "      \"minLength\": 1"]
+#[doc = "    },"]
+#[doc = "    \"interests\": {"]
+#[doc = "      \"type\": \"array\","]
+#[doc = "      \"items\": {"]
+#[doc = "        \"type\": \"object\","]
+#[doc = "        \"required\": ["]
+#[doc = "          \"byteSize\","]
+#[doc = "          \"contentType\","]
+#[doc = "          \"digest\","]
+#[doc = "          \"id\","]
+#[doc = "          \"purpose\","]
+#[doc = "          \"reference\","]
+#[doc = "          \"revision\""]
+#[doc = "        ],"]
+#[doc = "        \"properties\": {"]
+#[doc = "          \"byteSize\": {"]
+#[doc = "            \"type\": \"integer\","]
+#[doc = "            \"maximum\": 9007199254740991.0,"]
+#[doc = "            \"exclusiveMinimum\": 0.0"]
+#[doc = "          },"]
+#[doc = "          \"contentType\": {"]
+#[doc = "            \"type\": \"string\","]
+#[doc = "            \"enum\": ["]
+#[doc = "              \"image/png\","]
+#[doc = "              \"image/jpeg\","]
+#[doc = "              \"image/webp\""]
+#[doc = "            ]"]
+#[doc = "          },"]
+#[doc = "          \"digest\": {"]
+#[doc = "            \"type\": \"string\","]
+#[doc = "            \"pattern\": \"^sha256:[0-9a-f]{64}$\""]
+#[doc = "          },"]
+#[doc = "          \"id\": {"]
+#[doc = "            \"type\": \"string\","]
+#[doc = "            \"format\": \"uuid\","]
+#[doc = "            \"pattern\": \"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$\""]
+#[doc = "          },"]
+#[doc = "          \"purpose\": {"]
+#[doc = "            \"type\": \"string\","]
+#[doc = "            \"enum\": ["]
+#[doc = "              \"product_display_image\","]
+#[doc = "              \"try_on_garment\""]
+#[doc = "            ]"]
+#[doc = "          },"]
+#[doc = "          \"reference\": {"]
+#[doc = "            \"type\": \"string\","]
+#[doc = "            \"pattern\": \"^\\\\/api\\\\/media-assets\\\\/[0-9a-f-]+\\\\/content$\""]
+#[doc = "          },"]
+#[doc = "          \"revision\": {"]
+#[doc = "            \"type\": \"object\","]
+#[doc = "            \"required\": ["]
+#[doc = "              \"catalogRevision\""]
+#[doc = "            ],"]
+#[doc = "            \"properties\": {"]
+#[doc = "              \"assetRevision\": {"]
+#[doc = "                \"type\": \"string\","]
+#[doc = "                \"maxLength\": 128,"]
+#[doc = "                \"minLength\": 1"]
+#[doc = "              },"]
+#[doc = "              \"catalogRevision\": {"]
+#[doc = "                \"type\": \"string\","]
+#[doc = "                \"maxLength\": 128,"]
+#[doc = "                \"minLength\": 1"]
+#[doc = "              }"]
+#[doc = "            },"]
+#[doc = "            \"additionalProperties\": false"]
+#[doc = "          }"]
+#[doc = "        },"]
+#[doc = "        \"additionalProperties\": false"]
+#[doc = "      },"]
+#[doc = "      \"maxItems\": 256"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedMediaContractReconcileRequest {
+    pub generation: ManagedMediaContractReconcileRequestGeneration,
+    pub interests: ::std::vec::Vec<ManagedMediaContractReconcileRequestInterestsItem>,
+}
+#[doc = "`ManagedMediaContractReconcileRequestGeneration`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 128,"]
+#[doc = "  \"minLength\": 1"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct ManagedMediaContractReconcileRequestGeneration(::std::string::String);
+impl ::std::ops::Deref for ManagedMediaContractReconcileRequestGeneration {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<ManagedMediaContractReconcileRequestGeneration>
+    for ::std::string::String
+{
+    fn from(value: ManagedMediaContractReconcileRequestGeneration) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for ManagedMediaContractReconcileRequestGeneration {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 128usize {
+            return Err("longer than 128 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for ManagedMediaContractReconcileRequestGeneration {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for ManagedMediaContractReconcileRequestGeneration
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for ManagedMediaContractReconcileRequestGeneration
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for ManagedMediaContractReconcileRequestGeneration {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`ManagedMediaContractReconcileRequestInterestsItem`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"byteSize\","]
+#[doc = "    \"contentType\","]
+#[doc = "    \"digest\","]
+#[doc = "    \"id\","]
+#[doc = "    \"purpose\","]
+#[doc = "    \"reference\","]
+#[doc = "    \"revision\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"byteSize\": {"]
+#[doc = "      \"type\": \"integer\","]
+#[doc = "      \"maximum\": 9007199254740991.0,"]
+#[doc = "      \"exclusiveMinimum\": 0.0"]
+#[doc = "    },"]
+#[doc = "    \"contentType\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"image/png\","]
+#[doc = "        \"image/jpeg\","]
+#[doc = "        \"image/webp\""]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    \"digest\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"pattern\": \"^sha256:[0-9a-f]{64}$\""]
+#[doc = "    },"]
+#[doc = "    \"id\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"format\": \"uuid\","]
+#[doc = "      \"pattern\": \"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$\""]
+#[doc = "    },"]
+#[doc = "    \"purpose\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"product_display_image\","]
+#[doc = "        \"try_on_garment\""]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    \"reference\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"pattern\": \"^\\\\/api\\\\/media-assets\\\\/[0-9a-f-]+\\\\/content$\""]
+#[doc = "    },"]
+#[doc = "    \"revision\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"catalogRevision\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"assetRevision\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"maxLength\": 128,"]
+#[doc = "          \"minLength\": 1"]
+#[doc = "        },"]
+#[doc = "        \"catalogRevision\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"maxLength\": 128,"]
+#[doc = "          \"minLength\": 1"]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedMediaContractReconcileRequestInterestsItem {
+    #[serde(rename = "byteSize")]
+    pub byte_size: ::std::num::NonZeroU64,
+    #[serde(rename = "contentType")]
+    pub content_type: ManagedMediaContractReconcileRequestInterestsItemContentType,
+    pub digest: ManagedMediaContractReconcileRequestInterestsItemDigest,
+    pub id: ::uuid::Uuid,
+    pub purpose: ManagedMediaContractReconcileRequestInterestsItemPurpose,
+    pub reference: ManagedMediaContractReconcileRequestInterestsItemReference,
+    pub revision: ManagedMediaContractReconcileRequestInterestsItemRevision,
+}
+#[doc = "`ManagedMediaContractReconcileRequestInterestsItemContentType`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"image/png\","]
+#[doc = "    \"image/jpeg\","]
+#[doc = "    \"image/webp\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum ManagedMediaContractReconcileRequestInterestsItemContentType {
+    #[serde(rename = "image/png")]
+    ImagePng,
+    #[serde(rename = "image/jpeg")]
+    ImageJpeg,
+    #[serde(rename = "image/webp")]
+    ImageWebp,
+}
+impl ::std::fmt::Display for ManagedMediaContractReconcileRequestInterestsItemContentType {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::ImagePng => f.write_str("image/png"),
+            Self::ImageJpeg => f.write_str("image/jpeg"),
+            Self::ImageWebp => f.write_str("image/webp"),
+        }
+    }
+}
+impl ::std::str::FromStr for ManagedMediaContractReconcileRequestInterestsItemContentType {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "image/png" => Ok(Self::ImagePng),
+            "image/jpeg" => Ok(Self::ImageJpeg),
+            "image/webp" => Ok(Self::ImageWebp),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str>
+    for ManagedMediaContractReconcileRequestInterestsItemContentType
+{
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for ManagedMediaContractReconcileRequestInterestsItemContentType
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for ManagedMediaContractReconcileRequestInterestsItemContentType
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+#[doc = "`ManagedMediaContractReconcileRequestInterestsItemDigest`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"pattern\": \"^sha256:[0-9a-f]{64}$\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct ManagedMediaContractReconcileRequestInterestsItemDigest(::std::string::String);
+impl ::std::ops::Deref for ManagedMediaContractReconcileRequestInterestsItemDigest {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<ManagedMediaContractReconcileRequestInterestsItemDigest>
+    for ::std::string::String
+{
+    fn from(value: ManagedMediaContractReconcileRequestInterestsItemDigest) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for ManagedMediaContractReconcileRequestInterestsItemDigest {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
+            ::std::sync::LazyLock::new(|| ::regress::Regex::new("^sha256:[0-9a-f]{64}$").unwrap());
+        if PATTERN.find(value).is_none() {
+            return Err("doesn't match pattern \"^sha256:[0-9a-f]{64}$\"".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for ManagedMediaContractReconcileRequestInterestsItemDigest {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for ManagedMediaContractReconcileRequestInterestsItemDigest
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for ManagedMediaContractReconcileRequestInterestsItemDigest
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for ManagedMediaContractReconcileRequestInterestsItemDigest {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`ManagedMediaContractReconcileRequestInterestsItemPurpose`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"product_display_image\","]
+#[doc = "    \"try_on_garment\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum ManagedMediaContractReconcileRequestInterestsItemPurpose {
+    #[serde(rename = "product_display_image")]
+    ProductDisplayImage,
+    #[serde(rename = "try_on_garment")]
+    TryOnGarment,
+}
+impl ::std::fmt::Display for ManagedMediaContractReconcileRequestInterestsItemPurpose {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::ProductDisplayImage => f.write_str("product_display_image"),
+            Self::TryOnGarment => f.write_str("try_on_garment"),
+        }
+    }
+}
+impl ::std::str::FromStr for ManagedMediaContractReconcileRequestInterestsItemPurpose {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "product_display_image" => Ok(Self::ProductDisplayImage),
+            "try_on_garment" => Ok(Self::TryOnGarment),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for ManagedMediaContractReconcileRequestInterestsItemPurpose {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for ManagedMediaContractReconcileRequestInterestsItemPurpose
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for ManagedMediaContractReconcileRequestInterestsItemPurpose
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+#[doc = "`ManagedMediaContractReconcileRequestInterestsItemReference`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"pattern\": \"^\\\\/api\\\\/media-assets\\\\/[0-9a-f-]+\\\\/content$\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct ManagedMediaContractReconcileRequestInterestsItemReference(::std::string::String);
+impl ::std::ops::Deref for ManagedMediaContractReconcileRequestInterestsItemReference {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<ManagedMediaContractReconcileRequestInterestsItemReference>
+    for ::std::string::String
+{
+    fn from(value: ManagedMediaContractReconcileRequestInterestsItemReference) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for ManagedMediaContractReconcileRequestInterestsItemReference {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
+            ::std::sync::LazyLock::new(|| {
+                ::regress::Regex::new("^\\/api\\/media-assets\\/[0-9a-f-]+\\/content$").unwrap()
+            });
+        if PATTERN.find(value).is_none() {
+            return Err(
+                "doesn't match pattern \"^\\/api\\/media-assets\\/[0-9a-f-]+\\/content$\"".into(),
+            );
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for ManagedMediaContractReconcileRequestInterestsItemReference {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for ManagedMediaContractReconcileRequestInterestsItemReference
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for ManagedMediaContractReconcileRequestInterestsItemReference
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for ManagedMediaContractReconcileRequestInterestsItemReference {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`ManagedMediaContractReconcileRequestInterestsItemRevision`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"catalogRevision\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"assetRevision\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 128,"]
+#[doc = "      \"minLength\": 1"]
+#[doc = "    },"]
+#[doc = "    \"catalogRevision\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 128,"]
+#[doc = "      \"minLength\": 1"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedMediaContractReconcileRequestInterestsItemRevision {
+    #[serde(
+        rename = "assetRevision",
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub asset_revision: ::std::option::Option<
+        ManagedMediaContractReconcileRequestInterestsItemRevisionAssetRevision,
+    >,
+    #[serde(rename = "catalogRevision")]
+    pub catalog_revision: ManagedMediaContractReconcileRequestInterestsItemRevisionCatalogRevision,
+}
+#[doc = "`ManagedMediaContractReconcileRequestInterestsItemRevisionAssetRevision`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 128,"]
+#[doc = "  \"minLength\": 1"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct ManagedMediaContractReconcileRequestInterestsItemRevisionAssetRevision(
+    ::std::string::String,
+);
+impl ::std::ops::Deref for ManagedMediaContractReconcileRequestInterestsItemRevisionAssetRevision {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<ManagedMediaContractReconcileRequestInterestsItemRevisionAssetRevision>
+    for ::std::string::String
+{
+    fn from(value: ManagedMediaContractReconcileRequestInterestsItemRevisionAssetRevision) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr
+    for ManagedMediaContractReconcileRequestInterestsItemRevisionAssetRevision
+{
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 128usize {
+            return Err("longer than 128 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str>
+    for ManagedMediaContractReconcileRequestInterestsItemRevisionAssetRevision
+{
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for ManagedMediaContractReconcileRequestInterestsItemRevisionAssetRevision
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for ManagedMediaContractReconcileRequestInterestsItemRevisionAssetRevision
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de>
+    for ManagedMediaContractReconcileRequestInterestsItemRevisionAssetRevision
+{
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`ManagedMediaContractReconcileRequestInterestsItemRevisionCatalogRevision`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 128,"]
+#[doc = "  \"minLength\": 1"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct ManagedMediaContractReconcileRequestInterestsItemRevisionCatalogRevision(
+    ::std::string::String,
+);
+impl ::std::ops::Deref
+    for ManagedMediaContractReconcileRequestInterestsItemRevisionCatalogRevision
+{
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<ManagedMediaContractReconcileRequestInterestsItemRevisionCatalogRevision>
+    for ::std::string::String
+{
+    fn from(
+        value: ManagedMediaContractReconcileRequestInterestsItemRevisionCatalogRevision,
+    ) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr
+    for ManagedMediaContractReconcileRequestInterestsItemRevisionCatalogRevision
+{
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 128usize {
+            return Err("longer than 128 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str>
+    for ManagedMediaContractReconcileRequestInterestsItemRevisionCatalogRevision
+{
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for ManagedMediaContractReconcileRequestInterestsItemRevisionCatalogRevision
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for ManagedMediaContractReconcileRequestInterestsItemRevisionCatalogRevision
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de>
+    for ManagedMediaContractReconcileRequestInterestsItemRevisionCatalogRevision
+{
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`ManagedMediaContractSnapshot`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"assets\","]
+#[doc = "    \"generation\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"assets\": {"]
+#[doc = "      \"type\": \"array\","]
+#[doc = "      \"items\": {"]
+#[doc = "        \"type\": \"object\","]
+#[doc = "        \"required\": ["]
+#[doc = "          \"descriptor\","]
+#[doc = "          \"diagnostic\","]
+#[doc = "          \"readiness\","]
+#[doc = "          \"readyUrl\""]
+#[doc = "        ],"]
+#[doc = "        \"properties\": {"]
+#[doc = "          \"descriptor\": {"]
+#[doc = "            \"type\": \"object\","]
+#[doc = "            \"required\": ["]
+#[doc = "              \"byteSize\","]
+#[doc = "              \"contentType\","]
+#[doc = "              \"digest\","]
+#[doc = "              \"id\","]
+#[doc = "              \"purpose\","]
+#[doc = "              \"reference\","]
+#[doc = "              \"revision\""]
+#[doc = "            ],"]
+#[doc = "            \"properties\": {"]
+#[doc = "              \"byteSize\": {"]
+#[doc = "                \"type\": \"integer\","]
+#[doc = "                \"maximum\": 9007199254740991.0,"]
+#[doc = "                \"exclusiveMinimum\": 0.0"]
+#[doc = "              },"]
+#[doc = "              \"contentType\": {"]
+#[doc = "                \"type\": \"string\","]
+#[doc = "                \"enum\": ["]
+#[doc = "                  \"image/png\","]
+#[doc = "                  \"image/jpeg\","]
+#[doc = "                  \"image/webp\""]
+#[doc = "                ]"]
+#[doc = "              },"]
+#[doc = "              \"digest\": {"]
+#[doc = "                \"type\": \"string\","]
+#[doc = "                \"pattern\": \"^sha256:[0-9a-f]{64}$\""]
+#[doc = "              },"]
+#[doc = "              \"id\": {"]
+#[doc = "                \"type\": \"string\","]
+#[doc = "                \"format\": \"uuid\","]
+#[doc = "                \"pattern\": \"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$\""]
+#[doc = "              },"]
+#[doc = "              \"purpose\": {"]
+#[doc = "                \"type\": \"string\","]
+#[doc = "                \"enum\": ["]
+#[doc = "                  \"product_display_image\","]
+#[doc = "                  \"try_on_garment\""]
+#[doc = "                ]"]
+#[doc = "              },"]
+#[doc = "              \"reference\": {"]
+#[doc = "                \"type\": \"string\","]
+#[doc = "                \"pattern\": \"^\\\\/api\\\\/media-assets\\\\/[0-9a-f-]+\\\\/content$\""]
+#[doc = "              },"]
+#[doc = "              \"revision\": {"]
+#[doc = "                \"type\": \"object\","]
+#[doc = "                \"required\": ["]
+#[doc = "                  \"catalogRevision\""]
+#[doc = "                ],"]
+#[doc = "                \"properties\": {"]
+#[doc = "                  \"assetRevision\": {"]
+#[doc = "                    \"type\": \"string\","]
+#[doc = "                    \"maxLength\": 128,"]
+#[doc = "                    \"minLength\": 1"]
+#[doc = "                  },"]
+#[doc = "                  \"catalogRevision\": {"]
+#[doc = "                    \"type\": \"string\","]
+#[doc = "                    \"maxLength\": 128,"]
+#[doc = "                    \"minLength\": 1"]
+#[doc = "                  }"]
+#[doc = "                },"]
+#[doc = "                \"additionalProperties\": false"]
+#[doc = "              }"]
+#[doc = "            },"]
+#[doc = "            \"additionalProperties\": false"]
+#[doc = "          },"]
+#[doc = "          \"diagnostic\": {"]
+#[doc = "            \"anyOf\": ["]
+#[doc = "              {"]
+#[doc = "                \"type\": \"string\""]
+#[doc = "              },"]
+#[doc = "              {"]
+#[doc = "                \"type\": \"null\""]
+#[doc = "              }"]
+#[doc = "            ]"]
+#[doc = "          },"]
+#[doc = "          \"diagnosticReason\": {"]
+#[doc = "            \"anyOf\": ["]
+#[doc = "              {"]
+#[doc = "                \"type\": \"string\","]
+#[doc = "                \"enum\": ["]
+#[doc = "                  \"descriptor_invalid\","]
+#[doc = "                  \"cache_budget_exceeded\","]
+#[doc = "                  \"manifest_persistence_failed\","]
+#[doc = "                  \"download_failed\","]
+#[doc = "                  \"byte_size_mismatch\","]
+#[doc = "                  \"content_type_mismatch\","]
+#[doc = "                  \"media_facts_invalid\","]
+#[doc = "                  \"digest_mismatch\","]
+#[doc = "                  \"published_media_corrupt\","]
+#[doc = "                  \"defensive_read_failed\""]
+#[doc = "                ]"]
+#[doc = "              },"]
+#[doc = "              {"]
+#[doc = "                \"type\": \"null\""]
+#[doc = "              }"]
+#[doc = "            ]"]
+#[doc = "          },"]
+#[doc = "          \"readiness\": {"]
+#[doc = "            \"type\": \"string\","]
+#[doc = "            \"enum\": ["]
+#[doc = "              \"ready\","]
+#[doc = "              \"warming\","]
+#[doc = "              \"unavailable\""]
+#[doc = "            ]"]
+#[doc = "          },"]
+#[doc = "          \"readyUrl\": {"]
+#[doc = "            \"anyOf\": ["]
+#[doc = "              {"]
+#[doc = "                \"type\": \"string\","]
+#[doc = "                \"pattern\": \"^https?:\\\\/\\\\/(?:127\\\\.0\\\\.0\\\\.1|localhost|\\\\[::1\\\\])(?::(?:[1-9][0-9]{0,4}))?\\\\/media\\\\/sha256:[0-9a-f]{64}\\\\?grant=[A-Za-z0-9._~-]{16,128}$\""]
+#[doc = "              },"]
+#[doc = "              {"]
+#[doc = "                \"type\": \"null\""]
+#[doc = "              }"]
+#[doc = "            ]"]
+#[doc = "          }"]
+#[doc = "        },"]
+#[doc = "        \"additionalProperties\": false"]
+#[doc = "      },"]
+#[doc = "      \"maxItems\": 256"]
+#[doc = "    },"]
+#[doc = "    \"generation\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 128,"]
+#[doc = "      \"minLength\": 1"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedMediaContractSnapshot {
+    pub assets: ::std::vec::Vec<ManagedMediaContractSnapshotAssetsItem>,
+    pub generation: ManagedMediaContractSnapshotGeneration,
+}
+#[doc = "`ManagedMediaContractSnapshotAssetsItem`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"descriptor\","]
+#[doc = "    \"diagnostic\","]
+#[doc = "    \"readiness\","]
+#[doc = "    \"readyUrl\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"descriptor\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"byteSize\","]
+#[doc = "        \"contentType\","]
+#[doc = "        \"digest\","]
+#[doc = "        \"id\","]
+#[doc = "        \"purpose\","]
+#[doc = "        \"reference\","]
+#[doc = "        \"revision\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"byteSize\": {"]
+#[doc = "          \"type\": \"integer\","]
+#[doc = "          \"maximum\": 9007199254740991.0,"]
+#[doc = "          \"exclusiveMinimum\": 0.0"]
+#[doc = "        },"]
+#[doc = "        \"contentType\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"enum\": ["]
+#[doc = "            \"image/png\","]
+#[doc = "            \"image/jpeg\","]
+#[doc = "            \"image/webp\""]
+#[doc = "          ]"]
+#[doc = "        },"]
+#[doc = "        \"digest\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"pattern\": \"^sha256:[0-9a-f]{64}$\""]
+#[doc = "        },"]
+#[doc = "        \"id\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"format\": \"uuid\","]
+#[doc = "          \"pattern\": \"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$\""]
+#[doc = "        },"]
+#[doc = "        \"purpose\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"enum\": ["]
+#[doc = "            \"product_display_image\","]
+#[doc = "            \"try_on_garment\""]
+#[doc = "          ]"]
+#[doc = "        },"]
+#[doc = "        \"reference\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"pattern\": \"^\\\\/api\\\\/media-assets\\\\/[0-9a-f-]+\\\\/content$\""]
+#[doc = "        },"]
+#[doc = "        \"revision\": {"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"catalogRevision\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"assetRevision\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"maxLength\": 128,"]
+#[doc = "              \"minLength\": 1"]
+#[doc = "            },"]
+#[doc = "            \"catalogRevision\": {"]
+#[doc = "              \"type\": \"string\","]
+#[doc = "              \"maxLength\": 128,"]
+#[doc = "              \"minLength\": 1"]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    \"diagnostic\": {"]
+#[doc = "      \"anyOf\": ["]
+#[doc = "        {"]
+#[doc = "          \"type\": \"string\""]
+#[doc = "        },"]
+#[doc = "        {"]
+#[doc = "          \"type\": \"null\""]
+#[doc = "        }"]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    \"diagnosticReason\": {"]
+#[doc = "      \"anyOf\": ["]
+#[doc = "        {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"enum\": ["]
+#[doc = "            \"descriptor_invalid\","]
+#[doc = "            \"cache_budget_exceeded\","]
+#[doc = "            \"manifest_persistence_failed\","]
+#[doc = "            \"download_failed\","]
+#[doc = "            \"byte_size_mismatch\","]
+#[doc = "            \"content_type_mismatch\","]
+#[doc = "            \"media_facts_invalid\","]
+#[doc = "            \"digest_mismatch\","]
+#[doc = "            \"published_media_corrupt\","]
+#[doc = "            \"defensive_read_failed\""]
+#[doc = "          ]"]
+#[doc = "        },"]
+#[doc = "        {"]
+#[doc = "          \"type\": \"null\""]
+#[doc = "        }"]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    \"readiness\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"ready\","]
+#[doc = "        \"warming\","]
+#[doc = "        \"unavailable\""]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    \"readyUrl\": {"]
+#[doc = "      \"anyOf\": ["]
+#[doc = "        {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"pattern\": \"^https?:\\\\/\\\\/(?:127\\\\.0\\\\.0\\\\.1|localhost|\\\\[::1\\\\])(?::(?:[1-9][0-9]{0,4}))?\\\\/media\\\\/sha256:[0-9a-f]{64}\\\\?grant=[A-Za-z0-9._~-]{16,128}$\""]
+#[doc = "        },"]
+#[doc = "        {"]
+#[doc = "          \"type\": \"null\""]
+#[doc = "        }"]
+#[doc = "      ]"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedMediaContractSnapshotAssetsItem {
+    pub descriptor: ManagedMediaContractSnapshotAssetsItemDescriptor,
+    pub diagnostic: ::std::option::Option<::std::string::String>,
+    #[serde(
+        rename = "diagnosticReason",
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub diagnostic_reason:
+        ::std::option::Option<ManagedMediaContractSnapshotAssetsItemDiagnosticReason>,
+    pub readiness: ManagedMediaContractSnapshotAssetsItemReadiness,
+    #[serde(rename = "readyUrl")]
+    pub ready_url: ::std::option::Option<ManagedMediaContractSnapshotAssetsItemReadyUrl>,
+}
+#[doc = "`ManagedMediaContractSnapshotAssetsItemDescriptor`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"byteSize\","]
+#[doc = "    \"contentType\","]
+#[doc = "    \"digest\","]
+#[doc = "    \"id\","]
+#[doc = "    \"purpose\","]
+#[doc = "    \"reference\","]
+#[doc = "    \"revision\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"byteSize\": {"]
+#[doc = "      \"type\": \"integer\","]
+#[doc = "      \"maximum\": 9007199254740991.0,"]
+#[doc = "      \"exclusiveMinimum\": 0.0"]
+#[doc = "    },"]
+#[doc = "    \"contentType\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"image/png\","]
+#[doc = "        \"image/jpeg\","]
+#[doc = "        \"image/webp\""]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    \"digest\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"pattern\": \"^sha256:[0-9a-f]{64}$\""]
+#[doc = "    },"]
+#[doc = "    \"id\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"format\": \"uuid\","]
+#[doc = "      \"pattern\": \"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$\""]
+#[doc = "    },"]
+#[doc = "    \"purpose\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"product_display_image\","]
+#[doc = "        \"try_on_garment\""]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    \"reference\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"pattern\": \"^\\\\/api\\\\/media-assets\\\\/[0-9a-f-]+\\\\/content$\""]
+#[doc = "    },"]
+#[doc = "    \"revision\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"catalogRevision\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"assetRevision\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"maxLength\": 128,"]
+#[doc = "          \"minLength\": 1"]
+#[doc = "        },"]
+#[doc = "        \"catalogRevision\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"maxLength\": 128,"]
+#[doc = "          \"minLength\": 1"]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedMediaContractSnapshotAssetsItemDescriptor {
+    #[serde(rename = "byteSize")]
+    pub byte_size: ::std::num::NonZeroU64,
+    #[serde(rename = "contentType")]
+    pub content_type: ManagedMediaContractSnapshotAssetsItemDescriptorContentType,
+    pub digest: ManagedMediaContractSnapshotAssetsItemDescriptorDigest,
+    pub id: ::uuid::Uuid,
+    pub purpose: ManagedMediaContractSnapshotAssetsItemDescriptorPurpose,
+    pub reference: ManagedMediaContractSnapshotAssetsItemDescriptorReference,
+    pub revision: ManagedMediaContractSnapshotAssetsItemDescriptorRevision,
+}
+#[doc = "`ManagedMediaContractSnapshotAssetsItemDescriptorContentType`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"image/png\","]
+#[doc = "    \"image/jpeg\","]
+#[doc = "    \"image/webp\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum ManagedMediaContractSnapshotAssetsItemDescriptorContentType {
+    #[serde(rename = "image/png")]
+    ImagePng,
+    #[serde(rename = "image/jpeg")]
+    ImageJpeg,
+    #[serde(rename = "image/webp")]
+    ImageWebp,
+}
+impl ::std::fmt::Display for ManagedMediaContractSnapshotAssetsItemDescriptorContentType {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::ImagePng => f.write_str("image/png"),
+            Self::ImageJpeg => f.write_str("image/jpeg"),
+            Self::ImageWebp => f.write_str("image/webp"),
+        }
+    }
+}
+impl ::std::str::FromStr for ManagedMediaContractSnapshotAssetsItemDescriptorContentType {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "image/png" => Ok(Self::ImagePng),
+            "image/jpeg" => Ok(Self::ImageJpeg),
+            "image/webp" => Ok(Self::ImageWebp),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for ManagedMediaContractSnapshotAssetsItemDescriptorContentType {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for ManagedMediaContractSnapshotAssetsItemDescriptorContentType
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for ManagedMediaContractSnapshotAssetsItemDescriptorContentType
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+#[doc = "`ManagedMediaContractSnapshotAssetsItemDescriptorDigest`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"pattern\": \"^sha256:[0-9a-f]{64}$\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct ManagedMediaContractSnapshotAssetsItemDescriptorDigest(::std::string::String);
+impl ::std::ops::Deref for ManagedMediaContractSnapshotAssetsItemDescriptorDigest {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<ManagedMediaContractSnapshotAssetsItemDescriptorDigest>
+    for ::std::string::String
+{
+    fn from(value: ManagedMediaContractSnapshotAssetsItemDescriptorDigest) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for ManagedMediaContractSnapshotAssetsItemDescriptorDigest {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
+            ::std::sync::LazyLock::new(|| ::regress::Regex::new("^sha256:[0-9a-f]{64}$").unwrap());
+        if PATTERN.find(value).is_none() {
+            return Err("doesn't match pattern \"^sha256:[0-9a-f]{64}$\"".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for ManagedMediaContractSnapshotAssetsItemDescriptorDigest {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for ManagedMediaContractSnapshotAssetsItemDescriptorDigest
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for ManagedMediaContractSnapshotAssetsItemDescriptorDigest
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for ManagedMediaContractSnapshotAssetsItemDescriptorDigest {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`ManagedMediaContractSnapshotAssetsItemDescriptorPurpose`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"product_display_image\","]
+#[doc = "    \"try_on_garment\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum ManagedMediaContractSnapshotAssetsItemDescriptorPurpose {
+    #[serde(rename = "product_display_image")]
+    ProductDisplayImage,
+    #[serde(rename = "try_on_garment")]
+    TryOnGarment,
+}
+impl ::std::fmt::Display for ManagedMediaContractSnapshotAssetsItemDescriptorPurpose {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::ProductDisplayImage => f.write_str("product_display_image"),
+            Self::TryOnGarment => f.write_str("try_on_garment"),
+        }
+    }
+}
+impl ::std::str::FromStr for ManagedMediaContractSnapshotAssetsItemDescriptorPurpose {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "product_display_image" => Ok(Self::ProductDisplayImage),
+            "try_on_garment" => Ok(Self::TryOnGarment),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for ManagedMediaContractSnapshotAssetsItemDescriptorPurpose {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for ManagedMediaContractSnapshotAssetsItemDescriptorPurpose
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for ManagedMediaContractSnapshotAssetsItemDescriptorPurpose
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+#[doc = "`ManagedMediaContractSnapshotAssetsItemDescriptorReference`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"pattern\": \"^\\\\/api\\\\/media-assets\\\\/[0-9a-f-]+\\\\/content$\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct ManagedMediaContractSnapshotAssetsItemDescriptorReference(::std::string::String);
+impl ::std::ops::Deref for ManagedMediaContractSnapshotAssetsItemDescriptorReference {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<ManagedMediaContractSnapshotAssetsItemDescriptorReference>
+    for ::std::string::String
+{
+    fn from(value: ManagedMediaContractSnapshotAssetsItemDescriptorReference) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for ManagedMediaContractSnapshotAssetsItemDescriptorReference {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
+            ::std::sync::LazyLock::new(|| {
+                ::regress::Regex::new("^\\/api\\/media-assets\\/[0-9a-f-]+\\/content$").unwrap()
+            });
+        if PATTERN.find(value).is_none() {
+            return Err(
+                "doesn't match pattern \"^\\/api\\/media-assets\\/[0-9a-f-]+\\/content$\"".into(),
+            );
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for ManagedMediaContractSnapshotAssetsItemDescriptorReference {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for ManagedMediaContractSnapshotAssetsItemDescriptorReference
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for ManagedMediaContractSnapshotAssetsItemDescriptorReference
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for ManagedMediaContractSnapshotAssetsItemDescriptorReference {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`ManagedMediaContractSnapshotAssetsItemDescriptorRevision`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"catalogRevision\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"assetRevision\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 128,"]
+#[doc = "      \"minLength\": 1"]
+#[doc = "    },"]
+#[doc = "    \"catalogRevision\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 128,"]
+#[doc = "      \"minLength\": 1"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedMediaContractSnapshotAssetsItemDescriptorRevision {
+    #[serde(
+        rename = "assetRevision",
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub asset_revision: ::std::option::Option<
+        ManagedMediaContractSnapshotAssetsItemDescriptorRevisionAssetRevision,
+    >,
+    #[serde(rename = "catalogRevision")]
+    pub catalog_revision: ManagedMediaContractSnapshotAssetsItemDescriptorRevisionCatalogRevision,
+}
+#[doc = "`ManagedMediaContractSnapshotAssetsItemDescriptorRevisionAssetRevision`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 128,"]
+#[doc = "  \"minLength\": 1"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct ManagedMediaContractSnapshotAssetsItemDescriptorRevisionAssetRevision(
+    ::std::string::String,
+);
+impl ::std::ops::Deref for ManagedMediaContractSnapshotAssetsItemDescriptorRevisionAssetRevision {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<ManagedMediaContractSnapshotAssetsItemDescriptorRevisionAssetRevision>
+    for ::std::string::String
+{
+    fn from(value: ManagedMediaContractSnapshotAssetsItemDescriptorRevisionAssetRevision) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for ManagedMediaContractSnapshotAssetsItemDescriptorRevisionAssetRevision {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 128usize {
+            return Err("longer than 128 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str>
+    for ManagedMediaContractSnapshotAssetsItemDescriptorRevisionAssetRevision
+{
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for ManagedMediaContractSnapshotAssetsItemDescriptorRevisionAssetRevision
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for ManagedMediaContractSnapshotAssetsItemDescriptorRevisionAssetRevision
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de>
+    for ManagedMediaContractSnapshotAssetsItemDescriptorRevisionAssetRevision
+{
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`ManagedMediaContractSnapshotAssetsItemDescriptorRevisionCatalogRevision`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 128,"]
+#[doc = "  \"minLength\": 1"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct ManagedMediaContractSnapshotAssetsItemDescriptorRevisionCatalogRevision(
+    ::std::string::String,
+);
+impl ::std::ops::Deref for ManagedMediaContractSnapshotAssetsItemDescriptorRevisionCatalogRevision {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<ManagedMediaContractSnapshotAssetsItemDescriptorRevisionCatalogRevision>
+    for ::std::string::String
+{
+    fn from(
+        value: ManagedMediaContractSnapshotAssetsItemDescriptorRevisionCatalogRevision,
+    ) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr
+    for ManagedMediaContractSnapshotAssetsItemDescriptorRevisionCatalogRevision
+{
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 128usize {
+            return Err("longer than 128 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str>
+    for ManagedMediaContractSnapshotAssetsItemDescriptorRevisionCatalogRevision
+{
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for ManagedMediaContractSnapshotAssetsItemDescriptorRevisionCatalogRevision
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for ManagedMediaContractSnapshotAssetsItemDescriptorRevisionCatalogRevision
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de>
+    for ManagedMediaContractSnapshotAssetsItemDescriptorRevisionCatalogRevision
+{
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`ManagedMediaContractSnapshotAssetsItemDiagnosticReason`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"descriptor_invalid\","]
+#[doc = "    \"cache_budget_exceeded\","]
+#[doc = "    \"manifest_persistence_failed\","]
+#[doc = "    \"download_failed\","]
+#[doc = "    \"byte_size_mismatch\","]
+#[doc = "    \"content_type_mismatch\","]
+#[doc = "    \"media_facts_invalid\","]
+#[doc = "    \"digest_mismatch\","]
+#[doc = "    \"published_media_corrupt\","]
+#[doc = "    \"defensive_read_failed\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum ManagedMediaContractSnapshotAssetsItemDiagnosticReason {
+    #[serde(rename = "descriptor_invalid")]
+    DescriptorInvalid,
+    #[serde(rename = "cache_budget_exceeded")]
+    CacheBudgetExceeded,
+    #[serde(rename = "manifest_persistence_failed")]
+    ManifestPersistenceFailed,
+    #[serde(rename = "download_failed")]
+    DownloadFailed,
+    #[serde(rename = "byte_size_mismatch")]
+    ByteSizeMismatch,
+    #[serde(rename = "content_type_mismatch")]
+    ContentTypeMismatch,
+    #[serde(rename = "media_facts_invalid")]
+    MediaFactsInvalid,
+    #[serde(rename = "digest_mismatch")]
+    DigestMismatch,
+    #[serde(rename = "published_media_corrupt")]
+    PublishedMediaCorrupt,
+    #[serde(rename = "defensive_read_failed")]
+    DefensiveReadFailed,
+}
+impl ::std::fmt::Display for ManagedMediaContractSnapshotAssetsItemDiagnosticReason {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::DescriptorInvalid => f.write_str("descriptor_invalid"),
+            Self::CacheBudgetExceeded => f.write_str("cache_budget_exceeded"),
+            Self::ManifestPersistenceFailed => f.write_str("manifest_persistence_failed"),
+            Self::DownloadFailed => f.write_str("download_failed"),
+            Self::ByteSizeMismatch => f.write_str("byte_size_mismatch"),
+            Self::ContentTypeMismatch => f.write_str("content_type_mismatch"),
+            Self::MediaFactsInvalid => f.write_str("media_facts_invalid"),
+            Self::DigestMismatch => f.write_str("digest_mismatch"),
+            Self::PublishedMediaCorrupt => f.write_str("published_media_corrupt"),
+            Self::DefensiveReadFailed => f.write_str("defensive_read_failed"),
+        }
+    }
+}
+impl ::std::str::FromStr for ManagedMediaContractSnapshotAssetsItemDiagnosticReason {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "descriptor_invalid" => Ok(Self::DescriptorInvalid),
+            "cache_budget_exceeded" => Ok(Self::CacheBudgetExceeded),
+            "manifest_persistence_failed" => Ok(Self::ManifestPersistenceFailed),
+            "download_failed" => Ok(Self::DownloadFailed),
+            "byte_size_mismatch" => Ok(Self::ByteSizeMismatch),
+            "content_type_mismatch" => Ok(Self::ContentTypeMismatch),
+            "media_facts_invalid" => Ok(Self::MediaFactsInvalid),
+            "digest_mismatch" => Ok(Self::DigestMismatch),
+            "published_media_corrupt" => Ok(Self::PublishedMediaCorrupt),
+            "defensive_read_failed" => Ok(Self::DefensiveReadFailed),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for ManagedMediaContractSnapshotAssetsItemDiagnosticReason {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for ManagedMediaContractSnapshotAssetsItemDiagnosticReason
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for ManagedMediaContractSnapshotAssetsItemDiagnosticReason
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+#[doc = "`ManagedMediaContractSnapshotAssetsItemReadiness`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"ready\","]
+#[doc = "    \"warming\","]
+#[doc = "    \"unavailable\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum ManagedMediaContractSnapshotAssetsItemReadiness {
+    #[serde(rename = "ready")]
+    Ready,
+    #[serde(rename = "warming")]
+    Warming,
+    #[serde(rename = "unavailable")]
+    Unavailable,
+}
+impl ::std::fmt::Display for ManagedMediaContractSnapshotAssetsItemReadiness {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::Ready => f.write_str("ready"),
+            Self::Warming => f.write_str("warming"),
+            Self::Unavailable => f.write_str("unavailable"),
+        }
+    }
+}
+impl ::std::str::FromStr for ManagedMediaContractSnapshotAssetsItemReadiness {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "ready" => Ok(Self::Ready),
+            "warming" => Ok(Self::Warming),
+            "unavailable" => Ok(Self::Unavailable),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for ManagedMediaContractSnapshotAssetsItemReadiness {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for ManagedMediaContractSnapshotAssetsItemReadiness
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for ManagedMediaContractSnapshotAssetsItemReadiness
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+#[doc = "`ManagedMediaContractSnapshotAssetsItemReadyUrl`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"pattern\": \"^https?:\\\\/\\\\/(?:127\\\\.0\\\\.0\\\\.1|localhost|\\\\[::1\\\\])(?::(?:[1-9][0-9]{0,4}))?\\\\/media\\\\/sha256:[0-9a-f]{64}\\\\?grant=[A-Za-z0-9._~-]{16,128}$\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct ManagedMediaContractSnapshotAssetsItemReadyUrl(::std::string::String);
+impl ::std::ops::Deref for ManagedMediaContractSnapshotAssetsItemReadyUrl {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<ManagedMediaContractSnapshotAssetsItemReadyUrl>
+    for ::std::string::String
+{
+    fn from(value: ManagedMediaContractSnapshotAssetsItemReadyUrl) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for ManagedMediaContractSnapshotAssetsItemReadyUrl {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> = ::std::sync::LazyLock::new(
+            || {
+                :: regress :: Regex :: new ("^https?:\\/\\/(?:127\\.0\\.0\\.1|localhost|\\[::1\\])(?::(?:[1-9][0-9]{0,4}))?\\/media\\/sha256:[0-9a-f]{64}\\?grant=[A-Za-z0-9._~-]{16,128}$") . unwrap ()
+            },
+        );
+        if PATTERN.find(value).is_none() {
+            return Err ("doesn't match pattern \"^https?:\\/\\/(?:127\\.0\\.0\\.1|localhost|\\[::1\\])(?::(?:[1-9][0-9]{0,4}))?\\/media\\/sha256:[0-9a-f]{64}\\?grant=[A-Za-z0-9._~-]{16,128}$\"" . into ()) ;
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for ManagedMediaContractSnapshotAssetsItemReadyUrl {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String>
+    for ManagedMediaContractSnapshotAssetsItemReadyUrl
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String>
+    for ManagedMediaContractSnapshotAssetsItemReadyUrl
+{
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for ManagedMediaContractSnapshotAssetsItemReadyUrl {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`ManagedMediaContractSnapshotGeneration`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 128,"]
+#[doc = "  \"minLength\": 1"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct ManagedMediaContractSnapshotGeneration(::std::string::String);
+impl ::std::ops::Deref for ManagedMediaContractSnapshotGeneration {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<ManagedMediaContractSnapshotGeneration> for ::std::string::String {
+    fn from(value: ManagedMediaContractSnapshotGeneration) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for ManagedMediaContractSnapshotGeneration {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 128usize {
+            return Err("longer than 128 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for ManagedMediaContractSnapshotGeneration {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ManagedMediaContractSnapshotGeneration {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ManagedMediaContractSnapshotGeneration {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for ManagedMediaContractSnapshotGeneration {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
         D: ::serde::Deserializer<'de>,

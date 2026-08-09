@@ -12,7 +12,7 @@ import {
   exportDaemonIpcDeviceBindingActivationJsonSchema,
   exportDaemonIpcDeviceBindingJsonSchema,
   exportDaemonIpcSaleStartCapabilityJsonSchema,
-  exportDaemonIpcManagedMediaDescriptorJsonSchema,
+  exportDaemonIpcManagedMediaJsonSchema,
   exportDaemonIpcTransactionCheckoutJsonSchema,
 } from "@vem/shared/schemas/daemon-ipc";
 import {
@@ -434,7 +434,7 @@ export function buildDaemonIpcGeneratedContractInputs(): DaemonIpcGeneratedContr
       schema: exportDaemonIpcSaleStartCapabilityJsonSchema(),
     },
     managedMedia: {
-      schema: exportDaemonIpcManagedMediaDescriptorJsonSchema(),
+      schema: exportDaemonIpcManagedMediaJsonSchema(),
     },
   };
 }

@@ -652,8 +652,14 @@ async fn media_snapshot(State(ctx): State<IpcContext>, headers: HeaderMap) -> im
     if let Err(error) = require_token(&headers, &ctx.token).await {
         return error.into_response();
     }
-    let (generation, assets) = ctx.media_cache.snapshot().await;
-    Json(serde_json::json!({ "generation": generation, "assets": assets })).into_response()
+    match ctx.media_cache.snapshot_boundary().await {
+        Ok(snapshot) => Json(snapshot).into_response(),
+        Err(error) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "media_snapshot_boundary_invalid",
+            error,
+        ),
+    }
 }
 
 async fn media_head(
@@ -1330,10 +1336,7 @@ async fn refresh_catalog(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
                 .flat_map(|item| {
                     ["coverImageMedia"].into_iter().filter_map(move |field| {
                         item.get(field).cloned().and_then(|value| {
-                            serde_json::from_value::<crate::managed_media::ManagedMediaDescriptor>(
-                                value,
-                            )
-                            .ok()
+                            crate::managed_media::parse_media_descriptor_boundary(value).ok()
                         })
                     })
                 })
@@ -1353,9 +1356,28 @@ async fn refresh_catalog(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
                 "sha256:{:x}",
                 sha2::Sha256::digest(serde_json::to_vec(&generation_inputs).unwrap_or_default())
             );
-            ctx.media_cache
-                .reconcile_active_catalog(generation, descriptors)
-                .await;
+            // Keep reconciliation's public structural shape generated even
+            // though the backend catalog response itself is not an IPC DTO.
+            let reconcile_value = serde_json::json!({
+                "generation": generation,
+                "interests": descriptors,
+            });
+            let Ok(reconcile_request) = serde_json::from_value::<
+                daemon_ipc_contracts::ManagedMediaReconcileRequest,
+            >(reconcile_value) else {
+                return error_response(
+                    StatusCode::BAD_GATEWAY,
+                    "catalog_media_contract_invalid",
+                    "catalog media reconciliation contract is invalid",
+                );
+            };
+            if let Err(error) = ctx.media_cache.reconcile_boundary(reconcile_request).await {
+                return error_response(
+                    StatusCode::BAD_GATEWAY,
+                    "catalog_media_contract_invalid",
+                    error,
+                );
+            }
             let value = CatalogSnapshot {
                 items,
                 cached: true,
@@ -3802,7 +3824,7 @@ mod tests {
     impl crate::managed_media::MediaFetcher for ReadyMediaFetcher {
         async fn fetch(
             &self,
-            _: &crate::managed_media::ManagedMediaDescriptor,
+            _: &crate::managed_media::MediaDescriptor,
         ) -> Result<crate::managed_media::MediaBytes, String> {
             Ok(crate::managed_media::MediaBytes {
                 bytes: self.0.clone(),
@@ -3811,15 +3833,15 @@ mod tests {
         }
     }
 
-    fn ready_media_descriptor(bytes: &[u8]) -> crate::managed_media::ManagedMediaDescriptor {
-        crate::managed_media::ManagedMediaDescriptor {
+    fn ready_media_descriptor(bytes: &[u8]) -> crate::managed_media::MediaDescriptor {
+        crate::managed_media::MediaDescriptor {
             id: "550e8400-e29b-41d4-a716-446655440124".to_string(),
             reference: "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content".to_string(),
             digest: format!("sha256:{:x}", sha2::Sha256::digest(bytes)),
             content_type: "image/png".to_string(),
             byte_size: bytes.len() as u64,
             purpose: "product_display_image".to_string(),
-            revision: crate::managed_media::ManagedMediaRevision {
+            revision: crate::managed_media::MediaRevision {
                 catalog_revision: "test-generation".to_string(),
                 asset_revision: None,
             },

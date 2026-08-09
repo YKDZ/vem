@@ -7,7 +7,10 @@ import {
   paymentStatusSchema,
 } from "../enums/payment-status";
 import { vendingCommandStatusSchema } from "../enums/vending";
-import { managedMediaDescriptorSchema } from "./managed-media";
+import {
+  daemonIpcManagedMediaContractSchema,
+  managedMediaDescriptorSchema,
+} from "./managed-media";
 
 // Remaining daemon snapshot convergence starts here: health, ready, config, bring-up,
 // scanner, vision, natural-context, sync, and remote-operation snapshots should
@@ -786,6 +789,18 @@ export function exportDaemonIpcManagedMediaDescriptorJsonSchema(): DaemonIpcJson
   return {
     $schema: "https://json-schema.org/draft/2020-12/schema",
     title: "ManagedMediaDescriptor",
+    ...root,
+  };
+}
+
+export function exportDaemonIpcManagedMediaJsonSchema(): DaemonIpcJsonSchemaDocument {
+  const root = exportDaemonIpcJsonSchemaDefinition(
+    "ManagedMediaContract",
+    daemonIpcManagedMediaContractSchema,
+  );
+  return {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    title: "ManagedMediaContract",
     ...root,
   };
 }

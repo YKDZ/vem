@@ -25,19 +25,19 @@ const CLEANUP_BATCH_SIZE: usize = 32;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct ManagedMediaDescriptor {
+pub struct MediaDescriptor {
     pub id: String,
     pub reference: String,
     pub digest: String,
     pub content_type: String,
     pub byte_size: u64,
     pub purpose: String,
-    pub revision: ManagedMediaRevision,
+    pub revision: MediaRevision,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct ManagedMediaRevision {
+pub struct MediaRevision {
     pub catalog_revision: String,
     #[serde(default)]
     pub asset_revision: Option<String>,
@@ -53,11 +53,29 @@ pub enum MediaReadiness {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct ManagedMediaProjection {
-    pub descriptor: ManagedMediaDescriptor,
+pub struct MediaProjection {
+    pub descriptor: MediaDescriptor,
     pub readiness: MediaReadiness,
     pub ready_url: Option<String>,
     pub diagnostic: Option<String>,
+}
+
+/// Parse an externally supplied descriptor through the generated strict IPC
+/// DTO before converting it into the cache's private domain representation.
+pub fn parse_media_descriptor_boundary(
+    value: serde_json::Value,
+) -> Result<MediaDescriptor, String> {
+    let boundary: daemon_ipc_contracts::ManagedMediaDescriptor = serde_json::from_value(value)
+        .map_err(|error| format!("managed media descriptor boundary: {error}"))?;
+    let descriptor: MediaDescriptor = serde_json::from_value(
+        serde_json::to_value(boundary)
+            .map_err(|error| format!("managed media descriptor conversion: {error}"))?,
+    )
+    .map_err(|error| format!("managed media descriptor conversion: {error}"))?;
+    if let Some(error) = validate_descriptor(&descriptor) {
+        return Err(error);
+    }
+    Ok(descriptor)
 }
 
 #[derive(Debug, Clone)]
@@ -68,7 +86,7 @@ pub struct MediaBytes {
 
 #[async_trait]
 pub trait MediaFetcher: Send + Sync {
-    async fn fetch(&self, descriptor: &ManagedMediaDescriptor) -> Result<MediaBytes, String>;
+    async fn fetch(&self, descriptor: &MediaDescriptor) -> Result<MediaBytes, String>;
 }
 
 pub struct BackendMediaFetcher {
@@ -77,7 +95,7 @@ pub struct BackendMediaFetcher {
 
 #[async_trait]
 impl MediaFetcher for BackendMediaFetcher {
-    async fn fetch(&self, descriptor: &ManagedMediaDescriptor) -> Result<MediaBytes, String> {
+    async fn fetch(&self, descriptor: &MediaDescriptor) -> Result<MediaBytes, String> {
         self.backend
             .fetch_managed_media(&descriptor.reference, descriptor.byte_size)
             .await
@@ -113,7 +131,7 @@ impl std::error::Error for MediaReadError {}
 
 #[derive(Debug)]
 struct Entry {
-    descriptor: ManagedMediaDescriptor,
+    descriptor: MediaDescriptor,
     readiness: MediaReadiness,
     diagnostic: Option<String>,
     pinned: bool,
@@ -133,7 +151,7 @@ struct CacheState {
 #[serde(rename_all = "camelCase")]
 struct ActiveMediaManifest {
     generation: String,
-    assets: Vec<ManagedMediaDescriptor>,
+    assets: Vec<MediaDescriptor>,
 }
 
 #[derive(Clone)]
@@ -223,7 +241,7 @@ impl ManagedMediaCache {
     pub async fn reconcile_active_catalog(
         &self,
         generation: impl Into<String>,
-        mut descriptors: Vec<ManagedMediaDescriptor>,
+        mut descriptors: Vec<MediaDescriptor>,
     ) {
         let generation = generation.into();
         let mut state = self.state.lock().await;
@@ -340,7 +358,40 @@ impl ManagedMediaCache {
         let _ = self.cleanup_bounded(CLEANUP_BATCH_SIZE).await;
     }
 
-    pub async fn snapshot(&self) -> (String, Vec<ManagedMediaProjection>) {
+    /// Public reconciliation boundary: generated request in, generated
+    /// receipt out.  Conversion to the cache domain is explicit and every
+    /// descriptor is validated before the active generation is adopted.
+    pub async fn reconcile_boundary(
+        &self,
+        request: daemon_ipc_contracts::ManagedMediaReconcileRequest,
+    ) -> Result<daemon_ipc_contracts::ManagedMediaReconcileReceipt, String> {
+        let generation = request.generation.to_string();
+        let descriptors = request
+            .interests
+            .into_iter()
+            .map(|interest| {
+                serde_json::to_value(interest)
+                    .map_err(|error| format!("managed media interest conversion: {error}"))
+                    .and_then(parse_media_descriptor_boundary)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let interest_count = descriptors.len();
+        self.reconcile_active_catalog(generation.clone(), descriptors)
+            .await;
+        let snapshot = self.snapshot_boundary().await?;
+        let receipt = serde_json::from_value(serde_json::json!({
+            "generation": generation,
+            "accepted": true,
+            "interestCount": interest_count,
+            "snapshot": snapshot,
+        }))
+        .map_err(|error| format!("managed media reconcile receipt boundary: {error}"))?;
+        daemon_ipc_contracts::validate_managed_media_reconcile_receipt_boundary(&receipt)
+            .map_err(|error| error.to_string())?;
+        Ok(receipt)
+    }
+
+    pub async fn snapshot(&self) -> (String, Vec<MediaProjection>) {
         let state = self.state.lock().await;
         let projections = state
             .entries
@@ -349,6 +400,31 @@ impl ManagedMediaCache {
             .map(|entry| self.projection(entry))
             .collect();
         (state.generation.clone(), projections)
+    }
+
+    /// Serialize the public snapshot through the generated strict DTO.  The
+    /// private cache projection remains independent from the wire contract.
+    pub async fn snapshot_boundary(
+        &self,
+    ) -> Result<daemon_ipc_contracts::ManagedMediaSnapshot, String> {
+        let (generation, assets) = self.snapshot().await;
+        let mut value = serde_json::json!({ "generation": generation, "assets": assets });
+        if let Some(items) = value
+            .get_mut("assets")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for item in items {
+                let reason = item
+                    .get("diagnostic")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(managed_media_diagnostic_reason);
+                item["diagnosticReason"] = reason.map_or(serde_json::Value::Null, |value| {
+                    serde_json::Value::String(value.to_string())
+                });
+            }
+        }
+        serde_json::from_value(value)
+            .map_err(|error| format!("managed media snapshot boundary: {error}"))
     }
 
     pub fn read_grant(&self) -> String {
@@ -445,13 +521,13 @@ impl ManagedMediaCache {
         removed
     }
 
-    fn projection(&self, entry: &Entry) -> ManagedMediaProjection {
+    fn projection(&self, entry: &Entry) -> MediaProjection {
         let base = self
             .read_url_base
             .read()
             .map(|value| value.clone())
             .unwrap_or_default();
-        ManagedMediaProjection {
+        MediaProjection {
             descriptor: entry.descriptor.clone(),
             readiness: entry.readiness,
             ready_url: (entry.readiness == MediaReadiness::Ready).then(|| {
@@ -487,7 +563,7 @@ impl ManagedMediaCache {
         self.root.join(format!("{}.json", object_key(digest)))
     }
 
-    fn published_and_valid(&self, descriptor: &ManagedMediaDescriptor) -> bool {
+    fn published_and_valid(&self, descriptor: &MediaDescriptor) -> bool {
         let path = self.content_path(&descriptor.digest);
         let Ok(bytes) = fs::read(path) else {
             return false;
@@ -495,7 +571,7 @@ impl ManagedMediaCache {
         bytes.len() as u64 == descriptor.byte_size && digest_of(&bytes) == descriptor.digest
     }
 
-    async fn warm(&self, generation: String, descriptor: ManagedMediaDescriptor) {
+    async fn warm(&self, generation: String, descriptor: MediaDescriptor) {
         let result = self.fetcher.fetch(&descriptor).await.and_then(|media| {
             if media.bytes.len() as u64 != descriptor.byte_size {
                 return Err("media byte size does not match descriptor".to_string());
@@ -532,7 +608,7 @@ impl ManagedMediaCache {
         }
     }
 
-    fn publish(&self, descriptor: &ManagedMediaDescriptor, bytes: &[u8]) -> Result<(), String> {
+    fn publish(&self, descriptor: &MediaDescriptor, bytes: &[u8]) -> Result<(), String> {
         let key = object_key(&descriptor.digest);
         let nonce = uuid::Uuid::new_v4().simple().to_string();
         let temp = self.root.join(format!(".{key}.{nonce}.tmp"));
@@ -653,7 +729,7 @@ fn digest_of(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
 
-fn validate_descriptor(descriptor: &ManagedMediaDescriptor) -> Option<String> {
+fn validate_descriptor(descriptor: &MediaDescriptor) -> Option<String> {
     let valid_id = uuid::Uuid::parse_str(&descriptor.id).is_ok();
     let valid_reference = descriptor.reference.starts_with("/api/media-assets/")
         && descriptor.reference.ends_with("/content")
@@ -691,6 +767,30 @@ fn validate_descriptor(descriptor: &ManagedMediaDescriptor) -> Option<String> {
     }
 }
 
+fn managed_media_diagnostic_reason(message: &str) -> Option<&'static str> {
+    if message.contains("descriptor") {
+        Some("descriptor_invalid")
+    } else if message.contains("budget") || message.contains("object limit") {
+        Some("cache_budget_exceeded")
+    } else if message.contains("manifest persistence") {
+        Some("manifest_persistence_failed")
+    } else if message.contains("byte size") {
+        Some("byte_size_mismatch")
+    } else if message.contains("content type") {
+        Some("content_type_mismatch")
+    } else if message.contains("header") {
+        Some("media_facts_invalid")
+    } else if message.contains("digest") {
+        Some("digest_mismatch")
+    } else if message.contains("defensive read") {
+        Some("defensive_read_failed")
+    } else if message.contains("published") || message.contains("existing") {
+        Some("published_media_corrupt")
+    } else {
+        Some("download_failed")
+    }
+}
+
 fn verify_media_facts(content_type: &str, bytes: &[u8]) -> Result<(), String> {
     let valid_magic = match content_type {
         "image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
@@ -716,20 +816,20 @@ mod tests {
 
     #[async_trait]
     impl MediaFetcher for FixtureFetcher {
-        async fn fetch(&self, _: &ManagedMediaDescriptor) -> Result<MediaBytes, String> {
+        async fn fetch(&self, _: &MediaDescriptor) -> Result<MediaBytes, String> {
             Ok(self.media.clone())
         }
     }
 
-    fn descriptor(bytes: &[u8], content_type: &str) -> ManagedMediaDescriptor {
-        ManagedMediaDescriptor {
+    fn descriptor(bytes: &[u8], content_type: &str) -> MediaDescriptor {
+        MediaDescriptor {
             id: "550e8400-e29b-41d4-a716-446655440124".to_string(),
             reference: "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content".to_string(),
             digest: digest_of(bytes),
             content_type: content_type.to_string(),
             byte_size: bytes.len() as u64,
             purpose: "product_display_image".to_string(),
-            revision: ManagedMediaRevision {
+            revision: MediaRevision {
                 catalog_revision: "catalog-1".to_string(),
                 asset_revision: None,
             },
@@ -911,7 +1011,7 @@ mod tests {
         struct OfflineFetcher;
         #[async_trait]
         impl MediaFetcher for OfflineFetcher {
-            async fn fetch(&self, _: &ManagedMediaDescriptor) -> Result<MediaBytes, String> {
+            async fn fetch(&self, _: &MediaDescriptor) -> Result<MediaBytes, String> {
                 Err("offline".to_string())
             }
         }
@@ -970,7 +1070,7 @@ mod tests {
         struct SlowFetcher;
         #[async_trait]
         impl MediaFetcher for SlowFetcher {
-            async fn fetch(&self, _: &ManagedMediaDescriptor) -> Result<MediaBytes, String> {
+            async fn fetch(&self, _: &MediaDescriptor) -> Result<MediaBytes, String> {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 Err("slow source".to_string())
             }

@@ -8,13 +8,13 @@ import {
   daemonIpcDeviceBindingTestResultSchema,
   daemonIpcSaleStartCapabilityChangedEventSchema,
   daemonIpcSaleStartCapabilitySnapshotSchema,
+  daemonIpcManagedMediaSnapshotSchema,
   daemonIpcScannerStatusSchema,
   environmentControlResultPayloadSchema,
   machineCatalogItemSchema,
   machinePaymentOptionsResponseSchema,
   paymentProviderEnvironmentDiagnosticSchema,
   machineSaleViewSnapshotSchema,
-  managedMediaProjectionSchema,
   parseDaemonIpcTransactionSnapshotBoundary,
   visionCameraMaintenanceConfirmResponseSchema,
   visionCameraMaintenanceContractSchema,
@@ -394,10 +394,9 @@ export const catalogSnapshotSchema = z.object({
   lastError: z.string().nullable(),
 });
 
-export const mediaSnapshotSchema = z.object({
-  generation: z.string().min(1),
-  assets: z.array(managedMediaProjectionSchema),
-});
+// Managed media is a daemon IPC boundary; consume the same strict Shared
+// schema instead of maintaining a machine-local wire mirror.
+export const mediaSnapshotSchema = daemonIpcManagedMediaSnapshotSchema;
 
 export const daemonEventSchema = daemonIpcEventNotificationSchema;
 
