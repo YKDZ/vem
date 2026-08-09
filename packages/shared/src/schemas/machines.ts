@@ -536,9 +536,6 @@ const machineCatalogItemBaseSchema = z.object({
   productName: z.string().min(1).max(128),
   productDescription: z.string().nullable(),
   coverImageUrl: managedMediaReferenceSchema.nullable(),
-  // Retained only while the database migration removes persisted legacy rows;
-  // Machine runtime no longer consumes or projects this field.
-  tryOnSilhouetteUrl: managedMediaReferenceSchema.nullable().optional(),
   coverImageMedia: managedMediaDescriptorSchema.nullable().optional(),
   coverImageMediaDiagnostic: saleViewMediaDiagnosticSchema
     .nullable()

@@ -21,7 +21,6 @@ function makeCatalogItem(): MachineCatalogItem {
       size: "M",
       color: "白色",
       priceCents: 1000,
-      tryOnSilhouetteUrl: null,
       capacity: 10,
       parLevel: 8,
       physicalStock: 3,
@@ -35,7 +34,6 @@ function makeCatalogItem(): MachineCatalogItem {
       size: "L",
       color: "蓝色",
       priceCents: 1000,
-      tryOnSilhouetteUrl: null,
       capacity: 10,
       parLevel: 8,
       physicalStock: 3,
@@ -56,7 +54,6 @@ function makeCatalogItem(): MachineCatalogItem {
     productName: "基础短袖",
     productDescription: null,
     coverImageUrl: null,
-    tryOnSilhouetteUrl: null,
     categoryId: null,
     categoryName: "T恤",
     sku: "TSHIRT-M-WHITE",
@@ -260,27 +257,5 @@ describe("ProductDetailPanel recommendation policy", () => {
 
     expect(selectedOptionText(host)).toContain("M");
     expect(selectedOptionText(host)).not.toContain("L");
-  });
-
-  it("does not show try-on for category-matched products without a selected variant silhouette", async () => {
-    const item = makeCatalogItem();
-    item.categoryName = "T恤";
-    useCatalogStore().applySnapshot({
-      items: [item],
-      source: "local_stock",
-      planogramVersion: "PLAN-1",
-      lastUpdatedAt: "2026-06-04T00:00:00Z",
-    });
-
-    createApp(ProductDetailPanel, {
-      item,
-      profile: null,
-      onPurchase: () => undefined,
-    })
-      .use(pinia)
-      .mount(host);
-    await nextTick();
-
-    expect(host.textContent).not.toContain("试穿");
   });
 });

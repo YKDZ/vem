@@ -361,7 +361,6 @@ function planogramSlotValues(
     productName: slot.productName,
     productDescription: slot.productDescription,
     coverImageUrl: slot.coverImageUrl,
-    tryOnSilhouetteUrl: slot.tryOnSilhouetteUrl ?? null,
     categoryId: slot.categoryId,
     categoryName: slot.categoryName,
     sku: slot.sku,
@@ -388,7 +387,6 @@ function planogramSlotSnapshot(
     productName: row.productName,
     productDescription: row.productDescription,
     coverImageUrl: row.coverImageUrl,
-    tryOnSilhouetteUrl: row.tryOnSilhouetteUrl ?? null,
     categoryId: row.categoryId,
     categoryName: row.categoryName,
     sku: row.sku,
@@ -1254,14 +1252,6 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
             and ${mediaAssets.deletedAt} is null
           limit 1
         )`,
-        tryOnSilhouetteMediaAssetId: sql<string | null>`(
-          select ${mediaAssets.id}
-          from ${mediaAssets}
-          where ${mediaAssets.id} = ${productVariants.tryOnSilhouetteMediaAssetId}
-            and ${mediaAssets.purpose} = 'try_on_silhouette'
-            and ${mediaAssets.deletedAt} is null
-          limit 1
-        )`,
       })
       .from(productVariants)
       .innerJoin(products, eq(products.id, productVariants.productId))
@@ -1278,17 +1268,9 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         this.machineManagedMediaReference(row.displayImageMediaAssetId),
       ]),
     );
-    const tryOnSilhouetteUrls = new Map(
-      rows.map((row) => [
-        row.variantId,
-        this.machineManagedMediaReference(row.tryOnSilhouetteMediaAssetId),
-      ]),
-    );
-
     return slots.map((slot) => ({
       ...slot,
       coverImageUrl: coverImageUrls.get(slot.productId) ?? null,
-      tryOnSilhouetteUrl: tryOnSilhouetteUrls.get(slot.variantId) ?? null,
     }));
   }
 
@@ -1300,9 +1282,6 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       ...snapshot,
       coverImageUrl: this.canonicalManagedMediaReference(
         snapshot.coverImageUrl,
-      ),
-      tryOnSilhouetteUrl: this.canonicalManagedMediaReference(
-        snapshot.tryOnSilhouetteUrl ?? null,
       ),
     };
   }
@@ -1695,14 +1674,6 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         coverImageMediaAssetDigest: mediaAssets.sha256,
         coverImageMediaAssetContentType: mediaAssets.contentType,
         coverImageMediaAssetByteSize: mediaAssets.byteSize,
-        tryOnSilhouetteMediaAssetId: sql<string | null>`(
-          select ${mediaAssets.id}
-          from ${mediaAssets}
-          where ${mediaAssets.id} = ${productVariants.tryOnSilhouetteMediaAssetId}
-            and ${mediaAssets.purpose} = 'try_on_silhouette'
-            and ${mediaAssets.deletedAt} is null
-          limit 1
-        )`,
         categoryId: products.categoryId,
         categoryName: productCategories.name,
         sku: productVariants.sku,
@@ -1787,9 +1758,6 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       ...row,
       coverImageUrl: this.machineManagedMediaReference(
         row.coverImageMediaAssetId,
-      ),
-      tryOnSilhouetteUrl: this.machineManagedMediaReference(
-        row.tryOnSilhouetteMediaAssetId,
       ),
       ...(this.machineManagedMediaDescriptor(
         row.coverImageMediaAssetId,

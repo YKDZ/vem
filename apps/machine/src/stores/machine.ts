@@ -33,8 +33,6 @@ export const useMachineStore = defineStore("machine", {
   getters: {
     machineCode: (state): string | null =>
       state.effectiveRuntimeConfiguration?.machine?.code ?? null,
-    platformApiBaseUrl: (state): string | null =>
-      state.effectiveRuntimeConfiguration?.platform?.apiBaseUrl ?? null,
     hardwareReady: (state): boolean => state.health?.hardwareOnline ?? false,
     hasDeploymentConfig: (state): boolean =>
       Boolean(

@@ -138,7 +138,6 @@ function saleViewItem(overrides: Record<string, unknown> = {}) {
     productName: "基础短袖",
     productDescription: null,
     coverImageUrl: null,
-    tryOnSilhouetteUrl: null,
     categoryId: null,
     categoryName: "T恤",
     sku: "TEE-001",
