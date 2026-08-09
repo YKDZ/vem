@@ -5,9 +5,9 @@
 //! are implementation details of the module rather than IPC commands.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet, VecDeque},
     fs,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     sync::Arc,
     time::SystemTime,
@@ -15,13 +15,15 @@ use std::{
 
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 const MAX_MEDIA_OBJECT_BYTES: u64 = 5_000_000;
 const MAX_MEDIA_OBJECTS: usize = 256;
 const MAX_MEDIA_CACHE_BYTES: u64 = 100_000_000;
 const MEDIA_CACHE_RESERVED_BYTES: u64 = 5_000_000;
 const CLEANUP_BATCH_SIZE: usize = 32;
+const DOWNLOAD_WORKERS: usize = 4;
+const VERIFY_BUFFER_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -78,15 +80,20 @@ pub fn parse_media_descriptor_boundary(
     Ok(descriptor)
 }
 
-#[derive(Debug, Clone)]
-pub struct MediaBytes {
-    pub bytes: Vec<u8>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaFetchResult {
     pub content_type: String,
 }
 
 #[async_trait]
 pub trait MediaFetcher: Send + Sync {
-    async fn fetch(&self, descriptor: &MediaDescriptor) -> Result<MediaBytes, String>;
+    /// Streams a response directly into `staging`, which is guaranteed to be
+    /// on the cache volume.  Fetchers must not retain an object-sized buffer.
+    async fn fetch_to(
+        &self,
+        descriptor: &MediaDescriptor,
+        staging: &Path,
+    ) -> Result<MediaFetchResult, String>;
 }
 
 pub struct BackendMediaFetcher {
@@ -95,9 +102,13 @@ pub struct BackendMediaFetcher {
 
 #[async_trait]
 impl MediaFetcher for BackendMediaFetcher {
-    async fn fetch(&self, descriptor: &MediaDescriptor) -> Result<MediaBytes, String> {
+    async fn fetch_to(
+        &self,
+        descriptor: &MediaDescriptor,
+        staging: &Path,
+    ) -> Result<MediaFetchResult, String> {
         self.backend
-            .fetch_managed_media(&descriptor.reference, descriptor.byte_size)
+            .fetch_managed_media_to(&descriptor.reference, descriptor.byte_size, staging)
             .await
     }
 }
@@ -129,7 +140,7 @@ impl std::fmt::Display for MediaReadError {
 
 impl std::error::Error for MediaReadError {}
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Entry {
     descriptor: MediaDescriptor,
     readiness: MediaReadiness,
@@ -145,6 +156,7 @@ struct Entry {
 struct CacheState {
     generation: String,
     entries: HashMap<String, Entry>,
+    epoch: u64,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -161,6 +173,22 @@ pub struct ManagedMediaCache {
     grant: Arc<String>,
     fetcher: Arc<dyn MediaFetcher>,
     state: Arc<Mutex<CacheState>>,
+    queue: Arc<Mutex<VecDeque<WarmJob>>>,
+    inflight: Arc<Mutex<HashSet<MediaIdentity>>>,
+    queue_notify: Arc<Notify>,
+}
+
+#[derive(Debug, Clone)]
+struct WarmJob {
+    generation: String,
+    descriptor: MediaDescriptor,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct MediaIdentity {
+    digest: String,
+    content_type: String,
+    byte_size: u64,
 }
 
 impl ManagedMediaCache {
@@ -171,20 +199,42 @@ impl ManagedMediaCache {
     ) -> Result<Self, String> {
         let root = root.into();
         fs::create_dir_all(&root).map_err(|error| format!("create media cache: {error}"))?;
-        // Staging names are deliberately distinct from object names and are
-        // never part of a manifest.  An interrupted download is therefore
-        // safely reclaimable during recovery.
+        let persisted = fs::read(root.join("active-media.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<ActiveMediaManifest>(&bytes).ok())
+            .filter(|manifest| {
+                !manifest.generation.trim().is_empty()
+                    && manifest.assets.len() <= MAX_MEDIA_OBJECTS
+                    && manifest
+                        .assets
+                        .iter()
+                        .all(|asset| validate_descriptor(asset).is_none())
+            });
+        // Inventory cache data during recovery.  A cache object without a
+        // current valid manifest is never a recoverable source of truth.
+        let allowed = persisted
+            .as_ref()
+            .map(|manifest| {
+                manifest
+                    .assets
+                    .iter()
+                    .map(|asset| object_key(&asset.digest))
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default();
         if let Ok(entries) = fs::read_dir(&root) {
             for entry in entries.flatten() {
-                let name = entry.file_name();
-                if name.to_string_lossy().starts_with('.') {
-                    let _ = fs::remove_file(entry.path());
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().to_string();
+                let object = name
+                    .strip_suffix(".bin")
+                    .or_else(|| name.strip_suffix(".json"));
+                if name != "active-media.json" && !object.is_some_and(|key| allowed.contains(key)) {
+                    let _ = fs::remove_file(path);
                 }
             }
         }
-        let initial_state = fs::read(root.join("active-media.json"))
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<ActiveMediaManifest>(&bytes).ok())
+        let initial_state = persisted
             .map(|manifest| {
                 let entries = manifest
                     .assets
@@ -192,15 +242,12 @@ impl ManagedMediaCache {
                     .map(|descriptor| {
                         let valid = validate_descriptor(&descriptor).is_none();
                         let ready = valid
-                            && match fs::read(
-                                root.join(format!("{}.bin", object_key(&descriptor.digest))),
-                            ) {
-                                Ok(bytes) => {
-                                    bytes.len() as u64 == descriptor.byte_size
-                                        && digest_of(&bytes) == descriptor.digest
-                                }
-                                Err(_) => false,
-                            };
+                            && verify_staged_file(
+                                &root.join(format!("{}.bin", object_key(&descriptor.digest))),
+                                &descriptor,
+                                &descriptor.content_type,
+                            )
+                            .is_ok();
                         (
                             descriptor.digest.clone(),
                             Entry {
@@ -223,10 +270,11 @@ impl ManagedMediaCache {
                 CacheState {
                     generation: manifest.generation,
                     entries,
+                    epoch: 1,
                 }
             })
             .unwrap_or_default();
-        Ok(Self {
+        let cache = Self {
             root: Arc::new(root),
             read_url_base: Arc::new(std::sync::RwLock::new(
                 read_url_base.into().trim_end_matches('/').to_string(),
@@ -234,7 +282,15 @@ impl ManagedMediaCache {
             grant: Arc::new(uuid::Uuid::new_v4().to_string()),
             fetcher,
             state: Arc::new(Mutex::new(initial_state)),
-        })
+            queue: Arc::new(Mutex::new(VecDeque::new())),
+            inflight: Arc::new(Mutex::new(HashSet::new())),
+            queue_notify: Arc::new(Notify::new()),
+        };
+        for _ in 0..DOWNLOAD_WORKERS {
+            let worker = cache.clone();
+            tokio::spawn(async move { worker.worker_loop().await });
+        }
+        Ok(cache)
     }
 
     /// Atomically adopts the complete active interest set and warms it out of band.
@@ -242,18 +298,11 @@ impl ManagedMediaCache {
         &self,
         generation: impl Into<String>,
         mut descriptors: Vec<MediaDescriptor>,
-    ) {
+    ) -> Result<(), String> {
         let generation = generation.into();
-        let mut state = self.state.lock().await;
-        let mut entries = state
-            .entries
-            .drain()
-            .map(|(digest, mut entry)| {
-                entry.active = false;
-                entry.pinned = false;
-                (digest, entry)
-            })
-            .collect::<HashMap<_, _>>();
+        if generation.trim().is_empty() {
+            return Err("managed media generation is required".to_string());
+        }
         descriptors.sort_by(|left, right| {
             (&left.digest, &left.id, &left.reference).cmp(&(
                 &right.digest,
@@ -261,101 +310,81 @@ impl ManagedMediaCache {
                 &right.reference,
             ))
         });
-        let mut remaining_bytes = MAX_MEDIA_CACHE_BYTES.saturating_sub(MEDIA_CACHE_RESERVED_BYTES);
-        for (index, descriptor) in descriptors.into_iter().enumerate() {
-            let digest = descriptor.digest.clone();
-            let capacity_error = if index >= MAX_MEDIA_OBJECTS {
-                Some("managed media cache object limit exceeded".to_string())
-            } else if descriptor.byte_size > remaining_bytes {
-                Some("managed media cache byte budget exceeded".to_string())
-            } else {
-                remaining_bytes = remaining_bytes.saturating_sub(descriptor.byte_size);
-                None
+        descriptors.dedup_by(|left, right| left.digest == right.digest);
+        let mut remaining = MAX_MEDIA_CACHE_BYTES.saturating_sub(MEDIA_CACHE_RESERVED_BYTES);
+        for descriptor in &descriptors {
+            if let Some(error) = validate_descriptor(descriptor) {
+                return Err(error);
+            }
+            if descriptor.byte_size > remaining {
+                return Err("managed media cache byte budget exceeded".to_string());
+            }
+            remaining = remaining.saturating_sub(descriptor.byte_size);
+        }
+
+        // The potentially slow disk checks and fsync occur outside the state
+        // mutex.  An epoch retry keeps the final in-memory replacement one
+        // coherent swap even when refreshes race.
+        let warm = loop {
+            let (epoch, previous) = {
+                let state = self.state.lock().await;
+                (state.epoch, state.entries.clone())
             };
-            let validation = validate_descriptor(&descriptor).or(capacity_error);
-            let published = validation.is_none() && self.published_and_valid(&descriptor);
-            if let Some(mut entry) = entries.remove(&digest) {
-                // Reconciliation of an unchanged digest must not discard a
-                // live HTTP read lease.  The descriptor fence still updates so
-                // late output cannot turn a replacement ready.
-                entry.descriptor = descriptor;
-                entry.pinned = true;
+            let mut entries = previous
+                .into_iter()
+                .map(|(digest, mut entry)| {
+                    entry.active = false;
+                    entry.pinned = false;
+                    (digest, entry)
+                })
+                .collect::<HashMap<_, _>>();
+            for descriptor in &descriptors {
+                let digest = descriptor.digest.clone();
+                let published = self.published_and_valid(descriptor);
+                let entry = entries.entry(digest).or_insert_with(|| Entry {
+                    descriptor: descriptor.clone(),
+                    readiness: MediaReadiness::Warming,
+                    diagnostic: None,
+                    pinned: false,
+                    active: false,
+                    leases: 0,
+                    last_used: SystemTime::now(),
+                    warming_generation: None,
+                });
+                entry.descriptor = descriptor.clone();
                 entry.active = true;
-                entry.diagnostic = validation;
-                entry.readiness = if entry.diagnostic.is_some() {
-                    MediaReadiness::Unavailable
-                } else if published {
+                entry.pinned = true;
+                entry.diagnostic = None;
+                entry.readiness = if published {
                     MediaReadiness::Ready
                 } else {
                     MediaReadiness::Warming
                 };
-                entries.insert(digest, entry);
-            } else {
-                entries.insert(
-                    digest,
-                    Entry {
-                        descriptor,
-                        readiness: if validation.is_some() {
-                            MediaReadiness::Unavailable
-                        } else if published {
-                            MediaReadiness::Ready
-                        } else {
-                            MediaReadiness::Warming
-                        },
-                        diagnostic: validation,
-                        pinned: true,
-                        active: true,
-                        leases: 0,
-                        last_used: SystemTime::now(),
-                        warming_generation: None,
-                    },
-                );
             }
-        }
-        state.generation = generation.clone();
-        state.entries = entries;
-        let manifest = ActiveMediaManifest {
-            generation: generation.clone(),
-            assets: state
+            let manifest = ActiveMediaManifest {
+                generation: generation.clone(),
+                assets: descriptors.clone(),
+            };
+            self.persist_manifest(&manifest)?;
+            let mut state = self.state.lock().await;
+            if state.epoch != epoch {
+                continue;
+            }
+            state.generation = generation.clone();
+            state.entries = entries;
+            state.epoch = state.epoch.wrapping_add(1);
+            break state
                 .entries
                 .values()
-                .filter(|entry| entry.active)
+                .filter(|entry| entry.active && entry.readiness == MediaReadiness::Warming)
                 .map(|entry| entry.descriptor.clone())
-                .collect(),
+                .collect::<Vec<_>>();
         };
-        if let Err(error) = self.persist_manifest(&manifest) {
-            // Do not warm or expose an in-memory generation which cannot
-            // survive restart.  Serving the previous on-disk manifest here
-            // would substitute stale bytes for the newly adopted descriptor.
-            for entry in state.entries.values_mut().filter(|entry| entry.active) {
-                entry.readiness = MediaReadiness::Unavailable;
-                entry.diagnostic =
-                    Some(format!("media cache manifest persistence failed: {error}"));
-            }
-            return;
-        }
-        let warm = state
-            .entries
-            .values_mut()
-            .filter(|entry| entry.readiness == MediaReadiness::Warming)
-            .filter_map(|entry| {
-                if entry.warming_generation.as_deref() == Some(&generation) {
-                    None
-                } else {
-                    entry.warming_generation = Some(generation.clone());
-                    Some(entry.descriptor.clone())
-                }
-            })
-            .collect::<Vec<_>>();
-        drop(state);
         for descriptor in warm {
-            let cache = self.clone();
-            let expected_generation = generation.clone();
-            tokio::spawn(async move {
-                cache.warm(expected_generation, descriptor).await;
-            });
+            self.enqueue_warm(generation.clone(), descriptor).await;
         }
         let _ = self.cleanup_bounded(CLEANUP_BATCH_SIZE).await;
+        Ok(())
     }
 
     /// Public reconciliation boundary: generated request in, generated
@@ -377,7 +406,7 @@ impl ManagedMediaCache {
             .collect::<Result<Vec<_>, _>>()?;
         let interest_count = descriptors.len();
         self.reconcile_active_catalog(generation.clone(), descriptors)
-            .await;
+            .await?;
         let snapshot = self.snapshot_boundary().await?;
         let receipt = serde_json::from_value(serde_json::json!({
             "generation": generation,
@@ -460,17 +489,6 @@ impl ManagedMediaCache {
         entry.last_used = SystemTime::now();
         let path = self.content_path(digest);
         drop(state);
-        let bytes = fs::read(&path).map_err(|error| {
-            // Lease cleanup is best effort; the caller still receives a read failure.
-            let state = self.state.clone();
-            let digest = digest.to_string();
-            tokio::spawn(async move {
-                if let Some(entry) = state.lock().await.entries.get_mut(&digest) {
-                    entry.leases = entry.leases.saturating_sub(1);
-                }
-            });
-            MediaReadError::Io(error.to_string())
-        })?;
         let entry = self.state.lock().await;
         let descriptor = entry
             .entries
@@ -478,7 +496,7 @@ impl ManagedMediaCache {
             .map(|entry| entry.descriptor.clone());
         drop(entry);
         let descriptor = descriptor.ok_or(MediaReadError::NotFound)?;
-        if bytes.len() as u64 != descriptor.byte_size || digest_of(&bytes) != descriptor.digest {
+        if verify_staged_file(&path, &descriptor, &descriptor.content_type).is_err() {
             let mut state = self.state.lock().await;
             if let Some(entry) = state.entries.get_mut(digest) {
                 entry.leases = entry.leases.saturating_sub(1);
@@ -489,32 +507,37 @@ impl ManagedMediaCache {
             return Err(MediaReadError::NotReady);
         }
         Ok(MediaReadLease {
-            bytes: if matches!(method, MediaReadMethod::Head) {
-                Vec::new()
-            } else {
-                bytes
-            },
             content_type: descriptor.content_type,
             byte_size: descriptor.byte_size,
             digest: digest.to_string(),
+            path: matches!(method, MediaReadMethod::Get).then_some(path),
             state: self.state.clone(),
         })
     }
 
     pub async fn cleanup_bounded(&self, max_remove: usize) -> usize {
-        let mut state = self.state.lock().await;
-        let mut candidates = state
-            .entries
-            .iter()
-            .filter(|(_, entry)| !entry.pinned && entry.leases == 0)
-            .map(|(digest, entry)| (digest.clone(), entry.last_used))
-            .collect::<Vec<_>>();
+        let mut candidates = {
+            let state = self.state.lock().await;
+            state
+                .entries
+                .iter()
+                .filter(|(_, entry)| !entry.pinned && entry.leases == 0)
+                .map(|(digest, entry)| (digest.clone(), entry.last_used))
+                .collect::<Vec<_>>()
+        };
         candidates.sort_by_key(|(_, used)| *used);
         let mut removed = 0;
         for (digest, _) in candidates.into_iter().take(max_remove) {
+            // Disk mutation deliberately happens with no Tokio state lock.
             let _ = fs::remove_file(self.content_path(&digest));
             let _ = fs::remove_file(self.meta_path(&digest));
-            if state.entries.remove(&digest).is_some() {
+            let mut state = self.state.lock().await;
+            if state
+                .entries
+                .get(&digest)
+                .is_some_and(|entry| !entry.pinned && entry.leases == 0)
+                && state.entries.remove(&digest).is_some()
+            {
                 removed += 1;
             }
         }
@@ -564,81 +587,123 @@ impl ManagedMediaCache {
     }
 
     fn published_and_valid(&self, descriptor: &MediaDescriptor) -> bool {
-        let path = self.content_path(&descriptor.digest);
-        let Ok(bytes) = fs::read(path) else {
-            return false;
-        };
-        bytes.len() as u64 == descriptor.byte_size && digest_of(&bytes) == descriptor.digest
+        verify_staged_file(
+            &self.content_path(&descriptor.digest),
+            descriptor,
+            &descriptor.content_type,
+        )
+        .is_ok()
     }
 
-    async fn warm(&self, generation: String, descriptor: MediaDescriptor) {
-        let result = self.fetcher.fetch(&descriptor).await.and_then(|media| {
-            if media.bytes.len() as u64 != descriptor.byte_size {
-                return Err("media byte size does not match descriptor".to_string());
-            }
-            if media.content_type != descriptor.content_type {
-                return Err("media content type does not match descriptor".to_string());
-            }
-            verify_media_facts(&descriptor.content_type, &media.bytes)?;
-            if digest_of(&media.bytes) != descriptor.digest {
-                return Err("media digest does not match descriptor".to_string());
-            }
-            self.publish(&descriptor, &media.bytes)
+    async fn enqueue_warm(&self, generation: String, descriptor: MediaDescriptor) {
+        let identity = media_identity(&descriptor);
+        let mut inflight = self.inflight.lock().await;
+        if !inflight.insert(identity) {
+            return;
+        }
+        drop(inflight);
+        self.queue.lock().await.push_back(WarmJob {
+            generation,
+            descriptor,
         });
-        let mut state = self.state.lock().await;
-        if state.generation != generation {
-            return;
+        self.queue_notify.notify_one();
+    }
+
+    async fn worker_loop(self) {
+        loop {
+            let job = loop {
+                if let Some(job) = self.queue.lock().await.pop_front() {
+                    break job;
+                }
+                self.queue_notify.notified().await;
+            };
+            self.warm(job.clone()).await;
+            self.inflight
+                .lock()
+                .await
+                .remove(&media_identity(&job.descriptor));
         }
-        let Some(entry) = state.entries.get_mut(&descriptor.digest) else {
-            return;
-        };
-        if entry.descriptor != descriptor {
-            return;
-        }
-        entry.warming_generation = None;
+    }
+
+    async fn warm(&self, job: WarmJob) {
+        let stage = self.staging_path(&job.descriptor.digest, &job.generation);
+        let result = self
+            .fetcher
+            .fetch_to(&job.descriptor, &stage)
+            .await
+            .and_then(|response| {
+                if response.content_type != job.descriptor.content_type {
+                    return Err("media content type does not match descriptor".to_string());
+                }
+                verify_staged_file(&stage, &job.descriptor, &response.content_type)
+            });
         match result {
             Ok(()) => {
-                entry.readiness = MediaReadiness::Ready;
-                entry.diagnostic = None;
+                // This is deliberately the only short critical section in the
+                // publish path: a late result can publish only while the full
+                // current descriptor is still active.  MoveFileEx replaces a
+                // corrupt same-digest target on Windows without a visibility gap.
+                let mut state = self.state.lock().await;
+                let current = state
+                    .entries
+                    .get(&job.descriptor.digest)
+                    .filter(|entry| {
+                        entry.active
+                            && media_identity(&entry.descriptor) == media_identity(&job.descriptor)
+                    })
+                    .map(|entry| entry.descriptor.clone());
+                if let Some(current) = current {
+                    let publish = self.publish_staged(&current, &stage);
+                    if let Some(entry) = state.entries.get_mut(&current.digest) {
+                        entry.warming_generation = None;
+                        match publish {
+                            Ok(()) => {
+                                entry.readiness = MediaReadiness::Ready;
+                                entry.diagnostic = None;
+                            }
+                            Err(error) => {
+                                entry.readiness = MediaReadiness::Unavailable;
+                                entry.diagnostic = Some(error);
+                            }
+                        }
+                    }
+                } else {
+                    let _ = fs::remove_file(&stage);
+                }
             }
             Err(error) => {
-                entry.readiness = MediaReadiness::Unavailable;
-                entry.diagnostic = Some(error);
+                let _ = fs::remove_file(&stage);
+                let mut state = self.state.lock().await;
+                if let Some(entry) = state
+                    .entries
+                    .get_mut(&job.descriptor.digest)
+                    .filter(|entry| {
+                        entry.active
+                            && media_identity(&entry.descriptor) == media_identity(&job.descriptor)
+                    })
+                {
+                    entry.warming_generation = None;
+                    entry.readiness = MediaReadiness::Unavailable;
+                    entry.diagnostic = Some(error);
+                }
             }
         }
     }
 
-    fn publish(&self, descriptor: &MediaDescriptor, bytes: &[u8]) -> Result<(), String> {
-        let key = object_key(&descriptor.digest);
-        let nonce = uuid::Uuid::new_v4().simple().to_string();
-        let temp = self.root.join(format!(".{key}.{nonce}.tmp"));
-        let meta_temp = self.root.join(format!(".{key}.{nonce}.meta.tmp"));
-        write_durable(
-            &meta_temp,
-            &serde_json::to_vec(descriptor).map_err(|error| error.to_string())?,
-        )?;
-        write_durable(&temp, bytes)?;
-        let metadata_path = self.meta_path(&descriptor.digest);
-        let content_path = self.content_path(&descriptor.digest);
-        // A digest-addressed object is immutable.  Never remove an existing
-        // target to make rename work on Windows: a verified existing object is
-        // already the desired publication, while an invalid target is a
-        // recoverable cache fault rather than permission to create a visibility
-        // gap.
-        if content_path.exists() {
-            let existing = fs::read(&content_path)
-                .map_err(|error| format!("read existing media object: {error}"))?;
-            if existing.len() as u64 != descriptor.byte_size
-                || digest_of(&existing) != descriptor.digest
-            {
-                return Err("existing digest-addressed media object is corrupt".to_string());
-            }
-            let _ = fs::remove_file(&temp);
-        } else {
-            atomic_replace(&temp, &content_path)?;
-        }
-        atomic_replace(&meta_temp, &metadata_path)?;
-        sync_parent_dir(&self.root);
+    fn staging_path(&self, digest: &str, generation: &str) -> PathBuf {
+        let generation = format!("{:x}", Sha256::digest(generation.as_bytes()));
+        self.root.join(format!(
+            ".{}.{}.{}.tmp",
+            object_key(digest),
+            &generation[..16],
+            uuid::Uuid::new_v4().simple()
+        ))
+    }
+
+    fn publish_staged(&self, descriptor: &MediaDescriptor, stage: &Path) -> Result<(), String> {
+        atomic_replace(stage, &self.content_path(&descriptor.digest))?;
+        // `active-media.json` is the durable descriptor authority.  No second
+        // per-object descriptor is written on the hot publication path.
         Ok(())
     }
 }
@@ -706,11 +771,24 @@ fn sync_parent_dir(path: &Path) {
 fn sync_parent_dir(_: &Path) {}
 
 pub struct MediaReadLease {
-    pub bytes: Vec<u8>,
     pub content_type: String,
     pub byte_size: u64,
     pub digest: String,
+    path: Option<PathBuf>,
     state: Arc<Mutex<CacheState>>,
+}
+
+impl MediaReadLease {
+    pub async fn into_file(mut self) -> Result<(tokio::fs::File, Self), MediaReadError> {
+        let path = self
+            .path
+            .take()
+            .ok_or_else(|| MediaReadError::Io("HEAD has no body".to_string()))?;
+        let file = tokio::fs::File::open(path)
+            .await
+            .map_err(|error| MediaReadError::Io(error.to_string()))?;
+        Ok((file, self))
+    }
 }
 
 impl Drop for MediaReadLease {
@@ -725,8 +803,17 @@ impl Drop for MediaReadLease {
     }
 }
 
+#[cfg(test)]
 fn digest_of(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
+}
+
+fn media_identity(descriptor: &MediaDescriptor) -> MediaIdentity {
+    MediaIdentity {
+        digest: descriptor.digest.clone(),
+        content_type: descriptor.content_type.clone(),
+        byte_size: descriptor.byte_size,
+    }
 }
 
 fn validate_descriptor(descriptor: &MediaDescriptor) -> Option<String> {
@@ -791,15 +878,48 @@ fn managed_media_diagnostic_reason(message: &str) -> Option<&'static str> {
     }
 }
 
-fn verify_media_facts(content_type: &str, bytes: &[u8]) -> Result<(), String> {
+fn verify_staged_file(
+    path: &Path,
+    descriptor: &MediaDescriptor,
+    content_type: &str,
+) -> Result<(), String> {
+    let mut file =
+        fs::File::open(path).map_err(|error| format!("open staged media file: {error}"))?;
+    let mut digest = Sha256::new();
+    let mut header = Vec::with_capacity(12);
+    let mut bytes = 0u64;
+    let mut buffer = [0u8; VERIFY_BUFFER_BYTES];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|error| format!("read staged media file: {error}"))?;
+        if count == 0 {
+            break;
+        }
+        bytes = bytes.saturating_add(count as u64);
+        if bytes > descriptor.byte_size || bytes > MAX_MEDIA_OBJECT_BYTES {
+            return Err("media byte size does not match descriptor".to_string());
+        }
+        let needed = 12usize.saturating_sub(header.len()).min(count);
+        header.extend_from_slice(&buffer[..needed]);
+        digest.update(&buffer[..count]);
+    }
+    if bytes != descriptor.byte_size {
+        return Err("media byte size does not match descriptor".to_string());
+    }
     let valid_magic = match content_type {
-        "image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
-        "image/jpeg" => bytes.starts_with(b"\xff\xd8\xff"),
-        "image/webp" => bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP",
+        "image/png" => header.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "image/jpeg" => header.starts_with(b"\xff\xd8\xff"),
+        "image/webp" => header.len() >= 12 && &header[..4] == b"RIFF" && &header[8..12] == b"WEBP",
         _ => false,
     };
     if valid_magic {
-        Ok(())
+        let actual = format!("sha256:{:x}", digest.finalize());
+        if actual == descriptor.digest {
+            Ok(())
+        } else {
+            Err("media digest does not match descriptor".to_string())
+        }
     } else {
         Err("media header does not match declared image type".to_string())
     }
@@ -811,13 +931,21 @@ mod tests {
     use tempfile::tempdir;
 
     struct FixtureFetcher {
-        media: MediaBytes,
+        bytes: Vec<u8>,
+        content_type: String,
     }
 
     #[async_trait]
     impl MediaFetcher for FixtureFetcher {
-        async fn fetch(&self, _: &MediaDescriptor) -> Result<MediaBytes, String> {
-            Ok(self.media.clone())
+        async fn fetch_to(
+            &self,
+            _: &MediaDescriptor,
+            staging: &Path,
+        ) -> Result<MediaFetchResult, String> {
+            write_durable(staging, &self.bytes)?;
+            Ok(MediaFetchResult {
+                content_type: self.content_type.clone(),
+            })
         }
     }
 
@@ -836,6 +964,15 @@ mod tests {
         }
     }
 
+    async fn lease_bytes(lease: MediaReadLease) -> Vec<u8> {
+        let (mut file, _lease) = lease.into_file().await.expect("stream file");
+        let mut bytes = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut file, &mut bytes)
+            .await
+            .expect("read stream");
+        bytes
+    }
+
     #[tokio::test]
     async fn reconciliation_warms_verified_bytes_and_exposes_only_ready_digest() {
         let bytes = b"\x89PNG\r\n\x1a\nimage".to_vec();
@@ -844,16 +981,15 @@ mod tests {
             tempdir().expect("tempdir").keep(),
             "http://127.0.0.1:1234",
             Arc::new(FixtureFetcher {
-                media: MediaBytes {
-                    bytes,
-                    content_type: "image/png".to_string(),
-                },
+                bytes,
+                content_type: "image/png".to_string(),
             }),
         )
         .expect("cache");
         cache
             .reconcile_active_catalog("generation-1", vec![descriptor.clone()])
-            .await;
+            .await
+            .expect("adopt");
         for _ in 0..20 {
             if cache.snapshot().await.1[0].readiness == MediaReadiness::Ready {
                 break;
@@ -867,7 +1003,7 @@ mod tests {
             .read_ready(&grant, MediaReadMethod::Get, &descriptor.digest)
             .await
             .expect("read");
-        assert_eq!(lease.bytes, b"\x89PNG\r\n\x1a\nimage");
+        assert_eq!(lease_bytes(lease).await, b"\x89PNG\r\n\x1a\nimage");
         assert!(snapshot[0]
             .ready_url
             .as_deref()
@@ -881,16 +1017,15 @@ mod tests {
             tempdir().expect("tempdir").keep(),
             "http://127.0.0.1:1234",
             Arc::new(FixtureFetcher {
-                media: MediaBytes {
-                    bytes: b"bad".to_vec(),
-                    content_type: "image/png".to_string(),
-                },
+                bytes: b"bad".to_vec(),
+                content_type: "image/png".to_string(),
             }),
         )
         .expect("cache");
         cache
             .reconcile_active_catalog("generation-1", vec![expected.clone()])
-            .await;
+            .await
+            .expect("adopt");
         for _ in 0..20 {
             if cache.snapshot().await.1[0].readiness == MediaReadiness::Unavailable {
                 break;
@@ -918,16 +1053,15 @@ mod tests {
             root,
             "http://127.0.0.1:1234",
             Arc::new(FixtureFetcher {
-                media: MediaBytes {
-                    bytes,
-                    content_type: "image/png".to_string(),
-                },
+                bytes,
+                content_type: "image/png".to_string(),
             }),
         )
         .expect("cache");
         cache
             .reconcile_active_catalog("generation-1", vec![expected.clone()])
-            .await;
+            .await
+            .expect("adopt");
         for _ in 0..20 {
             if cache.snapshot().await.1[0].readiness == MediaReadiness::Ready {
                 break;
@@ -954,16 +1088,15 @@ mod tests {
             tempdir().expect("tempdir").keep(),
             "http://127.0.0.1:1234",
             Arc::new(FixtureFetcher {
-                media: MediaBytes {
-                    bytes: old_bytes,
-                    content_type: "image/png".to_string(),
-                },
+                bytes: old_bytes,
+                content_type: "image/png".to_string(),
             }),
         )
         .expect("cache");
         cache
             .reconcile_active_catalog("generation-1", vec![old.clone()])
-            .await;
+            .await
+            .expect("adopt");
         for _ in 0..20 {
             if cache.snapshot().await.1[0].readiness == MediaReadiness::Ready {
                 break;
@@ -976,7 +1109,8 @@ mod tests {
             .expect("old lease");
         cache
             .reconcile_active_catalog("generation-2", vec![new])
-            .await;
+            .await
+            .expect("adopt");
         assert_eq!(cache.cleanup_bounded(10).await, 0);
         drop(lease);
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
@@ -992,16 +1126,15 @@ mod tests {
             root.clone(),
             "http://127.0.0.1:1234",
             Arc::new(FixtureFetcher {
-                media: MediaBytes {
-                    bytes,
-                    content_type: "image/png".to_string(),
-                },
+                bytes,
+                content_type: "image/png".to_string(),
             }),
         )
         .expect("cache");
         online
             .reconcile_active_catalog("generation-1", vec![expected.clone()])
-            .await;
+            .await
+            .expect("adopt");
         for _ in 0..20 {
             if online.snapshot().await.1[0].readiness == MediaReadiness::Ready {
                 break;
@@ -1011,7 +1144,11 @@ mod tests {
         struct OfflineFetcher;
         #[async_trait]
         impl MediaFetcher for OfflineFetcher {
-            async fn fetch(&self, _: &MediaDescriptor) -> Result<MediaBytes, String> {
+            async fn fetch_to(
+                &self,
+                _: &MediaDescriptor,
+                _: &Path,
+            ) -> Result<MediaFetchResult, String> {
                 Err("offline".to_string())
             }
         }
@@ -1030,7 +1167,7 @@ mod tests {
             )
             .await
             .expect("offline read");
-        assert_eq!(lease.bytes, b"\x89PNG\r\n\x1a\noffline-ready");
+        assert_eq!(lease_bytes(lease).await, b"\x89PNG\r\n\x1a\noffline-ready");
     }
 
     #[tokio::test]
@@ -1048,10 +1185,8 @@ mod tests {
             root,
             "http://127.0.0.1:1234",
             Arc::new(FixtureFetcher {
-                media: MediaBytes {
-                    bytes,
-                    content_type: "image/png".to_string(),
-                },
+                bytes,
+                content_type: "image/png".to_string(),
             }),
         )
         .expect("cache");
@@ -1070,7 +1205,11 @@ mod tests {
         struct SlowFetcher;
         #[async_trait]
         impl MediaFetcher for SlowFetcher {
-            async fn fetch(&self, _: &MediaDescriptor) -> Result<MediaBytes, String> {
+            async fn fetch_to(
+                &self,
+                _: &MediaDescriptor,
+                _: &Path,
+            ) -> Result<MediaFetchResult, String> {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 Err("slow source".to_string())
             }
@@ -1087,6 +1226,7 @@ mod tests {
             cache.reconcile_active_catalog("generation-1", vec![descriptor]),
         )
         .await
-        .expect("reconciliation must not await source fetch");
+        .expect("reconciliation must not await source fetch")
+        .expect("adopt");
     }
 }

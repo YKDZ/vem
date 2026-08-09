@@ -422,7 +422,14 @@ export const useCatalogStore = defineStore("catalog", {
       if (refreshInFlight) return refreshInFlight;
       this.loading = true;
       refreshInFlight = (async () => {
-        void daemonClient.refreshCatalog?.().catch(() => undefined);
+        // A successful refresh is a daemon catalog-adoption boundary: wait
+        // for it before reading the projected sale view so an image-only
+        // replacement is visible in one customer refresh.  A platform outage
+        // still leaves the last local sale view readable.
+        const catalogRefresh = daemonClient.refreshCatalog?.();
+        if (catalogRefresh && typeof catalogRefresh.then === "function") {
+          await catalogRefresh.catch(() => undefined);
+        }
         this.applySnapshot(await daemonClient.getSaleView());
         this.error = null;
         this.loading = false;

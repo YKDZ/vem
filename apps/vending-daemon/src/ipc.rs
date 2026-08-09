@@ -2,14 +2,17 @@ use std::{
     collections::HashMap,
     net::SocketAddr,
     path::{Path, PathBuf},
+    pin::Pin,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
+    task::{Context, Poll},
     time::{Duration, Instant},
 };
 
 use axum::{
+    body::Body,
     extract::{
         ws::{Message, WebSocket},
         Path as AxumPath, Query, State, WebSocketUpgrade,
@@ -24,7 +27,7 @@ use axum::{
 };
 use sha2::Digest;
 use tokio::sync::{broadcast, mpsc, Mutex};
-use tokio_util::sync::CancellationToken;
+use tokio_util::{io::ReaderStream, sync::CancellationToken};
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::{
@@ -38,7 +41,7 @@ use crate::{
         ScannerProtocolParameters,
     },
     logs,
-    managed_media::{ManagedMediaCache, MediaReadError, MediaReadMethod},
+    managed_media::{ManagedMediaCache, MediaReadError, MediaReadLease, MediaReadMethod},
     natural_context::MachineNaturalContextSnapshot,
     network::{
         NetworkAdapter, NetworkSettingsRequest, NetworkSettingsResponse, NetworkSetupStatus,
@@ -640,6 +643,23 @@ struct MediaReadQuery {
     grant: Option<String>,
 }
 
+/// Keeping the lease inside the streaming reader makes cleanup wait for the
+/// response body to be dropped, not merely for routing to finish.
+struct LeasedMediaReader {
+    file: tokio::fs::File,
+    _lease: MediaReadLease,
+}
+
+impl tokio::io::AsyncRead for LeasedMediaReader {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.file).poll_read(cx, buf)
+    }
+}
+
 async fn media_get(
     State(ctx): State<IpcContext>,
     AxumPath(digest): AxumPath<String>,
@@ -680,7 +700,7 @@ async fn serve_media(
         return StatusCode::FORBIDDEN.into_response();
     };
     match cache.read_ready(&grant, method, &digest).await {
-        Ok(mut lease) => {
+        Ok(lease) => {
             let mut headers = HeaderMap::new();
             if let Ok(value) = lease.content_type.parse() {
                 headers.insert(CONTENT_TYPE, value);
@@ -691,7 +711,20 @@ async fn serve_media(
             if let Ok(value) = format!("\"{}\"", digest).parse() {
                 headers.insert("etag", value);
             }
-            (StatusCode::OK, headers, std::mem::take(&mut lease.bytes)).into_response()
+            if matches!(method, MediaReadMethod::Head) {
+                return (StatusCode::OK, headers, Body::empty()).into_response();
+            }
+            match lease.into_file().await {
+                Ok((file, lease)) => {
+                    let body = Body::from_stream(ReaderStream::new(LeasedMediaReader {
+                        file,
+                        _lease: lease,
+                    }));
+                    (StatusCode::OK, headers, body).into_response()
+                }
+                Err(MediaReadError::Io(_)) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+                Err(_) => StatusCode::NOT_FOUND.into_response(),
+            }
         }
         Err(MediaReadError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
         Err(MediaReadError::NotReady | MediaReadError::NotFound) => {
@@ -1326,21 +1359,41 @@ async fn refresh_catalog(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
         .await
     {
         Ok(payload) => {
-            let items = payload
+            let mut items = payload
                 .get("items")
                 .and_then(|value| value.as_array())
                 .cloned()
                 .unwrap_or_else(|| payload.as_array().cloned().unwrap_or_default());
-            let descriptors = items
-                .iter()
-                .flat_map(|item| {
-                    ["coverImageMedia"].into_iter().filter_map(move |field| {
-                        item.get(field).cloned().and_then(|value| {
-                            crate::managed_media::parse_media_descriptor_boundary(value).ok()
-                        })
-                    })
-                })
-                .collect::<Vec<_>>();
+            // Catalog media crosses the generated strict boundary exactly
+            // once.  The normalized catalog retains either a valid descriptor
+            // or a stable per-item diagnostic; sale-view never rehydrates raw
+            // malformed descriptor JSON.
+            let mut descriptors = Vec::new();
+            for item in &mut items {
+                let Some(object) = item.as_object_mut() else {
+                    continue;
+                };
+                let parsed = object.get("coverImageMedia").cloned().and_then(|value| {
+                    crate::managed_media::parse_media_descriptor_boundary(value).ok()
+                });
+                match parsed {
+                    Some(descriptor) => {
+                        object.insert(
+                            "coverImageMedia".to_string(),
+                            serde_json::to_value(&descriptor).unwrap_or(serde_json::Value::Null),
+                        );
+                        object.remove("coverImageMediaDiagnostic");
+                        descriptors.push(descriptor);
+                    }
+                    None if object.contains_key("coverImageMedia") => {
+                        object.insert("coverImageMedia".to_string(), serde_json::Value::Null);
+                        object.insert("coverImageMediaDiagnostic".to_string(), serde_json::json!({
+                            "reason": "descriptor_invalid", "message": "catalog managed media descriptor is invalid"
+                        }));
+                    }
+                    None => {}
+                }
+            }
             // A catalog endpoint may remain array-shaped for sale compatibility.
             // Derive the complete media interest generation deterministically
             // instead of minting a timestamp or falling back to a fake revision.
@@ -3822,12 +3875,13 @@ mod tests {
 
     #[async_trait]
     impl crate::managed_media::MediaFetcher for ReadyMediaFetcher {
-        async fn fetch(
+        async fn fetch_to(
             &self,
             _: &crate::managed_media::MediaDescriptor,
-        ) -> Result<crate::managed_media::MediaBytes, String> {
-            Ok(crate::managed_media::MediaBytes {
-                bytes: self.0.clone(),
+            staging: &Path,
+        ) -> Result<crate::managed_media::MediaFetchResult, String> {
+            std::fs::write(staging, &self.0).map_err(|error| error.to_string())?;
+            Ok(crate::managed_media::MediaFetchResult {
                 content_type: "image/png".to_string(),
             })
         }
@@ -3866,7 +3920,8 @@ mod tests {
         .expect("cache");
         cache
             .reconcile_active_catalog("test-generation", vec![descriptor.clone()])
-            .await;
+            .await
+            .expect("adopt media");
         for _ in 0..20 {
             if cache.snapshot().await.1[0].readiness == crate::managed_media::MediaReadiness::Ready
             {

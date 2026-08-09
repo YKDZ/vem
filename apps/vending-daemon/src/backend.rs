@@ -1,9 +1,10 @@
-use std::sync::Arc;
 use std::time::Duration;
+use std::{path::Path, sync::Arc};
 
 use futures_util::StreamExt;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, RwLock};
 
 const BACKEND_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -614,11 +615,12 @@ impl BackendClient {
             .await
     }
 
-    pub async fn fetch_managed_media(
+    pub async fn fetch_managed_media_to(
         &self,
         reference: &str,
         maximum_bytes: u64,
-    ) -> Result<crate::managed_media::MediaBytes, String> {
+        staging: &Path,
+    ) -> Result<crate::managed_media::MediaFetchResult, String> {
         let reference = canonical_managed_media_reference(reference)?;
         let base = reqwest::Url::parse(&self.base_url)
             .map_err(|_| "provisioned API origin is invalid for managed media".to_string())?;
@@ -675,21 +677,28 @@ impl BackendClient {
         {
             return Err("managed media response exceeds descriptor byte limit".to_string());
         }
-        let mut bytes =
-            Vec::with_capacity(response.content_length().unwrap_or(0).min(maximum_bytes) as usize);
+        let mut staging_file = tokio::fs::File::create(staging)
+            .await
+            .map_err(|error| format!("stage managed media response: {error}"))?;
+        let mut bytes = 0u64;
         let mut stream = response.bytes_stream();
         while let Some(chunk) = stream.next().await {
             let chunk =
                 chunk.map_err(|error| format!("read managed media response failed: {error}"))?;
-            if bytes.len().saturating_add(chunk.len()) > maximum_bytes as usize {
+            bytes = bytes.saturating_add(chunk.len() as u64);
+            if bytes > maximum_bytes {
                 return Err("managed media response exceeds descriptor byte limit".to_string());
             }
-            bytes.extend_from_slice(&chunk);
+            staging_file
+                .write_all(&chunk)
+                .await
+                .map_err(|error| format!("write managed media staging: {error}"))?;
         }
-        Ok(crate::managed_media::MediaBytes {
-            bytes,
-            content_type,
-        })
+        staging_file
+            .sync_all()
+            .await
+            .map_err(|error| format!("sync managed media staging: {error}"))?;
+        Ok(crate::managed_media::MediaFetchResult { content_type })
     }
 
     pub async fn get_published_planogram(
@@ -831,16 +840,21 @@ mod tests {
 
         let client = BackendClient::new(format!("{}/api", server.uri()));
         client.set_access_token_for_tests("token-123").await;
+        let staging = tempfile::NamedTempFile::new().expect("staging");
         let media = client
-            .fetch_managed_media(
+            .fetch_managed_media_to(
                 "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
                 32,
+                staging.path(),
             )
             .await
             .expect("canonical media response");
 
         assert_eq!(media.content_type, "image/png");
-        assert_eq!(media.bytes, vec![137, 80, 78, 71]);
+        assert_eq!(
+            std::fs::read(staging.path()).unwrap(),
+            vec![137, 80, 78, 71]
+        );
     }
 
     #[tokio::test]
