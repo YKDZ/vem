@@ -5,6 +5,7 @@ import { DrizzleDB, eq, inventories, productVariants } from "@vem/db";
 import {
   adminCreateTryOnGarmentContract,
   adminGetTryOnGarmentContract,
+  adminListTryOnGarmentsByProductContract,
   adminTryOnGarmentConfirmationContract,
   adminTryOnGarmentActivationContract,
   adminTryOnGarmentAssociationContract,
@@ -14,11 +15,20 @@ import {
 } from "@vem/shared";
 import { deflateSync } from "node:zlib";
 import request from "supertest";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 
 import { AppModule } from "../app.module";
 import { AppConfigService } from "../config/app-config.service";
 import { MqttService } from "../mqtt/mqtt.service";
+import { TryOnGarmentsService } from "../try-on-garments/try-on-garments.service";
 import {
   cleanupBusinessTables,
   getMachineAuthHeader,
@@ -144,6 +154,17 @@ describe("admin-try-on-garment-contract.e2e", { concurrent: false }, () => {
         (fetchedResponse.body as ApiResponse<unknown>).data,
       ),
     ).toEqual(draft);
+
+    const productGarmentsResponse = await api
+      .get(`/api${adminListTryOnGarmentsByProductContract.path}`)
+      .set(auth)
+      .query({ productId });
+    expect(productGarmentsResponse.status).toBe(200);
+    expect(
+      adminListTryOnGarmentsByProductContract.responseSchema.parse(
+        (productGarmentsResponse.body as ApiResponse<unknown>).data,
+      ),
+    ).toEqual([draft]);
 
     const confirmedResponse = await api
       .post(
@@ -420,6 +441,38 @@ describe("admin-try-on-garment-contract.e2e", { concurrent: false }, () => {
         .associatedVariantIds.sort(),
     ).toEqual([largeId, smallId].sort());
 
+    // Two real requests race on the same row.  The composite FK makes either
+    // scheduling order safe: PATCH can never publish a cross-product pointer.
+    const [concurrentAssociation, moveAssociatedVariantResponse] =
+      await Promise.all([
+        api
+          .put(
+            `/api${adminTryOnGarmentAssociationContract.path.replace(":id", draft.id)}`,
+          )
+          .set(auth)
+          .send({ variantIds: [smallId, largeId] }),
+        api
+          .patch(`/api/product-variants/${smallId}`)
+          .set(auth)
+          .send({ productId: otherProductId }),
+      ]);
+    expect(concurrentAssociation.status).toBe(200);
+    expect(moveAssociatedVariantResponse.status).toBe(400);
+    expect(
+      (
+        await api
+          .get(
+            `/api${adminGetTryOnGarmentContract.path.replace(":id", draft.id)}`,
+          )
+          .set(auth)
+          .expect(200)
+      ).body as ApiResponse<unknown>,
+    ).toMatchObject({
+      data: {
+        associatedVariantIds: expect.arrayContaining([smallId, largeId]),
+      },
+    });
+
     const crossProductResponse = await api
       .put(
         `/api${adminTryOnGarmentAssociationContract.path.replace(":id", draft.id)}`,
@@ -460,6 +513,32 @@ describe("admin-try-on-garment-contract.e2e", { concurrent: false }, () => {
       sourceMediaAsset: { id: replacement.id },
       template: "tshirt_long_sleeve",
     });
+    const sourceReplacementAudit = await api
+      .get(`/api/audit-logs?resourceId=${draft.id}&page=1&pageSize=20`)
+      .set(auth)
+      .expect(200);
+    expect(
+      (
+        sourceReplacementAudit.body as ApiResponse<{
+          items: Array<{
+            action: string;
+            beforeJson: Record<string, unknown> | null;
+            afterJson: Record<string, unknown> | null;
+          }>;
+        }>
+      ).data.items.find(
+        (item) => item.action === "try_on_garments.source.replace",
+      ),
+    ).toMatchObject({
+      beforeJson: {
+        sourceMediaAssetId: source.id,
+        template: "tshirt_short_sleeve",
+      },
+      afterJson: {
+        sourceMediaAssetId: replacement.id,
+        template: "tshirt_long_sleeve",
+      },
+    });
     const invalidReplacement = await api
       .patch(
         `/api${adminTryOnGarmentSourceReplacementContract.path.replace(":id", draft.id)}`,
@@ -482,6 +561,19 @@ describe("admin-try-on-garment-contract.e2e", { concurrent: false }, () => {
       template: "tshirt_long_sleeve",
       associatedVariantIds: expect.arrayContaining([smallId, largeId]),
     });
+
+    const clearAssociations = await api
+      .put(
+        `/api${adminTryOnGarmentAssociationContract.path.replace(":id", draft.id)}`,
+      )
+      .set(auth)
+      .send({ variantIds: [] });
+    expect(clearAssociations.status).toBe(200);
+    expect(
+      adminTryOnGarmentAssociationContract.responseSchema.parse(
+        (clearAssociations.body as ApiResponse<unknown>).data,
+      ).associatedVariantIds,
+    ).toEqual([]);
   }, 60_000);
 
   it("projects only an active confirmed explicit association at the authenticated machine catalog boundary", async () => {
@@ -667,7 +759,196 @@ describe("admin-try-on-garment-contract.e2e", { concurrent: false }, () => {
       finalAssociations,
     );
   }, 60_000);
+
+  it("rejects a stale activation after another operator activates then retires the garment", async () => {
+    const token = await loginAndGetToken(api, appConfig);
+    const auth = { Authorization: `Bearer ${token}` };
+    const productResponse = await api
+      .post("/api/products")
+      .set(auth)
+      .send({ name: "迟到激活隔离商品", status: "draft", sortOrder: 0 })
+      .expect(201);
+    const productId = (productResponse.body as ApiResponse<{ id: string }>).data
+      .id;
+    const uploadResponse = await api
+      .post(`/api${adminTryOnGarmentUploadContract.path}`)
+      .set(auth)
+      .attach("file", rgbaPng(768, 1024, 0), {
+        filename: "lifecycle-barrier.png",
+        contentType: "image/png",
+      })
+      .expect(201);
+    const source = adminTryOnGarmentUploadContract.responseSchema.parse(
+      (uploadResponse.body as ApiResponse<unknown>).data,
+    );
+    const draftResponse = await api
+      .post(`/api${adminCreateTryOnGarmentContract.path}`)
+      .set(auth)
+      .send({
+        productId,
+        colorLabel: "黑色",
+        sourceMediaAssetId: source.id,
+        template: "tshirt_short_sleeve",
+      })
+      .expect(201);
+    const draft = adminCreateTryOnGarmentContract.responseSchema.parse(
+      (draftResponse.body as ApiResponse<unknown>).data,
+    );
+    await api
+      .post(
+        `/api${adminTryOnGarmentConfirmationContract.path.replace(":id", draft.id)}`,
+      )
+      .set(auth)
+      .send({})
+      .expect(201);
+
+    const service = app.get(TryOnGarmentsService);
+    const originalGetById = service.getById.bind(service);
+    const activationRead = deferred<void>();
+    const resumeActivation = deferred<void>();
+    let pauseOnce = true;
+    const getById = vi
+      .spyOn(service, "getById")
+      .mockImplementation(async (id) => {
+        const garment = await originalGetById(id);
+        if (pauseOnce) {
+          pauseOnce = false;
+          activationRead.resolve();
+          await resumeActivation.promise;
+        }
+        return garment;
+      });
+
+    try {
+      const lateActivation = api
+        .post(
+          `/api${adminTryOnGarmentActivationContract.path.replace(":id", draft.id)}`,
+        )
+        .set(auth)
+        .send({})
+        .then((response) => response);
+      await activationRead.promise;
+      await api
+        .post(
+          `/api${adminTryOnGarmentActivationContract.path.replace(":id", draft.id)}`,
+        )
+        .set(auth)
+        .send({})
+        .expect(201);
+      await api
+        .post(
+          `/api${adminTryOnGarmentRetirementContract.path.replace(":id", draft.id)}`,
+        )
+        .set(auth)
+        .send({})
+        .expect(201);
+      resumeActivation.resolve();
+
+      const staleResponse = await lateActivation;
+      expect(staleResponse.status).toBe(400);
+      expect((staleResponse.body as ApiResponse<unknown>).message).toBe(
+        "TRY_ON_GARMENT_ACTIVATION_INVALID",
+      );
+      const finalResponse = await api
+        .get(
+          `/api${adminGetTryOnGarmentContract.path.replace(":id", draft.id)}`,
+        )
+        .set(auth)
+        .expect(200);
+      expect(
+        adminGetTryOnGarmentContract.responseSchema.parse(
+          (finalResponse.body as ApiResponse<unknown>).data,
+        ).status,
+      ).toBe("retired");
+    } finally {
+      getById.mockRestore();
+    }
+  }, 60_000);
+
+  it("treats a stale retirement as the stable retired idempotency result", async () => {
+    const token = await loginAndGetToken(api, appConfig);
+    const auth = { Authorization: `Bearer ${token}` };
+    const product = await api
+      .post("/api/products")
+      .set(auth)
+      .send({ name: "迟到退休隔离商品", status: "draft", sortOrder: 0 })
+      .expect(201);
+    const productId = (product.body as ApiResponse<{ id: string }>).data.id;
+    const upload = await api
+      .post(`/api${adminTryOnGarmentUploadContract.path}`)
+      .set(auth)
+      .attach("file", rgbaPng(768, 1024, 0), {
+        filename: "late-retirement.png",
+        contentType: "image/png",
+      })
+      .expect(201);
+    const source = adminTryOnGarmentUploadContract.responseSchema.parse(
+      (upload.body as ApiResponse<unknown>).data,
+    );
+    const created = await api
+      .post(`/api${adminCreateTryOnGarmentContract.path}`)
+      .set(auth)
+      .send({
+        productId,
+        colorLabel: "黑色",
+        sourceMediaAssetId: source.id,
+        template: "tshirt_short_sleeve",
+      })
+      .expect(201);
+    const garment = adminCreateTryOnGarmentContract.responseSchema.parse(
+      (created.body as ApiResponse<unknown>).data,
+    );
+    const confirmationPath = `/api${adminTryOnGarmentConfirmationContract.path.replace(":id", garment.id)}`;
+    const activationPath = `/api${adminTryOnGarmentActivationContract.path.replace(":id", garment.id)}`;
+    const retirementPath = `/api${adminTryOnGarmentRetirementContract.path.replace(":id", garment.id)}`;
+    await api.post(confirmationPath).set(auth).send({}).expect(201);
+    await api.post(activationPath).set(auth).send({}).expect(201);
+
+    const service = app.get(TryOnGarmentsService);
+    const originalGetById = service.getById.bind(service);
+    const retirementRead = deferred<void>();
+    const resumeRetirement = deferred<void>();
+    let pauseOnce = true;
+    const getById = vi
+      .spyOn(service, "getById")
+      .mockImplementation(async (id) => {
+        const current = await originalGetById(id);
+        if (pauseOnce) {
+          pauseOnce = false;
+          retirementRead.resolve();
+          await resumeRetirement.promise;
+        }
+        return current;
+      });
+    try {
+      const lateRetirement = api
+        .post(retirementPath)
+        .set(auth)
+        .send({})
+        .then((response) => response);
+      await retirementRead.promise;
+      await api.post(retirementPath).set(auth).send({}).expect(201);
+      resumeRetirement.resolve();
+      const idempotentResponse = await lateRetirement;
+      expect(idempotentResponse.status).toBe(201);
+      expect(
+        adminTryOnGarmentRetirementContract.responseSchema.parse(
+          (idempotentResponse.body as ApiResponse<unknown>).data,
+        ).status,
+      ).toBe("retired");
+    } finally {
+      getById.mockRestore();
+    }
+  }, 60_000);
 });
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve;
+  });
+  return { promise, resolve };
+}
 
 function rgbaPng(width: number, height: number, alpha: number): Buffer {
   const ihdr = Buffer.alloc(13);

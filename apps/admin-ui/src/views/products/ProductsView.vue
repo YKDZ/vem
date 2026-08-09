@@ -22,6 +22,7 @@ import {
   activateTryOnGarment,
   confirmTryOnGarment,
   createTryOnGarmentDraft,
+  listTryOnGarmentsByProduct,
   replaceTryOnGarmentSource,
   replaceTryOnGarmentVariantAssociations,
   retireTryOnGarment,
@@ -153,6 +154,8 @@ const tryOnGarmentModalOpen = ref(false);
 const tryOnGarmentProduct = ref<Product | null>(null);
 const tryOnGarmentAsset = ref<TryOnGarmentMediaAsset | null>(null);
 const tryOnGarmentDraft = ref<TryOnGarmentResponse | null>(null);
+const tryOnGarmentChoices = ref<TryOnGarmentResponse[]>([]);
+const tryOnGarmentChoiceId = ref<string | undefined>(undefined);
 const tryOnGarmentColorLabel = ref("");
 const tryOnGarmentTemplate = ref<"tshirt_short_sleeve" | "tshirt_long_sleeve">(
   "tshirt_short_sleeve",
@@ -174,6 +177,8 @@ async function openTryOnGarmentDraft(product: Product): Promise<void> {
   tryOnGarmentProduct.value = product;
   tryOnGarmentAsset.value = null;
   tryOnGarmentDraft.value = null;
+  tryOnGarmentChoices.value = [];
+  tryOnGarmentChoiceId.value = undefined;
   tryOnGarmentColorLabel.value = "";
   tryOnGarmentTemplate.value = "tshirt_short_sleeve";
   tryOnGarmentPreviewFailed.value = false;
@@ -183,10 +188,31 @@ async function openTryOnGarmentDraft(product: Product): Promise<void> {
   tryOnGarmentFeedback.value = "上传透明 PNG 后，系统会显示确定性校验结果。";
   tryOnGarmentModalOpen.value = true;
   try {
-    tryOnGarmentVariants.value = (await listProductVariants(product.id)).items;
+    const [variants, garments] = await Promise.all([
+      listProductVariants(product.id),
+      listTryOnGarmentsByProduct(product.id),
+    ]);
+    tryOnGarmentVariants.value = variants.items;
+    tryOnGarmentChoices.value = garments;
+    const existing = garments.at(-1);
+    if (existing) selectTryOnGarment(existing.id);
   } catch (error) {
-    tryOnGarmentFeedback.value = `无法加载尺码影响范围：${errorMessage(error)}`;
+    tryOnGarmentFeedback.value = `无法恢复试衣源：${errorMessage(error)}`;
   }
+}
+
+function selectTryOnGarment(id: string): void {
+  const garment = tryOnGarmentChoices.value.find((item) => item.id === id);
+  if (!garment) return;
+  tryOnGarmentChoiceId.value = id;
+  tryOnGarmentDraft.value = garment;
+  tryOnGarmentAsset.value = garment.sourceMediaAsset;
+  tryOnGarmentColorLabel.value = garment.colorLabel;
+  tryOnGarmentTemplate.value = garment.template;
+  tryOnGarmentVariantIds.value = [...garment.associatedVariantIds];
+  tryOnGarmentPreviewFailed.value = false;
+  tryOnGarmentPreviewReady.value = true;
+  tryOnGarmentFeedback.value = "已从服务端恢复共享试衣源。";
 }
 
 async function onTryOnGarmentSelected(event: Event): Promise<void> {
@@ -333,6 +359,12 @@ function errorMessage(error: unknown): string {
     if (typeof message === "string" && message) return message;
   }
   return error instanceof Error ? error.message : "请求失败";
+}
+
+function isTryOnGarmentFeedbackError(): boolean {
+  return /^(无法|校验失败|创建失败|确认失败|激活失败|关联失败|退休失败)/.test(
+    tryOnGarmentFeedback.value,
+  );
 }
 
 // Variants
@@ -699,6 +731,20 @@ watch(
         <a-form-item label="商品">
           <a-input :value="tryOnGarmentProduct?.name" disabled />
         </a-form-item>
+        <a-form-item v-if="tryOnGarmentChoices.length" label="已有试衣源">
+          <a-select
+            v-model:value="tryOnGarmentChoiceId"
+            @change="selectTryOnGarment"
+          >
+            <a-select-option
+              v-for="garment in tryOnGarmentChoices"
+              :key="garment.id"
+              :value="garment.id"
+            >
+              {{ garment.colorLabel }} · {{ garment.status }}
+            </a-select-option>
+          </a-select>
+        </a-form-item>
         <a-form-item label="可见颜色">
           <a-input
             v-model:value="tryOnGarmentColorLabel"
@@ -780,7 +826,7 @@ watch(
         <a-alert
           v-if="tryOnGarmentFeedback"
           :message="tryOnGarmentFeedback"
-          type="info"
+          :type="isTryOnGarmentFeedbackError() ? 'error' : 'info'"
           show-icon
           class="mb-4"
         />
@@ -826,7 +872,6 @@ watch(
             v-if="tryOnGarmentDraft?.status === 'active'"
             type="primary"
             :loading="tryOnGarmentAssociating"
-            :disabled="tryOnGarmentVariantIds.length === 0"
             @click="saveTryOnGarmentAssociations"
           >
             保存共享尺码关联

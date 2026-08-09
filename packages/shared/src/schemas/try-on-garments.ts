@@ -12,6 +12,7 @@ import {
 const noQuerySchema = z.strictObject({});
 const noBodySchema = z.strictObject({});
 const garmentPathParamsSchema = z.strictObject({ id: z.uuid() });
+const garmentListQuerySchema = z.strictObject({ productId: z.uuid() });
 
 /**
  * The upload operation is transported as multipart in the browser and is
@@ -42,7 +43,7 @@ export const tryOnGarmentDraftRequestSchema = z.strictObject({
 
 /** Association, not product metadata, is the sole eligibility authority. */
 export const tryOnGarmentVariantAssociationRequestSchema = z.strictObject({
-  variantIds: z.array(z.uuid()).min(1).max(256),
+  variantIds: z.array(z.uuid()).max(256),
 });
 
 export const tryOnGarmentSourceReplacementRequestSchema = z.strictObject({
@@ -64,6 +65,9 @@ export const tryOnGarmentResponseSchema = z.strictObject({
   updatedAt: z.string(),
   deletedAt: z.string().nullable(),
 });
+export const tryOnGarmentListResponseSchema = z
+  .array(tryOnGarmentResponseSchema)
+  .max(256);
 
 export const adminTryOnGarmentUploadContract = defineAdminEndpointContract({
   method: "POST",
@@ -91,6 +95,18 @@ export const adminGetTryOnGarmentContract = defineAdminEndpointContract({
   bodySchema: noBodySchema,
   responseSchema: tryOnGarmentResponseSchema,
 });
+
+/** Product management rehydrates its shared sources from the server, rather
+ * than treating a closed modal as the source of truth. */
+export const adminListTryOnGarmentsByProductContract =
+  defineAdminEndpointContract({
+    method: "GET",
+    path: "/try-on-garments",
+    pathParamsSchema: z.strictObject({}),
+    querySchema: garmentListQuerySchema,
+    bodySchema: noBodySchema,
+    responseSchema: tryOnGarmentListResponseSchema,
+  });
 
 export const adminTryOnGarmentConfirmationContract =
   defineAdminEndpointContract({
@@ -155,4 +171,5 @@ export type TryOnGarmentVariantAssociationRequest = z.infer<
 export type TryOnGarmentSourceReplacementRequest = z.infer<
   typeof tryOnGarmentSourceReplacementRequestSchema
 >;
+export type TryOnGarmentListQuery = z.infer<typeof garmentListQuerySchema>;
 export type TryOnGarmentResponse = z.infer<typeof tryOnGarmentResponseSchema>;

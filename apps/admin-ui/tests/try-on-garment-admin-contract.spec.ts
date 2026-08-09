@@ -122,6 +122,106 @@ test.describe("Try-On Garment Admin UI contract", () => {
     ]);
     expect(activationResponse.ok()).toBe(true);
     await expect(modal.getByText("共享尺码影响范围")).toBeVisible();
+
+    // Closing or refreshing the operator surface must not discard the shared
+    // source identity.  Reopen it from the product, then exercise the
+    // remaining server-backed lifecycle operations.
+    await modal.getByRole("button", { name: /取\s*消/ }).click();
+    await row.getByRole("button", { name: "新增试衣源" }).click();
+    const restoredModal = page
+      .locator(".ant-modal")
+      .filter({ hasText: "新增 Try-On Garment 草稿" });
+    await expect(
+      restoredModal.getByText("已从服务端恢复共享试衣源。"),
+    ).toBeVisible();
+    await expect(
+      formItem(restoredModal, "可见颜色").locator("input"),
+    ).toHaveValue("海军蓝");
+    const restoredPreview = restoredModal.getByAltText(
+      "Try-On Garment 来源预览",
+    );
+    await expect(restoredPreview).toHaveAttribute(
+      "src",
+      new RegExp(draft.sourceMediaAsset.id),
+    );
+
+    const [invalidReplacement] = await Promise.all([
+      page.waitForResponse(
+        (response) =>
+          response.url().endsWith("/api/media-assets/try-on-garments") &&
+          response.request().method() === "POST",
+      ),
+      restoredModal.locator("input[type='file']").setInputFiles({
+        name: "opaque-replacement.png",
+        mimeType: "image/png",
+        buffer: rgbaPng(512, 512, 255),
+      }),
+    ]);
+    expect(invalidReplacement.status()).toBe(400);
+    await expect(restoredModal.locator(".ant-alert-error")).toBeVisible();
+    await expect(restoredPreview).toHaveAttribute(
+      "src",
+      new RegExp(draft.sourceMediaAsset.id),
+    );
+    await expect
+      .poll(() => [...monitor.failures])
+      .toEqual(
+        expect.arrayContaining([
+          expect.stringContaining("response: 400"),
+          expect.stringContaining("TRY_ON_GARMENT_TRANSPARENCY_REQUIRED"),
+        ]),
+      );
+    expect(
+      monitor.failures.every(
+        (failure) =>
+          failure.includes("/api/media-assets/try-on-garments") ||
+          failure.includes("TRY_ON_GARMENT_TRANSPARENCY_REQUIRED") ||
+          failure.includes("Failed to load resource"),
+      ),
+    ).toBe(true);
+    monitor.failures.splice(0, monitor.failures.length);
+
+    const [replacementUpload, replacementPatch] = await Promise.all([
+      page.waitForResponse(
+        (response) =>
+          response.url().endsWith("/api/media-assets/try-on-garments") &&
+          response.request().method() === "POST",
+      ),
+      page.waitForResponse(
+        (response) =>
+          response.url().endsWith(`/api/try-on-garments/${draft.id}/source`) &&
+          response.request().method() === "PATCH",
+      ),
+      restoredModal.locator("input[type='file']").setInputFiles({
+        name: "replacement.png",
+        mimeType: "image/png",
+        buffer: rgbaPng(768, 1024, 0),
+      }),
+    ]);
+    expect(replacementUpload.ok()).toBe(true);
+    expect(replacementPatch.ok()).toBe(true);
+    await Promise.all([
+      page.waitForResponse(
+        (response) =>
+          response
+            .url()
+            .endsWith(
+              `/api/try-on-garments/${draft.id}/variant-associations`,
+            ) && response.request().method() === "PUT",
+      ),
+      restoredModal.getByRole("button", { name: "保存共享尺码关联" }).click(),
+    ]);
+    await Promise.all([
+      page.waitForResponse(
+        (response) =>
+          response
+            .url()
+            .endsWith(`/api/try-on-garments/${draft.id}/retirement`) &&
+          response.request().method() === "POST",
+      ),
+      restoredModal.getByRole("button", { name: "退休" }).click(),
+    ]);
+    await expect(restoredModal.getByText(/Garment 已退休/)).toBeVisible();
     await monitor.assertNoFailures();
   });
 
@@ -156,6 +256,7 @@ test.describe("Try-On Garment Admin UI contract", () => {
     await expect(
       modal.getByText(/TRY_ON_GARMENT_TRANSPARENCY_REQUIRED/),
     ).toBeVisible();
+    await expect(modal.locator(".ant-alert-error")).toBeVisible();
   });
 });
 

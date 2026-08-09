@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   adminCreateTryOnGarmentContract,
   adminGetTryOnGarmentContract,
+  adminListTryOnGarmentsByProductContract,
   adminTryOnGarmentUploadContract,
   adminTryOnGarmentConfirmationContract,
   adminTryOnGarmentActivationContract,
@@ -79,7 +80,7 @@ describe("Try-On Garment Admin Endpoint Contracts", () => {
     ).toThrow();
   });
 
-  it("binds confirmation and retrieval path parameters, request, and response", () => {
+  it("binds confirmation, retrieval, and product management list boundaries", () => {
     expect(adminTryOnGarmentConfirmationContract.method).toBe("POST");
     expect(adminTryOnGarmentConfirmationContract.path).toBe(
       "/try-on-garments/:id/confirmation",
@@ -95,6 +96,15 @@ describe("Try-On Garment Admin Endpoint Contracts", () => {
     expect(adminGetTryOnGarmentContract.pathParamsSchema.parse({ id })).toEqual(
       { id },
     );
+    expect(adminListTryOnGarmentsByProductContract.method).toBe("GET");
+    expect(adminListTryOnGarmentsByProductContract.path).toBe(
+      "/try-on-garments",
+    );
+    expect(
+      adminListTryOnGarmentsByProductContract.querySchema.parse({
+        productId: id,
+      }),
+    ).toEqual({ productId: id });
   });
 
   it("defines an explicit confirmed-draft activation boundary", () => {
@@ -122,9 +132,9 @@ describe("Try-On Garment Admin Endpoint Contracts", () => {
     ).toEqual({
       variantIds: [id, "550e8400-e29b-41d4-a716-446655440125"],
     });
-    expect(() =>
+    expect(
       adminTryOnGarmentAssociationContract.bodySchema.parse({ variantIds: [] }),
-    ).toThrow();
+    ).toEqual({ variantIds: [] });
 
     expect(adminTryOnGarmentSourceReplacementContract.method).toBe("PATCH");
     expect(adminTryOnGarmentSourceReplacementContract.path).toBe(

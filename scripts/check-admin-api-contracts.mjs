@@ -221,13 +221,104 @@ function helperCalls(functionSource) {
 }
 
 const TRY_ON_CONTRACT_NAMES = [
+  "adminProductDisplayImageUploadContract",
+  "adminListProductsContract",
+  "adminCreateProductContract",
+  "adminUpdateProductContract",
+  "adminListProductVariantsContract",
+  "adminCreateProductVariantContract",
+  "adminUpdateProductVariantContract",
   "adminTryOnGarmentUploadContract",
   "adminCreateTryOnGarmentContract",
   "adminGetTryOnGarmentContract",
+  "adminListTryOnGarmentsByProductContract",
   "adminTryOnGarmentConfirmationContract",
+  "adminTryOnGarmentActivationContract",
+  "adminTryOnGarmentRetirementContract",
+  "adminTryOnGarmentAssociationContract",
+  "adminTryOnGarmentSourceReplacementContract",
 ];
 
 const TRY_ON_CONTRACT_EXPECTATIONS = {
+  adminProductDisplayImageUploadContract: {
+    method: "POST",
+    path: "/media-assets/product-display-images",
+    providerMethod: "uploadProductDisplayImage",
+    callerMethods: ["uploadProductDisplayImage"],
+    schemaReferences: { responseSchema: ["adminMediaAssetSummarySchema"] },
+  },
+  adminListProductsContract: {
+    method: "GET",
+    path: "/products",
+    providerMethod: "listProducts",
+    callerMethods: ["listProducts"],
+    schemaReferences: {
+      pathParamsSchema: ["noProductPathParamsSchema"],
+      querySchema: ["adminProductListQuerySchema"],
+      bodySchema: ["noProductBodySchema"],
+      responseSchema: ["adminProductPageResponseSchema"],
+    },
+  },
+  adminCreateProductContract: {
+    method: "POST",
+    path: "/products",
+    providerMethod: "createProduct",
+    callerMethods: ["createProduct"],
+    schemaReferences: {
+      pathParamsSchema: ["noProductPathParamsSchema"],
+      querySchema: ["noProductQuerySchema"],
+      bodySchema: ["createProductSchema"],
+      responseSchema: ["adminProductResponseSchema"],
+    },
+  },
+  adminUpdateProductContract: {
+    method: "PATCH",
+    path: "/products/:id",
+    providerMethod: "updateProduct",
+    callerMethods: ["updateProduct"],
+    schemaReferences: {
+      pathParamsSchema: ["productIdPathParamsSchema"],
+      querySchema: ["noProductQuerySchema"],
+      bodySchema: ["updateProductSchema"],
+      responseSchema: ["adminProductResponseSchema"],
+    },
+  },
+  adminListProductVariantsContract: {
+    method: "GET",
+    path: "/product-variants",
+    providerMethod: "listVariants",
+    callerMethods: ["listProductVariants"],
+    schemaReferences: {
+      pathParamsSchema: ["noProductPathParamsSchema"],
+      querySchema: ["adminProductVariantListQuerySchema"],
+      bodySchema: ["noProductBodySchema"],
+      responseSchema: ["adminProductVariantPageResponseSchema"],
+    },
+  },
+  adminCreateProductVariantContract: {
+    method: "POST",
+    path: "/product-variants",
+    providerMethod: "createVariant",
+    callerMethods: ["createProductVariant"],
+    schemaReferences: {
+      pathParamsSchema: ["noProductPathParamsSchema"],
+      querySchema: ["noProductQuerySchema"],
+      bodySchema: ["createProductVariantSchema"],
+      responseSchema: ["adminProductVariantResponseSchema"],
+    },
+  },
+  adminUpdateProductVariantContract: {
+    method: "PATCH",
+    path: "/product-variants/:id",
+    providerMethod: "updateVariant",
+    callerMethods: ["updateProductVariant"],
+    schemaReferences: {
+      pathParamsSchema: ["productIdPathParamsSchema"],
+      querySchema: ["noProductQuerySchema"],
+      bodySchema: ["updateProductVariantSchema"],
+      responseSchema: ["adminProductVariantResponseSchema"],
+    },
+  },
   adminTryOnGarmentUploadContract: {
     method: "POST",
     path: "/media-assets/try-on-garments",
@@ -261,6 +352,17 @@ const TRY_ON_CONTRACT_EXPECTATIONS = {
       responseSchema: ["tryOnGarmentResponseSchema"],
     },
   },
+  adminListTryOnGarmentsByProductContract: {
+    method: "GET",
+    path: "/try-on-garments",
+    providerMethod: "listByProduct",
+    callerMethods: ["listTryOnGarmentsByProduct"],
+    schemaReferences: {
+      querySchema: ["garmentListQuerySchema"],
+      bodySchema: ["noBodySchema"],
+      responseSchema: ["tryOnGarmentListResponseSchema"],
+    },
+  },
   adminTryOnGarmentConfirmationContract: {
     method: "POST",
     path: "/try-on-garments/:id/confirmation",
@@ -270,6 +372,54 @@ const TRY_ON_CONTRACT_EXPECTATIONS = {
       pathParamsSchema: ["garmentPathParamsSchema"],
       querySchema: ["noQuerySchema"],
       bodySchema: ["noBodySchema"],
+      responseSchema: ["tryOnGarmentResponseSchema"],
+    },
+  },
+  adminTryOnGarmentActivationContract: {
+    method: "POST",
+    path: "/try-on-garments/:id/activation",
+    providerMethod: "activate",
+    callerMethods: ["activateTryOnGarment"],
+    schemaReferences: {
+      pathParamsSchema: ["garmentPathParamsSchema"],
+      querySchema: ["noQuerySchema"],
+      bodySchema: ["noBodySchema"],
+      responseSchema: ["tryOnGarmentResponseSchema"],
+    },
+  },
+  adminTryOnGarmentRetirementContract: {
+    method: "POST",
+    path: "/try-on-garments/:id/retirement",
+    providerMethod: "retire",
+    callerMethods: ["retireTryOnGarment"],
+    schemaReferences: {
+      pathParamsSchema: ["garmentPathParamsSchema"],
+      querySchema: ["noQuerySchema"],
+      bodySchema: ["noBodySchema"],
+      responseSchema: ["tryOnGarmentResponseSchema"],
+    },
+  },
+  adminTryOnGarmentAssociationContract: {
+    method: "PUT",
+    path: "/try-on-garments/:id/variant-associations",
+    providerMethod: "replaceVariantAssociations",
+    callerMethods: ["replaceTryOnGarmentVariantAssociations"],
+    schemaReferences: {
+      pathParamsSchema: ["garmentPathParamsSchema"],
+      querySchema: ["noQuerySchema"],
+      bodySchema: ["tryOnGarmentVariantAssociationRequestSchema"],
+      responseSchema: ["tryOnGarmentResponseSchema"],
+    },
+  },
+  adminTryOnGarmentSourceReplacementContract: {
+    method: "PATCH",
+    path: "/try-on-garments/:id/source",
+    providerMethod: "replaceSource",
+    callerMethods: ["replaceTryOnGarmentSource"],
+    schemaReferences: {
+      pathParamsSchema: ["garmentPathParamsSchema"],
+      querySchema: ["noQuerySchema"],
+      bodySchema: ["tryOnGarmentSourceReplacementRequestSchema"],
       responseSchema: ["tryOnGarmentResponseSchema"],
     },
   },
@@ -314,57 +464,61 @@ function decoratorCall(decorator) {
 }
 
 function contractDefinitions(root) {
-  const path = "packages/shared/src/schemas/try-on-garments.ts";
-  if (!pathExists(root, path)) return new Map();
-  const source = readText(root, path);
-  const file = parseTypeScript(path, source);
   const definitions = new Map();
-  file.forEachChild((statement) => {
-    if (!ts.isVariableStatement(statement)) return;
-    for (const declaration of statement.declarationList.declarations) {
-      if (!ts.isIdentifier(declaration.name)) continue;
-      if (
-        !declaration.initializer ||
-        !ts.isCallExpression(declaration.initializer) ||
-        !ts.isIdentifier(declaration.initializer.expression) ||
-        declaration.initializer.expression.text !==
-          "defineAdminEndpointContract"
-      ) {
-        continue;
-      }
-      const argument = declaration.initializer.arguments[0];
-      if (!argument || !ts.isObjectLiteralExpression(argument)) continue;
-      const values = {};
-      const invalidSchemaFields = new Set();
-      for (const property of argument.properties) {
-        const propertyName =
-          ts.isPropertyAssignment(property) ||
-          ts.isShorthandPropertyAssignment(property)
-            ? ts.isIdentifier(property.name)
-              ? property.name.text
-              : ts.isStringLiteral(property.name)
-                ? property.name.text
-                : undefined
-            : undefined;
-        if (!propertyName) continue;
-        values[propertyName] = ts.isShorthandPropertyAssignment(property)
-          ? property.name
-          : property.initializer;
+  for (const path of [
+    "packages/shared/src/schemas/products.ts",
+    "packages/shared/src/schemas/try-on-garments.ts",
+  ]) {
+    if (!pathExists(root, path)) continue;
+    const source = readText(root, path);
+    const file = parseTypeScript(path, source);
+    file.forEachChild((statement) => {
+      if (!ts.isVariableStatement(statement)) return;
+      for (const declaration of statement.declarationList.declarations) {
+        if (!ts.isIdentifier(declaration.name)) continue;
         if (
-          [
-            "pathParamsSchema",
-            "querySchema",
-            "bodySchema",
-            "responseSchema",
-          ].includes(propertyName) &&
-          isUnknownSchemaExpression(values[propertyName])
+          !declaration.initializer ||
+          !ts.isCallExpression(declaration.initializer) ||
+          !ts.isIdentifier(declaration.initializer.expression) ||
+          declaration.initializer.expression.text !==
+            "defineAdminEndpointContract"
         ) {
-          invalidSchemaFields.add(propertyName);
+          continue;
         }
+        const argument = declaration.initializer.arguments[0];
+        if (!argument || !ts.isObjectLiteralExpression(argument)) continue;
+        const values = {};
+        const invalidSchemaFields = new Set();
+        for (const property of argument.properties) {
+          const propertyName =
+            ts.isPropertyAssignment(property) ||
+            ts.isShorthandPropertyAssignment(property)
+              ? ts.isIdentifier(property.name)
+                ? property.name.text
+                : ts.isStringLiteral(property.name)
+                  ? property.name.text
+                  : undefined
+              : undefined;
+          if (!propertyName) continue;
+          values[propertyName] = ts.isShorthandPropertyAssignment(property)
+            ? property.name
+            : property.initializer;
+          if (
+            [
+              "pathParamsSchema",
+              "querySchema",
+              "bodySchema",
+              "responseSchema",
+            ].includes(propertyName) &&
+            isUnknownSchemaExpression(values[propertyName])
+          ) {
+            invalidSchemaFields.add(propertyName);
+          }
+        }
+        definitions.set(declaration.name.text, { values, invalidSchemaFields });
       }
-      definitions.set(declaration.name.text, { values, invalidSchemaFields });
-    }
-  });
+    });
+  }
   return definitions;
 }
 

@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -18,6 +24,25 @@ function withFixture(files, callback) {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+}
+
+function completeCatalogContractFixture() {
+  const workspace = process.cwd();
+  const paths = [
+    "packages/shared/src/schemas/products.ts",
+    "packages/shared/src/schemas/try-on-garments.ts",
+    "apps/service-api/src/products/products.controller.ts",
+    "apps/service-api/src/products/products.module.ts",
+    "apps/service-api/src/media-assets/media-assets.controller.ts",
+    "apps/service-api/src/media-assets/media-assets.module.ts",
+    "apps/service-api/src/try-on-garments/try-on-garments.controller.ts",
+    "apps/service-api/src/try-on-garments/try-on-garments.module.ts",
+    "apps/admin-ui/src/api/products.ts",
+    "apps/admin-ui/src/api/try-on-garments.ts",
+  ];
+  return Object.fromEntries(
+    paths.map((path) => [path, readFileSync(join(workspace, path), "utf8")]),
+  );
 }
 
 describe("admin api contract guard", () => {
@@ -78,6 +103,48 @@ describe("admin api contract guard", () => {
       assert.match(
         result.failures.join("\n"),
         /try-on endpoint contract provider missing: adminCreateTryOnGarmentContract/,
+      );
+    });
+  });
+
+  it("enumerates every Product, Variant, media, and garment contract", () => {
+    withFixture(completeCatalogContractFixture(), (root) => {
+      const result = checkAdminApiContracts({ root });
+      assert.equal(result.ok, true, result.failures.join("\n"));
+      assert.equal(result.tryOnCoverage.callerHits.length, 16);
+      assert.equal(result.tryOnCoverage.providerHits.length, 16);
+    });
+  });
+
+  it("fails when one catalog contract is deleted or a caller bypasses it", () => {
+    const missingContract = completeCatalogContractFixture();
+    missingContract["packages/shared/src/schemas/try-on-garments.ts"] =
+      missingContract["packages/shared/src/schemas/try-on-garments.ts"].replace(
+        "export const adminTryOnGarmentRetirementContract =",
+        "export const removedTryOnGarmentRetirementContract =",
+      );
+    withFixture(missingContract, (root) => {
+      const result = checkAdminApiContracts({ root });
+      assert.equal(result.ok, false);
+      assert.match(
+        result.failures.join("\n"),
+        /try-on contract definition missing: adminTryOnGarmentRetirementContract/,
+      );
+    });
+
+    const directHelper = completeCatalogContractFixture();
+    directHelper["apps/admin-ui/src/api/try-on-garments.ts"] = directHelper[
+      "apps/admin-ui/src/api/try-on-garments.ts"
+    ].replace(
+      "return await callAdminEndpointContract(adminTryOnGarmentActivationContract, {",
+      'return await patch("/try-on-garments/" + id, {',
+    );
+    withFixture(directHelper, (root) => {
+      const result = checkAdminApiContracts({ root });
+      assert.equal(result.ok, false);
+      assert.match(
+        result.failures.join("\n"),
+        /try-on endpoint contract caller missing: adminTryOnGarmentActivationContract/,
       );
     });
   });

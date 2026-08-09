@@ -3,6 +3,7 @@ import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import {
   adminCreateTryOnGarmentContract,
   adminGetTryOnGarmentContract,
+  adminListTryOnGarmentsByProductContract,
   adminTryOnGarmentConfirmationContract,
   adminTryOnGarmentActivationContract,
   adminTryOnGarmentAssociationContract,
@@ -48,6 +49,19 @@ export class TryOnGarmentsController {
     _query: Record<string, never>,
   ) {
     return await this.tryOnGarmentsService.getById(params.id);
+  }
+
+  @RequirePermissions("products.read")
+  @AdminEndpointContract(adminListTryOnGarmentsByProductContract)
+  async listByProduct(
+    @Query(
+      new ZodValidationPipe(
+        adminListTryOnGarmentsByProductContract.querySchema,
+      ),
+    )
+    query: { productId: string },
+  ) {
+    return await this.tryOnGarmentsService.listByProduct(query.productId);
   }
 
   @RequirePermissions("products.write")

@@ -3,6 +3,7 @@ import { METHOD_METADATA, PATH_METADATA } from "@nestjs/common/constants";
 import {
   adminCreateTryOnGarmentContract,
   adminGetTryOnGarmentContract,
+  adminListTryOnGarmentsByProductContract,
   adminTryOnGarmentConfirmationContract,
   adminTryOnGarmentActivationContract,
   adminTryOnGarmentAssociationContract,
@@ -18,6 +19,7 @@ describe("TryOnGarmentsController endpoint binding", () => {
   it.each([
     ["createDraft", adminCreateTryOnGarmentContract],
     ["getById", adminGetTryOnGarmentContract],
+    ["listByProduct", adminListTryOnGarmentsByProductContract],
     ["confirm", adminTryOnGarmentConfirmationContract],
     ["activate", adminTryOnGarmentActivationContract],
     ["retire", adminTryOnGarmentRetirementContract],

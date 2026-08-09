@@ -392,9 +392,7 @@ export const productVariants = t.pgTable(
     priceCents: t.integer("price_cents").notNull(),
     costCents: t.integer("cost_cents"),
     /** An explicit association is the only try-on eligibility authority. */
-    tryOnGarmentId: t
-      .uuid("try_on_garment_id")
-      .references(() => tryOnGarments.id),
+    tryOnGarmentId: t.uuid("try_on_garment_id"),
     status: variantStatus("status").default("active").notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -405,6 +403,11 @@ export const productVariants = t.pgTable(
     t.index("product_variants_product_id_idx").on(table.productId),
     t.index("product_variants_status_idx").on(table.status),
     t.index("product_variants_try_on_garment_id_idx").on(table.tryOnGarmentId),
+    t.foreignKey({
+      columns: [table.tryOnGarmentId, table.productId],
+      foreignColumns: [tryOnGarments.id, tryOnGarments.productId],
+      name: "product_variants_try_on_garment_product_id_fkey",
+    }),
     t.check(
       "product_variants_price_cents_non_negative",
       sql`${table.priceCents} >= 0`,
@@ -441,6 +444,9 @@ export const tryOnGarments = t.pgTable(
     deletedAt: deletedAt(),
   },
   (table) => [
+    t
+      .unique("try_on_garments_id_product_id_unique")
+      .on(table.id, table.productId),
     t.index("try_on_garments_product_id_idx").on(table.productId),
     t
       .index("try_on_garments_source_media_asset_id_idx")

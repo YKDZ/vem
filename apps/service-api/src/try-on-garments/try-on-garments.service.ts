@@ -16,6 +16,7 @@ import {
   and,
   eq,
   isNull,
+  isNotNull,
   inArray,
   mediaAssets,
   or,
@@ -101,6 +102,46 @@ export class TryOnGarmentsService {
     );
   }
 
+  async listByProduct(productId: string): Promise<TryOnGarmentResponse[]> {
+    const rows = await this.db
+      .select({ garment: tryOnGarments, sourceMediaAsset: mediaAssets })
+      .from(tryOnGarments)
+      .innerJoin(
+        mediaAssets,
+        eq(mediaAssets.id, tryOnGarments.sourceMediaAssetId),
+      )
+      .where(
+        and(
+          eq(tryOnGarments.productId, productId),
+          isNull(tryOnGarments.deletedAt),
+        ),
+      )
+      .orderBy(tryOnGarments.createdAt);
+    if (rows.length === 0) return [];
+    const garmentIds = rows.map((row) => row.garment.id);
+    const associations = await this.db
+      .select({
+        garmentId: productVariants.tryOnGarmentId,
+        id: productVariants.id,
+      })
+      .from(productVariants)
+      .where(
+        and(
+          inArray(productVariants.tryOnGarmentId, garmentIds),
+          isNull(productVariants.deletedAt),
+        ),
+      );
+    return rows.map((row) =>
+      toTryOnGarmentResponse(
+        row.garment,
+        toTryOnGarmentMediaAsset(row.sourceMediaAsset),
+        associations
+          .filter((association) => association.garmentId === row.garment.id)
+          .map((association) => association.id),
+      ),
+    );
+  }
+
   async confirm(
     id: string,
     adminUserId: string,
@@ -146,9 +187,16 @@ export class TryOnGarmentsService {
       const [active] = await tx
         .update(tryOnGarments)
         .set({ status: "active", updatedAt: new Date() })
-        .where(and(eq(tryOnGarments.id, id), isNull(tryOnGarments.deletedAt)))
+        .where(
+          and(
+            eq(tryOnGarments.id, id),
+            eq(tryOnGarments.status, "draft"),
+            isNotNull(tryOnGarments.confirmedAt),
+            isNull(tryOnGarments.deletedAt),
+          ),
+        )
         .returning();
-      if (!active) throw new NotFoundException("Try-On Garment not found");
+      if (!active) return null;
       await this.auditService.record(
         {
           adminUserId,
@@ -162,6 +210,14 @@ export class TryOnGarmentsService {
       );
       return active;
     });
+    if (!updated) {
+      const latest = await this.getById(id);
+      if (latest.status === "active") return latest;
+      if (!latest.confirmedAt) {
+        throw new BadRequestException("TRY_ON_GARMENT_CONFIRMATION_REQUIRED");
+      }
+      throw new BadRequestException("TRY_ON_GARMENT_ACTIVATION_INVALID");
+    }
     return toTryOnGarmentResponse(updated, garment.sourceMediaAsset);
   }
 
@@ -175,9 +231,15 @@ export class TryOnGarmentsService {
       const [retired] = await tx
         .update(tryOnGarments)
         .set({ status: "retired", updatedAt: new Date() })
-        .where(and(eq(tryOnGarments.id, id), isNull(tryOnGarments.deletedAt)))
+        .where(
+          and(
+            eq(tryOnGarments.id, id),
+            eq(tryOnGarments.status, "active"),
+            isNull(tryOnGarments.deletedAt),
+          ),
+        )
         .returning();
-      if (!retired) throw new NotFoundException("Try-On Garment not found");
+      if (!retired) return null;
       await this.auditService.record(
         {
           adminUserId,
@@ -194,6 +256,11 @@ export class TryOnGarmentsService {
       );
       return retired;
     });
+    if (!updated) {
+      const latest = await this.getById(id);
+      if (latest.status === "retired") return latest;
+      throw new BadRequestException("TRY_ON_GARMENT_RETIREMENT_INVALID");
+    }
     return toTryOnGarmentResponse(updated, garment.sourceMediaAsset);
   }
 
@@ -283,38 +350,54 @@ export class TryOnGarmentsService {
     input: TryOnGarmentSourceReplacementRequest,
     adminUserId: string,
   ): Promise<TryOnGarmentResponse> {
-    const current = await this.getById(id);
-    const sourceMediaAsset = await this.requireSourceMediaAsset(
-      input.sourceMediaAssetId,
+    const { garment: updated, sourceMediaAsset } = await this.db.transaction(
+      async (tx) => {
+        const [current] = await tx
+          .select({ garment: tryOnGarments })
+          .from(tryOnGarments)
+          .where(and(eq(tryOnGarments.id, id), isNull(tryOnGarments.deletedAt)))
+          .for("update", { of: tryOnGarments });
+        if (!current) throw new NotFoundException("Try-On Garment not found");
+        const [source] = await tx
+          .select()
+          .from(mediaAssets)
+          .where(
+            and(
+              eq(mediaAssets.id, input.sourceMediaAssetId),
+              eq(mediaAssets.purpose, "try_on_garment"),
+              eq(mediaAssets.contentType, "image/png"),
+              eq(mediaAssets.hasTransparency, true),
+              isNull(mediaAssets.deletedAt),
+            ),
+          )
+          .limit(1);
+        if (!source) {
+          throw new BadRequestException("TRY_ON_GARMENT_SOURCE_INVALID");
+        }
+        const [garment] = await tx
+          .update(tryOnGarments)
+          .set({
+            sourceMediaAssetId: input.sourceMediaAssetId,
+            template: input.template,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(tryOnGarments.id, id), isNull(tryOnGarments.deletedAt)))
+          .returning();
+        if (!garment) throw new NotFoundException("Try-On Garment not found");
+        await this.auditService.record(
+          {
+            adminUserId,
+            action: "try_on_garments.source.replace",
+            resourceType: "try_on_garment",
+            resourceId: id,
+            beforeJson: tryOnGarmentAuditSnapshot(current.garment),
+            afterJson: tryOnGarmentAuditSnapshot(garment),
+          },
+          tx,
+        );
+        return { garment, sourceMediaAsset: toTryOnGarmentMediaAsset(source) };
+      },
     );
-    const updated = await this.db.transaction(async (tx) => {
-      const [garment] = await tx
-        .update(tryOnGarments)
-        .set({
-          sourceMediaAssetId: input.sourceMediaAssetId,
-          template: input.template,
-          updatedAt: new Date(),
-        })
-        .where(and(eq(tryOnGarments.id, id), isNull(tryOnGarments.deletedAt)))
-        .returning();
-      if (!garment) throw new NotFoundException("Try-On Garment not found");
-      await this.auditService.record(
-        {
-          adminUserId,
-          action: "try_on_garments.source.replace",
-          resourceType: "try_on_garment",
-          resourceId: id,
-          beforeJson: tryOnGarmentAuditSnapshot({
-            ...garment,
-            sourceMediaAssetId: current.sourceMediaAsset.id,
-            template: current.template,
-          }),
-          afterJson: tryOnGarmentAuditSnapshot(garment),
-        },
-        tx,
-      );
-      return garment;
-    });
     return toTryOnGarmentResponse(updated, sourceMediaAsset);
   }
 

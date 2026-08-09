@@ -211,15 +211,50 @@ export class ProductsService {
   }
 
   async updateVariant(id: string, input: AdminUpdateProductVariantRequest) {
-    const [updated] = await this.db
-      .update(productVariants)
-      .set(mapUpdateVariantDtoToPatch(input))
-      .where(and(eq(productVariants.id, id), isNull(productVariants.deletedAt)))
-      .returning();
+    let updated;
+    try {
+      [updated] = await this.db
+        .update(productVariants)
+        .set(mapUpdateVariantDtoToPatch(input))
+        .where(
+          and(eq(productVariants.id, id), isNull(productVariants.deletedAt)),
+        )
+        .returning();
+    } catch (error) {
+      if (isTryOnGarmentProductOwnershipViolation(error)) {
+        throw new BadRequestException({
+          code: "TRY_ON_GARMENT_VARIANT_PRODUCT_MISMATCH",
+          message:
+            "A variant associated with a try-on garment cannot change product",
+        });
+      }
+      throw error;
+    }
 
     if (!updated) {
       throw new NotFoundException("Product variant not found");
     }
     return toAdminProductVariantResponse(updated);
   }
+}
+
+function isTryOnGarmentProductOwnershipViolation(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < 5; depth += 1) {
+    if (!current || typeof current !== "object") return false;
+    const maybeError = current as {
+      code?: unknown;
+      constraint?: unknown;
+      cause?: unknown;
+    };
+    if (
+      maybeError.code === "23503" &&
+      maybeError.constraint ===
+        "product_variants_try_on_garment_product_id_fkey"
+    ) {
+      return true;
+    }
+    current = maybeError.cause;
+  }
+  return false;
 }

@@ -3,6 +3,7 @@ import type { z } from "zod";
 import {
   adminCreateTryOnGarmentContract,
   adminGetTryOnGarmentContract,
+  adminListTryOnGarmentsByProductContract,
   adminTryOnGarmentConfirmationContract,
   adminTryOnGarmentActivationContract,
   adminTryOnGarmentAssociationContract,
@@ -38,6 +39,17 @@ export async function getTryOnGarment(
   return await callAdminEndpointContract(adminGetTryOnGarmentContract, {
     pathParams: { id },
   });
+}
+
+export async function listTryOnGarmentsByProduct(
+  productId: string,
+): Promise<TryOnGarmentResponse[]> {
+  return await callAdminEndpointContract(
+    adminListTryOnGarmentsByProductContract,
+    {
+      query: { productId },
+    },
+  );
 }
 
 export async function confirmTryOnGarment(

@@ -6,6 +6,7 @@ import {
   confirmTryOnGarment,
   createTryOnGarmentDraft,
   getTryOnGarment,
+  listTryOnGarmentsByProduct,
   uploadTryOnGarment,
 } from "./try-on-garments";
 
@@ -16,7 +17,7 @@ vi.mock("@/api/request", () => ({
 const id = "550e8400-e29b-41d4-a716-446655440124";
 
 describe("try-on garments api", () => {
-  it("uses complete shared endpoint contracts for upload, draft, retrieval, and confirmation", async () => {
+  it("uses complete shared endpoint contracts for upload, draft, retrieval, list, and confirmation", async () => {
     const file = new File(["png"], "shirt.png", { type: "image/png" });
     await uploadTryOnGarment(file);
     await createTryOnGarmentDraft({
@@ -26,6 +27,7 @@ describe("try-on garments api", () => {
       template: "tshirt_long_sleeve",
     });
     await getTryOnGarment(id);
+    await listTryOnGarmentsByProduct(id);
     await confirmTryOnGarment(id);
 
     expect(callAdminEndpointContract).toHaveBeenNthCalledWith(
@@ -59,6 +61,11 @@ describe("try-on garments api", () => {
     );
     expect(callAdminEndpointContract).toHaveBeenNthCalledWith(
       4,
+      expect.objectContaining({ method: "GET", path: "/try-on-garments" }),
+      { query: { productId: id } },
+    );
+    expect(callAdminEndpointContract).toHaveBeenNthCalledWith(
+      5,
       expect.objectContaining({
         method: "POST",
         path: "/try-on-garments/:id/confirmation",
