@@ -194,12 +194,17 @@ async fn run_console_cycle(
             .await;
     }
 
-    let media_cache = ManagedMediaCache::new(
+    // One cycle token owns IPC, catalog reconcile work and the cache workers.
+    // Reconfiguration waits for this cache to quiesce before the next cycle
+    // opens the same media-cache directory.
+    let cycle_shutdown = runtime.shutdown_token();
+    let media_cache = ManagedMediaCache::new_with_shutdown(
         data_dir.join("media-cache"),
         "http://127.0.0.1",
         Arc::new(BackendMediaFetcher {
             backend: backend.clone(),
         }),
+        cycle_shutdown.clone(),
     )?;
 
     let status_cache = ipc::RuntimeStatusCache::new(profile.as_ref(), state.clone()).await;
@@ -246,7 +251,7 @@ async fn run_console_cycle(
         network_adapter: crate::network::adapter_from_env(),
         ui,
         media_cache,
-        background_shutdown: CancellationToken::new(),
+        background_shutdown: cycle_shutdown.clone(),
     };
     let (ipc_handle, ipc_task) = ipc::run_server(config.bind, ipc_ctx.clone()).await?;
     ipc_ctx
@@ -382,6 +387,9 @@ async fn run_console_cycle(
     runtime.stop().await?;
     scanner_runtime.stop().await?;
     ipc_handle.shutdown.cancel();
+    // Join all cache-owned workers and catalog tasks before task abortion and
+    // before the supervisor may construct the next runtime cycle.
+    ipc_ctx.media_cache.shutdown().await;
     for task in tasks {
         task.abort();
         let _ = task.await;

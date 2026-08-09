@@ -9,13 +9,20 @@ use std::{
     fs,
     io::{Read, Write},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
     time::SystemTime,
 };
 
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
-use tokio::sync::{Mutex, Notify};
+use tokio::{
+    sync::{Mutex, Notify},
+    task::JoinHandle,
+};
+use tokio_util::sync::CancellationToken;
 
 const MAX_MEDIA_OBJECT_BYTES: u64 = 5_000_000;
 const MAX_MEDIA_OBJECTS: usize = 256;
@@ -223,6 +230,13 @@ pub struct ManagedMediaCache {
     inflight: Arc<Mutex<HashSet<WarmIdentity>>>,
     staging: Arc<Mutex<HashSet<PathBuf>>>,
     queue_notify: Arc<Notify>,
+    /// The current catalog request reserves its sequence before its detached
+    /// reconciliation task is spawned.  A task that starts late therefore
+    /// cannot redefine "latest" merely by reaching this module later.
+    latest_adoption: Arc<AtomicU64>,
+    shutdown: CancellationToken,
+    workers: Arc<std::sync::Mutex<Vec<JoinHandle<()>>>>,
+    background_tasks: Arc<std::sync::Mutex<Vec<JoinHandle<()>>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -263,19 +277,55 @@ impl ManagedMediaCache {
         read_url_base: impl Into<String>,
         fetcher: Arc<dyn MediaFetcher>,
     ) -> Result<Self, String> {
-        Self::new_with_manifest_directory_sync(
+        Self::new_with_manifest_directory_sync_and_shutdown(
             root,
             read_url_base,
             fetcher,
             Arc::new(PlatformManifestDirectorySync),
+            CancellationToken::new(),
         )
     }
 
+    /// Production caches observe their owning daemon cycle.  Tests which
+    /// construct an isolated cache may use `new` and explicitly call
+    /// `shutdown` when they need to prove task joining.
+    pub fn new_with_shutdown(
+        root: impl Into<PathBuf>,
+        read_url_base: impl Into<String>,
+        fetcher: Arc<dyn MediaFetcher>,
+        cycle_shutdown: CancellationToken,
+    ) -> Result<Self, String> {
+        Self::new_with_manifest_directory_sync_and_shutdown(
+            root,
+            read_url_base,
+            fetcher,
+            Arc::new(PlatformManifestDirectorySync),
+            cycle_shutdown,
+        )
+    }
+
+    #[cfg(test)]
     pub(crate) fn new_with_manifest_directory_sync(
         root: impl Into<PathBuf>,
         read_url_base: impl Into<String>,
         fetcher: Arc<dyn MediaFetcher>,
         manifest_directory_sync: Arc<dyn ManifestDirectorySync>,
+    ) -> Result<Self, String> {
+        Self::new_with_manifest_directory_sync_and_shutdown(
+            root,
+            read_url_base,
+            fetcher,
+            manifest_directory_sync,
+            CancellationToken::new(),
+        )
+    }
+
+    pub(crate) fn new_with_manifest_directory_sync_and_shutdown(
+        root: impl Into<PathBuf>,
+        read_url_base: impl Into<String>,
+        fetcher: Arc<dyn MediaFetcher>,
+        manifest_directory_sync: Arc<dyn ManifestDirectorySync>,
+        cycle_shutdown: CancellationToken,
     ) -> Result<Self, String> {
         let root = root.into();
         fs::create_dir_all(&root).map_err(|error| format!("create media cache: {error}"))?;
@@ -372,12 +422,59 @@ impl ManagedMediaCache {
             inflight: Arc::new(Mutex::new(HashSet::new())),
             staging: Arc::new(Mutex::new(HashSet::new())),
             queue_notify: Arc::new(Notify::new()),
+            latest_adoption: Arc::new(AtomicU64::new(0)),
+            shutdown: cycle_shutdown.child_token(),
+            workers: Arc::new(std::sync::Mutex::new(Vec::new())),
+            background_tasks: Arc::new(std::sync::Mutex::new(Vec::new())),
         };
         for _ in 0..DOWNLOAD_WORKERS {
             let worker = cache.clone();
-            tokio::spawn(async move { worker.worker_loop().await });
+            let handle = tokio::spawn(async move { worker.worker_loop().await });
+            cache
+                .workers
+                .lock()
+                .expect("media worker tracker")
+                .push(handle);
         }
         Ok(cache)
+    }
+
+    /// Reserve the ordering point before a caller launches its background
+    /// reconcile task.  This is intentionally public because the IPC catalog
+    /// handler owns the task and its presentation diagnostic.
+    pub fn register_catalog_adoption(&self) -> u64 {
+        self.latest_adoption.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    fn is_latest_adoption(&self, token: u64) -> bool {
+        !self.shutdown.is_cancelled() && self.latest_adoption.load(Ordering::SeqCst) == token
+    }
+
+    /// Track a catalog task under the same cache/cycle owner as download
+    /// workers, so shutdown can cancel and join it before a new cycle opens
+    /// the same data directory.
+    pub fn track_background_task(&self, task: JoinHandle<()>) {
+        self.background_tasks
+            .lock()
+            .expect("media background task tracker")
+            .push(task);
+    }
+
+    pub async fn shutdown(&self) {
+        self.shutdown.cancel();
+        let workers = std::mem::take(&mut *self.workers.lock().expect("media worker tracker"));
+        for task in workers {
+            let _ = task.await;
+        }
+        let background_tasks = std::mem::take(
+            &mut *self
+                .background_tasks
+                .lock()
+                .expect("media background task tracker"),
+        );
+        for task in background_tasks {
+            let _ = task.await;
+        }
     }
 
     /// Atomically adopts the complete active interest set and warms it out of band.
@@ -391,7 +488,8 @@ impl ManagedMediaCache {
             return Err("managed media generation is required".to_string());
         }
         let interest = normalize_interest_set(descriptors)?;
-        self.adopt_interest_set(generation, interest)
+        let token = self.register_catalog_adoption();
+        self.adopt_interest_set(generation, interest, token)
             .await
             .map(|_| ())
     }
@@ -400,8 +498,15 @@ impl ManagedMediaCache {
         &self,
         generation: String,
         interest: InterestSet,
+        adoption_token: u64,
     ) -> Result<(usize, daemon_ipc_contracts::ManagedMediaSnapshot), String> {
+        if !self.is_latest_adoption(adoption_token) {
+            return Err("managed media catalog adoption superseded".to_string());
+        }
         let gate = self.reconcile_gate.lock().await;
+        if !self.is_latest_adoption(adoption_token) {
+            return Err("managed media catalog adoption superseded".to_string());
+        }
 
         // Recovery and regular reconciliation share the same inventory rule:
         // no loose object, metadata, or staging file is allowed to consume the
@@ -412,37 +517,47 @@ impl ManagedMediaCache {
             return Err("managed media cache disk high-water mark exceeded".to_string());
         }
 
-        // The potentially slow disk checks and fsync occur outside the state
-        // mutex.  An epoch retry keeps the final in-memory replacement one
-        // coherent swap even when refreshes race.
-        let (warm, accepted_snapshot) = loop {
-            let (epoch, previous) = {
-                let state = self.state.lock().await;
-                (state.epoch, state.entries.clone())
-            };
-            let mut entries = previous
-                .into_iter()
-                .map(|(digest, mut entry)| {
-                    entry.active = false;
-                    entry.pinned = false;
-                    (digest, entry)
-                })
-                .collect::<HashMap<_, _>>();
+        let manifest = ActiveMediaManifest {
+            generation: generation.clone(),
+            assets: interest.candidates.clone(),
+        };
+        if !self.is_latest_adoption(adoption_token) {
+            return Err("managed media catalog adoption superseded".to_string());
+        }
+        self.persist_manifest(&manifest).await?;
+        // A newer request may have registered while disk persistence was in
+        // flight.  `persist_manifest` rolled back if its own durability step
+        // failed; a latest request queued behind this gate will become the
+        // only subsequent durable adoption.
+        if !self.is_latest_adoption(adoption_token) {
+            return Err("managed media catalog adoption superseded".to_string());
+        }
+        let (warm, accepted_snapshot) = {
+            let mut state = self.state.lock().await;
+            if !self.is_latest_adoption(adoption_token) {
+                return Err("managed media catalog adoption superseded".to_string());
+            }
+            for entry in state.entries.values_mut() {
+                entry.active = false;
+                entry.pinned = false;
+            }
             for object in &interest.objects {
                 let descriptor = &object.descriptor;
-                let digest = descriptor.digest.clone();
                 let published = self.published_and_valid(descriptor);
-                let entry = entries.entry(digest).or_insert_with(|| Entry {
-                    descriptor: descriptor.clone(),
-                    candidates: object.candidates.clone(),
-                    readiness: MediaReadiness::Warming,
-                    diagnostic: None,
-                    pinned: false,
-                    active: false,
-                    leases: 0,
-                    last_used: SystemTime::now(),
-                    warming_generation: None,
-                });
+                let entry = state
+                    .entries
+                    .entry(descriptor.digest.clone())
+                    .or_insert_with(|| Entry {
+                        descriptor: descriptor.clone(),
+                        candidates: object.candidates.clone(),
+                        readiness: MediaReadiness::Warming,
+                        diagnostic: None,
+                        pinned: false,
+                        active: false,
+                        leases: 0,
+                        last_used: SystemTime::now(),
+                        warming_generation: None,
+                    });
                 entry.descriptor = descriptor.clone();
                 entry.candidates = object.candidates.clone();
                 entry.active = true;
@@ -455,17 +570,7 @@ impl ManagedMediaCache {
                 };
                 entry.warming_generation = (!published).then(|| generation.clone());
             }
-            let manifest = ActiveMediaManifest {
-                generation: generation.clone(),
-                assets: interest.candidates.clone(),
-            };
-            self.persist_manifest(&manifest).await?;
-            let mut state = self.state.lock().await;
-            if state.epoch != epoch {
-                continue;
-            }
             state.generation = generation.clone();
-            state.entries = entries;
             state.epoch = state.epoch.wrapping_add(1);
             let warm = state
                 .entries
@@ -486,7 +591,7 @@ impl ManagedMediaCache {
                     .map(|entry| self.projection(entry))
                     .collect(),
             )?;
-            break (warm, snapshot);
+            (warm, snapshot)
         };
         drop(gate);
         for job in warm {
@@ -503,6 +608,15 @@ impl ManagedMediaCache {
         &self,
         request: daemon_ipc_contracts::ManagedMediaReconcileRequest,
     ) -> Result<daemon_ipc_contracts::ManagedMediaReconcileReceipt, String> {
+        let token = self.register_catalog_adoption();
+        self.reconcile_boundary_registered(request, token).await
+    }
+
+    pub async fn reconcile_boundary_registered(
+        &self,
+        request: daemon_ipc_contracts::ManagedMediaReconcileRequest,
+        adoption_token: u64,
+    ) -> Result<daemon_ipc_contracts::ManagedMediaReconcileReceipt, String> {
         let generation = request.generation.to_string();
         let descriptors = request
             .interests
@@ -515,7 +629,7 @@ impl ManagedMediaCache {
             .collect::<Result<Vec<_>, _>>()?;
         let interest = normalize_interest_set(descriptors)?;
         let (interest_count, snapshot) = self
-            .adopt_interest_set(generation.clone(), interest)
+            .adopt_interest_set(generation.clone(), interest, adoption_token)
             .await?;
         let receipt = serde_json::from_value(serde_json::json!({
             "generation": generation,
@@ -597,6 +711,7 @@ impl ManagedMediaCache {
                 entry.readiness = MediaReadiness::Unavailable;
                 entry.diagnostic =
                     Some("published media failed defensive read verification".to_string());
+                state.epoch = state.epoch.wrapping_add(1);
             }
             return Err(MediaReadError::NotReady);
         }
@@ -724,11 +839,40 @@ impl ManagedMediaCache {
         )
         .map_err(|error| format!("manifest persistence: {error}"))?;
         let target = self.root.join("active-media.json");
+        // A rename can complete while the parent directory flush fails.  Keep
+        // the previous accepted bytes until that flush succeeds, otherwise an
+        // unreceipted generation could revive after a process restart.
+        let previous = fs::read(&target).ok();
         atomic_replace(&temp, &target).map_err(|error| format!("manifest persistence: {error}"))?;
-        self.manifest_directory_sync
-            .sync(self.root.as_ref())
-            .await
-            .map_err(|error| format!("manifest persistence: {error}"))?;
+        if let Err(error) = self.manifest_directory_sync.sync(self.root.as_ref()).await {
+            let rollback = match previous {
+                Some(bytes) => {
+                    let restore = self.root.join(format!(
+                        ".active-media.rollback.{}.tmp",
+                        uuid::Uuid::new_v4().simple()
+                    ));
+                    write_durable(&restore, &bytes).and_then(|_| atomic_replace(&restore, &target))
+                }
+                None => fs::remove_file(&target)
+                    .or_else(|remove_error| {
+                        if remove_error.kind() == std::io::ErrorKind::NotFound {
+                            Ok(())
+                        } else {
+                            Err(remove_error)
+                        }
+                    })
+                    .map_err(|remove_error| remove_error.to_string()),
+            };
+            // This is best effort on the original I/O failure path; the old
+            // bytes are already restored for an immediate reconstruction.
+            let _ = self.manifest_directory_sync.sync(self.root.as_ref()).await;
+            if let Err(rollback) = rollback {
+                return Err(format!(
+                    "manifest persistence: {error}; rollback previous accepted manifest: {rollback}"
+                ));
+            }
+            return Err(format!("manifest persistence: {error}"));
+        }
         Ok(())
     }
 
@@ -762,10 +906,16 @@ impl ManagedMediaCache {
     async fn worker_loop(self) {
         loop {
             let job = loop {
+                if self.shutdown.is_cancelled() {
+                    return;
+                }
                 if let Some(job) = self.queue.lock().await.pop_front() {
                     break job;
                 }
-                self.queue_notify.notified().await;
+                tokio::select! {
+                    _ = self.shutdown.cancelled() => return,
+                    _ = self.queue_notify.notified() => {}
+                }
             };
             self.warm(job.clone()).await;
             self.inflight.lock().await.remove(&WarmIdentity {
@@ -783,17 +933,26 @@ impl ManagedMediaCache {
         let mut candidates = job.candidates.clone();
         let mut candidate_index = 0;
         while let Some(candidate) = candidates.get(candidate_index) {
+            if self.shutdown.is_cancelled() {
+                let _ = fs::remove_file(&stage);
+                self.staging.lock().await.remove(&stage);
+                return;
+            }
             candidate_index += 1;
-            result = self
-                .fetcher
-                .fetch_to(candidate, &stage)
-                .await
-                .and_then(|response| {
-                    if response.content_type != candidate.content_type {
-                        return Err("media content type does not match descriptor".to_string());
-                    }
-                    verify_staged_file(&stage, candidate, &response.content_type)
-                });
+            result = tokio::select! {
+                _ = self.shutdown.cancelled() => {
+                    let _ = fs::remove_file(&stage);
+                    self.staging.lock().await.remove(&stage);
+                    return;
+                }
+                result = self.fetcher.fetch_to(candidate, &stage) => result,
+            }
+            .and_then(|response| {
+                if response.content_type != candidate.content_type {
+                    return Err("media content type does not match descriptor".to_string());
+                }
+                verify_staged_file(&stage, candidate, &response.content_type)
+            });
             match &result {
                 Ok(()) => break,
                 Err(error) => {
@@ -871,6 +1030,7 @@ impl ManagedMediaCache {
                             entry.diagnostic = Some(
                                 "managed media cache disk high-water mark exceeded".to_string(),
                             );
+                            state.epoch = state.epoch.wrapping_add(1);
                         }
                     }
                     return;
@@ -1063,8 +1223,10 @@ impl Drop for MediaReadLease {
         let state = self.state.clone();
         let digest = self.digest.clone();
         tokio::spawn(async move {
-            if let Some(entry) = state.lock().await.entries.get_mut(&digest) {
+            let mut state = state.lock().await;
+            if let Some(entry) = state.entries.get_mut(&digest) {
                 entry.leases = entry.leases.saturating_sub(1);
+                state.epoch = state.epoch.wrapping_add(1);
             }
         });
     }
@@ -1384,6 +1546,11 @@ mod tests {
                 .await,
             Err(MediaReadError::NotReady)
         ));
+        assert_eq!(
+            cache.snapshot().await.1[0].readiness,
+            MediaReadiness::Unavailable,
+            "defensive-read corruption must not leave a ready projection"
+        );
     }
 
     #[tokio::test]
@@ -1810,8 +1977,8 @@ mod tests {
         assert!(cache.snapshot().await.0.is_empty(), "memory did not swap");
         assert!(cache.snapshot().await.1.is_empty());
         assert!(
-            root.join("active-media.json").exists(),
-            "failure was after rename"
+            !root.join("active-media.json").exists(),
+            "unreceipted first manifest was rolled back after rename"
         );
     }
 
@@ -1924,13 +2091,15 @@ mod tests {
             first.reconcile_boundary(request("generation-a", a)),
             second.reconcile_boundary(request("generation-b", b)),
         );
-        let a_receipt = a_receipt.expect("A receipt");
-        let b_receipt = b_receipt.expect("B receipt");
+        let receipts = [a_receipt, b_receipt]
+            .into_iter()
+            .filter_map(Result::ok)
+            .collect::<Vec<_>>();
         let (generation, snapshot) = cache.snapshot().await;
         let manifest: ActiveMediaManifest =
             serde_json::from_slice(&fs::read(root.join("active-media.json")).expect("manifest"))
                 .expect("manifest shape");
-        let receipt = [a_receipt, b_receipt]
+        let receipt = receipts
             .into_iter()
             .find(|receipt| receipt.generation.as_str() == generation)
             .expect("final accepted receipt");
@@ -1943,6 +2112,271 @@ mod tests {
             manifest.assets[0].digest, snapshot[0].descriptor.digest,
             "disk and memory describe the same adopted generation"
         );
+    }
+
+    #[tokio::test]
+    async fn latest_registered_catalog_wins_when_an_older_background_task_runs_after_it() {
+        let root = tempdir().expect("tempdir").keep();
+        let cache = ManagedMediaCache::new(
+            root.clone(),
+            "http://127.0.0.1:1234",
+            Arc::new(FixtureFetcher {
+                bytes: Vec::new(),
+                content_type: "image/png".to_string(),
+            }),
+        )
+        .expect("cache");
+        let a = descriptor(b"\x89PNG\r\n\x1a\nregistered-a", "image/png");
+        let b = descriptor(b"\x89PNG\r\n\x1a\nregistered-b", "image/png");
+        let request = |generation: &str, descriptor: MediaDescriptor| {
+            serde_json::from_value(serde_json::json!({
+                "generation": generation,
+                "interests": [descriptor],
+            }))
+            .expect("generated request")
+        };
+
+        // A is registered first but deliberately not allowed to execute until
+        // B has fully adopted.  This models a delayed HTTP background task.
+        let a_token = cache.register_catalog_adoption();
+        let b_token = cache.register_catalog_adoption();
+        cache
+            .reconcile_boundary_registered(request("generation-b", b.clone()), b_token)
+            .await
+            .expect("B adoption");
+        assert!(cache
+            .reconcile_boundary_registered(request("generation-a", a), a_token)
+            .await
+            .expect_err("late A must be superseded")
+            .contains("superseded"));
+
+        let (generation, projection) = cache.snapshot().await;
+        let manifest: ActiveMediaManifest =
+            serde_json::from_slice(&fs::read(root.join("active-media.json")).expect("manifest"))
+                .expect("manifest shape");
+        assert_eq!(generation, "generation-b");
+        assert_eq!(manifest.generation, "generation-b");
+        assert_eq!(projection.len(), 1);
+        assert_eq!(projection[0].descriptor.digest, b.digest);
+    }
+
+    #[tokio::test]
+    async fn post_rename_manifest_failure_restores_previous_accepted_generation_for_restart() {
+        struct FailSecondDirectorySync(AtomicUsize);
+        #[async_trait]
+        impl ManifestDirectorySync for FailSecondDirectorySync {
+            async fn sync(&self, _: &Path) -> Result<(), String> {
+                if self.0.fetch_add(1, Ordering::SeqCst) == 1 {
+                    Err("injected post-rename directory sync failure".to_string())
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        let root = tempdir().expect("tempdir").keep();
+        let old = descriptor(b"\x89PNG\r\n\x1a\naccepted-old", "image/png");
+        let new = descriptor(b"\x89PNG\r\n\x1a\nrejected-new", "image/png");
+        let cache = ManagedMediaCache::new_with_manifest_directory_sync(
+            root.clone(),
+            "http://127.0.0.1:1234",
+            Arc::new(FixtureFetcher {
+                bytes: Vec::new(),
+                content_type: "image/png".to_string(),
+            }),
+            Arc::new(FailSecondDirectorySync(AtomicUsize::new(0))),
+        )
+        .expect("cache");
+        cache
+            .reconcile_active_catalog("accepted", vec![old.clone()])
+            .await
+            .expect("first manifest is accepted");
+        assert!(cache
+            .reconcile_active_catalog("unreceipted", vec![new])
+            .await
+            .expect_err("post-rename failure")
+            .contains("manifest persistence"));
+
+        let restarted = ManagedMediaCache::new(
+            root,
+            "http://127.0.0.1:1234",
+            Arc::new(FixtureFetcher {
+                bytes: Vec::new(),
+                content_type: "image/png".to_string(),
+            }),
+        )
+        .expect("reconstruct cache");
+        let (generation, projection) = restarted.snapshot().await;
+        assert_eq!(generation, "accepted");
+        assert_eq!(projection.len(), 1);
+        assert_eq!(projection[0].descriptor.digest, old.digest);
+    }
+
+    #[tokio::test]
+    async fn lease_drop_is_not_lost_by_a_following_catalog_swap() {
+        let bytes = b"\x89PNG\r\n\x1a\nlease-drop".to_vec();
+        let descriptor = descriptor(&bytes, "image/png");
+        let cache = ManagedMediaCache::new(
+            tempdir().expect("tempdir").keep(),
+            "http://127.0.0.1:1234",
+            Arc::new(FixtureFetcher {
+                bytes,
+                content_type: "image/png".to_string(),
+            }),
+        )
+        .expect("cache");
+        cache
+            .reconcile_active_catalog("one", vec![descriptor.clone()])
+            .await
+            .expect("one");
+        for _ in 0..40 {
+            if cache.snapshot().await.1[0].readiness == MediaReadiness::Ready {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let lease = cache
+            .read_ready(
+                &cache.read_grant(),
+                MediaReadMethod::Head,
+                &descriptor.digest,
+            )
+            .await
+            .expect("lease");
+        drop(lease);
+        for _ in 0..40 {
+            if cache.state.lock().await.entries[&descriptor.digest].leases == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        cache
+            .reconcile_active_catalog("two", vec![descriptor.clone()])
+            .await
+            .expect("two");
+        assert_eq!(
+            cache.state.lock().await.entries[&descriptor.digest].leases,
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn cycle_shutdown_joins_workers_even_when_a_fetch_is_hung() {
+        struct HungFetcher {
+            started: Arc<Notify>,
+        }
+        #[async_trait]
+        impl MediaFetcher for HungFetcher {
+            async fn fetch_to(
+                &self,
+                _: &MediaDescriptor,
+                _: &Path,
+            ) -> Result<MediaFetchResult, String> {
+                self.started.notify_one();
+                std::future::pending::<Result<MediaFetchResult, String>>().await
+            }
+        }
+        let started = Arc::new(Notify::new());
+        let cycle = CancellationToken::new();
+        let cache = ManagedMediaCache::new_with_shutdown(
+            tempdir().expect("tempdir").keep(),
+            "http://127.0.0.1:1234",
+            Arc::new(HungFetcher {
+                started: started.clone(),
+            }),
+            cycle.clone(),
+        )
+        .expect("cache");
+        cache
+            .reconcile_active_catalog(
+                "hung",
+                vec![descriptor(b"\x89PNG\r\n\x1a\nhung", "image/png")],
+            )
+            .await
+            .expect("adopt");
+        tokio::time::timeout(Duration::from_secs(1), started.notified())
+            .await
+            .expect("fetch started");
+        cycle.cancel();
+        tokio::time::timeout(Duration::from_secs(1), cache.shutdown())
+            .await
+            .expect("workers joined");
+    }
+
+    #[tokio::test]
+    async fn reconfigured_cycle_joins_old_media_work_before_new_cache_uses_the_directory() {
+        struct StagedAndHungFetcher {
+            bytes: Vec<u8>,
+            staged: Arc<Notify>,
+        }
+        #[async_trait]
+        impl MediaFetcher for StagedAndHungFetcher {
+            async fn fetch_to(
+                &self,
+                _: &MediaDescriptor,
+                staging: &Path,
+            ) -> Result<MediaFetchResult, String> {
+                write_durable(staging, &self.bytes)?;
+                self.staged.notify_one();
+                std::future::pending::<Result<MediaFetchResult, String>>().await
+            }
+        }
+
+        let root = tempdir().expect("tempdir").keep();
+        let old_bytes = b"\x89PNG\r\n\x1a\nold-cycle".to_vec();
+        let old = descriptor(&old_bytes, "image/png");
+        let staged = Arc::new(Notify::new());
+        let old_cycle = CancellationToken::new();
+        let old_cache = ManagedMediaCache::new_with_shutdown(
+            root.clone(),
+            "http://127.0.0.1:1234",
+            Arc::new(StagedAndHungFetcher {
+                bytes: old_bytes,
+                staged: staged.clone(),
+            }),
+            old_cycle.clone(),
+        )
+        .expect("old cache");
+        old_cache
+            .reconcile_active_catalog("old-cycle", vec![old.clone()])
+            .await
+            .expect("old adoption");
+        tokio::time::timeout(Duration::from_secs(1), staged.notified())
+            .await
+            .expect("old fetch staged");
+        old_cycle.cancel();
+        old_cache.shutdown().await;
+
+        let new_bytes = b"\x89PNG\r\n\x1a\nnew-cycle".to_vec();
+        let new = descriptor(&new_bytes, "image/png");
+        let new_cache = ManagedMediaCache::new_with_shutdown(
+            root.clone(),
+            "http://127.0.0.1:1234",
+            Arc::new(FixtureFetcher {
+                bytes: new_bytes,
+                content_type: "image/png".to_string(),
+            }),
+            CancellationToken::new(),
+        )
+        .expect("new cache");
+        new_cache
+            .reconcile_active_catalog("new-cycle", vec![new.clone()])
+            .await
+            .expect("new adoption");
+        for _ in 0..40 {
+            let (generation, projection) = new_cache.snapshot().await;
+            if generation == "new-cycle" && projection[0].readiness == MediaReadiness::Ready {
+                let manifest: ActiveMediaManifest = serde_json::from_slice(
+                    &fs::read(root.join("active-media.json")).expect("manifest"),
+                )
+                .expect("manifest shape");
+                assert_eq!(manifest.generation, "new-cycle");
+                assert_eq!(projection[0].descriptor.digest, new.digest);
+                assert!(!new_cache.content_path(&old.digest).exists());
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("old cycle work crossed into the new cache");
     }
 
     #[tokio::test]

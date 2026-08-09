@@ -1056,15 +1056,16 @@ pub fn assert_loopback(addr: SocketAddr) -> Result<(), String> {
 
 pub async fn run_server(
     bind: SocketAddr,
-    mut context: IpcContext,
+    context: IpcContext,
 ) -> Result<(IpcServerHandle, tokio::task::JoinHandle<Result<(), String>>), String> {
     assert_loopback(bind)?;
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .map_err(|error| format!("bind IPC failed: {error}"))?;
     let addr = listener.local_addr().map_err(|error| error.to_string())?;
-    let shutdown = CancellationToken::new();
-    context.background_shutdown = shutdown.clone();
+    // The console cycle owns this token.  Do not mint an HTTP-only shutdown
+    // lifecycle here: catalog cache work and the server must stop together.
+    let shutdown = context.background_shutdown.clone();
     let graceful = shutdown.clone();
     let task = tokio::spawn(async move {
         axum::serve(listener, build_router(context))
@@ -1434,9 +1435,20 @@ async fn refresh_catalog(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
             *ctx.ui.status_cache.catalog.write().await = value.clone();
             let catalog = ctx.ui.status_cache.catalog.clone();
             let media_cache = ctx.media_cache.clone();
-            tokio::spawn(async move {
+            // Reserve latest-wins ordering before the task is scheduled.  A
+            // delayed older task must not become "new" merely by running
+            // after a newer catalog has already been adopted.
+            let adoption_token = media_cache.register_catalog_adoption();
+            let shutdown = ctx.background_shutdown.clone();
+            let task = tokio::spawn(async move {
+                if shutdown.is_cancelled() {
+                    return;
+                }
                 let media_error = match reconcile_request {
-                    Ok(request) => media_cache.reconcile_boundary(request).await.err(),
+                    Ok(request) => media_cache
+                        .reconcile_boundary_registered(request, adoption_token)
+                        .await
+                        .err(),
                     Err(error) => Some(error),
                 };
                 let Some(error) = media_error else {
@@ -1465,6 +1477,7 @@ async fn refresh_catalog(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
                 }
                 current.last_error = Some(error);
             });
+            ctx.media_cache.track_background_task(task);
             Json(value).into_response()
         }
         Err(error) => error_response(StatusCode::BAD_GATEWAY, "catalog_refresh_failed", error),
