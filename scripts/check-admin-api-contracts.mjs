@@ -592,9 +592,9 @@ function checkTryOnContractCoverage(root) {
       )) {
         const expression = definition.values[field];
         if (
-          expression &&
-          ts.isIdentifier(expression) &&
-          !expectedReferences.includes(expression.text)
+          field in definition.values &&
+          (!ts.isIdentifier(expression) ||
+            !expectedReferences.includes(expression.text))
         ) {
           failures.push(
             `try-on contract definition schema drift: ${name} ${field} expected ${expectedReferences.join(" or ")}`,

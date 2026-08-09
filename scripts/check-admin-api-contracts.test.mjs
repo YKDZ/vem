@@ -167,6 +167,57 @@ describe("admin api contract guard", () => {
     });
   });
 
+  it("rejects inline expressions for every expected try-on schema reference", () => {
+    const mutations = [
+      ["adminCreateTryOnGarmentContract", "querySchema", "noQuerySchema"],
+      [
+        "adminCreateTryOnGarmentContract",
+        "bodySchema",
+        "tryOnGarmentDraftRequestSchema",
+      ],
+      [
+        "adminGetTryOnGarmentContract",
+        "pathParamsSchema",
+        "garmentPathParamsSchema",
+      ],
+      [
+        "adminCreateTryOnGarmentContract",
+        "responseSchema",
+        "tryOnGarmentResponseSchema",
+      ],
+    ];
+
+    for (const [contract, field, expectedReference] of mutations) {
+      const files = tryOnFixture();
+      const source = files["packages/shared/src/schemas/try-on-garments.ts"];
+      const contractStart = source.indexOf(
+        `export const ${contract} = defineAdminEndpointContract(`,
+      );
+      const contractEnd = source.indexOf(
+        "\n      export const ",
+        contractStart + 1,
+      );
+      const end = contractEnd === -1 ? source.length : contractEnd;
+      const contractSource = source.slice(contractStart, end);
+      files["packages/shared/src/schemas/try-on-garments.ts"] =
+        source.slice(0, contractStart) +
+        contractSource.replace(
+          `${field}: ${expectedReference}`,
+          `${field}: z.strictObject({})`,
+        ) +
+        source.slice(end);
+
+      withFixture(files, (root) => {
+        const result = checkAdminApiContracts({ root });
+        assert.equal(result.ok, false);
+        assert.match(
+          result.failures.join("\n"),
+          new RegExp(`${contract} ${field} expected ${expectedReference}`),
+        );
+      });
+    }
+  });
+
   it("rejects a provider controller that is not registered by a Nest module", () => {
     const files = tryOnFixture();
     delete files["apps/service-api/src/media-assets/media-assets.module.ts"];
