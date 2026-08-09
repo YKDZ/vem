@@ -81,3 +81,34 @@ test("detects a tampered manifest and unexpected generated file", () => {
     assert.match(extraFileDrift.stderr, /unexpected\.json/);
   });
 });
+
+test("detects noncanonical and duplicate-key manifest spellings", () => {
+  withTemporaryBundles(({ sourceOutput, visionRoot }) => {
+    assert.equal(generate({ sourceOutput, visionRoot }).status, 0);
+    const manifestPath = join(sourceOutput, "manifest.json");
+    const rawManifest = readFileSync(manifestPath, "utf8");
+    writeFileSync(
+      manifestPath,
+      `${JSON.stringify(JSON.parse(rawManifest), null, 2)}\n`,
+      "utf8",
+    );
+    assert.notEqual(
+      generate({ sourceOutput, visionRoot, check: true }).status,
+      0,
+    );
+
+    assert.equal(generate({ sourceOutput, visionRoot }).status, 0);
+    writeFileSync(
+      manifestPath,
+      rawManifest.replace(
+        '"protocol":"vem.vision.v2",',
+        '"protocol":"vem.vision.v2","protocol":"vem.vision.v2",',
+      ),
+      "utf8",
+    );
+    assert.notEqual(
+      generate({ sourceOutput, visionRoot, check: true }).status,
+      0,
+    );
+  });
+});

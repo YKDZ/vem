@@ -12,8 +12,9 @@ const nonSentinelUuidSchema = z
   );
 const maximumBinaryBytes = 64 * 1024 * 1024;
 const maximumImageDimension = 8192;
+const maximumTokenizedLoopbackUrlLength = 2048;
 const tokenizedLoopbackUrlPattern =
-  /^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::(?:[1-9]\d{0,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d|655[0-2]\d|6553[0-5]))?(?:\/[^?#]*)?\?(?:[^#&]*&)*token=[^&#]+(?:&[^#]*)?$/;
+  /^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::(?:[1-9]\d{0,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5]))?(?:\/[^?#]*)?\?token=[^?#&]{1,512}$/;
 
 function validateTokenizedLoopbackUrl(
   value: string,
@@ -42,7 +43,14 @@ function validateTokenizedLoopbackUrl(
       message: "reference must be a loopback URL",
     });
   }
-  if ((url.searchParams.get("token") ?? "").length === 0) {
+  if (
+    url.hash !== "" ||
+    !url.search.startsWith("?token=") ||
+    url.search.includes("&") ||
+    url.searchParams.getAll("token").length !== 1 ||
+    (url.searchParams.get("token") ?? "").length === 0 ||
+    (url.searchParams.get("token") ?? "").includes("?")
+  ) {
     ctx.addIssue({
       code: "custom",
       message: "reference must contain a non-empty opaque token",
@@ -52,6 +60,7 @@ function validateTokenizedLoopbackUrl(
 
 const tokenizedLoopbackUrlSchema = z
   .string()
+  .max(maximumTokenizedLoopbackUrlLength)
   .regex(tokenizedLoopbackUrlPattern)
   .describe("vem.tokenized-loopback-url")
   .superRefine(validateTokenizedLoopbackUrl);

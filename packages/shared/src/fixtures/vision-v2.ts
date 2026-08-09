@@ -4,7 +4,7 @@ const variantId = "550e8400-e29b-41d4-a716-446655440125";
 const assetId = "550e8400-e29b-41d4-a716-446655440126";
 const fastGarment = {
   assetId,
-  reference: "http://127.0.0.1:39001/media/garment?token=source-token",
+  reference: "http://127.0.0.1:65000/media/garment?token=source-token",
   digest: `sha256:${digest}`,
   contentType: "image/png" as const,
   byteSize: 2048,
@@ -49,7 +49,7 @@ export const validVisionV2Fixtures = [
   envelope("vision.try_on.attempt.completed", {
     attemptId,
     result: {
-      reference: "http://127.0.0.1:39002/results/output?token=result-token",
+      reference: "http://127.0.0.1:65499/results/output?token=result-token",
       digest: `sha256:${digest}`,
       contentType: "image/png",
       byteSize: 4096,
@@ -98,6 +98,100 @@ export const invalidVisionV2Fixtures = [
     },
   },
   {
+    name: "rejects-empty-then-duplicate-loopback-token",
+    message: {
+      ...validVisionV2Fixtures[2],
+      payload: {
+        ...validVisionV2Fixtures[2].payload,
+        garment: {
+          ...fastGarment,
+          reference:
+            "http://127.0.0.1:65000/media/garment?token=&token=source-token",
+        },
+      },
+    },
+  },
+  {
+    name: "rejects-duplicate-loopback-token",
+    message: {
+      ...validVisionV2Fixtures[2],
+      payload: {
+        ...validVisionV2Fixtures[2].payload,
+        garment: {
+          ...fastGarment,
+          reference: "http://127.0.0.1:65000/media/garment?token=one&token=two",
+        },
+      },
+    },
+  },
+  {
+    name: "rejects-loopback-extra-query",
+    message: {
+      ...validVisionV2Fixtures[2],
+      payload: {
+        ...validVisionV2Fixtures[2].payload,
+        garment: {
+          ...fastGarment,
+          reference:
+            "http://127.0.0.1:65000/media/garment?token=source-token&extra=true",
+        },
+      },
+    },
+  },
+  {
+    name: "rejects-loopback-fragment",
+    message: {
+      ...validVisionV2Fixtures[2],
+      payload: {
+        ...validVisionV2Fixtures[2].payload,
+        garment: {
+          ...fastGarment,
+          reference:
+            "http://127.0.0.1:65000/media/garment?token=source-token#fragment",
+        },
+      },
+    },
+  },
+  {
+    name: "rejects-loopback-port-above-maximum",
+    message: {
+      ...validVisionV2Fixtures[2],
+      payload: {
+        ...validVisionV2Fixtures[2].payload,
+        garment: {
+          ...fastGarment,
+          reference: "http://127.0.0.1:65536/media/garment?token=source-token",
+        },
+      },
+    },
+  },
+  {
+    name: "rejects-loopback-five-digit-port-above-maximum",
+    message: {
+      ...validVisionV2Fixtures[2],
+      payload: {
+        ...validVisionV2Fixtures[2].payload,
+        garment: {
+          ...fastGarment,
+          reference: "http://127.0.0.1:99999/media/garment?token=source-token",
+        },
+      },
+    },
+  },
+  {
+    name: "rejects-overlong-loopback-token",
+    message: {
+      ...validVisionV2Fixtures[2],
+      payload: {
+        ...validVisionV2Fixtures[2].payload,
+        garment: {
+          ...fastGarment,
+          reference: `http://127.0.0.1:65000/media/garment?token=${"x".repeat(513)}`,
+        },
+      },
+    },
+  },
+  {
     name: "rejects-extra-fast-payload-property",
     message: {
       ...validVisionV2Fixtures[2],
@@ -117,6 +211,26 @@ export const invalidVisionV2Fixtures = [
           ...fastGarment,
           byteSize: "2048",
         },
+      },
+    },
+  },
+  {
+    name: "rejects-fractional-byte-size",
+    message: {
+      ...validVisionV2Fixtures[2],
+      payload: {
+        ...validVisionV2Fixtures[2].payload,
+        garment: { ...fastGarment, byteSize: 1.5 },
+      },
+    },
+  },
+  {
+    name: "rejects-boolean-byte-size",
+    message: {
+      ...validVisionV2Fixtures[2],
+      payload: {
+        ...validVisionV2Fixtures[2].payload,
+        garment: { ...fastGarment, byteSize: true },
       },
     },
   },
