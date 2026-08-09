@@ -28,10 +28,16 @@ describe("admin api contract guard", () => {
     "packages/shared/src/schemas/try-on-garments.ts": `
       const z = { strictObject: () => ({}) };
       const defineAdminEndpointContract = (value) => value;
-      export const adminTryOnGarmentUploadContract = defineAdminEndpointContract({ method: "POST", path: "/media-assets/try-on-garments" });
-      export const adminCreateTryOnGarmentContract = defineAdminEndpointContract({ method: "POST", path: "/try-on-garments" });
-      export const adminGetTryOnGarmentContract = defineAdminEndpointContract({ method: "GET", path: "/try-on-garments/:id" });
-      export const adminTryOnGarmentConfirmationContract = defineAdminEndpointContract({ method: "POST", path: "/try-on-garments/:id/confirmation" });
+      const garmentPathParamsSchema = z.strictObject({});
+      const noQuerySchema = z.strictObject({});
+      const noBodySchema = z.strictObject({});
+      const tryOnGarmentDraftRequestSchema = z.strictObject({});
+      const tryOnGarmentResponseSchema = z.strictObject({});
+      const tryOnGarmentMediaAssetSchema = z.strictObject({});
+      export const adminTryOnGarmentUploadContract = defineAdminEndpointContract({ method: "POST", path: "/media-assets/try-on-garments", pathParamsSchema: z.strictObject({}), querySchema: noQuerySchema, bodySchema: z.strictObject({}), responseSchema: tryOnGarmentMediaAssetSchema });
+      export const adminCreateTryOnGarmentContract = defineAdminEndpointContract({ method: "POST", path: "/try-on-garments", pathParamsSchema: z.strictObject({}), querySchema: noQuerySchema, bodySchema: tryOnGarmentDraftRequestSchema, responseSchema: tryOnGarmentResponseSchema });
+      export const adminGetTryOnGarmentContract = defineAdminEndpointContract({ method: "GET", path: "/try-on-garments/:id", pathParamsSchema: garmentPathParamsSchema, querySchema: noQuerySchema, bodySchema: noBodySchema, responseSchema: tryOnGarmentResponseSchema });
+      export const adminTryOnGarmentConfirmationContract = defineAdminEndpointContract({ method: "POST", path: "/try-on-garments/:id/confirmation", pathParamsSchema: garmentPathParamsSchema, querySchema: noQuerySchema, bodySchema: noBodySchema, responseSchema: tryOnGarmentResponseSchema });
     `,
     "apps/service-api/src/try-on-garments/try-on-garments.controller.ts": `
       class TryOnGarmentsController {
@@ -44,6 +50,14 @@ describe("admin api contract guard", () => {
       class MediaAssetsController {
         @${providerDecorator}(adminTryOnGarmentUploadContract) uploadTryOnGarment() {}
       }
+    `,
+    "apps/service-api/src/try-on-garments/try-on-garments.module.ts": `
+      @Module({ controllers: [TryOnGarmentsController] })
+      class TryOnGarmentsModule {}
+    `,
+    "apps/service-api/src/media-assets/media-assets.module.ts": `
+      @Module({ controllers: [MediaAssetsController] })
+      class MediaAssetsModule {}
     `,
     ...(caller
       ? {
@@ -86,6 +100,111 @@ describe("admin api contract guard", () => {
       assert.match(
         result.failures.join("\n"),
         /try-on endpoint contract caller missing: adminTryOnGarmentUploadContract/,
+      );
+    });
+  });
+
+  it("does not count a contract call after an unconditional return", () => {
+    const files = tryOnFixture();
+    files["apps/admin-ui/src/api/try-on-garments.ts"] = `
+      export async function uploadTryOnGarment() {
+        return undefined;
+        return callAdminEndpointContract(adminTryOnGarmentUploadContract, {});
+      }
+      export async function createTryOnGarmentDraft() { return callAdminEndpointContract(adminCreateTryOnGarmentContract, {}); }
+      export async function getTryOnGarment() { return callAdminEndpointContract(adminGetTryOnGarmentContract, {}); }
+      export async function confirmTryOnGarment() { return callAdminEndpointContract(adminTryOnGarmentConfirmationContract, {}); }
+    `;
+    withFixture(files, (root) => {
+      const result = checkAdminApiContracts({ root });
+      assert.equal(result.ok, false);
+      assert.match(
+        result.failures.join("\n"),
+        /try-on endpoint contract caller missing: adminTryOnGarmentUploadContract/,
+      );
+    });
+  });
+
+  it("rejects incomplete or unknown schemas in every try-on contract", () => {
+    const files = tryOnFixture();
+    files["packages/shared/src/schemas/try-on-garments.ts"] = files[
+      "packages/shared/src/schemas/try-on-garments.ts"
+    ]
+      .replace(
+        "bodySchema: z.strictObject({}), responseSchema: tryOnGarmentMediaAssetSchema",
+        "bodySchema: z.unknown(), responseSchema: tryOnGarmentMediaAssetSchema",
+      )
+      .replace(
+        "bodySchema: tryOnGarmentDraftRequestSchema, responseSchema: tryOnGarmentResponseSchema",
+        "bodySchema: tryOnGarmentDraftRequestSchema",
+      );
+    withFixture(files, (root) => {
+      const result = checkAdminApiContracts({ root });
+      assert.equal(result.ok, false);
+      assert.match(
+        result.failures.join("\n"),
+        /adminCreateTryOnGarmentContract missing responseSchema/,
+      );
+      assert.match(
+        result.failures.join("\n"),
+        /adminTryOnGarmentUploadContract uses unknown schema for bodySchema/,
+      );
+    });
+  });
+
+  it("rejects a schema reference drift even when the replacement is a known schema", () => {
+    const files = tryOnFixture();
+    files["packages/shared/src/schemas/try-on-garments.ts"] = files[
+      "packages/shared/src/schemas/try-on-garments.ts"
+    ].replace("querySchema: noQuerySchema", "querySchema: noBodySchema");
+    withFixture(files, (root) => {
+      const result = checkAdminApiContracts({ root });
+      assert.equal(result.ok, false);
+      assert.match(
+        result.failures.join("\n"),
+        /adminTryOnGarmentUploadContract querySchema expected noQuerySchema/,
+      );
+    });
+  });
+
+  it("rejects a provider controller that is not registered by a Nest module", () => {
+    const files = tryOnFixture();
+    delete files["apps/service-api/src/media-assets/media-assets.module.ts"];
+    withFixture(files, (root) => {
+      const result = checkAdminApiContracts({ root });
+      assert.equal(result.ok, false);
+      assert.match(
+        result.failures.join("\n"),
+        /provider controller unregistered: adminTryOnGarmentUploadContract/,
+      );
+    });
+  });
+
+  it("rejects a provider or caller bound to another exact contract", () => {
+    const files = tryOnFixture();
+    files["apps/service-api/src/media-assets/media-assets.controller.ts"] =
+      files[
+        "apps/service-api/src/media-assets/media-assets.controller.ts"
+      ].replace(
+        "adminTryOnGarmentUploadContract) uploadTryOnGarment",
+        "adminCreateTryOnGarmentContract) uploadTryOnGarment",
+      );
+    files["apps/admin-ui/src/api/try-on-garments.ts"] = files[
+      "apps/admin-ui/src/api/try-on-garments.ts"
+    ].replace(
+      "adminTryOnGarmentUploadContract, {}",
+      "adminCreateTryOnGarmentContract, {}",
+    );
+    withFixture(files, (root) => {
+      const result = checkAdminApiContracts({ root });
+      assert.equal(result.ok, false);
+      assert.match(
+        result.failures.join("\n"),
+        /provider missing: adminTryOnGarmentUploadContract/,
+      );
+      assert.match(
+        result.failures.join("\n"),
+        /caller missing: adminTryOnGarmentUploadContract/,
       );
     });
   });

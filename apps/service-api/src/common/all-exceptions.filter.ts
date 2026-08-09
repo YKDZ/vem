@@ -97,7 +97,9 @@ function tryOnGarmentUploadFailure(
   // detail behind the stable public contract reason code.
   if (
     exception instanceof Error &&
-    /multipart|form|boundary|unexpected end|part/i.test(exception.message)
+    /multipart|form|boundary|unexpected end|unexpected field|too many (?:parts|files|fields)|field (?:name|value) too long|malformed part|invalid .*part/i.test(
+      exception.message,
+    )
   ) {
     return "TRY_ON_GARMENT_MULTIPART_INVALID";
   }

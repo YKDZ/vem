@@ -233,26 +233,56 @@ const TRY_ON_CONTRACT_EXPECTATIONS = {
     path: "/media-assets/try-on-garments",
     providerMethod: "uploadTryOnGarment",
     callerMethods: ["uploadTryOnGarment"],
+    schemaReferences: {
+      querySchema: ["noQuerySchema"],
+      responseSchema: ["tryOnGarmentMediaAssetSchema"],
+    },
   },
   adminCreateTryOnGarmentContract: {
     method: "POST",
     path: "/try-on-garments",
     providerMethod: "createDraft",
     callerMethods: ["createTryOnGarmentDraft"],
+    schemaReferences: {
+      querySchema: ["noQuerySchema"],
+      bodySchema: ["tryOnGarmentDraftRequestSchema"],
+      responseSchema: ["tryOnGarmentResponseSchema"],
+    },
   },
   adminGetTryOnGarmentContract: {
     method: "GET",
     path: "/try-on-garments/:id",
     providerMethod: "getById",
     callerMethods: ["getTryOnGarment"],
+    schemaReferences: {
+      pathParamsSchema: ["garmentPathParamsSchema"],
+      querySchema: ["noQuerySchema"],
+      bodySchema: ["noBodySchema"],
+      responseSchema: ["tryOnGarmentResponseSchema"],
+    },
   },
   adminTryOnGarmentConfirmationContract: {
     method: "POST",
     path: "/try-on-garments/:id/confirmation",
     providerMethod: "confirm",
     callerMethods: ["confirmTryOnGarment"],
+    schemaReferences: {
+      pathParamsSchema: ["garmentPathParamsSchema"],
+      querySchema: ["noQuerySchema"],
+      bodySchema: ["noBodySchema"],
+      responseSchema: ["tryOnGarmentResponseSchema"],
+    },
   },
 };
+
+const TRY_ON_CONTRACT_FIELDS = [
+  "method",
+  "path",
+  "pathParamsSchema",
+  "querySchema",
+  "bodySchema",
+  "responseSchema",
+];
 
 function parseTypeScript(path, source) {
   return ts.createSourceFile(
@@ -305,16 +335,52 @@ function contractDefinitions(root) {
       const argument = declaration.initializer.arguments[0];
       if (!argument || !ts.isObjectLiteralExpression(argument)) continue;
       const values = {};
+      const invalidSchemaFields = new Set();
       for (const property of argument.properties) {
-        if (!ts.isPropertyAssignment(property)) continue;
-        if (!ts.isIdentifier(property.name)) continue;
-        if (!ts.isStringLiteral(property.initializer)) continue;
-        values[property.name.text] = property.initializer.text;
+        const propertyName =
+          ts.isPropertyAssignment(property) ||
+          ts.isShorthandPropertyAssignment(property)
+            ? ts.isIdentifier(property.name)
+              ? property.name.text
+              : ts.isStringLiteral(property.name)
+                ? property.name.text
+                : undefined
+            : undefined;
+        if (!propertyName) continue;
+        values[propertyName] = ts.isShorthandPropertyAssignment(property)
+          ? property.name
+          : property.initializer;
+        if (
+          [
+            "pathParamsSchema",
+            "querySchema",
+            "bodySchema",
+            "responseSchema",
+          ].includes(propertyName) &&
+          isUnknownSchemaExpression(values[propertyName])
+        ) {
+          invalidSchemaFields.add(propertyName);
+        }
       }
-      definitions.set(declaration.name.text, values);
+      definitions.set(declaration.name.text, { values, invalidSchemaFields });
     }
   });
   return definitions;
+}
+
+function isUnknownSchemaExpression(expression) {
+  if (
+    ts.isCallExpression(expression) &&
+    ts.isPropertyAccessExpression(expression.expression) &&
+    ts.isIdentifier(expression.expression.expression) &&
+    expression.expression.expression.text === "z" &&
+    ["any", "unknown"].includes(expression.expression.name.text)
+  ) {
+    return true;
+  }
+  return (
+    ts.isIdentifier(expression) && ["any", "unknown"].includes(expression.text)
+  );
 }
 
 function decoratedMethods(root, directory, decoratorName) {
@@ -336,6 +402,7 @@ function decoratedMethods(root, directory, decoratorName) {
             path,
             method: node.name.text,
             contract: call.argument,
+            controller: enclosingClassName(node),
           });
         }
       }
@@ -344,6 +411,54 @@ function decoratedMethods(root, directory, decoratorName) {
     visit(file);
   }
   return methods;
+}
+
+function enclosingClassName(node) {
+  let current = node.parent;
+  while (current) {
+    if (ts.isClassDeclaration(current) && current.name) {
+      return current.name.text;
+    }
+    current = current.parent;
+  }
+  return undefined;
+}
+
+function registeredControllers(root) {
+  const registered = new Set();
+  for (const path of listFiles(root, "apps/service-api/src")) {
+    if (!path.endsWith(".module.ts")) continue;
+    const file = parseTypeScript(path, readText(root, path));
+    const visit = (node) => {
+      if (ts.isDecorator(node)) {
+        const expression = node.expression;
+        if (
+          ts.isCallExpression(expression) &&
+          ts.isIdentifier(expression.expression) &&
+          expression.expression.text === "Module" &&
+          expression.arguments.length === 1 &&
+          ts.isObjectLiteralExpression(expression.arguments[0])
+        ) {
+          for (const property of expression.arguments[0].properties) {
+            if (
+              !ts.isPropertyAssignment(property) ||
+              !ts.isIdentifier(property.name) ||
+              property.name.text !== "controllers" ||
+              !ts.isArrayLiteralExpression(property.initializer)
+            ) {
+              continue;
+            }
+            for (const controller of property.initializer.elements) {
+              if (ts.isIdentifier(controller)) registered.add(controller.text);
+            }
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+  }
+  return registered;
 }
 
 function contractCalls(root) {
@@ -393,9 +508,29 @@ function isStaticallyDead(node) {
     ) {
       return true;
     }
+    if (isAfterUnconditionalExit(current, parent)) return true;
     current = parent;
   }
   return false;
+}
+
+function isAfterUnconditionalExit(node, parent) {
+  if (!ts.isBlock(parent)) return false;
+  const statement = findContainingStatement(node, parent);
+  if (!statement) return false;
+  const index = parent.statements.indexOf(statement);
+  return parent.statements
+    .slice(0, index)
+    .some(
+      (candidate) =>
+        ts.isReturnStatement(candidate) || ts.isThrowStatement(candidate),
+    );
+}
+
+function findContainingStatement(node, block) {
+  let current = node;
+  while (current && current.parent !== block) current = current.parent;
+  return current && ts.isStatement(current) ? current : undefined;
 }
 
 function isDescendantOf(node, ancestor) {
@@ -415,6 +550,7 @@ function checkTryOnContractCoverage(root) {
     "apps/service-api/src",
     "AdminEndpointContract",
   );
+  const registered = registeredControllers(root);
   const callers = contractCalls(root);
   const callerHits = [];
   const providerHits = [];
@@ -437,12 +573,40 @@ function checkTryOnContractCoverage(root) {
     if (!definition) {
       failures.push(`try-on contract definition missing: ${name}`);
     } else {
-      if (definition.method !== expected.method) {
+      const missingFields = TRY_ON_CONTRACT_FIELDS.filter(
+        (field) => !(field in definition.values),
+      );
+      if (missingFields.length > 0) {
+        failures.push(
+          `try-on contract definition incomplete: ${name} missing ${missingFields.join(", ")}`,
+        );
+      }
+      const invalidSchemas = [...definition.invalidSchemaFields];
+      if (invalidSchemas.length > 0) {
+        failures.push(
+          `try-on contract definition schema escape: ${name} uses unknown schema for ${invalidSchemas.join(", ")}`,
+        );
+      }
+      for (const [field, expectedReferences] of Object.entries(
+        expected.schemaReferences,
+      )) {
+        const expression = definition.values[field];
+        if (
+          expression &&
+          ts.isIdentifier(expression) &&
+          !expectedReferences.includes(expression.text)
+        ) {
+          failures.push(
+            `try-on contract definition schema drift: ${name} ${field} expected ${expectedReferences.join(" or ")}`,
+          );
+        }
+      }
+      if (stringLiteralValue(definition.values.method) !== expected.method) {
         failures.push(
           `try-on contract method drift: ${name} expected ${expected.method}`,
         );
       }
-      if (definition.path !== expected.path) {
+      if (stringLiteralValue(definition.values.path) !== expected.path) {
         failures.push(
           `try-on contract path drift: ${name} expected ${expected.path}`,
         );
@@ -457,7 +621,13 @@ function checkTryOnContractCoverage(root) {
     if (!provider) {
       failures.push(`try-on endpoint contract provider missing: ${name}`);
     } else {
-      providerHits.push(name);
+      if (!provider.controller || !registered.has(provider.controller)) {
+        failures.push(
+          `try-on endpoint contract provider controller unregistered: ${name}`,
+        );
+      } else {
+        providerHits.push(name);
+      }
     }
 
     const matchingCalls = callers.filter(
@@ -486,6 +656,10 @@ function checkTryOnContractCoverage(root) {
     failures.push("try-on upload contract body must not use z.unknown");
   }
   return { failures, callerHits, providerHits };
+}
+
+function stringLiteralValue(value) {
+  return value && ts.isStringLiteral(value) ? value.text : undefined;
 }
 
 function functionUsesWriteHelper(fn) {
