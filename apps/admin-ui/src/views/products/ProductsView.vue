@@ -3,7 +3,7 @@ import type { ProductStatus, TryOnGarmentMediaAsset } from "@vem/shared";
 
 import { PictureOutlined } from "@antdv-next/icons";
 import { isAxiosError } from "axios";
-import { onMounted, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 
 import {
@@ -156,10 +156,22 @@ const tryOnGarmentAsset = ref<TryOnGarmentMediaAsset | null>(null);
 const tryOnGarmentDraft = ref<TryOnGarmentResponse | null>(null);
 const tryOnGarmentChoices = ref<TryOnGarmentResponse[]>([]);
 const tryOnGarmentChoiceId = ref<string | undefined>(undefined);
+const newTryOnGarmentChoiceId = "__new_try_on_garment__";
+const tryOnGarmentChoiceOptions = computed(() => [
+  { value: newTryOnGarmentChoiceId, label: "新建试衣源" },
+  ...tryOnGarmentChoices.value.map((garment) => ({
+    value: garment.id,
+    label: `${garment.colorLabel} · ${garment.status}`,
+  })),
+]);
 const tryOnGarmentColorLabel = ref("");
 const tryOnGarmentTemplate = ref<"tshirt_short_sleeve" | "tshirt_long_sleeve">(
   "tshirt_short_sleeve",
 );
+const tryOnGarmentTemplateOptions = [
+  { value: "tshirt_short_sleeve", label: "短袖 T 恤" },
+  { value: "tshirt_long_sleeve", label: "长袖 T 恤" },
+] as const;
 const tryOnGarmentInput = ref<HTMLInputElement | null>(null);
 const tryOnGarmentUploading = ref(false);
 const tryOnGarmentSaving = ref(false);
@@ -202,9 +214,28 @@ async function openTryOnGarmentDraft(product: Product): Promise<void> {
 }
 
 function selectTryOnGarment(id: string): void {
+  if (id === newTryOnGarmentChoiceId) {
+    tryOnGarmentChoiceId.value = newTryOnGarmentChoiceId;
+    tryOnGarmentDraft.value = null;
+    tryOnGarmentAsset.value = null;
+    tryOnGarmentColorLabel.value = "";
+    tryOnGarmentTemplate.value = "tshirt_short_sleeve";
+    tryOnGarmentVariantIds.value = [];
+    tryOnGarmentPreviewFailed.value = false;
+    tryOnGarmentPreviewReady.value = false;
+    tryOnGarmentFeedback.value = "正在新建试衣源；请上传透明 PNG。";
+    return;
+  }
   const garment = tryOnGarmentChoices.value.find((item) => item.id === id);
   if (!garment) return;
-  tryOnGarmentChoiceId.value = id;
+  applyTryOnGarmentChoice(garment, true);
+}
+
+function applyTryOnGarmentChoice(
+  garment: TryOnGarmentResponse,
+  restored: boolean,
+): void {
+  tryOnGarmentChoiceId.value = garment.id;
   tryOnGarmentDraft.value = garment;
   tryOnGarmentAsset.value = garment.sourceMediaAsset;
   tryOnGarmentColorLabel.value = garment.colorLabel;
@@ -212,7 +243,23 @@ function selectTryOnGarment(id: string): void {
   tryOnGarmentVariantIds.value = [...garment.associatedVariantIds];
   tryOnGarmentPreviewFailed.value = false;
   tryOnGarmentPreviewReady.value = true;
-  tryOnGarmentFeedback.value = "已从服务端恢复共享试衣源。";
+  if (restored) {
+    tryOnGarmentFeedback.value = "已从服务端恢复共享试衣源。";
+  }
+}
+
+function reconcileTryOnGarmentChoice(garment: TryOnGarmentResponse): void {
+  const index = tryOnGarmentChoices.value.findIndex(
+    (candidate) => candidate.id === garment.id,
+  );
+  if (index === -1) {
+    tryOnGarmentChoices.value = [...tryOnGarmentChoices.value, garment];
+  } else {
+    tryOnGarmentChoices.value = tryOnGarmentChoices.value.map((candidate) =>
+      candidate.id === garment.id ? garment : candidate,
+    );
+  }
+  applyTryOnGarmentChoice(garment, false);
 }
 
 async function onTryOnGarmentSelected(event: Event): Promise<void> {
@@ -227,11 +274,12 @@ async function onTryOnGarmentSelected(event: Event): Promise<void> {
     const asset = await uploadTryOnGarment(file);
     tryOnGarmentAsset.value = asset;
     if (tryOnGarmentDraft.value) {
-      tryOnGarmentDraft.value = await replaceTryOnGarmentSource(
+      const updated = await replaceTryOnGarmentSource(
         tryOnGarmentDraft.value.id,
         asset.id,
         tryOnGarmentTemplate.value,
       );
+      reconcileTryOnGarmentChoice(updated);
     }
     tryOnGarmentPreviewFailed.value = false;
     tryOnGarmentPreviewReady.value = false;
@@ -269,12 +317,13 @@ async function saveTryOnGarmentDraft(): Promise<void> {
 
   tryOnGarmentSaving.value = true;
   try {
-    tryOnGarmentDraft.value = await createTryOnGarmentDraft({
+    const created = await createTryOnGarmentDraft({
       productId: product.id,
       colorLabel: tryOnGarmentColorLabel.value,
       sourceMediaAssetId: asset.id,
       template: tryOnGarmentTemplate.value,
     });
+    reconcileTryOnGarmentChoice(created);
     tryOnGarmentFeedback.value = "草稿已创建。请核对预览后显式确认来源。";
   } catch (error) {
     tryOnGarmentFeedback.value = `创建失败：${errorMessage(error)}`;
@@ -289,7 +338,7 @@ async function confirmTryOnGarmentSource(): Promise<void> {
 
   tryOnGarmentConfirming.value = true;
   try {
-    tryOnGarmentDraft.value = await confirmTryOnGarment(draft.id);
+    reconcileTryOnGarmentChoice(await confirmTryOnGarment(draft.id));
     tryOnGarmentFeedback.value =
       "来源已确认。请显式激活并选择共享的尺码规格后才会进入机器资格集合。";
   } catch (error) {
@@ -304,7 +353,7 @@ async function activateTryOnGarmentDraft(): Promise<void> {
   if (!draft) return;
   tryOnGarmentActivating.value = true;
   try {
-    tryOnGarmentDraft.value = await activateTryOnGarment(draft.id);
+    reconcileTryOnGarmentChoice(await activateTryOnGarment(draft.id));
     tryOnGarmentFeedback.value =
       "Garment 已激活；请选择同一商品下受影响的尺码规格。";
   } catch (error) {
@@ -319,9 +368,11 @@ async function saveTryOnGarmentAssociations(): Promise<void> {
   if (!draft) return;
   tryOnGarmentAssociating.value = true;
   try {
-    tryOnGarmentDraft.value = await replaceTryOnGarmentVariantAssociations(
-      draft.id,
-      tryOnGarmentVariantIds.value,
+    reconcileTryOnGarmentChoice(
+      await replaceTryOnGarmentVariantAssociations(
+        draft.id,
+        tryOnGarmentVariantIds.value,
+      ),
     );
     const affected = tryOnGarmentVariants.value
       .filter((variant) => tryOnGarmentVariantIds.value.includes(variant.id))
@@ -343,7 +394,7 @@ async function retireTryOnGarmentDraft(): Promise<void> {
   if (!draft) return;
   tryOnGarmentRetiring.value = true;
   try {
-    tryOnGarmentDraft.value = await retireTryOnGarment(draft.id);
+    reconcileTryOnGarmentChoice(await retireTryOnGarment(draft.id));
     tryOnGarmentFeedback.value =
       "Garment 已退休；所有关联规格即时失去试穿资格。";
   } catch (error) {
@@ -734,16 +785,9 @@ watch(
         <a-form-item v-if="tryOnGarmentChoices.length" label="已有试衣源">
           <a-select
             v-model:value="tryOnGarmentChoiceId"
+            :options="tryOnGarmentChoiceOptions"
             @change="selectTryOnGarment"
-          >
-            <a-select-option
-              v-for="garment in tryOnGarmentChoices"
-              :key="garment.id"
-              :value="garment.id"
-            >
-              {{ garment.colorLabel }} · {{ garment.status }}
-            </a-select-option>
-          </a-select>
+          />
         </a-form-item>
         <a-form-item label="可见颜色">
           <a-input
@@ -755,15 +799,8 @@ watch(
         <a-form-item label="T 恤模板">
           <a-select
             v-model:value="tryOnGarmentTemplate"
-            :disabled="Boolean(tryOnGarmentDraft)"
-          >
-            <a-select-option value="tshirt_short_sleeve">
-              短袖 T 恤
-            </a-select-option>
-            <a-select-option value="tshirt_long_sleeve">
-              长袖 T 恤
-            </a-select-option>
-          </a-select>
+            :options="tryOnGarmentTemplateOptions"
+          />
         </a-form-item>
         <a-form-item label="透明 PNG 来源">
           <div class="space-y-3">

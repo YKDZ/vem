@@ -32,13 +32,38 @@ async function createProduct(page: Page, name: string): Promise<void> {
   });
 }
 
+async function createProductVariant(
+  page: Page,
+  row: Locator,
+  sku: string,
+  size: string,
+): Promise<void> {
+  await row.getByRole("button", { name: "SKU" }).click();
+  const drawer = page.locator(".ant-drawer").filter({ hasText: "SKU 列表" });
+  await drawer.getByRole("button", { name: /新增 SKU/ }).click();
+  const modal = page.locator(".ant-modal").filter({ hasText: "新增 SKU" });
+  await formItem(modal, "SKU").locator("input").fill(sku);
+  await formItem(modal, "尺码").locator("input").fill(size);
+  await formItem(modal, "售价(分)").locator("input").fill("1000");
+  await Promise.all([
+    page.waitForResponse(
+      (response) =>
+        response.url().endsWith("/api/product-variants") &&
+        response.request().method() === "POST",
+    ),
+    modal.locator(".ant-btn-primary").click(),
+  ]);
+  await expect(modal).toBeHidden();
+  await page.keyboard.press("Escape");
+}
+
 test.describe("Try-On Garment Admin UI contract", () => {
   skipUnlessAdminMutationE2eEnabled(test);
 
   test("lets an operator select a product, preview a validated source, and explicitly confirm its draft", async ({
     page,
   }) => {
-    test.setTimeout(60_000);
+    test.setTimeout(90_000);
     const unique = Date.now().toString(36);
     const productName = `E2E试衣源-${unique}`;
     await login(page);
@@ -47,6 +72,8 @@ test.describe("Try-On Garment Admin UI contract", () => {
     await createProduct(page, productName);
 
     const row = page.locator(".ant-table-row").filter({ hasText: productName });
+    await createProductVariant(page, row, `TRY-ON-S-${unique}`, "S");
+    await createProductVariant(page, row, `TRY-ON-L-${unique}`, "L");
     await row.getByRole("button", { name: "新增试衣源" }).click();
     const modal = page
       .locator(".ant-modal")
@@ -122,6 +149,23 @@ test.describe("Try-On Garment Admin UI contract", () => {
     ]);
     expect(activationResponse.ok()).toBe(true);
     await expect(modal.getByText("共享尺码影响范围")).toBeVisible();
+    await modal.getByRole("checkbox", { name: `TRY-ON-S-${unique}` }).check();
+    await modal.getByRole("checkbox", { name: `TRY-ON-L-${unique}` }).check();
+    const [nonEmptyAssociation] = await Promise.all([
+      page.waitForResponse(
+        (response) =>
+          response
+            .url()
+            .endsWith(
+              `/api/try-on-garments/${draft.id}/variant-associations`,
+            ) && response.request().method() === "PUT",
+      ),
+      modal.getByRole("button", { name: "保存共享尺码关联" }).click(),
+    ]);
+    const associatedDraft = tryOnGarmentResponseSchema.parse(
+      (await nonEmptyAssociation.json()).data,
+    );
+    expect(associatedDraft.associatedVariantIds).toHaveLength(2);
 
     // Closing or refreshing the operator surface must not discard the shared
     // source identity.  Reopen it from the product, then exercise the
@@ -181,6 +225,8 @@ test.describe("Try-On Garment Admin UI contract", () => {
     ).toBe(true);
     monitor.failures.splice(0, monitor.failures.length);
 
+    await formItem(restoredModal, "T 恤模板").getByRole("combobox").click();
+    await page.getByText("长袖 T 恤", { exact: true }).last().click();
     const [replacementUpload, replacementPatch] = await Promise.all([
       page.waitForResponse(
         (response) =>
@@ -200,6 +246,12 @@ test.describe("Try-On Garment Admin UI contract", () => {
     ]);
     expect(replacementUpload.ok()).toBe(true);
     expect(replacementPatch.ok()).toBe(true);
+    expect(
+      tryOnGarmentResponseSchema.parse((await replacementPatch.json()).data),
+    ).toMatchObject({
+      template: "tshirt_long_sleeve",
+      associatedVariantIds: associatedDraft.associatedVariantIds,
+    });
     await Promise.all([
       page.waitForResponse(
         (response) =>
@@ -211,6 +263,62 @@ test.describe("Try-On Garment Admin UI contract", () => {
       ),
       restoredModal.getByRole("button", { name: "保存共享尺码关联" }).click(),
     ]);
+    await formItem(restoredModal, "已有试衣源").getByRole("combobox").click();
+    await page.getByText("新建试衣源", { exact: true }).last().click();
+    await expect(
+      formItem(restoredModal, "可见颜色").locator("input"),
+    ).toBeEnabled();
+    await formItem(restoredModal, "可见颜色").locator("input").fill("珊瑚红");
+    await Promise.all([
+      page.waitForResponse(
+        (response) =>
+          response.url().endsWith("/api/media-assets/try-on-garments") &&
+          response.request().method() === "POST",
+      ),
+      restoredModal.locator("input[type='file']").setInputFiles({
+        name: "second-garment.png",
+        mimeType: "image/png",
+        buffer: rgbaPng(768, 1024, 0),
+      }),
+    ]);
+    const [secondDraftResponse] = await Promise.all([
+      page.waitForResponse(
+        (response) =>
+          response.url().endsWith("/api/try-on-garments") &&
+          response.request().method() === "POST",
+      ),
+      restoredModal.getByRole("button", { name: "创建草稿" }).click(),
+    ]);
+    const secondDraft = tryOnGarmentResponseSchema.parse(
+      (await secondDraftResponse.json()).data,
+    );
+    await formItem(restoredModal, "已有试衣源").getByRole("combobox").click();
+    await page.getByText("海军蓝 · active", { exact: true }).last().click();
+    await expect(
+      formItem(restoredModal, "可见颜色").locator("input"),
+    ).toHaveValue("海军蓝");
+    await formItem(restoredModal, "已有试衣源").getByRole("combobox").click();
+    await page.getByText("珊瑚红 · draft", { exact: true }).last().click();
+    await expect(
+      formItem(restoredModal, "可见颜色").locator("input"),
+    ).toHaveValue("珊瑚红");
+    await restoredModal.getByRole("button", { name: /取\s*消/ }).click();
+    await page.reload();
+    const reloadedRow = page
+      .locator(".ant-table-row")
+      .filter({ hasText: productName });
+    await reloadedRow.getByRole("button", { name: "新增试衣源" }).click();
+    const reloadedModal = page
+      .locator(".ant-modal")
+      .filter({ hasText: "新增 Try-On Garment 草稿" });
+    await expect(
+      formItem(reloadedModal, "可见颜色").locator("input"),
+    ).toHaveValue("珊瑚红");
+    await expect(
+      reloadedModal.getByAltText("Try-On Garment 来源预览"),
+    ).toHaveAttribute("src", new RegExp(secondDraft.sourceMediaAsset.id));
+    await formItem(reloadedModal, "已有试衣源").getByRole("combobox").click();
+    await page.getByText("海军蓝 · active", { exact: true }).last().click();
     await Promise.all([
       page.waitForResponse(
         (response) =>
@@ -219,9 +327,9 @@ test.describe("Try-On Garment Admin UI contract", () => {
             .endsWith(`/api/try-on-garments/${draft.id}/retirement`) &&
           response.request().method() === "POST",
       ),
-      restoredModal.getByRole("button", { name: "退休" }).click(),
+      reloadedModal.getByRole("button", { name: "退休" }).click(),
     ]);
-    await expect(restoredModal.getByText(/Garment 已退休/)).toBeVisible();
+    await expect(reloadedModal.getByText(/Garment 已退休/)).toBeVisible();
     await monitor.assertNoFailures();
   });
 

@@ -149,6 +149,28 @@ describe("admin api contract guard", () => {
     });
   });
 
+  it("rejects raw GET and PUT even beside the one valid contract identity", () => {
+    const rawBypass = completeCatalogContractFixture();
+    rawBypass["apps/admin-ui/src/api/try-on-garments.ts"] = rawBypass[
+      "apps/admin-ui/src/api/try-on-garments.ts"
+    ].replace(
+      "return await callAdminEndpointContract(adminGetTryOnGarmentContract, {",
+      'await get("/try-on-garments/raw");\n  await put("/try-on-garments/raw", {});\n  return await callAdminEndpointContract(adminGetTryOnGarmentContract, {',
+    );
+    withFixture(rawBypass, (root) => {
+      const result = checkAdminApiContracts({ root });
+      assert.equal(result.ok, false);
+      assert.match(
+        result.failures.join("\n"),
+        /caller raw helper bypass: adminGetTryOnGarmentContract uses get, put/,
+      );
+      assert.doesNotMatch(
+        result.failures.join("\n"),
+        /caller missing: adminGetTryOnGarmentContract/,
+      );
+    });
+  });
+
   it("ignores comments and dead code and rejects a missing caller", () => {
     const files = tryOnFixture();
     files["apps/admin-ui/src/api/try-on-garments.ts"] = `

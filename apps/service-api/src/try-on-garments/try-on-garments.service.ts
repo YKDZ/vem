@@ -14,6 +14,7 @@ import {
 } from "@nestjs/common";
 import {
   and,
+  count,
   eq,
   isNull,
   isNotNull,
@@ -45,11 +46,36 @@ export class TryOnGarmentsService {
     input: TryOnGarmentDraftRequest,
     adminUserId: string,
   ): Promise<TryOnGarmentResponse> {
-    await this.requireProduct(input.productId);
     const sourceMediaAsset = await this.requireSourceMediaAsset(
       input.sourceMediaAssetId,
     );
     const created = await this.db.transaction(async (tx) => {
+      // A product row is the stable aggregate lock for this bounded list. It
+      // serializes concurrent creates even when no garment row yet exists.
+      const [product] = await tx
+        .select({ id: products.id })
+        .from(products)
+        .where(
+          and(eq(products.id, input.productId), isNull(products.deletedAt)),
+        )
+        .for("update", { of: products });
+      if (!product) {
+        throw new BadRequestException("TRY_ON_GARMENT_PRODUCT_NOT_FOUND");
+      }
+      const [{ total }] = await tx
+        .select({ total: count() })
+        .from(tryOnGarments)
+        .where(
+          and(
+            eq(tryOnGarments.productId, input.productId),
+            isNull(tryOnGarments.deletedAt),
+          ),
+        );
+      if (Number(total) >= 256) {
+        throw new BadRequestException(
+          "TRY_ON_GARMENT_PRODUCT_CAPACITY_REACHED",
+        );
+      }
       const [garment] = await tx
         .insert(tryOnGarments)
         .values({
@@ -166,9 +192,19 @@ export class TryOnGarmentsService {
         },
         tx,
       );
-      return confirmed;
+      return {
+        garment: confirmed,
+        associatedVariantIds: await this.readAssociatedVariantIds(
+          confirmed.id,
+          tx,
+        ),
+      };
     });
-    return toTryOnGarmentResponse(updated, garment.sourceMediaAsset);
+    return toTryOnGarmentResponse(
+      updated.garment,
+      garment.sourceMediaAsset,
+      updated.associatedVariantIds,
+    );
   }
 
   async activate(
@@ -208,7 +244,13 @@ export class TryOnGarmentsService {
         },
         tx,
       );
-      return active;
+      return {
+        garment: active,
+        associatedVariantIds: await this.readAssociatedVariantIds(
+          active.id,
+          tx,
+        ),
+      };
     });
     if (!updated) {
       const latest = await this.getById(id);
@@ -218,7 +260,11 @@ export class TryOnGarmentsService {
       }
       throw new BadRequestException("TRY_ON_GARMENT_ACTIVATION_INVALID");
     }
-    return toTryOnGarmentResponse(updated, garment.sourceMediaAsset);
+    return toTryOnGarmentResponse(
+      updated.garment,
+      garment.sourceMediaAsset,
+      updated.associatedVariantIds,
+    );
   }
 
   async retire(id: string, adminUserId: string): Promise<TryOnGarmentResponse> {
@@ -254,14 +300,24 @@ export class TryOnGarmentsService {
         },
         tx,
       );
-      return retired;
+      return {
+        garment: retired,
+        associatedVariantIds: await this.readAssociatedVariantIds(
+          retired.id,
+          tx,
+        ),
+      };
     });
     if (!updated) {
       const latest = await this.getById(id);
       if (latest.status === "retired") return latest;
       throw new BadRequestException("TRY_ON_GARMENT_RETIREMENT_INVALID");
     }
-    return toTryOnGarmentResponse(updated, garment.sourceMediaAsset);
+    return toTryOnGarmentResponse(
+      updated.garment,
+      garment.sourceMediaAsset,
+      updated.associatedVariantIds,
+    );
   }
 
   /** Replaces the exact association set atomically; product traits are never
@@ -350,65 +406,84 @@ export class TryOnGarmentsService {
     input: TryOnGarmentSourceReplacementRequest,
     adminUserId: string,
   ): Promise<TryOnGarmentResponse> {
-    const { garment: updated, sourceMediaAsset } = await this.db.transaction(
-      async (tx) => {
-        const [current] = await tx
-          .select({ garment: tryOnGarments })
-          .from(tryOnGarments)
-          .where(and(eq(tryOnGarments.id, id), isNull(tryOnGarments.deletedAt)))
-          .for("update", { of: tryOnGarments });
-        if (!current) throw new NotFoundException("Try-On Garment not found");
-        const [source] = await tx
-          .select()
-          .from(mediaAssets)
-          .where(
-            and(
-              eq(mediaAssets.id, input.sourceMediaAssetId),
-              eq(mediaAssets.purpose, "try_on_garment"),
-              eq(mediaAssets.contentType, "image/png"),
-              eq(mediaAssets.hasTransparency, true),
-              isNull(mediaAssets.deletedAt),
-            ),
-          )
-          .limit(1);
-        if (!source) {
-          throw new BadRequestException("TRY_ON_GARMENT_SOURCE_INVALID");
-        }
-        const [garment] = await tx
-          .update(tryOnGarments)
-          .set({
-            sourceMediaAssetId: input.sourceMediaAssetId,
-            template: input.template,
-            updatedAt: new Date(),
-          })
-          .where(and(eq(tryOnGarments.id, id), isNull(tryOnGarments.deletedAt)))
-          .returning();
-        if (!garment) throw new NotFoundException("Try-On Garment not found");
-        await this.auditService.record(
-          {
-            adminUserId,
-            action: "try_on_garments.source.replace",
-            resourceType: "try_on_garment",
-            resourceId: id,
-            beforeJson: tryOnGarmentAuditSnapshot(current.garment),
-            afterJson: tryOnGarmentAuditSnapshot(garment),
-          },
+    const {
+      garment: updated,
+      sourceMediaAsset,
+      associatedVariantIds,
+    } = await this.db.transaction(async (tx) => {
+      const [current] = await tx
+        .select({ garment: tryOnGarments })
+        .from(tryOnGarments)
+        .where(and(eq(tryOnGarments.id, id), isNull(tryOnGarments.deletedAt)))
+        .for("update", { of: tryOnGarments });
+      if (!current) throw new NotFoundException("Try-On Garment not found");
+      const [source] = await tx
+        .select()
+        .from(mediaAssets)
+        .where(
+          and(
+            eq(mediaAssets.id, input.sourceMediaAssetId),
+            eq(mediaAssets.purpose, "try_on_garment"),
+            eq(mediaAssets.contentType, "image/png"),
+            eq(mediaAssets.hasTransparency, true),
+            isNull(mediaAssets.deletedAt),
+          ),
+        )
+        .limit(1);
+      if (!source) {
+        throw new BadRequestException("TRY_ON_GARMENT_SOURCE_INVALID");
+      }
+      const [garment] = await tx
+        .update(tryOnGarments)
+        .set({
+          sourceMediaAssetId: input.sourceMediaAssetId,
+          template: input.template,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(tryOnGarments.id, id), isNull(tryOnGarments.deletedAt)))
+        .returning();
+      if (!garment) throw new NotFoundException("Try-On Garment not found");
+      await this.auditService.record(
+        {
+          adminUserId,
+          action: "try_on_garments.source.replace",
+          resourceType: "try_on_garment",
+          resourceId: id,
+          beforeJson: tryOnGarmentAuditSnapshot(current.garment),
+          afterJson: tryOnGarmentAuditSnapshot(garment),
+        },
+        tx,
+      );
+      return {
+        garment,
+        sourceMediaAsset: toTryOnGarmentMediaAsset(source),
+        associatedVariantIds: await this.readAssociatedVariantIds(
+          garment.id,
           tx,
-        );
-        return { garment, sourceMediaAsset: toTryOnGarmentMediaAsset(source) };
-      },
+        ),
+      };
+    });
+    return toTryOnGarmentResponse(
+      updated,
+      sourceMediaAsset,
+      associatedVariantIds,
     );
-    return toTryOnGarmentResponse(updated, sourceMediaAsset);
   }
 
-  private async requireProduct(id: string): Promise<void> {
-    const [product] = await this.db
-      .select({ id: products.id })
-      .from(products)
-      .where(and(eq(products.id, id), isNull(products.deletedAt)))
-      .limit(1);
-    if (!product)
-      throw new BadRequestException("TRY_ON_GARMENT_PRODUCT_NOT_FOUND");
+  private async readAssociatedVariantIds(
+    id: string,
+    executor: Pick<DrizzleClient, "select"> = this.db,
+  ): Promise<string[]> {
+    const variants = await executor
+      .select({ id: productVariants.id })
+      .from(productVariants)
+      .where(
+        and(
+          eq(productVariants.tryOnGarmentId, id),
+          isNull(productVariants.deletedAt),
+        ),
+      );
+    return variants.map((variant) => variant.id);
   }
 
   private async requireSourceMediaAsset(

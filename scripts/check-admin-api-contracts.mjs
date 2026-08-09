@@ -17,6 +17,7 @@ const CONTRACT_WRITE_HELPERS = new Set([
   "postResponseContract",
   "callAdminEndpointContract",
 ]);
+const RAW_ADMIN_HELPERS = new Set(["get", "post", "put", "patch", "delete"]);
 const WRITE_CALL_PATTERN =
   /\b(?:post|patch|postContract|patchContract|postResponseContract|callAdminEndpointContract)\s*(?:<[\s\S]*?>)?\s*\(/;
 const BROAD_TYPE_PATTERN = /\b(?:Record\s*<\s*string\s*,\s*unknown\s*>|any)\b/;
@@ -651,6 +652,41 @@ function contractCalls(root) {
   return calls;
 }
 
+/** Parse, rather than regex-scan, raw request helpers so a valid contract call
+ * in the same function cannot camouflage a bypass. */
+function rawAdminHelperCalls(root) {
+  const calls = [];
+  for (const path of listFiles(root, ADMIN_API_DIRECTORY)) {
+    if (path.endsWith(".spec.ts")) continue;
+    const file = parseTypeScript(path, readText(root, path));
+    const visit = (node, enclosingFunction) => {
+      let currentFunction = enclosingFunction;
+      if (
+        (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node)) &&
+        node.name &&
+        ts.isIdentifier(node.name)
+      ) {
+        currentFunction = node.name.text;
+      }
+      if (
+        ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        RAW_ADMIN_HELPERS.has(node.expression.text) &&
+        !isStaticallyDead(node)
+      ) {
+        calls.push({
+          path,
+          method: currentFunction,
+          helper: node.expression.text,
+        });
+      }
+      ts.forEachChild(node, (child) => visit(child, currentFunction));
+    };
+    visit(file, undefined);
+  }
+  return calls;
+}
+
 function isStaticallyDead(node) {
   let current = node;
   while (current.parent) {
@@ -706,6 +742,7 @@ function checkTryOnContractCoverage(root) {
   );
   const registered = registeredControllers(root);
   const callers = contractCalls(root);
+  const rawCalls = rawAdminHelperCalls(root);
   const callerHits = [];
   const providerHits = [];
 
@@ -784,15 +821,30 @@ function checkTryOnContractCoverage(root) {
       }
     }
 
-    const matchingCalls = callers.filter(
-      (candidate) =>
-        candidate.contract === name &&
-        expected.callerMethods.includes(candidate.method),
+    const callerContractCalls = callers.filter((candidate) =>
+      expected.callerMethods.includes(candidate.method),
+    );
+    const matchingCalls = callerContractCalls.filter(
+      (candidate) => candidate.contract === name,
     );
     if (matchingCalls.length === 0) {
       failures.push(`try-on endpoint contract caller missing: ${name}`);
+    } else if (matchingCalls.length !== 1) {
+      failures.push(`try-on endpoint contract caller ambiguous: ${name}`);
+    } else if (
+      callerContractCalls.some((candidate) => candidate.contract !== name)
+    ) {
+      failures.push(`try-on endpoint contract caller identity drift: ${name}`);
     } else {
       callerHits.push(name);
+    }
+    const rawBypasses = rawCalls.filter((candidate) =>
+      expected.callerMethods.includes(candidate.method),
+    );
+    if (rawBypasses.length > 0) {
+      failures.push(
+        `try-on endpoint contract caller raw helper bypass: ${name} uses ${rawBypasses.map((candidate) => candidate.helper).join(", ")}`,
+      );
     }
   }
 

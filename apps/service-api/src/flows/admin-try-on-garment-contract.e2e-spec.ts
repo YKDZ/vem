@@ -441,6 +441,31 @@ describe("admin-try-on-garment-contract.e2e", { concurrent: false }, () => {
         .associatedVariantIds.sort(),
     ).toEqual([largeId, smallId].sort());
 
+    const confirmedAgain = await api
+      .post(
+        `/api${adminTryOnGarmentConfirmationContract.path.replace(":id", draft.id)}`,
+      )
+      .set(auth)
+      .send({})
+      .expect(201);
+    expect(
+      adminTryOnGarmentConfirmationContract.responseSchema
+        .parse((confirmedAgain.body as ApiResponse<unknown>).data)
+        .associatedVariantIds.sort(),
+    ).toEqual([largeId, smallId].sort());
+    const activeAgain = await api
+      .post(
+        `/api${adminTryOnGarmentActivationContract.path.replace(":id", draft.id)}`,
+      )
+      .set(auth)
+      .send({})
+      .expect(201);
+    expect(
+      adminTryOnGarmentActivationContract.responseSchema
+        .parse((activeAgain.body as ApiResponse<unknown>).data)
+        .associatedVariantIds.sort(),
+    ).toEqual([largeId, smallId].sort());
+
     // Two real requests race on the same row.  The composite FK makes either
     // scheduling order safe: PATCH can never publish a cross-product pointer.
     const [concurrentAssociation, moveAssociatedVariantResponse] =
@@ -512,6 +537,7 @@ describe("admin-try-on-garment-contract.e2e", { concurrent: false }, () => {
     ).toMatchObject({
       sourceMediaAsset: { id: replacement.id },
       template: "tshirt_long_sleeve",
+      associatedVariantIds: expect.arrayContaining([smallId, largeId]),
     });
     const sourceReplacementAudit = await api
       .get(`/api/audit-logs?resourceId=${draft.id}&page=1&pageSize=20`)
@@ -561,6 +587,19 @@ describe("admin-try-on-garment-contract.e2e", { concurrent: false }, () => {
       template: "tshirt_long_sleeve",
       associatedVariantIds: expect.arrayContaining([smallId, largeId]),
     });
+
+    const retirementWithAssociations = await api
+      .post(
+        `/api${adminTryOnGarmentRetirementContract.path.replace(":id", draft.id)}`,
+      )
+      .set(auth)
+      .send({});
+    expect(retirementWithAssociations.status).toBe(201);
+    expect(
+      adminTryOnGarmentRetirementContract.responseSchema
+        .parse((retirementWithAssociations.body as ApiResponse<unknown>).data)
+        .associatedVariantIds.sort(),
+    ).toEqual([largeId, smallId].sort());
 
     const clearAssociations = await api
       .put(
@@ -940,6 +979,64 @@ describe("admin-try-on-garment-contract.e2e", { concurrent: false }, () => {
       getById.mockRestore();
     }
   }, 60_000);
+
+  it("caps a product at 256 garments, including concurrent final creates", async () => {
+    const token = await loginAndGetToken(api, appConfig);
+    const auth = { Authorization: `Bearer ${token}` };
+    const product = await api
+      .post("/api/products")
+      .set(auth)
+      .send({ name: "试衣源上限商品", status: "draft", sortOrder: 0 })
+      .expect(201);
+    const productId = (product.body as ApiResponse<{ id: string }>).data.id;
+    const upload = await api
+      .post(`/api${adminTryOnGarmentUploadContract.path}`)
+      .set(auth)
+      .attach("file", rgbaPng(768, 1024, 0), {
+        filename: "capacity-garment.png",
+        contentType: "image/png",
+      })
+      .expect(201);
+    const source = adminTryOnGarmentUploadContract.responseSchema.parse(
+      (upload.body as ApiResponse<unknown>).data,
+    );
+    const create = (colorLabel: string) =>
+      api.post(`/api${adminCreateTryOnGarmentContract.path}`).set(auth).send({
+        productId,
+        colorLabel,
+        sourceMediaAssetId: source.id,
+        template: "tshirt_short_sleeve",
+      });
+
+    for (let index = 0; index < 255; index += 1) {
+      // Deliberately establish the exact pre-race boundary without flooding
+      // the HTTP test server; only the final two creates race.
+      // oxlint-disable-next-line no-await-in-loop
+      await create(`容量-${index}`).expect(201);
+    }
+    const finalCreates = await Promise.all([
+      create("并发-A"),
+      create("并发-B"),
+    ]);
+    expect(
+      finalCreates
+        .map((response) => response.status)
+        .sort((left, right) => left - right),
+    ).toEqual([201, 400]);
+    expect(
+      finalCreates.find((response) => response.status === 400)?.body,
+    ).toMatchObject({ message: "TRY_ON_GARMENT_PRODUCT_CAPACITY_REACHED" });
+    const listed = await api
+      .get(`/api${adminListTryOnGarmentsByProductContract.path}`)
+      .set(auth)
+      .query({ productId })
+      .expect(200);
+    expect(
+      adminListTryOnGarmentsByProductContract.responseSchema.parse(
+        (listed.body as ApiResponse<unknown>).data,
+      ),
+    ).toHaveLength(256);
+  }, 90_000);
 });
 
 function deferred<T>() {
