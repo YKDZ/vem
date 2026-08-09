@@ -30,10 +30,13 @@ test("one reusable workflow owns the static quality gate", () => {
 
 test("the canonical static job includes formatting, types, lint and contracts", () => {
   const staticCommand = packageJson.scripts["ci:static"];
+  const affectedStaticCommand = packageJson.scripts["ci:static:affected"];
   assert.match(staticCommand, /pnpm fmt:check/);
   assert.match(staticCommand, /pnpm typecheck/);
   assert.match(staticCommand, /pnpm lint/);
   assert.match(staticCommand, /pnpm check:daemon-ipc-contracts/);
+  assert.match(staticCommand, /pnpm check:vision-v2-contracts/);
+  assert.match(affectedStaticCommand, /pnpm check:vision-v2-contracts/);
   assert.match(staticCommand, /pnpm ci:runtime-testbed-contracts/);
 });
 

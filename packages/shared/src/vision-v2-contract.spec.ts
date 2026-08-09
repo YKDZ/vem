@@ -20,4 +20,27 @@ describe("Vision V2 shared contract", () => {
       expect(() => visionV2MessageSchema.parse(fixture.message)).toThrow();
     }
   });
+
+  it("accepts only tokenized loopback ports from 1 through 65535", () => {
+    const start = validVisionV2Fixtures[2];
+    const garment = (start.payload as { garment: Record<string, unknown> })
+      .garment;
+    const withReference = (reference: string) => ({
+      ...start,
+      payload: { ...start.payload, garment: { ...garment, reference } },
+    });
+
+    expect(
+      visionV2MessageSchema.parse(
+        withReference("http://127.0.0.1:65535/garment?token=opaque"),
+      ),
+    ).toMatchObject({ type: "vision.try_on.attempt.start" });
+    for (const port of [0, 65536, 99999]) {
+      expect(() =>
+        visionV2MessageSchema.parse(
+          withReference(`http://127.0.0.1:${port}/garment?token=opaque`),
+        ),
+      ).toThrow();
+    }
+  });
 });

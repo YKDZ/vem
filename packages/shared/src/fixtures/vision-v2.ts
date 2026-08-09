@@ -120,4 +120,78 @@ export const invalidVisionV2Fixtures = [
       },
     },
   },
+  {
+    name: "rejects-unknown-message-discriminator",
+    message: {
+      ...validVisionV2Fixtures[0],
+      type: "vision.try_on.unknown",
+      payload: {},
+    },
+  },
+  {
+    name: "rejects-wrong-payload-for-discriminator",
+    message: { ...validVisionV2Fixtures[0], payload: {} },
+  },
+  {
+    name: "rejects-extra-envelope-property",
+    message: { ...validVisionV2Fixtures[0], unexpected: true },
+  },
+  {
+    name: "rejects-result-without-token",
+    message: {
+      ...validVisionV2Fixtures[5],
+      payload: {
+        ...validVisionV2Fixtures[5].payload,
+        result: {
+          reference: "http://127.0.0.1:39002/results/output",
+          digest: `sha256:${digest}`,
+          contentType: "image/png",
+          byteSize: 4096,
+          width: 512,
+          height: 768,
+        },
+      },
+    },
+  },
+  {
+    name: "rejects-nil-attempt-uuid",
+    message: {
+      ...validVisionV2Fixtures[2],
+      payload: {
+        ...validVisionV2Fixtures[2].payload,
+        attemptId: "00000000-0000-0000-0000-000000000000",
+      },
+    },
+  },
+  {
+    name: "rejects-invalid-garment-digest",
+    message: {
+      ...validVisionV2Fixtures[2],
+      payload: {
+        ...validVisionV2Fixtures[2].payload,
+        garment: { ...fastGarment, digest: "sha256:not-a-digest" },
+      },
+    },
+  },
+  {
+    name: "rejects-message-id-over-limit",
+    message: { ...validVisionV2Fixtures[0], messageId: "x".repeat(129) },
+  },
+  {
+    name: "rejects-result-dimension-over-limit",
+    message: {
+      ...validVisionV2Fixtures[5],
+      payload: {
+        ...validVisionV2Fixtures[5].payload,
+        result: {
+          reference: "http://127.0.0.1:39002/results/output?token=result-token",
+          digest: `sha256:${digest}`,
+          contentType: "image/png",
+          byteSize: 4096,
+          width: 8193,
+          height: 768,
+        },
+      },
+    },
+  },
 ];
