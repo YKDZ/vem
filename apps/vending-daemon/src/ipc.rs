@@ -1438,7 +1438,7 @@ async fn refresh_catalog(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
             // Reserve latest-wins ordering before the task is scheduled.  A
             // delayed older task must not become "new" merely by running
             // after a newer catalog has already been adopted.
-            let adoption_token = media_cache.register_catalog_adoption();
+            let adoption_token = media_cache.register_catalog_adoption().await;
             let shutdown = ctx.background_shutdown.clone();
             if let Err(error) = media_cache.clone().spawn_owned_task(async move {
                 if shutdown.is_cancelled() {
@@ -4265,12 +4265,20 @@ mod tests {
             .set_access_token_for_tests("catalog-test-token")
             .await;
         let block_fetch = Arc::new(Notify::new());
+        let media_cache_root = temp.path().join("hung-media-cache");
         ctx.media_cache = crate::managed_media::ManagedMediaCache::new(
-            temp.path().join("hung-media-cache"),
+            media_cache_root.clone(),
             "http://127.0.0.1:1234",
             Arc::new(HungFetcher(block_fetch)),
         )
         .expect("media cache");
+        // Use a real 95 MB inventory entry.  Reconciliation must account for
+        // it on a blocking worker while cache snapshots and the SQLite-backed
+        // sale view remain schedulable on Tokio.
+        std::fs::File::create(media_cache_root.join("95mb-inventory.bin"))
+            .expect("inventory file")
+            .set_len(95 * 1024 * 1024)
+            .expect("95 MB inventory plan");
         let bytes = b"\x89PNG\r\n\x1a\nhung".to_vec();
         let descriptor = serde_json::to_value(ready_media_descriptor(&bytes)).expect("descriptor");
         let product_id = "550e8400-e29b-41d4-a716-446655440024";
@@ -4348,6 +4356,9 @@ mod tests {
         .expect("catalog must not wait for media")
         .expect("catalog response");
         assert_eq!(catalog.status(), StatusCode::OK);
+        tokio::time::timeout(Duration::from_millis(100), ctx.media_cache.snapshot())
+            .await
+            .expect("cache snapshot must not wait for inventory or verifier");
         let sale_view = tokio::time::timeout(
             Duration::from_millis(100),
             build_router(ctx).oneshot(

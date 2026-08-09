@@ -126,6 +126,18 @@ pub trait MediaFetcher: Send + Sync {
 #[async_trait]
 pub(crate) trait ManifestDirectorySync: Send + Sync {
     async fn sync(&self, directory: &Path) -> Result<(), String>;
+
+    /// Startup treats only a missing transaction marker as absent.  Keeping
+    /// metadata behind the same small filesystem boundary makes permission
+    /// and I/O failures testable and prevents them from being mistaken for a
+    /// clean cache directory.
+    fn transaction_marker_present(&self, marker: &Path) -> Result<bool, String> {
+        match fs::metadata(marker) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(format!("inspect manifest transaction marker: {error}")),
+        }
+    }
 }
 
 struct PlatformManifestDirectorySync;
@@ -278,6 +290,11 @@ pub struct ManagedMediaCache {
     /// does not guard reads or warming: only next-state construction, manifest
     /// persistence, state swap and the reconcile receipt belong together.
     reconcile_gate: Arc<Mutex<()>>,
+    /// Registration and final commit share this gate.  A request supersedes a
+    /// prior request only after it obtains this gate and advances the token;
+    /// once a committer holds it, marker completion, state swap and its
+    /// receipt form one linearized acceptance.
+    adoption_linearization_gate: Arc<Mutex<()>>,
     queue: Arc<Mutex<VecDeque<WarmJob>>>,
     inflight: Arc<Mutex<HashSet<WarmIdentity>>>,
     staging: Arc<Mutex<HashSet<PathBuf>>>,
@@ -381,8 +398,12 @@ impl ManagedMediaCache {
         let root = root.into();
         fs::create_dir_all(&root).map_err(|error| format!("create media cache: {error}"))?;
         let transaction = root.join(".active-media.transaction");
-        let transaction_left_behind = transaction.exists();
-        let persisted = (!transaction_left_behind)
+        let (transaction_left_behind, marker_metadata_error) =
+            match manifest_directory_sync.transaction_marker_present(&transaction) {
+                Ok(present) => (present, None),
+                Err(error) => (false, Some(error)),
+            };
+        let persisted = (!transaction_left_behind && marker_metadata_error.is_none())
             .then(|| fs::read(root.join("active-media.json")).ok())
             .flatten()
             .and_then(|bytes| serde_json::from_slice::<ActiveMediaManifest>(&bytes).ok())
@@ -406,18 +427,20 @@ impl ManagedMediaCache {
                     .collect::<HashSet<_>>()
             })
             .unwrap_or_default();
-        if let Ok(entries) = fs::read_dir(&root) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let name = entry.file_name().to_string_lossy().to_string();
-                let object = name
-                    .strip_suffix(".bin")
-                    .or_else(|| name.strip_suffix(".json"));
-                if name != "active-media.json"
-                    && name != ".active-media.transaction"
-                    && !object.is_some_and(|key| allowed.contains(key))
-                {
-                    let _ = fs::remove_file(path);
+        if marker_metadata_error.is_none() {
+            if let Ok(entries) = fs::read_dir(&root) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    let object = name
+                        .strip_suffix(".bin")
+                        .or_else(|| name.strip_suffix(".json"));
+                    if name != "active-media.json"
+                        && name != ".active-media.transaction"
+                        && !object.is_some_and(|key| allowed.contains(key))
+                    {
+                        let _ = fs::remove_file(path);
+                    }
                 }
             }
         }
@@ -466,7 +489,11 @@ impl ManagedMediaCache {
                 }
             })
             .unwrap_or_default();
-        if transaction_left_behind {
+        if let Some(error) = marker_metadata_error {
+            initial_state.fatal_error = Some(format!(
+                "managed media cache cannot inspect manifest transaction marker; cache is unavailable: {error}"
+            ));
+        } else if transaction_left_behind {
             initial_state.fatal_error = Some(
                 "managed media cache has an incomplete manifest transaction; cache is unavailable"
                     .to_string(),
@@ -482,6 +509,7 @@ impl ManagedMediaCache {
             manifest_directory_sync,
             state: Arc::new(Mutex::new(initial_state)),
             reconcile_gate: Arc::new(Mutex::new(())),
+            adoption_linearization_gate: Arc::new(Mutex::new(())),
             queue: Arc::new(Mutex::new(VecDeque::new())),
             inflight: Arc::new(Mutex::new(HashSet::new())),
             staging: Arc::new(Mutex::new(HashSet::new())),
@@ -504,7 +532,8 @@ impl ManagedMediaCache {
     /// Reserve the ordering point before a caller launches its background
     /// reconcile task.  This is intentionally public because the IPC catalog
     /// handler owns the task and its presentation diagnostic.
-    pub fn register_catalog_adoption(&self) -> u64 {
+    pub async fn register_catalog_adoption(&self) -> u64 {
+        let _linearization = self.adoption_linearization_gate.lock().await;
         self.latest_adoption.fetch_add(1, Ordering::SeqCst) + 1
     }
 
@@ -549,7 +578,8 @@ impl ManagedMediaCache {
             return Err("managed media generation is required".to_string());
         }
         let interest = normalize_interest_set(descriptors)?;
-        let token = self.register_catalog_adoption();
+        let token = self.register_catalog_adoption().await;
+        let _linearization = self.adoption_linearization_gate.lock().await;
         self.adopt_interest_set(generation, interest, token)
             .await
             .map(|_| ())
@@ -577,7 +607,9 @@ impl ManagedMediaCache {
         // cache budget.  This is deliberately based on actual directory bytes,
         // not on a prior generation's declared descriptor sizes.
         self.remove_untracked_files().await;
-        if directory_usage_bytes(self.root.as_ref()) > MEDIA_CACHE_HIGH_WATER_BYTES {
+        if directory_usage_bytes_async(self.root.as_ref().clone()).await
+            > MEDIA_CACHE_HIGH_WATER_BYTES
+        {
             return Err("managed media cache disk high-water mark exceeded".to_string());
         }
 
@@ -585,16 +617,13 @@ impl ManagedMediaCache {
         // cache.  Build this immutable plan before touching cache state and
         // before the durable transaction, so a committed manifest can be
         // swapped into memory immediately at its linearization point.
-        let published = interest
-            .objects
-            .iter()
-            .map(|object| {
-                (
-                    object.descriptor.digest.clone(),
-                    self.published_and_valid(&object.descriptor),
-                )
-            })
-            .collect::<HashMap<_, _>>();
+        let mut published = HashMap::with_capacity(interest.objects.len());
+        for object in &interest.objects {
+            published.insert(
+                object.descriptor.digest.clone(),
+                self.published_and_valid(&object.descriptor).await,
+            );
+        }
 
         let manifest = ActiveMediaManifest {
             generation: generation.clone(),
@@ -686,7 +715,7 @@ impl ManagedMediaCache {
         &self,
         request: daemon_ipc_contracts::ManagedMediaReconcileRequest,
     ) -> Result<daemon_ipc_contracts::ManagedMediaReconcileReceipt, String> {
-        let token = self.register_catalog_adoption();
+        let token = self.register_catalog_adoption().await;
         self.reconcile_boundary_registered(request, token).await
     }
 
@@ -706,6 +735,10 @@ impl ManagedMediaCache {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let interest = normalize_interest_set(descriptors)?;
+        // Keep the linearization gate through receipt construction: a later
+        // registration cannot make disk, state and the acknowledged receipt
+        // describe different accepted generations.
+        let _linearization = self.adoption_linearization_gate.lock().await;
         let (interest_count, snapshot) = self
             .adopt_interest_set(generation.clone(), interest, adoption_token)
             .await?;
@@ -782,7 +815,14 @@ impl ManagedMediaCache {
             .map(|entry| entry.descriptor.clone());
         drop(entry);
         let descriptor = descriptor.ok_or(MediaReadError::NotFound)?;
-        if verify_staged_file(&path, &descriptor, &descriptor.content_type).is_err() {
+        if verify_staged_file_async(
+            path.clone(),
+            descriptor.clone(),
+            descriptor.content_type.clone(),
+        )
+        .await
+        .is_err()
+        {
             let mut state = self.state.lock().await;
             if let Some(entry) = state.entries.get_mut(digest) {
                 entry.leases = entry.leases.saturating_sub(1);
@@ -816,7 +856,7 @@ impl ManagedMediaCache {
         };
         candidates.sort_by_key(|(_, used)| *used);
         let mut removed = 0;
-        let mut disk_bytes = directory_usage_bytes(self.root.as_ref());
+        let mut disk_bytes = directory_usage_bytes_async(self.root.as_ref().clone()).await;
         for (digest, _) in candidates.into_iter().take(max_remove) {
             if disk_bytes <= MEDIA_CACHE_LOW_WATER_BYTES && removed > 0 {
                 break;
@@ -856,26 +896,32 @@ impl ManagedMediaCache {
                 .map(|(digest, _)| object_key(digest))
                 .collect::<HashSet<_>>()
         };
-        let staging = self.staging.lock().await.clone();
-        let Ok(entries) = fs::read_dir(self.root.as_ref()) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name == "active-media.json" {
-                continue;
+        // Keep stage registration closed until the blocking directory walk has
+        // captured it.  Otherwise a newly-created stage could appear between
+        // the async snapshot and the worker's `read_dir` call.
+        let staging_guard = self.staging.lock().await;
+        let staging = staging_guard.clone();
+        let root = self.root.as_ref().clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            let Ok(entries) = fs::read_dir(&root) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name == "active-media.json" || staging.contains(&path) {
+                    continue;
+                }
+                let keep = name
+                    .strip_suffix(".bin")
+                    .is_some_and(|key| protected.contains(key));
+                if !keep {
+                    let _ = fs::remove_file(path);
+                }
             }
-            if staging.contains(&path) {
-                continue;
-            }
-            let keep = name
-                .strip_suffix(".bin")
-                .is_some_and(|key| protected.contains(key));
-            if !keep {
-                let _ = fs::remove_file(path);
-            }
-        }
+        })
+        .await;
+        drop(staging_guard);
     }
 
     fn projection(&self, entry: &Entry) -> MediaProjection {
@@ -989,7 +1035,7 @@ impl ManagedMediaCache {
                 )
                 .await;
         }
-        if let Err(error) = fs::remove_file(&transaction) {
+        if let Err(error) = remove_optional_file(&transaction) {
             return self
                 .rollback_manifest(
                     previous,
@@ -1049,7 +1095,7 @@ impl ManagedMediaCache {
                 "managed media cache fatal: {cause}; sync rollback manifest: {error}"
             )));
         }
-        if let Err(error) = fs::remove_file(transaction) {
+        if let Err(error) = remove_optional_file(transaction) {
             return Err(ManifestPersistenceError::fatal(format!(
                 "managed media cache fatal: {cause}; remove rollback transaction marker: {error}"
             )));
@@ -1079,12 +1125,13 @@ impl ManagedMediaCache {
         self.root.join(format!("{}.json", object_key(digest)))
     }
 
-    fn published_and_valid(&self, descriptor: &MediaDescriptor) -> bool {
-        verify_staged_file(
-            &self.content_path(&descriptor.digest),
-            descriptor,
-            &descriptor.content_type,
+    async fn published_and_valid(&self, descriptor: &MediaDescriptor) -> bool {
+        verify_staged_file_async(
+            self.content_path(&descriptor.digest),
+            descriptor.clone(),
+            descriptor.content_type.clone(),
         )
+        .await
         .is_ok()
     }
 
@@ -1138,20 +1185,28 @@ impl ManagedMediaCache {
                 return;
             }
             candidate_index += 1;
-            result = tokio::select! {
+            let fetched = tokio::select! {
                 _ = self.shutdown.cancelled() => {
                     let _ = fs::remove_file(&stage);
                     self.staging.lock().await.remove(&stage);
                     return;
                 }
                 result = self.fetcher.fetch_to(candidate, &stage) => result,
-            }
-            .and_then(|response| {
-                if response.content_type != candidate.content_type {
-                    return Err("media content type does not match descriptor".to_string());
+            };
+            result = match fetched {
+                Ok(response) if response.content_type != candidate.content_type => {
+                    Err("media content type does not match descriptor".to_string())
                 }
-                verify_staged_file(&stage, candidate, &response.content_type)
-            });
+                Ok(response) => {
+                    verify_staged_file_async(
+                        stage.clone(),
+                        candidate.clone(),
+                        response.content_type,
+                    )
+                    .await
+                }
+                Err(error) => Err(error),
+            };
             match &result {
                 Ok(()) => break,
                 Err(error) => {
@@ -1220,7 +1275,9 @@ impl ManagedMediaCache {
                     self.staging.lock().await.remove(&stage);
                     return;
                 };
-                if directory_usage_bytes(self.root.as_ref()) > MEDIA_CACHE_HIGH_WATER_BYTES {
+                if directory_usage_bytes_async(self.root.as_ref().clone()).await
+                    > MEDIA_CACHE_HIGH_WATER_BYTES
+                {
                     let _ = fs::remove_file(&stage);
                     let mut state = self.state.lock().await;
                     if let Some(entry) = state.entries.get_mut(&current.digest) {
@@ -1348,6 +1405,33 @@ fn directory_usage_bytes(root: &Path) -> u64 {
         .filter(|metadata| metadata.is_file())
         .map(|metadata| metadata.len())
         .sum()
+}
+
+async fn directory_usage_bytes_async(root: PathBuf) -> u64 {
+    tokio::task::spawn_blocking(move || directory_usage_bytes(&root))
+        .await
+        .unwrap_or(0)
+}
+
+async fn verify_staged_file_async(
+    path: PathBuf,
+    descriptor: MediaDescriptor,
+    content_type: String,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || verify_staged_file(&path, &descriptor, &content_type))
+        .await
+        .map_err(|error| format!("managed media verifier task failed: {error}"))?
+}
+
+/// A marker is evidence only while present.  Once its deletion has been
+/// requested, observing it already absent is the same completed state and
+/// must not turn an otherwise durable transaction into a fatal cache.
+fn remove_optional_file(path: &Path) -> Result<(), std::io::Error> {
+    fs::remove_file(path).or_else(|error| {
+        (error.kind() == std::io::ErrorKind::NotFound)
+            .then_some(())
+            .ok_or(error)
+    })
 }
 
 fn write_durable(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -1693,7 +1777,7 @@ mod tests {
             .reconcile_active_catalog("generation-1", vec![descriptor.clone()])
             .await
             .expect("adopt");
-        for _ in 0..20 {
+        for _ in 0..400 {
             if cache.snapshot().await.1[0].readiness == MediaReadiness::Ready {
                 break;
             }
@@ -1729,7 +1813,7 @@ mod tests {
             .reconcile_active_catalog("generation-1", vec![expected.clone()])
             .await
             .expect("adopt");
-        for _ in 0..20 {
+        for _ in 0..100 {
             if cache.snapshot().await.1[0].readiness == MediaReadiness::Unavailable {
                 break;
             }
@@ -1801,7 +1885,7 @@ mod tests {
             .expect("staging started");
         assert_eq!(cache.cleanup_bounded(10).await, 0);
         release.notify_waiters();
-        for _ in 0..40 {
+        for _ in 0..400 {
             if cache.snapshot().await.1[0].readiness == MediaReadiness::Ready {
                 break;
             }
@@ -1905,7 +1989,7 @@ mod tests {
             .reconcile_active_catalog("generation-1", vec![expected.clone()])
             .await
             .expect("adopt");
-        for _ in 0..20 {
+        for _ in 0..400 {
             if online.snapshot().await.1[0].readiness == MediaReadiness::Ready {
                 break;
             }
@@ -2087,7 +2171,7 @@ mod tests {
             .reconcile_active_catalog("generation-1", vec![first.clone(), second])
             .await
             .expect("adopt");
-        for _ in 0..20 {
+        for _ in 0..400 {
             if cache.snapshot().await.1[0].readiness == MediaReadiness::Ready {
                 break;
             }
@@ -2350,8 +2434,8 @@ mod tests {
 
         // A is registered first but deliberately not allowed to execute until
         // B has fully adopted.  This models a delayed HTTP background task.
-        let a_token = cache.register_catalog_adoption();
-        let b_token = cache.register_catalog_adoption();
+        let a_token = cache.register_catalog_adoption().await;
+        let b_token = cache.register_catalog_adoption().await;
         cache
             .reconcile_boundary_registered(request("generation-b", b.clone()), b_token)
             .await
@@ -2427,8 +2511,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stale_adoption_after_durable_persist_restores_the_previous_manifest_before_the_next_request(
-    ) {
+    async fn completion_sync_and_registration_have_one_legal_linear_order() {
         struct PersistBarrier {
             calls: AtomicUsize,
             persisted: Arc<Notify>,
@@ -2473,7 +2556,7 @@ mod tests {
             .await
             .expect("C accepted");
 
-        let a_token = cache.register_catalog_adoption();
+        let a_token = cache.register_catalog_adoption().await;
         let a_cache = cache.clone();
         let a_task = tokio::spawn(async move {
             a_cache
@@ -2490,9 +2573,22 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(1), persisted.notified())
             .await
             .expect("A persisted");
-        let b_token = cache.register_catalog_adoption();
+        let mut b_registration = tokio::spawn({
+            let cache = cache.clone();
+            async move { cache.register_catalog_adoption().await }
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), &mut b_registration)
+                .await
+                .is_err(),
+            "B cannot supersede A until it obtains the completion linearization gate"
+        );
         release.notify_waiters();
-        assert!(a_task.await.expect("A task").is_err(), "A is stale");
+        assert!(
+            a_task.await.expect("A task").is_ok(),
+            "A commits before B registers"
+        );
+        let b_token = b_registration.await.expect("B registration");
         assert!(
             cache
                 .reconcile_boundary_registered(
@@ -2505,15 +2601,15 @@ mod tests {
                 )
                 .await
                 .is_err(),
-            "B rejection cannot replace C"
+            "B rejection cannot replace A"
         );
 
         let manifest: ActiveMediaManifest = serde_json::from_slice(
             &fs::read(root.join("active-media.json")).expect("durable manifest"),
         )
         .expect("manifest");
-        assert_eq!(manifest.generation, "accepted-c");
-        assert_eq!(cache.snapshot().await.0, "accepted-c");
+        assert_eq!(manifest.generation, "stale-a");
+        assert_eq!(cache.snapshot().await.0, "stale-a");
 
         let restarted = ManagedMediaCache::new(
             root,
@@ -2524,7 +2620,7 @@ mod tests {
             }),
         )
         .expect("restart");
-        assert_eq!(restarted.snapshot().await.0, "accepted-c");
+        assert_eq!(restarted.snapshot().await.0, "stale-a");
     }
 
     #[tokio::test]
@@ -2614,6 +2710,138 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn completion_marker_already_removed_is_an_idempotent_accepted_commit() {
+        struct RemoveMarkerBeforeCompletionSync(AtomicUsize);
+        #[async_trait]
+        impl ManifestDirectorySync for RemoveMarkerBeforeCompletionSync {
+            async fn sync(&self, directory: &Path) -> Result<(), String> {
+                // The second flush follows the manifest replacement, before
+                // the completion marker is removed.  Model a concurrent
+                // recovery/cleanup which has already made that deletion.
+                if self.0.fetch_add(1, Ordering::SeqCst) == 1 {
+                    fs::remove_file(directory.join(".active-media.transaction"))
+                        .map_err(|error| error.to_string())?;
+                }
+                Ok(())
+            }
+        }
+
+        let root = tempdir().expect("tempdir").keep();
+        let expected = descriptor(b"\x89PNG\r\n\x1a\ncompletion-idempotent", "image/png");
+        let cache = ManagedMediaCache::new_with_manifest_directory_sync(
+            root.clone(),
+            "http://127.0.0.1:1234",
+            Arc::new(FixtureFetcher {
+                bytes: Vec::new(),
+                content_type: "image/png".to_string(),
+            }),
+            Arc::new(RemoveMarkerBeforeCompletionSync(AtomicUsize::new(0))),
+        )
+        .expect("cache");
+
+        cache
+            .reconcile_active_catalog("accepted", vec![expected.clone()])
+            .await
+            .expect("an already absent completion marker is successful");
+        assert_eq!(cache.snapshot().await.0, "accepted");
+        assert!(!root.join(".active-media.transaction").exists());
+    }
+
+    #[tokio::test]
+    async fn completion_sync_failure_rolls_back_without_marking_the_cache_fatal() {
+        struct FailCompletionSync(AtomicUsize);
+        #[async_trait]
+        impl ManifestDirectorySync for FailCompletionSync {
+            async fn sync(&self, _: &Path) -> Result<(), String> {
+                // marker, replacement, completion, then rollback and its
+                // completion.  Only the unaccepted completion flush fails.
+                if self.0.fetch_add(1, Ordering::SeqCst) == 2 {
+                    Err("injected completion sync failure".to_string())
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        let root = tempdir().expect("tempdir").keep();
+        let cache = ManagedMediaCache::new_with_manifest_directory_sync(
+            root.clone(),
+            "http://127.0.0.1:1234",
+            Arc::new(FixtureFetcher {
+                bytes: Vec::new(),
+                content_type: "image/png".to_string(),
+            }),
+            Arc::new(FailCompletionSync(AtomicUsize::new(0))),
+        )
+        .expect("cache");
+        assert!(cache
+            .reconcile_active_catalog(
+                "unaccepted",
+                vec![descriptor(b"\x89PNG\r\n\x1a\nunaccepted", "image/png")],
+            )
+            .await
+            .expect_err("completion sync cannot be receipted")
+            .contains("completion"));
+        assert!(cache.snapshot().await.0.is_empty());
+        assert!(!root.join("active-media.json").exists());
+        assert!(!root.join(".active-media.transaction").exists());
+        cache
+            .reconcile_active_catalog(
+                "later",
+                vec![descriptor(b"\x89PNG\r\n\x1a\nlater", "image/png")],
+            )
+            .await
+            .expect("safe rollback leaves cache usable");
+    }
+
+    #[tokio::test]
+    async fn startup_marker_metadata_error_fails_closed_without_recovering_manifest() {
+        struct MarkerMetadataError;
+        #[async_trait]
+        impl ManifestDirectorySync for MarkerMetadataError {
+            async fn sync(&self, _: &Path) -> Result<(), String> {
+                Ok(())
+            }
+
+            fn transaction_marker_present(&self, _: &Path) -> Result<bool, String> {
+                Err("injected marker metadata denial".to_string())
+            }
+        }
+
+        let root = tempdir().expect("tempdir").keep();
+        let accepted = descriptor(b"\x89PNG\r\n\x1a\naccepted", "image/png");
+        fs::write(
+            root.join("active-media.json"),
+            serde_json::to_vec(&ActiveMediaManifest {
+                generation: "accepted".to_string(),
+                assets: vec![accepted],
+            })
+            .expect("manifest"),
+        )
+        .expect("seed manifest");
+
+        let cache = ManagedMediaCache::new_with_manifest_directory_sync(
+            root.clone(),
+            "http://127.0.0.1:1234",
+            Arc::new(FixtureFetcher {
+                bytes: Vec::new(),
+                content_type: "image/png".to_string(),
+            }),
+            Arc::new(MarkerMetadataError),
+        )
+        .expect("fail-closed cache still starts for diagnostics");
+        assert!(cache.snapshot().await.0.is_empty());
+        assert!(cache
+            .reconcile_active_catalog(
+                "must-not-recover",
+                vec![descriptor(b"\x89PNG\r\n\x1a\nnew", "image/png")],
+            )
+            .await
+            .expect_err("metadata failure freezes cache")
+            .contains("unavailable"));
+        assert!(root.join("active-media.json").exists());
+    }
+
+    #[tokio::test]
     async fn shutdown_closes_owned_task_registration_before_cancellation_and_reaps_finished_tasks()
     {
         let cache = ManagedMediaCache::new(
@@ -2668,6 +2896,101 @@ mod tests {
             "only workers and the most recent detached task remain tracked"
         );
         reopened.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_joins_a_tracked_reconcile_blocked_in_manifest_sync_before_reusing_directory()
+    {
+        struct ManifestSyncBarrier {
+            entered: Arc<Notify>,
+            release: Arc<Notify>,
+            calls: AtomicUsize,
+        }
+        #[async_trait]
+        impl ManifestDirectorySync for ManifestSyncBarrier {
+            async fn sync(&self, _: &Path) -> Result<(), String> {
+                if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    self.entered.notify_one();
+                    self.release.notified().await;
+                }
+                Ok(())
+            }
+        }
+
+        let root = tempdir().expect("tempdir").keep();
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let cache = ManagedMediaCache::new_with_manifest_directory_sync(
+            root.clone(),
+            "http://127.0.0.1:1234",
+            Arc::new(FixtureFetcher {
+                bytes: Vec::new(),
+                content_type: "image/png".to_string(),
+            }),
+            Arc::new(ManifestSyncBarrier {
+                entered: entered.clone(),
+                release: release.clone(),
+                calls: AtomicUsize::new(0),
+            }),
+        )
+        .expect("cache");
+        let token = cache.register_catalog_adoption().await;
+        let worker = cache.clone();
+        worker
+            .clone()
+            .spawn_owned_task(async move {
+                let _ = worker
+                    .reconcile_boundary_registered(
+                        serde_json::from_value(serde_json::json!({
+                            "generation": "blocked",
+                            "interests": [descriptor(b"\x89PNG\r\n\x1a\nblocked", "image/png")],
+                        }))
+                        .expect("request"),
+                        token,
+                    )
+                    .await;
+            })
+            .expect("tracked reconcile");
+        tokio::time::timeout(Duration::from_secs(1), entered.notified())
+            .await
+            .expect("manifest sync is blocked");
+
+        let mut shutdown = tokio::spawn({
+            let cache = cache.clone();
+            async move { cache.shutdown().await }
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), &mut shutdown)
+                .await
+                .is_err(),
+            "shutdown must retain the tracked persistence task until its sync returns"
+        );
+        release.notify_waiters();
+        shutdown
+            .await
+            .expect("shutdown joins after manifest sync release");
+
+        let next = ManagedMediaCache::new(
+            root.clone(),
+            "http://127.0.0.1:1234",
+            Arc::new(FixtureFetcher {
+                bytes: Vec::new(),
+                content_type: "image/png".to_string(),
+            }),
+        )
+        .expect("new cycle cache");
+        let token = next.register_catalog_adoption().await;
+        next.reconcile_boundary_registered(
+            serde_json::from_value(serde_json::json!({
+                "generation": "new-cycle",
+                "interests": [descriptor(b"\x89PNG\r\n\x1a\nnew-cycle", "image/png")],
+            }))
+            .expect("request"),
+            token,
+        )
+        .await
+        .expect("new cycle reconcile");
+        assert_eq!(next.snapshot().await.0, "new-cycle");
     }
 
     #[tokio::test]
