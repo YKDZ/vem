@@ -213,23 +213,76 @@ fn validate_server_envelope(envelope: &ServerEnvelope) -> Result<(), String> {
     if message_id_chars == 0 || message_id_chars > 128 {
         return Err("invalid vision messageId: expected 1..128 characters".to_string());
     }
-    if !envelope.timestamp.ends_with('Z')
-        || chrono::DateTime::parse_from_rfc3339(&envelope.timestamp).is_err()
-    {
-        return Err("invalid vision timestamp: expected UTC RFC3339 Z".to_string());
+    if !is_zod_utc_datetime(&envelope.timestamp) {
+        return Err("invalid vision timestamp: expected Zod ISO UTC datetime".to_string());
     }
     Ok(())
 }
 
+/// Match the shared `z.iso.datetime()` wire grammar, rather than Chrono's
+/// broader RFC3339 parser.  The protocol admits an uppercase UTC `Z` only;
+/// seconds are optional and fractions require at least one digit.
+fn is_zod_utc_datetime(value: &str) -> bool {
+    let Some(without_zone) = value.strip_suffix('Z') else {
+        return false;
+    };
+    let Some((date, time)) = without_zone.split_once('T') else {
+        return false;
+    };
+    if without_zone.matches('T').count() != 1
+        || date.len() != 10
+        || !date.as_bytes()[0..4].iter().all(u8::is_ascii_digit)
+        || date.as_bytes()[4] != b'-'
+        || !date.as_bytes()[5..7].iter().all(u8::is_ascii_digit)
+        || date.as_bytes()[7] != b'-'
+        || !date.as_bytes()[8..10].iter().all(u8::is_ascii_digit)
+    {
+        return false;
+    }
+    let normalized = match time.len() {
+        5 if is_hour_and_minute(time) => format!("{date}T{time}:00"),
+        8 if is_hour_minute_and_second(time) => format!("{date}T{time}"),
+        _ if time.len() > 9
+            && time.is_ascii()
+            && is_hour_minute_and_second(&time[..8])
+            && time.as_bytes()[8] == b'.'
+            && time[9..].bytes().all(|byte| byte.is_ascii_digit()) =>
+        {
+            // Zod validates the calendar portion but permits arbitrary
+            // fractional precision. Chrono is nanosecond-bound, so parse
+            // the shared seconds prefix and retain the already checked
+            // decimal grammar independently.
+            format!("{date}T{}", &time[..8])
+        }
+        _ => return false,
+    };
+    chrono::NaiveDateTime::parse_from_str(&normalized, "%Y-%m-%dT%H:%M:%S").is_ok()
+}
+
+fn is_hour_and_minute(value: &str) -> bool {
+    value.len() == 5
+        && value.as_bytes()[2] == b':'
+        && value.as_bytes()[0..2].iter().all(u8::is_ascii_digit)
+        && value.as_bytes()[3..5].iter().all(u8::is_ascii_digit)
+}
+
+fn is_hour_minute_and_second(value: &str) -> bool {
+    value.len() == 8
+        && is_hour_and_minute(&value[..5])
+        && value.as_bytes()[5] == b':'
+        && value.as_bytes()[6..8].iter().all(u8::is_ascii_digit)
+}
+
+fn character_count_within(value: &str, minimum: usize, maximum: usize) -> bool {
+    let count = value.chars().count();
+    (minimum..=maximum).contains(&count)
+}
+
 fn validate_ready_payload(ready: &VisionReadyPayload) -> Result<(), String> {
-    if ready.server_name.is_empty()
-        || ready.server_name.len() > 128
-        || ready.server_version.is_empty()
-        || ready.server_version.len() > 64
-        || ready.schema_version.is_empty()
-        || ready.schema_version.len() > 128
-        || ready.bundle_version.is_empty()
-        || ready.bundle_version.len() > 64
+    if !character_count_within(&ready.server_name, 1, 128)
+        || !character_count_within(&ready.server_version, 1, 64)
+        || !character_count_within(&ready.schema_version, 1, 128)
+        || !character_count_within(&ready.bundle_version, 1, 64)
     {
         return Err("invalid vision.ready version metadata".to_string());
     }
@@ -245,7 +298,7 @@ fn validate_ready_payload(ready: &VisionReadyPayload) -> Result<(), String> {
         || ready
             .capabilities
             .iter()
-            .any(|capability| capability.is_empty() || capability.len() > 64)
+            .any(|capability| !character_count_within(capability, 1, 64))
     {
         return Err("invalid vision.ready capabilities".to_string());
     }
@@ -298,39 +351,39 @@ async fn send_hello(socket: &mut VisionSocket, machine_code: Option<String>) -> 
 }
 
 async fn wait_ready(socket: &mut VisionSocket) -> Result<VisionReadyPayload, String> {
-    loop {
-        let envelope = read_server_envelope(socket).await?;
-        match envelope.message_type.as_str() {
-            "vision.ready" => {
-                let mut ready: VisionReadyPayload = parse_payload(envelope)?;
-                validate_ready_payload(&ready)?;
-                let identity = v2_contract_identity()?;
-                if ready.business_readiness_diagnostic
-                    == VisionBusinessReadinessDiagnostic::ContractBundleUnavailable
-                {
-                    // The remote generated bundle is unavailable.  This is a
-                    // stable degraded-core diagnosis, not a local mismatch.
-                } else if ready.schema_version != identity.schema_version
-                    || ready.bundle_version != identity.bundle_version
-                {
-                    ready.fast_ready = false;
-                    ready.vision_business_ready = false;
-                    ready.business_readiness_diagnostic =
-                        VisionBusinessReadinessDiagnostic::ContractVersionMismatch;
-                } else if ready.contract_digest != identity.bundle_digest {
-                    ready.fast_ready = false;
-                    ready.vision_business_ready = false;
-                    ready.business_readiness_diagnostic =
-                        VisionBusinessReadinessDiagnostic::ContractDigestMismatch;
-                }
-                return Ok(ready);
+    let envelope = read_server_envelope(socket).await?;
+    match envelope.message_type.as_str() {
+        "vision.ready" => {
+            let mut ready: VisionReadyPayload = parse_payload(envelope)?;
+            validate_ready_payload(&ready)?;
+            let identity = v2_contract_identity()?;
+            if ready.business_readiness_diagnostic
+                == VisionBusinessReadinessDiagnostic::ContractBundleUnavailable
+            {
+                // The remote generated bundle is unavailable.  This is a
+                // stable degraded-core diagnosis, not a local mismatch.
+            } else if ready.schema_version != identity.schema_version
+                || ready.bundle_version != identity.bundle_version
+            {
+                ready.fast_ready = false;
+                ready.vision_business_ready = false;
+                ready.business_readiness_diagnostic =
+                    VisionBusinessReadinessDiagnostic::ContractVersionMismatch;
+            } else if ready.contract_digest != identity.bundle_digest {
+                ready.fast_ready = false;
+                ready.vision_business_ready = false;
+                ready.business_readiness_diagnostic =
+                    VisionBusinessReadinessDiagnostic::ContractDigestMismatch;
             }
-            "vision.error" => {
-                let error: VisionErrorPayload = parse_payload(envelope)?;
-                return Err(vision_error_message(error));
-            }
-            _ => continue,
+            Ok(ready)
         }
+        "vision.error" => {
+            let error: VisionErrorPayload = parse_payload(envelope)?;
+            Err(vision_error_message(error))
+        }
+        unexpected => Err(format!(
+            "unexpected vision message before ready: {unexpected}"
+        )),
     }
 }
 
@@ -419,6 +472,145 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn check_ready_accepts_shared_character_limits_and_minute_utc_timestamp() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listen");
+        let addr = listener.local_addr().expect("local addr");
+        let ws_url = format!("ws://{addr}/");
+        let mut fixture = generated_ready_fixture();
+        fixture["timestamp"] = Value::String("2026-08-09T00:00Z".to_string());
+        fixture["payload"]["serverName"] = Value::String("名".repeat(128));
+        fixture["payload"]["serverVersion"] = Value::String("版".repeat(64));
+        fixture["payload"]["schemaVersion"] = Value::String("架".repeat(128));
+        fixture["payload"]["bundleVersion"] = Value::String("包".repeat(64));
+        fixture["payload"]["capabilities"] = serde_json::json!(["能".repeat(64)]);
+
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let mut ws_stream = accept_async(stream).await.expect("accept ws");
+            let _ = ws_stream.next().await.expect("next");
+            ws_stream
+                .send(Message::Text(fixture.to_string()))
+                .await
+                .expect("send character-limit ready fixture");
+        });
+
+        let ready = check_ready(&ws_url, None, 2000)
+            .await
+            .expect("shared character limits and HH:MMZ are accepted");
+        assert_eq!(ready.server_name.chars().count(), 128);
+        assert_eq!(ready.server_version.chars().count(), 64);
+        assert_eq!(ready.schema_version.chars().count(), 128);
+        assert_eq!(ready.bundle_version.chars().count(), 64);
+        assert_eq!(ready.capabilities[0].chars().count(), 64);
+    }
+
+    #[tokio::test]
+    async fn check_ready_matches_shared_timestamp_acceptance_and_rejection_matrix() {
+        for timestamp in [
+            "2026-08-09T00:00Z",
+            "2026-08-09T00:00:00Z",
+            "2026-08-09T00:00:00.123456789012Z",
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("listen");
+            let addr = listener.local_addr().expect("local addr");
+            let ws_url = format!("ws://{addr}/");
+            let mut fixture = generated_ready_fixture();
+            fixture["timestamp"] = Value::String(timestamp.to_string());
+            tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.expect("accept");
+                let mut ws_stream = accept_async(stream).await.expect("accept ws");
+                let _ = ws_stream.next().await.expect("hello frame");
+                ws_stream
+                    .send(Message::Text(fixture.to_string()))
+                    .await
+                    .expect("send accepted timestamp");
+            });
+            check_ready(&ws_url, None, 2000)
+                .await
+                .expect("Zod-accepted UTC timestamp");
+        }
+
+        for timestamp in [
+            "2026-08-09 00:00:00Z",
+            "2026-08-09t00:00:00z",
+            "2026-08-09T00:00:00+00:00",
+            "2026-02-30T00:00Z",
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("listen");
+            let addr = listener.local_addr().expect("local addr");
+            let ws_url = format!("ws://{addr}/");
+            let mut fixture = generated_ready_fixture();
+            fixture["timestamp"] = Value::String(timestamp.to_string());
+            tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.expect("accept");
+                let mut ws_stream = accept_async(stream).await.expect("accept ws");
+                let _ = ws_stream.next().await.expect("hello frame");
+                ws_stream
+                    .send(Message::Text(fixture.to_string()))
+                    .await
+                    .expect("send rejected timestamp");
+            });
+            let error = check_ready(&ws_url, None, 2000)
+                .await
+                .expect_err("Zod-rejected timestamp");
+            assert!(error.contains("timestamp"));
+        }
+    }
+
+    #[tokio::test]
+    async fn check_ready_rejects_ready_strings_beyond_shared_character_limits() {
+        for field in [
+            "serverName",
+            "serverVersion",
+            "schemaVersion",
+            "bundleVersion",
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("listen");
+            let addr = listener.local_addr().expect("local addr");
+            let ws_url = format!("ws://{addr}/");
+            let mut fixture = generated_ready_fixture();
+            let maximum = if field == "serverName" || field == "schemaVersion" {
+                128
+            } else {
+                64
+            };
+            fixture["payload"][field] = Value::String("界".repeat(maximum + 1));
+            tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.expect("accept");
+                let mut ws_stream = accept_async(stream).await.expect("accept ws");
+                let _ = ws_stream.next().await.expect("hello frame");
+                ws_stream
+                    .send(Message::Text(fixture.to_string()))
+                    .await
+                    .expect("send over-limit ready");
+            });
+            let error = check_ready(&ws_url, None, 2000)
+                .await
+                .expect_err("over-limit ready string");
+            assert!(error.contains("version metadata"));
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listen");
+        let addr = listener.local_addr().expect("local addr");
+        let ws_url = format!("ws://{addr}/");
+        let mut fixture = generated_ready_fixture();
+        fixture["payload"]["capabilities"] = serde_json::json!(["界".repeat(65)]);
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let mut ws_stream = accept_async(stream).await.expect("accept ws");
+            let _ = ws_stream.next().await.expect("hello frame");
+            ws_stream
+                .send(Message::Text(fixture.to_string()))
+                .await
+                .expect("send over-limit capability");
+        });
+        let error = check_ready(&ws_url, None, 2000)
+            .await
+            .expect_err("over-limit capability");
+        assert!(error.contains("capabilities"));
+    }
+
+    #[tokio::test]
     async fn check_ready_preserves_contract_bundle_unavailable_diagnostic() {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("listen");
         let addr = listener.local_addr().expect("local addr");
@@ -474,6 +666,41 @@ mod tests {
             .await
             .expect_err("V1 fixture must not pass the V2 websocket boundary");
         assert!(error.contains("unsupported vision protocol"));
+    }
+
+    #[tokio::test]
+    async fn check_ready_immediately_rejects_unknown_or_wrong_phase_server_messages() {
+        for message_type in ["vision.person_departed", "vision.unknown"] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("listen");
+            let addr = listener.local_addr().expect("local addr");
+            let ws_url = format!("ws://{addr}/");
+            let identity = v2_contract_identity().expect("identity");
+
+            tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.expect("accept");
+                let mut ws_stream = accept_async(stream).await.expect("accept ws");
+                let _ = ws_stream.next().await.expect("hello frame");
+                ws_stream
+                    .send(Message::Text(
+                        serde_json::json!({
+                            "protocol": identity.protocol,
+                            "type": message_type,
+                            "messageId": "event-before-ready",
+                            "timestamp": "2026-08-09T00:00Z",
+                            "payload": {},
+                        })
+                        .to_string(),
+                    ))
+                    .await
+                    .expect("send wrong-phase event");
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            });
+
+            let error = check_ready(&ws_url, None, 1000)
+                .await
+                .expect_err("unknown or wrong-phase event before vision.ready must be rejected");
+            assert!(error.contains("unexpected vision message before ready"));
+        }
     }
 
     #[test]

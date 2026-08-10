@@ -78,8 +78,8 @@ function envelopeMessageId(): string {
   return randomUUID();
 }
 
-function businessEventId(): string {
-  return randomUUID();
+function businessEventId(prefix: string): string {
+  return `${prefix}-${randomUUID()}`;
 }
 
 function baseEnvelope(): Pick<
@@ -148,7 +148,7 @@ function createResultMessage(heightCm = 172): VisionServerMessage {
     type: "vision.profile_result",
     payload: {
       source: "front",
-      eventId: businessEventId(),
+      eventId: businessEventId("event"),
       detectedAt,
       occupancy: {
         state: "single",
@@ -183,7 +183,7 @@ function createPresenceMessage(
   const personPresent = state !== "empty";
   const payload = {
     source: "top",
-    eventId: businessEventId(),
+    eventId: businessEventId("presence-event"),
     state,
     detectedAt,
     reason: personPresent ? "person_present_but_not_close" : "no_person",
@@ -216,7 +216,7 @@ function createPersonDepartedMessage(
   const detectedAt = nowIso();
   const payload = {
     source: "top",
-    eventId: businessEventId(),
+    eventId: businessEventId("departure-event"),
     detectedAt,
     lastSeenAt,
     reason: "left_frame",

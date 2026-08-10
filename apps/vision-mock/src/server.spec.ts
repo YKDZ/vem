@@ -296,7 +296,7 @@ describe("vision mock server - protocol conformance", () => {
         throw new Error(`expected profile result, got ${result.type}`);
       }
       expect(result.protocol).toBe(VISION_PROTOCOL);
-      expect(typeof result.payload.eventId).toBe("string");
+      expect(result.payload.eventId).toMatch(/^event-/);
       expect(typeof result.payload.detectedAt).toBe("string");
       expect(result.payload.profile.personPresent).toBe(true);
       expect(result.payload.profile.heightCm).toBe(172);
@@ -416,12 +416,19 @@ describe("vision mock server - departure events", () => {
 
       const presence = await messages.next();
       expect(presence.type).toBe("vision.presence_status");
+      if (presence.type === "vision.presence_status") {
+        expect(presence.payload.eventId).toMatch(/^presence-event-/);
+      }
 
       const departed = await messages.next();
       if (departed.type !== "vision.person_departed") {
         throw new Error(`expected person departed, got ${departed.type}`);
       }
       expect(departed.payload.reason).toBe("left_frame");
+      expect(departed.payload.eventId).toMatch(/^departure-event-/);
+      expect(departed.messageId).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      );
       expect(departed.payload.lastSeenAt).toBe(
         presence.type === "vision.presence_status"
           ? presence.payload.detectedAt
