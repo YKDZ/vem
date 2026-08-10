@@ -26,10 +26,8 @@ const maximumTokenizedLoopbackUrlLength = 2048;
 const tokenizedLoopbackTokenPattern = /^[A-Za-z0-9_-]{1,128}(?![\s\S])/;
 const tokenizedLoopbackHttpUrlPattern =
   /^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::(?:[1-9]\d{0,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5]))?(?:\/[^?#]*)?\?token=[A-Za-z0-9_-]{1,128}(?![\s\S])/;
-const visionV2AcquisitionPreviewPathPattern =
-  /^\/vision\/v2\/try-on\/attempts\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/preview\.mjpeg$/;
 const visionV2AcquisitionPreviewUrlPattern =
-  /^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::(?:[1-9]\d{0,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5]))?\/vision\/v2\/try-on\/attempts\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/preview\.mjpeg\?token=[A-Za-z0-9_-]{1,128}(?![\s\S])/;
+  /^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::(?:[1-9]\d{0,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5]))?\/v2\/try-on\/acquisition\/preview\.mjpeg\?token=[A-Za-z0-9_-]{1,128}(?![\s\S])/;
 
 /**
  * JSON Schema measures string length in Unicode code points. JavaScript's
@@ -123,21 +121,7 @@ function acquisitionPreviewReferenceSchema() {
   return codePointString({ maximum: maximumTokenizedLoopbackUrlLength })
     .regex(visionV2AcquisitionPreviewUrlPattern)
     .describe("vem.vision-v2-acquisition-preview-url")
-    .superRefine((value, context) => {
-      validateTokenizedLoopbackUrl(value, context);
-      let url: URL;
-      try {
-        url = new URL(value);
-      } catch {
-        return;
-      }
-      if (!visionV2AcquisitionPreviewPathPattern.test(url.pathname)) {
-        context.addIssue({
-          code: "custom",
-          message: "preview reference must use the V2 acquisition MJPEG path",
-        });
-      }
-    });
+    .superRefine(validateTokenizedLoopbackUrl);
 }
 
 export const visionV2AcquisitionPreviewSchema = z.strictObject({
@@ -230,59 +214,19 @@ export const visionV2AttemptCancelMessageSchema = envelopeBaseSchema.extend({
   }),
 });
 
-const visionV2AttemptAcquiringPayloadSchema = z
-  .strictObject({
-    attemptId: nonSentinelUuidSchema,
-    preview: visionV2AcquisitionPreviewSchema,
-    occupancy: z.enum(["none", "single", "multiple"]),
-    guidance: z.enum([
-      "no_person",
-      "multiple_people",
-      "align",
-      "hold_still",
-      "ready",
-    ]),
-    manualCaptureAllowed: z.boolean(),
-  })
-  .superRefine((payload, context) => {
-    let previewUrl: URL;
-    try {
-      previewUrl = new URL(payload.preview.reference);
-    } catch {
-      return;
-    }
-    const attemptPath = previewUrl.pathname.split("/")[5];
-    if (attemptPath !== payload.attemptId) {
-      context.addIssue({
-        code: "custom",
-        path: ["preview", "reference"],
-        message: "preview reference must be scoped to attemptId",
-      });
-    }
-    const expectedGuidance: Record<string, readonly string[]> = {
-      none: ["no_person"],
-      multiple: ["multiple_people"],
-      single: ["align", "hold_still", "ready"],
-    };
-    if (!expectedGuidance[payload.occupancy].includes(payload.guidance)) {
-      context.addIssue({
-        code: "custom",
-        path: ["guidance"],
-        message: "guidance must truthfully match occupancy",
-      });
-    }
-    const eligible =
-      payload.occupancy === "single" &&
-      ["align", "hold_still", "ready"].includes(payload.guidance);
-    if (payload.manualCaptureAllowed && !eligible) {
-      context.addIssue({
-        code: "custom",
-        path: ["manualCaptureAllowed"],
-        message: "manual capture requires one aligned person",
-      });
-    }
-  })
-  .meta({ "x-vem-semantic": "vision-v2-acquiring-payload" });
+const acquiringPayloadBase = {
+  attemptId: nonSentinelUuidSchema,
+  preview: visionV2AcquisitionPreviewSchema,
+};
+
+/** Enumerated on-wire truth table, shared identically by Zod, JSON Schema and Python. */
+const visionV2AttemptAcquiringPayloadSchema = z.union([
+  z.strictObject({ ...acquiringPayloadBase, occupancy: z.literal("none"), guidance: z.literal("no_person"), manualCaptureAllowed: z.literal(false) }),
+  z.strictObject({ ...acquiringPayloadBase, occupancy: z.literal("multiple"), guidance: z.literal("multiple_people"), manualCaptureAllowed: z.literal(false) }),
+  z.strictObject({ ...acquiringPayloadBase, occupancy: z.literal("single"), guidance: z.literal("align"), manualCaptureAllowed: z.literal(false) }),
+  z.strictObject({ ...acquiringPayloadBase, occupancy: z.literal("single"), guidance: z.literal("hold_still"), manualCaptureAllowed: z.literal(true) }),
+  z.strictObject({ ...acquiringPayloadBase, occupancy: z.literal("single"), guidance: z.literal("ready"), manualCaptureAllowed: z.literal(false) }),
+]);
 
 export const visionV2AttemptAcquiringMessageSchema = envelopeBaseSchema.extend({
   type: z.literal("vision.try_on.attempt.acquiring"),
@@ -298,16 +242,6 @@ export const visionV2AttemptGeneratingMessageSchema = envelopeBaseSchema.extend(
     }),
   },
 );
-
-export const visionV2AttemptProgressMessageSchema = envelopeBaseSchema
-  .extend({
-    type: z.literal("vision.try_on.attempt.progress"),
-    payload: z.strictObject({
-      attemptId: nonSentinelUuidSchema,
-      stage: z.literal("generating"),
-    }),
-  })
-  .meta({ deprecated: true, "x-vem-phase": "phase-b-delete" });
 
 export const visionV2AttemptCompletedMessageSchema = envelopeBaseSchema.extend({
   type: z.literal("vision.try_on.attempt.completed"),
@@ -325,8 +259,6 @@ export const visionV2AttemptFailedMessageSchema = envelopeBaseSchema.extend({
       "garment_rejected",
       "fast_failed",
       "fast_unavailable",
-      "attempt_already_active",
-      "attempt_replaced",
     ]),
   }),
 });
@@ -346,19 +278,32 @@ export const visionV2AttemptCanceledMessageSchema = envelopeBaseSchema.extend({
   }),
 });
 
-export const visionV2MessageSchema = z.discriminatedUnion("type", [
+export const visionV2ClientMessageSchema = z.discriminatedUnion("type", [
   visionV2HelloMessageSchema,
-  visionV2ReadyMessageSchema,
   visionV2FastAttemptStartMessageSchema,
-  visionV2AttemptAcceptedMessageSchema,
   visionV2AttemptCaptureMessageSchema,
   visionV2AttemptCancelMessageSchema,
+]);
+
+export const visionV2ServerMessageSchema = z.discriminatedUnion("type", [
+  visionV2ReadyMessageSchema,
+  visionV2AttemptAcceptedMessageSchema,
   visionV2AttemptAcquiringMessageSchema,
   visionV2AttemptGeneratingMessageSchema,
-  visionV2AttemptProgressMessageSchema,
   visionV2AttemptCompletedMessageSchema,
   visionV2AttemptFailedMessageSchema,
   visionV2AttemptCanceledMessageSchema,
 ]);
 
-export type VisionV2Message = z.infer<typeof visionV2MessageSchema>;
+export type VisionV2ClientMessage = z.infer<typeof visionV2ClientMessageSchema>;
+export type VisionV2ServerMessage = z.infer<typeof visionV2ServerMessageSchema>;
+export type VisionV2FastAttemptStartMessage = z.infer<
+  typeof visionV2FastAttemptStartMessageSchema
+>;
+export type VisionV2AttemptEvent =
+  | z.infer<typeof visionV2AttemptAcceptedMessageSchema>
+  | z.infer<typeof visionV2AttemptAcquiringMessageSchema>
+  | z.infer<typeof visionV2AttemptGeneratingMessageSchema>
+  | z.infer<typeof visionV2AttemptCompletedMessageSchema>
+  | z.infer<typeof visionV2AttemptFailedMessageSchema>
+  | z.infer<typeof visionV2AttemptCanceledMessageSchema>;

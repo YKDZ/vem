@@ -20,9 +20,11 @@ export type TryOnPhase =
   | "idle"
   | "starting"
   | "accepted"
+  | "acquiring"
   | "generating"
   | "completed"
-  | "failed";
+  | "failed"
+  | "canceled";
 
 type TryOnContext = {
   catalogKey: string;
@@ -42,6 +44,7 @@ export const useTryOnStore = defineStore("tryOn", {
     hasActiveAttempt: (state): boolean =>
       state.phase === "starting" ||
       state.phase === "accepted" ||
+      state.phase === "acquiring" ||
       state.phase === "generating",
   },
   actions: {
@@ -139,8 +142,18 @@ export const useTryOnStore = defineStore("tryOn", {
         if (this.phase === "starting") this.phase = "accepted";
         return;
       }
-      if (event.type === "vision.try_on.attempt.progress") {
+      if (event.type === "vision.try_on.attempt.acquiring") {
         if (this.phase === "starting" || this.phase === "accepted") {
+          this.phase = "acquiring";
+        }
+        return;
+      }
+      if (event.type === "vision.try_on.attempt.generating") {
+        if (
+          this.phase === "starting" ||
+          this.phase === "accepted" ||
+          this.phase === "acquiring"
+        ) {
           this.phase = "generating";
         }
         return;
@@ -162,7 +175,17 @@ export const useTryOnStore = defineStore("tryOn", {
         }
         return;
       }
-      if (this.phase === "completed" || this.phase === "failed") return;
+      if (
+        this.phase === "completed" ||
+        this.phase === "failed" ||
+        this.phase === "canceled"
+      ) return;
+      if (event.type === "vision.try_on.attempt.canceled") {
+        this.phase = "canceled";
+        this.failureReason = event.payload.reason;
+        clearOperation(currentOperation);
+        return;
+      }
       this.phase = "failed";
       this.failureReason = event.payload.reason;
       clearOperation(currentOperation);

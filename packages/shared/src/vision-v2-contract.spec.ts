@@ -2,142 +2,62 @@ import Ajv from "ajv/dist/2020";
 import { describe, expect, it } from "vitest";
 
 import {
-  invalidVisionV2Fixtures,
-  validVisionV2Fixtures,
+  invalidVisionV2ClientFixtures,
+  invalidVisionV2ServerFixtures,
+  validVisionV2ClientFixtures,
+  validVisionV2ServerFixtures,
 } from "./fixtures/vision-v2";
 import {
-  VISION_V2_BUNDLE_VERSION,
-  visionV2MessageSchema,
+  visionV2ClientMessageSchema,
+  visionV2ServerMessageSchema,
 } from "./schemas/vision-v2";
 
+const validators = {
+  client: visionV2ClientMessageSchema,
+  server: visionV2ServerMessageSchema,
+} as const;
+
 describe("Vision V2 shared contract", () => {
-  it("accepts an attempt-scoped manual acquisition intent", () => {
-    const start = validVisionV2Fixtures.find(
-      (fixture) => fixture.type === "vision.try_on.attempt.start",
-    );
-    if (!start) throw new Error("expected start fixture");
-
-    expect(
-      visionV2MessageSchema.parse({
-        ...start,
-        type: "vision.try_on.attempt.capture",
-        payload: { attemptId: start.payload.attemptId },
-      }),
-    ).toMatchObject({
-      type: "vision.try_on.attempt.capture",
-      payload: { attemptId: start.payload.attemptId },
-    });
-  });
-
-  it("accepts the Fast tracer fixture corpus", () => {
-    for (const fixture of validVisionV2Fixtures) {
-      expect(visionV2MessageSchema.parse(fixture)).toMatchObject({
-        protocol: "vem.vision.v2",
-      });
+  it("accepts each explicitly directed corpus and rejects its reverse direction", () => {
+    for (const [direction, fixtures] of Object.entries({
+      client: validVisionV2ClientFixtures,
+      server: validVisionV2ServerFixtures,
+    }) as Array<[keyof typeof validators, readonly object[]]>) {
+      const opposite = direction === "client" ? "server" : "client";
+      for (const fixture of fixtures) {
+        expect(validators[direction].parse(fixture)).toMatchObject({
+          protocol: "vem.vision.v2",
+        });
+        expect(() => validators[opposite].parse(fixture)).toThrow();
+      }
     }
   });
 
-  it("requires the generated bundle identity in both handshake directions", () => {
-    const hello = visionV2MessageSchema.parse(validVisionV2Fixtures[0]);
-    const ready = visionV2MessageSchema.parse(validVisionV2Fixtures[1]);
-
-    expect(hello).toMatchObject({
-      type: "vision.hello",
-      payload: {
-        schemaVersion: "vem-vision-v2-contract-bundle/v1",
-        bundleVersion: VISION_V2_BUNDLE_VERSION,
-      },
-    });
-    expect(ready).toMatchObject({
-      type: "vision.ready",
-      payload: {
-        schemaVersion: "vem-vision-v2-contract-bundle/v1",
-        bundleVersion: VISION_V2_BUNDLE_VERSION,
-      },
-    });
-  });
-
-  it("rejects V1, AI, and non-loopback source fixtures", () => {
-    for (const fixture of invalidVisionV2Fixtures) {
-      expect(() => visionV2MessageSchema.parse(fixture.message)).toThrow();
-    }
-  });
-
-  it("rejects HTTPS loopback result references without expanding the production contract", () => {
-    const completed = validVisionV2Fixtures.find(
-      (fixture) => fixture.type === "vision.try_on.attempt.completed",
+  it("exports the acquisition manual-action truth table without private semantics", () => {
+    const acquiring = validVisionV2ServerFixtures.filter(
+      (fixture) => fixture.type === "vision.try_on.attempt.acquiring",
     );
-    if (!completed) throw new Error("expected completed fixture");
-
-    expect(() =>
-      visionV2MessageSchema.parse({
-        ...completed,
-        payload: {
-          ...completed.payload,
-          result: {
-            ...(completed.payload as { result: Record<string, unknown> })
-              .result,
-            reference:
-              "https://127.0.0.1:65499/results/output?token=result-token",
-          },
-        },
-      }),
-    ).toThrow();
+    expect(acquiring.map((fixture) => fixture.payload)).toEqual([
+      expect.objectContaining({ occupancy: "none", guidance: "no_person", manualCaptureAllowed: false }),
+      expect.objectContaining({ occupancy: "multiple", guidance: "multiple_people", manualCaptureAllowed: false }),
+      expect.objectContaining({ occupancy: "single", guidance: "align", manualCaptureAllowed: false }),
+      expect.objectContaining({ occupancy: "single", guidance: "hold_still", manualCaptureAllowed: true }),
+      expect.objectContaining({ occupancy: "single", guidance: "ready", manualCaptureAllowed: false }),
+    ]);
   });
 
-  it("publishes Unicode code-point bounds to standalone JSON Schema", () => {
-    const schema = visionV2MessageSchema.toJSONSchema();
-    const ready = schema.oneOf.find(
-      (branch) => branch.properties.type.const === "vision.ready",
-    );
-    if (!ready) throw new Error("expected vision.ready schema branch");
-
-    expect(ready.properties.messageId).toMatchObject({
-      minLength: 1,
-      maxLength: 128,
-    });
-    expect(ready.properties.payload.properties.serverVersion).toMatchObject({
-      minLength: 1,
-      maxLength: 64,
-    });
-    expect(
-      ready.properties.payload.properties.capabilities.items,
-    ).toMatchObject({
-      minLength: 1,
-      maxLength: 64,
-    });
-
-    const validate = new Ajv({ strict: false, validateFormats: false }).compile(
-      schema,
-    );
-    expect(validate(validVisionV2Fixtures.at(-1))).toBe(true);
-    for (const fixture of invalidVisionV2Fixtures.filter((fixture) =>
-      fixture.name.includes("code-point-over-limit"),
-    )) {
-      expect(validate(fixture.message)).toBe(false);
-    }
-  });
-
-  it("accepts only tokenized loopback ports from 1 through 65535", () => {
-    const start = validVisionV2Fixtures[2];
-    const garment = (start.payload as { garment: Record<string, unknown> })
-      .garment;
-    const withReference = (reference: string) => ({
-      ...start,
-      payload: { ...start.payload, garment: { ...garment, reference } },
-    });
-
-    expect(
-      visionV2MessageSchema.parse(
-        withReference("http://127.0.0.1:65535/garment?token=opaque"),
-      ),
-    ).toMatchObject({ type: "vision.try_on.attempt.start" });
-    for (const port of [0, 65536, 99999]) {
-      expect(() =>
-        visionV2MessageSchema.parse(
-          withReference(`http://127.0.0.1:${port}/garment?token=opaque`),
-        ),
-      ).toThrow();
+  it("rejects every single-mutation fixture in its declared direction with Zod and standalone Ajv", () => {
+    for (const [direction, fixtures] of Object.entries({
+      client: invalidVisionV2ClientFixtures,
+      server: invalidVisionV2ServerFixtures,
+    }) as Array<[keyof typeof validators, readonly { base: object; message: object; field: string }[]]>) {
+      const schema = validators[direction].toJSONSchema();
+      const ajv = new Ajv({ strict: false, validateFormats: false }).compile(schema);
+      for (const fixture of fixtures) {
+        expect(validators[direction].safeParse(fixture.base).success).toBe(true);
+        expect(validators[direction].safeParse(fixture.message).success).toBe(false);
+        expect(ajv(fixture.message)).toBe(false);
+      }
     }
   });
 });

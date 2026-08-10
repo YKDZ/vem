@@ -7,9 +7,11 @@ import {
   visionReadyPayloadSchema,
   visionServerMessageSchema,
   visionV2AttemptFailedMessageSchema,
-  visionV2FastAttemptStartMessageSchema,
-  visionV2MessageSchema,
-  type VisionV2Message,
+  visionV2ClientMessageSchema,
+  visionV2ServerMessageSchema,
+  type VisionV2AttemptEvent,
+  type VisionV2FastAttemptStartMessage,
+  type VisionV2ServerMessage,
   type VisionClientMessage,
   type VisionErrorMessage,
   type VisionProfile,
@@ -71,24 +73,12 @@ export type VisionRuntimeConnection = {
   enabled?: boolean;
 };
 
-export type VisionFastAttemptEvent = Extract<
-  VisionV2Message,
-  {
-    type:
-      | "vision.try_on.attempt.accepted"
-      | "vision.try_on.attempt.progress"
-      | "vision.try_on.attempt.completed"
-      | "vision.try_on.attempt.failed";
-  }
->;
+export type VisionFastAttemptEvent = VisionV2AttemptEvent;
 
 export type VisionFastAttemptInput = {
   attemptId: string;
   variantId: string;
-  garment: Extract<
-    VisionV2Message,
-    { type: "vision.try_on.attempt.start" }
-  >["payload"]["garment"];
+  garment: VisionV2FastAttemptStartMessage["payload"]["garment"];
 };
 
 export interface VisionFastAttempt {
@@ -324,7 +314,7 @@ export function isVisionTryOnCapabilityDegraded(error: unknown): boolean {
 }
 
 function createVisionV2HelloMessage(machineCode: string | null) {
-  return {
+  return visionV2ClientMessageSchema.parse({
     protocol: VISION_V2_RUNTIME_IDENTITY.protocol,
     type: "vision.hello" as const,
     messageId: createMessageId("hello-v2"),
@@ -337,20 +327,20 @@ function createVisionV2HelloMessage(machineCode: string | null) {
       contractDigest: VISION_V2_RUNTIME_IDENTITY.contractDigest,
       capabilities: ["try_on_fast"],
     },
-  };
+  });
 }
 
-function parseVisionV2Message(value: unknown): VisionV2Message {
-  return visionV2MessageSchema.parse(value);
+function parseVisionV2ServerMessage(value: unknown): VisionV2ServerMessage {
+  return visionV2ServerMessageSchema.parse(value);
 }
 
 async function nextVisionV2Message(
   socket: WebSocket,
   timeoutMs: number,
   signal?: AbortSignal,
-): Promise<VisionV2Message> {
+): Promise<VisionV2ServerMessage> {
   if (signal?.aborted) throw new Error("Vision V2 operation aborted");
-  return await new Promise<VisionV2Message>((resolve, reject) => {
+  return await new Promise<VisionV2ServerMessage>((resolve, reject) => {
     let settled = false;
     const timer = setTimeout(() => {
       if (settled) return;
@@ -367,7 +357,7 @@ async function nextVisionV2Message(
         return;
       }
       try {
-        resolve(parseVisionV2Message(JSON.parse(event.data)));
+        resolve(parseVisionV2ServerMessage(JSON.parse(event.data)));
       } catch (error) {
         reject(error instanceof Error ? error : new Error(String(error)));
       }
@@ -481,7 +471,7 @@ export async function openVisionFastAttempt(
     if (socket.readyState !== WebSocket.OPEN) {
       throw new Error("Vision V2 websocket closed during Fast handshake");
     }
-    const startMessage = visionV2FastAttemptStartMessageSchema.parse({
+    const startMessage = visionV2ClientMessageSchema.parse({
       protocol: VISION_V2_RUNTIME_IDENTITY.protocol,
       type: "vision.try_on.attempt.start",
       messageId: createMessageId("attempt-start"),
@@ -496,18 +486,21 @@ export async function openVisionFastAttempt(
     onMessage = (event: MessageEvent): void => {
       if (closed || terminal || typeof event.data !== "string") return;
       try {
-        const message = parseVisionV2Message(JSON.parse(event.data));
+        const message = parseVisionV2ServerMessage(JSON.parse(event.data));
         if (
           (message.type === "vision.try_on.attempt.accepted" ||
-            message.type === "vision.try_on.attempt.progress" ||
+            message.type === "vision.try_on.attempt.acquiring" ||
+            message.type === "vision.try_on.attempt.generating" ||
             message.type === "vision.try_on.attempt.completed" ||
-            message.type === "vision.try_on.attempt.failed") &&
+            message.type === "vision.try_on.attempt.failed" ||
+            message.type === "vision.try_on.attempt.canceled") &&
           message.payload.attemptId === input.attemptId
         ) {
           onEvent(message, resultContext);
           if (
             message.type === "vision.try_on.attempt.completed" ||
-            message.type === "vision.try_on.attempt.failed"
+            message.type === "vision.try_on.attempt.failed" ||
+            message.type === "vision.try_on.attempt.canceled"
           ) {
             terminal = true;
             close();
