@@ -7,13 +7,18 @@ import { pathToFileURL } from "node:url";
 const DEFAULT_ROOT = resolve(import.meta.dirname, "../..");
 const DEFAULT_SCOPES = Object.freeze([
   "apps/machine/src",
+  "apps/machine/src-tauri",
   "apps/machine/package.json",
+  "docs",
   "packages/shared/src",
   "packages/shared/generated",
   "packages/shared/package.json",
   "scripts/testbed",
+  "scripts/windows",
+  ".github/workflows",
   "package.json",
   "pnpm-lock.yaml",
+  "turbo.json",
 ]);
 
 const FORBIDDEN_PATTERNS = Object.freeze([
@@ -37,6 +42,23 @@ const FORBIDDEN_PATTERNS = Object.freeze([
     category: "legacy-start-stop-operation",
     pattern: /\btry_on[.](?:start|stop)_preview\b/,
   },
+  {
+    category: "legacy-nested-customer-route",
+    pattern:
+      /#\/products\/[^\s"'`]+\/try-on\b|path\s*:\s*["']\/products\/:[^"']+\/try-on\b/,
+  },
+  {
+    category: "legacy-try-on-selector",
+    pattern: /(?:data-test\s*=\s*["']|\[data-test=["'])try-on-exit\b/,
+  },
+  {
+    category: "fabricated-try-on-phase-evidence",
+    pattern: /\b(?:accepted|progress|completed)Observed\b/,
+  },
+  {
+    category: "legacy-try-on-session-module",
+    pattern: /\b(?:VisionTryOnSession|try_on_session|tryOnSession)\b/,
+  },
 ]);
 
 const TEXT_EXTENSIONS = new Set([
@@ -44,6 +66,7 @@ const TEXT_EXTENSIONS = new Set([
   ".cjs",
   ".css",
   ".html",
+  ".js",
   ".json",
   ".md",
   ".mjs",
@@ -63,26 +86,32 @@ function extension(path) {
   return index === -1 ? "" : name.slice(index);
 }
 
-function shouldSkip(path) {
-  return /(?:^|[\\/])(?:node_modules|dist|target|coverage|[.]turbo|[.]git)(?:[\\/]|$)/.test(
-    path,
-  );
+function shouldSkip(path, { scanArtifacts = false } = {}) {
+  const names = scanArtifacts
+    ? /(?:^|[\\/])(?:node_modules|target|coverage|[.]turbo|[.]git)(?:[\\/]|$)/
+    : /(?:^|[\\/])(?:node_modules|dist|target|coverage|[.]turbo|[.]git)(?:[\\/]|$)/;
+  return names.test(path);
 }
 
-function filesUnder(path) {
-  if (shouldSkip(path)) return [];
+function filesUnder(path, options = {}) {
+  if (shouldSkip(path, options)) return [];
   const stats = statSync(path);
   if (!stats.isDirectory())
     return TEXT_EXTENSIONS.has(extension(path)) ? [path] : [];
   return readdirSync(path, { withFileTypes: true }).flatMap((entry) =>
-    filesUnder(resolve(path, entry.name)),
+    filesUnder(resolve(path, entry.name), options),
   );
+}
+
+function isHistoricalLegacyRecord(path) {
+  return /(?:^|[\\/])docs[\\/](?:archive|软著|adr)(?:[\\/]|$)/.test(path);
 }
 
 export function scanHardCutoverAbsence({
   root = DEFAULT_ROOT,
   scopes = DEFAULT_SCOPES,
   extraFiles = [],
+  artifactScopes = [],
 } = {}) {
   const self = new Set([
     resolve(import.meta.filename),
@@ -90,6 +119,9 @@ export function scanHardCutoverAbsence({
   ]);
   const paths = [
     ...scopes.flatMap((scope) => filesUnder(resolve(root, scope))),
+    ...artifactScopes.flatMap((scope) =>
+      filesUnder(resolve(root, scope), { scanArtifacts: true }),
+    ),
     ...extraFiles.map((file) => resolve(file)),
   ].filter((path, index, all) => all.indexOf(path) === index);
   return paths.flatMap((path) => {
@@ -98,6 +130,20 @@ export function scanHardCutoverAbsence({
       pattern.lastIndex = 0;
       if (!pattern.test(source)) return [];
       if (self.has(path)) return [];
+      if (
+        isHistoricalLegacyRecord(path) &&
+        [
+          "protocol-v1",
+          "legacy-try-on-client",
+          "legacy-preview-route",
+          "legacy-silhouette",
+          "legacy-start-stop-operation",
+          "legacy-try-on-session-module",
+          "transport-specific-preview",
+        ].includes(category)
+      ) {
+        return [];
+      }
       return [`${relative(root, path)}:${category}`];
     });
   });
@@ -115,7 +161,17 @@ export function assertHardCutoverAbsence(options) {
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   try {
-    assertHardCutoverAbsence();
+    const artifactScopes = [];
+    for (let index = 2; index < process.argv.length; index += 1) {
+      if (process.argv[index] !== "--artifact" || !process.argv[index + 1]) {
+        throw new Error(
+          "usage: hard-cutover-absence.mjs [--artifact <built-directory>]",
+        );
+      }
+      artifactScopes.push(process.argv[index + 1]);
+      index += 1;
+    }
+    assertHardCutoverAbsence({ artifactScopes });
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;

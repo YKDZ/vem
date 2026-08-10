@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -20,6 +20,15 @@ describe("Vision V2 hard-cutover absence guard", () => {
       const dot = (...parts) => parts.join(".");
       const pathWithBracedPart = (...parts) => parts.join("/");
       const streamExtension = ["m", "jpeg"].join("");
+      const nestedCustomerRoute = [
+        "#",
+        "products",
+        "product-key",
+        "try-on",
+      ].join("/");
+      const retiredSelector = ["try", "on", "exit"].join("-");
+      const fabricatedPhaseField = ["completed", "Observed"].join("");
+      const retiredSessionModule = ["try", "_on", "_session"].join("");
       const fixtures = [
         ["protocol.txt", dot("vem", "vision", "v1")],
         ["wire.txt", dot("vision", "try_on", "start")],
@@ -31,6 +40,10 @@ describe("Vision V2 hard-cutover absence guard", () => {
         ["media.txt", ["sil", "houette"].join("")],
         ["transport.txt", ["M", "JPEG"].join("")],
         ["operation.txt", dot("try_on", "stop_preview")],
+        ["nested-route.txt", nestedCustomerRoute],
+        ["selector.txt", `[data-test="${retiredSelector}"]`],
+        ["phase.txt", fabricatedPhaseField],
+        ["session.txt", retiredSessionModule],
       ];
       for (const [name, body] of fixtures) {
         writeFileSync(join(root, name), `${body}\n`);
@@ -42,15 +55,41 @@ describe("Vision V2 hard-cutover absence guard", () => {
       assert.deepEqual(
         [...new Set(violations.map((entry) => entry.split(":").at(-1)))].sort(),
         [
+          "fabricated-try-on-phase-evidence",
+          "legacy-nested-customer-route",
           "legacy-preview-route",
           "legacy-silhouette",
           "legacy-start-stop-operation",
           "legacy-try-on-client",
+          "legacy-try-on-selector",
+          "legacy-try-on-session-module",
           "legacy-try-on-wire-message",
           "protocol-v1",
           "transport-specific-preview",
         ],
       );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("scans built artifacts even when they live under dist", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-hard-cutover-artifact-"));
+    try {
+      const artifact = join(root, "apps", "machine", "dist");
+      mkdirSync(artifact, { recursive: true });
+      writeFileSync(
+        join(artifact, "app.js"),
+        ["completed", "Observed"].join("") + "\n",
+      );
+      const violations = scanHardCutoverAbsence({
+        root,
+        scopes: [],
+        artifactScopes: ["apps/machine/dist"],
+      });
+      assert.deepEqual(violations, [
+        "apps/machine/dist/app.js:fabricated-try-on-phase-evidence",
+      ]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
