@@ -5,8 +5,10 @@ use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration};
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 
-pub const VISION_PROTOCOL: &str = "vem.vision.v1";
+pub const VISION_PROTOCOL: &str = "vem.vision.v2";
 pub const DEFAULT_VISION_WS_URL: &str = "ws://127.0.0.1:7892/ws";
+const VISION_V2_MANIFEST: &str =
+    include_str!("../../../packages/shared/generated/vision-v2/manifest.json");
 
 pub type VisionSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -69,18 +71,37 @@ impl VisionSession {
 struct VisionHelloPayload {
     client_role: &'static str,
     machine_code: Option<String>,
-    protocol_version: u8,
+    schema_version: String,
+    bundle_version: String,
+    contract_digest: String,
     capabilities: Vec<&'static str>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 pub struct VisionReadyPayload {
     pub server_name: String,
     pub server_version: String,
+    pub schema_version: String,
+    pub bundle_version: String,
+    pub contract_digest: String,
     pub camera_ready: bool,
-    pub model_ready: bool,
+    pub fast_ready: bool,
+    pub vision_business_ready: bool,
+    pub business_readiness_diagnostic: String,
     pub capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct VisionV2BundleManifest {
+    protocol: String,
+    schema_version: String,
+    bundle_version: String,
+    bundle_digest: String,
+    #[serde(rename = "files")]
+    _files: Value,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -99,6 +120,15 @@ fn now_iso() -> String {
 
 fn message_id(prefix: &str) -> String {
     format!("{prefix}-{}", uuid::Uuid::new_v4())
+}
+
+fn v2_contract_identity() -> Result<VisionV2BundleManifest, String> {
+    let manifest: VisionV2BundleManifest = serde_json::from_str(VISION_V2_MANIFEST)
+        .map_err(|error| format!("parse generated Vision V2 manifest failed: {error}"))?;
+    if manifest.protocol != VISION_PROTOCOL {
+        return Err("generated Vision V2 manifest protocol does not match runtime".to_string());
+    }
+    Ok(manifest)
 }
 
 fn client_envelope<T>(message_type: &'static str, payload: T) -> ClientEnvelope<T>
@@ -176,18 +206,22 @@ async fn connect_vision(ws_url: &str) -> Result<VisionSocket, String> {
 }
 
 async fn send_hello(socket: &mut VisionSocket, machine_code: Option<String>) -> Result<(), String> {
+    let identity = v2_contract_identity()?;
     send_client_message(
         socket,
         "vision.hello",
         VisionHelloPayload {
             client_role: "machine",
             machine_code,
-            protocol_version: 1,
+            schema_version: identity.schema_version,
+            bundle_version: identity.bundle_version,
+            contract_digest: identity.bundle_digest,
             capabilities: vec![
                 "profile_push",
                 "presence_status",
                 "person_departed",
                 "ambient_light",
+                "try_on_fast",
             ],
         },
     )
@@ -198,7 +232,22 @@ async fn wait_ready(socket: &mut VisionSocket) -> Result<VisionReadyPayload, Str
     loop {
         let envelope = read_server_envelope(socket).await?;
         match envelope.message_type.as_str() {
-            "vision.ready" => return parse_payload(envelope),
+            "vision.ready" => {
+                let mut ready: VisionReadyPayload = parse_payload(envelope)?;
+                let identity = v2_contract_identity()?;
+                if ready.schema_version != identity.schema_version
+                    || ready.bundle_version != identity.bundle_version
+                {
+                    ready.fast_ready = false;
+                    ready.vision_business_ready = false;
+                    ready.business_readiness_diagnostic = "contract_version_mismatch".to_string();
+                } else if ready.contract_digest != identity.bundle_digest {
+                    ready.fast_ready = false;
+                    ready.vision_business_ready = false;
+                    ready.business_readiness_diagnostic = "contract_digest_mismatch".to_string();
+                }
+                return Ok(ready);
+            }
             "vision.error" => {
                 let error: VisionErrorPayload = parse_payload(envelope)?;
                 return Err(vision_error_message(error));
@@ -262,12 +311,13 @@ mod tests {
                     "profile_push",
                     "presence_status",
                     "person_departed",
-                    "ambient_light"
+                    "ambient_light",
+                    "try_on_fast"
                 ])
             );
             ws_stream
                 .send(Message::Text(
-                    r#"{"protocol":"vem.vision.v1","type":"vision.ready","messageId":"1","timestamp":"x","payload":{"serverName":"s","serverVersion":"1","cameraReady":true,"modelReady":true,"capabilities":[]}}"#
+                    r#"{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"1","timestamp":"x","payload":{"serverName":"s","serverVersion":"1","schemaVersion":"vem-vision-v2-contract-bundle/v1","bundleVersion":"1","contractDigest":"f5c86bc2def1a41328cccf7c2e864452fe2913265b99f36139d64c9c9028a386","cameraReady":true,"fastReady":true,"visionBusinessReady":true,"businessReadinessDiagnostic":"ready","capabilities":[]}}"#
                         .into(),
                 ))
                 .await
@@ -292,7 +342,7 @@ mod tests {
             let _ = ws_stream.next().await.expect("next");
             ws_stream
                 .send(Message::Text(
-                    r#"{"protocol":"vem.vision.v1","type":"vision.error","messageId":"1","timestamp":"x","payload":{"code":"camera_unavailable","message":"camera unavailable","retryable":false}}"#
+                    r#"{"protocol":"vem.vision.v2","type":"vision.error","messageId":"1","timestamp":"x","payload":{"code":"camera_unavailable","message":"camera unavailable","retryable":false}}"#
                         .into(),
                 ))
                 .await
@@ -316,13 +366,13 @@ mod tests {
             let _ = ws_stream.next().await.expect("next").expect("hello");
             ws_stream
                 .send(Message::Text(
-                    r#"{"protocol":"vem.vision.v1","type":"vision.ready","messageId":"1","timestamp":"x","payload":{"serverName":"s","serverVersion":"1","cameraReady":true,"modelReady":true,"capabilities":["person_departed"]}}"#.into(),
+                    r#"{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"1","timestamp":"x","payload":{"serverName":"s","serverVersion":"1","schemaVersion":"vem-vision-v2-contract-bundle/v1","bundleVersion":"1","contractDigest":"f5c86bc2def1a41328cccf7c2e864452fe2913265b99f36139d64c9c9028a386","cameraReady":true,"fastReady":true,"visionBusinessReady":true,"businessReadinessDiagnostic":"ready","capabilities":["person_departed"]}}"#.into(),
                 ))
                 .await
                 .expect("send ready");
             ws_stream
                 .send(Message::Text(
-                    r#"{"protocol":"vem.vision.v1","type":"vision.person_departed","messageId":"2","timestamp":"x","payload":{"eventId":"departure-1","detectedAt":"2026-07-19T00:00:00.000Z","lastSeenAt":null}}"#.into(),
+                    r#"{"protocol":"vem.vision.v2","type":"vision.person_departed","messageId":"2","timestamp":"x","payload":{"eventId":"departure-1","detectedAt":"2026-07-19T00:00:00.000Z","lastSeenAt":null}}"#.into(),
                 ))
                 .await
                 .expect("send departure");

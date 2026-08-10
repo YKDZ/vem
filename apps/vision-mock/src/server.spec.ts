@@ -1,4 +1,9 @@
 import {
+  VISION_V2_BUNDLE_SCHEMA_VERSION,
+  VISION_V2_BUNDLE_VERSION,
+  VISION_V2_CONTRACT_DIGEST,
+} from "@vem/shared";
+import {
   VISION_PROTOCOL,
   visionServerMessageSchema,
   type VisionClientMessage,
@@ -46,7 +51,9 @@ function createHelloMessage(
     payload: {
       clientRole: "machine",
       machineCode: "M001",
-      protocolVersion: 1,
+      schemaVersion: VISION_V2_BUNDLE_SCHEMA_VERSION,
+      bundleVersion: VISION_V2_BUNDLE_VERSION,
+      contractDigest: VISION_V2_CONTRACT_DIGEST,
       capabilities,
     },
   } satisfies VisionClientMessage;
@@ -271,10 +278,11 @@ describe("vision mock server - protocol conformance", () => {
       if (ready.type !== "vision.ready") return;
       expect(ready.payload.serverName).toBe("vem-vision-mock");
       expect(ready.payload.cameraReady).toBe(true);
-      expect(ready.payload.modelReady).toBe(true);
+      expect(ready.payload.visionBusinessReady).toBe(true);
       expect(ready.payload.capabilities).toContain("profile_push");
       expect(ready.payload.capabilities).toContain("presence_status");
       expect(ready.payload.capabilities).toContain("person_departed");
+      expect(ready.payload.capabilities).toContain("try_on_fast");
 
       const presence = await messages.next();
       if (presence.type !== "vision.presence_status") {

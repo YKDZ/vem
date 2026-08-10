@@ -1,5 +1,8 @@
 import {
   DEFAULT_VISION_WS_URL,
+  VISION_V2_BUNDLE_SCHEMA_VERSION,
+  VISION_V2_BUNDLE_VERSION,
+  VISION_V2_CONTRACT_DIGEST,
   VISION_PROTOCOL,
   visionPresenceStatusPayloadSchema,
   visionPersonDepartedPayloadSchema,
@@ -113,18 +116,44 @@ function createHelloMessage(machineCode: string | null): VisionClientMessage {
     timestamp: nowIso(),
     payload: {
       clientRole: "machine",
-      machineCode,
-      protocolVersion: 1,
+      ...(machineCode ? { machineCode } : {}),
+      schemaVersion: VISION_V2_BUNDLE_SCHEMA_VERSION,
+      bundleVersion: VISION_V2_BUNDLE_VERSION,
+      contractDigest: VISION_V2_CONTRACT_DIGEST,
       capabilities: [
         "profile_push",
         "presence_status",
         "person_departed",
         "ambient_light",
-        "try_on_session",
+        "try_on_fast",
       ],
     },
   } satisfies VisionClientMessage;
   return message;
+}
+
+function normalizedVisionReady(
+  ready: z.infer<typeof visionReadyPayloadSchema>,
+): z.infer<typeof visionReadyPayloadSchema> {
+  const versionMatches =
+    ready.schemaVersion === VISION_V2_BUNDLE_SCHEMA_VERSION &&
+    ready.bundleVersion === VISION_V2_BUNDLE_VERSION;
+  const digestMatches = ready.contractDigest === VISION_V2_CONTRACT_DIGEST;
+  if (versionMatches && digestMatches) return ready;
+  return {
+    ...ready,
+    fastReady: false,
+    visionBusinessReady: false,
+    businessReadinessDiagnostic: versionMatches
+      ? "contract_digest_mismatch"
+      : "contract_version_mismatch",
+  };
+}
+
+function parseServerMessage(value: unknown): VisionServerMessage {
+  const message = visionServerMessageSchema.parse(value);
+  if (message.type !== "vision.ready") return message;
+  return { ...message, payload: normalizedVisionReady(message.payload) };
 }
 
 function createPingMessage(): VisionClientMessage {
@@ -242,7 +271,7 @@ async function nextServerMessage(
       }
       try {
         const decoded: unknown = JSON.parse(event.data);
-        resolve(visionServerMessageSchema.parse(decoded));
+        resolve(parseServerMessage(decoded));
       } catch (error) {
         reject(error instanceof Error ? error : new Error(String(error)));
       }
@@ -327,7 +356,7 @@ async function visionSelfCheckBrowser(
     }
     return {
       enabled: true,
-      online: message.payload.cameraReady && message.payload.modelReady,
+      online: message.payload.cameraReady,
       message: `${message.payload.serverName} ${message.payload.serverVersion}`,
       checkedAtMs: Date.now(),
       ready: message.payload,
@@ -414,7 +443,7 @@ export async function openVisionTryOnSession(
     if (!readyMessage.payload.cameraReady) {
       throw tryOnUnavailableError("视觉摄像头未就绪，无法启动虚拟试穿");
     }
-    if (!readyMessage.payload.capabilities.includes("try_on_session")) {
+    if (!readyMessage.payload.fastReady) {
       throw tryOnUnavailableError("视觉模块不支持虚拟试穿会话");
     }
 
@@ -502,6 +531,7 @@ export function subscribeVisionProfiles(
   let pongTimer: ReturnType<typeof setTimeout> | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let reconnectAttempt = 0;
+  let activeGeneration = 0;
 
   const clearPingTimers = (): void => {
     if (pingTimer !== null) {
@@ -515,6 +545,7 @@ export function subscribeVisionProfiles(
   };
 
   const stopSocket = (): void => {
+    activeGeneration += 1;
     clearPingTimers();
     if (socket) {
       closeSocket(socket);
@@ -619,18 +650,27 @@ export function subscribeVisionProfiles(
   };
 
   const connect = async (): Promise<void> => {
+    const generation = activeGeneration + 1;
+    activeGeneration = generation;
     try {
       const connectedSocket = await openVisionSocket(
         options.url,
         options.timeoutMs,
       );
-      if (closed) {
+      if (closed || generation !== activeGeneration) {
         closeSocket(connectedSocket);
         return;
       }
       socket = connectedSocket;
       reconnectAttempt = 0;
       socket.addEventListener("message", (event) => {
+        if (
+          closed ||
+          generation !== activeGeneration ||
+          socket !== connectedSocket
+        ) {
+          return;
+        }
         if (typeof event.data !== "string") {
           handlers.onError?.(
             new Error("vision websocket returned a non-text frame"),
@@ -639,17 +679,25 @@ export function subscribeVisionProfiles(
         }
         try {
           const decoded: unknown = JSON.parse(event.data);
-          handleServerMessage(visionServerMessageSchema.parse(decoded));
+          handleServerMessage(parseServerMessage(decoded));
         } catch (error) {
           reportError(error);
         }
       });
       socket.addEventListener("error", () => {
+        if (generation !== activeGeneration || socket !== connectedSocket)
+          return;
         reportError(new Error("vision websocket error"));
         scheduleReconnect("视觉模块连接异常");
       });
       socket.addEventListener("close", () => {
-        if (closed) return;
+        if (
+          closed ||
+          generation !== activeGeneration ||
+          socket !== connectedSocket
+        ) {
+          return;
+        }
         scheduleReconnect("视觉模块连接已断开");
       });
       socket.send(

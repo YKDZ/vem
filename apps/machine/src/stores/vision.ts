@@ -166,7 +166,9 @@ export const useVisionStore = defineStore("vision", {
       if (!result.success) return;
       this.tryOnCapability =
         result.data.cameraReady &&
-        result.data.capabilities.includes("try_on_session")
+        result.data.fastReady &&
+        result.data.visionBusinessReady &&
+        result.data.capabilities.includes("try_on_fast")
           ? "available"
           : "degraded";
     },

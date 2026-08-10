@@ -2,6 +2,16 @@ import { z } from "zod";
 
 export const VISION_V2_PROTOCOL = "vem.vision.v2" as const;
 export const VISION_V2_BUNDLE_VERSION = "1" as const;
+export const VISION_V2_BUNDLE_SCHEMA_VERSION =
+  "vem-vision-v2-contract-bundle/v1" as const;
+
+export const visionV2BusinessReadinessDiagnosticSchema = z.enum([
+  "ready",
+  "camera_unavailable",
+  "contract_digest_mismatch",
+  "contract_version_mismatch",
+  "contract_bundle_unavailable",
+]);
 
 const sha256HexSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const sha256DigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
@@ -94,6 +104,8 @@ export const visionV2HelloMessageSchema = envelopeBaseSchema.extend({
   payload: z.strictObject({
     clientRole: z.literal("machine"),
     machineCode: z.string().min(1).max(64).optional(),
+    schemaVersion: z.string().min(1).max(128),
+    bundleVersion: z.string().min(1).max(64),
     contractDigest: sha256HexSchema,
     capabilities: z.array(z.string().min(1).max(64)).max(32),
   }),
@@ -104,10 +116,13 @@ export const visionV2ReadyMessageSchema = envelopeBaseSchema.extend({
   payload: z.strictObject({
     serverName: z.string().min(1).max(128),
     serverVersion: z.string().min(1).max(64),
+    schemaVersion: z.string().min(1).max(128),
+    bundleVersion: z.string().min(1).max(64),
     contractDigest: sha256HexSchema,
     cameraReady: z.boolean(),
     fastReady: z.boolean(),
     visionBusinessReady: z.boolean(),
+    businessReadinessDiagnostic: visionV2BusinessReadinessDiagnosticSchema,
     capabilities: z.array(z.string().min(1).max(64)).max(32),
   }),
 });

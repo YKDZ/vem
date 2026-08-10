@@ -32,4 +32,5 @@ export * from "./schemas/simulated-hardware-sale-flow";
 export * from "./schemas/try-on-garments";
 export * from "./schemas/vision";
 export * from "./schemas/vision-v2";
+export * from "./generated/vision-v2-bundle";
 export * from "./schemas/vision-camera-maintenance";

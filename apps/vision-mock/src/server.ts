@@ -1,4 +1,9 @@
 import {
+  VISION_V2_BUNDLE_SCHEMA_VERSION,
+  VISION_V2_BUNDLE_VERSION,
+  VISION_V2_CONTRACT_DIGEST,
+} from "@vem/shared";
+import {
   DEFAULT_VISION_WS_URL,
   VISION_PROTOCOL,
   visionClientMessageSchema,
@@ -27,6 +32,7 @@ export const MOCK_VISION_SCENARIOS = [
   "recommendation_unmatched",
   "disconnect_once",
   "camera_unavailable",
+  "contract_digest_mismatch",
   "try_on_unavailable_handshake",
   "try_on_unavailable_start",
 ] as const;
@@ -84,21 +90,31 @@ function baseEnvelope(
   };
 }
 
-function createReadyMessage(): VisionServerMessage {
+function createReadyMessage(
+  scenario: MockVisionScenario = "success",
+): VisionServerMessage {
   const message = {
     ...baseEnvelope("ready"),
     type: "vision.ready",
     payload: {
       serverName: "vem-vision-mock",
       serverVersion: "0.2.0",
+      schemaVersion: VISION_V2_BUNDLE_SCHEMA_VERSION,
+      bundleVersion: VISION_V2_BUNDLE_VERSION,
+      contractDigest:
+        scenario === "contract_digest_mismatch"
+          ? "f".repeat(64)
+          : VISION_V2_CONTRACT_DIGEST,
       cameraReady: true,
-      modelReady: true,
+      fastReady: true,
+      visionBusinessReady: true,
+      businessReadinessDiagnostic: "ready",
       capabilities: [
         "profile_push",
         "presence_status",
         "person_departed",
         "ambient_light",
-        "try_on_session",
+        "try_on_fast",
       ],
     },
   } satisfies VisionServerMessage;
@@ -403,7 +419,7 @@ function handleClientRawMessage(
         );
         return;
       }
-      sendServerMessage(socket, createReadyMessage());
+      sendServerMessage(socket, createReadyMessage(options.scenario));
       if (
         options.scenario === "disconnect_once" &&
         !options.disconnectOnceServed.value

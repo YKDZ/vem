@@ -71,6 +71,32 @@ function visionStatus(
   };
 }
 
+function readyPayload(
+  overrides: Partial<{
+    cameraReady: boolean;
+    fastReady: boolean;
+    visionBusinessReady: boolean;
+    businessReadinessDiagnostic:
+      | "ready"
+      | "camera_unavailable"
+      | "contract_digest_mismatch";
+  }> = {},
+) {
+  return {
+    serverName: "vending-vision",
+    serverVersion: "main",
+    schemaVersion: "vem-vision-v2-contract-bundle/v1",
+    bundleVersion: "1",
+    contractDigest: "a".repeat(64),
+    cameraReady: true,
+    fastReady: true,
+    visionBusinessReady: true,
+    businessReadinessDiagnostic: "ready" as const,
+    capabilities: ["profile_push", "try_on_fast"],
+    ...overrides,
+  };
+}
+
 describe("useVisionStore", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
@@ -264,16 +290,14 @@ describe("useVisionStore", () => {
     visionStore.applyStatus(
       visionStatus({
         type: "vision.ready",
-        payload: {
-          serverName: "vending-vision",
-          serverVersion: "main",
-          cameraReady: true,
-          modelReady: false,
-          capabilities: ["profile_push", "try_on_session"],
-        },
+        payload: readyPayload({
+          fastReady: false,
+          visionBusinessReady: false,
+          businessReadinessDiagnostic: "camera_unavailable",
+        }),
       }),
     );
-    expect(visionStore.isTryOnCapabilityDegraded).toBe(false);
+    expect(visionStore.isTryOnCapabilityDegraded).toBe(true);
 
     visionStore.applyStatus(
       visionStatus(
@@ -288,7 +312,7 @@ describe("useVisionStore", () => {
         { online: false },
       ),
     );
-    expect(visionStore.isTryOnCapabilityDegraded).toBe(false);
+    expect(visionStore.isTryOnCapabilityDegraded).toBe(true);
 
     visionStore.applyStatus(
       visionStatus({
@@ -305,13 +329,7 @@ describe("useVisionStore", () => {
 
   it("clears available or unknown try-on state whenever Vision becomes disabled", () => {
     const visionStore = useVisionStore();
-    visionStore.applyVisionReady({
-      serverName: "vending-vision",
-      serverVersion: "main",
-      cameraReady: true,
-      modelReady: true,
-      capabilities: ["profile_push", "try_on_session"],
-    });
+    visionStore.applyVisionReady(readyPayload());
     visionStore.applyPresenceStatus(presencePayload(true));
 
     visionStore.applyStatus(
@@ -331,13 +349,7 @@ describe("useVisionStore", () => {
       visionStatus(
         {
           type: "vision.ready",
-          payload: {
-            serverName: "vending-vision",
-            serverVersion: "main",
-            cameraReady: true,
-            modelReady: true,
-            capabilities: ["profile_push", "try_on_session"],
-          },
+          payload: readyPayload(),
         },
         {
           enabled: false,

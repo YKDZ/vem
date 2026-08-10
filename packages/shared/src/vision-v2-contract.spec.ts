@@ -4,7 +4,10 @@ import {
   invalidVisionV2Fixtures,
   validVisionV2Fixtures,
 } from "./fixtures/vision-v2";
-import { visionV2MessageSchema } from "./schemas/vision-v2";
+import {
+  VISION_V2_BUNDLE_VERSION,
+  visionV2MessageSchema,
+} from "./schemas/vision-v2";
 
 describe("Vision V2 shared contract", () => {
   it("accepts the Fast tracer fixture corpus", () => {
@@ -13,6 +16,26 @@ describe("Vision V2 shared contract", () => {
         protocol: "vem.vision.v2",
       });
     }
+  });
+
+  it("requires the generated bundle identity in both handshake directions", () => {
+    const hello = visionV2MessageSchema.parse(validVisionV2Fixtures[0]);
+    const ready = visionV2MessageSchema.parse(validVisionV2Fixtures[1]);
+
+    expect(hello).toMatchObject({
+      type: "vision.hello",
+      payload: {
+        schemaVersion: "vem-vision-v2-contract-bundle/v1",
+        bundleVersion: VISION_V2_BUNDLE_VERSION,
+      },
+    });
+    expect(ready).toMatchObject({
+      type: "vision.ready",
+      payload: {
+        schemaVersion: "vem-vision-v2-contract-bundle/v1",
+        bundleVersion: VISION_V2_BUNDLE_VERSION,
+      },
+    });
   });
 
   it("rejects V1, AI, and non-loopback source fixtures", () => {

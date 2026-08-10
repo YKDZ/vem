@@ -71,7 +71,7 @@ describe("vision native browser fallback - self-check", () => {
     expect(result.enabled).toBe(true);
     expect(result.ready?.serverName).toBe("vem-vision-mock");
     expect(result.ready?.cameraReady).toBe(true);
-    expect(result.ready?.modelReady).toBe(true);
+    expect(result.ready?.visionBusinessReady).toBe(true);
     expect(typeof result.checkedAtMs).toBe("number");
   });
 
@@ -88,6 +88,20 @@ describe("vision native browser fallback - self-check", () => {
     const config = { url: "ws://127.0.0.1:19999/ws" };
 
     await expect(visionSelfCheck(config)).rejects.toThrow();
+  });
+
+  it("keeps the core Vision connection online while a V2 digest mismatch withholds Fast", async () => {
+    const url = await startVisionMock("contract_digest_mismatch");
+
+    const result = await visionSelfCheck({ url });
+
+    expect(result.online).toBe(true);
+    expect(result.ready?.cameraReady).toBe(true);
+    expect(result.ready?.visionBusinessReady).toBe(false);
+    expect(result.ready?.fastReady).toBe(false);
+    expect(result.ready?.businessReadinessDiagnostic).toBe(
+      "contract_digest_mismatch",
+    );
   });
 });
 

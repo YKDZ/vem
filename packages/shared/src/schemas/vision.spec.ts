@@ -13,6 +13,10 @@ import {
   visionClientMessageSchema,
   visionTryOnStartedMessageSchema,
 } from "./vision";
+import {
+  VISION_V2_BUNDLE_SCHEMA_VERSION,
+  VISION_V2_BUNDLE_VERSION,
+} from "./vision-v2";
 
 const BASE_ENVELOPE = {
   protocol: VISION_PROTOCOL,
@@ -56,7 +60,9 @@ describe("vision protocol schemas", () => {
       payload: {
         clientRole: "machine",
         machineCode: "M001",
-        protocolVersion: 1,
+        schemaVersion: VISION_V2_BUNDLE_SCHEMA_VERSION,
+        bundleVersion: VISION_V2_BUNDLE_VERSION,
+        contractDigest: "a".repeat(64),
         capabilities: ["profile_push", "presence_status", "person_departed"],
       },
     });

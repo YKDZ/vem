@@ -1,3 +1,8 @@
+import {
+  VISION_V2_BUNDLE_SCHEMA_VERSION,
+  VISION_V2_BUNDLE_VERSION,
+} from "../schemas/vision-v2";
+
 const digest = "a".repeat(64);
 const attemptId = "550e8400-e29b-41d4-a716-446655440124";
 const variantId = "550e8400-e29b-41d4-a716-446655440125";
@@ -23,16 +28,21 @@ export const validVisionV2Fixtures = [
   envelope("vision.hello", {
     clientRole: "machine",
     machineCode: "M001",
+    schemaVersion: VISION_V2_BUNDLE_SCHEMA_VERSION,
+    bundleVersion: VISION_V2_BUNDLE_VERSION,
     contractDigest: digest,
     capabilities: ["try_on_fast"],
   }),
   envelope("vision.ready", {
     serverName: "vending-vision",
     serverVersion: "2.0.0",
+    schemaVersion: VISION_V2_BUNDLE_SCHEMA_VERSION,
+    bundleVersion: VISION_V2_BUNDLE_VERSION,
     contractDigest: digest,
     cameraReady: true,
     fastReady: true,
     visionBusinessReady: true,
+    businessReadinessDiagnostic: "ready",
     capabilities: ["try_on_fast"],
   }),
   envelope("vision.try_on.attempt.start", {

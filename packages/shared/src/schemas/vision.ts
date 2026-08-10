@@ -1,6 +1,12 @@
 import { z } from "zod";
 
-export const VISION_PROTOCOL = "vem.vision.v1" as const;
+import {
+  VISION_V2_PROTOCOL,
+  visionV2HelloMessageSchema,
+  visionV2ReadyMessageSchema,
+} from "./vision-v2";
+
+export const VISION_PROTOCOL = VISION_V2_PROTOCOL;
 export const DEFAULT_VISION_WS_URL = "ws://127.0.0.1:7892/ws" as const;
 
 export function isVisionLoopbackPreviewUrl(value: string): boolean {
@@ -127,23 +133,13 @@ export const visionFrameSourceBindingSchema = z
   })
   .loose();
 
-export const visionHelloPayloadSchema = z.object({
-  clientRole: z.literal("machine"),
-  machineCode: z.string().min(1).max(64).nullable().optional(),
-  protocolVersion: z.literal(1),
-  capabilities: z.array(z.string().min(1).max(64)).default([]),
-});
+export const visionHelloPayloadSchema =
+  visionV2HelloMessageSchema.shape.payload;
 
 const emptyPayloadSchema = z.object({}).loose();
 
-export const visionReadyPayloadSchema = z.object({
-  serverName: z.string().min(1).max(128),
-  serverVersion: z.string().min(1).max(64),
-  cameraReady: z.boolean(),
-  modelReady: z.boolean(),
-  capabilities: z.array(z.string().min(1).max(64)).default([]),
-  frameSource: visionFrameSourceBindingSchema.optional(),
-});
+export const visionReadyPayloadSchema =
+  visionV2ReadyMessageSchema.shape.payload;
 
 export const visionProfileSchema = z
   .object({
@@ -232,10 +228,7 @@ export const visionErrorPayloadSchema = z
   })
   .loose();
 
-export const visionHelloMessageSchema = visionEnvelopeBaseSchema.extend({
-  type: z.literal("vision.hello"),
-  payload: visionHelloPayloadSchema,
-});
+export const visionHelloMessageSchema = visionV2HelloMessageSchema;
 
 export const visionPingMessageSchema = visionEnvelopeBaseSchema.extend({
   type: z.literal("vision.ping"),
@@ -301,10 +294,7 @@ export const visionTryOnStopMessageSchema = visionEnvelopeBaseSchema.extend({
   payload: visionTryOnStopPayloadSchema,
 });
 
-export const visionReadyMessageSchema = visionEnvelopeBaseSchema.extend({
-  type: z.literal("vision.ready"),
-  payload: visionReadyPayloadSchema,
-});
+export const visionReadyMessageSchema = visionV2ReadyMessageSchema;
 
 export const visionProfileResultMessageSchema = visionEnvelopeBaseSchema.extend(
   {
