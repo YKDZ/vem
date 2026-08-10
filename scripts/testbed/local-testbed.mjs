@@ -29,10 +29,6 @@ const FIXTURE_PATH = new URL(
   "./fixtures/local-testbed-catalog.json",
   import.meta.url,
 );
-const TESTBED_TRY_ON_SILHOUETTE_PATH = new URL(
-  "./fixtures/try-on-silhouette.png",
-  import.meta.url,
-);
 const SERVICE_NAMES = Object.freeze({
   postgres: "vem-local-testbed-postgres",
   mqtt: "vem-local-testbed-mosquitto",
@@ -1248,11 +1244,11 @@ export async function prepareInstallationOwnedPaymentProvider({
   };
 }
 
-function testbedTryOnSilhouetteAsset() {
+function testbedTryOnGarmentAsset() {
   return {
-    fileName: "local-testbed-try-on-silhouette.png",
+    fileName: "local-testbed-try-on-garment.png",
     contentType: "image/png",
-    buffer: TESTBED_MEDIA_FIXTURES.tryOnSilhouette,
+    buffer: TESTBED_MEDIA_FIXTURES.tryOnGarment,
   };
 }
 
@@ -1324,11 +1320,23 @@ function createProductFixturePng({ background, accent }) {
   });
 }
 
-// Product display images remain deterministic generated fixtures. The try-on
-// silhouette uses the maintained real test asset so screenshot tuning reflects
-// the operator-visible garment overlay rather than a synthetic block shape.
+// Product display and transparent garment images are deterministic fixtures.
+// The garment follows the production Admin upload contract rather than a
+// customer overlay transport.
 const TESTBED_MEDIA_FIXTURES = Object.freeze({
-  tryOnSilhouette: readFileSync(TESTBED_TRY_ON_SILHOUETTE_PATH),
+  tryOnGarment: createRgbaPng(512, 640, (x, y, width, height) => {
+    const torso =
+      x > width * 0.24 &&
+      x < width * 0.76 &&
+      y > height * 0.26 &&
+      y < height * 0.9;
+    const sleeves =
+      y > height * 0.2 &&
+      y < height * 0.52 &&
+      ((x > width * 0.08 && x < width * 0.26) ||
+        (x > width * 0.74 && x < width * 0.92));
+    return torso || sleeves ? [38, 128, 212, 235] : [0, 0, 0, 0];
+  }),
   productDisplayImages: Object.freeze({
     袜子: createProductFixturePng({
       background: [32, 91, 76],
@@ -1463,12 +1471,12 @@ export async function seedThroughSupportedApis({
     },
   });
   const token = login.accessToken;
-  const tryOnSilhouetteAsset = await upload(
+  const tryOnGarmentAsset = await upload(
     baseUrl,
-    "/media-assets/try-on-silhouettes",
+    "/media-assets/try-on-garments",
     {
       token,
-      ...testbedTryOnSilhouetteAsset(),
+      ...testbedTryOnGarmentAsset(),
     },
   );
   const productDisplayAssetsByCategory = new Map();
@@ -1514,9 +1522,6 @@ export async function seedThroughSupportedApis({
           fixture.slots.find((slot) => slot.sourceRow === entry.sourceRow)
             ?.priceCents ?? 5900,
         status: "active",
-        tryOnSilhouetteMediaAssetId: supportsTryOnAcceptance(entry)
-          ? tryOnSilhouetteAsset.id
-          : null,
       },
     });
     products.push({ ...entry, product, variant, displayImageAsset });
@@ -1613,7 +1618,6 @@ export async function seedThroughSupportedApis({
         color: null,
         priceCents: recommendationBase.slot.priceCents,
         status: "active",
-        tryOnSilhouetteMediaAssetId: tryOnSilhouetteAsset.id,
       },
     });
     const machineSlot = await request(
@@ -1669,6 +1673,45 @@ export async function seedThroughSupportedApis({
       onHandQty: recommendationBase.slot.onHandQty,
     });
   }
+  const tryOnGarmentDraft = await request(baseUrl, "/try-on-garments", {
+    method: "POST",
+    token,
+    body: {
+      productId: recommendationBase.product.product.id,
+      colorLabel: "测试蓝",
+      sourceMediaAssetId: tryOnGarmentAsset.id,
+      template: "tshirt_short_sleeve",
+    },
+  });
+  await request(
+    baseUrl,
+    `/try-on-garments/${tryOnGarmentDraft.id}/confirmation`,
+    {
+      method: "POST",
+      token,
+      body: {},
+    },
+  );
+  await request(
+    baseUrl,
+    `/try-on-garments/${tryOnGarmentDraft.id}/activation`,
+    {
+      method: "POST",
+      token,
+      body: {},
+    },
+  );
+  const eligibleVariantIds = [
+    ...products
+      .filter((entry) => supportsTryOnAcceptance(entry))
+      .map((entry) => entry.variant.id),
+    ...recommendationVariants.map((entry) => entry.variantId),
+  ];
+  const tryOnGarment = await request(
+    baseUrl,
+    `/try-on-garments/${tryOnGarmentDraft.id}/variant-associations`,
+    { method: "PUT", token, body: { variantIds: eligibleVariantIds } },
+  );
   const planogramVersion = "LOCAL-TESTBED-V1";
   await request(baseUrl, `/machines/${machine.id}/planogram-versions`, {
     method: "POST",
@@ -1712,8 +1755,8 @@ export async function seedThroughSupportedApis({
       variantId: entry.variant.id,
       sku: entry.variant.sku,
       size: entry.size,
-      silhouetteAssetId: tryOnSilhouetteAsset.id,
-      silhouettePublicUrl: tryOnSilhouetteAsset.publicUrl,
+      garmentId: tryOnGarment.id,
+      garmentMediaAssetId: tryOnGarmentAsset.id,
     }));
   const productMedia = ["socks", "underwear", "tshirts"].map((categoryKey) => {
     const seededSlot = seededSlots.find(
@@ -1739,8 +1782,8 @@ export async function seedThroughSupportedApis({
     apiBaseUrl: baseUrl,
     mqttUrl: `mqtt://${hostPrivateAddress}:18883`,
     visionAcceptance: {
-      tryOnSilhouetteAssetId: tryOnSilhouetteAsset.id,
-      tryOnSilhouettePublicUrl: tryOnSilhouetteAsset.publicUrl,
+      tryOnGarmentId: tryOnGarment.id,
+      tryOnGarmentMediaAssetId: tryOnGarmentAsset.id,
       tryOnCategoryKey: "tshirts",
       selectedCatalogKey: `product:${recommendationBase.product.product.id}`,
       selectedVariantId: recommendationVariants[0].variantId,

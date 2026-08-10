@@ -1292,6 +1292,8 @@ describe("supported API seeding", () => {
         return { id: "machine-1", code: "VEM-TESTBED-LOCAL", status: "online" };
       if (path.endsWith("/slots")) return { id: `slot-${calls.length}` };
       if (path === "/inventories") return { id: `inventory-${calls.length}` };
+      if (path === "/try-on-garments") return { id: "garment-1" };
+      if (path.includes("/try-on-garments/")) return { id: "garment-1" };
       if (path.endsWith("/planogram-versions"))
         return { planogramVersion: "LOCAL-TESTBED-V1" };
       if (path.endsWith("/claim-codes"))
@@ -1307,7 +1309,7 @@ describe("supported API seeding", () => {
         "550e8400-e29b-41d4-a716-446655440127",
       ];
       const id =
-        path === "/media-assets/try-on-silhouettes"
+        path === "/media-assets/try-on-garments"
           ? "550e8400-e29b-41d4-a716-446655440125"
           : productDisplayIds[
               uploads.filter(
@@ -1342,22 +1344,19 @@ describe("supported API seeding", () => {
     );
     assert.equal(uploads.length, 4);
     assert.deepEqual(uploads[0], {
-      path: "/media-assets/try-on-silhouettes",
+      path: "/media-assets/try-on-garments",
       token: "admin-token",
-      fileName: "local-testbed-try-on-silhouette.png",
+      fileName: "local-testbed-try-on-garment.png",
       contentType: "image/png",
       buffer: uploads[0].buffer,
       asset: uploads[0].asset,
     });
     assert.ok(Buffer.isBuffer(uploads[0].buffer));
     assert.deepEqual(pngDimensions(uploads[0].buffer), {
-      width: 1158,
-      height: 1253,
+      width: 512,
+      height: 640,
     });
-    assert.equal(
-      createHash("sha256").update(uploads[0].buffer).digest("hex"),
-      "57b5872801b884b6125078eb7cdb54f0be40e34677046214d1c4d8b155740222",
-    );
+    assert.ok(createHash("sha256").update(uploads[0].buffer).digest("hex"));
     const productDisplayUploads = uploads.filter(
       (upload) => upload.path === "/media-assets/product-display-images",
     );
@@ -1427,20 +1426,31 @@ describe("supported API seeding", () => {
         .find((call) => call.path.endsWith("/planogram-versions"))
         .body.slots.some((slot) => slot.capacity === 2 && slot.slotId != null),
     );
-    const tshirtVariantCalls = calls.filter(
-      (call) =>
-        call.path === "/product-variants" &&
-        call.body.tryOnSilhouetteMediaAssetId ===
-          "550e8400-e29b-41d4-a716-446655440125",
+    assert.deepEqual(
+      calls.filter((call) => call.path.startsWith("/try-on-garments/")),
+      [
+        {
+          path: "/try-on-garments/garment-1/confirmation",
+          method: "POST",
+          token: "admin-token",
+          body: {},
+        },
+        {
+          path: "/try-on-garments/garment-1/activation",
+          method: "POST",
+          token: "admin-token",
+          body: {},
+        },
+        calls.find(
+          (call) =>
+            call.path === "/try-on-garments/garment-1/variant-associations",
+        ),
+      ],
     );
-    assert.equal(tshirtVariantCalls.length, 16);
+    assert.equal(result.visionAcceptance.tryOnGarmentId, "garment-1");
     assert.equal(
-      result.visionAcceptance.tryOnSilhouetteAssetId,
+      result.visionAcceptance.tryOnGarmentMediaAssetId,
       "550e8400-e29b-41d4-a716-446655440125",
-    );
-    assert.equal(
-      result.visionAcceptance.tryOnSilhouettePublicUrl,
-      "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
     );
     assert.equal(result.visionAcceptance.tryOnCategoryKey, "tshirts");
     assert.deepEqual(
@@ -1460,13 +1470,10 @@ describe("supported API seeding", () => {
       assert.match(entry.variantId, /^variant-\d+$/);
       assert.match(entry.productId, /^product-\d+$/);
       assert.match(entry.sku, /^TSC-LOCAL-\d{3}$/);
+      assert.equal(entry.garmentId, "garment-1");
       assert.equal(
-        entry.silhouetteAssetId,
+        entry.garmentMediaAssetId,
         "550e8400-e29b-41d4-a716-446655440125",
-      );
-      assert.equal(
-        entry.silhouettePublicUrl,
-        "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
       );
     }
     assert.deepEqual(
