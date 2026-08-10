@@ -85,6 +85,10 @@ export const validVisionV2Fixtures = [
       height: 768,
     },
   }),
+  envelope("vision.try_on.attempt.failed", {
+    attemptId,
+    reason: "garment_rejected",
+  }),
   {
     ...envelope("vision.ready", {
       serverName: "名".repeat(128),
@@ -123,6 +127,19 @@ export const invalidVisionV2Fixtures = [
         garment: {
           ...fastGarment,
           reference: "https://platform.example/media?token=wrong-boundary",
+        },
+      },
+    },
+  },
+  {
+    name: "rejects-https-loopback-garment",
+    message: {
+      ...validVisionV2Fixtures[2],
+      payload: {
+        ...validVisionV2Fixtures[2].payload,
+        garment: {
+          ...fastGarment,
+          reference: "https://127.0.0.1:65000/media?token=source-token",
         },
       },
     },
