@@ -551,7 +551,9 @@ describe("vision native browser fallback - Fast attempt lifecycle", () => {
         sockets.push(this);
         setTimeout(() => this.dispatchEvent(new Event("open")), 0);
       }
-      send(): void {}
+      send(): void {
+        return undefined;
+      }
       close(): void {
         this.readyState = FakeLifecycleSocket.CLOSED;
       }
