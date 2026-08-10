@@ -29,6 +29,7 @@ describe("Vision V2 hard-cutover absence guard", () => {
       const retiredSelector = ["try", "on", "exit"].join("-");
       const fabricatedPhaseField = ["completed", "Observed"].join("");
       const retiredSessionModule = ["try", "_on", "_session"].join("");
+      const retiredProtocolFixture = ["rejects-v", "1", "-protocol"].join("");
       const retiredField = [
         "try",
         "On",
@@ -48,6 +49,7 @@ describe("Vision V2 hard-cutover absence guard", () => {
         'const retired = ["try", "_on_", "sil", "hou", "ette"].join("");';
       const fixtures = [
         ["protocol.txt", dot("vem", "vision", "v1")],
+        ["fixture.txt", retiredProtocolFixture],
         ["wire.txt", dot("vision", "try_on", "start")],
         ["client.txt", ["use", "TryOn", "Preview"].join("")],
         [
@@ -89,6 +91,7 @@ describe("Vision V2 hard-cutover absence guard", () => {
           "legacy-try-on-selector",
           "legacy-try-on-session-module",
           "legacy-try-on-wire-message",
+          "legacy-v1-fixture",
           "protocol-v1",
           "transport-specific-preview",
         ],

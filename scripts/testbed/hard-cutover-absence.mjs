@@ -22,6 +22,9 @@ const DEFAULT_SCOPES = Object.freeze([
   "packages/shared/src",
   "packages/shared/generated",
   "packages/shared/package.json",
+  "crates/vending-core/src",
+  "crates/vending-core/tests",
+  "scripts/vision-v2-contracts",
   "scripts/testbed",
   "scripts/windows",
   ".github/workflows",
@@ -32,6 +35,7 @@ const DEFAULT_SCOPES = Object.freeze([
 
 const FORBIDDEN_PATTERNS = Object.freeze([
   { category: "protocol-v1", pattern: /\bvem[.]vision[.]v1\b/ },
+  { category: "legacy-v1-fixture", pattern: /\brejects-v[0-9]-protocol\b/ },
   {
     category: "legacy-try-on-wire-message",
     pattern: /\bvision[.]try_on[.](?:start|stop|started|stopped)\b/,

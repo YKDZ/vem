@@ -431,13 +431,13 @@ mod tests {
             .expect("generated ready fixture")
     }
 
-    fn generated_invalid_v1_hello_fixture() -> Value {
+    fn generated_invalid_unsupported_protocol_fixture() -> Value {
         serde_json::from_str::<Vec<Value>>(VISION_V2_INVALID_FIXTURES)
             .expect("generated invalid fixtures")
             .into_iter()
-            .find(|fixture| fixture["name"] == "rejects-v1-protocol")
+            .find(|fixture| fixture["name"] == "rejects-unsupported-protocol")
             .and_then(|fixture| fixture.get("message").cloned())
-            .expect("generated invalid V1 fixture")
+            .expect("generated unsupported-protocol fixture")
     }
 
     fn generated_invalid_fixture(name: &str) -> Value {
@@ -719,11 +719,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn check_ready_rejects_unmodified_shared_v1_handshake_fixture() {
+    async fn check_ready_rejects_unmodified_shared_unsupported_protocol_fixture() {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("listen");
         let addr = listener.local_addr().expect("local addr");
         let ws_url = format!("ws://{addr}/");
-        let fixture = generated_invalid_v1_hello_fixture();
+        let fixture = generated_invalid_unsupported_protocol_fixture();
 
         tokio::spawn(async move {
             let (stream, _) = listener.accept().await.expect("accept");
@@ -737,7 +737,7 @@ mod tests {
 
         let error = check_ready(&ws_url, None, 2000)
             .await
-            .expect_err("V1 fixture must not pass the V2 websocket boundary");
+            .expect_err("unsupported protocol fixture must not pass the V2 websocket boundary");
         assert!(error.contains("unsupported vision protocol"));
     }
 
