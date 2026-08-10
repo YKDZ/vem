@@ -109,7 +109,10 @@ export const validVisionV2Fixtures = [
 export const invalidVisionV2Fixtures = [
   {
     name: "rejects-unsupported-protocol",
-    message: { ...validVisionV2Fixtures[0], protocol: "vem.vision.unsupported" },
+    message: {
+      ...validVisionV2Fixtures[0],
+      protocol: "vem.vision.unsupported",
+    },
   },
   {
     name: "rejects-ai-before-ai-slice",

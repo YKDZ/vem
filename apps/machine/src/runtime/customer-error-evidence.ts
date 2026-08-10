@@ -27,10 +27,7 @@ export function recordCustomerErrorEvidence(input: {
   paymentId: string | null;
   orderNo: string | null;
 }): void {
-  const {
-    technicalError,
-    ...evidence
-  } = input;
+  const { technicalError, ...evidence } = input;
   const technical = serializeTechnicalError(technicalError);
   const record = {
     ...evidence,

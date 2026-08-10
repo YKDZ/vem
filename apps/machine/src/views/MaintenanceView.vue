@@ -229,7 +229,6 @@ const audioPreferenceMutation = reactive({
   message: null as string | null,
 });
 
-
 async function reloadEffectiveRuntimeConfiguration(): Promise<void> {
   await machineStore.loadEffectiveRuntimeConfiguration();
 }
