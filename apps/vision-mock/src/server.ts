@@ -31,8 +31,10 @@ export const MOCK_VISION_SCENARIOS = [
   "controlled",
   "recommendation_unmatched",
   "disconnect_once",
+  "presence_before_ready",
   "camera_unavailable",
   "contract_digest_mismatch",
+  "contract_bundle_unavailable",
   "try_on_unavailable_handshake",
   "try_on_unavailable_start",
 ] as const;
@@ -76,8 +78,8 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-function messageId(prefix: string): string {
-  return `${prefix}-${randomUUID()}`;
+function messageId(_prefix: string): string {
+  return randomUUID();
 }
 
 function baseEnvelope(
@@ -93,6 +95,7 @@ function baseEnvelope(
 function createReadyMessage(
   scenario: MockVisionScenario = "success",
 ): VisionServerMessage {
+  const contractBundleUnavailable = scenario === "contract_bundle_unavailable";
   const message = {
     ...baseEnvelope("ready"),
     type: "vision.ready",
@@ -106,9 +109,11 @@ function createReadyMessage(
           ? "f".repeat(64)
           : VISION_V2_CONTRACT_DIGEST,
       cameraReady: true,
-      fastReady: true,
-      visionBusinessReady: true,
-      businessReadinessDiagnostic: "ready",
+      fastReady: !contractBundleUnavailable,
+      visionBusinessReady: !contractBundleUnavailable,
+      businessReadinessDiagnostic: contractBundleUnavailable
+        ? "contract_bundle_unavailable"
+        : "ready",
       capabilities: [
         "profile_push",
         "presence_status",
@@ -418,6 +423,9 @@ function handleClientRawMessage(
           }),
         );
         return;
+      }
+      if (options.scenario === "presence_before_ready") {
+        sendServerMessage(socket, createPresenceMessage("approach"));
       }
       sendServerMessage(socket, createReadyMessage(options.scenario));
       if (

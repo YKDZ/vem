@@ -663,6 +663,7 @@ export function subscribeVisionProfiles(
       }
       socket = connectedSocket;
       reconnectAttempt = 0;
+      let established = false;
       socket.addEventListener("message", (event) => {
         if (
           closed ||
@@ -679,7 +680,19 @@ export function subscribeVisionProfiles(
         }
         try {
           const decoded: unknown = JSON.parse(event.data);
-          handleServerMessage(parseServerMessage(decoded));
+          const message = parseServerMessage(decoded);
+          if (!established) {
+            if (message.type === "vision.ready") {
+              // A readiness mismatch still establishes core presence/profile;
+              // normalized readiness withholds only the business Fast capability.
+              established = true;
+              handleServerMessage(message);
+            } else if (message.type === "vision.error") {
+              handleServerMessage(message);
+            }
+            return;
+          }
+          handleServerMessage(message);
         } catch (error) {
           reportError(error);
         }

@@ -13,7 +13,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   CdpClient,
@@ -66,6 +67,28 @@ const INSTALLED_KIOSK_SALE_NORMAL_LAUNCHER =
   "C:\\VEM\\bringup\\launch-machine-ui.vbs";
 const INSTALLED_KIOSK_SALE_MACHINE_PATH = "C:\\VEM\\bringup\\machine.exe";
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+const VISION_V2_MANIFEST_PATH = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../packages/shared/generated/vision-v2/manifest.json",
+);
+
+export function readVisionV2ContractIdentity() {
+  const manifest = JSON.parse(readFileSync(VISION_V2_MANIFEST_PATH, "utf8"));
+  if (
+    manifest?.protocol !== "vem.vision.v2" ||
+    typeof manifest.schemaVersion !== "string" ||
+    typeof manifest.bundleVersion !== "string" ||
+    !SHA256_PATTERN.test(manifest.bundleDigest)
+  ) {
+    throw new Error("generated Vision V2 manifest identity is invalid");
+  }
+  return Object.freeze({
+    protocol: manifest.protocol,
+    schemaVersion: manifest.schemaVersion,
+    bundleVersion: manifest.bundleVersion,
+    contractDigest: manifest.bundleDigest,
+  });
+}
 
 const PLATFORM_TARGETS = {
   "vem-vps": {
@@ -586,6 +609,7 @@ function runtimeAssertion(status, asserted) {
 
 export function buildRuntimeAcceptanceReport(facts = {}) {
   const diagnostics = [];
+  const visionIdentity = readVisionV2ContractIdentity();
 
   if (
     !String(facts.target?.machineCode ?? "").startsWith(
@@ -715,15 +739,15 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
   if (
     facts.visionRuntime?.healthReachable !== true ||
     !["ok", "degraded"].includes(facts.visionRuntime?.healthStatus) ||
-    facts.visionRuntime?.healthProtocol !== "vem.vision.v1" ||
+    facts.visionRuntime?.healthProtocol !== visionIdentity.protocol ||
     facts.visionRuntime?.healthModule !== "vision" ||
     facts.visionRuntime?.healthMockScenario !== "off" ||
-    facts.visionRuntime?.modelReady !== true
+    facts.visionRuntime?.cameraReady !== true
   ) {
     addDiagnostic(
       diagnostics,
       "vision_health_not_ready",
-      "The installed Vision runtime must expose a healthy vem.vision.v1 service with loaded models.",
+      "The installed Vision runtime must expose a healthy generated vem.vision.v2 service.",
     );
   }
   if (
@@ -753,7 +777,7 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
   }
   if (
     facts.visionRuntime?.webSocketConnected !== true ||
-    facts.visionRuntime?.readyProtocol !== "vem.vision.v1" ||
+    facts.visionRuntime?.readyProtocol !== visionIdentity.protocol ||
     facts.visionRuntime?.readyType !== "vision.ready" ||
     typeof facts.visionRuntime?.readyMessageId !== "string" ||
     facts.visionRuntime.readyMessageId.trim().length === 0 ||
@@ -765,8 +789,12 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
     typeof facts.visionRuntime?.readyCameraReady !== "boolean" ||
     facts.visionRuntime?.readyCameraReady !==
       facts.visionRuntime?.cameraReady ||
-    facts.visionRuntime?.readyModelReady !== true ||
-    facts.visionRuntime?.readyModelReady !== facts.visionRuntime?.modelReady ||
+    facts.visionRuntime?.readyFastReady !== true ||
+    facts.visionRuntime?.readyVisionBusinessReady !== true ||
+    facts.visionRuntime?.readyBusinessReadinessDiagnostic !== "ready" ||
+    facts.visionRuntime?.readySchemaVersion !== visionIdentity.schemaVersion ||
+    facts.visionRuntime?.readyBundleVersion !== visionIdentity.bundleVersion ||
+    facts.visionRuntime?.readyContractDigest !== visionIdentity.contractDigest ||
     !Array.isArray(facts.visionRuntime?.readyCapabilities) ||
     !facts.visionRuntime.readyCapabilities.every(
       (capability) =>
@@ -778,7 +806,7 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
       "profile_push",
       "presence_status",
       "person_departed",
-      "try_on_session",
+      "try_on_fast",
     ].every((capability) =>
       facts.visionRuntime.readyCapabilities.includes(capability),
     )
@@ -786,7 +814,7 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
     addDiagnostic(
       diagnostics,
       "vision_protocol_not_ready",
-      "The installed Vision runtime must complete the vem.vision.v1 hello handshake.",
+      "The installed Vision runtime must complete the generated vem.vision.v2 hello handshake.",
     );
   }
   if (facts.kioskRuntime?.webviewRunning !== true) {

@@ -72,9 +72,13 @@ test("installs one fixed app directory and probes health plus machine protocol",
   assert.match(module, /while \(-not \$received\.EndOfMessage\)/);
   assert.match(module, /\$MaxMessageBytes = 65536/);
   assert.match(module, /Test-VisionMainProtocolTimestamp/);
+  assert.match(module, /Get-VisionV2ContractIdentity/);
+  assert.match(module, /_internal\\contracts\\vem_vision_v2\\manifest\.json/);
+  assert.match(module, /schemaVersion = \$contractIdentity\.schemaVersion/);
+  assert.match(module, /contractDigest = \$contractIdentity\.contractDigest/);
   assert.match(
     module,
-    /profile_push", "presence_status", "person_departed", "try_on_session/,
+    /profile_push", "presence_status", "person_departed", "ambient_light", "try_on_fast/,
   );
   assert.doesNotMatch(module, /serverVersion -cne \$health\.version/);
   assert.match(module, /Ensure-VisionMainTask/);
@@ -102,6 +106,9 @@ test("runtime verification checks the installed Vision artifact", () => {
   assert.match(verify, /VisionInstallRecord/);
   assert.match(verify, /VisionSiteConfiguration/);
   assert.match(verify, /Invoke-VisionMainProbe/);
+  assert.match(verify, /ready\.payload\.fastReady -eq \$true/);
+  assert.match(verify, /ready\.payload\.visionBusinessReady -eq \$true/);
+  assert.match(verify, /ready\.payload\.businessReadinessDiagnostic -ceq "ready"/);
 });
 
 test("can install Vision files without defining a second runtime owner", () => {

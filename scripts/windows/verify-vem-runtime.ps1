@@ -71,9 +71,9 @@ function Test-VisionRuntimeBinding {
     if ($record.commit -notmatch '^[a-f0-9]{40}$' -or $record.runtime -cne "vending-vision.exe") { throw "direct Vision install record is invalid" }
     if (-not (Test-Path -LiteralPath (Join-Path $VisionAppDirectory "vending-vision.exe") -PathType Leaf) -or -not (Test-Path -LiteralPath $VisionSiteConfiguration -PathType Leaf)) { throw "direct Vision application or site configuration is missing" }
     $result.installationValid=$true
-    $probe = Invoke-VisionMainProbe -ConfigurationPath $VisionSiteConfiguration -FixtureRoot (Join-Path $VisionFixtureDirectory ([string]$record.commit))
-    $result.healthValid=$probe.health.modelReady -eq $true
-    $result.protocolValid=$probe.ready.type -ceq "vision.ready"
+    $probe = Invoke-VisionMainProbe -ConfigurationPath $VisionSiteConfiguration -FixtureRoot (Join-Path $VisionFixtureDirectory ([string]$record.commit)) -AppDirectory $VisionAppDirectory
+    $result.healthValid=$probe.health.cameraReady -eq $true
+    $result.protocolValid=($probe.ready.type -ceq "vision.ready" -and $probe.ready.payload.fastReady -eq $true -and $probe.ready.payload.visionBusinessReady -eq $true -and $probe.ready.payload.businessReadinessDiagnostic -ceq "ready")
   } catch { Add-VisionFailure $Failures $_.Exception.Message }
   return [pscustomobject]$result
 }

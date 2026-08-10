@@ -8,11 +8,12 @@ import {
   buildRecordedVisionSiteConfiguration,
   combineCleanupFailure,
   collectVisionProtocolEvidence,
-  compareObservedVisionProtocolToExpected,
+  compareObservedVisionProtocolToExpected as compareRawObservedVisionProtocolToExpected,
   createVisionEventFence,
   normalizeSeededVisionAcceptance,
   normalizeVisionExpectedResults,
   parseVisionTryOnAcceptanceArgs,
+  readVisionV2ContractIdentity,
   startVisionMockScenario,
   stopVisionChild,
   validateRecommendationProjection,
@@ -22,18 +23,24 @@ import {
   validateTryOnPresentation,
   validateVisionInstalledBinding,
   validateVisionEventFence,
-  validateVisionProtocolEvidence,
-  validateVisionRuntimeEvidence,
+  validateVisionProtocolEvidence as validateRawVisionProtocolEvidence,
+  validateVisionRuntimeEvidence as validateRawVisionRuntimeEvidence,
   waitForClearedVisionRecommendationBaseline,
   waitForVisionInstalledBindingObservation,
   waitForVisionPortRelease,
 } from "./vision-try-on-acceptance.mjs";
 
+const VISION_V2_IDENTITY = readVisionV2ContractIdentity();
+
+const validateVisionProtocolEvidence = validateRawVisionProtocolEvidence;
+const validateVisionRuntimeEvidence = validateRawVisionRuntimeEvidence;
+const compareObservedVisionProtocolToExpected = compareRawObservedVisionProtocolToExpected;
+
 function baseExpectedResults() {
   return {
     schemaVersion: "vending-vision-expected-results/v1",
     protocol: {
-      ready: { protocol: "vem.vision.v1" },
+      ready: { protocol: VISION_V2_IDENTITY.protocol },
       presence: {
         type: "vision.presence_status",
         source: "top",
@@ -305,26 +312,30 @@ describe("vision try-on acceptance script", () => {
     const summary = validateVisionProtocolEvidence({
       health: {
         status: "ok",
-        protocol: "vem.vision.v1",
-        modelReady: true,
+        protocol: VISION_V2_IDENTITY.protocol,
         cameraReady: true,
         frameSource: frameSourceBinding(),
       },
       ready: {
-        protocol: "vem.vision.v1",
+        protocol: VISION_V2_IDENTITY.protocol,
         type: "vision.ready",
         messageId: "ready-1",
         timestamp: "2026-07-18T00:00:00.000Z",
         payload: {
           serverName: "vem-vision-runtime",
           serverVersion: "1.2.3",
-          modelReady: true,
+          schemaVersion: VISION_V2_IDENTITY.schemaVersion,
+          bundleVersion: VISION_V2_IDENTITY.bundleVersion,
+          contractDigest: VISION_V2_IDENTITY.contractDigest,
+          fastReady: true,
+          visionBusinessReady: true,
+          businessReadinessDiagnostic: "ready",
           cameraReady: true,
           capabilities: [
             "profile_push",
             "presence_status",
             "person_departed",
-            "try_on_session",
+            "try_on_fast",
           ],
           frameSource: frameSourceBinding(),
         },
@@ -373,8 +384,7 @@ describe("vision try-on acceptance script", () => {
         validateVisionProtocolEvidence({
           health: {
             status: "offline",
-            protocol: "vem.vision.v1",
-            modelReady: true,
+            protocol: VISION_V2_IDENTITY.protocol,
             cameraReady: true,
             frameSource: frameSourceBinding(),
           },
@@ -390,26 +400,36 @@ describe("vision try-on acceptance script", () => {
         validateVisionProtocolEvidence({
           health: {
             status: "ok",
-            protocol: "vem.vision.v1",
-            modelReady: true,
+            protocol: VISION_V2_IDENTITY.protocol,
             cameraReady: true,
             frameSource: frameSourceBinding(),
           },
           ready: {
-            protocol: "vem.vision.v1",
+            protocol: VISION_V2_IDENTITY.protocol,
             type: "vision.ready",
             messageId: "ready-1",
             timestamp: "2026-07-18T00:00:00.000Z",
             payload: {
               serverName: "vem-vision-runtime",
               serverVersion: "1.2.3",
-              modelReady: true,
+              schemaVersion: VISION_V2_IDENTITY.schemaVersion,
+              bundleVersion: VISION_V2_IDENTITY.bundleVersion,
+              contractDigest: VISION_V2_IDENTITY.contractDigest,
+              fastReady: true,
+              visionBusinessReady: true,
+              businessReadinessDiagnostic: "ready",
+              schemaVersion: VISION_V2_IDENTITY.schemaVersion,
+              bundleVersion: VISION_V2_IDENTITY.bundleVersion,
+              contractDigest: VISION_V2_IDENTITY.contractDigest,
+              fastReady: true,
+              visionBusinessReady: true,
+              businessReadinessDiagnostic: "ready",
               cameraReady: true,
               capabilities: [
                 "profile_push",
                 "presence_status",
                 "person_departed",
-                "try_on_session",
+                "try_on_fast",
               ],
               frameSource: frameSourceBinding(),
             },
@@ -454,25 +474,35 @@ describe("vision try-on acceptance script", () => {
       {
         health: {
           status: "ok",
-          protocol: "vem.vision.v1",
-          modelReady: true,
+          protocol: VISION_V2_IDENTITY.protocol,
           cameraReady: true,
         },
         ready: {
-          protocol: "vem.vision.v1",
+          protocol: VISION_V2_IDENTITY.protocol,
           type: "vision.ready",
           messageId: "ready-1",
           timestamp: "2026-07-18T00:00:00.000Z",
           payload: {
             serverName: "vem-vision-runtime",
             serverVersion: "1.2.3",
-            modelReady: true,
+            schemaVersion: VISION_V2_IDENTITY.schemaVersion,
+            bundleVersion: VISION_V2_IDENTITY.bundleVersion,
+            contractDigest: VISION_V2_IDENTITY.contractDigest,
+            fastReady: true,
+            visionBusinessReady: true,
+            businessReadinessDiagnostic: "ready",
+            schemaVersion: VISION_V2_IDENTITY.schemaVersion,
+            bundleVersion: VISION_V2_IDENTITY.bundleVersion,
+            contractDigest: VISION_V2_IDENTITY.contractDigest,
+            fastReady: true,
+            visionBusinessReady: true,
+            businessReadinessDiagnostic: "ready",
             cameraReady: true,
             capabilities: [
               "profile_push",
               "presence_status",
               "person_departed",
-              "try_on_session",
+              "try_on_fast",
             ],
           },
         },
@@ -521,25 +551,23 @@ describe("vision try-on acceptance script", () => {
         validateVisionProtocolEvidence({
           health: {
             status: "ok",
-            protocol: "vem.vision.v1",
-            modelReady: true,
+            protocol: VISION_V2_IDENTITY.protocol,
             cameraReady: true,
           },
           ready: {
-            protocol: "vem.vision.v1",
+            protocol: VISION_V2_IDENTITY.protocol,
             type: "vision.ready",
             messageId: "ready-1",
             timestamp: "2026-07-18T00:00:00.000Z",
             payload: {
               serverName: "vem-vision-runtime",
               serverVersion: "1.2.3",
-              modelReady: true,
               cameraReady: true,
               capabilities: [
                 "profile_push",
                 "presence_status",
                 "person_departed",
-                "try_on_session",
+                "try_on_fast",
               ],
             },
           },
@@ -716,26 +744,30 @@ describe("vision try-on acceptance script", () => {
       protocolEvidence: {
         health: {
           status: "ok",
-          protocol: "vem.vision.v1",
-          modelReady: true,
+          protocol: VISION_V2_IDENTITY.protocol,
           cameraReady: true,
           frameSource: frameSourceBinding(),
         },
         ready: {
-          protocol: "vem.vision.v1",
+          protocol: VISION_V2_IDENTITY.protocol,
           type: "vision.ready",
           messageId: "ready-1",
           timestamp: "2026-07-18T00:00:00.000Z",
           payload: {
             serverName: "vem-vision-runtime",
             serverVersion: "1.2.3",
-            modelReady: true,
+            schemaVersion: VISION_V2_IDENTITY.schemaVersion,
+            bundleVersion: VISION_V2_IDENTITY.bundleVersion,
+            contractDigest: VISION_V2_IDENTITY.contractDigest,
+            fastReady: true,
+            visionBusinessReady: true,
+            businessReadinessDiagnostic: "ready",
             cameraReady: true,
             capabilities: [
               "profile_push",
               "presence_status",
               "person_departed",
-              "try_on_session",
+              "try_on_fast",
             ],
             frameSource: frameSourceBinding(),
           },
@@ -789,26 +821,30 @@ describe("vision try-on acceptance script", () => {
           protocolEvidence: {
             health: {
               status: "ok",
-              protocol: "vem.vision.v1",
-              modelReady: true,
+              protocol: VISION_V2_IDENTITY.protocol,
               cameraReady: true,
               frameSource: frameSourceBinding(),
             },
             ready: {
-              protocol: "vem.vision.v1",
+              protocol: VISION_V2_IDENTITY.protocol,
               type: "vision.ready",
               messageId: "ready-1",
               timestamp: "2026-07-18T00:00:00.000Z",
               payload: {
                 serverName: "vem-vision-runtime",
                 serverVersion: "1.2.3",
-                modelReady: true,
+                schemaVersion: VISION_V2_IDENTITY.schemaVersion,
+                bundleVersion: VISION_V2_IDENTITY.bundleVersion,
+                contractDigest: VISION_V2_IDENTITY.contractDigest,
+                fastReady: true,
+                visionBusinessReady: true,
+                businessReadinessDiagnostic: "ready",
                 cameraReady: true,
                 capabilities: [
                   "profile_push",
                   "presence_status",
                   "person_departed",
-                  "try_on_session",
+                  "try_on_fast",
                 ],
                 frameSource: frameSourceBinding(),
               },
@@ -860,26 +896,30 @@ describe("vision try-on acceptance script", () => {
           protocolEvidence: {
             health: {
               status: "ok",
-              protocol: "vem.vision.v1",
-              modelReady: true,
+              protocol: VISION_V2_IDENTITY.protocol,
               cameraReady: true,
               frameSource: frameSourceBinding(),
             },
             ready: {
-              protocol: "vem.vision.v1",
+              protocol: VISION_V2_IDENTITY.protocol,
               type: "vision.ready",
               messageId: "ready-1",
               timestamp: "2026-07-18T00:00:00.000Z",
               payload: {
                 serverName: "vem-vision-runtime",
                 serverVersion: "1.2.3",
-                modelReady: true,
+                schemaVersion: VISION_V2_IDENTITY.schemaVersion,
+                bundleVersion: VISION_V2_IDENTITY.bundleVersion,
+                contractDigest: VISION_V2_IDENTITY.contractDigest,
+                fastReady: true,
+                visionBusinessReady: true,
+                businessReadinessDiagnostic: "ready",
                 cameraReady: true,
                 capabilities: [
                   "profile_push",
                   "presence_status",
                   "person_departed",
-                  "try_on_session",
+                  "try_on_fast",
                 ],
                 frameSource: frameSourceBinding(),
               },
@@ -1055,8 +1095,7 @@ describe("vision try-on acceptance script", () => {
     const summary = validateVisionRuntimeEvidence({
       health: {
         status: "ok",
-        protocol: "vem.vision.v1",
-        modelReady: true,
+        protocol: VISION_V2_IDENTITY.protocol,
         cameraReady: true,
         frameSource: frameSourceBinding(),
       },
@@ -1072,8 +1111,7 @@ describe("vision try-on acceptance script", () => {
         validateVisionRuntimeEvidence({
           health: {
             status: "ok",
-            protocol: "vem.vision.v1",
-            modelReady: true,
+            protocol: VISION_V2_IDENTITY.protocol,
             cameraReady: true,
           },
           catalogRecommendation: {

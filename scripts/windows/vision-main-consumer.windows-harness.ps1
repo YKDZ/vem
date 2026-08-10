@@ -24,9 +24,11 @@ function New-VisionArchiveFixture([string]$Root, [string]$Commit) {
   $runtimeSource = Join-Path $Root "runtime-source"
   $fixtureSource = Join-Path $Root "fixture-source"
   $artifactSource = Join-Path $Root "artifact-source"
-  New-Item -ItemType Directory -Force -Path $runtimeSource, (Join-Path $fixtureSource "recorded-video"), $artifactSource | Out-Null
+  $contractRoot = Join-Path $runtimeSource "_internal\contracts\vem_vision_v2"
+  New-Item -ItemType Directory -Force -Path $runtimeSource, $contractRoot, (Join-Path $fixtureSource "recorded-video"), $artifactSource | Out-Null
   $manifest = @{ schemaVersion = "vending-vision-main-artifacts/v1"; commit = $Commit; runtimeArchive = "vending-vision-windows-x86_64.zip"; fixtureArchive = "vending-vision-test-fixtures.zip" } | ConvertTo-Json
   [IO.File]::WriteAllText((Join-Path $runtimeSource "vending-vision.exe"), "fixture", [Text.Encoding]::ASCII)
+  @{ protocol = "vem.vision.v2"; schemaVersion = "vem-vision-v2-contract-bundle/v1"; bundleVersion = "1"; bundleDigest = ("a" * 64) } | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $contractRoot "manifest.json") -Encoding utf8
   [IO.File]::WriteAllText((Join-Path $runtimeSource "vision-artifact.json"), $manifest, [Text.Encoding]::UTF8)
   $recordedVideoSource = Join-Path $fixtureSource "recorded-video"
   foreach ($name in @("top.mp4", "front.mp4", "expected-results.json")) { [IO.File]::WriteAllText((Join-Path $recordedVideoSource $name), "fixture", [Text.Encoding]::UTF8) }
@@ -89,7 +91,7 @@ function Start-VisionProbeServer([int]$Port, [string]$Status = "ok", [bool]$Came
       $client = $listener.AcceptTcpClient(); $stream = $client.GetStream(); $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::ASCII, $false, 4096, $true)
       try { while (($line = $reader.ReadLine()) -ne "") {} } finally { $reader.Dispose() }
       $cameraReadyJson = if ($CameraReady) { "true" } else { "false" }
-      $body = "{`"status`":`"$Status`",`"protocol`":`"vem.vision.v1`",`"version`":`"$Version`",`"cameraReady`":$cameraReadyJson,`"modelReady`":true}"
+      $body = "{`"status`":`"$Status`",`"protocol`":`"vem.vision.v2`",`"version`":`"$Version`",`"cameraReady`":$cameraReadyJson}"
       $response = "HTTP/1.1 200 OK`r`nContent-Type: application/json`r`nContent-Length: $($body.Length)`r`nConnection: close`r`n`r`n$body"
       $bytes = [Text.Encoding]::ASCII.GetBytes($response); $stream.Write($bytes, 0, $bytes.Length); $client.Dispose()
       if (-not $ExpectWebSocket) { return }
@@ -101,16 +103,21 @@ function Start-VisionProbeServer([int]$Port, [string]$Status = "ok", [bool]$Came
       $header = [byte[]]::new(2); [void]$stream.Read($header, 0, 2); $length = $header[1] -band 0x7f; if ($length -eq 126) { $extended = [byte[]]::new(2); [void]$stream.Read($extended, 0, 2); $length = ($extended[0] -shl 8) + $extended[1] }; $mask = [byte[]]::new(4); [void]$stream.Read($mask, 0, 4); $payload = [byte[]]::new($length); [void]$stream.Read($payload, 0, $length)
       if ([string]::IsNullOrWhiteSpace($ReadyJson)) {
         $ReadyJson = [ordered]@{
-          protocol = "vem.vision.v1"
+          protocol = "vem.vision.v2"
           type = "vision.ready"
-          messageId = "ready-harness"
+          messageId = [guid]::NewGuid().ToString()
           timestamp = "2026-07-17T00:00:00.000Z"
           payload = [ordered]@{
             serverName = "vision-harness"
             serverVersion = $Version
             cameraReady = $CameraReady
-            modelReady = $true
-            capabilities = @("profile_push", "presence_status", "person_departed", "try_on_session")
+            fastReady = $true
+            visionBusinessReady = $true
+            businessReadinessDiagnostic = "ready"
+            schemaVersion = "vem-vision-v2-contract-bundle/v1"
+            bundleVersion = "1"
+            contractDigest = ("a" * 64)
+            capabilities = @("profile_push", "presence_status", "person_departed", "ambient_light", "try_on_fast")
           }
         } | ConvertTo-Json -Compress -Depth 8
       }
@@ -282,7 +289,7 @@ try {
     $server = Start-ReadyVisionProbeServer $Name $port "ok" $true "9.8.7" $true $ReadyJson
     $rejected = $false
     try {
-      Invoke-VisionMainProbe -ConfigurationPath $ConfigurationPath -TimeoutSeconds 1 | Out-Null
+      Invoke-VisionMainProbe -ConfigurationPath $ConfigurationPath -TimeoutSeconds 1 -AppDirectory (Join-Path $root "vision\app") | Out-Null
     } catch {
       $rejected = $true
     }
@@ -295,22 +302,22 @@ try {
   $fragmentedPort = New-VisionHarnessPort
   Set-VisionHarnessSitePort $install.siteConfiguration $fragmentedPort
   $fragmentedServer = Start-ReadyVisionProbeServer "fragmented" $fragmentedPort "ok" $true "9.8.7" $true "" 32
-  $fragmentedProbe = Invoke-VisionMainProbe -ConfigurationPath $install.siteConfiguration -TimeoutSeconds 15
+  $fragmentedProbe = Invoke-VisionMainProbe -ConfigurationPath $install.siteConfiguration -TimeoutSeconds 15 -AppDirectory (Join-Path $root "vision\app")
   Wait-Job $fragmentedServer | Out-Null; Receive-Job $fragmentedServer | Out-Null; Remove-Job $fragmentedServer
   Assert-True ($fragmentedProbe.ready.type -eq "vision.ready") "fragmented Vision ready envelope was not assembled"
 
-  $independentVersionReady = '{"protocol":"vem.vision.v1","type":"vision.ready","messageId":"ready-version-diagnostic","timestamp":"2026-07-17T00:00:00.000Z","payload":{"serverName":"vision-harness","serverVersion":"independent-version","cameraReady":true,"modelReady":true,"capabilities":["profile_push","presence_status","person_departed","try_on_session"]}}'
+  $independentVersionReady = '{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440124","timestamp":"2026-07-17T00:00:00.000Z","payload":{"serverName":"vision-harness","serverVersion":"independent-version","cameraReady":true,"fastReady":true,"visionBusinessReady":true,"businessReadinessDiagnostic":"ready","schemaVersion":"vem-vision-v2-contract-bundle/v1","bundleVersion":"1","contractDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","capabilities":["profile_push","presence_status","person_departed","ambient_light","try_on_fast"]}}'
   $versionDiagnosticPort = New-VisionHarnessPort
   Set-VisionHarnessSitePort $install.siteConfiguration $versionDiagnosticPort
   $versionDiagnosticServer = Start-ReadyVisionProbeServer "version" $versionDiagnosticPort "ok" $true "9.8.7" $true $independentVersionReady
-  $versionDiagnosticProbe = Invoke-VisionMainProbe -ConfigurationPath $install.siteConfiguration -TimeoutSeconds 15
+  $versionDiagnosticProbe = Invoke-VisionMainProbe -ConfigurationPath $install.siteConfiguration -TimeoutSeconds 15 -AppDirectory (Join-Path $root "vision\app")
   Wait-Job $versionDiagnosticServer | Out-Null; Receive-Job $versionDiagnosticServer | Out-Null; Remove-Job $versionDiagnosticServer
   Assert-True ($versionDiagnosticProbe.ready.payload.serverVersion -eq "independent-version") "probe unexpectedly gated readiness on server version"
 
-  Assert-VisionProbeRejected "malformed" $install.siteConfiguration '{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"ready-malformed","timestamp":"2026-07-17T00:00:00.000Z","payload":{"serverName":"vision-harness","cameraReady":true,"modelReady":true,"capabilities":["profile_push","presence_status","person_departed","try_on_session"]}}'
-  Assert-VisionProbeRejected "camera-string" $install.siteConfiguration '{"protocol":"vem.vision.v1","type":"vision.ready","messageId":"ready-camera-string","timestamp":"2026-07-17T00:00:00.000Z","payload":{"serverName":"vision-harness","cameraReady":"true","modelReady":true,"capabilities":["profile_push","presence_status","person_departed","try_on_session"]}}'
-  Assert-VisionProbeRejected "model-string" $install.siteConfiguration '{"protocol":"vem.vision.v1","type":"vision.ready","messageId":"ready-model-string","timestamp":"2026-07-17T00:00:00.000Z","payload":{"serverName":"vision-harness","cameraReady":true,"modelReady":"true","capabilities":["profile_push","presence_status","person_departed","try_on_session"]}}'
-  Assert-VisionProbeRejected "missing-tryon" $install.siteConfiguration '{"protocol":"vem.vision.v1","type":"vision.ready","messageId":"ready-missing-tryon","timestamp":"2026-07-17T00:00:00.000Z","payload":{"serverName":"vision-harness","cameraReady":true,"modelReady":true,"capabilities":["profile_push","presence_status","person_departed"]}}'
+  Assert-VisionProbeRejected "malformed" $install.siteConfiguration '{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440128","timestamp":"2026-07-17T00:00:00.000Z","payload":{"serverName":"vision-harness","cameraReady":true}}'
+  Assert-VisionProbeRejected "camera-string" $install.siteConfiguration '{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440125","timestamp":"2026-07-17T00:00:00.000Z","payload":{"serverName":"vision-harness","cameraReady":"true"}}'
+  Assert-VisionProbeRejected "business-string" $install.siteConfiguration '{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440126","timestamp":"2026-07-17T00:00:00.000Z","payload":{"serverName":"vision-harness","cameraReady":true,"fastReady":"true"}}'
+  Assert-VisionProbeRejected "missing-fast" $install.siteConfiguration '{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440127","timestamp":"2026-07-17T00:00:00.000Z","payload":{"serverName":"vision-harness","cameraReady":true,"visionBusinessReady":true}}'
 
   $recordedConfig = Join-Path $root "recorded-site-input.json"
   $recordedPort = New-VisionHarnessPort

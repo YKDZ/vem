@@ -38,10 +38,10 @@ impl VisionRuntimeSnapshot {
                 } else {
                     "camera_not_ready"
                 },
-                if payload.model_ready {
-                    "model_ready"
+                if payload.vision_business_ready {
+                    "vision_business_ready"
                 } else {
-                    "model_not_ready"
+                    "vision_business_not_ready"
                 },
             )
             .trim_end()

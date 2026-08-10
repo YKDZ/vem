@@ -3,7 +3,7 @@ import {
   type MockVisionScenario,
   type MockVisionServer,
 } from "vision-mock";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   isVisionTryOnCapabilityDegraded,
@@ -12,13 +12,17 @@ import {
   subscribeVisionProfiles,
   type VisionPersonDepartedPayload,
   type VisionPresenceStatusPayload,
+  type VisionProfileSubscriptionHandlers,
   type VisionProfileResultPayload,
   visionSelfCheck,
 } from "./vision";
 
 const servers: MockVisionServer[] = [];
+const nativeWebSocket = globalThis.WebSocket;
 
 afterEach(async () => {
+  globalThis.WebSocket = nativeWebSocket;
+  vi.useRealTimers();
   const closing = servers.splice(0).map(async (server) => {
     try {
       await server.close();
@@ -103,9 +107,132 @@ describe("vision native browser fallback - self-check", () => {
       "contract_digest_mismatch",
     );
   });
+
+  it("preserves contract_bundle_unavailable without promoting business readiness", async () => {
+    const url = await startVisionMock("contract_bundle_unavailable");
+    const ready = await new Promise<Parameters<NonNullable<VisionProfileSubscriptionHandlers["onReady"]>>[0]>(
+      (resolve, reject) => {
+        const subscription = subscribeVisionProfiles({ url }, {
+          onReady: (value) => {
+            subscription.close();
+            resolve(value);
+          },
+          onProfile: () => undefined,
+          onError: reject,
+        });
+      },
+    );
+
+    expect(ready.fastReady).toBe(false);
+    expect(ready.visionBusinessReady).toBe(false);
+    expect(ready.businessReadinessDiagnostic).toBe("contract_bundle_unavailable");
+  });
 });
 
 describe("vision native browser fallback - pushed profiles", () => {
+  it("fences old-generation late messages while delivering only current post-ready events", async () => {
+    vi.useFakeTimers();
+    const sockets: FakeVisionSocket[] = [];
+    class FakeVisionSocket extends EventTarget {
+      static readonly CONNECTING = 0;
+      static readonly OPEN = 1;
+      static readonly CLOSING = 2;
+      static readonly CLOSED = 3;
+      readonly readyState = FakeVisionSocket.OPEN;
+      constructor(_url: string) {
+        super();
+        sockets.push(this);
+        setTimeout(() => this.dispatchEvent(new Event("open")), 0);
+      }
+      send(): void {}
+      close(): void {
+        this.dispatchEvent(new Event("close"));
+      }
+      emit(message: object): void {
+        this.dispatchEvent(
+          new MessageEvent("message", { data: JSON.stringify(message) }),
+        );
+      }
+    }
+    globalThis.WebSocket = FakeVisionSocket as unknown as typeof WebSocket;
+    const received: string[] = [];
+    const subscription = subscribeVisionProfiles(
+      { url: "ws://vision.invalid/ws" },
+      {
+        onReady: () => {
+          received.push("ready");
+        },
+        onPresenceStatus: (payload) => {
+          received.push(`presence:${payload.state}`);
+        },
+        onProfile: () => undefined,
+        onError: (error) => {
+          throw error;
+        },
+      },
+    );
+    const ready = () => ({
+      protocol: "vem.vision.v2",
+      type: "vision.ready",
+      messageId: crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
+      payload: {
+        serverName: "fake",
+        serverVersion: "1",
+        schemaVersion: "vem-vision-v2-contract-bundle/v1",
+        bundleVersion: "1",
+        contractDigest: "a".repeat(64),
+        cameraReady: true,
+        fastReady: true,
+        visionBusinessReady: true,
+        businessReadinessDiagnostic: "ready",
+        capabilities: [],
+      },
+    });
+    const presence = (state: "approach" | "empty") => ({
+      protocol: "vem.vision.v2",
+      type: "vision.presence_status",
+      messageId: crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
+      payload: {
+        source: "top",
+        eventId: crypto.randomUUID(),
+        state,
+        detectedAt: new Date().toISOString(),
+        reason: "test",
+        personPresent: state === "approach",
+        occupancy: { state: state === "approach" ? "single" : "none", confidence: 0.9 },
+        closeNow: false,
+        close: false,
+        closeTrigger: null,
+        proximity: { present: state === "approach", closeNow: false, close: false, method: "test" },
+      },
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    const first = sockets[0];
+    first.emit(presence("approach"));
+    first.emit(ready());
+    first.emit(presence("empty"));
+    expect(received).toEqual(["ready", "presence:empty"]);
+
+    first.close();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1);
+    await Promise.resolve();
+    await Promise.resolve();
+    const second = sockets[1];
+    first.emit(ready());
+    first.emit(presence("approach"));
+    expect(received).toEqual(["ready", "presence:empty"]);
+
+    second.emit(ready());
+    second.emit(presence("approach"));
+    expect(received).toEqual(["ready", "presence:empty", "ready", "presence:approach"]);
+    subscription.close();
+  });
+
   it("receives a pushed presence event before profile details", async () => {
     const url = await startVisionMock("success");
     const config = { url };
@@ -131,6 +258,33 @@ describe("vision native browser fallback - pushed profiles", () => {
     expect(result.personPresent).toBe(true);
     expect(result.occupancy?.state).toBe("single");
     expect(typeof result.detectedAt).toBe("string");
+  });
+
+  it("drops business events sent before this generation is ready", async () => {
+    const url = await startVisionMock("presence_before_ready");
+    const receivedAfterReady = await new Promise<boolean>((resolve, reject) => {
+      let ready = false;
+      let subscription: ReturnType<typeof subscribeVisionProfiles>;
+      subscription = subscribeVisionProfiles(
+        { url },
+        {
+          onReady: () => {
+            ready = true;
+          },
+          onPresenceStatus: () => {
+            subscription.close();
+            resolve(ready);
+          },
+          onProfile: () => undefined,
+          onError: (error) => {
+            subscription.close();
+            reject(error);
+          },
+        },
+      );
+    });
+
+    expect(receivedAfterReady).toBe(true);
   });
 
   it("receives a pushed profile from the mock websocket server", async () => {

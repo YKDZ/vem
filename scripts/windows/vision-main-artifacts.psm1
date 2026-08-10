@@ -363,6 +363,21 @@ function Test-VisionMainProtocolTimestamp($Value) {
   )
 }
 
+function Get-VisionV2ContractIdentity([string]$AppDirectory) {
+  $manifestPath = Join-Path $AppDirectory "_internal\contracts\vem_vision_v2\manifest.json"
+  $manifest = Read-VisionJson $manifestPath "generated V2 contract manifest"
+  Assert-VisionMainCondition ($manifest.protocol -ceq "vem.vision.v2") "generated V2 contract protocol is invalid"
+  Assert-VisionMainCondition ($manifest.schemaVersion -is [string] -and -not [string]::IsNullOrWhiteSpace($manifest.schemaVersion)) "generated V2 contract schemaVersion is invalid"
+  Assert-VisionMainCondition ($manifest.bundleVersion -is [string] -and -not [string]::IsNullOrWhiteSpace($manifest.bundleVersion)) "generated V2 contract bundleVersion is invalid"
+  Assert-VisionMainCondition ($manifest.bundleDigest -is [string] -and $manifest.bundleDigest -match '^[a-f0-9]{64}$') "generated V2 contract bundleDigest is invalid"
+  return [pscustomobject]@{
+    protocol = $manifest.protocol
+    schemaVersion = $manifest.schemaVersion
+    bundleVersion = $manifest.bundleVersion
+    contractDigest = $manifest.bundleDigest
+  }
+}
+
 function Receive-VisionMainTextMessage($Socket, $CancellationToken, [int]$MaxMessageBytes = 65536) {
   $messageStream = New-Object IO.MemoryStream
   try {
@@ -379,8 +394,9 @@ function Receive-VisionMainTextMessage($Socket, $CancellationToken, [int]$MaxMes
   }
 }
 
-function Invoke-VisionMainProbe([string]$ConfigurationPath, [int]$TimeoutSeconds = 30, [string]$FixtureRoot) {
+function Invoke-VisionMainProbe([string]$ConfigurationPath, [int]$TimeoutSeconds = 30, [string]$FixtureRoot, [string]$AppDirectory = "C:\VEM\vision\app") {
   $configuration = Assert-VisionSiteConfiguration $ConfigurationPath $FixtureRoot
+  $contractIdentity = Get-VisionV2ContractIdentity $AppDirectory
   $recordedCameras = @(Get-VisionRecordedCameras $configuration)
   $uris = Get-VisionMainUris -HostName ([string]$configuration.host) -Port ([int]$configuration.port)
   $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
@@ -389,27 +405,32 @@ function Invoke-VisionMainProbe([string]$ConfigurationPath, [int]$TimeoutSeconds
     try {
       $health = Invoke-RestMethod -Uri "$($uris.httpBaseUrl)/health" -TimeoutSec 5 -ErrorAction Stop
       Assert-VisionMainCondition ($health.status -in @("ok", "degraded")) "health status is not ok or degraded"
-      Assert-VisionMainCondition ($health.protocol -ceq "vem.vision.v1" -and $health.modelReady -is [bool] -and $health.modelReady -eq $true -and $health.cameraReady -is [bool]) "health does not report the Vision protocol and loaded models"
+      Assert-VisionMainCondition ($health.protocol -ceq $contractIdentity.protocol -and $health.cameraReady -is [bool]) "health does not report the generated Vision V2 protocol"
       if ($recordedCameras.Count -gt 0) {
         Assert-VisionMainCondition ($health.status -ceq "ok" -and $health.cameraReady -eq $true) "recorded-video cameras are not ready"
       }
       $socket = [Net.WebSockets.ClientWebSocket]::new(); $cancellation = [Threading.CancellationTokenSource]::new(); $cancellation.CancelAfter(5000)
       try {
         [void]$socket.ConnectAsync([Uri]$uris.webSocketUrl, $cancellation.Token).GetAwaiter().GetResult()
-        $hello = @{ protocol = "vem.vision.v1"; type = "vision.hello"; messageId = "vem-installer-probe"; timestamp = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"); payload = @{ clientRole = "machine"; protocolVersion = 1; capabilities = @("profile_push", "presence_status", "person_departed", "try_on_session") } } | ConvertTo-Json -Compress -Depth 8
+        $hello = @{ protocol = $contractIdentity.protocol; type = "vision.hello"; messageId = [guid]::NewGuid().ToString(); timestamp = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"); payload = @{ clientRole = "machine"; schemaVersion = $contractIdentity.schemaVersion; bundleVersion = $contractIdentity.bundleVersion; contractDigest = $contractIdentity.contractDigest; capabilities = @("profile_push", "presence_status", "person_departed", "ambient_light", "try_on_fast") } } | ConvertTo-Json -Compress -Depth 8
         $bytes = [Text.Encoding]::UTF8.GetBytes($hello); [void]$socket.SendAsync([ArraySegment[byte]]::new($bytes), [Net.WebSockets.WebSocketMessageType]::Text, $true, $cancellation.Token).GetAwaiter().GetResult()
         $ready = Receive-VisionMainTextMessage $socket $cancellation.Token | ConvertFrom-Json -ErrorAction Stop
-        $requiredCapabilities = @("profile_push", "presence_status", "person_departed", "try_on_session")
+        $requiredCapabilities = @("profile_push", "presence_status", "person_departed", "try_on_fast")
         $readyValid = (
           $null -ne $ready -and
-          $ready.protocol -is [string] -and $ready.protocol -ceq "vem.vision.v1" -and
+          $ready.protocol -is [string] -and $ready.protocol -ceq $contractIdentity.protocol -and
           $ready.type -is [string] -and $ready.type -ceq "vision.ready" -and
           $ready.messageId -is [string] -and -not [string]::IsNullOrWhiteSpace($ready.messageId) -and $ready.messageId.Length -le 128 -and
           (Test-VisionMainProtocolTimestamp $ready.timestamp) -and
           $ready.payload -is [System.Management.Automation.PSCustomObject] -and
           $ready.payload.serverName -is [string] -and -not [string]::IsNullOrWhiteSpace($ready.payload.serverName) -and $ready.payload.serverName.Length -le 128 -and
           $ready.payload.cameraReady -is [bool] -and
-          $ready.payload.modelReady -is [bool] -and $ready.payload.modelReady -eq $true -and
+          $ready.payload.fastReady -is [bool] -and $ready.payload.fastReady -eq $true -and
+          $ready.payload.visionBusinessReady -is [bool] -and $ready.payload.visionBusinessReady -eq $true -and
+          $ready.payload.businessReadinessDiagnostic -is [string] -and $ready.payload.businessReadinessDiagnostic -ceq "ready" -and
+          $ready.payload.schemaVersion -is [string] -and $ready.payload.schemaVersion -ceq $contractIdentity.schemaVersion -and
+          $ready.payload.bundleVersion -is [string] -and $ready.payload.bundleVersion -ceq $contractIdentity.bundleVersion -and
+          $ready.payload.contractDigest -is [string] -and $ready.payload.contractDigest -ceq $contractIdentity.contractDigest -and
           $ready.payload.capabilities -is [array] -and
           (@($ready.payload.capabilities | Where-Object { $_ -isnot [string] -or [string]::IsNullOrWhiteSpace($_) -or $_.Length -gt 64 }).Count -eq 0) -and
           (@($requiredCapabilities | Where-Object { $ready.payload.capabilities -cnotcontains $_ }).Count -eq 0)
@@ -622,7 +643,7 @@ function Install-VisionMainArtifact {
       Write-VisionMainLauncher $AppDirectory $SiteConfigurationDestination $RuntimeWorkDirectory $LauncherPath
       Ensure-VisionMainTask -LauncherPath $LauncherPath -WorkingDirectory $AppDirectory -TaskUser $TaskUser -TaskName $TaskName -TaskPath $TaskPath
       Start-VisionMainTask $TaskName $TaskPath
-      $probe = Invoke-VisionMainProbe $SiteConfigurationDestination $ProbeTimeoutSeconds $resolvedFixtureRoot
+      $probe = Invoke-VisionMainProbe $SiteConfigurationDestination $ProbeTimeoutSeconds $resolvedFixtureRoot $AppDirectory
     }
     $healthVersion = if ($null -ne $probe -and $null -ne $probe.health.PSObject.Properties["version"]) { [string]$probe.health.version } else { $null }
     $legacyOwner = if ($SkipRuntimeOwnerTask) {

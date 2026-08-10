@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { waitForDaemonReadyRefresh } from "./daemon-ready-refresh.mjs";
 import {
@@ -41,6 +41,28 @@ const PLATFORM_LOG_REFERENCE = Object.freeze({
   unit: "vem-local-testbed-service-api",
   command: "journalctl -u vem-local-testbed-service-api --no-pager -n 200",
 });
+const VISION_V2_MANIFEST_PATH = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../packages/shared/generated/vision-v2/manifest.json",
+);
+
+export function readVisionV2ContractIdentity() {
+  const manifest = JSON.parse(readFileSync(VISION_V2_MANIFEST_PATH, "utf8"));
+  if (
+    manifest?.protocol !== "vem.vision.v2" ||
+    typeof manifest.schemaVersion !== "string" ||
+    typeof manifest.bundleVersion !== "string" ||
+    !/^[a-f0-9]{64}$/.test(manifest.bundleDigest)
+  ) {
+    throw new Error("generated Vision V2 manifest identity is invalid");
+  }
+  return Object.freeze({
+    protocol: manifest.protocol,
+    schemaVersion: manifest.schemaVersion,
+    bundleVersion: manifest.bundleVersion,
+    contractDigest: manifest.bundleDigest,
+  });
+}
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -686,6 +708,7 @@ function normalizedExpectedProtocolEvent(
 }
 
 export function normalizeVisionExpectedResults(raw) {
+  const identity = readVisionV2ContractIdentity();
   const fixture = requiredObject(raw, "Vision expected-results fixture");
   const publishedExpected =
     fixture.expected && typeof fixture.expected === "object"
@@ -730,7 +753,7 @@ export function normalizeVisionExpectedResults(raw) {
     ? protocol.ready.capabilities.map((value) =>
         required(String(value), "ready capability"),
       )
-    : ["profile_push", "presence_status", "person_departed", "try_on_session"];
+    : ["profile_push", "presence_status", "person_departed", "try_on_fast"];
   const orderedCatalogKeys = Array.isArray(recommendation.orderedCatalogKeys)
     ? recommendation.orderedCatalogKeys.map((value) =>
         required(value, "expected ordered catalog key"),
@@ -742,7 +765,7 @@ export function normalizeVisionExpectedResults(raw) {
     protocol: {
       ready: {
         protocol: required(
-          protocol.ready?.protocol ?? "vem.vision.v1",
+          protocol.ready?.protocol ?? identity.protocol,
           "expected ready protocol",
         ),
         capabilities,
@@ -1681,20 +1704,24 @@ export function buildRecordedVisionSiteConfiguration({
 }
 
 function createVisionHello(machineCode) {
+  const identity = readVisionV2ContractIdentity();
   return {
-    protocol: "vem.vision.v1",
+    protocol: identity.protocol,
     type: "vision.hello",
-    messageId: `vision-try-on-acceptance-${Date.now()}`,
+    messageId: crypto.randomUUID(),
     timestamp: new Date().toISOString(),
     payload: {
       clientRole: "machine",
-      machineCode: machineCode ?? null,
-      protocolVersion: 1,
+      ...(machineCode ? { machineCode } : {}),
+      schemaVersion: identity.schemaVersion,
+      bundleVersion: identity.bundleVersion,
+      contractDigest: identity.contractDigest,
       capabilities: [
         "profile_push",
         "presence_status",
         "person_departed",
-        "try_on_session",
+        "ambient_light",
+        "try_on_fast",
       ],
     },
   };
@@ -1871,11 +1898,11 @@ export function validateVisionProtocolEvidence(
   evidence,
   installedBinding = null,
 ) {
+  const identity = readVisionV2ContractIdentity();
   const health = evidence?.health ?? {};
   if (
     !["ok", "degraded"].includes(health.status) ||
-    health.protocol !== "vem.vision.v1" ||
-    health.modelReady !== true ||
+    health.protocol !== identity.protocol ||
     typeof health.cameraReady !== "boolean"
   ) {
     throw new Error("vision health evidence is invalid");
@@ -1900,14 +1927,19 @@ export function validateVisionProtocolEvidence(
     );
   }
   if (
-    ready.protocol !== "vem.vision.v1" ||
+    ready.protocol !== identity.protocol ||
     ready.type !== "vision.ready" ||
     typeof ready.messageId !== "string" ||
     ready.messageId.trim() === "" ||
     !isVisionProtocolTimestamp(ready.timestamp) ||
     typeof ready.payload?.serverName !== "string" ||
     ready.payload.serverName.trim() === "" ||
-    ready.payload.modelReady !== true ||
+    ready.payload.fastReady !== true ||
+    ready.payload.visionBusinessReady !== true ||
+    ready.payload.businessReadinessDiagnostic !== "ready" ||
+    ready.payload.schemaVersion !== identity.schemaVersion ||
+    ready.payload.bundleVersion !== identity.bundleVersion ||
+    ready.payload.contractDigest !== identity.contractDigest ||
     typeof ready.payload.cameraReady !== "boolean" ||
     !Array.isArray(ready.payload.capabilities)
   ) {
@@ -1924,7 +1956,7 @@ export function validateVisionProtocolEvidence(
     "profile_push",
     "presence_status",
     "person_departed",
-    "try_on_session",
+    "try_on_fast",
   ]) {
     if (!ready.payload.capabilities.includes(capability)) {
       throw new Error(`vision ready handshake is missing ${capability}`);
@@ -1986,10 +2018,10 @@ export function validateVisionRuntimeEvidence({
   catalogRecommendation,
   installedBinding,
 }) {
+  const identity = readVisionV2ContractIdentity();
   if (
     health?.status !== "ok" ||
-    health?.protocol !== "vem.vision.v1" ||
-    health?.modelReady !== true ||
+    health?.protocol !== identity.protocol ||
     health?.cameraReady !== true
   ) {
     throw new Error("installed Vision runtime health evidence is invalid");

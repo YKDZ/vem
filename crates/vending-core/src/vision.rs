@@ -9,6 +9,9 @@ pub const VISION_PROTOCOL: &str = "vem.vision.v2";
 pub const DEFAULT_VISION_WS_URL: &str = "ws://127.0.0.1:7892/ws";
 const VISION_V2_MANIFEST: &str =
     include_str!("../../../packages/shared/generated/vision-v2/manifest.json");
+#[cfg(test)]
+const VISION_V2_VALID_FIXTURES: &str =
+    include_str!("../../../packages/shared/generated/vision-v2/fixtures/valid.json");
 
 pub type VisionSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -27,13 +30,13 @@ where
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ServerEnvelope {
     protocol: String,
     #[serde(rename = "type")]
     message_type: String,
-    _message_id: String,
-    _timestamp: String,
+    message_id: String,
+    timestamp: String,
     payload: Value,
 }
 
@@ -89,8 +92,18 @@ pub struct VisionReadyPayload {
     pub camera_ready: bool,
     pub fast_ready: bool,
     pub vision_business_ready: bool,
-    pub business_readiness_diagnostic: String,
+    pub business_readiness_diagnostic: VisionBusinessReadinessDiagnostic,
     pub capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VisionBusinessReadinessDiagnostic {
+    Ready,
+    CameraUnavailable,
+    ContractDigestMismatch,
+    ContractVersionMismatch,
+    ContractBundleUnavailable,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -105,7 +118,7 @@ struct VisionV2BundleManifest {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct VisionErrorPayload {
     #[allow(dead_code)]
     event_id: Option<String>,
@@ -173,6 +186,7 @@ async fn read_server_envelope(socket: &mut VisionSocket) -> Result<ServerEnvelop
                         envelope.protocol
                     ));
                 }
+                validate_server_envelope(&envelope)?;
                 return Ok(envelope);
             }
             Message::Binary(_) => return Err("vision server returned binary frame".to_string()),
@@ -181,6 +195,47 @@ async fn read_server_envelope(socket: &mut VisionSocket) -> Result<ServerEnvelop
         }
     }
     Err("vision websocket closed".to_string())
+}
+
+fn validate_server_envelope(envelope: &ServerEnvelope) -> Result<(), String> {
+    if uuid::Uuid::parse_str(&envelope.message_id).is_err() {
+        return Err("invalid vision messageId: expected UUID".to_string());
+    }
+    if chrono::DateTime::parse_from_rfc3339(&envelope.timestamp).is_err() {
+        return Err("invalid vision timestamp: expected RFC3339".to_string());
+    }
+    Ok(())
+}
+
+fn validate_ready_payload(ready: &VisionReadyPayload) -> Result<(), String> {
+    if ready.server_name.is_empty()
+        || ready.server_name.len() > 128
+        || ready.server_version.is_empty()
+        || ready.server_version.len() > 64
+        || ready.schema_version.is_empty()
+        || ready.schema_version.len() > 128
+        || ready.bundle_version.is_empty()
+        || ready.bundle_version.len() > 64
+    {
+        return Err("invalid vision.ready version metadata".to_string());
+    }
+    if ready.contract_digest.len() != 64
+        || !ready
+            .contract_digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("invalid vision.ready contractDigest".to_string());
+    }
+    if ready.capabilities.len() > 32
+        || ready
+            .capabilities
+            .iter()
+            .any(|capability| capability.is_empty() || capability.len() > 64)
+    {
+        return Err("invalid vision.ready capabilities".to_string());
+    }
+    Ok(())
 }
 
 fn parse_payload<T>(envelope: ServerEnvelope) -> Result<T, String>
@@ -234,17 +289,25 @@ async fn wait_ready(socket: &mut VisionSocket) -> Result<VisionReadyPayload, Str
         match envelope.message_type.as_str() {
             "vision.ready" => {
                 let mut ready: VisionReadyPayload = parse_payload(envelope)?;
+                validate_ready_payload(&ready)?;
                 let identity = v2_contract_identity()?;
-                if ready.schema_version != identity.schema_version
+                if ready.business_readiness_diagnostic
+                    == VisionBusinessReadinessDiagnostic::ContractBundleUnavailable
+                {
+                    // The remote generated bundle is unavailable.  This is a
+                    // stable degraded-core diagnosis, not a local mismatch.
+                } else if ready.schema_version != identity.schema_version
                     || ready.bundle_version != identity.bundle_version
                 {
                     ready.fast_ready = false;
                     ready.vision_business_ready = false;
-                    ready.business_readiness_diagnostic = "contract_version_mismatch".to_string();
+                    ready.business_readiness_diagnostic =
+                        VisionBusinessReadinessDiagnostic::ContractVersionMismatch;
                 } else if ready.contract_digest != identity.bundle_digest {
                     ready.fast_ready = false;
                     ready.vision_business_ready = false;
-                    ready.business_readiness_diagnostic = "contract_digest_mismatch".to_string();
+                    ready.business_readiness_diagnostic =
+                        VisionBusinessReadinessDiagnostic::ContractDigestMismatch;
                 }
                 return Ok(ready);
             }
@@ -293,6 +356,81 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio_tungstenite::{accept_async, tungstenite::protocol::Message};
 
+    fn generated_ready_fixture_with_runtime_identity() -> Value {
+        let mut fixture = serde_json::from_str::<Vec<Value>>(VISION_V2_VALID_FIXTURES)
+            .expect("generated valid fixtures")
+            .into_iter()
+            .find(|message| message["type"] == "vision.ready")
+            .expect("generated ready fixture");
+        let identity = v2_contract_identity().expect("generated identity");
+        fixture["messageId"] = Value::String("550e8400-e29b-41d4-a716-446655440125".to_string());
+        fixture["payload"]["contractDigest"] = Value::String(identity.bundle_digest);
+        fixture
+    }
+
+    #[tokio::test]
+    async fn check_ready_accepts_the_generated_ready_fixture_with_runtime_identity() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listen");
+        let addr = listener.local_addr().expect("local addr");
+        let ws_url = format!("ws://{addr}/");
+        let fixture = generated_ready_fixture_with_runtime_identity();
+
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let mut ws_stream = accept_async(stream).await.expect("accept ws");
+            let _ = ws_stream.next().await.expect("next");
+            ws_stream
+                .send(Message::Text(fixture.to_string()))
+                .await
+                .expect("send generated ready fixture");
+        });
+
+        let ready = check_ready(&ws_url, Some("M-1".to_string()), 2000)
+            .await
+            .expect("generated ready accepted");
+        assert!(ready.fast_ready);
+        assert!(ready.vision_business_ready);
+        assert_eq!(
+            ready.business_readiness_diagnostic,
+            VisionBusinessReadinessDiagnostic::Ready
+        );
+    }
+
+    #[tokio::test]
+    async fn check_ready_preserves_contract_bundle_unavailable_diagnostic() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listen");
+        let addr = listener.local_addr().expect("local addr");
+        let ws_url = format!("ws://{addr}/");
+        let mut fixture = generated_ready_fixture_with_runtime_identity();
+        fixture["payload"]["schemaVersion"] = Value::String("unavailable".to_string());
+        fixture["payload"]["bundleVersion"] = Value::String("unavailable".to_string());
+        fixture["payload"]["contractDigest"] = Value::String("0".repeat(64));
+        fixture["payload"]["fastReady"] = Value::Bool(false);
+        fixture["payload"]["visionBusinessReady"] = Value::Bool(false);
+        fixture["payload"]["businessReadinessDiagnostic"] =
+            Value::String("contract_bundle_unavailable".to_string());
+
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let mut ws_stream = accept_async(stream).await.expect("accept ws");
+            let _ = ws_stream.next().await.expect("next");
+            ws_stream
+                .send(Message::Text(fixture.to_string()))
+                .await
+                .expect("send degraded ready");
+        });
+
+        let ready = check_ready(&ws_url, None, 2000)
+            .await
+            .expect("degraded ready remains a reachable Vision core");
+        assert!(!ready.fast_ready);
+        assert!(!ready.vision_business_ready);
+        assert_eq!(
+            ready.business_readiness_diagnostic,
+            VisionBusinessReadinessDiagnostic::ContractBundleUnavailable
+        );
+    }
+
     #[tokio::test]
     async fn check_ready_returns_profile_on_ready_message() {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("listen");
@@ -317,7 +455,7 @@ mod tests {
             );
             ws_stream
                 .send(Message::Text(
-                    r#"{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"1","timestamp":"x","payload":{"serverName":"s","serverVersion":"1","schemaVersion":"vem-vision-v2-contract-bundle/v1","bundleVersion":"1","contractDigest":"f5c86bc2def1a41328cccf7c2e864452fe2913265b99f36139d64c9c9028a386","cameraReady":true,"fastReady":true,"visionBusinessReady":true,"businessReadinessDiagnostic":"ready","capabilities":[]}}"#
+                    r#"{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440120","timestamp":"2026-08-09T00:00:00.000Z","payload":{"serverName":"s","serverVersion":"1","schemaVersion":"vem-vision-v2-contract-bundle/v1","bundleVersion":"1","contractDigest":"f5c86bc2def1a41328cccf7c2e864452fe2913265b99f36139d64c9c9028a386","cameraReady":true,"fastReady":true,"visionBusinessReady":true,"businessReadinessDiagnostic":"ready","capabilities":[]}}"#
                         .into(),
                 ))
                 .await
@@ -342,7 +480,7 @@ mod tests {
             let _ = ws_stream.next().await.expect("next");
             ws_stream
                 .send(Message::Text(
-                    r#"{"protocol":"vem.vision.v2","type":"vision.error","messageId":"1","timestamp":"x","payload":{"code":"camera_unavailable","message":"camera unavailable","retryable":false}}"#
+                    r#"{"protocol":"vem.vision.v2","type":"vision.error","messageId":"550e8400-e29b-41d4-a716-446655440121","timestamp":"2026-08-09T00:00:00.000Z","payload":{"code":"camera_unavailable","message":"camera unavailable","retryable":false}}"#
                         .into(),
                 ))
                 .await
@@ -352,6 +490,78 @@ mod tests {
         let err = check_ready(&ws_url, None, 2000).await;
         assert!(err.is_err());
         assert!(err.unwrap_err().contains("camera_unavailable"));
+    }
+
+    #[tokio::test]
+    async fn check_ready_rejects_unknown_server_envelope_fields() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listen");
+        let addr = listener.local_addr().expect("local addr");
+        let ws_url = format!("ws://{addr}/");
+
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let mut ws_stream = accept_async(stream).await.expect("accept ws");
+            let _ = ws_stream.next().await.expect("next");
+            ws_stream
+                .send(Message::Text(
+                    r#"{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440122","timestamp":"2026-08-09T00:00:00.000Z","payload":{"serverName":"s","serverVersion":"1","schemaVersion":"vem-vision-v2-contract-bundle/v1","bundleVersion":"1","contractDigest":"f5c86bc2def1a41328cccf7c2e864452fe2913265b99f36139d64c9c9028a386","cameraReady":true,"fastReady":true,"visionBusinessReady":true,"businessReadinessDiagnostic":"ready","capabilities":[]},"unexpected":true}"#
+                        .into(),
+                ))
+                .await
+                .expect("send");
+        });
+
+        let result = check_ready(&ws_url, None, 2000).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown field"));
+    }
+
+    #[tokio::test]
+    async fn check_ready_rejects_non_rfc3339_server_timestamp() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listen");
+        let addr = listener.local_addr().expect("local addr");
+        let ws_url = format!("ws://{addr}/");
+
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let mut ws_stream = accept_async(stream).await.expect("accept ws");
+            let _ = ws_stream.next().await.expect("next");
+            ws_stream
+                .send(Message::Text(
+                    r#"{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440124","timestamp":"not-a-timestamp","payload":{"serverName":"s","serverVersion":"1","schemaVersion":"vem-vision-v2-contract-bundle/v1","bundleVersion":"1","contractDigest":"f5c86bc2def1a41328cccf7c2e864452fe2913265b99f36139d64c9c9028a386","cameraReady":true,"fastReady":true,"visionBusinessReady":true,"businessReadinessDiagnostic":"ready","capabilities":[]}}"#
+                        .into(),
+                ))
+                .await
+                .expect("send");
+        });
+
+        let result = check_ready(&ws_url, None, 2000).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("timestamp"));
+    }
+
+    #[tokio::test]
+    async fn check_ready_rejects_unknown_readiness_diagnostic() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listen");
+        let addr = listener.local_addr().expect("local addr");
+        let ws_url = format!("ws://{addr}/");
+
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let mut ws_stream = accept_async(stream).await.expect("accept ws");
+            let _ = ws_stream.next().await.expect("next");
+            ws_stream
+                .send(Message::Text(
+                    r#"{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440124","timestamp":"2026-08-09T00:00:00.000Z","payload":{"serverName":"s","serverVersion":"1","schemaVersion":"vem-vision-v2-contract-bundle/v1","bundleVersion":"1","contractDigest":"f5c86bc2def1a41328cccf7c2e864452fe2913265b99f36139d64c9c9028a386","cameraReady":true,"fastReady":true,"visionBusinessReady":true,"businessReadinessDiagnostic":"unrecognized","capabilities":[]}}"#
+                        .into(),
+                ))
+                .await
+                .expect("send");
+        });
+
+        let result = check_ready(&ws_url, None, 2000).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown variant"));
     }
 
     #[tokio::test]
@@ -366,13 +576,13 @@ mod tests {
             let _ = ws_stream.next().await.expect("next").expect("hello");
             ws_stream
                 .send(Message::Text(
-                    r#"{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"1","timestamp":"x","payload":{"serverName":"s","serverVersion":"1","schemaVersion":"vem-vision-v2-contract-bundle/v1","bundleVersion":"1","contractDigest":"f5c86bc2def1a41328cccf7c2e864452fe2913265b99f36139d64c9c9028a386","cameraReady":true,"fastReady":true,"visionBusinessReady":true,"businessReadinessDiagnostic":"ready","capabilities":["person_departed"]}}"#.into(),
+                    r#"{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440123","timestamp":"2026-08-09T00:00:00.000Z","payload":{"serverName":"s","serverVersion":"1","schemaVersion":"vem-vision-v2-contract-bundle/v1","bundleVersion":"1","contractDigest":"f5c86bc2def1a41328cccf7c2e864452fe2913265b99f36139d64c9c9028a386","cameraReady":true,"fastReady":true,"visionBusinessReady":true,"businessReadinessDiagnostic":"ready","capabilities":["person_departed"]}}"#.into(),
                 ))
                 .await
                 .expect("send ready");
             ws_stream
                 .send(Message::Text(
-                    r#"{"protocol":"vem.vision.v2","type":"vision.person_departed","messageId":"2","timestamp":"x","payload":{"eventId":"departure-1","detectedAt":"2026-07-19T00:00:00.000Z","lastSeenAt":null}}"#.into(),
+                    r#"{"protocol":"vem.vision.v2","type":"vision.person_departed","messageId":"550e8400-e29b-41d4-a716-446655440124","timestamp":"2026-08-09T00:00:00.000Z","payload":{"eventId":"departure-1","detectedAt":"2026-07-19T00:00:00.000Z","lastSeenAt":null}}"#.into(),
                 ))
                 .await
                 .expect("send departure");
