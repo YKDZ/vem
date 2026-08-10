@@ -1,3 +1,4 @@
+import { JSDOM } from "jsdom";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -10,10 +11,12 @@ import {
   collectVisionProtocolEvidence,
   compareObservedVisionProtocolToExpected as compareRawObservedVisionProtocolToExpected,
   createVisionEventFence,
+  INSTALL_TRY_ON_LIFECYCLE_OBSERVER_EXPRESSION,
   normalizeSeededVisionAcceptance,
   normalizeVisionExpectedResults,
   parseVisionTryOnAcceptanceArgs,
   readVisionV2ContractIdentity,
+  READ_TRY_ON_LIFECYCLE_EXPRESSION,
   startVisionMockScenario,
   stopVisionChild,
   validateRecommendationProjection,
@@ -96,6 +99,44 @@ function sourceFrame(role, fixtureSha256, overrides = {}) {
 }
 
 describe("vision try-on acceptance script", () => {
+  it("binds CLI routes and selectors to the current Machine customer contract", () => {
+    const machineRoot = new URL("../../apps/machine/src/", import.meta.url);
+    const routes = readFileSync(
+      new URL("router/routes.ts", machineRoot),
+      "utf8",
+    );
+    const productDetail = readFileSync(
+      new URL("views/ProductDetailView.vue", machineRoot),
+      "utf8",
+    );
+    const tryOnView = readFileSync(
+      new URL("views/TryOnView.vue", machineRoot),
+      "utf8",
+    );
+
+    assert.match(
+      routes,
+      /path:\s*["']\/try-on["'][\s\S]*name:\s*["']try-on["']/,
+    );
+    assert.match(
+      productDetail,
+      /data-test="try-on-fast"[\s\S]*@click="startFastTryOn"/,
+    );
+    assert.match(
+      productDetail,
+      /name:\s*"try-on"[\s\S]*query:\s*\{[\s\S]*catalogKey:[\s\S]*variantId:/,
+    );
+    for (const selector of [
+      "try-on-view",
+      "try-on-result-image",
+      "try-on-retry",
+      "try-on-return",
+    ]) {
+      assert.match(tryOnView, new RegExp(`data-test="${selector}"`));
+    }
+    assert.match(tryOnView, /:data-state="tryOn\.phase"/);
+  });
+
   function installedBindingObservation(processIds, listenerProcessIds) {
     return {
       canonicalProcesses: processIds.map((processId) => ({
@@ -216,7 +257,7 @@ describe("vision try-on acceptance script", () => {
     );
     assert.match(
       source,
-      /restoreTryOnProductDetail\([\s\S]*manualSelectedProduct/,
+      /retry-completed-try-on[\s\S]*try-on-retry[\s\S]*excludeAttemptId:[\s\S]*tryOnSurface\.attemptId/,
     );
     assert.match(
       source,
@@ -1532,16 +1573,68 @@ describe("vision try-on acceptance script", () => {
 
   function completedTryOnState(attemptId, variantId = "variant-l") {
     return {
-      route: `#/products/product:L/try-on?variantId=${variantId}`,
+      route: `#/try-on?catalogKey=product:L&variantId=${variantId}`,
       attemptId,
-      acceptedObserved: true,
-      progressObserved: true,
-      completedObserved: true,
+      lifecycle: ["starting", "accepted", "generating", "completed"].map(
+        (phase) => ({ phase, attemptId }),
+      ),
       resultUrl: `http://127.0.0.1:7892/v2/try-on/results/${attemptId}?token=result-token`,
       retryVisible: true,
       returnVisible: true,
     };
   }
+
+  it("observes a real DOM lifecycle installed before the Fast action", async () => {
+    const dom = new JSDOM(
+      '<!doctype html><button data-test="try-on-fast">快速试衣</button>',
+      {
+        runScripts: "dangerously",
+        url: "http://tauri.localhost/#/products/product:L",
+      },
+    );
+    const { window } = dom;
+    window.eval(INSTALL_TRY_ON_LIFECYCLE_OBSERVER_EXPRESSION);
+    const button = window.document.querySelector('[data-test="try-on-fast"]');
+    button.addEventListener("click", () => {
+      window.location.hash =
+        "#/try-on?catalogKey=product:L&variantId=variant-l";
+      const view = window.document.createElement("main");
+      view.dataset.test = "try-on-view";
+      view.dataset.attemptId = "attempt-dom-1";
+      view.dataset.state = "idle";
+      window.document.body.append(view);
+    });
+    button.click();
+    const view = window.document.querySelector('[data-test="try-on-view"]');
+    for (const phase of ["starting", "accepted", "generating", "completed"]) {
+      view.dataset.state = phase;
+      await new Promise((resolvePromise) =>
+        window.queueMicrotask(resolvePromise),
+      );
+    }
+    const observations = window.eval(READ_TRY_ON_LIFECYCLE_EXPRESSION);
+    const summary = validateTryOnPresentation({
+      selectedProduct: { catalogKey: "product:L", variantId: "variant-l" },
+      tryOnState: {
+        ...completedTryOnState("attempt-dom-1"),
+        route: window.location.hash,
+        lifecycle: observations,
+      },
+      resultEvidence: resultEvidence(),
+      expectedResults: baseExpectedResults(),
+      runtimeExpectation: {
+        seededTryOnVariants: [{ productId: "L", variantId: "variant-l" }],
+      },
+    });
+    assert.deepEqual(Array.from(summary.lifecycle.phases), [
+      "starting",
+      "accepted",
+      "generating",
+      "completed",
+    ]);
+    window.__vemTryOnLifecycleObserver.disconnect();
+    dom.window.close();
+  });
 
   function resultEvidence(overrides = {}) {
     return {
@@ -1641,7 +1734,7 @@ describe("vision try-on acceptance script", () => {
       },
       tryOnState: {
         ...completedTryOnState("attempt-004", "variant-m"),
-        route: "#/products/product:tee/try-on?variantId=variant-m",
+        route: "#/try-on?catalogKey=product:tee&variantId=variant-m",
       },
       resultEvidence: resultEvidence(),
       expectedResults: baseExpectedResults(),
@@ -1673,13 +1766,14 @@ describe("vision try-on acceptance script", () => {
             variantId: "variant-l",
           },
           tryOnState: {
-            route: "#/products/product:L/try-on?variantId=variant-l",
+            route: "#/try-on?catalogKey=product:L&variantId=variant-l",
             attemptId: "attempt-005",
             resultUrl:
               "http://127.0.0.1:7892/v2/try-on/results/attempt-005?token=result-token",
-            acceptedObserved: true,
-            progressObserved: false,
-            completedObserved: false,
+            lifecycle: ["starting", "accepted"].map((phase) => ({
+              phase,
+              attemptId: "attempt-005",
+            })),
             retryVisible: false,
             returnVisible: true,
           },
@@ -1695,7 +1789,7 @@ describe("vision try-on acceptance script", () => {
             ],
           },
         }),
-      /Fast V2 progress/,
+      /real generating lifecycle state/,
     );
   });
 

@@ -96,6 +96,7 @@ async function returnToProduct(): Promise<void> {
       :data-catalog-key="context?.catalogKey ?? ''"
       :data-variant-id="context?.variantId ?? ''"
       :data-attempt-id="tryOn.attemptId ?? ''"
+      :data-state="tryOn.phase"
     >
       <p class="text-sm text-neutral-500">{{ title }}</p>
       <h1 class="text-4xl font-black text-neutral-950">虚拟试衣</h1>

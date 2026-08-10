@@ -46,6 +46,39 @@ const VISION_V2_MANIFEST_PATH = resolve(
   "../../packages/shared/generated/vision-v2/manifest.json",
 );
 
+export const INSTALL_TRY_ON_LIFECYCLE_OBSERVER_EXPRESSION = `(() => {
+  window.__vemTryOnLifecycleObserver?.disconnect?.();
+  const evidence = { observations: [] };
+  const snapshot = () => {
+    const view = document.querySelector("[data-test='try-on-view']");
+    if (!(view instanceof HTMLElement)) return;
+    const phase = view.dataset.state ?? "";
+    const attemptId = view.dataset.attemptId ?? "";
+    if (!phase || !attemptId) return;
+    const last = evidence.observations.at(-1);
+    if (last?.phase === phase && last?.attemptId === attemptId) return;
+    evidence.observations.push({ phase, attemptId });
+  };
+  const observer = new MutationObserver(snapshot);
+  observer.observe(document.documentElement, {
+    subtree: true,
+    childList: true,
+    attributes: true,
+    attributeFilter: ["data-state", "data-attempt-id"],
+  });
+  window.__vemTryOnLifecycleEvidence = evidence;
+  window.__vemTryOnLifecycleObserver = observer;
+  snapshot();
+  return true;
+})()`;
+
+export const READ_TRY_ON_LIFECYCLE_EXPRESSION = `(() =>
+  Array.from(window.__vemTryOnLifecycleEvidence?.observations ?? [], (entry) => ({
+    phase: entry.phase,
+    attemptId: entry.attemptId,
+  }))
+)()`;
+
 export function readVisionV2ContractIdentity() {
   const manifest = JSON.parse(readFileSync(VISION_V2_MANIFEST_PATH, "utf8"));
   if (
@@ -1261,7 +1294,7 @@ export function validateTryOnPresentation({
       "selected product catalogKey does not match the seeded productId for the selected variantId",
     );
   }
-  const expectedRoute = `#/products/${selectedProduct.catalogKey}/try-on?variantId=${selectedProduct.variantId}`;
+  const expectedRoute = `#/try-on?catalogKey=${selectedProduct.catalogKey}&variantId=${selectedProduct.variantId}`;
   if (tryOnState.route !== expectedRoute) {
     throw new Error("try-on route is not bound to the selected catalog item");
   }
@@ -1278,15 +1311,10 @@ export function validateTryOnPresentation({
   ) {
     throw new Error("try-on result URL is not fenced by the active attempt");
   }
-  if (tryOnState.acceptedObserved !== true) {
-    throw new Error("try-on did not expose an accepted Fast V2 attempt");
-  }
-  if (tryOnState.progressObserved !== true) {
-    throw new Error("try-on did not expose Fast V2 progress");
-  }
-  if (tryOnState.completedObserved !== true) {
-    throw new Error("try-on did not complete the Fast V2 attempt");
-  }
+  const lifecycle = validateTryOnLifecycleEvidence(
+    tryOnState.lifecycle,
+    tryOnState.attemptId,
+  );
   if (resultEvidence.ok !== true || resultEvidence.httpStatus !== 200) {
     throw new Error("try-on result image did not return successfully");
   }
@@ -1314,7 +1342,30 @@ export function validateTryOnPresentation({
     byteLength: resultEvidence.byteLength,
     nonBlackPixelCount: resultEvidence.nonBlackPixelCount,
     digest: resultEvidence.sha256,
+    lifecycle,
   };
+}
+
+export function validateTryOnLifecycleEvidence(observations, attemptId) {
+  if (!Array.isArray(observations)) {
+    throw new Error("try-on lifecycle observations are required");
+  }
+  const phases = observations
+    .filter((entry) => entry?.attemptId === attemptId)
+    .map((entry) => entry.phase)
+    .filter((phase, index, all) => index === 0 || phase !== all[index - 1]);
+  const requiredPhases = ["starting", "accepted", "generating", "completed"];
+  let cursor = -1;
+  for (const phase of requiredPhases) {
+    cursor = phases.indexOf(phase, cursor + 1);
+    if (cursor === -1) {
+      throw new Error(`try-on did not expose real ${phase} lifecycle state`);
+    }
+  }
+  if (phases.slice(0, cursor + 1).includes("failed")) {
+    throw new Error("try-on failed before completing the observed attempt");
+  }
+  return { attemptId, phases };
 }
 
 export function validateVisionInstalledBinding(binding) {
@@ -2256,7 +2307,25 @@ async function waitForRecommendationPresentation(
   );
 }
 
-async function waitForTryOnSurface(client, timeoutMs = 60_000) {
+async function installTryOnLifecycleObserver(client) {
+  const installed = await evaluateExpression(
+    client,
+    INSTALL_TRY_ON_LIFECYCLE_OBSERVER_EXPRESSION,
+  );
+  if (installed !== true) {
+    throw new Error("try-on lifecycle observer could not be installed");
+  }
+}
+
+async function readTryOnLifecycle(client) {
+  return await evaluateExpression(client, READ_TRY_ON_LIFECYCLE_EXPRESSION);
+}
+
+async function waitForTryOnSurface(
+  client,
+  timeoutMs = 60_000,
+  { excludeAttemptId = null } = {},
+) {
   return waitForCondition(
     "Fast V2 try-on result surface",
     async () => {
@@ -2269,12 +2338,12 @@ async function waitForTryOnSurface(client, timeoutMs = 60_000) {
           const failure = document.querySelector("[data-test='try-on-failure']");
           const retry = document.querySelector("[data-test='try-on-retry']");
           const returnButton = document.querySelector("[data-test='try-on-return']");
-          const text = document.body.textContent || "";
           return {
             route: location.hash,
             catalogKey: view?.dataset?.catalogKey ?? null,
             variantId: view?.dataset?.variantId ?? null,
             attemptId: view?.dataset?.attemptId ?? null,
+            state: view?.dataset?.state ?? null,
             phaseText: phase?.textContent?.trim() ?? null,
             resultUrl: image?.getAttribute("src") ?? null,
             resultLoaded: image?.complete === true,
@@ -2282,15 +2351,15 @@ async function waitForTryOnSurface(client, timeoutMs = 60_000) {
             resultNaturalHeight: Number(image?.naturalHeight ?? 0),
             retryVisible: retry instanceof HTMLElement && retry.offsetParent !== null,
             returnVisible: returnButton instanceof HTMLElement && returnButton.offsetParent !== null,
-            acceptedObserved: text.includes("已接收") || text.includes("快速试衣完成"),
-            progressObserved: text.includes("正在生成") || text.includes("快速试衣完成"),
-            completedObserved: text.includes("快速试衣完成") && !!image,
             errorText: failure?.textContent?.trim() ?? null,
           };
         })()`,
       );
+      state.lifecycle = await readTryOnLifecycle(client);
       return {
         ok:
+          state?.state === "completed" &&
+          state?.attemptId !== excludeAttemptId &&
           typeof state?.resultUrl === "string" &&
           state.resultUrl.includes("/v2/try-on/results/") &&
           state.resultLoaded === true &&
@@ -2305,47 +2374,6 @@ async function waitForTryOnSurface(client, timeoutMs = 60_000) {
     timeoutMs,
     500,
   );
-}
-
-async function restoreTryOnProductDetail(client, selectedProduct) {
-  const route = await evaluateExpression(client, "location.hash");
-  if (String(route).includes("/try-on")) {
-    await activateVisibleSelector(client, '[data-test="try-on-exit"]', {
-      kind: "touch",
-      timeoutMs: 10_000,
-    });
-  }
-  const restoredRoute = await evaluateExpression(client, "location.hash");
-  if (restoredRoute === "#/catalog") {
-    await activateVisibleSelector(
-      client,
-      `[data-test="catalog-product"][data-catalog-key="${selectedProduct.catalogKey}"]`,
-      { kind: "touch", timeoutMs: 30_000 },
-    );
-  }
-  await waitForRoute(client, /^#\/products\//, {
-    timeoutMs: 30_000,
-    pollMs: 250,
-  });
-  let detail = await readProductDetailState(client);
-  if (detail?.variantId !== selectedProduct.variantId) {
-    await activateVisibleSelector(
-      client,
-      `[data-test="product-size-option"][data-size="${selectedProduct.size}"]`,
-      { kind: "touch", timeoutMs: 30_000 },
-    );
-    detail = await readProductDetailState(client);
-  }
-  if (
-    detail?.catalogKey !== selectedProduct.catalogKey ||
-    detail?.variantId !== selectedProduct.variantId ||
-    detail.tryOnPresent !== true ||
-    detail.tryOnDisabled !== false
-  ) {
-    throw new Error(
-      `try-on product detail was not recoverable: ${JSON.stringify(detail)}`,
-    );
-  }
 }
 
 async function readImageHttpEvidence(url) {
@@ -3176,47 +3204,19 @@ async function runVisionTryOnAcceptance(options) {
       }),
     );
 
+    const expectedTryOnRoute = `#/try-on?catalogKey=${manualSelectedProduct.catalogKey}&variantId=${manualSelectedProduct.variantId}`;
     const tryOnAttempts = [];
-    let tryOnSurface = null;
-    for (let attempt = 1; attempt <= 2 && !tryOnSurface; attempt += 1) {
-      stage = `open-try-on-attempt-${attempt}`;
-      if (attempt > 1) {
-        await restoreTryOnProductDetail(client, manualSelectedProduct);
-      }
-      await activateVisibleSelector(client, '[data-test="try-on-entry"]', {
-        kind: "touch",
-        timeoutMs: 30_000,
-      });
-      await waitForRoute(client, /^#\/products\/.+\/try-on/, {
-        timeoutMs: 30_000,
-        pollMs: 250,
-      });
-      try {
-        tryOnSurface = await waitForTryOnSurface(client, 25_000);
-        tryOnAttempts.push({ attempt, result: "passed", tryOnSurface });
-      } catch (error) {
-        const state = await evaluateExpression(
-          client,
-          `(() => ({
-          route: location.hash,
-          errorText: document.querySelector("[data-test='try-on-failure']")?.textContent?.trim() ?? null,
-          resultUrl: document.querySelector("[data-test='try-on-result-image']")?.getAttribute("src") ?? null,
-          phaseText: document.querySelector("[data-test='try-on-phase']")?.textContent?.trim() ?? null,
-        }))()`,
-        );
-        tryOnAttempts.push({
-          attempt,
-          result: "failed",
-          error: String(error),
-          state,
-        });
-        if (attempt === 2) {
-          throw new Error(
-            `real Vision try-on failed after two physical attempts: ${JSON.stringify(tryOnAttempts)}`,
-          );
-        }
-      }
-    }
+    stage = "open-try-on-attempt";
+    await installTryOnLifecycleObserver(client);
+    await activateVisibleSelector(client, '[data-test="try-on-fast"]', {
+      kind: "touch",
+      timeoutMs: 30_000,
+    });
+    await waitForRoute(client, expectedTryOnRoute, {
+      timeoutMs: 30_000,
+      pollMs: 250,
+    });
+    const tryOnSurface = await waitForTryOnSurface(client, 25_000);
     const resultEvidence = await readResultImageEvidence(
       client,
       tryOnSurface.resultUrl,
@@ -3231,6 +3231,13 @@ async function runVisionTryOnAcceptance(options) {
       expectedResults,
       runtimeExpectation,
     });
+    tryOnAttempts.push({
+      attempt: 1,
+      result: "completed",
+      tryOnSurface,
+      resultEvidence,
+      summary: tryOnSummary,
+    });
     checkpoints.push(
       await captureCheckpoint(client, "try-on-fast-result", {
         screenshot: true,
@@ -3238,12 +3245,79 @@ async function runVisionTryOnAcceptance(options) {
       }),
     );
 
-    stage = "return-from-try-on";
-    await activateVisibleSelector(client, '[data-test="try-on-exit"]', {
+    stage = "retry-completed-try-on";
+    await activateVisibleSelector(client, '[data-test="try-on-retry"]', {
       kind: "touch",
       timeoutMs: 30_000,
     });
-    await waitForRoute(client, /^#\/products\//, {
+    const retrySurface = await waitForTryOnSurface(client, 25_000, {
+      excludeAttemptId: tryOnSurface.attemptId,
+    });
+    if (retrySurface.resultUrl === tryOnSurface.resultUrl) {
+      throw new Error("try-on retry reused the previous attempt result path");
+    }
+    const retryResultEvidence = await readResultImageEvidence(
+      client,
+      retrySurface.resultUrl,
+    );
+    const retrySummary = validateTryOnPresentation({
+      selectedProduct: {
+        catalogKey: manualSelectedProduct.catalogKey,
+        variantId: manualSelectedProduct.variantId,
+      },
+      tryOnState: retrySurface,
+      resultEvidence: retryResultEvidence,
+      expectedResults,
+      runtimeExpectation,
+    });
+    tryOnAttempts.push({
+      attempt: 2,
+      result: "completed",
+      tryOnSurface: retrySurface,
+      resultEvidence: retryResultEvidence,
+      summary: retrySummary,
+    });
+
+    stage = "return-from-try-on";
+    await activateVisibleSelector(client, '[data-test="try-on-return"]', {
+      kind: "touch",
+      timeoutMs: 30_000,
+    });
+    const expectedReturnedProductRoute = `#/products/${manualSelectedProduct.catalogKey}?variantId=${manualSelectedProduct.variantId}`;
+    await waitForRoute(client, expectedReturnedProductRoute, {
+      timeoutMs: 30_000,
+      pollMs: 250,
+    });
+    const returnedProductDetail = await readProductDetailState(client);
+    if (
+      returnedProductDetail?.catalogKey !== manualSelectedProduct.catalogKey ||
+      returnedProductDetail?.variantId !== manualSelectedProduct.variantId
+    ) {
+      throw new Error(
+        `try-on return did not restore the selected product variant: ${JSON.stringify(returnedProductDetail)}`,
+      );
+    }
+
+    stage = "prove-ordinary-checkout-after-try-on";
+    await activateVisibleSelector(client, '[data-test="product-buy"]', {
+      kind: "touch",
+      timeoutMs: 30_000,
+    });
+    await waitForRoute(client, "#/checkout", {
+      timeoutMs: 30_000,
+      pollMs: 250,
+    });
+    checkpoints.push(
+      await captureCheckpoint(client, "try-on-ordinary-checkout", {
+        screenshot: true,
+        screenshotSink: sink,
+      }),
+    );
+    await evaluateExpression(
+      client,
+      `location.hash = ${JSON.stringify(expectedReturnedProductRoute)}`,
+    );
+    await waitForRoute(client, expectedReturnedProductRoute, {
       timeoutMs: 30_000,
       pollMs: 250,
     });
@@ -3347,6 +3421,9 @@ async function runVisionTryOnAcceptance(options) {
         },
         mediaPresentation,
         tryOnSurface,
+        retrySurface,
+        retrySummary,
+        returnedProductDetail,
         tryOnAttempts,
         resultEvidence,
         tryOnSummary,
