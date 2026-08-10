@@ -13,8 +13,9 @@ const nonSentinelUuidSchema = z
 const maximumBinaryBytes = 64 * 1024 * 1024;
 const maximumImageDimension = 8192;
 const maximumTokenizedLoopbackUrlLength = 2048;
+const tokenizedLoopbackTokenPattern = /^[A-Za-z0-9_-]{1,128}$/;
 const tokenizedLoopbackUrlPattern =
-  /^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::(?:[1-9]\d{0,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5]))?(?:\/[^?#]*)?\?token=[^?#&]{1,512}$/;
+  /^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::(?:[1-9]\d{0,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5]))?(?:\/[^?#]*)?\?token=[A-Za-z0-9_-]{1,128}$/;
 
 function validateTokenizedLoopbackUrl(
   value: string,
@@ -43,13 +44,12 @@ function validateTokenizedLoopbackUrl(
       message: "reference must be a loopback URL",
     });
   }
+  const token = url.search.slice("?token=".length);
   if (
     url.hash !== "" ||
     !url.search.startsWith("?token=") ||
     url.search.includes("&") ||
-    url.searchParams.getAll("token").length !== 1 ||
-    (url.searchParams.get("token") ?? "").length === 0 ||
-    (url.searchParams.get("token") ?? "").includes("?")
+    !tokenizedLoopbackTokenPattern.test(token)
   ) {
     ctx.addIssue({
       code: "custom",

@@ -41,6 +41,24 @@ export const validVisionV2Fixtures = [
     variantId,
     garment: fastGarment,
   }),
+  envelope("vision.try_on.attempt.start", {
+    attemptId,
+    mode: "fast",
+    variantId,
+    garment: {
+      ...fastGarment,
+      reference: "http://127.0.0.1:65000/media/garment?token=A",
+    },
+  }),
+  envelope("vision.try_on.attempt.start", {
+    attemptId,
+    mode: "fast",
+    variantId,
+    garment: {
+      ...fastGarment,
+      reference: `http://127.0.0.1:65000/media/garment?token=${"a".repeat(128)}`,
+    },
+  }),
   envelope("vision.try_on.attempt.accepted", { attemptId, mode: "fast" }),
   envelope("vision.try_on.attempt.progress", {
     attemptId,
@@ -191,6 +209,29 @@ export const invalidVisionV2Fixtures = [
       },
     },
   },
+  ...[
+    ["percent-question", "x%3F"],
+    ["percent-ampersand", "x%26"],
+    ["percent-fragment", "x%23"],
+    ["percent-null", "x%00"],
+    ["unicode", "令牌"],
+    ["emoji-256", "🙂".repeat(256)],
+    ["emoji-257", "🙂".repeat(257)],
+    ["ascii-129", "a".repeat(129)],
+    ["padding", "base64url="],
+  ].map(([name, token]) => ({
+    name: `rejects-non-base64url-token-${name}`,
+    message: {
+      ...validVisionV2Fixtures[2],
+      payload: {
+        ...validVisionV2Fixtures[2].payload,
+        garment: {
+          ...fastGarment,
+          reference: `http://127.0.0.1:65000/media/garment?token=${token}`,
+        },
+      },
+    },
+  })),
   {
     name: "rejects-extra-fast-payload-property",
     message: {
