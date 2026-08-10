@@ -19,7 +19,6 @@ describe("Vision V2 hard-cutover absence guard", () => {
     try {
       const dot = (...parts) => parts.join(".");
       const pathWithBracedPart = (...parts) => parts.join("/");
-      const streamExtension = ["m", "jpeg"].join("");
       const nestedCustomerRoute = [
         "#",
         "products",
@@ -54,10 +53,9 @@ describe("Vision V2 hard-cutover absence guard", () => {
         ["client.txt", ["use", "TryOn", "Preview"].join("")],
         [
           "route.txt",
-          `${pathWithBracedPart("", "try-on", "{session}")}.${streamExtension}`,
+          `${pathWithBracedPart("", "try-on", "{session}")}.${["m", "jpeg"].join("")}`,
         ],
         ["media.txt", ["sil", "houette"].join("")],
-        ["transport.txt", ["M", "JPEG"].join("")],
         ["operation.txt", dot("try_on", "stop_preview")],
         ["nested-route.txt", nestedCustomerRoute],
         ["selector.txt", `[data-test="${retiredSelector}"]`],
@@ -93,7 +91,6 @@ describe("Vision V2 hard-cutover absence guard", () => {
           "legacy-try-on-wire-message",
           "legacy-v1-fixture",
           "protocol-v1",
-          "transport-specific-preview",
         ],
       );
     } finally {

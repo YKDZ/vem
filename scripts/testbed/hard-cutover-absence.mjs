@@ -62,7 +62,6 @@ const FORBIDDEN_PATTERNS = Object.freeze([
     category: "legacy-silhouette-upload-endpoint",
     pattern: /\/media-assets\/try-on-silhouettes/i,
   },
-  { category: "transport-specific-preview", pattern: /\bmjpeg\b/i },
   {
     category: "legacy-start-stop-operation",
     pattern: /\btry_on[.](?:start|stop)_preview\b/,
@@ -298,7 +297,6 @@ export function scanHardCutoverAbsence({
             "legacy-silhouette-purpose",
             "legacy-start-stop-operation",
             "legacy-try-on-session-module",
-            "transport-specific-preview",
           ].includes(category)
         ) {
           return [];

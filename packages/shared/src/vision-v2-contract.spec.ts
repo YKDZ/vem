@@ -11,6 +11,24 @@ import {
 } from "./schemas/vision-v2";
 
 describe("Vision V2 shared contract", () => {
+  it("accepts an attempt-scoped manual acquisition intent", () => {
+    const start = validVisionV2Fixtures.find(
+      (fixture) => fixture.type === "vision.try_on.attempt.start",
+    );
+    if (!start) throw new Error("expected start fixture");
+
+    expect(
+      visionV2MessageSchema.parse({
+        ...start,
+        type: "vision.try_on.attempt.capture",
+        payload: { attemptId: start.payload.attemptId },
+      }),
+    ).toMatchObject({
+      type: "vision.try_on.attempt.capture",
+      payload: { attemptId: start.payload.attemptId },
+    });
+  });
+
   it("accepts the Fast tracer fixture corpus", () => {
     for (const fixture of validVisionV2Fixtures) {
       expect(visionV2MessageSchema.parse(fixture)).toMatchObject({

@@ -133,6 +133,21 @@ def _normalize_json_integers(value: Any, schema: dict[str, Any]) -> Any:
     return value
 
 def _validate_extensions(value: Any, schema: dict[str, Any]) -> None:
+    if schema.get("x-vem-semantic") == "vision-v2-acquiring-payload":
+        if not isinstance(value, dict):
+            return
+        attempt_id = value.get("attemptId")
+        preview = value.get("preview")
+        if isinstance(attempt_id, str) and isinstance(preview, dict):
+            reference = preview.get("reference")
+            try:
+                path = urlparse(reference).path if isinstance(reference, str) else ""
+            except ValueError:
+                path = ""
+            expected_suffix = f"/attempts/{attempt_id}/preview.mjpeg"
+            if not path.endswith(expected_suffix):
+                raise ValueError("preview reference must be scoped to attemptId")
+        return
     if "oneOf" in schema and isinstance(value, dict):
         message_type = value.get("type")
         for branch in schema["oneOf"]:
@@ -187,7 +202,53 @@ def parse_message(value: Any) -> VisionV2Envelope:
 }
 
 function bundleFiles(): Map<string, string> {
-  const schema = visionV2MessageSchema.toJSONSchema();
+  type SchemaRecord = Record<string, unknown>;
+  const isRecord = (value: unknown): value is SchemaRecord =>
+    typeof value === "object" && value !== null && !Array.isArray(value);
+  const schema = visionV2MessageSchema.toJSONSchema() as unknown as SchemaRecord;
+  const branches = Array.isArray(schema.oneOf)
+    ? schema.oneOf.filter(isRecord)
+    : [];
+  const acquiring = branches.find((branch) => {
+    const properties = isRecord(branch.properties) ? branch.properties : {};
+    const type = isRecord(properties.type) ? properties.type : {};
+    return type.const === "vision.try_on.attempt.acquiring";
+  });
+  if (!acquiring) throw new Error("missing acquiring schema branch");
+  const acquiringProperties = isRecord(acquiring.properties)
+    ? acquiring.properties
+    : {};
+  const acquiringPayload = isRecord(acquiringProperties.payload)
+    ? acquiringProperties.payload
+    : undefined;
+  if (!acquiringPayload) throw new Error("missing acquiring payload schema");
+  acquiringPayload.allOf = [
+    {
+      oneOf: [
+        {
+          properties: {
+            occupancy: { const: "none" },
+            guidance: { const: "no_person" },
+            manualCaptureAllowed: { const: false },
+          },
+        },
+        {
+          properties: {
+            occupancy: { const: "multiple" },
+            guidance: { const: "multiple_people" },
+            manualCaptureAllowed: { const: false },
+          },
+        },
+        {
+          properties: {
+            occupancy: { const: "single" },
+            guidance: { enum: ["align", "hold_still", "ready"] },
+            manualCaptureAllowed: { type: "boolean" },
+          },
+        },
+      ],
+    },
+  ];
   return new Map([
     ["__init__.py", "# @generated VEM Vision V2 bundle package\n"],
     ["vision-v2.schema.json", `${canonicalJson(schema)}\n`],

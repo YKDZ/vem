@@ -89,6 +89,26 @@ export const validVisionV2Fixtures = [
     attemptId,
     reason: "garment_rejected",
   }),
+  envelope("vision.try_on.attempt.capture", { attemptId }),
+  envelope("vision.try_on.attempt.cancel", { attemptId, reason: "user" }),
+  envelope("vision.try_on.attempt.acquiring", {
+    attemptId,
+    preview: {
+      reference: `http://127.0.0.1:65000/vision/v2/try-on/attempts/${attemptId}/preview.mjpeg?token=preview-token`,
+      streamType: "mjpeg",
+    },
+    occupancy: "single",
+    guidance: "ready",
+    manualCaptureAllowed: true,
+  }),
+  envelope("vision.try_on.attempt.generating", {
+    attemptId,
+    stage: "preparing",
+  }),
+  envelope("vision.try_on.attempt.canceled", {
+    attemptId,
+    reason: "departure",
+  }),
   {
     ...envelope("vision.ready", {
       serverName: "名".repeat(128),
@@ -421,6 +441,147 @@ export const invalidVisionV2Fixtures = [
           byteSize: 4096,
           width: 8193,
           height: 768,
+        },
+      },
+    },
+  },
+  {
+    name: "rejects-unknown-attempt-message",
+    message: {
+      ...validVisionV2Fixtures[0],
+      type: "vision.try_on.attempt.unknown",
+      payload: { attemptId },
+    },
+  },
+  {
+    name: "rejects-extra-capture-property",
+    message: {
+      ...validVisionV2Fixtures[10],
+      payload: { attemptId, unexpected: true },
+    },
+  },
+  {
+    name: "rejects-coerced-capture-attempt-id",
+    message: {
+      ...validVisionV2Fixtures[10],
+      payload: { attemptId: 42 },
+    },
+  },
+  {
+    name: "rejects-extra-cancel-property",
+    message: {
+      ...validVisionV2Fixtures[11],
+      payload: { attemptId, reason: "user", unexpected: true },
+    },
+  },
+  {
+    name: "rejects-wrong-cancel-reason",
+    message: {
+      ...validVisionV2Fixtures[11],
+      payload: { attemptId, reason: "departure" },
+    },
+  },
+  {
+    name: "rejects-acquiring-extra-property",
+    message: {
+      ...validVisionV2Fixtures[12],
+      payload: { ...validVisionV2Fixtures[12].payload, percentage: 50 },
+    },
+  },
+  ...[
+    ["none", "no_person", false],
+    ["multiple", "multiple_people", false],
+  ].map(([occupancy, guidance]) => ({
+    name: `rejects-${occupancy}-manual-acquisition`,
+    message: {
+      ...validVisionV2Fixtures[12],
+      payload: {
+        ...validVisionV2Fixtures[12].payload,
+        occupancy,
+        guidance,
+        manualCaptureAllowed: true,
+      },
+    },
+  })),
+  {
+    name: "rejects-single-misaligned-manual-acquisition",
+    message: {
+      ...validVisionV2Fixtures[12],
+      payload: {
+        ...validVisionV2Fixtures[12].payload,
+        guidance: "no_person",
+      },
+    },
+  },
+  {
+    name: "rejects-acquiring-bad-guidance",
+    message: {
+      ...validVisionV2Fixtures[12],
+      payload: { ...validVisionV2Fixtures[12].payload, guidance: "aligned" },
+    },
+  },
+  {
+    name: "rejects-acquiring-bad-occupancy",
+    message: {
+      ...validVisionV2Fixtures[12],
+      payload: { ...validVisionV2Fixtures[12].payload, occupancy: "unknown" },
+    },
+  },
+  {
+    name: "rejects-generating-percentage",
+    message: {
+      ...validVisionV2Fixtures[13],
+      payload: { ...validVisionV2Fixtures[13].payload, percentage: 50 },
+    },
+  },
+  {
+    name: "rejects-canceled-client-only-reason",
+    message: {
+      ...validVisionV2Fixtures[14],
+      payload: { attemptId, reason: "client" },
+    },
+  },
+  ...[
+    [
+      "https",
+      `https://127.0.0.1:65000/vision/v2/try-on/attempts/${attemptId}/preview.mjpeg?token=preview-token`,
+    ],
+    [
+      "crossorigin",
+      `http://192.168.1.2:65000/vision/v2/try-on/attempts/${attemptId}/preview.mjpeg?token=preview-token`,
+    ],
+    [
+      "wrongpath",
+      `http://127.0.0.1:65000/other/${attemptId}/preview.mjpeg?token=preview-token`,
+    ],
+    [
+      "extra-query",
+      `http://127.0.0.1:65000/vision/v2/try-on/attempts/${attemptId}/preview.mjpeg?token=preview-token&x=1`,
+    ],
+    [
+      "duplicate-token",
+      `http://127.0.0.1:65000/vision/v2/try-on/attempts/${attemptId}/preview.mjpeg?token=one&token=two`,
+    ],
+  ].map(([name, reference]) => ({
+    name: `rejects-preview-${name}`,
+    message: {
+      ...validVisionV2Fixtures[12],
+      payload: {
+        ...validVisionV2Fixtures[12].payload,
+        preview: { reference, streamType: "mjpeg" },
+      },
+    },
+  })),
+  {
+    name: "rejects-preview-for-different-attempt",
+    message: {
+      ...validVisionV2Fixtures[12],
+      payload: {
+        ...validVisionV2Fixtures[12].payload,
+        preview: {
+          reference:
+            "http://127.0.0.1:65000/vision/v2/try-on/attempts/550e8400-e29b-41d4-a716-446655440123/preview.mjpeg?token=preview-token",
+          streamType: "mjpeg",
         },
       },
     },
