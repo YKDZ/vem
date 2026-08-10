@@ -34,7 +34,8 @@ const VISION_V2_IDENTITY = readVisionV2ContractIdentity();
 
 const validateVisionProtocolEvidence = validateRawVisionProtocolEvidence;
 const validateVisionRuntimeEvidence = validateRawVisionRuntimeEvidence;
-const compareObservedVisionProtocolToExpected = compareRawObservedVisionProtocolToExpected;
+const compareObservedVisionProtocolToExpected =
+  compareRawObservedVisionProtocolToExpected;
 
 function baseExpectedResults() {
   return {

@@ -55,12 +55,18 @@ it("accepts only the manifest-derived V2 ready identity", () => {
     visionRuntime: v2VisionRuntime(),
   });
   assert.equal(
-    accepted.diagnostics.some((diagnostic) => diagnostic.code.startsWith("vision_")),
+    accepted.diagnostics.some((diagnostic) =>
+      diagnostic.code.startsWith("vision_"),
+    ),
     false,
   );
 
   const rejected = buildRuntimeAcceptanceReport({
     visionRuntime: v2VisionRuntime({ readyContractDigest: "f".repeat(64) }),
   });
-  assert.ok(rejected.diagnostics.some((diagnostic) => diagnostic.code === "vision_protocol_not_ready"));
+  assert.ok(
+    rejected.diagnostics.some(
+      (diagnostic) => diagnostic.code === "vision_protocol_not_ready",
+    ),
+  );
 });

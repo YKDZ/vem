@@ -794,7 +794,8 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
     facts.visionRuntime?.readyBusinessReadinessDiagnostic !== "ready" ||
     facts.visionRuntime?.readySchemaVersion !== visionIdentity.schemaVersion ||
     facts.visionRuntime?.readyBundleVersion !== visionIdentity.bundleVersion ||
-    facts.visionRuntime?.readyContractDigest !== visionIdentity.contractDigest ||
+    facts.visionRuntime?.readyContractDigest !==
+      visionIdentity.contractDigest ||
     !Array.isArray(facts.visionRuntime?.readyCapabilities) ||
     !facts.visionRuntime.readyCapabilities.every(
       (capability) =>

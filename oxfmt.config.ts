@@ -7,6 +7,8 @@ export default defineConfig({
     "**/dist",
     "packages/db/drizzle",
     "packages/shared/generated/vision-v2",
+    // Generated source is byte-stable contract output; the generator owns it.
+    "packages/shared/src/generated/vision-v2-bundle.ts",
   ],
   sortImports: {
     groups: [

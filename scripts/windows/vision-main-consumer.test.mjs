@@ -108,7 +108,10 @@ test("runtime verification checks the installed Vision artifact", () => {
   assert.match(verify, /Invoke-VisionMainProbe/);
   assert.match(verify, /ready\.payload\.fastReady -eq \$true/);
   assert.match(verify, /ready\.payload\.visionBusinessReady -eq \$true/);
-  assert.match(verify, /ready\.payload\.businessReadinessDiagnostic -ceq "ready"/);
+  assert.match(
+    verify,
+    /ready\.payload\.businessReadinessDiagnostic -ceq "ready"/,
+  );
 });
 
 test("can install Vision files without defining a second runtime owner", () => {
