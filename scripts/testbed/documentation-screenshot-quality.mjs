@@ -123,6 +123,16 @@ export function normalizeDocumentationScreenshotMetadata(input) {
             throw new Error("commit must be a non-empty string");
           })(),
     ),
+    sourceCommit:
+      input.sourceCommit == null
+        ? null
+        : validateCommit(
+            isNonEmptyString(input.sourceCommit)
+              ? input.sourceCommit.trim()
+              : (() => {
+                  throw new Error("sourceCommit must be a non-empty string");
+                })(),
+          ),
     viewport: normalizeViewport(input.viewport),
     expectedOrientation,
     expectedTexts: normalizeStringList(input.expectedTexts, "expectedTexts"),

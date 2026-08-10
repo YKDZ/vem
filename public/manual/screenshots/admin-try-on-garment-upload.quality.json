@@ -7,7 +7,8 @@
     "source": "admin-ui",
     "route": "/products#try-on-garment",
     "capturedAt": "2026-08-10T13:43:15.748Z",
-    "commit": "9dbfbf949c00",
+    "commit": "9dbfbf949c00510b22a343a337291aca8c9a13f0",
+    "sourceCommit": "103ade54ba10c71e93ceeed01e1b1afcd97eeb75",
     "viewport": {
       "width": 1440,
       "height": 1080

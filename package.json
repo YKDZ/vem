@@ -38,6 +38,7 @@
     "test": "node --test scripts/check-static-quality-workflow.test.mjs scripts/testbed/machine-ui-cdp-driver.test.mjs && turbo run test --output-logs=errors-only --log-order=grouped --log-prefix=task",
     "test:daemon-ipc-contracts": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=vem-source\" vitest run scripts/daemon-ipc-contracts/generate-contracts.spec.ts --reporter=agent --silent=passed-only",
     "test:e2e": "turbo run test:e2e --output-logs=errors-only --log-order=grouped --log-prefix=task",
+    "test:hard-cutover-pg": "VEM_D2_PG16_PROOF=1 node scripts/testbed/hard-cutover-postgres-atomicity.mjs",
     "typecheck": "turbo run typecheck --output-logs=errors-only --log-order=grouped --log-prefix=task",
     "typecheck:scripts": "tsc -p tsconfig.scripts.json"
   },

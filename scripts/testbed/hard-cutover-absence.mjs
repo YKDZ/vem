@@ -82,6 +82,22 @@ const FORBIDDEN_PATTERNS = Object.freeze([
   },
 ]);
 
+function splitLegacyConstructionMatches(source) {
+  const matches = source.matchAll(
+    /\[[\s\S]{0,200}?\][.]join\(\s*["']{2}\s*\)/g,
+  );
+  return [...matches].filter((match) => {
+    const fragments = [...match[0].matchAll(/["']([^"']+)["']/g)].map(
+      ([, fragment]) => fragment,
+    );
+    const normalized = fragments
+      .join("")
+      .replace(/[^a-z]/gi, "")
+      .toLowerCase();
+    return normalized.includes("tryonsilhouette");
+  });
+}
+
 const TEXT_EXTENSIONS = new Set([
   "",
   ".cjs",
@@ -160,7 +176,7 @@ const LEGACY_MIGRATION_ALLOWANCES = Object.freeze({
   "packages/db/drizzle/20260810000000_hard_delete_legacy_try_on_data/migration.sql":
     {
       digest:
-        "8199ee37a17bdc9488cf831bb880ecde28d60f5361bcafde85f8ff2419666f3c",
+        "a1b4e5f81b95ebca62f71091a23ec5876e4da5ae11ca97fbe24fdebfa7b877f7",
       occurrences: {
         "legacy-silhouette-field": 5,
         "legacy-silhouette-purpose": 5,
@@ -285,6 +301,11 @@ export function scanHardCutoverAbsence({
         }
         return [`${relative(root, path)}:${category}`];
       }),
+      ...(() => {
+        const matches = splitLegacyConstructionMatches(source);
+        if (matches.length === 0 || self.has(path)) return [];
+        return [`${relative(root, path)}:legacy-split-construction`];
+      })(),
     ];
   });
 }

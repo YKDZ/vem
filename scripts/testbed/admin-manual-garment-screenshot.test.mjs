@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, it } from "node:test";
 
@@ -27,6 +28,43 @@ describe("Try-On Garment operator-manual screenshot", () => {
     assert.equal(result.capture.widthPx, 1440);
     assert.equal(result.capture.heightPx, 1080);
     assert.equal(result.metadata.source, "admin-ui");
+    const rawMetadata = JSON.parse(readFileSync(metadata, "utf8"));
+    const currentHead = execFileSync("git", ["rev-parse", "HEAD"], {
+      encoding: "utf8",
+    }).trim();
+    const sourceCommit = rawMetadata.sourceCommit;
+    assert.match(sourceCommit, /^[a-f0-9]{40}$/i);
+    assert.notEqual(
+      sourceCommit,
+      currentHead,
+      "sourceCommit must not self-reference",
+    );
+    execFileSync("git", ["merge-base", "--is-ancestor", sourceCommit, "HEAD"]);
+    const committedBlob = execFileSync(
+      "git",
+      [
+        "rev-parse",
+        `${sourceCommit}:public/manual/screenshots/admin-try-on-garment-upload.png`,
+      ],
+      { encoding: "utf8" },
+    ).trim();
+    const localBlob = execFileSync("git", ["hash-object", screenshot], {
+      encoding: "utf8",
+    }).trim();
+    const committedSize = Number.parseInt(
+      execFileSync(
+        "git",
+        [
+          "cat-file",
+          "-s",
+          `${sourceCommit}:public/manual/screenshots/admin-try-on-garment-upload.png`,
+        ],
+        { encoding: "utf8" },
+      ),
+      10,
+    );
+    assert.equal(localBlob, committedBlob);
+    assert.equal(statSync(screenshot).size, committedSize);
     assert.deepEqual(result.metadata.expectedTexts, [
       "Try-On Garment 草稿",
       "透明 PNG 来源",

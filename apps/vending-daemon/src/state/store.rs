@@ -9996,13 +9996,6 @@ mod tests {
         assert!(names.contains(&"current_stock_projection"));
         assert!(names.contains(&"sale_view_projection"));
         assert!(names.contains(&"whole_machine_lock_clear_audit_events"));
-        let retired_media_column = format!(
-            "{}_{}_{}_{}",
-            "try",
-            "on",
-            ["sil", "hou", "ette"].join(""),
-            "url"
-        );
         let planogram_columns: Vec<(String,)> =
             sqlx::query_as("SELECT name FROM pragma_table_info('machine_planogram_slots')")
                 .fetch_all(store.pool())
@@ -10010,7 +10003,7 @@ mod tests {
                 .expect("planogram columns");
         assert!(!planogram_columns
             .iter()
-            .any(|(name,)| name == &retired_media_column));
+            .any(|(name,)| name == RETIRED_PLANOGRAM_MEDIA_COLUMN));
 
         let schema_version: Option<i64> = store
             .get_metadata("schema_version")
@@ -10060,14 +10053,8 @@ mod tests {
             .execute(&mut *connection)
             .await
             .expect("disable fixture foreign keys");
-        let retired_media_column = format!(
-            "{}_{}_{}_{}",
-            "try",
-            "on",
-            ["sil", "hou", "ette"].join(""),
-            "url"
-        );
-        let legacy_schema = "CREATE TABLE machine_planogram_slots_v18_fixture (
+        let legacy_schema = format!(
+            "CREATE TABLE machine_planogram_slots_v18_fixture (
                planogram_version TEXT NOT NULL,
                slot_id TEXT NOT NULL,
                slot_code TEXT NOT NULL,
@@ -10089,7 +10076,7 @@ mod tests {
                price_cents INTEGER NOT NULL,
                product_sort_order INTEGER NOT NULL,
                target_gender TEXT,
-               __RETIRED_MEDIA_COLUMN__ TEXT,
+               {RETIRED_PLANOGRAM_MEDIA_COLUMN} TEXT,
                PRIMARY KEY (planogram_version, slot_id)
              );
              INSERT INTO machine_planogram_slots_v18_fixture
@@ -10101,8 +10088,8 @@ mod tests {
              DROP TABLE machine_planogram_slots;
              ALTER TABLE machine_planogram_slots_v18_fixture RENAME TO machine_planogram_slots;
              UPDATE machine_planogram_slots
-             SET __RETIRED_MEDIA_COLUMN__ = 'retired://fixture';"
-            .replace("__RETIRED_MEDIA_COLUMN__", &retired_media_column);
+             SET {RETIRED_PLANOGRAM_MEDIA_COLUMN} = 'retired://fixture';"
+        );
         sqlx::query(&legacy_schema)
             .execute(&mut *connection)
             .await
@@ -10132,7 +10119,7 @@ mod tests {
         assert!(names.contains(&"cell_no"));
         assert!(!names.contains(&"slot_code"));
         assert!(!names.contains(&"slot_display_label"));
-        assert!(!names.contains(&retired_media_column.as_str()));
+        assert!(!names.contains(&RETIRED_PLANOGRAM_MEDIA_COLUMN));
         let preserved: (i64, i64, i64, i64, i64) = sqlx::query_as(
             "SELECT
                (SELECT COUNT(*) FROM stock_movements WHERE movement_id='v18-slot-ledger'),

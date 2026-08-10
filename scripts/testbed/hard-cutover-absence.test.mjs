@@ -44,6 +44,8 @@ describe("Vision V2 hard-cutover absence guard", () => {
         "/media-assets/",
         ["try", "-on-", ["sil", "hou", "ette"].join(""), "s"].join(""),
       ].join("");
+      const splitProductionReference =
+        'const retired = ["try", "_on_", "sil", "hou", "ette"].join("");';
       const fixtures = [
         ["protocol.txt", dot("vem", "vision", "v1")],
         ["wire.txt", dot("vision", "try_on", "start")],
@@ -62,6 +64,7 @@ describe("Vision V2 hard-cutover absence guard", () => {
         ["field.txt", retiredField],
         ["purpose.txt", `purpose: ${retiredPurpose}`],
         ["endpoint.txt", retiredUploadRoute],
+        ["production.ts", splitProductionReference],
       ];
       for (const [name, body] of fixtures) {
         writeFileSync(join(root, name), `${body}\n`);
@@ -80,6 +83,7 @@ describe("Vision V2 hard-cutover absence guard", () => {
           "legacy-silhouette-field",
           "legacy-silhouette-purpose",
           "legacy-silhouette-upload-endpoint",
+          "legacy-split-construction",
           "legacy-start-stop-operation",
           "legacy-try-on-client",
           "legacy-try-on-selector",

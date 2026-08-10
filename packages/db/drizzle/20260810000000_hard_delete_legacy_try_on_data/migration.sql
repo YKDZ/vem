@@ -1,8 +1,6 @@
 -- Irreversible V2 cutover.  The locking order is legacy-purpose assets,
 -- affected garments, then variants: it gives concurrent writers one stable
 -- deletion set without touching unrelated product presentation or audit JSON.
-BEGIN;
-
 LOCK TABLE "media_assets", "try_on_garments", "product_variants", "products"
   IN SHARE ROW EXCLUSIVE MODE;
 
@@ -33,5 +31,3 @@ WHERE "source_media_asset_id" IN (
 
 DELETE FROM "media_assets"
 WHERE "purpose" = 'try_on_silhouette';
-
-COMMIT;

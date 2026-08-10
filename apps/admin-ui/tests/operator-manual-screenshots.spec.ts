@@ -70,7 +70,7 @@ async function adminApi<T>(
 }
 
 function currentCommit(): string {
-  return execFileSync("git", ["rev-parse", "--short=12", "HEAD"], {
+  return execFileSync("git", ["rev-parse", "HEAD"], {
     cwd: resolve(dirname(fileURLToPath(import.meta.url)), "../../.."),
     encoding: "utf8",
   }).trim();
@@ -127,6 +127,9 @@ async function captureManualScreenshot(
         route: input.route,
         capturedAt: new Date().toISOString(),
         commit: currentCommit(),
+        sourceCommit:
+          process.env.VEM_ADMIN_MANUAL_SCREENSHOT_SOURCE_COMMIT ??
+          currentCommit(),
         viewport: viewport ?? { width: 1440, height: 1080 },
         expectedOrientation: "landscape",
         expectedTexts: input.expectedTexts,
