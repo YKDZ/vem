@@ -440,6 +440,15 @@ mod tests {
             .expect("generated invalid V1 fixture")
     }
 
+    fn generated_invalid_fixture(name: &str) -> Value {
+        serde_json::from_str::<Vec<Value>>(VISION_V2_INVALID_FIXTURES)
+            .expect("generated invalid fixtures")
+            .into_iter()
+            .find(|fixture| fixture["name"] == name)
+            .and_then(|fixture| fixture.get("message").cloned())
+            .unwrap_or_else(|| panic!("generated invalid fixture {name}"))
+    }
+
     #[tokio::test]
     async fn check_ready_consumes_unmodified_shared_ready_fixture() {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("listen");
@@ -469,6 +478,70 @@ mod tests {
             ready.business_readiness_diagnostic,
             VisionBusinessReadinessDiagnostic::ContractDigestMismatch
         );
+    }
+
+    #[tokio::test]
+    async fn check_ready_consumes_unmodified_astral_shared_ready_fixture() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listen");
+        let addr = listener.local_addr().expect("local addr");
+        let ws_url = format!("ws://{addr}/");
+        let fixture = serde_json::from_str::<Vec<Value>>(VISION_V2_VALID_FIXTURES)
+            .expect("generated valid fixtures")
+            .into_iter()
+            .find(|message| {
+                message["messageId"]
+                    .as_str()
+                    .map(str::chars)
+                    .map(Iterator::count)
+                    == Some(128)
+            })
+            .expect("generated astral ready fixture");
+
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let mut ws_stream = accept_async(stream).await.expect("accept ws");
+            let _ = ws_stream.next().await.expect("next");
+            ws_stream
+                .send(Message::Text(fixture.to_string()))
+                .await
+                .expect("send generated astral ready fixture");
+        });
+
+        let ready = check_ready(&ws_url, None, 2000)
+            .await
+            .expect("unmodified astral generated ready fixture is accepted");
+        assert_eq!(ready.server_name.chars().count(), 128);
+        assert_eq!(ready.server_version.chars().count(), 64);
+        assert_eq!(ready.schema_version.chars().count(), 128);
+        assert_eq!(ready.bundle_version.chars().count(), 64);
+        assert_eq!(ready.capabilities[0].chars().count(), 64);
+    }
+
+    #[tokio::test]
+    async fn check_ready_rejects_unmodified_astral_shared_over_limit_fixtures() {
+        for name in [
+            "rejects-message-id-code-point-over-limit",
+            "rejects-capability-code-point-over-limit",
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("listen");
+            let addr = listener.local_addr().expect("local addr");
+            let ws_url = format!("ws://{addr}/");
+            let fixture = generated_invalid_fixture(name);
+
+            tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.expect("accept");
+                let mut ws_stream = accept_async(stream).await.expect("accept ws");
+                let _ = ws_stream.next().await.expect("next");
+                ws_stream
+                    .send(Message::Text(fixture.to_string()))
+                    .await
+                    .expect("send generated astral invalid fixture");
+            });
+
+            check_ready(&ws_url, None, 2000)
+                .await
+                .expect_err("unmodified astral over-limit fixture is rejected");
+        }
     }
 
     #[tokio::test]

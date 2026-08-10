@@ -85,6 +85,21 @@ export const validVisionV2Fixtures = [
       height: 768,
     },
   }),
+  {
+    ...envelope("vision.ready", {
+      serverName: "名".repeat(128),
+      serverVersion: "🙂".repeat(64),
+      schemaVersion: "架".repeat(128),
+      bundleVersion: "🙂".repeat(64),
+      contractDigest: digest,
+      cameraReady: true,
+      fastReady: true,
+      visionBusinessReady: true,
+      businessReadinessDiagnostic: "ready",
+      capabilities: ["🙂".repeat(64)],
+    }),
+    messageId: "🙂".repeat(128),
+  },
 ];
 
 export const invalidVisionV2Fixtures = [
@@ -358,6 +373,20 @@ export const invalidVisionV2Fixtures = [
   {
     name: "rejects-message-id-over-limit",
     message: { ...validVisionV2Fixtures[0], messageId: "x".repeat(129) },
+  },
+  {
+    name: "rejects-message-id-code-point-over-limit",
+    message: { ...validVisionV2Fixtures[0], messageId: "🙂".repeat(129) },
+  },
+  {
+    name: "rejects-capability-code-point-over-limit",
+    message: {
+      ...validVisionV2Fixtures[1],
+      payload: {
+        ...validVisionV2Fixtures[1].payload,
+        capabilities: ["🙂".repeat(65)],
+      },
+    },
   },
   {
     name: "rejects-result-dimension-over-limit",

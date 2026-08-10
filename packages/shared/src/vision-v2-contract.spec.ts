@@ -1,3 +1,4 @@
+import Ajv from "ajv/dist/2020";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -41,6 +42,39 @@ describe("Vision V2 shared contract", () => {
   it("rejects V1, AI, and non-loopback source fixtures", () => {
     for (const fixture of invalidVisionV2Fixtures) {
       expect(() => visionV2MessageSchema.parse(fixture.message)).toThrow();
+    }
+  });
+
+  it("publishes Unicode code-point bounds to standalone JSON Schema", () => {
+    const schema = visionV2MessageSchema.toJSONSchema();
+    const ready = schema.oneOf.find(
+      (branch) => branch.properties.type.const === "vision.ready",
+    );
+    if (!ready) throw new Error("expected vision.ready schema branch");
+
+    expect(ready.properties.messageId).toMatchObject({
+      minLength: 1,
+      maxLength: 128,
+    });
+    expect(ready.properties.payload.properties.serverVersion).toMatchObject({
+      minLength: 1,
+      maxLength: 64,
+    });
+    expect(
+      ready.properties.payload.properties.capabilities.items,
+    ).toMatchObject({
+      minLength: 1,
+      maxLength: 64,
+    });
+
+    const validate = new Ajv({ strict: false, validateFormats: false }).compile(
+      schema,
+    );
+    expect(validate(validVisionV2Fixtures.at(-1))).toBe(true);
+    for (const fixture of invalidVisionV2Fixtures.filter((fixture) =>
+      fixture.name.includes("code-point-over-limit"),
+    )) {
+      expect(validate(fixture.message)).toBe(false);
     }
   });
 

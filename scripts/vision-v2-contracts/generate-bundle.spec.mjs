@@ -1,3 +1,4 @@
+import Ajv from "ajv/dist/2020.js";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -123,5 +124,42 @@ test("detects noncanonical and duplicate-key manifest spellings", () => {
       generate({ sourceOutput, visionRoot, check: true }).status,
       0,
     );
+  });
+});
+
+test("publishes standalone Unicode code-point bounds with the shared corpus", () => {
+  withTemporaryBundles(({ sourceOutput, visionRoot }) => {
+    assert.equal(generate({ sourceOutput, visionRoot }).status, 0);
+    const schema = JSON.parse(
+      readFileSync(join(sourceOutput, "vision-v2.schema.json"), "utf8"),
+    );
+    const valid = JSON.parse(
+      readFileSync(join(sourceOutput, "fixtures", "valid.json"), "utf8"),
+    );
+    const invalid = JSON.parse(
+      readFileSync(join(sourceOutput, "fixtures", "invalid.json"), "utf8"),
+    );
+    const ready = schema.oneOf.find(
+      (branch) => branch.properties.type.const === "vision.ready",
+    );
+    assert.deepEqual(
+      {
+        minLength: ready.properties.messageId.minLength,
+        maxLength: ready.properties.messageId.maxLength,
+        capabilityMaxLength:
+          ready.properties.payload.properties.capabilities.items.maxLength,
+      },
+      { minLength: 1, maxLength: 128, capabilityMaxLength: 64 },
+    );
+
+    const validate = new Ajv({ strict: false, validateFormats: false }).compile(
+      schema,
+    );
+    assert.equal(validate(valid.at(-1)), true);
+    for (const fixture of invalid.filter((fixture) =>
+      fixture.name.includes("code-point-over-limit"),
+    )) {
+      assert.equal(validate(fixture.message), false, fixture.name);
+    }
   });
 });

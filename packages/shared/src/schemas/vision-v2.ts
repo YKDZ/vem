@@ -27,6 +27,42 @@ const tokenizedLoopbackTokenPattern = /^[A-Za-z0-9_-]{1,128}(?![\s\S])/;
 const tokenizedLoopbackUrlPattern =
   /^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::(?:[1-9]\d{0,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5]))?(?:\/[^?#]*)?\?token=[A-Za-z0-9_-]{1,128}(?![\s\S])/;
 
+/**
+ * JSON Schema measures string length in Unicode code points. JavaScript's
+ * built-in Zod string checks measure UTF-16 code units, so use the iterator
+ * here to keep the authored schema, standalone JSON Schema, Python, and Rust
+ * on one wire-length rule.
+ */
+function codePointString({
+  minimum,
+  maximum,
+}: {
+  minimum?: number;
+  maximum?: number;
+}) {
+  return z
+    .string()
+    .superRefine((value, ctx) => {
+      const length = Array.from(value).length;
+      if (minimum !== undefined && length < minimum) {
+        ctx.addIssue({
+          code: "custom",
+          message: `expected at least ${minimum} Unicode code points`,
+        });
+      }
+      if (maximum !== undefined && length > maximum) {
+        ctx.addIssue({
+          code: "custom",
+          message: `expected at most ${maximum} Unicode code points`,
+        });
+      }
+    })
+    .meta({
+      ...(minimum === undefined ? {} : { minLength: minimum }),
+      ...(maximum === undefined ? {} : { maxLength: maximum }),
+    });
+}
+
 function validateTokenizedLoopbackUrl(
   value: string,
   ctx: z.RefinementCtx,
@@ -68,9 +104,9 @@ function validateTokenizedLoopbackUrl(
   }
 }
 
-const tokenizedLoopbackUrlSchema = z
-  .string()
-  .max(maximumTokenizedLoopbackUrlLength)
+const tokenizedLoopbackUrlSchema = codePointString({
+  maximum: maximumTokenizedLoopbackUrlLength,
+})
   .regex(tokenizedLoopbackUrlPattern)
   .describe("vem.tokenized-loopback-url")
   .superRefine(validateTokenizedLoopbackUrl);
@@ -95,7 +131,7 @@ export const visionV2ResultReferenceSchema = z.strictObject({
 
 const envelopeBaseSchema = z.strictObject({
   protocol: z.literal(VISION_V2_PROTOCOL),
-  messageId: z.string().min(1).max(128),
+  messageId: codePointString({ minimum: 1, maximum: 128 }),
   timestamp: z.iso.datetime(),
 });
 
@@ -103,27 +139,27 @@ export const visionV2HelloMessageSchema = envelopeBaseSchema.extend({
   type: z.literal("vision.hello"),
   payload: z.strictObject({
     clientRole: z.literal("machine"),
-    machineCode: z.string().min(1).max(64).optional(),
-    schemaVersion: z.string().min(1).max(128),
-    bundleVersion: z.string().min(1).max(64),
+    machineCode: codePointString({ minimum: 1, maximum: 64 }).optional(),
+    schemaVersion: codePointString({ minimum: 1, maximum: 128 }),
+    bundleVersion: codePointString({ minimum: 1, maximum: 64 }),
     contractDigest: sha256HexSchema,
-    capabilities: z.array(z.string().min(1).max(64)).max(32),
+    capabilities: z.array(codePointString({ minimum: 1, maximum: 64 })).max(32),
   }),
 });
 
 export const visionV2ReadyMessageSchema = envelopeBaseSchema.extend({
   type: z.literal("vision.ready"),
   payload: z.strictObject({
-    serverName: z.string().min(1).max(128),
-    serverVersion: z.string().min(1).max(64),
-    schemaVersion: z.string().min(1).max(128),
-    bundleVersion: z.string().min(1).max(64),
+    serverName: codePointString({ minimum: 1, maximum: 128 }),
+    serverVersion: codePointString({ minimum: 1, maximum: 64 }),
+    schemaVersion: codePointString({ minimum: 1, maximum: 128 }),
+    bundleVersion: codePointString({ minimum: 1, maximum: 64 }),
     contractDigest: sha256HexSchema,
     cameraReady: z.boolean(),
     fastReady: z.boolean(),
     visionBusinessReady: z.boolean(),
     businessReadinessDiagnostic: visionV2BusinessReadinessDiagnosticSchema,
-    capabilities: z.array(z.string().min(1).max(64)).max(32),
+    capabilities: z.array(codePointString({ minimum: 1, maximum: 64 })).max(32),
   }),
 });
 
