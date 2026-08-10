@@ -4808,7 +4808,6 @@ mod tests {
                         "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content"
                             .to_string(),
                     ),
-                    try_on_silhouette_url: None,
                     category_id: None,
                     category_name: None,
                     sku: "CURRENT-001".to_string(),
@@ -5223,7 +5222,6 @@ mod tests {
                         "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content"
                             .to_string(),
                     ),
-                    try_on_silhouette_url: None,
                     category_id: None,
                     category_name: None,
                     sku: "DIAGNOSTIC-001".to_string(),
@@ -6018,7 +6016,6 @@ mod tests {
                     product_name: "Water".to_string(),
                     product_description: None,
                     cover_image_url: None,
-                    try_on_silhouette_url: None,
                     category_id: None,
                     category_name: None,
                     sku: "WATER-001".to_string(),
@@ -6544,7 +6541,6 @@ mod tests {
                     product_name: "Water".to_string(),
                     product_description: None,
                     cover_image_url: None,
-                    try_on_silhouette_url: None,
                     category_id: None,
                     category_name: None,
                     sku: "WATER-001".to_string(),

@@ -1548,7 +1548,6 @@ mod tests {
                 product_name: "Product".to_string(),
                 product_description: None,
                 cover_image_url: None,
-                try_on_silhouette_url: None,
                 category_id: None,
                 category_name: None,
                 sku: "SKU-1".to_string(),

@@ -9,7 +9,14 @@ const DEFAULT_SCOPES = Object.freeze([
   "apps/machine/src",
   "apps/machine/src-tauri",
   "apps/machine/package.json",
+  "apps/service-api/src",
+  "apps/admin-ui/src",
+  "apps/admin-ui/tests",
+  "apps/vending-daemon/src",
+  "apps/vending-daemon/tests",
   "docs",
+  "packages/db/src",
+  "packages/db/drizzle",
   "packages/shared/src",
   "packages/shared/generated",
   "packages/shared/package.json",
@@ -37,6 +44,18 @@ const FORBIDDEN_PATTERNS = Object.freeze([
     pattern: /\/try-on\/\{[^}]+}[.]mjpeg\b|try-on-preview\b/i,
   },
   { category: "legacy-silhouette", pattern: /\bsilhouette\b/i },
+  {
+    category: "legacy-silhouette-field",
+    pattern: /try[_-]?on[_-]?silhouette|tryOnSilhouette/i,
+  },
+  {
+    category: "legacy-silhouette-purpose",
+    pattern: /try[_-]?on[_-]?silhouette(?:[_-]?media)?|tryOnSilhouette/i,
+  },
+  {
+    category: "legacy-silhouette-upload-endpoint",
+    pattern: /\/media-assets\/try-on-silhouettes/i,
+  },
   { category: "transport-specific-preview", pattern: /\bmjpeg\b/i },
   {
     category: "legacy-start-stop-operation",
@@ -107,6 +126,18 @@ function isHistoricalLegacyRecord(path) {
   return /(?:^|[\\/])docs[\\/](?:archive|软著|adr)(?:[\\/]|$)/.test(path);
 }
 
+const ALLOWED_HISTORICAL_MIGRATIONS = new Set([
+  "packages/db/drizzle/20260701170000_variant_try_on_silhouette_media_assets/migration.sql",
+  "packages/db/drizzle/20260701171000_machine_planogram_try_on_silhouette/migration.sql",
+  "packages/db/drizzle/20260722000000_remove_inventory_refill_authority/snapshot.json",
+  "packages/db/drizzle/20260809010000_try_on_garment_variant_associations/migration.sql",
+  "packages/db/drizzle/20260810000000_hard_delete_legacy_try_on_data/migration.sql",
+]);
+
+function isAllowedHistoricalMigration(path, root) {
+  return ALLOWED_HISTORICAL_MIGRATIONS.has(relative(root, path));
+}
+
 export function scanHardCutoverAbsence({
   root = DEFAULT_ROOT,
   scopes = DEFAULT_SCOPES,
@@ -130,6 +161,7 @@ export function scanHardCutoverAbsence({
       pattern.lastIndex = 0;
       if (!pattern.test(source)) return [];
       if (self.has(path)) return [];
+      if (isAllowedHistoricalMigration(path, root)) return [];
       if (
         isHistoricalLegacyRecord(path) &&
         [
@@ -137,6 +169,8 @@ export function scanHardCutoverAbsence({
           "legacy-try-on-client",
           "legacy-preview-route",
           "legacy-silhouette",
+          "legacy-silhouette-field",
+          "legacy-silhouette-purpose",
           "legacy-start-stop-operation",
           "legacy-try-on-session-module",
           "transport-specific-preview",

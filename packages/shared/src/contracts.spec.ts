@@ -1497,14 +1497,6 @@ describe("shared API contract", () => {
     ).toEqual({
       costCents: null,
     });
-    expect(() =>
-      createProductVariantSchema.parse({
-        productId,
-        sku: "TSHIRT-M-WHITE",
-        priceCents: 1000,
-        tryOnSilhouetteMediaAssetId: "550e8400-e29b-41d4-a716-446655440125",
-      }),
-    ).toThrow();
   });
 
   it("validates nullable all-or-nothing Machine Geo Location in machine write contracts", () => {

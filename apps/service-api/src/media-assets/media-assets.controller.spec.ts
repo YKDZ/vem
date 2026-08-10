@@ -41,12 +41,6 @@ describe("MediaAssetsController", () => {
     },
   );
 
-  it("does not retain the deleted silhouette upload operation", () => {
-    expect(MediaAssetsController.prototype).not.toHaveProperty(
-      "uploadTryOnSilhouette",
-    );
-  });
-
   it("declares the complete product display upload contract", () => {
     expect(
       adminProductDisplayImageUploadContract.bodySchema.safeParse({

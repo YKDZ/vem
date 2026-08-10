@@ -456,23 +456,23 @@ test.describe("Operator manual Admin UI screenshots", () => {
       route: "/products#sku-price",
       expectedTexts: ["编辑 SKU", "售价(分)", "确定"],
     });
-    await skuModal.locator("input[type='file']").setInputFiles({
-      name: "silhouette.png",
-      mimeType: "image/png",
-      buffer: ONE_PIXEL_PNG,
-    });
-    await expect(skuModal.getByAltText(`${variant.sku} 试穿剪影`)).toBeVisible({
-      timeout: 10_000,
-    });
-    await captureManualScreenshot(page, {
-      id: "admin-try-on-silhouette-upload",
-      route: "/products#try-on-silhouette",
-      expectedTexts: ["编辑 SKU", "试穿剪影", "确定"],
-    });
     await skuModal.getByRole("button", { name: /确\s*定/ }).click();
     await expect(skuModal).toBeHidden({ timeout: 10_000 });
     await page.keyboard.press("Escape");
     await expect(skuDrawer).toBeHidden({ timeout: 10_000 });
+
+    await productRow.getByRole("button", { name: "新增试衣源" }).click();
+    const tryOnGarmentModal = page
+      .locator(".ant-modal")
+      .filter({ hasText: "Try-On Garment 草稿" });
+    await expect(tryOnGarmentModal).toBeVisible({ timeout: 10_000 });
+    await captureManualScreenshot(page, {
+      id: "admin-try-on-garment-upload",
+      route: "/products#try-on-garment",
+      expectedTexts: ["Try-On Garment 草稿", "透明 PNG 来源", "上传并校验 PNG"],
+    });
+    await tryOnGarmentModal.getByRole("button", { name: "取消" }).click();
+    await expect(tryOnGarmentModal).toBeHidden({ timeout: 10_000 });
 
     await page.goto("/inventory");
     await waitForAdminUiSettled(page);

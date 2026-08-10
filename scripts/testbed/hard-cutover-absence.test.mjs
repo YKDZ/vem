@@ -29,6 +29,21 @@ describe("Vision V2 hard-cutover absence guard", () => {
       const retiredSelector = ["try", "on", "exit"].join("-");
       const fabricatedPhaseField = ["completed", "Observed"].join("");
       const retiredSessionModule = ["try", "_on", "_session"].join("");
+      const retiredField = [
+        "try",
+        "On",
+        ["sil", "hou", "ette"].join(""),
+        "Url",
+      ].join("");
+      const retiredPurpose = [
+        "try",
+        "_on",
+        ["sil", "hou", "ette"].join(""),
+      ].join("");
+      const retiredUploadRoute = [
+        "/media-assets/",
+        ["try", "-on-", ["sil", "hou", "ette"].join(""), "s"].join(""),
+      ].join("");
       const fixtures = [
         ["protocol.txt", dot("vem", "vision", "v1")],
         ["wire.txt", dot("vision", "try_on", "start")],
@@ -44,6 +59,9 @@ describe("Vision V2 hard-cutover absence guard", () => {
         ["selector.txt", `[data-test="${retiredSelector}"]`],
         ["phase.txt", fabricatedPhaseField],
         ["session.txt", retiredSessionModule],
+        ["field.txt", retiredField],
+        ["purpose.txt", `purpose: ${retiredPurpose}`],
+        ["endpoint.txt", retiredUploadRoute],
       ];
       for (const [name, body] of fixtures) {
         writeFileSync(join(root, name), `${body}\n`);
@@ -59,6 +77,9 @@ describe("Vision V2 hard-cutover absence guard", () => {
           "legacy-nested-customer-route",
           "legacy-preview-route",
           "legacy-silhouette",
+          "legacy-silhouette-field",
+          "legacy-silhouette-purpose",
+          "legacy-silhouette-upload-endpoint",
           "legacy-start-stop-operation",
           "legacy-try-on-client",
           "legacy-try-on-selector",

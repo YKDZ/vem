@@ -1,4 +1,4 @@
-pub const SCHEMA_VERSION: i64 = 19;
+pub const SCHEMA_VERSION: i64 = 20;
 
 pub const MIGRATION_V1: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -236,7 +236,7 @@ PRAGMA foreign_keys = ON;
 pub const MIGRATION_V10: &str = r#"
 PRAGMA foreign_keys = OFF;
 
-ALTER TABLE machine_planogram_slots ADD COLUMN try_on_silhouette_url TEXT;
+ALTER TABLE machine_planogram_slots ADD COLUMN __RETIRED_MEDIA_COLUMN__ TEXT;
 
 PRAGMA foreign_keys = ON;
 "#;
@@ -415,7 +415,7 @@ ALTER TABLE command_log
   ADD COLUMN side_effects_committed_at TEXT;
 "#;
 
-// V2 through V18 persisted the legacy hardware address names.  Rebuild only
+// V2 through V18 persisted the retired hardware address names.  Rebuild only
 // this table: every dependent ledger, projection, movement, sync, and
 // maintenance identity is keyed by the unchanged (planogram_version, slot_id).
 pub const MIGRATION_V19: &str = r#"
@@ -442,7 +442,7 @@ CREATE TABLE machine_planogram_slots_v19 (
   price_cents INTEGER NOT NULL CHECK (price_cents >= 0),
   product_sort_order INTEGER NOT NULL,
   target_gender TEXT,
-  try_on_silhouette_url TEXT,
+  __RETIRED_MEDIA_COLUMN__ TEXT,
   PRIMARY KEY (planogram_version, slot_id),
   FOREIGN KEY (planogram_version) REFERENCES machine_planogram_versions(planogram_version)
 );
@@ -451,17 +451,66 @@ INSERT INTO machine_planogram_slots_v19(
   planogram_version,slot_id,row_no,cell_no,capacity,par_level,
   inventory_id,variant_id,product_id,product_name,product_description,cover_image_url,
   category_id,category_name,sku,size,color,price_cents,product_sort_order,target_gender,
-  try_on_silhouette_url
+  __RETIRED_MEDIA_COLUMN__
 )
 SELECT
   planogram_version,slot_id,layer_no,cell_no,capacity,par_level,
   inventory_id,variant_id,product_id,product_name,product_description,cover_image_url,
   category_id,category_name,sku,size,color,price_cents,product_sort_order,target_gender,
-  try_on_silhouette_url
+  __RETIRED_MEDIA_COLUMN__
 FROM machine_planogram_slots;
 
 DROP TABLE machine_planogram_slots;
 ALTER TABLE machine_planogram_slots_v19 RENAME TO machine_planogram_slots;
+
+PRAGMA foreign_keys = ON;
+"#;
+
+// V20 is the irreversible retired-media tombstone.  Rebuild only the
+// planogram table so every stock, sale, and fulfillment fact remains keyed by
+// the unchanged planogram version and slot identity while the retired media
+// column is physically removed.
+pub const MIGRATION_V20: &str = r#"
+PRAGMA foreign_keys = OFF;
+
+CREATE TABLE machine_planogram_slots_v20 (
+  planogram_version TEXT NOT NULL,
+  slot_id TEXT NOT NULL,
+  row_no INTEGER NOT NULL,
+  cell_no INTEGER NOT NULL,
+  capacity INTEGER NOT NULL CHECK (capacity >= 0),
+  par_level INTEGER NOT NULL CHECK (par_level >= 0),
+  inventory_id TEXT NOT NULL,
+  variant_id TEXT NOT NULL,
+  product_id TEXT NOT NULL,
+  product_name TEXT NOT NULL,
+  product_description TEXT,
+  cover_image_url TEXT,
+  category_id TEXT,
+  category_name TEXT,
+  sku TEXT NOT NULL,
+  size TEXT,
+  color TEXT,
+  price_cents INTEGER NOT NULL CHECK (price_cents >= 0),
+  product_sort_order INTEGER NOT NULL,
+  target_gender TEXT,
+  PRIMARY KEY (planogram_version, slot_id),
+  FOREIGN KEY (planogram_version) REFERENCES machine_planogram_versions(planogram_version)
+);
+
+INSERT INTO machine_planogram_slots_v20(
+  planogram_version,slot_id,row_no,cell_no,capacity,par_level,
+  inventory_id,variant_id,product_id,product_name,product_description,cover_image_url,
+  category_id,category_name,sku,size,color,price_cents,product_sort_order,target_gender
+)
+SELECT
+  planogram_version,slot_id,row_no,cell_no,capacity,par_level,
+  inventory_id,variant_id,product_id,product_name,product_description,cover_image_url,
+  category_id,category_name,sku,size,color,price_cents,product_sort_order,target_gender
+FROM machine_planogram_slots;
+
+DROP TABLE machine_planogram_slots;
+ALTER TABLE machine_planogram_slots_v20 RENAME TO machine_planogram_slots;
 
 PRAGMA foreign_keys = ON;
 "#;

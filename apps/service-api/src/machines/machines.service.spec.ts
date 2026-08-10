@@ -2377,7 +2377,6 @@ describe("MachinesService planogram lifecycle", () => {
       null,
       null,
     ]);
-    expect(result.every((row) => !("tryOnSilhouetteUrl" in row))).toBe(true);
   });
 
   it("reports no active planogram until an acknowledged version is active", async () => {

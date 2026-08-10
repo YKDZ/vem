@@ -656,7 +656,6 @@ export const machinePlanogramSlots = t.pgTable(
     productName: t.varchar("product_name", { length: 128 }).notNull(),
     productDescription: t.text("product_description"),
     coverImageUrl: t.text("cover_image_url"),
-    tryOnSilhouetteUrl: t.text("try_on_silhouette_url"),
     categoryId: t.uuid("category_id"),
     categoryName: t.varchar("category_name", { length: 128 }),
     sku: t.varchar("sku", { length: 64 }).notNull(),

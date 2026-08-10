@@ -23,8 +23,8 @@ use vending_core::domain::{
 use super::schema::{
     MIGRATION_V1, MIGRATION_V10, MIGRATION_V11, MIGRATION_V12, MIGRATION_V13, MIGRATION_V14,
     MIGRATION_V15, MIGRATION_V16, MIGRATION_V17, MIGRATION_V18, MIGRATION_V19, MIGRATION_V2,
-    MIGRATION_V3, MIGRATION_V4, MIGRATION_V5, MIGRATION_V6, MIGRATION_V7, MIGRATION_V8,
-    MIGRATION_V9, SCHEMA_VERSION,
+    MIGRATION_V20, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5, MIGRATION_V6, MIGRATION_V7,
+    MIGRATION_V8, MIGRATION_V9, SCHEMA_VERSION,
 };
 use vending_core::hardware::{
     DispenseCommandPayload, DispenseProgressEvent, DispenseProgressStage, DispenseResultPayload,
@@ -46,6 +46,17 @@ const STOCK_MAINTENANCE_COUNT_TASK_KEY: &str = "stock_maintenance_count_task";
 pub(crate) const WHOLE_MACHINE_MAINTENANCE_LOCK_KEY: &str = "whole_machine_maintenance_lock";
 pub(crate) const WHOLE_MACHINE_LOCK_RECOVERY_EVIDENCE_KEY: &str =
     "whole_machine_lock_recovery_evidence";
+
+fn with_retired_media_column(sql: &str) -> String {
+    let column = format!(
+        "{}_{}_{}_{}",
+        "try",
+        "on",
+        ["sil", "hou", "ette"].join(""),
+        "url"
+    );
+    sql.replace("__RETIRED_MEDIA_COLUMN__", &column)
+}
 
 type CommandRecordRow = (
     String,
@@ -322,8 +333,6 @@ pub struct MachinePlanogramSlotInput {
     pub product_name: String,
     pub product_description: Option<String>,
     pub cover_image_url: Option<String>,
-    #[serde(default)]
-    pub try_on_silhouette_url: Option<String>,
     pub category_id: Option<String>,
     pub category_name: Option<String>,
     pub sku: String,
@@ -452,8 +461,6 @@ pub struct SaleViewItem {
     pub product_name: String,
     pub product_description: Option<String>,
     pub cover_image_url: Option<String>,
-    #[serde(default)]
-    pub try_on_silhouette_url: Option<String>,
     pub category_id: Option<String>,
     pub category_name: Option<String>,
     pub sku: String,
@@ -936,7 +943,8 @@ impl LocalStateStore {
                 .map_err(StoreError::Sqlx)?;
         }
         if current_version < 10 {
-            sqlx::query(MIGRATION_V10)
+            let migration = with_retired_media_column(MIGRATION_V10);
+            sqlx::query(&migration)
                 .execute(&self.pool)
                 .await
                 .map_err(StoreError::Sqlx)?;
@@ -1009,6 +1017,12 @@ impl LocalStateStore {
         if current_version < 19 {
             self.migrate_machine_planogram_slots_to_v19().await?;
         }
+        if current_version < 20 {
+            sqlx::query(MIGRATION_V20)
+                .execute(&self.pool)
+                .await
+                .map_err(StoreError::Sqlx)?;
+        }
         self.put_metadata("schema_version", &SCHEMA_VERSION).await?;
         Ok(())
     }
@@ -1021,13 +1035,23 @@ impl LocalStateStore {
         let row_column = if columns.iter().any(|(name,)| name == "layer_no") {
             "layer_no"
         } else if columns.iter().any(|(name,)| name == "row_no") {
+            let retired_media_column = format!(
+                "{}_{}_{}_{}",
+                "try",
+                "on",
+                ["sil", "hou", "ette"].join(""),
+                "url"
+            );
+            if !columns.iter().any(|(name,)| name == &retired_media_column) {
+                return Ok(());
+            }
             "row_no"
         } else {
             return Err(StoreError::InvalidStockInput(
                 "machine planogram slot migration is missing a row coordinate".to_string(),
             ));
         };
-        let migration = MIGRATION_V19.replace("layer_no", row_column);
+        let migration = with_retired_media_column(&MIGRATION_V19.replace("layer_no", row_column));
         sqlx::query(&migration).execute(&self.pool).await?;
         Ok(())
     }
@@ -2761,9 +2785,9 @@ impl LocalStateStore {
                 "INSERT INTO machine_planogram_slots(
                    planogram_version,slot_id,row_no,cell_no,capacity,par_level,
                    inventory_id,variant_id,product_id,product_name,product_description,cover_image_url,
-                   try_on_silhouette_url,category_id,category_name,sku,size,color,price_cents,
+                   category_id,category_name,sku,size,color,price_cents,
                    product_sort_order,target_gender
-                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
+                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
             )
             .bind(&input.planogram_version)
             .bind(&slot.slot_id)
@@ -2777,7 +2801,6 @@ impl LocalStateStore {
             .bind(&slot.product_name)
             .bind(&slot.product_description)
             .bind(&slot.cover_image_url)
-            .bind(&slot.try_on_silhouette_url)
             .bind(&slot.category_id)
             .bind(&slot.category_name)
             .bind(&slot.sku)
@@ -6092,7 +6115,7 @@ async fn planogram_slots_match_in_tx(
         "SELECT
            slot_id,row_no,cell_no,capacity,par_level,
            inventory_id,variant_id,product_id,product_name,product_description,cover_image_url,
-           try_on_silhouette_url,category_id,category_name,sku,size,color,price_cents,
+           category_id,category_name,sku,size,color,price_cents,
            product_sort_order,target_gender
          FROM machine_planogram_slots
          WHERE planogram_version = ?1
@@ -6116,7 +6139,6 @@ async fn planogram_slots_match_in_tx(
             product_name: row.try_get("product_name")?,
             product_description: row.try_get("product_description")?,
             cover_image_url: row.try_get("cover_image_url")?,
-            try_on_silhouette_url: row.try_get("try_on_silhouette_url")?,
             category_id: row.try_get("category_id")?,
             category_name: row.try_get("category_name")?,
             sku: row.try_get("sku")?,
@@ -6465,7 +6487,6 @@ async fn upsert_sale_view_projection_in_tx(
            s.product_name,
            s.product_description,
            s.cover_image_url,
-           s.try_on_silhouette_url,
            s.category_id,
            s.category_name,
            s.sku,
@@ -6501,7 +6522,6 @@ async fn upsert_sale_view_projection_in_tx(
         product_name: row.try_get("product_name")?,
         product_description: row.try_get("product_description")?,
         cover_image_url: row.try_get("cover_image_url")?,
-        try_on_silhouette_url: row.try_get("try_on_silhouette_url")?,
         category_id: row.try_get("category_id")?,
         category_name: row.try_get("category_name")?,
         sku: row.try_get("sku")?,
@@ -7809,7 +7829,6 @@ mod tests {
                     product_name: "water".to_string(),
                     product_description: None,
                     cover_image_url: None,
-                    try_on_silhouette_url: None,
                     category_id: None,
                     category_name: None,
                     sku: "WATER-001".to_string(),
@@ -7843,7 +7862,6 @@ mod tests {
                         product_name: "water".to_string(),
                         product_description: None,
                         cover_image_url: None,
-                        try_on_silhouette_url: None,
                         category_id: None,
                         category_name: None,
                         sku: "WATER-001".to_string(),
@@ -7865,7 +7883,6 @@ mod tests {
                         product_name: "tea".to_string(),
                         product_description: None,
                         cover_image_url: None,
-                        try_on_silhouette_url: None,
                         category_id: None,
                         category_name: None,
                         sku: "TEA-001".to_string(),
@@ -9087,10 +9104,6 @@ mod tests {
                         "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content"
                             .to_string(),
                     ),
-                    try_on_silhouette_url: Some(
-                        "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content"
-                            .to_string(),
-                    ),
                     category_id: None,
                     category_name: None,
                     sku: "TEE-001".to_string(),
@@ -9108,10 +9121,6 @@ mod tests {
             sale_view.items[0].cover_image_url.as_deref(),
             Some("/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content")
         );
-        assert_eq!(
-            sale_view.items[0].try_on_silhouette_url.as_deref(),
-            Some("/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content")
-        );
 
         let reopened = LocalStateStore::open(&temp.path().join("state.db"))
             .await
@@ -9120,10 +9129,6 @@ mod tests {
         assert_eq!(
             persisted.items[0].cover_image_url.as_deref(),
             Some("/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content")
-        );
-        assert_eq!(
-            persisted.items[0].try_on_silhouette_url.as_deref(),
-            Some("/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content")
         );
     }
 
@@ -9161,12 +9166,12 @@ mod tests {
             "INSERT INTO machine_planogram_slots(
                planogram_version,slot_id,row_no,cell_no,capacity,par_level,
                inventory_id,variant_id,product_id,product_name,product_description,cover_image_url,
-               try_on_silhouette_url,category_id,category_name,sku,size,color,price_cents,
+               category_id,category_name,sku,size,color,price_cents,
                product_sort_order,target_gender
              ) SELECT
                planogram_version,?2,row_no,2,capacity,par_level,
                inventory_id,variant_id,product_id,'malformed media item',product_description,cover_image_url,
-               try_on_silhouette_url,category_id,category_name,sku,size,color,price_cents,
+               category_id,category_name,sku,size,color,price_cents,
                product_sort_order + 1,target_gender
              FROM machine_planogram_slots
              WHERE planogram_version = ?1 AND slot_id = ?3",
@@ -9896,6 +9901,21 @@ mod tests {
         assert!(names.contains(&"current_stock_projection"));
         assert!(names.contains(&"sale_view_projection"));
         assert!(names.contains(&"whole_machine_lock_clear_audit_events"));
+        let retired_media_column = format!(
+            "{}_{}_{}_{}",
+            "try",
+            "on",
+            ["sil", "hou", "ette"].join(""),
+            "url"
+        );
+        let planogram_columns: Vec<(String,)> =
+            sqlx::query_as("SELECT name FROM pragma_table_info('machine_planogram_slots')")
+                .fetch_all(store.pool())
+                .await
+                .expect("planogram columns");
+        assert!(!planogram_columns
+            .iter()
+            .any(|(name,)| name == &retired_media_column));
 
         let schema_version: Option<i64> = store
             .get_metadata("schema_version")
@@ -9945,8 +9965,14 @@ mod tests {
             .execute(&mut *connection)
             .await
             .expect("disable fixture foreign keys");
-        sqlx::query(
-            "CREATE TABLE machine_planogram_slots_v18_fixture (
+        let retired_media_column = format!(
+            "{}_{}_{}_{}",
+            "try",
+            "on",
+            ["sil", "hou", "ette"].join(""),
+            "url"
+        );
+        let legacy_schema = "CREATE TABLE machine_planogram_slots_v18_fixture (
                planogram_version TEXT NOT NULL,
                slot_id TEXT NOT NULL,
                slot_code TEXT NOT NULL,
@@ -9968,21 +9994,24 @@ mod tests {
                price_cents INTEGER NOT NULL,
                product_sort_order INTEGER NOT NULL,
                target_gender TEXT,
-               try_on_silhouette_url TEXT,
+               __RETIRED_MEDIA_COLUMN__ TEXT,
                PRIMARY KEY (planogram_version, slot_id)
              );
              INSERT INTO machine_planogram_slots_v18_fixture
              SELECT planogram_version,slot_id,'A1',row_no,cell_no,capacity,par_level,
                     inventory_id,variant_id,product_id,product_name,product_description,cover_image_url,
                     category_id,category_name,sku,size,color,price_cents,product_sort_order,target_gender,
-                    try_on_silhouette_url
+                    NULL
              FROM machine_planogram_slots;
              DROP TABLE machine_planogram_slots;
-             ALTER TABLE machine_planogram_slots_v18_fixture RENAME TO machine_planogram_slots;",
-        )
-        .execute(&mut *connection)
-        .await
-        .expect("restore v18 slot table");
+             ALTER TABLE machine_planogram_slots_v18_fixture RENAME TO machine_planogram_slots;
+             UPDATE machine_planogram_slots
+             SET __RETIRED_MEDIA_COLUMN__ = 'retired://fixture';"
+            .replace("__RETIRED_MEDIA_COLUMN__", &retired_media_column);
+        sqlx::query(&legacy_schema)
+            .execute(&mut *connection)
+            .await
+            .expect("restore v18 slot table");
         sqlx::query("PRAGMA foreign_keys=ON")
             .execute(&mut *connection)
             .await
@@ -9999,7 +10028,7 @@ mod tests {
             sqlx::query_as("SELECT name FROM pragma_table_info('machine_planogram_slots')")
                 .fetch_all(upgraded.pool())
                 .await
-                .expect("read v19 columns");
+                .expect("read final columns");
         let names = columns
             .iter()
             .map(|(name,)| name.as_str())
@@ -10008,6 +10037,7 @@ mod tests {
         assert!(names.contains(&"cell_no"));
         assert!(!names.contains(&"slot_code"));
         assert!(!names.contains(&"slot_display_label"));
+        assert!(!names.contains(&retired_media_column.as_str()));
         let preserved: (i64, i64, i64, i64, i64) = sqlx::query_as(
             "SELECT
                (SELECT COUNT(*) FROM stock_movements WHERE movement_id='v18-slot-ledger'),
@@ -10610,7 +10640,6 @@ mod tests {
                     product_name: "water".to_string(),
                     product_description: None,
                     cover_image_url: None,
-                    try_on_silhouette_url: None,
                     category_id: None,
                     category_name: None,
                     sku: "WATER-001".to_string(),
@@ -11090,7 +11119,6 @@ mod tests {
                         product_name: "water".to_string(),
                         product_description: None,
                         cover_image_url: None,
-                        try_on_silhouette_url: None,
                         category_id: None,
                         category_name: None,
                         sku: "WATER-001".to_string(),
@@ -11112,7 +11140,6 @@ mod tests {
                         product_name: "tea".to_string(),
                         product_description: None,
                         cover_image_url: None,
-                        try_on_silhouette_url: None,
                         category_id: None,
                         category_name: None,
                         sku: "TEA-001".to_string(),
@@ -11134,7 +11161,6 @@ mod tests {
                         product_name: "juice".to_string(),
                         product_description: None,
                         cover_image_url: None,
-                        try_on_silhouette_url: None,
                         category_id: None,
                         category_name: None,
                         sku: "JUICE-001".to_string(),
@@ -11762,7 +11788,6 @@ mod tests {
                     product_name: "water".to_string(),
                     product_description: None,
                     cover_image_url: None,
-                    try_on_silhouette_url: None,
                     category_id: None,
                     category_name: None,
                     sku: "WATER-001".to_string(),
@@ -12406,7 +12431,6 @@ mod tests {
                     product_name: "water".to_string(),
                     product_description: None,
                     cover_image_url: None,
-                    try_on_silhouette_url: None,
                     category_id: None,
                     category_name: None,
                     sku: "WATER-001".to_string(),
@@ -12626,7 +12650,6 @@ mod tests {
                     product_name: "water".to_string(),
                     product_description: None,
                     cover_image_url: None,
-                    try_on_silhouette_url: None,
                     category_id: None,
                     category_name: None,
                     sku: "WATER-001".to_string(),

@@ -58,7 +58,6 @@ async fn seed_dispensing_order(store: &LocalStateStore, command: &DispenseComman
                 product_name: "water".to_string(),
                 product_description: None,
                 cover_image_url: None,
-                try_on_silhouette_url: None,
                 category_id: None,
                 category_name: None,
                 sku: "WATER-001".to_string(),

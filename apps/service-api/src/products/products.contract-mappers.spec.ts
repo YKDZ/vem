@@ -49,7 +49,6 @@ describe("Product Variant Catalog admin contract mappers", () => {
       status: "active",
       targetGender: null,
     });
-    expect(insert).not.toHaveProperty("tryOnSilhouetteMediaAssetId");
   });
 
   it("keeps omitted and nullable variant cost distinct for update patches", () => {
