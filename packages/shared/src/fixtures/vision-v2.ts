@@ -232,6 +232,23 @@ export const invalidVisionV2Fixtures = [
       },
     },
   })),
+  ...[
+    ["trailing-line-feed", "\n"],
+    ["trailing-carriage-return", "\r"],
+    ["trailing-tab", "\t"],
+  ].map(([name, suffix]) => ({
+    name: `rejects-token-url-${name}`,
+    message: {
+      ...validVisionV2Fixtures[2],
+      payload: {
+        ...validVisionV2Fixtures[2].payload,
+        garment: {
+          ...fastGarment,
+          reference: `http://127.0.0.1:65000/media/garment?token=source-token${suffix}`,
+        },
+      },
+    },
+  })),
   {
     name: "rejects-extra-fast-payload-property",
     message: {
