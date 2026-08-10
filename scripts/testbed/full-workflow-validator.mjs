@@ -982,18 +982,20 @@ function validateVisionTrack(report, reportPath) {
     tryOnSummary &&
     tryOnSummary.width > 0 &&
     tryOnSummary.height > 0 &&
-    tryOnSummary.silhouetteHttpStatus === 200 &&
-    Number.isInteger(tryOnSummary.silhouetteNaturalWidth) &&
-    tryOnSummary.silhouetteNaturalWidth >= 160 &&
-    Number.isInteger(tryOnSummary.silhouetteNaturalHeight) &&
-    tryOnSummary.silhouetteNaturalHeight >= 160 &&
+    tryOnSummary.contentType === "image/png" &&
+    Number.isInteger(tryOnSummary.byteLength) &&
+    tryOnSummary.byteLength >= 64 &&
+    typeof tryOnSummary.attemptId === "string" &&
+    tryOnSummary.resultUrl?.includes(
+      `/v2/try-on/results/${tryOnSummary.attemptId}`,
+    ) &&
     report.ui?.tryOnSelectedProduct?.variantId === alternate?.variantId &&
     report.ui?.tryOnAttempts?.some((attempt) => attempt?.result === "passed") &&
     visionDown.saleStartStillAvailable === true
       ? passedTrack("tryOn", "try-on", reportPath, {
-          previewWidth: tryOnSummary.width,
-          previewHeight: tryOnSummary.height,
-          silhouetteHttpStatus: tryOnSummary.silhouetteHttpStatus,
+          resultWidth: tryOnSummary.width,
+          resultHeight: tryOnSummary.height,
+          attemptId: tryOnSummary.attemptId,
         })
       : failedTrack(
           "tryOn",

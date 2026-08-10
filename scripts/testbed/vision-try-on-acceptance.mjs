@@ -517,8 +517,18 @@ export function normalizeSeededVisionAcceptance(raw) {
           ),
           sku: optionalString(facts.sku),
           size: optionalString(facts.size),
-          silhouetteAssetId: optionalString(facts.silhouetteAssetId),
-          silhouettePublicUrl: optionalString(facts.silhouettePublicUrl),
+          garmentAssetId: optionalString(
+            facts.garmentAssetId ?? facts.tryOnGarmentAssetId,
+          ),
+          garmentReadyUrl: optionalString(
+            facts.garmentReadyUrl ?? facts.tryOnGarmentReadyUrl,
+          ),
+          garmentDigest: optionalString(
+            facts.garmentDigest ?? facts.tryOnGarmentDigest,
+          ),
+          garmentTemplate: optionalString(
+            facts.garmentTemplate ?? facts.tryOnGarmentTemplate,
+          ),
         };
       })
     : [];
@@ -590,11 +600,11 @@ export function normalizeSeededVisionAcceptance(raw) {
     tryOnCategoryKey: optionalString(input.tryOnCategoryKey),
     selectedCatalogKey: optionalString(input.selectedCatalogKey),
     selectedVariantId: optionalString(input.selectedVariantId),
-    tryOnSilhouetteAssetId: optionalString(
-      input.selectedSilhouetteAssetId ?? input.tryOnSilhouetteAssetId,
+    tryOnGarmentAssetId: optionalString(
+      input.selectedGarmentAssetId ?? input.tryOnGarmentAssetId,
     ),
-    tryOnSilhouettePublicUrl: optionalString(
-      input.selectedSilhouettePublicUrl ?? input.tryOnSilhouettePublicUrl,
+    tryOnGarmentReadyUrl: optionalString(
+      input.selectedGarmentReadyUrl ?? input.tryOnGarmentReadyUrl,
     ),
     recommendationVariants,
     seededTryOnVariants,
@@ -745,7 +755,7 @@ export function normalizeVisionExpectedResults(raw) {
   const tryOn = requiredObject(
     fixture.tryOn ??
       fixture.try_on ??
-      fixture.tryOnPreview ??
+      fixture.fastTryOn ??
       publishedExpected?.front?.tryOn,
     "expected try-on block",
   );
@@ -804,13 +814,9 @@ export function normalizeVisionExpectedResults(raw) {
       ),
     },
     tryOn: {
-      silhouettePathFragment: required(
-        tryOn.silhouettePathFragment ?? "/api/media-assets/",
-        "expected try-on silhouette path fragment",
-      ),
-      previewPathPrefix: required(
-        tryOn.previewPathPrefix ?? "http://127.0.0.1:7892/try-on/",
-        "expected try-on preview path prefix",
+      resultPathPrefix: required(
+        tryOn.resultPathPrefix ?? "http://127.0.0.1:7892/v2/try-on/results/",
+        "expected try-on result path prefix",
       ),
       selectedCatalogKey: optionalString(
         tryOn.selectedCatalogKey ?? recommendation.selectedCatalogKey,
@@ -1225,11 +1231,9 @@ export function validateSizeControlPresentation(state) {
 export function validateTryOnPresentation({
   selectedProduct,
   tryOnState,
-  mjpegEvidence,
+  resultEvidence,
   expectedResults,
   runtimeExpectation = null,
-  silhouetteEvidence = null,
-  installedBinding = null,
 }) {
   const expected = normalizeVisionExpectedResults(expectedResults);
   const runtime = normalizeSeededVisionAcceptance(runtimeExpectation);
@@ -1262,132 +1266,54 @@ export function validateTryOnPresentation({
     throw new Error("try-on route is not bound to the selected catalog item");
   }
   if (
-    typeof tryOnState.previewUrl !== "string" ||
-    !tryOnState.previewUrl.startsWith(expected.tryOn.previewPathPrefix)
+    typeof tryOnState.resultUrl !== "string" ||
+    !tryOnState.resultUrl.startsWith(expected.tryOn.resultPathPrefix)
   ) {
     throw new Error(
-      "try-on preview URL is not bound to the expected loopback session",
+      "try-on result URL is not bound to the expected V2 loopback result endpoint",
     );
   }
   if (
-    typeof tryOnState.silhouetteUrl === "string" &&
-    !tryOnState.silhouetteUrl.includes(expected.tryOn.silhouettePathFragment)
+    !tryOnState.resultUrl.includes(`/v2/try-on/results/${tryOnState.attemptId}`)
   ) {
-    throw new Error(
-      "try-on silhouette URL is not bound to the selected variant",
-    );
+    throw new Error("try-on result URL is not fenced by the active attempt");
   }
-  const hasTryOnSilhouette = typeof tryOnState.silhouetteUrl === "string";
-  const expectedSilhouettePath = seededSelection?.silhouettePublicUrl
-    ? normalizeUrlPath(
-        seededSelection.silhouettePublicUrl,
-        "seeded try-on silhouette publicUrl",
-      )
-    : seededSelection?.silhouetteAssetId
-      ? `/api/media-assets/${seededSelection.silhouetteAssetId}/content`
-      : runtime.tryOnSilhouettePublicUrl
-        ? normalizeUrlPath(
-            runtime.tryOnSilhouettePublicUrl,
-            "seeded try-on silhouette publicUrl",
-          )
-        : runtime.tryOnSilhouetteAssetId
-          ? `/api/media-assets/${runtime.tryOnSilhouetteAssetId}/content`
-          : null;
-  if (!expectedSilhouettePath) {
-    throw new Error(
-      "try-on presentation requires a configured silhouette for the selected variant",
-    );
+  if (tryOnState.acceptedObserved !== true) {
+    throw new Error("try-on did not expose an accepted Fast V2 attempt");
   }
-  if (expectedSilhouettePath && !hasTryOnSilhouette) {
-    throw new Error(
-      "try-on silhouette configured for the selected variant was not rendered",
-    );
+  if (tryOnState.progressObserved !== true) {
+    throw new Error("try-on did not expose Fast V2 progress");
   }
-  if (hasTryOnSilhouette && expectedSilhouettePath) {
-    if (
-      normalizeUrlPath(tryOnState.silhouetteUrl, "try-on silhouetteUrl") !==
-      expectedSilhouettePath
-    ) {
-      throw new Error(
-        "try-on silhouette URL is not bound to the seeded media asset",
-      );
-    }
+  if (tryOnState.completedObserved !== true) {
+    throw new Error("try-on did not complete the Fast V2 attempt");
   }
-  if (hasTryOnSilhouette) {
-    if (
-      !silhouetteEvidence ||
-      silhouetteEvidence.ok !== true ||
-      silhouetteEvidence.httpStatus !== 200 ||
-      !/^image\//i.test(String(silhouetteEvidence.contentType ?? ""))
-    ) {
-      throw new Error(
-        "try-on silhouette did not return a successful image response",
-      );
-    }
+  if (resultEvidence.ok !== true || resultEvidence.httpStatus !== 200) {
+    throw new Error("try-on result image did not return successfully");
   }
-  if (hasTryOnSilhouette) {
-    if (
-      expectedSilhouettePath &&
-      normalizeUrlPath(
-        required(silhouetteEvidence?.finalUrl, "try-on silhouette finalUrl"),
-        "try-on silhouette finalUrl",
-      ) !== expectedSilhouettePath
-    ) {
-      throw new Error(
-        "try-on silhouette redirect finalUrl drifted from the seeded media asset",
-      );
-    }
-    if (
-      tryOnState.silhouetteLoaded !== true ||
-      tryOnState.silhouetteNaturalWidth < 160 ||
-      tryOnState.silhouetteNaturalHeight < 160
-    ) {
-      throw new Error(
-        "try-on silhouette image did not load with usable natural dimensions",
-      );
-    }
+  if (resultEvidence.contentType !== "image/png") {
+    throw new Error("try-on result image must be PNG");
   }
-  if (
-    typeof mjpegEvidence.contentType !== "string" ||
-    !/^multipart\/x-mixed-replace|^image\/jpeg/i.test(mjpegEvidence.contentType)
-  ) {
-    throw new Error("try-on preview did not return MJPEG/JPEG content");
+  if (resultEvidence.byteLength < 64) {
+    throw new Error("try-on result image is too small");
   }
-  if (mjpegEvidence.frameByteLength < 64) {
-    throw new Error("try-on preview did not deliver a decodable frame");
+  if (resultEvidence.width < 160 || resultEvidence.height < 160) {
+    throw new Error("try-on result image dimensions are unusable");
   }
-  if (mjpegEvidence.width < 1 || mjpegEvidence.height < 1) {
-    throw new Error("try-on preview frame did not decode to pixels");
+  if (resultEvidence.nonBlackPixelCount < 8) {
+    throw new Error("try-on result image decoded but remained fully black");
   }
-  if (mjpegEvidence.nonBlackPixelCount < 1) {
-    throw new Error("try-on preview frame decoded but remained fully black");
+  if (tryOnState.returnVisible !== true || tryOnState.retryVisible !== true) {
+    throw new Error("try-on result must expose retry and return actions");
   }
-  const sourceFrame =
-    installedBinding?.frameSourceBinding && mjpegEvidence.sourceFrame?.adapter
-      ? validateSourceFrameEvidence(
-          mjpegEvidence.sourceFrame,
-          "try-on source frame",
-          {
-            role: "front",
-            configSha256: installedBinding.frameSourceBinding.configSha256,
-            fixtureSha256: installedBinding.frameSourceBinding.front.sha256,
-          },
-        )
-      : null;
   return {
-    sessionId: mjpegEvidence.sessionId,
-    contentType: mjpegEvidence.contentType,
-    width: mjpegEvidence.width,
-    height: mjpegEvidence.height,
-    nonBlackPixelCount: mjpegEvidence.nonBlackPixelCount,
-    sourceFrame,
-    silhouetteHttpStatus: silhouetteEvidence?.httpStatus ?? null,
-    silhouetteNaturalWidth: hasTryOnSilhouette
-      ? tryOnState.silhouetteNaturalWidth
-      : null,
-    silhouetteNaturalHeight: hasTryOnSilhouette
-      ? tryOnState.silhouetteNaturalHeight
-      : null,
+    attemptId: tryOnState.attemptId,
+    resultUrl: tryOnState.resultUrl,
+    contentType: resultEvidence.contentType,
+    width: resultEvidence.width,
+    height: resultEvidence.height,
+    byteLength: resultEvidence.byteLength,
+    nonBlackPixelCount: resultEvidence.nonBlackPixelCount,
+    digest: resultEvidence.sha256,
   };
 }
 
@@ -2332,43 +2258,46 @@ async function waitForRecommendationPresentation(
 
 async function waitForTryOnSurface(client, timeoutMs = 60_000) {
   return waitForCondition(
-    "try-on preview surface",
+    "Fast V2 try-on result surface",
     async () => {
       const state = await evaluateExpression(
         client,
         `(() => {
-          const preview = document.querySelector("[data-test='try-on-preview']");
-          const silhouette = document.querySelector("[data-test='try-on-silhouette']");
-          const error = document.querySelector("[data-test='try-on-error']");
+          const view = document.querySelector("[data-test='try-on-view']");
+          const image = document.querySelector("[data-test='try-on-result-image']");
+          const phase = document.querySelector("[data-test='try-on-phase']");
+          const failure = document.querySelector("[data-test='try-on-failure']");
+          const retry = document.querySelector("[data-test='try-on-retry']");
+          const returnButton = document.querySelector("[data-test='try-on-return']");
+          const text = document.body.textContent || "";
           return {
             route: location.hash,
-            previewUrl: preview?.getAttribute("src") ?? null,
-            previewLoaded: preview?.complete === true,
-            previewNaturalWidth: Number(preview?.naturalWidth ?? 0),
-            previewNaturalHeight: Number(preview?.naturalHeight ?? 0),
-            silhouetteUrl: silhouette?.getAttribute("src") ?? null,
-            silhouetteLoaded: silhouette?.complete === true,
-            silhouetteNaturalWidth: Number(silhouette?.naturalWidth ?? 0),
-            silhouetteNaturalHeight: Number(silhouette?.naturalHeight ?? 0),
-            errorText: error?.textContent?.trim() ?? null,
+            catalogKey: view?.dataset?.catalogKey ?? null,
+            variantId: view?.dataset?.variantId ?? null,
+            attemptId: view?.dataset?.attemptId ?? null,
+            phaseText: phase?.textContent?.trim() ?? null,
+            resultUrl: image?.getAttribute("src") ?? null,
+            resultLoaded: image?.complete === true,
+            resultNaturalWidth: Number(image?.naturalWidth ?? 0),
+            resultNaturalHeight: Number(image?.naturalHeight ?? 0),
+            retryVisible: retry instanceof HTMLElement && retry.offsetParent !== null,
+            returnVisible: returnButton instanceof HTMLElement && returnButton.offsetParent !== null,
+            acceptedObserved: text.includes("已接收") || text.includes("快速试衣完成"),
+            progressObserved: text.includes("正在生成") || text.includes("快速试衣完成"),
+            completedObserved: text.includes("快速试衣完成") && !!image,
+            errorText: failure?.textContent?.trim() ?? null,
           };
         })()`,
       );
-      const hasSilhouetteUrl =
-        typeof state?.silhouetteUrl === "string" &&
-        state.silhouetteUrl.length > 0;
       return {
         ok:
-          typeof state?.previewUrl === "string" &&
-          state.previewUrl.startsWith("http://127.0.0.1:7892/try-on/") &&
-          state.previewLoaded === true &&
-          state.previewNaturalWidth > 0 &&
-          state.previewNaturalHeight > 0 &&
-          (!hasSilhouetteUrl ||
-            (state.silhouetteUrl.includes("/api/media-assets/") &&
-              state.silhouetteLoaded === true &&
-              state.silhouetteNaturalWidth > 0 &&
-              state.silhouetteNaturalHeight > 0)) &&
+          typeof state?.resultUrl === "string" &&
+          state.resultUrl.includes("/v2/try-on/results/") &&
+          state.resultLoaded === true &&
+          state.resultNaturalWidth > 0 &&
+          state.resultNaturalHeight > 0 &&
+          state.retryVisible === true &&
+          state.returnVisible === true &&
           !state.errorText,
         value: state,
       };
@@ -2849,12 +2778,12 @@ async function waitForTryOnFailure(client, timeoutMs = 30_000) {
       const state = await evaluateExpression(
         client,
         `(() => {
-          const error = document.querySelector("[data-test='try-on-error']");
-          const preview = document.querySelector("[data-test='try-on-preview']");
+          const error = document.querySelector("[data-test='try-on-failure']");
+          const result = document.querySelector("[data-test='try-on-result-image']");
           return {
             route: location.hash,
             errorText: error?.textContent?.replace(/\\s+/g, " ").trim() ?? null,
-            previewUrl: preview?.getAttribute("src") ?? null,
+            resultUrl: result?.getAttribute("src") ?? null,
           };
         })()`,
       );
@@ -2871,44 +2800,26 @@ async function waitForTryOnFailure(client, timeoutMs = 30_000) {
   );
 }
 
-async function readMjpegFrameEvidence(client, previewUrl, timeoutMs = 30_000) {
+async function readResultImageEvidence(client, resultUrl, timeoutMs = 30_000) {
   return waitForCondition(
-    "decoded MJPEG frame",
+    "decoded Fast V2 result image",
     async () => {
-      let reader;
       const controller = new AbortController();
       const timeout = globalThis.setTimeout(() => controller.abort(), 5_000);
       try {
-        const response = await fetch(previewUrl, { signal: controller.signal });
-        if (!response.ok || !response.body) {
+        const response = await fetch(resultUrl, { signal: controller.signal });
+        const bytes = Buffer.from(await response.arrayBuffer());
+        if (!response.ok) {
           return {
             ok: false,
             value: { ok: false, reason: "http", status: response.status },
           };
         }
-        reader = response.body.getReader();
-        const chunks = [];
-        let total = 0;
-        const markerStart = Buffer.from([0xff, 0xd8]);
-        const markerEnd = Buffer.from([0xff, 0xd9]);
-        while (total < 512 * 1024) {
-          const { done, value } = await reader.read();
-          if (done || !value) break;
-          chunks.push(Buffer.from(value));
-          total += value.byteLength;
-          const merged = Buffer.concat(chunks);
-          const start = merged.indexOf(markerStart);
-          const end =
-            start < 0
-              ? -1
-              : merged.indexOf(markerEnd, start + markerStart.length);
-          if (start < 0 || end < 0) continue;
-          const jpeg = merged.subarray(start, end + markerEnd.length);
-          const decoded = await evaluateExpression(
-            client,
-            `(async () => {
-              const bytes = Uint8Array.from(atob(${JSON.stringify(jpeg.toString("base64"))}), (character) => character.charCodeAt(0));
-              const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/jpeg" }));
+        const decoded = await evaluateExpression(
+          client,
+          `(async () => {
+              const bytes = Uint8Array.from(atob(${JSON.stringify(bytes.toString("base64"))}), (character) => character.charCodeAt(0));
+              const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
               const canvas = document.createElement("canvas");
               canvas.width = bitmap.width;
               canvas.height = bitmap.height;
@@ -2925,44 +2836,21 @@ async function readMjpegFrameEvidence(client, previewUrl, timeoutMs = 30_000) {
               }
               return { ok: true, width: canvas.width, height: canvas.height, nonBlackPixelCount };
             })()`,
-          );
-          const result = {
-            ...decoded,
-            contentType: response.headers.get("content-type"),
-            frameByteLength: jpeg.byteLength,
-            sessionId:
-              previewUrl
-                .split("/")
-                .pop()
-                ?.replace(/\.mjpeg$/i, "") ?? null,
-            sourceFrame: {
-              adapter: response.headers.get("x-vem-frame-source-adapter"),
-              role: response.headers.get("x-vem-frame-source-role"),
-              configSha256: response.headers.get(
-                "x-vem-frame-source-config-sha256",
-              ),
-              fixtureSha256: response.headers.get(
-                "x-vem-frame-source-file-sha256",
-              ),
-              frameIndex: Number(
-                response.headers.get("x-vem-frame-source-frame-index") ?? "-1",
-              ),
-              decodedFrameCount: Number(
-                response.headers.get(
-                  "x-vem-frame-source-decoded-frame-count",
-                ) ?? "0",
-              ),
-              sessionId: response.headers.get("x-vem-frame-source-session-id"),
-            },
-          };
-          return { ok: result.ok === true, value: result };
-        }
-        return { ok: false, value: { ok: false, reason: "no-jpeg" } };
+        );
+        const result = {
+          ...decoded,
+          httpStatus: response.status,
+          contentType:
+            response.headers.get("content-type")?.split(";")[0] ?? null,
+          byteLength: bytes.byteLength,
+          finalUrl: response.url,
+          sha256: createHash("sha256").update(bytes).digest("hex"),
+        };
+        return { ok: result.ok === true, value: result };
       } catch (error) {
         return { ok: false, value: { ok: false, reason: String(error) } };
       } finally {
         globalThis.clearTimeout(timeout);
-        await reader?.cancel().catch(() => undefined);
       }
     },
     timeoutMs,
@@ -3311,9 +3199,9 @@ async function runVisionTryOnAcceptance(options) {
           client,
           `(() => ({
           route: location.hash,
-          errorText: document.querySelector("[data-test='try-on-error']")?.textContent?.trim() ?? null,
-          previewUrl: document.querySelector("[data-test='try-on-preview']")?.getAttribute("src") ?? null,
-          silhouetteUrl: document.querySelector("[data-test='try-on-silhouette']")?.getAttribute("src") ?? null,
+          errorText: document.querySelector("[data-test='try-on-failure']")?.textContent?.trim() ?? null,
+          resultUrl: document.querySelector("[data-test='try-on-result-image']")?.getAttribute("src") ?? null,
+          phaseText: document.querySelector("[data-test='try-on-phase']")?.textContent?.trim() ?? null,
         }))()`,
         );
         tryOnAttempts.push({
@@ -3329,12 +3217,9 @@ async function runVisionTryOnAcceptance(options) {
         }
       }
     }
-    const silhouetteEvidence = tryOnSurface.silhouetteUrl
-      ? await readImageHttpEvidence(tryOnSurface.silhouetteUrl)
-      : null;
-    const mjpegEvidence = await readMjpegFrameEvidence(
+    const resultEvidence = await readResultImageEvidence(
       client,
-      tryOnSurface.previewUrl,
+      tryOnSurface.resultUrl,
     );
     const tryOnSummary = validateTryOnPresentation({
       selectedProduct: {
@@ -3342,14 +3227,12 @@ async function runVisionTryOnAcceptance(options) {
         variantId: manualSelectedProduct.variantId,
       },
       tryOnState: tryOnSurface,
-      mjpegEvidence,
+      resultEvidence,
       expectedResults,
       runtimeExpectation,
-      silhouetteEvidence,
-      installedBinding: installedBindingSummary,
     });
     checkpoints.push(
-      await captureCheckpoint(client, "try-on-preview", {
+      await captureCheckpoint(client, "try-on-fast-result", {
         screenshot: true,
         screenshotSink: sink,
       }),
@@ -3465,7 +3348,7 @@ async function runVisionTryOnAcceptance(options) {
         mediaPresentation,
         tryOnSurface,
         tryOnAttempts,
-        silhouetteEvidence,
+        resultEvidence,
         tryOnSummary,
         degradedProductDetail,
         finalRoute: "#/catalog",

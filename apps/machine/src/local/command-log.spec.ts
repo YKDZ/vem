@@ -226,7 +226,7 @@ describe("command log", () => {
           stage: "device",
           customerMessage: "设备暂不可用，请联系工作人员",
           technical,
-          operation: `try_on.stop_preview.${index}`,
+          operation: `try_on.cancel_attempt.${index}`,
           checkoutAttemptIdempotencyKey: null,
           orderId: null,
           paymentId: null,

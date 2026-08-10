@@ -616,15 +616,15 @@ describe("vision try-on acceptance script", () => {
     assert.equal(normalized.recommendation.selectedVariantId, null);
     assert.equal(normalized.recommendation.orderedCatalogKeys, null);
     assert.equal(
-      normalized.tryOn.previewPathPrefix,
-      "http://127.0.0.1:7892/try-on/",
+      normalized.tryOn.resultPathPrefix,
+      "http://127.0.0.1:7892/v2/try-on/results/",
     );
     assert.deepEqual(
       normalizeSeededVisionAcceptance({
         selectedVariantId: "variant-seeded",
-        tryOnSilhouetteAssetId: "550e8400-e29b-41d4-a716-446655440125",
-        tryOnSilhouettePublicUrl:
-          "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+        tryOnGarmentAssetId: "550e8400-e29b-41d4-a716-446655440125",
+        tryOnGarmentReadyUrl:
+          "http://127.0.0.1:26849/media/sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?grant=garment",
         recommendationVariants: [],
         seededTryOnVariants: [
           {
@@ -633,9 +633,11 @@ describe("vision try-on acceptance script", () => {
             variantId: "variant-seeded",
             sku: "TSC-LOCAL-031",
             size: "M",
-            silhouetteAssetId: "550e8400-e29b-41d4-a716-446655440125",
-            silhouettePublicUrl:
-              "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+            garmentAssetId: "550e8400-e29b-41d4-a716-446655440125",
+            garmentReadyUrl:
+              "http://127.0.0.1:26849/media/sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?grant=garment",
+            garmentDigest: null,
+            garmentTemplate: null,
           },
         ],
       }),
@@ -643,9 +645,9 @@ describe("vision try-on acceptance script", () => {
         tryOnCategoryKey: null,
         selectedCatalogKey: null,
         selectedVariantId: "variant-seeded",
-        tryOnSilhouetteAssetId: "550e8400-e29b-41d4-a716-446655440125",
-        tryOnSilhouettePublicUrl:
-          "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+        tryOnGarmentAssetId: "550e8400-e29b-41d4-a716-446655440125",
+        tryOnGarmentReadyUrl:
+          "http://127.0.0.1:26849/media/sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?grant=garment",
         recommendationVariants: [],
         seededTryOnVariants: [
           {
@@ -654,9 +656,11 @@ describe("vision try-on acceptance script", () => {
             variantId: "variant-seeded",
             sku: "TSC-LOCAL-031",
             size: "M",
-            silhouetteAssetId: "550e8400-e29b-41d4-a716-446655440125",
-            silhouettePublicUrl:
-              "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+            garmentAssetId: "550e8400-e29b-41d4-a716-446655440125",
+            garmentReadyUrl:
+              "http://127.0.0.1:26849/media/sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?grant=garment",
+            garmentDigest: null,
+            garmentTemplate: null,
           },
         ],
         productMedia: [],
@@ -1526,57 +1530,60 @@ describe("vision try-on acceptance script", () => {
     assert.equal(summary.selectedVariantId, "variant-regular");
   });
 
-  it("requires decodable try-on pixels without requiring transport-specific frame headers", () => {
+  function completedTryOnState(attemptId, variantId = "variant-l") {
+    return {
+      route: `#/products/product:L/try-on?variantId=${variantId}`,
+      attemptId,
+      acceptedObserved: true,
+      progressObserved: true,
+      completedObserved: true,
+      resultUrl: `http://127.0.0.1:7892/v2/try-on/results/${attemptId}?token=result-token`,
+      retryVisible: true,
+      returnVisible: true,
+    };
+  }
+
+  function resultEvidence(overrides = {}) {
+    return {
+      ok: true,
+      httpStatus: 200,
+      contentType: "image/png",
+      byteLength: 2048,
+      width: 512,
+      height: 768,
+      nonBlackPixelCount: 12,
+      sha256: "f".repeat(64),
+      ...overrides,
+    };
+  }
+
+  it("requires decodable Fast V2 try-on result pixels and result controls", () => {
     const summary = validateTryOnPresentation({
       selectedProduct: {
         catalogKey: "product:L",
         variantId: "variant-l",
       },
-      tryOnState: {
-        route: "#/products/product:L/try-on?variantId=variant-l",
-        previewUrl: "http://127.0.0.1:7892/try-on/try-on-session-001.mjpeg",
-        silhouetteUrl:
-          "http://127.0.0.1:26849/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
-        silhouetteLoaded: true,
-        silhouetteNaturalWidth: 640,
-        silhouetteNaturalHeight: 1280,
-      },
-      mjpegEvidence: {
-        contentType: "multipart/x-mixed-replace; boundary=frame",
-        frameByteLength: 2048,
-        width: 640,
-        height: 480,
-        nonBlackPixelCount: 12,
-        sessionId: "try-on-session-001",
-      },
-      silhouetteEvidence: {
-        ok: true,
-        httpStatus: 200,
-        contentType: "image/png",
-        finalUrl:
-          "http://127.0.0.1:26849/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
-      },
+      tryOnState: completedTryOnState("attempt-001"),
+      resultEvidence: resultEvidence(),
       expectedResults: baseExpectedResults(),
-      installedBinding: { frameSourceBinding: frameSourceBinding() },
       runtimeExpectation: {
         selectedVariantId: "variant-l",
-        tryOnSilhouetteAssetId: "550e8400-e29b-41d4-a716-446655440125",
-        tryOnSilhouettePublicUrl:
-          "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+        tryOnGarmentAssetId: "550e8400-e29b-41d4-a716-446655440125",
+        tryOnGarmentReadyUrl:
+          "http://127.0.0.1:26849/media/sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?grant=garment",
         seededTryOnVariants: [
           {
             productId: "L",
             variantId: "variant-l",
-            silhouetteAssetId: "550e8400-e29b-41d4-a716-446655440125",
-            silhouettePublicUrl:
-              "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+            garmentAssetId: "550e8400-e29b-41d4-a716-446655440125",
+            garmentReadyUrl:
+              "http://127.0.0.1:26849/media/sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?grant=garment",
           },
         ],
       },
     });
-    assert.equal(summary.sessionId, "try-on-session-001");
+    assert.equal(summary.attemptId, "attempt-001");
     assert.equal(summary.nonBlackPixelCount, 12);
-    assert.equal(summary.sourceFrame, null);
     assert.throws(
       () =>
         validateTryOnPresentation({
@@ -1584,45 +1591,15 @@ describe("vision try-on acceptance script", () => {
             catalogKey: "product:L",
             variantId: "variant-l",
           },
-          tryOnState: {
-            route: "#/products/product:L/try-on?variantId=variant-l",
-            previewUrl: "http://127.0.0.1:7892/try-on/try-on-session-001.mjpeg",
-            silhouetteUrl:
-              "http://127.0.0.1:26849/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
-            silhouetteLoaded: true,
-            silhouetteNaturalWidth: 640,
-            silhouetteNaturalHeight: 1280,
-          },
-          mjpegEvidence: {
-            contentType: "multipart/x-mixed-replace; boundary=frame",
-            frameByteLength: 512,
-            width: 640,
-            height: 480,
-            nonBlackPixelCount: 0,
-            sessionId: "try-on-session-001",
-            sourceFrame: sourceFrame("front", "c".repeat(64), {
-              frameIndex: 10,
-              decodedFrameCount: 11,
-              sessionId: "try-on-session-001",
-            }),
-          },
-          silhouetteEvidence: {
-            ok: true,
-            httpStatus: 200,
-            contentType: "image/png",
-            finalUrl:
-              "http://127.0.0.1:26849/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
-          },
+          tryOnState: completedTryOnState("attempt-002"),
+          resultEvidence: resultEvidence({ nonBlackPixelCount: 0 }),
           expectedResults: baseExpectedResults(),
-          installedBinding: { frameSourceBinding: frameSourceBinding() },
           runtimeExpectation: {
             selectedVariantId: "variant-l",
-            tryOnSilhouetteAssetId: "550e8400-e29b-41d4-a716-446655440125",
             seededTryOnVariants: [
               {
                 productId: "L",
                 variantId: "variant-l",
-                silhouetteAssetId: "550e8400-e29b-41d4-a716-446655440125",
               },
             ],
           },
@@ -1637,48 +1614,22 @@ describe("vision try-on acceptance script", () => {
             variantId: "variant-l",
           },
           tryOnState: {
-            route: "#/products/product:L/try-on?variantId=variant-l",
-            previewUrl: "http://127.0.0.1:7892/try-on/try-on-session-001.mjpeg",
-            silhouetteUrl:
-              "http://127.0.0.1:26849/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
-            silhouetteLoaded: true,
-            silhouetteNaturalWidth: 640,
-            silhouetteNaturalHeight: 1280,
+            ...completedTryOnState("attempt-003"),
+            resultUrl:
+              "http://127.0.0.1:7892/v2/try-on/results/other-attempt?token=result-token",
           },
-          mjpegEvidence: {
-            contentType: "multipart/x-mixed-replace; boundary=frame",
-            frameByteLength: 512,
-            width: 640,
-            height: 480,
-            nonBlackPixelCount: 12,
-            sessionId: "try-on-session-001",
-            sourceFrame: sourceFrame("front", "c".repeat(64), {
-              frameIndex: 10,
-              decodedFrameCount: 11,
-              sessionId: "try-on-session-001",
-            }),
-          },
-          silhouetteEvidence: {
-            ok: true,
-            httpStatus: 200,
-            contentType: "image/png",
-            finalUrl:
-              "http://127.0.0.1:26849/api/media-assets/DIFFERENT/content",
-          },
+          resultEvidence: resultEvidence(),
           expectedResults: baseExpectedResults(),
-          installedBinding: { frameSourceBinding: frameSourceBinding() },
           runtimeExpectation: {
             seededTryOnVariants: [
               {
                 productId: "L",
                 variantId: "variant-l",
-                silhouettePublicUrl:
-                  "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
               },
             ],
           },
         }),
-      /redirect finalUrl drifted/,
+      /active attempt/,
     );
   });
 
@@ -1689,58 +1640,31 @@ describe("vision try-on acceptance script", () => {
         variantId: "variant-m",
       },
       tryOnState: {
+        ...completedTryOnState("attempt-004", "variant-m"),
         route: "#/products/product:tee/try-on?variantId=variant-m",
-        previewUrl: "http://127.0.0.1:7892/try-on/try-on-session-002.mjpeg",
-        silhouetteUrl:
-          "http://127.0.0.1:26849/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
-        silhouetteLoaded: true,
-        silhouetteNaturalWidth: 640,
-        silhouetteNaturalHeight: 1280,
       },
-      mjpegEvidence: {
-        contentType: "multipart/x-mixed-replace; boundary=frame",
-        frameByteLength: 2048,
-        width: 640,
-        height: 480,
-        nonBlackPixelCount: 12,
-        sessionId: "try-on-session-002",
-        sourceFrame: sourceFrame("front", "c".repeat(64), {
-          sessionId: "vision-runtime-internal-session",
-        }),
-      },
-      silhouetteEvidence: {
-        ok: true,
-        httpStatus: 200,
-        contentType: "image/png",
-        finalUrl:
-          "http://127.0.0.1:26849/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
-      },
+      resultEvidence: resultEvidence(),
       expectedResults: baseExpectedResults(),
-      installedBinding: { frameSourceBinding: frameSourceBinding() },
       runtimeExpectation: {
         selectedVariantId: "variant-s",
         seededTryOnVariants: [
           {
             productId: "tee",
             variantId: "variant-s",
-            silhouetteAssetId: "550e8400-e29b-41d4-a716-446655440125",
-            silhouettePublicUrl:
-              "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+            garmentAssetId: "550e8400-e29b-41d4-a716-446655440125",
           },
           {
             productId: "tee",
             variantId: "variant-m",
-            silhouetteAssetId: "550e8400-e29b-41d4-a716-446655440125",
-            silhouettePublicUrl:
-              "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+            garmentAssetId: "550e8400-e29b-41d4-a716-446655440125",
           },
         ],
       },
     });
-    assert.equal(summary.sessionId, "try-on-session-002");
+    assert.equal(summary.attemptId, "attempt-004");
   });
 
-  it("rejects preview-only try-on when the selected variant has no silhouette", () => {
+  it("rejects incomplete Fast V2 attempts before result rendering", () => {
     assert.throws(
       () =>
         validateTryOnPresentation({
@@ -1750,27 +1674,17 @@ describe("vision try-on acceptance script", () => {
           },
           tryOnState: {
             route: "#/products/product:L/try-on?variantId=variant-l",
-            previewUrl: "http://127.0.0.1:7892/try-on/try-on-session-001.mjpeg",
-            silhouetteUrl: null,
-            silhouetteLoaded: false,
-            silhouetteNaturalWidth: 0,
-            silhouetteNaturalHeight: 0,
+            attemptId: "attempt-005",
+            resultUrl:
+              "http://127.0.0.1:7892/v2/try-on/results/attempt-005?token=result-token",
+            acceptedObserved: true,
+            progressObserved: false,
+            completedObserved: false,
+            retryVisible: false,
+            returnVisible: true,
           },
-          mjpegEvidence: {
-            contentType: "multipart/x-mixed-replace; boundary=frame",
-            frameByteLength: 2048,
-            width: 640,
-            height: 480,
-            nonBlackPixelCount: 12,
-            sessionId: "try-on-session-001",
-            sourceFrame: sourceFrame("front", "c".repeat(64), {
-              frameIndex: 15,
-              decodedFrameCount: 16,
-              sessionId: "try-on-session-001",
-            }),
-          },
+          resultEvidence: resultEvidence(),
           expectedResults: baseExpectedResults(),
-          installedBinding: { frameSourceBinding: frameSourceBinding() },
           runtimeExpectation: {
             selectedVariantId: "variant-l",
             seededTryOnVariants: [
@@ -1781,11 +1695,11 @@ describe("vision try-on acceptance script", () => {
             ],
           },
         }),
-      /requires a configured silhouette/,
+      /Fast V2 progress/,
     );
   });
 
-  it("rejects preview-only try-on when the selected variant configures a silhouette", () => {
+  it("rejects result pages without retry and return actions", () => {
     assert.throws(
       () =>
         validateTryOnPresentation({
@@ -1794,40 +1708,22 @@ describe("vision try-on acceptance script", () => {
             variantId: "variant-l",
           },
           tryOnState: {
-            route: "#/products/product:L/try-on?variantId=variant-l",
-            previewUrl: "http://127.0.0.1:7892/try-on/try-on-session-001.mjpeg",
-            silhouetteUrl: null,
-            silhouetteLoaded: false,
-            silhouetteNaturalWidth: 0,
-            silhouetteNaturalHeight: 0,
+            ...completedTryOnState("attempt-006"),
+            retryVisible: false,
           },
-          mjpegEvidence: {
-            contentType: "multipart/x-mixed-replace; boundary=frame",
-            frameByteLength: 2048,
-            width: 640,
-            height: 480,
-            nonBlackPixelCount: 12,
-            sessionId: "try-on-session-001",
-            sourceFrame: sourceFrame("front", "c".repeat(64), {
-              frameIndex: 15,
-              decodedFrameCount: 16,
-              sessionId: "try-on-session-001",
-            }),
-          },
+          resultEvidence: resultEvidence(),
           expectedResults: baseExpectedResults(),
-          installedBinding: { frameSourceBinding: frameSourceBinding() },
           runtimeExpectation: {
             selectedVariantId: "variant-l",
             seededTryOnVariants: [
               {
                 productId: "L",
                 variantId: "variant-l",
-                silhouetteAssetId: "550e8400-e29b-41d4-a716-446655440125",
               },
             ],
           },
         }),
-      /configured for the selected variant was not rendered/,
+      /retry and return/,
     );
   });
 

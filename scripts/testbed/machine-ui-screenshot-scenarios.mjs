@@ -24,7 +24,10 @@ export const MACHINE_UI_SCREENSHOT_SCENARIOS = Object.freeze(
     ["boot", "#/boot"],
     ["catalog", "#/catalog"],
     ["product-detail", "#/products/test-item"],
-    ["virtual-try-on", "#/products/test-item/try-on"],
+    [
+      "virtual-try-on-result",
+      "#/products/test-item/try-on?variantId=test-variant",
+    ],
     ["checkout", "#/checkout"],
     ["payment", "#/payment"],
     ["dispensing", "#/dispensing"],

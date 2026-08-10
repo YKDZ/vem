@@ -93,11 +93,13 @@ function visionExperienceReport() {
       },
       tryOnSelectedProduct: { variantId: "variant-m" },
       tryOnSummary: {
+        attemptId: "attempt-fast-1",
+        resultUrl:
+          "http://127.0.0.1:7892/v2/try-on/results/attempt-fast-1?token=result-token",
+        contentType: "image/png",
+        byteLength: 2048,
         width: 640,
         height: 480,
-        silhouetteHttpStatus: 200,
-        silhouetteNaturalWidth: 320,
-        silhouetteNaturalHeight: 420,
       },
       tryOnAttempts: [{ result: "passed" }],
       mediaPresentation: {
@@ -1205,12 +1207,13 @@ describe("full workflow aggregate validator", () => {
     );
     assert.equal(complete.status, "passed");
 
-    const retiredV1 = visionExperienceReport();
-    retiredV1.health.vision.protocolSummary.protocol = "vem.vision.v1";
+    const unsupportedProtocol = visionExperienceReport();
+    unsupportedProtocol.health.vision.protocolSummary.protocol =
+      "vem.vision.unsupported";
     assert.equal(
       validateBusinessCheckReport(
         descriptor("visionExperience"),
-        retiredV1,
+        unsupportedProtocol,
         "vision-experience.json",
       ).status,
       "failed",
