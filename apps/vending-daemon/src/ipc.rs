@@ -15,7 +15,7 @@ use axum::{
     body::Body,
     extract::{
         ws::{Message, WebSocket},
-        Path as AxumPath, Query, State, WebSocketUpgrade,
+        Path as AxumPath, Query, RawQuery, State, WebSocketUpgrade,
     },
     http::{
         header::{AUTHORIZATION, CONTENT_DISPOSITION, CONTENT_TYPE},
@@ -641,9 +641,14 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .with_state(ctx)
 }
 
-#[derive(Debug, serde::Deserialize)]
-struct MediaReadQuery {
-    grant: Option<String>,
+fn parse_exact_media_grant(raw_query: Option<String>) -> Option<String> {
+    let raw = raw_query?;
+    let value = raw.strip_prefix("grant=")?;
+    if !value.is_empty() && !value.contains('&') {
+        Some(value.to_string())
+    } else {
+        None
+    }
 }
 
 /// Keeping the lease inside the streaming reader makes cleanup wait for the
@@ -666,9 +671,15 @@ impl tokio::io::AsyncRead for LeasedMediaReader {
 async fn media_get(
     State(ctx): State<IpcContext>,
     AxumPath(digest): AxumPath<String>,
-    Query(query): Query<MediaReadQuery>,
+    RawQuery(raw_query): RawQuery,
 ) -> impl IntoResponse {
-    serve_media(ctx.media_cache, digest, query.grant, MediaReadMethod::Get).await
+    serve_media(
+        ctx.media_cache,
+        digest,
+        parse_exact_media_grant(raw_query),
+        MediaReadMethod::Get,
+    )
+    .await
 }
 
 async fn media_snapshot(State(ctx): State<IpcContext>, headers: HeaderMap) -> impl IntoResponse {
@@ -688,9 +699,15 @@ async fn media_snapshot(State(ctx): State<IpcContext>, headers: HeaderMap) -> im
 async fn media_head(
     State(ctx): State<IpcContext>,
     AxumPath(digest): AxumPath<String>,
-    Query(query): Query<MediaReadQuery>,
+    RawQuery(raw_query): RawQuery,
 ) -> impl IntoResponse {
-    serve_media(ctx.media_cache, digest, query.grant, MediaReadMethod::Head).await
+    serve_media(
+        ctx.media_cache,
+        digest,
+        parse_exact_media_grant(raw_query),
+        MediaReadMethod::Head,
+    )
+    .await
 }
 
 async fn serve_media(
@@ -4100,6 +4117,22 @@ mod tests {
             .await,
             StatusCode::FORBIDDEN
         );
+        for malformed_grant_query in [
+            format!("/media/{}?grant={grant}&extra=true", descriptor.digest),
+            format!("/media/{}?grant={grant}&grant=second", descriptor.digest),
+            format!("/media/{}?extra=true&grant={grant}", descriptor.digest),
+            format!("/media/{}?grant=", descriptor.digest),
+        ] {
+            assert_eq!(
+                status("GET".to_string(), malformed_grant_query.clone()).await,
+                StatusCode::FORBIDDEN,
+                "{malformed_grant_query} must not authorize media"
+            );
+            assert_eq!(
+                status("HEAD".to_string(), malformed_grant_query).await,
+                StatusCode::FORBIDDEN
+            );
+        }
         assert_eq!(
             status(
                 "GET".to_string(),
