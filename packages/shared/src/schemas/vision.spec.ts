@@ -11,7 +11,6 @@ import {
   visionProfileResultMessageSchema,
   visionServerMessageSchema,
   visionClientMessageSchema,
-  visionTryOnStartedMessageSchema,
 } from "./vision";
 import {
   VISION_V2_BUNDLE_SCHEMA_VERSION,
@@ -70,95 +69,6 @@ describe("vision protocol schemas", () => {
     expect(message.type).toBe("vision.hello");
     expect(message.payload.capabilities).toContain("profile_push");
     expect(message.payload.capabilities).toContain("person_departed");
-  });
-
-  it("parses try-on session control messages", () => {
-    const start = visionClientMessageSchema.parse({
-      ...BASE_ENVELOPE,
-      type: "vision.try_on.start",
-      payload: {
-        sessionId: "try-on-session-001",
-        catalogKey: "catalog-001",
-        variantId: "variant-001",
-      },
-    });
-    const stop = visionClientMessageSchema.parse({
-      ...BASE_ENVELOPE,
-      type: "vision.try_on.stop",
-      payload: {
-        sessionId: "try-on-session-001",
-        reason: "user_exit",
-      },
-    });
-
-    expect(start.type).toBe("vision.try_on.start");
-    expect(stop.type).toBe("vision.try_on.stop");
-  });
-
-  it("parses a try-on started message with an MJPEG preview URL", () => {
-    const message = visionTryOnStartedMessageSchema.parse({
-      ...BASE_ENVELOPE,
-      type: "vision.try_on.started",
-      payload: {
-        sessionId: "try-on-session-001",
-        previewUrl: "http://127.0.0.1:7892/try-on/session-001.mjpeg",
-        streamType: "mjpeg",
-        sourceFrame: {
-          adapter: "recorded_video",
-          role: "front",
-          configSha256: "a".repeat(64),
-          fixtureSha256: "b".repeat(64),
-          frameIndex: 18,
-          decodedFrameCount: 19,
-          synthetic: false,
-          relabeled: false,
-          sessionId: "try-on-session-001",
-        },
-      },
-    });
-
-    expect(message.type).toBe("vision.try_on.started");
-    expect(message.payload.streamType).toBe("mjpeg");
-    expect(message.payload.sourceFrame?.decodedFrameCount).toBe(19);
-  });
-
-  it("accepts only the fixed local Vision loopback preview origin", () => {
-    for (const previewUrl of [
-      "http://127.0.0.1:7892/try-on/session.mjpeg",
-      "http://localhost:7892/try-on/session.mjpeg",
-      "http://[::1]:7892/try-on/session.mjpeg",
-    ]) {
-      expect(() =>
-        visionTryOnStartedMessageSchema.parse({
-          ...BASE_ENVELOPE,
-          type: "vision.try_on.started",
-          payload: {
-            sessionId: "try-on-session-001",
-            previewUrl,
-            streamType: "mjpeg",
-          },
-        }),
-      ).not.toThrow();
-    }
-
-    for (const previewUrl of [
-      "https://vision.example/try-on/session.mjpeg",
-      "http://127.0.0.1:8080/try-on/session.mjpeg",
-      "https://127.0.0.1:7892/try-on/session.mjpeg",
-      "http://user@127.0.0.1:7892/try-on/session.mjpeg",
-    ]) {
-      expect(() =>
-        visionTryOnStartedMessageSchema.parse({
-          ...BASE_ENVELOPE,
-          type: "vision.try_on.started",
-          payload: {
-            sessionId: "try-on-session-001",
-            previewUrl,
-            streamType: "mjpeg",
-          },
-        }),
-      ).toThrow();
-    }
   });
 
   it("parses a pushed profile result", () => {

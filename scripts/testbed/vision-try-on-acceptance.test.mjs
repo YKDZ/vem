@@ -304,7 +304,7 @@ describe("vision try-on acceptance script", () => {
     });
     assert.deepEqual(config.cameras.front, {
       source: "recorded_video",
-      role: "profile_tryon",
+      role: "profile_fast_try_on",
       video_path: "recorded-video/front.mp4",
     });
   });
@@ -1886,7 +1886,7 @@ describe("vision try-on acceptance script", () => {
           },
           front: {
             source: "recorded_video",
-            role: "profile_tryon",
+            role: "profile_fast_try_on",
             video_path: frameSourceBinding().front.path,
           },
         },
@@ -1966,7 +1966,7 @@ describe("vision try-on acceptance script", () => {
               },
               front: {
                 source: "recorded_video",
-                role: "profile_tryon",
+                role: "profile_fast_try_on",
                 video_path: frameSourceBinding().front.path,
               },
             },

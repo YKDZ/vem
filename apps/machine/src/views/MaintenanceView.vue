@@ -16,10 +16,6 @@ import { daemonClient, isDaemonTransportFailure } from "@/daemon/client";
 import { WHOLE_MACHINE_LOCKED_BLOCKER_CODE } from "@/daemon/schemas";
 import { listCustomerErrorEvidence } from "@/local/command-log";
 import { installMaintenanceSystemTouchKeyboard } from "@/native/system-touch-keyboard";
-import {
-  openVisionTryOnSession,
-  type VisionTryOnSession,
-} from "@/native/vision";
 import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { requestMachineAudioTestPlayback } from "@/runtime/machine-runtime";
 import { useCatalogStore } from "@/stores/catalog";
@@ -233,16 +229,6 @@ const audioPreferenceMutation = reactive({
   message: null as string | null,
 });
 
-const tryOnPreviewDiagnostic = reactive({
-  loading: false,
-  message: null as string | null,
-  previewUrl: null as string | null,
-  sessionId: null as string | null,
-  streamType: null as string | null,
-});
-let tryOnPreviewDiagnosticSession: VisionTryOnSession | null = null;
-let maintenanceViewMounted = false;
-let tryOnPreviewDiagnosticSequence = 0;
 
 async function reloadEffectiveRuntimeConfiguration(): Promise<void> {
   await machineStore.loadEffectiveRuntimeConfiguration();
@@ -475,7 +461,6 @@ function boundDiagnosticString(
 }
 
 onMounted(async () => {
-  maintenanceViewMounted = true;
   if (maintenanceRoot.value) {
     removeSystemTouchKeyboard = installMaintenanceSystemTouchKeyboard(
       maintenanceRoot.value,
@@ -511,11 +496,9 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
-  maintenanceViewMounted = false;
   removeSystemTouchKeyboard?.();
   removeSystemTouchKeyboard = null;
   stopDiagnosticsAutoRefresh();
-  void stopTryOnPreviewDiagnostic();
 });
 
 const diagnostics = reactive({
@@ -627,11 +610,6 @@ async function runManualDispenseDiagnostic(): Promise<void> {
     manualDispenseDiagnostic.loading = false;
   }
 }
-
-const visionMaintenance = reactive({
-  loading: false,
-  message: null as string | null,
-});
 
 type LocalEnvironmentControlAction =
   | "airConditionerOn"
@@ -857,69 +835,6 @@ async function playMachineAudioTestPlayback(): Promise<void> {
   }
 }
 
-async function stopTryOnPreviewDiagnostic(): Promise<void> {
-  tryOnPreviewDiagnosticSequence += 1;
-  const session = tryOnPreviewDiagnosticSession;
-  tryOnPreviewDiagnosticSession = null;
-  tryOnPreviewDiagnostic.loading = false;
-  tryOnPreviewDiagnostic.previewUrl = null;
-  tryOnPreviewDiagnostic.sessionId = null;
-  tryOnPreviewDiagnostic.streamType = null;
-  if (!session) {
-    return;
-  }
-  try {
-    await session.stop();
-    if (maintenanceViewMounted) {
-      tryOnPreviewDiagnostic.message = "试衣预览诊断已释放。";
-    }
-  } catch (error) {
-    if (maintenanceViewMounted) {
-      tryOnPreviewDiagnostic.message = operatorErrorMessage(
-        "试衣预览未能释放，请检查视觉服务。",
-        error,
-      );
-    }
-  }
-}
-
-async function startTryOnPreviewDiagnostic(): Promise<void> {
-  if (tryOnPreviewDiagnostic.loading) return;
-  await stopTryOnPreviewDiagnostic();
-  tryOnPreviewDiagnosticSequence += 1;
-  const sequence = tryOnPreviewDiagnosticSequence;
-  tryOnPreviewDiagnostic.loading = true;
-  tryOnPreviewDiagnostic.message = null;
-  try {
-    const session = await openVisionTryOnSession({
-      machineCode: machineStore.machineCode,
-    });
-    if (
-      !maintenanceViewMounted ||
-      sequence !== tryOnPreviewDiagnosticSequence
-    ) {
-      await session.stop("replaced");
-      return;
-    }
-    tryOnPreviewDiagnosticSession = session;
-    tryOnPreviewDiagnostic.previewUrl = session.previewUrl;
-    tryOnPreviewDiagnostic.sessionId = session.sessionId;
-    tryOnPreviewDiagnostic.streamType = session.streamType;
-    tryOnPreviewDiagnostic.message = "试衣预览诊断已启动。";
-  } catch (error) {
-    if (maintenanceViewMounted && sequence === tryOnPreviewDiagnosticSequence) {
-      tryOnPreviewDiagnostic.message = operatorErrorMessage(
-        "试衣预览未能启动，请检查视觉服务。",
-        error,
-      );
-    }
-  } finally {
-    if (sequence === tryOnPreviewDiagnosticSequence) {
-      tryOnPreviewDiagnostic.loading = false;
-    }
-  }
-}
-
 async function runHardwareCheck(): Promise<void> {
   hardwareMaintenance.loading = true;
   hardwareMaintenance.message = null;
@@ -959,24 +874,6 @@ async function runHardwareCheck(): Promise<void> {
     );
   } finally {
     hardwareMaintenance.loading = false;
-  }
-}
-
-async function refreshVisionStatus(): Promise<void> {
-  visionMaintenance.loading = true;
-  visionMaintenance.message = null;
-  try {
-    await visionStore.refresh();
-    visionMaintenance.message = visionStore.online
-      ? `视觉模块在线：${visionStore.message}`
-      : `视觉模块不可用：${visionStore.message}`;
-  } catch (error) {
-    visionMaintenance.message = operatorErrorMessage(
-      "视觉状态未刷新，请检查视觉服务后重试。",
-      error,
-    );
-  } finally {
-    visionMaintenance.loading = false;
   }
 }
 
@@ -1646,79 +1543,6 @@ async function submitStockMaintenanceTask(): Promise<void> {
         >
           <VisionCameraMaintenancePanel />
         </div>
-
-        <section
-          v-show="activeTask === 'experience'"
-          class="maintenance-panel"
-          aria-label="视觉试衣预览诊断"
-        >
-          <div class="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <p class="font-semibold text-sky-100">视觉试衣预览诊断</p>
-              <p class="mt-1 text-sm text-slate-300">
-                直接验证本机视觉服务的临时预览会话。
-              </p>
-            </div>
-            <div class="flex flex-wrap gap-3">
-              <button
-                type="button"
-                :disabled="visionMaintenance.loading"
-                @click="refreshVisionStatus"
-              >
-                {{ visionMaintenance.loading ? "刷新中" : "刷新视觉状态" }}
-              </button>
-              <button
-                class="kiosk-touch-target rounded-xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100 disabled:opacity-50"
-                type="button"
-                :disabled="tryOnPreviewDiagnostic.loading"
-                @click="startTryOnPreviewDiagnostic"
-              >
-                {{ tryOnPreviewDiagnostic.loading ? "启动中" : "启动试衣预览" }}
-              </button>
-              <button
-                v-if="tryOnPreviewDiagnostic.previewUrl"
-                class="kiosk-touch-target rounded-xl border border-rose-200/30 px-4 py-3 font-bold text-rose-100"
-                type="button"
-                @click="stopTryOnPreviewDiagnostic"
-              >
-                释放试衣预览
-              </button>
-            </div>
-          </div>
-          <p
-            v-if="tryOnPreviewDiagnostic.message"
-            class="mt-3 text-sm text-sky-100"
-            aria-live="polite"
-          >
-            {{ tryOnPreviewDiagnostic.message }}
-          </p>
-          <p v-if="visionMaintenance.message" class="maintenance-message">
-            {{ visionMaintenance.message }}
-          </p>
-          <div
-            v-if="tryOnPreviewDiagnostic.previewUrl"
-            class="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_16rem]"
-          >
-            <img
-              :src="tryOnPreviewDiagnostic.previewUrl"
-              alt="视觉试衣预览"
-              class="aspect-video w-full rounded-xl bg-slate-950 object-cover"
-              data-test="try-on-camera-preview"
-            />
-            <dl class="grid content-start gap-3 text-sm text-slate-200">
-              <div>
-                <dt class="text-slate-400">预览流</dt>
-                <dd>{{ tryOnPreviewDiagnostic.streamType }}</dd>
-              </div>
-              <div>
-                <dt class="text-slate-400">预览地址</dt>
-                <dd class="break-all">
-                  {{ tryOnPreviewDiagnostic.previewUrl }}
-                </dd>
-              </div>
-            </dl>
-          </div>
-        </section>
 
         <section
           v-show="activeTask === 'environment'"

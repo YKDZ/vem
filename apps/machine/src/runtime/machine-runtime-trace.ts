@@ -76,9 +76,6 @@ export type MachineRuntimeCustomerErrorTraceEntry = {
   orderId: string | null;
   paymentId: string | null;
   orderNo: string | null;
-  tryOnSessionId?: string | null;
-  tryOnCatalogKey?: string | null;
-  tryOnVariantId?: string | null;
 };
 
 export type MachineRuntimeCheckoutSubmitTraceEntry = {

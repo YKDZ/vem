@@ -1516,7 +1516,7 @@ export function validateVisionInstalledBinding(binding) {
   if (siteConfigurationObject.cameras?.top?.role !== "presence") {
     throw new Error("Vision site configuration top role drifted");
   }
-  if (siteConfigurationObject.cameras?.front?.role !== "profile_tryon") {
+  if (siteConfigurationObject.cameras?.front?.role !== "profile_fast_try_on") {
     throw new Error("Vision site configuration front role drifted");
   }
   if (
@@ -1696,7 +1696,7 @@ export function buildRecordedVisionSiteConfiguration({
       },
       front: {
         source: "recorded_video",
-        role: "profile_tryon",
+        role: "profile_fast_try_on",
         video_path: "recorded-video/front.mp4",
       },
     },

@@ -47,9 +47,6 @@ export type CustomerErrorEvidence = {
   orderId: string | null;
   paymentId: string | null;
   orderNo: string | null;
-  tryOnSessionId?: string | null;
-  tryOnCatalogKey?: string | null;
-  tryOnVariantId?: string | null;
   recordedAtMs: number;
 };
 
@@ -81,12 +78,6 @@ function isCustomerErrorEvidence(
     isTechnicalErrorEvidence(entry.technical) &&
     ["checkoutAttemptIdempotencyKey", "orderId", "paymentId", "orderNo"].every(
       (key) => entry[key] === null || typeof entry[key] === "string",
-    ) &&
-    ["tryOnSessionId", "tryOnCatalogKey", "tryOnVariantId"].every(
-      (key) =>
-        entry[key] === undefined ||
-        entry[key] === null ||
-        typeof entry[key] === "string",
     ) &&
     Number.isFinite(entry.recordedAtMs)
   );

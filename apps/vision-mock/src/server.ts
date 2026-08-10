@@ -30,8 +30,6 @@ export const MOCK_VISION_SCENARIOS = [
   "camera_unavailable",
   "contract_digest_mismatch",
   "contract_bundle_unavailable",
-  "try_on_unavailable_handshake",
-  "try_on_unavailable_start",
 ] as const;
 
 export type MockVisionScenario = (typeof MOCK_VISION_SCENARIOS)[number];
@@ -249,31 +247,6 @@ function createErrorMessage(input: {
   return message;
 }
 
-function createTryOnStartedMessage(sessionId: string): VisionServerMessage {
-  const message = {
-    ...baseEnvelope(),
-    type: "vision.try_on.started",
-    payload: {
-      sessionId,
-      previewUrl: "http://127.0.0.1:7892/try-on/mock.mjpeg",
-      streamType: "mjpeg",
-    },
-  } satisfies VisionServerMessage;
-  return message;
-}
-
-function createTryOnStoppedMessage(sessionId: string): VisionServerMessage {
-  const message = {
-    ...baseEnvelope(),
-    type: "vision.try_on.stopped",
-    payload: {
-      sessionId,
-      reason: "client_stop",
-    },
-  } satisfies VisionServerMessage;
-  return message;
-}
-
 function json(
   response: ServerResponse,
   status: number,
@@ -419,17 +392,6 @@ function handleClientRawMessage(
   switch (message.type) {
     case "vision.hello":
       options.runtimeClients.set(socket, message.payload);
-      if (options.scenario === "try_on_unavailable_handshake") {
-        sendServerMessage(
-          socket,
-          createErrorMessage({
-            code: "try_on_unavailable",
-            message: "模拟试穿握手不可用",
-            retryable: true,
-          }),
-        );
-        return;
-      }
       if (options.scenario === "presence_before_ready") {
         sendServerMessage(socket, createPresenceMessage("approach"));
       }
@@ -451,29 +413,6 @@ function handleClientRawMessage(
       return;
     case "vision.ping":
       sendServerMessage(socket, createPongMessage());
-      return;
-    case "vision.try_on.start":
-      if (options.scenario === "try_on_unavailable_start") {
-        sendServerMessage(
-          socket,
-          createErrorMessage({
-            code: "try_on_unavailable",
-            message: "模拟试穿启动不可用",
-            retryable: true,
-          }),
-        );
-        return;
-      }
-      sendServerMessage(
-        socket,
-        createTryOnStartedMessage(message.payload.sessionId),
-      );
-      return;
-    case "vision.try_on.stop":
-      sendServerMessage(
-        socket,
-        createTryOnStoppedMessage(message.payload.sessionId),
-      );
       return;
   }
 }

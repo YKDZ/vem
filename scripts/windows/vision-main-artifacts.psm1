@@ -317,7 +317,7 @@ function Assert-VisionSiteConfiguration([string]$ConfigurationPath, [string]$Fix
     Assert-VisionMainCondition ($configuration.cameras.top.source -ceq "recorded_video") "site configuration must bind the top camera to recorded_video"
     Assert-VisionMainCondition ($configuration.cameras.front.source -ceq "recorded_video") "site configuration must bind the front camera to recorded_video"
     Assert-VisionMainCondition ($configuration.cameras.top.role -ceq "presence") "site configuration top camera role must remain presence"
-    Assert-VisionMainCondition ($configuration.cameras.front.role -ceq "profile_tryon") "site configuration front camera role must remain profile_tryon"
+    Assert-VisionMainCondition ($configuration.cameras.front.role -ceq "profile_fast_try_on") "site configuration front camera role must remain profile_fast_try_on"
     foreach ($binding in @(
       @{ camera = $configuration.cameras.top; expected = $fixtureState.digests.top.path; label = "top" },
       @{ camera = $configuration.cameras.front; expected = $fixtureState.digests.front.path; label = "front" }

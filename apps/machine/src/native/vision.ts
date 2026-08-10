@@ -6,7 +6,6 @@ import {
   visionProfileResultPayloadSchema,
   visionReadyPayloadSchema,
   visionServerMessageSchema,
-  visionTryOnPreviewUrlSchema,
   visionV2AttemptFailedMessageSchema,
   visionV2FastAttemptStartMessageSchema,
   visionV2MessageSchema,
@@ -64,11 +63,6 @@ export interface VisionProfileSubscription {
   close: () => void;
 }
 
-export interface VisionTryOnSessionInput {
-  catalogKey?: string;
-  variantId?: string;
-}
-
 export type VisionRuntimeConnection = {
   machineCode?: string | null;
   url?: string;
@@ -76,13 +70,6 @@ export type VisionRuntimeConnection = {
   fastAttemptTimeoutMs?: number;
   enabled?: boolean;
 };
-
-export interface VisionTryOnSession {
-  sessionId: string;
-  previewUrl: string;
-  streamType: "mjpeg";
-  stop: (reason?: VisionTryOnStopReason) => Promise<void>;
-}
 
 export type VisionFastAttemptEvent = Extract<
   VisionV2Message,
@@ -113,21 +100,13 @@ export interface VisionFastAttempt {
   close: () => void;
 }
 
-export type VisionTryOnStopReason =
-  | "user_exit"
-  | "route_leave"
-  | "replaced"
-  | "silhouette_load_failed"
-  | "error"
-  | "unknown";
-
 const CONNECT_TIMEOUT_MS = 3000;
 const FAST_ATTEMPT_TERMINAL_TIMEOUT_MS = 30_000;
 const PING_INTERVAL_MS = 10_000;
 const PONG_TIMEOUT_MS = 5_000;
 const RECONNECT_BASE_DELAY_MS = 1_000;
 const RECONNECT_MAX_DELAY_MS = 10_000;
-const TRY_ON_UNAVAILABLE_PREFIX = "vision try_on_unavailable:";
+const FAST_UNAVAILABLE_PREFIX = "vision fast_unavailable:";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -204,40 +183,6 @@ function createPingMessage(): VisionClientMessage {
     messageId: createMessageId("ping"),
     timestamp: nowIso(),
     payload: {},
-  } satisfies VisionClientMessage;
-  return message;
-}
-
-function createTryOnStartMessage(
-  input: VisionTryOnSessionInput,
-): Extract<VisionClientMessage, { type: "vision.try_on.start" }> {
-  const message = {
-    protocol: VISION_V2_RUNTIME_IDENTITY.protocol,
-    type: "vision.try_on.start",
-    messageId: createMessageId("try-on-start"),
-    timestamp: nowIso(),
-    payload: {
-      sessionId: createMessageId("try-on-session"),
-      catalogKey: input.catalogKey,
-      variantId: input.variantId,
-    },
-  } satisfies VisionClientMessage;
-  return message;
-}
-
-function createTryOnStopMessage(
-  sessionId: string,
-  reason: VisionTryOnStopReason,
-): Extract<VisionClientMessage, { type: "vision.try_on.stop" }> {
-  const message = {
-    protocol: VISION_V2_RUNTIME_IDENTITY.protocol,
-    type: "vision.try_on.stop",
-    messageId: createMessageId("try-on-stop"),
-    timestamp: nowIso(),
-    payload: {
-      sessionId,
-      reason,
-    },
   } satisfies VisionClientMessage;
   return message;
 }
@@ -354,19 +299,19 @@ async function nextServerMessage(
   });
 }
 
-class VisionTryOnUnavailableError extends Error {
+class VisionFastUnavailableError extends Error {
   constructor(message: string) {
-    super(`${TRY_ON_UNAVAILABLE_PREFIX} ${message}`);
-    this.name = "VisionTryOnUnavailableError";
+    super(`${FAST_UNAVAILABLE_PREFIX} ${message}`);
+    this.name = "VisionFastUnavailableError";
   }
 }
 
 function tryOnUnavailableError(message: string): Error {
-  return new VisionTryOnUnavailableError(message);
+  return new VisionFastUnavailableError(message);
 }
 
 function errorFromVisionMessage(message: VisionErrorMessage): Error {
-  if (message.payload.code === "try_on_unavailable") {
+  if (message.payload.code === "fast_unavailable") {
     return tryOnUnavailableError(message.payload.message);
   }
   return new Error(
@@ -375,11 +320,7 @@ function errorFromVisionMessage(message: VisionErrorMessage): Error {
 }
 
 export function isVisionTryOnCapabilityDegraded(error: unknown): boolean {
-  return error instanceof VisionTryOnUnavailableError;
-}
-
-export function parseVisionTryOnPreviewUrl(value: unknown): string {
-  return visionTryOnPreviewUrlSchema.parse(value);
+  return error instanceof VisionFastUnavailableError;
 }
 
 function createVisionV2HelloMessage(machineCode: string | null) {
@@ -678,111 +619,6 @@ export async function visionSelfCheck(
   if (!isTauriRuntime()) return await visionSelfCheckBrowser(connection);
   const result = await callTauriCommand<unknown>("vision_self_check");
   return visionSelfCheckResultSchema.parse(result);
-}
-
-export async function openVisionTryOnSession(
-  connection: VisionRuntimeConnection = {},
-  input: VisionTryOnSessionInput = {},
-): Promise<VisionTryOnSession> {
-  const options = connectionOptions(connection);
-  if (!options.enabled) {
-    throw new Error("视觉模块未启用，无法启动虚拟试穿");
-  }
-
-  const socket = await openVisionSocket(options.url, options.timeoutMs);
-  let closed = false;
-
-  const closeSessionSocket = (): void => {
-    closed = true;
-    closeSocket(socket);
-  };
-
-  try {
-    socket.send(
-      serializeClientMessage(createHelloMessage(options.machineCode)),
-    );
-    const readyMessage = await nextServerMessage(socket, options.timeoutMs);
-    if (readyMessage.type === "vision.error") {
-      throw errorFromVisionMessage(readyMessage);
-    }
-    if (readyMessage.type !== "vision.ready") {
-      throw new Error(
-        `unexpected vision try-on handshake message: ${readyMessage.type}`,
-      );
-    }
-    if (!readyMessage.payload.cameraReady) {
-      throw tryOnUnavailableError("视觉摄像头未就绪，无法启动虚拟试穿");
-    }
-    if (!readyMessage.payload.fastReady) {
-      throw tryOnUnavailableError("视觉模块不支持虚拟试穿会话");
-    }
-
-    const startMessage = createTryOnStartMessage(input);
-    socket.send(serializeClientMessage(startMessage));
-    const startedMessage = await waitForTryOnStarted(
-      socket,
-      startMessage.payload.sessionId,
-      options.timeoutMs,
-    );
-
-    return {
-      sessionId: startedMessage.payload.sessionId,
-      previewUrl: parseVisionTryOnPreviewUrl(startedMessage.payload.previewUrl),
-      streamType: startedMessage.payload.streamType,
-      stop: async (reason: VisionTryOnStopReason = "user_exit") => {
-        if (closed) return;
-        try {
-          socket.send(
-            serializeClientMessage(
-              createTryOnStopMessage(startedMessage.payload.sessionId, reason),
-            ),
-          );
-        } finally {
-          closeSessionSocket();
-        }
-      },
-    };
-  } catch (error) {
-    closeSessionSocket();
-    throw error;
-  }
-}
-
-async function waitForTryOnStarted(
-  socket: WebSocket,
-  sessionId: string,
-  timeoutMs: number,
-): Promise<Extract<VisionServerMessage, { type: "vision.try_on.started" }>> {
-  const deadline = Date.now() + timeoutMs;
-  return await waitForTryOnStartedBefore(socket, sessionId, deadline);
-}
-
-async function waitForTryOnStartedBefore(
-  socket: WebSocket,
-  sessionId: string,
-  deadline: number,
-): Promise<Extract<VisionServerMessage, { type: "vision.try_on.started" }>> {
-  const remainingMs = deadline - Date.now();
-  if (remainingMs <= 0) {
-    throw new Error("waiting for vision try-on preview timed out");
-  }
-  const message = await nextServerMessage(socket, remainingMs);
-  if (message.type === "vision.error") {
-    throw errorFromVisionMessage(message);
-  }
-  if (
-    message.type === "vision.try_on.started" &&
-    message.payload.sessionId === sessionId
-  ) {
-    return message;
-  }
-  if (
-    message.type === "vision.try_on.stopped" &&
-    message.payload.sessionId === sessionId
-  ) {
-    throw new Error(`vision try-on session stopped: ${message.payload.reason}`);
-  }
-  return await waitForTryOnStartedBefore(socket, sessionId, deadline);
 }
 
 export function subscribeVisionProfiles(

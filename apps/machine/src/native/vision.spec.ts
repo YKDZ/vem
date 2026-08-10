@@ -7,10 +7,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  isVisionTryOnCapabilityDegraded,
   openVisionFastAttempt,
-  openVisionTryOnSession,
-  parseVisionTryOnPreviewUrl,
   subscribeVisionProfiles,
   type VisionPersonDepartedPayload,
   type VisionPresenceStatusPayload,
@@ -661,58 +658,6 @@ function failedV2Message(attemptId: string) {
     payload: { attemptId, reason: "fast_failed" },
   };
 }
-
-describe("vision native browser fallback - try-on sessions", () => {
-  it("opens a try-on session and returns an MJPEG preview URL", async () => {
-    const url = await startVisionMock("presence_only");
-    const config = { url };
-
-    const session = await openVisionTryOnSession(config, {
-      catalogKey: "catalog-001",
-      variantId: "variant-001",
-    });
-
-    expect(session.streamType).toBe("mjpeg");
-    expect(session.previewUrl).toContain(".mjpeg");
-    await session.stop("user_exit");
-  });
-
-  it("rejects try-on sessions when vision is disabled", async () => {
-    const config = { enabled: false };
-
-    await expect(openVisionTryOnSession(config)).rejects.toThrow(
-      "视觉模块未启用",
-    );
-  });
-
-  it("rejects a remote preview URL returned by Vision", () => {
-    expect(() =>
-      parseVisionTryOnPreviewUrl("https://vision.example/try-on/session.mjpeg"),
-    ).toThrow();
-  });
-
-  it("classifies try_on_unavailable during the handshake as degraded", async () => {
-    const url = await startVisionMock("try_on_unavailable_handshake");
-
-    const error = await openVisionTryOnSession({ url }).catch(
-      (reason: unknown) => reason,
-    );
-
-    expect(isVisionTryOnCapabilityDegraded(error)).toBe(true);
-    expect(error).toMatchObject({ name: "VisionTryOnUnavailableError" });
-  });
-
-  it("classifies try_on_unavailable after session start as degraded", async () => {
-    const url = await startVisionMock("try_on_unavailable_start");
-
-    const error = await openVisionTryOnSession({ url }).catch(
-      (reason: unknown) => reason,
-    );
-
-    expect(isVisionTryOnCapabilityDegraded(error)).toBe(true);
-    expect(error).toMatchObject({ name: "VisionTryOnUnavailableError" });
-  });
-});
 
 describe("vision native browser fallback - vision disabled", () => {
   it("does not open a subscription when vision is disabled", () => {

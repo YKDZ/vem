@@ -238,7 +238,7 @@ try {
   Assert-True ($ipv6Uris.webSocketUrl -eq "ws://[::1]:7892/ws") "IPv6 WebSocket URI authority was not bracketed"
   $config = Join-Path $root "site-input.json"
   $dshowPort = New-VisionHarnessPort
-  @{ schemaVersion = "vending-vision-site-config/v1"; host = "127.0.0.1"; port = $dshowPort; allowed_origins = @("http://127.0.0.1:$dshowPort"); cameras = @{ top = @{ source = "dshow"; role = "presence" }; front = @{ source = "dshow"; role = "profile_tryon" } } } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $config -Encoding utf8
+  @{ schemaVersion = "vending-vision-site-config/v1"; host = "127.0.0.1"; port = $dshowPort; allowed_origins = @("http://127.0.0.1:$dshowPort"); cameras = @{ top = @{ source = "dshow"; role = "presence" }; front = @{ source = "dshow"; role = "profile_fast_try_on" } } } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $config -Encoding utf8
   $runtimeWorkDirectory = Join-Path $root "program-data\vision\runtime"
   $server = Start-ReadyVisionProbeServer "dshow" $dshowPort "degraded" $false "9.8.7"
   try {
@@ -321,7 +321,7 @@ try {
 
   $recordedConfig = Join-Path $root "recorded-site-input.json"
   $recordedPort = New-VisionHarnessPort
-  @{ schemaVersion = "vending-vision-site-config/v1"; host = "127.0.0.1"; port = $recordedPort; allowed_origins = @("http://127.0.0.1:$recordedPort"); cameras = @{ top = @{ source = "recorded_video"; role = "presence"; video_path = "source-relative/top.mp4" }; front = @{ source = "recorded_video"; role = "profile_tryon"; video_path = "source-relative/front.mp4" } } } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $recordedConfig -Encoding utf8
+  @{ schemaVersion = "vending-vision-site-config/v1"; host = "127.0.0.1"; port = $recordedPort; allowed_origins = @("http://127.0.0.1:$recordedPort"); cameras = @{ top = @{ source = "recorded_video"; role = "presence"; video_path = "source-relative/top.mp4" }; front = @{ source = "recorded_video"; role = "profile_fast_try_on"; video_path = "source-relative/front.mp4" } } } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $recordedConfig -Encoding utf8
   $missingFixtureRejected = $false
   try { Install-VisionMainArtifact -RuntimeArchive $cache.runtimeArchive -Commit $commit -SiteConfigurationPath $recordedConfig -AppDirectory (Join-Path $root "vision\app") -SiteConfigurationDestination (Join-Path $root "program-data\vision\site.json") -LauncherPath (Join-Path $root "bringup\start_vision.bat") -ProbeTimeoutSeconds 1 | Out-Null } catch { $missingFixtureRejected = $true }
   Assert-True $missingFixtureRejected "recorded-video configuration did not require the separate fixture archive"
