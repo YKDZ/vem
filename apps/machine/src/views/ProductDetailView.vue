@@ -18,7 +18,9 @@ import { submitMachineNavigationIntent } from "@/router/transaction-route-author
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useSaleCapabilityStore } from "@/stores/sale-capability";
+import { useTryOnStore } from "@/stores/try-on";
 import { useVisionStore } from "@/stores/vision";
+import { canStartFastTryOn } from "@/try-on/eligibility";
 import { formatCents } from "@/utils/format";
 
 type VariantOption = {
@@ -31,6 +33,7 @@ const route = useRoute();
 const catalogStore = useCatalogStore();
 const checkoutStore = useCheckoutStore();
 const visionStore = useVisionStore();
+const tryOnStore = useTryOnStore();
 const saleCapabilityStore = useSaleCapabilityStore();
 const {
   recommendationProfile: currentProfile,
@@ -101,6 +104,9 @@ const priceText = computed(() =>
   formatCents(selectedVariant.value?.priceCents ?? item.value?.priceCents ?? 0),
 );
 const stockText = computed(() => selectedVariant.value?.saleableStock ?? 0);
+const canFastTryOn = computed(() =>
+  canStartFastTryOn(selectedConcreteItem.value, visionStore),
+);
 const skuText = computed(
   () => selectedVariant.value?.sku ?? item.value?.sku ?? "-",
 );
@@ -264,6 +270,22 @@ async function purchase(): Promise<void> {
   await submitMachineNavigationIntent({
     type: "customer.navigate",
     target: { name: "checkout" },
+  });
+}
+
+async function startFastTryOn(): Promise<void> {
+  const concreteItem = selectedConcreteItem.value;
+  if (!concreteItem || !canFastTryOn.value) return;
+  tryOnStore.prepare(concreteItem);
+  await submitMachineNavigationIntent({
+    type: "customer.navigate",
+    target: {
+      name: "try-on",
+      query: {
+        catalogKey: concreteItem.catalogKey,
+        variantId: concreteItem.variantId,
+      },
+    },
   });
 }
 </script>
@@ -459,6 +481,23 @@ async function purchase(): Promise<void> {
             >
               库存：<strong>{{ stockText }}</strong>
             </p>
+          </section>
+
+          <section
+            v-if="canFastTryOn"
+            class="detail-section"
+            data-test="try-on-entry"
+          >
+            <h2>虚拟试衣</h2>
+            <button
+              class="kiosk-touch-target w-full rounded-lg border-2 border-neutral-950 bg-white px-5 py-3 text-lg font-black text-neutral-950"
+              type="button"
+              data-test="try-on-fast"
+              :data-variant-id="selectedVariant?.variantId ?? ''"
+              @click="startFastTryOn"
+            >
+              快速试衣
+            </button>
           </section>
 
           <div class="detail-bottom-bar">

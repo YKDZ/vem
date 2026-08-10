@@ -21,6 +21,11 @@ export const machineRoutes: RouteRecordRaw[] = [
     component: async () => import("@/views/ProductDetailView.vue"),
   },
   {
+    path: "/try-on",
+    name: "try-on",
+    component: async () => import("@/views/TryOnView.vue"),
+  },
+  {
     path: "/checkout",
     name: "checkout",
     component: async () => import("@/views/CheckoutView.vue"),

@@ -643,7 +643,9 @@ pub fn build_router(ctx: IpcContext) -> Router {
 
 fn parse_exact_media_grant(raw_query: Option<String>) -> Option<String> {
     let raw = raw_query?;
-    let value = raw.strip_prefix("grant=")?;
+    let value = raw
+        .strip_prefix("grant=")
+        .or_else(|| raw.strip_prefix("token="))?;
     if !value.is_empty() && !value.contains('&') {
         Some(value.to_string())
     } else {
@@ -1394,25 +1396,32 @@ async fn refresh_catalog(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
                 let Some(object) = item.as_object_mut() else {
                     continue;
                 };
-                let parsed = object.get("coverImageMedia").cloned().and_then(|value| {
-                    crate::managed_media::parse_media_descriptor_boundary(value).ok()
-                });
-                match parsed {
-                    Some(descriptor) => {
-                        object.insert(
-                            "coverImageMedia".to_string(),
-                            serde_json::to_value(&descriptor).unwrap_or(serde_json::Value::Null),
-                        );
-                        object.remove("coverImageMediaDiagnostic");
-                        descriptors.push(descriptor);
+                for field in ["coverImageMedia", "tryOnGarmentMedia"] {
+                    let parsed = object.get(field).cloned().and_then(|value| {
+                        crate::managed_media::parse_media_descriptor_boundary(value).ok()
+                    });
+                    match parsed {
+                        Some(descriptor) => {
+                            object.insert(
+                                field.to_string(),
+                                serde_json::to_value(&descriptor)
+                                    .unwrap_or(serde_json::Value::Null),
+                            );
+                            if field == "coverImageMedia" {
+                                object.remove("coverImageMediaDiagnostic");
+                            }
+                            descriptors.push(descriptor);
+                        }
+                        None if object.contains_key(field) => {
+                            object.insert(field.to_string(), serde_json::Value::Null);
+                            if field == "coverImageMedia" {
+                                object.insert("coverImageMediaDiagnostic".to_string(), serde_json::json!({
+                                    "reason": "descriptor_invalid", "message": "catalog managed media descriptor is invalid"
+                                }));
+                            }
+                        }
+                        None => {}
                     }
-                    None if object.contains_key("coverImageMedia") => {
-                        object.insert("coverImageMedia".to_string(), serde_json::Value::Null);
-                        object.insert("coverImageMediaDiagnostic".to_string(), serde_json::json!({
-                            "reason": "descriptor_invalid", "message": "catalog managed media descriptor is invalid"
-                        }));
-                    }
-                    None => {}
                 }
             }
             // A catalog endpoint may remain array-shaped for sale compatibility.
@@ -1583,6 +1592,28 @@ async fn sale_view(State(ctx): State<IpcContext>, headers: HeaderMap) -> impl In
                         "coverImageMediaDiagnostic": diagnostic,
                     }),
                 );
+                let garment_descriptor = source
+                    .get("tryOnGarmentMedia")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                let garment_projection = garment_descriptor
+                    .get("digest")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|digest| {
+                        media.iter().find(|asset| asset.descriptor.digest == digest)
+                    });
+                if let Some(overlay) = overlays.get_mut(&format!("{product_id}:{variant_id}")) {
+                    if let Some(object) = overlay.as_object_mut() {
+                        object.insert("tryOnGarmentMedia".to_string(), garment_descriptor);
+                        object.insert(
+                            "tryOnGarmentReadyUrl".to_string(),
+                            garment_projection
+                                .and_then(|asset| asset.ready_url.clone())
+                                .map(serde_json::Value::String)
+                                .unwrap_or(serde_json::Value::Null),
+                        );
+                    }
+                }
             }
             let mut response = serde_json::to_value(value).unwrap_or_default();
             if let Some(items) = response

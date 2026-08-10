@@ -76,6 +76,8 @@ export const useVisionStore = defineStore("vision", {
     updatedAt: null as string | null,
     latestDiagnosticPayload: null as unknown,
     tryOnCapability: "unknown" as VisionTryOnCapability,
+    fastReady: false,
+    visionBusinessReady: false,
     presence: { ...EMPTY_PRESENCE } as VisionPresenceState,
     recommendationProfile: null as VisionProfile | null,
     lastRecommendationResult: null as VisionProfileResultPayload | null,
@@ -106,6 +108,8 @@ export const useVisionStore = defineStore("vision", {
       this.updatedAt = status.updatedAt ?? new Date().toISOString();
       if (!status.enabled) {
         this.tryOnCapability = "degraded";
+        this.fastReady = false;
+        this.visionBusinessReady = false;
         this.clearLatestDiagnosticPayload();
         return;
       }
@@ -171,6 +175,8 @@ export const useVisionStore = defineStore("vision", {
         result.data.capabilities.includes("try_on_fast")
           ? "available"
           : "degraded";
+      this.fastReady = result.data.fastReady;
+      this.visionBusinessReady = result.data.visionBusinessReady;
     },
     markTryOnCapabilityDegraded(): void {
       this.tryOnCapability = "degraded";

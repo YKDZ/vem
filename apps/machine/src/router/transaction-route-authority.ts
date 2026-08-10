@@ -17,6 +17,7 @@ import { useSaleCapabilityStore } from "@/stores/sale-capability";
 const DEFAULT_TOUCHSCREEN_SESSION_INACTIVITY_MS = 45_000;
 const CUSTOMER_SESSION_ROUTE_NAMES = new Set([
   "product-detail",
+  "try-on",
   "checkout",
   "payment",
 ]);

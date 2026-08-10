@@ -7,6 +7,9 @@ import {
   visionReadyPayloadSchema,
   visionServerMessageSchema,
   visionTryOnPreviewUrlSchema,
+  visionV2FastAttemptStartMessageSchema,
+  visionV2MessageSchema,
+  type VisionV2Message,
   type VisionClientMessage,
   type VisionErrorMessage,
   type VisionProfile,
@@ -77,6 +80,31 @@ export interface VisionTryOnSession {
   previewUrl: string;
   streamType: "mjpeg";
   stop: (reason?: VisionTryOnStopReason) => Promise<void>;
+}
+
+export type VisionFastAttemptEvent = Extract<
+  VisionV2Message,
+  {
+    type:
+      | "vision.try_on.attempt.accepted"
+      | "vision.try_on.attempt.progress"
+      | "vision.try_on.attempt.completed"
+      | "vision.try_on.attempt.failed";
+  }
+>;
+
+export type VisionFastAttemptInput = {
+  attemptId: string;
+  variantId: string;
+  garment: Extract<
+    VisionV2Message,
+    { type: "vision.try_on.attempt.start" }
+  >["payload"]["garment"];
+};
+
+export interface VisionFastAttempt {
+  attemptId: string;
+  close: () => void;
 }
 
 export type VisionTryOnStopReason =
@@ -325,6 +353,142 @@ export function isVisionTryOnCapabilityDegraded(error: unknown): boolean {
 
 export function parseVisionTryOnPreviewUrl(value: unknown): string {
   return visionTryOnPreviewUrlSchema.parse(value);
+}
+
+function createVisionV2HelloMessage(machineCode: string | null) {
+  return {
+    protocol: VISION_V2_RUNTIME_IDENTITY.protocol,
+    type: "vision.hello" as const,
+    messageId: createMessageId("hello-v2"),
+    timestamp: nowIso(),
+    payload: {
+      clientRole: "machine" as const,
+      ...(machineCode ? { machineCode } : {}),
+      schemaVersion: VISION_V2_RUNTIME_IDENTITY.schemaVersion,
+      bundleVersion: VISION_V2_RUNTIME_IDENTITY.bundleVersion,
+      contractDigest: VISION_V2_RUNTIME_IDENTITY.contractDigest,
+      capabilities: ["try_on_fast"],
+    },
+  };
+}
+
+function parseVisionV2Message(value: unknown): VisionV2Message {
+  return visionV2MessageSchema.parse(value);
+}
+
+async function nextVisionV2Message(
+  socket: WebSocket,
+  timeoutMs: number,
+): Promise<VisionV2Message> {
+  return await new Promise<VisionV2Message>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error("waiting for Vision V2 message timed out"));
+    }, timeoutMs);
+    const onMessage = (event: MessageEvent): void => {
+      cleanup();
+      if (typeof event.data !== "string") {
+        reject(new Error("Vision V2 returned a non-text frame"));
+        return;
+      }
+      try {
+        resolve(parseVisionV2Message(JSON.parse(event.data)));
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    };
+    const onError = (): void => {
+      cleanup();
+      reject(new Error("Vision V2 websocket error"));
+    };
+    function cleanup(): void {
+      clearTimeout(timer);
+      socket.removeEventListener("message", onMessage);
+      socket.removeEventListener("error", onError);
+    }
+    socket.addEventListener("message", onMessage);
+    socket.addEventListener("error", onError);
+  });
+}
+
+export async function openVisionFastAttempt(
+  connection: VisionRuntimeConnection = {},
+  input: VisionFastAttemptInput,
+  onEvent: (event: VisionFastAttemptEvent) => void,
+): Promise<VisionFastAttempt> {
+  const options = connectionOptions(connection);
+  if (!options.enabled) throw new Error("视觉模块未启用，无法启动快速试衣");
+  const socket = await openVisionSocket(options.url, options.timeoutMs);
+  let closed = false;
+  const close = (): void => {
+    if (closed) return;
+    closed = true;
+    closeSocket(socket);
+  };
+  try {
+    socket.send(
+      JSON.stringify(createVisionV2HelloMessage(options.machineCode)),
+    );
+    const ready = await nextVisionV2Message(socket, options.timeoutMs);
+    if (ready.type !== "vision.ready") {
+      throw new Error(`unexpected Vision V2 handshake message: ${ready.type}`);
+    }
+    const identityMatches =
+      ready.payload.schemaVersion ===
+        VISION_V2_RUNTIME_IDENTITY.schemaVersion &&
+      ready.payload.bundleVersion ===
+        VISION_V2_RUNTIME_IDENTITY.bundleVersion &&
+      ready.payload.contractDigest ===
+        VISION_V2_RUNTIME_IDENTITY.contractDigest;
+    if (
+      !identityMatches ||
+      !ready.payload.fastReady ||
+      !ready.payload.visionBusinessReady
+    ) {
+      throw new Error("Vision V2 Fast capability is unavailable");
+    }
+    const startMessage = visionV2FastAttemptStartMessageSchema.parse({
+      protocol: VISION_V2_RUNTIME_IDENTITY.protocol,
+      type: "vision.try_on.attempt.start",
+      messageId: createMessageId("attempt-start"),
+      timestamp: nowIso(),
+      payload: {
+        attemptId: input.attemptId,
+        mode: "fast",
+        variantId: input.variantId,
+        garment: input.garment,
+      },
+    });
+    const onMessage = (event: MessageEvent): void => {
+      if (closed || typeof event.data !== "string") return;
+      try {
+        const message = parseVisionV2Message(JSON.parse(event.data));
+        if (
+          (message.type === "vision.try_on.attempt.accepted" ||
+            message.type === "vision.try_on.attempt.progress" ||
+            message.type === "vision.try_on.attempt.completed" ||
+            message.type === "vision.try_on.attempt.failed") &&
+          message.payload.attemptId === input.attemptId
+        ) {
+          onEvent(message);
+          if (
+            message.type === "vision.try_on.attempt.completed" ||
+            message.type === "vision.try_on.attempt.failed"
+          ) {
+            close();
+          }
+        }
+      } catch {
+        // A malformed or unrelated late frame cannot alter the current attempt.
+      }
+    };
+    socket.addEventListener("message", onMessage);
+    socket.send(JSON.stringify(startMessage));
+    return { attemptId: input.attemptId, close };
+  } catch (error) {
+    close();
+    throw error;
+  }
 }
 
 function closeSocket(socket: WebSocket): void {

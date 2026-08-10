@@ -543,6 +543,11 @@ const machineCatalogItemBaseSchema = z.object({
   tryOnGarmentMedia: managedMediaDescriptorSchema.nullable().optional(),
   coverImageReadyUrl: z.url().nullable().optional(),
   tryOnGarmentReadyUrl: z.url().nullable().optional(),
+  /** Active associated garment's generation template; absent means ineligible. */
+  tryOnGarmentTemplate: z
+    .enum(["tshirt_short_sleeve", "tshirt_long_sleeve"])
+    .nullable()
+    .optional(),
   categoryId: z.uuid().nullable(),
   categoryName: z.string().nullable(),
   sku: z.string().min(1).max(64),
