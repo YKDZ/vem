@@ -496,7 +496,7 @@ async function startFastTryOn(): Promise<void> {
               :data-variant-id="selectedVariant?.variantId ?? ''"
               @click="startFastTryOn"
             >
-              快速试衣
+              Fast虚拟试衣
             </button>
           </section>
 

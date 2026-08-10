@@ -128,6 +128,9 @@ describe("vision try-on acceptance script", () => {
     );
     for (const selector of [
       "try-on-view",
+      "try-on-acquisition-preview",
+      "try-on-manual-capture",
+      "try-on-cancel",
       "try-on-result-image",
       "try-on-retry",
       "try-on-return",
@@ -135,6 +138,11 @@ describe("vision try-on acceptance script", () => {
       assert.match(tryOnView, new RegExp(`data-test="${selector}"`));
     }
     assert.match(tryOnView, /:data-state="tryOn\.phase"/);
+    assert.match(tryOnView, /:src="tryOn\.previewUrl"/);
+    assert.doesNotMatch(
+      tryOnView,
+      /<canvas\b|fetch\(|getUserMedia|captureStream/,
+    );
   });
 
   function installedBindingObservation(processIds, listenerProcessIds) {
@@ -1575,9 +1583,20 @@ describe("vision try-on acceptance script", () => {
     return {
       route: `#/try-on?catalogKey=product:L&variantId=${variantId}`,
       attemptId,
-      lifecycle: ["starting", "accepted", "generating", "completed"].map(
-        (phase) => ({ phase, attemptId }),
-      ),
+      lifecycle: [
+        "starting",
+        "accepted",
+        "acquiring",
+        "generating",
+        "completed",
+      ].map((phase) => ({
+        phase,
+        attemptId,
+        acquisitionPreview:
+          phase === "acquiring"
+            ? "http://127.0.0.1:7892/v2/try-on/acquisition/preview.mjpeg?token=preview-token"
+            : null,
+      })),
       resultUrl: `http://127.0.0.1:7892/v2/try-on/results/${attemptId}?token=result-token`,
       retryVisible: true,
       returnVisible: true,
@@ -1606,7 +1625,20 @@ describe("vision try-on acceptance script", () => {
     });
     button.click();
     const view = window.document.querySelector('[data-test="try-on-view"]');
-    for (const phase of ["starting", "accepted", "generating", "completed"]) {
+    for (const phase of [
+      "starting",
+      "accepted",
+      "acquiring",
+      "generating",
+      "completed",
+    ]) {
+      if (phase === "acquiring") {
+        const preview = window.document.createElement("img");
+        preview.dataset.test = "try-on-acquisition-preview";
+        preview.src =
+          "http://127.0.0.1:7892/v2/try-on/acquisition/preview.mjpeg?token=preview-token";
+        view.append(preview);
+      }
       view.dataset.state = phase;
       await new Promise((resolvePromise) =>
         window.queueMicrotask(resolvePromise),
@@ -1629,6 +1661,7 @@ describe("vision try-on acceptance script", () => {
     assert.deepEqual(Array.from(summary.lifecycle.phases), [
       "starting",
       "accepted",
+      "acquiring",
       "generating",
       "completed",
     ]);
@@ -1789,7 +1822,7 @@ describe("vision try-on acceptance script", () => {
             ],
           },
         }),
-      /real generating lifecycle state/,
+      /real (acquiring|generating) lifecycle state/,
     );
   });
 

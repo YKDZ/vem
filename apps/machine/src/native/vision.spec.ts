@@ -485,7 +485,7 @@ describe("vision native browser fallback - Fast attempt lifecycle", () => {
     sockets[0].dispatchEvent(new Event("error"));
     await vi.advanceTimersByTimeAsync(100);
 
-    expect(events).toEqual(["vision.try_on.attempt.failed"]);
+    expect(events).toEqual(["vision.try_on.attempt.canceled"]);
     expect(attempt.resultContext).toEqual({
       attemptId,
       visionSocketUrl: "ws://127.0.0.1:65499/v2/machine",
@@ -535,6 +535,114 @@ describe("vision native browser fallback - Fast attempt lifecycle", () => {
     sockets[0].emit(failedV2Message(attemptId));
 
     expect(events).toEqual(["vision.try_on.attempt.completed"]);
+  });
+
+  it("sends one direction-only manual capture and one user cancellation without reading preview bytes", async () => {
+    vi.useFakeTimers();
+    const sockets: FakeManualIntentSocket[] = [];
+    class FakeManualIntentSocket extends EventTarget {
+      static readonly CONNECTING = 0;
+      static readonly OPEN = 1;
+      static readonly CLOSING = 2;
+      static readonly CLOSED = 3;
+      readyState = FakeManualIntentSocket.OPEN;
+      readonly sent: string[] = [];
+      constructor(_url: string) {
+        super();
+        sockets.push(this);
+        setTimeout(() => this.dispatchEvent(new Event("open")), 0);
+      }
+      send(value: string): void {
+        this.sent.push(value);
+      }
+      close(): void {
+        this.readyState = FakeManualIntentSocket.CLOSED;
+      }
+      emit(message: object): void {
+        this.dispatchEvent(
+          new MessageEvent("message", { data: JSON.stringify(message) }),
+        );
+      }
+    }
+    globalThis.WebSocket =
+      FakeManualIntentSocket as unknown as typeof WebSocket;
+    const attemptId = "550e8400-e29b-41d4-a716-446655440124";
+    const events: string[] = [];
+    const opening = openVisionFastAttempt(
+      { url: "ws://127.0.0.1:65499/v2/machine" },
+      fastAttemptInput(attemptId),
+      (event) => events.push(event.type),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    sockets[0].emit(readyV2Message());
+    const attempt = await opening;
+
+    expect(attempt.capture()).toBe(true);
+    expect(attempt.capture()).toBe(false);
+    expect(attempt.cancel("user")).toBe(true);
+    expect(attempt.cancel("route_leave")).toBe(false);
+
+    const types = sockets[0].sent.map(
+      (frame) => JSON.parse(frame).type as string,
+    );
+    expect(types).toEqual([
+      "vision.hello",
+      "vision.try_on.attempt.start",
+      "vision.try_on.attempt.capture",
+      "vision.try_on.attempt.cancel",
+    ]);
+    expect(events).toEqual(["vision.try_on.attempt.canceled"]);
+  });
+
+  it("sends route_leave as the only route teardown intent", async () => {
+    vi.useFakeTimers();
+    const sockets: FakeRouteLeaveSocket[] = [];
+    class FakeRouteLeaveSocket extends EventTarget {
+      static readonly CONNECTING = 0;
+      static readonly OPEN = 1;
+      static readonly CLOSING = 2;
+      static readonly CLOSED = 3;
+      readyState = FakeRouteLeaveSocket.OPEN;
+      readonly sent: string[] = [];
+      constructor(_url: string) {
+        super();
+        sockets.push(this);
+        setTimeout(() => this.dispatchEvent(new Event("open")), 0);
+      }
+      send(value: string): void {
+        this.sent.push(value);
+      }
+      close(): void {
+        this.readyState = FakeRouteLeaveSocket.CLOSED;
+      }
+      emit(message: object): void {
+        this.dispatchEvent(
+          new MessageEvent("message", { data: JSON.stringify(message) }),
+        );
+      }
+    }
+    globalThis.WebSocket = FakeRouteLeaveSocket as unknown as typeof WebSocket;
+    const attemptId = "550e8400-e29b-41d4-a716-446655440124";
+    const opening = openVisionFastAttempt(
+      { url: "ws://127.0.0.1:65499/v2/machine" },
+      fastAttemptInput(attemptId),
+      () => undefined,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    sockets[0].emit(readyV2Message());
+    const attempt = await opening;
+
+    expect(attempt.cancel("route_leave")).toBe(true);
+    const cancel = JSON.parse(
+      sockets[0].sent[sockets[0].sent.length - 1] ?? "{}",
+    ) as {
+      type?: string;
+      payload?: { reason?: string };
+    };
+    expect(cancel).toMatchObject({
+      type: "vision.try_on.attempt.cancel",
+      payload: { reason: "route_leave" },
+    });
   });
 
   it("consumes the production acquiring-to-generating-to-canceled sequence exactly once and ignores a reverse-direction frame", async () => {

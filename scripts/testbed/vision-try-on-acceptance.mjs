@@ -55,9 +55,20 @@ export const INSTALL_TRY_ON_LIFECYCLE_OBSERVER_EXPRESSION = `(() => {
     const phase = view.dataset.state ?? "";
     const attemptId = view.dataset.attemptId ?? "";
     if (!phase || !attemptId) return;
+    const preview =
+      phase === "acquiring"
+        ? document.querySelector("[data-test='try-on-acquisition-preview']")
+        : null;
+    const acquisitionPreview =
+      preview instanceof HTMLImageElement ? preview.getAttribute("src") : null;
     const last = evidence.observations.at(-1);
-    if (last?.phase === phase && last?.attemptId === attemptId) return;
-    evidence.observations.push({ phase, attemptId });
+    if (
+      last?.phase === phase &&
+      last?.attemptId === attemptId &&
+      last?.acquisitionPreview === acquisitionPreview
+    )
+      return;
+    evidence.observations.push({ phase, attemptId, acquisitionPreview });
   };
   const observer = new MutationObserver(snapshot);
   observer.observe(document.documentElement, {
@@ -76,6 +87,7 @@ export const READ_TRY_ON_LIFECYCLE_EXPRESSION = `(() =>
   Array.from(window.__vemTryOnLifecycleEvidence?.observations ?? [], (entry) => ({
     phase: entry.phase,
     attemptId: entry.attemptId,
+    acquisitionPreview: entry.acquisitionPreview ?? null,
   }))
 )()`;
 
@@ -1354,7 +1366,13 @@ export function validateTryOnLifecycleEvidence(observations, attemptId) {
     .filter((entry) => entry?.attemptId === attemptId)
     .map((entry) => entry.phase)
     .filter((phase, index, all) => index === 0 || phase !== all[index - 1]);
-  const requiredPhases = ["starting", "accepted", "generating", "completed"];
+  const requiredPhases = [
+    "starting",
+    "accepted",
+    "acquiring",
+    "generating",
+    "completed",
+  ];
   let cursor = -1;
   for (const phase of requiredPhases) {
     cursor = phases.indexOf(phase, cursor + 1);
@@ -1364,6 +1382,17 @@ export function validateTryOnLifecycleEvidence(observations, attemptId) {
   }
   if (phases.slice(0, cursor + 1).includes("failed")) {
     throw new Error("try-on failed before completing the observed attempt");
+  }
+  const acquiring = observations.find(
+    (entry) => entry?.attemptId === attemptId && entry?.phase === "acquiring",
+  );
+  if (
+    typeof acquiring?.acquisitionPreview !== "string" ||
+    !/^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?\/v2\/try-on\/acquisition\/preview\.mjpeg\?token=[A-Za-z0-9_-]{1,128}$/.test(
+      acquiring.acquisitionPreview,
+    )
+  ) {
+    throw new Error("try-on acquiring state must expose tokenized V2 MJPEG");
   }
   return { attemptId, phases };
 }

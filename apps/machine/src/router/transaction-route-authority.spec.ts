@@ -5,6 +5,7 @@ import { createMemoryHistory, createRouter } from "vue-router";
 
 import { useCheckoutStore } from "@/stores/checkout";
 import { useSaleCapabilityStore } from "@/stores/sale-capability";
+import { useTryOnStore } from "@/stores/try-on";
 import { saleCapabilitySnapshot } from "@/test-support/sale-capability";
 
 import {
@@ -143,6 +144,33 @@ describe("transaction route authority", () => {
     await router.push("/catalog");
 
     expect(router.currentRoute.value.name).toBe("payment");
+  });
+
+  it("waits on the try-on route for Vision's departure terminal instead of manufacturing route leave", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: "/catalog", name: "catalog", component: {} },
+        { path: "/try-on", name: "try-on", component: {} },
+      ],
+    });
+    const authority = createMachineNavigationAuthority(router, pinia);
+    useTryOnStore(pinia).$patch({ phase: "acquiring" });
+    await router.push("/try-on");
+
+    await authority.submit({
+      type: "presence.departed",
+      eventId: "departure-try-on-1",
+    });
+
+    expect(router.currentRoute.value.name).toBe("try-on");
+    expect(authority.trace.snapshot().slice(-1)[0]).toMatchObject({
+      intentType: "presence.departed",
+      reasonCode: "try_on_departure_pending_terminal",
+    });
+    authority.dispose();
   });
 
   it("keeps the payment route when a field-observed departure arrives", async () => {

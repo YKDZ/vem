@@ -221,7 +221,141 @@ describe("try-on store current catalog boundary", () => {
     expect(close).toHaveBeenCalledTimes(1);
     expect(useTryOnStore().phase).toBe("idle");
   });
+
+  it("projects Vision acquisition truth, submits one manual intent, and removes preview before the generated result", async () => {
+    getSaleViewMock.mockResolvedValueOnce(saleView("tshirt_short_sleeve"));
+    const catalog = useCatalogStore();
+    await catalog.refresh();
+    const store = useTryOnStore();
+    store.prepare(
+      catalog.saleableVariantItemFor(`product:${productId}`, variantId)!,
+    );
+    let pushEvent:
+      | ((event: Parameters<typeof store.applyEvent>[1]) => void)
+      | undefined;
+    const capture = vi.fn(() => true);
+    const cancel = vi.fn(() => true);
+    openFastMock.mockImplementationOnce((_connection, _input, onEvent) => {
+      pushEvent = (event) =>
+        onEvent(event, {
+          attemptId: event.payload.attemptId,
+          visionSocketUrl: "ws://127.0.0.1:7892/ws",
+        });
+      return Promise.resolve({ close: vi.fn(), capture, cancel });
+    });
+    getSaleViewMock.mockResolvedValueOnce(saleView("tshirt_short_sleeve"));
+
+    await expect(store.startFast()).resolves.toBe(true);
+    if (!pushEvent) throw new Error("expected native attempt callback");
+    const attemptId = store.attemptId!;
+    pushEvent(acquiringEvent(attemptId, "hold_still", true));
+
+    expect(store.phase).toBe("acquiring");
+    expect(store.previewUrl).toContain("/v2/try-on/acquisition/preview.mjpeg");
+    expect(store.guidance).toBe("hold_still");
+    expect(store.requestManualCapture()).toBe(true);
+    expect(store.requestManualCapture()).toBe(false);
+    expect(capture).toHaveBeenCalledTimes(1);
+
+    pushEvent(generatingEvent(attemptId, "preparing"));
+    expect(store.phase).toBe("generating");
+    expect(store.previewUrl).toBeNull();
+    expect(store.requestManualCapture()).toBe(false);
+    pushEvent(completedEvent(attemptId));
+
+    expect(store.phase).toBe("completed");
+    expect(store.result?.reference).toContain(
+      `/v2/try-on/results/${attemptId}`,
+    );
+    expect(store.previewUrl).toBeNull();
+  });
+
+  it("does not send manual capture for no-person, multiple-person, or late acquisition guidance", async () => {
+    getSaleViewMock.mockResolvedValueOnce(saleView("tshirt_short_sleeve"));
+    const catalog = useCatalogStore();
+    await catalog.refresh();
+    const store = useTryOnStore();
+    store.prepare(
+      catalog.saleableVariantItemFor(`product:${productId}`, variantId)!,
+    );
+    let pushEvent:
+      | ((event: Parameters<typeof store.applyEvent>[1]) => void)
+      | undefined;
+    const capture = vi.fn(() => true);
+    openFastMock.mockImplementationOnce((_connection, _input, onEvent) => {
+      pushEvent = (event) =>
+        onEvent(event, {
+          attemptId: event.payload.attemptId,
+          visionSocketUrl: "ws://127.0.0.1:7892/ws",
+        });
+      return Promise.resolve({ close: vi.fn(), capture, cancel: vi.fn() });
+    });
+    getSaleViewMock.mockResolvedValueOnce(saleView("tshirt_short_sleeve"));
+    await store.startFast();
+    if (!pushEvent) throw new Error("expected native attempt callback");
+    const attemptId = store.attemptId!;
+
+    pushEvent(acquiringEvent(attemptId, "no_person", false));
+    expect(store.requestManualCapture()).toBe(false);
+    pushEvent(acquiringEvent(attemptId, "multiple_people", false));
+    expect(store.requestManualCapture()).toBe(false);
+    pushEvent(generatingEvent(attemptId, "rendering"));
+    pushEvent(acquiringEvent(attemptId, "hold_still", true));
+    expect(store.requestManualCapture()).toBe(false);
+    expect(capture).not.toHaveBeenCalled();
+  });
 });
+
+function acquiringEvent(
+  attemptId: string,
+  guidance: "no_person" | "multiple_people" | "align" | "hold_still" | "ready",
+  manualCaptureAllowed: boolean,
+) {
+  const occupancy =
+    guidance === "no_person"
+      ? "none"
+      : guidance === "multiple_people"
+        ? "multiple"
+        : "single";
+  return {
+    type: "vision.try_on.attempt.acquiring",
+    payload: {
+      attemptId,
+      preview: {
+        reference:
+          "http://127.0.0.1:65499/v2/try-on/acquisition/preview.mjpeg?token=preview-token",
+        streamType: "mjpeg",
+      },
+      occupancy,
+      guidance,
+      manualCaptureAllowed,
+    },
+  } as Parameters<ReturnType<typeof useTryOnStore>["applyEvent"]>[1];
+}
+
+function generatingEvent(attemptId: string, stage: "preparing" | "rendering") {
+  return {
+    type: "vision.try_on.attempt.generating",
+    payload: { attemptId, stage },
+  } as Parameters<ReturnType<typeof useTryOnStore>["applyEvent"]>[1];
+}
+
+function completedEvent(attemptId: string) {
+  return {
+    type: "vision.try_on.attempt.completed",
+    payload: {
+      attemptId,
+      result: {
+        reference: `http://127.0.0.1:7892/v2/try-on/results/${attemptId}?token=result-token`,
+        digest: `sha256:${"a".repeat(64)}`,
+        contentType: "image/png",
+        byteSize: 2048,
+        width: 512,
+        height: 768,
+      },
+    },
+  } as Parameters<ReturnType<typeof useTryOnStore>["applyEvent"]>[1];
+}
 
 function deferred<T>() {
   let resolve!: (value: T) => void;

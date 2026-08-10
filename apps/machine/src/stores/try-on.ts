@@ -26,6 +26,15 @@ export type TryOnPhase =
   | "failed"
   | "canceled";
 
+export type TryOnGuidance =
+  | "no_person"
+  | "multiple_people"
+  | "align"
+  | "hold_still"
+  | "ready";
+
+export type TryOnGenerationStage = "preparing" | "rendering";
+
 type TryOnContext = {
   catalogKey: string;
   productId: string;
@@ -39,6 +48,12 @@ export const useTryOnStore = defineStore("tryOn", {
     context: null as TryOnContext | null,
     result: null as ReturnType<typeof validateTryOnResultReference> | null,
     failureReason: null as string | null,
+    previewUrl: null as string | null,
+    guidance: null as TryOnGuidance | null,
+    occupancy: null as "none" | "single" | "multiple" | null,
+    manualCaptureAllowed: false,
+    manualCaptureSubmitted: false,
+    generationStage: null as TryOnGenerationStage | null,
   }),
   getters: {
     hasActiveAttempt: (state): boolean =>
@@ -65,6 +80,7 @@ export const useTryOnStore = defineStore("tryOn", {
       this.attemptId = attemptId;
       this.result = null;
       this.failureReason = null;
+      this.clearAcquisitionPresentation();
       let currentItem: MachineCatalogItem | null = null;
       try {
         // The route stores a stable selection only. Every start and retry
@@ -122,15 +138,45 @@ export const useTryOnStore = defineStore("tryOn", {
       return await this.startFast();
     },
     clear(): void {
-      this.cancelCurrentAttempt();
+      this.cancelCurrentAttempt("route_leave");
       this.phase = "idle";
       this.attemptId = null;
       this.context = null;
       this.result = null;
       this.failureReason = null;
+      this.clearAcquisitionPresentation();
     },
-    cancelCurrentAttempt(): void {
-      cancelCurrentOperation();
+    requestManualCapture(): boolean {
+      const owner = currentOperation;
+      if (
+        this.phase !== "acquiring" ||
+        !this.manualCaptureAllowed ||
+        this.manualCaptureSubmitted ||
+        !this.attemptId ||
+        !isCurrentOperation(owner, this.attemptId)
+      ) {
+        return false;
+      }
+      const submitted = owner.attempt?.capture() ?? false;
+      if (submitted) {
+        this.manualCaptureSubmitted = true;
+        this.manualCaptureAllowed = false;
+      }
+      return submitted;
+    },
+    cancelCurrentAttempt(reason: "user" | "route_leave" = "user"): boolean {
+      const owner = currentOperation;
+      if (!this.hasActiveAttempt || !this.attemptId || !owner) return false;
+      const attemptId = this.attemptId;
+      const sent = owner.attempt?.cancel(reason) ?? false;
+      if (isCurrentOperation(owner, attemptId)) {
+        owner.controller.abort();
+        this.phase = "canceled";
+        this.failureReason = reason;
+        this.clearAcquisitionPresentation();
+        clearOperation(owner);
+      }
+      return sent || owner.attempt === null;
     },
     applyEvent(
       attemptId: string,
@@ -145,6 +191,11 @@ export const useTryOnStore = defineStore("tryOn", {
       if (event.type === "vision.try_on.attempt.acquiring") {
         if (this.phase === "starting" || this.phase === "accepted") {
           this.phase = "acquiring";
+          this.previewUrl = event.payload.preview.reference;
+          this.guidance = event.payload.guidance;
+          this.occupancy = event.payload.occupancy;
+          this.manualCaptureAllowed = event.payload.manualCaptureAllowed;
+          this.manualCaptureSubmitted = false;
         }
         return;
       }
@@ -155,6 +206,8 @@ export const useTryOnStore = defineStore("tryOn", {
           this.phase === "acquiring"
         ) {
           this.phase = "generating";
+          this.clearAcquisitionPresentation();
+          this.generationStage = event.payload.stage;
         }
         return;
       }
@@ -167,10 +220,12 @@ export const useTryOnStore = defineStore("tryOn", {
           );
           this.phase = "completed";
           this.failureReason = null;
+          this.clearAcquisitionPresentation();
           clearOperation(currentOperation);
         } catch {
           this.phase = "failed";
           this.failureReason = "fast_failed";
+          this.clearAcquisitionPresentation();
           clearOperation(currentOperation);
         }
         return;
@@ -184,12 +239,22 @@ export const useTryOnStore = defineStore("tryOn", {
       if (event.type === "vision.try_on.attempt.canceled") {
         this.phase = "canceled";
         this.failureReason = event.payload.reason;
+        this.clearAcquisitionPresentation();
         clearOperation(currentOperation);
         return;
       }
       this.phase = "failed";
       this.failureReason = event.payload.reason;
+      this.clearAcquisitionPresentation();
       clearOperation(currentOperation);
+    },
+    clearAcquisitionPresentation(): void {
+      this.previewUrl = null;
+      this.guidance = null;
+      this.occupancy = null;
+      this.manualCaptureAllowed = false;
+      this.manualCaptureSubmitted = false;
+      this.generationStage = null;
     },
   },
 });

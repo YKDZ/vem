@@ -13,6 +13,7 @@ import {
 } from "@/runtime/machine-runtime-trace";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useSaleCapabilityStore } from "@/stores/sale-capability";
+import { useTryOnStore } from "@/stores/try-on";
 
 const DEFAULT_TOUCHSCREEN_SESSION_INACTIVITY_MS = 45_000;
 const CUSTOMER_SESSION_ROUTE_NAMES = new Set([
@@ -96,6 +97,7 @@ export function createMachineNavigationAuthority(
 ): MachineNavigationAuthority {
   const checkoutStore = useCheckoutStore(pinia);
   const saleCapabilityStore = useSaleCapabilityStore(pinia);
+  const tryOnStore = useTryOnStore(pinia);
   const trace = new MachineRuntimeTrace();
   const now = options.now ?? Date.now;
   const inactivityMs =
@@ -265,6 +267,13 @@ export function createMachineNavigationAuthority(
     }
 
     if (intent.type === "presence.departed") {
+      // Vision owns departure cancellation for the active attempt.  Leaving
+      // the route first would manufacture a second route_leave terminal and
+      // could discard the authoritative departure reason.
+      if (routeName(router) === "try-on" && tryOnStore.hasActiveAttempt) {
+        recordDecision("rejected", "try_on_departure_pending_terminal", null);
+        return;
+      }
       if (touchscreenSessionActive) {
         recordDecision("rejected", "touchscreen_session_active", null);
         return;

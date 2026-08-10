@@ -6,7 +6,7 @@ import {
   visionProfileResultPayloadSchema,
   visionReadyPayloadSchema,
   visionServerMessageSchema,
-  visionV2AttemptFailedMessageSchema,
+  visionV2AttemptCanceledMessageSchema,
   visionV2ClientMessageSchema,
   visionV2ServerMessageSchema,
   type VisionV2AttemptEvent,
@@ -87,6 +87,10 @@ export interface VisionFastAttempt {
     attemptId: string;
     visionSocketUrl: string;
   };
+  /** Requests Vision-owned acquisition without ever reading the preview stream. */
+  capture: () => boolean;
+  /** Ends this local interaction with one of the only Machine-owned reasons. */
+  cancel: (reason: "user" | "route_leave") => boolean;
   close: () => void;
 }
 
@@ -400,6 +404,7 @@ export async function openVisionFastAttempt(
   const socket = await openVisionSocket(options.url, options.timeoutMs, signal);
   let closed = false;
   let terminal = false;
+  let captureSubmitted = false;
   let terminalTimer: ReturnType<typeof setTimeout> | null = null;
   let onMessage: ((event: MessageEvent) => void) | null = null;
   let onClose: (() => void) | null = null;
@@ -429,17 +434,19 @@ export async function openVisionFastAttempt(
     cleanup();
     closeSocket(socket);
   };
-  const emitFailure = (): void => {
+  const emitCanceled = (
+    reason: "disconnect" | "timeout" | "user" | "route_leave",
+  ): void => {
     if (terminal || closed) return;
     terminal = true;
-    const failure = visionV2AttemptFailedMessageSchema.parse({
+    const canceled = visionV2AttemptCanceledMessageSchema.parse({
       protocol: VISION_V2_RUNTIME_IDENTITY.protocol,
-      type: "vision.try_on.attempt.failed",
-      messageId: createMessageId("attempt-failed"),
+      type: "vision.try_on.attempt.canceled",
+      messageId: createMessageId("attempt-canceled"),
       timestamp: nowIso(),
-      payload: { attemptId: input.attemptId, reason: "fast_failed" },
+      payload: { attemptId: input.attemptId, reason },
     });
-    onEvent(failure, resultContext);
+    onEvent(canceled, resultContext);
     close();
   };
   try {
@@ -510,15 +517,72 @@ export async function openVisionFastAttempt(
         // A malformed or unrelated late frame cannot alter the current attempt.
       }
     };
-    onClose = emitFailure;
-    onError = emitFailure;
+    onClose = () => {
+      emitCanceled("disconnect");
+    };
+    onError = () => {
+      emitCanceled("disconnect");
+    };
     socket.addEventListener("message", onMessage);
     socket.addEventListener("close", onClose);
     socket.addEventListener("error", onError);
-    terminalTimer = setTimeout(emitFailure, options.fastAttemptTimeoutMs);
+    terminalTimer = setTimeout(() => {
+      emitCanceled("timeout");
+    }, options.fastAttemptTimeoutMs);
     if (signal?.aborted) throw new Error("Vision V2 Fast attempt aborted");
     socket.send(JSON.stringify(startMessage));
-    return { attemptId: input.attemptId, resultContext, close };
+    const capture = (): boolean => {
+      if (
+        closed ||
+        terminal ||
+        captureSubmitted ||
+        socket.readyState !== WebSocket.OPEN
+      ) {
+        return false;
+      }
+      try {
+        const captureMessage = visionV2ClientMessageSchema.parse({
+          protocol: VISION_V2_RUNTIME_IDENTITY.protocol,
+          type: "vision.try_on.attempt.capture",
+          messageId: createMessageId("attempt-capture"),
+          timestamp: nowIso(),
+          payload: { attemptId: input.attemptId },
+        });
+        socket.send(JSON.stringify(captureMessage));
+        captureSubmitted = true;
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const cancel = (reason: "user" | "route_leave"): boolean => {
+      if (closed || terminal) return false;
+      try {
+        if (socket.readyState === WebSocket.OPEN) {
+          const cancelMessage = visionV2ClientMessageSchema.parse({
+            protocol: VISION_V2_RUNTIME_IDENTITY.protocol,
+            type: "vision.try_on.attempt.cancel",
+            messageId: createMessageId("attempt-cancel"),
+            timestamp: nowIso(),
+            payload: { attemptId: input.attemptId, reason },
+          });
+          socket.send(JSON.stringify(cancelMessage));
+        }
+      } finally {
+        // Route teardown cannot wait for a remote response.  Publishing one
+        // local terminal keeps the UI and listener lifecycle deterministic;
+        // any later server terminal is fenced after close.
+        emitCanceled(reason);
+      }
+      return true;
+    };
+    return {
+      attemptId: input.attemptId,
+      resultContext,
+      capture,
+      cancel,
+      close,
+    };
   } catch (error) {
     close();
     throw error;
