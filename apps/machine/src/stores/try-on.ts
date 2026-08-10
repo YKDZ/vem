@@ -56,8 +56,8 @@ export const useTryOnStore = defineStore("tryOn", {
       if (item) this.prepare(item);
       const context = this.context;
       if (!context) return false;
-      this.cancelCurrentAttempt();
       const attemptId = createAttemptId();
+      const owner = beginOperation(attemptId);
       this.phase = "starting";
       this.attemptId = attemptId;
       this.result = null;
@@ -69,6 +69,7 @@ export const useTryOnStore = defineStore("tryOn", {
         // descriptor, readiness URL, or grant.
         const catalog = useCatalogStore();
         await catalog.refresh();
+        if (!isCurrentOperation(owner, attemptId)) return false;
         currentItem = catalog.saleableVariantItemFor(
           context.catalogKey,
           context.variantId,
@@ -76,30 +77,40 @@ export const useTryOnStore = defineStore("tryOn", {
       } catch {
         currentItem = null;
       }
+      if (!isCurrentOperation(owner, attemptId)) return false;
       const vision = useVisionStore();
       if (!currentItem || !canStartFastTryOn(currentItem, vision)) {
-        if (this.attemptId === attemptId) {
+        if (isCurrentOperation(owner, attemptId)) {
           this.phase = "failed";
           this.failureReason = "fast_unavailable";
+          clearOperation(owner);
         }
         return false;
       }
       try {
         const garment = visionGarmentSourceFor(currentItem);
+        if (!isCurrentOperation(owner, attemptId)) return false;
         const attempt = await openVisionFastAttempt(
           { machineCode: useMachineStore().machineCode },
           { attemptId, variantId: currentItem.variantId, garment },
           (event, resultContext) => {
-            this.applyEvent(attemptId, event, resultContext);
+            if (isCurrentOperation(owner, attemptId)) {
+              this.applyEvent(attemptId, event, resultContext);
+            }
           },
+          owner.controller.signal,
         );
-        activeAttempt = attempt;
-        if (this.attemptId !== attemptId) attempt.close();
-        return this.attemptId === attemptId;
+        if (!isCurrentOperation(owner, attemptId)) {
+          attempt.close();
+          return false;
+        }
+        owner.attempt = attempt;
+        return true;
       } catch {
-        if (this.attemptId === attemptId) {
+        if (isCurrentOperation(owner, attemptId)) {
           this.phase = "failed";
           this.failureReason = "fast_unavailable";
+          clearOperation(owner);
         }
         return false;
       }
@@ -116,8 +127,7 @@ export const useTryOnStore = defineStore("tryOn", {
       this.failureReason = null;
     },
     cancelCurrentAttempt(): void {
-      activeAttempt?.close();
-      activeAttempt = null;
+      cancelCurrentOperation();
     },
     applyEvent(
       attemptId: string,
@@ -144,20 +154,76 @@ export const useTryOnStore = defineStore("tryOn", {
           );
           this.phase = "completed";
           this.failureReason = null;
+          clearOperation(currentOperation);
         } catch {
           this.phase = "failed";
           this.failureReason = "fast_failed";
+          clearOperation(currentOperation);
         }
         return;
       }
       if (this.phase === "completed" || this.phase === "failed") return;
       this.phase = "failed";
       this.failureReason = event.payload.reason;
+      clearOperation(currentOperation);
     },
   },
 });
 
-let activeAttempt: VisionFastAttempt | null = null;
+type OperationOwner = {
+  generation: number;
+  attemptId: string;
+  controller: AbortController;
+  attempt: VisionFastAttempt | null;
+};
+
+let nextOperationGeneration = 0;
+let currentOperation: OperationOwner | null = null;
+
+function beginOperation(attemptId: string): OperationOwner {
+  cancelCurrentOperation();
+  const owner = {
+    generation: nextOperationGeneration + 1,
+    attemptId,
+    controller: new AbortController(),
+    attempt: null,
+  };
+  nextOperationGeneration = owner.generation;
+  currentOperation = owner;
+  return owner;
+}
+
+function isCurrentOperation(
+  owner: OperationOwner | null,
+  attemptId: string,
+): owner is OperationOwner {
+  return (
+    owner !== null &&
+    currentOperation === owner &&
+    owner.attemptId === attemptId &&
+    !owner.controller.signal.aborted
+  );
+}
+
+function cancelCurrentOperation(): void {
+  if (!currentOperation) {
+    nextOperationGeneration += 1;
+    return;
+  }
+  const owner = currentOperation;
+  currentOperation = null;
+  nextOperationGeneration += 1;
+  owner.controller.abort();
+  owner.attempt?.close();
+  owner.attempt = null;
+}
+
+function clearOperation(owner: OperationOwner | null): void {
+  if (!owner || currentOperation !== owner) return;
+  currentOperation = null;
+  owner.attempt?.close();
+  owner.attempt = null;
+}
 
 function createAttemptId(): string {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();

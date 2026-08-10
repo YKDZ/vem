@@ -144,6 +144,91 @@ describe("try-on store current catalog boundary", () => {
         garment: expect.objectContaining({ template: "tshirt_long_sleeve" }),
       }),
       expect.any(Function),
+      expect.any(AbortSignal),
     );
   });
+
+  it("clear during a blocked daemon refresh prevents any future Vision start", async () => {
+    getSaleViewMock.mockResolvedValueOnce(saleView("tshirt_short_sleeve"));
+    const catalog = useCatalogStore();
+    await catalog.refresh();
+    useTryOnStore().prepare(
+      catalog.saleableVariantItemFor(`product:${productId}`, variantId)!,
+    );
+
+    const refresh = deferred<ReturnType<typeof saleView>>();
+    getSaleViewMock.mockReturnValueOnce(refresh.promise);
+    const starting = useTryOnStore().startFast();
+    useTryOnStore().clear();
+    refresh.resolve(saleView("tshirt_short_sleeve"));
+
+    await expect(starting).resolves.toBe(false);
+    expect(openFastMock).not.toHaveBeenCalled();
+    expect(useTryOnStore().phase).toBe("idle");
+    expect(useTryOnStore().attemptId).toBeNull();
+  });
+
+  it("keeps concurrent start and retry single-flight with one current Vision socket", async () => {
+    getSaleViewMock.mockResolvedValueOnce(saleView("tshirt_short_sleeve"));
+    const catalog = useCatalogStore();
+    await catalog.refresh();
+    useTryOnStore().prepare(
+      catalog.saleableVariantItemFor(`product:${productId}`, variantId)!,
+    );
+
+    const refresh = deferred<ReturnType<typeof saleView>>();
+    const close = vi.fn();
+    getSaleViewMock.mockReturnValueOnce(refresh.promise);
+    openFastMock.mockResolvedValueOnce({ close });
+
+    const first = useTryOnStore().startFast();
+    const second = useTryOnStore().retry();
+    refresh.resolve(saleView("tshirt_short_sleeve"));
+    await expect(second).resolves.toBe(true);
+
+    await expect(first).resolves.toBe(false);
+    expect(openFastMock).toHaveBeenCalledTimes(1);
+    expect(close).not.toHaveBeenCalled();
+    expect(useTryOnStore().phase).toBe("starting");
+  });
+
+  it("clear during Vision handshake aborts the pending operation and closes a late socket", async () => {
+    getSaleViewMock.mockResolvedValueOnce(saleView("tshirt_short_sleeve"));
+    const catalog = useCatalogStore();
+    await catalog.refresh();
+    useTryOnStore().prepare(
+      catalog.saleableVariantItemFor(`product:${productId}`, variantId)!,
+    );
+
+    const opening = deferred<{ close: ReturnType<typeof vi.fn> }>();
+    const signals: AbortSignal[] = [];
+    openFastMock.mockImplementationOnce((_connection, _input, _onEvent, s) => {
+      signals.push(s);
+      return opening.promise;
+    });
+    getSaleViewMock.mockResolvedValueOnce(saleView("tshirt_short_sleeve"));
+
+    const starting = useTryOnStore().startFast();
+    await vi.waitFor(() => {
+      expect(openFastMock).toHaveBeenCalledTimes(1);
+    });
+    const close = vi.fn();
+    useTryOnStore().clear();
+    opening.resolve({ close });
+
+    await expect(starting).resolves.toBe(false);
+    expect(signals[0]?.aborted).toBe(true);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(useTryOnStore().phase).toBe("idle");
+  });
 });
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}

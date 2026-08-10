@@ -117,7 +117,7 @@ describe("Fast try-on eligibility", () => {
       visionSocketUrl: "ws://127.0.0.1:65499/v2/machine",
     };
     expect(validateTryOnResultReference(valid, expected)).toEqual(valid);
-    expect(
+    expect(() =>
       validateTryOnResultReference(
         {
           ...valid,
@@ -125,7 +125,7 @@ describe("Fast try-on eligibility", () => {
         },
         { ...expected, visionSocketUrl: "wss://127.0.0.1:65499/v2/machine" },
       ),
-    ).toMatchObject({ contentType: "image/png" });
+    ).toThrow();
     expect(() =>
       validateTryOnResultReference(
         {

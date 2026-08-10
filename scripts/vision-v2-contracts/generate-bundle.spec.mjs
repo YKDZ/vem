@@ -163,3 +163,39 @@ test("publishes standalone Unicode code-point bounds with the shared corpus", ()
     }
   });
 });
+
+test("rejects the same HTTPS loopback result in TypeScript, JSON Schema, and generated Python guards", () => {
+  withTemporaryBundles(({ sourceOutput, visionRoot }) => {
+    assert.equal(generate({ sourceOutput, visionRoot }).status, 0);
+    const valid = JSON.parse(
+      readFileSync(join(sourceOutput, "fixtures", "valid.json"), "utf8"),
+    );
+    const completed = valid.find(
+      (fixture) => fixture.type === "vision.try_on.attempt.completed",
+    );
+    assert.ok(completed);
+    const httpsResult = {
+      ...completed,
+      payload: {
+        ...completed.payload,
+        result: {
+          ...completed.payload.result,
+          reference:
+            "https://127.0.0.1:65499/results/output?token=result-token",
+        },
+      },
+    };
+
+    const schema = JSON.parse(
+      readFileSync(join(sourceOutput, "vision-v2.schema.json"), "utf8"),
+    );
+    const validate = new Ajv({ strict: false, validateFormats: false }).compile(
+      schema,
+    );
+    assert.equal(validate(httpsResult), false);
+    assert.match(
+      readFileSync(join(sourceOutput, "python", "vision_v2_models.py"), "utf8"),
+      /parsed\.scheme != "http"/,
+    );
+  });
+});

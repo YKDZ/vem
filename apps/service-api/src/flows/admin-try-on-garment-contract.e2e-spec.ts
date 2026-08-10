@@ -718,6 +718,7 @@ describe("admin-try-on-garment-contract.e2e", { concurrent: false }, () => {
         purpose: "try_on_garment",
         reference: `/api/media-assets/${source.id}/content`,
       },
+      tryOnGarmentTemplate: "tshirt_short_sleeve",
     });
 
     await api
@@ -732,6 +733,65 @@ describe("admin-try-on-garment-contract.e2e", { concurrent: false }, () => {
       (retiredCatalog.body as ApiResponse<Array<Record<string, unknown>>>)
         .data[0],
     ).not.toHaveProperty("tryOnGarmentMedia");
+
+    const longSourceResponse = await api
+      .post(`/api${adminTryOnGarmentUploadContract.path}`)
+      .set(auth)
+      .attach("file", rgbaPng(768, 1024, 1), {
+        filename: "catalog-garment-long.png",
+        contentType: "image/png",
+      })
+      .expect(201);
+    const longSource = adminTryOnGarmentUploadContract.responseSchema.parse(
+      (longSourceResponse.body as ApiResponse<unknown>).data,
+    );
+    const longDraftResponse = await api
+      .post(`/api${adminCreateTryOnGarmentContract.path}`)
+      .set(auth)
+      .send({
+        productId: variant.productId,
+        colorLabel: "黑色长袖",
+        sourceMediaAssetId: longSource.id,
+        template: "tshirt_long_sleeve",
+      })
+      .expect(201);
+    const longDraft = adminCreateTryOnGarmentContract.responseSchema.parse(
+      (longDraftResponse.body as ApiResponse<unknown>).data,
+    );
+    await api
+      .post(
+        `/api${adminTryOnGarmentConfirmationContract.path.replace(":id", longDraft.id)}`,
+      )
+      .set(auth)
+      .send({})
+      .expect(201);
+    await api
+      .post(
+        `/api${adminTryOnGarmentActivationContract.path.replace(":id", longDraft.id)}`,
+      )
+      .set(auth)
+      .send({})
+      .expect(201);
+    await api
+      .put(
+        `/api${adminTryOnGarmentAssociationContract.path.replace(":id", longDraft.id)}`,
+      )
+      .set(auth)
+      .send({ variantIds: [inventory.variantId] })
+      .expect(200);
+    const longEligibleCatalog = await readCatalog();
+    expect(
+      (longEligibleCatalog.body as ApiResponse<Array<Record<string, unknown>>>)
+        .data[0],
+    ).toMatchObject({
+      variantId: inventory.variantId,
+      tryOnGarmentMedia: {
+        id: longSource.id,
+        purpose: "try_on_garment",
+        reference: `/api/media-assets/${longSource.id}/content`,
+      },
+      tryOnGarmentTemplate: "tshirt_long_sleeve",
+    });
   }, 60_000);
 
   it("serializes concurrent replacement sets for one shared garment", async () => {

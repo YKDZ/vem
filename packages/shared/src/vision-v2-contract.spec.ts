@@ -45,6 +45,28 @@ describe("Vision V2 shared contract", () => {
     }
   });
 
+  it("rejects HTTPS loopback result references without expanding the production contract", () => {
+    const completed = validVisionV2Fixtures.find(
+      (fixture) => fixture.type === "vision.try_on.attempt.completed",
+    );
+    if (!completed) throw new Error("expected completed fixture");
+
+    expect(() =>
+      visionV2MessageSchema.parse({
+        ...completed,
+        payload: {
+          ...completed.payload,
+          result: {
+            ...(completed.payload as { result: Record<string, unknown> })
+              .result,
+            reference:
+              "https://127.0.0.1:65499/results/output?token=result-token",
+          },
+        },
+      }),
+    ).toThrow();
+  });
+
   it("publishes Unicode code-point bounds to standalone JSON Schema", () => {
     const schema = visionV2MessageSchema.toJSONSchema();
     const ready = schema.oneOf.find(

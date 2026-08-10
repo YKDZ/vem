@@ -89,16 +89,15 @@ export function validateTryOnResultReference(
   }
   const socket = new URL(context.visionSocketUrl);
   if (
-    (socket.protocol !== "ws:" && socket.protocol !== "wss:") ||
+    socket.protocol !== "ws:" ||
     socket.username !== "" ||
     socket.password !== ""
   ) {
     throw new Error("Vision socket origin is invalid");
   }
-  const expectedProtocol = socket.protocol === "ws:" ? "http:" : "https:";
   const url = new URL(parsed.reference);
   if (
-    url.protocol !== expectedProtocol ||
+    url.protocol !== "http:" ||
     url.host !== socket.host ||
     url.username !== "" ||
     url.password !== "" ||

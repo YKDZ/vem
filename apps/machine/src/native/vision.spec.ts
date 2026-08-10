@@ -539,6 +539,61 @@ describe("vision native browser fallback - Fast attempt lifecycle", () => {
 
     expect(events).toEqual(["vision.try_on.attempt.completed"]);
   });
+
+  it("aborts a pending Fast handshake, closes the socket, and releases listeners exactly once", async () => {
+    vi.useFakeTimers();
+    const sockets: FakeAbortSocket[] = [];
+    class FakeAbortSocket extends EventTarget {
+      static readonly CONNECTING = 0;
+      static readonly OPEN = 1;
+      static readonly CLOSING = 2;
+      static readonly CLOSED = 3;
+      readyState = FakeAbortSocket.OPEN;
+      closeCount = 0;
+      listenerBalance = 0;
+      constructor(_url: string) {
+        super();
+        sockets.push(this);
+        setTimeout(() => this.dispatchEvent(new Event("open")), 0);
+      }
+      override addEventListener(
+        ...args: Parameters<EventTarget["addEventListener"]>
+      ): void {
+        this.listenerBalance += 1;
+        super.addEventListener(...args);
+      }
+      override removeEventListener(
+        ...args: Parameters<EventTarget["removeEventListener"]>
+      ): void {
+        this.listenerBalance -= 1;
+        super.removeEventListener(...args);
+      }
+      send(): void {
+        return undefined;
+      }
+      close(): void {
+        this.closeCount += 1;
+        this.readyState = FakeAbortSocket.CLOSED;
+        this.dispatchEvent(new Event("close"));
+      }
+    }
+    globalThis.WebSocket = FakeAbortSocket as unknown as typeof WebSocket;
+    const controller = new AbortController();
+    const opening = openVisionFastAttempt(
+      { url: "ws://127.0.0.1:65499/v2/machine" },
+      fastAttemptInput("550e8400-e29b-41d4-a716-446655440124"),
+      () => undefined,
+      controller.signal,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    controller.abort();
+    controller.abort();
+
+    await expect(opening).rejects.toThrow(/aborted/);
+    expect(sockets[0].closeCount).toBe(1);
+    expect(sockets[0].listenerBalance).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
 });
 
 function readyV2Message() {

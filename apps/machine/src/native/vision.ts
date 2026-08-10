@@ -262,37 +262,55 @@ function connectionOptions(
 async function openVisionSocket(
   url: string,
   timeoutMs = CONNECT_TIMEOUT_MS,
+  signal?: AbortSignal,
 ): Promise<WebSocket> {
   if (typeof WebSocket === "undefined") {
     throw new Error("WebSocket is not available in this runtime");
   }
+  if (signal?.aborted) throw new Error("vision websocket operation aborted");
 
   return await new Promise<WebSocket>((resolve, reject) => {
+    let settled = false;
     const socket = new WebSocket(url);
     const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
       cleanup();
       socket.close();
       reject(new Error(`connect vision websocket timed out: ${url}`));
     }, timeoutMs);
 
     const onOpen = (): void => {
+      if (settled) return;
+      settled = true;
       cleanup();
       resolve(socket);
     };
 
     const onError = (): void => {
+      if (settled) return;
+      settled = true;
       cleanup();
       reject(new Error(`connect vision websocket failed: ${url}`));
+    };
+    const onAbort = (): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      socket.close();
+      reject(new Error("vision websocket operation aborted"));
     };
 
     function cleanup(): void {
       clearTimeout(timer);
       socket.removeEventListener("open", onOpen);
       socket.removeEventListener("error", onError);
+      signal?.removeEventListener("abort", onAbort);
     }
 
     socket.addEventListener("open", onOpen);
     socket.addEventListener("error", onError);
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 
@@ -388,13 +406,20 @@ function parseVisionV2Message(value: unknown): VisionV2Message {
 async function nextVisionV2Message(
   socket: WebSocket,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<VisionV2Message> {
+  if (signal?.aborted) throw new Error("Vision V2 operation aborted");
   return await new Promise<VisionV2Message>((resolve, reject) => {
+    let settled = false;
     const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
       cleanup();
       reject(new Error("waiting for Vision V2 message timed out"));
     }, timeoutMs);
     const onMessage = (event: MessageEvent): void => {
+      if (settled) return;
+      settled = true;
       cleanup();
       if (typeof event.data !== "string") {
         reject(new Error("Vision V2 returned a non-text frame"));
@@ -407,16 +432,26 @@ async function nextVisionV2Message(
       }
     };
     const onError = (): void => {
+      if (settled) return;
+      settled = true;
       cleanup();
       reject(new Error("Vision V2 websocket error"));
+    };
+    const onAbort = (): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(new Error("Vision V2 operation aborted"));
     };
     function cleanup(): void {
       clearTimeout(timer);
       socket.removeEventListener("message", onMessage);
       socket.removeEventListener("error", onError);
+      signal?.removeEventListener("abort", onAbort);
     }
     socket.addEventListener("message", onMessage);
     socket.addEventListener("error", onError);
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 
@@ -427,16 +462,18 @@ export async function openVisionFastAttempt(
     event: VisionFastAttemptEvent,
     resultContext: VisionFastAttempt["resultContext"],
   ) => void,
+  signal?: AbortSignal,
 ): Promise<VisionFastAttempt> {
   const options = connectionOptions(connection);
   if (!options.enabled) throw new Error("视觉模块未启用，无法启动快速试衣");
-  const socket = await openVisionSocket(options.url, options.timeoutMs);
+  const socket = await openVisionSocket(options.url, options.timeoutMs, signal);
   let closed = false;
   let terminal = false;
   let terminalTimer: ReturnType<typeof setTimeout> | null = null;
   let onMessage: ((event: MessageEvent) => void) | null = null;
   let onClose: (() => void) | null = null;
   let onError: (() => void) | null = null;
+  let onAbort: (() => void) | null = null;
   const resultContext = {
     attemptId: input.attemptId,
     visionSocketUrl: options.url,
@@ -449,9 +486,11 @@ export async function openVisionFastAttempt(
     if (onMessage) socket.removeEventListener("message", onMessage);
     if (onClose) socket.removeEventListener("close", onClose);
     if (onError) socket.removeEventListener("error", onError);
+    if (onAbort) signal?.removeEventListener("abort", onAbort);
     onMessage = null;
     onClose = null;
     onError = null;
+    onAbort = null;
   };
   const close = (): void => {
     if (closed) return;
@@ -473,10 +512,14 @@ export async function openVisionFastAttempt(
     close();
   };
   try {
+    onAbort = close;
+    if (signal?.aborted) throw new Error("Vision V2 Fast attempt aborted");
+    signal?.addEventListener("abort", onAbort, { once: true });
     socket.send(
       JSON.stringify(createVisionV2HelloMessage(options.machineCode)),
     );
-    const ready = await nextVisionV2Message(socket, options.timeoutMs);
+    const ready = await nextVisionV2Message(socket, options.timeoutMs, signal);
+    if (signal?.aborted) throw new Error("Vision V2 Fast attempt aborted");
     if (ready.type !== "vision.ready") {
       throw new Error(`unexpected Vision V2 handshake message: ${ready.type}`);
     }
@@ -539,6 +582,7 @@ export async function openVisionFastAttempt(
     socket.addEventListener("close", onClose);
     socket.addEventListener("error", onError);
     terminalTimer = setTimeout(emitFailure, options.fastAttemptTimeoutMs);
+    if (signal?.aborted) throw new Error("Vision V2 Fast attempt aborted");
     socket.send(JSON.stringify(startMessage));
     return { attemptId: input.attemptId, resultContext, close };
   } catch (error) {
