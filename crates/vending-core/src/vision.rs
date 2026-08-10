@@ -5,13 +5,15 @@ use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration};
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 
-pub const VISION_PROTOCOL: &str = "vem.vision.v2";
 pub const DEFAULT_VISION_WS_URL: &str = "ws://127.0.0.1:7892/ws";
 const VISION_V2_MANIFEST: &str =
     include_str!("../../../packages/shared/generated/vision-v2/manifest.json");
 #[cfg(test)]
 const VISION_V2_VALID_FIXTURES: &str =
     include_str!("../../../packages/shared/generated/vision-v2/fixtures/valid.json");
+#[cfg(test)]
+const VISION_V2_INVALID_FIXTURES: &str =
+    include_str!("../../../packages/shared/generated/vision-v2/fixtures/invalid.json");
 
 pub type VisionSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -21,7 +23,7 @@ struct ClientEnvelope<T>
 where
     T: Serialize,
 {
-    protocol: &'static str,
+    protocol: String,
     #[serde(rename = "type")]
     message_type: &'static str,
     message_id: String,
@@ -131,30 +133,39 @@ fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
-fn message_id(prefix: &str) -> String {
+fn envelope_message_id(prefix: &str) -> String {
     format!("{prefix}-{}", uuid::Uuid::new_v4())
 }
 
 fn v2_contract_identity() -> Result<VisionV2BundleManifest, String> {
     let manifest: VisionV2BundleManifest = serde_json::from_str(VISION_V2_MANIFEST)
         .map_err(|error| format!("parse generated Vision V2 manifest failed: {error}"))?;
-    if manifest.protocol != VISION_PROTOCOL {
-        return Err("generated Vision V2 manifest protocol does not match runtime".to_string());
+    if manifest.protocol.is_empty()
+        || manifest.schema_version.is_empty()
+        || manifest.bundle_version.is_empty()
+        || manifest.bundle_digest.len() != 64
+        || !manifest
+            .bundle_digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("generated Vision V2 manifest identity is invalid".to_string());
     }
     Ok(manifest)
 }
 
-fn client_envelope<T>(message_type: &'static str, payload: T) -> ClientEnvelope<T>
+fn client_envelope<T>(message_type: &'static str, payload: T) -> Result<ClientEnvelope<T>, String>
 where
     T: Serialize,
 {
-    ClientEnvelope {
-        protocol: VISION_PROTOCOL,
+    let identity = v2_contract_identity()?;
+    Ok(ClientEnvelope {
+        protocol: identity.protocol,
         message_type,
-        message_id: message_id(message_type),
+        message_id: envelope_message_id(message_type),
         timestamp: now_iso(),
         payload,
-    }
+    })
 }
 
 async fn send_client_message<T>(
@@ -165,7 +176,7 @@ async fn send_client_message<T>(
 where
     T: Serialize,
 {
-    let content = serde_json::to_string(&client_envelope(message_type, payload))
+    let content = serde_json::to_string(&client_envelope(message_type, payload)?)
         .map_err(|error| format!("serialize vision message failed: {error}"))?;
     socket
         .send(Message::Text(content))
@@ -180,7 +191,7 @@ async fn read_server_envelope(socket: &mut VisionSocket) -> Result<ServerEnvelop
             Message::Text(text) => {
                 let envelope: ServerEnvelope = serde_json::from_str(&text)
                     .map_err(|error| format!("parse vision message failed: {error}"))?;
-                if envelope.protocol != VISION_PROTOCOL {
+                if envelope.protocol != v2_contract_identity()?.protocol {
                     return Err(format!(
                         "unsupported vision protocol: {}",
                         envelope.protocol
@@ -198,11 +209,14 @@ async fn read_server_envelope(socket: &mut VisionSocket) -> Result<ServerEnvelop
 }
 
 fn validate_server_envelope(envelope: &ServerEnvelope) -> Result<(), String> {
-    if uuid::Uuid::parse_str(&envelope.message_id).is_err() {
-        return Err("invalid vision messageId: expected UUID".to_string());
+    let message_id_chars = envelope.message_id.chars().count();
+    if message_id_chars == 0 || message_id_chars > 128 {
+        return Err("invalid vision messageId: expected 1..128 characters".to_string());
     }
-    if chrono::DateTime::parse_from_rfc3339(&envelope.timestamp).is_err() {
-        return Err("invalid vision timestamp: expected RFC3339".to_string());
+    if !envelope.timestamp.ends_with('Z')
+        || chrono::DateTime::parse_from_rfc3339(&envelope.timestamp).is_err()
+    {
+        return Err("invalid vision timestamp: expected UTC RFC3339 Z".to_string());
     }
     Ok(())
 }
@@ -356,24 +370,29 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio_tungstenite::{accept_async, tungstenite::protocol::Message};
 
-    fn generated_ready_fixture_with_runtime_identity() -> Value {
-        let mut fixture = serde_json::from_str::<Vec<Value>>(VISION_V2_VALID_FIXTURES)
+    fn generated_ready_fixture() -> Value {
+        serde_json::from_str::<Vec<Value>>(VISION_V2_VALID_FIXTURES)
             .expect("generated valid fixtures")
             .into_iter()
             .find(|message| message["type"] == "vision.ready")
-            .expect("generated ready fixture");
-        let identity = v2_contract_identity().expect("generated identity");
-        fixture["messageId"] = Value::String("550e8400-e29b-41d4-a716-446655440125".to_string());
-        fixture["payload"]["contractDigest"] = Value::String(identity.bundle_digest);
-        fixture
+            .expect("generated ready fixture")
+    }
+
+    fn generated_invalid_v1_hello_fixture() -> Value {
+        serde_json::from_str::<Vec<Value>>(VISION_V2_INVALID_FIXTURES)
+            .expect("generated invalid fixtures")
+            .into_iter()
+            .find(|fixture| fixture["name"] == "rejects-v1-protocol")
+            .and_then(|fixture| fixture.get("message").cloned())
+            .expect("generated invalid V1 fixture")
     }
 
     #[tokio::test]
-    async fn check_ready_accepts_the_generated_ready_fixture_with_runtime_identity() {
+    async fn check_ready_consumes_unmodified_shared_ready_fixture() {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("listen");
         let addr = listener.local_addr().expect("local addr");
         let ws_url = format!("ws://{addr}/");
-        let fixture = generated_ready_fixture_with_runtime_identity();
+        let fixture = generated_ready_fixture();
 
         tokio::spawn(async move {
             let (stream, _) = listener.accept().await.expect("accept");
@@ -387,12 +406,15 @@ mod tests {
 
         let ready = check_ready(&ws_url, Some("M-1".to_string()), 2000)
             .await
-            .expect("generated ready accepted");
-        assert!(ready.fast_ready);
-        assert!(ready.vision_business_ready);
+            .expect("generated ready envelope accepted");
+        // The corpus deliberately uses a placeholder digest.  It is still a
+        // valid server envelope; runtime identity comparison must withhold
+        // Fast without rewriting the source corpus.
+        assert!(!ready.fast_ready);
+        assert!(!ready.vision_business_ready);
         assert_eq!(
             ready.business_readiness_diagnostic,
-            VisionBusinessReadinessDiagnostic::Ready
+            VisionBusinessReadinessDiagnostic::ContractDigestMismatch
         );
     }
 
@@ -401,7 +423,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("listen");
         let addr = listener.local_addr().expect("local addr");
         let ws_url = format!("ws://{addr}/");
-        let mut fixture = generated_ready_fixture_with_runtime_identity();
+        let mut fixture = generated_ready_fixture();
         fixture["payload"]["schemaVersion"] = Value::String("unavailable".to_string());
         fixture["payload"]["bundleVersion"] = Value::String("unavailable".to_string());
         fixture["payload"]["contractDigest"] = Value::String("0".repeat(64));
@@ -429,6 +451,52 @@ mod tests {
             ready.business_readiness_diagnostic,
             VisionBusinessReadinessDiagnostic::ContractBundleUnavailable
         );
+    }
+
+    #[tokio::test]
+    async fn check_ready_rejects_unmodified_shared_v1_handshake_fixture() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listen");
+        let addr = listener.local_addr().expect("local addr");
+        let ws_url = format!("ws://{addr}/");
+        let fixture = generated_invalid_v1_hello_fixture();
+
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let mut ws_stream = accept_async(stream).await.expect("accept ws");
+            let _ = ws_stream.next().await.expect("next");
+            ws_stream
+                .send(Message::Text(fixture.to_string()))
+                .await
+                .expect("send generated invalid fixture");
+        });
+
+        let error = check_ready(&ws_url, None, 2000)
+            .await
+            .expect_err("V1 fixture must not pass the V2 websocket boundary");
+        assert!(error.contains("unsupported vision protocol"));
+    }
+
+    #[test]
+    fn shared_envelope_accepts_non_uuid_character_message_ids_and_only_utc_z_timestamps() {
+        let base = ServerEnvelope {
+            protocol: v2_contract_identity().expect("identity").protocol,
+            message_type: "vision.ready".to_string(),
+            message_id: "消息-id".to_string(),
+            timestamp: "2026-08-09T00:00:00.000Z".to_string(),
+            payload: serde_json::json!({}),
+        };
+        assert!(validate_server_envelope(&base).is_ok());
+
+        let too_long = ServerEnvelope {
+            message_id: "界".repeat(129),
+            ..base.clone()
+        };
+        assert!(validate_server_envelope(&too_long).is_err());
+        let offset = ServerEnvelope {
+            timestamp: "2026-08-09T00:00:00.000+00:00".to_string(),
+            ..base
+        };
+        assert!(validate_server_envelope(&offset).is_err());
     }
 
     #[tokio::test]

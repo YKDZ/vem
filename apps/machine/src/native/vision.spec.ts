@@ -110,22 +110,30 @@ describe("vision native browser fallback - self-check", () => {
 
   it("preserves contract_bundle_unavailable without promoting business readiness", async () => {
     const url = await startVisionMock("contract_bundle_unavailable");
-    const ready = await new Promise<Parameters<NonNullable<VisionProfileSubscriptionHandlers["onReady"]>>[0]>(
-      (resolve, reject) => {
-        const subscription = subscribeVisionProfiles({ url }, {
+    const ready = await new Promise<
+      Parameters<NonNullable<VisionProfileSubscriptionHandlers["onReady"]>>[0]
+    >((resolve, reject) => {
+      const subscription = subscribeVisionProfiles(
+        { url },
+        {
           onReady: (value) => {
             subscription.close();
             resolve(value);
           },
           onProfile: () => undefined,
           onError: reject,
-        });
-      },
-    );
+        },
+      );
+    });
 
     expect(ready.fastReady).toBe(false);
     expect(ready.visionBusinessReady).toBe(false);
-    expect(ready.businessReadinessDiagnostic).toBe("contract_bundle_unavailable");
+    expect(ready.businessReadinessDiagnostic).toBe(
+      "contract_bundle_unavailable",
+    );
+    expect(ready.schemaVersion).toBe("unavailable");
+    expect(ready.bundleVersion).toBe("unavailable");
+    expect(ready.contractDigest).toBe("0".repeat(64));
   });
 });
 
@@ -144,7 +152,9 @@ describe("vision native browser fallback - pushed profiles", () => {
         sockets.push(this);
         setTimeout(() => this.dispatchEvent(new Event("open")), 0);
       }
-      send(): void {}
+      send(): void {
+        return undefined;
+      }
       close(): void {
         this.dispatchEvent(new Event("close"));
       }
@@ -201,11 +211,19 @@ describe("vision native browser fallback - pushed profiles", () => {
         detectedAt: new Date().toISOString(),
         reason: "test",
         personPresent: state === "approach",
-        occupancy: { state: state === "approach" ? "single" : "none", confidence: 0.9 },
+        occupancy: {
+          state: state === "approach" ? "single" : "none",
+          confidence: 0.9,
+        },
         closeNow: false,
         close: false,
         closeTrigger: null,
-        proximity: { present: state === "approach", closeNow: false, close: false, method: "test" },
+        proximity: {
+          present: state === "approach",
+          closeNow: false,
+          close: false,
+          method: "test",
+        },
       },
     });
 
@@ -229,7 +247,12 @@ describe("vision native browser fallback - pushed profiles", () => {
 
     second.emit(ready());
     second.emit(presence("approach"));
-    expect(received).toEqual(["ready", "presence:empty", "ready", "presence:approach"]);
+    expect(received).toEqual([
+      "ready",
+      "presence:empty",
+      "ready",
+      "presence:approach",
+    ]);
     subscription.close();
   });
 

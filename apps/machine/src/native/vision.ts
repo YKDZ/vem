@@ -1,9 +1,6 @@
 import {
   DEFAULT_VISION_WS_URL,
-  VISION_V2_BUNDLE_SCHEMA_VERSION,
-  VISION_V2_BUNDLE_VERSION,
-  VISION_V2_CONTRACT_DIGEST,
-  VISION_PROTOCOL,
+  VISION_V2_RUNTIME_IDENTITY,
   visionPresenceStatusPayloadSchema,
   visionPersonDepartedPayloadSchema,
   visionProfileResultPayloadSchema,
@@ -110,16 +107,16 @@ function createMessageId(prefix: string): string {
 
 function createHelloMessage(machineCode: string | null): VisionClientMessage {
   const message = {
-    protocol: VISION_PROTOCOL,
+    protocol: VISION_V2_RUNTIME_IDENTITY.protocol,
     type: "vision.hello",
     messageId: createMessageId("hello"),
     timestamp: nowIso(),
     payload: {
       clientRole: "machine",
       ...(machineCode ? { machineCode } : {}),
-      schemaVersion: VISION_V2_BUNDLE_SCHEMA_VERSION,
-      bundleVersion: VISION_V2_BUNDLE_VERSION,
-      contractDigest: VISION_V2_CONTRACT_DIGEST,
+      schemaVersion: VISION_V2_RUNTIME_IDENTITY.schemaVersion,
+      bundleVersion: VISION_V2_RUNTIME_IDENTITY.bundleVersion,
+      contractDigest: VISION_V2_RUNTIME_IDENTITY.contractDigest,
       capabilities: [
         "profile_push",
         "presence_status",
@@ -135,10 +132,19 @@ function createHelloMessage(machineCode: string | null): VisionClientMessage {
 function normalizedVisionReady(
   ready: z.infer<typeof visionReadyPayloadSchema>,
 ): z.infer<typeof visionReadyPayloadSchema> {
+  const contractBundleUnavailable =
+    ready.businessReadinessDiagnostic === "contract_bundle_unavailable" &&
+    ready.schemaVersion === "unavailable" &&
+    ready.bundleVersion === "unavailable" &&
+    ready.contractDigest === "0".repeat(64) &&
+    !ready.fastReady &&
+    !ready.visionBusinessReady;
+  if (contractBundleUnavailable) return ready;
   const versionMatches =
-    ready.schemaVersion === VISION_V2_BUNDLE_SCHEMA_VERSION &&
-    ready.bundleVersion === VISION_V2_BUNDLE_VERSION;
-  const digestMatches = ready.contractDigest === VISION_V2_CONTRACT_DIGEST;
+    ready.schemaVersion === VISION_V2_RUNTIME_IDENTITY.schemaVersion &&
+    ready.bundleVersion === VISION_V2_RUNTIME_IDENTITY.bundleVersion;
+  const digestMatches =
+    ready.contractDigest === VISION_V2_RUNTIME_IDENTITY.contractDigest;
   if (versionMatches && digestMatches) return ready;
   return {
     ...ready,
@@ -158,7 +164,7 @@ function parseServerMessage(value: unknown): VisionServerMessage {
 
 function createPingMessage(): VisionClientMessage {
   const message = {
-    protocol: VISION_PROTOCOL,
+    protocol: VISION_V2_RUNTIME_IDENTITY.protocol,
     type: "vision.ping",
     messageId: createMessageId("ping"),
     timestamp: nowIso(),
@@ -171,7 +177,7 @@ function createTryOnStartMessage(
   input: VisionTryOnSessionInput,
 ): Extract<VisionClientMessage, { type: "vision.try_on.start" }> {
   const message = {
-    protocol: VISION_PROTOCOL,
+    protocol: VISION_V2_RUNTIME_IDENTITY.protocol,
     type: "vision.try_on.start",
     messageId: createMessageId("try-on-start"),
     timestamp: nowIso(),
@@ -189,7 +195,7 @@ function createTryOnStopMessage(
   reason: VisionTryOnStopReason,
 ): Extract<VisionClientMessage, { type: "vision.try_on.stop" }> {
   const message = {
-    protocol: VISION_PROTOCOL,
+    protocol: VISION_V2_RUNTIME_IDENTITY.protocol,
     type: "vision.try_on.stop",
     messageId: createMessageId("try-on-stop"),
     timestamp: nowIso(),

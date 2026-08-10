@@ -947,6 +947,7 @@ function validateVisionTrack(report, reportPath) {
     recommendation.manual.variantId !== recommendation.automatic.variantId;
   const vision =
     protocol &&
+    protocol.protocol === "vem.vision.v2" &&
     eventFence?.source === "installed_machine_runtime_trace_generation" &&
     typeof eventFence.runtimeGenerationId === "string" &&
     eventFence.runtimeGenerationId.length > 0 &&

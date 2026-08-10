@@ -1,11 +1,6 @@
-import {
-  VISION_V2_BUNDLE_SCHEMA_VERSION,
-  VISION_V2_BUNDLE_VERSION,
-  VISION_V2_CONTRACT_DIGEST,
-} from "@vem/shared";
+import { VISION_V2_RUNTIME_IDENTITY } from "@vem/shared";
 import {
   DEFAULT_VISION_WS_URL,
-  VISION_PROTOCOL,
   visionClientMessageSchema,
   visionServerMessageSchema,
   type VisionClientMessage,
@@ -78,16 +73,22 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-function messageId(_prefix: string): string {
+/** Transport correlation is deliberately distinct from domain event identity. */
+function envelopeMessageId(): string {
   return randomUUID();
 }
 
-function baseEnvelope(
-  prefix: string,
-): Pick<VisionServerMessage, "protocol" | "messageId" | "timestamp"> {
+function businessEventId(): string {
+  return randomUUID();
+}
+
+function baseEnvelope(): Pick<
+  VisionServerMessage,
+  "protocol" | "messageId" | "timestamp"
+> {
   return {
-    protocol: VISION_PROTOCOL,
-    messageId: messageId(prefix),
+    protocol: VISION_V2_RUNTIME_IDENTITY.protocol,
+    messageId: envelopeMessageId(),
     timestamp: nowIso(),
   };
 }
@@ -97,17 +98,22 @@ function createReadyMessage(
 ): VisionServerMessage {
   const contractBundleUnavailable = scenario === "contract_bundle_unavailable";
   const message = {
-    ...baseEnvelope("ready"),
+    ...baseEnvelope(),
     type: "vision.ready",
     payload: {
       serverName: "vem-vision-mock",
       serverVersion: "0.2.0",
-      schemaVersion: VISION_V2_BUNDLE_SCHEMA_VERSION,
-      bundleVersion: VISION_V2_BUNDLE_VERSION,
-      contractDigest:
-        scenario === "contract_digest_mismatch"
+      schemaVersion: contractBundleUnavailable
+        ? "unavailable"
+        : VISION_V2_RUNTIME_IDENTITY.schemaVersion,
+      bundleVersion: contractBundleUnavailable
+        ? "unavailable"
+        : VISION_V2_RUNTIME_IDENTITY.bundleVersion,
+      contractDigest: contractBundleUnavailable
+        ? "0".repeat(64)
+        : scenario === "contract_digest_mismatch"
           ? "f".repeat(64)
-          : VISION_V2_CONTRACT_DIGEST,
+          : VISION_V2_RUNTIME_IDENTITY.contractDigest,
       cameraReady: true,
       fastReady: !contractBundleUnavailable,
       visionBusinessReady: !contractBundleUnavailable,
@@ -128,7 +134,7 @@ function createReadyMessage(
 
 function createPongMessage(): VisionServerMessage {
   const message = {
-    ...baseEnvelope("pong"),
+    ...baseEnvelope(),
     type: "vision.pong",
     payload: {},
   } satisfies VisionServerMessage;
@@ -138,11 +144,11 @@ function createPongMessage(): VisionServerMessage {
 function createResultMessage(heightCm = 172): VisionServerMessage {
   const detectedAt = nowIso();
   const message = {
-    ...baseEnvelope("result"),
+    ...baseEnvelope(),
     type: "vision.profile_result",
     payload: {
       source: "front",
-      eventId: messageId("event"),
+      eventId: businessEventId(),
       detectedAt,
       occupancy: {
         state: "single",
@@ -177,7 +183,7 @@ function createPresenceMessage(
   const personPresent = state !== "empty";
   const payload = {
     source: "top",
-    eventId: messageId("presence-event"),
+    eventId: businessEventId(),
     state,
     detectedAt,
     reason: personPresent ? "person_present_but_not_close" : "no_person",
@@ -197,7 +203,7 @@ function createPresenceMessage(
     },
   } satisfies VisionServerMessage["payload"];
   const message = {
-    ...baseEnvelope("presence"),
+    ...baseEnvelope(),
     type: "vision.presence_status",
     payload,
   } satisfies VisionServerMessage;
@@ -210,14 +216,14 @@ function createPersonDepartedMessage(
   const detectedAt = nowIso();
   const payload = {
     source: "top",
-    eventId: messageId("departure-event"),
+    eventId: businessEventId(),
     detectedAt,
     lastSeenAt,
     reason: "left_frame",
     absenceDurationMs: 1200,
   } satisfies VisionServerMessage["payload"];
   const message = {
-    ...baseEnvelope("departure"),
+    ...baseEnvelope(),
     type: "vision.person_departed",
     payload,
   } satisfies VisionServerMessage;
@@ -231,7 +237,7 @@ function createErrorMessage(input: {
   retryable: boolean;
 }): VisionServerMessage {
   const message = {
-    ...baseEnvelope("error"),
+    ...baseEnvelope(),
     type: "vision.error",
     payload: {
       eventId: input.eventId,
@@ -245,7 +251,7 @@ function createErrorMessage(input: {
 
 function createTryOnStartedMessage(sessionId: string): VisionServerMessage {
   const message = {
-    ...baseEnvelope("try-on-started"),
+    ...baseEnvelope(),
     type: "vision.try_on.started",
     payload: {
       sessionId,
@@ -258,7 +264,7 @@ function createTryOnStartedMessage(sessionId: string): VisionServerMessage {
 
 function createTryOnStoppedMessage(sessionId: string): VisionServerMessage {
   const message = {
-    ...baseEnvelope("try-on-stopped"),
+    ...baseEnvelope(),
     type: "vision.try_on.stopped",
     payload: {
       sessionId,

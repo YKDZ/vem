@@ -1387,16 +1387,68 @@ mod tests {
     async fn vision_watch_forwards_runtime_events_over_the_persistent_session() {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("listen");
         let endpoint = format!("ws://{}/ws", listener.local_addr().expect("address"));
+        let manifest: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../packages/shared/generated/vision-v2/manifest.json"
+        ))
+        .expect("generated V2 manifest");
+        let protocol = manifest["protocol"].as_str().expect("protocol").to_string();
+        let schema_version = manifest["schemaVersion"]
+            .as_str()
+            .expect("schema version")
+            .to_string();
+        let bundle_version = manifest["bundleVersion"]
+            .as_str()
+            .expect("bundle version")
+            .to_string();
+        let contract_digest = manifest["bundleDigest"]
+            .as_str()
+            .expect("bundle digest")
+            .to_string();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.expect("accept");
             let mut socket = accept_async(stream).await.expect("websocket");
             let _ = socket.next().await.expect("hello frame").expect("hello");
-            socket.send(Message::Text(
-                r#"{"protocol":"vem.vision.v1","type":"vision.ready","messageId":"ready-1","timestamp":"2026-07-19T00:00:00.000Z","payload":{"serverName":"test","serverVersion":"1","cameraReady":true,"modelReady":true,"capabilities":["person_departed"]}}"#.into(),
-            )).await.expect("ready");
-            socket.send(Message::Text(
-                r#"{"protocol":"vem.vision.v1","type":"vision.person_departed","messageId":"departure-1","timestamp":"2026-07-19T00:00:01.000Z","payload":{"eventId":"departure-1","detectedAt":"2026-07-19T00:00:01.000Z","lastSeenAt":null}}"#.into(),
-            )).await.expect("departure");
+            socket
+                .send(Message::Text(
+                    serde_json::json!({
+                        "protocol": protocol,
+                        "type": "vision.ready",
+                        "messageId": "ready-1",
+                        "timestamp": "2026-07-19T00:00:00.000Z",
+                        "payload": {
+                            "serverName": "test",
+                            "serverVersion": "1",
+                            "schemaVersion": schema_version,
+                            "bundleVersion": bundle_version,
+                            "contractDigest": contract_digest,
+                            "cameraReady": true,
+                            "fastReady": true,
+                            "visionBusinessReady": true,
+                            "businessReadinessDiagnostic": "ready",
+                            "capabilities": ["person_departed"],
+                        },
+                    })
+                    .to_string(),
+                ))
+                .await
+                .expect("ready");
+            socket
+                .send(Message::Text(
+                    serde_json::json!({
+                        "protocol": protocol,
+                        "type": "vision.person_departed",
+                        "messageId": "departure-1",
+                        "timestamp": "2026-07-19T00:00:01.000Z",
+                        "payload": {
+                            "eventId": "departure-1",
+                            "detectedAt": "2026-07-19T00:00:01.000Z",
+                            "lastSeenAt": null,
+                        },
+                    })
+                    .to_string(),
+                ))
+                .await
+                .expect("departure");
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         });
         let (events, mut receiver) = broadcast::channel(8);

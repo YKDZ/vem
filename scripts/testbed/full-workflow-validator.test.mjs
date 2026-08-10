@@ -40,7 +40,7 @@ function visionExperienceReport() {
     health: {
       vision: {
         protocolSummary: {
-          protocol: "vem.vision.v1",
+          protocol: "vem.vision.v2",
           presenceDetectedAt: "2026-07-22T00:00:02.000Z",
           profileDetectedAt: "2026-07-22T00:00:03.000Z",
           departureDetectedAt: "2026-07-22T00:00:04.000Z",
@@ -1204,6 +1204,17 @@ describe("full workflow aggregate validator", () => {
       "vision-experience.json",
     );
     assert.equal(complete.status, "passed");
+
+    const retiredV1 = visionExperienceReport();
+    retiredV1.health.vision.protocolSummary.protocol = "vem.vision.v1";
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("visionExperience"),
+        retiredV1,
+        "vision-experience.json",
+      ).status,
+      "failed",
+    );
 
     const incomplete = visionExperienceReport();
     delete incomplete.ui.recommendationPresentation.onlineUnmatched;

@@ -62,6 +62,19 @@ test("publishes byte-stable bundles only into temporary cross-repository targets
       ),
       sourceManifest,
     );
+    const generatedRuntimeIdentity = readFileSync(
+      join(root, "packages/shared/src/generated/vision-v2-bundle.ts"),
+      "utf8",
+    );
+    assert.match(generatedRuntimeIdentity, /VISION_V2_RUNTIME_IDENTITY/);
+    assert.match(
+      generatedRuntimeIdentity,
+      /protocol: visionV2BundleManifest\.protocol/,
+    );
+    assert.match(
+      generatedRuntimeIdentity,
+      /contractDigest: visionV2BundleManifest\.bundleDigest/,
+    );
     assert.equal(generate({ sourceOutput, visionRoot, check: true }).status, 0);
   });
 });
