@@ -38,11 +38,31 @@ describe("Vision V2 shared contract", () => {
       (fixture) => fixture.type === "vision.try_on.attempt.acquiring",
     );
     expect(acquiring.map((fixture) => fixture.payload)).toEqual([
-      expect.objectContaining({ occupancy: "none", guidance: "no_person", manualCaptureAllowed: false }),
-      expect.objectContaining({ occupancy: "multiple", guidance: "multiple_people", manualCaptureAllowed: false }),
-      expect.objectContaining({ occupancy: "single", guidance: "align", manualCaptureAllowed: false }),
-      expect.objectContaining({ occupancy: "single", guidance: "hold_still", manualCaptureAllowed: true }),
-      expect.objectContaining({ occupancy: "single", guidance: "ready", manualCaptureAllowed: false }),
+      expect.objectContaining({
+        occupancy: "none",
+        guidance: "no_person",
+        manualCaptureAllowed: false,
+      }),
+      expect.objectContaining({
+        occupancy: "multiple",
+        guidance: "multiple_people",
+        manualCaptureAllowed: false,
+      }),
+      expect.objectContaining({
+        occupancy: "single",
+        guidance: "align",
+        manualCaptureAllowed: false,
+      }),
+      expect.objectContaining({
+        occupancy: "single",
+        guidance: "hold_still",
+        manualCaptureAllowed: true,
+      }),
+      expect.objectContaining({
+        occupancy: "single",
+        guidance: "ready",
+        manualCaptureAllowed: false,
+      }),
     ]);
   });
 
@@ -50,12 +70,23 @@ describe("Vision V2 shared contract", () => {
     for (const [direction, fixtures] of Object.entries({
       client: invalidVisionV2ClientFixtures,
       server: invalidVisionV2ServerFixtures,
-    }) as Array<[keyof typeof validators, readonly { base: object; message: object; field: string }[]]>) {
+    }) as Array<
+      [
+        keyof typeof validators,
+        readonly { base: object; message: object; field: string }[],
+      ]
+    >) {
       const schema = validators[direction].toJSONSchema();
-      const ajv = new Ajv({ strict: false, validateFormats: false }).compile(schema);
+      const ajv = new Ajv({ strict: false, validateFormats: false }).compile(
+        schema,
+      );
       for (const fixture of fixtures) {
-        expect(validators[direction].safeParse(fixture.base).success).toBe(true);
-        expect(validators[direction].safeParse(fixture.message).success).toBe(false);
+        expect(validators[direction].safeParse(fixture.base).success).toBe(
+          true,
+        );
+        expect(validators[direction].safeParse(fixture.message).success).toBe(
+          false,
+        );
         expect(ajv(fixture.message)).toBe(false);
       }
     }

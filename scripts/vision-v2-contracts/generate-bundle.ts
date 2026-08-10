@@ -1,3 +1,15 @@
+import { createHash } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import {
   invalidVisionV2ClientFixtures,
   invalidVisionV2ServerFixtures,
@@ -11,17 +23,6 @@ import {
   visionV2ClientMessageSchema,
   visionV2ServerMessageSchema,
 } from "../../packages/shared/src/schemas/vision-v2";
-import { createHash } from "node:crypto";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 
 type Mode = "write" | "check";
 
@@ -191,7 +192,10 @@ _CLIENT_ADAPTER = TypeAdapter(VisionV2ClientEnvelope)
 _SERVER_ADAPTER = TypeAdapter(VisionV2ServerEnvelope)
 
 def _parse(value: Any, schema: dict[str, Any], validator: Draft202012Validator, adapter: TypeAdapter) -> Any:
-    normalized = _normalize_json_integers(value, schema)
+    try:
+        normalized = _normalize_json_integers(value, schema)
+    except ValueError as error:
+        raise ValueError(f"invalid {PROTOCOL} message: {error}") from error
     error = next(iter(validator.iter_errors(normalized)), None)
     if error is not None:
         raise ValueError(f"invalid {PROTOCOL} message: {error.message}")
@@ -208,18 +212,30 @@ def parse_server_message(value: Any) -> VisionV2ServerEnvelope:
 
 function bundleFiles(): Map<string, string> {
   type SchemaRecord = Record<string, unknown>;
-  const isRecord = (value: unknown): value is SchemaRecord =>
-    typeof value === "object" && value !== null && !Array.isArray(value);
-  const clientSchema = visionV2ClientMessageSchema.toJSONSchema() as unknown as SchemaRecord;
-  const serverSchema = visionV2ServerMessageSchema.toJSONSchema() as unknown as SchemaRecord;
+  const clientSchema =
+    visionV2ClientMessageSchema.toJSONSchema() as unknown as SchemaRecord;
+  const serverSchema =
+    visionV2ServerMessageSchema.toJSONSchema() as unknown as SchemaRecord;
   return new Map([
     ["__init__.py", "# @generated VEM Vision V2 bundle package\n"],
     ["vision-v2.client.schema.json", `${canonicalJson(clientSchema)}\n`],
     ["vision-v2.server.schema.json", `${canonicalJson(serverSchema)}\n`],
-    ["fixtures/client-valid.json", `${canonicalJson(validVisionV2ClientFixtures)}\n`],
-    ["fixtures/client-invalid.json", `${canonicalJson(invalidVisionV2ClientFixtures)}\n`],
-    ["fixtures/server-valid.json", `${canonicalJson(validVisionV2ServerFixtures)}\n`],
-    ["fixtures/server-invalid.json", `${canonicalJson(invalidVisionV2ServerFixtures)}\n`],
+    [
+      "fixtures/client-valid.json",
+      `${canonicalJson(validVisionV2ClientFixtures)}\n`,
+    ],
+    [
+      "fixtures/client-invalid.json",
+      `${canonicalJson(invalidVisionV2ClientFixtures)}\n`,
+    ],
+    [
+      "fixtures/server-valid.json",
+      `${canonicalJson(validVisionV2ServerFixtures)}\n`,
+    ],
+    [
+      "fixtures/server-invalid.json",
+      `${canonicalJson(invalidVisionV2ServerFixtures)}\n`,
+    ],
     ["python/__init__.py", "# @generated VEM Vision V2 Python models\n"],
     ["python/vision_v2_models.py", generatedPythonModels()],
   ]);

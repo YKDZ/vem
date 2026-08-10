@@ -221,11 +221,36 @@ const acquiringPayloadBase = {
 
 /** Enumerated on-wire truth table, shared identically by Zod, JSON Schema and Python. */
 const visionV2AttemptAcquiringPayloadSchema = z.union([
-  z.strictObject({ ...acquiringPayloadBase, occupancy: z.literal("none"), guidance: z.literal("no_person"), manualCaptureAllowed: z.literal(false) }),
-  z.strictObject({ ...acquiringPayloadBase, occupancy: z.literal("multiple"), guidance: z.literal("multiple_people"), manualCaptureAllowed: z.literal(false) }),
-  z.strictObject({ ...acquiringPayloadBase, occupancy: z.literal("single"), guidance: z.literal("align"), manualCaptureAllowed: z.literal(false) }),
-  z.strictObject({ ...acquiringPayloadBase, occupancy: z.literal("single"), guidance: z.literal("hold_still"), manualCaptureAllowed: z.literal(true) }),
-  z.strictObject({ ...acquiringPayloadBase, occupancy: z.literal("single"), guidance: z.literal("ready"), manualCaptureAllowed: z.literal(false) }),
+  z.strictObject({
+    ...acquiringPayloadBase,
+    occupancy: z.literal("none"),
+    guidance: z.literal("no_person"),
+    manualCaptureAllowed: z.literal(false),
+  }),
+  z.strictObject({
+    ...acquiringPayloadBase,
+    occupancy: z.literal("multiple"),
+    guidance: z.literal("multiple_people"),
+    manualCaptureAllowed: z.literal(false),
+  }),
+  z.strictObject({
+    ...acquiringPayloadBase,
+    occupancy: z.literal("single"),
+    guidance: z.literal("align"),
+    manualCaptureAllowed: z.literal(false),
+  }),
+  z.strictObject({
+    ...acquiringPayloadBase,
+    occupancy: z.literal("single"),
+    guidance: z.literal("hold_still"),
+    manualCaptureAllowed: z.literal(true),
+  }),
+  z.strictObject({
+    ...acquiringPayloadBase,
+    occupancy: z.literal("single"),
+    guidance: z.literal("ready"),
+    manualCaptureAllowed: z.literal(false),
+  }),
 ]);
 
 export const visionV2AttemptAcquiringMessageSchema = envelopeBaseSchema.extend({
@@ -255,11 +280,7 @@ export const visionV2AttemptFailedMessageSchema = envelopeBaseSchema.extend({
   type: z.literal("vision.try_on.attempt.failed"),
   payload: z.strictObject({
     attemptId: nonSentinelUuidSchema,
-    reason: z.enum([
-      "garment_rejected",
-      "fast_failed",
-      "fast_unavailable",
-    ]),
+    reason: z.enum(["garment_rejected", "fast_failed", "fast_unavailable"]),
   }),
 });
 

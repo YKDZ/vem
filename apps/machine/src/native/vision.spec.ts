@@ -537,6 +537,83 @@ describe("vision native browser fallback - Fast attempt lifecycle", () => {
     expect(events).toEqual(["vision.try_on.attempt.completed"]);
   });
 
+  it("consumes the production acquiring-to-generating-to-canceled sequence exactly once and ignores a reverse-direction frame", async () => {
+    vi.useFakeTimers();
+    const sockets: FakeLifecycleSocket[] = [];
+    class FakeLifecycleSocket extends EventTarget {
+      static readonly CONNECTING = 0;
+      static readonly OPEN = 1;
+      static readonly CLOSING = 2;
+      static readonly CLOSED = 3;
+      readyState = FakeLifecycleSocket.OPEN;
+      constructor(_url: string) {
+        super();
+        sockets.push(this);
+        setTimeout(() => this.dispatchEvent(new Event("open")), 0);
+      }
+      send(): void {}
+      close(): void {
+        this.readyState = FakeLifecycleSocket.CLOSED;
+      }
+      emit(message: object): void {
+        this.dispatchEvent(
+          new MessageEvent("message", { data: JSON.stringify(message) }),
+        );
+      }
+    }
+    globalThis.WebSocket = FakeLifecycleSocket as unknown as typeof WebSocket;
+    const attemptId = "550e8400-e29b-41d4-a716-446655440124";
+    const events: string[] = [];
+    const opening = openVisionFastAttempt(
+      { url: "ws://127.0.0.1:65499/v2/machine" },
+      fastAttemptInput(attemptId),
+      (event) => events.push(event.type),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    sockets[0].emit(readyV2Message());
+    await opening;
+    const envelope = (type: string, payload: object) => ({
+      protocol: "vem.vision.v2",
+      type,
+      messageId: crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
+      payload,
+    });
+    sockets[0].emit(envelope("vision.hello", readyV2Message().payload));
+    sockets[0].emit(
+      envelope("vision.try_on.attempt.acquiring", {
+        attemptId,
+        preview: {
+          reference:
+            "http://127.0.0.1:65000/v2/try-on/acquisition/preview.mjpeg?token=preview-token",
+          streamType: "mjpeg",
+        },
+        occupancy: "single",
+        guidance: "hold_still",
+        manualCaptureAllowed: true,
+      }),
+    );
+    sockets[0].emit(
+      envelope("vision.try_on.attempt.generating", {
+        attemptId,
+        stage: "preparing",
+      }),
+    );
+    sockets[0].emit(
+      envelope("vision.try_on.attempt.canceled", {
+        attemptId,
+        reason: "replaced",
+      }),
+    );
+    sockets[0].emit(completedV2Message(attemptId));
+
+    expect(events).toEqual([
+      "vision.try_on.attempt.acquiring",
+      "vision.try_on.attempt.generating",
+      "vision.try_on.attempt.canceled",
+    ]);
+  });
+
   it("aborts a pending Fast handshake, closes the socket, and releases listeners exactly once", async () => {
     vi.useFakeTimers();
     const sockets: FakeAbortSocket[] = [];

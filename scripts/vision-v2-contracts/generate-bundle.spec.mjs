@@ -131,13 +131,16 @@ test("publishes standalone Unicode code-point bounds with the shared corpus", ()
   withTemporaryBundles(({ sourceOutput, visionRoot }) => {
     assert.equal(generate({ sourceOutput, visionRoot }).status, 0);
     const schema = JSON.parse(
-      readFileSync(join(sourceOutput, "vision-v2.schema.json"), "utf8"),
+      readFileSync(join(sourceOutput, "vision-v2.server.schema.json"), "utf8"),
     );
     const valid = JSON.parse(
-      readFileSync(join(sourceOutput, "fixtures", "valid.json"), "utf8"),
+      readFileSync(join(sourceOutput, "fixtures", "server-valid.json"), "utf8"),
     );
     const invalid = JSON.parse(
-      readFileSync(join(sourceOutput, "fixtures", "invalid.json"), "utf8"),
+      readFileSync(
+        join(sourceOutput, "fixtures", "server-invalid.json"),
+        "utf8",
+      ),
     );
     const ready = schema.oneOf.find(
       (branch) => branch.properties.type.const === "vision.ready",
@@ -168,7 +171,7 @@ test("rejects the same HTTPS loopback result in TypeScript, JSON Schema, and gen
   withTemporaryBundles(({ sourceOutput, visionRoot }) => {
     assert.equal(generate({ sourceOutput, visionRoot }).status, 0);
     const valid = JSON.parse(
-      readFileSync(join(sourceOutput, "fixtures", "valid.json"), "utf8"),
+      readFileSync(join(sourceOutput, "fixtures", "server-valid.json"), "utf8"),
     );
     const completed = valid.find(
       (fixture) => fixture.type === "vision.try_on.attempt.completed",
@@ -187,7 +190,7 @@ test("rejects the same HTTPS loopback result in TypeScript, JSON Schema, and gen
     };
 
     const schema = JSON.parse(
-      readFileSync(join(sourceOutput, "vision-v2.schema.json"), "utf8"),
+      readFileSync(join(sourceOutput, "vision-v2.server.schema.json"), "utf8"),
     );
     const validate = new Ajv({ strict: false, validateFormats: false }).compile(
       schema,

@@ -41,6 +41,10 @@ const FORBIDDEN_PATTERNS = Object.freeze([
     pattern: /\bvision[.]try_on[.](?:start|stop|started|stopped)\b/,
   },
   {
+    category: "obsolete-try-on-progress-event",
+    pattern: /\bvision[.]try_on[.]attempt[.]progress\b/,
+  },
+  {
     category: "legacy-try-on-client",
     pattern:
       /\b(?:openVisionTryOnSession|VisionTryOnSession|useTryOnPreview)\b/,

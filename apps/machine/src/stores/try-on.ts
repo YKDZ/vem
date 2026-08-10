@@ -179,7 +179,8 @@ export const useTryOnStore = defineStore("tryOn", {
         this.phase === "completed" ||
         this.phase === "failed" ||
         this.phase === "canceled"
-      ) return;
+      )
+        return;
       if (event.type === "vision.try_on.attempt.canceled") {
         this.phase = "canceled";
         this.failureReason = event.payload.reason;

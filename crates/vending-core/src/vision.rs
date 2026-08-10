@@ -9,11 +9,11 @@ pub const DEFAULT_VISION_WS_URL: &str = "ws://127.0.0.1:7892/ws";
 const VISION_V2_MANIFEST: &str =
     include_str!("../../../packages/shared/generated/vision-v2/manifest.json");
 #[cfg(test)]
-const VISION_V2_VALID_FIXTURES: &str =
-    include_str!("../../../packages/shared/generated/vision-v2/fixtures/valid.json");
+const VISION_V2_SERVER_VALID_FIXTURES: &str =
+    include_str!("../../../packages/shared/generated/vision-v2/fixtures/server-valid.json");
 #[cfg(test)]
-const VISION_V2_INVALID_FIXTURES: &str =
-    include_str!("../../../packages/shared/generated/vision-v2/fixtures/invalid.json");
+const VISION_V2_SERVER_INVALID_FIXTURES: &str =
+    include_str!("../../../packages/shared/generated/vision-v2/fixtures/server-invalid.json");
 
 pub type VisionSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -424,7 +424,7 @@ mod tests {
     use tokio_tungstenite::{accept_async, tungstenite::protocol::Message};
 
     fn generated_ready_fixture() -> Value {
-        serde_json::from_str::<Vec<Value>>(VISION_V2_VALID_FIXTURES)
+        serde_json::from_str::<Vec<Value>>(VISION_V2_SERVER_VALID_FIXTURES)
             .expect("generated valid fixtures")
             .into_iter()
             .find(|message| message["type"] == "vision.ready")
@@ -432,16 +432,16 @@ mod tests {
     }
 
     fn generated_invalid_unsupported_protocol_fixture() -> Value {
-        serde_json::from_str::<Vec<Value>>(VISION_V2_INVALID_FIXTURES)
+        serde_json::from_str::<Vec<Value>>(VISION_V2_SERVER_INVALID_FIXTURES)
             .expect("generated invalid fixtures")
             .into_iter()
-            .find(|fixture| fixture["name"] == "rejects-unsupported-protocol")
+            .find(|fixture| fixture["name"] == "rejects-server-protocol")
             .and_then(|fixture| fixture.get("message").cloned())
             .expect("generated unsupported-protocol fixture")
     }
 
     fn generated_invalid_fixture(name: &str) -> Value {
-        serde_json::from_str::<Vec<Value>>(VISION_V2_INVALID_FIXTURES)
+        serde_json::from_str::<Vec<Value>>(VISION_V2_SERVER_INVALID_FIXTURES)
             .expect("generated invalid fixtures")
             .into_iter()
             .find(|fixture| fixture["name"] == name)
@@ -485,7 +485,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("listen");
         let addr = listener.local_addr().expect("local addr");
         let ws_url = format!("ws://{addr}/");
-        let fixture = serde_json::from_str::<Vec<Value>>(VISION_V2_VALID_FIXTURES)
+        let fixture = serde_json::from_str::<Vec<Value>>(VISION_V2_SERVER_VALID_FIXTURES)
             .expect("generated valid fixtures")
             .into_iter()
             .find(|message| {
@@ -519,10 +519,7 @@ mod tests {
 
     #[tokio::test]
     async fn check_ready_rejects_unmodified_astral_shared_over_limit_fixtures() {
-        for name in [
-            "rejects-message-id-code-point-over-limit",
-            "rejects-capability-code-point-over-limit",
-        ] {
+        for name in ["rejects-server-unicode-code-point-over-limit"] {
             let listener = TcpListener::bind("127.0.0.1:0").await.expect("listen");
             let addr = listener.local_addr().expect("local addr");
             let ws_url = format!("ws://{addr}/");
