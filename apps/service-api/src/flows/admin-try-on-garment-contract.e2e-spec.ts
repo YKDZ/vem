@@ -647,6 +647,7 @@ describe("admin-try-on-garment-contract.e2e", { concurrent: false }, () => {
         contentType: "image/png",
       })
       .expect(201);
+    expect(uploadResponse.status).toBe(201);
     const source = adminTryOnGarmentUploadContract.responseSchema.parse(
       (uploadResponse.body as ApiResponse<unknown>).data,
     );
@@ -737,11 +738,17 @@ describe("admin-try-on-garment-contract.e2e", { concurrent: false }, () => {
     const longSourceResponse = await api
       .post(`/api${adminTryOnGarmentUploadContract.path}`)
       .set(auth)
-      .attach("file", rgbaPng(768, 1024, 1), {
+      .attach("file", rgbaPng(768, 1024, 0, { foregroundRgb: [180, 40, 20] }), {
         filename: "catalog-garment-long.png",
         contentType: "image/png",
       })
       .expect(201);
+    expect(longSourceResponse.status).toBe(201);
+    expect(
+      adminTryOnGarmentUploadContract.responseSchema.parse(
+        (longSourceResponse.body as ApiResponse<unknown>).data,
+      ).sha256,
+    ).not.toBe(source.sha256);
     const longSource = adminTryOnGarmentUploadContract.responseSchema.parse(
       (longSourceResponse.body as ApiResponse<unknown>).data,
     );
@@ -1459,7 +1466,12 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function rgbaPng(width: number, height: number, alpha: number): Buffer {
+function rgbaPng(
+  width: number,
+  height: number,
+  alpha: number,
+  options: { foregroundRgb?: readonly [number, number, number] } = {},
+): Buffer {
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(width, 0);
   ihdr.writeUInt32BE(height, 4);
@@ -1472,7 +1484,8 @@ function rgbaPng(width: number, height: number, alpha: number): Buffer {
       pixels[offset + 1 + pixel * 4 + 3] = alpha;
     }
   }
-  if (alpha === 0) {
+  if (alpha === 0 || options.foregroundRgb) {
+    const foregroundRgb = options.foregroundRgb ?? [20, 50, 180];
     for (
       let row = Math.floor(height / 4);
       row < Math.ceil((height * 3) / 4);
@@ -1485,9 +1498,9 @@ function rgbaPng(width: number, height: number, alpha: number): Buffer {
         pixel += 1
       ) {
         const pixelOffset = offset + 1 + pixel * 4;
-        pixels[pixelOffset] = 20;
-        pixels[pixelOffset + 1] = 50;
-        pixels[pixelOffset + 2] = 180;
+        pixels[pixelOffset] = foregroundRgb[0];
+        pixels[pixelOffset + 1] = foregroundRgb[1];
+        pixels[pixelOffset + 2] = foregroundRgb[2];
         pixels[pixelOffset + 3] = 255;
       }
     }
