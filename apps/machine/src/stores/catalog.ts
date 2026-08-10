@@ -443,10 +443,13 @@ export const useCatalogStore = defineStore("catalog", {
         throw error;
       }
     },
-    startAutoRefresh(intervalMs = DEFAULT_AUTO_REFRESH_INTERVAL_MS): void {
+    startAutoRefresh(
+      intervalMs = DEFAULT_AUTO_REFRESH_INTERVAL_MS,
+      refreshImmediately = true,
+    ): void {
       autoRefreshConsumers += 1;
       this.autoRefreshEnabled = true;
-      void this.refresh().catch(() => undefined);
+      if (refreshImmediately) void this.refresh().catch(() => undefined);
       if (autoRefreshTimer !== null) return;
       autoRefreshTimer = setInterval(() => {
         void this.refresh().catch(() => undefined);

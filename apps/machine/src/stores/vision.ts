@@ -106,10 +106,8 @@ export const useVisionStore = defineStore("vision", {
       this.online = status.online;
       this.message = status.message;
       this.updatedAt = status.updatedAt ?? new Date().toISOString();
-      if (!status.enabled) {
-        this.tryOnCapability = "degraded";
-        this.fastReady = false;
-        this.visionBusinessReady = false;
+      if (!status.enabled || !status.online) {
+        this.clearTryOnReadiness();
         this.clearLatestDiagnosticPayload();
         return;
       }
@@ -179,7 +177,12 @@ export const useVisionStore = defineStore("vision", {
       this.visionBusinessReady = result.data.visionBusinessReady;
     },
     markTryOnCapabilityDegraded(): void {
+      this.clearTryOnReadiness();
+    },
+    clearTryOnReadiness(): void {
       this.tryOnCapability = "degraded";
+      this.fastReady = false;
+      this.visionBusinessReady = false;
     },
     clearLatestDiagnosticPayload(): void {
       this.latestDiagnosticPayload = null;

@@ -16,6 +16,12 @@ export type VisionFastReadiness = {
   visionBusinessReady: boolean;
 };
 
+export type VisionTryOnResultContext = {
+  attemptId: string;
+  /** The exact socket endpoint that accepted this attempt. */
+  visionSocketUrl: string;
+};
+
 /** The platform's active association is represented by a valid garment descriptor. */
 export function canStartFastTryOn(
   item: MachineCatalogItem | null | undefined,
@@ -24,12 +30,18 @@ export function canStartFastTryOn(
   if (!item || !readiness.fastReady || !readiness.visionBusinessReady) {
     return false;
   }
-  if (!isTshirt(item.categoryName) || item.slotSalesState !== "sale_ready") {
+  if (item.slotSalesState !== "sale_ready") {
     return false;
   }
   const media = item.tryOnGarmentMedia;
   if (!media || media.purpose !== "try_on_garment") return false;
   if (media.contentType !== "image/png") return false;
+  if (
+    item.tryOnGarmentTemplate !== "tshirt_short_sleeve" &&
+    item.tryOnGarmentTemplate !== "tshirt_long_sleeve"
+  ) {
+    return false;
+  }
   return isReadyLoopbackMediaUrl(item.tryOnGarmentReadyUrl);
 }
 
@@ -44,12 +56,17 @@ export function visionGarmentSourceFor(
   if (!readyUrl || !isReadyLoopbackMediaUrl(readyUrl)) {
     throw new Error("try-on garment media is not ready");
   }
-  // The daemon grant is an opaque read credential. V2 intentionally carries
-  // it in the generated contract's token field without exposing the grant in
-  // any durable Machine state or diagnostics.
+  if (
+    item.tryOnGarmentTemplate !== "tshirt_short_sleeve" &&
+    item.tryOnGarmentTemplate !== "tshirt_long_sleeve"
+  ) {
+    throw new Error("try-on garment template is invalid");
+  }
+  // The daemon grant is an opaque read credential. The V2 source field names
+  // its query credential `token`; it is created only for this start message
+  // and is never retained by the store or diagnostics.
   const url = new URL(readyUrl);
-  const credential =
-    url.searchParams.get("token") ?? url.searchParams.get("grant");
+  const credential = url.searchParams.get("grant");
   if (!credential) throw new Error("try-on garment media grant is missing");
   url.search = `?token=${credential}`;
   return visionV2GarmentSourceSchema.parse({
@@ -58,66 +75,48 @@ export function visionGarmentSourceFor(
     digest: media.digest,
     contentType: media.contentType,
     byteSize: media.byteSize,
-    template: item.tryOnGarmentTemplate ?? "tshirt_short_sleeve",
+    template: item.tryOnGarmentTemplate,
   });
 }
 
 export function validateTryOnResultReference(
   value: unknown,
+  context: VisionTryOnResultContext,
 ): VisionV2ResultReference {
   const parsed = visionV2ResultReferenceSchema.parse(value);
+  if (parsed.reference.includes("%")) {
+    throw new Error("Vision returned an unsafe try-on result reference");
+  }
+  const socket = new URL(context.visionSocketUrl);
+  if (
+    (socket.protocol !== "ws:" && socket.protocol !== "wss:") ||
+    socket.username !== "" ||
+    socket.password !== ""
+  ) {
+    throw new Error("Vision socket origin is invalid");
+  }
+  const expectedProtocol = socket.protocol === "ws:" ? "http:" : "https:";
   const url = new URL(parsed.reference);
   if (
-    url.protocol !== "http:" ||
-    !["127.0.0.1", "localhost", "[::1]", "::1"].includes(
-      url.hostname.toLowerCase(),
-    ) ||
-    !/^\/results\/[A-Za-z0-9._-]+$/.test(url.pathname) ||
-    url.pathname.includes("%") ||
-    url.searchParams.get("token") === null ||
-    url.searchParams.size !== 1
+    url.protocol !== expectedProtocol ||
+    url.host !== socket.host ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.hash !== "" ||
+    url.pathname !== `/v2/try-on/results/${context.attemptId}` ||
+    !/^\?token=[A-Za-z0-9_-]{1,128}$/.test(url.search)
   ) {
     throw new Error("Vision returned an unsafe try-on result reference");
   }
   return parsed;
 }
 
-function isTshirt(categoryName: string | null): boolean {
-  if (!categoryName) return false;
-  const normalized = categoryName.trim().toLowerCase();
-  return (
-    normalized === "t恤" || normalized === "t-shirt" || normalized === "tshirt"
-  );
-}
-
 function isReadyLoopbackMediaUrl(value: string | null | undefined): boolean {
   if (!value) return false;
   try {
-    const url = new URL(value);
-    if (
-      url.protocol !== "http:" ||
-      !["127.0.0.1", "localhost", "[::1]", "::1"].includes(
-        url.hostname.toLowerCase(),
-      )
-    ) {
-      return false;
-    }
     managedMediaLoopbackUrlSchema.parse(value);
     return true;
   } catch {
-    try {
-      const url = new URL(value);
-      return (
-        url.protocol === "http:" &&
-        ["127.0.0.1", "localhost", "[::1]", "::1"].includes(
-          url.hostname.toLowerCase(),
-        ) &&
-        url.pathname.startsWith("/media/") &&
-        (url.searchParams.has("token") || url.searchParams.has("grant")) &&
-        url.searchParams.size === 1
-      );
-    } catch {
-      return false;
-    }
+    return false;
   }
 }

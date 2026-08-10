@@ -1685,6 +1685,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         tryOnGarmentMediaAssetDigest: tryOnGarmentMediaAssets.sha256,
         tryOnGarmentMediaAssetContentType: tryOnGarmentMediaAssets.contentType,
         tryOnGarmentMediaAssetByteSize: tryOnGarmentMediaAssets.byteSize,
+        tryOnGarmentTemplate: tryOnGarments.template,
         categoryId: products.categoryId,
         categoryName: productCategories.name,
         sku: productVariants.sku,
@@ -1793,50 +1794,72 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     const catalogRevision = createHash("sha256")
       .update(JSON.stringify(descriptorInputs))
       .digest("hex");
-    return rows.map((row) => ({
-      ...row,
-      coverImageUrl: this.machineManagedMediaReference(
-        row.coverImageMediaAssetId,
-      ),
-      ...(this.machineManagedMediaDescriptor(
-        row.coverImageMediaAssetId,
-        row.coverImageMediaAssetDigest,
-        row.coverImageMediaAssetContentType,
-        row.coverImageMediaAssetByteSize,
-        "product_display_image",
-        catalogRevision,
-      )
-        ? {
-            coverImageMedia: this.machineManagedMediaDescriptor(
-              row.coverImageMediaAssetId,
-              row.coverImageMediaAssetDigest,
-              row.coverImageMediaAssetContentType,
-              row.coverImageMediaAssetByteSize,
-              "product_display_image",
-              catalogRevision,
-            ),
-          }
-        : {}),
-      ...(this.machineManagedMediaDescriptor(
+    return rows.map((row) => {
+      const tryOnGarment = this.machineTryOnGarmentProjection(
         row.tryOnGarmentMediaAssetId,
         row.tryOnGarmentMediaAssetDigest,
         row.tryOnGarmentMediaAssetContentType,
         row.tryOnGarmentMediaAssetByteSize,
-        "try_on_garment",
+        row.tryOnGarmentTemplate,
         catalogRevision,
-      )
-        ? {
-            tryOnGarmentMedia: this.machineManagedMediaDescriptor(
-              row.tryOnGarmentMediaAssetId,
-              row.tryOnGarmentMediaAssetDigest,
-              row.tryOnGarmentMediaAssetContentType,
-              row.tryOnGarmentMediaAssetByteSize,
-              "try_on_garment",
-              catalogRevision,
-            ),
-          }
-        : {}),
-    }));
+      );
+      return {
+        ...row,
+        coverImageUrl: this.machineManagedMediaReference(
+          row.coverImageMediaAssetId,
+        ),
+        ...(this.machineManagedMediaDescriptor(
+          row.coverImageMediaAssetId,
+          row.coverImageMediaAssetDigest,
+          row.coverImageMediaAssetContentType,
+          row.coverImageMediaAssetByteSize,
+          "product_display_image",
+          catalogRevision,
+        )
+          ? {
+              coverImageMedia: this.machineManagedMediaDescriptor(
+                row.coverImageMediaAssetId,
+                row.coverImageMediaAssetDigest,
+                row.coverImageMediaAssetContentType,
+                row.coverImageMediaAssetByteSize,
+                "product_display_image",
+                catalogRevision,
+              ),
+            }
+          : {}),
+        ...(tryOnGarment
+          ? {
+              tryOnGarmentMedia: tryOnGarment.media,
+              tryOnGarmentTemplate: tryOnGarment.template,
+            }
+          : {}),
+      };
+    });
+  }
+
+  private machineTryOnGarmentProjection(
+    id: string | null,
+    digest: string | null,
+    contentType: string | null,
+    byteSize: number | null,
+    template: string | null,
+    catalogRevision: string,
+  ) {
+    if (
+      template !== "tshirt_short_sleeve" &&
+      template !== "tshirt_long_sleeve"
+    ) {
+      return null;
+    }
+    const media = this.machineManagedMediaDescriptor(
+      id,
+      digest,
+      contentType,
+      byteSize,
+      "try_on_garment",
+      catalogRevision,
+    );
+    return media ? { media, template } : null;
   }
 
   private machineManagedMediaDescriptor(

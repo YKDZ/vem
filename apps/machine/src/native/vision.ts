@@ -7,6 +7,7 @@ import {
   visionReadyPayloadSchema,
   visionServerMessageSchema,
   visionTryOnPreviewUrlSchema,
+  visionV2AttemptFailedMessageSchema,
   visionV2FastAttemptStartMessageSchema,
   visionV2MessageSchema,
   type VisionV2Message,
@@ -72,6 +73,7 @@ export type VisionRuntimeConnection = {
   machineCode?: string | null;
   url?: string;
   timeoutMs?: number;
+  fastAttemptTimeoutMs?: number;
   enabled?: boolean;
 };
 
@@ -104,6 +106,10 @@ export type VisionFastAttemptInput = {
 
 export interface VisionFastAttempt {
   attemptId: string;
+  resultContext: {
+    attemptId: string;
+    visionSocketUrl: string;
+  };
   close: () => void;
 }
 
@@ -116,6 +122,7 @@ export type VisionTryOnStopReason =
   | "unknown";
 
 const CONNECT_TIMEOUT_MS = 3000;
+const FAST_ATTEMPT_TERMINAL_TIMEOUT_MS = 30_000;
 const PING_INTERVAL_MS = 10_000;
 const PONG_TIMEOUT_MS = 5_000;
 const RECONNECT_BASE_DELAY_MS = 1_000;
@@ -246,6 +253,8 @@ function connectionOptions(
     machineCode: connection.machineCode ?? null,
     url: connection.url ?? DEFAULT_VISION_WS_URL,
     timeoutMs: connection.timeoutMs ?? CONNECT_TIMEOUT_MS,
+    fastAttemptTimeoutMs:
+      connection.fastAttemptTimeoutMs ?? FAST_ATTEMPT_TERMINAL_TIMEOUT_MS,
     enabled: connection.enabled ?? true,
   };
 }
@@ -414,16 +423,54 @@ async function nextVisionV2Message(
 export async function openVisionFastAttempt(
   connection: VisionRuntimeConnection = {},
   input: VisionFastAttemptInput,
-  onEvent: (event: VisionFastAttemptEvent) => void,
+  onEvent: (
+    event: VisionFastAttemptEvent,
+    resultContext: VisionFastAttempt["resultContext"],
+  ) => void,
 ): Promise<VisionFastAttempt> {
   const options = connectionOptions(connection);
   if (!options.enabled) throw new Error("视觉模块未启用，无法启动快速试衣");
   const socket = await openVisionSocket(options.url, options.timeoutMs);
   let closed = false;
+  let terminal = false;
+  let terminalTimer: ReturnType<typeof setTimeout> | null = null;
+  let onMessage: ((event: MessageEvent) => void) | null = null;
+  let onClose: (() => void) | null = null;
+  let onError: (() => void) | null = null;
+  const resultContext = {
+    attemptId: input.attemptId,
+    visionSocketUrl: options.url,
+  };
+  const cleanup = (): void => {
+    if (terminalTimer !== null) {
+      clearTimeout(terminalTimer);
+      terminalTimer = null;
+    }
+    if (onMessage) socket.removeEventListener("message", onMessage);
+    if (onClose) socket.removeEventListener("close", onClose);
+    if (onError) socket.removeEventListener("error", onError);
+    onMessage = null;
+    onClose = null;
+    onError = null;
+  };
   const close = (): void => {
     if (closed) return;
     closed = true;
+    cleanup();
     closeSocket(socket);
+  };
+  const emitFailure = (): void => {
+    if (terminal || closed) return;
+    terminal = true;
+    const failure = visionV2AttemptFailedMessageSchema.parse({
+      protocol: VISION_V2_RUNTIME_IDENTITY.protocol,
+      type: "vision.try_on.attempt.failed",
+      messageId: createMessageId("attempt-failed"),
+      timestamp: nowIso(),
+      payload: { attemptId: input.attemptId, reason: "fast_failed" },
+    });
+    onEvent(failure, resultContext);
+    close();
   };
   try {
     socket.send(
@@ -447,6 +494,9 @@ export async function openVisionFastAttempt(
     ) {
       throw new Error("Vision V2 Fast capability is unavailable");
     }
+    if (socket.readyState !== WebSocket.OPEN) {
+      throw new Error("Vision V2 websocket closed during Fast handshake");
+    }
     const startMessage = visionV2FastAttemptStartMessageSchema.parse({
       protocol: VISION_V2_RUNTIME_IDENTITY.protocol,
       type: "vision.try_on.attempt.start",
@@ -459,8 +509,8 @@ export async function openVisionFastAttempt(
         garment: input.garment,
       },
     });
-    const onMessage = (event: MessageEvent): void => {
-      if (closed || typeof event.data !== "string") return;
+    onMessage = (event: MessageEvent): void => {
+      if (closed || terminal || typeof event.data !== "string") return;
       try {
         const message = parseVisionV2Message(JSON.parse(event.data));
         if (
@@ -470,11 +520,12 @@ export async function openVisionFastAttempt(
             message.type === "vision.try_on.attempt.failed") &&
           message.payload.attemptId === input.attemptId
         ) {
-          onEvent(message);
+          onEvent(message, resultContext);
           if (
             message.type === "vision.try_on.attempt.completed" ||
             message.type === "vision.try_on.attempt.failed"
           ) {
+            terminal = true;
             close();
           }
         }
@@ -482,9 +533,14 @@ export async function openVisionFastAttempt(
         // A malformed or unrelated late frame cannot alter the current attempt.
       }
     };
+    onClose = emitFailure;
+    onError = emitFailure;
     socket.addEventListener("message", onMessage);
+    socket.addEventListener("close", onClose);
+    socket.addEventListener("error", onError);
+    terminalTimer = setTimeout(emitFailure, options.fastAttemptTimeoutMs);
     socket.send(JSON.stringify(startMessage));
-    return { attemptId: input.attemptId, close };
+    return { attemptId: input.attemptId, resultContext, close };
   } catch (error) {
     close();
     throw error;

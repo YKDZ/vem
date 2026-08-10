@@ -2199,6 +2199,7 @@ describe("MachinesService planogram lifecycle", () => {
       tryOnGarmentMediaAssetDigest: "a".repeat(64),
       tryOnGarmentMediaAssetContentType: "image/png",
       tryOnGarmentMediaAssetByteSize: 2048,
+      tryOnGarmentTemplate: "tshirt_long_sleeve",
       categoryId: slot.categoryId,
       categoryName: slot.categoryName,
       sku: slot.sku,
@@ -2225,7 +2226,53 @@ describe("MachinesService planogram lifecycle", () => {
           reference: `/api/media-assets/${garmentAssetId}/content`,
           purpose: "try_on_garment",
         }),
+        tryOnGarmentTemplate: "tshirt_long_sleeve",
       }),
+    ]);
+  });
+
+  it("withholds an association with a missing or unsupported garment template", async () => {
+    const garmentAssetId = "550e8400-e29b-41d4-a716-446655440126";
+    const catalogRow = {
+      machineCode: "M001",
+      slotId: slot.slotId,
+      rowNo: slot.rowNo,
+      cellNo: slot.cellNo,
+      inventoryId: slot.inventoryId,
+      variantId: slot.variantId,
+      productId: slot.productId,
+      productName: slot.productName,
+      productDescription: slot.productDescription,
+      coverImageMediaAssetId: null,
+      coverImageMediaAssetDigest: null,
+      coverImageMediaAssetContentType: null,
+      coverImageMediaAssetByteSize: null,
+      tryOnGarmentMediaAssetId: garmentAssetId,
+      tryOnGarmentMediaAssetDigest: "a".repeat(64),
+      tryOnGarmentMediaAssetContentType: "image/png",
+      tryOnGarmentMediaAssetByteSize: 2048,
+      tryOnGarmentTemplate: "unsupported_template",
+      categoryId: slot.categoryId,
+      categoryName: "定制上衣",
+      sku: slot.sku,
+      size: slot.size,
+      color: slot.color,
+      priceCents: slot.priceCents,
+      availableQty: 1,
+      productSortOrder: slot.productSortOrder,
+      targetGender: slot.targetGender,
+    };
+    const query = {
+      from: vi.fn(() => query),
+      innerJoin: vi.fn(() => query),
+      leftJoin: vi.fn(() => query),
+      where: vi.fn(() => query),
+      orderBy: vi.fn(async () => [catalogRow]),
+    };
+    mockDb.select.mockReturnValueOnce(query);
+
+    await expect(service.getCatalogByMachineCode("M001")).resolves.toEqual([
+      expect.not.objectContaining({ tryOnGarmentMedia: expect.anything() }),
     ]);
   });
 

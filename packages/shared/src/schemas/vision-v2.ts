@@ -24,8 +24,10 @@ const maximumBinaryBytes = 64 * 1024 * 1024;
 const maximumImageDimension = 8192;
 const maximumTokenizedLoopbackUrlLength = 2048;
 const tokenizedLoopbackTokenPattern = /^[A-Za-z0-9_-]{1,128}(?![\s\S])/;
-const tokenizedLoopbackUrlPattern =
+const tokenizedLoopbackHttpUrlPattern =
   /^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::(?:[1-9]\d{0,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5]))?(?:\/[^?#]*)?\?token=[A-Za-z0-9_-]{1,128}(?![\s\S])/;
+const tokenizedLoopbackResultUrlPattern =
+  /^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::(?:[1-9]\d{0,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5]))?(?:\/[^?#]*)?\?token=[A-Za-z0-9_-]{1,128}(?![\s\S])/;
 
 /**
  * JSON Schema measures string length in Unicode code points. JavaScript's
@@ -66,6 +68,7 @@ function codePointString({
 function validateTokenizedLoopbackUrl(
   value: string,
   ctx: z.RefinementCtx,
+  allowHttps = false,
 ): void {
   let url: URL;
   try {
@@ -78,7 +81,7 @@ function validateTokenizedLoopbackUrl(
     return;
   }
   if (
-    url.protocol !== "http:" ||
+    (url.protocol !== "http:" && (!allowHttps || url.protocol !== "https:")) ||
     !["127.0.0.1", "localhost", "[::1]", "::1"].includes(
       url.hostname.toLowerCase(),
     ) ||
@@ -104,16 +107,24 @@ function validateTokenizedLoopbackUrl(
   }
 }
 
-const tokenizedLoopbackUrlSchema = codePointString({
-  maximum: maximumTokenizedLoopbackUrlLength,
-})
-  .regex(tokenizedLoopbackUrlPattern)
-  .describe("vem.tokenized-loopback-url")
-  .superRefine(validateTokenizedLoopbackUrl);
+function tokenizedLoopbackUrlSchema(allowHttps = false) {
+  return codePointString({
+    maximum: maximumTokenizedLoopbackUrlLength,
+  })
+    .regex(
+      allowHttps
+        ? tokenizedLoopbackResultUrlPattern
+        : tokenizedLoopbackHttpUrlPattern,
+    )
+    .describe("vem.tokenized-loopback-url")
+    .superRefine((value, context) =>
+      validateTokenizedLoopbackUrl(value, context, allowHttps),
+    );
+}
 
 export const visionV2GarmentSourceSchema = z.strictObject({
   assetId: nonSentinelUuidSchema,
-  reference: tokenizedLoopbackUrlSchema,
+  reference: tokenizedLoopbackUrlSchema(),
   digest: sha256DigestSchema,
   contentType: z.literal("image/png"),
   byteSize: z.int().positive().max(maximumBinaryBytes),
@@ -121,7 +132,7 @@ export const visionV2GarmentSourceSchema = z.strictObject({
 });
 
 export const visionV2ResultReferenceSchema = z.strictObject({
-  reference: tokenizedLoopbackUrlSchema,
+  reference: tokenizedLoopbackUrlSchema(true),
   digest: sha256DigestSchema,
   contentType: z.literal("image/png"),
   byteSize: z.int().positive().max(maximumBinaryBytes),

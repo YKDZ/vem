@@ -341,6 +341,8 @@ describe("useVisionStore", () => {
     );
 
     expect(visionStore.tryOnCapability).toBe("degraded");
+    expect(visionStore.fastReady).toBe(false);
+    expect(visionStore.visionBusinessReady).toBe(false);
     expect(visionStore.latestDiagnosticPayload).toBeNull();
     expect(visionStore.presence.personPresent).toBe(false);
 

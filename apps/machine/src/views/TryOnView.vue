@@ -12,7 +12,12 @@ const catalog = useCatalogStore();
 const tryOn = useTryOnStore();
 const started = ref(false);
 const context = computed(() => tryOn.context);
-const title = computed(() => context.value?.item.productName ?? "虚拟试衣");
+const title = computed(() => {
+  const current = context.value;
+  return current
+    ? (catalog.itemByCatalogKey(current.catalogKey)?.productName ?? "虚拟试衣")
+    : "虚拟试衣";
+});
 const phaseText = computed(() => {
   switch (tryOn.phase) {
     case "starting":
@@ -45,7 +50,7 @@ onMounted(() => {
     tryOn.phase !== "failed"
   ) {
     started.value = true;
-    void tryOn.startFast(tryOn.context.item);
+    void tryOn.startFast();
   }
 });
 

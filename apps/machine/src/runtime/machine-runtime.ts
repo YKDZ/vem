@@ -265,6 +265,10 @@ export function startMachineRuntime(pinia: Pinia): void {
   const saleCapabilityStore = useSaleCapabilityStore(pinia);
   const connectivityStore = useConnectivityStore(pinia);
   const machineStore = useMachineStore(pinia);
+  // Catalog freshness is runtime-owned, rather than route-owned: Product
+  // Detail and Try-On must keep observing association/source replacement
+  // while the customer navigates away from the catalog view.
+  useCatalogStore(pinia).startAutoRefresh(undefined, false);
   coordinator.journeyAudio = createCustomerJourneyAudioRuntime(
     pinia,
     installedMachineRuntimeTrace() ?? undefined,
@@ -308,6 +312,7 @@ export function stopMachineRuntime(pinia: Pinia): Promise<void> {
   if (coordinator.teardown) return coordinator.teardown;
   coordinator.subscription?.close();
   coordinator.subscription = null;
+  useCatalogStore(pinia).stopAutoRefresh();
   if (coordinator.pollTimer !== null) {
     globalThis.clearInterval(coordinator.pollTimer);
     coordinator.pollTimer = null;

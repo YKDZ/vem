@@ -623,7 +623,33 @@ export const machineSaleViewItemSchema = machineCatalogItemBaseSchema
       "needs_platform_review",
     ]),
   })
-  .superRefine(addMachineSlotCoordinateIssue);
+  .superRefine(addMachineSlotCoordinateIssue)
+  .superRefine((item, context) => {
+    const hasGarment =
+      item.tryOnGarmentMedia !== null && item.tryOnGarmentMedia !== undefined;
+    const hasTemplate =
+      item.tryOnGarmentTemplate !== null &&
+      item.tryOnGarmentTemplate !== undefined;
+    if (hasGarment !== hasTemplate) {
+      context.addIssue({
+        code: "custom",
+        path: hasGarment ? ["tryOnGarmentTemplate"] : ["tryOnGarmentMedia"],
+        message:
+          "try-on garment descriptor and template must be projected together",
+      });
+    }
+    if (
+      item.tryOnGarmentReadyUrl !== null &&
+      item.tryOnGarmentReadyUrl !== undefined &&
+      !hasGarment
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["tryOnGarmentReadyUrl"],
+        message: "try-on garment readiness requires an associated descriptor",
+      });
+    }
+  });
 
 export const machineSaleViewSnapshotSchema = z.object({
   items: z.array(machineSaleViewItemSchema),

@@ -55,15 +55,21 @@ function item(overrides: Partial<MachineCatalogItem> = {}): MachineCatalogItem {
 }
 
 describe("Fast try-on eligibility", () => {
-  it("requires supported associated garment, ready media, and V2 business readiness", () => {
+  it("uses the explicit active association rather than a category label", () => {
     expect(
-      canStartFastTryOn(item(), { fastReady: true, visionBusinessReady: true }),
-    ).toBe(true);
-    expect(
-      canStartFastTryOn(item({ categoryName: "袜子" }), {
+      canStartFastTryOn(item({ categoryName: "定制上衣" }), {
         fastReady: true,
         visionBusinessReady: true,
       }),
+    ).toBe(true);
+    expect(
+      canStartFastTryOn(
+        item({ categoryName: "袜子", tryOnGarmentMedia: null }),
+        {
+          fastReady: true,
+          visionBusinessReady: true,
+        },
+      ),
     ).toBe(false);
     expect(
       canStartFastTryOn(item({ tryOnGarmentMedia: null }), {
@@ -73,6 +79,12 @@ describe("Fast try-on eligibility", () => {
     ).toBe(false);
     expect(
       canStartFastTryOn(item({ tryOnGarmentReadyUrl: null }), {
+        fastReady: true,
+        visionBusinessReady: true,
+      }),
+    ).toBe(false);
+    expect(
+      canStartFastTryOn(item({ tryOnGarmentTemplate: null }), {
         fastReady: true,
         visionBusinessReady: true,
       }),
@@ -91,39 +103,64 @@ describe("Fast try-on eligibility", () => {
     ).toBe(false);
   });
 
-  it("rejects unsafe or malformed generated result references", () => {
+  it("accepts only the current attempt result on the connected Vision origin", () => {
     const valid = {
-      reference: "http://127.0.0.1:65499/results/output?token=result-token",
+      reference: `http://127.0.0.1:65499/v2/try-on/results/${id}?token=result-token`,
       digest: `sha256:${"a".repeat(64)}`,
       contentType: "image/png" as const,
       byteSize: 4096,
       width: 512,
       height: 768,
     };
-    expect(validateTryOnResultReference(valid)).toEqual(valid);
+    const expected = {
+      attemptId: id,
+      visionSocketUrl: "ws://127.0.0.1:65499/v2/machine",
+    };
+    expect(validateTryOnResultReference(valid, expected)).toEqual(valid);
+    expect(
+      validateTryOnResultReference(
+        {
+          ...valid,
+          reference: `https://127.0.0.1:65499/v2/try-on/results/${id}?token=result-token`,
+        },
+        { ...expected, visionSocketUrl: "wss://127.0.0.1:65499/v2/machine" },
+      ),
+    ).toMatchObject({ contentType: "image/png" });
     expect(() =>
-      validateTryOnResultReference({
-        ...valid,
-        reference: "https://evil.example/results/output?token=x",
-      }),
+      validateTryOnResultReference(
+        {
+          ...valid,
+          reference: `http://127.0.0.1:65500/v2/try-on/results/${id}?token=x`,
+        },
+        expected,
+      ),
     ).toThrow();
     expect(() =>
-      validateTryOnResultReference({
-        ...valid,
-        reference: "http://127.0.0.1:65499/wrong/output?token=x",
-      }),
+      validateTryOnResultReference(
+        {
+          ...valid,
+          reference: `http://127.0.0.1:65499/v2/try-on/results/${variantId}?token=x`,
+        },
+        expected,
+      ),
     ).toThrow();
     expect(() =>
-      validateTryOnResultReference({
-        ...valid,
-        reference: "http://127.0.0.1:65499/results/%6futput?token=x",
-      }),
+      validateTryOnResultReference(
+        {
+          ...valid,
+          reference: `http://127.0.0.1:65499/v2/try-on/results/${id}?token=x%32`,
+        },
+        expected,
+      ),
     ).toThrow();
     expect(() =>
-      validateTryOnResultReference({
-        ...valid,
-        reference: "http://127.0.0.1:65499/results/output?token=x&extra=y",
-      }),
+      validateTryOnResultReference(
+        {
+          ...valid,
+          reference: `http://vision@127.0.0.1:65499/v2/try-on/results/${id}?token=x`,
+        },
+        expected,
+      ),
     ).toThrow();
   });
 });

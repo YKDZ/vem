@@ -355,13 +355,11 @@ async function openProductDetail(product: DisplayProduct): Promise<void> {
 }
 
 onMounted(() => {
-  catalogStore.startAutoRefresh();
   startCarouselAutoAdvance();
 });
 
 onUnmounted(() => {
   customerJourneyStore.leaveCategory();
-  catalogStore.stopAutoRefresh();
   stopCarouselAutoAdvance();
 });
 </script>

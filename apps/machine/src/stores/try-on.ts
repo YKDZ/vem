@@ -7,6 +7,7 @@ import {
   type VisionFastAttempt,
   type VisionFastAttemptEvent,
 } from "@/native/vision";
+import { useCatalogStore } from "@/stores/catalog";
 import { useMachineStore } from "@/stores/machine";
 import { useVisionStore } from "@/stores/vision";
 import {
@@ -27,7 +28,6 @@ type TryOnContext = {
   catalogKey: string;
   productId: string;
   variantId: string;
-  item: MachineCatalogItem;
 };
 
 export const useTryOnStore = defineStore("tryOn", {
@@ -50,33 +50,47 @@ export const useTryOnStore = defineStore("tryOn", {
         catalogKey: item.catalogKey,
         productId: item.productId,
         variantId: item.variantId,
-        item,
       };
     },
-    async startFast(item: MachineCatalogItem): Promise<boolean> {
-      const vision = useVisionStore();
-      if (!canStartFastTryOn(item, vision)) return false;
-      const attemptId = createAttemptId();
-      const context: TryOnContext = {
-        catalogKey: item.catalogKey,
-        productId: item.productId,
-        variantId: item.variantId,
-        item,
-      };
-      this.context = context;
+    async startFast(item?: MachineCatalogItem): Promise<boolean> {
+      if (item) this.prepare(item);
+      const context = this.context;
+      if (!context) return false;
       this.cancelCurrentAttempt();
+      const attemptId = createAttemptId();
       this.phase = "starting";
       this.attemptId = attemptId;
-      this.context = context;
       this.result = null;
       this.failureReason = null;
+      let currentItem: MachineCatalogItem | null = null;
       try {
-        const garment = visionGarmentSourceFor(item);
+        // The route stores a stable selection only. Every start and retry
+        // adopts the current daemon sale-view before it reads an association,
+        // descriptor, readiness URL, or grant.
+        const catalog = useCatalogStore();
+        await catalog.refresh();
+        currentItem = catalog.saleableVariantItemFor(
+          context.catalogKey,
+          context.variantId,
+        );
+      } catch {
+        currentItem = null;
+      }
+      const vision = useVisionStore();
+      if (!currentItem || !canStartFastTryOn(currentItem, vision)) {
+        if (this.attemptId === attemptId) {
+          this.phase = "failed";
+          this.failureReason = "fast_unavailable";
+        }
+        return false;
+      }
+      try {
+        const garment = visionGarmentSourceFor(currentItem);
         const attempt = await openVisionFastAttempt(
           { machineCode: useMachineStore().machineCode },
-          { attemptId, variantId: item.variantId, garment },
-          (event) => {
-            this.applyEvent(attemptId, event);
+          { attemptId, variantId: currentItem.variantId, garment },
+          (event, resultContext) => {
+            this.applyEvent(attemptId, event, resultContext);
           },
         );
         activeAttempt = attempt;
@@ -91,8 +105,7 @@ export const useTryOnStore = defineStore("tryOn", {
       }
     },
     async retry(): Promise<boolean> {
-      const item = this.context?.item;
-      return item ? await this.startFast(item) : false;
+      return await this.startFast();
     },
     clear(): void {
       this.cancelCurrentAttempt();
@@ -106,7 +119,11 @@ export const useTryOnStore = defineStore("tryOn", {
       activeAttempt?.close();
       activeAttempt = null;
     },
-    applyEvent(attemptId: string, event: VisionFastAttemptEvent): void {
+    applyEvent(
+      attemptId: string,
+      event: VisionFastAttemptEvent,
+      resultContext: Parameters<typeof validateTryOnResultReference>[1],
+    ): void {
       if (this.attemptId !== attemptId) return;
       if (event.type === "vision.try_on.attempt.accepted") {
         if (this.phase === "starting") this.phase = "accepted";
@@ -121,7 +138,10 @@ export const useTryOnStore = defineStore("tryOn", {
       if (event.type === "vision.try_on.attempt.completed") {
         if (this.phase === "completed" || this.phase === "failed") return;
         try {
-          this.result = validateTryOnResultReference(event.payload.result);
+          this.result = validateTryOnResultReference(
+            event.payload.result,
+            resultContext,
+          );
           this.phase = "completed";
           this.failureReason = null;
         } catch {

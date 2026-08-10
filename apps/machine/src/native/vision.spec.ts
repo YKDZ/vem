@@ -1,3 +1,4 @@
+import { VISION_V2_RUNTIME_IDENTITY } from "@vem/shared";
 import {
   startMockVisionServer,
   type MockVisionScenario,
@@ -7,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   isVisionTryOnCapabilityDegraded,
+  openVisionFastAttempt,
   openVisionTryOnSession,
   parseVisionTryOnPreviewUrl,
   subscribeVisionProfiles,
@@ -417,6 +419,193 @@ describe("vision native browser fallback - pushed profiles", () => {
     expect(result.profile.heightCm).toBe(172);
   }, 10_000);
 });
+
+describe("vision native browser fallback - Fast attempt lifecycle", () => {
+  it("fails once on an unexpected close and releases every attempt listener and timer", async () => {
+    vi.useFakeTimers();
+    const sockets: FakeFastSocket[] = [];
+    class FakeFastSocket extends EventTarget {
+      static readonly CONNECTING = 0;
+      static readonly OPEN = 1;
+      static readonly CLOSING = 2;
+      static readonly CLOSED = 3;
+      readyState = FakeFastSocket.OPEN;
+      listenerBalance = 0;
+      constructor(_url: string) {
+        super();
+        sockets.push(this);
+        setTimeout(() => this.dispatchEvent(new Event("open")), 0);
+      }
+      override addEventListener(
+        ...args: Parameters<EventTarget["addEventListener"]>
+      ): void {
+        this.listenerBalance += 1;
+        super.addEventListener(...args);
+      }
+      override removeEventListener(
+        ...args: Parameters<EventTarget["removeEventListener"]>
+      ): void {
+        this.listenerBalance -= 1;
+        super.removeEventListener(...args);
+      }
+      send(): void {
+        return undefined;
+      }
+      close(): void {
+        this.readyState = FakeFastSocket.CLOSED;
+        this.dispatchEvent(new Event("close"));
+      }
+      emit(message: object): void {
+        this.dispatchEvent(
+          new MessageEvent("message", { data: JSON.stringify(message) }),
+        );
+      }
+    }
+    globalThis.WebSocket = FakeFastSocket as unknown as typeof WebSocket;
+    const attemptId = "550e8400-e29b-41d4-a716-446655440124";
+    const events: string[] = [];
+    const opening = openVisionFastAttempt(
+      { url: "ws://127.0.0.1:65499/v2/machine", fastAttemptTimeoutMs: 100 },
+      {
+        attemptId,
+        variantId: "550e8400-e29b-41d4-a716-446655440125",
+        garment: {
+          assetId: "550e8400-e29b-41d4-a716-446655440126",
+          reference: `http://127.0.0.1:65499/media/sha256:${"a".repeat(64)}?token=grant-token`,
+          digest: `sha256:${"a".repeat(64)}`,
+          contentType: "image/png",
+          byteSize: 2048,
+          template: "tshirt_short_sleeve",
+        },
+      },
+      (event) => events.push(event.type),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    sockets[0].emit(readyV2Message());
+    const attempt = await opening;
+
+    sockets[0].dispatchEvent(new Event("close"));
+    sockets[0].dispatchEvent(new Event("error"));
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(events).toEqual(["vision.try_on.attempt.failed"]);
+    expect(attempt.resultContext).toEqual({
+      attemptId,
+      visionSocketUrl: "ws://127.0.0.1:65499/v2/machine",
+    });
+    expect(sockets[0].listenerBalance).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("fences late terminal messages after a completed result", async () => {
+    vi.useFakeTimers();
+    const sockets: FakeTerminalSocket[] = [];
+    class FakeTerminalSocket extends EventTarget {
+      static readonly CONNECTING = 0;
+      static readonly OPEN = 1;
+      static readonly CLOSING = 2;
+      static readonly CLOSED = 3;
+      readyState = FakeTerminalSocket.OPEN;
+      constructor(_url: string) {
+        super();
+        sockets.push(this);
+        setTimeout(() => this.dispatchEvent(new Event("open")), 0);
+      }
+      send(): void {
+        return undefined;
+      }
+      close(): void {
+        this.readyState = FakeTerminalSocket.CLOSED;
+      }
+      emit(message: object): void {
+        this.dispatchEvent(
+          new MessageEvent("message", { data: JSON.stringify(message) }),
+        );
+      }
+    }
+    globalThis.WebSocket = FakeTerminalSocket as unknown as typeof WebSocket;
+    const attemptId = "550e8400-e29b-41d4-a716-446655440124";
+    const events: string[] = [];
+    const opening = openVisionFastAttempt(
+      { url: "ws://127.0.0.1:65499/v2/machine" },
+      fastAttemptInput(attemptId),
+      (event) => events.push(event.type),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    sockets[0].emit(readyV2Message());
+    await opening;
+    sockets[0].emit(completedV2Message(attemptId));
+    sockets[0].emit(failedV2Message(attemptId));
+
+    expect(events).toEqual(["vision.try_on.attempt.completed"]);
+  });
+});
+
+function readyV2Message() {
+  return {
+    protocol: "vem.vision.v2",
+    type: "vision.ready",
+    messageId: crypto.randomUUID(),
+    timestamp: new Date().toISOString(),
+    payload: {
+      serverName: "fake",
+      serverVersion: "1",
+      schemaVersion: VISION_V2_RUNTIME_IDENTITY.schemaVersion,
+      bundleVersion: VISION_V2_RUNTIME_IDENTITY.bundleVersion,
+      contractDigest: VISION_V2_RUNTIME_IDENTITY.contractDigest,
+      cameraReady: true,
+      fastReady: true,
+      visionBusinessReady: true,
+      businessReadinessDiagnostic: "ready",
+      capabilities: ["try_on_fast"],
+    },
+  };
+}
+
+function fastAttemptInput(attemptId: string) {
+  return {
+    attemptId,
+    variantId: "550e8400-e29b-41d4-a716-446655440125",
+    garment: {
+      assetId: "550e8400-e29b-41d4-a716-446655440126",
+      reference: `http://127.0.0.1:65499/media/sha256:${"a".repeat(64)}?token=grant-token`,
+      digest: `sha256:${"a".repeat(64)}`,
+      contentType: "image/png" as const,
+      byteSize: 2048,
+      template: "tshirt_short_sleeve" as const,
+    },
+  };
+}
+
+function completedV2Message(attemptId: string) {
+  return {
+    protocol: "vem.vision.v2",
+    type: "vision.try_on.attempt.completed",
+    messageId: crypto.randomUUID(),
+    timestamp: new Date().toISOString(),
+    payload: {
+      attemptId,
+      result: {
+        reference: `http://127.0.0.1:65499/v2/try-on/results/${attemptId}?token=result-token`,
+        digest: `sha256:${"a".repeat(64)}`,
+        contentType: "image/png",
+        byteSize: 2048,
+        width: 512,
+        height: 768,
+      },
+    },
+  };
+}
+
+function failedV2Message(attemptId: string) {
+  return {
+    protocol: "vem.vision.v2",
+    type: "vision.try_on.attempt.failed",
+    messageId: crypto.randomUUID(),
+    timestamp: new Date().toISOString(),
+    payload: { attemptId, reason: "fast_failed" },
+  };
+}
 
 describe("vision native browser fallback - try-on sessions", () => {
   it("opens a try-on session and returns an MJPEG preview URL", async () => {

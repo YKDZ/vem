@@ -1423,6 +1423,26 @@ async fn refresh_catalog(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
                         None => {}
                     }
                 }
+                // A garment source is inseparable from its calibrated template.
+                // Do not let a malformed platform response become a ready media
+                // action merely because its bytes happen to be cached.
+                let supported_template = object
+                    .get("tryOnGarmentTemplate")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|value| matches!(*value, "tshirt_short_sleeve" | "tshirt_long_sleeve"))
+                    .map(str::to_string);
+                let has_garment_descriptor = object
+                    .get("tryOnGarmentMedia")
+                    .is_some_and(|value| !value.is_null());
+                if !has_garment_descriptor || supported_template.is_none() {
+                    object.insert("tryOnGarmentMedia".to_string(), serde_json::Value::Null);
+                    object.insert("tryOnGarmentTemplate".to_string(), serde_json::Value::Null);
+                } else if let Some(template) = supported_template {
+                    object.insert(
+                        "tryOnGarmentTemplate".to_string(),
+                        serde_json::Value::String(template),
+                    );
+                }
             }
             // A catalog endpoint may remain array-shaped for sale compatibility.
             // Derive the complete media interest generation deterministically
@@ -1592,8 +1612,14 @@ async fn sale_view(State(ctx): State<IpcContext>, headers: HeaderMap) -> impl In
                         "coverImageMediaDiagnostic": diagnostic,
                     }),
                 );
-                let garment_descriptor = source
-                    .get("tryOnGarmentMedia")
+                let garment_template = source
+                    .get("tryOnGarmentTemplate")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|value| matches!(*value, "tshirt_short_sleeve" | "tshirt_long_sleeve"))
+                    .map(str::to_string);
+                let garment_descriptor = garment_template
+                    .as_ref()
+                    .and_then(|_| source.get("tryOnGarmentMedia"))
                     .cloned()
                     .unwrap_or(serde_json::Value::Null);
                 let garment_projection = garment_descriptor
@@ -1605,6 +1631,12 @@ async fn sale_view(State(ctx): State<IpcContext>, headers: HeaderMap) -> impl In
                 if let Some(overlay) = overlays.get_mut(&format!("{product_id}:{variant_id}")) {
                     if let Some(object) = overlay.as_object_mut() {
                         object.insert("tryOnGarmentMedia".to_string(), garment_descriptor);
+                        object.insert(
+                            "tryOnGarmentTemplate".to_string(),
+                            garment_template
+                                .map(serde_json::Value::String)
+                                .unwrap_or(serde_json::Value::Null),
+                        );
                         object.insert(
                             "tryOnGarmentReadyUrl".to_string(),
                             garment_projection
@@ -5224,6 +5256,19 @@ mod tests {
                     "variantId": variant_id,
                     "name": "Checkout remains available",
                     "coverImageMedia": { "id": "not-a-media-id" },
+                    "tryOnGarmentMedia": {
+                        "id": "550e8400-e29b-41d4-a716-446655440126",
+                        "reference": "/api/media-assets/550e8400-e29b-41d4-a716-446655440126/content",
+                        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "contentType": "image/png",
+                        "byteSize": 2048,
+                        "purpose": "try_on_garment",
+                        "revision": {
+                            "catalogRevision": "catalog-try-on",
+                            "assetRevision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        }
+                    },
+                    "tryOnGarmentTemplate": "tshirt_long_sleeve",
                 }]
             })))
             .mount(&server)
@@ -5259,6 +5304,12 @@ mod tests {
         .expect("sale view json");
         let item = &sale_view["items"][0];
         assert_eq!(item["coverImageMedia"], serde_json::Value::Null);
+        assert_eq!(
+            item["tryOnGarmentMedia"]["reference"],
+            "/api/media-assets/550e8400-e29b-41d4-a716-446655440126/content"
+        );
+        assert_eq!(item["tryOnGarmentTemplate"], "tshirt_long_sleeve");
+        assert!(item["tryOnGarmentReadyUrl"].is_null());
         assert_eq!(
             item["coverImageMediaDiagnostic"]["reason"],
             "descriptor_invalid"
