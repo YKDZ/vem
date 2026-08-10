@@ -1,8 +1,9 @@
-import { expect, type Page, test } from "@playwright/test";
+import { expect, type Locator, type Page, test } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { deflateSync } from "node:zlib";
 
 import {
   loginAsAdmin,
@@ -11,6 +12,12 @@ import {
 import { skipUnlessAdminMutationE2eEnabled } from "./support/admin-mutation-e2e";
 
 const CAPTURE_ENABLED = process.env.VEM_ADMIN_MANUAL_SCREENSHOT_CAPTURE === "1";
+const CAPTURE_IDS = new Set(
+  (process.env.VEM_ADMIN_MANUAL_SCREENSHOT_IDS ?? "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean),
+);
 const SCREENSHOT_ROOT = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "../../../public/manual/screenshots",
@@ -84,6 +91,7 @@ async function captureManualScreenshot(
     expectedTexts: string[];
   },
 ): Promise<void> {
+  if (CAPTURE_IDS.size > 0 && !CAPTURE_IDS.has(input.id)) return;
   await mkdir(SCREENSHOT_ROOT, { recursive: true });
   const pngPath = resolve(SCREENSHOT_ROOT, `${input.id}.png`);
   const metadataPath = resolve(SCREENSHOT_ROOT, `${input.id}.json`);
@@ -384,7 +392,7 @@ async function installOrderIncidentRoutes(
   return incidentActions;
 }
 
-function formItem(page: Page, label: string) {
+function formItem(page: Page | Locator, label: string) {
   return page.locator(".ant-form-item").filter({ hasText: label }).first();
 }
 
@@ -466,12 +474,51 @@ test.describe("Operator manual Admin UI screenshots", () => {
       .locator(".ant-modal")
       .filter({ hasText: "Try-On Garment 草稿" });
     await expect(tryOnGarmentModal).toBeVisible({ timeout: 10_000 });
+    await formItem(tryOnGarmentModal, "可见颜色")
+      .locator("input")
+      .fill("手册海军蓝");
+    await tryOnGarmentModal.locator("input[type='file']").setInputFiles({
+      name: "manual-garment.png",
+      mimeType: "image/png",
+      buffer: transparentGarmentPng(768, 1024),
+    });
+    const garmentPreview = tryOnGarmentModal.getByAltText(
+      "Try-On Garment 来源预览",
+    );
+    await expect(garmentPreview).toBeVisible({ timeout: 10_000 });
+    await expect(
+      tryOnGarmentModal.getByText(/校验通过：透明 PNG/),
+    ).toBeVisible();
+    await tryOnGarmentModal.getByRole("button", { name: "创建草稿" }).click();
+    await expect(
+      tryOnGarmentModal.getByRole("button", { name: "确认来源" }),
+    ).toBeVisible();
+    await tryOnGarmentModal.getByRole("button", { name: "确认来源" }).click();
+    await expect(
+      tryOnGarmentModal.getByRole("button", { name: "激活 Garment" }),
+    ).toBeVisible();
+    await tryOnGarmentModal
+      .getByRole("button", { name: "激活 Garment" })
+      .click();
+    await expect(tryOnGarmentModal.getByText("共享尺码影响范围")).toBeVisible();
+    await tryOnGarmentModal
+      .getByRole("checkbox", { name: variant.sku })
+      .check();
+    await tryOnGarmentModal
+      .getByRole("button", { name: "保存共享尺码关联" })
+      .click();
+    await expect(tryOnGarmentModal.getByText(/已原子关联/)).toBeVisible();
     await captureManualScreenshot(page, {
       id: "admin-try-on-garment-upload",
       route: "/products#try-on-garment",
-      expectedTexts: ["Try-On Garment 草稿", "透明 PNG 来源", "上传并校验 PNG"],
+      expectedTexts: [
+        "Try-On Garment 草稿",
+        "透明 PNG 来源",
+        "共享尺码影响范围",
+        "保存共享尺码关联",
+      ],
     });
-    await tryOnGarmentModal.getByRole("button", { name: "取消" }).click();
+    await tryOnGarmentModal.getByRole("button", { name: /取\s*消/ }).click();
     await expect(tryOnGarmentModal).toBeHidden({ timeout: 10_000 });
 
     await page.goto("/inventory");
@@ -599,3 +646,56 @@ test.describe("Operator manual Admin UI screenshots", () => {
     );
   });
 });
+
+function transparentGarmentPng(width: number, height: number): Buffer {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
+  const pixels = Buffer.alloc((width * 4 + 1) * height);
+  for (
+    let row = Math.floor(height / 4);
+    row < Math.ceil((height * 3) / 4);
+    row += 1
+  ) {
+    const offset = row * (width * 4 + 1);
+    for (
+      let column = Math.floor(width / 4);
+      column < Math.ceil((width * 3) / 4);
+      column += 1
+    ) {
+      const pixel = offset + 1 + column * 4;
+      pixels[pixel] = 20;
+      pixels[pixel + 1] = 50;
+      pixels[pixel + 2] = 110;
+      pixels[pixel + 3] = 255;
+    }
+  }
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", deflateSync(pixels)),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+function pngChunk(type: string, data: Buffer): Buffer {
+  const header = Buffer.alloc(8);
+  header.writeUInt32BE(data.byteLength, 0);
+  header.write(type, 4, "ascii");
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(Buffer.concat([Buffer.from(type), data])), 0);
+  return Buffer.concat([header, data, crc]);
+}
+
+function crc32(value: Buffer): number {
+  let crc = 0xffffffff;
+  for (const byte of value) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}

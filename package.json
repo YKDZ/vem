@@ -13,7 +13,7 @@
     "check:machine-vision-deployment": "node scripts/check-machine-vision-deployment.mjs",
     "check:rust": "cargo check --workspace --all-targets",
     "check:static-quality-workflow": "node --test scripts/check-static-quality-workflow.test.mjs",
-    "check:vision-hard-cutover": "node --test scripts/testbed/hard-cutover-absence.test.mjs && node scripts/testbed/hard-cutover-absence.mjs",
+    "check:vision-hard-cutover": "node --test scripts/testbed/hard-cutover-absence.test.mjs scripts/testbed/admin-manual-garment-screenshot.test.mjs && node scripts/testbed/hard-cutover-absence.mjs",
     "check:vision-hard-cutover:artifacts": "node scripts/testbed/hard-cutover-absence.mjs --artifact apps/machine/dist",
     "check:vision-main-consumer": "node --test scripts/windows/vision-main-consumer.test.mjs",
     "check:vision-v2-contracts": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=vem-source\" tsx scripts/vision-v2-contracts/generate-bundle.ts --check --local-only",

@@ -10,7 +10,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
-    Row, Sqlite, SqlitePool, Transaction,
+    Acquire, Row, Sqlite, SqlitePool, Transaction,
 };
 use thiserror::Error;
 use tokio::sync::{Mutex, OwnedMutexGuard};
@@ -23,8 +23,9 @@ use vending_core::domain::{
 use super::schema::{
     MIGRATION_V1, MIGRATION_V10, MIGRATION_V11, MIGRATION_V12, MIGRATION_V13, MIGRATION_V14,
     MIGRATION_V15, MIGRATION_V16, MIGRATION_V17, MIGRATION_V18, MIGRATION_V19, MIGRATION_V2,
-    MIGRATION_V20, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5, MIGRATION_V6, MIGRATION_V7,
-    MIGRATION_V8, MIGRATION_V9, SCHEMA_VERSION,
+    MIGRATION_V20_COPY, MIGRATION_V20_CREATE, MIGRATION_V20_DROP, MIGRATION_V20_RENAME,
+    MIGRATION_V3, MIGRATION_V4, MIGRATION_V5, MIGRATION_V6, MIGRATION_V7, MIGRATION_V8,
+    MIGRATION_V9, RETIRED_PLANOGRAM_MEDIA_COLUMN, SCHEMA_VERSION,
 };
 use vending_core::hardware::{
     DispenseCommandPayload, DispenseProgressEvent, DispenseProgressStage, DispenseResultPayload,
@@ -47,15 +48,14 @@ pub(crate) const WHOLE_MACHINE_MAINTENANCE_LOCK_KEY: &str = "whole_machine_maint
 pub(crate) const WHOLE_MACHINE_LOCK_RECOVERY_EVIDENCE_KEY: &str =
     "whole_machine_lock_recovery_evidence";
 
-fn with_retired_media_column(sql: &str) -> String {
-    let column = format!(
-        "{}_{}_{}_{}",
-        "try",
-        "on",
-        ["sil", "hou", "ette"].join(""),
-        "url"
-    );
-    sql.replace("__RETIRED_MEDIA_COLUMN__", &column)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum V20MigrationFailurePoint {
+    Create,
+    Copy,
+    Drop,
+    Rename,
+    IndexRestore,
+    Version,
 }
 
 type CommandRecordRow = (
@@ -943,8 +943,7 @@ impl LocalStateStore {
                 .map_err(StoreError::Sqlx)?;
         }
         if current_version < 10 {
-            let migration = with_retired_media_column(MIGRATION_V10);
-            sqlx::query(&migration)
+            sqlx::query(MIGRATION_V10)
                 .execute(&self.pool)
                 .await
                 .map_err(StoreError::Sqlx)?;
@@ -1018,10 +1017,8 @@ impl LocalStateStore {
             self.migrate_machine_planogram_slots_to_v19().await?;
         }
         if current_version < 20 {
-            sqlx::query(MIGRATION_V20)
-                .execute(&self.pool)
-                .await
-                .map_err(StoreError::Sqlx)?;
+            self.migrate_machine_planogram_slots_to_v20(None).await?;
+            return Ok(());
         }
         self.put_metadata("schema_version", &SCHEMA_VERSION).await?;
         Ok(())
@@ -1035,14 +1032,10 @@ impl LocalStateStore {
         let row_column = if columns.iter().any(|(name,)| name == "layer_no") {
             "layer_no"
         } else if columns.iter().any(|(name,)| name == "row_no") {
-            let retired_media_column = format!(
-                "{}_{}_{}_{}",
-                "try",
-                "on",
-                ["sil", "hou", "ette"].join(""),
-                "url"
-            );
-            if !columns.iter().any(|(name,)| name == &retired_media_column) {
+            if !columns
+                .iter()
+                .any(|(name,)| name == RETIRED_PLANOGRAM_MEDIA_COLUMN)
+            {
                 return Ok(());
             }
             "row_no"
@@ -1051,8 +1044,110 @@ impl LocalStateStore {
                 "machine planogram slot migration is missing a row coordinate".to_string(),
             ));
         };
-        let migration = with_retired_media_column(&MIGRATION_V19.replace("layer_no", row_column));
+        let migration = MIGRATION_V19.replace("layer_no", row_column);
         sqlx::query(&migration).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    async fn migrate_machine_planogram_slots_to_v20(
+        &self,
+        fail_after: Option<V20MigrationFailurePoint>,
+    ) -> Result<(), StoreError> {
+        let mut connection = self.pool.acquire().await?;
+        // SQLite cannot disable foreign-key enforcement after a transaction
+        // starts.  Keep the mode change and the one V20 transaction on this
+        // single connection, then restore enforcement before returning it.
+        sqlx::query("PRAGMA foreign_keys = OFF")
+            .execute(&mut *connection)
+            .await?;
+        let result = async {
+            let mut transaction = connection.begin().await?;
+            let indexes: Vec<(String,)> = sqlx::query_as(
+            "SELECT sql FROM sqlite_master
+             WHERE type='index'
+               AND tbl_name IN (
+                 'machine_planogram_slots', 'stock_movements', 'stock_movement_sync',
+                 'current_stock_projection', 'sale_view_projection', 'sale_safety_blockers'
+               )
+               AND sql IS NOT NULL
+             ORDER BY name",
+        )
+        .fetch_all(&mut *transaction)
+        .await?;
+
+        sqlx::query(MIGRATION_V20_CREATE)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| {
+                StoreError::InvalidStockInput(format!("v20 create failed: {error}"))
+            })?;
+        self.fail_v20_migration_at(fail_after, V20MigrationFailurePoint::Create)?;
+        sqlx::query(MIGRATION_V20_COPY)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| StoreError::InvalidStockInput(format!("v20 copy failed: {error}")))?;
+        self.fail_v20_migration_at(fail_after, V20MigrationFailurePoint::Copy)?;
+        sqlx::query(MIGRATION_V20_DROP)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| StoreError::InvalidStockInput(format!("v20 drop failed: {error}")))?;
+        self.fail_v20_migration_at(fail_after, V20MigrationFailurePoint::Drop)?;
+        sqlx::query(MIGRATION_V20_RENAME)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| {
+                StoreError::InvalidStockInput(format!("v20 rename failed: {error}"))
+            })?;
+        self.fail_v20_migration_at(fail_after, V20MigrationFailurePoint::Rename)?;
+        for (index_sql,) in indexes {
+            if index_sql.contains(RETIRED_PLANOGRAM_MEDIA_COLUMN) {
+                continue;
+            }
+            sqlx::query(&index_sql).execute(&mut *transaction).await?;
+        }
+        self.fail_v20_migration_at(fail_after, V20MigrationFailurePoint::IndexRestore)?;
+        let foreign_key_errors: Vec<(String, i64, String, i64)> =
+            sqlx::query_as("PRAGMA foreign_key_check")
+                .fetch_all(&mut *transaction)
+                .await?;
+        if !foreign_key_errors.is_empty() {
+            return Err(StoreError::InvalidStockInput(format!(
+                "v20 migration foreign-key validation failed: {foreign_key_errors:?}"
+            )));
+        }
+        let schema_version = serde_json::to_string(&SCHEMA_VERSION)?;
+        sqlx::query(
+            "INSERT INTO runtime_metadata(key,value_json,updated_at) VALUES ('schema_version',?1,?2)
+             ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at",
+        )
+        .bind(schema_version)
+        .bind(now_iso())
+        .execute(&mut *transaction)
+        .await?;
+        self.fail_v20_migration_at(fail_after, V20MigrationFailurePoint::Version)?;
+        transaction.commit().await.map_err(|error| {
+            StoreError::InvalidStockInput(format!("v20 commit failed: {error}"))
+        })?;
+            Ok(())
+        }
+        .await;
+        let restore_foreign_keys = sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&mut *connection)
+            .await;
+        restore_foreign_keys?;
+        result
+    }
+
+    fn fail_v20_migration_at(
+        &self,
+        selected: Option<V20MigrationFailurePoint>,
+        point: V20MigrationFailurePoint,
+    ) -> Result<(), StoreError> {
+        if selected == Some(point) {
+            return Err(StoreError::InvalidStockInput(format!(
+                "injected v20 migration failure after {point:?}"
+            )));
+        }
         Ok(())
     }
 
@@ -10059,6 +10154,114 @@ mod tests {
             "550e8400-e29b-41d4-a716-446655440001"
         );
         assert_eq!(sale_view.items[0].slot_display_label, "R1C1");
+    }
+
+    #[tokio::test]
+    async fn v20_tombstone_migration_rolls_back_every_boundary_and_retries_after_restart() {
+        for failure_point in [
+            V20MigrationFailurePoint::Create,
+            V20MigrationFailurePoint::Copy,
+            V20MigrationFailurePoint::Drop,
+            V20MigrationFailurePoint::Rename,
+            V20MigrationFailurePoint::IndexRestore,
+            V20MigrationFailurePoint::Version,
+        ] {
+            let temp = TempDir::new().expect("temp");
+            let path = temp.path().join(format!("state-v19-{failure_point:?}.db"));
+            let store = LocalStateStore::open(&path)
+                .await
+                .expect("seed current database");
+            seed_single_slot_planogram(&store).await;
+            store
+                .record_stock_movement(StockMovementInput {
+                    movement_id: format!("v19-stock-{failure_point:?}"),
+                    planogram_version: "PLAN-FAILURE".to_string(),
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                    movement_type: "stock_count_correction".to_string(),
+                    quantity: 3,
+                    source: "local_maintenance".to_string(),
+                    attributed_to: Some("operator-v19".to_string()),
+                })
+                .await
+                .expect("seed stock ledger");
+            sqlx::query(MIGRATION_V10)
+                .execute(store.pool())
+                .await
+                .expect("restore real v19 media column");
+            sqlx::query("CREATE INDEX v19_planogram_sku_idx ON machine_planogram_slots(sku)")
+                .execute(store.pool())
+                .await
+                .expect("seed v19 index");
+            store
+                .put_metadata("schema_version", &19_i64)
+                .await
+                .expect("mark v19");
+
+            let error = store
+                .migrate_machine_planogram_slots_to_v20(Some(failure_point))
+                .await
+                .expect_err("injected boundary fails atomically");
+            assert!(error.to_string().contains("injected v20 migration failure"));
+            let version: Option<i64> = store
+                .get_metadata("schema_version")
+                .await
+                .expect("read v19 version");
+            assert_eq!(version, Some(19), "{failure_point:?}");
+            let columns: Vec<(String,)> =
+                sqlx::query_as("SELECT name FROM pragma_table_info('machine_planogram_slots')")
+                    .fetch_all(store.pool())
+                    .await
+                    .expect("read rolled back v19 columns");
+            assert!(columns
+                .iter()
+                .any(|(name,)| name == RETIRED_PLANOGRAM_MEDIA_COLUMN));
+            let temporary_tables: Vec<(String,)> = sqlx::query_as(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='machine_planogram_slots_v20'",
+            )
+            .fetch_all(store.pool())
+            .await
+            .expect("read v20 temporary table");
+            assert!(temporary_tables.is_empty(), "{failure_point:?}");
+            let foreign_key_errors: Vec<(String, String, String, i64)> =
+                sqlx::query_as("PRAGMA foreign_key_check")
+                    .fetch_all(store.pool())
+                    .await
+                    .expect("validate v19 foreign keys");
+            assert!(foreign_key_errors.is_empty(), "{failure_point:?}");
+            let preserved: (i64, i64, i64) = sqlx::query_as(
+                "SELECT
+                   (SELECT COUNT(*) FROM machine_planogram_slots),
+                   (SELECT COUNT(*) FROM stock_movements),
+                   (SELECT COUNT(*) FROM sale_view_projection)",
+            )
+            .fetch_one(store.pool())
+            .await
+            .expect("read rolled back facts");
+            assert_eq!(preserved, (1, 1, 1), "{failure_point:?}");
+            drop(store);
+
+            let retried = LocalStateStore::open(&path)
+                .await
+                .expect("restart retries v20 migration");
+            let final_version: Option<i64> = retried
+                .get_metadata("schema_version")
+                .await
+                .expect("read final version");
+            assert_eq!(final_version, Some(SCHEMA_VERSION));
+            let restored_indexes: Vec<(String,)> = sqlx::query_as(
+                "SELECT name FROM sqlite_master WHERE type='index' AND name='v19_planogram_sku_idx'",
+            )
+            .fetch_all(retried.pool())
+            .await
+            .expect("read restored index");
+            assert_eq!(restored_indexes.len(), 1);
+            let final_foreign_key_errors: Vec<(String, String, String, i64)> =
+                sqlx::query_as("PRAGMA foreign_key_check")
+                    .fetch_all(retried.pool())
+                    .await
+                    .expect("validate final foreign keys");
+            assert!(final_foreign_key_errors.is_empty());
+        }
     }
 
     #[tokio::test]

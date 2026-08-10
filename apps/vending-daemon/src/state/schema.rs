@@ -1,4 +1,8 @@
 pub const SCHEMA_VERSION: i64 = 20;
+// The V20 tombstone is the only live migration code allowed to name this
+// retired V19 column.  Published V10/V19 SQL below remains byte-for-byte
+// historical migration text.
+pub const RETIRED_PLANOGRAM_MEDIA_COLUMN: &str = "try_on_silhouette_url";
 
 pub const MIGRATION_V1: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -236,7 +240,7 @@ PRAGMA foreign_keys = ON;
 pub const MIGRATION_V10: &str = r#"
 PRAGMA foreign_keys = OFF;
 
-ALTER TABLE machine_planogram_slots ADD COLUMN __RETIRED_MEDIA_COLUMN__ TEXT;
+ALTER TABLE machine_planogram_slots ADD COLUMN try_on_silhouette_url TEXT;
 
 PRAGMA foreign_keys = ON;
 "#;
@@ -415,7 +419,7 @@ ALTER TABLE command_log
   ADD COLUMN side_effects_committed_at TEXT;
 "#;
 
-// V2 through V18 persisted the retired hardware address names.  Rebuild only
+// V2 through V18 persisted the legacy hardware address names.  Rebuild only
 // this table: every dependent ledger, projection, movement, sync, and
 // maintenance identity is keyed by the unchanged (planogram_version, slot_id).
 pub const MIGRATION_V19: &str = r#"
@@ -442,7 +446,7 @@ CREATE TABLE machine_planogram_slots_v19 (
   price_cents INTEGER NOT NULL CHECK (price_cents >= 0),
   product_sort_order INTEGER NOT NULL,
   target_gender TEXT,
-  __RETIRED_MEDIA_COLUMN__ TEXT,
+  try_on_silhouette_url TEXT,
   PRIMARY KEY (planogram_version, slot_id),
   FOREIGN KEY (planogram_version) REFERENCES machine_planogram_versions(planogram_version)
 );
@@ -451,13 +455,13 @@ INSERT INTO machine_planogram_slots_v19(
   planogram_version,slot_id,row_no,cell_no,capacity,par_level,
   inventory_id,variant_id,product_id,product_name,product_description,cover_image_url,
   category_id,category_name,sku,size,color,price_cents,product_sort_order,target_gender,
-  __RETIRED_MEDIA_COLUMN__
+  try_on_silhouette_url
 )
 SELECT
   planogram_version,slot_id,layer_no,cell_no,capacity,par_level,
   inventory_id,variant_id,product_id,product_name,product_description,cover_image_url,
   category_id,category_name,sku,size,color,price_cents,product_sort_order,target_gender,
-  __RETIRED_MEDIA_COLUMN__
+  try_on_silhouette_url
 FROM machine_planogram_slots;
 
 DROP TABLE machine_planogram_slots;
@@ -470,9 +474,7 @@ PRAGMA foreign_keys = ON;
 // planogram table so every stock, sale, and fulfillment fact remains keyed by
 // the unchanged planogram version and slot identity while the retired media
 // column is physically removed.
-pub const MIGRATION_V20: &str = r#"
-PRAGMA foreign_keys = OFF;
-
+pub const MIGRATION_V20_CREATE: &str = r#"
 CREATE TABLE machine_planogram_slots_v20 (
   planogram_version TEXT NOT NULL,
   slot_id TEXT NOT NULL,
@@ -498,6 +500,66 @@ CREATE TABLE machine_planogram_slots_v20 (
   FOREIGN KEY (planogram_version) REFERENCES machine_planogram_versions(planogram_version)
 );
 
+CREATE TABLE stock_movements_v20 (
+  movement_id TEXT PRIMARY KEY,
+  planogram_version TEXT NOT NULL,
+  slot_id TEXT NOT NULL,
+  movement_type TEXT NOT NULL CHECK (movement_type IN ('planned_refill','stock_count_correction','dispense_succeeded')),
+  quantity INTEGER NOT NULL CHECK (quantity >= 0),
+  source TEXT NOT NULL,
+  attributed_to TEXT,
+  occurred_at TEXT NOT NULL,
+  before_quantity INTEGER NOT NULL DEFAULT 0 CHECK (before_quantity >= 0),
+  after_quantity INTEGER NOT NULL DEFAULT 0 CHECK (after_quantity >= 0),
+  slot_mapping_snapshot_json TEXT,
+  FOREIGN KEY (planogram_version, slot_id) REFERENCES machine_planogram_slots(planogram_version, slot_id)
+);
+
+CREATE TABLE stock_movement_sync_v20 (
+  movement_id TEXT PRIMARY KEY,
+  status TEXT NOT NULL CHECK (status IN ('pending','failed','accepted','rejected','reconciliation')),
+  outbox_event_id TEXT NOT NULL,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  accepted_at TEXT,
+  platform_receipt_json TEXT,
+  rejection_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE current_stock_projection_v20 (
+  planogram_version TEXT NOT NULL,
+  slot_id TEXT PRIMARY KEY,
+  physical_stock INTEGER NOT NULL CHECK (physical_stock >= 0),
+  saleable_stock INTEGER NOT NULL CHECK (saleable_stock >= 0),
+  slot_sales_state TEXT NOT NULL CHECK (slot_sales_state IN ('sale_ready','sold_out','suspect','frozen','needs_count','blocked_for_planogram_change','movement_rejected','needs_platform_review')),
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (planogram_version, slot_id) REFERENCES machine_planogram_slots(planogram_version, slot_id)
+);
+
+CREATE TABLE sale_view_projection_v20 (
+  planogram_version TEXT NOT NULL,
+  slot_id TEXT PRIMARY KEY,
+  item_json TEXT NOT NULL,
+  slot_sales_state TEXT NOT NULL CHECK (slot_sales_state IN ('sale_ready','sold_out','suspect','frozen','needs_count','blocked_for_planogram_change','movement_rejected','needs_platform_review')),
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (planogram_version, slot_id) REFERENCES machine_planogram_slots(planogram_version, slot_id)
+);
+
+CREATE TABLE sale_safety_blockers_v20 (
+  planogram_version TEXT NOT NULL,
+  slot_id TEXT NOT NULL,
+  slot_sales_state TEXT NOT NULL CHECK (slot_sales_state IN ('needs_count','blocked_for_planogram_change','movement_rejected','needs_platform_review')),
+  reason TEXT,
+  source TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (planogram_version, slot_id),
+  FOREIGN KEY (planogram_version, slot_id) REFERENCES machine_planogram_slots(planogram_version, slot_id)
+);
+"#;
+
+pub const MIGRATION_V20_COPY: &str = r#"
 INSERT INTO machine_planogram_slots_v20(
   planogram_version,slot_id,row_no,cell_no,capacity,par_level,
   inventory_id,variant_id,product_id,product_name,product_description,cover_image_url,
@@ -509,10 +571,59 @@ SELECT
   category_id,category_name,sku,size,color,price_cents,product_sort_order,target_gender
 FROM machine_planogram_slots;
 
-DROP TABLE machine_planogram_slots;
-ALTER TABLE machine_planogram_slots_v20 RENAME TO machine_planogram_slots;
+INSERT INTO stock_movements_v20(
+  movement_id,planogram_version,slot_id,movement_type,quantity,source,attributed_to,
+  occurred_at,before_quantity,after_quantity,slot_mapping_snapshot_json
+)
+SELECT
+  movement_id,planogram_version,slot_id,movement_type,quantity,source,attributed_to,
+  occurred_at,before_quantity,after_quantity,slot_mapping_snapshot_json
+FROM stock_movements;
 
-PRAGMA foreign_keys = ON;
+INSERT INTO stock_movement_sync_v20(
+  movement_id,status,outbox_event_id,attempt_count,last_error,accepted_at,
+  platform_receipt_json,rejection_json,created_at,updated_at
+)
+SELECT
+  movement_id,status,outbox_event_id,attempt_count,last_error,accepted_at,
+  platform_receipt_json,rejection_json,created_at,updated_at
+FROM stock_movement_sync;
+
+INSERT INTO current_stock_projection_v20(
+  planogram_version,slot_id,physical_stock,saleable_stock,slot_sales_state,updated_at
+)
+SELECT planogram_version,slot_id,physical_stock,saleable_stock,slot_sales_state,updated_at
+FROM current_stock_projection;
+
+INSERT INTO sale_view_projection_v20(
+  planogram_version,slot_id,item_json,slot_sales_state,updated_at
+)
+SELECT planogram_version,slot_id,item_json,slot_sales_state,updated_at
+FROM sale_view_projection;
+
+INSERT INTO sale_safety_blockers_v20(
+  planogram_version,slot_id,slot_sales_state,reason,source,updated_at
+)
+SELECT planogram_version,slot_id,slot_sales_state,reason,source,updated_at
+FROM sale_safety_blockers;
+"#;
+
+pub const MIGRATION_V20_DROP: &str = r#"
+DROP TABLE stock_movement_sync;
+DROP TABLE sale_safety_blockers;
+DROP TABLE current_stock_projection;
+DROP TABLE sale_view_projection;
+DROP TABLE stock_movements;
+DROP TABLE machine_planogram_slots;
+"#;
+
+pub const MIGRATION_V20_RENAME: &str = r#"
+ALTER TABLE machine_planogram_slots_v20 RENAME TO machine_planogram_slots;
+ALTER TABLE stock_movements_v20 RENAME TO stock_movements;
+ALTER TABLE stock_movement_sync_v20 RENAME TO stock_movement_sync;
+ALTER TABLE current_stock_projection_v20 RENAME TO current_stock_projection;
+ALTER TABLE sale_view_projection_v20 RENAME TO sale_view_projection;
+ALTER TABLE sale_safety_blockers_v20 RENAME TO sale_safety_blockers;
 "#;
 
 pub const MIGRATION_V4: &str = r#"

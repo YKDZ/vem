@@ -777,6 +777,7 @@ watch(
       title="新增 Try-On Garment 草稿"
       :footer="null"
       :destroy-on-hidden="true"
+      data-test="admin-try-on-garment-modal"
     >
       <a-form layout="vertical">
         <a-form-item label="商品">
@@ -820,12 +821,14 @@ watch(
             </div>
             <input
               ref="tryOnGarmentInput"
+              data-test="admin-try-on-garment-file"
               class="hidden"
               type="file"
               accept="image/png"
               @change="onTryOnGarmentSelected"
             />
             <a-button
+              data-test="admin-try-on-garment-upload"
               :loading="tryOnGarmentUploading"
               @click="tryOnGarmentInput?.click()"
             >
@@ -871,6 +874,7 @@ watch(
           <a-button @click="tryOnGarmentModalOpen = false">取消</a-button>
           <a-button
             v-if="!tryOnGarmentDraft"
+            data-test="admin-try-on-garment-create"
             type="primary"
             :loading="tryOnGarmentSaving"
             :disabled="
@@ -884,6 +888,7 @@ watch(
           </a-button>
           <a-button
             v-else
+            data-test="admin-try-on-garment-confirm"
             type="primary"
             :loading="tryOnGarmentConfirming"
             :disabled="
@@ -900,6 +905,7 @@ watch(
               tryOnGarmentDraft.status === 'draft'
             "
             type="primary"
+            data-test="admin-try-on-garment-activate"
             :loading="tryOnGarmentActivating"
             @click="activateTryOnGarmentDraft"
           >
@@ -908,6 +914,7 @@ watch(
           <a-button
             v-if="tryOnGarmentDraft?.status === 'active'"
             type="primary"
+            data-test="admin-try-on-garment-associate"
             :loading="tryOnGarmentAssociating"
             @click="saveTryOnGarmentAssociations"
           >

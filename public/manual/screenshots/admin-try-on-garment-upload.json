@@ -1,0 +1,24 @@
+{
+  "id": "admin-try-on-garment-upload",
+  "source": "admin-ui",
+  "route": "/products#try-on-garment",
+  "capturedAt": "2026-08-10T13:43:15.748Z",
+  "commit": "9dbfbf949c00",
+  "viewport": {
+    "width": 1440,
+    "height": 1080
+  },
+  "expectedOrientation": "landscape",
+  "expectedTexts": [
+    "Try-On Garment 草稿",
+    "透明 PNG 来源",
+    "共享尺码影响范围",
+    "保存共享尺码关联"
+  ],
+  "detectedTexts": [
+    "Try-On Garment 草稿",
+    "透明 PNG 来源",
+    "共享尺码影响范围",
+    "保存共享尺码关联"
+  ]
+}
