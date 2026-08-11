@@ -77,6 +77,7 @@ export const useVisionStore = defineStore("vision", {
     latestDiagnosticPayload: null as unknown,
     tryOnCapability: "unknown" as VisionTryOnCapability,
     fastReady: false,
+    aiReady: false,
     visionBusinessReady: false,
     presence: { ...EMPTY_PRESENCE } as VisionPresenceState,
     recommendationProfile: null as VisionProfile | null,
@@ -174,6 +175,7 @@ export const useVisionStore = defineStore("vision", {
           ? "available"
           : "degraded";
       this.fastReady = result.data.fastReady;
+      this.aiReady = result.data.aiReady;
       this.visionBusinessReady = result.data.visionBusinessReady;
     },
     markTryOnCapabilityDegraded(): void {
@@ -182,6 +184,7 @@ export const useVisionStore = defineStore("vision", {
     clearTryOnReadiness(): void {
       this.tryOnCapability = "degraded";
       this.fastReady = false;
+      this.aiReady = false;
       this.visionBusinessReady = false;
     },
     clearLatestDiagnosticPayload(): void {

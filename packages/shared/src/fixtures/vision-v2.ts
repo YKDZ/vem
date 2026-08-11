@@ -67,6 +67,12 @@ export const visionV2ClientFixtures = {
     variantId,
     garment: garment(),
   }),
+  startAi: envelope("vision.try_on.attempt.start", {
+    attemptId,
+    mode: "ai",
+    variantId,
+    garment: garment(),
+  }),
   capture: envelope("vision.try_on.attempt.capture", { attemptId }),
   cancel: envelope("vision.try_on.attempt.cancel", {
     attemptId,
@@ -83,6 +89,7 @@ export const visionV2ServerFixtures = {
     contractDigest: digest,
     cameraReady: true,
     fastReady: true,
+    aiReady: true,
     visionBusinessReady: true,
     businessReadinessDiagnostic: "ready",
     capabilities: ["try_on_fast"],
@@ -96,6 +103,7 @@ export const visionV2ServerFixtures = {
       contractDigest: digest,
       cameraReady: true,
       fastReady: true,
+      aiReady: true,
       visionBusinessReady: true,
       businessReadinessDiagnostic: "ready",
       capabilities: ["能".repeat(64)],
@@ -105,6 +113,10 @@ export const visionV2ServerFixtures = {
   accepted: envelope("vision.try_on.attempt.accepted", {
     attemptId,
     mode: "fast",
+  }),
+  acceptedAi: envelope("vision.try_on.attempt.accepted", {
+    attemptId,
+    mode: "ai",
   }),
   acquiringNone: envelope("vision.try_on.attempt.acquiring", {
     attemptId,
@@ -224,11 +236,11 @@ export const invalidVisionV2ClientFixtures = [
     },
   ),
   mutate(
-    "rejects-client-ai",
+    "rejects-client-unknown-mode",
     "payload.mode",
     visionV2ClientFixtures.start,
     (message) => {
-      payload(message).mode = "ai";
+      payload(message).mode = "automatic";
     },
   ),
   mutate(

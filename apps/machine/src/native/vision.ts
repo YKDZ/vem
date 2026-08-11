@@ -74,11 +74,22 @@ export type VisionRuntimeConnection = {
 };
 
 export type VisionFastAttemptEvent = VisionV2AttemptEvent;
+export type VisionTryOnMode = "fast" | "ai";
+export type VisionTryOnAttemptEvent = VisionV2AttemptEvent;
+type VisionTryOnGenerationStage =
+  | "preparing"
+  | "loading_model"
+  | "generating"
+  | "validating_result"
+  | "rendering";
 
 export type VisionFastAttemptInput = {
   attemptId: string;
   variantId: string;
   garment: VisionV2FastAttemptStartMessage["payload"]["garment"];
+};
+export type VisionTryOnAttemptInput = VisionFastAttemptInput & {
+  mode: VisionTryOnMode;
 };
 
 export interface VisionFastAttempt {
@@ -93,6 +104,7 @@ export interface VisionFastAttempt {
   cancel: (reason: "user" | "route_leave") => boolean;
   close: () => void;
 }
+export type VisionTryOnAttempt = VisionFastAttempt;
 
 const CONNECT_TIMEOUT_MS = 3000;
 const FAST_ATTEMPT_TERMINAL_TIMEOUT_MS = 30_000;
@@ -329,7 +341,7 @@ function createVisionV2HelloMessage(machineCode: string | null) {
       schemaVersion: VISION_V2_RUNTIME_IDENTITY.schemaVersion,
       bundleVersion: VISION_V2_RUNTIME_IDENTITY.bundleVersion,
       contractDigest: VISION_V2_RUNTIME_IDENTITY.contractDigest,
-      capabilities: ["try_on_fast"],
+      capabilities: ["try_on_fast", "try_on_ai"],
     },
   });
 }
@@ -390,9 +402,9 @@ async function nextVisionV2Message(
   });
 }
 
-export async function openVisionFastAttempt(
+export async function openVisionTryOnAttempt(
   connection: VisionRuntimeConnection = {},
-  input: VisionFastAttemptInput,
+  input: VisionTryOnAttemptInput,
   onEvent: (
     event: VisionFastAttemptEvent,
     resultContext: VisionFastAttempt["resultContext"],
@@ -407,7 +419,7 @@ export async function openVisionFastAttempt(
   let captureSubmitted = false;
   let lifecycle: "starting" | "accepted" | "acquiring" | "generating" =
     "starting";
-  let generationStage: "preparing" | "rendering" | null = null;
+  let generationStage: VisionTryOnGenerationStage | null = null;
   let terminalTimer: ReturnType<typeof setTimeout> | null = null;
   let onMessage: ((event: MessageEvent) => void) | null = null;
   let onClose: (() => void) | null = null;
@@ -473,7 +485,9 @@ export async function openVisionFastAttempt(
         VISION_V2_RUNTIME_IDENTITY.contractDigest;
     if (
       !identityMatches ||
-      !ready.payload.fastReady ||
+      !(input.mode === "fast"
+        ? ready.payload.fastReady
+        : ready.payload.aiReady) ||
       !ready.payload.visionBusinessReady
     ) {
       throw new Error("Vision V2 Fast capability is unavailable");
@@ -488,7 +502,7 @@ export async function openVisionFastAttempt(
       timestamp: nowIso(),
       payload: {
         attemptId: input.attemptId,
-        mode: "fast",
+        mode: input.mode,
         variantId: input.variantId,
         garment: input.garment,
       },
@@ -605,10 +619,28 @@ export async function openVisionFastAttempt(
   }
 }
 
+/** Kept for callers outside the try-on store while the public wire mode is unified. */
+export async function openVisionFastAttempt(
+  connection: VisionRuntimeConnection = {},
+  input: VisionFastAttemptInput,
+  onEvent: (
+    event: VisionFastAttemptEvent,
+    resultContext: VisionFastAttempt["resultContext"],
+  ) => void,
+  signal?: AbortSignal,
+): Promise<VisionFastAttempt> {
+  return await openVisionTryOnAttempt(
+    connection,
+    { ...input, mode: "fast" },
+    onEvent,
+    signal,
+  );
+}
+
 function isPermittedFastAttemptEvent(
   message: VisionFastAttemptEvent,
   lifecycle: "starting" | "accepted" | "acquiring" | "generating",
-  generationStage: "preparing" | "rendering" | null,
+  generationStage: VisionTryOnGenerationStage | null,
 ): boolean {
   if (message.type === "vision.try_on.attempt.completed") {
     return lifecycle === "generating";
@@ -629,9 +661,19 @@ function isPermittedFastAttemptEvent(
     lifecycle === "acquiring" ||
     (lifecycle === "generating" &&
       (generationStage === null ||
-        message.payload.stage === "rendering" ||
-        generationStage === "preparing"))
+        generationStageOrder(message.payload.stage) >=
+          generationStageOrder(generationStage)))
   );
+}
+
+function generationStageOrder(stage: VisionTryOnGenerationStage): number {
+  return [
+    "preparing",
+    "loading_model",
+    "generating",
+    "validating_result",
+    "rendering",
+  ].indexOf(stage);
 }
 
 function closeSocket(socket: WebSocket): void {

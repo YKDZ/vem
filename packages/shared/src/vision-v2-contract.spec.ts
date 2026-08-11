@@ -66,6 +66,22 @@ describe("Vision V2 shared contract", () => {
     ]);
   });
 
+  it("accepts an independently selected AI attempt and AI readiness fact", () => {
+    const aiStart = structuredClone(validVisionV2ClientFixtures[1]);
+    aiStart.payload.mode = "ai";
+    expect(visionV2ClientMessageSchema.parse(aiStart)).toMatchObject({
+      type: "vision.try_on.attempt.start",
+      payload: { mode: "ai" },
+    });
+
+    const ready = structuredClone(validVisionV2ServerFixtures[0]);
+    ready.payload.aiReady = true;
+    ready.payload.capabilities = ["try_on_fast", "try_on_ai"];
+    expect(visionV2ServerMessageSchema.parse(ready)).toMatchObject({
+      payload: { fastReady: true, aiReady: true },
+    });
+  });
+
   it("rejects every single-mutation fixture in its declared direction with Zod and standalone Ajv", () => {
     for (const [direction, fixtures] of Object.entries({
       client: invalidVisionV2ClientFixtures,

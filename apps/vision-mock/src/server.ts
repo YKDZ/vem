@@ -114,6 +114,7 @@ function createReadyMessage(
           : VISION_V2_RUNTIME_IDENTITY.contractDigest,
       cameraReady: true,
       fastReady: !contractBundleUnavailable,
+      aiReady: false,
       visionBusinessReady: !contractBundleUnavailable,
       businessReadinessDiagnostic: contractBundleUnavailable
         ? "contract_bundle_unavailable"

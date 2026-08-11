@@ -1,13 +1,13 @@
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { getSaleViewMock, refreshCatalogMock, openFastMock } = vi.hoisted(
-  () => ({
+const { getSaleViewMock, refreshCatalogMock, openFastMock, openAiMock } =
+  vi.hoisted(() => ({
     getSaleViewMock: vi.fn(),
     refreshCatalogMock: vi.fn(),
     openFastMock: vi.fn(),
-  }),
-);
+    openAiMock: vi.fn(),
+  }));
 
 vi.mock("@/daemon/client", () => ({
   daemonClient: {
@@ -18,6 +18,7 @@ vi.mock("@/daemon/client", () => ({
 
 vi.mock("@/native/vision", () => ({
   openVisionFastAttempt: openFastMock,
+  openVisionTryOnAttempt: openAiMock,
 }));
 
 import { useCatalogStore } from "./catalog";
@@ -146,6 +147,33 @@ describe("try-on store current catalog boundary", () => {
       expect.any(Function),
       expect.any(AbortSignal),
     );
+  });
+
+  it("starts exactly one selected AI attempt without opening Fast", async () => {
+    getSaleViewMock.mockResolvedValue(saleView("tshirt_short_sleeve"));
+    const catalog = useCatalogStore();
+    await catalog.refresh();
+    const store = useTryOnStore();
+    store.prepare(
+      catalog.saleableVariantItemFor(`product:${productId}`, variantId)!,
+    );
+    useVisionStore().aiReady = true;
+    openAiMock.mockResolvedValue({
+      close: vi.fn(),
+      capture: vi.fn(),
+      cancel: vi.fn(),
+    });
+
+    await expect(store.startAi()).resolves.toBe(true);
+
+    expect(openAiMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ mode: "ai", variantId }),
+      expect.any(Function),
+      expect.any(AbortSignal),
+    );
+    expect(openFastMock).not.toHaveBeenCalled();
+    expect(store.mode).toBe("ai");
   });
 
   it("clear during a blocked daemon refresh prevents any future Vision start", async () => {

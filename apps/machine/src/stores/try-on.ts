@@ -4,13 +4,16 @@ import type { MachineCatalogItem } from "@/types/catalog";
 
 import {
   openVisionFastAttempt,
-  type VisionFastAttempt,
-  type VisionFastAttemptEvent,
+  openVisionTryOnAttempt,
+  type VisionTryOnAttempt,
+  type VisionTryOnAttemptEvent,
+  type VisionTryOnMode,
 } from "@/native/vision";
 import { useCatalogStore } from "@/stores/catalog";
 import { useMachineStore } from "@/stores/machine";
 import { useVisionStore } from "@/stores/vision";
 import {
+  canStartAiTryOn,
   canStartFastTryOn,
   validateTryOnPreviewReference,
   validateTryOnResultReference,
@@ -34,7 +37,12 @@ export type TryOnGuidance =
   | "hold_still"
   | "ready";
 
-export type TryOnGenerationStage = "preparing" | "rendering";
+export type TryOnGenerationStage =
+  | "preparing"
+  | "loading_model"
+  | "generating"
+  | "validating_result"
+  | "rendering";
 
 type TryOnContext = {
   catalogKey: string;
@@ -46,6 +54,7 @@ export const useTryOnStore = defineStore("tryOn", {
   state: () => ({
     phase: "idle" as TryOnPhase,
     attemptId: null as string | null,
+    mode: null as VisionTryOnMode | null,
     context: null as TryOnContext | null,
     result: null as ReturnType<typeof validateTryOnResultReference> | null,
     failureReason: null as string | null,
@@ -71,7 +80,10 @@ export const useTryOnStore = defineStore("tryOn", {
         variantId: item.variantId,
       };
     },
-    async startFast(item?: MachineCatalogItem): Promise<boolean> {
+    async start(
+      mode: VisionTryOnMode,
+      item?: MachineCatalogItem,
+    ): Promise<boolean> {
       if (item) this.prepare(item);
       const context = this.context;
       if (!context) return false;
@@ -79,6 +91,7 @@ export const useTryOnStore = defineStore("tryOn", {
       const owner = beginOperation(attemptId);
       this.phase = "starting";
       this.attemptId = attemptId;
+      this.mode = mode;
       this.result = null;
       this.failureReason = null;
       this.clearAcquisitionPresentation();
@@ -99,10 +112,15 @@ export const useTryOnStore = defineStore("tryOn", {
       }
       if (!isCurrentOperation(owner, attemptId)) return false;
       const vision = useVisionStore();
-      if (!currentItem || !canStartFastTryOn(currentItem, vision)) {
+      const available =
+        mode === "fast"
+          ? canStartFastTryOn(currentItem, vision)
+          : canStartAiTryOn(currentItem, vision);
+      if (!currentItem || !available) {
         if (isCurrentOperation(owner, attemptId)) {
           this.phase = "failed";
-          this.failureReason = "fast_unavailable";
+          this.failureReason =
+            mode === "fast" ? "fast_unavailable" : "ai_unavailable";
           clearOperation(owner);
         }
         return false;
@@ -110,16 +128,28 @@ export const useTryOnStore = defineStore("tryOn", {
       try {
         const garment = visionGarmentSourceFor(currentItem);
         if (!isCurrentOperation(owner, attemptId)) return false;
-        const attempt = await openVisionFastAttempt(
-          { machineCode: useMachineStore().machineCode },
-          { attemptId, variantId: currentItem.variantId, garment },
-          (event, resultContext) => {
-            if (isCurrentOperation(owner, attemptId)) {
-              this.applyEvent(attemptId, event, resultContext);
-            }
-          },
-          owner.controller.signal,
-        );
+        const onEvent = (
+          event: VisionTryOnAttemptEvent,
+          resultContext: Parameters<typeof this.applyEvent>[2],
+        ) => {
+          if (isCurrentOperation(owner, attemptId)) {
+            this.applyEvent(attemptId, event, resultContext);
+          }
+        };
+        const attempt =
+          mode === "fast"
+            ? await openVisionFastAttempt(
+                { machineCode: useMachineStore().machineCode },
+                { attemptId, variantId: currentItem.variantId, garment },
+                onEvent,
+                owner.controller.signal,
+              )
+            : await openVisionTryOnAttempt(
+                { machineCode: useMachineStore().machineCode },
+                { attemptId, mode, variantId: currentItem.variantId, garment },
+                onEvent,
+                owner.controller.signal,
+              );
         if (!isCurrentOperation(owner, attemptId)) {
           attempt.close();
           return false;
@@ -129,19 +159,27 @@ export const useTryOnStore = defineStore("tryOn", {
       } catch {
         if (isCurrentOperation(owner, attemptId)) {
           this.phase = "failed";
-          this.failureReason = "fast_unavailable";
+          this.failureReason =
+            mode === "fast" ? "fast_unavailable" : "ai_unavailable";
           clearOperation(owner);
         }
         return false;
       }
     },
+    async startFast(item?: MachineCatalogItem): Promise<boolean> {
+      return await this.start("fast", item);
+    },
+    async startAi(item?: MachineCatalogItem): Promise<boolean> {
+      return await this.start("ai", item);
+    },
     async retry(): Promise<boolean> {
-      return await this.startFast();
+      return await this.start(this.mode ?? "fast");
     },
     clear(): void {
       this.cancelCurrentAttempt("route_leave");
       this.phase = "idle";
       this.attemptId = null;
+      this.mode = null;
       this.context = null;
       this.result = null;
       this.failureReason = null;
@@ -181,7 +219,7 @@ export const useTryOnStore = defineStore("tryOn", {
     },
     applyEvent(
       attemptId: string,
-      event: VisionFastAttemptEvent,
+      event: VisionTryOnAttemptEvent,
       resultContext: Parameters<typeof validateTryOnResultReference>[1],
     ): void {
       if (this.attemptId !== attemptId) return;
@@ -278,7 +316,7 @@ type OperationOwner = {
   generation: number;
   attemptId: string;
   controller: AbortController;
-  attempt: VisionFastAttempt | null;
+  attempt: VisionTryOnAttempt | null;
 };
 
 let nextOperationGeneration = 0;
@@ -343,5 +381,11 @@ function isGenerationStageAtLeast(
 }
 
 function generationStageOrder(stage: TryOnGenerationStage): number {
-  return stage === "preparing" ? 0 : 1;
+  return [
+    "preparing",
+    "loading_model",
+    "generating",
+    "validating_result",
+    "rendering",
+  ].indexOf(stage);
 }

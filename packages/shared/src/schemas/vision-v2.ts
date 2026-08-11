@@ -175,17 +175,20 @@ export const visionV2ReadyMessageSchema = envelopeBaseSchema.extend({
     contractDigest: sha256HexSchema,
     cameraReady: z.boolean(),
     fastReady: z.boolean(),
+    // AI readiness is independent: an unavailable model pack must never
+    // remove Fast or ordinary sale capability.
+    aiReady: z.boolean().default(false),
     visionBusinessReady: z.boolean(),
     businessReadinessDiagnostic: visionV2BusinessReadinessDiagnosticSchema,
     capabilities: z.array(codePointString({ minimum: 1, maximum: 64 })).max(32),
   }),
 });
 
-export const visionV2FastAttemptStartMessageSchema = envelopeBaseSchema.extend({
+export const visionV2AttemptStartMessageSchema = envelopeBaseSchema.extend({
   type: z.literal("vision.try_on.attempt.start"),
   payload: z.strictObject({
     attemptId: nonSentinelUuidSchema,
-    mode: z.literal("fast"),
+    mode: z.enum(["fast", "ai"]),
     variantId: nonSentinelUuidSchema,
     garment: visionV2GarmentSourceSchema,
   }),
@@ -195,7 +198,7 @@ export const visionV2AttemptAcceptedMessageSchema = envelopeBaseSchema.extend({
   type: z.literal("vision.try_on.attempt.accepted"),
   payload: z.strictObject({
     attemptId: nonSentinelUuidSchema,
-    mode: z.literal("fast"),
+    mode: z.enum(["fast", "ai"]),
   }),
 });
 
@@ -263,7 +266,13 @@ export const visionV2AttemptGeneratingMessageSchema = envelopeBaseSchema.extend(
     type: z.literal("vision.try_on.attempt.generating"),
     payload: z.strictObject({
       attemptId: nonSentinelUuidSchema,
-      stage: z.enum(["preparing", "rendering"]),
+      stage: z.enum([
+        "preparing",
+        "loading_model",
+        "generating",
+        "validating_result",
+        "rendering",
+      ]),
     }),
   },
 );
@@ -280,7 +289,14 @@ export const visionV2AttemptFailedMessageSchema = envelopeBaseSchema.extend({
   type: z.literal("vision.try_on.attempt.failed"),
   payload: z.strictObject({
     attemptId: nonSentinelUuidSchema,
-    reason: z.enum(["garment_rejected", "fast_failed", "fast_unavailable"]),
+    reason: z.enum([
+      "garment_rejected",
+      "fast_failed",
+      "fast_unavailable",
+      "ai_failed",
+      "ai_unavailable",
+      "ai_model_pack_invalid",
+    ]),
   }),
 });
 
@@ -301,7 +317,7 @@ export const visionV2AttemptCanceledMessageSchema = envelopeBaseSchema.extend({
 
 export const visionV2ClientMessageSchema = z.discriminatedUnion("type", [
   visionV2HelloMessageSchema,
-  visionV2FastAttemptStartMessageSchema,
+  visionV2AttemptStartMessageSchema,
   visionV2AttemptCaptureMessageSchema,
   visionV2AttemptCancelMessageSchema,
 ]);
@@ -318,9 +334,11 @@ export const visionV2ServerMessageSchema = z.discriminatedUnion("type", [
 
 export type VisionV2ClientMessage = z.infer<typeof visionV2ClientMessageSchema>;
 export type VisionV2ServerMessage = z.infer<typeof visionV2ServerMessageSchema>;
-export type VisionV2FastAttemptStartMessage = z.infer<
-  typeof visionV2FastAttemptStartMessageSchema
+export type VisionV2AttemptStartMessage = z.infer<
+  typeof visionV2AttemptStartMessageSchema
 >;
+/** Compatibility type name; its wire shape is now explicitly mode-neutral. */
+export type VisionV2FastAttemptStartMessage = VisionV2AttemptStartMessage;
 export type VisionV2AttemptEvent =
   | z.infer<typeof visionV2AttemptAcceptedMessageSchema>
   | z.infer<typeof visionV2AttemptAcquiringMessageSchema>

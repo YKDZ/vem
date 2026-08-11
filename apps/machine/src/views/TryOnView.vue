@@ -116,7 +116,8 @@ onMounted(() => {
     const item = catalog.saleableVariantItemFor(key, variantId);
     if (item) tryOn.prepare(item);
   }
-  if (tryOn.context && tryOn.phase === "idle") void tryOn.startFast();
+  const mode = route.query.mode === "ai" ? "ai" : "fast";
+  if (tryOn.context && tryOn.phase === "idle") void tryOn.start(mode);
 });
 
 onUnmounted(() => {

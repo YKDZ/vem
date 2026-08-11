@@ -17,6 +17,7 @@ type VisionV2AcquisitionPreview = z.infer<
 
 export type VisionFastReadiness = {
   fastReady: boolean;
+  aiReady?: boolean;
   visionBusinessReady: boolean;
 };
 
@@ -47,6 +48,20 @@ export function canStartFastTryOn(
     return false;
   }
   return isReadyLoopbackMediaUrl(item.tryOnGarmentReadyUrl);
+}
+
+/** The garment/acquisition boundary is shared; only readiness is mode-specific. */
+export function canStartAiTryOn(
+  item: MachineCatalogItem | null | undefined,
+  readiness: VisionFastReadiness,
+): boolean {
+  return (
+    readiness.aiReady === true &&
+    canStartFastTryOn(item, {
+      ...readiness,
+      fastReady: true,
+    })
+  );
 }
 
 export function visionGarmentSourceFor(
