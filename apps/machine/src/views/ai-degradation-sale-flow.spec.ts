@@ -59,10 +59,16 @@ let uninstallAuthority: (() => void) | null = null;
 let closeVisionCoordinator: (() => void) | null = null;
 let daemonServer: Server | null = null;
 let daemonBaseUrl = "";
-let daemonMode: "idle" | "flow" | "reject_create" | "reject_order" = "idle";
+let daemonMode:
+  | "idle"
+  | "flow"
+  | "reject_create"
+  | "reject_order"
+  | "mutate_order_id" = "idle";
 let daemonRequests: Array<{ method: string; path: string; body: unknown }> = [];
 let daemonViolations: string[] = [];
 let transactionReadIndex = 0;
+let createdOrderId: string | null = null;
 let paymentSucceededGate: ReturnType<
   typeof deferred<TransactionSnapshot>
 > | null = null;
@@ -122,6 +128,7 @@ beforeEach(async () => {
   daemonRequests = [];
   daemonViolations = [];
   transactionReadIndex = 0;
+  createdOrderId = null;
   paymentSucceededGate = null;
   dispenseSucceededGate = null;
   vi.clearAllMocks();
@@ -295,6 +302,7 @@ function exactJsonMatches(actual: unknown, expected: unknown): boolean {
 
 function transactionIdentityViolation(
   snapshot: TransactionSnapshot,
+  expectedOrderId: string | null = null,
 ): string | null {
   const summary = snapshot.productSummary as Record<string, unknown> | null;
   if (
@@ -308,6 +316,9 @@ function transactionIdentityViolation(
     summary.slotId !== "550e8400-e29b-41d4-a716-446655440124"
   ) {
     return "transaction identity does not match the selected sale item";
+  }
+  if (expectedOrderId !== null && snapshot.orderId !== expectedOrderId) {
+    return "transaction identity does not match the created orderId";
   }
   if (
     snapshot.vending !== null &&
@@ -386,6 +397,52 @@ async function handleDaemonRequest(
     return;
   }
 
+  if (daemonMode === "mutate_order_id") {
+    if (method === "POST" && path === "/v1/intents/create-order") {
+      if (!exactJsonMatches(body, EXPECTED_CREATE_ORDER)) {
+        daemonViolations.push("create-order payload identity mismatch");
+        respondJson(
+          response,
+          {
+            code: "identity_mismatch",
+            message: "create-order identity mismatch",
+          },
+          400,
+        );
+        return;
+      }
+      const created = transaction();
+      createdOrderId = created.orderId;
+      respondJson(response, created);
+      return;
+    }
+    const mutated = transaction({
+      orderId: "550e8400-e29b-41d4-a716-446655449997",
+      paymentStatus: "succeeded",
+      orderStatus: "dispensing",
+      nextAction: "dispensing",
+      vending: {
+        commandId: "550e8400-e29b-41d4-a716-446655440012",
+        commandNo: "CMD-AI-DEGRADED-001",
+        status: "sent",
+        lastError: null,
+      },
+      updatedAt: "2026-08-11T00:00:02.000Z",
+    });
+    const violation = transactionIdentityViolation(mutated, createdOrderId);
+    if (method !== "GET" || path !== "/v1/transactions/current" || violation) {
+      daemonViolations.push(violation ?? "unexpected order identity probe");
+      respondJson(
+        response,
+        { code: "identity_mismatch", message: "transaction identity mismatch" },
+        409,
+      );
+      return;
+    }
+    respondJson(response, mutated);
+    return;
+  }
+
   if (daemonMode !== "flow") {
     daemonViolations.push(`unexpected request while idle: ${method} ${path}`);
     respondJson(
@@ -449,6 +506,7 @@ async function handleDaemonRequest(
       );
       return;
     }
+    createdOrderId = snapshot.orderId;
     respondJson(response, snapshot);
     return;
   }
@@ -459,7 +517,7 @@ async function handleDaemonRequest(
         : dispenseSucceededGate;
     if (!gate) throw new Error("transaction response gate is missing");
     const snapshot = await gate.promise;
-    const violation = transactionIdentityViolation(snapshot);
+    const violation = transactionIdentityViolation(snapshot, createdOrderId);
     if (violation) {
       daemonViolations.push(violation);
       respondJson(
@@ -855,5 +913,55 @@ describe("AI degradation public sale flow", () => {
         .flatMap((socket) => socket.sent)
         .filter((frame) => frame.type === "vision.try_on.attempt.start"),
     ).toEqual([]);
+  });
+});
+
+describe("strict daemon transaction identity", () => {
+  it("keeps the payment UI from advancing when the daemon changes orderId", async () => {
+    daemonMode = "mutate_order_id";
+    const created = await daemonClient.createOrder(EXPECTED_CREATE_ORDER);
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    useSaleCapabilityStore().acceptSnapshot(saleCapabilitySnapshot());
+    useCheckoutStore().applyTransaction(created);
+    router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: "/payment", name: "payment", component: PaymentView },
+        { path: "/dispensing", name: "dispensing", component: DispensingView },
+        { path: "/result/:kind", name: "result", component: ResultView },
+      ],
+    });
+    uninstallAuthority = installTransactionRouteAuthority(router, pinia);
+    await router.push({ name: "payment" });
+    const host = document.createElement("div");
+    document.body.append(host);
+    mountedApp = createApp({ render: () => h(RouterView) });
+    mountedApp.use(pinia).use(router).mount(host);
+
+    await vi.waitFor(() => {
+      expect(daemonRequests.length).toBeGreaterThanOrEqual(2);
+    });
+    await nextTick();
+
+    expect(daemonRequests[0]).toMatchObject({
+      method: "POST",
+      path: "/v1/intents/create-order",
+      body: EXPECTED_CREATE_ORDER,
+    });
+    expect(daemonRequests[1]).toMatchObject({
+      method: "GET",
+      path: "/v1/transactions/current",
+    });
+    expect(daemonViolations).toContain(
+      "transaction identity does not match the created orderId",
+    );
+    expect(router.currentRoute.value.name).toBe("payment");
+    expect(host.querySelector('[data-test="payment-page"]')).not.toBeNull();
+    expect(host.querySelector('[data-test="dispensing-page"]')).toBeNull();
+    expect(host.querySelector('[data-test="result-page"]')).toBeNull();
+    expect(useCheckoutStore().transaction?.orderId).toBe(
+      "550e8400-e29b-41d4-a716-446655440010",
+    );
   });
 });
