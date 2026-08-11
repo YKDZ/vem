@@ -88,6 +88,7 @@ function validateComponentEvidence(evidence, repoRoot) {
       "ai",
       "backend",
       "database",
+      "precutover",
       "schemaVersion",
       "vem",
       "vision",
@@ -229,6 +230,81 @@ function validateComponentEvidence(evidence, repoRoot) {
     evidence.adminContracts,
     ["evidenceSha256"],
     "component evidence.adminContracts",
+  );
+
+  assertExactObject(
+    evidence.precutover,
+    ["database", "managedMedia"],
+    "component evidence.precutover",
+  );
+  assertExactObject(
+    evidence.precutover.database,
+    ["backup", "receiptSha256", "source"],
+    "component evidence.precutover.database",
+  );
+  assertDigest(
+    evidence.precutover.database.receiptSha256,
+    "precutover database receipt",
+  );
+  assertExactObject(
+    evidence.precutover.database.backup,
+    ["byteSize", "sha256"],
+    "component evidence.precutover.database.backup",
+  );
+  if (
+    !Number.isSafeInteger(evidence.precutover.database.backup.byteSize) ||
+    evidence.precutover.database.backup.byteSize <= 0
+  ) {
+    throw new Error("precutover database backup byteSize is invalid");
+  }
+  assertDigest(
+    evidence.precutover.database.backup.sha256,
+    "precutover database backup",
+  );
+  assertExactObject(
+    evidence.precutover.database.source,
+    ["databaseName", "migrationChainSha256", "systemIdentifier"],
+    "component evidence.precutover.database.source",
+  );
+  if (
+    !/^[a-z][a-z0-9_]{0,62}$/.test(
+      evidence.precutover.database.source.databaseName,
+    ) ||
+    !/^[0-9]+$/.test(evidence.precutover.database.source.systemIdentifier)
+  ) {
+    throw new Error("precutover database source identity is invalid");
+  }
+  assertDigest(
+    evidence.precutover.database.source.migrationChainSha256,
+    "precutover database migration chain",
+  );
+  if (
+    evidence.precutover.database.source.migrationChainSha256 !==
+    evidence.database.migrationChainSha256
+  ) {
+    throw new Error("precutover database migration chain is inconsistent");
+  }
+  assertExactObject(
+    evidence.precutover.managedMedia,
+    ["assetCount", "assetsSetSha256", "generation", "receiptSha256"],
+    "component evidence.precutover.managedMedia",
+  );
+  if (
+    !Number.isSafeInteger(evidence.precutover.managedMedia.assetCount) ||
+    evidence.precutover.managedMedia.assetCount < 0 ||
+    typeof evidence.precutover.managedMedia.generation !== "string" ||
+    evidence.precutover.managedMedia.generation.length === 0 ||
+    evidence.precutover.managedMedia.generation.length > 128
+  ) {
+    throw new Error("precutover managed-media identity is invalid");
+  }
+  assertDigest(
+    evidence.precutover.managedMedia.assetsSetSha256,
+    "precutover managed-media asset set",
+  );
+  assertDigest(
+    evidence.precutover.managedMedia.receiptSha256,
+    "precutover managed-media receipt",
   );
 
   const repository = readReleaseRepositoryFacts(repoRoot);

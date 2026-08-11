@@ -10,6 +10,10 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  canonicalJson as canonicalReceiptJson,
+  derivePrecutoverEvidence,
+} from "./precutover-receipts.mjs";
 import { verifyReleaseSet } from "./release-set.mjs";
 import { verifyTrustedGhBinary } from "./trusted-gh-cli.mjs";
 
@@ -24,7 +28,12 @@ const COMMIT_RE = /^[a-f0-9]{40}$/;
 const DIGEST_RE = /^sha256:[a-f0-9]{64}$/;
 const SOURCE_REF_RE =
   /^refs\/tags\/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-rc\.[0-9A-Za-z.-]+$/;
-const INPUT_MEMBERS = ["component-evidence.json", "release-set.json"];
+const INPUT_MEMBERS = [
+  "component-evidence.json",
+  "database-backup-receipt.json",
+  "managed-media-receipt.json",
+  "release-set.json",
+];
 const GH_VERIFICATION_MEDIA_TYPE =
   "application/vnd.dev.sigstore.verificationresult+json;version=0.1";
 const GH_CERTIFICATE_KEYS = [
@@ -113,7 +122,7 @@ function readExactInput(directory) {
     JSON.stringify(INPUT_MEMBERS)
   ) {
     throw new Error(
-      "release-set input artifact must contain exactly two members",
+      "release-set input artifact must contain exactly four members",
     );
   }
   const result = {};
@@ -140,6 +149,8 @@ export function createReleaseSetApproval({
   validateClaim(sourceCommit, sourceRef, attesterWorkflowSha);
   const input = readExactInput(inputDirectory);
   const componentEvidenceText = input["component-evidence.json"];
+  const databaseReceiptText = input["database-backup-receipt.json"];
+  const managedMediaReceiptText = input["managed-media-receipt.json"];
   const manifestText = input["release-set.json"];
   const componentEvidence = parseCanonical(
     componentEvidenceText,
@@ -153,6 +164,18 @@ export function createReleaseSetApproval({
       "component evidence does not bind the approved source commit",
     );
   }
+  const precutover = derivePrecutoverEvidence(
+    databaseReceiptText,
+    managedMediaReceiptText,
+  );
+  if (
+    canonicalReceiptJson(componentEvidence.precutover) !==
+    canonicalReceiptJson(precutover)
+  ) {
+    throw new Error(
+      "pending precutover receipts do not match component evidence",
+    );
+  }
   const manifestSha256 = sha256(manifestText);
   verifyReleaseSet({
     componentEvidence,
@@ -160,6 +183,9 @@ export function createReleaseSetApproval({
     manifestText,
     repoRoot,
   });
+  const members = Object.fromEntries(
+    INPUT_MEMBERS.map((name) => [name, sha256(input[name])]),
+  );
   const approvalText = canonicalJson({
     attester: {
       hostedRunnerRequired: true,
@@ -167,8 +193,10 @@ export function createReleaseSetApproval({
       workflow: TRUSTED_RELEASE_SET_WORKFLOW,
       workflowSha: attesterWorkflowSha,
     },
-    componentEvidenceSha256: sha256(componentEvidenceText),
-    manifestSha256,
+    inputArtifact: {
+      aggregateSha256: sha256(canonicalJson(members)),
+      members,
+    },
     schemaVersion: APPROVAL_SCHEMA,
     sourceCommit,
     sourceRef,
@@ -182,6 +210,8 @@ export function createReleaseSetApproval({
 export function verifyReleaseSetApprovalBinding({
   approvalText,
   componentEvidenceText,
+  databaseReceiptText,
+  managedMediaReceiptText,
   manifestText,
   sourceCommit,
   sourceRef,
@@ -191,20 +221,23 @@ export function verifyReleaseSetApprovalBinding({
   const approval = parseCanonical(approvalText, "release-set approval");
   assertExactObject(
     approval,
-    [
-      "attester",
-      "componentEvidenceSha256",
-      "manifestSha256",
-      "schemaVersion",
-      "sourceCommit",
-      "sourceRef",
-    ],
+    ["attester", "inputArtifact", "schemaVersion", "sourceCommit", "sourceRef"],
     "release-set approval",
   );
   assertExactObject(
     approval.attester,
     ["hostedRunnerRequired", "repository", "workflow", "workflowSha"],
     "release-set approval attester",
+  );
+  assertExactObject(
+    approval.inputArtifact,
+    ["aggregateSha256", "members"],
+    "release-set approval input artifact",
+  );
+  assertExactObject(
+    approval.inputArtifact.members,
+    INPUT_MEMBERS,
+    "release-set approval input members",
   );
   if (
     approval.schemaVersion !== APPROVAL_SCHEMA ||
@@ -217,15 +250,40 @@ export function verifyReleaseSetApprovalBinding({
   ) {
     throw new Error("release-set approval authority mismatch");
   }
+  const input = {
+    "component-evidence.json": componentEvidenceText,
+    "database-backup-receipt.json": databaseReceiptText,
+    "managed-media-receipt.json": managedMediaReceiptText,
+    "release-set.json": manifestText,
+  };
+  const expectedMembers = Object.fromEntries(
+    INPUT_MEMBERS.map((name) => [name, sha256(input[name])]),
+  );
   if (
-    !DIGEST_RE.test(approval.manifestSha256) ||
-    approval.manifestSha256 !== sha256(manifestText) ||
-    !DIGEST_RE.test(approval.componentEvidenceSha256) ||
-    approval.componentEvidenceSha256 !== sha256(componentEvidenceText)
+    Object.values(approval.inputArtifact.members).some(
+      (value) => !DIGEST_RE.test(value),
+    ) ||
+    canonicalJson(approval.inputArtifact.members) !==
+      canonicalJson(expectedMembers) ||
+    approval.inputArtifact.aggregateSha256 !==
+      sha256(canonicalJson(expectedMembers))
   ) {
     throw new Error("release-set approval payload digest mismatch");
   }
-  parseCanonical(componentEvidenceText, "component evidence");
+  const componentEvidence = parseCanonical(
+    componentEvidenceText,
+    "component evidence",
+  );
+  const precutover = derivePrecutoverEvidence(
+    databaseReceiptText,
+    managedMediaReceiptText,
+  );
+  if (
+    canonicalReceiptJson(componentEvidence.precutover) !==
+    canonicalReceiptJson(precutover)
+  ) {
+    throw new Error("release-set approval precutover payload mismatch");
+  }
   return approval;
 }
 

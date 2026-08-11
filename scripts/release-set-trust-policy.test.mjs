@@ -32,6 +32,10 @@ function assertNoRunExpressions(workflow) {
 
 test("trusted release-set attester has a fixed hosted approval boundary", () => {
   const source = readFileSync(workflowPath, "utf8");
+  const approvalSource = readFileSync(
+    new URL("./release-set-approval.mjs", import.meta.url),
+    "utf8",
+  );
   const workflow = YAML.parse(source);
   assert.deepEqual(Object.keys(workflow.on.workflow_call.inputs).sort(), [
     "source_commit",
@@ -55,6 +59,16 @@ test("trusted release-set attester has a fixed hosted approval boundary", () => 
     /subject-path: trusted-output\/release-set-approval\.json/,
   );
   assert.match(source, /actions\/download-artifact@v4/);
+  assert.match(source, /fixed four-member release-set input artifact/);
+  for (const member of [
+    "component-evidence.json",
+    "database-backup-receipt.json",
+    "managed-media-receipt.json",
+    "release-set.json",
+  ]) {
+    assert.match(approvalSource, new RegExp(`"${member}"`));
+  }
+  assert.match(approvalSource, /aggregateSha256/);
   assert.doesNotMatch(source, /source\/scripts\//);
 });
 

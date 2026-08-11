@@ -79,6 +79,23 @@ function componentEvidence() {
       modelPackArchive: { byteSize: 123456, sha256: digest("8") },
     },
     database: repository.database,
+    precutover: {
+      database: {
+        backup: { byteSize: 654321, sha256: digest("a") },
+        receiptSha256: digest("b"),
+        source: {
+          databaseName: "vem_production",
+          migrationChainSha256: repository.database.migrationChainSha256,
+          systemIdentifier: "7654321098765432109",
+        },
+      },
+      managedMedia: {
+        assetCount: 2,
+        assetsSetSha256: digest("c"),
+        generation: "catalog-generation-42",
+        receiptSha256: digest("d"),
+      },
+    },
     adminContracts: { evidenceSha256: digest("9") },
   };
 }
@@ -304,6 +321,19 @@ describe("canonical release-set identity", () => {
       [["database", "migrationTarget"], "20990101000000_wrong"],
       [["database", "migrationCount"], 44],
       [["database", "migrationChainSha256"], digest("0")],
+      [["precutover", "database", "receiptSha256"], digest("0")],
+      [["precutover", "database", "backup", "byteSize"], 654322],
+      [["precutover", "database", "backup", "sha256"], digest("0")],
+      [["precutover", "database", "source", "databaseName"], "other_database"],
+      [["precutover", "database", "source", "systemIdentifier"], "123"],
+      [
+        ["precutover", "database", "source", "migrationChainSha256"],
+        digest("0"),
+      ],
+      [["precutover", "managedMedia", "receiptSha256"], digest("0")],
+      [["precutover", "managedMedia", "generation"], "other-generation"],
+      [["precutover", "managedMedia", "assetCount"], 3],
+      [["precutover", "managedMedia", "assetsSetSha256"], digest("0")],
       [["adminContracts", "evidenceSha256"], digest("0")],
     ];
 

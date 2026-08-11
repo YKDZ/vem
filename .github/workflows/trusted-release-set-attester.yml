@@ -67,12 +67,12 @@ jobs:
           [[ "$SOURCE_COMMIT" == "$CALLER_SHA" ]]
           [[ "$SOURCE_REF" == "$CALLER_REF" ]]
           [[ "$(git -C source rev-parse HEAD)" == "$SOURCE_COMMIT" ]]
-      - name: Download the fixed current-run release-set input artifact
+      - name: Download the fixed four-member release-set input artifact
         uses: actions/download-artifact@v4
         with:
           name: vem-release-set-input-${{ inputs.source_commit }}
           path: release-set-input
-      - name: Create approval using only immutable trusted code
+      - name: Validate all four members and create approval using immutable trusted code
         shell: bash
         env:
           SOURCE_COMMIT: ${{ inputs.source_commit }}

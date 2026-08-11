@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
+import { derivePrecutoverEvidence } from "./precutover-receipts.mjs";
 import {
   TRUSTED_RELEASE_SET_WORKFLOW_SHA,
   createReleaseSetApproval,
@@ -49,8 +50,125 @@ function canonical(value) {
   return `${JSON.stringify(sort(value))}\n`;
 }
 
+function pendingReceiptTexts() {
+  const facts = readReleaseRepositoryFacts(repoRoot);
+  const migration = {
+    chainSha256: facts.database.migrationChainSha256,
+    count: facts.database.migrationCount,
+    target: facts.database.migrationTarget,
+  };
+  const catalogData = {
+    associationCount: 1,
+    garmentCount: 1,
+    mediaAssetCount: 2,
+    productCount: 1,
+    sha256: digest("a"),
+    variantCount: 1,
+  };
+  const databaseReceiptText = canonical({
+    backup: {
+      byteSize: 4096,
+      format: "postgresql-custom",
+      sha256: digest("b"),
+    },
+    restoreProof: {
+      catalogData,
+      constraintsSha256: digest("c"),
+      databaseName: "vem_precutover_restore_123_abcdef012345",
+      legacyResidue: {
+        columns: 0,
+        constraints: 0,
+        indexes: 0,
+        purposeRows: 0,
+        storageReferences: 0,
+      },
+      migration,
+      verifiedAt: "2026-08-11T00:00:01.000Z",
+    },
+    schemaVersion: "vem.precutover.database-backup.v1",
+    source: {
+      catalogData,
+      currentLsn: "0/16B6C50",
+      databaseName: "vem_production",
+      migration,
+      snapshotId: "00000003-0000001B-1",
+      snapshotTime: "2026-08-11T00:00:00.000Z",
+      systemIdentifier: "7654321098765432109",
+    },
+    toolchain: {
+      docker: {
+        byteSize: 123456,
+        path: "/usr/bin/docker",
+        sha256: digest("d"),
+        version: "Docker version 28.0.0, build test",
+      },
+      image:
+        "postgres@sha256:33f923b05f64ca54ac4401c01126a6b92afe839a0aa0a52bc5aeb5cc958e5f20",
+      imageId: digest("e"),
+      pgDump: { path: "/usr/bin/pg_dump", version: "16.10" },
+      pgRestore: { path: "/usr/bin/pg_restore", version: "16.10" },
+      psql: { path: "/usr/bin/psql", version: "16.10" },
+      serverVersion: "160010",
+    },
+    trustStatus: "pending_release_set_approval",
+  });
+  const managedMediaReceiptText = canonical({
+    assets: [
+      {
+        assetRevision: null,
+        byteSize: 68,
+        catalogRevision: "catalog-42",
+        contentType: "image/png",
+        digest: digest("f"),
+        grantSha256: digest("1"),
+        id: "00000000-0000-4000-8000-000000000001",
+        loopbackPath: `/media/${digest("f")}`,
+        purpose: "product_display_image",
+        reference:
+          "/api/media-assets/00000000-0000-4000-8000-000000000001/content",
+      },
+      {
+        assetRevision: "garment-1",
+        byteSize: 70,
+        catalogRevision: "catalog-42",
+        contentType: "image/png",
+        digest: digest("2"),
+        grantSha256: digest("3"),
+        id: "00000000-0000-4000-8000-000000000002",
+        loopbackPath: `/media/${digest("2")}`,
+        purpose: "try_on_garment",
+        reference:
+          "/api/media-assets/00000000-0000-4000-8000-000000000002/content",
+      },
+    ],
+    generation: "catalog-42",
+    observedAt: "2026-08-11T00:00:02.000Z",
+    origin: "http://127.0.0.1:4312",
+    planogramVersion: "planogram-9",
+    schemaVersion: "vem.precutover.managed-media.v1",
+    trustStatus: "pending_release_set_approval",
+  });
+  return { databaseReceiptText, managedMediaReceiptText };
+}
+
+function writeApprovalInput(input, evidenceText, manifestText) {
+  const receipts = pendingReceiptTexts();
+  writeFileSync(join(input, "component-evidence.json"), evidenceText);
+  writeFileSync(
+    join(input, "database-backup-receipt.json"),
+    receipts.databaseReceiptText,
+  );
+  writeFileSync(
+    join(input, "managed-media-receipt.json"),
+    receipts.managedMediaReceiptText,
+  );
+  writeFileSync(join(input, "release-set.json"), manifestText);
+  return receipts;
+}
+
 function evidence() {
   const facts = readReleaseRepositoryFacts(repoRoot);
+  const receipts = pendingReceiptTexts();
   return {
     adminContracts: { evidenceSha256: digest("9") },
     ai: {
@@ -72,6 +190,10 @@ function evidence() {
       },
     },
     database: facts.database,
+    precutover: derivePrecutoverEvidence(
+      receipts.databaseReceiptText,
+      receipts.managedMediaReceiptText,
+    ),
     schemaVersion: "vem.release-set.component-evidence.v1",
     vem: { sourceCommit },
     vision: {
@@ -200,8 +322,7 @@ describe("trusted release-set approval", () => {
         repoRoot,
       });
       mkdirSync(input);
-      writeFileSync(join(input, "component-evidence.json"), evidenceText);
-      writeFileSync(join(input, "release-set.json"), manifestText);
+      const receipts = writeApprovalInput(input, evidenceText, manifestText);
       createReleaseSetApproval({
         attesterWorkflowSha: workflowSha,
         inputDirectory: input,
@@ -214,13 +335,33 @@ describe("trusted release-set approval", () => {
       const approval = verifyReleaseSetApprovalBinding({
         approvalText,
         componentEvidenceText: evidenceText,
+        databaseReceiptText: receipts.databaseReceiptText,
+        managedMediaReceiptText: receipts.managedMediaReceiptText,
         manifestText,
         sourceCommit,
         sourceRef: "refs/tags/v1.2.3-rc.1",
         trustedWorkflowSha: workflowSha,
       });
-      assert.equal(approval.manifestSha256, sha256(manifestText));
-      assert.equal(approval.componentEvidenceSha256, sha256(evidenceText));
+      assert.equal(
+        approval.inputArtifact.members["release-set.json"],
+        sha256(manifestText),
+      );
+      assert.equal(
+        approval.inputArtifact.members["component-evidence.json"],
+        sha256(evidenceText),
+      );
+      assert.equal(
+        approval.inputArtifact.members["database-backup-receipt.json"],
+        sha256(receipts.databaseReceiptText),
+      );
+      assert.equal(
+        approval.inputArtifact.members["managed-media-receipt.json"],
+        sha256(receipts.managedMediaReceiptText),
+      );
+      assert.equal(
+        approval.inputArtifact.aggregateSha256,
+        sha256(canonical(approval.inputArtifact.members)),
+      );
       assert.notEqual(approvalText, manifestText);
       assert.equal(approvalText, canonical(JSON.parse(approvalText)));
     } finally {
@@ -237,12 +378,14 @@ describe("trusted release-set approval", () => {
         evidence: componentEvidence,
         repoRoot,
       });
-      for (const kind of ["extra", "nested", "symlink"]) {
+      for (const kind of ["extra", "missing", "nested", "symlink"]) {
         const input = join(directory, kind);
         mkdirSync(input);
-        writeFileSync(join(input, "component-evidence.json"), evidenceText);
-        writeFileSync(join(input, "release-set.json"), manifestText);
+        writeApprovalInput(input, evidenceText, manifestText);
         if (kind === "extra") writeFileSync(join(input, "extra.json"), "{}\n");
+        if (kind === "missing") {
+          rmSync(join(input, "database-backup-receipt.json"));
+        }
         if (kind === "nested") mkdirSync(join(input, "nested"));
         if (kind === "symlink") {
           rmSync(join(input, "release-set.json"));
@@ -261,7 +404,83 @@ describe("trusted release-set approval", () => {
               sourceCommit,
               sourceRef: "refs/tags/v1.2.3-rc.1",
             }),
-          /exactly two members|must be regular files/,
+          /exactly four members|must be regular files/,
+        );
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects rewritten, noncanonical, and raw-secret pending receipts", () => {
+    const directory = mkdtempSync(
+      join(tmpdir(), "vem-release-receipt-tamper-"),
+    );
+    try {
+      const componentEvidence = evidence();
+      const evidenceText = canonical(componentEvidence);
+      const manifestText = generateReleaseSet({
+        evidence: componentEvidence,
+        repoRoot,
+      });
+      for (const kind of [
+        "rewritten",
+        "unknown",
+        "duplicate",
+        "noncanonical",
+        "unsafe-number",
+        "unsafe-path",
+        "raw-grant",
+        "raw-token",
+      ]) {
+        const input = join(directory, kind);
+        mkdirSync(input);
+        writeApprovalInput(input, evidenceText, manifestText);
+        const databasePath = join(input, "database-backup-receipt.json");
+        const mediaPath = join(input, "managed-media-receipt.json");
+        if (kind === "rewritten") {
+          const receipt = JSON.parse(readFileSync(databasePath, "utf8"));
+          receipt.backup.byteSize += 1;
+          writeFileSync(databasePath, canonical(receipt));
+        } else if (kind === "unknown") {
+          const receipt = JSON.parse(readFileSync(databasePath, "utf8"));
+          receipt.untrusted = true;
+          writeFileSync(databasePath, canonical(receipt));
+        } else if (kind === "duplicate") {
+          const raw = readFileSync(databasePath, "utf8");
+          writeFileSync(
+            databasePath,
+            raw.replace(
+              '"schemaVersion":"vem.precutover.database-backup.v1"',
+              '"schemaVersion":"vem.precutover.database-backup.v1","schemaVersion":"vem.precutover.database-backup.v1"',
+            ),
+          );
+        } else if (kind === "noncanonical") {
+          const receipt = JSON.parse(readFileSync(databasePath, "utf8"));
+          writeFileSync(databasePath, `${JSON.stringify(receipt, null, 2)}\n`);
+        } else if (kind === "unsafe-number") {
+          const receipt = JSON.parse(readFileSync(databasePath, "utf8"));
+          receipt.backup.byteSize = Number.MAX_SAFE_INTEGER + 1;
+          writeFileSync(databasePath, canonical(receipt));
+        } else if (kind === "unsafe-path") {
+          const receipt = JSON.parse(readFileSync(databasePath, "utf8"));
+          receipt.toolchain.docker.path = "./docker";
+          writeFileSync(databasePath, canonical(receipt));
+        } else {
+          const receipt = JSON.parse(readFileSync(mediaPath, "utf8"));
+          receipt.assets[0].loopbackPath +=
+            kind === "raw-token" ? "?token=raw-secret" : "?grant=raw-secret";
+          writeFileSync(mediaPath, canonical(receipt));
+        }
+        assert.throws(() =>
+          createReleaseSetApproval({
+            attesterWorkflowSha: workflowSha,
+            inputDirectory: input,
+            outputPath: join(directory, `${kind}-approval.json`),
+            repoRoot,
+            sourceCommit,
+            sourceRef,
+          }),
         );
       }
     } finally {
@@ -284,8 +503,7 @@ describe("trusted release-set approval", () => {
       const manifestPath = join(input, "release-set.json");
       const approvalPath = join(directory, "release-set-approval.json");
       const bundlePath = join(directory, "fake.sigstore.json");
-      writeFileSync(evidencePath, evidenceText);
-      writeFileSync(manifestPath, manifestText);
+      writeApprovalInput(input, evidenceText, manifestText);
       writeFileSync(bundlePath, "{}\n");
       createReleaseSetApproval({
         attesterWorkflowSha: workflowSha,
@@ -348,8 +566,7 @@ describe("trusted release-set approval", () => {
       const manifestPath = join(input, "release-set.json");
       const approvalPath = join(directory, "release-set-approval.json");
       const bundlePath = join(directory, "fake.sigstore.json");
-      writeFileSync(evidencePath, evidenceText);
-      writeFileSync(manifestPath, manifestText);
+      writeApprovalInput(input, evidenceText, manifestText);
       writeFileSync(bundlePath, "{}\n");
       createReleaseSetApproval({
         attesterWorkflowSha: workflowSha,
