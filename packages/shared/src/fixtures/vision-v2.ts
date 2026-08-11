@@ -434,6 +434,22 @@ export const invalidVisionV2ServerFixtures = [
     },
   ),
   mutate(
+    "rejects-server-ai-ready-with-degraded-diagnostic",
+    "payload.aiReadinessDiagnostic",
+    visionV2ServerFixtures.ready,
+    (message) => {
+      payload(message).aiReadinessDiagnostic = "model_pack_missing";
+    },
+  ),
+  mutate(
+    "rejects-server-ai-unready-with-ready-diagnostic",
+    "payload.aiReady",
+    visionV2ServerFixtures.ready,
+    (message) => {
+      payload(message).aiReady = false;
+    },
+  ),
+  mutate(
     "rejects-server-protocol",
     "protocol",
     visionV2ServerFixtures.ready,

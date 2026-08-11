@@ -305,6 +305,13 @@ fn validate_ready_payload(ready: &VisionReadyPayload) -> Result<(), String> {
     {
         return Err("invalid vision.ready contractDigest".to_string());
     }
+    let diagnostic_ready = matches!(
+        ready.ai_readiness_diagnostic,
+        VisionAiReadinessDiagnostic::Ready
+    );
+    if ready.ai_ready != diagnostic_ready {
+        return Err("contradictory vision.ready AI readiness".to_string());
+    }
     if ready.capabilities.len() > 32
         || ready
             .capabilities
@@ -942,6 +949,31 @@ mod tests {
         let result = check_ready(&ws_url, None, 2000).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("unknown variant"));
+    }
+
+    #[tokio::test]
+    async fn check_ready_rejects_contradictory_ai_readiness_facts() {
+        for (ai_ready, diagnostic) in [(true, "model_pack_missing"), (false, "ready")] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("listen");
+            let addr = listener.local_addr().expect("local addr");
+            let ws_url = format!("ws://{addr}/");
+            let mut fixture = generated_ready_fixture();
+            fixture["payload"]["aiReady"] = Value::Bool(ai_ready);
+            fixture["payload"]["aiReadinessDiagnostic"] = Value::String(diagnostic.to_string());
+
+            tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.expect("accept");
+                let mut ws_stream = accept_async(stream).await.expect("accept ws");
+                let _ = ws_stream.next().await.expect("next");
+                ws_stream
+                    .send(Message::Text(fixture.to_string()))
+                    .await
+                    .expect("send");
+            });
+
+            let result = check_ready(&ws_url, None, 2000).await;
+            assert!(result.is_err(), "accepted {ai_ready}+{diagnostic}");
+        }
     }
 
     #[tokio::test]

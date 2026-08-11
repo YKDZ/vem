@@ -90,6 +90,7 @@ function readyPayload(
     contractDigest: "a".repeat(64),
     cameraReady: true,
     fastReady: true,
+    aiReady: true,
     aiReadinessDiagnostic: "ready" as const,
     visionBusinessReady: true,
     businessReadinessDiagnostic: "ready" as const,
@@ -402,6 +403,26 @@ describe("useVisionStore", () => {
     expect(visionStore.fastReady).toBe(false);
     expect(visionStore.aiReady).toBe(false);
   });
+
+  it.each([
+    [true, "model_pack_missing"],
+    [false, "ready"],
+  ] as const)(
+    "rejects contradictory AI readiness facts (%s, %s)",
+    (aiReady, aiReadinessDiagnostic) => {
+      const visionStore = useVisionStore();
+
+      visionStore.applyVisionReady({
+        ...readyPayload(),
+        aiReady,
+        aiReadinessDiagnostic,
+      });
+
+      expect(visionStore.aiReadinessDiagnostic).toBeNull();
+      expect(visionStore.fastReady).toBe(false);
+      expect(visionStore.aiReady).toBe(false);
+    },
+  );
 
   it("clears available or unknown try-on state whenever Vision becomes disabled", () => {
     const visionStore = useVisionStore();

@@ -22,6 +22,11 @@ export const visionV2AiReadinessDiagnosticSchema = z.enum([
 export type VisionV2AiReadinessDiagnostic = z.infer<
   typeof visionV2AiReadinessDiagnosticSchema
 >;
+const visionV2AiUnavailableDiagnosticSchema = z.enum([
+  "model_pack_missing",
+  "model_pack_invalid",
+  "worker_unavailable",
+]);
 
 const sha256HexSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const sha256DigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
@@ -175,24 +180,36 @@ export const visionV2HelloMessageSchema = envelopeBaseSchema.extend({
   }),
 });
 
+const visionV2ReadyPayloadCommonShape = {
+  serverName: codePointString({ minimum: 1, maximum: 128 }),
+  serverVersion: codePointString({ minimum: 1, maximum: 64 }),
+  schemaVersion: codePointString({ minimum: 1, maximum: 128 }),
+  bundleVersion: codePointString({ minimum: 1, maximum: 64 }),
+  contractDigest: sha256HexSchema,
+  cameraReady: z.boolean(),
+  fastReady: z.boolean(),
+  visionBusinessReady: z.boolean(),
+  businessReadinessDiagnostic: visionV2BusinessReadinessDiagnosticSchema,
+  capabilities: z.array(codePointString({ minimum: 1, maximum: 64 })).max(32),
+};
+
 export const visionV2ReadyMessageSchema = envelopeBaseSchema.extend({
   type: z.literal("vision.ready"),
-  payload: z.strictObject({
-    serverName: codePointString({ minimum: 1, maximum: 128 }),
-    serverVersion: codePointString({ minimum: 1, maximum: 64 }),
-    schemaVersion: codePointString({ minimum: 1, maximum: 128 }),
-    bundleVersion: codePointString({ minimum: 1, maximum: 64 }),
-    contractDigest: sha256HexSchema,
-    cameraReady: z.boolean(),
-    fastReady: z.boolean(),
-    // AI readiness is independent: an unavailable model pack must never
-    // remove Fast or ordinary sale capability.
-    aiReady: z.boolean().default(false),
-    aiReadinessDiagnostic: visionV2AiReadinessDiagnosticSchema,
-    visionBusinessReady: z.boolean(),
-    businessReadinessDiagnostic: visionV2BusinessReadinessDiagnosticSchema,
-    capabilities: z.array(codePointString({ minimum: 1, maximum: 64 })).max(32),
-  }),
+  // AI readiness is independent: an unavailable model pack must never
+  // remove Fast or ordinary sale capability. Its boolean and diagnostic are
+  // one fact and cannot contradict each other at any generated boundary.
+  payload: z.discriminatedUnion("aiReady", [
+    z.strictObject({
+      ...visionV2ReadyPayloadCommonShape,
+      aiReady: z.literal(true),
+      aiReadinessDiagnostic: z.literal("ready"),
+    }),
+    z.strictObject({
+      ...visionV2ReadyPayloadCommonShape,
+      aiReady: z.literal(false),
+      aiReadinessDiagnostic: visionV2AiUnavailableDiagnosticSchema,
+    }),
+  ]),
 });
 
 export const visionV2AttemptStartMessageSchema = envelopeBaseSchema.extend({
