@@ -467,6 +467,7 @@ describe("vision native browser fallback - Fast attempt lifecycle", () => {
     sockets[0].emit(
       readyV2Message({
         aiReady: true,
+        aiReadinessDiagnostic: "ready",
         capabilities: ["try_on_fast", "try_on_ai"],
       }),
     );
@@ -970,6 +971,11 @@ function readyV2Message(
   overrides: Partial<{
     fastReady: boolean;
     aiReady: boolean;
+    aiReadinessDiagnostic:
+      | "ready"
+      | "model_pack_missing"
+      | "model_pack_invalid"
+      | "worker_unavailable";
     visionBusinessReady: boolean;
     capabilities: string[];
   }> = {},
