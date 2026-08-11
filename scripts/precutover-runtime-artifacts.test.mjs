@@ -796,6 +796,42 @@ describe("pre-cutover complete runtime archives", () => {
     assert.match(receipt.verifier.descriptorIdentity, /^sha256:[a-f0-9]{64}$/);
   });
 
+  it("projects the complete externally verified packaged worker onedir for the AI proof", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-runtime-ai-materials-"));
+    temporaryRoots.push(root);
+    const fixture = await buildFixture(root);
+    const output = join(root, "runtime-artifacts-receipt.json");
+    const destination = join(root, "verified-ai-materials");
+    const previous = process.env.NODE_ENV;
+    process.env.NODE_ENV = "test";
+    try {
+      const proof = await verifyRuntimeArtifactsForTest(
+        runtimeOptions(fixture, output),
+        async () => testProvenPrecutover(fixture),
+        async () => {},
+        undefined,
+        destination,
+      );
+      assert.equal(proof.aiMaterials.workerFiles.length, 5);
+      assert.deepEqual(
+        proof.aiMaterials.workerFiles.map(({ relative }) => relative).sort(),
+        [
+          "_internal/ai-runtime-descriptor.json",
+          "_internal/official-ai-model-pack-descriptor.json",
+          "_internal/official-ai-source-descriptor.json",
+          "_internal/requirements-ai.lock.json",
+          "vending-vision-ai-worker.exe",
+        ],
+      );
+      for (const file of proof.aiMaterials.workerFiles) {
+        assert.equal(existsSync(file.path), true);
+      }
+    } finally {
+      if (previous === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previous;
+    }
+  });
+
   it("rejects an empty Vision builder attestation after release authority authentication", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-runtime-unsigned-vision-"));
     temporaryRoots.push(root);

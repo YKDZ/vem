@@ -5,6 +5,7 @@ import {
   closeSync,
   constants,
   createReadStream,
+  existsSync,
   fstatSync,
   fsyncSync,
   linkSync,
@@ -208,7 +209,7 @@ function validateHeldPath(path, fileDescriptor, initialStat, label) {
   }
 }
 
-function revalidateStagedFile(lease) {
+export function revalidateStagedFile(lease) {
   validateHeldPath(
     lease.source.path,
     lease.source.fileDescriptor,
@@ -239,7 +240,7 @@ function revalidateStagedFile(lease) {
   }
 }
 
-function closeStagedFile(lease) {
+export function closeStagedFile(lease) {
   if (lease.closed) return;
   lease.closed = true;
   closeSync(lease.staging.fileDescriptor);
@@ -277,7 +278,7 @@ async function hashRegularFile(path, label, maximumBytes) {
   };
 }
 
-function stageRegularFile(
+export function stageRegularFile(
   source,
   destination,
   label,
@@ -885,6 +886,7 @@ function verifyExtractedV2Bundle(extractedRoot, repoRoot, expectedDigest) {
 }
 
 async function verifyVisionArchive({
+  aiMaterialsDestination,
   candidateDirectory,
   descriptor,
   ghBinaryPath,
@@ -992,7 +994,75 @@ async function verifyVisionArchive({
     repoRoot,
     identityRoot.releaseSet.visionV2Bundle.bundleSha256,
   );
-  return {
+  let aiMaterials;
+  if (aiMaterialsDestination !== undefined) {
+    assertAbsolute(aiMaterialsDestination, "verified AI materials destination");
+    if (existsSync(aiMaterialsDestination)) {
+      fail("verified AI materials destination must not exist");
+    }
+    mkdirSync(aiMaterialsDestination, { mode: 0o700 });
+    aiMaterials = {};
+    const workerRoot = dirname(bindings.workerExecutable.path);
+    const workerFiles = candidateManifest.files.filter(
+      ({ path }) => path === workerRoot || path.startsWith(`${workerRoot}/`),
+    );
+    if (
+      workerFiles.length === 0 ||
+      !workerFiles.some(({ path }) => path === bindings.workerExecutable.path)
+    ) {
+      fail("verified AI worker onedir is incomplete");
+    }
+    aiMaterials.workerFiles = [];
+    for (const file of workerFiles) {
+      const relative = file.path.slice(workerRoot.length + 1);
+      const destination = join(aiMaterialsDestination, "worker", relative);
+      mkdirSync(dirname(destination), { mode: 0o700, recursive: true });
+      const staged = stageRegularFile(
+        join(extracted, file.path),
+        destination,
+        `verified AI worker file ${file.path}`,
+        2 * 1024 * 1024 * 1024,
+        file.path === bindings.workerExecutable.path ? 0o700 : 0o600,
+      );
+      heldInputs.push(staged);
+      if (
+        staged.facts.byteSize !== file.size ||
+        staged.facts.sha256 !== `sha256:${file.sha256}`
+      ) {
+        fail(`verified AI worker file mismatch: ${file.path}`);
+      }
+      aiMaterials.workerFiles.push({
+        ...staged.facts,
+        path: staged.path,
+        relative,
+      });
+    }
+    for (const name of [
+      "workerExecutable",
+      "runtimeDescriptor",
+      "aiLock",
+      "sourceDescriptor",
+      "modelPackDescriptor",
+    ]) {
+      const binding = bindings[name];
+      const relative = binding.path.slice(workerRoot.length + 1);
+      const staged = aiMaterials.workerFiles.find(
+        (file) => file.relative === relative,
+      );
+      if (
+        staged === undefined ||
+        staged.sha256 !== `sha256:${binding.sha256}`
+      ) {
+        fail(`verified AI ${name} digest mismatch`);
+      }
+      aiMaterials[name] = {
+        byteSize: staged.byteSize,
+        path: staged.path,
+        sha256: staged.sha256,
+      };
+    }
+  }
+  const facts = {
     archive: subject,
     attestationBundleSha256: attestation.sha256,
     bindings: Object.fromEntries(
@@ -1006,6 +1076,7 @@ async function verifyVisionArchive({
     supplierEvidenceSha256: evidence.sha256,
     v2BundleSha256,
   };
+  return { aiMaterials, facts };
 }
 
 function validateReceipt(receipt) {
@@ -1169,7 +1240,12 @@ function writeExclusive(path, contents, validateInputs) {
 
 async function verify(
   options,
-  { beforeVemHelperExecute, provePrecutover, verifyVisionAttestation },
+  {
+    aiMaterialsDestination,
+    beforeVemHelperExecute,
+    provePrecutover,
+    verifyVisionAttestation,
+  },
 ) {
   for (const [key, value] of Object.entries(options)) {
     if (PATH_OPTIONS.has(key)) assertAbsolute(value, `--${key}`);
@@ -1207,7 +1283,8 @@ async function verify(
       repoRoot: options["repo-root"],
       tempRoot,
     });
-    const vision = await verifyVisionArchive({
+    const visionProof = await verifyVisionArchive({
+      aiMaterialsDestination,
       candidateDirectory: options["vision-candidate-input-directory"],
       descriptor: verifier.value,
       ghBinaryPath: options["gh-binary"],
@@ -1220,6 +1297,7 @@ async function verify(
       verifyVisionAttestation,
       visionSourceRef: options["vision-source-ref"],
     });
+    const vision = visionProof.facts;
     const receiptText = canonicalJson(
       validateReceipt({
         identityRoot: {
@@ -1243,6 +1321,12 @@ async function verify(
     writeExclusive(options.output, receiptText, () => {
       for (const lease of heldInputs) revalidateStagedFile(lease);
     });
+    return {
+      aiMaterials: visionProof.aiMaterials,
+      receipt: JSON.parse(receiptText),
+      receiptText,
+      releaseSet: identityRoot.releaseSet,
+    };
   } finally {
     for (const lease of heldInputs.reverse()) closeStagedFile(lease);
     rmSync(tempRoot, { recursive: true, force: true });
@@ -1275,6 +1359,7 @@ export async function verifyRuntimeArtifactsForTest(
   provePrecutover,
   verifyVisionAttestation = async () => {},
   beforeVemHelperExecute,
+  aiMaterialsDestination,
 ) {
   if (process.env.NODE_ENV !== "test") {
     fail("test-only runtime artifact verifier requires NODE_ENV=test");
@@ -1283,9 +1368,21 @@ export async function verifyRuntimeArtifactsForTest(
     fail("test-only precutover proof boundary must be callable");
   }
   return verify(options, {
+    aiMaterialsDestination,
     beforeVemHelperExecute,
     provePrecutover,
     verifyVisionAttestation,
+  });
+}
+
+export async function proveProductionRuntimeArtifactsForAi(
+  options,
+  aiMaterialsDestination,
+) {
+  return verify(options, {
+    aiMaterialsDestination,
+    provePrecutover: proveRuntimePrecutover,
+    verifyVisionAttestation: verifyTrustedVisionCandidateAttestation,
   });
 }
 

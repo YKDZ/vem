@@ -1,0 +1,45 @@
+{
+  "entrypoint": "scripts/precutover_ai_model_pack.py",
+  "identity": "sha256:2a9126536f89e9a8a0fc91a60246c5b9220de7b978ce64bc58853989d7883fd2",
+  "python": {
+    "byteSize": 6834488,
+    "path": "/usr/bin/python3.11",
+    "sha256": "6d972cf21be56fe3c947ab6ba257ff8d08c342dd2714442986791bd9a6dfabfe",
+    "version": "Python 3.11.2"
+  },
+  "repository": "hbhjt/vending-vision",
+  "revision": "215b7f1286f77435d274ead35c39ad8391204790",
+  "schemaVersion": "vem-trusted-vision-ai-precutover-verifier/v1",
+  "scripts": [
+    {
+      "byteSize": 8767,
+      "gitBlob": "3708a7d6718d101d61c27efc1979e0c7be9b03de",
+      "path": "scripts/ai_model_pack_release.py",
+      "sha256": "82745589dd764f9422c4504a9f729279024226c8917275e073fcf125e602c37e"
+    },
+    {
+      "byteSize": 4237,
+      "gitBlob": "bdd12eddb132ac7e9377869e69f238ebd55c19ed",
+      "path": "scripts/precutover_ai_model_pack.py",
+      "sha256": "e55673eaa776210117550d257ac04b6d7264285fc0277037e6a90ae3888638ec"
+    },
+    {
+      "byteSize": 2111,
+      "gitBlob": "5154a74503cd150e1b891baeafae8bcbf1a05398",
+      "path": "scripts/precutover_ai_worker_probe.py",
+      "sha256": "8be39b7f05a22a9772bc76d0a6c2360ec22d2204eb41d1b3e94d0d4e109ea8fa"
+    },
+    {
+      "byteSize": 21123,
+      "gitBlob": "1a360c859e61dcc5965c2a73a9c20d0c926c4447",
+      "path": "vision/ai_model_pack.py",
+      "sha256": "e48b56481ef54b5adb1c7df5fb036b2b5b8ec04b07de8f5ce9b6ac579383d96a"
+    },
+    {
+      "byteSize": 26153,
+      "gitBlob": "2a6fe1c0d1e3ddfbd4deac49d5ec459e4608c509",
+      "path": "vision/process_supervisor.py",
+      "sha256": "f27e9e635912d6e29bf6fb43997165b2bd9b0969ec021a133de5bdee9722ec26"
+    }
+  ]
+}
