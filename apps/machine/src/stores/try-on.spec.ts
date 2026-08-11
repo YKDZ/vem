@@ -97,6 +97,7 @@ describe("try-on store current catalog boundary", () => {
       contractDigest: "a".repeat(64),
       cameraReady: true,
       fastReady: true,
+      aiReady: false,
       aiReadinessDiagnostic: "model_pack_missing",
       visionBusinessReady: true,
       businessReadinessDiagnostic: "ready",
