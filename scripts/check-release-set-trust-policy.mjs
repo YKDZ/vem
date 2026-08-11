@@ -4,9 +4,12 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 
-const TRUSTED_COMMIT = "270dd86853b484ae0db776c8248fc323cacf4ba2";
+import { verifyTrustedGhBinary } from "./trusted-gh-cli.mjs";
+
+const TRUSTED_COMMIT = "f849cb57d0868fe7b11065fcacbbf9276291abd4";
 const TRUSTED_REPOSITORY = "YKDZ/vem";
 const TRUSTED_WORKFLOW = ".github/workflows/trusted-release-set-attester.yml";
+const PINNED_GH_BINARY = "/usr/bin/gh";
 
 export class TrustPolicyError extends Error {}
 
@@ -57,8 +60,10 @@ export function checkReleaseSetTrustPolicy(repositoryRoot) {
   );
   for (const path of [
     "scripts/backend-deployment-validation.mjs",
+    "scripts/materialize_trusted_gh.py",
     "scripts/release-set.mjs",
     "scripts/release-set-approval.mjs",
+    "trusted-gh-cli-linux-amd64.json",
   ]) {
     requirePolicy(
       trustedGitBytes(root, path).length > 0,
@@ -83,21 +88,28 @@ export function checkReleaseSetTrustPolicy(repositoryRoot) {
   );
   for (const fragment of [
     `"${TRUSTED_COMMIT}"`,
-    'spawnSync(\n    "gh"',
+    "verifyTrustedGhBinary(ghBinaryPath)",
+    "spawnSync(\n    ghBinaryPath",
     '"--signer-workflow"',
     '"--signer-digest"',
     '"--source-ref"',
     '"--source-digest"',
     '"--deny-self-hosted-runners"',
+    '"--format=json"',
   ]) {
     requirePolicy(
       approvalSource.includes(fragment),
       `production verifier policy missing: ${fragment}`,
     );
   }
+  requirePolicy(
+    !approvalSource.includes('spawnSync(\n    "gh"'),
+    "production verifier must not resolve gh through PATH",
+  );
+  verifyTrustedGhBinary(PINNED_GH_BINARY);
   const missingRoot = `/tmp/vem-release-set-policy-${process.pid}`;
   const parsed = spawnSync(
-    "gh",
+    PINNED_GH_BINARY,
     [
       "attestation",
       "verify",
@@ -115,8 +127,14 @@ export function checkReleaseSetTrustPolicy(repositoryRoot) {
       "--source-digest",
       "0".repeat(40),
       "--deny-self-hosted-runners",
+      "--format=json",
     ],
-    { cwd: root, encoding: "utf8" },
+    {
+      cwd: root,
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      timeout: 30_000,
+    },
   );
   const parserOutput = `${parsed.stdout}${parsed.stderr}`.toLowerCase();
   requirePolicy(

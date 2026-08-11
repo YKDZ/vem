@@ -11,12 +11,13 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { verifyReleaseSet } from "./release-set.mjs";
+import { verifyTrustedGhBinary } from "./trusted-gh-cli.mjs";
 
 export const TRUSTED_RELEASE_SET_REPOSITORY = "YKDZ/vem";
 export const TRUSTED_RELEASE_SET_WORKFLOW =
   ".github/workflows/trusted-release-set-attester.yml";
 export const TRUSTED_RELEASE_SET_WORKFLOW_SHA =
-  "270dd86853b484ae0db776c8248fc323cacf4ba2";
+  "f849cb57d0868fe7b11065fcacbbf9276291abd4";
 const APPROVAL_SCHEMA = "vem.release-set.approval.v1";
 const EVIDENCE_SCHEMA = "vem.release-set.component-evidence.v1";
 const COMMIT_RE = /^[a-f0-9]{40}$/;
@@ -24,6 +25,32 @@ const DIGEST_RE = /^sha256:[a-f0-9]{64}$/;
 const SOURCE_REF_RE =
   /^refs\/tags\/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-rc\.[0-9A-Za-z.-]+$/;
 const INPUT_MEMBERS = ["component-evidence.json", "release-set.json"];
+const GH_VERIFICATION_MEDIA_TYPE =
+  "application/vnd.dev.sigstore.verificationresult+json;version=0.1";
+const GH_CERTIFICATE_KEYS = [
+  "buildConfigDigest",
+  "buildConfigURI",
+  "buildSignerDigest",
+  "buildSignerURI",
+  "buildTrigger",
+  "certificateIssuer",
+  "githubWorkflowName",
+  "githubWorkflowRef",
+  "githubWorkflowRepository",
+  "githubWorkflowSHA",
+  "githubWorkflowTrigger",
+  "issuer",
+  "runInvocationURI",
+  "runnerEnvironment",
+  "sourceRepositoryDigest",
+  "sourceRepositoryIdentifier",
+  "sourceRepositoryOwnerIdentifier",
+  "sourceRepositoryOwnerURI",
+  "sourceRepositoryRef",
+  "sourceRepositoryURI",
+  "sourceRepositoryVisibilityAtSigning",
+  "subjectAlternativeName",
+];
 
 function sha256(value) {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
@@ -202,18 +229,185 @@ export function verifyReleaseSetApprovalBinding({
   return approval;
 }
 
+function assertNonemptyString(value, label) {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`${label} must be a non-empty string`);
+  }
+}
+
+export function parseTrustedGhAttestationVerification({
+  approvalText,
+  output,
+  sourceCommit,
+  sourceRef,
+}) {
+  if (typeof output !== "string" || output.length === 0) {
+    throw new Error("GitHub attestation verification output is empty");
+  }
+  let entries;
+  try {
+    entries = JSON.parse(output);
+  } catch {
+    throw new Error("GitHub attestation verification output is invalid JSON");
+  }
+  if (!Array.isArray(entries) || entries.length !== 1) {
+    throw new Error(
+      "GitHub attestation verification must contain exactly one result",
+    );
+  }
+  const entry = entries[0];
+  assertExactObject(
+    entry,
+    ["attestation", "verificationResult"],
+    "GitHub attestation result",
+  );
+  assertExactObject(
+    entry.attestation,
+    ["bundle", "bundle_url", "initiator"],
+    "GitHub attestation metadata",
+  );
+  if (
+    entry.attestation.bundle === null ||
+    typeof entry.attestation.bundle !== "object" ||
+    Array.isArray(entry.attestation.bundle)
+  ) {
+    throw new Error("GitHub attestation bundle metadata is invalid");
+  }
+  if (
+    typeof entry.attestation.bundle_url !== "string" ||
+    typeof entry.attestation.initiator !== "string"
+  ) {
+    throw new Error("GitHub attestation metadata strings are invalid");
+  }
+
+  const result = entry.verificationResult;
+  assertExactObject(
+    result,
+    [
+      "mediaType",
+      "signature",
+      "statement",
+      "verifiedIdentity",
+      "verifiedTimestamps",
+    ],
+    "GitHub verification result",
+  );
+  if (result.mediaType !== GH_VERIFICATION_MEDIA_TYPE) {
+    throw new Error("GitHub verification result media type mismatch");
+  }
+  assertExactObject(result.signature, ["certificate"], "GitHub signature");
+  const certificate = result.signature.certificate;
+  assertExactObject(
+    certificate,
+    GH_CERTIFICATE_KEYS,
+    "GitHub verification certificate claims",
+  );
+  for (const key of GH_CERTIFICATE_KEYS) {
+    assertNonemptyString(certificate[key], `GitHub certificate claim ${key}`);
+  }
+  const signerPrefix = `https://github.com/${TRUSTED_RELEASE_SET_REPOSITORY}/${TRUSTED_RELEASE_SET_WORKFLOW}@`;
+  if (
+    certificate.githubWorkflowRepository !== TRUSTED_RELEASE_SET_REPOSITORY ||
+    certificate.buildSignerDigest !== TRUSTED_RELEASE_SET_WORKFLOW_SHA ||
+    !certificate.buildSignerURI.startsWith(signerPrefix) ||
+    certificate.subjectAlternativeName !== certificate.buildSignerURI ||
+    certificate.sourceRepositoryURI !==
+      `https://github.com/${TRUSTED_RELEASE_SET_REPOSITORY}` ||
+    certificate.sourceRepositoryDigest !== sourceCommit ||
+    certificate.sourceRepositoryRef !== sourceRef ||
+    certificate.runnerEnvironment !== "github-hosted" ||
+    certificate.issuer !== "https://token.actions.githubusercontent.com"
+  ) {
+    throw new Error("GitHub attestation certificate authority mismatch");
+  }
+
+  const statement = result.statement;
+  assertExactObject(
+    statement,
+    ["_type", "predicate", "predicateType", "subject"],
+    "GitHub attestation statement",
+  );
+  if (
+    statement._type !== "https://in-toto.io/Statement/v1" ||
+    statement.predicate === null ||
+    typeof statement.predicate !== "object" ||
+    Array.isArray(statement.predicate) ||
+    typeof statement.predicateType !== "string" ||
+    statement.predicateType.length === 0 ||
+    !Array.isArray(statement.subject) ||
+    statement.subject.length !== 1
+  ) {
+    throw new Error("GitHub attestation statement is invalid");
+  }
+  const subject = statement.subject[0];
+  assertExactObject(subject, ["digest", "name"], "GitHub attestation subject");
+  assertExactObject(subject.digest, ["sha256"], "GitHub subject digest");
+  if (
+    subject.name !== "release-set-approval.json" ||
+    subject.digest.sha256 !== sha256(approvalText).slice("sha256:".length)
+  ) {
+    throw new Error("GitHub attestation subject digest mismatch");
+  }
+
+  const identity = result.verifiedIdentity;
+  assertExactObject(
+    identity,
+    ["issuer", "subjectAlternativeName"],
+    "GitHub verified identity",
+  );
+  assertExactObject(
+    identity.issuer,
+    ["issuer", "regexp"],
+    "GitHub verified issuer",
+  );
+  assertExactObject(
+    identity.subjectAlternativeName,
+    ["regexp", "subjectAlternativeName"],
+    "GitHub verified subject alternative name",
+  );
+  for (const value of [
+    identity.issuer.issuer,
+    identity.issuer.regexp,
+    identity.subjectAlternativeName.subjectAlternativeName,
+    identity.subjectAlternativeName.regexp,
+  ]) {
+    if (typeof value !== "string") {
+      throw new Error("GitHub verified identity is invalid");
+    }
+  }
+  if (
+    !Array.isArray(result.verifiedTimestamps) ||
+    result.verifiedTimestamps.length === 0
+  ) {
+    throw new Error("GitHub verified timestamps are missing");
+  }
+  for (const timestamp of result.verifiedTimestamps) {
+    assertExactObject(
+      timestamp,
+      ["timestamp", "type", "uri"],
+      "GitHub verified timestamp",
+    );
+    for (const key of ["timestamp", "type", "uri"]) {
+      assertNonemptyString(timestamp[key], `GitHub timestamp ${key}`);
+    }
+  }
+  return result;
+}
+
 export function verifyProductionReleaseSet({
   approvalPath,
   attestationBundlePath,
   componentEvidencePath,
+  ghBinaryPath,
   manifestPath,
   repoRoot,
   sourceCommit,
   sourceRef,
 }) {
   validateClaim(sourceCommit, sourceRef, TRUSTED_RELEASE_SET_WORKFLOW_SHA);
+  verifyTrustedGhBinary(ghBinaryPath);
   const attestation = spawnSync(
-    "gh",
+    ghBinaryPath,
     [
       "attestation",
       "verify",
@@ -231,14 +425,31 @@ export function verifyProductionReleaseSet({
       "--source-digest",
       sourceCommit,
       "--deny-self-hosted-runners",
+      "--format=json",
     ],
-    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    {
+      encoding: "utf8",
+      maxBuffer: 8 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 60_000,
+    },
   );
-  if (attestation.status !== 0) {
+  if (
+    attestation.error ||
+    attestation.status !== 0 ||
+    attestation.signal !== null ||
+    attestation.stderr !== ""
+  ) {
     throw new Error("GitHub attestation verification failed");
   }
 
   const approvalText = readFileSync(approvalPath, "utf8");
+  parseTrustedGhAttestationVerification({
+    approvalText,
+    output: attestation.stdout,
+    sourceCommit,
+    sourceRef,
+  });
   const componentEvidenceText = readFileSync(componentEvidencePath, "utf8");
   const manifestText = readFileSync(manifestPath, "utf8");
   const approval = verifyReleaseSetApprovalBinding({
@@ -294,6 +505,7 @@ function parseArguments(argv) {
           "approval",
           "attestation-bundle",
           "evidence",
+          "gh-binary",
           "manifest",
           "repo-root",
           "source-commit",
@@ -326,6 +538,7 @@ function main(argv) {
     approvalPath: values.approval,
     attestationBundlePath: values["attestation-bundle"],
     componentEvidencePath: values.evidence,
+    ghBinaryPath: values["gh-binary"],
     manifestPath: values.manifest,
     repoRoot: values["repo-root"],
     sourceCommit: values["source-commit"],
