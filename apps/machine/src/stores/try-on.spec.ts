@@ -248,6 +248,7 @@ describe("try-on store current catalog boundary", () => {
     await expect(store.startFast()).resolves.toBe(true);
     if (!pushEvent) throw new Error("expected native attempt callback");
     const attemptId = store.attemptId!;
+    pushEvent(acceptedEvent(attemptId));
     pushEvent(acquiringEvent(attemptId, "no_person", false));
     expect(store.guidance).toBe("no_person");
     expect(store.occupancy).toBe("none");
@@ -311,6 +312,7 @@ describe("try-on store current catalog boundary", () => {
     await store.startFast();
     if (!pushEvent) throw new Error("expected Vision event boundary");
     const attemptId = store.attemptId!;
+    pushEvent(acceptedEvent(attemptId));
     const unsafe = acquiringEvent(attemptId, "hold_still", true);
     unsafe.payload.preview.reference =
       "http://127.0.0.1:65000/v2/try-on/acquisition/preview.mjpeg?token=preview-token";
@@ -368,6 +370,7 @@ describe("try-on store current catalog boundary", () => {
     const fresh = acquiringEvent(currentAttemptId, "hold_still", true);
     fresh.payload.preview.reference =
       "http://[::1]:7892/v2/try-on/acquisition/preview.mjpeg?token=preview-token";
+    callbacks[1]?.(acceptedEvent(currentAttemptId));
     callbacks[1]?.(fresh);
     expect(store.phase).toBe("acquiring");
     expect(store.previewUrl).toBe(fresh.payload.preview.reference);
@@ -398,6 +401,7 @@ describe("try-on store current catalog boundary", () => {
     if (!pushEvent) throw new Error("expected native attempt callback");
     const attemptId = store.attemptId!;
 
+    pushEvent(acceptedEvent(attemptId));
     pushEvent(acquiringEvent(attemptId, "no_person", false));
     expect(store.requestManualCapture()).toBe(false);
     pushEvent(acquiringEvent(attemptId, "multiple_people", false));
@@ -407,7 +411,86 @@ describe("try-on store current catalog boundary", () => {
     expect(store.requestManualCapture()).toBe(false);
     expect(capture).not.toHaveBeenCalled();
   });
+
+  it("accepts only the strict attempt lifecycle while retaining repeated acquisition truth and fencing late terminals", () => {
+    const store = useTryOnStore();
+    const attemptId = "550e8400-e29b-41d4-a716-446655440124";
+    const resultContext = {
+      attemptId,
+      visionSocketUrl: "ws://127.0.0.1:7892/ws",
+    };
+    store.attemptId = attemptId;
+    store.phase = "starting";
+
+    store.applyEvent(
+      attemptId,
+      generatingEvent(attemptId, "preparing"),
+      resultContext,
+    );
+    store.applyEvent(attemptId, completedEvent(attemptId), resultContext);
+    expect(store.phase).toBe("starting");
+
+    store.applyEvent(attemptId, acceptedEvent(attemptId), resultContext);
+    store.applyEvent(
+      attemptId,
+      generatingEvent(attemptId, "preparing"),
+      resultContext,
+    );
+    store.applyEvent(attemptId, completedEvent(attemptId), resultContext);
+    expect(store.phase).toBe("accepted");
+
+    store.applyEvent(
+      attemptId,
+      acquiringEvent(attemptId, "hold_still", true),
+      resultContext,
+    );
+    store.manualCaptureSubmitted = true;
+    store.applyEvent(
+      attemptId,
+      acquiringEvent(attemptId, "ready", true),
+      resultContext,
+    );
+    expect(store.phase).toBe("acquiring");
+    expect(store.guidance).toBe("ready");
+    expect(store.manualCaptureSubmitted).toBe(true);
+    expect(store.manualCaptureAllowed).toBe(false);
+
+    store.applyEvent(attemptId, completedEvent(attemptId), resultContext);
+    expect(store.phase).toBe("acquiring");
+    store.applyEvent(
+      attemptId,
+      generatingEvent(attemptId, "preparing"),
+      resultContext,
+    );
+    store.applyEvent(
+      attemptId,
+      generatingEvent(attemptId, "rendering"),
+      resultContext,
+    );
+    store.applyEvent(
+      attemptId,
+      generatingEvent(attemptId, "preparing"),
+      resultContext,
+    );
+    store.applyEvent(attemptId, completedEvent(attemptId), resultContext);
+    expect(store.phase).toBe("completed");
+    expect(store.generationStage).toBeNull();
+
+    store.applyEvent(
+      attemptId,
+      failedEvent(attemptId, "fast_failed"),
+      resultContext,
+    );
+    expect(store.phase).toBe("completed");
+  });
 });
+
+function acceptedEvent(attemptId: string) {
+  return {
+    type: "vision.try_on.attempt.accepted",
+    payload: { attemptId },
+  } as Parameters<ReturnType<typeof useTryOnStore>["applyEvent"]>[1];
+}
 
 function acquiringEvent(
   attemptId: string,
@@ -463,6 +546,13 @@ function completedEvent(attemptId: string) {
         height: 768,
       },
     },
+  } as Parameters<ReturnType<typeof useTryOnStore>["applyEvent"]>[1];
+}
+
+function failedEvent(attemptId: string, reason: "fast_failed") {
+  return {
+    type: "vision.try_on.attempt.failed",
+    payload: { attemptId, reason },
   } as Parameters<ReturnType<typeof useTryOnStore>["applyEvent"]>[1];
 }
 

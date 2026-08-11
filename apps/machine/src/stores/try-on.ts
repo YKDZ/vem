@@ -190,11 +190,7 @@ export const useTryOnStore = defineStore("tryOn", {
         return;
       }
       if (event.type === "vision.try_on.attempt.acquiring") {
-        if (
-          this.phase === "starting" ||
-          this.phase === "accepted" ||
-          this.phase === "acquiring"
-        ) {
+        if (this.phase === "accepted" || this.phase === "acquiring") {
           try {
             const preview = validateTryOnPreviewReference(
               event.payload.preview,
@@ -220,8 +216,6 @@ export const useTryOnStore = defineStore("tryOn", {
       }
       if (event.type === "vision.try_on.attempt.generating") {
         if (
-          this.phase === "starting" ||
-          this.phase === "accepted" ||
           this.phase === "acquiring" ||
           (this.phase === "generating" &&
             isGenerationStageAtLeast(event.payload.stage, this.generationStage))

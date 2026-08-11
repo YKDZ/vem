@@ -533,6 +533,30 @@ describe("vision native browser fallback - Fast attempt lifecycle", () => {
     await opening;
     sockets[0].emit({
       protocol: "vem.vision.v2",
+      type: "vision.try_on.attempt.accepted",
+      messageId: crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
+      payload: { attemptId, mode: "fast" },
+    });
+    sockets[0].emit({
+      protocol: "vem.vision.v2",
+      type: "vision.try_on.attempt.acquiring",
+      messageId: crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
+      payload: {
+        attemptId,
+        preview: {
+          reference:
+            "http://127.0.0.1:65499/v2/try-on/acquisition/preview.mjpeg?token=preview-token",
+          streamType: "mjpeg",
+        },
+        occupancy: "single",
+        guidance: "hold_still",
+        manualCaptureAllowed: true,
+      },
+    });
+    sockets[0].emit({
+      protocol: "vem.vision.v2",
       type: "vision.try_on.attempt.generating",
       messageId: crypto.randomUUID(),
       timestamp: new Date().toISOString(),
@@ -542,6 +566,8 @@ describe("vision native browser fallback - Fast attempt lifecycle", () => {
     sockets[0].emit(failedV2Message(attemptId));
 
     expect(events).toEqual([
+      "vision.try_on.attempt.accepted",
+      "vision.try_on.attempt.acquiring",
       "vision.try_on.attempt.generating",
       "vision.try_on.attempt.completed",
     ]);
@@ -655,7 +681,7 @@ describe("vision native browser fallback - Fast attempt lifecycle", () => {
     });
   });
 
-  it("consumes the production acquiring-to-generating-to-canceled sequence exactly once and ignores a reverse-direction frame", async () => {
+  it("accepts only the strict production lifecycle and fences skipped, reversed, and late frames", async () => {
     vi.useFakeTimers();
     const sockets: FakeLifecycleSocket[] = [];
     class FakeLifecycleSocket extends EventTarget {
@@ -700,6 +726,23 @@ describe("vision native browser fallback - Fast attempt lifecycle", () => {
       payload,
     });
     sockets[0].emit(envelope("vision.hello", readyV2Message().payload));
+    sockets[0].emit(
+      envelope("vision.try_on.attempt.generating", {
+        attemptId,
+        stage: "preparing",
+      }),
+    );
+    sockets[0].emit(completedV2Message(attemptId));
+    sockets[0].emit(
+      envelope("vision.try_on.attempt.accepted", { attemptId, mode: "fast" }),
+    );
+    sockets[0].emit(
+      envelope("vision.try_on.attempt.generating", {
+        attemptId,
+        stage: "preparing",
+      }),
+    );
+    sockets[0].emit(completedV2Message(attemptId));
     for (const [occupancy, guidance, manualCaptureAllowed] of [
       ["none", "no_person", false],
       ["multiple", "multiple_people", false],
@@ -765,6 +808,7 @@ describe("vision native browser fallback - Fast attempt lifecycle", () => {
     sockets[0].emit(completedV2Message(attemptId));
 
     expect(events).toEqual([
+      "vision.try_on.attempt.accepted",
       "vision.try_on.attempt.acquiring",
       "vision.try_on.attempt.acquiring",
       "vision.try_on.attempt.acquiring",

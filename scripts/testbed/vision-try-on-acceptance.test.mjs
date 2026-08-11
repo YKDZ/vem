@@ -40,6 +40,23 @@ const validateVisionRuntimeEvidence = validateRawVisionRuntimeEvidence;
 const compareObservedVisionProtocolToExpected =
   compareRawObservedVisionProtocolToExpected;
 
+function runMachineVisionAuthority(...args) {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(process.execPath, [
+      "scripts/testbed/run-machine-vision-lifecycle-authority.mjs",
+      ...args,
+    ]);
+    let stderr = "";
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.once("error", reject);
+    child.once("close", (exitCode) => {
+      resolvePromise({ exitCode, stderr });
+    });
+  });
+}
+
 function baseExpectedResults() {
   return {
     schemaVersion: "vending-vision-expected-results/v1",
@@ -99,34 +116,18 @@ function sourceFrame(role, fixtureSha256, overrides = {}) {
 }
 
 describe("vision try-on acceptance script", () => {
-  it("requires the production Machine Vitest lifecycle authority instead of a hand-built testbed DOM", () => {
-    const machineRoot = new URL("../../apps/machine/", import.meta.url);
-    const machinePackage = JSON.parse(
-      readFileSync(new URL("package.json", machineRoot), "utf8"),
-    );
-    assert.match(machinePackage.scripts?.test ?? "", /vitest run/);
-    for (const [path, behavior] of [
-      [
-        "src/stores/try-on.spec.ts",
-        /replaces every current acquisition fact[\s\S]*fences an old socket after retry/,
-      ],
-      [
-        "src/native/vision.spec.ts",
-        /consumes the production acquiring-to-generating-to-canceled sequence/,
-      ],
-      [
-        "src/views/TryOnView.spec.ts",
-        /returns a departed customer[\s\S]*retries failed, canceled, and completed attempts[\s\S]*uses route_leave once/,
-      ],
-      [
-        "src/try-on/eligibility.spec.ts",
-        /accepts an acquisition preview only from the exact current Vision socket origin/,
-      ],
-    ]) {
-      assert.match(
-        readFileSync(new URL(path, machineRoot), "utf8"),
-        behavior,
-        `${path} must remain in the production Machine Vitest lifecycle suite`,
+  it("executes the production Machine Vitest lifecycle authority", async () => {
+    const result = await runMachineVisionAuthority();
+    assert.equal(result.exitCode, 0, result.stderr);
+  });
+
+  it("fails the authority guard when the selected Vitest fixture is skipped or fails", async () => {
+    for (const fixture of ["skipped", "failed"]) {
+      const result = await runMachineVisionAuthority("--fixture", fixture);
+      assert.notEqual(
+        result.exitCode,
+        0,
+        `${fixture} fixture must fail the authority guard`,
       );
     }
   });

@@ -623,24 +623,14 @@ function isPermittedFastAttemptEvent(
     return lifecycle === "starting";
   }
   if (message.type === "vision.try_on.attempt.acquiring") {
-    return (
-      lifecycle === "starting" ||
-      lifecycle === "accepted" ||
-      lifecycle === "acquiring"
-    );
-  }
-  if (
-    lifecycle !== "starting" &&
-    lifecycle !== "accepted" &&
-    lifecycle !== "acquiring" &&
-    lifecycle !== "generating"
-  ) {
-    return false;
+    return lifecycle === "accepted" || lifecycle === "acquiring";
   }
   return (
-    generationStage === null ||
-    message.payload.stage === "rendering" ||
-    generationStage === "preparing"
+    lifecycle === "acquiring" ||
+    (lifecycle === "generating" &&
+      (generationStage === null ||
+        message.payload.stage === "rendering" ||
+        generationStage === "preparing"))
   );
 }
 

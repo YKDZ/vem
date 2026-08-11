@@ -160,6 +160,7 @@ describe("TryOnView acquisition UI", () => {
     const attemptId = useTryOnStore().attemptId!;
     if (!emit) throw new Error("expected Vision event boundary");
 
+    emit(attemptEvent("vision.try_on.attempt.accepted", { attemptId }));
     emit(
       attemptEvent("vision.try_on.attempt.acquiring", {
         attemptId,
@@ -323,10 +324,29 @@ describe("TryOnView acquisition UI", () => {
     });
     const terminal = async (type: string, payload: object): Promise<void> => {
       if (type === "vision.try_on.attempt.completed") {
+        const attemptId = (payload as { attemptId: string }).attemptId;
+        callbacks[callbacks.length - 1]?.({
+          type: "vision.try_on.attempt.accepted",
+          payload: { attemptId },
+        });
+        callbacks[callbacks.length - 1]?.({
+          type: "vision.try_on.attempt.acquiring",
+          payload: {
+            attemptId,
+            preview: {
+              reference:
+                "http://127.0.0.1:7892/v2/try-on/acquisition/preview.mjpeg?token=preview-token",
+              streamType: "mjpeg",
+            },
+            occupancy: "single",
+            guidance: "hold_still",
+            manualCaptureAllowed: true,
+          },
+        });
         callbacks[callbacks.length - 1]?.({
           type: "vision.try_on.attempt.generating",
           payload: {
-            attemptId: (payload as { attemptId: string }).attemptId,
+            attemptId,
             stage: "preparing",
           },
         });
@@ -400,6 +420,24 @@ describe("TryOnView acquisition UI", () => {
       expect(openFastMock).toHaveBeenCalledTimes(2);
     });
     if (!emit) throw new Error("expected Vision event boundary");
+    emit(
+      attemptEvent("vision.try_on.attempt.accepted", {
+        attemptId: useTryOnStore().attemptId!,
+      }),
+    );
+    emit(
+      attemptEvent("vision.try_on.attempt.acquiring", {
+        attemptId: useTryOnStore().attemptId!,
+        preview: {
+          reference:
+            "http://127.0.0.1:7892/v2/try-on/acquisition/preview.mjpeg?token=preview-token",
+          streamType: "mjpeg",
+        },
+        occupancy: "single",
+        guidance: "hold_still",
+        manualCaptureAllowed: true,
+      }),
+    );
     emit(
       attemptEvent("vision.try_on.attempt.generating", {
         attemptId: useTryOnStore().attemptId!,
