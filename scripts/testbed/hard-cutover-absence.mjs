@@ -384,17 +384,44 @@ function startsWith(bytes, prefix) {
   );
 }
 
+const CRC32_TABLE = Uint32Array.from({ length: 256 }, (_, value) => {
+  let crc = value;
+  for (let bit = 0; bit < 8; bit += 1) {
+    crc = (crc & 1) !== 0 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1;
+  }
+  return crc >>> 0;
+});
+
+function crc32(...buffers) {
+  let crc = 0xffffffff;
+  for (const buffer of buffers) {
+    for (const byte of buffer) {
+      crc = CRC32_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
 function validPng(bytes) {
   if (!startsWith(bytes, Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
     return false;
   }
   let offset = 8;
   let sawHeader = false;
+  let sawImageData = false;
+  let imageDataEnded = false;
   while (offset + 12 <= bytes.length) {
     const length = bytes.readUInt32BE(offset);
     const chunkEnd = offset + 12 + length;
     if (chunkEnd > bytes.length) return false;
     const chunkType = bytes.toString("ascii", offset + 4, offset + 8);
+    const chunkData = bytes.subarray(offset + 8, offset + 8 + length);
+    if (
+      bytes.readUInt32BE(offset + 8 + length) !==
+      crc32(bytes.subarray(offset + 4, offset + 8), chunkData)
+    ) {
+      return false;
+    }
     if (!sawHeader) {
       if (chunkType !== "IHDR" || length !== 13) return false;
       if (
@@ -404,9 +431,19 @@ function validPng(bytes) {
         return false;
       }
       sawHeader = true;
+    } else if (chunkType === "IHDR") {
+      return false;
+    }
+    if (chunkType === "IDAT") {
+      if (length === 0 || imageDataEnded) return false;
+      sawImageData = true;
+    } else if (sawImageData && chunkType !== "IEND") {
+      imageDataEnded = true;
     }
     if (chunkType === "IEND") {
-      return length === 0 && sawHeader && chunkEnd === bytes.length;
+      return (
+        length === 0 && sawHeader && sawImageData && chunkEnd === bytes.length
+      );
     }
     offset = chunkEnd;
   }
@@ -414,11 +451,114 @@ function validPng(bytes) {
 }
 
 function validJpeg(bytes) {
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) {
+    return false;
+  }
+  let offset = 2;
+  let sawFrame = false;
+  let sawScan = false;
+  let sawScanData = false;
+  while (offset < bytes.length) {
+    if (bytes[offset] !== 0xff) return false;
+    while (offset < bytes.length && bytes[offset] === 0xff) offset += 1;
+    if (offset >= bytes.length) return false;
+    const marker = bytes[offset];
+    offset += 1;
+    if (marker === 0xd9) return sawFrame && sawScan && sawScanData;
+    if (marker === 0x00 || marker === 0x01 || marker === 0xd8) return false;
+    if (marker >= 0xd0 && marker <= 0xd7) return false;
+    if (offset + 2 > bytes.length) return false;
+    const segmentLength = bytes.readUInt16BE(offset);
+    if (segmentLength < 2 || offset + segmentLength > bytes.length) {
+      return false;
+    }
+    const segmentStart = offset + 2;
+    const segmentEnd = offset + segmentLength;
+    const isStartOfFrame =
+      (marker >= 0xc0 && marker <= 0xc3) ||
+      (marker >= 0xc5 && marker <= 0xc7) ||
+      (marker >= 0xc9 && marker <= 0xcb) ||
+      (marker >= 0xcd && marker <= 0xcf);
+    if (isStartOfFrame) {
+      if (sawFrame || segmentLength < 8) return false;
+      const componentCount = bytes[segmentStart + 5];
+      if (
+        bytes.readUInt16BE(segmentStart + 1) === 0 ||
+        bytes.readUInt16BE(segmentStart + 3) === 0 ||
+        componentCount === 0 ||
+        segmentLength !== 8 + 3 * componentCount
+      ) {
+        return false;
+      }
+      sawFrame = true;
+    }
+    if (marker === 0xda) {
+      const componentCount = bytes[segmentStart];
+      if (
+        !sawFrame ||
+        sawScan ||
+        componentCount === 0 ||
+        segmentLength !== 6 + 2 * componentCount
+      ) {
+        return false;
+      }
+      sawScan = true;
+      offset = segmentEnd;
+      while (offset < bytes.length) {
+        if (bytes[offset] !== 0xff) {
+          sawScanData = true;
+          offset += 1;
+          continue;
+        }
+        let markerOffset = offset + 1;
+        while (markerOffset < bytes.length && bytes[markerOffset] === 0xff) {
+          markerOffset += 1;
+        }
+        if (markerOffset >= bytes.length) return false;
+        const scanMarker = bytes[markerOffset];
+        if (scanMarker === 0x00) {
+          sawScanData = true;
+          offset = markerOffset + 1;
+          continue;
+        }
+        if (scanMarker >= 0xd0 && scanMarker <= 0xd7) {
+          offset = markerOffset + 1;
+          continue;
+        }
+        if (scanMarker === 0xd9) {
+          return sawScanData;
+        }
+        return false;
+      }
+      return false;
+    }
+    offset = segmentEnd;
+  }
+  return false;
+}
+
+function validDib(bytes) {
+  if (bytes.length < 12) return false;
+  const headerSize = bytes.readUInt32LE(0);
+  if (headerSize === 12) {
+    return (
+      bytes.readUInt16LE(4) > 0 &&
+      bytes.readUInt16LE(6) > 0 &&
+      bytes.readUInt16LE(8) === 1 &&
+      [1, 4, 8, 16, 24, 32].includes(bytes.readUInt16LE(10))
+    );
+  }
+  if (
+    ![40, 52, 56, 108, 124].includes(headerSize) ||
+    bytes.length < headerSize
+  ) {
+    return false;
+  }
   return (
-    bytes.length >= 4 &&
-    bytes[0] === 0xff &&
-    bytes[1] === 0xd8 &&
-    bytes.lastIndexOf(Buffer.from([0xff, 0xd9])) >= 2
+    bytes.readInt32LE(4) !== 0 &&
+    bytes.readInt32LE(8) !== 0 &&
+    bytes.readUInt16LE(12) === 1 &&
+    [1, 4, 8, 16, 24, 32].includes(bytes.readUInt16LE(14))
   );
 }
 
@@ -445,6 +585,8 @@ function validIco(bytes) {
     ) {
       return false;
     }
+    const image = bytes.subarray(imageOffset, imageOffset + imageSize);
+    if (!validPng(image) && !validDib(image)) return false;
   }
   return true;
 }
@@ -454,48 +596,93 @@ function validWav(bytes) {
     bytes.length < 12 ||
     bytes.toString("ascii", 0, 4) !== "RIFF" ||
     bytes.toString("ascii", 8, 12) !== "WAVE" ||
-    bytes.readUInt32LE(4) + 8 > bytes.length
+    bytes.readUInt32LE(4) + 8 !== bytes.length
   ) {
     return false;
   }
   let offset = 12;
-  const chunks = new Set();
+  let sawFormat = false;
+  let sawData = false;
   while (offset + 8 <= bytes.length) {
     const type = bytes.toString("ascii", offset, offset + 4);
     const length = bytes.readUInt32LE(offset + 4);
     const chunkEnd = offset + 8 + length;
-    if (chunkEnd > bytes.length) return false;
-    chunks.add(type);
-    offset = chunkEnd + (length & 1);
+    const paddedEnd = chunkEnd + (length & 1);
+    if (paddedEnd > bytes.length) return false;
+    if (type === "fmt ") {
+      if (sawFormat || length < 16) return false;
+      sawFormat = true;
+    } else if (type === "data") {
+      if (!sawFormat || sawData || length === 0) return false;
+      sawData = true;
+    }
+    offset = paddedEnd;
   }
-  return offset === bytes.length && chunks.has("fmt ") && chunks.has("data");
+  return offset === bytes.length && sawFormat && sawData;
 }
 
 function validMp3(bytes) {
+  let offset = 0;
   if (bytes.toString("ascii", 0, 3) === "ID3") {
     if (
       bytes.length < 10 ||
+      bytes[3] < 2 ||
+      bytes[3] > 4 ||
       [...bytes.subarray(6, 10)].some((byte) => byte & 0x80)
     ) {
       return false;
     }
     const tagSize =
       (bytes[6] << 21) | (bytes[7] << 14) | (bytes[8] << 7) | bytes[9];
-    return tagSize + 10 <= bytes.length;
+    const hasFooter = bytes[3] === 4 && (bytes[5] & 0x10) !== 0;
+    offset = 10 + tagSize + (hasFooter ? 10 : 0);
   }
-  if (bytes.length < 4 || bytes[0] !== 0xff || (bytes[1] & 0xe0) !== 0xe0) {
+  if (
+    offset + 4 > bytes.length ||
+    bytes[offset] !== 0xff ||
+    (bytes[offset + 1] & 0xe0) !== 0xe0
+  ) {
     return false;
   }
-  const version = (bytes[1] >> 3) & 0x03;
-  const layer = (bytes[1] >> 1) & 0x03;
-  const bitrate = (bytes[2] >> 4) & 0x0f;
-  const sampleRate = (bytes[2] >> 2) & 0x03;
-  return (
-    version !== 1 &&
-    layer !== 0 &&
-    ![0, 15].includes(bitrate) &&
-    sampleRate !== 3
-  );
+  const version = (bytes[offset + 1] >> 3) & 0x03;
+  const layer = (bytes[offset + 1] >> 1) & 0x03;
+  const bitrateIndex = (bytes[offset + 2] >> 4) & 0x0f;
+  const sampleRateIndex = (bytes[offset + 2] >> 2) & 0x03;
+  if (
+    version === 1 ||
+    layer === 0 ||
+    bitrateIndex === 0 ||
+    bitrateIndex === 15 ||
+    sampleRateIndex === 3
+  ) {
+    return false;
+  }
+  const mpeg1Bitrates = {
+    1: [32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320],
+    2: [32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384],
+    3: [32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448],
+  };
+  const mpeg2Bitrates = {
+    1: [8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160],
+    2: [8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160],
+    3: [32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256],
+  };
+  const bitrateKbps = (version === 3 ? mpeg1Bitrates : mpeg2Bitrates)[layer][
+    bitrateIndex - 1
+  ];
+  const sampleRates = [44100, 48000, 32000];
+  const sampleRate =
+    sampleRates[sampleRateIndex] / (version === 3 ? 1 : version === 2 ? 2 : 4);
+  const padding = (bytes[offset + 2] >> 1) & 1;
+  const bitrate = bitrateKbps * 1000;
+  const frameLength =
+    layer === 3
+      ? Math.floor((12 * bitrate) / sampleRate + padding) * 4
+      : Math.floor(
+          ((layer === 1 && version !== 3 ? 72 : 144) * bitrate) / sampleRate +
+            padding,
+        );
+  return frameLength >= 4 && offset + frameLength <= bytes.length;
 }
 
 function validOgg(bytes) {

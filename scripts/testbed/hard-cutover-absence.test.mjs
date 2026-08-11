@@ -533,6 +533,155 @@ describe("Vision V2 hard-cutover absence guard", () => {
           scanHardCutoverAbsence({ root }).includes(
             `${relativePath}:binary-format-invalid`,
           ),
+          name,
+        );
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("rejects malformed JPEG segments and MP3 audio frames", () => {
+    const malformedAssets = new Map([
+      [
+        "jpeg-payload",
+        ["disguised.jpg", Buffer.from([0xff, 0xd8, 0x4d, 0x5a, 0xff, 0xd9])],
+      ],
+      [
+        "jpeg-segment-overrun",
+        [
+          "truncated.jpg",
+          Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0xff, 0xd9]),
+        ],
+      ],
+      [
+        "jpeg-standalone-marker",
+        ["standalone.jpg", Buffer.from([0xff, 0xd8, 0xff, 0xd0, 0xff, 0xd9])],
+      ],
+      [
+        "empty-id3",
+        [
+          "empty.mp3",
+          Buffer.from([0x49, 0x44, 0x33, 0x04, 0x00, 0x00, 0, 0, 0, 0]),
+        ],
+      ],
+      ["fake-mpeg-sync", ["fake.mp3", Buffer.from([0xff, 0xfb, 0x90, 0x00])]],
+      [
+        "reserved-mpeg-sync",
+        ["reserved.mp3", Buffer.alloc(256, 0xff).fill(0, 4)],
+      ],
+    ]);
+    malformedAssets.get("reserved-mpeg-sync")[1].set([0xff, 0xeb, 0xf0, 0x00]);
+    for (const [name, [filename, payload]] of malformedAssets) {
+      const root = mkdtempSync(
+        join(tmpdir(), `vem-hard-cutover-media-${name}-`),
+      );
+      try {
+        initGuardRepo(root);
+        const relativePath = filename.endsWith(".mp3")
+          ? `apps/machine/public/audio/${filename}`
+          : `apps/machine/src/assets/${filename}`;
+        const asset = join(root, relativePath);
+        mkdirSync(dirname(asset), { recursive: true });
+        writeFileSync(asset, payload);
+        writeBinaryAllowlist(root, [
+          {
+            category: filename.endsWith(".mp3")
+              ? "machine-audio"
+              : "machine-ui-asset",
+            gitMode: "100644",
+            path: relativePath,
+            reason: filename.endsWith(".mp3")
+              ? "Production Machine audio asset."
+              : "Production Machine UI image asset.",
+            sha256: createHash("sha256").update(payload).digest("hex"),
+          },
+        ]);
+        execFileSync("git", ["add", relativePath], { cwd: root });
+
+        assert.ok(
+          scanHardCutoverAbsence({ root }).includes(
+            `${relativePath}:binary-format-invalid`,
+          ),
+          name,
+        );
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("rejects corrupt PNG, empty WAV, and empty ICO containers", () => {
+    const sourcePng = readFileSync(
+      resolve(import.meta.dirname, "../../apps/machine/src-tauri/app-icon.png"),
+    );
+    const pngParts = [sourcePng.subarray(0, 8)];
+    for (let offset = 8; offset < sourcePng.length; ) {
+      const length = sourcePng.readUInt32BE(offset);
+      const end = offset + 12 + length;
+      if (sourcePng.toString("ascii", offset + 4, offset + 8) !== "IDAT") {
+        pngParts.push(sourcePng.subarray(offset, end));
+      }
+      offset = end;
+    }
+    const corruptCrc = Buffer.from(sourcePng);
+    corruptCrc[29] ^= 0x01;
+    const emptyWav = Buffer.alloc(44);
+    emptyWav.write("RIFF", 0, "ascii");
+    emptyWav.writeUInt32LE(36, 4);
+    emptyWav.write("WAVEfmt ", 8, "ascii");
+    emptyWav.writeUInt32LE(16, 16);
+    emptyWav.writeUInt16LE(1, 20);
+    emptyWav.writeUInt16LE(1, 22);
+    emptyWav.writeUInt32LE(8000, 24);
+    emptyWav.writeUInt32LE(16000, 28);
+    emptyWav.writeUInt16LE(2, 32);
+    emptyWav.writeUInt16LE(16, 34);
+    emptyWav.write("data", 36, "ascii");
+    const emptyIco = Buffer.alloc(26);
+    emptyIco.writeUInt16LE(1, 2);
+    emptyIco.writeUInt16LE(1, 4);
+    emptyIco.writeUInt16LE(1, 10);
+    emptyIco.writeUInt16LE(32, 12);
+    emptyIco.writeUInt32LE(4, 14);
+    emptyIco.writeUInt32LE(22, 18);
+    const malformedAssets = new Map([
+      ["png-without-idat", ["no-idat.png", Buffer.concat(pngParts)]],
+      ["png-corrupt-crc", ["corrupt-crc.png", corruptCrc]],
+      ["wav-empty-data", ["empty.wav", emptyWav]],
+      ["ico-empty-payload", ["empty.ico", emptyIco]],
+    ]);
+    for (const [name, [filename, payload]] of malformedAssets) {
+      const root = mkdtempSync(
+        join(tmpdir(), `vem-hard-cutover-container-${name}-`),
+      );
+      try {
+        initGuardRepo(root);
+        const isAudio = filename.endsWith(".wav");
+        const relativePath = isAudio
+          ? `apps/machine/src/assets/audio/${filename}`
+          : `apps/machine/src/assets/${filename}`;
+        const asset = join(root, relativePath);
+        mkdirSync(dirname(asset), { recursive: true });
+        writeFileSync(asset, payload);
+        writeBinaryAllowlist(root, [
+          {
+            category: isAudio ? "machine-audio" : "machine-ui-asset",
+            gitMode: "100644",
+            path: relativePath,
+            reason: isAudio
+              ? "Production Machine audio asset."
+              : "Production Machine UI image asset.",
+            sha256: createHash("sha256").update(payload).digest("hex"),
+          },
+        ]);
+        execFileSync("git", ["add", relativePath], { cwd: root });
+
+        assert.ok(
+          scanHardCutoverAbsence({ root }).includes(
+            `${relativePath}:binary-format-invalid`,
+          ),
+          name,
         );
       } finally {
         rmSync(root, { recursive: true, force: true });
