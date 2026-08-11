@@ -168,6 +168,7 @@ async function seedPreD2(client) {
     legacyVariantA: "00000000-0000-4000-8000-000000000031",
     legacyVariantB: "00000000-0000-4000-8000-000000000032",
     newVariant: "00000000-0000-4000-8000-000000000033",
+    invalidGenderVariant: "00000000-0000-4000-8000-000000000034",
     machine: "00000000-0000-4000-8000-000000000041",
     machineSlot: "00000000-0000-4000-8000-000000000042",
     planogramVersion: "00000000-0000-4000-8000-000000000043",
@@ -208,8 +209,10 @@ async function seedPreD2(client) {
   );
   await query(
     client,
-    `INSERT INTO "product_variants"(id,product_id,sku,price_cents,status,try_on_garment_id) VALUES
-    ($1,$2,'LEGACY-A',100,'active',$3),($4,$2,'LEGACY-B',100,'active',$3),($5,$6,'NEW-A',100,'active',$7)`,
+    `INSERT INTO "product_variants"(id,product_id,sku,price_cents,status,try_on_garment_id,target_gender) VALUES
+    ($1,$2,'LEGACY-A',100,'active',$3,'male'),
+    ($4,$2,'LEGACY-B',100,'active',$3,'female'),
+    ($5,$6,'NEW-A',100,'active',$7,NULL)`,
     [
       ids.legacyVariantA,
       ids.legacyProduct,
@@ -264,6 +267,7 @@ async function assertPreD2(client, ids) {
     (SELECT count(*) FROM "try_on_garments" WHERE id=$3) AS legacy_garment,
     (SELECT count(*) FROM "product_variants" WHERE try_on_garment_id=$3) AS legacy_variants,
     (SELECT count(*) FROM "product_variants" WHERE id=$4 AND try_on_garment_id=$5) AS new_variant,
+    (SELECT count(*) FROM "product_variants" WHERE id IN ($4,$7,$8) AND (target_gender IN ('male','female') OR target_gender IS NULL)) AS legal_target_genders,
     (SELECT count(*) FROM "machine_planogram_slots" WHERE id=$6 AND ${legacyColumnSql} IS NOT NULL) AS legacy_planogram_path,
     (SELECT count(*) FROM drizzle."__drizzle_migrations") AS migration_count`,
     [
@@ -273,6 +277,8 @@ async function assertPreD2(client, ids) {
       ids.newVariant,
       ids.newGarment,
       ids.planogramSlot,
+      ids.legacyVariantA,
+      ids.legacyVariantB,
     ],
   );
   assert.deepEqual(result.rows[0], {
@@ -281,6 +287,7 @@ async function assertPreD2(client, ids) {
     legacy_garment: "1",
     legacy_variants: "2",
     new_variant: "1",
+    legal_target_genders: "3",
     legacy_planogram_path: "1",
     migration_count: "44",
   });
@@ -514,6 +521,13 @@ async function assertFinalTryOnCatalog(client) {
     },
     {
       table_name: "product_variants",
+      conname: "product_variants_target_gender_enum",
+      contype: "c",
+      definition:
+        "CHECK (((target_gender IS NULL) OR ((target_gender)::text = ANY ((ARRAY['male'::character varying, 'female'::character varying])::text[]))))",
+    },
+    {
+      table_name: "product_variants",
       conname: "product_variants_try_on_garment_product_id_fkey",
       contype: "f",
       definition:
@@ -603,6 +617,37 @@ try {
   const ids = await seedPreD2(client);
   await assertPreD2(client, ids);
 
+  await query(
+    client,
+    `INSERT INTO "product_variants"(id,product_id,sku,price_cents,target_gender)
+     VALUES ($1,$2,'D2-PREEXISTING-INVALID-GENDER',100,'other')`,
+    [ids.invalidGenderVariant, ids.newProduct],
+  );
+  await query(client, "BEGIN");
+  await assert.rejects(
+    query(client, cutoverSql),
+    /product_variants_target_gender_enum/,
+    "the migration must not clean or map an invalid existing target gender",
+  );
+  await query(client, "ROLLBACK");
+  await assertPreD2(client, ids);
+  const constraintsAfterRollback = await query(
+    client,
+    `SELECT count(*) AS total FROM pg_constraint
+     WHERE conname IN ('media_assets_purpose_allowed','product_variants_target_gender_enum')`,
+  );
+  assert.deepEqual(constraintsAfterRollback.rows, [{ total: "0" }]);
+  const invalidGenderAfterRollback = await query(
+    client,
+    `SELECT count(*) AS total FROM "product_variants"
+     WHERE id=$1 AND target_gender='other'`,
+    [ids.invalidGenderVariant],
+  );
+  assert.deepEqual(invalidGenderAfterRollback.rows, [{ total: "1" }]);
+  await query(client, `DELETE FROM "product_variants" WHERE id=$1`, [
+    ids.invalidGenderVariant,
+  ]);
+
   await query(client, "BEGIN");
   await query(client, cutoverSql);
   await query(client, "ROLLBACK");
@@ -677,6 +722,37 @@ try {
     ),
     /media_assets_purpose_allowed/,
     "the migrated schema must reject retired media purposes",
+  );
+  await query(normal, "BEGIN");
+  await query(
+    normal,
+    `INSERT INTO "product_variants"(product_id,sku,price_cents,target_gender) VALUES
+     ($1,'D2-VALID-GENDER-MALE',100,'male'),
+     ($1,'D2-VALID-GENDER-FEMALE',100,'female'),
+     ($1,'D2-VALID-GENDER-NULL',100,NULL)`,
+    [ids.newProduct],
+  );
+  const legalTargetGenders = await query(
+    normal,
+    `SELECT target_gender FROM "product_variants"
+     WHERE sku LIKE 'D2-VALID-GENDER-%'
+     ORDER BY sku`,
+  );
+  assert.deepEqual(legalTargetGenders.rows, [
+    { target_gender: "female" },
+    { target_gender: "male" },
+    { target_gender: null },
+  ]);
+  await query(normal, "ROLLBACK");
+  await assert.rejects(
+    query(
+      normal,
+      `INSERT INTO "product_variants"(product_id,sku,price_cents,target_gender)
+       VALUES ($1,'D2-INVALID-TARGET-GENDER',100,'other')`,
+      [ids.newProduct],
+    ),
+    /product_variants_target_gender_enum/,
+    "the migrated schema must reject unknown target genders",
   );
   await normal.end();
   migrate([...historyDirectories, cutoverDirectory]);

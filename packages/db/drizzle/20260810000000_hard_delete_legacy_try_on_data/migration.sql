@@ -35,3 +35,7 @@ WHERE "purpose" = 'try_on_silhouette';
 ALTER TABLE "media_assets"
   ADD CONSTRAINT "media_assets_purpose_allowed"
   CHECK ("purpose" IN ('product_display_image', 'try_on_garment'));
+
+ALTER TABLE "product_variants"
+  ADD CONSTRAINT "product_variants_target_gender_enum"
+  CHECK ("target_gender" IS NULL OR "target_gender" IN ('male', 'female'));
