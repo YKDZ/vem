@@ -121,15 +121,33 @@ describe("vision try-on acceptance script", () => {
     assert.equal(result.exitCode, 0, result.stderr);
   });
 
-  it("fails the authority guard when the selected Vitest fixture is skipped or fails", async () => {
-    for (const fixture of ["skipped", "failed"]) {
+  it("executes fixture tests and rejects every non-passing Vitest status", async () => {
+    const passing = await runMachineVisionAuthority("--fixture", "passed");
+    assert.equal(passing.exitCode, 0, passing.stderr);
+
+    for (const fixture of ["skipped", "failed", "pending", "todo"]) {
       const result = await runMachineVisionAuthority("--fixture", fixture);
       assert.notEqual(
         result.exitCode,
         0,
         `${fixture} fixture must fail the authority guard`,
       );
+      assert.match(result.stderr, new RegExp(fixture));
     }
+  });
+
+  it("rejects an additional requested suite that Vitest silently omits", async () => {
+    const missing = "src/does-not-exist.spec.ts";
+    const result = await runMachineVisionAuthority(
+      "--spec",
+      "src/native/vision.spec.ts",
+      "--spec",
+      missing,
+    );
+
+    assert.notEqual(result.exitCode, 0);
+    assert.match(result.stderr, /missing suites/i);
+    assert.match(result.stderr, /apps\/machine\/src\/does-not-exist\.spec\.ts/);
   });
 
   it("binds CLI routes and selectors to the current Machine customer contract", () => {
