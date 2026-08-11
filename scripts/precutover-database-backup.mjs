@@ -2,19 +2,25 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import {
+  constants,
   createReadStream,
   createWriteStream,
   closeSync,
+  fstatSync,
+  fsyncSync,
   linkSync,
   lstatSync,
+  mkdtempSync,
   openSync,
   readSync,
   readFileSync,
   readdirSync,
   realpathSync,
   rmSync,
+  writeSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -727,20 +733,35 @@ async function streamDump(options, containerId, database, snapshotId, staging) {
   };
 }
 
-async function backupFileFacts(path) {
-  const stat = lstatSync(path);
-  if (
-    !stat.isFile() ||
-    stat.isSymbolicLink() ||
-    stat.size <= 0 ||
-    stat.size > MAX_BACKUP_BYTES
-  ) {
-    fail("database backup live input is invalid");
-  }
+function fileIdentity(stat) {
+  return {
+    ctimeNs: stat.ctimeNs.toString(),
+    dev: stat.dev.toString(),
+    ino: stat.ino.toString(),
+    mode: stat.mode.toString(),
+    mtimeNs: stat.mtimeNs.toString(),
+    nlink: stat.nlink.toString(),
+    size: stat.size.toString(),
+  };
+}
+
+function sameIdentity(left, right) {
+  return (
+    canonicalJson(fileIdentity(left)) === canonicalJson(fileIdentity(right))
+  );
+}
+
+async function hashOpenFile(fd, path) {
   const digest = createHash("sha256");
   let byteSize = 0;
-  for await (const chunk of createReadStream(path)) {
+  for await (const chunk of createReadStream(path, {
+    autoClose: false,
+    fd,
+    start: 0,
+  })) {
     byteSize += chunk.byteLength;
+    if (byteSize > MAX_BACKUP_BYTES)
+      fail("database backup exceeds its size cap");
     digest.update(chunk);
   }
   return {
@@ -748,6 +769,155 @@ async function backupFileFacts(path) {
     format: "postgresql-custom",
     sha256: `sha256:${digest.digest("hex")}`,
   };
+}
+
+function assertOriginalBackupUnchanged(resource) {
+  let descriptorStat;
+  let pathStat;
+  try {
+    descriptorStat = fstatSync(resource.sourceFd, { bigint: true });
+    pathStat = lstatSync(resource.sourcePath, { bigint: true });
+  } catch {
+    fail("database backup input changed during reproof");
+  }
+  if (
+    !descriptorStat.isFile() ||
+    pathStat.isSymbolicLink() ||
+    !pathStat.isFile() ||
+    !sameIdentity(descriptorStat, resource.sourceIdentity) ||
+    !sameIdentity(pathStat, resource.sourceIdentity)
+  ) {
+    fail("database backup input changed during reproof");
+  }
+}
+
+async function stageBackupForReproof(sourcePath) {
+  if (!Number.isInteger(constants.O_NOFOLLOW)) {
+    fail("database backup staging requires O_NOFOLLOW");
+  }
+  const directory = mkdtempSync(join(tmpdir(), "vem-precutover-reproof-"));
+  const stagingPath = join(directory, "backup.dump");
+  let sourceFd;
+  let stagingFd;
+  try {
+    const directoryStat = lstatSync(directory);
+    if (
+      !directoryStat.isDirectory() ||
+      directoryStat.isSymbolicLink() ||
+      (directoryStat.mode & 0o077) !== 0
+    ) {
+      fail("database backup private staging directory is unsafe");
+    }
+    if (realpathSync(sourcePath) !== sourcePath) {
+      fail("database backup input path must be canonical");
+    }
+    sourceFd = openSync(sourcePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const sourceIdentity = fstatSync(sourceFd, { bigint: true });
+    const sourcePathIdentity = lstatSync(sourcePath, { bigint: true });
+    if (
+      !sourceIdentity.isFile() ||
+      sourcePathIdentity.isSymbolicLink() ||
+      !sourcePathIdentity.isFile() ||
+      !sameIdentity(sourceIdentity, sourcePathIdentity) ||
+      sourceIdentity.size <= 0n ||
+      sourceIdentity.size > BigInt(MAX_BACKUP_BYTES)
+    ) {
+      fail("database backup live input is invalid");
+    }
+    stagingFd = openSync(
+      stagingPath,
+      constants.O_CREAT |
+        constants.O_EXCL |
+        constants.O_NOFOLLOW |
+        constants.O_RDWR,
+      0o600,
+    );
+    const digest = createHash("sha256");
+    let byteSize = 0;
+    for await (const chunk of createReadStream(sourcePath, {
+      autoClose: false,
+      fd: sourceFd,
+      start: 0,
+    })) {
+      byteSize += chunk.byteLength;
+      if (byteSize > MAX_BACKUP_BYTES) {
+        fail("database backup exceeds its size cap");
+      }
+      digest.update(chunk);
+      let written = 0;
+      while (written < chunk.byteLength) {
+        written += writeSync(
+          stagingFd,
+          chunk,
+          written,
+          chunk.byteLength - written,
+          byteSize - chunk.byteLength + written,
+        );
+      }
+    }
+    fsyncSync(stagingFd);
+    const stagingIdentity = fstatSync(stagingFd, { bigint: true });
+    if (
+      !stagingIdentity.isFile() ||
+      stagingIdentity.nlink !== 1n ||
+      stagingIdentity.size !== BigInt(byteSize)
+    ) {
+      fail("database backup private staging identity is invalid");
+    }
+    const resource = {
+      byteFacts: {
+        byteSize,
+        format: "postgresql-custom",
+        sha256: `sha256:${digest.digest("hex")}`,
+      },
+      directory,
+      sourceFd,
+      sourceIdentity,
+      sourcePath,
+      stagingFd,
+      stagingIdentity,
+      stagingPath,
+    };
+    assertOriginalBackupUnchanged(resource);
+    return resource;
+  } catch (error) {
+    if (stagingFd !== undefined) closeSync(stagingFd);
+    if (sourceFd !== undefined) closeSync(sourceFd);
+    rmSync(directory, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function verifyAndCloseStagedBackup(resource) {
+  let verificationError;
+  try {
+    assertOriginalBackupUnchanged(resource);
+    const stagingIdentity = fstatSync(resource.stagingFd, { bigint: true });
+    const stagingPathIdentity = lstatSync(resource.stagingPath, {
+      bigint: true,
+    });
+    if (
+      !sameIdentity(stagingIdentity, resource.stagingIdentity) ||
+      !sameIdentity(stagingPathIdentity, resource.stagingIdentity)
+    ) {
+      fail("database backup private staging changed during reproof");
+    }
+    const finalFacts = await hashOpenFile(
+      resource.stagingFd,
+      resource.stagingPath,
+    );
+    if (canonicalJson(finalFacts) !== canonicalJson(resource.byteFacts)) {
+      fail("database backup private staging changed during reproof");
+    }
+    assertOriginalBackupUnchanged(resource);
+  } catch (error) {
+    verificationError = error;
+  } finally {
+    closeSync(resource.stagingFd);
+    closeSync(resource.sourceFd);
+    rmSync(resource.directory, { recursive: true, force: true });
+  }
+  if (verificationError) throw verificationError;
 }
 
 async function restoreBackup(options, containerId, backup, migration) {
@@ -803,12 +973,18 @@ async function restoreBackup(options, containerId, backup, migration) {
       }
     });
     try {
-      const streamed = pipeline(createReadStream(backup), child.stdin).catch(
-        (error) => {
-          void owned.terminate();
-          throw error;
-        },
-      );
+      const backupStream =
+        typeof backup === "string"
+          ? createReadStream(backup)
+          : createReadStream(backup.stagingPath, {
+              autoClose: false,
+              fd: backup.stagingFd,
+              start: 0,
+            });
+      const streamed = pipeline(backupStream, child.stdin).catch((error) => {
+        void owned.terminate();
+        throw error;
+      });
       const restoreResults = await Promise.allSettled([streamed, owned.wait()]);
       const restoreFailure = restoreResults.find(
         (result) => result.status === "rejected",
@@ -1034,16 +1210,30 @@ export async function reproveDatabaseBackup({
   ) {
     fail("database reproof migration chain differs from the receipt");
   }
-  const backup = await backupFileFacts(backupPath);
-  if (canonicalJson(backup) !== canonicalJson(receipt.backup)) {
-    fail("database reproof backup bytes differ from the receipt");
+  const stagedBackup = await stageBackupForReproof(backupPath);
+  let restored;
+  let primaryError;
+  try {
+    if (
+      canonicalJson(stagedBackup.byteFacts) !== canonicalJson(receipt.backup)
+    ) {
+      fail("database reproof backup bytes differ from the receipt");
+    }
+    restored = await restoreBackup(
+      options,
+      container.containerId,
+      stagedBackup,
+      migration,
+    );
+  } catch (error) {
+    primaryError = error;
   }
-  const restored = await restoreBackup(
-    options,
-    container.containerId,
-    backupPath,
-    migration,
-  );
+  try {
+    await verifyAndCloseStagedBackup(stagedBackup);
+  } catch (error) {
+    primaryError = error;
+  }
+  if (primaryError) throw primaryError;
   if (
     canonicalJson(restored.catalogData) !==
       canonicalJson(receipt.source.catalogData) ||
@@ -1054,7 +1244,7 @@ export async function reproveDatabaseBackup({
     fail("database reproof restored facts differ from the pending receipt");
   }
   return {
-    backup,
+    backup: stagedBackup.byteFacts,
     catalogData: restored.catalogData,
     migration: migration.receipt,
   };

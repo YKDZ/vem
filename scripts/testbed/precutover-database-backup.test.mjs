@@ -2,11 +2,15 @@ import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  copyFileSync,
+  existsSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -30,6 +34,9 @@ const dockerVersion = execFileSync("/usr/bin/docker", ["--version"], {
   encoding: "utf8",
 }).trim();
 let baselineCatalogSha256;
+let baselineBackup;
+let baselineReceiptText;
+let alternateBackup;
 
 function canonical(value) {
   const sort = (item) => {
@@ -134,6 +141,58 @@ function psql(database, sql) {
     ],
     { input: sql },
   );
+}
+
+function restoreDatabaseCount() {
+  return Number(
+    psql(
+      "postgres",
+      "SELECT count(*) FROM pg_database WHERE datname LIKE 'vem_precutover_restore_%'",
+    ),
+  );
+}
+
+async function waitForRestoreDatabase() {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (restoreDatabaseCount() > 0) return;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 5));
+  }
+  throw new Error("reproof never entered its isolated restore window");
+}
+
+async function raceBackupInput(kind) {
+  const racedBackup = join(temporary, `raced-${kind}.dump`);
+  const replacement = join(temporary, `replacement-${kind}.dump`);
+  const approvedOutput = join(temporary, `approved-${kind}.json`);
+  copyFileSync(baselineBackup, racedBackup);
+  copyFileSync(alternateBackup, replacement);
+  const pending = reproveDatabaseBackup({
+    backupPath: racedBackup,
+    container,
+    dockerBinary: "/usr/bin/docker",
+    expectedDockerByteSize: dockerByteSize,
+    expectedDockerSha256: dockerSha256,
+    expectedDockerVersion: dockerVersion,
+    receiptText: baselineReceiptText,
+    repoRoot,
+    sourceUser: "postgres",
+  }).then((proof) => {
+    writeFileSync(approvedOutput, canonical(proof), { flag: "wx" });
+    return proof;
+  });
+  try {
+    await waitForRestoreDatabase();
+    if (kind === "rename") {
+      renameSync(replacement, racedBackup);
+    } else {
+      writeFileSync(racedBackup, readFileSync(replacement));
+    }
+    await assert.rejects(pending, /backup input changed during reproof/i);
+  } finally {
+    await pending.catch(() => undefined);
+  }
+  assert.equal(restoreDatabaseCount(), 0);
+  assert.equal(existsSync(approvedOutput), false);
 }
 
 function migrateAndSeed() {
@@ -284,6 +343,40 @@ describe("precutover PostgreSQL backup receipt", () => {
     ]);
     assert.equal(leftovers, "0");
 
+    baselineBackup = backup;
+    baselineReceiptText = raw;
+    alternateBackup = join(temporary, "alternate-recoverable.dump");
+    psql(
+      sourceDatabase,
+      "CREATE TABLE reproof_race_padding(payload text); INSERT INTO reproof_race_padding VALUES ('different recoverable dump bytes')",
+    );
+    try {
+      const alternateBytes = execFileSync(
+        "/usr/bin/docker",
+        [
+          "exec",
+          "--user",
+          "postgres",
+          container,
+          "/usr/bin/pg_dump",
+          "--format=custom",
+          "--no-owner",
+          "--no-privileges",
+          "--username",
+          "postgres",
+          sourceDatabase,
+        ],
+        { maxBuffer: 64 * 1024 * 1024 },
+      );
+      writeFileSync(alternateBackup, alternateBytes);
+    } finally {
+      psql(sourceDatabase, "DROP TABLE reproof_race_padding");
+    }
+    assert.notEqual(
+      createHash("sha256").update(readFileSync(alternateBackup)).digest("hex"),
+      createHash("sha256").update(readFileSync(backup)).digest("hex"),
+    );
+
     const reproof = await reproveDatabaseBackup({
       backupPath: backup,
       container,
@@ -358,6 +451,14 @@ describe("precutover PostgreSQL backup receipt", () => {
       "an unapproved receipt must have no production verify path",
     );
     assert.match(validSelfInspection.stderr, /create.*only|unknown command/i);
+  });
+
+  it("rejects an atomic path replacement after hashing but before restore", async () => {
+    await raceBackupInput("rename");
+  });
+
+  it("rejects an in-place rewrite after hashing but before restore", async () => {
+    await raceBackupInput("in-place");
   });
 
   it("dumps the same exported snapshot while all catalog facts change", async () => {
