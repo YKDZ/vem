@@ -464,7 +464,9 @@ function validJpeg(bytes) {
     if (offset >= bytes.length) return false;
     const marker = bytes[offset];
     offset += 1;
-    if (marker === 0xd9) return sawFrame && sawScan && sawScanData;
+    if (marker === 0xd9) {
+      return sawFrame && sawScan && sawScanData && offset === bytes.length;
+    }
     if (marker === 0x00 || marker === 0x01 || marker === 0xd8) return false;
     if (marker >= 0xd0 && marker <= 0xd7) return false;
     if (offset + 2 > bytes.length) return false;
@@ -526,7 +528,7 @@ function validJpeg(bytes) {
           continue;
         }
         if (scanMarker === 0xd9) {
-          return sawScanData;
+          return sawScanData && markerOffset + 1 === bytes.length;
         }
         return false;
       }
@@ -537,29 +539,47 @@ function validJpeg(bytes) {
   return false;
 }
 
-function validDib(bytes) {
-  if (bytes.length < 12) return false;
+function validDib(bytes, directoryWidth, directoryHeight) {
+  if (bytes.length < 40) return false;
   const headerSize = bytes.readUInt32LE(0);
-  if (headerSize === 12) {
-    return (
-      bytes.readUInt16LE(4) > 0 &&
-      bytes.readUInt16LE(6) > 0 &&
-      bytes.readUInt16LE(8) === 1 &&
-      [1, 4, 8, 16, 24, 32].includes(bytes.readUInt16LE(10))
-    );
-  }
   if (
     ![40, 52, 56, 108, 124].includes(headerSize) ||
     bytes.length < headerSize
   ) {
     return false;
   }
-  return (
-    bytes.readInt32LE(4) !== 0 &&
-    bytes.readInt32LE(8) !== 0 &&
-    bytes.readUInt16LE(12) === 1 &&
-    [1, 4, 8, 16, 24, 32].includes(bytes.readUInt16LE(14))
-  );
+  const width = bytes.readInt32LE(4);
+  const combinedHeight = bytes.readInt32LE(8);
+  const planes = bytes.readUInt16LE(12);
+  const bitCount = bytes.readUInt16LE(14);
+  const compression = bytes.readUInt32LE(16);
+  const colorsUsed = bytes.readUInt32LE(32);
+  if (
+    width !== directoryWidth ||
+    combinedHeight <= 0 ||
+    combinedHeight % 2 !== 0 ||
+    combinedHeight / 2 !== directoryHeight ||
+    planes !== 1 ||
+    ![1, 4, 8, 16, 24, 32].includes(bitCount) ||
+    ![0, 3, 6].includes(compression) ||
+    (bitCount <= 8 && colorsUsed > 2 ** bitCount)
+  ) {
+    return false;
+  }
+  const height = combinedHeight / 2;
+  const maskBytes =
+    headerSize === 40 && compression === 3
+      ? 12
+      : headerSize === 40 && compression === 6
+        ? 16
+        : 0;
+  const paletteEntries = colorsUsed || (bitCount <= 8 ? 2 ** bitCount : 0);
+  const xorStride = ((BigInt(width) * BigInt(bitCount) + 31n) / 32n) * 4n;
+  const andStride = ((BigInt(width) + 31n) / 32n) * 4n;
+  const expectedSize =
+    BigInt(headerSize + maskBytes + paletteEntries * 4) +
+    (xorStride + andStride) * BigInt(height);
+  return expectedSize === BigInt(bytes.length);
 }
 
 function validIco(bytes) {
@@ -574,8 +594,11 @@ function validIco(bytes) {
   }
   const directoryEnd = 6 + count * 16;
   if (directoryEnd > bytes.length) return false;
+  const ranges = [];
   for (let index = 0; index < count; index += 1) {
     const entry = 6 + index * 16;
+    const directoryWidth = bytes[entry] || 256;
+    const directoryHeight = bytes[entry + 1] || 256;
     const imageSize = bytes.readUInt32LE(entry + 8);
     const imageOffset = bytes.readUInt32LE(entry + 12);
     if (
@@ -586,9 +609,18 @@ function validIco(bytes) {
       return false;
     }
     const image = bytes.subarray(imageOffset, imageOffset + imageSize);
-    if (!validPng(image) && !validDib(image)) return false;
+    if (!validPng(image) && !validDib(image, directoryWidth, directoryHeight)) {
+      return false;
+    }
+    ranges.push([imageOffset, imageOffset + imageSize]);
   }
-  return true;
+  ranges.sort(([left], [right]) => left - right);
+  let cursor = directoryEnd;
+  for (const [start, end] of ranges) {
+    if (start !== cursor) return false;
+    cursor = end;
+  }
+  return cursor === bytes.length;
 }
 
 function validWav(bytes) {

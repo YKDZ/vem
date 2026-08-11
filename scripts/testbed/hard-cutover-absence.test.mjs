@@ -542,7 +542,17 @@ describe("Vision V2 hard-cutover absence guard", () => {
   });
 
   it("rejects malformed JPEG segments and MP3 audio frames", () => {
+    const realJpegWithTrailer = Buffer.concat([
+      readFileSync(
+        resolve(
+          import.meta.dirname,
+          "../../apps/machine/src/assets/home/carousel-1.jpg",
+        ),
+      ),
+      Buffer.from("MZ"),
+    ]);
     const malformedAssets = new Map([
+      ["jpeg-trailer", ["trailer.jpg", realJpegWithTrailer]],
       [
         "jpeg-payload",
         ["disguised.jpg", Buffer.from([0xff, 0xd8, 0x4d, 0x5a, 0xff, 0xd9])],
@@ -645,11 +655,47 @@ describe("Vision V2 hard-cutover absence guard", () => {
     emptyIco.writeUInt16LE(32, 12);
     emptyIco.writeUInt32LE(4, 14);
     emptyIco.writeUInt32LE(22, 18);
+    const headerOnlyDibIco = Buffer.alloc(62);
+    headerOnlyDibIco.writeUInt16LE(1, 2);
+    headerOnlyDibIco.writeUInt16LE(1, 4);
+    headerOnlyDibIco.writeUInt16LE(1, 10);
+    headerOnlyDibIco.writeUInt16LE(32, 12);
+    headerOnlyDibIco.writeUInt32LE(40, 14);
+    headerOnlyDibIco.writeUInt32LE(22, 18);
+    headerOnlyDibIco.writeUInt32LE(40, 22);
+    headerOnlyDibIco.writeInt32LE(1, 26);
+    headerOnlyDibIco.writeInt32LE(2, 30);
+    headerOnlyDibIco.writeUInt16LE(1, 34);
+    headerOnlyDibIco.writeUInt16LE(32, 36);
+    const sourceIco = readFileSync(
+      resolve(import.meta.dirname, "../../apps/machine/src-tauri/app-icon.ico"),
+    );
+    const icoWithGap = Buffer.concat([
+      sourceIco.subarray(0, 22),
+      Buffer.from([0]),
+      sourceIco.subarray(22),
+    ]);
+    icoWithGap.writeUInt32LE(23, 18);
+    const overlappingIco = Buffer.alloc(38 + sourceIco.length - 22);
+    sourceIco.copy(overlappingIco, 0, 0, 6);
+    overlappingIco.writeUInt16LE(2, 4);
+    sourceIco.copy(overlappingIco, 6, 6, 22);
+    sourceIco.copy(overlappingIco, 22, 6, 22);
+    overlappingIco.writeUInt32LE(38, 18);
+    overlappingIco.writeUInt32LE(38, 34);
+    sourceIco.copy(overlappingIco, 38, 22);
     const malformedAssets = new Map([
       ["png-without-idat", ["no-idat.png", Buffer.concat(pngParts)]],
       ["png-corrupt-crc", ["corrupt-crc.png", corruptCrc]],
       ["wav-empty-data", ["empty.wav", emptyWav]],
       ["ico-empty-payload", ["empty.ico", emptyIco]],
+      ["ico-header-only-dib", ["header-only.ico", headerOnlyDibIco]],
+      ["ico-overlap", ["overlap.ico", overlappingIco]],
+      ["ico-gap", ["gap.ico", icoWithGap]],
+      [
+        "ico-trailing",
+        ["trailing.ico", Buffer.concat([sourceIco, Buffer.from([0])])],
+      ],
     ]);
     for (const [name, [filename, payload]] of malformedAssets) {
       const root = mkdtempSync(
