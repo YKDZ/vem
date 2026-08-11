@@ -3,19 +3,26 @@ import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp, nextTick, type App } from "vue";
 
-const { getSaleViewMock, openFastMock, submitNavigationMock } = vi.hoisted(
-  () => ({
-    getSaleViewMock: vi.fn(),
-    openFastMock: vi.fn(),
-    submitNavigationMock: vi.fn(),
-  }),
-);
+const {
+  getSaleViewMock,
+  openFastMock,
+  openAiMock,
+  submitNavigationMock,
+  routeMode,
+} = vi.hoisted(() => ({
+  getSaleViewMock: vi.fn(),
+  openFastMock: vi.fn(),
+  openAiMock: vi.fn(),
+  submitNavigationMock: vi.fn(),
+  routeMode: { value: undefined as "fast" | "ai" | undefined },
+}));
 
 vi.mock("vue-router", () => ({
   useRoute: () => ({
     query: {
       catalogKey: "product:550e8400-e29b-41d4-a716-446655440128",
       variantId: "550e8400-e29b-41d4-a716-446655440125",
+      ...(routeMode.value ? { mode: routeMode.value } : {}),
     },
   }),
 }));
@@ -30,6 +37,7 @@ vi.mock("@/daemon/client", () => ({
 }));
 vi.mock("@/native/vision", () => ({
   openVisionFastAttempt: openFastMock,
+  openVisionTryOnAttempt: openAiMock,
 }));
 
 import { useCatalogStore } from "@/stores/catalog";
@@ -114,7 +122,13 @@ describe("TryOnView acquisition UI", () => {
     pinia = createPinia();
     setActivePinia(pinia);
     vi.clearAllMocks();
+    routeMode.value = undefined;
     getSaleViewMock.mockResolvedValue(saleView());
+    openAiMock.mockResolvedValue({
+      close: vi.fn(),
+      capture: vi.fn(),
+      cancel: vi.fn(),
+    });
     useCatalogStore().applySnapshot(saleView());
     useVisionStore().applyVisionReady({
       serverName: "vision",
@@ -124,6 +138,7 @@ describe("TryOnView acquisition UI", () => {
       contractDigest: "a".repeat(64),
       cameraReady: true,
       fastReady: true,
+      aiReady: false,
       visionBusinessReady: true,
       businessReadinessDiagnostic: "ready",
       capabilities: ["try_on_fast"],
@@ -223,6 +238,108 @@ describe("TryOnView acquisition UI", () => {
     expect(
       host.querySelector('[data-test="try-on-result-error"]'),
     ).not.toBeNull();
+  });
+
+  it("runs the AI route through truthful coarse stages, result, retry, and never opens Fast", async () => {
+    routeMode.value = "ai";
+    useVisionStore().applyVisionReady({
+      serverName: "vision",
+      serverVersion: "1",
+      schemaVersion: "vem-vision-v2-contract-bundle/v1",
+      bundleVersion: "1",
+      contractDigest: "a".repeat(64),
+      cameraReady: true,
+      fastReady: true,
+      aiReady: true,
+      visionBusinessReady: true,
+      businessReadinessDiagnostic: "ready",
+      capabilities: ["try_on_fast", "try_on_ai"],
+    });
+    const callbacks: Array<(event: { type: string; payload: object }) => void> =
+      [];
+    openAiMock.mockImplementation((_connection, _input, onEvent) => {
+      callbacks.push((event) =>
+        onEvent(event, {
+          attemptId: (event.payload as { attemptId: string }).attemptId,
+          visionSocketUrl: "ws://127.0.0.1:7892/ws",
+        }),
+      );
+      return Promise.resolve({
+        close: vi.fn(),
+        capture: vi.fn(),
+        cancel: vi.fn(),
+      });
+    });
+    const host = await mount();
+    await vi.waitFor(() => {
+      expect(openAiMock).toHaveBeenCalledOnce();
+    });
+    expect(openFastMock).not.toHaveBeenCalled();
+    expect(openAiMock.mock.calls[0][1]).toMatchObject({ mode: "ai" });
+    const attemptId = useTryOnStore().attemptId!;
+
+    callbacks[0]?.(
+      attemptEvent("vision.try_on.attempt.accepted", {
+        attemptId,
+        mode: "ai",
+      }),
+    );
+    callbacks[0]?.(
+      attemptEvent("vision.try_on.attempt.acquiring", {
+        attemptId,
+        preview: {
+          reference:
+            "http://127.0.0.1:7892/v2/try-on/acquisition/preview.mjpeg?token=preview-token",
+          streamType: "mjpeg",
+        },
+        occupancy: "single",
+        guidance: "hold_still",
+        manualCaptureAllowed: true,
+      }),
+    );
+    callbacks[0]?.(
+      attemptEvent("vision.try_on.attempt.generating", {
+        attemptId,
+        stage: "preparing",
+      }),
+    );
+    await nextTick();
+    expect(host.textContent).toContain("正在准备试衣效果");
+    callbacks[0]?.(
+      attemptEvent("vision.try_on.attempt.generating", {
+        attemptId,
+        stage: "generating",
+      }),
+    );
+    await nextTick();
+    expect(host.textContent).toContain("正在生成试衣效果");
+    callbacks[0]?.(
+      attemptEvent("vision.try_on.attempt.completed", {
+        attemptId,
+        result: {
+          reference: `http://127.0.0.1:7892/v2/try-on/results/${attemptId}?token=result-token`,
+          digest: `sha256:${"b".repeat(64)}`,
+          contentType: "image/png",
+          byteSize: 2048,
+          width: 512,
+          height: 768,
+        },
+      }),
+    );
+    await nextTick();
+    expect(
+      host.querySelector('[data-test="try-on-result-image"]'),
+    ).not.toBeNull();
+
+    host
+      .querySelector('[data-test="try-on-retry"]')
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await vi.waitFor(() => {
+      expect(openAiMock).toHaveBeenCalledTimes(2);
+    });
+    expect(openFastMock).not.toHaveBeenCalled();
+    expect(openAiMock.mock.calls[1][1]).toMatchObject({ mode: "ai" });
+    expect(openAiMock.mock.calls[1][1].attemptId).not.toBe(attemptId);
   });
 
   it("sends one explicit user cancellation", async () => {

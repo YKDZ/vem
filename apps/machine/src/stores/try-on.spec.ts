@@ -176,6 +176,81 @@ describe("try-on store current catalog boundary", () => {
     expect(store.mode).toBe("ai");
   });
 
+  it("keeps AI mode through lifecycle, exact terminal cleanup, retry, and late old socket fence", async () => {
+    getSaleViewMock.mockResolvedValue(saleView("tshirt_short_sleeve"));
+    const catalog = useCatalogStore();
+    await catalog.refresh();
+    const store = useTryOnStore();
+    store.prepare(
+      catalog.saleableVariantItemFor(`product:${productId}`, variantId)!,
+    );
+    useVisionStore().applyVisionReady({
+      serverName: "vision",
+      serverVersion: "1",
+      schemaVersion: "vem-vision-v2-contract-bundle/v1",
+      bundleVersion: "1",
+      contractDigest: "a".repeat(64),
+      cameraReady: true,
+      fastReady: true,
+      aiReady: true,
+      visionBusinessReady: true,
+      businessReadinessDiagnostic: "ready",
+      capabilities: ["try_on_fast", "try_on_ai"],
+    });
+    const callbacks: Array<
+      (event: Parameters<typeof store.applyEvent>[1]) => void
+    > = [];
+    openAiMock.mockImplementation((_connection, _input, onEvent) => {
+      callbacks.push((event) =>
+        onEvent(event, {
+          attemptId: event.payload.attemptId,
+          visionSocketUrl: "ws://127.0.0.1:7892/ws",
+        }),
+      );
+      return Promise.resolve({
+        close: vi.fn(),
+        capture: vi.fn(),
+        cancel: vi.fn(() => true),
+      });
+    });
+
+    await expect(store.startAi()).resolves.toBe(true);
+    const firstAttemptId = store.attemptId!;
+    callbacks[0]?.(acceptedEvent(firstAttemptId, "ai"));
+    callbacks[0]?.(acquiringEvent(firstAttemptId, "hold_still", true));
+    callbacks[0]?.(generatingEvent(firstAttemptId, "preparing"));
+    callbacks[0]?.(generatingEvent(firstAttemptId, "generating"));
+
+    expect(store.mode).toBe("ai");
+    expect(store.phase).toBe("generating");
+    expect(store.generationStage).toBe("generating");
+    expect(store.previewUrl).toBeNull();
+
+    callbacks[0]?.(canceledEvent(firstAttemptId, "timeout"));
+    expect(store.phase).toBe("canceled");
+    expect(store.failureReason).toBe("timeout");
+    expect(store.mode).toBe("ai");
+    expect(store.result).toBeNull();
+    expect(store.previewUrl).toBeNull();
+
+    await expect(store.retry()).resolves.toBe(true);
+    const secondAttemptId = store.attemptId!;
+    expect(secondAttemptId).not.toBe(firstAttemptId);
+    expect(openAiMock).toHaveBeenCalledTimes(2);
+    expect(openFastMock).not.toHaveBeenCalled();
+    callbacks[0]?.(completedEvent(firstAttemptId));
+    expect(store.attemptId).toBe(secondAttemptId);
+    expect(store.phase).toBe("starting");
+
+    callbacks[1]?.(acceptedEvent(secondAttemptId, "ai"));
+    callbacks[1]?.(acquiringEvent(secondAttemptId, "hold_still", true));
+    callbacks[1]?.(generatingEvent(secondAttemptId, "generating"));
+    callbacks[1]?.(completedEvent(secondAttemptId));
+    expect(store.phase).toBe("completed");
+    expect(store.mode).toBe("ai");
+    expect(store.result?.reference).toContain(secondAttemptId);
+  });
+
   it("clear during a blocked daemon refresh prevents any future Vision start", async () => {
     getSaleViewMock.mockResolvedValueOnce(saleView("tshirt_short_sleeve"));
     const catalog = useCatalogStore();
@@ -513,10 +588,10 @@ describe("try-on store current catalog boundary", () => {
   });
 });
 
-function acceptedEvent(attemptId: string) {
+function acceptedEvent(attemptId: string, mode: "fast" | "ai" = "fast") {
   return {
     type: "vision.try_on.attempt.accepted",
-    payload: { attemptId },
+    payload: { attemptId, mode },
   } as Parameters<ReturnType<typeof useTryOnStore>["applyEvent"]>[1];
 }
 
@@ -553,7 +628,15 @@ function acquiringEvent(
   >;
 }
 
-function generatingEvent(attemptId: string, stage: "preparing" | "rendering") {
+function generatingEvent(
+  attemptId: string,
+  stage:
+    | "preparing"
+    | "loading_model"
+    | "generating"
+    | "validating_result"
+    | "rendering",
+) {
   return {
     type: "vision.try_on.attempt.generating",
     payload: { attemptId, stage },
@@ -580,6 +663,22 @@ function completedEvent(attemptId: string) {
 function failedEvent(attemptId: string, reason: "fast_failed") {
   return {
     type: "vision.try_on.attempt.failed",
+    payload: { attemptId, reason },
+  } as Parameters<ReturnType<typeof useTryOnStore>["applyEvent"]>[1];
+}
+
+function canceledEvent(
+  attemptId: string,
+  reason:
+    | "user"
+    | "route_leave"
+    | "disconnect"
+    | "departure"
+    | "replaced"
+    | "timeout",
+) {
+  return {
+    type: "vision.try_on.attempt.canceled",
     payload: { attemptId, reason },
   } as Parameters<ReturnType<typeof useTryOnStore>["applyEvent"]>[1];
 }

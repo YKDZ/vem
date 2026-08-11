@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   openVisionFastAttempt,
+  openVisionTryOnAttempt,
   subscribeVisionProfiles,
   type VisionPersonDepartedPayload,
   type VisionPresenceStatusPayload,
@@ -418,6 +419,94 @@ describe("vision native browser fallback - pushed profiles", () => {
 });
 
 describe("vision native browser fallback - Fast attempt lifecycle", () => {
+  it("sends exactly one selected AI start and rejects accepted frames with the wrong or missing mode", async () => {
+    vi.useFakeTimers();
+    const sockets: FakeAiModeSocket[] = [];
+    class FakeAiModeSocket extends EventTarget {
+      static readonly CONNECTING = 0;
+      static readonly OPEN = 1;
+      static readonly CLOSING = 2;
+      static readonly CLOSED = 3;
+      readyState = FakeAiModeSocket.OPEN;
+      readonly sent: string[] = [];
+      constructor(_url: string) {
+        super();
+        sockets.push(this);
+        setTimeout(() => this.dispatchEvent(new Event("open")), 0);
+      }
+      send(value: string): void {
+        this.sent.push(value);
+      }
+      close(): void {
+        this.readyState = FakeAiModeSocket.CLOSED;
+      }
+      emit(message: object): void {
+        this.dispatchEvent(
+          new MessageEvent("message", { data: JSON.stringify(message) }),
+        );
+      }
+    }
+    globalThis.WebSocket = FakeAiModeSocket as unknown as typeof WebSocket;
+    const attemptId = "550e8400-e29b-41d4-a716-446655440124";
+    const events: Array<{ type: string; mode: string | undefined }> = [];
+    const opening = openVisionTryOnAttempt(
+      { url: "ws://127.0.0.1:65499/v2/machine" },
+      { ...fastAttemptInput(attemptId), mode: "ai" },
+      (event) =>
+        events.push({
+          type: event.type,
+          mode:
+            event.type === "vision.try_on.attempt.accepted"
+              ? event.payload.mode
+              : undefined,
+        }),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    sockets[0].emit(
+      readyV2Message({
+        aiReady: true,
+        capabilities: ["try_on_fast", "try_on_ai"],
+      }),
+    );
+    await opening;
+
+    expect(
+      sockets[0].sent
+        .map((frame) => JSON.parse(frame) as { type: string; payload: object })
+        .filter((frame) => frame.type === "vision.try_on.attempt.start"),
+    ).toEqual([
+      expect.objectContaining({
+        payload: expect.objectContaining({ attemptId, mode: "ai" }),
+      }),
+    ]);
+
+    sockets[0].emit({
+      protocol: "vem.vision.v2",
+      type: "vision.try_on.attempt.accepted",
+      messageId: crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
+      payload: { attemptId, mode: "fast" },
+    });
+    sockets[0].emit({
+      protocol: "vem.vision.v2",
+      type: "vision.try_on.attempt.accepted",
+      messageId: crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
+      payload: { attemptId },
+    });
+    sockets[0].emit({
+      protocol: "vem.vision.v2",
+      type: "vision.try_on.attempt.accepted",
+      messageId: crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
+      payload: { attemptId, mode: "ai" },
+    });
+
+    expect(events).toEqual([
+      { type: "vision.try_on.attempt.accepted", mode: "ai" },
+    ]);
+  });
+
   it("fails once on an unexpected close and releases every attempt listener and timer", async () => {
     vi.useFakeTimers();
     const sockets: FakeFastSocket[] = [];
@@ -875,7 +964,14 @@ describe("vision native browser fallback - Fast attempt lifecycle", () => {
   });
 });
 
-function readyV2Message() {
+function readyV2Message(
+  overrides: Partial<{
+    fastReady: boolean;
+    aiReady: boolean;
+    visionBusinessReady: boolean;
+    capabilities: string[];
+  }> = {},
+) {
   return {
     protocol: "vem.vision.v2",
     type: "vision.ready",
@@ -889,9 +985,11 @@ function readyV2Message() {
       contractDigest: VISION_V2_RUNTIME_IDENTITY.contractDigest,
       cameraReady: true,
       fastReady: true,
+      aiReady: false,
       visionBusinessReady: true,
       businessReadinessDiagnostic: "ready",
       capabilities: ["try_on_fast"],
+      ...overrides,
     },
   };
 }

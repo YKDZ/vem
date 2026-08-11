@@ -483,13 +483,13 @@ export async function openVisionTryOnAttempt(
         VISION_V2_RUNTIME_IDENTITY.bundleVersion &&
       ready.payload.contractDigest ===
         VISION_V2_RUNTIME_IDENTITY.contractDigest;
-    if (
-      !identityMatches ||
-      !(input.mode === "fast"
-        ? ready.payload.fastReady
-        : ready.payload.aiReady) ||
-      !ready.payload.visionBusinessReady
-    ) {
+    const modeReady =
+      input.mode === "fast"
+        ? ready.payload.fastReady &&
+          ready.payload.capabilities.includes("try_on_fast")
+        : ready.payload.aiReady &&
+          ready.payload.capabilities.includes("try_on_ai");
+    if (!identityMatches || !modeReady || !ready.payload.visionBusinessReady) {
       throw new Error("Vision V2 Fast capability is unavailable");
     }
     if (socket.readyState !== WebSocket.OPEN) {
@@ -520,6 +520,12 @@ export async function openVisionTryOnAttempt(
             message.type === "vision.try_on.attempt.canceled") &&
           message.payload.attemptId === input.attemptId
         ) {
+          if (
+            message.type === "vision.try_on.attempt.accepted" &&
+            message.payload.mode !== input.mode
+          ) {
+            return;
+          }
           if (
             !isPermittedFastAttemptEvent(message, lifecycle, generationStage)
           ) {

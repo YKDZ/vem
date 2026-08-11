@@ -327,6 +327,50 @@ describe("useVisionStore", () => {
     expect(visionStore.isTryOnCapabilityDegraded).toBe(true);
   });
 
+  it("binds Fast and AI readiness to the current Vision hello capabilities instead of local flags", () => {
+    const visionStore = useVisionStore();
+
+    visionStore.applyVisionReady({
+      ...readyPayload(),
+      fastReady: true,
+      aiReady: true,
+      capabilities: ["try_on_fast"],
+      fakeAiReady: true,
+    });
+    expect(visionStore.fastReady).toBe(false);
+    expect(visionStore.aiReady).toBe(false);
+    expect(visionStore.visionBusinessReady).toBe(false);
+
+    visionStore.applyVisionReady({
+      ...readyPayload(),
+      fastReady: true,
+      aiReady: true,
+      capabilities: ["try_on_fast"],
+    });
+    expect(visionStore.fastReady).toBe(true);
+    expect(visionStore.aiReady).toBe(false);
+    expect(visionStore.visionBusinessReady).toBe(true);
+
+    visionStore.applyVisionReady({
+      ...readyPayload(),
+      fastReady: true,
+      aiReady: true,
+      capabilities: ["try_on_fast", "try_on_ai"],
+    });
+    expect(visionStore.fastReady).toBe(true);
+    expect(visionStore.aiReady).toBe(true);
+
+    visionStore.applyVisionReady({
+      ...readyPayload(),
+      fastReady: true,
+      aiReady: true,
+      visionBusinessReady: false,
+      capabilities: ["try_on_fast", "try_on_ai"],
+    });
+    expect(visionStore.fastReady).toBe(false);
+    expect(visionStore.aiReady).toBe(false);
+  });
+
   it("clears available or unknown try-on state whenever Vision becomes disabled", () => {
     const visionStore = useVisionStore();
     visionStore.applyVisionReady(readyPayload());

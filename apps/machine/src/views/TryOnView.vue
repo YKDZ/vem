@@ -28,7 +28,9 @@ const phaseText = computed(() => {
     case "acquiring":
       return guidanceText.value;
     case "generating":
-      return tryOn.generationStage === "rendering"
+      return tryOn.generationStage === "generating" ||
+        tryOn.generationStage === "rendering" ||
+        tryOn.generationStage === "validating_result"
         ? "正在生成试衣效果"
         : "正在准备试衣效果";
     case "completed":

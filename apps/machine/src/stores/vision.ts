@@ -174,8 +174,16 @@ export const useVisionStore = defineStore("vision", {
         result.data.capabilities.includes("try_on_fast")
           ? "available"
           : "degraded";
-      this.fastReady = result.data.fastReady;
-      this.aiReady = result.data.aiReady;
+      this.fastReady =
+        result.data.cameraReady &&
+        result.data.fastReady &&
+        result.data.visionBusinessReady &&
+        result.data.capabilities.includes("try_on_fast");
+      this.aiReady =
+        result.data.cameraReady &&
+        result.data.aiReady &&
+        result.data.visionBusinessReady &&
+        result.data.capabilities.includes("try_on_ai");
       this.visionBusinessReady = result.data.visionBusinessReady;
     },
     markTryOnCapabilityDegraded(): void {

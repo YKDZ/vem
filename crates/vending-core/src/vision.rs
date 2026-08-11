@@ -93,6 +93,8 @@ pub struct VisionReadyPayload {
     pub contract_digest: String,
     pub camera_ready: bool,
     pub fast_ready: bool,
+    #[serde(default)]
+    pub ai_ready: bool,
     pub vision_business_ready: bool,
     pub business_readiness_diagnostic: VisionBusinessReadinessDiagnostic,
     pub capabilities: Vec<String>,
@@ -344,6 +346,7 @@ async fn send_hello(socket: &mut VisionSocket, machine_code: Option<String>) -> 
                 "person_departed",
                 "ambient_light",
                 "try_on_fast",
+                "try_on_ai",
             ],
         },
     )
@@ -366,11 +369,13 @@ async fn wait_ready(socket: &mut VisionSocket) -> Result<VisionReadyPayload, Str
                 || ready.bundle_version != identity.bundle_version
             {
                 ready.fast_ready = false;
+                ready.ai_ready = false;
                 ready.vision_business_ready = false;
                 ready.business_readiness_diagnostic =
                     VisionBusinessReadinessDiagnostic::ContractVersionMismatch;
             } else if ready.contract_digest != identity.bundle_digest {
                 ready.fast_ready = false;
+                ready.ai_ready = false;
                 ready.vision_business_ready = false;
                 ready.business_readiness_diagnostic =
                     VisionBusinessReadinessDiagnostic::ContractDigestMismatch;
@@ -815,7 +820,8 @@ mod tests {
                     "presence_status",
                     "person_departed",
                     "ambient_light",
-                    "try_on_fast"
+                    "try_on_fast",
+                    "try_on_ai"
                 ])
             );
             ws_stream

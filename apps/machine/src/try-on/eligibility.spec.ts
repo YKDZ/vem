@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { MachineCatalogItem } from "@/types/catalog";
 
 import {
+  canStartAiTryOn,
   canStartFastTryOn,
   validateTryOnPreviewReference,
   validateTryOnResultReference,
@@ -103,6 +104,29 @@ describe("Fast try-on eligibility", () => {
       canStartFastTryOn(item(), {
         fastReady: true,
         visionBusinessReady: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("keeps Fast available when AI is unready but shares all garment qualification", () => {
+    const readiness = {
+      fastReady: true,
+      aiReady: false,
+      visionBusinessReady: true,
+    };
+
+    expect(canStartFastTryOn(item(), readiness)).toBe(true);
+    expect(canStartAiTryOn(item(), readiness)).toBe(false);
+    expect(
+      canStartAiTryOn(item(), {
+        ...readiness,
+        aiReady: true,
+      }),
+    ).toBe(true);
+    expect(
+      canStartAiTryOn(item({ tryOnGarmentMedia: null }), {
+        ...readiness,
+        aiReady: true,
       }),
     ).toBe(false);
   });
