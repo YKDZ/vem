@@ -19,6 +19,9 @@ import { describe, it } from "node:test";
 import { derivePrecutoverEvidence } from "./precutover-receipts.mjs";
 import {
   TRUSTED_RELEASE_SET_WORKFLOW_SHA,
+  TRUSTED_VISION_BUILDER_SHA,
+  TRUSTED_VISION_BUILDER_WORKFLOW,
+  TRUSTED_VISION_REPOSITORY,
   createReleaseSetApproval,
   parseTrustedGhAttestationVerification,
   validateApprovedPrecutoverReceiptText,
@@ -866,6 +869,64 @@ describe("trusted release-set approval", () => {
           approvalText,
           output,
           sourceCommit,
+          sourceRef,
+        }),
+      );
+    }
+  });
+
+  it("applies the same exact gh claim parser to the Vision builder authority", () => {
+    const visionCommit = "89abcdef0123456789abcdef0123456789abcdef";
+    const subjectSha256 = "1".repeat(64);
+    const valid = ghVerificationFixture(canonical({ unused: true }));
+    const certificate = valid[0].verificationResult.signature.certificate;
+    const signerUri = `https://github.com/${TRUSTED_VISION_REPOSITORY}/${TRUSTED_VISION_BUILDER_WORKFLOW}@refs/heads/main`;
+    Object.assign(certificate, {
+      buildSignerDigest: TRUSTED_VISION_BUILDER_SHA,
+      buildSignerURI: signerUri,
+      githubWorkflowRepository: TRUSTED_VISION_REPOSITORY,
+      issuer: "https://token.actions.githubusercontent.com",
+      runnerEnvironment: "github-hosted",
+      sourceRepositoryDigest: visionCommit,
+      sourceRepositoryRef: sourceRef,
+      sourceRepositoryURI: `https://github.com/${TRUSTED_VISION_REPOSITORY}`,
+      subjectAlternativeName: signerUri,
+    });
+    valid[0].verificationResult.statement.subject = [
+      {
+        digest: { sha256: subjectSha256 },
+        name: "vending-vision-1.2.3-rc.1-windows-x86_64.zip",
+      },
+    ];
+    const authority = {
+      repository: TRUSTED_VISION_REPOSITORY,
+      subjectName: "vending-vision-1.2.3-rc.1-windows-x86_64.zip",
+      subjectSha256,
+      workflow: TRUSTED_VISION_BUILDER_WORKFLOW,
+      workflowSha: TRUSTED_VISION_BUILDER_SHA,
+    };
+    assert.doesNotThrow(() =>
+      parseTrustedGhAttestationVerification({
+        authority,
+        output: JSON.stringify(valid),
+        sourceCommit: visionCommit,
+        sourceRef,
+      }),
+    );
+    for (const [claim, replacement] of [
+      ["githubWorkflowRepository", "attacker/fork"],
+      ["buildSignerDigest", "0".repeat(40)],
+      ["sourceRepositoryDigest", "0".repeat(40)],
+      ["sourceRepositoryRef", "refs/heads/unapproved"],
+      ["runnerEnvironment", "self-hosted"],
+    ]) {
+      const mutation = structuredClone(valid);
+      mutation[0].verificationResult.signature.certificate[claim] = replacement;
+      assert.throws(() =>
+        parseTrustedGhAttestationVerification({
+          authority,
+          output: JSON.stringify(mutation),
+          sourceCommit: visionCommit,
           sourceRef,
         }),
       );

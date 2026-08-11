@@ -3,10 +3,12 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   cpSync,
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -14,6 +16,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 
+import { verifyRuntimeArtifactsForTest } from "./precutover-runtime-artifacts.mjs";
+import { verifyTrustedVisionCandidateAttestation } from "./release-set-approval.mjs";
 import {
   generateReleaseSet,
   readReleaseRepositoryFacts,
@@ -23,7 +27,7 @@ import {
   writeRuntimeArtifactDescriptor,
 } from "./windows/runtime-artifact-descriptor.mjs";
 
-const repoRoot = new URL("..", import.meta.url).pathname;
+const repoRoot = realpathSync(new URL("..", import.meta.url).pathname);
 const python = "/usr/bin/python3.11";
 const archiveHelper = join(
   repoRoot,
@@ -285,6 +289,10 @@ async function buildFixture(root) {
   });
   const approvalPath = join(root, "release-set-approval.json");
   writeFileSync(approvalPath, approvalText);
+  const approvalBundlePath = join(root, "release-set-approval.sigstore.json");
+  writeFileSync(approvalBundlePath, "{}\n");
+  const releaseSetInputDirectory = join(root, "release-set-input");
+  mkdirSync(releaseSetInputDirectory);
   const approvedText = canonical({
     database: {
       backup: { byteSize: 1, format: "postgresql-custom", sha256: digest("1") },
@@ -308,8 +316,11 @@ async function buildFixture(root) {
   writeFileSync(approvedPath, approvedText);
   return {
     approvalPath,
+    approvalBundlePath,
+    approvalSha256: sha256(approvalText),
     approvedPath,
     candidateInput,
+    releaseSetInputDirectory,
     releaseSetPath,
     vemArchive,
   };
@@ -323,24 +334,107 @@ function productionArgs(fixture, output, overrides = {}) {
     fixture.approvedPath,
     "--approval",
     fixture.approvalPath,
+    "--approval-attestation-bundle",
+    fixture.approvalBundlePath,
+    "--approval-subject-sha256",
+    fixture.approvalSha256,
+    "--gh-binary",
+    overrides.ghBinary ?? "/usr/bin/gh",
     "--output",
     output,
     "--python",
     overrides.python ?? python,
     "--release-set",
     fixture.releaseSetPath,
+    "--release-set-input-directory",
+    fixture.releaseSetInputDirectory,
     "--repo-root",
-    repoRoot,
+    overrides.repoRoot ?? repoRoot,
+    "--source-commit",
+    vemCommit,
+    "--source-ref",
+    sourceRef,
     "--vem-runtime-archive",
     fixture.vemArchive,
     "--vision-candidate-input-directory",
     fixture.candidateInput,
+    "--vision-source-ref",
+    sourceRef,
     "--vision-verifier-root",
     overrides.visionVerifierRoot ?? visionRoot,
   ];
 }
 
+function runtimeOptions(fixture, output, overrides = {}) {
+  const args = productionArgs(fixture, output, overrides);
+  const options = { command: "verify" };
+  for (let index = 2; index < args.length; index += 2) {
+    options[args[index].slice(2)] = args[index + 1];
+  }
+  return options;
+}
+
+function testAuthenticatedReleaseSet(fixture) {
+  const approvalText = readFileSync(fixture.approvalPath, "utf8");
+  const manifestText = readFileSync(fixture.releaseSetPath, "utf8");
+  return {
+    approval: JSON.parse(approvalText),
+    approvalText,
+    manifest: JSON.parse(manifestText),
+    manifestText,
+  };
+}
+
+async function runWithTestAuthority(
+  fixture,
+  output,
+  overrides = {},
+  verifyVisionAttestation,
+) {
+  const previous = process.env.NODE_ENV;
+  process.env.NODE_ENV = "test";
+  try {
+    await verifyRuntimeArtifactsForTest(
+      runtimeOptions(fixture, output, overrides),
+      testAuthenticatedReleaseSet(fixture),
+      verifyVisionAttestation,
+    );
+    return { status: 0, stderr: "" };
+  } catch (error) {
+    return {
+      status: 1,
+      stderr: `PRECUTOVER_RUNTIME_ARTIFACTS=FAIL:${error.message}\n`,
+    };
+  } finally {
+    if (previous === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previous;
+  }
+}
+
 describe("pre-cutover complete runtime archives", () => {
+  it("rejects a locally authored release-set authority at the production CLI", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-runtime-unsigned-root-"));
+    temporaryRoots.push(root);
+    const fixture = await buildFixture(root);
+    const output = join(root, "runtime-artifacts-receipt.json");
+
+    const result = spawnSync(
+      process.execPath,
+      productionArgs(fixture, output),
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+      },
+    );
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /attestation|authority|approval/i);
+    assert.equal(
+      readdirSync(root).includes("runtime-artifacts-receipt.json"),
+      false,
+    );
+  });
+
   it("safely extracts the exact VEM runtime archive member set", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-runtime-archive-"));
     temporaryRoots.push(root);
@@ -437,19 +531,12 @@ describe("pre-cutover complete runtime archives", () => {
     });
   }
 
-  it("verifies both complete archives before publishing one pending receipt", async () => {
+  it("verifies both complete archives behind explicit test-owned trust boundaries", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-runtime-complete-"));
     temporaryRoots.push(root);
     const fixture = await buildFixture(root);
     const output = join(root, "runtime-artifacts-receipt.json");
-    const result = spawnSync(
-      process.execPath,
-      productionArgs(fixture, output),
-      {
-        cwd: repoRoot,
-        encoding: "utf8",
-      },
-    );
+    const result = await runWithTestAuthority(fixture, output);
     assert.equal(result.status, 0, result.stderr);
     const receiptRaw = readFileSync(output, "utf8");
     const receipt = JSON.parse(receiptRaw);
@@ -461,6 +548,27 @@ describe("pre-cutover complete runtime archives", () => {
     assert.match(receipt.verifier.descriptorIdentity, /^sha256:[a-f0-9]{64}$/);
   });
 
+  it("rejects an empty Vision builder attestation after release authority authentication", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-runtime-unsigned-vision-"));
+    temporaryRoots.push(root);
+    const fixture = await buildFixture(root);
+    const output = join(root, "runtime-artifacts-receipt.json");
+
+    const result = await runWithTestAuthority(
+      fixture,
+      output,
+      {},
+      verifyTrustedVisionCandidateAttestation,
+    );
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Vision.*attestation|GitHub.*attestation/i);
+    assert.equal(
+      readdirSync(root).includes("runtime-artifacts-receipt.json"),
+      false,
+    );
+  });
+
   it("rejects a self-consistent candidate ZIP and manifest without all external builder facts", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-runtime-self-manifest-"));
     temporaryRoots.push(root);
@@ -468,14 +576,7 @@ describe("pre-cutover complete runtime archives", () => {
     const output = join(root, "runtime-artifacts-receipt.json");
     rmSync(join(fixture.candidateInput, "trusted-builder-evidence.json"));
 
-    const result = spawnSync(
-      process.execPath,
-      productionArgs(fixture, output),
-      {
-        cwd: repoRoot,
-        encoding: "utf8",
-      },
-    );
+    const result = await runWithTestAuthority(fixture, output);
 
     assert.notEqual(result.status, 0);
     assert.match(
@@ -528,14 +629,7 @@ describe("pre-cutover complete runtime archives", () => {
       const output = join(root, "runtime-artifacts-receipt.json");
       mutate(fixture);
 
-      const result = spawnSync(
-        process.execPath,
-        productionArgs(fixture, output),
-        {
-          cwd: repoRoot,
-          encoding: "utf8",
-        },
-      );
+      const result = await runWithTestAuthority(fixture, output);
 
       assert.notEqual(result.status, 0);
       assert.match(result.stderr, /digest mismatch/);
@@ -568,11 +662,9 @@ describe("pre-cutover complete runtime archives", () => {
     writeFileSync(verifier, `${readFileSync(verifier, "utf8")}\n# fake\n`);
     const output = join(root, "runtime-artifacts-receipt.json");
 
-    const result = spawnSync(
-      process.execPath,
-      productionArgs(fixture, output, { visionVerifierRoot: fakeRoot }),
-      { cwd: repoRoot, encoding: "utf8" },
-    );
+    const result = await runWithTestAuthority(fixture, output, {
+      visionVerifierRoot: fakeRoot,
+    });
 
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /Vision verifier script identity mismatch/);
@@ -580,5 +672,120 @@ describe("pre-cutover complete runtime archives", () => {
       readdirSync(root).includes("runtime-artifacts-receipt.json"),
       false,
     );
+  });
+
+  it("rejects a caller-replaced self-signed verifier repository even when all local hashes agree", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-runtime-self-signed-tools-"));
+    temporaryRoots.push(root);
+    const fixture = await buildFixture(root);
+    const fakeRepo = join(root, "fake-vem-repository");
+    const fakeVision = join(root, "fake-vision-repository");
+    mkdirSync(join(fakeRepo, "scripts/lib"), { recursive: true });
+    mkdirSync(join(fakeVision, "scripts"), { recursive: true });
+    cpSync(
+      join(repoRoot, "packages/shared/generated/vision-v2"),
+      join(fakeRepo, "packages/shared/generated/vision-v2"),
+      { recursive: true },
+    );
+    const helper = join(fakeRepo, "scripts/lib/verify_vem_runtime_archive.py");
+    cpSync(join(repoRoot, "scripts/lib/verify_vem_runtime_archive.py"), helper);
+    writeFileSync(
+      helper,
+      `${readFileSync(helper, "utf8")}\n# caller replacement\n`,
+    );
+    for (const name of [
+      "candidate_artifact_manifest.py",
+      "verify_trusted_candidate_inputs.py",
+    ]) {
+      const target = join(fakeVision, "scripts", name);
+      cpSync(join(visionRoot, "scripts", name), target);
+      writeFileSync(
+        target,
+        `${readFileSync(target, "utf8")}\n# caller replacement\n`,
+      );
+    }
+    const descriptor = JSON.parse(
+      readFileSync(
+        join(repoRoot, "trusted-vision-candidate-verifier.json"),
+        "utf8",
+      ),
+    );
+    descriptor.revision = "c".repeat(40);
+    descriptor.scripts = descriptor.scripts.map((script) => {
+      const bytes = readFileSync(join(fakeVision, script.path));
+      return {
+        byteSize: bytes.byteLength,
+        path: script.path,
+        sha256: sha256(bytes).slice(7),
+      };
+    });
+    delete descriptor.identity;
+    descriptor.identity = sha256(
+      JSON.stringify(JSON.parse(canonical(descriptor))),
+    );
+    writeFileSync(
+      join(fakeRepo, "trusted-vision-candidate-verifier.json"),
+      JSON.stringify(JSON.parse(canonical(descriptor)), null, 2) + "\n",
+    );
+    const output = join(root, "runtime-artifacts-receipt.json");
+
+    const result = await runWithTestAuthority(fixture, output, {
+      repoRoot: fakeRepo,
+      visionVerifierRoot: fakeVision,
+    });
+
+    assert.notEqual(result.status, 0);
+    assert.match(
+      result.stderr,
+      /authenticated|authority|revision|descriptor|helper|not a git repository/i,
+    );
+    assert.equal(
+      readdirSync(root).includes("runtime-artifacts-receipt.json"),
+      false,
+    );
+  });
+
+  it("rejects a caller-selected Python even when it is an absolute regular executable", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-runtime-fake-python-"));
+    temporaryRoots.push(root);
+    const fixture = await buildFixture(root);
+    const fakePython = join(root, "python3.11");
+    cpSync(python, fakePython);
+    const output = join(root, "runtime-artifacts-receipt.json");
+
+    const result = await runWithTestAuthority(fixture, output, {
+      python: fakePython,
+    });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Python path differs from its descriptor/);
+    assert.equal(
+      readdirSync(root).includes("runtime-artifacts-receipt.json"),
+      false,
+    );
+  });
+
+  it("ignores ambient Python import paths while executing trusted verifier bytes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-runtime-python-isolation-"));
+    temporaryRoots.push(root);
+    const fixture = await buildFixture(root);
+    const ambient = join(root, "ambient-python");
+    const marker = join(root, "ambient-site-ran");
+    mkdirSync(ambient);
+    writeFileSync(
+      join(ambient, "sitecustomize.py"),
+      `from pathlib import Path\nPath(${JSON.stringify(marker)}).write_text("ran")\n`,
+    );
+    const output = join(root, "runtime-artifacts-receipt.json");
+    const previousPythonPath = process.env.PYTHONPATH;
+    process.env.PYTHONPATH = ambient;
+    try {
+      const result = await runWithTestAuthority(fixture, output);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(existsSync(marker), false);
+    } finally {
+      if (previousPythonPath === undefined) delete process.env.PYTHONPATH;
+      else process.env.PYTHONPATH = previousPythonPath;
+    }
   });
 });

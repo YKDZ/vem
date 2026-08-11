@@ -26,6 +26,11 @@ export const TRUSTED_RELEASE_SET_WORKFLOW =
   ".github/workflows/trusted-release-set-attester.yml";
 export const TRUSTED_RELEASE_SET_WORKFLOW_SHA =
   "54f30f648f07c8bf5bc639f4ca2ba8f5a3d85981";
+export const TRUSTED_VISION_REPOSITORY = "hbhjt/vending-vision";
+export const TRUSTED_VISION_BUILDER_WORKFLOW =
+  ".github/workflows/trusted-ai-candidate-builder.yml";
+export const TRUSTED_VISION_BUILDER_SHA =
+  "be8fe434855b94f61511e8c6c926e02c54230a38";
 const APPROVAL_SCHEMA = "vem.release-set.approval.v1";
 const EVIDENCE_SCHEMA = "vem.release-set.component-evidence.v1";
 const COMMIT_RE = /^[a-f0-9]{40}$/;
@@ -407,10 +412,32 @@ function assertNonemptyString(value, label) {
 
 export function parseTrustedGhAttestationVerification({
   approvalText,
+  authority,
   output,
   sourceCommit,
   sourceRef,
 }) {
+  const expected = authority ?? {
+    repository: TRUSTED_RELEASE_SET_REPOSITORY,
+    subjectName: "release-set-approval.json",
+    subjectSha256: sha256(approvalText).slice("sha256:".length),
+    workflow: TRUSTED_RELEASE_SET_WORKFLOW,
+    workflowSha: TRUSTED_RELEASE_SET_WORKFLOW_SHA,
+  };
+  assertExactObject(
+    expected,
+    ["repository", "subjectName", "subjectSha256", "workflow", "workflowSha"],
+    "GitHub attestation authority",
+  );
+  if (
+    !COMMIT_RE.test(expected.workflowSha) ||
+    !/^[a-f0-9]{64}$/.test(expected.subjectSha256) ||
+    typeof expected.repository !== "string" ||
+    typeof expected.workflow !== "string" ||
+    typeof expected.subjectName !== "string"
+  ) {
+    throw new Error("GitHub attestation authority is invalid");
+  }
   if (typeof output !== "string" || output.length === 0) {
     throw new Error("GitHub attestation verification output is empty");
   }
@@ -475,14 +502,14 @@ export function parseTrustedGhAttestationVerification({
   for (const key of GH_CERTIFICATE_KEYS) {
     assertNonemptyString(certificate[key], `GitHub certificate claim ${key}`);
   }
-  const signerPrefix = `https://github.com/${TRUSTED_RELEASE_SET_REPOSITORY}/${TRUSTED_RELEASE_SET_WORKFLOW}@`;
+  const signerPrefix = `https://github.com/${expected.repository}/${expected.workflow}@`;
   if (
-    certificate.githubWorkflowRepository !== TRUSTED_RELEASE_SET_REPOSITORY ||
-    certificate.buildSignerDigest !== TRUSTED_RELEASE_SET_WORKFLOW_SHA ||
+    certificate.githubWorkflowRepository !== expected.repository ||
+    certificate.buildSignerDigest !== expected.workflowSha ||
     !certificate.buildSignerURI.startsWith(signerPrefix) ||
     certificate.subjectAlternativeName !== certificate.buildSignerURI ||
     certificate.sourceRepositoryURI !==
-      `https://github.com/${TRUSTED_RELEASE_SET_REPOSITORY}` ||
+      `https://github.com/${expected.repository}` ||
     certificate.sourceRepositoryDigest !== sourceCommit ||
     certificate.sourceRepositoryRef !== sourceRef ||
     certificate.runnerEnvironment !== "github-hosted" ||
@@ -513,8 +540,8 @@ export function parseTrustedGhAttestationVerification({
   assertExactObject(subject, ["digest", "name"], "GitHub attestation subject");
   assertExactObject(subject.digest, ["sha256"], "GitHub subject digest");
   if (
-    subject.name !== "release-set-approval.json" ||
-    subject.digest.sha256 !== sha256(approvalText).slice("sha256:".length)
+    subject.name !== expected.subjectName ||
+    subject.digest.sha256 !== expected.subjectSha256
   ) {
     throw new Error("GitHub attestation subject digest mismatch");
   }
@@ -564,24 +591,77 @@ export function parseTrustedGhAttestationVerification({
   return result;
 }
 
-export async function verifyProductionReleaseSet({
+export function verifyTrustedVisionCandidateAttestation({
+  artifactPath,
+  attestationBundlePath,
+  ghBinaryPath,
+  sourceCommit,
+  sourceRef,
+  subjectSha256,
+}) {
+  validateClaim(sourceCommit, sourceRef, TRUSTED_VISION_BUILDER_SHA);
+  if (!/^[a-f0-9]{64}$/.test(subjectSha256)) {
+    throw new Error("Vision candidate subject digest is invalid");
+  }
+  verifyTrustedGhBinary(ghBinaryPath);
+  const verification = spawnSync(
+    ghBinaryPath,
+    [
+      "attestation",
+      "verify",
+      artifactPath,
+      "--bundle",
+      attestationBundlePath,
+      "--repo",
+      TRUSTED_VISION_REPOSITORY,
+      "--signer-workflow",
+      `${TRUSTED_VISION_REPOSITORY}/${TRUSTED_VISION_BUILDER_WORKFLOW}`,
+      "--signer-digest",
+      TRUSTED_VISION_BUILDER_SHA,
+      "--source-ref",
+      sourceRef,
+      "--source-digest",
+      sourceCommit,
+      "--deny-self-hosted-runners",
+      "--format=json",
+    ],
+    {
+      encoding: "utf8",
+      maxBuffer: 8 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 60_000,
+    },
+  );
+  if (
+    verification.error ||
+    verification.status !== 0 ||
+    verification.signal !== null ||
+    verification.stderr !== ""
+  ) {
+    throw new Error("Vision GitHub builder attestation verification failed");
+  }
+  return parseTrustedGhAttestationVerification({
+    authority: {
+      repository: TRUSTED_VISION_REPOSITORY,
+      subjectName: artifactPath.split(/[\\/]/).at(-1),
+      subjectSha256,
+      workflow: TRUSTED_VISION_BUILDER_WORKFLOW,
+      workflowSha: TRUSTED_VISION_BUILDER_SHA,
+    },
+    output: verification.stdout,
+    sourceCommit,
+    sourceRef,
+  });
+}
+
+export function verifyAuthenticatedReleaseSetApproval({
   approvalPath,
   attestationBundlePath,
-  backupPath,
-  container,
-  dockerBinary,
-  expectedDockerByteSize,
-  expectedDockerSha256,
-  expectedDockerVersion,
   ghBinaryPath,
   inputDirectory,
-  managedMediaOrigin,
-  managedMediaToken,
-  outputPath,
   repoRoot,
   sourceCommit,
   sourceRef,
-  sourceUser,
 }) {
   validateClaim(sourceCommit, sourceRef, TRUSTED_RELEASE_SET_WORKFLOW_SHA);
   verifyTrustedGhBinary(ghBinaryPath);
@@ -654,6 +734,53 @@ export async function verifyProductionReleaseSet({
     manifestText,
     repoRoot,
   });
+  return {
+    approval,
+    approvalText,
+    componentEvidence,
+    databaseReceiptText,
+    managedMediaReceiptText,
+    manifest,
+    manifestText,
+  };
+}
+
+export async function verifyProductionReleaseSet({
+  approvalPath,
+  attestationBundlePath,
+  backupPath,
+  container,
+  dockerBinary,
+  expectedDockerByteSize,
+  expectedDockerSha256,
+  expectedDockerVersion,
+  ghBinaryPath,
+  inputDirectory,
+  managedMediaOrigin,
+  managedMediaToken,
+  outputPath,
+  repoRoot,
+  sourceCommit,
+  sourceRef,
+  sourceUser,
+}) {
+  const authenticated = verifyAuthenticatedReleaseSetApproval({
+    approvalPath,
+    attestationBundlePath,
+    ghBinaryPath,
+    inputDirectory,
+    repoRoot,
+    sourceCommit,
+    sourceRef,
+  });
+  const {
+    approval,
+    approvalText,
+    componentEvidence,
+    databaseReceiptText,
+    managedMediaReceiptText,
+    manifest,
+  } = authenticated;
   const databaseProof = await reproveDatabaseBackup({
     backupPath,
     container,

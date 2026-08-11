@@ -46,7 +46,7 @@ async function terminateProcessGroup(processGroupId) {
 export function startOwnedProcess(
   binary,
   args,
-  { deadlineMs, stdio = ["ignore", "pipe", "pipe"] },
+  { deadlineMs, env, stdio = ["ignore", "pipe", "pipe"] },
 ) {
   if (process.platform === "win32") {
     throw new Error(
@@ -56,7 +56,7 @@ export function startOwnedProcess(
   if (!Number.isSafeInteger(deadlineMs) || deadlineMs <= 0) {
     throw new Error("owned process deadline must be a positive integer");
   }
-  const child = spawn(binary, args, { detached: true, stdio });
+  const child = spawn(binary, args, { detached: true, env, stdio });
   let deadlineExceeded = false;
   let termination;
   const exited = new Promise((resolve) => {
@@ -100,13 +100,14 @@ export function startOwnedProcess(
 export async function runOwnedCommand(
   binary,
   args,
-  { deadlineMs, input, maximumOutputBytes },
+  { deadlineMs, env, input, maximumOutputBytes },
 ) {
   if (!Number.isSafeInteger(maximumOutputBytes) || maximumOutputBytes <= 0) {
     throw new Error("command output bound must be a positive integer");
   }
   const owned = startOwnedProcess(binary, args, {
     deadlineMs,
+    env,
     stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
   });
   const stdout = [];

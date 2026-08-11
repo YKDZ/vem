@@ -25,12 +25,10 @@ import { fileURLToPath } from "node:url";
 
 import { runOwnedCommand } from "./lib/owned-process.mjs";
 import {
-  TRUSTED_RELEASE_SET_REPOSITORY,
-  TRUSTED_RELEASE_SET_WORKFLOW,
-  TRUSTED_RELEASE_SET_WORKFLOW_SHA,
   validateApprovedPrecutoverReceiptText,
+  verifyAuthenticatedReleaseSetApproval,
+  verifyTrustedVisionCandidateAttestation,
 } from "./release-set-approval.mjs";
-import { verifyReleaseSet } from "./release-set.mjs";
 import {
   RUNTIME_DESCRIPTOR_FILE,
   readRuntimeArtifactDescriptor,
@@ -40,16 +38,53 @@ import {
 
 const RECEIPT_SCHEMA = "vem.precutover.runtime-artifacts.v1";
 const VERIFIER_SCHEMA = "vem-trusted-vision-candidate-verifier/v1";
-const RELEASE_APPROVAL_SCHEMA = "vem.release-set.approval.v1";
 const DIGEST_RE = /^sha256:[a-f0-9]{64}$/;
 const COMMIT_RE = /^[a-f0-9]{40}$/;
 const MAX_JSON_BYTES = 16 * 1024 * 1024;
 const MAX_VEM_ARCHIVE_BYTES = 513 * 1024 * 1024;
 const MAX_VISION_ARCHIVE_BYTES = 8 * 1024 * 1024 * 1024;
+const TRUSTED_RUNTIME_PROOF_AUTHORITY = Object.freeze({
+  descriptorIdentity:
+    "sha256:b8a1fede33ea6a9a8909dc6c39ce37148a6718ee1511d7fe4f4c3166f81798ef",
+  descriptorSha256:
+    "sha256:794971fcb5acaccb522ec028643806c8b132fa8f99b1d223aa91d6cd55f1f768",
+  helper: Object.freeze({
+    byteSize: 5264,
+    gitBlob: "de96fe612de74d5754827fc03f2beff7002151b0",
+    sha256:
+      "sha256:ff92e47bbeb938ab20ea8409568f93df39823bd43be253b6de611040b1e47e3c",
+  }),
+  descriptorGitBlob: "014bce1157a1be1022240174117a2537258f7f42",
+  git: Object.freeze({
+    byteSize: 3_713_416,
+    path: "/usr/bin/git",
+    sha256:
+      "sha256:2540879925a6881e3877ff7e3330746ba3027b04edf16a3a12dccd1644c4f32d",
+    version: "git version 2.39.5",
+  }),
+  vemRevision: "971560e5191ad06b631f55a2bfaeb969e390d0e6",
+  visionRevision: "072e3484f8db021950ce8b1773bd23c90e6e92c1",
+});
+const ISOLATED_VISION_RUNNER =
+  "import runpy,sys;script=sys.argv[1];sys.path.insert(0,script.rsplit('/',1)[0]);sys.argv=sys.argv[1:];runpy.run_path(script,run_name='__main__')";
 const CANDIDATE_FIXED_MEMBERS = new Set([
   "candidate-manifest.json",
   "github-build-provenance.sigstore.json",
   "trusted-builder-evidence.json",
+]);
+const PATH_OPTIONS = new Set([
+  "approved",
+  "approval",
+  "approval-attestation-bundle",
+  "gh-binary",
+  "output",
+  "python",
+  "release-set",
+  "release-set-input-directory",
+  "repo-root",
+  "vem-runtime-archive",
+  "vision-candidate-input-directory",
+  "vision-verifier-root",
 ]);
 const V2_FILES = [
   "__init__.py",
@@ -244,83 +279,41 @@ function readCanonicalFile(path, label) {
   return { raw, value: parseCanonical(raw, label) };
 }
 
-function validateIdentityRoot({
+function validateAuthenticatedIdentityRoot({
   approvedPath,
-  approvalPath,
+  expectedApprovalSha256,
   releaseSetPath,
-  repoRoot,
+  authenticated,
 }) {
   const approved = readCanonicalFile(
     approvedPath,
     "approved precutover receipt",
   );
   validateApprovedPrecutoverReceiptText(approved.raw);
-  const approval = readCanonicalFile(approvalPath, "release-set approval");
   const releaseSet = readCanonicalFile(releaseSetPath, "release set");
   if (
-    sha256(approval.raw) !== approved.value.releaseApprovalSha256 ||
-    sha256(releaseSet.raw) !== approved.value.releaseSetSha256
+    !DIGEST_RE.test(expectedApprovalSha256) ||
+    sha256(authenticated.approvalText) !== expectedApprovalSha256 ||
+    expectedApprovalSha256 !== approved.value.releaseApprovalSha256 ||
+    sha256(authenticated.manifestText) !== approved.value.releaseSetSha256 ||
+    sha256(releaseSet.raw) !== approved.value.releaseSetSha256 ||
+    authenticated.manifestText !== releaseSet.raw
   ) {
     fail("approved precutover identity root digest mismatch");
   }
-  exact(
-    approval.value,
-    ["attester", "inputArtifact", "schemaVersion", "sourceCommit", "sourceRef"],
-    "release-set approval",
-  );
-  exact(
-    approval.value.attester,
-    ["hostedRunnerRequired", "repository", "workflow", "workflowSha"],
-    "release-set approval attester",
-  );
-  exact(
-    approval.value.inputArtifact,
-    ["aggregateSha256", "members"],
-    "release-set approval input artifact",
-  );
-  exact(
-    approval.value.inputArtifact.members,
-    [
-      "component-evidence.json",
-      "database-backup-receipt.json",
-      "managed-media-receipt.json",
-      "release-set.json",
-    ],
-    "release-set approval input members",
-  );
   if (
-    !DIGEST_RE.test(approval.value.inputArtifact.aggregateSha256) ||
-    Object.values(approval.value.inputArtifact.members).some(
-      (digest) => !DIGEST_RE.test(digest),
-    )
-  ) {
-    fail("release-set approval input digests are invalid");
-  }
-  if (
-    approval.value.schemaVersion !== RELEASE_APPROVAL_SCHEMA ||
-    approval.value.attester.hostedRunnerRequired !== true ||
-    approval.value.attester.repository !== TRUSTED_RELEASE_SET_REPOSITORY ||
-    approval.value.attester.workflow !== TRUSTED_RELEASE_SET_WORKFLOW ||
-    approval.value.attester.workflowSha !== TRUSTED_RELEASE_SET_WORKFLOW_SHA ||
-    approval.value.sourceCommit !== approved.value.sourceCommit ||
-    approval.value.sourceRef !== approved.value.sourceRef ||
-    approval.value.inputArtifact?.members?.["release-set.json"] !==
-      approved.value.releaseSetSha256
+    authenticated.approval.sourceCommit !== approved.value.sourceCommit ||
+    authenticated.approval.sourceRef !== approved.value.sourceRef ||
+    authenticated.approval.inputArtifact.members["release-set.json"] !==
+      approved.value.releaseSetSha256 ||
+    authenticated.manifest.vem.sourceCommit !== approved.value.sourceCommit
   ) {
     fail("approved precutover release authority mismatch");
   }
-  const componentEvidence = structuredClone(releaseSet.value);
-  componentEvidence.schemaVersion = "vem.release-set.component-evidence.v1";
-  verifyReleaseSet({
-    componentEvidence,
-    expectedManifestSha256: approved.value.releaseSetSha256,
-    manifestText: releaseSet.raw,
-    repoRoot,
-  });
   return {
-    approvalSha256: sha256(approval.raw),
+    approvalSha256: sha256(authenticated.approvalText),
     approvedReceiptSha256: sha256(approved.raw),
-    releaseSet: releaseSet.value,
+    releaseSet: authenticated.manifest,
     releaseSetSha256: sha256(releaseSet.raw),
   };
 }
@@ -336,6 +329,15 @@ function loadVerifierDescriptor(repoRoot) {
   }
   if (canonicalPrettyJson(value) !== raw) {
     fail("Vision verifier descriptor is not formatter-canonical JSON");
+  }
+  if (
+    sha256(raw) !== TRUSTED_RUNTIME_PROOF_AUTHORITY.descriptorSha256 ||
+    value.identity !== TRUSTED_RUNTIME_PROOF_AUTHORITY.descriptorIdentity ||
+    value.revision !== TRUSTED_RUNTIME_PROOF_AUTHORITY.visionRevision
+  ) {
+    fail(
+      "Vision verifier descriptor is not authenticated by the VEM authority",
+    );
   }
   exact(
     value,
@@ -420,14 +422,106 @@ async function materializePython({ descriptor, pythonPath, staging }) {
   ) {
     fail("Vision verifier Python identity mismatch");
   }
-  const version = await runOwnedCommand(python.path, ["--version"], {
+  const version = await runOwnedCommand(python.path, ["-I", "--version"], {
     deadlineMs: 10_000,
+    env: cleanPythonEnvironment(staging),
     maximumOutputBytes: 1024,
   });
   if (version !== descriptor.python.version) {
     fail("Vision verifier Python version mismatch");
   }
   return python.path;
+}
+
+function cleanPythonEnvironment(privateRoot) {
+  return {
+    HOME: privateRoot,
+    LANG: "C.UTF-8",
+    PYTHONHASHSEED: "0",
+    PYTHONNOUSERSITE: "1",
+    TMPDIR: privateRoot,
+  };
+}
+
+function cleanGitEnvironment(privateRoot) {
+  return {
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_OPTIONAL_LOCKS: "0",
+    GIT_TERMINAL_PROMPT: "0",
+    HOME: privateRoot,
+    LANG: "C.UTF-8",
+    XDG_CONFIG_HOME: privateRoot,
+  };
+}
+
+async function verifyTrustedRepositoryAuthority(repoRoot, privateRoot) {
+  assertAbsolute(repoRoot, "VEM repository root");
+  if (
+    !lstatSync(repoRoot).isDirectory() ||
+    realpathSync(repoRoot) !== repoRoot
+  ) {
+    fail("VEM repository root is unsafe");
+  }
+  const gitAuthority = TRUSTED_RUNTIME_PROOF_AUTHORITY.git;
+  const git = await hashRegularFile(
+    gitAuthority.path,
+    "trusted Git binary",
+    16 * 1024 * 1024,
+  );
+  if (
+    git.byteSize !== gitAuthority.byteSize ||
+    git.sha256 !== gitAuthority.sha256
+  ) {
+    fail("trusted Git binary identity mismatch");
+  }
+  const environment = cleanGitEnvironment(privateRoot);
+  const runGit = (args, maximumOutputBytes = 64 * 1024) =>
+    runOwnedCommand(gitAuthority.path, args, {
+      deadlineMs: 15_000,
+      env: environment,
+      maximumOutputBytes,
+    });
+  if ((await runGit(["--version"])) !== gitAuthority.version) {
+    fail("trusted Git binary version mismatch");
+  }
+  const prefix = ["--no-optional-locks", "-C", repoRoot];
+  if (
+    (await runGit([...prefix, "rev-parse", "--show-toplevel"])) !== repoRoot
+  ) {
+    fail("VEM repository root does not identify the trusted worktree");
+  }
+  const head = await runGit([...prefix, "rev-parse", "HEAD"]);
+  if (!COMMIT_RE.test(head)) fail("VEM repository HEAD is invalid");
+  await runGit([
+    ...prefix,
+    "merge-base",
+    "--is-ancestor",
+    TRUSTED_RUNTIME_PROOF_AUTHORITY.vemRevision,
+    head,
+  ]);
+  const expectedBlobs = {
+    "scripts/lib/verify_vem_runtime_archive.py":
+      TRUSTED_RUNTIME_PROOF_AUTHORITY.helper.gitBlob,
+    "trusted-vision-candidate-verifier.json":
+      TRUSTED_RUNTIME_PROOF_AUTHORITY.descriptorGitBlob,
+  };
+  for (const [path, expectedBlob] of Object.entries(expectedBlobs)) {
+    if (
+      (await runGit([...prefix, "rev-parse", `HEAD:${path}`])) !== expectedBlob
+    ) {
+      fail(`VEM repository HEAD blob is not trusted: ${path}`);
+    }
+  }
+  const status = await runGit([
+    ...prefix,
+    "status",
+    "--porcelain=v1",
+    "--untracked-files=no",
+    "--",
+    ...Object.keys(expectedBlobs),
+  ]);
+  if (status !== "") fail("VEM trusted verifier files differ from HEAD");
+  return head;
 }
 
 async function materializeVisionVerifier({
@@ -546,17 +640,39 @@ async function verifyVemArchive({
     fail("VEM runtime archive digest mismatch");
   }
   const destination = join(tempRoot, "vem-runtime");
+  const helperPath = join(
+    repoRoot,
+    "scripts/lib/verify_vem_runtime_archive.py",
+  );
+  const helper = await hashRegularFile(
+    helperPath,
+    "VEM runtime archive verifier",
+    1024 * 1024,
+  );
+  if (
+    helper.byteSize !== TRUSTED_RUNTIME_PROOF_AUTHORITY.helper.byteSize ||
+    helper.sha256 !== TRUSTED_RUNTIME_PROOF_AUTHORITY.helper.sha256
+  ) {
+    fail(
+      "VEM runtime archive verifier is not authenticated by the VEM authority",
+    );
+  }
   const reportText = await runOwnedCommand(
     pythonPath,
     [
-      join(repoRoot, "scripts/lib/verify_vem_runtime_archive.py"),
+      "-I",
+      helperPath,
       "verify",
       "--archive",
       staged.path,
       "--destination",
       destination,
     ],
-    { deadlineMs: 300_000, maximumOutputBytes: 1024 * 1024 },
+    {
+      deadlineMs: 300_000,
+      env: cleanPythonEnvironment(tempRoot),
+      maximumOutputBytes: 1024 * 1024,
+    },
   );
   const report = JSON.parse(reportText);
   if (
@@ -638,11 +754,14 @@ function verifyExtractedV2Bundle(extractedRoot, repoRoot, expectedDigest) {
 async function verifyVisionArchive({
   candidateDirectory,
   descriptor,
+  ghBinaryPath,
   identityRoot,
   pythonPath,
   repoRoot,
   tempRoot,
   verifierRoot,
+  verifyVisionAttestation,
+  visionSourceRef,
 }) {
   const stagedInputs = stageVisionCandidateInputs(
     candidateDirectory,
@@ -665,6 +784,14 @@ async function verifyVisionArchive({
   ]) {
     if (actual !== wanted) fail(`Vision candidate ${label} digest mismatch`);
   }
+  await verifyVisionAttestation({
+    artifactPath: stagedInputs.archive.path,
+    attestationBundlePath: stagedInputs.attestation.path,
+    ghBinaryPath,
+    sourceCommit: expected.sourceCommit,
+    sourceRef: visionSourceRef,
+    subjectSha256: subject.sha256.slice(7),
+  });
   const verifierPath = await materializeVisionVerifier({
     descriptor,
     verifierRoot,
@@ -674,6 +801,9 @@ async function verifyVisionArchive({
   await runOwnedCommand(
     pythonPath,
     [
+      "-I",
+      "-c",
+      ISOLATED_VISION_RUNNER,
       verifierPath,
       "--artifact",
       stagedInputs.archive.path,
@@ -694,7 +824,11 @@ async function verifyVisionArchive({
       "--source-commit",
       expected.sourceCommit,
     ],
-    { deadlineMs: 600_000, maximumOutputBytes: 8 * 1024 * 1024 },
+    {
+      deadlineMs: 600_000,
+      env: cleanPythonEnvironment(tempRoot),
+      maximumOutputBytes: 8 * 1024 * 1024,
+    },
   );
   const candidateManifestRaw = readFileSync(stagedInputs.manifest.path, "utf8");
   let candidateManifest;
@@ -809,12 +943,21 @@ function validateReceipt(receipt) {
   }
   exact(
     receipt.verifier,
-    ["descriptorIdentity", "descriptorSha256", "revision"],
+    [
+      "descriptorIdentity",
+      "descriptorSha256",
+      "revision",
+      "vemAuthorityRevision",
+      "vemRepositoryHead",
+    ],
     "Vision verifier facts",
   );
   if (
     !DIGEST_RE.test(receipt.verifier.descriptorSha256) ||
-    !COMMIT_RE.test(receipt.verifier.revision)
+    !COMMIT_RE.test(receipt.verifier.revision) ||
+    receipt.verifier.vemAuthorityRevision !==
+      TRUSTED_RUNTIME_PROOF_AUTHORITY.vemRevision ||
+    !COMMIT_RE.test(receipt.verifier.vemRepositoryHead)
   ) {
     fail("Vision verifier receipt facts are invalid");
   }
@@ -887,22 +1030,30 @@ function writeExclusive(path, contents) {
   }
 }
 
-async function verify(options) {
+async function verify(
+  options,
+  { authenticateReleaseSet, verifyVisionAttestation },
+) {
   for (const [key, value] of Object.entries(options)) {
-    if (key !== "command") assertAbsolute(value, `--${key}`);
+    if (PATH_OPTIONS.has(key)) assertAbsolute(value, `--${key}`);
   }
-  const identityRoot = validateIdentityRoot({
+  const authenticated = await authenticateReleaseSet(options);
+  const identityRoot = validateAuthenticatedIdentityRoot({
     approvedPath: options.approved,
-    approvalPath: options.approval,
+    authenticated,
+    expectedApprovalSha256: options["approval-subject-sha256"],
     releaseSetPath: options["release-set"],
-    repoRoot: options["repo-root"],
   });
-  const verifier = loadVerifierDescriptor(options["repo-root"]);
   const tempRoot = mkdtempSync(join(tmpdir(), "vem-runtime-artifacts-"));
   try {
     const directoryStat = lstatSync(tempRoot);
     if ((directoryStat.mode & 0o077) !== 0)
       fail("private verification root is unsafe");
+    const vemRepositoryHead = await verifyTrustedRepositoryAuthority(
+      options["repo-root"],
+      tempRoot,
+    );
+    const verifier = loadVerifierDescriptor(options["repo-root"]);
     const trustedPython = await materializePython({
       descriptor: verifier.value,
       pythonPath: options.python,
@@ -918,11 +1069,14 @@ async function verify(options) {
     const vision = await verifyVisionArchive({
       candidateDirectory: options["vision-candidate-input-directory"],
       descriptor: verifier.value,
+      ghBinaryPath: options["gh-binary"],
       identityRoot,
       pythonPath: trustedPython,
       repoRoot: options["repo-root"],
       tempRoot,
       verifierRoot: options["vision-verifier-root"],
+      verifyVisionAttestation,
+      visionSourceRef: options["vision-source-ref"],
     });
     const receiptText = canonicalJson(
       validateReceipt({
@@ -938,6 +1092,8 @@ async function verify(options) {
           descriptorIdentity: verifier.value.identity,
           descriptorSha256: sha256(verifier.raw),
           revision: verifier.value.revision,
+          vemAuthorityRevision: TRUSTED_RUNTIME_PROOF_AUTHORITY.vemRevision,
+          vemRepositoryHead,
         },
         vision,
       }),
@@ -948,6 +1104,32 @@ async function verify(options) {
   }
 }
 
+function authenticateProductionReleaseSet(options) {
+  return verifyAuthenticatedReleaseSetApproval({
+    approvalPath: options.approval,
+    attestationBundlePath: options["approval-attestation-bundle"],
+    ghBinaryPath: options["gh-binary"],
+    inputDirectory: options["release-set-input-directory"],
+    repoRoot: options["repo-root"],
+    sourceCommit: options["source-commit"],
+    sourceRef: options["source-ref"],
+  });
+}
+
+export async function verifyRuntimeArtifactsForTest(
+  options,
+  authenticatedReleaseSet,
+  verifyVisionAttestation = async () => {},
+) {
+  if (process.env.NODE_ENV !== "test") {
+    fail("test-only runtime artifact verifier requires NODE_ENV=test");
+  }
+  return verify(options, {
+    authenticateReleaseSet: async () => authenticatedReleaseSet,
+    verifyVisionAttestation,
+  });
+}
+
 function parseArgs(argv) {
   const [command, ...tokens] = argv;
   if (command !== "verify")
@@ -955,12 +1137,19 @@ function parseArgs(argv) {
   const required = [
     "approved",
     "approval",
+    "approval-attestation-bundle",
+    "approval-subject-sha256",
+    "gh-binary",
     "output",
     "python",
     "release-set",
+    "release-set-input-directory",
     "repo-root",
+    "source-commit",
+    "source-ref",
     "vem-runtime-archive",
     "vision-candidate-input-directory",
+    "vision-source-ref",
     "vision-verifier-root",
   ];
   const options = { command };
@@ -983,7 +1172,10 @@ if (
   resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))
 ) {
   try {
-    await verify(parseArgs(process.argv.slice(2)));
+    await verify(parseArgs(process.argv.slice(2)), {
+      authenticateReleaseSet: authenticateProductionReleaseSet,
+      verifyVisionAttestation: verifyTrustedVisionCandidateAttestation,
+    });
     process.stdout.write("PRECUTOVER_RUNTIME_ARTIFACTS=PASS\n");
   } catch (error) {
     process.stderr.write(
