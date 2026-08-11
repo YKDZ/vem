@@ -90,6 +90,7 @@ function readyPayload(
     contractDigest: "a".repeat(64),
     cameraReady: true,
     fastReady: true,
+    aiReadinessDiagnostic: "ready" as const,
     visionBusinessReady: true,
     businessReadinessDiagnostic: "ready" as const,
     capabilities: ["profile_push", "try_on_fast"],
@@ -367,6 +368,37 @@ describe("useVisionStore", () => {
       visionBusinessReady: false,
       capabilities: ["try_on_fast", "try_on_ai"],
     });
+    expect(visionStore.fastReady).toBe(false);
+    expect(visionStore.aiReady).toBe(false);
+  });
+
+  it("projects a stable AI-only diagnostic without degrading Fast or business readiness", () => {
+    const visionStore = useVisionStore();
+
+    visionStore.applyVisionReady({
+      ...readyPayload(),
+      aiReady: false,
+      aiReadinessDiagnostic: "model_pack_invalid",
+      capabilities: ["try_on_fast"],
+    });
+
+    expect(visionStore.aiReadinessDiagnostic).toBe("model_pack_invalid");
+    expect(visionStore.fastReady).toBe(true);
+    expect(visionStore.aiReady).toBe(false);
+    expect(visionStore.visionBusinessReady).toBe(true);
+  });
+
+  it("rejects non-contract AI diagnostic text instead of displaying local paths", () => {
+    const visionStore = useVisionStore();
+
+    visionStore.applyVisionReady({
+      ...readyPayload(),
+      aiReady: false,
+      aiReadinessDiagnostic: "C:\\private\\models\\missing.bin",
+      capabilities: ["try_on_fast"],
+    });
+
+    expect(visionStore.aiReadinessDiagnostic).toBeNull();
     expect(visionStore.fastReady).toBe(false);
     expect(visionStore.aiReady).toBe(false);
   });

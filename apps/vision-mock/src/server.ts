@@ -115,6 +115,7 @@ function createReadyMessage(
       cameraReady: true,
       fastReady: !contractBundleUnavailable,
       aiReady: false,
+      aiReadinessDiagnostic: "model_pack_missing",
       visionBusinessReady: !contractBundleUnavailable,
       businessReadinessDiagnostic: contractBundleUnavailable
         ? "contract_bundle_unavailable"

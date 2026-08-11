@@ -2,6 +2,7 @@ import {
   type VisionProfile,
   type VisionPresenceOccupancyState,
   type VisionProfileNotUsableReason,
+  type VisionV2AiReadinessDiagnostic,
   visionErrorPayloadSchema,
   visionPresenceStatusPayloadSchema,
   visionPersonDepartedPayloadSchema,
@@ -78,6 +79,7 @@ export const useVisionStore = defineStore("vision", {
     tryOnCapability: "unknown" as VisionTryOnCapability,
     fastReady: false,
     aiReady: false,
+    aiReadinessDiagnostic: null as VisionV2AiReadinessDiagnostic | null,
     visionBusinessReady: false,
     presence: { ...EMPTY_PRESENCE } as VisionPresenceState,
     recommendationProfile: null as VisionProfile | null,
@@ -184,6 +186,7 @@ export const useVisionStore = defineStore("vision", {
         result.data.aiReady &&
         result.data.visionBusinessReady &&
         result.data.capabilities.includes("try_on_ai");
+      this.aiReadinessDiagnostic = result.data.aiReadinessDiagnostic;
       this.visionBusinessReady = result.data.visionBusinessReady;
     },
     markTryOnCapabilityDegraded(): void {
@@ -193,6 +196,7 @@ export const useVisionStore = defineStore("vision", {
       this.tryOnCapability = "degraded";
       this.fastReady = false;
       this.aiReady = false;
+      this.aiReadinessDiagnostic = null;
       this.visionBusinessReady = false;
     },
     clearLatestDiagnosticPayload(): void {

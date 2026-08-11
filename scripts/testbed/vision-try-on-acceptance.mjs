@@ -1941,6 +1941,13 @@ export function validateVisionProtocolEvidence(
     typeof ready.payload?.serverName !== "string" ||
     ready.payload.serverName.trim() === "" ||
     ready.payload.fastReady !== true ||
+    typeof ready.payload.aiReady !== "boolean" ||
+    ![
+      "ready",
+      "model_pack_missing",
+      "model_pack_invalid",
+      "worker_unavailable",
+    ].includes(ready.payload.aiReadinessDiagnostic) ||
     ready.payload.visionBusinessReady !== true ||
     ready.payload.businessReadinessDiagnostic !== "ready" ||
     ready.payload.schemaVersion !== identity.schemaVersion ||

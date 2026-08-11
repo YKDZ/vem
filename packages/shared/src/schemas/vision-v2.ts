@@ -13,6 +13,16 @@ export const visionV2BusinessReadinessDiagnosticSchema = z.enum([
   "contract_bundle_unavailable",
 ]);
 
+export const visionV2AiReadinessDiagnosticSchema = z.enum([
+  "ready",
+  "model_pack_missing",
+  "model_pack_invalid",
+  "worker_unavailable",
+]);
+export type VisionV2AiReadinessDiagnostic = z.infer<
+  typeof visionV2AiReadinessDiagnosticSchema
+>;
+
 const sha256HexSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const sha256DigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const nonSentinelUuidSchema = z
@@ -178,6 +188,7 @@ export const visionV2ReadyMessageSchema = envelopeBaseSchema.extend({
     // AI readiness is independent: an unavailable model pack must never
     // remove Fast or ordinary sale capability.
     aiReady: z.boolean().default(false),
+    aiReadinessDiagnostic: visionV2AiReadinessDiagnosticSchema,
     visionBusinessReady: z.boolean(),
     businessReadinessDiagnostic: visionV2BusinessReadinessDiagnosticSchema,
     capabilities: z.array(codePointString({ minimum: 1, maximum: 64 })).max(32),

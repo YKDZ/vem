@@ -1423,6 +1423,8 @@ mod tests {
                             "contractDigest": contract_digest,
                             "cameraReady": true,
                             "fastReady": true,
+                            "aiReady": false,
+                            "aiReadinessDiagnostic": "model_pack_missing",
                             "visionBusinessReady": true,
                             "businessReadinessDiagnostic": "ready",
                             "capabilities": ["person_departed"],

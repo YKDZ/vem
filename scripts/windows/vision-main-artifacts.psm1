@@ -426,6 +426,9 @@ function Invoke-VisionMainProbe([string]$ConfigurationPath, [int]$TimeoutSeconds
           $ready.payload.serverName -is [string] -and -not [string]::IsNullOrWhiteSpace($ready.payload.serverName) -and $ready.payload.serverName.Length -le 128 -and
           $ready.payload.cameraReady -is [bool] -and
           $ready.payload.fastReady -is [bool] -and $ready.payload.fastReady -eq $true -and
+          $ready.payload.aiReady -is [bool] -and
+          $ready.payload.aiReadinessDiagnostic -is [string] -and
+          @("ready", "model_pack_missing", "model_pack_invalid", "worker_unavailable") -ccontains $ready.payload.aiReadinessDiagnostic -and
           $ready.payload.visionBusinessReady -is [bool] -and $ready.payload.visionBusinessReady -eq $true -and
           $ready.payload.businessReadinessDiagnostic -is [string] -and $ready.payload.businessReadinessDiagnostic -ceq "ready" -and
           $ready.payload.schemaVersion -is [string] -and $ready.payload.schemaVersion -ceq $contractIdentity.schemaVersion -and

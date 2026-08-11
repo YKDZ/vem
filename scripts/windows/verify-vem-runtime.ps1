@@ -73,7 +73,7 @@ function Test-VisionRuntimeBinding {
     $result.installationValid=$true
     $probe = Invoke-VisionMainProbe -ConfigurationPath $VisionSiteConfiguration -FixtureRoot (Join-Path $VisionFixtureDirectory ([string]$record.commit)) -AppDirectory $VisionAppDirectory
     $result.healthValid=$probe.health.cameraReady -eq $true
-    $result.protocolValid=($probe.ready.type -ceq "vision.ready" -and $probe.ready.payload.fastReady -eq $true -and $probe.ready.payload.visionBusinessReady -eq $true -and $probe.ready.payload.businessReadinessDiagnostic -ceq "ready")
+    $result.protocolValid=($probe.ready.type -ceq "vision.ready" -and $probe.ready.payload.fastReady -eq $true -and $probe.ready.payload.aiReady -is [bool] -and @("ready", "model_pack_missing", "model_pack_invalid", "worker_unavailable") -ccontains $probe.ready.payload.aiReadinessDiagnostic -and $probe.ready.payload.visionBusinessReady -eq $true -and $probe.ready.payload.businessReadinessDiagnostic -ceq "ready")
   } catch { Add-VisionFailure $Failures $_.Exception.Message }
   return [pscustomobject]$result
 }

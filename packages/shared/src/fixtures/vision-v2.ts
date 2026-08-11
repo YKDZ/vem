@@ -90,6 +90,7 @@ export const visionV2ServerFixtures = {
     cameraReady: true,
     fastReady: true,
     aiReady: true,
+    aiReadinessDiagnostic: "ready",
     visionBusinessReady: true,
     businessReadinessDiagnostic: "ready",
     capabilities: ["try_on_fast"],
@@ -104,6 +105,7 @@ export const visionV2ServerFixtures = {
       cameraReady: true,
       fastReady: true,
       aiReady: true,
+      aiReadinessDiagnostic: "ready",
       visionBusinessReady: true,
       businessReadinessDiagnostic: "ready",
       capabilities: ["能".repeat(64)],
@@ -420,6 +422,15 @@ export const invalidVisionV2ServerFixtures = [
     visionV2ServerFixtures.ready,
     (message) => {
       payload(message).fastReady = "true";
+    },
+  ),
+  mutate(
+    "rejects-server-unstable-ai-readiness-diagnostic",
+    "payload.aiReadinessDiagnostic",
+    visionV2ServerFixtures.ready,
+    (message) => {
+      payload(message).aiReadinessDiagnostic =
+        "C:\\private\\models\\missing-weight.bin";
     },
   ),
   mutate(

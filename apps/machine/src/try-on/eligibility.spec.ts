@@ -112,6 +112,7 @@ describe("Fast try-on eligibility", () => {
     const readiness = {
       fastReady: true,
       aiReady: false,
+      aiReadinessDiagnostic: "model_pack_missing",
       visionBusinessReady: true,
     };
 

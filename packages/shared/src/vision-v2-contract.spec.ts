@@ -82,6 +82,24 @@ describe("Vision V2 shared contract", () => {
     });
   });
 
+  it("carries only stable AI readiness diagnostics without changing Fast readiness", () => {
+    const ready = structuredClone(validVisionV2ServerFixtures[0]);
+    ready.payload.aiReady = false;
+    ready.payload.aiReadinessDiagnostic = "model_pack_missing";
+    ready.payload.capabilities = ["try_on_fast"];
+
+    expect(visionV2ServerMessageSchema.parse(ready)).toMatchObject({
+      payload: {
+        fastReady: true,
+        aiReady: false,
+        aiReadinessDiagnostic: "model_pack_missing",
+      },
+    });
+
+    ready.payload.aiReadinessDiagnostic = "C:\\private\\models\\missing.bin";
+    expect(() => visionV2ServerMessageSchema.parse(ready)).toThrow();
+  });
+
   it("rejects every single-mutation fixture in its declared direction with Zod and standalone Ajv", () => {
     for (const [direction, fixtures] of Object.entries({
       client: invalidVisionV2ClientFixtures,

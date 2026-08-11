@@ -111,6 +111,7 @@ function applyReady(aiReady: boolean): void {
     cameraReady: true,
     fastReady: true,
     aiReady,
+    aiReadinessDiagnostic: aiReady ? "ready" : "model_pack_missing",
     visionBusinessReady: true,
     businessReadinessDiagnostic: "ready",
     capabilities: aiReady ? ["try_on_fast", "try_on_ai"] : ["try_on_fast"],

@@ -107,6 +107,8 @@ test("runtime verification checks the installed Vision artifact", () => {
   assert.match(verify, /VisionSiteConfiguration/);
   assert.match(verify, /Invoke-VisionMainProbe/);
   assert.match(verify, /ready\.payload\.fastReady -eq \$true/);
+  assert.match(verify, /ready\.payload\.aiReady -is \[bool\]/);
+  assert.match(verify, /ready\.payload\.aiReadinessDiagnostic/);
   assert.match(verify, /ready\.payload\.visionBusinessReady -eq \$true/);
   assert.match(
     verify,

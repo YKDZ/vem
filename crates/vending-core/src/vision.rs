@@ -93,8 +93,8 @@ pub struct VisionReadyPayload {
     pub contract_digest: String,
     pub camera_ready: bool,
     pub fast_ready: bool,
-    #[serde(default)]
     pub ai_ready: bool,
+    pub ai_readiness_diagnostic: VisionAiReadinessDiagnostic,
     pub vision_business_ready: bool,
     pub business_readiness_diagnostic: VisionBusinessReadinessDiagnostic,
     pub capabilities: Vec<String>,
@@ -108,6 +108,15 @@ pub enum VisionBusinessReadinessDiagnostic {
     ContractDigestMismatch,
     ContractVersionMismatch,
     ContractBundleUnavailable,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VisionAiReadinessDiagnostic {
+    Ready,
+    ModelPackMissing,
+    ModelPackInvalid,
+    WorkerUnavailable,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -826,7 +835,7 @@ mod tests {
             );
             ws_stream
                 .send(Message::Text(
-                    r#"{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440120","timestamp":"2026-08-09T00:00:00.000Z","payload":{"serverName":"s","serverVersion":"1","schemaVersion":"vem-vision-v2-contract-bundle/v1","bundleVersion":"1","contractDigest":"f5c86bc2def1a41328cccf7c2e864452fe2913265b99f36139d64c9c9028a386","cameraReady":true,"fastReady":true,"visionBusinessReady":true,"businessReadinessDiagnostic":"ready","capabilities":[]}}"#
+                    r#"{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440120","timestamp":"2026-08-09T00:00:00.000Z","payload":{"serverName":"s","serverVersion":"1","schemaVersion":"vem-vision-v2-contract-bundle/v1","bundleVersion":"1","contractDigest":"f5c86bc2def1a41328cccf7c2e864452fe2913265b99f36139d64c9c9028a386","cameraReady":true,"fastReady":true,"aiReady":false,"aiReadinessDiagnostic":"model_pack_missing","visionBusinessReady":true,"businessReadinessDiagnostic":"ready","capabilities":[]}}"#
                         .into(),
                 ))
                 .await
@@ -875,7 +884,7 @@ mod tests {
             let _ = ws_stream.next().await.expect("next");
             ws_stream
                 .send(Message::Text(
-                    r#"{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440122","timestamp":"2026-08-09T00:00:00.000Z","payload":{"serverName":"s","serverVersion":"1","schemaVersion":"vem-vision-v2-contract-bundle/v1","bundleVersion":"1","contractDigest":"f5c86bc2def1a41328cccf7c2e864452fe2913265b99f36139d64c9c9028a386","cameraReady":true,"fastReady":true,"visionBusinessReady":true,"businessReadinessDiagnostic":"ready","capabilities":[]},"unexpected":true}"#
+                    r#"{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440122","timestamp":"2026-08-09T00:00:00.000Z","payload":{"serverName":"s","serverVersion":"1","schemaVersion":"vem-vision-v2-contract-bundle/v1","bundleVersion":"1","contractDigest":"f5c86bc2def1a41328cccf7c2e864452fe2913265b99f36139d64c9c9028a386","cameraReady":true,"fastReady":true,"aiReady":false,"aiReadinessDiagnostic":"model_pack_missing","visionBusinessReady":true,"businessReadinessDiagnostic":"ready","capabilities":[]},"unexpected":true}"#
                         .into(),
                 ))
                 .await
@@ -899,7 +908,7 @@ mod tests {
             let _ = ws_stream.next().await.expect("next");
             ws_stream
                 .send(Message::Text(
-                    r#"{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440124","timestamp":"not-a-timestamp","payload":{"serverName":"s","serverVersion":"1","schemaVersion":"vem-vision-v2-contract-bundle/v1","bundleVersion":"1","contractDigest":"f5c86bc2def1a41328cccf7c2e864452fe2913265b99f36139d64c9c9028a386","cameraReady":true,"fastReady":true,"visionBusinessReady":true,"businessReadinessDiagnostic":"ready","capabilities":[]}}"#
+                    r#"{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440124","timestamp":"not-a-timestamp","payload":{"serverName":"s","serverVersion":"1","schemaVersion":"vem-vision-v2-contract-bundle/v1","bundleVersion":"1","contractDigest":"f5c86bc2def1a41328cccf7c2e864452fe2913265b99f36139d64c9c9028a386","cameraReady":true,"fastReady":true,"aiReady":false,"aiReadinessDiagnostic":"model_pack_missing","visionBusinessReady":true,"businessReadinessDiagnostic":"ready","capabilities":[]}}"#
                         .into(),
                 ))
                 .await
@@ -923,7 +932,7 @@ mod tests {
             let _ = ws_stream.next().await.expect("next");
             ws_stream
                 .send(Message::Text(
-                    r#"{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440124","timestamp":"2026-08-09T00:00:00.000Z","payload":{"serverName":"s","serverVersion":"1","schemaVersion":"vem-vision-v2-contract-bundle/v1","bundleVersion":"1","contractDigest":"f5c86bc2def1a41328cccf7c2e864452fe2913265b99f36139d64c9c9028a386","cameraReady":true,"fastReady":true,"visionBusinessReady":true,"businessReadinessDiagnostic":"unrecognized","capabilities":[]}}"#
+                    r#"{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440124","timestamp":"2026-08-09T00:00:00.000Z","payload":{"serverName":"s","serverVersion":"1","schemaVersion":"vem-vision-v2-contract-bundle/v1","bundleVersion":"1","contractDigest":"f5c86bc2def1a41328cccf7c2e864452fe2913265b99f36139d64c9c9028a386","cameraReady":true,"fastReady":true,"aiReady":false,"aiReadinessDiagnostic":"model_pack_missing","visionBusinessReady":true,"businessReadinessDiagnostic":"unrecognized","capabilities":[]}}"#
                         .into(),
                 ))
                 .await
@@ -947,7 +956,7 @@ mod tests {
             let _ = ws_stream.next().await.expect("next").expect("hello");
             ws_stream
                 .send(Message::Text(
-                    r#"{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440123","timestamp":"2026-08-09T00:00:00.000Z","payload":{"serverName":"s","serverVersion":"1","schemaVersion":"vem-vision-v2-contract-bundle/v1","bundleVersion":"1","contractDigest":"f5c86bc2def1a41328cccf7c2e864452fe2913265b99f36139d64c9c9028a386","cameraReady":true,"fastReady":true,"visionBusinessReady":true,"businessReadinessDiagnostic":"ready","capabilities":["person_departed"]}}"#.into(),
+                    r#"{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440123","timestamp":"2026-08-09T00:00:00.000Z","payload":{"serverName":"s","serverVersion":"1","schemaVersion":"vem-vision-v2-contract-bundle/v1","bundleVersion":"1","contractDigest":"f5c86bc2def1a41328cccf7c2e864452fe2913265b99f36139d64c9c9028a386","cameraReady":true,"fastReady":true,"aiReady":false,"aiReadinessDiagnostic":"model_pack_missing","visionBusinessReady":true,"businessReadinessDiagnostic":"ready","capabilities":["person_departed"]}}"#.into(),
                 ))
                 .await
                 .expect("send ready");
