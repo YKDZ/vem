@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   unlinkSync,
@@ -17,6 +19,32 @@ import {
   scanHardCutoverAbsence,
 } from "./hard-cutover-absence.mjs";
 
+const BINARY_ALLOWLIST_NAME = "hard-cutover-binary-allowlist.json";
+const BINARY_ALLOWLIST_SCHEMA = "vem-hard-cutover-binary-allowlist/v1";
+
+function writeBinaryAllowlist(root, entries) {
+  writeFileSync(
+    join(root, BINARY_ALLOWLIST_NAME),
+    `${JSON.stringify({ entries, schemaVersion: BINARY_ALLOWLIST_SCHEMA })}\n`,
+  );
+  execFileSync("git", ["add", BINARY_ALLOWLIST_NAME], { cwd: root });
+}
+
+function initGuardRepo(root) {
+  execFileSync("git", ["init", "-q"], { cwd: root });
+  writeBinaryAllowlist(root, []);
+}
+
+function machineAudioEntry(path, payload) {
+  return {
+    category: "machine-audio",
+    gitMode: "100644",
+    path,
+    reason: "Production Machine audio asset.",
+    sha256: createHash("sha256").update(payload).digest("hex"),
+  };
+}
+
 describe("Vision V2 hard-cutover absence guard", () => {
   it("covers Machine, shared contracts, testbed scripts, package metadata, specs, and generated bundles", () => {
     assert.deepEqual(assertHardCutoverAbsence(), []);
@@ -25,7 +53,7 @@ describe("Vision V2 hard-cutover absence guard", () => {
   it("detects every retired try-on category through dynamic negative fixtures", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-hard-cutover-"));
     try {
-      execFileSync("git", ["init", "-q"], { cwd: root });
+      initGuardRepo(root);
       const dot = (...parts) => parts.join(".");
       const pathWithBracedPart = (...parts) => parts.join("/");
       const nestedCustomerRoute = [
@@ -126,7 +154,7 @@ describe("Vision V2 hard-cutover absence guard", () => {
   it("scans every tracked regular file without relying on path or extension", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-hard-cutover-tracked-"));
     try {
-      execFileSync("git", ["init", "-q"], { cwd: root });
+      initGuardRepo(root);
       const forbidden =
         "https://" + ["github.com", "hbhjt", "virtual-tryon"].join("/");
       const tracked = [
@@ -161,7 +189,7 @@ describe("Vision V2 hard-cutover absence guard", () => {
   it("rejects standalone dependency variants and guard-self hiding", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-hard-cutover-variants-"));
     try {
-      execFileSync("git", ["init", "-q"], { cwd: root });
+      initGuardRepo(root);
       const dot = ".";
       const repository = ["github.com", "hbhjt", "virtual-tryon.git"].join("/");
       const module = ["app", "main"].join(dot);
@@ -214,7 +242,7 @@ describe("Vision V2 hard-cutover absence guard", () => {
   it("allows similar text that is not a standalone dependency", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-hard-cutover-similar-"));
     try {
-      execFileSync("git", ["init", "-q"], { cwd: root });
+      initGuardRepo(root);
       const capture = "get" + "User" + "Media";
       const similar = [
         "https://" + ["github.com", "hbhjt", "virtual-tryon-docs"].join("/"),
@@ -231,26 +259,17 @@ describe("Vision V2 hard-cutover absence guard", () => {
     }
   });
 
-  it("records binary, symlink, submodule, and unreadable tracked entries", () => {
+  it("rejects symlink, submodule, and worktree type drift", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-hard-cutover-types-"));
     try {
-      execFileSync("git", ["init", "-q"], { cwd: root });
-      writeFileSync(join(root, "nul.bin"), Buffer.from("text\0payload"));
-      writeFileSync(join(root, "non-utf8.bin"), Buffer.from([0xff, 0xfe]));
+      initGuardRepo(root);
       writeFileSync(join(root, "target.txt"), "not tracked\n");
       symlinkSync("target.txt", join(root, "reference-link"));
       writeFileSync(join(root, "missing.txt"), "tracked\n");
       writeFileSync(join(root, "replaced.txt"), "tracked\n");
       execFileSync(
         "git",
-        [
-          "add",
-          "nul.bin",
-          "non-utf8.bin",
-          "reference-link",
-          "missing.txt",
-          "replaced.txt",
-        ],
+        ["add", "reference-link", "missing.txt", "replaced.txt"],
         { cwd: root },
       );
       execFileSync(
@@ -264,34 +283,211 @@ describe("Vision V2 hard-cutover absence guard", () => {
         { cwd: root },
       );
       unlinkSync(join(root, "missing.txt"));
+      unlinkSync(join(root, "reference-link"));
+      writeFileSync(join(root, "reference-link"), "regular drift\n");
       unlinkSync(join(root, "replaced.txt"));
       symlinkSync("target.txt", join(root, "replaced.txt"));
-      const diagnostics = [];
 
-      const violations = scanHardCutoverAbsence({ root, diagnostics });
+      const violations = scanHardCutoverAbsence({ root });
 
-      assert.deepEqual(violations, [
+      assert.deepEqual(violations.sort(), [
         "missing.txt:tracked-file-unreadable",
+        "reference-link:tracked-symlink-forbidden",
         "replaced.txt:tracked-worktree-type-mismatch",
+        "vendor/reference:tracked-submodule-forbidden",
       ]);
-      assert.deepEqual(
-        diagnostics.map((entry) => entry.split(":").at(-1)).sort(),
-        [
-          "binary-non-utf8-skipped",
-          "binary-nul-skipped",
-          "tracked-submodule-skipped",
-          "tracked-symlink-skipped",
-        ],
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("binds the exact approved binary set and identity", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-hard-cutover-binary-"));
+    try {
+      initGuardRepo(root);
+      const relativePath = "apps/machine/src/assets/audio/approved.wav";
+      const payload = Buffer.from("approved\0audio");
+      const binary = join(root, relativePath);
+      mkdirSync(dirname(binary), { recursive: true });
+      writeFileSync(binary, payload);
+      writeBinaryAllowlist(root, [machineAudioEntry(relativePath, payload)]);
+      execFileSync("git", ["add", relativePath], { cwd: root });
+
+      assert.deepEqual(scanHardCutoverAbsence({ root }), []);
+
+      writeFileSync(binary, Buffer.from("tampered\0audio"));
+      assert.ok(
+        scanHardCutoverAbsence({ root }).includes(
+          `${relativePath}:binary-identity-mismatch`,
+        ),
       );
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+
+    const deletedRoot = mkdtempSync(
+      join(tmpdir(), "vem-hard-cutover-binary-deleted-"),
+    );
+    try {
+      initGuardRepo(deletedRoot);
+      const relativePath = "apps/machine/src/assets/audio/approved.wav";
+      const payload = Buffer.from("approved\0audio");
+      const binary = join(deletedRoot, relativePath);
+      mkdirSync(dirname(binary), { recursive: true });
+      writeFileSync(binary, payload);
+      writeBinaryAllowlist(deletedRoot, [
+        machineAudioEntry(relativePath, payload),
+      ]);
+      execFileSync("git", ["add", relativePath], { cwd: deletedRoot });
+      execFileSync("git", ["rm", "-f", "--", relativePath], {
+        cwd: deletedRoot,
+      });
+
+      const violations = scanHardCutoverAbsence({ root: deletedRoot });
+
+      assert.ok(
+        violations.includes(`${relativePath}:binary-allowlist-entry-missing`),
+      );
+    } finally {
+      rmSync(deletedRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects new executable binaries and malformed allowlist authority", () => {
+    const executableRoot = mkdtempSync(
+      join(tmpdir(), "vem-hard-cutover-executable-"),
+    );
+    try {
+      initGuardRepo(executableRoot);
+      const executable = "standalone-service.exe";
+      writeFileSync(
+        join(executableRoot, executable),
+        Buffer.from("MZ\0untrusted"),
+      );
+      execFileSync("git", ["add", executable], { cwd: executableRoot });
+
+      assert.ok(
+        scanHardCutoverAbsence({ root: executableRoot }).includes(
+          `${executable}:binary-unapproved`,
+        ),
+      );
+      writeBinaryAllowlist(executableRoot, [
+        {
+          category: "machine-ui-asset",
+          gitMode: "100644",
+          path: executable,
+          reason: "Production Machine UI image asset.",
+          sha256: createHash("sha256")
+            .update(readFileSync(join(executableRoot, executable)))
+            .digest("hex"),
+        },
+      ]);
+      assert.ok(
+        scanHardCutoverAbsence({ root: executableRoot }).includes(
+          `${BINARY_ALLOWLIST_NAME}:binary-allowlist-invalid`,
+        ),
+      );
+    } finally {
+      rmSync(executableRoot, { recursive: true, force: true });
+    }
+
+    const paths = [
+      "apps/machine/src/assets/audio/a.wav",
+      "apps/machine/src/assets/audio/b.wav",
+    ];
+    const payloads = [Buffer.from("a\0"), Buffer.from("b\0")];
+    const entries = paths.map((path, index) =>
+      machineAudioEntry(path, payloads[index]),
+    );
+    const mutations = [
+      {
+        entries: [...entries].reverse(),
+        schemaVersion: BINARY_ALLOWLIST_SCHEMA,
+      },
+      {
+        entries: [entries[0], entries[0]],
+        schemaVersion: BINARY_ALLOWLIST_SCHEMA,
+      },
+      { entries, extra: true, schemaVersion: BINARY_ALLOWLIST_SCHEMA },
+      {
+        entries: [
+          {
+            category: entries[0].category,
+            extra: "field",
+            gitMode: entries[0].gitMode,
+            path: entries[0].path,
+            reason: entries[0].reason,
+            sha256: entries[0].sha256,
+          },
+        ],
+        schemaVersion: BINARY_ALLOWLIST_SCHEMA,
+      },
+    ];
+    mutations.forEach((manifest, index) => {
+      const root = mkdtempSync(
+        join(tmpdir(), `vem-hard-cutover-manifest-${index}-`),
+      );
+      try {
+        initGuardRepo(root);
+        paths.forEach((path, pathIndex) => {
+          const binary = join(root, path);
+          mkdirSync(dirname(binary), { recursive: true });
+          writeFileSync(binary, payloads[pathIndex]);
+        });
+        writeFileSync(
+          join(root, BINARY_ALLOWLIST_NAME),
+          `${JSON.stringify(manifest)}\n`,
+        );
+        execFileSync("git", ["add", BINARY_ALLOWLIST_NAME, ...paths], {
+          cwd: root,
+        });
+
+        assert.ok(
+          scanHardCutoverAbsence({ root }).includes(
+            `${BINARY_ALLOWLIST_NAME}:binary-allowlist-invalid`,
+          ),
+        );
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    const noncanonicalRoot = mkdtempSync(
+      join(tmpdir(), "vem-hard-cutover-manifest-noncanonical-"),
+    );
+    try {
+      initGuardRepo(noncanonicalRoot);
+      paths.forEach((path, index) => {
+        const binary = join(noncanonicalRoot, path);
+        mkdirSync(dirname(binary), { recursive: true });
+        writeFileSync(binary, payloads[index]);
+      });
+      writeFileSync(
+        join(noncanonicalRoot, BINARY_ALLOWLIST_NAME),
+        `${JSON.stringify(
+          { entries, schemaVersion: BINARY_ALLOWLIST_SCHEMA },
+          null,
+          2,
+        )}\n`,
+      );
+      execFileSync("git", ["add", BINARY_ALLOWLIST_NAME, ...paths], {
+        cwd: noncanonicalRoot,
+      });
+
+      assert.ok(
+        scanHardCutoverAbsence({ root: noncanonicalRoot }).includes(
+          `${BINARY_ALLOWLIST_NAME}:binary-allowlist-invalid`,
+        ),
+      );
+    } finally {
+      rmSync(noncanonicalRoot, { recursive: true, force: true });
     }
   });
 
   it("scans built artifacts even when they live under dist", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-hard-cutover-artifact-"));
     try {
-      execFileSync("git", ["init", "-q"], { cwd: root });
+      initGuardRepo(root);
       const artifact = join(root, "apps", "machine", "dist");
       mkdirSync(artifact, { recursive: true });
       writeFileSync(
