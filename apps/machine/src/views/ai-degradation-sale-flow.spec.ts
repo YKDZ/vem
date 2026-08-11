@@ -1,10 +1,25 @@
-// @vitest-environment jsdom
 import {
   VISION_V2_RUNTIME_IDENTITY,
   type EffectiveMachineRuntimeConfiguration,
 } from "@vem/shared";
+// @vitest-environment jsdom
+import {
+  createServer,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from "node:http";
 import { createPinia, setActivePinia } from "pinia";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { createApp, h, nextTick, type App } from "vue";
 import {
   createMemoryHistory,
@@ -13,32 +28,14 @@ import {
   type Router,
 } from "vue-router";
 
-const {
-  createOrderMock,
-  getCurrentTransactionMock,
-  getSaleStartCapabilityMock,
-  getSaleViewMock,
-  refreshCatalogMock,
-} = vi.hoisted(() => ({
-  createOrderMock: vi.fn(),
-  getCurrentTransactionMock: vi.fn(),
-  getSaleStartCapabilityMock: vi.fn(),
-  getSaleViewMock: vi.fn(),
-  refreshCatalogMock: vi.fn(),
-}));
-
-vi.mock("@/daemon/client", () => ({
-  daemonClient: {
-    createOrder: createOrderMock,
-    getCurrentTransaction: getCurrentTransactionMock,
-    getSaleStartCapability: getSaleStartCapabilityMock,
-    getSaleView: getSaleViewMock,
-    refreshCatalog: refreshCatalogMock,
-  },
+vi.mock("@/native/daemon-connection", () => ({
+  getDaemonConnectionInfo: vi.fn(),
 }));
 
 import type { TransactionSnapshot } from "@/daemon/schemas";
 
+import { daemonClient } from "@/daemon/client";
+import { getDaemonConnectionInfo } from "@/native/daemon-connection";
 import { installTransactionRouteAuthority } from "@/router/transaction-route-authority";
 import { installVisionRecommendationCoordinator } from "@/runtime/vision-recommendation-coordinator";
 import { useCatalogStore } from "@/stores/catalog";
@@ -60,6 +57,99 @@ let mountedApp: App<Element> | null = null;
 let router: Router | null = null;
 let uninstallAuthority: (() => void) | null = null;
 let closeVisionCoordinator: (() => void) | null = null;
+let daemonServer: Server | null = null;
+let daemonBaseUrl = "";
+let daemonMode: "idle" | "flow" | "reject_create" | "reject_order" = "idle";
+let daemonRequests: Array<{ method: string; path: string; body: unknown }> = [];
+let daemonViolations: string[] = [];
+let transactionReadIndex = 0;
+let paymentSucceededGate: ReturnType<
+  typeof deferred<TransactionSnapshot>
+> | null = null;
+let dispenseSucceededGate: ReturnType<
+  typeof deferred<TransactionSnapshot>
+> | null = null;
+
+const DAEMON_TOKEN = "ai-degradation-daemon-token";
+const FIXED_RANDOM_UUID = "00000000-0000-4000-8000-000000000001";
+const EXPECTED_CREATE_ORDER = {
+  inventoryId: "550e8400-e29b-41d4-a716-446655440127",
+  quantity: 1,
+  planogramVersion: "PLAN-1",
+  slotId: "550e8400-e29b-41d4-a716-446655440124",
+  paymentMethod: "qr_code",
+  paymentProviderCode: "alipay",
+  profileSnapshot: null,
+  idempotencyKey: `checkout:${FIXED_RANDOM_UUID}`,
+};
+const FLOW_REQUEST_SEQUENCE = [
+  "POST /v1/catalog",
+  "GET /v1/sale-view",
+  "POST /v1/catalog",
+  "GET /v1/sale-view",
+  "POST /v1/intents/create-order",
+  "GET /v1/transactions/current",
+  "GET /v1/transactions/current",
+  "GET /v1/sale-start-capability",
+] as const;
+
+beforeAll(async () => {
+  daemonServer = createServer((request, response) => {
+    void handleDaemonRequest(request, response).catch((error: unknown) => {
+      daemonViolations.push(
+        error instanceof Error ? error.message : String(error),
+      );
+      respondJson(
+        response,
+        { code: "fixture_failed", message: "fixture failed" },
+        500,
+      );
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    daemonServer?.once("error", reject);
+    daemonServer?.listen(0, "127.0.0.1", resolve);
+  });
+  const address = daemonServer.address();
+  if (!address || typeof address === "string") {
+    throw new Error("strict daemon fixture did not allocate a loopback port");
+  }
+  daemonBaseUrl = `http://127.0.0.1:${address.port}`;
+});
+
+beforeEach(async () => {
+  daemonMode = "idle";
+  daemonRequests = [];
+  daemonViolations = [];
+  transactionReadIndex = 0;
+  paymentSucceededGate = null;
+  dispenseSucceededGate = null;
+  vi.clearAllMocks();
+  vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+    baseUrl: daemonBaseUrl,
+    token: DAEMON_TOKEN,
+    source: "browser_env",
+    mock: true,
+  });
+  await daemonClient.initialize(true);
+});
+
+afterAll(async () => {
+  await new Promise<void>((resolve, reject) => {
+    if (!daemonServer) {
+      resolve();
+      return;
+    }
+    daemonServer.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+  daemonServer = null;
+});
 
 afterEach(() => {
   mountedApp?.unmount();
@@ -91,7 +181,8 @@ function saleView() {
         coverImageUrl: null,
         tryOnGarmentMedia: {
           id: "550e8400-e29b-41d4-a716-446655440126",
-          reference: "/api/media-assets/garment/content",
+          reference:
+            "/api/media-assets/550e8400-e29b-41d4-a716-446655440126/content",
           digest: `sha256:${"a".repeat(64)}`,
           contentType: "image/png" as const,
           byteSize: 2048,
@@ -137,7 +228,14 @@ function transaction(
   return {
     orderId: "550e8400-e29b-41d4-a716-446655440010",
     orderNo: "ORD-AI-DEGRADED-001",
-    productSummary: null,
+    productSummary: {
+      catalogKey: "product:550e8400-e29b-41d4-a716-446655440128",
+      productId: "550e8400-e29b-41d4-a716-446655440128",
+      variantId: "550e8400-e29b-41d4-a716-446655440125",
+      inventoryId: "550e8400-e29b-41d4-a716-446655440127",
+      slotId: "550e8400-e29b-41d4-a716-446655440124",
+      productName: "蓝色 T 恤",
+    },
     paymentId: "550e8400-e29b-41d4-a716-446655440011",
     paymentNo: "PAY-AI-DEGRADED-001",
     paymentMethod: "qr_code",
@@ -165,6 +263,221 @@ function deferred<T>() {
     resolve = settle;
   });
   return { promise, resolve };
+}
+
+async function readRequestBody(request: IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  const text = Buffer.concat(chunks).toString("utf8");
+  return text === "" ? null : (JSON.parse(text) as unknown);
+}
+
+function respondJson(
+  response: ServerResponse,
+  payload: unknown,
+  status = 200,
+): void {
+  if (response.headersSent) return;
+  const body = JSON.stringify(payload);
+  response.writeHead(status, {
+    "content-type": "application/json",
+    "content-length": Buffer.byteLength(body),
+    connection: "close",
+  });
+  response.end(body);
+}
+
+function exactJsonMatches(actual: unknown, expected: unknown): boolean {
+  return JSON.stringify(actual) === JSON.stringify(expected);
+}
+
+function transactionIdentityViolation(
+  snapshot: TransactionSnapshot,
+): string | null {
+  const summary = snapshot.productSummary as Record<string, unknown> | null;
+  if (
+    snapshot.orderNo !== "ORD-AI-DEGRADED-001" ||
+    snapshot.paymentId !== "550e8400-e29b-41d4-a716-446655440011" ||
+    snapshot.paymentNo !== "PAY-AI-DEGRADED-001" ||
+    summary?.catalogKey !== "product:550e8400-e29b-41d4-a716-446655440128" ||
+    summary.productId !== "550e8400-e29b-41d4-a716-446655440128" ||
+    summary.variantId !== "550e8400-e29b-41d4-a716-446655440125" ||
+    summary.inventoryId !== "550e8400-e29b-41d4-a716-446655440127" ||
+    summary.slotId !== "550e8400-e29b-41d4-a716-446655440124"
+  ) {
+    return "transaction identity does not match the selected sale item";
+  }
+  if (
+    snapshot.vending !== null &&
+    (snapshot.vending.commandId !== "550e8400-e29b-41d4-a716-446655440012" ||
+      snapshot.vending.commandNo !== "CMD-AI-DEGRADED-001")
+  ) {
+    return "vending identity does not match the created order";
+  }
+  return null;
+}
+
+function catalogRefreshSnapshot() {
+  const snapshot = saleView();
+  return {
+    items: snapshot.items,
+    cached: false,
+    source: snapshot.source,
+    lastUpdatedAt: snapshot.lastUpdatedAt,
+    lastError: null,
+  };
+}
+
+async function handleDaemonRequest(
+  request: IncomingMessage,
+  response: ServerResponse,
+): Promise<void> {
+  const method = request.method ?? "GET";
+  const path = new URL(request.url ?? "/", daemonBaseUrl).pathname;
+  const body = await readRequestBody(request);
+  daemonRequests.push({ method, path, body });
+
+  if (request.headers.authorization !== `Bearer ${DAEMON_TOKEN}`) {
+    daemonViolations.push("missing or incorrect daemon bearer token");
+    respondJson(
+      response,
+      { code: "unauthorized", message: "unauthorized" },
+      401,
+    );
+    return;
+  }
+
+  if (daemonMode === "reject_create") {
+    if (
+      method !== "POST" ||
+      path !== "/v1/intents/create-order" ||
+      !exactJsonMatches(body, EXPECTED_CREATE_ORDER)
+    ) {
+      daemonViolations.push("create-order payload identity mismatch");
+      respondJson(
+        response,
+        {
+          code: "identity_mismatch",
+          message: "create-order identity mismatch",
+        },
+        400,
+      );
+      return;
+    }
+    respondJson(response, transaction());
+    return;
+  }
+
+  if (daemonMode === "reject_order") {
+    const mutated = transaction({ orderNo: "ORD-WRONG-IDENTITY" });
+    const violation = transactionIdentityViolation(mutated);
+    if (method !== "GET" || path !== "/v1/transactions/current" || violation) {
+      daemonViolations.push(violation ?? "unexpected order identity probe");
+      respondJson(
+        response,
+        { code: "identity_mismatch", message: "transaction identity mismatch" },
+        409,
+      );
+      return;
+    }
+    respondJson(response, mutated);
+    return;
+  }
+
+  if (daemonMode !== "flow") {
+    daemonViolations.push(`unexpected request while idle: ${method} ${path}`);
+    respondJson(
+      response,
+      { code: "unexpected", message: "unexpected request" },
+      500,
+    );
+    return;
+  }
+
+  const requestIndex = daemonRequests.length - 1;
+  const actualStep = `${method} ${path}`;
+  if (FLOW_REQUEST_SEQUENCE[requestIndex] !== actualStep) {
+    daemonViolations.push(
+      `request ${requestIndex} expected ${FLOW_REQUEST_SEQUENCE[requestIndex] ?? "end"}, received ${actualStep}`,
+    );
+    respondJson(
+      response,
+      { code: "sequence_mismatch", message: "sequence mismatch" },
+      409,
+    );
+    return;
+  }
+
+  if (path === "/v1/catalog" && method === "POST") {
+    if (body !== null)
+      daemonViolations.push("catalog refresh body must be empty");
+    respondJson(response, catalogRefreshSnapshot());
+    return;
+  }
+  if (path === "/v1/sale-view" && method === "GET") {
+    respondJson(response, saleView());
+    return;
+  }
+  if (path === "/v1/intents/create-order" && method === "POST") {
+    if (
+      request.headers["content-type"] !== "application/json" ||
+      !exactJsonMatches(body, EXPECTED_CREATE_ORDER)
+    ) {
+      daemonViolations.push(
+        "create-order method, content type, or exact JSON mismatch",
+      );
+      respondJson(
+        response,
+        {
+          code: "identity_mismatch",
+          message: "create-order identity mismatch",
+        },
+        400,
+      );
+      return;
+    }
+    const snapshot = transaction();
+    const violation = transactionIdentityViolation(snapshot);
+    if (violation) {
+      daemonViolations.push(violation);
+      respondJson(
+        response,
+        { code: "identity_mismatch", message: violation },
+        409,
+      );
+      return;
+    }
+    respondJson(response, snapshot);
+    return;
+  }
+  if (path === "/v1/transactions/current" && method === "GET") {
+    const gate =
+      transactionReadIndex++ === 0
+        ? paymentSucceededGate
+        : dispenseSucceededGate;
+    if (!gate) throw new Error("transaction response gate is missing");
+    const snapshot = await gate.promise;
+    const violation = transactionIdentityViolation(snapshot);
+    if (violation) {
+      daemonViolations.push(violation);
+      respondJson(
+        response,
+        { code: "identity_mismatch", message: violation },
+        409,
+      );
+      return;
+    }
+    respondJson(response, snapshot);
+    return;
+  }
+  if (path === "/v1/sale-start-capability" && method === "GET") {
+    respondJson(response, saleCapabilitySnapshot());
+    return;
+  }
+  daemonViolations.push(`unhandled strict daemon request: ${actualStep}`);
+  respondJson(response, { code: "not_found", message: "not found" }, 404);
 }
 
 function machineConfiguration(): EffectiveMachineRuntimeConfiguration {
@@ -206,21 +519,49 @@ describe("AI degradation public sale flow", () => {
       }
     }
     globalThis.WebSocket = ProtocolSocket as unknown as typeof WebSocket;
+    vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(
+      FIXED_RANDOM_UUID,
+    );
+
+    daemonMode = "reject_create";
+    await expect(
+      daemonClient.createOrder({
+        ...EXPECTED_CREATE_ORDER,
+        inventoryId: "550e8400-e29b-41d4-a716-446655449999",
+      }),
+    ).rejects.toMatchObject({ statusCode: 400 });
+    await expect(
+      daemonClient.createOrder({
+        ...EXPECTED_CREATE_ORDER,
+        slotId: "550e8400-e29b-41d4-a716-446655449998",
+      }),
+    ).rejects.toMatchObject({ statusCode: 400 });
+    expect(daemonViolations).toEqual([
+      "create-order payload identity mismatch",
+      "create-order payload identity mismatch",
+    ]);
+
+    daemonMode = "reject_order";
+    await expect(daemonClient.getCurrentTransaction()).rejects.toMatchObject({
+      statusCode: 409,
+    });
+    expect(daemonViolations[daemonViolations.length - 1]).toBe(
+      "transaction identity does not match the selected sale item",
+    );
+
+    daemonMode = "flow";
+    daemonRequests = [];
+    daemonViolations = [];
+    transactionReadIndex = 0;
+    const paymentGate = deferred<TransactionSnapshot>();
+    const dispenseGate = deferred<TransactionSnapshot>();
+    paymentSucceededGate = paymentGate;
+    dispenseSucceededGate = dispenseGate;
 
     const pinia = createPinia();
     setActivePinia(pinia);
     const snapshot = saleView();
-    getSaleViewMock.mockResolvedValue(snapshot);
-    refreshCatalogMock.mockResolvedValue(undefined);
     const capability = saleCapabilitySnapshot();
-    getSaleStartCapabilityMock.mockResolvedValue(capability);
-    const awaitingPayment = transaction();
-    const paymentSucceeded = deferred<TransactionSnapshot>();
-    const dispenseSucceeded = deferred<TransactionSnapshot>();
-    createOrderMock.mockResolvedValue(awaitingPayment);
-    getCurrentTransactionMock
-      .mockReturnValueOnce(paymentSucceeded.promise)
-      .mockReturnValueOnce(dispenseSucceeded.promise);
     useCatalogStore().applySnapshot(snapshot);
     useSaleCapabilityStore().acceptSnapshot(capability);
     useVisionStore().applyVisionReady({
@@ -349,7 +690,7 @@ describe("AI degradation public sale flow", () => {
     expect(host.querySelector('[data-test="payment-page"]')).not.toBeNull();
     expect(useCheckoutStore().transaction?.orderNo).toBe("ORD-AI-DEGRADED-001");
 
-    paymentSucceeded.resolve(
+    paymentGate.resolve(
       transaction({
         paymentStatus: "succeeded",
         orderStatus: "dispensing",
@@ -369,7 +710,7 @@ describe("AI degradation public sale flow", () => {
     expect(host.querySelector('[data-test="dispensing-page"]')).not.toBeNull();
     expect(host.textContent).toContain("正在出货");
 
-    dispenseSucceeded.resolve(
+    dispenseGate.resolve(
       transaction({
         paymentStatus: "succeeded",
         orderStatus: "fulfilled",
@@ -390,6 +731,14 @@ describe("AI degradation public sale flow", () => {
     expect(host.textContent).toContain("出货完成");
     expect(useCheckoutStore().selectedItem?.productName).toBe("蓝色 T 恤");
     expect(useSaleCapabilityStore().canStartSale).toBe(true);
+    await vi.waitFor(() => {
+      expect(daemonRequests).toHaveLength(FLOW_REQUEST_SEQUENCE.length);
+    });
+    expect(
+      daemonRequests.map(({ method, path }) => `${method} ${path}`),
+    ).toEqual(FLOW_REQUEST_SEQUENCE);
+    expect(daemonViolations).toEqual([]);
+    expect(daemonRequests[4]?.body).toEqual(EXPECTED_CREATE_ORDER);
     expect(
       sockets
         .flatMap((socket) => socket.sent)
@@ -428,8 +777,6 @@ describe("AI degradation public sale flow", () => {
     const pinia = createPinia();
     setActivePinia(pinia);
     const snapshot = saleView();
-    getSaleViewMock.mockResolvedValue(snapshot);
-    refreshCatalogMock.mockResolvedValue(undefined);
     useCatalogStore().applySnapshot(snapshot);
     useSaleCapabilityStore().acceptSnapshot(saleCapabilitySnapshot());
     useMachineStore().applyEffectiveRuntimeConfiguration(

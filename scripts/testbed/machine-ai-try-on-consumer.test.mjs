@@ -14,6 +14,55 @@ const MACHINE_STAGE5_SPECS = Object.freeze([
   "src/try-on/eligibility.spec.ts",
   "src/views/ai-degradation-sale-flow.spec.ts",
 ]);
+const REQUIRED_AI_DEGRADATION_TESTS = Object.freeze([
+  "AI degradation public sale flow continues the ordinary sale through payment and dispense after a public AI failure without starting Fast",
+  "AI degradation public sale flow hides only AI after a public missing-pack ready frame while Fast, buy, and catalog remain available",
+]);
+
+function assertMachineConsumerReport(report, output) {
+  assert.equal(report.success, true, output);
+  assert.equal(report.numFailedTests, 0, output);
+  assert.equal(report.numPendingTests, 0, output);
+  assert.equal(report.numTodoTests, 0, output);
+  assert.equal(report.testResults.length, MACHINE_STAGE5_SPECS.length, output);
+  const assertions = report.testResults.flatMap(
+    (testResult) => testResult.assertionResults,
+  );
+  assert.ok(
+    assertions.every((assertion) => assertion.status === "passed"),
+    output,
+  );
+  assert.deepEqual(
+    assertions
+      .filter((assertion) =>
+        assertion.fullName.startsWith("AI degradation public sale flow "),
+      )
+      .map((assertion) => assertion.fullName)
+      .sort(),
+    [...REQUIRED_AI_DEGRADATION_TESTS].sort(),
+    output,
+  );
+}
+
+function mutationFixture(
+  assertionResults = REQUIRED_AI_DEGRADATION_TESTS.map((fullName) => ({
+    fullName,
+    status: "passed",
+  })),
+) {
+  return {
+    success: true,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    numTodoTests: 0,
+    testResults: [
+      { assertionResults },
+      ...Array.from({ length: MACHINE_STAGE5_SPECS.length - 1 }, () => ({
+        assertionResults: [],
+      })),
+    ],
+  };
+}
 
 describe("Machine AI try-on consumer authority", () => {
   it("runs the real Machine Vitest suites that prove independent AI mode entry and lifecycle with zero skipped tests", () => {
@@ -26,8 +75,7 @@ describe("Machine AI try-on consumer authority", () => {
         "vitest",
         "run",
         ...MACHINE_STAGE5_SPECS,
-        "--reporter=agent",
-        "--silent=passed-only",
+        "--reporter=json",
       ],
       {
         cwd: ROOT,
@@ -38,9 +86,31 @@ describe("Machine AI try-on consumer authority", () => {
     const output = `${result.stdout}${result.stderr}`;
 
     assert.equal(result.status, 0, output);
-    assert.match(output, /Test Files\s+7 passed \(7\)/);
-    assert.match(output, /Tests\s+\d+ passed \(\d+\)/);
-    assert.doesNotMatch(output, /\bskipped\b|\btodo\b/i);
+    const report = JSON.parse(result.stdout);
+    assertMachineConsumerReport(report, output);
+  });
+
+  it("rejects missing, renamed, skipped, and failed Stage4B assertion results", () => {
+    const [first, second] = REQUIRED_AI_DEGRADATION_TESTS;
+    const mutations = [
+      mutationFixture([{ fullName: first, status: "passed" }]),
+      mutationFixture([
+        { fullName: `${first} renamed`, status: "passed" },
+        { fullName: second, status: "passed" },
+      ]),
+      mutationFixture([
+        { fullName: first, status: "skipped" },
+        { fullName: second, status: "passed" },
+      ]),
+      mutationFixture([
+        { fullName: first, status: "failed" },
+        { fullName: second, status: "passed" },
+      ]),
+    ];
+
+    for (const mutation of mutations) {
+      assert.throws(() => assertMachineConsumerReport(mutation, "mutation"));
+    }
   });
 
   it("keeps the customer try-on path free of browser capture, a second Vision service, and automatic Fast/AI fallback", () => {
