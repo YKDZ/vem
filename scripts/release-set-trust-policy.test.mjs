@@ -12,7 +12,7 @@ import {
 } from "./check-release-set-trust-policy.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
-const trustedCommit = "f849cb57d0868fe7b11065fcacbbf9276291abd4";
+const trustedCommit = "54f30f648f07c8bf5bc639f4ca2ba8f5a3d85981";
 const workflowPath = new URL(
   "../.github/workflows/trusted-release-set-attester.yml",
   import.meta.url,
@@ -100,6 +100,21 @@ test("release-set caller pins the immutable attester and cannot inject shell", (
     "source_ref",
   ]);
   assert.doesNotMatch(trustedJob.uses, /\$\{\{|refs\/heads|@main|@v[0-9]/);
+  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs).sort(), [
+    "component_evidence_json",
+    "database_backup_receipt_json",
+    "managed_media_receipt_json",
+    "source_commit",
+    "source_ref",
+  ]);
+  const prepare = workflow.jobs.prepare_input;
+  const materialize = prepare.steps.find((step) =>
+    step.name.includes("Materialize untrusted input"),
+  );
+  assert.match(materialize.run, /database-backup-receipt\.json/);
+  assert.match(materialize.run, /managed-media-receipt\.json/);
+  assert.match(materialize.run, /release-set\.json/);
+  assert.equal(materialize.run.includes("release-set-approval.json"), false);
 });
 
 test("trust policy rejects workflow expressions in every YAML run scalar style", () => {

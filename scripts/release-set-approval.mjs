@@ -1,17 +1,21 @@
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
+  linkSync,
   lstatSync,
   readFileSync,
   readdirSync,
-  renameSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { reproveDatabaseBackup } from "./precutover-database-backup.mjs";
+import { collectManagedMediaReceipt } from "./precutover-managed-media.mjs";
 import {
   canonicalJson as canonicalReceiptJson,
+  deriveManagedMediaEvidence,
   derivePrecutoverEvidence,
 } from "./precutover-receipts.mjs";
 import { verifyReleaseSet } from "./release-set.mjs";
@@ -21,7 +25,7 @@ export const TRUSTED_RELEASE_SET_REPOSITORY = "YKDZ/vem";
 export const TRUSTED_RELEASE_SET_WORKFLOW =
   ".github/workflows/trusted-release-set-attester.yml";
 export const TRUSTED_RELEASE_SET_WORKFLOW_SHA =
-  "f849cb57d0868fe7b11065fcacbbf9276291abd4";
+  "54f30f648f07c8bf5bc639f4ca2ba8f5a3d85981";
 const APPROVAL_SCHEMA = "vem.release-set.approval.v1";
 const EVIDENCE_SCHEMA = "vem.release-set.component-evidence.v1";
 const COMMIT_RE = /^[a-f0-9]{40}$/;
@@ -116,6 +120,10 @@ function validateClaim(sourceCommit, sourceRef, workflowSha) {
 }
 
 function readExactInput(directory) {
+  const directoryStat = lstatSync(directory);
+  if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) {
+    throw new Error("release-set input artifact root must be a real directory");
+  }
   const entries = readdirSync(directory, { withFileTypes: true });
   if (
     JSON.stringify(entries.map((entry) => entry.name).sort()) !==
@@ -136,6 +144,29 @@ function readExactInput(directory) {
     result[entry.name] = readFileSync(path, "utf8");
   }
   return result;
+}
+
+function writeExclusiveAtomic(path, contents, label) {
+  const parent = dirname(path);
+  const parentStat = lstatSync(parent);
+  if (!parentStat.isDirectory() || parentStat.isSymbolicLink()) {
+    throw new Error(`${label} parent is unsafe`);
+  }
+  const staging = join(
+    parent,
+    `.${process.pid}-${randomBytes(8).toString("hex")}.${label}.tmp`,
+  );
+  try {
+    writeFileSync(staging, contents, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    linkSync(staging, path);
+    rmSync(staging);
+  } finally {
+    rmSync(staging, { force: true });
+  }
 }
 
 export function createReleaseSetApproval({
@@ -201,9 +232,7 @@ export function createReleaseSetApproval({
     sourceCommit,
     sourceRef,
   });
-  const temporary = join(dirname(outputPath), `.${process.pid}.approval.tmp`);
-  writeFileSync(temporary, approvalText, { flag: "wx" });
-  renameSync(temporary, outputPath);
+  writeExclusiveAtomic(outputPath, approvalText, "release-set-approval");
   return JSON.parse(approvalText);
 }
 
@@ -285,6 +314,89 @@ export function verifyReleaseSetApprovalBinding({
     throw new Error("release-set approval precutover payload mismatch");
   }
   return approval;
+}
+
+export function verifyLiveManagedMediaReproof(expected, liveReceiptText) {
+  assertExactObject(
+    expected,
+    ["assetCount", "assetsSetSha256", "generation", "receiptSha256"],
+    "approved managed-media evidence",
+  );
+  const live = deriveManagedMediaEvidence(liveReceiptText);
+  for (const key of ["assetCount", "assetsSetSha256", "generation"]) {
+    if (live[key] !== expected[key]) {
+      throw new Error(`live managed-media ${key} differs from the approval`);
+    }
+  }
+  return live;
+}
+
+export function validateApprovedPrecutoverReceiptText(raw) {
+  const receipt = parseCanonical(raw, "approved precutover receipt");
+  assertExactObject(
+    receipt,
+    [
+      "database",
+      "managedMedia",
+      "releaseApprovalSha256",
+      "releaseSetSha256",
+      "schemaVersion",
+      "sourceCommit",
+      "sourceRef",
+    ],
+    "approved precutover receipt",
+  );
+  assertExactObject(
+    receipt.database,
+    ["backup", "catalogDataSha256", "receiptSha256"],
+    "approved precutover database",
+  );
+  assertExactObject(
+    receipt.database.backup,
+    ["byteSize", "format", "sha256"],
+    "approved precutover database backup",
+  );
+  assertExactObject(
+    receipt.managedMedia,
+    [
+      "assetCount",
+      "assetsSetSha256",
+      "generation",
+      "liveProofSha256",
+      "receiptSha256",
+    ],
+    "approved precutover managed media",
+  );
+  if (
+    receipt.schemaVersion !== "vem.precutover.approved.v1" ||
+    !COMMIT_RE.test(receipt.sourceCommit) ||
+    !SOURCE_REF_RE.test(receipt.sourceRef) ||
+    receipt.database.backup.format !== "postgresql-custom" ||
+    !Number.isSafeInteger(receipt.database.backup.byteSize) ||
+    receipt.database.backup.byteSize <= 0 ||
+    !Number.isSafeInteger(receipt.managedMedia.assetCount) ||
+    receipt.managedMedia.assetCount < 0 ||
+    typeof receipt.managedMedia.generation !== "string" ||
+    receipt.managedMedia.generation.length === 0 ||
+    receipt.managedMedia.generation.length > 128
+  ) {
+    throw new Error("approved precutover receipt identity is invalid");
+  }
+  for (const digest of [
+    receipt.database.backup.sha256,
+    receipt.database.catalogDataSha256,
+    receipt.database.receiptSha256,
+    receipt.managedMedia.assetsSetSha256,
+    receipt.managedMedia.liveProofSha256,
+    receipt.managedMedia.receiptSha256,
+    receipt.releaseApprovalSha256,
+    receipt.releaseSetSha256,
+  ]) {
+    if (!DIGEST_RE.test(digest)) {
+      throw new Error("approved precutover receipt digest is invalid");
+    }
+  }
+  return receipt;
 }
 
 function assertNonemptyString(value, label) {
@@ -452,15 +564,24 @@ export function parseTrustedGhAttestationVerification({
   return result;
 }
 
-export function verifyProductionReleaseSet({
+export async function verifyProductionReleaseSet({
   approvalPath,
   attestationBundlePath,
-  componentEvidencePath,
+  backupPath,
+  container,
+  dockerBinary,
+  expectedDockerByteSize,
+  expectedDockerSha256,
+  expectedDockerVersion,
   ghBinaryPath,
-  manifestPath,
+  inputDirectory,
+  managedMediaOrigin,
+  managedMediaToken,
+  outputPath,
   repoRoot,
   sourceCommit,
   sourceRef,
+  sourceUser,
 }) {
   validateClaim(sourceCommit, sourceRef, TRUSTED_RELEASE_SET_WORKFLOW_SHA);
   verifyTrustedGhBinary(ghBinaryPath);
@@ -508,11 +629,16 @@ export function verifyProductionReleaseSet({
     sourceCommit,
     sourceRef,
   });
-  const componentEvidenceText = readFileSync(componentEvidencePath, "utf8");
-  const manifestText = readFileSync(manifestPath, "utf8");
+  const input = readExactInput(inputDirectory);
+  const componentEvidenceText = input["component-evidence.json"];
+  const databaseReceiptText = input["database-backup-receipt.json"];
+  const managedMediaReceiptText = input["managed-media-receipt.json"];
+  const manifestText = input["release-set.json"];
   const approval = verifyReleaseSetApprovalBinding({
     approvalText,
     componentEvidenceText,
+    databaseReceiptText,
+    managedMediaReceiptText,
     manifestText,
     sourceCommit,
     sourceRef,
@@ -522,12 +648,55 @@ export function verifyProductionReleaseSet({
     componentEvidenceText,
     "component evidence",
   );
-  return verifyReleaseSet({
+  const manifest = verifyReleaseSet({
     componentEvidence,
-    expectedManifestSha256: approval.manifestSha256,
+    expectedManifestSha256: approval.inputArtifact.members["release-set.json"],
     manifestText,
     repoRoot,
   });
+  const databaseProof = await reproveDatabaseBackup({
+    backupPath,
+    container,
+    dockerBinary,
+    expectedDockerByteSize,
+    expectedDockerSha256,
+    expectedDockerVersion,
+    receiptText: databaseReceiptText,
+    repoRoot,
+    sourceUser,
+  });
+  const liveMedia = await collectManagedMediaReceipt({
+    origin: managedMediaOrigin,
+    token: managedMediaToken,
+  });
+  const liveMediaFacts = verifyLiveManagedMediaReproof(
+    componentEvidence.precutover.managedMedia,
+    liveMedia.text,
+  );
+  const approvedText = canonicalJson({
+    database: {
+      backup: databaseProof.backup,
+      catalogDataSha256: databaseProof.catalogData.sha256,
+      receiptSha256:
+        approval.inputArtifact.members["database-backup-receipt.json"],
+    },
+    managedMedia: {
+      assetCount: liveMediaFacts.assetCount,
+      assetsSetSha256: liveMediaFacts.assetsSetSha256,
+      generation: liveMediaFacts.generation,
+      liveProofSha256: sha256(liveMedia.text),
+      receiptSha256:
+        approval.inputArtifact.members["managed-media-receipt.json"],
+    },
+    releaseApprovalSha256: sha256(approvalText),
+    releaseSetSha256: approval.inputArtifact.members["release-set.json"],
+    schemaVersion: "vem.precutover.approved.v1",
+    sourceCommit,
+    sourceRef,
+  });
+  validateApprovedPrecutoverReceiptText(approvedText);
+  writeExclusiveAtomic(outputPath, approvedText, "approved-precutover");
+  return { approval, manifest, receipt: JSON.parse(approvedText) };
 }
 
 function parseArguments(argv) {
@@ -562,9 +731,18 @@ function parseArguments(argv) {
       : [
           "approval",
           "attestation-bundle",
-          "evidence",
+          "database-backup",
+          "docker-binary",
+          "expected-docker-byte-size",
+          "expected-docker-sha256",
+          "expected-docker-version",
           "gh-binary",
-          "manifest",
+          "input-directory",
+          "managed-media-origin",
+          "managed-media-token",
+          "output",
+          "postgres-container",
+          "postgres-user",
           "repo-root",
           "source-commit",
           "source-ref",
@@ -578,7 +756,7 @@ function parseArguments(argv) {
   return { command, values };
 }
 
-function main(argv) {
+async function main(argv) {
   const { command, values } = parseArguments(argv);
   if (command === "create") {
     createReleaseSetApproval({
@@ -592,15 +770,24 @@ function main(argv) {
     process.stdout.write("release-set approval created\n");
     return;
   }
-  verifyProductionReleaseSet({
+  await verifyProductionReleaseSet({
     approvalPath: values.approval,
     attestationBundlePath: values["attestation-bundle"],
-    componentEvidencePath: values.evidence,
+    backupPath: values["database-backup"],
+    container: values["postgres-container"],
+    dockerBinary: values["docker-binary"],
+    expectedDockerByteSize: values["expected-docker-byte-size"],
+    expectedDockerSha256: values["expected-docker-sha256"],
+    expectedDockerVersion: values["expected-docker-version"],
     ghBinaryPath: values["gh-binary"],
-    manifestPath: values.manifest,
+    inputDirectory: values["input-directory"],
+    managedMediaOrigin: values["managed-media-origin"],
+    managedMediaToken: values["managed-media-token"],
+    outputPath: values.output,
     repoRoot: values["repo-root"],
     sourceCommit: values["source-commit"],
     sourceRef: values["source-ref"],
+    sourceUser: values["postgres-user"],
   });
   process.stdout.write("production approval verified\n");
 }
@@ -610,7 +797,7 @@ if (
   resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))
 ) {
   try {
-    main(process.argv.slice(2));
+    await main(process.argv.slice(2));
   } catch (error) {
     process.stderr.write(`${error.message}\n`);
     process.exitCode = 1;

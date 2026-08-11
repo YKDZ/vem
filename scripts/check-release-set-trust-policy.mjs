@@ -6,7 +6,7 @@ import YAML from "yaml";
 
 import { verifyTrustedGhBinary } from "./trusted-gh-cli.mjs";
 
-const TRUSTED_COMMIT = "f849cb57d0868fe7b11065fcacbbf9276291abd4";
+const TRUSTED_COMMIT = "54f30f648f07c8bf5bc639f4ca2ba8f5a3d85981";
 const TRUSTED_REPOSITORY = "YKDZ/vem";
 const TRUSTED_WORKFLOW = ".github/workflows/trusted-release-set-attester.yml";
 const PINNED_GH_BINARY = "/usr/bin/gh";
@@ -61,6 +61,7 @@ export function checkReleaseSetTrustPolicy(repositoryRoot) {
   for (const path of [
     "scripts/backend-deployment-validation.mjs",
     "scripts/materialize_trusted_gh.py",
+    "scripts/precutover-receipts.mjs",
     "scripts/release-set.mjs",
     "scripts/release-set-approval.mjs",
     "trusted-gh-cli-linux-amd64.json",

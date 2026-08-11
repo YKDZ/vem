@@ -7,6 +7,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 
+import { collectManagedMediaReceipt } from "./precutover-managed-media.mjs";
+import { deriveManagedMediaEvidence } from "./precutover-receipts.mjs";
+import { verifyLiveManagedMediaReproof } from "./release-set-approval.mjs";
+
 const repoRoot = new URL("..", import.meta.url).pathname;
 const cli = join(repoRoot, "scripts/precutover-managed-media.mjs");
 const token = "test-owned-daemon-token";
@@ -98,9 +102,10 @@ async function withDaemon(options, callback) {
       }
       snapshotReads += 1;
       const generation =
-        options.generationChange && snapshotReads > 1
+        options.generation ??
+        (options.generationChange && snapshotReads > 1
           ? "catalog-43"
-          : "catalog-42";
+          : "catalog-42");
       const projectedDescriptor = structuredClone(descriptor);
       if (options.wrongPurpose) {
         projectedDescriptor.purpose = "try_on_garment";
@@ -274,6 +279,21 @@ describe("precutover managed-media receipt", () => {
           .filter(({ url }) => url.startsWith("/v1/"))
           .every(({ authorization }) => authorization === `Bearer ${token}`),
         true,
+      );
+    });
+  });
+
+  it("rejects self-consistent approved media facts when live bytes have a different generation", async () => {
+    let approvedEvidence;
+    await withDaemon({}, async ({ origin }) => {
+      const baseline = await collectManagedMediaReceipt({ origin, token });
+      approvedEvidence = deriveManagedMediaEvidence(baseline.text);
+    });
+    await withDaemon({ generation: "catalog-43" }, async ({ origin }) => {
+      const live = await collectManagedMediaReceipt({ origin, token });
+      assert.throws(
+        () => verifyLiveManagedMediaReproof(approvedEvidence, live.text),
+        /live managed-media generation differs/i,
       );
     });
   });

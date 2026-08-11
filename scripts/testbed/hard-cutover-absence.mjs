@@ -179,7 +179,7 @@ function isHistoricalLegacyRecord(path) {
 const RETIRED_MEDIA_TOKEN = ["sil", "houette"].join("");
 const LEGACY_ABSENCE_PROOF_ALLOWANCES = Object.freeze({
   "scripts/precutover-database-backup.mjs": {
-    digest: "e8ebe514b43fcdb0975ce2a53ec05fb342a0c461c693df7494854acfcbebefe0",
+    digest: "6c7d8b0974bca8cb5555cbc7f9d37313dd6954050ab092c5f464dc26a30aef43",
     lines: [
       `'columns',(SELECT count(*)::int FROM information_schema.columns WHERE table_schema='public' AND column_name ILIKE '%${RETIRED_MEDIA_TOKEN}%'),`,
       `'indexes',(SELECT count(*)::int FROM pg_indexes WHERE schemaname='public' AND (indexname ILIKE '%${RETIRED_MEDIA_TOKEN}%' OR indexdef ILIKE '%${RETIRED_MEDIA_TOKEN}%')),`,

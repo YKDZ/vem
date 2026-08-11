@@ -15,6 +15,14 @@ on:
         description: Sorted compact component evidence JSON without a trailing newline
         required: true
         type: string
+      database_backup_receipt_json:
+        description: Canonical pending database backup receipt JSON without a trailing newline
+        required: true
+        type: string
+      managed_media_receipt_json:
+        description: Canonical pending managed-media receipt JSON without a trailing newline
+        required: true
+        type: string
 
 permissions:
   actions: read
@@ -41,6 +49,8 @@ jobs:
           CALLER_REF: ${{ github.ref }}
           CALLER_SHA: ${{ github.sha }}
           COMPONENT_EVIDENCE_JSON: ${{ inputs.component_evidence_json }}
+          DATABASE_BACKUP_RECEIPT_JSON: ${{ inputs.database_backup_receipt_json }}
+          MANAGED_MEDIA_RECEIPT_JSON: ${{ inputs.managed_media_receipt_json }}
           SOURCE_COMMIT: ${{ inputs.source_commit }}
           SOURCE_REF: ${{ inputs.source_ref }}
         run: |
@@ -52,11 +62,13 @@ jobs:
           [[ "$(git -C source rev-parse HEAD)" == "$SOURCE_COMMIT" ]]
           mkdir release-set-input
           printf '%s\n' "$COMPONENT_EVIDENCE_JSON" > release-set-input/component-evidence.json
+          printf '%s\n' "$DATABASE_BACKUP_RECEIPT_JSON" > release-set-input/database-backup-receipt.json
+          printf '%s\n' "$MANAGED_MEDIA_RECEIPT_JSON" > release-set-input/managed-media-receipt.json
           node source/scripts/release-set.mjs generate \
             --evidence release-set-input/component-evidence.json \
             --output release-set-input/release-set.json \
             --repo-root source
-      - name: Upload only the two untrusted inputs for the trusted attester
+      - name: Upload only the four untrusted inputs for the trusted attester
         uses: actions/upload-artifact@v4
         with:
           name: vem-release-set-input-${{ inputs.source_commit }}
@@ -71,7 +83,7 @@ jobs:
       attestations: write
       contents: read
       id-token: write
-    uses: YKDZ/vem/.github/workflows/trusted-release-set-attester.yml@f849cb57d0868fe7b11065fcacbbf9276291abd4
+    uses: YKDZ/vem/.github/workflows/trusted-release-set-attester.yml@54f30f648f07c8bf5bc639f4ca2ba8f5a3d85981
     with:
       source_commit: ${{ inputs.source_commit }}
       source_ref: ${{ inputs.source_ref }}

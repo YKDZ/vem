@@ -15,11 +15,13 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { fileURLToPath } from "node:url";
 
 import { runOwnedCommand, startOwnedProcess } from "./lib/owned-process.mjs";
+import { validateDatabaseBackupReceiptText } from "./precutover-receipts.mjs";
 
 const RECEIPT_SCHEMA = "vem.precutover.database-backup.v1";
 const PINNED_POSTGRES_IMAGE =
@@ -725,6 +727,29 @@ async function streamDump(options, containerId, database, snapshotId, staging) {
   };
 }
 
+async function backupFileFacts(path) {
+  const stat = lstatSync(path);
+  if (
+    !stat.isFile() ||
+    stat.isSymbolicLink() ||
+    stat.size <= 0 ||
+    stat.size > MAX_BACKUP_BYTES
+  ) {
+    fail("database backup live input is invalid");
+  }
+  const digest = createHash("sha256");
+  let byteSize = 0;
+  for await (const chunk of createReadStream(path)) {
+    byteSize += chunk.byteLength;
+    digest.update(chunk);
+  }
+  return {
+    byteSize,
+    format: "postgresql-custom",
+    sha256: `sha256:${digest.digest("hex")}`,
+  };
+}
+
 async function restoreBackup(options, containerId, backup, migration) {
   const database = `vem_precutover_restore_${process.pid}_${randomBytes(6).toString("hex")}`;
   let created = false;
@@ -953,6 +978,88 @@ async function createReceipt(options, container) {
   }
 }
 
+export async function reproveDatabaseBackup({
+  backupPath,
+  container: containerName,
+  dockerBinary,
+  expectedDockerByteSize,
+  expectedDockerSha256,
+  expectedDockerVersion,
+  receiptText,
+  repoRoot,
+  sourceUser,
+}) {
+  const receipt = validateDatabaseBackupReceiptText(receiptText);
+  const options = {
+    backup: backupPath,
+    container: containerName,
+    dockerBinary,
+    expectedDockerByteSize,
+    expectedDockerSha256,
+    expectedDockerVersion,
+    repoRoot,
+    sourceUser,
+  };
+  for (const path of [backupPath, dockerBinary, repoRoot]) {
+    if (!isAbsolute(path)) fail("database reproof paths must be absolute");
+  }
+  if (!DATABASE_RE.test(sourceUser)) fail("database reproof user is invalid");
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(containerName)) {
+    fail("database reproof container identity is invalid");
+  }
+  const size = Number(expectedDockerByteSize);
+  if (!Number.isSafeInteger(size) || size <= 0) {
+    fail("database reproof Docker size pin is invalid");
+  }
+  options.expectedDockerByteSize = size;
+  const container = await validateContainer(options);
+  const liveToolchain = {
+    docker: container.docker,
+    image: container.image,
+    imageId: container.imageId,
+    pgDump: { path: "/usr/bin/pg_dump", version: container.pgDumpVersion },
+    pgRestore: {
+      path: "/usr/bin/pg_restore",
+      version: container.pgRestoreVersion,
+    },
+    psql: { path: "/usr/bin/psql", version: container.psqlVersion },
+    serverVersion: container.serverVersion,
+  };
+  if (canonicalJson(liveToolchain) !== canonicalJson(receipt.toolchain)) {
+    fail("database reproof toolchain differs from the pending receipt");
+  }
+  const migration = migrationFacts(repoRoot);
+  if (
+    canonicalJson(migration.receipt) !== canonicalJson(receipt.source.migration)
+  ) {
+    fail("database reproof migration chain differs from the receipt");
+  }
+  const backup = await backupFileFacts(backupPath);
+  if (canonicalJson(backup) !== canonicalJson(receipt.backup)) {
+    fail("database reproof backup bytes differ from the receipt");
+  }
+  const restored = await restoreBackup(
+    options,
+    container.containerId,
+    backupPath,
+    migration,
+  );
+  if (
+    canonicalJson(restored.catalogData) !==
+      canonicalJson(receipt.source.catalogData) ||
+    restored.constraintsSha256 !== receipt.restoreProof.constraintsSha256 ||
+    canonicalJson(restored.legacyResidue) !==
+      canonicalJson(receipt.restoreProof.legacyResidue)
+  ) {
+    fail("database reproof restored facts differ from the pending receipt");
+  }
+  return {
+    backup,
+    catalogData: restored.catalogData,
+    migration: migration.receipt,
+  };
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const container = await validateContainer(options);
@@ -960,9 +1067,14 @@ async function main() {
   process.stdout.write(`${options.receipt}\n`);
 }
 
-main().catch((error) => {
-  process.stderr.write(
-    `precutover database backup proof failed: ${error.message}\n`,
-  );
-  process.exitCode = 1;
-});
+if (
+  process.argv[1] &&
+  resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))
+) {
+  main().catch((error) => {
+    process.stderr.write(
+      `precutover database backup proof failed: ${error.message}\n`,
+    );
+    process.exitCode = 1;
+  });
+}

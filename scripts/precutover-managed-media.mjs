@@ -2,7 +2,8 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import { linkSync, lstatSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { isStructurallyValidPng } from "./lib/png-structure.mjs";
 
@@ -14,7 +15,7 @@ const GRANT_RE = /^[A-Za-z0-9._~-]{16,128}$/;
 const CONTENT_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
 const PURPOSES = new Set(["product_display_image", "try_on_garment"]);
 const MAX_JSON_BYTES = 4 * 1024 * 1024;
-const PROCESS_DEADLINE_AT = Date.now() + 120_000;
+const PROCESS_DEADLINE_MS = 120_000;
 
 function fail(message) {
   throw new Error(message);
@@ -105,9 +106,9 @@ async function responseBytes(response, maximum) {
 
 async function request(
   url,
-  { method = "GET", token, maximum = MAX_JSON_BYTES } = {},
+  { deadlineAt, method = "GET", token, maximum = MAX_JSON_BYTES } = {},
 ) {
-  const remaining = PROCESS_DEADLINE_AT - Date.now();
+  const remaining = deadlineAt - Date.now();
   if (remaining <= 0) fail("managed-media proof exceeded its deadline");
   let response;
   try {
@@ -129,8 +130,8 @@ async function request(
   return { bytes, response };
 }
 
-async function getJson(url, token) {
-  const { bytes, response } = await request(url, { token });
+async function getJson(url, token, deadlineAt) {
+  const { bytes, response } = await request(url, { deadlineAt, token });
   const contentType = response.headers.get("content-type") ?? "";
   if (!/^application\/json(?:;|$)/i.test(contentType))
     fail("daemon response is not JSON");
@@ -306,10 +307,11 @@ function parseSaleView(value, snapshot) {
   return { planogramVersion: value.planogramVersion };
 }
 
-async function proveBytes(entry) {
-  const head = await request(entry.readyUrl, { method: "HEAD" });
+async function proveBytes(entry, deadlineAt) {
+  const head = await request(entry.readyUrl, { deadlineAt, method: "HEAD" });
   validateIdentityHeaders(head.response, entry.descriptor);
   const get = await request(entry.readyUrl, {
+    deadlineAt,
     maximum: entry.descriptor.byteSize + 1,
   });
   validateIdentityHeaders(get.response, entry.descriptor);
@@ -361,27 +363,42 @@ function writeAtomic(path, contents) {
   }
 }
 
-async function main() {
-  const options = parseArgs(process.argv.slice(2));
+export async function collectManagedMediaReceipt({ origin, token }) {
+  const deadlineAt = Date.now() + PROCESS_DEADLINE_MS;
+  const options = parseArgs([
+    "create",
+    "--origin",
+    origin,
+    "--token",
+    token,
+    "--receipt",
+    "/managed-media-receipt.json",
+  ]);
   const snapshotRaw = await getJson(
     `${options.origin}/v1/media/snapshot`,
     options.token,
+    deadlineAt,
   );
   const snapshot = parseSnapshot(snapshotRaw, options.origin);
   const saleRaw = await getJson(
     `${options.origin}/v1/sale-view`,
     options.token,
+    deadlineAt,
   );
   const sale = parseSaleView(saleRaw, snapshot);
-  for (const entry of snapshot.byId.values()) await proveBytes(entry);
+  for (const entry of snapshot.byId.values()) {
+    await proveBytes(entry, deadlineAt);
+  }
   const finalSnapshotRaw = await getJson(
     `${options.origin}/v1/media/snapshot`,
     options.token,
+    deadlineAt,
   );
   const finalSnapshot = parseSnapshot(finalSnapshotRaw, options.origin);
   const finalSaleRaw = await getJson(
     `${options.origin}/v1/sale-view`,
     options.token,
+    deadlineAt,
   );
   if (
     finalSnapshot.generation !== snapshot.generation ||
@@ -415,13 +432,24 @@ async function main() {
     schemaVersion: RECEIPT_SCHEMA,
     trustStatus: "pending_release_set_approval",
   };
-  writeAtomic(options.receipt, canonicalJson(receipt));
+  return { receipt, text: canonicalJson(receipt) };
+}
+
+async function main() {
+  const options = parseArgs(process.argv.slice(2));
+  const result = await collectManagedMediaReceipt(options);
+  writeAtomic(options.receipt, result.text);
   process.stdout.write(`${options.receipt}\n`);
 }
 
-main().catch((error) => {
-  process.stderr.write(
-    `precutover managed-media proof failed: ${error.message}\n`,
-  );
-  process.exitCode = 1;
-});
+if (
+  process.argv[1] &&
+  resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))
+) {
+  main().catch((error) => {
+    process.stderr.write(
+      `precutover managed-media proof failed: ${error.message}\n`,
+    );
+    process.exitCode = 1;
+  });
+}

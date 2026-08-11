@@ -7,6 +7,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -20,6 +21,7 @@ import {
   TRUSTED_RELEASE_SET_WORKFLOW_SHA,
   createReleaseSetApproval,
   parseTrustedGhAttestationVerification,
+  validateApprovedPrecutoverReceiptText,
   verifyReleaseSetApprovalBinding,
 } from "./release-set-approval.mjs";
 import {
@@ -166,6 +168,52 @@ function writeApprovalInput(input, evidenceText, manifestText) {
   return receipts;
 }
 
+function productionVerifyArgs({
+  approvalPath,
+  bundlePath,
+  directory,
+  ghBinary,
+  inputDirectory,
+}) {
+  return [
+    "scripts/release-set-approval.mjs",
+    "verify",
+    "--approval",
+    approvalPath,
+    "--attestation-bundle",
+    bundlePath,
+    "--database-backup",
+    join(directory, "database.dump"),
+    "--docker-binary",
+    "/usr/bin/docker",
+    "--expected-docker-byte-size",
+    "1",
+    "--expected-docker-sha256",
+    digest("0"),
+    "--expected-docker-version",
+    "Docker version test",
+    ...(ghBinary ? ["--gh-binary", ghBinary] : []),
+    "--input-directory",
+    inputDirectory,
+    "--managed-media-origin",
+    "http://127.0.0.1:4312",
+    "--managed-media-token",
+    "test-owned-token",
+    "--output",
+    join(directory, "approved.json"),
+    "--postgres-container",
+    "test-postgres",
+    "--postgres-user",
+    "postgres",
+    "--repo-root",
+    repoRoot,
+    "--source-commit",
+    sourceCommit,
+    "--source-ref",
+    sourceRef,
+  ];
+}
+
 function evidence() {
   const facts = readReleaseRepositoryFacts(repoRoot);
   const receipts = pendingReceiptTexts();
@@ -286,6 +334,53 @@ function ghVerificationFixture(approvalText) {
 }
 
 describe("trusted release-set approval", () => {
+  it("accepts only an exact canonical approved precutover receipt", () => {
+    const receipt = {
+      database: {
+        backup: {
+          byteSize: 4096,
+          format: "postgresql-custom",
+          sha256: digest("1"),
+        },
+        catalogDataSha256: digest("2"),
+        receiptSha256: digest("3"),
+      },
+      managedMedia: {
+        assetCount: 2,
+        assetsSetSha256: digest("4"),
+        generation: "catalog-42",
+        liveProofSha256: digest("5"),
+        receiptSha256: digest("6"),
+      },
+      releaseApprovalSha256: digest("7"),
+      releaseSetSha256: digest("8"),
+      schemaVersion: "vem.precutover.approved.v1",
+      sourceCommit,
+      sourceRef,
+    };
+    assert.deepEqual(
+      validateApprovedPrecutoverReceiptText(canonical(receipt)),
+      receipt,
+    );
+    for (const mutation of [
+      { ...receipt, extra: true },
+      { ...receipt, releaseApprovalSha256: digest("x") },
+      {
+        ...receipt,
+        managedMedia: { ...receipt.managedMedia, assetCount: 1.5 },
+      },
+    ]) {
+      assert.throws(() =>
+        validateApprovedPrecutoverReceiptText(canonical(mutation)),
+      );
+    }
+    assert.throws(() =>
+      validateApprovedPrecutoverReceiptText(
+        `${JSON.stringify(receipt, null, 2)}\n`,
+      ),
+    );
+  });
+
   it("tracks the minimized official gh 2.95 JSON claim structure", () => {
     const fixture = JSON.parse(
       readFileSync(
@@ -364,6 +459,21 @@ describe("trusted release-set approval", () => {
       );
       assert.notEqual(approvalText, manifestText);
       assert.equal(approvalText, canonical(JSON.parse(approvalText)));
+      assert.throws(() =>
+        createReleaseSetApproval({
+          attesterWorkflowSha: workflowSha,
+          inputDirectory: input,
+          outputPath: output,
+          repoRoot,
+          sourceCommit,
+          sourceRef: "refs/tags/v1.2.3-rc.1",
+        }),
+      );
+      assert.equal(readFileSync(output, "utf8"), approvalText);
+      assert.deepEqual(
+        readdirSync(directory).filter((name) => name.endsWith(".tmp")),
+        [],
+      );
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
@@ -499,8 +609,6 @@ describe("trusted release-set approval", () => {
         evidence: componentEvidence,
         repoRoot,
       });
-      const evidencePath = join(input, "component-evidence.json");
-      const manifestPath = join(input, "release-set.json");
       const approvalPath = join(directory, "release-set-approval.json");
       const bundlePath = join(directory, "fake.sigstore.json");
       writeApprovalInput(input, evidenceText, manifestText);
@@ -515,31 +623,25 @@ describe("trusted release-set approval", () => {
       });
       const result = spawnSync(
         process.execPath,
-        [
-          "scripts/release-set-approval.mjs",
-          "verify",
-          "--approval",
+        productionVerifyArgs({
           approvalPath,
-          "--attestation-bundle",
           bundlePath,
-          "--evidence",
-          evidencePath,
-          "--gh-binary",
-          "/usr/bin/gh",
-          "--manifest",
-          manifestPath,
-          "--repo-root",
-          repoRoot,
-          "--source-commit",
-          sourceCommit,
-          "--source-ref",
-          "refs/tags/v1.2.3-rc.1",
-        ],
+          directory,
+          ghBinary: "/usr/bin/gh",
+          inputDirectory: input,
+        }),
         { cwd: repoRoot, encoding: "utf8" },
       );
       assert.notEqual(result.status, 0);
       assert.match(result.stderr, /GitHub attestation verification failed/);
       assert.doesNotMatch(result.stderr, /production approval verified/);
+      assert.equal(existsSync(join(directory, "approved.json")), false);
+      assert.deepEqual(
+        readdirSync(directory).filter((name) =>
+          name.includes("approved-precutover.tmp"),
+        ),
+        [],
+      );
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
@@ -562,8 +664,6 @@ describe("trusted release-set approval", () => {
         evidence: componentEvidence,
         repoRoot,
       });
-      const evidencePath = join(input, "component-evidence.json");
-      const manifestPath = join(input, "release-set.json");
       const approvalPath = join(directory, "release-set-approval.json");
       const bundlePath = join(directory, "fake.sigstore.json");
       writeApprovalInput(input, evidenceText, manifestText);
@@ -578,24 +678,12 @@ describe("trusted release-set approval", () => {
       });
       const result = spawnSync(
         process.execPath,
-        [
-          "scripts/release-set-approval.mjs",
-          "verify",
-          "--approval",
+        productionVerifyArgs({
           approvalPath,
-          "--attestation-bundle",
           bundlePath,
-          "--evidence",
-          evidencePath,
-          "--manifest",
-          manifestPath,
-          "--repo-root",
-          repoRoot,
-          "--source-commit",
-          sourceCommit,
-          "--source-ref",
-          "refs/tags/v1.2.3-rc.1",
-        ],
+          directory,
+          inputDirectory: input,
+        }),
         {
           cwd: repoRoot,
           encoding: "utf8",
@@ -623,26 +711,13 @@ describe("trusted release-set approval", () => {
       chmodSync(fakeGh, 0o755);
       const result = spawnSync(
         process.execPath,
-        [
-          "scripts/release-set-approval.mjs",
-          "verify",
-          "--approval",
-          join(directory, "missing-approval.json"),
-          "--attestation-bundle",
-          join(directory, "missing-bundle.json"),
-          "--evidence",
-          join(directory, "missing-evidence.json"),
-          "--gh-binary",
-          fakeGh,
-          "--manifest",
-          join(directory, "missing-manifest.json"),
-          "--repo-root",
-          repoRoot,
-          "--source-commit",
-          sourceCommit,
-          "--source-ref",
-          sourceRef,
-        ],
+        productionVerifyArgs({
+          approvalPath: join(directory, "missing-approval.json"),
+          bundlePath: join(directory, "missing-bundle.json"),
+          directory,
+          ghBinary: fakeGh,
+          inputDirectory: join(directory, "missing-input"),
+        }),
         {
           cwd: repoRoot,
           encoding: "utf8",

@@ -12,6 +12,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, before, describe, it } from "node:test";
 
+import { reproveDatabaseBackup } from "../precutover-database-backup.mjs";
+
 const repoRoot = resolve(import.meta.dirname, "../..");
 const cli = join(repoRoot, "scripts/precutover-database-backup.mjs");
 const image =
@@ -28,6 +30,21 @@ const dockerVersion = execFileSync("/usr/bin/docker", ["--version"], {
   encoding: "utf8",
 }).trim();
 let baselineCatalogSha256;
+
+function canonical(value) {
+  const sort = (item) => {
+    if (Array.isArray(item)) return item.map(sort);
+    if (item !== null && typeof item === "object") {
+      return Object.fromEntries(
+        Object.keys(item)
+          .sort()
+          .map((key) => [key, sort(item[key])]),
+      );
+    }
+    return item;
+  };
+  return `${JSON.stringify(sort(value))}\n`;
+}
 
 function pinnedToolArgs() {
   return [
@@ -266,6 +283,59 @@ describe("precutover PostgreSQL backup receipt", () => {
       "SELECT count(*) FROM pg_database WHERE datname LIKE 'vem_precutover_restore_%'",
     ]);
     assert.equal(leftovers, "0");
+
+    const reproof = await reproveDatabaseBackup({
+      backupPath: backup,
+      container,
+      dockerBinary: "/usr/bin/docker",
+      expectedDockerByteSize: dockerByteSize,
+      expectedDockerSha256: dockerSha256,
+      expectedDockerVersion: dockerVersion,
+      receiptText: raw,
+      repoRoot,
+      sourceUser: "postgres",
+    });
+    assert.equal(reproof.backup.sha256, receipt.backup.sha256);
+    assert.equal(reproof.catalogData.sha256, receipt.source.catalogData.sha256);
+    assert.equal(reproof.migration.count, 45);
+
+    const forged = structuredClone(receipt);
+    const forgedCatalogSha256 = `sha256:${"f".repeat(64)}`;
+    forged.source.catalogData.sha256 = forgedCatalogSha256;
+    forged.restoreProof.catalogData.sha256 = forgedCatalogSha256;
+    await assert.rejects(
+      reproveDatabaseBackup({
+        backupPath: backup,
+        container,
+        dockerBinary: "/usr/bin/docker",
+        expectedDockerByteSize: dockerByteSize,
+        expectedDockerSha256: dockerSha256,
+        expectedDockerVersion: dockerVersion,
+        receiptText: canonical(forged),
+        repoRoot,
+        sourceUser: "postgres",
+      }),
+      /restored facts differ/i,
+      "a structurally valid, self-consistent pending receipt must not replace an isolated restore",
+    );
+
+    const forgedToolchain = structuredClone(receipt);
+    forgedToolchain.toolchain.docker.version =
+      "Docker version 99.0.0, build attacker";
+    await assert.rejects(
+      reproveDatabaseBackup({
+        backupPath: backup,
+        container,
+        dockerBinary: "/usr/bin/docker",
+        expectedDockerByteSize: dockerByteSize,
+        expectedDockerSha256: dockerSha256,
+        expectedDockerVersion: dockerVersion,
+        receiptText: canonical(forgedToolchain),
+        repoRoot,
+        sourceUser: "postgres",
+      }),
+      /toolchain differs/i,
+    );
 
     const validSelfInspection = await run([
       "verify",

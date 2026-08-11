@@ -365,7 +365,6 @@ export function validateManagedMediaReceiptText(raw) {
 
 export function derivePrecutoverEvidence(databaseRaw, mediaRaw) {
   const database = validateDatabaseBackupReceiptText(databaseRaw);
-  const managedMedia = validateManagedMediaReceiptText(mediaRaw);
   return {
     database: {
       backup: {
@@ -379,11 +378,16 @@ export function derivePrecutoverEvidence(databaseRaw, mediaRaw) {
         systemIdentifier: database.source.systemIdentifier,
       },
     },
-    managedMedia: {
-      assetCount: managedMedia.assets.length,
-      assetsSetSha256: sha256(canonicalJson(managedMedia.assets)),
-      generation: managedMedia.generation,
-      receiptSha256: sha256(mediaRaw),
-    },
+    managedMedia: deriveManagedMediaEvidence(mediaRaw),
+  };
+}
+
+export function deriveManagedMediaEvidence(mediaRaw) {
+  const managedMedia = validateManagedMediaReceiptText(mediaRaw);
+  return {
+    assetCount: managedMedia.assets.length,
+    assetsSetSha256: sha256(canonicalJson(managedMedia.assets)),
+    generation: managedMedia.generation,
+    receiptSha256: sha256(mediaRaw),
   };
 }
