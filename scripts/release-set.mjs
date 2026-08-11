@@ -404,8 +404,13 @@ export function verifyReleaseSet({
 
 function parseArguments(argv) {
   const [command, ...tokens] = argv;
-  if (!["generate", "verify"].includes(command)) {
-    throw new Error("usage: release-set.mjs <generate|verify> [options]");
+  if (command === "verify") {
+    throw new Error(
+      "production verification requires release-set-approval.mjs verify",
+    );
+  }
+  if (command !== "generate") {
+    throw new Error("usage: release-set.mjs generate [options]");
   }
   const values = {};
   for (let index = 0; index < tokens.length; index += 2) {
@@ -419,10 +424,7 @@ function parseArguments(argv) {
       throw new Error(`duplicate option: ${option}`);
     values[key] = value;
   }
-  const allowed =
-    command === "generate"
-      ? ["evidence", "output", "repo-root"]
-      : ["evidence", "expected-sha256", "manifest", "repo-root"];
+  const allowed = ["evidence", "output", "repo-root"];
   for (const key of Object.keys(values)) {
     if (!allowed.includes(key)) throw new Error(`unknown option: --${key}`);
   }
@@ -466,13 +468,6 @@ function main(argv) {
     process.stdout.write("release-set generated\n");
     return;
   }
-  verifyReleaseSet({
-    componentEvidence: evidence,
-    expectedManifestSha256: values["expected-sha256"],
-    manifestText: readFileSync(values.manifest, "utf8"),
-    repoRoot: values["repo-root"],
-  });
-  process.stdout.write("release-set verified\n");
 }
 
 if (

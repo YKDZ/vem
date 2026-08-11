@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   lstatSync,
@@ -14,6 +15,8 @@ import { verifyReleaseSet } from "./release-set.mjs";
 export const TRUSTED_RELEASE_SET_REPOSITORY = "YKDZ/vem";
 export const TRUSTED_RELEASE_SET_WORKFLOW =
   ".github/workflows/trusted-release-set-attester.yml";
+export const TRUSTED_RELEASE_SET_WORKFLOW_SHA =
+  "270dd86853b484ae0db776c8248fc323cacf4ba2";
 const APPROVAL_SCHEMA = "vem.release-set.approval.v1";
 const EVIDENCE_SCHEMA = "vem.release-set.component-evidence.v1";
 const COMMIT_RE = /^[a-f0-9]{40}$/;
@@ -199,10 +202,71 @@ export function verifyReleaseSetApprovalBinding({
   return approval;
 }
 
+export function verifyProductionReleaseSet({
+  approvalPath,
+  attestationBundlePath,
+  componentEvidencePath,
+  manifestPath,
+  repoRoot,
+  sourceCommit,
+  sourceRef,
+}) {
+  validateClaim(sourceCommit, sourceRef, TRUSTED_RELEASE_SET_WORKFLOW_SHA);
+  const attestation = spawnSync(
+    "gh",
+    [
+      "attestation",
+      "verify",
+      approvalPath,
+      "--bundle",
+      attestationBundlePath,
+      "--repo",
+      TRUSTED_RELEASE_SET_REPOSITORY,
+      "--signer-workflow",
+      `${TRUSTED_RELEASE_SET_REPOSITORY}/${TRUSTED_RELEASE_SET_WORKFLOW}`,
+      "--signer-digest",
+      TRUSTED_RELEASE_SET_WORKFLOW_SHA,
+      "--source-ref",
+      sourceRef,
+      "--source-digest",
+      sourceCommit,
+      "--deny-self-hosted-runners",
+    ],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+  );
+  if (attestation.status !== 0) {
+    throw new Error("GitHub attestation verification failed");
+  }
+
+  const approvalText = readFileSync(approvalPath, "utf8");
+  const componentEvidenceText = readFileSync(componentEvidencePath, "utf8");
+  const manifestText = readFileSync(manifestPath, "utf8");
+  const approval = verifyReleaseSetApprovalBinding({
+    approvalText,
+    componentEvidenceText,
+    manifestText,
+    sourceCommit,
+    sourceRef,
+    trustedWorkflowSha: TRUSTED_RELEASE_SET_WORKFLOW_SHA,
+  });
+  const componentEvidence = parseCanonical(
+    componentEvidenceText,
+    "component evidence",
+  );
+  return verifyReleaseSet({
+    componentEvidence,
+    expectedManifestSha256: approval.manifestSha256,
+    manifestText,
+    repoRoot,
+  });
+}
+
 function parseArguments(argv) {
   const [command, ...tokens] = argv;
-  if (command !== "create") {
-    throw new Error("usage: release-set-approval.mjs create [options]");
+  if (!["create", "verify"].includes(command)) {
+    throw new Error(
+      "usage: release-set-approval.mjs <create|verify> [options]",
+    );
   }
   const values = {};
   for (let index = 0; index < tokens.length; index += 2) {
@@ -216,34 +280,58 @@ function parseArguments(argv) {
       throw new Error(`duplicate option: ${option}`);
     values[key] = value;
   }
-  const required = [
-    "attester-workflow-sha",
-    "input-directory",
-    "output",
-    "repo-root",
-    "source-commit",
-    "source-ref",
-  ];
+  const required =
+    command === "create"
+      ? [
+          "attester-workflow-sha",
+          "input-directory",
+          "output",
+          "repo-root",
+          "source-commit",
+          "source-ref",
+        ]
+      : [
+          "approval",
+          "attestation-bundle",
+          "evidence",
+          "manifest",
+          "repo-root",
+          "source-commit",
+          "source-ref",
+        ];
   for (const key of Object.keys(values)) {
     if (!required.includes(key)) throw new Error(`unknown option: --${key}`);
   }
   for (const key of required) {
     if (!values[key]) throw new Error(`--${key} is required`);
   }
-  return values;
+  return { command, values };
 }
 
 function main(argv) {
-  const values = parseArguments(argv);
-  createReleaseSetApproval({
-    attesterWorkflowSha: values["attester-workflow-sha"],
-    inputDirectory: values["input-directory"],
-    outputPath: values.output,
+  const { command, values } = parseArguments(argv);
+  if (command === "create") {
+    createReleaseSetApproval({
+      attesterWorkflowSha: values["attester-workflow-sha"],
+      inputDirectory: values["input-directory"],
+      outputPath: values.output,
+      repoRoot: values["repo-root"],
+      sourceCommit: values["source-commit"],
+      sourceRef: values["source-ref"],
+    });
+    process.stdout.write("release-set approval created\n");
+    return;
+  }
+  verifyProductionReleaseSet({
+    approvalPath: values.approval,
+    attestationBundlePath: values["attestation-bundle"],
+    componentEvidencePath: values.evidence,
+    manifestPath: values.manifest,
     repoRoot: values["repo-root"],
     sourceCommit: values["source-commit"],
     sourceRef: values["source-ref"],
   });
-  process.stdout.write("release-set approval created\n");
+  process.stdout.write("production approval verified\n");
 }
 
 if (

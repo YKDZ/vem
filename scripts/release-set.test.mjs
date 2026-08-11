@@ -338,7 +338,7 @@ describe("canonical release-set identity", () => {
     );
   });
 
-  it("provides generate and verify CLI commands without deriving expected trust", () => {
+  it("provides generation but rejects caller-selected digest verification", () => {
     const directory = mkdtempSync(join(tmpdir(), "vem-release-set-"));
     try {
       const evidencePath = join(directory, "evidence.json");
@@ -360,7 +360,7 @@ describe("canonical release-set identity", () => {
         { cwd: repoRoot },
       );
       const manifestText = readFileSync(manifestPath, "utf8");
-      execFileSync(
+      const selfAuthorized = spawnSync(
         process.execPath,
         [
           "scripts/release-set.mjs",
@@ -374,22 +374,10 @@ describe("canonical release-set identity", () => {
           "--repo-root",
           repoRoot,
         ],
-        { cwd: repoRoot },
-      );
-      const withoutExpected = spawnSync(
-        process.execPath,
-        [
-          "scripts/release-set.mjs",
-          "verify",
-          "--evidence",
-          evidencePath,
-          "--manifest",
-          manifestPath,
-        ],
         { cwd: repoRoot, encoding: "utf8" },
       );
-      assert.notEqual(withoutExpected.status, 0);
-      assert.match(withoutExpected.stderr, /--expected-sha256 is required/);
+      assert.notEqual(selfAuthorized.status, 0);
+      assert.match(selfAuthorized.stderr, /production verification requires/);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

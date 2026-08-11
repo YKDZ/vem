@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   mkdirSync,
@@ -161,6 +162,62 @@ describe("trusted release-set approval", () => {
           /exactly two members|must be regular files/,
         );
       }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a locally generated approval without a valid GitHub attestation", () => {
+    const directory = mkdtempSync(join(tmpdir(), "vem-release-fake-approval-"));
+    try {
+      const input = join(directory, "input");
+      mkdirSync(input);
+      const componentEvidence = evidence();
+      const evidenceText = canonical(componentEvidence);
+      const manifestText = generateReleaseSet({
+        evidence: componentEvidence,
+        repoRoot,
+      });
+      const evidencePath = join(input, "component-evidence.json");
+      const manifestPath = join(input, "release-set.json");
+      const approvalPath = join(directory, "release-set-approval.json");
+      const bundlePath = join(directory, "fake.sigstore.json");
+      writeFileSync(evidencePath, evidenceText);
+      writeFileSync(manifestPath, manifestText);
+      writeFileSync(bundlePath, "{}\n");
+      createReleaseSetApproval({
+        attesterWorkflowSha: workflowSha,
+        inputDirectory: input,
+        outputPath: approvalPath,
+        repoRoot,
+        sourceCommit,
+        sourceRef: "refs/tags/v1.2.3-rc.1",
+      });
+      const result = spawnSync(
+        process.execPath,
+        [
+          "scripts/release-set-approval.mjs",
+          "verify",
+          "--approval",
+          approvalPath,
+          "--attestation-bundle",
+          bundlePath,
+          "--evidence",
+          evidencePath,
+          "--manifest",
+          manifestPath,
+          "--repo-root",
+          repoRoot,
+          "--source-commit",
+          sourceCommit,
+          "--source-ref",
+          "refs/tags/v1.2.3-rc.1",
+        ],
+        { cwd: repoRoot, encoding: "utf8" },
+      );
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /GitHub attestation verification failed/);
+      assert.doesNotMatch(result.stderr, /production approval verified/);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
