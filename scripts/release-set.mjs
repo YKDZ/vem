@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
-import { readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import {
+  lstatSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -10,6 +16,17 @@ const RELEASE_SET_SCHEMA = "vem.release-set.v1";
 const FULL_SOURCE_COMMIT_RE = /^[a-f0-9]{40}$/;
 const SHA256_RE = /^sha256:[a-f0-9]{64}$/;
 const MIGRATION_TARGET_RE = /^20[0-9]{12}_[a-z0-9_]+$/;
+const VISION_V2_BUNDLE_FILES = [
+  "__init__.py",
+  "fixtures/client-invalid.json",
+  "fixtures/client-valid.json",
+  "fixtures/server-invalid.json",
+  "fixtures/server-valid.json",
+  "python/__init__.py",
+  "python/vision_v2_models.py",
+  "vision-v2.client.schema.json",
+  "vision-v2.server.schema.json",
+];
 
 function sha256(value) {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
@@ -29,6 +46,10 @@ function sortCanonical(value) {
 
 function canonicalJson(value) {
   return `${JSON.stringify(sortCanonical(value))}\n`;
+}
+
+function canonicalJsonValue(value) {
+  return JSON.stringify(sortCanonical(value));
 }
 
 function assertExactObject(value, expectedKeys, label) {
@@ -228,13 +249,82 @@ function validateComponentEvidence(evidence, repoRoot) {
 
 export function readReleaseRepositoryFacts(repoRoot) {
   const root = resolve(repoRoot);
-  const bundleManifest = JSON.parse(
-    readFileSync(
-      join(root, "packages/shared/generated/vision-v2/manifest.json"),
-      "utf8",
-    ),
+  const bundleRoot = join(root, "packages/shared/generated/vision-v2");
+  const bundleManifestRaw = readFileSync(
+    join(bundleRoot, "manifest.json"),
+    "utf8",
   );
-  if (!/^[a-f0-9]{64}$/.test(bundleManifest.bundleDigest)) {
+  const bundleManifest = JSON.parse(bundleManifestRaw);
+  if (canonicalJson(bundleManifest) !== bundleManifestRaw) {
+    throw new Error("generated Vision V2 manifest must use canonical JSON");
+  }
+  assertExactObject(
+    bundleManifest,
+    ["bundleDigest", "bundleVersion", "files", "protocol", "schemaVersion"],
+    "generated Vision V2 manifest",
+  );
+  if (
+    bundleManifest.schemaVersion !== "vem-vision-v2-contract-bundle/v1" ||
+    bundleManifest.protocol !== "vem.vision.v2" ||
+    bundleManifest.bundleVersion !== "1"
+  ) {
+    throw new Error("generated Vision V2 manifest metadata is invalid");
+  }
+  assertExactObject(
+    bundleManifest.files,
+    VISION_V2_BUNDLE_FILES,
+    "generated Vision V2 manifest files",
+  );
+  const actualMembers = [];
+  const visit = (directory, prefix = "") => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) visit(join(directory, entry.name), relative);
+      else actualMembers.push(relative);
+    }
+  };
+  visit(bundleRoot);
+  const expectedMembers = [...VISION_V2_BUNDLE_FILES, "manifest.json"].sort();
+  if (
+    JSON.stringify(actualMembers.sort()) !== JSON.stringify(expectedMembers)
+  ) {
+    throw new Error("generated Vision V2 bundle has an unexpected file set");
+  }
+  for (const relative of VISION_V2_BUNDLE_FILES) {
+    const path = join(bundleRoot, ...relative.split("/"));
+    if (!lstatSync(path).isFile()) {
+      throw new Error(
+        `generated Vision V2 member is not a regular file: ${relative}`,
+      );
+    }
+    const contents = readFileSync(path);
+    if (
+      !Number.isSafeInteger(contents.byteLength) ||
+      contents.byteLength <= 0
+    ) {
+      throw new Error(`generated Vision V2 file size is invalid: ${relative}`);
+    }
+    const expectedDigest = bundleManifest.files[relative];
+    if (!/^[a-f0-9]{64}$/.test(expectedDigest)) {
+      throw new Error(
+        `generated Vision V2 file digest is invalid: ${relative}`,
+      );
+    }
+    if (sha256(contents) !== `sha256:${expectedDigest}`) {
+      throw new Error(`generated Vision V2 file digest mismatch: ${relative}`);
+    }
+  }
+  const bundleMetadata = {
+    bundleVersion: bundleManifest.bundleVersion,
+    files: bundleManifest.files,
+    protocol: bundleManifest.protocol,
+    schemaVersion: bundleManifest.schemaVersion,
+  };
+  if (
+    !/^[a-f0-9]{64}$/.test(bundleManifest.bundleDigest) ||
+    sha256(canonicalJsonValue(bundleMetadata)) !==
+      `sha256:${bundleManifest.bundleDigest}`
+  ) {
     throw new Error("generated Vision V2 bundle has an invalid digest");
   }
 
@@ -342,12 +432,19 @@ function parseArguments(argv) {
   return { command, values };
 }
 
-function readJson(path, label) {
+function readJson(path, label, { requireCanonical = false } = {}) {
+  let raw;
+  let parsed;
   try {
-    return JSON.parse(readFileSync(path, "utf8"));
+    raw = readFileSync(path, "utf8");
+    parsed = JSON.parse(raw);
   } catch {
     throw new Error(`${label} must be readable valid JSON`);
   }
+  if (requireCanonical && canonicalJson(parsed) !== raw) {
+    throw new Error(`${label} must use canonical JSON`);
+  }
+  return parsed;
 }
 
 function writeAtomic(path, value) {
@@ -358,7 +455,9 @@ function writeAtomic(path, value) {
 
 function main(argv) {
   const { command, values } = parseArguments(argv);
-  const evidence = readJson(values.evidence, "component evidence");
+  const evidence = readJson(values.evidence, "component evidence", {
+    requireCanonical: true,
+  });
   if (command === "generate") {
     writeAtomic(
       values.output,

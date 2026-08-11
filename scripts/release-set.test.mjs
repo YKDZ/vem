@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -18,6 +24,21 @@ const visionCommit = "89abcdef0123456789abcdef0123456789abcdef";
 const digest = (character) => `sha256:${character.repeat(64)}`;
 const hashText = (text) =>
   `sha256:${createHash("sha256").update(text).digest("hex")}`;
+
+function canonicalText(value) {
+  const sort = (item) => {
+    if (Array.isArray(item)) return item.map(sort);
+    if (item !== null && typeof item === "object") {
+      return Object.fromEntries(
+        Object.keys(item)
+          .sort()
+          .map((key) => [key, sort(item[key])]),
+      );
+    }
+    return item;
+  };
+  return `${JSON.stringify(sort(value))}\n`;
+}
 
 function componentEvidence() {
   const repository = readReleaseRepositoryFacts(repoRoot);
@@ -116,6 +137,70 @@ describe("canonical release-set identity", () => {
       () => generateReleaseSet({ evidence: wrongDatabase, repoRoot }),
       /does not match the VEM migration chain/,
     );
+  });
+
+  it("rejects a generated V2 file that no longer matches its manifest", () => {
+    const temporary = mkdtempSync(join(tmpdir(), "vem-release-bundle-"));
+    try {
+      cpSync(
+        join(repoRoot, "packages/shared/generated/vision-v2"),
+        join(temporary, "packages/shared/generated/vision-v2"),
+        { recursive: true },
+      );
+      cpSync(
+        join(repoRoot, "packages/db/drizzle"),
+        join(temporary, "packages/db/drizzle"),
+        { recursive: true },
+      );
+      const schemaPath = join(
+        temporary,
+        "packages/shared/generated/vision-v2/vision-v2.client.schema.json",
+      );
+      writeFileSync(schemaPath, `${readFileSync(schemaPath, "utf8")} `);
+      assert.throws(
+        () => readReleaseRepositoryFacts(temporary),
+        /generated Vision V2 file digest mismatch/,
+      );
+    } finally {
+      rmSync(temporary, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects noncanonical metadata, a forged bundle digest, and extra bundle files", () => {
+    for (const kind of ["pretty", "digest", "extra"]) {
+      const temporary = mkdtempSync(join(tmpdir(), `vem-release-${kind}-`));
+      try {
+        const bundleRoot = join(
+          temporary,
+          "packages/shared/generated/vision-v2",
+        );
+        cpSync(
+          join(repoRoot, "packages/shared/generated/vision-v2"),
+          bundleRoot,
+          {
+            recursive: true,
+          },
+        );
+        cpSync(
+          join(repoRoot, "packages/db/drizzle"),
+          join(temporary, "packages/db/drizzle"),
+          { recursive: true },
+        );
+        const manifestPath = join(bundleRoot, "manifest.json");
+        const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+        if (kind === "pretty") {
+          writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+        } else if (kind === "digest") {
+          manifest.bundleDigest = "0".repeat(64);
+          writeFileSync(manifestPath, canonicalText(manifest));
+        } else {
+          writeFileSync(join(bundleRoot, "extra.schema.json"), "{}\n");
+        }
+        assert.throws(() => readReleaseRepositoryFacts(temporary));
+      } finally {
+        rmSync(temporary, { recursive: true, force: true });
+      }
+    }
   });
 
   it("requires an externally supplied exact manifest digest", () => {
@@ -259,7 +344,7 @@ describe("canonical release-set identity", () => {
       const evidencePath = join(directory, "evidence.json");
       const manifestPath = join(directory, "release-set.json");
       const evidence = componentEvidence();
-      writeFileSync(evidencePath, `${JSON.stringify(evidence)}\n`);
+      writeFileSync(evidencePath, canonicalText(evidence));
       execFileSync(
         process.execPath,
         [
@@ -305,6 +390,47 @@ describe("canonical release-set identity", () => {
       );
       assert.notEqual(withoutExpected.status, 0);
       assert.match(withoutExpected.stderr, /--expected-sha256 is required/);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects every noncanonical or unsafe evidence spelling at the CLI boundary", () => {
+    const directory = mkdtempSync(join(tmpdir(), "vem-release-evidence-"));
+    try {
+      const evidencePath = join(directory, "evidence.json");
+      const outputPath = join(directory, "release-set.json");
+      const value = componentEvidence();
+      const exact = canonicalText(value);
+      const variants = [
+        `${JSON.stringify(value, null, 2)}\n`,
+        exact.replace(
+          '"schemaVersion":"vem.release-set.component-evidence.v1"',
+          '"schemaVersion":"vem.release-set.component-evidence.v1","schemaVersion":"vem.release-set.component-evidence.v1"',
+        ),
+        exact.replace('"schemaVersion"', '"schema\\u0056ersion"'),
+        exact.replace('"byteSize":123456', '"byteSize":1.23456e5'),
+        exact.replace('"byteSize":123456', '"byteSize":9007199254740992'),
+      ];
+      for (const variant of variants) {
+        rmSync(outputPath, { force: true });
+        writeFileSync(evidencePath, variant);
+        const result = spawnSync(
+          process.execPath,
+          [
+            "scripts/release-set.mjs",
+            "generate",
+            "--evidence",
+            evidencePath,
+            "--output",
+            outputPath,
+            "--repo-root",
+            repoRoot,
+          ],
+          { cwd: repoRoot, encoding: "utf8" },
+        );
+        assert.notEqual(result.status, 0, `accepted evidence: ${variant}`);
+      }
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

@@ -1,0 +1,101 @@
+name: Trusted release-set attester
+
+on:
+  workflow_call:
+    inputs:
+      source_commit:
+        description: Exact VEM source commit represented by the release set
+        required: true
+        type: string
+      source_ref:
+        description: Exact RC tag ref pointing at source_commit
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  approve:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout immutable trusted attester implementation
+        uses: actions/checkout@v4
+        with:
+          repository: YKDZ/vem
+          ref: ${{ job.workflow_sha }}
+          path: trusted
+          persist-credentials: false
+      - name: Checkout approved source as data only
+        uses: actions/checkout@v4
+        with:
+          repository: YKDZ/vem
+          ref: ${{ inputs.source_commit }}
+          path: source
+          persist-credentials: false
+      - name: Validate caller and immutable workflow identities
+        shell: bash
+        env:
+          CALLER_REF: ${{ github.ref }}
+          CALLER_SHA: ${{ github.sha }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          TRUSTED_WORKFLOW_PATH: ${{ job.workflow_file_path }}
+          TRUSTED_WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          TRUSTED_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$TRUSTED_WORKFLOW_REPOSITORY" == "YKDZ/vem" ]]
+          [[ "$TRUSTED_WORKFLOW_PATH" == ".github/workflows/trusted-release-set-attester.yml" ]]
+          [[ "$TRUSTED_WORKFLOW_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$SOURCE_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$SOURCE_REF" =~ ^refs/tags/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-rc\.[0-9A-Za-z.-]+$ ]]
+          [[ "$SOURCE_COMMIT" == "$CALLER_SHA" ]]
+          [[ "$SOURCE_REF" == "$CALLER_REF" ]]
+          [[ "$(git -C source rev-parse HEAD)" == "$SOURCE_COMMIT" ]]
+      - name: Download the fixed current-run release-set input artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: vem-release-set-input-${{ inputs.source_commit }}
+          path: release-set-input
+      - name: Create approval using only immutable trusted code
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          TRUSTED_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p trusted-output
+          node trusted/scripts/release-set-approval.mjs create \
+            --input-directory release-set-input \
+            --output trusted-output/release-set-approval.json \
+            --repo-root source \
+            --source-commit "$SOURCE_COMMIT" \
+            --source-ref "$SOURCE_REF" \
+            --attester-workflow-sha "$TRUSTED_WORKFLOW_SHA"
+      - name: Attest only the trusted approval artifact
+        id: attest
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: trusted-output/release-set-approval.json
+      - name: Preserve the GitHub attestation bundle separately
+        shell: bash
+        env:
+          ATTESTATION_BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          [[ -f "$ATTESTATION_BUNDLE_PATH" ]]
+          cp -- "$ATTESTATION_BUNDLE_PATH" trusted-output/release-set-approval.sigstore.json
+      - name: Upload only the approval and its GitHub attestation
+        uses: actions/upload-artifact@v4
+        with:
+          name: vem-release-set-approval-${{ inputs.source_commit }}
+          path: trusted-output/*
+          if-no-files-found: error
+          retention-days: 14
