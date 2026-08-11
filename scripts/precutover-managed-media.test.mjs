@@ -21,7 +21,10 @@ const descriptor = Object.freeze({
   purpose: "product_display_image",
   revision: { catalogRevision: "catalog-42", assetRevision: "asset-7" },
 });
-const garmentBytes = Buffer.from("\x89PNG\r\n\x1a\ntest-garment-media\n");
+const garmentBytes = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "base64",
+);
 const garmentDigest = `sha256:${createHash("sha256")
   .update(garmentBytes)
   .digest("hex")}`;
@@ -65,9 +68,18 @@ function run(args) {
 async function withDaemon(options, callback) {
   let snapshotReads = 0;
   const requests = [];
-  const activeGarmentBytes = options.garmentBadBytes
-    ? Buffer.from("not-a-png-garment\n")
-    : garmentBytes;
+  let activeGarmentBytes = garmentBytes;
+  if (options.garmentBadBytes) {
+    activeGarmentBytes = Buffer.from("not-a-png-garment\n");
+  } else if (options.garmentCorruptCrc) {
+    activeGarmentBytes = Buffer.from(garmentBytes);
+    activeGarmentBytes[32] ^= 0x01;
+  } else if (options.garmentWithoutIdat) {
+    activeGarmentBytes = Buffer.concat([
+      garmentBytes.subarray(0, 33),
+      garmentBytes.subarray(56),
+    ]);
+  }
   const activeGarment = structuredClone(garmentDescriptor);
   activeGarment.digest = `sha256:${createHash("sha256")
     .update(activeGarmentBytes)
@@ -124,11 +136,7 @@ async function withDaemon(options, callback) {
         ? []
         : options.duplicate
           ? [projection, structuredClone(projection)]
-          : options.garmentRevisionMissing ||
-              options.garmentNotPng ||
-              options.garmentBadBytes
-            ? [projection, garmentProjection]
-            : [projection];
+          : [projection, garmentProjection];
       response
         .writeHead(200, { "content-type": "application/json" })
         .end(JSON.stringify({ generation, assets }));
@@ -149,10 +157,7 @@ async function withDaemon(options, callback) {
         delete saleGarment.revision.assetRevision;
       }
       if (options.garmentNotPng) saleGarment.contentType = "image/jpeg";
-      const hasGarment =
-        options.garmentRevisionMissing ||
-        options.garmentNotPng ||
-        options.garmentBadBytes;
+      const hasGarment = true;
       response.writeHead(200, { "content-type": "application/json" }).end(
         JSON.stringify({
           items: [
@@ -246,7 +251,7 @@ describe("precutover managed-media receipt", () => {
       assert.equal(receipt.trustStatus, "pending_release_set_approval");
       assert.equal(receipt.generation, "catalog-42");
       assert.equal(receipt.planogramVersion, "planogram-9");
-      assert.equal(receipt.assets.length, 1);
+      assert.equal(receipt.assets.length, 2);
       assert.equal(receipt.assets[0].digest, digest);
       assert.equal(receipt.assets[0].byteSize, mediaBytes.byteLength);
       assert.match(receipt.assets[0].grantSha256, /^sha256:[a-f0-9]{64}$/);
@@ -258,6 +263,8 @@ describe("precutover managed-media receipt", () => {
           ["GET", "/v1/sale-view"],
           ["HEAD", `/media/${digest}?grant=abcdefghijklmnop`],
           ["GET", `/media/${digest}?grant=abcdefghijklmnop`],
+          ["HEAD", `/media/${garmentDigest}?grant=qrstuvwxyzABCDEF`],
+          ["GET", `/media/${garmentDigest}?grant=qrstuvwxyzABCDEF`],
           ["GET", "/v1/media/snapshot"],
           ["GET", "/v1/sale-view"],
         ],
@@ -294,6 +301,16 @@ describe("precutover managed-media receipt", () => {
     [
       "garment bytes without a PNG signature",
       { garmentBadBytes: true },
+      /garment.*not PNG/i,
+    ],
+    [
+      "garment PNG with a corrupt CRC",
+      { garmentCorruptCrc: true },
+      /garment.*not PNG/i,
+    ],
+    [
+      "garment PNG without IDAT",
+      { garmentWithoutIdat: true },
       /garment.*not PNG/i,
     ],
   ]) {

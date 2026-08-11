@@ -7,6 +7,8 @@ import { extname, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { TextDecoder } from "node:util";
 
+import { isStructurallyValidPng } from "../lib/png-structure.mjs";
+
 const DEFAULT_ROOT = resolve(import.meta.dirname, "../..");
 const BINARY_ALLOWLIST_NAME = "hard-cutover-binary-allowlist.json";
 const BINARY_ALLOWLIST_SCHEMA = "vem-hard-cutover-binary-allowlist/v1";
@@ -175,6 +177,23 @@ function isHistoricalLegacyRecord(path) {
 }
 
 const RETIRED_MEDIA_TOKEN = ["sil", "houette"].join("");
+const LEGACY_ABSENCE_PROOF_ALLOWANCES = Object.freeze({
+  "scripts/precutover-database-backup.mjs": {
+    digest: "e8ebe514b43fcdb0975ce2a53ec05fb342a0c461c693df7494854acfcbebefe0",
+    lines: [
+      `'columns',(SELECT count(*)::int FROM information_schema.columns WHERE table_schema='public' AND column_name ILIKE '%${RETIRED_MEDIA_TOKEN}%'),`,
+      `'indexes',(SELECT count(*)::int FROM pg_indexes WHERE schemaname='public' AND (indexname ILIKE '%${RETIRED_MEDIA_TOKEN}%' OR indexdef ILIKE '%${RETIRED_MEDIA_TOKEN}%')),`,
+      `'constraints',(SELECT count(*)::int FROM pg_constraint WHERE conname ILIKE '%${RETIRED_MEDIA_TOKEN}%' OR pg_get_constraintdef(oid) ILIKE '%${RETIRED_MEDIA_TOKEN}%'),`,
+      `'purposeRows',(SELECT count(*)::int FROM media_assets WHERE purpose='try_on_${RETIRED_MEDIA_TOKEN}'),`,
+      `'storageReferences',(SELECT count(*)::int FROM media_assets WHERE storage_key ILIKE '%${RETIRED_MEDIA_TOKEN}%' OR coalesce(public_url,'') ILIKE '%${RETIRED_MEDIA_TOKEN}%')),`,
+    ],
+    occurrences: {
+      "legacy-silhouette": 7,
+      "legacy-silhouette-field": 1,
+      "legacy-silhouette-purpose": 1,
+    },
+  },
+});
 const LEGACY_MIGRATION_ALLOWANCES = Object.freeze({
   [`packages/db/drizzle/20260701170000_variant_try_on_${RETIRED_MEDIA_TOKEN}_media_assets/migration.sql`]:
     {
@@ -242,6 +261,22 @@ function rustMigrationLiteral(source, name) {
 
 function legacyAllowance(path, root, source) {
   const relativePath = relative(root, path);
+  const absenceProof = LEGACY_ABSENCE_PROOF_ALLOWANCES[relativePath];
+  if (absenceProof) {
+    const observedLines = source
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) =>
+        line.toLowerCase().includes(RETIRED_MEDIA_TOKEN.toLowerCase()),
+      );
+    return {
+      valid:
+        digest(source) === absenceProof.digest &&
+        JSON.stringify(observedLines) === JSON.stringify(absenceProof.lines),
+      occurrences: absenceProof.occurrences,
+      integrityLabel: "legacy-absence-proof-digest-or-role",
+    };
+  }
   const migration = LEGACY_MIGRATION_ALLOWANCES[relativePath];
   if (migration) {
     return {
@@ -382,72 +417,6 @@ function startsWith(bytes, prefix) {
     bytes.length >= prefix.length &&
     bytes.subarray(0, prefix.length).equals(prefix)
   );
-}
-
-const CRC32_TABLE = Uint32Array.from({ length: 256 }, (_, value) => {
-  let crc = value;
-  for (let bit = 0; bit < 8; bit += 1) {
-    crc = (crc & 1) !== 0 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1;
-  }
-  return crc >>> 0;
-});
-
-function crc32(...buffers) {
-  let crc = 0xffffffff;
-  for (const buffer of buffers) {
-    for (const byte of buffer) {
-      crc = CRC32_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
-    }
-  }
-  return (crc ^ 0xffffffff) >>> 0;
-}
-
-function validPng(bytes) {
-  if (!startsWith(bytes, Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
-    return false;
-  }
-  let offset = 8;
-  let sawHeader = false;
-  let sawImageData = false;
-  let imageDataEnded = false;
-  while (offset + 12 <= bytes.length) {
-    const length = bytes.readUInt32BE(offset);
-    const chunkEnd = offset + 12 + length;
-    if (chunkEnd > bytes.length) return false;
-    const chunkType = bytes.toString("ascii", offset + 4, offset + 8);
-    const chunkData = bytes.subarray(offset + 8, offset + 8 + length);
-    if (
-      bytes.readUInt32BE(offset + 8 + length) !==
-      crc32(bytes.subarray(offset + 4, offset + 8), chunkData)
-    ) {
-      return false;
-    }
-    if (!sawHeader) {
-      if (chunkType !== "IHDR" || length !== 13) return false;
-      if (
-        bytes.readUInt32BE(offset + 8) === 0 ||
-        bytes.readUInt32BE(offset + 12) === 0
-      ) {
-        return false;
-      }
-      sawHeader = true;
-    } else if (chunkType === "IHDR") {
-      return false;
-    }
-    if (chunkType === "IDAT") {
-      if (length === 0 || imageDataEnded) return false;
-      sawImageData = true;
-    } else if (sawImageData && chunkType !== "IEND") {
-      imageDataEnded = true;
-    }
-    if (chunkType === "IEND") {
-      return (
-        length === 0 && sawHeader && sawImageData && chunkEnd === bytes.length
-      );
-    }
-    offset = chunkEnd;
-  }
-  return false;
 }
 
 function validJpeg(bytes) {
@@ -609,7 +578,10 @@ function validIco(bytes) {
       return false;
     }
     const image = bytes.subarray(imageOffset, imageOffset + imageSize);
-    if (!validPng(image) && !validDib(image, directoryWidth, directoryHeight)) {
+    if (
+      !isStructurallyValidPng(image) &&
+      !validDib(image, directoryWidth, directoryHeight)
+    ) {
       return false;
     }
     ranges.push([imageOffset, imageOffset + imageSize]);
@@ -797,7 +769,7 @@ function binaryFormatIsValid(path, bytes) {
     [".mp3", validMp3],
     [".mp4", validMp4],
     [".ogg", validOgg],
-    [".png", validPng],
+    [".png", isStructurallyValidPng],
     [".wav", validWav],
     [".webp", validWebp],
   ]);

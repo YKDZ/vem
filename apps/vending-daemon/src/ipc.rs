@@ -4017,6 +4017,7 @@ mod tests {
         body::Body,
         http::{Method, Request, StatusCode},
     };
+    use base64::Engine as _;
     use tokio::sync::Notify;
     use tower::ServiceExt;
     use wiremock::{
@@ -4037,6 +4038,31 @@ mod tests {
             staging: &Path,
         ) -> Result<crate::managed_media::MediaFetchResult, String> {
             std::fs::write(staging, &self.0).map_err(|error| error.to_string())?;
+            Ok(crate::managed_media::MediaFetchResult {
+                content_type: "image/png".to_string(),
+            })
+        }
+    }
+
+    #[derive(Clone)]
+    struct PurposeMediaFetcher {
+        cover: Vec<u8>,
+        garment: Vec<u8>,
+    }
+
+    #[async_trait]
+    impl crate::managed_media::MediaFetcher for PurposeMediaFetcher {
+        async fn fetch_to(
+            &self,
+            descriptor: &crate::managed_media::MediaDescriptor,
+            staging: &Path,
+        ) -> Result<crate::managed_media::MediaFetchResult, String> {
+            let bytes = if descriptor.purpose == "try_on_garment" {
+                &self.garment
+            } else {
+                &self.cover
+            };
+            std::fs::write(staging, bytes).map_err(|error| error.to_string())?;
             Ok(crate::managed_media::MediaFetchResult {
                 content_type: "image/png".to_string(),
             })
@@ -4275,25 +4301,41 @@ mod tests {
             .expect("loopback listener");
         let address = listener.local_addr().expect("loopback address");
         let origin = format!("http://{address}");
-        let bytes = b"\x89PNG\r\n\x1a\nprecutover-router".to_vec();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+            .expect("structurally valid PNG fixture");
+        let garment_bytes = base64::engine::general_purpose::STANDARD
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==")
+            .expect("second structurally valid PNG fixture");
         let descriptor = ready_media_descriptor(&bytes);
+        let mut garment_descriptor = ready_media_descriptor(&garment_bytes);
+        garment_descriptor.id = "550e8400-e29b-41d4-a716-446655440125".to_string();
+        garment_descriptor.reference =
+            "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content".to_string();
+        garment_descriptor.purpose = "try_on_garment".to_string();
+        garment_descriptor.revision.asset_revision = Some("garment-revision-1".to_string());
         let cache = crate::managed_media::ManagedMediaCache::new(
             temp.path().join("precutover-media"),
             &origin,
-            Arc::new(ReadyMediaFetcher(bytes)),
+            Arc::new(PurposeMediaFetcher {
+                cover: bytes,
+                garment: garment_bytes,
+            }),
         )
         .expect("media cache");
         cache
-            .reconcile_active_catalog("test-generation", vec![descriptor.clone()])
+            .reconcile_active_catalog(
+                "test-generation",
+                vec![descriptor.clone(), garment_descriptor.clone()],
+            )
             .await
             .expect("adopt media");
         for _ in 0..100 {
-            if cache
-                .snapshot()
-                .await
-                .1
-                .first()
-                .is_some_and(|asset| asset.readiness == crate::managed_media::MediaReadiness::Ready)
+            let assets = cache.snapshot().await.1;
+            if assets.len() == 2
+                && assets
+                    .iter()
+                    .all(|asset| asset.readiness == crate::managed_media::MediaReadiness::Ready)
             {
                 break;
             }
@@ -4352,6 +4394,8 @@ mod tests {
             "productId": product_id,
             "variantId": variant_id,
             "coverImageMedia": catalog_descriptor,
+            "tryOnGarmentMedia": garment_descriptor,
+            "tryOnGarmentTemplate": "tshirt_short_sleeve",
         })];
         ctx.media_cache = cache.clone();
         let shutdown = ctx.background_shutdown.clone();
@@ -4391,7 +4435,10 @@ mod tests {
                 .expect("receipt JSON");
         assert_eq!(receipt["schemaVersion"], "vem.precutover.managed-media.v1");
         assert_eq!(receipt["trustStatus"], "pending_release_set_approval");
-        assert_eq!(receipt["assets"][0]["id"], descriptor.id);
+        assert_eq!(receipt["assets"].as_array().map(Vec::len), Some(2));
+        assert!(receipt["assets"].as_array().is_some_and(|assets| assets
+            .iter()
+            .any(|asset| asset["purpose"] == "try_on_garment")));
         shutdown.cancel();
         cache.shutdown().await;
         tokio::time::timeout(Duration::from_secs(5), server)

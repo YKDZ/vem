@@ -4,6 +4,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { linkSync, lstatSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 
+import { isStructurallyValidPng } from "./lib/png-structure.mjs";
+
 const RECEIPT_SCHEMA = "vem.precutover.managed-media.v1";
 const DIGEST_RE = /^sha256:[a-f0-9]{64}$/;
 const UUID_RE =
@@ -319,7 +321,7 @@ async function proveBytes(entry) {
   }
   if (
     entry.descriptor.purpose === "try_on_garment" &&
-    !get.bytes.subarray(0, 8).equals(Buffer.from("\x89PNG\r\n\x1a\n"))
+    !isStructurallyValidPng(get.bytes)
   ) {
     fail(`garment media bytes are not PNG: ${entry.descriptor.id}`);
   }

@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
   createReadStream,
@@ -19,6 +18,8 @@ import {
 import { dirname, isAbsolute, join } from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
+
+import { runOwnedCommand, startOwnedProcess } from "./lib/owned-process.mjs";
 
 const RECEIPT_SCHEMA = "vem.precutover.database-backup.v1";
 const PINNED_POSTGRES_IMAGE =
@@ -258,53 +259,23 @@ function run(
     deadlineMs = COMMAND_DEADLINE_MS,
   } = {},
 ) {
-  return new Promise((resolveResult, reject) => {
-    const child = spawn(binary, args, {
-      stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
-    });
-    const stdout = [];
-    const stderr = [];
-    let stdoutSize = 0;
-    let stderrSize = 0;
-    let timedOut = false;
-    const deadline = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGKILL");
-    }, deadlineMs);
-    const collect = (chunks, kind) => (chunk) => {
-      if (kind === "stdout") stdoutSize += chunk.byteLength;
-      else stderrSize += chunk.byteLength;
-      if (stdoutSize > maximum || stderrSize > maximum) {
-        child.kill("SIGKILL");
-        reject(new Error("command output exceeded its bound"));
-        return;
-      }
-      chunks.push(Buffer.from(chunk));
-    };
-    child.stdout.on("data", collect(stdout, "stdout"));
-    child.stderr.on("data", collect(stderr, "stderr"));
-    child.once("error", (error) => {
-      clearTimeout(deadline);
-      reject(error);
-    });
-    child.once("close", (status, signal) => {
-      clearTimeout(deadline);
-      const stdoutText = Buffer.concat(stdout).toString("utf8");
-      const stderrText = Buffer.concat(stderr).toString("utf8");
-      if (timedOut) {
-        reject(new Error(`command exceeded its ${deadlineMs}ms deadline`));
-      } else if (status !== 0) {
-        reject(
-          new Error(
-            `command failed (${status ?? signal}): ${stderrText.trim()}`,
-          ),
-        );
-      } else {
-        resolveResult(stdoutText.trim());
-      }
-    });
-    if (input !== undefined) child.stdin.end(input);
+  return runOwnedCommand(binary, args, {
+    deadlineMs,
+    input,
+    maximumOutputBytes: maximum,
   });
+}
+
+function containerTool(tool, args, deadlineMs = COMMAND_DEADLINE_MS) {
+  const innerSeconds = Math.max(1, Math.floor((deadlineMs - 5_000) / 1_000));
+  return [
+    "/usr/bin/timeout",
+    "--signal=TERM",
+    "--kill-after=5s",
+    `${innerSeconds}s`,
+    tool,
+    ...args,
+  ];
 }
 
 async function validateContainer(options) {
@@ -334,8 +305,7 @@ async function validateContainer(options) {
   for (const tool of ["pg_dump", "pg_restore", "psql"]) {
     const version = await run(options.dockerBinary, [
       ...execPrefix,
-      `/usr/bin/${tool}`,
-      "--version",
+      ...containerTool(`/usr/bin/${tool}`, ["--version"]),
     ]);
     const match =
       /^p(?:g_dump|g_restore|sql) \(PostgreSQL\) (16\.\d+)(?:\s|$)/.exec(
@@ -380,16 +350,17 @@ async function psql(
       "--user",
       "postgres",
       containerId,
-      "/usr/bin/psql",
-      "-v",
-      "ON_ERROR_STOP=1",
-      "-AtX",
-      "--dbname",
-      database,
-      "--username",
-      options.sourceUser,
-      "--command",
-      sql,
+      ...containerTool("/usr/bin/psql", [
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-AtX",
+        "--dbname",
+        database,
+        "--username",
+        options.sourceUser,
+        "--command",
+        sql,
+      ]),
     ],
     { maximum },
   );
@@ -546,7 +517,7 @@ async function databaseFacts(
 }
 
 async function openSourceSnapshot(options, containerId, database) {
-  const child = spawn(
+  const owned = startOwnedProcess(
     options.dockerBinary,
     [
       "exec",
@@ -554,41 +525,48 @@ async function openSourceSnapshot(options, containerId, database) {
       "--user",
       "postgres",
       containerId,
-      "/usr/bin/psql",
-      "-v",
-      "ON_ERROR_STOP=1",
-      "-qAtX",
-      "--dbname",
-      database,
-      "--username",
-      options.sourceUser,
+      ...containerTool(
+        "/usr/bin/psql",
+        [
+          "-v",
+          "ON_ERROR_STOP=1",
+          "-qAtX",
+          "--dbname",
+          database,
+          "--username",
+          options.sourceUser,
+        ],
+        DATABASE_OPERATION_DEADLINE_MS,
+      ),
     ],
-    { stdio: ["pipe", "pipe", "pipe"] },
+    {
+      deadlineMs: DATABASE_OPERATION_DEADLINE_MS,
+      stdio: ["pipe", "pipe", "pipe"],
+    },
   );
+  const { child } = owned;
   const stderr = [];
   let stderrSize = 0;
-  let timedOut = false;
-  const deadline = setTimeout(() => {
-    timedOut = true;
-    child.kill("SIGKILL");
-  }, DATABASE_OPERATION_DEADLINE_MS);
+  let streamFailure;
   let stdoutSize = 0;
   let stdout = Buffer.alloc(0);
   child.stderr.on("data", (chunk) => {
     stderrSize += chunk.byteLength;
     if (stderrSize <= MAX_COMMAND_OUTPUT) stderr.push(Buffer.from(chunk));
-    else child.kill("SIGKILL");
-  });
-  const exited = new Promise((resolveExit) => {
-    child.once("error", (error) => resolveExit({ error }));
-    child.once("close", (status, signal) => resolveExit({ signal, status }));
+    else {
+      streamFailure = new Error("snapshot stderr exceeded its output cap");
+      void owned.terminate();
+    }
   });
   const firstLine = new Promise((resolveLine, reject) => {
     const onData = (chunk) => {
       stdoutSize += chunk.byteLength;
       if (stdoutSize > 64 * 1024 * 1024) {
-        child.kill("SIGKILL");
-        reject(new Error("database snapshot facts exceed their output cap"));
+        streamFailure = new Error(
+          "database snapshot facts exceed their output cap",
+        );
+        void owned.terminate();
+        reject(streamFailure);
         return;
       }
       stdout = Buffer.concat([stdout, Buffer.from(chunk)]);
@@ -599,12 +577,13 @@ async function openSourceSnapshot(options, containerId, database) {
       }
     };
     child.stdout.on("data", onData);
-    child.once("close", () => {
+    child.once("exit", () => {
       if (!stdout.includes(0x0a)) {
         reject(
-          new Error(
-            `snapshot transaction ended before export: ${Buffer.concat(stderr).toString("utf8").trim()}`,
-          ),
+          streamFailure ??
+            new Error(
+              `snapshot transaction ended before export: ${Buffer.concat(stderr).toString("utf8").trim()}`,
+            ),
         );
       }
     });
@@ -620,21 +599,28 @@ async function openSourceSnapshot(options, containerId, database) {
       fail("exported database snapshot identity is invalid");
     }
   } catch (error) {
-    clearTimeout(deadline);
-    child.kill("SIGKILL");
-    await exited;
+    await owned.terminate();
     throw error;
   }
+  let finished = false;
   const finish = async (commit) => {
-    if (commit) child.stdin.end("COMMIT;\n\\q\n");
-    else child.kill("SIGKILL");
-    const result = await exited;
-    clearTimeout(deadline);
-    if (timedOut || result.error || (commit && result.status !== 0)) {
+    if (finished) fail("database snapshot transaction was already closed");
+    finished = true;
+    if (!commit) {
+      await owned.terminate();
+      return;
+    }
+    child.stdin.end("COMMIT;\n\\q\n");
+    let result;
+    try {
+      result = await owned.wait();
+    } catch (error) {
+      fail(`database snapshot transaction failed: ${error.message}`);
+    }
+    if (streamFailure || result.status !== 0) {
       fail(
-        timedOut
-          ? "database snapshot transaction exceeded its deadline"
-          : `database snapshot transaction failed: ${Buffer.concat(stderr).toString("utf8").trim()}`,
+        streamFailure?.message ??
+          `database snapshot transaction failed: ${Buffer.concat(stderr).toString("utf8").trim()}`,
       );
     }
   };
@@ -647,38 +633,46 @@ async function openSourceSnapshot(options, containerId, database) {
 }
 
 async function streamDump(options, containerId, database, snapshotId, staging) {
-  const child = spawn(
+  const owned = startOwnedProcess(
     options.dockerBinary,
     [
       "exec",
       "--user",
       "postgres",
       containerId,
-      "/usr/bin/pg_dump",
-      "--format=custom",
-      "--no-owner",
-      "--no-privileges",
-      `--snapshot=${snapshotId}`,
-      "--dbname",
-      database,
-      "--username",
-      options.sourceUser,
+      ...containerTool(
+        "/usr/bin/pg_dump",
+        [
+          "--format=custom",
+          "--no-owner",
+          "--no-privileges",
+          `--snapshot=${snapshotId}`,
+          "--dbname",
+          database,
+          "--username",
+          options.sourceUser,
+        ],
+        DATABASE_OPERATION_DEADLINE_MS,
+      ),
     ],
-    { stdio: ["ignore", "pipe", "pipe"] },
+    {
+      deadlineMs: DATABASE_OPERATION_DEADLINE_MS,
+      stdio: ["ignore", "pipe", "pipe"],
+    },
   );
+  const { child } = owned;
   const digest = createHash("sha256");
   let byteSize = 0;
   const stderr = [];
   let stderrSize = 0;
-  let timedOut = false;
-  const deadline = setTimeout(() => {
-    timedOut = true;
-    child.kill("SIGKILL");
-  }, DATABASE_OPERATION_DEADLINE_MS);
+  let stderrExceeded = false;
   child.stderr.on("data", (chunk) => {
     stderrSize += chunk.byteLength;
     if (stderrSize <= MAX_COMMAND_OUTPUT) stderr.push(Buffer.from(chunk));
-    else child.kill("SIGKILL");
+    else {
+      stderrExceeded = true;
+      void owned.terminate();
+    }
   });
   const meter = new Transform({
     transform(chunk, _encoding, callback) {
@@ -691,36 +685,28 @@ async function streamDump(options, containerId, database, snapshotId, staging) {
       }
     },
   });
-  const exited = new Promise((resolveExit, reject) => {
-    child.once("error", reject);
-    child.once("close", (status, signal) => {
-      if (status !== 0)
-        reject(
-          new Error(
-            `pg_dump failed (${status ?? signal}): ${Buffer.concat(stderr).toString("utf8").trim()}`,
-          ),
-        );
-      else resolveExit();
-    });
-  });
   try {
     const streamed = pipeline(
       child.stdout,
       meter,
       createWriteStream(staging, { flags: "wx", mode: 0o600 }),
     ).catch((error) => {
-      child.kill("SIGKILL");
+      void owned.terminate();
       throw error;
     });
-    const results = await Promise.allSettled([streamed, exited]);
+    const results = await Promise.allSettled([streamed, owned.wait()]);
     const failure = results.find((result) => result.status === "rejected");
     if (failure) throw failure.reason;
-    if (timedOut) fail("pg_dump exceeded its absolute deadline");
+    const processResult = results[1].value;
+    if (stderrExceeded) fail("pg_dump stderr exceeded its output cap");
+    if (processResult.status !== 0) {
+      fail(
+        `pg_dump failed (${processResult.status ?? processResult.signal}): ${Buffer.concat(stderr).toString("utf8").trim()}`,
+      );
+    }
   } catch (error) {
-    child.kill("SIGKILL");
+    await owned.terminate();
     throw error;
-  } finally {
-    clearTimeout(deadline);
   }
   const header = Buffer.alloc(5);
   const descriptor = openSync(staging, "r");
@@ -752,7 +738,7 @@ async function restoreBackup(options, containerId, backup, migration) {
       `CREATE DATABASE "${database}"`,
     );
     created = true;
-    const child = spawn(
+    const owned = startOwnedProcess(
       options.dockerBinary,
       [
         "exec",
@@ -760,56 +746,59 @@ async function restoreBackup(options, containerId, backup, migration) {
         "--user",
         "postgres",
         containerId,
-        "/usr/bin/pg_restore",
-        "--exit-on-error",
-        "--no-owner",
-        "--no-privileges",
-        "--dbname",
-        database,
-        "--username",
-        options.sourceUser,
+        ...containerTool(
+          "/usr/bin/pg_restore",
+          [
+            "--exit-on-error",
+            "--no-owner",
+            "--no-privileges",
+            "--dbname",
+            database,
+            "--username",
+            options.sourceUser,
+          ],
+          DATABASE_OPERATION_DEADLINE_MS,
+        ),
       ],
-      { stdio: ["pipe", "ignore", "pipe"] },
+      {
+        deadlineMs: DATABASE_OPERATION_DEADLINE_MS,
+        stdio: ["pipe", "ignore", "pipe"],
+      },
     );
+    const { child } = owned;
     const stderr = [];
     let stderrSize = 0;
-    let timedOut = false;
-    const deadline = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGKILL");
-    }, DATABASE_OPERATION_DEADLINE_MS);
+    let stderrExceeded = false;
     child.stderr.on("data", (chunk) => {
       stderrSize += chunk.byteLength;
       if (stderrSize <= MAX_COMMAND_OUTPUT) stderr.push(Buffer.from(chunk));
-      else child.kill("SIGKILL");
-    });
-    const exited = new Promise((resolveExit, reject) => {
-      child.once("error", reject);
-      child.once("close", (status, signal) => {
-        if (status !== 0)
-          reject(
-            new Error(
-              `pg_restore failed (${status ?? signal}): ${Buffer.concat(stderr).toString("utf8").trim()}`,
-            ),
-          );
-        else resolveExit();
-      });
+      else {
+        stderrExceeded = true;
+        void owned.terminate();
+      }
     });
     try {
       const streamed = pipeline(createReadStream(backup), child.stdin).catch(
         (error) => {
-          child.kill("SIGKILL");
+          void owned.terminate();
           throw error;
         },
       );
-      const restoreResults = await Promise.allSettled([streamed, exited]);
+      const restoreResults = await Promise.allSettled([streamed, owned.wait()]);
       const restoreFailure = restoreResults.find(
         (result) => result.status === "rejected",
       );
       if (restoreFailure) throw restoreFailure.reason;
-      if (timedOut) fail("pg_restore exceeded its absolute deadline");
-    } finally {
-      clearTimeout(deadline);
+      const processResult = restoreResults[1].value;
+      if (stderrExceeded) fail("pg_restore stderr exceeded its output cap");
+      if (processResult.status !== 0) {
+        fail(
+          `pg_restore failed (${processResult.status ?? processResult.signal}): ${Buffer.concat(stderr).toString("utf8").trim()}`,
+        );
+      }
+    } catch (error) {
+      await owned.terminate();
+      throw error;
     }
     facts = await databaseFacts(options, containerId, database, migration);
   } catch (error) {
