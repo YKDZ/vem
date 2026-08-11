@@ -52,6 +52,15 @@ describe("Vision V2 hard-cutover absence guard", () => {
       ].join("");
       const splitProductionReference =
         'const retired = ["try", "_on_", "sil", "hou", "ette"].join("");';
+      const standaloneUrl =
+        "https://" + ["github.com", "hbhjt", "virtual-tryon.git"].join("/");
+      const standalonePath = "..\\" + ["virtual-tryon", "run.ps1"].join("\\");
+      const standaloneServer = ["app", "main"].join(".") + ":app";
+      const standaloneCamera = [
+        "navigator",
+        "mediaDevices",
+        "getUserMedia",
+      ].join(".");
       const fixtures = [
         ["protocol.txt", dot("vem", "vision", "v1")],
         ["fixture.txt", retiredProtocolFixture],
@@ -72,6 +81,10 @@ describe("Vision V2 hard-cutover absence guard", () => {
         ["purpose.txt", `purpose: ${retiredPurpose}`],
         ["endpoint.txt", retiredUploadRoute],
         ["production.ts", splitProductionReference],
+        ["standalone-url.txt", standaloneUrl],
+        ["standalone-path.txt", standalonePath],
+        ["standalone-server.txt", standaloneServer],
+        ["standalone-camera.txt", standaloneCamera],
       ];
       for (const [name, body] of fixtures) {
         writeFileSync(join(root, name), `${body}\n`);
@@ -99,6 +112,10 @@ describe("Vision V2 hard-cutover absence guard", () => {
           "legacy-v1-fixture",
           "obsolete-try-on-progress-event",
           "protocol-v1",
+          "standalone-browser-camera-owner",
+          "standalone-repository-path",
+          "standalone-repository-url",
+          "standalone-server-entrypoint",
         ],
       );
     } finally {

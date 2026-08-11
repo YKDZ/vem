@@ -28,8 +28,10 @@ const DEFAULT_SCOPES = Object.freeze([
   "scripts/testbed",
   "scripts/windows",
   ".github/workflows",
+  "Cargo.toml",
   "package.json",
   "pnpm-lock.yaml",
+  "pnpm-workspace.yaml",
   "turbo.json",
 ]);
 
@@ -86,6 +88,24 @@ const FORBIDDEN_PATTERNS = Object.freeze([
   {
     category: "legacy-try-on-session-module",
     pattern: /\b(?:VisionTryOnSession|try_on_session|tryOnSession)\b/,
+  },
+  {
+    category: "standalone-repository-url",
+    pattern: /https?:\/\/github[.]com\/hbhjt\/virtual-tryon(?:[.]git)?\b/i,
+  },
+  {
+    category: "standalone-repository-path",
+    pattern:
+      /(?:[.][.][\\/]|[A-Za-z]:[\\/]|\/workspaces\/)?virtual-tryon[\\/](?:run[.]ps1|app[\\/]|static[\\/]|scripts[\\/]|requirements[.]txt|vendor[\\/])/i,
+  },
+  {
+    category: "standalone-server-entrypoint",
+    pattern:
+      /\bapp[.]main:app\b|\bfrom\s+app[.]main\s+import\s+app\b|\bimport\s+app[.]main\b/,
+  },
+  {
+    category: "standalone-browser-camera-owner",
+    pattern: /\bnavigator[.]mediaDevices\b|\bgetUserMedia\s*[(]/,
   },
 ]);
 
