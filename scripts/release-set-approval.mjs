@@ -745,7 +745,7 @@ export function verifyAuthenticatedReleaseSetApproval({
   };
 }
 
-export async function verifyProductionReleaseSet({
+export async function proveProductionPrecutover({
   approvalPath,
   attestationBundlePath,
   backupPath,
@@ -758,7 +758,6 @@ export async function verifyProductionReleaseSet({
   inputDirectory,
   managedMediaOrigin,
   managedMediaToken,
-  outputPath,
   repoRoot,
   sourceCommit,
   sourceRef,
@@ -822,8 +821,24 @@ export async function verifyProductionReleaseSet({
     sourceRef,
   });
   validateApprovedPrecutoverReceiptText(approvedText);
-  writeExclusiveAtomic(outputPath, approvedText, "approved-precutover");
-  return { approval, manifest, receipt: JSON.parse(approvedText) };
+  return {
+    approval,
+    approvalText,
+    approvedText,
+    manifest,
+    manifestText: authenticated.manifestText,
+    receipt: JSON.parse(approvedText),
+  };
+}
+
+export async function verifyProductionReleaseSet(options) {
+  const proven = await proveProductionPrecutover(options);
+  writeExclusiveAtomic(
+    options.outputPath,
+    proven.approvedText,
+    "approved-precutover",
+  );
+  return proven;
 }
 
 function parseArguments(argv) {

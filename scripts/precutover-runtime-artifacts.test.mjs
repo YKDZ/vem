@@ -315,12 +315,16 @@ async function buildFixture(root) {
   });
   const approvedPath = join(root, "approved-precutover.json");
   writeFileSync(approvedPath, approvedText);
+  const databaseBackupPath = join(root, "database.dump");
+  writeFileSync(databaseBackupPath, "test-owned backup");
   return {
     approvalPath,
     approvalBundlePath,
     approvalSha256: sha256(approvalText),
     approvedPath,
     candidateInput,
+    databaseBackupPath,
+    freshApprovedText: approvedText,
     releaseSetInputDirectory,
     releaseSetPath,
     vemArchive,
@@ -339,6 +343,16 @@ function productionArgs(fixture, output, overrides = {}) {
     fixture.approvalBundlePath,
     "--approval-subject-sha256",
     fixture.approvalSha256,
+    "--database-backup",
+    fixture.databaseBackupPath,
+    "--docker-binary",
+    "/usr/bin/docker",
+    "--expected-docker-byte-size",
+    "1",
+    "--expected-docker-sha256",
+    `sha256:${"0".repeat(64)}`,
+    "--expected-docker-version",
+    "Docker version test",
     "--gh-binary",
     overrides.ghBinary ?? "/usr/bin/gh",
     "--output",
@@ -349,8 +363,16 @@ function productionArgs(fixture, output, overrides = {}) {
     fixture.releaseSetPath,
     "--release-set-input-directory",
     fixture.releaseSetInputDirectory,
+    "--managed-media-origin",
+    "http://127.0.0.1:1",
+    "--managed-media-token",
+    "test-owned-token",
     "--repo-root",
     overrides.repoRoot ?? repoRoot,
+    "--postgres-container",
+    "test-owned-postgres",
+    "--postgres-user",
+    "postgres",
     "--source-commit",
     vemCommit,
     "--source-ref",
@@ -375,14 +397,16 @@ function runtimeOptions(fixture, output, overrides = {}) {
   return options;
 }
 
-function testAuthenticatedReleaseSet(fixture) {
+function testProvenPrecutover(fixture) {
   const approvalText = readFileSync(fixture.approvalPath, "utf8");
   const manifestText = readFileSync(fixture.releaseSetPath, "utf8");
   return {
     approval: JSON.parse(approvalText),
     approvalText,
+    approvedText: fixture.freshApprovedText,
     manifest: JSON.parse(manifestText),
     manifestText,
+    receipt: JSON.parse(fixture.freshApprovedText),
   };
 }
 
@@ -391,13 +415,14 @@ async function runWithTestAuthority(
   output,
   overrides = {},
   verifyVisionAttestation,
+  provePrecutover = async () => testProvenPrecutover(fixture),
 ) {
   const previous = process.env.NODE_ENV;
   process.env.NODE_ENV = "test";
   try {
     await verifyRuntimeArtifactsForTest(
       runtimeOptions(fixture, output, overrides),
-      testAuthenticatedReleaseSet(fixture),
+      provePrecutover,
       verifyVisionAttestation,
     );
     return { status: 0, stderr: "" };
@@ -434,6 +459,76 @@ describe("pre-cutover complete runtime archives", () => {
       readdirSync(root).includes("runtime-artifacts-receipt.json"),
       false,
     );
+  });
+
+  it("rejects a locally rewritten approved receipt even when its authenticated release references remain exact", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-runtime-forged-approved-"));
+    temporaryRoots.push(root);
+    const fixture = await buildFixture(root);
+    const approved = JSON.parse(readFileSync(fixture.approvedPath, "utf8"));
+    approved.database.catalogDataSha256 = `sha256:${"a".repeat(64)}`;
+    approved.managedMedia.assetsSetSha256 = `sha256:${"b".repeat(64)}`;
+    approved.managedMedia.generation = "attacker-generation";
+    writeFileSync(fixture.approvedPath, canonical(approved));
+    const output = join(root, "runtime-artifacts-receipt.json");
+
+    const result = await runWithTestAuthority(fixture, output);
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /fresh|reproof|approved.*differ/i);
+    assert.equal(existsSync(output), false);
+  });
+
+  for (const failure of [
+    "database reproof failed",
+    "managed-media reproof failed",
+  ]) {
+    it(`publishes no runtime receipt when ${failure}`, async () => {
+      const root = mkdtempSync(join(tmpdir(), "vem-runtime-reproof-failed-"));
+      temporaryRoots.push(root);
+      const fixture = await buildFixture(root);
+      const output = join(root, "runtime-artifacts-receipt.json");
+      const events = [];
+
+      const result = await runWithTestAuthority(
+        fixture,
+        output,
+        {},
+        async () => events.push("vision-verifier"),
+        async () => {
+          events.push("precutover-reproof");
+          throw new Error(failure);
+        },
+      );
+
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, new RegExp(failure));
+      assert.deepEqual(events, ["precutover-reproof"]);
+      assert.equal(existsSync(output), false);
+    });
+  }
+
+  it("completes the fresh database and media proof before consuming runtime archives", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-runtime-reproof-order-"));
+    temporaryRoots.push(root);
+    const fixture = await buildFixture(root);
+    const output = join(root, "runtime-artifacts-receipt.json");
+    const events = [];
+
+    const result = await runWithTestAuthority(
+      fixture,
+      output,
+      {},
+      async () => events.push("vision-verifier"),
+      async () => {
+        events.push("database-and-media-reproof");
+        return testProvenPrecutover(fixture);
+      },
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(events, ["database-and-media-reproof", "vision-verifier"]);
+    assert.equal(existsSync(output), true);
   });
 
   it("safely extracts the exact VEM runtime archive member set", () => {

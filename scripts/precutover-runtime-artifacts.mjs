@@ -26,8 +26,8 @@ import { fileURLToPath } from "node:url";
 
 import { runOwnedCommand } from "./lib/owned-process.mjs";
 import {
+  proveProductionPrecutover,
   validateApprovedPrecutoverReceiptText,
-  verifyAuthenticatedReleaseSetApproval,
   verifyTrustedVisionCandidateAttestation,
 } from "./release-set-approval.mjs";
 import {
@@ -77,6 +77,8 @@ const PATH_OPTIONS = new Set([
   "approved",
   "approval",
   "approval-attestation-bundle",
+  "database-backup",
+  "docker-binary",
   "gh-binary",
   "output",
   "python",
@@ -383,41 +385,43 @@ function readCanonicalFile(path, label) {
   return { raw, value: parseCanonical(raw, label) };
 }
 
-function validateAuthenticatedIdentityRoot({
+function validateProvenIdentityRoot({
   approvedPath,
   expectedApprovalSha256,
+  proven,
   releaseSetPath,
-  authenticated,
 }) {
   const approved = readCanonicalFile(
     approvedPath,
     "approved precutover receipt",
   );
   validateApprovedPrecutoverReceiptText(approved.raw);
+  validateApprovedPrecutoverReceiptText(proven.approvedText);
   const releaseSet = readCanonicalFile(releaseSetPath, "release set");
   if (
+    approved.raw !== proven.approvedText ||
     !DIGEST_RE.test(expectedApprovalSha256) ||
-    sha256(authenticated.approvalText) !== expectedApprovalSha256 ||
+    sha256(proven.approvalText) !== expectedApprovalSha256 ||
     expectedApprovalSha256 !== approved.value.releaseApprovalSha256 ||
-    sha256(authenticated.manifestText) !== approved.value.releaseSetSha256 ||
+    sha256(proven.manifestText) !== approved.value.releaseSetSha256 ||
     sha256(releaseSet.raw) !== approved.value.releaseSetSha256 ||
-    authenticated.manifestText !== releaseSet.raw
+    proven.manifestText !== releaseSet.raw
   ) {
-    fail("approved precutover identity root digest mismatch");
+    fail("local approved receipt differs from the fresh production reproof");
   }
   if (
-    authenticated.approval.sourceCommit !== approved.value.sourceCommit ||
-    authenticated.approval.sourceRef !== approved.value.sourceRef ||
-    authenticated.approval.inputArtifact.members["release-set.json"] !==
+    proven.approval.sourceCommit !== approved.value.sourceCommit ||
+    proven.approval.sourceRef !== approved.value.sourceRef ||
+    proven.approval.inputArtifact.members["release-set.json"] !==
       approved.value.releaseSetSha256 ||
-    authenticated.manifest.vem.sourceCommit !== approved.value.sourceCommit
+    proven.manifest.vem.sourceCommit !== approved.value.sourceCommit
   ) {
     fail("approved precutover release authority mismatch");
   }
   return {
-    approvalSha256: sha256(authenticated.approvalText),
+    approvalSha256: sha256(proven.approvalText),
     approvedReceiptSha256: sha256(approved.raw),
-    releaseSet: authenticated.manifest,
+    releaseSet: proven.manifest,
     releaseSetSha256: sha256(releaseSet.raw),
   };
 }
@@ -1149,18 +1153,15 @@ function writeExclusive(path, contents, validateInputs) {
   }
 }
 
-async function verify(
-  options,
-  { authenticateReleaseSet, verifyVisionAttestation },
-) {
+async function verify(options, { provePrecutover, verifyVisionAttestation }) {
   for (const [key, value] of Object.entries(options)) {
     if (PATH_OPTIONS.has(key)) assertAbsolute(value, `--${key}`);
   }
-  const authenticated = await authenticateReleaseSet(options);
-  const identityRoot = validateAuthenticatedIdentityRoot({
+  const proven = await provePrecutover(options);
+  const identityRoot = validateProvenIdentityRoot({
     approvedPath: options.approved,
-    authenticated,
     expectedApprovalSha256: options["approval-subject-sha256"],
+    proven,
     releaseSetPath: options["release-set"],
   });
   const tempRoot = mkdtempSync(join(tmpdir(), "vem-runtime-artifacts-"));
@@ -1230,28 +1231,40 @@ async function verify(
   }
 }
 
-function authenticateProductionReleaseSet(options) {
-  return verifyAuthenticatedReleaseSetApproval({
+function proveRuntimePrecutover(options) {
+  return proveProductionPrecutover({
     approvalPath: options.approval,
     attestationBundlePath: options["approval-attestation-bundle"],
+    backupPath: options["database-backup"],
+    container: options["postgres-container"],
+    dockerBinary: options["docker-binary"],
+    expectedDockerByteSize: options["expected-docker-byte-size"],
+    expectedDockerSha256: options["expected-docker-sha256"],
+    expectedDockerVersion: options["expected-docker-version"],
     ghBinaryPath: options["gh-binary"],
     inputDirectory: options["release-set-input-directory"],
+    managedMediaOrigin: options["managed-media-origin"],
+    managedMediaToken: options["managed-media-token"],
     repoRoot: options["repo-root"],
     sourceCommit: options["source-commit"],
     sourceRef: options["source-ref"],
+    sourceUser: options["postgres-user"],
   });
 }
 
 export async function verifyRuntimeArtifactsForTest(
   options,
-  authenticatedReleaseSet,
+  provePrecutover,
   verifyVisionAttestation = async () => {},
 ) {
   if (process.env.NODE_ENV !== "test") {
     fail("test-only runtime artifact verifier requires NODE_ENV=test");
   }
+  if (typeof provePrecutover !== "function") {
+    fail("test-only precutover proof boundary must be callable");
+  }
   return verify(options, {
-    authenticateReleaseSet: async () => authenticatedReleaseSet,
+    provePrecutover,
     verifyVisionAttestation,
   });
 }
@@ -1265,12 +1278,21 @@ function parseArgs(argv) {
     "approval",
     "approval-attestation-bundle",
     "approval-subject-sha256",
+    "database-backup",
+    "docker-binary",
+    "expected-docker-byte-size",
+    "expected-docker-sha256",
+    "expected-docker-version",
     "gh-binary",
+    "managed-media-origin",
+    "managed-media-token",
     "output",
     "python",
     "release-set",
     "release-set-input-directory",
     "repo-root",
+    "postgres-container",
+    "postgres-user",
     "source-commit",
     "source-ref",
     "vem-runtime-archive",
@@ -1299,7 +1321,7 @@ if (
 ) {
   try {
     await verify(parseArgs(process.argv.slice(2)), {
-      authenticateReleaseSet: authenticateProductionReleaseSet,
+      provePrecutover: proveRuntimePrecutover,
       verifyVisionAttestation: verifyTrustedVisionCandidateAttestation,
     });
     process.stdout.write("PRECUTOVER_RUNTIME_ARTIFACTS=PASS\n");
