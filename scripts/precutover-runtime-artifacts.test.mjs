@@ -416,6 +416,7 @@ async function runWithTestAuthority(
   overrides = {},
   verifyVisionAttestation,
   provePrecutover = async () => testProvenPrecutover(fixture),
+  beforeVemHelperExecute,
 ) {
   const previous = process.env.NODE_ENV;
   process.env.NODE_ENV = "test";
@@ -424,6 +425,7 @@ async function runWithTestAuthority(
       runtimeOptions(fixture, output, overrides),
       provePrecutover,
       verifyVisionAttestation,
+      beforeVemHelperExecute,
     );
     return { status: 0, stderr: "" };
   } catch (error) {
@@ -530,6 +532,73 @@ describe("pre-cutover complete runtime archives", () => {
     assert.deepEqual(events, ["database-and-media-reproof", "vision-verifier"]);
     assert.equal(existsSync(output), true);
   });
+
+  for (const mutation of ["atomic replacement", "in-place rewrite"]) {
+    it(`rejects VEM archive helper source ${mutation} after authority validation`, async () => {
+      const root = mkdtempSync(join(tmpdir(), "vem-runtime-helper-race-"));
+      temporaryRoots.push(root);
+      const fixture = await buildFixture(root);
+      const output = join(root, "runtime-artifacts-receipt.json");
+
+      const result = await runWithTestAuthority(
+        fixture,
+        output,
+        {},
+        undefined,
+        undefined,
+        async ({ sourcePath }) => {
+          const bytes = readFileSync(sourcePath);
+          if (mutation === "atomic replacement") {
+            const replacement = `${sourcePath}.${process.pid}.replacement`;
+            writeFileSync(replacement, bytes, { mode: 0o644 });
+            renameSync(replacement, sourcePath);
+          } else {
+            writeFileSync(sourcePath, bytes);
+          }
+        },
+      );
+
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /helper|verifier|changed|identity/i);
+      assert.equal(existsSync(output), false);
+    });
+  }
+
+  for (const mutation of ["atomic replacement", "in-place rewrite"]) {
+    it(`rejects private VEM archive helper staging ${mutation} before Python execution`, async () => {
+      const root = mkdtempSync(
+        join(tmpdir(), "vem-runtime-staged-helper-race-"),
+      );
+      temporaryRoots.push(root);
+      const fixture = await buildFixture(root);
+      const output = join(root, "runtime-artifacts-receipt.json");
+      let privateRoot;
+
+      const result = await runWithTestAuthority(
+        fixture,
+        output,
+        {},
+        undefined,
+        undefined,
+        async ({ stagedPath }) => {
+          privateRoot = dirname(stagedPath);
+          const bytes = readFileSync(stagedPath);
+          if (mutation === "atomic replacement") {
+            const replacement = `${stagedPath}.replacement`;
+            writeFileSync(replacement, bytes, { mode: 0o600 });
+            renameSync(replacement, stagedPath);
+          } else {
+            writeFileSync(stagedPath, bytes);
+          }
+        },
+      );
+
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /helper|verifier|changed|identity/i);
+      assert.equal(existsSync(output), false);
+      assert.equal(existsSync(privateRoot), false);
+    });
+  }
 
   it("safely extracts the exact VEM runtime archive member set", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-runtime-archive-"));

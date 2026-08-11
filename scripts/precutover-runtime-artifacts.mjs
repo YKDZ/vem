@@ -741,6 +741,7 @@ function stageVisionCandidateInputs(directory, heldInputs, staging) {
 
 async function verifyVemArchive({
   archivePath,
+  beforeHelperExecute,
   heldInputs,
   identityRoot,
   pythonPath,
@@ -763,24 +764,30 @@ async function verifyVemArchive({
     repoRoot,
     "scripts/lib/verify_vem_runtime_archive.py",
   );
-  const helper = await hashRegularFile(
+  const helper = stageRegularFile(
     helperPath,
+    join(tempRoot, "verify_vem_runtime_archive.py"),
     "VEM runtime archive verifier",
     1024 * 1024,
   );
+  heldInputs.push(helper);
   if (
-    helper.byteSize !== TRUSTED_RUNTIME_PROOF_AUTHORITY.helper.byteSize ||
-    helper.sha256 !== TRUSTED_RUNTIME_PROOF_AUTHORITY.helper.sha256
+    helper.facts.byteSize !== TRUSTED_RUNTIME_PROOF_AUTHORITY.helper.byteSize ||
+    helper.facts.sha256 !== TRUSTED_RUNTIME_PROOF_AUTHORITY.helper.sha256
   ) {
     fail(
       "VEM runtime archive verifier is not authenticated by the VEM authority",
     );
   }
+  await beforeHelperExecute?.({
+    sourcePath: helperPath,
+    stagedPath: helper.path,
+  });
   const reportText = await runOwnedCommand(
     pythonPath,
     [
       "-I",
-      helperPath,
+      helper.path,
       "verify",
       "--archive",
       staged.path,
@@ -1153,7 +1160,10 @@ function writeExclusive(path, contents, validateInputs) {
   }
 }
 
-async function verify(options, { provePrecutover, verifyVisionAttestation }) {
+async function verify(
+  options,
+  { beforeVemHelperExecute, provePrecutover, verifyVisionAttestation },
+) {
   for (const [key, value] of Object.entries(options)) {
     if (PATH_OPTIONS.has(key)) assertAbsolute(value, `--${key}`);
   }
@@ -1183,6 +1193,7 @@ async function verify(options, { provePrecutover, verifyVisionAttestation }) {
     });
     const vem = await verifyVemArchive({
       archivePath: options["vem-runtime-archive"],
+      beforeHelperExecute: beforeVemHelperExecute,
       heldInputs,
       identityRoot,
       pythonPath: trustedPython,
@@ -1256,6 +1267,7 @@ export async function verifyRuntimeArtifactsForTest(
   options,
   provePrecutover,
   verifyVisionAttestation = async () => {},
+  beforeVemHelperExecute,
 ) {
   if (process.env.NODE_ENV !== "test") {
     fail("test-only runtime artifact verifier requires NODE_ENV=test");
@@ -1264,6 +1276,7 @@ export async function verifyRuntimeArtifactsForTest(
     fail("test-only precutover proof boundary must be callable");
   }
   return verify(options, {
+    beforeVemHelperExecute,
     provePrecutover,
     verifyVisionAttestation,
   });
