@@ -18,6 +18,7 @@ import {
   targetHostComposeCommand,
 } from "./backend-compose-smoke.mjs";
 import {
+  validateBackendReleaseSet,
   validateAdminProxyHealth,
   validateDigestPinnedImage,
   validatePaymentWebhookBaseUrl,
@@ -97,6 +98,26 @@ function dockerComposeSkipReason() {
 const dockerComposeSkip = dockerComposeSkipReason();
 
 describe("backend image publishing", () => {
+  it("rejects digest-pinned Service and Admin images from mixed VEM commits", () => {
+    assert.throws(
+      () =>
+        validateBackendReleaseSet({
+          vemSourceCommit: commit,
+          serviceApi: {
+            image: `registry.example/vem-service-api@sha256:${"a".repeat(64)}`,
+            provenanceSha256: `sha256:${"b".repeat(64)}`,
+            sourceCommit: commit,
+          },
+          adminUi: {
+            image: `registry.example/vem-admin-ui@sha256:${"c".repeat(64)}`,
+            provenanceSha256: `sha256:${"d".repeat(64)}`,
+            sourceCommit: "f".repeat(40),
+          },
+        }),
+      /backend release components must use the VEM source commit/,
+    );
+  });
+
   it("requires a full lowercase commit and derives sha tags", () => {
     assert.equal(validatePublishCommit(commit), commit);
     assert.deepEqual(imageNames("registry.example/", commit), [

@@ -1,5 +1,7 @@
 const DIGEST_PINNED_IMAGE_RE =
   /^(?:(?:[a-z0-9.-]+(?::[0-9]+)?\/)?[a-z0-9]+(?:[._-][a-z0-9]+)*(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)*)@sha256:[a-f0-9]{64}$/;
+const FULL_SOURCE_COMMIT_RE = /^[a-f0-9]{40}$/;
+const SHA256_RE = /^sha256:[a-f0-9]{64}$/;
 
 export function validateDigestPinnedImage(value, name = "image") {
   if (!DIGEST_PINNED_IMAGE_RE.test(value)) {
@@ -8,6 +10,31 @@ export function validateDigestPinnedImage(value, name = "image") {
     );
   }
   return value;
+}
+
+export function validateBackendReleaseSet({
+  vemSourceCommit,
+  serviceApi,
+  adminUi,
+}) {
+  if (!FULL_SOURCE_COMMIT_RE.test(vemSourceCommit)) {
+    throw new Error("VEM source commit must be a full lowercase Git commit");
+  }
+  for (const [name, component] of [
+    ["Service API", serviceApi],
+    ["Admin UI", adminUi],
+  ]) {
+    validateDigestPinnedImage(component?.image, `${name} image`);
+    if (!SHA256_RE.test(component?.provenanceSha256)) {
+      throw new Error(`${name} provenance must be a SHA-256 digest`);
+    }
+    if (component?.sourceCommit !== vemSourceCommit) {
+      throw new Error(
+        "backend release components must use the VEM source commit",
+      );
+    }
+  }
+  return { vemSourceCommit, serviceApi, adminUi };
 }
 
 export function validatePaymentWebhookBaseUrl(value) {
