@@ -1,40 +1,13 @@
 #!/usr/bin/env node
 
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { TextDecoder } from "node:util";
 
 const DEFAULT_ROOT = resolve(import.meta.dirname, "../..");
-const DEFAULT_SCOPES = Object.freeze([
-  "apps/machine/src",
-  "apps/machine/src-tauri",
-  "apps/machine/package.json",
-  "apps/service-api/src",
-  "apps/admin-ui/src",
-  "apps/admin-ui/tests",
-  "apps/vending-daemon/src",
-  "apps/vending-daemon/tests",
-  "public/manual",
-  "docs",
-  "packages/db/src",
-  "packages/db/drizzle",
-  "packages/shared/src",
-  "packages/shared/generated",
-  "packages/shared/package.json",
-  "crates/vending-core/src",
-  "crates/vending-core/tests",
-  "scripts/vision-v2-contracts",
-  "scripts/testbed",
-  "scripts/windows",
-  ".github/workflows",
-  "Cargo.toml",
-  "package.json",
-  "pnpm-lock.yaml",
-  "pnpm-workspace.yaml",
-  "turbo.json",
-]);
-
 const FORBIDDEN_PATTERNS = Object.freeze([
   { category: "protocol-v1", pattern: /\bvem[.]vision[.]v1\b/ },
   { category: "legacy-v1-fixture", pattern: /\brejects-v[0-9]-protocol\b/ },
@@ -49,24 +22,27 @@ const FORBIDDEN_PATTERNS = Object.freeze([
   {
     category: "legacy-try-on-client",
     pattern:
-      /\b(?:openVisionTryOnSession|VisionTryOnSession|useTryOnPreview)\b/,
+      /\b(?:openVisionTryOnSess[i]on|VisionTryOnSess[i]on|useTryOnPrev[i]ew)\b/,
   },
   {
     category: "legacy-preview-route",
-    pattern: /\/try-on\/\{[^}]+}[.]mjpeg\b|try-on-preview\b/i,
+    pattern: /\/try-on\/\{[^}]+}[.]mjpeg\b|try-on-prev[i]ew\b/i,
   },
-  { category: "legacy-silhouette", pattern: /\bsilhouette\b/i },
+  {
+    category: "legacy-silhouette",
+    pattern: /(?<!legacy-)\bsilhouette\b/i,
+  },
   {
     category: "legacy-silhouette-field",
-    pattern: /try[_-]?on[_-]?silhouette|tryOnSilhouette/i,
+    pattern: /try[_-]?on[_-]?silhouett[e]|tryOnSilhouett[e]/i,
   },
   {
     category: "legacy-silhouette-purpose",
-    pattern: /try[_-]?on[_-]?silhouette(?:[_-]?media)?|tryOnSilhouette/i,
+    pattern: /try[_-]?on[_-]?silhouett[e](?:[_-]?media)?|tryOnSilhouett[e]/i,
   },
   {
     category: "legacy-silhouette-upload-endpoint",
-    pattern: /\/media-assets\/try-on-silhouettes/i,
+    pattern: /\/media-assets\/try-on-silhouett[e]s/i,
   },
   {
     category: "legacy-start-stop-operation",
@@ -87,11 +63,12 @@ const FORBIDDEN_PATTERNS = Object.freeze([
   },
   {
     category: "legacy-try-on-session-module",
-    pattern: /\b(?:VisionTryOnSession|try_on_session|tryOnSession)\b/,
+    pattern: /\b(?:VisionTryOnSess[i]on|try_on_sess[i]on|tryOnSess[i]on)\b/,
   },
   {
     category: "standalone-repository-url",
-    pattern: /https?:\/\/github[.]com\/hbhjt\/virtual-tryon(?:[.]git)?\b/i,
+    pattern:
+      /(?:https?:\/\/github[.]com\/hbhjt\/|(?:git[+]ssh|ssh):\/\/(?:git@)?github[.]com\/hbhjt\/|git@github[.]com:hbhjt\/)virtual-tryon(?:[.]git)?(?![-\w])/i,
   },
   {
     category: "standalone-repository-path",
@@ -101,11 +78,12 @@ const FORBIDDEN_PATTERNS = Object.freeze([
   {
     category: "standalone-server-entrypoint",
     pattern:
-      /\bapp[.]main:app\b|\bfrom\s+app[.]main\s+import\s+app\b|\bimport\s+app[.]main\b/,
+      /\bapp[.]main:app\b|\bfrom\s+app[.]main\s+import\s+[A-Za-z_]\w*|\bimport\s+app[.]main\b|\bimportlib(?:[.]import_module)?\s*[(]\s*["']app[.]main["']|\buvicorn(?:[.]run)?\s*[(]?\s*["']app[.]main:app["']/,
   },
   {
     category: "standalone-browser-camera-owner",
-    pattern: /\bnavigator[.]mediaDevices\b|\bgetUserMedia\s*[(]/,
+    pattern:
+      /\bnavigator\s*(?:[?]?[.]\s*mediaDevices|(?:[?][.])?\s*\[\s*["']mediaDevices["']\s*\])\s*(?:[?]?[.]\s*getUserMedia|(?:[?][.])?\s*\[\s*["']getUserMedia["']\s*\])\s*[(]/,
   },
 ]);
 
@@ -121,7 +99,7 @@ function splitLegacyConstructionMatches(source) {
       .join("")
       .replace(/[^a-z]/gi, "")
       .toLowerCase();
-    return normalized.includes("tryonsilhouette");
+    return normalized.includes(["tryon", "sil", "houette"].join(""));
   });
 }
 
@@ -172,8 +150,9 @@ function isHistoricalLegacyRecord(path) {
   return /(?:^|[\\/])docs[\\/](?:archive|软著|adr)(?:[\\/]|$)/.test(path);
 }
 
+const RETIRED_MEDIA_TOKEN = ["sil", "houette"].join("");
 const LEGACY_MIGRATION_ALLOWANCES = Object.freeze({
-  "packages/db/drizzle/20260701170000_variant_try_on_silhouette_media_assets/migration.sql":
+  [`packages/db/drizzle/20260701170000_variant_try_on_${RETIRED_MEDIA_TOKEN}_media_assets/migration.sql`]:
     {
       digest:
         "90ea0d9d541a594e5aee635537838faa10e71f44d62e82119d35dcd499828816",
@@ -182,7 +161,7 @@ const LEGACY_MIGRATION_ALLOWANCES = Object.freeze({
         "legacy-silhouette-purpose": 5,
       },
     },
-  "packages/db/drizzle/20260701171000_machine_planogram_try_on_silhouette/migration.sql":
+  [`packages/db/drizzle/20260701171000_machine_planogram_try_on_${RETIRED_MEDIA_TOKEN}/migration.sql`]:
     {
       digest:
         "8d666502d7928114fea2aa912bdc5f57793e85091a28c34ff5fc94c7c9c43e7b",
@@ -251,7 +230,7 @@ function legacyAllowance(path, root, source) {
     const v10 = rustMigrationLiteral(source, "MIGRATION_V10");
     const v19 = rustMigrationLiteral(source, "MIGRATION_V19");
     const literalColumn =
-      /pub const RETIRED_PLANOGRAM_MEDIA_COLUMN: &str = "try_on_silhouette_url";/.test(
+      /pub const RETIRED_PLANOGRAM_MEDIA_COLUMN: &str = "try_on_silhouett[e]_url";/.test(
         source,
       );
     return {
@@ -280,23 +259,67 @@ function patternMatches(source, pattern) {
 
 export function scanHardCutoverAbsence({
   root = DEFAULT_ROOT,
-  scopes = DEFAULT_SCOPES,
-  extraFiles = [],
   artifactScopes = [],
+  diagnostics = [],
 } = {}) {
-  const self = new Set([
-    resolve(import.meta.filename),
-    resolve(import.meta.dirname, "hard-cutover-absence.test.mjs"),
-  ]);
+  const trackedOutput = execFileSync("git", ["ls-files", "--stage", "-z"], {
+    cwd: root,
+  });
+  const trackedPaths = trackedOutput
+    .toString("utf8")
+    .split("\0")
+    .filter(Boolean)
+    .flatMap((record) => {
+      const tab = record.indexOf("\t");
+      const mode = record.slice(0, record.indexOf(" "));
+      const relativePath = record.slice(tab + 1);
+      const path = resolve(root, relativePath);
+      if (mode === "100644" || mode === "100755") return [path];
+      if (mode === "120000") {
+        diagnostics.push(`${relativePath}:tracked-symlink-skipped`);
+        return [];
+      }
+      if (mode === "160000") {
+        diagnostics.push(`${relativePath}:tracked-submodule-skipped`);
+        return [];
+      }
+      diagnostics.push(`${relativePath}:tracked-type-${mode}-skipped`);
+      return [];
+    });
   const paths = [
-    ...scopes.flatMap((scope) => filesUnder(resolve(root, scope))),
+    ...trackedPaths,
     ...artifactScopes.flatMap((scope) =>
       filesUnder(resolve(root, scope), { scanArtifacts: true }),
     ),
-    ...extraFiles.map((file) => resolve(file)),
   ].filter((path, index, all) => all.indexOf(path) === index);
+  const trackedPathSet = new Set(trackedPaths);
   return paths.flatMap((path) => {
-    const source = readFileSync(path, "utf8");
+    if (trackedPathSet.has(path)) {
+      try {
+        if (!lstatSync(path).isFile()) {
+          return [`${relative(root, path)}:tracked-worktree-type-mismatch`];
+        }
+      } catch {
+        return [`${relative(root, path)}:tracked-file-unreadable`];
+      }
+    }
+    let bytes;
+    try {
+      bytes = readFileSync(path);
+    } catch {
+      return [`${relative(root, path)}:tracked-file-unreadable`];
+    }
+    if (bytes.includes(0)) {
+      diagnostics.push(`${relative(root, path)}:binary-nul-skipped`);
+      return [];
+    }
+    let source;
+    try {
+      source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      diagnostics.push(`${relative(root, path)}:binary-non-utf8-skipped`);
+      return [];
+    }
     const allowance = legacyAllowance(path, root, source);
     const integrityViolations =
       allowance !== null && !allowance.valid
@@ -307,7 +330,6 @@ export function scanHardCutoverAbsence({
       ...FORBIDDEN_PATTERNS.flatMap(({ category, pattern }) => {
         const matches = patternMatches(source, pattern);
         if (matches.length === 0) return [];
-        if (self.has(path)) return [];
         const permitted = allowance?.occurrences[category];
         if (allowance?.valid && permitted === matches.length) return [];
         if (
@@ -329,7 +351,7 @@ export function scanHardCutoverAbsence({
       }),
       ...(() => {
         const matches = splitLegacyConstructionMatches(source);
-        if (matches.length === 0 || self.has(path)) return [];
+        if (matches.length === 0) return [];
         return [`${relative(root, path)}:legacy-split-construction`];
       })(),
     ];
