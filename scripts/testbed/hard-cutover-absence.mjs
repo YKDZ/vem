@@ -3,7 +3,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { relative, resolve } from "node:path";
+import { extname, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { TextDecoder } from "node:util";
 
@@ -366,6 +366,226 @@ function loadBinaryAllowlist(root, trackedEntries, violations) {
   return { approved, source };
 }
 
+const EXECUTABLE_MAGICS = [
+  Buffer.from("MZ"),
+  Buffer.from([0x7f, 0x45, 0x4c, 0x46]),
+  Buffer.from([0xfe, 0xed, 0xfa, 0xce]),
+  Buffer.from([0xce, 0xfa, 0xed, 0xfe]),
+  Buffer.from([0xfe, 0xed, 0xfa, 0xcf]),
+  Buffer.from([0xcf, 0xfa, 0xed, 0xfe]),
+  Buffer.from([0xca, 0xfe, 0xba, 0xbe]),
+  Buffer.from([0xbe, 0xba, 0xfe, 0xca]),
+];
+
+function startsWith(bytes, prefix) {
+  return (
+    bytes.length >= prefix.length &&
+    bytes.subarray(0, prefix.length).equals(prefix)
+  );
+}
+
+function validPng(bytes) {
+  if (!startsWith(bytes, Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
+    return false;
+  }
+  let offset = 8;
+  let sawHeader = false;
+  while (offset + 12 <= bytes.length) {
+    const length = bytes.readUInt32BE(offset);
+    const chunkEnd = offset + 12 + length;
+    if (chunkEnd > bytes.length) return false;
+    const chunkType = bytes.toString("ascii", offset + 4, offset + 8);
+    if (!sawHeader) {
+      if (chunkType !== "IHDR" || length !== 13) return false;
+      if (
+        bytes.readUInt32BE(offset + 8) === 0 ||
+        bytes.readUInt32BE(offset + 12) === 0
+      ) {
+        return false;
+      }
+      sawHeader = true;
+    }
+    if (chunkType === "IEND") {
+      return length === 0 && sawHeader && chunkEnd === bytes.length;
+    }
+    offset = chunkEnd;
+  }
+  return false;
+}
+
+function validJpeg(bytes) {
+  return (
+    bytes.length >= 4 &&
+    bytes[0] === 0xff &&
+    bytes[1] === 0xd8 &&
+    bytes.lastIndexOf(Buffer.from([0xff, 0xd9])) >= 2
+  );
+}
+
+function validIco(bytes) {
+  if (bytes.length < 6) return false;
+  const count = bytes.readUInt16LE(4);
+  if (
+    bytes.readUInt16LE(0) !== 0 ||
+    bytes.readUInt16LE(2) !== 1 ||
+    count === 0
+  ) {
+    return false;
+  }
+  const directoryEnd = 6 + count * 16;
+  if (directoryEnd > bytes.length) return false;
+  for (let index = 0; index < count; index += 1) {
+    const entry = 6 + index * 16;
+    const imageSize = bytes.readUInt32LE(entry + 8);
+    const imageOffset = bytes.readUInt32LE(entry + 12);
+    if (
+      imageSize === 0 ||
+      imageOffset < directoryEnd ||
+      imageOffset + imageSize > bytes.length
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function validWav(bytes) {
+  if (
+    bytes.length < 12 ||
+    bytes.toString("ascii", 0, 4) !== "RIFF" ||
+    bytes.toString("ascii", 8, 12) !== "WAVE" ||
+    bytes.readUInt32LE(4) + 8 > bytes.length
+  ) {
+    return false;
+  }
+  let offset = 12;
+  const chunks = new Set();
+  while (offset + 8 <= bytes.length) {
+    const type = bytes.toString("ascii", offset, offset + 4);
+    const length = bytes.readUInt32LE(offset + 4);
+    const chunkEnd = offset + 8 + length;
+    if (chunkEnd > bytes.length) return false;
+    chunks.add(type);
+    offset = chunkEnd + (length & 1);
+  }
+  return offset === bytes.length && chunks.has("fmt ") && chunks.has("data");
+}
+
+function validMp3(bytes) {
+  if (bytes.toString("ascii", 0, 3) === "ID3") {
+    if (
+      bytes.length < 10 ||
+      [...bytes.subarray(6, 10)].some((byte) => byte & 0x80)
+    ) {
+      return false;
+    }
+    const tagSize =
+      (bytes[6] << 21) | (bytes[7] << 14) | (bytes[8] << 7) | bytes[9];
+    return tagSize + 10 <= bytes.length;
+  }
+  if (bytes.length < 4 || bytes[0] !== 0xff || (bytes[1] & 0xe0) !== 0xe0) {
+    return false;
+  }
+  const version = (bytes[1] >> 3) & 0x03;
+  const layer = (bytes[1] >> 1) & 0x03;
+  const bitrate = (bytes[2] >> 4) & 0x0f;
+  const sampleRate = (bytes[2] >> 2) & 0x03;
+  return (
+    version !== 1 &&
+    layer !== 0 &&
+    ![0, 15].includes(bitrate) &&
+    sampleRate !== 3
+  );
+}
+
+function validOgg(bytes) {
+  if (
+    bytes.length < 27 ||
+    bytes.toString("ascii", 0, 4) !== "OggS" ||
+    bytes[4] !== 0
+  ) {
+    return false;
+  }
+  const segmentCount = bytes[26];
+  if (bytes.length < 27 + segmentCount) return false;
+  const payloadSize = [...bytes.subarray(27, 27 + segmentCount)].reduce(
+    (total, size) => total + size,
+    0,
+  );
+  return 27 + segmentCount + payloadSize <= bytes.length;
+}
+
+function validMp4(bytes) {
+  let offset = 0;
+  let boxCount = 0;
+  while (offset + 8 <= bytes.length) {
+    let size = bytes.readUInt32BE(offset);
+    const type = bytes.toString("ascii", offset + 4, offset + 8);
+    let headerSize = 8;
+    if (size === 1) {
+      if (offset + 16 > bytes.length) return false;
+      const largeSize = bytes.readBigUInt64BE(offset + 8);
+      if (largeSize > BigInt(Number.MAX_SAFE_INTEGER)) return false;
+      size = Number(largeSize);
+      headerSize = 16;
+    } else if (size === 0) {
+      size = bytes.length - offset;
+    }
+    if (size < headerSize || offset + size > bytes.length) return false;
+    if (boxCount === 0) {
+      if (type !== "ftyp" || size < headerSize + 8) return false;
+      if ((size - headerSize - 8) % 4 !== 0) return false;
+    }
+    boxCount += 1;
+    offset += size;
+  }
+  return boxCount > 0 && offset === bytes.length;
+}
+
+function validWebp(bytes) {
+  if (
+    bytes.length < 20 ||
+    bytes.toString("ascii", 0, 4) !== "RIFF" ||
+    bytes.toString("ascii", 8, 12) !== "WEBP" ||
+    bytes.readUInt32LE(4) + 8 !== bytes.length
+  ) {
+    return false;
+  }
+  let offset = 12;
+  let sawImage = false;
+  while (offset + 8 <= bytes.length) {
+    const type = bytes.toString("ascii", offset, offset + 4);
+    const length = bytes.readUInt32LE(offset + 4);
+    const chunkEnd = offset + 8 + length;
+    if (chunkEnd > bytes.length) return false;
+    sawImage ||= ["VP8 ", "VP8L", "VP8X"].includes(type);
+    offset = chunkEnd + (length & 1);
+  }
+  return sawImage && offset === bytes.length;
+}
+
+function binaryFormatIsValid(path, bytes) {
+  if (
+    startsWith(bytes, Buffer.from("#!")) ||
+    EXECUTABLE_MAGICS.some((magic) => startsWith(bytes, magic))
+  ) {
+    return false;
+  }
+  const validators = new Map([
+    [".ico", validIco],
+    [".jpeg", validJpeg],
+    [".jpg", validJpeg],
+    [".mp3", validMp3],
+    [".mp4", validMp4],
+    [".ogg", validOgg],
+    [".png", validPng],
+    [".wav", validWav],
+    [".webp", validWebp],
+  ]);
+  const validator = validators.get(extname(path).toLowerCase());
+  return validator !== undefined && validator(bytes);
+}
+
 export function scanHardCutoverAbsence({
   root = DEFAULT_ROOT,
   artifactScopes = [],
@@ -421,6 +641,16 @@ export function scanHardCutoverAbsence({
         bytes = readFileSync(path);
       } catch {
         return [`${relative(root, path)}:tracked-file-unreadable`];
+      }
+      const relativePath = relative(root, path);
+      if (approvedBinary.has(relativePath)) {
+        actualBinary.set(relativePath, {
+          gitMode: trackedEntries.find((entry) => entry.path === path).mode,
+          sha256: digest(bytes),
+        });
+        return binaryFormatIsValid(relativePath, bytes)
+          ? []
+          : [`${relativePath}:binary-format-invalid`];
       }
       if (bytes.includes(0)) {
         if (trackedPathSet.has(path)) {

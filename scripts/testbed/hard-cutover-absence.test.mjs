@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
 
 import {
@@ -306,7 +306,12 @@ describe("Vision V2 hard-cutover absence guard", () => {
     try {
       initGuardRepo(root);
       const relativePath = "apps/machine/src/assets/audio/approved.wav";
-      const payload = Buffer.from("approved\0audio");
+      const payload = readFileSync(
+        resolve(
+          import.meta.dirname,
+          "../../apps/machine/src/assets/audio/maintenance-test-tone.wav",
+        ),
+      );
       const binary = join(root, relativePath);
       mkdirSync(dirname(binary), { recursive: true });
       writeFileSync(binary, payload);
@@ -315,7 +320,9 @@ describe("Vision V2 hard-cutover absence guard", () => {
 
       assert.deepEqual(scanHardCutoverAbsence({ root }), []);
 
-      writeFileSync(binary, Buffer.from("tampered\0audio"));
+      const tampered = Buffer.from(payload);
+      tampered[tampered.length - 1] ^= 0x01;
+      writeFileSync(binary, tampered);
       assert.ok(
         scanHardCutoverAbsence({ root }).includes(
           `${relativePath}:binary-identity-mismatch`,
@@ -331,7 +338,12 @@ describe("Vision V2 hard-cutover absence guard", () => {
     try {
       initGuardRepo(deletedRoot);
       const relativePath = "apps/machine/src/assets/audio/approved.wav";
-      const payload = Buffer.from("approved\0audio");
+      const payload = readFileSync(
+        resolve(
+          import.meta.dirname,
+          "../../apps/machine/src/assets/audio/maintenance-test-tone.wav",
+        ),
+      );
       const binary = join(deletedRoot, relativePath);
       mkdirSync(dirname(binary), { recursive: true });
       writeFileSync(binary, payload);
@@ -481,6 +493,50 @@ describe("Vision V2 hard-cutover absence guard", () => {
       );
     } finally {
       rmSync(noncanonicalRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects executable magic, extension mismatch, and truncated containers", () => {
+    const disguisedPayloads = new Map([
+      ["pe", Buffer.from("MZ\0pretend-png")],
+      ["elf", Buffer.from("\x7fELF\0pretend-png")],
+      ["mach-o", Buffer.from([0xfe, 0xed, 0xfa, 0xcf, 0, 1])],
+      ["shebang", Buffer.from("#!/bin/sh\nexit 0\n")],
+      ["extension-mismatch", Buffer.from([0xff, 0xd8, 1, 2, 3, 0xff, 0xd9])],
+      [
+        "truncated",
+        Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73]),
+      ],
+    ]);
+    for (const [name, payload] of disguisedPayloads) {
+      const root = mkdtempSync(
+        join(tmpdir(), `vem-hard-cutover-format-${name}-`),
+      );
+      try {
+        initGuardRepo(root);
+        const relativePath = "apps/machine/src/assets/disguised.png";
+        const disguised = join(root, relativePath);
+        mkdirSync(dirname(disguised), { recursive: true });
+        writeFileSync(disguised, payload);
+        writeBinaryAllowlist(root, [
+          {
+            category: "machine-ui-asset",
+            gitMode: "100644",
+            path: relativePath,
+            reason: "Production Machine UI image asset.",
+            sha256: createHash("sha256").update(payload).digest("hex"),
+          },
+        ]);
+        execFileSync("git", ["add", relativePath], { cwd: root });
+
+        assert.ok(
+          scanHardCutoverAbsence({ root }).includes(
+            `${relativePath}:binary-format-invalid`,
+          ),
+        );
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
     }
   });
 
