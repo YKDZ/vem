@@ -6,7 +6,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
-  writeFileSync,
+  statSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -19,6 +19,28 @@ const image =
 const container = `vem-precutover-pg-${process.pid}`;
 const temporary = mkdtempSync(join(tmpdir(), "vem-precutover-pg-"));
 const sourceDatabase = "vem_precutover_source";
+const dockerBytes = readFileSync("/usr/bin/docker");
+const dockerSha256 = `sha256:${createHash("sha256")
+  .update(dockerBytes)
+  .digest("hex")}`;
+const dockerByteSize = statSync("/usr/bin/docker").size;
+const dockerVersion = execFileSync("/usr/bin/docker", ["--version"], {
+  encoding: "utf8",
+}).trim();
+let baselineCatalogSha256;
+
+function pinnedToolArgs() {
+  return [
+    "--docker-binary",
+    "/usr/bin/docker",
+    "--expected-docker-byte-size",
+    String(dockerByteSize),
+    "--expected-docker-sha256",
+    dockerSha256,
+    "--expected-docker-version",
+    dockerVersion,
+  ];
+}
 
 function docker(args, options = {}) {
   return execFileSync("/usr/bin/docker", args, {
@@ -45,21 +67,6 @@ function run(args) {
       }),
     );
   });
-}
-
-function canonicalText(value) {
-  const canonical = (item) => {
-    if (Array.isArray(item)) return item.map(canonical);
-    if (item !== null && typeof item === "object") {
-      return Object.fromEntries(
-        Object.keys(item)
-          .sort()
-          .map((key) => [key, canonical(item[key])]),
-      );
-    }
-    return item;
-  };
-  return `${JSON.stringify(canonical(value))}\n`;
 }
 
 async function waitForPostgres() {
@@ -189,8 +196,7 @@ describe("precutover PostgreSQL backup receipt", () => {
     const receiptPath = join(temporary, "precutover-database.json");
     const result = await run([
       "create",
-      "--docker-binary",
-      "/usr/bin/docker",
+      ...pinnedToolArgs(),
       "--container",
       container,
       "--source-database",
@@ -210,18 +216,33 @@ describe("precutover PostgreSQL backup receipt", () => {
     const raw = readFileSync(receiptPath, "utf8");
     const receipt = JSON.parse(raw);
     assert.equal(receipt.schemaVersion, "vem.precutover.database-backup.v1");
+    assert.equal(receipt.trustStatus, "pending_release_set_approval");
     assert.equal(receipt.source.databaseName, sourceDatabase);
+    assert.match(receipt.source.snapshotId, /^[A-Fa-f0-9-]{3,128}$/);
     assert.equal(
       receipt.source.migration.target,
       "20260810000000_hard_delete_legacy_try_on_data",
     );
     assert.equal(receipt.source.migration.count, 45);
-    assert.equal(receipt.source.tryOnData.garmentCount, 1);
-    assert.equal(receipt.source.tryOnData.associationCount, 1);
+    assert.equal(receipt.source.catalogData.garmentCount, 1);
+    assert.equal(receipt.source.catalogData.associationCount, 1);
+    assert.equal(receipt.source.catalogData.mediaAssetCount, 1);
+    assert.equal(receipt.source.catalogData.productCount, 1);
+    assert.equal(receipt.source.catalogData.variantCount, 1);
+    baselineCatalogSha256 = receipt.source.catalogData.sha256;
+    assert.equal(receipt.toolchain.docker.byteSize, dockerByteSize);
+    assert.equal(receipt.toolchain.docker.sha256, dockerSha256);
+    assert.equal(receipt.toolchain.docker.version, dockerVersion);
+    assert.equal(receipt.toolchain.image, image);
+    assert.match(receipt.toolchain.imageId, /^sha256:[a-f0-9]{64}$/);
+    assert.equal(receipt.toolchain.pgDump.path, "/usr/bin/pg_dump");
+    assert.equal(receipt.toolchain.pgRestore.path, "/usr/bin/pg_restore");
+    assert.equal(receipt.toolchain.psql.path, "/usr/bin/psql");
+    assert.match(receipt.toolchain.serverVersion, /^16\d{4}$/);
     assert.equal(receipt.restoreProof.migration.count, 45);
     assert.equal(
-      receipt.restoreProof.tryOnData.sha256,
-      receipt.source.tryOnData.sha256,
+      receipt.restoreProof.catalogData.sha256,
+      receipt.source.catalogData.sha256,
     );
     assert.deepEqual(receipt.restoreProof.legacyResidue, {
       columns: 0,
@@ -246,10 +267,7 @@ describe("precutover PostgreSQL backup receipt", () => {
     ]);
     assert.equal(leftovers, "0");
 
-    const tampered = join(temporary, "tampered.dump");
-    const bytes = readFileSync(backup);
-    writeFileSync(tampered, bytes.subarray(0, Math.max(5, bytes.length - 31)));
-    const verify = await run([
+    const validSelfInspection = await run([
       "verify",
       "--docker-binary",
       "/usr/bin/docker",
@@ -260,52 +278,125 @@ describe("precutover PostgreSQL backup receipt", () => {
       "--repo-root",
       repoRoot,
       "--backup",
-      tampered,
+      backup,
       "--receipt",
       receiptPath,
     ]);
-    assert.notEqual(verify.status, 0);
-    assert.match(verify.stderr, /size|sha-256|restore/i);
+    assert.notEqual(
+      validSelfInspection.status,
+      0,
+      "an unapproved receipt must have no production verify path",
+    );
+    assert.match(validSelfInspection.stderr, /create.*only|unknown command/i);
+  });
 
-    const forgedReceipt = structuredClone(receipt);
-    const truncatedBytes = readFileSync(tampered);
-    forgedReceipt.backup.byteSize = truncatedBytes.byteLength;
-    forgedReceipt.backup.sha256 = `sha256:${createHash("sha256")
-      .update(truncatedBytes)
-      .digest("hex")}`;
-    const forgedReceiptPath = join(temporary, "forged-receipt.json");
-    writeFileSync(forgedReceiptPath, canonicalText(forgedReceipt));
-    const forged = await run([
-      "verify",
-      "--docker-binary",
-      "/usr/bin/docker",
+  it("dumps the same exported snapshot while all catalog facts change", async () => {
+    psql(
+      sourceDatabase,
+      "CREATE TABLE snapshot_padding(payload text); INSERT INTO snapshot_padding SELECT repeat('x',5000) FROM generate_series(1,2000)",
+    );
+    const backup = join(temporary, "snapshot.dump");
+    const receiptPath = join(temporary, "snapshot.json");
+    const pending = run([
+      "create",
+      ...pinnedToolArgs(),
       "--container",
       container,
+      "--source-database",
+      sourceDatabase,
+      "--expected-database-name",
+      sourceDatabase,
       "--source-user",
       "postgres",
       "--repo-root",
       repoRoot,
       "--backup",
-      tampered,
+      backup,
       "--receipt",
-      forgedReceiptPath,
+      receiptPath,
     ]);
-    assert.notEqual(forged.status, 0);
-    assert.match(forged.stderr, /pg_restore|restore/i);
-    assert.equal(
+    try {
+      let exported = false;
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const count = psql(
+          sourceDatabase,
+          "SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND state='idle in transaction' AND query LIKE '%pg_export_snapshot%'",
+        );
+        if (count !== "0") {
+          exported = true;
+          break;
+        }
+        await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+      }
+      assert.equal(
+        exported,
+        true,
+        "the production CLI exported a live snapshot",
+      );
       psql(
+        sourceDatabase,
+        `UPDATE media_assets SET storage_key='garment-mutated.png',byte_size=8,sha256=repeat('b',64);
+       UPDATE products SET name='receipt product mutated';
+       UPDATE try_on_garments SET color_label='green';
+       UPDATE product_variants SET price_cents=101,try_on_garment_id=NULL`,
+      );
+      const snapshotResult = await pending;
+      assert.equal(snapshotResult.status, 0, snapshotResult.stderr);
+      const snapshotReceipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+      assert.equal(
+        snapshotReceipt.source.catalogData.sha256,
+        baselineCatalogSha256,
+      );
+      assert.equal(
+        snapshotReceipt.restoreProof.catalogData.sha256,
+        baselineCatalogSha256,
+      );
+
+      const changedReceiptPath = join(temporary, "changed.json");
+      const changed = await run([
+        "create",
+        ...pinnedToolArgs(),
+        "--container",
+        container,
+        "--source-database",
+        sourceDatabase,
+        "--expected-database-name",
+        sourceDatabase,
+        "--source-user",
         "postgres",
-        "SELECT count(*) FROM pg_database WHERE datname LIKE 'vem_precutover_restore_%'",
-      ),
-      "0",
-    );
+        "--repo-root",
+        repoRoot,
+        "--backup",
+        join(temporary, "changed.dump"),
+        "--receipt",
+        changedReceiptPath,
+      ]);
+      assert.equal(changed.status, 0, changed.stderr);
+      const changedReceipt = JSON.parse(
+        readFileSync(changedReceiptPath, "utf8"),
+      );
+      assert.notEqual(
+        changedReceipt.source.catalogData.sha256,
+        baselineCatalogSha256,
+      );
+      assert.equal(changedReceipt.source.catalogData.associationCount, 0);
+    } finally {
+      await pending;
+      psql(
+        sourceDatabase,
+        `UPDATE media_assets SET storage_key='garment.png',byte_size=7,sha256=repeat('a',64);
+       UPDATE products SET name='receipt product';
+       UPDATE try_on_garments SET color_label='blue';
+       UPDATE product_variants SET price_cents=100,try_on_garment_id='00000000-0000-4000-8000-000000000003';
+       DROP TABLE IF EXISTS snapshot_padding`,
+      );
+    }
   });
 
   it("rejects the wrong source database identity", async () => {
     const result = await run([
       "create",
-      "--docker-binary",
-      "/usr/bin/docker",
+      ...pinnedToolArgs(),
       "--container",
       container,
       "--source-database",
@@ -325,6 +416,31 @@ describe("precutover PostgreSQL backup receipt", () => {
     assert.match(result.stderr, /database identity/i);
   });
 
+  it("rejects a Docker binary outside the external size/SHA/version pin", async () => {
+    const result = await run([
+      "create",
+      ...pinnedToolArgs().map((value) =>
+        value === dockerSha256 ? `sha256:${"0".repeat(64)}` : value,
+      ),
+      "--container",
+      container,
+      "--source-database",
+      sourceDatabase,
+      "--expected-database-name",
+      sourceDatabase,
+      "--source-user",
+      "postgres",
+      "--repo-root",
+      repoRoot,
+      "--backup",
+      join(temporary, "wrong-tool.dump"),
+      "--receipt",
+      join(temporary, "wrong-tool.json"),
+    ]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Docker binary.*pin/i);
+  });
+
   it("rejects a source whose applied migration chain drifted", async () => {
     const originalHash = psql(
       sourceDatabase,
@@ -337,8 +453,7 @@ describe("precutover PostgreSQL backup receipt", () => {
     try {
       const result = await run([
         "create",
-        "--docker-binary",
-        "/usr/bin/docker",
+        ...pinnedToolArgs(),
         "--container",
         container,
         "--source-database",

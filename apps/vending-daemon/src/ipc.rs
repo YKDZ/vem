@@ -4262,6 +4262,145 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn precutover_cli_proves_managed_media_through_the_production_router() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (mut ctx, _) = test_context(
+            temp.path().join("daemon"),
+            "http://platform.invalid/api".to_string(),
+        )
+        .await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("loopback listener");
+        let address = listener.local_addr().expect("loopback address");
+        let origin = format!("http://{address}");
+        let bytes = b"\x89PNG\r\n\x1a\nprecutover-router".to_vec();
+        let descriptor = ready_media_descriptor(&bytes);
+        let cache = crate::managed_media::ManagedMediaCache::new(
+            temp.path().join("precutover-media"),
+            &origin,
+            Arc::new(ReadyMediaFetcher(bytes)),
+        )
+        .expect("media cache");
+        cache
+            .reconcile_active_catalog("test-generation", vec![descriptor.clone()])
+            .await
+            .expect("adopt media");
+        for _ in 0..100 {
+            if cache
+                .snapshot()
+                .await
+                .1
+                .first()
+                .is_some_and(|asset| asset.readiness == crate::managed_media::MediaReadiness::Ready)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let product_id = "550e8400-e29b-41d4-a716-446655440134";
+        let variant_id = "550e8400-e29b-41d4-a716-446655440133";
+        ctx.state
+            .apply_planogram(MachinePlanogramInput {
+                planogram_version: "PLAN-PRECUTOVER-MEDIA".to_string(),
+                source: "test".to_string(),
+                applied_by: None,
+                slots: vec![MachinePlanogramSlotInput {
+                    slot_id: "550e8400-e29b-41d4-a716-446655440131".to_string(),
+                    row_no: 1,
+                    cell_no: 1,
+                    capacity: 8,
+                    par_level: 6,
+                    inventory_id: "550e8400-e29b-41d4-a716-446655440132".to_string(),
+                    variant_id: variant_id.to_string(),
+                    product_id: product_id.to_string(),
+                    product_name: "Precutover media product".to_string(),
+                    product_description: None,
+                    cover_image_url: Some(descriptor.reference.clone()),
+                    category_id: None,
+                    category_name: None,
+                    sku: "PRECUTOVER-MEDIA-001".to_string(),
+                    size: None,
+                    color: None,
+                    price_cents: 200,
+                    product_sort_order: 1,
+                    target_gender: None,
+                }],
+            })
+            .await
+            .expect("planogram");
+        ctx.state
+            .record_stock_movement(StockMovementInput {
+                movement_id: "PRECUTOVER-MEDIA-STOCK".to_string(),
+                planogram_version: "PLAN-PRECUTOVER-MEDIA".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440131".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 1,
+                source: "test".to_string(),
+                attributed_to: None,
+            })
+            .await
+            .expect("stock");
+        let mut catalog_descriptor = serde_json::to_value(&descriptor).expect("catalog descriptor");
+        catalog_descriptor
+            .get_mut("revision")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("descriptor revision")
+            .remove("assetRevision");
+        ctx.ui.status_cache.catalog.write().await.items = vec![serde_json::json!({
+            "productId": product_id,
+            "variantId": variant_id,
+            "coverImageMedia": catalog_descriptor,
+        })];
+        ctx.media_cache = cache.clone();
+        let shutdown = ctx.background_shutdown.clone();
+        let graceful = shutdown.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, build_router(ctx))
+                .with_graceful_shutdown(async move { graceful.cancelled().await })
+                .await
+        });
+        let receipt = temp.path().join("managed-media-receipt.json");
+        let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scripts/precutover-managed-media.mjs");
+        let mut command = tokio::process::Command::new("node");
+        command
+            .kill_on_drop(true)
+            .arg(script)
+            .args([
+                "create",
+                "--origin",
+                &origin,
+                "--token",
+                "test-token",
+                "--receipt",
+            ])
+            .arg(&receipt);
+        let output = tokio::time::timeout(Duration::from_secs(15), command.output())
+            .await
+            .expect("precutover CLI deadline")
+            .expect("spawn precutover CLI");
+        assert!(
+            output.status.success(),
+            "precutover CLI failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let receipt: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(receipt).expect("managed-media receipt"))
+                .expect("receipt JSON");
+        assert_eq!(receipt["schemaVersion"], "vem.precutover.managed-media.v1");
+        assert_eq!(receipt["trustStatus"], "pending_release_set_approval");
+        assert_eq!(receipt["assets"][0]["id"], descriptor.id);
+        shutdown.cancel();
+        cache.shutdown().await;
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("production router shutdown")
+            .expect("production router task")
+            .expect("production router result");
+    }
+
     #[tokio::test]
     async fn legal_absent_warming_and_unavailable_media_are_404_without_fetching() {
         struct CountingFetcher(Arc<std::sync::atomic::AtomicUsize>);

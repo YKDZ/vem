@@ -12,6 +12,7 @@ const GRANT_RE = /^[A-Za-z0-9._~-]{16,128}$/;
 const CONTENT_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
 const PURPOSES = new Set(["product_display_image", "try_on_garment"]);
 const MAX_JSON_BYTES = 4 * 1024 * 1024;
+const PROCESS_DEADLINE_AT = Date.now() + 120_000;
 
 function fail(message) {
   throw new Error(message);
@@ -104,13 +105,15 @@ async function request(
   url,
   { method = "GET", token, maximum = MAX_JSON_BYTES } = {},
 ) {
+  const remaining = PROCESS_DEADLINE_AT - Date.now();
+  if (remaining <= 0) fail("managed-media proof exceeded its deadline");
   let response;
   try {
     response = await fetch(url, {
       method,
       headers: token ? { authorization: `Bearer ${token}` } : undefined,
       redirect: "error",
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(Math.min(5000, remaining)),
     });
   } catch (error) {
     fail(`HTTP ${method} failed: ${error.message}`);
@@ -265,6 +268,24 @@ function parseSaleView(value, snapshot) {
         continue;
       }
       validateDescriptor(descriptor, `sale-view item ${index} ${field}`);
+      const expectedPurpose =
+        field === "coverImageMedia"
+          ? "product_display_image"
+          : "try_on_garment";
+      if (descriptor.purpose !== expectedPurpose) {
+        fail(
+          `${field === "coverImageMedia" ? "cover" : "garment"} media purpose is invalid: ${descriptor.id}`,
+        );
+      }
+      if (
+        field === "tryOnGarmentMedia" &&
+        (descriptor.contentType !== "image/png" ||
+          typeof descriptor.revision.assetRevision !== "string")
+      ) {
+        fail(
+          `garment media requires PNG bytes and an asset revision: ${descriptor.id}`,
+        );
+      }
       const projection = snapshot.byId.get(descriptor.id);
       if (!projection)
         fail(
@@ -285,26 +306,34 @@ function parseSaleView(value, snapshot) {
 
 async function proveBytes(entry) {
   const head = await request(entry.readyUrl, { method: "HEAD" });
-  const expectedLength = String(entry.descriptor.byteSize);
-  if (head.response.headers.get("content-length") !== expectedLength) {
-    fail(`managed media byte size mismatch: ${entry.descriptor.id}`);
-  }
-  if (
-    head.response.headers.get("content-type") !== entry.descriptor.contentType
-  ) {
-    fail(`managed media content type mismatch: ${entry.descriptor.id}`);
-  }
-  if (head.response.headers.get("etag") !== `"${entry.descriptor.digest}"`) {
-    fail(`managed media digest identity mismatch: ${entry.descriptor.id}`);
-  }
+  validateIdentityHeaders(head.response, entry.descriptor);
   const get = await request(entry.readyUrl, {
     maximum: entry.descriptor.byteSize + 1,
   });
+  validateIdentityHeaders(get.response, entry.descriptor);
   if (get.bytes.byteLength !== entry.descriptor.byteSize) {
     fail(`managed media byte size mismatch: ${entry.descriptor.id}`);
   }
   if (sha256(get.bytes) !== entry.descriptor.digest) {
     fail(`managed media digest mismatch: ${entry.descriptor.id}`);
+  }
+  if (
+    entry.descriptor.purpose === "try_on_garment" &&
+    !get.bytes.subarray(0, 8).equals(Buffer.from("\x89PNG\r\n\x1a\n"))
+  ) {
+    fail(`garment media bytes are not PNG: ${entry.descriptor.id}`);
+  }
+}
+
+function validateIdentityHeaders(response, descriptor) {
+  if (response.headers.get("content-length") !== String(descriptor.byteSize)) {
+    fail(`managed media byte size mismatch: ${descriptor.id}`);
+  }
+  if (response.headers.get("content-type") !== descriptor.contentType) {
+    fail(`managed media content type mismatch: ${descriptor.id}`);
+  }
+  if (response.headers.get("etag") !== `"${descriptor.digest}"`) {
+    fail(`managed media digest identity mismatch: ${descriptor.id}`);
   }
 }
 
@@ -382,6 +411,7 @@ async function main() {
     origin: options.origin,
     planogramVersion: sale.planogramVersion,
     schemaVersion: RECEIPT_SCHEMA,
+    trustStatus: "pending_release_set_approval",
   };
   writeAtomic(options.receipt, canonicalJson(receipt));
   process.stdout.write(`${options.receipt}\n`);

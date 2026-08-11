@@ -27,6 +27,8 @@ const DATABASE_RE = /^[a-z][a-z0-9_]{0,62}$/;
 const DIGEST_RE = /^sha256:[a-f0-9]{64}$/;
 const MAX_COMMAND_OUTPUT = 8 * 1024 * 1024;
 const MAX_BACKUP_BYTES = 64 * 1024 * 1024 * 1024;
+const COMMAND_DEADLINE_MS = 30_000;
+const DATABASE_OPERATION_DEADLINE_MS = 300_000;
 const EXPECTED_CONSTRAINTS = Object.freeze([
   ["media_assets", "media_assets_pkey", "p", "PRIMARY KEY (id)"],
   [
@@ -138,8 +140,8 @@ function exactKeys(value, keys, label) {
 
 function parseArgs(argv) {
   const [command, ...rest] = argv;
-  if (!new Set(["create", "verify"]).has(command)) {
-    fail("usage: precutover-database-backup.mjs <create|verify> ...");
+  if (command !== "create") {
+    fail("create is the only production database-backup command");
   }
   const allowed = new Set([
     "docker-binary",
@@ -150,6 +152,9 @@ function parseArgs(argv) {
     "repo-root",
     "backup",
     "receipt",
+    "expected-docker-byte-size",
+    "expected-docker-sha256",
+    "expected-docker-version",
   ]);
   const values = {};
   for (let index = 0; index < rest.length; index += 2) {
@@ -172,21 +177,22 @@ function parseArgs(argv) {
     ["repoRoot", "repo-root"],
     ["backup", "backup"],
     ["receipt", "receipt"],
+    ["expectedDockerByteSize", "expected-docker-byte-size"],
+    ["expectedDockerSha256", "expected-docker-sha256"],
+    ["expectedDockerVersion", "expected-docker-version"],
   ]) {
     if (!values[key]) fail(`--${flag} is required`);
   }
-  if (command === "create") {
-    for (const [key, flag] of [
-      ["sourceDatabase", "source-database"],
-      ["expectedDatabaseName", "expected-database-name"],
-    ]) {
-      if (!values[key]) fail(`--${flag} is required`);
-    }
-    if (values.sourceDatabase !== values.expectedDatabaseName) {
-      fail(
-        "source database identity does not match the external expected database name",
-      );
-    }
+  for (const [key, flag] of [
+    ["sourceDatabase", "source-database"],
+    ["expectedDatabaseName", "expected-database-name"],
+  ]) {
+    if (!values[key]) fail(`--${flag} is required`);
+  }
+  if (values.sourceDatabase !== values.expectedDatabaseName) {
+    fail(
+      "source database identity does not match the external expected database name",
+    );
   }
   for (const key of ["dockerBinary", "repoRoot", "backup", "receipt"]) {
     if (!isAbsolute(values[key]))
@@ -200,10 +206,20 @@ function parseArgs(argv) {
   }
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(values.container))
     fail("container identity is invalid");
+  const expectedDockerByteSize = Number(values.expectedDockerByteSize);
+  if (
+    !Number.isSafeInteger(expectedDockerByteSize) ||
+    expectedDockerByteSize <= 0 ||
+    !DIGEST_RE.test(values.expectedDockerSha256) ||
+    values.expectedDockerVersion.length > 256
+  ) {
+    fail("external Docker binary pin is invalid");
+  }
+  values.expectedDockerByteSize = expectedDockerByteSize;
   return { command, ...values };
 }
 
-function verifyAbsoluteExecutable(path) {
+async function verifyAbsoluteExecutable(path, options) {
   const stat = lstatSync(path);
   if (
     !stat.isFile() ||
@@ -213,9 +229,35 @@ function verifyAbsoluteExecutable(path) {
   ) {
     fail("docker binary must be an absolute real regular executable");
   }
+  const digest = createHash("sha256");
+  let byteSize = 0;
+  for await (const chunk of createReadStream(path)) {
+    byteSize += chunk.byteLength;
+    digest.update(chunk);
+  }
+  const sha256Value = `sha256:${digest.digest("hex")}`;
+  if (
+    byteSize !== options.expectedDockerByteSize ||
+    sha256Value !== options.expectedDockerSha256
+  ) {
+    fail("Docker binary does not match its external size/SHA-256 pin");
+  }
+  const version = await run(path, ["--version"]);
+  if (version !== options.expectedDockerVersion) {
+    fail("Docker binary does not match its external version pin");
+  }
+  return { byteSize, path, sha256: sha256Value, version };
 }
 
-function run(binary, args, { input, maximum = MAX_COMMAND_OUTPUT } = {}) {
+function run(
+  binary,
+  args,
+  {
+    input,
+    maximum = MAX_COMMAND_OUTPUT,
+    deadlineMs = COMMAND_DEADLINE_MS,
+  } = {},
+) {
   return new Promise((resolveResult, reject) => {
     const child = spawn(binary, args, {
       stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
@@ -224,6 +266,11 @@ function run(binary, args, { input, maximum = MAX_COMMAND_OUTPUT } = {}) {
     const stderr = [];
     let stdoutSize = 0;
     let stderrSize = 0;
+    let timedOut = false;
+    const deadline = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, deadlineMs);
     const collect = (chunks, kind) => (chunk) => {
       if (kind === "stdout") stdoutSize += chunk.byteLength;
       else stderrSize += chunk.byteLength;
@@ -236,11 +283,17 @@ function run(binary, args, { input, maximum = MAX_COMMAND_OUTPUT } = {}) {
     };
     child.stdout.on("data", collect(stdout, "stdout"));
     child.stderr.on("data", collect(stderr, "stderr"));
-    child.once("error", reject);
+    child.once("error", (error) => {
+      clearTimeout(deadline);
+      reject(error);
+    });
     child.once("close", (status, signal) => {
+      clearTimeout(deadline);
       const stdoutText = Buffer.concat(stdout).toString("utf8");
       const stderrText = Buffer.concat(stderr).toString("utf8");
-      if (status !== 0) {
+      if (timedOut) {
+        reject(new Error(`command exceeded its ${deadlineMs}ms deadline`));
+      } else if (status !== 0) {
         reject(
           new Error(
             `command failed (${status ?? signal}): ${stderrText.trim()}`,
@@ -255,7 +308,7 @@ function run(binary, args, { input, maximum = MAX_COMMAND_OUTPUT } = {}) {
 }
 
 async function validateContainer(options) {
-  verifyAbsoluteExecutable(options.dockerBinary);
+  const docker = await verifyAbsoluteExecutable(options.dockerBinary, options);
   const inspected = JSON.parse(
     await run(options.dockerBinary, ["inspect", options.container]),
   );
@@ -301,26 +354,45 @@ async function validateContainer(options) {
   );
   if (!/^16\d{4}$/.test(serverVersion))
     fail("PostgreSQL server is not version 16");
-  return { containerId: container.Id, postgresVersion: versions[0] };
+  return {
+    containerId: container.Id,
+    docker,
+    image: PINNED_POSTGRES_IMAGE,
+    imageId: container.Image,
+    pgDumpVersion: versions[0],
+    pgRestoreVersion: versions[1],
+    psqlVersion: versions[2],
+    serverVersion,
+  };
 }
 
-async function psql(options, containerId, database, sql) {
-  return await run(options.dockerBinary, [
-    "exec",
-    "--user",
-    "postgres",
-    containerId,
-    "/usr/bin/psql",
-    "-v",
-    "ON_ERROR_STOP=1",
-    "-AtX",
-    "--dbname",
-    database,
-    "--username",
-    options.sourceUser,
-    "--command",
-    sql,
-  ]);
+async function psql(
+  options,
+  containerId,
+  database,
+  sql,
+  maximum = MAX_COMMAND_OUTPUT,
+) {
+  return await run(
+    options.dockerBinary,
+    [
+      "exec",
+      "--user",
+      "postgres",
+      containerId,
+      "/usr/bin/psql",
+      "-v",
+      "ON_ERROR_STOP=1",
+      "-AtX",
+      "--dbname",
+      database,
+      "--username",
+      options.sourceUser,
+      "--command",
+      sql,
+    ],
+    { maximum },
+  );
 }
 
 function migrationFacts(repoRoot) {
@@ -366,27 +438,19 @@ SELECT json_build_object(
     'constraints',(SELECT count(*)::int FROM pg_constraint WHERE conname ILIKE '%silhouette%' OR pg_get_constraintdef(oid) ILIKE '%silhouette%'),
     'purposeRows',(SELECT count(*)::int FROM media_assets WHERE purpose='try_on_silhouette'),
     'storageReferences',(SELECT count(*)::int FROM media_assets WHERE storage_key ILIKE '%silhouette%' OR coalesce(public_url,'') ILIKE '%silhouette%')),
-  'tryOnRows',(SELECT coalesce(json_agg(row_to_json(facts) ORDER BY facts."garmentId",facts."variantId"),'[]'::json) FROM (
-    SELECT g.id::text AS "garmentId",g.product_id::text AS "productId",g.source_media_asset_id::text AS "sourceMediaAssetId",
-      g.template::text AS template,g.status::text AS status,coalesce(v.id::text,'') AS "variantId"
-    FROM try_on_garments g LEFT JOIN product_variants v ON v.try_on_garment_id=g.id
-    ORDER BY g.id,v.id) facts)
+  'catalogData',json_build_object(
+    'mediaAssets',(SELECT coalesce(json_agg(to_jsonb(m) ORDER BY m.id),'[]'::json) FROM media_assets m),
+    'products',(SELECT coalesce(json_agg(to_jsonb(p) ORDER BY p.id),'[]'::json) FROM products p),
+    'variants',(SELECT coalesce(json_agg(to_jsonb(v) ORDER BY v.id),'[]'::json) FROM product_variants v),
+    'garments',(SELECT coalesce(json_agg(to_jsonb(g) ORDER BY g.id),'[]'::json) FROM try_on_garments g),
+    'associations',(SELECT coalesce(json_agg(json_build_object(
+      'garmentId',v.try_on_garment_id::text,'productId',v.product_id::text,'variantId',v.id::text)
+      ORDER BY v.try_on_garment_id,v.id),'[]'::json)
+      FROM product_variants v WHERE v.try_on_garment_id IS NOT NULL)
+  )
 )`;
 
-async function databaseFacts(
-  options,
-  containerId,
-  database,
-  expectedMigration,
-) {
-  let raw;
-  try {
-    raw = JSON.parse(
-      await psql(options, containerId, database, DATABASE_FACTS_SQL),
-    );
-  } catch (error) {
-    fail(`database migration or schema proof failed: ${error.message}`);
-  }
+function validateDatabaseFacts(raw, database, expectedMigration) {
   if (raw.databaseName !== database)
     fail("database identity mismatch during proof");
   if (
@@ -429,11 +493,22 @@ async function databaseFacts(
   );
   if (Object.values(legacyResidue).some((value) => value !== 0))
     fail("database contains legacy try-on residue");
-  if (!Array.isArray(raw.tryOnRows)) fail("try-on data proof is invalid");
-  const garmentCount = new Set(raw.tryOnRows.map((row) => row.garmentId)).size;
-  const associationCount = raw.tryOnRows.filter(
-    (row) => row.variantId !== "",
-  ).length;
+  exactKeys(
+    raw.catalogData,
+    ["associations", "garments", "mediaAssets", "products", "variants"],
+    "catalog data proof",
+  );
+  for (const [key, rows] of Object.entries(raw.catalogData)) {
+    if (!Array.isArray(rows)) fail(`catalog data ${key} is invalid`);
+  }
+  const catalogData = {
+    associationCount: raw.catalogData.associations.length,
+    garmentCount: raw.catalogData.garments.length,
+    mediaAssetCount: raw.catalogData.mediaAssets.length,
+    productCount: raw.catalogData.products.length,
+    sha256: sha256(canonicalJson(raw.catalogData)),
+    variantCount: raw.catalogData.variants.length,
+  };
   return {
     databaseName: raw.databaseName,
     systemIdentifier: raw.systemIdentifier,
@@ -443,15 +518,135 @@ async function databaseFacts(
     constraints: EXPECTED_CONSTRAINTS,
     constraintsSha256: sha256(canonicalJson(EXPECTED_CONSTRAINTS)),
     legacyResidue,
-    tryOnData: {
-      associationCount,
-      garmentCount,
-      sha256: sha256(canonicalJson(raw.tryOnRows)),
-    },
+    catalogData,
   };
 }
 
-async function streamDump(options, containerId, database, staging) {
+async function databaseFacts(
+  options,
+  containerId,
+  database,
+  expectedMigration,
+) {
+  let raw;
+  try {
+    raw = JSON.parse(
+      await psql(
+        options,
+        containerId,
+        database,
+        DATABASE_FACTS_SQL,
+        64 * 1024 * 1024,
+      ),
+    );
+  } catch (error) {
+    fail(`database migration or schema proof failed: ${error.message}`);
+  }
+  return validateDatabaseFacts(raw, database, expectedMigration);
+}
+
+async function openSourceSnapshot(options, containerId, database) {
+  const child = spawn(
+    options.dockerBinary,
+    [
+      "exec",
+      "--interactive",
+      "--user",
+      "postgres",
+      containerId,
+      "/usr/bin/psql",
+      "-v",
+      "ON_ERROR_STOP=1",
+      "-qAtX",
+      "--dbname",
+      database,
+      "--username",
+      options.sourceUser,
+    ],
+    { stdio: ["pipe", "pipe", "pipe"] },
+  );
+  const stderr = [];
+  let stderrSize = 0;
+  let timedOut = false;
+  const deadline = setTimeout(() => {
+    timedOut = true;
+    child.kill("SIGKILL");
+  }, DATABASE_OPERATION_DEADLINE_MS);
+  let stdoutSize = 0;
+  let stdout = Buffer.alloc(0);
+  child.stderr.on("data", (chunk) => {
+    stderrSize += chunk.byteLength;
+    if (stderrSize <= MAX_COMMAND_OUTPUT) stderr.push(Buffer.from(chunk));
+    else child.kill("SIGKILL");
+  });
+  const exited = new Promise((resolveExit) => {
+    child.once("error", (error) => resolveExit({ error }));
+    child.once("close", (status, signal) => resolveExit({ signal, status }));
+  });
+  const firstLine = new Promise((resolveLine, reject) => {
+    const onData = (chunk) => {
+      stdoutSize += chunk.byteLength;
+      if (stdoutSize > 64 * 1024 * 1024) {
+        child.kill("SIGKILL");
+        reject(new Error("database snapshot facts exceed their output cap"));
+        return;
+      }
+      stdout = Buffer.concat([stdout, Buffer.from(chunk)]);
+      const newline = stdout.indexOf(0x0a);
+      if (newline >= 0) {
+        child.stdout.off("data", onData);
+        resolveLine(stdout.subarray(0, newline).toString("utf8"));
+      }
+    };
+    child.stdout.on("data", onData);
+    child.once("close", () => {
+      if (!stdout.includes(0x0a)) {
+        reject(
+          new Error(
+            `snapshot transaction ended before export: ${Buffer.concat(stderr).toString("utf8").trim()}`,
+          ),
+        );
+      }
+    });
+  });
+  child.stdin.write(
+    `BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\nSELECT json_build_object('snapshotId',pg_export_snapshot(),'facts',(${DATABASE_FACTS_SQL}));\n`,
+  );
+  let exported;
+  try {
+    exported = JSON.parse(await firstLine);
+    exactKeys(exported, ["facts", "snapshotId"], "exported database snapshot");
+    if (!/^[A-Fa-f0-9-]{3,128}$/.test(exported.snapshotId)) {
+      fail("exported database snapshot identity is invalid");
+    }
+  } catch (error) {
+    clearTimeout(deadline);
+    child.kill("SIGKILL");
+    await exited;
+    throw error;
+  }
+  const finish = async (commit) => {
+    if (commit) child.stdin.end("COMMIT;\n\\q\n");
+    else child.kill("SIGKILL");
+    const result = await exited;
+    clearTimeout(deadline);
+    if (timedOut || result.error || (commit && result.status !== 0)) {
+      fail(
+        timedOut
+          ? "database snapshot transaction exceeded its deadline"
+          : `database snapshot transaction failed: ${Buffer.concat(stderr).toString("utf8").trim()}`,
+      );
+    }
+  };
+  return {
+    abort: async () => await finish(false),
+    commit: async () => await finish(true),
+    facts: exported.facts,
+    snapshotId: exported.snapshotId,
+  };
+}
+
+async function streamDump(options, containerId, database, snapshotId, staging) {
   const child = spawn(
     options.dockerBinary,
     [
@@ -463,7 +658,7 @@ async function streamDump(options, containerId, database, staging) {
       "--format=custom",
       "--no-owner",
       "--no-privileges",
-      "--serializable-deferrable",
+      `--snapshot=${snapshotId}`,
       "--dbname",
       database,
       "--username",
@@ -475,6 +670,11 @@ async function streamDump(options, containerId, database, staging) {
   let byteSize = 0;
   const stderr = [];
   let stderrSize = 0;
+  let timedOut = false;
+  const deadline = setTimeout(() => {
+    timedOut = true;
+    child.kill("SIGKILL");
+  }, DATABASE_OPERATION_DEADLINE_MS);
   child.stderr.on("data", (chunk) => {
     stderrSize += chunk.byteLength;
     if (stderrSize <= MAX_COMMAND_OUTPUT) stderr.push(Buffer.from(chunk));
@@ -515,9 +715,12 @@ async function streamDump(options, containerId, database, staging) {
     const results = await Promise.allSettled([streamed, exited]);
     const failure = results.find((result) => result.status === "rejected");
     if (failure) throw failure.reason;
+    if (timedOut) fail("pg_dump exceeded its absolute deadline");
   } catch (error) {
     child.kill("SIGKILL");
     throw error;
+  } finally {
+    clearTimeout(deadline);
   }
   const header = Buffer.alloc(5);
   const descriptor = openSync(staging, "r");
@@ -528,29 +731,6 @@ async function streamDump(options, containerId, database, staging) {
   }
   if (byteSize < 5 || !header.equals(Buffer.from("PGDMP"))) {
     fail("pg_dump did not produce a PostgreSQL custom backup");
-  }
-  return {
-    byteSize,
-    format: "postgresql-custom",
-    sha256: `sha256:${digest.digest("hex")}`,
-  };
-}
-
-async function fileFacts(path) {
-  const stat = lstatSync(path);
-  if (
-    !stat.isFile() ||
-    stat.isSymbolicLink() ||
-    stat.size <= 0 ||
-    stat.size > MAX_BACKUP_BYTES
-  ) {
-    fail("backup file is invalid");
-  }
-  const digest = createHash("sha256");
-  let byteSize = 0;
-  for await (const chunk of createReadStream(path)) {
-    byteSize += chunk.byteLength;
-    digest.update(chunk);
   }
   return {
     byteSize,
@@ -593,6 +773,11 @@ async function restoreBackup(options, containerId, backup, migration) {
     );
     const stderr = [];
     let stderrSize = 0;
+    let timedOut = false;
+    const deadline = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, DATABASE_OPERATION_DEADLINE_MS);
     child.stderr.on("data", (chunk) => {
       stderrSize += chunk.byteLength;
       if (stderrSize <= MAX_COMMAND_OUTPUT) stderr.push(Buffer.from(chunk));
@@ -610,17 +795,22 @@ async function restoreBackup(options, containerId, backup, migration) {
         else resolveExit();
       });
     });
-    const streamed = pipeline(createReadStream(backup), child.stdin).catch(
-      (error) => {
-        child.kill("SIGKILL");
-        throw error;
-      },
-    );
-    const restoreResults = await Promise.allSettled([streamed, exited]);
-    const restoreFailure = restoreResults.find(
-      (result) => result.status === "rejected",
-    );
-    if (restoreFailure) throw restoreFailure.reason;
+    try {
+      const streamed = pipeline(createReadStream(backup), child.stdin).catch(
+        (error) => {
+          child.kill("SIGKILL");
+          throw error;
+        },
+      );
+      const restoreResults = await Promise.allSettled([streamed, exited]);
+      const restoreFailure = restoreResults.find(
+        (result) => result.status === "rejected",
+      );
+      if (restoreFailure) throw restoreFailure.reason;
+      if (timedOut) fail("pg_restore exceeded its absolute deadline");
+    } finally {
+      clearTimeout(deadline);
+    }
     facts = await databaseFacts(options, containerId, database, migration);
   } catch (error) {
     primaryError = error;
@@ -673,152 +863,10 @@ function writeAtomic(path, contents) {
   }
 }
 
-function validateReceipt(raw) {
-  let receipt;
-  try {
-    receipt = JSON.parse(raw);
-  } catch {
-    fail("database backup receipt is invalid JSON");
-  }
-  if (canonicalJson(receipt) !== raw)
-    fail("database backup receipt is not canonical");
-  exactKeys(
-    receipt,
-    ["backup", "restoreProof", "schemaVersion", "source", "toolchain"],
-    "database backup receipt",
-  );
-  if (receipt.schemaVersion !== RECEIPT_SCHEMA)
-    fail("database backup receipt schema is invalid");
-  exactKeys(receipt.backup, ["byteSize", "format", "sha256"], "backup facts");
-  if (
-    !Number.isSafeInteger(receipt.backup.byteSize) ||
-    receipt.backup.byteSize <= 0 ||
-    !DIGEST_RE.test(receipt.backup.sha256) ||
-    receipt.backup.format !== "postgresql-custom"
-  ) {
-    fail("database backup receipt facts are invalid");
-  }
-  exactKeys(
-    receipt.toolchain,
-    ["image", "postgresVersion"],
-    "database backup toolchain",
-  );
-  if (
-    receipt.toolchain.image !== PINNED_POSTGRES_IMAGE ||
-    !/^16\.\d+$/.test(receipt.toolchain.postgresVersion)
-  ) {
-    fail("database backup receipt toolchain is invalid");
-  }
-  exactKeys(
-    receipt.source,
-    [
-      "currentLsn",
-      "databaseName",
-      "migration",
-      "snapshotTime",
-      "systemIdentifier",
-      "tryOnData",
-    ],
-    "database backup source",
-  );
-  if (
-    !DATABASE_RE.test(receipt.source.databaseName) ||
-    !/^[0-9]+$/.test(receipt.source.systemIdentifier) ||
-    !/^[0-9A-F]+\/[0-9A-F]+$/.test(receipt.source.currentLsn) ||
-    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(
-      receipt.source.snapshotTime,
-    )
-  ) {
-    fail("database backup source identity is invalid");
-  }
-  exactKeys(
-    receipt.restoreProof,
-    [
-      "constraintsSha256",
-      "databaseName",
-      "legacyResidue",
-      "migration",
-      "tryOnData",
-      "verifiedAt",
-    ],
-    "database restore proof",
-  );
-  if (
-    !/^vem_precutover_restore_[0-9]+_[a-f0-9]{12}$/.test(
-      receipt.restoreProof.databaseName,
-    ) ||
-    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(
-      receipt.restoreProof.verifiedAt,
-    )
-  ) {
-    fail("database restore proof identity is invalid");
-  }
-  for (const [label, migration] of [
-    ["source migration", receipt.source.migration],
-    ["restore migration", receipt.restoreProof.migration],
-  ]) {
-    exactKeys(migration, ["chainSha256", "count", "target"], label);
-    if (
-      !DIGEST_RE.test(migration.chainSha256) ||
-      !Number.isSafeInteger(migration.count) ||
-      migration.count <= 0 ||
-      !/^20\d{12}_[a-z0-9_]+$/.test(migration.target)
-    ) {
-      fail(`${label} is invalid`);
-    }
-  }
-  for (const [label, data] of [
-    ["source try-on data", receipt.source.tryOnData],
-    ["restore try-on data", receipt.restoreProof.tryOnData],
-  ]) {
-    exactKeys(data, ["associationCount", "garmentCount", "sha256"], label);
-    if (
-      !Number.isSafeInteger(data.associationCount) ||
-      data.associationCount < 0 ||
-      !Number.isSafeInteger(data.garmentCount) ||
-      data.garmentCount < 0 ||
-      !DIGEST_RE.test(data.sha256)
-    ) {
-      fail(`${label} is invalid`);
-    }
-  }
-  exactKeys(
-    receipt.restoreProof.legacyResidue,
-    ["columns", "constraints", "indexes", "purposeRows", "storageReferences"],
-    "restore legacy residue",
-  );
-  if (
-    Object.values(receipt.restoreProof.legacyResidue).some(
-      (value) => value !== 0,
-    )
-  ) {
-    fail("database backup receipt contains legacy residue");
-  }
-  if (!DIGEST_RE.test(receipt.restoreProof.constraintsSha256))
-    fail("database restore constraints digest is invalid");
-  if (
-    canonicalJson(receipt.source.migration) !==
-      canonicalJson(receipt.restoreProof.migration) ||
-    canonicalJson(receipt.source.tryOnData) !==
-      canonicalJson(receipt.restoreProof.tryOnData)
-  ) {
-    fail("database source and restore receipt facts differ");
-  }
-  return receipt;
-}
-
 async function createReceipt(options, container) {
   if (options.sourceDatabase !== options.expectedDatabaseName)
     fail("source database identity mismatch");
   const migration = migrationFacts(options.repoRoot);
-  const source = await databaseFacts(
-    options,
-    container.containerId,
-    options.sourceDatabase,
-    migration,
-  );
-  if (source.databaseName !== options.expectedDatabaseName)
-    fail("source database identity mismatch");
   const backupParent = dirname(options.backup);
   const parentStat = lstatSync(backupParent);
   if (!parentStat.isDirectory() || parentStat.isSymbolicLink())
@@ -829,13 +877,30 @@ async function createReceipt(options, container) {
   );
   let backupPublished = false;
   let receiptPublished = false;
+  let sourceSnapshot;
   try {
+    sourceSnapshot = await openSourceSnapshot(
+      options,
+      container.containerId,
+      options.sourceDatabase,
+    );
+    const source = validateDatabaseFacts(
+      sourceSnapshot.facts,
+      options.sourceDatabase,
+      migration,
+    );
+    if (source.databaseName !== options.expectedDatabaseName)
+      fail("source database identity mismatch");
     const backup = await streamDump(
       options,
       container.containerId,
       options.sourceDatabase,
+      sourceSnapshot.snapshotId,
       staging,
     );
+    const committedSnapshot = sourceSnapshot;
+    sourceSnapshot = undefined;
+    await committedSnapshot.commit();
     const restoreProof = await restoreBackup(
       options,
       container.containerId,
@@ -844,7 +909,7 @@ async function createReceipt(options, container) {
     );
     if (
       restoreProof.migration.chainSha256 !== source.migration.chainSha256 ||
-      restoreProof.tryOnData.sha256 !== source.tryOnData.sha256 ||
+      restoreProof.catalogData.sha256 !== source.catalogData.sha256 ||
       restoreProof.constraintsSha256 !== source.constraintsSha256
     ) {
       fail("restored database does not match source database facts");
@@ -855,68 +920,54 @@ async function createReceipt(options, container) {
     const receipt = {
       backup,
       restoreProof: {
+        catalogData: restoreProof.catalogData,
         constraintsSha256: restoreProof.constraintsSha256,
         databaseName: restoreProof.databaseName,
         legacyResidue: restoreProof.legacyResidue,
         migration: restoreProof.migration,
-        tryOnData: restoreProof.tryOnData,
         verifiedAt: restoreProof.verifiedAt,
       },
       schemaVersion: RECEIPT_SCHEMA,
       source: {
+        catalogData: source.catalogData,
         currentLsn: source.currentLsn,
         databaseName: source.databaseName,
         migration: source.migration,
+        snapshotId: committedSnapshot.snapshotId,
         snapshotTime: source.snapshotTime,
         systemIdentifier: source.systemIdentifier,
-        tryOnData: source.tryOnData,
       },
       toolchain: {
-        image: PINNED_POSTGRES_IMAGE,
-        postgresVersion: container.postgresVersion,
+        docker: container.docker,
+        image: container.image,
+        imageId: container.imageId,
+        pgDump: {
+          path: "/usr/bin/pg_dump",
+          version: container.pgDumpVersion,
+        },
+        pgRestore: {
+          path: "/usr/bin/pg_restore",
+          version: container.pgRestoreVersion,
+        },
+        psql: { path: "/usr/bin/psql", version: container.psqlVersion },
+        serverVersion: container.serverVersion,
       },
+      trustStatus: "pending_release_set_approval",
     };
     writeAtomic(options.receipt, canonicalJson(receipt));
     receiptPublished = true;
   } finally {
+    if (sourceSnapshot) await sourceSnapshot.abort();
     rmSync(staging, { force: true });
     if (backupPublished && !receiptPublished)
       rmSync(options.backup, { force: true });
   }
 }
 
-async function verifyReceipt(options, container) {
-  const raw = readFileSync(options.receipt, "utf8");
-  const receipt = validateReceipt(raw);
-  if (receipt.toolchain.postgresVersion !== container.postgresVersion) {
-    fail("database backup tool version does not match its receipt");
-  }
-  const backup = await fileFacts(options.backup);
-  if (canonicalJson(backup) !== canonicalJson(receipt.backup))
-    fail("backup size or SHA-256 does not match its receipt");
-  const migration = migrationFacts(options.repoRoot);
-  const restore = await restoreBackup(
-    options,
-    container.containerId,
-    options.backup,
-    migration,
-  );
-  if (
-    canonicalJson(restore.migration) !==
-      canonicalJson(receipt.source.migration) ||
-    restore.tryOnData.sha256 !== receipt.source.tryOnData.sha256 ||
-    restore.constraintsSha256 !== receipt.restoreProof.constraintsSha256 ||
-    Object.values(restore.legacyResidue).some((value) => value !== 0)
-  ) {
-    fail("restored backup does not match its receipt proof");
-  }
-}
-
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const container = await validateContainer(options);
-  if (options.command === "create") await createReceipt(options, container);
-  else await verifyReceipt(options, container);
+  await createReceipt(options, container);
   process.stdout.write(`${options.receipt}\n`);
 }
 

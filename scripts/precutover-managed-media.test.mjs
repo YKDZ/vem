@@ -21,6 +21,19 @@ const descriptor = Object.freeze({
   purpose: "product_display_image",
   revision: { catalogRevision: "catalog-42", assetRevision: "asset-7" },
 });
+const garmentBytes = Buffer.from("\x89PNG\r\n\x1a\ntest-garment-media\n");
+const garmentDigest = `sha256:${createHash("sha256")
+  .update(garmentBytes)
+  .digest("hex")}`;
+const garmentDescriptor = Object.freeze({
+  id: "00000000-0000-4000-8000-000000000002",
+  reference: "/api/media-assets/00000000-0000-4000-8000-000000000002/content",
+  digest: garmentDigest,
+  contentType: "image/png",
+  byteSize: garmentBytes.byteLength,
+  purpose: "try_on_garment",
+  revision: { catalogRevision: "catalog-42", assetRevision: "garment-9" },
+});
 
 const temporaryRoots = [];
 afterEach(() => {
@@ -52,6 +65,14 @@ function run(args) {
 async function withDaemon(options, callback) {
   let snapshotReads = 0;
   const requests = [];
+  const activeGarmentBytes = options.garmentBadBytes
+    ? Buffer.from("not-a-png-garment\n")
+    : garmentBytes;
+  const activeGarment = structuredClone(garmentDescriptor);
+  activeGarment.digest = `sha256:${createHash("sha256")
+    .update(activeGarmentBytes)
+    .digest("hex")}`;
+  activeGarment.byteSize = activeGarmentBytes.byteLength;
   const server = createServer((request, response) => {
     requests.push({
       authorization: request.headers.authorization ?? null,
@@ -68,14 +89,32 @@ async function withDaemon(options, callback) {
         options.generationChange && snapshotReads > 1
           ? "catalog-43"
           : "catalog-42";
+      const projectedDescriptor = structuredClone(descriptor);
+      if (options.wrongPurpose) {
+        projectedDescriptor.purpose = "try_on_garment";
+        projectedDescriptor.revision.assetRevision =
+          "asset-cover-wrong-purpose";
+      }
       const projection = {
-        descriptor,
+        descriptor: projectedDescriptor,
         readiness: options.readiness ?? "ready",
         readyUrl: null,
         diagnostic: null,
         diagnosticReason: null,
       };
       projection.readyUrl = `${origin}/media/${digest}?grant=abcdefghijklmnop`;
+      const projectedGarment = structuredClone(activeGarment);
+      if (options.garmentRevisionMissing) {
+        delete projectedGarment.revision.assetRevision;
+      }
+      if (options.garmentNotPng) projectedGarment.contentType = "image/jpeg";
+      const garmentProjection = {
+        descriptor: projectedGarment,
+        readiness: "ready",
+        readyUrl: `${origin}/media/${activeGarment.digest}?grant=qrstuvwxyzABCDEF`,
+        diagnostic: null,
+        diagnosticReason: null,
+      };
       if (projection.readiness !== "ready") {
         projection.readyUrl = null;
         projection.diagnostic = "not ready";
@@ -85,7 +124,11 @@ async function withDaemon(options, callback) {
         ? []
         : options.duplicate
           ? [projection, structuredClone(projection)]
-          : [projection];
+          : options.garmentRevisionMissing ||
+              options.garmentNotPng ||
+              options.garmentBadBytes
+            ? [projection, garmentProjection]
+            : [projection];
       response
         .writeHead(200, { "content-type": "application/json" })
         .end(JSON.stringify({ generation, assets }));
@@ -96,15 +139,31 @@ async function withDaemon(options, callback) {
         response.writeHead(401).end();
         return;
       }
+      const saleDescriptor = structuredClone(descriptor);
+      if (options.wrongPurpose) {
+        saleDescriptor.purpose = "try_on_garment";
+        saleDescriptor.revision.assetRevision = "asset-cover-wrong-purpose";
+      }
+      const saleGarment = structuredClone(activeGarment);
+      if (options.garmentRevisionMissing) {
+        delete saleGarment.revision.assetRevision;
+      }
+      if (options.garmentNotPng) saleGarment.contentType = "image/jpeg";
+      const hasGarment =
+        options.garmentRevisionMissing ||
+        options.garmentNotPng ||
+        options.garmentBadBytes;
       response.writeHead(200, { "content-type": "application/json" }).end(
         JSON.stringify({
           items: [
             {
               catalogKey: "product-1:variant-1",
-              coverImageMedia: descriptor,
+              coverImageMedia: saleDescriptor,
               coverImageReadyUrl: `${origin}/media/${digest}?grant=abcdefghijklmnop`,
-              tryOnGarmentMedia: null,
-              tryOnGarmentReadyUrl: null,
+              tryOnGarmentMedia: hasGarment ? saleGarment : null,
+              tryOnGarmentReadyUrl: hasGarment
+                ? `${origin}/media/${activeGarment.digest}?grant=qrstuvwxyzABCDEF`
+                : null,
             },
           ],
           source: "live",
@@ -123,12 +182,29 @@ async function withDaemon(options, callback) {
         ? Buffer.from("tampered-media\n")
         : mediaBytes;
       const headers = {
-        "content-type": descriptor.contentType,
+        "content-type":
+          options.getHeaderMismatch && request.method === "GET"
+            ? "image/jpeg"
+            : descriptor.contentType,
         "content-length": String(body.byteLength),
-        etag: `"${digest}"`,
+        etag:
+          options.getHeaderMismatch && request.method === "GET"
+            ? '"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"'
+            : `"${digest}"`,
       };
       response.writeHead(200, headers);
       response.end(request.method === "HEAD" ? undefined : body);
+      return;
+    }
+    if (
+      request.url === `/media/${activeGarment.digest}?grant=qrstuvwxyzABCDEF`
+    ) {
+      response.writeHead(200, {
+        "content-type": activeGarment.contentType,
+        "content-length": String(activeGarmentBytes.byteLength),
+        etag: `"${activeGarment.digest}"`,
+      });
+      response.end(request.method === "HEAD" ? undefined : activeGarmentBytes);
       return;
     }
     response.writeHead(404).end();
@@ -167,6 +243,7 @@ describe("precutover managed-media receipt", () => {
       const raw = readFileSync(receiptPath, "utf8");
       const receipt = JSON.parse(raw);
       assert.equal(receipt.schemaVersion, "vem.precutover.managed-media.v1");
+      assert.equal(receipt.trustStatus, "pending_release_set_approval");
       assert.equal(receipt.generation, "catalog-42");
       assert.equal(receipt.planogramVersion, "planogram-9");
       assert.equal(receipt.assets.length, 1);
@@ -202,6 +279,23 @@ describe("precutover managed-media receipt", () => {
     ["generation change", { generationChange: true }, /generation changed/i],
     ["404", { notFound: true }, /status 404/i],
     ["tampered bytes", { tamper: true }, /byte size|digest/i],
+    ["wrong cover purpose", { wrongPurpose: true }, /cover.*purpose/i],
+    [
+      "wrong GET identity headers",
+      { getHeaderMismatch: true },
+      /content type|digest/i,
+    ],
+    [
+      "garment without revision",
+      { garmentRevisionMissing: true },
+      /garment.*revision/i,
+    ],
+    ["garment without PNG semantics", { garmentNotPng: true }, /garment.*PNG/i],
+    [
+      "garment bytes without a PNG signature",
+      { garmentBadBytes: true },
+      /garment.*not PNG/i,
+    ],
   ]) {
     it(`rejects ${name}`, async () => {
       await withDaemon(options, async ({ origin }) => {
