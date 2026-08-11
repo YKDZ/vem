@@ -6,6 +6,7 @@ import {
   constants,
   createReadStream,
   fstatSync,
+  fsyncSync,
   linkSync,
   lstatSync,
   mkdirSync,
@@ -163,6 +164,85 @@ function identity(stat) {
   return [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(":");
 }
 
+function heldIdentity(stat) {
+  return [
+    stat.dev,
+    stat.ino,
+    stat.mode,
+    stat.nlink,
+    stat.size,
+    stat.mtimeNs,
+    stat.ctimeNs,
+  ].join(":");
+}
+
+function hashHeldFile(fileDescriptor, maximumBytes, label) {
+  const digest = createHash("sha256");
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  let byteSize = 0;
+  for (;;) {
+    const count = readSync(fileDescriptor, buffer, 0, buffer.length, byteSize);
+    if (count === 0) break;
+    byteSize += count;
+    if (byteSize > maximumBytes) fail(`${label} exceeded its size cap`);
+    digest.update(buffer.subarray(0, count));
+  }
+  return { byteSize, sha256: `sha256:${digest.digest("hex")}` };
+}
+
+function validateHeldPath(path, fileDescriptor, initialStat, label) {
+  const held = fstatSync(fileDescriptor, { bigint: true });
+  const current = lstatSync(path, { bigint: true });
+  if (
+    !held.isFile() ||
+    !current.isFile() ||
+    current.isSymbolicLink() ||
+    realpathSync(path) !== path ||
+    heldIdentity(held) !== heldIdentity(initialStat) ||
+    heldIdentity(current) !== heldIdentity(held)
+  ) {
+    fail(`${label} identity changed during verification`);
+  }
+}
+
+function revalidateStagedFile(lease) {
+  validateHeldPath(
+    lease.source.path,
+    lease.source.fileDescriptor,
+    lease.source.initialStat,
+    `${lease.label} source`,
+  );
+  validateHeldPath(
+    lease.staging.path,
+    lease.staging.fileDescriptor,
+    lease.staging.initialStat,
+    `${lease.label} private staging`,
+  );
+  const source = hashHeldFile(
+    lease.source.fileDescriptor,
+    lease.maximumBytes,
+    `${lease.label} source`,
+  );
+  const staging = hashHeldFile(
+    lease.staging.fileDescriptor,
+    lease.maximumBytes,
+    `${lease.label} private staging`,
+  );
+  if (
+    canonicalJson(source) !== canonicalJson(lease.facts) ||
+    canonicalJson(staging) !== canonicalJson(lease.facts)
+  ) {
+    fail(`${lease.label} content changed during verification`);
+  }
+}
+
+function closeStagedFile(lease) {
+  if (lease.closed) return;
+  lease.closed = true;
+  closeSync(lease.staging.fileDescriptor);
+  closeSync(lease.source.fileDescriptor);
+}
+
 async function hashRegularFile(path, label, maximumBytes) {
   assertAbsolute(path, label);
   const before = lstatSync(path);
@@ -202,26 +282,27 @@ function stageRegularFile(
   mode = 0o600,
 ) {
   assertAbsolute(source, label);
-  const before = lstatSync(source);
+  const before = lstatSync(source, { bigint: true });
   if (
     before.isSymbolicLink() ||
     !before.isFile() ||
     realpathSync(source) !== source ||
-    before.size <= 0 ||
-    before.size > maximumBytes
+    before.size <= 0n ||
+    before.size > BigInt(maximumBytes)
   ) {
     fail(`${label} must be a bounded canonical regular file`);
   }
   let input;
   let output;
+  let stagingInput;
   try {
     input = openSync(source, constants.O_RDONLY | constants.O_NOFOLLOW);
-    const opened = fstatSync(input);
-    if (identity(opened) !== identity(before))
+    const opened = fstatSync(input, { bigint: true });
+    if (heldIdentity(opened) !== heldIdentity(before))
       fail(`${label} changed before staging`);
     output = openSync(
       destination,
-      constants.O_WRONLY |
+      constants.O_RDWR |
         constants.O_CREAT |
         constants.O_EXCL |
         constants.O_NOFOLLOW,
@@ -241,22 +322,45 @@ function stageRegularFile(
       }
       digest.update(buffer.subarray(0, count));
     }
-    const after = lstatSync(source);
-    const openedAfter = fstatSync(input);
+    fsyncSync(output);
+    closeSync(output);
+    output = undefined;
+    stagingInput = openSync(
+      destination,
+      constants.O_RDONLY | constants.O_NOFOLLOW,
+    );
+    const after = lstatSync(source, { bigint: true });
+    const openedAfter = fstatSync(input, { bigint: true });
+    const staged = fstatSync(stagingInput, { bigint: true });
     if (
-      identity(before) !== identity(after) ||
-      identity(before) !== identity(openedAfter) ||
-      byteSize !== openedAfter.size
+      heldIdentity(before) !== heldIdentity(after) ||
+      heldIdentity(before) !== heldIdentity(openedAfter) ||
+      BigInt(byteSize) !== openedAfter.size ||
+      BigInt(byteSize) !== staged.size
     ) {
       fail(`${label} changed while staging`);
     }
     return {
-      path: destination,
+      closed: false,
       facts: { byteSize, sha256: `sha256:${digest.digest("hex")}` },
+      label,
+      maximumBytes,
+      path: destination,
+      source: { fileDescriptor: input, initialStat: openedAfter, path: source },
+      staging: {
+        fileDescriptor: stagingInput,
+        initialStat: staged,
+        path: destination,
+      },
     };
-  } finally {
+  } catch (error) {
+    if (stagingInput !== undefined) closeSync(stagingInput);
     if (output !== undefined) closeSync(output);
     if (input !== undefined) closeSync(input);
+    rmSync(destination, { force: true });
+    throw error;
+  } finally {
+    // Successful leases intentionally retain both descriptors until publication.
   }
 }
 
@@ -405,7 +509,12 @@ function loadVerifierDescriptor(repoRoot) {
   return { raw, value };
 }
 
-async function materializePython({ descriptor, pythonPath, staging }) {
+async function materializePython({
+  descriptor,
+  heldInputs,
+  pythonPath,
+  staging,
+}) {
   if (pythonPath !== descriptor.python.path) {
     fail("Vision verifier Python path differs from its descriptor");
   }
@@ -416,6 +525,7 @@ async function materializePython({ descriptor, pythonPath, staging }) {
     128 * 1024 * 1024,
     0o700,
   );
+  heldInputs.push(python);
   if (
     python.facts.byteSize !== descriptor.python.byteSize ||
     python.facts.sha256 !== `sha256:${descriptor.python.sha256}`
@@ -526,6 +636,7 @@ async function verifyTrustedRepositoryAuthority(repoRoot, privateRoot) {
 
 async function materializeVisionVerifier({
   descriptor,
+  heldInputs,
   verifierRoot,
   staging,
 }) {
@@ -550,6 +661,7 @@ async function materializeVisionVerifier({
       script.path,
       1024 * 1024,
     );
+    heldInputs.push(staged);
     const facts = staged.facts;
     if (
       facts.byteSize !== script.byteSize ||
@@ -599,7 +711,7 @@ function exactVisionCandidateInputs(directory) {
   };
 }
 
-function stageVisionCandidateInputs(directory, staging) {
+function stageVisionCandidateInputs(directory, heldInputs, staging) {
   const before = lstatSync(directory);
   const inputs = exactVisionCandidateInputs(directory);
   mkdirSync(staging, { mode: 0o700 });
@@ -613,6 +725,7 @@ function stageVisionCandidateInputs(directory, staging) {
       `Vision candidate ${name}`,
       maximum,
     );
+    heldInputs.push(staged);
     result[name] = staged;
   }
   exactVisionCandidateInputs(directory);
@@ -624,6 +737,7 @@ function stageVisionCandidateInputs(directory, staging) {
 
 async function verifyVemArchive({
   archivePath,
+  heldInputs,
   identityRoot,
   pythonPath,
   repoRoot,
@@ -635,6 +749,7 @@ async function verifyVemArchive({
     "VEM runtime archive",
     MAX_VEM_ARCHIVE_BYTES,
   );
+  heldInputs.push(staged);
   const archive = staged.facts;
   if (archive.sha256 !== identityRoot.releaseSet.windowsRuntime.archiveSha256) {
     fail("VEM runtime archive digest mismatch");
@@ -755,6 +870,7 @@ async function verifyVisionArchive({
   candidateDirectory,
   descriptor,
   ghBinaryPath,
+  heldInputs,
   identityRoot,
   pythonPath,
   repoRoot,
@@ -765,6 +881,7 @@ async function verifyVisionArchive({
 }) {
   const stagedInputs = stageVisionCandidateInputs(
     candidateDirectory,
+    heldInputs,
     join(tempRoot, "vision-inputs"),
   );
   const subject = stagedInputs.archive.facts;
@@ -794,6 +911,7 @@ async function verifyVisionArchive({
   });
   const verifierPath = await materializeVisionVerifier({
     descriptor,
+    heldInputs,
     verifierRoot,
     staging: join(tempRoot, "vision-verifier"),
   });
@@ -1008,7 +1126,7 @@ function validateReceipt(receipt) {
   return receipt;
 }
 
-function writeExclusive(path, contents) {
+function writeExclusive(path, contents, validateInputs) {
   const parent = dirname(path);
   if (!lstatSync(parent).isDirectory() || realpathSync(parent) !== parent) {
     fail("runtime artifacts receipt parent is unsafe");
@@ -1023,6 +1141,7 @@ function writeExclusive(path, contents) {
       flag: "wx",
       mode: 0o600,
     });
+    validateInputs();
     linkSync(staging, path);
     rmSync(staging);
   } finally {
@@ -1045,6 +1164,7 @@ async function verify(
     releaseSetPath: options["release-set"],
   });
   const tempRoot = mkdtempSync(join(tmpdir(), "vem-runtime-artifacts-"));
+  const heldInputs = [];
   try {
     const directoryStat = lstatSync(tempRoot);
     if ((directoryStat.mode & 0o077) !== 0)
@@ -1056,11 +1176,13 @@ async function verify(
     const verifier = loadVerifierDescriptor(options["repo-root"]);
     const trustedPython = await materializePython({
       descriptor: verifier.value,
+      heldInputs,
       pythonPath: options.python,
       staging: tempRoot,
     });
     const vem = await verifyVemArchive({
       archivePath: options["vem-runtime-archive"],
+      heldInputs,
       identityRoot,
       pythonPath: trustedPython,
       repoRoot: options["repo-root"],
@@ -1070,6 +1192,7 @@ async function verify(
       candidateDirectory: options["vision-candidate-input-directory"],
       descriptor: verifier.value,
       ghBinaryPath: options["gh-binary"],
+      heldInputs,
       identityRoot,
       pythonPath: trustedPython,
       repoRoot: options["repo-root"],
@@ -1098,8 +1221,11 @@ async function verify(
         vision,
       }),
     );
-    writeExclusive(options.output, receiptText);
+    writeExclusive(options.output, receiptText, () => {
+      for (const lease of heldInputs) revalidateStagedFile(lease);
+    });
   } finally {
+    for (const lease of heldInputs.reverse()) closeStagedFile(lease);
     rmSync(tempRoot, { recursive: true, force: true });
   }
 }

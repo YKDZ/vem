@@ -9,11 +9,12 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 
 import { verifyRuntimeArtifactsForTest } from "./precutover-runtime-artifacts.mjs";
@@ -788,4 +789,107 @@ describe("pre-cutover complete runtime archives", () => {
       else process.env.PYTHONPATH = previousPythonPath;
     }
   });
+
+  for (const [inputName, resolveInput] of [
+    ["VEM archive", (fixture) => fixture.vemArchive],
+    [
+      "Vision candidate archive",
+      (fixture) =>
+        join(
+          fixture.candidateInput,
+          readdirSync(fixture.candidateInput).find((name) =>
+            name.endsWith(".zip"),
+          ),
+        ),
+    ],
+    [
+      "Vision candidate manifest",
+      (fixture) => join(fixture.candidateInput, "candidate-manifest.json"),
+    ],
+    [
+      "Vision GitHub attestation",
+      (fixture) =>
+        join(fixture.candidateInput, "github-build-provenance.sigstore.json"),
+    ],
+    [
+      "Vision trusted-builder evidence",
+      (fixture) =>
+        join(fixture.candidateInput, "trusted-builder-evidence.json"),
+    ],
+  ]) {
+    for (const mutation of ["atomic replacement", "in-place rewrite"]) {
+      it(`rejects ${inputName} ${mutation} after private verification consumed staged bytes`, async () => {
+        const root = mkdtempSync(
+          join(tmpdir(), "vem-runtime-concurrent-input-"),
+        );
+        temporaryRoots.push(root);
+        const fixture = await buildFixture(root);
+        const output = join(root, "runtime-artifacts-receipt.json");
+        const input = resolveInput(fixture);
+        let privateRoot;
+
+        const result = await runWithTestAuthority(
+          fixture,
+          output,
+          {},
+          async ({ artifactPath }) => {
+            privateRoot = dirname(dirname(artifactPath));
+            const bytes = readFileSync(input);
+            if (mutation === "atomic replacement") {
+              const replacement = `${input}.replacement`;
+              writeFileSync(replacement, bytes);
+              renameSync(replacement, input);
+            } else {
+              writeFileSync(input, bytes);
+            }
+          },
+        );
+
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, /changed|identity|replaced/i);
+        assert.equal(
+          readdirSync(root).includes("runtime-artifacts-receipt.json"),
+          false,
+        );
+        assert.equal(existsSync(privateRoot), false);
+      });
+    }
+  }
+
+  for (const mutation of ["atomic replacement", "in-place rewrite"]) {
+    it(`rejects private Vision staging ${mutation} during verifier consumption`, async () => {
+      const root = mkdtempSync(
+        join(tmpdir(), "vem-runtime-concurrent-staging-"),
+      );
+      temporaryRoots.push(root);
+      const fixture = await buildFixture(root);
+      const output = join(root, "runtime-artifacts-receipt.json");
+      let privateRoot;
+
+      const result = await runWithTestAuthority(
+        fixture,
+        output,
+        {},
+        async ({ artifactPath }) => {
+          privateRoot = dirname(dirname(artifactPath));
+          const bytes = readFileSync(artifactPath);
+          if (mutation === "atomic replacement") {
+            const replacement = `${artifactPath}.replacement`;
+            writeFileSync(replacement, bytes);
+            renameSync(replacement, artifactPath);
+          } else {
+            writeFileSync(artifactPath, bytes);
+          }
+        },
+      );
+
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /private staging.*changed|identity changed/i);
+      assert.equal(
+        readdirSync(root).includes("runtime-artifacts-receipt.json"),
+        false,
+      );
+      assert.equal(existsSync(privateRoot), false);
+    });
+  }
 });
