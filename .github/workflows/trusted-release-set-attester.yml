@@ -31,6 +31,15 @@ jobs:
           ref: ${{ job.workflow_sha }}
           path: trusted
           persist-credentials: false
+      - name: Materialize the descriptor-pinned GitHub CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo install -d -m 0755 -o "$USER" -g "$(id -gn)" /opt/vem-trusted-gh
+          python3 trusted/scripts/materialize_trusted_gh.py materialize \
+            --descriptor trusted/trusted-gh-cli-linux-amd64.json \
+            --destination /opt/vem-trusted-gh
+          /opt/vem-trusted-gh/gh --version >/dev/null
       - name: Checkout approved source as data only
         uses: actions/checkout@v4
         with:
