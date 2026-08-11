@@ -25,7 +25,11 @@ const BINARY_ALLOWLIST_SCHEMA = "vem-hard-cutover-binary-allowlist/v1";
 function writeBinaryAllowlist(root, entries) {
   writeFileSync(
     join(root, BINARY_ALLOWLIST_NAME),
-    `${JSON.stringify({ entries, schemaVersion: BINARY_ALLOWLIST_SCHEMA })}\n`,
+    `${JSON.stringify(
+      { entries, schemaVersion: BINARY_ALLOWLIST_SCHEMA },
+      null,
+      2,
+    )}\n`,
   );
   execFileSync("git", ["add", BINARY_ALLOWLIST_NAME], { cwd: root });
 }
@@ -448,7 +452,7 @@ describe("Vision V2 hard-cutover absence guard", () => {
         });
         writeFileSync(
           join(root, BINARY_ALLOWLIST_NAME),
-          `${JSON.stringify(manifest)}\n`,
+          `${JSON.stringify(manifest, null, 2)}\n`,
         );
         execFileSync("git", ["add", BINARY_ALLOWLIST_NAME, ...paths], {
           cwd: root,
@@ -476,11 +480,7 @@ describe("Vision V2 hard-cutover absence guard", () => {
       });
       writeFileSync(
         join(noncanonicalRoot, BINARY_ALLOWLIST_NAME),
-        `${JSON.stringify(
-          { entries, schemaVersion: BINARY_ALLOWLIST_SCHEMA },
-          null,
-          2,
-        )}\n`,
+        `${JSON.stringify({ entries, schemaVersion: BINARY_ALLOWLIST_SCHEMA })}\n`,
       );
       execFileSync("git", ["add", BINARY_ALLOWLIST_NAME, ...paths], {
         cwd: noncanonicalRoot,

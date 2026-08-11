@@ -322,7 +322,7 @@ function loadBinaryAllowlist(root, trackedEntries, violations) {
     violations.push(`${BINARY_ALLOWLIST_NAME}:binary-allowlist-invalid`);
     return { approved: new Map(), source: null };
   }
-  const canonical = `${JSON.stringify(canonicalJson(manifest))}\n`;
+  const canonical = `${JSON.stringify(canonicalJson(manifest), null, 2)}\n`;
   if (
     source !== canonical ||
     !manifest ||
