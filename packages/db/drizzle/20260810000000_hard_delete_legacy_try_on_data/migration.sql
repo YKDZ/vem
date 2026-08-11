@@ -31,3 +31,7 @@ WHERE "source_media_asset_id" IN (
 
 DELETE FROM "media_assets"
 WHERE "purpose" = 'try_on_silhouette';
+
+ALTER TABLE "media_assets"
+  ADD CONSTRAINT "media_assets_purpose_allowed"
+  CHECK ("purpose" IN ('product_display_image', 'try_on_garment'));

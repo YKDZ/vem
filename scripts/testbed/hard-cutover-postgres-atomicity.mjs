@@ -64,6 +64,11 @@ const legacyColumn = cutoverSql.match(/DROP COLUMN "([^"]+)"/)?.[1];
 const legacyPurpose = cutoverSql.match(/asset\."purpose" = '([^']+)'/)?.[1];
 assert.ok(legacyColumn, "D2 identifies one physical legacy planogram column");
 assert.ok(legacyPurpose, "D2 identifies one legacy media purpose");
+assert.match(legacyColumn, /^[a-z][a-z0-9_]*$/);
+const legacyColumnSql = `"${legacyColumn}"`;
+const legacyStoragePrefix = `${legacyPurpose.replaceAll("_", "-")}s`;
+const legacyToken = legacyPurpose.split("_").at(-1);
+assert.ok(legacyToken, "D2 identifies one legacy media token");
 
 function migrationConfig(out) {
   const config = join(out, "drizzle.config.ts");
@@ -104,6 +109,50 @@ function migrate(directories) {
   }
 }
 
+function runPublicApiTracer() {
+  execFileSync(
+    "pnpm",
+    [
+      "--filter",
+      "service-api",
+      "exec",
+      "vitest",
+      "run",
+      "--config",
+      "vitest.e2e.config.ts",
+      "src/flows/admin-try-on-garment-contract.e2e-spec.ts",
+      "-t",
+      "projects only an active confirmed explicit association",
+      "--reporter=agent",
+      "--silent=passed-only",
+    ],
+    {
+      cwd: root,
+      env: {
+        ...process.env,
+        BOOTSTRAP_ADMIN_PASSWORD: "AdminPassword123!",
+        DATABASE_URL: databaseUrl,
+        JWT_REFRESH_SECRET: "service-api-e2e-refresh-secret-0000000001",
+        JWT_SECRET: "service-api-e2e-jwt-secret-0000000000000001",
+        MACHINE_API_BASE_URL: "http://127.0.0.1:3000/api",
+        MACHINE_CLAIM_LOOKUP_HMAC_KEY:
+          "service-api-e2e-machine-claim-lookup-key-0001",
+        MACHINE_CREDENTIAL_ENCRYPTION_KEY:
+          "service-api-e2e-machine-credential-key-0000001",
+        MACHINE_JWT_SECRET: "service-api-e2e-machine-jwt-secret-0000001",
+        MACHINE_MQTT_URL: "mqtt://127.0.0.1:1883",
+        MQTT_URL: "mqtt://127.0.0.1:1883",
+        NODE_ENV: "test",
+        PAYMENT_MOCK_ENABLED: "true",
+        PAYMENT_WEBHOOK_BASE_URL: "http://127.0.0.1:3000/api/payments/webhooks",
+        VEM_D2_LEGACY_MEDIA_PURPOSE: legacyPurpose,
+        VEM_TEST_POSTGRES_URL: databaseUrl,
+      },
+      stdio: "inherit",
+    },
+  );
+}
+
 async function query(client, text, values = []) {
   return await client.query(text, values);
 }
@@ -119,13 +168,24 @@ async function seedPreD2(client) {
     legacyVariantA: "00000000-0000-4000-8000-000000000031",
     legacyVariantB: "00000000-0000-4000-8000-000000000032",
     newVariant: "00000000-0000-4000-8000-000000000033",
+    machine: "00000000-0000-4000-8000-000000000041",
+    machineSlot: "00000000-0000-4000-8000-000000000042",
+    planogramVersion: "00000000-0000-4000-8000-000000000043",
+    planogramSlot: "00000000-0000-4000-8000-000000000044",
+    inventory: "00000000-0000-4000-8000-000000000045",
   };
   await query(
     client,
     `INSERT INTO "media_assets"(id,purpose,storage_provider,storage_key,content_type,byte_size,sha256,public_url,width,height,has_transparency) VALUES
-    ($1,$2,'test','legacy.png','image/png',1,repeat('a',64),'https://example.test/legacy.png',512,512,true),
-    ($3,'try_on_garment','test','new.png','image/png',1,repeat('b',64),'https://example.test/new.png',512,512,true)`,
-    [ids.legacyAsset, legacyPurpose, ids.newAsset],
+    ($1,$2,'test',$3,'image/png',1,repeat('a',64),$4,512,512,true),
+    ($5,'try_on_garment','test','new.png','image/png',1,repeat('b',64),'https://example.test/new.png',512,512,true)`,
+    [
+      ids.legacyAsset,
+      legacyPurpose,
+      `${legacyStoragePrefix}/legacy.png`,
+      `https://example.test/${legacyStoragePrefix}/legacy.png`,
+      ids.newAsset,
+    ],
   );
   await query(
     client,
@@ -160,6 +220,38 @@ async function seedPreD2(client) {
       ids.newGarment,
     ],
   );
+  await query(
+    client,
+    `INSERT INTO "machines"(id,code,name) VALUES ($1,'D2-LEGACY-MACHINE','D2 legacy machine')`,
+    [ids.machine],
+  );
+  await query(
+    client,
+    `INSERT INTO "machine_slots"(id,machine_id,row_no,cell_no,capacity) VALUES ($1,$2,1,1,1)`,
+    [ids.machineSlot, ids.machine],
+  );
+  await query(
+    client,
+    `INSERT INTO "machine_planogram_versions"(id,machine_id,planogram_version,status) VALUES ($1,$2,'legacy-v1','active')`,
+    [ids.planogramVersion, ids.machine],
+  );
+  await query(
+    client,
+    `INSERT INTO "machine_planogram_slots"(
+      id,machine_planogram_version_id,slot_id,row_no,cell_no,capacity,par_level,
+      inventory_id,variant_id,product_id,product_name,sku,price_cents,
+      product_sort_order,${legacyColumnSql}
+    ) VALUES ($1,$2,$3,1,1,1,1,$4,$5,$6,'legacy display','LEGACY-A',100,0,$7)`,
+    [
+      ids.planogramSlot,
+      ids.planogramVersion,
+      ids.machineSlot,
+      ids.inventory,
+      ids.legacyVariantA,
+      ids.legacyProduct,
+      `https://example.test/${legacyStoragePrefix}/legacy.png`,
+    ],
+  );
   return ids;
 }
 
@@ -172,6 +264,7 @@ async function assertPreD2(client, ids) {
     (SELECT count(*) FROM "try_on_garments" WHERE id=$3) AS legacy_garment,
     (SELECT count(*) FROM "product_variants" WHERE try_on_garment_id=$3) AS legacy_variants,
     (SELECT count(*) FROM "product_variants" WHERE id=$4 AND try_on_garment_id=$5) AS new_variant,
+    (SELECT count(*) FROM "machine_planogram_slots" WHERE id=$6 AND ${legacyColumnSql} IS NOT NULL) AS legacy_planogram_path,
     (SELECT count(*) FROM drizzle."__drizzle_migrations") AS migration_count`,
     [
       legacyColumn,
@@ -179,6 +272,7 @@ async function assertPreD2(client, ids) {
       ids.legacyGarment,
       ids.newVariant,
       ids.newGarment,
+      ids.planogramSlot,
     ],
   );
   assert.deepEqual(result.rows[0], {
@@ -187,8 +281,315 @@ async function assertPreD2(client, ids) {
     legacy_garment: "1",
     legacy_variants: "2",
     new_variant: "1",
+    legacy_planogram_path: "1",
     migration_count: "44",
   });
+}
+
+async function assertFinalTryOnCatalog(client) {
+  const columns = await query(
+    client,
+    `SELECT table_name,column_name,data_type,udt_name,is_nullable
+     FROM information_schema.columns
+     WHERE table_schema='public' AND table_name IN ('product_variants','try_on_garments')
+     ORDER BY table_name,ordinal_position`,
+  );
+  assert.deepEqual(columns.rows, [
+    {
+      table_name: "product_variants",
+      column_name: "id",
+      data_type: "uuid",
+      udt_name: "uuid",
+      is_nullable: "NO",
+    },
+    {
+      table_name: "product_variants",
+      column_name: "product_id",
+      data_type: "uuid",
+      udt_name: "uuid",
+      is_nullable: "NO",
+    },
+    {
+      table_name: "product_variants",
+      column_name: "sku",
+      data_type: "character varying",
+      udt_name: "varchar",
+      is_nullable: "NO",
+    },
+    {
+      table_name: "product_variants",
+      column_name: "size",
+      data_type: "character varying",
+      udt_name: "varchar",
+      is_nullable: "YES",
+    },
+    {
+      table_name: "product_variants",
+      column_name: "color",
+      data_type: "character varying",
+      udt_name: "varchar",
+      is_nullable: "YES",
+    },
+    {
+      table_name: "product_variants",
+      column_name: "barcode",
+      data_type: "character varying",
+      udt_name: "varchar",
+      is_nullable: "YES",
+    },
+    {
+      table_name: "product_variants",
+      column_name: "price_cents",
+      data_type: "integer",
+      udt_name: "int4",
+      is_nullable: "NO",
+    },
+    {
+      table_name: "product_variants",
+      column_name: "cost_cents",
+      data_type: "integer",
+      udt_name: "int4",
+      is_nullable: "YES",
+    },
+    {
+      table_name: "product_variants",
+      column_name: "status",
+      data_type: "USER-DEFINED",
+      udt_name: "variant_status",
+      is_nullable: "NO",
+    },
+    {
+      table_name: "product_variants",
+      column_name: "created_at",
+      data_type: "timestamp with time zone",
+      udt_name: "timestamptz",
+      is_nullable: "NO",
+    },
+    {
+      table_name: "product_variants",
+      column_name: "updated_at",
+      data_type: "timestamp with time zone",
+      udt_name: "timestamptz",
+      is_nullable: "NO",
+    },
+    {
+      table_name: "product_variants",
+      column_name: "deleted_at",
+      data_type: "timestamp with time zone",
+      udt_name: "timestamptz",
+      is_nullable: "YES",
+    },
+    {
+      table_name: "product_variants",
+      column_name: "target_gender",
+      data_type: "character varying",
+      udt_name: "varchar",
+      is_nullable: "YES",
+    },
+    {
+      table_name: "product_variants",
+      column_name: "try_on_garment_id",
+      data_type: "uuid",
+      udt_name: "uuid",
+      is_nullable: "YES",
+    },
+    {
+      table_name: "try_on_garments",
+      column_name: "id",
+      data_type: "uuid",
+      udt_name: "uuid",
+      is_nullable: "NO",
+    },
+    {
+      table_name: "try_on_garments",
+      column_name: "product_id",
+      data_type: "uuid",
+      udt_name: "uuid",
+      is_nullable: "NO",
+    },
+    {
+      table_name: "try_on_garments",
+      column_name: "color_label",
+      data_type: "character varying",
+      udt_name: "varchar",
+      is_nullable: "NO",
+    },
+    {
+      table_name: "try_on_garments",
+      column_name: "source_media_asset_id",
+      data_type: "uuid",
+      udt_name: "uuid",
+      is_nullable: "NO",
+    },
+    {
+      table_name: "try_on_garments",
+      column_name: "template",
+      data_type: "character varying",
+      udt_name: "varchar",
+      is_nullable: "NO",
+    },
+    {
+      table_name: "try_on_garments",
+      column_name: "status",
+      data_type: "USER-DEFINED",
+      udt_name: "try_on_garment_status",
+      is_nullable: "NO",
+    },
+    {
+      table_name: "try_on_garments",
+      column_name: "confirmed_at",
+      data_type: "timestamp with time zone",
+      udt_name: "timestamptz",
+      is_nullable: "YES",
+    },
+    {
+      table_name: "try_on_garments",
+      column_name: "created_at",
+      data_type: "timestamp with time zone",
+      udt_name: "timestamptz",
+      is_nullable: "NO",
+    },
+    {
+      table_name: "try_on_garments",
+      column_name: "updated_at",
+      data_type: "timestamp with time zone",
+      udt_name: "timestamptz",
+      is_nullable: "NO",
+    },
+    {
+      table_name: "try_on_garments",
+      column_name: "deleted_at",
+      data_type: "timestamp with time zone",
+      udt_name: "timestamptz",
+      is_nullable: "YES",
+    },
+  ]);
+
+  const constraints = await query(
+    client,
+    `SELECT c.relname AS table_name,con.conname,con.contype,pg_get_constraintdef(con.oid) AS definition
+     FROM pg_constraint con
+     JOIN pg_class c ON c.oid=con.conrelid
+     JOIN pg_namespace n ON n.oid=c.relnamespace
+     WHERE n.nspname='public' AND c.relname IN ('media_assets','product_variants','try_on_garments')
+     ORDER BY c.relname,con.conname`,
+  );
+  assert.deepEqual(constraints.rows, [
+    {
+      table_name: "media_assets",
+      conname: "media_assets_pkey",
+      contype: "p",
+      definition: "PRIMARY KEY (id)",
+    },
+    {
+      table_name: "media_assets",
+      conname: "media_assets_purpose_allowed",
+      contype: "c",
+      definition:
+        "CHECK (((purpose)::text = ANY ((ARRAY['product_display_image'::character varying, 'try_on_garment'::character varying])::text[])))",
+    },
+    {
+      table_name: "product_variants",
+      conname: "product_variants_cost_cents_non_negative",
+      contype: "c",
+      definition: "CHECK (((cost_cents IS NULL) OR (cost_cents >= 0)))",
+    },
+    {
+      table_name: "product_variants",
+      conname: "product_variants_pkey",
+      contype: "p",
+      definition: "PRIMARY KEY (id)",
+    },
+    {
+      table_name: "product_variants",
+      conname: "product_variants_price_cents_non_negative",
+      contype: "c",
+      definition: "CHECK ((price_cents >= 0))",
+    },
+    {
+      table_name: "product_variants",
+      conname: "product_variants_product_id_products_id_fkey",
+      contype: "f",
+      definition: "FOREIGN KEY (product_id) REFERENCES products(id)",
+    },
+    {
+      table_name: "product_variants",
+      conname: "product_variants_try_on_garment_product_id_fkey",
+      contype: "f",
+      definition:
+        "FOREIGN KEY (try_on_garment_id, product_id) REFERENCES try_on_garments(id, product_id)",
+    },
+    {
+      table_name: "try_on_garments",
+      conname: "try_on_garments_id_product_id_unique",
+      contype: "u",
+      definition: "UNIQUE (id, product_id)",
+    },
+    {
+      table_name: "try_on_garments",
+      conname: "try_on_garments_pkey",
+      contype: "p",
+      definition: "PRIMARY KEY (id)",
+    },
+    {
+      table_name: "try_on_garments",
+      conname: "try_on_garments_product_id_products_id_fkey",
+      contype: "f",
+      definition: "FOREIGN KEY (product_id) REFERENCES products(id)",
+    },
+    {
+      table_name: "try_on_garments",
+      conname: "try_on_garments_source_media_asset_id_media_assets_id_fkey",
+      contype: "f",
+      definition:
+        "FOREIGN KEY (source_media_asset_id) REFERENCES media_assets(id)",
+    },
+    {
+      table_name: "try_on_garments",
+      conname: "try_on_garments_template_supported",
+      contype: "c",
+      definition:
+        "CHECK (((template)::text = ANY ((ARRAY['tshirt_short_sleeve'::character varying, 'tshirt_long_sleeve'::character varying])::text[])))",
+    },
+  ]);
+
+  const indexes = await query(
+    client,
+    `SELECT tablename,indexname,indexdef FROM pg_indexes
+     WHERE schemaname='public' AND tablename IN ('media_assets','product_variants','try_on_garments')
+     ORDER BY tablename,indexname`,
+  );
+  assert.deepEqual(
+    indexes.rows.map(({ tablename, indexname }) => [tablename, indexname]),
+    [
+      ["media_assets", "media_assets_pkey"],
+      ["media_assets", "media_assets_purpose_idx"],
+      ["media_assets", "media_assets_storage_provider_idx"],
+      ["product_variants", "product_variants_pkey"],
+      ["product_variants", "product_variants_product_id_idx"],
+      ["product_variants", "product_variants_sku_unique"],
+      ["product_variants", "product_variants_status_idx"],
+      ["product_variants", "product_variants_try_on_garment_id_idx"],
+      ["try_on_garments", "try_on_garments_id_product_id_unique"],
+      ["try_on_garments", "try_on_garments_pkey"],
+      ["try_on_garments", "try_on_garments_product_id_idx"],
+      ["try_on_garments", "try_on_garments_source_media_asset_id_idx"],
+    ],
+  );
+
+  const statuses = await query(
+    client,
+    `SELECT enumlabel
+     FROM pg_enum
+     JOIN pg_type ON pg_type.oid=pg_enum.enumtypid
+     WHERE pg_type.typname='try_on_garment_status'
+     ORDER BY pg_enum.enumsortorder`,
+  );
+  assert.deepEqual(statuses.rows, [
+    { enumlabel: "draft" },
+    { enumlabel: "active" },
+    { enumlabel: "retired" },
+  ]);
 }
 
 const client = new pg.Client({ connectionString: databaseUrl });
@@ -243,6 +644,40 @@ try {
     new_variant: "1",
     migration_count: "45",
   });
+  const legacyResidue = await query(
+    normal,
+    `SELECT
+      (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND column_name ILIKE $1) AS columns,
+      (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND (indexname ILIKE $1 OR indexdef ILIKE $1)) AS indexes,
+      (SELECT count(*) FROM pg_constraint WHERE conname ILIKE $1 OR pg_get_constraintdef(oid) ILIKE $1) AS constraints,
+      (SELECT count(*) FROM "media_assets" WHERE purpose=$2) AS purpose_rows,
+      (SELECT count(*) FROM "media_assets" WHERE storage_key ILIKE $1 OR public_url ILIKE $1) AS storage_refs`,
+    [`%${legacyToken}%`, legacyPurpose],
+  );
+  assert.deepEqual(legacyResidue.rows, [
+    {
+      columns: "0",
+      indexes: "0",
+      constraints: "0",
+      purpose_rows: "0",
+      storage_refs: "0",
+    },
+  ]);
+  await assertFinalTryOnCatalog(normal);
+  await assert.rejects(
+    query(
+      normal,
+      `INSERT INTO "media_assets"(purpose,storage_provider,storage_key,content_type,byte_size,sha256,public_url) VALUES
+      ($1,'test',$2,'image/png',1,repeat('c',64),$3)`,
+      [
+        legacyPurpose,
+        `${legacyStoragePrefix}/reintroduced.png`,
+        `https://example.test/${legacyStoragePrefix}/reintroduced.png`,
+      ],
+    ),
+    /media_assets_purpose_allowed/,
+    "the migrated schema must reject retired media purposes",
+  );
   await normal.end();
   migrate([...historyDirectories, cutoverDirectory]);
   const repeated = new pg.Client({ connectionString: databaseUrl });
@@ -253,6 +688,7 @@ try {
   );
   assert.deepEqual(repeatedHistory.rows, [{ migration_count: "45" }]);
   await repeated.end();
+  runPublicApiTracer();
   process.stdout.write("PostgreSQL D2 atomicity proof passed.\n");
 } finally {
   await client.end().catch(() => undefined);

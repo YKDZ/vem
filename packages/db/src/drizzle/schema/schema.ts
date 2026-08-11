@@ -347,6 +347,10 @@ export const mediaAssets = t.pgTable(
   (table) => [
     t.index("media_assets_purpose_idx").on(table.purpose),
     t.index("media_assets_storage_provider_idx").on(table.storageProvider),
+    t.check(
+      "media_assets_purpose_allowed",
+      sql`${table.purpose} IN ('product_display_image', 'try_on_garment')`,
+    ),
   ],
 );
 

@@ -206,7 +206,7 @@ const LEGACY_MIGRATION_ALLOWANCES = Object.freeze({
   "packages/db/drizzle/20260810000000_hard_delete_legacy_try_on_data/migration.sql":
     {
       digest:
-        "a1b4e5f81b95ebca62f71091a23ec5876e4da5ae11ca97fbe24fdebfa7b877f7",
+        "96160d733362493722b0aa81adffb2d0ca37e7279970aa8bf1dffe2a4b51fc2f",
       occurrences: {
         "legacy-silhouette-field": 5,
         "legacy-silhouette-purpose": 5,

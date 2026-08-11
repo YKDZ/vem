@@ -6,6 +6,7 @@ import {
   eq,
   inventories,
   productVariants,
+  sql,
   tryOnGarments,
 } from "@vem/db";
 import {
@@ -624,6 +625,19 @@ describe("admin-try-on-garment-contract.e2e", { concurrent: false }, () => {
   it("projects only an active confirmed explicit association at the authenticated machine catalog boundary", async () => {
     const token = await loginAndGetToken(api, appConfig);
     const auth = { Authorization: `Bearer ${token}` };
+    const legacyPurpose = process.env.VEM_D2_LEGACY_MEDIA_PURPOSE;
+    const legacyPurposeParts = legacyPurpose?.split("_") ?? [];
+    const legacyToken = legacyPurposeParts.at(-1);
+    if (legacyPurpose) {
+      await api
+        .post(`/api/media-assets/${legacyPurpose.replaceAll("_", "-")}s`)
+        .set(auth)
+        .attach("file", rgbaPng(768, 1024, 0), {
+          filename: `${legacyPurpose}.png`,
+          contentType: "image/png",
+        })
+        .expect(404);
+    }
     const seeded = await seedSingleSlotInventory(db, {
       machineCode: `M-TRY-ON-CATALOG-${Date.now().toString(36)}`,
       onHandQty: 1,
@@ -651,6 +665,18 @@ describe("admin-try-on-garment-contract.e2e", { concurrent: false }, () => {
     const source = adminTryOnGarmentUploadContract.responseSchema.parse(
       (uploadResponse.body as ApiResponse<unknown>).data,
     );
+    if (legacyPurpose) {
+      const legacyField = `${legacyPurposeParts
+        .map((part, index) =>
+          index === 0 ? part : `${part[0]?.toUpperCase()}${part.slice(1)}`,
+        )
+        .join("")}MediaAssetId`;
+      await api
+        .patch(`/api/product-variants/${inventory.variantId}`)
+        .set(auth)
+        .send({ [legacyField]: source.id })
+        .expect(400);
+    }
     const draftResponse = await api
       .post(`/api${adminCreateTryOnGarmentContract.path}`)
       .set(auth)
@@ -721,6 +747,22 @@ describe("admin-try-on-garment-contract.e2e", { concurrent: false }, () => {
       },
       tryOnGarmentTemplate: "tshirt_short_sleeve",
     });
+    if (legacyPurpose && legacyToken) {
+      const legacyPattern = `%${legacyToken}%`;
+      expect(JSON.stringify(eligibleCatalog.body)).not.toMatch(
+        new RegExp(legacyToken, "i"),
+      );
+      const legacyResidue = await db.client.execute(sql`
+        SELECT
+          (SELECT count(*)::int FROM information_schema.columns
+            WHERE table_schema='public' AND column_name ILIKE ${legacyPattern}) AS columns,
+          (SELECT count(*)::int FROM media_assets
+            WHERE purpose=${legacyPurpose}
+               OR storage_key ILIKE ${legacyPattern}
+               OR public_url ILIKE ${legacyPattern}) AS media
+      `);
+      expect(legacyResidue.rows).toEqual([{ columns: 0, media: 0 }]);
+    }
 
     await api
       .post(
