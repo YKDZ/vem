@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import type { MachineCatalogItem } from "@/types/catalog";
 
-import { canStartFastTryOn, validateTryOnResultReference } from "./eligibility";
+import {
+  canStartFastTryOn,
+  validateTryOnPreviewReference,
+  validateTryOnResultReference,
+} from "./eligibility";
 
 const id = "550e8400-e29b-41d4-a716-446655440124";
 const variantId = "550e8400-e29b-41d4-a716-446655440125";
@@ -162,5 +166,27 @@ describe("Fast try-on eligibility", () => {
         expected,
       ),
     ).toThrow();
+  });
+
+  it("accepts an acquisition preview only from the exact current Vision socket origin", () => {
+    const expected = {
+      attemptId: id,
+      visionSocketUrl: "ws://127.0.0.1:7892/ws",
+    };
+    const valid = {
+      reference:
+        "http://127.0.0.1:7892/v2/try-on/acquisition/preview.mjpeg?token=preview-token",
+      streamType: "mjpeg" as const,
+    };
+    expect(validateTryOnPreviewReference(valid, expected)).toEqual(valid);
+    for (const reference of [
+      "http://127.0.0.1:65000/v2/try-on/acquisition/preview.mjpeg?token=preview-token",
+      "http://localhost:7892/v2/try-on/acquisition/preview.mjpeg?token=preview-token",
+      "http://vision@127.0.0.1:7892/v2/try-on/acquisition/preview.mjpeg?token=preview-token",
+    ]) {
+      expect(() =>
+        validateTryOnPreviewReference({ ...valid, reference }, expected),
+      ).toThrow();
+    }
   });
 });

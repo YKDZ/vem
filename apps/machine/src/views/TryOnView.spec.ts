@@ -260,4 +260,192 @@ describe("TryOnView acquisition UI", () => {
     expect(cancel).toHaveBeenCalledTimes(1);
     expect(cancel).toHaveBeenCalledWith("route_leave");
   });
+
+  it("returns a departed customer to the exact selected variant without a second route_leave", async () => {
+    let emit:
+      | ((event: {
+          type: string;
+          payload: { attemptId: string } & object;
+        }) => void)
+      | undefined;
+    const cancel = vi.fn(() => true);
+    openFastMock.mockImplementation((_connection, _input, onEvent) => {
+      emit = (event) =>
+        onEvent(event, {
+          attemptId: event.payload.attemptId,
+          visionSocketUrl: "ws://127.0.0.1:7892/ws",
+        });
+      return Promise.resolve({ close: vi.fn(), capture: vi.fn(), cancel });
+    });
+    await mount();
+    await vi.waitFor(() => {
+      expect(openFastMock).toHaveBeenCalledOnce();
+    });
+    if (!emit) throw new Error("expected Vision event boundary");
+    emit(
+      attemptEvent("vision.try_on.attempt.canceled", {
+        attemptId: useTryOnStore().attemptId!,
+        reason: "departure",
+      }),
+    );
+    await nextTick();
+
+    expect(submitNavigationMock).toHaveBeenCalledExactlyOnceWith({
+      type: "customer.navigate",
+      target: {
+        name: "product-detail",
+        params: { catalogKey: `product:${productId}` },
+        query: { variantId },
+      },
+    });
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
+  it("retries failed, canceled, and completed attempts through distinct native sockets", async () => {
+    const callbacks: Array<(event: { type: string; payload: object }) => void> =
+      [];
+    openFastMock.mockImplementation((_connection, _input, onEvent) => {
+      callbacks.push((event) =>
+        onEvent(event, {
+          attemptId: (event.payload as { attemptId: string }).attemptId,
+          visionSocketUrl: "ws://127.0.0.1:7892/ws",
+        }),
+      );
+      return Promise.resolve({
+        close: vi.fn(),
+        capture: vi.fn(),
+        cancel: vi.fn(),
+      });
+    });
+    const host = await mount();
+    await vi.waitFor(() => {
+      expect(openFastMock).toHaveBeenCalledOnce();
+    });
+    const terminal = async (type: string, payload: object): Promise<void> => {
+      if (type === "vision.try_on.attempt.completed") {
+        callbacks[callbacks.length - 1]?.({
+          type: "vision.try_on.attempt.generating",
+          payload: {
+            attemptId: (payload as { attemptId: string }).attemptId,
+            stage: "preparing",
+          },
+        });
+      }
+      callbacks[callbacks.length - 1]?.({ type, payload });
+      await nextTick();
+      const retry = host.querySelector('[data-test="try-on-retry"]');
+      expect(retry).not.toBeNull();
+      const expectedStarts = openFastMock.mock.calls.length + 1;
+      retry?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await vi.waitFor(() => {
+        expect(openFastMock).toHaveBeenCalledTimes(expectedStarts);
+      });
+    };
+    const first = useTryOnStore().attemptId!;
+    await terminal("vision.try_on.attempt.failed", {
+      attemptId: first,
+      reason: "fast_failed",
+    });
+    const second = useTryOnStore().attemptId!;
+    await terminal("vision.try_on.attempt.canceled", {
+      attemptId: second,
+      reason: "user",
+    });
+    const third = useTryOnStore().attemptId!;
+    await terminal("vision.try_on.attempt.completed", {
+      attemptId: third,
+      result: {
+        reference: `http://127.0.0.1:7892/v2/try-on/results/${third}?token=result-token`,
+        digest: `sha256:${"b".repeat(64)}`,
+        contentType: "image/png",
+        byteSize: 2048,
+        width: 512,
+        height: 768,
+      },
+    });
+
+    expect(openFastMock).toHaveBeenCalledTimes(4);
+    expect(
+      new Set(openFastMock.mock.calls.map((call) => call[1].attemptId)),
+    ).toHaveLength(4);
+  });
+
+  it("uses route_leave once for a current return and never cancels a completed return", async () => {
+    let emit:
+      | ((event: {
+          type: string;
+          payload: { attemptId: string } & object;
+        }) => void)
+      | undefined;
+    const cancel = vi.fn(() => true);
+    openFastMock.mockImplementation((_connection, _input, onEvent) => {
+      emit = (event) =>
+        onEvent(event, {
+          attemptId: event.payload.attemptId,
+          visionSocketUrl: "ws://127.0.0.1:7892/ws",
+        });
+      return Promise.resolve({ close: vi.fn(), capture: vi.fn(), cancel });
+    });
+    const host = await mount();
+    await vi.waitFor(() => {
+      expect(openFastMock).toHaveBeenCalledOnce();
+    });
+    host
+      .querySelector('[data-test="try-on-return"]')
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await nextTick();
+    expect(cancel).toHaveBeenCalledExactlyOnceWith("route_leave");
+    await useTryOnStore().retry();
+    await vi.waitFor(() => {
+      expect(openFastMock).toHaveBeenCalledTimes(2);
+    });
+    if (!emit) throw new Error("expected Vision event boundary");
+    emit(
+      attemptEvent("vision.try_on.attempt.generating", {
+        attemptId: useTryOnStore().attemptId!,
+        stage: "preparing",
+      }),
+    );
+    emit(
+      attemptEvent("vision.try_on.attempt.completed", {
+        attemptId: useTryOnStore().attemptId!,
+        result: {
+          reference: `http://127.0.0.1:7892/v2/try-on/results/${useTryOnStore().attemptId}?token=result-token`,
+          digest: `sha256:${"b".repeat(64)}`,
+          contentType: "image/png",
+          byteSize: 2048,
+          width: 512,
+          height: 768,
+        },
+      }),
+    );
+    await nextTick();
+    host
+      .querySelector('[data-test="try-on-return"]')
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await nextTick();
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it("does not navigate from profile signals while the try-on customer route is active", async () => {
+    openFastMock.mockResolvedValue({
+      close: vi.fn(),
+      capture: vi.fn(),
+      cancel: vi.fn(),
+    });
+    await mount();
+    await vi.waitFor(() => {
+      expect(openFastMock).toHaveBeenCalledOnce();
+    });
+    useVisionStore().applyRecommendationProfileResult({
+      source: "front",
+      eventId: "VISION-PROFILE-TRY-ON",
+      detectedAt: "2026-08-10T00:00:00.000Z",
+      occupancy: { state: "single", confidence: 0.9 },
+      profile: { personPresent: true, confidence: 0.9 },
+      quality: { overall: "good", warnings: [], profileUsable: true },
+    });
+    await nextTick();
+    expect(submitNavigationMock).not.toHaveBeenCalled();
+  });
 });

@@ -531,10 +531,20 @@ describe("vision native browser fallback - Fast attempt lifecycle", () => {
     await vi.advanceTimersByTimeAsync(0);
     sockets[0].emit(readyV2Message());
     await opening;
+    sockets[0].emit({
+      protocol: "vem.vision.v2",
+      type: "vision.try_on.attempt.generating",
+      messageId: crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
+      payload: { attemptId, stage: "preparing" },
+    });
     sockets[0].emit(completedV2Message(attemptId));
     sockets[0].emit(failedV2Message(attemptId));
 
-    expect(events).toEqual(["vision.try_on.attempt.completed"]);
+    expect(events).toEqual([
+      "vision.try_on.attempt.generating",
+      "vision.try_on.attempt.completed",
+    ]);
   });
 
   it("sends one direction-only manual capture and one user cancellation without reading preview bytes", async () => {
@@ -690,6 +700,49 @@ describe("vision native browser fallback - Fast attempt lifecycle", () => {
       payload,
     });
     sockets[0].emit(envelope("vision.hello", readyV2Message().payload));
+    for (const [occupancy, guidance, manualCaptureAllowed] of [
+      ["none", "no_person", false],
+      ["multiple", "multiple_people", false],
+      ["single", "hold_still", true],
+    ]) {
+      sockets[0].emit(
+        envelope("vision.try_on.attempt.acquiring", {
+          attemptId,
+          preview: {
+            reference:
+              "http://127.0.0.1:65000/v2/try-on/acquisition/preview.mjpeg?token=preview-token",
+            streamType: "mjpeg",
+          },
+          occupancy,
+          guidance,
+          manualCaptureAllowed,
+        }),
+      );
+    }
+    sockets[0].emit(
+      envelope("vision.try_on.attempt.generating", {
+        attemptId,
+        stage: "preparing",
+      }),
+    );
+    sockets[0].emit(
+      envelope("vision.try_on.attempt.generating", {
+        attemptId,
+        stage: "preparing",
+      }),
+    );
+    sockets[0].emit(
+      envelope("vision.try_on.attempt.generating", {
+        attemptId,
+        stage: "rendering",
+      }),
+    );
+    sockets[0].emit(
+      envelope("vision.try_on.attempt.generating", {
+        attemptId,
+        stage: "preparing",
+      }),
+    );
     sockets[0].emit(
       envelope("vision.try_on.attempt.acquiring", {
         attemptId,
@@ -699,14 +752,8 @@ describe("vision native browser fallback - Fast attempt lifecycle", () => {
           streamType: "mjpeg",
         },
         occupancy: "single",
-        guidance: "hold_still",
-        manualCaptureAllowed: true,
-      }),
-    );
-    sockets[0].emit(
-      envelope("vision.try_on.attempt.generating", {
-        attemptId,
-        stage: "preparing",
+        guidance: "ready",
+        manualCaptureAllowed: false,
       }),
     );
     sockets[0].emit(
@@ -719,6 +766,10 @@ describe("vision native browser fallback - Fast attempt lifecycle", () => {
 
     expect(events).toEqual([
       "vision.try_on.attempt.acquiring",
+      "vision.try_on.attempt.acquiring",
+      "vision.try_on.attempt.acquiring",
+      "vision.try_on.attempt.generating",
+      "vision.try_on.attempt.generating",
       "vision.try_on.attempt.generating",
       "vision.try_on.attempt.canceled",
     ]);

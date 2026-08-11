@@ -12,6 +12,7 @@ import { useMachineStore } from "@/stores/machine";
 import { useVisionStore } from "@/stores/vision";
 import {
   canStartFastTryOn,
+  validateTryOnPreviewReference,
   validateTryOnResultReference,
   visionGarmentSourceFor,
 } from "@/try-on/eligibility";
@@ -189,13 +190,31 @@ export const useTryOnStore = defineStore("tryOn", {
         return;
       }
       if (event.type === "vision.try_on.attempt.acquiring") {
-        if (this.phase === "starting" || this.phase === "accepted") {
-          this.phase = "acquiring";
-          this.previewUrl = event.payload.preview.reference;
-          this.guidance = event.payload.guidance;
-          this.occupancy = event.payload.occupancy;
-          this.manualCaptureAllowed = event.payload.manualCaptureAllowed;
-          this.manualCaptureSubmitted = false;
+        if (
+          this.phase === "starting" ||
+          this.phase === "accepted" ||
+          this.phase === "acquiring"
+        ) {
+          try {
+            const preview = validateTryOnPreviewReference(
+              event.payload.preview,
+              resultContext,
+            );
+            this.phase = "acquiring";
+            this.previewUrl = preview.reference;
+            this.guidance = event.payload.guidance;
+            this.occupancy = event.payload.occupancy;
+            // An accepted manual intent is irrevocable for this attempt.
+            // Subsequent Vision guidance is current display truth only.
+            this.manualCaptureAllowed = this.manualCaptureSubmitted
+              ? false
+              : event.payload.manualCaptureAllowed;
+          } catch {
+            this.phase = "failed";
+            this.failureReason = "fast_failed";
+            this.clearAcquisitionPresentation();
+            clearOperation(currentOperation);
+          }
         }
         return;
       }
@@ -203,7 +222,9 @@ export const useTryOnStore = defineStore("tryOn", {
         if (
           this.phase === "starting" ||
           this.phase === "accepted" ||
-          this.phase === "acquiring"
+          this.phase === "acquiring" ||
+          (this.phase === "generating" &&
+            isGenerationStageAtLeast(event.payload.stage, this.generationStage))
         ) {
           this.phase = "generating";
           this.clearAcquisitionPresentation();
@@ -212,7 +233,7 @@ export const useTryOnStore = defineStore("tryOn", {
         return;
       }
       if (event.type === "vision.try_on.attempt.completed") {
-        if (this.phase === "completed" || this.phase === "failed") return;
+        if (this.phase !== "generating") return;
         try {
           this.result = validateTryOnResultReference(
             event.payload.result,
@@ -317,4 +338,16 @@ function clearOperation(owner: OperationOwner | null): void {
 function createAttemptId(): string {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
   return "550e8400-e29b-41d4-a716-446655440124";
+}
+
+function isGenerationStageAtLeast(
+  candidate: TryOnGenerationStage,
+  current: TryOnGenerationStage | null,
+): boolean {
+  if (current === null) return true;
+  return generationStageOrder(candidate) >= generationStageOrder(current);
+}
+
+function generationStageOrder(stage: TryOnGenerationStage): number {
+  return stage === "preparing" ? 0 : 1;
 }

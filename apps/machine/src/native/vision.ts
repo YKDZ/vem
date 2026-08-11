@@ -405,6 +405,9 @@ export async function openVisionFastAttempt(
   let closed = false;
   let terminal = false;
   let captureSubmitted = false;
+  let lifecycle: "starting" | "accepted" | "acquiring" | "generating" =
+    "starting";
+  let generationStage: "preparing" | "rendering" | null = null;
   let terminalTimer: ReturnType<typeof setTimeout> | null = null;
   let onMessage: ((event: MessageEvent) => void) | null = null;
   let onClose: (() => void) | null = null;
@@ -503,7 +506,20 @@ export async function openVisionFastAttempt(
             message.type === "vision.try_on.attempt.canceled") &&
           message.payload.attemptId === input.attemptId
         ) {
+          if (
+            !isPermittedFastAttemptEvent(message, lifecycle, generationStage)
+          ) {
+            return;
+          }
           onEvent(message, resultContext);
+          if (message.type === "vision.try_on.attempt.accepted") {
+            lifecycle = "accepted";
+          } else if (message.type === "vision.try_on.attempt.acquiring") {
+            lifecycle = "acquiring";
+          } else if (message.type === "vision.try_on.attempt.generating") {
+            lifecycle = "generating";
+            generationStage = message.payload.stage;
+          }
           if (
             message.type === "vision.try_on.attempt.completed" ||
             message.type === "vision.try_on.attempt.failed" ||
@@ -587,6 +603,45 @@ export async function openVisionFastAttempt(
     close();
     throw error;
   }
+}
+
+function isPermittedFastAttemptEvent(
+  message: VisionFastAttemptEvent,
+  lifecycle: "starting" | "accepted" | "acquiring" | "generating",
+  generationStage: "preparing" | "rendering" | null,
+): boolean {
+  if (message.type === "vision.try_on.attempt.completed") {
+    return lifecycle === "generating";
+  }
+  if (
+    message.type === "vision.try_on.attempt.failed" ||
+    message.type === "vision.try_on.attempt.canceled"
+  ) {
+    return true;
+  }
+  if (message.type === "vision.try_on.attempt.accepted") {
+    return lifecycle === "starting";
+  }
+  if (message.type === "vision.try_on.attempt.acquiring") {
+    return (
+      lifecycle === "starting" ||
+      lifecycle === "accepted" ||
+      lifecycle === "acquiring"
+    );
+  }
+  if (
+    lifecycle !== "starting" &&
+    lifecycle !== "accepted" &&
+    lifecycle !== "acquiring" &&
+    lifecycle !== "generating"
+  ) {
+    return false;
+  }
+  return (
+    generationStage === null ||
+    message.payload.stage === "rendering" ||
+    generationStage === "preparing"
+  );
 }
 
 function closeSocket(socket: WebSocket): void {
