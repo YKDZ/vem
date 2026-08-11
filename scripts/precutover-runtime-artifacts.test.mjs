@@ -18,7 +18,10 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 
 import { verifyRuntimeArtifactsForTest } from "./precutover-runtime-artifacts.mjs";
-import { verifyTrustedVisionCandidateAttestation } from "./release-set-approval.mjs";
+import {
+  buildApprovedPrecutoverReceiptText,
+  verifyTrustedVisionCandidateAttestation,
+} from "./release-set-approval.mjs";
 import {
   generateReleaseSet,
   readReleaseRepositoryFacts,
@@ -92,6 +95,33 @@ function canonical(value) {
     return item;
   };
   return `${JSON.stringify(sort(value))}\n`;
+}
+
+function managedMediaReceiptText(observedAt) {
+  const mediaDigest = `sha256:${"a".repeat(64)}`;
+  return canonical({
+    assets: [
+      {
+        assetRevision: null,
+        byteSize: 1,
+        catalogRevision: "catalog-1",
+        contentType: "image/png",
+        digest: mediaDigest,
+        grantSha256: `sha256:${"b".repeat(64)}`,
+        id: "00000000-0000-4000-8000-000000000001",
+        loopbackPath: `/media/${mediaDigest}`,
+        purpose: "product_display_image",
+        reference:
+          "/api/media-assets/00000000-0000-4000-8000-000000000001/content",
+      },
+    ],
+    generation: "catalog-1",
+    observedAt,
+    origin: "http://127.0.0.1:4312",
+    planogramVersion: "planogram-1",
+    schemaVersion: "vem.precutover.managed-media.v1",
+    trustStatus: "pending_release_set_approval",
+  });
 }
 
 async function buildFixture(root) {
@@ -294,22 +324,29 @@ async function buildFixture(root) {
   writeFileSync(approvalBundlePath, "{}\n");
   const releaseSetInputDirectory = join(root, "release-set-input");
   mkdirSync(releaseSetInputDirectory);
-  const approvedText = canonical({
-    database: {
-      backup: { byteSize: 1, format: "postgresql-custom", sha256: digest("1") },
-      catalogDataSha256: digest("2"),
-      receiptSha256: digest("3"),
+  const databaseProof = {
+    backup: { byteSize: 1, format: "postgresql-custom", sha256: digest("1") },
+    catalogData: { sha256: digest("2") },
+    constraintsSha256: digest("3"),
+    legacyResidue: {
+      columns: 0,
+      constraints: 0,
+      indexes: 0,
+      purposeRows: 0,
+      storageReferences: 0,
     },
-    managedMedia: {
-      assetCount: 1,
-      assetsSetSha256: digest("4"),
-      generation: "catalog-1",
-      liveProofSha256: digest("5"),
-      receiptSha256: digest("6"),
+    migration: {
+      chainSha256: repository.database.migrationChainSha256,
+      count: repository.database.migrationCount,
+      target: repository.database.migrationTarget,
     },
-    releaseApprovalSha256: sha256(approvalText),
-    releaseSetSha256,
-    schemaVersion: "vem.precutover.approved.v1",
+  };
+  const mediaReceiptText = managedMediaReceiptText("2026-08-11T00:00:00.000Z");
+  const approvedText = buildApprovedPrecutoverReceiptText({
+    approval: JSON.parse(approvalText),
+    approvalText,
+    databaseProof,
+    liveMediaReceiptText: mediaReceiptText,
     sourceCommit: vemCommit,
     sourceRef,
   });
@@ -324,7 +361,9 @@ async function buildFixture(root) {
     approvedPath,
     candidateInput,
     databaseBackupPath,
+    databaseProof,
     freshApprovedText: approvedText,
+    mediaReceiptText,
     releaseSetInputDirectory,
     releaseSetPath,
     vemArchive,
@@ -471,6 +510,14 @@ describe("pre-cutover complete runtime archives", () => {
     approved.database.catalogDataSha256 = `sha256:${"a".repeat(64)}`;
     approved.managedMedia.assetsSetSha256 = `sha256:${"b".repeat(64)}`;
     approved.managedMedia.generation = "attacker-generation";
+    approved.managedMedia.stableMediaProofSha256 = sha256(
+      canonical({
+        assetCount: approved.managedMedia.assetCount,
+        assetsSetSha256: approved.managedMedia.assetsSetSha256,
+        generation: approved.managedMedia.generation,
+        planogramVersion: approved.managedMedia.planogramVersion,
+      }),
+    );
     writeFileSync(fixture.approvedPath, canonical(approved));
     const output = join(root, "runtime-artifacts-receipt.json");
 
@@ -479,6 +526,42 @@ describe("pre-cutover complete runtime archives", () => {
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /fresh|reproof|approved.*differ/i);
     assert.equal(existsSync(output), false);
+  });
+
+  it("accepts a fresh media observation with identical stable facts", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-runtime-media-observation-"));
+    temporaryRoots.push(root);
+    const fixture = await buildFixture(root);
+    const output = join(root, "runtime-artifacts-receipt.json");
+    const secondMediaReceiptText = managedMediaReceiptText(
+      "2026-08-11T00:00:01.000Z",
+    );
+    assert.notEqual(secondMediaReceiptText, fixture.mediaReceiptText);
+    const approvalText = readFileSync(fixture.approvalPath, "utf8");
+    const freshApprovedText = buildApprovedPrecutoverReceiptText({
+      approval: JSON.parse(approvalText),
+      approvalText,
+      databaseProof: fixture.databaseProof,
+      liveMediaReceiptText: secondMediaReceiptText,
+      sourceCommit: vemCommit,
+      sourceRef,
+    });
+    const fresh = JSON.parse(freshApprovedText);
+
+    const result = await runWithTestAuthority(
+      fixture,
+      output,
+      {},
+      undefined,
+      async () => ({
+        ...testProvenPrecutover(fixture),
+        approvedText: freshApprovedText,
+        receipt: fresh,
+      }),
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(existsSync(output), true);
   });
 
   for (const failure of [

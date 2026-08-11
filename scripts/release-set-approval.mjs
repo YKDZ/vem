@@ -17,6 +17,7 @@ import {
   canonicalJson as canonicalReceiptJson,
   deriveManagedMediaEvidence,
   derivePrecutoverEvidence,
+  deriveStableManagedMediaProof,
 } from "./precutover-receipts.mjs";
 import { verifyReleaseSet } from "./release-set.mjs";
 import { verifyTrustedGhBinary } from "./trusted-gh-cli.mjs";
@@ -35,6 +36,7 @@ const APPROVAL_SCHEMA = "vem.release-set.approval.v1";
 const EVIDENCE_SCHEMA = "vem.release-set.component-evidence.v1";
 const COMMIT_RE = /^[a-f0-9]{40}$/;
 const DIGEST_RE = /^sha256:[a-f0-9]{64}$/;
+const MIGRATION_RE = /^20[0-9]{12}_[a-z0-9_]+$/;
 const SOURCE_REF_RE =
   /^refs\/tags\/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-rc\.[0-9A-Za-z.-]+$/;
 const INPUT_MEMBERS = [
@@ -353,7 +355,14 @@ export function validateApprovedPrecutoverReceiptText(raw) {
   );
   assertExactObject(
     receipt.database,
-    ["backup", "catalogDataSha256", "receiptSha256"],
+    [
+      "backup",
+      "catalogDataSha256",
+      "constraintsSha256",
+      "legacyResidueSha256",
+      "migration",
+      "receiptSha256",
+    ],
     "approved precutover database",
   );
   assertExactObject(
@@ -367,10 +376,16 @@ export function validateApprovedPrecutoverReceiptText(raw) {
       "assetCount",
       "assetsSetSha256",
       "generation",
-      "liveProofSha256",
+      "planogramVersion",
       "receiptSha256",
+      "stableMediaProofSha256",
     ],
     "approved precutover managed media",
+  );
+  assertExactObject(
+    receipt.database.migration,
+    ["chainSha256", "count", "target"],
+    "approved precutover database migration",
   );
   if (
     receipt.schemaVersion !== "vem.precutover.approved.v1" ||
@@ -381,19 +396,28 @@ export function validateApprovedPrecutoverReceiptText(raw) {
     receipt.database.backup.byteSize <= 0 ||
     !Number.isSafeInteger(receipt.managedMedia.assetCount) ||
     receipt.managedMedia.assetCount < 0 ||
+    !Number.isSafeInteger(receipt.database.migration.count) ||
+    receipt.database.migration.count <= 0 ||
+    !MIGRATION_RE.test(receipt.database.migration.target) ||
     typeof receipt.managedMedia.generation !== "string" ||
     receipt.managedMedia.generation.length === 0 ||
-    receipt.managedMedia.generation.length > 128
+    receipt.managedMedia.generation.length > 128 ||
+    typeof receipt.managedMedia.planogramVersion !== "string" ||
+    receipt.managedMedia.planogramVersion.length === 0 ||
+    receipt.managedMedia.planogramVersion.length > 128
   ) {
     throw new Error("approved precutover receipt identity is invalid");
   }
   for (const digest of [
     receipt.database.backup.sha256,
     receipt.database.catalogDataSha256,
+    receipt.database.constraintsSha256,
+    receipt.database.legacyResidueSha256,
+    receipt.database.migration.chainSha256,
     receipt.database.receiptSha256,
     receipt.managedMedia.assetsSetSha256,
-    receipt.managedMedia.liveProofSha256,
     receipt.managedMedia.receiptSha256,
+    receipt.managedMedia.stableMediaProofSha256,
     receipt.releaseApprovalSha256,
     receipt.releaseSetSha256,
   ]) {
@@ -401,7 +425,82 @@ export function validateApprovedPrecutoverReceiptText(raw) {
       throw new Error("approved precutover receipt digest is invalid");
     }
   }
+  const stableMediaProof = {
+    assetCount: receipt.managedMedia.assetCount,
+    assetsSetSha256: receipt.managedMedia.assetsSetSha256,
+    generation: receipt.managedMedia.generation,
+    planogramVersion: receipt.managedMedia.planogramVersion,
+  };
+  const emptyLegacyResidue = {
+    columns: 0,
+    constraints: 0,
+    indexes: 0,
+    purposeRows: 0,
+    storageReferences: 0,
+  };
+  if (
+    receipt.managedMedia.stableMediaProofSha256 !==
+      sha256(canonicalReceiptJson(stableMediaProof)) ||
+    receipt.database.legacyResidueSha256 !==
+      sha256(canonicalReceiptJson(emptyLegacyResidue))
+  ) {
+    throw new Error("approved precutover stable proof digest is invalid");
+  }
   return receipt;
+}
+
+export function approvedPrecutoverStableProjectionText(raw) {
+  const receipt = validateApprovedPrecutoverReceiptText(raw);
+  return canonicalReceiptJson({
+    authority: {
+      releaseApprovalSha256: receipt.releaseApprovalSha256,
+      releaseSetSha256: receipt.releaseSetSha256,
+      sourceCommit: receipt.sourceCommit,
+      sourceRef: receipt.sourceRef,
+    },
+    database: receipt.database,
+    managedMedia: receipt.managedMedia,
+  });
+}
+
+export function buildApprovedPrecutoverReceiptText({
+  approval,
+  approvalText,
+  databaseProof,
+  liveMediaReceiptText,
+  sourceCommit,
+  sourceRef,
+}) {
+  const stableMedia = deriveStableManagedMediaProof(liveMediaReceiptText);
+  const approvedText = canonicalReceiptJson({
+    database: {
+      backup: databaseProof.backup,
+      catalogDataSha256: databaseProof.catalogData.sha256,
+      constraintsSha256: databaseProof.constraintsSha256,
+      legacyResidueSha256: sha256(
+        canonicalReceiptJson(databaseProof.legacyResidue),
+      ),
+      migration: databaseProof.migration,
+      receiptSha256:
+        approval.inputArtifact.members["database-backup-receipt.json"],
+    },
+    managedMedia: {
+      assetCount: stableMedia.assetCount,
+      assetsSetSha256: stableMedia.assetsSetSha256,
+      generation: stableMedia.generation,
+      planogramVersion: stableMedia.planogramVersion,
+      receiptSha256:
+        approval.inputArtifact.members["managed-media-receipt.json"],
+      stableMediaProofSha256: sha256(canonicalReceiptJson(stableMedia)),
+    },
+    releaseApprovalSha256: sha256(approvalText),
+    releaseSetSha256: approval.inputArtifact.members["release-set.json"],
+    schemaVersion: "vem.precutover.approved.v1",
+    sourceCommit,
+    sourceRef,
+  });
+  validateApprovedPrecutoverReceiptText(approvedText);
+  return approvedText;
 }
 
 function assertNonemptyString(value, label) {
@@ -795,32 +894,18 @@ export async function proveProductionPrecutover({
     origin: managedMediaOrigin,
     token: managedMediaToken,
   });
-  const liveMediaFacts = verifyLiveManagedMediaReproof(
+  verifyLiveManagedMediaReproof(
     componentEvidence.precutover.managedMedia,
     liveMedia.text,
   );
-  const approvedText = canonicalJson({
-    database: {
-      backup: databaseProof.backup,
-      catalogDataSha256: databaseProof.catalogData.sha256,
-      receiptSha256:
-        approval.inputArtifact.members["database-backup-receipt.json"],
-    },
-    managedMedia: {
-      assetCount: liveMediaFacts.assetCount,
-      assetsSetSha256: liveMediaFacts.assetsSetSha256,
-      generation: liveMediaFacts.generation,
-      liveProofSha256: sha256(liveMedia.text),
-      receiptSha256:
-        approval.inputArtifact.members["managed-media-receipt.json"],
-    },
-    releaseApprovalSha256: sha256(approvalText),
-    releaseSetSha256: approval.inputArtifact.members["release-set.json"],
-    schemaVersion: "vem.precutover.approved.v1",
+  const approvedText = buildApprovedPrecutoverReceiptText({
+    approval,
+    approvalText,
+    databaseProof,
+    liveMediaReceiptText: liveMedia.text,
     sourceCommit,
     sourceRef,
   });
-  validateApprovedPrecutoverReceiptText(approvedText);
   return {
     approval,
     approvalText,

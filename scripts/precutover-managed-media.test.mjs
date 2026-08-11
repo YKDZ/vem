@@ -8,7 +8,10 @@ import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 
 import { collectManagedMediaReceipt } from "./precutover-managed-media.mjs";
-import { deriveManagedMediaEvidence } from "./precutover-receipts.mjs";
+import {
+  deriveManagedMediaEvidence,
+  deriveStableManagedMediaProof,
+} from "./precutover-receipts.mjs";
 import { verifyLiveManagedMediaReproof } from "./release-set-approval.mjs";
 
 const repoRoot = new URL("..", import.meta.url).pathname;
@@ -235,6 +238,21 @@ async function withDaemon(options, callback) {
 }
 
 describe("precutover managed-media receipt", () => {
+  it("projects two independent live observations of identical media to the same stable proof", async () => {
+    await withDaemon({}, async ({ origin }) => {
+      const first = await collectManagedMediaReceipt({ origin, token });
+      await new Promise((resolveWait) => setTimeout(resolveWait, 5));
+      const second = await collectManagedMediaReceipt({ origin, token });
+
+      assert.notEqual(first.receipt.observedAt, second.receipt.observedAt);
+      assert.notEqual(first.text, second.text);
+      assert.deepEqual(
+        deriveStableManagedMediaProof(first.text),
+        deriveStableManagedMediaProof(second.text),
+      );
+    });
+  });
+
   it("proves every public daemon media byte and emits a canonical receipt", async () => {
     await withDaemon({}, async ({ origin, requests }) => {
       const temporary = mkdtempSync(join(tmpdir(), "vem-media-receipt-"));

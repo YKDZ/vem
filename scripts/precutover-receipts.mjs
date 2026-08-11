@@ -383,11 +383,21 @@ export function derivePrecutoverEvidence(databaseRaw, mediaRaw) {
 }
 
 export function deriveManagedMediaEvidence(mediaRaw) {
+  const stable = deriveStableManagedMediaProof(mediaRaw);
+  return {
+    assetCount: stable.assetCount,
+    assetsSetSha256: stable.assetsSetSha256,
+    generation: stable.generation,
+    receiptSha256: sha256(mediaRaw),
+  };
+}
+
+export function deriveStableManagedMediaProof(mediaRaw) {
   const managedMedia = validateManagedMediaReceiptText(mediaRaw);
   return {
     assetCount: managedMedia.assets.length,
     assetsSetSha256: sha256(canonicalJson(managedMedia.assets)),
     generation: managedMedia.generation,
-    receiptSha256: sha256(mediaRaw),
+    planogramVersion: managedMedia.planogramVersion,
   };
 }

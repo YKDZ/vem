@@ -26,6 +26,7 @@ import { fileURLToPath } from "node:url";
 
 import { runOwnedCommand } from "./lib/owned-process.mjs";
 import {
+  approvedPrecutoverStableProjectionText,
   proveProductionPrecutover,
   validateApprovedPrecutoverReceiptText,
   verifyTrustedVisionCandidateAttestation,
@@ -397,9 +398,15 @@ function validateProvenIdentityRoot({
   );
   validateApprovedPrecutoverReceiptText(approved.raw);
   validateApprovedPrecutoverReceiptText(proven.approvedText);
+  const approvedProjection = approvedPrecutoverStableProjectionText(
+    approved.raw,
+  );
+  const provenProjection = approvedPrecutoverStableProjectionText(
+    proven.approvedText,
+  );
   const releaseSet = readCanonicalFile(releaseSetPath, "release set");
   if (
-    approved.raw !== proven.approvedText ||
+    approvedProjection !== provenProjection ||
     !DIGEST_RE.test(expectedApprovalSha256) ||
     sha256(proven.approvalText) !== expectedApprovalSha256 ||
     expectedApprovalSha256 !== approved.value.releaseApprovalSha256 ||

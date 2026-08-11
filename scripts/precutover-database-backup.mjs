@@ -1246,6 +1246,8 @@ export async function reproveDatabaseBackup({
   return {
     backup: stagedBackup.byteFacts,
     catalogData: restored.catalogData,
+    constraintsSha256: restored.constraintsSha256,
+    legacyResidue: restored.legacyResidue,
     migration: migration.receipt,
   };
 }

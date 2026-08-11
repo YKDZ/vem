@@ -390,6 +390,11 @@ describe("precutover PostgreSQL backup receipt", () => {
     });
     assert.equal(reproof.backup.sha256, receipt.backup.sha256);
     assert.equal(reproof.catalogData.sha256, receipt.source.catalogData.sha256);
+    assert.equal(
+      reproof.constraintsSha256,
+      receipt.restoreProof.constraintsSha256,
+    );
+    assert.deepEqual(reproof.legacyResidue, receipt.restoreProof.legacyResidue);
     assert.equal(reproof.migration.count, 45);
 
     const forged = structuredClone(receipt);

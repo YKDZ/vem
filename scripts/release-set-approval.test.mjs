@@ -338,6 +338,19 @@ function ghVerificationFixture(approvalText) {
 
 describe("trusted release-set approval", () => {
   it("accepts only an exact canonical approved precutover receipt", () => {
+    const stableMediaProof = {
+      assetCount: 2,
+      assetsSetSha256: digest("4"),
+      generation: "catalog-42",
+      planogramVersion: "planogram-9",
+    };
+    const emptyLegacyResidue = {
+      columns: 0,
+      constraints: 0,
+      indexes: 0,
+      purposeRows: 0,
+      storageReferences: 0,
+    };
     const receipt = {
       database: {
         backup: {
@@ -346,14 +359,22 @@ describe("trusted release-set approval", () => {
           sha256: digest("1"),
         },
         catalogDataSha256: digest("2"),
+        constraintsSha256: digest("3"),
+        legacyResidueSha256: sha256(canonical(emptyLegacyResidue)),
+        migration: {
+          chainSha256: digest("5"),
+          count: 45,
+          target: "20260810000000_hard_delete_legacy_try_on_data",
+        },
         receiptSha256: digest("3"),
       },
       managedMedia: {
         assetCount: 2,
         assetsSetSha256: digest("4"),
         generation: "catalog-42",
-        liveProofSha256: digest("5"),
+        planogramVersion: "planogram-9",
         receiptSha256: digest("6"),
+        stableMediaProofSha256: sha256(canonical(stableMediaProof)),
       },
       releaseApprovalSha256: digest("7"),
       releaseSetSha256: digest("8"),
@@ -365,12 +386,23 @@ describe("trusted release-set approval", () => {
       validateApprovedPrecutoverReceiptText(canonical(receipt)),
       receipt,
     );
+    const legacyLiveProof = structuredClone(receipt);
+    delete legacyLiveProof.managedMedia.stableMediaProofSha256;
+    legacyLiveProof.managedMedia.liveProofSha256 = digest("5");
     for (const mutation of [
       { ...receipt, extra: true },
       { ...receipt, releaseApprovalSha256: digest("x") },
+      legacyLiveProof,
       {
         ...receipt,
         managedMedia: { ...receipt.managedMedia, assetCount: 1.5 },
+      },
+      {
+        ...receipt,
+        managedMedia: {
+          ...receipt.managedMedia,
+          generation: "attacker-generation",
+        },
       },
     ]) {
       assert.throws(() =>
