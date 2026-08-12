@@ -58,6 +58,7 @@ export const AI_SUPPORT_EVIDENCE_SCHEMA =
 const AI_SUPPORT_KINDS = new Set([
   "degradation-diagnostic",
   "installed-runtime",
+  "regional-evidence",
   "resource-observation",
 ]);
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
@@ -251,13 +252,18 @@ function validateAiSupportingJson(path) {
     value == null ||
     typeof value !== "object" ||
     Array.isArray(value) ||
-    value.schemaVersion !== AI_SUPPORT_EVIDENCE_SCHEMA ||
+    ![AI_SUPPORT_EVIDENCE_SCHEMA, "vem-ai-regional-evidence/v1"].includes(
+      value.schemaVersion,
+    ) ||
     !AI_SUPPORT_KINDS.has(value.kind) ||
-    value.facts == null ||
-    typeof value.facts !== "object" ||
-    Array.isArray(value.facts) ||
-    JSON.stringify(Object.keys(value).sort()) !==
-      JSON.stringify(["facts", "kind", "schemaVersion"])
+    (value.schemaVersion === AI_SUPPORT_EVIDENCE_SCHEMA &&
+      (value.facts == null ||
+        typeof value.facts !== "object" ||
+        Array.isArray(value.facts) ||
+        JSON.stringify(Object.keys(value).sort()) !==
+          JSON.stringify(["facts", "kind", "schemaVersion"]))) ||
+    (value.schemaVersion === "vem-ai-regional-evidence/v1" &&
+      value.kind !== "regional-evidence")
   )
     return `unsupported AI supporting JSON schema: ${path}`;
   return null;

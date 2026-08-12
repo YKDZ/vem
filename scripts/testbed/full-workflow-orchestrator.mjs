@@ -6,6 +6,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { validateAiRegionalEvidence } from "./ai-regional-evidence.mjs";
 import {
   BUSINESS_CHECK_REGISTRY,
   selectBusinessChecks,
@@ -293,6 +294,7 @@ export async function runSerialTrackLifecycle({
       track,
       report,
       track.reportPath,
+      { artifactRoot: track.artifactRoot },
     );
     const childFailed =
       child.status !== "passed" || validation.status !== "passed";
@@ -1486,8 +1488,19 @@ export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
     byteLength: evidenceManifestBytes.byteLength,
     sha256: createHash("sha256").update(evidenceManifestBytes).digest("hex"),
   };
-  const evidenceValidationErrors =
-    validateFullWorkflowEvidenceManifest(evidenceManifest);
+  const evidenceValidationErrors = [
+    ...validateFullWorkflowEvidenceManifest(evidenceManifest),
+    ...plan.tracks
+      .filter((track) => track.key === "aiVirtualTryOn")
+      .flatMap((track) => {
+        const regional = validateAiRegionalEvidence(
+          jsonIfPresent(track.reportPath),
+          track.artifactRoot,
+          evidenceManifest,
+        );
+        return regional.ok ? [] : [regional.reason];
+      }),
+  ];
   const aggregate = buildFullWorkflowAggregate({
     mode: options.mode,
     selectedDescriptors: plan.tracks,

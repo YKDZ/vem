@@ -211,6 +211,7 @@ function validateAiVirtualTryOnTrack(report, reportPath) {
   const output = report?.outputFacts;
   const postAi = report?.postAi;
   const degradations = report?.degradations;
+  const regionalReference = report?.regionalEvidence;
   const digest = (value) => /^sha256:[a-f0-9]{64}$/.test(value ?? "");
   const degradationExact = (value) =>
     exactKeys(value, [
@@ -237,6 +238,7 @@ function validateAiVirtualTryOnTrack(report, reportPath) {
       "ok",
       "outputFacts",
       "postAi",
+      "regionalEvidence",
       "runtimeTrace",
       "schemaVersion",
     ]) &&
@@ -304,7 +306,19 @@ function validateAiVirtualTryOnTrack(report, reportPath) {
     exactKeys(degradations, ["corruptPack", "missingPack", "workerFailure"]) &&
     Object.values(degradations).every(degradationExact) &&
     Array.isArray(report.runtimeTrace) &&
-    report.runtimeTrace.length > 0;
+    report.runtimeTrace.length > 0 &&
+    exactKeys(regionalReference, [
+      "path",
+      "schemaVersion",
+      "sha256",
+      "verdict",
+    ]) &&
+    regionalReference.schemaVersion ===
+      "vem-ai-regional-evidence-reference/v1" &&
+    typeof regionalReference.path === "string" &&
+    regionalReference.path.length > 0 &&
+    /^[a-f0-9]{64}$/.test(regionalReference.sha256 ?? "") &&
+    ["passed", "regional_check_failed"].includes(regionalReference.verdict);
   return complete
     ? passedTrack("aiVirtualTryOn", "AI virtual try-on", reportPath, {
         decodedWidth: result.decodedWidth,
@@ -1149,7 +1163,12 @@ function canonicalResult(descriptor, result, reportPath) {
   };
 }
 
-export function validateBusinessCheckReport(descriptor, report, reportPath) {
+export function validateBusinessCheckReport(
+  descriptor,
+  report,
+  reportPath,
+  _context = {},
+) {
   if (!descriptor?.runner) {
     return failedTrack(
       descriptor?.name ?? "unknown",

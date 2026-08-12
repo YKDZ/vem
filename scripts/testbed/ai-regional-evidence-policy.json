@@ -1,0 +1,10 @@
+{
+  "algorithm": "rgb-absolute-delta-rle/v1",
+  "atrEvaluator": "schp-atr",
+  "calibrationStatus": "pending_issue10_two_garment",
+  "lipEvaluator": "schp-lip",
+  "minimumUpperBodySampledPixels": 1024,
+  "poseEvaluator": "mediapipe-pose",
+  "schemaVersion": "vem-ai-regional-evidence-policy/v1",
+  "sourceDescriptorSha256": "4d3676e6933d3b5ec752de10bff48f2776348f33a0747bde816eb7e98a64d754"
+}

@@ -181,6 +181,12 @@ function aiVirtualTryOnReport() {
       differsFromInput: true,
       nonPlaceholder: true,
     },
+    regionalEvidence: {
+      path: "regional-evidence.json",
+      schemaVersion: "vem-ai-regional-evidence-reference/v1",
+      sha256: "9".repeat(64),
+      verdict: "passed",
+    },
     postAi: {
       browseAvailable: true,
       saleAvailable: true,
@@ -1261,7 +1267,20 @@ function passingExecution(descriptors) {
 }
 
 describe("full workflow aggregate validator", () => {
-  it("accepts only the exact installed AI virtual try-on v1 report", () => {
+  it("rejects an AI report without independently owned regional evidence", () => {
+    const report = aiVirtualTryOnReport();
+    delete report.regionalEvidence;
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("aiVirtualTryOn"),
+        report,
+        "ai-virtual-try-on.json",
+      ).status,
+      "failed",
+    );
+  });
+
+  it("accepts the exact regional sidecar reference shape for root-aware adjudication", () => {
     assert.equal(
       validateBusinessCheckReport(
         descriptor("aiVirtualTryOn"),
