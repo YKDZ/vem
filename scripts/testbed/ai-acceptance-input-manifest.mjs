@@ -22,6 +22,33 @@ function absolute(path, label) {
   return resolve(path);
 }
 
+function contains(root, path) {
+  const difference = relative(resolve(root), resolve(path));
+  return (
+    difference === "" ||
+    (difference !== ".." &&
+      !difference.startsWith(`..${sep}`) &&
+      !isAbsolute(difference))
+  );
+}
+
+function rejectOverlappingOutput(options, outputPath) {
+  const inputs = [
+    options.candidateInputDirectory,
+    options.windowsProofInputDirectory,
+    options.materializedModelPackRoot,
+  ];
+  if (
+    inputs.some((path) =>
+      contains(absolute(path, "input directory"), outputPath),
+    )
+  ) {
+    fail(
+      "output must remain outside candidate, proof, and model input directories",
+    );
+  }
+}
+
 async function describeFile(path, label, sourceCommit) {
   const hostPath = absolute(path, label);
   const entry = await lstat(hostPath).catch(() => fail(`${label} is missing`));
@@ -157,6 +184,7 @@ export async function buildMeasurementAiAcceptanceInputManifest(options) {
 
 export async function createMeasurementAiAcceptanceInputManifest(options) {
   const outputPath = absolute(options.outputPath, "output");
+  rejectOverlappingOutput(options, outputPath);
   const value = await buildMeasurementAiAcceptanceInputManifest(options);
   const raw = canonicalAiAcceptanceInputManifest(value);
   await validateAiAcceptanceInputManifest(raw);
