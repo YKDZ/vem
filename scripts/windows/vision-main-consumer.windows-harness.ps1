@@ -15,6 +15,16 @@ function Get-Sha256([string]$Path) {
   return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
+function Get-ContainedRelativePath([string]$Root, [string]$Path, [string]$Label) {
+  $normalizedRoot = [IO.Path]::GetFullPath($Root).TrimEnd([char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar))
+  $normalizedPath = [IO.Path]::GetFullPath($Path)
+  $prefix = $normalizedRoot + [IO.Path]::DirectorySeparatorChar
+  if (-not $normalizedPath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "$Label must be contained by its root"
+  }
+  return $normalizedPath.Substring($prefix.Length)
+}
+
 function New-Zip([string]$Source, [string]$Destination) {
   Add-Type -AssemblyName System.IO.Compression.FileSystem
   [IO.Compression.ZipFile]::CreateFromDirectory($Source, $Destination)
@@ -61,7 +71,7 @@ function New-VisionCandidateFixture([string]$Root, [string]$Commit) {
   }
   $files = @(Get-ChildItem -LiteralPath $source -File -Recurse | ForEach-Object {
     [ordered]@{
-      path = [IO.Path]::GetRelativePath($source, $_.FullName).Replace('\', '/')
+      path = (Get-ContainedRelativePath $source $_.FullName "candidate fixture member").Replace('\', '/')
       sha256 = Get-Sha256 $_.FullName
       size = [long]$_.Length
     }

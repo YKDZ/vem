@@ -44,6 +44,16 @@ function Require-Path([string]$Path) {
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "missing required testbed input: $Path" }
 }
 
+function Get-ContainedRelativePath([string]$Root, [string]$Path, [string]$Label) {
+  $normalizedRoot = [IO.Path]::GetFullPath($Root).TrimEnd([char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar))
+  $normalizedPath = [IO.Path]::GetFullPath($Path)
+  $prefix = $normalizedRoot + [IO.Path]::DirectorySeparatorChar
+  if (-not $normalizedPath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "$Label must be contained by its root"
+  }
+  return $normalizedPath.Substring($prefix.Length)
+}
+
 function Write-TestbedPhase([string]$Name) {
   New-Item -ItemType Directory -Force -Path $handoffRoot | Out-Null
   Add-Content -LiteralPath (Join-Path $handoffRoot "guest-phases.log") -Encoding utf8 -Value "$(Get-Date -Format o) $Name"
@@ -68,7 +78,7 @@ function Get-LocalRustSourceDigest {
     }
   } | Sort-Object FullName -Unique)
   $entries = @($files | ForEach-Object {
-    $relative = [IO.Path]::GetRelativePath($repoRoot, $_.FullName)
+    $relative = Get-ContainedRelativePath $repoRoot $_.FullName "local Rust source"
     $digest = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
     "$relative`0$digest"
   })
@@ -110,7 +120,7 @@ function Get-RuntimeArtifactSourceDigest {
     }
   } | Sort-Object FullName -Unique)
   $entries = @($files | ForEach-Object {
-    $relative = [IO.Path]::GetRelativePath($repoRoot, $_.FullName)
+    $relative = Get-ContainedRelativePath $repoRoot $_.FullName "runtime artifact source"
     $digest = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
     "$relative`0$digest"
   })

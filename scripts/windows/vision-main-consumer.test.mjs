@@ -5,10 +5,22 @@ import test from "node:test";
 const modulePath = "scripts/windows/vision-main-artifacts.psm1";
 const resolverPath = "scripts/windows/get-vision-main-artifacts.ps1";
 const installerPath = "scripts/windows/install-vision-main-artifact.ps1";
+const powershell51Paths = [
+  "scripts/windows/vision-main-consumer.windows-harness.ps1",
+  "scripts/testbed/ai-acceptance-artifacts.psm1",
+  "scripts/testbed/run-local-testbed-guest.ps1",
+  "scripts/testbed/run-full-ai-virtual-try-on-track.ps1",
+];
 
 function source(path) {
   return readFileSync(path, "utf8");
 }
+
+test("keeps relative-path calculation compatible with Windows PowerShell 5.1", () => {
+  for (const path of powershell51Paths) {
+    assert.doesNotMatch(source(path), /\[IO\.Path\]::GetRelativePath/);
+  }
+});
 
 test("consumes the published Vision main Actions artifact contract", () => {
   const module = source(modulePath);

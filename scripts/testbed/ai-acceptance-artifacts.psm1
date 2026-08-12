@@ -5,6 +5,16 @@ $script:MarkerName = ".vem-ai-acceptance-owner.json"
 $script:Schema = "vem.testbed.ai-acceptance-artifact-owner.v1"
 $script:SupportSchema = "vem.testbed.ai-virtual-try-on-support.v1"
 
+function Get-ContainedRelativePath([string]$Root, [string]$Path, [string]$Label) {
+  $normalizedRoot = [IO.Path]::GetFullPath($Root).TrimEnd([char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar))
+  $normalizedPath = [IO.Path]::GetFullPath($Path)
+  $prefix = $normalizedRoot + [IO.Path]::DirectorySeparatorChar
+  if (-not $normalizedPath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "$Label must be contained by its root"
+  }
+  return $normalizedPath.Substring($prefix.Length)
+}
+
 function Assert-TestbedAiArtifactIdentity([string]$RunId, [int]$Pass, [string]$FixtureKey) {
   if ($RunId -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$') { throw "AI artifact owner runId is invalid" }
   if ($Pass -notin @(1, 2)) { throw "AI artifact owner pass is invalid" }
@@ -82,7 +92,7 @@ function Remove-TestbedAiAcceptanceArtifactRoot {
   )
   foreach ($entry in @(Get-ChildItem -LiteralPath $Root -Force -Recurse)) {
     if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "AI artifact inventory contains a linked member" }
-    $relative = [IO.Path]::GetRelativePath($Root, $entry.FullName).Replace("\", "/")
+    $relative = (Get-ContainedRelativePath $Root $entry.FullName "AI artifact inventory member").Replace("\", "/")
     if ($entry.PSIsContainer) {
       if ($relative -notin @("regional", "regional/short", "regional/long")) { throw "AI artifact inventory contains a foreign directory: $relative" }
     } elseif ($relative -notin $allowedLeaf -and $relative -cnotmatch '^regional/(short|long)/[0-9a-f-]{36}\.regional-evidence\.json$') {

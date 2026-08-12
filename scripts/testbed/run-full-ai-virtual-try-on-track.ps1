@@ -41,6 +41,16 @@ function Require-ExactRegularMembers([string]$Path, [string[]]$Names, [string]$L
   }
 }
 
+function Get-ContainedRelativePath([string]$Root, [string]$Path, [string]$Label) {
+  $normalizedRoot = [IO.Path]::GetFullPath($Root).TrimEnd([char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar))
+  $normalizedPath = [IO.Path]::GetFullPath($Path)
+  $prefix = $normalizedRoot + [IO.Path]::DirectorySeparatorChar
+  if (-not $normalizedPath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "$Label must be contained by its root"
+  }
+  return $normalizedPath.Substring($prefix.Length)
+}
+
 function Get-RegularDirectoryIdentity([string]$Path, [bool]$Nested, [string]$Label) {
   Require-AbsoluteDirectory $Path $Label
   $files = @(Get-ChildItem -LiteralPath $Path -File -Recurse -Force)
@@ -48,7 +58,7 @@ function Get-RegularDirectoryIdentity([string]$Path, [bool]$Nested, [string]$Lab
   if (@($files + $directories | Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 }).Count -ne 0) { throw "$Label must not contain reparse points" }
   if (-not $Nested -and $directories.Count -ne 0) { throw "$Label must contain direct regular files only" }
   return @($files | ForEach-Object {
-    [ordered]@{ name = [IO.Path]::GetRelativePath($Path, $_.FullName).Replace('\', '/'); sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(); byteSize = [long]$_.Length }
+    [ordered]@{ name = (Get-ContainedRelativePath $Path $_.FullName "$Label member").Replace('\', '/'); sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(); byteSize = [long]$_.Length }
   } | Sort-Object name)
 }
 
