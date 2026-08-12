@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   mkdirSync,
   mkdtempSync,
@@ -15,6 +17,7 @@ import {
   buildFullWorkflowEvidenceManifest,
   EVIDENCE_LIMITS,
   validateFullWorkflowEvidenceManifest,
+  validateFullWorkflowEvidenceOwnedFiles,
 } from "./full-workflow-evidence-manifest.mjs";
 
 const roots = [];
@@ -389,6 +392,92 @@ describe("full workflow evidence manifest", () => {
         failure.includes("too many selected screenshots"),
       ),
     );
+  });
+
+  it("rejects evidence bytes changed after manifest construction", () => {
+    const temp = root();
+    const artifacts = join(temp, "artifacts");
+    mkdirSync(artifacts);
+    const report = join(temp, "report.json");
+    const log = join(artifacts, "runtime.log");
+    writeFileSync(report, '{"runtimeTrace":[{"id":"trace-1"}]}\n');
+    writeFileSync(log, "original\n");
+    const manifest = buildFullWorkflowEvidenceManifest({
+      tracks: [{ key: "sale", reportPath: report, artifactRoot: artifacts }],
+    });
+    assert.deepEqual(validateFullWorkflowEvidenceOwnedFiles(manifest), []);
+
+    writeFileSync(log, "tampered\n");
+
+    assert.ok(
+      validateFullWorkflowEvidenceOwnedFiles(manifest).some((failure) =>
+        failure.includes("digest or size changed"),
+      ),
+    );
+  });
+
+  it("allows bundling only while the aggregate, manifest, and owned bytes remain valid", () => {
+    const temp = root();
+    const artifacts = join(temp, "artifacts");
+    mkdirSync(artifacts);
+    const report = join(temp, "report.json");
+    const log = join(artifacts, "runtime.log");
+    writeFileSync(report, '{"runtimeTrace":[{"id":"trace-1"}]}\n');
+    writeFileSync(log, "original\n");
+    const manifest = buildFullWorkflowEvidenceManifest({
+      tracks: [{ key: "sale", reportPath: report, artifactRoot: artifacts }],
+    });
+    const manifestPath = join(temp, "full-workflow-evidence-manifest.json");
+    const manifestRaw = `${JSON.stringify(manifest, null, 2)}\n`;
+    writeFileSync(manifestPath, manifestRaw);
+    const summaryPath = join(temp, "full-workflow-tracks.json");
+    const summary = {
+      ok: true,
+      businessOutcome: { ok: true },
+      evidenceInventory: {
+        ok: true,
+        reportPath: manifestPath,
+        manifestFile: {
+          byteLength: Buffer.byteLength(manifestRaw),
+          sha256: createHash("sha256").update(manifestRaw).digest("hex"),
+        },
+      },
+    };
+    writeFileSync(summaryPath, `${JSON.stringify(summary)}\n`);
+    const run = () =>
+      spawnSync(
+        process.execPath,
+        [
+          new URL("./full-workflow-evidence-manifest.mjs", import.meta.url)
+            .pathname,
+          "--validate-upload",
+          manifestPath,
+          summaryPath,
+        ],
+        { encoding: "utf8" },
+      );
+    assert.equal(run().status, 0);
+
+    writeFileSync(manifestPath, `${JSON.stringify(manifest)}\n`);
+    const manifestTampered = run();
+    assert.notEqual(manifestTampered.status, 0);
+    assert.match(
+      manifestTampered.stderr,
+      /manifest changed after aggregate decision/,
+    );
+    writeFileSync(manifestPath, manifestRaw);
+
+    writeFileSync(log, "tampered\n");
+    const tampered = run();
+    assert.notEqual(tampered.status, 0);
+    assert.match(tampered.stderr, /digest or size changed/);
+
+    writeFileSync(log, "original\n");
+    summary.ok = false;
+    writeFileSync(summaryPath, `${JSON.stringify(summary)}\n`);
+    const failed = run();
+    assert.notEqual(failed.status, 0);
+    assert.match(failed.stderr, /diagnostic-only and not uploadable/);
   });
 
   it("keeps a failed business track failed while accepting its structured primary reason and one diagnostic source", () => {

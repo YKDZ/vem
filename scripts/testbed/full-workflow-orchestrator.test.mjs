@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -17,6 +24,7 @@ import {
   FULL_WORKFLOW_TRACK_DESCRIPTORS,
   reloadRuntimeHandoff,
   refreshDaemonReadyHandoff,
+  runFullWorkflowOrchestrator,
   runSerialTrackLifecycle,
   waitForPlatformFixtureStock,
   waitForBusinessHardwareReady,
@@ -33,6 +41,124 @@ function readyPhysicalStockAttestation(attestationId) {
 }
 
 describe("full workflow serial lifecycle", () => {
+  it("fails the public aggregate when artifact authority rejects a passed report", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-workflow-evidence-gate-"));
+    try {
+      const outPath = join(root, "full-workflow-tracks.json");
+      const aggregate = await runFullWorkflowOrchestrator(
+        {
+          mode: "fast",
+          focus: ["sale"],
+          guestInputPath: join(root, "guest-input.json"),
+          handoffPath: join(root, "handoff.json"),
+          outPath,
+        },
+        {
+          beforeTrack: async () => undefined,
+          runTrack: async (track) => {
+            mkdirSync(track.artifactRoot, { recursive: true });
+            const report = {
+              schemaVersion: "vem-fast-route-stress-sale/v2",
+              ok: true,
+              runtimeTrace: [{ id: "sale-trace" }],
+              summary: {
+                orderId: "ORDER-1",
+                paymentId: "PAYMENT-1",
+                vendingCommandId: "VEND-1",
+                protocol: ["VEND", "F0", "F1", "F2"],
+                daemonStockDeltaAfterF2: -1,
+                platformStockDeltaAfterF2: -1,
+                visionEventId: "VISION-1",
+                repeatedPhysicalTouchTraceId: 1,
+              },
+            };
+            writeFileSync(track.reportPath, `${JSON.stringify(report)}\n`);
+            writeFileSync(join(track.artifactRoot, "runtime.log"), "ok\n");
+            writeFileSync(
+              join(track.artifactRoot, "worker.exe"),
+              Buffer.from("MZpayload"),
+            );
+            return { status: "passed", exitCode: 0, report };
+          },
+          captureTerminal: async () => ({ ok: true, facts: {} }),
+          recover: async () => ({ ok: true, actions: [] }),
+          emitTrackProgress: () => undefined,
+        },
+      );
+
+      assert.equal(aggregate.businessSets.sale.status, "passed");
+      assert.equal(aggregate.ok, false);
+      assert.equal(aggregate.businessOutcome.ok, false);
+      assert.ok(
+        aggregate.failures.some(
+          (failure) =>
+            failure.set === "evidenceInventory" &&
+            failure.reason.includes("forbidden evidence artifact"),
+        ),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails the public aggregate when the complete artifact tree exceeds its budget", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-workflow-budget-gate-"));
+    try {
+      const aggregate = await runFullWorkflowOrchestrator(
+        {
+          mode: "fast",
+          focus: ["sale"],
+          guestInputPath: join(root, "guest-input.json"),
+          handoffPath: join(root, "handoff.json"),
+          outPath: join(root, "full-workflow-tracks.json"),
+        },
+        {
+          beforeTrack: async () => undefined,
+          runTrack: async (track) => {
+            mkdirSync(track.artifactRoot, { recursive: true });
+            const report = {
+              schemaVersion: "vem-fast-route-stress-sale/v2",
+              ok: true,
+              runtimeTrace: [{ id: "sale-trace" }],
+              summary: {
+                orderId: "ORDER-1",
+                paymentId: "PAYMENT-1",
+                vendingCommandId: "VEND-1",
+                protocol: ["VEND", "F0", "F1", "F2"],
+                daemonStockDeltaAfterF2: -1,
+                platformStockDeltaAfterF2: -1,
+                visionEventId: "VISION-1",
+                repeatedPhysicalTouchTraceId: 1,
+              },
+            };
+            writeFileSync(track.reportPath, `${JSON.stringify(report)}\n`);
+            writeFileSync(join(track.artifactRoot, "runtime.log"), "ok\n");
+            const png = Buffer.alloc(2 * 1024 * 1024);
+            Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(png);
+            for (let index = 0; index < 4; index += 1)
+              writeFileSync(join(track.artifactRoot, `${index}.png`), png);
+            return { status: "passed", exitCode: 0, report };
+          },
+          captureTerminal: async () => ({ ok: true, facts: {} }),
+          recover: async () => ({ ok: true, actions: [] }),
+          emitTrackProgress: () => undefined,
+        },
+      );
+
+      assert.equal(aggregate.businessSets.sale.status, "passed");
+      assert.equal(aggregate.ok, false);
+      assert.ok(
+        aggregate.failures.some(
+          (failure) =>
+            failure.set === "evidenceInventory" &&
+            failure.reason.includes("total size limit"),
+        ),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("reloads runtime identities changed by a track restart", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-workflow-handoff-reload-"));
     const handoffPath = join(root, "handoff.json");

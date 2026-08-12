@@ -2155,7 +2155,7 @@ describe("Windows D cache contract", () => {
     );
   });
 
-  it("keeps workflow aggregate reports on non-zero exit and bundles evidence without masking failures", () => {
+  it("keeps failed diagnostics but never packages them as uploadable evidence", () => {
     const guest = readFileSync(
       new URL("./run-local-testbed-guest.ps1", import.meta.url),
       "utf8",
@@ -2189,6 +2189,17 @@ describe("Windows D cache contract", () => {
     assert.ok(manifestCheck >= 0 && bundleCall > manifestCheck);
     assert.ok(bundleFailure > bundleCall);
     assert.match(guest, /if \(Test-Path -LiteralPath \$manifestPath\)/);
+    assert.match(
+      guest,
+      /full-workflow-evidence-manifest\.mjs --validate-upload \$ManifestPath \$summaryPath/,
+    );
+    const removeBundle = guest.indexOf(
+      "Remove-Item -LiteralPath $BundleRoot -Recurse -Force",
+    );
+    const createBundle = guest.indexOf(
+      "New-Item -ItemType Directory -Force -Path $BundleRoot",
+    );
+    assert.ok(removeBundle >= 0 && createBundle > removeBundle);
     assert.match(guest, /\$workflowFailure -ne \$null/);
     assert.match(guest, /\$bundleFailure -ne \$null/);
   });

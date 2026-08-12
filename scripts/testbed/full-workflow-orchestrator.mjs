@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -10,7 +11,10 @@ import {
   selectBusinessChecks,
 } from "./business-check-registry.mjs";
 import { waitForDaemonReadyRefresh } from "./daemon-ready-refresh.mjs";
-import { buildFullWorkflowEvidenceManifest } from "./full-workflow-evidence-manifest.mjs";
+import {
+  buildFullWorkflowEvidenceManifest,
+  validateFullWorkflowEvidenceManifest,
+} from "./full-workflow-evidence-manifest.mjs";
 import {
   buildFullWorkflowAggregate,
   validateBusinessCheckReport,
@@ -1477,12 +1481,22 @@ export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
     })),
   });
   writeJson(evidenceManifestPath, evidenceManifest);
+  const evidenceManifestBytes = readFileSync(evidenceManifestPath);
+  const evidenceManifestFile = {
+    byteLength: evidenceManifestBytes.byteLength,
+    sha256: createHash("sha256").update(evidenceManifestBytes).digest("hex"),
+  };
+  const evidenceValidationErrors =
+    validateFullWorkflowEvidenceManifest(evidenceManifest);
   const aggregate = buildFullWorkflowAggregate({
     mode: options.mode,
     selectedDescriptors: plan.tracks,
     identity: workflowIdentity(options.guestInputPath, options.commit),
     executedTracks,
     evidenceManifestPath,
+    evidenceManifest,
+    evidenceManifestFile,
+    evidenceValidationErrors,
   });
   writeJson(options.outPath, aggregate);
   return aggregate;

@@ -222,6 +222,10 @@ function New-BoundedEvidenceBundle([string]$ManifestPath, [string]$BundleRoot) {
   if (Test-Path -LiteralPath $BundleRoot) {
     Remove-Item -LiteralPath $BundleRoot -Recurse -Force
   }
+  $summaryPath = Join-Path $handoffRoot "full-workflow-tracks.json"
+  Require-Path $summaryPath
+  & node scripts/testbed/full-workflow-evidence-manifest.mjs --validate-upload $ManifestPath $summaryPath
+  if ($LASTEXITCODE -ne 0) { throw "workflow evidence manifest or owned files are not uploadable" }
   New-Item -ItemType Directory -Force -Path $BundleRoot | Out-Null
   $manifest = Get-Content -Raw -LiteralPath $ManifestPath | ConvertFrom-Json
   foreach ($path in @(

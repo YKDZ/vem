@@ -1218,6 +1218,9 @@ function buildRegistryWorkflowAggregate({
   selectedDescriptors,
   executedTracks,
   evidenceManifestPath,
+  evidenceManifest,
+  evidenceManifestFile,
+  evidenceValidationErrors,
   identity,
 }) {
   const expected = selectedDescriptors.map((descriptor) => descriptor.name);
@@ -1262,6 +1265,21 @@ function buildRegistryWorkflowAggregate({
       return [descriptor.name, result];
     }),
   );
+  const evidenceFailures = [
+    ...(Array.isArray(evidenceManifest?.failures)
+      ? evidenceManifest.failures
+      : []),
+    ...(Array.isArray(evidenceValidationErrors)
+      ? evidenceValidationErrors
+      : []),
+  ];
+  for (const reason of [...new Set(evidenceFailures)]) {
+    failures.push({
+      set: "evidenceInventory",
+      reason,
+      reportPath: evidenceManifestPath,
+    });
+  }
   return {
     schemaVersion: "vem-local-testbed-full-workflow/v4",
     mode,
@@ -1273,7 +1291,15 @@ function buildRegistryWorkflowAggregate({
     businessSets: sets,
     failures,
     businessOutcome: { ok: failures.length === 0, failures },
-    evidenceInventory: { reportPath: evidenceManifestPath },
+    evidenceInventory: {
+      reportPath: evidenceManifestPath,
+      ok:
+        evidenceManifest == null
+          ? null
+          : evidenceManifest.ok === true && evidenceFailures.length === 0,
+      failures: evidenceFailures,
+      manifestFile: evidenceManifestFile,
+    },
     identity,
   };
 }
@@ -1282,6 +1308,9 @@ export function buildFullWorkflowAggregate({
   mode,
   selectedDescriptors,
   evidenceManifestPath = null,
+  evidenceManifest = null,
+  evidenceManifestFile = null,
+  evidenceValidationErrors = [],
   identity = null,
   executedTracks = [],
 } = {}) {
@@ -1297,6 +1326,9 @@ export function buildFullWorkflowAggregate({
     selectedDescriptors,
     executedTracks,
     evidenceManifestPath,
+    evidenceManifest,
+    evidenceManifestFile,
+    evidenceValidationErrors,
     identity,
   });
 }

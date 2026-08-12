@@ -14,6 +14,7 @@ import {
   resolve,
   sep,
 } from "node:path";
+import { pathToFileURL } from "node:url";
 
 export const EVIDENCE_LIMITS = Object.freeze({
   reportPerFileBytes: 512 * 1024,
@@ -670,4 +671,91 @@ export function validateFullWorkflowEvidenceManifest(manifest) {
   for (const failure of manifest?.failures ?? [])
     failures.push(`evidence manifest failure: ${failure}`);
   return failures;
+}
+
+export function validateFullWorkflowEvidenceOwnedFiles(manifest) {
+  const failures = [];
+  for (const file of manifest?.files ?? []) {
+    try {
+      requireRegularUnlinkedFile(file.path, "owned evidence artifact");
+      const content = readFileSync(file.path);
+      const digest = createHash("sha256").update(content).digest("hex");
+      if (content.byteLength !== file.byteLength || digest !== file.sha256)
+        failures.push(`owned evidence digest or size changed: ${file.path}`);
+    } catch (error) {
+      failures.push(
+        error instanceof Error
+          ? error.message
+          : `owned evidence artifact is invalid: ${file?.path ?? "unknown"}`,
+      );
+    }
+  }
+  return failures;
+}
+
+export function validateFullWorkflowEvidenceForUpload(manifest) {
+  return [
+    ...validateFullWorkflowEvidenceManifest(manifest),
+    ...validateFullWorkflowEvidenceOwnedFiles(manifest),
+  ];
+}
+
+function readJsonRegular(path, label) {
+  if (typeof path !== "string" || path.trim() === "" || !isAbsolute(path))
+    throw new Error(`${label} path must be absolute`);
+  const resolvedPath = resolve(path);
+  requireRegularUnlinkedFile(resolvedPath, label);
+  const raw = readFileSync(resolvedPath);
+  let value;
+  try {
+    value = JSON.parse(raw.toString("utf8"));
+  } catch {
+    throw new Error(`${label} is invalid JSON`);
+  }
+  return { path: resolvedPath, raw, value };
+}
+
+function validateOwnedManifestCli(args) {
+  if (
+    args.length !== 3 ||
+    args[0] !== "--validate-upload" ||
+    typeof args[1] !== "string" ||
+    typeof args[2] !== "string"
+  )
+    throw new Error(
+      "usage: --validate-upload <absolute-manifest-path> <absolute-summary-path>",
+    );
+  const manifestFile = readJsonRegular(args[1], "evidence manifest");
+  const summaryFile = readJsonRegular(args[2], "workflow summary");
+  const summary = summaryFile.value;
+  if (
+    summary?.ok !== true ||
+    summary?.businessOutcome?.ok !== true ||
+    summary?.evidenceInventory?.ok !== true
+  )
+    throw new Error("workflow evidence is diagnostic-only and not uploadable");
+  const digest = createHash("sha256").update(manifestFile.raw).digest("hex");
+  if (
+    summary?.evidenceInventory?.reportPath !== manifestFile.path ||
+    summary?.evidenceInventory?.manifestFile?.byteLength !==
+      manifestFile.raw.byteLength ||
+    summary?.evidenceInventory?.manifestFile?.sha256 !== digest
+  )
+    throw new Error(
+      "workflow evidence manifest changed after aggregate decision",
+    );
+  const failures = validateFullWorkflowEvidenceForUpload(manifestFile.value);
+  if (failures.length > 0)
+    throw new Error(
+      `evidence manifest is not uploadable: ${failures.join("; ")}`,
+    );
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  try {
+    validateOwnedManifestCli(process.argv.slice(2));
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  }
 }
