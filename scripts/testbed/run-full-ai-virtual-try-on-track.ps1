@@ -94,10 +94,13 @@ $shortFacts = Join-Path $artifactRoot "short-attempt.json"
 $longFacts = Join-Path $artifactRoot "long-attempt.json"
 $saleFacts = Join-Path $artifactRoot "ordinary-sale.json"
 $missingFacts = Join-Path $artifactRoot "missing-model-degradation.json"
+$verifiedRecoveryFacts = Join-Path $artifactRoot "verified-owner-recovery.json"
 $nodeEntry = Join-Path $PSScriptRoot "ai-virtual-try-on-installed-entry.mjs"
 $restorationRequired = $false
 $restorationSupport = Join-Path $artifactRoot "default-owner-restoration.json"
 $trackSucceeded = $false
+$verifiedConfiguration = $null
+$trackFailure = $null
 try {
   # The first stop is a mutating operation; restoration is required before it.
   $restorationRequired = $true
@@ -113,14 +116,33 @@ try {
   node $nodeEntry degradation --fault missing --guest-input $GuestInputPath --handoff $HandoffPath --out $missingFacts
   if ($LASTEXITCODE -ne 0) { throw "missing model installed degradation failed" }
   $restoredConfiguration = Restart-TestbedAiVisionOwner -GuestInput $guestInput -EvidencePhase recovery -ModelPackRoot $modelPackRoot
-  Remove-Item -LiteralPath $restoredConfiguration.acceptanceEvidenceRoot -Recurse -Force -ErrorAction Stop
-  node $nodeEntry assemble --artifact-root $artifactRoot --candidate-input-directory ([string]$inputs.candidateInputDirectory) --windows-proof-input-directory ([string]$inputs.windowsProofInputDirectory) --short-attempt $shortFacts --long-attempt $longFacts --sale $saleFacts --missing-degradation $missingFacts --out $OutPath
+  $verifiedConfiguration = $restoredConfiguration
+  $windowsProof = Get-Content -Raw -LiteralPath (Join-Path ([string]$inputs.windowsProofInputDirectory) "precutover-ai-proof.json") -Encoding utf8 | ConvertFrom-Json -ErrorAction Stop
+  [ordered]@{
+    facts = [ordered]@{ recovery = [ordered]@{
+      aiReadinessDiagnostic = "ready"
+      aiReady = $true
+      modelPackSha256 = [string]$windowsProof.modelPack.archive.sha256
+      runtimeDescriptorSha256 = [string]$windowsProof.resources.runtimeDescriptorSha256
+      sourceCommit = [string]$windowsProof.candidate.sourceCommit
+      workerExecutableSha256 = [string]$windowsProof.candidate.workerExecutableSha256
+    } }
+    kind = "installed-runtime"
+    schemaVersion = "vem.testbed.ai-virtual-try-on-support.v1"
+  } | ConvertTo-Json -Compress -Depth 8 | ForEach-Object { [IO.File]::WriteAllText($verifiedRecoveryFacts, "$_`n", [Text.UTF8Encoding]::new($false)) }
+  node $nodeEntry assemble --artifact-root $artifactRoot --candidate-input-directory ([string]$inputs.candidateInputDirectory) --windows-proof-input-directory ([string]$inputs.windowsProofInputDirectory) --short-attempt $shortFacts --long-attempt $longFacts --sale $saleFacts --missing-degradation $missingFacts --recovery $verifiedRecoveryFacts --out $OutPath
   if ($LASTEXITCODE -ne 0) { throw "installed AI acceptance assembly failed" }
   $trackSucceeded = $true
+} catch {
+  $trackFailure = $_.Exception
 } finally {
+  $cleanupFailures = [Collections.Generic.List[Exception]]::new()
   try {
     if ($restorationRequired) {
       $restored = Restore-TestbedDefaultVisionOwner -GuestInput $guestInput
+      if ($null -ne $verifiedConfiguration) {
+        Remove-Item -LiteralPath ([string]$verifiedConfiguration.acceptanceEvidenceRoot) -Recurse -Force -ErrorAction Stop
+      }
       [ordered]@{
         facts = [ordered]@{
           aiEnvironmentCleared = $true
@@ -132,13 +154,21 @@ try {
     }
   } catch {
     Remove-Item -LiteralPath $OutPath -Force -ErrorAction SilentlyContinue
-    Remove-TestbedAiAcceptanceArtifactRoot -Root $artifactRoot -RunId ([string]$guestInput.runId) -FixtureKey $FixtureKey
-    throw
+    $cleanupFailures.Add($_.Exception)
   }
   if (-not $trackSucceeded) {
     Remove-Item -LiteralPath $OutPath -Force -ErrorAction SilentlyContinue
-    Remove-TestbedAiAcceptanceArtifactRoot -Root $artifactRoot -RunId ([string]$guestInput.runId) -FixtureKey $FixtureKey
+    try { Remove-TestbedAiAcceptanceArtifactRoot -Root $artifactRoot -RunId ([string]$guestInput.runId) -FixtureKey $FixtureKey }
+    catch { $cleanupFailures.Add($_.Exception) }
+  }
+  if ($cleanupFailures.Count -gt 0) {
+    if ($null -ne $trackFailure) {
+      throw [AggregateException]::new("AI track and cleanup both failed", @($trackFailure) + @($cleanupFailures))
+    }
+    if ($cleanupFailures.Count -eq 1) { throw $cleanupFailures[0] }
+    throw [AggregateException]::new("AI track cleanup failed", @($cleanupFailures))
   }
 }
+if ($null -ne $trackFailure) { throw $trackFailure }
 Write-Error "installed degradation probes not executed; AI regional evidence policy awaits Issue10 two-garment calibration" -ErrorAction Continue
 exit 1

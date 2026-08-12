@@ -77,6 +77,7 @@ function Remove-TestbedAiAcceptanceArtifactRoot {
   }
   $allowedLeaf = @(
     $script:MarkerName, "short-attempt.json", "long-attempt.json", "ordinary-sale.json",
+    "missing-model-degradation.json", "verified-owner-recovery.json",
     "default-owner-restoration.json"
   )
   foreach ($entry in @(Get-ChildItem -LiteralPath $Root -Force -Recurse)) {

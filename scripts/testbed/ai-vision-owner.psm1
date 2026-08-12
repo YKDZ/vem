@@ -233,7 +233,10 @@ function Restart-TestbedAiVisionOwner {
     $context = Assert-TestbedAiOwnerContext
     if ($null -ne $context.testOperations -and $context.testOperations.ContainsKey("StartOwner")) { & $context.testOperations.StartOwner }
     else { Start-ScheduledTask -TaskName "VEMVisionRuntime" -ErrorAction Stop }
-    Wait-TestbedVisionReady | Out-Null
+    $health = Wait-TestbedVisionReady
+    if ($health.aiReady -ne $true -or [string]$health.aiReadinessDiagnostic -cne "ready") {
+      throw "verified AI owner did not expose ready model and worker identities"
+    }
     return $configuration
   } catch {
     $primary = $_.Exception

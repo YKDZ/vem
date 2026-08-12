@@ -260,6 +260,82 @@ function supportEvidence(kind, facts) {
   return { facts, kind, schemaVersion: AI_SUPPORT_EVIDENCE_SCHEMA };
 }
 
+const DEGRADATION_FACT_KEYS = Object.freeze([
+  "aiReady",
+  "coreReady",
+  "daemonReady",
+  "fastReady",
+  "machineUiAvailable",
+  "saleAvailable",
+]);
+
+function validateMissingDegradationSupport(value) {
+  const degradation = value?.facts?.degradation;
+  const facts = degradation?.facts;
+  if (
+    JSON.stringify(Object.keys(value ?? {}).sort()) !==
+      JSON.stringify(["facts", "kind", "schemaVersion"]) ||
+    value.schemaVersion !== AI_SUPPORT_EVIDENCE_SCHEMA ||
+    value.kind !== "installed-runtime" ||
+    JSON.stringify(Object.keys(value.facts ?? {}).sort()) !==
+      JSON.stringify(["degradation"]) ||
+    JSON.stringify(Object.keys(degradation ?? {}).sort()) !==
+      JSON.stringify(["diagnostic", "facts", "fault"]) ||
+    JSON.stringify(Object.keys(facts ?? {}).sort()) !==
+      JSON.stringify(DEGRADATION_FACT_KEYS) ||
+    degradation.diagnostic !== "model_pack_missing" ||
+    degradation.fault !== "missing" ||
+    facts.aiReady !== false ||
+    DEGRADATION_FACT_KEYS.filter((key) => key !== "aiReady").some(
+      (key) => facts[key] !== true,
+    )
+  )
+    throw new Error("missing model degradation support evidence is invalid");
+  return facts;
+}
+
+export function validateMissingDegradationSupportForTest(value) {
+  if (process.env.NODE_ENV !== "test")
+    throw new Error("missing degradation validator is test-only");
+  return validateMissingDegradationSupport(value);
+}
+
+function validateVerifiedOwnerRecoverySupport(value, proof) {
+  const recovery = value?.facts?.recovery;
+  if (
+    JSON.stringify(Object.keys(value ?? {}).sort()) !==
+      JSON.stringify(["facts", "kind", "schemaVersion"]) ||
+    value.schemaVersion !== AI_SUPPORT_EVIDENCE_SCHEMA ||
+    value.kind !== "installed-runtime" ||
+    JSON.stringify(Object.keys(value.facts ?? {}).sort()) !==
+      JSON.stringify(["recovery"]) ||
+    JSON.stringify(Object.keys(recovery ?? {}).sort()) !==
+      JSON.stringify([
+        "aiReadinessDiagnostic",
+        "aiReady",
+        "modelPackSha256",
+        "runtimeDescriptorSha256",
+        "sourceCommit",
+        "workerExecutableSha256",
+      ]) ||
+    recovery.aiReady !== true ||
+    recovery.aiReadinessDiagnostic !== "ready" ||
+    recovery.modelPackSha256 !== proof.modelPack.archive.sha256 ||
+    recovery.runtimeDescriptorSha256 !==
+      proof.resources.runtimeDescriptorSha256 ||
+    recovery.sourceCommit !== proof.candidate.sourceCommit ||
+    recovery.workerExecutableSha256 !== proof.candidate.workerExecutableSha256
+  )
+    throw new Error("verified AI owner recovery support evidence is invalid");
+  return recovery;
+}
+
+export function validateVerifiedOwnerRecoverySupportForTest(value, proof) {
+  if (process.env.NODE_ENV !== "test")
+    throw new Error("verified owner recovery validator is test-only");
+  return validateVerifiedOwnerRecoverySupport(value, proof);
+}
+
 function requireDigest(value, label) {
   const normalized = String(value ?? "").replace(/^sha256:/, "");
   if (!/^[a-f0-9]{64}$/.test(normalized))
@@ -803,14 +879,6 @@ export async function assembleInstalledAiTryOnAcceptanceFiles(options) {
     options.missingDegradationPath,
     "missing model degradation facts",
   );
-  const missingDegradation = degradationSupport.facts?.degradation;
-  if (
-    degradationSupport.schemaVersion !== AI_SUPPORT_EVIDENCE_SCHEMA ||
-    degradationSupport.kind !== "installed-runtime" ||
-    missingDegradation?.diagnostic !== "model_pack_missing" ||
-    missingDegradation.fault !== "missing"
-  )
-    throw new Error("missing model degradation support evidence is invalid");
   if (
     saleSupport.schemaVersion !== AI_SUPPORT_EVIDENCE_SCHEMA ||
     saleSupport.kind !== "installed-runtime" ||
@@ -822,6 +890,13 @@ export async function assembleInstalledAiTryOnAcceptanceFiles(options) {
     join(options.windowsProofInputDirectory, "precutover-ai-proof.json"),
     "trusted Windows proof",
   );
+  const missingDegradation =
+    validateMissingDegradationSupport(degradationSupport);
+  const recoverySupport = readCanonicalJson(
+    options.recoveryPath,
+    "verified AI owner recovery facts",
+  );
+  validateVerifiedOwnerRecoverySupport(recoverySupport, proof);
   const candidateManifest = readCanonicalJson(
     join(options.candidateInputDirectory, "candidate-manifest.json"),
     "candidate manifest",
@@ -851,7 +926,7 @@ export async function assembleInstalledAiTryOnAcceptanceFiles(options) {
     },
     { ordinarySale: async () => sale },
   );
-  result.report.degradations.missingPack = missingDegradation.facts;
+  result.report.degradations.missingPack = missingDegradation;
   if (
     candidateManifest.sourceCommit !== proof.candidate.sourceCommit ||
     proof.candidate.embeddedManifestSha256 !== sha256(candidateManifestRaw) ||
@@ -1024,6 +1099,7 @@ async function main() {
     candidateInputDirectory: options["candidate-input-directory"],
     longAttemptPath: options["long-attempt"],
     missingDegradationPath: options["missing-degradation"],
+    recoveryPath: options.recovery,
     outPath: options.out,
     salePath: options.sale,
     shortAttemptPath: options["short-attempt"],

@@ -19,6 +19,8 @@ import {
   buildInstalledVisionWorkerSampleScript,
   sampleInstalledVisionPeakRssForTest,
   validateInstalledAiAttemptSupport,
+  validateMissingDegradationSupportForTest,
+  validateVerifiedOwnerRecoverySupportForTest,
 } from "./ai-virtual-try-on-installed-entry.mjs";
 import { CdpClient } from "./machine-ui-cdp-driver.mjs";
 
@@ -162,6 +164,91 @@ test("proves missing model degradation through public Vision Machine and daemon 
     await client.close();
     await new Promise((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
+test("rejects missing model support with unknown fields or any false surviving truth", () => {
+  const value = {
+    facts: {
+      degradation: {
+        diagnostic: "model_pack_missing",
+        facts: {
+          aiReady: false,
+          coreReady: true,
+          daemonReady: true,
+          fastReady: true,
+          machineUiAvailable: true,
+          saleAvailable: true,
+        },
+        fault: "missing",
+      },
+    },
+    kind: "installed-runtime",
+    schemaVersion: "vem.testbed.ai-virtual-try-on-support.v1",
+  };
+  assert.deepEqual(
+    validateMissingDegradationSupportForTest(value),
+    value.facts.degradation.facts,
+  );
+  for (const mutate of [
+    (copy) => (copy.extra = true),
+    (copy) => delete copy.facts.degradation.facts.coreReady,
+    (copy) => (copy.facts.degradation.facts.fastReady = false),
+    (copy) => (copy.facts.degradation.facts.aiReady = true),
+    (copy) => (copy.facts.degradation.extra = true),
+  ]) {
+    const copy = structuredClone(value);
+    mutate(copy);
+    assert.throws(
+      () => validateMissingDegradationSupportForTest(copy),
+      /support evidence is invalid/,
+    );
+  }
+});
+
+test("binds verified owner recovery to ready model runtime worker and source identities", () => {
+  const proof = {
+    candidate: {
+      sourceCommit: "1".repeat(40),
+      workerExecutableSha256: "2".repeat(64),
+    },
+    modelPack: { archive: { sha256: "3".repeat(64) } },
+    resources: { runtimeDescriptorSha256: "4".repeat(64) },
+  };
+  const value = {
+    facts: {
+      recovery: {
+        aiReadinessDiagnostic: "ready",
+        aiReady: true,
+        modelPackSha256: "3".repeat(64),
+        runtimeDescriptorSha256: "4".repeat(64),
+        sourceCommit: "1".repeat(40),
+        workerExecutableSha256: "2".repeat(64),
+      },
+    },
+    kind: "installed-runtime",
+    schemaVersion: "vem.testbed.ai-virtual-try-on-support.v1",
+  };
+  assert.equal(
+    validateVerifiedOwnerRecoverySupportForTest(value, proof).aiReady,
+    true,
+  );
+  for (const mutate of [
+    (copy) => (copy.extra = true),
+    (copy) => (copy.facts.recovery.aiReady = false),
+    (copy) =>
+      (copy.facts.recovery.aiReadinessDiagnostic = "worker_unavailable"),
+    (copy) => (copy.facts.recovery.modelPackSha256 = "5".repeat(64)),
+    (copy) => (copy.facts.recovery.runtimeDescriptorSha256 = "5".repeat(64)),
+    (copy) => (copy.facts.recovery.workerExecutableSha256 = "5".repeat(64)),
+    (copy) => (copy.facts.recovery.sourceCommit = "5".repeat(40)),
+  ]) {
+    const copy = structuredClone(value);
+    mutate(copy);
+    assert.throws(
+      () => validateVerifiedOwnerRecoverySupportForTest(copy, proof),
+      /recovery support evidence is invalid/,
     );
   }
 });
