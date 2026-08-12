@@ -45,8 +45,7 @@ const productionCli = join(
   "scripts/precutover-runtime-artifacts.mjs",
 );
 const visionRoot = "/workspaces/vending-vision";
-const trustedVisionVerifierSha =
-  "6f598fe01f1fb9af76ec6985fdc2df8fbbe95710";
+const trustedVisionVerifierSha = "6f598fe01f1fb9af76ec6985fdc2df8fbbe95710";
 const trustedVisionVerifierBuilderSha =
   "c90a965d117fea49f318b18e0fcd50aa047bc41";
 const vemCommit = "a".repeat(40);
@@ -140,15 +139,12 @@ async function buildFixture(root) {
   ]) {
     writeFileSync(
       join(trustedVisionRoot, "scripts", script),
-      execFileSync(
-        "git",
-        [
-          "-C",
-          visionRoot,
-          "show",
-          `${trustedVisionVerifierSha}:scripts/${script}`,
-        ],
-      ),
+      execFileSync("git", [
+        "-C",
+        visionRoot,
+        "show",
+        `${trustedVisionVerifierSha}:scripts/${script}`,
+      ]),
     );
   }
   const runtimeDirectory = join(root, "runtime-directory");
@@ -224,10 +220,7 @@ async function buildFixture(root) {
   const built = spawnSync(
     python,
     [
-      join(
-        trustedVisionRoot,
-        "scripts/candidate_artifact_manifest.py",
-      ),
+      join(trustedVisionRoot, "scripts/candidate_artifact_manifest.py"),
       "--dist-root",
       dist,
       "--artifact",
@@ -329,7 +322,7 @@ async function buildFixture(root) {
       hostedRunnerRequired: true,
       repository: "YKDZ/vem",
       workflow: ".github/workflows/trusted-release-set-attester.yml",
-      workflowSha: "e70cf966a8dbb76f024a9ef4aeec6d83d7651b44",
+      workflowSha: "91b06351bdf630de8826e88b7b811a8fee491528",
     },
     inputArtifact: {
       aggregateSha256: digest("5"),

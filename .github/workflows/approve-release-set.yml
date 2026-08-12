@@ -84,7 +84,7 @@ jobs:
       attestations: write
       contents: read
       id-token: write
-    uses: YKDZ/vem/.github/workflows/trusted-release-set-attester.yml@e70cf966a8dbb76f024a9ef4aeec6d83d7651b44
+    uses: YKDZ/vem/.github/workflows/trusted-release-set-attester.yml@91b06351bdf630de8826e88b7b811a8fee491528
     with:
       source_commit: ${{ inputs.source_commit }}
       source_ref: ${{ inputs.source_ref }}
