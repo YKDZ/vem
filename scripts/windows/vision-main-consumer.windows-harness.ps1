@@ -25,9 +25,19 @@ function Get-ContainedRelativePath([string]$Root, [string]$Path, [string]$Label)
   return $normalizedPath.Substring($prefix.Length)
 }
 
-function New-Zip([string]$Source, [string]$Destination) {
+function New-Zip([string]$Source, [string]$Destination, [switch]$LegacySeparators) {
   Add-Type -AssemblyName System.IO.Compression.FileSystem
-  [IO.Compression.ZipFile]::CreateFromDirectory($Source, $Destination)
+  if (-not $LegacySeparators) {
+    [IO.Compression.ZipFile]::CreateFromDirectory($Source, $Destination)
+    return
+  }
+  $archive = [IO.Compression.ZipFile]::Open($Destination, [IO.Compression.ZipArchiveMode]::Create)
+  try {
+    foreach ($file in @(Get-ChildItem -LiteralPath $Source -File -Recurse | Sort-Object FullName)) {
+      $entryName = (Get-ContainedRelativePath $Source $file.FullName "legacy ZIP fixture member").Replace('/', '\')
+      [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $file.FullName, $entryName)
+    }
+  } finally { $archive.Dispose() }
 }
 
 function New-VisionArchiveFixture([string]$Root, [string]$Commit) {
@@ -58,7 +68,7 @@ function New-VisionArchiveFixture([string]$Root, [string]$Commit) {
   return [pscustomobject]@{ runtime = $runtime; fixtures = $fixtures; actionZip = $actionZip }
 }
 
-function New-VisionCandidateFixture([string]$Root, [string]$Commit) {
+function New-VisionCandidateFixture([string]$Root, [string]$Commit, [switch]$LegacySeparators) {
   $source = Join-Path $Root "candidate-source"
   $main = Join-Path $source "vending-vision"
   $worker = Join-Path $source "vending-vision-ai-worker"
@@ -85,7 +95,7 @@ function New-VisionCandidateFixture([string]$Root, [string]$Commit) {
   } | ConvertTo-Json -Compress -Depth 8
   [IO.File]::WriteAllText((Join-Path $source "candidate-manifest.json"), $manifest, [Text.UTF8Encoding]::new($false))
   $archive = Join-Path $Root "candidate.zip"
-  New-Zip $source $archive
+  New-Zip $source $archive -LegacySeparators:$LegacySeparators
   return $archive
 }
 
@@ -208,7 +218,7 @@ try {
   $unrelatedCommit = "fedcba9876543210fedcba9876543210fedcba98"
   New-Item -ItemType Directory -Force -Path $root | Out-Null
   $archives = New-VisionArchiveFixture $root $commit
-  $candidate = New-VisionCandidateFixture $root $commit
+  $candidate = New-VisionCandidateFixture $root $commit -LegacySeparators
   $candidateDelivery = Join-Path $root "candidate-delivery"
   Convert-VisionCandidateToMainDelivery -CandidateArchive $candidate -FixtureArchive $archives.fixtures -Commit $commit -Destination $candidateDelivery | Out-Null
   $adapted = Assert-VisionCachedArtifacts $candidateDelivery $commit

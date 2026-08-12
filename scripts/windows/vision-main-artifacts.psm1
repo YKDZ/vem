@@ -146,10 +146,15 @@ function Convert-VisionCandidateToMainDelivery {
     New-Item -ItemType Directory -Path $extract, $stage, $deliveryOutput | Out-Null
     $archive = [IO.Compression.ZipFile]::OpenRead($CandidateArchive)
     try {
-      $entries = @($archive.Entries | Where-Object { -not $_.FullName.EndsWith('/') })
-      $manifestEntry = @($entries | Where-Object { $_.FullName -ceq "candidate-manifest.json" })
+      $entries = @($archive.Entries | ForEach-Object {
+        $name = $_.FullName.Replace('\', '/')
+        if (-not $name.EndsWith('/')) {
+          [pscustomobject]@{ archiveEntry = $_; name = $name }
+        }
+      })
+      $manifestEntry = @($entries | Where-Object { $_.name -ceq "candidate-manifest.json" })
       Assert-VisionMainCondition ($manifestEntry.Count -eq 1) "candidate manifest is missing"
-      $reader = [IO.StreamReader]::new($manifestEntry[0].Open(), [Text.Encoding]::UTF8, $false)
+      $reader = [IO.StreamReader]::new($manifestEntry[0].archiveEntry.Open(), [Text.Encoding]::UTF8, $false)
       try { $manifestRaw = $reader.ReadToEnd() } finally { $reader.Dispose() }
       $manifest = $manifestRaw | ConvertFrom-Json -ErrorAction Stop
       Assert-VisionMainCondition ([string]$manifest.schemaVersion -ceq "vending-vision-candidate-artifact/v3") "candidate manifest schema is invalid"
@@ -165,15 +170,17 @@ function Convert-VisionCandidateToMainDelivery {
       Assert-VisionMainCondition ($declared.ContainsKey("vending-vision-ai-worker/vending-vision-ai-worker.exe")) "candidate AI worker is missing"
       Assert-VisionMainCondition ($entries.Count -eq $declared.Count + 1) "candidate archive member set is invalid"
       foreach ($entry in $entries) {
-        if ($entry.FullName -ceq "candidate-manifest.json") { continue }
-        Assert-VisionMainCondition ($declared.ContainsKey($entry.FullName)) "candidate archive has an undeclared member"
-        $target = [IO.Path]::GetFullPath((Join-Path $extract $entry.FullName))
+        if ($entry.name -ceq "candidate-manifest.json") { continue }
+        $entryDiagnostic = [ordered]@{ archiveName = $entry.archiveEntry.FullName; canonicalName = $entry.name } | ConvertTo-Json -Compress
+        Assert-VisionMainCondition ($entry.name -notmatch '^/|^[A-Za-z]:|(^|/)\.\.(/|$)') "candidate archive path is unsafe $entryDiagnostic"
+        Assert-VisionMainCondition ($declared.ContainsKey($entry.name)) "candidate archive has an undeclared member $entryDiagnostic"
+        $target = [IO.Path]::GetFullPath((Join-Path $extract $entry.name))
         $root = [IO.Path]::GetFullPath($extract).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
         Assert-VisionMainCondition ($target.StartsWith($root, [StringComparison]::Ordinal)) "candidate archive path is unsafe"
         New-Item -ItemType Directory -Force (Split-Path -Parent $target) | Out-Null
-        $input = $entry.Open(); $output = [IO.File]::Open($target, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write)
+        $input = $entry.archiveEntry.Open(); $output = [IO.File]::Open($target, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write)
         try { $input.CopyTo($output) } finally { $output.Dispose(); $input.Dispose() }
-        $identity = $declared[$entry.FullName]
+        $identity = $declared[$entry.name]
         Assert-VisionMainCondition ((Get-Item -LiteralPath $target).Length -eq [long]$identity.size -and (Get-VisionSha256 $target) -ceq [string]$identity.sha256) "candidate payload digest mismatch"
       }
     } finally { $archive.Dispose() }
