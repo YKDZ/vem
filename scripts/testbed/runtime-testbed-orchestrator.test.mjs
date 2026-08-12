@@ -8,6 +8,7 @@ import { describe, it } from "node:test";
 import {
   createRunId,
   identicalVisionCoreArtifactSnapshot,
+  loadVisionCoreArtifacts,
   materializeVisionCoreArtifactSnapshot,
   parseOrchestratorOptions,
   powerShellFocusArgument,
@@ -30,6 +31,7 @@ const visionCore = (root) => ({
     hostPath: join(root, "recorded-fixtures.zip"),
     sha256: "d".repeat(64),
     byteSize: 1,
+    sourceCommit: "e".repeat(40),
   },
 });
 
@@ -341,6 +343,7 @@ describe("runtime testbed scheduler contract", () => {
             hostPath: join(root, "recorded-fixtures.zip"),
             sha256: digest(fixture),
             byteSize: fixture.length,
+            sourceCommit: "d".repeat(40),
           },
         },
       });
@@ -391,6 +394,54 @@ describe("runtime testbed scheduler contract", () => {
       );
       assert.match(guest, /Properties\["visionCore"\]/);
       assert.doesNotMatch(guest, /Get-VisionMainArtifactCache/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects the installed Vision pair when it diverges from host-verified acceptance authority", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-ai-authority-core-"));
+    try {
+      const runtime = Buffer.from("runtime");
+      const fixture = Buffer.from("fixture");
+      writeFileSync(join(root, "vision-runtime.zip"), runtime);
+      writeFileSync(join(root, "recorded-fixtures.zip"), fixture);
+      const config = validateHostConfig({
+        schemaVersion: "vem-runtime-testbed-host/v1",
+        mirrorPath: join(root, "mirror.git"),
+        workspaceRoot: join(root, "workspaces"),
+        stateRoot: join(root, "state"),
+        baselineContract: join(root, "baseline.json"),
+        hostPrivateAddress: "192.0.2.22",
+        guestSourcePath: "C:\\VEM\\source",
+        visionCoreArtifacts: {
+          runtimeArchive: {
+            hostPath: join(root, "vision-runtime.zip"),
+            sha256: digest(runtime),
+            byteSize: runtime.length,
+            sourceCommit: "a".repeat(40),
+          },
+          recordedFixtureArchive: {
+            hostPath: join(root, "recorded-fixtures.zip"),
+            sha256: digest(fixture),
+            byteSize: fixture.length,
+            sourceCommit: "b".repeat(40),
+          },
+        },
+      });
+      await assert.rejects(
+        loadVisionCoreArtifacts(config, {
+          candidate: {
+            subjectSha256: "0".repeat(64),
+            sourceCommit: "a".repeat(40),
+          },
+          companion: {
+            archiveSha256: digest(fixture),
+            sourceCommit: "b".repeat(40),
+          },
+        }),
+        /do not match host-verified AI acceptance authority/,
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

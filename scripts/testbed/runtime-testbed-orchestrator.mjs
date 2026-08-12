@@ -17,6 +17,7 @@ import { isIP } from "node:net";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { verifyAiAcceptanceAuthority } from "./ai-acceptance-authority.mjs";
 import {
   identicalAiAcceptanceInputSnapshot,
   materializeAiAcceptanceInputSnapshot,
@@ -211,6 +212,40 @@ export function validateHostConfig(value) {
             "host config aiVirtualTryOnInputManifest",
           ),
         }),
+    ...(value.aiVirtualTryOnAuthority === undefined
+      ? {}
+      : (() => {
+          const authority = value.aiVirtualTryOnAuthority;
+          if (
+            !authority ||
+            typeof authority !== "object" ||
+            Array.isArray(authority)
+          ) {
+            throw new Error(
+              "host config aiVirtualTryOnAuthority must be an object",
+            );
+          }
+          if (
+            Object.keys(authority).sort().join("\0") !==
+            ["ghBinary", "visionSourceRef"].join("\0")
+          ) {
+            throw new Error(
+              "host config aiVirtualTryOnAuthority fields are invalid",
+            );
+          }
+          return {
+            aiVirtualTryOnAuthority: {
+              ghBinary: absolute(
+                authority.ghBinary,
+                "host config AI authority ghBinary",
+              ),
+              visionSourceRef: required(
+                authority.visionSourceRef,
+                "host config AI authority visionSourceRef",
+              ),
+            },
+          };
+        })()),
     ...(value.aiVirtualTryOnAllowedHttpsOrigins === undefined
       ? {}
       : {
@@ -249,6 +284,7 @@ export function validateHostConfig(value) {
       recordedFixtureArchive: artifactFile(
         value.visionCoreArtifacts?.recordedFixtureArchive,
         "host config visionCoreArtifacts.recordedFixtureArchive",
+        true,
       ),
     },
   };
@@ -540,16 +576,59 @@ function requiresAiAcceptanceInputs(options) {
   );
 }
 
-async function loadAiAcceptanceInputs(config) {
+function canonicalIdentity(value) {
+  if (Array.isArray(value)) return value.map(canonicalIdentity);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, canonicalIdentity(value[key])]),
+    );
+  }
+  return value;
+}
+
+export async function admitAiAcceptanceInputs(
+  config,
+  workspace,
+  verifyAuthority = verifyAiAcceptanceAuthority,
+) {
   if (!config.aiVirtualTryOnInputManifest) {
     throw new Error(
       "AI virtual try-on acceptance requires host config aiVirtualTryOnInputManifest",
     );
   }
-  return validateAiAcceptanceInputManifest(
+  if (!config.aiVirtualTryOnAuthority) {
+    throw new Error(
+      "AI virtual try-on acceptance requires host config aiVirtualTryOnAuthority",
+    );
+  }
+  const preparation = await validateAiAcceptanceInputManifest(
     await readFile(config.aiVirtualTryOnInputManifest, "utf8"),
     { allowedHttpsOrigins: config.aiVirtualTryOnAllowedHttpsOrigins ?? [] },
   );
+  const receipt = await verifyAuthority({
+    candidateInputDirectory: preparation.candidateInput.hostPath,
+    contractManifest: join(
+      workspace,
+      "packages/shared/generated/vision-v2/manifest.json",
+    ),
+    ghBinaryPath: config.aiVirtualTryOnAuthority.ghBinary,
+    repoRoot: workspace,
+    visionSourceRef: config.aiVirtualTryOnAuthority.visionSourceRef,
+    windowsProofInputDirectory: preparation.windowsProofInput.hostPath,
+  });
+  if (
+    JSON.stringify(canonicalIdentity(receipt)) !==
+    JSON.stringify(
+      canonicalIdentity(preparation.acceptanceAuthorityReceipt.value),
+    )
+  ) {
+    throw new Error(
+      "AI acceptance authority receipt does not equal host-verified authority",
+    );
+  }
+  return preparation;
 }
 
 function visionCoreIdentity(runtime, fixture) {
@@ -565,6 +644,7 @@ function visionCoreIdentity(runtime, fixture) {
         recordedFixtureArchive: {
           sha256: fixture.sha256,
           byteSize: fixture.byteSize,
+          sourceCommit: fixture.sourceCommit,
         },
       }),
     )
@@ -590,11 +670,22 @@ async function assertVisionCoreArtifact(artifact, label) {
   }
 }
 
-export async function loadVisionCoreArtifacts(config) {
+export async function loadVisionCoreArtifacts(config, authorityReceipt) {
   const runtime = config.visionCoreArtifacts.runtimeArchive;
   const fixture = config.visionCoreArtifacts.recordedFixtureArchive;
   await assertVisionCoreArtifact(runtime, "Vision runtime");
   await assertVisionCoreArtifact(fixture, "recorded Vision fixture");
+  if (
+    authorityReceipt &&
+    (runtime.sha256 !== authorityReceipt.candidate.subjectSha256 ||
+      runtime.sourceCommit !== authorityReceipt.candidate.sourceCommit ||
+      fixture.sha256 !== authorityReceipt.companion.archiveSha256 ||
+      fixture.sourceCommit !== authorityReceipt.companion.sourceCommit)
+  ) {
+    throw new Error(
+      "Vision core artifacts do not match host-verified AI acceptance authority",
+    );
+  }
   const sha256 = visionCoreIdentity(runtime, fixture);
   const identity = {
     sha256,
@@ -606,6 +697,7 @@ export async function loadVisionCoreArtifacts(config) {
     recordedFixtureArchive: {
       sha256: fixture.sha256,
       byteSize: fixture.byteSize,
+      sourceCommit: fixture.sourceCommit,
     },
   };
   const root = `C:\\ProgramData\\VEM\\testbed\\vision-core\\${sha256}`;
@@ -625,7 +717,10 @@ export async function loadVisionCoreArtifacts(config) {
 }
 
 export async function materializeVisionCoreArtifactSnapshot(config, root) {
-  const preparation = await loadVisionCoreArtifacts(config);
+  const preparation = await loadVisionCoreArtifacts(
+    config,
+    config.aiAcceptanceAuthorityReceipt,
+  );
   const snapshotRoot = resolve(root, preparation.guestInput.identity.sha256);
   await mkdir(snapshotRoot, { recursive: true });
   const names = ["vision-runtime.zip", "recorded-fixtures.zip"];
@@ -1045,7 +1140,7 @@ async function executeRun(options, config) {
       let aiInputFailure = null;
       if (aiInputRequired) {
         try {
-          aiAcceptanceInputs = await loadAiAcceptanceInputs(config);
+          aiAcceptanceInputs = await admitAiAcceptanceInputs(config, workspace);
           aiAcceptanceInputs = await materializeAiAcceptanceInputSnapshot(
             aiAcceptanceInputs,
             join(root, "ai-input-snapshots"),
@@ -1171,7 +1266,15 @@ async function executeRun(options, config) {
         });
       }
       const visionCoreInputs = await materializeVisionCoreArtifactSnapshot(
-        config,
+        {
+          ...config,
+          ...(aiAcceptanceInputs
+            ? {
+                aiAcceptanceAuthorityReceipt:
+                  aiAcceptanceInputs.acceptanceAuthorityReceipt.value,
+              }
+            : {}),
+        },
         join(root, "vision-core-snapshots", `pass-${pass}`),
       );
       if (
@@ -1192,7 +1295,10 @@ async function executeRun(options, config) {
         );
       }
       if (aiAcceptanceInputs) {
-        let currentAiAcceptanceInputs = await loadAiAcceptanceInputs(config);
+        let currentAiAcceptanceInputs = await admitAiAcceptanceInputs(
+          config,
+          workspace,
+        );
         currentAiAcceptanceInputs = await materializeAiAcceptanceInputSnapshot(
           currentAiAcceptanceInputs,
           join(root, "ai-input-snapshots"),

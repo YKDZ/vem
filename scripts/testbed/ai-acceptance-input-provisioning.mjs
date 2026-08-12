@@ -700,10 +700,16 @@ export async function validateAiAcceptanceInputManifest(
     },
   ];
   return {
+    acceptanceAuthorityReceipt: {
+      ...acceptanceAuthorityReceipt,
+      value: authority,
+    },
     artifactDigests: guestInput.identities,
+    candidateInput,
     guestInput,
     manifestSha256,
     transfers,
+    windowsProofInput,
   };
 }
 

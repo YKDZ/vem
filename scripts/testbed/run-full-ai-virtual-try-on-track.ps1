@@ -81,11 +81,13 @@ if ($null -eq $inputs) { throw "candidate exact-four input directory is required
 Require-AbsoluteDirectory ([string]$inputs.candidateInputDirectory) "candidate exact-four input directory"
 Require-AbsoluteDirectory ([string]$inputs.windowsProofInputDirectory) "companion proof exact-three input directory"
 Require-AbsoluteLeaf ([string]$inputs.acceptanceAuthorityReceipt) "installed Windows acceptance authority receipt"
-if ([string]$inputs.phase -cne "formal") { throw "installed AI acceptance runner requires formal authority inputs" }
-Require-AbsoluteLeaf ([string]$inputs.calibratedRegionalPolicy) "calibrated AI regional evidence policy"
-Require-AbsoluteLeaf ([string]$inputs.calibrationReceipt) "calibrated AI regional evidence receipt"
-Require-AbsoluteLeaf ([string]$inputs.calibrationSourceInput) "calibration source input"
-Require-AbsoluteDirectory ([string]$inputs.calibrationSourceRoot) "calibration source closure"
+$phase = [string]$inputs.phase
+if ($phase -notin @("measurement", "formal")) { throw "installed AI acceptance phase is invalid" }
+if ($phase -eq "formal") {
+  Require-AbsoluteLeaf ([string]$inputs.calibratedRegionalPolicy) "calibrated AI regional evidence policy"
+  Require-AbsoluteLeaf ([string]$inputs.calibrationReceipt) "calibrated AI regional evidence receipt"
+  Require-AbsoluteLeaf ([string]$inputs.calibrationSourceInput) "calibration source input"
+}
 
 $candidateArchives = @(Get-ChildItem -LiteralPath ([string]$inputs.candidateInputDirectory) -File | Where-Object { $_.Extension -ceq ".zip" })
 if ($candidateArchives.Count -ne 1) { throw "candidate exact-four archive set is invalid" }
@@ -105,6 +107,14 @@ $authority = Get-Content -Raw -LiteralPath ([string]$inputs.acceptanceAuthorityR
 if ([string]$authority.schemaVersion -cne "vem.testbed.ai-acceptance-authority/v1" -or [string]$authority.scope -cne "installed_windows_acceptance" -or [string]$authority.trustStatus -cne "verified_for_acceptance") {
   throw "installed Windows acceptance authority receipt identity is invalid"
 }
+$installedVision = $guestInput.workflowIdentity.visionCore
+if ($null -eq $installedVision -or
+  [string]$installedVision.runtimeArchive.sha256 -cne [string]$authority.candidate.subjectSha256 -or
+  [string]$installedVision.runtimeArchive.sourceCommit -cne [string]$authority.candidate.sourceCommit -or
+  [string]$installedVision.recordedFixtureArchive.sha256 -cne [string]$authority.companion.archiveSha256 -or
+  [string]$installedVision.recordedFixtureArchive.sourceCommit -cne [string]$authority.companion.sourceCommit) {
+  throw "installed Vision core identity does not match acceptance authority"
+}
 
 Require-AbsoluteLeaf ([string]$inputs.installedVisionRuntimeArchive) "installed Vision runtime archive"
 Require-AbsoluteLeaf ([string]$inputs.recordedFixtureArchive) "recorded front/top fixture archive"
@@ -115,6 +125,9 @@ if ($modelPackSource -cne "host-local-cache" -and [string]$inputs.modelPackUrl -
 if ($modelPackSource -notin @("host-local-cache", "host-controlled-https")) { throw "official model source is invalid" }
 if ([string]$inputs.modelPackSha256 -notmatch '^[a-f0-9]{64}$') { throw "official model SHA-256 is invalid" }
 if ($inputs.modelPackByteSize -isnot [long] -or [long]$inputs.modelPackByteSize -le 0) { throw "official model byte size is invalid" }
+if ([string]$inputs.modelPackSha256 -cne [string]$authority.modelPack.archive.sha256 -or [long]$inputs.modelPackByteSize -ne [long]$authority.modelPack.archive.byteSize) {
+  throw "materialized model pack does not match acceptance authority"
+}
 
 Initialize-TestbedAiVisionOwnerContext `
   -RepoRoot $repoRoot `
@@ -131,10 +144,11 @@ $identities = $inputs.identities
 Assert-GuestDirectoryIdentity ([string]$inputs.candidateInputDirectory) $identities.candidateInput $false "candidate exact-four input"
 Assert-GuestDirectoryIdentity ([string]$inputs.windowsProofInputDirectory) $identities.windowsProofInput $false "companion proof exact-three input"
 Assert-GuestFileIdentity ([string]$inputs.acceptanceAuthorityReceipt) $identities.acceptanceAuthorityReceipt "installed Windows acceptance authority receipt"
-Assert-GuestFileIdentity ([string]$inputs.calibratedRegionalPolicy) $identities.calibratedRegionalPolicy "calibrated AI regional evidence policy"
-Assert-GuestFileIdentity ([string]$inputs.calibrationReceipt) $identities.calibrationReceipt "calibrated AI regional evidence receipt"
-Assert-GuestFileIdentity ([string]$inputs.calibrationSourceInput) $identities.calibrationSourceInput "calibration source input"
-Assert-GuestDirectoryIdentity ([string]$inputs.calibrationSourceRoot) $identities.calibrationSource $true "calibration source closure"
+if ($phase -eq "formal") {
+  Assert-GuestFileIdentity ([string]$inputs.calibratedRegionalPolicy) $identities.calibratedRegionalPolicy "calibrated AI regional evidence policy"
+  Assert-GuestFileIdentity ([string]$inputs.calibrationReceipt) $identities.calibrationReceipt "calibrated AI regional evidence receipt"
+  Assert-GuestFileIdentity ([string]$inputs.calibrationSourceInput) $identities.calibrationSourceInput "calibration source input"
+}
 Assert-GuestFileIdentity ([string]$inputs.installedVisionRuntimeArchive) $identities.installedVisionRuntimeArchive "installed Vision runtime archive"
 Assert-GuestFileIdentity ([string]$inputs.recordedFixtureArchive) $identities.recordedFixtureArchive "recorded front/top fixture archive"
 Assert-GuestFileIdentity ([string]$inputs.modelPackArchive) $identities.modelPackArchive "official model pack archive"
@@ -159,6 +173,9 @@ $workerFault = $null
 $restoredWorker = $null
 $trackFailure = $null
 try {
+  if ($phase -eq "measurement") {
+    throw "AI measurement execution is staged but is not acceptance evidence"
+  }
   # The first stop is a mutating operation; restoration is required before it.
   $restorationRequired = $true
   $shortConfiguration = Restart-TestbedAiVisionOwner -GuestInput $guestInput -EvidencePhase short -ModelPackRoot $modelPackRoot
@@ -188,14 +205,13 @@ try {
   if ($null -eq $restoredWorker -or [string]$restoredWorker.workerExecutableSha256 -cnotmatch '^[a-f0-9]{64}$') {
     throw "restored installed AI worker identity is invalid"
   }
-  $windowsProof = Get-Content -Raw -LiteralPath (Join-Path ([string]$inputs.windowsProofInputDirectory) "precutover-ai-proof.json") -Encoding utf8 | ConvertFrom-Json -ErrorAction Stop
   [ordered]@{
     facts = [ordered]@{ recovery = [ordered]@{
       aiReadinessDiagnostic = [string]$restoredConfiguration.health.aiReadinessDiagnostic
       aiReady = [bool]$restoredConfiguration.health.aiReady
-      modelPackSha256 = [string]$windowsProof.modelPack.archive.sha256
-      runtimeDescriptorSha256 = [string]$windowsProof.resources.runtimeDescriptorSha256
-      sourceCommit = [string]$windowsProof.candidate.sourceCommit
+      modelPackSha256 = [string]$authority.modelPack.archive.sha256
+      runtimeDescriptorSha256 = [string]$authority.resources.runtimeDescriptorSha256
+      sourceCommit = [string]$authority.candidate.sourceCommit
       workerExecutableSha256 = [string]$restoredWorker.workerExecutableSha256
     } }
     kind = "installed-runtime"

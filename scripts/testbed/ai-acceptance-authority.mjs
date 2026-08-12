@@ -314,11 +314,15 @@ export async function verifyAiAcceptanceAuthorityForTest(
   return verify(options, dependencies);
 }
 
-export async function createAiAcceptanceAuthorityReceipt(options) {
-  const receipt = await verify(options, {
+export async function verifyAiAcceptanceAuthority(options) {
+  return verify(options, {
     verifyCandidateAttestation: verifyTrustedVisionCandidateAttestation,
     verifyWindowsProof: verifyProductionWindowsPrecutoverProof,
   });
+}
+
+export async function createAiAcceptanceAuthorityReceipt(options) {
+  const receipt = await verifyAiAcceptanceAuthority(options);
   writeExclusive(options.outputPath, canonicalJson(receipt));
   return receipt;
 }

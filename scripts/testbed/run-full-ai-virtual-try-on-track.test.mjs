@@ -527,9 +527,19 @@ test("AI virtual try-on runner accepts only approved external input identities",
     assert.match(source, new RegExp(member.replaceAll(".", "\\.")));
   }
   assert.match(source, /vem\.testbed\.ai-acceptance-authority\/v1/);
+  assert.match(source, /\$phase -notin @\("measurement", "formal"\)/);
   assert.match(
     source,
-    /installed AI acceptance runner requires formal authority inputs/,
+    /AI measurement execution is staged but is not acceptance evidence/,
+  );
+  assert.doesNotMatch(source, /calibrationSourceRoot/);
+  assert.match(
+    source,
+    /installed Vision core identity does not match acceptance authority/,
+  );
+  assert.match(
+    source,
+    /materialized model pack does not match acceptance authority/,
   );
   assert.match(source, /\^https:\/\//);
   assert.doesNotMatch(
