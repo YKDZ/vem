@@ -4,8 +4,14 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  closeSync,
+  constants as fsConstants,
+  fstatSync,
   lstatSync,
   mkdirSync,
+  openSync,
+  opendirSync,
+  readSync,
   readdirSync,
   readFileSync,
   realpathSync,
@@ -2906,6 +2912,10 @@ async function readResultImageEvidence(
               if (!context) return { ok: false, reason: "context" };
               context.drawImage(bitmap, 0, 0);
               const imageData = context.getImageData(0, 0, canvas.width, canvas.height).data;
+              const rgbaSha256 = Array.from(
+                new Uint8Array(await crypto.subtle.digest("SHA-256", imageData)),
+                (value) => value.toString(16).padStart(2, "0"),
+              ).join("");
               let nonBlackPixelCount = 0;
               for (let i = 0; i < imageData.length; i += 4) {
                 if (imageData[i] !== 0 || imageData[i + 1] !== 0 || imageData[i + 2] !== 0) {
@@ -2913,7 +2923,7 @@ async function readResultImageEvidence(
                   if (nonBlackPixelCount >= 8) break;
                 }
               }
-              return { ok: true, width: canvas.width, height: canvas.height, nonBlackPixelCount };
+              return { ok: true, width: canvas.width, height: canvas.height, nonBlackPixelCount, rgbaSha256 };
             })()`,
         );
         const result = {
@@ -2937,39 +2947,178 @@ async function readResultImageEvidence(
   );
 }
 
-function readRegionalEvidenceMember(rootPath, attemptId) {
-  const rootStat = lstatSync(rootPath);
+async function readRenderedResultPixels(client) {
+  return evaluateExpression(
+    client,
+    `(async () => {
+      // VEM_AI_RENDERED_RESULT_PIXELS_V1
+      const image = document.querySelector("[data-test='try-on-result-image']");
+      if (!(image instanceof HTMLImageElement) || image.complete !== true || image.naturalWidth < 1 || image.naturalHeight < 1)
+        return { ok: false, reason: "image" };
+      const canvas = document.createElement("canvas");
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      const context = canvas.getContext("2d");
+      if (!context) return { ok: false, reason: "context" };
+      context.drawImage(image, 0, 0);
+      const rgba = context.getImageData(0, 0, canvas.width, canvas.height).data;
+      const rgbaSha256 = Array.from(
+        new Uint8Array(await crypto.subtle.digest("SHA-256", rgba)),
+        (value) => value.toString(16).padStart(2, "0"),
+      ).join("");
+      return { ok: true, width: canvas.width, height: canvas.height, rgbaSha256 };
+    })()`,
+  );
+}
+
+function readRegionalEvidenceMember(rootPath, attemptId, testHooks = null) {
+  const rootStat = lstatSync(rootPath, { bigint: true });
   if (rootStat.isSymbolicLink() || !rootStat.isDirectory())
     throw new Error("AI regional evidence root must be a regular directory");
   const root = realpathSync(rootPath);
-  const expectedName = `${attemptId}.regional-evidence.json`;
-  const members = readdirSync(root);
-  if (members.length !== 1 || members[0] !== expectedName) return null;
-  const path = resolve(root, expectedName);
-  const stat = lstatSync(path);
-  if (stat.isSymbolicLink() || !stat.isFile())
-    throw new Error("AI regional evidence member must be a regular file");
-  const canonical = realpathSync(path);
-  if (dirname(canonical) !== root)
-    throw new Error("AI regional evidence member escaped its root");
-  const bytes = readFileSync(canonical);
-  if (bytes.byteLength === 0 || bytes.byteLength > 512 * 1024)
-    throw new Error("AI regional evidence member size is invalid");
+  const rootIdentity = fileIdentity(rootStat);
+  let rootFd = null;
+  let rootDirectory = null;
+  let memberFd = null;
+  try {
+    if (process.platform === "win32") rootDirectory = opendirSync(root);
+    else
+      rootFd = openSync(
+        root,
+        fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
+      );
+    const expectedName = `${attemptId}.regional-evidence.json`;
+    const members = readdirSync(root);
+    if (members.length !== 1 || members[0] !== expectedName) {
+      if (rootFd !== null) closeSync(rootFd);
+      if (rootDirectory !== null) rootDirectory.closeSync();
+      return null;
+    }
+    const path = resolve(root, expectedName);
+    const stat = lstatSync(path, { bigint: true });
+    if (stat.isSymbolicLink() || !stat.isFile())
+      throw new Error("AI regional evidence member must be a regular file");
+    const canonical = realpathSync(path);
+    if (dirname(canonical) !== root)
+      throw new Error("AI regional evidence member escaped its root");
+    memberFd = openSync(
+      canonical,
+      fsConstants.O_RDONLY |
+        (process.platform === "win32" ? 0 : fsConstants.O_NOFOLLOW),
+    );
+    const heldIdentity = fileIdentity(fstatSync(memberFd, { bigint: true }));
+    if (!sameFileIdentity(heldIdentity, fileIdentity(stat)))
+      throw new Error(
+        "AI regional evidence member identity changed before read",
+      );
+    testHooks?.afterIdentityCheck?.({ path: canonical, root });
+    const bytes = readHeldFile(memberFd, heldIdentity.size);
+    testHooks?.afterRead?.({ path: canonical, root });
+    if (bytes.byteLength === 0 || bytes.byteLength > 512 * 1024)
+      throw new Error("AI regional evidence member size is invalid");
+    const expectedSha256 = createHash("sha256").update(bytes).digest("hex");
+    return {
+      evidence: {
+        path: canonical,
+        bytes,
+        byteLength: bytes.byteLength,
+        physicalIdentity: heldIdentity,
+        sha256: expectedSha256,
+      },
+      finalizeAndClose() {
+        const finalHeldIdentity = fileIdentity(
+          fstatSync(memberFd, { bigint: true }),
+        );
+        const finalPathIdentity = fileIdentity(
+          lstatSync(canonical, { bigint: true }),
+        );
+        const finalRootIdentity = fileIdentity(
+          lstatSync(root, { bigint: true }),
+        );
+        const finalBytes = readHeldFile(memberFd, finalHeldIdentity.size);
+        if (
+          !sameFileIdentity(rootIdentity, finalRootIdentity) ||
+          !sameFileIdentity(heldIdentity, finalHeldIdentity) ||
+          !sameFileIdentity(heldIdentity, finalPathIdentity) ||
+          createHash("sha256").update(finalBytes).digest("hex") !==
+            expectedSha256
+        )
+          throw new Error("AI regional evidence identity or bytes changed");
+        const value = this.evidence;
+        this.close();
+        return value;
+      },
+      close() {
+        if (memberFd !== null) {
+          closeSync(memberFd);
+          memberFd = null;
+        }
+        if (rootFd !== null) {
+          closeSync(rootFd);
+          rootFd = null;
+        }
+        if (rootDirectory !== null) {
+          rootDirectory.closeSync();
+          rootDirectory = null;
+        }
+      },
+    };
+  } catch (error) {
+    if (memberFd !== null) closeSync(memberFd);
+    if (rootFd !== null) closeSync(rootFd);
+    if (rootDirectory !== null) rootDirectory.closeSync();
+    throw error;
+  }
+}
+
+function fileIdentity(stat) {
   return {
-    path: canonical,
-    bytes,
-    byteLength: bytes.byteLength,
-    sha256: createHash("sha256").update(bytes).digest("hex"),
+    device: String(stat.dev),
+    inode: String(stat.ino),
+    mode: String(stat.mode),
+    linkCount: String(stat.nlink),
+    size: String(stat.size),
+    modifiedNs: String(stat.mtimeNs ?? BigInt(Math.trunc(stat.mtimeMs * 1e6))),
+    changedNs: String(stat.ctimeNs ?? BigInt(Math.trunc(stat.ctimeMs * 1e6))),
   };
 }
 
-export async function collectInstalledAiTryOnAttempt({
-  client,
-  expectedTryOnRoute,
-  regionalEvidenceRoot,
-  timeoutMs = 60_000,
-  pollMs = 250,
-}) {
+function sameFileIdentity(left, right) {
+  return Object.keys(left).every((key) => left[key] === right[key]);
+}
+
+function readHeldFile(fd, declaredSize) {
+  const size = Number(declaredSize);
+  if (!Number.isSafeInteger(size) || size <= 0 || size > 512 * 1024)
+    throw new Error("AI regional evidence member size is invalid");
+  const bytes = Buffer.alloc(size);
+  let offset = 0;
+  while (offset < bytes.byteLength) {
+    const count = readSync(
+      fd,
+      bytes,
+      offset,
+      bytes.byteLength - offset,
+      offset,
+    );
+    if (count === 0) break;
+    offset += count;
+  }
+  if (offset !== bytes.byteLength)
+    throw new Error("AI regional evidence member changed while reading");
+  return bytes;
+}
+
+async function collectInstalledAiTryOnAttemptInternal(
+  {
+    client,
+    expectedTryOnRoute,
+    regionalEvidenceRoot,
+    timeoutMs = 60_000,
+    pollMs = 250,
+  },
+  regionalEvidenceTestHooks = null,
+) {
   if (!(client instanceof CdpClient))
     throw new Error("installed AI attempt requires a production CdpClient");
   if (
@@ -3008,6 +3157,14 @@ export async function collectInstalledAiTryOnAttempt({
   if (surface.route !== expectedTryOnRoute)
     throw new Error("installed AI result route mismatched");
   validateTryOnLifecycleEvidence(surface.lifecycle, surface.attemptId);
+  const renderedPixels = await readRenderedResultPixels(client);
+  if (
+    renderedPixels?.ok !== true ||
+    renderedPixels.width !== surface.resultNaturalWidth ||
+    renderedPixels.height !== surface.resultNaturalHeight ||
+    !/^[a-f0-9]{64}$/.test(renderedPixels.rgbaSha256 ?? "")
+  )
+    throw new Error("installed AI rendered image pixels are invalid");
   const expectedResultPath = `/v2/try-on/results/${surface.attemptId}`;
   let resultUrl;
   try {
@@ -3049,26 +3206,51 @@ export async function collectInstalledAiTryOnAttempt({
     finalResultUrl.hash !== ""
   )
     throw new Error("installed AI result image evidence is invalid");
-  const regionalEvidence = await waitForCondition(
+  if (
+    resultEvidence.width !== renderedPixels.width ||
+    resultEvidence.height !== renderedPixels.height ||
+    resultEvidence.rgbaSha256 !== renderedPixels.rgbaSha256
+  )
+    throw new Error(
+      "installed AI rendered image pixels mismatched result bytes",
+    );
+  const regionalLease = await waitForCondition(
     "matching AI regional evidence sidecar",
     async () => {
       const value = readRegionalEvidenceMember(
         regionalEvidenceRoot,
         surface.attemptId,
+        regionalEvidenceTestHooks,
       );
       return { ok: value !== null, value };
     },
     remaining(),
     pollMs,
   );
-  return {
-    attemptId: surface.attemptId,
-    activation,
-    lifecycle: surface.lifecycle,
-    resultEvidence,
-    regionalEvidence,
-    surface,
-  };
+  try {
+    regionalEvidenceTestHooks?.beforeReturn?.(regionalLease.evidence);
+    const regionalEvidence = regionalLease.finalizeAndClose();
+    return {
+      attemptId: surface.attemptId,
+      activation,
+      lifecycle: surface.lifecycle,
+      resultEvidence,
+      regionalEvidence,
+      surface,
+    };
+  } finally {
+    regionalLease.close();
+  }
+}
+
+export async function collectInstalledAiTryOnAttempt(options) {
+  return collectInstalledAiTryOnAttemptInternal(options);
+}
+
+export async function collectInstalledAiTryOnAttemptForTest(options, hooks) {
+  if (process.env.NODE_ENV !== "test")
+    throw new Error("installed AI attempt test hook is unavailable");
+  return collectInstalledAiTryOnAttemptInternal(options, hooks);
 }
 
 async function runVisionTryOnAcceptance(options) {

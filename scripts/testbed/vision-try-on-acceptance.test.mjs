@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -20,6 +21,7 @@ import {
   buildRecordedVisionSiteConfiguration,
   combineCleanupFailure,
   collectInstalledAiTryOnAttempt,
+  collectInstalledAiTryOnAttemptForTest,
   collectVisionProtocolEvidence,
   compareObservedVisionProtocolToExpected as compareRawObservedVisionProtocolToExpected,
   createVisionEventFence,
@@ -214,11 +216,31 @@ async function withInstalledAiHarness(options, callback) {
         },
         message.id,
       );
+    if (expression.includes("VEM_AI_RENDERED_RESULT_PIXELS_V1"))
+      return cdpValue(
+        {
+          ok: true,
+          width: 320,
+          height: 480,
+          rgbaSha256: "a".repeat(64),
+        },
+        message.id,
+      );
     if (expression.includes("createImageBitmap"))
       return cdpValue(
         options.decodeFailure
           ? { ok: false, reason: "decode" }
-          : { ok: true, width: 320, height: 480, nonBlackPixelCount: 8 },
+          : {
+              ok: true,
+              width: options.domPixelsMismatch ? 1 : 320,
+              height: options.domPixelsMismatch ? 1 : 480,
+              nonBlackPixelCount: 8,
+              rgbaSha256: options.domPixelsMismatch
+                ? "b".repeat(64)
+                : options.sameDimensionsDifferentPixels
+                  ? "c".repeat(64)
+                  : "a".repeat(64),
+            },
         message.id,
       );
     throw new Error(`unexpected Runtime.evaluate expression: ${expression}`);
@@ -421,9 +443,25 @@ describe("vision try-on acceptance script", () => {
           },
           message.id,
         );
+      if (expression.includes("VEM_AI_RENDERED_RESULT_PIXELS_V1"))
+        return cdpValue(
+          {
+            ok: true,
+            width: 320,
+            height: 480,
+            rgbaSha256: "a".repeat(64),
+          },
+          message.id,
+        );
       if (expression.includes("createImageBitmap"))
         return cdpValue(
-          { ok: true, width: 320, height: 480, nonBlackPixelCount: 8 },
+          {
+            ok: true,
+            width: 320,
+            height: 480,
+            nonBlackPixelCount: 8,
+            rgbaSha256: "a".repeat(64),
+          },
           message.id,
         );
       throw new Error(`unexpected Runtime.evaluate expression: ${expression}`);
@@ -445,6 +483,18 @@ describe("vision try-on acceptance script", () => {
       assert.equal(collected.attemptId, attemptId);
       assert.equal(collected.regionalEvidence.byteLength > 0, true);
       assert.match(collected.regionalEvidence.sha256, /^[a-f0-9]{64}$/);
+      assert.deepEqual(
+        Object.keys(collected.regionalEvidence.physicalIdentity).sort(),
+        [
+          "changedNs",
+          "device",
+          "inode",
+          "linkCount",
+          "mode",
+          "modifiedNs",
+          "size",
+        ],
+      );
       assert.deepEqual(
         socket.sent
           .filter((message) => message.method === "Input.dispatchTouchEvent")
@@ -529,6 +579,175 @@ describe("vision try-on acceptance script", () => {
         );
       },
     );
+  });
+
+  it("rejects a later same-URL image whose pixels do not match the image rendered for the customer", async () => {
+    await withInstalledAiHarness(
+      { domPixelsMismatch: true },
+      async ({ client, root, route }) => {
+        await assert.rejects(
+          collectInstalledAiTryOnAttempt({
+            client,
+            expectedTryOnRoute: route,
+            regionalEvidenceRoot: root,
+            timeoutMs: 100,
+            pollMs: 2,
+          }),
+          /rendered image pixels mismatched/,
+        );
+      },
+    );
+  });
+
+  it("rejects same-size decoded result pixels that differ from the customer image", async () => {
+    await withInstalledAiHarness(
+      { sameDimensionsDifferentPixels: true },
+      async ({ client, root, route }) => {
+        await assert.rejects(
+          collectInstalledAiTryOnAttempt({
+            client,
+            expectedTryOnRoute: route,
+            regionalEvidenceRoot: root,
+            timeoutMs: 100,
+            pollMs: 2,
+          }),
+          /rendered image pixels mismatched/,
+        );
+      },
+    );
+  });
+
+  for (const [label, mutate] of [
+    [
+      "member atomic replacement after identity check",
+      ({ path }) => {
+        const replacement = `${path}.replacement`;
+        writeFileSync(replacement, '{"replacement":true}\n');
+        renameSync(replacement, path);
+      },
+    ],
+    [
+      "member in-place rewrite after read",
+      ({ path }) => writeFileSync(path, '{"rewritten":true}\n'),
+    ],
+    [
+      "member atomic replacement before final return",
+      ({ path }) => {
+        const replacement = `${path}.replacement`;
+        writeFileSync(replacement, '{"late":true}\n');
+        renameSync(replacement, path);
+      },
+    ],
+  ]) {
+    it(`rejects ${label} in regional evidence collection`, async () => {
+      const prior = process.env.NODE_ENV;
+      process.env.NODE_ENV = "test";
+      try {
+        await withInstalledAiHarness({}, async ({ client, root, route }) => {
+          const hookName = label.includes("identity check")
+            ? "afterIdentityCheck"
+            : label.includes("after read")
+              ? "afterRead"
+              : "beforeReturn";
+          await assert.rejects(
+            collectInstalledAiTryOnAttemptForTest(
+              {
+                client,
+                expectedTryOnRoute: route,
+                regionalEvidenceRoot: root,
+                timeoutMs: 100,
+                pollMs: 2,
+              },
+              { [hookName]: mutate },
+            ),
+            /regional evidence.*changed|identity/,
+          );
+        });
+      } finally {
+        if (prior == null) delete process.env.NODE_ENV;
+        else process.env.NODE_ENV = prior;
+      }
+    });
+  }
+
+  for (const [label, hookName, mutate] of [
+    [
+      "member in-place rewrite after identity check",
+      "afterIdentityCheck",
+      ({ path }) => writeFileSync(path, '{"earlyRewrite":true}\n'),
+    ],
+    [
+      "member atomic replacement after read",
+      "afterRead",
+      ({ path }) => {
+        const replacement = `${path}.after-read`;
+        writeFileSync(replacement, '{"afterRead":true}\n');
+        renameSync(replacement, path);
+      },
+    ],
+    [
+      "member in-place rewrite before final return",
+      "beforeReturn",
+      ({ path }) => writeFileSync(path, '{"lateRewrite":true}\n'),
+    ],
+  ]) {
+    it(`rejects ${label} in regional evidence collection`, async () => {
+      const prior = process.env.NODE_ENV;
+      process.env.NODE_ENV = "test";
+      try {
+        await withInstalledAiHarness({}, async ({ client, root, route }) => {
+          await assert.rejects(
+            collectInstalledAiTryOnAttemptForTest(
+              {
+                client,
+                expectedTryOnRoute: route,
+                regionalEvidenceRoot: root,
+                timeoutMs: 100,
+                pollMs: 2,
+              },
+              { [hookName]: mutate },
+            ),
+            /regional evidence.*changed|identity/,
+          );
+        });
+      } finally {
+        if (prior == null) delete process.env.NODE_ENV;
+        else process.env.NODE_ENV = prior;
+      }
+    });
+  }
+
+  it("rejects regional root atomic replacement before final return", async () => {
+    const prior = process.env.NODE_ENV;
+    process.env.NODE_ENV = "test";
+    let movedRoot = null;
+    try {
+      await withInstalledAiHarness({}, async ({ client, root, route }) => {
+        movedRoot = `${root}.moved`;
+        await assert.rejects(
+          collectInstalledAiTryOnAttemptForTest(
+            {
+              client,
+              expectedTryOnRoute: route,
+              regionalEvidenceRoot: root,
+              timeoutMs: 100,
+              pollMs: 2,
+            },
+            {
+              beforeReturn() {
+                renameSync(root, movedRoot);
+                mkdirSync(root);
+              },
+            },
+          ),
+          /regional evidence.*changed|identity|ENOENT/,
+        );
+      });
+    } finally {
+      if (movedRoot) rmSync(movedRoot, { recursive: true, force: true });
+      if (prior == null) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = prior;
+    }
   });
 
   it("executes the production Machine Vitest lifecycle authority", async () => {
