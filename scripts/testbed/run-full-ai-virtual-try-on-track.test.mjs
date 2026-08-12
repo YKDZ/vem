@@ -19,6 +19,7 @@ import {
   buildInstalledVisionWorkerSampleScript,
   sampleInstalledVisionPeakRssForTest,
   validateInstalledAiAttemptSupport,
+  validateCorruptDegradationSupport,
   validateMissingDegradationSupport,
   validateVerifiedOwnerRecoverySupport,
 } from "./ai-virtual-try-on-installed-entry.mjs";
@@ -30,6 +31,10 @@ const runner = join(
   "scripts/testbed/run-full-ai-virtual-try-on-track.ps1",
 );
 const ownerModule = join(repoRoot, "scripts/testbed/ai-vision-owner.psm1");
+const installedEntry = join(
+  repoRoot,
+  "scripts/testbed/ai-virtual-try-on-installed-entry.mjs",
+);
 
 class DegradationFakeWebSocket {
   constructor() {
@@ -91,6 +96,47 @@ class DegradationFakeWebSocket {
     );
   }
 }
+
+test("routes corrupt model degradation through the public installed command and runner", () => {
+  const root = mkdtempSync(join(tmpdir(), "vem-ai-corrupt-command-"));
+  try {
+    const guestInput = join(root, "guest-input.json");
+    const handoff = join(root, "handoff.json");
+    const output = join(root, "corrupt-model-degradation.json");
+    writeFileSync(guestInput, "{}\n");
+    writeFileSync(handoff, "{}\n");
+    const result = spawnSync(
+      process.execPath,
+      [
+        installedEntry,
+        "degradation",
+        "--fault",
+        "corrupt",
+        "--guest-input",
+        guestInput,
+        "--handoff",
+        handoff,
+        "--out",
+        output,
+      ],
+      { cwd: repoRoot, encoding: "utf8" },
+    );
+    assert.notEqual(result.status, 0);
+    assert.doesNotMatch(result.stderr, /fault must be missing/);
+    assert.match(
+      result.stderr,
+      /installed degradation daemon handoff is invalid/,
+    );
+    assert.equal(existsSync(output), false);
+    const source = readFileSync(runner, "utf8");
+    assert.match(source, /New-TestbedCorruptModelPackClone/);
+    assert.match(source, /Restart-TestbedAiDegradedVisionOwner[^\n]*corrupt/);
+    assert.match(source, /degradation --fault corrupt/);
+    assert.match(source, /--corrupt-degradation/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("proves missing model degradation through public Vision Machine and daemon boundaries", async () => {
   const server = createServer((request, response) => {
@@ -205,6 +251,37 @@ test("rejects missing model support with unknown fields or any false surviving t
       /support evidence is invalid/,
     );
   }
+});
+
+test("accepts only exact corrupt model six-truth support", () => {
+  const value = {
+    facts: {
+      degradation: {
+        diagnostic: "model_pack_invalid",
+        facts: {
+          aiReady: false,
+          coreReady: true,
+          daemonReady: true,
+          fastReady: true,
+          machineUiAvailable: true,
+          saleAvailable: true,
+        },
+        fault: "corrupt",
+      },
+    },
+    kind: "installed-runtime",
+    schemaVersion: "vem.testbed.ai-virtual-try-on-support.v1",
+  };
+  assert.deepEqual(
+    validateCorruptDegradationSupport(value),
+    value.facts.degradation.facts,
+  );
+  const copy = structuredClone(value);
+  copy.facts.degradation.facts.saleAvailable = false;
+  assert.throws(
+    () => validateCorruptDegradationSupport(copy),
+    /support evidence is invalid/,
+  );
 });
 
 test("binds verified owner recovery to ready model runtime worker and source identities", () => {
@@ -409,7 +486,7 @@ test("assembles two isolated installed AI attempts and ordinary sale facts while
   assert.equal(result.report.postAi.ordinarySaleCompleted, true);
   assert.equal(result.acceptance.ok, false);
   assert.deepEqual(result.acceptance.reasons, [
-    "installed degradation probes not executed",
+    "installed worker failure probe not executed",
     "AI regional evidence policy awaits Issue10 two-garment calibration",
   ]);
   rmSync(root, { recursive: true, force: true });

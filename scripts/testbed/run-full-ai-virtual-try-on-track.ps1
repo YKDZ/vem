@@ -11,6 +11,7 @@ Set-StrictMode -Version Latest
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 Import-Module (Join-Path $PSScriptRoot "ai-vision-owner.psm1") -Force
 Import-Module (Join-Path $PSScriptRoot "ai-acceptance-artifacts.psm1") -Force
+Import-Module (Join-Path $PSScriptRoot "ai-corrupt-model-pack.psm1") -Force
 
 function Require-AbsoluteLeaf([string]$Path, [string]$Label) {
   if ([string]::IsNullOrWhiteSpace($Path) -or -not [IO.Path]::IsPathFullyQualified($Path)) {
@@ -94,12 +95,15 @@ $shortFacts = Join-Path $artifactRoot "short-attempt.json"
 $longFacts = Join-Path $artifactRoot "long-attempt.json"
 $saleFacts = Join-Path $artifactRoot "ordinary-sale.json"
 $missingFacts = Join-Path $artifactRoot "missing-model-degradation.json"
+$corruptFacts = Join-Path $artifactRoot "corrupt-model-degradation.json"
 $verifiedRecoveryFacts = Join-Path $artifactRoot "verified-owner-recovery.json"
 $nodeEntry = Join-Path $PSScriptRoot "ai-virtual-try-on-installed-entry.mjs"
 $restorationRequired = $false
 $restorationSupport = Join-Path $artifactRoot "default-owner-restoration.json"
 $trackSucceeded = $false
 $verifiedConfiguration = $null
+$corruptConfiguration = $null
+$corruptOwnership = $null
 $trackFailure = $null
 try {
   # The first stop is a mutating operation; restoration is required before it.
@@ -115,6 +119,11 @@ try {
   Restart-TestbedAiDegradedVisionOwner -GuestInput $guestInput -Fault missing | Out-Null
   node $nodeEntry degradation --fault missing --guest-input $GuestInputPath --handoff $HandoffPath --out $missingFacts
   if ($LASTEXITCODE -ne 0) { throw "missing model installed degradation failed" }
+  $corruptModelRoot = Join-Path (Split-Path -Parent $modelPackRoot) ("ai-acceptance-corrupt-" + [string]$guestInput.runId + "-pass-" + $pass)
+  $corruptOwnership = New-TestbedCorruptModelPackClone -SourceRoot $modelPackRoot -VisionAppDirectory "C:\VEM\vision\app" -VisionDataDirectory "C:\ProgramData\VEM\vision" -DestinationRoot $corruptModelRoot -RunId ([string]$guestInput.runId)
+  $corruptConfiguration = Restart-TestbedAiDegradedVisionOwner -GuestInput $guestInput -Fault corrupt -ModelPackRoot ([string]$corruptOwnership.cloneRoot)
+  node $nodeEntry degradation --fault corrupt --guest-input $GuestInputPath --handoff $HandoffPath --out $corruptFacts
+  if ($LASTEXITCODE -ne 0) { throw "corrupt model installed degradation failed" }
   $restoredConfiguration = Restart-TestbedAiVisionOwner -GuestInput $guestInput -EvidencePhase recovery -ModelPackRoot $modelPackRoot
   $verifiedConfiguration = $restoredConfiguration
   $windowsProof = Get-Content -Raw -LiteralPath (Join-Path ([string]$inputs.windowsProofInputDirectory) "precutover-ai-proof.json") -Encoding utf8 | ConvertFrom-Json -ErrorAction Stop
@@ -130,7 +139,7 @@ try {
     kind = "installed-runtime"
     schemaVersion = "vem.testbed.ai-virtual-try-on-support.v1"
   } | ConvertTo-Json -Compress -Depth 8 | ForEach-Object { [IO.File]::WriteAllText($verifiedRecoveryFacts, "$_`n", [Text.UTF8Encoding]::new($false)) }
-  node $nodeEntry assemble --artifact-root $artifactRoot --candidate-input-directory ([string]$inputs.candidateInputDirectory) --windows-proof-input-directory ([string]$inputs.windowsProofInputDirectory) --short-attempt $shortFacts --long-attempt $longFacts --sale $saleFacts --missing-degradation $missingFacts --recovery $verifiedRecoveryFacts --out $OutPath
+  node $nodeEntry assemble --artifact-root $artifactRoot --candidate-input-directory ([string]$inputs.candidateInputDirectory) --windows-proof-input-directory ([string]$inputs.windowsProofInputDirectory) --short-attempt $shortFacts --long-attempt $longFacts --sale $saleFacts --missing-degradation $missingFacts --corrupt-degradation $corruptFacts --recovery $verifiedRecoveryFacts --out $OutPath
   if ($LASTEXITCODE -ne 0) { throw "installed AI acceptance assembly failed" }
   $trackSucceeded = $true
 } catch {
@@ -143,6 +152,10 @@ try {
       if ($null -ne $verifiedConfiguration) {
         Remove-Item -LiteralPath ([string]$verifiedConfiguration.acceptanceEvidenceRoot) -Recurse -Force -ErrorAction Stop
       }
+      if ($null -ne $corruptConfiguration) {
+        Remove-Item -LiteralPath ([string]$corruptConfiguration.acceptanceEvidenceRoot) -Recurse -Force -ErrorAction Stop
+      }
+      if ($null -ne $corruptOwnership) { Remove-TestbedCorruptModelPackClone $corruptOwnership }
       [ordered]@{
         facts = [ordered]@{
           aiEnvironmentCleared = $true
@@ -170,5 +183,5 @@ try {
   }
 }
 if ($null -ne $trackFailure) { throw $trackFailure }
-Write-Error "installed degradation probes not executed; AI regional evidence policy awaits Issue10 two-garment calibration" -ErrorAction Continue
+Write-Error "installed worker failure probe not executed; AI regional evidence policy awaits Issue10 two-garment calibration" -ErrorAction Continue
 exit 1

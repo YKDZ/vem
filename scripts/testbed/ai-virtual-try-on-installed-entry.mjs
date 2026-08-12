@@ -269,7 +269,7 @@ const DEGRADATION_FACT_KEYS = Object.freeze([
   "saleAvailable",
 ]);
 
-export function validateMissingDegradationSupport(value) {
+function validateDegradationSupport(value, expectedFault, expectedDiagnostic) {
   const degradation = value?.facts?.degradation;
   const facts = degradation?.facts;
   if (
@@ -283,15 +283,25 @@ export function validateMissingDegradationSupport(value) {
       JSON.stringify(["diagnostic", "facts", "fault"]) ||
     JSON.stringify(Object.keys(facts ?? {}).sort()) !==
       JSON.stringify(DEGRADATION_FACT_KEYS) ||
-    degradation.diagnostic !== "model_pack_missing" ||
-    degradation.fault !== "missing" ||
+    degradation.diagnostic !== expectedDiagnostic ||
+    degradation.fault !== expectedFault ||
     facts.aiReady !== false ||
     DEGRADATION_FACT_KEYS.filter((key) => key !== "aiReady").some(
       (key) => facts[key] !== true,
     )
   )
-    throw new Error("missing model degradation support evidence is invalid");
+    throw new Error(
+      `${expectedFault} model degradation support evidence is invalid`,
+    );
   return facts;
+}
+
+export function validateMissingDegradationSupport(value) {
+  return validateDegradationSupport(value, "missing", "model_pack_missing");
+}
+
+export function validateCorruptDegradationSupport(value) {
+  return validateDegradationSupport(value, "corrupt", "model_pack_invalid");
 }
 
 export function validateVerifiedOwnerRecoverySupport(value, proof) {
@@ -761,7 +771,7 @@ export async function assembleInstalledAiTryOnAcceptance(
     attempts,
     degradations: {},
     error:
-      "installed degradation probes not executed; AI regional evidence policy awaits Issue10 two-garment calibration",
+      "installed worker failure probe not executed; AI regional evidence policy awaits Issue10 two-garment calibration",
     execution: {
       identities: Object.fromEntries(
         Object.entries(input.identities).map(([key, value]) => [
@@ -786,7 +796,7 @@ export async function assembleInstalledAiTryOnAcceptance(
   const acceptance = {
     ok: false,
     reasons: [
-      "installed degradation probes not executed",
+      "installed worker failure probe not executed",
       "AI regional evidence policy awaits Issue10 two-garment calibration",
     ],
   };
@@ -867,6 +877,10 @@ export async function assembleInstalledAiTryOnAcceptanceFiles(options) {
     options.missingDegradationPath,
     "missing model degradation facts",
   );
+  const corruptDegradationSupport = readCanonicalJson(
+    options.corruptDegradationPath,
+    "corrupt model degradation facts",
+  );
   if (
     saleSupport.schemaVersion !== AI_SUPPORT_EVIDENCE_SCHEMA ||
     saleSupport.kind !== "installed-runtime" ||
@@ -880,6 +894,9 @@ export async function assembleInstalledAiTryOnAcceptanceFiles(options) {
   );
   const missingDegradation =
     validateMissingDegradationSupport(degradationSupport);
+  const corruptDegradation = validateCorruptDegradationSupport(
+    corruptDegradationSupport,
+  );
   const recoverySupport = readCanonicalJson(
     options.recoveryPath,
     "verified AI owner recovery facts",
@@ -915,6 +932,7 @@ export async function assembleInstalledAiTryOnAcceptanceFiles(options) {
     { ordinarySale: async () => sale },
   );
   result.report.degradations.missingPack = missingDegradation;
+  result.report.degradations.corruptPack = corruptDegradation;
   if (
     candidateManifest.sourceCommit !== proof.candidate.sourceCommit ||
     proof.candidate.embeddedManifestSha256 !== sha256(candidateManifestRaw) ||
@@ -1072,10 +1090,14 @@ async function main() {
     });
   }
   if (options.command === "degradation") {
-    if (options.fault !== "missing")
-      throw new Error("installed degradation fault must be missing");
+    const diagnostics = {
+      corrupt: "model_pack_invalid",
+      missing: "model_pack_missing",
+    };
+    if (!Object.hasOwn(diagnostics, options.fault))
+      throw new Error("installed degradation fault must be missing or corrupt");
     return runInstalledAiDegradationPhase({
-      expectedDiagnostic: "model_pack_missing",
+      expectedDiagnostic: diagnostics[options.fault],
       fault: options.fault,
       guestInputPath: options["guest-input"],
       handoffPath: options.handoff,
@@ -1085,6 +1107,7 @@ async function main() {
   return assembleInstalledAiTryOnAcceptanceFiles({
     artifactRoot: options["artifact-root"],
     candidateInputDirectory: options["candidate-input-directory"],
+    corruptDegradationPath: options["corrupt-degradation"],
     longAttemptPath: options["long-attempt"],
     missingDegradationPath: options["missing-degradation"],
     recoveryPath: options.recovery,

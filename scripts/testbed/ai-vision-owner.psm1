@@ -38,13 +38,18 @@ function Assert-TestbedAiOwnerContext {
   return $script:OwnerContext
 }
 
-function New-TestbedAiVisionOwnerConfiguration([object]$GuestInput, [ValidateSet("short", "long", "recovery")][string]$EvidencePhase) {
+function New-TestbedAiVisionOwnerConfiguration {
+  param(
+    [Parameter(Mandatory = $true)][object]$GuestInput,
+    [Parameter(Mandatory = $true)][ValidateSet("short", "long", "recovery", "corrupt")][string]$EvidencePhase,
+    [string]$ModelPackRoot
+  )
   $context = Assert-TestbedAiOwnerContext
   $inputsProperty = $GuestInput.PSObject.Properties["aiVirtualTryOn"]
   $inputs = if ($null -eq $inputsProperty) { $null } else { $inputsProperty.Value }
   if ($null -eq $inputs) { throw "AI owner configuration requires aiVirtualTryOn guest inputs" }
-  $modelPackRoot = [string]$inputs.materializedModelPackRoot
-  if ([string]::IsNullOrWhiteSpace($modelPackRoot) -or -not [IO.Path]::IsPathRooted($modelPackRoot)) {
+  $selectedModelPackRoot = if ([string]::IsNullOrWhiteSpace($ModelPackRoot)) { [string]$inputs.materializedModelPackRoot } else { $ModelPackRoot }
+  if ([string]::IsNullOrWhiteSpace($selectedModelPackRoot) -or -not [IO.Path]::IsPathRooted($selectedModelPackRoot)) {
     throw "AI owner configuration requires an absolute materializedModelPackRoot"
   }
   if ([string]$GuestInput.runId -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$') {
@@ -60,7 +65,7 @@ function New-TestbedAiVisionOwnerConfiguration([object]$GuestInput, [ValidateSet
       @(Get-ChildItem -LiteralPath $evidenceRoot -Force).Count -ne 0) {
     throw "AI acceptance evidence root is not a fresh regular empty directory"
   }
-  return [ordered]@{ modelPackRoot = $modelPackRoot; acceptanceEvidenceRoot = $evidenceRoot; phase = $EvidencePhase }
+  return [ordered]@{ modelPackRoot = [IO.Path]::GetFullPath($selectedModelPackRoot); acceptanceEvidenceRoot = $evidenceRoot; phase = $EvidencePhase }
 }
 
 function Get-TestbedKioskPassword([object]$GuestInput) {
@@ -187,6 +192,35 @@ function Install-TestbedVisionOwner([object]$GuestInput, [object]$Configuration)
   & (Join-Path $context.repoRoot "scripts\windows\install-vem-runtime-owners.ps1") @arguments | Out-Null
 }
 
+function Install-TestbedCorruptVisionOwner([object]$GuestInput, [object]$Configuration) {
+  $context = Assert-TestbedAiOwnerContext
+  Install-TestbedVisionOwner $GuestInput $null
+  if ($null -ne $context.testOperations -and $context.testOperations.ContainsKey("InstallCorruptOwner")) {
+    & $context.testOperations.InstallCorruptOwner $GuestInput $Configuration
+    return
+  }
+  $modelRoot = [string]$Configuration.modelPackRoot
+  $evidenceRoot = [string]$Configuration.acceptanceEvidenceRoot
+  if ($modelRoot.Contains([char]34) -or $evidenceRoot.Contains([char]34)) { throw "corrupt owner launcher path is invalid" }
+  $content = @"
+`$ErrorActionPreference = "Stop"
+`$startInfo = [Diagnostics.ProcessStartInfo]::new()
+`$startInfo.FileName = "C:\VEM\vision\app\vending-vision.exe"
+`$startInfo.WorkingDirectory = "C:\VEM\vision\app"
+`$startInfo.UseShellExecute = `$false
+`$startInfo.Arguments = '"--config" "C:\ProgramData\VEM\vision\site.json"'
+`$startInfo.EnvironmentVariables["VEM_AI_MODEL_PACK"] = "$modelRoot"
+`$startInfo.EnvironmentVariables["VEM_AI_ACCEPTANCE_EVIDENCE_ROOT"] = "$evidenceRoot"
+[Diagnostics.Process]::Start(`$startInfo) | Out-Null
+"@
+  $launcher = Join-Path $context.deploymentRoot "launch-vem-vision.ps1"
+  $temporary = "$launcher.$PID.corrupt.tmp"
+  try {
+    [IO.File]::WriteAllText($temporary, $content, [Text.UTF8Encoding]::new($false))
+    Move-Item -LiteralPath $temporary -Destination $launcher -Force -ErrorAction Stop
+  } finally { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue }
+}
+
 function Restore-TestbedDefaultVisionOwner([object]$GuestInput) {
   $context = Assert-TestbedAiOwnerContext
   $app = "C:\VEM\vision\app"
@@ -249,29 +283,40 @@ function Restart-TestbedAiVisionOwner {
 function Restart-TestbedAiDegradedVisionOwner {
   param(
     [Parameter(Mandatory = $true)][object]$GuestInput,
-    [Parameter(Mandatory = $true)][ValidateSet("missing")][string]$Fault
+    [Parameter(Mandatory = $true)][ValidateSet("missing", "corrupt")][string]$Fault,
+    [string]$ModelPackRoot
   )
   [void](Assert-TestbedAiOwnerContext)
   $app = "C:\VEM\vision\app"
   $site = "C:\ProgramData\VEM\vision\site.json"
+  $configuration = $null
   try {
     Stop-TestbedAiVisionOwner $app $site
-    if ($Fault -cne "missing") { throw "unsupported AI degradation fault" }
-    # The default launcher removes both AI variables from inherited scopes.
-    # That is the production missing-pack state, not a test worker override.
-    Install-TestbedVisionOwner $GuestInput $null
+    if ($Fault -ceq "missing") {
+      Install-TestbedVisionOwner $GuestInput $null
+      $expectedDiagnostic = "model_pack_missing"
+    } else {
+      if ([string]::IsNullOrWhiteSpace($ModelPackRoot) -or -not [IO.Path]::IsPathRooted($ModelPackRoot)) { throw "corrupt AI degradation requires an absolute private clone root" }
+      $configuration = New-TestbedAiVisionOwnerConfiguration -GuestInput $GuestInput -EvidencePhase corrupt -ModelPackRoot $ModelPackRoot
+      Install-TestbedCorruptVisionOwner $GuestInput $configuration
+      $expectedDiagnostic = "model_pack_invalid"
+    }
     $context = Assert-TestbedAiOwnerContext
     if ($null -ne $context.testOperations -and $context.testOperations.ContainsKey("StartOwner")) { & $context.testOperations.StartOwner }
     else { Start-ScheduledTask -TaskName "VEMVisionRuntime" -ErrorAction Stop }
     $health = Wait-TestbedVisionReady
-    if ($health.aiReady -ne $false -or [string]$health.aiReadinessDiagnostic -cne "model_pack_missing") {
-      throw "managed Vision owner did not expose model_pack_missing"
+    if ($health.aiReady -ne $false -or [string]$health.aiReadinessDiagnostic -cne $expectedDiagnostic) { throw "managed Vision owner did not expose $expectedDiagnostic" }
+    if ($Fault -ceq "corrupt") {
+      return [ordered]@{ acceptanceEvidenceRoot = [string]$configuration.acceptanceEvidenceRoot; health = $health; modelPackRoot = [string]$configuration.modelPackRoot }
     }
     return $health
   } catch {
     $primary = $_.Exception
     try { Restore-TestbedDefaultVisionOwner $GuestInput | Out-Null }
     catch { throw [AggregateException]::new("AI degradation owner and default-owner recovery both failed", @($primary, $_.Exception)) }
+    if ($null -ne $configuration -and (Test-Path -LiteralPath ([string]$configuration.acceptanceEvidenceRoot))) {
+      Remove-Item -LiteralPath ([string]$configuration.acceptanceEvidenceRoot) -Recurse -Force -ErrorAction SilentlyContinue
+    }
     throw $primary
   }
 }

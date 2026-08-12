@@ -18,6 +18,7 @@ $global:AiOwnerHarnessFailAiInstall = $false
 $global:AiOwnerHarnessFailurePoint = $null
 $global:AiOwnerHarnessDefaultOnline = $false
 $global:AiOwnerHarnessAiEnvironment = $false
+$global:AiOwnerHarnessDiagnostic = $null
 $global:AiOwnerHarnessFailDefaultInstall = $false
 $global:AiOwnerHarnessStopAfterSideEffectFailure = $false
 $env:NODE_ENV = "test"
@@ -47,6 +48,9 @@ $testOperations = @{
   WaitReady = {
   $global:AiOwnerHarnessCalls.Add("ready") | Out-Null
   if ($global:AiOwnerHarnessFailurePoint -ceq "ready" -and $global:AiOwnerHarnessAiEnvironment) { throw "injected ready failure" }
+  if (-not [string]::IsNullOrWhiteSpace([string]$global:AiOwnerHarnessDiagnostic)) {
+    return [pscustomobject]@{ ok = $true; aiReady = $false; aiReadinessDiagnostic = $global:AiOwnerHarnessDiagnostic }
+  }
   if ($global:AiOwnerHarnessAiEnvironment) {
     return [pscustomobject]@{ ok = $true; aiReady = $true; aiReadinessDiagnostic = "ready" }
   }
@@ -61,11 +65,19 @@ $testOperations = @{
       $global:AiOwnerHarnessCalls.Add("install-default") | Out-Null
       if ($global:AiOwnerHarnessFailDefaultInstall) { throw "injected default recovery failure" }
       $global:AiOwnerHarnessAiEnvironment = $false
+      $global:AiOwnerHarnessDiagnostic = $null
       return
     }
     $global:AiOwnerHarnessCalls.Add("install-ai:$($Configuration.acceptanceEvidenceRoot)") | Out-Null
     $global:AiOwnerHarnessAiEnvironment = $true
+    $global:AiOwnerHarnessDiagnostic = $null
     if ($global:AiOwnerHarnessFailurePoint -ceq "install") { throw "injected install failure" }
+  }
+  InstallCorruptOwner = {
+    param([object]$GuestInput, [object]$Configuration)
+    $global:AiOwnerHarnessCalls.Add("install-corrupt-launcher:$($Configuration.modelPackRoot)") | Out-Null
+    $global:AiOwnerHarnessAiEnvironment = $true
+    $global:AiOwnerHarnessDiagnostic = "model_pack_invalid"
   }
 }
 
@@ -103,6 +115,13 @@ if ($global:AiOwnerHarnessFailurePoint -ceq "install") { throw "injected install
     throw "missing model owner did not expose the public diagnostic"
   }
   if ($global:AiOwnerHarnessAiEnvironment) { throw "missing model owner retained AI environment" }
+  $global:AiOwnerHarnessCalls.Clear()
+  $corruptRoot = Join-Path $root "corrupt-model"
+  New-Item -ItemType Directory -Path $corruptRoot | Out-Null
+  $corrupt = Restart-TestbedAiDegradedVisionOwner -GuestInput $guestInput -Fault corrupt -ModelPackRoot $corruptRoot
+  if ($corrupt.health.aiReady -ne $false -or $corrupt.health.aiReadinessDiagnostic -cne "model_pack_invalid") { throw "corrupt model owner did not expose the public diagnostic" }
+  $corruptCalls = @($global:AiOwnerHarnessCalls)
+  Assert-Equal ($corruptCalls -join ",") ("stop-task:VEMVisionRuntime,stop-canonical,install-default,install-corrupt-launcher:" + $corruptRoot + ",start-task:VEMVisionRuntime,ready") "managed corrupt restart call order"
   $restored = Restart-TestbedAiVisionOwner -GuestInput $guestInput -EvidencePhase recovery -ModelPackRoot $modelRoot
   if (-not $global:AiOwnerHarnessAiEnvironment) { throw "verified AI owner was not restored after missing model proof" }
   Remove-Item -LiteralPath $restored.acceptanceEvidenceRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -159,6 +178,8 @@ if ($global:AiOwnerHarnessFailurePoint -ceq "install") { throw "injected install
     schemaVersion = "vem-ai-owner-restart-harness/v1"
     shortRoot = [string]$short.acceptanceEvidenceRoot
     longRoot = [string]$long.acceptanceEvidenceRoot
+    corruptDiagnostic = [string]$corrupt.health.aiReadinessDiagnostic
+    corruptCalls = $corruptCalls
     failures = $failures
     aggregateFailure = $aggregateFailure
   } | ConvertTo-Json -Depth 6
