@@ -12,6 +12,7 @@ import {
   parseOrchestratorOptions,
   powerShellFocusArgument,
   provisionAiAcceptanceBlock,
+  provisionAiAcceptanceGuestInput,
   stageAiAcceptanceInputs,
   validateHostConfig,
 } from "./runtime-testbed-orchestrator.mjs";
@@ -642,6 +643,64 @@ describe("runtime testbed scheduler contract", () => {
       assert.equal(
         staged.acceptanceBlocks.aiVirtualTryOn,
         "AI acceptance input blocked: manifest is missing",
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("unblocks a warm AI rerun when valid host inputs replace an earlier AI block", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-ai-warm-unblock-"));
+    try {
+      writeFileSync(
+        join(root, "guest-input.json"),
+        JSON.stringify({
+          schemaVersion: "vem-local-testbed-guest-input/v1",
+          workflowIdentity: {},
+          acceptanceBlocks: {
+            aiVirtualTryOn: "earlier host input failure",
+            payment: "provider unavailable",
+          },
+        }),
+      );
+      await provisionAiAcceptanceBlock({
+        config: { stateRoot: root },
+        pass: 1,
+        reason: "AI acceptance input blocked: manifest is missing",
+      });
+      await provisionAiAcceptanceGuestInput({
+        config: { stateRoot: root },
+        pass: 1,
+        preparation: { guestInput: { inputRoot: "C:\\testbed\\ai" } },
+      });
+      const guestInput = JSON.parse(
+        readFileSync(join(root, "guest-input.json"), "utf8"),
+      );
+      assert.deepEqual(guestInput.acceptanceBlocks, {
+        payment: "provider unavailable",
+      });
+      assert.deepEqual(guestInput.aiVirtualTryOn, {
+        inputRoot: "C:\\testbed\\ai",
+      });
+      writeFileSync(
+        join(root, "guest-input.json"),
+        JSON.stringify({
+          schemaVersion: "vem-local-testbed-guest-input/v1",
+          workflowIdentity: {},
+          acceptanceBlocks: { aiVirtualTryOn: "earlier host input failure" },
+        }),
+      );
+      await provisionAiAcceptanceGuestInput({
+        config: { stateRoot: root },
+        pass: 1,
+        preparation: { guestInput: { inputRoot: "C:\\testbed\\ai" } },
+      });
+      assert.equal(
+        Object.hasOwn(
+          JSON.parse(readFileSync(join(root, "guest-input.json"), "utf8")),
+          "acceptanceBlocks",
+        ),
+        false,
       );
     } finally {
       rmSync(root, { recursive: true, force: true });

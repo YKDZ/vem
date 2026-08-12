@@ -656,7 +656,11 @@ export function identicalVisionCoreArtifactSnapshot(left, right) {
   );
 }
 
-async function provisionAiAcceptanceGuestInput({ config, preparation, pass }) {
+export async function provisionAiAcceptanceGuestInput({
+  config,
+  preparation,
+  pass,
+}) {
   const path = join(config.stateRoot, "guest-input.json");
   const guestInput = JSON.parse(await readFile(path, "utf8"));
   if (guestInput?.schemaVersion !== "vem-local-testbed-guest-input/v1") {
@@ -664,10 +668,17 @@ async function provisionAiAcceptanceGuestInput({ config, preparation, pass }) {
       "AI guest input provision requires canonical local testbed guest input",
     );
   }
+  const acceptanceBlocks = { ...(guestInput.acceptanceBlocks ?? {}) };
+  delete acceptanceBlocks.aiVirtualTryOn;
+  const {
+    acceptanceBlocks: _previousAcceptanceBlocks,
+    ...guestInputWithoutBlocks
+  } = guestInput;
   await writeJson(path, {
-    ...guestInput,
+    ...guestInputWithoutBlocks,
     workflowIdentity: { ...guestInput.workflowIdentity, pass },
     aiVirtualTryOn: preparation.guestInput,
+    ...(Object.keys(acceptanceBlocks).length > 0 ? { acceptanceBlocks } : {}),
   });
 }
 
