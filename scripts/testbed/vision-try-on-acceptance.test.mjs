@@ -1,13 +1,25 @@
 import { JSDOM } from "jsdom";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 
+import { CdpClient, enablePageRuntime } from "./machine-ui-cdp-driver.mjs";
 import {
   buildRecordedVisionSiteConfiguration,
   combineCleanupFailure,
+  collectInstalledAiTryOnAttempt,
   collectVisionProtocolEvidence,
   compareObservedVisionProtocolToExpected as compareRawObservedVisionProtocolToExpected,
   createVisionEventFence,
@@ -34,6 +46,200 @@ import {
 } from "./vision-try-on-acceptance.mjs";
 
 const VISION_V2_IDENTITY = readVisionV2ContractIdentity();
+
+function cdpValue(value, id) {
+  return { id, result: { result: { value } } };
+}
+
+class AcceptanceFakeWebSocket {
+  constructor(handler) {
+    this.handler = handler;
+    this.readyState = 0;
+    this.listeners = new Map();
+    this.sent = [];
+    queueMicrotask(() => {
+      this.readyState = 1;
+      this.emit("open", {});
+    });
+  }
+
+  addEventListener(type, handler, options = {}) {
+    const values = this.listeners.get(type) ?? [];
+    values.push({ handler, once: options.once === true });
+    this.listeners.set(type, values);
+  }
+
+  removeEventListener(type, handler) {
+    this.listeners.set(
+      type,
+      (this.listeners.get(type) ?? []).filter(
+        (entry) => entry.handler !== handler,
+      ),
+    );
+  }
+
+  send(raw) {
+    const message = JSON.parse(raw);
+    this.sent.push(message);
+    const response = this.handler(message);
+    if (response)
+      queueMicrotask(() =>
+        this.emit("message", { data: JSON.stringify(response) }),
+      );
+  }
+
+  close() {
+    this.readyState = 3;
+    this.emit("close", {});
+  }
+
+  emit(type, event) {
+    const values = [...(this.listeners.get(type) ?? [])];
+    for (const value of values) value.handler(event);
+    this.listeners.set(
+      type,
+      values.filter((value) => !value.once),
+    );
+  }
+}
+
+async function withInstalledAiHarness(options, callback) {
+  const attemptId = "0198f44e-21bd-7c62-8f52-b7c86cc2d101";
+  const lifecycleAttemptId = options.lifecycleAttemptId ?? attemptId;
+  const resultAttemptId = options.resultAttemptId ?? attemptId;
+  const route = "#/try-on?catalogKey=product-shirts&variantId=variant-long";
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "base64",
+  );
+  const server = createHttpServer((request, response) => {
+    if (request.url !== `/v2/try-on/results/${resultAttemptId}`) {
+      response.writeHead(404).end();
+      return;
+    }
+    response.writeHead(200, {
+      "content-type": options.contentType ?? "image/png",
+      "content-length": String(png.byteLength),
+    });
+    response.end(png);
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const root = mkdtempSync(join(tmpdir(), "vem-installed-ai-cdp-negative-"));
+  let outsideRoot = null;
+  const evidenceName =
+    options.sidecarAttemptId === null
+      ? null
+      : `${options.sidecarAttemptId ?? attemptId}.regional-evidence.json`;
+  if (evidenceName) {
+    const evidencePath = join(root, evidenceName);
+    if (options.sidecarSymlink) {
+      outsideRoot = mkdtempSync(join(tmpdir(), "vem-ai-sidecar-outside-"));
+      const outside = join(outsideRoot, "outside.json");
+      writeFileSync(outside, "{}\n");
+      symlinkSync(outside, evidencePath);
+    } else {
+      writeFileSync(evidencePath, "{}\n");
+    }
+  }
+  if (options.extraSidecar)
+    writeFileSync(join(root, "extra.regional-evidence.json"), "{}\n");
+  const resultUrl = `http://127.0.0.1:${server.address().port}/v2/try-on/results/${resultAttemptId}`;
+  const lifecycle = [
+    "starting",
+    "accepted",
+    "acquiring",
+    "generating",
+    "completed",
+  ].map((phase) => ({
+    attemptId: lifecycleAttemptId,
+    phase,
+    ...(phase === "acquiring"
+      ? {
+          acquisitionPreview:
+            "http://127.0.0.1/v2/try-on/acquisition/preview.mjpeg?token=acceptance-token",
+        }
+      : {}),
+  }));
+  const socket = new AcceptanceFakeWebSocket((message) => {
+    if (message.method !== "Runtime.evaluate")
+      return { id: message.id, result: {} };
+    const expression = message.params.expression;
+    if (expression === INSTALL_TRY_ON_LIFECYCLE_OBSERVER_EXPRESSION)
+      return cdpValue(true, message.id);
+    if (expression === READ_TRY_ON_LIFECYCLE_EXPRESSION)
+      return cdpValue(lifecycle, message.id);
+    if (expression.includes("document.documentElement?.outerHTML"))
+      return cdpValue(
+        {
+          route,
+          url: `http://tauri.localhost/${route}`,
+          pathname: "/",
+          title: "Machine",
+          readyState: "complete",
+          activeElement: "body",
+          domLength: 42,
+          domHash: "deadbeef",
+        },
+        message.id,
+      );
+    if (expression.includes("const selector ="))
+      return cdpValue(
+        {
+          exists: true,
+          actionable: true,
+          inViewport: true,
+          hitTarget: true,
+          pointerEvents: "auto",
+          bounds: { x: 10, y: 20, width: 40, height: 60 },
+          center: { x: 30, y: 50 },
+        },
+        message.id,
+      );
+    if (expression.includes("[data-test='try-on-view']"))
+      return cdpValue(
+        {
+          route,
+          attemptId,
+          state: "completed",
+          resultUrl,
+          resultLoaded: true,
+          resultNaturalWidth: 320,
+          resultNaturalHeight: 480,
+          retryVisible: true,
+          returnVisible: true,
+          errorText: null,
+        },
+        message.id,
+      );
+    if (expression.includes("createImageBitmap"))
+      return cdpValue(
+        options.decodeFailure
+          ? { ok: false, reason: "decode" }
+          : { ok: true, width: 320, height: 480, nonBlackPixelCount: 8 },
+        message.id,
+      );
+    throw new Error(`unexpected Runtime.evaluate expression: ${expression}`);
+  });
+  const client = new CdpClient("ws://127.0.0.1/devtools/page/negative", {
+    webSocketFactory: () => socket,
+    defaultTimeoutMs: 250,
+  });
+  try {
+    await client.connect();
+    await enablePageRuntime(client);
+    return await callback({ attemptId, client, root, route, socket });
+  } finally {
+    await client.close();
+    await new Promise((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+    rmSync(root, { recursive: true, force: true });
+    if (outsideRoot) rmSync(outsideRoot, { recursive: true, force: true });
+  }
+}
 
 const validateVisionProtocolEvidence = validateRawVisionProtocolEvidence;
 const validateVisionRuntimeEvidence = validateRawVisionRuntimeEvidence;
@@ -116,6 +322,215 @@ function sourceFrame(role, fixtureSha256, overrides = {}) {
 }
 
 describe("vision try-on acceptance script", () => {
+  it("captures an AI try-on through a production CdpClient touch and waits for its matching regional sidecar", async () => {
+    const attemptId = "0198f44e-21bd-7c62-8f52-b7c86cc2d001";
+    const route = "#/try-on?catalogKey=product-shirts&variantId=variant-long";
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "base64",
+    );
+    const server = createHttpServer((request, response) => {
+      if (request.url !== `/v2/try-on/results/${attemptId}`) {
+        response.writeHead(404).end();
+        return;
+      }
+      response.writeHead(200, {
+        "content-type": "image/png",
+        "content-length": String(png.byteLength),
+      });
+      response.end(png);
+    });
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const root = mkdtempSync(join(tmpdir(), "vem-installed-ai-cdp-"));
+    writeFileSync(
+      join(root, `${attemptId}.regional-evidence.json`),
+      '{"kind":"regional-evidence","schemaVersion":"vem-ai-regional-evidence/v1"}\n',
+    );
+    const resultUrl = `http://127.0.0.1:${server.address().port}/v2/try-on/results/${attemptId}`;
+    const lifecycle = [
+      "starting",
+      "accepted",
+      "acquiring",
+      "generating",
+      "completed",
+    ].map((phase) => ({
+      attemptId,
+      phase,
+      ...(phase === "acquiring"
+        ? {
+            acquisitionPreview:
+              "http://127.0.0.1/v2/try-on/acquisition/preview.mjpeg?token=acceptance-token",
+          }
+        : {}),
+    }));
+    const socket = new AcceptanceFakeWebSocket((message) => {
+      if (message.method !== "Runtime.evaluate")
+        return { id: message.id, result: {} };
+      const expression = message.params.expression;
+      if (expression === INSTALL_TRY_ON_LIFECYCLE_OBSERVER_EXPRESSION)
+        return cdpValue(true, message.id);
+      if (expression === READ_TRY_ON_LIFECYCLE_EXPRESSION)
+        return cdpValue(lifecycle, message.id);
+      if (expression.includes("document.documentElement?.outerHTML"))
+        return cdpValue(
+          {
+            route,
+            url: `http://tauri.localhost/${route}`,
+            pathname: "/",
+            title: "Machine",
+            readyState: "complete",
+            activeElement: "body",
+            domLength: 42,
+            domHash: "deadbeef",
+          },
+          message.id,
+        );
+      if (expression.includes('const selector = "[data-test=\\"try-on-ai\\"]"'))
+        return cdpValue(
+          {
+            selector: '[data-test="try-on-ai"]',
+            exists: true,
+            actionable: true,
+            inViewport: true,
+            hitTarget: true,
+            pointerEvents: "auto",
+            bounds: { x: 10, y: 20, width: 40, height: 60 },
+            center: { x: 30, y: 50 },
+          },
+          message.id,
+        );
+      if (expression.includes("[data-test='try-on-view']"))
+        return cdpValue(
+          {
+            route,
+            catalogKey: "product-shirts",
+            variantId: "variant-long",
+            attemptId,
+            state: "completed",
+            phaseText: "completed",
+            resultUrl,
+            resultLoaded: true,
+            resultNaturalWidth: 320,
+            resultNaturalHeight: 480,
+            retryVisible: true,
+            returnVisible: true,
+            errorText: null,
+          },
+          message.id,
+        );
+      if (expression.includes("createImageBitmap"))
+        return cdpValue(
+          { ok: true, width: 320, height: 480, nonBlackPixelCount: 8 },
+          message.id,
+        );
+      throw new Error(`unexpected Runtime.evaluate expression: ${expression}`);
+    });
+    const client = new CdpClient("ws://127.0.0.1/devtools/page/ai", {
+      webSocketFactory: () => socket,
+      defaultTimeoutMs: 500,
+    });
+    try {
+      await client.connect();
+      await enablePageRuntime(client);
+      const collected = await collectInstalledAiTryOnAttempt({
+        client,
+        expectedTryOnRoute: route,
+        regionalEvidenceRoot: root,
+        timeoutMs: 1_000,
+        pollMs: 5,
+      });
+      assert.equal(collected.attemptId, attemptId);
+      assert.equal(collected.regionalEvidence.byteLength > 0, true);
+      assert.match(collected.regionalEvidence.sha256, /^[a-f0-9]{64}$/);
+      assert.deepEqual(
+        socket.sent
+          .filter((message) => message.method === "Input.dispatchTouchEvent")
+          .map((message) => message.params.type),
+        ["touchStart", "touchEnd"],
+      );
+      assert.equal(
+        socket.sent.some(
+          (message) =>
+            message.method === "Runtime.evaluate" &&
+            /\.click\s*\(/.test(message.params.expression),
+        ),
+        false,
+      );
+    } finally {
+      await client.close();
+      await new Promise((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  for (const [label, options, reason] of [
+    [
+      "cross-attempt lifecycle",
+      { lifecycleAttemptId: "0198f44e-21bd-7c62-8f52-b7c86cc2d999" },
+      /real starting lifecycle state/,
+    ],
+    [
+      "cross-attempt result URL",
+      { resultAttemptId: "0198f44e-21bd-7c62-8f52-b7c86cc2d998" },
+      /result URL is not bound/,
+    ],
+    [
+      "wrong-attempt sidecar",
+      { sidecarAttemptId: "wrong" },
+      /did not become true/,
+    ],
+    ["extra sidecar", { extraSidecar: true }, /did not become true/],
+    ["linked sidecar", { sidecarSymlink: true }, /regular file/],
+    [
+      "bad image content type",
+      { contentType: "text/plain" },
+      /image evidence is invalid/,
+    ],
+    [
+      "image decode failure",
+      { decodeFailure: true },
+      /decoded Fast V2 result image did not become true/,
+    ],
+  ]) {
+    it(`rejects ${label} while collecting an installed AI attempt`, async () => {
+      await withInstalledAiHarness(options, async ({ client, root, route }) => {
+        await assert.rejects(
+          collectInstalledAiTryOnAttempt({
+            client,
+            expectedTryOnRoute: route,
+            regionalEvidenceRoot: root,
+            timeoutMs: 100,
+            pollMs: 2,
+          }),
+          reason,
+        );
+      });
+    });
+  }
+
+  it("times out without a matching regional sidecar", async () => {
+    await withInstalledAiHarness(
+      { sidecarAttemptId: null },
+      async ({ client, root, route }) => {
+        await assert.rejects(
+          collectInstalledAiTryOnAttempt({
+            client,
+            expectedTryOnRoute: route,
+            regionalEvidenceRoot: root,
+            timeoutMs: 50,
+            pollMs: 2,
+          }),
+          /did not become true|timed out/,
+        );
+      },
+    );
+  });
+
   it("executes the production Machine Vitest lifecycle authority", async () => {
     const result = await runMachineVisionAuthority();
     assert.equal(result.exitCode, 0, result.stderr);

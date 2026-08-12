@@ -3,9 +3,16 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer } from "node:net";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { waitForDaemonReadyRefresh } from "./daemon-ready-refresh.mjs";
@@ -2360,7 +2367,7 @@ async function readTryOnLifecycle(client) {
 async function waitForTryOnSurface(
   client,
   timeoutMs = 60_000,
-  { excludeAttemptId = null } = {},
+  { excludeAttemptId = null, pollMs = 500 } = {},
 ) {
   return waitForCondition(
     "Fast V2 try-on result surface",
@@ -2408,7 +2415,7 @@ async function waitForTryOnSurface(
       };
     },
     timeoutMs,
-    500,
+    pollMs,
   );
 }
 
@@ -2864,12 +2871,20 @@ async function waitForTryOnFailure(client, timeoutMs = 30_000) {
   );
 }
 
-async function readResultImageEvidence(client, resultUrl, timeoutMs = 30_000) {
+async function readResultImageEvidence(
+  client,
+  resultUrl,
+  timeoutMs = 30_000,
+  pollMs = 500,
+) {
   return waitForCondition(
     "decoded Fast V2 result image",
     async () => {
       const controller = new AbortController();
-      const timeout = globalThis.setTimeout(() => controller.abort(), 5_000);
+      const timeout = globalThis.setTimeout(
+        () => controller.abort(),
+        Math.min(5_000, timeoutMs),
+      );
       try {
         const response = await fetch(resultUrl, { signal: controller.signal });
         const bytes = Buffer.from(await response.arrayBuffer());
@@ -2918,8 +2933,142 @@ async function readResultImageEvidence(client, resultUrl, timeoutMs = 30_000) {
       }
     },
     timeoutMs,
-    500,
+    pollMs,
   );
+}
+
+function readRegionalEvidenceMember(rootPath, attemptId) {
+  const rootStat = lstatSync(rootPath);
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory())
+    throw new Error("AI regional evidence root must be a regular directory");
+  const root = realpathSync(rootPath);
+  const expectedName = `${attemptId}.regional-evidence.json`;
+  const members = readdirSync(root);
+  if (members.length !== 1 || members[0] !== expectedName) return null;
+  const path = resolve(root, expectedName);
+  const stat = lstatSync(path);
+  if (stat.isSymbolicLink() || !stat.isFile())
+    throw new Error("AI regional evidence member must be a regular file");
+  const canonical = realpathSync(path);
+  if (dirname(canonical) !== root)
+    throw new Error("AI regional evidence member escaped its root");
+  const bytes = readFileSync(canonical);
+  if (bytes.byteLength === 0 || bytes.byteLength > 512 * 1024)
+    throw new Error("AI regional evidence member size is invalid");
+  return {
+    path: canonical,
+    bytes,
+    byteLength: bytes.byteLength,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+  };
+}
+
+export async function collectInstalledAiTryOnAttempt({
+  client,
+  expectedTryOnRoute,
+  regionalEvidenceRoot,
+  timeoutMs = 60_000,
+  pollMs = 250,
+}) {
+  if (!(client instanceof CdpClient))
+    throw new Error("installed AI attempt requires a production CdpClient");
+  if (
+    typeof expectedTryOnRoute !== "string" ||
+    !expectedTryOnRoute.startsWith("#/try-on?") ||
+    typeof regionalEvidenceRoot !== "string" ||
+    !isAbsolute(regionalEvidenceRoot) ||
+    !Number.isSafeInteger(timeoutMs) ||
+    timeoutMs <= 0 ||
+    !Number.isSafeInteger(pollMs) ||
+    pollMs <= 0
+  )
+    throw new Error("installed AI attempt inputs are invalid");
+  const deadline = Date.now() + timeoutMs;
+  const remaining = () => {
+    const value = deadline - Date.now();
+    if (value <= 0) throw new Error("installed AI attempt timed out");
+    return value;
+  };
+  await installTryOnLifecycleObserver(client);
+  const activation = await activateVisibleSelector(
+    client,
+    '[data-test="try-on-ai"]',
+    { kind: "touch", timeoutMs: remaining(), pollMs },
+  );
+  if (
+    activation.input?.kind !== "touch" ||
+    activation.input?.method !== "Input.dispatchTouchEvent"
+  )
+    throw new Error("installed AI attempt was not activated by touch");
+  await waitForRoute(client, expectedTryOnRoute, {
+    timeoutMs: remaining(),
+    pollMs,
+  });
+  const surface = await waitForTryOnSurface(client, remaining(), { pollMs });
+  if (surface.route !== expectedTryOnRoute)
+    throw new Error("installed AI result route mismatched");
+  validateTryOnLifecycleEvidence(surface.lifecycle, surface.attemptId);
+  const expectedResultPath = `/v2/try-on/results/${surface.attemptId}`;
+  let resultUrl;
+  try {
+    resultUrl = new URL(surface.resultUrl);
+  } catch {
+    throw new Error("installed AI result URL is not bound to its attempt");
+  }
+  if (
+    resultUrl.protocol !== "http:" ||
+    !["127.0.0.1", "localhost", "[::1]"].includes(resultUrl.hostname) ||
+    resultUrl.pathname !== expectedResultPath ||
+    resultUrl.search !== "" ||
+    resultUrl.hash !== ""
+  )
+    throw new Error("installed AI result URL is not bound to its attempt");
+  const resultEvidence = await readResultImageEvidence(
+    client,
+    surface.resultUrl,
+    remaining(),
+    pollMs,
+  );
+  let finalResultUrl;
+  try {
+    finalResultUrl = new URL(resultEvidence.finalUrl);
+  } catch {
+    throw new Error("installed AI result image evidence is invalid");
+  }
+  if (
+    resultEvidence.ok !== true ||
+    resultEvidence.httpStatus !== 200 ||
+    resultEvidence.contentType !== "image/png" ||
+    resultEvidence.byteLength < 64 ||
+    resultEvidence.width <= 0 ||
+    resultEvidence.height <= 0 ||
+    finalResultUrl.protocol !== "http:" ||
+    !["127.0.0.1", "localhost", "[::1]"].includes(finalResultUrl.hostname) ||
+    finalResultUrl.pathname !== expectedResultPath ||
+    finalResultUrl.search !== "" ||
+    finalResultUrl.hash !== ""
+  )
+    throw new Error("installed AI result image evidence is invalid");
+  const regionalEvidence = await waitForCondition(
+    "matching AI regional evidence sidecar",
+    async () => {
+      const value = readRegionalEvidenceMember(
+        regionalEvidenceRoot,
+        surface.attemptId,
+      );
+      return { ok: value !== null, value };
+    },
+    remaining(),
+    pollMs,
+  );
+  return {
+    attemptId: surface.attemptId,
+    activation,
+    lifecycle: surface.lifecycle,
+    resultEvidence,
+    regionalEvidence,
+    surface,
+  };
 }
 
 async function runVisionTryOnAcceptance(options) {
