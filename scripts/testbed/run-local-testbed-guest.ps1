@@ -251,15 +251,12 @@ function New-MeasurementEvidenceBundle([string]$BundleRoot) {
   Require-Path $measurement
   Require-Path $source
   Require-Path $report
-  $value = Get-Content -Raw -LiteralPath $measurement -Encoding utf8 | ConvertFrom-Json
-  if ($value.schemaVersion -ne "vem-ai-regional-measurement/v1" -or $value.status -ne "measured_not_accepted" -or [bool]$value.acceptancePassed -or -not [bool]$value.calibrationRequired) {
-    throw "measurement evidence is not canonical pending output"
-  }
-  Remove-Item -LiteralPath $BundleRoot -Recurse -Force -ErrorAction SilentlyContinue
-  New-Item -ItemType Directory -Force -Path $BundleRoot | Out-Null
-  Copy-Item -LiteralPath $measurement -Destination (Join-Path $BundleRoot "ai-regional-measurement.json") -Force
-  Copy-Item -LiteralPath $report -Destination (Join-Path $BundleRoot "ai-virtual-try-on.json") -Force
-  Copy-Item -LiteralPath $source -Destination (Join-Path $BundleRoot "calibration-source") -Recurse -Force
+  $aggregate = Join-Path $handoffRoot "full-workflow-tracks.json"
+  $manifest = Join-Path $handoffRoot "full-workflow-evidence-manifest.json"
+  Require-Path $aggregate
+  Require-Path $manifest
+  node scripts/testbed/measurement-evidence-bundle.mjs --measurement $measurement --report $report --aggregate $aggregate --manifest $manifest --source $source --out $BundleRoot
+  if ($LASTEXITCODE -ne 0) { throw "measurement evidence is not transportable" }
 }
 
 function Clear-TestbedRunReports {
