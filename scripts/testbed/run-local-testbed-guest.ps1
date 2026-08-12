@@ -253,15 +253,8 @@ function Clear-TestbedRunReports {
     Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
   }
   $aiArtifactRoot = Join-Path $handoffRoot "ai-virtual-try-on-artifacts"
-  if (Test-Path -LiteralPath $aiArtifactRoot) {
-    $item = Get-Item -LiteralPath $aiArtifactRoot -Force
-    $expected = [IO.Path]::GetFullPath($aiArtifactRoot)
-    if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
-        [IO.Path]::GetFullPath($item.FullName) -cne $expected) {
-      throw "AI acceptance artifact root is not the exact owned regular directory"
-    }
-    Remove-Item -LiteralPath $expected -Recurse -Force -ErrorAction Stop
-  }
+  $artifactModule = Import-Module (Join-Path $PSScriptRoot "ai-acceptance-artifacts.psm1") -Force -PassThru
+  & $artifactModule { param($Root, $RunId) Remove-TestbedAiAcceptanceArtifactRoot -Root $Root -RunId $RunId -FixtureKey "aiVirtualTryOn" } $aiArtifactRoot ([string]$guestInput.runId)
 }
 
 function Assert-DeclaredCachePath([string]$Path, [string]$Name) {
@@ -1221,6 +1214,7 @@ foreach ($artifactName in @("daemon", "machine", "webViewLoader")) {
   $runtimeArtifactEvidence.artifacts[$artifactName] = [ordered]@{ sha256 = [string]$artifact.sha256 }
 }
 $guestInput.workflowIdentity | Add-Member -NotePropertyName runtimeArtifacts -NotePropertyValue $runtimeArtifactEvidence -Force
+$guestInput.workflowIdentity | Add-Member -NotePropertyName pass -NotePropertyValue $Pass -Force
 $guestInput | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $GuestInputPath -Encoding utf8
 Write-TestbedPhase "deploy-runtime"
 $daemonPath = Join-Path $deploymentRoot "vending-daemon.exe"

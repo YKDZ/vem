@@ -15,6 +15,7 @@ import { test } from "node:test";
 import {
   assembleInstalledAiTryOnAcceptanceForTest,
   sampleInstalledVisionPeakRssForTest,
+  validateInstalledAiAttemptSupportForTest,
 } from "./ai-virtual-try-on-installed-entry.mjs";
 
 const repoRoot = new URL("../..", import.meta.url).pathname.replace(/\/$/, "");
@@ -41,11 +42,19 @@ test("repeat runs clear only the exact owned AI artifact root before admission",
     "utf8",
   );
   assert.match(guest, /Join-Path \$handoffRoot "ai-virtual-try-on-artifacts"/);
-  assert.match(
-    guest,
-    /AI acceptance artifact root is not the exact owned regular directory/,
+  assert.match(guest, /Remove-TestbedAiAcceptanceArtifactRoot/);
+  const result = spawnSync(
+    "pwsh",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-File",
+      join(repoRoot, "scripts/testbed/ai-acceptance-artifacts.harness.ps1"),
+    ],
+    { cwd: repoRoot, encoding: "utf8", timeout: 10_000 },
   );
-  assert.match(guest, /FileAttributes\]::ReparsePoint/);
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.equal(JSON.parse(result.stdout.trim()).ok, true);
 });
 
 test("AI virtual try-on runner fails closed without emitting acceptance evidence", () => {
@@ -239,4 +248,62 @@ test("binds installed garment and RSS facts without inventing a UI garment ident
     /D:\\\\runtime-cache\\\\v1\\\\powershell\\\\7\.4\.6\\\\pwsh\.exe/,
   );
   assert.doesNotMatch(source, /execFileAsync\(\s*["']pwsh["']/);
+});
+
+test("rejects unsafe or cross-attempt installed RSS support facts", () => {
+  process.env.NODE_ENV = "test";
+  const value = {
+    facts: {
+      attempt: {
+        attemptId: "0198f44e-21bd-7c62-8f52-b7c86cc2c001",
+        caseKey: "short",
+        garment: {
+          garmentId: "0198f44e-21bd-7c62-8f52-b7c86cc2d001",
+          sha256: "a".repeat(64),
+        },
+        result: { peakRssBytes: 4096 },
+      },
+      observation: {
+        attemptId: "0198f44e-21bd-7c62-8f52-b7c86cc2c001",
+        caseKey: "short",
+        garmentAssociation: {
+          garmentId: "0198f44e-21bd-7c62-8f52-b7c86cc2d001",
+          garmentSha256: "a".repeat(64),
+          selectedVariantId: "variant-1",
+        },
+        resource: {
+          ownerExecutablePath: "C:\\VEM\\vision\\app\\vending-vision.exe",
+          ownerProcessId: 10,
+          ownerStartTimeTicks: "638900000000000001",
+          peakRssBytes: 4096,
+          sampleCount: 2,
+          workerExecutablePath:
+            "C:\\VEM\\vision\\app\\vending-vision-ai-worker\\vending-vision-ai-worker.exe",
+          workerParentProcessId: 10,
+          workerProcessId: 11,
+          workerStartTimeTicks: "638900000000000002",
+        },
+      },
+    },
+    kind: "installed-runtime",
+    schemaVersion: "vem.testbed.ai-virtual-try-on-support.v1",
+  };
+  assert.equal(validateInstalledAiAttemptSupportForTest(value, "short"), true);
+  for (const mutate of [
+    (copy) => (copy.facts.observation.resource.workerProcessId = 2 ** 54),
+    (copy) =>
+      (copy.facts.observation.resource.workerStartTimeTicks =
+        "9007199254740993.0"),
+    (copy) => (copy.facts.observation.resource.peakRssBytes = 8192),
+    (copy) =>
+      (copy.facts.observation.attemptId =
+        "0198f44e-21bd-7c62-8f52-b7c86cc2c009"),
+  ]) {
+    const copy = structuredClone(value);
+    mutate(copy);
+    assert.throws(
+      () => validateInstalledAiAttemptSupportForTest(copy, "short"),
+      /support evidence is invalid/,
+    );
+  }
 });

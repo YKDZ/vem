@@ -10,6 +10,7 @@ Set-StrictMode -Version Latest
 
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 Import-Module (Join-Path $PSScriptRoot "ai-vision-owner.psm1") -Force
+Import-Module (Join-Path $PSScriptRoot "ai-acceptance-artifacts.psm1") -Force
 
 function Require-AbsoluteLeaf([string]$Path, [string]$Label) {
   if ([string]::IsNullOrWhiteSpace($Path) -or -not [IO.Path]::IsPathFullyQualified($Path)) {
@@ -87,8 +88,8 @@ Initialize-TestbedAiVisionOwnerContext `
 $modelPackRoot = [string]$inputs.materializedModelPackRoot
 Require-AbsoluteDirectory $modelPackRoot "materialized official model pack"
 $artifactRoot = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetDirectoryName($OutPath)) "ai-virtual-try-on-artifacts"))
-if (Test-Path -LiteralPath $artifactRoot) { throw "AI acceptance artifact root must be fresh" }
-New-Item -ItemType Directory -Path $artifactRoot | Out-Null
+$pass = if ($guestInput.workflowIdentity.pass) { [int]$guestInput.workflowIdentity.pass } else { 1 }
+New-TestbedAiAcceptanceArtifactRoot -Root $artifactRoot -RunId ([string]$guestInput.runId) -Pass $pass -FixtureKey $FixtureKey | Out-Null
 $shortFacts = Join-Path $artifactRoot "short-attempt.json"
 $longFacts = Join-Path $artifactRoot "long-attempt.json"
 $saleFacts = Join-Path $artifactRoot "ordinary-sale.json"
@@ -125,13 +126,13 @@ try {
     }
   } catch {
     Remove-Item -LiteralPath $OutPath -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $artifactRoot -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-TestbedAiAcceptanceArtifactRoot -Root $artifactRoot -RunId ([string]$guestInput.runId) -FixtureKey $FixtureKey
     throw
   }
   if (-not $trackSucceeded) {
     Remove-Item -LiteralPath $OutPath -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $artifactRoot -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-TestbedAiAcceptanceArtifactRoot -Root $artifactRoot -RunId ([string]$guestInput.runId) -FixtureKey $FixtureKey
   }
 }
-Write-Error "AI regional evidence policy awaits Issue10 two-garment calibration" -ErrorAction Continue
+Write-Error "installed degradation probes not executed; AI regional evidence policy awaits Issue10 two-garment calibration" -ErrorAction Continue
 exit 1

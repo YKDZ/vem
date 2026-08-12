@@ -62,9 +62,9 @@ async function readInstalledVisionWorkerSample() {
     "$owned=[Collections.Generic.HashSet[int]]::new();[void]$owned.Add([int]$main[0].ProcessId)",
     "do{$changed=$false;foreach($p in $all){if($owned.Contains([int]$p.ParentProcessId)-and $owned.Add([int]$p.ProcessId)){$changed=$true}}}while($changed)",
     "$workers=@($all|Where-Object{$owned.Contains([int]$_.ProcessId)-and $_.ExecutablePath -and [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $workerPath})",
-    "$workerFacts=@($workers|ForEach-Object{$p=Get-Process -Id ([int]$_.ProcessId) -ErrorAction Stop;$c=[VemMemory+PMC]::new();$c.cb=[Runtime.InteropServices.Marshal]::SizeOf($c);if(-not [VemMemory]::GetProcessMemoryInfo($p.Handle,[ref]$c,$c.cb)){throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error())};[ordered]@{processId=[int]$p.Id;startTime=$p.StartTime.ToUniversalTime().Ticks;peakWorkingSetBytes=[uint64]$c.PeakWorkingSetSize}})",
+    "$workerFacts=@($workers|ForEach-Object{$cim=$_;$p=Get-Process -Id ([int]$cim.ProcessId) -ErrorAction Stop;$handle=$p.Handle;$start=[string]$p.StartTime.ToUniversalTime().Ticks;$exe=[IO.Path]::GetFullPath($p.Path);if($exe -ine $workerPath -or [int]$cim.ParentProcessId -notin $owned){throw 'worker process handle identity mismatched'};$c=[VemMemory+PMC]::new();$c.cb=[Runtime.InteropServices.Marshal]::SizeOf($c);if(-not [VemMemory]::GetProcessMemoryInfo($handle,[ref]$c,$c.cb)){throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error())};if([string](Get-Process -Id ([int]$cim.ProcessId) -ErrorAction Stop).StartTime.ToUniversalTime().Ticks -cne $start){throw 'worker PID was reused'};[ordered]@{executablePath=$exe;parentProcessId=[int]$cim.ParentProcessId;peakWorkingSetBytes=[string][uint64]$c.PeakWorkingSetSize;processId=[int]$p.Id;startTimeTicks=$start}})",
     "$owner=Get-Process -Id ([int]$main[0].ProcessId) -ErrorAction Stop",
-    "[Console]::Out.Write((@{owner=@{processId=[int]$owner.Id;startTime=$owner.StartTime.ToUniversalTime().Ticks};workers=$workerFacts}|ConvertTo-Json -Compress -Depth 4))",
+    "[Console]::Out.Write((@{owner=@{executablePath=[IO.Path]::GetFullPath($owner.Path);processId=[int]$owner.Id;startTimeTicks=[string]$owner.StartTime.ToUniversalTime().Ticks};workers=$workerFacts}|ConvertTo-Json -Compress -Depth 4))",
   ].join(";");
   const { stdout } = await execFileAsync(
     TRUSTED_POWERSHELL,
@@ -89,7 +89,7 @@ async function sampleInstalledAiWorkerPeakRss(completed) {
     ownerIdentity ??= sample.owner;
     if (
       sample.owner?.processId !== ownerIdentity.processId ||
-      sample.owner?.startTime !== ownerIdentity.startTime
+      sample.owner?.startTimeTicks !== ownerIdentity.startTimeTicks
     )
       throw new Error(
         "installed Vision owner identity changed during AI attempt",
@@ -100,14 +100,23 @@ async function sampleInstalledAiWorkerPeakRss(completed) {
       const worker = sample.workers[0];
       workerIdentity ??= {
         processId: worker.processId,
-        startTime: worker.startTime,
+        startTimeTicks: worker.startTimeTicks,
+        executablePath: worker.executablePath,
+        parentProcessId: worker.parentProcessId,
       };
       if (
         worker.processId !== workerIdentity.processId ||
-        worker.startTime !== workerIdentity.startTime
+        worker.startTimeTicks !== workerIdentity.startTimeTicks ||
+        worker.executablePath !== workerIdentity.executablePath ||
+        worker.parentProcessId !== workerIdentity.parentProcessId
       )
         throw new Error("installed AI worker identity changed during attempt");
-      peakRssBytes = Math.max(peakRssBytes, worker.peakWorkingSetBytes);
+      if (!/^[1-9][0-9]*$/.test(worker.peakWorkingSetBytes))
+        throw new Error("installed AI worker peak RSS is invalid");
+      const observedPeak = Number(worker.peakWorkingSetBytes);
+      if (!Number.isSafeInteger(observedPeak))
+        throw new Error("installed AI worker peak RSS exceeds safe JSON range");
+      peakRssBytes = Math.max(peakRssBytes, observedPeak);
       sampleCount += 1;
     }
     if (completed()) {
@@ -339,12 +348,15 @@ function attemptSupportRecord(collected, caseKey, report, resource) {
       selectedVariantId: collected.surface.variantId,
     },
     resource: {
+      ownerExecutablePath: resource.ownerIdentity.executablePath,
       ownerProcessId: resource.ownerIdentity.processId,
-      ownerStartTime: resource.ownerIdentity.startTime,
+      ownerStartTimeTicks: resource.ownerIdentity.startTimeTicks,
       peakRssBytes: resource.peakRssBytes,
       sampleCount: resource.sampleCount,
+      workerExecutablePath: resource.workerIdentity.executablePath,
+      workerParentProcessId: resource.workerIdentity.parentProcessId,
       workerProcessId: resource.workerIdentity.processId,
-      workerStartTime: resource.workerIdentity.startTime,
+      workerStartTimeTicks: resource.workerIdentity.startTimeTicks,
     },
   });
 }
@@ -641,13 +653,54 @@ export async function assembleInstalledAiTryOnAcceptanceFiles(options) {
     readCanonicalJson(options.longAttemptPath, "long attempt facts"),
   ];
   const attempts = supportRecords.map((value, index) => {
+    const expectedCase = index === 0 ? "short" : "long";
+    const resource = value.facts?.observation?.resource;
+    const association = value.facts?.observation?.garmentAssociation;
+    const attempt = value.facts?.attempt;
     if (
+      JSON.stringify(Object.keys(value).sort()) !==
+        JSON.stringify(["facts", "kind", "schemaVersion"]) ||
       value.schemaVersion !== AI_SUPPORT_EVIDENCE_SCHEMA ||
       value.kind !== "installed-runtime" ||
-      value.facts?.attempt?.caseKey !== (index === 0 ? "short" : "long")
+      JSON.stringify(Object.keys(value.facts ?? {}).sort()) !==
+        JSON.stringify(["attempt", "observation"]) ||
+      JSON.stringify(Object.keys(value.facts.observation ?? {}).sort()) !==
+        JSON.stringify([
+          "attemptId",
+          "caseKey",
+          "garmentAssociation",
+          "resource",
+        ]) ||
+      JSON.stringify(Object.keys(association ?? {}).sort()) !==
+        JSON.stringify(["garmentId", "garmentSha256", "selectedVariantId"]) ||
+      JSON.stringify(Object.keys(resource ?? {}).sort()) !==
+        JSON.stringify([
+          "ownerExecutablePath",
+          "ownerProcessId",
+          "ownerStartTimeTicks",
+          "peakRssBytes",
+          "sampleCount",
+          "workerExecutablePath",
+          "workerParentProcessId",
+          "workerProcessId",
+          "workerStartTimeTicks",
+        ]) ||
+      attempt?.caseKey !== expectedCase ||
+      value.facts.observation.attemptId !== attempt.attemptId ||
+      value.facts.observation.caseKey !== expectedCase ||
+      association.garmentId !== attempt.garment.garmentId ||
+      association.garmentSha256 !== attempt.garment.sha256 ||
+      resource.peakRssBytes !== attempt.result.peakRssBytes ||
+      !Number.isSafeInteger(resource.sampleCount) ||
+      resource.sampleCount <= 0 ||
+      !Number.isSafeInteger(resource.ownerProcessId) ||
+      !Number.isSafeInteger(resource.workerProcessId) ||
+      !Number.isSafeInteger(resource.workerParentProcessId) ||
+      !/^[1-9][0-9]*$/.test(resource.ownerStartTimeTicks ?? "") ||
+      !/^[1-9][0-9]*$/.test(resource.workerStartTimeTicks ?? "")
     )
       throw new Error("installed AI attempt support evidence is invalid");
-    return value.facts.attempt;
+    return attempt;
   });
   const saleSupport = readCanonicalJson(
     options.salePath,
@@ -701,6 +754,32 @@ export async function assembleInstalledAiTryOnAcceptanceFiles(options) {
     throw new Error("installed AI assembly input identity mismatched");
   writeExclusiveCanonical(options.outPath, result.report);
   return result;
+}
+
+export function validateInstalledAiAttemptSupportForTest(value, caseKey) {
+  if (process.env.NODE_ENV !== "test")
+    throw new Error(
+      "installed AI support validator test boundary requires NODE_ENV=test",
+    );
+  const attempt = value?.facts?.attempt;
+  const resource = value?.facts?.observation?.resource;
+  const association = value?.facts?.observation?.garmentAssociation;
+  if (
+    value?.schemaVersion !== AI_SUPPORT_EVIDENCE_SCHEMA ||
+    value?.kind !== "installed-runtime" ||
+    attempt?.caseKey !== caseKey ||
+    value.facts.observation.attemptId !== attempt.attemptId ||
+    value.facts.observation.caseKey !== caseKey ||
+    association?.garmentId !== attempt.garment?.garmentId ||
+    association?.garmentSha256 !== attempt.garment?.sha256 ||
+    resource?.peakRssBytes !== attempt.result?.peakRssBytes ||
+    !Number.isSafeInteger(resource?.sampleCount) ||
+    resource.sampleCount <= 0 ||
+    !Number.isSafeInteger(resource?.workerProcessId) ||
+    !/^[1-9][0-9]*$/.test(resource?.workerStartTimeTicks ?? "")
+  )
+    throw new Error("installed AI attempt support evidence is invalid");
+  return true;
 }
 
 export async function assembleInstalledAiTryOnAcceptanceForTest(
