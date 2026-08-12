@@ -2504,6 +2504,409 @@ async function completeMockPayment(guestInput, paymentNo) {
   );
 }
 
+const installedOwnerOrdinarySaleDependencies = Object.freeze({
+  waitForRoute,
+  waitForSaleStartReady,
+  readInstalledUiViewport,
+  readDaemonSaleView: (handoff) => daemonGet(handoff, "/v1/sale-view"),
+  readCurrentTransaction: (handoff, options) =>
+    daemonGet(handoff, "/v1/transactions/current", options),
+  readPlatform: async (guestInput, body) =>
+    (await controlPlaneRequest(guestInput, "/v1/platform/query", body)).report,
+  activateVisibleSelector,
+  armCreateOrderGate,
+  waitForCreateOrderGatePending,
+  releaseCreateOrderGate,
+  readRenderedPaymentSurface,
+  completeMockPayment,
+  waitForCommand,
+  waitForBeforeF0Boundary,
+  readUiBoundary,
+  waitForSuccessfulResultSurface,
+  waitForPlatformMovement,
+  waitForDaemonSaleViewAfterF2,
+  readRuntimeTraceSnapshot,
+  captureRuntimeTraceBoundary,
+  startContinuousCdpLocationHashObservation,
+  serialRequest: (guestInput, sessionId, operation, body = {}) =>
+    controlPlaneRequest(
+      guestInput,
+      `/v1/serial-sessions/${sessionId}/${operation}`,
+      body,
+    ),
+  cancelTransaction: (handoff, transaction) =>
+    daemonPost(
+      handoff,
+      "/v1/intents/cancel-order",
+      { orderNo: required(transaction?.orderNo, "active orderNo") },
+      { timeoutMs: CLEANUP_REQUEST_TIMEOUT_MS },
+    ),
+  openCreateOrderGate: (guestInput) =>
+    controlPlaneRequest(
+      guestInput,
+      "/v1/mock-payment-create-gate/open",
+      {},
+      { timeoutMs: CLEANUP_REQUEST_TIMEOUT_MS },
+    ),
+  readCreateOrderGate: (guestInput) =>
+    controlPlaneRequest(
+      guestInput,
+      "/v1/mock-payment-create-gate/status",
+      {},
+      { timeoutMs: CLEANUP_REQUEST_TIMEOUT_MS },
+    ),
+});
+
+/**
+ * Completes one ordinary installed-owner sale without taking ownership of the
+ * connected CDP client, the existing Vision owner, or the active serial
+ * session. The optional dependency override is a test-owned boundary only.
+ */
+export async function runInstalledOwnerOrdinarySaleCompletion(input) {
+  const client = input?.client;
+  const guestInput = input?.guestInput;
+  const handoff = input?.handoff;
+  const serialSession = input?.serialSession;
+  if (!client || !guestInput || !handoff || !serialSession?.sessionId)
+    throw new Error(
+      "ordinary installed-owner sale requires connected client, guest input, handoff, and active serial session",
+    );
+  if (input.testDependencies && process.env.NODE_ENV !== "test")
+    throw new Error(
+      "ordinary installed-owner sale test dependencies require NODE_ENV=test",
+    );
+  const dependencies = {
+    ...installedOwnerOrdinarySaleDependencies,
+    ...(input.testDependencies ?? {}),
+  };
+  const runId = required(guestInput.runId, "runId");
+  const machineCode = required(guestInput.machineCode, "machineCode");
+  const steps = buildFastRouteStressScenarioSteps(input.productSelector);
+  let gateOpened = false;
+  let pendingCreate = null;
+  let observer = null;
+  let primaryError = null;
+  try {
+    await dependencies.waitForRoute(client, "#/catalog", {
+      timeoutMs: 30_000,
+      pollMs: 250,
+    });
+    const saleStartCapability = await dependencies.waitForSaleStartReady(
+      handoff,
+      client,
+    );
+    const uiViewport = await dependencies.readInstalledUiViewport(client);
+    const baselineSaleView = await dependencies.readDaemonSaleView(handoff);
+    const baselinePlatform = await dependencies.readPlatform(guestInput, {
+      runId,
+      machineCode,
+      sessionId: serialSession.sessionId,
+    });
+    const createOrderGate = await dependencies.armCreateOrderGate(guestInput);
+    gateOpened = true;
+    observer =
+      await dependencies.startContinuousCdpLocationHashObservation(client);
+    const noCatalogTraceBoundary =
+      await dependencies.captureRuntimeTraceBoundary(
+        client,
+        "ordinary sale Catalog trace boundary",
+      );
+    for (const step of steps.slice(0, 4)) {
+      await dependencies.waitForRoute(client, step.routeBefore, {
+        timeoutMs: 30_000,
+        pollMs: 250,
+      });
+      const activation = await dependencies.activateVisibleSelector(
+        client,
+        step.selector,
+        { kind: "touch", timeoutMs: 30_000 },
+      );
+      assert.match(activation.input.method, /Input\.dispatchTouchEvent/);
+      await dependencies.waitForRoute(client, step.routeAfter, {
+        timeoutMs: 30_000,
+        pollMs: 250,
+      });
+    }
+    observer.assertArmed();
+    const submit = await dependencies.activateVisibleSelector(
+      client,
+      steps[4].selector,
+      { kind: "touch", timeoutMs: 30_000 },
+    );
+    assert.match(submit.input.method, /Input\.dispatchTouchEvent/);
+    pendingCreate = await dependencies.waitForCreateOrderGatePending(
+      guestInput,
+      30_000,
+    );
+    const pendingConfirmedAt =
+      pendingCreate.observedAt ?? new Date().toISOString();
+    const releasedCreateOrderGate = await dependencies.releaseCreateOrderGate(
+      guestInput,
+      pendingCreate.paymentNo,
+    );
+    await dependencies.waitForRoute(client, /^#\/payment/, {
+      timeoutMs: 30_000,
+      pollMs: 250,
+    });
+    const renderedSale = await dependencies.readRenderedPaymentSurface(client);
+    const pendingTransaction =
+      await dependencies.readCurrentTransaction(handoff);
+    if (pendingTransaction?.paymentNo !== pendingCreate.paymentNo)
+      throw new Error(
+        "released create-order gate paymentNo must match the current transaction",
+      );
+    await dependencies.completeMockPayment(guestInput, pendingCreate.paymentNo);
+    const liveSale = await dependencies.waitForCommand(handoff, renderedSale);
+    const vendBoundary = await dependencies.serialRequest(
+      guestInput,
+      serialSession.sessionId,
+      "wait-frame",
+      { parsedOpcode: "VEND", timeoutMs: 30_000 },
+    );
+    const beforeF0Platform = await dependencies.waitForBeforeF0Boundary(
+      guestInput,
+      { runId, machineCode, sessionId: serialSession.sessionId },
+      baselinePlatform.raw,
+      renderedSale,
+      liveSale,
+      pendingCreate.paymentNo,
+    );
+    const beforeF0SaleView = await dependencies.readDaemonSaleView(handoff);
+    const beforeF0Ui = await dependencies.readUiBoundary(client);
+    const releaseF0 = await dependencies.serialRequest(
+      guestInput,
+      serialSession.sessionId,
+      "release-f0",
+    );
+    const f0Boundary = await dependencies.serialRequest(
+      guestInput,
+      serialSession.sessionId,
+      "wait-frame",
+      { parsedOpcode: "F0", timeoutMs: 30_000 },
+    );
+    const f1Boundary = await dependencies.serialRequest(
+      guestInput,
+      serialSession.sessionId,
+      "wait-frame",
+      { parsedOpcode: "F1", timeoutMs: 30_000 },
+    );
+    const afterF1SaleView = await dependencies.readDaemonSaleView(handoff);
+    const afterF1Platform = await dependencies.readPlatform(guestInput, {
+      runId,
+      machineCode,
+      sessionId: serialSession.sessionId,
+    });
+    const afterF1Ui = await dependencies.readUiBoundary(client);
+    if (afterF1Ui.result?.kind === "success")
+      throw new Error("UI must not show success before inbound F2");
+    const releaseF2 = await dependencies.serialRequest(
+      guestInput,
+      serialSession.sessionId,
+      "release-f2",
+    );
+    const f2Boundary = await dependencies.serialRequest(
+      guestInput,
+      serialSession.sessionId,
+      "wait-frame",
+      { parsedOpcode: "F2", timeoutMs: 30_000 },
+    );
+    const resultSurface = await dependencies.waitForSuccessfulResultSurface(
+      client,
+      {
+        orderId: renderedSale.orderId,
+        paymentId: renderedSale.paymentId,
+        orderNo: renderedSale.orderNo,
+        commandId: liveSale.vendingCommandId,
+      },
+      60_000,
+    );
+    const continuousCdpLocationHash = await observer.finish(
+      resultSurface.route,
+    );
+    observer = null;
+    const collect = await dependencies.serialRequest(
+      guestInput,
+      serialSession.sessionId,
+      "evidence",
+    );
+    const afterF2Platform = await dependencies.waitForPlatformMovement(
+      guestInput,
+      { runId, machineCode, sessionId: serialSession.sessionId },
+      rows(afterF1Platform.raw, "movements").length,
+      {
+        orderId: renderedSale.orderId,
+        paymentId: renderedSale.paymentId,
+        paymentNo: pendingCreate.paymentNo,
+        commandId: liveSale.vendingCommandId,
+      },
+    );
+    const orderItem = rows(afterF2Platform.raw, "orderItems").find(
+      (row) => row.orderId === renderedSale.orderId,
+    );
+    const identity = {
+      inventoryId: required(orderItem?.inventoryId, "order item inventoryId"),
+      slotId: required(orderItem?.slotId, "order item slotId"),
+    };
+    const middleItem = matchingItem(afterF1SaleView, identity);
+    const afterF2SaleView = await dependencies.waitForDaemonSaleViewAfterF2(
+      handoff,
+      identity,
+      middleItem,
+      Number(orderItem.quantity),
+    );
+    const runtimeTrace = await dependencies.readRuntimeTraceSnapshot(client);
+    const evidence = {
+      scenario: "sale-only",
+      saleCorrelationId:
+        serialSession.saleCorrelationId ?? `installed-owner:${runId}`,
+      controlPlaneSessionId: serialSession.sessionId,
+      machineCode,
+      renderedSale,
+      liveSale,
+      createOrderGate: {
+        controlPlane: createOrderGate.controlPlane,
+        armedAt: createOrderGate.armedAt,
+        paymentNo: pendingCreate.paymentNo,
+        pendingObservedAt: pendingConfirmedAt,
+        releasedAt: releasedCreateOrderGate.releasedAt,
+      },
+      saleStartCapability,
+      uiViewport,
+      platform: {
+        baseline: baselinePlatform,
+        beforeF0: beforeF0Platform,
+        afterF1BeforeF2: afterF1Platform,
+        afterF2: afterF2Platform,
+      },
+      daemon: {
+        baseline: baselineSaleView,
+        beforeF0: beforeF0SaleView,
+        afterF1BeforeF2: afterF1SaleView,
+        afterF2: afterF2SaleView,
+      },
+      ui: {
+        beforeF0: beforeF0Ui,
+        afterF1BeforeF2: afterF1Ui,
+        afterF2: resultSurface,
+      },
+      visionDelivery: {
+        scenario: "sale-only",
+        skippedReason: "installed_vision_owner_retained",
+        arrival: null,
+        traceBoundary: null,
+        requestedAt: null,
+        completedAt: null,
+      },
+      repeatedPaymentTouch: {
+        scenario: "sale-only",
+        traceEntryId: null,
+        preDispatchTraceBoundary: null,
+        pendingConfirmedAt,
+        releaseRequestedAt: releasedCreateOrderGate.releasedAt,
+      },
+      noCatalogTraceBoundary,
+      continuousCdpLocationHash,
+      machineRuntimeTrace: {
+        source: "installed_machine_runtime_trace_cdp",
+        capturedAt: new Date().toISOString(),
+        runtimeGenerationId: runtimeTrace.runtimeGenerationId,
+        entries: runtimeTrace.entries,
+      },
+      mqttMessages: collect.mqtt?.messages ?? [],
+      serial: {
+        sessionId:
+          serialSession.binding?.serialSessionId ?? serialSession.sessionId,
+        rawFrames: collect.rawFrames ?? [],
+      },
+    };
+    const summary = validateFastRouteStressSaleEvidence(evidence);
+    const opened = await dependencies.openCreateOrderGate(guestInput);
+    const openStatus = await dependencies.readCreateOrderGate(guestInput);
+    if (
+      opened?.state !== "open" ||
+      openStatus?.state !== "open" ||
+      openStatus?.pending !== null
+    )
+      throw new Error(
+        "payment create gate did not return to open with no pending payment",
+      );
+    gateOpened = false;
+    return {
+      schemaVersion: "vem-installed-owner-ordinary-sale/v1",
+      ok: true,
+      evidence,
+      summary,
+      boundaries: {
+        vend: vendBoundary.frame,
+        releaseF0,
+        f0: f0Boundary.frame,
+        f1: f1Boundary.frame,
+        releaseF2,
+        f2: f2Boundary.frame,
+      },
+    };
+  } catch (error) {
+    primaryError = error instanceof Error ? error : new Error(String(error));
+    const cleanupErrors = [];
+    if (pendingCreate?.paymentNo) {
+      await collectCleanupStep(
+        [],
+        cleanupErrors,
+        "release pending create gate",
+        () =>
+          dependencies.releaseCreateOrderGate(
+            guestInput,
+            pendingCreate.paymentNo,
+          ),
+      );
+      await collectCleanupStep(
+        [],
+        cleanupErrors,
+        "settle pending create transaction",
+        () =>
+          settlePendingCreateOrder({
+            paymentNo: pendingCreate.paymentNo,
+            readTransaction: () =>
+              dependencies.readCurrentTransaction(handoff, {
+                timeoutMs: CLEANUP_REQUEST_TIMEOUT_MS,
+              }),
+            cancelTransaction: (transaction) =>
+              dependencies.cancelTransaction(handoff, transaction),
+          }),
+        PENDING_TRANSACTION_CLEANUP_TIMEOUT_MS + CLEANUP_REQUEST_TIMEOUT_MS,
+      );
+    }
+    if (gateOpened || pendingCreate) {
+      const opened = await collectCleanupStep(
+        [],
+        cleanupErrors,
+        "reopen payment create gate",
+        () => dependencies.openCreateOrderGate(guestInput),
+      );
+      await collectCleanupStep(
+        [],
+        cleanupErrors,
+        "verify payment create gate",
+        async () => {
+          const status = await dependencies.readCreateOrderGate(guestInput);
+          if (
+            opened?.state !== "open" ||
+            status?.state !== "open" ||
+            status?.pending !== null
+          )
+            throw new Error(
+              "payment create gate did not return to open with no pending payment",
+            );
+          return status;
+        },
+      );
+    }
+    throw combineCleanupError(primaryError, cleanupErrors);
+  } finally {
+    observer?.stop();
+  }
+}
+
 async function runFastRouteStressSale(options) {
   const routeStressScenario = options.scenario !== "sale-only";
   let guestInput = null;

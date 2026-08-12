@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { describe, it } from "node:test";
+import ts from "typescript";
 
 import {
   buildFastRouteStressSaleFailureReport,
@@ -11,6 +12,7 @@ import {
   dispatchRepeatedPaymentTouch,
   latestVisionPresence,
   parseFastRouteStressSaleArgs,
+  runInstalledOwnerOrdinarySaleCompletion,
   runCleanupStep,
   settlePendingCreateOrder,
   shutdownControlledVisionMock,
@@ -23,6 +25,166 @@ import {
   waitForVisionArrivalOrTouchSession,
   validateFastRouteStressSaleEvidence,
 } from "./fast-route-stress-sale.mjs";
+import { CdpClient } from "./machine-ui-cdp-driver.mjs";
+
+class InstalledOwnerFakeWebSocket {
+  constructor() {
+    this.readyState = 1;
+    this.closeCalls = 0;
+    this.listeners = new Map();
+  }
+
+  addEventListener(type, handler, options = {}) {
+    if (!this.listeners.has(type)) this.listeners.set(type, []);
+    this.listeners.get(type).push({ handler, once: options.once === true });
+  }
+
+  removeEventListener(type, handler) {
+    this.listeners.set(
+      type,
+      (this.listeners.get(type) ?? []).filter(
+        (entry) => entry.handler !== handler,
+      ),
+    );
+  }
+
+  send() {}
+
+  close() {
+    this.closeCalls += 1;
+    this.readyState = 3;
+    for (const entry of this.listeners.get("close") ?? []) entry.handler({});
+  }
+}
+
+async function connectedInstalledOwnerClient() {
+  const socket = new InstalledOwnerFakeWebSocket();
+  const client = new CdpClient("ws://127.0.0.1/devtools/page/ordinary-sale", {
+    webSocketFactory: () => socket,
+    defaultTimeoutMs: 100,
+  });
+  await client.connect();
+  return { client, socket };
+}
+
+function ordinarySaleDependencies(evidence, events, options = {}) {
+  let gateState = "open";
+  const activateVisibleSelector = async (_client, selector) => {
+    events.push(`touch:${selector}`);
+    if (selector === '[data-test="checkout-submit"]') gateState = "pending";
+    return { input: { method: "Input.dispatchTouchEvent" } };
+  };
+  return {
+    waitForRoute: async (_client, route) => events.push(`route:${route}`),
+    waitForSaleStartReady: async () => evidence.saleStartCapability,
+    readInstalledUiViewport: async () => evidence.uiViewport,
+    readDaemonSaleView: async () => {
+      const phase = events.includes("serial:evidence")
+        ? "afterF2"
+        : events.includes("serial:release-f0")
+          ? "afterF1BeforeF2"
+          : events.includes("payment:complete")
+            ? "beforeF0"
+            : "baseline";
+      return evidence.daemon[phase];
+    },
+    readCurrentTransaction: async () => {
+      events.push("transaction:read");
+      return {
+        paymentNo: "PAY-1",
+        orderNo: "ORD-1",
+        nextAction:
+          (options.failed && !options.settled) || gateState === "pending"
+            ? "wait_payment"
+            : "completed",
+      };
+    },
+    readPlatform: async () =>
+      events.includes("serial:release-f0")
+        ? evidence.platform.afterF1BeforeF2
+        : evidence.platform.baseline,
+    activateVisibleSelector,
+    armCreateOrderGate: async () => {
+      events.push("gate:arm");
+      gateState = "armed";
+      return {
+        controlPlane: "mock-payment-create-gate",
+        armedAt: evidence.createOrderGate.armedAt,
+      };
+    },
+    waitForCreateOrderGatePending: async () => {
+      events.push("gate:pending");
+      if (options.failPendingOnce && !options.failed) {
+        options.failed = true;
+        throw new Error("injected payment gate failure");
+      }
+      return {
+        paymentNo: "PAY-1",
+        observedAt: evidence.createOrderGate.pendingObservedAt,
+      };
+    },
+    releaseCreateOrderGate: async () => {
+      events.push("gate:release");
+      if (options.failReleaseOnce && !options.failed) {
+        options.failed = true;
+        throw new Error("injected payment gate release failure");
+      }
+      gateState = "released";
+      return { releasedAt: evidence.createOrderGate.releasedAt };
+    },
+    readRenderedPaymentSurface: async () => evidence.renderedSale,
+    completeMockPayment: async () => events.push("payment:complete"),
+    waitForCommand: async () => evidence.liveSale,
+    waitForBeforeF0Boundary: async () => evidence.platform.beforeF0,
+    readUiBoundary: async () =>
+      events.includes("serial:release-f0")
+        ? evidence.ui.afterF1BeforeF2
+        : evidence.ui.beforeF0,
+    waitForSuccessfulResultSurface: async () => evidence.ui.afterF2,
+    waitForPlatformMovement: async () => evidence.platform.afterF2,
+    waitForDaemonSaleViewAfterF2: async () => evidence.daemon.afterF2,
+    readRuntimeTraceSnapshot: async () => ({
+      runtimeGenerationId: evidence.machineRuntimeTrace.runtimeGenerationId,
+      entries: evidence.machineRuntimeTrace.entries,
+    }),
+    captureRuntimeTraceBoundary: async () => evidence.noCatalogTraceBoundary,
+    startContinuousCdpLocationHashObservation: async () => ({
+      assertArmed() {},
+      async finish() {
+        return evidence.continuousCdpLocationHash;
+      },
+      stop() {},
+    }),
+    serialRequest: async (_guest, _session, operation, body = {}) => {
+      events.push(
+        `serial:${operation}${body.parsedOpcode ? `:${body.parsedOpcode}` : ""}`,
+      );
+      if (operation === "evidence")
+        return {
+          mqtt: { messages: evidence.mqttMessages },
+          rawFrames: evidence.serial.rawFrames,
+        };
+      return {
+        frame: evidence.serial.rawFrames.find((frame) =>
+          operation.includes(frame.parsedOpcode.toLowerCase()),
+        ),
+      };
+    },
+    cancelTransaction: async () => {
+      events.push("transaction:cancel");
+      options.settled = true;
+      gateState = "settled";
+    },
+    openCreateOrderGate: async () => {
+      events.push("gate:open");
+      gateState = "open";
+      return { state: "open" };
+    },
+    readCreateOrderGate: async () => ({
+      ...(events.push("gate:status"), { state: gateState, pending: null }),
+    }),
+  };
+}
 
 async function listenOnAvailablePort() {
   const server = createServer();
@@ -894,6 +1056,200 @@ describe("fast route stress sale tracer", () => {
       );
 
     assert.doesNotThrow(() => validateFastRouteStressSaleEvidence(evidence));
+  });
+
+  it("accepts an ordinary installed-owner sale without controlling Vision while retaining payment daemon and raw serial boundaries", async () => {
+    const evidence = validEvidence();
+    evidence.scenario = "sale-only";
+    evidence.visionDelivery = {
+      scenario: "sale-only",
+      skippedReason: "installed_vision_owner_retained",
+      arrival: null,
+      traceBoundary: null,
+      requestedAt: null,
+      completedAt: null,
+    };
+    evidence.repeatedPaymentTouch = {
+      scenario: "sale-only",
+      traceEntryId: null,
+      preDispatchTraceBoundary: null,
+      pendingConfirmedAt: evidence.createOrderGate.pendingObservedAt,
+      releaseRequestedAt: evidence.createOrderGate.releasedAt,
+    };
+    evidence.machineRuntimeTrace.entries =
+      evidence.machineRuntimeTrace.entries.filter(
+        (entry) =>
+          entry.intentType !== "presence.departed" &&
+          entry.intentType !== "transaction.projection" &&
+          entry.id !== 3,
+      );
+    const events = [];
+    const { client, socket } = await connectedInstalledOwnerClient();
+    const serialSession = {
+      sessionId: "serial-session-1",
+      binding: { serialSessionId: "serial-session-1" },
+      stopCalls: 0,
+      abortCalls: 0,
+    };
+    const oldNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "test";
+    try {
+      const result = await runInstalledOwnerOrdinarySaleCompletion({
+        client,
+        guestInput: {
+          runId: "ordinary-sale-run",
+          machineCode: "VEM-TESTBED-LOCAL",
+        },
+        handoff: {},
+        serialSession,
+        testDependencies: ordinarySaleDependencies(evidence, events),
+      });
+      assert.equal(result.ok, true);
+      assert.deepEqual(result.summary.protocol, ["VEND", "F0", "F1", "F2"]);
+      assert.equal(result.summary.platformStockDeltaAfterF2, -1);
+      assert.equal(result.summary.daemonStockDeltaAfterF2, -1);
+      assert.equal(result.summary.orderId, "order-1");
+      assert.equal(result.summary.paymentId, "payment-1");
+      assert.equal(result.summary.vendingCommandId, "command-1");
+      assert.equal(socket.closeCalls, 0);
+      assert.equal(client.closed, false);
+      assert.equal(serialSession.stopCalls, 0);
+      assert.equal(serialSession.abortCalls, 0);
+      assert.deepEqual(
+        events.filter((event) => event.startsWith("serial:")),
+        [
+          "serial:wait-frame:VEND",
+          "serial:release-f0",
+          "serial:wait-frame:F0",
+          "serial:wait-frame:F1",
+          "serial:release-f2",
+          "serial:wait-frame:F2",
+          "serial:evidence",
+        ],
+      );
+    } finally {
+      if (oldNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = oldNodeEnv;
+      await client.close();
+    }
+  });
+
+  it("restores the payment gate after failure so the retained owners can retry", async () => {
+    const evidence = validEvidence();
+    evidence.scenario = "sale-only";
+    evidence.visionDelivery = {
+      scenario: "sale-only",
+      skippedReason: "installed_vision_owner_retained",
+      arrival: null,
+      traceBoundary: null,
+      requestedAt: null,
+      completedAt: null,
+    };
+    evidence.repeatedPaymentTouch = {
+      scenario: "sale-only",
+      traceEntryId: null,
+      preDispatchTraceBoundary: null,
+      pendingConfirmedAt: evidence.createOrderGate.pendingObservedAt,
+      releaseRequestedAt: evidence.createOrderGate.releasedAt,
+    };
+    evidence.machineRuntimeTrace.entries =
+      evidence.machineRuntimeTrace.entries.filter(
+        (entry) =>
+          entry.intentType !== "presence.departed" &&
+          entry.intentType !== "transaction.projection" &&
+          entry.id !== 3,
+      );
+    const { client, socket } = await connectedInstalledOwnerClient();
+    const serialSession = {
+      sessionId: "serial-session-1",
+      binding: { serialSessionId: "serial-session-1" },
+    };
+    const failureEvents = [];
+    const failureOptions = { failReleaseOnce: true, failed: false };
+    const common = {
+      client,
+      guestInput: {
+        runId: "ordinary-sale-retry",
+        machineCode: "VEM-TESTBED-LOCAL",
+      },
+      handoff: {},
+      serialSession,
+    };
+    const oldNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "test";
+    try {
+      await assert.rejects(
+        runInstalledOwnerOrdinarySaleCompletion({
+          ...common,
+          testDependencies: ordinarySaleDependencies(
+            evidence,
+            failureEvents,
+            failureOptions,
+          ),
+        }),
+        /injected payment gate release failure/,
+      );
+      assert.deepEqual(failureEvents.slice(-6), [
+        "gate:release",
+        "transaction:read",
+        "transaction:cancel",
+        "transaction:read",
+        "gate:open",
+        "gate:status",
+      ]);
+      assert.equal(socket.closeCalls, 0);
+      assert.equal(client.closed, false);
+
+      const retryEvents = [];
+      const retry = await runInstalledOwnerOrdinarySaleCompletion({
+        ...common,
+        testDependencies: ordinarySaleDependencies(evidence, retryEvents),
+      });
+      assert.equal(retry.ok, true);
+    } finally {
+      if (oldNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = oldNodeEnv;
+      await client.close();
+    }
+  });
+
+  it("keeps the ordinary installed-owner helper free of Vision and owner cleanup operations", () => {
+    const source = readFileSync(
+      new URL("./fast-route-stress-sale.mjs", import.meta.url),
+      "utf8",
+    );
+    const tree = ts.createSourceFile(
+      "fast-route-stress-sale.mjs",
+      source,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.JS,
+    );
+    const helper = tree.statements.find(
+      (statement) =>
+        ts.isFunctionDeclaration(statement) &&
+        statement.name?.text === "runInstalledOwnerOrdinarySaleCompletion",
+    );
+    assert.ok(helper?.body);
+    const calls = [];
+    const visit = (node) => {
+      if (ts.isCallExpression(node)) calls.push(node.expression.getText(tree));
+      ts.forEachChild(node, visit);
+    };
+    visit(helper.body);
+    for (const forbidden of [
+      "stopInstalledVisionOwnerForControlledMock",
+      "ensureControlledVisionMock",
+      "waitForControlledVisionRuntimeClient",
+      "shutdownControlledVisionMock",
+      "establishVisionPresenceForSale",
+      "dispatchVisionDeparture",
+      "dispatchRepeatedPaymentTouch",
+      "client.close",
+      "serialSession.stop",
+      "serialSession.abort",
+    ])
+      assert.equal(calls.includes(forbidden), false, forbidden);
   });
 
   it("drives only physical touch navigation and repeats checkout submit during payment creation", () => {
