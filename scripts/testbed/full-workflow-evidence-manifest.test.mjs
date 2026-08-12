@@ -157,6 +157,38 @@ describe("full workflow evidence manifest", () => {
     );
   });
 
+  it("maps AI virtual try-on runtime trace and rejects model or executable artifacts", () => {
+    const temp = root();
+    const artifacts = join(temp, "ai-artifacts");
+    mkdirSync(artifacts);
+    const report = join(temp, "ai-virtual-try-on.json");
+    writeFileSync(report, '{"runtimeTrace":[{"id":"ai-trace"}]}\n');
+    writeFileSync(join(artifacts, "ai.log"), "installed AI track\n");
+    writeFileSync(
+      join(artifacts, "result.png"),
+      Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    );
+    writeFileSync(join(artifacts, "model.bin"), "forbidden");
+    writeFileSync(join(artifacts, "notes.txt"), "not AI evidence\n");
+    const manifest = buildFullWorkflowEvidenceManifest({
+      tracks: [
+        { key: "aiVirtualTryOn", reportPath: report, artifactRoot: artifacts },
+      ],
+    });
+    assert.match(manifest.tracks[0].machineRuntimeTrace, /#runtimeTrace$/);
+    assert.ok(
+      manifest.failures.some((warning) =>
+        warning.includes("forbidden AI evidence artifact for aiVirtualTryOn"),
+      ),
+    );
+    assert.equal(manifest.ok, false);
+    assert.ok(
+      validateFullWorkflowEvidenceManifest(manifest).some((failure) =>
+        failure.includes("forbidden AI evidence artifact"),
+      ),
+    );
+  });
+
   it("records unsupported or missing supporting artifacts as warnings", () => {
     const temp = root();
     const artifacts = join(temp, "artifacts");

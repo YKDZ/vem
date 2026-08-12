@@ -141,6 +141,68 @@ function visionExperienceReport() {
   };
 }
 
+function aiVirtualTryOnReport() {
+  return {
+    schemaVersion: "vem-ai-virtual-try-on-acceptance/v1",
+    ok: true,
+    execution: {
+      source: "installed_machine_ui_cdp",
+      protocol: "vem.vision.v2",
+      noDirectWorker: true,
+      recordedSources: ["front", "top"],
+      identities: {
+        runtime: "sha256:" + "1".repeat(64),
+        contract: "sha256:" + "2".repeat(64),
+        aiRuntime: "sha256:" + "3".repeat(64),
+        modelPack: "sha256:" + "4".repeat(64),
+      },
+    },
+    attempt: {
+      mode: "ai",
+      stateTrace: ["acquiring", "generating", "completed"],
+      input: { contentType: "image/png", sha256: "5".repeat(64) },
+      garment: {
+        contentType: "image/png",
+        garmentId: "garment-1",
+        sha256: "6".repeat(64),
+      },
+      result: {
+        contentType: "image/png",
+        decodedWidth: 768,
+        decodedHeight: 1024,
+        durationMs: 12_000,
+        peakRssBytes: 512 * 1024 * 1024,
+        sha256: "7".repeat(64),
+      },
+    },
+    outputFacts: {
+      decodable: true,
+      differsFromGarment: true,
+      differsFromInput: true,
+      nonPlaceholder: true,
+    },
+    postAi: {
+      browseAvailable: true,
+      saleAvailable: true,
+      ordinarySaleCompleted: true,
+    },
+    degradations: Object.fromEntries(
+      ["missingPack", "corruptPack", "workerFailure"].map((name) => [
+        name,
+        {
+          aiReady: false,
+          fastReady: true,
+          coreReady: true,
+          machineUiAvailable: true,
+          daemonReady: true,
+          saleAvailable: true,
+        },
+      ]),
+    ),
+    runtimeTrace: [{ id: "ai-trace-1", mode: "ai" }],
+  };
+}
+
 function stockMaintenanceReport() {
   return {
     schemaVersion: "vem-stock-maintenance-guest-full/v1",
@@ -1199,6 +1261,50 @@ function passingExecution(descriptors) {
 }
 
 describe("full workflow aggregate validator", () => {
+  it("accepts only the exact installed AI virtual try-on v1 report", () => {
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("aiVirtualTryOn"),
+        aiVirtualTryOnReport(),
+        "ai-virtual-try-on.json",
+      ).status,
+      "passed",
+    );
+  });
+
+  for (const [label, mutate] of [
+    [
+      "a direct worker path",
+      (report) => (report.execution.noDirectWorker = false),
+    ],
+    ["a non-V2 protocol", (report) => (report.execution.protocol = "legacy")],
+    [
+      "an incomplete state trace",
+      (report) => (report.attempt.stateTrace = ["acquiring", "completed"]),
+    ],
+    [
+      "a missing output truth",
+      (report) => (report.outputFacts.nonPlaceholder = false),
+    ],
+    [
+      "a sale-impacting missing pack",
+      (report) => (report.degradations.missingPack.saleAvailable = false),
+    ],
+    ["an unknown report field", (report) => (report.selfAsserted = true)],
+  ]) {
+    it(`rejects ${label} in AI virtual try-on evidence`, () => {
+      const report = aiVirtualTryOnReport();
+      mutate(report);
+      assert.equal(
+        validateBusinessCheckReport(
+          descriptor("aiVirtualTryOn"),
+          report,
+          "ai-virtual-try-on.json",
+        ).status,
+        "failed",
+      );
+    });
+  }
   it("rejects vision experience reports without each recommendation presentation state", () => {
     const complete = validateBusinessCheckReport(
       descriptor("visionExperience"),

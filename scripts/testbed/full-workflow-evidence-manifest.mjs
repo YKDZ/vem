@@ -116,6 +116,7 @@ function reportTrace(track, reportPath, report, artifactFiles) {
     sale: ["runtimeTrace", report?.runtimeTrace],
     scannerPayment: ["runtimeTrace", report?.runtimeTrace],
     visionExperience: ["runtimeTrace", report?.runtimeTrace],
+    aiVirtualTryOn: ["runtimeTrace", report?.runtimeTrace],
     presenceAndAudio: [
       "presenceAndAudio.runtimeTrace",
       report?.presenceAndAudio?.runtimeTrace,
@@ -218,6 +219,7 @@ function perFileLimit(file) {
 
 export function buildFullWorkflowEvidenceManifest({ tracks = [] } = {}) {
   const failures = [];
+  const blockingFailures = [];
   const files = [];
   const sections = [];
   const trackEvidence = [];
@@ -250,7 +252,14 @@ export function buildFullWorkflowEvidenceManifest({ tracks = [] } = {}) {
     const artifactFiles = filesUnder(artifactRoot);
     for (const path of artifactFiles) {
       const extension = extname(path).toLowerCase();
-      if (FORBIDDEN_EXTENSIONS.has(extension)) {
+      if (
+        track === "aiVirtualTryOn" &&
+        ![".json", ".log", ".png"].includes(extension)
+      ) {
+        blockingFailures.push(
+          `forbidden AI evidence artifact for ${track}: ${path}`,
+        );
+      } else if (FORBIDDEN_EXTENSIONS.has(extension)) {
         failures.push(`forbidden evidence artifact for ${track}: ${path}`);
       } else if (extension === ".png" && !isPng(path)) {
         failures.push(`invalid PNG screenshot artifact for ${track}: ${path}`);
@@ -315,7 +324,7 @@ export function buildFullWorkflowEvidenceManifest({ tracks = [] } = {}) {
     schemaVersion: "vem-local-testbed-full-workflow-evidence-manifest/v2",
     // Evidence is an inventory. Business validators decide acceptance; an
     // absent optional screenshot or diagnostic remains visible as a warning.
-    ok: true,
+    ok: blockingFailures.length === 0,
     limits: EVIDENCE_LIMITS,
     requiredKinds: [...REQUIRED_KINDS],
     totals: {
@@ -334,7 +343,7 @@ export function buildFullWorkflowEvidenceManifest({ tracks = [] } = {}) {
     files,
     sections,
     warnings: failures,
-    failures: [],
+    failures: blockingFailures,
   };
 }
 

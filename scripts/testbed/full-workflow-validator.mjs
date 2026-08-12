@@ -193,6 +193,134 @@ function validateStartupTrack(report, reportPath) {
   return passedTrack("startup", "startup", reportPath, summary);
 }
 
+function exactKeys(value, keys) {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    JSON.stringify(Object.keys(value).sort()) ===
+      JSON.stringify([...keys].sort())
+  );
+}
+
+function validateAiVirtualTryOnTrack(report, reportPath) {
+  const execution = report?.execution;
+  const identities = execution?.identities;
+  const attempt = report?.attempt;
+  const result = attempt?.result;
+  const output = report?.outputFacts;
+  const postAi = report?.postAi;
+  const degradations = report?.degradations;
+  const digest = (value) => /^sha256:[a-f0-9]{64}$/.test(value ?? "");
+  const degradationExact = (value) =>
+    exactKeys(value, [
+      "aiReady",
+      "coreReady",
+      "daemonReady",
+      "fastReady",
+      "machineUiAvailable",
+      "saleAvailable",
+    ]) &&
+    value.aiReady === false &&
+    [
+      value.coreReady,
+      value.daemonReady,
+      value.fastReady,
+      value.machineUiAvailable,
+      value.saleAvailable,
+    ].every((fact) => fact === true);
+  const complete =
+    exactKeys(report, [
+      "attempt",
+      "degradations",
+      "execution",
+      "ok",
+      "outputFacts",
+      "postAi",
+      "runtimeTrace",
+      "schemaVersion",
+    ]) &&
+    report.schemaVersion === "vem-ai-virtual-try-on-acceptance/v1" &&
+    report.ok === true &&
+    exactKeys(execution, [
+      "identities",
+      "noDirectWorker",
+      "protocol",
+      "recordedSources",
+      "source",
+    ]) &&
+    execution.source === "installed_machine_ui_cdp" &&
+    execution.protocol === "vem.vision.v2" &&
+    execution.noDirectWorker === true &&
+    JSON.stringify(execution.recordedSources) ===
+      JSON.stringify(["front", "top"]) &&
+    exactKeys(identities, ["aiRuntime", "contract", "modelPack", "runtime"]) &&
+    Object.values(identities).every(digest) &&
+    exactKeys(attempt, ["garment", "input", "mode", "result", "stateTrace"]) &&
+    attempt.mode === "ai" &&
+    JSON.stringify(attempt.stateTrace) ===
+      JSON.stringify(["acquiring", "generating", "completed"]) &&
+    exactKeys(attempt.input, ["contentType", "sha256"]) &&
+    attempt.input.contentType === "image/png" &&
+    /^[a-f0-9]{64}$/.test(attempt.input.sha256 ?? "") &&
+    exactKeys(attempt.garment, ["contentType", "garmentId", "sha256"]) &&
+    typeof attempt.garment.garmentId === "string" &&
+    attempt.garment.garmentId.length > 0 &&
+    attempt.garment.contentType === "image/png" &&
+    /^[a-f0-9]{64}$/.test(attempt.garment.sha256 ?? "") &&
+    exactKeys(result, [
+      "contentType",
+      "decodedHeight",
+      "decodedWidth",
+      "durationMs",
+      "peakRssBytes",
+      "sha256",
+    ]) &&
+    result.contentType === "image/png" &&
+    Number.isSafeInteger(result.decodedWidth) &&
+    result.decodedWidth > 0 &&
+    Number.isSafeInteger(result.decodedHeight) &&
+    result.decodedHeight > 0 &&
+    Number.isSafeInteger(result.durationMs) &&
+    result.durationMs > 0 &&
+    Number.isSafeInteger(result.peakRssBytes) &&
+    result.peakRssBytes > 0 &&
+    /^[a-f0-9]{64}$/.test(result.sha256 ?? "") &&
+    result.sha256 !== attempt.input.sha256 &&
+    result.sha256 !== attempt.garment.sha256 &&
+    exactKeys(output, [
+      "decodable",
+      "differsFromGarment",
+      "differsFromInput",
+      "nonPlaceholder",
+    ]) &&
+    Object.values(output).every((fact) => fact === true) &&
+    exactKeys(postAi, [
+      "browseAvailable",
+      "ordinarySaleCompleted",
+      "saleAvailable",
+    ]) &&
+    Object.values(postAi).every((fact) => fact === true) &&
+    exactKeys(degradations, ["corruptPack", "missingPack", "workerFailure"]) &&
+    Object.values(degradations).every(degradationExact) &&
+    Array.isArray(report.runtimeTrace) &&
+    report.runtimeTrace.length > 0;
+  return complete
+    ? passedTrack("aiVirtualTryOn", "AI virtual try-on", reportPath, {
+        decodedWidth: result.decodedWidth,
+        decodedHeight: result.decodedHeight,
+        durationMs: result.durationMs,
+        peakRssBytes: result.peakRssBytes,
+      })
+    : failedTrack(
+        "aiVirtualTryOn",
+        "AI virtual try-on",
+        reportPath,
+        "AI virtual try-on acceptance evidence is incomplete",
+        report ?? null,
+      );
+}
+
 function validateScannerTrack(report, reportPath) {
   if (
     report?.schemaVersion !== "vem-scanner-payment-code-guest-full/v1" ||
@@ -1046,13 +1174,7 @@ export function validateBusinessCheckReport(descriptor, report, reportPath) {
     startup: validateStartupTrack,
     sale: validateFastTrack,
     scannerPayment: validateScannerTrack,
-    aiVirtualTryOn: (_value, path) =>
-      failedTrack(
-        "aiVirtualTryOn",
-        "AI virtual try-on",
-        path,
-        "AI virtual try-on acceptance runner is not implemented",
-      ),
+    aiVirtualTryOn: validateAiVirtualTryOnTrack,
     pickupProtocol: validateDelayedAudioTrack,
     presenceAndAudio: validatePresenceAndAudioTrack,
     ipcRecovery: validateIpcRecoveryTrack,
