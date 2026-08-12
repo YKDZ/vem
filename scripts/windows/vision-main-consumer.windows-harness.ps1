@@ -224,7 +224,12 @@ try {
   $adapted = Assert-VisionCachedArtifacts $candidateDelivery $commit
   $adaptedZip = [IO.Compression.ZipFile]::OpenRead($adapted.runtimeArchive)
   try {
-    Assert-True ($null -ne $adaptedZip.GetEntry("vending-vision-ai-worker/vending-vision-ai-worker.exe")) "candidate runtime adapter lost the AI worker"
+    $adaptedMembers = @($adaptedZip.Entries | ForEach-Object {
+      [pscustomobject]@{ archiveName = $_.FullName; canonicalName = $_.FullName.Replace('\', '/') }
+    })
+    $workerMembers = @($adaptedMembers | Where-Object { $_.canonicalName -ceq "vending-vision-ai-worker/vending-vision-ai-worker.exe" })
+    $adaptedMemberDiagnostic = $adaptedMembers | ConvertTo-Json -Compress
+    Assert-True ($workerMembers.Count -eq 1) "candidate runtime adapter AI worker inventory is invalid: $adaptedMemberDiagnostic"
   } finally { $adaptedZip.Dispose() }
   $apiCalls = [Collections.Generic.List[string]]::new(); $downloads = [Collections.Generic.List[string]]::new()
   $api = {
