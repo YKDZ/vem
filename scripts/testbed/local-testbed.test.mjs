@@ -2206,15 +2206,17 @@ describe("Windows D cache contract", () => {
     assert.match(guest, /if \(Test-Path -LiteralPath \$manifestPath\)/);
     assert.match(
       guest,
-      /full-workflow-evidence-manifest\.mjs --validate-upload \$ManifestPath \$summaryPath/,
+      /full-workflow-evidence-bundle\.mjs[\s\S]*--manifest \$ManifestPath[\s\S]*--summary \$summaryPath[\s\S]*--smoke \$smokePath[\s\S]*--out \$BundleRoot/,
     );
-    const removeBundle = guest.indexOf(
-      "Remove-Item -LiteralPath $BundleRoot -Recurse -Force",
+    const bundleFunction = guest.slice(
+      guest.indexOf("function New-BoundedEvidenceBundle"),
+      guest.indexOf("function Clear-TestbedRunReports"),
     );
-    const createBundle = guest.indexOf(
-      "New-Item -ItemType Directory -Force -Path $BundleRoot",
+    assert.doesNotMatch(bundleFunction, /Copy-Item|Remove-Item|New-Item/);
+    assert.doesNotMatch(
+      guest,
+      /Remove-Item[^\r\n]*full-workflow-evidence-bundle/,
     );
-    assert.ok(removeBundle >= 0 && createBundle > removeBundle);
     assert.match(guest, /\$workflowFailure -ne \$null/);
     assert.match(guest, /\$bundleFailure -ne \$null/);
   });

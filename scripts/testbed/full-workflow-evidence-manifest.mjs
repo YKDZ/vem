@@ -721,18 +721,12 @@ function readJsonRegular(path, label) {
   return { path: resolvedPath, raw, value };
 }
 
-function validateOwnedManifestCli(args) {
-  if (
-    args.length !== 3 ||
-    args[0] !== "--validate-upload" ||
-    typeof args[1] !== "string" ||
-    typeof args[2] !== "string"
-  )
-    throw new Error(
-      "usage: --validate-upload <absolute-manifest-path> <absolute-summary-path>",
-    );
-  const manifestFile = readJsonRegular(args[1], "evidence manifest");
-  const summaryFile = readJsonRegular(args[2], "workflow summary");
+export function validateFullWorkflowEvidenceUploadFiles(
+  manifestPath,
+  summaryPath,
+) {
+  const manifestFile = readJsonRegular(manifestPath, "evidence manifest");
+  const summaryFile = readJsonRegular(summaryPath, "workflow summary");
   const summary = summaryFile.value;
   if (
     summary?.ok !== true ||
@@ -755,6 +749,20 @@ function validateOwnedManifestCli(args) {
     throw new Error(
       `evidence manifest is not uploadable: ${failures.join("; ")}`,
     );
+  return { manifestFile, summaryFile };
+}
+
+function validateOwnedManifestCli(args) {
+  if (
+    args.length !== 3 ||
+    args[0] !== "--validate-upload" ||
+    typeof args[1] !== "string" ||
+    typeof args[2] !== "string"
+  )
+    throw new Error(
+      "usage: --validate-upload <absolute-manifest-path> <absolute-summary-path>",
+    );
+  validateFullWorkflowEvidenceUploadFiles(args[1], args[2]);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {

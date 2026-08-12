@@ -219,39 +219,16 @@ function Update-WorkflowIdentityCacheObservation(
 
 function New-BoundedEvidenceBundle([string]$ManifestPath, [string]$BundleRoot) {
   Require-Path $ManifestPath
-  if (Test-Path -LiteralPath $BundleRoot) {
-    Remove-Item -LiteralPath $BundleRoot -Recurse -Force
-  }
   $summaryPath = Join-Path $handoffRoot "full-workflow-tracks.json"
+  $smokePath = Join-Path $handoffRoot "installed-runtime-smoke.json"
   Require-Path $summaryPath
-  & node scripts/testbed/full-workflow-evidence-manifest.mjs --validate-upload $ManifestPath $summaryPath
-  if ($LASTEXITCODE -ne 0) { throw "workflow evidence manifest or owned files are not uploadable" }
-  New-Item -ItemType Directory -Force -Path $BundleRoot | Out-Null
-  $manifest = Get-Content -Raw -LiteralPath $ManifestPath | ConvertFrom-Json
-  foreach ($path in @(
-    (Join-Path $handoffRoot "installed-runtime-smoke.json"),
-    (Join-Path $handoffRoot "full-workflow-tracks.json"),
-    $ManifestPath
-  )) {
-    if (Test-Path -LiteralPath $path -PathType Leaf) {
-      Copy-Item -LiteralPath $path -Destination (Join-Path $BundleRoot ([IO.Path]::GetFileName($path))) -Force
-    }
-  }
-  foreach ($file in @($manifest.files)) {
-    $sourcePath = [string]$file.path
-    if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
-      throw "manifest file listed for evidence bundle is missing: $sourcePath"
-    }
-    $extension = [IO.Path]::GetExtension($sourcePath).ToLowerInvariant()
-    if ($extension -notin @(".json", ".log", ".txt", ".png")) {
-      throw "manifest file listed for evidence bundle has a forbidden extension: $sourcePath"
-    }
-    $targetPath = Join-Path $BundleRoot ([IO.Path]::GetFileName($sourcePath))
-    if (Test-Path -LiteralPath $targetPath) {
-      $targetPath = Join-Path $BundleRoot ("{0}-{1}{2}" -f [IO.Path]::GetFileNameWithoutExtension($sourcePath), ([Math]::Abs($sourcePath.GetHashCode())), $extension)
-    }
-    Copy-Item -LiteralPath $sourcePath -Destination $targetPath -Force
-  }
+  Require-Path $smokePath
+  & node scripts/testbed/full-workflow-evidence-bundle.mjs `
+    --manifest $ManifestPath `
+    --summary $summaryPath `
+    --smoke $smokePath `
+    --out $BundleRoot
+  if ($LASTEXITCODE -ne 0) { throw "workflow evidence bundle is not uploadable" }
 }
 
 function Clear-TestbedRunReports {
@@ -275,7 +252,6 @@ function Clear-TestbedRunReports {
   )) {
     Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
   }
-  Remove-Item -LiteralPath (Join-Path $handoffRoot "full-workflow-evidence-bundle") -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 function Assert-DeclaredCachePath([string]$Path, [string]$Name) {
