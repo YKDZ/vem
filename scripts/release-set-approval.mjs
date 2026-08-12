@@ -31,7 +31,7 @@ export const TRUSTED_VISION_REPOSITORY = "hbhjt/vending-vision";
 export const TRUSTED_VISION_BUILDER_WORKFLOW =
   ".github/workflows/trusted-ai-candidate-builder.yml";
 export const TRUSTED_VISION_BUILDER_SHA =
-  "be8fe434855b94f61511e8c6c926e02c54230a38";
+  "c90a965d117fea49f318b18e0fcd50aa047bc41f";
 const APPROVAL_SCHEMA = "vem.release-set.approval.v1";
 const EVIDENCE_SCHEMA = "vem.release-set.component-evidence.v1";
 const COMMIT_RE = /^[a-f0-9]{40}$/;

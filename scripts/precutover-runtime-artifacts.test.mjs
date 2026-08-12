@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   cpSync,
@@ -45,6 +45,10 @@ const productionCli = join(
   "scripts/precutover-runtime-artifacts.mjs",
 );
 const visionRoot = "/workspaces/vending-vision";
+const trustedVisionVerifierSha =
+  "6f598fe01f1fb9af76ec6985fdc2df8fbbe95710";
+const trustedVisionVerifierBuilderSha =
+  "c90a965d117fea49f318b18e0fcd50aa047bc41";
 const vemCommit = "a".repeat(40);
 const visionCommit = "b".repeat(40);
 const sourceRef = "refs/tags/v1.2.3-rc.1";
@@ -128,6 +132,25 @@ function managedMediaReceiptText(observedAt) {
 }
 
 async function buildFixture(root) {
+  const trustedVisionRoot = join(root, "trusted-vision-builder");
+  mkdirSync(join(trustedVisionRoot, "scripts"), { recursive: true });
+  for (const script of [
+    "candidate_artifact_manifest.py",
+    "verify_trusted_candidate_inputs.py",
+  ]) {
+    writeFileSync(
+      join(trustedVisionRoot, "scripts", script),
+      execFileSync(
+        "git",
+        [
+          "-C",
+          visionRoot,
+          "show",
+          `${trustedVisionVerifierSha}:scripts/${script}`,
+        ],
+      ),
+    );
+  }
   const runtimeDirectory = join(root, "runtime-directory");
   mkdirSync(runtimeDirectory);
   for (const [name, bytes] of [
@@ -201,7 +224,10 @@ async function buildFixture(root) {
   const built = spawnSync(
     python,
     [
-      join(visionRoot, "scripts/candidate_artifact_manifest.py"),
+      join(
+        trustedVisionRoot,
+        "scripts/candidate_artifact_manifest.py",
+      ),
       "--dist-root",
       dist,
       "--artifact",
@@ -211,7 +237,7 @@ async function buildFixture(root) {
       "--source-commit",
       visionCommit,
     ],
-    { cwd: visionRoot, encoding: "utf8" },
+    { cwd: trustedVisionRoot, encoding: "utf8" },
   );
   assert.equal(built.status, 0, built.stderr);
   const candidate = JSON.parse(built.stdout);
@@ -228,7 +254,7 @@ async function buildFixture(root) {
       schemaVersion: "vending-vision-trusted-builder-evidence/v1",
       builderRepository: "hbhjt/vending-vision",
       builderWorkflow: ".github/workflows/trusted-ai-candidate-builder.yml",
-      builderWorkflowSha: "be8fe434855b94f61511e8c6c926e02c54230a38",
+      builderWorkflowSha: trustedVisionVerifierBuilderSha,
       sourceCommit: visionCommit,
       subjectSha256: candidate.subjectSha256,
       embeddedManifestSha256: candidate.embeddedManifestSha256,
@@ -366,6 +392,7 @@ async function buildFixture(root) {
     mediaReceiptText,
     releaseSetInputDirectory,
     releaseSetPath,
+    trustedVisionRoot,
     vemArchive,
   };
 }
@@ -423,7 +450,7 @@ function productionArgs(fixture, output, overrides = {}) {
     "--vision-source-ref",
     sourceRef,
     "--vision-verifier-root",
-    overrides.visionVerifierRoot ?? visionRoot,
+    overrides.visionVerifierRoot ?? fixture.trustedVisionRoot,
   ];
 }
 
