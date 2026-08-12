@@ -180,7 +180,9 @@ function aiVirtualTryOnReport() {
     screenshots: ["acquisition", "result"].map((stage) => ({
       byteLength: 64,
       path: `screenshots/${caseKey}/${attemptId}-${stage}.png`,
-      sha256: String(stage === "acquisition" ? suffix : Number(suffix) + 4).repeat(64),
+      sha256: String(
+        stage === "acquisition" ? suffix : Number(suffix) + 4,
+      ).repeat(64),
       stage,
     })),
   });
@@ -200,10 +202,19 @@ function aiVirtualTryOnReport() {
   ];
   attempts[0].journey = {
     catalogRoute: "#/catalog",
-    nextAttemptId: attempts[1].attemptId,
-    productRoute: "#/products/test",
-    resultAttemptId: attempts[0].attemptId,
-    resultRoute: "#/try-on?test",
+    categorySelector:
+      '[data-test="catalog-category"][data-category-key="tshirts"]',
+    productRoute: "#/products/product%3Ashort",
+    productSelector:
+      '[data-test="catalog-product"][data-catalog-key="product:short"]',
+    resultAttemptId: "0198f44e-21bd-7c62-8f52-b7c86cc2b003",
+    resultRoute:
+      "#/try-on?catalogKey=product:short&variantId=0198f44e-21bd-7c62-8f52-b7c86cc2d001",
+    returnedCatalogRoute: "#/catalog",
+    returnProductRoute: "#/products/product%3Ashort",
+    selectedCatalogKey: "product:short",
+    selectedVariantId: "0198f44e-21bd-7c62-8f52-b7c86cc2d001",
+    startSelector: '[data-test="try-on-ai"]',
   };
   attempts[0].retry = {
     completedAttemptId: attempts[0].attemptId,
@@ -217,10 +228,19 @@ function aiVirtualTryOnReport() {
   };
   attempts[1].journey = {
     catalogRoute: "#/catalog",
-    previousAttemptId: attempts[0].attemptId,
-    productRoute: "#/products/test",
+    categorySelector:
+      '[data-test="catalog-category"][data-category-key="tshirts"]',
+    productRoute: "#/products/product%3Along",
+    productSelector:
+      '[data-test="catalog-product"][data-catalog-key="product:long"]',
     resultAttemptId: attempts[1].attemptId,
-    resultRoute: "#/try-on?test",
+    resultRoute:
+      "#/try-on?catalogKey=product:long&variantId=0198f44e-21bd-7c62-8f52-b7c86cc2d005",
+    returnedCatalogRoute: "#/catalog",
+    returnProductRoute: "#/products/product%3Along",
+    selectedCatalogKey: "product:long",
+    selectedVariantId: "0198f44e-21bd-7c62-8f52-b7c86cc2d005",
+    startSelector: '[data-test="try-on-ai"]',
   };
   return {
     schemaVersion: "vem-ai-virtual-try-on-acceptance/v2",
@@ -1351,6 +1371,33 @@ describe("full workflow aggregate validator", () => {
         "ai-virtual-try-on.json",
       ).status,
       "passed",
+    );
+  });
+
+  it("binds the short return route to the retry attempt that owned the visible result", () => {
+    const report = aiVirtualTryOnReport();
+    report.attempts[0].journey.resultAttemptId = report.attempts[0].attemptId;
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("aiVirtualTryOn"),
+        report,
+        "ai-virtual-try-on.json",
+      ).status,
+      "failed",
+    );
+  });
+
+  it("requires the long attempt to carry its observed catalog-to-product causal path", () => {
+    const report = aiVirtualTryOnReport();
+    report.attempts[1].journey.productSelector =
+      '[data-test="catalog-product"][data-catalog-key="product:short"]';
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("aiVirtualTryOn"),
+        report,
+        "ai-virtual-try-on.json",
+      ).status,
+      "failed",
     );
   });
 

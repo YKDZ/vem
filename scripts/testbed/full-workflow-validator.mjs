@@ -299,6 +299,8 @@ function validateAiVirtualTryOnTrack(report, reportPath) {
 }
 
 export function validateAiAttemptSet(attempts, runtimeTrace) {
+  const uuid =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
   const expected = [
     ["short", "tshirt_short_sleeve"],
     ["long", "tshirt_long_sleeve"],
@@ -354,7 +356,8 @@ export function validateAiAttemptSet(attempts, runtimeTrace) {
             "sha256",
           ]) ||
           attempt.retry.result.decodedWidth !== attempt.result?.decodedWidth ||
-          attempt.retry.result.decodedHeight !== attempt.result?.decodedHeight ||
+          attempt.retry.result.decodedHeight !==
+            attempt.result?.decodedHeight ||
           attempt.retry.result.sha256 === attempt.result?.sha256 ||
           !/^[a-f0-9]{64}$/.test(attempt.retry.result.sha256 ?? ""))) ||
       JSON.stringify(attempt.stateTrace) !==
@@ -362,31 +365,35 @@ export function validateAiAttemptSet(attempts, runtimeTrace) {
       !exactKeys(attempt.input, ["contentType", "sha256"]) ||
       attempt.input.contentType !== "image/png" ||
       !/^[a-f0-9]{64}$/.test(attempt.input.sha256 ?? "") ||
-      !exactKeys(
-        attempt.journey,
-        index === 0
-          ? [
-              "catalogRoute",
-              "nextAttemptId",
-              "productRoute",
-              "resultAttemptId",
-              "resultRoute",
-            ]
-          : [
-              "catalogRoute",
-              "previousAttemptId",
-              "productRoute",
-              "resultAttemptId",
-              "resultRoute",
-            ],
-      ) ||
+      !exactKeys(attempt.journey, [
+        "catalogRoute",
+        "categorySelector",
+        "productRoute",
+        "productSelector",
+        "resultAttemptId",
+        "resultRoute",
+        "returnedCatalogRoute",
+        "returnProductRoute",
+        "selectedCatalogKey",
+        "selectedVariantId",
+        "startSelector",
+      ]) ||
       attempt.journey.catalogRoute !== "#/catalog" ||
-      !attempt.journey.resultRoute.startsWith("#/try-on?") ||
-      !attempt.journey.productRoute.startsWith("#/products/") ||
-      attempt.journey.resultAttemptId !== attempt.attemptId ||
-      (index === 0 && attempt.journey.nextAttemptId !== attempts[1]?.attemptId) ||
-      (index === 1 &&
-        attempt.journey.previousAttemptId !== attempts[0]?.attemptId) ||
+      attempt.journey.returnedCatalogRoute !== "#/catalog" ||
+      attempt.journey.categorySelector !==
+        '[data-test="catalog-category"][data-category-key="tshirts"]' ||
+      attempt.journey.productSelector !==
+        `[data-test="catalog-product"][data-catalog-key="${attempt.journey.selectedCatalogKey}"]` ||
+      attempt.journey.productRoute !==
+        `#/products/${encodeURIComponent(attempt.journey.selectedCatalogKey)}` ||
+      attempt.journey.returnProductRoute !== attempt.journey.productRoute ||
+      attempt.journey.startSelector !== '[data-test="try-on-ai"]' ||
+      !uuid.test(attempt.journey.selectedVariantId ?? "") ||
+      attempt.journey.resultRoute !==
+        `#/try-on?catalogKey=${attempt.journey.selectedCatalogKey}&variantId=${attempt.journey.selectedVariantId}` ||
+      (index === 0 &&
+        attempt.journey.resultAttemptId !== attempt.retry?.retriedAttemptId) ||
+      (index === 1 && attempt.journey.resultAttemptId !== attempt.attemptId) ||
       !Array.isArray(attempt.screenshots) ||
       attempt.screenshots.length !== 2 ||
       !["acquisition", "result"].every((stage, index) => {

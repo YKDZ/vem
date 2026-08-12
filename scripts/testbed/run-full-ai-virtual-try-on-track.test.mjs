@@ -685,6 +685,69 @@ test("admits calibrated two-garment evidence only with mandatory screenshots and
   rmSync(root, { recursive: true, force: true });
 });
 
+test("does not synthesize a short return owner from attempt array position", async () => {
+  process.env.NODE_ENV = "test";
+  const root = mkdtempSync(join(tmpdir(), "vem-ai-journey-owner-"));
+  const collected = (caseKey, digit) => {
+    const attemptId = `0198f44e-21bd-7c62-8f52-b7c86cc2c00${digit}`;
+    const garmentId = `0198f44e-21bd-7c62-8f52-b7c86cc2d00${digit}`;
+    const selectedCatalogKey = `product:${caseKey}`;
+    return {
+      attemptId,
+      durationMs: 12_000,
+      journey: {
+        catalogRoute: "#/catalog",
+        categorySelector:
+          '[data-test="catalog-category"][data-category-key="tshirts"]',
+        productRoute: `#/products/${encodeURIComponent(selectedCatalogKey)}`,
+        productSelector: `[data-test="catalog-product"][data-catalog-key="${selectedCatalogKey}"]`,
+        resultAttemptId: attemptId,
+        resultRoute: `#/try-on?catalogKey=${selectedCatalogKey}&variantId=${garmentId}`,
+        returnedCatalogRoute: "#/catalog",
+        returnProductRoute: `#/products/${encodeURIComponent(selectedCatalogKey)}`,
+        selectedCatalogKey,
+        selectedVariantId: garmentId,
+        startSelector: '[data-test="try-on-ai"]',
+      },
+      lifecycle: ["acquiring", "generating", "completed"],
+      peakRssBytes: 512 * 1024 * 1024,
+      regionalEvidence: { bytes: Buffer.from("{}\n") },
+      resultEvidence: {
+        contentType: "image/png",
+        height: 1024,
+        sha256: digit.repeat(64),
+        width: 768,
+      },
+      surface: { garmentId },
+    };
+  };
+  await assert.rejects(
+    assembleInstalledAiTryOnAcceptanceForTest(
+      {
+        artifactRoot: root,
+        attempts: [collected("short", "1"), collected("long", "5")],
+        identities: {
+          aiRuntime: "3".repeat(64),
+          contract: "2".repeat(64),
+          modelPack: "4".repeat(64),
+          runtime: "1".repeat(64),
+        },
+        workerFailure: {
+          aiReady: false,
+          coreReady: true,
+          daemonReady: true,
+          fastReady: true,
+          machineUiAvailable: true,
+          saleAvailable: true,
+        },
+      },
+      { ordinarySale: async () => ({ ok: true }) },
+    ),
+    /installed AI attempt set failed/,
+  );
+  rmSync(root, { recursive: true, force: true });
+});
+
 test("samples the same installed Vision process identity until the attempt completes", async () => {
   process.env.NODE_ENV = "test";
   const samples = [

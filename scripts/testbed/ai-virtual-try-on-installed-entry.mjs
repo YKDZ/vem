@@ -26,13 +26,13 @@ import {
   loadAiRegionalEvidencePolicy,
   validateAiRegionalEvidenceSet,
 } from "./ai-regional-evidence.mjs";
-import { runInstalledOwnerOrdinarySaleCompletion } from "./fast-route-stress-sale.mjs";
-import { AI_SUPPORT_EVIDENCE_SCHEMA } from "./full-workflow-evidence-manifest.mjs";
-import { catalogProductSelectorForFixture } from "./full-workflow-fixtures.mjs";
 import {
   readCalibrationSourceClosure,
   validateCalibratedAiRegionalReceipt,
 } from "./calibrate-ai-regional-evidence.mjs";
+import { runInstalledOwnerOrdinarySaleCompletion } from "./fast-route-stress-sale.mjs";
+import { AI_SUPPORT_EVIDENCE_SCHEMA } from "./full-workflow-evidence-manifest.mjs";
+import { catalogProductSelectorForFixture } from "./full-workflow-fixtures.mjs";
 import { restoreCatalogHomeFromClient } from "./full-workflow-orchestrator.mjs";
 import { validateAiAttemptSet } from "./full-workflow-validator.mjs";
 import {
@@ -285,7 +285,9 @@ function validateAttemptScreenshotArtifacts(attempts, artifactRoot, manifest) {
         !stat.isFile() ||
         bytes.byteLength !== screenshot.byteLength ||
         sha256(bytes) !== screenshot.sha256 ||
-        !bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ||
+        !bytes
+          .subarray(0, 8)
+          .equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ||
         !manifest.files?.some(
           (file) =>
             file.track === "aiVirtualTryOn" &&
@@ -295,7 +297,9 @@ function validateAttemptScreenshotArtifacts(attempts, artifactRoot, manifest) {
             file.sha256 === screenshot.sha256,
         )
       )
-        throw new Error("AI attempt screenshot evidence is invalid or not manifest-owned");
+        throw new Error(
+          "AI attempt screenshot evidence is invalid or not manifest-owned",
+        );
     }
   }
 }
@@ -408,7 +412,6 @@ function readCalibratedPolicyReceipt({
     identities,
     policy,
     receiptPath,
-    sourceAttempts: closure.attempts,
   });
   return { policy, ...checked };
 }
@@ -632,7 +635,9 @@ function installedAiScreenshotCapture(artifactRoot, caseKey) {
   };
 }
 
-async function returnInstalledAiAttemptToCatalog(client) {
+async function returnInstalledAiAttemptToCatalog(client, resultAttemptId) {
+  if (!UUID_PATTERN.test(resultAttemptId ?? ""))
+    throw new Error("AI try-on return attempt identity is invalid");
   const resultRoute = (
     await client.send("Runtime.evaluate", {
       expression: "location.hash",
@@ -673,31 +678,11 @@ async function returnInstalledAiAttemptToCatalog(client) {
     !productRoute.startsWith("#/products/")
   )
     throw new Error("AI try-on return route observation is invalid");
-  return { catalogRoute, productRoute, resultRoute };
-}
-
-function linkAiAttemptJourneys(attempts) {
-  if (!Array.isArray(attempts) || attempts.length !== 2) return;
-  const [shortAttempt, longAttempt] = attempts;
-  if (
-    process.env.NODE_ENV !== "test" &&
-    (shortAttempt.returnJourney?.catalogRoute !== "#/catalog" ||
-      longAttempt.returnJourney?.catalogRoute !== "#/catalog")
-  )
-    throw new Error("AI try-on return journey did not observe the catalog route");
-  shortAttempt.journey = {
-    catalogRoute: shortAttempt.returnJourney?.catalogRoute ?? "#/catalog",
-    nextAttemptId: longAttempt.attemptId,
-    productRoute: shortAttempt.returnJourney?.productRoute ?? "#/products/test",
-    resultAttemptId: shortAttempt.attemptId,
-    resultRoute: shortAttempt.returnJourney?.resultRoute ?? "#/try-on?test",
-  };
-  longAttempt.journey = {
-    catalogRoute: longAttempt.returnJourney?.catalogRoute ?? "#/catalog",
-    previousAttemptId: shortAttempt.attemptId,
-    productRoute: longAttempt.returnJourney?.productRoute ?? "#/products/test",
-    resultAttemptId: longAttempt.attemptId,
-    resultRoute: longAttempt.returnJourney?.resultRoute ?? "#/try-on?test",
+  return {
+    resultAttemptId,
+    resultRoute,
+    returnedCatalogRoute: catalogRoute,
+    returnProductRoute: productRoute,
   };
 }
 
@@ -725,25 +710,48 @@ export async function runInstalledAiAttemptPhase(options) {
         `${options.caseKey} installed AI garment case is unavailable`,
       );
     await restoreCatalogHomeFromClient({ client });
-    await activateVisibleSelector(
-      client,
-      '[data-test="catalog-category"][data-category-key="tshirts"]',
-      { kind: "touch", timeoutMs: 30_000 },
-    );
-    await activateVisibleSelector(
-      client,
-      `[data-test="catalog-product"][data-catalog-key="${acceptance.selectedCatalogKey}"]`,
-      { kind: "touch", timeoutMs: 30_000 },
-    );
+    const catalogRoute = (
+      await client.send("Runtime.evaluate", {
+        expression: "location.hash",
+        returnByValue: true,
+      })
+    )?.result?.value;
+    if (catalogRoute !== "#/catalog")
+      throw new Error(
+        "AI try-on did not start from the observed catalog route",
+      );
+    const categorySelector =
+      '[data-test="catalog-category"][data-category-key="tshirts"]';
+    const productSelector = `[data-test="catalog-product"][data-catalog-key="${acceptance.selectedCatalogKey}"]`;
+    await activateVisibleSelector(client, categorySelector, {
+      kind: "touch",
+      timeoutMs: 30_000,
+    });
+    await activateVisibleSelector(client, productSelector, {
+      kind: "touch",
+      timeoutMs: 30_000,
+    });
     await waitForRoute(client, /^#\/products\//, {
       timeoutMs: 30_000,
       pollMs: 250,
     });
+    const productRoute = (
+      await client.send("Runtime.evaluate", {
+        expression: "location.hash",
+        returnByValue: true,
+      })
+    )?.result?.value;
+    const expectedProductRoute = `#/products/${encodeURIComponent(acceptance.selectedCatalogKey)}`;
+    if (productRoute !== expectedProductRoute)
+      throw new Error(
+        "AI try-on product route does not bind the selected catalog item",
+      );
     await activateVisibleSelector(
       client,
       `[data-test="product-size-option"][data-size="${acceptance.size}"]`,
       { kind: "touch", timeoutMs: 30_000 },
     );
+    const startSelector = '[data-test="try-on-ai"]';
     const expectedTryOnRoute = `#/try-on?catalogKey=${acceptance.selectedCatalogKey}&variantId=${acceptance.selectedVariantId}`;
     const startedAt = performance.now();
     let completed = false;
@@ -770,7 +778,9 @@ export async function runInstalledAiAttemptPhase(options) {
         regionalEvidenceRoot: options.regionalEvidenceRoot,
       });
       if (retried.attemptId === collected.attemptId)
-        throw new Error("AI try-on retry reused the completed attempt identity");
+        throw new Error(
+          "AI try-on retry reused the completed attempt identity",
+        );
       collected.retry = {
         completedAttemptId: collected.attemptId,
         lifecycle: retried.lifecycle.map((entry) => entry.phase),
@@ -796,7 +806,18 @@ export async function runInstalledAiAttemptPhase(options) {
       acceptance.garmentSha256,
       `${options.caseKey} seeded garment digest`,
     );
-    collected.returnJourney = await returnInstalledAiAttemptToCatalog(client);
+    const resultAttemptId =
+      collected.retry?.retriedAttemptId ?? collected.attemptId;
+    collected.journey = {
+      catalogRoute,
+      categorySelector,
+      productRoute,
+      productSelector,
+      ...(await returnInstalledAiAttemptToCatalog(client, resultAttemptId)),
+      selectedCatalogKey: acceptance.selectedCatalogKey,
+      selectedVariantId: acceptance.selectedVariantId,
+      startSelector,
+    };
     const archived = archiveSidecar(
       collected,
       options.caseKey,
@@ -945,7 +966,6 @@ export async function assembleInstalledAiTryOnAcceptance(
   const attempts = input.attempts;
   if (!Array.isArray(attempts) || attempts.length !== 2)
     throw new Error("two installed AI attempt facts are required");
-  linkAiAttemptJourneys(attempts);
   const runtimeTrace = attempts.flatMap((attempt) =>
     attempt.stateTrace.map((state) => ({
       attemptId: attempt.attemptId,
@@ -958,7 +978,11 @@ export async function assembleInstalledAiTryOnAcceptance(
   const evidenceManifest =
     input.evidenceManifest ??
     provisionalSidecarManifest(attempts, input.artifactRoot);
-  validateAttemptScreenshotArtifacts(attempts, input.artifactRoot, evidenceManifest);
+  validateAttemptScreenshotArtifacts(
+    attempts,
+    input.artifactRoot,
+    evidenceManifest,
+  );
   const calibrated =
     input.calibratedPolicyPath == null && input.calibrationReceiptPath == null
       ? null
@@ -979,7 +1003,8 @@ export async function assembleInstalledAiTryOnAcceptance(
     "AI regional evidence policy awaits Issue10 two-garment calibration";
   if (!regional.ok && !calibrationPending) throw new Error(regional.reason);
   const workerFailurePending = input.workerFailure === undefined;
-  const successful = regional.ok && !workerFailurePending && calibrated !== null;
+  const successful =
+    regional.ok && !workerFailurePending && calibrated !== null;
   if (successful) {
     const report = {
       attempts,
@@ -1236,8 +1261,7 @@ export async function assembleInstalledAiTryOnAcceptanceForTest(
         atr: "schp-atr",
         lip: "schp-lip",
         pose: "mediapipe-pose",
-        sourceDescriptorSha256:
-          policy.sourceDescriptorSha256,
+        sourceDescriptorSha256: policy.sourceDescriptorSha256,
       },
       kind: "regional-evidence",
       masks: {
@@ -1295,7 +1319,6 @@ export async function assembleInstalledAiTryOnAcceptanceForTest(
       };
     });
     collected.expectedGarmentSha256 = sidecar.attempt.garmentSha256;
-    collected.returnJourney ??= { catalogRoute: "#/catalog" };
     if (caseKey === "short")
       collected.retry ??= {
         completedAttemptId: collected.attemptId,
@@ -1307,6 +1330,22 @@ export async function assembleInstalledAiTryOnAcceptanceForTest(
         },
         retriedAttemptId: "0198f44e-21bd-7c62-8f52-b7c86cc2b009",
       };
+    const selectedCatalogKey = `product:${caseKey}`;
+    const selectedVariantId = collected.surface.garmentId;
+    collected.journey ??= {
+      catalogRoute: "#/catalog",
+      categorySelector:
+        '[data-test="catalog-category"][data-category-key="tshirts"]',
+      productRoute: `#/products/${encodeURIComponent(selectedCatalogKey)}`,
+      productSelector: `[data-test="catalog-product"][data-catalog-key="${selectedCatalogKey}"]`,
+      resultAttemptId: collected.retry?.retriedAttemptId ?? collected.attemptId,
+      resultRoute: `#/try-on?catalogKey=${selectedCatalogKey}&variantId=${selectedVariantId}`,
+      returnedCatalogRoute: "#/catalog",
+      returnProductRoute: `#/products/${encodeURIComponent(selectedCatalogKey)}`,
+      selectedCatalogKey,
+      selectedVariantId,
+      startSelector: '[data-test="try-on-ai"]',
+    };
     collected.expectedGarmentId = collected.surface.garmentId;
     const sourceRoot = join(input.artifactRoot, `.source-${caseKey}`);
     mkdirSync(sourceRoot, { mode: 0o700 });
@@ -1336,19 +1375,22 @@ export async function assembleInstalledAiTryOnAcceptanceForTest(
     files: attempts.flatMap((attempt) => {
       const path = resolve(input.artifactRoot, attempt.regionalEvidence.path);
       const bytes = readFileSync(path);
-      return [{
-        track: "aiVirtualTryOn",
-        kind: "supportingEvidence",
-        path,
-        byteLength: bytes.byteLength,
-        sha256: sha256(bytes),
-      }, ...attempt.screenshots.map((screenshot) => ({
-        track: "aiVirtualTryOn",
-        kind: "screenshots",
-        path: resolve(input.artifactRoot, screenshot.path),
-        byteLength: screenshot.byteLength,
-        sha256: screenshot.sha256,
-      }))];
+      return [
+        {
+          track: "aiVirtualTryOn",
+          kind: "supportingEvidence",
+          path,
+          byteLength: bytes.byteLength,
+          sha256: sha256(bytes),
+        },
+        ...attempt.screenshots.map((screenshot) => ({
+          track: "aiVirtualTryOn",
+          kind: "screenshots",
+          path: resolve(input.artifactRoot, screenshot.path),
+          byteLength: screenshot.byteLength,
+          sha256: screenshot.sha256,
+        })),
+      ];
     }),
   };
   return assembleInstalledAiTryOnAcceptance(

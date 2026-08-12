@@ -456,6 +456,118 @@ describe("AI regional evidence calibration", () => {
     );
   });
 
+  it("replays recovery semantics when every outer calibration digest is refreshed", () => {
+    const fixture = calibrationFixture();
+    const policyPath = join(fixture.root, "candidate-policy.json");
+    const receiptPath = join(fixture.root, "candidate-receipt.json");
+    calibrateAiRegionalEvidence(fixture.inputPath, policyPath, receiptPath);
+
+    const input = readJson(fixture.inputPath);
+    const recovery = readJson(input.recoverySupport.path);
+    recovery.facts.recovery.workerExecutableSha256 = "0".repeat(64);
+    input.recoverySupport.sha256 = writeCanonical(
+      input.recoverySupport.path,
+      recovery,
+      { compact: true },
+    );
+    writeCanonical(fixture.inputPath, input);
+
+    const calibratedReceipt = readJson(receiptPath);
+    calibratedReceipt.recoverySupportSha256 = input.recoverySupport.sha256;
+    calibratedReceipt.calibrationInputSha256 = digest(
+      readFileSync(fixture.inputPath),
+    );
+    writeCanonical(receiptPath, calibratedReceipt);
+
+    const report = readJson(input.acceptanceReport.path);
+    const identities = Object.fromEntries(
+      Object.entries(report.execution.identities).map(([key, value]) => [
+        key,
+        value.replace("sha256:", ""),
+      ]),
+    );
+    assert.throws(
+      () =>
+        validateCalibratedAiRegionalReceipt({
+          closure: readCalibrationSourceClosure(fixture.inputPath),
+          identities,
+          policy: loadAiRegionalEvidencePolicy(policyPath),
+          receiptPath,
+        }),
+      /recovery support does not bind release proof/,
+    );
+  });
+
+  it("re-derives thresholds from source sidecars after their outer bindings are refreshed", () => {
+    const fixture = calibrationFixture();
+    const policyPath = join(fixture.root, "candidate-policy.json");
+    const receiptPath = join(fixture.root, "candidate-receipt.json");
+    calibrateAiRegionalEvidence(fixture.inputPath, policyPath, receiptPath);
+
+    const input = readJson(fixture.inputPath);
+    const entry = input.attempts.find(
+      (candidate) => candidate.caseKey === "short",
+    );
+    const sidecarPath = join(
+      fixture.artifactRoot,
+      entry.attempt.regionalEvidence.path,
+    );
+    const sidecar = readJson(sidecarPath);
+    sidecar.measurements.upperBody.meanDelta = 39;
+    entry.attempt.regionalEvidence.sha256 = writeCanonical(
+      sidecarPath,
+      sidecar,
+      { compact: true },
+    );
+    entry.attemptSha256 = digest(
+      `${JSON.stringify(canonical(entry.attempt), null, 2)}\n`,
+    );
+    const manifest = readJson(input.evidenceManifest.path);
+    const member = manifest.files.find(
+      (candidate) => candidate.path === sidecarPath,
+    );
+    member.sha256 = entry.attempt.regionalEvidence.sha256;
+    member.byteLength = readFileSync(sidecarPath).byteLength;
+    input.evidenceManifest.sha256 = writeCanonical(
+      input.evidenceManifest.path,
+      manifest,
+    );
+    rewriteBoundReport(input, (report) => {
+      report.attempts = input.attempts.map((candidate) => candidate.attempt);
+    });
+    writeCanonical(fixture.inputPath, input);
+
+    const calibratedReceipt = readJson(receiptPath);
+    calibratedReceipt.acceptanceReportSha256 = input.acceptanceReport.sha256;
+    calibratedReceipt.calibrationInputSha256 = digest(
+      readFileSync(fixture.inputPath),
+    );
+    const boundAttempt = calibratedReceipt.attempts.find(
+      (candidate) => candidate.caseKey === "short",
+    );
+    boundAttempt.attemptSha256 = entry.attemptSha256;
+    boundAttempt.sidecarSha256 = entry.attempt.regionalEvidence.sha256;
+    writeCanonical(receiptPath, calibratedReceipt);
+
+    const report = readJson(input.acceptanceReport.path);
+    const identities = Object.fromEntries(
+      Object.entries(report.execution.identities).map(([key, value]) => [
+        key,
+        value.replace("sha256:", ""),
+      ]),
+    );
+    assert.throws(
+      () =>
+        validateCalibratedAiRegionalReceipt({
+          closure: readCalibrationSourceClosure(fixture.inputPath),
+          identities,
+          policy: loadAiRegionalEvidencePolicy(policyPath),
+          receiptPath,
+        }),
+      /not bound to this release/,
+    );
+  });
+
   it("rejects noncanonical, duplicate, proof, manifest, and attempt-digest contradictions", () => {
     const cases = [
       [
