@@ -45,20 +45,35 @@ test("accepts only the production-shaped single pending aggregate", () => {
     ])
       write(join(source, n), {});
     const manifest = write(manifestp, { ok: true });
+    const incomplete = "AI virtual try-on acceptance evidence is incomplete";
+    const failures = [
+      { set: "aiVirtualTryOn", reason: incomplete },
+      { set: "evidenceInventory", reason: pending },
+    ];
     write(ap, {
       ok: false,
       businessOutcome: {
         ok: false,
-        failures: [{ set: "aiVirtualTryOn", reason: pending }],
+        failures,
       },
       execution: {
         executedTracks: [
-          { key: "aiVirtualTryOn", businessStatus: "failed", error: pending },
+          {
+            key: "aiVirtualTryOn",
+            businessStatus: "failed",
+            error: incomplete,
+          },
         ],
       },
-      businessSets: { aiVirtualTryOn: { status: "failed", reason: pending } },
-      failures: [{ set: "aiVirtualTryOn", reason: pending }],
-      evidenceInventory: { ok: true, manifestFile: manifest },
+      businessSets: {
+        aiVirtualTryOn: { status: "failed", reason: incomplete },
+      },
+      failures,
+      evidenceInventory: {
+        ok: false,
+        failures: [pending],
+        manifestFile: manifest,
+      },
     });
     write(mp, {
       schemaVersion: "vem-ai-regional-measurement/v1",

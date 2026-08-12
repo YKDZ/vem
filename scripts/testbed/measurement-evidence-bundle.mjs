@@ -200,6 +200,7 @@ export function validateMeasurementEvidenceTransport(bundleRoot) {
     throw new Error("measurement pending contract is invalid");
   const pending =
     "AI regional evidence policy awaits Issue10 two-garment calibration";
+  const incomplete = "AI virtual try-on acceptance evidence is incomplete";
   if (report.ok !== false || report.error !== pending)
     throw new Error("AI report is not exact calibration pending");
   const tracks = aggregate?.execution?.executedTracks;
@@ -211,13 +212,19 @@ export function validateMeasurementEvidenceTransport(bundleRoot) {
     !Array.isArray(tracks) ||
     !Array.isArray(failures) ||
     ai?.status !== "failed" ||
-    ai?.reason !== pending
+    ai?.reason !== incomplete
   )
     throw new Error("aggregate pending contract is invalid");
   if (
-    failures.length !== 1 ||
-    failures[0]?.set !== "aiVirtualTryOn" ||
-    failures[0]?.reason !== pending
+    failures.length !== 2 ||
+    !failures.some(
+      (failure) =>
+        failure?.set === "aiVirtualTryOn" && failure?.reason === incomplete,
+    ) ||
+    !failures.some(
+      (failure) =>
+        failure?.set === "evidenceInventory" && failure?.reason === pending,
+    )
   )
     throw new Error("aggregate has unexpected failure");
   if (
@@ -230,7 +237,9 @@ export function validateMeasurementEvidenceTransport(bundleRoot) {
   )
     throw new Error("aggregate has infrastructure or other-track failure");
   if (
-    aggregate?.evidenceInventory?.ok !== true ||
+    aggregate?.evidenceInventory?.ok !== false ||
+    JSON.stringify(aggregate?.evidenceInventory?.failures) !==
+      JSON.stringify([pending]) ||
     manifest?.ok !== true ||
     !aggregate?.evidenceInventory?.manifestFile
   )
