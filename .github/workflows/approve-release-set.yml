@@ -42,6 +42,7 @@ jobs:
           repository: YKDZ/vem
           ref: ${{ inputs.source_commit }}
           path: source
+          fetch-depth: 0
           persist-credentials: false
       - name: Materialize untrusted input for independent approval
         shell: bash

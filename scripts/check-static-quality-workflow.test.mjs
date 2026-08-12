@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { parse } from "yaml";
 
@@ -26,6 +26,24 @@ test("one reusable workflow owns the static quality gate", () => {
   assert.doesNotMatch(ci, /tools\/check-ci\.mjs/);
   assert.doesNotMatch(reusable, /tools\/check-ci\.mjs/);
   assert.doesNotMatch(adminBrowser, /tools\/check-ci\.mjs/);
+});
+
+test("repository workflows fetch full history for commit-ancestry checks", () => {
+  for (const workflowPath of readdirSync(".github/workflows")) {
+    if (!/\.ya?ml$/.test(workflowPath)) continue;
+    const workflow = readFileSync(`.github/workflows/${workflowPath}`, "utf8");
+    const checkouts = workflow.match(
+      /uses: actions\/checkout@v\d+[\s\S]*?(?=\n\s*-|\n\S|$)/g,
+    );
+    if (!checkouts) continue;
+    for (const checkout of checkouts) {
+      assert.match(
+        checkout,
+        /fetch-depth: 0/,
+        `${workflowPath} checkout must retain commit ancestry`,
+      );
+    }
+  }
 });
 
 test("the canonical static job includes formatting, types, lint and contracts", () => {
