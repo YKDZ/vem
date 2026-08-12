@@ -28,6 +28,7 @@ import {
   adjudicateCalibrationSourceClosure,
   readCalibrationSourceClosure,
 } from "./calibrate-ai-regional-evidence.mjs";
+import { validateMeasurementEvidenceTransport } from "./measurement-evidence-bundle.mjs";
 
 const MODES = new Set(["fast", "full", "clear_cache", "measurement"]);
 const TERMINAL = new Set([
@@ -1363,6 +1364,12 @@ async function executeRun(options, config) {
         visionCoreInputs,
       });
       if (options.mode === "measurement") {
+        const transportRoot = join(
+          compact,
+          `pass-${pass}`,
+          "measurement-evidence-bundle",
+        );
+        validateMeasurementEvidenceTransport(transportRoot);
         const measurementPath = await findFile(
           join(compact, `pass-${pass}`),
           "ai-regional-measurement.json",

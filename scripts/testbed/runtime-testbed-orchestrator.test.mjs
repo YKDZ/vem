@@ -193,6 +193,10 @@ describe("runtime testbed scheduler contract", () => {
     assert.match(source, /measurement-evidence-bundle/);
     assert.match(source, /-Measurement/);
     assert.match(source, /if \(mode === "measurement"\) throw error/);
+    assert.match(
+      source,
+      /validateMeasurementEvidenceTransport\(transportRoot\)/,
+    );
   });
 
   it("tells the guest which reconstructed pass owns the runtime build", () => {

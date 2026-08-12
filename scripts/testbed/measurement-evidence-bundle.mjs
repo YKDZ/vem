@@ -26,6 +26,13 @@ function sorted(value) {
   return value;
 }
 const canonical = (value) => `${JSON.stringify(sorted(value), null, 2)}\n`;
+function parse(path, label) {
+  try {
+    return JSON.parse(file(path, label).bytes);
+  } catch {
+    throw new Error(`${label} is invalid JSON`);
+  }
+}
 function file(path, label) {
   if (!isAbsolute(path)) throw new Error(`${label} must be absolute`);
   const entry = lstatSync(path);
@@ -116,6 +123,16 @@ export function createMeasurementEvidenceBundle({
       canonical({
         schemaVersion,
         acceptanceUploadable: false,
+        bindings: {
+          reportSha256: inventory.find(
+            (member) => member.name === "metadata/ai-virtual-try-on.json",
+          ).sha256,
+          sourceInputSha256: inventory.find(
+            (member) =>
+              member.name ===
+              "calibration-source/calibration-source-input.json",
+          ).sha256,
+        },
         inventory: inventory.map(({ name, byteSize, sha256 }) => ({
           name,
           byteSize,
@@ -129,6 +146,105 @@ export function createMeasurementEvidenceBundle({
     throw error;
   }
   return { inventory };
+}
+export function validateMeasurementEvidenceTransport(bundleRoot) {
+  if (!isAbsolute(bundleRoot))
+    throw new Error("measurement transport root must be absolute");
+  const transport = parse(
+    join(bundleRoot, "transport-manifest.json"),
+    "transport manifest",
+  );
+  if (
+    transport?.schemaVersion !== schemaVersion ||
+    transport.acceptanceUploadable !== false ||
+    !Array.isArray(transport.inventory) ||
+    !/^[a-f0-9]{64}$/.test(transport.bindings?.reportSha256 ?? "") ||
+    !/^[a-f0-9]{64}$/.test(transport.bindings?.sourceInputSha256 ?? "")
+  )
+    throw new Error("transport manifest is invalid");
+  for (const member of transport.inventory) {
+    if (
+      !member?.name ||
+      !Number.isSafeInteger(member.byteSize) ||
+      !/^[a-f0-9]{64}$/.test(member.sha256 ?? "")
+    )
+      throw new Error("transport inventory is invalid");
+    const actual = file(
+      resolve(bundleRoot, member.name),
+      "transport inventory member",
+    );
+    if (actual.byteSize !== member.byteSize || actual.sha256 !== member.sha256)
+      throw new Error("transport inventory identity mismatched");
+  }
+  const measurement = parse(
+    join(bundleRoot, "measurement/ai-regional-measurement.json"),
+    "measurement",
+  );
+  const report = parse(
+    join(bundleRoot, "metadata/ai-virtual-try-on.json"),
+    "AI report",
+  );
+  const aggregate = parse(
+    join(bundleRoot, "metadata/full-workflow-tracks.json"),
+    "aggregate",
+  );
+  const manifest = parse(
+    join(bundleRoot, "metadata/full-workflow-evidence-manifest.json"),
+    "evidence manifest",
+  );
+  if (
+    measurement.status !== "measured_not_accepted" ||
+    measurement.acceptancePassed !== false ||
+    measurement.calibrationRequired !== true
+  )
+    throw new Error("measurement pending contract is invalid");
+  const pending =
+    "AI regional evidence policy awaits Issue10 two-garment calibration";
+  if (
+    report.ok !== false ||
+    report.error !== pending ||
+    !Array.isArray(report.reasons) ||
+    report.reasons.length !== 1 ||
+    report.reasons[0] !== pending
+  )
+    throw new Error("AI report is not exact calibration pending");
+  const tracks = aggregate?.tracks ?? aggregate?.results ?? [];
+  if (aggregate?.ok !== false || !Array.isArray(tracks))
+    throw new Error("aggregate pending contract is invalid");
+  const failed = tracks.filter(
+    (track) => track?.businessStatus === "failed" || track?.status === "failed",
+  );
+  if (
+    failed.length !== 1 ||
+    failed[0].key !== "aiVirtualTryOn" ||
+    !String(failed[0].error ?? failed[0].reason ?? "").includes(pending)
+  )
+    throw new Error("aggregate has unexpected failure");
+  if (
+    tracks.some(
+      (track) =>
+        track?.infrastructureStatus === "failed" ||
+        track?.businessStatus === "infrastructure_failed",
+    )
+  )
+    throw new Error("aggregate has infrastructure failure");
+  if (manifest?.ok === false || manifest?.evidenceInventory?.ok === false)
+    throw new Error("measurement evidence manifest is invalid");
+  const sourceInput = file(
+    join(bundleRoot, "calibration-source/calibration-source-input.json"),
+    "calibration source input",
+  );
+  const reportIdentity = file(
+    join(bundleRoot, "metadata/ai-virtual-try-on.json"),
+    "AI report",
+  );
+  if (
+    measurement.calibrationSourceBundle?.members?.length !== 8 ||
+    transport.bindings.sourceInputSha256 !== sourceInput.sha256 ||
+    transport.bindings.reportSha256 !== reportIdentity.sha256
+  )
+    throw new Error("measurement source cross-binding is invalid");
+  return { measurement, report, aggregate, manifest };
 }
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   const args = Object.fromEntries(
