@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
+import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { describe, it } from "node:test";
 import ts from "typescript";
@@ -10,6 +11,7 @@ import {
   buildFastRouteStressScenarioSteps,
   combineCleanupError,
   controlPlaneRequest,
+  daemonGet,
   dispatchRepeatedPaymentTouch,
   latestVisionPresence,
   parseFastRouteStressSaleArgs,
@@ -20,6 +22,7 @@ import {
   stopInstalledVisionOwnerForControlledMock,
   startContinuousCdpLocationHashObservation,
   waitForSaleStartReady,
+  waitForOrdinarySaleCleanupPoll,
   waitForGuardedVisionDepartureTrace,
   waitForStableVisionArrivalTrace,
   waitForStableVisionDepartureTransition,
@@ -104,7 +107,8 @@ function ordinarySaleDependencies(evidence, events, options = {}) {
         paymentNo: "PAY-1",
         orderNo: "ORD-1",
         nextAction:
-          (options.failed && !options.settled) || gateState === "pending"
+          ((options.failed || options.transactionActive) && !options.settled) ||
+          gateState === "pending"
             ? "wait_payment"
             : "completed",
       };
@@ -146,7 +150,10 @@ function ordinarySaleDependencies(evidence, events, options = {}) {
       return { releasedAt: evidence.createOrderGate.releasedAt };
     },
     readRenderedPaymentSurface: async () => evidence.renderedSale,
-    completeMockPayment: async () => events.push("payment:complete"),
+    completeMockPayment: async () => {
+      events.push("payment:complete");
+      options.transactionActive = true;
+    },
     waitForCommand: async () => evidence.liveSale,
     waitForBeforeF0Boundary: async () => evidence.platform.beforeF0,
     readUiBoundary: async () =>
@@ -1307,6 +1314,59 @@ describe("fast route stress sale tracer", () => {
     }
   });
 
+  it("settles the known payment after release removed provider pending and a later sale boundary fails", async () => {
+    const evidence = validEvidence();
+    const { client } = await connectedInstalledOwnerClient();
+    const events = [];
+    const base = ordinarySaleDependencies(evidence, events, {});
+    const dependencies = {
+      ...base,
+      waitForBeforeF0Boundary: async () => {
+        throw new Error("injected post-release VEND boundary failure");
+      },
+    };
+    const oldNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "test";
+    const common = {
+      client,
+      guestInput: {
+        runId: "ordinary-sale-post-release-failure",
+        machineCode: "VEM-TESTBED-LOCAL",
+      },
+      handoff: {},
+      serialSession: {
+        sessionId: "serial-session-1",
+        binding: { serialSessionId: "serial-session-1" },
+      },
+    };
+    try {
+      await assert.rejects(
+        runInstalledOwnerOrdinarySaleCompletion({
+          ...common,
+          testDependencies: dependencies,
+        }),
+        /injected post-release VEND boundary failure/,
+      );
+      assert.deepEqual(events.slice(-6), [
+        "gate:status",
+        "transaction:read",
+        "transaction:cancel",
+        "transaction:read",
+        "gate:open",
+        "gate:status",
+      ]);
+      const retry = await runInstalledOwnerOrdinarySaleCompletion({
+        ...common,
+        testDependencies: ordinarySaleDependencies(evidence, []),
+      });
+      assert.equal(retry.ok, true);
+    } finally {
+      if (oldNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = oldNodeEnv;
+      await client.close();
+    }
+  });
+
   it("aborts a delayed control-plane request instead of allowing a late mutation", async () => {
     const { server, port } = await listenOnAvailablePort();
     let requestAborted = false;
@@ -1345,6 +1405,109 @@ describe("fast route stress sale tracer", () => {
       assert.equal(lateMutation, false);
     } finally {
       await closeServer(server);
+    }
+  });
+
+  it("passes the cleanup abort signal through a delayed production daemon GET", async () => {
+    let requestClosed = false;
+    let lateMutation = false;
+    const server = createHttpServer((request, response) => {
+      request.once("close", () => {
+        requestClosed = true;
+      });
+      const timer = setTimeout(() => {
+        lateMutation = true;
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end('{"paymentNo":"PAY-1"}');
+      }, 100);
+      request.once("close", () => clearTimeout(timer));
+    });
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    try {
+      const signal = AbortSignal.timeout(20);
+      await assert.rejects(
+        daemonGet(
+          {
+            daemon: {
+              ready: {
+                healthzUrl: `http://127.0.0.1:${server.address().port}/healthz`,
+                ipcToken: "test-ipc-token",
+              },
+            },
+          },
+          "/v1/transactions/current",
+          { timeoutMs: 20, signal },
+        ),
+        /abort|timeout/i,
+      );
+      assert.equal(signal.aborted, true);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      assert.equal(requestClosed, true);
+      assert.equal(lateMutation, false);
+    } finally {
+      await new Promise((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
+  it("does not issue another terminal read when the monotonic deadline expires during backoff", async () => {
+    const deadline = performance.now() + 20;
+    const started = performance.now();
+    await assert.rejects(
+      waitForOrdinarySaleCleanupPoll(deadline, 100),
+      /cleanup deadline exceeded/,
+    );
+    assert.equal(performance.now() - started < 80, true);
+  });
+
+  it("does not issue another transaction read after the cleanup deadline expires in polling backoff", async () => {
+    const evidence = validEvidence();
+    const { client } = await connectedInstalledOwnerClient();
+    const base = ordinarySaleDependencies(evidence, [], {
+      failPendingOnce: true,
+    });
+    let transactionReads = 0;
+    const dependencies = {
+      ...base,
+      readCurrentTransaction: async (_handoff, requestOptions) => {
+        assert.equal(requestOptions.signal instanceof AbortSignal, true);
+        transactionReads += 1;
+        return {
+          paymentNo: "PAY-1",
+          orderNo: "ORD-1",
+          nextAction: "wait_payment",
+        };
+      },
+    };
+    const oldNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "test";
+    try {
+      await assert.rejects(
+        runInstalledOwnerOrdinarySaleCompletion({
+          client,
+          guestInput: {
+            runId: "ordinary-sale-poll-deadline",
+            machineCode: "VEM-TESTBED-LOCAL",
+          },
+          handoff: {},
+          serialSession: {
+            sessionId: "serial-session-1",
+            binding: { serialSessionId: "serial-session-1" },
+          },
+          testCleanupTimeoutMs: 20,
+          testDependencies: dependencies,
+        }),
+        /injected status timeout.*cleanup|cleanup.*deadline/is,
+      );
+      assert.equal(transactionReads, 2);
+    } finally {
+      if (oldNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = oldNodeEnv;
+      await client.close();
     }
   });
 

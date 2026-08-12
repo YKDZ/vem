@@ -1200,10 +1200,11 @@ async function fetchJson(url, options = {}) {
   return payload;
 }
 
-async function daemonGet(handoff, path, options = {}) {
+export async function daemonGet(handoff, path, options = {}) {
   return fetchJson(`${daemonBaseUrl(handoff)}${path}`, {
     headers: daemonHeaders(handoff),
     timeoutMs: options.timeoutMs,
+    signal: options.signal,
   });
 }
 
@@ -1216,6 +1217,7 @@ async function daemonPost(handoff, path, body = {}, options = {}) {
     },
     body: JSON.stringify(body),
     timeoutMs: options.timeoutMs,
+    signal: options.signal,
   });
 }
 
@@ -2604,23 +2606,62 @@ function boundedCleanupRequest(deadline) {
   return { timeoutMs, signal: AbortSignal.timeout(timeoutMs) };
 }
 
+export async function waitForOrdinarySaleCleanupPoll(
+  deadline,
+  maxDelayMs = 100,
+) {
+  const remaining = deadline - performance.now();
+  if (remaining <= 0)
+    throw new Error("ordinary sale cleanup deadline exceeded");
+  const delayMs = Math.max(1, Math.min(maxDelayMs, Math.ceil(remaining)));
+  const deadlineSignal = AbortSignal.timeout(Math.max(1, Math.ceil(remaining)));
+  await new Promise((resolvePromise, reject) => {
+    let timer;
+    const finish = () => {
+      deadlineSignal.removeEventListener("abort", abort);
+      resolvePromise();
+    };
+    const abort = () => {
+      clearTimeout(timer);
+      deadlineSignal.removeEventListener("abort", abort);
+      reject(new Error("ordinary sale cleanup deadline exceeded"));
+    };
+    timer = setTimeout(finish, delayMs);
+    deadlineSignal.addEventListener("abort", abort, { once: true });
+  });
+  boundedCleanupRequest(deadline);
+}
+
 async function cleanupOrdinarySalePayment({
   dependencies,
   guestInput,
   handoff,
   deadline,
+  knownPaymentNo,
 }) {
   const status = await dependencies.readCreateOrderGate(
     guestInput,
     boundedCleanupRequest(deadline),
   );
-  const paymentNo = status?.pending?.paymentNo;
-  if (typeof paymentNo === "string" && paymentNo !== "") {
-    await dependencies.releaseCreateOrderGate(
-      guestInput,
-      paymentNo,
-      boundedCleanupRequest(deadline),
+  const pendingPaymentNo = status?.pending?.paymentNo;
+  if (
+    typeof pendingPaymentNo === "string" &&
+    pendingPaymentNo !== "" &&
+    typeof knownPaymentNo === "string" &&
+    knownPaymentNo !== "" &&
+    pendingPaymentNo !== knownPaymentNo
+  )
+    throw new Error(
+      "payment create gate pending identity conflicts with the known payment",
     );
+  const paymentNo = pendingPaymentNo ?? knownPaymentNo;
+  if (typeof paymentNo === "string" && paymentNo !== "") {
+    if (typeof pendingPaymentNo === "string" && pendingPaymentNo !== "")
+      await dependencies.releaseCreateOrderGate(
+        guestInput,
+        paymentNo,
+        boundedCleanupRequest(deadline),
+      );
     let transaction = await dependencies.readCurrentTransaction(
       handoff,
       boundedCleanupRequest(deadline),
@@ -2645,7 +2686,7 @@ async function cleanupOrdinarySalePayment({
           !transactionIsActive(transaction)
         )
           break;
-        await sleep(Math.min(100, boundedCleanupRequest(deadline).timeoutMs));
+        await waitForOrdinarySaleCleanupPoll(deadline);
       } while (true);
     }
   }
@@ -2978,6 +3019,7 @@ export async function runInstalledOwnerOrdinarySaleCompletion(input) {
             dependencies,
             guestInput,
             handoff,
+            knownPaymentNo: pendingCreate?.paymentNo,
             deadline:
               performance.now() +
               (input.testCleanupTimeoutMs ??
