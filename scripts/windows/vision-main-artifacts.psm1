@@ -130,8 +130,9 @@ function Convert-VisionCandidateToMainDelivery {
   Add-Type -AssemblyName System.IO.Compression.FileSystem
   $extract = "$Destination.extract-$([guid]::NewGuid().ToString('N'))"
   $stage = "$Destination.stage-$([guid]::NewGuid().ToString('N'))"
+  $deliveryOutput = "$Destination.output-$([guid]::NewGuid().ToString('N'))"
   try {
-    New-Item -ItemType Directory -Path $extract, $stage | Out-Null
+    New-Item -ItemType Directory -Path $extract, $stage, $deliveryOutput | Out-Null
     $archive = [IO.Compression.ZipFile]::OpenRead($CandidateArchive)
     try {
       $entries = @($archive.Entries | Where-Object { -not $_.FullName.EndsWith('/') })
@@ -174,10 +175,9 @@ function Convert-VisionCandidateToMainDelivery {
       fixtureArchive = $script:VisionFixtureArchive
     }
     [IO.File]::WriteAllText((Join-Path $stage "vision-artifact.json"), ($legacyManifest | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
-    New-Item -ItemType Directory -Path $Destination | Out-Null
-    $runtime = Join-Path $Destination $script:VisionRuntimeArchive
+    $runtime = Join-Path $deliveryOutput $script:VisionRuntimeArchive
     [IO.Compression.ZipFile]::CreateFromDirectory($stage, $runtime, [IO.Compression.CompressionLevel]::Optimal, $false)
-    $fixtures = Join-Path $Destination $script:VisionFixtureArchive
+    $fixtures = Join-Path $deliveryOutput $script:VisionFixtureArchive
     Copy-Item -LiteralPath $FixtureArchive -Destination $fixtures
     $delivery = [ordered]@{
       schemaVersion = $script:VisionArtifactSchema
@@ -185,10 +185,12 @@ function Convert-VisionCandidateToMainDelivery {
       runtime = [ordered]@{ file = $script:VisionRuntimeArchive; sha256 = Get-VisionSha256 $runtime }
       fixtures = [ordered]@{ file = $script:VisionFixtureArchive; sha256 = Get-VisionSha256 $fixtures }
     }
-    [IO.File]::WriteAllText((Join-Path $Destination $script:VisionDeliveryManifest), ($delivery | ConvertTo-Json -Compress -Depth 5), [Text.UTF8Encoding]::new($false))
-    Assert-VisionCachedArtifacts $Destination $Commit
+    [IO.File]::WriteAllText((Join-Path $deliveryOutput $script:VisionDeliveryManifest), ($delivery | ConvertTo-Json -Compress -Depth 5), [Text.UTF8Encoding]::new($false))
+    Assert-VisionCachedArtifacts $deliveryOutput $Commit | Out-Null
+    Move-Item -LiteralPath $deliveryOutput -Destination $Destination -ErrorAction Stop
+    return Assert-VisionCachedArtifacts $Destination $Commit
   } finally {
-    Remove-Item -LiteralPath $extract, $stage -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $extract, $stage, $deliveryOutput -Recurse -Force -ErrorAction SilentlyContinue
   }
 }
 
