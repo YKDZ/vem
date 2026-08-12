@@ -24,6 +24,7 @@ import {
   materializeAiAcceptanceInputSnapshot,
   validateAiAcceptanceInputManifest,
 } from "./ai-acceptance-input-provisioning.mjs";
+import { readCalibrationSourceClosure } from "./calibrate-ai-regional-evidence.mjs";
 
 const MODES = new Set(["fast", "full", "clear_cache", "measurement"]);
 const TERMINAL = new Set([
@@ -992,7 +993,8 @@ async function stageAndRunGuest({
   const guestScript = `${config.guestSourcePath}\\scripts\\testbed\\run-local-testbed-guest.ps1`;
   const focusArgument = powerShellFocusArgument(focus);
   const guestMode = mode === "measurement" ? "fast" : mode;
-  const execute = `& '${guestScript.replaceAll("'", "''")}' -Mode '${guestMode}' -Commit '${commit}' -Pass ${pass}${focusArgument}`;
+  const measurementArgument = mode === "measurement" ? " -Measurement" : "";
+  const execute = `& '${guestScript.replaceAll("'", "''")}' -Mode '${guestMode}' -Commit '${commit}' -Pass ${pass}${focusArgument}${measurementArgument}`;
   const invokePowerShell7 = [
     `$pwsh = 'D:\\runtime-cache\\v1\\powershell\\7.4.6\\pwsh.exe'`,
     `& $pwsh -NoProfile -EncodedCommand '${encodedPowerShell(execute)}'`,
@@ -1038,9 +1040,11 @@ async function stageAndRunGuest({
     const evidence = join(runRoot, "compact", `pass-${pass}`);
     await mkdir(evidence, { recursive: true });
     const remoteEvidence =
-      mode === "clear_cache"
-        ? "C:/ProgramData/VEM/testbed/clear-cache-report.json"
-        : "C:/ProgramData/VEM/testbed/full-workflow-evidence-bundle";
+      mode === "measurement"
+        ? "C:/ProgramData/VEM/testbed/measurement-evidence-bundle"
+        : mode === "clear_cache"
+          ? "C:/ProgramData/VEM/testbed/clear-cache-report.json"
+          : "C:/ProgramData/VEM/testbed/full-workflow-evidence-bundle";
     await runProcess(
       "scp",
       [...scp, "-r", `${remote}:${remoteEvidence}`, evidence],
@@ -1048,7 +1052,10 @@ async function stageAndRunGuest({
         timeoutMs: GUEST_TRANSFER_TIMEOUT_MS,
         timeoutLabel: "guest evidence transfer",
       },
-    ).catch(() => undefined);
+    ).catch((error) => {
+      if (mode === "measurement") throw error;
+      return undefined;
+    });
   }
   return { measurementPending };
 }
@@ -1210,7 +1217,7 @@ async function executeRun(options, config) {
           },
         );
       }
-      if (options.mode === "fast") {
+      if (options.mode === "fast" || options.mode === "measurement") {
         const existingGuestInput = await readJson(
           join(config.stateRoot, "guest-input.json"),
         );
@@ -1242,7 +1249,7 @@ async function executeRun(options, config) {
             config.stateRoot,
             "--run-id",
             fixtureIsCurrent ? options.runId : `${options.runId}-PASS-${pass}`,
-            ...(fixtureIsCurrent ? [] : ["--mode", options.mode]),
+            ...(fixtureIsCurrent ? [] : ["--mode", "fast"]),
             "--baseline-contract",
             config.baselineContract,
             "--host-private-address",
@@ -1383,6 +1390,9 @@ async function executeRun(options, config) {
           dirname(guestSourceInput),
           join(root, "measurement-source", `pass-${pass}`),
         );
+        const closure = readCalibrationSourceClosure(hostSource.inputPath);
+        if (closure.input.value.attempts.length !== 2)
+          throw new Error("measurement operation source closure is invalid");
         await update({
           measurement: {
             path: measurementPath,

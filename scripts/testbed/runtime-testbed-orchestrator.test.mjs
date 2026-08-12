@@ -190,6 +190,9 @@ describe("runtime testbed scheduler contract", () => {
     assert.match(source, /measurementPending/);
     assert.match(source, /materializeHostCalibrationSourceSnapshot/);
     assert.match(source, /sourceInputPath: hostSource\.inputPath/);
+    assert.match(source, /measurement-evidence-bundle/);
+    assert.match(source, /-Measurement/);
+    assert.match(source, /if \(mode === "measurement"\) throw error/);
   });
 
   it("tells the guest which reconstructed pass owns the runtime build", () => {

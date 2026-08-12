@@ -3,6 +3,7 @@ param(
   [string]$Commit,
   [ValidateRange(1, 2)][int]$Pass = 1,
   [string[]]$Focus = @(),
+  [switch]$Measurement,
   [string]$GuestInputPath = "C:\ProgramData\VEM\testbed\guest-input.json"
 )
 
@@ -240,6 +241,25 @@ function New-BoundedEvidenceBundle([string]$ManifestPath, [string]$BundleRoot) {
     --smoke $smokePath `
     --out $BundleRoot
   if ($LASTEXITCODE -ne 0) { throw "workflow evidence bundle is not uploadable" }
+}
+
+function New-MeasurementEvidenceBundle([string]$BundleRoot) {
+  $artifactRoot = Join-Path $handoffRoot "ai-virtual-try-on-artifacts"
+  $measurement = Join-Path $artifactRoot "ai-regional-measurement.json"
+  $source = Join-Path $artifactRoot "calibration-source"
+  $report = Join-Path $handoffRoot "ai-virtual-try-on.json"
+  Require-Path $measurement
+  Require-Path $source
+  Require-Path $report
+  $value = Get-Content -Raw -LiteralPath $measurement -Encoding utf8 | ConvertFrom-Json
+  if ($value.schemaVersion -ne "vem-ai-regional-measurement/v1" -or $value.status -ne "measured_not_accepted" -or [bool]$value.acceptancePassed -or -not [bool]$value.calibrationRequired) {
+    throw "measurement evidence is not canonical pending output"
+  }
+  Remove-Item -LiteralPath $BundleRoot -Recurse -Force -ErrorAction SilentlyContinue
+  New-Item -ItemType Directory -Force -Path $BundleRoot | Out-Null
+  Copy-Item -LiteralPath $measurement -Destination (Join-Path $BundleRoot "ai-regional-measurement.json") -Force
+  Copy-Item -LiteralPath $report -Destination (Join-Path $BundleRoot "ai-virtual-try-on.json") -Force
+  Copy-Item -LiteralPath $source -Destination (Join-Path $BundleRoot "calibration-source") -Recurse -Force
 }
 
 function Clear-TestbedRunReports {
@@ -1334,7 +1354,10 @@ try {
   $workflowFailure = "local testbed workflow aggregate command failed: $($_.Exception.Message)"
 }
 
-if ($Mode -ne "clear_cache") {
+if ($Measurement) {
+  try { New-MeasurementEvidenceBundle -BundleRoot (Join-Path $handoffRoot "measurement-evidence-bundle") }
+  catch { $bundleFailure = "measurement evidence bundle failed: $($_.Exception.Message)" }
+} elseif ($Mode -ne "clear_cache") {
   $manifestPath = Join-Path $handoffRoot "full-workflow-evidence-manifest.json"
   if (Test-Path -LiteralPath $manifestPath) {
     try {
