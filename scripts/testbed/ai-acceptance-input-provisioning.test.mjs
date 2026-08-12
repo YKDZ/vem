@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -11,6 +17,7 @@ import {
   materializeAiAcceptanceInputSnapshot,
   validateAiAcceptanceInputManifest,
 } from "./ai-acceptance-input-provisioning.mjs";
+import { readCalibrationSourceClosure } from "./calibrate-ai-regional-evidence.mjs";
 
 function digest(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -73,6 +80,49 @@ function compactCanonical(value) {
     return item;
   };
   return `${JSON.stringify(sort(value))}\n`;
+}
+
+function calibrationSourceBundle(root) {
+  const bundleRoot = join(root, "calibration-source");
+  const documents = [
+    ["acceptanceReport", "acceptance-report.json", "{}\n"],
+    ["precutoverReceipt", "precutover-receipt.json", "{}\n"],
+    ["releaseProof", "release-proof.json", "{}\n"],
+    ["recoverySupport", "recovery-support.json", "{}\n"],
+    [
+      "evidenceManifest",
+      "evidence-manifest.json",
+      compactCanonical({ files: [] }),
+    ],
+  ];
+  const sidecars = [
+    ["regional/short/short.json", "{}\n"],
+    ["regional/long/long.json", "{}\n"],
+  ];
+  const references = Object.fromEntries(
+    documents.map(([key, name, content]) => [
+      key,
+      { path: join(bundleRoot, name), sha256: digest(content) },
+    ]),
+  );
+  const attempts = sidecars.map(([name, content], index) => ({
+    attempt: {
+      regionalEvidence: { path: name, sha256: digest(content) },
+    },
+    attemptSha256: String(index + 1).repeat(64),
+    caseKey: index === 0 ? "short" : "long",
+  }));
+  const input = canonicalAiAcceptanceInputManifest({
+    artifactRoot: bundleRoot,
+    ...references,
+    attempts,
+    schemaVersion: "vem-ai-regional-evidence-calibration-input/v1",
+  });
+  return directory(root, "calibration-source", [
+    ...documents.map(([, name, content]) => [name, content]),
+    ...sidecars,
+    ["calibration-source-input.json", input],
+  ]);
 }
 
 function manifest(root, phase = "measurement") {
@@ -174,13 +224,11 @@ function manifest(root, phase = "measurement") {
     value.calibrationReceipt = file(
       root,
       "calibration-receipt.json",
-      "receipt",
+      canonicalAiAcceptanceInputManifest({
+        calibrationInputSha256: "0".repeat(64),
+      }),
     );
-    value.calibrationSourceInput = file(
-      root,
-      "calibration-source-input.json",
-      "source",
-    );
+    value.calibrationSourceInput = calibrationSourceBundle(root);
   }
   return value;
 }
@@ -210,7 +258,7 @@ test("accepts a measurement v4 manifest without calibration and projects complet
   }
 });
 
-test("requires exact-three calibration inputs only for formal v4 manifests", async () => {
+test("packages the formal source closure as the third exact-three member", async () => {
   const root = mkdtempSync(join(tmpdir(), "vem-ai-input-formal-"));
   try {
     const value = manifest(root, "formal");
@@ -219,6 +267,66 @@ test("requires exact-three calibration inputs only for formal v4 manifests", asy
     );
     assert.equal(checked.guestInput.phase, "formal");
     assert.equal(checked.transfers.length, 10);
+    assert.equal(
+      checked.guestInput.calibrationSourceInput.endsWith(
+        "\\calibration-source",
+      ),
+      true,
+    );
+    assert.equal(
+      checked.guestInput.identities.calibrationSourceInput.members.length,
+      8,
+    );
+    const snapshot = await materializeAiAcceptanceInputSnapshot(
+      checked,
+      join(root, "snapshots"),
+    );
+    rmSync(value.calibrationSourceInput.hostPath, {
+      recursive: true,
+      force: true,
+    });
+    const bundleTransfer = snapshot.transfers.find(
+      (transfer) =>
+        transfer.guestPath === snapshot.guestInput.calibrationSourceInput,
+    );
+    assert.equal(bundleTransfer.members.length, 8);
+    const rewritten = JSON.parse(
+      readFileSync(
+        join(bundleTransfer.hostPath, "calibration-source-input.json"),
+        "utf8",
+      ),
+    );
+    assert.equal(
+      rewritten.artifactRoot,
+      snapshot.guestInput.calibrationSourceInput,
+    );
+    assert.equal(
+      rewritten.acceptanceReport.path.includes(
+        value.calibrationSourceInput.hostPath,
+      ),
+      false,
+    );
+    const guestAssemblyInput = join(
+      bundleTransfer.hostPath,
+      "calibration-source-input.json",
+    );
+    const localGuestInput = JSON.parse(
+      readFileSync(guestAssemblyInput, "utf8"),
+    );
+    localGuestInput.artifactRoot = bundleTransfer.hostPath;
+    for (const [key, name] of [
+      ["acceptanceReport", "acceptance-report.json"],
+      ["precutoverReceipt", "precutover-receipt.json"],
+      ["releaseProof", "release-proof.json"],
+      ["recoverySupport", "recovery-support.json"],
+      ["evidenceManifest", "evidence-manifest.json"],
+    ])
+      localGuestInput[key].path = join(bundleTransfer.hostPath, name);
+    writeFileSync(
+      guestAssemblyInput,
+      canonicalAiAcceptanceInputManifest(localGuestInput),
+    );
+    assert.doesNotThrow(() => readCalibrationSourceClosure(guestAssemblyInput));
     delete value.calibrationReceipt;
     await assert.rejects(
       validateAiAcceptanceInputManifest(

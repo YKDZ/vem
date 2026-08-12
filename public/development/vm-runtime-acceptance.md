@@ -30,8 +30,11 @@
 当执行完整验收或 `fast --focus aiVirtualTryOn` 时，配置还必须提供
 `aiVirtualTryOnInputManifest`，它是宿主机本地的绝对路径。清单版本为
 `vem-runtime-testbed-ai-input/v4`。它先声明 `phase`：`measurement` 不携带任何
-校准输入；`formal` 必须且只能额外携带三项校准输入（regional policy、receipt 和
-source input）。两种阶段都逐项声明候选 exact-four 目录、Windows proof exact-three
+校准输入；`formal` 必须且只能额外携带三项校准输入（regional policy、receipt 和一个
+exact-eight 的自包含 calibration-source bundle）。该 bundle 的根成员仍名为
+`calibration-source-input.json`，连同五份绑定文档和两份 regional sidecar；宿主 admission
+复核闭包后把全部内部绝对引用重写到客体私有的固定输入根，客体从 bundle 内重新读取闭包，
+不会依赖原 host 路径。两种阶段都逐项声明候选 exact-four 目录、Windows proof exact-three
 目录、由 `vem.testbed.ai-acceptance-authority/v1` 验证器签发的验收 authority receipt、
 Vision runtime、录制 fixture、model-pack archive 和已物化 model root 的 host 路径、
 SHA-256 与字节数；目录还逐项锁定成员。authority receipt 的 scope 固定为
