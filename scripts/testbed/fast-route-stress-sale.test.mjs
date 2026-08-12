@@ -1367,6 +1367,144 @@ describe("fast route stress sale tracer", () => {
     }
   });
 
+  it("waits through null and another payment until the released known payment projects", async () => {
+    const evidence = validEvidence();
+    const { client } = await connectedInstalledOwnerClient();
+    const events = [];
+    const options = {};
+    const base = ordinarySaleDependencies(evidence, events, options);
+    const projected = [
+      null,
+      {
+        paymentNo: "PAY-OLD",
+        orderNo: "ORD-OLD",
+        nextAction: "wait_payment",
+      },
+      {
+        paymentNo: "PAY-1",
+        orderNo: "ORD-1",
+        nextAction: "wait_payment",
+      },
+      {
+        paymentNo: "PAY-1",
+        orderNo: "ORD-1",
+        nextAction: "completed",
+      },
+    ];
+    let reads = 0;
+    let wrongPaymentCancel = false;
+    const dependencies = {
+      ...base,
+      waitForBeforeF0Boundary: async () => {
+        throw new Error("injected post-release projection failure");
+      },
+      readCurrentTransaction: async (_handoff, requestOptions) => {
+        if (!requestOptions) return { paymentNo: "PAY-1" };
+        assert.equal(requestOptions.signal instanceof AbortSignal, true);
+        const value = projected[Math.min(reads, projected.length - 1)];
+        reads += 1;
+        return value;
+      },
+      cancelTransaction: async (_handoff, transaction, requestOptions) => {
+        assert.equal(requestOptions.signal instanceof AbortSignal, true);
+        assert.equal(reads, 3);
+        if (transaction.paymentNo !== "PAY-1") wrongPaymentCancel = true;
+        events.push("transaction:cancel");
+      },
+    };
+    const oldNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "test";
+    const common = {
+      client,
+      guestInput: {
+        runId: "ordinary-sale-projection-window",
+        machineCode: "VEM-TESTBED-LOCAL",
+      },
+      handoff: {},
+      serialSession: {
+        sessionId: "serial-session-1",
+        binding: { serialSessionId: "serial-session-1" },
+      },
+    };
+    try {
+      await assert.rejects(
+        runInstalledOwnerOrdinarySaleCompletion({
+          ...common,
+          testDependencies: dependencies,
+        }),
+        /injected post-release projection failure/,
+      );
+      assert.equal(reads, 4);
+      assert.equal(wrongPaymentCancel, false);
+      const retry = await runInstalledOwnerOrdinarySaleCompletion({
+        ...common,
+        testDependencies: ordinarySaleDependencies(evidence, []),
+      });
+      assert.equal(retry.ok, true);
+    } finally {
+      if (oldNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = oldNodeEnv;
+      await client.close();
+    }
+  });
+
+  it("aborts before a known payment projects and never cancels the other active payment", async () => {
+    const evidence = validEvidence();
+    const { client } = await connectedInstalledOwnerClient();
+    const options = {};
+    const base = ordinarySaleDependencies(evidence, [], options);
+    let reads = 0;
+    let cancels = 0;
+    const dependencies = {
+      ...base,
+      waitForBeforeF0Boundary: async () => {
+        throw new Error("injected projection timeout boundary");
+      },
+      readCurrentTransaction: async (_handoff, requestOptions) => {
+        if (!requestOptions) return { paymentNo: "PAY-1" };
+        assert.equal(requestOptions.signal instanceof AbortSignal, true);
+        reads += 1;
+        return {
+          paymentNo: "PAY-OTHER",
+          orderNo: "ORD-OTHER",
+          nextAction: "wait_payment",
+        };
+      },
+      cancelTransaction: async () => {
+        cancels += 1;
+      },
+    };
+    const oldNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "test";
+    try {
+      await assert.rejects(
+        runInstalledOwnerOrdinarySaleCompletion({
+          client,
+          guestInput: {
+            runId: "ordinary-sale-projection-timeout",
+            machineCode: "VEM-TESTBED-LOCAL",
+          },
+          handoff: {},
+          serialSession: {
+            sessionId: "serial-session-1",
+            binding: { serialSessionId: "serial-session-1" },
+          },
+          testCleanupTimeoutMs: 20,
+          testDependencies: dependencies,
+        }),
+        /projection timeout boundary.*cleanup|cleanup.*deadline/is,
+      );
+      assert.equal(reads, 1);
+      assert.equal(cancels, 0);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      assert.equal(reads, 1);
+    } finally {
+      if (oldNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = oldNodeEnv;
+      await client.close();
+    }
+  });
+
   it("aborts a delayed control-plane request instead of allowing a late mutation", async () => {
     const { server, port } = await listenOnAvailablePort();
     let requestAborted = false;

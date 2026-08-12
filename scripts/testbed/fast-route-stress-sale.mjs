@@ -2662,14 +2662,15 @@ async function cleanupOrdinarySalePayment({
         paymentNo,
         boundedCleanupRequest(deadline),
       );
-    let transaction = await dependencies.readCurrentTransaction(
-      handoff,
-      boundedCleanupRequest(deadline),
-    );
-    if (transaction?.paymentNo !== paymentNo)
-      throw new Error(
-        `released payment create request did not project transaction ${paymentNo}`,
+    let transaction;
+    do {
+      transaction = await dependencies.readCurrentTransaction(
+        handoff,
+        boundedCleanupRequest(deadline),
       );
+      if (transaction?.paymentNo === paymentNo) break;
+      await waitForOrdinarySaleCleanupPoll(deadline);
+    } while (true);
     if (transactionIsActive(transaction)) {
       await dependencies.cancelTransaction(
         handoff,
