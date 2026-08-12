@@ -60,7 +60,11 @@ test("accepts only the production-shaped single pending aggregate", () => {
         executedTracks: [
           {
             key: "aiVirtualTryOn",
+            status: "failed",
             businessStatus: "failed",
+            failureStage: "business",
+            terminal: { ok: false },
+            recovery: { ok: true },
             error: incomplete,
           },
         ],

@@ -228,6 +228,18 @@ export function validateMeasurementEvidenceTransport(bundleRoot) {
   )
     throw new Error("aggregate has unexpected failure");
   if (
+    tracks.length !== 1 ||
+    tracks[0]?.key !== "aiVirtualTryOn" ||
+    tracks[0]?.status !== "failed" ||
+    tracks[0]?.businessStatus !== "failed" ||
+    tracks[0]?.failureStage !== "business" ||
+    tracks[0]?.terminal?.ok !== false ||
+    tracks[0]?.recovery?.ok !== true
+  )
+    throw new Error(
+      "measurement execution track is not exact pending lifecycle",
+    );
+  if (
     tracks.some(
       (track) =>
         track?.failureStage === "infrastructure" ||
