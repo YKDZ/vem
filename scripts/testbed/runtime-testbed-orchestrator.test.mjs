@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
@@ -7,6 +8,8 @@ import {
   createRunId,
   parseOrchestratorOptions,
   powerShellFocusArgument,
+  provisionAiAcceptanceBlock,
+  stageAiAcceptanceInputs,
   validateHostConfig,
 } from "./runtime-testbed-orchestrator.mjs";
 import { parseTriggerOptions } from "./runtime-testbed-trigger.mjs";
@@ -368,6 +371,114 @@ describe("runtime testbed scheduler contract", () => {
       source,
       /AI acceptance inputs changed during host preparation/,
     );
+  });
+
+  it("stages every fixed AI destination and always sends the current blocked guest input", async () => {
+    const calls = [];
+    const config = { stateRoot: "/var/lib/vem-testbed/state" };
+    const contract = {
+      testbed: {
+        guest: {
+          user: "VEMKiosk",
+          host: "win10-testbed.local",
+          identityFile: "/tmp/id",
+          knownHostsFile: "/tmp/known_hosts",
+          stagingPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
+        },
+      },
+    };
+    const preparation = {
+      guestInput: {
+        inputRoot: "C:\\ProgramData\\VEM\\testbed\\ai-inputs\\a".repeat(64),
+      },
+      transfers: Array.from({ length: 7 }, (_, index) => ({
+        hostPath: `/snapshot/${index}`,
+        guestPath: `C:\\ProgramData\\VEM\\testbed\\ai-inputs\\digest\\entry-${index}`,
+        ...(index < 2 || index === 6 ? { members: [] } : {}),
+      })),
+    };
+    await stageAiAcceptanceInputs({
+      config,
+      contract,
+      preparation,
+      run: async (command, args) => calls.push({ command, args }),
+    });
+    await stageAiAcceptanceInputs({
+      config,
+      contract,
+      preparation: null,
+      run: async (command, args) => calls.push({ command, args }),
+    });
+    const destinations = calls
+      .filter((call) => call.command === "scp")
+      .map((call) => call.args.at(-1));
+    assert.ok(
+      destinations.includes(
+        "VEMKiosk@win10-testbed.local:C:\\ProgramData\\VEM\\testbed\\ai-inputs\\digest\\entry-0",
+      ),
+    );
+    assert.ok(
+      destinations.includes(
+        "VEMKiosk@win10-testbed.local:C:\\ProgramData\\VEM\\testbed\\guest-input.json",
+      ),
+    );
+    assert.equal(
+      destinations.filter((value) => value.endsWith("guest-input.json")).length,
+      2,
+    );
+    assert.equal(
+      destinations.some((value) => value.endsWith("undefined")),
+      false,
+    );
+  });
+
+  it("writes a blocked marker before synchronizing the guest projection", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-ai-blocked-projection-"));
+    try {
+      writeFileSync(
+        join(root, "guest-input.json"),
+        '{"schemaVersion":"vem-local-testbed-guest-input/v1","workflowIdentity":{}}\n',
+      );
+      await provisionAiAcceptanceBlock({
+        config: { stateRoot: root },
+        pass: 1,
+        reason: "AI acceptance input blocked: manifest is missing",
+      });
+      const guestInput = JSON.parse(
+        readFileSync(join(root, "guest-input.json"), "utf8"),
+      );
+      assert.equal(
+        guestInput.acceptanceBlocks.aiVirtualTryOn,
+        "AI acceptance input blocked: manifest is missing",
+      );
+      assert.equal(guestInput.workflowIdentity.pass, 1);
+      let staged;
+      await stageAiAcceptanceInputs({
+        config: { stateRoot: root },
+        contract: {
+          testbed: {
+            guest: {
+              user: "VEMKiosk",
+              host: "win10-testbed.local",
+              identityFile: "/tmp/id",
+              knownHostsFile: "/tmp/known_hosts",
+              stagingPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
+            },
+          },
+        },
+        preparation: null,
+        run: async (command, args) => {
+          if (command === "scp")
+            staged = JSON.parse(readFileSync(args.at(-2), "utf8"));
+        },
+      });
+      assert.equal(
+        staged.acceptanceBlocks.aiVirtualTryOn,
+        "AI acceptance input blocked: manifest is missing",
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("keeps terminal status writes from overwriting an old superseded terminal", () => {

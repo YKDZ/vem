@@ -110,6 +110,18 @@ test("validates a canonical host-local AI acceptance input manifest", async () =
       `C:\\ProgramData\\VEM\\testbed\\ai-inputs\\${checked.manifestSha256}\\candidate`,
     );
     assert.equal(checked.transfers.length, 7);
+    assert.deepEqual(
+      checked.transfers.map((transfer) => transfer.guestPath),
+      [
+        checked.guestInput.candidateInputDirectory,
+        checked.guestInput.windowsProofInputDirectory,
+        checked.guestInput.approvedPrecutoverReceipt,
+        checked.guestInput.installedVisionRuntimeArchive,
+        checked.guestInput.recordedFixtureArchive,
+        checked.guestInput.modelPackArchive,
+        checked.guestInput.materializedModelPackRoot,
+      ],
+    );
     assert.equal(JSON.stringify(checked.guestInput).includes(root), false);
   } finally {
     rmSync(root, { recursive: true, force: true });

@@ -515,7 +515,7 @@ async function provisionAiAcceptanceGuestInput({ config, preparation, pass }) {
   });
 }
 
-async function provisionAiAcceptanceBlock({ config, pass, reason }) {
+export async function provisionAiAcceptanceBlock({ config, pass, reason }) {
   const path = join(config.stateRoot, "guest-input.json");
   const guestInput = JSON.parse(await readFile(path, "utf8"));
   await writeJson(path, {
@@ -528,22 +528,30 @@ async function provisionAiAcceptanceBlock({ config, pass, reason }) {
   });
 }
 
-async function stageAiAcceptanceInputs({ config, contract, preparation }) {
+export async function stageAiAcceptanceInputs({
+  config,
+  contract,
+  preparation,
+  run = runProcess,
+}) {
   const guest = contract.testbed.guest;
   const remote = `${guest.user}@${guest.host}`;
   const ssh = sshArguments(guest);
   const scp = scpArguments(guest);
-  const transfers = [...preparation.transfers];
-  const inputRoot = preparation.guestInput.inputRoot;
+  const transfers = preparation ? [...preparation.transfers] : [];
   const cleanup = [
-    `$root = '${inputRoot.replaceAll("'", "''")}'`,
-    "New-Item -ItemType Directory -Force -Path (Split-Path -Parent $root) | Out-Null",
-    "Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue",
-    "New-Item -ItemType Directory -Force -Path $root | Out-Null",
+    ...(preparation
+      ? [
+          `$root = '${preparation.guestInput.inputRoot.replaceAll("'", "''")}'`,
+          "New-Item -ItemType Directory -Force -Path (Split-Path -Parent $root) | Out-Null",
+          "Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue",
+          "New-Item -ItemType Directory -Force -Path $root | Out-Null",
+        ]
+      : []),
     `$guestInput = '${guest.stagingPath.replaceAll("'", "''")}'`,
     "New-Item -ItemType Directory -Force -Path (Split-Path -Parent $guestInput) | Out-Null",
   ].join("\n");
-  await runProcess(
+  await run(
     "ssh",
     [
       ...ssh,
@@ -559,7 +567,7 @@ async function stageAiAcceptanceInputs({ config, contract, preparation }) {
     },
   );
   for (const transfer of transfers) {
-    await runProcess(
+    await run(
       "scp",
       [
         ...scp,
@@ -573,7 +581,7 @@ async function stageAiAcceptanceInputs({ config, contract, preparation }) {
       },
     );
   }
-  await runProcess(
+  await run(
     "scp",
     [
       ...scp,
@@ -638,13 +646,11 @@ async function stageAndRunGuest({
       timeoutLabel: "guest archive parent setup",
     },
   );
-  if (aiAcceptanceInputs) {
-    await stageAiAcceptanceInputs({
-      config,
-      contract,
-      preparation: aiAcceptanceInputs,
-    });
-  }
+  await stageAiAcceptanceInputs({
+    config,
+    contract,
+    preparation: aiAcceptanceInputs,
+  });
   await runProcess("scp", [...scp, archive, `${remote}:${remoteArchive}`], {
     timeoutMs: GUEST_TRANSFER_TIMEOUT_MS,
     timeoutLabel: "guest source archive transfer",

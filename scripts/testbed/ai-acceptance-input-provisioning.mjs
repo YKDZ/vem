@@ -454,18 +454,34 @@ export async function validateAiAcceptanceInputManifest(
     recordedFixtureArchive,
     modelPack,
   };
+  const projection = guestProjection(artifacts, manifestSha256);
   return {
     manifestSha256,
-    artifactDigests: guestProjection(artifacts, manifestSha256).identities,
-    guestInput: guestProjection(artifacts, manifestSha256),
+    artifactDigests: projection.identities,
+    guestInput: projection,
     transfers: [
-      candidateInput,
-      windowsProofInput,
-      approvedPrecutoverReceipt,
-      installedVisionRuntimeArchive,
-      recordedFixtureArchive,
-      modelPack.archive,
-      modelPack.materializedRoot,
+      { ...candidateInput, guestPath: projection.candidateInputDirectory },
+      {
+        ...windowsProofInput,
+        guestPath: projection.windowsProofInputDirectory,
+      },
+      {
+        ...approvedPrecutoverReceipt,
+        guestPath: projection.approvedPrecutoverReceipt,
+      },
+      {
+        ...installedVisionRuntimeArchive,
+        guestPath: projection.installedVisionRuntimeArchive,
+      },
+      {
+        ...recordedFixtureArchive,
+        guestPath: projection.recordedFixtureArchive,
+      },
+      { ...modelPack.archive, guestPath: projection.modelPackArchive },
+      {
+        ...modelPack.materializedRoot,
+        guestPath: projection.materializedModelPackRoot,
+      },
     ],
   };
 }
