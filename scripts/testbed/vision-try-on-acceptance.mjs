@@ -2947,28 +2947,82 @@ async function readResultImageEvidence(
   );
 }
 
-async function readRenderedResultPixels(client) {
-  return evaluateExpression(
-    client,
-    `(async () => {
-      // VEM_AI_RENDERED_RESULT_PIXELS_V1
-      const image = document.querySelector("[data-test='try-on-result-image']");
-      if (!(image instanceof HTMLImageElement) || image.complete !== true || image.naturalWidth < 1 || image.naturalHeight < 1)
-        return { ok: false, reason: "image" };
-      const canvas = document.createElement("canvas");
-      canvas.width = image.naturalWidth;
-      canvas.height = image.naturalHeight;
-      const context = canvas.getContext("2d");
-      if (!context) return { ok: false, reason: "context" };
-      context.drawImage(image, 0, 0);
-      const rgba = context.getImageData(0, 0, canvas.width, canvas.height).data;
-      const rgbaSha256 = Array.from(
-        new Uint8Array(await crypto.subtle.digest("SHA-256", rgba)),
-        (value) => value.toString(16).padStart(2, "0"),
-      ).join("");
-      return { ok: true, width: canvas.width, height: canvas.height, rgbaSha256 };
-    })()`,
-  );
+function startResultNetworkCapture(client) {
+  const responses = new Map();
+  const redirected = new Set();
+  const failures = new Set();
+  const finished = new Set();
+  const offResponse = client.on("Network.responseReceived", (event) => {
+    if (event?.type === "Image" && typeof event?.requestId === "string")
+      responses.set(event.requestId, event.response);
+  });
+  const offFinished = client.on("Network.loadingFinished", (event) => {
+    if (typeof event?.requestId === "string") finished.add(event.requestId);
+  });
+  const offFailed = client.on("Network.loadingFailed", (event) => {
+    if (typeof event?.requestId === "string") failures.add(event.requestId);
+  });
+  const offRequest = client.on("Network.requestWillBeSent", (event) => {
+    if (event?.redirectResponse && typeof event?.requestId === "string")
+      redirected.add(event.requestId);
+  });
+  return {
+    async read(resultUrl, timeoutMs, pollMs) {
+      const matched = await waitForCondition(
+        "unique AI result Network response",
+        async () => {
+          const values = [...responses.entries()].filter(
+            ([, response]) => response?.url === resultUrl,
+          );
+          const done = values.filter(([requestId]) => finished.has(requestId));
+          return {
+            ok: done.length === 1 && values.length === 1,
+            value: { done, values },
+          };
+        },
+        timeoutMs,
+        pollMs,
+      );
+      const [[requestId, response]] = matched.done;
+      await new Promise((resolvePromise) =>
+        globalThis.setTimeout(resolvePromise, pollMs),
+      );
+      const exactResponses = [...responses.entries()].filter(
+        ([, candidate]) => candidate?.url === resultUrl,
+      );
+      if (
+        exactResponses.length !== 1 ||
+        failures.has(requestId) ||
+        redirected.has(requestId) ||
+        response.status !== 200 ||
+        response.mimeType !== "image/png" ||
+        response.fromDiskCache === true ||
+        response.fromServiceWorker === true
+      )
+        throw new Error("installed AI Network response is invalid");
+      const body = await client.send(
+        "Network.getResponseBody",
+        { requestId },
+        { timeoutMs },
+      );
+      if (body.base64Encoded !== true || typeof body.body !== "string")
+        throw new Error("installed AI Network response body is invalid");
+      const bytes = Buffer.from(body.body, "base64");
+      if (
+        bytes.byteLength === 0 ||
+        bytes.toString("base64").replace(/=+$/, "") !==
+          body.body.replace(/=+$/, "")
+      )
+        throw new Error("installed AI Network response body is invalid base64");
+      return { bytes, requestId, response };
+    },
+    close() {
+      offResponse();
+      offFinished();
+      offFailed();
+      offRequest();
+    },
+  };
 }
 
 function readRegionalEvidenceMember(rootPath, attemptId, testHooks = null) {
@@ -3138,108 +3192,145 @@ async function collectInstalledAiTryOnAttemptInternal(
     if (value <= 0) throw new Error("installed AI attempt timed out");
     return value;
   };
-  await installTryOnLifecycleObserver(client);
-  const activation = await activateVisibleSelector(
-    client,
-    '[data-test="try-on-ai"]',
-    { kind: "touch", timeoutMs: remaining(), pollMs },
-  );
-  if (
-    activation.input?.kind !== "touch" ||
-    activation.input?.method !== "Input.dispatchTouchEvent"
-  )
-    throw new Error("installed AI attempt was not activated by touch");
-  await waitForRoute(client, expectedTryOnRoute, {
-    timeoutMs: remaining(),
-    pollMs,
-  });
-  const surface = await waitForTryOnSurface(client, remaining(), { pollMs });
-  if (surface.route !== expectedTryOnRoute)
-    throw new Error("installed AI result route mismatched");
-  validateTryOnLifecycleEvidence(surface.lifecycle, surface.attemptId);
-  const renderedPixels = await readRenderedResultPixels(client);
-  if (
-    renderedPixels?.ok !== true ||
-    renderedPixels.width !== surface.resultNaturalWidth ||
-    renderedPixels.height !== surface.resultNaturalHeight ||
-    !/^[a-f0-9]{64}$/.test(renderedPixels.rgbaSha256 ?? "")
-  )
-    throw new Error("installed AI rendered image pixels are invalid");
-  const expectedResultPath = `/v2/try-on/results/${surface.attemptId}`;
-  let resultUrl;
+  await client.send("Network.enable", {}, { timeoutMs: remaining() });
+  const networkCapture = startResultNetworkCapture(client);
   try {
-    resultUrl = new URL(surface.resultUrl);
-  } catch {
-    throw new Error("installed AI result URL is not bound to its attempt");
-  }
-  if (
-    resultUrl.protocol !== "http:" ||
-    !["127.0.0.1", "localhost", "[::1]"].includes(resultUrl.hostname) ||
-    resultUrl.pathname !== expectedResultPath ||
-    resultUrl.search !== "" ||
-    resultUrl.hash !== ""
-  )
-    throw new Error("installed AI result URL is not bound to its attempt");
-  const resultEvidence = await readResultImageEvidence(
-    client,
-    surface.resultUrl,
-    remaining(),
-    pollMs,
-  );
-  let finalResultUrl;
-  try {
-    finalResultUrl = new URL(resultEvidence.finalUrl);
-  } catch {
-    throw new Error("installed AI result image evidence is invalid");
-  }
-  if (
-    resultEvidence.ok !== true ||
-    resultEvidence.httpStatus !== 200 ||
-    resultEvidence.contentType !== "image/png" ||
-    resultEvidence.byteLength < 64 ||
-    resultEvidence.width <= 0 ||
-    resultEvidence.height <= 0 ||
-    finalResultUrl.protocol !== "http:" ||
-    !["127.0.0.1", "localhost", "[::1]"].includes(finalResultUrl.hostname) ||
-    finalResultUrl.pathname !== expectedResultPath ||
-    finalResultUrl.search !== "" ||
-    finalResultUrl.hash !== ""
-  )
-    throw new Error("installed AI result image evidence is invalid");
-  if (
-    resultEvidence.width !== renderedPixels.width ||
-    resultEvidence.height !== renderedPixels.height ||
-    resultEvidence.rgbaSha256 !== renderedPixels.rgbaSha256
-  )
-    throw new Error(
-      "installed AI rendered image pixels mismatched result bytes",
+    await installTryOnLifecycleObserver(client);
+    const activation = await activateVisibleSelector(
+      client,
+      '[data-test="try-on-ai"]',
+      { kind: "touch", timeoutMs: remaining(), pollMs },
     );
-  const regionalLease = await waitForCondition(
-    "matching AI regional evidence sidecar",
-    async () => {
-      const value = readRegionalEvidenceMember(
-        regionalEvidenceRoot,
-        surface.attemptId,
-        regionalEvidenceTestHooks,
+    if (
+      activation.input?.kind !== "touch" ||
+      activation.input?.method !== "Input.dispatchTouchEvent"
+    )
+      throw new Error("installed AI attempt was not activated by touch");
+    await waitForRoute(client, expectedTryOnRoute, {
+      timeoutMs: remaining(),
+      pollMs,
+    });
+    const surface = await waitForTryOnSurface(client, remaining(), { pollMs });
+    if (surface.route !== expectedTryOnRoute)
+      throw new Error("installed AI result route mismatched");
+    validateTryOnLifecycleEvidence(surface.lifecycle, surface.attemptId);
+    const expectedResultPath = `/v2/try-on/results/${surface.attemptId}`;
+    let resultUrl;
+    try {
+      resultUrl = new URL(surface.resultUrl);
+    } catch {
+      throw new Error("installed AI result URL is not bound to its attempt");
+    }
+    if (
+      resultUrl.protocol !== "http:" ||
+      !["127.0.0.1", "localhost", "[::1]"].includes(resultUrl.hostname) ||
+      resultUrl.pathname !== expectedResultPath ||
+      resultUrl.search !== "" ||
+      resultUrl.hash !== ""
+    )
+      throw new Error("installed AI result URL is not bound to its attempt");
+    const network = await networkCapture.read(
+      surface.resultUrl,
+      remaining(),
+      pollMs,
+    );
+    const capturedBody = network.bytes;
+    const capturedSha256 = createHash("sha256")
+      .update(capturedBody)
+      .digest("hex");
+    const capturedDecoded = await readResultImageEvidence(
+      client,
+      `data:image/png;base64,${capturedBody.toString("base64")}`,
+      remaining(),
+      pollMs,
+    );
+    if (
+      capturedDecoded.ok !== true ||
+      capturedDecoded.width !== surface.resultNaturalWidth ||
+      capturedDecoded.height !== surface.resultNaturalHeight ||
+      !/^[a-f0-9]{64}$/.test(capturedDecoded.rgbaSha256 ?? "")
+    )
+      throw new Error("installed AI captured result image is invalid");
+    const resultEvidence = await readResultImageEvidence(
+      client,
+      surface.resultUrl,
+      remaining(),
+      pollMs,
+    );
+    let finalResultUrl;
+    try {
+      finalResultUrl = new URL(resultEvidence.finalUrl);
+    } catch {
+      throw new Error("installed AI result image evidence is invalid");
+    }
+    if (
+      resultEvidence.ok !== true ||
+      resultEvidence.httpStatus !== 200 ||
+      resultEvidence.contentType !== "image/png" ||
+      resultEvidence.byteLength < 64 ||
+      resultEvidence.width <= 0 ||
+      resultEvidence.height <= 0 ||
+      finalResultUrl.protocol !== "http:" ||
+      !["127.0.0.1", "localhost", "[::1]"].includes(finalResultUrl.hostname) ||
+      finalResultUrl.pathname !== expectedResultPath ||
+      finalResultUrl.search !== "" ||
+      finalResultUrl.hash !== ""
+    )
+      throw new Error("installed AI result image evidence is invalid");
+    if (
+      resultEvidence.sha256 !== capturedSha256 ||
+      resultEvidence.width !== capturedDecoded.width ||
+      resultEvidence.height !== capturedDecoded.height ||
+      resultEvidence.rgbaSha256 !== capturedDecoded.rgbaSha256
+    )
+      throw new Error(
+        "installed AI rendered image pixels mismatched result bytes",
       );
-      return { ok: value !== null, value };
-    },
-    remaining(),
-    pollMs,
-  );
-  try {
-    regionalEvidenceTestHooks?.beforeReturn?.(regionalLease.evidence);
-    const regionalEvidence = regionalLease.finalizeAndClose();
-    return {
-      attemptId: surface.attemptId,
-      activation,
-      lifecycle: surface.lifecycle,
-      resultEvidence,
-      regionalEvidence,
-      surface,
-    };
+    const regionalLease = await waitForCondition(
+      "matching AI regional evidence sidecar",
+      async () => {
+        const value = readRegionalEvidenceMember(
+          regionalEvidenceRoot,
+          surface.attemptId,
+          regionalEvidenceTestHooks,
+        );
+        return { ok: value !== null, value };
+      },
+      remaining(),
+      pollMs,
+    );
+    try {
+      regionalEvidenceTestHooks?.beforeReturn?.(regionalLease.evidence);
+      const regionalEvidence = regionalLease.finalizeAndClose();
+      return {
+        attemptId: surface.attemptId,
+        activation,
+        lifecycle: surface.lifecycle,
+        resultEvidence: {
+          ...resultEvidence,
+          network: {
+            requestId: network.requestId,
+            httpStatus: network.response.status,
+            contentType: network.response.mimeType,
+            byteLength: capturedBody.byteLength,
+            sha256: capturedSha256,
+          },
+        },
+        regionalEvidence,
+        surface,
+      };
+    } finally {
+      regionalLease.close();
+    }
   } finally {
-    regionalLease.close();
+    networkCapture.close();
+    await client
+      .send(
+        "Network.disable",
+        {},
+        { timeoutMs: Math.max(1, deadline - Date.now()) },
+      )
+      .catch(() => {});
   }
 }
 

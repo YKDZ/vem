@@ -83,7 +83,7 @@ class AcceptanceFakeWebSocket {
   send(raw) {
     const message = JSON.parse(raw);
     this.sent.push(message);
-    const response = this.handler(message);
+    const response = this.handler(message, this);
     if (response)
       queueMicrotask(() =>
         this.emit("message", { data: JSON.stringify(response) }),
@@ -110,10 +110,16 @@ async function withInstalledAiHarness(options, callback) {
   const lifecycleAttemptId = options.lifecycleAttemptId ?? attemptId;
   const resultAttemptId = options.resultAttemptId ?? attemptId;
   const route = "#/try-on?catalogKey=product-shirts&variantId=variant-long";
-  const png = Buffer.from(
+  const networkPng = Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
     "base64",
   );
+  const laterPng = options.laterGetDifferentBytes
+    ? Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2iL8AAAAASUVORK5CYII=",
+        "base64",
+      )
+    : networkPng;
   const server = createHttpServer((request, response) => {
     if (request.url !== `/v2/try-on/results/${resultAttemptId}`) {
       response.writeHead(404).end();
@@ -121,9 +127,9 @@ async function withInstalledAiHarness(options, callback) {
     }
     response.writeHead(200, {
       "content-type": options.contentType ?? "image/png",
-      "content-length": String(png.byteLength),
+      "content-length": String(laterPng.byteLength),
     });
-    response.end(png);
+    response.end(laterPng);
   });
   await new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -165,9 +171,90 @@ async function withInstalledAiHarness(options, callback) {
         }
       : {}),
   }));
-  const socket = new AcceptanceFakeWebSocket((message) => {
+  let decodeCalls = 0;
+  const socket = new AcceptanceFakeWebSocket((message, activeSocket) => {
     if (message.method !== "Runtime.evaluate")
-      return { id: message.id, result: {} };
+      if (
+        message.method === "Input.dispatchTouchEvent" &&
+        message.params.type === "touchStart"
+      ) {
+        queueMicrotask(() => {
+          activeSocket.emit("message", {
+            data: JSON.stringify({
+              method: "Network.responseReceived",
+              params: {
+                requestId: "ai-result-request",
+                type: "Image",
+                response: {
+                  url: options.networkWrongUrl
+                    ? `${resultUrl}/wrong-attempt`
+                    : resultUrl,
+                  status: 200,
+                  mimeType: options.contentType ?? "image/png",
+                  fromDiskCache: options.fromDiskCache === true,
+                  fromServiceWorker: false,
+                  headers: {
+                    "Content-Type": options.contentType ?? "image/png",
+                  },
+                },
+              },
+            }),
+          });
+          activeSocket.emit("message", {
+            data: JSON.stringify({
+              method: options.loadingFailed
+                ? "Network.loadingFailed"
+                : "Network.loadingFinished",
+              params: { requestId: "ai-result-request" },
+            }),
+          });
+          if (options.duplicateNetworkResponse)
+            activeSocket.emit("message", {
+              data: JSON.stringify({
+                method: "Network.responseReceived",
+                params: {
+                  requestId: "ai-result-request-duplicate",
+                  type: "Image",
+                  response: {
+                    url: resultUrl,
+                    status: 200,
+                    mimeType: "image/png",
+                    fromDiskCache: false,
+                    fromServiceWorker: false,
+                  },
+                },
+              }),
+            });
+          if (options.duplicateNetworkResponse)
+            activeSocket.emit("message", {
+              data: JSON.stringify({
+                method: "Network.loadingFinished",
+                params: { requestId: "ai-result-request-duplicate" },
+              }),
+            });
+          if (options.redirected)
+            activeSocket.emit("message", {
+              data: JSON.stringify({
+                method: "Network.requestWillBeSent",
+                params: {
+                  requestId: "ai-result-request",
+                  redirectResponse: { status: 302 },
+                },
+              }),
+            });
+        });
+        return { id: message.id, result: {} };
+      } else if (message.method === "Network.getResponseBody") {
+        if (options.missingBody)
+          return { id: message.id, error: { message: "No resource" } };
+        return {
+          id: message.id,
+          result: {
+            body: options.invalidBase64 ? "***" : networkPng.toString("base64"),
+            base64Encoded: true,
+          },
+        };
+      } else return { id: message.id, result: {} };
     const expression = message.params.expression;
     if (expression === INSTALL_TRY_ON_LIFECYCLE_OBSERVER_EXPRESSION)
       return cdpValue(true, message.id);
@@ -216,33 +303,29 @@ async function withInstalledAiHarness(options, callback) {
         },
         message.id,
       );
-    if (expression.includes("VEM_AI_RENDERED_RESULT_PIXELS_V1"))
-      return cdpValue(
-        {
-          ok: true,
-          width: 320,
-          height: 480,
-          rgbaSha256: "a".repeat(64),
-        },
-        message.id,
-      );
-    if (expression.includes("createImageBitmap"))
+    if (expression.includes("createImageBitmap")) {
+      decodeCalls += 1;
+      const decodingCapturedBody = decodeCalls === 1;
       return cdpValue(
         options.decodeFailure
           ? { ok: false, reason: "decode" }
           : {
               ok: true,
-              width: options.domPixelsMismatch ? 1 : 320,
-              height: options.domPixelsMismatch ? 1 : 480,
+              width:
+                options.domPixelsMismatch && !decodingCapturedBody ? 1 : 320,
+              height:
+                options.domPixelsMismatch && !decodingCapturedBody ? 1 : 480,
               nonBlackPixelCount: 8,
-              rgbaSha256: options.domPixelsMismatch
-                ? "b".repeat(64)
-                : options.sameDimensionsDifferentPixels
-                  ? "c".repeat(64)
+              rgbaSha256:
+                !decodingCapturedBody &&
+                (options.domPixelsMismatch ||
+                  options.sameDimensionsDifferentPixels)
+                  ? "b".repeat(64)
                   : "a".repeat(64),
             },
         message.id,
       );
+    }
     throw new Error(`unexpected Runtime.evaluate expression: ${expression}`);
   });
   const client = new CdpClient("ws://127.0.0.1/devtools/page/negative", {
@@ -388,9 +471,42 @@ describe("vision try-on acceptance script", () => {
           }
         : {}),
     }));
-    const socket = new AcceptanceFakeWebSocket((message) => {
-      if (message.method !== "Runtime.evaluate")
+    const socket = new AcceptanceFakeWebSocket((message, activeSocket) => {
+      if (message.method !== "Runtime.evaluate") {
+        if (
+          message.method === "Input.dispatchTouchEvent" &&
+          message.params.type === "touchStart"
+        ) {
+          queueMicrotask(() => {
+            for (const [method, params] of [
+              [
+                "Network.responseReceived",
+                {
+                  requestId: "ai-result-request",
+                  type: "Image",
+                  response: {
+                    url: resultUrl,
+                    status: 200,
+                    mimeType: "image/png",
+                    fromDiskCache: false,
+                    fromServiceWorker: false,
+                  },
+                },
+              ],
+              ["Network.loadingFinished", { requestId: "ai-result-request" }],
+            ])
+              activeSocket.emit("message", {
+                data: JSON.stringify({ method, params }),
+              });
+          });
+        }
+        if (message.method === "Network.getResponseBody")
+          return {
+            id: message.id,
+            result: { body: png.toString("base64"), base64Encoded: true },
+          };
         return { id: message.id, result: {} };
+      }
       const expression = message.params.expression;
       if (expression === INSTALL_TRY_ON_LIFECYCLE_OBSERVER_EXPRESSION)
         return cdpValue(true, message.id);
@@ -440,16 +556,6 @@ describe("vision try-on acceptance script", () => {
             retryVisible: true,
             returnVisible: true,
             errorText: null,
-          },
-          message.id,
-        );
-      if (expression.includes("VEM_AI_RENDERED_RESULT_PIXELS_V1"))
-        return cdpValue(
-          {
-            ok: true,
-            width: 320,
-            height: 480,
-            rgbaSha256: "a".repeat(64),
           },
           message.id,
         );
@@ -539,12 +645,39 @@ describe("vision try-on acceptance script", () => {
     [
       "bad image content type",
       { contentType: "text/plain" },
-      /image evidence is invalid/,
+      /Network response is invalid/,
     ],
     [
       "image decode failure",
       { decodeFailure: true },
       /decoded Fast V2 result image did not become true/,
+    ],
+    [
+      "wrong Network request URL",
+      { networkWrongUrl: true },
+      /Network response did not become true/,
+    ],
+    [
+      "Network loading failure",
+      { loadingFailed: true },
+      /Network response did not become true/,
+    ],
+    ["missing Network body", { missingBody: true }, /getResponseBody failed/],
+    ["invalid Network base64", { invalidBase64: true }, /invalid base64/],
+    [
+      "duplicate Network response",
+      { duplicateNetworkResponse: true },
+      /Network response did not become true/,
+    ],
+    [
+      "redirected Network response",
+      { redirected: true },
+      /Network response is invalid/,
+    ],
+    [
+      "cached Network response",
+      { fromDiskCache: true },
+      /Network response is invalid/,
     ],
   ]) {
     it(`rejects ${label} while collecting an installed AI attempt`, async () => {
@@ -583,7 +716,7 @@ describe("vision try-on acceptance script", () => {
 
   it("rejects a later same-URL image whose pixels do not match the image rendered for the customer", async () => {
     await withInstalledAiHarness(
-      { domPixelsMismatch: true },
+      { laterGetDifferentBytes: true },
       async ({ client, root, route }) => {
         await assert.rejects(
           collectInstalledAiTryOnAttempt({
@@ -595,6 +728,22 @@ describe("vision try-on acceptance script", () => {
           }),
           /rendered image pixels mismatched/,
         );
+      },
+    );
+  });
+
+  it("accepts the page response through CDP Network when the cross-origin DOM canvas is tainted", async () => {
+    await withInstalledAiHarness(
+      { canvasSecurityError: true },
+      async ({ client, root, route }) => {
+        const result = await collectInstalledAiTryOnAttempt({
+          client,
+          expectedTryOnRoute: route,
+          regionalEvidenceRoot: root,
+          timeoutMs: 100,
+          pollMs: 2,
+        });
+        assert.equal(result.resultEvidence.httpStatus, 200);
       },
     );
   });
