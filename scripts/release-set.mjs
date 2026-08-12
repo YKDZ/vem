@@ -155,7 +155,7 @@ function validateComponentEvidence(evidence, repoRoot) {
       "candidateSubjectSha256",
       "embeddedManifestSha256",
       "sourceCommit",
-      "supplierEvidenceSha256",
+      "trustedBuilderEvidenceSha256",
     ],
     "component evidence.vision",
   );
@@ -164,7 +164,7 @@ function validateComponentEvidence(evidence, repoRoot) {
     "attestationBundleSha256",
     "candidateSubjectSha256",
     "embeddedManifestSha256",
-    "supplierEvidenceSha256",
+    "trustedBuilderEvidenceSha256",
   ]) {
     assertDigest(evidence.vision[key], `Vision ${key}`);
   }

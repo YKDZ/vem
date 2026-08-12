@@ -67,7 +67,7 @@ function componentEvidence() {
       candidateSubjectSha256: digest("1"),
       attestationBundleSha256: digest("2"),
       embeddedManifestSha256: digest("3"),
-      supplierEvidenceSha256: digest("4"),
+      trustedBuilderEvidenceSha256: digest("4"),
     },
     visionV2Bundle: {
       bundleSha256: repository.visionV2Bundle.bundleSha256,
@@ -287,6 +287,17 @@ describe("canonical release-set identity", () => {
     );
   });
 
+  it("strictly rejects the retired Vision supplier evidence field", () => {
+    const evidence = componentEvidence();
+    const retired = "supplier" + "EvidenceSha256";
+    evidence.vision[retired] = evidence.vision.trustedBuilderEvidenceSha256;
+    delete evidence.vision.trustedBuilderEvidenceSha256;
+    assert.throws(
+      () => generateReleaseSet({ evidence, repoRoot }),
+      /component evidence\.vision must contain exactly/,
+    );
+  });
+
   it("rejects every component field mutation even when its digest is self-recomputed", () => {
     const evidence = componentEvidence();
     const manifest = JSON.parse(generateReleaseSet({ evidence, repoRoot }));
@@ -311,7 +322,7 @@ describe("canonical release-set identity", () => {
       [["vision", "candidateSubjectSha256"], digest("0")],
       [["vision", "attestationBundleSha256"], digest("0")],
       [["vision", "embeddedManifestSha256"], digest("0")],
-      [["vision", "supplierEvidenceSha256"], digest("0")],
+      [["vision", "trustedBuilderEvidenceSha256"], digest("0")],
       [["visionV2Bundle", "bundleSha256"], digest("0")],
       [["ai", "runtimeDescriptorSha256"], digest("0")],
       [["ai", "requirementsLockSha256"], digest("0")],
