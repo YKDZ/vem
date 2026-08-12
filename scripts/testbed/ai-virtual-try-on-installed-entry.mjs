@@ -29,6 +29,7 @@ import {
 import { runInstalledOwnerOrdinarySaleCompletion } from "./fast-route-stress-sale.mjs";
 import { AI_SUPPORT_EVIDENCE_SCHEMA } from "./full-workflow-evidence-manifest.mjs";
 import { catalogProductSelectorForFixture } from "./full-workflow-fixtures.mjs";
+import { validateCalibratedAiRegionalReceipt } from "./calibrate-ai-regional-evidence.mjs";
 import { restoreCatalogHomeFromClient } from "./full-workflow-orchestrator.mjs";
 import { validateAiAttemptSet } from "./full-workflow-validator.mjs";
 import {
@@ -385,17 +386,7 @@ function requireDigest(value, label) {
   return normalized;
 }
 
-function exactKeys(value, keys) {
-  return (
-    value !== null &&
-    typeof value === "object" &&
-    !Array.isArray(value) &&
-    JSON.stringify(Object.keys(value).sort()) ===
-      JSON.stringify([...keys].sort())
-  );
-}
-
-function readCalibratedPolicyReceipt({ policyPath, receiptPath, identities }) {
+function readCalibratedPolicyReceipt({ policyPath, receiptPath, identities, attempts }) {
   if (typeof policyPath !== "string" || !isAbsolute(policyPath))
     throw new Error("calibrated AI regional evidence policy is required");
   if (typeof receiptPath !== "string" || !isAbsolute(receiptPath))
@@ -403,46 +394,13 @@ function readCalibratedPolicyReceipt({ policyPath, receiptPath, identities }) {
   const policy = loadAiRegionalEvidencePolicy(policyPath);
   if (policy.calibrationStatus !== "calibrated_issue10")
     throw new Error("AI regional evidence policy is not calibrated");
-  const receiptRaw = readFileSync(receiptPath);
-  let receipt;
-  try {
-    receipt = JSON.parse(receiptRaw.toString("utf8"));
-  } catch {
-    throw new Error("calibrated AI regional evidence receipt is invalid JSON");
-  }
-  if (
-    !receiptRaw.equals(
-      Buffer.from(`${JSON.stringify(canonical(receipt), null, 2)}\n`),
-    ) ||
-    !exactKeys(receipt, [
-      "acceptanceReportSha256",
-      "attempts",
-      "calibrationInputSha256",
-      "derivedThresholds",
-      "policySha256",
-      "precutoverReceiptSha256",
-      "recoverySupportSha256",
-      "release",
-      "releaseProofSha256",
-      "schemaVersion",
-    ]) ||
-    receipt.schemaVersion !== "vem-ai-regional-evidence-calibration-receipt/v1" ||
-    !exactKeys(receipt.release, ["aiRuntime", "contract", "modelPack", "runtime"]) ||
-    !exactKeys(receipt.derivedThresholds, [
-      "maximumProtectedChangedFractionBps",
-      "maximumProtectedMeanDelta",
-      "minimumUpperBodyChangedFractionBps",
-      "minimumUpperBodyMeanDelta",
-    ]) ||
-    !Array.isArray(receipt.attempts) ||
-    receipt.attempts.length !== 2 ||
-    receipt.policySha256 !== policy.sha256 ||
-    Object.entries(identities).some(
-      ([key, value]) => receipt.release[key] !== requireDigest(value, `${key} identity`),
-    )
-  )
-    throw new Error("calibrated AI regional evidence receipt is not bound to this release");
-  return { policy, receipt, sha256: sha256(receiptRaw) };
+  const checked = validateCalibratedAiRegionalReceipt({
+    attempts,
+    identities,
+    policy,
+    receiptPath,
+  });
+  return { policy, ...checked };
 }
 
 function sidecarAttemptFacts(value, collected, caseKey) {
@@ -638,10 +596,12 @@ function installedAiScreenshotCapture(artifactRoot, caseKey) {
     throw new Error("AI screenshot artifact root must be absolute");
   if (!Object.hasOwn(CASES, caseKey))
     throw new Error("AI screenshot case is invalid");
-  return async ({ client, stage }) => {
+  return async ({ client, stage, attemptId }) => {
     if (!new Set(["acquisition", "result"]).has(stage))
       throw new Error("AI screenshot stage is invalid");
-    const relative = `screenshots/${caseKey}/${stage}.png`;
+    if (!UUID_PATTERN.test(attemptId ?? ""))
+      throw new Error("AI screenshot attempt identity is invalid");
+    const relative = `screenshots/${caseKey}/${attemptId}-${stage}.png`;
     const path = resolve(artifactRoot, relative);
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     return captureScreenshot(client, {
@@ -676,10 +636,34 @@ async function returnInstalledAiAttemptToCatalog(client) {
     { kind: "touch", timeoutMs: 30_000 },
   );
   await waitForRoute(client, "#/catalog", { timeoutMs: 30_000, pollMs: 250 });
-  return {
-    nextAttemptKind: "new_attempt_after_return",
-    returnToCatalog: true,
-    selectedFromCatalog: true,
+  const observation = await client.send("Runtime.evaluate", {
+    expression: "location.hash",
+    returnByValue: true,
+  });
+  const catalogRoute = observation?.result?.value;
+  if (catalogRoute !== "#/catalog")
+    throw new Error("AI try-on return did not reach the public catalog route");
+  return { catalogRoute };
+}
+
+function linkAiAttemptJourneys(attempts) {
+  if (!Array.isArray(attempts) || attempts.length !== 2) return;
+  const [shortAttempt, longAttempt] = attempts;
+  if (
+    process.env.NODE_ENV !== "test" &&
+    (shortAttempt.returnJourney?.catalogRoute !== "#/catalog" ||
+      longAttempt.returnJourney?.catalogRoute !== "#/catalog")
+  )
+    throw new Error("AI try-on return journey did not observe the catalog route");
+  shortAttempt.journey = {
+    catalogRoute: shortAttempt.returnJourney?.catalogRoute ?? "#/catalog",
+    nextAttemptId: longAttempt.attemptId,
+    resultAttemptId: shortAttempt.attemptId,
+  };
+  longAttempt.journey = {
+    catalogRoute: longAttempt.returnJourney?.catalogRoute ?? "#/catalog",
+    previousAttemptId: shortAttempt.attemptId,
+    resultAttemptId: longAttempt.attemptId,
   };
 }
 
@@ -758,7 +742,7 @@ export async function runInstalledAiAttemptPhase(options) {
       acceptance.garmentSha256,
       `${options.caseKey} seeded garment digest`,
     );
-    collected.journey = await returnInstalledAiAttemptToCatalog(client);
+    collected.returnJourney = await returnInstalledAiAttemptToCatalog(client);
     const archived = archiveSidecar(
       collected,
       options.caseKey,
@@ -907,6 +891,7 @@ export async function assembleInstalledAiTryOnAcceptance(
   const attempts = input.attempts;
   if (!Array.isArray(attempts) || attempts.length !== 2)
     throw new Error("two installed AI attempt facts are required");
+  linkAiAttemptJourneys(attempts);
   const runtimeTrace = attempts.flatMap((attempt) =>
     attempt.stateTrace.map((state) => ({
       attemptId: attempt.attemptId,
@@ -927,6 +912,7 @@ export async function assembleInstalledAiTryOnAcceptance(
           identities: input.identities,
           policyPath: input.calibratedPolicyPath,
           receiptPath: input.calibrationReceiptPath,
+          attempts,
         });
   const regional = validateAiRegionalEvidenceSet(
     attempts,
@@ -1235,13 +1221,8 @@ export async function assembleInstalledAiTryOnAcceptanceForTest(
       verdict: "passed",
     };
     collected.regionalEvidence.bytes = canonicalBytes(sidecar);
-    collected.journey ??= {
-      nextAttemptKind: "new_attempt_after_return",
-      returnToCatalog: true,
-      selectedFromCatalog: true,
-    };
     collected.screenshots ??= ["acquisition", "result"].map((stage) => {
-      const relative = `screenshots/${caseKey}/${stage}.png`;
+      const relative = `screenshots/${caseKey}/${collected.attemptId}-${stage}.png`;
       const path = resolve(input.artifactRoot, relative);
       mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
       const png = Buffer.alloc(24);
@@ -1259,6 +1240,7 @@ export async function assembleInstalledAiTryOnAcceptanceForTest(
       };
     });
     collected.expectedGarmentSha256 = sidecar.attempt.garmentSha256;
+    collected.returnJourney ??= { catalogRoute: "#/catalog" };
     collected.expectedGarmentId = collected.surface.garmentId;
     const sourceRoot = join(input.artifactRoot, `.source-${caseKey}`);
     mkdirSync(sourceRoot, { mode: 0o700 });

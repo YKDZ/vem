@@ -177,6 +177,12 @@ function aiVirtualTryOnReport() {
       sha256: String(Number(suffix) + 3).repeat(64),
       verdict: "passed",
     },
+    screenshots: ["acquisition", "result"].map((stage) => ({
+      byteLength: 64,
+      path: `screenshots/${caseKey}/${attemptId}-${stage}.png`,
+      sha256: String(stage === "acquisition" ? suffix : Number(suffix) + 4).repeat(64),
+      stage,
+    })),
   });
   const attempts = [
     attempt({
@@ -192,9 +198,25 @@ function aiVirtualTryOnReport() {
       suffix: "5",
     }),
   ];
+  attempts[0].journey = {
+    catalogRoute: "#/catalog",
+    nextAttemptId: attempts[1].attemptId,
+    resultAttemptId: attempts[0].attemptId,
+  };
+  attempts[1].journey = {
+    catalogRoute: "#/catalog",
+    previousAttemptId: attempts[0].attemptId,
+    resultAttemptId: attempts[1].attemptId,
+  };
   return {
     schemaVersion: "vem-ai-virtual-try-on-acceptance/v2",
     ok: true,
+    error: null,
+    reasons: [],
+    calibration: {
+      policySha256: "sha256:" + "a".repeat(64),
+      receiptSha256: "sha256:" + "b".repeat(64),
+    },
     execution: {
       source: "installed_machine_ui_cdp",
       protocol: "vem.vision.v2",

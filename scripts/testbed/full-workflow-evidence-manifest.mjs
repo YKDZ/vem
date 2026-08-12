@@ -378,6 +378,33 @@ function physicalEvidence(track, artifactFiles) {
   };
 }
 
+function validateAiReportScreenshots(report, artifactRoot, evidence, files) {
+  if (
+    report?.schemaVersion !== "vem-ai-virtual-try-on-acceptance/v2" ||
+    report?.ok !== true
+  )
+    return null;
+  const expected = report?.attempts?.flatMap((attempt) => attempt.screenshots ?? []);
+  if (!Array.isArray(expected) || expected.length !== 4)
+    return "AI virtual try-on report screenshots are incomplete";
+  const actual = evidence.screenshots;
+  if (!Array.isArray(actual) || actual.length !== 4)
+    return "AI virtual try-on manifest screenshots are incomplete";
+  for (const screenshot of expected) {
+    const path = resolve(artifactRoot, screenshot.path);
+    const record = files.find(
+      (file) =>
+        file.kind === "screenshots" &&
+        file.path === path &&
+        file.byteLength === screenshot.byteLength &&
+        file.sha256 === screenshot.sha256,
+    );
+    if (!record || !actual.includes(record.path))
+      return "AI virtual try-on manifest screenshots do not bind report screenshots";
+  }
+  return null;
+}
+
 function perFileLimit(file) {
   if (file.kind === "reports") return EVIDENCE_LIMITS.reportPerFileBytes;
   if (file.kind === "supportingEvidence")
@@ -493,6 +520,15 @@ export function buildFullWorkflowEvidenceManifest({ tracks = [] } = {}) {
       ],
     };
     trackEvidence.push(evidence);
+    if (track === "aiVirtualTryOn" && businessStatus === "passed") {
+      const screenshotFailure = validateAiReportScreenshots(
+        report,
+        artifactRoot,
+        evidence,
+        files,
+      );
+      if (screenshotFailure) blockingFailures.push(screenshotFailure);
+    }
     if (businessStatus === "passed") {
       if (evidencePolicy.trace && !trace)
         failures.push(`actual Machine Runtime Trace is absent for ${track}`);

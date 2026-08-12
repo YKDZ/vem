@@ -376,6 +376,52 @@ describe("full workflow evidence manifest", () => {
     );
   });
 
+  it("binds the passed AI manifest screenshots exactly to the report", () => {
+    const temp = root();
+    const artifacts = join(temp, "artifacts");
+    mkdirSync(artifacts, { recursive: true });
+    const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+    const screenshots = ["short", "long"].flatMap((caseKey, index) => {
+      const attemptId = `0198f44e-21bd-7c62-8f52-b7c86cc2b00${index + 1}`;
+      return ["acquisition", "result"].map((stage) => {
+        const relative = `screenshots/${caseKey}/${attemptId}-${stage}.png`;
+        const path = join(artifacts, relative);
+        mkdirSync(join(path, ".."), { recursive: true });
+        writeFileSync(path, png);
+        return {
+          byteLength: png.byteLength,
+          path: relative,
+          sha256: createHash("sha256").update(png).digest("hex"),
+          stage,
+        };
+      });
+    });
+    const report = join(temp, "ai.json");
+    writeFileSync(
+      report,
+      `${JSON.stringify({
+        attempts: [
+          { screenshots: screenshots.slice(0, 2) },
+          { screenshots: screenshots.slice(2) },
+        ],
+        ok: true,
+        runtimeTrace: [{ id: "ai" }],
+        schemaVersion: "vem-ai-virtual-try-on-acceptance/v2",
+      })}\n`,
+    );
+    writeFileSync(join(artifacts, "runtime.log"), "ok\n");
+    const accepted = buildFullWorkflowEvidenceManifest({
+      tracks: [{ key: "aiVirtualTryOn", reportPath: report, artifactRoot: artifacts }],
+    });
+    assert.equal(accepted.ok, true, JSON.stringify(accepted.failures));
+    writeFileSync(join(artifacts, screenshots[0].path), Buffer.from([...png, 0]));
+    const rejected = buildFullWorkflowEvidenceManifest({
+      tracks: [{ key: "aiVirtualTryOn", reportPath: report, artifactRoot: artifacts }],
+    });
+    assert.equal(rejected.ok, false);
+    assert.ok(rejected.failures.some((failure) => failure.includes("do not bind")));
+  });
+
   it("rejects an artifact symlink that escapes its declared root", () => {
     const temp = root();
     const artifacts = join(temp, "artifacts");

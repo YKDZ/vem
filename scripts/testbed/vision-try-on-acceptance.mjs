@@ -2729,7 +2729,7 @@ export async function startVisionMockScenario(scenario, timeoutMs = 20_000) {
   child.stdout.resume();
   child.stderr.resume();
   try {
-    await waitForCondition(
+    const acquisition = await waitForCondition(
       `vision mock scenario ${scenario}`,
       async () => {
         if (child.exitCode !== null) {
@@ -3298,7 +3298,11 @@ async function collectInstalledAiTryOnAttemptInternal(
       pollMs,
     );
     const acquisitionScreenshot = captureAttemptScreenshot
-      ? await captureAttemptScreenshot({ client, stage: "acquisition" })
+      ? await captureAttemptScreenshot({
+          attemptId: acquisition.value.at(-1)?.attemptId,
+          client,
+          stage: "acquisition",
+        })
       : null;
     const surface = await waitForTryOnSurface(client, remaining(), { pollMs });
     if (surface.route !== expectedTryOnRoute)
@@ -3393,7 +3397,11 @@ async function collectInstalledAiTryOnAttemptInternal(
       regionalEvidenceTestHooks?.beforeReturn?.(regionalLease.evidence);
       const regionalEvidence = regionalLease.finalizeAndClose();
       const resultScreenshot = captureAttemptScreenshot
-        ? await captureAttemptScreenshot({ client, stage: "result" })
+        ? await captureAttemptScreenshot({
+            attemptId: surface.attemptId,
+            client,
+            stage: "result",
+          })
         : null;
       return {
         attemptId: surface.attemptId,

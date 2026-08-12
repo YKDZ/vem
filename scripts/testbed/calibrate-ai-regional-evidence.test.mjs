@@ -19,7 +19,10 @@ import {
   loadAiRegionalEvidencePolicy,
   validateAiRegionalEvidence,
 } from "./ai-regional-evidence.mjs";
-import { calibrateAiRegionalEvidence } from "./calibrate-ai-regional-evidence.mjs";
+import {
+  calibrateAiRegionalEvidence,
+  validateCalibratedAiRegionalReceipt,
+} from "./calibrate-ai-regional-evidence.mjs";
 
 const cli = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -409,6 +412,44 @@ describe("AI regional evidence calibration", () => {
         policy,
       ).ok,
       true,
+    );
+  });
+
+  it("rejects a refreshed calibrated receipt whose attempt binding no longer matches", () => {
+    const fixture = calibrationFixture();
+    const policyPath = join(fixture.root, "candidate-policy.json");
+    const receiptPath = join(fixture.root, "candidate-receipt.json");
+    calibrateAiRegionalEvidence(fixture.inputPath, policyPath, receiptPath);
+    const input = readJson(fixture.inputPath);
+    const report = readJson(input.acceptanceReport.path);
+    const identities = Object.fromEntries(
+      Object.entries(report.execution.identities).map(([key, value]) => [
+        key,
+        value.replace("sha256:", ""),
+      ]),
+    );
+    const attempts = input.attempts.map((entry) => entry.attempt);
+    const policy = loadAiRegionalEvidencePolicy(policyPath);
+    assert.doesNotThrow(() =>
+      validateCalibratedAiRegionalReceipt({
+        attempts,
+        identities,
+        policy,
+        receiptPath,
+      }),
+    );
+    const receipt = readJson(receiptPath);
+    receipt.attempts[0].resultSha256 = "0".repeat(64);
+    writeCanonical(receiptPath, receipt);
+    assert.throws(
+      () =>
+        validateCalibratedAiRegionalReceipt({
+          attempts,
+          identities,
+          policy,
+          receiptPath,
+        }),
+      /attempt binding mismatched/,
     );
   });
 

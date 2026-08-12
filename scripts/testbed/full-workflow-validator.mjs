@@ -340,14 +340,17 @@ export function validateAiAttemptSet(attempts, runtimeTrace) {
       !exactKeys(attempt.input, ["contentType", "sha256"]) ||
       attempt.input.contentType !== "image/png" ||
       !/^[a-f0-9]{64}$/.test(attempt.input.sha256 ?? "") ||
-      !exactKeys(attempt.journey, [
-        "nextAttemptKind",
-        "returnToCatalog",
-        "selectedFromCatalog",
-      ]) ||
-      attempt.journey.nextAttemptKind !== "new_attempt_after_return" ||
-      attempt.journey.returnToCatalog !== true ||
-      attempt.journey.selectedFromCatalog !== true ||
+      !exactKeys(
+        attempt.journey,
+        index === 0
+          ? ["catalogRoute", "nextAttemptId", "resultAttemptId"]
+          : ["catalogRoute", "previousAttemptId", "resultAttemptId"],
+      ) ||
+      attempt.journey.catalogRoute !== "#/catalog" ||
+      attempt.journey.resultAttemptId !== attempt.attemptId ||
+      (index === 0 && attempt.journey.nextAttemptId !== attempts[1]?.attemptId) ||
+      (index === 1 &&
+        attempt.journey.previousAttemptId !== attempts[0]?.attemptId) ||
       !Array.isArray(attempt.screenshots) ||
       attempt.screenshots.length !== 2 ||
       !["acquisition", "result"].every((stage, index) => {
@@ -356,9 +359,8 @@ export function validateAiAttemptSet(attempts, runtimeTrace) {
           exactKeys(screenshot, ["byteLength", "path", "sha256", "stage"]) &&
           screenshot.stage === stage &&
           typeof screenshot.path === "string" &&
-          /^screenshots\/(short|long)\/(acquisition|result)\.png$/.test(
-            screenshot.path,
-          ) &&
+          screenshot.path ===
+            `screenshots/${caseKey}/${attempt.attemptId}-${stage}.png` &&
           Number.isSafeInteger(screenshot.byteLength) &&
           screenshot.byteLength > 0 &&
           screenshot.byteLength <= 2 * 1024 * 1024 &&

@@ -383,6 +383,104 @@ function deriveThresholds(sidecars) {
   };
 }
 
+export function validateCalibratedAiRegionalReceipt({
+  policy,
+  receiptPath,
+  attempts,
+  identities,
+}) {
+  if (!policy || policy.calibrationStatus !== "calibrated_issue10")
+    fail("calibrated AI regional evidence policy is invalid");
+  const receipt = readCanonical(receiptPath, "calibrated AI regional evidence receipt");
+  const value = receipt.value;
+  const thresholdKeys = [
+    "maximumProtectedChangedFractionBps",
+    "maximumProtectedMeanDelta",
+    "minimumUpperBodyChangedFractionBps",
+    "minimumUpperBodyMeanDelta",
+  ];
+  if (
+    !exact(value, [
+      "acceptanceReportSha256",
+      "attempts",
+      "calibrationInputSha256",
+      "derivedThresholds",
+      "policySha256",
+      "precutoverReceiptSha256",
+      "recoverySupportSha256",
+      "release",
+      "releaseProofSha256",
+      "schemaVersion",
+    ]) ||
+    value.schemaVersion !== RECEIPT_SCHEMA ||
+    value.policySha256 !== policy.sha256 ||
+    !exact(value.derivedThresholds, thresholdKeys) ||
+    thresholdKeys.some((key) => value.derivedThresholds[key] !== policy[key]) ||
+    !exact(value.release, ["aiRuntime", "contract", "modelPack", "runtime"]) ||
+    Object.entries(identities).some(
+      ([key, digest]) => value.release[key] !== requireDigest(digest, `${key} identity`),
+    ) ||
+    !Array.isArray(value.attempts) ||
+    value.attempts.length !== 2
+  )
+    fail("calibrated AI regional evidence receipt is not bound to this release");
+  const calibrationAttempt = (attempt) => {
+    const { journey, screenshots, ...value } = attempt;
+    return value;
+  };
+  const expected = [...attempts]
+    .sort((left, right) => left.caseKey.localeCompare(right.caseKey))
+    .map((attempt) => ({
+    attemptSha256: sha256(canonicalBytes(calibrationAttempt(attempt))),
+    caseKey: attempt.caseKey,
+    garmentSha256: attempt.garment.sha256,
+    inputSha256: attempt.input.sha256,
+    recordedFixtureSha256: null,
+    resultSha256: attempt.result.sha256,
+    sidecarSha256: attempt.regionalEvidence.sha256,
+    }));
+  for (const [index, entry] of value.attempts.entries()) {
+    if (
+      !exact(entry, [
+        "attemptSha256",
+        "caseKey",
+        "garmentSha256",
+        "inputSha256",
+        "recordedFixtureSha256",
+        "resultSha256",
+        "sidecarSha256",
+      ]) ||
+      entry.caseKey !== expected[index].caseKey ||
+      entry.attemptSha256 !== expected[index].attemptSha256 ||
+      entry.garmentSha256 !== expected[index].garmentSha256 ||
+      entry.inputSha256 !== expected[index].inputSha256 ||
+      entry.resultSha256 !== expected[index].resultSha256 ||
+      entry.sidecarSha256 !== expected[index].sidecarSha256 ||
+      !DIGEST.test(entry.recordedFixtureSha256 ?? "")
+    )
+      fail("calibrated AI regional evidence receipt attempt binding mismatched");
+  }
+  if (new Set(value.attempts.map((entry) => entry.caseKey)).size !== 2)
+    fail("calibrated AI regional evidence receipt attempts are not independent");
+  for (const key of [
+    "attemptSha256",
+    "garmentSha256",
+    "resultSha256",
+    "sidecarSha256",
+  ])
+    if (new Set(value.attempts.map((entry) => entry[key])).size !== 2)
+      fail("calibrated AI regional evidence receipt attempts are not independent");
+  for (const key of [
+    "acceptanceReportSha256",
+    "calibrationInputSha256",
+    "precutoverReceiptSha256",
+    "recoverySupportSha256",
+    "releaseProofSha256",
+  ])
+    requireDigest(value[key], `calibrated receipt ${key}`);
+  return { receipt: value, sha256: sha256(receipt.raw) };
+}
+
 export function calibrateAiRegionalEvidence(
   inputPath,
   outputPolicyPath,
