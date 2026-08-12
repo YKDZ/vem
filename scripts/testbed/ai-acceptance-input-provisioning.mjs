@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
-import { cp, lstat, mkdir, readFile, readdir } from "node:fs/promises";
+import {
+  cp,
+  lstat,
+  mkdir,
+  readFile,
+  readdir,
+  writeFile,
+} from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
 const SCHEMA_VERSION = "vem-runtime-testbed-ai-input/v3";
@@ -283,6 +290,79 @@ function windowsJoin(...parts) {
   return parts.join("\\");
 }
 
+async function calibrationSourceClosure(source) {
+  let input;
+  try {
+    input = JSON.parse(await readFile(source.hostPath, "utf8"));
+  } catch {
+    fail("calibration source input is not JSON");
+  }
+  if (
+    input?.schemaVersion !== "vem-ai-regional-evidence-calibration-input/v1" ||
+    !isAbsolute(input.artifactRoot ?? "") ||
+    !Array.isArray(input.attempts) ||
+    input.attempts.length !== 2
+  ) {
+    fail("calibration source input identity is invalid");
+  }
+  const references = [
+    ["acceptanceReport", "acceptance-report.json"],
+    ["precutoverReceipt", "precutover-receipt.json"],
+    ["releaseProof", "release-proof.json"],
+    ["recoverySupport", "recovery-support.json"],
+    ["evidenceManifest", "evidence-manifest.json"],
+  ];
+  const documents = [];
+  for (const [key, name] of references) {
+    const reference = input[key];
+    if (
+      !reference ||
+      Object.keys(reference).sort().join("\0") !== "path\0sha256" ||
+      !isAbsolute(reference.path) ||
+      !SHA256.test(reference.sha256 ?? "")
+    ) {
+      fail(`calibration source ${key} reference is invalid`);
+    }
+    const descriptor = {
+      hostPath: resolve(reference.path),
+      sha256: reference.sha256,
+      byteSize: (await lstat(reference.path)).size,
+    };
+    await regularFile(
+      descriptor.hostPath,
+      descriptor,
+      `calibration source ${key}`,
+    );
+    documents.push({ key, name, ...descriptor });
+  }
+  const sidecars = [];
+  for (const entry of input.attempts) {
+    const relativePath = memberName(
+      entry?.attempt?.regionalEvidence?.path,
+      "calibration regional sidecar path",
+      true,
+    );
+    const descriptor = {
+      hostPath: resolve(input.artifactRoot, relativePath),
+      sha256: sha256(
+        entry?.attempt?.regionalEvidence?.sha256,
+        "calibration regional sidecar SHA-256",
+      ),
+      byteSize: (await lstat(resolve(input.artifactRoot, relativePath))).size,
+    };
+    await regularFile(
+      descriptor.hostPath,
+      descriptor,
+      "calibration regional sidecar",
+    );
+    sidecars.push({ name: relativePath, ...descriptor });
+  }
+  if (new Set(sidecars.map((entry) => entry.name)).size !== 2) {
+    fail("calibration regional sidecars must be exact-two");
+  }
+  return { input, documents, sidecars };
+}
+
 function guestProjection(
   {
     candidateInput,
@@ -298,15 +378,23 @@ function guestProjection(
   manifestSha256,
 ) {
   const root = windowsJoin(GUEST_ROOT, manifestSha256);
+  const calibrationSourceRoot = windowsJoin(root, "calibration-source");
   return {
     schemaVersion: "vem-local-testbed-ai-virtual-try-on-input/v1",
     inputRoot: root,
     candidateInputDirectory: windowsJoin(root, "candidate"),
     windowsProofInputDirectory: windowsJoin(root, "windows-proof"),
     approvedPrecutoverReceipt: windowsJoin(root, "approved-receipt.json"),
-    calibratedRegionalPolicy: windowsJoin(root, "calibrated-regional-policy.json"),
+    calibratedRegionalPolicy: windowsJoin(
+      root,
+      "calibrated-regional-policy.json",
+    ),
     calibrationReceipt: windowsJoin(root, "calibration-receipt.json"),
-    calibrationSourceInput: windowsJoin(root, "calibration-source-input.json"),
+    calibrationSourceRoot,
+    calibrationSourceInput: windowsJoin(
+      calibrationSourceRoot,
+      "calibration-source-input.json",
+    ),
     installedVisionRuntimeArchive: windowsJoin(root, "vision-runtime.zip"),
     recordedFixtureArchive: windowsJoin(root, "recorded-fixtures.zip"),
     modelPackArchive: windowsJoin(root, "model-pack.zip"),
@@ -441,6 +529,9 @@ export async function validateAiAcceptanceInputManifest(
     value.calibrationSourceInput,
     "calibration source input",
   );
+  const calibrationSource = await calibrationSourceClosure(
+    calibrationSourceInput,
+  );
   let receipt;
   try {
     receipt = JSON.parse(
@@ -486,6 +577,7 @@ export async function validateAiAcceptanceInputManifest(
     calibratedRegionalPolicy,
     calibrationReceipt,
     calibrationSourceInput,
+    calibrationSource,
     installedVisionRuntimeArchive,
     recordedFixtureArchive,
     modelPack,
@@ -493,6 +585,7 @@ export async function validateAiAcceptanceInputManifest(
   const projection = guestProjection(artifacts, manifestSha256);
   return {
     manifestSha256,
+    calibrationSource,
     artifactDigests: projection.identities,
     guestInput: projection,
     transfers: [
@@ -539,7 +632,7 @@ export async function materializeAiAcceptanceInputSnapshot(preparation, root) {
     [preparation.transfers[2].hostPath, "approved-receipt.json"],
     [preparation.transfers[3].hostPath, "calibrated-regional-policy.json"],
     [preparation.transfers[4].hostPath, "calibration-receipt.json"],
-    [preparation.transfers[5].hostPath, "calibration-source-input.json"],
+    [null, "calibration-source"],
     [preparation.transfers[6].hostPath, "vision-runtime.zip"],
     [preparation.transfers[7].hostPath, "recorded-fixtures.zip"],
     [preparation.transfers[8].hostPath, "model-pack.zip"],
@@ -547,17 +640,108 @@ export async function materializeAiAcceptanceInputSnapshot(preparation, root) {
   ];
   await mkdir(snapshotRoot, { recursive: true });
   for (const [source, name] of files) {
+    if (source === null) continue;
     await cp(source, resolve(snapshotRoot, name), {
       recursive: true,
       force: true,
     });
   }
+  const bundleRoot = resolve(snapshotRoot, "calibration-source");
+  await mkdir(bundleRoot, { recursive: true });
+  const closure = preparation.calibrationSource;
+  for (const document of closure.documents) {
+    await cp(document.hostPath, resolve(bundleRoot, document.name), {
+      force: true,
+    });
+  }
+  for (const sidecar of closure.sidecars) {
+    const destination = resolve(bundleRoot, sidecar.name);
+    await mkdir(resolve(destination, ".."), { recursive: true });
+    await cp(sidecar.hostPath, destination, { force: true });
+  }
+  const guestRoot = preparation.guestInput.calibrationSourceRoot;
+  const manifestDocument = closure.documents.find(
+    (entry) => entry.key === "evidenceManifest",
+  );
+  const manifestPath = resolve(bundleRoot, manifestDocument.name);
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  for (const file of manifest.files ?? []) {
+    const sidecar = closure.sidecars.find(
+      (entry) => resolve(file.path) === entry.hostPath,
+    );
+    if (sidecar) file.path = windowsJoin(guestRoot, ...sidecar.name.split("/"));
+  }
+  const manifestRaw = canonicalAiAcceptanceInputManifest(manifest);
+  await writeFile(manifestPath, manifestRaw);
+  const rewritten = structuredClone(closure.input);
+  rewritten.artifactRoot = guestRoot;
+  for (const document of closure.documents) {
+    rewritten[document.key] = {
+      path: windowsJoin(guestRoot, document.name),
+      sha256:
+        document.key === "evidenceManifest"
+          ? manifestIdentity(manifestRaw)
+          : document.sha256,
+    };
+  }
+  const inputRaw = canonicalAiAcceptanceInputManifest(rewritten);
+  const inputPath = resolve(bundleRoot, "calibration-source-input.json");
+  await writeFile(inputPath, inputRaw);
+  const bundleMembers = await collectDirectoryMembers(
+    bundleRoot,
+    true,
+    "calibration source bundle",
+  );
+  if (bundleMembers.length !== 8)
+    fail("calibration source bundle must contain exact-eight files");
+  const bundleIdentity = {
+    sha256: directoryDigest(bundleMembers),
+    byteSize: bundleMembers.reduce((sum, member) => sum + member.byteSize, 0),
+    members: bundleMembers,
+  };
+  const receiptPath = resolve(snapshotRoot, "calibration-receipt.json");
+  const receipt = JSON.parse(await readFile(receiptPath, "utf8"));
+  receipt.calibrationInputSha256 = manifestIdentity(inputRaw);
+  const receiptRaw = canonicalAiAcceptanceInputManifest(receipt);
+  await writeFile(receiptPath, receiptRaw);
+  const receiptIdentity = {
+    sha256: manifestIdentity(receiptRaw),
+    byteSize: Buffer.byteLength(receiptRaw),
+  };
   const remapped = {
     ...preparation,
     transfers: preparation.transfers.map((transfer, index) => ({
       ...transfer,
       hostPath: resolve(snapshotRoot, files[index][1]),
+      ...(index === 4 ? receiptIdentity : {}),
+      ...(index === 5
+        ? {
+            ...bundleIdentity,
+            guestPath: preparation.guestInput.calibrationSourceRoot,
+          }
+        : {}),
     })),
+    artifactDigests: {
+      ...preparation.artifactDigests,
+      calibrationReceipt: receiptIdentity,
+      calibrationSourceInput: {
+        sha256: manifestIdentity(inputRaw),
+        byteSize: Buffer.byteLength(inputRaw),
+      },
+      calibrationSource: bundleIdentity,
+    },
+    guestInput: {
+      ...preparation.guestInput,
+      identities: {
+        ...preparation.guestInput.identities,
+        calibrationReceipt: receiptIdentity,
+        calibrationSourceInput: {
+          sha256: manifestIdentity(inputRaw),
+          byteSize: Buffer.byteLength(inputRaw),
+        },
+        calibrationSource: bundleIdentity,
+      },
+    },
   };
   return remapped;
 }

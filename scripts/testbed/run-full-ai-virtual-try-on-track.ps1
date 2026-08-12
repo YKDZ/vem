@@ -84,6 +84,7 @@ Require-AbsoluteLeaf ([string]$inputs.approvedPrecutoverReceipt) "B2 approved re
 Require-AbsoluteLeaf ([string]$inputs.calibratedRegionalPolicy) "calibrated AI regional evidence policy"
 Require-AbsoluteLeaf ([string]$inputs.calibrationReceipt) "calibrated AI regional evidence receipt"
 Require-AbsoluteLeaf ([string]$inputs.calibrationSourceInput) "calibration source input"
+Require-AbsoluteDirectory ([string]$inputs.calibrationSourceRoot) "calibration source closure"
 
 $candidateArchives = @(Get-ChildItem -LiteralPath ([string]$inputs.candidateInputDirectory) -File | Where-Object { $_.Extension -ceq ".zip" })
 if ($candidateArchives.Count -ne 1) { throw "candidate exact-four archive set is invalid" }
@@ -132,6 +133,7 @@ Assert-GuestFileIdentity ([string]$inputs.approvedPrecutoverReceipt) $identities
 Assert-GuestFileIdentity ([string]$inputs.calibratedRegionalPolicy) $identities.calibratedRegionalPolicy "calibrated AI regional evidence policy"
 Assert-GuestFileIdentity ([string]$inputs.calibrationReceipt) $identities.calibrationReceipt "calibrated AI regional evidence receipt"
 Assert-GuestFileIdentity ([string]$inputs.calibrationSourceInput) $identities.calibrationSourceInput "calibration source input"
+Assert-GuestDirectoryIdentity ([string]$inputs.calibrationSourceRoot) $identities.calibrationSource $true "calibration source closure"
 Assert-GuestFileIdentity ([string]$inputs.installedVisionRuntimeArchive) $identities.installedVisionRuntimeArchive "installed Vision runtime archive"
 Assert-GuestFileIdentity ([string]$inputs.recordedFixtureArchive) $identities.recordedFixtureArchive "recorded front/top fixture archive"
 Assert-GuestFileIdentity ([string]$inputs.modelPackArchive) $identities.modelPackArchive "official model pack archive"

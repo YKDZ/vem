@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
   mkdtempSync,
   mkdirSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -79,6 +80,67 @@ function manifest(root) {
     ]),
     delivery: { kind: "host-local-cache" },
   };
+  const calibrationRoot = join(root, "calibration-source");
+  const calibrationDocuments = Object.fromEntries(
+    [
+      "acceptance-report.json",
+      "precutover-receipt.json",
+      "release-proof.json",
+      "recovery-support.json",
+      "evidence-manifest.json",
+    ].map((name) => [name, file(calibrationRoot, name, "{}\n")]),
+  );
+  const calibrationAttempts = ["short", "long"].map((caseKey) => {
+    const sidecar = file(
+      calibrationRoot,
+      `regional/${caseKey}/${caseKey}.regional-evidence.json`,
+      "{}\n",
+    );
+    return {
+      attempt: {
+        caseKey,
+        regionalEvidence: {
+          path: `regional/${caseKey}/${caseKey}.regional-evidence.json`,
+          sha256: sidecar.sha256,
+        },
+      },
+      attemptSha256: "1".repeat(64),
+      caseKey,
+    };
+  });
+  const calibrationSourceValue = {
+    artifactRoot: calibrationRoot,
+    acceptanceReport: {
+      path: calibrationDocuments["acceptance-report.json"].hostPath,
+      sha256: calibrationDocuments["acceptance-report.json"].sha256,
+    },
+    attempts: calibrationAttempts,
+    evidenceManifest: {
+      path: calibrationDocuments["evidence-manifest.json"].hostPath,
+      sha256: calibrationDocuments["evidence-manifest.json"].sha256,
+    },
+    precutoverReceipt: {
+      path: calibrationDocuments["precutover-receipt.json"].hostPath,
+      sha256: calibrationDocuments["precutover-receipt.json"].sha256,
+    },
+    recoverySupport: {
+      path: calibrationDocuments["recovery-support.json"].hostPath,
+      sha256: calibrationDocuments["recovery-support.json"].sha256,
+    },
+    releaseProof: {
+      path: calibrationDocuments["release-proof.json"].hostPath,
+      sha256: calibrationDocuments["release-proof.json"].sha256,
+    },
+    schemaVersion: "vem-ai-regional-evidence-calibration-input/v1",
+  };
+  const calibrationSourceRaw = canonicalAiAcceptanceInputManifest(
+    calibrationSourceValue,
+  );
+  const calibrationSourceInput = file(
+    calibrationRoot,
+    "calibration-source-input.json",
+    calibrationSourceRaw,
+  );
   return {
     schemaVersion: "vem-runtime-testbed-ai-input/v3",
     candidateInput,
@@ -91,10 +153,10 @@ function manifest(root) {
     calibratedRegionalPolicy: file(
       root,
       "calibrated-regional-policy.json",
-      "{\"calibrationStatus\":\"calibrated_issue10\"}\n",
+      '{"calibrationStatus":"calibrated_issue10"}\n',
     ),
     calibrationReceipt: file(root, "calibration-receipt.json", "{}\n"),
-    calibrationSourceInput: file(root, "calibration-source-input.json", "{}\n"),
+    calibrationSourceInput,
     installedVisionRuntimeArchive: {
       ...file(root, "vision-runtime.zip", "vision-runtime"),
       sourceCommit: "a".repeat(40),
@@ -166,6 +228,131 @@ test("materializes immutable host-local inputs and derives every guest path", as
   }
 });
 
+test("materializes a self-contained exact-eight calibration source bundle for the guest", async () => {
+  const root = mkdtempSync(join(tmpdir(), "vem-ai-calibration-bundle-"));
+  try {
+    const value = manifest(join(root, "source"));
+    const sourceRoot = join(root, "source", "calibration-source");
+    mkdirSync(join(sourceRoot, "regional", "short"), { recursive: true });
+    mkdirSync(join(sourceRoot, "regional", "long"), { recursive: true });
+    const documents = {
+      "acceptance-report.json": "{}\n",
+      "precutover-receipt.json": "{}\n",
+      "release-proof.json": "{}\n",
+      "recovery-support.json": "{}\n",
+      "evidence-manifest.json": "{}\n",
+      "regional/short/short.regional-evidence.json": "{}\n",
+      "regional/long/long.regional-evidence.json": "{}\n",
+    };
+    documents["evidence-manifest.json"] = canonicalAiAcceptanceInputManifest({
+      files: ["short", "long"].map((caseKey) => ({
+        byteLength: Buffer.byteLength(
+          documents[`regional/${caseKey}/${caseKey}.regional-evidence.json`],
+        ),
+        kind: "supportingEvidence",
+        path: join(
+          sourceRoot,
+          `regional/${caseKey}/${caseKey}.regional-evidence.json`,
+        ),
+        sha256: digest(
+          documents[`regional/${caseKey}/${caseKey}.regional-evidence.json`],
+        ),
+        track: "aiVirtualTryOn",
+      })),
+    });
+    for (const [relative, raw] of Object.entries(documents)) {
+      mkdirSync(join(sourceRoot, relative, ".."), { recursive: true });
+      writeFileSync(join(sourceRoot, relative), raw);
+    }
+    const sourceInput = {
+      acceptanceReport: {
+        path: join(sourceRoot, "acceptance-report.json"),
+        sha256: digest(documents["acceptance-report.json"]),
+      },
+      artifactRoot: sourceRoot,
+      attempts: ["short", "long"].map((caseKey) => ({
+        attempt: {
+          caseKey,
+          regionalEvidence: {
+            path: `regional/${caseKey}/${caseKey}.regional-evidence.json`,
+            sha256: digest(
+              documents[
+                `regional/${caseKey}/${caseKey}.regional-evidence.json`
+              ],
+            ),
+          },
+        },
+        attemptSha256: "1".repeat(64),
+        caseKey,
+      })),
+      evidenceManifest: {
+        path: join(sourceRoot, "evidence-manifest.json"),
+        sha256: digest(documents["evidence-manifest.json"]),
+      },
+      precutoverReceipt: {
+        path: join(sourceRoot, "precutover-receipt.json"),
+        sha256: digest(documents["precutover-receipt.json"]),
+      },
+      recoverySupport: {
+        path: join(sourceRoot, "recovery-support.json"),
+        sha256: digest(documents["recovery-support.json"]),
+      },
+      releaseProof: {
+        path: join(sourceRoot, "release-proof.json"),
+        sha256: digest(documents["release-proof.json"]),
+      },
+      schemaVersion: "vem-ai-regional-evidence-calibration-input/v1",
+    };
+    const sourceRaw = canonicalAiAcceptanceInputManifest(sourceInput);
+    writeFileSync(join(sourceRoot, "calibration-source-input.json"), sourceRaw);
+    value.calibrationSourceInput = {
+      hostPath: join(sourceRoot, "calibration-source-input.json"),
+      sha256: digest(sourceRaw),
+      byteSize: Buffer.byteLength(sourceRaw),
+    };
+
+    const checked = await validateAiAcceptanceInputManifest(
+      canonicalAiAcceptanceInputManifest(value),
+    );
+    const snapshot = await materializeAiAcceptanceInputSnapshot(
+      checked,
+      join(root, "snapshots"),
+    );
+    const bundle = snapshot.transfers.find(
+      (transfer) =>
+        transfer.guestPath === checked.guestInput.calibrationSourceRoot,
+    );
+    assert.equal(bundle.members.length, 8);
+    assert.equal(JSON.stringify(bundle).includes(join(root, "source")), false);
+    const rewritten = JSON.parse(
+      readFileSync(
+        join(bundle.hostPath, "calibration-source-input.json"),
+        "utf8",
+      ),
+    );
+    assert.equal(
+      rewritten.acceptanceReport.path,
+      `${checked.guestInput.calibrationSourceRoot}\\acceptance-report.json`,
+    );
+    assert.equal(
+      rewritten.artifactRoot,
+      checked.guestInput.calibrationSourceRoot,
+    );
+    const rewrittenManifest = JSON.parse(
+      readFileSync(join(bundle.hostPath, "evidence-manifest.json"), "utf8"),
+    );
+    assert.deepEqual(
+      rewrittenManifest.files.map((file) => file.path),
+      ["short", "long"].map(
+        (caseKey) =>
+          `${checked.guestInput.calibrationSourceRoot}\\regional\\${caseKey}\\${caseKey}.regional-evidence.json`,
+      ),
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("full-pass input snapshots reject any manifest or artifact drift", () => {
   const base = {
     manifestSha256: "1".repeat(64),
@@ -191,6 +378,25 @@ test("full-pass input snapshots reject any manifest or artifact drift", () => {
       ...base,
       manifestSha256: "4".repeat(64),
     }),
+    false,
+  );
+  assert.equal(
+    identicalAiAcceptanceInputSnapshot(
+      {
+        ...base,
+        artifactDigests: {
+          ...base.artifactDigests,
+          calibrationSource: { sha256: "5".repeat(64), byteSize: 8 },
+        },
+      },
+      {
+        ...base,
+        artifactDigests: {
+          ...base.artifactDigests,
+          calibrationSource: { sha256: "6".repeat(64), byteSize: 8 },
+        },
+      },
+    ),
     false,
   );
 });
