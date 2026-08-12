@@ -17,7 +17,7 @@ import { parseWindowsProofGhClaimsForTest } from "./precutover-windows-proof.mjs
 
 const roots = [];
 const repoRoot = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
-const workflowSha = "8030ea67a26b925bd2add07fe8b98641eb22ced2";
+const workflowSha = "3d3ba24ed12c1d521c1916274c6932c2982b885e";
 const sourceCommit = "a".repeat(40);
 const sourceRef = "refs/tags/v1.2.3-rc.1";
 
@@ -56,6 +56,7 @@ function fixture() {
       embeddedManifestSha256: "2".repeat(64),
       sourceCommit,
       subjectSha256: "3".repeat(64),
+      trustedBuilderEvidenceSha256: "f".repeat(64),
       workerExecutableSha256: "4".repeat(64),
       workerMode: "frozen-windows",
     },
@@ -81,7 +82,12 @@ function fixture() {
       runtimeDescriptorSha256: "9".repeat(64),
       sourceDescriptorSha256: "b".repeat(64),
     },
-    schemaVersion: "vending-vision-precutover-proof/v1",
+    companion: {
+      archiveSha256: "c".repeat(64),
+      descriptorSha256: "d".repeat(64),
+      sourceCommit: "e".repeat(40),
+    },
+    schemaVersion: "vending-vision-precutover-proof/v2",
   };
   const proofText = canonical(proof);
   const bundleText = canonical({ testOwned: "deterministic claim fixture" });
@@ -95,7 +101,7 @@ function fixture() {
     inputIdentity: {
       candidate: {
         attestationSha256: proof.candidate.attestationBundleSha256,
-        evidenceSha256: "f".repeat(64),
+        trustedBuilderEvidenceSha256: "f".repeat(64),
         manifestSha256: proof.candidate.embeddedManifestSha256,
         sourceCommit,
         subjectSha256: proof.candidate.subjectSha256,
@@ -144,6 +150,7 @@ function runtimeProof(value) {
         releaseSetSha256: `sha256:${"2".repeat(64)}`,
       },
       vision: {
+        attestationBundleSha256: `sha256:${value.proof.candidate.attestationBundleSha256}`,
         archive: {
           byteSize: 456,
           sha256: `sha256:${value.proof.candidate.subjectSha256}`,
@@ -165,6 +172,7 @@ function runtimeProof(value) {
         },
         embeddedManifestSha256: `sha256:${value.proof.candidate.embeddedManifestSha256}`,
         sourceCommit,
+        trustedBuilderEvidenceSha256: `sha256:${value.proof.candidate.trustedBuilderEvidenceSha256}`,
       },
     },
     releaseSet: {
@@ -178,9 +186,11 @@ function runtimeProof(value) {
         runtimeDescriptorSha256: `sha256:${value.proof.resources.runtimeDescriptorSha256}`,
       },
       vision: {
+        attestationBundleSha256: `sha256:${value.proof.candidate.attestationBundleSha256}`,
         candidateSubjectSha256: `sha256:${value.proof.candidate.subjectSha256}`,
         embeddedManifestSha256: `sha256:${value.proof.candidate.embeddedManifestSha256}`,
         sourceCommit,
+        trustedBuilderEvidenceSha256: `sha256:${value.proof.candidate.trustedBuilderEvidenceSha256}`,
       },
     },
   };
@@ -277,6 +287,28 @@ describe("pre-cutover Windows proof finalizer", () => {
         },
       );
       assert.equal(result.schemaVersion, "vem.precutover.ai.v2");
+      assert.deepEqual(result.windowsProof.companion, value.proof.companion);
+      assert.deepEqual(result.windowsProof.candidate, {
+        attestationBundleSha256: value.proof.candidate.attestationBundleSha256,
+        trustedBuilderEvidenceSha256:
+          value.proof.candidate.trustedBuilderEvidenceSha256,
+      });
+      assert.equal(
+        result.windowsProof.proofAttestationBundleSha256,
+        `sha256:${digest(
+          canonical({ testOwned: "deterministic claim fixture" }),
+        )}`,
+      );
+      assert.equal(
+        result.windowsProof.signedProofSha256,
+        `sha256:${digest(value.proofText)}`,
+      );
+      assert.match(
+        result.windowsProof.trustedProofEvidenceSha256,
+        /^sha256:[a-f0-9]{64}$/,
+      );
+      assert.equal("proofSha256" in result.windowsProof, false);
+      assert.equal("evidenceSha256" in result.windowsProof, false);
       assert.deepEqual(events, [
         "fresh-linux-runtime-proof",
         "trusted-windows-proof-attestation",
@@ -424,6 +456,60 @@ describe("pre-cutover Windows proof finalizer", () => {
     }
   });
 
+  for (const [label, mutate] of [
+    [
+      "candidate attestation bundle",
+      (fresh) =>
+        (fresh.releaseSet.vision.attestationBundleSha256 = `sha256:${"0".repeat(64)}`),
+    ],
+    [
+      "candidate trusted builder evidence",
+      (fresh) =>
+        (fresh.releaseSet.vision.trustedBuilderEvidenceSha256 = `sha256:${"0".repeat(64)}`),
+    ],
+    [
+      "fresh runtime attestation bundle",
+      (fresh) =>
+        (fresh.receipt.vision.attestationBundleSha256 = `sha256:${"0".repeat(64)}`),
+    ],
+    [
+      "fresh runtime trusted builder evidence",
+      (fresh) =>
+        (fresh.receipt.vision.trustedBuilderEvidenceSha256 = `sha256:${"0".repeat(64)}`),
+    ],
+  ]) {
+    it(`rejects a bypassed ${label} identity`, async () => {
+      const value = fixture();
+      const fresh = runtimeProof(value);
+      mutate(fresh);
+      const prior = process.env.NODE_ENV;
+      process.env.NODE_ENV = "test";
+      try {
+        await assert.rejects(
+          finalizePrecutoverAiForTest(
+            {
+              output: value.output,
+              "repo-root": repoRoot,
+              "source-ref": sourceRef,
+              "windows-proof-input-directory": value.input,
+            },
+            {
+              async proveRuntimeArtifacts() {
+                return fresh;
+              },
+              async verifyWindowsProofAttestation() {},
+            },
+          ),
+          /does not match fresh Linux proof/,
+        );
+        assert.equal(existsSync(value.output), false);
+      } finally {
+        if (prior === undefined) delete process.env.NODE_ENV;
+        else process.env.NODE_ENV = prior;
+      }
+    });
+  }
+
   it("accepts exactly one hosted GitHub result from the pinned B1 workflow", () => {
     const value = fixture();
     const previous = process.env.NODE_ENV;
@@ -567,6 +653,29 @@ describe("pre-cutover Windows proof finalizer", () => {
         writeFileSync(
           join(value.input, "precutover-ai-proof.json"),
           canonical(value.proof),
+        );
+      },
+      error: /binding mismatch/,
+    },
+    {
+      name: "companion evidence rewritten beside the signed proof",
+      apply(value) {
+        value.evidence.companion.archiveSha256 = "0".repeat(64);
+        writeFileSync(
+          join(value.input, "trusted-precutover-proof-evidence.json"),
+          canonical(value.evidence).trimEnd(),
+        );
+      },
+      error: /binding mismatch/,
+    },
+    {
+      name: "builder evidence identity rewritten beside the signed proof",
+      apply(value) {
+        value.evidence.inputIdentity.candidate.trustedBuilderEvidenceSha256 =
+          "0".repeat(64);
+        writeFileSync(
+          join(value.input, "trusted-precutover-proof-evidence.json"),
+          canonical(value.evidence).trimEnd(),
         );
       },
       error: /binding mismatch/,

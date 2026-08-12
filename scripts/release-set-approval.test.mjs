@@ -252,7 +252,7 @@ function evidence() {
       candidateSubjectSha256: digest("1"),
       embeddedManifestSha256: digest("3"),
       sourceCommit: "89abcdef0123456789abcdef0123456789abcdef",
-      supplierEvidenceSha256: digest("4"),
+      trustedBuilderEvidenceSha256: digest("4"),
     },
     visionV2Bundle: facts.visionV2Bundle,
     windowsRuntime: {

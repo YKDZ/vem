@@ -113,6 +113,16 @@ function crossBindWindowsProof(runtimeProof, windowsProof) {
       "candidate source",
     ],
     [
+      proof.candidate.attestationBundleSha256,
+      releaseSet.vision.attestationBundleSha256,
+      "candidate attestation bundle",
+    ],
+    [
+      proof.candidate.trustedBuilderEvidenceSha256,
+      releaseSet.vision.trustedBuilderEvidenceSha256,
+      "candidate trusted builder evidence",
+    ],
+    [
       proof.modelPack.archive.sha256,
       releaseSet.ai.modelPackArchive.sha256,
       "model archive",
@@ -151,6 +161,16 @@ function crossBindWindowsProof(runtimeProof, windowsProof) {
       proof.candidate.sourceCommit,
       runtime.vision.sourceCommit,
       "fresh runtime source",
+    ],
+    [
+      proof.candidate.attestationBundleSha256,
+      runtime.vision.attestationBundleSha256,
+      "fresh runtime attestation bundle",
+    ],
+    [
+      proof.candidate.trustedBuilderEvidenceSha256,
+      runtime.vision.trustedBuilderEvidenceSha256,
+      "fresh runtime trusted builder evidence",
     ],
     [
       proof.resources.aiLockSha256,
@@ -228,11 +248,17 @@ async function finalize(options, dependencies) {
           schemaVersion: "vem.precutover.ai.v2",
           trustStatus: "pending_final_aggregate_approval",
           windowsProof: {
-            attestationBundleSha256: windowsProof.files.bundle.sha256,
             authorityDescriptorSha256: windowsProof.authority.descriptorSha256,
-            companion: windowsProof.evidence.companion,
-            evidenceSha256: windowsProof.files.evidence.sha256,
-            proofSha256: windowsProof.files.proof.sha256,
+            candidate: {
+              attestationBundleSha256:
+                windowsProof.proof.candidate.attestationBundleSha256,
+              trustedBuilderEvidenceSha256:
+                windowsProof.proof.candidate.trustedBuilderEvidenceSha256,
+            },
+            companion: windowsProof.proof.companion,
+            proofAttestationBundleSha256: windowsProof.files.bundle.sha256,
+            signedProofSha256: windowsProof.files.proof.sha256,
+            trustedProofEvidenceSha256: windowsProof.files.evidence.sha256,
             workflowSha: windowsProof.authority.workflowSha,
           },
         };

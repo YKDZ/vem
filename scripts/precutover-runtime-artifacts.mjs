@@ -917,7 +917,11 @@ async function verifyVisionArchive({
       expected.attestationBundleSha256,
       "attestation bundle",
     ],
-    [evidence.sha256, expected.supplierEvidenceSha256, "supplier evidence"],
+    [
+      evidence.sha256,
+      expected.trustedBuilderEvidenceSha256,
+      "trusted builder evidence",
+    ],
   ]) {
     if (actual !== wanted) fail(`Vision candidate ${label} digest mismatch`);
   }
@@ -1073,7 +1077,7 @@ async function verifyVisionArchive({
     ),
     embeddedManifestSha256: manifest.sha256,
     sourceCommit: expected.sourceCommit,
-    supplierEvidenceSha256: evidence.sha256,
+    trustedBuilderEvidenceSha256: evidence.sha256,
     v2BundleSha256,
   };
   return { aiMaterials, facts };
@@ -1176,7 +1180,7 @@ function validateReceipt(receipt) {
       "bindings",
       "embeddedManifestSha256",
       "sourceCommit",
-      "supplierEvidenceSha256",
+      "trustedBuilderEvidenceSha256",
       "v2BundleSha256",
     ],
     "Vision candidate facts",
@@ -1206,13 +1210,20 @@ function validateReceipt(receipt) {
     !DIGEST_RE.test(receipt.vision.archive.sha256) ||
     !DIGEST_RE.test(receipt.vision.attestationBundleSha256) ||
     !DIGEST_RE.test(receipt.vision.embeddedManifestSha256) ||
-    !DIGEST_RE.test(receipt.vision.supplierEvidenceSha256) ||
+    !DIGEST_RE.test(receipt.vision.trustedBuilderEvidenceSha256) ||
     !DIGEST_RE.test(receipt.vision.v2BundleSha256) ||
     !COMMIT_RE.test(receipt.vision.sourceCommit)
   ) {
     fail("Vision candidate receipt facts are invalid");
   }
   return receipt;
+}
+
+export function validateRuntimeArtifactsReceiptTextForTest(raw) {
+  if (process.env.NODE_ENV !== "test") {
+    fail("test-only runtime receipt validator requires NODE_ENV=test");
+  }
+  return validateReceipt(parseCanonical(raw, "runtime artifacts receipt"));
 }
 
 function writeExclusive(path, contents, validateInputs) {

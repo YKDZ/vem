@@ -17,7 +17,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 
-import { verifyRuntimeArtifactsForTest } from "./precutover-runtime-artifacts.mjs";
+import {
+  validateRuntimeArtifactsReceiptTextForTest,
+  verifyRuntimeArtifactsForTest,
+} from "./precutover-runtime-artifacts.mjs";
 import {
   buildApprovedPrecutoverReceiptText,
   verifyTrustedVisionCandidateAttestation,
@@ -218,12 +221,9 @@ async function buildFixture(root) {
   );
   writeFileSync(attestation, "{}\n");
   const attestationSha256 = sha256(readFileSync(attestation));
-  const supplierEvidence = join(
-    candidateInput,
-    "trusted-builder-evidence.json",
-  );
+  const builderEvidence = join(candidateInput, "trusted-builder-evidence.json");
   writeFileSync(
-    supplierEvidence,
+    builderEvidence,
     JSON.stringify({
       schemaVersion: "vending-vision-trusted-builder-evidence/v1",
       builderRepository: "hbhjt/vending-vision",
@@ -283,7 +283,7 @@ async function buildFixture(root) {
       candidateSubjectSha256: `sha256:${candidate.subjectSha256}`,
       embeddedManifestSha256: `sha256:${candidate.embeddedManifestSha256}`,
       sourceCommit: visionCommit,
-      supplierEvidenceSha256: sha256(readFileSync(supplierEvidence)),
+      trustedBuilderEvidenceSha256: sha256(readFileSync(builderEvidence)),
     },
     visionV2Bundle: repository.visionV2Bundle,
     windowsRuntime: {
@@ -303,7 +303,7 @@ async function buildFixture(root) {
       hostedRunnerRequired: true,
       repository: "YKDZ/vem",
       workflow: ".github/workflows/trusted-release-set-attester.yml",
-      workflowSha: "54f30f648f07c8bf5bc639f4ca2ba8f5a3d85981",
+      workflowSha: "e70cf966a8dbb76f024a9ef4aeec6d83d7651b44",
     },
     inputArtifact: {
       aggregateSha256: digest("5"),
@@ -793,7 +793,35 @@ describe("pre-cutover complete runtime archives", () => {
     assert.equal(receipt.trustStatus, "pending_final_aggregate_approval");
     assert.equal(receipt.vem.files.length, 3);
     assert.equal(receipt.vision.sourceCommit, visionCommit);
+    assert.match(
+      receipt.vision.trustedBuilderEvidenceSha256,
+      /^sha256:[a-f0-9]{64}$/,
+    );
     assert.match(receipt.verifier.descriptorIdentity, /^sha256:[a-f0-9]{64}$/);
+  });
+
+  it("strictly rejects a runtime receipt using the retired Vision evidence field", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-runtime-retired-field-"));
+    temporaryRoots.push(root);
+    const fixture = await buildFixture(root);
+    const output = join(root, "runtime-artifacts-receipt.json");
+    const result = await runWithTestAuthority(fixture, output);
+    assert.equal(result.status, 0, result.stderr);
+    const receipt = JSON.parse(readFileSync(output, "utf8"));
+    const retired = "supplier" + "EvidenceSha256";
+    receipt.vision[retired] = receipt.vision.trustedBuilderEvidenceSha256;
+    delete receipt.vision.trustedBuilderEvidenceSha256;
+    const prior = process.env.NODE_ENV;
+    process.env.NODE_ENV = "test";
+    try {
+      assert.throws(
+        () => validateRuntimeArtifactsReceiptTextForTest(canonical(receipt)),
+        /Vision candidate facts has missing or unknown fields/,
+      );
+    } finally {
+      if (prior === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = prior;
+    }
   });
 
   it("projects the complete externally verified packaged worker onedir for the AI proof", async () => {

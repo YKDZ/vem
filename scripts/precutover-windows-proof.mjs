@@ -24,14 +24,14 @@ const INPUT_MEMBERS = Object.freeze([
   "precutover-ai-proof.sigstore.json",
   "trusted-precutover-proof-evidence.json",
 ]);
-const PROOF_SCHEMA = "vending-vision-precutover-proof/v1";
+const PROOF_SCHEMA = "vending-vision-precutover-proof/v2";
 const EVIDENCE_SCHEMA = "vending-vision-trusted-precutover-proof-evidence/v1";
 const AUTHORITY_SCHEMA = "vem.trusted-windows-precutover-proof.v1";
 const AUTHORITY_SHA256 =
-  "sha256:4d2108eed5401cf0f7e66c818ee160635ca4a23c64d14f1d82b2e64841e24d51";
+  "sha256:13650e3800da78f51f1aa6feb6e070a6aa29191af4152a6a9758647856296cf1";
 const REPOSITORY = "hbhjt/vending-vision";
 const WORKFLOW = ".github/workflows/trusted-precutover-companion-proof.yml";
-const WORKFLOW_SHA = "8030ea67a26b925bd2add07fe8b98641eb22ced2";
+const WORKFLOW_SHA = "3d3ba24ed12c1d521c1916274c6932c2982b885e";
 const SUBJECT = "precutover-ai-proof.json";
 const SHA_RE = /^[a-f0-9]{64}$/;
 const COMMIT_RE = /^[a-f0-9]{40}$/;
@@ -147,18 +147,18 @@ function validateIdentity(identity) {
     identity.candidate,
     [
       "attestationSha256",
-      "evidenceSha256",
       "manifestSha256",
       "sourceCommit",
       "subjectSha256",
+      "trustedBuilderEvidenceSha256",
     ],
     "Windows proof candidate identity",
   );
   for (const key of [
     "attestationSha256",
-    "evidenceSha256",
     "manifestSha256",
     "subjectSha256",
+    "trustedBuilderEvidenceSha256",
   ])
     assertDigest(identity.candidate[key], `Windows proof candidate ${key}`);
   if (!COMMIT_RE.test(identity.candidate.sourceCommit))
@@ -196,7 +196,14 @@ function validateIdentity(identity) {
 function validateProof(proof, identity) {
   exact(
     proof,
-    ["candidate", "modelPack", "probes", "resources", "schemaVersion"],
+    [
+      "candidate",
+      "companion",
+      "modelPack",
+      "probes",
+      "resources",
+      "schemaVersion",
+    ],
     "Windows proof",
   );
   if (proof.schemaVersion !== PROOF_SCHEMA)
@@ -208,6 +215,7 @@ function validateProof(proof, identity) {
       "embeddedManifestSha256",
       "sourceCommit",
       "subjectSha256",
+      "trustedBuilderEvidenceSha256",
       "workerExecutableSha256",
       "workerMode",
     ],
@@ -220,11 +228,25 @@ function validateProof(proof, identity) {
       identity.candidate.manifestSha256 ||
     proof.candidate.sourceCommit !== identity.candidate.sourceCommit ||
     proof.candidate.subjectSha256 !== identity.candidate.subjectSha256 ||
+    proof.candidate.trustedBuilderEvidenceSha256 !==
+      identity.candidate.trustedBuilderEvidenceSha256 ||
     proof.candidate.workerExecutableSha256 !==
       identity.resources.workerExecutableSha256 ||
     proof.candidate.workerMode !== "frozen-windows"
   )
     fail("Windows proof candidate binding mismatch");
+  exact(
+    proof.companion,
+    ["archiveSha256", "descriptorSha256", "sourceCommit"],
+    "Windows proof companion",
+  );
+  for (const [key, value] of Object.entries(proof.companion)) {
+    if (
+      (key.endsWith("Sha256") && !SHA_RE.test(value)) ||
+      (key === "sourceCommit" && !COMMIT_RE.test(value))
+    )
+      fail("Windows proof companion identity is invalid");
+  }
   exact(
     proof.modelPack,
     ["archive", "descriptorSha256", "sourceRevision"],
@@ -322,7 +344,8 @@ function validateEvidence(evidence, facts, proof, proofRaw, authority) {
     evidence.proof.sha256 !== facts.proof.sha256.slice(7) ||
     evidence.workflow.repository !== authority.repository ||
     evidence.workflow.workflow !== authority.workflow ||
-    evidence.workflow.sha !== authority.workflowSha
+    evidence.workflow.sha !== authority.workflowSha ||
+    canonicalJson(evidence.companion) !== canonicalJson(proof.companion)
   )
     fail("Windows proof evidence binding mismatch");
   for (const [key, value] of Object.entries(evidence.companion)) {
