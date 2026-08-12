@@ -8,6 +8,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -29,6 +30,7 @@ import {
   serialDeviceXmlForRole,
   waitForRawSerialFrame,
 } from "./host-serial-control-plane.mjs";
+import { writePaymentMockCreateGateState } from "./mock-payment-create-gate.mjs";
 import {
   qemuUsbSerialSessionPaths,
   QEMU_USB_SERIAL_ADAPTER_VERSION,
@@ -123,6 +125,29 @@ async function requestJson(baseUrl, token, path, body = {}) {
 }
 
 describe("host serial control plane", () => {
+  it("atomically replaces the mock payment create gate with a protected release state", () => {
+    const root = makeTempDir("mock-payment-create-gate");
+    try {
+      const gate = mockPaymentCreateGatePaths(root);
+      mkdirSync(join(root, "fast-route"), { recursive: true });
+      writeFileSync(gate.statePath, '{"state":"hold"}\n', { mode: 0o644 });
+      chmodSync(gate.statePath, 0o644);
+
+      writePaymentMockCreateGateState(root, {
+        state: "release",
+        paymentNo: "PAY-ATOMIC-RELEASE-001",
+      });
+
+      assert.deepEqual(JSON.parse(readFileSync(gate.statePath, "utf8")), {
+        state: "release",
+        paymentNo: "PAY-ATOMIC-RELEASE-001",
+      });
+      assert.equal(statSync(gate.statePath).mode & 0o777, 0o600);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("waits for role-specific sale capability projections", () => {
     const capability = {
       canStartSale: true,

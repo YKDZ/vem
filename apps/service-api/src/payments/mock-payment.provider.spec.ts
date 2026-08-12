@@ -1,6 +1,7 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import type { AppConfigService } from "../config/app-config.service";
@@ -35,6 +36,27 @@ function makeTradeStore() {
     ),
     acceptReversal: vi.fn(async () => trade),
   } as unknown as MockPaymentCodeTradeStore;
+}
+
+async function publishJsonAtomically(
+  path: string,
+  value: unknown,
+): Promise<void> {
+  const temporaryPath = join(
+    dirname(path),
+    `.${basename(path)}.${randomUUID()}.tmp`,
+  );
+  try {
+    await writeFile(temporaryPath, `${JSON.stringify(value)}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx",
+    });
+    await rename(temporaryPath, path);
+  } catch (error) {
+    await rm(temporaryPath, { force: true });
+    throw error;
+  }
 }
 
 describe("MockPaymentProvider", () => {
@@ -189,14 +211,10 @@ describe("MockPaymentProvider", () => {
     });
     expect(resolved).toBe(false);
 
-    await writeFile(
-      gatePath,
-      `${JSON.stringify({
-        state: "release",
-        paymentNo: "PAY20260504000001AAAA0003",
-      })}\n`,
-      "utf8",
-    );
+    await publishJsonAtomically(gatePath, {
+      state: "release",
+      paymentNo: "PAY20260504000001AAAA0003",
+    });
 
     await expect(pending).resolves.toMatchObject({
       providerTradeNo: "MOCK-PAY20260504000001AAAA0003",

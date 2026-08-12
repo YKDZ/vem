@@ -1,11 +1,13 @@
+import { randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
+  renameSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -35,10 +37,31 @@ export function paymentMockQueryFaultPaths(stateRoot) {
   return Object.freeze({ statePath });
 }
 
+export function replaceJsonFileAtomically(path, value) {
+  const statePath = resolve(required(path, "path"));
+  const directory = dirname(statePath);
+  const temporaryPath = join(
+    directory,
+    `.${basename(statePath)}.${randomUUID()}.tmp`,
+  );
+  mkdirSync(directory, { recursive: true });
+  try {
+    writeFileSync(temporaryPath, `${JSON.stringify(value)}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx",
+    });
+    renameSync(temporaryPath, statePath);
+  } catch (error) {
+    rmSync(temporaryPath, { force: true });
+    throw error;
+  }
+  return statePath;
+}
+
 export function writePaymentMockCreateGateState(stateRoot, value) {
   const gate = paymentMockCreateGatePaths(stateRoot);
-  mkdirSync(dirname(gate.statePath), { recursive: true });
-  writeFileSync(gate.statePath, `${JSON.stringify(value)}\n`, { mode: 0o600 });
+  replaceJsonFileAtomically(gate.statePath, value);
   if (value?.state === "open" || value?.state === "hold") {
     rmSync(gate.pendingPath, { force: true });
   }
@@ -69,8 +92,7 @@ export function readPaymentMockCreateGateStatus(stateRoot) {
 
 export function writePaymentMockQueryFaultState(stateRoot, value) {
   const fault = paymentMockQueryFaultPaths(stateRoot);
-  mkdirSync(dirname(fault.statePath), { recursive: true });
-  writeFileSync(fault.statePath, `${JSON.stringify(value)}\n`, { mode: 0o600 });
+  replaceJsonFileAtomically(fault.statePath, value);
   return fault;
 }
 
