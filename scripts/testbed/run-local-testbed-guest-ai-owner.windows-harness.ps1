@@ -47,7 +47,10 @@ $testOperations = @{
   WaitReady = {
   $global:AiOwnerHarnessCalls.Add("ready") | Out-Null
   if ($global:AiOwnerHarnessFailurePoint -ceq "ready" -and $global:AiOwnerHarnessAiEnvironment) { throw "injected ready failure" }
-  return [pscustomobject]@{ ok = $true }
+  if ($global:AiOwnerHarnessAiEnvironment) {
+    return [pscustomobject]@{ ok = $true; aiReady = $true; aiReadinessDiagnostic = "ready" }
+  }
+  return [pscustomobject]@{ ok = $true; aiReady = $false; aiReadinessDiagnostic = "model_pack_missing" }
   }
   ReadOwnerIdentity = {
     return [pscustomobject]@{ ProcessId = 4242; ExecutablePath = "C:\VEM\vision\app\vending-vision.exe" }
@@ -93,6 +96,16 @@ if ($global:AiOwnerHarnessFailurePoint -ceq "install") { throw "injected install
   $long = Restart-TestbedAiVisionOwner -GuestInput $guestInput -EvidencePhase long -ModelPackRoot $modelRoot
   Assert-Equal ($global:AiOwnerHarnessCalls -join ",") "stop-task:VEMVisionRuntime,stop-canonical,install-ai:$($short.acceptanceEvidenceRoot),start-task:VEMVisionRuntime,ready,stop-task:VEMVisionRuntime,stop-canonical,install-ai:$($long.acceptanceEvidenceRoot),start-task:VEMVisionRuntime,ready" "managed restart call order"
   if ([string]$short.acceptanceEvidenceRoot -ceq [string]$long.acceptanceEvidenceRoot) { throw "short and long evidence roots overlapped" }
+
+  $global:AiOwnerHarnessCalls.Clear()
+  $missing = Restart-TestbedAiDegradedVisionOwner -GuestInput $guestInput -Fault missing
+  if ($missing.aiReady -ne $false -or $missing.aiReadinessDiagnostic -cne "model_pack_missing") {
+    throw "missing model owner did not expose the public diagnostic"
+  }
+  if ($global:AiOwnerHarnessAiEnvironment) { throw "missing model owner retained AI environment" }
+  $restored = Restart-TestbedAiVisionOwner -GuestInput $guestInput -EvidencePhase recovery -ModelPackRoot $modelRoot
+  if (-not $global:AiOwnerHarnessAiEnvironment) { throw "verified AI owner was not restored after missing model proof" }
+  Remove-Item -LiteralPath $restored.acceptanceEvidenceRoot -Recurse -Force -ErrorAction SilentlyContinue
 
   $failures = [ordered]@{}
   foreach ($failurePoint in @("install", "start", "ready")) {

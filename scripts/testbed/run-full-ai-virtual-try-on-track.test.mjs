@@ -8,16 +8,19 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
+import { collectInstalledAiDegradationEvidence } from "./ai-installed-degradation.mjs";
 import {
   assembleInstalledAiTryOnAcceptanceForTest,
   buildInstalledVisionWorkerSampleScript,
   sampleInstalledVisionPeakRssForTest,
   validateInstalledAiAttemptSupport,
 } from "./ai-virtual-try-on-installed-entry.mjs";
+import { CdpClient } from "./machine-ui-cdp-driver.mjs";
 
 const repoRoot = new URL("../..", import.meta.url).pathname.replace(/\/$/, "");
 const runner = join(
@@ -26,12 +29,152 @@ const runner = join(
 );
 const ownerModule = join(repoRoot, "scripts/testbed/ai-vision-owner.psm1");
 
+class DegradationFakeWebSocket {
+  constructor() {
+    this.readyState = 0;
+    this.listeners = new Map();
+    queueMicrotask(() => {
+      this.readyState = 1;
+      this.emit("open", {});
+    });
+  }
+
+  addEventListener(type, handler, options = {}) {
+    const entries = this.listeners.get(type) ?? [];
+    entries.push({ handler, once: options.once === true });
+    this.listeners.set(type, entries);
+  }
+
+  removeEventListener(type, handler) {
+    this.listeners.set(
+      type,
+      (this.listeners.get(type) ?? []).filter(
+        (entry) => entry.handler !== handler,
+      ),
+    );
+  }
+
+  send(raw) {
+    const request = JSON.parse(raw);
+    queueMicrotask(() =>
+      this.emit("message", {
+        data: JSON.stringify({
+          id: request.id,
+          result: {
+            result: {
+              value: {
+                buyAvailable: true,
+                catalogAvailable: true,
+                machineUiAvailable: true,
+                tryOnAiAvailable: false,
+              },
+            },
+          },
+        }),
+      }),
+    );
+  }
+
+  close() {
+    this.readyState = 3;
+    this.emit("close", {});
+  }
+
+  emit(type, event) {
+    const entries = [...(this.listeners.get(type) ?? [])];
+    for (const entry of entries) entry.handler(event);
+    this.listeners.set(
+      type,
+      entries.filter((entry) => !entry.once),
+    );
+  }
+}
+
+test("proves missing model degradation through public Vision Machine and daemon boundaries", async () => {
+  const server = createServer((request, response) => {
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/health") {
+      response.end(
+        JSON.stringify({
+          status: "degraded",
+          protocol: "vem.vision.v2",
+          cameraReady: true,
+          fastReady: true,
+          aiReady: false,
+          aiReadinessDiagnostic: "model_pack_missing",
+          visionBusinessReady: true,
+        }),
+      );
+      return;
+    }
+    if (request.url === "/healthz") {
+      response.end(JSON.stringify({ status: "healthy" }));
+      return;
+    }
+    if (request.url === "/readyz") {
+      response.end(JSON.stringify({ ready: true }));
+      return;
+    }
+    if (request.url === "/v1/sale-start-capability") {
+      response.end(JSON.stringify({ canStartSale: true, revision: 1 }));
+      return;
+    }
+    response.writeHead(404).end("{}");
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const socket = new DegradationFakeWebSocket();
+  const client = new CdpClient("ws://127.0.0.1/devtools/page/degradation", {
+    webSocketFactory: () => socket,
+    defaultTimeoutMs: 500,
+  });
+  await client.connect();
+  try {
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    const result = await collectInstalledAiDegradationEvidence({
+      client,
+      daemonOrigin: origin,
+      daemonToken: "test-token",
+      expectedDiagnostic: "model_pack_missing",
+      readReady: async () => ({
+        type: "vision.ready",
+        payload: {
+          aiReady: false,
+          aiReadinessDiagnostic: "model_pack_missing",
+          fastReady: true,
+          visionBusinessReady: true,
+          capabilities: ["try_on_fast", "profile_push", "presence_status"],
+        },
+      }),
+      visionOrigin: origin,
+    });
+    assert.deepEqual(result, {
+      aiReady: false,
+      coreReady: true,
+      daemonReady: true,
+      fastReady: true,
+      machineUiAvailable: true,
+      saleAvailable: true,
+    });
+  } finally {
+    await client.close();
+    await new Promise((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
 test("AI track owns the importable short/long/default Vision owner lifecycle", () => {
   assert.equal(existsSync(ownerModule), true);
   const source = readFileSync(runner, "utf8");
   assert.match(source, /Import-Module[^\n]*ai-vision-owner\.psm1/);
   assert.match(source, /Restart-TestbedAiVisionOwner[^\n]*short/);
   assert.match(source, /Restart-TestbedAiVisionOwner[^\n]*long/);
+  assert.match(source, /Restart-TestbedAiDegradedVisionOwner[^\n]*missing/);
+  assert.match(source, /degradation --fault missing/);
+  assert.match(source, /--missing-degradation \$missingFacts/);
   assert.match(source, /Restore-TestbedDefaultVisionOwner/);
   assert.match(source, /default-owner-restoration\.json/);
   assert.match(source, /aiEnvironmentCleared = \$true/);

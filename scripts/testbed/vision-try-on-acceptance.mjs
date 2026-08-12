@@ -1807,6 +1807,31 @@ async function nextVisionMessage(socket, timeoutMs) {
   });
 }
 
+export async function collectVisionReadyHandshake({
+  machineCode,
+  timeoutMs = 10_000,
+  openSocket = openVisionSocket,
+  readMessage = nextVisionMessage,
+  closeSocket,
+}) {
+  const socket = await openSocket("ws://127.0.0.1:7892/ws", timeoutMs);
+  try {
+    socket.send(JSON.stringify(createVisionHello(machineCode)));
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const message = await readMessage(
+        socket,
+        Math.max(1, deadline - Date.now()),
+      );
+      if (message?.type === "vision.ready") return message;
+    }
+    throw new Error("installed Vision did not emit a ready handshake");
+  } finally {
+    if (typeof closeSocket === "function") await closeSocket(socket);
+    else if (typeof socket?.close === "function") socket.close();
+  }
+}
+
 function protocolEventTime(message) {
   return message?.type === "vision.ready"
     ? message.timestamp

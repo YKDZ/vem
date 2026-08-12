@@ -93,6 +93,7 @@ New-TestbedAiAcceptanceArtifactRoot -Root $artifactRoot -RunId ([string]$guestIn
 $shortFacts = Join-Path $artifactRoot "short-attempt.json"
 $longFacts = Join-Path $artifactRoot "long-attempt.json"
 $saleFacts = Join-Path $artifactRoot "ordinary-sale.json"
+$missingFacts = Join-Path $artifactRoot "missing-model-degradation.json"
 $nodeEntry = Join-Path $PSScriptRoot "ai-virtual-try-on-installed-entry.mjs"
 $restorationRequired = $false
 $restorationSupport = Join-Path $artifactRoot "default-owner-restoration.json"
@@ -108,7 +109,12 @@ try {
   if ($LASTEXITCODE -ne 0) { throw "long installed AI attempt failed" }
   node $nodeEntry sale --guest-input $GuestInputPath --handoff $HandoffPath --out $saleFacts
   if ($LASTEXITCODE -ne 0) { throw "ordinary installed-owner sale failed" }
-  node $nodeEntry assemble --artifact-root $artifactRoot --candidate-input-directory ([string]$inputs.candidateInputDirectory) --windows-proof-input-directory ([string]$inputs.windowsProofInputDirectory) --short-attempt $shortFacts --long-attempt $longFacts --sale $saleFacts --out $OutPath
+  Restart-TestbedAiDegradedVisionOwner -GuestInput $guestInput -Fault missing | Out-Null
+  node $nodeEntry degradation --fault missing --guest-input $GuestInputPath --handoff $HandoffPath --out $missingFacts
+  if ($LASTEXITCODE -ne 0) { throw "missing model installed degradation failed" }
+  $restoredConfiguration = Restart-TestbedAiVisionOwner -GuestInput $guestInput -EvidencePhase recovery -ModelPackRoot $modelPackRoot
+  Remove-Item -LiteralPath $restoredConfiguration.acceptanceEvidenceRoot -Recurse -Force -ErrorAction Stop
+  node $nodeEntry assemble --artifact-root $artifactRoot --candidate-input-directory ([string]$inputs.candidateInputDirectory) --windows-proof-input-directory ([string]$inputs.windowsProofInputDirectory) --short-attempt $shortFacts --long-attempt $longFacts --sale $saleFacts --missing-degradation $missingFacts --out $OutPath
   if ($LASTEXITCODE -ne 0) { throw "installed AI acceptance assembly failed" }
   $trackSucceeded = $true
 } finally {

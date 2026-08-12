@@ -38,7 +38,7 @@ function Assert-TestbedAiOwnerContext {
   return $script:OwnerContext
 }
 
-function New-TestbedAiVisionOwnerConfiguration([object]$GuestInput, [ValidateSet("short", "long")][string]$EvidencePhase) {
+function New-TestbedAiVisionOwnerConfiguration([object]$GuestInput, [ValidateSet("short", "long", "recovery")][string]$EvidencePhase) {
   $context = Assert-TestbedAiOwnerContext
   $inputsProperty = $GuestInput.PSObject.Properties["aiVirtualTryOn"]
   $inputs = if ($null -eq $inputsProperty) { $null } else { $inputsProperty.Value }
@@ -215,7 +215,7 @@ function Restore-TestbedDefaultVisionOwner([object]$GuestInput) {
 function Restart-TestbedAiVisionOwner {
   param(
     [Parameter(Mandatory = $true)][object]$GuestInput,
-    [Parameter(Mandatory = $true)][ValidateSet("short", "long")][string]$EvidencePhase,
+    [Parameter(Mandatory = $true)][ValidateSet("short", "long", "recovery")][string]$EvidencePhase,
     [Parameter(Mandatory = $true)][string]$ModelPackRoot
   )
   [void](Assert-TestbedAiOwnerContext)
@@ -243,4 +243,34 @@ function Restart-TestbedAiVisionOwner {
   }
 }
 
-Export-ModuleMember -Function Initialize-TestbedAiVisionOwnerContext, New-TestbedAiVisionOwnerConfiguration, Restart-TestbedAiVisionOwner, Restore-TestbedDefaultVisionOwner
+function Restart-TestbedAiDegradedVisionOwner {
+  param(
+    [Parameter(Mandatory = $true)][object]$GuestInput,
+    [Parameter(Mandatory = $true)][ValidateSet("missing")][string]$Fault
+  )
+  [void](Assert-TestbedAiOwnerContext)
+  $app = "C:\VEM\vision\app"
+  $site = "C:\ProgramData\VEM\vision\site.json"
+  try {
+    Stop-TestbedAiVisionOwner $app $site
+    if ($Fault -cne "missing") { throw "unsupported AI degradation fault" }
+    # The default launcher removes both AI variables from inherited scopes.
+    # That is the production missing-pack state, not a test worker override.
+    Install-TestbedVisionOwner $GuestInput $null
+    $context = Assert-TestbedAiOwnerContext
+    if ($null -ne $context.testOperations -and $context.testOperations.ContainsKey("StartOwner")) { & $context.testOperations.StartOwner }
+    else { Start-ScheduledTask -TaskName "VEMVisionRuntime" -ErrorAction Stop }
+    $health = Wait-TestbedVisionReady
+    if ($health.aiReady -ne $false -or [string]$health.aiReadinessDiagnostic -cne "model_pack_missing") {
+      throw "managed Vision owner did not expose model_pack_missing"
+    }
+    return $health
+  } catch {
+    $primary = $_.Exception
+    try { Restore-TestbedDefaultVisionOwner $GuestInput | Out-Null }
+    catch { throw [AggregateException]::new("AI degradation owner and default-owner recovery both failed", @($primary, $_.Exception)) }
+    throw $primary
+  }
+}
+
+Export-ModuleMember -Function Initialize-TestbedAiVisionOwnerContext, New-TestbedAiVisionOwnerConfiguration, Restart-TestbedAiVisionOwner, Restart-TestbedAiDegradedVisionOwner, Restore-TestbedDefaultVisionOwner

@@ -20,6 +20,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
+import { collectInstalledAiDegradationEvidence } from "./ai-installed-degradation.mjs";
 import {
   AI_REGIONAL_EVIDENCE_POLICY,
   AI_REGIONAL_EVIDENCE_POLICY_SHA256,
@@ -588,6 +589,77 @@ export async function runInstalledOrdinarySalePhase(options) {
   }
 }
 
+export async function runInstalledAiDegradationPhase(options) {
+  const guestInput = readJson(options.guestInputPath, "guest input");
+  const handoff = readJson(options.handoffPath, "runtime handoff");
+  const healthzUrl = handoff.daemon?.ready?.healthzUrl;
+  const daemonToken = handoff.daemon?.ready?.ipcToken;
+  if (
+    typeof healthzUrl !== "string" ||
+    !healthzUrl.endsWith("/healthz") ||
+    typeof daemonToken !== "string" ||
+    daemonToken.length < 1
+  )
+    throw new Error("installed degradation daemon handoff is invalid");
+  const target = await discoverMachineUiTarget({
+    endpoint: handoff.cdp.endpoint,
+    expectedTargetId: handoff.cdp.targetId,
+  });
+  const client = new CdpClient(
+    rewriteWebSocketDebuggerUrl(
+      target.webSocketDebuggerUrl,
+      handoff.cdp.endpoint,
+    ),
+  );
+  try {
+    await client.connect();
+    await enablePageRuntime(client);
+    const acceptance = guestInput.visionAcceptance?.aiTryOnCases?.[0];
+    if (!acceptance?.selectedCatalogKey || !acceptance?.size)
+      throw new Error("installed degradation product fixture is unavailable");
+    await restoreCatalogHomeFromClient({ client });
+    await activateVisibleSelector(
+      client,
+      '[data-test="catalog-category"][data-category-key="tshirts"]',
+      { kind: "touch", timeoutMs: 30_000 },
+    );
+    await activateVisibleSelector(
+      client,
+      `[data-test="catalog-product"][data-catalog-key="${acceptance.selectedCatalogKey}"]`,
+      { kind: "touch", timeoutMs: 30_000 },
+    );
+    await waitForRoute(client, /^#\/products\//, {
+      timeoutMs: 30_000,
+      pollMs: 250,
+    });
+    await activateVisibleSelector(
+      client,
+      `[data-test="product-size-option"][data-size="${acceptance.size}"]`,
+      { kind: "touch", timeoutMs: 30_000 },
+    );
+    const facts = await collectInstalledAiDegradationEvidence({
+      client,
+      daemonOrigin: healthzUrl.slice(0, -"/healthz".length),
+      daemonToken,
+      expectedDiagnostic: options.expectedDiagnostic,
+      machineCode: guestInput.machineCode,
+    });
+    writeExclusiveCanonical(
+      options.phaseOutputPath,
+      supportEvidence("installed-runtime", {
+        degradation: {
+          diagnostic: options.expectedDiagnostic,
+          fault: options.fault,
+          facts,
+        },
+      }),
+    );
+    return facts;
+  } finally {
+    await client.close().catch(() => {});
+  }
+}
+
 export async function assembleInstalledAiTryOnAcceptance(
   input,
   dependencies = {},
@@ -727,6 +799,18 @@ export async function assembleInstalledAiTryOnAcceptanceFiles(options) {
     options.salePath,
     "ordinary sale facts",
   );
+  const degradationSupport = readCanonicalJson(
+    options.missingDegradationPath,
+    "missing model degradation facts",
+  );
+  const missingDegradation = degradationSupport.facts?.degradation;
+  if (
+    degradationSupport.schemaVersion !== AI_SUPPORT_EVIDENCE_SCHEMA ||
+    degradationSupport.kind !== "installed-runtime" ||
+    missingDegradation?.diagnostic !== "model_pack_missing" ||
+    missingDegradation.fault !== "missing"
+  )
+    throw new Error("missing model degradation support evidence is invalid");
   if (
     saleSupport.schemaVersion !== AI_SUPPORT_EVIDENCE_SCHEMA ||
     saleSupport.kind !== "installed-runtime" ||
@@ -767,6 +851,7 @@ export async function assembleInstalledAiTryOnAcceptanceFiles(options) {
     },
     { ordinarySale: async () => sale },
   );
+  result.report.degradations.missingPack = missingDegradation.facts;
   if (
     candidateManifest.sourceCommit !== proof.candidate.sourceCommit ||
     proof.candidate.embeddedManifestSha256 !== sha256(candidateManifestRaw) ||
@@ -884,9 +969,9 @@ export async function assembleInstalledAiTryOnAcceptanceForTest(
 
 function parseCli(argv) {
   const [command, ...tokens] = argv;
-  if (!["attempt", "sale", "assemble"].includes(command))
+  if (!["attempt", "degradation", "sale", "assemble"].includes(command))
     throw new Error(
-      "installed AI entry command must be attempt, sale, or assemble",
+      "installed AI entry command must be attempt, degradation, sale, or assemble",
     );
   const values = { command };
   for (let index = 0; index < tokens.length; index += 2) {
@@ -923,10 +1008,22 @@ async function main() {
       phaseOutputPath: options.out,
     });
   }
+  if (options.command === "degradation") {
+    if (options.fault !== "missing")
+      throw new Error("installed degradation fault must be missing");
+    return runInstalledAiDegradationPhase({
+      expectedDiagnostic: "model_pack_missing",
+      fault: options.fault,
+      guestInputPath: options["guest-input"],
+      handoffPath: options.handoff,
+      phaseOutputPath: options.out,
+    });
+  }
   return assembleInstalledAiTryOnAcceptanceFiles({
     artifactRoot: options["artifact-root"],
     candidateInputDirectory: options["candidate-input-directory"],
     longAttemptPath: options["long-attempt"],
+    missingDegradationPath: options["missing-degradation"],
     outPath: options.out,
     salePath: options.sale,
     shortAttemptPath: options["short-attempt"],
