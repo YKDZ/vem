@@ -31,7 +31,7 @@ const CALIBRATION_FIELDS = [
 ];
 const CALIBRATION_DOCUMENTS = [
   ["acceptanceReport", "acceptance-report.json"],
-  ["precutoverReceipt", "precutover-receipt.json"],
+  ["acceptanceAuthorityReceipt", "acceptance-authority-receipt.json"],
   ["releaseProof", "release-proof.json"],
   ["recoverySupport", "recovery-support.json"],
   ["evidenceManifest", "evidence-manifest.json"],
@@ -501,7 +501,7 @@ async function calibrationSourceBundle(value) {
     fail("calibration source bundle input is not JSON");
   }
   if (
-    input?.schemaVersion !== "vem-ai-regional-evidence-calibration-input/v1" ||
+    input?.schemaVersion !== "vem-ai-regional-evidence-calibration-input/v2" ||
     !isAbsolute(input.artifactRoot ?? "") ||
     !Array.isArray(input.attempts) ||
     input.attempts.length !== 2

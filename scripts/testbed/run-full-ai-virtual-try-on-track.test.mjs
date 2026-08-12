@@ -434,7 +434,7 @@ test("AI track owns the importable short/long/default Vision owner lifecycle", (
   assert.match(source, /Restart-TestbedAiVisionOwner[^\n]*long/);
   assert.match(source, /Restart-TestbedAiDegradedVisionOwner[^\n]*missing/);
   assert.match(source, /degradation --fault missing/);
-  assert.match(source, /--missing-degradation \$missingFacts/);
+  assert.match(source, /"--missing-degradation", \$missingFacts/);
   assert.match(source, /Restore-TestbedDefaultVisionOwner/);
   assert.match(source, /default-owner-restoration\.json/);
   assert.match(source, /aiEnvironmentCleared = \$true/);
@@ -528,7 +528,10 @@ test("AI virtual try-on runner accepts only approved external input identities",
   }
   assert.match(source, /vem\.testbed\.ai-acceptance-authority\/v1/);
   assert.match(source, /\$phase -notin @\("measurement", "formal"\)/);
-  assert.match(
+  assert.match(source, /if \(\$phase -eq "formal"\)/);
+  assert.match(source, /run-ai-regional-measurement\.mjs/);
+  assert.match(source, /installed AI regional measurement collection failed/);
+  assert.doesNotMatch(
     source,
     /AI measurement execution is staged but is not acceptance evidence/,
   );
@@ -655,11 +658,11 @@ test("admits calibrated two-garment evidence only with mandatory screenshots and
       minimumUpperBodyMeanDelta: 1,
     },
     policySha256,
-    precutoverReceiptSha256: "c".repeat(64),
+    acceptanceAuthorityReceiptSha256: "c".repeat(64),
     recoverySupportSha256: "d".repeat(64),
     release: identities,
     releaseProofSha256: "e".repeat(64),
-    schemaVersion: "vem-ai-regional-evidence-calibration-receipt/v1",
+    schemaVersion: "vem-ai-regional-evidence-calibration-receipt/v2",
   });
   const attempt = (digit, caseKey) => ({
     attemptId: `0198f44e-21bd-7c62-8f52-b7c86cc2c00${digit}`,

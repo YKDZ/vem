@@ -24,6 +24,7 @@ import {
   readCalibrationSourceClosure,
   validateCalibratedAiRegionalReceipt,
 } from "./calibrate-ai-regional-evidence.mjs";
+import { createAiRegionalMeasurement } from "./run-ai-regional-measurement.mjs";
 
 const cli = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -224,38 +225,54 @@ function calibrationFixture() {
     { compact: true },
   );
   const receipt = {
-    identityRoot: {
-      approvedPrecutoverSha256: `sha256:${"f".repeat(64)}`,
-      releaseApprovalSha256: `sha256:${"a".repeat(64)}`,
-      releaseSetSha256: `sha256:${"b".repeat(64)}`,
-      runtimeArtifactsReceiptSha256: `sha256:${"c".repeat(64)}`,
+    candidate: {
+      attestationBundleSha256: "d".repeat(64),
+      embeddedManifestSha256: "f".repeat(64),
+      sourceCommit: "b".repeat(40),
+      subjectSha256: "4".repeat(64),
+      trustedBuilderEvidenceSha256: "e".repeat(64),
     },
-    schemaVersion: "vem.precutover.ai.v2",
-    trustStatus: "pending_final_aggregate_approval",
+    companion: {
+      archiveSha256: "f".repeat(64),
+      descriptorSha256: "a".repeat(64),
+      sourceCommit: "b".repeat(40),
+    },
+    contract: {
+      bundleDigest: CONTRACT_BUNDLE_DIGEST,
+      manifestSha256: "c".repeat(64),
+      protocol: "vem.vision.v2",
+    },
+    modelPack: {
+      archive: { byteSize: 1, sha256: "3".repeat(64) },
+      descriptorSha256: "7".repeat(64),
+      sourceRevision: "a".repeat(40),
+    },
+    resources: {
+      aiLockSha256: "8".repeat(64),
+      runtimeDescriptorSha256: "1".repeat(64),
+      sourceDescriptorSha256: "9".repeat(64),
+      workerExecutableSha256: "5".repeat(64),
+    },
+    schemaVersion: "vem.testbed.ai-acceptance-authority/v1",
+    scope: "installed_windows_acceptance",
+    trustStatus: "verified_for_acceptance",
     windowsProof: {
       authorityDescriptorSha256: `sha256:${"a".repeat(64)}`,
-      candidate: {
-        attestationBundleSha256: "d".repeat(64),
-        trustedBuilderEvidenceSha256: "e".repeat(64),
-      },
-      companion: {
-        archiveSha256: "f".repeat(64),
-        descriptorSha256: "a".repeat(64),
-        sourceCommit: "b".repeat(40),
-      },
       proofAttestationBundleSha256: `sha256:${"b".repeat(64)}`,
       signedProofSha256: `sha256:${releaseSha256}`,
       trustedProofEvidenceSha256: `sha256:${"d".repeat(64)}`,
       workflowSha: "c".repeat(40),
     },
   };
-  const receiptPath = join(root, "precutover.json");
+  const receiptPath = join(root, "acceptance-authority-receipt.json");
   const receiptSha256 = writeCanonical(receiptPath, receipt, { compact: true });
   const reportPath = join(root, "acceptance-report.json");
   const reportSha256 = writeCanonical(
     reportPath,
     {
       attempts: attempts.map(({ attempt }) => attempt),
+      error:
+        "AI regional evidence policy awaits Issue10 two-garment calibration",
       execution: {
         identities: {
           aiRuntime: `sha256:${"1".repeat(64)}`,
@@ -267,6 +284,12 @@ function calibrationFixture() {
         protocol: "vem.vision.v2",
         recordedSources: ["front", "top"],
         source: "installed_machine_ui_cdp",
+      },
+      ok: false,
+      postAi: {
+        browseAvailable: true,
+        ordinarySaleCompleted: true,
+        saleAvailable: true,
       },
       schemaVersion: "vem-ai-virtual-try-on-acceptance/v2",
     },
@@ -301,17 +324,111 @@ function calibrationFixture() {
       caseKey,
     })),
     evidenceManifest: { path: manifestPath, sha256: manifestSha256 },
-    precutoverReceipt: { path: receiptPath, sha256: receiptSha256 },
+    acceptanceAuthorityReceipt: { path: receiptPath, sha256: receiptSha256 },
     recoverySupport: { path: recoveryPath, sha256: recoverySha256 },
     releaseProof: { path: releasePath, sha256: releaseSha256 },
-    schemaVersion: "vem-ai-regional-evidence-calibration-input/v1",
+    schemaVersion: "vem-ai-regional-evidence-calibration-input/v2",
   });
-  return { artifactRoot, attempts, inputPath, root };
+  return {
+    artifactRoot,
+    attempts,
+    inputPath,
+    root,
+    reportPath,
+    receiptPath,
+    releasePath,
+    recoveryPath,
+    manifestPath,
+  };
 }
 
 describe("AI regional evidence calibration", () => {
   it("provides the production calibration CLI", () => {
     assert.equal(existsSync(cli), true);
+  });
+
+  it("collects a pending installed measurement as an exact-eight v2 calibration source", () => {
+    const fixture = calibrationFixture();
+    const measurement = createAiRegionalMeasurement({
+      report: fixture.reportPath,
+      artifactRoot: fixture.artifactRoot,
+      acceptanceAuthorityReceipt: fixture.receiptPath,
+      releaseProof: fixture.releasePath,
+      recoverySupport: fixture.recoveryPath,
+      evidenceManifest: fixture.manifestPath,
+      sourceRoot: join(fixture.root, "measurement-source"),
+      out: join(fixture.root, "measurement.json"),
+    });
+    assert.deepEqual(measurement, {
+      acceptancePassed: false,
+      calibrationRequired: true,
+      calibrationSourceBundle: measurement.calibrationSourceBundle,
+      schemaVersion: "vem-ai-regional-measurement/v1",
+      status: "measured_not_accepted",
+    });
+    assert.equal(measurement.calibrationSourceBundle.members.length, 8);
+    assert.doesNotThrow(() =>
+      readCalibrationSourceClosure(
+        join(
+          fixture.root,
+          "measurement-source",
+          "calibration-source-input.json",
+        ),
+      ),
+    );
+  });
+
+  it("rejects a fabricated green report and incomplete or reused measurement evidence", () => {
+    const cases = [
+      [
+        "fabricated green",
+        (fixture) => {
+          const report = readJson(fixture.reportPath);
+          report.ok = true;
+          writeCanonical(fixture.reportPath, report, { compact: true });
+        },
+        /not calibration-pending/,
+      ],
+      [
+        "missing sidecar",
+        (fixture) =>
+          rmSync(
+            join(
+              fixture.artifactRoot,
+              fixture.attempts[0].attempt.regionalEvidence.path,
+            ),
+            { force: true },
+          ),
+        /sidecar|evidence|measured/i,
+      ],
+      [
+        "reused attempts",
+        (fixture) => {
+          const report = readJson(fixture.reportPath);
+          report.attempts[1] = structuredClone(report.attempts[0]);
+          writeCanonical(fixture.reportPath, report, { compact: true });
+        },
+        /attempt|sidecar|evidence|measured/i,
+      ],
+    ];
+    for (const [label, mutate, expected] of cases) {
+      const fixture = calibrationFixture();
+      mutate(fixture);
+      assert.throws(
+        () =>
+          createAiRegionalMeasurement({
+            report: fixture.reportPath,
+            artifactRoot: fixture.artifactRoot,
+            acceptanceAuthorityReceipt: fixture.receiptPath,
+            releaseProof: fixture.releasePath,
+            recoverySupport: fixture.recoveryPath,
+            evidenceManifest: fixture.manifestPath,
+            sourceRoot: join(fixture.root, `${label}-source`),
+            out: join(fixture.root, `${label}.json`),
+          }),
+        expected,
+      );
+    }
   });
 
   it("derives inclusive two-garment thresholds and writes canonical exclusive candidates", () => {
@@ -580,6 +697,15 @@ describe("AI regional evidence calibration", () => {
         /not canonical/,
       ],
       [
+        "retired v1 input",
+        (fixture) =>
+          rewriteInput(fixture.inputPath, (input) => {
+            input.schemaVersion =
+              "vem-ai-regional-evidence-calibration-input/v1";
+          }),
+        /calibration input is invalid/,
+      ],
+      [
         "duplicate garment case",
         (fixture) =>
           rewriteInput(fixture.inputPath, (input) => {
@@ -588,12 +714,12 @@ describe("AI regional evidence calibration", () => {
         /exactly one short and one long/,
       ],
       [
-        "precutover digest",
+        "authority digest",
         (fixture) =>
           rewriteInput(fixture.inputPath, (input) => {
-            input.precutoverReceipt.sha256 = "0".repeat(64);
+            input.acceptanceAuthorityReceipt.sha256 = "0".repeat(64);
           }),
-        /precutover receipt digest mismatched/,
+        /acceptance authority receipt digest mismatched/,
       ],
       [
         "manifest ownership",
@@ -649,7 +775,29 @@ describe("AI regional evidence calibration", () => {
           join(fixture.root, "policy.json"),
           join(fixture.root, "receipt.json"),
         ),
-      /release proof digest does not bind trusted precutover receipt/,
+      /release proof digest does not bind acceptance authority receipt/,
+    );
+  });
+
+  it("re-adjudicates the acceptance authority instead of trusting its refreshed outer digest", () => {
+    const fixture = calibrationFixture();
+    const input = readJson(fixture.inputPath);
+    const authority = readJson(input.acceptanceAuthorityReceipt.path);
+    authority.candidate.subjectSha256 = "0".repeat(64);
+    input.acceptanceAuthorityReceipt.sha256 = writeCanonical(
+      input.acceptanceAuthorityReceipt.path,
+      authority,
+      { compact: true },
+    );
+    writeCanonical(fixture.inputPath, input);
+    assert.throws(
+      () =>
+        calibrateAiRegionalEvidence(
+          fixture.inputPath,
+          join(fixture.root, "policy.json"),
+          join(fixture.root, "receipt.json"),
+        ),
+      /release proof does not bind acceptance authority receipt/,
     );
   });
 

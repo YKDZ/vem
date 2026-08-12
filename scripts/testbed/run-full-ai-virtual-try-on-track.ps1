@@ -173,9 +173,6 @@ $workerFault = $null
 $restoredWorker = $null
 $trackFailure = $null
 try {
-  if ($phase -eq "measurement") {
-    throw "AI measurement execution is staged but is not acceptance evidence"
-  }
   # The first stop is a mutating operation; restoration is required before it.
   $restorationRequired = $true
   $shortConfiguration = Restart-TestbedAiVisionOwner -GuestInput $guestInput -EvidencePhase short -ModelPackRoot $modelPackRoot
@@ -217,8 +214,20 @@ try {
     kind = "installed-runtime"
     schemaVersion = "vem.testbed.ai-virtual-try-on-support.v1"
   } | ConvertTo-Json -Compress -Depth 8 | ForEach-Object { [IO.File]::WriteAllText($verifiedRecoveryFacts, "$_`n", [Text.UTF8Encoding]::new($false)) }
-  node $nodeEntry assemble --artifact-root $artifactRoot --candidate-input-directory ([string]$inputs.candidateInputDirectory) --windows-proof-input-directory ([string]$inputs.windowsProofInputDirectory) --calibrated-policy ([string]$inputs.calibratedRegionalPolicy) --calibration-receipt ([string]$inputs.calibrationReceipt) --calibration-source-input (Join-Path ([string]$inputs.calibrationSourceInput) "calibration-source-input.json") --short-attempt $shortFacts --long-attempt $longFacts --sale $saleFacts --missing-degradation $missingFacts --corrupt-degradation $corruptFacts --worker-failure-degradation $workerFailureFacts --recovery $verifiedRecoveryFacts --out $OutPath
+  $assemble = @("assemble", "--artifact-root", $artifactRoot, "--candidate-input-directory", [string]$inputs.candidateInputDirectory, "--windows-proof-input-directory", [string]$inputs.windowsProofInputDirectory)
+  if ($phase -eq "formal") {
+    $assemble += @("--calibrated-policy", [string]$inputs.calibratedRegionalPolicy, "--calibration-receipt", [string]$inputs.calibrationReceipt, "--calibration-source-input", (Join-Path ([string]$inputs.calibrationSourceInput) "calibration-source-input.json"))
+  }
+  $assemble += @("--short-attempt", $shortFacts, "--long-attempt", $longFacts, "--sale", $saleFacts, "--missing-degradation", $missingFacts, "--corrupt-degradation", $corruptFacts, "--worker-failure-degradation", $workerFailureFacts, "--recovery", $verifiedRecoveryFacts, "--out", $OutPath)
+  node $nodeEntry @assemble
   if ($LASTEXITCODE -ne 0) { throw "installed AI acceptance assembly failed" }
+  if ($phase -eq "measurement") {
+    $measurementEntry = Join-Path $PSScriptRoot "run-ai-regional-measurement.mjs"
+    $measurementOutput = Join-Path $artifactRoot "ai-regional-measurement.json"
+    $measurementSource = Join-Path $artifactRoot "calibration-source"
+    node $measurementEntry --report $OutPath --artifact-root $artifactRoot --acceptance-authority-receipt ([string]$inputs.acceptanceAuthorityReceipt) --release-proof (Join-Path ([string]$inputs.windowsProofInputDirectory) "precutover-ai-proof.json") --recovery-support $verifiedRecoveryFacts --source-root $measurementSource --out $measurementOutput
+    if ($LASTEXITCODE -ne 0) { throw "installed AI regional measurement collection failed" }
+  }
   $trackSucceeded = $true
 } catch {
   $trackFailure = $_.Exception

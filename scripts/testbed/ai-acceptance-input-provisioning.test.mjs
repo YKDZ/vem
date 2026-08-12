@@ -86,7 +86,7 @@ function calibrationSourceBundle(root) {
   const bundleRoot = join(root, "calibration-source");
   const documents = [
     ["acceptanceReport", "acceptance-report.json", "{}\n"],
-    ["precutoverReceipt", "precutover-receipt.json", "{}\n"],
+    ["acceptanceAuthorityReceipt", "acceptance-authority-receipt.json", "{}\n"],
     ["releaseProof", "release-proof.json", "{}\n"],
     ["recoverySupport", "recovery-support.json", "{}\n"],
     [
@@ -116,7 +116,7 @@ function calibrationSourceBundle(root) {
     artifactRoot: bundleRoot,
     ...references,
     attempts,
-    schemaVersion: "vem-ai-regional-evidence-calibration-input/v1",
+    schemaVersion: "vem-ai-regional-evidence-calibration-input/v2",
   });
   return directory(root, "calibration-source", [
     ...documents.map(([, name, content]) => [name, content]),
@@ -316,7 +316,7 @@ test("packages the formal source closure as the third exact-three member", async
     localGuestInput.artifactRoot = bundleTransfer.hostPath;
     for (const [key, name] of [
       ["acceptanceReport", "acceptance-report.json"],
-      ["precutoverReceipt", "precutover-receipt.json"],
+      ["acceptanceAuthorityReceipt", "acceptance-authority-receipt.json"],
       ["releaseProof", "release-proof.json"],
       ["recoverySupport", "recovery-support.json"],
       ["evidenceManifest", "evidence-manifest.json"],

@@ -20,8 +20,8 @@ import {
 
 const DIGEST = /^[a-f0-9]{64}$/;
 const COMMIT = /^[a-f0-9]{40}$/;
-const INPUT_SCHEMA = "vem-ai-regional-evidence-calibration-input/v1";
-const RECEIPT_SCHEMA = "vem-ai-regional-evidence-calibration-receipt/v1";
+const INPUT_SCHEMA = "vem-ai-regional-evidence-calibration-input/v2";
+const RECEIPT_SCHEMA = "vem-ai-regional-evidence-calibration-receipt/v2";
 const CONTRACT_PATH = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "../../packages/shared/generated/vision-v2/manifest.json",
@@ -102,7 +102,7 @@ export function readCalibrationSourceClosure(inputPath) {
       "acceptanceReport",
       "attempts",
       "evidenceManifest",
-      "precutoverReceipt",
+      "acceptanceAuthorityReceipt",
       "recoverySupport",
       "releaseProof",
       "schemaVersion",
@@ -117,9 +117,9 @@ export function readCalibrationSourceClosure(inputPath) {
     "calibration source acceptance report",
     { pretty: false },
   );
-  const precutoverReceipt = readBoundCanonical(
-    input.precutoverReceipt,
-    "calibration source precutover receipt",
+  const acceptanceAuthorityReceipt = readBoundCanonical(
+    input.acceptanceAuthorityReceipt,
+    "calibration source acceptance authority receipt",
     { pretty: false },
   );
   const releaseProof = readBoundCanonical(
@@ -140,7 +140,7 @@ export function readCalibrationSourceClosure(inputPath) {
     acceptanceReport,
     attempts: input.attempts.map((entry) => entry.attempt),
     input: inputFile,
-    precutoverReceipt,
+    acceptanceAuthorityReceipt,
     recoverySupport,
     releaseProof,
     evidenceManifest,
@@ -231,95 +231,125 @@ function parseReleaseProof(value, receipt) {
     for (const [key, digest] of Object.entries(group))
       if (key.endsWith("Sha256"))
         requireDigest(digest, `calibration release ${key}`);
-  const receiptProof = receipt.windowsProof;
+  const authority = receipt;
   if (
     value.candidate.attestationBundleSha256 !==
       normalizeAiRegionalSha256(
-        receiptProof.candidate.attestationBundleSha256,
-        "trusted precutover candidate attestation",
+        authority.candidate.attestationBundleSha256,
+        "calibration authority candidate attestation",
       ) ||
     value.candidate.trustedBuilderEvidenceSha256 !==
       normalizeAiRegionalSha256(
-        receiptProof.candidate.trustedBuilderEvidenceSha256,
-        "trusted precutover candidate evidence",
+        authority.candidate.trustedBuilderEvidenceSha256,
+        "calibration authority candidate evidence",
       ) ||
+    value.candidate.embeddedManifestSha256 !==
+      authority.candidate.embeddedManifestSha256 ||
+    value.candidate.subjectSha256 !== authority.candidate.subjectSha256 ||
+    value.candidate.sourceCommit !== authority.candidate.sourceCommit ||
+    value.candidate.workerExecutableSha256 !==
+      authority.resources.workerExecutableSha256 ||
     value.companion.archiveSha256 !==
       normalizeAiRegionalSha256(
-        receiptProof.companion.archiveSha256,
-        "trusted precutover companion archive",
+        authority.companion.archiveSha256,
+        "calibration authority companion archive",
       ) ||
     value.companion.descriptorSha256 !==
       normalizeAiRegionalSha256(
-        receiptProof.companion.descriptorSha256,
-        "trusted precutover companion descriptor",
+        authority.companion.descriptorSha256,
+        "calibration authority companion descriptor",
       ) ||
-    value.companion.sourceCommit !== receiptProof.companion.sourceCommit
+    value.companion.sourceCommit !== authority.companion.sourceCommit ||
+    value.modelPack.archive.sha256 !== authority.modelPack.archive.sha256 ||
+    value.modelPack.archive.byteSize !== authority.modelPack.archive.byteSize ||
+    value.modelPack.descriptorSha256 !== authority.modelPack.descriptorSha256 ||
+    value.modelPack.sourceRevision !== authority.modelPack.sourceRevision ||
+    value.resources.aiLockSha256 !== authority.resources.aiLockSha256 ||
+    value.resources.runtimeDescriptorSha256 !==
+      authority.resources.runtimeDescriptorSha256 ||
+    value.resources.sourceDescriptorSha256 !==
+      authority.resources.sourceDescriptorSha256
   )
-    fail("calibration release proof does not bind trusted precutover receipt");
+    fail(
+      "calibration release proof does not bind acceptance authority receipt",
+    );
   return value;
 }
 
-function parsePrecutoverReceipt(value) {
+function parseAcceptanceAuthorityReceipt(value) {
   if (
     !exact(value, [
-      "identityRoot",
+      "candidate",
+      "companion",
+      "contract",
+      "modelPack",
+      "resources",
       "schemaVersion",
+      "scope",
       "trustStatus",
       "windowsProof",
     ]) ||
-    value.schemaVersion !== "vem.precutover.ai.v2" ||
-    value.trustStatus !== "pending_final_aggregate_approval"
+    value.schemaVersion !== "vem.testbed.ai-acceptance-authority/v1" ||
+    value.scope !== "installed_windows_acceptance" ||
+    value.trustStatus !== "verified_for_acceptance"
   )
-    fail("trusted precutover receipt is invalid");
+    fail("calibration acceptance authority receipt is invalid");
   if (
-    !exact(value.identityRoot, [
-      "approvedPrecutoverSha256",
-      "releaseApprovalSha256",
-      "releaseSetSha256",
-      "runtimeArtifactsReceiptSha256",
-    ])
-  )
-    fail("trusted precutover receipt root identity is invalid");
-  for (const [key, digest] of Object.entries(value.identityRoot))
-    normalizeAiRegionalSha256(digest, `trusted precutover ${key}`, {
-      prefixed: true,
-    });
-  if (
-    !exact(value.windowsProof, [
-      "authorityDescriptorSha256",
-      "candidate",
-      "companion",
-      "proofAttestationBundleSha256",
-      "signedProofSha256",
-      "trustedProofEvidenceSha256",
-      "workflowSha",
-    ])
-  )
-    fail("trusted precutover receipt proof identity is invalid");
-  if (
-    !exact(value.windowsProof.candidate, [
+    !exact(value.candidate, [
       "attestationBundleSha256",
+      "embeddedManifestSha256",
+      "sourceCommit",
+      "subjectSha256",
       "trustedBuilderEvidenceSha256",
     ]) ||
-    !exact(value.windowsProof.companion, [
+    !exact(value.companion, [
       "archiveSha256",
       "descriptorSha256",
       "sourceCommit",
     ]) ||
+    !exact(value.modelPack, [
+      "archive",
+      "descriptorSha256",
+      "sourceRevision",
+    ]) ||
+    !exact(value.modelPack.archive, ["byteSize", "sha256"]) ||
+    !exact(value.resources, [
+      "aiLockSha256",
+      "runtimeDescriptorSha256",
+      "sourceDescriptorSha256",
+      "workerExecutableSha256",
+    ]) ||
+    !exact(value.contract, ["bundleDigest", "manifestSha256", "protocol"]) ||
+    value.contract.protocol !== "vem.vision.v2" ||
+    !exact(value.windowsProof, [
+      "authorityDescriptorSha256",
+      "proofAttestationBundleSha256",
+      "signedProofSha256",
+      "trustedProofEvidenceSha256",
+      "workflowSha",
+    ]) ||
+    !COMMIT.test(value.candidate.sourceCommit) ||
+    !COMMIT.test(value.companion.sourceCommit) ||
+    !COMMIT.test(value.modelPack.sourceRevision) ||
     !COMMIT.test(value.windowsProof.workflowSha) ||
-    !COMMIT.test(value.windowsProof.companion.sourceCommit)
+    !Number.isSafeInteger(value.modelPack.archive.byteSize) ||
+    value.modelPack.archive.byteSize <= 0
   )
-    fail("trusted precutover receipt nested proof identity is invalid");
-  for (const [key, digest] of Object.entries(value.windowsProof))
-    if (key.endsWith("Sha256"))
-      normalizeAiRegionalSha256(digest, `trusted precutover ${key}`, {
-        prefixed: true,
-      });
-  for (const [key, digest] of Object.entries(value.windowsProof.candidate))
-    normalizeAiRegionalSha256(digest, `trusted precutover candidate ${key}`);
-  for (const [key, digest] of Object.entries(value.windowsProof.companion))
-    if (key.endsWith("Sha256"))
-      normalizeAiRegionalSha256(digest, `trusted precutover companion ${key}`);
+    fail("calibration acceptance authority receipt identity is invalid");
+  for (const group of [
+    value.candidate,
+    value.companion,
+    value.modelPack,
+    value.modelPack.archive,
+    value.resources,
+    value.contract,
+    value.windowsProof,
+  ])
+    for (const [key, digest] of Object.entries(group))
+      if (key.endsWith("Sha256") || key === "bundleDigest")
+        normalizeAiRegionalSha256(digest, `calibration authority ${key}`, {
+          prefixed: key.endsWith("Sha256") && group === value.windowsProof,
+        });
   return value;
 }
 
@@ -447,17 +477,19 @@ export function adjudicateCalibrationSourceClosure(closure) {
     fail("calibration artifact root is invalid");
   const artifactRoot = realpathSync(input.artifactRoot);
 
-  const receipt = parsePrecutoverReceipt(closure.precutoverReceipt.value);
+  const receipt = parseAcceptanceAuthorityReceipt(
+    closure.acceptanceAuthorityReceipt.value,
+  );
   if (
     sha256(closure.releaseProof.raw) !==
     normalizeAiRegionalSha256(
       receipt.windowsProof.signedProofSha256,
-      "trusted precutover signed proof",
+      "calibration authority signed proof",
       { prefixed: true },
     )
   )
     fail(
-      "calibration release proof digest does not bind trusted precutover receipt",
+      "calibration release proof digest does not bind acceptance authority receipt",
     );
   const proof = parseReleaseProof(closure.releaseProof.value, receipt);
   const attempts = input.attempts.map((entry) => {
@@ -554,7 +586,7 @@ export function validateCalibratedAiRegionalReceipt({
       "calibrationInputSha256",
       "derivedThresholds",
       "policySha256",
-      "precutoverReceiptSha256",
+      "acceptanceAuthorityReceiptSha256",
       "recoverySupportSha256",
       "release",
       "releaseProofSha256",
@@ -564,7 +596,8 @@ export function validateCalibratedAiRegionalReceipt({
     value.policySha256 !== policy.sha256 ||
     value.calibrationInputSha256 !== sha256(closure.input.raw) ||
     value.acceptanceReportSha256 !== sha256(closure.acceptanceReport.raw) ||
-    value.precutoverReceiptSha256 !== sha256(closure.precutoverReceipt.raw) ||
+    value.acceptanceAuthorityReceiptSha256 !==
+      sha256(closure.acceptanceAuthorityReceipt.raw) ||
     value.releaseProofSha256 !== sha256(closure.releaseProof.raw) ||
     value.recoverySupportSha256 !== sha256(closure.recoverySupport.raw) ||
     !exact(value.derivedThresholds, thresholdKeys) ||
@@ -644,7 +677,7 @@ export function validateCalibratedAiRegionalReceipt({
   for (const key of [
     "acceptanceReportSha256",
     "calibrationInputSha256",
-    "precutoverReceiptSha256",
+    "acceptanceAuthorityReceiptSha256",
     "recoverySupportSha256",
     "releaseProofSha256",
   ])
@@ -665,7 +698,7 @@ export function calibrateAiRegionalEvidence(
       "acceptanceReport",
       "attempts",
       "evidenceManifest",
-      "precutoverReceipt",
+      "acceptanceAuthorityReceipt",
       "recoverySupport",
       "releaseProof",
       "schemaVersion",
@@ -684,7 +717,7 @@ export function calibrateAiRegionalEvidence(
     sidecars,
     thresholds,
   } = adjudicateCalibrationSourceClosure(closure);
-  const receipt = closure.precutoverReceipt;
+  const receipt = closure.acceptanceAuthorityReceipt;
   const releaseProof = closure.releaseProof;
   const acceptanceReport = closure.acceptanceReport;
   const recoverySupport = closure.recoverySupport;
@@ -713,7 +746,7 @@ export function calibrateAiRegionalEvidence(
     calibrationInputSha256: sha256(inputFile.raw),
     derivedThresholds: thresholds,
     policySha256: sha256(policyBytes),
-    precutoverReceiptSha256: sha256(receipt.raw),
+    acceptanceAuthorityReceiptSha256: sha256(receipt.raw),
     recoverySupportSha256: sha256(recoverySupport.raw),
     release,
     releaseProofSha256: sha256(releaseProof.raw),
