@@ -621,15 +621,11 @@ export function validateCalibratedAiRegionalReceipt({
     fail(
       "calibrated AI regional evidence receipt is not bound to this release",
     );
-  const calibrationAttempt = (attempt) => {
-    const { journey, screenshots, ...value } = attempt;
-    return value;
-  };
   const expected = adjudicated.attempts
     .map((entry) => entry.attempt)
     .sort((left, right) => left.caseKey.localeCompare(right.caseKey))
     .map((attempt) => ({
-      attemptSha256: sha256(canonicalBytes(calibrationAttempt(attempt))),
+      attemptSha256: sha256(canonicalBytes(attempt)),
       caseKey: attempt.caseKey,
       garmentSha256: attempt.garment.sha256,
       inputSha256: attempt.input.sha256,

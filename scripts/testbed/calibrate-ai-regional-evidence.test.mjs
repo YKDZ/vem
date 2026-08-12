@@ -24,7 +24,10 @@ import {
   readCalibrationSourceClosure,
   validateCalibratedAiRegionalReceipt,
 } from "./calibrate-ai-regional-evidence.mjs";
-import { createAiRegionalMeasurement } from "./run-ai-regional-measurement.mjs";
+import {
+  containedMeasurementPath,
+  createAiRegionalMeasurement,
+} from "./run-ai-regional-measurement.mjs";
 
 const cli = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -347,6 +350,24 @@ describe("AI regional evidence calibration", () => {
     assert.equal(existsSync(cli), true);
   });
 
+  it("contains Windows measurement members before reading them", () => {
+    assert.equal(
+      containedMeasurementPath(
+        "C:\\ProgramData\\VEM\\measurement",
+        "regional\\short\\sidecar.json",
+      ),
+      "C:\\ProgramData\\VEM\\measurement\\regional\\short\\sidecar.json",
+    );
+    assert.throws(
+      () =>
+        containedMeasurementPath(
+          "C:\\ProgramData\\VEM\\measurement",
+          "..\\outside.json",
+        ),
+      /escapes artifact root/,
+    );
+  });
+
   it("collects a pending installed measurement as an exact-eight v2 calibration source", () => {
     const fixture = calibrationFixture();
     const measurement = createAiRegionalMeasurement({
@@ -463,6 +484,52 @@ describe("AI regional evidence calibration", () => {
       () =>
         calibrateAiRegionalEvidence(fixture.inputPath, policyPath, receiptPath),
       /outputs already exist/,
+    );
+  });
+
+  it("binds the complete production attempt projection through calibration and formal receipt validation", () => {
+    const fixture = calibrationFixture();
+    const input = readJson(fixture.inputPath);
+    for (const entry of input.attempts) {
+      entry.attempt.journey = { returnedToCatalog: true, route: "#/catalog" };
+      entry.attempt.screenshots = [
+        {
+          path: `screenshots/${entry.caseKey}/result.png`,
+          sha256: "f".repeat(64),
+        },
+      ];
+      entry.attemptSha256 = digest(
+        `${JSON.stringify(canonical(entry.attempt), null, 2)}\n`,
+      );
+    }
+    rewriteBoundReport(input, (report) => {
+      report.attempts = input.attempts.map((entry) => entry.attempt);
+    });
+    writeCanonical(fixture.inputPath, input);
+    const policyPath = join(fixture.root, "policy.json");
+    const receiptPath = join(fixture.root, "receipt.json");
+    calibrateAiRegionalEvidence(fixture.inputPath, policyPath, receiptPath);
+    const receipt = readJson(receiptPath);
+    assert.deepEqual(
+      receipt.attempts.map((entry) => entry.attemptSha256),
+      input.attempts
+        .sort((left, right) => left.caseKey.localeCompare(right.caseKey))
+        .map((entry) => entry.attemptSha256),
+    );
+    const report = readJson(input.acceptanceReport.path);
+    const identities = Object.fromEntries(
+      Object.entries(report.execution.identities).map(([key, value]) => [
+        key,
+        value.replace("sha256:", ""),
+      ]),
+    );
+    assert.doesNotThrow(() =>
+      validateCalibratedAiRegionalReceipt({
+        closure: readCalibrationSourceClosure(fixture.inputPath),
+        identities,
+        policy: loadAiRegionalEvidencePolicy(policyPath),
+        receiptPath,
+      }),
     );
   });
 

@@ -20,11 +20,12 @@ import { pathToFileURL } from "node:url";
 import { verifyAiAcceptanceAuthority } from "./ai-acceptance-authority.mjs";
 import {
   identicalAiAcceptanceInputSnapshot,
+  materializeHostCalibrationSourceSnapshot,
   materializeAiAcceptanceInputSnapshot,
   validateAiAcceptanceInputManifest,
 } from "./ai-acceptance-input-provisioning.mjs";
 
-const MODES = new Set(["fast", "full", "clear_cache"]);
+const MODES = new Set(["fast", "full", "clear_cache", "measurement"]);
 const TERMINAL = new Set([
   "passed",
   "failed",
@@ -119,13 +120,13 @@ export function parseOrchestratorOptions(args) {
   }
   const mode = option(args, "mode");
   if (!MODES.has(mode))
-    throw new Error("--mode must be fast, full, or clear_cache");
+    throw new Error("--mode must be fast, full, clear_cache, or measurement");
   const commit = option(args, "commit").toLowerCase();
   if (!/^[0-9a-f]{40}$/.test(commit)) {
     throw new Error("--commit must be a full 40-character Git SHA");
   }
   const focus = repeatableOption(args, "focus");
-  if (mode !== "fast" && focus.length > 0) {
+  if (mode !== "fast" && mode !== "measurement" && focus.length > 0) {
     throw new Error("--focus is only valid with --mode fast");
   }
   return {
@@ -572,6 +573,7 @@ function encodedPowerShell(script) {
 function requiresAiAcceptanceInputs(options) {
   return (
     options.mode === "full" ||
+    options.mode === "measurement" ||
     (options.mode === "fast" && options.focus.includes("aiVirtualTryOn"))
   );
 }
@@ -989,12 +991,14 @@ async function stageAndRunGuest({
   );
   const guestScript = `${config.guestSourcePath}\\scripts\\testbed\\run-local-testbed-guest.ps1`;
   const focusArgument = powerShellFocusArgument(focus);
-  const execute = `& '${guestScript.replaceAll("'", "''")}' -Mode '${mode}' -Commit '${commit}' -Pass ${pass}${focusArgument}`;
+  const guestMode = mode === "measurement" ? "fast" : mode;
+  const execute = `& '${guestScript.replaceAll("'", "''")}' -Mode '${guestMode}' -Commit '${commit}' -Pass ${pass}${focusArgument}`;
   const invokePowerShell7 = [
     `$pwsh = 'D:\\runtime-cache\\v1\\powershell\\7.4.6\\pwsh.exe'`,
     `& $pwsh -NoProfile -EncodedCommand '${encodedPowerShell(execute)}'`,
     "exit $LASTEXITCODE",
   ].join("\n");
+  let measurementPending = false;
   try {
     await runProcess(
       "ssh",
@@ -1017,15 +1021,19 @@ async function stageAndRunGuest({
       },
     );
   } catch (error) {
-    if (
-      (error.command === "ssh" || error.command === "scp") &&
-      (error.exitCode === 255 || error.timedOut === true)
-    ) {
-      error.businessFailure = false;
+    if (mode === "measurement" && error.exitCode === 1) {
+      measurementPending = true;
     } else {
-      error.businessFailure = true;
+      if (
+        (error.command === "ssh" || error.command === "scp") &&
+        (error.exitCode === 255 || error.timedOut === true)
+      ) {
+        error.businessFailure = false;
+      } else {
+        error.businessFailure = true;
+      }
+      throw error;
     }
-    throw error;
   } finally {
     const evidence = join(runRoot, "compact", `pass-${pass}`);
     await mkdir(evidence, { recursive: true });
@@ -1042,6 +1050,7 @@ async function stageAndRunGuest({
       },
     ).catch(() => undefined);
   }
+  return { measurementPending };
 }
 
 async function findFile(root, name) {
@@ -1330,18 +1339,58 @@ async function executeRun(options, config) {
         preparation: visionCoreInputs,
       });
       await update({ phase: `guest-pass-${pass}` });
-      await stageAndRunGuest({
+      const guestExecution = await stageAndRunGuest({
         config,
         contract,
         workspace,
         commit: options.commit,
         mode: options.mode,
-        focus: options.focus,
+        focus:
+          options.mode === "measurement" ? ["aiVirtualTryOn"] : options.focus,
         pass,
         runRoot: root,
         aiAcceptanceInputs,
         visionCoreInputs,
       });
+      if (options.mode === "measurement") {
+        const measurementPath = await findFile(
+          join(compact, `pass-${pass}`),
+          "ai-regional-measurement.json",
+        );
+        if (!guestExecution.measurementPending || !measurementPath) {
+          throw new Error(
+            "measurement operation did not publish measured-not-accepted evidence",
+          );
+        }
+        const measurement = JSON.parse(await readFile(measurementPath, "utf8"));
+        if (
+          measurement?.schemaVersion !== "vem-ai-regional-measurement/v1" ||
+          measurement?.status !== "measured_not_accepted" ||
+          measurement?.acceptancePassed !== false ||
+          measurement?.calibrationRequired !== true
+        ) {
+          throw new Error("measurement operation output is invalid");
+        }
+        const guestSourceInput = await findFile(
+          join(compact, `pass-${pass}`),
+          "calibration-source-input.json",
+        );
+        if (!guestSourceInput)
+          throw new Error(
+            "measurement operation did not publish source closure",
+          );
+        const hostSource = await materializeHostCalibrationSourceSnapshot(
+          dirname(guestSourceInput),
+          join(root, "measurement-source", `pass-${pass}`),
+        );
+        await update({
+          measurement: {
+            path: measurementPath,
+            sourceInputPath: hostSource.inputPath,
+            status: measurement.status,
+          },
+        });
+      }
       if (aiAcceptanceInputs) {
         const identityPath = await findFile(
           join(compact, `pass-${pass}`),

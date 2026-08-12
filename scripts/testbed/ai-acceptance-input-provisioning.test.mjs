@@ -13,7 +13,9 @@ import { test } from "node:test";
 
 import {
   canonicalAiAcceptanceInputManifest,
+  containedCalibrationSourcePath,
   identicalAiAcceptanceInputSnapshot,
+  materializeHostCalibrationSourceSnapshot,
   materializeAiAcceptanceInputSnapshot,
   validateAiAcceptanceInputManifest,
 } from "./ai-acceptance-input-provisioning.mjs";
@@ -384,4 +386,75 @@ test("retains full-pass drift detection", () => {
     }),
     false,
   );
+});
+
+test("contains Windows calibration source members with win32 semantics", () => {
+  assert.equal(
+    containedCalibrationSourcePath(
+      "C:\\ProgramData\\VEM\\measurement-source",
+      "C:\\ProgramData\\VEM\\measurement-source\\regional\\short\\one.json",
+      "Windows measurement member",
+    ),
+    "C:\\ProgramData\\VEM\\measurement-source\\regional\\short\\one.json",
+  );
+  assert.throws(
+    () =>
+      containedCalibrationSourcePath(
+        "C:\\ProgramData\\VEM\\measurement-source",
+        "C:\\ProgramData\\VEM\\outside.json",
+        "Windows measurement member",
+      ),
+    /remain inside/,
+  );
+});
+
+test("rewrites a copied Windows measurement closure into host-calibratable paths", async () => {
+  const root = mkdtempSync(join(tmpdir(), "vem-ai-measurement-roundtrip-"));
+  try {
+    const source = calibrationSourceBundle(root);
+    const inputPath = join(source.hostPath, "calibration-source-input.json");
+    const input = JSON.parse(readFileSync(inputPath, "utf8"));
+    const guestRoot = "C:\\ProgramData\\VEM\\testbed\\measurement";
+    input.artifactRoot = guestRoot;
+    for (const [key, name] of [
+      ["acceptanceReport", "acceptance-report.json"],
+      ["acceptanceAuthorityReceipt", "acceptance-authority-receipt.json"],
+      ["releaseProof", "release-proof.json"],
+      ["recoverySupport", "recovery-support.json"],
+      ["evidenceManifest", "evidence-manifest.json"],
+    ])
+      input[key].path = `${guestRoot}\\${name}`;
+    writeFileSync(inputPath, canonicalAiAcceptanceInputManifest(input));
+    const manifestPath = join(source.hostPath, "evidence-manifest.json");
+    writeFileSync(
+      manifestPath,
+      canonicalAiAcceptanceInputManifest({
+        files: [
+          { path: `${guestRoot}\\regional\\short\\short.json` },
+          { path: `${guestRoot}\\regional\\long\\long.json` },
+        ],
+      }),
+    );
+    const snapshot = await materializeHostCalibrationSourceSnapshot(
+      source.hostPath,
+      join(root, "host-source"),
+    );
+    const rewritten = JSON.parse(readFileSync(snapshot.inputPath, "utf8"));
+    assert.equal(rewritten.artifactRoot, snapshot.artifactRoot);
+    assert.equal(
+      rewritten.acceptanceReport.path.startsWith(snapshot.artifactRoot),
+      true,
+    );
+    assert.equal(
+      JSON.parse(
+        readFileSync(
+          join(snapshot.artifactRoot, "evidence-manifest.json"),
+          "utf8",
+        ),
+      ).files.every((entry) => entry.path.startsWith(snapshot.artifactRoot)),
+      true,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

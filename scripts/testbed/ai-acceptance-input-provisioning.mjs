@@ -7,7 +7,13 @@ import {
   readdir,
   writeFile,
 } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import {
+  isAbsolute,
+  relative,
+  resolve,
+  sep,
+  win32 as windowsPath,
+} from "node:path";
 
 const SCHEMA_VERSION = "vem-runtime-testbed-ai-input/v4";
 const AUTHORITY_SCHEMA = "vem.testbed.ai-acceptance-authority/v1";
@@ -476,14 +482,17 @@ function windowsJoin(...parts) {
   return parts.join("\\");
 }
 
-function containedPath(root, path, label) {
-  const checked = resolve(path);
-  const difference = relative(root, checked);
+export function containedCalibrationSourcePath(root, path, label) {
+  const windows = /^(?:[A-Za-z]:\\|\\\\)/.test(root);
+  const paths = windows ? windowsPath : { isAbsolute, relative, resolve, sep };
+  const checked = paths.resolve(path);
+  const canonicalRoot = paths.resolve(root);
+  const difference = paths.relative(canonicalRoot, checked);
   if (
     difference === "" ||
     difference === ".." ||
-    difference.startsWith(`..${sep}`) ||
-    isAbsolute(difference)
+    difference.startsWith(`..${paths.sep}`) ||
+    paths.isAbsolute(difference)
   )
     fail(`${label} must remain inside calibration source bundle`);
   return checked;
@@ -524,7 +533,7 @@ async function calibrationSourceBundle(value) {
     ) {
       fail(`calibration source ${key} reference is invalid`);
     }
-    const hostPath = containedPath(
+    const hostPath = containedCalibrationSourcePath(
       bundle.hostPath,
       reference.path,
       `calibration source ${key}`,
@@ -546,7 +555,7 @@ async function calibrationSourceBundle(value) {
       "calibration regional sidecar path",
       true,
     );
-    const hostPath = containedPath(
+    const hostPath = containedCalibrationSourcePath(
       bundle.hostPath,
       resolve(input.artifactRoot, name),
       "calibration regional sidecar",
@@ -580,7 +589,7 @@ async function calibrationSourceBundle(value) {
   for (const entry of evidenceManifest.files) {
     if (!entry || !isAbsolute(entry.path ?? ""))
       fail("calibration source evidence manifest path is invalid");
-    containedPath(
+    containedCalibrationSourcePath(
       bundle.hostPath,
       entry.path,
       "calibration source evidence manifest path",
@@ -973,6 +982,59 @@ export async function materializeAiAcceptanceInputSnapshot(preparation, root) {
           : {}),
       },
     },
+  };
+}
+
+export async function materializeHostCalibrationSourceSnapshot(
+  guestBundlePath,
+  hostRoot,
+) {
+  const source = hostPath(guestBundlePath, "guest calibration source bundle");
+  const destination = hostPath(hostRoot, "host calibration source bundle");
+  await cp(source, destination, { recursive: true, errorOnExist: true });
+  const inputPath = resolve(destination, "calibration-source-input.json");
+  let input;
+  try {
+    input = JSON.parse(await readFile(inputPath, "utf8"));
+  } catch {
+    fail("guest calibration source input is not JSON");
+  }
+  if (input?.schemaVersion !== "vem-ai-regional-evidence-calibration-input/v2")
+    fail("guest calibration source input is invalid");
+  const documents = Object.fromEntries(
+    CALIBRATION_DOCUMENTS.map(([key, name]) => [
+      key,
+      resolve(destination, name),
+    ]),
+  );
+  const manifest = JSON.parse(
+    await readFile(documents.evidenceManifest, "utf8"),
+  );
+  for (const entry of manifest.files ?? []) {
+    const relativePath = windowsPath.relative(
+      input.artifactRoot,
+      entry?.path ?? "",
+    );
+    memberName(
+      relativePath.replaceAll("\\", "/"),
+      "guest manifest member",
+      true,
+    );
+    entry.path = resolve(destination, relativePath);
+  }
+  const manifestRaw = canonicalAiAcceptanceInputManifest(manifest);
+  await writeFile(documents.evidenceManifest, manifestRaw);
+  input.artifactRoot = destination;
+  for (const [key, path] of Object.entries(documents)) {
+    const raw = await readFile(path);
+    input[key] = { path, sha256: manifestIdentity(raw) };
+  }
+  const inputRaw = canonicalAiAcceptanceInputManifest(input);
+  await writeFile(inputPath, inputRaw);
+  return {
+    artifactRoot: destination,
+    inputPath,
+    inputSha256: manifestIdentity(inputRaw),
   };
 }
 

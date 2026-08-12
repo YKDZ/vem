@@ -170,6 +170,28 @@ describe("runtime testbed scheduler contract", () => {
     );
   });
 
+  it("runs measurement as an explicit successful collection operation", () => {
+    const options = parseOrchestratorOptions([
+      "run",
+      "--mode",
+      "measurement",
+      "--commit",
+      sha,
+      "--config",
+      "/etc/vem/testbed.json",
+    ]);
+    assert.equal(options.mode, "measurement");
+    const source = readFileSync(
+      new URL("./runtime-testbed-orchestrator.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(source, /mode === "measurement" \? "fast" : mode/);
+    assert.match(source, /measured_not_accepted/);
+    assert.match(source, /measurementPending/);
+    assert.match(source, /materializeHostCalibrationSourceSnapshot/);
+    assert.match(source, /sourceInputPath: hostSource\.inputPath/);
+  });
+
   it("tells the guest which reconstructed pass owns the runtime build", () => {
     const source = readFileSync(
       new URL("./runtime-testbed-orchestrator.mjs", import.meta.url),

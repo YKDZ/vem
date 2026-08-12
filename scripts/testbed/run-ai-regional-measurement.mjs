@@ -9,7 +9,7 @@ import {
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, resolve, win32 as windowsPath } from "node:path";
 
 import { validateAiRegionalEvidenceSet } from "./ai-regional-evidence.mjs";
 
@@ -98,6 +98,25 @@ function copyExclusive(source, target, label) {
   copyFileSync(source, target, 0);
 }
 
+export function containedMeasurementPath(root, member) {
+  const windows = /^(?:[A-Za-z]:\\|\\\\)/.test(root);
+  const paths = windows ? windowsPath : { isAbsolute, resolve, relative: null };
+  const canonicalRoot = paths.resolve(root);
+  const checked = paths.resolve(canonicalRoot, member);
+  const difference = windows
+    ? windowsPath.relative(canonicalRoot, checked)
+    : checked.slice(canonicalRoot.length).replace(/^[/\\]/, "");
+  if (
+    !difference ||
+    difference === ".." ||
+    difference.startsWith("../") ||
+    difference.startsWith("..\\") ||
+    (windows ? windowsPath.isAbsolute(difference) : isAbsolute(difference))
+  )
+    fail("regional sidecar escapes artifact root");
+  return checked;
+}
+
 export function createAiRegionalMeasurement(options) {
   const report = readCanonical(options.report, "business report");
   const artifactRoot = resolve(options.artifactRoot);
@@ -178,9 +197,8 @@ export function createAiRegionalMeasurement(options) {
       relative.includes("..")
     )
       fail("regional sidecar path is invalid");
-    const source = resolve(artifactRoot, relative);
-    if (!source.startsWith(`${artifactRoot}/`) || !lstatSync(source).isFile())
-      fail("regional sidecar is missing");
+    const source = containedMeasurementPath(artifactRoot, relative);
+    if (!lstatSync(source).isFile()) fail("regional sidecar is missing");
     const target = resolve(sourceRoot, relative);
     copyExclusive(source, target, "regional sidecar");
     return { attempt, relative, target };
