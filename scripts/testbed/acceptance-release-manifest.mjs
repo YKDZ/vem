@@ -72,12 +72,20 @@ function validateIdentity(identity) {
     throw new Error("acceptance release Service API runtime facts are invalid");
   }
   const adminDelivery = required(backend.adminUi.delivery, "Admin UI delivery");
+  const adminHttp = required(
+    adminDelivery.observedHttp,
+    "Admin UI HTTP observation",
+  );
   if (
-    adminDelivery.buildVerified !== true ||
-    adminDelivery.entrypoint !== "index.html"
+    adminDelivery.entrypoint !== "index.html" ||
+    adminHttp.method !== "GET" ||
+    adminHttp.status !== 200 ||
+    !Number.isSafeInteger(adminHttp.byteSize) ||
+    adminHttp.byteSize <= 0
   ) {
     throw new Error("acceptance release Admin UI delivery facts are invalid");
   }
+  digest(adminHttp.responseSha256, "Admin UI HTTP response");
   const runtime = required(
     identity.runtimeArtifacts,
     "Windows runtime identity",

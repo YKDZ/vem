@@ -62,7 +62,7 @@ authority receipt 完全相同。宿主还从本地 Vision repository 的候选 
 
 `full` 的第一轮还会从已验证的 workflow identity 生成 canonical
 `vem-runtime-testbed-acceptance-release/v1` 清单，绑定 VEM source commit、Service API
-实际健康与 Service API/Admin UI 构建摘要、Admin UI delivery 入口、daemon/Machine/WebViewLoader、Vision runtime/fixture、
+实际健康与 Service API/Admin UI 构建摘要、宿主 owned loopback HTTP 对 Admin UI delivery 入口的逐字节观测、daemon/Machine/WebViewLoader、Vision runtime/fixture、
 Vision V2 contract、AI worker/environment 以及 model-pack archive/materialized tree。第二轮从自身事实
 重新生成同一清单；任何差异都会使 stability gate 失败。成功时 compact 根同时保留
 `acceptance-release-manifest.json`，`full-workflow-stability-gate.json` 记录其小写 SHA-256。

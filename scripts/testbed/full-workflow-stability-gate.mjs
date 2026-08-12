@@ -184,12 +184,17 @@ export function buildStabilityGateReport({
   ) {
     gateFailures.push("runtime artifact digests differ between passes");
   }
+  const ok = gateFailures.length === 0;
   return {
     schemaVersion: "vem-local-testbed-stability-gate/v2",
     commit: required(commit, "commit"),
-    ok: gateFailures.length === 0,
-    acceptanceReleaseManifest: acceptanceRelease?.manifest ?? null,
-    acceptanceReleaseManifestSha256: acceptanceRelease?.sha256 ?? null,
+    ok,
+    ...(ok && acceptanceRelease
+      ? {
+          acceptanceReleaseManifest: acceptanceRelease.manifest,
+          acceptanceReleaseManifestSha256: acceptanceRelease.sha256,
+        }
+      : {}),
     declaredStateReconstruction: {
       systemDrive: "reconstructed C:",
       platform: "reconstructed ephemeral platform state",
@@ -224,7 +229,7 @@ async function main() {
     passBPath: option(args, "pass-b"),
   });
   const outPath = option(args, "out");
-  if (report.acceptanceReleaseManifest) {
+  if (report.ok && report.acceptanceReleaseManifest) {
     const manifestPath = resolve(
       dirname(outPath),
       "acceptance-release-manifest.json",

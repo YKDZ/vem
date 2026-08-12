@@ -23,7 +23,15 @@ function identity() {
       },
       adminUi: {
         build: { byteSize: 13, fileCount: 3, sha256: "3".repeat(64) },
-        delivery: { buildVerified: true, entrypoint: "index.html" },
+        delivery: {
+          entrypoint: "index.html",
+          observedHttp: {
+            byteSize: 13,
+            method: "GET",
+            responseSha256: "4".repeat(64),
+            status: 200,
+          },
+        },
       },
     },
     runtimeArtifacts: {

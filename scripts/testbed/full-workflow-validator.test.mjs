@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -1328,7 +1329,15 @@ function identity(reconstruction) {
       },
       adminUi: {
         build: { byteSize: 11, fileCount: 1, sha256: "2".repeat(64) },
-        delivery: { buildVerified: true, entrypoint: "index.html" },
+        delivery: {
+          entrypoint: "index.html",
+          observedHttp: {
+            byteSize: 11,
+            method: "GET",
+            responseSha256: "2".repeat(64),
+            status: 200,
+          },
+        },
       },
     },
     baseline: {
@@ -2337,7 +2346,72 @@ describe("full workflow stability gate", () => {
           "acceptance release pass 2 drifted from pass 1",
         ),
       );
-      assert.equal(gate.acceptanceReleaseManifest, null);
+      assert.equal("acceptanceReleaseManifest" in gate, false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("withholds the acceptance release manifest when any other stability gate fails", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-workflow-release-failed-"));
+    try {
+      const descriptors = BUSINESS_CHECK_REGISTRY.filter(
+        (descriptor) => descriptor.fullRequired,
+      );
+      const report = (reconstruction) => ({
+        schemaVersion: "vem-local-testbed-full-workflow/v4",
+        mode: "full",
+        ok: true,
+        businessSets: Object.fromEntries(
+          descriptors.map((descriptor) => [
+            descriptor.name,
+            { status: "passed" },
+          ]),
+        ),
+        execution: {
+          selectedBusinessSets: descriptors.map(
+            (descriptor) => descriptor.name,
+          ),
+        },
+        identity: identity(reconstruction),
+      });
+      const first = report("a");
+      const second = report("b");
+      second.businessSets.sale.status = "failed";
+      const passA = join(root, "pass-a.json");
+      const passB = join(root, "pass-b.json");
+      const out = join(root, "full-workflow-stability-gate.json");
+      writeFileSync(passA, `${JSON.stringify(first)}\n`);
+      writeFileSync(passB, `${JSON.stringify(second)}\n`);
+      const gate = buildStabilityGateReport({
+        commit: "c".repeat(40),
+        passAPath: passA,
+        passBPath: passB,
+      });
+      assert.equal(gate.ok, false);
+      assert.equal("acceptanceReleaseManifest" in gate, false);
+      assert.equal("acceptanceReleaseManifestSha256" in gate, false);
+      const result = spawnSync(
+        process.execPath,
+        [
+          new URL("./full-workflow-stability-gate.mjs", import.meta.url)
+            .pathname,
+          "--commit",
+          "c".repeat(40),
+          "--pass-a",
+          passA,
+          "--pass-b",
+          passB,
+          "--out",
+          out,
+        ],
+        { encoding: "utf8" },
+      );
+      assert.equal(result.status, 1);
+      assert.equal(
+        existsSync(join(root, "acceptance-release-manifest.json")),
+        false,
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

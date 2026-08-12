@@ -12,6 +12,7 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
+import { createServer } from "node:http";
 import { isIP } from "node:net";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -715,6 +716,50 @@ async function buildDirectoryIdentity(workspace, relativeDirectory) {
   };
 }
 
+async function observeAdminUiDelivery(indexBytes) {
+  const server = createServer((request, response) => {
+    if (request.method !== "GET" || request.url !== "/") {
+      response.writeHead(404).end();
+      return;
+    }
+    response.writeHead(200, {
+      "content-length": indexBytes.byteLength,
+      "content-type": "text/html; charset=utf-8",
+    });
+    response.end(indexBytes);
+  });
+  try {
+    await new Promise((resolvePromise, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolvePromise);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("local testbed Admin UI observer address is invalid");
+    }
+    const response = await fetch(`http://127.0.0.1:${address.port}/`, {
+      signal: AbortSignal.timeout(5_000),
+    });
+    const observed = Buffer.from(await response.arrayBuffer());
+    if (!response.ok || !observed.equals(indexBytes)) {
+      throw new Error("local testbed Admin UI delivery observation failed");
+    }
+    return {
+      byteSize: observed.byteLength,
+      method: "GET",
+      responseSha256: createHash("sha256").update(observed).digest("hex"),
+      status: response.status,
+    };
+  } finally {
+    server.closeAllConnections();
+    if (server.listening) {
+      await new Promise((resolvePromise, reject) =>
+        server.close((error) => (error ? reject(error) : resolvePromise())),
+      );
+    }
+  }
+}
+
 export async function buildBackendAcceptanceIdentity(workspace, health) {
   const root = absolute(workspace, "workspace");
   if (health?.database !== "ok" || health?.mqtt !== "connected") {
@@ -730,6 +775,7 @@ export async function buildBackendAcceptanceIdentity(workspace, health) {
   if (serviceEntrypoint.byteLength === 0 || adminEntrypoint.byteLength === 0) {
     throw new Error("local testbed backend runtime entrypoint is empty");
   }
+  const adminDelivery = await observeAdminUiDelivery(adminEntrypoint);
   return {
     serviceApi: {
       build: serviceApi,
@@ -742,7 +788,7 @@ export async function buildBackendAcceptanceIdentity(workspace, health) {
     },
     adminUi: {
       build: adminUi,
-      delivery: { buildVerified: true, entrypoint: "index.html" },
+      delivery: { entrypoint: "index.html", observedHttp: adminDelivery },
     },
   };
 }

@@ -950,7 +950,7 @@ describe("local testbed orchestration", () => {
     }
   });
 
-  it("binds deterministic Service API and Admin UI builds with observed API runtime health", async () => {
+  it("binds real Service API health and an observed Admin UI HTTP delivery", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-testbed-backend-identity-"));
     try {
       mkdirSync(join(root, "apps/service-api/dist"), { recursive: true });
@@ -976,8 +976,13 @@ describe("local testbed orchestration", () => {
       assert.equal(first.serviceApi.build.fileCount, 1);
       assert.equal(first.adminUi.build.fileCount, 2);
       assert.deepEqual(first.adminUi.delivery, {
-        buildVerified: true,
         entrypoint: "index.html",
+        observedHttp: {
+          byteSize: 6,
+          method: "GET",
+          responseSha256: createHash("sha256").update("admin\n").digest("hex"),
+          status: 200,
+        },
       });
       assert.match(first.adminUi.build.sha256, /^[a-f0-9]{64}$/);
       const plan = buildReconstructionPlan(
