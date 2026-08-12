@@ -2949,15 +2949,23 @@ async function readResultImageEvidence(
 
 function startResultNetworkCapture(client) {
   const responses = new Map();
+  const responseCounts = new Map();
   const redirected = new Set();
   const failures = new Set();
-  const finished = new Set();
+  const finished = new Map();
+  const servedFromCache = new Set();
   const offResponse = client.on("Network.responseReceived", (event) => {
-    if (event?.type === "Image" && typeof event?.requestId === "string")
+    if (event?.type === "Image" && typeof event?.requestId === "string") {
+      responseCounts.set(
+        event.requestId,
+        (responseCounts.get(event.requestId) ?? 0) + 1,
+      );
       responses.set(event.requestId, event.response);
+    }
   });
   const offFinished = client.on("Network.loadingFinished", (event) => {
-    if (typeof event?.requestId === "string") finished.add(event.requestId);
+    if (typeof event?.requestId === "string")
+      finished.set(event.requestId, event.encodedDataLength);
   });
   const offFailed = client.on("Network.loadingFailed", (event) => {
     if (typeof event?.requestId === "string") failures.add(event.requestId);
@@ -2966,8 +2974,18 @@ function startResultNetworkCapture(client) {
     if (event?.redirectResponse && typeof event?.requestId === "string")
       redirected.add(event.requestId);
   });
+  const offCache = client.on("Network.requestServedFromCache", (event) => {
+    if (typeof event?.requestId === "string")
+      servedFromCache.add(event.requestId);
+  });
   return {
-    async read(resultUrl, timeoutMs, pollMs) {
+    async read(resultUrl, deadline, pollMs) {
+      const remaining = () => {
+        const value = deadline - performance.now();
+        if (value <= 0)
+          throw new Error("installed AI Network capture timed out");
+        return Math.max(1, Math.ceil(value));
+      };
       const matched = await waitForCondition(
         "unique AI result Network response",
         async () => {
@@ -2980,36 +2998,61 @@ function startResultNetworkCapture(client) {
             value: { done, values },
           };
         },
-        timeoutMs,
+        remaining(),
         pollMs,
       );
       const [[requestId, response]] = matched.done;
       await new Promise((resolvePromise) =>
-        globalThis.setTimeout(resolvePromise, pollMs),
+        globalThis.setTimeout(resolvePromise, Math.min(pollMs, remaining())),
       );
+      remaining();
       const exactResponses = [...responses.entries()].filter(
         ([, candidate]) => candidate?.url === resultUrl,
       );
       if (
         exactResponses.length !== 1 ||
+        responseCounts.get(requestId) !== 1 ||
         failures.has(requestId) ||
         redirected.has(requestId) ||
+        servedFromCache.has(requestId) ||
         response.status !== 200 ||
         response.mimeType !== "image/png" ||
         response.fromDiskCache === true ||
         response.fromServiceWorker === true
       )
         throw new Error("installed AI Network response is invalid");
+      const contentTypeHeaders = Object.entries(response.headers ?? {}).filter(
+        ([name]) => name.toLowerCase() === "content-type",
+      );
+      if (
+        contentTypeHeaders.length !== 1 ||
+        contentTypeHeaders[0][1] !== "image/png"
+      )
+        throw new Error("installed AI Network Content-Type header is invalid");
+      const encodedDataLength = finished.get(requestId);
+      if (
+        !Number.isSafeInteger(encodedDataLength) ||
+        encodedDataLength <= 0 ||
+        encodedDataLength > 8 * 1024 * 1024
+      )
+        throw new Error("installed AI Network encoded size is invalid");
       const body = await client.send(
         "Network.getResponseBody",
         { requestId },
-        { timeoutMs },
+        { timeoutMs: remaining() },
       );
+      remaining();
       if (body.base64Encoded !== true || typeof body.body !== "string")
         throw new Error("installed AI Network response body is invalid");
+      if (body.body.length > Math.ceil((8 * 1024 * 1024 * 4) / 3) + 4)
+        throw new Error("installed AI Network response body is oversized");
+      remaining();
       const bytes = Buffer.from(body.body, "base64");
+      remaining();
       if (
         bytes.byteLength === 0 ||
+        bytes.byteLength > 8 * 1024 * 1024 ||
+        encodedDataLength !== bytes.byteLength ||
         bytes.toString("base64").replace(/=+$/, "") !==
           body.body.replace(/=+$/, "")
       )
@@ -3021,6 +3064,7 @@ function startResultNetworkCapture(client) {
       offFinished();
       offFailed();
       offRequest();
+      offCache();
     },
   };
 }
@@ -3186,11 +3230,11 @@ async function collectInstalledAiTryOnAttemptInternal(
     pollMs <= 0
   )
     throw new Error("installed AI attempt inputs are invalid");
-  const deadline = Date.now() + timeoutMs;
+  const deadline = performance.now() + timeoutMs;
   const remaining = () => {
-    const value = deadline - Date.now();
+    const value = deadline - performance.now();
     if (value <= 0) throw new Error("installed AI attempt timed out");
-    return value;
+    return Math.max(1, Math.ceil(value));
   };
   await client.send("Network.enable", {}, { timeoutMs: remaining() });
   const networkCapture = startResultNetworkCapture(client);
@@ -3231,7 +3275,7 @@ async function collectInstalledAiTryOnAttemptInternal(
       throw new Error("installed AI result URL is not bound to its attempt");
     const network = await networkCapture.read(
       surface.resultUrl,
-      remaining(),
+      deadline,
       pollMs,
     );
     const capturedBody = network.bytes;
@@ -3328,7 +3372,7 @@ async function collectInstalledAiTryOnAttemptInternal(
       .send(
         "Network.disable",
         {},
-        { timeoutMs: Math.max(1, deadline - Date.now()) },
+        { timeoutMs: Math.max(1, Math.ceil(deadline - performance.now())) },
       )
       .catch(() => {});
   }

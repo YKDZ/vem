@@ -136,6 +136,7 @@ async function withInstalledAiHarness(options, callback) {
     server.listen(0, "127.0.0.1", resolve);
   });
   const root = mkdtempSync(join(tmpdir(), "vem-installed-ai-cdp-negative-"));
+  const delayedNetworkTimers = [];
   let outsideRoot = null;
   const evidenceName =
     options.sidecarAttemptId === null
@@ -178,7 +179,7 @@ async function withInstalledAiHarness(options, callback) {
         message.method === "Input.dispatchTouchEvent" &&
         message.params.type === "touchStart"
       ) {
-        queueMicrotask(() => {
+        const emitNetworkResponse = () => {
           activeSocket.emit("message", {
             data: JSON.stringify({
               method: "Network.responseReceived",
@@ -190,22 +191,70 @@ async function withInstalledAiHarness(options, callback) {
                     ? `${resultUrl}/wrong-attempt`
                     : resultUrl,
                   status: 200,
-                  mimeType: options.contentType ?? "image/png",
+                  mimeType:
+                    options.networkMimeType ??
+                    options.contentType ??
+                    "image/png",
                   fromDiskCache: options.fromDiskCache === true,
                   fromServiceWorker: false,
-                  headers: {
-                    "Content-Type": options.contentType ?? "image/png",
-                  },
+                  headers:
+                    options.missingContentTypeHeader === true
+                      ? {}
+                      : options.duplicateCaseContentTypeHeaders === true
+                        ? {
+                            "Content-Type": "image/png",
+                            "content-type": "image/png",
+                          }
+                        : options.conflictingContentTypeHeader === true
+                          ? { "Content-Type": "image/png, text/plain" }
+                          : {
+                              [options.lowercaseContentTypeHeader
+                                ? "content-type"
+                                : "Content-Type"]:
+                                options.responseHeaderContentType ??
+                                options.contentType ??
+                                "image/png",
+                            },
                 },
               },
             }),
           });
+          if (options.duplicateSameRequestId)
+            activeSocket.emit("message", {
+              data: JSON.stringify({
+                method: "Network.responseReceived",
+                params: {
+                  requestId: "ai-result-request",
+                  type: "Image",
+                  response: {
+                    url: resultUrl,
+                    status: 200,
+                    mimeType: "image/png",
+                    fromDiskCache: false,
+                    fromServiceWorker: false,
+                    headers: { "Content-Type": "image/png" },
+                  },
+                },
+              }),
+            });
+          if (options.servedFromMemoryCache)
+            activeSocket.emit("message", {
+              data: JSON.stringify({
+                method: "Network.requestServedFromCache",
+                params: { requestId: "ai-result-request" },
+              }),
+            });
           activeSocket.emit("message", {
             data: JSON.stringify({
               method: options.loadingFailed
                 ? "Network.loadingFailed"
                 : "Network.loadingFinished",
-              params: { requestId: "ai-result-request" },
+              params: {
+                requestId: "ai-result-request",
+                encodedDataLength: options.oversizedEncodedData
+                  ? 9 * 1024 * 1024
+                  : networkPng.byteLength,
+              },
             }),
           });
           if (options.duplicateNetworkResponse)
@@ -221,6 +270,7 @@ async function withInstalledAiHarness(options, callback) {
                     mimeType: "image/png",
                     fromDiskCache: false,
                     fromServiceWorker: false,
+                    headers: { "Content-Type": "image/png" },
                   },
                 },
               }),
@@ -242,18 +292,40 @@ async function withInstalledAiHarness(options, callback) {
                 },
               }),
             });
-        });
+        };
+        if (options.slowResponseMs)
+          delayedNetworkTimers.push(
+            setTimeout(emitNetworkResponse, options.slowResponseMs),
+          );
+        else queueMicrotask(emitNetworkResponse);
         return { id: message.id, result: {} };
       } else if (message.method === "Network.getResponseBody") {
         if (options.missingBody)
           return { id: message.id, error: { message: "No resource" } };
-        return {
+        const response = {
           id: message.id,
           result: {
-            body: options.invalidBase64 ? "***" : networkPng.toString("base64"),
+            body: options.oversizedBody
+              ? "A".repeat(12 * 1024 * 1024)
+              : options.invalidBase64
+                ? "***"
+                : networkPng.toString("base64"),
             base64Encoded: true,
           },
         };
+        if (options.slowGetResponseBodyMs) {
+          delayedNetworkTimers.push(
+            setTimeout(
+              () =>
+                activeSocket.emit("message", {
+                  data: JSON.stringify(response),
+                }),
+              options.slowGetResponseBodyMs,
+            ),
+          );
+          return null;
+        }
+        return response;
       } else return { id: message.id, result: {} };
     const expression = message.params.expression;
     if (expression === INSTALL_TRY_ON_LIFECYCLE_OBSERVER_EXPRESSION)
@@ -337,6 +409,7 @@ async function withInstalledAiHarness(options, callback) {
     await enablePageRuntime(client);
     return await callback({ attemptId, client, root, route, socket });
   } finally {
+    for (const timer of delayedNetworkTimers) clearTimeout(timer);
     await client.close();
     await new Promise((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),
@@ -490,10 +563,17 @@ describe("vision try-on acceptance script", () => {
                     mimeType: "image/png",
                     fromDiskCache: false,
                     fromServiceWorker: false,
+                    headers: { "Content-Type": "image/png" },
                   },
                 },
               ],
-              ["Network.loadingFinished", { requestId: "ai-result-request" }],
+              [
+                "Network.loadingFinished",
+                {
+                  requestId: "ai-result-request",
+                  encodedDataLength: png.byteLength,
+                },
+              ],
             ])
               activeSocket.emit("message", {
                 data: JSON.stringify({ method, params }),
@@ -679,6 +759,49 @@ describe("vision try-on acceptance script", () => {
       { fromDiskCache: true },
       /Network response is invalid/,
     ],
+    [
+      "duplicate responseReceived for one requestId",
+      { duplicateSameRequestId: true },
+      /Network response is invalid/,
+    ],
+    [
+      "memory-cached Network response",
+      { servedFromMemoryCache: true },
+      /Network response is invalid/,
+    ],
+    [
+      "missing Content-Type header",
+      { missingContentTypeHeader: true },
+      /Content-Type header is invalid/,
+    ],
+    [
+      "conflicting Content-Type header",
+      { conflictingContentTypeHeader: true },
+      /Content-Type header is invalid/,
+    ],
+    [
+      "text Content-Type header despite PNG mimeType",
+      {
+        networkMimeType: "image/png",
+        responseHeaderContentType: "text/plain",
+      },
+      /Content-Type header is invalid/,
+    ],
+    [
+      "case-duplicate Content-Type header",
+      { duplicateCaseContentTypeHeaders: true },
+      /Content-Type header is invalid/,
+    ],
+    [
+      "oversized encoded response",
+      { oversizedEncodedData: true },
+      /encoded size is invalid/,
+    ],
+    [
+      "oversized base64 response body",
+      { oversizedBody: true },
+      /response body is oversized/,
+    ],
   ]) {
     it(`rejects ${label} while collecting an installed AI attempt`, async () => {
       await withInstalledAiHarness(options, async ({ client, root, route }) => {
@@ -695,6 +818,78 @@ describe("vision try-on acceptance script", () => {
       });
     });
   }
+
+  it("accepts a lowercase canonical Content-Type header", async () => {
+    await withInstalledAiHarness(
+      { lowercaseContentTypeHeader: true },
+      async ({ client, root, route }) => {
+        const result = await collectInstalledAiTryOnAttempt({
+          client,
+          expectedTryOnRoute: route,
+          regionalEvidenceRoot: root,
+          timeoutMs: 100,
+          pollMs: 2,
+        });
+        assert.equal(result.resultEvidence.network.contentType, "image/png");
+      },
+    );
+  });
+
+  it("bounds a slow getResponseBody by the single capture deadline", async () => {
+    const started = performance.now();
+    await withInstalledAiHarness(
+      { slowGetResponseBodyMs: 150 },
+      async ({ client, root, route }) => {
+        await assert.rejects(
+          collectInstalledAiTryOnAttempt({
+            client,
+            expectedTryOnRoute: route,
+            regionalEvidenceRoot: root,
+            timeoutMs: 50,
+            pollMs: 2,
+          }),
+          /timed out|did not become true/,
+        );
+        for (const method of [
+          "Network.responseReceived",
+          "Network.loadingFinished",
+          "Network.loadingFailed",
+          "Network.requestWillBeSent",
+          "Network.requestServedFromCache",
+        ])
+          assert.equal(client.eventHandlers.get(method)?.length ?? 0, 0);
+      },
+    );
+    assert.equal(performance.now() - started < 140, true);
+  });
+
+  it("bounds a slow Network response by the single capture deadline and removes handlers", async () => {
+    const started = performance.now();
+    await withInstalledAiHarness(
+      { slowResponseMs: 150 },
+      async ({ client, root, route }) => {
+        await assert.rejects(
+          collectInstalledAiTryOnAttempt({
+            client,
+            expectedTryOnRoute: route,
+            regionalEvidenceRoot: root,
+            timeoutMs: 50,
+            pollMs: 2,
+          }),
+          /timed out|did not become true/,
+        );
+        for (const method of [
+          "Network.responseReceived",
+          "Network.loadingFinished",
+          "Network.loadingFailed",
+          "Network.requestWillBeSent",
+          "Network.requestServedFromCache",
+        ])
+          assert.equal(client.eventHandlers.get(method)?.length ?? 0, 0);
+      },
+    );
+    assert.equal(performance.now() - started < 140, true);
+  });
 
   it("times out without a matching regional sidecar", async () => {
     await withInstalledAiHarness(
