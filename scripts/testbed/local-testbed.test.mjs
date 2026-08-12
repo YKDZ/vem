@@ -653,6 +653,16 @@ describe("local testbed orchestration", () => {
               onHandQty: 1,
               sku: "SKU-STOCK",
             },
+            {
+              slotId: "slot-ai-try-on",
+              rowNo: 2,
+              cellNo: 5,
+              slotDisplayLabel: "B5",
+              categoryKey: "tshirts",
+              inventoryId: "inventory-ai-try-on",
+              onHandQty: 3,
+              sku: "SKU-AI-TRY-ON",
+            },
           ],
         };
       },
@@ -664,6 +674,11 @@ describe("local testbed orchestration", () => {
     assert.equal(
       refreshed.fixtureAllocation.stockMaintenance.slotId,
       "slot-stock",
+    );
+    assert.equal(Object.keys(refreshed.fixtureAllocation).length, 8);
+    assert.equal(
+      refreshed.fixtureAllocation.aiVirtualTryOn.slotId,
+      "slot-ai-try-on",
     );
   });
 
