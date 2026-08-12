@@ -1011,16 +1011,24 @@ export async function materializeHostCalibrationSourceSnapshot(
     await readFile(documents.evidenceManifest, "utf8"),
   );
   for (const entry of manifest.files ?? []) {
-    const relativePath = windowsPath.relative(
+    const windowsRelative = windowsPath.relative(
       input.artifactRoot,
       entry?.path ?? "",
     );
-    memberName(
-      relativePath.replaceAll("\\", "/"),
-      "guest manifest member",
-      true,
-    );
-    entry.path = resolve(destination, relativePath);
+    const segments = windowsRelative.split(/[\\/]+/);
+    if (
+      segments.length === 0 ||
+      segments.some(
+        (segment) => !segment || segment === "." || segment === "..",
+      )
+    )
+      fail("guest manifest member escapes calibration source bundle");
+    const hostPath = resolve(destination, ...segments);
+    const expected = entry?.sha256;
+    const copied = await readFile(hostPath);
+    if (!SHA256.test(expected ?? "") || manifestIdentity(copied) !== expected)
+      fail("guest manifest member identity mismatched after copy");
+    entry.path = hostPath;
   }
   const manifestRaw = canonicalAiAcceptanceInputManifest(manifest);
   await writeFile(documents.evidenceManifest, manifestRaw);

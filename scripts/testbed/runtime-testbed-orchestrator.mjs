@@ -24,7 +24,10 @@ import {
   materializeAiAcceptanceInputSnapshot,
   validateAiAcceptanceInputManifest,
 } from "./ai-acceptance-input-provisioning.mjs";
-import { readCalibrationSourceClosure } from "./calibrate-ai-regional-evidence.mjs";
+import {
+  adjudicateCalibrationSourceClosure,
+  readCalibrationSourceClosure,
+} from "./calibrate-ai-regional-evidence.mjs";
 
 const MODES = new Set(["fast", "full", "clear_cache", "measurement"]);
 const TERMINAL = new Set([
@@ -1391,8 +1394,7 @@ async function executeRun(options, config) {
           join(root, "measurement-source", `pass-${pass}`),
         );
         const closure = readCalibrationSourceClosure(hostSource.inputPath);
-        if (closure.input.value.attempts.length !== 2)
-          throw new Error("measurement operation source closure is invalid");
+        adjudicateCalibrationSourceClosure(closure);
         await update({
           measurement: {
             path: measurementPath,

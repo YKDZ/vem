@@ -15,8 +15,17 @@ import { pathToFileURL } from "node:url";
 
 const schemaVersion = "vem-ai-regional-measurement-transport/v1";
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
-const canonical = (value) =>
-  `${JSON.stringify(value, Object.keys(value).sort(), 2)}\n`;
+function sorted(value) {
+  if (Array.isArray(value)) return value.map(sorted);
+  if (value && typeof value === "object")
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, sorted(value[key])]),
+    );
+  return value;
+}
+const canonical = (value) => `${JSON.stringify(sorted(value), null, 2)}\n`;
 function file(path, label) {
   if (!isAbsolute(path)) throw new Error(`${label} must be absolute`);
   const entry = lstatSync(path);

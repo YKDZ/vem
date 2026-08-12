@@ -430,8 +430,14 @@ test("rewrites a copied Windows measurement closure into host-calibratable paths
       manifestPath,
       canonicalAiAcceptanceInputManifest({
         files: [
-          { path: `${guestRoot}\\regional\\short\\short.json` },
-          { path: `${guestRoot}\\regional\\long\\long.json` },
+          {
+            path: `${guestRoot}\\regional\\short\\short.json`,
+            sha256: digest("{}\n"),
+          },
+          {
+            path: `${guestRoot}\\regional\\long\\long.json`,
+            sha256: digest("{}\n"),
+          },
         ],
       }),
     );
