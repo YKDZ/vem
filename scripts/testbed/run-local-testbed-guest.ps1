@@ -195,6 +195,17 @@ function Get-DeclaredCacheObservation {
   }
 }
 
+function Write-TestbedGuestInputAtomically([string]$Path, [object]$GuestInput) {
+  $temporaryPath = "$Path.$([Guid]::NewGuid().ToString('N')).tmp"
+  try {
+    $json = $GuestInput | ConvertTo-Json -Depth 12
+    [IO.File]::WriteAllText($temporaryPath, "$json`n", [Text.UTF8Encoding]::new($false))
+    [IO.File]::Replace($temporaryPath, $Path, $null)
+  } finally {
+    Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+  }
+}
+
 function Update-WorkflowIdentityCacheObservation(
   [string]$Path,
   [string[]]$ObservedRetainedCaches,
@@ -214,7 +225,7 @@ function Update-WorkflowIdentityCacheObservation(
   $guestInput.workflowIdentity.removedUndeclaredCaches = @(
     $RemovedUndeclaredCaches | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
   )
-  $guestInput | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $Path -Encoding utf8
+  Write-TestbedGuestInputAtomically $Path $guestInput
 }
 
 function New-BoundedEvidenceBundle([string]$ManifestPath, [string]$BundleRoot) {
@@ -1030,6 +1041,7 @@ if ($guestInput.schemaVersion -ne "vem-local-testbed-guest-input/v1") { throw "i
 $validatedVisionCore = Get-TestbedProvisionedVisionCoreArtifact $guestInput
 if ($null -eq $guestInput.workflowIdentity) { throw "workflow identity is missing from local testbed guest input" }
 $guestInput.workflowIdentity | Add-Member -NotePropertyName visionCore -NotePropertyValue $validatedVisionCore.identity -Force
+Write-TestbedGuestInputAtomically $GuestInputPath $guestInput
 if ($Mode -in @("fast", "full")) {
   Clear-TestbedVisionProcesses $guestInput
 }

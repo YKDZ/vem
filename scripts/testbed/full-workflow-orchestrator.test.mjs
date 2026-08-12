@@ -41,6 +41,52 @@ function readyPhysicalStockAttestation(attestationId) {
 }
 
 describe("full workflow serial lifecycle", () => {
+  it("carries persisted Vision core identity from guest input into the child workflow summary", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-vision-core-workflow-"));
+    try {
+      const guestInputPath = join(root, "guest-input.json");
+      const outPath = join(root, "full-workflow-tracks.json");
+      const visionCore = {
+        sha256: "a".repeat(64),
+        runtimeArchive: {
+          sha256: "b".repeat(64),
+          byteSize: 1,
+          sourceCommit: "c".repeat(40),
+        },
+        recordedFixtureArchive: { sha256: "d".repeat(64), byteSize: 1 },
+      };
+      writeFileSync(
+        guestInputPath,
+        `${JSON.stringify({
+          workflowIdentity: { visionCore },
+          acceptanceBlocks: { aiVirtualTryOn: "AI input blocked" },
+        })}\n`,
+      );
+      const aggregate = await runFullWorkflowOrchestrator(
+        {
+          mode: "fast",
+          focus: ["aiVirtualTryOn"],
+          guestInputPath,
+          handoffPath: join(root, "handoff.json"),
+          outPath,
+        },
+        {
+          beforeTrack: async () => undefined,
+          captureTerminal: async () => ({ ok: true, facts: {} }),
+          recover: async () => ({ ok: true, actions: [] }),
+          emitTrackProgress: () => undefined,
+        },
+      );
+      assert.deepEqual(aggregate.identity.visionCore, visionCore);
+      assert.deepEqual(
+        JSON.parse(readFileSync(outPath, "utf8")).identity.visionCore,
+        visionCore,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("records a blocked AI track and continues with independent tracks", async () => {
     const result = await runSerialTrackLifecycle({
       tracks: [

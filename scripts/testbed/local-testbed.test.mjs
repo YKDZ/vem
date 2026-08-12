@@ -2265,6 +2265,10 @@ describe("Windows D cache contract", () => {
     assert.match(guest, /function Invoke-FullVisionTryOnAcceptance/);
     assert.match(guest, /Get-TestbedProvisionedVisionCoreArtifact/);
     assert.doesNotMatch(guest, /Get-VisionMainArtifactCache/);
+    assert.match(
+      guest,
+      /function Write-TestbedGuestInputAtomically[\s\S]*\[IO\.File\]::Replace[\s\S]*visionCore[\s\S]*Write-TestbedGuestInputAtomically \$GuestInputPath \$guestInput/,
+    );
     assert.match(guest, /Install-VisionMainArtifact/);
     assert.match(guest, /full-workflow-orchestrator\.mjs/);
     assert.match(guest, /installed-ipc-recovery\.json/);
