@@ -29,11 +29,17 @@
 
 当执行完整验收或 `fast --focus aiVirtualTryOn` 时，配置还必须提供
 `aiVirtualTryOnInputManifest`，它是宿主机本地的绝对路径。清单版本为
-`vem-runtime-testbed-ai-input/v1`，逐项声明候选 exact-four 目录、Windows
-proof exact-three 目录、B2 receipt、Vision/录制 fixture/model-pack archive 和
-已物化 model root 的 host 路径、SHA-256 与字节数；目录还逐项锁定成员。客体路径
-不是清单输入，而是编排器从 manifest SHA 派生为固定的 testbed `ai-inputs` 根。
-清单必须是 canonical JSON，不能含 token 或其他凭据。默认交付
+`vem-runtime-testbed-ai-input/v4`。它先声明 `phase`：`measurement` 不携带任何
+校准输入；`formal` 必须且只能额外携带三项校准输入（regional policy、receipt 和
+source input）。两种阶段都逐项声明候选 exact-four 目录、Windows proof exact-three
+目录、由 `vem.testbed.ai-acceptance-authority/v1` 验证器签发的验收 authority receipt、
+Vision runtime、录制 fixture、model-pack archive 和已物化 model root 的 host 路径、
+SHA-256 与字节数；目录还逐项锁定成员。authority receipt 的 scope 固定为
+`installed_windows_acceptance`、trustStatus 固定为 `verified_for_acceptance`，并交叉
+绑定候选、Windows proof、companion、模型、worker、runtime、source 与 Vision V2
+contract 身份；它不代表 release-set、数据库、媒体或后端发布审批。客体路径不是清单
+输入，而是编排器从 manifest SHA 派生为固定的 testbed `ai-inputs` 根。清单必须是
+canonical JSON，不能含 token 或其他凭据。默认交付
 方式是 `host-local-cache`：编排器验证后直接预置到 VM，不下载也不让 VM 访问
 GitHub。若确有 HTTPS 来源，须额外在宿主机配置的
 `aiVirtualTryOnAllowedHttpsOrigins` 中声明精确 origin，且 URL 不得含凭据、查询

@@ -1,15 +1,9 @@
 import { createHash } from "node:crypto";
-import {
-  cp,
-  lstat,
-  mkdir,
-  readFile,
-  readdir,
-  writeFile,
-} from "node:fs/promises";
+import { cp, lstat, mkdir, readFile, readdir } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
-const SCHEMA_VERSION = "vem-runtime-testbed-ai-input/v3";
+const SCHEMA_VERSION = "vem-runtime-testbed-ai-input/v4";
+const AUTHORITY_SCHEMA = "vem.testbed.ai-acceptance-authority/v1";
 const SHA256 = /^[a-f0-9]{64}$/;
 const COMMIT = /^[a-f0-9]{40}$/;
 const GUEST_ROOT = "C:\\ProgramData\\VEM\\testbed\\ai-inputs";
@@ -23,6 +17,11 @@ const WINDOWS_PROOF_MEMBERS = new Set([
   "precutover-ai-proof.sigstore.json",
   "trusted-precutover-proof-evidence.json",
 ]);
+const CALIBRATION_FIELDS = [
+  "calibratedRegionalPolicy",
+  "calibrationReceipt",
+  "calibrationSourceInput",
+];
 
 function fail(message) {
   throw new Error(`AI acceptance input manifest ${message}`);
@@ -37,9 +36,7 @@ function object(value, label) {
 
 function exactKeys(value, keys, label) {
   object(value, label);
-  const actual = Object.keys(value).sort();
-  const expected = [...keys].sort();
-  if (actual.join("\0") !== expected.join("\0")) {
+  if (Object.keys(value).sort().join("\0") !== [...keys].sort().join("\0")) {
     fail(`${label} fields are invalid`);
   }
 }
@@ -177,15 +174,16 @@ async function collectDirectoryMembers(root, nested, label) {
       if (entry.isDirectory()) {
         if (!nested) fail(`${label} must contain regular files only`);
         await visit(path);
-        continue;
+      } else if (entry.isFile()) {
+        const content = await readFile(path);
+        members.push({
+          name,
+          sha256: createHash("sha256").update(content).digest("hex"),
+          byteSize: content.length,
+        });
+      } else {
+        fail(`${label} must contain regular files only`);
       }
-      if (!entry.isFile()) fail(`${label} must contain regular files only`);
-      const content = await readFile(path);
-      members.push({
-        name,
-        sha256: createHash("sha256").update(content).digest("hex"),
-        byteSize: content.length,
-      });
     }
   }
   await visit(root);
@@ -218,9 +216,8 @@ async function directory(
     nested,
     label,
   );
-  if (JSON.stringify(actual) !== JSON.stringify(descriptor.members)) {
+  if (JSON.stringify(actual) !== JSON.stringify(descriptor.members))
     fail(`${label} member identities mismatch`);
-  }
   if (
     actual.reduce((sum, member) => sum + member.byteSize, 0) !==
     descriptor.byteSize
@@ -248,9 +245,8 @@ async function file(value, label, { sourceCommit = false } = {}) {
       ? { sourceCommit: string(value.sourceCommit, `${label} source commit`) }
       : {}),
   };
-  if (sourceCommit && !COMMIT.test(descriptor.sourceCommit)) {
+  if (sourceCommit && !COMMIT.test(descriptor.sourceCommit))
     fail(`${label} source commit is invalid`);
-  }
   await regularFile(descriptor.hostPath, descriptor, label);
   return descriptor;
 }
@@ -286,172 +282,260 @@ function delivery(value, allowedHttpsOrigins) {
   return { kind, url: url.toString() };
 }
 
+function validateAuthorityReceipt(raw, candidateInput, windowsProofInput) {
+  let receipt;
+  try {
+    receipt = JSON.parse(raw);
+  } catch {
+    fail("acceptance authority receipt is not JSON");
+  }
+  if (raw !== `${JSON.stringify(canonicalize(receipt))}\n`)
+    fail("acceptance authority receipt is not canonical JSON");
+  exactKeys(
+    receipt,
+    [
+      "candidate",
+      "companion",
+      "contract",
+      "modelPack",
+      "resources",
+      "schemaVersion",
+      "scope",
+      "trustStatus",
+      "windowsProof",
+    ],
+    "acceptance authority receipt",
+  );
+  if (
+    receipt.schemaVersion !== AUTHORITY_SCHEMA ||
+    receipt.scope !== "installed_windows_acceptance" ||
+    receipt.trustStatus !== "verified_for_acceptance"
+  ) {
+    fail("acceptance authority receipt scope or trust status is invalid");
+  }
+  exactKeys(
+    receipt.candidate,
+    [
+      "attestationBundleSha256",
+      "embeddedManifestSha256",
+      "sourceCommit",
+      "subjectSha256",
+      "trustedBuilderEvidenceSha256",
+    ],
+    "acceptance authority candidate",
+  );
+  for (const key of [
+    "attestationBundleSha256",
+    "embeddedManifestSha256",
+    "subjectSha256",
+    "trustedBuilderEvidenceSha256",
+  ]) {
+    sha256(receipt.candidate[key], `acceptance authority candidate ${key}`);
+  }
+  if (!COMMIT.test(receipt.candidate.sourceCommit))
+    fail("acceptance authority candidate source commit is invalid");
+  const candidateByName = Object.fromEntries(
+    candidateInput.members.map((member) => [member.name, member]),
+  );
+  const archive = candidateInput.members.find((member) =>
+    member.name.endsWith(".zip"),
+  );
+  if (
+    archive.sha256 !== receipt.candidate.subjectSha256 ||
+    candidateByName["candidate-manifest.json"].sha256 !==
+      receipt.candidate.embeddedManifestSha256 ||
+    candidateByName["github-build-provenance.sigstore.json"].sha256 !==
+      receipt.candidate.attestationBundleSha256 ||
+    candidateByName["trusted-builder-evidence.json"].sha256 !==
+      receipt.candidate.trustedBuilderEvidenceSha256
+  )
+    fail("acceptance authority candidate does not bind exact-four input");
+  exactKeys(
+    receipt.windowsProof,
+    [
+      "authorityDescriptorSha256",
+      "proofAttestationBundleSha256",
+      "signedProofSha256",
+      "trustedProofEvidenceSha256",
+      "workflowSha",
+    ],
+    "acceptance authority Windows proof",
+  );
+  for (const key of [
+    "authorityDescriptorSha256",
+    "proofAttestationBundleSha256",
+    "signedProofSha256",
+    "trustedProofEvidenceSha256",
+  ]) {
+    const value = string(
+      receipt.windowsProof[key],
+      `acceptance authority Windows proof ${key}`,
+    );
+    if (
+      !/^sha256:/.test(value)
+        ? !SHA256.test(value)
+        : !/^sha256:[a-f0-9]{64}$/.test(value)
+    )
+      fail(`acceptance authority Windows proof ${key} is invalid`);
+  }
+  if (!COMMIT.test(receipt.windowsProof.workflowSha))
+    fail("acceptance authority Windows proof workflow is invalid");
+  const proofByName = Object.fromEntries(
+    windowsProofInput.members.map((member) => [member.name, member]),
+  );
+  if (
+    proofByName["precutover-ai-proof.json"].sha256 !==
+      receipt.windowsProof.signedProofSha256 ||
+    proofByName["precutover-ai-proof.sigstore.json"].sha256 !==
+      receipt.windowsProof.proofAttestationBundleSha256 ||
+    proofByName["trusted-precutover-proof-evidence.json"].sha256 !==
+      receipt.windowsProof.trustedProofEvidenceSha256
+  )
+    fail("acceptance authority Windows proof does not bind exact-three input");
+  exactKeys(
+    receipt.companion,
+    ["archiveSha256", "descriptorSha256", "sourceCommit"],
+    "acceptance authority companion",
+  );
+  sha256(
+    receipt.companion.archiveSha256,
+    "acceptance authority companion archive",
+  );
+  sha256(
+    receipt.companion.descriptorSha256,
+    "acceptance authority companion descriptor",
+  );
+  if (!COMMIT.test(receipt.companion.sourceCommit))
+    fail("acceptance authority companion source commit is invalid");
+  exactKeys(
+    receipt.modelPack,
+    ["archive", "descriptorSha256", "sourceRevision"],
+    "acceptance authority model pack",
+  );
+  exactKeys(
+    receipt.modelPack.archive,
+    ["byteSize", "sha256"],
+    "acceptance authority model archive",
+  );
+  sha256(
+    receipt.modelPack.archive.sha256,
+    "acceptance authority model archive SHA-256",
+  );
+  byteSize(
+    receipt.modelPack.archive.byteSize,
+    "acceptance authority model archive byte size",
+  );
+  sha256(
+    receipt.modelPack.descriptorSha256,
+    "acceptance authority model descriptor",
+  );
+  if (!COMMIT.test(receipt.modelPack.sourceRevision))
+    fail("acceptance authority model source revision is invalid");
+  exactKeys(
+    receipt.resources,
+    [
+      "aiLockSha256",
+      "runtimeDescriptorSha256",
+      "sourceDescriptorSha256",
+      "workerExecutableSha256",
+    ],
+    "acceptance authority resources",
+  );
+  for (const [key, value] of Object.entries(receipt.resources))
+    sha256(value, `acceptance authority ${key}`);
+  exactKeys(
+    receipt.contract,
+    ["bundleDigest", "manifestSha256", "protocol"],
+    "acceptance authority contract",
+  );
+  sha256(receipt.contract.bundleDigest, "acceptance authority contract bundle");
+  sha256(
+    receipt.contract.manifestSha256,
+    "acceptance authority contract manifest",
+  );
+  if (receipt.contract.protocol !== "vem.vision.v2")
+    fail("acceptance authority contract protocol is invalid");
+  return receipt;
+}
+
 function windowsJoin(...parts) {
   return parts.join("\\");
 }
 
-async function calibrationSourceClosure(source) {
-  let input;
-  try {
-    input = JSON.parse(await readFile(source.hostPath, "utf8"));
-  } catch {
-    fail("calibration source input is not JSON");
-  }
-  if (
-    input?.schemaVersion !== "vem-ai-regional-evidence-calibration-input/v1" ||
-    !isAbsolute(input.artifactRoot ?? "") ||
-    !Array.isArray(input.attempts) ||
-    input.attempts.length !== 2
-  ) {
-    fail("calibration source input identity is invalid");
-  }
-  const references = [
-    ["acceptanceReport", "acceptance-report.json"],
-    ["precutoverReceipt", "precutover-receipt.json"],
-    ["releaseProof", "release-proof.json"],
-    ["recoverySupport", "recovery-support.json"],
-    ["evidenceManifest", "evidence-manifest.json"],
-  ];
-  const documents = [];
-  for (const [key, name] of references) {
-    const reference = input[key];
-    if (
-      !reference ||
-      Object.keys(reference).sort().join("\0") !== "path\0sha256" ||
-      !isAbsolute(reference.path) ||
-      !SHA256.test(reference.sha256 ?? "")
-    ) {
-      fail(`calibration source ${key} reference is invalid`);
-    }
-    const descriptor = {
-      hostPath: resolve(reference.path),
-      sha256: reference.sha256,
-      byteSize: (await lstat(reference.path)).size,
-    };
-    await regularFile(
-      descriptor.hostPath,
-      descriptor,
-      `calibration source ${key}`,
-    );
-    documents.push({ key, name, ...descriptor });
-  }
-  const sidecars = [];
-  for (const entry of input.attempts) {
-    const relativePath = memberName(
-      entry?.attempt?.regionalEvidence?.path,
-      "calibration regional sidecar path",
-      true,
-    );
-    const descriptor = {
-      hostPath: resolve(input.artifactRoot, relativePath),
-      sha256: sha256(
-        entry?.attempt?.regionalEvidence?.sha256,
-        "calibration regional sidecar SHA-256",
-      ),
-      byteSize: (await lstat(resolve(input.artifactRoot, relativePath))).size,
-    };
-    await regularFile(
-      descriptor.hostPath,
-      descriptor,
-      "calibration regional sidecar",
-    );
-    sidecars.push({ name: relativePath, ...descriptor });
-  }
-  if (new Set(sidecars.map((entry) => entry.name)).size !== 2) {
-    fail("calibration regional sidecars must be exact-two");
-  }
-  return { input, documents, sidecars };
-}
-
-function guestProjection(
-  {
-    candidateInput,
-    windowsProofInput,
-    approvedPrecutoverReceipt,
-    calibratedRegionalPolicy,
-    calibrationReceipt,
-    calibrationSourceInput,
-    installedVisionRuntimeArchive,
-    recordedFixtureArchive,
-    modelPack,
-  },
-  manifestSha256,
-) {
+function guestProjection(artifacts, manifestSha256) {
   const root = windowsJoin(GUEST_ROOT, manifestSha256);
-  const calibrationSourceRoot = windowsJoin(root, "calibration-source");
+  const calibration =
+    artifacts.phase === "formal"
+      ? {
+          calibratedRegionalPolicy: windowsJoin(
+            root,
+            "calibrated-regional-policy.json",
+          ),
+          calibrationReceipt: windowsJoin(root, "calibration-receipt.json"),
+          calibrationSourceInput: windowsJoin(
+            root,
+            "calibration-source-input.json",
+          ),
+        }
+      : {};
+  const identities = {
+    manifestSha256,
+    candidateInput: pickDirectory(artifacts.candidateInput),
+    windowsProofInput: pickDirectory(artifacts.windowsProofInput),
+    acceptanceAuthorityReceipt: pickFile(artifacts.acceptanceAuthorityReceipt),
+    installedVisionRuntimeArchive: pickFile(
+      artifacts.installedVisionRuntimeArchive,
+      true,
+    ),
+    recordedFixtureArchive: pickFile(artifacts.recordedFixtureArchive, true),
+    modelPackArchive: pickFile(artifacts.modelPack.archive),
+    materializedModelPackRoot: pickDirectory(
+      artifacts.modelPack.materializedRoot,
+    ),
+    ...(artifacts.phase === "formal"
+      ? Object.fromEntries(
+          CALIBRATION_FIELDS.map((key) => [key, pickFile(artifacts[key])]),
+        )
+      : {}),
+  };
   return {
-    schemaVersion: "vem-local-testbed-ai-virtual-try-on-input/v1",
+    schemaVersion: "vem-local-testbed-ai-virtual-try-on-input/v2",
     inputRoot: root,
+    phase: artifacts.phase,
     candidateInputDirectory: windowsJoin(root, "candidate"),
     windowsProofInputDirectory: windowsJoin(root, "windows-proof"),
-    approvedPrecutoverReceipt: windowsJoin(root, "approved-receipt.json"),
-    calibratedRegionalPolicy: windowsJoin(
+    acceptanceAuthorityReceipt: windowsJoin(
       root,
-      "calibrated-regional-policy.json",
+      "acceptance-authority-receipt.json",
     ),
-    calibrationReceipt: windowsJoin(root, "calibration-receipt.json"),
-    calibrationSourceRoot,
-    calibrationSourceInput: windowsJoin(
-      calibrationSourceRoot,
-      "calibration-source-input.json",
-    ),
+    ...calibration,
     installedVisionRuntimeArchive: windowsJoin(root, "vision-runtime.zip"),
     recordedFixtureArchive: windowsJoin(root, "recorded-fixtures.zip"),
     modelPackArchive: windowsJoin(root, "model-pack.zip"),
     materializedModelPackRoot: windowsJoin(root, "model-pack"),
-    modelPackSource: modelPack.delivery.kind,
-    ...(modelPack.delivery.kind === "host-controlled-https"
-      ? { modelPackUrl: modelPack.delivery.url }
+    modelPackSource: artifacts.modelPack.delivery.kind,
+    ...(artifacts.modelPack.delivery.kind === "host-controlled-https"
+      ? { modelPackUrl: artifacts.modelPack.delivery.url }
       : {}),
-    modelPackSha256: modelPack.archive.sha256,
-    modelPackByteSize: modelPack.archive.byteSize,
-    identities: {
-      manifestSha256,
-      candidateInput: {
-        sha256: candidateInput.sha256,
-        byteSize: candidateInput.byteSize,
-        members: candidateInput.members,
-      },
-      windowsProofInput: {
-        sha256: windowsProofInput.sha256,
-        byteSize: windowsProofInput.byteSize,
-        members: windowsProofInput.members,
-      },
-      approvedPrecutoverReceipt: {
-        sha256: approvedPrecutoverReceipt.sha256,
-        byteSize: approvedPrecutoverReceipt.byteSize,
-      },
-      calibratedRegionalPolicy: {
-        sha256: calibratedRegionalPolicy.sha256,
-        byteSize: calibratedRegionalPolicy.byteSize,
-      },
-      calibrationReceipt: {
-        sha256: calibrationReceipt.sha256,
-        byteSize: calibrationReceipt.byteSize,
-      },
-      calibrationSourceInput: {
-        sha256: calibrationSourceInput.sha256,
-        byteSize: calibrationSourceInput.byteSize,
-      },
-      installedVisionRuntimeArchive: {
-        sha256: installedVisionRuntimeArchive.sha256,
-        byteSize: installedVisionRuntimeArchive.byteSize,
-        sourceCommit: installedVisionRuntimeArchive.sourceCommit,
-      },
-      recordedFixtureArchive: {
-        sha256: recordedFixtureArchive.sha256,
-        byteSize: recordedFixtureArchive.byteSize,
-      },
-      modelPackArchive: {
-        sha256: modelPack.archive.sha256,
-        byteSize: modelPack.archive.byteSize,
-      },
-      materializedModelPackRoot: {
-        sha256: modelPack.materializedRoot.sha256,
-        byteSize: modelPack.materializedRoot.byteSize,
-        members: modelPack.materializedRoot.members,
-      },
-    },
+    modelPackSha256: artifacts.modelPack.archive.sha256,
+    modelPackByteSize: artifacts.modelPack.archive.byteSize,
+    identities,
+  };
+}
+
+function pickFile(value, sourceCommit = false) {
+  return {
+    sha256: value.sha256,
+    byteSize: value.byteSize,
+    ...(sourceCommit ? { sourceCommit: value.sourceCommit } : {}),
+  };
+}
+
+function pickDirectory(value) {
+  return {
+    sha256: value.sha256,
+    byteSize: value.byteSize,
+    members: value.members,
   };
 }
 
@@ -469,22 +553,21 @@ export async function validateAiAcceptanceInputManifest(
   }
   if (raw !== canonicalAiAcceptanceInputManifest(value))
     fail("is not canonical JSON");
-  exactKeys(
-    value,
-    [
-      "schemaVersion",
-      "candidateInput",
-      "windowsProofInput",
-      "approvedPrecutoverReceipt",
-      "calibratedRegionalPolicy",
-      "calibrationReceipt",
-      "calibrationSourceInput",
-      "installedVisionRuntimeArchive",
-      "recordedFixtureArchive",
-      "modelPack",
-    ],
-    "root",
-  );
+  const phase = value.phase;
+  if (phase !== "measurement" && phase !== "formal")
+    fail("phase must be measurement or formal");
+  const fields = [
+    "acceptanceAuthorityReceipt",
+    "candidateInput",
+    "installedVisionRuntimeArchive",
+    "modelPack",
+    "phase",
+    "recordedFixtureArchive",
+    "schemaVersion",
+    "windowsProofInput",
+  ];
+  if (phase === "formal") fields.push(...CALIBRATION_FIELDS);
+  exactKeys(value, fields, "root");
   if (value.schemaVersion !== SCHEMA_VERSION)
     fail(`schemaVersion must be ${SCHEMA_VERSION}`);
   const candidateInput = await directory(
@@ -502,10 +585,11 @@ export async function validateAiAcceptanceInputManifest(
       ]),
     },
   );
-  const candidateArchives = candidateInput.members.filter((member) =>
-    member.name.endsWith(".zip"),
-  );
-  if (candidateArchives.length !== 1 || candidateInput.members.length !== 4) {
+  if (
+    candidateInput.members.length !== 4 ||
+    candidateInput.members.filter((member) => member.name.endsWith(".zip"))
+      .length !== 1
+  ) {
     fail("candidate exact-four archive set is invalid");
   }
   const windowsProofInput = await directory(
@@ -513,51 +597,44 @@ export async function validateAiAcceptanceInputManifest(
     "Windows proof exact-three input",
     { exactMemberNames: WINDOWS_PROOF_MEMBERS },
   );
-  const approvedPrecutoverReceipt = await file(
-    value.approvedPrecutoverReceipt,
-    "B2 approved receipt",
+  const acceptanceAuthorityReceipt = await file(
+    value.acceptanceAuthorityReceipt,
+    "acceptance authority receipt",
   );
-  const calibratedRegionalPolicy = await file(
-    value.calibratedRegionalPolicy,
-    "calibrated AI regional evidence policy",
+  const authority = validateAuthorityReceipt(
+    await readFile(acceptanceAuthorityReceipt.hostPath, "utf8"),
+    candidateInput,
+    windowsProofInput,
   );
-  const calibrationReceipt = await file(
-    value.calibrationReceipt,
-    "calibrated AI regional evidence receipt",
-  );
-  const calibrationSourceInput = await file(
-    value.calibrationSourceInput,
-    "calibration source input",
-  );
-  const calibrationSource = await calibrationSourceClosure(
-    calibrationSourceInput,
-  );
-  let receipt;
-  try {
-    receipt = JSON.parse(
-      await readFile(approvedPrecutoverReceipt.hostPath, "utf8"),
-    );
-  } catch {
-    fail("B2 approved receipt is not JSON");
-  }
-  if (
-    receipt?.schemaVersion !== "vem.precutover.ai.v2" ||
-    receipt?.trustStatus !== "pending_final_aggregate_approval"
-  ) {
-    fail("B2 approved receipt identity is invalid");
-  }
   const installedVisionRuntimeArchive = await file(
     value.installedVisionRuntimeArchive,
     "installed Vision runtime archive",
     { sourceCommit: true },
   );
+  if (
+    installedVisionRuntimeArchive.sha256 !==
+      authority.candidate.subjectSha256 ||
+    installedVisionRuntimeArchive.sourceCommit !==
+      authority.candidate.sourceCommit
+  ) {
+    fail(
+      "installed Vision runtime archive does not match acceptance authority",
+    );
+  }
   const recordedFixtureArchive = await file(
     value.recordedFixtureArchive,
     "recorded fixture archive",
+    { sourceCommit: true },
   );
+  if (
+    recordedFixtureArchive.sha256 !== authority.companion.archiveSha256 ||
+    recordedFixtureArchive.sourceCommit !== authority.companion.sourceCommit
+  ) {
+    fail("recorded fixture archive does not match acceptance authority");
+  }
   exactKeys(
     value.modelPack,
-    ["archive", "materializedRoot", "delivery"],
+    ["archive", "delivery", "materializedRoot"],
     "modelPack",
   );
   const modelPack = {
@@ -569,181 +646,84 @@ export async function validateAiAcceptanceInputManifest(
     ),
     delivery: delivery(value.modelPack.delivery, allowedHttpsOrigins),
   };
+  if (
+    modelPack.archive.sha256 !== authority.modelPack.archive.sha256 ||
+    modelPack.archive.byteSize !== authority.modelPack.archive.byteSize
+  ) {
+    fail("official model pack does not match acceptance authority");
+  }
+  const calibration =
+    phase === "formal"
+      ? Object.fromEntries(
+          await Promise.all(
+            CALIBRATION_FIELDS.map(async (key) => [
+              key,
+              await file(value[key], `formal ${key}`),
+            ]),
+          ),
+        )
+      : {};
   const manifestSha256 = manifestIdentity(raw);
   const artifacts = {
+    acceptanceAuthorityReceipt,
     candidateInput,
-    windowsProofInput,
-    approvedPrecutoverReceipt,
-    calibratedRegionalPolicy,
-    calibrationReceipt,
-    calibrationSourceInput,
-    calibrationSource,
     installedVisionRuntimeArchive,
-    recordedFixtureArchive,
     modelPack,
+    phase,
+    recordedFixtureArchive,
+    windowsProofInput,
+    ...calibration,
   };
-  const projection = guestProjection(artifacts, manifestSha256);
+  const guestInput = guestProjection(artifacts, manifestSha256);
+  const transfers = [
+    { ...candidateInput, guestPath: guestInput.candidateInputDirectory },
+    { ...windowsProofInput, guestPath: guestInput.windowsProofInputDirectory },
+    {
+      ...acceptanceAuthorityReceipt,
+      guestPath: guestInput.acceptanceAuthorityReceipt,
+    },
+    ...(phase === "formal"
+      ? CALIBRATION_FIELDS.map((key) => ({
+          ...calibration[key],
+          guestPath: guestInput[key],
+        }))
+      : []),
+    {
+      ...installedVisionRuntimeArchive,
+      guestPath: guestInput.installedVisionRuntimeArchive,
+    },
+    { ...recordedFixtureArchive, guestPath: guestInput.recordedFixtureArchive },
+    { ...modelPack.archive, guestPath: guestInput.modelPackArchive },
+    {
+      ...modelPack.materializedRoot,
+      guestPath: guestInput.materializedModelPackRoot,
+    },
+  ];
   return {
+    artifactDigests: guestInput.identities,
+    guestInput,
     manifestSha256,
-    calibrationSource,
-    artifactDigests: projection.identities,
-    guestInput: projection,
-    transfers: [
-      { ...candidateInput, guestPath: projection.candidateInputDirectory },
-      {
-        ...windowsProofInput,
-        guestPath: projection.windowsProofInputDirectory,
-      },
-      {
-        ...approvedPrecutoverReceipt,
-        guestPath: projection.approvedPrecutoverReceipt,
-      },
-      {
-        ...calibratedRegionalPolicy,
-        guestPath: projection.calibratedRegionalPolicy,
-      },
-      { ...calibrationReceipt, guestPath: projection.calibrationReceipt },
-      {
-        ...calibrationSourceInput,
-        guestPath: projection.calibrationSourceInput,
-      },
-      {
-        ...installedVisionRuntimeArchive,
-        guestPath: projection.installedVisionRuntimeArchive,
-      },
-      {
-        ...recordedFixtureArchive,
-        guestPath: projection.recordedFixtureArchive,
-      },
-      { ...modelPack.archive, guestPath: projection.modelPackArchive },
-      {
-        ...modelPack.materializedRoot,
-        guestPath: projection.materializedModelPackRoot,
-      },
-    ],
+    transfers,
   };
 }
 
 export async function materializeAiAcceptanceInputSnapshot(preparation, root) {
   const snapshotRoot = resolve(root, preparation.manifestSha256);
-  const files = [
-    [preparation.transfers[0].hostPath, "candidate"],
-    [preparation.transfers[1].hostPath, "windows-proof"],
-    [preparation.transfers[2].hostPath, "approved-receipt.json"],
-    [preparation.transfers[3].hostPath, "calibrated-regional-policy.json"],
-    [preparation.transfers[4].hostPath, "calibration-receipt.json"],
-    [null, "calibration-source"],
-    [preparation.transfers[6].hostPath, "vision-runtime.zip"],
-    [preparation.transfers[7].hostPath, "recorded-fixtures.zip"],
-    [preparation.transfers[8].hostPath, "model-pack.zip"],
-    [preparation.transfers[9].hostPath, "model-pack"],
-  ];
+  const files = preparation.transfers.map((transfer) => {
+    const name = transfer.guestPath.split("\\").at(-1);
+    return [transfer.hostPath, name];
+  });
   await mkdir(snapshotRoot, { recursive: true });
-  for (const [source, name] of files) {
-    if (source === null) continue;
+  for (const [source, name] of files)
     await cp(source, resolve(snapshotRoot, name), {
       recursive: true,
       force: true,
     });
-  }
-  const bundleRoot = resolve(snapshotRoot, "calibration-source");
-  await mkdir(bundleRoot, { recursive: true });
-  const closure = preparation.calibrationSource;
-  for (const document of closure.documents) {
-    await cp(document.hostPath, resolve(bundleRoot, document.name), {
-      force: true,
-    });
-  }
-  for (const sidecar of closure.sidecars) {
-    const destination = resolve(bundleRoot, sidecar.name);
-    await mkdir(resolve(destination, ".."), { recursive: true });
-    await cp(sidecar.hostPath, destination, { force: true });
-  }
-  const guestRoot = preparation.guestInput.calibrationSourceRoot;
-  const manifestDocument = closure.documents.find(
-    (entry) => entry.key === "evidenceManifest",
-  );
-  const manifestPath = resolve(bundleRoot, manifestDocument.name);
-  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  for (const file of manifest.files ?? []) {
-    const sidecar = closure.sidecars.find(
-      (entry) => resolve(file.path) === entry.hostPath,
-    );
-    if (sidecar) file.path = windowsJoin(guestRoot, ...sidecar.name.split("/"));
-  }
-  const manifestRaw = canonicalAiAcceptanceInputManifest(manifest);
-  await writeFile(manifestPath, manifestRaw);
-  const rewritten = structuredClone(closure.input);
-  rewritten.artifactRoot = guestRoot;
-  for (const document of closure.documents) {
-    rewritten[document.key] = {
-      path: windowsJoin(guestRoot, document.name),
-      sha256:
-        document.key === "evidenceManifest"
-          ? manifestIdentity(manifestRaw)
-          : document.sha256,
-    };
-  }
-  const inputRaw = canonicalAiAcceptanceInputManifest(rewritten);
-  const inputPath = resolve(bundleRoot, "calibration-source-input.json");
-  await writeFile(inputPath, inputRaw);
-  const bundleMembers = await collectDirectoryMembers(
-    bundleRoot,
-    true,
-    "calibration source bundle",
-  );
-  if (bundleMembers.length !== 8)
-    fail("calibration source bundle must contain exact-eight files");
-  const bundleIdentity = {
-    sha256: directoryDigest(bundleMembers),
-    byteSize: bundleMembers.reduce((sum, member) => sum + member.byteSize, 0),
-    members: bundleMembers,
-  };
-  const receiptPath = resolve(snapshotRoot, "calibration-receipt.json");
-  const receipt = JSON.parse(await readFile(receiptPath, "utf8"));
-  receipt.calibrationInputSha256 = manifestIdentity(inputRaw);
-  const receiptRaw = canonicalAiAcceptanceInputManifest(receipt);
-  await writeFile(receiptPath, receiptRaw);
-  const receiptIdentity = {
-    sha256: manifestIdentity(receiptRaw),
-    byteSize: Buffer.byteLength(receiptRaw),
-  };
-  const remapped = {
-    ...preparation,
-    transfers: preparation.transfers.map((transfer, index) => ({
-      ...transfer,
-      hostPath: resolve(snapshotRoot, files[index][1]),
-      ...(index === 4 ? receiptIdentity : {}),
-      ...(index === 5
-        ? {
-            ...bundleIdentity,
-            guestPath: preparation.guestInput.calibrationSourceRoot,
-          }
-        : {}),
-    })),
-    artifactDigests: {
-      ...preparation.artifactDigests,
-      calibrationReceipt: receiptIdentity,
-      calibrationSourceInput: {
-        sha256: manifestIdentity(inputRaw),
-        byteSize: Buffer.byteLength(inputRaw),
-      },
-      calibrationSource: bundleIdentity,
-    },
-    guestInput: {
-      ...preparation.guestInput,
-      identities: {
-        ...preparation.guestInput.identities,
-        calibrationReceipt: receiptIdentity,
-        calibrationSourceInput: {
-          sha256: manifestIdentity(inputRaw),
-          byteSize: Buffer.byteLength(inputRaw),
-        },
-        calibrationSource: bundleIdentity,
-      },
-    },
-  };
-  return remapped;
+  const remapped = preparation.transfers.map((transfer, index) => ({
+    ...transfer,
+    hostPath: resolve(snapshotRoot, files[index][1]),
+  }));
+  return { ...preparation, transfers: remapped };
 }
 
 export function identicalAiAcceptanceInputSnapshot(left, right) {

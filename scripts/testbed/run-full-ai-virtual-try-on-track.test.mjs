@@ -506,7 +506,8 @@ test("AI virtual try-on runner accepts only approved external input identities",
   for (const name of [
     "candidateInputDirectory",
     "windowsProofInputDirectory",
-    "approvedPrecutoverReceipt",
+    "acceptanceAuthorityReceipt",
+    "phase",
     "modelPackUrl",
     "modelPackSha256",
     "modelPackByteSize",
@@ -525,7 +526,11 @@ test("AI virtual try-on runner accepts only approved external input identities",
   ]) {
     assert.match(source, new RegExp(member.replaceAll(".", "\\.")));
   }
-  assert.match(source, /vem\.precutover\.ai\.v2/);
+  assert.match(source, /vem\.testbed\.ai-acceptance-authority\/v1/);
+  assert.match(
+    source,
+    /installed AI acceptance runner requires formal authority inputs/,
+  );
   assert.match(source, /\^https:\/\//);
   assert.doesNotMatch(
     source,

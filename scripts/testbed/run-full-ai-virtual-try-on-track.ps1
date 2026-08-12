@@ -80,7 +80,8 @@ if ($null -eq $inputs) { throw "candidate exact-four input directory is required
 
 Require-AbsoluteDirectory ([string]$inputs.candidateInputDirectory) "candidate exact-four input directory"
 Require-AbsoluteDirectory ([string]$inputs.windowsProofInputDirectory) "companion proof exact-three input directory"
-Require-AbsoluteLeaf ([string]$inputs.approvedPrecutoverReceipt) "B2 approved receipt"
+Require-AbsoluteLeaf ([string]$inputs.acceptanceAuthorityReceipt) "installed Windows acceptance authority receipt"
+if ([string]$inputs.phase -cne "formal") { throw "installed AI acceptance runner requires formal authority inputs" }
 Require-AbsoluteLeaf ([string]$inputs.calibratedRegionalPolicy) "calibrated AI regional evidence policy"
 Require-AbsoluteLeaf ([string]$inputs.calibrationReceipt) "calibrated AI regional evidence receipt"
 Require-AbsoluteLeaf ([string]$inputs.calibrationSourceInput) "calibration source input"
@@ -100,9 +101,9 @@ Require-ExactRegularMembers ([string]$inputs.windowsProofInputDirectory) @(
     "trusted-precutover-proof-evidence.json"
 ) "companion proof exact-three input"
 
-$approved = Get-Content -Raw -LiteralPath ([string]$inputs.approvedPrecutoverReceipt) -Encoding utf8 | ConvertFrom-Json -ErrorAction Stop
-if ([string]$approved.schemaVersion -cne "vem.precutover.ai.v2" -or [string]$approved.trustStatus -cne "pending_final_aggregate_approval") {
-  throw "B2 approved receipt identity is invalid"
+$authority = Get-Content -Raw -LiteralPath ([string]$inputs.acceptanceAuthorityReceipt) -Encoding utf8 | ConvertFrom-Json -ErrorAction Stop
+if ([string]$authority.schemaVersion -cne "vem.testbed.ai-acceptance-authority/v1" -or [string]$authority.scope -cne "installed_windows_acceptance" -or [string]$authority.trustStatus -cne "verified_for_acceptance") {
+  throw "installed Windows acceptance authority receipt identity is invalid"
 }
 
 Require-AbsoluteLeaf ([string]$inputs.installedVisionRuntimeArchive) "installed Vision runtime archive"
@@ -129,7 +130,7 @@ New-TestbedAiAcceptanceArtifactRoot -Root $artifactRoot -RunId ([string]$guestIn
 $identities = $inputs.identities
 Assert-GuestDirectoryIdentity ([string]$inputs.candidateInputDirectory) $identities.candidateInput $false "candidate exact-four input"
 Assert-GuestDirectoryIdentity ([string]$inputs.windowsProofInputDirectory) $identities.windowsProofInput $false "companion proof exact-three input"
-Assert-GuestFileIdentity ([string]$inputs.approvedPrecutoverReceipt) $identities.approvedPrecutoverReceipt "B2 approved receipt"
+Assert-GuestFileIdentity ([string]$inputs.acceptanceAuthorityReceipt) $identities.acceptanceAuthorityReceipt "installed Windows acceptance authority receipt"
 Assert-GuestFileIdentity ([string]$inputs.calibratedRegionalPolicy) $identities.calibratedRegionalPolicy "calibrated AI regional evidence policy"
 Assert-GuestFileIdentity ([string]$inputs.calibrationReceipt) $identities.calibrationReceipt "calibrated AI regional evidence receipt"
 Assert-GuestFileIdentity ([string]$inputs.calibrationSourceInput) $identities.calibrationSourceInput "calibration source input"
