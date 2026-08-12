@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   mkdirSync,
@@ -2048,6 +2049,51 @@ describe("Windows D cache contract", () => {
     );
     assert.doesNotMatch(guest, /Remove-Item -LiteralPath \$cacheRoot -Recurse/);
     assert.doesNotMatch(guest, /CARGO_REGISTRY_CACHE|CARGO_GIT_CACHE/);
+  });
+
+  it("plumbs selected AI acceptance roots through the single managed Vision owner", () => {
+    const guest = readFileSync(
+      new URL("./run-local-testbed-guest.ps1", import.meta.url),
+      "utf8",
+    );
+    const selected = guest.indexOf("$aiVirtualTryOnSelected =");
+    const prepared = guest.indexOf(
+      'New-TestbedAiVisionOwnerConfiguration $guestInput "short"',
+      selected,
+    );
+    const started = guest.indexOf(
+      "$startupState = Start-TestbedInstalledRuntimeOwners",
+    );
+    assert.ok(selected >= 0 && prepared > selected && started > prepared);
+    assert.match(
+      guest,
+      /Start-TestbedInstalledRuntimeOwners[\s\S]*-VisionAiModelPackRoot \$aiVisionModelPackRoot[\s\S]*-VisionAiAcceptanceEvidenceRoot \$aiVisionAcceptanceEvidenceRoot/,
+    );
+    assert.match(
+      guest,
+      /function Restart-TestbedAiVisionOwner[\s\S]*Get-TestbedProcessTreeIds[\s\S]*Stop-ScheduledTask[\s\S]*Stop-TestbedCanonicalVision[\s\S]*remainingOwnedProcessIds[\s\S]*7892[\s\S]*install-vem-runtime-owners\.ps1[\s\S]*Start-ScheduledTask[\s\S]*Wait-TestbedVisionReady/,
+    );
+    assert.match(guest, /ValidateSet\("short", "long"\)/);
+  });
+
+  it("restarts the one Vision owner without overlapping short and long sinks", () => {
+    const result = spawnSync(
+      "pwsh",
+      [
+        "-NoProfile",
+        "-File",
+        "scripts/testbed/run-local-testbed-guest-ai-owner.windows-harness.ps1",
+      ],
+      { cwd: new URL("../..", import.meta.url), encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.schemaVersion, "vem-ai-owner-restart-harness/v1");
+    assert.notEqual(output.shortRoot, output.longRoot);
+    assert.deepEqual(output.fallback.slice(-2), [
+      `install-ai:${output.shortRoot}`,
+      "install-default",
+    ]);
   });
 
   it("does not require reconstructed guest input for clear_cache", () => {

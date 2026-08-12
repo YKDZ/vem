@@ -4,6 +4,8 @@ param(
   [string]$DaemonDataDirectory = "C:\ProgramData\VEM\vending-daemon",
   [string]$VisionAppDirectory = "C:\VEM\vision\app",
   [string]$VisionDataDirectory = "C:\ProgramData\VEM\vision",
+  [string]$VisionAiModelPackRoot,
+  [string]$VisionAiAcceptanceEvidenceRoot,
   [string]$KioskUser = "VEMKiosk",
   [string]$KioskPassword,
   [ValidateRange(1, 65535)][int]$MachineUiWebViewDebugPort = 0,
@@ -18,6 +20,111 @@ function Assert-OwnerPath([string]$Path, [string]$Label) {
   }
 }
 
+function Get-NormalizedOwnerDirectory([string]$Path, [string]$Label) {
+  if ([string]::IsNullOrWhiteSpace($Path) -or -not [IO.Path]::IsPathRooted($Path)) {
+    throw "$Label must be an absolute directory: $Path"
+  }
+  $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+  if (-not $item.PSIsContainer -or (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+    throw "$Label must be a regular non-reparse directory: $Path"
+  }
+  return [IO.Path]::GetFullPath($item.FullName).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+}
+
+function Assert-OwnerChildPath([string]$Path, [string]$Parent, [string]$Label) {
+  $normalizedPath = Get-NormalizedOwnerDirectory $Path $Label
+  $normalizedParent = Get-NormalizedOwnerDirectory $Parent "$Label authority root"
+  $prefix = $normalizedParent + [IO.Path]::DirectorySeparatorChar
+  if (-not $normalizedPath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "$Label must be contained by $normalizedParent"
+  }
+  return $normalizedPath
+}
+
+function Assert-VisionAiModelPack([string]$ModelRoot, [string]$VisionRoot) {
+  $normalizedRoot = Assert-OwnerChildPath $ModelRoot (Join-Path $VisionRoot "ai-model-packs\packs") "Vision AI model pack root"
+  $descriptorPath = Join-Path $VisionAppDirectory "_internal\official-ai-model-pack-descriptor.json"
+  Assert-OwnerPath $descriptorPath "bundled official AI model descriptor"
+  $manifestPath = Join-Path $normalizedRoot "ai-model-manifest.json"
+  Assert-OwnerPath $manifestPath "AI model manifest"
+  $descriptorBytes = [IO.File]::ReadAllBytes($descriptorPath)
+  $manifestBytes = [IO.File]::ReadAllBytes($manifestPath)
+  $manifestMatchesDescriptor = $descriptorBytes.Length -eq $manifestBytes.Length
+  for ($index = 0; $manifestMatchesDescriptor -and $index -lt $descriptorBytes.Length; $index += 1) {
+    if ($descriptorBytes[$index] -ne $manifestBytes[$index]) { $manifestMatchesDescriptor = $false }
+  }
+  if (-not $manifestMatchesDescriptor) {
+    throw "AI model manifest does not match the bundled official descriptor"
+  }
+  try {
+    $descriptor = [Text.Encoding]::UTF8.GetString($descriptorBytes) | ConvertFrom-Json
+  } catch {
+    throw "bundled official AI model descriptor is not valid JSON: $($_.Exception.Message)"
+  }
+  if ($descriptor.schemaVersion -ne "vem-official-ai-model-pack-descriptor/v2" -or
+      $descriptor.totalByteSize -isnot [long] -or $descriptor.totalByteSize -lt 1 -or
+      @($descriptor.files).Count -lt 1) {
+    throw "bundled official AI model descriptor has an unsupported identity"
+  }
+  $expectedPaths = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+  $totalBytes = [long]0
+  foreach ($file in @($descriptor.files)) {
+    $relativePath = [string]$file.path
+    if ([string]::IsNullOrWhiteSpace($relativePath) -or [IO.Path]::IsPathRooted($relativePath) -or
+        $relativePath.Contains("\") -or $relativePath.Contains(":") -or
+        @($relativePath.Split("/") | Where-Object { $_ -eq "" -or $_ -eq "." -or $_ -eq ".." }).Count -gt 0 -or
+        -not $expectedPaths.Add($relativePath)) {
+      throw "bundled official AI model descriptor contains an unsafe or duplicate path"
+    }
+    $candidatePath = Join-Path $normalizedRoot ($relativePath.Replace("/", [IO.Path]::DirectorySeparatorChar))
+    $candidate = Get-Item -LiteralPath $candidatePath -Force -ErrorAction Stop
+    if ($candidate.PSIsContainer -or (($candidate.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+      throw "AI model file must be regular and non-reparse: $relativePath"
+    }
+    $expectedSize = [long]$file.byteSize
+    if ($expectedSize -lt 1 -or [long]$candidate.Length -ne $expectedSize) {
+      throw "AI model file size mismatch: $relativePath"
+    }
+    $expectedSha = [string]$file.sha256
+    if ($expectedSha -cnotmatch '^[0-9a-f]{64}$' -or
+        (Get-FileHash -LiteralPath $candidate.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expectedSha) {
+      throw "AI model file digest mismatch: $relativePath"
+    }
+    $totalBytes += $expectedSize
+  }
+  if ($totalBytes -ne [long]$descriptor.totalByteSize) {
+    throw "AI model descriptor totalByteSize mismatch"
+  }
+  $modelEntries = @(Get-ChildItem -LiteralPath $normalizedRoot -Recurse -Force)
+  if (@($modelEntries | Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 }).Count -ne 0) {
+    throw "AI model pack contains a reparse entry"
+  }
+  $actualRelativePaths = @($modelEntries | Where-Object { -not $_.PSIsContainer } | ForEach-Object {
+    $_.FullName.Substring($normalizedRoot.Length + 1).Replace("\", "/")
+  } | Where-Object { $_ -ne "ai-model-manifest.json" } | Sort-Object)
+  $expectedRelativePaths = @($expectedPaths | Sort-Object)
+  if (($actualRelativePaths -join "`n") -cne ($expectedRelativePaths -join "`n")) {
+    throw "AI model pack file set does not match the bundled official descriptor"
+  }
+  return $normalizedRoot
+}
+
+function Resolve-VisionAiOwnerEnvironment {
+  $hasModel = -not [string]::IsNullOrWhiteSpace($VisionAiModelPackRoot)
+  $hasSink = -not [string]::IsNullOrWhiteSpace($VisionAiAcceptanceEvidenceRoot)
+  if ($hasModel -ne $hasSink) {
+    throw "VisionAiModelPackRoot and VisionAiAcceptanceEvidenceRoot must be provided together"
+  }
+  if (-not $hasModel) { return $null }
+  $modelRoot = Assert-VisionAiModelPack $VisionAiModelPackRoot $VisionDataDirectory
+  $sinkAuthority = Join-Path $VisionDataDirectory "acceptance"
+  $sinkRoot = Assert-OwnerChildPath $VisionAiAcceptanceEvidenceRoot $sinkAuthority "Vision AI acceptance evidence root"
+  if (@(Get-ChildItem -LiteralPath $sinkRoot -Force).Count -ne 0) {
+    throw "Vision AI acceptance evidence root must be empty"
+  }
+  return [ordered]@{ modelPackRoot = $modelRoot; acceptanceEvidenceRoot = $sinkRoot }
+}
+
 function Invoke-Sc([string[]]$Arguments, [string]$Operation) {
   $output = & sc.exe @Arguments 2>&1
   if ($LASTEXITCODE -ne 0) {
@@ -29,6 +136,16 @@ function Grant-OwnerAccess([string]$Path, [string]$Rights) {
   New-Item -ItemType Directory -Force -Path $Path | Out-Null
   & icacls.exe $Path /grant:r "${KioskUser}:(OI)(CI)$Rights" /T /C /Q | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "failed to grant $KioskUser access: $Path" }
+}
+
+function Protect-VisionAiModelPack([string]$Path) {
+  & icacls.exe $Path `
+    /inheritance:r `
+    /grant:r "*S-1-5-18:(OI)(CI)F" `
+    /grant:r "*S-1-5-32-544:(OI)(CI)F" `
+    /grant:r "${KioskUser}:(OI)(CI)(RX)" `
+    /T /C /Q | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "failed to protect the verified Vision AI model pack: $Path" }
 }
 
 function Write-InteractiveLauncher(
@@ -84,7 +201,20 @@ foreach (`$staleProcess in `$staleProcesses) {
 }
 [Diagnostics.Process]::Start(`$startInfo) | Out-Null
 "@
-  [IO.File]::WriteAllText($LauncherPath, $content, [Text.UTF8Encoding]::new($false))
+  $temporaryLauncher = "$LauncherPath.$PID.tmp"
+  $backupLauncher = "$LauncherPath.$PID.backup"
+  try {
+    [IO.File]::WriteAllText($temporaryLauncher, $content, [Text.UTF8Encoding]::new($false))
+    if (Test-Path -LiteralPath $LauncherPath -PathType Leaf) {
+      [IO.File]::Replace($temporaryLauncher, $LauncherPath, $backupLauncher, $true)
+      Remove-Item -LiteralPath $backupLauncher -Force -ErrorAction Stop
+    } else {
+      Move-Item -LiteralPath $temporaryLauncher -Destination $LauncherPath -ErrorAction Stop
+    }
+  } finally {
+    Remove-Item -LiteralPath $temporaryLauncher -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $backupLauncher -Force -ErrorAction SilentlyContinue
+  }
 }
 
 function Register-InteractiveOwnerTask(
@@ -167,6 +297,31 @@ function Write-OwnerManifest(
   [string]$MachineLauncher,
   [string]$VisionLauncher
 ) {
+  $visionOwner = [ordered]@{
+    kind = "scheduledTask"
+    name = "VEMVisionRuntime"
+    taskPath = "\"
+    trigger = "AtLogon"
+    user = $KioskUser
+    executablePath = $VisionExecutable
+    arguments = @("--config", (Join-Path $VisionDataDirectory "site.json"))
+    launcherPath = $VisionLauncher
+    workingDirectory = $VisionAppDirectory
+  }
+  if ($null -ne $script:VisionAiOwner) {
+    $visionOwner["ai"] = $script:VisionAiOwner
+  }
+  $acl = [Collections.Generic.List[object]]::new()
+  @(
+    [ordered]@{ path = $RuntimeDirectory; user = $KioskUser; rights = "RX" },
+    [ordered]@{ path = $DaemonDataDirectory; user = $KioskUser; rights = "M" },
+    [ordered]@{ path = $VisionAppDirectory; user = $KioskUser; rights = "RX" },
+    [ordered]@{ path = $VisionDataDirectory; user = $KioskUser; rights = "M" }
+  ) | ForEach-Object { $acl.Add($_) }
+  if ($null -ne $script:VisionAiOwner) {
+    $acl.Add([ordered]@{ path = $script:VisionAiOwner.modelPackRoot; user = $KioskUser; rights = "RX" })
+    $acl.Add([ordered]@{ path = $script:VisionAiOwner.acceptanceEvidenceRoot; user = $KioskUser; rights = "M" })
+  }
   $manifest = [ordered]@{
     schemaVersion = "vem-runtime-owners/v1"
     installedAt = [DateTime]::UtcNow.ToString("o")
@@ -198,24 +353,9 @@ function Write-OwnerManifest(
         launcherPath = $MachineLauncher
         workingDirectory = $RuntimeDirectory
       }
-      vision = [ordered]@{
-        kind = "scheduledTask"
-        name = "VEMVisionRuntime"
-        taskPath = "\"
-        trigger = "AtLogon"
-        user = $KioskUser
-        executablePath = $VisionExecutable
-        arguments = @("--config", (Join-Path $VisionDataDirectory "site.json"))
-        launcherPath = $VisionLauncher
-        workingDirectory = $VisionAppDirectory
-      }
+      vision = $visionOwner
     }
-    acl = @(
-      [ordered]@{ path = $RuntimeDirectory; user = $KioskUser; rights = "RX" },
-      [ordered]@{ path = $DaemonDataDirectory; user = $KioskUser; rights = "M" },
-      [ordered]@{ path = $VisionAppDirectory; user = $KioskUser; rights = "RX" },
-      [ordered]@{ path = $VisionDataDirectory; user = $KioskUser; rights = "M" }
-    )
+    acl = @($acl)
   }
   New-Item -ItemType Directory -Force -Path (Split-Path -Parent $OwnerManifestPath) | Out-Null
   $temporaryPath = "$OwnerManifestPath.$PID.tmp"
@@ -237,6 +377,7 @@ $visionLauncher = Join-Path $RuntimeDirectory "launch-vem-vision.ps1"
 Assert-OwnerPath $daemonExecutable "daemon executable"
 Assert-OwnerPath $machineExecutable "Machine UI executable"
 Assert-OwnerPath $visionExecutable "Vision executable"
+$script:VisionAiOwner = Resolve-VisionAiOwnerEnvironment
 if ($null -eq (Get-LocalUser -Name $KioskUser -ErrorAction SilentlyContinue)) {
   throw "required interactive user is missing: $KioskUser"
 }
@@ -273,13 +414,22 @@ Grant-OwnerAccess $RuntimeDirectory "(RX)"
 Grant-OwnerAccess $DaemonDataDirectory "(M)"
 Grant-OwnerAccess $VisionAppDirectory "(RX)"
 Grant-OwnerAccess $VisionDataDirectory "(M)"
+if ($null -ne $script:VisionAiOwner) {
+  Protect-VisionAiModelPack $script:VisionAiOwner.modelPackRoot
+  Grant-OwnerAccess $script:VisionAiOwner.acceptanceEvidenceRoot "(M)"
+}
 
 $machineUiEnvironment = @{}
 if ($MachineUiWebViewDebugPort -gt 0) {
   $machineUiEnvironment["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = "--remote-debugging-port=$MachineUiWebViewDebugPort"
 }
 Write-InteractiveLauncher $machineLauncher "machine.exe" $machineExecutable @() @() $machineUiEnvironment
-Write-InteractiveLauncher $visionLauncher "vending-vision.exe" $visionExecutable @("--config", (Join-Path $VisionDataDirectory "site.json"))
+$visionEnvironment = @{}
+if ($null -ne $script:VisionAiOwner) {
+  $visionEnvironment["VEM_AI_MODEL_PACK"] = $script:VisionAiOwner.modelPackRoot
+  $visionEnvironment["VEM_AI_ACCEPTANCE_EVIDENCE_ROOT"] = $script:VisionAiOwner.acceptanceEvidenceRoot
+}
+Write-InteractiveLauncher $visionLauncher "vending-vision.exe" $visionExecutable @("--config", (Join-Path $VisionDataDirectory "site.json")) @() $visionEnvironment
 Register-InteractiveOwnerTask "VEMMachineUI" $machineLauncher $RuntimeDirectory
 Register-InteractiveOwnerTask "VEMVisionRuntime" $visionLauncher $VisionAppDirectory
 

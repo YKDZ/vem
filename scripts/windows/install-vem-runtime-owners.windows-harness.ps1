@@ -13,6 +13,8 @@ $runtime = Join-Path $root "bringup"
 $daemonData = Join-Path $root "daemon-data"
 $visionApp = Join-Path $root "vision-app"
 $visionData = Join-Path $root "vision-data"
+$modelRoot = Join-Path $visionData "ai-model-packs\packs\verified"
+$sinkRoot = Join-Path $visionData "acceptance\short"
 $manifestPath = Join-Path $root "runtime-owners\owner-manifest.json"
 $global:OwnerHarnessTasks = [System.Collections.Generic.List[object]]::new()
 $global:OwnerHarnessScCalls = [System.Collections.Generic.List[object]]::new()
@@ -62,8 +64,68 @@ function global:Register-ScheduledTask {
 }
 
 try {
-  New-Item -ItemType Directory -Force -Path $runtime, $daemonData, $visionApp, $visionData | Out-Null
+  New-Item -ItemType Directory -Force -Path $runtime, $daemonData, $visionApp, $visionData, $modelRoot, $sinkRoot, (Join-Path $visionApp "_internal") | Out-Null
   New-Item -ItemType File -Force -Path (Join-Path $runtime "vending-daemon.exe"), (Join-Path $runtime "machine.exe"), (Join-Path $visionApp "vending-vision.exe"), (Join-Path $visionData "site.json") | Out-Null
+  [IO.File]::WriteAllText((Join-Path $modelRoot "model.bin"), "model", [Text.UTF8Encoding]::new($false))
+  $modelSha = (Get-FileHash -LiteralPath (Join-Path $modelRoot "model.bin") -Algorithm SHA256).Hash.ToLowerInvariant()
+  $descriptor = [ordered]@{
+    catvtonSourceRevision = "3b795364a4d2f3b5adb365f39cdea376d20bc53c"
+    files = @([ordered]@{ byteSize = 5; format = "bin"; path = "model.bin"; role = "fixture"; sha256 = $modelSha; upstream = "fixture"; upstreamPath = "model.bin" })
+    schemaVersion = "vem-official-ai-model-pack-descriptor/v2"
+    totalByteSize = 5
+    upstreams = @([ordered]@{ id = "fixture"; repository = "fixture/repository"; revision = "a" * 40 })
+  }
+  $descriptorRaw = $descriptor | ConvertTo-Json -Compress -Depth 8
+  [IO.File]::WriteAllText((Join-Path $visionApp "_internal\official-ai-model-pack-descriptor.json"), $descriptorRaw, [Text.UTF8Encoding]::new($false))
+  [IO.File]::WriteAllText((Join-Path $modelRoot "ai-model-manifest.json"), $descriptorRaw, [Text.UTF8Encoding]::new($false))
+
+  $aiInputFailures = [System.Collections.Generic.List[string]]::new()
+  $commonInstallerArguments = @{
+    RuntimeDirectory = $runtime
+    DaemonDataDirectory = $daemonData
+    VisionAppDirectory = $visionApp
+    VisionDataDirectory = $visionData
+    KioskPassword = "prototype-password"
+    OwnerManifestPath = $manifestPath
+  }
+  try {
+    & (Join-Path $PSScriptRoot "install-vem-runtime-owners.ps1") @commonInstallerArguments -VisionAiModelPackRoot $modelRoot | Out-Null
+  } catch {
+    if ($_.Exception.Message -match "must be provided together") { $aiInputFailures.Add("unpaired") | Out-Null }
+  }
+  try {
+    & (Join-Path $PSScriptRoot "install-vem-runtime-owners.ps1") @commonInstallerArguments -VisionAiModelPackRoot ".\relative-model" -VisionAiAcceptanceEvidenceRoot $sinkRoot | Out-Null
+  } catch {
+    if ($_.Exception.Message -match "must be an absolute directory") { $aiInputFailures.Add("relative") | Out-Null }
+  }
+  [IO.File]::WriteAllText((Join-Path $sinkRoot "stale.json"), "{}", [Text.UTF8Encoding]::new($false))
+  try {
+    & (Join-Path $PSScriptRoot "install-vem-runtime-owners.ps1") @commonInstallerArguments -VisionAiModelPackRoot $modelRoot -VisionAiAcceptanceEvidenceRoot $sinkRoot | Out-Null
+  } catch {
+    if ($_.Exception.Message -match "must be empty") { $aiInputFailures.Add("nonempty") | Out-Null }
+  } finally {
+    Remove-Item -LiteralPath (Join-Path $sinkRoot "stale.json") -Force
+  }
+  [IO.File]::WriteAllText((Join-Path $modelRoot "model.bin"), "other", [Text.UTF8Encoding]::new($false))
+  try {
+    & (Join-Path $PSScriptRoot "install-vem-runtime-owners.ps1") @commonInstallerArguments -VisionAiModelPackRoot $modelRoot -VisionAiAcceptanceEvidenceRoot $sinkRoot | Out-Null
+  } catch {
+    if ($_.Exception.Message -match "(?:size|digest) mismatch") { $aiInputFailures.Add("model-mismatch") | Out-Null }
+  } finally {
+    [IO.File]::WriteAllText((Join-Path $modelRoot "model.bin"), "model", [Text.UTF8Encoding]::new($false))
+  }
+  $modelLink = Join-Path $visionData "ai-model-packs\packs\linked"
+  try {
+    New-Item -ItemType SymbolicLink -Path $modelLink -Target $modelRoot | Out-Null
+    try {
+      & (Join-Path $PSScriptRoot "install-vem-runtime-owners.ps1") @commonInstallerArguments -VisionAiModelPackRoot $modelLink -VisionAiAcceptanceEvidenceRoot $sinkRoot | Out-Null
+    } catch {
+      if ($_.Exception.Message -match "non-reparse") { $aiInputFailures.Add("reparse") | Out-Null }
+    }
+  } finally {
+    Remove-Item -LiteralPath $modelLink -Force -ErrorAction SilentlyContinue
+  }
+  Assert-Equal ($aiInputFailures -join ",") "unpaired,relative,nonempty,model-mismatch,reparse" "AI owner input rejections"
 
   $missingPasswordRejected = $false
   try {
@@ -80,17 +142,27 @@ try {
     -VisionDataDirectory $visionData `
     -KioskPassword "prototype-password" `
     -MachineUiWebViewDebugPort 9222 `
+    -VisionAiModelPackRoot $modelRoot `
+    -VisionAiAcceptanceEvidenceRoot $sinkRoot `
     -OwnerManifestPath $manifestPath | Out-Null
 
   $manifest = Get-Content -Raw -LiteralPath $manifestPath -Encoding UTF8 | ConvertFrom-Json
+  $aiOwnerTasks = @($global:OwnerHarnessTasks)
   Assert-Equal $manifest.schemaVersion "vem-runtime-owners/v1" "owner manifest schema"
   Assert-Equal $manifest.owners.daemon.name "VemVendingDaemon" "daemon owner"
   Assert-Equal $manifest.owners.machineUi.name "VEMMachineUI" "Machine UI owner"
   Assert-Equal $manifest.owners.vision.name "VEMVisionRuntime" "Vision owner"
+  Assert-Equal $manifest.owners.vision.ai.modelPackRoot $modelRoot "Vision AI model root"
+  Assert-Equal $manifest.owners.vision.ai.acceptanceEvidenceRoot $sinkRoot "Vision AI evidence root"
+  Assert-Equal $manifest.acl.Count 6 "AI owner manifest ACL count"
+  Assert-Equal @($manifest.acl | Where-Object { $_.path -ceq $modelRoot })[0].rights "RX" "AI model manifest ACL"
+  Assert-Equal @($manifest.acl | Where-Object { $_.path -ceq $sinkRoot })[0].rights "M" "AI sink manifest ACL"
   Assert-Equal $global:OwnerHarnessTasks.Count 2 "registered task count"
   Assert-True (@($global:OwnerHarnessScCalls | Where-Object { $_[0] -eq "config" -and $_ -contains "obj=" -and $_ -contains "LocalSystem" -and $_ -contains "start=" -and $_ -contains "auto" }).Count -eq 1) "daemon service did not configure LocalSystem automatic startup"
   Assert-True (@($global:OwnerHarnessScCalls | Where-Object { $_[0] -eq "failure" -and $_ -contains "actions=" -and $_ -contains 'restart/5000/""/0/""/0' }).Count -eq 1) "daemon crash recovery call was not captured"
-  Assert-Equal $global:OwnerHarnessAclCalls.Count 4 "runtime ACL call count"
+  Assert-Equal $global:OwnerHarnessAclCalls.Count 6 "runtime ACL call count"
+  Assert-True (@($global:OwnerHarnessAclCalls | Where-Object { $_ -contains "/inheritance:r" -and $_ -contains "VEMKiosk:(OI)(CI)(RX)" }).Count -eq 1) "AI model pack did not receive read-only owner ACL"
+  $aiAclCalls = @($global:OwnerHarnessAclCalls)
   Assert-True (@($global:OwnerHarnessRegistryWrites | Where-Object { $_.name -eq "DefaultPassword" -and $_.value -eq "<redacted>" }).Count -eq 1) "DefaultPassword was not written"
   foreach ($task in @($global:OwnerHarnessTasks)) {
     Assert-Equal $task.action.Execute "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" "interactive owner action executable"
@@ -120,17 +192,40 @@ try {
   }
   Assert-True $legacyOwnerRejected "installer accepted legacy Vision owners"
 
+  $global:OwnerHarnessScheduledTasks = @()
+  $global:OwnerHarnessServices = @()
+
+  $aiVisionLauncher = Get-Content -Raw -LiteralPath (Join-Path $runtime "launch-vem-vision.ps1")
+  $aiMachineLauncher = Get-Content -Raw -LiteralPath (Join-Path $runtime "launch-vem-machine-ui.ps1")
+  Assert-True ($aiVisionLauncher.Contains("VEM_AI_MODEL_PACK")) "AI launcher omitted model root"
+  Assert-True ($aiVisionLauncher.Contains($modelRoot)) "AI launcher omitted exact model root"
+  Assert-True ($aiVisionLauncher.Contains("VEM_AI_ACCEPTANCE_EVIDENCE_ROOT")) "AI launcher omitted evidence root"
+  Assert-True ($aiVisionLauncher.Contains($sinkRoot)) "AI launcher omitted exact evidence root"
+
+  & (Join-Path $PSScriptRoot "install-vem-runtime-owners.ps1") `
+    -RuntimeDirectory $runtime `
+    -DaemonDataDirectory $daemonData `
+    -VisionAppDirectory $visionApp `
+    -VisionDataDirectory $visionData `
+    -KioskPassword "prototype-password" `
+    -OwnerManifestPath $manifestPath | Out-Null
+  $defaultVisionLauncher = Get-Content -Raw -LiteralPath (Join-Path $runtime "launch-vem-vision.ps1")
+  Assert-True (-not $defaultVisionLauncher.Contains("VEM_AI_MODEL_PACK")) "default launcher inherited model root"
+  Assert-True (-not $defaultVisionLauncher.Contains("VEM_AI_ACCEPTANCE_EVIDENCE_ROOT")) "default launcher enabled acceptance sink"
+
   [ordered]@{
     schemaVersion = "vem-runtime-owners-harness/v2"
     manifest = $manifest
-    machineLauncher = Get-Content -Raw -LiteralPath (Join-Path $runtime "launch-vem-machine-ui.ps1")
-    visionLauncher = Get-Content -Raw -LiteralPath (Join-Path $runtime "launch-vem-vision.ps1")
+    machineLauncher = $aiMachineLauncher
+    visionLauncher = $aiVisionLauncher
+    defaultVisionLauncher = $defaultVisionLauncher
     daemonDataDirectory = $daemonData
     missingPasswordRejected = $missingPasswordRejected
     legacyOwnerRejected = $legacyOwnerRejected
-    registeredTasks = @($global:OwnerHarnessTasks)
+    aiInputFailures = @($aiInputFailures)
+    registeredTasks = @($aiOwnerTasks)
     scCalls = @($global:OwnerHarnessScCalls)
-    aclCalls = @($global:OwnerHarnessAclCalls)
+    aclCalls = @($aiAclCalls)
     registryWrites = @($global:OwnerHarnessRegistryWrites)
   } | ConvertTo-Json -Depth 16
 } finally {

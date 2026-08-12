@@ -105,12 +105,34 @@ test("owner installer writes one manifest through its public PowerShell entrypoi
   );
   assert.doesNotMatch(output.machineLauncher, /-ArgumentList @\(\)/);
   assert.match(output.visionLauncher, /\$startInfo\.Arguments = '"--config" "/);
+  assert.match(output.visionLauncher, /VEM_AI_MODEL_PACK/);
+  assert.match(output.visionLauncher, /VEM_AI_ACCEPTANCE_EVIDENCE_ROOT/);
+  assert.doesNotMatch(output.defaultVisionLauncher, /VEM_AI_MODEL_PACK/);
+  assert.doesNotMatch(
+    output.defaultVisionLauncher,
+    /VEM_AI_ACCEPTANCE_EVIDENCE_ROOT/,
+  );
+  assert.deepEqual(output.aiInputFailures, [
+    "unpaired",
+    "relative",
+    "nonempty",
+    "model-mismatch",
+    "reparse",
+  ]);
   assert.equal(output.manifest.owners.machineUi.trigger, "AtLogon");
   assert.equal(output.manifest.owners.vision.trigger, "AtLogon");
+  assert.equal(output.manifest.acl.length, 6);
   assert.equal(output.registeredTasks.length, 2);
   assert.equal(output.missingPasswordRejected, true);
   assert.equal(output.legacyOwnerRejected, true);
-  assert.equal(output.aclCalls.length, 4);
+  assert.equal(output.aclCalls.length, 6);
+  assert.ok(
+    output.aclCalls.some(
+      (call) =>
+        call.includes("/inheritance:r") &&
+        call.includes("VEMKiosk:(OI)(CI)(RX)"),
+    ),
+  );
   assert.deepEqual(
     output.registeredTasks.map((task) => task.trigger.kind),
     ["AtLogon", "AtLogon"],
