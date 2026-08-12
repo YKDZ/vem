@@ -1316,6 +1316,21 @@ function identity(reconstruction) {
   ];
   return {
     githubSha: "c".repeat(40),
+    backend: {
+      serviceApi: {
+        build: { byteSize: 10, fileCount: 1, sha256: "1".repeat(64) },
+        runtime: {
+          database: "ok",
+          entrypoint: "main.js",
+          health: "ready",
+          mqtt: "connected",
+        },
+      },
+      adminUi: {
+        build: { byteSize: 11, fileCount: 1, sha256: "2".repeat(64) },
+        delivery: { buildVerified: true, entrypoint: "index.html" },
+      },
+    },
     baseline: {
       releaseId: "win10-runtime-20260718",
       digest: `sha256:${"a".repeat(64)}`,
@@ -1327,11 +1342,60 @@ function identity(reconstruction) {
     removedUndeclaredCaches: [],
     runtimeArtifacts: {
       commit: "c".repeat(40),
+      sourceDigest: "3".repeat(64),
       reusedFromPass1: reconstruction === "b",
       artifacts: {
         daemon: { sha256: "d".repeat(64) },
         machine: { sha256: "e".repeat(64) },
         webViewLoader: { sha256: "f".repeat(64) },
+      },
+    },
+    visionCore: {
+      sha256: "4".repeat(64),
+      runtimeArchive: {
+        byteSize: 12,
+        sha256: "5".repeat(64),
+        sourceCommit: "d".repeat(40),
+      },
+      recordedFixtureArchive: {
+        byteSize: 13,
+        sha256: "6".repeat(64),
+        sourceCommit: "d".repeat(40),
+      },
+    },
+    aiVirtualTryOn: {
+      authority: {
+        candidate: {
+          sourceCommit: "d".repeat(40),
+          subjectSha256: "5".repeat(64),
+        },
+        contract: {
+          bundleDigest: "7".repeat(64),
+          manifestSha256: "8".repeat(64),
+          protocol: "vem.vision.v2",
+        },
+        modelPack: {
+          archive: { byteSize: 14, sha256: "9".repeat(64) },
+          descriptorSha256: "a".repeat(64),
+          sourceRevision: "e".repeat(40),
+        },
+        resources: {
+          aiLockSha256: "b".repeat(64),
+          runtimeDescriptorSha256: "c".repeat(64),
+          sourceDescriptorSha256: "d".repeat(64),
+          workerExecutableSha256: "e".repeat(64),
+        },
+      },
+      input: {
+        manifestSha256: "f".repeat(64),
+        modelPackArchive: { byteSize: 14, sha256: "9".repeat(64) },
+        materializedModelPackRoot: {
+          byteSize: 15,
+          members: [
+            { name: "weights/model.bin", byteSize: 15, sha256: "1".repeat(64) },
+          ],
+          sha256: "0".repeat(64),
+        },
       },
     },
   };
@@ -2128,13 +2192,16 @@ describe("full workflow stability gate", () => {
       const passB = join(root, "pass-b.json");
       writeFileSync(passA, `${JSON.stringify(report("a"))}\n`);
       writeFileSync(passB, `${JSON.stringify(report("b"))}\n`);
+      const gate = buildStabilityGateReport({
+        commit: "c".repeat(40),
+        passAPath: passA,
+        passBPath: passB,
+      });
+      assert.equal(gate.ok, true);
+      assert.match(gate.acceptanceReleaseManifestSha256, /^[a-f0-9]{64}$/);
       assert.equal(
-        buildStabilityGateReport({
-          commit: "c".repeat(40),
-          passAPath: passA,
-          passBPath: passB,
-        }).ok,
-        true,
+        gate.acceptanceReleaseManifest.schemaVersion,
+        "vem-runtime-testbed-acceptance-release/v1",
       );
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -2224,6 +2291,53 @@ describe("full workflow stability gate", () => {
           "pass B aiVirtualTryOn status is not passed",
         ),
       );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails when pass two changes one accepted release artifact", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-workflow-release-drift-"));
+    try {
+      const descriptors = BUSINESS_CHECK_REGISTRY.filter(
+        (descriptor) => descriptor.fullRequired,
+      );
+      const report = (reconstruction) => ({
+        schemaVersion: "vem-local-testbed-full-workflow/v4",
+        mode: "full",
+        ok: true,
+        businessSets: Object.fromEntries(
+          descriptors.map((descriptor) => [
+            descriptor.name,
+            { status: "passed" },
+          ]),
+        ),
+        execution: {
+          selectedBusinessSets: descriptors.map(
+            (descriptor) => descriptor.name,
+          ),
+        },
+        identity: identity(reconstruction),
+      });
+      const first = report("a");
+      const second = report("b");
+      second.identity.backend.adminUi.build.sha256 = "9".repeat(64);
+      const passA = join(root, "pass-a.json");
+      const passB = join(root, "pass-b.json");
+      writeFileSync(passA, `${JSON.stringify(first)}\n`);
+      writeFileSync(passB, `${JSON.stringify(second)}\n`);
+      const gate = buildStabilityGateReport({
+        commit: "c".repeat(40),
+        passAPath: passA,
+        passBPath: passB,
+      });
+      assert.equal(gate.ok, false);
+      assert.ok(
+        gate.gateFailures.includes(
+          "acceptance release pass 2 drifted from pass 1",
+        ),
+      );
+      assert.equal(gate.acceptanceReleaseManifest, null);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

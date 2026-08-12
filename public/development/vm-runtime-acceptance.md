@@ -60,6 +60,13 @@ authority receipt 完全相同。宿主还从本地 Vision repository 的候选 
 `visionCore` runtime/fixture 身份完全一致，避免仅传输但未安装另一套 AI runtime/fixture。`measurement` 输入可被预置，
 但当前只记录“尚非验收证据”的失败闭环；`formal` 才读取其精确三项校准文件。
 
+`full` 的第一轮还会从已验证的 workflow identity 生成 canonical
+`vem-runtime-testbed-acceptance-release/v1` 清单，绑定 VEM source commit、Service API
+实际健康与 Service API/Admin UI 构建摘要、Admin UI delivery 入口、daemon/Machine/WebViewLoader、Vision runtime/fixture、
+Vision V2 contract、AI worker/environment 以及 model-pack archive/materialized tree。第二轮从自身事实
+重新生成同一清单；任何差异都会使 stability gate 失败。成功时 compact 根同时保留
+`acceptance-release-manifest.json`，`full-workflow-stability-gate.json` 记录其小写 SHA-256。
+
 Windows 基线由测试宿主机从标准 Windows 10 安装介质生成，并以 qcow2 形式保存在宿主机本地。仓库维护生成脚本、验收合同和运行期约束。`baselineContract` 指向宿主机上的小型 JSON 合同或当前发布清单，用来描述本地基线的路径、摘要、显示分辨率、缓存盘和运行时准备状态。
 
 这份基线应等价于一台已完成基础准备的普通 Windows 10 工控机：系统已安装，显示为 1080x1920 竖屏，具备 VM 运行和自动化所需的驱动、OpenSSH、构建缓存盘、默认音频和 Runtime Bootstrap 准备能力。唐诗村智能售货机系统的业务身份、商品、库存、支付、MQTT、扫码器、下位机和视觉行为仍通过真实运行路径或设备边界配置，不固化在基线镜像里。

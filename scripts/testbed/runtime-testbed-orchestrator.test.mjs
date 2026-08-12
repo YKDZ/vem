@@ -753,7 +753,15 @@ describe("runtime testbed scheduler contract", () => {
       await provisionAiAcceptanceGuestInput({
         config: { stateRoot: root },
         pass: 1,
-        preparation: { guestInput: { inputRoot: "C:\\testbed\\ai" } },
+        preparation: {
+          acceptanceAuthorityReceipt: {
+            value: { resources: { workerExecutableSha256: "a".repeat(64) } },
+          },
+          guestInput: {
+            inputRoot: "C:\\testbed\\ai",
+            identities: { manifestSha256: "b".repeat(64) },
+          },
+        },
       });
       const guestInput = JSON.parse(
         readFileSync(join(root, "guest-input.json"), "utf8"),
@@ -761,8 +769,10 @@ describe("runtime testbed scheduler contract", () => {
       assert.deepEqual(guestInput.acceptanceBlocks, {
         payment: "provider unavailable",
       });
-      assert.deepEqual(guestInput.aiVirtualTryOn, {
-        inputRoot: "C:\\testbed\\ai",
+      assert.equal(guestInput.aiVirtualTryOn.inputRoot, "C:\\testbed\\ai");
+      assert.deepEqual(guestInput.workflowIdentity.aiVirtualTryOn, {
+        authority: { resources: { workerExecutableSha256: "a".repeat(64) } },
+        input: { manifestSha256: "b".repeat(64) },
       });
       writeFileSync(
         join(root, "guest-input.json"),
@@ -775,7 +785,10 @@ describe("runtime testbed scheduler contract", () => {
       await provisionAiAcceptanceGuestInput({
         config: { stateRoot: root },
         pass: 1,
-        preparation: { guestInput: { inputRoot: "C:\\testbed\\ai" } },
+        preparation: {
+          acceptanceAuthorityReceipt: { value: {} },
+          guestInput: { inputRoot: "C:\\testbed\\ai", identities: {} },
+        },
       });
       assert.equal(
         Object.hasOwn(

@@ -5,6 +5,10 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import {
+  bindAcceptanceReleaseManifest,
+  canonicalAcceptanceReleaseManifest,
+} from "./acceptance-release-manifest.mjs";
 import { BUSINESS_CHECK_REGISTRY } from "./business-check-registry.mjs";
 
 const RETAINED_CACHE_CONTRACT = Object.freeze([
@@ -78,6 +82,15 @@ export function buildStabilityGateReport({
   const passA = loadReport(passAPath, "passA");
   const passB = loadReport(passBPath, "passB");
   const gateFailures = [];
+  let acceptanceRelease = null;
+  try {
+    acceptanceRelease = bindAcceptanceReleaseManifest(
+      passA.identity,
+      passB.identity,
+    );
+  } catch (error) {
+    gateFailures.push(error instanceof Error ? error.message : String(error));
+  }
   if (passA.mode !== "full" || passB.mode !== "full") {
     gateFailures.push("stability gate requires two full workflow passes");
   }
@@ -175,6 +188,8 @@ export function buildStabilityGateReport({
     schemaVersion: "vem-local-testbed-stability-gate/v2",
     commit: required(commit, "commit"),
     ok: gateFailures.length === 0,
+    acceptanceReleaseManifest: acceptanceRelease?.manifest ?? null,
+    acceptanceReleaseManifestSha256: acceptanceRelease?.sha256 ?? null,
     declaredStateReconstruction: {
       systemDrive: "reconstructed C:",
       platform: "reconstructed ephemeral platform state",
@@ -209,6 +224,18 @@ async function main() {
     passBPath: option(args, "pass-b"),
   });
   const outPath = option(args, "out");
+  if (report.acceptanceReleaseManifest) {
+    const manifestPath = resolve(
+      dirname(outPath),
+      "acceptance-release-manifest.json",
+    );
+    mkdirSync(dirname(manifestPath), { recursive: true });
+    writeFileSync(
+      manifestPath,
+      canonicalAcceptanceReleaseManifest(report.acceptanceReleaseManifest),
+      "utf8",
+    );
+  }
   writeJson(outPath, report);
   process.stdout.write(`${JSON.stringify(report)}\n`);
   if (!report.ok) process.exitCode = 1;

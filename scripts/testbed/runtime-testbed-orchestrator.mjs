@@ -806,7 +806,14 @@ export async function provisionAiAcceptanceGuestInput({
   } = guestInput;
   await writeJson(path, {
     ...guestInputWithoutBlocks,
-    workflowIdentity: { ...guestInput.workflowIdentity, pass },
+    workflowIdentity: {
+      ...guestInput.workflowIdentity,
+      aiVirtualTryOn: {
+        authority: preparation.acceptanceAuthorityReceipt.value,
+        input: preparation.guestInput.identities,
+      },
+      pass,
+    },
     aiVirtualTryOn: preparation.guestInput,
     ...(Object.keys(acceptanceBlocks).length > 0 ? { acceptanceBlocks } : {}),
   });

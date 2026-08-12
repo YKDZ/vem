@@ -637,6 +637,7 @@ export function buildReconstructionPlan(options, contract) {
       "@vem/db",
       "--filter",
       "service-api",
+      "--filter=admin-ui",
     ]),
     commandLine("pnpm", ["--filter", "@vem/db", "migrate"], {
       env: buildMigrationEnvironment(options),
@@ -681,6 +682,69 @@ async function sourceFilesUnder(root, relativeDirectory, listDirectory) {
     }
   }
   return files;
+}
+
+async function buildDirectoryIdentity(workspace, relativeDirectory) {
+  const files = await sourceFilesUnder(workspace, relativeDirectory, readdir);
+  const members = await Promise.all(
+    files.map(async (path) => {
+      const bytes = await readFile(join(workspace, path));
+      return {
+        name: path.slice(relativeDirectory.length + 1).replaceAll("\\", "/"),
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        byteSize: bytes.byteLength,
+      };
+    }),
+  );
+  if (members.length === 0) {
+    throw new Error(`${relativeDirectory} build output is empty`);
+  }
+  return {
+    byteSize: members.reduce((total, member) => total + member.byteSize, 0),
+    fileCount: members.length,
+    sha256: createHash("sha256")
+      .update(
+        members
+          .map(
+            (member) =>
+              `${member.name}\0${member.sha256}\0${member.byteSize}\n`,
+          )
+          .join(""),
+      )
+      .digest("hex"),
+  };
+}
+
+export async function buildBackendAcceptanceIdentity(workspace, health) {
+  const root = absolute(workspace, "workspace");
+  if (health?.database !== "ok" || health?.mqtt !== "connected") {
+    throw new Error("local testbed Service API runtime health is invalid");
+  }
+  const [serviceApi, adminUi, serviceEntrypoint, adminEntrypoint] =
+    await Promise.all([
+      buildDirectoryIdentity(root, "apps/service-api/dist"),
+      buildDirectoryIdentity(root, "apps/admin-ui/dist"),
+      readFile(join(root, "apps/service-api/dist/main.js")),
+      readFile(join(root, "apps/admin-ui/dist/index.html")),
+    ]);
+  if (serviceEntrypoint.byteLength === 0 || adminEntrypoint.byteLength === 0) {
+    throw new Error("local testbed backend runtime entrypoint is empty");
+  }
+  return {
+    serviceApi: {
+      build: serviceApi,
+      runtime: {
+        database: health.database,
+        entrypoint: "main.js",
+        health: "ready",
+        mqtt: health.mqtt,
+      },
+    },
+    adminUi: {
+      build: adminUi,
+      delivery: { buildVerified: true, entrypoint: "index.html" },
+    },
+  };
 }
 
 export async function lowerControllerSimSourceFingerprint(
@@ -1417,7 +1481,17 @@ async function waitForApi(baseUrl) {
   for (let attempt = 0; attempt < 60; attempt += 1) {
     try {
       const response = await fetch(`${baseUrl}/health`);
-      if (response.ok) return;
+      const payload = await response.json();
+      if (
+        response.ok &&
+        payload?.data?.database === "ok" &&
+        payload?.data?.mqtt === "connected"
+      ) {
+        return {
+          database: payload.data.database,
+          mqtt: payload.data.mqtt,
+        };
+      }
     } catch {}
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 1_000));
   }
@@ -2266,8 +2340,9 @@ async function reconstruct(options) {
       });
     await startServiceApiUnit(options);
     const apiBaseUrl = "http://127.0.0.1:26849/api";
+    let serviceApiHealth;
     try {
-      await waitForApi(apiBaseUrl);
+      serviceApiHealth = await waitForApi(apiBaseUrl);
     } catch (error) {
       throw await serviceApiFailure(error, options);
     }
@@ -2289,6 +2364,10 @@ async function reconstruct(options) {
       paymentProvider = await prepareInstallationOwnedPaymentProvider({
         baseUrl: apiBaseUrl,
       });
+      identity.backend = await buildBackendAcceptanceIdentity(
+        options.workspace,
+        serviceApiHealth,
+      );
     } catch (error) {
       throw await serviceApiFailure(error, options);
     }

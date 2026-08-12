@@ -22,6 +22,7 @@ import {
 } from "./kvm-baseline/linux-kvm-baseline.mjs";
 import {
   buildBackendComposeCommand,
+  buildBackendAcceptanceIdentity,
   buildBackendComposeEnvironment,
   buildComposeServiceApiEnvironment,
   buildHeadlessVncActivatorUnitPlan,
@@ -943,6 +944,48 @@ describe("local testbed orchestration", () => {
       assert.doesNotMatch(
         implementation,
         /systemd-run --unit=vem-local-testbed-service-api|service-api\.pid|detached: true/,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("binds deterministic Service API and Admin UI builds with observed API runtime health", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-testbed-backend-identity-"));
+    try {
+      mkdirSync(join(root, "apps/service-api/dist"), { recursive: true });
+      mkdirSync(join(root, "apps/admin-ui/dist/assets"), { recursive: true });
+      writeFileSync(join(root, "apps/service-api/dist/main.js"), "service\n");
+      writeFileSync(join(root, "apps/admin-ui/dist/index.html"), "admin\n");
+      writeFileSync(join(root, "apps/admin-ui/dist/assets/app.js"), "ui\n");
+      const first = await buildBackendAcceptanceIdentity(root, {
+        database: "ok",
+        mqtt: "connected",
+      });
+      const second = await buildBackendAcceptanceIdentity(root, {
+        database: "ok",
+        mqtt: "connected",
+      });
+      assert.deepEqual(first, second);
+      assert.deepEqual(first.serviceApi.runtime, {
+        database: "ok",
+        entrypoint: "main.js",
+        health: "ready",
+        mqtt: "connected",
+      });
+      assert.equal(first.serviceApi.build.fileCount, 1);
+      assert.equal(first.adminUi.build.fileCount, 2);
+      assert.deepEqual(first.adminUi.delivery, {
+        buildVerified: true,
+        entrypoint: "index.html",
+      });
+      assert.match(first.adminUi.build.sha256, /^[a-f0-9]{64}$/);
+      const plan = buildReconstructionPlan(
+        options(root),
+        await publishCurrentManifest(root),
+      );
+      assert.ok(
+        plan.flatMap((step) => step.args).includes("--filter=admin-ui"),
       );
     } finally {
       rmSync(root, { recursive: true, force: true });
