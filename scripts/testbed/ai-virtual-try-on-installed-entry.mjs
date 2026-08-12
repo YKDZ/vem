@@ -46,14 +46,17 @@ const CASES = Object.freeze({
 });
 const execFileAsync = promisify(execFile);
 const TRUSTED_POWERSHELL = "D:\\runtime-cache\\v1\\powershell\\7.4.6\\pwsh.exe";
+const OWNER_EXECUTABLE = "C:\\VEM\\vision\\app\\vending-vision.exe";
+const WORKER_EXECUTABLE =
+  "C:\\VEM\\vision\\app\\vending-vision-ai-worker\\vending-vision-ai-worker.exe";
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
-async function readInstalledVisionWorkerSample() {
-  if (process.platform !== "win32")
-    throw new Error("installed Vision RSS sampling requires Windows");
-  const script = [
+export function buildInstalledVisionWorkerSampleScript() {
+  return [
     "$ErrorActionPreference='Stop'",
-    "$mainPath=[IO.Path]::GetFullPath('C:\\VEM\\vision\\app\\vending-vision.exe')",
-    "$workerPath=[IO.Path]::GetFullPath('C:\\VEM\\vision\\app\\vending-vision-ai-worker\\vending-vision-ai-worker.exe')",
+    `$mainPath=[IO.Path]::GetFullPath('${OWNER_EXECUTABLE}')`,
+    `$workerPath=[IO.Path]::GetFullPath('${WORKER_EXECUTABLE}')`,
     "Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public static class VemMemory { [StructLayout(LayoutKind.Sequential)] public struct PMC { public uint cb; public uint PageFaultCount; public UIntPtr PeakWorkingSetSize; public UIntPtr WorkingSetSize; public UIntPtr QuotaPeakPagedPoolUsage; public UIntPtr QuotaPagedPoolUsage; public UIntPtr QuotaPeakNonPagedPoolUsage; public UIntPtr QuotaNonPagedPoolUsage; public UIntPtr PagefileUsage; public UIntPtr PeakPagefileUsage; } [DllImport(\"psapi.dll\",SetLastError=true)] public static extern bool GetProcessMemoryInfo(IntPtr hProcess,out PMC counters,uint size); }'",
     "$all=@(Get-CimInstance Win32_Process -ErrorAction Stop)",
     "$main=@($all|Where-Object{$_.ExecutablePath -and [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $mainPath})",
@@ -62,10 +65,17 @@ async function readInstalledVisionWorkerSample() {
     "$owned=[Collections.Generic.HashSet[int]]::new();[void]$owned.Add([int]$main[0].ProcessId)",
     "do{$changed=$false;foreach($p in $all){if($owned.Contains([int]$p.ParentProcessId)-and $owned.Add([int]$p.ProcessId)){$changed=$true}}}while($changed)",
     "$workers=@($all|Where-Object{$owned.Contains([int]$_.ProcessId)-and $_.ExecutablePath -and [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $workerPath})",
-    "$workerFacts=@($workers|ForEach-Object{$cim=$_;$p=Get-Process -Id ([int]$cim.ProcessId) -ErrorAction Stop;$handle=$p.Handle;$start=[string]$p.StartTime.ToUniversalTime().Ticks;$exe=[IO.Path]::GetFullPath($p.Path);if($exe -ine $workerPath -or [int]$cim.ParentProcessId -notin $owned){throw 'worker process handle identity mismatched'};$c=[VemMemory+PMC]::new();$c.cb=[Runtime.InteropServices.Marshal]::SizeOf($c);if(-not [VemMemory]::GetProcessMemoryInfo($handle,[ref]$c,$c.cb)){throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error())};if([string](Get-Process -Id ([int]$cim.ProcessId) -ErrorAction Stop).StartTime.ToUniversalTime().Ticks -cne $start){throw 'worker PID was reused'};[ordered]@{executablePath=$exe;parentProcessId=[int]$cim.ParentProcessId;peakWorkingSetBytes=[string][uint64]$c.PeakWorkingSetSize;processId=[int]$p.Id;startTimeTicks=$start}})",
-    "$owner=Get-Process -Id ([int]$main[0].ProcessId) -ErrorAction Stop",
-    "[Console]::Out.Write((@{owner=@{executablePath=[IO.Path]::GetFullPath($owner.Path);processId=[int]$owner.Id;startTimeTicks=[string]$owner.StartTime.ToUniversalTime().Ticks};workers=$workerFacts}|ConvertTo-Json -Compress -Depth 4))",
+    "$workerFacts=@($workers|ForEach-Object{$cim=$_;$p=Get-Process -Id ([int]$cim.ProcessId) -ErrorAction Stop;$handle=$p.Handle;$start=[string]$p.StartTime.ToUniversalTime().Ticks;$cimCreated=if($cim.CreationDate -is [DateTime]){$cim.CreationDate.ToUniversalTime()}else{[Management.ManagementDateTimeConverter]::ToDateTime([string]$cim.CreationDate).ToUniversalTime()};$cimStart=[string]$cimCreated.Ticks;$exe=[IO.Path]::GetFullPath($p.Path);if($exe -ine $workerPath -or [int]$cim.ParentProcessId -ne [int]$main[0].ProcessId -or $cimStart -cne $start){throw 'worker process handle identity mismatched'};$c=[VemMemory+PMC]::new();$c.cb=[Runtime.InteropServices.Marshal]::SizeOf($c);if(-not [VemMemory]::GetProcessMemoryInfo($handle,[ref]$c,$c.cb)){throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error())};$workerFinal=Get-Process -Id ([int]$cim.ProcessId) -ErrorAction Stop;if([IO.Path]::GetFullPath($workerFinal.Path) -ine $workerPath -or [string]$workerFinal.StartTime.ToUniversalTime().Ticks -cne $start){throw 'worker PID was reused'};[ordered]@{executablePath=$workerPath;parentProcessId=[int]$cim.ParentProcessId;peakWorkingSetBytes=[string][uint64]$c.PeakWorkingSetSize;processId=[int]$p.Id;startTimeTicks=$start}})",
+    "$ownerCim=$main[0];$owner=Get-Process -Id ([int]$ownerCim.ProcessId) -ErrorAction Stop;$ownerHandle=$owner.Handle;$ownerStart=[string]$owner.StartTime.ToUniversalTime().Ticks;$ownerCimCreated=if($ownerCim.CreationDate -is [DateTime]){$ownerCim.CreationDate.ToUniversalTime()}else{[Management.ManagementDateTimeConverter]::ToDateTime([string]$ownerCim.CreationDate).ToUniversalTime()};$ownerCimStart=[string]$ownerCimCreated.Ticks;$ownerExe=[IO.Path]::GetFullPath($owner.Path);if($ownerExe -ine $mainPath -or $ownerCimStart -cne $ownerStart){throw 'owner process handle identity mismatched'}",
+    "$finalListener=@(Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 7892 -State Listen -ErrorAction Stop);$ownerFinal=Get-Process -Id ([int]$owner.Id) -ErrorAction Stop;if($finalListener.Count -ne 1 -or [int]$finalListener[0].OwningProcess -ne [int]$owner.Id -or [IO.Path]::GetFullPath($ownerFinal.Path) -ine $mainPath -or [string]$ownerFinal.StartTime.ToUniversalTime().Ticks -cne $ownerStart){throw 'owner process final identity mismatched'}",
+    "[Console]::Out.Write((@{owner=@{executablePath=$mainPath;processId=[int]$owner.Id;startTimeTicks=$ownerStart};workers=$workerFacts}|ConvertTo-Json -Compress -Depth 4))",
   ].join(";");
+}
+
+async function readInstalledVisionWorkerSample() {
+  if (process.platform !== "win32")
+    throw new Error("installed Vision RSS sampling requires Windows");
+  const script = buildInstalledVisionWorkerSampleScript();
   const { stdout } = await execFileAsync(
     TRUSTED_POWERSHELL,
     ["-NoProfile", "-NonInteractive", "-Command", script],
@@ -647,61 +657,72 @@ export async function assembleInstalledAiTryOnAcceptance(
   return { acceptance, report };
 }
 
+export function validateInstalledAiAttemptSupport(value, expectedCase) {
+  const resource = value?.facts?.observation?.resource;
+  const association = value?.facts?.observation?.garmentAssociation;
+  const attempt = value?.facts?.attempt;
+  if (
+    JSON.stringify(Object.keys(value ?? {}).sort()) !==
+      JSON.stringify(["facts", "kind", "schemaVersion"]) ||
+    value.schemaVersion !== AI_SUPPORT_EVIDENCE_SCHEMA ||
+    value.kind !== "installed-runtime" ||
+    JSON.stringify(Object.keys(value.facts ?? {}).sort()) !==
+      JSON.stringify(["attempt", "observation"]) ||
+    JSON.stringify(Object.keys(value.facts.observation ?? {}).sort()) !==
+      JSON.stringify([
+        "attemptId",
+        "caseKey",
+        "garmentAssociation",
+        "resource",
+      ]) ||
+    JSON.stringify(Object.keys(association ?? {}).sort()) !==
+      JSON.stringify(["garmentId", "garmentSha256", "selectedVariantId"]) ||
+    JSON.stringify(Object.keys(resource ?? {}).sort()) !==
+      JSON.stringify([
+        "ownerExecutablePath",
+        "ownerProcessId",
+        "ownerStartTimeTicks",
+        "peakRssBytes",
+        "sampleCount",
+        "workerExecutablePath",
+        "workerParentProcessId",
+        "workerProcessId",
+        "workerStartTimeTicks",
+      ]) ||
+    !Object.hasOwn(CASES, expectedCase) ||
+    attempt?.caseKey !== expectedCase ||
+    value.facts.observation.attemptId !== attempt.attemptId ||
+    value.facts.observation.caseKey !== expectedCase ||
+    association.garmentId !== attempt.garment?.garmentId ||
+    association.garmentSha256 !== attempt.garment?.sha256 ||
+    !UUID_PATTERN.test(association.selectedVariantId ?? "") ||
+    resource.ownerExecutablePath !== OWNER_EXECUTABLE ||
+    resource.workerExecutablePath !== WORKER_EXECUTABLE ||
+    resource.peakRssBytes !== attempt.result?.peakRssBytes ||
+    !Number.isSafeInteger(resource.sampleCount) ||
+    resource.sampleCount <= 0 ||
+    !Number.isSafeInteger(resource.ownerProcessId) ||
+    resource.ownerProcessId <= 0 ||
+    !Number.isSafeInteger(resource.workerProcessId) ||
+    resource.workerProcessId <= 0 ||
+    resource.workerProcessId === resource.ownerProcessId ||
+    !Number.isSafeInteger(resource.workerParentProcessId) ||
+    resource.workerParentProcessId !== resource.ownerProcessId ||
+    !/^[1-9][0-9]*$/.test(resource.ownerStartTimeTicks ?? "") ||
+    !/^[1-9][0-9]*$/.test(resource.workerStartTimeTicks ?? "")
+  )
+    throw new Error("installed AI attempt support evidence is invalid");
+  return attempt;
+}
+
 export async function assembleInstalledAiTryOnAcceptanceFiles(options) {
   const supportRecords = [
     readCanonicalJson(options.shortAttemptPath, "short attempt facts"),
     readCanonicalJson(options.longAttemptPath, "long attempt facts"),
   ];
-  const attempts = supportRecords.map((value, index) => {
-    const expectedCase = index === 0 ? "short" : "long";
-    const resource = value.facts?.observation?.resource;
-    const association = value.facts?.observation?.garmentAssociation;
-    const attempt = value.facts?.attempt;
-    if (
-      JSON.stringify(Object.keys(value).sort()) !==
-        JSON.stringify(["facts", "kind", "schemaVersion"]) ||
-      value.schemaVersion !== AI_SUPPORT_EVIDENCE_SCHEMA ||
-      value.kind !== "installed-runtime" ||
-      JSON.stringify(Object.keys(value.facts ?? {}).sort()) !==
-        JSON.stringify(["attempt", "observation"]) ||
-      JSON.stringify(Object.keys(value.facts.observation ?? {}).sort()) !==
-        JSON.stringify([
-          "attemptId",
-          "caseKey",
-          "garmentAssociation",
-          "resource",
-        ]) ||
-      JSON.stringify(Object.keys(association ?? {}).sort()) !==
-        JSON.stringify(["garmentId", "garmentSha256", "selectedVariantId"]) ||
-      JSON.stringify(Object.keys(resource ?? {}).sort()) !==
-        JSON.stringify([
-          "ownerExecutablePath",
-          "ownerProcessId",
-          "ownerStartTimeTicks",
-          "peakRssBytes",
-          "sampleCount",
-          "workerExecutablePath",
-          "workerParentProcessId",
-          "workerProcessId",
-          "workerStartTimeTicks",
-        ]) ||
-      attempt?.caseKey !== expectedCase ||
-      value.facts.observation.attemptId !== attempt.attemptId ||
-      value.facts.observation.caseKey !== expectedCase ||
-      association.garmentId !== attempt.garment.garmentId ||
-      association.garmentSha256 !== attempt.garment.sha256 ||
-      resource.peakRssBytes !== attempt.result.peakRssBytes ||
-      !Number.isSafeInteger(resource.sampleCount) ||
-      resource.sampleCount <= 0 ||
-      !Number.isSafeInteger(resource.ownerProcessId) ||
-      !Number.isSafeInteger(resource.workerProcessId) ||
-      !Number.isSafeInteger(resource.workerParentProcessId) ||
-      !/^[1-9][0-9]*$/.test(resource.ownerStartTimeTicks ?? "") ||
-      !/^[1-9][0-9]*$/.test(resource.workerStartTimeTicks ?? "")
-    )
-      throw new Error("installed AI attempt support evidence is invalid");
-    return attempt;
-  });
+  const attempts = supportRecords.map((value, index) =>
+    validateInstalledAiAttemptSupport(value, index === 0 ? "short" : "long"),
+  );
   const saleSupport = readCanonicalJson(
     options.salePath,
     "ordinary sale facts",
@@ -754,32 +775,6 @@ export async function assembleInstalledAiTryOnAcceptanceFiles(options) {
     throw new Error("installed AI assembly input identity mismatched");
   writeExclusiveCanonical(options.outPath, result.report);
   return result;
-}
-
-export function validateInstalledAiAttemptSupportForTest(value, caseKey) {
-  if (process.env.NODE_ENV !== "test")
-    throw new Error(
-      "installed AI support validator test boundary requires NODE_ENV=test",
-    );
-  const attempt = value?.facts?.attempt;
-  const resource = value?.facts?.observation?.resource;
-  const association = value?.facts?.observation?.garmentAssociation;
-  if (
-    value?.schemaVersion !== AI_SUPPORT_EVIDENCE_SCHEMA ||
-    value?.kind !== "installed-runtime" ||
-    attempt?.caseKey !== caseKey ||
-    value.facts.observation.attemptId !== attempt.attemptId ||
-    value.facts.observation.caseKey !== caseKey ||
-    association?.garmentId !== attempt.garment?.garmentId ||
-    association?.garmentSha256 !== attempt.garment?.sha256 ||
-    resource?.peakRssBytes !== attempt.result?.peakRssBytes ||
-    !Number.isSafeInteger(resource?.sampleCount) ||
-    resource.sampleCount <= 0 ||
-    !Number.isSafeInteger(resource?.workerProcessId) ||
-    !/^[1-9][0-9]*$/.test(resource?.workerStartTimeTicks ?? "")
-  )
-    throw new Error("installed AI attempt support evidence is invalid");
-  return true;
 }
 
 export async function assembleInstalledAiTryOnAcceptanceForTest(

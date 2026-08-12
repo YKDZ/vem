@@ -14,8 +14,9 @@ import { test } from "node:test";
 
 import {
   assembleInstalledAiTryOnAcceptanceForTest,
+  buildInstalledVisionWorkerSampleScript,
   sampleInstalledVisionPeakRssForTest,
-  validateInstalledAiAttemptSupportForTest,
+  validateInstalledAiAttemptSupport,
 } from "./ai-virtual-try-on-installed-entry.mjs";
 
 const repoRoot = new URL("../..", import.meta.url).pathname.replace(/\/$/, "");
@@ -243,11 +244,38 @@ test("binds installed garment and RSS facts without inventing a UI garment ident
     assert.match(source, new RegExp(fact));
   assert.match(source, /GetProcessMemoryInfo/);
   assert.match(source, /PeakWorkingSetSize/);
+  assert.match(source, /CreationDate -is \[DateTime\]/);
+  assert.match(source, /\$cimStart -cne \$start/);
+  assert.match(source, /\$ownerCimStart -cne \$ownerStart/);
+  assert.match(source, /\$workerFinal=Get-Process/);
+  assert.match(source, /\$finalListener=@\(Get-NetTCPConnection/);
+  assert.match(source, /\$ownerFinal=Get-Process/);
   assert.match(
     source,
     /D:\\\\runtime-cache\\\\v1\\\\powershell\\\\7\.4\.6\\\\pwsh\.exe/,
   );
   assert.doesNotMatch(source, /execFileAsync\(\s*["']pwsh["']/);
+});
+
+test("rejects a CIM snapshot whose owner PID was reused before its handle opened", () => {
+  const productionScript = buildInstalledVisionWorkerSampleScript();
+  const body = productionScript.slice(
+    productionScript.indexOf("$ownerCim=$main[0]"),
+    productionScript.indexOf("$finalListener="),
+  );
+  const harness = [
+    "$mainPath='C:\\VEM\\vision\\app\\vending-vision.exe'",
+    "$main=@([pscustomobject]@{ProcessId=41;CreationDate=[datetime]'2025-01-01T00:00:00Z'})",
+    "function Get-Process { [pscustomobject]@{Id=41;Handle=[intptr]1;Path=$mainPath;StartTime=[datetime]'2025-01-01T00:00:01Z'} }",
+    body,
+  ].join(";");
+  const result = spawnSync(
+    "pwsh",
+    ["-NoProfile", "-NonInteractive", "-Command", harness],
+    { encoding: "utf8", timeout: 2_000 },
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /owner process handle identity mismatched/);
 });
 
 test("rejects unsafe or cross-attempt installed RSS support facts", () => {
@@ -269,7 +297,7 @@ test("rejects unsafe or cross-attempt installed RSS support facts", () => {
         garmentAssociation: {
           garmentId: "0198f44e-21bd-7c62-8f52-b7c86cc2d001",
           garmentSha256: "a".repeat(64),
-          selectedVariantId: "variant-1",
+          selectedVariantId: "0198f44e-21bd-7c62-8f52-b7c86cc2e001",
         },
         resource: {
           ownerExecutablePath: "C:\\VEM\\vision\\app\\vending-vision.exe",
@@ -288,9 +316,24 @@ test("rejects unsafe or cross-attempt installed RSS support facts", () => {
     kind: "installed-runtime",
     schemaVersion: "vem.testbed.ai-virtual-try-on-support.v1",
   };
-  assert.equal(validateInstalledAiAttemptSupportForTest(value, "short"), true);
+  assert.equal(
+    validateInstalledAiAttemptSupport(value, "short").attemptId,
+    value.facts.attempt.attemptId,
+  );
   for (const mutate of [
+    (copy) => (copy.facts.observation.resource.ownerProcessId = -1),
+    (copy) => (copy.facts.observation.resource.workerProcessId = 10),
     (copy) => (copy.facts.observation.resource.workerProcessId = 2 ** 54),
+    (copy) => (copy.facts.observation.resource.workerParentProcessId = 12),
+    (copy) =>
+      (copy.facts.observation.resource.ownerExecutablePath =
+        "C:\\Temp\\vending-vision.exe"),
+    (copy) =>
+      (copy.facts.observation.resource.workerExecutablePath =
+        "C:\\Temp\\vending-vision-ai-worker.exe"),
+    (copy) =>
+      (copy.facts.observation.garmentAssociation.selectedVariantId =
+        "variant-1"),
     (copy) =>
       (copy.facts.observation.resource.workerStartTimeTicks =
         "9007199254740993.0"),
@@ -302,7 +345,7 @@ test("rejects unsafe or cross-attempt installed RSS support facts", () => {
     const copy = structuredClone(value);
     mutate(copy);
     assert.throws(
-      () => validateInstalledAiAttemptSupportForTest(copy, "short"),
+      () => validateInstalledAiAttemptSupport(copy, "short"),
       /support evidence is invalid/,
     );
   }
