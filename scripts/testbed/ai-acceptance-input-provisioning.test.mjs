@@ -80,7 +80,7 @@ function manifest(root) {
     delivery: { kind: "host-local-cache" },
   };
   return {
-    schemaVersion: "vem-runtime-testbed-ai-input/v2",
+    schemaVersion: "vem-runtime-testbed-ai-input/v3",
     candidateInput,
     windowsProofInput,
     approvedPrecutoverReceipt: file(
@@ -94,6 +94,7 @@ function manifest(root) {
       "{\"calibrationStatus\":\"calibrated_issue10\"}\n",
     ),
     calibrationReceipt: file(root, "calibration-receipt.json", "{}\n"),
+    calibrationSourceInput: file(root, "calibration-source-input.json", "{}\n"),
     installedVisionRuntimeArchive: {
       ...file(root, "vision-runtime.zip", "vision-runtime"),
       sourceCommit: "a".repeat(40),
@@ -115,7 +116,7 @@ test("validates a canonical host-local AI acceptance input manifest", async () =
       checked.guestInput.candidateInputDirectory,
       `C:\\ProgramData\\VEM\\testbed\\ai-inputs\\${checked.manifestSha256}\\candidate`,
     );
-    assert.equal(checked.transfers.length, 9);
+    assert.equal(checked.transfers.length, 10);
     assert.deepEqual(
       checked.transfers.map((transfer) => transfer.guestPath),
       [
@@ -124,6 +125,7 @@ test("validates a canonical host-local AI acceptance input manifest", async () =
         checked.guestInput.approvedPrecutoverReceipt,
         checked.guestInput.calibratedRegionalPolicy,
         checked.guestInput.calibrationReceipt,
+        checked.guestInput.calibrationSourceInput,
         checked.guestInput.installedVisionRuntimeArchive,
         checked.guestInput.recordedFixtureArchive,
         checked.guestInput.modelPackArchive,

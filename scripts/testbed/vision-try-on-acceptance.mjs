@@ -3238,6 +3238,7 @@ async function collectInstalledAiTryOnAttemptInternal(
     expectedTryOnRoute,
     regionalEvidenceRoot,
     captureAttemptScreenshot = null,
+    activationSelector = '[data-test="try-on-ai"]',
     timeoutMs = 60_000,
     pollMs = 250,
   },
@@ -3261,6 +3262,8 @@ async function collectInstalledAiTryOnAttemptInternal(
     typeof captureAttemptScreenshot !== "function"
   )
     throw new Error("installed AI screenshot capture is invalid");
+  if (typeof activationSelector !== "string" || activationSelector === "")
+    throw new Error("installed AI activation selector is invalid");
   const deadline = performance.now() + timeoutMs;
   const remaining = () => {
     const value = deadline - performance.now();
@@ -3273,7 +3276,7 @@ async function collectInstalledAiTryOnAttemptInternal(
     await installTryOnLifecycleObserver(client);
     const activation = await activateVisibleSelector(
       client,
-      '[data-test="try-on-ai"]',
+      activationSelector,
       { kind: "touch", timeoutMs: remaining(), pollMs },
     );
     if (

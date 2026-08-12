@@ -203,6 +203,10 @@ function aiVirtualTryOnReport() {
     nextAttemptId: attempts[1].attemptId,
     resultAttemptId: attempts[0].attemptId,
   };
+  attempts[0].retry = {
+    completedAttemptId: attempts[0].attemptId,
+    retriedAttemptId: "0198f44e-21bd-7c62-8f52-b7c86cc2b003",
+  };
   attempts[1].journey = {
     catalogRoute: "#/catalog",
     previousAttemptId: attempts[0].attemptId,

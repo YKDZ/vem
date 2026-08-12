@@ -29,7 +29,10 @@ import {
 import { runInstalledOwnerOrdinarySaleCompletion } from "./fast-route-stress-sale.mjs";
 import { AI_SUPPORT_EVIDENCE_SCHEMA } from "./full-workflow-evidence-manifest.mjs";
 import { catalogProductSelectorForFixture } from "./full-workflow-fixtures.mjs";
-import { validateCalibratedAiRegionalReceipt } from "./calibrate-ai-regional-evidence.mjs";
+import {
+  readCalibrationSourceClosure,
+  validateCalibratedAiRegionalReceipt,
+} from "./calibrate-ai-regional-evidence.mjs";
 import { restoreCatalogHomeFromClient } from "./full-workflow-orchestrator.mjs";
 import { validateAiAttemptSet } from "./full-workflow-validator.mjs";
 import {
@@ -386,7 +389,12 @@ function requireDigest(value, label) {
   return normalized;
 }
 
-function readCalibratedPolicyReceipt({ policyPath, receiptPath, identities, attempts }) {
+function readCalibratedPolicyReceipt({
+  calibrationSourceInputPath,
+  policyPath,
+  receiptPath,
+  identities,
+}) {
   if (typeof policyPath !== "string" || !isAbsolute(policyPath))
     throw new Error("calibrated AI regional evidence policy is required");
   if (typeof receiptPath !== "string" || !isAbsolute(receiptPath))
@@ -394,11 +402,13 @@ function readCalibratedPolicyReceipt({ policyPath, receiptPath, identities, atte
   const policy = loadAiRegionalEvidencePolicy(policyPath);
   if (policy.calibrationStatus !== "calibrated_issue10")
     throw new Error("AI regional evidence policy is not calibrated");
+  const closure = readCalibrationSourceClosure(calibrationSourceInputPath);
   const checked = validateCalibratedAiRegionalReceipt({
-    attempts,
+    closure,
     identities,
     policy,
     receiptPath,
+    sourceAttempts: closure.attempts,
   });
   return { policy, ...checked };
 }
@@ -473,6 +483,7 @@ function attemptReport(collected, caseKey, archived) {
       sha256: archived.sha256,
       verdict: sidecar.verdict,
     },
+    ...(collected.retry ? { retry: collected.retry } : {}),
     result: {
       contentType: "image/png",
       decodedHeight: collected.resultEvidence.height,
@@ -728,6 +739,20 @@ export async function runInstalledAiAttemptPhase(options) {
       attemptPromise,
       sampleInstalledAiWorkerPeakRss(() => completed),
     ]);
+    if (options.caseKey === "short") {
+      const retried = await collectInstalledAiTryOnAttempt({
+        activationSelector: '[data-test="try-on-retry"]',
+        client,
+        expectedTryOnRoute,
+        regionalEvidenceRoot: options.regionalEvidenceRoot,
+      });
+      if (retried.attemptId === collected.attemptId)
+        throw new Error("AI try-on retry reused the completed attempt identity");
+      collected.retry = {
+        completedAttemptId: collected.attemptId,
+        retriedAttemptId: retried.attemptId,
+      };
+    }
     if (collected.surface.variantId !== acceptance.selectedVariantId)
       throw new Error(
         `${options.caseKey} installed UI selected variant mismatched its seeded garment association`,
@@ -910,9 +935,9 @@ export async function assembleInstalledAiTryOnAcceptance(
       ? null
       : readCalibratedPolicyReceipt({
           identities: input.identities,
+          calibrationSourceInputPath: input.calibrationSourceInputPath,
           policyPath: input.calibratedPolicyPath,
           receiptPath: input.calibrationReceiptPath,
-          attempts,
         });
   const regional = validateAiRegionalEvidenceSet(
     attempts,
@@ -1125,6 +1150,7 @@ export async function assembleInstalledAiTryOnAcceptanceFiles(options) {
     {
       attempts,
       artifactRoot: options.artifactRoot,
+      calibrationSourceInputPath: options.calibrationSourceInputPath,
       calibratedPolicyPath: options.calibratedPolicyPath,
       calibrationReceiptPath: options.calibrationReceiptPath,
       identities: {
@@ -1353,6 +1379,7 @@ async function main() {
   return assembleInstalledAiTryOnAcceptanceFiles({
     artifactRoot: options["artifact-root"],
     calibratedPolicyPath: options["calibrated-policy"],
+    calibrationSourceInputPath: options["calibration-source-input"],
     calibrationReceiptPath: options["calibration-receipt"],
     candidateInputDirectory: options["candidate-input-directory"],
     corruptDegradationPath: options["corrupt-degradation"],

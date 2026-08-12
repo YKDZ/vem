@@ -21,6 +21,7 @@ import {
 } from "./ai-regional-evidence.mjs";
 import {
   calibrateAiRegionalEvidence,
+  readCalibrationSourceClosure,
   validateCalibratedAiRegionalReceipt,
 } from "./calibrate-ai-regional-evidence.mjs";
 
@@ -432,6 +433,7 @@ describe("AI regional evidence calibration", () => {
     const policy = loadAiRegionalEvidencePolicy(policyPath);
     assert.doesNotThrow(() =>
       validateCalibratedAiRegionalReceipt({
+        closure: readCalibrationSourceClosure(fixture.inputPath),
         attempts,
         identities,
         policy,
@@ -444,6 +446,7 @@ describe("AI regional evidence calibration", () => {
     assert.throws(
       () =>
         validateCalibratedAiRegionalReceipt({
+          closure: readCalibrationSourceClosure(fixture.inputPath),
           attempts,
           identities,
           policy,

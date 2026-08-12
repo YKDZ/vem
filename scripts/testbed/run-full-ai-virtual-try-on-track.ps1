@@ -83,6 +83,7 @@ Require-AbsoluteDirectory ([string]$inputs.windowsProofInputDirectory) "companio
 Require-AbsoluteLeaf ([string]$inputs.approvedPrecutoverReceipt) "B2 approved receipt"
 Require-AbsoluteLeaf ([string]$inputs.calibratedRegionalPolicy) "calibrated AI regional evidence policy"
 Require-AbsoluteLeaf ([string]$inputs.calibrationReceipt) "calibrated AI regional evidence receipt"
+Require-AbsoluteLeaf ([string]$inputs.calibrationSourceInput) "calibration source input"
 
 $candidateArchives = @(Get-ChildItem -LiteralPath ([string]$inputs.candidateInputDirectory) -File | Where-Object { $_.Extension -ceq ".zip" })
 if ($candidateArchives.Count -ne 1) { throw "candidate exact-four archive set is invalid" }
@@ -130,6 +131,7 @@ Assert-GuestDirectoryIdentity ([string]$inputs.windowsProofInputDirectory) $iden
 Assert-GuestFileIdentity ([string]$inputs.approvedPrecutoverReceipt) $identities.approvedPrecutoverReceipt "B2 approved receipt"
 Assert-GuestFileIdentity ([string]$inputs.calibratedRegionalPolicy) $identities.calibratedRegionalPolicy "calibrated AI regional evidence policy"
 Assert-GuestFileIdentity ([string]$inputs.calibrationReceipt) $identities.calibrationReceipt "calibrated AI regional evidence receipt"
+Assert-GuestFileIdentity ([string]$inputs.calibrationSourceInput) $identities.calibrationSourceInput "calibration source input"
 Assert-GuestFileIdentity ([string]$inputs.installedVisionRuntimeArchive) $identities.installedVisionRuntimeArchive "installed Vision runtime archive"
 Assert-GuestFileIdentity ([string]$inputs.recordedFixtureArchive) $identities.recordedFixtureArchive "recorded front/top fixture archive"
 Assert-GuestFileIdentity ([string]$inputs.modelPackArchive) $identities.modelPackArchive "official model pack archive"
@@ -196,7 +198,7 @@ try {
     kind = "installed-runtime"
     schemaVersion = "vem.testbed.ai-virtual-try-on-support.v1"
   } | ConvertTo-Json -Compress -Depth 8 | ForEach-Object { [IO.File]::WriteAllText($verifiedRecoveryFacts, "$_`n", [Text.UTF8Encoding]::new($false)) }
-  node $nodeEntry assemble --artifact-root $artifactRoot --candidate-input-directory ([string]$inputs.candidateInputDirectory) --windows-proof-input-directory ([string]$inputs.windowsProofInputDirectory) --calibrated-policy ([string]$inputs.calibratedRegionalPolicy) --calibration-receipt ([string]$inputs.calibrationReceipt) --short-attempt $shortFacts --long-attempt $longFacts --sale $saleFacts --missing-degradation $missingFacts --corrupt-degradation $corruptFacts --worker-failure-degradation $workerFailureFacts --recovery $verifiedRecoveryFacts --out $OutPath
+  node $nodeEntry assemble --artifact-root $artifactRoot --candidate-input-directory ([string]$inputs.candidateInputDirectory) --windows-proof-input-directory ([string]$inputs.windowsProofInputDirectory) --calibrated-policy ([string]$inputs.calibratedRegionalPolicy) --calibration-receipt ([string]$inputs.calibrationReceipt) --calibration-source-input ([string]$inputs.calibrationSourceInput) --short-attempt $shortFacts --long-attempt $longFacts --sale $saleFacts --missing-degradation $missingFacts --corrupt-degradation $corruptFacts --worker-failure-degradation $workerFailureFacts --recovery $verifiedRecoveryFacts --out $OutPath
   if ($LASTEXITCODE -ne 0) { throw "installed AI acceptance assembly failed" }
   $trackSucceeded = $true
 } catch {

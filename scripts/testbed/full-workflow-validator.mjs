@@ -327,6 +327,7 @@ export function validateAiAttemptSet(attempts, runtimeTrace) {
         "stateTrace",
         "screenshots",
         "template",
+        ...(caseKey === "short" ? ["retry"] : []),
       ]) ||
       attempt.caseKey !== caseKey ||
       attempt.template !== template ||
@@ -335,6 +336,11 @@ export function validateAiAttemptSet(attempts, runtimeTrace) {
       ) ||
       attemptIds.has(attempt.attemptId) ||
       attempt.mode !== "ai" ||
+      (caseKey === "short" &&
+        (!exactKeys(attempt.retry, ["completedAttemptId", "retriedAttemptId"]) ||
+          attempt.retry.completedAttemptId !== attempt.attemptId ||
+          attempt.retry.retriedAttemptId === attempt.attemptId ||
+          !/^[0-9a-f-]{36}$/.test(attempt.retry.retriedAttemptId ?? ""))) ||
       JSON.stringify(attempt.stateTrace) !==
         JSON.stringify(["acquiring", "generating", "completed"]) ||
       !exactKeys(attempt.input, ["contentType", "sha256"]) ||

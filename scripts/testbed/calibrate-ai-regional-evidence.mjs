@@ -93,6 +93,60 @@ function readBoundCanonical(reference, label, options = undefined) {
   return parsed;
 }
 
+export function readCalibrationSourceClosure(inputPath) {
+  const inputFile = readCanonical(inputPath, "calibration source input");
+  const input = inputFile.value;
+  if (
+    !exact(input, [
+      "artifactRoot",
+      "acceptanceReport",
+      "attempts",
+      "evidenceManifest",
+      "precutoverReceipt",
+      "recoverySupport",
+      "releaseProof",
+      "schemaVersion",
+    ]) ||
+    input.schemaVersion !== INPUT_SCHEMA ||
+    !Array.isArray(input.attempts) ||
+    input.attempts.length !== 2
+  )
+    fail("calibration source input is invalid");
+  const acceptanceReport = readBoundCanonical(
+    input.acceptanceReport,
+    "calibration source acceptance report",
+    { pretty: false },
+  );
+  const precutoverReceipt = readBoundCanonical(
+    input.precutoverReceipt,
+    "calibration source precutover receipt",
+    { pretty: false },
+  );
+  const releaseProof = readBoundCanonical(
+    input.releaseProof,
+    "calibration source release proof",
+    { pretty: false },
+  );
+  const recoverySupport = readBoundCanonical(
+    input.recoverySupport,
+    "calibration source recovery support",
+    { pretty: false },
+  );
+  const evidenceManifest = readBoundCanonical(
+    input.evidenceManifest,
+    "calibration source evidence manifest",
+  );
+  return {
+    acceptanceReport,
+    attempts: input.attempts.map((entry) => entry.attempt),
+    input: inputFile,
+    precutoverReceipt,
+    recoverySupport,
+    releaseProof,
+    evidenceManifest,
+  };
+}
+
 function parseArguments(argv) {
   const value = {};
   for (let index = 0; index < argv.length; index += 1) {
@@ -384,9 +438,10 @@ function deriveThresholds(sidecars) {
 }
 
 export function validateCalibratedAiRegionalReceipt({
+  closure,
   policy,
   receiptPath,
-  attempts,
+  sourceAttempts = closure?.attempts,
   identities,
 }) {
   if (!policy || policy.calibrationStatus !== "calibrated_issue10")
@@ -414,6 +469,11 @@ export function validateCalibratedAiRegionalReceipt({
     ]) ||
     value.schemaVersion !== RECEIPT_SCHEMA ||
     value.policySha256 !== policy.sha256 ||
+    value.calibrationInputSha256 !== sha256(closure.input.raw) ||
+    value.acceptanceReportSha256 !== sha256(closure.acceptanceReport.raw) ||
+    value.precutoverReceiptSha256 !== sha256(closure.precutoverReceipt.raw) ||
+    value.releaseProofSha256 !== sha256(closure.releaseProof.raw) ||
+    value.recoverySupportSha256 !== sha256(closure.recoverySupport.raw) ||
     !exact(value.derivedThresholds, thresholdKeys) ||
     thresholdKeys.some((key) => value.derivedThresholds[key] !== policy[key]) ||
     !exact(value.release, ["aiRuntime", "contract", "modelPack", "runtime"]) ||
@@ -428,7 +488,7 @@ export function validateCalibratedAiRegionalReceipt({
     const { journey, screenshots, ...value } = attempt;
     return value;
   };
-  const expected = [...attempts]
+  const expected = [...sourceAttempts]
     .sort((left, right) => left.caseKey.localeCompare(right.caseKey))
     .map((attempt) => ({
     attemptSha256: sha256(canonicalBytes(calibrationAttempt(attempt))),
