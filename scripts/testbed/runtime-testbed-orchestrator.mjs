@@ -15,6 +15,11 @@ import { isIP } from "node:net";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import {
+  identicalAiAcceptanceInputSnapshot,
+  validateAiAcceptanceInputManifest,
+} from "./ai-acceptance-input-provisioning.mjs";
+
 const MODES = new Set(["fast", "full", "clear_cache"]);
 const TERMINAL = new Set([
   "passed",
@@ -156,6 +161,43 @@ export function validateHostConfig(value) {
     pathPrepend: pathPrepend.map((path) =>
       absolute(path, "host config pathPrepend entry"),
     ),
+    ...(value.aiVirtualTryOnInputManifest === undefined
+      ? {}
+      : {
+          aiVirtualTryOnInputManifest: absolute(
+            value.aiVirtualTryOnInputManifest,
+            "host config aiVirtualTryOnInputManifest",
+          ),
+        }),
+    ...(value.aiVirtualTryOnAllowedHttpsOrigins === undefined
+      ? {}
+      : {
+          aiVirtualTryOnAllowedHttpsOrigins: (() => {
+            if (!Array.isArray(value.aiVirtualTryOnAllowedHttpsOrigins)) {
+              throw new Error(
+                "host config aiVirtualTryOnAllowedHttpsOrigins must be an array",
+              );
+            }
+            return value.aiVirtualTryOnAllowedHttpsOrigins.map((origin) => {
+              const parsed = new URL(
+                required(origin, "host config AI HTTPS origin"),
+              );
+              if (
+                parsed.protocol !== "https:" ||
+                parsed.username ||
+                parsed.password ||
+                parsed.search ||
+                parsed.hash ||
+                parsed.pathname !== "/"
+              ) {
+                throw new Error(
+                  "host config AI HTTPS origins must be credential-free HTTPS origins",
+                );
+              }
+              return parsed.origin;
+            });
+          })(),
+        }),
   };
 }
 
@@ -438,6 +480,94 @@ function encodedPowerShell(script) {
   return Buffer.from(script, "utf16le").toString("base64");
 }
 
+function requiresAiAcceptanceInputs(options) {
+  return (
+    options.mode === "full" ||
+    (options.mode === "fast" && options.focus.includes("aiVirtualTryOn"))
+  );
+}
+
+async function loadAiAcceptanceInputs(config) {
+  if (!config.aiVirtualTryOnInputManifest) {
+    throw new Error(
+      "AI virtual try-on acceptance requires host config aiVirtualTryOnInputManifest",
+    );
+  }
+  return validateAiAcceptanceInputManifest(
+    await readFile(config.aiVirtualTryOnInputManifest, "utf8"),
+    { allowedHttpsOrigins: config.aiVirtualTryOnAllowedHttpsOrigins ?? [] },
+  );
+}
+
+async function provisionAiAcceptanceGuestInput({ config, preparation, pass }) {
+  const path = join(config.stateRoot, "guest-input.json");
+  const guestInput = JSON.parse(await readFile(path, "utf8"));
+  if (guestInput?.schemaVersion !== "vem-local-testbed-guest-input/v1") {
+    throw new Error(
+      "AI guest input provision requires canonical local testbed guest input",
+    );
+  }
+  await writeJson(path, {
+    ...guestInput,
+    workflowIdentity: { ...guestInput.workflowIdentity, pass },
+    aiVirtualTryOn: preparation.guestInput,
+  });
+}
+
+async function stageAiAcceptanceInputs({ config, contract, preparation }) {
+  const guest = contract.testbed.guest;
+  const remote = `${guest.user}@${guest.host}`;
+  const ssh = sshArguments(guest);
+  const scp = scpArguments(guest);
+  const transfers = [
+    ...preparation.transfers,
+    {
+      hostPath: join(config.stateRoot, "guest-input.json"),
+      guestPath: guest.stagingPath,
+      directory: false,
+    },
+  ];
+  const cleanup = transfers
+    .map((transfer) =>
+      [
+        `$destination = '${transfer.guestPath.replaceAll("'", "''")}'`,
+        "New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null",
+        "Remove-Item -LiteralPath $destination -Recurse -Force -ErrorAction SilentlyContinue",
+      ].join("\n"),
+    )
+    .join("\n");
+  await runProcess(
+    "ssh",
+    [
+      ...ssh,
+      remote,
+      "powershell.exe",
+      "-NoProfile",
+      "-EncodedCommand",
+      encodedPowerShell(cleanup),
+    ],
+    {
+      timeoutMs: GUEST_SETUP_TIMEOUT_MS,
+      timeoutLabel: "AI guest input staging setup",
+    },
+  );
+  for (const transfer of transfers) {
+    await runProcess(
+      "scp",
+      [
+        ...scp,
+        ...(transfer.members ? ["-r"] : []),
+        transfer.hostPath,
+        `${remote}:${transfer.guestPath}`,
+      ],
+      {
+        timeoutMs: GUEST_TRANSFER_TIMEOUT_MS,
+        timeoutLabel: "AI guest input staging",
+      },
+    );
+  }
+}
+
 export function powerShellFocusArgument(focus) {
   if (focus.length === 0) return "";
   const values = focus
@@ -455,6 +585,7 @@ async function stageAndRunGuest({
   focus = [],
   pass,
   runRoot,
+  aiAcceptanceInputs,
 }) {
   const guest = contract.testbed.guest;
   const remote = `${guest.user}@${guest.host}`;
@@ -488,6 +619,13 @@ async function stageAndRunGuest({
       timeoutLabel: "guest archive parent setup",
     },
   );
+  if (aiAcceptanceInputs) {
+    await stageAiAcceptanceInputs({
+      config,
+      contract,
+      preparation: aiAcceptanceInputs,
+    });
+  }
   await runProcess("scp", [...scp, archive, `${remote}:${remoteArchive}`], {
     timeoutMs: GUEST_TRANSFER_TIMEOUT_MS,
     timeoutLabel: "guest source archive transfer",
@@ -643,6 +781,8 @@ async function executeRun(options, config) {
     await assertMirrorCommit(config, options.commit);
     const workspace = await materializeWorkspace(config, options.commit);
     const environment = executionEnvironment(config);
+    const aiInputRequired = requiresAiAcceptanceInputs(options);
+    if (aiInputRequired) await loadAiAcceptanceInputs(config);
     const lockHash = (
       await capture("git", ["hash-object", "pnpm-lock.yaml"], {
         cwd: workspace,
@@ -681,7 +821,29 @@ async function executeRun(options, config) {
     const contract = JSON.parse(readFileSync(config.baselineContract, "utf8"));
     const currentFixtureIdentity = fixtureIdentityForWorkspace(workspace);
     const passes = options.mode === "full" ? 2 : 1;
+    let passOneAiInputSnapshot = null;
     for (let pass = 1; pass <= passes; pass += 1) {
+      const aiAcceptanceInputs = aiInputRequired
+        ? await loadAiAcceptanceInputs(config)
+        : null;
+      const snapshot = aiAcceptanceInputs && {
+        manifestSha256: aiAcceptanceInputs.manifestSha256,
+        artifactDigests: aiAcceptanceInputs.artifactDigests,
+      };
+      if (
+        options.mode === "full" &&
+        pass === 2 &&
+        !identicalAiAcceptanceInputSnapshot(passOneAiInputSnapshot, snapshot)
+      ) {
+        throw new Error("full pass 2 AI acceptance input drifted from pass 1");
+      }
+      if (options.mode === "full" && pass === 1) {
+        passOneAiInputSnapshot = snapshot;
+        await writeJson(
+          join(root, "ai-acceptance-input-pass-1.json"),
+          snapshot,
+        );
+      }
       if (options.mode === "full") {
         await update({ phase: `reconstruct-pass-${pass}`, pass });
         const reconstructionOut = join(
@@ -778,6 +940,23 @@ async function executeRun(options, config) {
           },
         });
       }
+      if (aiAcceptanceInputs) {
+        const currentAiAcceptanceInputs = await loadAiAcceptanceInputs(config);
+        const currentSnapshot = {
+          manifestSha256: currentAiAcceptanceInputs.manifestSha256,
+          artifactDigests: currentAiAcceptanceInputs.artifactDigests,
+        };
+        if (!identicalAiAcceptanceInputSnapshot(snapshot, currentSnapshot)) {
+          throw new Error(
+            "AI acceptance inputs changed during host preparation",
+          );
+        }
+        await provisionAiAcceptanceGuestInput({
+          config,
+          preparation: currentAiAcceptanceInputs,
+          pass,
+        });
+      }
       await update({ phase: `guest-pass-${pass}` });
       await stageAndRunGuest({
         config,
@@ -788,6 +967,7 @@ async function executeRun(options, config) {
         focus: options.focus,
         pass,
         runRoot: root,
+        aiAcceptanceInputs,
       });
     }
     if (options.mode === "full") {

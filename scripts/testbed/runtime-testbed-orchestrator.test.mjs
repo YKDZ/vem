@@ -196,6 +196,35 @@ describe("runtime testbed scheduler contract", () => {
     );
   });
 
+  it("accepts the AI input manifest only as an external host configuration", () => {
+    const config = validateHostConfig({
+      schemaVersion: "vem-runtime-testbed-host/v1",
+      mirrorPath: "/var/lib/vem-testbed/mirror.git",
+      workspaceRoot: "/var/lib/vem-testbed/workspaces",
+      stateRoot: "/var/lib/vem-testbed/state",
+      baselineContract: "/var/lib/vem-testbed/baseline.json",
+      hostPrivateAddress: "192.0.2.22",
+      guestSourcePath: "C:\\VEM\\source",
+      aiVirtualTryOnInputManifest: "/var/lib/vem-testbed/ai-input.json",
+      aiVirtualTryOnAllowedHttpsOrigins: ["https://cache.example.test"],
+    });
+    assert.equal(
+      config.aiVirtualTryOnInputManifest,
+      "/var/lib/vem-testbed/ai-input.json",
+    );
+    assert.deepEqual(config.aiVirtualTryOnAllowedHttpsOrigins, [
+      "https://cache.example.test",
+    ]);
+    assert.throws(
+      () =>
+        validateHostConfig({
+          ...config,
+          aiVirtualTryOnAllowedHttpsOrigins: "https://cache.example.test",
+        }),
+      /must be an array/,
+    );
+  });
+
   it("uses the same commit-only contract in the thin trigger", () => {
     assert.equal(
       parseTriggerOptions([
@@ -324,6 +353,21 @@ describe("runtime testbed scheduler contract", () => {
     );
     assert.match(source, /C:\/ProgramData\/VEM\/testbed\/full-workflow/);
     assert.doesNotMatch(source, /C:\/ProgramData\/VEM\/runtime\/testbed/);
+  });
+
+  it("provisions digest-bound AI inputs before each selected guest execution", () => {
+    const source = readFileSync(
+      new URL("./runtime-testbed-orchestrator.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(source, /requiresAiAcceptanceInputs\(options\)/);
+    assert.match(source, /aiVirtualTryOn: preparation\.guestInput/);
+    assert.match(source, /await stageAiAcceptanceInputs/);
+    assert.match(source, /full pass 2 AI acceptance input drifted from pass 1/);
+    assert.match(
+      source,
+      /AI acceptance inputs changed during host preparation/,
+    );
   });
 
   it("keeps terminal status writes from overwriting an old superseded terminal", () => {

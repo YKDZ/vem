@@ -18,7 +18,7 @@
     "check:vision-main-consumer": "node --test scripts/windows/vision-main-consumer.test.mjs",
     "check:vision-v2-contracts": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=vem-source\" tsx scripts/vision-v2-contracts/generate-bundle.ts --check --local-only",
     "check:vision-v2-contracts:cross": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=vem-source\" tsx scripts/vision-v2-contracts/generate-bundle.ts --check --vision-root /workspaces/vending-vision",
-    "check:vm-host-adapter": "node --test scripts/testbed/default-audio-evidence.test.mjs scripts/testbed/display-evidence.test.mjs scripts/testbed/windows-native-audio-evidence.test.mjs scripts/testbed/vm-host-adapter-contract.test.mjs scripts/testbed/local-testbed-host.test.mjs scripts/testbed/local-testbed.test.mjs scripts/testbed/runtime-testbed-orchestrator.test.mjs scripts/testbed/installed-runtime-smoke.test.mjs scripts/check-ci-workflow-needs.test.mjs",
+    "check:vm-host-adapter": "node --test scripts/testbed/default-audio-evidence.test.mjs scripts/testbed/display-evidence.test.mjs scripts/testbed/windows-native-audio-evidence.test.mjs scripts/testbed/vm-host-adapter-contract.test.mjs scripts/testbed/local-testbed-host.test.mjs scripts/testbed/local-testbed.test.mjs scripts/testbed/runtime-testbed-orchestrator.test.mjs scripts/testbed/ai-acceptance-input-provisioning.test.mjs scripts/testbed/installed-runtime-smoke.test.mjs scripts/check-ci-workflow-needs.test.mjs",
     "ci:admin-browser": "node scripts/admin-browser-acceptance-ci.mjs",
     "ci:backend-deployment": "node --test scripts/backend-image-deployment.test.mjs",
     "ci:runtime-testbed-contracts": "pnpm check:vm-host-adapter && node --test scripts/testbed/business-check-registry.test.mjs",

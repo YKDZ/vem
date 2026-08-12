@@ -21,6 +21,17 @@
 - `hostPrivateAddress`：VM 可访问的宿主机内网 IPv4 地址。
 - `guestSourcePath`：Windows 客体中的源码路径。
 
+当执行完整验收或 `fast --focus aiVirtualTryOn` 时，配置还必须提供
+`aiVirtualTryOnInputManifest`，它是宿主机本地的绝对路径。清单版本为
+`vem-runtime-testbed-ai-input/v1`，逐项声明候选 exact-four 目录、Windows
+proof exact-three 目录、B2 receipt、Vision/录制 fixture/model-pack archive 和
+已物化 model root 的 host 路径、客体 Windows 路径、SHA-256 与字节数；目录还
+逐项锁定成员。清单必须是 canonical JSON，不能含 token 或其他凭据。默认交付
+方式是 `host-local-cache`：编排器验证后直接预置到 VM，不下载也不让 VM 访问
+GitHub。若确有 HTTPS 来源，须额外在宿主机配置的
+`aiVirtualTryOnAllowedHttpsOrigins` 中声明精确 origin，且 URL 不得含凭据、查询
+参数或 fragment。配置、清单和大文件都留在宿主机，不提交到仓库。
+
 Windows 基线由测试宿主机从标准 Windows 10 安装介质生成，并以 qcow2 形式保存在宿主机本地。仓库维护生成脚本、验收合同和运行期约束。`baselineContract` 指向宿主机上的小型 JSON 合同或当前发布清单，用来描述本地基线的路径、摘要、显示分辨率、缓存盘和运行时准备状态。
 
 这份基线应等价于一台已完成基础准备的普通 Windows 10 工控机：系统已安装，显示为 1080x1920 竖屏，具备 VM 运行和自动化所需的驱动、OpenSSH、构建缓存盘、默认音频和 Runtime Bootstrap 准备能力。唐诗村智能售货机系统的业务身份、商品、库存、支付、MQTT、扫码器、下位机和视觉行为仍通过真实运行路径或设备边界配置，不固化在基线镜像里。

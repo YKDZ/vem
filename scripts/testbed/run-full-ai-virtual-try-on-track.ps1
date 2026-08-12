@@ -75,8 +75,11 @@ if ([string]$approved.schemaVersion -cne "vem.precutover.ai.v2" -or [string]$app
 
 Require-AbsoluteLeaf ([string]$inputs.installedVisionRuntimeArchive) "installed Vision runtime archive"
 Require-AbsoluteLeaf ([string]$inputs.recordedFixtureArchive) "recorded front/top fixture archive"
+Require-AbsoluteLeaf ([string]$inputs.modelPackArchive) "official model pack archive"
 
-if ([string]$inputs.modelPackUrl -notmatch '^https://') { throw "official model URL must use HTTPS" }
+$modelPackSource = [string]$inputs.modelPackSource
+if ($modelPackSource -cne "host-local-cache" -and [string]$inputs.modelPackUrl -notmatch '^https://') { throw "official model URL must use HTTPS" }
+if ($modelPackSource -notin @("host-local-cache", "host-controlled-https")) { throw "official model source is invalid" }
 if ([string]$inputs.modelPackSha256 -notmatch '^[a-f0-9]{64}$') { throw "official model SHA-256 is invalid" }
 if ($inputs.modelPackByteSize -isnot [long] -or [long]$inputs.modelPackByteSize -le 0) { throw "official model byte size is invalid" }
 

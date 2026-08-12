@@ -579,7 +579,8 @@ function Invoke-FullVisionTryOnAcceptance(
   $visionCacheRoot = Join-Path $cacheRoot "vision-main"
   $visionSiteConfigurationSourcePath = Join-Path $handoffRoot "vision-recorded-site-config.json"
   Write-RecordedVisionSiteConfiguration $visionSiteConfigurationSourcePath
-  $visionCache = Get-VisionMainArtifactCache -CacheRoot $visionCacheRoot
+  $provisioned = Get-TestbedProvisionedAiVisionArtifact $guestInput
+  $visionCache = if ($null -eq $provisioned) { Get-VisionMainArtifactCache -CacheRoot $visionCacheRoot } else { $provisioned }
   $visionInstallation = Install-VisionMainArtifact `
     -RuntimeArchive ([string]$visionCache.runtimeArchive) `
     -FixtureArchive ([string]$visionCache.fixtureArchive) `
@@ -703,23 +704,55 @@ function Set-ResolvedVisionMainCommit([string]$CacheRoot, [string]$Commit) {
   Set-Content -LiteralPath $indexPath -Value $Commit -NoNewline -Encoding utf8
 }
 
-function Install-TestbedStartupVisionArtifact {
+function Get-TestbedProvisionedAiVisionArtifact([object]$GuestInput) {
+  $inputsProperty = $GuestInput.PSObject.Properties["aiVirtualTryOn"]
+  $inputs = if ($null -eq $inputsProperty) { $null } else { $inputsProperty.Value }
+  if ($null -eq $inputs) { return $null }
+  $runtimeArchive = [string]$inputs.installedVisionRuntimeArchive
+  $fixtureArchive = [string]$inputs.recordedFixtureArchive
+  $runtimeIdentity = $inputs.identities.installedVisionRuntimeArchive
+  $fixtureIdentity = $inputs.identities.recordedFixtureArchive
+  foreach ($item in @(
+    @{ path = $runtimeArchive; identity = $runtimeIdentity; label = "provisioned Vision runtime archive" },
+    @{ path = $fixtureArchive; identity = $fixtureIdentity; label = "provisioned recorded fixture archive" }
+  )) {
+    if (-not [IO.Path]::IsPathFullyQualified([string]$item.path) -or -not (Test-Path -LiteralPath ([string]$item.path) -PathType Leaf)) {
+      throw "$($item.label) is missing"
+    }
+    $actual = (Get-FileHash -LiteralPath ([string]$item.path) -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -cne [string]$item.identity.sha256 -or (Get-Item -LiteralPath ([string]$item.path)).Length -ne [long]$item.identity.byteSize) {
+      throw "$($item.label) identity is invalid"
+    }
+  }
+  $commit = [string]$runtimeIdentity.sourceCommit
+  if ($commit -cnotmatch '^[a-f0-9]{40}$') { throw "provisioned Vision runtime source commit is invalid" }
+  return [ordered]@{
+    runtimeArchive = $runtimeArchive
+    fixtureArchive = $fixtureArchive
+    commit = $commit
+  }
+}
+
+function Install-TestbedStartupVisionArtifact([object]$GuestInput) {
   $visionModulePath = Join-Path $PSScriptRoot "..\windows\vision-main-artifacts.psm1"
   Import-Module $visionModulePath -Force
   $visionCacheRoot = Join-Path $cacheRoot "vision-main"
   $visionSiteConfigurationSourcePath = Join-Path $handoffRoot "vision-recorded-site-config.json"
   Write-RecordedVisionSiteConfiguration $visionSiteConfigurationSourcePath
-  $visionCommit = Get-ResolvedVisionMainCommit -CacheRoot $visionCacheRoot
-  if ([string]::IsNullOrWhiteSpace($visionCommit)) {
-    $visionCache = Get-VisionMainArtifactCache -CacheRoot $visionCacheRoot
-    Set-ResolvedVisionMainCommit -CacheRoot $visionCacheRoot -Commit ([string]$visionCache.commit)
-  } else {
-    try {
-      $visionCache = Get-VisionMainArtifactCache -CacheRoot $visionCacheRoot -CommitSha $visionCommit
-    } catch {
-      Remove-Item -LiteralPath (Join-Path $visionCacheRoot "resolved-vision-main-commit.txt") -Force -ErrorAction SilentlyContinue
+  $visionCache = Get-TestbedProvisionedAiVisionArtifact $GuestInput
+  if ($null -eq $visionCache) {
+    $visionCommit = Get-ResolvedVisionMainCommit -CacheRoot $visionCacheRoot
+    if ([string]::IsNullOrWhiteSpace($visionCommit)) {
       $visionCache = Get-VisionMainArtifactCache -CacheRoot $visionCacheRoot
       Set-ResolvedVisionMainCommit -CacheRoot $visionCacheRoot -Commit ([string]$visionCache.commit)
+    } else {
+      try {
+        $visionCache = Get-VisionMainArtifactCache -CacheRoot $visionCacheRoot -CommitSha $visionCommit
+      } catch {
+        Remove-Item -LiteralPath (Join-Path $visionCacheRoot "resolved-vision-main-commit.txt") -Force -ErrorAction SilentlyContinue
+        $visionCache = Get-VisionMainArtifactCache -CacheRoot $visionCacheRoot
+        Set-ResolvedVisionMainCommit -CacheRoot $visionCacheRoot -Commit ([string]$visionCache.commit)
+      }
     }
   }
   $visionInstallation = Install-VisionMainArtifact `
@@ -823,7 +856,7 @@ function Start-TestbedInstalledRuntimeOwners {
     [switch]$ClaimBeforeInteractiveOwners
   )
   Write-TestbedPhase "install-startup-vision"
-  Install-TestbedStartupVisionArtifact | Out-Null
+  Install-TestbedStartupVisionArtifact $GuestInput | Out-Null
   Write-TestbedPhase "install-runtime-owners"
   Clear-TestbedLegacyRuntimeOwnersForStartup
   [Environment]::SetEnvironmentVariable("VEM_TESTBED_SERIAL_DISCOVERY_FILE", $env:VEM_TESTBED_SERIAL_DISCOVERY_FILE, "Machine")
