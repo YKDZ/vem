@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +7,8 @@ import { describe, it } from "node:test";
 
 import {
   createRunId,
+  identicalVisionCoreArtifactSnapshot,
+  materializeVisionCoreArtifactSnapshot,
   parseOrchestratorOptions,
   powerShellFocusArgument,
   provisionAiAcceptanceBlock,
@@ -15,6 +18,23 @@ import {
 import { parseTriggerOptions } from "./runtime-testbed-trigger.mjs";
 
 const sha = "a".repeat(40);
+const visionCore = (root) => ({
+  runtimeArchive: {
+    hostPath: join(root, "vision-runtime.zip"),
+    sha256: "b".repeat(64),
+    byteSize: 1,
+    sourceCommit: "c".repeat(40),
+  },
+  recordedFixtureArchive: {
+    hostPath: join(root, "recorded-fixtures.zip"),
+    sha256: "d".repeat(64),
+    byteSize: 1,
+  },
+});
+
+function digest(content) {
+  return createHash("sha256").update(content).digest("hex");
+}
 
 describe("runtime testbed scheduler contract", () => {
   it("uses the host-adapter logical run identity", () => {
@@ -182,6 +202,7 @@ describe("runtime testbed scheduler contract", () => {
         baselineContract: join(root, "baseline.json"),
         hostPrivateAddress: "192.0.2.22",
         guestSourcePath: "C:\\VEM\\source",
+        visionCoreArtifacts: visionCore(root),
         environment: { CARGO_HOME: join(root, "cargo") },
         pathPrepend: [join(root, "cargo", "bin")],
       }),
@@ -195,6 +216,7 @@ describe("runtime testbed scheduler contract", () => {
         guestSourcePath: "C:\\VEM\\source",
         environment: { CARGO_HOME: join(root, "cargo") },
         pathPrepend: [join(root, "cargo", "bin")],
+        visionCoreArtifacts: visionCore(root),
       },
     );
   });
@@ -208,6 +230,7 @@ describe("runtime testbed scheduler contract", () => {
       baselineContract: "/var/lib/vem-testbed/baseline.json",
       hostPrivateAddress: "192.0.2.22",
       guestSourcePath: "C:\\VEM\\source",
+      visionCoreArtifacts: visionCore("/var/lib/vem-testbed"),
       aiVirtualTryOnInputManifest: "/var/lib/vem-testbed/ai-input.json",
       aiVirtualTryOnAllowedHttpsOrigins: ["https://cache.example.test"],
     });
@@ -226,6 +249,150 @@ describe("runtime testbed scheduler contract", () => {
         }),
       /must be an array/,
     );
+  });
+
+  it("requires independent host-local Vision core artifacts before any AI input", () => {
+    assert.throws(
+      () =>
+        validateHostConfig({
+          schemaVersion: "vem-runtime-testbed-host/v1",
+          mirrorPath: "/var/lib/vem-testbed/mirror.git",
+          workspaceRoot: "/var/lib/vem-testbed/workspaces",
+          stateRoot: "/var/lib/vem-testbed/state",
+          baselineContract: "/var/lib/vem-testbed/baseline.json",
+          hostPrivateAddress: "192.0.2.22",
+          guestSourcePath: "C:\\VEM\\source",
+        }),
+      /visionCoreArtifacts must contain exact-two artifacts/,
+    );
+    assert.throws(
+      () =>
+        validateHostConfig({
+          schemaVersion: "vem-runtime-testbed-host/v1",
+          mirrorPath: "/var/lib/vem-testbed/mirror.git",
+          workspaceRoot: "/var/lib/vem-testbed/workspaces",
+          stateRoot: "/var/lib/vem-testbed/state",
+          baselineContract: "/var/lib/vem-testbed/baseline.json",
+          hostPrivateAddress: "192.0.2.22",
+          guestSourcePath: "C:\\VEM\\source",
+          visionCoreArtifacts: {
+            ...visionCore("/var/lib/vem-testbed"),
+            runtimeArchive: {
+              ...visionCore("/var/lib/vem-testbed").runtimeArchive,
+              hostPath: "vision-runtime.zip",
+              unexpected: true,
+            },
+          },
+        }),
+      /fields are invalid/,
+    );
+    assert.throws(
+      () =>
+        validateHostConfig({
+          schemaVersion: "vem-runtime-testbed-host/v1",
+          mirrorPath: "/var/lib/vem-testbed/mirror.git",
+          workspaceRoot: "/var/lib/vem-testbed/workspaces",
+          stateRoot: "/var/lib/vem-testbed/state",
+          baselineContract: "/var/lib/vem-testbed/baseline.json",
+          hostPrivateAddress: "192.0.2.22",
+          guestSourcePath: "C:\\VEM\\source",
+          visionCoreArtifacts: {
+            ...visionCore("/var/lib/vem-testbed"),
+            extraArchive: {},
+          },
+        }),
+      /exact-two artifacts/,
+    );
+    const guest = readFileSync(
+      new URL("./run-local-testbed-guest.ps1", import.meta.url),
+      "utf8",
+    );
+    assert.match(
+      guest,
+      /function Get-TestbedProvisionedVisionCoreArtifact[\s\S]*Properties\["visionCore"\]/,
+    );
+    assert.doesNotMatch(guest, /Get-VisionMainArtifactCache/);
+  });
+
+  it("snapshots the exact two Vision core archives for a blocked AI pass without a guest cache fallback", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-vision-core-input-"));
+    try {
+      const runtime = Buffer.from("runtime archive");
+      const fixture = Buffer.from("recorded fixture archive");
+      writeFileSync(join(root, "vision-runtime.zip"), runtime);
+      writeFileSync(join(root, "recorded-fixtures.zip"), fixture);
+      const config = validateHostConfig({
+        schemaVersion: "vem-runtime-testbed-host/v1",
+        mirrorPath: join(root, "mirror.git"),
+        workspaceRoot: join(root, "workspaces"),
+        stateRoot: join(root, "state"),
+        baselineContract: join(root, "baseline.json"),
+        hostPrivateAddress: "192.0.2.22",
+        guestSourcePath: "C:\\VEM\\source",
+        visionCoreArtifacts: {
+          runtimeArchive: {
+            hostPath: join(root, "vision-runtime.zip"),
+            sha256: digest(runtime),
+            byteSize: runtime.length,
+            sourceCommit: "c".repeat(40),
+          },
+          recordedFixtureArchive: {
+            hostPath: join(root, "recorded-fixtures.zip"),
+            sha256: digest(fixture),
+            byteSize: fixture.length,
+          },
+        },
+      });
+      const snapshot = await materializeVisionCoreArtifactSnapshot(
+        config,
+        join(root, "snapshots", "pass-1"),
+      );
+      assert.match(snapshot.guestInput.identity.sha256, /^[a-f0-9]{64}$/);
+      assert.equal(
+        snapshot.guestInput.runtimeArchive,
+        `C:\\ProgramData\\VEM\\testbed\\vision-core\\${snapshot.guestInput.identity.sha256}\\vision-runtime.zip`,
+      );
+      assert.equal(snapshot.transfers.length, 2);
+      assert.ok(
+        snapshot.transfers.every((entry) =>
+          entry.hostPath.includes("snapshots"),
+        ),
+      );
+      assert.ok(
+        snapshot.transfers.every(
+          (entry) => !entry.hostPath.includes("vision-main"),
+        ),
+      );
+      writeFileSync(join(root, "vision-runtime.zip"), "changed source");
+      await assert.rejects(
+        materializeVisionCoreArtifactSnapshot(
+          config,
+          join(root, "snapshots", "pass-2"),
+        ),
+        /Vision runtime host artifact (byte size|SHA-256) is invalid/,
+      );
+      assert.equal(
+        identicalVisionCoreArtifactSnapshot(snapshot, {
+          ...snapshot,
+          guestInput: {
+            ...snapshot.guestInput,
+            identity: {
+              ...snapshot.guestInput.identity,
+              sha256: "0".repeat(64),
+            },
+          },
+        }),
+        false,
+      );
+      const guest = readFileSync(
+        new URL("./run-local-testbed-guest.ps1", import.meta.url),
+        "utf8",
+      );
+      assert.match(guest, /Properties\["visionCore"\]/);
+      assert.doesNotMatch(guest, /Get-VisionMainArtifactCache/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("uses the same commit-only contract in the thin trigger", () => {

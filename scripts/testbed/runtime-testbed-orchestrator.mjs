@@ -4,6 +4,8 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, openSync, readFileSync } from "node:fs";
 import {
+  copyFile,
+  lstat,
   mkdir,
   readFile,
   readdir,
@@ -41,6 +43,34 @@ function required(value, label) {
     throw new Error(`${label} is required`);
   }
   return value.trim();
+}
+
+function artifactFile(value, label, sourceCommit = false) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  const expectedKeys = sourceCommit
+    ? ["hostPath", "sha256", "byteSize", "sourceCommit"]
+    : ["hostPath", "sha256", "byteSize"];
+  if (Object.keys(value).sort().join("\0") !== expectedKeys.sort().join("\0")) {
+    throw new Error(`${label} fields are invalid`);
+  }
+  const path = absolute(value.hostPath, `${label} hostPath`);
+  if (!/^[a-f0-9]{64}$/.test(value.sha256 ?? "")) {
+    throw new Error(`${label} SHA-256 is invalid`);
+  }
+  if (!Number.isSafeInteger(value.byteSize) || value.byteSize <= 0) {
+    throw new Error(`${label} byte size is invalid`);
+  }
+  if (sourceCommit && !/^[a-f0-9]{40}$/.test(value.sourceCommit ?? "")) {
+    throw new Error(`${label} source commit is invalid`);
+  }
+  return {
+    hostPath: path,
+    sha256: value.sha256,
+    byteSize: value.byteSize,
+    ...(sourceCommit ? { sourceCommit: value.sourceCommit } : {}),
+  };
 }
 
 function absolute(value, label) {
@@ -147,6 +177,17 @@ export function validateHostConfig(value) {
   if (!Array.isArray(pathPrepend)) {
     throw new Error("host config pathPrepend must be an array");
   }
+  if (
+    !value.visionCoreArtifacts ||
+    typeof value.visionCoreArtifacts !== "object" ||
+    Array.isArray(value.visionCoreArtifacts) ||
+    Object.keys(value.visionCoreArtifacts).sort().join("\0") !==
+      ["runtimeArchive", "recordedFixtureArchive"].sort().join("\0")
+  ) {
+    throw new Error(
+      "host config visionCoreArtifacts must contain exact-two artifacts",
+    );
+  }
   return {
     schemaVersion: CONFIG_SCHEMA,
     mirrorPath: absolute(value.mirrorPath, "host config mirrorPath"),
@@ -199,6 +240,17 @@ export function validateHostConfig(value) {
             });
           })(),
         }),
+    visionCoreArtifacts: {
+      runtimeArchive: artifactFile(
+        value.visionCoreArtifacts?.runtimeArchive,
+        "host config visionCoreArtifacts.runtimeArchive",
+        true,
+      ),
+      recordedFixtureArchive: artifactFile(
+        value.visionCoreArtifacts?.recordedFixtureArchive,
+        "host config visionCoreArtifacts.recordedFixtureArchive",
+      ),
+    },
   };
 }
 
@@ -500,6 +552,110 @@ async function loadAiAcceptanceInputs(config) {
   );
 }
 
+function visionCoreIdentity(runtime, fixture) {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        schemaVersion: "vem-runtime-testbed-vision-core-input/v1",
+        runtimeArchive: {
+          sha256: runtime.sha256,
+          byteSize: runtime.byteSize,
+          sourceCommit: runtime.sourceCommit,
+        },
+        recordedFixtureArchive: {
+          sha256: fixture.sha256,
+          byteSize: fixture.byteSize,
+        },
+      }),
+    )
+    .digest("hex");
+}
+
+async function assertVisionCoreArtifact(artifact, label) {
+  let entry;
+  try {
+    entry = await lstat(artifact.hostPath);
+  } catch {
+    throw new Error(`${label} host artifact is missing`);
+  }
+  if (!entry.isFile() || entry.isSymbolicLink()) {
+    throw new Error(`${label} host artifact must be a regular file`);
+  }
+  if (entry.size !== artifact.byteSize) {
+    throw new Error(`${label} host artifact byte size is invalid`);
+  }
+  const bytes = await readFile(artifact.hostPath);
+  if (createHash("sha256").update(bytes).digest("hex") !== artifact.sha256) {
+    throw new Error(`${label} host artifact SHA-256 is invalid`);
+  }
+}
+
+export async function loadVisionCoreArtifacts(config) {
+  const runtime = config.visionCoreArtifacts.runtimeArchive;
+  const fixture = config.visionCoreArtifacts.recordedFixtureArchive;
+  await assertVisionCoreArtifact(runtime, "Vision runtime");
+  await assertVisionCoreArtifact(fixture, "recorded Vision fixture");
+  const sha256 = visionCoreIdentity(runtime, fixture);
+  const identity = {
+    sha256,
+    runtimeArchive: {
+      sha256: runtime.sha256,
+      byteSize: runtime.byteSize,
+      sourceCommit: runtime.sourceCommit,
+    },
+    recordedFixtureArchive: {
+      sha256: fixture.sha256,
+      byteSize: fixture.byteSize,
+    },
+  };
+  const root = `C:\\ProgramData\\VEM\\testbed\\vision-core\\${sha256}`;
+  return {
+    guestInput: {
+      schemaVersion: "vem-local-testbed-vision-core-input/v1",
+      inputRoot: root,
+      runtimeArchive: `${root}\\vision-runtime.zip`,
+      fixtureArchive: `${root}\\recorded-fixtures.zip`,
+      identity,
+    },
+    transfers: [
+      { ...runtime, guestPath: `${root}\\vision-runtime.zip` },
+      { ...fixture, guestPath: `${root}\\recorded-fixtures.zip` },
+    ],
+  };
+}
+
+export async function materializeVisionCoreArtifactSnapshot(config, root) {
+  const preparation = await loadVisionCoreArtifacts(config);
+  const snapshotRoot = resolve(root, preparation.guestInput.identity.sha256);
+  await mkdir(snapshotRoot, { recursive: true });
+  const names = ["vision-runtime.zip", "recorded-fixtures.zip"];
+  const transfers = preparation.transfers.map((transfer, index) => ({
+    ...transfer,
+    hostPath: join(snapshotRoot, names[index]),
+  }));
+  await Promise.all(
+    preparation.transfers.map((transfer, index) =>
+      copyFile(transfer.hostPath, join(snapshotRoot, names[index])),
+    ),
+  );
+  await Promise.all([
+    assertVisionCoreArtifact(transfers[0], "Vision runtime snapshot"),
+    assertVisionCoreArtifact(transfers[1], "recorded Vision fixture snapshot"),
+  ]);
+  return {
+    ...preparation,
+    transfers,
+  };
+}
+
+export function identicalVisionCoreArtifactSnapshot(left, right) {
+  return (
+    Boolean(left && right) &&
+    JSON.stringify(left.guestInput.identity) ===
+      JSON.stringify(right.guestInput.identity)
+  );
+}
+
 async function provisionAiAcceptanceGuestInput({ config, preparation, pass }) {
   const path = join(config.stateRoot, "guest-input.json");
   const guestInput = JSON.parse(await readFile(path, "utf8"));
@@ -528,18 +684,40 @@ export async function provisionAiAcceptanceBlock({ config, pass, reason }) {
   });
 }
 
+async function provisionVisionCoreInput({ config, pass, preparation }) {
+  const path = join(config.stateRoot, "guest-input.json");
+  const guestInput = JSON.parse(await readFile(path, "utf8"));
+  await writeJson(path, {
+    ...guestInput,
+    workflowIdentity: { ...guestInput.workflowIdentity, pass },
+    visionCore: preparation.guestInput,
+  });
+}
+
 export async function stageAiAcceptanceInputs({
   config,
   contract,
   preparation,
+  corePreparation,
   run = runProcess,
 }) {
   const guest = contract.testbed.guest;
   const remote = `${guest.user}@${guest.host}`;
   const ssh = sshArguments(guest);
   const scp = scpArguments(guest);
-  const transfers = preparation ? [...preparation.transfers] : [];
+  const transfers = [
+    ...(corePreparation?.transfers ?? []),
+    ...(preparation?.transfers ?? []),
+  ];
   const cleanup = [
+    ...(corePreparation
+      ? [
+          `$coreRoot = '${corePreparation.guestInput.inputRoot.replaceAll("'", "''")}'`,
+          "New-Item -ItemType Directory -Force -Path (Split-Path -Parent $coreRoot) | Out-Null",
+          "Remove-Item -LiteralPath $coreRoot -Recurse -Force -ErrorAction SilentlyContinue",
+          "New-Item -ItemType Directory -Force -Path $coreRoot | Out-Null",
+        ]
+      : []),
     ...(preparation
       ? [
           `$root = '${preparation.guestInput.inputRoot.replaceAll("'", "''")}'`,
@@ -613,6 +791,7 @@ async function stageAndRunGuest({
   pass,
   runRoot,
   aiAcceptanceInputs,
+  visionCoreInputs,
 }) {
   const guest = contract.testbed.guest;
   const remote = `${guest.user}@${guest.host}`;
@@ -650,6 +829,7 @@ async function stageAndRunGuest({
     config,
     contract,
     preparation: aiAcceptanceInputs,
+    corePreparation: visionCoreInputs,
   });
   await runProcess("scp", [...scp, archive, `${remote}:${remoteArchive}`], {
     timeoutMs: GUEST_TRANSFER_TIMEOUT_MS,
@@ -847,6 +1027,8 @@ async function executeRun(options, config) {
     const passes = options.mode === "full" ? 2 : 1;
     let passOneAiInputSnapshot = null;
     let passOneGuestAiIdentity = null;
+    let passOneVisionCoreSnapshot = null;
+    let passOneGuestVisionCoreIdentity = null;
     for (let pass = 1; pass <= passes; pass += 1) {
       let aiAcceptanceInputs = null;
       let aiInputFailure = null;
@@ -977,6 +1159,27 @@ async function executeRun(options, config) {
           },
         });
       }
+      const visionCoreInputs = await materializeVisionCoreArtifactSnapshot(
+        config,
+        join(root, "vision-core-snapshots", `pass-${pass}`),
+      );
+      if (
+        options.mode === "full" &&
+        pass === 2 &&
+        !identicalVisionCoreArtifactSnapshot(
+          passOneVisionCoreSnapshot,
+          visionCoreInputs,
+        )
+      ) {
+        throw new Error("full pass 2 Vision core input drifted from pass 1");
+      }
+      if (options.mode === "full" && pass === 1) {
+        passOneVisionCoreSnapshot = visionCoreInputs;
+        await writeJson(
+          join(root, "vision-core-input-pass-1.json"),
+          visionCoreInputs.guestInput.identity,
+        );
+      }
       if (aiAcceptanceInputs) {
         let currentAiAcceptanceInputs = await loadAiAcceptanceInputs(config);
         currentAiAcceptanceInputs = await materializeAiAcceptanceInputSnapshot(
@@ -1004,6 +1207,11 @@ async function executeRun(options, config) {
           reason: `AI acceptance input blocked: ${aiInputFailure}`,
         });
       }
+      await provisionVisionCoreInput({
+        config,
+        pass,
+        preparation: visionCoreInputs,
+      });
       await update({ phase: `guest-pass-${pass}` });
       await stageAndRunGuest({
         config,
@@ -1015,6 +1223,7 @@ async function executeRun(options, config) {
         pass,
         runRoot: root,
         aiAcceptanceInputs,
+        visionCoreInputs,
       });
       if (aiAcceptanceInputs) {
         const identityPath = await findFile(
@@ -1035,6 +1244,33 @@ async function executeRun(options, config) {
             "full pass 2 guest validated AI input drifted from pass 1",
           );
         }
+      }
+      const coreSummaryPath = await findFile(
+        join(compact, `pass-${pass}`),
+        "full-workflow-tracks.json",
+      );
+      if (!coreSummaryPath) {
+        throw new Error("guest did not publish validated Vision core identity");
+      }
+      const guestCoreIdentity = JSON.stringify(
+        JSON.parse(await readFile(coreSummaryPath, "utf8"))?.identity
+          ?.visionCore,
+      );
+      if (
+        guestCoreIdentity !==
+        JSON.stringify(visionCoreInputs.guestInput.identity)
+      ) {
+        throw new Error("guest validated Vision core identity is invalid");
+      }
+      if (options.mode === "full" && pass === 1) {
+        passOneGuestVisionCoreIdentity = guestCoreIdentity;
+      } else if (
+        options.mode === "full" &&
+        guestCoreIdentity !== passOneGuestVisionCoreIdentity
+      ) {
+        throw new Error(
+          "full pass 2 guest Vision core identity drifted from pass 1",
+        );
       }
     }
     if (options.mode === "full") {

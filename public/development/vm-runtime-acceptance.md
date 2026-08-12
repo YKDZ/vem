@@ -20,6 +20,12 @@
 - `baselineContract`：Windows 基线 VM 合同文件。
 - `hostPrivateAddress`：VM 可访问的宿主机内网 IPv4 地址。
 - `guestSourcePath`：Windows 客体中的源码路径。
+- `visionCoreArtifacts`：宿主机本地的核心 Vision 输入，且只能包含
+  `runtimeArchive` 与 `recordedFixtureArchive` 两项。两项均声明绝对 `hostPath`、
+  小写 SHA-256 和 `byteSize`；运行时归档额外声明 40 位小写 `sourceCommit`。
+  编排器只接受普通文件并在每个 pass 校验摘要和大小、生成快照，再传输到由这两项
+  身份聚合值派生的固定 `C:\ProgramData\VEM\testbed\vision-core\<aggregate>`。
+  客体启动只使用这一预置输入，绝不以 Vision 缓存缺失为由查询 GitHub。
 
 当执行完整验收或 `fast --focus aiVirtualTryOn` 时，配置还必须提供
 `aiVirtualTryOnInputManifest`，它是宿主机本地的绝对路径。清单版本为

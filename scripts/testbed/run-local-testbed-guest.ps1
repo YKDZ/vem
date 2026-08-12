@@ -576,11 +576,9 @@ function Invoke-FullVisionTryOnAcceptance(
 ) {
   $visionModulePath = Join-Path $PSScriptRoot "..\windows\vision-main-artifacts.psm1"
   Import-Module $visionModulePath -Force
-  $visionCacheRoot = Join-Path $cacheRoot "vision-main"
   $visionSiteConfigurationSourcePath = Join-Path $handoffRoot "vision-recorded-site-config.json"
   Write-RecordedVisionSiteConfiguration $visionSiteConfigurationSourcePath
-  $provisioned = Get-TestbedProvisionedAiVisionArtifact $guestInput
-  $visionCache = if ($null -eq $provisioned) { Get-VisionMainArtifactCache -CacheRoot $visionCacheRoot } else { $provisioned }
+  $visionCache = Get-TestbedProvisionedVisionCoreArtifact $guestInput
   $visionInstallation = Install-VisionMainArtifact `
     -RuntimeArchive ([string]$visionCache.runtimeArchive) `
     -FixtureArchive ([string]$visionCache.fixtureArchive) `
@@ -675,43 +673,27 @@ function Restart-TestbedDaemonServiceOwner([string]$DaemonPath) {
   Start-Service -Name "VemVendingDaemon" -ErrorAction Stop
 }
 
-function Get-ResolvedVisionMainCommit([string]$CacheRoot) {
-  $indexPath = Join-Path $CacheRoot "resolved-vision-main-commit.txt"
-  if (-not (Test-Path -LiteralPath $indexPath -PathType Leaf)) {
-    $cached = @(Get-ChildItem -LiteralPath $CacheRoot -Directory -ErrorAction SilentlyContinue |
-      Where-Object { $_.Name -match '^[a-f0-9]{40}$' } |
-      Sort-Object LastWriteTimeUtc -Descending |
-      Select-Object -First 1)
-    if ($cached.Count -eq 1) { return [string]$cached[0].Name }
-    return ""
+function Get-TestbedProvisionedVisionCoreArtifact([object]$GuestInput) {
+  $inputsProperty = $GuestInput.PSObject.Properties["visionCore"]
+  if ($null -eq $inputsProperty) { throw "guest input Vision core artifact is missing" }
+  $inputs = $inputsProperty.Value
+  if ($null -eq $inputs -or [string]$inputs.schemaVersion -ne "vem-local-testbed-vision-core-input/v1") {
+    throw "guest input Vision core artifact is invalid"
   }
-  try {
-    $candidate = (Get-Content -Raw -LiteralPath $indexPath).Trim()
-  } catch {
-    Remove-Item -LiteralPath $indexPath -Force -ErrorAction SilentlyContinue
-    return ""
+  $identity = $inputs.identity
+  if ($null -eq $identity -or [string]$identity.sha256 -cnotmatch '^[a-f0-9]{64}$') {
+    throw "guest input Vision core identity is invalid"
   }
-  if ($candidate -match '^[a-f0-9]{40}$') {
-    return $candidate
+  $expectedRoot = "C:\ProgramData\VEM\testbed\vision-core\$([string]$identity.sha256)"
+  if ([string]$inputs.inputRoot -cne $expectedRoot) { throw "guest input Vision core root is not canonical" }
+  $runtimeArchive = [string]$inputs.runtimeArchive
+  $fixtureArchive = [string]$inputs.fixtureArchive
+  if ($runtimeArchive -cne (Join-Path $expectedRoot "vision-runtime.zip") -or
+    $fixtureArchive -cne (Join-Path $expectedRoot "recorded-fixtures.zip")) {
+    throw "guest input Vision core archive paths are not canonical"
   }
-  Remove-Item -LiteralPath $indexPath -Force -ErrorAction SilentlyContinue
-  return ""
-}
-
-function Set-ResolvedVisionMainCommit([string]$CacheRoot, [string]$Commit) {
-  $indexPath = Join-Path $CacheRoot "resolved-vision-main-commit.txt"
-  New-Item -ItemType Directory -Force -Path $CacheRoot | Out-Null
-  Set-Content -LiteralPath $indexPath -Value $Commit -NoNewline -Encoding utf8
-}
-
-function Get-TestbedProvisionedAiVisionArtifact([object]$GuestInput) {
-  $inputsProperty = $GuestInput.PSObject.Properties["aiVirtualTryOn"]
-  $inputs = if ($null -eq $inputsProperty) { $null } else { $inputsProperty.Value }
-  if ($null -eq $inputs) { return $null }
-  $runtimeArchive = [string]$inputs.installedVisionRuntimeArchive
-  $fixtureArchive = [string]$inputs.recordedFixtureArchive
-  $runtimeIdentity = $inputs.identities.installedVisionRuntimeArchive
-  $fixtureIdentity = $inputs.identities.recordedFixtureArchive
+  $runtimeIdentity = $identity.runtimeArchive
+  $fixtureIdentity = $identity.recordedFixtureArchive
   foreach ($item in @(
     @{ path = $runtimeArchive; identity = $runtimeIdentity; label = "provisioned Vision runtime archive" },
     @{ path = $fixtureArchive; identity = $fixtureIdentity; label = "provisioned recorded fixture archive" }
@@ -730,31 +712,16 @@ function Get-TestbedProvisionedAiVisionArtifact([object]$GuestInput) {
     runtimeArchive = $runtimeArchive
     fixtureArchive = $fixtureArchive
     commit = $commit
+    identity = $identity
   }
 }
 
 function Install-TestbedStartupVisionArtifact([object]$GuestInput) {
   $visionModulePath = Join-Path $PSScriptRoot "..\windows\vision-main-artifacts.psm1"
   Import-Module $visionModulePath -Force
-  $visionCacheRoot = Join-Path $cacheRoot "vision-main"
   $visionSiteConfigurationSourcePath = Join-Path $handoffRoot "vision-recorded-site-config.json"
   Write-RecordedVisionSiteConfiguration $visionSiteConfigurationSourcePath
-  $visionCache = Get-TestbedProvisionedAiVisionArtifact $GuestInput
-  if ($null -eq $visionCache) {
-    $visionCommit = Get-ResolvedVisionMainCommit -CacheRoot $visionCacheRoot
-    if ([string]::IsNullOrWhiteSpace($visionCommit)) {
-      $visionCache = Get-VisionMainArtifactCache -CacheRoot $visionCacheRoot
-      Set-ResolvedVisionMainCommit -CacheRoot $visionCacheRoot -Commit ([string]$visionCache.commit)
-    } else {
-      try {
-        $visionCache = Get-VisionMainArtifactCache -CacheRoot $visionCacheRoot -CommitSha $visionCommit
-      } catch {
-        Remove-Item -LiteralPath (Join-Path $visionCacheRoot "resolved-vision-main-commit.txt") -Force -ErrorAction SilentlyContinue
-        $visionCache = Get-VisionMainArtifactCache -CacheRoot $visionCacheRoot
-        Set-ResolvedVisionMainCommit -CacheRoot $visionCacheRoot -Commit ([string]$visionCache.commit)
-      }
-    }
-  }
+  $visionCache = Get-TestbedProvisionedVisionCoreArtifact $GuestInput
   $visionInstallation = Install-VisionMainArtifact `
     -RuntimeArchive ([string]$visionCache.runtimeArchive) `
     -FixtureArchive ([string]$visionCache.fixtureArchive) `
@@ -1060,6 +1027,9 @@ if ($Mode -eq "clear_cache") {
 Require-Path $GuestInputPath
 $guestInput = Get-Content -Raw -LiteralPath $GuestInputPath -Encoding UTF8 | ConvertFrom-Json
 if ($guestInput.schemaVersion -ne "vem-local-testbed-guest-input/v1") { throw "invalid local testbed guest input" }
+$validatedVisionCore = Get-TestbedProvisionedVisionCoreArtifact $guestInput
+if ($null -eq $guestInput.workflowIdentity) { throw "workflow identity is missing from local testbed guest input" }
+$guestInput.workflowIdentity | Add-Member -NotePropertyName visionCore -NotePropertyValue $validatedVisionCore.identity -Force
 if ($Mode -in @("fast", "full")) {
   Clear-TestbedVisionProcesses $guestInput
 }
