@@ -232,9 +232,12 @@ export function validateMeasurementEvidenceTransport(bundleRoot) {
     tracks[0]?.key !== "aiVirtualTryOn" ||
     tracks[0]?.status !== "failed" ||
     tracks[0]?.businessStatus !== "failed" ||
-    tracks[0]?.failureStage !== "business" ||
-    tracks[0]?.terminal?.ok !== false ||
-    tracks[0]?.recovery?.ok !== true
+    tracks[0]?.reportOk !== false ||
+    tracks[0]?.failureStage !== "child" ||
+    tracks[0]?.validator?.status !== "failed" ||
+    tracks[0]?.validator?.reason !== incomplete ||
+    tracks[0]?.terminal?.ok !== true ||
+    tracks[0]?.handoffRecovery?.ok !== true
   )
     throw new Error(
       "measurement execution track is not exact pending lifecycle",

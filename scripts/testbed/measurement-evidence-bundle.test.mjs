@@ -10,6 +10,7 @@ import {
 import { join } from "node:path";
 import { test } from "node:test";
 
+import { runSerialTrackLifecycle } from "./full-workflow-orchestrator.mjs";
 import {
   createMeasurementEvidenceBundle,
   validateMeasurementEvidenceTransport,
@@ -23,7 +24,7 @@ const write = (p, v) => {
   writeFileSync(p, raw);
   return { byteLength: Buffer.byteLength(raw), sha256: sha(raw) };
 };
-test("accepts only the production-shaped single pending aggregate", () => {
+test("accepts only the production lifecycle pending aggregate", async () => {
   const root = mkdtempSync("/tmp/vem-measurement-");
   try {
     const source = join(root, "source");
@@ -45,7 +46,28 @@ test("accepts only the production-shaped single pending aggregate", () => {
     ])
       write(join(source, n), {});
     const manifest = write(manifestp, { ok: true });
-    const incomplete = "AI virtual try-on acceptance evidence is incomplete";
+    const executedTracks = await runSerialTrackLifecycle({
+      tracks: [
+        {
+          key: "aiVirtualTryOn",
+          name: "aiVirtualTryOn",
+          validator: "aiVirtualTryOn",
+          reportPath: rp,
+          artifactRoot: source,
+          runner: true,
+        },
+      ],
+      runTrack: async () => ({
+        status: "failed",
+        exitCode: 1,
+        stderr: "pending",
+        report,
+      }),
+      captureTerminal: async () => ({ ok: true, facts: {} }),
+      recover: async () => ({ ok: true, actions: [] }),
+    });
+    write(rp, report);
+    const incomplete = executedTracks[0].validator.reason;
     const failures = [
       { set: "aiVirtualTryOn", reason: incomplete },
       { set: "evidenceInventory", reason: pending },
@@ -56,19 +78,7 @@ test("accepts only the production-shaped single pending aggregate", () => {
         ok: false,
         failures,
       },
-      execution: {
-        executedTracks: [
-          {
-            key: "aiVirtualTryOn",
-            status: "failed",
-            businessStatus: "failed",
-            failureStage: "business",
-            terminal: { ok: false },
-            recovery: { ok: true },
-            error: incomplete,
-          },
-        ],
-      },
+      execution: { executedTracks },
       businessSets: {
         aiVirtualTryOn: { status: "failed", reason: incomplete },
       },
