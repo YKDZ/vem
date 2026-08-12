@@ -240,6 +240,7 @@ describe("full workflow serial lifecycle", () => {
         "sale",
         "scannerPayment",
         "visionExperience",
+        "aiVirtualTryOn",
         "pickupProtocol",
         "presenceAndAudio",
         "ipcRecovery",
@@ -276,7 +277,12 @@ describe("full workflow serial lifecycle", () => {
   it("keeps warm VM selection separate from full business-check semantics", () => {
     const plan = buildWorkflowTrackCommands({
       mode: "fast",
-      focus: ["visionExperience", "presenceAndAudio", "environmentControl"],
+      focus: [
+        "visionExperience",
+        "aiVirtualTryOn",
+        "presenceAndAudio",
+        "environmentControl",
+      ],
       guestInputPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
       handoffPath:
         "C:\\ProgramData\\VEM\\testbed\\installed-runtime-handoff.json",
@@ -286,6 +292,12 @@ describe("full workflow serial lifecycle", () => {
       (track) => track.key === "visionExperience",
     );
     assert.equal(vision.fixtureKey, "visionExperience");
+    const ai = plan.tracks.find((track) => track.key === "aiVirtualTryOn");
+    assert.equal(ai.fixtureKey, "aiVirtualTryOn");
+    assert.equal(
+      ai.command[ai.command.indexOf("-FixtureKey") + 1],
+      "aiVirtualTryOn",
+    );
     for (const track of plan.tracks.filter(
       (entry) => entry.runner.kind === "node",
     )) {

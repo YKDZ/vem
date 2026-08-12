@@ -6,6 +6,7 @@ const FIXTURE_TRACK_KEYS = Object.freeze([
   "pickupProtocol",
   "ipcRecovery",
   "stockMaintenance",
+  "aiVirtualTryOn",
 ]);
 
 const FIXTURE_SLOT_COORDINATES = Object.freeze([
@@ -16,6 +17,7 @@ const FIXTURE_SLOT_COORDINATES = Object.freeze([
   { rowNo: 1, cellNo: 5 },
   { rowNo: 2, cellNo: 1 },
   { rowNo: 2, cellNo: 2 },
+  { rowNo: 2, cellNo: 5 },
 ]);
 
 function required(value, label) {

@@ -1854,4 +1854,50 @@ describe("full workflow stability gate", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("requires AI virtual try-on to pass independently in both full passes", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-workflow-stability-ai-"));
+    try {
+      const descriptors = BUSINESS_CHECK_REGISTRY.filter(
+        (descriptor) => descriptor.fullRequired,
+      );
+      const report = (reconstruction) => ({
+        schemaVersion: "vem-local-testbed-full-workflow/v4",
+        mode: "full",
+        ok: true,
+        businessSets: Object.fromEntries(
+          descriptors.map((descriptor) => [
+            descriptor.name,
+            { status: "passed" },
+          ]),
+        ),
+        execution: {
+          selectedBusinessSets: descriptors.map(
+            (descriptor) => descriptor.name,
+          ),
+        },
+        identity: identity(reconstruction),
+      });
+      const passAReport = report("a");
+      const passBReport = report("b");
+      passBReport.businessSets.aiVirtualTryOn.status = "failed";
+      const passA = join(root, "pass-a.json");
+      const passB = join(root, "pass-b.json");
+      writeFileSync(passA, `${JSON.stringify(passAReport)}\n`);
+      writeFileSync(passB, `${JSON.stringify(passBReport)}\n`);
+      const gate = buildStabilityGateReport({
+        commit: "c".repeat(40),
+        passAPath: passA,
+        passBPath: passB,
+      });
+      assert.equal(gate.ok, false);
+      assert.ok(
+        gate.gateFailures.includes(
+          "pass B aiVirtualTryOn status is not passed",
+        ),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

@@ -103,6 +103,17 @@ export const BUSINESS_CHECK_REGISTRY = Object.freeze([
     validator: "visionExperience",
   }),
   descriptor({
+    name: "aiVirtualTryOn",
+    runner: {
+      kind: "powershell",
+      script: "scripts/testbed/run-full-ai-virtual-try-on-track.ps1",
+      args: [],
+      reportFileName: "ai-virtual-try-on.json",
+      artifactDirectory: "ai-virtual-try-on-artifacts",
+    },
+    validator: "aiVirtualTryOn",
+  }),
+  descriptor({
     name: "pickupProtocol",
     runner: {
       kind: "node",

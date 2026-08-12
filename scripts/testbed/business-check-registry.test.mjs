@@ -16,6 +16,7 @@ describe("runtime business-check registry", () => {
         "sale",
         "scannerPayment",
         "visionExperience",
+        "aiVirtualTryOn",
         "pickupProtocol",
         "presenceAndAudio",
         "ipcRecovery",
@@ -44,6 +45,7 @@ describe("runtime business-check registry", () => {
         "sale",
         "scannerPayment",
         "visionExperience",
+        "aiVirtualTryOn",
         "pickupProtocol",
         "presenceAndAudio",
         "ipcRecovery",
@@ -116,6 +118,33 @@ describe("runtime business-check registry", () => {
         (descriptor) => descriptor.name === "presenceAndAudio",
       )?.fixtureKey,
       "sale",
+    );
+  });
+
+  it("registers AI virtual try-on as an independent focusable full track", () => {
+    const track = BUSINESS_CHECK_REGISTRY.find(
+      (descriptor) => descriptor.name === "aiVirtualTryOn",
+    );
+    assert.deepEqual(track?.runner, {
+      kind: "powershell",
+      script: "scripts/testbed/run-full-ai-virtual-try-on-track.ps1",
+      args: [],
+      reportFileName: "ai-virtual-try-on.json",
+      artifactDirectory: "ai-virtual-try-on-artifacts",
+    });
+    assert.equal(track?.validator, "aiVirtualTryOn");
+    assert.equal(track?.fixtureKey, "aiVirtualTryOn");
+    assert.equal(track?.fullRequired, true);
+    assert.deepEqual(
+      selectBusinessChecks({ mode: "fast", focus: ["aiVirtualTryOn"] }).map(
+        (descriptor) => descriptor.name,
+      ),
+      ["aiVirtualTryOn"],
+    );
+    assert.ok(
+      selectBusinessChecks({ mode: "full" }).some(
+        (descriptor) => descriptor.name === "aiVirtualTryOn",
+      ),
     );
   });
 

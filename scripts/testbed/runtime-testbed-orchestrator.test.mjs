@@ -125,6 +125,25 @@ describe("runtime testbed scheduler contract", () => {
     );
   });
 
+  it("passes the independent AI virtual try-on focus through the host boundary", () => {
+    const options = parseOrchestratorOptions([
+      "run",
+      "--mode",
+      "fast",
+      "--focus",
+      "aiVirtualTryOn",
+      "--commit",
+      sha,
+      "--config",
+      "/etc/vem/testbed.json",
+    ]);
+    assert.deepEqual(options.focus, ["aiVirtualTryOn"]);
+    assert.equal(
+      powerShellFocusArgument(options.focus),
+      " -Focus @('aiVirtualTryOn')",
+    );
+  });
+
   it("tells the guest which reconstructed pass owns the runtime build", () => {
     const source = readFileSync(
       new URL("./runtime-testbed-orchestrator.mjs", import.meta.url),

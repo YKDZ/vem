@@ -1046,6 +1046,13 @@ export function validateBusinessCheckReport(descriptor, report, reportPath) {
     startup: validateStartupTrack,
     sale: validateFastTrack,
     scannerPayment: validateScannerTrack,
+    aiVirtualTryOn: (_value, path) =>
+      failedTrack(
+        "aiVirtualTryOn",
+        "AI virtual try-on",
+        path,
+        "AI virtual try-on acceptance runner is not implemented",
+      ),
     pickupProtocol: validateDelayedAudioTrack,
     presenceAndAudio: validatePresenceAndAudioTrack,
     ipcRecovery: validateIpcRecoveryTrack,

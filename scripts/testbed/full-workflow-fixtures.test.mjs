@@ -9,11 +9,11 @@ import {
 describe("full workflow fixture allocation", () => {
   it("allocates an independent seeded slot to each fixed track", () => {
     const allocation = allocateFullWorkflowFixtures(
-      ["A1", "A2", "A3", "A4", "A5", "B1", "B2"].map(
+      ["A1", "A2", "A3", "A4", "A5", "B1", "B2", "B3"].map(
         (slotDisplayLabel, index) => ({
           slotId: `550e8400-e29b-41d4-a716-44665544000${index + 1}`,
           rowNo: index < 5 ? 1 : 2,
-          cellNo: index < 5 ? index + 1 : index - 4,
+          cellNo: index < 5 ? index + 1 : index === 7 ? 5 : index - 4,
           slotDisplayLabel,
           categoryKey: slotDisplayLabel === "A3" ? "tshirts" : "socks",
           inventoryId: `inventory-${index + 1}`,
@@ -24,7 +24,7 @@ describe("full workflow fixture allocation", () => {
     );
     assert.deepEqual(
       Object.values(allocation).map((fixture) => fixture.slotDisplayLabel),
-      ["A1", "A2", "A3", "A4", "A5", "B1", "B2"],
+      ["A1", "A2", "A3", "A4", "A5", "B1", "B2", "B3"],
     );
     assert.equal(
       catalogProductSelectorForFixture(allocation, "scannerPayment"),
@@ -40,6 +40,29 @@ describe("full workflow fixture allocation", () => {
       onHandQty: 1,
       sku: "TSC-LOCAL-007",
     });
+    assert.deepEqual(allocation.aiVirtualTryOn, {
+      slotDisplayLabel: "B3",
+      categoryKey: "socks",
+      slotId: "550e8400-e29b-41d4-a716-446655440008",
+      rowNo: 2,
+      cellNo: 5,
+      inventoryId: "inventory-8",
+      onHandQty: 3,
+      sku: "TSC-LOCAL-008",
+    });
+    assert.notEqual(
+      allocation.aiVirtualTryOn.slotId,
+      allocation.visionExperience.slotId,
+    );
+    assert.notEqual(
+      allocation.aiVirtualTryOn.inventoryId,
+      allocation.stockMaintenance.inventoryId,
+    );
+    assert.equal(
+      new Set(Object.values(allocation).map((fixture) => fixture.inventoryId))
+        .size,
+      Object.keys(allocation).length,
+    );
   });
 
   it("rejects missing or reused slots rather than allowing track-order stock coupling", () => {
@@ -61,11 +84,12 @@ describe("full workflow fixture allocation", () => {
     assert.throws(
       () =>
         allocateFullWorkflowFixtures(
-          ["A1", "A2", "A3", "A4", "A5", "B1", "B2"].map(
+          ["A1", "A2", "A3", "A4", "A5", "B1", "B2", "B3"].map(
             (slotDisplayLabel) => ({
               slotId: `550e8400-e29b-41d4-a716-4466554400${slotDisplayLabel.length}0`,
               rowNo: slotDisplayLabel.startsWith("A") ? 1 : 2,
-              cellNo: Number(slotDisplayLabel[1]),
+              cellNo:
+                slotDisplayLabel === "B3" ? 5 : Number(slotDisplayLabel[1]),
               slotDisplayLabel,
               categoryKey: "socks",
               inventoryId: "shared",
