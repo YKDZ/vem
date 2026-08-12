@@ -6,7 +6,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { validateAiRegionalEvidence } from "./ai-regional-evidence.mjs";
+import { validateAiRegionalEvidenceSet } from "./ai-regional-evidence.mjs";
 import {
   BUSINESS_CHECK_REGISTRY,
   selectBusinessChecks,
@@ -1494,16 +1494,12 @@ export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
       .filter((track) => track.key === "aiVirtualTryOn")
       .flatMap((track) => {
         const report = jsonIfPresent(track.reportPath);
-        return (Array.isArray(report?.attempts) ? report.attempts : []).flatMap(
-          (attempt) => {
-            const regional = validateAiRegionalEvidence(
-              attempt,
-              track.artifactRoot,
-              evidenceManifest,
-            );
-            return regional.ok ? [] : [regional.reason];
-          },
+        const regional = validateAiRegionalEvidenceSet(
+          report?.attempts,
+          track.artifactRoot,
+          evidenceManifest,
         );
+        return regional.ok ? [] : [regional.reason];
       }),
   ];
   const aggregate = buildFullWorkflowAggregate({

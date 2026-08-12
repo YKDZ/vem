@@ -151,7 +151,10 @@ function aiVirtualTryOnReport() {
     input: { contentType: "image/png", sha256: suffix.repeat(64) },
     garment: {
       contentType: "image/png",
-      garmentId: `garment-${caseKey}`,
+      garmentId:
+        caseKey === "short"
+          ? "0198f44e-21bd-7c62-8f52-b7c86cc2c001"
+          : "0198f44e-21bd-7c62-8f52-b7c86cc2c002",
       sha256: String(Number(suffix) + 1).repeat(64),
     },
     result: {
@@ -1309,6 +1312,66 @@ describe("full workflow aggregate validator", () => {
       validateBusinessCheckReport(
         descriptor("aiVirtualTryOn"),
         aiVirtualTryOnReport(),
+        "ai-virtual-try-on.json",
+      ).status,
+      "passed",
+    );
+  });
+
+  for (const [label, mutate] of [
+    [
+      "garment identity reuse",
+      (report) =>
+        (report.attempts[1].garment.garmentId =
+          report.attempts[0].garment.garmentId),
+    ],
+    [
+      "garment digest reuse",
+      (report) =>
+        (report.attempts[1].garment.sha256 = report.attempts[0].garment.sha256),
+    ],
+    [
+      "result digest reuse",
+      (report) =>
+        (report.attempts[1].result.sha256 = report.attempts[0].result.sha256),
+    ],
+    [
+      "regional digest reuse",
+      (report) =>
+        (report.attempts[1].regionalEvidence.sha256 =
+          report.attempts[0].regionalEvidence.sha256),
+    ],
+    [
+      "regional reference swap",
+      (report) => {
+        const first = report.attempts[0].regionalEvidence;
+        report.attempts[0].regionalEvidence =
+          report.attempts[1].regionalEvidence;
+        report.attempts[1].regionalEvidence = first;
+      },
+    ],
+  ]) {
+    it(`rejects cross-attempt ${label}`, () => {
+      const report = aiVirtualTryOnReport();
+      mutate(report);
+      assert.equal(
+        validateBusinessCheckReport(
+          descriptor("aiVirtualTryOn"),
+          report,
+          "ai-virtual-try-on.json",
+        ).status,
+        "failed",
+      );
+    });
+  }
+
+  it("allows both garment cases to bind the same captured input", () => {
+    const report = aiVirtualTryOnReport();
+    report.attempts[1].input.sha256 = report.attempts[0].input.sha256;
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("aiVirtualTryOn"),
+        report,
         "ai-virtual-try-on.json",
       ).status,
       "passed",

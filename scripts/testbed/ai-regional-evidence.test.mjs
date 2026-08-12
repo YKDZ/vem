@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  linkSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, it } from "node:test";
@@ -10,6 +16,7 @@ import {
   AI_REGIONAL_EVIDENCE_POLICY_SHA256,
   evaluateAiRegionalPixels,
   validateAiRegionalEvidence,
+  validateAiRegionalEvidenceSet,
 } from "./ai-regional-evidence.mjs";
 
 const roots = [];
@@ -240,6 +247,31 @@ describe("AI regional evidence", () => {
       validateAiRegionalEvidence(attempt, root, manifest).reason,
       /not manifest-owned/,
     );
+  });
+
+  it("rejects two case-scoped references to the same physical sidecar", () => {
+    const root = fixtureRoot();
+    const { attempt, manifest } = reportFixture(root);
+    const longAttemptId = "0198f44e-21bd-7c62-8f52-b7c86cc2b002";
+    const longRelative = `regional/long/${longAttemptId}.regional-evidence.json`;
+    const source = manifest.files[0].path;
+    const destination = join(root, longRelative);
+    mkdirSync(dirname(destination), { recursive: true });
+    linkSync(source, destination);
+    const longAttempt = structuredClone(attempt);
+    longAttempt.attemptId = longAttemptId;
+    longAttempt.caseKey = "long";
+    longAttempt.template = "tshirt_long_sleeve";
+    longAttempt.regionalEvidence.path = longRelative;
+    manifest.files.push({ ...manifest.files[0], path: destination });
+
+    const result = validateAiRegionalEvidenceSet(
+      [attempt, longAttempt],
+      root,
+      manifest,
+    );
+    assert.equal(result.ok, false);
+    assert.match(result.reason, /physical member is reused/);
   });
 
   for (const [label, mutate, reason] of [

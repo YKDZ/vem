@@ -350,3 +350,39 @@ export function validateAiRegionalEvidence(
     );
   }
 }
+
+export function validateAiRegionalEvidenceSet(
+  attempts,
+  artifactRoot,
+  evidenceManifest = null,
+) {
+  if (!Array.isArray(attempts) || attempts.length !== 2)
+    return fail("AI regional evidence attempt set is invalid");
+  const physicalMembers = new Set();
+  try {
+    const root = realpathSync(artifactRoot);
+    for (const attempt of attempts) {
+      const candidate = resolve(root, attempt?.regionalEvidence?.path ?? "");
+      const stat = lstatSync(candidate, { bigint: true });
+      if (stat.isSymbolicLink() || !stat.isFile())
+        return fail("AI regional evidence sidecar is not a regular file");
+      const identity = `${stat.dev}:${stat.ino}`;
+      if (physicalMembers.has(identity))
+        return fail("AI regional evidence physical member is reused");
+      physicalMembers.add(identity);
+    }
+  } catch (error) {
+    return fail(
+      `AI regional evidence member identity is invalid: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  for (const attempt of attempts) {
+    const result = validateAiRegionalEvidence(
+      attempt,
+      artifactRoot,
+      evidenceManifest,
+    );
+    if (!result.ok) return result;
+  }
+  return { ok: true, reason: null };
+}

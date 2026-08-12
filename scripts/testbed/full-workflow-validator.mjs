@@ -295,6 +295,10 @@ function validateAiAttemptSet(attempts, runtimeTrace) {
     ["long", "tshirt_long_sleeve"],
   ];
   const attemptIds = new Set();
+  const garmentIds = new Set();
+  const garmentDigests = new Set();
+  const resultDigests = new Set();
+  const regionalDigests = new Set();
   for (let index = 0; index < expected.length; index += 1) {
     const attempt = attempts[index];
     const result = attempt?.result;
@@ -326,10 +330,13 @@ function validateAiAttemptSet(attempts, runtimeTrace) {
       attempt.input.contentType !== "image/png" ||
       !/^[a-f0-9]{64}$/.test(attempt.input.sha256 ?? "") ||
       !exactKeys(attempt.garment, ["contentType", "garmentId", "sha256"]) ||
-      typeof attempt.garment.garmentId !== "string" ||
-      attempt.garment.garmentId.length === 0 ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+        attempt.garment.garmentId ?? "",
+      ) ||
+      garmentIds.has(attempt.garment.garmentId) ||
       attempt.garment.contentType !== "image/png" ||
       !/^[a-f0-9]{64}$/.test(attempt.garment.sha256 ?? "") ||
+      garmentDigests.has(attempt.garment.sha256) ||
       !exactKeys(result, [
         "contentType",
         "decodedHeight",
@@ -348,6 +355,7 @@ function validateAiAttemptSet(attempts, runtimeTrace) {
       !Number.isSafeInteger(result.peakRssBytes) ||
       result.peakRssBytes <= 0 ||
       !/^[a-f0-9]{64}$/.test(result.sha256 ?? "") ||
+      resultDigests.has(result.sha256) ||
       result.sha256 === attempt.input.sha256 ||
       result.sha256 === attempt.garment.sha256 ||
       !exactKeys(attempt.outputFacts, [
@@ -368,10 +376,15 @@ function validateAiAttemptSet(attempts, runtimeTrace) {
       regionalReference.path !==
         `regional/${caseKey}/${attempt.attemptId}.regional-evidence.json` ||
       !/^[a-f0-9]{64}$/.test(regionalReference.sha256 ?? "") ||
+      regionalDigests.has(regionalReference.sha256) ||
       !["passed", "regional_check_failed"].includes(regionalReference.verdict)
     )
       return false;
     attemptIds.add(attempt.attemptId);
+    garmentIds.add(attempt.garment.garmentId);
+    garmentDigests.add(attempt.garment.sha256);
+    resultDigests.add(result.sha256);
+    regionalDigests.add(regionalReference.sha256);
     const trace = runtimeTrace.filter(
       (entry) => entry?.attemptId === attempt.attemptId,
     );
