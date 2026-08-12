@@ -336,6 +336,37 @@ describe("full workflow evidence manifest", () => {
     );
   });
 
+  it("owns both case-scoped regional sidecars in the AI artifact tree", () => {
+    const temp = root();
+    const artifacts = join(temp, "artifacts");
+    const short = join(artifacts, "regional", "short");
+    const long = join(artifacts, "regional", "long");
+    mkdirSync(short, { recursive: true });
+    mkdirSync(long, { recursive: true });
+    const report = join(temp, "ai-virtual-try-on.json");
+    writeFileSync(report, '{"runtimeTrace":[{"id":"ai-trace"}]}\n');
+    writeFileSync(join(artifacts, "runtime.log"), "ok\n");
+    const support =
+      '{"kind":"regional-evidence","schemaVersion":"vem-ai-regional-evidence/v1"}\n';
+    writeFileSync(join(short, "short-attempt.regional-evidence.json"), support);
+    writeFileSync(join(long, "long-attempt.regional-evidence.json"), support);
+
+    const manifest = buildFullWorkflowEvidenceManifest({
+      tracks: [
+        { key: "aiVirtualTryOn", reportPath: report, artifactRoot: artifacts },
+      ],
+    });
+
+    assert.equal(manifest.ok, true, JSON.stringify(manifest.failures));
+    assert.equal(
+      manifest.files.filter(
+        (file) =>
+          file.track === "aiVirtualTryOn" && file.kind === "supportingEvidence",
+      ).length,
+      2,
+    );
+  });
+
   it("rejects an artifact symlink that escapes its declared root", () => {
     const temp = root();
     const artifacts = join(temp, "artifacts");

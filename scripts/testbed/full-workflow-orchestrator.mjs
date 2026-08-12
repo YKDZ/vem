@@ -1493,12 +1493,17 @@ export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
     ...plan.tracks
       .filter((track) => track.key === "aiVirtualTryOn")
       .flatMap((track) => {
-        const regional = validateAiRegionalEvidence(
-          jsonIfPresent(track.reportPath),
-          track.artifactRoot,
-          evidenceManifest,
+        const report = jsonIfPresent(track.reportPath);
+        return (Array.isArray(report?.attempts) ? report.attempts : []).flatMap(
+          (attempt) => {
+            const regional = validateAiRegionalEvidence(
+              attempt,
+              track.artifactRoot,
+              evidenceManifest,
+            );
+            return regional.ok ? [] : [regional.reason];
+          },
         );
-        return regional.ok ? [] : [regional.reason];
       }),
   ];
   const aggregate = buildFullWorkflowAggregate({

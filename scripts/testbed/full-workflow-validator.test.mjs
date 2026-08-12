@@ -142,8 +142,55 @@ function visionExperienceReport() {
 }
 
 function aiVirtualTryOnReport() {
+  const attempt = ({ caseKey, template, attemptId, suffix }) => ({
+    attemptId,
+    caseKey,
+    template,
+    mode: "ai",
+    stateTrace: ["acquiring", "generating", "completed"],
+    input: { contentType: "image/png", sha256: suffix.repeat(64) },
+    garment: {
+      contentType: "image/png",
+      garmentId: `garment-${caseKey}`,
+      sha256: String(Number(suffix) + 1).repeat(64),
+    },
+    result: {
+      contentType: "image/png",
+      decodedWidth: 768,
+      decodedHeight: 1024,
+      durationMs: 12_000,
+      peakRssBytes: 512 * 1024 * 1024,
+      sha256: String(Number(suffix) + 2).repeat(64),
+    },
+    outputFacts: {
+      decodable: true,
+      differsFromGarment: true,
+      differsFromInput: true,
+      nonPlaceholder: true,
+    },
+    regionalEvidence: {
+      path: `regional/${caseKey}/${attemptId}.regional-evidence.json`,
+      schemaVersion: "vem-ai-regional-evidence-reference/v1",
+      sha256: String(Number(suffix) + 3).repeat(64),
+      verdict: "passed",
+    },
+  });
+  const attempts = [
+    attempt({
+      caseKey: "short",
+      template: "tshirt_short_sleeve",
+      attemptId: "0198f44e-21bd-7c62-8f52-b7c86cc2b001",
+      suffix: "1",
+    }),
+    attempt({
+      caseKey: "long",
+      template: "tshirt_long_sleeve",
+      attemptId: "0198f44e-21bd-7c62-8f52-b7c86cc2b002",
+      suffix: "5",
+    }),
+  ];
   return {
-    schemaVersion: "vem-ai-virtual-try-on-acceptance/v1",
+    schemaVersion: "vem-ai-virtual-try-on-acceptance/v2",
     ok: true,
     execution: {
       source: "installed_machine_ui_cdp",
@@ -157,36 +204,7 @@ function aiVirtualTryOnReport() {
         modelPack: "sha256:" + "4".repeat(64),
       },
     },
-    attempt: {
-      mode: "ai",
-      stateTrace: ["acquiring", "generating", "completed"],
-      input: { contentType: "image/png", sha256: "5".repeat(64) },
-      garment: {
-        contentType: "image/png",
-        garmentId: "garment-1",
-        sha256: "6".repeat(64),
-      },
-      result: {
-        contentType: "image/png",
-        decodedWidth: 768,
-        decodedHeight: 1024,
-        durationMs: 12_000,
-        peakRssBytes: 512 * 1024 * 1024,
-        sha256: "7".repeat(64),
-      },
-    },
-    outputFacts: {
-      decodable: true,
-      differsFromGarment: true,
-      differsFromInput: true,
-      nonPlaceholder: true,
-    },
-    regionalEvidence: {
-      path: "regional-evidence.json",
-      schemaVersion: "vem-ai-regional-evidence-reference/v1",
-      sha256: "9".repeat(64),
-      verdict: "passed",
-    },
+    attempts,
     postAi: {
       browseAvailable: true,
       saleAvailable: true,
@@ -205,7 +223,13 @@ function aiVirtualTryOnReport() {
         },
       ]),
     ),
-    runtimeTrace: [{ id: "ai-trace-1", mode: "ai" }],
+    runtimeTrace: attempts.flatMap((value) =>
+      value.stateTrace.map((state) => ({
+        attemptId: value.attemptId,
+        mode: "ai",
+        state,
+      })),
+    ),
   };
 }
 
@@ -1269,7 +1293,7 @@ function passingExecution(descriptors) {
 describe("full workflow aggregate validator", () => {
   it("rejects an AI report without independently owned regional evidence", () => {
     const report = aiVirtualTryOnReport();
-    delete report.regionalEvidence;
+    delete report.attempts[0].regionalEvidence;
     assert.equal(
       validateBusinessCheckReport(
         descriptor("aiVirtualTryOn"),
@@ -1299,17 +1323,50 @@ describe("full workflow aggregate validator", () => {
     ["a non-V2 protocol", (report) => (report.execution.protocol = "legacy")],
     [
       "an incomplete state trace",
-      (report) => (report.attempt.stateTrace = ["acquiring", "completed"]),
+      (report) => (report.attempts[0].stateTrace = ["acquiring", "completed"]),
     ],
     [
       "a missing output truth",
-      (report) => (report.outputFacts.nonPlaceholder = false),
+      (report) => (report.attempts[0].outputFacts.nonPlaceholder = false),
     ],
     [
       "a sale-impacting missing pack",
       (report) => (report.degradations.missingPack.saleAvailable = false),
     ],
     ["an unknown report field", (report) => (report.selfAsserted = true)],
+    [
+      "the retired v1 schema",
+      (report) =>
+        (report.schemaVersion = "vem-ai-virtual-try-on-acceptance/v1"),
+    ],
+    ["a missing garment case", (report) => report.attempts.pop()],
+    [
+      "an extra garment case",
+      (report) => report.attempts.push(structuredClone(report.attempts[0])),
+    ],
+    ["a duplicate case", (report) => (report.attempts[1].caseKey = "short")],
+    [
+      "a duplicate template",
+      (report) => (report.attempts[1].template = "tshirt_short_sleeve"),
+    ],
+    [
+      "a duplicate attempt identity",
+      (report) => (report.attempts[1].attemptId = report.attempts[0].attemptId),
+    ],
+    [
+      "a cross-attempt runtime trace",
+      (report) =>
+        (report.runtimeTrace[3].attemptId = report.attempts[0].attemptId),
+    ],
+    [
+      "a sidecar path outside its attempt",
+      (report) =>
+        (report.attempts[0].regionalEvidence.path = `regional/long/${report.attempts[0].attemptId}.regional-evidence.json`),
+    ],
+    [
+      "an unknown attempt field",
+      (report) => (report.attempts[0].selfAsserted = true),
+    ],
   ]) {
     it(`rejects ${label} in AI virtual try-on evidence`, () => {
       const report = aiVirtualTryOnReport();

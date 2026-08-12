@@ -192,11 +192,11 @@ function validateMeasurement(value, sampledPixels, label) {
 }
 
 export function validateAiRegionalEvidence(
-  report,
+  attempt,
   artifactRoot,
   evidenceManifest = null,
 ) {
-  const reference = report?.regionalEvidence;
+  const reference = attempt?.regionalEvidence;
   if (
     !exact(reference, ["path", "schemaVersion", "sha256", "verdict"]) ||
     reference.schemaVersion !== REPORT_SCHEMA ||
@@ -207,9 +207,13 @@ export function validateAiRegionalEvidence(
   if (
     typeof artifactRoot !== "string" ||
     !isAbsolute(artifactRoot) ||
+    typeof attempt?.attemptId !== "string" ||
+    typeof attempt?.caseKey !== "string" ||
     typeof reference.path !== "string" ||
     reference.path === "" ||
-    isAbsolute(reference.path)
+    isAbsolute(reference.path) ||
+    reference.path !==
+      `regional/${attempt.caseKey}/${attempt.attemptId}.regional-evidence.json`
   )
     return fail("AI regional evidence root or path is invalid");
   try {
@@ -270,12 +274,11 @@ export function validateAiRegionalEvidence(
         "resultSha256",
         "sourceCamera",
       ]) ||
-      sidecar.attempt.inputSha256 !== report?.attempt?.input?.sha256 ||
-      sidecar.attempt.garmentSha256 !== report?.attempt?.garment?.sha256 ||
-      sidecar.attempt.resultSha256 !== report?.attempt?.result?.sha256 ||
-      sidecar.attempt.decodedWidth !== report?.attempt?.result?.decodedWidth ||
-      sidecar.attempt.decodedHeight !==
-        report?.attempt?.result?.decodedHeight ||
+      sidecar.attempt.inputSha256 !== attempt?.input?.sha256 ||
+      sidecar.attempt.garmentSha256 !== attempt?.garment?.sha256 ||
+      sidecar.attempt.resultSha256 !== attempt?.result?.sha256 ||
+      sidecar.attempt.decodedWidth !== attempt?.result?.decodedWidth ||
+      sidecar.attempt.decodedHeight !== attempt?.result?.decodedHeight ||
       sidecar.attempt.sourceCamera !== "front" ||
       sidecar.attempt.acquisitionSource !== "direct_recorded_frame" ||
       !DIGEST.test(sidecar.attempt.recordedFixtureSha256 ?? "") ||

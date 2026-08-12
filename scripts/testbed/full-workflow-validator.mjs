@@ -206,12 +206,9 @@ function exactKeys(value, keys) {
 function validateAiVirtualTryOnTrack(report, reportPath) {
   const execution = report?.execution;
   const identities = execution?.identities;
-  const attempt = report?.attempt;
-  const result = attempt?.result;
-  const output = report?.outputFacts;
+  const attempts = report?.attempts;
   const postAi = report?.postAi;
   const degradations = report?.degradations;
-  const regionalReference = report?.regionalEvidence;
   const digest = (value) => /^sha256:[a-f0-9]{64}$/.test(value ?? "");
   const degradationExact = (value) =>
     exactKeys(value, [
@@ -232,17 +229,15 @@ function validateAiVirtualTryOnTrack(report, reportPath) {
     ].every((fact) => fact === true);
   const complete =
     exactKeys(report, [
-      "attempt",
+      "attempts",
       "degradations",
       "execution",
       "ok",
-      "outputFacts",
       "postAi",
-      "regionalEvidence",
       "runtimeTrace",
       "schemaVersion",
     ]) &&
-    report.schemaVersion === "vem-ai-virtual-try-on-acceptance/v1" &&
+    report.schemaVersion === "vem-ai-virtual-try-on-acceptance/v2" &&
     report.ok === true &&
     exactKeys(execution, [
       "identities",
@@ -258,45 +253,6 @@ function validateAiVirtualTryOnTrack(report, reportPath) {
       JSON.stringify(["front", "top"]) &&
     exactKeys(identities, ["aiRuntime", "contract", "modelPack", "runtime"]) &&
     Object.values(identities).every(digest) &&
-    exactKeys(attempt, ["garment", "input", "mode", "result", "stateTrace"]) &&
-    attempt.mode === "ai" &&
-    JSON.stringify(attempt.stateTrace) ===
-      JSON.stringify(["acquiring", "generating", "completed"]) &&
-    exactKeys(attempt.input, ["contentType", "sha256"]) &&
-    attempt.input.contentType === "image/png" &&
-    /^[a-f0-9]{64}$/.test(attempt.input.sha256 ?? "") &&
-    exactKeys(attempt.garment, ["contentType", "garmentId", "sha256"]) &&
-    typeof attempt.garment.garmentId === "string" &&
-    attempt.garment.garmentId.length > 0 &&
-    attempt.garment.contentType === "image/png" &&
-    /^[a-f0-9]{64}$/.test(attempt.garment.sha256 ?? "") &&
-    exactKeys(result, [
-      "contentType",
-      "decodedHeight",
-      "decodedWidth",
-      "durationMs",
-      "peakRssBytes",
-      "sha256",
-    ]) &&
-    result.contentType === "image/png" &&
-    Number.isSafeInteger(result.decodedWidth) &&
-    result.decodedWidth > 0 &&
-    Number.isSafeInteger(result.decodedHeight) &&
-    result.decodedHeight > 0 &&
-    Number.isSafeInteger(result.durationMs) &&
-    result.durationMs > 0 &&
-    Number.isSafeInteger(result.peakRssBytes) &&
-    result.peakRssBytes > 0 &&
-    /^[a-f0-9]{64}$/.test(result.sha256 ?? "") &&
-    result.sha256 !== attempt.input.sha256 &&
-    result.sha256 !== attempt.garment.sha256 &&
-    exactKeys(output, [
-      "decodable",
-      "differsFromGarment",
-      "differsFromInput",
-      "nonPlaceholder",
-    ]) &&
-    Object.values(output).every((fact) => fact === true) &&
     exactKeys(postAi, [
       "browseAvailable",
       "ordinarySaleCompleted",
@@ -305,26 +261,24 @@ function validateAiVirtualTryOnTrack(report, reportPath) {
     Object.values(postAi).every((fact) => fact === true) &&
     exactKeys(degradations, ["corruptPack", "missingPack", "workerFailure"]) &&
     Object.values(degradations).every(degradationExact) &&
+    Array.isArray(attempts) &&
+    attempts.length === 2 &&
     Array.isArray(report.runtimeTrace) &&
-    report.runtimeTrace.length > 0 &&
-    exactKeys(regionalReference, [
-      "path",
-      "schemaVersion",
-      "sha256",
-      "verdict",
-    ]) &&
-    regionalReference.schemaVersion ===
-      "vem-ai-regional-evidence-reference/v1" &&
-    typeof regionalReference.path === "string" &&
-    regionalReference.path.length > 0 &&
-    /^[a-f0-9]{64}$/.test(regionalReference.sha256 ?? "") &&
-    ["passed", "regional_check_failed"].includes(regionalReference.verdict);
+    validateAiAttemptSet(attempts, report.runtimeTrace);
+  const results = Array.isArray(attempts)
+    ? attempts.map((attempt) => attempt.result)
+    : [];
   return complete
     ? passedTrack("aiVirtualTryOn", "AI virtual try-on", reportPath, {
-        decodedWidth: result.decodedWidth,
-        decodedHeight: result.decodedHeight,
-        durationMs: result.durationMs,
-        peakRssBytes: result.peakRssBytes,
+        attempts: attempts.map((attempt) => ({
+          attemptId: attempt.attemptId,
+          caseKey: attempt.caseKey,
+          template: attempt.template,
+        })),
+        decodedWidth: results[0].decodedWidth,
+        decodedHeight: results[0].decodedHeight,
+        durationMs: Math.max(...results.map((result) => result.durationMs)),
+        peakRssBytes: Math.max(...results.map((result) => result.peakRssBytes)),
       })
     : failedTrack(
         "aiVirtualTryOn",
@@ -333,6 +287,109 @@ function validateAiVirtualTryOnTrack(report, reportPath) {
         "AI virtual try-on acceptance evidence is incomplete",
         report ?? null,
       );
+}
+
+function validateAiAttemptSet(attempts, runtimeTrace) {
+  const expected = [
+    ["short", "tshirt_short_sleeve"],
+    ["long", "tshirt_long_sleeve"],
+  ];
+  const attemptIds = new Set();
+  for (let index = 0; index < expected.length; index += 1) {
+    const attempt = attempts[index];
+    const result = attempt?.result;
+    const regionalReference = attempt?.regionalEvidence;
+    const [caseKey, template] = expected[index];
+    if (
+      !exactKeys(attempt, [
+        "attemptId",
+        "caseKey",
+        "garment",
+        "input",
+        "mode",
+        "outputFacts",
+        "regionalEvidence",
+        "result",
+        "stateTrace",
+        "template",
+      ]) ||
+      attempt.caseKey !== caseKey ||
+      attempt.template !== template ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+        attempt.attemptId ?? "",
+      ) ||
+      attemptIds.has(attempt.attemptId) ||
+      attempt.mode !== "ai" ||
+      JSON.stringify(attempt.stateTrace) !==
+        JSON.stringify(["acquiring", "generating", "completed"]) ||
+      !exactKeys(attempt.input, ["contentType", "sha256"]) ||
+      attempt.input.contentType !== "image/png" ||
+      !/^[a-f0-9]{64}$/.test(attempt.input.sha256 ?? "") ||
+      !exactKeys(attempt.garment, ["contentType", "garmentId", "sha256"]) ||
+      typeof attempt.garment.garmentId !== "string" ||
+      attempt.garment.garmentId.length === 0 ||
+      attempt.garment.contentType !== "image/png" ||
+      !/^[a-f0-9]{64}$/.test(attempt.garment.sha256 ?? "") ||
+      !exactKeys(result, [
+        "contentType",
+        "decodedHeight",
+        "decodedWidth",
+        "durationMs",
+        "peakRssBytes",
+        "sha256",
+      ]) ||
+      result.contentType !== "image/png" ||
+      !Number.isSafeInteger(result.decodedWidth) ||
+      result.decodedWidth <= 0 ||
+      !Number.isSafeInteger(result.decodedHeight) ||
+      result.decodedHeight <= 0 ||
+      !Number.isSafeInteger(result.durationMs) ||
+      result.durationMs <= 0 ||
+      !Number.isSafeInteger(result.peakRssBytes) ||
+      result.peakRssBytes <= 0 ||
+      !/^[a-f0-9]{64}$/.test(result.sha256 ?? "") ||
+      result.sha256 === attempt.input.sha256 ||
+      result.sha256 === attempt.garment.sha256 ||
+      !exactKeys(attempt.outputFacts, [
+        "decodable",
+        "differsFromGarment",
+        "differsFromInput",
+        "nonPlaceholder",
+      ]) ||
+      !Object.values(attempt.outputFacts).every((fact) => fact === true) ||
+      !exactKeys(regionalReference, [
+        "path",
+        "schemaVersion",
+        "sha256",
+        "verdict",
+      ]) ||
+      regionalReference.schemaVersion !==
+        "vem-ai-regional-evidence-reference/v1" ||
+      regionalReference.path !==
+        `regional/${caseKey}/${attempt.attemptId}.regional-evidence.json` ||
+      !/^[a-f0-9]{64}$/.test(regionalReference.sha256 ?? "") ||
+      !["passed", "regional_check_failed"].includes(regionalReference.verdict)
+    )
+      return false;
+    attemptIds.add(attempt.attemptId);
+    const trace = runtimeTrace.filter(
+      (entry) => entry?.attemptId === attempt.attemptId,
+    );
+    if (
+      trace.length !== 3 ||
+      trace.some(
+        (entry, stateIndex) =>
+          !exactKeys(entry, ["attemptId", "mode", "state"]) ||
+          entry.mode !== "ai" ||
+          entry.state !== attempt.stateTrace[stateIndex],
+      )
+    )
+      return false;
+  }
+  return (
+    runtimeTrace.length === 6 &&
+    runtimeTrace.every((entry) => attemptIds.has(entry?.attemptId))
+  );
 }
 
 function validateScannerTrack(report, reportPath) {

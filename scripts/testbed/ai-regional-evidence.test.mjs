@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 
 import {
@@ -13,6 +13,7 @@ import {
 } from "./ai-regional-evidence.mjs";
 
 const roots = [];
+const ATTEMPT_ID = "0198f44e-21bd-7c62-8f52-b7c86cc2b001";
 afterEach(() => {
   for (const root of roots.splice(0))
     rmSync(root, { recursive: true, force: true });
@@ -91,22 +92,25 @@ function reportFixture(root, mutate = () => undefined) {
   const sidecar = sidecarFixture();
   mutate(sidecar);
   const raw = `${JSON.stringify(canonical(sidecar))}\n`;
-  const path = join(root, "regional-evidence.json");
+  const relativePath = `regional/short/${ATTEMPT_ID}.regional-evidence.json`;
+  const path = join(root, relativePath);
+  mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, raw);
   const sha256 = createHash("sha256").update(raw).digest("hex");
   return {
-    report: {
-      attempt: {
-        garment: { sha256: "6".repeat(64) },
-        input: { sha256: "5".repeat(64) },
-        result: {
-          decodedHeight: 32,
-          decodedWidth: 40,
-          sha256: "7".repeat(64),
-        },
+    attempt: {
+      attemptId: ATTEMPT_ID,
+      caseKey: "short",
+      template: "tshirt_short_sleeve",
+      garment: { sha256: "6".repeat(64) },
+      input: { sha256: "5".repeat(64) },
+      result: {
+        decodedHeight: 32,
+        decodedWidth: 40,
+        sha256: "7".repeat(64),
       },
       regionalEvidence: {
-        path: "regional-evidence.json",
+        path: relativePath,
         schemaVersion: "vem-ai-regional-evidence-reference/v1",
         sha256,
         verdict: sidecar.verdict,
@@ -197,18 +201,45 @@ describe("AI regional evidence", () => {
 
   it("validates all stable facts but remains failclosed before Issue10 calibration", () => {
     const root = fixtureRoot();
-    const { report, manifest } = reportFixture(root);
-    const result = validateAiRegionalEvidence(report, root, manifest);
+    const { attempt, manifest } = reportFixture(root);
+    const result = validateAiRegionalEvidence(attempt, root, manifest);
     assert.equal(result.ok, false);
     assert.match(result.reason, /awaits Issue10 two-garment calibration/);
   });
 
   it("requires the sidecar to be owned by the evidence manifest", () => {
     const root = fixtureRoot();
-    const { report } = reportFixture(root);
-    const result = validateAiRegionalEvidence(report, root, { files: [] });
+    const { attempt } = reportFixture(root);
+    const result = validateAiRegionalEvidence(attempt, root, { files: [] });
     assert.equal(result.ok, false);
     assert.match(result.reason, /not manifest-owned/);
+  });
+
+  it("binds each sidecar path and dimensions to its report attempt", () => {
+    const root = fixtureRoot();
+    const { attempt, manifest } = reportFixture(root);
+    attempt.regionalEvidence.path = `regional/long/${ATTEMPT_ID}.regional-evidence.json`;
+    assert.match(
+      validateAiRegionalEvidence(attempt, root, manifest).reason,
+      /root or path is invalid/,
+    );
+
+    const fresh = reportFixture(root);
+    fresh.attempt.result.decodedWidth += 1;
+    assert.match(
+      validateAiRegionalEvidence(fresh.attempt, root, fresh.manifest).reason,
+      /identity or schema mismatched/,
+    );
+  });
+
+  it("rejects manifest ownership attributed to another track", () => {
+    const root = fixtureRoot();
+    const { attempt, manifest } = reportFixture(root);
+    manifest.files[0].track = "visionExperience";
+    assert.match(
+      validateAiRegionalEvidence(attempt, root, manifest).reason,
+      /not manifest-owned/,
+    );
   });
 
   for (const [label, mutate, reason] of [
@@ -256,8 +287,8 @@ describe("AI regional evidence", () => {
   ]) {
     it(`rejects ${label}`, () => {
       const root = fixtureRoot();
-      const { report, manifest } = reportFixture(root, mutate);
-      const result = validateAiRegionalEvidence(report, root, manifest);
+      const { attempt, manifest } = reportFixture(root, mutate);
+      const result = validateAiRegionalEvidence(attempt, root, manifest);
       assert.equal(result.ok, false);
       assert.match(result.reason, reason);
     });
@@ -265,13 +296,13 @@ describe("AI regional evidence", () => {
 
   it("rejects digest mismatch and traversal", () => {
     const root = fixtureRoot();
-    const { report, manifest } = reportFixture(root);
-    report.regionalEvidence.sha256 = "0".repeat(64);
+    const { attempt, manifest } = reportFixture(root);
+    attempt.regionalEvidence.sha256 = "0".repeat(64);
     assert.match(
-      validateAiRegionalEvidence(report, root, manifest).reason,
+      validateAiRegionalEvidence(attempt, root, manifest).reason,
       /digest mismatched/,
     );
-    report.regionalEvidence.path = "../regional-evidence.json";
-    assert.equal(validateAiRegionalEvidence(report, root, manifest).ok, false);
+    attempt.regionalEvidence.path = "../regional-evidence.json";
+    assert.equal(validateAiRegionalEvidence(attempt, root, manifest).ok, false);
   });
 });
