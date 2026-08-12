@@ -8,27 +8,6 @@ const POLICY_PATH = resolve(MODULE_ROOT, "ai-regional-evidence-policy.json");
 const SIDECAR_SCHEMA = "vem-ai-regional-evidence/v1";
 const REPORT_SCHEMA = "vem-ai-regional-evidence-reference/v1";
 const DIGEST = /^[a-f0-9]{64}$/;
-const POLICY_RAW = readFileSync(POLICY_PATH, "utf8");
-const POLICY_VALUE = JSON.parse(POLICY_RAW);
-if (
-  `${JSON.stringify(canonical(POLICY_VALUE), null, 2)}\n` !== POLICY_RAW ||
-  !exact(POLICY_VALUE, [
-    "algorithm",
-    "atrEvaluator",
-    "calibrationStatus",
-    "lipEvaluator",
-    "minimumUpperBodySampledPixels",
-    "poseEvaluator",
-    "schemaVersion",
-    "sourceDescriptorSha256",
-  ]) ||
-  POLICY_VALUE.calibrationStatus !== "pending_issue10_two_garment"
-)
-  throw new Error("AI regional evidence policy authority is invalid");
-export const AI_REGIONAL_EVIDENCE_POLICY = Object.freeze(POLICY_VALUE);
-export const AI_REGIONAL_EVIDENCE_POLICY_SHA256 = createHash("sha256")
-  .update(POLICY_RAW)
-  .digest("hex");
 
 function exact(value, keys) {
   return (
@@ -50,6 +29,81 @@ function canonical(value) {
     );
   return value;
 }
+
+function canonicalJson(value) {
+  return `${JSON.stringify(canonical(value), null, 2)}\n`;
+}
+
+export function loadAiRegionalEvidencePolicy(path = POLICY_PATH) {
+  const raw = readFileSync(path, "utf8");
+  let value;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    throw new Error("AI regional evidence policy is invalid JSON");
+  }
+  const common = [
+    "algorithm",
+    "atrEvaluator",
+    "calibrationStatus",
+    "lipEvaluator",
+    "minimumUpperBodySampledPixels",
+    "poseEvaluator",
+    "schemaVersion",
+    "sourceDescriptorSha256",
+  ];
+  const calibrated = [
+    ...common,
+    "maximumProtectedChangedFractionBps",
+    "maximumProtectedMeanDelta",
+    "minimumUpperBodyChangedFractionBps",
+    "minimumUpperBodyMeanDelta",
+  ];
+  if (
+    raw !== canonicalJson(value) ||
+    value?.schemaVersion !== "vem-ai-regional-evidence-policy/v1" ||
+    value?.algorithm !== "rgb-absolute-delta-rle/v1" ||
+    value?.atrEvaluator !== "schp-atr" ||
+    value?.lipEvaluator !== "schp-lip" ||
+    value?.poseEvaluator !== "mediapipe-pose" ||
+    !DIGEST.test(value?.sourceDescriptorSha256 ?? "") ||
+    value.minimumUpperBodySampledPixels !== 1024 ||
+    !["pending_issue10_two_garment", "calibrated_issue10"].includes(
+      value.calibrationStatus,
+    ) ||
+    !exact(
+      value,
+      value.calibrationStatus === "calibrated_issue10" ? calibrated : common,
+    )
+  )
+    throw new Error("AI regional evidence policy authority is invalid");
+  if (value.calibrationStatus === "calibrated_issue10") {
+    for (const key of [
+      "minimumUpperBodyChangedFractionBps",
+      "maximumProtectedChangedFractionBps",
+    ])
+      if (!safeInteger(value[key], 0, 10_000))
+        throw new Error(
+          "AI regional evidence calibrated policy thresholds are invalid",
+        );
+    for (const key of [
+      "minimumUpperBodyMeanDelta",
+      "maximumProtectedMeanDelta",
+    ])
+      if (!safeInteger(value[key], 0, 255))
+        throw new Error(
+          "AI regional evidence calibrated policy thresholds are invalid",
+        );
+  }
+  return Object.freeze({
+    ...value,
+    sha256: createHash("sha256").update(raw).digest("hex"),
+  });
+}
+
+export const AI_REGIONAL_EVIDENCE_POLICY = loadAiRegionalEvidencePolicy();
+export const AI_REGIONAL_EVIDENCE_POLICY_SHA256 =
+  AI_REGIONAL_EVIDENCE_POLICY.sha256;
 
 function within(root, candidate) {
   const child = relative(root, candidate);
@@ -195,6 +249,7 @@ export function validateAiRegionalEvidence(
   attempt,
   artifactRoot,
   evidenceManifest = null,
+  policy = AI_REGIONAL_EVIDENCE_POLICY,
 ) {
   const reference = attempt?.regionalEvidence;
   if (
@@ -289,16 +344,15 @@ export function validateAiRegionalEvidence(
         "pose",
         "sourceDescriptorSha256",
       ]) ||
-      sidecar.evaluator.algorithm !== AI_REGIONAL_EVIDENCE_POLICY.algorithm ||
-      sidecar.evaluator.atr !== AI_REGIONAL_EVIDENCE_POLICY.atrEvaluator ||
-      sidecar.evaluator.lip !== AI_REGIONAL_EVIDENCE_POLICY.lipEvaluator ||
-      sidecar.evaluator.pose !== AI_REGIONAL_EVIDENCE_POLICY.poseEvaluator ||
+      sidecar.evaluator.algorithm !== policy.algorithm ||
+      sidecar.evaluator.atr !== policy.atrEvaluator ||
+      sidecar.evaluator.lip !== policy.lipEvaluator ||
+      sidecar.evaluator.pose !== policy.poseEvaluator ||
       sidecar.evaluator.sourceDescriptorSha256 !==
-        AI_REGIONAL_EVIDENCE_POLICY.sourceDescriptorSha256 ||
+        policy.sourceDescriptorSha256 ||
       !exact(sidecar.policy, ["sha256", "schemaVersion"]) ||
-      sidecar.policy.schemaVersion !==
-        AI_REGIONAL_EVIDENCE_POLICY.schemaVersion ||
-      sidecar.policy.sha256 !== AI_REGIONAL_EVIDENCE_POLICY_SHA256 ||
+      sidecar.policy.schemaVersion !== policy.schemaVersion ||
+      sidecar.policy.sha256 !== policy.sha256 ||
       !exact(sidecar.masks, [
         "height",
         "protectedRegion",
@@ -331,17 +385,38 @@ export function validateAiRegionalEvidence(
         protectedPixels.length,
         "protectedRegion",
       ) ||
-      sidecar.verdict !== reference.verdict ||
-      sidecar.verdict !==
-        (sidecar.measurements.upperBody.verdict === "changed" &&
-        sidecar.measurements.protectedRegion.verdict === "preserved"
-          ? "passed"
-          : "regional_check_failed")
+      !["passed", "regional_check_failed"].includes(sidecar.verdict)
     )
       return fail("AI regional evidence measurement or verdict contradicted");
-    if (AI_REGIONAL_EVIDENCE_POLICY.calibrationStatus !== "calibrated_issue10")
+    if (
+      policy.calibrationStatus === "pending_issue10_two_garment" &&
+      (sidecar.verdict !== reference.verdict ||
+        sidecar.verdict !==
+          (sidecar.measurements.upperBody.verdict === "changed" &&
+          sidecar.measurements.protectedRegion.verdict === "preserved"
+            ? "passed"
+            : "regional_check_failed"))
+    )
+      return fail("AI regional evidence measurement or verdict contradicted");
+    if (policy.calibrationStatus !== "calibrated_issue10")
       return fail(
         "AI regional evidence policy awaits Issue10 two-garment calibration",
+      );
+    const upperChanged =
+      sidecar.measurements.upperBody.sampledPixels >=
+        policy.minimumUpperBodySampledPixels &&
+      sidecar.measurements.upperBody.changedFractionBps >=
+        policy.minimumUpperBodyChangedFractionBps &&
+      sidecar.measurements.upperBody.meanDelta >=
+        policy.minimumUpperBodyMeanDelta;
+    const protectedPreserved =
+      sidecar.measurements.protectedRegion.changedFractionBps <=
+        policy.maximumProtectedChangedFractionBps &&
+      sidecar.measurements.protectedRegion.meanDelta <=
+        policy.maximumProtectedMeanDelta;
+    if (!upperChanged || !protectedPreserved)
+      return fail(
+        "AI regional evidence calibrated policy thresholds were not met",
       );
     return { ok: true, reason: null };
   } catch (error) {
@@ -355,6 +430,7 @@ export function validateAiRegionalEvidenceSet(
   attempts,
   artifactRoot,
   evidenceManifest = null,
+  policy = AI_REGIONAL_EVIDENCE_POLICY,
 ) {
   if (!Array.isArray(attempts) || attempts.length !== 2)
     return fail("AI regional evidence attempt set is invalid");
@@ -382,6 +458,7 @@ export function validateAiRegionalEvidenceSet(
       attempt,
       artifactRoot,
       evidenceManifest,
+      policy,
     );
     if (
       result.reason ===
