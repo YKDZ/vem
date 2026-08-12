@@ -34,6 +34,18 @@ function canonicalJson(value) {
   return `${JSON.stringify(canonical(value), null, 2)}\n`;
 }
 
+export function normalizeAiRegionalSha256(
+  value,
+  label,
+  { prefixed = false } = {},
+) {
+  if (typeof value !== "string") throw new Error(`${label} digest is invalid`);
+  const expected = prefixed ? /^sha256:([a-f0-9]{64})$/ : /^([a-f0-9]{64})$/;
+  const matched = value.match(expected);
+  if (!matched) throw new Error(`${label} digest is invalid`);
+  return matched[1];
+}
+
 export function loadAiRegionalEvidencePolicy(path = POLICY_PATH) {
   const raw = readFileSync(path, "utf8");
   let value;

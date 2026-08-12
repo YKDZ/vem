@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -25,6 +25,14 @@ const cli = join(
   dirname(fileURLToPath(import.meta.url)),
   "calibrate-ai-regional-evidence.mjs",
 );
+const contractBundleDigest = readFileSync(
+  resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    "../../packages/shared/generated/vision-v2/manifest.json",
+  ),
+  "utf8",
+);
+const CONTRACT_BUNDLE_DIGEST = JSON.parse(contractBundleDigest).bundleDigest;
 const roots = [];
 
 afterEach(() => {
@@ -64,6 +72,16 @@ function rewriteInput(path, mutate) {
   const input = readJson(path);
   mutate(input);
   writeCanonical(path, input);
+}
+
+function rewriteBoundReport(input, mutate) {
+  const report = readJson(input.acceptanceReport.path);
+  mutate(report);
+  input.acceptanceReport.sha256 = writeCanonical(
+    input.acceptanceReport.path,
+    report,
+    { compact: true },
+  );
 }
 
 function calibrationFixture() {
@@ -168,47 +186,111 @@ function calibrationFixture() {
   };
   const manifestPath = join(root, "manifest.json");
   const manifestSha256 = writeCanonical(manifestPath, manifest);
-  const receipt = {
-    identityRoot: {
-      approvedPrecutoverSha256: "f".repeat(64),
-      releaseApprovalSha256: "a".repeat(64),
-      releaseSetSha256: "b".repeat(64),
-      runtimeArtifactsReceiptSha256: "c".repeat(64),
-    },
-    schemaVersion: "vem.precutover.ai.v2",
-    trustStatus: "pending_final_aggregate_approval",
-    windowsProof: {
-      authorityDescriptorSha256: "a".repeat(64),
+  const releasePath = join(root, "precutover-ai-proof.json");
+  const releaseSha256 = writeCanonical(
+    releasePath,
+    {
       candidate: {
         attestationBundleSha256: "d".repeat(64),
+        embeddedManifestSha256: "f".repeat(64),
+        sourceCommit: "b".repeat(40),
+        subjectSha256: "4".repeat(64),
         trustedBuilderEvidenceSha256: "e".repeat(64),
+        workerExecutableSha256: "5".repeat(64),
+        workerMode: "frozen-windows",
       },
       companion: {
         archiveSha256: "f".repeat(64),
         descriptorSha256: "a".repeat(64),
         sourceCommit: "b".repeat(40),
       },
-      proofAttestationBundleSha256: "b".repeat(64),
-      signedProofSha256: "c".repeat(64),
-      trustedProofEvidenceSha256: "d".repeat(64),
+      modelPack: {
+        archive: { byteSize: 1, sha256: "3".repeat(64) },
+        descriptorSha256: "7".repeat(64),
+        sourceRevision: "a".repeat(40),
+      },
+      probes: {},
+      resources: {
+        aiLockSha256: "8".repeat(64),
+        runtimeDescriptorSha256: "1".repeat(64),
+        sourceDescriptorSha256: "9".repeat(64),
+      },
+      schemaVersion: "vending-vision-precutover-proof/v2",
+    },
+    { compact: true },
+  );
+  const receipt = {
+    identityRoot: {
+      approvedPrecutoverSha256: `sha256:${"f".repeat(64)}`,
+      releaseApprovalSha256: `sha256:${"a".repeat(64)}`,
+      releaseSetSha256: `sha256:${"b".repeat(64)}`,
+      runtimeArtifactsReceiptSha256: `sha256:${"c".repeat(64)}`,
+    },
+    schemaVersion: "vem.precutover.ai.v2",
+    trustStatus: "pending_final_aggregate_approval",
+    windowsProof: {
+      authorityDescriptorSha256: `sha256:${"a".repeat(64)}`,
+      candidate: {
+        attestationBundleSha256: `sha256:${"d".repeat(64)}`,
+        trustedBuilderEvidenceSha256: `sha256:${"e".repeat(64)}`,
+      },
+      companion: {
+        archiveSha256: `sha256:${"f".repeat(64)}`,
+        descriptorSha256: `sha256:${"a".repeat(64)}`,
+        sourceCommit: "b".repeat(40),
+      },
+      proofAttestationBundleSha256: `sha256:${"b".repeat(64)}`,
+      signedProofSha256: `sha256:${releaseSha256}`,
+      trustedProofEvidenceSha256: `sha256:${"d".repeat(64)}`,
       workflowSha: "c".repeat(40),
     },
   };
   const receiptPath = join(root, "precutover.json");
-  const receiptSha256 = writeCanonical(receiptPath, receipt);
-  const releasePath = join(root, "release.json");
-  const releaseSha256 = writeCanonical(releasePath, {
-    aiRuntimeSha256: "1".repeat(64),
-    contractBundleSha256: "2".repeat(64),
-    modelPackSha256: "3".repeat(64),
-    precutoverReceiptSha256: receiptSha256,
-    runtimeSha256: "4".repeat(64),
-    schemaVersion: "vem-ai-regional-evidence-calibration-release/v1",
-    workerExecutableSha256: "5".repeat(64),
-  });
+  const receiptSha256 = writeCanonical(receiptPath, receipt, { compact: true });
+  const reportPath = join(root, "acceptance-report.json");
+  const reportSha256 = writeCanonical(
+    reportPath,
+    {
+      attempts: attempts.map(({ attempt }) => attempt),
+      execution: {
+        identities: {
+          aiRuntime: `sha256:${"1".repeat(64)}`,
+          contract: `sha256:${CONTRACT_BUNDLE_DIGEST}`,
+          modelPack: `sha256:${"3".repeat(64)}`,
+          runtime: `sha256:${"4".repeat(64)}`,
+        },
+        noDirectWorker: true,
+        protocol: "vem.vision.v2",
+        recordedSources: ["front", "top"],
+        source: "installed_machine_ui_cdp",
+      },
+      schemaVersion: "vem-ai-virtual-try-on-acceptance/v2",
+    },
+    { compact: true },
+  );
+  const recoveryPath = join(root, "recovery.json");
+  const recoverySha256 = writeCanonical(
+    recoveryPath,
+    {
+      facts: {
+        recovery: {
+          aiReadinessDiagnostic: "ready",
+          aiReady: true,
+          modelPackSha256: "3".repeat(64),
+          runtimeDescriptorSha256: "1".repeat(64),
+          sourceCommit: "b".repeat(40),
+          workerExecutableSha256: "5".repeat(64),
+        },
+      },
+      kind: "installed-runtime",
+      schemaVersion: "vem.testbed.ai-virtual-try-on-support.v1",
+    },
+    { compact: true },
+  );
   const inputPath = join(root, "input.json");
   writeCanonical(inputPath, {
     artifactRoot,
+    acceptanceReport: { path: reportPath, sha256: reportSha256 },
     attempts: attempts.map(({ attempt, attemptSha256, caseKey }) => ({
       attempt,
       attemptSha256,
@@ -216,6 +298,7 @@ function calibrationFixture() {
     })),
     evidenceManifest: { path: manifestPath, sha256: manifestSha256 },
     precutoverReceipt: { path: receiptPath, sha256: receiptSha256 },
+    recoverySupport: { path: recoveryPath, sha256: recoverySha256 },
     releaseProof: { path: releasePath, sha256: releaseSha256 },
     schemaVersion: "vem-ai-regional-evidence-calibration-input/v1",
   });
@@ -265,7 +348,10 @@ describe("AI regional evidence calibration", () => {
   it("derives the same policy when the two canonical attempts are swapped", () => {
     const first = calibrationFixture();
     const second = calibrationFixture();
-    rewriteInput(second.inputPath, (input) => input.attempts.reverse());
+    rewriteInput(second.inputPath, (input) => {
+      input.attempts.reverse();
+      rewriteBoundReport(input, (report) => report.attempts.reverse());
+    });
     const firstPolicy = join(first.root, "policy.json");
     const secondPolicy = join(second.root, "policy.json");
     calibrateAiRegionalEvidence(
@@ -391,6 +477,66 @@ describe("AI regional evidence calibration", () => {
     }
   });
 
+  it("rejects a forged release proof even when its caller reference digest is refreshed", () => {
+    const fixture = calibrationFixture();
+    const input = readJson(fixture.inputPath);
+    const proof = readJson(input.releaseProof.path);
+    proof.resources.runtimeDescriptorSha256 = "0".repeat(64);
+    input.releaseProof.sha256 = writeCanonical(input.releaseProof.path, proof, {
+      compact: true,
+    });
+    writeCanonical(fixture.inputPath, input);
+    assert.throws(
+      () =>
+        calibrateAiRegionalEvidence(
+          fixture.inputPath,
+          join(fixture.root, "policy.json"),
+          join(fixture.root, "receipt.json"),
+        ),
+      /release proof digest does not bind trusted precutover receipt/,
+    );
+  });
+
+  it("rejects a forged acceptance release identity even when its caller digest is refreshed", () => {
+    const fixture = calibrationFixture();
+    const input = readJson(fixture.inputPath);
+    rewriteBoundReport(input, (report) => {
+      report.execution.identities.runtime = `sha256:${"0".repeat(64)}`;
+    });
+    writeCanonical(fixture.inputPath, input);
+    assert.throws(
+      () =>
+        calibrateAiRegionalEvidence(
+          fixture.inputPath,
+          join(fixture.root, "policy.json"),
+          join(fixture.root, "receipt.json"),
+        ),
+      /acceptance report release identities mismatched/,
+    );
+  });
+
+  it("rejects a forged recovery worker identity even when its caller digest is refreshed", () => {
+    const fixture = calibrationFixture();
+    const input = readJson(fixture.inputPath);
+    const recovery = readJson(input.recoverySupport.path);
+    recovery.facts.recovery.workerExecutableSha256 = "0".repeat(64);
+    input.recoverySupport.sha256 = writeCanonical(
+      input.recoverySupport.path,
+      recovery,
+      { compact: true },
+    );
+    writeCanonical(fixture.inputPath, input);
+    assert.throws(
+      () =>
+        calibrateAiRegionalEvidence(
+          fixture.inputPath,
+          join(fixture.root, "policy.json"),
+          join(fixture.root, "receipt.json"),
+        ),
+      /recovery support does not bind release proof/,
+    );
+  });
+
   it("rejects threshold calibration when protected facts are not actually preserved", () => {
     const fixture = calibrationFixture();
     const entry = fixture.attempts[0];
@@ -422,6 +568,9 @@ describe("AI regional evidence calibration", () => {
       input.evidenceManifest.path,
       manifest,
     );
+    rewriteBoundReport(input, (report) => {
+      report.attempts[0] = entry.attempt;
+    });
     writeCanonical(fixture.inputPath, input);
     assert.throws(
       () =>

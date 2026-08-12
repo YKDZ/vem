@@ -14,14 +14,18 @@ import { fileURLToPath } from "node:url";
 
 import {
   AI_REGIONAL_EVIDENCE_POLICY,
+  normalizeAiRegionalSha256,
   validateAiRegionalEvidenceSet,
 } from "./ai-regional-evidence.mjs";
 
 const DIGEST = /^[a-f0-9]{64}$/;
 const COMMIT = /^[a-f0-9]{40}$/;
 const INPUT_SCHEMA = "vem-ai-regional-evidence-calibration-input/v1";
-const RELEASE_SCHEMA = "vem-ai-regional-evidence-calibration-release/v1";
 const RECEIPT_SCHEMA = "vem-ai-regional-evidence-calibration-receipt/v1";
+const CONTRACT_PATH = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../packages/shared/generated/vision-v2/manifest.json",
+);
 
 function exact(value, keys) {
   return (
@@ -80,10 +84,10 @@ function requireDigest(value, label) {
   return value;
 }
 
-function readBoundCanonical(reference, label) {
+function readBoundCanonical(reference, label, options = undefined) {
   if (!exact(reference, ["path", "sha256"]))
     fail(`${label} reference is invalid`);
-  const parsed = readCanonical(reference.path, label);
+  const parsed = readCanonical(reference.path, label, options);
   if (sha256(parsed.raw) !== requireDigest(reference.sha256, label))
     fail(`${label} digest mismatched`);
   return parsed;
@@ -119,26 +123,89 @@ function writeExclusiveCanonical(path, value, label) {
   writeFileSync(path, canonicalBytes(value), { flag: "wx", mode: 0o600 });
 }
 
-function parseReleaseProof(value, receiptSha256) {
+function parseReleaseProof(value, receipt) {
   if (
     !exact(value, [
-      "aiRuntimeSha256",
-      "contractBundleSha256",
-      "modelPackSha256",
-      "precutoverReceiptSha256",
-      "runtimeSha256",
+      "candidate",
+      "companion",
+      "modelPack",
+      "probes",
+      "resources",
       "schemaVersion",
-      "workerExecutableSha256",
     ]) ||
-    value.schemaVersion !== RELEASE_SCHEMA ||
-    value.precutoverReceiptSha256 !== receiptSha256
+    value.schemaVersion !== "vending-vision-precutover-proof/v2" ||
+    !exact(value.candidate, [
+      "attestationBundleSha256",
+      "embeddedManifestSha256",
+      "sourceCommit",
+      "subjectSha256",
+      "trustedBuilderEvidenceSha256",
+      "workerExecutableSha256",
+      "workerMode",
+    ]) ||
+    !exact(value.companion, [
+      "archiveSha256",
+      "descriptorSha256",
+      "sourceCommit",
+    ]) ||
+    !exact(value.modelPack, [
+      "archive",
+      "descriptorSha256",
+      "sourceRevision",
+    ]) ||
+    !exact(value.modelPack.archive, ["byteSize", "sha256"]) ||
+    !exact(value.resources, [
+      "aiLockSha256",
+      "runtimeDescriptorSha256",
+      "sourceDescriptorSha256",
+    ]) ||
+    value.candidate.workerMode !== "frozen-windows" ||
+    !COMMIT.test(value.candidate.sourceCommit) ||
+    !COMMIT.test(value.companion.sourceCommit) ||
+    !COMMIT.test(value.modelPack.sourceRevision) ||
+    !Number.isSafeInteger(value.modelPack.archive.byteSize) ||
+    value.modelPack.archive.byteSize <= 0
   )
-    fail(
-      "calibration release proof is invalid or not bound to precutover receipt",
-    );
-  for (const [key, digest] of Object.entries(value))
-    if (key.endsWith("Sha256"))
-      requireDigest(digest, `calibration release ${key}`);
+    fail("calibration release proof is invalid");
+  for (const group of [
+    value.candidate,
+    value.companion,
+    value.modelPack,
+    value.modelPack.archive,
+    value.resources,
+  ])
+    for (const [key, digest] of Object.entries(group))
+      if (key.endsWith("Sha256"))
+        requireDigest(digest, `calibration release ${key}`);
+  const receiptProof = receipt.windowsProof;
+  if (
+    value.candidate.attestationBundleSha256 !==
+      normalizeAiRegionalSha256(
+        receiptProof.candidate.attestationBundleSha256,
+        "trusted precutover candidate attestation",
+        { prefixed: true },
+      ) ||
+    value.candidate.trustedBuilderEvidenceSha256 !==
+      normalizeAiRegionalSha256(
+        receiptProof.candidate.trustedBuilderEvidenceSha256,
+        "trusted precutover candidate evidence",
+        { prefixed: true },
+      ) ||
+    value.companion.archiveSha256 !==
+      normalizeAiRegionalSha256(
+        receiptProof.companion.archiveSha256,
+        "trusted precutover companion archive",
+        { prefixed: true },
+      ) ||
+    value.companion.descriptorSha256 !==
+      normalizeAiRegionalSha256(
+        receiptProof.companion.descriptorSha256,
+        "trusted precutover companion descriptor",
+        { prefixed: true },
+      ) ||
+    value.companion.sourceCommit !== receiptProof.companion.sourceCommit
+  )
+    fail("calibration release proof does not bind trusted precutover receipt");
   return value;
 }
 
@@ -164,7 +231,9 @@ function parsePrecutoverReceipt(value) {
   )
     fail("trusted precutover receipt root identity is invalid");
   for (const [key, digest] of Object.entries(value.identityRoot))
-    requireDigest(digest, `trusted precutover ${key}`);
+    normalizeAiRegionalSha256(digest, `trusted precutover ${key}`, {
+      prefixed: true,
+    });
   if (
     !exact(value.windowsProof, [
       "authorityDescriptorSha256",
@@ -193,13 +262,85 @@ function parsePrecutoverReceipt(value) {
     fail("trusted precutover receipt nested proof identity is invalid");
   for (const [key, digest] of Object.entries(value.windowsProof))
     if (key.endsWith("Sha256"))
-      requireDigest(digest, `trusted precutover ${key}`);
+      normalizeAiRegionalSha256(digest, `trusted precutover ${key}`, {
+        prefixed: true,
+      });
   for (const [key, digest] of Object.entries(value.windowsProof.candidate))
-    requireDigest(digest, `trusted precutover candidate ${key}`);
+    normalizeAiRegionalSha256(digest, `trusted precutover candidate ${key}`, {
+      prefixed: true,
+    });
   for (const [key, digest] of Object.entries(value.windowsProof.companion))
     if (key.endsWith("Sha256"))
-      requireDigest(digest, `trusted precutover companion ${key}`);
+      normalizeAiRegionalSha256(digest, `trusted precutover companion ${key}`, {
+        prefixed: true,
+      });
   return value;
+}
+
+function parseAcceptanceReport(value, proof, attempts) {
+  const identities = value?.execution?.identities;
+  if (
+    value?.schemaVersion !== "vem-ai-virtual-try-on-acceptance/v2" ||
+    !exact(value.execution, [
+      "identities",
+      "noDirectWorker",
+      "protocol",
+      "recordedSources",
+      "source",
+    ]) ||
+    !exact(identities, ["aiRuntime", "contract", "modelPack", "runtime"]) ||
+    value.execution.noDirectWorker !== true ||
+    value.execution.protocol !== "vem.vision.v2" ||
+    !Array.isArray(value.attempts) ||
+    !canonicalBytes(value.attempts).equals(canonicalBytes(attempts))
+  )
+    fail("calibration acceptance report is invalid or does not bind attempts");
+  const release = Object.fromEntries(
+    Object.entries(identities).map(([key, digest]) => [
+      key,
+      normalizeAiRegionalSha256(digest, `calibration report ${key}`, {
+        prefixed: true,
+      }),
+    ]),
+  );
+  if (
+    release.aiRuntime !== proof.resources.runtimeDescriptorSha256 ||
+    release.modelPack !== proof.modelPack.archive.sha256 ||
+    release.runtime !== proof.candidate.subjectSha256 ||
+    release.contract !==
+      readCanonical(CONTRACT_PATH, "generated Vision V2 contract", {
+        pretty: false,
+      }).value.bundleDigest
+  )
+    fail("calibration acceptance report release identities mismatched");
+  return release;
+}
+
+function parseRecoverySupport(value, proof) {
+  const recovery = value?.facts?.recovery;
+  if (
+    !exact(value, ["facts", "kind", "schemaVersion"]) ||
+    value.schemaVersion !== "vem.testbed.ai-virtual-try-on-support.v1" ||
+    value.kind !== "installed-runtime" ||
+    !exact(value.facts, ["recovery"]) ||
+    !exact(recovery, [
+      "aiReadinessDiagnostic",
+      "aiReady",
+      "modelPackSha256",
+      "runtimeDescriptorSha256",
+      "sourceCommit",
+      "workerExecutableSha256",
+    ]) ||
+    recovery.aiReady !== true ||
+    recovery.aiReadinessDiagnostic !== "ready" ||
+    recovery.modelPackSha256 !== proof.modelPack.archive.sha256 ||
+    recovery.runtimeDescriptorSha256 !==
+      proof.resources.runtimeDescriptorSha256 ||
+    recovery.workerExecutableSha256 !==
+      proof.candidate.workerExecutableSha256 ||
+    recovery.sourceCommit !== proof.candidate.sourceCommit
+  )
+    fail("calibration recovery support does not bind release proof");
 }
 
 function readSidecar(artifactRoot, attempt) {
@@ -260,9 +401,11 @@ export function calibrateAiRegionalEvidence(
   if (
     !exact(input, [
       "artifactRoot",
+      "acceptanceReport",
       "attempts",
       "evidenceManifest",
       "precutoverReceipt",
+      "recoverySupport",
       "releaseProof",
       "schemaVersion",
     ]) ||
@@ -284,13 +427,26 @@ export function calibrateAiRegionalEvidence(
   const receipt = readBoundCanonical(
     input.precutoverReceipt,
     "trusted precutover receipt",
+    { pretty: false },
   );
   parsePrecutoverReceipt(receipt.value);
   const releaseProof = readBoundCanonical(
     input.releaseProof,
     "calibration release proof",
+    { pretty: false },
   );
-  const release = parseReleaseProof(releaseProof.value, sha256(receipt.raw));
+  if (
+    sha256(releaseProof.raw) !==
+    normalizeAiRegionalSha256(
+      receipt.value.windowsProof.signedProofSha256,
+      "trusted precutover signed proof",
+      { prefixed: true },
+    )
+  )
+    fail(
+      "calibration release proof digest does not bind trusted precutover receipt",
+    );
+  const proof = parseReleaseProof(releaseProof.value, receipt.value);
   const attempts = input.attempts.map((entry) => {
     if (!exact(entry, ["attempt", "attemptSha256", "caseKey"]))
       fail("calibration attempt reference is invalid");
@@ -327,6 +483,22 @@ export function calibrateAiRegionalEvidence(
       new Set(values).size !== 2
     )
       fail(`calibration ${label} identity is not independent`);
+  const acceptanceReport = readBoundCanonical(
+    input.acceptanceReport,
+    "calibration acceptance report",
+    { pretty: false },
+  );
+  const release = parseAcceptanceReport(
+    acceptanceReport.value,
+    proof,
+    attempts.map((entry) => entry.attempt),
+  );
+  const recoverySupport = readBoundCanonical(
+    input.recoverySupport,
+    "calibration recovery support",
+    { pretty: false },
+  );
+  parseRecoverySupport(recoverySupport.value, proof);
   const ordered = [...attempts].sort((left, right) =>
     left.caseKey.localeCompare(right.caseKey),
   );
@@ -370,8 +542,10 @@ export function calibrateAiRegionalEvidence(
     derivedThresholds: thresholds,
     policySha256: sha256(policyBytes),
     precutoverReceiptSha256: sha256(receipt.raw),
+    recoverySupportSha256: sha256(recoverySupport.raw),
     release,
     releaseProofSha256: sha256(releaseProof.raw),
+    acceptanceReportSha256: sha256(acceptanceReport.raw),
     schemaVersion: RECEIPT_SCHEMA,
   };
   if (resolve(outputPolicyPath) === resolve(outputReceiptPath))
