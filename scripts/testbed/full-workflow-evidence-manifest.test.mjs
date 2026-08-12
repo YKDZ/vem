@@ -1,11 +1,19 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 
 import {
+  AI_SUPPORT_EVIDENCE_SCHEMA,
   buildFullWorkflowEvidenceManifest,
+  EVIDENCE_LIMITS,
   validateFullWorkflowEvidenceManifest,
 } from "./full-workflow-evidence-manifest.mjs";
 
@@ -189,7 +197,7 @@ describe("full workflow evidence manifest", () => {
     );
   });
 
-  it("records unsupported or missing supporting artifacts as warnings", () => {
+  it("fails forbidden artifacts while retaining optional screenshot warnings", () => {
     const temp = root();
     const artifacts = join(temp, "artifacts");
     mkdirSync(artifacts);
@@ -200,12 +208,186 @@ describe("full workflow evidence manifest", () => {
     const manifest = buildFullWorkflowEvidenceManifest({
       tracks: [{ key: "sale", reportPath: report, artifactRoot: artifacts }],
     });
-    assert.equal(manifest.ok, true);
+    assert.equal(manifest.ok, false);
     assert.ok(
-      manifest.warnings.some((failure) => failure.includes("forbidden")),
+      manifest.failures.some((failure) => failure.includes("forbidden")),
     );
     assert.ok(
       manifest.warnings.some((failure) => failure.includes("PNG screenshot")),
+    );
+  });
+
+  it("fails closed when any artifact tree contains an executable", () => {
+    const temp = root();
+    const artifacts = join(temp, "artifacts");
+    mkdirSync(artifacts);
+    const report = join(temp, "report.json");
+    writeFileSync(report, '{"runtimeTrace":[{"id":"trace-1"}]}\n');
+    writeFileSync(join(artifacts, "runtime.log"), "ok\n");
+    writeFileSync(join(artifacts, "unexpected.exe"), Buffer.from("MZpayload"));
+
+    const manifest = buildFullWorkflowEvidenceManifest({
+      tracks: [{ key: "sale", reportPath: report, artifactRoot: artifacts }],
+    });
+
+    assert.equal(manifest.ok, false);
+    assert.ok(
+      manifest.failures.some((failure) =>
+        failure.includes("forbidden evidence artifact"),
+      ),
+    );
+  });
+
+  it("rejects executable magic disguised as AI supporting JSON", () => {
+    const temp = root();
+    const artifacts = join(temp, "artifacts");
+    mkdirSync(artifacts);
+    const report = join(temp, "ai-virtual-try-on.json");
+    writeFileSync(report, '{"runtimeTrace":[{"id":"ai-trace"}]}\n');
+    writeFileSync(join(artifacts, "runtime.log"), "ok\n");
+    writeFileSync(join(artifacts, "worker.json"), Buffer.from("MZpayload"));
+
+    const manifest = buildFullWorkflowEvidenceManifest({
+      tracks: [
+        { key: "aiVirtualTryOn", reportPath: report, artifactRoot: artifacts },
+      ],
+    });
+
+    assert.equal(manifest.ok, false);
+    assert.ok(
+      manifest.failures.some((failure) =>
+        failure.includes("disguised executable or archive"),
+      ),
+    );
+  });
+
+  it("rejects executable, archive, and media magic behind textual suffixes", () => {
+    const signatures = [
+      ["ELF", Buffer.from([0x7f, 0x45, 0x4c, 0x46])],
+      ["Mach-O", Buffer.from([0xfe, 0xed, 0xfa, 0xcf])],
+      ["ZIP", Buffer.from([0x50, 0x4b, 0x03, 0x04])],
+      ["media", Buffer.from([0xff, 0xd8, 0xff])],
+    ];
+    for (const [label, signature] of signatures) {
+      const temp = root();
+      const artifacts = join(temp, "artifacts");
+      mkdirSync(artifacts);
+      const report = join(temp, "report.json");
+      writeFileSync(report, '{"runtimeTrace":[{"id":"trace-1"}]}\n');
+      writeFileSync(join(artifacts, "runtime.log"), "ok\n");
+      writeFileSync(
+        join(artifacts, "diagnostic.json"),
+        Buffer.concat([signature, Buffer.from("payload")]),
+      );
+
+      const manifest = buildFullWorkflowEvidenceManifest({
+        tracks: [{ key: "sale", reportPath: report, artifactRoot: artifacts }],
+      });
+      assert.equal(manifest.ok, false, `${label} magic was accepted`);
+      assert.ok(
+        manifest.failures.some((failure) =>
+          failure.includes("disguised executable or archive/media"),
+        ),
+        `${label} magic did not produce an authority failure`,
+      );
+    }
+  });
+
+  it("accepts only canonical explicitly-versioned AI supporting JSON", () => {
+    const temp = root();
+    const artifacts = join(temp, "artifacts");
+    mkdirSync(artifacts);
+    const report = join(temp, "ai-virtual-try-on.json");
+    writeFileSync(report, '{"runtimeTrace":[{"id":"ai-trace"}]}\n');
+    writeFileSync(join(artifacts, "runtime.log"), "ok\n");
+    writeFileSync(
+      join(artifacts, "diagnostic.json"),
+      `${JSON.stringify({
+        facts: { aiReady: false, diagnostic: "model_pack_missing" },
+        kind: "degradation-diagnostic",
+        schemaVersion: AI_SUPPORT_EVIDENCE_SCHEMA,
+      })}\n`,
+    );
+
+    const accepted = buildFullWorkflowEvidenceManifest({
+      tracks: [
+        { key: "aiVirtualTryOn", reportPath: report, artifactRoot: artifacts },
+      ],
+    });
+    assert.equal(accepted.ok, true, JSON.stringify(accepted.failures));
+
+    writeFileSync(
+      join(artifacts, "diagnostic.json"),
+      '{"facts":{},"kind":"degradation-diagnostic","schemaVersion":"unknown"}\n',
+    );
+    const rejected = buildFullWorkflowEvidenceManifest({
+      tracks: [
+        { key: "aiVirtualTryOn", reportPath: report, artifactRoot: artifacts },
+      ],
+    });
+    assert.equal(rejected.ok, false);
+    assert.ok(
+      rejected.failures.some((failure) =>
+        failure.includes("unsupported AI supporting JSON schema"),
+      ),
+    );
+  });
+
+  it("rejects an artifact symlink that escapes its declared root", () => {
+    const temp = root();
+    const artifacts = join(temp, "artifacts");
+    mkdirSync(artifacts);
+    const report = join(temp, "report.json");
+    const outside = join(temp, "outside.json");
+    writeFileSync(report, '{"runtimeTrace":[{"id":"trace-1"}]}\n');
+    writeFileSync(outside, '{"private":"outside"}\n');
+    writeFileSync(join(artifacts, "runtime.log"), "ok\n");
+    symlinkSync(outside, join(artifacts, "diagnostic.json"));
+
+    const manifest = buildFullWorkflowEvidenceManifest({
+      tracks: [{ key: "sale", reportPath: report, artifactRoot: artifacts }],
+    });
+
+    assert.equal(manifest.ok, false);
+    assert.ok(
+      manifest.failures.some((failure) =>
+        failure.includes("non-regular or linked evidence artifact"),
+      ),
+    );
+  });
+
+  it("budgets every screenshot before selecting at most three", () => {
+    const temp = root();
+    const artifacts = join(temp, "artifacts");
+    mkdirSync(artifacts);
+    const report = join(temp, "report.json");
+    writeFileSync(report, '{"runtimeTrace":[{"id":"trace-1"}]}\n');
+    writeFileSync(join(artifacts, "runtime.log"), "ok\n");
+    const screenshot = Buffer.alloc(EVIDENCE_LIMITS.screenshotPerFileBytes);
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(screenshot);
+    for (let index = 0; index < 4; index += 1)
+      writeFileSync(join(artifacts, `capture-${index}.png`), screenshot);
+
+    const manifest = buildFullWorkflowEvidenceManifest({
+      tracks: [{ key: "sale", reportPath: report, artifactRoot: artifacts }],
+    });
+
+    assert.equal(manifest.tracks[0].screenshots.length, 3);
+    assert.equal(manifest.totals.screenshots, 4);
+    assert.equal(manifest.ok, false);
+    assert.ok(
+      manifest.failures.some((failure) => failure.includes("total size limit")),
+    );
+    const tampered = structuredClone(manifest);
+    tampered.ok = true;
+    tampered.failures = [];
+    tampered.tracks[0].screenshots = tampered.files
+      .filter((file) => file.kind === "screenshots")
+      .map((file) => file.path);
+    assert.ok(
+      validateFullWorkflowEvidenceManifest(tampered).some((failure) =>
+        failure.includes("too many selected screenshots"),
+      ),
     );
   });
 

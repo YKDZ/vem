@@ -1,6 +1,19 @@
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { basename, extname, resolve } from "node:path";
+import {
+  existsSync,
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+} from "node:fs";
+import {
+  basename,
+  extname,
+  isAbsolute,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 
 export const EVIDENCE_LIMITS = Object.freeze({
   reportPerFileBytes: 512 * 1024,
@@ -39,13 +52,85 @@ const FORBIDDEN_EXTENSIONS = new Set([
   ".webm",
   ".zip",
 ]);
+export const AI_SUPPORT_EVIDENCE_SCHEMA =
+  "vem.testbed.ai-virtual-try-on-support.v1";
+const AI_SUPPORT_KINDS = new Set([
+  "degradation-diagnostic",
+  "installed-runtime",
+  "resource-observation",
+]);
+const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+const FORBIDDEN_MAGIC = Object.freeze([
+  ["PE", Buffer.from("MZ")],
+  ["ELF", Buffer.from([0x7f, 0x45, 0x4c, 0x46])],
+  ["Mach-O", Buffer.from([0xfe, 0xed, 0xfa, 0xce])],
+  ["Mach-O", Buffer.from([0xfe, 0xed, 0xfa, 0xcf])],
+  ["Mach-O", Buffer.from([0xce, 0xfa, 0xed, 0xfe])],
+  ["Mach-O", Buffer.from([0xcf, 0xfa, 0xed, 0xfe])],
+  ["Mach-O", Buffer.from([0xca, 0xfe, 0xba, 0xbe])],
+  ["Mach-O", Buffer.from([0xbe, 0xba, 0xfe, 0xca])],
+  ["ZIP", Buffer.from([0x50, 0x4b, 0x03, 0x04])],
+  ["ZIP", Buffer.from([0x50, 0x4b, 0x05, 0x06])],
+  ["ZIP", Buffer.from([0x50, 0x4b, 0x07, 0x08])],
+  ["CAB", Buffer.from("MSCF")],
+  ["ar", Buffer.from("!<arch>\n")],
+  ["gzip", Buffer.from([0x1f, 0x8b])],
+  ["7z", Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c])],
+  ["RAR", Buffer.from("Rar!")],
+  ["XZ", Buffer.from([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00])],
+  ["bzip2", Buffer.from("BZh")],
+  ["JPEG", Buffer.from([0xff, 0xd8, 0xff])],
+  ["BMP", Buffer.from("BM")],
+  ["ICO", Buffer.from([0x00, 0x00, 0x01, 0x00])],
+  ["GIF", Buffer.from("GIF87a")],
+  ["GIF", Buffer.from("GIF89a")],
+  ["RIFF media", Buffer.from("RIFF")],
+  ["MP3", Buffer.from("ID3")],
+  ["Ogg", Buffer.from("OggS")],
+  ["FLAC", Buffer.from("fLaC")],
+  ["WebM", Buffer.from([0x1a, 0x45, 0xdf, 0xa3])],
+]);
+
+function pathStaysWithin(root, candidate) {
+  const pathFromRoot = relative(root, candidate);
+  return (
+    pathFromRoot === "" ||
+    (pathFromRoot !== ".." &&
+      !pathFromRoot.startsWith(`..${sep}`) &&
+      !isAbsolute(pathFromRoot))
+  );
+}
 
 function filesUnder(path) {
   if (!existsSync(path)) return [];
-  if (statSync(path).isFile()) return [resolve(path)];
-  return readdirSync(path, { withFileTypes: true }).flatMap((entry) =>
-    filesUnder(resolve(path, entry.name)),
-  );
+  const declaredRoot = resolve(path);
+  const rootStat = lstatSync(declaredRoot);
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory())
+    throw new Error(
+      `non-regular or linked evidence artifact root: ${declaredRoot}`,
+    );
+  const canonicalRoot = realpathSync(declaredRoot);
+  const visit = (candidate) => {
+    const stat = lstatSync(candidate);
+    if (stat.isSymbolicLink())
+      throw new Error(`non-regular or linked evidence artifact: ${candidate}`);
+    const canonical = realpathSync(candidate);
+    if (!pathStaysWithin(canonicalRoot, canonical))
+      throw new Error(`evidence artifact escapes its root: ${candidate}`);
+    if (stat.isFile()) return [resolve(candidate)];
+    if (!stat.isDirectory())
+      throw new Error(`non-regular or linked evidence artifact: ${candidate}`);
+    return readdirSync(candidate, { withFileTypes: true }).flatMap((entry) =>
+      visit(resolve(candidate, entry.name)),
+    );
+  };
+  return visit(declaredRoot);
+}
+
+function requireRegularUnlinkedFile(path, label) {
+  const stat = lstatSync(path);
+  if (stat.isSymbolicLink() || !stat.isFile())
+    throw new Error(`${label} must be a regular non-linked file: ${path}`);
 }
 
 function bytesRecord(path, kind, track) {
@@ -108,7 +193,81 @@ function primaryFailureReason(report) {
 
 function isPng(path) {
   const signature = readFileSync(path).subarray(0, 8);
-  return signature.equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  return signature.equals(PNG_SIGNATURE);
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (value != null && typeof value === "object")
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, canonicalJson(value[key])]),
+    );
+  return value;
+}
+
+function forbiddenMagic(content) {
+  for (const [label, signature] of FORBIDDEN_MAGIC) {
+    if (content.subarray(0, signature.length).equals(signature)) return label;
+  }
+  if (
+    content.byteLength >= 12 &&
+    content.subarray(4, 8).equals(Buffer.from("ftyp"))
+  )
+    return "MP4";
+  if (
+    content.byteLength >= 262 &&
+    content.subarray(257, 262).equals(Buffer.from("ustar"))
+  )
+    return "tar";
+  if (
+    content.byteLength >= 2 &&
+    content[0] === 0xff &&
+    (content[1] & 0xe0) === 0xe0
+  )
+    return "MPEG audio";
+  if (content.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE))
+    return "PNG";
+  return null;
+}
+
+function validateAiSupportingJson(path) {
+  const content = readFileSync(path);
+  const magic = forbiddenMagic(content);
+  if (magic)
+    return `disguised executable or archive/media (${magic}) in AI evidence artifact: ${path}`;
+  let value;
+  try {
+    const raw = content.toString("utf8");
+    value = JSON.parse(raw);
+    if (`${JSON.stringify(canonicalJson(value))}\n` !== raw)
+      return `noncanonical AI supporting JSON artifact: ${path}`;
+  } catch {
+    return `invalid AI supporting JSON artifact: ${path}`;
+  }
+  if (
+    value == null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    value.schemaVersion !== AI_SUPPORT_EVIDENCE_SCHEMA ||
+    !AI_SUPPORT_KINDS.has(value.kind) ||
+    value.facts == null ||
+    typeof value.facts !== "object" ||
+    Array.isArray(value.facts) ||
+    JSON.stringify(Object.keys(value).sort()) !==
+      JSON.stringify(["facts", "kind", "schemaVersion"])
+  )
+    return `unsupported AI supporting JSON schema: ${path}`;
+  return null;
+}
+
+function disguisedArtifact(path) {
+  if (extname(path).toLowerCase() === ".png") return null;
+  const magic = forbiddenMagic(readFileSync(path));
+  return magic
+    ? `disguised executable or archive/media (${magic}) in evidence artifact: ${path}`
+    : null;
 }
 
 function reportTrace(track, reportPath, report, artifactFiles) {
@@ -197,14 +356,19 @@ function physicalEvidence(track, artifactFiles) {
     if (name.includes("final")) return 1;
     return 0;
   };
-  const screenshots = screenshotCandidates
+  const selectedScreenshots = screenshotCandidates
     .sort(
       (left, right) =>
         screenshotScore(right) - screenshotScore(left) ||
         right.path.localeCompare(left.path),
     )
     .slice(0, 3);
-  return { supporting, logs, screenshots };
+  return {
+    supporting,
+    logs,
+    screenshots: screenshotCandidates,
+    selectedScreenshots,
+  };
 }
 
 function perFileLimit(file) {
@@ -228,20 +392,25 @@ export function buildFullWorkflowEvidenceManifest({ tracks = [] } = {}) {
     const reportPath = resolve(input?.reportPath ?? "");
     const artifactRoot = resolve(input?.artifactRoot ?? "");
     if (!track || !existsSync(reportPath)) {
-      failures.push(
+      blockingFailures.push(
         `required report artifact is absent for ${track ?? "unknown"}`,
       );
       continue;
     }
     if (!existsSync(artifactRoot)) {
-      failures.push(`required artifact root is absent for ${track}`);
+      blockingFailures.push(`required artifact root is absent for ${track}`);
       continue;
     }
     let report;
     try {
+      requireRegularUnlinkedFile(reportPath, "required report artifact");
       report = JSON.parse(readFileSync(reportPath, "utf8"));
-    } catch {
-      failures.push(`required report artifact is invalid for ${track}`);
+    } catch (error) {
+      blockingFailures.push(
+        error instanceof Error
+          ? `required report artifact is invalid for ${track}: ${error.message}`
+          : `required report artifact is invalid for ${track}`,
+      );
       continue;
     }
     const businessStatus =
@@ -249,7 +418,16 @@ export function buildFullWorkflowEvidenceManifest({ tracks = [] } = {}) {
     const evidencePolicy =
       input?.evidence?.[businessStatus] ??
       DEFAULT_EVIDENCE_POLICY[businessStatus];
-    const artifactFiles = filesUnder(artifactRoot);
+    let artifactFiles = [];
+    try {
+      artifactFiles = filesUnder(artifactRoot);
+    } catch (error) {
+      blockingFailures.push(
+        error instanceof Error
+          ? error.message
+          : `invalid evidence artifact tree for ${track}`,
+      );
+    }
     for (const path of artifactFiles) {
       const extension = extname(path).toLowerCase();
       if (
@@ -260,11 +438,23 @@ export function buildFullWorkflowEvidenceManifest({ tracks = [] } = {}) {
           `forbidden AI evidence artifact for ${track}: ${path}`,
         );
       } else if (FORBIDDEN_EXTENSIONS.has(extension)) {
-        failures.push(`forbidden evidence artifact for ${track}: ${path}`);
+        blockingFailures.push(
+          `forbidden evidence artifact for ${track}: ${path}`,
+        );
+      } else if (track === "aiVirtualTryOn" && extension === ".json") {
+        const invalidJson = validateAiSupportingJson(path);
+        if (invalidJson) blockingFailures.push(invalidJson);
       } else if (extension === ".png" && !isPng(path)) {
-        failures.push(`invalid PNG screenshot artifact for ${track}: ${path}`);
+        blockingFailures.push(
+          `invalid PNG screenshot artifact for ${track}: ${path}`,
+        );
       } else if (![".json", ".log", ".txt", ".png"].includes(extension)) {
-        failures.push(`unsupported evidence artifact for ${track}: ${path}`);
+        blockingFailures.push(
+          `unsupported evidence artifact for ${track}: ${path}`,
+        );
+      } else {
+        const disguised = disguisedArtifact(path);
+        if (disguised) blockingFailures.push(disguised);
       }
     }
     const reportRecord = bytesRecord(reportPath, "reports", track);
@@ -288,7 +478,7 @@ export function buildFullWorkflowEvidenceManifest({ tracks = [] } = {}) {
       report: reportRecord.path,
       machineRuntimeTrace: trace?.path ?? null,
       logs: logs.map((file) => file.path),
-      screenshots: physical.screenshots.map((file) => file.path),
+      screenshots: physical.selectedScreenshots.map((file) => file.path),
       primaryReason: primaryFailureReason(report),
       diagnostics: [
         ...physical.supporting.map((file) => file.path),
@@ -301,7 +491,7 @@ export function buildFullWorkflowEvidenceManifest({ tracks = [] } = {}) {
         failures.push(`actual Machine Runtime Trace is absent for ${track}`);
       if (evidencePolicy.logs && logs.length === 0)
         failures.push(`actual log evidence is absent for ${track}`);
-      if (physical.screenshots.length === 0)
+      if (physical.selectedScreenshots.length === 0)
         failures.push(
           `optional PNG screenshot evidence is absent for ${track}`,
         );
@@ -314,16 +504,18 @@ export function buildFullWorkflowEvidenceManifest({ tracks = [] } = {}) {
   }
   for (const file of [...files, ...sections]) {
     if (file.byteLength > perFileLimit(file)) {
-      failures.push(`${file.kind} evidence exceeds its limit: ${file.path}`);
+      blockingFailures.push(
+        `${file.kind} evidence exceeds its limit: ${file.path}`,
+      );
     }
   }
   const totalBytes = files.reduce((total, file) => total + file.byteLength, 0);
   if (totalBytes > EVIDENCE_LIMITS.totalBytes)
-    failures.push("evidence artifacts exceed the total size limit");
+    blockingFailures.push("evidence artifacts exceed the total size limit");
   return {
     schemaVersion: "vem-local-testbed-full-workflow-evidence-manifest/v2",
-    // Evidence is an inventory. Business validators decide acceptance; an
-    // absent optional screenshot or diagnostic remains visible as a warning.
+    // Business validators decide acceptance. Authority, format, and size
+    // failures are blocking; genuinely optional absence stays a warning.
     ok: blockingFailures.length === 0,
     limits: EVIDENCE_LIMITS,
     requiredKinds: [...REQUIRED_KINDS],
@@ -408,6 +600,8 @@ export function validateFullWorkflowEvidenceManifest(manifest) {
           failures.push(`log evidence is not owned by ${track.key}`);
         if (track.screenshots.some((path) => !owns(path, "screenshots")))
           failures.push(`screenshot evidence is not owned by ${track.key}`);
+        if (track.screenshots.length > 3)
+          failures.push(`too many selected screenshots for ${track.key}`);
       } else if (
         track.diagnostics.some(
           (path) =>
