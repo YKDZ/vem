@@ -1375,12 +1375,8 @@ export async function verifyRuntimeArtifactsForTest(
   });
 }
 
-export async function proveProductionRuntimeArtifactsForAi(
-  options,
-  aiMaterialsDestination,
-) {
+export async function proveProductionRuntimeArtifacts(options) {
   return verify(options, {
-    aiMaterialsDestination,
     provePrecutover: proveRuntimePrecutover,
     verifyVisionAttestation: verifyTrustedVisionCandidateAttestation,
   });

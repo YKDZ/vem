@@ -1,0 +1,9 @@
+{
+  "attestationSubject": "precutover-ai-proof.json",
+  "evidenceSchema": "vending-vision-trusted-precutover-proof-evidence/v1",
+  "proofSchema": "vending-vision-precutover-proof/v1",
+  "repository": "hbhjt/vending-vision",
+  "schemaVersion": "vem.trusted-windows-precutover-proof.v1",
+  "workflow": ".github/workflows/trusted-precutover-companion-proof.yml",
+  "workflowSha": "8030ea67a26b925bd2add07fe8b98641eb22ced2"
+}
