@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   lstatSync,
@@ -28,6 +29,11 @@ const CANDIDATE_MEMBERS = new Set([
 ]);
 const SHA256 = /^[a-f0-9]{64}$/;
 const COMMIT = /^[a-f0-9]{40}$/;
+const REQUIRED_RECORDED_FIXTURE_FILES = new Set([
+  "fixtures/recorded-video/expected-results.json",
+  "fixtures/recorded-video/front.mp4",
+  "fixtures/recorded-video/top.mp4",
+]);
 
 function fail(message) {
   throw new Error(`AI acceptance authority ${message}`);
@@ -208,7 +214,7 @@ function candidateFacts(paths, contract) {
   return { facts, paths };
 }
 
-function crossBind(candidate, windows, contract) {
+function crossBind(candidate, windows, contract, visionCore) {
   const proof = windows.proof;
   const matches = [
     [
@@ -238,13 +244,13 @@ function crossBind(candidate, windows, contract) {
   }
   return {
     candidate,
-    companion: proof.companion,
     contract: {
       bundleDigest: contract.bundleDigest,
       manifestSha256: contract.sha256,
       protocol: "vem.vision.v2",
     },
     modelPack: proof.modelPack,
+    proofCompanion: proof.companion,
     resources: {
       ...proof.resources,
       workerExecutableSha256: proof.candidate.workerExecutableSha256,
@@ -252,6 +258,7 @@ function crossBind(candidate, windows, contract) {
     schemaVersion: SCHEMA_VERSION,
     scope: "installed_windows_acceptance",
     trustStatus: "verified_for_acceptance",
+    visionCore,
     windowsProof: {
       authorityDescriptorSha256: windows.authority.descriptorSha256,
       proofAttestationBundleSha256: windows.files.bundle.sha256.slice(7),
@@ -268,9 +275,167 @@ function writeExclusive(path, raw) {
   writeFileSync(path, raw, { encoding: "utf8", flag: "wx", mode: 0o600 });
 }
 
+function runBinary(binary, args, label, { text = false } = {}) {
+  if (!isAbsolute(binary)) fail(`${label} binary must be absolute`);
+  const result = spawnSync(binary, args, {
+    encoding: text ? "utf8" : null,
+    maxBuffer: 64 * 1024 * 1024,
+    windowsHide: true,
+  });
+  if (result.error || result.status !== 0) fail(`${label} failed`);
+  return result.stdout;
+}
+
+function checkedVisionCore(value, candidate) {
+  exact(
+    value,
+    ["recordedFixtureArchive", "runtimeArchive"],
+    "Vision core delivery",
+  );
+  for (const [key, format] of [
+    ["runtimeArchive", "vending-vision-candidate-artifact/v3"],
+    ["recordedFixtureArchive", "vending-vision-main-artifacts/v1"],
+  ]) {
+    exact(
+      value[key],
+      ["format", "sha256", "sourceCommit"],
+      `Vision core ${key}`,
+    );
+    if (
+      value[key].format !== format ||
+      !SHA256.test(value[key].sha256 ?? "") ||
+      value[key].sourceCommit !== candidate.sourceCommit
+    ) {
+      fail(`Vision core ${key} identity is invalid`);
+    }
+  }
+  if (value.runtimeArchive.sha256 !== candidate.subjectSha256) {
+    fail("Vision core runtime is not the attested candidate");
+  }
+  return value;
+}
+
+export async function verifyVisionCoreDelivery(options) {
+  const repository = resolve(options.visionRepositoryPath);
+  if (!isAbsolute(options.visionRepositoryPath))
+    fail("Vision repository path must be absolute");
+  const fixturePath = resolve(options.recordedFixtureArchive);
+  if (!isAbsolute(options.recordedFixtureArchive))
+    fail("recorded fixture archive must be absolute");
+  const fixtureStat = lstatSync(fixturePath);
+  if (!fixtureStat.isFile() || fixtureStat.isSymbolicLink())
+    fail("recorded fixture archive is unsafe");
+  runBinary(
+    options.gitBinaryPath,
+    [
+      "-C",
+      repository,
+      "cat-file",
+      "-e",
+      `${options.candidate.sourceCommit}^{commit}`,
+    ],
+    "Vision source commit verification",
+  );
+  const tree = runBinary(
+    options.gitBinaryPath,
+    [
+      "-C",
+      repository,
+      "ls-tree",
+      "-r",
+      "--name-only",
+      options.candidate.sourceCommit,
+      "--",
+      "fixtures/recorded-video",
+    ],
+    "Vision recorded fixture tree",
+    { text: true },
+  )
+    .trim()
+    .split("\n")
+    .filter(Boolean);
+  tree.sort();
+  if (
+    tree.some((name) => !name.startsWith("fixtures/recorded-video/")) ||
+    [...REQUIRED_RECORDED_FIXTURE_FILES].some((name) => !tree.includes(name))
+  )
+    fail("Vision recorded fixture source tree is invalid");
+  const archiveMembers = runBinary(
+    options.unzipBinaryPath,
+    ["-Z1", fixturePath],
+    "recorded fixture archive inventory",
+    { text: true },
+  )
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .sort();
+  const expectedMembers = [
+    ...tree.map((name) => name.slice("fixtures/".length)),
+    "vision-artifact.json",
+  ].sort();
+  if (JSON.stringify(archiveMembers) !== JSON.stringify(expectedMembers))
+    fail("recorded fixture archive member set is invalid");
+  for (const sourceName of tree) {
+    const name = sourceName.slice("fixtures/recorded-video/".length);
+    const source = runBinary(
+      options.gitBinaryPath,
+      [
+        "-C",
+        repository,
+        "show",
+        `${options.candidate.sourceCommit}:${sourceName}`,
+      ],
+      `Vision recorded fixture source ${name}`,
+    );
+    const archived = runBinary(
+      options.unzipBinaryPath,
+      ["-p", fixturePath, `recorded-video/${name}`],
+      `recorded fixture archive member ${name}`,
+    );
+    if (!source.equals(archived))
+      fail(`recorded fixture ${name} does not match trusted source commit`);
+  }
+  const manifestRaw = runBinary(
+    options.unzipBinaryPath,
+    ["-p", fixturePath, "vision-artifact.json"],
+    "recorded fixture archive manifest",
+    { text: true },
+  );
+  let manifest;
+  try {
+    manifest = JSON.parse(manifestRaw);
+  } catch {
+    fail("recorded fixture archive manifest is invalid JSON");
+  }
+  if (
+    manifest?.schemaVersion !== "vending-vision-main-artifacts/v1" ||
+    manifest.commit !== options.candidate.sourceCommit ||
+    manifest.runtimeArchive !== "vending-vision-windows-x86_64.zip" ||
+    manifest.fixtureArchive !== "vending-vision-test-fixtures.zip"
+  ) {
+    fail("recorded fixture archive manifest identity is invalid");
+  }
+  return checkedVisionCore(
+    {
+      runtimeArchive: {
+        format: "vending-vision-candidate-artifact/v3",
+        sha256: options.candidate.subjectSha256,
+        sourceCommit: options.candidate.sourceCommit,
+      },
+      recordedFixtureArchive: {
+        format: "vending-vision-main-artifacts/v1",
+        sha256: digest(readFileSync(fixturePath)),
+        sourceCommit: options.candidate.sourceCommit,
+      },
+    },
+    options.candidate,
+  );
+}
+
 async function verify(
   options,
-  { verifyCandidateAttestation, verifyWindowsProof },
+  { verifyCandidateAttestation, verifyVisionCoreDelivery, verifyWindowsProof },
 ) {
   const contract = readContract(options.contractManifest);
   const candidate = candidateFacts(
@@ -293,7 +458,19 @@ async function verify(
       sourceRef: options.visionSourceRef,
     },
     async (windows, revalidate) => {
-      const receipt = crossBind(candidate.facts, windows, contract);
+      const visionCore = await verifyVisionCoreDelivery({
+        candidate: candidate.facts,
+        gitBinaryPath: options.gitBinaryPath,
+        recordedFixtureArchive: options.recordedFixtureArchive,
+        unzipBinaryPath: options.unzipBinaryPath,
+        visionRepositoryPath: options.visionRepositoryPath,
+      });
+      const receipt = crossBind(
+        candidate.facts,
+        windows,
+        contract,
+        checkedVisionCore(visionCore, candidate.facts),
+      );
       revalidate();
       return receipt;
     },
@@ -307,7 +484,8 @@ export async function verifyAiAcceptanceAuthorityForTest(
   if (
     process.env.NODE_ENV !== "test" ||
     typeof dependencies?.verifyCandidateAttestation !== "function" ||
-    typeof dependencies?.verifyWindowsProof !== "function"
+    typeof dependencies?.verifyWindowsProof !== "function" ||
+    typeof dependencies?.verifyVisionCoreDelivery !== "function"
   ) {
     fail("test-only authority verifier boundary is unavailable");
   }
@@ -318,6 +496,7 @@ export async function verifyAiAcceptanceAuthority(options) {
   return verify(options, {
     verifyCandidateAttestation: verifyTrustedVisionCandidateAttestation,
     verifyWindowsProof: verifyProductionWindowsPrecutoverProof,
+    verifyVisionCoreDelivery: verifyVisionCoreDelivery,
   });
 }
 
@@ -335,8 +514,12 @@ function parseArgs(argv) {
     "candidate-input-directory",
     "contract-manifest",
     "gh-binary",
+    "git-binary",
     "output",
+    "recorded-fixture-archive",
     "repo-root",
+    "unzip-binary",
+    "vision-repository",
     "vision-source-ref",
     "windows-proof-input-directory",
   ];
@@ -356,8 +539,12 @@ function parseArgs(argv) {
     candidateInputDirectory: values["candidate-input-directory"],
     contractManifest: values["contract-manifest"],
     ghBinaryPath: values["gh-binary"],
+    gitBinaryPath: values["git-binary"],
     outputPath: values.output,
+    recordedFixtureArchive: values["recorded-fixture-archive"],
     repoRoot: values["repo-root"],
+    unzipBinaryPath: values["unzip-binary"],
+    visionRepositoryPath: values["vision-repository"],
     visionSourceRef: values["vision-source-ref"],
     windowsProofInputDirectory: values["windows-proof-input-directory"],
   };

@@ -156,8 +156,8 @@ function manifest(root, phase = "measurement") {
       trustedBuilderEvidenceSha256:
         candidateByName["trusted-builder-evidence.json"].sha256,
     },
-    companion: {
-      archiveSha256: digest("fixture"),
+    proofCompanion: {
+      archiveSha256: "b".repeat(64),
       descriptorSha256: "c".repeat(64),
       sourceCommit: "d".repeat(40),
     },
@@ -180,6 +180,18 @@ function manifest(root, phase = "measurement") {
     schemaVersion: "vem.testbed.ai-acceptance-authority/v1",
     scope: "installed_windows_acceptance",
     trustStatus: "verified_for_acceptance",
+    visionCore: {
+      recordedFixtureArchive: {
+        format: "vending-vision-main-artifacts/v1",
+        sha256: digest("fixture"),
+        sourceCommit,
+      },
+      runtimeArchive: {
+        format: "vending-vision-candidate-artifact/v3",
+        sha256: candidateByName["candidate.zip"].sha256,
+        sourceCommit,
+      },
+    },
     windowsProof: {
       authorityDescriptorSha256: `sha256:${"8".repeat(64)}`,
       proofAttestationBundleSha256:
@@ -212,7 +224,7 @@ function manifest(root, phase = "measurement") {
     phase,
     recordedFixtureArchive: {
       ...file(root, "recorded-fixtures.zip", "fixture"),
-      sourceCommit: "d".repeat(40),
+      sourceCommit,
     },
     schemaVersion: "vem-runtime-testbed-ai-input/v4",
     windowsProofInput: proof,
@@ -243,6 +255,12 @@ test("accepts a measurement v4 manifest without calibration and projects complet
       canonicalAiAcceptanceInputManifest(value),
     );
     assert.equal(checked.guestInput.phase, "measurement");
+    assert.notEqual(
+      value.recordedFixtureArchive.sha256,
+      JSON.parse(
+        readFileSync(value.acceptanceAuthorityReceipt.hostPath, "utf8"),
+      ).proofCompanion.archiveSha256,
+    );
     assert.equal("calibrationReceipt" in checked.guestInput, false);
     assert.equal(checked.transfers.length, 7);
     const snapshot = await materializeAiAcceptanceInputSnapshot(

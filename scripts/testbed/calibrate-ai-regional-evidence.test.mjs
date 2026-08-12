@@ -235,7 +235,7 @@ function calibrationFixture() {
       subjectSha256: "4".repeat(64),
       trustedBuilderEvidenceSha256: "e".repeat(64),
     },
-    companion: {
+    proofCompanion: {
       archiveSha256: "f".repeat(64),
       descriptorSha256: "a".repeat(64),
       sourceCommit: "b".repeat(40),
@@ -259,6 +259,18 @@ function calibrationFixture() {
     schemaVersion: "vem.testbed.ai-acceptance-authority/v1",
     scope: "installed_windows_acceptance",
     trustStatus: "verified_for_acceptance",
+    visionCore: {
+      recordedFixtureArchive: {
+        format: "vending-vision-main-artifacts/v1",
+        sha256: "6".repeat(64),
+        sourceCommit: "b".repeat(40),
+      },
+      runtimeArchive: {
+        format: "vending-vision-candidate-artifact/v3",
+        sha256: "4".repeat(64),
+        sourceCommit: "b".repeat(40),
+      },
+    },
     windowsProof: {
       authorityDescriptorSha256: `sha256:${"a".repeat(64)}`,
       proofAttestationBundleSha256: `sha256:${"b".repeat(64)}`,
@@ -864,7 +876,7 @@ describe("AI regional evidence calibration", () => {
           join(fixture.root, "policy.json"),
           join(fixture.root, "receipt.json"),
         ),
-      /release proof does not bind acceptance authority receipt/,
+      /acceptance authority receipt identity is invalid/,
     );
   });
 

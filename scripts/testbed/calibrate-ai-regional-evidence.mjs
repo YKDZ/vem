@@ -251,15 +251,15 @@ function parseReleaseProof(value, receipt) {
       authority.resources.workerExecutableSha256 ||
     value.companion.archiveSha256 !==
       normalizeAiRegionalSha256(
-        authority.companion.archiveSha256,
+        authority.proofCompanion.archiveSha256,
         "calibration authority companion archive",
       ) ||
     value.companion.descriptorSha256 !==
       normalizeAiRegionalSha256(
-        authority.companion.descriptorSha256,
+        authority.proofCompanion.descriptorSha256,
         "calibration authority companion descriptor",
       ) ||
-    value.companion.sourceCommit !== authority.companion.sourceCommit ||
+    value.companion.sourceCommit !== authority.proofCompanion.sourceCommit ||
     value.modelPack.archive.sha256 !== authority.modelPack.archive.sha256 ||
     value.modelPack.archive.byteSize !== authority.modelPack.archive.byteSize ||
     value.modelPack.descriptorSha256 !== authority.modelPack.descriptorSha256 ||
@@ -280,13 +280,14 @@ function parseAcceptanceAuthorityReceipt(value) {
   if (
     !exact(value, [
       "candidate",
-      "companion",
       "contract",
       "modelPack",
+      "proofCompanion",
       "resources",
       "schemaVersion",
       "scope",
       "trustStatus",
+      "visionCore",
       "windowsProof",
     ]) ||
     value.schemaVersion !== "vem.testbed.ai-acceptance-authority/v1" ||
@@ -302,9 +303,20 @@ function parseAcceptanceAuthorityReceipt(value) {
       "subjectSha256",
       "trustedBuilderEvidenceSha256",
     ]) ||
-    !exact(value.companion, [
+    !exact(value.proofCompanion, [
       "archiveSha256",
       "descriptorSha256",
+      "sourceCommit",
+    ]) ||
+    !exact(value.visionCore, ["recordedFixtureArchive", "runtimeArchive"]) ||
+    !exact(value.visionCore.runtimeArchive, [
+      "format",
+      "sha256",
+      "sourceCommit",
+    ]) ||
+    !exact(value.visionCore.recordedFixtureArchive, [
+      "format",
+      "sha256",
       "sourceCommit",
     ]) ||
     !exact(value.modelPack, [
@@ -329,7 +341,17 @@ function parseAcceptanceAuthorityReceipt(value) {
       "workflowSha",
     ]) ||
     !COMMIT.test(value.candidate.sourceCommit) ||
-    !COMMIT.test(value.companion.sourceCommit) ||
+    !COMMIT.test(value.proofCompanion.sourceCommit) ||
+    value.visionCore.runtimeArchive.format !==
+      "vending-vision-candidate-artifact/v3" ||
+    value.visionCore.runtimeArchive.sha256 !== value.candidate.subjectSha256 ||
+    value.visionCore.runtimeArchive.sourceCommit !==
+      value.candidate.sourceCommit ||
+    value.visionCore.recordedFixtureArchive.format !==
+      "vending-vision-main-artifacts/v1" ||
+    !DIGEST.test(value.visionCore.recordedFixtureArchive.sha256 ?? "") ||
+    value.visionCore.recordedFixtureArchive.sourceCommit !==
+      value.candidate.sourceCommit ||
     !COMMIT.test(value.modelPack.sourceRevision) ||
     !COMMIT.test(value.windowsProof.workflowSha) ||
     !Number.isSafeInteger(value.modelPack.archive.byteSize) ||
@@ -338,7 +360,9 @@ function parseAcceptanceAuthorityReceipt(value) {
     fail("calibration acceptance authority receipt identity is invalid");
   for (const group of [
     value.candidate,
-    value.companion,
+    value.proofCompanion,
+    value.visionCore.runtimeArchive,
+    value.visionCore.recordedFixtureArchive,
     value.modelPack,
     value.modelPack.archive,
     value.resources,

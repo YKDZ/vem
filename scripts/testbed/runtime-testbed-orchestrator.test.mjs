@@ -460,13 +460,15 @@ describe("runtime testbed scheduler contract", () => {
       });
       await assert.rejects(
         loadVisionCoreArtifacts(config, {
-          candidate: {
-            subjectSha256: "0".repeat(64),
-            sourceCommit: "a".repeat(40),
-          },
-          companion: {
-            archiveSha256: digest(fixture),
-            sourceCommit: "b".repeat(40),
+          visionCore: {
+            runtimeArchive: {
+              sha256: "0".repeat(64),
+              sourceCommit: "a".repeat(40),
+            },
+            recordedFixtureArchive: {
+              sha256: digest(fixture),
+              sourceCommit: "b".repeat(40),
+            },
           },
         }),
         /do not match host-verified AI acceptance authority/,

@@ -44,6 +44,14 @@ test("keeps the runtime and recorded-video fixture archives separate", () => {
   );
 });
 
+test("adapts the attested candidate v3 layout before using the legacy installer", () => {
+  const module = source(modulePath);
+  assert.match(module, /function Convert-VisionCandidateToMainDelivery/);
+  assert.match(module, /vending-vision-candidate-artifact\/v3/);
+  assert.match(module, /candidate payload digest mismatch/);
+  assert.match(module, /vending-vision-ai-worker/);
+});
+
 test("installs one fixed app directory and probes health plus machine protocol", () => {
   const module = source(modulePath);
   const installer = source(installerPath);

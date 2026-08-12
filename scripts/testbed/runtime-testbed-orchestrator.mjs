@@ -233,7 +233,15 @@ export function validateHostConfig(value) {
           }
           if (
             Object.keys(authority).sort().join("\0") !==
-            ["ghBinary", "visionSourceRef"].join("\0")
+            [
+              "ghBinary",
+              "gitBinary",
+              "unzipBinary",
+              "visionRepository",
+              "visionSourceRef",
+            ]
+              .sort()
+              .join("\0")
           ) {
             throw new Error(
               "host config aiVirtualTryOnAuthority fields are invalid",
@@ -244,6 +252,18 @@ export function validateHostConfig(value) {
               ghBinary: absolute(
                 authority.ghBinary,
                 "host config AI authority ghBinary",
+              ),
+              gitBinary: absolute(
+                authority.gitBinary,
+                "host config AI authority gitBinary",
+              ),
+              unzipBinary: absolute(
+                authority.unzipBinary,
+                "host config AI authority unzipBinary",
+              ),
+              visionRepository: absolute(
+                authority.visionRepository,
+                "host config AI authority visionRepository",
               ),
               visionSourceRef: required(
                 authority.visionSourceRef,
@@ -621,7 +641,12 @@ export async function admitAiAcceptanceInputs(
       "packages/shared/generated/vision-v2/manifest.json",
     ),
     ghBinaryPath: config.aiVirtualTryOnAuthority.ghBinary,
+    gitBinaryPath: config.aiVirtualTryOnAuthority.gitBinary,
+    recordedFixtureArchive:
+      config.visionCoreArtifacts.recordedFixtureArchive.hostPath,
     repoRoot: workspace,
+    unzipBinaryPath: config.aiVirtualTryOnAuthority.unzipBinary,
+    visionRepositoryPath: config.aiVirtualTryOnAuthority.visionRepository,
     visionSourceRef: config.aiVirtualTryOnAuthority.visionSourceRef,
     windowsProofInputDirectory: preparation.windowsProofInput.hostPath,
   });
@@ -684,10 +709,13 @@ export async function loadVisionCoreArtifacts(config, authorityReceipt) {
   await assertVisionCoreArtifact(fixture, "recorded Vision fixture");
   if (
     authorityReceipt &&
-    (runtime.sha256 !== authorityReceipt.candidate.subjectSha256 ||
-      runtime.sourceCommit !== authorityReceipt.candidate.sourceCommit ||
-      fixture.sha256 !== authorityReceipt.companion.archiveSha256 ||
-      fixture.sourceCommit !== authorityReceipt.companion.sourceCommit)
+    (runtime.sha256 !== authorityReceipt.visionCore.runtimeArchive.sha256 ||
+      runtime.sourceCommit !==
+        authorityReceipt.visionCore.runtimeArchive.sourceCommit ||
+      fixture.sha256 !==
+        authorityReceipt.visionCore.recordedFixtureArchive.sha256 ||
+      fixture.sourceCommit !==
+        authorityReceipt.visionCore.recordedFixtureArchive.sourceCommit)
   ) {
     throw new Error(
       "Vision core artifacts do not match host-verified AI acceptance authority",

@@ -44,6 +44,33 @@ function New-VisionArchiveFixture([string]$Root, [string]$Commit) {
   return [pscustomobject]@{ runtime = $runtime; fixtures = $fixtures; actionZip = $actionZip }
 }
 
+function New-VisionCandidateFixture([string]$Root, [string]$Commit) {
+  $source = Join-Path $Root "candidate-source"
+  $main = Join-Path $source "vending-vision"
+  $worker = Join-Path $source "vending-vision-ai-worker"
+  New-Item -ItemType Directory -Force -Path $main, $worker | Out-Null
+  [IO.File]::WriteAllText((Join-Path $main "vending-vision.exe"), "main", [Text.Encoding]::ASCII)
+  [IO.File]::WriteAllText((Join-Path $worker "vending-vision-ai-worker.exe"), "worker", [Text.Encoding]::ASCII)
+  $files = @(Get-ChildItem -LiteralPath $source -File -Recurse | ForEach-Object {
+    [ordered]@{
+      path = [IO.Path]::GetRelativePath($source, $_.FullName).Replace('\', '/')
+      sha256 = Get-Sha256 $_.FullName
+      size = [long]$_.Length
+    }
+  } | Sort-Object path)
+  $manifest = [ordered]@{
+    bindings = @{}
+    files = $files
+    layout = @{}
+    schemaVersion = "vending-vision-candidate-artifact/v3"
+    sourceCommit = $Commit
+  } | ConvertTo-Json -Compress -Depth 8
+  [IO.File]::WriteAllText((Join-Path $source "candidate-manifest.json"), $manifest, [Text.UTF8Encoding]::new($false))
+  $archive = Join-Path $Root "candidate.zip"
+  New-Zip $source $archive
+  return $archive
+}
+
 function New-VisionHarnessPort() {
   $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
   $listener.Start()
@@ -163,6 +190,14 @@ try {
   $unrelatedCommit = "fedcba9876543210fedcba9876543210fedcba98"
   New-Item -ItemType Directory -Force -Path $root | Out-Null
   $archives = New-VisionArchiveFixture $root $commit
+  $candidate = New-VisionCandidateFixture $root $commit
+  $candidateDelivery = Join-Path $root "candidate-delivery"
+  Convert-VisionCandidateToMainDelivery -CandidateArchive $candidate -FixtureArchive $archives.fixtures -Commit $commit -Destination $candidateDelivery | Out-Null
+  $adapted = Assert-VisionCachedArtifacts $candidateDelivery $commit
+  $adaptedZip = [IO.Compression.ZipFile]::OpenRead($adapted.runtimeArchive)
+  try {
+    Assert-True ($null -ne $adaptedZip.GetEntry("vending-vision-ai-worker/vending-vision-ai-worker.exe")) "candidate runtime adapter lost the AI worker"
+  } finally { $adaptedZip.Dispose() }
   $apiCalls = [Collections.Generic.List[string]]::new(); $downloads = [Collections.Generic.List[string]]::new()
   $api = {
     param($Uri)

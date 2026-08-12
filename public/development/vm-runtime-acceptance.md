@@ -25,7 +25,10 @@
   小写 SHA-256 和 `byteSize`；运行时归档额外声明 40 位小写 `sourceCommit`。
   编排器只接受普通文件并在每个 pass 校验摘要和大小、生成快照，再传输到由这两项
   身份聚合值派生的固定 `C:\ProgramData\VEM\testbed\vision-core\<aggregate>`。
-  客体启动只使用这一预置输入，绝不以 Vision 缓存缺失为由查询 GitHub。
+  `runtimeArchive` 是已证明的 candidate v3 ZIP；客体逐成员复核其内嵌清单后，把
+  `vending-vision` 与同候选中的 `vending-vision-ai-worker` 组装为现有安装器可消费的
+  本地 delivery。`recordedFixtureArchive` 是同一 Vision source commit 生成的独立录播
+  fixture ZIP。客体启动只使用这两个预置输入，绝不以 Vision 缓存缺失为由查询 GitHub。
 
 当执行完整验收或 `fast --focus aiVirtualTryOn` 时，配置还必须提供
 `aiVirtualTryOnInputManifest`，它是宿主机本地的绝对路径。清单版本为
@@ -39,7 +42,7 @@ exact-eight 的自包含 calibration-source bundle）。该 bundle 的根成员�
 Vision runtime、录制 fixture、model-pack archive 和已物化 model root 的 host 路径、
 SHA-256 与字节数；目录还逐项锁定成员。authority receipt 的 scope 固定为
 `installed_windows_acceptance`、trustStatus 固定为 `verified_for_acceptance`，并交叉
-绑定候选、Windows proof、companion、模型、worker、runtime、source 与 Vision V2
+绑定候选、Windows proof、proof companion、模型、worker、可安装 runtime/fixture、source 与 Vision V2
 contract 身份；它不代表 release-set、数据库、媒体或后端发布审批。客体路径不是清单
 输入，而是编排器从 manifest SHA 派生为固定的 testbed `ai-inputs` 根。清单必须是
 canonical JSON，不能含 token 或其他凭据。默认交付
@@ -48,12 +51,13 @@ GitHub。若确有 HTTPS 来源，须额外在宿主机配置的
 `aiVirtualTryOnAllowedHttpsOrigins` 中声明精确 origin，且 URL 不得含凭据、查询
 参数或 fragment。配置、清单和大文件都留在宿主机，不提交到仓库。
 
-启用 AI 输入时，宿主配置还必须提供 `aiVirtualTryOnAuthority`，其中的 `ghBinary` 和
-`visionSourceRef` 用于在每个 host admission 重跑 candidate exact-four 的可信构建者
+启用 AI 输入时，宿主配置还必须提供 `aiVirtualTryOnAuthority`，其中的 `ghBinary`、
+`gitBinary`、`unzipBinary`、`visionRepository` 和 `visionSourceRef` 用于在每个 host admission 重跑 candidate exact-four 的可信构建者
 attestation 与 Windows proof exact-three 验证；编排器要求该重算结果与清单中的 canonical
-authority receipt 完全相同。随后它还要求实际要安装的 `visionCoreArtifacts.runtimeArchive`
-和 `recordedFixtureArchive` 的 SHA-256、sourceCommit 分别等于 authority 的 candidate 与
-companion 身份，避免仅传输但未安装另一套 AI runtime/fixture。`measurement` 输入可被预置，
+authority receipt 完全相同。宿主还从本地 Vision repository 的候选 source commit
+逐字节复核 recorded fixture ZIP 的 exact-five 成员；proof companion 只代表冻结证明执行器，
+不能冒充 fixture。随后它要求实际安装的 `visionCoreArtifacts` 与 authority 的
+`visionCore` runtime/fixture 身份完全一致，避免仅传输但未安装另一套 AI runtime/fixture。`measurement` 输入可被预置，
 但当前只记录“尚非验收证据”的失败闭环；`formal` 才读取其精确三项校准文件。
 
 Windows 基线由测试宿主机从标准 Windows 10 安装介质生成，并以 qcow2 形式保存在宿主机本地。仓库维护生成脚本、验收合同和运行期约束。`baselineContract` 指向宿主机上的小型 JSON 合同或当前发布清单，用来描述本地基线的路径、摘要、显示分辨率、缓存盘和运行时准备状态。

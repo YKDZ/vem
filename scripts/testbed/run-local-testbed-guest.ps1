@@ -750,9 +750,18 @@ function Install-TestbedStartupVisionArtifact([object]$GuestInput) {
   $visionSiteConfigurationSourcePath = Join-Path $handoffRoot "vision-recorded-site-config.json"
   Write-RecordedVisionSiteConfiguration $visionSiteConfigurationSourcePath
   $visionCache = Get-TestbedProvisionedVisionCoreArtifact $GuestInput
+  $candidateDelivery = Join-Path ([IO.Path]::GetDirectoryName([string]$visionCache.runtimeArchive)) "installable-main"
+  if (-not (Test-Path -LiteralPath $candidateDelivery -PathType Container)) {
+    Convert-VisionCandidateToMainDelivery `
+      -CandidateArchive ([string]$visionCache.runtimeArchive) `
+      -FixtureArchive ([string]$visionCache.fixtureArchive) `
+      -Commit ([string]$visionCache.commit) `
+      -Destination $candidateDelivery | Out-Null
+  }
+  $installable = Assert-VisionCachedArtifacts $candidateDelivery ([string]$visionCache.commit)
   $visionInstallation = Install-VisionMainArtifact `
-    -RuntimeArchive ([string]$visionCache.runtimeArchive) `
-    -FixtureArchive ([string]$visionCache.fixtureArchive) `
+    -RuntimeArchive ([string]$installable.runtimeArchive) `
+    -FixtureArchive ([string]$installable.fixtureArchive) `
     -Commit ([string]$visionCache.commit) `
     -SiteConfigurationPath $visionSiteConfigurationSourcePath `
     -SkipRuntimeOwnerTask

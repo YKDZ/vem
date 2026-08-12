@@ -315,13 +315,14 @@ function validateAuthorityReceipt(raw, candidateInput, windowsProofInput) {
     receipt,
     [
       "candidate",
-      "companion",
       "contract",
       "modelPack",
+      "proofCompanion",
       "resources",
       "schemaVersion",
       "scope",
       "trustStatus",
+      "visionCore",
       "windowsProof",
     ],
     "acceptance authority receipt",
@@ -413,20 +414,49 @@ function validateAuthorityReceipt(raw, candidateInput, windowsProofInput) {
   )
     fail("acceptance authority Windows proof does not bind exact-three input");
   exactKeys(
-    receipt.companion,
+    receipt.proofCompanion,
     ["archiveSha256", "descriptorSha256", "sourceCommit"],
-    "acceptance authority companion",
+    "acceptance authority proof companion",
   );
   sha256(
-    receipt.companion.archiveSha256,
-    "acceptance authority companion archive",
+    receipt.proofCompanion.archiveSha256,
+    "acceptance authority proof companion archive",
   );
   sha256(
-    receipt.companion.descriptorSha256,
-    "acceptance authority companion descriptor",
+    receipt.proofCompanion.descriptorSha256,
+    "acceptance authority proof companion descriptor",
   );
-  if (!COMMIT.test(receipt.companion.sourceCommit))
-    fail("acceptance authority companion source commit is invalid");
+  if (!COMMIT.test(receipt.proofCompanion.sourceCommit))
+    fail("acceptance authority proof companion source commit is invalid");
+  exactKeys(
+    receipt.visionCore,
+    ["recordedFixtureArchive", "runtimeArchive"],
+    "acceptance authority Vision core",
+  );
+  for (const [key, format] of [
+    ["runtimeArchive", "vending-vision-candidate-artifact/v3"],
+    ["recordedFixtureArchive", "vending-vision-main-artifacts/v1"],
+  ]) {
+    const artifact = receipt.visionCore[key];
+    exactKeys(
+      artifact,
+      ["format", "sha256", "sourceCommit"],
+      `acceptance authority Vision core ${key}`,
+    );
+    if (
+      artifact.format !== format ||
+      !SHA256.test(artifact.sha256 ?? "") ||
+      !COMMIT.test(artifact.sourceCommit ?? "") ||
+      artifact.sourceCommit !== receipt.candidate.sourceCommit
+    ) {
+      fail(`acceptance authority Vision core ${key} identity is invalid`);
+    }
+  }
+  if (
+    receipt.visionCore.runtimeArchive.sha256 !== receipt.candidate.subjectSha256
+  ) {
+    fail("acceptance authority candidate runtime binding is invalid");
+  }
   exactKeys(
     receipt.modelPack,
     ["archive", "descriptorSha256", "sourceRevision"],
@@ -767,9 +797,9 @@ export async function validateAiAcceptanceInputManifest(
   );
   if (
     installedVisionRuntimeArchive.sha256 !==
-      authority.candidate.subjectSha256 ||
+      authority.visionCore.runtimeArchive.sha256 ||
     installedVisionRuntimeArchive.sourceCommit !==
-      authority.candidate.sourceCommit
+      authority.visionCore.runtimeArchive.sourceCommit
   ) {
     fail(
       "installed Vision runtime archive does not match acceptance authority",
@@ -781,8 +811,10 @@ export async function validateAiAcceptanceInputManifest(
     { sourceCommit: true },
   );
   if (
-    recordedFixtureArchive.sha256 !== authority.companion.archiveSha256 ||
-    recordedFixtureArchive.sourceCommit !== authority.companion.sourceCommit
+    recordedFixtureArchive.sha256 !==
+      authority.visionCore.recordedFixtureArchive.sha256 ||
+    recordedFixtureArchive.sourceCommit !==
+      authority.visionCore.recordedFixtureArchive.sourceCommit
   ) {
     fail("recorded fixture archive does not match acceptance authority");
   }

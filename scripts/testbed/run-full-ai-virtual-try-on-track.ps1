@@ -111,8 +111,8 @@ $installedVision = $guestInput.workflowIdentity.visionCore
 if ($null -eq $installedVision -or
   [string]$installedVision.runtimeArchive.sha256 -cne [string]$authority.candidate.subjectSha256 -or
   [string]$installedVision.runtimeArchive.sourceCommit -cne [string]$authority.candidate.sourceCommit -or
-  [string]$installedVision.recordedFixtureArchive.sha256 -cne [string]$authority.companion.archiveSha256 -or
-  [string]$installedVision.recordedFixtureArchive.sourceCommit -cne [string]$authority.companion.sourceCommit) {
+  [string]$installedVision.recordedFixtureArchive.sha256 -cne [string]$authority.visionCore.recordedFixtureArchive.sha256 -or
+  [string]$installedVision.recordedFixtureArchive.sourceCommit -cne [string]$authority.visionCore.recordedFixtureArchive.sourceCommit) {
   throw "installed Vision core identity does not match acceptance authority"
 }
 
