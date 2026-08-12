@@ -19,8 +19,8 @@ import {
   buildInstalledVisionWorkerSampleScript,
   sampleInstalledVisionPeakRssForTest,
   validateInstalledAiAttemptSupport,
-  validateMissingDegradationSupportForTest,
-  validateVerifiedOwnerRecoverySupportForTest,
+  validateMissingDegradationSupport,
+  validateVerifiedOwnerRecoverySupport,
 } from "./ai-virtual-try-on-installed-entry.mjs";
 import { CdpClient } from "./machine-ui-cdp-driver.mjs";
 
@@ -188,7 +188,7 @@ test("rejects missing model support with unknown fields or any false surviving t
     schemaVersion: "vem.testbed.ai-virtual-try-on-support.v1",
   };
   assert.deepEqual(
-    validateMissingDegradationSupportForTest(value),
+    validateMissingDegradationSupport(value),
     value.facts.degradation.facts,
   );
   for (const mutate of [
@@ -201,7 +201,7 @@ test("rejects missing model support with unknown fields or any false surviving t
     const copy = structuredClone(value);
     mutate(copy);
     assert.throws(
-      () => validateMissingDegradationSupportForTest(copy),
+      () => validateMissingDegradationSupport(copy),
       /support evidence is invalid/,
     );
   }
@@ -231,7 +231,7 @@ test("binds verified owner recovery to ready model runtime worker and source ide
     schemaVersion: "vem.testbed.ai-virtual-try-on-support.v1",
   };
   assert.equal(
-    validateVerifiedOwnerRecoverySupportForTest(value, proof).aiReady,
+    validateVerifiedOwnerRecoverySupport(value, proof).aiReady,
     true,
   );
   for (const mutate of [
@@ -247,7 +247,7 @@ test("binds verified owner recovery to ready model runtime worker and source ide
     const copy = structuredClone(value);
     mutate(copy);
     assert.throws(
-      () => validateVerifiedOwnerRecoverySupportForTest(copy, proof),
+      () => validateVerifiedOwnerRecoverySupport(copy, proof),
       /recovery support evidence is invalid/,
     );
   }

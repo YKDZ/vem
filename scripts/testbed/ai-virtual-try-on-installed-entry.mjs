@@ -269,7 +269,7 @@ const DEGRADATION_FACT_KEYS = Object.freeze([
   "saleAvailable",
 ]);
 
-function validateMissingDegradationSupport(value) {
+export function validateMissingDegradationSupport(value) {
   const degradation = value?.facts?.degradation;
   const facts = degradation?.facts;
   if (
@@ -294,13 +294,7 @@ function validateMissingDegradationSupport(value) {
   return facts;
 }
 
-export function validateMissingDegradationSupportForTest(value) {
-  if (process.env.NODE_ENV !== "test")
-    throw new Error("missing degradation validator is test-only");
-  return validateMissingDegradationSupport(value);
-}
-
-function validateVerifiedOwnerRecoverySupport(value, proof) {
+export function validateVerifiedOwnerRecoverySupport(value, proof) {
   const recovery = value?.facts?.recovery;
   if (
     JSON.stringify(Object.keys(value ?? {}).sort()) !==
@@ -328,12 +322,6 @@ function validateVerifiedOwnerRecoverySupport(value, proof) {
   )
     throw new Error("verified AI owner recovery support evidence is invalid");
   return recovery;
-}
-
-export function validateVerifiedOwnerRecoverySupportForTest(value, proof) {
-  if (process.env.NODE_ENV !== "test")
-    throw new Error("verified owner recovery validator is test-only");
-  return validateVerifiedOwnerRecoverySupport(value, proof);
 }
 
 function requireDigest(value, label) {
