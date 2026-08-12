@@ -183,25 +183,21 @@ function parseReleaseProof(value, receipt) {
       normalizeAiRegionalSha256(
         receiptProof.candidate.attestationBundleSha256,
         "trusted precutover candidate attestation",
-        { prefixed: true },
       ) ||
     value.candidate.trustedBuilderEvidenceSha256 !==
       normalizeAiRegionalSha256(
         receiptProof.candidate.trustedBuilderEvidenceSha256,
         "trusted precutover candidate evidence",
-        { prefixed: true },
       ) ||
     value.companion.archiveSha256 !==
       normalizeAiRegionalSha256(
         receiptProof.companion.archiveSha256,
         "trusted precutover companion archive",
-        { prefixed: true },
       ) ||
     value.companion.descriptorSha256 !==
       normalizeAiRegionalSha256(
         receiptProof.companion.descriptorSha256,
         "trusted precutover companion descriptor",
-        { prefixed: true },
       ) ||
     value.companion.sourceCommit !== receiptProof.companion.sourceCommit
   )
@@ -266,14 +262,10 @@ function parsePrecutoverReceipt(value) {
         prefixed: true,
       });
   for (const [key, digest] of Object.entries(value.windowsProof.candidate))
-    normalizeAiRegionalSha256(digest, `trusted precutover candidate ${key}`, {
-      prefixed: true,
-    });
+    normalizeAiRegionalSha256(digest, `trusted precutover candidate ${key}`);
   for (const [key, digest] of Object.entries(value.windowsProof.companion))
     if (key.endsWith("Sha256"))
-      normalizeAiRegionalSha256(digest, `trusted precutover companion ${key}`, {
-        prefixed: true,
-      });
+      normalizeAiRegionalSha256(digest, `trusted precutover companion ${key}`);
   return value;
 }
 

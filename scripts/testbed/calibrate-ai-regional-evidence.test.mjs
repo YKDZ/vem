@@ -231,12 +231,12 @@ function calibrationFixture() {
     windowsProof: {
       authorityDescriptorSha256: `sha256:${"a".repeat(64)}`,
       candidate: {
-        attestationBundleSha256: `sha256:${"d".repeat(64)}`,
-        trustedBuilderEvidenceSha256: `sha256:${"e".repeat(64)}`,
+        attestationBundleSha256: "d".repeat(64),
+        trustedBuilderEvidenceSha256: "e".repeat(64),
       },
       companion: {
-        archiveSha256: `sha256:${"f".repeat(64)}`,
-        descriptorSha256: `sha256:${"a".repeat(64)}`,
+        archiveSha256: "f".repeat(64),
+        descriptorSha256: "a".repeat(64),
         sourceCommit: "b".repeat(40),
       },
       proofAttestationBundleSha256: `sha256:${"b".repeat(64)}`,
