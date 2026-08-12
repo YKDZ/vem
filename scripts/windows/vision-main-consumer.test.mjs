@@ -31,6 +31,11 @@ test("keeps the runtime and recorded-video fixture archives separate", () => {
     module,
     /runtime archive must not contain recorded-video fixtures/,
   );
+  assert.match(
+    module,
+    /_internal\/contracts\/vem_vision_v2\/fixtures\/client-valid\.json/,
+  );
+  assert.match(module, /unexpectedFixtures/);
   assert.match(module, /recorded-video\/top\.mp4/);
   assert.match(module, /fixture-manifest\.json/);
   assert.match(

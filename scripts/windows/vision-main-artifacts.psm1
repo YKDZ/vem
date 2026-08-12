@@ -103,7 +103,18 @@ function Assert-VisionArchive([string]$ArchivePath, [string]$Commit, [ValidateSe
     $entries = @($archive.Entries | ForEach-Object { $_.FullName.Replace("\", "/") })
     if ($Kind -eq "runtime") {
       Assert-VisionMainCondition ($entries -contains "vending-vision.exe") "runtime archive must contain vending-vision.exe at its root"
-      Assert-VisionMainCondition (@($entries | Where-Object { $_ -match '(^|/)(recorded-video|fixtures)(/|$)|\.mp4$' }).Count -eq 0) "runtime archive must not contain recorded-video fixtures"
+      $contractFixtures = @(
+        "_internal/contracts/vem_vision_v2/fixtures/client-invalid.json",
+        "_internal/contracts/vem_vision_v2/fixtures/client-valid.json",
+        "_internal/contracts/vem_vision_v2/fixtures/server-invalid.json",
+        "_internal/contracts/vem_vision_v2/fixtures/server-valid.json"
+      )
+      $fixtureLike = @($entries | Where-Object { $_ -match '(^|/)(recorded-video|fixtures)(/|$)|\.mp4$' })
+      $unexpectedFixtures = @($fixtureLike | Where-Object { $_ -cnotin $contractFixtures })
+      Assert-VisionMainCondition ($unexpectedFixtures.Count -eq 0) "runtime archive must not contain recorded-video fixtures"
+      foreach ($contractFixture in $contractFixtures) {
+        Assert-VisionMainCondition ($entries -contains $contractFixture) "runtime archive is missing Vision V2 contract fixture $contractFixture"
+      }
     } else {
       foreach ($required in @("recorded-video/top.mp4", "recorded-video/front.mp4", "recorded-video/expected-results.json")) {
         Assert-VisionMainCondition ($entries -contains $required) "fixture archive is missing $required"

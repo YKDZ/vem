@@ -55,7 +55,7 @@ GitHub。若确有 HTTPS 来源，须额外在宿主机配置的
 `gitBinary`、`unzipBinary`、`visionRepository` 和 `visionSourceRef` 用于在每个 host admission 重跑 candidate exact-four 的可信构建者
 attestation 与 Windows proof exact-three 验证；编排器要求该重算结果与清单中的 canonical
 authority receipt 完全相同。宿主还从本地 Vision repository 的候选 source commit
-逐字节复核 recorded fixture ZIP 的 exact-five 成员；proof companion 只代表冻结证明执行器，
+逐字节复核完整 recorded-video 源树与 fixture ZIP 加 manifest 的精确闭包；proof companion 只代表冻结证明执行器，
 不能冒充 fixture。随后它要求实际安装的 `visionCoreArtifacts` 与 authority 的
 `visionCore` runtime/fixture 身份完全一致，避免仅传输但未安装另一套 AI runtime/fixture。`measurement` 输入可被预置，
 但当前只记录“尚非验收证据”的失败闭环；`formal` 才读取其精确三项校准文件。

@@ -25,10 +25,14 @@ function New-VisionArchiveFixture([string]$Root, [string]$Commit) {
   $fixtureSource = Join-Path $Root "fixture-source"
   $artifactSource = Join-Path $Root "artifact-source"
   $contractRoot = Join-Path $runtimeSource "_internal\contracts\vem_vision_v2"
-  New-Item -ItemType Directory -Force -Path $runtimeSource, $contractRoot, (Join-Path $fixtureSource "recorded-video"), $artifactSource | Out-Null
+  $contractFixtures = Join-Path $contractRoot "fixtures"
+  New-Item -ItemType Directory -Force -Path $runtimeSource, $contractRoot, $contractFixtures, (Join-Path $fixtureSource "recorded-video"), $artifactSource | Out-Null
   $manifest = @{ schemaVersion = "vending-vision-main-artifacts/v1"; commit = $Commit; runtimeArchive = "vending-vision-windows-x86_64.zip"; fixtureArchive = "vending-vision-test-fixtures.zip" } | ConvertTo-Json
   [IO.File]::WriteAllText((Join-Path $runtimeSource "vending-vision.exe"), "fixture", [Text.Encoding]::ASCII)
   @{ protocol = "vem.vision.v2"; schemaVersion = "vem-vision-v2-contract-bundle/v1"; bundleVersion = "1"; bundleDigest = ("a" * 64) } | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $contractRoot "manifest.json") -Encoding utf8
+  foreach ($name in @("client-invalid.json", "client-valid.json", "server-invalid.json", "server-valid.json")) {
+    [IO.File]::WriteAllText((Join-Path $contractFixtures $name), "{}", [Text.Encoding]::ASCII)
+  }
   [IO.File]::WriteAllText((Join-Path $runtimeSource "vision-artifact.json"), $manifest, [Text.Encoding]::UTF8)
   $recordedVideoSource = Join-Path $fixtureSource "recorded-video"
   foreach ($name in @("top.mp4", "front.mp4", "expected-results.json")) { [IO.File]::WriteAllText((Join-Path $recordedVideoSource $name), "fixture", [Text.Encoding]::UTF8) }
@@ -48,9 +52,13 @@ function New-VisionCandidateFixture([string]$Root, [string]$Commit) {
   $source = Join-Path $Root "candidate-source"
   $main = Join-Path $source "vending-vision"
   $worker = Join-Path $source "vending-vision-ai-worker"
-  New-Item -ItemType Directory -Force -Path $main, $worker | Out-Null
+  $contractFixtures = Join-Path $main "_internal/contracts/vem_vision_v2/fixtures"
+  New-Item -ItemType Directory -Force -Path $main, $worker, $contractFixtures | Out-Null
   [IO.File]::WriteAllText((Join-Path $main "vending-vision.exe"), "main", [Text.Encoding]::ASCII)
   [IO.File]::WriteAllText((Join-Path $worker "vending-vision-ai-worker.exe"), "worker", [Text.Encoding]::ASCII)
+  foreach ($name in @("client-invalid.json", "client-valid.json", "server-invalid.json", "server-valid.json")) {
+    [IO.File]::WriteAllText((Join-Path $contractFixtures $name), "{}", [Text.Encoding]::ASCII)
+  }
   $files = @(Get-ChildItem -LiteralPath $source -File -Recurse | ForEach-Object {
     [ordered]@{
       path = [IO.Path]::GetRelativePath($source, $_.FullName).Replace('\', '/')
