@@ -49,37 +49,6 @@ function Write-TestbedPhase([string]$Name) {
   Write-Output "::vem-testbed-phase::$Name"
 }
 
-function Test-TestbedAiVirtualTryOnSelected {
-  if ($Mode -eq "full") { return $true }
-  return @($Focus | Where-Object { $_ -ceq "aiVirtualTryOn" }).Count -eq 1
-}
-
-function New-TestbedAiVisionOwnerConfiguration([object]$GuestInput, [ValidateSet("short", "long")][string]$EvidencePhase) {
-  $inputsProperty = $GuestInput.PSObject.Properties["aiVirtualTryOn"]
-  $inputs = if ($null -eq $inputsProperty) { $null } else { $inputsProperty.Value }
-  if ($null -eq $inputs) { throw "AI owner configuration requires aiVirtualTryOn guest inputs" }
-  $modelPackRoot = [string]$inputs.materializedModelPackRoot
-  if ([string]::IsNullOrWhiteSpace($modelPackRoot) -or -not [IO.Path]::IsPathRooted($modelPackRoot)) {
-    throw "AI owner configuration requires an absolute materializedModelPackRoot"
-  }
-  if ([string]$GuestInput.runId -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$') {
-    throw "AI owner configuration runId is invalid"
-  }
-  $evidenceAuthority = Join-Path "C:\ProgramData\VEM\vision\acceptance" ([string]$GuestInput.runId)
-  New-Item -ItemType Directory -Force -Path $evidenceAuthority | Out-Null
-  $evidenceRoot = Join-Path $evidenceAuthority $EvidencePhase
-  if (Test-Path -LiteralPath $evidenceRoot) {
-    throw "AI acceptance evidence root already exists: $evidenceRoot"
-  }
-  New-Item -ItemType Directory -Path $evidenceRoot | Out-Null
-  $evidenceItem = Get-Item -LiteralPath $evidenceRoot -Force
-  if (-not $evidenceItem.PSIsContainer -or (($evidenceItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) -or
-      @(Get-ChildItem -LiteralPath $evidenceRoot -Force).Count -ne 0) {
-    throw "AI acceptance evidence root is not a fresh regular empty directory"
-  }
-  return [ordered]@{ modelPackRoot = $modelPackRoot; acceptanceEvidenceRoot = $evidenceRoot; phase = $EvidencePhase }
-}
-
 function Get-LocalRustSourceDigest {
   $paths = @(
     "Cargo.toml",
@@ -282,6 +251,16 @@ function Clear-TestbedRunReports {
     (Join-Path $handoffRoot "stock-maintenance.json")
   )) {
     Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+  }
+  $aiArtifactRoot = Join-Path $handoffRoot "ai-virtual-try-on-artifacts"
+  if (Test-Path -LiteralPath $aiArtifactRoot) {
+    $item = Get-Item -LiteralPath $aiArtifactRoot -Force
+    $expected = [IO.Path]::GetFullPath($aiArtifactRoot)
+    if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        [IO.Path]::GetFullPath($item.FullName) -cne $expected) {
+      throw "AI acceptance artifact root is not the exact owned regular directory"
+    }
+    Remove-Item -LiteralPath $expected -Recurse -Force -ErrorAction Stop
   }
 }
 
@@ -907,101 +886,6 @@ function Start-TestbedInstalledRuntimeOwners {
   }
 }
 
-function Wait-TestbedVisionReady {
-  $deadline = [DateTime]::UtcNow.AddSeconds(30)
-  do {
-    try {
-      $health = Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:7892/health" -TimeoutSec 2
-      if ($null -ne $health -and @(Get-NetTCPConnection -LocalAddress "127.0.0.1" -LocalPort 7892 -State Listen -ErrorAction SilentlyContinue).Count -eq 1) {
-        return $health
-      }
-    } catch {}
-    Start-Sleep -Milliseconds 250
-  } while ([DateTime]::UtcNow -lt $deadline)
-  throw "managed Vision owner did not become ready on 127.0.0.1:7892"
-}
-
-function Get-TestbedProcessTreeIds([int[]]$RootProcessIds) {
-  $processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
-  $owned = [Collections.Generic.HashSet[int]]::new()
-  foreach ($processId in $RootProcessIds) { if ($processId -gt 0) { [void]$owned.Add($processId) } }
-  do {
-    $changed = $false
-    foreach ($process in $processes) {
-      if ($owned.Contains([int]$process.ParentProcessId) -and $owned.Add([int]$process.ProcessId)) { $changed = $true }
-    }
-  } while ($changed)
-  return @($owned)
-}
-
-function Stop-TestbedAiVisionOwner([string]$AppDirectory, [string]$ConfigurationPath) {
-  $initialProcesses = Get-TestbedCanonicalVisionProcesses $AppDirectory $ConfigurationPath
-  Assert-TestbedNoUnknownCanonicalVisionProcesses $initialProcesses
-  $ownedProcessIds = @(Get-TestbedProcessTreeIds @($initialProcesses.managed | ForEach-Object { [int]$_.ProcessId }))
-  Stop-ScheduledTask -TaskName "VEMVisionRuntime" -ErrorAction SilentlyContinue
-  Stop-TestbedCanonicalVision $AppDirectory $ConfigurationPath
-  $stopDeadline = [DateTime]::UtcNow.AddSeconds(20)
-  do {
-    $processes = Get-TestbedCanonicalVisionProcesses $AppDirectory $ConfigurationPath
-    Assert-TestbedNoUnknownCanonicalVisionProcesses $processes
-    $remainingOwnedProcessIds = @($ownedProcessIds | Where-Object { $null -ne (Get-Process -Id $_ -ErrorAction SilentlyContinue) })
-    $listeners = @(Get-NetTCPConnection -LocalAddress "127.0.0.1" -LocalPort 7892 -State Listen -ErrorAction SilentlyContinue)
-    if (@($processes.managed).Count -eq 0 -and $remainingOwnedProcessIds.Count -eq 0 -and $listeners.Count -eq 0) { return }
-    Start-Sleep -Milliseconds 100
-  } while ([DateTime]::UtcNow -lt $stopDeadline)
-  throw "managed Vision owner did not become physically dead before restart"
-}
-
-function Restart-TestbedAiVisionOwner {
-  param(
-    [object]$GuestInput,
-    [ValidateSet("short", "long")][string]$EvidencePhase,
-    [string]$ModelPackRoot
-  )
-  $configuration = New-TestbedAiVisionOwnerConfiguration $GuestInput $EvidencePhase
-  if ([IO.Path]::GetFullPath($configuration.modelPackRoot) -ine [IO.Path]::GetFullPath($ModelPackRoot)) {
-    throw "AI owner restart model root changed between attempts"
-  }
-  $visionAppDirectory = "C:\VEM\vision\app"
-  $visionDataDirectory = "C:\ProgramData\VEM\vision"
-  $visionConfiguration = Join-Path $visionDataDirectory "site.json"
-  $ownerManifestPath = Join-Path $runtimeRoot "runtime-owners\owner-manifest.json"
-  Stop-TestbedAiVisionOwner $visionAppDirectory $visionConfiguration
-  try {
-    & (Join-Path $repoRoot "scripts\windows\install-vem-runtime-owners.ps1") `
-      -RuntimeDirectory $deploymentRoot `
-      -DaemonDataDirectory $daemonDataRoot `
-      -VisionAppDirectory $visionAppDirectory `
-      -VisionDataDirectory $visionDataDirectory `
-      -KioskPassword (Get-TestbedKioskPassword $GuestInput) `
-      -MachineUiWebViewDebugPort 9222 `
-      -VisionAiModelPackRoot ([string]$configuration.modelPackRoot) `
-      -VisionAiAcceptanceEvidenceRoot ([string]$configuration.acceptanceEvidenceRoot) `
-      -OwnerManifestPath $ownerManifestPath | Out-Null
-    Start-ScheduledTask -TaskName "VEMVisionRuntime" -ErrorAction Stop
-    Wait-TestbedVisionReady | Out-Null
-    return $configuration
-  } catch {
-    $primaryError = $_.Exception
-    try {
-      Stop-TestbedAiVisionOwner $visionAppDirectory $visionConfiguration
-      & (Join-Path $repoRoot "scripts\windows\install-vem-runtime-owners.ps1") `
-        -RuntimeDirectory $deploymentRoot `
-        -DaemonDataDirectory $daemonDataRoot `
-        -VisionAppDirectory $visionAppDirectory `
-        -VisionDataDirectory $visionDataDirectory `
-        -KioskPassword (Get-TestbedKioskPassword $GuestInput) `
-        -MachineUiWebViewDebugPort 9222 `
-        -OwnerManifestPath $ownerManifestPath | Out-Null
-      Start-ScheduledTask -TaskName "VEMVisionRuntime" -ErrorAction Stop
-      Wait-TestbedVisionReady | Out-Null
-    } catch {
-      throw [AggregateException]::new("AI Vision owner restart and default-owner recovery both failed", @($primaryError, $_.Exception))
-    }
-    throw $primaryError
-  }
-}
-
 function Stop-TestbedCanonicalVision([string]$AppDirectory, [string]$ConfigurationPath) {
   $visionModule = Import-Module (Join-Path $PSScriptRoot "..\windows\vision-main-artifacts.psm1") -Force -PassThru
   try {
@@ -1150,12 +1034,6 @@ if ($Mode -eq "clear_cache") {
 Require-Path $GuestInputPath
 $guestInput = Get-Content -Raw -LiteralPath $GuestInputPath -Encoding UTF8 | ConvertFrom-Json
 if ($guestInput.schemaVersion -ne "vem-local-testbed-guest-input/v1") { throw "invalid local testbed guest input" }
-$aiVirtualTryOnSelected = Test-TestbedAiVirtualTryOnSelected
-$aiVisionOwnerConfiguration = if ($aiVirtualTryOnSelected) {
-  New-TestbedAiVisionOwnerConfiguration $guestInput "short"
-} else { $null }
-$aiVisionModelPackRoot = if ($null -eq $aiVisionOwnerConfiguration) { $null } else { [string]$aiVisionOwnerConfiguration.modelPackRoot }
-$aiVisionAcceptanceEvidenceRoot = if ($null -eq $aiVisionOwnerConfiguration) { $null } else { [string]$aiVisionOwnerConfiguration.acceptanceEvidenceRoot }
 if ($Mode -in @("fast", "full")) {
   Clear-TestbedVisionProcesses $guestInput
 }
@@ -1361,8 +1239,8 @@ $startupState = Start-TestbedInstalledRuntimeOwners `
   -GuestInput $guestInput `
   -DaemonPath $daemonPath `
   -MachinePath $machinePath `
-  -VisionAiModelPackRoot $aiVisionModelPackRoot `
-  -VisionAiAcceptanceEvidenceRoot $aiVisionAcceptanceEvidenceRoot `
+  -VisionAiModelPackRoot $null `
+  -VisionAiAcceptanceEvidenceRoot $null `
   -ClaimBeforeInteractiveOwners:($Mode -eq "full" -or -not $isWarmFastRun)
 if ($null -ne $startupState.claim) {
   $claim = $startupState.claim

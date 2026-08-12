@@ -376,13 +376,25 @@ export function validateAiRegionalEvidenceSet(
       `AI regional evidence member identity is invalid: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
+  let calibrationPending = false;
   for (const attempt of attempts) {
     const result = validateAiRegionalEvidence(
       attempt,
       artifactRoot,
       evidenceManifest,
     );
+    if (
+      result.reason ===
+      "AI regional evidence policy awaits Issue10 two-garment calibration"
+    ) {
+      calibrationPending = true;
+      continue;
+    }
     if (!result.ok) return result;
   }
+  if (calibrationPending)
+    return fail(
+      "AI regional evidence policy awaits Issue10 two-garment calibration",
+    );
   return { ok: true, reason: null };
 }

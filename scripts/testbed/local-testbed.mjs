@@ -1244,11 +1244,16 @@ export async function prepareInstallationOwnedPaymentProvider({
   };
 }
 
-function testbedTryOnGarmentAsset() {
+function testbedTryOnGarmentAsset(template = "tshirt_short_sleeve") {
+  const longSleeve = template === "tshirt_long_sleeve";
   return {
-    fileName: "local-testbed-try-on-garment.png",
+    fileName: longSleeve
+      ? "local-testbed-try-on-garment-long.png"
+      : "local-testbed-try-on-garment.png",
     contentType: "image/png",
-    buffer: TESTBED_MEDIA_FIXTURES.tryOnGarment,
+    buffer: longSleeve
+      ? TESTBED_MEDIA_FIXTURES.tryOnGarmentLong
+      : TESTBED_MEDIA_FIXTURES.tryOnGarment,
   };
 }
 
@@ -1337,6 +1342,19 @@ const TESTBED_MEDIA_FIXTURES = Object.freeze({
         (x > width * 0.74 && x < width * 0.92));
     return torso || sleeves ? [38, 128, 212, 235] : [0, 0, 0, 0];
   }),
+  tryOnGarmentLong: createRgbaPng(512, 640, (x, y, width, height) => {
+    const torso =
+      x > width * 0.27 &&
+      x < width * 0.73 &&
+      y > height * 0.24 &&
+      y < height * 0.92;
+    const sleeves =
+      y > height * 0.2 &&
+      y < height * 0.82 &&
+      ((x > width * 0.09 && x < width * 0.28) ||
+        (x > width * 0.72 && x < width * 0.91));
+    return torso || sleeves ? [119, 58, 173, 235] : [0, 0, 0, 0];
+  }),
   productDisplayImages: Object.freeze({
     袜子: createProductFixturePng({
       background: [32, 91, 76],
@@ -1372,10 +1390,6 @@ function testbedProductDisplayImageAsset(category) {
     contentType: "image/png",
     buffer,
   };
-}
-
-function supportsTryOnAcceptance(entry) {
-  return entry.category === "T恤";
 }
 
 async function uploadMultipartFile(baseUrl, path, options) {
@@ -1477,6 +1491,14 @@ export async function seedThroughSupportedApis({
     {
       token,
       ...testbedTryOnGarmentAsset(),
+    },
+  );
+  const longTryOnGarmentAsset = await upload(
+    baseUrl,
+    "/media-assets/try-on-garments",
+    {
+      token,
+      ...testbedTryOnGarmentAsset("tshirt_long_sleeve"),
     },
   );
   const productDisplayAssetsByCategory = new Map();
@@ -1673,44 +1695,47 @@ export async function seedThroughSupportedApis({
       onHandQty: recommendationBase.slot.onHandQty,
     });
   }
-  const tryOnGarmentDraft = await request(baseUrl, "/try-on-garments", {
-    method: "POST",
-    token,
-    body: {
-      productId: recommendationBase.product.product.id,
-      colorLabel: "测试蓝",
-      sourceMediaAssetId: tryOnGarmentAsset.id,
-      template: "tshirt_short_sleeve",
-    },
-  });
-  await request(
-    baseUrl,
-    `/try-on-garments/${tryOnGarmentDraft.id}/confirmation`,
-    {
+  const createGarment = async (sourceMediaAssetId, template, colorLabel) => {
+    const draft = await request(baseUrl, "/try-on-garments", {
       method: "POST",
       token,
-      body: {},
-    },
+      body: {
+        productId: recommendationBase.product.product.id,
+        colorLabel,
+        sourceMediaAssetId,
+        template,
+      },
+    });
+    for (const action of ["confirmation", "activation"]) {
+      await request(baseUrl, `/try-on-garments/${draft.id}/${action}`, {
+        method: "POST",
+        token,
+        body: {},
+      });
+    }
+    return draft;
+  };
+  const shortDraft = await createGarment(
+    tryOnGarmentAsset.id,
+    "tshirt_short_sleeve",
+    "测试蓝",
   );
-  await request(
-    baseUrl,
-    `/try-on-garments/${tryOnGarmentDraft.id}/activation`,
-    {
-      method: "POST",
-      token,
-      body: {},
-    },
+  const longDraft = await createGarment(
+    longTryOnGarmentAsset.id,
+    "tshirt_long_sleeve",
+    "测试紫",
   );
-  const eligibleVariantIds = [
-    ...products
-      .filter((entry) => supportsTryOnAcceptance(entry))
-      .map((entry) => entry.variant.id),
-    ...recommendationVariants.map((entry) => entry.variantId),
-  ];
+  const shortVariant = recommendationVariants[0];
+  const longVariant = recommendationVariants[1];
   const tryOnGarment = await request(
     baseUrl,
-    `/try-on-garments/${tryOnGarmentDraft.id}/variant-associations`,
-    { method: "PUT", token, body: { variantIds: eligibleVariantIds } },
+    `/try-on-garments/${shortDraft.id}/variant-associations`,
+    { method: "PUT", token, body: { variantIds: [shortVariant.variantId] } },
+  );
+  const longTryOnGarment = await request(
+    baseUrl,
+    `/try-on-garments/${longDraft.id}/variant-associations`,
+    { method: "PUT", token, body: { variantIds: [longVariant.variantId] } },
   );
   const planogramVersion = "LOCAL-TESTBED-V1";
   await request(baseUrl, `/machines/${machine.id}/planogram-versions`, {
@@ -1747,17 +1772,6 @@ export async function seedThroughSupportedApis({
     token,
     body: { purpose: "first_claim" },
   });
-  const seededTryOnVariants = products
-    .filter((entry) => supportsTryOnAcceptance(entry))
-    .map((entry) => ({
-      sourceRow: entry.sourceRow,
-      productId: entry.product.id,
-      variantId: entry.variant.id,
-      sku: entry.variant.sku,
-      size: entry.size,
-      garmentId: tryOnGarment.id,
-      garmentMediaAssetId: tryOnGarmentAsset.id,
-    }));
   const productMedia = ["socks", "underwear", "tshirts"].map((categoryKey) => {
     const seededSlot = seededSlots.find(
       (entry) => categoryKeyForFixtureProduct(entry.product) === categoryKey,
@@ -1796,7 +1810,52 @@ export async function seedThroughSupportedApis({
         slotId: unmatchedRecommendation.machineSlot.id,
         inventoryId: unmatchedRecommendation.inventory.id,
       },
-      seededTryOnVariants,
+      seededTryOnVariants: [
+        {
+          sourceRow: recommendationBase.slot.sourceRow,
+          productId: shortVariant.productId,
+          variantId: shortVariant.variantId,
+          sku: shortVariant.sku,
+          size: shortVariant.size,
+          garmentId: tryOnGarment.id,
+          garmentMediaAssetId: tryOnGarmentAsset.id,
+        },
+        {
+          sourceRow: recommendationBase.slot.sourceRow,
+          productId: longVariant.productId,
+          variantId: longVariant.variantId,
+          sku: longVariant.sku,
+          size: longVariant.size,
+          garmentId: longTryOnGarment.id,
+          garmentMediaAssetId: longTryOnGarmentAsset.id,
+        },
+      ],
+      aiTryOnCases: [
+        {
+          caseKey: "short",
+          template: "tshirt_short_sleeve",
+          garmentId: tryOnGarment.id,
+          garmentMediaAssetId: tryOnGarmentAsset.id,
+          garmentSha256: createHash("sha256")
+            .update(TESTBED_MEDIA_FIXTURES.tryOnGarment)
+            .digest("hex"),
+          selectedCatalogKey: `product:${shortVariant.productId}`,
+          selectedVariantId: shortVariant.variantId,
+          size: shortVariant.size,
+        },
+        {
+          caseKey: "long",
+          template: "tshirt_long_sleeve",
+          garmentId: longTryOnGarment.id,
+          garmentMediaAssetId: longTryOnGarmentAsset.id,
+          garmentSha256: createHash("sha256")
+            .update(TESTBED_MEDIA_FIXTURES.tryOnGarmentLong)
+            .digest("hex"),
+          selectedCatalogKey: `product:${longVariant.productId}`,
+          selectedVariantId: longVariant.variantId,
+          size: longVariant.size,
+        },
+      ],
       productMedia,
     },
     slots: seededSlots.map(({ slot, product, machineSlot, inventory }) => ({

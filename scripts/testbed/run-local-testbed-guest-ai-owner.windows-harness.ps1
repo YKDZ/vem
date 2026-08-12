@@ -4,17 +4,8 @@ function Assert-Equal($Actual, $Expected, [string]$Message) {
   if ($Actual -cne $Expected) { throw "$Message; expected $Expected, got $Actual" }
 }
 
-$guestScript = Join-Path $PSScriptRoot "run-local-testbed-guest.ps1"
-$tokens = $null
-$parseErrors = $null
-$ast = [Management.Automation.Language.Parser]::ParseFile($guestScript, [ref]$tokens, [ref]$parseErrors)
-if ($parseErrors.Count -ne 0) { throw "guest script does not parse" }
-$ownerFunctions = @($ast.FindAll({
-  param($node)
-  $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in @("Stop-TestbedAiVisionOwner", "Restart-TestbedAiVisionOwner")
-}, $true))
-if ($ownerFunctions.Count -ne 2) { throw "restart helpers are not uniquely defined" }
-foreach ($function in $ownerFunctions | Sort-Object { $_.Extent.StartOffset }) { Invoke-Expression $function.Extent.Text }
+$ownerModulePath = Join-Path $PSScriptRoot "ai-vision-owner.psm1"
+Import-Module $ownerModulePath -Force
 
 $root = Join-Path ([IO.Path]::GetTempPath()) ("vem-ai-owner-restart-" + [guid]::NewGuid().ToString("N"))
 $script:repoRoot = Join-Path $root "repo"
@@ -28,6 +19,8 @@ $global:AiOwnerHarnessFailurePoint = $null
 $global:AiOwnerHarnessDefaultOnline = $false
 $global:AiOwnerHarnessAiEnvironment = $false
 $global:AiOwnerHarnessFailDefaultInstall = $false
+$global:AiOwnerHarnessStopAfterSideEffectFailure = $false
+$env:NODE_ENV = "test"
 
 function global:Join-Path {
   param([string]$Path, [string]$ChildPath)
@@ -35,30 +28,42 @@ function global:Join-Path {
   return [IO.Path]::Combine($Path, $ChildPath)
 }
 
-function global:New-TestbedAiVisionOwnerConfiguration {
-  param([object]$GuestInput, [ValidateSet("short", "long")][string]$EvidencePhase)
-  $path = Join-Path $root "sink-$EvidencePhase"
-  New-Item -ItemType Directory -Path $path | Out-Null
-  return [ordered]@{ modelPackRoot = [string]$GuestInput.aiVirtualTryOn.materializedModelPackRoot; acceptanceEvidenceRoot = $path; phase = $EvidencePhase }
-}
-function global:Get-TestbedKioskPassword { return "harness-password" }
-function global:Stop-ScheduledTask { param([string]$TaskName, $ErrorAction) $global:AiOwnerHarnessCalls.Add("stop-task:$TaskName") | Out-Null }
-function global:Stop-TestbedCanonicalVision { param([string]$AppDirectory, [string]$ConfigurationPath) $global:AiOwnerHarnessCalls.Add("stop-canonical") | Out-Null; $global:AiOwnerHarnessDefaultOnline = $false }
-function global:Get-TestbedCanonicalVisionProcesses { return [pscustomobject]@{ managed = @(); unknown = @() } }
-function global:Assert-TestbedNoUnknownCanonicalVisionProcesses { param([object]$VisionProcesses) }
-function global:Get-TestbedProcessTreeIds { return @() }
-function global:Get-Process { return $null }
-function global:Get-NetTCPConnection { return @() }
-function global:Start-ScheduledTask {
-  param([string]$TaskName, $ErrorAction)
-  $global:AiOwnerHarnessCalls.Add("start-task:$TaskName") | Out-Null
+$testOperations = @{
+  StopOwner = {
+    param([string]$AppDirectory, [string]$ConfigurationPath)
+    $global:AiOwnerHarnessCalls.Add("stop-task:VEMVisionRuntime") | Out-Null
+    $global:AiOwnerHarnessCalls.Add("stop-canonical") | Out-Null
+    $global:AiOwnerHarnessDefaultOnline = $false
+    if ($global:AiOwnerHarnessStopAfterSideEffectFailure) {
+      $global:AiOwnerHarnessStopAfterSideEffectFailure = $false
+      throw "injected stop-after-side-effect failure"
+    }
+  }
+  StartOwner = {
+  $global:AiOwnerHarnessCalls.Add("start-task:VEMVisionRuntime") | Out-Null
   if ($global:AiOwnerHarnessFailurePoint -ceq "start" -and $global:AiOwnerHarnessAiEnvironment) { throw "injected start failure" }
   $global:AiOwnerHarnessDefaultOnline = -not $global:AiOwnerHarnessAiEnvironment
-}
-function global:Wait-TestbedVisionReady {
+  }
+  WaitReady = {
   $global:AiOwnerHarnessCalls.Add("ready") | Out-Null
   if ($global:AiOwnerHarnessFailurePoint -ceq "ready" -and $global:AiOwnerHarnessAiEnvironment) { throw "injected ready failure" }
   return [pscustomobject]@{ ok = $true }
+  }
+  ReadOwnerIdentity = {
+    return [pscustomobject]@{ ProcessId = 4242; ExecutablePath = "C:\VEM\vision\app\vending-vision.exe" }
+  }
+  InstallOwner = {
+    param([object]$GuestInput, [object]$Configuration)
+    if ($null -eq $Configuration) {
+      $global:AiOwnerHarnessCalls.Add("install-default") | Out-Null
+      if ($global:AiOwnerHarnessFailDefaultInstall) { throw "injected default recovery failure" }
+      $global:AiOwnerHarnessAiEnvironment = $false
+      return
+    }
+    $global:AiOwnerHarnessCalls.Add("install-ai:$($Configuration.acceptanceEvidenceRoot)") | Out-Null
+    $global:AiOwnerHarnessAiEnvironment = $true
+    if ($global:AiOwnerHarnessFailurePoint -ceq "install") { throw "injected install failure" }
+  }
 }
 
 try {
@@ -82,7 +87,8 @@ if ($global:AiOwnerHarnessFailurePoint -ceq "install") { throw "injected install
 
   $modelRoot = Join-Path $root "model"
   New-Item -ItemType Directory -Path $modelRoot | Out-Null
-  $guestInput = [pscustomobject]@{ aiVirtualTryOn = [pscustomobject]@{ materializedModelPackRoot = $modelRoot } }
+  Initialize-TestbedAiVisionOwnerContext -RepoRoot $script:repoRoot -RuntimeRoot $script:runtimeRoot -DeploymentRoot $script:deploymentRoot -DaemonDataRoot $script:daemonDataRoot -AcceptanceAuthorityRoot (Join-Path $root "acceptance") -TestOperations $testOperations
+  $guestInput = [pscustomobject]@{ runId = "owner-harness"; interactiveUserPassword = "harness-password"; aiVirtualTryOn = [pscustomobject]@{ materializedModelPackRoot = $modelRoot } }
   $short = Restart-TestbedAiVisionOwner -GuestInput $guestInput -EvidencePhase short -ModelPackRoot $modelRoot
   $long = Restart-TestbedAiVisionOwner -GuestInput $guestInput -EvidencePhase long -ModelPackRoot $modelRoot
   Assert-Equal ($global:AiOwnerHarnessCalls -join ",") "stop-task:VEMVisionRuntime,stop-canonical,install-ai:$($short.acceptanceEvidenceRoot),start-task:VEMVisionRuntime,ready,stop-task:VEMVisionRuntime,stop-canonical,install-ai:$($long.acceptanceEvidenceRoot),start-task:VEMVisionRuntime,ready" "managed restart call order"
@@ -109,6 +115,20 @@ if ($global:AiOwnerHarnessFailurePoint -ceq "install") { throw "injected install
     }
     $failures[$failurePoint] = $calls
   }
+
+  $global:AiOwnerHarnessCalls.Clear()
+  $global:AiOwnerHarnessFailurePoint = $null
+  $global:AiOwnerHarnessStopAfterSideEffectFailure = $true
+  Remove-Item -LiteralPath $short.acceptanceEvidenceRoot -Recurse -Force -ErrorAction SilentlyContinue
+  $stopFailure = $null
+  try {
+    Restart-TestbedAiVisionOwner -GuestInput $guestInput -EvidencePhase short -ModelPackRoot $modelRoot | Out-Null
+  } catch { $stopFailure = $_.Exception.Message }
+  if ($stopFailure -notmatch "stop-after-side-effect") { throw "partial stop primary failure was not preserved: $stopFailure" }
+  if (-not $global:AiOwnerHarnessDefaultOnline -or $global:AiOwnerHarnessAiEnvironment) {
+    throw "partial stop recovery did not restore the AI-free default owner"
+  }
+  $failures["partial-stop"] = @($global:AiOwnerHarnessCalls)
 
   $global:AiOwnerHarnessCalls.Clear()
   $global:AiOwnerHarnessFailurePoint = "install"

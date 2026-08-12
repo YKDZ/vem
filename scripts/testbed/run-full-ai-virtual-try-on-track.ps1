@@ -8,6 +8,9 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+$repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
+Import-Module (Join-Path $PSScriptRoot "ai-vision-owner.psm1") -Force
+
 function Require-AbsoluteLeaf([string]$Path, [string]$Label) {
   if ([string]::IsNullOrWhiteSpace($Path) -or -not [IO.Path]::IsPathFullyQualified($Path)) {
     throw "$Label is required as an absolute path"
@@ -75,4 +78,60 @@ if ([string]$inputs.modelPackUrl -notmatch '^https://') { throw "official model 
 if ([string]$inputs.modelPackSha256 -notmatch '^[a-f0-9]{64}$') { throw "official model SHA-256 is invalid" }
 if ($inputs.modelPackByteSize -isnot [long] -or [long]$inputs.modelPackByteSize -le 0) { throw "official model byte size is invalid" }
 
-throw "AI virtual try-on installed acceptance execution is not implemented; verified inputs were not consumed and no report was emitted"
+Initialize-TestbedAiVisionOwnerContext `
+  -RepoRoot $repoRoot `
+  -RuntimeRoot "C:\ProgramData\VEM" `
+  -DeploymentRoot "C:\VEM\bringup" `
+  -DaemonDataRoot "C:\ProgramData\VEM\vending-daemon"
+
+$modelPackRoot = [string]$inputs.materializedModelPackRoot
+Require-AbsoluteDirectory $modelPackRoot "materialized official model pack"
+$artifactRoot = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetDirectoryName($OutPath)) "ai-virtual-try-on-artifacts"))
+if (Test-Path -LiteralPath $artifactRoot) { throw "AI acceptance artifact root must be fresh" }
+New-Item -ItemType Directory -Path $artifactRoot | Out-Null
+$shortFacts = Join-Path $artifactRoot "short-attempt.json"
+$longFacts = Join-Path $artifactRoot "long-attempt.json"
+$saleFacts = Join-Path $artifactRoot "ordinary-sale.json"
+$nodeEntry = Join-Path $PSScriptRoot "ai-virtual-try-on-installed-entry.mjs"
+$restorationRequired = $false
+$restorationSupport = Join-Path $artifactRoot "default-owner-restoration.json"
+$trackSucceeded = $false
+try {
+  # The first stop is a mutating operation; restoration is required before it.
+  $restorationRequired = $true
+  $shortConfiguration = Restart-TestbedAiVisionOwner -GuestInput $guestInput -EvidencePhase short -ModelPackRoot $modelPackRoot
+  node $nodeEntry attempt --case short --guest-input $GuestInputPath --handoff $HandoffPath --regional-root ([string]$shortConfiguration.acceptanceEvidenceRoot) --artifact-root $artifactRoot --out $shortFacts
+  if ($LASTEXITCODE -ne 0) { throw "short installed AI attempt failed" }
+  $longConfiguration = Restart-TestbedAiVisionOwner -GuestInput $guestInput -EvidencePhase long -ModelPackRoot $modelPackRoot
+  node $nodeEntry attempt --case long --guest-input $GuestInputPath --handoff $HandoffPath --regional-root ([string]$longConfiguration.acceptanceEvidenceRoot) --artifact-root $artifactRoot --out $longFacts
+  if ($LASTEXITCODE -ne 0) { throw "long installed AI attempt failed" }
+  node $nodeEntry sale --guest-input $GuestInputPath --handoff $HandoffPath --out $saleFacts
+  if ($LASTEXITCODE -ne 0) { throw "ordinary installed-owner sale failed" }
+  node $nodeEntry assemble --artifact-root $artifactRoot --candidate-input-directory ([string]$inputs.candidateInputDirectory) --windows-proof-input-directory ([string]$inputs.windowsProofInputDirectory) --short-attempt $shortFacts --long-attempt $longFacts --sale $saleFacts --out $OutPath
+  if ($LASTEXITCODE -ne 0) { throw "installed AI acceptance assembly failed" }
+  $trackSucceeded = $true
+} finally {
+  try {
+    if ($restorationRequired) {
+      $restored = Restore-TestbedDefaultVisionOwner -GuestInput $guestInput
+      [ordered]@{
+        facts = [ordered]@{
+          aiEnvironmentCleared = $true
+          owner = $restored
+        }
+        kind = "installed-runtime"
+        schemaVersion = "vem.testbed.ai-virtual-try-on-support.v1"
+      } | ConvertTo-Json -Compress -Depth 12 | ForEach-Object { [IO.File]::WriteAllText($restorationSupport, "$_`n", [Text.UTF8Encoding]::new($false)) }
+    }
+  } catch {
+    Remove-Item -LiteralPath $OutPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $artifactRoot -Recurse -Force -ErrorAction SilentlyContinue
+    throw
+  }
+  if (-not $trackSucceeded) {
+    Remove-Item -LiteralPath $OutPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $artifactRoot -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+Write-Error "AI regional evidence policy awaits Issue10 two-garment calibration" -ErrorAction Continue
+exit 1

@@ -289,7 +289,7 @@ function validateAiVirtualTryOnTrack(report, reportPath) {
       );
 }
 
-function validateAiAttemptSet(attempts, runtimeTrace) {
+export function validateAiAttemptSet(attempts, runtimeTrace) {
   const expected = [
     ["short", "tshirt_short_sleeve"],
     ["long", "tshirt_long_sleeve"],

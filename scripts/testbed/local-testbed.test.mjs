@@ -1308,8 +1308,11 @@ describe("supported API seeding", () => {
         return { id: "machine-1", code: "VEM-TESTBED-LOCAL", status: "online" };
       if (path.endsWith("/slots")) return { id: `slot-${calls.length}` };
       if (path === "/inventories") return { id: `inventory-${calls.length}` };
-      if (path === "/try-on-garments") return { id: "garment-1" };
-      if (path.includes("/try-on-garments/")) return { id: "garment-1" };
+      if (path === "/try-on-garments")
+        return {
+          id: `garment-${calls.filter((call) => call.path === path).length}`,
+        };
+      if (path.includes("/try-on-garments/")) return { id: path.split("/")[2] };
       if (path.endsWith("/planogram-versions"))
         return { planogramVersion: "LOCAL-TESTBED-V1" };
       if (path.endsWith("/claim-codes"))
@@ -1324,9 +1327,15 @@ describe("supported API seeding", () => {
         "550e8400-e29b-41d4-a716-446655440126",
         "550e8400-e29b-41d4-a716-446655440127",
       ];
+      const garmentAssetIds = [
+        "550e8400-e29b-41d4-a716-446655440125",
+        "550e8400-e29b-41d4-a716-446655440128",
+      ];
       const id =
         path === "/media-assets/try-on-garments"
-          ? "550e8400-e29b-41d4-a716-446655440125"
+          ? garmentAssetIds[
+              uploads.filter((upload) => upload.path === path).length
+            ]
           : productDisplayIds[
               uploads.filter(
                 (upload) =>
@@ -1358,7 +1367,7 @@ describe("supported API seeding", () => {
         body: { status: "online" },
       },
     );
-    assert.equal(uploads.length, 4);
+    assert.equal(uploads.length, 5);
     assert.deepEqual(uploads[0], {
       path: "/media-assets/try-on-garments",
       token: "admin-token",
@@ -1373,6 +1382,12 @@ describe("supported API seeding", () => {
       height: 640,
     });
     assert.ok(createHash("sha256").update(uploads[0].buffer).digest("hex"));
+    assert.equal(uploads[1].path, "/media-assets/try-on-garments");
+    assert.equal(uploads[1].fileName, "local-testbed-try-on-garment-long.png");
+    assert.notEqual(
+      createHash("sha256").update(uploads[0].buffer).digest("hex"),
+      createHash("sha256").update(uploads[1].buffer).digest("hex"),
+    );
     const productDisplayUploads = uploads.filter(
       (upload) => upload.path === "/media-assets/product-display-images",
     );
@@ -1457,9 +1472,25 @@ describe("supported API seeding", () => {
           token: "admin-token",
           body: {},
         },
+        {
+          path: "/try-on-garments/garment-2/confirmation",
+          method: "POST",
+          token: "admin-token",
+          body: {},
+        },
+        {
+          path: "/try-on-garments/garment-2/activation",
+          method: "POST",
+          token: "admin-token",
+          body: {},
+        },
         calls.find(
           (call) =>
             call.path === "/try-on-garments/garment-1/variant-associations",
+        ),
+        calls.find(
+          (call) =>
+            call.path === "/try-on-garments/garment-2/variant-associations",
         ),
       ],
     );
@@ -1468,6 +1499,34 @@ describe("supported API seeding", () => {
       result.visionAcceptance.tryOnGarmentMediaAssetId,
       "550e8400-e29b-41d4-a716-446655440125",
     );
+    assert.deepEqual(result.visionAcceptance.aiTryOnCases, [
+      {
+        caseKey: "short",
+        template: "tshirt_short_sleeve",
+        garmentId: "garment-1",
+        garmentMediaAssetId: "550e8400-e29b-41d4-a716-446655440125",
+        garmentSha256: createHash("sha256")
+          .update(uploads[0].buffer)
+          .digest("hex"),
+        selectedCatalogKey: result.visionAcceptance.selectedCatalogKey,
+        selectedVariantId:
+          result.visionAcceptance.recommendationVariants[0].variantId,
+        size: "S",
+      },
+      {
+        caseKey: "long",
+        template: "tshirt_long_sleeve",
+        garmentId: "garment-2",
+        garmentMediaAssetId: "550e8400-e29b-41d4-a716-446655440128",
+        garmentSha256: createHash("sha256")
+          .update(uploads[1].buffer)
+          .digest("hex"),
+        selectedCatalogKey: result.visionAcceptance.selectedCatalogKey,
+        selectedVariantId:
+          result.visionAcceptance.recommendationVariants[1].variantId,
+        size: "M",
+      },
+    ]);
     assert.equal(result.visionAcceptance.tryOnCategoryKey, "tshirts");
     assert.deepEqual(
       result.visionAcceptance.productMedia.map((entry) => ({
@@ -1481,17 +1540,27 @@ describe("supported API seeding", () => {
         coverImageUrl: productDisplayUploads[index].asset.publicUrl,
       })),
     );
-    assert.equal(result.visionAcceptance.seededTryOnVariants.length, 14);
-    for (const entry of result.visionAcceptance.seededTryOnVariants) {
-      assert.match(entry.variantId, /^variant-\d+$/);
-      assert.match(entry.productId, /^product-\d+$/);
-      assert.match(entry.sku, /^TSC-LOCAL-\d{3}$/);
-      assert.equal(entry.garmentId, "garment-1");
-      assert.equal(
-        entry.garmentMediaAssetId,
-        "550e8400-e29b-41d4-a716-446655440125",
-      );
-    }
+    assert.deepEqual(
+      result.visionAcceptance.seededTryOnVariants.map((entry) => ({
+        garmentId: entry.garmentId,
+        garmentMediaAssetId: entry.garmentMediaAssetId,
+        variantId: entry.variantId,
+      })),
+      [
+        {
+          garmentId: "garment-1",
+          garmentMediaAssetId: "550e8400-e29b-41d4-a716-446655440125",
+          variantId:
+            result.visionAcceptance.recommendationVariants[0].variantId,
+        },
+        {
+          garmentId: "garment-2",
+          garmentMediaAssetId: "550e8400-e29b-41d4-a716-446655440128",
+          variantId:
+            result.visionAcceptance.recommendationVariants[1].variantId,
+        },
+      ],
+    );
     assert.deepEqual(
       result.visionAcceptance.recommendationVariants.map((entry) => ({
         productId: entry.productId,
@@ -1535,8 +1604,8 @@ describe("supported API seeding", () => {
       1,
     );
     const seededTryOnVariantIds = new Set(
-      result.visionAcceptance.seededTryOnVariants.map(
-        (entry) => entry.variantId,
+      result.visionAcceptance.aiTryOnCases.map(
+        (entry) => entry.selectedVariantId,
       ),
     );
     const tryOnInventoryCalls = calls.filter(
@@ -2051,33 +2120,23 @@ describe("Windows D cache contract", () => {
     assert.doesNotMatch(guest, /CARGO_REGISTRY_CACHE|CARGO_GIT_CACHE/);
   });
 
-  it("plumbs selected AI acceptance roots through the single managed Vision owner", () => {
+  it("leaves the default Vision owner AI-free until the selected track starts a fresh phase", () => {
     const guest = readFileSync(
       new URL("./run-local-testbed-guest.ps1", import.meta.url),
       "utf8",
     );
-    const selected = guest.indexOf("$aiVirtualTryOnSelected =");
-    const prepared = guest.indexOf(
-      'New-TestbedAiVisionOwnerConfiguration $guestInput "short"',
-      selected,
-    );
     const started = guest.indexOf(
       "$startupState = Start-TestbedInstalledRuntimeOwners",
     );
-    assert.ok(selected >= 0 && prepared > selected && started > prepared);
+    assert.ok(started >= 0);
     assert.match(
       guest,
-      /Start-TestbedInstalledRuntimeOwners[\s\S]*-VisionAiModelPackRoot \$aiVisionModelPackRoot[\s\S]*-VisionAiAcceptanceEvidenceRoot \$aiVisionAcceptanceEvidenceRoot/,
+      /Start-TestbedInstalledRuntimeOwners[\s\S]*-VisionAiModelPackRoot \$null[\s\S]*-VisionAiAcceptanceEvidenceRoot \$null/,
     );
-    assert.match(
+    assert.doesNotMatch(
       guest,
-      /function Stop-TestbedAiVisionOwner[\s\S]*Get-TestbedProcessTreeIds[\s\S]*Stop-ScheduledTask[\s\S]*Stop-TestbedCanonicalVision[\s\S]*remainingOwnedProcessIds[\s\S]*7892/,
+      /New-TestbedAiVisionOwnerConfiguration \$guestInput "short"/,
     );
-    assert.match(
-      guest,
-      /function Restart-TestbedAiVisionOwner[\s\S]*Stop-TestbedAiVisionOwner[\s\S]*install-vem-runtime-owners\.ps1[\s\S]*Start-ScheduledTask[\s\S]*Wait-TestbedVisionReady/,
-    );
-    assert.match(guest, /ValidateSet\("short", "long"\)/);
   });
 
   it("restarts the one Vision owner without overlapping short and long sinks", () => {

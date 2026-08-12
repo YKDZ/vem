@@ -274,6 +274,50 @@ describe("AI regional evidence", () => {
     assert.match(result.reason, /physical member is reused/);
   });
 
+  it("validates both physical sidecars before reporting calibration pending", () => {
+    const root = fixtureRoot();
+    const short = reportFixture(root);
+    const longAttemptId = "0198f44e-21bd-7c62-8f52-b7c86cc2b003";
+    const longRelative = `regional/long/${longAttemptId}.regional-evidence.json`;
+    const longPath = join(root, longRelative);
+    mkdirSync(dirname(longPath), { recursive: true });
+    const longSidecar = sidecarFixture();
+    longSidecar.attempt.garmentSha256 = "4".repeat(64);
+    longSidecar.attempt.resultSha256 = "9".repeat(64);
+    const longRaw = `${JSON.stringify(canonical(longSidecar))}\n`;
+    writeFileSync(longPath, longRaw);
+    const longAttempt = structuredClone(short.attempt);
+    longAttempt.attemptId = longAttemptId;
+    longAttempt.caseKey = "long";
+    longAttempt.template = "tshirt_long_sleeve";
+    longAttempt.garment.sha256 = longSidecar.attempt.garmentSha256;
+    longAttempt.result.sha256 = longSidecar.attempt.resultSha256;
+    longAttempt.regionalEvidence.path = longRelative;
+    longAttempt.regionalEvidence.sha256 = createHash("sha256")
+      .update(longRaw)
+      .digest("hex");
+    const manifest = {
+      files: [
+        ...short.manifest.files,
+        {
+          byteLength: Buffer.byteLength(longRaw),
+          kind: "supportingEvidence",
+          path: longPath,
+          sha256: longAttempt.regionalEvidence.sha256,
+          track: "aiVirtualTryOn",
+        },
+      ],
+    };
+    writeFileSync(longPath, `${longRaw.trimEnd()} `);
+    const result = validateAiRegionalEvidenceSet(
+      [short.attempt, longAttempt],
+      root,
+      manifest,
+    );
+    assert.equal(result.ok, false);
+    assert.match(result.reason, /digest mismatched|not canonical/);
+  });
+
   for (const [label, mutate, reason] of [
     ["unknown field", (value) => (value.unknown = true), /schema/],
     [
