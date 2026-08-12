@@ -6,5 +6,5 @@
   "minimumUpperBodySampledPixels": 1024,
   "poseEvaluator": "mediapipe-pose",
   "schemaVersion": "vem-ai-regional-evidence-policy/v1",
-  "sourceDescriptorSha256": "a6b6efdb1287a18829e2c20860f905e5ec203f6a8dca48cbd099931912ecd9d2"
+  "sourceDescriptorSha256": "f722d1cbaf6ddcf79edceabfb125acb8aa673822e7823ae865eeaf0db1f47ee0"
 }
