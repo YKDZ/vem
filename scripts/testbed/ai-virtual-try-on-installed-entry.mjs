@@ -304,6 +304,10 @@ export function validateCorruptDegradationSupport(value) {
   return validateDegradationSupport(value, "corrupt", "model_pack_invalid");
 }
 
+export function validateWorkerFailureDegradationSupport(value) {
+  return validateDegradationSupport(value, "worker", "worker_unavailable");
+}
+
 export function validateVerifiedOwnerRecoverySupport(value, proof) {
   const recovery = value?.facts?.recovery;
   if (
@@ -767,11 +771,15 @@ export async function assembleInstalledAiTryOnAcceptance(
     regional.reason ===
     "AI regional evidence policy awaits Issue10 two-garment calibration";
   if (!regional.ok && !calibrationPending) throw new Error(regional.reason);
+  const workerFailurePending = input.workerFailure === undefined;
   const report = {
     attempts,
-    degradations: {},
-    error:
-      "installed worker failure probe not executed; AI regional evidence policy awaits Issue10 two-garment calibration",
+    degradations: workerFailurePending
+      ? {}
+      : { workerFailure: input.workerFailure },
+    error: workerFailurePending
+      ? "installed worker failure probe not executed; AI regional evidence policy awaits Issue10 two-garment calibration"
+      : "AI regional evidence policy awaits Issue10 two-garment calibration",
     execution: {
       identities: Object.fromEntries(
         Object.entries(input.identities).map(([key, value]) => [
@@ -795,10 +803,12 @@ export async function assembleInstalledAiTryOnAcceptance(
   };
   const acceptance = {
     ok: false,
-    reasons: [
-      "installed worker failure probe not executed",
-      "AI regional evidence policy awaits Issue10 two-garment calibration",
-    ],
+    reasons: workerFailurePending
+      ? [
+          "installed worker failure probe not executed",
+          "AI regional evidence policy awaits Issue10 two-garment calibration",
+        ]
+      : ["AI regional evidence policy awaits Issue10 two-garment calibration"],
   };
   return { acceptance, report };
 }
@@ -881,6 +891,10 @@ export async function assembleInstalledAiTryOnAcceptanceFiles(options) {
     options.corruptDegradationPath,
     "corrupt model degradation facts",
   );
+  const workerFailureDegradationSupport = readCanonicalJson(
+    options.workerFailureDegradationPath,
+    "worker failure degradation facts",
+  );
   if (
     saleSupport.schemaVersion !== AI_SUPPORT_EVIDENCE_SCHEMA ||
     saleSupport.kind !== "installed-runtime" ||
@@ -896,6 +910,9 @@ export async function assembleInstalledAiTryOnAcceptanceFiles(options) {
     validateMissingDegradationSupport(degradationSupport);
   const corruptDegradation = validateCorruptDegradationSupport(
     corruptDegradationSupport,
+  );
+  const workerFailureDegradation = validateWorkerFailureDegradationSupport(
+    workerFailureDegradationSupport,
   );
   const recoverySupport = readCanonicalJson(
     options.recoveryPath,
@@ -928,6 +945,7 @@ export async function assembleInstalledAiTryOnAcceptanceFiles(options) {
         runtime: proof.candidate.subjectSha256,
       },
       saleInput: null,
+      workerFailure: workerFailureDegradation,
     },
     { ordinarySale: async () => sale },
   );
@@ -1093,9 +1111,12 @@ async function main() {
     const diagnostics = {
       corrupt: "model_pack_invalid",
       missing: "model_pack_missing",
+      worker: "worker_unavailable",
     };
     if (!Object.hasOwn(diagnostics, options.fault))
-      throw new Error("installed degradation fault must be missing or corrupt");
+      throw new Error(
+        "installed degradation fault must be missing, corrupt, or worker",
+      );
     return runInstalledAiDegradationPhase({
       expectedDiagnostic: diagnostics[options.fault],
       fault: options.fault,
@@ -1115,6 +1136,7 @@ async function main() {
     salePath: options.sale,
     shortAttemptPath: options["short-attempt"],
     windowsProofInputDirectory: options["windows-proof-input-directory"],
+    workerFailureDegradationPath: options["worker-failure-degradation"],
   });
 }
 

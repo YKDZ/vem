@@ -96,6 +96,7 @@ $longFacts = Join-Path $artifactRoot "long-attempt.json"
 $saleFacts = Join-Path $artifactRoot "ordinary-sale.json"
 $missingFacts = Join-Path $artifactRoot "missing-model-degradation.json"
 $corruptFacts = Join-Path $artifactRoot "corrupt-model-degradation.json"
+$workerFailureFacts = Join-Path $artifactRoot "worker-failure-degradation.json"
 $verifiedRecoveryFacts = Join-Path $artifactRoot "verified-owner-recovery.json"
 $nodeEntry = Join-Path $PSScriptRoot "ai-virtual-try-on-installed-entry.mjs"
 $restorationRequired = $false
@@ -104,6 +105,9 @@ $trackSucceeded = $false
 $verifiedConfiguration = $null
 $corruptConfiguration = $null
 $corruptOwnership = $null
+$workerFailureConfiguration = $null
+$workerFault = $null
+$restoredWorker = $null
 $trackFailure = $null
 try {
   # The first stop is a mutating operation; restoration is required before it.
@@ -124,22 +128,31 @@ try {
   $corruptConfiguration = Restart-TestbedAiDegradedVisionOwner -GuestInput $guestInput -Fault corrupt -ModelPackRoot ([string]$corruptOwnership.cloneRoot)
   node $nodeEntry degradation --fault corrupt --guest-input $GuestInputPath --handoff $HandoffPath --out $corruptFacts
   if ($LASTEXITCODE -ne 0) { throw "corrupt model installed degradation failed" }
+  $workerFailureConfiguration = Restart-TestbedAiDegradedVisionOwner -GuestInput $guestInput -Fault worker -ModelPackRoot $modelPackRoot
+  $workerFault = $workerFailureConfiguration.workerFault
+  node $nodeEntry degradation --fault worker --guest-input $GuestInputPath --handoff $HandoffPath --out $workerFailureFacts
+  if ($LASTEXITCODE -ne 0) { throw "worker failure installed degradation failed" }
+  $restoredWorker = Restore-TestbedAiVisionWorkerFault -WorkerFault $workerFault
+  $workerFault = $null
   $restoredConfiguration = Restart-TestbedAiVisionOwner -GuestInput $guestInput -EvidencePhase recovery -ModelPackRoot $modelPackRoot
   $verifiedConfiguration = $restoredConfiguration
+  if ($null -eq $restoredWorker -or [string]$restoredWorker.workerExecutableSha256 -cnotmatch '^[a-f0-9]{64}$') {
+    throw "restored installed AI worker identity is invalid"
+  }
   $windowsProof = Get-Content -Raw -LiteralPath (Join-Path ([string]$inputs.windowsProofInputDirectory) "precutover-ai-proof.json") -Encoding utf8 | ConvertFrom-Json -ErrorAction Stop
   [ordered]@{
     facts = [ordered]@{ recovery = [ordered]@{
-      aiReadinessDiagnostic = "ready"
-      aiReady = $true
+      aiReadinessDiagnostic = [string]$restoredConfiguration.health.aiReadinessDiagnostic
+      aiReady = [bool]$restoredConfiguration.health.aiReady
       modelPackSha256 = [string]$windowsProof.modelPack.archive.sha256
       runtimeDescriptorSha256 = [string]$windowsProof.resources.runtimeDescriptorSha256
       sourceCommit = [string]$windowsProof.candidate.sourceCommit
-      workerExecutableSha256 = [string]$windowsProof.candidate.workerExecutableSha256
+      workerExecutableSha256 = [string]$restoredWorker.workerExecutableSha256
     } }
     kind = "installed-runtime"
     schemaVersion = "vem.testbed.ai-virtual-try-on-support.v1"
   } | ConvertTo-Json -Compress -Depth 8 | ForEach-Object { [IO.File]::WriteAllText($verifiedRecoveryFacts, "$_`n", [Text.UTF8Encoding]::new($false)) }
-  node $nodeEntry assemble --artifact-root $artifactRoot --candidate-input-directory ([string]$inputs.candidateInputDirectory) --windows-proof-input-directory ([string]$inputs.windowsProofInputDirectory) --short-attempt $shortFacts --long-attempt $longFacts --sale $saleFacts --missing-degradation $missingFacts --corrupt-degradation $corruptFacts --recovery $verifiedRecoveryFacts --out $OutPath
+  node $nodeEntry assemble --artifact-root $artifactRoot --candidate-input-directory ([string]$inputs.candidateInputDirectory) --windows-proof-input-directory ([string]$inputs.windowsProofInputDirectory) --short-attempt $shortFacts --long-attempt $longFacts --sale $saleFacts --missing-degradation $missingFacts --corrupt-degradation $corruptFacts --worker-failure-degradation $workerFailureFacts --recovery $verifiedRecoveryFacts --out $OutPath
   if ($LASTEXITCODE -ne 0) { throw "installed AI acceptance assembly failed" }
   $trackSucceeded = $true
 } catch {
@@ -148,12 +161,19 @@ try {
   $cleanupFailures = [Collections.Generic.List[Exception]]::new()
   try {
     if ($restorationRequired) {
+      if ($null -ne $workerFault) {
+        $restoredWorker = Restore-TestbedAiVisionWorkerFault -WorkerFault $workerFault
+        $workerFault = $null
+      }
       $restored = Restore-TestbedDefaultVisionOwner -GuestInput $guestInput
       if ($null -ne $verifiedConfiguration) {
         Remove-Item -LiteralPath ([string]$verifiedConfiguration.acceptanceEvidenceRoot) -Recurse -Force -ErrorAction Stop
       }
       if ($null -ne $corruptConfiguration) {
         Remove-Item -LiteralPath ([string]$corruptConfiguration.acceptanceEvidenceRoot) -Recurse -Force -ErrorAction Stop
+      }
+      if ($null -ne $workerFailureConfiguration) {
+        Remove-Item -LiteralPath ([string]$workerFailureConfiguration.acceptanceEvidenceRoot) -Recurse -Force -ErrorAction Stop
       }
       if ($null -ne $corruptOwnership) { Remove-TestbedCorruptModelPackClone $corruptOwnership }
       [ordered]@{
@@ -183,5 +203,5 @@ try {
   }
 }
 if ($null -ne $trackFailure) { throw $trackFailure }
-Write-Error "installed worker failure probe not executed; AI regional evidence policy awaits Issue10 two-garment calibration" -ErrorAction Continue
+Write-Error "AI regional evidence policy awaits Issue10 two-garment calibration" -ErrorAction Continue
 exit 1

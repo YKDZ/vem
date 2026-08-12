@@ -18,6 +18,7 @@ try {
   New-Owned $normal
   Set-Content -LiteralPath (Join-Path $normal "missing-model-degradation.json") -Value "{}`n" -NoNewline
   Set-Content -LiteralPath (Join-Path $normal "corrupt-model-degradation.json") -Value "{}`n" -NoNewline
+  Set-Content -LiteralPath (Join-Path $normal "worker-failure-degradation.json") -Value "{}`n" -NoNewline
   & $module { param($Owned) Remove-TestbedAiAcceptanceArtifactRoot -Root $Owned -RunId "run-pass-two" -FixtureKey "aiVirtualTryOn" } $normal
   if (Test-Path -LiteralPath $normal) { throw "normal pass-two cleanup retained owned root" }
   Assert-PreservedFailure "$root-sentinel" { param($path) Set-Content -LiteralPath (Join-Path $path "foreign.txt") -Value foreign } "foreign file"

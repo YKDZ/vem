@@ -41,7 +41,7 @@ function Assert-TestbedAiOwnerContext {
 function New-TestbedAiVisionOwnerConfiguration {
   param(
     [Parameter(Mandatory = $true)][object]$GuestInput,
-    [Parameter(Mandatory = $true)][ValidateSet("short", "long", "recovery", "corrupt")][string]$EvidencePhase,
+    [Parameter(Mandatory = $true)][ValidateSet("short", "long", "recovery", "corrupt", "worker")][string]$EvidencePhase,
     [string]$ModelPackRoot
   )
   $context = Assert-TestbedAiOwnerContext
@@ -221,6 +221,52 @@ function Install-TestbedCorruptVisionOwner([object]$GuestInput, [object]$Configu
   } finally { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue }
 }
 
+function Disable-TestbedAiVisionWorker([object]$Configuration) {
+  $context = Assert-TestbedAiOwnerContext
+  if ($null -ne $context.testOperations -and $context.testOperations.ContainsKey("DisableWorker")) {
+    return & $context.testOperations.DisableWorker $Configuration
+  }
+  $canonicalPath = "C:\VEM\vision\app\vending-vision-ai-worker\vending-vision-ai-worker.exe"
+  $disabledPath = Join-Path ([string]$Configuration.acceptanceEvidenceRoot) "vending-vision-ai-worker.exe.disabled"
+  if (-not (Test-Path -LiteralPath $canonicalPath -PathType Leaf)) {
+    throw "canonical installed AI worker is missing before worker-failure proof"
+  }
+  if (Test-Path -LiteralPath $disabledPath) {
+    throw "worker-failure disabled worker destination already exists"
+  }
+  $worker = Get-Item -LiteralPath $canonicalPath -Force
+  if (($worker.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "canonical installed AI worker must be a regular file"
+  }
+  $sha256 = (Get-FileHash -LiteralPath $canonicalPath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+  Move-Item -LiteralPath $canonicalPath -Destination $disabledPath -ErrorAction Stop
+  return [ordered]@{
+    canonicalWorkerPath = $canonicalPath
+    disabledWorkerPath = $disabledPath
+    workerExecutableSha256 = $sha256
+  }
+}
+
+function Restore-TestbedAiVisionWorkerFault([Parameter(Mandatory = $true)][object]$WorkerFault) {
+  $context = Assert-TestbedAiOwnerContext
+  if ($null -ne $context.testOperations -and $context.testOperations.ContainsKey("RestoreWorker")) {
+    return & $context.testOperations.RestoreWorker $WorkerFault
+  }
+  $canonicalPath = [IO.Path]::GetFullPath([string]$WorkerFault.canonicalWorkerPath)
+  $disabledPath = [IO.Path]::GetFullPath([string]$WorkerFault.disabledWorkerPath)
+  $expectedSha256 = [string]$WorkerFault.workerExecutableSha256
+  if ($canonicalPath -ine "C:\VEM\vision\app\vending-vision-ai-worker\vending-vision-ai-worker.exe" -or
+      [string]::IsNullOrWhiteSpace($disabledPath) -or $expectedSha256 -cnotmatch '^[a-f0-9]{64}$') {
+    throw "worker-failure restoration identity is invalid"
+  }
+  if (Test-Path -LiteralPath $canonicalPath) { throw "canonical installed AI worker already exists during restoration" }
+  if (-not (Test-Path -LiteralPath $disabledPath -PathType Leaf)) { throw "disabled installed AI worker is missing during restoration" }
+  Move-Item -LiteralPath $disabledPath -Destination $canonicalPath -ErrorAction Stop
+  $restoredSha256 = (Get-FileHash -LiteralPath $canonicalPath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+  if ($restoredSha256 -cne $expectedSha256) { throw "restored installed AI worker identity mismatched" }
+  return [ordered]@{ workerExecutableSha256 = $restoredSha256 }
+}
+
 function Restore-TestbedDefaultVisionOwner([object]$GuestInput) {
   $context = Assert-TestbedAiOwnerContext
   $app = "C:\VEM\vision\app"
@@ -271,6 +317,7 @@ function Restart-TestbedAiVisionOwner {
     if ($health.aiReady -ne $true -or [string]$health.aiReadinessDiagnostic -cne "ready") {
       throw "verified AI owner did not expose ready model and worker identities"
     }
+    $configuration.health = $health
     return $configuration
   } catch {
     $primary = $_.Exception
@@ -283,23 +330,31 @@ function Restart-TestbedAiVisionOwner {
 function Restart-TestbedAiDegradedVisionOwner {
   param(
     [Parameter(Mandatory = $true)][object]$GuestInput,
-    [Parameter(Mandatory = $true)][ValidateSet("missing", "corrupt")][string]$Fault,
+    [Parameter(Mandatory = $true)][ValidateSet("missing", "corrupt", "worker")][string]$Fault,
     [string]$ModelPackRoot
   )
   [void](Assert-TestbedAiOwnerContext)
   $app = "C:\VEM\vision\app"
   $site = "C:\ProgramData\VEM\vision\site.json"
   $configuration = $null
+  $workerFault = $null
   try {
     Stop-TestbedAiVisionOwner $app $site
     if ($Fault -ceq "missing") {
       Install-TestbedVisionOwner $GuestInput $null
       $expectedDiagnostic = "model_pack_missing"
     } else {
-      if ([string]::IsNullOrWhiteSpace($ModelPackRoot) -or -not [IO.Path]::IsPathRooted($ModelPackRoot)) { throw "corrupt AI degradation requires an absolute private clone root" }
-      $configuration = New-TestbedAiVisionOwnerConfiguration -GuestInput $GuestInput -EvidencePhase corrupt -ModelPackRoot $ModelPackRoot
-      Install-TestbedCorruptVisionOwner $GuestInput $configuration
-      $expectedDiagnostic = "model_pack_invalid"
+      if ([string]::IsNullOrWhiteSpace($ModelPackRoot) -or -not [IO.Path]::IsPathRooted($ModelPackRoot)) { throw "$Fault AI degradation requires an absolute model root" }
+      if ($Fault -ceq "corrupt") {
+        $configuration = New-TestbedAiVisionOwnerConfiguration -GuestInput $GuestInput -EvidencePhase corrupt -ModelPackRoot $ModelPackRoot
+        Install-TestbedCorruptVisionOwner $GuestInput $configuration
+        $expectedDiagnostic = "model_pack_invalid"
+      } else {
+        $configuration = New-TestbedAiVisionOwnerConfiguration -GuestInput $GuestInput -EvidencePhase worker -ModelPackRoot $ModelPackRoot
+        Install-TestbedVisionOwner $GuestInput $configuration
+        $workerFault = Disable-TestbedAiVisionWorker $configuration
+        $expectedDiagnostic = "worker_unavailable"
+      }
     }
     $context = Assert-TestbedAiOwnerContext
     if ($null -ne $context.testOperations -and $context.testOperations.ContainsKey("StartOwner")) { & $context.testOperations.StartOwner }
@@ -309,10 +364,16 @@ function Restart-TestbedAiDegradedVisionOwner {
     if ($Fault -ceq "corrupt") {
       return [ordered]@{ acceptanceEvidenceRoot = [string]$configuration.acceptanceEvidenceRoot; health = $health; modelPackRoot = [string]$configuration.modelPackRoot }
     }
+    if ($Fault -ceq "worker") {
+      return [ordered]@{ acceptanceEvidenceRoot = [string]$configuration.acceptanceEvidenceRoot; health = $health; modelPackRoot = [string]$configuration.modelPackRoot; workerFault = $workerFault }
+    }
     return $health
   } catch {
     $primary = $_.Exception
-    try { Restore-TestbedDefaultVisionOwner $GuestInput | Out-Null }
+    try {
+      if ($null -ne $workerFault) { Restore-TestbedAiVisionWorkerFault $workerFault | Out-Null }
+      Restore-TestbedDefaultVisionOwner $GuestInput | Out-Null
+    }
     catch { throw [AggregateException]::new("AI degradation owner and default-owner recovery both failed", @($primary, $_.Exception)) }
     if ($null -ne $configuration -and (Test-Path -LiteralPath ([string]$configuration.acceptanceEvidenceRoot))) {
       Remove-Item -LiteralPath ([string]$configuration.acceptanceEvidenceRoot) -Recurse -Force -ErrorAction SilentlyContinue
@@ -321,4 +382,4 @@ function Restart-TestbedAiDegradedVisionOwner {
   }
 }
 
-Export-ModuleMember -Function Initialize-TestbedAiVisionOwnerContext, New-TestbedAiVisionOwnerConfiguration, Restart-TestbedAiVisionOwner, Restart-TestbedAiDegradedVisionOwner, Restore-TestbedDefaultVisionOwner
+Export-ModuleMember -Function Initialize-TestbedAiVisionOwnerContext, New-TestbedAiVisionOwnerConfiguration, Restart-TestbedAiVisionOwner, Restart-TestbedAiDegradedVisionOwner, Restore-TestbedAiVisionWorkerFault, Restore-TestbedDefaultVisionOwner

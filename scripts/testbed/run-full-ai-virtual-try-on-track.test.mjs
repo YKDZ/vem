@@ -21,6 +21,7 @@ import {
   validateInstalledAiAttemptSupport,
   validateCorruptDegradationSupport,
   validateMissingDegradationSupport,
+  validateWorkerFailureDegradationSupport,
   validateVerifiedOwnerRecoverySupport,
 } from "./ai-virtual-try-on-installed-entry.mjs";
 import { CdpClient } from "./machine-ui-cdp-driver.mjs";
@@ -133,6 +134,46 @@ test("routes corrupt model degradation through the public installed command and 
     assert.match(source, /Restart-TestbedAiDegradedVisionOwner[^\n]*corrupt/);
     assert.match(source, /degradation --fault corrupt/);
     assert.match(source, /--corrupt-degradation/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("routes official installed worker failure through the public command and runner", () => {
+  const root = mkdtempSync(join(tmpdir(), "vem-ai-worker-failure-command-"));
+  try {
+    const guestInput = join(root, "guest-input.json");
+    const handoff = join(root, "handoff.json");
+    const output = join(root, "worker-failure-degradation.json");
+    writeFileSync(guestInput, "{}\n");
+    writeFileSync(handoff, "{}\n");
+    const result = spawnSync(
+      process.execPath,
+      [
+        installedEntry,
+        "degradation",
+        "--fault",
+        "worker",
+        "--guest-input",
+        guestInput,
+        "--handoff",
+        handoff,
+        "--out",
+        output,
+      ],
+      { cwd: repoRoot, encoding: "utf8" },
+    );
+    assert.notEqual(result.status, 0);
+    assert.doesNotMatch(result.stderr, /fault must be missing or corrupt/);
+    assert.match(
+      result.stderr,
+      /installed degradation daemon handoff is invalid/,
+    );
+    assert.equal(existsSync(output), false);
+    const source = readFileSync(runner, "utf8");
+    assert.match(source, /Restart-TestbedAiDegradedVisionOwner[^\n]*worker/);
+    assert.match(source, /degradation --fault worker/);
+    assert.match(source, /--worker-failure-degradation/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -282,6 +323,43 @@ test("accepts only exact corrupt model six-truth support", () => {
     () => validateCorruptDegradationSupport(copy),
     /support evidence is invalid/,
   );
+});
+
+test("accepts only exact worker failure six-truth support", () => {
+  const value = {
+    facts: {
+      degradation: {
+        diagnostic: "worker_unavailable",
+        facts: {
+          aiReady: false,
+          coreReady: true,
+          daemonReady: true,
+          fastReady: true,
+          machineUiAvailable: true,
+          saleAvailable: true,
+        },
+        fault: "worker",
+      },
+    },
+    kind: "installed-runtime",
+    schemaVersion: "vem.testbed.ai-virtual-try-on-support.v1",
+  };
+  assert.deepEqual(
+    validateWorkerFailureDegradationSupport(value),
+    value.facts.degradation.facts,
+  );
+  for (const mutate of [
+    (copy) => (copy.facts.degradation.diagnostic = "model_pack_missing"),
+    (copy) => (copy.facts.degradation.fault = "missing"),
+    (copy) => (copy.facts.degradation.facts.daemonReady = false),
+  ]) {
+    const copy = structuredClone(value);
+    mutate(copy);
+    assert.throws(
+      () => validateWorkerFailureDegradationSupport(copy),
+      /worker model degradation support evidence is invalid/,
+    );
+  }
 });
 
 test("binds verified owner recovery to ready model runtime worker and source identities", () => {
@@ -439,7 +517,7 @@ test("AI virtual try-on runner accepts only approved external input identities",
   assert.doesNotMatch(source, /camera|captureUserMedia|getUserMedia/i);
 });
 
-test("assembles two isolated installed AI attempts and ordinary sale facts while calibration stays fail closed", async () => {
+test("assembles worker-failure support so only calibration stays fail closed", async () => {
   process.env.NODE_ENV = "test";
   const root = mkdtempSync(join(tmpdir(), "vem-ai-assembly-"));
   const calls = [];
@@ -469,6 +547,14 @@ test("assembles two isolated installed AI attempts and ordinary sale facts while
         runtime: "1".repeat(64),
       },
       artifactRoot: root,
+      workerFailure: {
+        aiReady: false,
+        coreReady: true,
+        daemonReady: true,
+        fastReady: true,
+        machineUiAvailable: true,
+        saleAvailable: true,
+      },
     },
     {
       ordinarySale: async () => {
@@ -483,10 +569,17 @@ test("assembles two isolated installed AI attempts and ordinary sale facts while
     "vem-ai-virtual-try-on-acceptance/v2",
   );
   assert.equal(result.report.attempts.length, 2);
+  assert.deepEqual(result.report.degradations.workerFailure, {
+    aiReady: false,
+    coreReady: true,
+    daemonReady: true,
+    fastReady: true,
+    machineUiAvailable: true,
+    saleAvailable: true,
+  });
   assert.equal(result.report.postAi.ordinarySaleCompleted, true);
   assert.equal(result.acceptance.ok, false);
   assert.deepEqual(result.acceptance.reasons, [
-    "installed worker failure probe not executed",
     "AI regional evidence policy awaits Issue10 two-garment calibration",
   ]);
   rmSync(root, { recursive: true, force: true });
