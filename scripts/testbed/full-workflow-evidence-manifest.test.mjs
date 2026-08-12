@@ -411,15 +411,24 @@ describe("full workflow evidence manifest", () => {
     );
     writeFileSync(join(artifacts, "runtime.log"), "ok\n");
     const accepted = buildFullWorkflowEvidenceManifest({
-      tracks: [{ key: "aiVirtualTryOn", reportPath: report, artifactRoot: artifacts }],
+      tracks: [
+        { key: "aiVirtualTryOn", reportPath: report, artifactRoot: artifacts },
+      ],
     });
     assert.equal(accepted.ok, true, JSON.stringify(accepted.failures));
-    writeFileSync(join(artifacts, screenshots[0].path), Buffer.from([...png, 0]));
+    writeFileSync(
+      join(artifacts, screenshots[0].path),
+      Buffer.from([...png, 0]),
+    );
     const rejected = buildFullWorkflowEvidenceManifest({
-      tracks: [{ key: "aiVirtualTryOn", reportPath: report, artifactRoot: artifacts }],
+      tracks: [
+        { key: "aiVirtualTryOn", reportPath: report, artifactRoot: artifacts },
+      ],
     });
     assert.equal(rejected.ok, false);
-    assert.ok(rejected.failures.some((failure) => failure.includes("do not bind")));
+    assert.ok(
+      rejected.failures.some((failure) => failure.includes("do not bind")),
+    );
   });
 
   it("rejects an artifact symlink that escapes its declared root", () => {

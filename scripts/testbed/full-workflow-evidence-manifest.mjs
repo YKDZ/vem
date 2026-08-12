@@ -384,7 +384,9 @@ function validateAiReportScreenshots(report, artifactRoot, evidence, files) {
     report?.ok !== true
   )
     return null;
-  const expected = report?.attempts?.flatMap((attempt) => attempt.screenshots ?? []);
+  const expected = report?.attempts?.flatMap(
+    (attempt) => attempt.screenshots ?? [],
+  );
   if (!Array.isArray(expected) || expected.length !== 4)
     return "AI virtual try-on report screenshots are incomplete";
   const actual = evidence.screenshots;
