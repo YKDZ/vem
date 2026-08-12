@@ -200,36 +200,52 @@ export function validateMeasurementEvidenceTransport(bundleRoot) {
     throw new Error("measurement pending contract is invalid");
   const pending =
     "AI regional evidence policy awaits Issue10 two-garment calibration";
-  if (
-    report.ok !== false ||
-    report.error !== pending ||
-    !Array.isArray(report.reasons) ||
-    report.reasons.length !== 1 ||
-    report.reasons[0] !== pending
-  )
+  if (report.ok !== false || report.error !== pending)
     throw new Error("AI report is not exact calibration pending");
-  const tracks = aggregate?.tracks ?? aggregate?.results ?? [];
-  if (aggregate?.ok !== false || !Array.isArray(tracks))
-    throw new Error("aggregate pending contract is invalid");
-  const failed = tracks.filter(
-    (track) => track?.businessStatus === "failed" || track?.status === "failed",
-  );
+  const tracks = aggregate?.execution?.executedTracks;
+  const failures = aggregate?.failures;
+  const ai = aggregate?.businessSets?.aiVirtualTryOn;
   if (
-    failed.length !== 1 ||
-    failed[0].key !== "aiVirtualTryOn" ||
-    !String(failed[0].error ?? failed[0].reason ?? "").includes(pending)
+    aggregate?.ok !== false ||
+    aggregate?.businessOutcome?.ok !== false ||
+    !Array.isArray(tracks) ||
+    !Array.isArray(failures) ||
+    ai?.status !== "failed" ||
+    ai?.reason !== pending
+  )
+    throw new Error("aggregate pending contract is invalid");
+  if (
+    failures.length !== 1 ||
+    failures[0]?.set !== "aiVirtualTryOn" ||
+    failures[0]?.reason !== pending
   )
     throw new Error("aggregate has unexpected failure");
   if (
     tracks.some(
       (track) =>
-        track?.infrastructureStatus === "failed" ||
-        track?.businessStatus === "infrastructure_failed",
+        track?.failureStage === "infrastructure" ||
+        track?.businessStatus === "infrastructure_failed" ||
+        (track?.key !== "aiVirtualTryOn" && track?.error != null),
     )
   )
-    throw new Error("aggregate has infrastructure failure");
-  if (manifest?.ok === false || manifest?.evidenceInventory?.ok === false)
+    throw new Error("aggregate has infrastructure or other-track failure");
+  if (
+    aggregate?.evidenceInventory?.ok !== true ||
+    manifest?.ok !== true ||
+    !aggregate?.evidenceInventory?.manifestFile
+  )
     throw new Error("measurement evidence manifest is invalid");
+  const manifestIdentity = file(
+    join(bundleRoot, "metadata/full-workflow-evidence-manifest.json"),
+    "evidence manifest",
+  );
+  if (
+    aggregate.evidenceInventory.manifestFile.sha256 !==
+      manifestIdentity.sha256 ||
+    aggregate.evidenceInventory.manifestFile.byteLength !==
+      manifestIdentity.byteSize
+  )
+    throw new Error("aggregate manifest identity mismatched");
   const sourceInput = file(
     join(bundleRoot, "calibration-source/calibration-source-input.json"),
     "calibration source input",
