@@ -934,6 +934,24 @@ function Get-TestbedProcessTreeIds([int[]]$RootProcessIds) {
   return @($owned)
 }
 
+function Stop-TestbedAiVisionOwner([string]$AppDirectory, [string]$ConfigurationPath) {
+  $initialProcesses = Get-TestbedCanonicalVisionProcesses $AppDirectory $ConfigurationPath
+  Assert-TestbedNoUnknownCanonicalVisionProcesses $initialProcesses
+  $ownedProcessIds = @(Get-TestbedProcessTreeIds @($initialProcesses.managed | ForEach-Object { [int]$_.ProcessId }))
+  Stop-ScheduledTask -TaskName "VEMVisionRuntime" -ErrorAction SilentlyContinue
+  Stop-TestbedCanonicalVision $AppDirectory $ConfigurationPath
+  $stopDeadline = [DateTime]::UtcNow.AddSeconds(20)
+  do {
+    $processes = Get-TestbedCanonicalVisionProcesses $AppDirectory $ConfigurationPath
+    Assert-TestbedNoUnknownCanonicalVisionProcesses $processes
+    $remainingOwnedProcessIds = @($ownedProcessIds | Where-Object { $null -ne (Get-Process -Id $_ -ErrorAction SilentlyContinue) })
+    $listeners = @(Get-NetTCPConnection -LocalAddress "127.0.0.1" -LocalPort 7892 -State Listen -ErrorAction SilentlyContinue)
+    if (@($processes.managed).Count -eq 0 -and $remainingOwnedProcessIds.Count -eq 0 -and $listeners.Count -eq 0) { return }
+    Start-Sleep -Milliseconds 100
+  } while ([DateTime]::UtcNow -lt $stopDeadline)
+  throw "managed Vision owner did not become physically dead before restart"
+}
+
 function Restart-TestbedAiVisionOwner {
   param(
     [object]$GuestInput,
@@ -948,23 +966,7 @@ function Restart-TestbedAiVisionOwner {
   $visionDataDirectory = "C:\ProgramData\VEM\vision"
   $visionConfiguration = Join-Path $visionDataDirectory "site.json"
   $ownerManifestPath = Join-Path $runtimeRoot "runtime-owners\owner-manifest.json"
-  $initialProcesses = Get-TestbedCanonicalVisionProcesses $visionAppDirectory $visionConfiguration
-  Assert-TestbedNoUnknownCanonicalVisionProcesses $initialProcesses
-  $ownedProcessIds = @(Get-TestbedProcessTreeIds @($initialProcesses.managed | ForEach-Object { [int]$_.ProcessId }))
-  Stop-ScheduledTask -TaskName "VEMVisionRuntime" -ErrorAction SilentlyContinue
-  Stop-TestbedCanonicalVision $visionAppDirectory $visionConfiguration
-  $stopDeadline = [DateTime]::UtcNow.AddSeconds(20)
-  do {
-    $processes = Get-TestbedCanonicalVisionProcesses $visionAppDirectory $visionConfiguration
-    Assert-TestbedNoUnknownCanonicalVisionProcesses $processes
-    $remainingOwnedProcessIds = @($ownedProcessIds | Where-Object { $null -ne (Get-Process -Id $_ -ErrorAction SilentlyContinue) })
-    $listeners = @(Get-NetTCPConnection -LocalAddress "127.0.0.1" -LocalPort 7892 -State Listen -ErrorAction SilentlyContinue)
-    if (@($processes.managed).Count -eq 0 -and $remainingOwnedProcessIds.Count -eq 0 -and $listeners.Count -eq 0) { break }
-    Start-Sleep -Milliseconds 100
-  } while ([DateTime]::UtcNow -lt $stopDeadline)
-  if (@($processes.managed).Count -ne 0 -or $remainingOwnedProcessIds.Count -ne 0 -or $listeners.Count -ne 0) {
-    throw "managed Vision owner did not become physically dead before restart"
-  }
+  Stop-TestbedAiVisionOwner $visionAppDirectory $visionConfiguration
   try {
     & (Join-Path $repoRoot "scripts\windows\install-vem-runtime-owners.ps1") `
       -RuntimeDirectory $deploymentRoot `
@@ -980,15 +982,23 @@ function Restart-TestbedAiVisionOwner {
     Wait-TestbedVisionReady | Out-Null
     return $configuration
   } catch {
-    & (Join-Path $repoRoot "scripts\windows\install-vem-runtime-owners.ps1") `
-      -RuntimeDirectory $deploymentRoot `
-      -DaemonDataDirectory $daemonDataRoot `
-      -VisionAppDirectory $visionAppDirectory `
-      -VisionDataDirectory $visionDataDirectory `
-      -KioskPassword (Get-TestbedKioskPassword $GuestInput) `
-      -MachineUiWebViewDebugPort 9222 `
-      -OwnerManifestPath $ownerManifestPath | Out-Null
-    throw
+    $primaryError = $_.Exception
+    try {
+      Stop-TestbedAiVisionOwner $visionAppDirectory $visionConfiguration
+      & (Join-Path $repoRoot "scripts\windows\install-vem-runtime-owners.ps1") `
+        -RuntimeDirectory $deploymentRoot `
+        -DaemonDataDirectory $daemonDataRoot `
+        -VisionAppDirectory $visionAppDirectory `
+        -VisionDataDirectory $visionDataDirectory `
+        -KioskPassword (Get-TestbedKioskPassword $GuestInput) `
+        -MachineUiWebViewDebugPort 9222 `
+        -OwnerManifestPath $ownerManifestPath | Out-Null
+      Start-ScheduledTask -TaskName "VEMVisionRuntime" -ErrorAction Stop
+      Wait-TestbedVisionReady | Out-Null
+    } catch {
+      throw [AggregateException]::new("AI Vision owner restart and default-owner recovery both failed", @($primaryError, $_.Exception))
+    }
+    throw $primaryError
   }
 }
 

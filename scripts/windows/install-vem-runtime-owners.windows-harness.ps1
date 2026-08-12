@@ -22,6 +22,17 @@ $global:OwnerHarnessAclCalls = [System.Collections.Generic.List[object]]::new()
 $global:OwnerHarnessRegistryWrites = [System.Collections.Generic.List[object]]::new()
 $global:OwnerHarnessScheduledTasks = @()
 $global:OwnerHarnessServices = @()
+$global:OwnerHarnessReplaceModelParent = $false
+$global:OwnerHarnessModelFile = $null
+$global:OwnerHarnessJunctionPath = $null
+$environmentCapture = Join-Path $root "vision-child-environment.txt"
+$originalEnvironment = @{}
+foreach ($scope in @("Process", "User", "Machine")) {
+  $originalEnvironment[$scope] = [ordered]@{
+    model = [Environment]::GetEnvironmentVariable("VEM_AI_MODEL_PACK", $scope)
+    sink = [Environment]::GetEnvironmentVariable("VEM_AI_ACCEPTANCE_EVIDENCE_ROOT", $scope)
+  }
+}
 
 function global:Get-LocalUser { param([string]$Name) return [pscustomobject]@{ Name = $Name } }
 function global:Get-ScheduledTask {
@@ -53,6 +64,33 @@ function global:sc.exe {
   $global:OwnerHarnessScCalls.Add(@($Arguments)) | Out-Null
   $global:LASTEXITCODE = 0
 }
+function global:Get-FileHash {
+  param([string]$LiteralPath, [string]$Algorithm)
+  $result = Microsoft.PowerShell.Utility\Get-FileHash -LiteralPath $LiteralPath -Algorithm $Algorithm
+  if ($global:OwnerHarnessReplaceModelParent -and $LiteralPath -ceq $global:OwnerHarnessModelFile) {
+    $global:OwnerHarnessReplaceModelParent = $false
+    $packs = Split-Path -Parent (Split-Path -Parent $LiteralPath)
+    $replacement = "$packs.replacement"
+    Move-Item -LiteralPath $packs -Destination $replacement
+    New-Item -ItemType Directory -Path $packs | Out-Null
+    Copy-Item -LiteralPath (Join-Path $replacement "verified") -Destination (Join-Path $packs "verified") -Recurse
+  }
+  return $result
+}
+function global:Get-Item {
+  param([string]$LiteralPath, [switch]$Force, $ErrorAction)
+  $item = Microsoft.PowerShell.Management\Get-Item -LiteralPath $LiteralPath -Force -ErrorAction Stop
+  if (-not [string]::IsNullOrWhiteSpace($global:OwnerHarnessJunctionPath) -and [IO.Path]::GetFullPath($LiteralPath) -ceq [IO.Path]::GetFullPath($global:OwnerHarnessJunctionPath)) {
+    return [pscustomobject]@{
+      PSIsContainer = $true
+      Attributes = [IO.FileAttributes]::Directory -bor [IO.FileAttributes]::ReparsePoint
+      FullName = $item.FullName
+      CreationTimeUtc = $item.CreationTimeUtc
+      LastWriteTimeUtc = $item.LastWriteTimeUtc
+    }
+  }
+  return $item
+}
 function global:New-ScheduledTaskAction { param([string]$Execute, [string]$Argument, [string]$WorkingDirectory) return [pscustomobject]@{ Execute = $Execute; Arguments = $Argument; WorkingDirectory = $WorkingDirectory } }
 function global:New-ScheduledTaskTrigger { param([switch]$AtLogOn, [string]$User) return [pscustomobject]@{ kind = "AtLogon"; UserId = $User } }
 function global:New-ScheduledTaskPrincipal { param([string]$UserId, [string]$LogonType, [string]$RunLevel) return [pscustomobject]@{ UserId = $UserId; LogonType = $LogonType; RunLevel = $RunLevel } }
@@ -65,7 +103,9 @@ function global:Register-ScheduledTask {
 
 try {
   New-Item -ItemType Directory -Force -Path $runtime, $daemonData, $visionApp, $visionData, $modelRoot, $sinkRoot, (Join-Path $visionApp "_internal") | Out-Null
-  New-Item -ItemType File -Force -Path (Join-Path $runtime "vending-daemon.exe"), (Join-Path $runtime "machine.exe"), (Join-Path $visionApp "vending-vision.exe"), (Join-Path $visionData "site.json") | Out-Null
+  New-Item -ItemType File -Force -Path (Join-Path $runtime "vending-daemon.exe"), (Join-Path $runtime "machine.exe"), (Join-Path $visionData "site.json") | Out-Null
+  [IO.File]::WriteAllText((Join-Path $visionApp "vending-vision.exe"), "#!/bin/sh`nenv | sort > `"`$VEM_OWNER_ENV_CAPTURE`"`n", [Text.UTF8Encoding]::new($false))
+  & chmod +x (Join-Path $visionApp "vending-vision.exe")
   [IO.File]::WriteAllText((Join-Path $modelRoot "model.bin"), "model", [Text.UTF8Encoding]::new($false))
   $modelSha = (Get-FileHash -LiteralPath (Join-Path $modelRoot "model.bin") -Algorithm SHA256).Hash.ToLowerInvariant()
   $descriptor = [ordered]@{
@@ -125,7 +165,48 @@ try {
   } finally {
     Remove-Item -LiteralPath $modelLink -Force -ErrorAction SilentlyContinue
   }
-  Assert-Equal ($aiInputFailures -join ",") "unpaired,relative,nonempty,model-mismatch,reparse" "AI owner input rejections"
+  $outsideModelRoot = Join-Path $root "outside-model"
+  $nestedLink = Join-Path $visionData "ai-model-packs\packs\nested-link"
+  try {
+    New-Item -ItemType Directory -Path $outsideModelRoot | Out-Null
+    Copy-Item -LiteralPath $modelRoot -Destination (Join-Path $outsideModelRoot "verified") -Recurse
+    New-Item -ItemType SymbolicLink -Path $nestedLink -Target $outsideModelRoot | Out-Null
+    try {
+      & (Join-Path $PSScriptRoot "install-vem-runtime-owners.ps1") @commonInstallerArguments -VisionAiModelPackRoot (Join-Path $nestedLink "verified") -VisionAiAcceptanceEvidenceRoot $sinkRoot | Out-Null
+    } catch {
+      if ($_.Exception.Message -match "reparse") { $aiInputFailures.Add("intermediate-reparse") | Out-Null }
+    }
+  } finally {
+    Remove-Item -LiteralPath $nestedLink -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $outsideModelRoot -Recurse -Force -ErrorAction SilentlyContinue
+  }
+  $junctionRoot = Join-Path $visionData "ai-model-packs\packs\junction"
+  New-Item -ItemType Directory -Path $junctionRoot | Out-Null
+  Copy-Item -LiteralPath $modelRoot -Destination (Join-Path $junctionRoot "verified") -Recurse
+  $global:OwnerHarnessJunctionPath = $junctionRoot
+  try {
+    & (Join-Path $PSScriptRoot "install-vem-runtime-owners.ps1") @commonInstallerArguments -VisionAiModelPackRoot (Join-Path $junctionRoot "verified") -VisionAiAcceptanceEvidenceRoot $sinkRoot | Out-Null
+  } catch {
+    if ($_.Exception.Message -match "reparse") { $aiInputFailures.Add("intermediate-junction") | Out-Null }
+  } finally {
+    $global:OwnerHarnessJunctionPath = $null
+    Remove-Item -LiteralPath $junctionRoot -Recurse -Force
+  }
+  Assert-Equal ($aiInputFailures -join ",") "unpaired,relative,nonempty,model-mismatch,reparse,intermediate-reparse,intermediate-junction" "AI owner input rejections"
+
+  $global:OwnerHarnessReplaceModelParent = $true
+  $global:OwnerHarnessModelFile = Join-Path $modelRoot "model.bin"
+  $taskCountBeforeReplacement = $global:OwnerHarnessTasks.Count
+  $aclCountBeforeReplacement = $global:OwnerHarnessAclCalls.Count
+  $parentReplacementRejected = $false
+  try {
+    & (Join-Path $PSScriptRoot "install-vem-runtime-owners.ps1") @commonInstallerArguments -VisionAiModelPackRoot $modelRoot -VisionAiAcceptanceEvidenceRoot $sinkRoot | Out-Null
+  } catch {
+    $parentReplacementRejected = $_.Exception.Message -match "directory identity changed"
+  }
+  Assert-True $parentReplacementRejected "installer accepted a replaced model authority parent"
+  Assert-Equal $global:OwnerHarnessTasks.Count $taskCountBeforeReplacement "parent replacement registered a task"
+  Assert-Equal $global:OwnerHarnessAclCalls.Count $aclCountBeforeReplacement "parent replacement changed ACLs"
 
   $missingPasswordRejected = $false
   try {
@@ -202,6 +283,25 @@ try {
   Assert-True ($aiVisionLauncher.Contains("VEM_AI_ACCEPTANCE_EVIDENCE_ROOT")) "AI launcher omitted evidence root"
   Assert-True ($aiVisionLauncher.Contains($sinkRoot)) "AI launcher omitted exact evidence root"
 
+  foreach ($scope in @("Process", "User", "Machine")) {
+    [Environment]::SetEnvironmentVariable("VEM_AI_MODEL_PACK", "stale-model-$scope", $scope)
+    [Environment]::SetEnvironmentVariable("VEM_AI_ACCEPTANCE_EVIDENCE_ROOT", "stale-sink-$scope", $scope)
+  }
+  $env:VEM_OWNER_ENV_CAPTURE = $environmentCapture
+  & (Join-Path $runtime "launch-vem-vision.ps1")
+  $captureDeadline = [DateTime]::UtcNow.AddSeconds(5)
+  while (-not (Test-Path -LiteralPath $environmentCapture -PathType Leaf) -and [DateTime]::UtcNow -lt $captureDeadline) {
+    Start-Sleep -Milliseconds 50
+  }
+  Assert-True (Test-Path -LiteralPath $environmentCapture -PathType Leaf) "AI launcher child did not report its environment"
+  $aiChildEnvironment = Get-Content -Raw -LiteralPath $environmentCapture
+  Assert-True ($aiChildEnvironment.Contains("VEM_AI_MODEL_PACK=$modelRoot")) "AI launcher child did not receive the current model root"
+  Assert-True ($aiChildEnvironment.Contains("VEM_AI_ACCEPTANCE_EVIDENCE_ROOT=$sinkRoot")) "AI launcher child did not receive the current evidence root"
+  Assert-True (-not $aiChildEnvironment.Contains("stale-model")) "AI launcher child retained a stale model root"
+  Assert-True (-not $aiChildEnvironment.Contains("stale-sink")) "AI launcher child retained a stale evidence root"
+  Remove-Item -LiteralPath $environmentCapture -Force
+  Start-Sleep -Milliseconds 100
+
   & (Join-Path $PSScriptRoot "install-vem-runtime-owners.ps1") `
     -RuntimeDirectory $runtime `
     -DaemonDataDirectory $daemonData `
@@ -210,8 +310,16 @@ try {
     -KioskPassword "prototype-password" `
     -OwnerManifestPath $manifestPath | Out-Null
   $defaultVisionLauncher = Get-Content -Raw -LiteralPath (Join-Path $runtime "launch-vem-vision.ps1")
-  Assert-True (-not $defaultVisionLauncher.Contains("VEM_AI_MODEL_PACK")) "default launcher inherited model root"
-  Assert-True (-not $defaultVisionLauncher.Contains("VEM_AI_ACCEPTANCE_EVIDENCE_ROOT")) "default launcher enabled acceptance sink"
+  Assert-True ($defaultVisionLauncher.Contains('$explicitEnvironment = @{}')) "default launcher retained explicit AI environment"
+  & (Join-Path $runtime "launch-vem-vision.ps1")
+  $captureDeadline = [DateTime]::UtcNow.AddSeconds(5)
+  while (-not (Test-Path -LiteralPath $environmentCapture -PathType Leaf) -and [DateTime]::UtcNow -lt $captureDeadline) {
+    Start-Sleep -Milliseconds 50
+  }
+  Assert-True (Test-Path -LiteralPath $environmentCapture -PathType Leaf) "default launcher child did not report its environment"
+  $defaultChildEnvironment = Get-Content -Raw -LiteralPath $environmentCapture
+  Assert-True (-not $defaultChildEnvironment.Contains("VEM_AI_MODEL_PACK=")) "default launcher child inherited a stale model root"
+  Assert-True (-not $defaultChildEnvironment.Contains("VEM_AI_ACCEPTANCE_EVIDENCE_ROOT=")) "default launcher child inherited a stale evidence root"
 
   [ordered]@{
     schemaVersion = "vem-runtime-owners-harness/v2"
@@ -223,11 +331,17 @@ try {
     missingPasswordRejected = $missingPasswordRejected
     legacyOwnerRejected = $legacyOwnerRejected
     aiInputFailures = @($aiInputFailures)
+    parentReplacementRejected = $parentReplacementRejected
     registeredTasks = @($aiOwnerTasks)
     scCalls = @($global:OwnerHarnessScCalls)
     aclCalls = @($aiAclCalls)
     registryWrites = @($global:OwnerHarnessRegistryWrites)
   } | ConvertTo-Json -Depth 16
 } finally {
+  foreach ($scope in @("Process", "User", "Machine")) {
+    [Environment]::SetEnvironmentVariable("VEM_AI_MODEL_PACK", $originalEnvironment[$scope].model, $scope)
+    [Environment]::SetEnvironmentVariable("VEM_AI_ACCEPTANCE_EVIDENCE_ROOT", $originalEnvironment[$scope].sink, $scope)
+  }
+  Remove-Item -LiteralPath "Env:VEM_OWNER_ENV_CAPTURE" -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }

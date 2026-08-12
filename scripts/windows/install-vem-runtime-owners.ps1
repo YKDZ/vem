@@ -13,6 +13,35 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$script:OwnerDirectoryLeases = [Collections.Generic.List[object]]::new()
+
+function Initialize-OwnerDirectoryLeaseApi {
+  if ($env:OS -cne "Windows_NT" -or ("VemOwnerDirectoryLease" -as [type])) { return }
+  Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+public static class VemOwnerDirectoryLease {
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+  static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+  static extern uint GetFinalPathNameByHandleW(SafeFileHandle handle, System.Text.StringBuilder path, uint length, uint flags);
+  public static SafeFileHandle Open(string path) {
+    var handle = CreateFileW(path, 0x80, 1, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero);
+    if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error(), "failed to lease owner directory: " + path);
+    return handle;
+  }
+  public static string FinalPath(SafeFileHandle handle) {
+    var buffer = new System.Text.StringBuilder(32768);
+    var length = GetFinalPathNameByHandleW(handle, buffer, (uint)buffer.Capacity, 0);
+    if (length == 0 || length >= buffer.Capacity) throw new Win32Exception(Marshal.GetLastWin32Error(), "failed to resolve leased owner directory");
+    var value = buffer.ToString();
+    return value.StartsWith(@"\\?\") ? value.Substring(4) : value;
+  }
+}
+'@
+}
 
 function Assert-OwnerPath([string]$Path, [string]$Label) {
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
@@ -31,12 +60,74 @@ function Get-NormalizedOwnerDirectory([string]$Path, [string]$Label) {
   return [IO.Path]::GetFullPath($item.FullName).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
 }
 
+function Add-OwnerDirectoryLease([string]$Path, [string]$Label) {
+  $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+  if (-not $item.PSIsContainer -or (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+    throw "$Label contains a reparse or non-directory component: $Path"
+  }
+  if ($env:OS -ceq "Windows_NT") {
+    Initialize-OwnerDirectoryLeaseApi
+    $handle = [VemOwnerDirectoryLease]::Open($item.FullName)
+    try {
+      $finalPath = [IO.Path]::GetFullPath([VemOwnerDirectoryLease]::FinalPath($handle))
+      if ($finalPath -ine [IO.Path]::GetFullPath($item.FullName)) {
+        throw "$Label component resolved to a different final path: $Path"
+      }
+      $script:OwnerDirectoryLeases.Add([pscustomobject]@{ path = $finalPath; handle = $handle; label = $Label })
+      $handle = $null
+    } finally {
+      if ($null -ne $handle) { $handle.Dispose() }
+    }
+  } else {
+    $script:OwnerDirectoryLeases.Add([pscustomobject]@{
+      path = [IO.Path]::GetFullPath($item.FullName)
+      handle = $null
+      label = $Label
+      creationTimeUtc = $item.CreationTimeUtc.Ticks
+      lastWriteTimeUtc = $item.LastWriteTimeUtc.Ticks
+    })
+  }
+}
+
+function Assert-OwnerDirectoryLeases {
+  foreach ($lease in $script:OwnerDirectoryLeases) {
+    $item = Get-Item -LiteralPath $lease.path -Force -ErrorAction Stop
+    if (-not $item.PSIsContainer -or (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+      throw "$($lease.label) directory identity changed: $($lease.path)"
+    }
+    if ($null -ne $lease.handle) {
+      $finalPath = [IO.Path]::GetFullPath([VemOwnerDirectoryLease]::FinalPath($lease.handle))
+      if ($finalPath -ine [IO.Path]::GetFullPath($item.FullName)) { throw "$($lease.label) directory identity changed: $($lease.path)" }
+    } elseif ($lease.creationTimeUtc -ne $item.CreationTimeUtc.Ticks -or $lease.lastWriteTimeUtc -ne $item.LastWriteTimeUtc.Ticks) {
+      throw "$($lease.label) directory identity changed: $($lease.path)"
+    }
+  }
+}
+
+function Close-OwnerDirectoryLeases {
+  foreach ($lease in $script:OwnerDirectoryLeases) {
+    if ($null -ne $lease.handle) { $lease.handle.Dispose() }
+  }
+  $script:OwnerDirectoryLeases.Clear()
+}
+
+trap {
+  Close-OwnerDirectoryLeases
+  throw $_
+}
+
 function Assert-OwnerChildPath([string]$Path, [string]$Parent, [string]$Label) {
   $normalizedPath = Get-NormalizedOwnerDirectory $Path $Label
   $normalizedParent = Get-NormalizedOwnerDirectory $Parent "$Label authority root"
   $prefix = $normalizedParent + [IO.Path]::DirectorySeparatorChar
   if (-not $normalizedPath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
     throw "$Label must be contained by $normalizedParent"
+  }
+  $cursor = $normalizedParent
+  Add-OwnerDirectoryLease $cursor $Label
+  foreach ($component in $normalizedPath.Substring($prefix.Length).Split([IO.Path]::DirectorySeparatorChar)) {
+    $cursor = Join-Path $cursor $component
+    Add-OwnerDirectoryLease $cursor $Label
   }
   return $normalizedPath
 }
@@ -178,6 +269,10 @@ function Write-InteractiveLauncher(
 `$startInfo.WorkingDirectory = '$(Split-Path -Parent $ExecutablePath)'
 `$startInfo.UseShellExecute = `$false
 `$startInfo.Arguments = $argumentStringLiteral
+foreach (`$name in @("VEM_AI_MODEL_PACK", "VEM_AI_ACCEPTANCE_EVIDENCE_ROOT")) {
+  Remove-Item -LiteralPath "Env:`$name" -ErrorAction SilentlyContinue
+  [void]`$startInfo.EnvironmentVariables.Remove(`$name)
+}
 foreach (`$name in $environmentNamesLiteral) {
   `$userValue = [Environment]::GetEnvironmentVariable(`$name, "User")
   `$machineValue = [Environment]::GetEnvironmentVariable(`$name, "Machine")
@@ -390,6 +485,7 @@ if ($conflicts.Count -gt 0) {
   throw "competing runtime owners detected; remove them manually before installing: $($conflicts -join ', ')"
 }
 Assert-NoDuplicateRuntimeProcesses
+Assert-OwnerDirectoryLeases
 
 $daemonArguments = "`"$daemonExecutable`" --data-dir `"$DaemonDataDirectory`""
 $daemonService = Get-Service -Name "VemVendingDaemon" -ErrorAction SilentlyContinue
@@ -410,6 +506,7 @@ Set-ItemProperty -Path $winlogon -Name "DefaultPassword" -Value $KioskPassword
 Set-ItemProperty -Path $winlogon -Name "AutoAdminLogon" -Value "1"
 Remove-ItemProperty -Path $winlogon -Name "AutoLogonCount" -ErrorAction SilentlyContinue
 
+Assert-OwnerDirectoryLeases
 Grant-OwnerAccess $RuntimeDirectory "(RX)"
 Grant-OwnerAccess $DaemonDataDirectory "(M)"
 Grant-OwnerAccess $VisionAppDirectory "(RX)"
@@ -419,6 +516,7 @@ if ($null -ne $script:VisionAiOwner) {
   Grant-OwnerAccess $script:VisionAiOwner.acceptanceEvidenceRoot "(M)"
 }
 
+Assert-OwnerDirectoryLeases
 $machineUiEnvironment = @{}
 if ($MachineUiWebViewDebugPort -gt 0) {
   $machineUiEnvironment["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = "--remote-debugging-port=$MachineUiWebViewDebugPort"
@@ -430,7 +528,12 @@ if ($null -ne $script:VisionAiOwner) {
   $visionEnvironment["VEM_AI_ACCEPTANCE_EVIDENCE_ROOT"] = $script:VisionAiOwner.acceptanceEvidenceRoot
 }
 Write-InteractiveLauncher $visionLauncher "vending-vision.exe" $visionExecutable @("--config", (Join-Path $VisionDataDirectory "site.json")) @() $visionEnvironment
+Assert-OwnerDirectoryLeases
 Register-InteractiveOwnerTask "VEMMachineUI" $machineLauncher $RuntimeDirectory
 Register-InteractiveOwnerTask "VEMVisionRuntime" $visionLauncher $VisionAppDirectory
 
-Write-OwnerManifest $daemonExecutable $machineExecutable $visionExecutable $machineLauncher $visionLauncher | ConvertTo-Json -Depth 12
+Assert-OwnerDirectoryLeases
+$ownerManifest = Write-OwnerManifest $daemonExecutable $machineExecutable $visionExecutable $machineLauncher $visionLauncher
+Assert-OwnerDirectoryLeases
+Close-OwnerDirectoryLeases
+$ownerManifest | ConvertTo-Json -Depth 12

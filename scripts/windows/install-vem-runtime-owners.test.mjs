@@ -107,18 +107,20 @@ test("owner installer writes one manifest through its public PowerShell entrypoi
   assert.match(output.visionLauncher, /\$startInfo\.Arguments = '"--config" "/);
   assert.match(output.visionLauncher, /VEM_AI_MODEL_PACK/);
   assert.match(output.visionLauncher, /VEM_AI_ACCEPTANCE_EVIDENCE_ROOT/);
-  assert.doesNotMatch(output.defaultVisionLauncher, /VEM_AI_MODEL_PACK/);
-  assert.doesNotMatch(
-    output.defaultVisionLauncher,
-    /VEM_AI_ACCEPTANCE_EVIDENCE_ROOT/,
-  );
+  assert.match(output.defaultVisionLauncher, /\$explicitEnvironment = @\{\}/);
   assert.deepEqual(output.aiInputFailures, [
     "unpaired",
     "relative",
     "nonempty",
     "model-mismatch",
     "reparse",
+    "intermediate-reparse",
+    "intermediate-junction",
   ]);
+  assert.equal(output.parentReplacementRejected, true);
+  assert.match(output.visionLauncher, /EnvironmentVariables\.Remove/);
+  assert.match(source(installerPath), /CreateFileW\(path, 0x80, 1,/);
+  assert.match(source(installerPath), /GetFinalPathNameByHandleW/);
   assert.equal(output.manifest.owners.machineUi.trigger, "AtLogon");
   assert.equal(output.manifest.owners.vision.trigger, "AtLogon");
   assert.equal(output.manifest.acl.length, 6);

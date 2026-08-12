@@ -2071,7 +2071,11 @@ describe("Windows D cache contract", () => {
     );
     assert.match(
       guest,
-      /function Restart-TestbedAiVisionOwner[\s\S]*Get-TestbedProcessTreeIds[\s\S]*Stop-ScheduledTask[\s\S]*Stop-TestbedCanonicalVision[\s\S]*remainingOwnedProcessIds[\s\S]*7892[\s\S]*install-vem-runtime-owners\.ps1[\s\S]*Start-ScheduledTask[\s\S]*Wait-TestbedVisionReady/,
+      /function Stop-TestbedAiVisionOwner[\s\S]*Get-TestbedProcessTreeIds[\s\S]*Stop-ScheduledTask[\s\S]*Stop-TestbedCanonicalVision[\s\S]*remainingOwnedProcessIds[\s\S]*7892/,
+    );
+    assert.match(
+      guest,
+      /function Restart-TestbedAiVisionOwner[\s\S]*Stop-TestbedAiVisionOwner[\s\S]*install-vem-runtime-owners\.ps1[\s\S]*Start-ScheduledTask[\s\S]*Wait-TestbedVisionReady/,
     );
     assert.match(guest, /ValidateSet\("short", "long"\)/);
   });
@@ -2090,10 +2094,16 @@ describe("Windows D cache contract", () => {
     const output = JSON.parse(result.stdout);
     assert.equal(output.schemaVersion, "vem-ai-owner-restart-harness/v1");
     assert.notEqual(output.shortRoot, output.longRoot);
-    assert.deepEqual(output.fallback.slice(-2), [
-      `install-ai:${output.shortRoot}`,
-      "install-default",
-    ]);
+    for (const failurePoint of ["install", "start", "ready"]) {
+      assert.equal(
+        output.failures[failurePoint].includes("install-default"),
+        true,
+      );
+      assert.deepEqual(output.failures[failurePoint].slice(-2), [
+        "start-task:VEMVisionRuntime",
+        "ready",
+      ]);
+    }
   });
 
   it("does not require reconstructed guest input for clear_cache", () => {
