@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
-import { lstat, readFile, readdir } from "node:fs/promises";
+import { cp, lstat, mkdir, readFile, readdir } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
 const SCHEMA_VERSION = "vem-runtime-testbed-ai-input/v1";
 const SHA256 = /^[a-f0-9]{64}$/;
 const COMMIT = /^[a-f0-9]{40}$/;
-const WINDOWS_PATH = /^[A-Za-z]:\\/;
+const GUEST_ROOT = "C:\\ProgramData\\VEM\\testbed\\ai-inputs";
 const CANDIDATE_MEMBERS = new Set([
   "candidate-manifest.json",
   "github-build-provenance.sigstore.json",
@@ -60,14 +60,6 @@ function hostPath(value, label) {
   const path = string(value, label);
   if (!isAbsolute(path)) fail(`${label} must be absolute`);
   return resolve(path);
-}
-
-function guestPath(value, label) {
-  const path = string(value, label);
-  if (!WINDOWS_PATH.test(path) || /[\u0000-\u001f]/.test(path)) {
-    fail(`${label} must be an absolute Windows path`);
-  }
-  return path;
 }
 
 function canonicalize(value) {
@@ -198,14 +190,9 @@ async function directory(
   label,
   { nested = false, exactMemberNames } = {},
 ) {
-  exactKeys(
-    value,
-    ["hostPath", "guestPath", "sha256", "byteSize", "members"],
-    label,
-  );
+  exactKeys(value, ["hostPath", "sha256", "byteSize", "members"], label);
   const descriptor = {
     hostPath: hostPath(value.hostPath, `${label} hostPath`),
-    guestPath: guestPath(value.guestPath, `${label} guestPath`),
     sha256: sha256(value.sha256, `${label} SHA-256`),
     byteSize: byteSize(value.byteSize, `${label} byte size`),
     members: validateMembers(value.members, label, nested),
@@ -242,13 +229,12 @@ async function file(value, label, { sourceCommit = false } = {}) {
   exactKeys(
     value,
     sourceCommit
-      ? ["hostPath", "guestPath", "sha256", "byteSize", "sourceCommit"]
-      : ["hostPath", "guestPath", "sha256", "byteSize"],
+      ? ["hostPath", "sha256", "byteSize", "sourceCommit"]
+      : ["hostPath", "sha256", "byteSize"],
     label,
   );
   const descriptor = {
     hostPath: hostPath(value.hostPath, `${label} hostPath`),
-    guestPath: guestPath(value.guestPath, `${label} guestPath`),
     sha256: sha256(value.sha256, `${label} SHA-256`),
     byteSize: byteSize(value.byteSize, `${label} byte size`),
     ...(sourceCommit
@@ -293,6 +279,10 @@ function delivery(value, allowedHttpsOrigins) {
   return { kind, url: url.toString() };
 }
 
+function windowsJoin(...parts) {
+  return parts.join("\\");
+}
+
 function guestProjection(
   {
     candidateInput,
@@ -304,15 +294,17 @@ function guestProjection(
   },
   manifestSha256,
 ) {
+  const root = windowsJoin(GUEST_ROOT, manifestSha256);
   return {
     schemaVersion: "vem-local-testbed-ai-virtual-try-on-input/v1",
-    candidateInputDirectory: candidateInput.guestPath,
-    windowsProofInputDirectory: windowsProofInput.guestPath,
-    approvedPrecutoverReceipt: approvedPrecutoverReceipt.guestPath,
-    installedVisionRuntimeArchive: installedVisionRuntimeArchive.guestPath,
-    recordedFixtureArchive: recordedFixtureArchive.guestPath,
-    modelPackArchive: modelPack.archive.guestPath,
-    materializedModelPackRoot: modelPack.materializedRoot.guestPath,
+    inputRoot: root,
+    candidateInputDirectory: windowsJoin(root, "candidate"),
+    windowsProofInputDirectory: windowsJoin(root, "windows-proof"),
+    approvedPrecutoverReceipt: windowsJoin(root, "approved-receipt.json"),
+    installedVisionRuntimeArchive: windowsJoin(root, "vision-runtime.zip"),
+    recordedFixtureArchive: windowsJoin(root, "recorded-fixtures.zip"),
+    modelPackArchive: windowsJoin(root, "model-pack.zip"),
+    materializedModelPackRoot: windowsJoin(root, "model-pack"),
     modelPackSource: modelPack.delivery.kind,
     ...(modelPack.delivery.kind === "host-controlled-https"
       ? { modelPackUrl: modelPack.delivery.url }
@@ -324,10 +316,12 @@ function guestProjection(
       candidateInput: {
         sha256: candidateInput.sha256,
         byteSize: candidateInput.byteSize,
+        members: candidateInput.members,
       },
       windowsProofInput: {
         sha256: windowsProofInput.sha256,
         byteSize: windowsProofInput.byteSize,
+        members: windowsProofInput.members,
       },
       approvedPrecutoverReceipt: {
         sha256: approvedPrecutoverReceipt.sha256,
@@ -349,24 +343,10 @@ function guestProjection(
       materializedModelPackRoot: {
         sha256: modelPack.materializedRoot.sha256,
         byteSize: modelPack.materializedRoot.byteSize,
+        members: modelPack.materializedRoot.members,
       },
     },
   };
-}
-
-function assertDistinctGuestPaths(artifacts) {
-  const paths = [
-    artifacts.candidateInput.guestPath,
-    artifacts.windowsProofInput.guestPath,
-    artifacts.approvedPrecutoverReceipt.guestPath,
-    artifacts.installedVisionRuntimeArchive.guestPath,
-    artifacts.recordedFixtureArchive.guestPath,
-    artifacts.modelPack.archive.guestPath,
-    artifacts.modelPack.materializedRoot.guestPath,
-  ].map((path) => path.toLowerCase());
-  if (new Set(paths).size !== paths.length) {
-    fail("guest artifact paths must be distinct");
-  }
 }
 
 export async function validateAiAcceptanceInputManifest(
@@ -474,7 +454,6 @@ export async function validateAiAcceptanceInputManifest(
     recordedFixtureArchive,
     modelPack,
   };
-  assertDistinctGuestPaths(artifacts);
   return {
     manifestSha256,
     artifactDigests: guestProjection(artifacts, manifestSha256).identities,
@@ -489,6 +468,34 @@ export async function validateAiAcceptanceInputManifest(
       modelPack.materializedRoot,
     ],
   };
+}
+
+export async function materializeAiAcceptanceInputSnapshot(preparation, root) {
+  const snapshotRoot = resolve(root, preparation.manifestSha256);
+  const files = [
+    [preparation.transfers[0].hostPath, "candidate"],
+    [preparation.transfers[1].hostPath, "windows-proof"],
+    [preparation.transfers[2].hostPath, "approved-receipt.json"],
+    [preparation.transfers[3].hostPath, "vision-runtime.zip"],
+    [preparation.transfers[4].hostPath, "recorded-fixtures.zip"],
+    [preparation.transfers[5].hostPath, "model-pack.zip"],
+    [preparation.transfers[6].hostPath, "model-pack"],
+  ];
+  await mkdir(snapshotRoot, { recursive: true });
+  for (const [source, name] of files) {
+    await cp(source, resolve(snapshotRoot, name), {
+      recursive: true,
+      force: true,
+    });
+  }
+  const remapped = {
+    ...preparation,
+    transfers: preparation.transfers.map((transfer, index) => ({
+      ...transfer,
+      hostPath: resolve(snapshotRoot, files[index][1]),
+    })),
+  };
+  return remapped;
 }
 
 export function identicalAiAcceptanceInputSnapshot(left, right) {

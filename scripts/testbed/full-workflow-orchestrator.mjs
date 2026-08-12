@@ -318,9 +318,17 @@ export async function runSerialTrackLifecycle({
       key: track.key,
       reportPath: track.reportPath,
       status:
-        childFailed || terminalFailed || recoveryFailed ? "failed" : "passed",
+        child.status === "blocked"
+          ? "blocked"
+          : childFailed || terminalFailed || recoveryFailed
+            ? "failed"
+            : "passed",
       businessStatus:
-        childFailed || terminalFailed || recoveryFailed ? "failed" : "passed",
+        child.status === "blocked"
+          ? "blocked"
+          : childFailed || terminalFailed || recoveryFailed
+            ? "failed"
+            : "passed",
       exitCode: child.exitCode,
       reportOk: report?.ok ?? null,
       validator: validation,
@@ -1400,8 +1408,17 @@ function terminalOperations(guestInput, handoff, handoffPath) {
 }
 
 export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
-  const plan = buildWorkflowTrackCommands(options);
   const guestInput = jsonIfPresent(options.guestInputPath);
+  const plan = buildWorkflowTrackCommands(options);
+  const aiBlock = guestInput?.acceptanceBlocks?.aiVirtualTryOn;
+  if (typeof aiBlock === "string" && aiBlock.length > 0) {
+    const aiTrack = plan.tracks.find((track) => track.key === "aiVirtualTryOn");
+    if (aiTrack) {
+      aiTrack.runner = null;
+      aiTrack.command = null;
+      aiTrack.blockedReason = aiBlock;
+    }
+  }
   const handoff = jsonIfPresent(options.handoffPath);
   const operations =
     dependencies.captureTerminal ||

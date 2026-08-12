@@ -17,6 +17,7 @@ import { pathToFileURL } from "node:url";
 
 import {
   identicalAiAcceptanceInputSnapshot,
+  materializeAiAcceptanceInputSnapshot,
   validateAiAcceptanceInputManifest,
 } from "./ai-acceptance-input-provisioning.mjs";
 
@@ -514,28 +515,34 @@ async function provisionAiAcceptanceGuestInput({ config, preparation, pass }) {
   });
 }
 
+async function provisionAiAcceptanceBlock({ config, pass, reason }) {
+  const path = join(config.stateRoot, "guest-input.json");
+  const guestInput = JSON.parse(await readFile(path, "utf8"));
+  await writeJson(path, {
+    ...guestInput,
+    workflowIdentity: { ...guestInput.workflowIdentity, pass },
+    acceptanceBlocks: {
+      ...guestInput.acceptanceBlocks,
+      aiVirtualTryOn: reason,
+    },
+  });
+}
+
 async function stageAiAcceptanceInputs({ config, contract, preparation }) {
   const guest = contract.testbed.guest;
   const remote = `${guest.user}@${guest.host}`;
   const ssh = sshArguments(guest);
   const scp = scpArguments(guest);
-  const transfers = [
-    ...preparation.transfers,
-    {
-      hostPath: join(config.stateRoot, "guest-input.json"),
-      guestPath: guest.stagingPath,
-      directory: false,
-    },
-  ];
-  const cleanup = transfers
-    .map((transfer) =>
-      [
-        `$destination = '${transfer.guestPath.replaceAll("'", "''")}'`,
-        "New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null",
-        "Remove-Item -LiteralPath $destination -Recurse -Force -ErrorAction SilentlyContinue",
-      ].join("\n"),
-    )
-    .join("\n");
+  const transfers = [...preparation.transfers];
+  const inputRoot = preparation.guestInput.inputRoot;
+  const cleanup = [
+    `$root = '${inputRoot.replaceAll("'", "''")}'`,
+    "New-Item -ItemType Directory -Force -Path (Split-Path -Parent $root) | Out-Null",
+    "Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue",
+    "New-Item -ItemType Directory -Force -Path $root | Out-Null",
+    `$guestInput = '${guest.stagingPath.replaceAll("'", "''")}'`,
+    "New-Item -ItemType Directory -Force -Path (Split-Path -Parent $guestInput) | Out-Null",
+  ].join("\n");
   await runProcess(
     "ssh",
     [
@@ -566,6 +573,18 @@ async function stageAiAcceptanceInputs({ config, contract, preparation }) {
       },
     );
   }
+  await runProcess(
+    "scp",
+    [
+      ...scp,
+      join(config.stateRoot, "guest-input.json"),
+      `${remote}:${guest.stagingPath}`,
+    ],
+    {
+      timeoutMs: GUEST_TRANSFER_TIMEOUT_MS,
+      timeoutLabel: "AI guest input projection staging",
+    },
+  );
 }
 
 export function powerShellFocusArgument(focus) {
@@ -782,7 +801,6 @@ async function executeRun(options, config) {
     const workspace = await materializeWorkspace(config, options.commit);
     const environment = executionEnvironment(config);
     const aiInputRequired = requiresAiAcceptanceInputs(options);
-    if (aiInputRequired) await loadAiAcceptanceInputs(config);
     const lockHash = (
       await capture("git", ["hash-object", "pnpm-lock.yaml"], {
         cwd: workspace,
@@ -822,10 +840,22 @@ async function executeRun(options, config) {
     const currentFixtureIdentity = fixtureIdentityForWorkspace(workspace);
     const passes = options.mode === "full" ? 2 : 1;
     let passOneAiInputSnapshot = null;
+    let passOneGuestAiIdentity = null;
     for (let pass = 1; pass <= passes; pass += 1) {
-      const aiAcceptanceInputs = aiInputRequired
-        ? await loadAiAcceptanceInputs(config)
-        : null;
+      let aiAcceptanceInputs = null;
+      let aiInputFailure = null;
+      if (aiInputRequired) {
+        try {
+          aiAcceptanceInputs = await loadAiAcceptanceInputs(config);
+          aiAcceptanceInputs = await materializeAiAcceptanceInputSnapshot(
+            aiAcceptanceInputs,
+            join(root, "ai-input-snapshots"),
+          );
+        } catch (error) {
+          aiInputFailure =
+            error instanceof Error ? error.message : String(error);
+        }
+      }
       const snapshot = aiAcceptanceInputs && {
         manifestSha256: aiAcceptanceInputs.manifestSha256,
         artifactDigests: aiAcceptanceInputs.artifactDigests,
@@ -835,9 +865,10 @@ async function executeRun(options, config) {
         pass === 2 &&
         !identicalAiAcceptanceInputSnapshot(passOneAiInputSnapshot, snapshot)
       ) {
-        throw new Error("full pass 2 AI acceptance input drifted from pass 1");
+        aiAcceptanceInputs = null;
+        aiInputFailure = "full pass 2 AI acceptance input drifted from pass 1";
       }
-      if (options.mode === "full" && pass === 1) {
+      if (options.mode === "full" && pass === 1 && snapshot) {
         passOneAiInputSnapshot = snapshot;
         await writeJson(
           join(root, "ai-acceptance-input-pass-1.json"),
@@ -941,7 +972,11 @@ async function executeRun(options, config) {
         });
       }
       if (aiAcceptanceInputs) {
-        const currentAiAcceptanceInputs = await loadAiAcceptanceInputs(config);
+        let currentAiAcceptanceInputs = await loadAiAcceptanceInputs(config);
+        currentAiAcceptanceInputs = await materializeAiAcceptanceInputSnapshot(
+          currentAiAcceptanceInputs,
+          join(root, "ai-input-snapshots"),
+        );
         const currentSnapshot = {
           manifestSha256: currentAiAcceptanceInputs.manifestSha256,
           artifactDigests: currentAiAcceptanceInputs.artifactDigests,
@@ -956,6 +991,12 @@ async function executeRun(options, config) {
           preparation: currentAiAcceptanceInputs,
           pass,
         });
+      } else if (aiInputFailure) {
+        await provisionAiAcceptanceBlock({
+          config,
+          pass,
+          reason: `AI acceptance input blocked: ${aiInputFailure}`,
+        });
       }
       await update({ phase: `guest-pass-${pass}` });
       await stageAndRunGuest({
@@ -969,6 +1010,26 @@ async function executeRun(options, config) {
         runRoot: root,
         aiAcceptanceInputs,
       });
+      if (aiAcceptanceInputs) {
+        const identityPath = await findFile(
+          join(compact, `pass-${pass}`),
+          "validated-input-identity.json",
+        );
+        if (!identityPath) {
+          throw new Error("guest did not publish validated AI input identity");
+        }
+        const guestIdentity = await readFile(identityPath, "utf8");
+        if (options.mode === "full" && pass === 1) {
+          passOneGuestAiIdentity = guestIdentity;
+        } else if (
+          options.mode === "full" &&
+          guestIdentity !== passOneGuestAiIdentity
+        ) {
+          throw new Error(
+            "full pass 2 guest validated AI input drifted from pass 1",
+          );
+        }
+      }
     }
     if (options.mode === "full") {
       await update({ phase: "stability-gate" });

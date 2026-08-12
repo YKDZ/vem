@@ -41,6 +41,29 @@ function readyPhysicalStockAttestation(attestationId) {
 }
 
 describe("full workflow serial lifecycle", () => {
+  it("records a blocked AI track and continues with independent tracks", async () => {
+    const result = await runSerialTrackLifecycle({
+      tracks: [
+        {
+          key: "aiVirtualTryOn",
+          runner: null,
+          blockedReason: "input unavailable",
+        },
+        { key: "sale", runner: { kind: "node" }, reportPath: "sale.json" },
+      ],
+      runTrack: async () => ({
+        status: "passed",
+        exitCode: 0,
+        report: { ok: true },
+      }),
+      captureTerminal: async () => ({ ok: true, facts: {} }),
+      recover: async () => ({ ok: true, actions: [] }),
+    });
+    assert.equal(result[0].businessStatus, "blocked");
+    assert.equal(result[0].error, "input unavailable");
+    assert.equal(result[1].businessStatus, "failed");
+  });
+
   it("fails the public aggregate when artifact authority rejects a passed report", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-workflow-evidence-gate-"));
     try {

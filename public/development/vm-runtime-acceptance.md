@@ -25,8 +25,9 @@
 `aiVirtualTryOnInputManifest`，它是宿主机本地的绝对路径。清单版本为
 `vem-runtime-testbed-ai-input/v1`，逐项声明候选 exact-four 目录、Windows
 proof exact-three 目录、B2 receipt、Vision/录制 fixture/model-pack archive 和
-已物化 model root 的 host 路径、客体 Windows 路径、SHA-256 与字节数；目录还
-逐项锁定成员。清单必须是 canonical JSON，不能含 token 或其他凭据。默认交付
+已物化 model root 的 host 路径、SHA-256 与字节数；目录还逐项锁定成员。客体路径
+不是清单输入，而是编排器从 manifest SHA 派生为固定的 testbed `ai-inputs` 根。
+清单必须是 canonical JSON，不能含 token 或其他凭据。默认交付
 方式是 `host-local-cache`：编排器验证后直接预置到 VM，不下载也不让 VM 访问
 GitHub。若确有 HTTPS 来源，须额外在宿主机配置的
 `aiVirtualTryOnAllowedHttpsOrigins` 中声明精确 origin，且 URL 不得含凭据、查询

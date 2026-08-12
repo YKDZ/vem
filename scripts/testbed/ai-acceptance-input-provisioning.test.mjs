@@ -14,6 +14,7 @@ import { test } from "node:test";
 import {
   canonicalAiAcceptanceInputManifest,
   identicalAiAcceptanceInputSnapshot,
+  materializeAiAcceptanceInputSnapshot,
   validateAiAcceptanceInputManifest,
 } from "./ai-acceptance-input-provisioning.mjs";
 
@@ -27,7 +28,6 @@ function file(root, relative, content) {
   writeFileSync(path, content);
   return {
     hostPath: path,
-    guestPath: `C:\\ProgramData\\VEM\\testbed\\ai-input\\${relative.replaceAll("/", "\\")}`,
     sha256: digest(content),
     byteSize: Buffer.byteLength(content),
   };
@@ -54,7 +54,6 @@ function directory(root, relative, entries) {
   );
   return {
     hostPath: path,
-    guestPath: `C:\\ProgramData\\VEM\\testbed\\ai-input\\${relative.replaceAll("/", "\\")}`,
     sha256,
     byteSize,
     members,
@@ -108,10 +107,38 @@ test("validates a canonical host-local AI acceptance input manifest", async () =
     assert.equal(checked.guestInput.modelPackSource, "host-local-cache");
     assert.equal(
       checked.guestInput.candidateInputDirectory,
-      value.candidateInput.guestPath,
+      `C:\\ProgramData\\VEM\\testbed\\ai-inputs\\${checked.manifestSha256}\\candidate`,
     );
     assert.equal(checked.transfers.length, 7);
     assert.equal(JSON.stringify(checked.guestInput).includes(root), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("materializes immutable host-local inputs and derives every guest path", async () => {
+  const root = mkdtempSync(join(tmpdir(), "vem-ai-input-snapshot-"));
+  try {
+    const checked = await validateAiAcceptanceInputManifest(
+      canonicalAiAcceptanceInputManifest(manifest(join(root, "source"))),
+    );
+    const snapshot = await materializeAiAcceptanceInputSnapshot(
+      checked,
+      join(root, "snapshots"),
+    );
+    assert.notEqual(
+      snapshot.transfers[0].hostPath,
+      checked.transfers[0].hostPath,
+    );
+    assert.match(snapshot.transfers[0].hostPath, /snapshots/);
+    assert.match(
+      snapshot.guestInput.inputRoot,
+      /^C:\\ProgramData\\VEM\\testbed\\ai-inputs\\[a-f0-9]{64}$/,
+    );
+    assert.equal(
+      JSON.stringify(snapshot.guestInput).includes(join(root, "source")),
+      false,
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -187,15 +214,14 @@ test("rejects missing, extra, noncanonical, mismatched, and symlinked inputs", a
       /SHA-256 mismatch/,
     );
     const duplicateGuestPath = structuredClone(
-      manifest(join(root, "duplicate-guest-path")),
+      manifest(join(root, "path-traversal")),
     );
-    duplicateGuestPath.modelPack.archive.guestPath =
-      duplicateGuestPath.recordedFixtureArchive.guestPath;
+    duplicateGuestPath.modelPack.archive.guestPath = "C:\\outside";
     await assert.rejects(
       validateAiAcceptanceInputManifest(
         canonicalAiAcceptanceInputManifest(duplicateGuestPath),
       ),
-      /guest artifact paths must be distinct/,
+      /fields are invalid/,
     );
     const linked = structuredClone(manifest(join(root, "linked")));
     const target = join(root, "linked-target.zip");

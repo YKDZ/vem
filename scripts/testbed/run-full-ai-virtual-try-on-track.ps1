@@ -41,6 +41,34 @@ function Require-ExactRegularMembers([string]$Path, [string[]]$Names, [string]$L
   }
 }
 
+function Get-RegularDirectoryIdentity([string]$Path, [bool]$Nested, [string]$Label) {
+  Require-AbsoluteDirectory $Path $Label
+  $files = @(Get-ChildItem -LiteralPath $Path -File -Recurse -Force)
+  $directories = @(Get-ChildItem -LiteralPath $Path -Directory -Recurse -Force)
+  if (@($files + $directories | Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 }).Count -ne 0) { throw "$Label must not contain reparse points" }
+  if (-not $Nested -and $directories.Count -ne 0) { throw "$Label must contain direct regular files only" }
+  return @($files | ForEach-Object {
+    [ordered]@{ name = [IO.Path]::GetRelativePath($Path, $_.FullName).Replace('\', '/'); sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(); byteSize = [long]$_.Length }
+  } | Sort-Object name)
+}
+
+function Assert-GuestFileIdentity([string]$Path, [object]$Identity, [string]$Label) {
+  Require-AbsoluteLeaf $Path $Label
+  $actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($actual -cne [string]$Identity.sha256 -or (Get-Item -LiteralPath $Path).Length -ne [long]$Identity.byteSize) { throw "$Label identity is invalid" }
+}
+
+function Assert-GuestDirectoryIdentity([string]$Path, [object]$Identity, [bool]$Nested, [string]$Label) {
+  $actual = @(Get-RegularDirectoryIdentity $Path $Nested $Label)
+  $expected = @($Identity.members | ForEach-Object { [ordered]@{ name = [string]$_.name; sha256 = [string]$_.sha256; byteSize = [long]$_.byteSize } } | Sort-Object name)
+  if (($actual | ConvertTo-Json -Compress -Depth 4) -cne ($expected | ConvertTo-Json -Compress -Depth 4)) { throw "$Label member identities are invalid" }
+  $bytes = [long]($actual | Measure-Object -Property byteSize -Sum).Sum
+  if ($bytes -ne [long]$Identity.byteSize) { throw "$Label byte size is invalid" }
+  $lines = @($actual | ForEach-Object { "$($_.name)`0$($_.sha256)`0$($_.byteSize)`n" }) -join ""
+  $sha = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($lines))).ToLowerInvariant()
+  if ($sha -cne [string]$Identity.sha256) { throw "$Label aggregate identity is invalid" }
+}
+
 Require-AbsoluteLeaf $GuestInputPath "guest input"
 Require-AbsoluteLeaf $HandoffPath "runtime handoff"
 if ($FixtureKey -cne "aiVirtualTryOn") { throw "AI fixture key is invalid" }
@@ -94,6 +122,15 @@ Require-AbsoluteDirectory $modelPackRoot "materialized official model pack"
 $artifactRoot = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetDirectoryName($OutPath)) "ai-virtual-try-on-artifacts"))
 $pass = if ($guestInput.workflowIdentity.pass) { [int]$guestInput.workflowIdentity.pass } else { 1 }
 New-TestbedAiAcceptanceArtifactRoot -Root $artifactRoot -RunId ([string]$guestInput.runId) -Pass $pass -FixtureKey $FixtureKey | Out-Null
+$identities = $inputs.identities
+Assert-GuestDirectoryIdentity ([string]$inputs.candidateInputDirectory) $identities.candidateInput $false "candidate exact-four input"
+Assert-GuestDirectoryIdentity ([string]$inputs.windowsProofInputDirectory) $identities.windowsProofInput $false "companion proof exact-three input"
+Assert-GuestFileIdentity ([string]$inputs.approvedPrecutoverReceipt) $identities.approvedPrecutoverReceipt "B2 approved receipt"
+Assert-GuestFileIdentity ([string]$inputs.installedVisionRuntimeArchive) $identities.installedVisionRuntimeArchive "installed Vision runtime archive"
+Assert-GuestFileIdentity ([string]$inputs.recordedFixtureArchive) $identities.recordedFixtureArchive "recorded front/top fixture archive"
+Assert-GuestFileIdentity ([string]$inputs.modelPackArchive) $identities.modelPackArchive "official model pack archive"
+Assert-GuestDirectoryIdentity $modelPackRoot $identities.materializedModelPackRoot $true "materialized official model pack"
+([ordered]@{ schemaVersion = "vem.testbed.ai-input-identity/v1"; manifestSha256 = [string]$identities.manifestSha256; identities = $identities } | ConvertTo-Json -Depth 12) | Set-Content -LiteralPath (Join-Path $artifactRoot "validated-input-identity.json") -Encoding utf8
 $shortFacts = Join-Path $artifactRoot "short-attempt.json"
 $longFacts = Join-Path $artifactRoot "long-attempt.json"
 $saleFacts = Join-Path $artifactRoot "ordinary-sale.json"
