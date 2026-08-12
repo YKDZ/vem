@@ -23,7 +23,7 @@ import { promisify } from "node:util";
 import { collectInstalledAiDegradationEvidence } from "./ai-installed-degradation.mjs";
 import {
   AI_REGIONAL_EVIDENCE_POLICY,
-  AI_REGIONAL_EVIDENCE_POLICY_SHA256,
+  loadAiRegionalEvidencePolicy,
   validateAiRegionalEvidenceSet,
 } from "./ai-regional-evidence.mjs";
 import { runInstalledOwnerOrdinarySaleCompletion } from "./fast-route-stress-sale.mjs";
@@ -37,6 +37,7 @@ import {
   enablePageRuntime,
   rewriteWebSocketDebuggerUrl,
   activateVisibleSelector,
+  captureScreenshot,
   waitForRoute,
 } from "./machine-ui-cdp-driver.mjs";
 import { collectInstalledAiTryOnAttempt } from "./vision-try-on-acceptance.mjs";
@@ -239,21 +240,60 @@ function writeExclusiveCanonical(path, value) {
 
 function provisionalSidecarManifest(attempts, artifactRoot) {
   return {
-    files: attempts.map((attempt) => {
-      const path = resolve(artifactRoot, attempt.regionalEvidence.path);
-      const stat = lstatSync(path);
+    files: attempts.flatMap((attempt) => {
+      const sidecarPath = resolve(artifactRoot, attempt.regionalEvidence.path);
+      const stat = lstatSync(sidecarPath);
       if (!stat.isFile() || stat.isSymbolicLink())
         throw new Error("AI regional evidence member is not regular");
-      const bytes = readFileSync(path);
-      return {
-        byteLength: bytes.byteLength,
-        kind: "supportingEvidence",
-        path,
-        sha256: sha256(bytes),
-        track: "aiVirtualTryOn",
-      };
+      const bytes = readFileSync(sidecarPath);
+      return [
+        {
+          byteLength: bytes.byteLength,
+          kind: "supportingEvidence",
+          path: sidecarPath,
+          sha256: sha256(bytes),
+          track: "aiVirtualTryOn",
+        },
+        ...attempt.screenshots.map((screenshot) => {
+          const path = resolve(artifactRoot, screenshot.path);
+          const image = readFileSync(path);
+          return {
+            byteLength: image.byteLength,
+            kind: "screenshots",
+            path,
+            sha256: sha256(image),
+            track: "aiVirtualTryOn",
+          };
+        }),
+      ];
     }),
   };
+}
+
+function validateAttemptScreenshotArtifacts(attempts, artifactRoot, manifest) {
+  for (const attempt of attempts) {
+    for (const screenshot of attempt.screenshots ?? []) {
+      const path = resolve(artifactRoot, screenshot.path);
+      const stat = lstatSync(path);
+      const bytes = readFileSync(path);
+      if (
+        stat.isSymbolicLink() ||
+        !stat.isFile() ||
+        bytes.byteLength !== screenshot.byteLength ||
+        sha256(bytes) !== screenshot.sha256 ||
+        !bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ||
+        !manifest.files?.some(
+          (file) =>
+            file.track === "aiVirtualTryOn" &&
+            file.kind === "screenshots" &&
+            resolve(file.path) === path &&
+            file.byteLength === screenshot.byteLength &&
+            file.sha256 === screenshot.sha256,
+        )
+      )
+        throw new Error("AI attempt screenshot evidence is invalid or not manifest-owned");
+    }
+  }
 }
 
 function supportEvidence(kind, facts) {
@@ -345,6 +385,66 @@ function requireDigest(value, label) {
   return normalized;
 }
 
+function exactKeys(value, keys) {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    JSON.stringify(Object.keys(value).sort()) ===
+      JSON.stringify([...keys].sort())
+  );
+}
+
+function readCalibratedPolicyReceipt({ policyPath, receiptPath, identities }) {
+  if (typeof policyPath !== "string" || !isAbsolute(policyPath))
+    throw new Error("calibrated AI regional evidence policy is required");
+  if (typeof receiptPath !== "string" || !isAbsolute(receiptPath))
+    throw new Error("calibrated AI regional evidence receipt is required");
+  const policy = loadAiRegionalEvidencePolicy(policyPath);
+  if (policy.calibrationStatus !== "calibrated_issue10")
+    throw new Error("AI regional evidence policy is not calibrated");
+  const receiptRaw = readFileSync(receiptPath);
+  let receipt;
+  try {
+    receipt = JSON.parse(receiptRaw.toString("utf8"));
+  } catch {
+    throw new Error("calibrated AI regional evidence receipt is invalid JSON");
+  }
+  if (
+    !receiptRaw.equals(
+      Buffer.from(`${JSON.stringify(canonical(receipt), null, 2)}\n`),
+    ) ||
+    !exactKeys(receipt, [
+      "acceptanceReportSha256",
+      "attempts",
+      "calibrationInputSha256",
+      "derivedThresholds",
+      "policySha256",
+      "precutoverReceiptSha256",
+      "recoverySupportSha256",
+      "release",
+      "releaseProofSha256",
+      "schemaVersion",
+    ]) ||
+    receipt.schemaVersion !== "vem-ai-regional-evidence-calibration-receipt/v1" ||
+    !exactKeys(receipt.release, ["aiRuntime", "contract", "modelPack", "runtime"]) ||
+    !exactKeys(receipt.derivedThresholds, [
+      "maximumProtectedChangedFractionBps",
+      "maximumProtectedMeanDelta",
+      "minimumUpperBodyChangedFractionBps",
+      "minimumUpperBodyMeanDelta",
+    ]) ||
+    !Array.isArray(receipt.attempts) ||
+    receipt.attempts.length !== 2 ||
+    receipt.policySha256 !== policy.sha256 ||
+    Object.entries(identities).some(
+      ([key, value]) => receipt.release[key] !== requireDigest(value, `${key} identity`),
+    )
+  )
+    throw new Error("calibrated AI regional evidence receipt is not bound to this release");
+  return { policy, receipt, sha256: sha256(receiptRaw) };
+}
+
 function sidecarAttemptFacts(value, collected, caseKey) {
   if (
     value?.schemaVersion !== "vem-ai-regional-evidence/v1" ||
@@ -401,6 +501,7 @@ function attemptReport(collected, caseKey, archived) {
       sha256: facts.garmentSha256,
     },
     input: { contentType: "image/png", sha256: facts.inputSha256 },
+    journey: collected.journey,
     mode: "ai",
     outputFacts: {
       decodable: true,
@@ -422,6 +523,7 @@ function attemptReport(collected, caseKey, archived) {
       peakRssBytes,
       sha256: facts.resultSha256,
     },
+    screenshots: collected.screenshots,
     stateTrace: ["acquiring", "generating", "completed"],
     template: CASES[caseKey],
   };
@@ -531,6 +633,56 @@ function archiveSidecar(collected, caseKey, artifactRoot) {
   return { path: relative, sha256: sha256(archived) };
 }
 
+function installedAiScreenshotCapture(artifactRoot, caseKey) {
+  if (typeof artifactRoot !== "string" || !isAbsolute(artifactRoot))
+    throw new Error("AI screenshot artifact root must be absolute");
+  if (!Object.hasOwn(CASES, caseKey))
+    throw new Error("AI screenshot case is invalid");
+  return async ({ client, stage }) => {
+    if (!new Set(["acquisition", "result"]).has(stage))
+      throw new Error("AI screenshot stage is invalid");
+    const relative = `screenshots/${caseKey}/${stage}.png`;
+    const path = resolve(artifactRoot, relative);
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    return captureScreenshot(client, {
+      format: "png",
+      label: `${caseKey}-${stage}`,
+      screenshotSink: ({ bytes }) => {
+        writeFileSync(path, bytes, { flag: "wx", mode: 0o600 });
+        return { ref: relative };
+      },
+      validatePng: true,
+    }).then((screenshot) => ({
+      byteLength: screenshot.byteLength,
+      path: relative,
+      sha256: screenshot.sha256,
+      stage,
+    }));
+  };
+}
+
+async function returnInstalledAiAttemptToCatalog(client) {
+  await activateVisibleSelector(client, '[data-test="try-on-return"]', {
+    kind: "touch",
+    timeoutMs: 30_000,
+  });
+  await waitForRoute(client, /^#\/products\//, {
+    timeoutMs: 30_000,
+    pollMs: 250,
+  });
+  await activateVisibleSelector(
+    client,
+    '[data-test="product-detail-return-catalog"]',
+    { kind: "touch", timeoutMs: 30_000 },
+  );
+  await waitForRoute(client, "#/catalog", { timeoutMs: 30_000, pollMs: 250 });
+  return {
+    nextAttemptKind: "new_attempt_after_return",
+    returnToCatalog: true,
+    selectedFromCatalog: true,
+  };
+}
+
 export async function runInstalledAiAttemptPhase(options) {
   const guestInput = readJson(options.guestInputPath, "guest input");
   const handoff = readJson(options.handoffPath, "runtime handoff");
@@ -579,6 +731,10 @@ export async function runInstalledAiAttemptPhase(options) {
     let completed = false;
     const attemptPromise = collectInstalledAiTryOnAttempt({
       client,
+      captureAttemptScreenshot: installedAiScreenshotCapture(
+        options.artifactRoot,
+        options.caseKey,
+      ),
       expectedTryOnRoute,
       regionalEvidenceRoot: options.regionalEvidenceRoot,
     }).finally(() => {
@@ -602,6 +758,7 @@ export async function runInstalledAiAttemptPhase(options) {
       acceptance.garmentSha256,
       `${options.caseKey} seeded garment digest`,
     );
+    collected.journey = await returnInstalledAiAttemptToCatalog(client);
     const archived = archiveSidecar(
       collected,
       options.caseKey,
@@ -762,16 +919,60 @@ export async function assembleInstalledAiTryOnAcceptance(
   const evidenceManifest =
     input.evidenceManifest ??
     provisionalSidecarManifest(attempts, input.artifactRoot);
+  validateAttemptScreenshotArtifacts(attempts, input.artifactRoot, evidenceManifest);
+  const calibrated =
+    input.calibratedPolicyPath == null && input.calibrationReceiptPath == null
+      ? null
+      : readCalibratedPolicyReceipt({
+          identities: input.identities,
+          policyPath: input.calibratedPolicyPath,
+          receiptPath: input.calibrationReceiptPath,
+        });
   const regional = validateAiRegionalEvidenceSet(
     attempts,
     input.artifactRoot,
     evidenceManifest,
+    calibrated?.policy,
   );
   const calibrationPending =
     regional.reason ===
     "AI regional evidence policy awaits Issue10 two-garment calibration";
   if (!regional.ok && !calibrationPending) throw new Error(regional.reason);
   const workerFailurePending = input.workerFailure === undefined;
+  const successful = regional.ok && !workerFailurePending && calibrated !== null;
+  if (successful) {
+    const report = {
+      attempts,
+      calibration: {
+        policySha256: `sha256:${calibrated.policy.sha256}`,
+        receiptSha256: `sha256:${calibrated.sha256}`,
+      },
+      degradations: { workerFailure: input.workerFailure },
+      error: null,
+      execution: {
+        identities: Object.fromEntries(
+          Object.entries(input.identities).map(([key, value]) => [
+            key,
+            `sha256:${requireDigest(value, `${key} identity`)}`,
+          ]),
+        ),
+        noDirectWorker: true,
+        protocol: "vem.vision.v2",
+        recordedSources: ["front", "top"],
+        source: "installed_machine_ui_cdp",
+      },
+      ok: true,
+      postAi: {
+        browseAvailable: true,
+        ordinarySaleCompleted: true,
+        saleAvailable: true,
+      },
+      reasons: [],
+      runtimeTrace,
+      schemaVersion: "vem-ai-virtual-try-on-acceptance/v2",
+    };
+    return { acceptance: { ok: true, reasons: [] }, report };
+  }
   const report = {
     attempts,
     degradations: workerFailurePending
@@ -938,6 +1139,8 @@ export async function assembleInstalledAiTryOnAcceptanceFiles(options) {
     {
       attempts,
       artifactRoot: options.artifactRoot,
+      calibratedPolicyPath: options.calibratedPolicyPath,
+      calibrationReceiptPath: options.calibrationReceiptPath,
       identities: {
         aiRuntime: proof.resources.runtimeDescriptorSha256,
         contract: contract.bundleDigest,
@@ -969,6 +1172,11 @@ export async function assembleInstalledAiTryOnAcceptanceForTest(
     throw new Error(
       "AI installed assembly test boundary requires NODE_ENV=test",
     );
+  const policy = input.calibratedPolicyPath
+    ? loadAiRegionalEvidencePolicy(input.calibratedPolicyPath)
+    : AI_REGIONAL_EVIDENCE_POLICY;
+  const regionalSampledPixels =
+    policy.calibrationStatus === "calibrated_issue10" ? 1024 : 1;
   const attempts = input.attempts.map((collected, index) => {
     const caseKey = index === 0 ? "short" : "long";
     const sidecar = {
@@ -988,13 +1196,19 @@ export async function assembleInstalledAiTryOnAcceptanceForTest(
         lip: "schp-lip",
         pose: "mediapipe-pose",
         sourceDescriptorSha256:
-          AI_REGIONAL_EVIDENCE_POLICY.sourceDescriptorSha256,
+          policy.sourceDescriptorSha256,
       },
       kind: "regional-evidence",
       masks: {
         height: collected.resultEvidence.height,
-        protectedRegion: { encoding: "rle-row-major/v1", runs: [[1, 1]] },
-        upperBody: { encoding: "rle-row-major/v1", runs: [[0, 1]] },
+        protectedRegion: {
+          encoding: "rle-row-major/v1",
+          runs: [[regionalSampledPixels, 1]],
+        },
+        upperBody: {
+          encoding: "rle-row-major/v1",
+          runs: [[0, regionalSampledPixels]],
+        },
         width: collected.resultEvidence.width,
       },
       measurements: {
@@ -1007,20 +1221,43 @@ export async function assembleInstalledAiTryOnAcceptanceForTest(
         },
         upperBody: {
           changedFractionBps: 10000,
-          changedPixels: 1,
+          changedPixels: regionalSampledPixels,
           meanDelta: 1,
-          sampledPixels: 1,
+          sampledPixels: regionalSampledPixels,
           verdict: "changed",
         },
       },
       policy: {
-        schemaVersion: AI_REGIONAL_EVIDENCE_POLICY.schemaVersion,
-        sha256: AI_REGIONAL_EVIDENCE_POLICY_SHA256,
+        schemaVersion: policy.schemaVersion,
+        sha256: policy.sha256,
       },
       schemaVersion: "vem-ai-regional-evidence/v1",
       verdict: "passed",
     };
     collected.regionalEvidence.bytes = canonicalBytes(sidecar);
+    collected.journey ??= {
+      nextAttemptKind: "new_attempt_after_return",
+      returnToCatalog: true,
+      selectedFromCatalog: true,
+    };
+    collected.screenshots ??= ["acquisition", "result"].map((stage) => {
+      const relative = `screenshots/${caseKey}/${stage}.png`;
+      const path = resolve(input.artifactRoot, relative);
+      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+      const png = Buffer.alloc(24);
+      Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(png);
+      png.writeUInt32BE(13, 8);
+      png.write("IHDR", 12, "ascii");
+      png.writeUInt32BE(1080, 16);
+      png.writeUInt32BE(1920, 20);
+      writeFileSync(path, png, { flag: "wx", mode: 0o600 });
+      return {
+        byteLength: png.byteLength,
+        path: relative,
+        sha256: sha256(png),
+        stage,
+      };
+    });
     collected.expectedGarmentSha256 = sidecar.attempt.garmentSha256;
     collected.expectedGarmentId = collected.surface.garmentId;
     const sourceRoot = join(input.artifactRoot, `.source-${caseKey}`);
@@ -1048,16 +1285,22 @@ export async function assembleInstalledAiTryOnAcceptanceForTest(
     });
   });
   const evidenceManifest = {
-    files: attempts.map((attempt) => {
+    files: attempts.flatMap((attempt) => {
       const path = resolve(input.artifactRoot, attempt.regionalEvidence.path);
       const bytes = readFileSync(path);
-      return {
+      return [{
         track: "aiVirtualTryOn",
         kind: "supportingEvidence",
         path,
         byteLength: bytes.byteLength,
         sha256: sha256(bytes),
-      };
+      }, ...attempt.screenshots.map((screenshot) => ({
+        track: "aiVirtualTryOn",
+        kind: "screenshots",
+        path: resolve(input.artifactRoot, screenshot.path),
+        byteLength: screenshot.byteLength,
+        sha256: screenshot.sha256,
+      }))];
     }),
   };
   return assembleInstalledAiTryOnAcceptance(
@@ -1127,6 +1370,8 @@ async function main() {
   }
   return assembleInstalledAiTryOnAcceptanceFiles({
     artifactRoot: options["artifact-root"],
+    calibratedPolicyPath: options["calibrated-policy"],
+    calibrationReceiptPath: options["calibration-receipt"],
     candidateInputDirectory: options["candidate-input-directory"],
     corruptDegradationPath: options["corrupt-degradation"],
     longAttemptPath: options["long-attempt"],

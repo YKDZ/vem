@@ -33,6 +33,13 @@ function root() {
   return value;
 }
 
+function writeAiAttemptScreenshots(artifacts) {
+  const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  for (const caseKey of ["short", "long"])
+    for (const stage of ["acquisition", "result"])
+      writeFileSync(join(artifacts, `${caseKey}-${stage}.png`), png);
+}
+
 describe("full workflow evidence manifest", () => {
   it("requires bounded Machine Runtime Trace, log, and PNG evidence for each track", () => {
     const temp = root();
@@ -303,6 +310,7 @@ describe("full workflow evidence manifest", () => {
     const report = join(temp, "ai-virtual-try-on.json");
     writeFileSync(report, '{"runtimeTrace":[{"id":"ai-trace"}]}\n');
     writeFileSync(join(artifacts, "runtime.log"), "ok\n");
+    writeAiAttemptScreenshots(artifacts);
     writeFileSync(
       join(artifacts, "diagnostic.json"),
       `${JSON.stringify({
@@ -346,6 +354,7 @@ describe("full workflow evidence manifest", () => {
     const report = join(temp, "ai-virtual-try-on.json");
     writeFileSync(report, '{"runtimeTrace":[{"id":"ai-trace"}]}\n');
     writeFileSync(join(artifacts, "runtime.log"), "ok\n");
+    writeAiAttemptScreenshots(artifacts);
     const support =
       '{"kind":"regional-evidence","schemaVersion":"vem-ai-regional-evidence/v1"}\n';
     writeFileSync(join(short, "short-attempt.regional-evidence.json"), support);

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -36,6 +37,23 @@ const installedEntry = join(
   repoRoot,
   "scripts/testbed/ai-virtual-try-on-installed-entry.mjs",
 );
+
+function canonical(value) {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === "object")
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, canonical(value[key])]),
+    );
+  return value;
+}
+
+function writeCanonical(path, value) {
+  const bytes = Buffer.from(`${JSON.stringify(canonical(value), null, 2)}\n`);
+  writeFileSync(path, bytes);
+  return createHash("sha256").update(bytes).digest("hex");
+}
 
 class DegradationFakeWebSocket {
   constructor() {
@@ -582,6 +600,109 @@ test("assembles worker-failure support so only calibration stays fail closed", a
   assert.deepEqual(result.acceptance.reasons, [
     "AI regional evidence policy awaits Issue10 two-garment calibration",
   ]);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("admits calibrated two-garment evidence only with mandatory screenshots and return journeys", async () => {
+  process.env.NODE_ENV = "test";
+  const root = mkdtempSync(join(tmpdir(), "vem-ai-calibrated-success-"));
+  const identities = {
+    aiRuntime: "3".repeat(64),
+    contract: "2".repeat(64),
+    modelPack: "4".repeat(64),
+    runtime: "1".repeat(64),
+  };
+  const policyPath = join(root, "calibrated-policy.json");
+  const policy = {
+    algorithm: "rgb-absolute-delta-rle/v1",
+    atrEvaluator: "schp-atr",
+    calibrationStatus: "calibrated_issue10",
+    lipEvaluator: "schp-lip",
+    maximumProtectedChangedFractionBps: 0,
+    maximumProtectedMeanDelta: 0,
+    minimumUpperBodyChangedFractionBps: 10_000,
+    minimumUpperBodyMeanDelta: 1,
+    minimumUpperBodySampledPixels: 1024,
+    poseEvaluator: "mediapipe-pose",
+    schemaVersion: "vem-ai-regional-evidence-policy/v1",
+    sourceDescriptorSha256: "0".repeat(64),
+  };
+  const policySha256 = writeCanonical(policyPath, policy);
+  const receiptPath = join(root, "calibration-receipt.json");
+  writeCanonical(receiptPath, {
+    acceptanceReportSha256: "a".repeat(64),
+    attempts: [{ caseKey: "short" }, { caseKey: "long" }],
+    calibrationInputSha256: "b".repeat(64),
+    derivedThresholds: {
+      maximumProtectedChangedFractionBps: 0,
+      maximumProtectedMeanDelta: 0,
+      minimumUpperBodyChangedFractionBps: 10_000,
+      minimumUpperBodyMeanDelta: 1,
+    },
+    policySha256,
+    precutoverReceiptSha256: "c".repeat(64),
+    recoverySupportSha256: "d".repeat(64),
+    release: identities,
+    releaseProofSha256: "e".repeat(64),
+    schemaVersion: "vem-ai-regional-evidence-calibration-receipt/v1",
+  });
+  const attempt = (digit, caseKey) => ({
+    attemptId: `0198f44e-21bd-7c62-8f52-b7c86cc2c00${digit}`,
+    lifecycle: ["acquiring", "generating", "completed"],
+    resultEvidence: {
+      contentType: "image/png",
+      width: 768,
+      height: 1024,
+      sha256: digit.repeat(64),
+    },
+    durationMs: 12_000,
+    peakRssBytes: 512 * 1024 * 1024,
+    surface: { garmentId: `0198f44e-21bd-7c62-8f52-b7c86cc2d00${digit}` },
+    regionalEvidence: { bytes: Buffer.from("{}\n") },
+    ...(caseKey === "short" ? { screenshots: [] } : {}),
+  });
+  const input = {
+    attempts: [attempt("1", "short"), attempt("5", "long")],
+    artifactRoot: root,
+    calibratedPolicyPath: policyPath,
+    calibrationReceiptPath: receiptPath,
+    identities,
+    workerFailure: {
+      aiReady: false,
+      coreReady: true,
+      daemonReady: true,
+      fastReady: true,
+      machineUiAvailable: true,
+      saleAvailable: true,
+    },
+  };
+  await assert.rejects(
+    assembleInstalledAiTryOnAcceptanceForTest(input, {
+      ordinarySale: async () => ({ ok: true }),
+    }),
+    /installed AI attempt set failed|screenshot evidence/,
+  );
+  const successRoot = mkdtempSync(join(tmpdir(), "vem-ai-calibrated-green-"));
+  const successful = await assembleInstalledAiTryOnAcceptanceForTest(
+    {
+      ...input,
+      artifactRoot: successRoot,
+      attempts: [attempt("1", "short"), attempt("5", "long")].map(
+        (entry) => {
+          delete entry.screenshots;
+          return entry;
+        },
+      ),
+    },
+    { ordinarySale: async () => ({ ok: true }) },
+  );
+  assert.equal(successful.acceptance.ok, true);
+  assert.equal(successful.report.ok, true);
+  assert.equal(successful.report.error, null);
+  assert.deepEqual(successful.report.reasons, []);
+  assert.equal(successful.report.attempts[0].screenshots.length, 2);
+  assert.equal(successful.report.attempts[1].journey.returnToCatalog, true);
+  rmSync(successRoot, { recursive: true, force: true });
   rmSync(root, { recursive: true, force: true });
 });
 

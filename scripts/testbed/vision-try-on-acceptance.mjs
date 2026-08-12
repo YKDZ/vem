@@ -3237,6 +3237,7 @@ async function collectInstalledAiTryOnAttemptInternal(
     client,
     expectedTryOnRoute,
     regionalEvidenceRoot,
+    captureAttemptScreenshot = null,
     timeoutMs = 60_000,
     pollMs = 250,
   },
@@ -3255,6 +3256,11 @@ async function collectInstalledAiTryOnAttemptInternal(
     pollMs <= 0
   )
     throw new Error("installed AI attempt inputs are invalid");
+  if (
+    captureAttemptScreenshot !== null &&
+    typeof captureAttemptScreenshot !== "function"
+  )
+    throw new Error("installed AI screenshot capture is invalid");
   const deadline = performance.now() + timeoutMs;
   const remaining = () => {
     const value = deadline - performance.now();
@@ -3279,6 +3285,21 @@ async function collectInstalledAiTryOnAttemptInternal(
       timeoutMs: remaining(),
       pollMs,
     });
+    await waitForCondition(
+      "installed AI acquisition surface",
+      async () => {
+        const lifecycle = await readTryOnLifecycle(client);
+        return {
+          ok: lifecycle.some((entry) => entry?.phase === "acquiring"),
+          value: lifecycle,
+        };
+      },
+      remaining(),
+      pollMs,
+    );
+    const acquisitionScreenshot = captureAttemptScreenshot
+      ? await captureAttemptScreenshot({ client, stage: "acquisition" })
+      : null;
     const surface = await waitForTryOnSurface(client, remaining(), { pollMs });
     if (surface.route !== expectedTryOnRoute)
       throw new Error("installed AI result route mismatched");
@@ -3371,6 +3392,9 @@ async function collectInstalledAiTryOnAttemptInternal(
     try {
       regionalEvidenceTestHooks?.beforeReturn?.(regionalLease.evidence);
       const regionalEvidence = regionalLease.finalizeAndClose();
+      const resultScreenshot = captureAttemptScreenshot
+        ? await captureAttemptScreenshot({ client, stage: "result" })
+        : null;
       return {
         attemptId: surface.attemptId,
         activation,
@@ -3386,6 +3410,10 @@ async function collectInstalledAiTryOnAttemptInternal(
           },
         },
         regionalEvidence,
+        screenshots:
+          acquisitionScreenshot && resultScreenshot
+            ? [acquisitionScreenshot, resultScreenshot]
+            : [],
         surface,
       };
     } finally {

@@ -207,6 +207,7 @@ function validateAiVirtualTryOnTrack(report, reportPath) {
   const execution = report?.execution;
   const identities = execution?.identities;
   const attempts = report?.attempts;
+  const calibration = report?.calibration;
   const postAi = report?.postAi;
   const degradations = report?.degradations;
   const digest = (value) => /^sha256:[a-f0-9]{64}$/.test(value ?? "");
@@ -230,15 +231,21 @@ function validateAiVirtualTryOnTrack(report, reportPath) {
   const complete =
     exactKeys(report, [
       "attempts",
+      "calibration",
       "degradations",
+      "error",
       "execution",
       "ok",
       "postAi",
+      "reasons",
       "runtimeTrace",
       "schemaVersion",
     ]) &&
     report.schemaVersion === "vem-ai-virtual-try-on-acceptance/v2" &&
     report.ok === true &&
+    report.error === null &&
+    Array.isArray(report.reasons) &&
+    report.reasons.length === 0 &&
     exactKeys(execution, [
       "identities",
       "noDirectWorker",
@@ -253,6 +260,8 @@ function validateAiVirtualTryOnTrack(report, reportPath) {
       JSON.stringify(["front", "top"]) &&
     exactKeys(identities, ["aiRuntime", "contract", "modelPack", "runtime"]) &&
     Object.values(identities).every(digest) &&
+    exactKeys(calibration, ["policySha256", "receiptSha256"]) &&
+    Object.values(calibration).every(digest) &&
     exactKeys(postAi, [
       "browseAvailable",
       "ordinarySaleCompleted",
@@ -310,11 +319,13 @@ export function validateAiAttemptSet(attempts, runtimeTrace) {
         "caseKey",
         "garment",
         "input",
+        "journey",
         "mode",
         "outputFacts",
         "regionalEvidence",
         "result",
         "stateTrace",
+        "screenshots",
         "template",
       ]) ||
       attempt.caseKey !== caseKey ||
@@ -329,6 +340,31 @@ export function validateAiAttemptSet(attempts, runtimeTrace) {
       !exactKeys(attempt.input, ["contentType", "sha256"]) ||
       attempt.input.contentType !== "image/png" ||
       !/^[a-f0-9]{64}$/.test(attempt.input.sha256 ?? "") ||
+      !exactKeys(attempt.journey, [
+        "nextAttemptKind",
+        "returnToCatalog",
+        "selectedFromCatalog",
+      ]) ||
+      attempt.journey.nextAttemptKind !== "new_attempt_after_return" ||
+      attempt.journey.returnToCatalog !== true ||
+      attempt.journey.selectedFromCatalog !== true ||
+      !Array.isArray(attempt.screenshots) ||
+      attempt.screenshots.length !== 2 ||
+      !["acquisition", "result"].every((stage, index) => {
+        const screenshot = attempt.screenshots[index];
+        return (
+          exactKeys(screenshot, ["byteLength", "path", "sha256", "stage"]) &&
+          screenshot.stage === stage &&
+          typeof screenshot.path === "string" &&
+          /^screenshots\/(short|long)\/(acquisition|result)\.png$/.test(
+            screenshot.path,
+          ) &&
+          Number.isSafeInteger(screenshot.byteLength) &&
+          screenshot.byteLength > 0 &&
+          screenshot.byteLength <= 2 * 1024 * 1024 &&
+          /^[a-f0-9]{64}$/.test(screenshot.sha256 ?? "")
+        );
+      }) ||
       !exactKeys(attempt.garment, ["contentType", "garmentId", "sha256"]) ||
       !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
         attempt.garment.garmentId ?? "",

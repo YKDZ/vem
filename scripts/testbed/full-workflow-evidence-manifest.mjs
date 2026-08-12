@@ -369,7 +369,7 @@ function physicalEvidence(track, artifactFiles) {
         screenshotScore(right) - screenshotScore(left) ||
         right.path.localeCompare(left.path),
     )
-    .slice(0, 3);
+    .slice(0, track === "aiVirtualTryOn" ? 4 : 3);
   return {
     supporting,
     logs,
@@ -498,7 +498,11 @@ export function buildFullWorkflowEvidenceManifest({ tracks = [] } = {}) {
         failures.push(`actual Machine Runtime Trace is absent for ${track}`);
       if (evidencePolicy.logs && logs.length === 0)
         failures.push(`actual log evidence is absent for ${track}`);
-      if (physical.selectedScreenshots.length === 0)
+      if (track === "aiVirtualTryOn" && physical.selectedScreenshots.length < 4)
+        blockingFailures.push(
+          "AI virtual try-on requires acquisition and result PNG evidence for both attempts",
+        );
+      else if (physical.selectedScreenshots.length === 0)
         failures.push(
           `optional PNG screenshot evidence is absent for ${track}`,
         );
@@ -607,7 +611,7 @@ export function validateFullWorkflowEvidenceManifest(manifest) {
           failures.push(`log evidence is not owned by ${track.key}`);
         if (track.screenshots.some((path) => !owns(path, "screenshots")))
           failures.push(`screenshot evidence is not owned by ${track.key}`);
-        if (track.screenshots.length > 3)
+        if (track.screenshots.length > (track.key === "aiVirtualTryOn" ? 4 : 3))
           failures.push(`too many selected screenshots for ${track.key}`);
       } else if (
         track.diagnostics.some(

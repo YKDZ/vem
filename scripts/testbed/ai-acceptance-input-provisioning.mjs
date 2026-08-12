@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { cp, lstat, mkdir, readFile, readdir } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
-const SCHEMA_VERSION = "vem-runtime-testbed-ai-input/v1";
+const SCHEMA_VERSION = "vem-runtime-testbed-ai-input/v2";
 const SHA256 = /^[a-f0-9]{64}$/;
 const COMMIT = /^[a-f0-9]{40}$/;
 const GUEST_ROOT = "C:\\ProgramData\\VEM\\testbed\\ai-inputs";
@@ -288,6 +288,8 @@ function guestProjection(
     candidateInput,
     windowsProofInput,
     approvedPrecutoverReceipt,
+    calibratedRegionalPolicy,
+    calibrationReceipt,
     installedVisionRuntimeArchive,
     recordedFixtureArchive,
     modelPack,
@@ -301,6 +303,8 @@ function guestProjection(
     candidateInputDirectory: windowsJoin(root, "candidate"),
     windowsProofInputDirectory: windowsJoin(root, "windows-proof"),
     approvedPrecutoverReceipt: windowsJoin(root, "approved-receipt.json"),
+    calibratedRegionalPolicy: windowsJoin(root, "calibrated-regional-policy.json"),
+    calibrationReceipt: windowsJoin(root, "calibration-receipt.json"),
     installedVisionRuntimeArchive: windowsJoin(root, "vision-runtime.zip"),
     recordedFixtureArchive: windowsJoin(root, "recorded-fixtures.zip"),
     modelPackArchive: windowsJoin(root, "model-pack.zip"),
@@ -326,6 +330,14 @@ function guestProjection(
       approvedPrecutoverReceipt: {
         sha256: approvedPrecutoverReceipt.sha256,
         byteSize: approvedPrecutoverReceipt.byteSize,
+      },
+      calibratedRegionalPolicy: {
+        sha256: calibratedRegionalPolicy.sha256,
+        byteSize: calibratedRegionalPolicy.byteSize,
+      },
+      calibrationReceipt: {
+        sha256: calibrationReceipt.sha256,
+        byteSize: calibrationReceipt.byteSize,
       },
       installedVisionRuntimeArchive: {
         sha256: installedVisionRuntimeArchive.sha256,
@@ -370,6 +382,8 @@ export async function validateAiAcceptanceInputManifest(
       "candidateInput",
       "windowsProofInput",
       "approvedPrecutoverReceipt",
+      "calibratedRegionalPolicy",
+      "calibrationReceipt",
       "installedVisionRuntimeArchive",
       "recordedFixtureArchive",
       "modelPack",
@@ -407,6 +421,14 @@ export async function validateAiAcceptanceInputManifest(
   const approvedPrecutoverReceipt = await file(
     value.approvedPrecutoverReceipt,
     "B2 approved receipt",
+  );
+  const calibratedRegionalPolicy = await file(
+    value.calibratedRegionalPolicy,
+    "calibrated AI regional evidence policy",
+  );
+  const calibrationReceipt = await file(
+    value.calibrationReceipt,
+    "calibrated AI regional evidence receipt",
   );
   let receipt;
   try {
@@ -450,6 +472,8 @@ export async function validateAiAcceptanceInputManifest(
     candidateInput,
     windowsProofInput,
     approvedPrecutoverReceipt,
+    calibratedRegionalPolicy,
+    calibrationReceipt,
     installedVisionRuntimeArchive,
     recordedFixtureArchive,
     modelPack,
@@ -469,6 +493,11 @@ export async function validateAiAcceptanceInputManifest(
         ...approvedPrecutoverReceipt,
         guestPath: projection.approvedPrecutoverReceipt,
       },
+      {
+        ...calibratedRegionalPolicy,
+        guestPath: projection.calibratedRegionalPolicy,
+      },
+      { ...calibrationReceipt, guestPath: projection.calibrationReceipt },
       {
         ...installedVisionRuntimeArchive,
         guestPath: projection.installedVisionRuntimeArchive,
@@ -492,10 +521,12 @@ export async function materializeAiAcceptanceInputSnapshot(preparation, root) {
     [preparation.transfers[0].hostPath, "candidate"],
     [preparation.transfers[1].hostPath, "windows-proof"],
     [preparation.transfers[2].hostPath, "approved-receipt.json"],
-    [preparation.transfers[3].hostPath, "vision-runtime.zip"],
-    [preparation.transfers[4].hostPath, "recorded-fixtures.zip"],
-    [preparation.transfers[5].hostPath, "model-pack.zip"],
-    [preparation.transfers[6].hostPath, "model-pack"],
+    [preparation.transfers[3].hostPath, "calibrated-regional-policy.json"],
+    [preparation.transfers[4].hostPath, "calibration-receipt.json"],
+    [preparation.transfers[5].hostPath, "vision-runtime.zip"],
+    [preparation.transfers[6].hostPath, "recorded-fixtures.zip"],
+    [preparation.transfers[7].hostPath, "model-pack.zip"],
+    [preparation.transfers[8].hostPath, "model-pack"],
   ];
   await mkdir(snapshotRoot, { recursive: true });
   for (const [source, name] of files) {
