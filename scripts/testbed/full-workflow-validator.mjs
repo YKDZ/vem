@@ -337,10 +337,26 @@ export function validateAiAttemptSet(attempts, runtimeTrace) {
       attemptIds.has(attempt.attemptId) ||
       attempt.mode !== "ai" ||
       (caseKey === "short" &&
-        (!exactKeys(attempt.retry, ["completedAttemptId", "retriedAttemptId"]) ||
+        (!exactKeys(attempt.retry, [
+          "completedAttemptId",
+          "lifecycle",
+          "result",
+          "retriedAttemptId",
+        ]) ||
           attempt.retry.completedAttemptId !== attempt.attemptId ||
           attempt.retry.retriedAttemptId === attempt.attemptId ||
-          !/^[0-9a-f-]{36}$/.test(attempt.retry.retriedAttemptId ?? ""))) ||
+          !/^[0-9a-f-]{36}$/.test(attempt.retry.retriedAttemptId ?? "") ||
+          JSON.stringify(attempt.retry.lifecycle) !==
+            JSON.stringify(["acquiring", "generating", "completed"]) ||
+          !exactKeys(attempt.retry.result, [
+            "decodedHeight",
+            "decodedWidth",
+            "sha256",
+          ]) ||
+          attempt.retry.result.decodedWidth !== attempt.result?.decodedWidth ||
+          attempt.retry.result.decodedHeight !== attempt.result?.decodedHeight ||
+          attempt.retry.result.sha256 === attempt.result?.sha256 ||
+          !/^[a-f0-9]{64}$/.test(attempt.retry.result.sha256 ?? ""))) ||
       JSON.stringify(attempt.stateTrace) !==
         JSON.stringify(["acquiring", "generating", "completed"]) ||
       !exactKeys(attempt.input, ["contentType", "sha256"]) ||
@@ -349,10 +365,24 @@ export function validateAiAttemptSet(attempts, runtimeTrace) {
       !exactKeys(
         attempt.journey,
         index === 0
-          ? ["catalogRoute", "nextAttemptId", "resultAttemptId"]
-          : ["catalogRoute", "previousAttemptId", "resultAttemptId"],
+          ? [
+              "catalogRoute",
+              "nextAttemptId",
+              "productRoute",
+              "resultAttemptId",
+              "resultRoute",
+            ]
+          : [
+              "catalogRoute",
+              "previousAttemptId",
+              "productRoute",
+              "resultAttemptId",
+              "resultRoute",
+            ],
       ) ||
       attempt.journey.catalogRoute !== "#/catalog" ||
+      !attempt.journey.resultRoute.startsWith("#/try-on?") ||
+      !attempt.journey.productRoute.startsWith("#/products/") ||
       attempt.journey.resultAttemptId !== attempt.attemptId ||
       (index === 0 && attempt.journey.nextAttemptId !== attempts[1]?.attemptId) ||
       (index === 1 &&

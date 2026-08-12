@@ -633,6 +633,12 @@ function installedAiScreenshotCapture(artifactRoot, caseKey) {
 }
 
 async function returnInstalledAiAttemptToCatalog(client) {
+  const resultRoute = (
+    await client.send("Runtime.evaluate", {
+      expression: "location.hash",
+      returnByValue: true,
+    })
+  )?.result?.value;
   await activateVisibleSelector(client, '[data-test="try-on-return"]', {
     kind: "touch",
     timeoutMs: 30_000,
@@ -641,6 +647,12 @@ async function returnInstalledAiAttemptToCatalog(client) {
     timeoutMs: 30_000,
     pollMs: 250,
   });
+  const productRoute = (
+    await client.send("Runtime.evaluate", {
+      expression: "location.hash",
+      returnByValue: true,
+    })
+  )?.result?.value;
   await activateVisibleSelector(
     client,
     '[data-test="product-detail-return-catalog"]',
@@ -654,7 +666,14 @@ async function returnInstalledAiAttemptToCatalog(client) {
   const catalogRoute = observation?.result?.value;
   if (catalogRoute !== "#/catalog")
     throw new Error("AI try-on return did not reach the public catalog route");
-  return { catalogRoute };
+  if (
+    typeof resultRoute !== "string" ||
+    !resultRoute.startsWith("#/try-on?") ||
+    typeof productRoute !== "string" ||
+    !productRoute.startsWith("#/products/")
+  )
+    throw new Error("AI try-on return route observation is invalid");
+  return { catalogRoute, productRoute, resultRoute };
 }
 
 function linkAiAttemptJourneys(attempts) {
@@ -669,12 +688,16 @@ function linkAiAttemptJourneys(attempts) {
   shortAttempt.journey = {
     catalogRoute: shortAttempt.returnJourney?.catalogRoute ?? "#/catalog",
     nextAttemptId: longAttempt.attemptId,
+    productRoute: shortAttempt.returnJourney?.productRoute ?? "#/products/test",
     resultAttemptId: shortAttempt.attemptId,
+    resultRoute: shortAttempt.returnJourney?.resultRoute ?? "#/try-on?test",
   };
   longAttempt.journey = {
     catalogRoute: longAttempt.returnJourney?.catalogRoute ?? "#/catalog",
     previousAttemptId: shortAttempt.attemptId,
+    productRoute: longAttempt.returnJourney?.productRoute ?? "#/products/test",
     resultAttemptId: longAttempt.attemptId,
+    resultRoute: longAttempt.returnJourney?.resultRoute ?? "#/try-on?test",
   };
 }
 
@@ -750,6 +773,12 @@ export async function runInstalledAiAttemptPhase(options) {
         throw new Error("AI try-on retry reused the completed attempt identity");
       collected.retry = {
         completedAttemptId: collected.attemptId,
+        lifecycle: retried.lifecycle.map((entry) => entry.phase),
+        result: {
+          decodedHeight: retried.resultEvidence.height,
+          decodedWidth: retried.resultEvidence.width,
+          sha256: retried.resultEvidence.sha256,
+        },
         retriedAttemptId: retried.attemptId,
       };
     }
@@ -1267,6 +1296,17 @@ export async function assembleInstalledAiTryOnAcceptanceForTest(
     });
     collected.expectedGarmentSha256 = sidecar.attempt.garmentSha256;
     collected.returnJourney ??= { catalogRoute: "#/catalog" };
+    if (caseKey === "short")
+      collected.retry ??= {
+        completedAttemptId: collected.attemptId,
+        lifecycle: ["acquiring", "generating", "completed"],
+        result: {
+          decodedHeight: collected.resultEvidence.height,
+          decodedWidth: collected.resultEvidence.width,
+          sha256: "e".repeat(64),
+        },
+        retriedAttemptId: "0198f44e-21bd-7c62-8f52-b7c86cc2b009",
+      };
     collected.expectedGarmentId = collected.surface.garmentId;
     const sourceRoot = join(input.artifactRoot, `.source-${caseKey}`);
     mkdirSync(sourceRoot, { mode: 0o700 });

@@ -201,16 +201,26 @@ function aiVirtualTryOnReport() {
   attempts[0].journey = {
     catalogRoute: "#/catalog",
     nextAttemptId: attempts[1].attemptId,
+    productRoute: "#/products/test",
     resultAttemptId: attempts[0].attemptId,
+    resultRoute: "#/try-on?test",
   };
   attempts[0].retry = {
     completedAttemptId: attempts[0].attemptId,
+    lifecycle: ["acquiring", "generating", "completed"],
+    result: {
+      decodedHeight: 1024,
+      decodedWidth: 768,
+      sha256: "f".repeat(64),
+    },
     retriedAttemptId: "0198f44e-21bd-7c62-8f52-b7c86cc2b003",
   };
   attempts[1].journey = {
     catalogRoute: "#/catalog",
     previousAttemptId: attempts[0].attemptId,
+    productRoute: "#/products/test",
     resultAttemptId: attempts[1].attemptId,
+    resultRoute: "#/try-on?test",
   };
   return {
     schemaVersion: "vem-ai-virtual-try-on-acceptance/v2",
