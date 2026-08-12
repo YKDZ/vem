@@ -9,6 +9,7 @@ import {
   buildFastRouteStressSaleFailureReport,
   buildFastRouteStressScenarioSteps,
   combineCleanupError,
+  controlPlaneRequest,
   dispatchRepeatedPaymentTouch,
   latestVisionPresence,
   parseFastRouteStressSaleArgs,
@@ -69,9 +70,16 @@ async function connectedInstalledOwnerClient() {
 
 function ordinarySaleDependencies(evidence, events, options = {}) {
   let gateState = "open";
+  let pendingPayment = null;
   const activateVisibleSelector = async (_client, selector) => {
     events.push(`touch:${selector}`);
     if (selector === '[data-test="checkout-submit"]') gateState = "pending";
+    if (selector === '[data-test="checkout-submit"]')
+      pendingPayment = {
+        state: "pending",
+        paymentNo: "PAY-1",
+        observedAt: evidence.createOrderGate.pendingObservedAt,
+      };
     return { input: { method: "Input.dispatchTouchEvent" } };
   };
   return {
@@ -88,8 +96,10 @@ function ordinarySaleDependencies(evidence, events, options = {}) {
             : "baseline";
       return evidence.daemon[phase];
     },
-    readCurrentTransaction: async () => {
+    readCurrentTransaction: async (_handoff, requestOptions) => {
       events.push("transaction:read");
+      if (requestOptions)
+        assert.equal(requestOptions.signal instanceof AbortSignal, true);
       return {
         paymentNo: "PAY-1",
         orderNo: "ORD-1",
@@ -116,20 +126,23 @@ function ordinarySaleDependencies(evidence, events, options = {}) {
       events.push("gate:pending");
       if (options.failPendingOnce && !options.failed) {
         options.failed = true;
-        throw new Error("injected payment gate failure");
+        throw new Error("injected status timeout after provider pending");
       }
       return {
         paymentNo: "PAY-1",
         observedAt: evidence.createOrderGate.pendingObservedAt,
       };
     },
-    releaseCreateOrderGate: async () => {
+    releaseCreateOrderGate: async (_guest, _paymentNo, requestOptions) => {
       events.push("gate:release");
+      if (requestOptions)
+        assert.equal(requestOptions.signal instanceof AbortSignal, true);
       if (options.failReleaseOnce && !options.failed) {
         options.failed = true;
         throw new Error("injected payment gate release failure");
       }
       gateState = "released";
+      pendingPayment = null;
       return { releasedAt: evidence.createOrderGate.releasedAt };
     },
     readRenderedPaymentSurface: async () => evidence.renderedSale,
@@ -170,19 +183,27 @@ function ordinarySaleDependencies(evidence, events, options = {}) {
         ),
       };
     },
-    cancelTransaction: async () => {
+    cancelTransaction: async (_handoff, _transaction, requestOptions) => {
       events.push("transaction:cancel");
+      assert.equal(requestOptions?.signal instanceof AbortSignal, true);
       options.settled = true;
       gateState = "settled";
     },
-    openCreateOrderGate: async () => {
+    openCreateOrderGate: async (_guest, requestOptions) => {
       events.push("gate:open");
+      if (requestOptions)
+        assert.equal(requestOptions.signal instanceof AbortSignal, true);
+      if (pendingPayment || (options.failed && !options.settled))
+        throw new Error("provider refuses open while payment remains active");
       gateState = "open";
       return { state: "open" };
     },
-    readCreateOrderGate: async () => ({
-      ...(events.push("gate:status"), { state: gateState, pending: null }),
-    }),
+    readCreateOrderGate: async (_guest, requestOptions) => {
+      events.push("gate:status");
+      if (requestOptions)
+        assert.equal(requestOptions.signal instanceof AbortSignal, true);
+      return { state: gateState, pending: pendingPayment };
+    },
   };
 }
 
@@ -1212,6 +1233,210 @@ describe("fast route stress sale tracer", () => {
       await client.close();
     }
   });
+
+  it("discovers provider pending state during cleanup when the main pending wait times out", async () => {
+    const evidence = validEvidence();
+    evidence.scenario = "sale-only";
+    evidence.visionDelivery = {
+      scenario: "sale-only",
+      skippedReason: "installed_vision_owner_retained",
+      arrival: null,
+      traceBoundary: null,
+      requestedAt: null,
+      completedAt: null,
+    };
+    evidence.repeatedPaymentTouch = {
+      scenario: "sale-only",
+      traceEntryId: null,
+      preDispatchTraceBoundary: null,
+      pendingConfirmedAt: evidence.createOrderGate.pendingObservedAt,
+      releaseRequestedAt: evidence.createOrderGate.releasedAt,
+    };
+    evidence.machineRuntimeTrace.entries =
+      evidence.machineRuntimeTrace.entries.filter(
+        (entry) =>
+          entry.intentType !== "presence.departed" &&
+          entry.intentType !== "transaction.projection" &&
+          entry.id !== 3,
+      );
+    const { client } = await connectedInstalledOwnerClient();
+    const common = {
+      client,
+      guestInput: {
+        runId: "ordinary-sale-status-timeout",
+        machineCode: "VEM-TESTBED-LOCAL",
+      },
+      handoff: {},
+      serialSession: {
+        sessionId: "serial-session-1",
+        binding: { serialSessionId: "serial-session-1" },
+      },
+    };
+    const oldNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "test";
+    try {
+      const failureEvents = [];
+      await assert.rejects(
+        runInstalledOwnerOrdinarySaleCompletion({
+          ...common,
+          testDependencies: ordinarySaleDependencies(evidence, failureEvents, {
+            failPendingOnce: true,
+          }),
+        }),
+        /injected status timeout after provider pending/,
+      );
+      assert.deepEqual(failureEvents.slice(-7), [
+        "gate:status",
+        "gate:release",
+        "transaction:read",
+        "transaction:cancel",
+        "transaction:read",
+        "gate:open",
+        "gate:status",
+      ]);
+
+      const retry = await runInstalledOwnerOrdinarySaleCompletion({
+        ...common,
+        testDependencies: ordinarySaleDependencies(evidence, []),
+      });
+      assert.equal(retry.ok, true);
+    } finally {
+      if (oldNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = oldNodeEnv;
+      await client.close();
+    }
+  });
+
+  it("aborts a delayed control-plane request instead of allowing a late mutation", async () => {
+    const { server, port } = await listenOnAvailablePort();
+    let requestAborted = false;
+    let lateMutation = false;
+    server.removeAllListeners("connection");
+    server.on("connection", (socket) => {
+      socket.once("data", () => {
+        socket.once("close", () => {
+          requestAborted = true;
+        });
+        setTimeout(() => {
+          if (!socket.destroyed) socket.end();
+          else lateMutation = false;
+        }, 100).unref();
+      });
+    });
+    try {
+      const signal = AbortSignal.timeout(20);
+      await assert.rejects(
+        controlPlaneRequest(
+          {
+            hostControlPlane: {
+              endpoint: `http://127.0.0.1:${port}`,
+              token: "test-token",
+            },
+          },
+          "/v1/mock-payment-create-gate/release",
+          { paymentNo: "PAY-1" },
+          { timeoutMs: 20, signal },
+        ),
+        /abort|timeout/i,
+      );
+      assert.equal(signal.aborted, true);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      assert.equal(requestAborted, true);
+      assert.equal(lateMutation, false);
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  for (const delayedOperation of [
+    "status",
+    "release",
+    "transaction-read",
+    "open",
+  ]) {
+    it(`aborts delayed ${delayedOperation} cleanup under one total deadline without late gate mutation`, async () => {
+      const evidence = validEvidence();
+      const { client } = await connectedInstalledOwnerClient();
+      const events = [];
+      const base = ordinarySaleDependencies(evidence, events, {
+        failPendingOnce: true,
+      });
+      const signals = [];
+      let lateMutation = 0;
+      const delayed = (signal) =>
+        new Promise((resolve, reject) => {
+          signals.push(signal);
+          const timer = setTimeout(() => {
+            lateMutation += 1;
+            resolve({ state: "open", pending: null });
+          }, 100);
+          signal.addEventListener(
+            "abort",
+            () => {
+              clearTimeout(timer);
+              reject(signal.reason);
+            },
+            { once: true },
+          );
+        });
+      let statusReads = 0;
+      const dependencies = {
+        ...base,
+        readCreateOrderGate: async (...args) => {
+          statusReads += 1;
+          const signal = args[1]?.signal;
+          if (delayedOperation === "status") return delayed(signal);
+          return base.readCreateOrderGate(...args);
+        },
+        releaseCreateOrderGate: async (...args) =>
+          delayedOperation === "release"
+            ? delayed(args[2]?.signal)
+            : base.releaseCreateOrderGate(...args),
+        readCurrentTransaction: async (...args) =>
+          delayedOperation === "transaction-read"
+            ? delayed(args[1]?.signal)
+            : base.readCurrentTransaction(...args),
+        openCreateOrderGate: async (...args) =>
+          delayedOperation === "open" && statusReads > 0
+            ? delayed(args[1]?.signal)
+            : base.openCreateOrderGate(...args),
+      };
+      const oldNodeEnv = process.env.NODE_ENV;
+      process.env.NODE_ENV = "test";
+      try {
+        const started = performance.now();
+        await assert.rejects(
+          runInstalledOwnerOrdinarySaleCompletion({
+            client,
+            guestInput: {
+              runId: `ordinary-sale-delayed-${delayedOperation}`,
+              machineCode: "VEM-TESTBED-LOCAL",
+            },
+            handoff: {},
+            serialSession: {
+              sessionId: "serial-session-1",
+              binding: { serialSessionId: "serial-session-1" },
+            },
+            testCleanupTimeoutMs: 25,
+            testDependencies: dependencies,
+          }),
+          /injected status timeout|cleanup|abort|timeout/i,
+        );
+        assert.equal(performance.now() - started < 200, true);
+        assert.equal(signals.length >= 1, true);
+        assert.equal(
+          signals.every((signal) => signal.aborted),
+          true,
+        );
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        assert.equal(lateMutation, 0);
+      } finally {
+        if (oldNodeEnv === undefined) delete process.env.NODE_ENV;
+        else process.env.NODE_ENV = oldNodeEnv;
+        await client.close();
+      }
+    });
+  }
 
   it("keeps the ordinary installed-owner helper free of Vision and owner cleanup operations", () => {
     const source = readFileSync(

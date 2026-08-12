@@ -2003,7 +2003,12 @@ export function buildFastRouteStressSaleFailureReport(input) {
   };
 }
 
-async function controlPlaneRequest(guestInput, path, body = {}, options = {}) {
+export async function controlPlaneRequest(
+  guestInput,
+  path,
+  body = {},
+  options = {},
+) {
   const controlPlane = guestInput.hostControlPlane;
   if (!controlPlane?.endpoint || !controlPlane?.token) {
     throw new Error(
@@ -2019,10 +2024,27 @@ async function controlPlaneRequest(guestInput, path, body = {}, options = {}) {
     },
     body: JSON.stringify(body),
     timeoutMs: options.timeoutMs,
+    signal: options.signal,
   };
   let lastError;
   for (const retryDelayMs of [0, 100, 250]) {
-    if (retryDelayMs > 0) await sleep(retryDelayMs);
+    if (retryDelayMs > 0) {
+      if (request.signal?.aborted) throw request.signal.reason;
+      await new Promise((resolvePromise, reject) => {
+        let timer;
+        const finish = () => {
+          request.signal?.removeEventListener("abort", abort);
+          resolvePromise();
+        };
+        const abort = () => {
+          clearTimeout(timer);
+          request.signal?.removeEventListener("abort", abort);
+          reject(request.signal.reason);
+        };
+        timer = setTimeout(finish, retryDelayMs);
+        request.signal?.addEventListener("abort", abort, { once: true });
+      });
+    }
     try {
       return await fetchJson(`${controlPlane.endpoint}${path}`, request);
     } catch (error) {
@@ -2516,7 +2538,16 @@ const installedOwnerOrdinarySaleDependencies = Object.freeze({
   activateVisibleSelector,
   armCreateOrderGate,
   waitForCreateOrderGatePending,
-  releaseCreateOrderGate,
+  releaseCreateOrderGate: (guestInput, paymentNo, options) =>
+    controlPlaneRequest(
+      guestInput,
+      "/v1/mock-payment-create-gate/release",
+      { paymentNo },
+      options,
+    ).then((released) => ({
+      paymentNo,
+      releasedAt: released.releasedAt,
+    })),
   readRenderedPaymentSurface,
   completeMockPayment,
   waitForCommand,
@@ -2534,28 +2565,108 @@ const installedOwnerOrdinarySaleDependencies = Object.freeze({
       `/v1/serial-sessions/${sessionId}/${operation}`,
       body,
     ),
-  cancelTransaction: (handoff, transaction) =>
-    daemonPost(
-      handoff,
-      "/v1/intents/cancel-order",
-      { orderNo: required(transaction?.orderNo, "active orderNo") },
-      { timeoutMs: CLEANUP_REQUEST_TIMEOUT_MS },
-    ),
-  openCreateOrderGate: (guestInput) =>
+  cancelTransaction: (handoff, transaction, options) =>
+    fetchJson(`${daemonBaseUrl(handoff)}/v1/intents/cancel-order`, {
+      method: "POST",
+      headers: {
+        ...daemonHeaders(handoff),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        orderNo: required(transaction?.orderNo, "active orderNo"),
+      }),
+      ...options,
+    }),
+  openCreateOrderGate: (guestInput, options) =>
     controlPlaneRequest(
       guestInput,
       "/v1/mock-payment-create-gate/open",
       {},
-      { timeoutMs: CLEANUP_REQUEST_TIMEOUT_MS },
+      options,
     ),
-  readCreateOrderGate: (guestInput) =>
+  readCreateOrderGate: (guestInput, options) =>
     controlPlaneRequest(
       guestInput,
       "/v1/mock-payment-create-gate/status",
       {},
-      { timeoutMs: CLEANUP_REQUEST_TIMEOUT_MS },
+      options,
     ),
 });
+
+function boundedCleanupRequest(deadline) {
+  const remaining = deadline - performance.now();
+  if (remaining <= 0)
+    throw new Error("ordinary sale cleanup deadline exceeded");
+  const timeoutMs = Math.max(
+    1,
+    Math.min(CLEANUP_REQUEST_TIMEOUT_MS, Math.ceil(remaining)),
+  );
+  return { timeoutMs, signal: AbortSignal.timeout(timeoutMs) };
+}
+
+async function cleanupOrdinarySalePayment({
+  dependencies,
+  guestInput,
+  handoff,
+  deadline,
+}) {
+  const status = await dependencies.readCreateOrderGate(
+    guestInput,
+    boundedCleanupRequest(deadline),
+  );
+  const paymentNo = status?.pending?.paymentNo;
+  if (typeof paymentNo === "string" && paymentNo !== "") {
+    await dependencies.releaseCreateOrderGate(
+      guestInput,
+      paymentNo,
+      boundedCleanupRequest(deadline),
+    );
+    let transaction = await dependencies.readCurrentTransaction(
+      handoff,
+      boundedCleanupRequest(deadline),
+    );
+    if (transaction?.paymentNo !== paymentNo)
+      throw new Error(
+        `released payment create request did not project transaction ${paymentNo}`,
+      );
+    if (transactionIsActive(transaction)) {
+      await dependencies.cancelTransaction(
+        handoff,
+        transaction,
+        boundedCleanupRequest(deadline),
+      );
+      do {
+        transaction = await dependencies.readCurrentTransaction(
+          handoff,
+          boundedCleanupRequest(deadline),
+        );
+        if (
+          transaction?.paymentNo === paymentNo &&
+          !transactionIsActive(transaction)
+        )
+          break;
+        await sleep(Math.min(100, boundedCleanupRequest(deadline).timeoutMs));
+      } while (true);
+    }
+  }
+  const opened = await dependencies.openCreateOrderGate(
+    guestInput,
+    boundedCleanupRequest(deadline),
+  );
+  const finalStatus = await dependencies.readCreateOrderGate(
+    guestInput,
+    boundedCleanupRequest(deadline),
+  );
+  if (
+    opened?.state !== "open" ||
+    finalStatus?.state !== "open" ||
+    finalStatus?.pending !== null
+  )
+    throw new Error(
+      "payment create gate did not return to open with no pending payment",
+    );
+  return finalStatus;
+}
 
 /**
  * Completes one ordinary installed-owner sale without taking ownership of the
@@ -2574,6 +2685,15 @@ export async function runInstalledOwnerOrdinarySaleCompletion(input) {
   if (input.testDependencies && process.env.NODE_ENV !== "test")
     throw new Error(
       "ordinary installed-owner sale test dependencies require NODE_ENV=test",
+    );
+  if (
+    input.testCleanupTimeoutMs !== undefined &&
+    (process.env.NODE_ENV !== "test" ||
+      !Number.isFinite(input.testCleanupTimeoutMs) ||
+      input.testCleanupTimeoutMs <= 0)
+  )
+    throw new Error(
+      "ordinary sale cleanup timeout override requires NODE_ENV=test and a positive timeout",
     );
   const dependencies = {
     ...installedOwnerOrdinarySaleDependencies,
@@ -2848,57 +2968,23 @@ export async function runInstalledOwnerOrdinarySaleCompletion(input) {
   } catch (error) {
     primaryError = error instanceof Error ? error : new Error(String(error));
     const cleanupErrors = [];
-    if (pendingCreate?.paymentNo) {
-      await collectCleanupStep(
-        [],
-        cleanupErrors,
-        "release pending create gate",
-        () =>
-          dependencies.releaseCreateOrderGate(
-            guestInput,
-            pendingCreate.paymentNo,
-          ),
-      );
-      await collectCleanupStep(
-        [],
-        cleanupErrors,
-        "settle pending create transaction",
-        () =>
-          settlePendingCreateOrder({
-            paymentNo: pendingCreate.paymentNo,
-            readTransaction: () =>
-              dependencies.readCurrentTransaction(handoff, {
-                timeoutMs: CLEANUP_REQUEST_TIMEOUT_MS,
-              }),
-            cancelTransaction: (transaction) =>
-              dependencies.cancelTransaction(handoff, transaction),
-          }),
-        PENDING_TRANSACTION_CLEANUP_TIMEOUT_MS + CLEANUP_REQUEST_TIMEOUT_MS,
-      );
-    }
     if (gateOpened || pendingCreate) {
-      const opened = await collectCleanupStep(
-        [],
-        cleanupErrors,
-        "reopen payment create gate",
-        () => dependencies.openCreateOrderGate(guestInput),
-      );
       await collectCleanupStep(
         [],
         cleanupErrors,
-        "verify payment create gate",
-        async () => {
-          const status = await dependencies.readCreateOrderGate(guestInput);
-          if (
-            opened?.state !== "open" ||
-            status?.state !== "open" ||
-            status?.pending !== null
-          )
-            throw new Error(
-              "payment create gate did not return to open with no pending payment",
-            );
-          return status;
-        },
+        "restore payment create gate and transaction",
+        () =>
+          cleanupOrdinarySalePayment({
+            dependencies,
+            guestInput,
+            handoff,
+            deadline:
+              performance.now() +
+              (input.testCleanupTimeoutMs ??
+                PENDING_TRANSACTION_CLEANUP_TIMEOUT_MS),
+          }),
+        (input.testCleanupTimeoutMs ?? PENDING_TRANSACTION_CLEANUP_TIMEOUT_MS) +
+          1_000,
       );
     }
     throw combineCleanupError(primaryError, cleanupErrors);
