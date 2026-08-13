@@ -39,7 +39,7 @@ const sourceRef = "refs/tags/v1.2.3-rc.1";
 const digest = (character) => `sha256:${character.repeat(64)}`;
 const sha256 = (value) =>
   `sha256:${createHash("sha256").update(value).digest("hex")}`;
-const currentVisionBuilderSha = "c85ac3059c31d41b405282ecfc7641d0c1b88958";
+const currentVisionBuilderSha = "691b5056e8b9bf2667bc527b2170780b05863946";
 
 function canonical(value) {
   const sort = (item) => {

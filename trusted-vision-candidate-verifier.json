@@ -1,6 +1,6 @@
 {
   "entrypoint": "scripts/verify_trusted_candidate_inputs.py",
-  "identity": "sha256:bf3de5bb17aea1c309d0397a32aaf9c14e1bb3d20a51796e9fbebf1171527780",
+  "identity": "sha256:859bbd80bb22b1472ffb61a4f0476ea23d0e8e1b9d8ad11794e30f383eb96eea",
   "python": {
     "byteSize": 6834488,
     "path": "/usr/bin/python3.11",
@@ -8,7 +8,7 @@
     "version": "Python 3.11.2"
   },
   "repository": "hbhjt/vending-vision",
-  "revision": "92e3473435bf6c98fc6d88cb77a14c6cf3268c48",
+  "revision": "3bfaf22704ec62e6e467e50b012c51be2890a68b",
   "schemaVersion": "vem-trusted-vision-candidate-verifier/v1",
   "scripts": [
     {
@@ -19,7 +19,7 @@
     {
       "byteSize": 5084,
       "path": "scripts/verify_trusted_candidate_inputs.py",
-      "sha256": "7395ee351389fca95a76365cd16887c6d18d5d73724bd5b6e4e748789134e230"
+      "sha256": "77c617e4c35ede95900fa20517adeaa3b9e0a1bbe343c4ec99738e1b769f5ada"
     }
   ]
 }
