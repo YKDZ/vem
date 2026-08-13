@@ -45,9 +45,9 @@ const productionCli = join(
   "scripts/precutover-runtime-artifacts.mjs",
 );
 const visionRoot = "/workspaces/vending-vision";
-const trustedVisionVerifierSha = "6f598fe01f1fb9af76ec6985fdc2df8fbbe95710";
+const trustedVisionVerifierSha = "af9f7bb766e8a467e8c9a24396a76b616fd68188";
 const trustedVisionVerifierBuilderSha =
-  "c90a965d117fea49f318b18e0fcd50aa047bc41";
+  "3fe9e00c98d9df59c71ce9be5b980a713ddd3110";
 const nextTrustedVisionVerifierSha =
   "af9f7bb766e8a467e8c9a24396a76b616fd68188";
 const nextTrustedVisionVerifierBuilderSha =

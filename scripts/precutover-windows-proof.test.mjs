@@ -17,7 +17,7 @@ import { parseWindowsProofGhClaimsForTest } from "./precutover-windows-proof.mjs
 
 const roots = [];
 const repoRoot = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
-const workflowSha = "6f598fe01f1fb9af76ec6985fdc2df8fbbe95710";
+const workflowSha = "ab1acb3f2439b2251ec06e2eafec40cf8e863112";
 const sourceCommit = "a".repeat(40);
 const sourceRef = "refs/tags/v1.2.3-rc.1";
 
