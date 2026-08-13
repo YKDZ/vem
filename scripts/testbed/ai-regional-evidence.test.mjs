@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   linkSync,
@@ -21,6 +22,9 @@ import {
 
 const roots = [];
 const ATTEMPT_ID = "0198f44e-21bd-7c62-8f52-b7c86cc2b001";
+const visionRoot = "/workspaces/vending-vision";
+const regionalEvaluatorAuthorityRevision =
+  "3798b51756ffbb6fb6193071a430679f7667718b";
 afterEach(() => {
   for (const root of roots.splice(0))
     rmSync(root, { recursive: true, force: true });
@@ -42,6 +46,17 @@ function canonical(value) {
     );
   return value;
 }
+
+it("pins the regional evidence policy to the committed Vision evaluator descriptor", () => {
+  const descriptor = execFileSync("git", [
+    "-C",
+    visionRoot,
+    "show",
+    `${regionalEvaluatorAuthorityRevision}:regional-evaluator-descriptor.json`,
+  ]);
+  const digest = createHash("sha256").update(descriptor).digest("hex");
+  assert.equal(AI_REGIONAL_EVIDENCE_POLICY.sourceDescriptorSha256, digest);
+});
 
 function sidecarFixture() {
   return {
