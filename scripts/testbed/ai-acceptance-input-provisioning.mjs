@@ -43,6 +43,13 @@ const CALIBRATION_DOCUMENTS = [
   ["evidenceManifest", "evidence-manifest.json"],
 ];
 
+function normalizedAuthorityDigest(value, label) {
+  const raw = string(value, label);
+  const matched = raw.match(/^(?:sha256:)?([a-f0-9]{64})$/);
+  if (!matched) fail(`${label} is invalid`);
+  return matched[1];
+}
+
 function fail(message) {
   throw new Error(`AI acceptance input manifest ${message}`);
 }
@@ -208,6 +215,22 @@ async function collectDirectoryMembers(root, nested, label) {
   }
   await visit(root);
   return members.sort((left, right) => left.name.localeCompare(right.name));
+}
+
+export async function describeAiAcceptanceInputDirectory(
+  path,
+  label,
+  { nested = false } = {},
+) {
+  const hostPathValue = hostPath(path, label);
+  const members = await collectDirectoryMembers(hostPathValue, nested, label);
+  if (members.length === 0) fail(`${label} must not be empty`);
+  return {
+    hostPath: hostPathValue,
+    sha256: directoryDigest(members),
+    byteSize: members.reduce((sum, member) => sum + member.byteSize, 0),
+    members,
+  };
 }
 
 async function directory(
@@ -388,16 +411,10 @@ function validateAuthorityReceipt(raw, candidateInput, windowsProofInput) {
     "signedProofSha256",
     "trustedProofEvidenceSha256",
   ]) {
-    const value = string(
+    normalizedAuthorityDigest(
       receipt.windowsProof[key],
       `acceptance authority Windows proof ${key}`,
     );
-    if (
-      !/^sha256:/.test(value)
-        ? !SHA256.test(value)
-        : !/^sha256:[a-f0-9]{64}$/.test(value)
-    )
-      fail(`acceptance authority Windows proof ${key} is invalid`);
   }
   if (!COMMIT.test(receipt.windowsProof.workflowSha))
     fail("acceptance authority Windows proof workflow is invalid");
@@ -406,11 +423,20 @@ function validateAuthorityReceipt(raw, candidateInput, windowsProofInput) {
   );
   if (
     proofByName["precutover-ai-proof.json"].sha256 !==
-      receipt.windowsProof.signedProofSha256 ||
+      normalizedAuthorityDigest(
+        receipt.windowsProof.signedProofSha256,
+        "acceptance authority signed proof",
+      ) ||
     proofByName["precutover-ai-proof.sigstore.json"].sha256 !==
-      receipt.windowsProof.proofAttestationBundleSha256 ||
+      normalizedAuthorityDigest(
+        receipt.windowsProof.proofAttestationBundleSha256,
+        "acceptance authority proof attestation",
+      ) ||
     proofByName["trusted-precutover-proof-evidence.json"].sha256 !==
-      receipt.windowsProof.trustedProofEvidenceSha256
+      normalizedAuthorityDigest(
+        receipt.windowsProof.trustedProofEvidenceSha256,
+        "acceptance authority proof evidence",
+      )
   )
     fail("acceptance authority Windows proof does not bind exact-three input");
   exactKeys(

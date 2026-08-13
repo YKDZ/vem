@@ -60,6 +60,39 @@ authority receipt 完全相同。宿主还从本地 Vision repository 的候选 
 `visionCore` runtime/fixture 身份完全一致，避免仅传输但未安装另一套 AI runtime/fixture。`measurement` 输入可被预置，
 但当前只记录“尚非验收证据”的失败闭环；`formal` 才读取其精确三项校准文件。
 
+在宿主机上以生产 CLI 生成这些不可变清单。先为一次测量生成 v4 清单；测量完成后，
+将客体的 exact-eight closure 复制并 rehome 到宿主机，再以该同一份 measurement 清单、
+校准产物和 rehomed bundle 生成 formal 清单：
+
+```bash
+node scripts/testbed/ai-acceptance-input-manifest.mjs create-measurement \
+  --acceptance-authority-receipt /absolute/authority.json \
+  --candidate-input-directory /absolute/candidate-input \
+  --windows-proof-input-directory /absolute/windows-proof-input \
+  --installed-vision-runtime-archive /absolute/vision-runtime.zip \
+  --recorded-fixture-archive /absolute/recorded-fixtures.zip \
+  --model-pack-archive /absolute/model-pack.zip \
+  --materialized-model-pack-root /absolute/model-pack \
+  --output /absolute/manifests/measurement.json
+
+node scripts/testbed/calibrate-ai-regional-evidence.mjs \
+  --input /absolute/rehomed-calibration-source/calibration-source-input.json \
+  --out-policy /absolute/calibration/calibrated-regional-policy.json \
+  --out-receipt /absolute/calibration/calibration-receipt.json
+
+node scripts/testbed/ai-acceptance-input-manifest.mjs create-formal \
+  --measurement-manifest /absolute/manifests/measurement.json \
+  --calibrated-regional-policy /absolute/calibration/calibrated-regional-policy.json \
+  --calibration-receipt /absolute/calibration/calibration-receipt.json \
+  --calibration-source-input-directory /absolute/rehomed-calibration-source \
+  --output /absolute/manifests/formal.json
+```
+
+`create-formal` 重新验证 measurement 清单锁定的全部 release identity，只添加三项
+formal calibration descriptor，并再次运行 v4 清单验证。两个命令均使用 canonical JSON
+和排他创建；formal 输出不得位于 candidate、Windows proof、model root 或 calibration
+source 输入目录中，也不能通过符号链接祖先绕过该限制。
+
 `full` 的第一轮还会从已验证的 workflow identity 生成 canonical
 `vem-runtime-testbed-acceptance-release/v1` 清单，绑定 VEM source commit、Service API
 实际健康与 Service API/Admin UI 构建摘要、宿主 owned loopback HTTP 对 Admin UI delivery 入口的逐字节观测、daemon/Machine/WebViewLoader、Vision runtime/fixture、

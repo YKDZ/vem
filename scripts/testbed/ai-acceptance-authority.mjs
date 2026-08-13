@@ -261,9 +261,9 @@ function crossBind(candidate, windows, contract, visionCore) {
     visionCore,
     windowsProof: {
       authorityDescriptorSha256: windows.authority.descriptorSha256,
-      proofAttestationBundleSha256: windows.files.bundle.sha256.slice(7),
-      signedProofSha256: windows.files.proof.sha256.slice(7),
-      trustedProofEvidenceSha256: windows.files.evidence.sha256.slice(7),
+      proofAttestationBundleSha256: windows.files.bundle.sha256,
+      signedProofSha256: windows.files.proof.sha256,
+      trustedProofEvidenceSha256: windows.files.evidence.sha256,
       workflowSha: windows.authority.workflowSha,
     },
   };
