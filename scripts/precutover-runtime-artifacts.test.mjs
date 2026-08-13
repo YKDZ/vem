@@ -45,12 +45,12 @@ const productionCli = join(
   "scripts/precutover-runtime-artifacts.mjs",
 );
 const visionRoot = "/workspaces/vending-vision";
-const trustedVisionVerifierSha = "af9f7bb766e8a467e8c9a24396a76b616fd68188";
+const trustedVisionVerifierSha = "92e3473435bf6c98fc6d88cb77a14c6cf3268c48";
 const trustedVisionVerifierBuilderSha =
-  "3fe9e00c98d9df59c71ce9be5b980a713ddd3110";
-const nextTrustedVisionVerifierSha = "af9f7bb766e8a467e8c9a24396a76b616fd68188";
+  "c85ac3059c31d41b405282ecfc7641d0c1b88958";
+const nextTrustedVisionVerifierSha = "92e3473435bf6c98fc6d88cb77a14c6cf3268c48";
 const nextTrustedVisionVerifierBuilderSha =
-  "3fe9e00c98d9df59c71ce9be5b980a713ddd3110";
+  "c85ac3059c31d41b405282ecfc7641d0c1b88958";
 const vemCommit = "a".repeat(40);
 const visionCommit = "b".repeat(40);
 const sourceRef = "refs/tags/v1.2.3-rc.1";
