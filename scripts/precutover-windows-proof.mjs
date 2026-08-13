@@ -28,10 +28,10 @@ const PROOF_SCHEMA = "vending-vision-precutover-proof/v2";
 const EVIDENCE_SCHEMA = "vending-vision-trusted-precutover-proof-evidence/v1";
 const AUTHORITY_SCHEMA = "vem.trusted-windows-precutover-proof.v1";
 const AUTHORITY_SHA256 =
-  "sha256:2f3f493929d8c4cc992a3be6617acc5509c87aae372bac24a2c335629ef00d30";
+  "sha256:09a4c1510bdcf2c4465baa3c2132521788d1cee65bcf2ebd45f0e8345f5e0aee";
 const REPOSITORY = "hbhjt/vending-vision";
 const WORKFLOW = ".github/workflows/trusted-precutover-companion-proof.yml";
-const WORKFLOW_SHA = "ab1acb3f2439b2251ec06e2eafec40cf8e863112";
+const WORKFLOW_SHA = "f22990ab66a6780168be203b9707a6e865ce1e8a";
 const SUBJECT = "precutover-ai-proof.json";
 const SHA_RE = /^[a-f0-9]{64}$/;
 const COMMIT_RE = /^[a-f0-9]{40}$/;

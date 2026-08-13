@@ -6,7 +6,7 @@ import YAML from "yaml";
 
 import { verifyTrustedGhBinary } from "./trusted-gh-cli.mjs";
 
-const TRUSTED_COMMIT = "91b06351bdf630de8826e88b7b811a8fee491528";
+const TRUSTED_COMMIT = "22e26c871d155b3f6d6664059c01f4baea74f049";
 const TRUSTED_REPOSITORY = "YKDZ/vem";
 const TRUSTED_WORKFLOW = ".github/workflows/trusted-release-set-attester.yml";
 const PINNED_GH_BINARY = "/usr/bin/gh";

@@ -325,7 +325,7 @@ async function buildFixture(root) {
       hostedRunnerRequired: true,
       repository: "YKDZ/vem",
       workflow: ".github/workflows/trusted-release-set-attester.yml",
-      workflowSha: "91b06351bdf630de8826e88b7b811a8fee491528",
+      workflowSha: "22e26c871d155b3f6d6664059c01f4baea74f049",
     },
     inputArtifact: {
       aggregateSha256: digest("5"),

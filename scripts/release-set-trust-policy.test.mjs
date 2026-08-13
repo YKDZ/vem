@@ -12,7 +12,7 @@ import {
 } from "./check-release-set-trust-policy.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
-const trustedCommit = "91b06351bdf630de8826e88b7b811a8fee491528";
+const trustedCommit = "22e26c871d155b3f6d6664059c01f4baea74f049";
 const workflowPath = new URL(
   "../.github/workflows/trusted-release-set-attester.yml",
   import.meta.url,

@@ -26,7 +26,7 @@ export const TRUSTED_RELEASE_SET_REPOSITORY = "YKDZ/vem";
 export const TRUSTED_RELEASE_SET_WORKFLOW =
   ".github/workflows/trusted-release-set-attester.yml";
 export const TRUSTED_RELEASE_SET_WORKFLOW_SHA =
-  "91b06351bdf630de8826e88b7b811a8fee491528";
+  "22e26c871d155b3f6d6664059c01f4baea74f049";
 export const TRUSTED_VISION_REPOSITORY = "hbhjt/vending-vision";
 export const TRUSTED_VISION_BUILDER_WORKFLOW =
   ".github/workflows/trusted-ai-candidate-builder.yml";

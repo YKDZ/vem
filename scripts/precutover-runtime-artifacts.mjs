@@ -48,16 +48,16 @@ const MAX_VEM_ARCHIVE_BYTES = 513 * 1024 * 1024;
 const MAX_VISION_ARCHIVE_BYTES = 8 * 1024 * 1024 * 1024;
 const TRUSTED_RUNTIME_PROOF_AUTHORITY = Object.freeze({
   descriptorIdentity:
-    "sha256:0c0c4142ddb0b159997f63efca0dcbb04bc925a281b7623b16281a002d1dc674",
+    "sha256:bf3de5bb17aea1c309d0397a32aaf9c14e1bb3d20a51796e9fbebf1171527780",
   descriptorSha256:
-    "sha256:8b286d8ac45b1a94a8dfb77879c1cf971b1da2a53c75c0d1648ec5ae9ae8ed3d",
+    "sha256:cf2774b9d297f2bb965b7134f2517a2b166e92a99ea858d5f3882e2001bac993",
   helper: Object.freeze({
     byteSize: 5264,
     gitBlob: "de96fe612de74d5754827fc03f2beff7002151b0",
     sha256:
       "sha256:ff92e47bbeb938ab20ea8409568f93df39823bd43be253b6de611040b1e47e3c",
   }),
-  descriptorGitBlob: "7571cb44ae10ab45e85972bd2200749d190525d3",
+  descriptorGitBlob: "d486b5168c341944f5c79792126c1d2a2b2f514e",
   git: Object.freeze({
     byteSize: 3_713_416,
     path: "/usr/bin/git",
@@ -65,8 +65,8 @@ const TRUSTED_RUNTIME_PROOF_AUTHORITY = Object.freeze({
       "sha256:2540879925a6881e3877ff7e3330746ba3027b04edf16a3a12dccd1644c4f32d",
     version: "git version 2.39.5",
   }),
-  vemRevision: "28f86833079bc445882c68467a2afe33a3192e32",
-  visionRevision: "af9f7bb766e8a467e8c9a24396a76b616fd68188",
+  vemRevision: "22e26c871d155b3f6d6664059c01f4baea74f049",
+  visionRevision: "92e3473435bf6c98fc6d88cb77a14c6cf3268c48",
 });
 const ISOLATED_VISION_RUNNER =
   "import runpy,sys;script=sys.argv[1];sys.path.insert(0,script.rsplit('/',1)[0]);sys.argv=sys.argv[1:];runpy.run_path(script,run_name='__main__')";
