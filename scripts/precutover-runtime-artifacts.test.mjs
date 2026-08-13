@@ -48,8 +48,7 @@ const visionRoot = "/workspaces/vending-vision";
 const trustedVisionVerifierSha = "af9f7bb766e8a467e8c9a24396a76b616fd68188";
 const trustedVisionVerifierBuilderSha =
   "3fe9e00c98d9df59c71ce9be5b980a713ddd3110";
-const nextTrustedVisionVerifierSha =
-  "af9f7bb766e8a467e8c9a24396a76b616fd68188";
+const nextTrustedVisionVerifierSha = "af9f7bb766e8a467e8c9a24396a76b616fd68188";
 const nextTrustedVisionVerifierBuilderSha =
   "3fe9e00c98d9df59c71ce9be5b980a713ddd3110";
 const vemCommit = "a".repeat(40);
