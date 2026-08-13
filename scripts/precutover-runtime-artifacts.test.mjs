@@ -48,6 +48,10 @@ const visionRoot = "/workspaces/vending-vision";
 const trustedVisionVerifierSha = "6f598fe01f1fb9af76ec6985fdc2df8fbbe95710";
 const trustedVisionVerifierBuilderSha =
   "c90a965d117fea49f318b18e0fcd50aa047bc41";
+const nextTrustedVisionVerifierSha =
+  "af9f7bb766e8a467e8c9a24396a76b616fd68188";
+const nextTrustedVisionVerifierBuilderSha =
+  "3fe9e00c98d9df59c71ce9be5b980a713ddd3110";
 const vemCommit = "a".repeat(40);
 const visionCommit = "b".repeat(40);
 const sourceRef = "refs/tags/v1.2.3-rc.1";
@@ -499,6 +503,38 @@ async function runWithTestAuthority(
 }
 
 describe("pre-cutover complete runtime archives", () => {
+  it("binds the production candidate verifier descriptor to immutable Vision blobs", () => {
+    const descriptor = JSON.parse(
+      readFileSync(
+        join(repoRoot, "trusted-vision-candidate-verifier.json"),
+        "utf8",
+      ),
+    );
+    assert.equal(descriptor.revision, nextTrustedVisionVerifierSha);
+    for (const script of descriptor.scripts) {
+      const bytes = execFileSync("git", [
+        "-C",
+        visionRoot,
+        "show",
+        `${nextTrustedVisionVerifierSha}:${script.path}`,
+      ]);
+      assert.equal(script.byteSize, bytes.byteLength);
+      assert.equal(script.sha256, sha256(bytes).slice(7));
+    }
+    const verifier = execFileSync("git", [
+      "-C",
+      visionRoot,
+      "show",
+      `${nextTrustedVisionVerifierSha}:scripts/verify_trusted_candidate_inputs.py`,
+    ]).toString("utf8");
+    assert.match(
+      verifier,
+      new RegExp(
+        `TRUSTED_BUILDER_COMMIT = "${nextTrustedVisionVerifierBuilderSha}"`,
+      ),
+    );
+  });
+
   it("rejects a locally authored release-set authority at the production CLI", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-runtime-unsigned-root-"));
     temporaryRoots.push(root);

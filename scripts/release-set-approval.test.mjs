@@ -39,6 +39,8 @@ const sourceRef = "refs/tags/v1.2.3-rc.1";
 const digest = (character) => `sha256:${character.repeat(64)}`;
 const sha256 = (value) =>
   `sha256:${createHash("sha256").update(value).digest("hex")}`;
+const currentVisionBuilderSha =
+  "3fe9e00c98d9df59c71ce9be5b980a713ddd3110";
 
 function canonical(value) {
   const sort = (item) => {
@@ -54,6 +56,10 @@ function canonical(value) {
   };
   return `${JSON.stringify(sort(value))}\n`;
 }
+
+it("pins release approval to the current full Vision candidate-builder revision", () => {
+  assert.equal(TRUSTED_VISION_BUILDER_SHA, currentVisionBuilderSha);
+});
 
 function pendingReceiptTexts() {
   const facts = readReleaseRepositoryFacts(repoRoot);

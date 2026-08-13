@@ -68,7 +68,7 @@ function fixture() {
     attestationBundleSha256: digest(attestation),
     builderRepository: "hbhjt/vending-vision",
     builderWorkflow: ".github/workflows/trusted-ai-candidate-builder.yml",
-    builderWorkflowSha: "c90a965d117fea49f318b18e0fcd50aa047bc41f",
+    builderWorkflowSha: "3fe9e00c98d9df59c71ce9be5b980a713ddd3110",
     embeddedManifestSha256: digest(manifestRaw),
     schemaVersion: "vending-vision-trusted-builder-evidence/v1",
     sourceCommit,
