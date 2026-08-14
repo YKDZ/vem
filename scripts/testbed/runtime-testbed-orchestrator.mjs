@@ -593,6 +593,12 @@ function sshArguments(guest) {
     `UserKnownHostsFile=${guest.knownHostsFile}`,
     "-o",
     "StrictHostKeyChecking=yes",
+    "-o",
+    "ConnectTimeout=15",
+    "-o",
+    "ServerAliveInterval=5",
+    "-o",
+    "ServerAliveCountMax=3",
   ];
 }
 
@@ -600,12 +606,6 @@ function scpArguments(guest) {
   return [
     "-O",
     ...sshArguments(guest),
-    "-o",
-    "ConnectTimeout=15",
-    "-o",
-    "ServerAliveInterval=5",
-    "-o",
-    "ServerAliveCountMax=3",
   ];
 }
 
