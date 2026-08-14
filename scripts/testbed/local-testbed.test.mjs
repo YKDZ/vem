@@ -2111,6 +2111,10 @@ describe("Windows D cache contract", () => {
     assert.doesNotMatch(guest, /cargo metadata --format-version 1/);
     assert.match(
       guest,
+      /Test-Path -LiteralPath \$cargoRegistrySource -PathType Container/,
+    );
+    assert.match(
+      guest,
       /Get-ChildItem[\s\S]*webview2-com-sys-[^\r\n]+[\s\S]*x64\\WebView2Loader\.dll/,
     );
     assert.match(guest, /C:\\Program Files\\nodejs\\pnpm\.cmd/);

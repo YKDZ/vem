@@ -1229,7 +1229,9 @@ if ($reuseRuntimeArtifacts) {
   & $sccache --show-stats
   if ($LASTEXITCODE -ne 0) { throw "sccache statistics were unavailable" }
   $cargoRegistrySource = Join-Path $env:CARGO_HOME "registry\src"
-  Require-Path $cargoRegistrySource
+  if (-not (Test-Path -LiteralPath $cargoRegistrySource -PathType Container)) {
+    throw "missing Cargo registry source cache: $cargoRegistrySource"
+  }
   $webViewLoaders = @(
     Get-ChildItem -LiteralPath $cargoRegistrySource -Directory -ErrorAction Stop |
       ForEach-Object {
