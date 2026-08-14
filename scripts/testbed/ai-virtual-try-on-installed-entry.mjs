@@ -61,7 +61,6 @@ const UUID_PATTERN =
 export function buildInstalledVisionWorkerSampleScript() {
   return [
     "$ErrorActionPreference='Stop'",
-    "try {",
     `$mainPath=[IO.Path]::GetFullPath('${OWNER_EXECUTABLE}')`,
     `$workerPath=[IO.Path]::GetFullPath('${WORKER_EXECUTABLE}')`,
     "Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public static class VemMemory { [StructLayout(LayoutKind.Sequential)] public struct PMC { public uint cb; public uint PageFaultCount; public UIntPtr PeakWorkingSetSize; public UIntPtr WorkingSetSize; public UIntPtr QuotaPeakPagedPoolUsage; public UIntPtr QuotaPagedPoolUsage; public UIntPtr QuotaPeakNonPagedPoolUsage; public UIntPtr QuotaNonPagedPoolUsage; public UIntPtr PagefileUsage; public UIntPtr PeakPagefileUsage; } [DllImport(\"psapi.dll\",SetLastError=true)] public static extern bool GetProcessMemoryInfo(IntPtr hProcess,out PMC counters,uint size); }'",
@@ -78,10 +77,6 @@ export function buildInstalledVisionWorkerSampleScript() {
     "$ownerCim=$main[0];$owner=Get-Process -Id ([int]$ownerCim.ProcessId) -ErrorAction Stop;$ownerHandle=$owner.Handle;$ownerStart=[string]$owner.StartTime.ToUniversalTime().Ticks;$ownerExe=[IO.Path]::GetFullPath($owner.Path);if($ownerExe -ine $mainPath){throw 'owner process handle identity mismatched'}",
     "$finalListener=@(Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 7892 -State Listen -ErrorAction Stop);$ownerFinal=Get-Process -Id ([int]$owner.Id) -ErrorAction Stop;if($finalListener.Count -ne 1 -or [int]$finalListener[0].OwningProcess -ne [int]$owner.Id -or [IO.Path]::GetFullPath($ownerFinal.Path) -ine $mainPath -or [string]$ownerFinal.StartTime.ToUniversalTime().Ticks -cne $ownerStart){throw 'owner process final identity mismatched'}",
     "[Console]::Out.Write((@{owner=@{executablePath=$mainPath;processId=[int]$owner.Id;startTimeTicks=$ownerStart};workers=$workerFacts}|ConvertTo-Json -Compress -Depth 4))",
-    "} catch {",
-    "if ([string]$_.FullyQualifiedErrorId -like 'NoProcessFoundForGivenId,*') { [Console]::Out.Write('{\"sampleStatus\":\"process_exited\"}'); exit 0 }",
-    "throw",
-    "}",
   ].join(";");
 }
 
@@ -101,24 +96,14 @@ async function readInstalledVisionWorkerSample() {
   return JSON.parse(stdout);
 }
 
-async function sampleInstalledAiWorkerPeakRss(
-  completed,
-  readSample = readInstalledVisionWorkerSample,
-) {
+async function sampleInstalledAiWorkerPeakRss(completed) {
   const deadline = performance.now() + 120_000;
   let ownerIdentity = null;
   let workerIdentity = null;
   let peakRssBytes = 0;
   let sampleCount = 0;
   while (performance.now() < deadline) {
-    const sample = await readSample();
-    if (sample?.sampleStatus === "process_exited") {
-      if (completed() && workerIdentity && peakRssBytes > 0) {
-        return { peakRssBytes, sampleCount, workerIdentity, ownerIdentity };
-      }
-      await sleep(100);
-      continue;
-    }
+    const sample = await readInstalledVisionWorkerSample();
     ownerIdentity ??= sample.owner;
     if (
       sample.owner?.processId !== ownerIdentity.processId ||
@@ -160,17 +145,6 @@ async function sampleInstalledAiWorkerPeakRss(
     await sleep(100);
   }
   throw new Error("installed AI worker RSS sampler timed out");
-}
-
-export async function sampleInstalledAiWorkerPeakRssForTest(
-  completed,
-  readSample,
-) {
-  if (process.env.NODE_ENV !== "test")
-    throw new Error(
-      "installed AI worker RSS sampler test boundary requires NODE_ENV=test",
-    );
-  return sampleInstalledAiWorkerPeakRss(completed, readSample);
 }
 
 async function samplePeakRss(
