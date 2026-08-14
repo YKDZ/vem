@@ -741,7 +741,9 @@ export async function runInstalledAiAttemptPhase(options) {
         returnByValue: true,
       })
     )?.result?.value;
-    const expectedProductRoute = `#/products/${encodeURIComponent(acceptance.selectedCatalogKey)}`;
+    const expectedProductRoute = expectedInstalledProductRoute(
+      acceptance.selectedCatalogKey,
+    );
     if (productRoute !== expectedProductRoute)
       throw new Error(
         "AI try-on product route does not bind the selected catalog item",
@@ -840,6 +842,10 @@ export async function runInstalledAiAttemptPhase(options) {
   } finally {
     await client.close().catch(() => {});
   }
+}
+
+export function expectedInstalledProductRoute(catalogKey) {
+  return `#/products/${catalogKey}`;
 }
 
 export async function runInstalledOrdinarySalePhase(options) {

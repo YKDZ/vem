@@ -18,6 +18,7 @@ import { collectInstalledAiDegradationEvidence } from "./ai-installed-degradatio
 import {
   assembleInstalledAiTryOnAcceptanceForTest,
   buildInstalledVisionWorkerSampleScript,
+  expectedInstalledProductRoute,
   sampleInstalledVisionPeakRssForTest,
   validateInstalledAiAttemptSupport,
   validateCorruptDegradationSupport,
@@ -37,6 +38,15 @@ const installedEntry = join(
   repoRoot,
   "scripts/testbed/ai-virtual-try-on-installed-entry.mjs",
 );
+
+test("matches the selected catalog item using the Vue hash-route representation", () => {
+  assert.equal(
+    expectedInstalledProductRoute(
+      "product:8a768475-d41b-4b5e-ab9c-c52d1b375c13",
+    ),
+    "#/products/product:8a768475-d41b-4b5e-ab9c-c52d1b375c13",
+  );
+});
 
 function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
