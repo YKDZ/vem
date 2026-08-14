@@ -476,7 +476,17 @@ if ($null -ne $script:VisionAiOwner) {
   $visionEnvironment["VEM_AI_MODEL_PACK"] = $script:VisionAiOwner.modelPackRoot
   $visionEnvironment["VEM_AI_ACCEPTANCE_EVIDENCE_ROOT"] = $script:VisionAiOwner.acceptanceEvidenceRoot
 }
-Write-InteractiveLauncher $visionLauncher "vending-vision.exe" $visionExecutable @("--config", (Join-Path $VisionDataDirectory "site.json")) @() $visionEnvironment
+foreach ($name in @("VEM_VM_ACCEPTANCE_AI_HEIGHT", "VEM_VM_ACCEPTANCE_AI_STEPS", "VEM_VM_ACCEPTANCE_AI_WIDTH")) {
+  $value = [Environment]::GetEnvironmentVariable($name, "Process")
+  if (-not [string]::IsNullOrWhiteSpace($value)) {
+    $visionEnvironment[$name] = $value
+  }
+}
+Write-InteractiveLauncher $visionLauncher "vending-vision.exe" $visionExecutable @("--config", (Join-Path $VisionDataDirectory "site.json")) @(
+  "VEM_VM_ACCEPTANCE_AI_HEIGHT",
+  "VEM_VM_ACCEPTANCE_AI_STEPS",
+  "VEM_VM_ACCEPTANCE_AI_WIDTH"
+) $visionEnvironment
 Assert-OwnerDirectoryLeases
 Register-InteractiveOwnerTask "VEMMachineUI" $machineLauncher $RuntimeDirectory
 Register-InteractiveOwnerTask "VEMVisionRuntime" $visionLauncher $VisionAppDirectory
