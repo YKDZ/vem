@@ -3288,7 +3288,7 @@ async function collectInstalledAiTryOnAttemptInternal(
       timeoutMs: remaining(),
       pollMs,
     });
-    await waitForCondition(
+    const acquisition = await waitForCondition(
       "installed AI acquisition surface",
       async () => {
         const lifecycle = await readTryOnLifecycle(client);
@@ -3302,7 +3302,7 @@ async function collectInstalledAiTryOnAttemptInternal(
     );
     const acquisitionScreenshot = captureAttemptScreenshot
       ? await captureAttemptScreenshot({
-          attemptId: acquisition.value.at(-1)?.attemptId,
+          attemptId: acquisition.at(-1)?.attemptId,
           client,
           stage: "acquisition",
         })

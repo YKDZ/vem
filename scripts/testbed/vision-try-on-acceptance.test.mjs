@@ -835,6 +835,32 @@ describe("vision try-on acceptance script", () => {
     );
   });
 
+  it("binds the acquisition screenshot to the attempt returned by the readiness waiter", async () => {
+    await withInstalledAiHarness({}, async ({ client, root, route }) => {
+      const captures = [];
+      const result = await collectInstalledAiTryOnAttempt({
+        client,
+        expectedTryOnRoute: route,
+        regionalEvidenceRoot: root,
+        timeoutMs: 100,
+        pollMs: 2,
+        captureAttemptScreenshot: async ({ attemptId, stage }) => {
+          captures.push({ attemptId, stage });
+          return {
+            byteLength: 1,
+            path: `${stage}.png`,
+            sha256: "a".repeat(64),
+            stage,
+          };
+        },
+      });
+      assert.deepEqual(captures, [
+        { attemptId: result.attemptId, stage: "acquisition" },
+        { attemptId: result.attemptId, stage: "result" },
+      ]);
+    });
+  });
+
   it("bounds a slow getResponseBody by the single capture deadline", async () => {
     const started = performance.now();
     await withInstalledAiHarness(
