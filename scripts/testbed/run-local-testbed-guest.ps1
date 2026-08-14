@@ -1228,11 +1228,19 @@ if ($reuseRuntimeArtifacts) {
   Set-Content -LiteralPath $localRustSourceMarker -Value $localRustSourceDigest -Encoding ascii
   & $sccache --show-stats
   if ($LASTEXITCODE -ne 0) { throw "sccache statistics were unavailable" }
-  $cargoMetadata = (& cargo metadata --format-version 1 --locked --offline | ConvertFrom-Json)
-  if ($LASTEXITCODE -ne 0) { throw "Cargo metadata was unavailable after the Windows build" }
-  $webViewPackages = @($cargoMetadata.packages | Where-Object { $_.name -eq "webview2-com-sys" })
-  if ($webViewPackages.Count -ne 1) { throw "expected exactly one resolved webview2-com-sys package" }
-  $resolvedWebViewLoader = Join-Path (Split-Path -Parent ([string]$webViewPackages[0].manifest_path)) "x64\WebView2Loader.dll"
+  $cargoRegistrySource = Join-Path $env:CARGO_HOME "registry\src"
+  Require-Path $cargoRegistrySource
+  $webViewLoaders = @(
+    Get-ChildItem -LiteralPath $cargoRegistrySource -Directory -ErrorAction Stop |
+      ForEach-Object {
+        Get-ChildItem -LiteralPath $_.FullName -Directory -Filter "webview2-com-sys-*" -ErrorAction Stop
+      } |
+      ForEach-Object {
+        Get-Item -LiteralPath (Join-Path $_.FullName "x64\WebView2Loader.dll") -ErrorAction SilentlyContinue
+      }
+  )
+  if ($webViewLoaders.Count -ne 1) { throw "expected exactly one cached webview2-com-sys x64 WebView2Loader.dll" }
+  $resolvedWebViewLoader = $webViewLoaders[0].FullName
   Require-Path $resolvedWebViewLoader
   Copy-Item -LiteralPath $resolvedWebViewLoader -Destination $webViewLoaderSource -Force
   Require-Path $daemonSource

@@ -2108,9 +2108,10 @@ describe("Windows D cache contract", () => {
       );
     assert.match(guest, /function Clear-DeclaredCaches/);
     assert.doesNotMatch(guest, /sccache --zero-stats|Compile requests/);
+    assert.doesNotMatch(guest, /cargo metadata --format-version 1/);
     assert.match(
       guest,
-      /cargo metadata --format-version 1 --locked --offline[\s\S]*webview2-com-sys[\s\S]*x64\\WebView2Loader\.dll/,
+      /Get-ChildItem[\s\S]*webview2-com-sys-[^\r\n]+[\s\S]*x64\\WebView2Loader\.dll/,
     );
     assert.match(guest, /C:\\Program Files\\nodejs\\pnpm\.cmd/);
     assert.match(
