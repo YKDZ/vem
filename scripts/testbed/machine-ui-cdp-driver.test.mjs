@@ -1108,6 +1108,74 @@ describe("machine-ui-cdp-driver", () => {
     await client.close();
   });
 
+  it("centers a visible but obscured product action before physical touch", async () => {
+    let scrollCalls = 0;
+    const { factory, sockets } = createFakeWebSocketFactory((message) => {
+      if (message.method === "Runtime.evaluate") {
+        const expression = message.params.expression;
+        if (expression.includes("scrollIntoView")) {
+          scrollCalls += 1;
+          return cdpValue(true, message.id);
+        }
+        if (expression.includes("getBoundingClientRect"))
+          return cdpValue(
+            scrollCalls === 0
+              ? {
+                  selector: '[data-test="try-on-ai"]',
+                  exists: true,
+                  actionable: false,
+                  inViewport: true,
+                  pointerEvents: "auto",
+                  hitTarget: false,
+                  bounds: { x: 40, y: 1821, width: 300, height: 72 },
+                  center: { x: 190, y: 1857 },
+                }
+              : {
+                  selector: '[data-test="try-on-ai"]',
+                  exists: true,
+                  actionable: true,
+                  inViewport: true,
+                  pointerEvents: "auto",
+                  hitTarget: true,
+                  bounds: { x: 40, y: 820, width: 300, height: 72 },
+                  center: { x: 190, y: 856 },
+                },
+            message.id,
+          );
+      }
+      return { id: message.id, result: {} };
+    });
+    const client = new CdpClient("ws://127.0.0.1/devtools/page/long-product", {
+      webSocketFactory: factory,
+    });
+    await client.connect();
+    await activateVisibleSelector(client, '[data-test="try-on-ai"]', {
+      timeoutMs: 50,
+      pollMs: 1,
+    });
+    assert.equal(scrollCalls, 1);
+    const scrollCall = sockets[0].sent.find(
+      (message) =>
+        message.method === "Runtime.evaluate" &&
+        message.params.expression.includes("scrollIntoView"),
+    );
+    assert.ok(scrollCall);
+    assert.match(
+      scrollCall.params.expression,
+      /block: "center", inline: "center"/,
+    );
+    assert.deepEqual(
+      sockets[0].sent
+        .slice(-2)
+        .map((message) => [message.method, message.params.type]),
+      [
+        ["Input.dispatchTouchEvent", "touchStart"],
+        ["Input.dispatchTouchEvent", "touchEnd"],
+      ],
+    );
+    await client.close();
+  });
+
   it("requires a named nonempty sale sequence with customer routes and actions", async () => {
     const common = {
       expectedRuntimeAttestation: ATTESTATION,

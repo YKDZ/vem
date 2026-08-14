@@ -1291,7 +1291,17 @@ export async function activateVisibleSelector(client, selector, options = {}) {
   do {
     probe = await probeSelectorBounds(client, selector, options);
     if (probe?.actionable) break;
-    if (probe?.exists === true && probe?.inViewport === false && !scrolled) {
+    if (
+      probe?.exists === true &&
+      !scrolled &&
+      (probe.inViewport === false ||
+        (probe.inViewport === true &&
+          probe.hitTarget === false &&
+          probe.pointerEvents === "auto" &&
+          probe.disabled !== true &&
+          probe.ariaDisabled !== "true" &&
+          Number.isFinite(probe.bounds?.y)))
+    ) {
       await evaluateExpression(
         client,
         `(() => {
