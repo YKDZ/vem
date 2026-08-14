@@ -21,6 +21,7 @@ import {
   expectedInstalledProductRoute,
   expectedInstalledReturnProductRoute,
   expectedInstalledTryOnRoute,
+  sampleInstalledAiWorkerPeakRssForTest,
   sampleInstalledVisionPeakRssForTest,
   validateInstalledAiAttemptSupport,
   validateCorruptDegradationSupport,
@@ -833,6 +834,63 @@ test("samples the same installed Vision process identity until the attempt compl
       { processId: 812, startTime: 100 },
       async () => ({ processId: 812, startTime: 101, workingSetBytes: 64 }),
       async () => false,
+    ),
+    /identity changed/,
+  );
+});
+
+test("returns the last AI worker RSS sample when the worker exits with the completed attempt", async () => {
+  process.env.NODE_ENV = "test";
+  let reads = 0;
+  const result = await sampleInstalledAiWorkerPeakRssForTest(
+    () => reads >= 2,
+    async () => {
+      reads += 1;
+      if (reads === 2) return { sampleStatus: "process_exited" };
+      return {
+        owner: { processId: 41, startTimeTicks: "100" },
+        workers: [
+          {
+            executablePath:
+              "C:\\VEM\\vision\\app\\vending-vision-ai-worker\\vending-vision-ai-worker.exe",
+            parentProcessId: 41,
+            peakWorkingSetBytes: "4096",
+            processId: 42,
+            startTimeTicks: "101",
+          },
+        ],
+      };
+    },
+  );
+  assert.equal(result.peakRssBytes, 4096);
+  assert.equal(result.sampleCount, 1);
+  assert.equal(result.workerIdentity.processId, 42);
+});
+
+test("does not hide an AI worker identity error after a valid RSS sample", async () => {
+  process.env.NODE_ENV = "test";
+  let reads = 0;
+  await assert.rejects(
+    sampleInstalledAiWorkerPeakRssForTest(
+      () => reads >= 2,
+      async () => {
+        reads += 1;
+        if (reads === 2)
+          throw new Error("installed AI worker identity changed during attempt");
+        return {
+          owner: { processId: 41, startTimeTicks: "100" },
+          workers: [
+            {
+              executablePath:
+                "C:\\VEM\\vision\\app\\vending-vision-ai-worker\\vending-vision-ai-worker.exe",
+              parentProcessId: 41,
+              peakWorkingSetBytes: "4096",
+              processId: 42,
+              startTimeTicks: "101",
+            },
+          ],
+        };
+      },
     ),
     /identity changed/,
   );
