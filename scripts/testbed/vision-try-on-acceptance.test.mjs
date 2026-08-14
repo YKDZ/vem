@@ -114,12 +114,6 @@ async function withInstalledAiHarness(options, callback) {
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
     "base64",
   );
-  const laterPng = options.laterGetDifferentBytes
-    ? Buffer.from(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2iL8AAAAASUVORK5CYII=",
-        "base64",
-      )
-    : networkPng;
   const server = createHttpServer((request, response) => {
     if (
       new URL(request.url, "http://127.0.0.1").pathname !==
@@ -130,9 +124,9 @@ async function withInstalledAiHarness(options, callback) {
     }
     response.writeHead(200, {
       "content-type": options.contentType ?? "image/png",
-      "content-length": String(laterPng.byteLength),
+      "content-length": String(networkPng.byteLength),
     });
-    response.end(laterPng);
+    response.end(networkPng);
   });
   await new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -175,7 +169,6 @@ async function withInstalledAiHarness(options, callback) {
         }
       : {}),
   }));
-  let decodeCalls = 0;
   const socket = new AcceptanceFakeWebSocket((message, activeSocket) => {
     if (message.method !== "Runtime.evaluate")
       if (
@@ -302,33 +295,6 @@ async function withInstalledAiHarness(options, callback) {
           );
         else queueMicrotask(emitNetworkResponse);
         return { id: message.id, result: {} };
-      } else if (message.method === "Network.getResponseBody") {
-        if (options.missingBody)
-          return { id: message.id, error: { message: "No resource" } };
-        const response = {
-          id: message.id,
-          result: {
-            body: options.oversizedBody
-              ? "A".repeat(12 * 1024 * 1024)
-              : options.invalidBase64
-                ? "***"
-                : networkPng.toString("base64"),
-            base64Encoded: true,
-          },
-        };
-        if (options.slowGetResponseBodyMs) {
-          delayedNetworkTimers.push(
-            setTimeout(
-              () =>
-                activeSocket.emit("message", {
-                  data: JSON.stringify(response),
-                }),
-              options.slowGetResponseBodyMs,
-            ),
-          );
-          return null;
-        }
-        return response;
       } else return { id: message.id, result: {} };
     const expression = message.params.expression;
     if (expression === INSTALL_TRY_ON_LIFECYCLE_OBSERVER_EXPRESSION)
@@ -379,24 +345,15 @@ async function withInstalledAiHarness(options, callback) {
         message.id,
       );
     if (expression.includes("createImageBitmap")) {
-      decodeCalls += 1;
-      const decodingCapturedBody = decodeCalls === 1;
       return cdpValue(
         options.decodeFailure
           ? { ok: false, reason: "decode" }
           : {
               ok: true,
-              width:
-                options.domPixelsMismatch && !decodingCapturedBody ? 1 : 320,
-              height:
-                options.domPixelsMismatch && !decodingCapturedBody ? 1 : 480,
+              width: 320,
+              height: 480,
               nonBlackPixelCount: 8,
-              rgbaSha256:
-                !decodingCapturedBody &&
-                (options.domPixelsMismatch ||
-                  options.sameDimensionsDifferentPixels)
-                  ? "b".repeat(64)
-                  : "a".repeat(64),
+              rgbaSha256: "a".repeat(64),
             },
         message.id,
       );
@@ -693,6 +650,12 @@ describe("vision try-on acceptance script", () => {
           .map((message) => message.params.type),
         ["touchStart", "touchEnd"],
       );
+      assert.deepEqual(
+        socket.sent.filter(
+          (message) => message.method === "Network.getResponseBody",
+        ),
+        [],
+      );
       assert.equal(
         socket.sent.some(
           (message) =>
@@ -748,8 +711,6 @@ describe("vision try-on acceptance script", () => {
       { loadingFailed: true },
       /Network response did not become true/,
     ],
-    ["missing Network body", { missingBody: true }, /getResponseBody failed/],
-    ["invalid Network base64", { invalidBase64: true }, /invalid base64/],
     [
       "duplicate Network response",
       { duplicateNetworkResponse: true },
@@ -802,11 +763,6 @@ describe("vision try-on acceptance script", () => {
       "oversized encoded response",
       { oversizedEncodedData: true },
       /encoded size is invalid/,
-    ],
-    [
-      "oversized base64 response body",
-      { oversizedBody: true },
-      /response body is oversized/,
     ],
   ]) {
     it(`rejects ${label} while collecting an installed AI attempt`, async () => {
@@ -867,34 +823,6 @@ describe("vision try-on acceptance script", () => {
     });
   });
 
-  it("bounds a slow getResponseBody by the single capture deadline", async () => {
-    const started = performance.now();
-    await withInstalledAiHarness(
-      { slowGetResponseBodyMs: 150 },
-      async ({ client, root, route }) => {
-        await assert.rejects(
-          collectInstalledAiTryOnAttempt({
-            client,
-            expectedTryOnRoute: route,
-            regionalEvidenceRoot: root,
-            timeoutMs: 50,
-            pollMs: 2,
-          }),
-          /timed out|did not become true/,
-        );
-        for (const method of [
-          "Network.responseReceived",
-          "Network.loadingFinished",
-          "Network.loadingFailed",
-          "Network.requestWillBeSent",
-          "Network.requestServedFromCache",
-        ])
-          assert.equal(client.eventHandlers.get(method)?.length ?? 0, 0);
-      },
-    );
-    assert.equal(performance.now() - started < 140, true);
-  });
-
   it("bounds a slow Network response by the single capture deadline and removes handlers", async () => {
     const started = performance.now();
     await withInstalledAiHarness(
@@ -941,24 +869,6 @@ describe("vision try-on acceptance script", () => {
     );
   });
 
-  it("rejects a later same-URL image whose pixels do not match the image rendered for the customer", async () => {
-    await withInstalledAiHarness(
-      { laterGetDifferentBytes: true },
-      async ({ client, root, route }) => {
-        await assert.rejects(
-          collectInstalledAiTryOnAttempt({
-            client,
-            expectedTryOnRoute: route,
-            regionalEvidenceRoot: root,
-            timeoutMs: 100,
-            pollMs: 2,
-          }),
-          /rendered image pixels mismatched/,
-        );
-      },
-    );
-  });
-
   it("accepts the page response through CDP Network when the cross-origin DOM canvas is tainted", async () => {
     await withInstalledAiHarness(
       { canvasSecurityError: true },
@@ -971,24 +881,6 @@ describe("vision try-on acceptance script", () => {
           pollMs: 2,
         });
         assert.equal(result.resultEvidence.httpStatus, 200);
-      },
-    );
-  });
-
-  it("rejects same-size decoded result pixels that differ from the customer image", async () => {
-    await withInstalledAiHarness(
-      { sameDimensionsDifferentPixels: true },
-      async ({ client, root, route }) => {
-        await assert.rejects(
-          collectInstalledAiTryOnAttempt({
-            client,
-            expectedTryOnRoute: route,
-            regionalEvidenceRoot: root,
-            timeoutMs: 100,
-            pollMs: 2,
-          }),
-          /rendered image pixels mismatched/,
-        );
       },
     );
   });

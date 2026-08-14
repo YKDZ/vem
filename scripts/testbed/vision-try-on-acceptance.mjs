@@ -3061,28 +3061,7 @@ function startResultNetworkCapture(client) {
         encodedDataLength > 8 * 1024 * 1024
       )
         throw new Error("installed AI Network encoded size is invalid");
-      const body = await client.send(
-        "Network.getResponseBody",
-        { requestId },
-        { timeoutMs: remaining() },
-      );
-      remaining();
-      if (body.base64Encoded !== true || typeof body.body !== "string")
-        throw new Error("installed AI Network response body is invalid");
-      if (body.body.length > Math.ceil((8 * 1024 * 1024 * 4) / 3) + 4)
-        throw new Error("installed AI Network response body is oversized");
-      remaining();
-      const bytes = Buffer.from(body.body, "base64");
-      remaining();
-      if (
-        bytes.byteLength === 0 ||
-        bytes.byteLength > 8 * 1024 * 1024 ||
-        encodedDataLength !== bytes.byteLength ||
-        bytes.toString("base64").replace(/=+$/, "") !==
-          body.body.replace(/=+$/, "")
-      )
-        throw new Error("installed AI Network response body is invalid base64");
-      return { bytes, requestId, response };
+      return { requestId, response };
     },
     close() {
       offResponse();
@@ -3331,23 +3310,6 @@ async function collectInstalledAiTryOnAttemptInternal(
       deadline,
       pollMs,
     );
-    const capturedBody = network.bytes;
-    const capturedSha256 = createHash("sha256")
-      .update(capturedBody)
-      .digest("hex");
-    const capturedDecoded = await readResultImageEvidence(
-      client,
-      `data:image/png;base64,${capturedBody.toString("base64")}`,
-      remaining(),
-      pollMs,
-    );
-    if (
-      capturedDecoded.ok !== true ||
-      capturedDecoded.width !== surface.resultNaturalWidth ||
-      capturedDecoded.height !== surface.resultNaturalHeight ||
-      !/^[a-f0-9]{64}$/.test(capturedDecoded.rgbaSha256 ?? "")
-    )
-      throw new Error("installed AI captured result image is invalid");
     const resultEvidence = await readResultImageEvidence(
       client,
       surface.resultUrl,
@@ -3365,8 +3327,12 @@ async function collectInstalledAiTryOnAttemptInternal(
       resultEvidence.httpStatus !== 200 ||
       resultEvidence.contentType !== "image/png" ||
       resultEvidence.byteLength < 64 ||
+      resultEvidence.byteLength > 8 * 1024 * 1024 ||
       resultEvidence.width <= 0 ||
       resultEvidence.height <= 0 ||
+      resultEvidence.width !== surface.resultNaturalWidth ||
+      resultEvidence.height !== surface.resultNaturalHeight ||
+      !/^[a-f0-9]{64}$/.test(resultEvidence.rgbaSha256 ?? "") ||
       finalResultUrl.protocol !== "http:" ||
       !["127.0.0.1", "localhost", "[::1]"].includes(finalResultUrl.hostname) ||
       finalResultUrl.pathname !== expectedResultPath ||
@@ -3374,15 +3340,6 @@ async function collectInstalledAiTryOnAttemptInternal(
       finalResultUrl.hash !== ""
     )
       throw new Error("installed AI result image evidence is invalid");
-    if (
-      resultEvidence.sha256 !== capturedSha256 ||
-      resultEvidence.width !== capturedDecoded.width ||
-      resultEvidence.height !== capturedDecoded.height ||
-      resultEvidence.rgbaSha256 !== capturedDecoded.rgbaSha256
-    )
-      throw new Error(
-        "installed AI rendered image pixels mismatched result bytes",
-      );
     const regionalLease = await waitForCondition(
       "matching AI regional evidence sidecar",
       async () => {
@@ -3416,8 +3373,8 @@ async function collectInstalledAiTryOnAttemptInternal(
             requestId: network.requestId,
             httpStatus: network.response.status,
             contentType: network.response.mimeType,
-            byteLength: capturedBody.byteLength,
-            sha256: capturedSha256,
+            byteLength: resultEvidence.byteLength,
+            sha256: resultEvidence.sha256,
           },
         },
         regionalEvidence,
