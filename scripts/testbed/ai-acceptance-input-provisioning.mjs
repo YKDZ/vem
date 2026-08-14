@@ -114,6 +114,16 @@ function manifestIdentity(raw) {
   return createHash("sha256").update(raw).digest("hex");
 }
 
+async function describeFileContent(path) {
+  const hash = createHash("sha256");
+  let byteSize = 0;
+  for await (const chunk of createReadStream(path)) {
+    hash.update(chunk);
+    byteSize += chunk.length;
+  }
+  return { byteSize, sha256: hash.digest("hex") };
+}
+
 async function regularFile(path, descriptor, label) {
   let entry;
   try {
@@ -124,9 +134,7 @@ async function regularFile(path, descriptor, label) {
   if (!entry.isFile() || entry.isSymbolicLink())
     fail(`${label} must be a regular file`);
   if (entry.size !== descriptor.byteSize) fail(`${label} byte size mismatch`);
-  const hash = createHash("sha256");
-  for await (const chunk of createReadStream(path)) hash.update(chunk);
-  const actual = hash.digest("hex");
+  const actual = (await describeFileContent(path)).sha256;
   if (actual !== descriptor.sha256) fail(`${label} SHA-256 mismatch`);
 }
 
@@ -203,11 +211,11 @@ async function collectDirectoryMembers(root, nested, label) {
         if (!nested) fail(`${label} must contain regular files only`);
         await visit(path);
       } else if (entry.isFile()) {
-        const content = await readFile(path);
+        const content = await describeFileContent(path);
         members.push({
           name,
-          sha256: createHash("sha256").update(content).digest("hex"),
-          byteSize: content.length,
+          sha256: content.sha256,
+          byteSize: content.byteSize,
         });
       } else {
         fail(`${label} must contain regular files only`);
