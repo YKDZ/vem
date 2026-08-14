@@ -141,8 +141,9 @@ function Assert-VisionAiModelPack([string]$ModelRoot, [string]$VisionRoot) {
   Assert-OwnerPath $manifestPath "AI model manifest"
   $descriptorBytes = [IO.File]::ReadAllBytes($descriptorPath)
   $manifestBytes = [IO.File]::ReadAllBytes($manifestPath)
-  $manifestMatchesDescriptor = $descriptorBytes.Length -eq $manifestBytes.Length
-  for ($index = 0; $manifestMatchesDescriptor -and $index -lt $descriptorBytes.Length; $index += 1) {
+  $manifestMatchesDescriptor = $descriptorBytes.Length -eq $manifestBytes.Length -or
+    ($descriptorBytes.Length -eq $manifestBytes.Length + 1 -and $descriptorBytes[$descriptorBytes.Length - 1] -eq 10)
+  for ($index = 0; $manifestMatchesDescriptor -and $index -lt $manifestBytes.Length; $index += 1) {
     if ($descriptorBytes[$index] -ne $manifestBytes[$index]) { $manifestMatchesDescriptor = $false }
   }
   if (-not $manifestMatchesDescriptor) {

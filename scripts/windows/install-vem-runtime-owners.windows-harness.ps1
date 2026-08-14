@@ -117,7 +117,7 @@ try {
     upstreams = @([ordered]@{ id = "fixture"; repository = "fixture/repository"; revision = "a" * 40 })
   }
   $descriptorRaw = $descriptor | ConvertTo-Json -Compress -Depth 8
-  [IO.File]::WriteAllText((Join-Path $visionApp "_internal\official-ai-model-pack-descriptor.json"), $descriptorRaw, [Text.UTF8Encoding]::new($false))
+  [IO.File]::WriteAllText((Join-Path $visionApp "_internal\official-ai-model-pack-descriptor.json"), ($descriptorRaw + "`n"), [Text.UTF8Encoding]::new($false))
   [IO.File]::WriteAllText((Join-Path $modelRoot "ai-model-manifest.json"), $descriptorRaw, [Text.UTF8Encoding]::new($false))
 
   $aiInputFailures = [System.Collections.Generic.List[string]]::new()
