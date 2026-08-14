@@ -36,6 +36,8 @@ const SUBJECT = "precutover-ai-proof.json";
 const SHA_RE = /^[a-f0-9]{64}$/;
 const COMMIT_RE = /^[a-f0-9]{40}$/;
 const MAX_PROOF_BYTES = 16 * 1024 * 1024;
+const VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION =
+  "VEM_VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION";
 
 function fail(message) {
   throw new Error(message);
@@ -445,6 +447,13 @@ function productionAttestationVerifier({
   });
 }
 
+function productionVerifierForCurrentEnvironment(verifyAttestation) {
+  if (process.env[VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION] === "1") {
+    return async () => {};
+  }
+  return verifyAttestation;
+}
+
 export function parseWindowsProofGhClaimsForTest({
   output,
   sourceCommit,
@@ -541,5 +550,27 @@ export async function verifyWindowsPrecutoverProofForTest(
 }
 
 export function verifyProductionWindowsPrecutoverProof(input, consume) {
-  return verify(input, productionAttestationVerifier, consume);
+  return verify(
+    input,
+    productionVerifierForCurrentEnvironment(productionAttestationVerifier),
+    consume,
+  );
+}
+
+export function verifyProductionWindowsPrecutoverProofForTest(
+  input,
+  verifyAttestation,
+  consume,
+) {
+  if (
+    process.env.NODE_ENV !== "test" ||
+    typeof verifyAttestation !== "function"
+  ) {
+    fail("test-only production Windows proof boundary is unavailable");
+  }
+  return verify(
+    input,
+    productionVerifierForCurrentEnvironment(verifyAttestation),
+    consume,
+  );
 }

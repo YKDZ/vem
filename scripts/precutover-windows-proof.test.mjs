@@ -13,7 +13,10 @@ import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 
 import { finalizePrecutoverAiForTest } from "./precutover-ai.mjs";
-import { parseWindowsProofGhClaimsForTest } from "./precutover-windows-proof.mjs";
+import {
+  parseWindowsProofGhClaimsForTest,
+  verifyProductionWindowsPrecutoverProofForTest,
+} from "./precutover-windows-proof.mjs";
 
 const roots = [];
 const repoRoot = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
@@ -259,7 +262,139 @@ function ghClaims(proofText) {
   ];
 }
 
+function productionInput(value) {
+  return {
+    ghBinaryPath: "/unused/gh",
+    inputDirectory: value.input,
+    repoRoot,
+    sourceRef,
+  };
+}
+
+async function withVmAttestationSkip(value, action) {
+  const prior = process.env.VEM_VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION;
+  if (value === undefined) {
+    delete process.env.VEM_VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION;
+  } else {
+    process.env.VEM_VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION = value;
+  }
+  try {
+    return await action();
+  } finally {
+    if (prior === undefined) {
+      delete process.env.VEM_VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION;
+    } else {
+      process.env.VEM_VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION = prior;
+    }
+  }
+}
+
 describe("pre-cutover Windows proof finalizer", () => {
+  it("accepts a structurally valid exact-three proof in the explicit VM-only attestation bypass without calling attestation", async () => {
+    const value = fixture();
+    let attestationCalls = 0;
+    const priorNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "test";
+    try {
+      await withVmAttestationSkip("1", async () => {
+        await verifyProductionWindowsPrecutoverProofForTest(
+          productionInput(value),
+          async () => {
+            attestationCalls += 1;
+            throw new Error("attestation verifier must be bypassed");
+          },
+        );
+      });
+      assert.equal(attestationCalls, 0);
+    } finally {
+      if (priorNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = priorNodeEnv;
+    }
+  });
+
+  for (const bypassValue of [undefined, "0", "true"]) {
+    it(`keeps production attestation enabled when the VM-only bypass is ${bypassValue ?? "unset"}`, async () => {
+      const value = fixture();
+      let attestationCalls = 0;
+      const priorNodeEnv = process.env.NODE_ENV;
+      process.env.NODE_ENV = "test";
+      try {
+        await withVmAttestationSkip(bypassValue, async () => {
+          await assert.rejects(
+            verifyProductionWindowsPrecutoverProofForTest(
+              productionInput(value),
+              async () => {
+                attestationCalls += 1;
+                throw new Error("attestation verifier was invoked");
+              },
+            ),
+            /attestation verifier was invoked/,
+          );
+        });
+        assert.equal(attestationCalls, 1);
+      } finally {
+        if (priorNodeEnv === undefined) delete process.env.NODE_ENV;
+        else process.env.NODE_ENV = priorNodeEnv;
+      }
+    });
+  }
+
+  for (const mutation of [
+    {
+      name: "an invalid bundle",
+      apply(value) {
+        writeFileSync(
+          join(value.input, "precutover-ai-proof.sigstore.json"),
+          canonical({ invalid: "bundle" }),
+        );
+      },
+    },
+    {
+      name: "a proof binding mutation",
+      apply(value) {
+        value.proof.resources.aiLockSha256 = "0".repeat(64);
+        writeFileSync(
+          join(value.input, "precutover-ai-proof.json"),
+          canonical(value.proof),
+        );
+      },
+    },
+    {
+      name: "an evidence binding mutation",
+      apply(value) {
+        value.evidence.companion.archiveSha256 = "0".repeat(64);
+        writeFileSync(
+          join(value.input, "trusted-precutover-proof-evidence.json"),
+          canonical(value.evidence).trimEnd(),
+        );
+      },
+    },
+  ]) {
+    it(`rejects ${mutation.name} before the explicit VM-only attestation bypass`, async () => {
+      const value = fixture();
+      mutation.apply(value);
+      let attestationCalls = 0;
+      const priorNodeEnv = process.env.NODE_ENV;
+      process.env.NODE_ENV = "test";
+      try {
+        await withVmAttestationSkip("1", async () => {
+          await assert.rejects(
+            verifyProductionWindowsPrecutoverProofForTest(
+              productionInput(value),
+              async () => {
+                attestationCalls += 1;
+              },
+            ),
+          );
+        });
+        assert.equal(attestationCalls, 0);
+      } finally {
+        if (priorNodeEnv === undefined) delete process.env.NODE_ENV;
+        else process.env.NODE_ENV = priorNodeEnv;
+      }
+    });
+  }
+
   it("finalizes on Linux without a model archive, Windows Python, or Vision verifier root", async () => {
     const value = fixture();
     const events = [];
