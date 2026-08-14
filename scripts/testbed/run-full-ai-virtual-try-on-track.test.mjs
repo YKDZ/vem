@@ -686,6 +686,19 @@ test("repeat runs clear only the exact owned AI artifact root before admission",
   assert.equal(JSON.parse(result.stdout.trim()).ok, true);
 });
 
+test("failed AI tracks retain completed phase artifacts without publishing aggregate acceptance", () => {
+  const source = readFileSync(runner, "utf8");
+  assert.match(
+    source,
+    /Complete-TestbedAiAcceptanceArtifacts[\s\S]{0,100}-OutPath \$OutPath[\s\S]{0,100}-TrackSucceeded \$trackSucceeded/,
+  );
+  const failedCleanup = source.slice(
+    source.indexOf("if (-not $trackSucceeded)"),
+    source.indexOf("if ($cleanupFailures.Count -gt 0)"),
+  );
+  assert.doesNotMatch(failedCleanup, /Remove-TestbedAiAcceptanceArtifactRoot/);
+});
+
 test("AI virtual try-on runner fails closed without emitting acceptance evidence", () => {
   const root = mkdtempSync(join(tmpdir(), "vem-ai-track-placeholder-"));
   const output = join(root, "ai-virtual-try-on.json");

@@ -12,6 +12,34 @@ try {
   Set-Content -LiteralPath (Join-Path $normal "worker-failure-degradation.json") -Value "{}`n" -NoNewline
   & $module { param($Owned) Remove-TestbedAiAcceptanceArtifactRoot -Root $Owned -RunId "run-pass-two" -FixtureKey "aiVirtualTryOn" } $normal
   if (Test-Path -LiteralPath $normal) { throw "normal pass-two cleanup retained owned root" }
+  $failed = "$root-failed"
+  $failedOutput = "$root-failed.json"
+  New-Owned $failed
+  Set-Content -LiteralPath (Join-Path $failed "short-attempt.json") -Value '{"completed":true}'
+  Set-Content -LiteralPath $failedOutput -Value '{"accepted":true}'
+  & $module {
+    param($Owned, $Output)
+    Complete-TestbedAiAcceptanceArtifacts -OutPath $Output -TrackSucceeded $false
+  } $failed $failedOutput
+  if (-not (Test-Path -LiteralPath (Join-Path $failed "short-attempt.json"))) {
+    throw "failed track discarded completed phase evidence"
+  }
+  if (Test-Path -LiteralPath $failedOutput) {
+    throw "failed track retained aggregate acceptance output"
+  }
+  $succeeded = "$root-succeeded"
+  $succeededOutput = "$root-succeeded.json"
+  New-Owned $succeeded
+  Set-Content -LiteralPath (Join-Path $succeeded "short-attempt.json") -Value '{"completed":true}'
+  Set-Content -LiteralPath $succeededOutput -Value '{"accepted":true}'
+  & $module {
+    param($Output)
+    Complete-TestbedAiAcceptanceArtifacts -OutPath $Output -TrackSucceeded $true
+  } $succeededOutput
+  if (-not (Test-Path -LiteralPath (Join-Path $succeeded "short-attempt.json")) -or
+      -not (Test-Path -LiteralPath $succeededOutput)) {
+    throw "successful track finalization changed accepted artifacts"
+  }
   $stale = "$root-stale"
   New-Owned $stale
   Set-Content -LiteralPath (Join-Path $stale "foreign.txt") -Value foreign
@@ -26,5 +54,5 @@ try {
   if ($linkedFailure -notmatch "exact regular directory" -or -not (Test-Path -LiteralPath "$root-link")) { throw "linked root was not preserved failclosed: $linkedFailure" }
   [ordered]@{ schemaVersion = "vem-ai-artifact-harness/v1"; ok = $true } | ConvertTo-Json -Compress
 } finally {
-  foreach ($path in @("$root-normal", "$root-stale", "$root-link", "$root-target")) { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue }
+  foreach ($path in @("$root-normal", "$root-failed", "$root-failed.json", "$root-succeeded", "$root-succeeded.json", "$root-stale", "$root-link", "$root-target")) { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue }
 }

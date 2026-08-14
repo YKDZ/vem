@@ -277,8 +277,11 @@ try {
     $cleanupFailures.Add($_.Exception)
   }
   if (-not $trackSucceeded) {
-    Remove-Item -LiteralPath $OutPath -Force -ErrorAction SilentlyContinue
-    try { Remove-TestbedAiAcceptanceArtifactRoot -Root $artifactRoot -RunId ([string]$guestInput.runId) -FixtureKey $FixtureKey }
+    try {
+      Complete-TestbedAiAcceptanceArtifacts `
+        -OutPath $OutPath `
+        -TrackSucceeded $trackSucceeded
+    }
     catch { $cleanupFailures.Add($_.Exception) }
   }
   if ($cleanupFailures.Count -gt 0) {

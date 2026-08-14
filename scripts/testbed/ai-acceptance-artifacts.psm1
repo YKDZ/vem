@@ -71,4 +71,13 @@ function Remove-TestbedAiAcceptanceArtifactRoot {
   Remove-Item -LiteralPath $Root -Recurse -Force -ErrorAction Stop
 }
 
-Export-ModuleMember -Function New-TestbedAiAcceptanceArtifactRoot, Remove-TestbedAiAcceptanceArtifactRoot
+function Complete-TestbedAiAcceptanceArtifacts {
+  param(
+    [Parameter(Mandatory = $true)][string]$OutPath,
+    [Parameter(Mandatory = $true)][bool]$TrackSucceeded
+  )
+  if ($TrackSucceeded) { return }
+  Remove-Item -LiteralPath $OutPath -Force -ErrorAction SilentlyContinue
+}
+
+Export-ModuleMember -Function New-TestbedAiAcceptanceArtifactRoot, Remove-TestbedAiAcceptanceArtifactRoot, Complete-TestbedAiAcceptanceArtifacts
