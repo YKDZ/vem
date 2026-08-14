@@ -276,7 +276,6 @@ function Restore-TestbedDefaultVisionOwner([object]$GuestInput) {
     $owner = & $context.testOperations.ReadOwnerIdentity
   } else {
     $processes = Get-TestbedCanonicalVisionProcesses $app $configuration
-    Assert-TestbedNoUnknownCanonicalVisionProcesses $processes
     if (@($processes.managed).Count -ne 1) { throw "default Vision owner identity is ambiguous after recovery" }
     $owner = @($processes.managed)[0]
   }

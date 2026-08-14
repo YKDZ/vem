@@ -446,6 +446,7 @@ test("AI owner cleanup removes every process from the canonical Vision executabl
     source,
     /throw "Vision bootstrap found unknown canonical executable processes/,
   );
+  assert.doesNotMatch(source, /Assert-TestbedNoUnknownCanonicalVisionProcesses/);
   assert.match(
     source,
     /remaining = @\(\$processes\.managed\) \+ @\(\$processes\.unknown\)/,
