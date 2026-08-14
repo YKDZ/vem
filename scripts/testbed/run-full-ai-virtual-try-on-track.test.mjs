@@ -26,6 +26,7 @@ import {
   expectedInstalledTryOnRoute,
   isVmAcceptanceKeepAiActiveEnabled,
   isVmAcceptanceAiRssSkipEnabled,
+  projectInstalledAiRetryLifecycleForTest,
   sampleInstalledVisionPeakRssForTest,
   startVmAiActiveHeartbeatForTest,
   validateInstalledAiAttemptSupport,
@@ -79,6 +80,44 @@ test("enables the VM AI RSS bypass only for the exact opt-in value", () => {
     if (original === undefined)
       delete process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS;
     else process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS = original;
+  }
+});
+
+test("projects only the retried attempt lifecycle into the AI retry contract", () => {
+  const completedAttemptId = "0198f44e-21bd-7c62-8f52-b7c86cc2b001";
+  const retriedAttemptId = "0198f44e-21bd-7c62-8f52-b7c86cc2b002";
+  const original = process.env.NODE_ENV;
+  try {
+    process.env.NODE_ENV = "test";
+    assert.deepEqual(
+      projectInstalledAiRetryLifecycleForTest(
+        [
+          { attemptId: completedAttemptId, phase: "completed" },
+          { attemptId: retriedAttemptId, phase: "starting" },
+          { attemptId: retriedAttemptId, phase: "accepted" },
+          { attemptId: retriedAttemptId, phase: "acquiring" },
+          { attemptId: retriedAttemptId, phase: "acquiring" },
+          { attemptId: retriedAttemptId, phase: "generating" },
+          { attemptId: retriedAttemptId, phase: "completed" },
+        ],
+        retriedAttemptId,
+      ),
+      ["acquiring", "generating", "completed"],
+    );
+    assert.throws(
+      () =>
+        projectInstalledAiRetryLifecycleForTest(
+          [
+            { attemptId: retriedAttemptId, phase: "acquiring" },
+            { attemptId: retriedAttemptId, phase: "completed" },
+          ],
+          retriedAttemptId,
+        ),
+      /retry lifecycle is invalid/,
+    );
+  } finally {
+    if (original === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = original;
   }
 });
 
@@ -320,10 +359,7 @@ test("resolves the generated Vision manifest from a Windows module file URL", ()
     mistakenPath,
     "C:\\VEM\\source\\scripts\\testbed\\ai-virtual-try-on-installed-entry.mjs",
   );
-  assert.match(
-    mistakenPath,
-    /file:\/C:\/VEM\/source\/scripts\/testbed\//,
-  );
+  assert.match(mistakenPath, /file:\/C:\/VEM\/source\/scripts\/testbed\//);
   assert.equal(
     fileURLToPath(moduleUrl, { windows: true }),
     "C:\\VEM\\source\\scripts\\testbed\\ai-virtual-try-on-installed-entry.mjs",
@@ -673,7 +709,10 @@ test("AI owner cleanup removes every process from the canonical Vision executabl
     source,
     /throw "Vision bootstrap found unknown canonical executable processes/,
   );
-  assert.doesNotMatch(source, /Assert-TestbedNoUnknownCanonicalVisionProcesses/);
+  assert.doesNotMatch(
+    source,
+    /Assert-TestbedNoUnknownCanonicalVisionProcesses/,
+  );
   assert.match(
     source,
     /remaining = @\(\$processes\.managed\) \+ @\(\$processes\.unknown\)/,
@@ -687,7 +726,10 @@ test("AI owner cleanup removes every process from the canonical Vision executabl
 test("sums ordered directory identities without Measure-Object property binding", () => {
   const source = readFileSync(runner, "utf8");
   assert.doesNotMatch(source, /Measure-Object -Property byteSize/);
-  assert.match(source, /foreach \(\$entry in \$actual\)[\s\S]*\$bytes \+= \[long\]\$entry\.byteSize/);
+  assert.match(
+    source,
+    /foreach \(\$entry in \$actual\)[\s\S]*\$bytes \+= \[long\]\$entry\.byteSize/,
+  );
 });
 
 test("repeat runs clear only the exact owned AI artifact root before admission", () => {
@@ -983,10 +1025,7 @@ test("does not synthesize a short return owner from attempt array position", asy
         productRoute: expectedInstalledProductRoute(selectedCatalogKey),
         productSelector: `[data-test="catalog-product"][data-catalog-key="${selectedCatalogKey}"]`,
         resultAttemptId: attemptId,
-        resultRoute: expectedInstalledTryOnRoute(
-          selectedCatalogKey,
-          garmentId,
-        ),
+        resultRoute: expectedInstalledTryOnRoute(selectedCatalogKey, garmentId),
         returnedCatalogRoute: "#/catalog",
         returnProductRoute: expectedInstalledReturnProductRoute(
           selectedCatalogKey,

@@ -41,7 +41,6 @@ import {
 } from "./full-workflow-fixtures.mjs";
 import { restoreCatalogHomeFromClient } from "./full-workflow-orchestrator.mjs";
 import { validateAiAttemptSet } from "./full-workflow-validator.mjs";
-import { replaceSerialSessionAndUpdateHandoff } from "./serial-session-handoff.mjs";
 import {
   CdpClient,
   discoverMachineUiTarget,
@@ -51,6 +50,7 @@ import {
   captureScreenshot,
   waitForRoute,
 } from "./machine-ui-cdp-driver.mjs";
+import { replaceSerialSessionAndUpdateHandoff } from "./serial-session-handoff.mjs";
 import { collectInstalledAiTryOnAttempt } from "./vision-try-on-acceptance.mjs";
 
 const CASES = Object.freeze({
@@ -64,6 +64,7 @@ const WORKER_EXECUTABLE =
   "C:\\VEM\\vision\\app\\vending-vision-ai-worker\\vending-vision-ai-worker.exe";
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const RETRY_LIFECYCLE = Object.freeze(["acquiring", "generating", "completed"]);
 
 export function isVmAcceptanceAiRssSkipEnabled() {
   return process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS === "1";
@@ -71,6 +72,30 @@ export function isVmAcceptanceAiRssSkipEnabled() {
 
 export function isVmAcceptanceKeepAiActiveEnabled() {
   return process.env.VEM_VM_ACCEPTANCE_KEEP_AI_ACTIVE === "1";
+}
+
+function projectInstalledAiRetryLifecycle(lifecycle, attemptId) {
+  if (!Array.isArray(lifecycle) || !UUID_PATTERN.test(attemptId ?? ""))
+    throw new Error("AI retry lifecycle is invalid");
+  const projected = [];
+  for (const entry of lifecycle) {
+    if (
+      entry?.attemptId !== attemptId ||
+      !RETRY_LIFECYCLE.includes(entry.phase) ||
+      projected.at(-1) === entry.phase
+    )
+      continue;
+    projected.push(entry.phase);
+  }
+  if (JSON.stringify(projected) !== JSON.stringify(RETRY_LIFECYCLE))
+    throw new Error("AI retry lifecycle is invalid");
+  return projected;
+}
+
+export function projectInstalledAiRetryLifecycleForTest(lifecycle, attemptId) {
+  if (process.env.NODE_ENV !== "test")
+    throw new Error("AI retry lifecycle test boundary requires NODE_ENV=test");
+  return projectInstalledAiRetryLifecycle(lifecycle, attemptId);
 }
 
 function waitForHeartbeatInterval(intervalMs) {
@@ -552,8 +577,7 @@ function attemptReport(
   if (
     !Number.isSafeInteger(durationMs) ||
     durationMs <= 0 ||
-    (!skipAiRss &&
-      (!Number.isSafeInteger(peakRssBytes) || peakRssBytes <= 0))
+    (!skipAiRss && (!Number.isSafeInteger(peakRssBytes) || peakRssBytes <= 0))
   )
     throw new Error(`${caseKey} runtime resource facts are missing`);
   return {
@@ -931,7 +955,10 @@ export async function runInstalledAiAttemptPhase(options) {
         );
       collected.retry = {
         completedAttemptId: collected.attemptId,
-        lifecycle: retried.lifecycle.map((entry) => entry.phase),
+        lifecycle: projectInstalledAiRetryLifecycle(
+          retried.lifecycle,
+          retried.attemptId,
+        ),
         result: {
           decodedHeight: retried.resultEvidence.height,
           decodedWidth: retried.resultEvidence.width,
@@ -1195,9 +1222,7 @@ export async function assembleInstalledAiTryOnAcceptance(
       degradations: { workerFailure: input.workerFailure },
       error: null,
       execution: {
-        ...(skipAiRss
-          ? { aiRssObservation: "skipped_by_vm_acceptance" }
-          : {}),
+        ...(skipAiRss ? { aiRssObservation: "skipped_by_vm_acceptance" } : {}),
         identities: Object.fromEntries(
           Object.entries(input.identities).map(([key, value]) => [
             key,
@@ -1230,9 +1255,7 @@ export async function assembleInstalledAiTryOnAcceptance(
       ? "installed worker failure probe not executed; AI regional evidence policy awaits Issue10 two-garment calibration"
       : "AI regional evidence policy awaits Issue10 two-garment calibration",
     execution: {
-      ...(skipAiRss
-        ? { aiRssObservation: "skipped_by_vm_acceptance" }
-        : {}),
+      ...(skipAiRss ? { aiRssObservation: "skipped_by_vm_acceptance" } : {}),
       identities: Object.fromEntries(
         Object.entries(input.identities).map(([key, value]) => [
           key,
