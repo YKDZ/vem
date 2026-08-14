@@ -210,9 +210,10 @@ function aiVirtualTryOnReport() {
       '[data-test="catalog-product"][data-catalog-key="product:short"]',
     resultAttemptId: "0198f44e-21bd-7c62-8f52-b7c86cc2b003",
     resultRoute:
-      "#/try-on?catalogKey=product:short&variantId=0198f44e-21bd-7c62-8f52-b7c86cc2d001",
+      "#/try-on?catalogKey=product:short&variantId=0198f44e-21bd-7c62-8f52-b7c86cc2d001&mode=ai",
     returnedCatalogRoute: "#/catalog",
-    returnProductRoute: "#/products/product:short",
+    returnProductRoute:
+      "#/products/product:short?variantId=0198f44e-21bd-7c62-8f52-b7c86cc2d001",
     selectedCatalogKey: "product:short",
     selectedVariantId: "0198f44e-21bd-7c62-8f52-b7c86cc2d001",
     startSelector: '[data-test="try-on-ai"]',
@@ -236,9 +237,10 @@ function aiVirtualTryOnReport() {
       '[data-test="catalog-product"][data-catalog-key="product:long"]',
     resultAttemptId: attempts[1].attemptId,
     resultRoute:
-      "#/try-on?catalogKey=product:long&variantId=0198f44e-21bd-7c62-8f52-b7c86cc2d005",
+      "#/try-on?catalogKey=product:long&variantId=0198f44e-21bd-7c62-8f52-b7c86cc2d005&mode=ai",
     returnedCatalogRoute: "#/catalog",
-    returnProductRoute: "#/products/product:long",
+    returnProductRoute:
+      "#/products/product:long?variantId=0198f44e-21bd-7c62-8f52-b7c86cc2d005",
     selectedCatalogKey: "product:long",
     selectedVariantId: "0198f44e-21bd-7c62-8f52-b7c86cc2d005",
     startSelector: '[data-test="try-on-ai"]',

@@ -19,6 +19,8 @@ import {
   assembleInstalledAiTryOnAcceptanceForTest,
   buildInstalledVisionWorkerSampleScript,
   expectedInstalledProductRoute,
+  expectedInstalledReturnProductRoute,
+  expectedInstalledTryOnRoute,
   sampleInstalledVisionPeakRssForTest,
   validateInstalledAiAttemptSupport,
   validateCorruptDegradationSupport,
@@ -40,11 +42,19 @@ const installedEntry = join(
 );
 
 test("matches the selected catalog item using the Vue hash-route representation", () => {
+  const catalogKey = "product:8a768475-d41b-4b5e-ab9c-c52d1b375c13";
+  const variantId = "e24dea5e-8b92-4f71-a018-909fdbc6f5b4";
   assert.equal(
-    expectedInstalledProductRoute(
-      "product:8a768475-d41b-4b5e-ab9c-c52d1b375c13",
-    ),
+    expectedInstalledProductRoute(catalogKey),
     "#/products/product:8a768475-d41b-4b5e-ab9c-c52d1b375c13",
+  );
+  assert.equal(
+    expectedInstalledTryOnRoute(catalogKey, variantId),
+    "#/try-on?catalogKey=product:8a768475-d41b-4b5e-ab9c-c52d1b375c13&variantId=e24dea5e-8b92-4f71-a018-909fdbc6f5b4&mode=ai",
+  );
+  assert.equal(
+    expectedInstalledReturnProductRoute(catalogKey, variantId),
+    "#/products/product:8a768475-d41b-4b5e-ab9c-c52d1b375c13?variantId=e24dea5e-8b92-4f71-a018-909fdbc6f5b4",
   );
 });
 
@@ -753,9 +763,15 @@ test("does not synthesize a short return owner from attempt array position", asy
         productRoute: expectedInstalledProductRoute(selectedCatalogKey),
         productSelector: `[data-test="catalog-product"][data-catalog-key="${selectedCatalogKey}"]`,
         resultAttemptId: attemptId,
-        resultRoute: `#/try-on?catalogKey=${selectedCatalogKey}&variantId=${garmentId}`,
+        resultRoute: expectedInstalledTryOnRoute(
+          selectedCatalogKey,
+          garmentId,
+        ),
         returnedCatalogRoute: "#/catalog",
-        returnProductRoute: expectedInstalledProductRoute(selectedCatalogKey),
+        returnProductRoute: expectedInstalledReturnProductRoute(
+          selectedCatalogKey,
+          garmentId,
+        ),
         selectedCatalogKey,
         selectedVariantId: garmentId,
         startSelector: '[data-test="try-on-ai"]',

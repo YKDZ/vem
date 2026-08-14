@@ -756,7 +756,10 @@ export async function runInstalledAiAttemptPhase(options) {
       { kind: "touch", timeoutMs: 30_000 },
     );
     const startSelector = '[data-test="try-on-ai"]';
-    const expectedTryOnRoute = `#/try-on?catalogKey=${acceptance.selectedCatalogKey}&variantId=${acceptance.selectedVariantId}`;
+    const expectedTryOnRoute = expectedInstalledTryOnRoute(
+      acceptance.selectedCatalogKey,
+      acceptance.selectedVariantId,
+    );
     const startedAt = performance.now();
     let completed = false;
     const attemptPromise = collectInstalledAiTryOnAttempt({
@@ -848,6 +851,14 @@ export async function runInstalledAiAttemptPhase(options) {
 
 export function expectedInstalledProductRoute(catalogKey) {
   return `#/products/${catalogKey}`;
+}
+
+export function expectedInstalledTryOnRoute(catalogKey, variantId) {
+  return `#/try-on?catalogKey=${catalogKey}&variantId=${variantId}&mode=ai`;
+}
+
+export function expectedInstalledReturnProductRoute(catalogKey, variantId) {
+  return `${expectedInstalledProductRoute(catalogKey)}?variantId=${variantId}`;
 }
 
 export async function runInstalledOrdinarySalePhase(options) {
@@ -1347,9 +1358,15 @@ export async function assembleInstalledAiTryOnAcceptanceForTest(
       productRoute: expectedInstalledProductRoute(selectedCatalogKey),
       productSelector: `[data-test="catalog-product"][data-catalog-key="${selectedCatalogKey}"]`,
       resultAttemptId: collected.retry?.retriedAttemptId ?? collected.attemptId,
-      resultRoute: `#/try-on?catalogKey=${selectedCatalogKey}&variantId=${selectedVariantId}`,
+      resultRoute: expectedInstalledTryOnRoute(
+        selectedCatalogKey,
+        selectedVariantId,
+      ),
       returnedCatalogRoute: "#/catalog",
-      returnProductRoute: expectedInstalledProductRoute(selectedCatalogKey),
+      returnProductRoute: expectedInstalledReturnProductRoute(
+        selectedCatalogKey,
+        selectedVariantId,
+      ),
       selectedCatalogKey,
       selectedVariantId,
       startSelector: '[data-test="try-on-ai"]',

@@ -386,11 +386,12 @@ export function validateAiAttemptSet(attempts, runtimeTrace) {
         `[data-test="catalog-product"][data-catalog-key="${attempt.journey.selectedCatalogKey}"]` ||
       attempt.journey.productRoute !==
         `#/products/${attempt.journey.selectedCatalogKey}` ||
-      attempt.journey.returnProductRoute !== attempt.journey.productRoute ||
+      attempt.journey.returnProductRoute !==
+        `${attempt.journey.productRoute}?variantId=${attempt.journey.selectedVariantId}` ||
       attempt.journey.startSelector !== '[data-test="try-on-ai"]' ||
       !uuid.test(attempt.journey.selectedVariantId ?? "") ||
       attempt.journey.resultRoute !==
-        `#/try-on?catalogKey=${attempt.journey.selectedCatalogKey}&variantId=${attempt.journey.selectedVariantId}` ||
+        `#/try-on?catalogKey=${attempt.journey.selectedCatalogKey}&variantId=${attempt.journey.selectedVariantId}&mode=ai` ||
       (index === 0 &&
         attempt.journey.resultAttemptId !== attempt.retry?.retriedAttemptId) ||
       (index === 1 && attempt.journey.resultAttemptId !== attempt.attemptId) ||
