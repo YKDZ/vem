@@ -81,6 +81,23 @@ test("enables the VM AI RSS bypass only for the exact opt-in value", () => {
   }
 });
 
+test("replaces the accumulated serial session before the ordinary AI sale", () => {
+  const source = readFileSync(installedEntry, "utf8");
+  const phase = source.indexOf(
+    "export async function runInstalledOrdinarySalePhase",
+  );
+  const replace = source.indexOf("replaceSerialSessionAndUpdateHandoff", phase);
+  const sale = source.indexOf("runInstalledOwnerOrdinarySaleCompletion", phase);
+  assert.ok(phase >= 0);
+  assert.ok(replace > phase);
+  assert.ok(sale > replace);
+  assert.match(
+    source.slice(phase, sale),
+    /handoffPath:\s*options\.handoffPath/,
+  );
+  assert.match(source.slice(phase, sale), /control:\s*controlPlaneRequest/);
+});
+
 test("removes only the collected regional sidecar before an AI retry", () => {
   const previousNodeEnv = process.env.NODE_ENV;
   process.env.NODE_ENV = "test";
