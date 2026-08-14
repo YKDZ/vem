@@ -286,7 +286,6 @@ class DegradationFakeWebSocket {
             result: {
               value: {
                 buyAvailable: true,
-                catalogAvailable: true,
                 machineUiAvailable: true,
                 tryOnAiAvailable: false,
               },
@@ -393,7 +392,14 @@ test("routes official installed worker failure through the public command and ru
   }
 });
 
-test("proves missing model degradation through public Vision Machine and daemon boundaries", async () => {
+test("proves missing model degradation from product detail without catalog-page evidence", async () => {
+  assert.doesNotMatch(
+    readFileSync(
+      join(repoRoot, "scripts/testbed/ai-installed-degradation.mjs"),
+      "utf8",
+    ),
+    /catalog-page/,
+  );
   const server = createServer((request, response) => {
     response.setHeader("content-type", "application/json");
     if (request.url === "/health") {

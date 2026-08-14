@@ -46,7 +46,6 @@ export async function collectInstalledAiDegradationEvidence({
         client,
         `(() => ({
         buyAvailable: document.querySelector('[data-test="product-buy"]')?.disabled === false,
-        catalogAvailable: document.querySelector('[data-test="catalog-page"]') !== null,
         machineUiAvailable: document.documentElement !== null,
         tryOnAiAvailable: document.querySelector('[data-test="try-on-ai"]')?.disabled === false,
       }))()`,
@@ -68,7 +67,6 @@ export async function collectInstalledAiDegradationEvidence({
     daemonReady?.ready !== true ||
     sale?.canStartSale !== true ||
     machine?.machineUiAvailable !== true ||
-    machine.catalogAvailable !== true ||
     machine.buyAvailable !== true ||
     machine.tryOnAiAvailable !== false
   )
