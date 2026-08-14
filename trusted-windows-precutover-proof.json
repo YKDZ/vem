@@ -5,5 +5,5 @@
   "repository": "hbhjt/vending-vision",
   "schemaVersion": "vem.trusted-windows-precutover-proof.v1",
   "workflow": ".github/workflows/trusted-precutover-companion-proof.yml",
-  "workflowSha": "a3a56fccd0a6110366af9ebb0b460e5143182fdb"
+  "workflowSha": "e2e8ba519a27bb966109373205a50bd5e2ed7b40"
 }
