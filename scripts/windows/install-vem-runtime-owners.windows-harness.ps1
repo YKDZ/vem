@@ -209,14 +209,13 @@ try {
   Assert-Equal $manifest.owners.vision.name "VEMVisionRuntime" "Vision owner"
   Assert-Equal $manifest.owners.vision.ai.modelPackRoot $modelRoot "Vision AI model root"
   Assert-Equal $manifest.owners.vision.ai.acceptanceEvidenceRoot $sinkRoot "Vision AI evidence root"
-  Assert-Equal $manifest.acl.Count 6 "AI owner manifest ACL count"
-  Assert-Equal @($manifest.acl | Where-Object { $_.path -ceq $modelRoot })[0].rights "RX" "AI model manifest ACL"
+  Assert-Equal $manifest.acl.Count 5 "AI owner manifest ACL count"
+  Assert-Equal @($manifest.acl | Where-Object { $_.path -ceq $modelRoot }).Count 0 "AI model input unexpectedly received an owner ACL"
   Assert-Equal @($manifest.acl | Where-Object { $_.path -ceq $sinkRoot })[0].rights "M" "AI sink manifest ACL"
   Assert-Equal $global:OwnerHarnessTasks.Count 2 "registered task count"
   Assert-True (@($global:OwnerHarnessScCalls | Where-Object { $_[0] -eq "config" -and $_ -contains "obj=" -and $_ -contains "LocalSystem" -and $_ -contains "start=" -and $_ -contains "auto" }).Count -eq 1) "daemon service did not configure LocalSystem automatic startup"
   Assert-True (@($global:OwnerHarnessScCalls | Where-Object { $_[0] -eq "failure" -and $_ -contains "actions=" -and $_ -contains 'restart/5000/""/0/""/0' }).Count -eq 1) "daemon crash recovery call was not captured"
-  Assert-Equal $global:OwnerHarnessAclCalls.Count 6 "runtime ACL call count"
-  Assert-True (@($global:OwnerHarnessAclCalls | Where-Object { $_ -contains "/inheritance:r" -and $_ -contains "VEMKiosk:(OI)(CI)(RX)" }).Count -eq 1) "AI model pack did not receive read-only owner ACL"
+  Assert-Equal $global:OwnerHarnessAclCalls.Count 5 "runtime ACL call count"
   $aiAclCalls = @($global:OwnerHarnessAclCalls)
   Assert-True (@($global:OwnerHarnessRegistryWrites | Where-Object { $_.name -eq "DefaultPassword" -and $_.value -eq "<redacted>" }).Count -eq 1) "DefaultPassword was not written"
   foreach ($task in @($global:OwnerHarnessTasks)) {

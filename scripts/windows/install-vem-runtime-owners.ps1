@@ -231,16 +231,6 @@ function Grant-OwnerAccess([string]$Path, [string]$Rights) {
   if ($LASTEXITCODE -ne 0) { throw "failed to grant $KioskUser access: $Path" }
 }
 
-function Protect-VisionAiModelPack([string]$Path) {
-  & icacls.exe $Path `
-    /inheritance:r `
-    /grant:r "*S-1-5-18:(OI)(CI)F" `
-    /grant:r "*S-1-5-32-544:(OI)(CI)F" `
-    /grant:r "${KioskUser}:(OI)(CI)(RX)" `
-    /T /C /Q | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw "failed to protect the verified Vision AI model pack: $Path" }
-}
-
 function Write-InteractiveLauncher(
   [string]$LauncherPath,
   [string]$ProcessName,
@@ -379,7 +369,6 @@ function Write-OwnerManifest(
     [ordered]@{ path = $VisionDataDirectory; user = $KioskUser; rights = "M" }
   ) | ForEach-Object { $acl.Add($_) }
   if ($null -ne $script:VisionAiOwner) {
-    $acl.Add([ordered]@{ path = $script:VisionAiOwner.modelPackRoot; user = $KioskUser; rights = "RX" })
     $acl.Add([ordered]@{ path = $script:VisionAiOwner.acceptanceEvidenceRoot; user = $KioskUser; rights = "M" })
   }
   $manifest = [ordered]@{
@@ -473,7 +462,6 @@ Grant-OwnerAccess $DaemonDataDirectory "(M)"
 Grant-OwnerAccess $VisionAppDirectory "(RX)"
 Grant-OwnerAccess $VisionDataDirectory "(M)"
 if ($null -ne $script:VisionAiOwner) {
-  Protect-VisionAiModelPack $script:VisionAiOwner.modelPackRoot
   Grant-OwnerAccess $script:VisionAiOwner.acceptanceEvidenceRoot "(M)"
 }
 

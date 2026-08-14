@@ -121,18 +121,11 @@ test("owner installer writes one manifest through its public PowerShell entrypoi
   assert.match(source(installerPath), /GetFinalPathNameByHandleW/);
   assert.equal(output.manifest.owners.machineUi.trigger, "AtLogon");
   assert.equal(output.manifest.owners.vision.trigger, "AtLogon");
-  assert.equal(output.manifest.acl.length, 6);
+  assert.equal(output.manifest.acl.length, 5);
   assert.equal(output.registeredTasks.length, 2);
   assert.equal(output.missingPasswordRejected, true);
   assert.equal(output.globalOwnerScanRemoved, true);
-  assert.equal(output.aclCalls.length, 6);
-  assert.ok(
-    output.aclCalls.some(
-      (call) =>
-        call.includes("/inheritance:r") &&
-        call.includes("VEMKiosk:(OI)(CI)(RX)"),
-    ),
-  );
+  assert.equal(output.aclCalls.length, 5);
   assert.deepEqual(
     output.registeredTasks.map((task) => task.trigger.kind),
     ["AtLogon", "AtLogon"],
