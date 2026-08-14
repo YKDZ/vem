@@ -822,6 +822,28 @@ test("samples the same installed Vision process identity until the attempt compl
   );
 });
 
+test("identifies the installed Vision owner by its unique listener when fork children share the executable", () => {
+  const productionScript = buildInstalledVisionWorkerSampleScript();
+  const body = productionScript.slice(
+    productionScript.indexOf("$all="),
+    productionScript.indexOf("$owned="),
+  );
+  const harness = [
+    "$mainPath=[IO.Path]::GetFullPath('C:\\VEM\\vision\\app\\vending-vision.exe')",
+    "function Get-CimInstance { @([pscustomobject]@{ProcessId=41;ParentProcessId=9;ExecutablePath=$mainPath},[pscustomobject]@{ProcessId=42;ParentProcessId=41;ExecutablePath=$mainPath},[pscustomobject]@{ProcessId=43;ParentProcessId=41;ExecutablePath=$mainPath}) }",
+    "function Get-NetTCPConnection { @([pscustomobject]@{OwningProcess=41}) }",
+    body,
+    "[Console]::Out.Write([string]$main[0].ProcessId)",
+  ].join(";");
+  const result = spawnSync(
+    "pwsh",
+    ["-NoProfile", "-NonInteractive", "-Command", harness],
+    { encoding: "utf8", timeout: 2_000 },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "41");
+});
+
 test("archives held regional evidence without overwriting an existing attempt member", () => {
   const source = readFileSync(
     join(repoRoot, "scripts/testbed/ai-virtual-try-on-installed-entry.mjs"),
