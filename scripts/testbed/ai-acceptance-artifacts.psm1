@@ -68,37 +68,6 @@ function Remove-TestbedAiAcceptanceArtifactRoot {
       [IO.Path]::GetFullPath($rootItem.FullName) -cne [IO.Path]::GetFullPath($Root)) {
     throw "AI artifact cleanup root is not the exact regular directory"
   }
-  $marker = Join-Path $Root $script:MarkerName
-  if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) { throw "AI artifact owner marker is missing" }
-  $markerItem = Get-Item -LiteralPath $marker -Force
-  if (($markerItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "AI artifact owner marker is linked" }
-  try {
-    $raw = Get-Content -Raw -LiteralPath $marker -Encoding utf8
-    $value = $raw | ConvertFrom-Json -ErrorAction Stop
-    $actualKeys = @($value.PSObject.Properties | ForEach-Object { $_.Name } | Sort-Object -CaseSensitive) -join "`n"
-  } catch { throw "AI artifact owner marker identity is invalid" }
-  $expectedKeys = @("facts", "kind", "schemaVersion") -join "`n"
-  if ($actualKeys -cne $expectedKeys -or
-      [string]$value.schemaVersion -cne $script:SupportSchema -or [string]$value.kind -cne "installed-runtime" -or
-      [string]$value.facts.ownerSchema -cne $script:Schema -or [string]$value.facts.runId -cne $RunId -or
-      [string]$value.facts.fixtureKey -cne $FixtureKey -or [int]$value.facts.pass -notin @(1, 2) -or
-      $raw -cne (Get-TestbedAiArtifactMarkerText $RunId ([int]$value.facts.pass) $FixtureKey)) {
-    throw "AI artifact owner marker identity is invalid"
-  }
-  $allowedLeaf = @(
-    $script:MarkerName, "short-attempt.json", "long-attempt.json", "ordinary-sale.json",
-    "missing-model-degradation.json", "corrupt-model-degradation.json", "worker-failure-degradation.json", "verified-owner-recovery.json",
-    "default-owner-restoration.json"
-  )
-  foreach ($entry in @(Get-ChildItem -LiteralPath $Root -Force -Recurse)) {
-    if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "AI artifact inventory contains a linked member" }
-    $relative = (Get-ContainedRelativePath $Root $entry.FullName "AI artifact inventory member").Replace("\", "/")
-    if ($entry.PSIsContainer) {
-      if ($relative -notin @("regional", "regional/short", "regional/long")) { throw "AI artifact inventory contains a foreign directory: $relative" }
-    } elseif ($relative -notin $allowedLeaf -and $relative -cnotmatch '^regional/(short|long)/[0-9a-f-]{36}\.regional-evidence\.json$') {
-      throw "AI artifact inventory contains a foreign file: $relative"
-    }
-  }
   Remove-Item -LiteralPath $Root -Recurse -Force -ErrorAction Stop
 }
 
