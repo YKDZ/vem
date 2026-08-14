@@ -1801,6 +1801,20 @@ describe("fast route stress sale tracer", () => {
     );
   });
 
+  it("opens the assigned fixture category before selecting its exact product", () => {
+    const categorySelector =
+      '[data-test="catalog-category"][data-category-key="underwear"]:not(:disabled)';
+    const steps = buildFastRouteStressScenarioSteps(
+      '[data-test="catalog-product"][data-slot-id="fixture-slot"]',
+      categorySelector,
+    );
+    assert.equal(steps[0].selector, categorySelector);
+    assert.equal(
+      steps[1].selector,
+      '[data-test="catalog-product"][data-slot-id="fixture-slot"]',
+    );
+  });
+
   it("dispatches the repeated payment touch at the original coordinates after DOM disablement", async () => {
     const calls = [];
     const client = {

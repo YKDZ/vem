@@ -32,7 +32,10 @@ import {
 } from "./calibrate-ai-regional-evidence.mjs";
 import { runInstalledOwnerOrdinarySaleCompletion } from "./fast-route-stress-sale.mjs";
 import { AI_SUPPORT_EVIDENCE_SCHEMA } from "./full-workflow-evidence-manifest.mjs";
-import { catalogProductSelectorForFixture } from "./full-workflow-fixtures.mjs";
+import {
+  catalogCategorySelectorForFixture,
+  catalogProductSelectorForFixture,
+} from "./full-workflow-fixtures.mjs";
 import { restoreCatalogHomeFromClient } from "./full-workflow-orchestrator.mjs";
 import { validateAiAttemptSet } from "./full-workflow-validator.mjs";
 import {
@@ -1022,6 +1025,10 @@ export async function runInstalledOrdinarySalePhase(options) {
       guestInput,
       handoff,
       serialSession: handoff.commissioningSerialSession,
+      categorySelector: catalogCategorySelectorForFixture(
+        guestInput.fixtureAllocation,
+        "aiVirtualTryOn",
+      ),
       productSelector: catalogProductSelectorForFixture(
         guestInput.fixtureAllocation,
         "aiVirtualTryOn",

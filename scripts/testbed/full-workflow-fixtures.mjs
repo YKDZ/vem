@@ -87,3 +87,14 @@ export function catalogProductSelectorForFixture(allocation, trackKey) {
   }
   return `[data-test="catalog-product"][data-slot-id="${slotId}"]`;
 }
+
+export function catalogCategorySelectorForFixture(allocation, trackKey) {
+  const fixture = allocation?.[trackKey];
+  const categoryKey = required(
+    fixture?.categoryKey,
+    `${trackKey} fixture categoryKey`,
+  );
+  if (!/^[a-z][a-z0-9_-]{0,63}$/.test(categoryKey))
+    throw new Error(`${trackKey} fixture categoryKey is invalid`);
+  return `[data-test="catalog-category"][data-category-key="${categoryKey}"]:not(:disabled)`;
+}

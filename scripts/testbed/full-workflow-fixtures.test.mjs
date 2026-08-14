@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import {
   allocateFullWorkflowFixtures,
+  catalogCategorySelectorForFixture,
   catalogProductSelectorForFixture,
 } from "./full-workflow-fixtures.mjs";
 
@@ -29,6 +30,10 @@ describe("full workflow fixture allocation", () => {
     assert.equal(
       catalogProductSelectorForFixture(allocation, "scannerPayment"),
       '[data-test="catalog-product"][data-slot-id="550e8400-e29b-41d4-a716-446655440002"]',
+    );
+    assert.equal(
+      catalogCategorySelectorForFixture(allocation, "scannerPayment"),
+      '[data-test="catalog-category"][data-category-key="socks"]:not(:disabled)',
     );
     assert.deepEqual(allocation.stockMaintenance, {
       slotDisplayLabel: "B2",

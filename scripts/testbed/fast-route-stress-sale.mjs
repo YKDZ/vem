@@ -108,12 +108,13 @@ export function parseFastRouteStressSaleArgs(args) {
 
 export function buildFastRouteStressScenarioSteps(
   productSelector = '[data-test="catalog-product"]',
+  categorySelector = '[data-test="catalog-category"]:not(:disabled)',
 ) {
   return [
     {
       type: "customer-activation",
       name: "catalog category",
-      selector: '[data-test="catalog-category"]:not(:disabled)',
+      selector: categorySelector,
       routeBefore: "#/catalog",
       routeAfter: "#/catalog",
       inputKind: "touch",
@@ -2743,7 +2744,10 @@ export async function runInstalledOwnerOrdinarySaleCompletion(input) {
   };
   const runId = required(guestInput.runId, "runId");
   const machineCode = required(guestInput.machineCode, "machineCode");
-  const steps = buildFastRouteStressScenarioSteps(input.productSelector);
+  const steps = buildFastRouteStressScenarioSteps(
+    input.productSelector,
+    input.categorySelector,
+  );
   let gateOpened = false;
   let pendingCreate = null;
   let observer = null;
