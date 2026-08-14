@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -77,11 +78,12 @@ async function describeFile(path, label, sourceCommit) {
   const entry = await lstat(hostPath).catch(() => fail(`${label} is missing`));
   if (!entry.isFile() || entry.isSymbolicLink())
     fail(`${label} must be a regular file`);
-  const bytes = await readFile(hostPath);
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(hostPath)) hash.update(chunk);
   return {
     hostPath,
-    sha256: createHash("sha256").update(bytes).digest("hex"),
-    byteSize: bytes.length,
+    sha256: hash.digest("hex"),
+    byteSize: entry.size,
     ...(sourceCommit ? { sourceCommit } : {}),
   };
 }

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import {
   cp,
   lstat,
@@ -123,9 +124,9 @@ async function regularFile(path, descriptor, label) {
   if (!entry.isFile() || entry.isSymbolicLink())
     fail(`${label} must be a regular file`);
   if (entry.size !== descriptor.byteSize) fail(`${label} byte size mismatch`);
-  const actual = createHash("sha256")
-    .update(await readFile(path))
-    .digest("hex");
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  const actual = hash.digest("hex");
   if (actual !== descriptor.sha256) fail(`${label} SHA-256 mismatch`);
 }
 
