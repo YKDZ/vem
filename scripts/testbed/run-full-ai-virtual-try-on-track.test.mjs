@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -18,6 +19,7 @@ import { collectInstalledAiDegradationEvidence } from "./ai-installed-degradatio
 import {
   assembleInstalledAiTryOnAcceptanceForTest,
   buildInstalledVisionWorkerSampleScript,
+  clearCollectedRegionalEvidenceForRetryForTest,
   expectedInstalledProductRoute,
   expectedInstalledReturnProductRoute,
   expectedInstalledTryOnRoute,
@@ -76,6 +78,43 @@ test("enables the VM AI RSS bypass only for the exact opt-in value", () => {
     if (original === undefined)
       delete process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS;
     else process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS = original;
+  }
+});
+
+test("removes only the collected regional sidecar before an AI retry", () => {
+  const previousNodeEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = "test";
+  const root = mkdtempSync(join(tmpdir(), "vem-ai-retry-sidecar-"));
+  const attemptId = "0198f44e-21bd-7c62-8f52-b7c86cc2d001";
+  const target = join(root, `${attemptId}.regional-evidence.json`);
+  const stale = join(root, "stale.regional-evidence.json");
+  const bytes = Buffer.from('{"attempt":"first"}\n');
+  try {
+    writeFileSync(target, bytes);
+    writeFileSync(stale, '{"attempt":"stale"}\n');
+    const stat = lstatSync(target, { bigint: true });
+    clearCollectedRegionalEvidenceForRetryForTest(
+      {
+        attemptId,
+        regionalEvidence: {
+          bytes,
+          path: target,
+          physicalIdentity: {
+            device: String(stat.dev),
+            inode: String(stat.ino),
+            size: String(stat.size),
+          },
+        },
+      },
+      root,
+    );
+    assert.equal(existsSync(target), false);
+    assert.equal(existsSync(stale), true);
+    assert.deepEqual(bytes, Buffer.from('{"attempt":"first"}\n'));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
   }
 });
 

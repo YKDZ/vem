@@ -690,6 +690,43 @@ function archiveSidecar(collected, caseKey, artifactRoot) {
   return { path: relative, sha256: sha256(archived) };
 }
 
+function clearCollectedRegionalEvidenceForRetry(collected, root) {
+  const attemptId = collected?.attemptId;
+  const evidence = collected?.regionalEvidence;
+  if (
+    !UUID_PATTERN.test(attemptId ?? "") ||
+    typeof root !== "string" ||
+    !isAbsolute(root) ||
+    typeof evidence?.path !== "string" ||
+    !Buffer.isBuffer(evidence.bytes)
+  )
+    throw new Error("AI retry regional evidence is invalid");
+  const expectedPath = resolve(root, `${attemptId}.regional-evidence.json`);
+  if (resolve(evidence.path) !== expectedPath)
+    throw new Error(
+      "AI retry regional evidence path is not bound to its attempt",
+    );
+  const stat = lstatSync(expectedPath, { bigint: true });
+  const identity = evidence.physicalIdentity;
+  if (
+    stat.isSymbolicLink() ||
+    !stat.isFile() ||
+    String(stat.dev) !== identity?.device ||
+    String(stat.ino) !== identity?.inode ||
+    String(stat.size) !== identity?.size
+  )
+    throw new Error("AI retry regional evidence identity changed");
+  rmSync(expectedPath);
+}
+
+export function clearCollectedRegionalEvidenceForRetryForTest(collected, root) {
+  if (process.env.NODE_ENV !== "test")
+    throw new Error(
+      "AI retry regional evidence test boundary requires NODE_ENV=test",
+    );
+  clearCollectedRegionalEvidenceForRetry(collected, root);
+}
+
 function installedAiScreenshotCapture(artifactRoot, caseKey) {
   if (typeof artifactRoot !== "string" || !isAbsolute(artifactRoot))
     throw new Error("AI screenshot artifact root must be absolute");
@@ -863,7 +900,17 @@ export async function runInstalledAiAttemptPhase(options) {
         ? Promise.resolve(null)
         : sampleInstalledAiWorkerPeakRss(() => completed),
     ]);
+    let archived = null;
     if (options.caseKey === "short") {
+      archived = archiveSidecar(
+        collected,
+        options.caseKey,
+        options.artifactRoot,
+      );
+      clearCollectedRegionalEvidenceForRetry(
+        collected,
+        options.regionalEvidenceRoot,
+      );
       const retried = await collectInstalledAiTryOnAttemptWithVmHeartbeat({
         activationSelector: '[data-test="try-on-retry"]',
         client,
@@ -911,7 +958,7 @@ export async function runInstalledAiAttemptPhase(options) {
       selectedVariantId: acceptance.selectedVariantId,
       startSelector,
     };
-    const archived = archiveSidecar(
+    archived ??= archiveSidecar(
       collected,
       options.caseKey,
       options.artifactRoot,
