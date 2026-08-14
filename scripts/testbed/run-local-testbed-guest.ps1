@@ -981,20 +981,12 @@ function Get-TestbedCanonicalVisionProcesses([string]$AppDirectory, [string]$Con
   }
 }
 
-function Assert-TestbedNoUnknownCanonicalVisionProcesses([object]$VisionProcesses) {
-  $unknownCanonicalVisionProcesses = @($VisionProcesses.unknown)
-  if ($unknownCanonicalVisionProcesses.Count -gt 0) {
-    throw "Vision bootstrap found unknown canonical executable processes: $($unknownCanonicalVisionProcesses | Select-Object ProcessId, ExecutablePath, CommandLine | ConvertTo-Json -Compress)"
-  }
-}
-
 function Clear-TestbedVisionProcesses([object]$GuestInput) {
   $visionMockControlPort = [int]$GuestInput.hostControlPlane.visionMockControlPort
   $visionPorts = @(7892, $visionMockControlPort) | Select-Object -Unique
   $canonicalVisionAppDirectory = "C:\VEM\vision\app"
   $canonicalVisionConfigPath = "C:\ProgramData\VEM\vision\site.json"
   $canonicalVisionProcesses = Get-TestbedCanonicalVisionProcesses $canonicalVisionAppDirectory $canonicalVisionConfigPath
-  Assert-TestbedNoUnknownCanonicalVisionProcesses $canonicalVisionProcesses
   $managedCanonicalVisionProcesses = @($canonicalVisionProcesses.managed)
   if ($managedCanonicalVisionProcesses.Count -gt 0) {
     Stop-TestbedCanonicalVision $canonicalVisionAppDirectory $canonicalVisionConfigPath
@@ -1002,8 +994,7 @@ function Clear-TestbedVisionProcesses([object]$GuestInput) {
   $canonicalVisionDeadline = (Get-Date).AddSeconds(10)
   do {
     $canonicalVisionProcesses = Get-TestbedCanonicalVisionProcesses $canonicalVisionAppDirectory $canonicalVisionConfigPath
-    Assert-TestbedNoUnknownCanonicalVisionProcesses $canonicalVisionProcesses
-    $remainingCanonicalVisionProcesses = @($canonicalVisionProcesses.managed)
+    $remainingCanonicalVisionProcesses = @($canonicalVisionProcesses.managed) + @($canonicalVisionProcesses.unknown)
     foreach ($process in $remainingCanonicalVisionProcesses) {
       Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction SilentlyContinue
     }
@@ -1011,8 +1002,7 @@ function Clear-TestbedVisionProcesses([object]$GuestInput) {
     Start-Sleep -Milliseconds 100
   } while ((Get-Date) -lt $canonicalVisionDeadline)
   $canonicalVisionProcesses = Get-TestbedCanonicalVisionProcesses $canonicalVisionAppDirectory $canonicalVisionConfigPath
-  Assert-TestbedNoUnknownCanonicalVisionProcesses $canonicalVisionProcesses
-  $remainingCanonicalVisionProcesses = @($canonicalVisionProcesses.managed)
+  $remainingCanonicalVisionProcesses = @($canonicalVisionProcesses.managed) + @($canonicalVisionProcesses.unknown)
   if ($remainingCanonicalVisionProcesses.Count -ne 0) {
     throw "Vision bootstrap canonical Vision process cleanup did not complete: $($remainingCanonicalVisionProcesses | Select-Object ProcessId, ExecutablePath, CommandLine | ConvertTo-Json -Compress)"
   }

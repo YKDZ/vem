@@ -1720,9 +1720,13 @@ describe("Windows D cache contract", () => {
       guestScript,
       /managedCanonicalVisionProcessIds[\s\S]*ParentProcessId[\s\S]*--multiprocessing-fork/,
     );
+    assert.doesNotMatch(
+      guestScript,
+      /throw "Vision bootstrap found unknown canonical executable processes/,
+    );
     assert.match(
       guestScript,
-      /unknownCanonicalVisionProcesses[\s\S]*throw "Vision bootstrap found unknown canonical executable processes/,
+      /remainingCanonicalVisionProcesses = @\(\$canonicalVisionProcesses\.managed\) \+ @\(\$canonicalVisionProcesses\.unknown\)/,
     );
     assert.match(
       guestScript,
