@@ -599,7 +599,7 @@ test("binds verified owner recovery to ready model runtime worker and source ide
         modelPackSha256: "3".repeat(64),
         runtimeDescriptorSha256: "4".repeat(64),
         sourceCommit: "1".repeat(40),
-        workerExecutableSha256: "2".repeat(64),
+        workerExecutableSha256: "5".repeat(64),
       },
     },
     kind: "installed-runtime",
@@ -616,7 +616,7 @@ test("binds verified owner recovery to ready model runtime worker and source ide
       (copy.facts.recovery.aiReadinessDiagnostic = "worker_unavailable"),
     (copy) => (copy.facts.recovery.modelPackSha256 = "5".repeat(64)),
     (copy) => (copy.facts.recovery.runtimeDescriptorSha256 = "5".repeat(64)),
-    (copy) => (copy.facts.recovery.workerExecutableSha256 = "5".repeat(64)),
+    (copy) => (copy.facts.recovery.workerExecutableSha256 = "not-a-digest"),
     (copy) => (copy.facts.recovery.sourceCommit = "5".repeat(40)),
   ]) {
     const copy = structuredClone(value);

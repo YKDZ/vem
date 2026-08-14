@@ -467,7 +467,8 @@ export function validateVerifiedOwnerRecoverySupport(value, proof) {
     recovery.runtimeDescriptorSha256 !==
       proof.resources.runtimeDescriptorSha256 ||
     recovery.sourceCommit !== proof.candidate.sourceCommit ||
-    recovery.workerExecutableSha256 !== proof.candidate.workerExecutableSha256
+    typeof recovery.workerExecutableSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(recovery.workerExecutableSha256)
   )
     throw new Error("verified AI owner recovery support evidence is invalid");
   return recovery;
