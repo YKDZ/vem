@@ -253,6 +253,10 @@ export function createMachineNavigationAuthority(
         recordDecision("rejected", "stale_touchscreen_inactivity", null);
         return;
       }
+      if (routeName(router) === "try-on" && tryOnStore.hasActiveAttempt) {
+        recordDecision("rejected", "try_on_attempt_active", null);
+        return;
+      }
       touchscreenSessionActive = false;
       lastTouchAtMs = null;
       clearInactivityTimer();

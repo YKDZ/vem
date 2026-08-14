@@ -173,6 +173,32 @@ describe("transaction route authority", () => {
     authority.dispose();
   });
 
+  it("keeps an active try-on ahead of touchscreen inactivity", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: "/catalog", name: "catalog", component: {} },
+        { path: "/try-on", name: "try-on", component: {} },
+      ],
+    });
+    const authority = createMachineNavigationAuthority(router, pinia);
+    useTryOnStore(pinia).$patch({ phase: "acquiring" });
+    await router.push("/try-on");
+    await authority.submit({ type: "customer.touch", atMs: 1_000 });
+
+    await authority.submit({ type: "customer.inactive", atMs: 1_000 });
+
+    expect(router.currentRoute.value.name).toBe("try-on");
+    expect(authority.trace.snapshot().slice(-1)[0]).toMatchObject({
+      intentType: "customer.inactive",
+      decision: "rejected",
+      reasonCode: "try_on_attempt_active",
+    });
+    authority.dispose();
+  });
+
   it("keeps the payment route when a field-observed departure arrives", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
