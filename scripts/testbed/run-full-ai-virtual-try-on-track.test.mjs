@@ -21,8 +21,10 @@ import {
   expectedInstalledProductRoute,
   expectedInstalledReturnProductRoute,
   expectedInstalledTryOnRoute,
+  isVmAcceptanceKeepAiActiveEnabled,
   isVmAcceptanceAiRssSkipEnabled,
   sampleInstalledVisionPeakRssForTest,
+  startVmAiActiveHeartbeatForTest,
   validateInstalledAiAttemptSupport,
   validateCorruptDegradationSupport,
   validateMissingDegradationSupport,
@@ -75,6 +77,105 @@ test("enables the VM AI RSS bypass only for the exact opt-in value", () => {
       delete process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS;
     else process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS = original;
   }
+});
+
+test("keeps a pending VM AI attempt active with bounded CDP touches and stops", async () => {
+  process.env.NODE_ENV = "test";
+  const original = process.env.VEM_VM_ACCEPTANCE_KEEP_AI_ACTIVE;
+  const originalRss = process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS;
+  const waits = [];
+  const touches = [];
+  try {
+    delete process.env.VEM_VM_ACCEPTANCE_KEEP_AI_ACTIVE;
+    assert.equal(isVmAcceptanceKeepAiActiveEnabled(), false);
+    process.env.VEM_VM_ACCEPTANCE_KEEP_AI_ACTIVE = "0";
+    assert.equal(isVmAcceptanceKeepAiActiveEnabled(), false);
+    process.env.VEM_VM_ACCEPTANCE_KEEP_AI_ACTIVE = "true";
+    assert.equal(isVmAcceptanceKeepAiActiveEnabled(), false);
+    process.env.VEM_VM_ACCEPTANCE_KEEP_AI_ACTIVE = "1";
+    assert.equal(isVmAcceptanceKeepAiActiveEnabled(), true);
+    process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS = "1";
+    assert.equal(isVmAcceptanceAiRssSkipEnabled(), true);
+    const heartbeat = startVmAiActiveHeartbeatForTest(
+      {
+        async send(method, params) {
+          touches.push({ method, params });
+        },
+      },
+      {
+        intervalMs: 10_000,
+        waitForInterval: () => {
+          let resolve;
+          const promise = new Promise((resolvePromise) => {
+            resolve = resolvePromise;
+          });
+          const wait = {
+            cancel() {
+              resolve();
+            },
+            promise,
+            resolve,
+          };
+          waits.push(wait);
+          return wait;
+        },
+      },
+    );
+    for (let second = 10; second <= 30; second += 10) {
+      while (waits.length === 0) await Promise.resolve();
+      waits.shift().resolve();
+      while (touches.length < (second / 10) * 2) await Promise.resolve();
+    }
+    assert.deepEqual(
+      touches.map(({ method, params }) => [method, params.type]),
+      [
+        ["Input.dispatchTouchEvent", "touchStart"],
+        ["Input.dispatchTouchEvent", "touchEnd"],
+        ["Input.dispatchTouchEvent", "touchStart"],
+        ["Input.dispatchTouchEvent", "touchEnd"],
+        ["Input.dispatchTouchEvent", "touchStart"],
+        ["Input.dispatchTouchEvent", "touchEnd"],
+      ],
+    );
+    await heartbeat.stop();
+    const stoppedTouchCount = touches.length;
+    await Promise.resolve();
+    assert.equal(touches.length, stoppedTouchCount);
+  } finally {
+    if (original === undefined)
+      delete process.env.VEM_VM_ACCEPTANCE_KEEP_AI_ACTIVE;
+    else process.env.VEM_VM_ACCEPTANCE_KEEP_AI_ACTIVE = original;
+    if (originalRss === undefined)
+      delete process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS;
+    else process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS = originalRss;
+  }
+});
+
+test("fails the pending attempt when its VM AI active heartbeat cannot touch", async () => {
+  process.env.NODE_ENV = "test";
+  const waits = [];
+  const heartbeat = startVmAiActiveHeartbeatForTest(
+    {
+      async send() {
+        throw new Error("CDP touch failed");
+      },
+    },
+    {
+      waitForInterval: () => {
+        let resolve;
+        const promise = new Promise((resolvePromise) => {
+          resolve = resolvePromise;
+        });
+        const wait = { cancel: resolve, promise, resolve };
+        waits.push(wait);
+        return wait;
+      },
+    },
+  );
+  while (waits.length === 0) await Promise.resolve();
+  waits.shift().resolve();
+  await new Promise(setImmediate);
+  await assert.rejects(heartbeat.stop(), /VM AI active heartbeat failed/);
 });
 
 function canonical(value) {

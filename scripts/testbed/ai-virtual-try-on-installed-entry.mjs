@@ -62,6 +62,80 @@ export function isVmAcceptanceAiRssSkipEnabled() {
   return process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS === "1";
 }
 
+export function isVmAcceptanceKeepAiActiveEnabled() {
+  return process.env.VEM_VM_ACCEPTANCE_KEEP_AI_ACTIVE === "1";
+}
+
+function waitForHeartbeatInterval(intervalMs) {
+  let resolve;
+  const promise = new Promise((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  const timer = setTimeout(resolve, intervalMs);
+  return {
+    cancel() {
+      clearTimeout(timer);
+      resolve();
+    },
+    promise,
+  };
+}
+
+function startVmAiActiveHeartbeat(
+  client,
+  { intervalMs = 10_000, waitForInterval = waitForHeartbeatInterval } = {},
+) {
+  let stopped = false;
+  let currentWait = null;
+  let failure = null;
+  const task = (async () => {
+    while (!stopped) {
+      currentWait = waitForInterval(intervalMs);
+      await currentWait.promise;
+      currentWait = null;
+      if (stopped) return;
+      await client.send("Input.dispatchTouchEvent", {
+        touchPoints: [{ x: 1, y: 1 }],
+        type: "touchStart",
+      });
+      await client.send("Input.dispatchTouchEvent", {
+        touchPoints: [],
+        type: "touchEnd",
+      });
+    }
+  })().catch((error) => {
+    failure = error;
+  });
+  return {
+    async stop() {
+      stopped = true;
+      currentWait?.cancel();
+      await task;
+      if (failure)
+        throw new Error("VM AI active heartbeat failed", { cause: failure });
+    },
+  };
+}
+
+export function startVmAiActiveHeartbeatForTest(client, options) {
+  if (process.env.NODE_ENV !== "test")
+    throw new Error(
+      "VM AI active heartbeat test boundary requires NODE_ENV=test",
+    );
+  return startVmAiActiveHeartbeat(client, options);
+}
+
+async function collectInstalledAiTryOnAttemptWithVmHeartbeat(options) {
+  const heartbeat = isVmAcceptanceKeepAiActiveEnabled()
+    ? startVmAiActiveHeartbeat(options.client)
+    : null;
+  try {
+    return await collectInstalledAiTryOnAttempt(options);
+  } finally {
+    if (heartbeat) await heartbeat.stop();
+  }
+}
+
 export function buildInstalledVisionWorkerSampleScript() {
   return [
     "$ErrorActionPreference='Stop'",
@@ -771,7 +845,7 @@ export async function runInstalledAiAttemptPhase(options) {
     );
     const startedAt = performance.now();
     let completed = false;
-    const attemptPromise = collectInstalledAiTryOnAttempt({
+    const attemptPromise = collectInstalledAiTryOnAttemptWithVmHeartbeat({
       client,
       captureAttemptScreenshot: installedAiScreenshotCapture(
         options.artifactRoot,
@@ -790,7 +864,7 @@ export async function runInstalledAiAttemptPhase(options) {
         : sampleInstalledAiWorkerPeakRss(() => completed),
     ]);
     if (options.caseKey === "short") {
-      const retried = await collectInstalledAiTryOnAttempt({
+      const retried = await collectInstalledAiTryOnAttemptWithVmHeartbeat({
         activationSelector: '[data-test="try-on-retry"]',
         client,
         expectedTryOnRoute,
