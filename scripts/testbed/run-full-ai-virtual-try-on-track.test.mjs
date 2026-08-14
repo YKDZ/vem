@@ -440,6 +440,12 @@ test("AI track owns the importable short/long/default Vision owner lifecycle", (
   assert.match(source, /aiEnvironmentCleared = \$true/);
 });
 
+test("sums ordered directory identities without Measure-Object property binding", () => {
+  const source = readFileSync(runner, "utf8");
+  assert.doesNotMatch(source, /Measure-Object -Property byteSize/);
+  assert.match(source, /foreach \(\$entry in \$actual\)[\s\S]*\$bytes \+= \[long\]\$entry\.byteSize/);
+});
+
 test("repeat runs clear only the exact owned AI artifact root before admission", () => {
   const guest = readFileSync(
     join(repoRoot, "scripts/testbed/run-local-testbed-guest.ps1"),

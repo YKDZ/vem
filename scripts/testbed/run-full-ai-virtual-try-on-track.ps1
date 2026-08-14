@@ -72,7 +72,10 @@ function Assert-GuestDirectoryIdentity([string]$Path, [object]$Identity, [bool]$
   $actual = @(Get-RegularDirectoryIdentity $Path $Nested $Label)
   $expected = @($Identity.members | ForEach-Object { [ordered]@{ name = [string]$_.name; sha256 = [string]$_.sha256; byteSize = [long]$_.byteSize } } | Sort-Object name)
   if (($actual | ConvertTo-Json -Compress -Depth 4) -cne ($expected | ConvertTo-Json -Compress -Depth 4)) { throw "$Label member identities are invalid" }
-  $bytes = [long]($actual | Measure-Object -Property byteSize -Sum).Sum
+  [long]$bytes = 0
+  foreach ($entry in $actual) {
+    $bytes += [long]$entry.byteSize
+  }
   if ($bytes -ne [long]$Identity.byteSize) { throw "$Label byte size is invalid" }
   $lines = @($actual | ForEach-Object { "$($_.name)`0$($_.sha256)`0$($_.byteSize)`n" }) -join ""
   $sha = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($lines))).ToLowerInvariant()
