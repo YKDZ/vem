@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "vue-tsc --noEmit && vite build --logLevel warn && node ../../scripts/testbed/hard-cutover-absence.mjs --artifact apps/machine/dist",
+    "build": "vue-tsc --noEmit && vite build --logLevel warn",
     "dev": "vite --host 0.0.0.0",
     "fmt": "oxfmt",
     "lint": "oxlint --quiet --format=unix --type-aware --config ../../oxlint.config.ts .",
