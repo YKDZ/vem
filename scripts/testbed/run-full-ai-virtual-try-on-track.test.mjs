@@ -14,6 +14,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { collectInstalledAiDegradationEvidence } from "./ai-installed-degradation.mjs";
 import {
@@ -310,6 +311,30 @@ class DegradationFakeWebSocket {
     );
   }
 }
+
+test("resolves the generated Vision manifest from a Windows module file URL", () => {
+  const moduleUrl =
+    "file:///C:/VEM/source/scripts/testbed/ai-virtual-try-on-installed-entry.mjs";
+  const mistakenPath = pathToFileURL(moduleUrl).pathname;
+  assert.notEqual(
+    mistakenPath,
+    "C:\\VEM\\source\\scripts\\testbed\\ai-virtual-try-on-installed-entry.mjs",
+  );
+  assert.match(
+    mistakenPath,
+    /file:\/C:\/VEM\/source\/scripts\/testbed\//,
+  );
+  assert.equal(
+    fileURLToPath(moduleUrl, { windows: true }),
+    "C:\\VEM\\source\\scripts\\testbed\\ai-virtual-try-on-installed-entry.mjs",
+  );
+  const source = readFileSync(installedEntry, "utf8");
+  assert.doesNotMatch(
+    source,
+    /dirname\(pathToFileURL\(import\.meta\.url\)\.pathname\)/,
+  );
+  assert.match(source, /dirname\(fileURLToPath\(import\.meta\.url\)\)/);
+});
 
 test("routes corrupt model degradation through the public installed command and runner", () => {
   const root = mkdtempSync(join(tmpdir(), "vem-ai-corrupt-command-"));

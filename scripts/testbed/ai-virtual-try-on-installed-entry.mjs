@@ -17,7 +17,7 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 import { collectInstalledAiDegradationEvidence } from "./ai-installed-degradation.mjs";
@@ -1394,7 +1394,7 @@ export async function assembleInstalledAiTryOnAcceptanceFiles(options) {
   );
   const contract = readCanonicalJson(
     resolve(
-      dirname(pathToFileURL(import.meta.url).pathname),
+      dirname(fileURLToPath(import.meta.url)),
       "../../packages/shared/generated/vision-v2/manifest.json",
     ),
     "generated Vision V2 manifest",
