@@ -8,6 +8,7 @@ import { afterEach, test } from "node:test";
 
 import {
   verifyAiAcceptanceAuthorityForTest,
+  verifyProductionCandidateAttestationForTest,
   verifyVisionCoreDelivery,
 } from "./ai-acceptance-authority.mjs";
 
@@ -142,6 +143,55 @@ function fixture() {
 afterEach(() => {
   while (roots.length) rmSync(roots.pop(), { recursive: true, force: true });
 });
+
+test("skips only the final candidate GitHub attestation in the explicit VM acceptance bypass", async () => {
+  const priorNodeEnv = process.env.NODE_ENV;
+  const priorBypass = process.env.VEM_VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION;
+  process.env.NODE_ENV = "test";
+  process.env.VEM_VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION = "1";
+  let calls = 0;
+  try {
+    await verifyProductionCandidateAttestationForTest({}, async () => {
+      calls += 1;
+      throw new Error("candidate attestation must be bypassed");
+    });
+    assert.equal(calls, 0);
+  } finally {
+    if (priorNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = priorNodeEnv;
+    if (priorBypass === undefined)
+      delete process.env.VEM_VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION;
+    else process.env.VEM_VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION = priorBypass;
+  }
+});
+
+for (const bypassValue of [undefined, "0", "true"]) {
+  test(`keeps candidate GitHub attestation enabled when VM bypass is ${bypassValue ?? "unset"}`, async () => {
+    const priorNodeEnv = process.env.NODE_ENV;
+    const priorBypass = process.env.VEM_VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION;
+    process.env.NODE_ENV = "test";
+    if (bypassValue === undefined)
+      delete process.env.VEM_VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION;
+    else process.env.VEM_VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION = bypassValue;
+    let calls = 0;
+    try {
+      await assert.rejects(
+        verifyProductionCandidateAttestationForTest({}, async () => {
+          calls += 1;
+          throw new Error("candidate attestation invoked");
+        }),
+        /candidate attestation invoked/,
+      );
+      assert.equal(calls, 1);
+    } finally {
+      if (priorNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = priorNodeEnv;
+      if (priorBypass === undefined)
+        delete process.env.VEM_VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION;
+      else process.env.VEM_VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION = priorBypass;
+    }
+  });
+}
 
 test("separates the proof companion from the installable candidate runtime and recorded fixture", async () => {
   const value = fixture();

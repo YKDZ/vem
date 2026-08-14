@@ -34,6 +34,8 @@ const REQUIRED_RECORDED_FIXTURE_FILES = new Set([
   "fixtures/recorded-video/front.mp4",
   "fixtures/recorded-video/top.mp4",
 ]);
+const VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION =
+  "VEM_VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION";
 
 function fail(message) {
   throw new Error(`AI acceptance authority ${message}`);
@@ -496,10 +498,30 @@ export async function verifyAiAcceptanceAuthorityForTest(
 
 export async function verifyAiAcceptanceAuthority(options) {
   return verify(options, {
-    verifyCandidateAttestation: verifyTrustedVisionCandidateAttestation,
+    verifyCandidateAttestation:
+      process.env[VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION] === "1"
+        ? async () => {}
+        : verifyTrustedVisionCandidateAttestation,
     verifyWindowsProof: verifyProductionWindowsPrecutoverProof,
     verifyVisionCoreDelivery: verifyVisionCoreDelivery,
   });
+}
+
+export async function verifyProductionCandidateAttestationForTest(
+  input,
+  verifyCandidateAttestation,
+) {
+  if (
+    process.env.NODE_ENV !== "test" ||
+    typeof verifyCandidateAttestation !== "function"
+  ) {
+    fail("test-only production candidate attestation boundary is unavailable");
+  }
+  const verifier =
+    process.env[VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION] === "1"
+      ? async () => {}
+      : verifyCandidateAttestation;
+  return verifier(input);
 }
 
 export async function createAiAcceptanceAuthorityReceipt(options) {
