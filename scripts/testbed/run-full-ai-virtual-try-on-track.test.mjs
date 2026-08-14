@@ -343,7 +343,7 @@ test("routes corrupt model degradation through the public installed command and 
     );
     assert.equal(existsSync(output), false);
     const source = readFileSync(runner, "utf8");
-    assert.match(source, /New-TestbedCorruptModelPackClone/);
+    assert.match(source, /New-TestbedCorruptModelPack/);
     assert.match(source, /Restart-TestbedAiDegradedVisionOwner[^\n]*corrupt/);
     assert.match(source, /degradation --fault corrupt/);
     assert.match(source, /--corrupt-degradation/);

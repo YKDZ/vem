@@ -200,7 +200,7 @@ try {
   node $nodeEntry degradation --fault missing --guest-input $GuestInputPath --handoff $HandoffPath --out $missingFacts
   if ($LASTEXITCODE -ne 0) { throw "missing model installed degradation failed" }
   $corruptModelRoot = Join-Path (Split-Path -Parent $modelPackRoot) ("ai-acceptance-corrupt-" + [string]$guestInput.runId + "-pass-" + $pass)
-  $corruptOwnership = New-TestbedCorruptModelPackClone -SourceRoot $modelPackRoot -VisionAppDirectory "C:\VEM\vision\app" -VisionDataDirectory "C:\ProgramData\VEM\vision" -DestinationRoot $corruptModelRoot -RunId ([string]$guestInput.runId)
+  $corruptOwnership = New-TestbedCorruptModelPack -SourceRoot $modelPackRoot -DestinationRoot $corruptModelRoot -RunId ([string]$guestInput.runId)
   $corruptConfiguration = Restart-TestbedAiDegradedVisionOwner -GuestInput $guestInput -Fault corrupt -ModelPackRoot ([string]$corruptOwnership.cloneRoot)
   node $nodeEntry degradation --fault corrupt --guest-input $GuestInputPath --handoff $HandoffPath --out $corruptFacts
   if ($LASTEXITCODE -ne 0) { throw "corrupt model installed degradation failed" }
@@ -262,7 +262,7 @@ try {
       if ($null -ne $workerFailureConfiguration) {
         Remove-Item -LiteralPath ([string]$workerFailureConfiguration.acceptanceEvidenceRoot) -Recurse -Force -ErrorAction Stop
       }
-      if ($null -ne $corruptOwnership) { Remove-TestbedCorruptModelPackClone $corruptOwnership }
+      if ($null -ne $corruptOwnership) { Remove-TestbedCorruptModelPack $corruptOwnership }
       [ordered]@{
         facts = [ordered]@{
           aiEnvironmentCleared = $true
