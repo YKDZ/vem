@@ -880,9 +880,7 @@ test("binds installed garment and RSS facts without inventing a UI garment ident
     assert.match(source, new RegExp(fact));
   assert.match(source, /GetProcessMemoryInfo/);
   assert.match(source, /PeakWorkingSetSize/);
-  assert.match(source, /CreationDate -is \[DateTime\]/);
-  assert.match(source, /\$cimStart -cne \$start/);
-  assert.match(source, /\$ownerCimStart -cne \$ownerStart/);
+  assert.doesNotMatch(source, /CreationDate -is \[DateTime\]/);
   assert.match(source, /\$workerFinal=Get-Process/);
   assert.match(source, /\$finalListener=@\(Get-NetTCPConnection/);
   assert.match(source, /\$ownerFinal=Get-Process/);
@@ -893,25 +891,21 @@ test("binds installed garment and RSS facts without inventing a UI garment ident
   assert.doesNotMatch(source, /execFileAsync\(\s*["']pwsh["']/);
 });
 
-test("rejects a CIM snapshot whose owner PID was reused before its handle opened", () => {
+test("accepts harmless CIM start-time rounding while retaining handle identity", () => {
   const productionScript = buildInstalledVisionWorkerSampleScript();
-  const body = productionScript.slice(
-    productionScript.indexOf("$ownerCim=$main[0]"),
-    productionScript.indexOf("$finalListener="),
-  );
   const harness = [
-    "$mainPath='C:\\VEM\\vision\\app\\vending-vision.exe'",
-    "$main=@([pscustomobject]@{ProcessId=41;CreationDate=[datetime]'2025-01-01T00:00:00Z'})",
-    "function Get-Process { [pscustomobject]@{Id=41;Handle=[intptr]1;Path=$mainPath;StartTime=[datetime]'2025-01-01T00:00:01Z'} }",
-    body,
+    "function Get-CimInstance { @([pscustomobject]@{ProcessId=41;ParentProcessId=9;ExecutablePath='C:\\VEM\\vision\\app\\vending-vision.exe';CreationDate=[datetime]'2025-01-01T00:00:00.0000000Z'}) }",
+    "function Get-NetTCPConnection { @([pscustomobject]@{OwningProcess=41}) }",
+    "function Get-Process { [pscustomobject]@{Id=41;Handle=[intptr]1;Path='C:\\VEM\\vision\\app\\vending-vision.exe';StartTime=[datetime]'2025-01-01T00:00:00.0000001Z'} }",
+    productionScript,
   ].join(";");
   const result = spawnSync(
     "pwsh",
     ["-NoProfile", "-NonInteractive", "-Command", harness],
     { encoding: "utf8", timeout: 2_000 },
   );
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /owner process handle identity mismatched/);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).owner.processId, 41);
 });
 
 test("rejects unsafe or cross-attempt installed RSS support facts", () => {
