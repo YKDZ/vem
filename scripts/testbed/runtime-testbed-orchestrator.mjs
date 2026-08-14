@@ -393,10 +393,28 @@ async function capture(command, args, options = {}) {
       env: options.env,
       stdio: ["ignore", "pipe", "pipe"],
     });
+    let timedOut = false;
+    const timeout =
+      Number.isInteger(options.timeoutMs) && options.timeoutMs > 0
+        ? setTimeout(() => {
+            timedOut = true;
+            child.kill("SIGTERM");
+            reject(
+              new Error(
+                `${command} timed out after ${options.timeoutMs}ms${options.timeoutLabel ? ` (${options.timeoutLabel})` : ""}`,
+              ),
+            );
+          }, options.timeoutMs)
+        : undefined;
     child.stdout.on("data", (chunk) => (stdout += chunk));
     child.stderr.on("data", (chunk) => (stderr += chunk));
-    child.once("error", reject);
+    child.once("error", (error) => {
+      if (timeout) clearTimeout(timeout);
+      reject(error);
+    });
     child.once("exit", (code) => {
+      if (timeout) clearTimeout(timeout);
+      if (timedOut) return;
       if (code === 0) resolvePromise();
       else
         reject(new Error(`${command} exited with ${code}: ${stderr.trim()}`));
@@ -832,6 +850,65 @@ export async function provisionAiAcceptanceBlock({ config, pass, reason }) {
   });
 }
 
+function powerShellLiteral(value) {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+function guestFileCacheProbe(transfers) {
+  const candidates = transfers
+    .filter((transfer) => !transfer.members)
+    .map((transfer) => ({
+      byteSize: transfer.byteSize,
+      guestPath: transfer.guestPath,
+      sha256: transfer.sha256,
+    }));
+  if (candidates.length === 0) return null;
+  return [
+    `$candidates = ConvertFrom-Json ${powerShellLiteral(JSON.stringify(candidates))}`,
+    "$cacheHits = @()",
+    "foreach ($candidate in @($candidates)) {",
+    "  $entry = Get-Item -LiteralPath $candidate.guestPath -Force -ErrorAction SilentlyContinue",
+    "  if ($null -eq $entry -or -not ($entry -is [System.IO.FileInfo])) { continue }",
+    "  if ($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }",
+    "  if ($entry.Length -ne [Int64]$candidate.byteSize) { continue }",
+    "  $actual = (Get-FileHash -LiteralPath $candidate.guestPath -Algorithm SHA256).Hash.ToLowerInvariant()",
+    "  if ($actual -ceq $candidate.sha256) { $cacheHits += $candidate.guestPath }",
+    "}",
+    "@{ cacheHits = @($cacheHits) } | ConvertTo-Json -Compress",
+  ].join("\n");
+}
+
+function parseGuestFileCacheHits(output, transfers) {
+  let value;
+  try {
+    value = JSON.parse(output.trim());
+  } catch {
+    throw new Error("AI guest input cache probe returned invalid JSON");
+  }
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.keys(value).sort().join("\0") !== "cacheHits" ||
+    !Array.isArray(value.cacheHits)
+  ) {
+    throw new Error("AI guest input cache probe returned invalid results");
+  }
+  const eligible = new Set(
+    transfers
+      .filter((transfer) => !transfer.members)
+      .map((transfer) => transfer.guestPath),
+  );
+  const hits = new Set();
+  for (const path of value.cacheHits) {
+    if (typeof path !== "string" || !eligible.has(path) || hits.has(path)) {
+      throw new Error("AI guest input cache probe returned invalid results");
+    }
+    hits.add(path);
+  }
+  return hits;
+}
+
 async function provisionVisionCoreInput({ config, pass, preparation }) {
   const path = join(config.stateRoot, "guest-input.json");
   const guestInput = JSON.parse(await readFile(path, "utf8"));
@@ -847,6 +924,7 @@ export async function stageAiAcceptanceInputs({
   contract,
   preparation,
   corePreparation,
+  captureResult = capture,
   run = runProcess,
 }) {
   const guest = contract.testbed.guest;
@@ -857,24 +935,38 @@ export async function stageAiAcceptanceInputs({
     ...(corePreparation?.transfers ?? []),
     ...(preparation?.transfers ?? []),
   ];
+  const probe = guestFileCacheProbe(transfers);
+  const cachedGuestFiles = probe
+    ? parseGuestFileCacheHits(
+        (
+          await captureResult(
+            "ssh",
+            [
+              ...ssh,
+              remote,
+              "powershell.exe",
+              "-NoProfile",
+              "-EncodedCommand",
+              encodedPowerShell(probe),
+            ],
+            {
+              timeoutMs: GUEST_SETUP_TIMEOUT_MS,
+              timeoutLabel: "AI guest input cache probe",
+            },
+          )
+        ).stdout,
+        transfers,
+      )
+    : new Set();
+  const missingTransfers = transfers.filter(
+    (transfer) => !cachedGuestFiles.has(transfer.guestPath),
+  );
   const cleanup = [
-    ...(corePreparation
-      ? [
-          `$coreRoot = '${corePreparation.guestInput.inputRoot.replaceAll("'", "''")}'`,
-          "New-Item -ItemType Directory -Force -Path (Split-Path -Parent $coreRoot) | Out-Null",
-          "Remove-Item -LiteralPath $coreRoot -Recurse -Force -ErrorAction SilentlyContinue",
-          "New-Item -ItemType Directory -Force -Path $coreRoot | Out-Null",
-        ]
-      : []),
-    ...(preparation
-      ? [
-          `$root = '${preparation.guestInput.inputRoot.replaceAll("'", "''")}'`,
-          "New-Item -ItemType Directory -Force -Path (Split-Path -Parent $root) | Out-Null",
-          "Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue",
-          "New-Item -ItemType Directory -Force -Path $root | Out-Null",
-        ]
-      : []),
-    `$guestInput = '${guest.stagingPath.replaceAll("'", "''")}'`,
+    ...missingTransfers.flatMap((transfer) => [
+      `Remove-Item -LiteralPath ${powerShellLiteral(transfer.guestPath)} -Recurse -Force -ErrorAction SilentlyContinue`,
+      `New-Item -ItemType Directory -Force -Path (Split-Path -Parent ${powerShellLiteral(transfer.guestPath)}) | Out-Null`,
+    ]),
+    `$guestInput = ${powerShellLiteral(guest.stagingPath)}`,
     "New-Item -ItemType Directory -Force -Path (Split-Path -Parent $guestInput) | Out-Null",
   ].join("\n");
   await run(
@@ -892,7 +984,7 @@ export async function stageAiAcceptanceInputs({
       timeoutLabel: "AI guest input staging setup",
     },
   );
-  for (const transfer of transfers) {
+  for (const transfer of missingTransfers) {
     await run(
       "scp",
       [

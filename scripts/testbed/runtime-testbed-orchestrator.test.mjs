@@ -651,12 +651,14 @@ describe("runtime testbed scheduler contract", () => {
       config,
       contract,
       preparation,
+      captureResult: async () => ({ stdout: '{"cacheHits":[]}' }),
       run: async (command, args) => calls.push({ command, args }),
     });
     await stageAiAcceptanceInputs({
       config,
       contract,
       preparation: null,
+      captureResult: async () => ({ stdout: '{"cacheHits":[]}' }),
       run: async (command, args) => calls.push({ command, args }),
     });
     const destinations = calls
@@ -678,6 +680,144 @@ describe("runtime testbed scheduler contract", () => {
     );
     assert.equal(
       destinations.some((value) => value.endsWith("undefined")),
+      false,
+    );
+  });
+
+  it("retains matching regular guest archives while refreshing the guest projection", async () => {
+    const calls = [];
+    const runtimePath =
+      "C:\\ProgramData\\VEM\\testbed\\vision-core\\digest\\vision-runtime.zip";
+    const modelPath =
+      "C:\\ProgramData\\VEM\\testbed\\ai-inputs\\digest\\official-model-pack.zip";
+    await stageAiAcceptanceInputs({
+      config: { stateRoot: "/var/lib/vem-testbed/state" },
+      contract: {
+        testbed: {
+          guest: {
+            user: "VEMKiosk",
+            host: "win10-testbed.local",
+            identityFile: "/tmp/id",
+            knownHostsFile: "/tmp/known_hosts",
+            stagingPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
+          },
+        },
+      },
+      corePreparation: {
+        guestInput: {
+          inputRoot: "C:\\ProgramData\\VEM\\testbed\\vision-core\\digest",
+        },
+        transfers: [
+          {
+            hostPath: "/host/vision-runtime.zip",
+            guestPath: runtimePath,
+            sha256: "a".repeat(64),
+            byteSize: 1_484_082_923,
+          },
+        ],
+      },
+      preparation: {
+        guestInput: {
+          inputRoot: "C:\\ProgramData\\VEM\\testbed\\ai-inputs\\digest",
+        },
+        transfers: [
+          {
+            hostPath: "/host/official-model-pack.zip",
+            guestPath: modelPath,
+            sha256: "b".repeat(64),
+            byteSize: 4_506_000_000,
+          },
+        ],
+      },
+      captureResult: async (command, args) => {
+        assert.equal(command, "ssh");
+        const probe = Buffer.from(args.at(-1), "base64").toString("utf16le");
+        assert.match(probe, /System\.IO\.FileInfo/);
+        assert.match(probe, /FileAttributes\]::ReparsePoint/);
+        assert.match(probe, /Get-FileHash/);
+        assert.match(probe, /1484082923/);
+        assert.match(probe, /4506000000/);
+        return {
+          stdout: JSON.stringify({ cacheHits: [runtimePath, modelPath] }),
+        };
+      },
+      run: async (command, args) => calls.push({ command, args }),
+    });
+    const destinations = calls
+      .filter((call) => call.command === "scp")
+      .map((call) => call.args.at(-1));
+    assert.deepEqual(destinations, [
+      "VEMKiosk@win10-testbed.local:C:\\ProgramData\\VEM\\testbed\\guest-input.json",
+    ]);
+  });
+
+  it("replaces a digest-mismatched regular guest archive without clearing a matching sibling", async () => {
+    const calls = [];
+    const runtimePath =
+      "C:\\ProgramData\\VEM\\testbed\\vision-core\\digest\\vision-runtime.zip";
+    const modelPath =
+      "C:\\ProgramData\\VEM\\testbed\\ai-inputs\\digest\\official-model-pack.zip";
+    await stageAiAcceptanceInputs({
+      config: { stateRoot: "/var/lib/vem-testbed/state" },
+      contract: {
+        testbed: {
+          guest: {
+            user: "VEMKiosk",
+            host: "win10-testbed.local",
+            identityFile: "/tmp/id",
+            knownHostsFile: "/tmp/known_hosts",
+            stagingPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
+          },
+        },
+      },
+      corePreparation: {
+        guestInput: {
+          inputRoot: "C:\\ProgramData\\VEM\\testbed\\vision-core\\digest",
+        },
+        transfers: [
+          {
+            hostPath: "/host/vision-runtime.zip",
+            guestPath: runtimePath,
+            sha256: "a".repeat(64),
+            byteSize: 1_484_082_923,
+          },
+        ],
+      },
+      preparation: {
+        guestInput: {
+          inputRoot: "C:\\ProgramData\\VEM\\testbed\\ai-inputs\\digest",
+        },
+        transfers: [
+          {
+            hostPath: "/host/official-model-pack.zip",
+            guestPath: modelPath,
+            sha256: "b".repeat(64),
+            byteSize: 4_506_000_000,
+          },
+        ],
+      },
+      captureResult: async () => ({
+        stdout: JSON.stringify({ cacheHits: [runtimePath] }),
+      }),
+      run: async (command, args) => calls.push({ command, args }),
+    });
+    const destinations = calls
+      .filter((call) => call.command === "scp")
+      .map((call) => call.args.at(-1));
+    assert.deepEqual(destinations, [
+      `VEMKiosk@win10-testbed.local:${modelPath}`,
+      "VEMKiosk@win10-testbed.local:C:\\ProgramData\\VEM\\testbed\\guest-input.json",
+    ]);
+    const cleanup = Buffer.from(
+      calls.find((call) => call.command === "ssh").args.at(-1),
+      "base64",
+    ).toString("utf16le");
+    assert.equal(
+      cleanup.includes(`Remove-Item -LiteralPath '${modelPath}`),
+      true,
+    );
+    assert.equal(
+      cleanup.includes(`Remove-Item -LiteralPath '${runtimePath}`),
       false,
     );
   });
