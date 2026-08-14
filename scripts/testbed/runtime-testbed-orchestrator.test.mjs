@@ -822,6 +822,130 @@ describe("runtime testbed scheduler contract", () => {
     );
   });
 
+  it("retains a complete regular non-reparse guest directory while refreshing the guest projection", async () => {
+    const calls = [];
+    const modelRoot =
+      "C:\\ProgramData\\VEM\\testbed\\ai-inputs\\digest\\model-pack";
+    await stageAiAcceptanceInputs({
+      config: { stateRoot: "/var/lib/vem-testbed/state" },
+      contract: {
+        testbed: {
+          guest: {
+            user: "VEMKiosk",
+            host: "win10-testbed.local",
+            identityFile: "/tmp/id",
+            knownHostsFile: "/tmp/known_hosts",
+            stagingPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
+          },
+        },
+      },
+      preparation: {
+        guestInput: {
+          inputRoot: "C:\\ProgramData\\VEM\\testbed\\ai-inputs\\digest",
+        },
+        transfers: [
+          {
+            hostPath: "/host/model-pack",
+            guestPath: modelRoot,
+            sha256: "c".repeat(64),
+            byteSize: 4_506_000_000,
+            members: [
+              { name: "model.bin", sha256: "a".repeat(64), byteSize: 2 },
+              {
+                name: "nested/config.json",
+                sha256: "b".repeat(64),
+                byteSize: 3,
+              },
+            ],
+          },
+        ],
+      },
+      captureResult: async (command, args) => {
+        assert.equal(command, "ssh");
+        const probe = Buffer.from(args.at(-1), "base64").toString("utf16le");
+        assert.match(probe, /System\.IO\.DirectoryInfo/);
+        assert.match(probe, /Get-ChildItem/);
+        assert.match(probe, /ReparsePoint/);
+        assert.match(probe, /nested\/config\.json/);
+        return { stdout: JSON.stringify({ cacheHits: [modelRoot] }) };
+      },
+      run: async (command, args) => calls.push({ command, args }),
+    });
+    assert.deepEqual(
+      calls
+        .filter((call) => call.command === "scp")
+        .map((call) => call.args.at(-1)),
+      [
+        "VEMKiosk@win10-testbed.local:C:\\ProgramData\\VEM\\testbed\\guest-input.json",
+      ],
+    );
+  });
+
+  for (const cacheMiss of [
+    "a member with the wrong hash",
+    "an extra member",
+    "a nested reparse member",
+  ]) {
+    it(`retransfers a guest directory with ${cacheMiss}`, async () => {
+      const calls = [];
+      const modelRoot =
+        "C:\\ProgramData\\VEM\\testbed\\ai-inputs\\digest\\model-pack";
+      await stageAiAcceptanceInputs({
+        config: { stateRoot: "/var/lib/vem-testbed/state" },
+        contract: {
+          testbed: {
+            guest: {
+              user: "VEMKiosk",
+              host: "win10-testbed.local",
+              identityFile: "/tmp/id",
+              knownHostsFile: "/tmp/known_hosts",
+              stagingPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
+            },
+          },
+        },
+        preparation: {
+          guestInput: {
+            inputRoot: "C:\\ProgramData\\VEM\\testbed\\ai-inputs\\digest",
+          },
+          transfers: [
+            {
+              hostPath: "/host/model-pack",
+              guestPath: modelRoot,
+              sha256: "c".repeat(64),
+              byteSize: 4_506_000_000,
+              members: [
+                {
+                  name: "nested/config.json",
+                  sha256: "b".repeat(64),
+                  byteSize: 3,
+                },
+              ],
+            },
+          ],
+        },
+        captureResult: async () => ({ stdout: '{"cacheHits":[]}' }),
+        run: async (command, args) => calls.push({ command, args }),
+      });
+      const inputTransfer = calls.find(
+        (call) =>
+          call.command === "scp" && call.args.at(-1).endsWith(modelRoot),
+      );
+      assert.deepEqual(inputTransfer.args.slice(-3), [
+        "-r",
+        "/host/model-pack",
+        `VEMKiosk@win10-testbed.local:${modelRoot}`,
+      ]);
+      const cleanup = Buffer.from(
+        calls.find((call) => call.command === "ssh").args.at(-1),
+        "base64",
+      ).toString("utf16le");
+      assert.equal(
+        cleanup.includes(`Remove-Item -LiteralPath '${modelRoot}`),
+        true,
+      );
+    });
+  }
+
   it("writes a blocked marker before synchronizing the guest projection", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-ai-blocked-projection-"));
     try {

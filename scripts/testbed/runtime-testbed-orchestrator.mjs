@@ -854,31 +854,75 @@ function powerShellLiteral(value) {
   return `'${value.replaceAll("'", "''")}'`;
 }
 
-function guestFileCacheProbe(transfers) {
-  const candidates = transfers
-    .filter((transfer) => !transfer.members)
-    .map((transfer) => ({
-      byteSize: transfer.byteSize,
-      guestPath: transfer.guestPath,
-      sha256: transfer.sha256,
-    }));
+function guestInputCacheProbe(transfers) {
+  const candidates = transfers.map((transfer) => ({
+    byteSize: transfer.byteSize,
+    guestPath: transfer.guestPath,
+    sha256: transfer.sha256,
+    ...(transfer.members !== undefined
+      ? { kind: "directory", members: transfer.members }
+      : { kind: "file" }),
+  }));
   if (candidates.length === 0) return null;
   return [
     `$candidates = ConvertFrom-Json ${powerShellLiteral(JSON.stringify(candidates))}`,
+    "function Test-GuestDirectoryCache($candidate) {",
+    "  try {",
+    "    $root = Get-Item -LiteralPath $candidate.guestPath -Force -ErrorAction Stop",
+    "    if (-not ($root -is [System.IO.DirectoryInfo]) -or ($root.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { return $false }",
+    "    $expectedFiles = @{}; $expectedDirectories = @{}",
+    "    foreach ($member in @($candidate.members)) {",
+    "      $name = [string]$member.name",
+    "      if ($name -eq '' -or $name.StartsWith('/') -or $name.Contains('\\') -or ($name -split '/' | Where-Object { $_ -eq '' -or $_ -eq '.' -or $_ -eq '..' })) { return $false }",
+    "      if ($expectedFiles.ContainsKey($name)) { return $false }",
+    "      $expectedFiles[$name] = $member",
+    "      $parts = $name -split '/'",
+    "      for ($index = 0; $index -lt $parts.Count - 1; $index += 1) {",
+    "        $directoryName = $parts[0..$index] -join '/'",
+    "        if ($expectedDirectories.ContainsKey($directoryName) -and $expectedDirectories[$directoryName] -cne $directoryName) { return $false }",
+    "        $expectedDirectories[$directoryName] = $directoryName",
+    "      }",
+    "    }",
+    "    $actualFiles = @{}; $actualDirectories = @{}; $visit = $null",
+    "    $visit = { param($directory, $prefix)",
+    "      foreach ($entry in @(Get-ChildItem -LiteralPath $directory.FullName -Force -ErrorAction Stop)) {",
+    "        $name = if ($prefix -eq '') { $entry.Name } else { \"$prefix/$($entry.Name)\" }",
+    "        if ($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw 'reparse member' }",
+    "        if ($entry -is [System.IO.DirectoryInfo]) {",
+    "          if ($actualDirectories.ContainsKey($name)) { throw 'duplicate directory' }",
+    "          $actualDirectories[$name] = $name; & $visit $entry $name; continue",
+    "        }",
+    "        if (-not ($entry -is [System.IO.FileInfo]) -or $actualFiles.ContainsKey($name)) { throw 'nonregular member' }",
+    "        $actualFiles[$name] = @{ entry = $entry; name = $name }",
+    "      }",
+    "    }",
+    "    & $visit $root ''",
+    "    if ($actualFiles.Count -ne $expectedFiles.Count -or $actualDirectories.Count -ne $expectedDirectories.Count) { return $false }",
+    "    foreach ($name in $expectedFiles.Keys) {",
+    "      if (-not $actualFiles.ContainsKey($name) -or $actualFiles[$name].name -cne $name) { return $false }",
+    "      $entry = $actualFiles[$name].entry; $member = $expectedFiles[$name]",
+    "      if ($entry.Length -ne [Int64]$member.byteSize) { return $false }",
+    "      if ((Get-FileHash -LiteralPath $entry.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne $member.sha256) { return $false }",
+    "    }",
+    "    foreach ($name in $expectedDirectories.Keys) {",
+    "      if (-not $actualDirectories.ContainsKey($name) -or $actualDirectories[$name] -cne $name) { return $false }",
+    "    }",
+    "    return $true",
+    "  } catch { return $false }",
+    "}",
     "$cacheHits = @()",
     "foreach ($candidate in @($candidates)) {",
+    "  if ($candidate.kind -eq 'directory') { if (Test-GuestDirectoryCache $candidate) { $cacheHits += $candidate.guestPath }; continue }",
     "  $entry = Get-Item -LiteralPath $candidate.guestPath -Force -ErrorAction SilentlyContinue",
-    "  if ($null -eq $entry -or -not ($entry -is [System.IO.FileInfo])) { continue }",
-    "  if ($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }",
-    "  if ($entry.Length -ne [Int64]$candidate.byteSize) { continue }",
-    "  $actual = (Get-FileHash -LiteralPath $candidate.guestPath -Algorithm SHA256).Hash.ToLowerInvariant()",
-    "  if ($actual -ceq $candidate.sha256) { $cacheHits += $candidate.guestPath }",
+    "  if ($null -ne $entry -and ($entry -is [System.IO.FileInfo]) -and -not ($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -and $entry.Length -eq [Int64]$candidate.byteSize) {",
+    "    if ((Get-FileHash -LiteralPath $candidate.guestPath -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $candidate.sha256) { $cacheHits += $candidate.guestPath }",
+    "  }",
     "}",
     "@{ cacheHits = @($cacheHits) } | ConvertTo-Json -Compress",
   ].join("\n");
 }
 
-function parseGuestFileCacheHits(output, transfers) {
+function parseGuestInputCacheHits(output, transfers) {
   let value;
   try {
     value = JSON.parse(output.trim());
@@ -894,11 +938,7 @@ function parseGuestFileCacheHits(output, transfers) {
   ) {
     throw new Error("AI guest input cache probe returned invalid results");
   }
-  const eligible = new Set(
-    transfers
-      .filter((transfer) => !transfer.members)
-      .map((transfer) => transfer.guestPath),
-  );
+  const eligible = new Set(transfers.map((transfer) => transfer.guestPath));
   const hits = new Set();
   for (const path of value.cacheHits) {
     if (typeof path !== "string" || !eligible.has(path) || hits.has(path)) {
@@ -935,9 +975,9 @@ export async function stageAiAcceptanceInputs({
     ...(corePreparation?.transfers ?? []),
     ...(preparation?.transfers ?? []),
   ];
-  const probe = guestFileCacheProbe(transfers);
+  const probe = guestInputCacheProbe(transfers);
   const cachedGuestFiles = probe
-    ? parseGuestFileCacheHits(
+    ? parseGuestInputCacheHits(
         (
           await captureResult(
             "ssh",
