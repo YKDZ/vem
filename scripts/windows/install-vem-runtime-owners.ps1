@@ -133,7 +133,8 @@ function Assert-OwnerChildPath([string]$Path, [string]$Parent, [string]$Label) {
 }
 
 function Assert-VisionAiModelPack([string]$ModelRoot, [string]$VisionRoot) {
-  $normalizedRoot = Assert-OwnerChildPath $ModelRoot (Join-Path $VisionRoot "ai-model-packs\packs") "Vision AI model pack root"
+  $normalizedRoot = Get-NormalizedOwnerDirectory $ModelRoot "Vision AI model pack root"
+  Add-OwnerDirectoryLease $normalizedRoot "Vision AI model pack root"
   $descriptorPath = Join-Path $VisionAppDirectory "_internal\official-ai-model-pack-descriptor.json"
   Assert-OwnerPath $descriptorPath "bundled official AI model descriptor"
   $manifestPath = Join-Path $normalizedRoot "ai-model-manifest.json"
@@ -339,43 +340,6 @@ function Register-InteractiveOwnerTask(
     -Force | Out-Null
 }
 
-function Test-RuntimeExecutableReference([string]$Text, [string[]]$ExpectedPaths) {
-  if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
-  if (@($ExpectedPaths | Where-Object { $Text -match [regex]::Escape($_) }).Count -gt 0) {
-    return $true
-  }
-  return $Text -match '(?i)(^|[\\/"''\s])(?:machine|vending-vision|vending-daemon)\.exe\b'
-}
-
-function Get-CompetingOwners(
-  [string]$DaemonExecutable,
-  [string]$MachineExecutable,
-  [string]$VisionExecutable
-) {
-  $expectedTasks = @("VEMMachineUI", "VEMVisionRuntime")
-  $expectedPaths = @($DaemonExecutable, $MachineExecutable, $VisionExecutable)
-  $conflicts = [System.Collections.Generic.List[string]]::new()
-
-  foreach ($task in @(Get-ScheduledTask -ErrorAction SilentlyContinue)) {
-    if ($expectedTasks -contains [string]$task.TaskName) { continue }
-    $actionText = @($task.Actions | ForEach-Object { "$( [string]$_.Execute ) $( [string]$_.Arguments )" }) -join " "
-    $isLegacyVisionTask = [string]$task.TaskPath -ieq "\VEM\" -and [string]$task.TaskName -ieq "StartVisionServer"
-    $usesLegacyVisionLauncher = $actionText -match '(?i)start_vision\.(bat|cmd)\b'
-    if ($isLegacyVisionTask -or $usesLegacyVisionLauncher -or (Test-RuntimeExecutableReference $actionText $expectedPaths)) {
-      $conflicts.Add("scheduled task $($task.TaskPath)$($task.TaskName)") | Out-Null
-    }
-  }
-
-  foreach ($service in @(Get-CimInstance Win32_Service -ErrorAction SilentlyContinue)) {
-    if ([string]$service.Name -eq "VemVendingDaemon") { continue }
-    if (Test-RuntimeExecutableReference ([string]$service.PathName) $expectedPaths) {
-      $conflicts.Add("service $($service.Name)") | Out-Null
-    }
-  }
-
-  return @($conflicts | Select-Object -Unique)
-}
-
 function Assert-NoDuplicateRuntimeProcesses {
   foreach ($processName in @("vending-daemon.exe", "machine.exe", "vending-vision.exe")) {
     $instances = @(Get-CimInstance Win32_Process -Filter "Name = '$processName'" -ErrorAction SilentlyContinue)
@@ -480,10 +444,6 @@ if ([string]::IsNullOrWhiteSpace($KioskPassword)) {
   throw "KioskPassword is required to configure VEMKiosk automatic logon"
 }
 
-$conflicts = @(Get-CompetingOwners $daemonExecutable $machineExecutable $visionExecutable)
-if ($conflicts.Count -gt 0) {
-  throw "competing runtime owners detected; remove them manually before installing: $($conflicts -join ', ')"
-}
 Assert-NoDuplicateRuntimeProcesses
 Assert-OwnerDirectoryLeases
 

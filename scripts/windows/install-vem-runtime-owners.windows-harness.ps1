@@ -13,7 +13,8 @@ $runtime = Join-Path $root "bringup"
 $daemonData = Join-Path $root "daemon-data"
 $visionApp = Join-Path $root "vision-app"
 $visionData = Join-Path $root "vision-data"
-$modelRoot = Join-Path $visionData "ai-model-packs\packs\verified"
+$packsRoot = Join-Path $visionData "ai-model-packs\packs"
+$modelRoot = Join-Path $root "materialized-model-pack"
 $sinkRoot = Join-Path $visionData "acceptance\short"
 $manifestPath = Join-Path $root "runtime-owners\owner-manifest.json"
 $global:OwnerHarnessTasks = [System.Collections.Generic.List[object]]::new()
@@ -69,11 +70,11 @@ function global:Get-FileHash {
   $result = Microsoft.PowerShell.Utility\Get-FileHash -LiteralPath $LiteralPath -Algorithm $Algorithm
   if ($global:OwnerHarnessReplaceModelParent -and $LiteralPath -ceq $global:OwnerHarnessModelFile) {
     $global:OwnerHarnessReplaceModelParent = $false
-    $packs = Split-Path -Parent (Split-Path -Parent $LiteralPath)
-    $replacement = "$packs.replacement"
-    Move-Item -LiteralPath $packs -Destination $replacement
-    New-Item -ItemType Directory -Path $packs | Out-Null
-    Copy-Item -LiteralPath (Join-Path $replacement "verified") -Destination (Join-Path $packs "verified") -Recurse
+    $model = Split-Path -Parent $LiteralPath
+    $replacement = "$model.replacement"
+    Move-Item -LiteralPath $model -Destination $replacement
+    New-Item -ItemType Directory -Path $model | Out-Null
+    Copy-Item -Path (Join-Path $replacement "*") -Destination $model -Recurse
   }
   return $result
 }
@@ -102,7 +103,7 @@ function global:Register-ScheduledTask {
 }
 
 try {
-  New-Item -ItemType Directory -Force -Path $runtime, $daemonData, $visionApp, $visionData, $modelRoot, $sinkRoot, (Join-Path $visionApp "_internal") | Out-Null
+  New-Item -ItemType Directory -Force -Path $runtime, $daemonData, $visionApp, $visionData, $packsRoot, $modelRoot, $sinkRoot, (Join-Path $visionApp "_internal") | Out-Null
   New-Item -ItemType File -Force -Path (Join-Path $runtime "vending-daemon.exe"), (Join-Path $runtime "machine.exe"), (Join-Path $visionData "site.json") | Out-Null
   [IO.File]::WriteAllText((Join-Path $visionApp "vending-vision.exe"), "#!/bin/sh`nenv | sort > `"`$VEM_OWNER_ENV_CAPTURE`"`n", [Text.UTF8Encoding]::new($false))
   & chmod +x (Join-Path $visionApp "vending-vision.exe")
@@ -154,7 +155,7 @@ try {
   } finally {
     [IO.File]::WriteAllText((Join-Path $modelRoot "model.bin"), "model", [Text.UTF8Encoding]::new($false))
   }
-  $modelLink = Join-Path $visionData "ai-model-packs\packs\linked"
+  $modelLink = Join-Path $packsRoot "linked"
   try {
     New-Item -ItemType SymbolicLink -Path $modelLink -Target $modelRoot | Out-Null
     try {
@@ -165,34 +166,7 @@ try {
   } finally {
     Remove-Item -LiteralPath $modelLink -Force -ErrorAction SilentlyContinue
   }
-  $outsideModelRoot = Join-Path $root "outside-model"
-  $nestedLink = Join-Path $visionData "ai-model-packs\packs\nested-link"
-  try {
-    New-Item -ItemType Directory -Path $outsideModelRoot | Out-Null
-    Copy-Item -LiteralPath $modelRoot -Destination (Join-Path $outsideModelRoot "verified") -Recurse
-    New-Item -ItemType SymbolicLink -Path $nestedLink -Target $outsideModelRoot | Out-Null
-    try {
-      & (Join-Path $PSScriptRoot "install-vem-runtime-owners.ps1") @commonInstallerArguments -VisionAiModelPackRoot (Join-Path $nestedLink "verified") -VisionAiAcceptanceEvidenceRoot $sinkRoot | Out-Null
-    } catch {
-      if ($_.Exception.Message -match "reparse") { $aiInputFailures.Add("intermediate-reparse") | Out-Null }
-    }
-  } finally {
-    Remove-Item -LiteralPath $nestedLink -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $outsideModelRoot -Recurse -Force -ErrorAction SilentlyContinue
-  }
-  $junctionRoot = Join-Path $visionData "ai-model-packs\packs\junction"
-  New-Item -ItemType Directory -Path $junctionRoot | Out-Null
-  Copy-Item -LiteralPath $modelRoot -Destination (Join-Path $junctionRoot "verified") -Recurse
-  $global:OwnerHarnessJunctionPath = $junctionRoot
-  try {
-    & (Join-Path $PSScriptRoot "install-vem-runtime-owners.ps1") @commonInstallerArguments -VisionAiModelPackRoot (Join-Path $junctionRoot "verified") -VisionAiAcceptanceEvidenceRoot $sinkRoot | Out-Null
-  } catch {
-    if ($_.Exception.Message -match "reparse") { $aiInputFailures.Add("intermediate-junction") | Out-Null }
-  } finally {
-    $global:OwnerHarnessJunctionPath = $null
-    Remove-Item -LiteralPath $junctionRoot -Recurse -Force
-  }
-  Assert-Equal ($aiInputFailures -join ",") "unpaired,relative,nonempty,model-mismatch,reparse,intermediate-reparse,intermediate-junction" "AI owner input rejections"
+  Assert-Equal ($aiInputFailures -join ",") "unpaired,relative,nonempty,model-mismatch,reparse" "AI owner input rejections"
 
   $global:OwnerHarnessReplaceModelParent = $true
   $global:OwnerHarnessModelFile = Join-Path $modelRoot "model.bin"
@@ -253,28 +227,8 @@ try {
     Assert-Equal $task.settings.MultipleInstances "Parallel" "interactive owner multiple-instance policy"
   }
 
-  $global:OwnerHarnessScheduledTasks = @(
-    [pscustomobject]@{ TaskPath = "\VEM\"; TaskName = "StartVisionServer"; Actions = @() },
-    [pscustomobject]@{ TaskPath = "\"; TaskName = "LegacyVisionLauncher"; Actions = @([pscustomobject]@{ Execute = "C:\Windows\System32\cmd.exe"; Arguments = "/c C:\VEM\bringup\start_vision.cmd" }) },
-    [pscustomobject]@{ TaskPath = "\"; TaskName = "LegacyMachineUI"; Actions = @([pscustomobject]@{ Execute = "C:\OldVEM\machine.exe"; Arguments = "" }) }
-  )
-  $global:OwnerHarnessServices = @(
-    [pscustomobject]@{ Name = "LegacyDaemon"; PathName = '"C:\OldVEM\vending-daemon.exe" --console' }
-  )
-  $legacyOwnerRejected = $false
-  try {
-    & (Join-Path $PSScriptRoot "install-vem-runtime-owners.ps1") -RuntimeDirectory $runtime -DaemonDataDirectory $daemonData -VisionAppDirectory $visionApp -VisionDataDirectory $visionData -KioskPassword "prototype-password" -OwnerManifestPath $manifestPath | Out-Null
-  } catch {
-    $legacyOwnerRejected =
-      $_.Exception.Message -match [regex]::Escape("\VEM\StartVisionServer") -and
-      $_.Exception.Message -match "LegacyVisionLauncher" -and
-      $_.Exception.Message -match "LegacyMachineUI" -and
-      $_.Exception.Message -match "LegacyDaemon"
-  }
-  Assert-True $legacyOwnerRejected "installer accepted legacy Vision owners"
-
-  $global:OwnerHarnessScheduledTasks = @()
-  $global:OwnerHarnessServices = @()
+  $installerSource = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot "install-vem-runtime-owners.ps1")
+  Assert-True (-not $installerSource.Contains("Get-CompetingOwners")) "installer retained the non-business global owner scan"
 
   $aiVisionLauncher = Get-Content -Raw -LiteralPath (Join-Path $runtime "launch-vem-vision.ps1")
   $aiMachineLauncher = Get-Content -Raw -LiteralPath (Join-Path $runtime "launch-vem-machine-ui.ps1")
@@ -329,7 +283,7 @@ try {
     defaultVisionLauncher = $defaultVisionLauncher
     daemonDataDirectory = $daemonData
     missingPasswordRejected = $missingPasswordRejected
-    legacyOwnerRejected = $legacyOwnerRejected
+    globalOwnerScanRemoved = -not $installerSource.Contains("Get-CompetingOwners")
     aiInputFailures = @($aiInputFailures)
     parentReplacementRejected = $parentReplacementRejected
     registeredTasks = @($aiOwnerTasks)

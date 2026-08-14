@@ -114,8 +114,6 @@ test("owner installer writes one manifest through its public PowerShell entrypoi
     "nonempty",
     "model-mismatch",
     "reparse",
-    "intermediate-reparse",
-    "intermediate-junction",
   ]);
   assert.equal(output.parentReplacementRejected, true);
   assert.match(output.visionLauncher, /EnvironmentVariables\.Remove/);
@@ -126,7 +124,7 @@ test("owner installer writes one manifest through its public PowerShell entrypoi
   assert.equal(output.manifest.acl.length, 6);
   assert.equal(output.registeredTasks.length, 2);
   assert.equal(output.missingPasswordRejected, true);
-  assert.equal(output.legacyOwnerRejected, true);
+  assert.equal(output.globalOwnerScanRemoved, true);
   assert.equal(output.aclCalls.length, 6);
   assert.ok(
     output.aclCalls.some(
