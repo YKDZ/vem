@@ -958,6 +958,18 @@ function Get-TestbedCanonicalVisionProcesses([string]$AppDirectory, [string]$Con
       } $_.CommandLine $canonicalVisionConfigurationPath)
     }
   )
+  $managedCanonicalVisionProcessIds = @(
+    $managedCanonicalVisionProcesses | ForEach-Object { [int]$_.ProcessId }
+  )
+  $managedCanonicalVisionChildProcesses = @(
+    $canonicalVisionProcesses | Where-Object {
+      [int]$_.ParentProcessId -in $managedCanonicalVisionProcessIds -and
+      [string]$_.CommandLine -match '(?:^|\s)"?--multiprocessing-fork"?(?:\s|$)'
+    }
+  )
+  $managedCanonicalVisionProcesses = @(
+    $managedCanonicalVisionProcesses + $managedCanonicalVisionChildProcesses
+  )
   $unknownCanonicalVisionProcesses = @(
     $canonicalVisionProcesses | Where-Object {
       [int]$_.ProcessId -notin @($managedCanonicalVisionProcesses | ForEach-Object { [int]$_.ProcessId })
