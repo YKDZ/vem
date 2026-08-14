@@ -121,7 +121,10 @@ async function withInstalledAiHarness(options, callback) {
       )
     : networkPng;
   const server = createHttpServer((request, response) => {
-    if (request.url !== `/v2/try-on/results/${resultAttemptId}`) {
+    if (
+      new URL(request.url, "http://127.0.0.1").pathname !==
+      `/v2/try-on/results/${resultAttemptId}`
+    ) {
       response.writeHead(404).end();
       return;
     }
@@ -155,7 +158,7 @@ async function withInstalledAiHarness(options, callback) {
   }
   if (options.extraSidecar)
     writeFileSync(join(root, "extra.regional-evidence.json"), "{}\n");
-  const resultUrl = `http://127.0.0.1:${server.address().port}/v2/try-on/results/${resultAttemptId}`;
+  const resultUrl = `http://127.0.0.1:${server.address().port}/v2/try-on/results/${resultAttemptId}?token=result-token`;
   const lifecycle = [
     "starting",
     "accepted",
@@ -508,7 +511,10 @@ describe("vision try-on acceptance script", () => {
       "base64",
     );
     const server = createHttpServer((request, response) => {
-      if (request.url !== `/v2/try-on/results/${attemptId}`) {
+      if (
+        new URL(request.url, "http://127.0.0.1").pathname !==
+        `/v2/try-on/results/${attemptId}`
+      ) {
         response.writeHead(404).end();
         return;
       }
@@ -527,7 +533,7 @@ describe("vision try-on acceptance script", () => {
       join(root, `${attemptId}.regional-evidence.json`),
       '{"kind":"regional-evidence","schemaVersion":"vem-ai-regional-evidence/v1"}\n',
     );
-    const resultUrl = `http://127.0.0.1:${server.address().port}/v2/try-on/results/${attemptId}`;
+    const resultUrl = `http://127.0.0.1:${server.address().port}/v2/try-on/results/${attemptId}?token=result-token`;
     const lifecycle = [
       "starting",
       "accepted",

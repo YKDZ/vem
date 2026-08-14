@@ -3322,7 +3322,7 @@ async function collectInstalledAiTryOnAttemptInternal(
       resultUrl.protocol !== "http:" ||
       !["127.0.0.1", "localhost", "[::1]"].includes(resultUrl.hostname) ||
       resultUrl.pathname !== expectedResultPath ||
-      resultUrl.search !== "" ||
+      !/^\?token=[A-Za-z0-9_-]{1,128}$/.test(resultUrl.search) ||
       resultUrl.hash !== ""
     )
       throw new Error("installed AI result URL is not bound to its attempt");
@@ -3370,7 +3370,7 @@ async function collectInstalledAiTryOnAttemptInternal(
       finalResultUrl.protocol !== "http:" ||
       !["127.0.0.1", "localhost", "[::1]"].includes(finalResultUrl.hostname) ||
       finalResultUrl.pathname !== expectedResultPath ||
-      finalResultUrl.search !== "" ||
+      !/^\?token=[A-Za-z0-9_-]{1,128}$/.test(finalResultUrl.search) ||
       finalResultUrl.hash !== ""
     )
       throw new Error("installed AI result image evidence is invalid");
