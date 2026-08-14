@@ -2315,7 +2315,7 @@ describe("Windows D cache contract", () => {
     assert.doesNotMatch(guest, /Get-VisionMainArtifactCache/);
     assert.match(
       guest,
-      /function Write-TestbedGuestInputAtomically[\s\S]*\[IO\.File\]::Replace[\s\S]*visionCore[\s\S]*Write-TestbedGuestInputAtomically \$GuestInputPath \$guestInput/,
+      /function Write-TestbedGuestInputAtomically[\s\S]*Move-Item -LiteralPath \$temporaryPath -Destination \$Path -Force -ErrorAction Stop[\s\S]*visionCore[\s\S]*Write-TestbedGuestInputAtomically \$GuestInputPath \$guestInput/,
     );
     assert.match(guest, /Install-VisionMainArtifact/);
     assert.match(guest, /full-workflow-orchestrator\.mjs/);

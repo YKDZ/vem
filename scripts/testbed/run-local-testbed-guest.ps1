@@ -211,7 +211,7 @@ function Write-TestbedGuestInputAtomically([string]$Path, [object]$GuestInput) {
   try {
     $json = $GuestInput | ConvertTo-Json -Depth 12
     [IO.File]::WriteAllText($temporaryPath, "$json`n", [Text.UTF8Encoding]::new($false))
-    [IO.File]::Replace($temporaryPath, $Path, $null)
+    Move-Item -LiteralPath $temporaryPath -Destination $Path -Force -ErrorAction Stop
   } finally {
     Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
   }
