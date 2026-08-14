@@ -385,7 +385,7 @@ export function validateAiAttemptSet(attempts, runtimeTrace) {
       attempt.journey.productSelector !==
         `[data-test="catalog-product"][data-catalog-key="${attempt.journey.selectedCatalogKey}"]` ||
       attempt.journey.productRoute !==
-        `#/products/${encodeURIComponent(attempt.journey.selectedCatalogKey)}` ||
+        `#/products/${attempt.journey.selectedCatalogKey}` ||
       attempt.journey.returnProductRoute !== attempt.journey.productRoute ||
       attempt.journey.startSelector !== '[data-test="try-on-ai"]' ||
       !uuid.test(attempt.journey.selectedVariantId ?? "") ||

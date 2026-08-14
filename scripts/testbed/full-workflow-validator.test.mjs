@@ -205,14 +205,14 @@ function aiVirtualTryOnReport() {
     catalogRoute: "#/catalog",
     categorySelector:
       '[data-test="catalog-category"][data-category-key="tshirts"]',
-    productRoute: "#/products/product%3Ashort",
+    productRoute: "#/products/product:short",
     productSelector:
       '[data-test="catalog-product"][data-catalog-key="product:short"]',
     resultAttemptId: "0198f44e-21bd-7c62-8f52-b7c86cc2b003",
     resultRoute:
       "#/try-on?catalogKey=product:short&variantId=0198f44e-21bd-7c62-8f52-b7c86cc2d001",
     returnedCatalogRoute: "#/catalog",
-    returnProductRoute: "#/products/product%3Ashort",
+    returnProductRoute: "#/products/product:short",
     selectedCatalogKey: "product:short",
     selectedVariantId: "0198f44e-21bd-7c62-8f52-b7c86cc2d001",
     startSelector: '[data-test="try-on-ai"]',
@@ -231,14 +231,14 @@ function aiVirtualTryOnReport() {
     catalogRoute: "#/catalog",
     categorySelector:
       '[data-test="catalog-category"][data-category-key="tshirts"]',
-    productRoute: "#/products/product%3Along",
+    productRoute: "#/products/product:long",
     productSelector:
       '[data-test="catalog-product"][data-catalog-key="product:long"]',
     resultAttemptId: attempts[1].attemptId,
     resultRoute:
       "#/try-on?catalogKey=product:long&variantId=0198f44e-21bd-7c62-8f52-b7c86cc2d005",
     returnedCatalogRoute: "#/catalog",
-    returnProductRoute: "#/products/product%3Along",
+    returnProductRoute: "#/products/product:long",
     selectedCatalogKey: "product:long",
     selectedVariantId: "0198f44e-21bd-7c62-8f52-b7c86cc2d005",
     startSelector: '[data-test="try-on-ai"]',
@@ -1444,6 +1444,25 @@ describe("full workflow aggregate validator", () => {
         "ai-virtual-try-on.json",
       ).status,
       "passed",
+    );
+  });
+
+  it("rejects a percent-encoded product hash that Vue Router never observed", () => {
+    const report = aiVirtualTryOnReport();
+    for (const attempt of report.attempts) {
+      const encoded = `#/products/${encodeURIComponent(
+        attempt.journey.selectedCatalogKey,
+      )}`;
+      attempt.journey.productRoute = encoded;
+      attempt.journey.returnProductRoute = encoded;
+    }
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("aiVirtualTryOn"),
+        report,
+        "ai-virtual-try-on.json",
+      ).status,
+      "failed",
     );
   });
 
