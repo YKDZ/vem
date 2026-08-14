@@ -440,6 +440,22 @@ test("AI track owns the importable short/long/default Vision owner lifecycle", (
   assert.match(source, /aiEnvironmentCleared = \$true/);
 });
 
+test("AI owner cleanup removes every process from the canonical Vision executable", () => {
+  const source = readFileSync(ownerModule, "utf8");
+  assert.doesNotMatch(
+    source,
+    /throw "Vision bootstrap found unknown canonical executable processes/,
+  );
+  assert.match(
+    source,
+    /remaining = @\(\$processes\.managed\) \+ @\(\$processes\.unknown\)/,
+  );
+  assert.match(
+    source,
+    /Stop-Process -Id \(\[int\]\$process\.ProcessId\) -Force/,
+  );
+});
+
 test("sums ordered directory identities without Measure-Object property binding", () => {
   const source = readFileSync(runner, "utf8");
   assert.doesNotMatch(source, /Measure-Object -Property byteSize/);

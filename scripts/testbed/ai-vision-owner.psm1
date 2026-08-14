@@ -140,13 +140,6 @@ function Get-TestbedCanonicalVisionProcesses([string]$AppDirectory, [string]$Con
   }
 }
 
-function Assert-TestbedNoUnknownCanonicalVisionProcesses([object]$VisionProcesses) {
-  $unknown = @($VisionProcesses.unknown)
-  if ($unknown.Count -gt 0) {
-    throw "Vision bootstrap found unknown canonical executable processes: $($unknown | Select-Object ProcessId, ExecutablePath, CommandLine | ConvertTo-Json -Compress)"
-  }
-}
-
 function Stop-TestbedAiVisionOwner([string]$AppDirectory, [string]$ConfigurationPath) {
   $context = Assert-TestbedAiOwnerContext
   if ($null -ne $context.testOperations -and $context.testOperations.ContainsKey("StopOwner")) {
@@ -154,17 +147,20 @@ function Stop-TestbedAiVisionOwner([string]$AppDirectory, [string]$Configuration
     return
   }
   $initial = Get-TestbedCanonicalVisionProcesses $AppDirectory $ConfigurationPath
-  Assert-TestbedNoUnknownCanonicalVisionProcesses $initial
-  $owned = @(Get-TestbedProcessTreeIds @($initial.managed | ForEach-Object { [int]$_.ProcessId }))
+  $initialCanonical = @($initial.managed) + @($initial.unknown)
+  $owned = @(Get-TestbedProcessTreeIds @($initialCanonical | ForEach-Object { [int]$_.ProcessId }))
   Stop-ScheduledTask -TaskName "VEMVisionRuntime" -ErrorAction SilentlyContinue
   Stop-TestbedCanonicalVision $AppDirectory $ConfigurationPath
   $deadline = [DateTime]::UtcNow.AddSeconds(20)
   do {
     $processes = Get-TestbedCanonicalVisionProcesses $AppDirectory $ConfigurationPath
-    Assert-TestbedNoUnknownCanonicalVisionProcesses $processes
+    $remaining = @($processes.managed) + @($processes.unknown)
+    foreach ($process in $remaining) {
+      Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction SilentlyContinue
+    }
     $remaining = @($owned | Where-Object { $null -ne (Get-Process -Id $_ -ErrorAction SilentlyContinue) })
     $listeners = @(Get-NetTCPConnection -LocalAddress "127.0.0.1" -LocalPort 7892 -State Listen -ErrorAction SilentlyContinue)
-    if (@($processes.managed).Count -eq 0 -and $remaining.Count -eq 0 -and $listeners.Count -eq 0) { return }
+    if (@($processes.managed).Count + @($processes.unknown).Count -eq 0 -and $remaining.Count -eq 0 -and $listeners.Count -eq 0) { return }
     Start-Sleep -Milliseconds 100
   } while ([DateTime]::UtcNow -lt $deadline)
   throw "managed Vision owner did not become physically dead before restart"
