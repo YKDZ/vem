@@ -228,6 +228,10 @@ function validateAiVirtualTryOnTrack(report, reportPath) {
       value.machineUiAvailable,
       value.saleAvailable,
     ].every((fact) => fact === true);
+  const skipAiRss =
+    execution?.aiRssObservation === "skipped_by_vm_acceptance";
+  const vmAiRssSkipEnabled =
+    process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS === "1";
   const complete =
     exactKeys(report, [
       "attempts",
@@ -247,6 +251,7 @@ function validateAiVirtualTryOnTrack(report, reportPath) {
     Array.isArray(report.reasons) &&
     report.reasons.length === 0 &&
     exactKeys(execution, [
+      ...(skipAiRss ? ["aiRssObservation"] : []),
       "identities",
       "noDirectWorker",
       "protocol",
@@ -256,6 +261,7 @@ function validateAiVirtualTryOnTrack(report, reportPath) {
     execution.source === "installed_machine_ui_cdp" &&
     execution.protocol === "vem.vision.v2" &&
     execution.noDirectWorker === true &&
+    (!skipAiRss || vmAiRssSkipEnabled) &&
     JSON.stringify(execution.recordedSources) ===
       JSON.stringify(["front", "top"]) &&
     exactKeys(identities, ["aiRuntime", "contract", "modelPack", "runtime"]) &&
@@ -273,7 +279,7 @@ function validateAiVirtualTryOnTrack(report, reportPath) {
     Array.isArray(attempts) &&
     attempts.length === 2 &&
     Array.isArray(report.runtimeTrace) &&
-    validateAiAttemptSet(attempts, report.runtimeTrace);
+    validateAiAttemptSet(attempts, report.runtimeTrace, { skipAiRss });
   const results = Array.isArray(attempts)
     ? attempts.map((attempt) => attempt.result)
     : [];
@@ -287,7 +293,13 @@ function validateAiVirtualTryOnTrack(report, reportPath) {
         decodedWidth: results[0].decodedWidth,
         decodedHeight: results[0].decodedHeight,
         durationMs: Math.max(...results.map((result) => result.durationMs)),
-        peakRssBytes: Math.max(...results.map((result) => result.peakRssBytes)),
+        ...(skipAiRss
+          ? {}
+          : {
+              peakRssBytes: Math.max(
+                ...results.map((result) => result.peakRssBytes),
+              ),
+            }),
       })
     : failedTrack(
         "aiVirtualTryOn",
@@ -298,7 +310,11 @@ function validateAiVirtualTryOnTrack(report, reportPath) {
       );
 }
 
-export function validateAiAttemptSet(attempts, runtimeTrace) {
+export function validateAiAttemptSet(
+  attempts,
+  runtimeTrace,
+  { skipAiRss = false } = {},
+) {
   const uuid =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
   const expected = [
@@ -424,7 +440,7 @@ export function validateAiAttemptSet(attempts, runtimeTrace) {
         "decodedHeight",
         "decodedWidth",
         "durationMs",
-        "peakRssBytes",
+        ...(skipAiRss ? [] : ["peakRssBytes"]),
         "sha256",
       ]) ||
       result.contentType !== "image/png" ||
@@ -434,8 +450,9 @@ export function validateAiAttemptSet(attempts, runtimeTrace) {
       result.decodedHeight <= 0 ||
       !Number.isSafeInteger(result.durationMs) ||
       result.durationMs <= 0 ||
-      !Number.isSafeInteger(result.peakRssBytes) ||
-      result.peakRssBytes <= 0 ||
+      (!skipAiRss &&
+        (!Number.isSafeInteger(result.peakRssBytes) ||
+          result.peakRssBytes <= 0)) ||
       !/^[a-f0-9]{64}$/.test(result.sha256 ?? "") ||
       resultDigests.has(result.sha256) ||
       result.sha256 === attempt.input.sha256 ||

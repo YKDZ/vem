@@ -58,6 +58,10 @@ const WORKER_EXECUTABLE =
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
+export function isVmAcceptanceAiRssSkipEnabled() {
+  return process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS === "1";
+}
+
 export function buildInstalledVisionWorkerSampleScript() {
   return [
     "$ErrorActionPreference='Stop'",
@@ -453,7 +457,12 @@ function sidecarAttemptFacts(value, collected, caseKey) {
   };
 }
 
-function attemptReport(collected, caseKey, archived) {
+function attemptReport(
+  collected,
+  caseKey,
+  archived,
+  { skipAiRss = false } = {},
+) {
   const sidecar = JSON.parse(collected.regionalEvidence.bytes.toString("utf8"));
   const facts = sidecarAttemptFacts(sidecar, collected, caseKey);
   const durationMs = collected.durationMs;
@@ -461,8 +470,8 @@ function attemptReport(collected, caseKey, archived) {
   if (
     !Number.isSafeInteger(durationMs) ||
     durationMs <= 0 ||
-    !Number.isSafeInteger(peakRssBytes) ||
-    peakRssBytes <= 0
+    (!skipAiRss &&
+      (!Number.isSafeInteger(peakRssBytes) || peakRssBytes <= 0))
   )
     throw new Error(`${caseKey} runtime resource facts are missing`);
   return {
@@ -494,7 +503,7 @@ function attemptReport(collected, caseKey, archived) {
       decodedHeight: collected.resultEvidence.height,
       decodedWidth: collected.resultEvidence.width,
       durationMs,
-      peakRssBytes,
+      ...(skipAiRss ? {} : { peakRssBytes }),
       sha256: facts.resultSha256,
     },
     screenshots: collected.screenshots,
@@ -773,9 +782,12 @@ export async function runInstalledAiAttemptPhase(options) {
     }).finally(() => {
       completed = true;
     });
+    const skipAiRss = isVmAcceptanceAiRssSkipEnabled();
     const [collected, resource] = await Promise.all([
       attemptPromise,
-      sampleInstalledAiWorkerPeakRss(() => completed),
+      skipAiRss
+        ? Promise.resolve(null)
+        : sampleInstalledAiWorkerPeakRss(() => completed),
     ]);
     if (options.caseKey === "short") {
       const retried = await collectInstalledAiTryOnAttempt({
@@ -807,7 +819,7 @@ export async function runInstalledAiAttemptPhase(options) {
       1,
       Math.ceil(performance.now() - startedAt),
     );
-    collected.peakRssBytes = resource.peakRssBytes;
+    if (resource) collected.peakRssBytes = resource.peakRssBytes;
     collected.expectedGarmentId = acceptance.garmentId;
     collected.expectedGarmentSha256 = requireDigest(
       acceptance.garmentSha256,
@@ -830,16 +842,22 @@ export async function runInstalledAiAttemptPhase(options) {
       options.caseKey,
       options.artifactRoot,
     );
-    const report = attemptReport(collected, options.caseKey, archived);
+    const report = attemptReport(collected, options.caseKey, archived, {
+      skipAiRss,
+    });
     const bytes = canonicalBytes(
       supportEvidence("installed-runtime", {
         attempt: report,
-        observation: attemptSupportRecord(
-          collected,
-          options.caseKey,
-          report,
-          resource,
-        ).facts,
+        ...(resource
+          ? {
+              observation: attemptSupportRecord(
+                collected,
+                options.caseKey,
+                report,
+                resource,
+              ).facts,
+            }
+          : {}),
       }),
     );
     writeFileSync(options.phaseOutputPath, bytes, { flag: "wx", mode: 0o600 });
@@ -983,6 +1001,9 @@ export async function assembleInstalledAiTryOnAcceptance(
   if (sale?.ok !== true)
     throw new Error("ordinary installed-owner sale did not complete");
   const attempts = input.attempts;
+  const skipAiRss = input.skipAiRss === true;
+  if (skipAiRss && !isVmAcceptanceAiRssSkipEnabled())
+    throw new Error("VM AI RSS bypass is not enabled");
   if (!Array.isArray(attempts) || attempts.length !== 2)
     throw new Error("two installed AI attempt facts are required");
   const runtimeTrace = attempts.flatMap((attempt) =>
@@ -992,7 +1013,7 @@ export async function assembleInstalledAiTryOnAcceptance(
       state,
     })),
   );
-  if (!validateAiAttemptSet(attempts, runtimeTrace))
+  if (!validateAiAttemptSet(attempts, runtimeTrace, { skipAiRss }))
     throw new Error("installed AI attempt set failed the shared v2 contract");
   const evidenceManifest =
     input.evidenceManifest ??
@@ -1034,6 +1055,9 @@ export async function assembleInstalledAiTryOnAcceptance(
       degradations: { workerFailure: input.workerFailure },
       error: null,
       execution: {
+        ...(skipAiRss
+          ? { aiRssObservation: "skipped_by_vm_acceptance" }
+          : {}),
         identities: Object.fromEntries(
           Object.entries(input.identities).map(([key, value]) => [
             key,
@@ -1066,6 +1090,9 @@ export async function assembleInstalledAiTryOnAcceptance(
       ? "installed worker failure probe not executed; AI regional evidence policy awaits Issue10 two-garment calibration"
       : "AI regional evidence policy awaits Issue10 two-garment calibration",
     execution: {
+      ...(skipAiRss
+        ? { aiRssObservation: "skipped_by_vm_acceptance" }
+        : {}),
       identities: Object.fromEntries(
         Object.entries(input.identities).map(([key, value]) => [
           key,
@@ -1099,17 +1126,32 @@ export async function assembleInstalledAiTryOnAcceptance(
 }
 
 export function validateInstalledAiAttemptSupport(value, expectedCase) {
-  const resource = value?.facts?.observation?.resource;
-  const association = value?.facts?.observation?.garmentAssociation;
+  const skipAiRss = isVmAcceptanceAiRssSkipEnabled();
   const attempt = value?.facts?.attempt;
   if (
     JSON.stringify(Object.keys(value ?? {}).sort()) !==
       JSON.stringify(["facts", "kind", "schemaVersion"]) ||
     value.schemaVersion !== AI_SUPPORT_EVIDENCE_SCHEMA ||
     value.kind !== "installed-runtime" ||
+    !Object.hasOwn(CASES, expectedCase) ||
+    attempt?.caseKey !== expectedCase
+  )
+    throw new Error("installed AI attempt support evidence is invalid");
+  if (skipAiRss) {
+    if (
+      JSON.stringify(Object.keys(value.facts ?? {}).sort()) !==
+      JSON.stringify(["attempt"])
+    )
+      throw new Error("installed AI attempt support evidence is invalid");
+    return attempt;
+  }
+  const observation = value.facts.observation;
+  const resource = observation?.resource;
+  const association = observation?.garmentAssociation;
+  if (
     JSON.stringify(Object.keys(value.facts ?? {}).sort()) !==
       JSON.stringify(["attempt", "observation"]) ||
-    JSON.stringify(Object.keys(value.facts.observation ?? {}).sort()) !==
+    JSON.stringify(Object.keys(observation ?? {}).sort()) !==
       JSON.stringify([
         "attemptId",
         "caseKey",
@@ -1130,10 +1172,8 @@ export function validateInstalledAiAttemptSupport(value, expectedCase) {
         "workerProcessId",
         "workerStartTimeTicks",
       ]) ||
-    !Object.hasOwn(CASES, expectedCase) ||
-    attempt?.caseKey !== expectedCase ||
-    value.facts.observation.attemptId !== attempt.attemptId ||
-    value.facts.observation.caseKey !== expectedCase ||
+    observation.attemptId !== attempt.attemptId ||
+    observation.caseKey !== expectedCase ||
     association.garmentId !== attempt.garment?.garmentId ||
     association.garmentSha256 !== attempt.garment?.sha256 ||
     !UUID_PATTERN.test(association.selectedVariantId ?? "") ||
@@ -1233,6 +1273,7 @@ export async function assembleInstalledAiTryOnAcceptanceFiles(options) {
         runtime: proof.candidate.subjectSha256,
       },
       saleInput: null,
+      skipAiRss: isVmAcceptanceAiRssSkipEnabled(),
       workerFailure: workerFailureDegradation,
     },
     { ordinarySale: async () => sale },

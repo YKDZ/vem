@@ -21,6 +21,7 @@ import {
   expectedInstalledProductRoute,
   expectedInstalledReturnProductRoute,
   expectedInstalledTryOnRoute,
+  isVmAcceptanceAiRssSkipEnabled,
   sampleInstalledVisionPeakRssForTest,
   validateInstalledAiAttemptSupport,
   validateCorruptDegradationSupport,
@@ -56,6 +57,24 @@ test("matches the selected catalog item using the Vue hash-route representation"
     expectedInstalledReturnProductRoute(catalogKey, variantId),
     "#/products/product:8a768475-d41b-4b5e-ab9c-c52d1b375c13?variantId=e24dea5e-8b92-4f71-a018-909fdbc6f5b4",
   );
+});
+
+test("enables the VM AI RSS bypass only for the exact opt-in value", () => {
+  const original = process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS;
+  try {
+    delete process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS;
+    assert.equal(isVmAcceptanceAiRssSkipEnabled(), false);
+    process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS = "0";
+    assert.equal(isVmAcceptanceAiRssSkipEnabled(), false);
+    process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS = "true";
+    assert.equal(isVmAcceptanceAiRssSkipEnabled(), false);
+    process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS = "1";
+    assert.equal(isVmAcceptanceAiRssSkipEnabled(), true);
+  } finally {
+    if (original === undefined)
+      delete process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS;
+    else process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS = original;
+  }
 });
 
 function canonical(value) {
