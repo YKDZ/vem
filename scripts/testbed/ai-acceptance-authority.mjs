@@ -143,7 +143,9 @@ function exactCandidateInput(directory) {
 
 function readContract(path) {
   if (!isAbsolute(path)) fail("contract manifest must be absolute");
-  const { raw, value } = readCanonical(path, "contract manifest");
+  const { raw, value } = readCanonical(path, "contract manifest", {
+    newline: true,
+  });
   exact(
     value,
     ["bundleDigest", "bundleVersion", "files", "protocol", "schemaVersion"],

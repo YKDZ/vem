@@ -46,7 +46,7 @@ function fixture() {
     schemaVersion: "vem-vision-v2-contract-bundle/v1",
   };
   const contractPath = join(root, "contract-manifest.json");
-  const contractRaw = canonical(contract, false);
+  const contractRaw = canonical(contract);
   writeFileSync(contractPath, contractRaw);
   const candidateManifest = {
     bindings: {},
