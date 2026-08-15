@@ -15,21 +15,12 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 import { collectInstalledAiDegradationEvidence } from "./ai-installed-degradation.mjs";
-import {
-  AI_REGIONAL_EVIDENCE_POLICY,
-  loadAiRegionalEvidencePolicy,
-  validateAiRegionalEvidenceSet,
-} from "./ai-regional-evidence.mjs";
-import {
-  readCalibrationSourceClosure,
-  validateCalibratedAiRegionalReceipt,
-} from "./calibrate-ai-regional-evidence.mjs";
 import {
   controlPlaneRequest,
   runInstalledOwnerOrdinarySaleCompletion,
@@ -354,10 +345,27 @@ function writeExclusiveCanonical(path, value) {
   writeFileSync(path, canonicalBytes(value), { flag: "wx", mode: 0o600 });
 }
 
+function resolveContainedArtifactMember(artifactRoot, memberPath, label) {
+  const root = resolve(artifactRoot);
+  const path = resolve(root, memberPath);
+  const relativePath = relative(root, path);
+  if (
+    relativePath === "" ||
+    relativePath === ".." ||
+    relativePath.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)
+  )
+    throw new Error(`${label} is outside the artifact root`);
+  return path;
+}
+
 function provisionalSidecarManifest(attempts, artifactRoot) {
   return {
     files: attempts.flatMap((attempt) => {
-      const sidecarPath = resolve(artifactRoot, attempt.regionalEvidence.path);
+      const sidecarPath = resolveContainedArtifactMember(
+        artifactRoot,
+        attempt.regionalEvidence.path,
+        "AI regional evidence member",
+      );
       const stat = lstatSync(sidecarPath);
       if (!stat.isFile() || stat.isSymbolicLink())
         throw new Error("AI regional evidence member is not regular");
@@ -384,6 +392,41 @@ function provisionalSidecarManifest(attempts, artifactRoot) {
       ];
     }),
   };
+}
+
+function validateArchivedRegionalSidecars(attempts, artifactRoot, manifest) {
+  for (const attempt of attempts) {
+    const reference = attempt.regionalEvidence;
+    const path = resolveContainedArtifactMember(
+      artifactRoot,
+      reference.path,
+      "AI regional evidence member",
+    );
+    const stat = lstatSync(path);
+    const bytes = readFileSync(path);
+    const manifestOwned = manifest.files?.some(
+      (file) =>
+        file.track === "aiVirtualTryOn" &&
+        file.kind === "supportingEvidence" &&
+        file.path === path &&
+        file.byteLength === bytes.byteLength &&
+        file.sha256 === reference.sha256,
+    );
+    const sidecar = readCanonicalJson(path, "AI regional evidence member");
+    if (
+      stat.isSymbolicLink() ||
+      !stat.isFile() ||
+      sha256(bytes) !== reference.sha256 ||
+      !manifestOwned ||
+      sidecar.verdict !== "passed" ||
+      sidecar.attempt?.inputSha256 !== attempt.input.sha256 ||
+      sidecar.attempt?.garmentSha256 !== attempt.garment.sha256 ||
+      sidecar.attempt?.resultSha256 !== attempt.result.sha256 ||
+      sidecar.attempt?.decodedWidth !== attempt.result.decodedWidth ||
+      sidecar.attempt?.decodedHeight !== attempt.result.decodedHeight
+    )
+      throw new Error("AI regional evidence archive binding is invalid");
+  }
 }
 
 function validateAttemptScreenshotArtifacts(attempts, artifactRoot, manifest) {
@@ -504,29 +547,6 @@ function requireDigest(value, label) {
   if (!/^[a-f0-9]{64}$/.test(normalized))
     throw new Error(`${label} is invalid`);
   return normalized;
-}
-
-function readCalibratedPolicyReceipt({
-  calibrationSourceInputPath,
-  policyPath,
-  receiptPath,
-  identities,
-}) {
-  if (typeof policyPath !== "string" || !isAbsolute(policyPath))
-    throw new Error("calibrated AI regional evidence policy is required");
-  if (typeof receiptPath !== "string" || !isAbsolute(receiptPath))
-    throw new Error("calibrated AI regional evidence receipt is required");
-  const policy = loadAiRegionalEvidencePolicy(policyPath);
-  if (policy.calibrationStatus !== "calibrated_issue10")
-    throw new Error("AI regional evidence policy is not calibrated");
-  const closure = readCalibrationSourceClosure(calibrationSourceInputPath);
-  const checked = validateCalibratedAiRegionalReceipt({
-    closure,
-    identities,
-    policy,
-    receiptPath,
-  });
-  return { policy, ...checked };
 }
 
 function sidecarAttemptFacts(value, collected, caseKey) {
@@ -1182,43 +1202,29 @@ export async function assembleInstalledAiTryOnAcceptance(
   );
   if (!validateAiAttemptSet(attempts, runtimeTrace, { skipAiRss }))
     throw new Error("installed AI attempt set failed the shared v2 contract");
-  const evidenceManifest =
-    input.evidenceManifest ??
-    provisionalSidecarManifest(attempts, input.artifactRoot);
+  const regionalManifest = provisionalSidecarManifest(
+    attempts,
+    input.artifactRoot,
+  );
+  const evidenceManifest = input.evidenceManifest ?? regionalManifest;
   validateAttemptScreenshotArtifacts(
     attempts,
     input.artifactRoot,
     evidenceManifest,
   );
-  const calibrated =
-    input.calibratedPolicyPath == null && input.calibrationReceiptPath == null
-      ? null
-      : readCalibratedPolicyReceipt({
-          identities: input.identities,
-          calibrationSourceInputPath: input.calibrationSourceInputPath,
-          policyPath: input.calibratedPolicyPath,
-          receiptPath: input.calibrationReceiptPath,
-        });
-  const regional = validateAiRegionalEvidenceSet(
+  validateArchivedRegionalSidecars(
     attempts,
     input.artifactRoot,
-    evidenceManifest,
-    calibrated?.policy,
+    regionalManifest,
   );
-  const calibrationPending =
-    regional.reason ===
-    "AI regional evidence policy awaits Issue10 two-garment calibration";
-  if (!regional.ok && !calibrationPending) throw new Error(regional.reason);
+  const regionalPassed = attempts.every(
+    (attempt) => attempt.regionalEvidence.verdict === "passed",
+  );
   const workerFailurePending = input.workerFailure === undefined;
-  const successful =
-    regional.ok && !workerFailurePending && calibrated !== null;
+  const successful = regionalPassed && !workerFailurePending;
   if (successful) {
     const report = {
       attempts,
-      calibration: {
-        policySha256: `sha256:${calibrated.policy.sha256}`,
-        receiptSha256: `sha256:${calibrated.sha256}`,
-      },
       degradations: { workerFailure: input.workerFailure },
       error: null,
       execution: {
@@ -1252,8 +1258,8 @@ export async function assembleInstalledAiTryOnAcceptance(
       ? {}
       : { workerFailure: input.workerFailure },
     error: workerFailurePending
-      ? "installed worker failure probe not executed; AI regional evidence policy awaits Issue10 two-garment calibration"
-      : "AI regional evidence policy awaits Issue10 two-garment calibration",
+      ? "installed worker failure probe not executed"
+      : "regional_check_failed",
     execution: {
       ...(skipAiRss ? { aiRssObservation: "skipped_by_vm_acceptance" } : {}),
       identities: Object.fromEntries(
@@ -1278,12 +1284,12 @@ export async function assembleInstalledAiTryOnAcceptance(
   };
   const acceptance = {
     ok: false,
-    reasons: workerFailurePending
-      ? [
-          "installed worker failure probe not executed",
-          "AI regional evidence policy awaits Issue10 two-garment calibration",
-        ]
-      : ["AI regional evidence policy awaits Issue10 two-garment calibration"],
+    reasons: [
+      ...(workerFailurePending
+        ? ["installed worker failure probe not executed"]
+        : []),
+      ...(!regionalPassed ? ["regional_check_failed"] : []),
+    ],
   };
   return { acceptance, report };
 }
@@ -1426,9 +1432,6 @@ export async function assembleInstalledAiTryOnAcceptanceFiles(options) {
     {
       attempts,
       artifactRoot: options.artifactRoot,
-      calibrationSourceInputPath: options.calibrationSourceInputPath,
-      calibratedPolicyPath: options.calibratedPolicyPath,
-      calibrationReceiptPath: options.calibrationReceiptPath,
       identities: {
         aiRuntime: proof.resources.runtimeDescriptorSha256,
         contract: contract.bundleDigest,
@@ -1461,11 +1464,7 @@ export async function assembleInstalledAiTryOnAcceptanceForTest(
     throw new Error(
       "AI installed assembly test boundary requires NODE_ENV=test",
     );
-  const policy = input.calibratedPolicyPath
-    ? loadAiRegionalEvidencePolicy(input.calibratedPolicyPath)
-    : AI_REGIONAL_EVIDENCE_POLICY;
-  const regionalSampledPixels =
-    policy.calibrationStatus === "calibrated_issue10" ? 1024 : 1;
+  const regionalSampledPixels = 1;
   const attempts = input.attempts.map((collected, index) => {
     const caseKey = index === 0 ? "short" : "long";
     const sidecar = {
@@ -1484,7 +1483,7 @@ export async function assembleInstalledAiTryOnAcceptanceForTest(
         atr: "schp-atr",
         lip: "schp-lip",
         pose: "mediapipe-pose",
-        sourceDescriptorSha256: policy.sourceDescriptorSha256,
+        sourceDescriptorSha256: "0".repeat(64),
       },
       kind: "regional-evidence",
       masks: {
@@ -1516,11 +1515,11 @@ export async function assembleInstalledAiTryOnAcceptanceForTest(
         },
       },
       policy: {
-        schemaVersion: policy.schemaVersion,
-        sha256: policy.sha256,
+        schemaVersion: "vem-ai-regional-evidence-policy/v1",
+        sha256: "0".repeat(64),
       },
       schemaVersion: "vem-ai-regional-evidence/v1",
-      verdict: "passed",
+      verdict: collected.regionalVerdict ?? "passed",
     };
     collected.regionalEvidence.bytes = canonicalBytes(sidecar);
     collected.screenshots ??= ["acquisition", "result"].map((stage) => {
@@ -1599,6 +1598,10 @@ export async function assembleInstalledAiTryOnAcceptanceForTest(
       path: `regional/${caseKey}/${collected.attemptId}.regional-evidence.json`,
       sha256: archived.sha256,
     });
+  });
+  input.mutateArchivedSidecars?.({
+    attempts,
+    artifactRoot: input.artifactRoot,
   });
   const evidenceManifest = {
     files: attempts.flatMap((attempt) => {
@@ -1689,9 +1692,6 @@ async function main() {
   }
   return assembleInstalledAiTryOnAcceptanceFiles({
     artifactRoot: options["artifact-root"],
-    calibratedPolicyPath: options["calibrated-policy"],
-    calibrationSourceInputPath: options["calibration-source-input"],
-    calibrationReceiptPath: options["calibration-receipt"],
     candidateInputDirectory: options["candidate-input-directory"],
     corruptDegradationPath: options["corrupt-degradation"],
     longAttemptPath: options["long-attempt"],

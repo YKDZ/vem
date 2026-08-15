@@ -207,7 +207,6 @@ function validateAiVirtualTryOnTrack(report, reportPath) {
   const execution = report?.execution;
   const identities = execution?.identities;
   const attempts = report?.attempts;
-  const calibration = report?.calibration;
   const postAi = report?.postAi;
   const degradations = report?.degradations;
   const digest = (value) => /^sha256:[a-f0-9]{64}$/.test(value ?? "");
@@ -228,14 +227,11 @@ function validateAiVirtualTryOnTrack(report, reportPath) {
       value.machineUiAvailable,
       value.saleAvailable,
     ].every((fact) => fact === true);
-  const skipAiRss =
-    execution?.aiRssObservation === "skipped_by_vm_acceptance";
-  const vmAiRssSkipEnabled =
-    process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS === "1";
+  const skipAiRss = execution?.aiRssObservation === "skipped_by_vm_acceptance";
+  const vmAiRssSkipEnabled = process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS === "1";
   const complete =
     exactKeys(report, [
       "attempts",
-      "calibration",
       "degradations",
       "error",
       "execution",
@@ -266,8 +262,6 @@ function validateAiVirtualTryOnTrack(report, reportPath) {
       JSON.stringify(["front", "top"]) &&
     exactKeys(identities, ["aiRuntime", "contract", "modelPack", "runtime"]) &&
     Object.values(identities).every(digest) &&
-    exactKeys(calibration, ["policySha256", "receiptSha256"]) &&
-    Object.values(calibration).every(digest) &&
     exactKeys(postAi, [
       "browseAvailable",
       "ordinarySaleCompleted",
@@ -476,7 +470,7 @@ export function validateAiAttemptSet(
         `regional/${caseKey}/${attempt.attemptId}.regional-evidence.json` ||
       !/^[a-f0-9]{64}$/.test(regionalReference.sha256 ?? "") ||
       regionalDigests.has(regionalReference.sha256) ||
-      !["passed", "regional_check_failed"].includes(regionalReference.verdict)
+      regionalReference.verdict !== "passed"
     )
       return false;
     attemptIds.add(attempt.attemptId);

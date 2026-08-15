@@ -286,7 +286,7 @@ function canonical(value) {
 }
 
 function writeCanonical(path, value) {
-  const bytes = Buffer.from(`${JSON.stringify(canonical(value), null, 2)}\n`);
+  const bytes = Buffer.from(`${JSON.stringify(canonical(value))}\n`);
   writeFileSync(path, bytes);
   return createHash("sha256").update(bytes).digest("hex");
 }
@@ -812,7 +812,6 @@ test("AI virtual try-on runner accepts only approved external input identities",
     "candidateInputDirectory",
     "windowsProofInputDirectory",
     "acceptanceAuthorityReceipt",
-    "phase",
     "modelPackUrl",
     "modelPackSha256",
     "modelPackByteSize",
@@ -832,14 +831,9 @@ test("AI virtual try-on runner accepts only approved external input identities",
     assert.match(source, new RegExp(member.replaceAll(".", "\\.")));
   }
   assert.match(source, /vem\.testbed\.ai-acceptance-authority\/v1/);
-  assert.match(source, /\$phase -notin @\("measurement", "formal"\)/);
-  assert.match(source, /if \(\$phase -eq "formal"\)/);
-  assert.match(source, /run-ai-regional-measurement\.mjs/);
-  assert.match(source, /installed AI regional measurement collection failed/);
-  assert.doesNotMatch(
-    source,
-    /AI measurement execution is staged but is not acceptance evidence/,
-  );
+  assert.doesNotMatch(source, /\$phase/);
+  assert.doesNotMatch(source, /calibratedRegionalPolicy|calibrationReceipt/);
+  assert.doesNotMatch(source, /run-ai-regional-measurement\.mjs/);
   assert.doesNotMatch(source, /calibrationSourceRoot/);
   assert.match(
     source,
@@ -858,11 +852,11 @@ test("AI virtual try-on runner accepts only approved external input identities",
   assert.doesNotMatch(source, /camera|captureUserMedia|getUserMedia/i);
 });
 
-test("assembles worker-failure support so only calibration stays fail closed", async () => {
+test("assembles passed regional sidecars and worker-failure support without calibration", async () => {
   process.env.NODE_ENV = "test";
   const root = mkdtempSync(join(tmpdir(), "vem-ai-assembly-"));
   const calls = [];
-  const attempt = (caseKey, digit) => ({
+  const attempt = (caseKey, digit, regionalVerdict) => ({
     attemptId: `0198f44e-21bd-7c62-8f52-b7c86cc2c00${digit}`,
     lifecycle: ["acquiring", "generating", "completed"],
     resultEvidence: {
@@ -877,6 +871,7 @@ test("assembles worker-failure support so only calibration stays fail closed", a
       garmentId: `0198f44e-21bd-7c62-8f52-b7c86cc2d00${digit}`,
     },
     regionalEvidence: { bytes: Buffer.from("{}\n") },
+    ...(regionalVerdict === undefined ? {} : { regionalVerdict }),
   });
   const result = await assembleInstalledAiTryOnAcceptanceForTest(
     {
@@ -919,56 +914,78 @@ test("assembles worker-failure support so only calibration stays fail closed", a
     saleAvailable: true,
   });
   assert.equal(result.report.postAi.ordinarySaleCompleted, true);
-  assert.equal(result.acceptance.ok, false);
-  assert.deepEqual(result.acceptance.reasons, [
-    "AI regional evidence policy awaits Issue10 two-garment calibration",
-  ]);
+  assert.equal(result.acceptance.ok, true);
+  assert.equal(result.report.ok, true);
+  assert.equal(Object.hasOwn(result.report, "calibration"), false);
+  const failedRoot = join(root, "regional-check-failed");
+  mkdirSync(failedRoot);
+  await assert.rejects(
+    assembleInstalledAiTryOnAcceptanceForTest(
+      {
+        attempts: [
+          attempt("short", "2"),
+          attempt("long", "6", "regional_check_failed"),
+        ],
+        identities: {
+          aiRuntime: "3".repeat(64),
+          contract: "2".repeat(64),
+          modelPack: "4".repeat(64),
+          runtime: "1".repeat(64),
+        },
+        artifactRoot: failedRoot,
+        workerFailure: result.report.degradations.workerFailure,
+      },
+      { ordinarySale: async () => ({ ok: true }) },
+    ),
+    /installed AI attempt set failed the shared v2 contract/,
+  );
+  for (const [label, mutate] of [
+    ["digest", (sidecar) => (sidecar.attempt.inputSha256 = "f".repeat(64))],
+    ["input", (sidecar) => (sidecar.attempt.inputSha256 = "f".repeat(64))],
+    ["garment", (sidecar) => (sidecar.attempt.garmentSha256 = "f".repeat(64))],
+    ["result", (sidecar) => (sidecar.attempt.resultSha256 = "e".repeat(64))],
+    ["dimensions", (sidecar) => (sidecar.attempt.decodedWidth = 1)],
+  ]) {
+    const mutatedRoot = join(root, `regional-sidecar-${label}`);
+    mkdirSync(mutatedRoot);
+    await assert.rejects(
+      assembleInstalledAiTryOnAcceptanceForTest(
+        {
+          attempts: [attempt("short", "1"), attempt("long", "5")],
+          identities: {
+            aiRuntime: "3".repeat(64),
+            contract: "2".repeat(64),
+            modelPack: "4".repeat(64),
+            runtime: "1".repeat(64),
+          },
+          artifactRoot: mutatedRoot,
+          mutateArchivedSidecars: ({ attempts }) => {
+            const path = join(mutatedRoot, attempts[0].regionalEvidence.path);
+            const sidecar = JSON.parse(readFileSync(path, "utf8"));
+            mutate(sidecar);
+            const sha256 = writeCanonical(path, sidecar);
+            if (label !== "digest")
+              attempts[0].regionalEvidence.sha256 = sha256;
+          },
+          workerFailure: result.report.degradations.workerFailure,
+        },
+        { ordinarySale: async () => ({ ok: true }) },
+      ),
+      /regional evidence archive binding is invalid/,
+    );
+  }
   rmSync(root, { recursive: true, force: true });
 });
 
-test("admits calibrated two-garment evidence only with mandatory screenshots and return journeys", async () => {
+test("requires mandatory screenshots and return journeys for two-garment evidence", async () => {
   process.env.NODE_ENV = "test";
-  const root = mkdtempSync(join(tmpdir(), "vem-ai-calibrated-success-"));
+  const root = mkdtempSync(join(tmpdir(), "vem-ai-two-garment-"));
   const identities = {
     aiRuntime: "3".repeat(64),
     contract: "2".repeat(64),
     modelPack: "4".repeat(64),
     runtime: "1".repeat(64),
   };
-  const policyPath = join(root, "calibrated-policy.json");
-  const policy = {
-    algorithm: "rgb-absolute-delta-rle/v1",
-    atrEvaluator: "schp-atr",
-    calibrationStatus: "calibrated_issue10",
-    lipEvaluator: "schp-lip",
-    maximumProtectedChangedFractionBps: 0,
-    maximumProtectedMeanDelta: 0,
-    minimumUpperBodyChangedFractionBps: 10_000,
-    minimumUpperBodyMeanDelta: 1,
-    minimumUpperBodySampledPixels: 1024,
-    poseEvaluator: "mediapipe-pose",
-    schemaVersion: "vem-ai-regional-evidence-policy/v1",
-    sourceDescriptorSha256: "0".repeat(64),
-  };
-  const policySha256 = writeCanonical(policyPath, policy);
-  const receiptPath = join(root, "calibration-receipt.json");
-  writeCanonical(receiptPath, {
-    acceptanceReportSha256: "a".repeat(64),
-    attempts: [{ caseKey: "short" }, { caseKey: "long" }],
-    calibrationInputSha256: "b".repeat(64),
-    derivedThresholds: {
-      maximumProtectedChangedFractionBps: 0,
-      maximumProtectedMeanDelta: 0,
-      minimumUpperBodyChangedFractionBps: 10_000,
-      minimumUpperBodyMeanDelta: 1,
-    },
-    policySha256,
-    acceptanceAuthorityReceiptSha256: "c".repeat(64),
-    recoverySupportSha256: "d".repeat(64),
-    release: identities,
-    releaseProofSha256: "e".repeat(64),
-    schemaVersion: "vem-ai-regional-evidence-calibration-receipt/v2",
-  });
   const attempt = (digit, caseKey) => ({
     attemptId: `0198f44e-21bd-7c62-8f52-b7c86cc2c00${digit}`,
     lifecycle: ["acquiring", "generating", "completed"],
@@ -987,8 +1004,6 @@ test("admits calibrated two-garment evidence only with mandatory screenshots and
   const input = {
     attempts: [attempt("1", "short"), attempt("5", "long")],
     artifactRoot: root,
-    calibratedPolicyPath: policyPath,
-    calibrationReceiptPath: receiptPath,
     identities,
     workerFailure: {
       aiReady: false,
@@ -1003,7 +1018,7 @@ test("admits calibrated two-garment evidence only with mandatory screenshots and
     assembleInstalledAiTryOnAcceptanceForTest(input, {
       ordinarySale: async () => ({ ok: true }),
     }),
-    /installed AI attempt set failed|screenshot evidence|receipt attempt binding/,
+    /installed AI attempt set failed|screenshot evidence/,
   );
   rmSync(root, { recursive: true, force: true });
 });

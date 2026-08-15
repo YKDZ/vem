@@ -250,10 +250,6 @@ function aiVirtualTryOnReport() {
     ok: true,
     error: null,
     reasons: [],
-    calibration: {
-      policySha256: "sha256:" + "a".repeat(64),
-      receiptSha256: "sha256:" + "b".repeat(64),
-    },
     execution: {
       source: "installed_machine_ui_cdp",
       protocol: "vem.vision.v2",
@@ -1455,8 +1451,7 @@ describe("full workflow aggregate validator", () => {
       process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS = "1";
       const report = aiVirtualTryOnReport();
       report.execution.aiRssObservation = "skipped_by_vm_acceptance";
-      for (const attempt of report.attempts)
-        delete attempt.result.peakRssBytes;
+      for (const attempt of report.attempts) delete attempt.result.peakRssBytes;
       assert.equal(
         validateBusinessCheckReport(
           descriptor("aiVirtualTryOn"),
@@ -1630,6 +1625,11 @@ describe("full workflow aggregate validator", () => {
     [
       "a missing output truth",
       (report) => (report.attempts[0].outputFacts.nonPlaceholder = false),
+    ],
+    [
+      "a failed regional verdict",
+      (report) =>
+        (report.attempts[0].regionalEvidence.verdict = "regional_check_failed"),
     ],
     [
       "a sale-impacting missing pack",

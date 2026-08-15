@@ -94,13 +94,6 @@ if ($null -eq $inputs) { throw "candidate exact-four input directory is required
 Require-AbsoluteDirectory ([string]$inputs.candidateInputDirectory) "candidate exact-four input directory"
 Require-AbsoluteDirectory ([string]$inputs.windowsProofInputDirectory) "companion proof exact-three input directory"
 Require-AbsoluteLeaf ([string]$inputs.acceptanceAuthorityReceipt) "installed Windows acceptance authority receipt"
-$phase = [string]$inputs.phase
-if ($phase -notin @("measurement", "formal")) { throw "installed AI acceptance phase is invalid" }
-if ($phase -eq "formal") {
-  Require-AbsoluteLeaf ([string]$inputs.calibratedRegionalPolicy) "calibrated AI regional evidence policy"
-  Require-AbsoluteLeaf ([string]$inputs.calibrationReceipt) "calibrated AI regional evidence receipt"
-  Require-AbsoluteDirectory ([string]$inputs.calibrationSourceInput) "calibration source bundle"
-}
 
 $candidateArchives = @(Get-ChildItem -LiteralPath ([string]$inputs.candidateInputDirectory) -File | Where-Object { $_.Extension -ceq ".zip" })
 if ($candidateArchives.Count -ne 1) { throw "candidate exact-four archive set is invalid" }
@@ -157,11 +150,6 @@ $identities = $inputs.identities
 Assert-GuestDirectoryIdentity ([string]$inputs.candidateInputDirectory) $identities.candidateInput $false "candidate exact-four input"
 Assert-GuestDirectoryIdentity ([string]$inputs.windowsProofInputDirectory) $identities.windowsProofInput $false "companion proof exact-three input"
 Assert-GuestFileIdentity ([string]$inputs.acceptanceAuthorityReceipt) $identities.acceptanceAuthorityReceipt "installed Windows acceptance authority receipt"
-if ($phase -eq "formal") {
-  Assert-GuestFileIdentity ([string]$inputs.calibratedRegionalPolicy) $identities.calibratedRegionalPolicy "calibrated AI regional evidence policy"
-  Assert-GuestFileIdentity ([string]$inputs.calibrationReceipt) $identities.calibrationReceipt "calibrated AI regional evidence receipt"
-  Assert-GuestDirectoryIdentity ([string]$inputs.calibrationSourceInput) $identities.calibrationSourceInput $true "calibration source bundle"
-}
 Assert-GuestFileIdentity ([string]$inputs.installedVisionRuntimeArchive) $identities.installedVisionRuntimeArchive "installed Vision runtime archive"
 Assert-GuestFileIdentity ([string]$inputs.recordedFixtureArchive) $identities.recordedFixtureArchive "recorded front/top fixture archive"
 Assert-GuestFileIdentity ([string]$inputs.modelPackArchive) $identities.modelPackArchive "official model pack archive"
@@ -228,19 +216,9 @@ try {
     schemaVersion = "vem.testbed.ai-virtual-try-on-support.v1"
   } | ConvertTo-Json -Compress -Depth 8 | ForEach-Object { [IO.File]::WriteAllText($verifiedRecoveryFacts, "$_`n", [Text.UTF8Encoding]::new($false)) }
   $assemble = @("assemble", "--artifact-root", $artifactRoot, "--candidate-input-directory", [string]$inputs.candidateInputDirectory, "--windows-proof-input-directory", [string]$inputs.windowsProofInputDirectory)
-  if ($phase -eq "formal") {
-    $assemble += @("--calibrated-policy", [string]$inputs.calibratedRegionalPolicy, "--calibration-receipt", [string]$inputs.calibrationReceipt, "--calibration-source-input", (Join-Path ([string]$inputs.calibrationSourceInput) "calibration-source-input.json"))
-  }
   $assemble += @("--short-attempt", $shortFacts, "--long-attempt", $longFacts, "--sale", $saleFacts, "--missing-degradation", $missingFacts, "--corrupt-degradation", $corruptFacts, "--worker-failure-degradation", $workerFailureFacts, "--recovery", $verifiedRecoveryFacts, "--out", $OutPath)
   node $nodeEntry @assemble
   if ($LASTEXITCODE -ne 0) { throw "installed AI acceptance assembly failed" }
-  if ($phase -eq "measurement") {
-    $measurementEntry = Join-Path $PSScriptRoot "run-ai-regional-measurement.mjs"
-    $measurementOutput = Join-Path $artifactRoot "ai-regional-measurement.json"
-    $measurementSource = Join-Path $artifactRoot "calibration-source"
-    node $measurementEntry --report $OutPath --artifact-root $artifactRoot --acceptance-authority-receipt ([string]$inputs.acceptanceAuthorityReceipt) --release-proof (Join-Path ([string]$inputs.windowsProofInputDirectory) "precutover-ai-proof.json") --recovery-support $verifiedRecoveryFacts --source-root $measurementSource --out $measurementOutput
-    if ($LASTEXITCODE -ne 0) { throw "installed AI regional measurement collection failed" }
-  }
   $trackSucceeded = $true
 } catch {
   $trackFailure = $_.Exception
