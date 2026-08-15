@@ -1403,7 +1403,7 @@ export function validateTryOnPresentation({
       "selected product catalogKey does not match the seeded productId for the selected variantId",
     );
   }
-  const expectedRoute = `#/try-on?catalogKey=${selectedProduct.catalogKey}&variantId=${selectedProduct.variantId}`;
+  const expectedRoute = `#/try-on?catalogKey=${selectedProduct.catalogKey}&variantId=${selectedProduct.variantId}&mode=fast`;
   if (tryOnState.route !== expectedRoute) {
     throw new Error("try-on route is not bound to the selected catalog item");
   }
@@ -3776,7 +3776,7 @@ async function runVisionTryOnAcceptance(options) {
       }),
     );
 
-    const expectedTryOnRoute = `#/try-on?catalogKey=${manualSelectedProduct.catalogKey}&variantId=${manualSelectedProduct.variantId}`;
+    const expectedTryOnRoute = `#/try-on?catalogKey=${manualSelectedProduct.catalogKey}&variantId=${manualSelectedProduct.variantId}&mode=fast`;
     const tryOnAttempts = [];
     stage = "open-try-on-attempt";
     await installTryOnLifecycleObserver(client);

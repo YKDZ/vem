@@ -2771,7 +2771,7 @@ describe("vision try-on acceptance script", () => {
 
   function completedTryOnState(attemptId, variantId = "variant-l") {
     return {
-      route: `#/try-on?catalogKey=product:L&variantId=${variantId}`,
+      route: `#/try-on?catalogKey=product:L&variantId=${variantId}&mode=fast`,
       attemptId,
       lifecycle: [
         "starting",
@@ -2793,6 +2793,33 @@ describe("vision try-on acceptance script", () => {
     };
   }
 
+  it("requires the exact Fast mode in the try-on route", () => {
+    const validateRoute = (route) =>
+      validateTryOnPresentation({
+        selectedProduct: {
+          catalogKey: "product:L",
+          variantId: "variant-l",
+        },
+        tryOnState: {
+          ...completedTryOnState("attempt-fast-route"),
+          route,
+        },
+        resultEvidence: resultEvidence(),
+        expectedResults: baseExpectedResults(),
+      });
+    assert.doesNotThrow(() =>
+      validateRoute(
+        "#/try-on?catalogKey=product:L&variantId=variant-l&mode=fast",
+      ),
+    );
+    for (const route of [
+      "#/try-on?catalogKey=product:L&variantId=variant-l",
+      "#/try-on?catalogKey=product:L&variantId=variant-l&mode=ai",
+    ]) {
+      assert.throws(() => validateRoute(route), /route is not bound/);
+    }
+  });
+
   it("observes a real DOM lifecycle installed before the Fast action", async () => {
     const dom = new JSDOM(
       '<!doctype html><button data-test="try-on-fast">快速试衣</button>',
@@ -2806,7 +2833,7 @@ describe("vision try-on acceptance script", () => {
     const button = window.document.querySelector('[data-test="try-on-fast"]');
     button.addEventListener("click", () => {
       window.location.hash =
-        "#/try-on?catalogKey=product:L&variantId=variant-l";
+        "#/try-on?catalogKey=product:L&variantId=variant-l&mode=fast";
       const view = window.document.createElement("main");
       view.dataset.test = "try-on-view";
       view.dataset.attemptId = "attempt-dom-1";
@@ -2957,7 +2984,7 @@ describe("vision try-on acceptance script", () => {
       },
       tryOnState: {
         ...completedTryOnState("attempt-004", "variant-m"),
-        route: "#/try-on?catalogKey=product:tee&variantId=variant-m",
+        route: "#/try-on?catalogKey=product:tee&variantId=variant-m&mode=fast",
       },
       resultEvidence: resultEvidence(),
       expectedResults: baseExpectedResults(),
@@ -2989,7 +3016,8 @@ describe("vision try-on acceptance script", () => {
             variantId: "variant-l",
           },
           tryOnState: {
-            route: "#/try-on?catalogKey=product:L&variantId=variant-l",
+            route:
+              "#/try-on?catalogKey=product:L&variantId=variant-l&mode=fast",
             attemptId: "attempt-005",
             resultUrl:
               "http://127.0.0.1:7892/v2/try-on/results/attempt-005?token=result-token",
