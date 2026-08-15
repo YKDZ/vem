@@ -3,58 +3,52 @@ import { describe, expect, it, vi } from "vitest";
 import { VendingService } from "./vending.service";
 
 describe("VendingService durable command dispatcher", () => {
-  it("locks the machine before recording a vending command ACK", async () => {
+  it("locks the order before acknowledging the selected vending command", async () => {
     const tx = {
       execute: vi.fn().mockResolvedValue({ rowCount: 1 }),
       select: vi.fn().mockReturnValue({
-        from: () => ({ where: () => ({ limit: async () => [] }) }),
-      }),
-      insert: vi.fn().mockReturnValue({
-        values: () => ({
-          onConflictDoNothing: () => ({
-            returning: async () => [{ id: "event-1" }],
-          }),
+        from: () => ({
+          where: () => ({ limit: async () => [{ orderId: "order-1" }] }),
         }),
       }),
       update: vi.fn().mockReturnValue({
         set: () => ({ where: async () => undefined }),
       }),
     };
-    const db = {
-      select: vi.fn().mockReturnValue({
-        from: () => ({
-          where: async () => [{ id: "machine-1", code: "M001" }],
-        }),
-      }),
-      transaction: async (callback: (value: typeof tx) => Promise<unknown>) =>
-        await callback(tx),
-    };
+    const registerCommandAckHandler = vi.fn();
     const service = new VendingService(
-      db as never,
-      { bindVendingService: vi.fn(), publish: vi.fn() } as never,
+      {} as never,
       {
-        verifyFromTopic: vi.fn().mockResolvedValue({
-          messageId: "ack:CMD-1",
-          payload: {
-            commandNo: "CMD-1",
-            receivedAt: "2026-07-22T20:00:00.000Z",
-          },
-        }),
+        bindVendingService: vi.fn(),
+        publish: vi.fn(),
+        registerCommandAckHandler,
       } as never,
       {} as never,
       {} as never,
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
     );
 
-    await service.handleMachineMessage(
-      "vem/machines/M001/commands/CMD-1/ack",
-      "{}",
-    );
+    service.onModuleInit();
+    const handler = registerCommandAckHandler.mock.calls[0]?.[1] as (
+      transaction: typeof tx,
+      ack: Record<string, unknown>,
+    ) => Promise<void>;
+    await handler(tx, {
+      machineId: "machine-1",
+      machineCode: "M001",
+      commandId: "command-1",
+      commandNo: "CMD-1",
+      messageId: "ack:CMD-1",
+      payload: { messageId: "ack:CMD-1" },
+      topic: "vem/machines/M001/commands/CMD-1/ack",
+    });
+    service.onApplicationShutdown();
 
     expect(tx.execute.mock.invocationCallOrder[0]).toBeLessThan(
-      tx.insert.mock.invocationCallOrder[0],
+      tx.update.mock.invocationCallOrder[0],
     );
     expect(tx.update).toHaveBeenCalledOnce();
   });

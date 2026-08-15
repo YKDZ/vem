@@ -9,6 +9,8 @@ import {
   inventories,
   inventoryMovements,
   inventoryReservations,
+  machineCommands,
+  machineEvents,
   orderItems,
   orders,
   payments,
@@ -47,6 +49,82 @@ describe("core-flow.e2e", { concurrent: false }, () => {
   let mqttClient: MqttClient;
   let api: ReturnType<typeof request>;
   let paymentsService: PaymentsService;
+
+  async function holdMachineMutationLock(machineId: string): Promise<{
+    client: {
+      query: (text: string, values?: unknown[]) => Promise<unknown>;
+      release: () => void;
+    };
+    backendPid: number;
+  }> {
+    const client = await db.client.$client.connect();
+    await client.query("begin");
+    await client.query("select id from machines where id = $1 for update", [
+      machineId,
+    ]);
+    const result = await client.query<{ pid: number }>(
+      "select pg_backend_pid() as pid",
+    );
+    return { client, backendPid: result.rows[0].pid };
+  }
+
+  async function waitForBlockedMachineMutation(
+    blockerPid: number,
+    attempt = 0,
+  ): Promise<number> {
+    const result = await db.client.$client.query<{ pid: number }>(
+      `select pid
+         from pg_stat_activity
+         where $1 = any(pg_blocking_pids(pid))
+           and state = 'active'
+         order by pid
+         limit 1`,
+      [blockerPid],
+    );
+    if (result.rows[0]) return result.rows[0].pid;
+    if (attempt >= 199) {
+      throw new Error(
+        "MQTT ACK handler did not reach the machine mutation lock",
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    return await waitForBlockedMachineMutation(blockerPid, attempt + 1);
+  }
+
+  async function waitForDatabaseSessionIdle(
+    backendPid: number,
+    attempt = 0,
+  ): Promise<void> {
+    const result = await db.client.$client.query<{ state: string }>(
+      "select state from pg_stat_activity where pid = $1",
+      [backendPid],
+    );
+    if (!result.rows[0] || result.rows[0].state === "idle") return;
+    if (attempt >= 199) {
+      throw new Error("MQTT ACK handler database session did not become idle");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await waitForDatabaseSessionIdle(backendPid, attempt + 1);
+  }
+
+  async function waitForBackendBlockedBy(
+    backendPid: number,
+    blockerPid: number,
+    attempt = 0,
+  ): Promise<void> {
+    const result = await db.client.$client.query<{ blocked: boolean }>(
+      "select $2 = any(pg_blocking_pids($1)) as blocked",
+      [backendPid, blockerPid],
+    );
+    if (result.rows[0]?.blocked) return;
+    if (attempt >= 199) {
+      throw new Error(
+        `Database session ${backendPid} did not block as expected`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await waitForBackendBlockedBy(backendPid, blockerPid, attempt + 1);
+  }
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -473,6 +551,228 @@ describe("core-flow.e2e", { concurrent: false }, () => {
       .from(inventories)
       .where(eq(inventories.id, seeded.inventoryId));
     expect(finalInventoryRow).toMatchObject({ onHandQty: 0, reservedQty: 0 });
+  }, 60_000);
+
+  it("fails closed when a public command ACK ambiguously names vending and machine commands", async () => {
+    const seeded = await seedSingleSlotInventory(db, {
+      machineCode: "M-E2E-ACK-AMBIGUOUS-001",
+      onHandQty: 1,
+      lowStockThreshold: 1,
+      rowNo: 1,
+      cellNo: 1,
+    });
+    const token = await loginAndGetToken(api, appConfig);
+    const machineAuthHeader = await getMachineAuthHeader(
+      api,
+      seeded.machineCode,
+      seeded.machineSecret,
+    );
+    const commandPayloadPromise = waitForMqttMessage(
+      mqttClient,
+      `vem/machines/${seeded.machineCode}/commands/dispense`,
+    );
+    const createOrderResponse = await api
+      .post("/api/machine-orders")
+      .set(machineAuthHeader)
+      .send(machineOrderBody(seeded));
+    expect(createOrderResponse.status).toBe(201);
+    const createdOrder =
+      createOrderResponse.body as ApiResponse<CreatedOrderPayload>;
+    const succeedResponse = await api
+      .post(`/api/payments/mock/${createdOrder.data.paymentNo}/succeed`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({});
+    expect(succeedResponse.status).toBe(201);
+
+    const commandEnvelope = JSON.parse(await commandPayloadPromise) as {
+      payload: { commandNo: string };
+    };
+    const commandNo = commandEnvelope.payload.commandNo;
+    const ackMessageId = `ambiguous-ack:${commandNo}`;
+    await db.client.insert(machineCommands).values({
+      commandNo,
+      machineId: seeded.machineId,
+      type: "environment-control",
+      status: "sent",
+      payloadJson: { targetTemperatureCelsius: 23 },
+    });
+
+    const lock = await holdMachineMutationLock(seeded.machineId);
+    let handlerPid: number;
+    try {
+      await publishMqtt(
+        mqttClient,
+        `vem/machines/${seeded.machineCode}/commands/${commandNo}/ack`,
+        signMqttPayload({
+          machineCode: seeded.machineCode,
+          mqttSigningSecret: seeded.mqttSigningSecret,
+          messageId: ackMessageId,
+          payload: { messageId: ackMessageId },
+        }),
+      );
+      handlerPid = await waitForBlockedMachineMutation(lock.backendPid);
+    } finally {
+      await lock.client.query("rollback");
+      lock.client.release();
+    }
+    await waitForDatabaseSessionIdle(handlerPid);
+
+    const [vendingCommand] = await db.client
+      .select({ status: vendingCommands.status })
+      .from(vendingCommands)
+      .where(eq(vendingCommands.commandNo, commandNo));
+    const [machineCommand] = await db.client
+      .select({ status: machineCommands.status })
+      .from(machineCommands)
+      .where(eq(machineCommands.commandNo, commandNo));
+    const receipts = await db.client
+      .select({ id: machineEvents.id })
+      .from(machineEvents)
+      .where(eq(machineEvents.messageId, ackMessageId));
+
+    expect(vendingCommand.status).toBe("sent");
+    expect(machineCommand.status).toBe("sent");
+    expect(receipts).toEqual([]);
+  }, 60_000);
+
+  it("fails closed after receiving an ACK for no durable command", async () => {
+    const seeded = await seedSingleSlotInventory(db, {
+      machineCode: "M-E2E-ACK-UNKNOWN-001",
+      onHandQty: 1,
+      lowStockThreshold: 1,
+      rowNo: 1,
+      cellNo: 1,
+    });
+    const commandNo = "ACK-WITHOUT-DURABLE-COMMAND";
+    const ackMessageId = `unknown-ack:${commandNo}`;
+    const lock = await holdMachineMutationLock(seeded.machineId);
+    let handlerPid: number;
+    try {
+      await publishMqtt(
+        mqttClient,
+        `vem/machines/${seeded.machineCode}/commands/${commandNo}/ack`,
+        signMqttPayload({
+          machineCode: seeded.machineCode,
+          mqttSigningSecret: seeded.mqttSigningSecret,
+          messageId: ackMessageId,
+          payload: { messageId: ackMessageId },
+        }),
+      );
+      handlerPid = await waitForBlockedMachineMutation(lock.backendPid);
+    } finally {
+      await lock.client.query("rollback");
+      lock.client.release();
+    }
+    await waitForDatabaseSessionIdle(handlerPid);
+
+    const receipts = await db.client
+      .select({ id: machineEvents.id })
+      .from(machineEvents)
+      .where(eq(machineEvents.messageId, ackMessageId));
+    expect(receipts).toEqual([]);
+  }, 60_000);
+
+  it("keeps ACK exact-one resolution stable against a competing domain insert", async () => {
+    const seeded = await seedSingleSlotInventory(db, {
+      machineCode: "M-E2E-ACK-INTERLEAVING-001",
+      onHandQty: 1,
+      lowStockThreshold: 1,
+      rowNo: 1,
+      cellNo: 1,
+    });
+    const token = await loginAndGetToken(api, appConfig);
+    const machineAuthHeader = await getMachineAuthHeader(
+      api,
+      seeded.machineCode,
+      seeded.machineSecret,
+    );
+    const commandPayloadPromise = waitForMqttMessage(
+      mqttClient,
+      `vem/machines/${seeded.machineCode}/commands/dispense`,
+    );
+    const createOrderResponse = await api
+      .post("/api/machine-orders")
+      .set(machineAuthHeader)
+      .send(machineOrderBody(seeded));
+    const createdOrder =
+      createOrderResponse.body as ApiResponse<CreatedOrderPayload>;
+    await api
+      .post(`/api/payments/mock/${createdOrder.data.paymentNo}/succeed`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({});
+    const commandEnvelope = JSON.parse(await commandPayloadPromise) as {
+      payload: { commandNo: string };
+    };
+    const commandNo = commandEnvelope.payload.commandNo;
+    const ackMessageId = `interleaving-ack:${commandNo}`;
+
+    const lock = await holdMachineMutationLock(seeded.machineId);
+    const competitor = await db.client.$client.connect();
+    let competitorCompletion: Promise<void> | null = null;
+    try {
+      await publishMqtt(
+        mqttClient,
+        `vem/machines/${seeded.machineCode}/commands/${commandNo}/ack`,
+        signMqttPayload({
+          machineCode: seeded.machineCode,
+          mqttSigningSecret: seeded.mqttSigningSecret,
+          messageId: ackMessageId,
+          payload: { messageId: ackMessageId },
+        }),
+      );
+      const handlerPid = await waitForBlockedMachineMutation(lock.backendPid);
+
+      await competitor.query("begin");
+      const competitorPidResult = await competitor.query<{ pid: number }>(
+        "select pg_backend_pid() as pid",
+      );
+      const competitorPid = competitorPidResult.rows[0].pid;
+      competitorCompletion = (async () => {
+        await competitor.query(
+          "select id from machines where id = $1 for update",
+          [seeded.machineId],
+        );
+        await competitor.query(
+          `insert into machine_commands
+             (command_no, machine_id, type, status, payload_json)
+           values ($1, $2, 'environment-control', 'sent', $3::jsonb)`,
+          [commandNo, seeded.machineId, JSON.stringify({ ventSpeed: 2 })],
+        );
+        await competitor.query("commit");
+      })();
+      // PostgreSQL reports the earlier ACK waiter as the competitor's soft
+      // blocker, proving the ACK owns the next machine-mutation turn.
+      await waitForBackendBlockedBy(competitorPid, handlerPid);
+
+      await lock.client.query("commit");
+      await competitorCompletion;
+      await waitForDatabaseSessionIdle(handlerPid);
+    } finally {
+      await lock.client.query("rollback").catch(() => undefined);
+      lock.client.release();
+      if (competitorCompletion) {
+        await competitorCompletion.catch(() => undefined);
+      }
+      await competitor.query("rollback").catch(() => undefined);
+      competitor.release();
+    }
+
+    const [vendingCommand] = await db.client
+      .select({ status: vendingCommands.status })
+      .from(vendingCommands)
+      .where(eq(vendingCommands.commandNo, commandNo));
+    const [machineCommand] = await db.client
+      .select({ status: machineCommands.status })
+      .from(machineCommands)
+      .where(eq(machineCommands.commandNo, commandNo));
+    const receipts = await db.client
+      .select({ id: machineEvents.id })
+      .from(machineEvents)
+      .where(eq(machineEvents.messageId, ackMessageId));
+
+    expect(vendingCommand.status).toBe("acknowledged");
+    expect(machineCommand.status).toBe("sent");
+    expect(receipts).toHaveLength(1);
   }, 60_000);
 
   it("releases reservation when mock payment fails", async () => {

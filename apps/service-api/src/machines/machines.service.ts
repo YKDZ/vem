@@ -41,9 +41,9 @@ import {
   tryOnGarments,
   sql,
   type DrizzleClient,
+  type DrizzleTransaction,
 } from "@vem/db";
 import {
-  commandAckPayloadSchema,
   createMachineSchema,
   createMachineSlotSchema,
   environmentControlResultPayloadSchema,
@@ -57,7 +57,6 @@ import {
   machineEnvironmentControlRequestSchema,
   publishMachinePlanogramVersionSchema,
   updateMachineSchema,
-  type CommandAckPayload,
   type EnvironmentControlResultPayload,
   type MachineEnvironmentControlRequest,
   type MachineHeartbeatStatusPayload,
@@ -87,7 +86,7 @@ import { lockMachineForVendingMutation } from "../database/machine-transaction-l
 import { releaseExpiredInventoryReservations } from "../inventory/expired-inventory-reservations";
 import { MachineCredentialService } from "../machine-auth/machine-credential.service";
 import { MqttSignatureService } from "../mqtt/mqtt-signature.service";
-import { MqttService } from "../mqtt/mqtt.service";
+import { MqttService, type VerifiedCommandAck } from "../mqtt/mqtt.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { PaymentProviderConfigService } from "../payments/payment-provider-config.service";
 import {
@@ -761,6 +760,9 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
   ) {}
 
   onModuleInit(): void {
+    this.mqttService.registerCommandAckHandler?.("machine", async (tx, ack) => {
+      await this.handleCommandAck(tx, ack);
+    });
     this.mqttService.registerMachineMessageHandler(async (topic, payload) => {
       await this.handleMachineMessage(topic, payload);
     });
@@ -1496,14 +1498,6 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
   }
 
   async handleMachineMessage(topic: string, payload: string): Promise<void> {
-    const ackMatch = /^vem\/machines\/([^/]+)\/commands\/([^/]+)\/ack$/.exec(
-      topic,
-    );
-    if (ackMatch) {
-      await this.handleCommandAck(ackMatch[1], ackMatch[2], topic, payload);
-      return;
-    }
-
     const resultMatch =
       /^vem\/machines\/([^/]+)\/events\/environment-control-result$/.exec(
         topic,
@@ -2128,61 +2122,24 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
   }
 
   private async handleCommandAck(
-    machineCode: string,
-    commandNo: string,
-    topic: string,
-    payloadText: string,
+    tx: DrizzleTransaction,
+    ack: VerifiedCommandAck,
   ): Promise<void> {
-    let verified: {
-      machineId: string;
-      machineCode: string;
-      messageId: string;
-      payload: CommandAckPayload;
-    };
-    try {
-      verified = await this.mqttSignatureService.verifyFromTopic({
-        topicMachineCode: machineCode,
-        rawPayload: this.parsePayload(payloadText),
-        payloadSchema: commandAckPayloadSchema,
-      });
-    } catch {
-      this.logger.warn(
-        `handleMachineCommandAck: invalid signed envelope from ${machineCode}`,
+    await tx
+      .update(machineCommands)
+      .set({
+        status: "acknowledged",
+        ackAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(machineCommands.id, ack.commandId),
+          eq(machineCommands.machineId, ack.machineId),
+          eq(machineCommands.type, "environment-control"),
+          inArray(machineCommands.status, ["pending", "sent"]),
+        ),
       );
-      return;
-    }
-
-    await withDeadlockRetry(async () =>
-      this.db.transaction(async (tx) => {
-        await tx
-          .insert(machineEvents)
-          .values({
-            machineId: verified.machineId,
-            eventType: "command_ack",
-            payloadJson: { ...verified.payload },
-            mqttTopic: topic,
-            messageId: verified.messageId,
-          })
-          .onConflictDoNothing()
-          .returning({ id: machineEvents.id });
-
-        await tx
-          .update(machineCommands)
-          .set({
-            status: "acknowledged",
-            ackAt: new Date(),
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(machineCommands.commandNo, commandNo),
-              eq(machineCommands.machineId, verified.machineId),
-              eq(machineCommands.type, "environment-control"),
-              inArray(machineCommands.status, ["pending", "sent"]),
-            ),
-          );
-      }),
-    );
   }
 
   private parsePayload(payloadText: string): unknown {

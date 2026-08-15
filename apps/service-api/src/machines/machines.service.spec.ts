@@ -46,6 +46,8 @@ describe("MachinesService", () => {
   };
   const auditRecord = vi.fn();
   const publish = vi.fn();
+  const registerCommandAckHandler = vi.fn();
+  const registerMachineMessageHandler = vi.fn();
   const signForMachine = vi.fn();
   const verifyFromTopic = vi.fn();
   const listMachinePaymentOptionsForMachine = vi.fn();
@@ -78,7 +80,14 @@ describe("MachinesService", () => {
           },
         },
         { provide: AuditService, useValue: { record: auditRecord } },
-        { provide: MqttService, useValue: { publish } },
+        {
+          provide: MqttService,
+          useValue: {
+            publish,
+            registerCommandAckHandler,
+            registerMachineMessageHandler,
+          },
+        },
         {
           provide: MqttSignatureService,
           useValue: { signForMachine, verifyFromTopic },
@@ -1612,42 +1621,29 @@ describe("MachinesService", () => {
   });
 
   it("acknowledges an environment control machine command from MQTT ACK", async () => {
-    const eventValues = vi.fn().mockReturnValue({
-      onConflictDoNothing: () => ({
-        returning: async () => [{ id: "event-1" }],
-      }),
-    });
     const commandSet = vi
       .fn()
       .mockReturnValue({ where: async () => undefined });
     const tx = {
-      insert: vi.fn().mockReturnValue({ values: eventValues }),
       update: vi.fn().mockReturnValue({ set: commandSet }),
     };
-    mockDb.transaction.mockImplementationOnce(
-      async (cb: (txArg: typeof tx) => Promise<void>) => {
-        await cb(tx);
-      },
-    );
-    verifyFromTopic.mockResolvedValueOnce({
+    service.onModuleInit();
+    const handler = registerCommandAckHandler.mock.calls[0]?.[1] as (
+      transaction: typeof tx,
+      ack: Record<string, unknown>,
+    ) => Promise<void>;
+
+    await handler(tx, {
       machineId: "machine-1",
       machineCode: "M001",
+      commandId: "machine-command-1",
+      commandNo: "MCMD-1",
       messageId: "ack:MCMD-1",
       payload: { messageId: "ack:MCMD-1" },
+      topic: "vem/machines/M001/commands/MCMD-1/ack",
     });
+    service.onApplicationShutdown();
 
-    await service.handleMachineMessage(
-      "vem/machines/M001/commands/MCMD-1/ack",
-      JSON.stringify({}),
-    );
-
-    expect(eventValues).toHaveBeenCalledWith({
-      machineId: "machine-1",
-      eventType: "command_ack",
-      payloadJson: { messageId: "ack:MCMD-1" },
-      mqttTopic: "vem/machines/M001/commands/MCMD-1/ack",
-      messageId: "ack:MCMD-1",
-    });
     expect(commandSet).toHaveBeenCalledWith(
       expect.objectContaining({ status: "acknowledged" }),
     );

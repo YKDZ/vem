@@ -28,7 +28,6 @@ import {
   type DrizzleTransaction,
 } from "@vem/db";
 import {
-  commandAckPayloadSchema,
   dispenseCommandPayloadSchema,
   dispenseResultPayloadSchema,
   heartbeatPayloadSchema,
@@ -49,7 +48,7 @@ import { InventoryService } from "../inventory/inventory.service";
 import { MachineStockMovementsService } from "../inventory/machine-stock-movements.service";
 import { MaintenanceWorkOrdersService } from "../maintenance-work-orders/maintenance-work-orders.service";
 import { MqttSignatureService } from "../mqtt/mqtt-signature.service";
-import { MqttService } from "../mqtt/mqtt.service";
+import { MqttService, type VerifiedCommandAck } from "../mqtt/mqtt.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { projectOrderStatus } from "../orders/order-state-projection";
 import { RefundsService } from "../refunds/refunds.service";
@@ -91,6 +90,9 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
 
   onModuleInit(): void {
     this.mqttService.bindVendingService(this);
+    this.mqttService.registerCommandAckHandler?.("vending", async (tx, ack) => {
+      await this.handleCommandAck(tx, ack);
+    });
     this.timeoutInterval = setInterval(() => {
       void (async () => {
         await this.dispatchPendingCommands();
@@ -342,14 +344,6 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
   }
 
   async handleMachineMessage(topic: string, payload: string): Promise<void> {
-    const ackMatch = /^vem\/machines\/([^/]+)\/commands\/([^/]+)\/ack$/.exec(
-      topic,
-    );
-    if (ackMatch) {
-      await this.handleCommandAck(ackMatch[1], ackMatch[2], topic, payload);
-      return;
-    }
-
     const resultMatch =
       /^vem\/machines\/([^/]+)\/events\/dispense-result$/.exec(topic);
     if (resultMatch) {
@@ -836,76 +830,36 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
   }
 
   private async handleCommandAck(
-    machineCode: string,
-    commandNo: string,
-    topic: string,
-    payloadText: string,
+    tx: DrizzleTransaction,
+    ack: VerifiedCommandAck,
   ): Promise<void> {
-    let payload: z.infer<typeof commandAckPayloadSchema>;
-    let messageId: string;
-    try {
-      const verified = await this.mqttSignatureService.verifyFromTopic({
-        topicMachineCode: machineCode,
-        rawPayload: this.parsePayload(payloadText),
-        payloadSchema: commandAckPayloadSchema,
-      });
-      payload = verified.payload;
-      messageId = verified.messageId;
-    } catch {
-      this.logger.warn(
-        `handleCommandAck: invalid signed envelope from ${machineCode}`,
+    const [command] = await tx
+      .select({ orderId: vendingCommands.orderId })
+      .from(vendingCommands)
+      .where(
+        and(
+          eq(vendingCommands.id, ack.commandId),
+          eq(vendingCommands.machineId, ack.machineId),
+        ),
+      )
+      .limit(1);
+    if (!command) return;
+    await lockOrderForVendingMutation(tx, command.orderId);
+
+    await tx
+      .update(vendingCommands)
+      .set({
+        status: "acknowledged",
+        ackAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(vendingCommands.id, ack.commandId),
+          eq(vendingCommands.machineId, ack.machineId),
+          inArray(vendingCommands.status, ["pending", "sent"]),
+        ),
       );
-      return;
-    }
-
-    const machine = await this.findMachineByCode(machineCode);
-    if (!machine) return;
-
-    await this.db.transaction(async (tx) => {
-      await lockMachineForVendingMutation(tx, machine.id);
-      const [command] = await tx
-        .select({ orderId: vendingCommands.orderId })
-        .from(vendingCommands)
-        .where(
-          and(
-            eq(vendingCommands.commandNo, commandNo),
-            eq(vendingCommands.machineId, machine.id),
-          ),
-        )
-        .limit(1);
-      if (command) {
-        await lockOrderForVendingMutation(tx, command.orderId);
-      }
-      const inserted = await tx
-        .insert(machineEvents)
-        .values({
-          machineId: machine.id,
-          eventType: "command_ack",
-          payloadJson: payload,
-          mqttTopic: topic,
-          messageId,
-        })
-        .onConflictDoNothing()
-        .returning({ id: machineEvents.id });
-      if (inserted.length === 0) {
-        return;
-      }
-
-      await tx
-        .update(vendingCommands)
-        .set({
-          status: "acknowledged",
-          ackAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(vendingCommands.commandNo, commandNo),
-            eq(vendingCommands.machineId, machine.id),
-            inArray(vendingCommands.status, ["pending", "sent"]),
-          ),
-        );
-    });
   }
 
   private async handleDispenseResult(
