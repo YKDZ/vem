@@ -358,19 +358,75 @@ function visionInstalledBindingDiagnostic(observation) {
   ].join("; ");
 }
 
-function hasExactVisionInstalledBinding(observation) {
+function classifyVisionInstalledBindingProcesses(observation) {
   const canonicalProcesses = Array.isArray(observation?.canonicalProcesses)
     ? observation.canonicalProcesses
     : [];
   const listeners = Array.isArray(observation?.listeners)
     ? observation.listeners
     : [];
-  if (listeners.length !== 1 || canonicalProcesses.length !== 1) return false;
+  if (listeners.length !== 1 || canonicalProcesses.length === 0) return null;
+  const processIds = canonicalProcesses.map((process) => process?.processId);
+  if (
+    processIds.some(
+      (processId) => !Number.isInteger(processId) || processId < 1,
+    ) ||
+    new Set(processIds).size !== processIds.length
+  )
+    return null;
   const listenerOwner = listeners[0]?.owningProcess;
-  return (
-    Number.isInteger(listenerOwner) &&
-    canonicalProcesses[0]?.processId === listenerOwner
+  if (!Number.isInteger(listenerOwner)) return null;
+  const mainProcesses = canonicalProcesses.filter(
+    (process) => process?.processId === listenerOwner,
   );
+  if (mainProcesses.length !== 1) return null;
+  const mainProcess = mainProcesses[0];
+  const workerProcesses = canonicalProcesses.filter(
+    (process) => process !== mainProcess,
+  );
+  if (
+    workerProcesses.some(
+      (process) =>
+        process?.parentProcessId !== mainProcess.processId ||
+        typeof process.commandLine !== "string" ||
+        !/(?:^|\s)"?--multiprocessing-fork"?(?:\s|$)/.test(process.commandLine),
+    )
+  )
+    return null;
+  return { mainProcess, workerProcesses };
+}
+
+function hasExactVisionInstalledBinding(observation) {
+  return classifyVisionInstalledBindingProcesses(observation) !== null;
+}
+
+export function buildVisionInstalledRuntimeBinding(observation) {
+  const processBinding = classifyVisionInstalledBindingProcesses(observation);
+  if (processBinding === null)
+    throw new Error("Vision installed binding observation is invalid");
+  const visionProcess = processBinding.mainProcess;
+  const visionProcesses = [visionProcess, ...processBinding.workerProcesses];
+  const listener = observation.listeners[0];
+  const task = observation.task ?? {};
+  return {
+    processId: visionProcess.processId,
+    listenerProcessId: listener.owningProcess,
+    listenerOwnerCount: observation.listeners.length,
+    listenerBindingSource: "Get-NetTCPConnection",
+    visionProcessOwnershipSource: "Win32_Process",
+    visionProcessCount: visionProcesses.length,
+    visionProcessIds: visionProcesses.map((process) => process.processId),
+    visionProcessCommandLines: visionProcesses.map(
+      (process) => process.commandLine,
+    ),
+    executablePath: visionProcess.executablePath,
+    commandLine: visionProcess.commandLine,
+    processOwner: observation.processOwner,
+    taskUser: task.user,
+    taskCommand: task.command,
+    taskArguments: task.arguments,
+    taskWorkingDirectory: task.workingDirectory,
+  };
 }
 
 export async function waitForVisionInstalledBindingObservation({
@@ -1578,15 +1634,16 @@ export function validateVisionInstalledBinding(binding) {
   }
   if (
     facts.visionProcessOwnershipSource !== "Win32_Process" ||
-    facts.visionProcessCount !== 1 ||
+    !Number.isInteger(facts.visionProcessCount) ||
+    facts.visionProcessCount < 1 ||
     !Array.isArray(facts.visionProcessIds) ||
-    facts.visionProcessIds.length !== 1 ||
+    facts.visionProcessIds.length !== facts.visionProcessCount ||
     facts.visionProcessIds[0] !== facts.processId ||
     !Array.isArray(facts.visionProcessCommandLines) ||
-    facts.visionProcessCommandLines.length !== 1
+    facts.visionProcessCommandLines.length !== facts.visionProcessCount
   ) {
     throw new Error(
-      "Vision process ownership must enumerate exactly one canonical executable",
+      "Vision process ownership must enumerate the listener main process first",
     );
   }
   if (
@@ -2565,7 +2622,7 @@ async function collectVisionInstalledBinding() {
       "$visionProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.ExecutablePath -and [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonicalExecutablePath } | ForEach-Object { [pscustomobject]@{ processId = [int]$_.ProcessId; parentProcessId = [int]$_.ParentProcessId; creationDate = [string]$_.CreationDate; executablePath = [IO.Path]::GetFullPath([string]$_.ExecutablePath); commandLine = [string]$_.CommandLine } })",
       "$listener = @(Get-NetTCPConnection -State Listen -LocalPort 7892 -ErrorAction Stop | Where-Object { [string]$_.LocalAddress -ceq '127.0.0.1' })",
       "$listenerDetails = @($listener | ForEach-Object { [pscustomobject]@{ localAddress = [string]$_.LocalAddress; localPort = [int]$_.LocalPort; owningProcess = [int]$_.OwningProcess } })",
-      '$processOwner = $null; if ($visionProcesses.Count -eq 1 -and $listenerDetails.Count -eq 1 -and $visionProcesses[0].processId -eq $listenerDetails[0].owningProcess) { $owner = Invoke-CimMethod -InputObject (Get-CimInstance Win32_Process -Filter "ProcessId = $($visionProcesses[0].processId)" -ErrorAction Stop) -MethodName GetOwner -ErrorAction Stop; $processOwner = [string]$owner.User }',
+      '$processOwner = $null; if ($listenerDetails.Count -eq 1) { $mainProcess = @($visionProcesses | Where-Object { [int]$_.processId -eq [int]$listenerDetails[0].owningProcess }); if ($mainProcess.Count -eq 1) { $ownerProcesses = @(Get-CimInstance Win32_Process -Filter "ProcessId = $($mainProcess[0].processId)" -ErrorAction Stop); if ($ownerProcesses.Count -ne 1 -or [int]$ownerProcesses[0].ProcessId -ne [int]$mainProcess[0].processId -or [string]$ownerProcesses[0].CreationDate -cne [string]$mainProcess[0].creationDate -or -not $ownerProcesses[0].ExecutablePath -or -not ([IO.Path]::GetFullPath([string]$ownerProcesses[0].ExecutablePath) -ieq $canonicalExecutablePath)) { throw "Vision listener owner identity changed before owner lookup" }; $owner = Invoke-CimMethod -InputObject $ownerProcesses[0] -MethodName GetOwner -ErrorAction Stop; $processOwner = [string]$owner.User } }',
       `$taskDetails = [pscustomobject]@{ path = '${VISION_TASK_PATH}'; name = '${VISION_TASK_NAME}'; state = [string]$task.State; user = [string]$task.Principal.UserId; command = if ($action.Count -gt 0) { [string]$action[0].Execute } else { $null }; arguments = if ($action.Count -gt 0) { [string]$action[0].Arguments } else { $null }; workingDirectory = if ($action.Count -gt 0) { [string]$action[0].WorkingDirectory } else { $null } }`,
       "[Console]::Out.Write((@{ canonicalProcesses = $visionProcesses; listeners = $listenerDetails; processOwner = $processOwner; task = $taskDetails } | ConvertTo-Json -Compress -Depth 4))",
     ].join("; ");
@@ -2578,31 +2635,7 @@ async function collectVisionInstalledBinding() {
   const observation = await waitForVisionInstalledBindingObservation({
     collectObservation: collectRuntimeBinding,
   });
-  const visionProcess = observation.canonicalProcesses[0];
-  const visionPid = visionProcess.processId;
-  const listener = observation.listeners[0];
-  const task = observation.task;
-  const runtimeBinding = {
-    processId: visionPid,
-    listenerProcessId: listener.owningProcess,
-    listenerOwnerCount: observation.listeners.length,
-    listenerBindingSource: "Get-NetTCPConnection",
-    visionProcessOwnershipSource: "Win32_Process",
-    visionProcessCount: observation.canonicalProcesses.length,
-    visionProcessIds: observation.canonicalProcesses.map(
-      (process) => process.processId,
-    ),
-    visionProcessCommandLines: observation.canonicalProcesses.map(
-      (process) => process.commandLine,
-    ),
-    executablePath: visionProcess.executablePath,
-    commandLine: visionProcess.commandLine,
-    processOwner: observation.processOwner,
-    taskUser: task.user,
-    taskCommand: task.command,
-    taskArguments: task.arguments,
-    taskWorkingDirectory: task.workingDirectory,
-  };
+  const runtimeBinding = buildVisionInstalledRuntimeBinding(observation);
   return {
     installedRecord,
     siteConfiguration,

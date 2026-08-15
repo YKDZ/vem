@@ -18,6 +18,7 @@ import { describe, it } from "node:test";
 
 import { CdpClient, enablePageRuntime } from "./machine-ui-cdp-driver.mjs";
 import {
+  buildVisionInstalledRuntimeBinding,
   buildRecordedVisionSiteConfiguration,
   combineCleanupFailure,
   collectInstalledAiTryOnAttempt,
@@ -1115,6 +1116,38 @@ describe("vision try-on acceptance script", () => {
     };
   }
 
+  function installedBindingWithWorkerChildren({
+    workerParentProcessId = 7012,
+    workerCommandLine = "C:\\VEM\\vision\\app\\vending-vision.exe --multiprocessing-fork",
+    listenerProcessIds = [7012],
+    sibling = null,
+  } = {}) {
+    const main = {
+      processId: 7012,
+      parentProcessId: 100,
+      creationDate: "20260722120000.000000+000",
+      executablePath: "C:\\VEM\\vision\\app\\vending-vision.exe",
+      commandLine:
+        "C:\\VEM\\vision\\app\\vending-vision.exe --config C:\\ProgramData\\VEM\\vision\\site.json",
+    };
+    const workers = [7013, 7014].map((processId) => ({
+      processId,
+      parentProcessId: workerParentProcessId,
+      creationDate: "20260722120000.000000+000",
+      executablePath: "C:\\VEM\\vision\\app\\vending-vision.exe",
+      commandLine: workerCommandLine,
+    }));
+    return {
+      canonicalProcesses: [main, ...workers, ...(sibling ? [sibling] : [])],
+      listeners: listenerProcessIds.map((owningProcess) => ({
+        localAddress: "127.0.0.1",
+        localPort: 7892,
+        owningProcess,
+      })),
+      task: { path: "\\", name: "VEMVisionRuntime", state: "Running" },
+    };
+  }
+
   async function pollInstalledBinding(observations, timeoutMs = 8_000) {
     let index = 0;
     let clock = 0;
@@ -1140,6 +1173,88 @@ describe("vision try-on acceptance script", () => {
     assert.equal(binding.listeners[0].owningProcess, 4202);
   });
 
+  it("accepts the current Vision main with direct multiprocessing worker children", async () => {
+    const binding = await pollInstalledBinding([
+      installedBindingWithWorkerChildren(),
+    ]);
+    assert.equal(binding.listeners[0].owningProcess, 7012);
+    assert.deepEqual(
+      binding.canonicalProcesses.map((process) => process.processId),
+      [7012, 7013, 7014],
+    );
+  });
+
+  it("carries the listener main and direct worker children from collector into the validator", () => {
+    const observation = installedBindingWithWorkerChildren();
+    observation.processOwner = "VEMKiosk";
+    observation.task = {
+      path: "\\",
+      name: "VEMVisionRuntime",
+      state: "Running",
+      user: "DOM\\VEMKiosk",
+      command: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      arguments:
+        '-NoProfile -ExecutionPolicy Bypass -File "C:\\VEM\\bringup\\launch-vem-vision.ps1"',
+      workingDirectory: "C:\\VEM\\vision\\app",
+    };
+    const runtimeBinding = buildVisionInstalledRuntimeBinding(observation);
+    assert.equal(runtimeBinding.processId, 7012);
+    assert.deepEqual(runtimeBinding.visionProcessIds, [7012, 7013, 7014]);
+    assert.equal(
+      runtimeBinding.visionProcessCommandLines[0],
+      observation.canonicalProcesses[0].commandLine,
+    );
+  });
+
+  for (const [label, observation] of [
+    [
+      "an unknown canonical sibling",
+      installedBindingWithWorkerChildren({
+        sibling: {
+          processId: 7015,
+          parentProcessId: 100,
+          creationDate: "20260722120000.000000+000",
+          commandLine:
+            "C:\\VEM\\vision\\app\\vending-vision.exe --other-instance",
+        },
+      }),
+    ],
+    [
+      "a worker with another parent",
+      installedBindingWithWorkerChildren({ workerParentProcessId: 7000 }),
+    ],
+    [
+      "a child without the multiprocessing token",
+      installedBindingWithWorkerChildren({
+        workerCommandLine: "C:\\VEM\\vision\\app\\vending-vision.exe --child",
+      }),
+    ],
+    [
+      "multiple loopback listeners",
+      installedBindingWithWorkerChildren({ listenerProcessIds: [7012, 7013] }),
+    ],
+    [
+      "a duplicate canonical PID",
+      installedBindingWithWorkerChildren({
+        sibling: {
+          processId: 7013,
+          parentProcessId: 7012,
+          creationDate: "20260722120000.000000+000",
+          executablePath: "C:\\VEM\\vision\\app\\vending-vision.exe",
+          commandLine:
+            "C:\\VEM\\vision\\app\\vending-vision.exe --multiprocessing-fork",
+        },
+      }),
+    ],
+  ]) {
+    it(`rejects ${label} around the installed Vision main`, async () => {
+      await assert.rejects(
+        pollInstalledBinding([observation], 750),
+        /Vision installed binding did not stabilize/,
+      );
+    });
+  }
+
   it("binds installed acceptance only to the current root Vision runtime task", () => {
     const source = readFileSync(
       new URL("./vision-try-on-acceptance.mjs", import.meta.url),
@@ -1154,6 +1269,18 @@ describe("vision try-on acceptance script", () => {
     assert.match(
       collectBinding,
       /Get-ScheduledTask -TaskName '\$\{VISION_TASK_NAME\}' -TaskPath '\$\{VISION_TASK_PATH\}'/,
+    );
+    assert.match(
+      collectBinding,
+      /\$mainProcess = @\(\$visionProcesses \| Where-Object \{ \[int\]\$_\.processId -eq \[int\]\$listenerDetails\[0\]\.owningProcess \}\)/,
+    );
+    assert.match(
+      collectBinding,
+      /\$ownerProcesses = @\(Get-CimInstance Win32_Process -Filter "ProcessId = \$\(\$mainProcess\[0\]\.processId\)" -ErrorAction Stop\)/,
+    );
+    assert.match(
+      collectBinding,
+      /ownerProcesses\[0\]\.CreationDate[\s\S]*ownerProcesses\[0\]\.ExecutablePath[\s\S]*Invoke-CimMethod -InputObject \$ownerProcesses\[0\]/,
     );
     assert.doesNotMatch(collectBinding, /StartVisionServer/);
   });
@@ -2936,6 +3063,40 @@ describe("vision try-on acceptance script", () => {
     assert.equal(binding.processOwner, "VEMKiosk");
     assert.deepEqual(binding.visionProcessIds, [4242]);
     assert.equal(binding.frameSourceBinding.front.sha256, "c".repeat(64));
+    const collectedThreeProcessBinding = buildVisionInstalledRuntimeBinding({
+      canonicalProcesses: [
+        {
+          processId: 4242,
+          parentProcessId: 100,
+          creationDate: "20260722120000.000000+000",
+          executablePath: bindingFacts.executablePath,
+          commandLine: bindingFacts.commandLine,
+        },
+        ...[4243, 4244].map((processId) => ({
+          processId,
+          parentProcessId: 4242,
+          creationDate: "20260722120000.000000+000",
+          executablePath: bindingFacts.executablePath,
+          commandLine:
+            "C:\\VEM\\vision\\app\\vending-vision.exe --multiprocessing-fork",
+        })),
+      ],
+      listeners: [
+        { localAddress: "127.0.0.1", localPort: 7892, owningProcess: 4242 },
+      ],
+      processOwner: bindingFacts.processOwner,
+      task: {
+        user: bindingFacts.taskUser,
+        command: bindingFacts.taskCommand,
+        arguments: bindingFacts.taskArguments,
+        workingDirectory: bindingFacts.taskWorkingDirectory,
+      },
+    });
+    const threeProcessBinding = validateVisionInstalledBinding({
+      ...bindingFacts,
+      ...collectedThreeProcessBinding,
+    });
+    assert.deepEqual(threeProcessBinding.visionProcessIds, [4242, 4243, 4244]);
     const legacyCmdLauncher = structuredClone(bindingFacts);
     legacyCmdLauncher.taskCommand = "C:\\Windows\\System32\\cmd.exe";
     legacyCmdLauncher.taskArguments =
