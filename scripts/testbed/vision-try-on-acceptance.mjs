@@ -177,6 +177,29 @@ function fileSha256(path) {
     .digest("hex");
 }
 
+function inspectRecordedVideoFile(path, label) {
+  const normalizedPath = windowsAbsolute(path, `${label} path`);
+  let stat;
+  try {
+    stat = lstatSync(localPath(normalizedPath));
+  } catch (error) {
+    throw new Error(
+      `${label} is unavailable: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  const regularFile = stat.isFile();
+  const symbolicLink = stat.isSymbolicLink();
+  return {
+    path: normalizedPath,
+    sha256:
+      regularFile && !symbolicLink
+        ? fileSha256(normalizedPath)
+        : "0".repeat(64),
+    regularFile,
+    symbolicLink,
+  };
+}
+
 function writeReport(outPath, report) {
   const path = localPath(outPath);
   mkdirSync(dirname(path), { recursive: true });
@@ -500,6 +523,29 @@ function windowsPathEquals(left, right) {
   );
 }
 
+function windowsParentPath(value, label) {
+  const path = windowsAbsolute(value, label);
+  const separator = path.lastIndexOf("\\");
+  if (separator <= 2) {
+    throw new Error(`${label} must have a parent directory`);
+  }
+  return path.slice(0, separator);
+}
+
+function isWindowsPathWithin(path, root) {
+  const candidate = windowsAbsolute(path, "Vision recorded-video path");
+  const container = windowsAbsolute(root, "Vision recorded-video root").replace(
+    /\\+$/,
+    "",
+  );
+  if (
+    candidate.split("\\").some((segment) => segment === "." || segment === "..")
+  ) {
+    return false;
+  }
+  return candidate.toLowerCase().startsWith(`${container.toLowerCase()}\\`);
+}
+
 function windowsUserIdentifier(value, label) {
   const user = required(value, label);
   const slash = user.lastIndexOf("\\");
@@ -532,6 +578,20 @@ function normalizeFrameSourceBinding(
         `${label} expected-results sha256`,
       ),
     },
+  };
+}
+
+function normalizeObservedRecordedVideoFile(value, label) {
+  const facts = requiredObject(value, label);
+  if (facts.regularFile !== true) {
+    throw new Error(`${label} must be a regular file`);
+  }
+  if (facts.symbolicLink !== false) {
+    throw new Error(`${label} must not be a symbolic link`);
+  }
+  return {
+    path: windowsAbsolute(facts.path, `${label} path`),
+    sha256: sha256Hex(facts.sha256, `${label} sha256`),
   };
 }
 
@@ -1569,7 +1629,7 @@ export function validateVisionInstalledBinding(binding) {
     downloadManifest.fixtureArchive?.sha256,
     "Vision fixture archive sha256",
   );
-  const frameSourceBinding = normalizeFrameSourceBinding(
+  const installedFixtureBinding = normalizeFrameSourceBinding(
     {
       adapter: "recorded_video",
       configSha256: actualSiteConfigurationSha256,
@@ -1592,6 +1652,27 @@ export function validateVisionInstalledBinding(binding) {
   ) {
     throw new Error("Vision fixture manifest digest drifted");
   }
+  const recordedVideoRoot = windowsParentPath(
+    fixtureManifestPath,
+    "Vision fixture manifest path",
+  );
+  if (
+    [
+      installedFixtureBinding.top.path,
+      installedFixtureBinding.front.path,
+      installedFixtureBinding.expectedResults.path,
+    ].some(
+      (path) =>
+        !windowsPathEquals(
+          windowsParentPath(path, "Vision fixture path"),
+          recordedVideoRoot,
+        ),
+    )
+  ) {
+    throw new Error(
+      "Vision installed fixtures do not share the recorded-video root",
+    );
+  }
   const siteConfigurationObject = requiredObject(
     facts.siteConfiguration,
     "Vision site configuration",
@@ -1613,19 +1694,53 @@ export function validateVisionInstalledBinding(binding) {
     throw new Error("Vision site configuration front role drifted");
   }
   if (
+    siteConfigurationObject.cameras?.top?.loop !== true ||
+    siteConfigurationObject.cameras?.front?.loop !== true
+  ) {
+    throw new Error(
+      "Vision site configuration recorded-video cameras must loop",
+    );
+  }
+  const actualTop = normalizeObservedRecordedVideoFile(
+    facts.siteConfigurationFiles?.top,
+    "Vision site configuration top video",
+  );
+  const actualFront = normalizeObservedRecordedVideoFile(
+    facts.siteConfigurationFiles?.front,
+    "Vision site configuration front video",
+  );
+  if (
     !windowsPathEquals(
       siteConfigurationObject.cameras?.top?.video_path,
-      frameSourceBinding.top.path,
+      actualTop.path,
     ) ||
     !windowsPathEquals(
       siteConfigurationObject.cameras?.front?.video_path,
-      frameSourceBinding.front.path,
+      actualFront.path,
     )
   ) {
     throw new Error(
-      "Vision site configuration is not bound to the committed top/front fixtures",
+      "Vision site configuration is not bound to its observed top/front files",
     );
   }
+  if (
+    !isWindowsPathWithin(actualTop.path, recordedVideoRoot) ||
+    !isWindowsPathWithin(actualFront.path, recordedVideoRoot)
+  ) {
+    throw new Error(
+      "Vision site configuration files must remain within the installed recorded-video root",
+    );
+  }
+  const frameSourceBinding = normalizeFrameSourceBinding(
+    {
+      adapter: "recorded_video",
+      configSha256: actualSiteConfigurationSha256,
+      top: actualTop,
+      front: actualFront,
+      expectedResults: installedFixtureBinding.expectedResults,
+    },
+    "Vision installed fixture binding",
+  );
   if (!windowsPathEquals(facts.executablePath, VISION_ENTRYPOINT_PATH)) {
     throw new Error(
       "Vision listener is not bound to the fixed installed executable",
@@ -1721,17 +1836,13 @@ export function validateVisionInstalledBinding(binding) {
     throw new Error("Vision fixture manifest path drifted");
   }
   if (
-    sha256Hex(facts.fixtureTopSha256, "Vision top fixture sha256") !==
-      frameSourceBinding.top.sha256 ||
-    sha256Hex(facts.fixtureFrontSha256, "Vision front fixture sha256") !==
-      frameSourceBinding.front.sha256 ||
     sha256Hex(
       facts.fixtureExpectedResultsSha256,
       "Vision expected-results sha256",
     ) !== frameSourceBinding.expectedResults.sha256
   ) {
     throw new Error(
-      "Vision fixture digests drifted from the committed fixture manifest",
+      "Vision expected-results digest drifted from the fixture manifest",
     );
   }
   if (!/^[a-f0-9]{64}$/.test(String(facts.executableSha256 ?? ""))) {
@@ -1785,11 +1896,13 @@ export function buildRecordedVisionSiteConfiguration({
         source: "recorded_video",
         role: "presence",
         video_path: "recorded-video/top.mp4",
+        loop: true,
       },
       front: {
         source: "recorded_video",
         role: "profile_fast_try_on",
         video_path: "recorded-video/front.mp4",
+        loop: true,
       },
     },
   };
@@ -2650,6 +2763,16 @@ async function collectVisionInstalledBinding() {
     collectObservation: collectRuntimeBinding,
   });
   const runtimeBinding = buildVisionInstalledRuntimeBinding(observation);
+  const siteConfigurationFiles = {
+    top: inspectRecordedVideoFile(
+      siteConfiguration.cameras?.top?.video_path,
+      "Vision site configuration top video",
+    ),
+    front: inspectRecordedVideoFile(
+      siteConfiguration.cameras?.front?.video_path,
+      "Vision site configuration front video",
+    ),
+  };
   return {
     installedRecord,
     siteConfiguration,
@@ -2658,8 +2781,7 @@ async function collectVisionInstalledBinding() {
     siteConfigurationSha256: fileSha256(VISION_SITE_CONFIGURATION_PATH),
     downloadManifestSha256: fileSha256(installedRecord.downloadManifest.path),
     fixtureManifestSha256: fileSha256(installedRecord.fixtureSet.manifestPath),
-    fixtureTopSha256: fileSha256(installedRecord.fixtureSet.top.path),
-    fixtureFrontSha256: fileSha256(installedRecord.fixtureSet.front.path),
+    siteConfigurationFiles,
     fixtureExpectedResultsSha256: fileSha256(
       installedRecord.fixtureSet.expectedResults.path,
     ),

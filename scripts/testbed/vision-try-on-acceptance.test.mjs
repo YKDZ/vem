@@ -1448,11 +1448,13 @@ describe("vision try-on acceptance script", () => {
       source: "recorded_video",
       role: "presence",
       video_path: "recorded-video/top.mp4",
+      loop: true,
     });
     assert.deepEqual(config.cameras.front, {
       source: "recorded_video",
       role: "profile_fast_try_on",
       video_path: "recorded-video/front.mp4",
+      loop: true,
     });
   });
 
@@ -3125,12 +3127,16 @@ describe("vision try-on acceptance script", () => {
           top: {
             source: "recorded_video",
             role: "presence",
-            video_path: frameSourceBinding().top.path,
+            video_path:
+              "C:\\ProgramData\\VEM\\vision\\fixtures\\aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\recorded-video\\top-presence.mp4",
+            loop: true,
           },
           front: {
             source: "recorded_video",
             role: "profile_fast_try_on",
-            video_path: frameSourceBinding().front.path,
+            video_path:
+              "C:\\ProgramData\\VEM\\vision\\fixtures\\aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\recorded-video\\man-front.mp4",
+            loop: true,
           },
         },
       },
@@ -3139,8 +3145,20 @@ describe("vision try-on acceptance script", () => {
       siteConfigurationSha256: "9".repeat(64),
       downloadManifestSha256: "c".repeat(64),
       fixtureManifestSha256: "f".repeat(64),
-      fixtureTopSha256: frameSourceBinding().top.sha256,
-      fixtureFrontSha256: frameSourceBinding().front.sha256,
+      siteConfigurationFiles: {
+        top: {
+          path: "C:\\ProgramData\\VEM\\vision\\fixtures\\aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\recorded-video\\top-presence.mp4",
+          sha256: "1".repeat(64),
+          regularFile: true,
+          symbolicLink: false,
+        },
+        front: {
+          path: "C:\\ProgramData\\VEM\\vision\\fixtures\\aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\recorded-video\\man-front.mp4",
+          sha256: "2".repeat(64),
+          regularFile: true,
+          symbolicLink: false,
+        },
+      },
       fixtureExpectedResultsSha256: frameSourceBinding().expectedResults.sha256,
       processId: 4242,
       processOwner: "VEMKiosk",
@@ -3167,7 +3185,8 @@ describe("vision try-on acceptance script", () => {
     assert.equal(binding.processOwner, "VEMKiosk");
     assert.deepEqual(binding.visionProcessIds, [4242]);
     assert.equal(Object.hasOwn(binding, "siteConfigurationSha256"), false);
-    assert.equal(binding.frameSourceBinding.front.sha256, "c".repeat(64));
+    assert.equal(binding.frameSourceBinding.top.sha256, "1".repeat(64));
+    assert.equal(binding.frameSourceBinding.front.sha256, "2".repeat(64));
     for (const [label, mutate, expected] of [
       [
         "a non-recorded source",
@@ -3180,11 +3199,33 @@ describe("vision try-on acceptance script", () => {
         /front role drifted/,
       ],
       [
-        "an unbound fixture path",
-        (facts) =>
-          (facts.siteConfiguration.cameras.front.video_path =
-            "C:\\ProgramData\\VEM\\vision\\fixtures\\other.mp4"),
-        /not bound to the committed top\/front fixtures/,
+        "an outside fixture path",
+        (facts) => {
+          const outside = "C:\\ProgramData\\VEM\\vision\\fixtures\\other.mp4";
+          facts.siteConfiguration.cameras.front.video_path = outside;
+          facts.siteConfigurationFiles.front.path = outside;
+        },
+        /must remain within the installed recorded-video root/,
+      ],
+      [
+        "a symbolic-link fixture",
+        (facts) => (facts.siteConfigurationFiles.front.symbolicLink = true),
+        /front video must not be a symbolic link/,
+      ],
+      [
+        "a missing fixture",
+        (facts) => (facts.siteConfigurationFiles.top.regularFile = false),
+        /top video must be a regular file/,
+      ],
+      [
+        "a missing fixture observation",
+        (facts) => delete facts.siteConfigurationFiles.front,
+        /front video must be an object/,
+      ],
+      [
+        "a non-looping fixture",
+        (facts) => (facts.siteConfiguration.cameras.top.loop = false),
+        /recorded-video cameras must loop/,
       ],
     ]) {
       const invalidConfiguration = structuredClone(bindingFacts);
@@ -3302,11 +3343,13 @@ describe("vision try-on acceptance script", () => {
                 source: "recorded_video",
                 role: "presence",
                 video_path: frameSourceBinding().top.path,
+                loop: true,
               },
               front: {
                 source: "recorded_video",
                 role: "profile_fast_try_on",
                 video_path: frameSourceBinding().front.path,
+                loop: true,
               },
             },
           },
@@ -3315,8 +3358,18 @@ describe("vision try-on acceptance script", () => {
           siteConfigurationSha256: "a".repeat(64),
           downloadManifestSha256: "c".repeat(64),
           fixtureManifestSha256: "f".repeat(64),
-          fixtureTopSha256: frameSourceBinding().top.sha256,
-          fixtureFrontSha256: frameSourceBinding().front.sha256,
+          siteConfigurationFiles: {
+            top: {
+              ...frameSourceBinding().top,
+              regularFile: true,
+              symbolicLink: false,
+            },
+            front: {
+              ...frameSourceBinding().front,
+              regularFile: true,
+              symbolicLink: false,
+            },
+          },
           fixtureExpectedResultsSha256:
             frameSourceBinding().expectedResults.sha256,
           processId: 1,
