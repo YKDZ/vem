@@ -33,7 +33,8 @@ $declaredCachePaths = @(
   (Join-Path $cacheRoot "target"),
   (Join-Path $cacheRoot "sccache"),
   (Join-Path $cacheRoot "turbo"),
-  (Join-Path $cacheRoot "vision-main")
+  (Join-Path $cacheRoot "vision-main"),
+  (Join-Path $cacheRoot "acceptance-inputs")
 )
 $retainedToolPaths = @(
   (Join-Path $cacheRoot "powershell")
@@ -722,12 +723,13 @@ function Get-TestbedProvisionedVisionCoreArtifact([object]$GuestInput) {
   if ($null -eq $identity -or [string]$identity.sha256 -cnotmatch '^[a-f0-9]{64}$') {
     throw "guest input Vision core identity is invalid"
   }
-  $expectedRoot = "C:\ProgramData\VEM\testbed\vision-core\$([string]$identity.sha256)"
+  $expectedCacheRoot = "D:\runtime-cache\v1\acceptance-inputs"
+  $expectedRoot = Join-Path $expectedCacheRoot "vision-core\$([string]$identity.sha256)"
   if ([string]$inputs.inputRoot -cne $expectedRoot) { throw "guest input Vision core root is not canonical" }
   $runtimeArchive = [string]$inputs.runtimeArchive
   $fixtureArchive = [string]$inputs.fixtureArchive
-  if ($runtimeArchive -cne (Join-Path $expectedRoot "vision-runtime.zip") -or
-    $fixtureArchive -cne (Join-Path $expectedRoot "recorded-fixtures.zip")) {
+  if ($runtimeArchive -cne (Join-Path $expectedCacheRoot "files\$([string]$identity.runtimeArchive.sha256)\vision-runtime.zip") -or
+    $fixtureArchive -cne (Join-Path $expectedCacheRoot "files\$([string]$identity.recordedFixtureArchive.sha256)\recorded-fixtures.zip")) {
     throw "guest input Vision core archive paths are not canonical"
   }
   $runtimeIdentity = $identity.runtimeArchive

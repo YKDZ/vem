@@ -2153,6 +2153,7 @@ describe("Windows D cache contract", () => {
     assert.match(guest, /Join-Path \$cacheRoot "cargo-home"/);
     assert.match(guest, /Join-Path \$cacheRoot "pnpm-store"/);
     assert.match(guest, /Join-Path \$cacheRoot "pnpm-virtual-store"/);
+    assert.match(guest, /Join-Path \$cacheRoot "acceptance-inputs"/);
     assert.match(
       guest,
       /Get-FileHash -LiteralPath \$pnpmLockPath -Algorithm SHA256/,

@@ -20,7 +20,7 @@ const SCHEMA_VERSION = "vem-runtime-testbed-ai-input/v4";
 const AUTHORITY_SCHEMA = "vem.testbed.ai-acceptance-authority/v1";
 const SHA256 = /^[a-f0-9]{64}$/;
 const COMMIT = /^[a-f0-9]{40}$/;
-const GUEST_ROOT = "C:\\ProgramData\\VEM\\testbed\\ai-inputs";
+const GUEST_ROOT = "D:\\runtime-cache\\v1\\acceptance-inputs";
 const CANDIDATE_MEMBERS = new Set([
   "candidate-manifest.json",
   "github-build-provenance.sigstore.json",
@@ -677,15 +677,22 @@ async function calibrationSourceBundle(value) {
 }
 
 function guestProjection(artifacts, manifestSha256) {
-  const root = windowsJoin(GUEST_ROOT, manifestSha256);
+  const root = windowsJoin(GUEST_ROOT, "manifests", manifestSha256);
+  const guestFile = (artifact, name) =>
+    windowsJoin(GUEST_ROOT, "files", artifact.sha256, name);
+  const guestDirectory = (artifact) =>
+    windowsJoin(GUEST_ROOT, "directories", artifact.sha256);
   const calibration =
     artifacts.phase === "formal"
       ? {
-          calibratedRegionalPolicy: windowsJoin(
-            root,
+          calibratedRegionalPolicy: guestFile(
+            artifacts.calibratedRegionalPolicy,
             "calibrated-regional-policy.json",
           ),
-          calibrationReceipt: windowsJoin(root, "calibration-receipt.json"),
+          calibrationReceipt: guestFile(
+            artifacts.calibrationReceipt,
+            "calibration-receipt.json",
+          ),
           calibrationSourceInput: windowsJoin(root, "calibration-source"),
         }
       : {};
@@ -721,17 +728,25 @@ function guestProjection(artifacts, manifestSha256) {
     schemaVersion: "vem-local-testbed-ai-virtual-try-on-input/v2",
     inputRoot: root,
     phase: artifacts.phase,
-    candidateInputDirectory: windowsJoin(root, "candidate"),
-    windowsProofInputDirectory: windowsJoin(root, "windows-proof"),
-    acceptanceAuthorityReceipt: windowsJoin(
-      root,
+    candidateInputDirectory: guestDirectory(artifacts.candidateInput),
+    windowsProofInputDirectory: guestDirectory(artifacts.windowsProofInput),
+    acceptanceAuthorityReceipt: guestFile(
+      artifacts.acceptanceAuthorityReceipt,
       "acceptance-authority-receipt.json",
     ),
     ...calibration,
-    installedVisionRuntimeArchive: windowsJoin(root, "vision-runtime.zip"),
-    recordedFixtureArchive: windowsJoin(root, "recorded-fixtures.zip"),
-    modelPackArchive: windowsJoin(root, "model-pack.zip"),
-    materializedModelPackRoot: windowsJoin(root, "model-pack"),
+    installedVisionRuntimeArchive: guestFile(
+      artifacts.installedVisionRuntimeArchive,
+      "vision-runtime.zip",
+    ),
+    recordedFixtureArchive: guestFile(
+      artifacts.recordedFixtureArchive,
+      "recorded-fixtures.zip",
+    ),
+    modelPackArchive: guestFile(artifacts.modelPack.archive, "model-pack.zip"),
+    materializedModelPackRoot: guestDirectory(
+      artifacts.modelPack.materializedRoot,
+    ),
     modelPackSource: artifacts.modelPack.delivery.kind,
     ...(artifacts.modelPack.delivery.kind === "host-controlled-https"
       ? { modelPackUrl: artifacts.modelPack.delivery.url }

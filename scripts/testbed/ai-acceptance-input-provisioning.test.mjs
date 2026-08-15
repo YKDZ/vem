@@ -263,6 +263,19 @@ test("accepts a measurement v4 manifest without calibration and projects complet
     );
     assert.equal("calibrationReceipt" in checked.guestInput, false);
     assert.equal(checked.transfers.length, 7);
+    const retainedRoot = "D:\\runtime-cache\\v1\\acceptance-inputs";
+    assert.equal(
+      checked.guestInput.inputRoot,
+      `${retainedRoot}\\manifests\\${checked.manifestSha256}`,
+    );
+    assert.equal(
+      checked.guestInput.installedVisionRuntimeArchive,
+      `${retainedRoot}\\files\\${value.installedVisionRuntimeArchive.sha256}\\vision-runtime.zip`,
+    );
+    assert.equal(
+      checked.guestInput.candidateInputDirectory,
+      `${retainedRoot}\\directories\\${value.candidateInput.sha256}`,
+    );
     const snapshot = await materializeAiAcceptanceInputSnapshot(
       checked,
       join(root, "snapshots"),

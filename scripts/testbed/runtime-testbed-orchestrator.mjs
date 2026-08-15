@@ -45,6 +45,7 @@ const GUEST_TRANSFER_TIMEOUT_MS = 300_000;
 const GUEST_FAST_EXECUTION_TIMEOUT_MS = 15 * 60_000;
 const GUEST_FULL_EXECUTION_TIMEOUT_MS = 45 * 60_000;
 const WINDOWS_REMOTE_COMMAND_MAX_CHARS = 8_000;
+const GUEST_ACCEPTANCE_INPUT_CACHE = "D:\\runtime-cache\\v1\\acceptance-inputs";
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -791,18 +792,20 @@ export async function loadVisionCoreArtifacts(config, authorityReceipt) {
       sourceCommit: fixture.sourceCommit,
     },
   };
-  const root = `C:\\ProgramData\\VEM\\testbed\\vision-core\\${sha256}`;
+  const root = `${GUEST_ACCEPTANCE_INPUT_CACHE}\\vision-core\\${sha256}`;
+  const guestFile = (artifact, name) =>
+    `${GUEST_ACCEPTANCE_INPUT_CACHE}\\files\\${artifact.sha256}\\${name}`;
   return {
     guestInput: {
       schemaVersion: "vem-local-testbed-vision-core-input/v1",
       inputRoot: root,
-      runtimeArchive: `${root}\\vision-runtime.zip`,
-      fixtureArchive: `${root}\\recorded-fixtures.zip`,
+      runtimeArchive: guestFile(runtime, "vision-runtime.zip"),
+      fixtureArchive: guestFile(fixture, "recorded-fixtures.zip"),
       identity,
     },
     transfers: [
-      { ...runtime, guestPath: `${root}\\vision-runtime.zip` },
-      { ...fixture, guestPath: `${root}\\recorded-fixtures.zip` },
+      { ...runtime, guestPath: guestFile(runtime, "vision-runtime.zip") },
+      { ...fixture, guestPath: guestFile(fixture, "recorded-fixtures.zip") },
     ],
   };
 }
@@ -892,31 +895,73 @@ function powerShellLiteral(value) {
   return `'${value.replaceAll("'", "''")}'`;
 }
 
-function guestFileCacheProbe(transfers) {
-  const candidates = transfers
-    .filter((transfer) => !transfer.members)
-    .map((transfer) => ({
-      byteSize: transfer.byteSize,
-      guestPath: transfer.guestPath,
-      sha256: transfer.sha256,
-    }));
-  if (candidates.length === 0) return null;
-  return [
-    `$candidates = ConvertFrom-Json ${powerShellLiteral(JSON.stringify(candidates))}`,
-    "$cacheHits = @()",
-    "foreach ($candidate in @($candidates)) {",
-    "  $entry = Get-Item -LiteralPath $candidate.guestPath -Force -ErrorAction SilentlyContinue",
-    "  if ($null -eq $entry -or -not ($entry -is [System.IO.FileInfo])) { continue }",
-    "  if ($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }",
-    "  if ($entry.Length -ne [Int64]$candidate.byteSize) { continue }",
-    "  $actual = (Get-FileHash -LiteralPath $candidate.guestPath -Algorithm SHA256).Hash.ToLowerInvariant()",
-    "  if ($actual -ceq $candidate.sha256) { $cacheHits += $candidate.guestPath }",
-    "}",
-    "@{ cacheHits = @($cacheHits) } | ConvertTo-Json -Compress",
-  ].join("\n");
+function uniqueGuestTransfers(transfers) {
+  const unique = new Map();
+  for (const transfer of transfers) {
+    const previous = unique.get(transfer.guestPath);
+    if (!previous) {
+      unique.set(transfer.guestPath, transfer);
+      continue;
+    }
+    const identity = ({ byteSize, members, sha256, sourceCommit }) =>
+      JSON.stringify({
+        byteSize,
+        members: members ?? null,
+        sha256,
+        sourceCommit: sourceCommit ?? null,
+      });
+    if (identity(previous) !== identity(transfer)) {
+      throw new Error("guest input cache destination identity conflicts");
+    }
+  }
+  return [...unique.values()];
 }
 
-function parseGuestFileCacheHits(output, transfers) {
+function guestInputCacheProbes(transfer) {
+  const candidate = {
+    byteSize: transfer.byteSize,
+    guestPath: transfer.guestPath,
+    sha256: transfer.sha256,
+    ...(transfer.members ? { members: transfer.members } : {}),
+  };
+  if (transfer.members) {
+    return [
+      [
+        `$candidate = ConvertFrom-Json ${powerShellLiteral(JSON.stringify(candidate))}`,
+        "$cacheHit = $false",
+        "$root = Get-Item -LiteralPath $candidate.guestPath -Force -ErrorAction SilentlyContinue",
+        "if ($null -ne $root -and $root -is [System.IO.DirectoryInfo] -and -not ($root.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {",
+        "  $entries = @(Get-ChildItem -LiteralPath $root.FullName -Recurse -Force -ErrorAction SilentlyContinue)",
+        "  $files = @($entries | Where-Object { $_ -is [System.IO.FileInfo] })",
+        "  $cacheHit = @($entries | Where-Object { $_.Attributes -band [System.IO.FileAttributes]::ReparsePoint }).Count -eq 0 -and $files.Count -eq @($candidate.members).Count",
+        "  foreach ($member in @($candidate.members)) {",
+        "    if (-not $cacheHit) { break }",
+        "    $memberPath = Join-Path $root.FullName ([string]$member.name).Replace('/', [IO.Path]::DirectorySeparatorChar)",
+        "    $entry = Get-Item -LiteralPath $memberPath -Force -ErrorAction SilentlyContinue",
+        "    if ($null -eq $entry -or -not ($entry -is [System.IO.FileInfo]) -or ($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -or $entry.Length -ne [Int64]$member.byteSize) { $cacheHit = $false; break }",
+        "    $actual = (Get-FileHash -LiteralPath $entry.FullName -Algorithm SHA256).Hash.ToLowerInvariant()",
+        "    if ($actual -cne [string]$member.sha256) { $cacheHit = $false; break }",
+        "  }",
+        "}",
+        "@{ cacheHits = @($(if ($cacheHit) { $candidate.guestPath })) } | ConvertTo-Json -Compress",
+      ].join("\n"),
+    ];
+  }
+  return [
+    [
+      `$candidate = ConvertFrom-Json ${powerShellLiteral(JSON.stringify(candidate))}`,
+      "$cacheHit = $false",
+      "$entry = Get-Item -LiteralPath $candidate.guestPath -Force -ErrorAction SilentlyContinue",
+      "if ($null -ne $entry -and $entry -is [System.IO.FileInfo] -and -not ($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -and $entry.Length -eq [Int64]$candidate.byteSize) {",
+      "  $actual = (Get-FileHash -LiteralPath $entry.FullName -Algorithm SHA256).Hash.ToLowerInvariant()",
+      "  $cacheHit = $actual -ceq $candidate.sha256",
+      "}",
+      "@{ cacheHits = @($(if ($cacheHit) { $candidate.guestPath })) } | ConvertTo-Json -Compress",
+    ].join("\n"),
+  ];
+}
+
+function parseGuestInputCacheHits(output, transfers) {
   let value;
   try {
     value = JSON.parse(output.trim());
@@ -932,11 +977,7 @@ function parseGuestFileCacheHits(output, transfers) {
   ) {
     throw new Error("AI guest input cache probe returned invalid results");
   }
-  const eligible = new Set(
-    transfers
-      .filter((transfer) => !transfer.members)
-      .map((transfer) => transfer.guestPath),
-  );
+  const eligible = new Set(transfers.map((transfer) => transfer.guestPath));
   const hits = new Set();
   for (const path of value.cacheHits) {
     if (typeof path !== "string" || !eligible.has(path) || hits.has(path)) {
@@ -969,13 +1010,20 @@ export async function stageAiAcceptanceInputs({
   const remote = `${guest.user}@${guest.host}`;
   const ssh = sshArguments(guest);
   const scp = scpArguments(guest);
-  const transfers = [
+  const transfers = uniqueGuestTransfers([
     ...(corePreparation?.transfers ?? []),
     ...(preparation?.transfers ?? []),
-  ];
-  const probe = guestFileCacheProbe(transfers);
-  const cachedGuestFiles = probe
-    ? parseGuestFileCacheHits(
+  ]);
+  const cachedGuestFiles = new Set();
+  for (const transfer of transfers) {
+    let cacheHit = true;
+    for (const probe of guestInputCacheProbes(transfer)) {
+      if (
+        remotePowerShellCommandLength(probe) > WINDOWS_REMOTE_COMMAND_MAX_CHARS
+      ) {
+        throw new Error("guest input cache probe exceeds Windows limit");
+      }
+      const hits = parseGuestInputCacheHits(
         (
           await captureResult(
             "ssh",
@@ -993,9 +1041,12 @@ export async function stageAiAcceptanceInputs({
             },
           )
         ).stdout,
-        transfers,
-      )
-    : new Set();
+        [transfer],
+      );
+      if (!hits.has(transfer.guestPath)) cacheHit = false;
+    }
+    if (cacheHit) cachedGuestFiles.add(transfer.guestPath);
+  }
   const missingTransfers = transfers.filter(
     (transfer) => !cachedGuestFiles.has(transfer.guestPath),
   );

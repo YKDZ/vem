@@ -66,6 +66,7 @@ const RETAINED_CACHE_CONTRACT = Object.freeze([
   "D:\\runtime-cache\\v1\\sccache",
   "D:\\runtime-cache\\v1\\turbo",
   "D:\\runtime-cache\\v1\\vision-main",
+  "D:\\runtime-cache\\v1\\acceptance-inputs",
   "D:\\runtime-cache\\v1\\powershell",
 ]);
 const REQUIRED_SERVICE_API_ENV_KEYS = Object.freeze([
