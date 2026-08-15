@@ -43,6 +43,7 @@ type AudioPresentation = {
 export type AudioCoordinatorRequest = {
   requestId: string;
   transitionId: string;
+  kind: CustomerJourneyTransition["kind"] | "local-operations.test";
   sourceUrl: string;
   priority: number;
   category: CustomerJourneyTransition["category"];
@@ -169,6 +170,7 @@ export function createAudioCoordinator(
       rememberTransition(acceptedTransitionIds, transition.transitionId);
       const request = createRequest({
         transitionId: transition.transitionId,
+        kind: transition.kind,
         sourceUrl: presentation.sourceUrl,
         priority: presentation.priority,
         category: transition.category,
@@ -222,6 +224,7 @@ export function createAudioCoordinator(
     if (disposed || queue.length >= maxQueueSize) return null;
     const request = createRequest({
       transitionId: `local-operations-test:${nextRequestSequence}`,
+      kind: "local-operations.test",
       sourceUrl,
       priority: Number.MAX_SAFE_INTEGER,
       category: "transaction",
@@ -276,6 +279,8 @@ export function createAudioCoordinator(
 
   async function interruptForHigherPriorityRequest(): Promise<void> {
     const next = queue[0];
+    const welcomePreemptsDeparture =
+      next?.kind === "presence.welcome" && active?.kind === "presence.departed";
     const transactionPreemptsPresence =
       next?.category === "transaction" && active?.category === "presence";
     const newerTransactionPreemptsActive =
@@ -287,6 +292,7 @@ export function createAudioCoordinator(
       !next ||
       (!transactionPreemptsPresence &&
         !newerTransactionPreemptsActive &&
+        !welcomePreemptsDeparture &&
         next.priority <= active.priority) ||
       stoppingActive
     ) {

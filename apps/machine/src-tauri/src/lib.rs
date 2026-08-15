@@ -132,6 +132,9 @@ pub fn run() {
                 if let Err(error) = enforce_kiosk_window(&window) {
                     eprintln!("failed to enforce kiosk window bounds during setup: {error}");
                 }
+                if let Err(error) = _app.state::<MachineAudioState>().prepare_default_output() {
+                    eprintln!("failed to warm Windows default audio output during setup: {error}");
+                }
             }
             Ok(())
         })

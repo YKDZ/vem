@@ -168,6 +168,59 @@ describe("Customer Journey Transition Projector", () => {
     ]);
   });
 
+  it("consumes an ordered F0 pickup edge even when the next snapshot is already AC", () => {
+    const projector = createCustomerJourneyTransitionProjector();
+
+    expect(
+      projector.project({
+        pickupProgress: [
+          {
+            eventId: "pickup-f0",
+            orderNo: "ORDER-FAST-PICKUP",
+            stage: "outlet_opened",
+            warningNo: null,
+            reportedAt: "2026-07-18T08:00:00.000Z",
+          },
+        ],
+        transaction: {
+          orderNo: "ORDER-FAST-PICKUP",
+          nextAction: "dispensing",
+          updatedAt: "2026-07-18T08:00:01.000Z",
+          vending: {
+            status: "dispensing",
+            pickupReminder: {
+              stage: "pickup_completed",
+              level: "info",
+              warningNo: null,
+              reportedAt: "2026-07-18T08:00:01.000Z",
+            },
+          },
+        },
+      }),
+    ).toContainEqual(expect.objectContaining({ kind: "pickup.outlet_opened" }));
+
+    expect(
+      projector.project({
+        transaction: {
+          orderNo: "ORDER-FAST-PICKUP",
+          nextAction: "dispensing",
+          updatedAt: "2026-07-18T08:00:02.000Z",
+          vending: {
+            status: "dispensing",
+            pickupReminder: {
+              stage: "pickup_completed",
+              level: "info",
+              warningNo: null,
+              reportedAt: "2026-07-18T08:00:01.000Z",
+            },
+          },
+        },
+      }),
+    ).not.toContainEqual(
+      expect.objectContaining({ kind: "pickup.outlet_opened" }),
+    );
+  });
+
   it("projects payment, refund, and manual handling outcomes from transaction facts", () => {
     const projector = createCustomerJourneyTransitionProjector();
     projector.project({ transaction: null });

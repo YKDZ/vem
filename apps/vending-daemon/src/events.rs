@@ -45,6 +45,7 @@ pub enum DaemonEvent {
         updated_at: String,
         order_no: String,
         status: String,
+        pickup_progress: Option<PickupProgressProjection>,
     },
     MqttChanged {
         event_id: String,
@@ -72,6 +73,14 @@ pub enum DaemonEvent {
         op_id: String,
         status: String,
     },
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PickupProgressProjection {
+    pub stage: String,
+    pub warning_no: Option<u8>,
+    pub reported_at: String,
 }
 
 pub fn scanner_runtime_status_contract(

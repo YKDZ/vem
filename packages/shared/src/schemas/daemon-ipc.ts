@@ -417,6 +417,20 @@ export const daemonIpcTransactionChangedEventSchema =
       type: z.literal("transaction_changed"),
       orderNo: z.string(),
       status: z.string(),
+      pickupProgress: z
+        .object({
+          stage: z.enum([
+            "outlet_opened",
+            "pickup_waiting",
+            "pickup_completed",
+            "pickup_timeout_warning",
+            "reset_completed",
+          ]),
+          warningNo: z.number().int().positive().nullable(),
+          reportedAt: z.string(),
+        })
+        .nullable()
+        .optional(),
     })
     .strict();
 

@@ -1673,6 +1673,7 @@ mod tests {
             updated_at: "2026-07-17T00:00:00Z".to_string(),
             order_no: "ORDER-1".to_string(),
             status: "success".to_string(),
+            pickup_progress: None,
         };
         let stock_upload = DaemonEvent::SaleStartCapabilityInvalidated {
             event_id: "event".to_string(),

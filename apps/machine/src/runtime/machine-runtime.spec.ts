@@ -166,6 +166,7 @@ beforeEach(() => {
   });
   disposeJourneyAudioMock.mockResolvedValue(undefined);
   createJourneyAudioRuntimeMock.mockReturnValue({
+    acceptPickupProgress: vi.fn().mockResolvedValue(undefined),
     requestTestPlayback: vi.fn(),
     trace: vi.fn(() => []),
     dispose: disposeJourneyAudioMock,
@@ -185,6 +186,53 @@ afterEach(async () => {
 });
 
 describe("Machine runtime coordinator", () => {
+  it("forwards an ordered daemon F0 pickup edge before refreshing the transaction snapshot", async () => {
+    let releasePickupProjection: (() => void) | null = null;
+    const pickupProjection = new Promise<void>((resolve) => {
+      releasePickupProjection = resolve;
+    });
+    const acceptPickupProgress = vi.fn(() => pickupProjection);
+    createJourneyAudioRuntimeMock.mockReturnValueOnce({
+      acceptPickupProgress,
+      requestTestPlayback: vi.fn(),
+      trace: vi.fn(() => []),
+      dispose: disposeJourneyAudioMock,
+    });
+    startMachineRuntime(pinia);
+    const subscription = subscribeEventsMock.mock.calls[0];
+    if (!subscription)
+      throw new Error("runtime did not subscribe to daemon events");
+
+    subscription[0].onEvent({
+      type: "transaction_changed",
+      eventId: "pickup-f0-event",
+      updatedAt: "2026-07-19T08:00:00.000Z",
+      orderNo: "ORD-F0-FAST-001",
+      status: "dispensing",
+      pickupProgress: {
+        stage: "outlet_opened",
+        warningNo: null,
+        reportedAt: "2026-07-19T08:00:00.000Z",
+      },
+    });
+
+    expect(acceptPickupProgress).toHaveBeenCalledWith({
+      eventId: "pickup-f0-event",
+      orderNo: "ORD-F0-FAST-001",
+      stage: "outlet_opened",
+      warningNo: null,
+      reportedAt: "2026-07-19T08:00:00.000Z",
+    });
+    expect(getCurrentTransactionMock).not.toHaveBeenCalled();
+
+    const release = releasePickupProjection as (() => void) | null;
+    if (!release) throw new Error("pickup projection did not start");
+    release();
+    await vi.waitFor(() => {
+      expect(getCurrentTransactionMock).toHaveBeenCalledOnce();
+    });
+  });
+
   it("exposes production teardown that settles only after audio disposal", async () => {
     let resolveAudioDisposal: (() => void) | null = null;
     disposeJourneyAudioMock.mockImplementationOnce(

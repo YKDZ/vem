@@ -214,6 +214,51 @@ describe("Audio Coordinator", () => {
     });
   });
 
+  it("interrupts an active departure when a later presence welcome arrives", async () => {
+    let terminal:
+      | ((status: "completed" | "failed" | "stopped") => void)
+      | null = null;
+    const driver: AudioCoordinatorPlaybackDriver = {
+      name: "mock",
+      playLocal: vi.fn(async (_sourceUrl, options) => {
+        terminal = (status) => options?.onTerminal?.({ status });
+      }),
+      stop: vi.fn(async () => undefined),
+    };
+    const coordinator = createAudioCoordinator({
+      driver,
+      preferences: () => ({
+        volume: 0.7,
+        cuesEnabled: true,
+        presenceCuesEnabled: true,
+        transactionCuesEnabled: true,
+      }),
+      mapTransition: (item) => ({
+        sourceUrl: `/audio/${item.transitionId}.mp3`,
+        priority: item.kind === "presence.departed" ? 60 : 30,
+      }),
+    });
+
+    await coordinator.accept([
+      { ...transition("departed", "presence"), kind: "presence.departed" },
+    ]);
+    await coordinator.accept([
+      { ...transition("welcome", "presence"), kind: "presence.welcome" },
+    ]);
+
+    expect(driver.stop).toHaveBeenCalledOnce();
+    expect(coordinator.activeRequest()?.transitionId).toBe("departed");
+
+    const stopActive = terminal as
+      | ((status: "completed" | "failed" | "stopped") => void)
+      | null;
+    if (!stopActive) throw new Error("mock playback did not retain callback");
+    stopActive("stopped");
+    await vi.waitFor(() => {
+      expect(coordinator.activeRequest()?.transitionId).toBe("welcome");
+    });
+  });
+
   it("drops stale queued transaction cues and interrupts equal-priority transaction audio", async () => {
     let terminal:
       | ((status: "completed" | "failed" | "stopped") => void)

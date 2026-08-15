@@ -31,6 +31,18 @@ export type CustomerJourneyTransition = {
 };
 
 export type CustomerJourneyFacts = {
+  pickupProgress?: readonly {
+    eventId: string;
+    orderNo: string;
+    stage:
+      | "outlet_opened"
+      | "pickup_waiting"
+      | "pickup_completed"
+      | "pickup_timeout_warning"
+      | "reset_completed";
+    warningNo: number | null;
+    reportedAt: string;
+  }[];
   touchscreen?: {
     personPresent: boolean;
     source: "local_interaction";
@@ -225,6 +237,16 @@ function projectCandidates(
   }
 
   const transaction = facts.transaction;
+  for (const progress of facts.pickupProgress ?? []) {
+    const pickupTransition = pickupProgressTransition(progress);
+    if (!pickupTransition) continue;
+    transactionEdges.markPickupSeen(progress.orderNo);
+    if (
+      transactionEdges.claim(progress.orderNo, pickupTransition.transitionId)
+    ) {
+      candidates.push(pickupTransition);
+    }
+  }
   if (!transaction?.orderNo || !transaction.nextAction) return candidates;
 
   const orderNo = transaction.orderNo;
@@ -596,6 +618,50 @@ function transactionTransition(
     orderNo,
     occurredAt,
   });
+}
+
+function pickupProgressTransition(
+  progress: NonNullable<CustomerJourneyFacts["pickupProgress"]>[number],
+): CustomerJourneyTransition | null {
+  switch (progress.stage) {
+    case "outlet_opened":
+      return transactionTransition(
+        progress.orderNo,
+        "pickup-outlet-opened",
+        "pickup.outlet_opened",
+        progress.reportedAt,
+      );
+    case "pickup_waiting":
+      return transactionTransition(
+        progress.orderNo,
+        "pickup-waiting",
+        "pickup.waiting",
+        progress.reportedAt,
+      );
+    case "pickup_timeout_warning": {
+      const urgent = (progress.warningNo ?? 0) >= 2;
+      return transactionTransition(
+        progress.orderNo,
+        `pickup-warning-${urgent ? 2 : 1}`,
+        urgent ? "pickup.urgent" : "pickup.warning",
+        progress.reportedAt,
+      );
+    }
+    case "pickup_completed":
+      return transactionTransition(
+        progress.orderNo,
+        "pickup-completed",
+        "pickup.completed",
+        progress.reportedAt,
+      );
+    case "reset_completed":
+      return transactionTransition(
+        progress.orderNo,
+        "pickup-resetting",
+        "pickup.resetting",
+        progress.reportedAt,
+      );
+  }
 }
 
 function transition(

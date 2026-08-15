@@ -13,7 +13,7 @@ use tokio::sync::{broadcast, Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::events::DaemonEvent;
+use crate::events::{DaemonEvent, PickupProgressProjection};
 use crate::{
     automatic_vent::AutomaticVentController,
     hardware::HardwareSupervisor,
@@ -32,6 +32,46 @@ use vending_core::{
 const DISPENSE_LOCAL_TIMEOUT_GRACE_SECONDS: u64 = 15;
 const DISPENSE_RESTART_RECOVERY_GRACE_SECONDS: i64 = 30;
 const DISPENSE_SIDE_EFFECT_RECOVERY_INTERVAL: Duration = Duration::from_secs(30);
+
+fn pickup_progress_stage_name(
+    stage: &vending_core::hardware::DispenseProgressStage,
+) -> &'static str {
+    match stage {
+        vending_core::hardware::DispenseProgressStage::OutletOpened => "outlet_opened",
+        vending_core::hardware::DispenseProgressStage::PickupWaiting => "pickup_waiting",
+        vending_core::hardware::DispenseProgressStage::PickupCompleted => "pickup_completed",
+        vending_core::hardware::DispenseProgressStage::PickupTimeoutWarning => {
+            "pickup_timeout_warning"
+        }
+        vending_core::hardware::DispenseProgressStage::ResetCompleted => "reset_completed",
+    }
+}
+
+async fn record_observed_dispense_progress(
+    state: &LocalStateStore,
+    events: &broadcast::Sender<DaemonEvent>,
+    event: vending_core::hardware::DispenseProgressEvent,
+) -> Result<bool, String> {
+    if !state
+        .record_dispense_progress(&event)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return Ok(false);
+    }
+    let _ = events.send(DaemonEvent::TransactionChanged {
+        event_id: Uuid::new_v4().simple().to_string(),
+        updated_at: crate::state::store::now_iso(),
+        order_no: event.order_no,
+        status: "dispensing".to_string(),
+        pickup_progress: Some(PickupProgressProjection {
+            stage: pickup_progress_stage_name(&event.stage).to_string(),
+            warning_no: event.warning_no,
+            reported_at: event.reported_at,
+        }),
+    });
+    Ok(true)
+}
 
 #[derive(Debug, Clone)]
 pub struct OutboxFlushResult {
@@ -309,18 +349,8 @@ impl MqttSyncRuntime {
         let progress_events = self.events.clone();
         let progress_worker = tokio::spawn(async move {
             while let Some(event) = progress_receiver.recv().await {
-                let order_no = event.order_no.clone();
-                if matches!(
-                    progress_state.record_dispense_progress(&event).await,
-                    Ok(true)
-                ) {
-                    let _ = progress_events.send(DaemonEvent::TransactionChanged {
-                        event_id: Uuid::new_v4().simple().to_string(),
-                        updated_at: crate::state::store::now_iso(),
-                        order_no,
-                        status: "dispensing".to_string(),
-                    });
-                }
+                let _ = record_observed_dispense_progress(&progress_state, &progress_events, event)
+                    .await;
             }
         });
         let progress_sender_for_observer = progress_sender.clone();
@@ -374,6 +404,7 @@ impl MqttSyncRuntime {
             } else {
                 "dispense_failed".to_string()
             },
+            pickup_progress: None,
         });
         if !result.success {
             self.state
@@ -519,6 +550,7 @@ impl MqttSyncRuntime {
                 updated_at: crate::state::store::now_iso(),
                 order_no: record.order_no,
                 status: "dispense_failed".to_string(),
+                pickup_progress: None,
             });
             recovered += 1;
         }
@@ -1565,6 +1597,102 @@ mod tests {
         },
         serial::EnvironmentSample,
     };
+
+    #[test]
+    fn pickup_progress_projection_preserves_f0_e5_f1_and_f2_stage_order() {
+        use vending_core::hardware::DispenseProgressStage;
+
+        assert_eq!(
+            [
+                DispenseProgressStage::OutletOpened,
+                DispenseProgressStage::PickupTimeoutWarning,
+                DispenseProgressStage::PickupCompleted,
+                DispenseProgressStage::ResetCompleted,
+            ]
+            .iter()
+            .map(pickup_progress_stage_name)
+            .collect::<Vec<_>>(),
+            [
+                "outlet_opened",
+                "pickup_timeout_warning",
+                "pickup_completed",
+                "reset_completed",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn observed_pickup_progress_is_recorded_before_one_ordered_event_and_ignores_duplicates_or_other_commands(
+    ) {
+        use vending_core::hardware::{DispenseProgressEvent, DispenseProgressStage};
+
+        let temp = tempfile::tempdir().expect("temp");
+        let state = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        state
+            .upsert_order_session(order_session_in_dispense("CMD-PICKUP-EDGE"))
+            .await
+            .expect("order");
+        let (events, mut received) = broadcast::channel(8);
+        let observed = DispenseProgressEvent {
+            command_no: "CMD-PICKUP-EDGE".to_string(),
+            order_no: "ORDER-ENV".to_string(),
+            stage: DispenseProgressStage::OutletOpened,
+            warning_no: None,
+            message: "F0 outlet opened".to_string(),
+            reported_at: "2026-08-15T06:00:00.000Z".to_string(),
+        };
+
+        assert!(
+            record_observed_dispense_progress(&state, &events, observed.clone())
+                .await
+                .expect("record observed F0")
+        );
+        let snapshot = state
+            .current_transaction_snapshot()
+            .await
+            .expect("snapshot")
+            .expect("current transaction");
+        assert_eq!(
+            snapshot
+                .vending
+                .and_then(|vending| vending.pickup_reminder)
+                .and_then(|reminder| reminder.stage),
+            Some("outlet_opened".to_string())
+        );
+        assert!(matches!(
+            received.recv().await.expect("recorded progress event"),
+            DaemonEvent::TransactionChanged {
+                order_no,
+                pickup_progress: Some(PickupProgressProjection { stage, .. }),
+                ..
+            } if order_no == "ORDER-ENV" && stage == "outlet_opened"
+        ));
+
+        assert!(
+            !record_observed_dispense_progress(&state, &events, observed)
+                .await
+                .expect("duplicate F0 is ignored")
+        );
+        let wrong_command = DispenseProgressEvent {
+            command_no: "CMD-OTHER".to_string(),
+            order_no: "ORDER-ENV".to_string(),
+            stage: DispenseProgressStage::PickupWaiting,
+            warning_no: None,
+            message: "F1 from another command".to_string(),
+            reported_at: "2026-08-15T06:00:01.000Z".to_string(),
+        };
+        assert!(
+            !record_observed_dispense_progress(&state, &events, wrong_command)
+                .await
+                .expect("other command is ignored")
+        );
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), received.recv()).await,
+            Err(_)
+        ));
+    }
 
     #[derive(Debug, Default)]
     struct EnvironmentCommandCalls {

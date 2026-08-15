@@ -1266,6 +1266,7 @@ impl TransactionStateMachine {
                 .map(InternalCheckoutFlowAction::as_str)
                 .map(ToString::to_string)
                 .unwrap_or_else(|| current.order_status.clone().unwrap_or_default()),
+            pickup_progress: None,
         });
     }
 }

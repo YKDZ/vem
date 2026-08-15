@@ -142,7 +142,19 @@ function dispatchDaemonEvent(
     return;
   }
   if (event.type === "transaction_changed") {
-    void checkoutStore.refreshCurrentTransaction();
+    if (event.pickupProgress && coordinator.journeyAudio) {
+      void coordinator.journeyAudio
+        .acceptPickupProgress({
+          eventId: event.eventId,
+          orderNo: event.orderNo,
+          ...event.pickupProgress,
+        })
+        .finally(() => {
+          void checkoutStore.refreshCurrentTransaction();
+        });
+    } else {
+      void checkoutStore.refreshCurrentTransaction();
+    }
     void catalogStore.refresh().catch(() => undefined);
     return;
   }

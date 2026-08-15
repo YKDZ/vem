@@ -28,6 +28,18 @@ const AUTOMATIC_VENT_SUBMIT_RETRY_DELAY_MS = 250;
 const AUTOMATIC_VENT_SUBMIT_MAX_ATTEMPTS = 3;
 
 export type CustomerJourneyAudioRuntime = {
+  acceptPickupProgress(input: {
+    eventId: string;
+    orderNo: string;
+    stage:
+      | "outlet_opened"
+      | "pickup_waiting"
+      | "pickup_completed"
+      | "pickup_timeout_warning"
+      | "reset_completed";
+    warningNo: number | null;
+    reportedAt: string;
+  }): Promise<void>;
   requestTestPlayback(
     sourceUrl: string,
     volume: number,
@@ -129,6 +141,10 @@ export function createCustomerJourneyAudioRuntime(
   });
 
   return {
+    async acceptPickupProgress(input): Promise<void> {
+      if (disposed) return;
+      await coordinator.accept(projector.project({ pickupProgress: [input] }));
+    },
     async requestTestPlayback(sourceUrl, volume) {
       return await coordinator.requestTestPlayback(sourceUrl, volume);
     },

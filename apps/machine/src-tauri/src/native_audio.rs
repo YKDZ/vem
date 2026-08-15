@@ -20,10 +20,131 @@ use {
     tauri::Emitter,
 };
 
+trait DefaultAudioOutputFactory: Send + Sync + 'static {
+    type Session: DefaultAudioOutputSession;
+
+    fn open_default_session(&self) -> Result<Self::Session, String>;
+}
+
+trait DefaultAudioOutputSession: Send + 'static {
+    type Player: Send + 'static;
+
+    fn create_player(&self) -> Result<Self::Player, String>;
+    fn is_unhealthy(&self) -> bool;
+}
+
+struct ReusableDefaultAudioOutput<F: DefaultAudioOutputFactory> {
+    factory: F,
+    session: Mutex<Option<F::Session>>,
+}
+
+impl<F: DefaultAudioOutputFactory> ReusableDefaultAudioOutput<F> {
+    fn new(factory: F) -> Self {
+        Self {
+            factory,
+            session: Mutex::new(None),
+        }
+    }
+
+    fn prepare(&self) -> Result<(), String> {
+        let mut session = self
+            .session
+            .lock()
+            .map_err(|_| "default audio output state poisoned".to_string())?;
+        if session
+            .as_ref()
+            .is_some_and(DefaultAudioOutputSession::is_unhealthy)
+        {
+            *session = None;
+        }
+        if session.is_none() {
+            *session = Some(self.factory.open_default_session()?);
+        }
+        Ok(())
+    }
+
+    fn create_player(&self) -> Result<<F::Session as DefaultAudioOutputSession>::Player, String> {
+        for attempt in 0..=1 {
+            let mut session = self
+                .session
+                .lock()
+                .map_err(|_| "default audio output state poisoned".to_string())?;
+            if session
+                .as_ref()
+                .is_some_and(DefaultAudioOutputSession::is_unhealthy)
+            {
+                *session = None;
+            }
+            if session.is_none() {
+                match self.factory.open_default_session() {
+                    Ok(opened) => *session = Some(opened),
+                    Err(error) if attempt == 1 => return Err(error),
+                    Err(_) => continue,
+                }
+            }
+            let result = session
+                .as_ref()
+                .ok_or_else(|| "default audio output is unavailable".to_string())?
+                .create_player();
+            match result {
+                Ok(player) => return Ok(player),
+                Err(error) if attempt == 1 => return Err(error),
+                Err(_) => {
+                    *session = None;
+                }
+            }
+        }
+        Err("default audio output is unavailable".to_string())
+    }
+}
+
+#[cfg(windows)]
+struct WindowsDefaultAudioOutputFactory;
+
+#[cfg(windows)]
+struct WindowsDefaultAudioOutputSession {
+    sink: MixerDeviceSink,
+    unhealthy: Arc<AtomicBool>,
+}
+
+#[cfg(windows)]
+impl DefaultAudioOutputFactory for WindowsDefaultAudioOutputFactory {
+    type Session = WindowsDefaultAudioOutputSession;
+
+    fn open_default_session(&self) -> Result<Self::Session, String> {
+        let unhealthy = Arc::new(AtomicBool::new(false));
+        let callback_unhealthy = Arc::clone(&unhealthy);
+        let mut sink = DeviceSinkBuilder::from_default_device()
+            .map_err(|error| format!("query Windows default audio output failed: {error}"))?
+            .with_error_callback(move |_| {
+                callback_unhealthy.store(true, Ordering::Release);
+            })
+            .open_sink_or_fallback()
+            .map_err(|error| format!("open Windows default audio output failed: {error}"))?;
+        sink.log_on_drop(false);
+        Ok(WindowsDefaultAudioOutputSession { sink, unhealthy })
+    }
+}
+
+#[cfg(windows)]
+impl DefaultAudioOutputSession for WindowsDefaultAudioOutputSession {
+    type Player = Player;
+
+    fn create_player(&self) -> Result<Self::Player, String> {
+        Ok(Player::connect_new(self.sink.mixer()))
+    }
+
+    fn is_unhealthy(&self) -> bool {
+        self.unhealthy.load(Ordering::Acquire)
+    }
+}
+
 pub struct MachineAudioState {
     lifecycle: PlaybackLifecycle<ActiveMachineAudio>,
     #[cfg(windows)]
     completion_tx: Sender<CompletionSignal>,
+    #[cfg(windows)]
+    default_output: ReusableDefaultAudioOutput<WindowsDefaultAudioOutputFactory>,
 }
 
 struct ActiveMachineAudio {
@@ -31,8 +152,6 @@ struct ActiveMachineAudio {
     app: tauri::AppHandle,
     #[cfg(windows)]
     player: Arc<Player>,
-    #[cfg(windows)]
-    sink: MixerDeviceSink,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -360,9 +479,8 @@ impl Default for MachineAudioState {
                 lifecycle.state_handle(),
                 completion_rx,
                 |completed: ActiveMachineAudio| {
-                    let ActiveMachineAudio { app, player, sink } = completed;
+                    let ActiveMachineAudio { app, player } = completed;
                     drop(player);
-                    drop(sink);
                     app
                 },
                 |request_id, terminal, app| match terminal {
@@ -391,6 +509,8 @@ impl Default for MachineAudioState {
             lifecycle,
             #[cfg(windows)]
             completion_tx,
+            #[cfg(windows)]
+            default_output: ReusableDefaultAudioOutput::new(WindowsDefaultAudioOutputFactory),
         }
     }
 }
@@ -440,6 +560,11 @@ impl MachineAudioSource {
 }
 
 impl MachineAudioState {
+    #[cfg(windows)]
+    pub fn prepare_default_output(&self) -> Result<(), String> {
+        self.default_output.prepare()
+    }
+
     fn play(
         &self,
         app: tauri::AppHandle,
@@ -457,24 +582,21 @@ impl MachineAudioState {
         #[cfg(windows)]
         {
             let source = MachineAudioSource::from_source_url(&input.source_url, resolve_asset)?;
-            let mut sink = DeviceSinkBuilder::open_default_sink()
-                .map_err(|error| format!("open Windows default audio output failed: {error}"))?;
-            sink.log_on_drop(false);
-            let player = Arc::new(Player::connect_new(&sink.mixer()));
+            let player = Arc::new(self.default_output.create_player()?);
             player.set_volume(normalize_volume(input.volume));
             player.pause();
             match source {
                 MachineAudioSource::Bytes(bytes) => {
                     let decoder = Decoder::try_from(Cursor::new(bytes))
                         .map_err(|error| format!("decode audio source failed: {error}"))?;
-                    self.start_player(app, sink, player, input.request_id, decoder)?;
+                    self.start_player(app, player, input.request_id, decoder)?;
                 }
                 MachineAudioSource::File(path) => {
                     let file = File::open(&path)
                         .map_err(|error| format!("open audio source failed: {error}"))?;
                     let decoder = Decoder::try_from(BufReader::new(file))
                         .map_err(|error| format!("decode audio source failed: {error}"))?;
-                    self.start_player(app, sink, player, input.request_id, decoder)?;
+                    self.start_player(app, player, input.request_id, decoder)?;
                 }
             }
             Ok(())
@@ -485,7 +607,6 @@ impl MachineAudioState {
     fn start_player<S>(
         &self,
         app: tauri::AppHandle,
-        sink: MixerDeviceSink,
         player: Arc<Player>,
         request_id: String,
         source: S,
@@ -500,7 +621,6 @@ impl MachineAudioState {
             ActiveMachineAudio {
                 app,
                 player: Arc::clone(&player),
-                sink,
             },
             |replaced| {
                 replaced.payload.player.stop();
@@ -701,6 +821,157 @@ fn safe_relative_path(path: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    #[derive(Clone)]
+    struct FakeDefaultOutputFactory {
+        opens: Arc<AtomicUsize>,
+        session_failures: Arc<Mutex<Vec<bool>>>,
+        unhealthy_sessions: Arc<Mutex<Vec<Arc<AtomicBool>>>>,
+        open_failures: Arc<Mutex<Vec<bool>>>,
+    }
+
+    struct FakeDefaultOutputSession {
+        fail_create_player: bool,
+        unhealthy: Arc<AtomicBool>,
+    }
+
+    impl DefaultAudioOutputFactory for FakeDefaultOutputFactory {
+        type Session = FakeDefaultOutputSession;
+
+        fn open_default_session(&self) -> Result<Self::Session, String> {
+            self.opens.fetch_add(1, Ordering::SeqCst);
+            if self
+                .open_failures
+                .lock()
+                .expect("open failures")
+                .pop()
+                .unwrap_or(false)
+            {
+                return Err("Windows default output is absent".to_string());
+            }
+            let unhealthy = Arc::new(AtomicBool::new(false));
+            self.unhealthy_sessions
+                .lock()
+                .expect("unhealthy sessions")
+                .push(Arc::clone(&unhealthy));
+            Ok(FakeDefaultOutputSession {
+                fail_create_player: self
+                    .session_failures
+                    .lock()
+                    .expect("session failures")
+                    .pop()
+                    .unwrap_or(false),
+                unhealthy,
+            })
+        }
+    }
+
+    impl DefaultAudioOutputSession for FakeDefaultOutputSession {
+        type Player = usize;
+
+        fn create_player(&self) -> Result<Self::Player, String> {
+            if self.fail_create_player {
+                Err("default device became unavailable".to_string())
+            } else {
+                Ok(1)
+            }
+        }
+
+        fn is_unhealthy(&self) -> bool {
+            self.unhealthy.load(Ordering::Acquire)
+        }
+    }
+
+    #[test]
+    fn reuses_one_warmed_default_output_for_consecutive_and_preempted_cues() {
+        let opens = Arc::new(AtomicUsize::new(0));
+        let output = ReusableDefaultAudioOutput::new(FakeDefaultOutputFactory {
+            opens: Arc::clone(&opens),
+            session_failures: Arc::new(Mutex::new(vec![false])),
+            unhealthy_sessions: Arc::new(Mutex::new(vec![])),
+            open_failures: Arc::new(Mutex::new(vec![])),
+        });
+        let lifecycle = PlaybackLifecycle::default();
+        let order = Arc::new(Mutex::new(Vec::new()));
+
+        output.prepare().expect("warm default output");
+        let first_player = output.create_player().expect("first player");
+        lifecycle
+            .replace("cue-1".to_string(), first_player, |_| {})
+            .expect("start first cue");
+        let stopped_order = Arc::clone(&order);
+        lifecycle.stop("cue-1".to_string(), move |_| {
+            stopped_order
+                .lock()
+                .expect("cue order")
+                .push("cue-1-terminal");
+        });
+        let second_player = output.create_player().expect("preempting player");
+        order.lock().expect("cue order").push("cue-2-player");
+        lifecycle
+            .replace("cue-2".to_string(), second_player, |_| {})
+            .expect("start second cue after first terminal");
+
+        assert_eq!(opens.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            *order.lock().expect("cue order"),
+            vec!["cue-1-terminal", "cue-2-player"]
+        );
+    }
+
+    #[test]
+    fn rebuilds_the_default_output_once_when_a_session_cannot_create_a_player() {
+        let opens = Arc::new(AtomicUsize::new(0));
+        let output = ReusableDefaultAudioOutput::new(FakeDefaultOutputFactory {
+            opens: Arc::clone(&opens),
+            // pop() returns the failed first session, then the healthy rebuilt session.
+            session_failures: Arc::new(Mutex::new(vec![false, true])),
+            unhealthy_sessions: Arc::new(Mutex::new(vec![])),
+            open_failures: Arc::new(Mutex::new(vec![])),
+        });
+
+        output
+            .create_player()
+            .expect("one bounded default-output rebuild");
+
+        assert_eq!(opens.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn stream_error_marks_the_cached_session_unhealthy_then_requeries_once_and_reuses_it() {
+        let opens = Arc::new(AtomicUsize::new(0));
+        let unhealthy_sessions = Arc::new(Mutex::new(vec![]));
+        let output = ReusableDefaultAudioOutput::new(FakeDefaultOutputFactory {
+            opens: Arc::clone(&opens),
+            session_failures: Arc::new(Mutex::new(vec![false, false])),
+            unhealthy_sessions: Arc::clone(&unhealthy_sessions),
+            open_failures: Arc::new(Mutex::new(vec![])),
+        });
+        output.prepare().expect("warm output");
+        unhealthy_sessions.lock().expect("sessions")[0].store(true, Ordering::Release);
+
+        output.create_player().expect("rebuild after stream error");
+        output
+            .create_player()
+            .expect("reuse rebuilt default output");
+
+        assert_eq!(opens.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn rejects_an_absent_default_output_after_one_bounded_requery() {
+        let opens = Arc::new(AtomicUsize::new(0));
+        let output = ReusableDefaultAudioOutput::new(FakeDefaultOutputFactory {
+            opens: Arc::clone(&opens),
+            session_failures: Arc::new(Mutex::new(vec![])),
+            unhealthy_sessions: Arc::new(Mutex::new(vec![])),
+            open_failures: Arc::new(Mutex::new(vec![true, true])),
+        });
+
+        assert!(output.create_player().is_err());
+        assert_eq!(opens.load(Ordering::SeqCst), 2);
+    }
 
     #[derive(Debug)]
     struct LifecycleObservation {
