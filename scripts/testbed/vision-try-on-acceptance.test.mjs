@@ -1111,7 +1111,7 @@ describe("vision try-on acceptance script", () => {
         localPort: 7892,
         owningProcess,
       })),
-      task: { name: "StartVisionServer", state: "Running" },
+      task: { path: "\\", name: "VEMVisionRuntime", state: "Running" },
     };
   }
 
@@ -1138,6 +1138,24 @@ describe("vision try-on acceptance script", () => {
     ]);
     assert.equal(binding.canonicalProcesses[0].processId, 4202);
     assert.equal(binding.listeners[0].owningProcess, 4202);
+  });
+
+  it("binds installed acceptance only to the current root Vision runtime task", () => {
+    const source = readFileSync(
+      new URL("./vision-try-on-acceptance.mjs", import.meta.url),
+      "utf8",
+    );
+    const collectBinding = source.slice(
+      source.indexOf("async function collectVisionInstalledBinding()"),
+      source.indexOf("async function stopVisionRuntime()"),
+    );
+    assert.match(source, /const VISION_TASK_PATH = "\\\\"/);
+    assert.match(source, /const VISION_TASK_NAME = "VEMVisionRuntime"/);
+    assert.match(
+      collectBinding,
+      /Get-ScheduledTask -TaskName '\$\{VISION_TASK_NAME\}' -TaskPath '\$\{VISION_TASK_PATH\}'/,
+    );
+    assert.doesNotMatch(collectBinding, /StartVisionServer/);
   });
 
   it("times out with process, listener, and task diagnostics when two canonical Vision processes persist", async () => {
@@ -2824,7 +2842,7 @@ describe("vision try-on acceptance script", () => {
   });
 
   it("requires the 7892 listener to bind the fixed installed executable and commit", () => {
-    const binding = validateVisionInstalledBinding({
+    const bindingFacts = {
       installedRecord: {
         schemaVersion: "vem-vision-installed/v1",
         commit: "a".repeat(40),
@@ -2838,14 +2856,16 @@ describe("vision try-on acceptance script", () => {
           sha256: "a".repeat(64),
         },
         launcher: {
-          path: "C:\\VEM\\bringup\\start_vision.bat",
-          command: "C:\\Windows\\System32\\cmd.exe",
-          arguments: '/c ""C:\\VEM\\bringup\\start_vision.bat""',
+          path: "C:\\VEM\\bringup\\launch-vem-vision.ps1",
+          command:
+            "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+          arguments:
+            '-NoProfile -ExecutionPolicy Bypass -File "C:\\VEM\\bringup\\launch-vem-vision.ps1"',
           workingDirectory: "C:\\VEM\\vision\\app",
         },
         startTask: {
-          path: "\\VEM\\",
-          name: "StartVisionServer",
+          path: "\\",
+          name: "VEMVisionRuntime",
           user: "VEMKiosk",
         },
         downloadManifest: {
@@ -2896,8 +2916,10 @@ describe("vision try-on acceptance script", () => {
       commandLine:
         '"C:\\VEM\\vision\\app\\vending-vision.exe" --config "C:\\ProgramData\\VEM\\vision\\site.json"',
       taskUser: "DOM\\VEMKiosk",
-      taskCommand: "C:\\Windows\\System32\\cmd.exe",
-      taskArguments: '/c ""C:\\VEM\\bringup\\start_vision.bat""',
+      taskCommand:
+        "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      taskArguments:
+        '-NoProfile -ExecutionPolicy Bypass -File "C:\\VEM\\bringup\\launch-vem-vision.ps1"',
       taskWorkingDirectory: "C:\\VEM\\vision\\app",
       listenerProcessId: 4242,
       listenerOwnerCount: 1,
@@ -2908,11 +2930,43 @@ describe("vision try-on acceptance script", () => {
       visionProcessCommandLines: [
         '"C:\\VEM\\vision\\app\\vending-vision.exe" --config "C:\\ProgramData\\VEM\\vision\\site.json"',
       ],
-    });
+    };
+    const binding = validateVisionInstalledBinding(bindingFacts);
     assert.equal(binding.processId, 4242);
     assert.equal(binding.processOwner, "VEMKiosk");
     assert.deepEqual(binding.visionProcessIds, [4242]);
     assert.equal(binding.frameSourceBinding.front.sha256, "c".repeat(64));
+    const legacyCmdLauncher = structuredClone(bindingFacts);
+    legacyCmdLauncher.taskCommand = "C:\\Windows\\System32\\cmd.exe";
+    legacyCmdLauncher.taskArguments =
+      '/c ""C:\\VEM\\bringup\\start_vision.bat""';
+    assert.throws(
+      () => validateVisionInstalledBinding(legacyCmdLauncher),
+      /Vision scheduled task command drifted/,
+    );
+    const legacyBatLauncher = structuredClone(bindingFacts);
+    legacyBatLauncher.taskArguments =
+      '-NoProfile -ExecutionPolicy Bypass -File "C:\\VEM\\bringup\\start_vision.bat"';
+    assert.throws(
+      () => validateVisionInstalledBinding(legacyBatLauncher),
+      /Vision scheduled task arguments drifted/,
+    );
+    const installer = readFileSync(
+      new URL("../windows/install-vem-runtime-owners.ps1", import.meta.url),
+      "utf8",
+    );
+    assert.match(
+      installer,
+      /-Execute "C:\\Windows\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe"/,
+    );
+    assert.match(
+      installer,
+      /-Argument "-NoProfile -ExecutionPolicy Bypass -File `"\$LauncherPath`""/,
+    );
+    assert.match(
+      installer,
+      /Register-InteractiveOwnerTask "VEMVisionRuntime" \$visionLauncher \$VisionAppDirectory/,
+    );
     assert.throws(
       () =>
         validateVisionInstalledBinding({

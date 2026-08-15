@@ -36,15 +36,18 @@ import { waitForHardwareBindings } from "./scanner-payment-code-guest-full.mjs";
 
 const MODES = new Set(["full"]);
 const VISION_ENTRYPOINT_PATH = "C:\\VEM\\vision\\app\\vending-vision.exe";
-const VISION_LAUNCHER_PATH = "C:\\VEM\\bringup\\start_vision.bat";
+const VISION_LAUNCHER_PATH = "C:\\VEM\\bringup\\launch-vem-vision.ps1";
 const VISION_RUNTIME_WORK_DIRECTORY = "C:\\ProgramData\\VEM\\vision\\runtime";
 const VISION_SITE_CONFIGURATION_PATH =
   "C:\\ProgramData\\VEM\\vision\\site.json";
 const VISION_INSTALLED_RECORD_PATH =
   "C:\\ProgramData\\VEM\\vision\\installed.json";
 const VISION_FIXTURE_ROOT = "C:\\ProgramData\\VEM\\vision\\fixtures";
-const VISION_TASK_PATH = "\\VEM\\";
-const VISION_TASK_NAME = "StartVisionServer";
+const VISION_TASK_PATH = "\\";
+const VISION_TASK_NAME = "VEMVisionRuntime";
+const VISION_TASK_EXECUTABLE =
+  "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+const VISION_TASK_ARGUMENTS = `-NoProfile -ExecutionPolicy Bypass -File "${VISION_LAUNCHER_PATH}"`;
 const MANAGED_VISION_TASK_NAMES = ["VEMVisionRuntime", "StartVisionServer"];
 const POWERSHELL_EXECUTABLE =
   process.platform === "win32"
@@ -1608,13 +1611,12 @@ export function validateVisionInstalledBinding(binding) {
   if (facts.visionProcessCommandLines[0] !== commandLine) {
     throw new Error("Vision process enumeration command line drifted");
   }
-  if (!windowsPathEquals(facts.taskCommand, "C:\\Windows\\System32\\cmd.exe")) {
+  if (!windowsPathEquals(facts.taskCommand, VISION_TASK_EXECUTABLE)) {
     throw new Error("Vision scheduled task command drifted");
   }
   if (
-    required(facts.taskArguments, "Vision scheduled task arguments").includes(
-      VISION_LAUNCHER_PATH,
-    ) === false
+    required(facts.taskArguments, "Vision scheduled task arguments") !==
+    VISION_TASK_ARGUMENTS
   ) {
     throw new Error("Vision scheduled task arguments drifted");
   }
