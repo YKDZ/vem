@@ -42,6 +42,7 @@ import {
   waitForRoute,
 } from "./machine-ui-cdp-driver.mjs";
 import { replaceSerialSessionAndUpdateHandoff } from "./serial-session-handoff.mjs";
+import { RECORDED_VISION_NEXT_ARRIVAL_TIMEOUT_MS } from "./try-on-timeouts.mjs";
 import { collectInstalledAiTryOnAttempt } from "./vision-try-on-acceptance.mjs";
 
 const CASES = Object.freeze({
@@ -185,6 +186,7 @@ export async function collectInstalledAiOwnerAttempts({
       activationSelector:
         initialOptions.activationSelector ?? '[data-test="try-on-ai"]',
       readRuntimeTraceSnapshot,
+      timeoutMs: RECORDED_VISION_NEXT_ARRIVAL_TIMEOUT_MS,
     });
   } finally {
     await onInitialSettled?.();
@@ -196,6 +198,7 @@ export async function collectInstalledAiOwnerAttempts({
         activationSelector:
           retryOptions.activationSelector ?? '[data-test="try-on-retry"]',
         readRuntimeTraceSnapshot,
+        timeoutMs: RECORDED_VISION_NEXT_ARRIVAL_TIMEOUT_MS,
       })
     : null;
   return { initial, retry };

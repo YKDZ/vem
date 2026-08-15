@@ -33,6 +33,7 @@ import {
   waitForRoute,
 } from "./machine-ui-cdp-driver.mjs";
 import { waitForHardwareBindings } from "./scanner-payment-code-guest-full.mjs";
+import { RECORDED_VISION_NEXT_ARRIVAL_TIMEOUT_MS } from "./try-on-timeouts.mjs";
 
 const MODES = new Set(["full"]);
 const VISION_ENTRYPOINT_PATH = "C:\\VEM\\vision\\app\\vending-vision.exe";
@@ -2420,7 +2421,7 @@ export async function runFastTryOnOwnerAttempts({
   collectRetry = null,
   readRuntimeTraceSnapshot,
   activationTimeoutMs = 30_000,
-  timeoutMs = 45_000,
+  timeoutMs = RECORDED_VISION_NEXT_ARRIVAL_TIMEOUT_MS,
   pollMs = 250,
 }) {
   if (
@@ -2469,6 +2470,16 @@ export async function runFastTryOnOwnerAttempts({
     );
   }
   return { admissions, results };
+}
+
+export async function runFastTryOnProductionOwnerAttempts(
+  options,
+  runOwner = runFastTryOnOwnerAttempts,
+) {
+  return await runOwner({
+    ...options,
+    timeoutMs: RECORDED_VISION_NEXT_ARRIVAL_TIMEOUT_MS,
+  });
 }
 
 async function readCatalogRecommendationState(client) {
@@ -3558,7 +3569,7 @@ async function collectInstalledAiTryOnAttemptInternal(
     captureAttemptScreenshot = null,
     activationSelector = '[data-test="try-on-ai"]',
     readRuntimeTraceSnapshot = null,
-    timeoutMs = 60_000,
+    timeoutMs = RECORDED_VISION_NEXT_ARRIVAL_TIMEOUT_MS,
     pollMs = 250,
   },
   regionalEvidenceTestHooks = null,
@@ -4192,7 +4203,7 @@ async function runVisionTryOnAcceptance(options) {
     const expectedTryOnRoute = `#/try-on?catalogKey=${manualSelectedProduct.catalogKey}&variantId=${manualSelectedProduct.variantId}&mode=fast`;
     stage = "open-try-on-attempt";
     await installTryOnLifecycleObserver(client);
-    const fastOwner = await runFastTryOnOwnerAttempts({
+    const fastOwner = await runFastTryOnProductionOwnerAttempts({
       client,
       beforeAttempt: async (index) => {
         if (index === 1) stage = "retry-completed-try-on";
@@ -4254,7 +4265,6 @@ async function runVisionTryOnAcceptance(options) {
             });
             return { resultEvidence, summary, tryOnSurface };
           },
-      timeoutMs: 45_000,
       pollMs: 250,
     });
     const [initialTryOn, retryTryOn = null] = fastOwner.results;

@@ -37,6 +37,7 @@ import {
   normalizeSeededVisionAcceptance,
   normalizeVisionExpectedResults,
   parseVisionTryOnAcceptanceArgs,
+  runFastTryOnProductionOwnerAttempts,
   runFastTryOnOwnerAttempts,
   readVisionV2ContractIdentity,
   READ_TRY_ON_LIFECYCLE_EXPRESSION,
@@ -306,6 +307,19 @@ async function withTryOnOwnerTouchHarness(
 }
 
 describe("Fast try-on production owner", () => {
+  it("passes the shared recorded-arrival budget to the production owner", async () => {
+    let received = null;
+    await runFastTryOnProductionOwnerAttempts(
+      { client: { production: true }, timeoutMs: 45_000 },
+      async (options) => {
+        received = options;
+        return { results: [] };
+      },
+    );
+
+    assert.equal(received.timeoutMs, 240_000);
+  });
+
   it("admits a fresh active arrival independently before initial and retry touches", async () => {
     await withTryOnOwnerTouchHarness(
       { firstArrivalId: 1, secondArrivalId: 2 },
@@ -344,7 +358,9 @@ describe("AI try-on production owner", () => {
     await withTryOnOwnerTouchHarness(
       { firstArrivalId: 11, secondArrivalId: 12 },
       async ({ client, readRuntimeTraceSnapshot, trace }) => {
+        const receivedBudgets = [];
         const collectAttempt = async (options) => {
+          receivedBudgets.push(options.timeoutMs);
           const admitted = await activateAfterFreshVisionPresenceArrival(
             {
               activate: async () =>
@@ -392,6 +408,7 @@ describe("AI try-on production owner", () => {
           "read:12",
           "touch:retry",
         ]);
+        assert.deepEqual(receivedBudgets, [240_000, 240_000]);
       },
     );
   });
