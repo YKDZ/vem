@@ -2405,6 +2405,82 @@ describe("vision try-on acceptance script", () => {
     assert.equal(summary.seededSelection.catalogKey, "product:tee");
   });
 
+  it("uses the seeded try-on projection as authority while cross-checking the recommendation projection", () => {
+    const projection = (runtimeExpectation) =>
+      validateRecommendationProjection({
+        beforeProducts: [
+          {
+            catalogKey: "product:tee",
+            preferredVariantId: "",
+            recommendationScore: 0,
+          },
+        ],
+        afterProducts: [
+          {
+            catalogKey: "product:tee",
+            variantId: "variant-regular",
+            preferredVariantId: "variant-s",
+            recommendationScore: 0.88,
+          },
+        ],
+        pageText: "推荐尺码 基础T恤",
+        expectedResults: baseExpectedResults(),
+        runtimeExpectation,
+      });
+    const seeded = {
+      productId: "tee",
+      variantId: "variant-s",
+      sku: "TSC-LOCAL-S",
+      size: "S",
+    };
+    const recommendation = {
+      ...seeded,
+      slotId: "slot-s",
+      inventoryId: "inventory-s",
+      onHandQty: 3,
+    };
+    assert.equal(
+      projection({
+        seededTryOnVariants: [seeded],
+        recommendationVariants: [recommendation],
+      }).seededSelection.catalogKey,
+      "product:tee",
+    );
+    assert.equal(
+      projection({ recommendationVariants: [recommendation] }).seededSelection
+        .catalogKey,
+      "product:tee",
+    );
+    for (const [label, runtimeExpectation, expected] of [
+      [
+        "a conflicting recommendation identity",
+        {
+          seededTryOnVariants: [seeded],
+          recommendationVariants: [{ ...recommendation, sku: "OTHER-SKU" }],
+        },
+        /seeded and recommendation entries disagree/,
+      ],
+      [
+        "duplicate seeded variants",
+        {
+          seededTryOnVariants: [seeded, seeded],
+          recommendationVariants: [recommendation],
+        },
+        /exactly one seeded try-on entry/,
+      ],
+      [
+        "duplicate recommendation variants",
+        {
+          seededTryOnVariants: [seeded],
+          recommendationVariants: [recommendation, recommendation],
+        },
+        /exactly one recommendation entry/,
+      ],
+    ]) {
+      assert.throws(() => projection(runtimeExpectation), expected, label);
+    }
+  });
+
   it("fails closed unless recommendation has a seeded variant match", () => {
     const summary = validateRecommendationProjection({
       beforeProducts: [

@@ -736,22 +736,45 @@ function resolveSelectedSeededEntry(
 ) {
   const runtime = normalizeSeededVisionAcceptance(runtimeExpectation);
   const variantId = required(selectedVariantId, label);
-  const matches = [
-    ...runtime.seededTryOnVariants,
-    ...runtime.recommendationVariants,
-  ].filter((entry) => entry.variantId === variantId);
-  if (matches.length !== 1) {
-    throw new Error(
-      `${label} must uniquely match exactly one seeded try-on entry`,
-    );
+  const seededMatches = runtime.seededTryOnVariants.filter(
+    (entry) => entry.variantId === variantId,
+  );
+  const recommendationMatches = runtime.recommendationVariants.filter(
+    (entry) => entry.variantId === variantId,
+  );
+  let entry;
+  if (runtime.seededTryOnVariants.length > 0) {
+    if (seededMatches.length !== 1) {
+      throw new Error(
+        `${label} must uniquely match exactly one seeded try-on entry`,
+      );
+    }
+    if (recommendationMatches.length > 1) {
+      throw new Error(
+        `${label} must uniquely match exactly one recommendation entry`,
+      );
+    }
+    entry = seededMatches[0];
+    const recommendation = recommendationMatches[0];
+    if (
+      recommendation &&
+      ["productId", "variantId", "sku", "size"].some(
+        (key) => entry[key] !== recommendation[key],
+      )
+    ) {
+      throw new Error(`${label} seeded and recommendation entries disagree`);
+    }
+  } else {
+    if (recommendationMatches.length !== 1) {
+      throw new Error(
+        `${label} must uniquely match exactly one recommendation entry`,
+      );
+    }
+    entry = recommendationMatches[0];
   }
-  const entry = matches[0];
   return {
     ...entry,
-    catalogKey: catalogKeyForProductId(
-      entry.productId,
-      `${label} seeded productId`,
-    ),
+    catalogKey: catalogKeyForProductId(entry.productId, `${label} productId`),
   };
 }
 
@@ -1181,7 +1204,8 @@ export function validateRecommendationProjection({
   const selectedVariantId =
     selected.preferredVariantId || selected.variantId || null;
   const seededSelection =
-    runtime.seededTryOnVariants.length > 0
+    runtime.seededTryOnVariants.length > 0 ||
+    runtime.recommendationVariants.length > 0
       ? resolveSelectedSeededEntry(
           runtime,
           selectedVariantId,
@@ -1355,7 +1379,8 @@ export function validateTryOnPresentation({
   const expected = normalizeVisionExpectedResults(expectedResults);
   const runtime = normalizeSeededVisionAcceptance(runtimeExpectation);
   const seededSelection =
-    runtime.seededTryOnVariants.length > 0
+    runtime.seededTryOnVariants.length > 0 ||
+    runtime.recommendationVariants.length > 0
       ? resolveSelectedSeededEntry(
           runtime,
           selectedProduct.variantId,
