@@ -164,13 +164,41 @@ test("field probe rejects incomplete or competing installed owner definitions", 
   assert.equal(output.visionMainCount, 1);
   assert.equal(output.visionWorkerCount, 2);
   assert.deepEqual(output.topologyCases, [
-    { name: "second-listener", topologyIssue: "multiple-listeners", visionDuplicateCount: 1 },
-    { name: "canonical-sibling", topologyIssue: "canonical-sibling", visionDuplicateCount: 1 },
-    { name: "wrong-worker-parent", topologyIssue: "worker-parent-drift", visionDuplicateCount: 1 },
-    { name: "missing-worker-token", topologyIssue: "worker-fork-token-missing", visionDuplicateCount: 1 },
-    { name: "duplicate-canonical-pid", topologyIssue: "canonical-pid-duplicate", visionDuplicateCount: 1 },
-    { name: "wrong-main-config", topologyIssue: "main-config-drift", visionDuplicateCount: 1 },
-    { name: "noncanonical-listener", topologyIssue: "listener-owner-noncanonical", visionDuplicateCount: 0 },
+    {
+      name: "second-listener",
+      topologyIssue: "multiple-listeners",
+      visionDuplicateCount: 1,
+    },
+    {
+      name: "canonical-sibling",
+      topologyIssue: "canonical-sibling",
+      visionDuplicateCount: 1,
+    },
+    {
+      name: "wrong-worker-parent",
+      topologyIssue: "worker-parent-drift",
+      visionDuplicateCount: 1,
+    },
+    {
+      name: "missing-worker-token",
+      topologyIssue: "worker-fork-token-missing",
+      visionDuplicateCount: 1,
+    },
+    {
+      name: "duplicate-canonical-pid",
+      topologyIssue: "canonical-pid-duplicate",
+      visionDuplicateCount: 1,
+    },
+    {
+      name: "wrong-main-config",
+      topologyIssue: "main-config-drift",
+      visionDuplicateCount: 1,
+    },
+    {
+      name: "noncanonical-listener",
+      topologyIssue: "listener-owner-noncanonical",
+      visionDuplicateCount: 0,
+    },
   ]);
   assert.equal(output.baselineFixtureUnchanged, true);
   assert.deepEqual(output.reversedTopologyCases, output.topologyCases);
