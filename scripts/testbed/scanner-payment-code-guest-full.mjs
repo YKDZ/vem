@@ -19,6 +19,7 @@ import {
   rewriteWebSocketDebuggerUrl,
   waitForRoute,
 } from "./machine-ui-cdp-driver.mjs";
+import { replaceSerialSessionAndUpdateHandoff } from "./serial-session-handoff.mjs";
 
 const MODES = new Set(["full"]);
 const DEFAULT_VALID_SCANNER_CODE = "621234567890123456\r";
@@ -154,17 +155,24 @@ export function combineCleanupError(primaryError, cleanupErrors) {
   );
 }
 
-async function finalizeScannerCleanup({ guestInput, sessionStart, client }) {
+async function finalizeScannerCleanup({
+  guestInput,
+  sessionStart,
+  sessionControl,
+  client,
+}) {
   const cleanup = [];
   const cleanupErrors = [];
   if (sessionStart?.sessionId) {
     try {
       cleanup.push(
         await runCleanupStep("abort serial session", async () => {
-          const result = await controlPlaneRequest(
-            guestInput,
-            `/v1/serial-sessions/${sessionStart.sessionId}/abort`,
-          );
+          const result = sessionControl
+            ? await sessionControl.abort()
+            : await controlPlaneRequest(
+                guestInput,
+                `/v1/serial-sessions/${sessionStart.sessionId}/abort`,
+              );
           if (result?.aborted !== true) {
             throw new Error(
               "serial session abort did not confirm inactive state",
@@ -755,32 +763,150 @@ async function readRuntimeTrace(client) {
   );
 }
 
-async function startSession(guestInput, runId, machineCode) {
-  return controlPlaneRequest(guestInput, "/v1/serial-sessions/start", {
-    runId,
-    machineCode,
-    saleCorrelationId: `sale-correlation://scanner-payment-code-${Date.now()}`,
-    targetIdentity: required(
-      guestInput.hostControlPlane?.targetIdentity,
-      "hostControlPlane.targetIdentity",
+export async function replaceScannerSerialSessionAndUpdateHandoff({
+  guestInput,
+  handoff,
+  handoffPath,
+  control = controlPlaneRequest,
+  writeJsonFile,
+}) {
+  const { replacement } = await replaceSerialSessionAndUpdateHandoff({
+    guestInput,
+    handoff,
+    handoffPath,
+    sessionId: required(
+      handoff?.commissioningSerialSession?.sessionId,
+      "handoff commissioning serial session id",
     ),
-    runtimeBase: required(
-      guestInput.hostControlPlane?.runtimeBaseIdentity,
-      "hostControlPlane.runtimeBaseIdentity",
-    ),
+    control,
+    writeJsonFile,
   });
+  required(replacement?.sessionId, "scanner replacement serial session id");
+  return replacement;
 }
 
-async function injectSessionCode(guestInput, sessionId, renderedSale, bytes) {
-  return controlPlaneRequest(
-    guestInput,
-    `/v1/serial-sessions/${sessionId}/inject`,
-    {
-      orderId: renderedSale.orderId,
-      paymentId: renderedSale.paymentId,
-      scannerCodeBase64: Buffer.from(bytes).toString("base64"),
+export function createScannerPaymentSerialControl({
+  guestInput,
+  sessionId,
+  control = controlPlaneRequest,
+}) {
+  const activeSessionId = required(sessionId, "scanner serial session id");
+  const request = (operation, body = {}) =>
+    control(
+      guestInput,
+      `/v1/serial-sessions/${encodeURIComponent(activeSessionId)}/${operation}`,
+      body,
+    );
+  return {
+    sessionId: activeSessionId,
+    inject(renderedSale, bytes) {
+      return request("inject", {
+        orderId: renderedSale.orderId,
+        paymentId: renderedSale.paymentId,
+        scannerCodeBase64: Buffer.from(bytes).toString("base64"),
+      });
     },
-  );
+    bindSale(command) {
+      return request("bind-sale", command);
+    },
+    stopScannerProbe() {
+      return request("stop-scanner-probe");
+    },
+    waitFrame(parsedOpcode, timeoutMs = 30_000) {
+      return request("wait-frame", { parsedOpcode, timeoutMs });
+    },
+    releaseF0() {
+      return request("release-f0");
+    },
+    releaseF2() {
+      return request("release-f2");
+    },
+    evidence() {
+      return request("evidence");
+    },
+    stop(payload) {
+      return request("stop", payload);
+    },
+    abort() {
+      return request("abort");
+    },
+  };
+}
+
+export async function admitScannerPaymentSession({
+  guestInput,
+  handoff,
+  handoffPath,
+  control = controlPlaneRequest,
+  writeJsonFile,
+  replaceSession = replaceScannerSerialSessionAndUpdateHandoff,
+  waitForDaemonReady = waitForDaemonReadyRefresh,
+  waitForHardware = waitForHardwareBindings,
+  waitForSale = waitForScannerSaleCapability,
+  captureScannerEvent = captureNextSerialScannerEvent,
+}) {
+  const sessionStart = await replaceSession({
+    guestInput,
+    handoff,
+    handoffPath,
+    control,
+    writeJsonFile,
+  });
+  const sessionControl = createScannerPaymentSerialControl({
+    guestInput,
+    sessionId: sessionStart.sessionId,
+    control,
+  });
+  const abortFreshSession = async () => {
+    try {
+      await sessionControl.abort();
+    } catch {
+      // Preserve the admission failure after best-effort session cleanup.
+    }
+  };
+  let quietScannerCapture = null;
+  let primaryError = null;
+  try {
+    await waitForDaemonReady(handoff);
+    const hardwareBindings = await waitForHardware(handoff, sessionStart);
+    const saleStartCapability = await waitForSale(handoff);
+    quietScannerCapture = captureScannerEvent(handoff);
+    await quietScannerCapture.opened;
+    const scannerBindingProbe = await sessionControl.stopScannerProbe();
+    if (
+      scannerBindingProbe?.scannerBindingProbe?.purpose !==
+        "non_payment_scanner_binding_probe" ||
+      scannerBindingProbe.scannerBindingProbe.stopReason !==
+        "daemon_binding_confirmed" ||
+      typeof scannerBindingProbe.scannerBindingProbe.stoppedAt !== "string"
+    ) {
+      throw new Error(
+        "scanner binding probe did not stop after daemon binding confirmation",
+      );
+    }
+    const scannerQuietBoundary = await quietScannerCapture.assertQuiet();
+    return {
+      sessionStart,
+      sessionControl,
+      hardwareBindings,
+      saleStartCapability,
+      scannerBindingProbe,
+      scannerQuietBoundary,
+    };
+  } catch (error) {
+    primaryError = error;
+    await abortFreshSession();
+    throw error;
+  } finally {
+    try {
+      await quietScannerCapture?.close();
+    } catch (closeError) {
+      if (!primaryError) {
+        await abortFreshSession();
+        throw closeError;
+      }
+    }
+  }
 }
 
 export function assertNoAttemptOrDuplicatePayment(
@@ -1039,8 +1165,8 @@ export async function runScannerPaymentCodeGuest(options) {
   const checkpoints = [];
   let client = null;
   let sessionStart = null;
+  let sessionControl = null;
   let scannerEventCapture = null;
-  let quietScannerCapture = null;
   let stage = "connect";
   let successReport = null;
   let failureReport = null;
@@ -1065,33 +1191,19 @@ export async function runScannerPaymentCodeGuest(options) {
     await waitForRoute(client, "#/catalog", { timeoutMs: 30_000, pollMs: 250 });
 
     stage = "start-session";
-    sessionStart = await startSession(guestInput, runId, machineCode);
-    await waitForDaemonReadyRefresh(handoff);
-    const hardwareBindings = await waitForHardwareBindings(
-      handoff,
-      sessionStart,
-    );
-    quietScannerCapture = captureNextSerialScannerEvent(handoff);
-    await quietScannerCapture.opened;
-    const scannerBindingProbe = await controlPlaneRequest(
+    const admission = await admitScannerPaymentSession({
       guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/stop-scanner-probe`,
-    );
-    if (
-      scannerBindingProbe?.scannerBindingProbe?.purpose !==
-        "non_payment_scanner_binding_probe" ||
-      scannerBindingProbe.scannerBindingProbe.stopReason !==
-        "daemon_binding_confirmed" ||
-      typeof scannerBindingProbe.scannerBindingProbe.stoppedAt !== "string"
-    ) {
-      throw new Error(
-        "scanner binding probe did not stop after daemon binding confirmation",
-      );
-    }
-    const scannerQuietBoundary = await quietScannerCapture.assertQuiet();
-    quietScannerCapture.close();
-    quietScannerCapture = null;
-    const saleStartCapability = await waitForScannerSaleCapability(handoff);
+      handoff,
+      handoffPath: options.handoffPath,
+    });
+    sessionStart = admission.sessionStart;
+    sessionControl = admission.sessionControl;
+    const {
+      hardwareBindings,
+      saleStartCapability,
+      scannerBindingProbe,
+      scannerQuietBoundary,
+    } = admission;
 
     const steps = buildInstalledKioskSaleScenarioSteps(
       "vm-scanner-payment-code",
@@ -1142,12 +1254,7 @@ export async function runScannerPaymentCodeGuest(options) {
     );
 
     stage = "malformed-scan";
-    await injectSessionCode(
-      guestInput,
-      sessionStart.sessionId,
-      renderedSale,
-      MALFORMED_SCANNER_BYTES,
-    );
+    await sessionControl.inject(renderedSale, MALFORMED_SCANNER_BYTES);
     await sleep(250);
     const postMalformed = await queryPlatform(
       guestInput,
@@ -1163,12 +1270,7 @@ export async function runScannerPaymentCodeGuest(options) {
     );
 
     stage = "timeout-scan";
-    await injectSessionCode(
-      guestInput,
-      sessionStart.sessionId,
-      renderedSale,
-      TIMEOUT_PARTIAL_SCANNER_BYTES,
-    );
+    await sessionControl.inject(renderedSale, TIMEOUT_PARTIAL_SCANNER_BYTES);
     await sleep(1_200);
     const postTimeout = await queryPlatform(
       guestInput,
@@ -1189,12 +1291,7 @@ export async function runScannerPaymentCodeGuest(options) {
     );
     scannerEventCapture = captureNextSerialScannerEvent(handoff);
     await scannerEventCapture.opened;
-    await injectSessionCode(
-      guestInput,
-      sessionStart.sessionId,
-      renderedSale,
-      validScannerBytes,
-    );
+    await sessionControl.inject(renderedSale, validScannerBytes);
 
     const attemptSnapshot = await waitForPaymentCodeAttempt(
       handoff,
@@ -1207,53 +1304,27 @@ export async function runScannerPaymentCodeGuest(options) {
     scannerEventCapture.close();
     scannerEventCapture = null;
     const command = await waitForCommand(handoff, renderedSale, 30_000);
-    await controlPlaneRequest(
-      guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/bind-sale`,
-      command,
-    );
+    await sessionControl.bindSale(command);
 
     stage = "vend-boundaries";
-    const vendBoundary = await controlPlaneRequest(
-      guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/wait-frame`,
-      { parsedOpcode: "VEND", timeoutMs: 30_000 },
-    );
+    const vendBoundary = await sessionControl.waitFrame("VEND");
     const beforeF0Platform = await queryPlatform(
       guestInput,
       runId,
       machineCode,
       sessionStart.sessionId,
     );
-    const releaseF0 = await controlPlaneRequest(
-      guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/release-f0`,
-    );
-    const f0Boundary = await controlPlaneRequest(
-      guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/wait-frame`,
-      { parsedOpcode: "F0", timeoutMs: 30_000 },
-    );
-    const f1Boundary = await controlPlaneRequest(
-      guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/wait-frame`,
-      { parsedOpcode: "F1", timeoutMs: 30_000 },
-    );
+    const releaseF0 = await sessionControl.releaseF0();
+    const f0Boundary = await sessionControl.waitFrame("F0");
+    const f1Boundary = await sessionControl.waitFrame("F1");
     const afterF1Platform = await queryPlatform(
       guestInput,
       runId,
       machineCode,
       sessionStart.sessionId,
     );
-    const releaseF2 = await controlPlaneRequest(
-      guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/release-f2`,
-    );
-    const f2Boundary = await controlPlaneRequest(
-      guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/wait-frame`,
-      { parsedOpcode: "F2", timeoutMs: 30_000 },
-    );
+    const releaseF2 = await sessionControl.releaseF2();
+    const f2Boundary = await sessionControl.waitFrame("F2");
     const afterF2Ui = await waitForSuccessfulResultSurface(
       client,
       {
@@ -1277,21 +1348,14 @@ export async function runScannerPaymentCodeGuest(options) {
       scannerEvent,
       afterF2Ui,
     });
-    const sessionEvidence = await controlPlaneRequest(
-      guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/evidence`,
-    );
+    const sessionEvidence = await sessionControl.evidence();
     const runtimeTrace = await readRuntimeTrace(client);
 
-    const stop = await controlPlaneRequest(
-      guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/stop`,
-      {
-        orderId: renderedSale.orderId,
-        paymentId: renderedSale.paymentId,
-        vendingCommandId: command.vendingCommandId,
-      },
-    );
+    const stop = await sessionControl.stop({
+      orderId: renderedSale.orderId,
+      paymentId: renderedSale.paymentId,
+      vendingCommandId: command.vendingCommandId,
+    });
 
     successReport = {
       schemaVersion: "vem-scanner-payment-code-guest-full/v1",
@@ -1380,10 +1444,9 @@ export async function runScannerPaymentCodeGuest(options) {
         ).catch((captureError) => ({ error: String(captureError) }));
       }
       if (sessionStart?.sessionId) {
-        failureReport.evidence.serial = await controlPlaneRequest(
-          guestInput,
-          `/v1/serial-sessions/${sessionStart.sessionId}/evidence`,
-        ).catch((captureError) => ({ error: String(captureError) }));
+        failureReport.evidence.serial = await sessionControl
+          .evidence()
+          .catch((captureError) => ({ error: String(captureError) }));
       }
     }
     if (handoff) {
@@ -1412,12 +1475,12 @@ export async function runScannerPaymentCodeGuest(options) {
   const { cleanup, cleanupErrors } = await finalizeScannerCleanup({
     guestInput,
     sessionStart,
+    sessionControl,
     client,
   });
   if (successReport) successReport.cleanup = cleanup;
   if (failureReport) failureReport.cleanup = cleanup;
   scannerEventCapture?.close();
-  quietScannerCapture?.close();
   const finalError = combineCleanupError(primaryError, cleanupErrors);
   if (finalError) {
     if (!failureReport) {

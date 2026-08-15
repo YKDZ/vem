@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 import {
+  admitScannerPaymentSession,
   assertNoAttemptOrDuplicatePayment,
   combineCleanupError,
   paymentCodeAttemptCorrelationReady,
@@ -11,12 +12,344 @@ import {
   pnpObservationMatchesLibvirtTopology,
   scannerFrameBytes,
   runCleanupStep,
+  replaceScannerSerialSessionAndUpdateHandoff,
   validateSuccessfulOutcome,
   waitForSuccessfulOutcomeSnapshot,
   waitForSaleStartCapability,
 } from "./scanner-payment-code-guest-full.mjs";
 
 describe("scanner payment-code guest full", () => {
+  it("keeps scanner controls and customer actions behind fresh-session hardware and sale admission", async () => {
+    const calls = [];
+    const actions = [];
+    let releaseHardware;
+    let releaseSale;
+    const hardwareReady = new Promise((resolve) => {
+      releaseHardware = resolve;
+    });
+    const saleReady = new Promise((resolve) => {
+      releaseSale = resolve;
+    });
+    const freshSessionId = "scanner-track-session";
+    const oldSessionId = "fast-sale-d69-session";
+    const handoff = {
+      commissioningSerialSession: {
+        sessionId: oldSessionId,
+        rawJournal: Array.from({ length: 257 }, (_, index) => ({ index })),
+      },
+    };
+    const guestInput = {
+      runId: "RUN-SCANNER",
+      machineCode: "VEM-SCANNER",
+      hostControlPlane: {
+        targetIdentity: "vm-target://scanner",
+        runtimeBaseIdentity: "runtime-base://scanner",
+      },
+    };
+    const control = async (_input, path, body = {}) => {
+      calls.push({ path, body });
+      if (path === `/v1/serial-sessions/${oldSessionId}/abort`) {
+        return { aborted: true };
+      }
+      if (path === "/v1/serial-sessions/start") {
+        return { sessionId: freshSessionId };
+      }
+      assert.doesNotMatch(path, new RegExp(oldSessionId));
+      assert.match(path, new RegExp(freshSessionId));
+      if (path.endsWith("/stop-scanner-probe")) {
+        return {
+          scannerBindingProbe: {
+            purpose: "non_payment_scanner_binding_probe",
+            stopReason: "daemon_binding_confirmed",
+            stoppedAt: "2026-08-15T00:00:00.000Z",
+          },
+        };
+      }
+      if (path.endsWith("/abort")) return { aborted: true };
+      return { path, body };
+    };
+    const admission = admitScannerPaymentSession({
+      guestInput,
+      handoff,
+      handoffPath: "C:\\handoff.json",
+      control,
+      writeJsonFile: () => actions.push("handoff:persisted"),
+      waitForDaemonReady: async () => actions.push("daemon:refreshed"),
+      waitForHardware: async (_handoff, sessionStart) => {
+        assert.equal(sessionStart.sessionId, freshSessionId);
+        actions.push("hardware:waiting");
+        await hardwareReady;
+        actions.push("hardware:ready");
+        return {
+          daemon: {
+            roles: [
+              { role: "lower_controller", ready: true },
+              { role: "scanner", ready: true },
+            ],
+          },
+        };
+      },
+      waitForSale: async () => {
+        actions.push("sale:waiting");
+        await saleReady;
+        actions.push("sale:ready:payment_code:mock");
+        return { canStartSale: true };
+      },
+      captureScannerEvent: () => {
+        actions.push("scanner:capture");
+        return {
+          opened: Promise.resolve(),
+          assertQuiet: async () => ({ quiet: true }),
+          close: () => actions.push("scanner:capture-closed"),
+        };
+      },
+    });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(
+      calls.map((entry) => entry.path),
+      [
+        `/v1/serial-sessions/${oldSessionId}/abort`,
+        "/v1/serial-sessions/start",
+      ],
+    );
+    assert.deepEqual(actions, [
+      "handoff:persisted",
+      "daemon:refreshed",
+      "hardware:waiting",
+    ]);
+
+    releaseHardware();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(
+      calls.map((entry) => entry.path),
+      [
+        `/v1/serial-sessions/${oldSessionId}/abort`,
+        "/v1/serial-sessions/start",
+      ],
+    );
+    assert.deepEqual(actions.slice(-2), ["hardware:ready", "sale:waiting"]);
+
+    releaseSale();
+    const admitted = await admission;
+    assert.equal(admitted.sessionStart.sessionId, freshSessionId);
+    assert.equal(handoff.commissioningSerialSession.sessionId, freshSessionId);
+    assert.deepEqual(actions.slice(-3), [
+      "sale:ready:payment_code:mock",
+      "scanner:capture",
+      "scanner:capture-closed",
+    ]);
+
+    actions.push("customer", "gate", "order", "payment");
+    await admitted.sessionControl.inject(
+      { orderId: "order-1", paymentId: "payment-1" },
+      "valid-code",
+    );
+    await admitted.sessionControl.bindSale({ vendingCommandId: "command-1" });
+    await admitted.sessionControl.waitFrame("VEND");
+    await admitted.sessionControl.releaseF0();
+    await admitted.sessionControl.waitFrame("F0");
+    await admitted.sessionControl.waitFrame("F1");
+    await admitted.sessionControl.releaseF2();
+    await admitted.sessionControl.waitFrame("F2");
+    await admitted.sessionControl.evidence();
+    await admitted.sessionControl.stop({ orderId: "order-1" });
+    await admitted.sessionControl.abort();
+
+    assert.deepEqual(
+      calls.map((entry) => entry.path),
+      [
+        `/v1/serial-sessions/${oldSessionId}/abort`,
+        "/v1/serial-sessions/start",
+        `/v1/serial-sessions/${freshSessionId}/stop-scanner-probe`,
+        `/v1/serial-sessions/${freshSessionId}/inject`,
+        `/v1/serial-sessions/${freshSessionId}/bind-sale`,
+        `/v1/serial-sessions/${freshSessionId}/wait-frame`,
+        `/v1/serial-sessions/${freshSessionId}/release-f0`,
+        `/v1/serial-sessions/${freshSessionId}/wait-frame`,
+        `/v1/serial-sessions/${freshSessionId}/wait-frame`,
+        `/v1/serial-sessions/${freshSessionId}/release-f2`,
+        `/v1/serial-sessions/${freshSessionId}/wait-frame`,
+        `/v1/serial-sessions/${freshSessionId}/evidence`,
+        `/v1/serial-sessions/${freshSessionId}/stop`,
+        `/v1/serial-sessions/${freshSessionId}/abort`,
+      ],
+    );
+  });
+
+  for (const stage of [
+    "daemon",
+    "hardware",
+    "sale",
+    "capture-factory",
+    "capture-open",
+    "probe",
+    "quiet",
+    "capture-close",
+  ]) {
+    it(`aborts only the fresh session when ${stage} admission fails`, async () => {
+      const calls = [];
+      const actions = [];
+      const oldSessionId = "fast-sale-d69-session";
+      const freshSessionId = "scanner-track-session";
+      const failure = new Error(`${stage} admission failed`);
+      const control = async (_input, path) => {
+        calls.push(path);
+        if (path === `/v1/serial-sessions/${oldSessionId}/abort`) {
+          return { aborted: true };
+        }
+        if (path === "/v1/serial-sessions/start") {
+          return { sessionId: freshSessionId };
+        }
+        assert.doesNotMatch(path, new RegExp(oldSessionId));
+        if (path === `/v1/serial-sessions/${freshSessionId}/abort`) {
+          return { aborted: true };
+        }
+        if (
+          stage === "probe" &&
+          path === `/v1/serial-sessions/${freshSessionId}/stop-scanner-probe`
+        ) {
+          throw failure;
+        }
+        if (path.endsWith("/stop-scanner-probe")) {
+          return {
+            scannerBindingProbe: {
+              purpose: "non_payment_scanner_binding_probe",
+              stopReason: "daemon_binding_confirmed",
+              stoppedAt: "2026-08-15T00:00:00.000Z",
+            },
+          };
+        }
+        throw new Error(`unexpected serial control: ${path}`);
+      };
+      const captureScannerEvent = () => {
+        if (stage === "capture-factory") throw failure;
+        actions.push("capture");
+        return {
+          opened:
+            stage === "capture-open"
+              ? Promise.reject(failure)
+              : Promise.resolve(),
+          assertQuiet: async () => {
+            if (stage === "quiet") throw failure;
+            return { quiet: true };
+          },
+          close: () => {
+            actions.push("capture:closed");
+            if (stage === "capture-close") throw failure;
+          },
+        };
+      };
+
+      await assert.rejects(
+        admitScannerPaymentSession({
+          guestInput: {
+            runId: "RUN-SCANNER",
+            machineCode: "VEM-SCANNER",
+            hostControlPlane: {
+              targetIdentity: "vm-target://scanner",
+              runtimeBaseIdentity: "runtime-base://scanner",
+            },
+          },
+          handoff: {
+            commissioningSerialSession: {
+              sessionId: oldSessionId,
+              rawJournal: Array.from({ length: 257 }, (_, index) => ({
+                index,
+              })),
+            },
+          },
+          handoffPath: "C:\\handoff.json",
+          control,
+          writeJsonFile: () => actions.push("handoff:persisted"),
+          waitForDaemonReady: async () => {
+            actions.push("daemon:refreshed");
+            if (stage === "daemon") throw failure;
+          },
+          waitForHardware: async () => {
+            if (stage === "hardware") throw failure;
+            return { lower: { ready: true }, scanner: { ready: true } };
+          },
+          waitForSale: async () => {
+            if (stage === "sale") throw failure;
+            return { canStartSale: true };
+          },
+          captureScannerEvent,
+        }),
+        (error) => error === failure,
+      );
+
+      const expected = [
+        `/v1/serial-sessions/${oldSessionId}/abort`,
+        "/v1/serial-sessions/start",
+      ];
+      if (stage === "probe" || stage === "quiet" || stage === "capture-close") {
+        expected.push(
+          `/v1/serial-sessions/${freshSessionId}/stop-scanner-probe`,
+        );
+      }
+      expected.push(`/v1/serial-sessions/${freshSessionId}/abort`);
+      assert.deepEqual(calls, expected);
+      assert.equal(
+        calls.some((path) =>
+          /\/(inject|bind-sale|wait-frame|evidence|stop)$/.test(path),
+        ),
+        false,
+      );
+      assert.deepEqual(
+        actions.filter((action) => /customer|gate|order|payment/.test(action)),
+        [],
+      );
+      assert.deepEqual(
+        actions.filter((action) => action.startsWith("capture")),
+        ["daemon", "hardware", "sale", "capture-factory"].includes(stage)
+          ? []
+          : ["capture", "capture:closed"],
+      );
+    });
+  }
+
+  it("replaces the handoff serial session before scanner payment observes or injects frames", async () => {
+    const calls = [];
+    const handoff = {
+      commissioningSerialSession: { sessionId: "sale-track-session" },
+    };
+    const session = await replaceScannerSerialSessionAndUpdateHandoff({
+      guestInput: {
+        runId: "RUN-SCANNER",
+        machineCode: "VEM-SCANNER",
+        hostControlPlane: {
+          targetIdentity: "vm-target://scanner",
+          runtimeBaseIdentity: "runtime-base://scanner",
+        },
+      },
+      handoff,
+      handoffPath: "C:\\handoff.json",
+      writeJsonFile: () => calls.push("handoff:persisted"),
+      control: async (_input, path) => {
+        calls.push(path);
+        if (path.endsWith("/sale-track-session/abort")) {
+          return { aborted: true };
+        }
+        if (path.endsWith("/start")) {
+          return { sessionId: "scanner-track-session" };
+        }
+        throw new Error(`unexpected scanner serial control: ${path}`);
+      },
+    });
+
+    assert.equal(session.sessionId, "scanner-track-session");
+    assert.equal(
+      handoff.commissioningSerialSession.sessionId,
+      "scanner-track-session",
+    );
+    assert.deepEqual(calls, [
+      "/v1/serial-sessions/sale-track-session/abort",
+      "/v1/serial-sessions/start",
+      "handoff:persisted",
+    ]);
+  });
+
   it("parses the dedicated full-mode guest contract", () => {
     const options = parseScannerPaymentCodeGuestArgs([
       "--mode",
@@ -111,7 +444,7 @@ describe("scanner payment-code guest full", () => {
       source,
       /scannerEventId !==\s*attemptSnapshot\?\.paymentCodeAttempt\?\.scannerEventId/,
     );
-    assert.match(source, /\/v1\/serial-sessions\/.*\/wait-frame/);
+    assert.match(source, /sessionControl\.waitFrame\("VEND"\)/);
   });
 
   it("waits for all daemon attempt correlation fields before sampling", () => {
