@@ -649,22 +649,28 @@ export async function admitAiAcceptanceInputs(
     await readFile(config.aiVirtualTryOnInputManifest, "utf8"),
     { allowedHttpsOrigins: config.aiVirtualTryOnAllowedHttpsOrigins ?? [] },
   );
-  const receipt = await verifyAuthority({
-    candidateInputDirectory: preparation.candidateInput.hostPath,
-    contractManifest: join(
-      workspace,
-      "packages/shared/generated/vision-v2/manifest.json",
-    ),
-    ghBinaryPath: config.aiVirtualTryOnAuthority.ghBinary,
-    gitBinaryPath: config.aiVirtualTryOnAuthority.gitBinary,
-    recordedFixtureArchive:
-      config.visionCoreArtifacts.recordedFixtureArchive.hostPath,
-    repoRoot: workspace,
-    unzipBinaryPath: config.aiVirtualTryOnAuthority.unzipBinary,
-    visionRepositoryPath: config.aiVirtualTryOnAuthority.visionRepository,
-    visionSourceRef: config.aiVirtualTryOnAuthority.visionSourceRef,
-    windowsProofInputDirectory: preparation.windowsProofInput.hostPath,
-  });
+  const receipt = await verifyAuthority(
+    {
+      candidateInputDirectory: preparation.candidateInput.hostPath,
+      contractManifest: join(
+        workspace,
+        "packages/shared/generated/vision-v2/manifest.json",
+      ),
+      ghBinaryPath: config.aiVirtualTryOnAuthority.ghBinary,
+      gitBinaryPath: config.aiVirtualTryOnAuthority.gitBinary,
+      recordedFixtureArchive:
+        config.visionCoreArtifacts.recordedFixtureArchive.hostPath,
+      repoRoot: workspace,
+      unzipBinaryPath: config.aiVirtualTryOnAuthority.unzipBinary,
+      visionRepositoryPath: config.aiVirtualTryOnAuthority.visionRepository,
+      visionSourceRef: config.aiVirtualTryOnAuthority.visionSourceRef,
+      windowsProofInputDirectory: preparation.windowsProofInput.hostPath,
+    },
+    {
+      VEM_VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION:
+        config.environment?.VEM_VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION,
+    },
+  );
   if (
     JSON.stringify(canonicalIdentity(receipt)) !==
     JSON.stringify(

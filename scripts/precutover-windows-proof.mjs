@@ -447,8 +447,11 @@ function productionAttestationVerifier({
   });
 }
 
-function productionVerifierForCurrentEnvironment(verifyAttestation) {
-  if (process.env[VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION] === "1") {
+function productionVerifierForEnvironment(
+  verifyAttestation,
+  environment = process.env,
+) {
+  if (environment?.[VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION] === "1") {
     return async () => {};
   }
   return verifyAttestation;
@@ -549,10 +552,17 @@ export async function verifyWindowsPrecutoverProofForTest(
   return verify(input, verifyAttestation, consume);
 }
 
-export function verifyProductionWindowsPrecutoverProof(input, consume) {
+export function verifyProductionWindowsPrecutoverProof(
+  input,
+  consume,
+  environment = process.env,
+) {
   return verify(
     input,
-    productionVerifierForCurrentEnvironment(productionAttestationVerifier),
+    productionVerifierForEnvironment(
+      productionAttestationVerifier,
+      environment,
+    ),
     consume,
   );
 }
@@ -561,6 +571,7 @@ export function verifyProductionWindowsPrecutoverProofForTest(
   input,
   verifyAttestation,
   consume,
+  environment = process.env,
 ) {
   if (
     process.env.NODE_ENV !== "test" ||
@@ -570,7 +581,7 @@ export function verifyProductionWindowsPrecutoverProofForTest(
   }
   return verify(
     input,
-    productionVerifierForCurrentEnvironment(verifyAttestation),
+    productionVerifierForEnvironment(verifyAttestation, environment),
     consume,
   );
 }

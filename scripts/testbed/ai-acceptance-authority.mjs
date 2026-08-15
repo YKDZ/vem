@@ -496,13 +496,17 @@ export async function verifyAiAcceptanceAuthorityForTest(
   return verify(options, dependencies);
 }
 
-export async function verifyAiAcceptanceAuthority(options) {
+export async function verifyAiAcceptanceAuthority(
+  options,
+  environment = process.env,
+) {
   return verify(options, {
     verifyCandidateAttestation:
-      process.env[VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION] === "1"
+      environment?.[VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION] === "1"
         ? async () => {}
         : verifyTrustedVisionCandidateAttestation,
-    verifyWindowsProof: verifyProductionWindowsPrecutoverProof,
+    verifyWindowsProof: (input, consume) =>
+      verifyProductionWindowsPrecutoverProof(input, consume, environment),
     verifyVisionCoreDelivery: verifyVisionCoreDelivery,
   });
 }
@@ -510,6 +514,7 @@ export async function verifyAiAcceptanceAuthority(options) {
 export async function verifyProductionCandidateAttestationForTest(
   input,
   verifyCandidateAttestation,
+  environment = process.env,
 ) {
   if (
     process.env.NODE_ENV !== "test" ||
@@ -518,7 +523,7 @@ export async function verifyProductionCandidateAttestationForTest(
     fail("test-only production candidate attestation boundary is unavailable");
   }
   const verifier =
-    process.env[VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION] === "1"
+    environment?.[VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION] === "1"
       ? async () => {}
       : verifyCandidateAttestation;
   return verifier(input);

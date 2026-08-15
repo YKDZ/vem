@@ -312,6 +312,33 @@ describe("pre-cutover Windows proof finalizer", () => {
     }
   });
 
+  it("uses the explicitly forwarded host environment for the Windows proof attestation bypass", async () => {
+    const value = fixture();
+    let attestationCalls = 0;
+    const priorNodeEnv = process.env.NODE_ENV;
+    const priorBypass = process.env.VEM_VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION;
+    process.env.NODE_ENV = "test";
+    delete process.env.VEM_VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION;
+    try {
+      await verifyProductionWindowsPrecutoverProofForTest(
+        productionInput(value),
+        async () => {
+          attestationCalls += 1;
+          throw new Error("attestation verifier must be bypassed");
+        },
+        undefined,
+        { VEM_VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION: "1" },
+      );
+      assert.equal(attestationCalls, 0);
+    } finally {
+      if (priorNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = priorNodeEnv;
+      if (priorBypass === undefined)
+        delete process.env.VEM_VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION;
+      else process.env.VEM_VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION = priorBypass;
+    }
+  });
+
   for (const bypassValue of [undefined, "0", "true"]) {
     it(`keeps production attestation enabled when the VM-only bypass is ${bypassValue ?? "unset"}`, async () => {
       const value = fixture();

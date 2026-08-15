@@ -165,6 +165,31 @@ test("skips only the final candidate GitHub attestation in the explicit VM accep
   }
 });
 
+test("uses the explicitly forwarded host environment for the candidate attestation bypass", async () => {
+  const priorNodeEnv = process.env.NODE_ENV;
+  const priorBypass = process.env.VEM_VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION;
+  process.env.NODE_ENV = "test";
+  delete process.env.VEM_VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION;
+  let calls = 0;
+  try {
+    await verifyProductionCandidateAttestationForTest(
+      {},
+      async () => {
+        calls += 1;
+        throw new Error("candidate attestation must be bypassed");
+      },
+      { VEM_VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION: "1" },
+    );
+    assert.equal(calls, 0);
+  } finally {
+    if (priorNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = priorNodeEnv;
+    if (priorBypass === undefined)
+      delete process.env.VEM_VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION;
+    else process.env.VEM_VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION = priorBypass;
+  }
+});
+
 for (const bypassValue of [undefined, "0", "true"]) {
   test(`keeps candidate GitHub attestation enabled when VM bypass is ${bypassValue ?? "unset"}`, async () => {
     const priorNodeEnv = process.env.NODE_ENV;
