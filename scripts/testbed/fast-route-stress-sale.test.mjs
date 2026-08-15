@@ -9,6 +9,7 @@ import ts from "typescript";
 import {
   buildFastRouteStressSaleFailureReport,
   buildFastRouteStressScenarioSteps,
+  admitFreshSerialSessionForSale,
   combineCleanupError,
   controlPlaneRequest,
   daemonGet,
@@ -2308,10 +2309,7 @@ describe("fast route stress sale tracer", () => {
     assert.match(implementation, /mock-payment-create-gate\/arm/);
     assert.match(implementation, /mock-payment-create-gate\/status/);
     assert.match(implementation, /mock-payment-create-gate\/release/);
-    assert.match(
-      implementation,
-      /handoff\.commissioningSerialSession[\s\S]*commissioningSession \?\?[\s\S]*serial-sessions\/start/,
-    );
+    assert.match(implementation, /replaceSerialSessionAndUpdateHandoff/);
     assert.match(implementation, /release-f0/);
     assert.match(implementation, /platform-log/);
     assert.match(implementation, /snapshots:/);
@@ -2347,6 +2345,139 @@ describe("fast route stress sale tracer", () => {
     assert.match(implementation, /run-vm-host-adapter/);
     assert.doesNotMatch(implementation, /simulatedHardwareSaleFlow/);
     assert.doesNotMatch(implementation, /scannerCode/);
+  });
+
+  it("replaces the accumulated serial observer before any sale action", () => {
+    const implementation = readFileSync(
+      new URL("./fast-route-stress-sale.mjs", import.meta.url),
+      "utf8",
+    );
+    const runner = implementation.slice(
+      implementation.indexOf("async function runFastRouteStressSale(options)"),
+    );
+    const replacement = runner.indexOf(
+      "await admitFreshSerialSessionForSale({",
+    );
+    const saleReadyAfterReplacement = runner.indexOf(
+      "await waitForSaleStartReady(handoff, client)",
+      replacement,
+    );
+    const createOrderGate = runner.indexOf(
+      "createOrderGate = await serialAdmission.armCreateOrderGate()",
+    );
+    const firstCustomerAction = runner.indexOf(
+      'stage = "physical-catalog-to-checkout"',
+    );
+
+    assert.ok(
+      replacement >= 0,
+      "the full sale must replace its inherited serial observer instead of reusing an accumulated journal",
+    );
+    assert.ok(
+      replacement < saleReadyAfterReplacement &&
+        saleReadyAfterReplacement < createOrderGate &&
+        createOrderGate < firstCustomerAction,
+      "the replacement session must be ready before gate, order/payment, and first customer action",
+    );
+    assert.doesNotMatch(
+      runner.slice(0, firstCustomerAction),
+      /commissioningSession\s*\?\?\s*\(await controlPlaneRequest/,
+    );
+  });
+
+  it("waits for fresh lower-controller readiness before opening the sale admission", async () => {
+    const events = [];
+    const journals = {
+      "serial-old": Array.from({ length: 257 }, () => ({ raw: "stale" })),
+      "serial-fresh": [],
+    };
+    const handoff = { commissioningSerialSession: { sessionId: "serial-old" } };
+    let hardwarePolls = 0;
+    let ready = false;
+    let replacementStarted = false;
+    const admission = await admitFreshSerialSessionForSale({
+      guestInput: {
+        runId: "RUN-FRESH",
+        machineCode: "VEM-FRESH",
+        hostControlPlane: {
+          targetIdentity: "vm-target://fresh",
+          runtimeBaseIdentity: "runtime-base://fresh",
+        },
+      },
+      handoff,
+      handoffPath: "C:\\handoff.json",
+      writeJsonFile: () => events.push("handoff:persisted"),
+      control: async (_input, path) => {
+        events.push(`control:${path}`);
+        if (path.endsWith("/serial-old/abort")) return { aborted: true };
+        if (path.endsWith("/start")) {
+          replacementStarted = true;
+          return { sessionId: "serial-fresh" };
+        }
+        const sessionId = path.match(/serial-sessions\/([^/]+)\//)?.[1];
+        if (sessionId === "serial-old") {
+          throw new Error(
+            `raw serial evidence exceeded ${journals[sessionId].length} records`,
+          );
+        }
+        assert.equal(sessionId, "serial-fresh");
+        assert.equal(ready, true);
+        return { frame: { sessionId } };
+      },
+      daemonGet: async (path) => {
+        events.push(`daemon:${path}`);
+        assert.equal(replacementStarted, true);
+        if (path === "/v1/hardware-bindings") hardwarePolls += 1;
+        ready = hardwarePolls >= 2;
+        return path === "/v1/hardware-bindings"
+          ? { roles: [{ role: "lower_controller", ready }] }
+          : { canStartSale: ready };
+      },
+      armCreateOrderGate: async () => {
+        events.push("gate:arm");
+        assert.equal(ready, true);
+        return { controlPlane: "mock-payment-create-gate" };
+      },
+    });
+
+    assert.equal(hardwarePolls, 2);
+    assert.ok(journals["serial-old"].length > 256);
+    assert.equal(handoff.commissioningSerialSession.sessionId, "serial-fresh");
+    assert.equal(events.includes("gate:arm"), false);
+    assert.equal(events.includes("customer:touch"), false);
+    await admission.armCreateOrderGate();
+    await admission.runCustomerAction(async () => {
+      events.push("customer:touch");
+    });
+    await admission.serialRequest("wait-frame", { parsedOpcode: "VEND" });
+    await admission.serialRequest("release-f0");
+    await admission.serialRequest("wait-frame", { parsedOpcode: "F0" });
+    await admission.serialRequest("wait-frame", { parsedOpcode: "F1" });
+    await admission.serialRequest("release-f2");
+    await admission.serialRequest("wait-frame", { parsedOpcode: "F2" });
+    await admission.serialRequest("evidence");
+    await admission.serialRequest("stop");
+
+    assert.ok(
+      events.indexOf("daemon:/v1/hardware-bindings") <
+        events.indexOf("gate:arm"),
+    );
+    assert.ok(events.indexOf("gate:arm") < events.indexOf("customer:touch"));
+    assert.deepEqual(
+      events.filter((event) => event.startsWith("control:")),
+      [
+        "control:/v1/serial-sessions/serial-old/abort",
+        "control:/v1/serial-sessions/start",
+        "control:/v1/serial-sessions/serial-fresh/wait-frame",
+        "control:/v1/serial-sessions/serial-fresh/release-f0",
+        "control:/v1/serial-sessions/serial-fresh/wait-frame",
+        "control:/v1/serial-sessions/serial-fresh/wait-frame",
+        "control:/v1/serial-sessions/serial-fresh/release-f2",
+        "control:/v1/serial-sessions/serial-fresh/wait-frame",
+        "control:/v1/serial-sessions/serial-fresh/evidence",
+        "control:/v1/serial-sessions/serial-fresh/stop",
+      ],
+    );
   });
 
   it("exports an explicit controlled vision mock shutdown path", () => {

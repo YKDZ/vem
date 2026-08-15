@@ -29,6 +29,9 @@ export async function replaceSerialSessionAndUpdateHandoff({
     guestInput,
     `/v1/serial-sessions/${encodeURIComponent(sessionId)}/abort`,
   );
+  if (aborted?.aborted !== true) {
+    throw new Error("serial session abort did not confirm inactive state");
+  }
   const replacement = await control(guestInput, "/v1/serial-sessions/start", {
     runId: required(guestInput.runId, "runId"),
     machineCode: required(guestInput.machineCode, "machineCode"),
@@ -43,7 +46,19 @@ export async function replaceSerialSessionAndUpdateHandoff({
     ),
   });
   required(replacement.sessionId, "replacement serial session id");
+  const updatedHandoff = {
+    ...handoff,
+    commissioningSerialSession: replacement,
+  };
+  try {
+    writeJsonFile(handoffPath, updatedHandoff);
+  } catch (error) {
+    await control(
+      guestInput,
+      `/v1/serial-sessions/${encodeURIComponent(replacement.sessionId)}/abort`,
+    ).catch(() => undefined);
+    throw error;
+  }
   handoff.commissioningSerialSession = replacement;
-  writeJsonFile(handoffPath, handoff);
   return { aborted, replacement };
 }

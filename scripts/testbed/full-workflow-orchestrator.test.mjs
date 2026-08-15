@@ -265,7 +265,9 @@ describe("full workflow serial lifecycle", () => {
       sessionId: "serial-1",
       control: async (_input, path) => {
         calls.push(path);
-        return path.endsWith("/start") ? { sessionId: "serial-2" } : {};
+        return path.endsWith("/start")
+          ? { sessionId: "serial-2" }
+          : { aborted: true };
       },
     });
     assert.deepEqual(calls, [
@@ -308,7 +310,7 @@ describe("full workflow serial lifecycle", () => {
           replacementStarted = true;
           return { sessionId: "pickup-replacement-session" };
         }
-        return {};
+        return { aborted: true };
       },
     });
     const ready = await waitForBusinessHardwareReady({

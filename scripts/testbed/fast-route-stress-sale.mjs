@@ -8,6 +8,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { catalogProductSelectorForFixture } from "./full-workflow-fixtures.mjs";
+import { waitForBusinessHardwareReady } from "./full-workflow-orchestrator.mjs";
 import {
   activateVisibleSelector,
   captureCheckpoint,
@@ -20,6 +21,7 @@ import {
   waitForRoute,
 } from "./machine-ui-cdp-driver.mjs";
 import { validateProductionRawSerialFrame } from "./qemu-usb-serial-host-adapter.mjs";
+import { replaceSerialSessionAndUpdateHandoff } from "./serial-session-handoff.mjs";
 
 const MODES = new Set(["fast", "full"]);
 const CLEANUP_TIMEOUT_MS = 10_000;
@@ -1311,6 +1313,57 @@ export async function waitForSaleStartReady(
   throw new Error(
     `installed sale startup did not settle before interaction: ${JSON.stringify(last)}`,
   );
+}
+
+export async function admitFreshSerialSessionForSale({
+  guestInput,
+  handoff,
+  handoffPath,
+  control,
+  daemonGet: get,
+  armCreateOrderGate: armGate,
+  writeJsonFile,
+  waitForHardwareReady = waitForBusinessHardwareReady,
+}) {
+  if (typeof control !== "function") {
+    throw new Error("fresh sale serial admission control is required");
+  }
+  if (typeof get !== "function") {
+    throw new Error("fresh sale serial admission daemonGet is required");
+  }
+  if (typeof armGate !== "function") {
+    throw new Error("fresh sale serial admission gate is required");
+  }
+  const { replacement } = await replaceSerialSessionAndUpdateHandoff({
+    guestInput,
+    handoff,
+    handoffPath,
+    sessionId: required(
+      handoff.commissioningSerialSession?.sessionId,
+      "handoff commissioning serial session id",
+    ),
+    control,
+    writeJsonFile,
+  });
+  const sessionId = required(replacement.sessionId, "fresh serial session id");
+  const hardware = await waitForHardwareReady({ daemonGet: get });
+  return {
+    serialSession: replacement,
+    hardware,
+    armCreateOrderGate: () => armGate(guestInput),
+    runCustomerAction: (action) => {
+      if (typeof action !== "function") {
+        throw new Error("fresh sale customer action is required");
+      }
+      return action();
+    },
+    serialRequest: (operation, body = {}) =>
+      control(
+        guestInput,
+        `/v1/serial-sessions/${sessionId}/${required(operation, "serial operation")}`,
+        body,
+      ),
+  };
 }
 
 async function waitForCommand(handoff, renderedSale, timeoutMs = 30_000) {
@@ -3048,6 +3101,7 @@ async function runFastRouteStressSale(options) {
   let client = null;
   let clientReady = false;
   let sessionStart = null;
+  let serialAdmission = null;
   let liveSale = null;
   let saleStartCapability = null;
   let uiViewport = null;
@@ -3078,10 +3132,7 @@ async function runFastRouteStressSale(options) {
     handoff = readJson(options.handoffPath, "handoff");
     const runId = required(guestInput.runId, "runId");
     const machineCode = required(guestInput.machineCode, "machineCode");
-    const commissioningSession = handoff.commissioningSerialSession ?? null;
-    const saleCorrelationId =
-      commissioningSession?.saleCorrelationId ??
-      `sale-correlation://fast-route-${Date.now()}`;
+    let saleCorrelationId = null;
     const steps = buildFastRouteStressScenarioSteps(
       options.fixtureKey
         ? catalogProductSelectorForFixture(
@@ -3090,7 +3141,6 @@ async function runFastRouteStressSale(options) {
           )
         : undefined,
     );
-    createOrderGate = await armCreateOrderGate(guestInput);
     stage = "stop-installed-vision-owner";
     await stopInstalledVisionOwnerForControlledMock();
     stage = "start-controlled-vision";
@@ -3102,23 +3152,20 @@ async function runFastRouteStressSale(options) {
       guestInput.hostControlPlane?.visionMockControlPort ??
         guestInput.visionMockControlPort,
     );
-    stage = "reuse-or-start-host-serial-session";
-    sessionStart =
-      commissioningSession ??
-      (await controlPlaneRequest(guestInput, "/v1/serial-sessions/start", {
-        runId,
-        machineCode,
-        saleCorrelationId,
-        targetIdentity: required(
-          guestInput.hostControlPlane?.targetIdentity,
-          "hostControlPlane.targetIdentity",
-        ),
-        runtimeBase: required(
-          guestInput.hostControlPlane?.runtimeBaseIdentity,
-          "hostControlPlane.runtimeBaseIdentity",
-        ),
-      }));
+    stage = "replace-host-serial-session-before-sale";
+    serialAdmission = await admitFreshSerialSessionForSale({
+      guestInput,
+      handoff,
+      handoffPath: options.handoffPath,
+      control: controlPlaneRequest,
+      daemonGet: (path) => daemonGet(handoff, path),
+      armCreateOrderGate,
+    });
+    sessionStart = serialAdmission.serialSession;
     required(sessionStart.sessionId, "serial session id");
+    saleCorrelationId =
+      sessionStart.saleCorrelationId ??
+      `sale-correlation://fast-route-${Date.now()}`;
     stage = "connect-installed-tauri-cdp";
     const target = await discoverMachineUiTarget({
       endpoint: "http://127.0.0.1:9222",
@@ -3136,6 +3183,8 @@ async function runFastRouteStressSale(options) {
     await waitForRoute(client, "#/catalog", { timeoutMs: 30_000, pollMs: 250 });
     saleStartCapability = await waitForSaleStartReady(handoff, client);
     await waitForRoute(client, "#/catalog", { timeoutMs: 30_000, pollMs: 250 });
+    stage = "arm-create-order-gate";
+    createOrderGate = await serialAdmission.armCreateOrderGate();
     stage = "snapshot-baseline";
     uiViewport = await readInstalledUiViewport(client);
     baselineSaleView = await daemonGet(handoff, "/v1/sale-view");
@@ -3163,10 +3212,12 @@ async function runFastRouteStressSale(options) {
       });
       // activateVisibleSelector hard-fails unless the UI action is dispatched via
       // the real Chrome DevTools Input.dispatchTouchEvent path.
-      const activation = await activateVisibleSelector(client, step.selector, {
-        kind: step.inputKind,
-        timeoutMs: 30_000,
-      });
+      const activation = await serialAdmission.runCustomerAction(() =>
+        activateVisibleSelector(client, step.selector, {
+          kind: step.inputKind,
+          timeoutMs: 30_000,
+        }),
+      );
       assert.match(activation.input.method, /Input\.dispatchTouchEvent/);
       await waitForRoute(client, step.routeAfter, {
         timeoutMs: 30_000,
@@ -3187,10 +3238,12 @@ async function runFastRouteStressSale(options) {
     stage = "wait-create-order-pending-boundary";
     let firstSubmit = null;
     for (let attempt = 0; attempt < 3 && !pendingCreate; attempt += 1) {
-      firstSubmit = await activateVisibleSelector(client, steps[4].selector, {
-        kind: "touch",
-        timeoutMs: 30_000,
-      });
+      firstSubmit = await serialAdmission.runCustomerAction(() =>
+        activateVisibleSelector(client, steps[4].selector, {
+          kind: "touch",
+          timeoutMs: 30_000,
+        }),
+      );
       assert.match(firstSubmit.input.method, /Input\.dispatchTouchEvent/);
       pendingCreate = await waitForCreateOrderGatePending(
         guestInput,
@@ -3258,9 +3311,8 @@ async function runFastRouteStressSale(options) {
         client,
         "repeated payment touch pre-dispatch trace boundary",
       );
-      const secondSubmit = await dispatchRepeatedPaymentTouch(
-        client,
-        firstSubmit,
+      const secondSubmit = await serialAdmission.runCustomerAction(() =>
+        dispatchRepeatedPaymentTouch(client, firstSubmit),
       );
       assert.match(secondSubmit.input.method, /Input\.dispatchTouchEvent/);
       const repeatedTouchTrace = await waitForRepeatedCustomerTouchTrace(
@@ -3310,11 +3362,10 @@ async function runFastRouteStressSale(options) {
     await completeMockPayment(guestInput, pendingCreate.paymentNo);
     liveSale = await waitForCommand(handoff, renderedSale);
     stage = "snapshot-before-f0";
-    const vendBoundary = await controlPlaneRequest(
-      guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/wait-frame`,
-      { parsedOpcode: "VEND", timeoutMs: 30_000 },
-    );
+    const vendBoundary = await serialAdmission.serialRequest("wait-frame", {
+      parsedOpcode: "VEND",
+      timeoutMs: 30_000,
+    });
     beforeF0Platform = await waitForBeforeF0Boundary(
       guestInput,
       {
@@ -3335,22 +3386,17 @@ async function runFastRouteStressSale(options) {
         screenshotSink: sink,
       }),
     );
-    const releaseF0 = await controlPlaneRequest(
-      guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/release-f0`,
-    );
+    const releaseF0 = await serialAdmission.serialRequest("release-f0");
     stage = "wait-inbound-f0";
-    const f0Boundary = await controlPlaneRequest(
-      guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/wait-frame`,
-      { parsedOpcode: "F0", timeoutMs: 30_000 },
-    );
+    const f0Boundary = await serialAdmission.serialRequest("wait-frame", {
+      parsedOpcode: "F0",
+      timeoutMs: 30_000,
+    });
     stage = "wait-inbound-f1";
-    const f1Boundary = await controlPlaneRequest(
-      guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/wait-frame`,
-      { parsedOpcode: "F1", timeoutMs: 30_000 },
-    );
+    const f1Boundary = await serialAdmission.serialRequest("wait-frame", {
+      parsedOpcode: "F1",
+      timeoutMs: 30_000,
+    });
     stage = "snapshot-after-f1-before-f2";
     afterF1SaleView = await daemonGet(handoff, "/v1/sale-view");
     afterF1Platform = (
@@ -3371,15 +3417,11 @@ async function runFastRouteStressSale(options) {
       }),
     );
     stage = "release-and-wait-inbound-f2";
-    const releaseF2 = await controlPlaneRequest(
-      guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/release-f2`,
-    );
-    const f2Boundary = await controlPlaneRequest(
-      guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/wait-frame`,
-      { parsedOpcode: "F2", timeoutMs: 30_000 },
-    );
+    const releaseF2 = await serialAdmission.serialRequest("release-f2");
+    const f2Boundary = await serialAdmission.serialRequest("wait-frame", {
+      parsedOpcode: "F2",
+      timeoutMs: 30_000,
+    });
     stage = "wait-success-result";
     const resultSurface = await waitForSuccessfulResultSurface(
       client,
@@ -3401,10 +3443,7 @@ async function runFastRouteStressSale(options) {
       }),
     );
     stage = "collect-raw-serial-evidence";
-    const collect = await controlPlaneRequest(
-      guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/evidence`,
-    );
+    const collect = await serialAdmission.serialRequest("evidence");
     afterF2Platform = await waitForPlatformMovement(
       guestInput,
       {
@@ -3507,25 +3546,17 @@ async function runFastRouteStressSale(options) {
     };
     const summary = validateFastRouteStressSaleEvidence(evidence);
     stage = "stop-host-serial-session";
-    const stop = await controlPlaneRequest(
-      guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/stop`,
-      {
-        orderId: liveSale.orderId,
-        paymentId: liveSale.paymentId,
-        vendingCommandId: liveSale.vendingCommandId,
-      },
-    );
-    const stopRepeat = await controlPlaneRequest(
-      guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/stop`,
-      {
-        orderId: liveSale.orderId,
-        paymentId: liveSale.paymentId,
-        vendingCommandId: liveSale.vendingCommandId,
-        idempotencyCheck: true,
-      },
-    );
+    const stop = await serialAdmission.serialRequest("stop", {
+      orderId: liveSale.orderId,
+      paymentId: liveSale.paymentId,
+      vendingCommandId: liveSale.vendingCommandId,
+    });
+    const stopRepeat = await serialAdmission.serialRequest("stop", {
+      orderId: liveSale.orderId,
+      paymentId: liveSale.paymentId,
+      vendingCommandId: liveSale.vendingCommandId,
+      idempotencyCheck: true,
+    });
     successReport = {
       schemaVersion: "vem-fast-route-stress-sale/v2",
       ok: true,
