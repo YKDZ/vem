@@ -1882,6 +1882,10 @@ export function parseVisionTryOnAcceptanceArgs(args) {
   };
 }
 
+export function isVmFastCoreVisionRecommendationSkip(env = process.env) {
+  return env.VEM_VM_ACCEPTANCE_SKIP_VISION_RECOMMENDATION === "1";
+}
+
 export function buildRecordedVisionSiteConfiguration({
   host = "127.0.0.1",
   port = 7892,
@@ -3589,6 +3593,10 @@ async function runVisionTryOnAcceptance(options) {
   );
   const recommendationFixture =
     validateSeededRecommendationVariants(runtimeExpectation);
+  const skipVisionRecommendation = isVmFastCoreVisionRecommendationSkip();
+  const recommendationScope = skipVisionRecommendation
+    ? "vm_fast_core"
+    : "strict";
   const allocatedFixture = guestInput.fixtureAllocation?.[options.fixtureKey];
   if (!allocatedFixture?.slotDisplayLabel || !allocatedFixture?.inventoryId) {
     throw new Error(`fixture allocation is absent for ${options.fixtureKey}`);
@@ -3672,231 +3680,340 @@ async function runVisionTryOnAcceptance(options) {
       runtimeExpectation,
     );
 
-    stage = "clear-existing-vision-before-recommendation-baseline";
-    await stopVisionRuntime();
-    realVisionStopped = true;
-    await waitForVisionPortRelease();
-    await waitForVisionDegradation(handoff, 45_000);
-
-    stage = "open-tshirt-category-baseline";
-    await activateVisibleSelector(
-      client,
-      '[data-test="catalog-category"][data-category-key="tshirts"]',
-      { kind: "touch", timeoutMs: 30_000 },
-    );
-    const baseline = await waitForClearedVisionRecommendationBaseline({
-      readCatalogState: () => readCatalogProducts(client),
-      readRuntimeTraceSnapshot: () => readRuntimeTrace(client),
-    });
-    const baselineCatalogProjection = baseline.catalogState;
-
-    stage = "start-installed-vision-fixture-source";
-    const eventFence = createVisionEventFence({
-      runtimeTraceSnapshot: baseline.runtimeTraceSnapshot,
-      visionStartedAt: new Date().toISOString(),
-    });
-    let observedProfileEventId = null;
-    await startInstalledVisionRuntime();
-    realVisionStopped = false;
-    await waitForVisionOnline(handoff, 45_000);
-
-    stage = "observe-fenced-recorded-video-chronology-in-machine-catalog";
-    const [protocolEvidence, catalogRecommendation] = await Promise.all([
-      collectVisionProtocolEvidence({
-        machineCode: guestInput.machineCode,
-        eventFence,
-        onProfile: (message) => {
-          observedProfileEventId = message.payload?.eventId ?? null;
-        },
-      }),
-      waitForCatalogRecommendationProjection(
-        client,
-        baselineCatalogProjection.products.map((product) => product.catalogKey),
-        true,
-        {
-          profileEventId: () => observedProfileEventId,
-          excludedProfileEventId: baselineCatalogProjection.profileEventId,
-        },
-      ),
-    ]);
-    const protocolSummary = compareObservedVisionProtocolToExpected({
-      expectedResults,
-      protocolEvidence,
-      installedBinding: installedBindingSummary,
-      eventFence,
-      runtimeTraceSnapshot: await readRuntimeTrace(client),
-    });
-    const catalogProfileEventId = required(
-      protocolEvidence.profile?.payload?.eventId,
-      "fenced recorded-video profile eventId",
-    );
-    if (catalogRecommendation.profileEventId !== catalogProfileEventId) {
-      throw new Error(
-        "catalog recommendation was not projected from the fenced Vision profile event",
-      );
-    }
-
-    stage = "validate-catalog-recommendation-projection";
-    const recommendationSummary = validateRecommendationProjection({
-      beforeProducts: baselineCatalogProjection.products,
-      afterProducts: catalogRecommendation.products,
-      pageText: catalogRecommendation.pageText,
-      expectedResults,
-      runtimeExpectation,
-    });
     const ordinaryVariantId = recommendationFixture.alternate.variantId;
-    checkpoints.push(
-      await captureCheckpoint(client, "catalog-recommendation", {
-        screenshot: true,
-        screenshotSink: sink,
-      }),
-    );
+    let protocolSummary = null;
+    let catalogRecommendation = null;
+    let recommendationSummary = null;
+    let productDetail = null;
+    let automaticRecommendationPresentation = null;
+    let onlineUnmatchedRecommendationPresentation = null;
+    let manualRecommendationPresentation = null;
+    let manualSelectedProduct = null;
 
-    stage = "open-expected-recommended-product";
-    await activateVisibleSelector(
-      client,
-      `[data-test="catalog-product"][data-catalog-key="${recommendationSummary.selectedCatalogKey}"]`,
-      {
-        kind: "touch",
+    if (skipVisionRecommendation) {
+      const matchedCatalogKey = catalogKeyForProductId(
+        recommendationFixture.matched.productId,
+        "VM Fast core matched productId",
+      );
+      const matchedProductMedia = requiredObject(
+        runtimeExpectation.productMedia.find(
+          (entry) => entry.catalogKey === matchedCatalogKey,
+        ),
+        "VM Fast core matched product media",
+      );
+      const matchedCategoryKey = required(
+        matchedProductMedia.categoryKey,
+        "VM Fast core matched categoryKey",
+      );
+      stage = "open-vm-fast-core-seeded-product";
+      await activateVisibleSelector(
+        client,
+        `[data-test="catalog-category"][data-category-key="${matchedCategoryKey}"]`,
+        { kind: "touch", timeoutMs: 30_000 },
+      );
+      await waitForCatalogProducts(client);
+      await activateVisibleSelector(
+        client,
+        `[data-test="catalog-product"][data-catalog-key="${matchedCatalogKey}"]`,
+        { kind: "touch", timeoutMs: 30_000 },
+      );
+      await waitForRoute(client, /^#\/products\//, {
         timeoutMs: 30_000,
-      },
-    );
-    await waitForRoute(client, /^#\/products\//, {
-      timeoutMs: 30_000,
-      pollMs: 250,
-    });
-    const productDetail = await waitForCondition(
-      "recommended product navigation fenced by catalog Vision event",
-      async () => {
-        const state = await readProductDetailState(client);
-        return {
-          ok:
-            state?.catalogKey === recommendationSummary.selectedCatalogKey &&
-            state?.variantId === recommendationSummary.selectedVariantId &&
-            state?.tryOnPresent === true &&
-            state?.tryOnDisabled === false &&
-            state?.buyDisabled === false &&
-            state?.profileEventId === catalogProfileEventId,
-          value: state,
-        };
-      },
-      30_000,
-      250,
-    );
-
-    stage = "validate-automatic-recommendation-presentation";
-    const automaticRecommendationPresentation =
-      await waitForRecommendationPresentation(
-        client,
-        "automatic",
-        recommendationSummary.selectedVariantId,
+        pollMs: 250,
+      });
+      productDetail = await waitForCondition(
+        "VM Fast core seeded product selection",
+        async () => {
+          const state = await readProductDetailState(client);
+          return {
+            ok:
+              state?.catalogKey === matchedCatalogKey &&
+              state?.tryOnPresent === true &&
+              state?.tryOnDisabled === false &&
+              state?.buyDisabled === false,
+            value: state,
+          };
+        },
+        30_000,
+        250,
       );
-    checkpoints.push(
-      await captureCheckpoint(client, "automatic-recommendation-detail", {
-        screenshot: true,
-        validatePng: true,
-        screenshotSink: sink,
-      }),
-    );
-
-    stage = "validate-online-unmatched-recommendation-presentation";
-    await evaluateExpression(client, 'location.hash = "#/catalog"');
-    await waitForRoute(client, "#/catalog", { timeoutMs: 30_000, pollMs: 250 });
-    await activateVisibleSelector(
-      client,
-      '[data-test="catalog-category"][data-category-key="socks"]',
-      { kind: "touch", timeoutMs: 30_000 },
-    );
-    const onlineUnmatchedCatalog = await waitForCatalogProducts(client);
-    const onlineUnmatchedProduct = requiredObject(
-      onlineUnmatchedCatalog.products.find(
-        (product) =>
-          product.catalogKey !== recommendationSummary.selectedCatalogKey &&
-          product.variantId,
-      ),
-      "online-unmatched catalog product",
-    );
-    await activateVisibleSelector(
-      client,
-      `[data-test="catalog-product"][data-catalog-key="${onlineUnmatchedProduct.catalogKey}"]`,
-      { kind: "touch", timeoutMs: 30_000 },
-    );
-    await waitForRoute(client, /^#\/products\//, {
-      timeoutMs: 30_000,
-      pollMs: 250,
-    });
-    const onlineUnmatchedRecommendationPresentation =
-      await waitForRecommendationPresentation(
+      stage = "select-vm-fast-core-alternate-variant";
+      await activateVisibleSelector(
         client,
-        "online_unmatched",
-        onlineUnmatchedProduct.variantId,
+        `[data-test="product-size-option"][data-size="${recommendationFixture.alternate.size}"]`,
+        { kind: "touch", timeoutMs: 30_000 },
       );
-    checkpoints.push(
-      await captureCheckpoint(
-        client,
-        "online-unmatched-recommendation-detail",
-        {
+      const selectedProduct = await waitForCondition(
+        "VM Fast core alternate variant selection",
+        async () => {
+          const state = await readProductDetailState(client);
+          return {
+            ok:
+              state?.catalogKey === matchedCatalogKey &&
+              state?.variantId === recommendationFixture.alternate.variantId &&
+              state?.tryOnPresent === true &&
+              state?.tryOnDisabled === false &&
+              state?.buyDisabled === false,
+            value: state,
+          };
+        },
+        30_000,
+        250,
+      );
+      manualSelectedProduct = {
+        catalogKey: required(
+          selectedProduct?.catalogKey,
+          "VM Fast core product catalogKey",
+        ),
+        variantId: required(
+          selectedProduct?.variantId,
+          "VM Fast core product variantId",
+        ),
+        size: recommendationFixture.alternate.size,
+      };
+      checkpoints.push(
+        await captureCheckpoint(client, "vm-fast-core-manual-size-detail", {
           screenshot: true,
           validatePng: true,
           screenshotSink: sink,
+        }),
+      );
+    } else {
+      stage = "clear-existing-vision-before-recommendation-baseline";
+      await stopVisionRuntime();
+      realVisionStopped = true;
+      await waitForVisionPortRelease();
+      await waitForVisionDegradation(handoff, 45_000);
+
+      stage = "open-tshirt-category-baseline";
+      await activateVisibleSelector(
+        client,
+        '[data-test="catalog-category"][data-category-key="tshirts"]',
+        { kind: "touch", timeoutMs: 30_000 },
+      );
+      const baseline = await waitForClearedVisionRecommendationBaseline({
+        readCatalogState: () => readCatalogProducts(client),
+        readRuntimeTraceSnapshot: () => readRuntimeTrace(client),
+      });
+      const baselineCatalogProjection = baseline.catalogState;
+
+      stage = "start-installed-vision-fixture-source";
+      const eventFence = createVisionEventFence({
+        runtimeTraceSnapshot: baseline.runtimeTraceSnapshot,
+        visionStartedAt: new Date().toISOString(),
+      });
+      let observedProfileEventId = null;
+      await startInstalledVisionRuntime();
+      realVisionStopped = false;
+      await waitForVisionOnline(handoff, 45_000);
+
+      stage = "observe-fenced-recorded-video-chronology-in-machine-catalog";
+      const [protocolEvidence, observedCatalogRecommendation] =
+        await Promise.all([
+          collectVisionProtocolEvidence({
+            machineCode: guestInput.machineCode,
+            eventFence,
+            onProfile: (message) => {
+              observedProfileEventId = message.payload?.eventId ?? null;
+            },
+          }),
+          waitForCatalogRecommendationProjection(
+            client,
+            baselineCatalogProjection.products.map(
+              (product) => product.catalogKey,
+            ),
+            true,
+            {
+              profileEventId: () => observedProfileEventId,
+              excludedProfileEventId: baselineCatalogProjection.profileEventId,
+            },
+          ),
+        ]);
+      catalogRecommendation = observedCatalogRecommendation;
+      protocolSummary = compareObservedVisionProtocolToExpected({
+        expectedResults,
+        protocolEvidence,
+        installedBinding: installedBindingSummary,
+        eventFence,
+        runtimeTraceSnapshot: await readRuntimeTrace(client),
+      });
+      const catalogProfileEventId = required(
+        protocolEvidence.profile?.payload?.eventId,
+        "fenced recorded-video profile eventId",
+      );
+      if (catalogRecommendation.profileEventId !== catalogProfileEventId) {
+        throw new Error(
+          "catalog recommendation was not projected from the fenced Vision profile event",
+        );
+      }
+
+      stage = "validate-catalog-recommendation-projection";
+      recommendationSummary = validateRecommendationProjection({
+        beforeProducts: baselineCatalogProjection.products,
+        afterProducts: catalogRecommendation.products,
+        pageText: catalogRecommendation.pageText,
+        expectedResults,
+        runtimeExpectation,
+      });
+      checkpoints.push(
+        await captureCheckpoint(client, "catalog-recommendation", {
+          screenshot: true,
+          screenshotSink: sink,
+        }),
+      );
+
+      stage = "open-expected-recommended-product";
+      await activateVisibleSelector(
+        client,
+        `[data-test="catalog-product"][data-catalog-key="${recommendationSummary.selectedCatalogKey}"]`,
+        {
+          kind: "touch",
+          timeoutMs: 30_000,
         },
-      ),
-    );
+      );
+      await waitForRoute(client, /^#\/products\//, {
+        timeoutMs: 30_000,
+        pollMs: 250,
+      });
+      productDetail = await waitForCondition(
+        "recommended product navigation fenced by catalog Vision event",
+        async () => {
+          const state = await readProductDetailState(client);
+          return {
+            ok:
+              state?.catalogKey === recommendationSummary.selectedCatalogKey &&
+              state?.variantId === recommendationSummary.selectedVariantId &&
+              state?.tryOnPresent === true &&
+              state?.tryOnDisabled === false &&
+              state?.buyDisabled === false &&
+              state?.profileEventId === catalogProfileEventId,
+            value: state,
+          };
+        },
+        30_000,
+        250,
+      );
 
-    stage = "return-to-recorded-video-matched-product";
-    await evaluateExpression(client, 'location.hash = "#/catalog"');
-    await waitForRoute(client, "#/catalog", { timeoutMs: 30_000, pollMs: 250 });
-    await activateVisibleSelector(
-      client,
-      '[data-test="catalog-category"][data-category-key="tshirts"]',
-      { kind: "touch", timeoutMs: 30_000 },
-    );
-    await waitForCatalogProducts(client);
-    await activateVisibleSelector(
-      client,
-      `[data-test="catalog-product"][data-catalog-key="${recommendationSummary.selectedCatalogKey}"]`,
-      { kind: "touch", timeoutMs: 30_000 },
-    );
-    await waitForRoute(client, /^#\/products\//, {
-      timeoutMs: 30_000,
-      pollMs: 250,
-    });
-    await waitForRecommendationPresentation(
-      client,
-      "automatic",
-      recommendationFixture.matched.variantId,
-    );
+      stage = "validate-automatic-recommendation-presentation";
+      automaticRecommendationPresentation =
+        await waitForRecommendationPresentation(
+          client,
+          "automatic",
+          recommendationSummary.selectedVariantId,
+        );
+      checkpoints.push(
+        await captureCheckpoint(client, "automatic-recommendation-detail", {
+          screenshot: true,
+          validatePng: true,
+          screenshotSink: sink,
+        }),
+      );
 
-    stage = "validate-manual-recommendation-override";
-    await activateVisibleSelector(
-      client,
-      `[data-test="product-size-option"][data-size="${recommendationFixture.alternate.size}"]`,
-      { kind: "touch", timeoutMs: 30_000 },
-    );
-    const manualRecommendationPresentation =
+      stage = "validate-online-unmatched-recommendation-presentation";
+      await evaluateExpression(client, 'location.hash = "#/catalog"');
+      await waitForRoute(client, "#/catalog", {
+        timeoutMs: 30_000,
+        pollMs: 250,
+      });
+      await activateVisibleSelector(
+        client,
+        '[data-test="catalog-category"][data-category-key="socks"]',
+        { kind: "touch", timeoutMs: 30_000 },
+      );
+      const onlineUnmatchedCatalog = await waitForCatalogProducts(client);
+      const onlineUnmatchedProduct = requiredObject(
+        onlineUnmatchedCatalog.products.find(
+          (product) =>
+            product.catalogKey !== recommendationSummary.selectedCatalogKey &&
+            product.variantId,
+        ),
+        "online-unmatched catalog product",
+      );
+      await activateVisibleSelector(
+        client,
+        `[data-test="catalog-product"][data-catalog-key="${onlineUnmatchedProduct.catalogKey}"]`,
+        { kind: "touch", timeoutMs: 30_000 },
+      );
+      await waitForRoute(client, /^#\/products\//, {
+        timeoutMs: 30_000,
+        pollMs: 250,
+      });
+      onlineUnmatchedRecommendationPresentation =
+        await waitForRecommendationPresentation(
+          client,
+          "online_unmatched",
+          onlineUnmatchedProduct.variantId,
+        );
+      checkpoints.push(
+        await captureCheckpoint(
+          client,
+          "online-unmatched-recommendation-detail",
+          {
+            screenshot: true,
+            validatePng: true,
+            screenshotSink: sink,
+          },
+        ),
+      );
+
+      stage = "return-to-recorded-video-matched-product";
+      await evaluateExpression(client, 'location.hash = "#/catalog"');
+      await waitForRoute(client, "#/catalog", {
+        timeoutMs: 30_000,
+        pollMs: 250,
+      });
+      await activateVisibleSelector(
+        client,
+        '[data-test="catalog-category"][data-category-key="tshirts"]',
+        { kind: "touch", timeoutMs: 30_000 },
+      );
+      await waitForCatalogProducts(client);
+      await activateVisibleSelector(
+        client,
+        `[data-test="catalog-product"][data-catalog-key="${recommendationSummary.selectedCatalogKey}"]`,
+        { kind: "touch", timeoutMs: 30_000 },
+      );
+      await waitForRoute(client, /^#\/products\//, {
+        timeoutMs: 30_000,
+        pollMs: 250,
+      });
       await waitForRecommendationPresentation(
         client,
-        "manual",
-        recommendationFixture.alternate.variantId,
+        "automatic",
+        recommendationFixture.matched.variantId,
       );
-    const manualSelectedProduct = {
-      catalogKey: required(
-        manualRecommendationPresentation.state?.catalogKey,
-        "manual product catalogKey",
-      ),
-      variantId: required(
-        manualRecommendationPresentation.presentation?.variantId,
-        "manual product variantId",
-      ),
-      size: recommendationFixture.alternate.size,
-    };
-    checkpoints.push(
-      await captureCheckpoint(client, "manual-size-detail", {
-        screenshot: true,
-        validatePng: true,
-        screenshotSink: sink,
-      }),
-    );
+
+      stage = "validate-manual-recommendation-override";
+      await activateVisibleSelector(
+        client,
+        `[data-test="product-size-option"][data-size="${recommendationFixture.alternate.size}"]`,
+        { kind: "touch", timeoutMs: 30_000 },
+      );
+      manualRecommendationPresentation =
+        await waitForRecommendationPresentation(
+          client,
+          "manual",
+          recommendationFixture.alternate.variantId,
+        );
+      manualSelectedProduct = {
+        catalogKey: required(
+          manualRecommendationPresentation.state?.catalogKey,
+          "manual product catalogKey",
+        ),
+        variantId: required(
+          manualRecommendationPresentation.presentation?.variantId,
+          "manual product variantId",
+        ),
+        size: recommendationFixture.alternate.size,
+      };
+      checkpoints.push(
+        await captureCheckpoint(client, "manual-size-detail", {
+          screenshot: true,
+          validatePng: true,
+          screenshotSink: sink,
+        }),
+      );
+    }
 
     const expectedTryOnRoute = `#/try-on?catalogKey=${manualSelectedProduct.catalogKey}&variantId=${manualSelectedProduct.variantId}&mode=fast`;
     const tryOnAttempts = [];
@@ -4026,46 +4143,48 @@ async function runVisionTryOnAcceptance(options) {
       );
     }
 
-    stage = "stop-real-vision-runtime";
-    await stopVisionRuntime();
-    realVisionStopped = true;
-    await waitForVisionPortRelease();
-    const degradedDaemon = await waitForVisionDegradation(handoff, 45_000);
-    const degradedProductDetail = await waitForTryOnButtonEnabled(
-      client,
-      30_000,
-    );
-    assert.equal(degradedProductDetail?.buyDisabled, false);
-    stage = "validate-vision-unavailable-recommendation-presentation";
-    const unavailableRecommendationPresentation =
-      await waitForRecommendationPresentation(
-        client,
-        "vision_unavailable",
-        ordinaryVariantId,
+    let degradedDaemon = null;
+    let degradedProductDetail = null;
+    let unavailableRecommendationPresentation = null;
+    if (!skipVisionRecommendation) {
+      stage = "stop-real-vision-runtime";
+      await stopVisionRuntime();
+      realVisionStopped = true;
+      await waitForVisionPortRelease();
+      degradedDaemon = await waitForVisionDegradation(handoff, 45_000);
+      degradedProductDetail = await waitForTryOnButtonEnabled(client, 30_000);
+      assert.equal(degradedProductDetail?.buyDisabled, false);
+      stage = "validate-vision-unavailable-recommendation-presentation";
+      unavailableRecommendationPresentation =
+        await waitForRecommendationPresentation(
+          client,
+          "vision_unavailable",
+          ordinaryVariantId,
+        );
+      checkpoints.push(
+        await captureCheckpoint(client, "vision-degraded-product", {
+          screenshot: true,
+          validatePng: true,
+          screenshotSink: sink,
+        }),
       );
-    checkpoints.push(
-      await captureCheckpoint(client, "vision-degraded-product", {
-        screenshot: true,
-        validatePng: true,
-        screenshotSink: sink,
-      }),
-    );
 
-    stage = "prove-sale-survives-experience-degradation";
-    await activateVisibleSelector(client, '[data-test="product-buy"]', {
-      kind: "touch",
-      timeoutMs: 30_000,
-    });
-    await waitForRoute(client, "#/checkout", {
-      timeoutMs: 30_000,
-      pollMs: 250,
-    });
-    checkpoints.push(
-      await captureCheckpoint(client, "degraded-checkout", {
-        screenshot: true,
-        screenshotSink: sink,
-      }),
-    );
+      stage = "prove-sale-survives-experience-degradation";
+      await activateVisibleSelector(client, '[data-test="product-buy"]', {
+        kind: "touch",
+        timeoutMs: 30_000,
+      });
+      await waitForRoute(client, "#/checkout", {
+        timeoutMs: 30_000,
+        pollMs: 250,
+      });
+      checkpoints.push(
+        await captureCheckpoint(client, "degraded-checkout", {
+          screenshot: true,
+          screenshotSink: sink,
+        }),
+      );
+    }
     await evaluateExpression(client, 'location.hash = "#/catalog"');
     await waitForRoute(client, "#/catalog", {
       timeoutMs: 30_000,
@@ -4076,6 +4195,7 @@ async function runVisionTryOnAcceptance(options) {
     report = {
       schemaVersion: "vem-vision-try-on-acceptance/v1",
       ok: true,
+      acceptanceScope: { visionRecommendation: recommendationScope },
       handoffSerialSessionId: hardwareSession?.sessionId ?? null,
       mode: options.mode,
       machineCode: guestInput.machineCode,
@@ -4090,11 +4210,12 @@ async function runVisionTryOnAcceptance(options) {
       },
       health: {
         daemon: {
-          healthz: degradedDaemon.healthz,
-          readyz: degradedDaemon.readyz,
-          visionStatus: degradedDaemon.visionStatus,
+          healthz: degradedDaemon?.healthz ?? null,
+          readyz: degradedDaemon?.readyz ?? null,
+          visionStatus: degradedDaemon?.visionStatus ?? null,
           saleCapabilityBeforeDegradation: capabilityBeforeDegradation,
-          saleCapabilityAfterDegradation: degradedDaemon.saleCapability,
+          saleCapabilityAfterDegradation:
+            degradedDaemon?.saleCapability ?? null,
         },
         vision: {
           protocolSummary,
@@ -4106,13 +4227,16 @@ async function runVisionTryOnAcceptance(options) {
         recommendationSummary,
         productDetail,
         tryOnSelectedProduct: manualSelectedProduct,
-        recommendationPresentation: {
-          automatic: automaticRecommendationPresentation.presentation,
-          onlineUnmatched:
-            onlineUnmatchedRecommendationPresentation.presentation,
-          manual: manualRecommendationPresentation.presentation,
-          visionUnavailable: unavailableRecommendationPresentation.presentation,
-        },
+        recommendationPresentation: skipVisionRecommendation
+          ? null
+          : {
+              automatic: automaticRecommendationPresentation.presentation,
+              onlineUnmatched:
+                onlineUnmatchedRecommendationPresentation.presentation,
+              manual: manualRecommendationPresentation.presentation,
+              visionUnavailable:
+                unavailableRecommendationPresentation.presentation,
+            },
         mediaPresentation,
         tryOnSurface,
         retrySurface,
@@ -4126,9 +4250,10 @@ async function runVisionTryOnAcceptance(options) {
       },
       degradations: {
         visionDown: {
-          experienceCapabilityDegraded: true,
-          saleStartStillAvailable:
-            degradedDaemon.saleCapability?.canStartSale === true,
+          experienceCapabilityDegraded: !skipVisionRecommendation,
+          saleStartStillAvailable: skipVisionRecommendation
+            ? capabilityBeforeDegradation?.canStartSale === true
+            : degradedDaemon?.saleCapability?.canStartSale === true,
         },
       },
       runtimeTrace: compactRuntimeTrace(runtimeTrace.entries),
@@ -4169,6 +4294,7 @@ async function runVisionTryOnAcceptance(options) {
     report = {
       schemaVersion: "vem-vision-try-on-acceptance/v1",
       ok: false,
+      acceptanceScope: { visionRecommendation: recommendationScope },
       handoffSerialSessionId: hardwareSession?.sessionId ?? null,
       mode: options.mode,
       stage,
@@ -4265,6 +4391,7 @@ async function runVisionTryOnAcceptance(options) {
     report = {
       ...(report ?? {
         schemaVersion: "vem-vision-try-on-acceptance/v1",
+        acceptanceScope: { visionRecommendation: recommendationScope },
         handoffSerialSessionId: hardwareSession?.sessionId ?? null,
         mode: options.mode,
         checkpoints,

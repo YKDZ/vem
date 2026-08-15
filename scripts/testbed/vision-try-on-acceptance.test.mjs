@@ -27,6 +27,7 @@ import {
   compareObservedVisionProtocolToExpected as compareRawObservedVisionProtocolToExpected,
   createVisionEventFence,
   INSTALL_TRY_ON_LIFECYCLE_OBSERVER_EXPRESSION,
+  isVmFastCoreVisionRecommendationSkip,
   normalizeSeededVisionAcceptance,
   normalizeVisionExpectedResults,
   parseVisionTryOnAcceptanceArgs,
@@ -461,6 +462,23 @@ function sourceFrame(role, fixtureSha256, overrides = {}) {
 }
 
 describe("vision try-on acceptance script", () => {
+  it("enables the VM Fast recommendation skip only for the exact marker", () => {
+    assert.equal(
+      isVmFastCoreVisionRecommendationSkip({
+        VEM_VM_ACCEPTANCE_SKIP_VISION_RECOMMENDATION: "1",
+      }),
+      true,
+    );
+    for (const value of [undefined, "", "true", "0", "1 "]) {
+      assert.equal(
+        isVmFastCoreVisionRecommendationSkip({
+          VEM_VM_ACCEPTANCE_SKIP_VISION_RECOMMENDATION: value,
+        }),
+        false,
+      );
+    }
+  });
+
   it("captures an AI try-on through a production CdpClient touch and waits for its matching regional sidecar", async () => {
     const attemptId = "0198f44e-21bd-7c62-8f52-b7c86cc2d001";
     const route = "#/try-on?catalogKey=product-shirts&variantId=variant-long";
@@ -1371,7 +1389,7 @@ describe("vision try-on acceptance script", () => {
     );
     assert.match(
       source,
-      /const degradedDaemon = await waitForVisionDegradation[\s\S]*waitForRecommendationPresentation\([\s\S]*"vision_unavailable"[\s\S]*ordinaryVariantId/,
+      /if \(!skipVisionRecommendation\) \{[\s\S]*degradedDaemon = await waitForVisionDegradation[\s\S]*waitForRecommendationPresentation\([\s\S]*"vision_unavailable"[\s\S]*ordinaryVariantId/,
     );
     for (const label of [
       "automatic-recommendation-detail",
@@ -1381,6 +1399,29 @@ describe("vision try-on acceptance script", () => {
     ]) {
       assert.match(source, new RegExp(`"${label}"[\\s\\S]*validatePng: true`));
     }
+  });
+
+  it("wires the explicit VM Fast core scope around recommendation-only work", () => {
+    const source = readFileSync(
+      new URL("./vision-try-on-acceptance.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(
+      source,
+      /const skipVisionRecommendation = isVmFastCoreVisionRecommendationSkip\(\);[\s\S]*if \(skipVisionRecommendation\) \{[\s\S]*open-vm-fast-core-seeded-product[\s\S]*catalog-category[\s\S]*catalog-product[\s\S]*select-vm-fast-core-alternate-variant[\s\S]*product-size-option/,
+    );
+    assert.match(
+      source,
+      /\} else \{[\s\S]*clear-existing-vision-before-recommendation-baseline[\s\S]*start-installed-vision-fixture-source[\s\S]*observe-fenced-recorded-video-chronology-in-machine-catalog[\s\S]*validate-automatic-recommendation-presentation[\s\S]*validate-online-unmatched-recommendation-presentation/,
+    );
+    assert.match(
+      source,
+      /if \(!skipVisionRecommendation\) \{[\s\S]*stop-real-vision-runtime[\s\S]*validate-vision-unavailable-recommendation-presentation/,
+    );
+    assert.match(
+      source,
+      /acceptanceScope: \{ visionRecommendation: recommendationScope \}/,
+    );
   });
 
   it("waits for product-owned media through the shared condition contract", () => {

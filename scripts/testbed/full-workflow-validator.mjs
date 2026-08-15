@@ -1189,6 +1189,9 @@ function validateVisionTrack(report, reportPath) {
       ),
     };
   }
+  const recommendationScope = report.acceptanceScope?.visionRecommendation;
+  const strictRecommendationScope = recommendationScope === "strict";
+  const vmFastCoreScope = recommendationScope === "vm_fast_core";
   const visionDown = report.degradations?.visionDown ?? {};
   const protocol = report.health?.vision?.protocolSummary ?? null;
   const eventFence = protocol?.eventFence ?? null;
@@ -1250,7 +1253,7 @@ function validateVisionTrack(report, reportPath) {
     recommendation.visionUnavailable?.variantId === alternate?.variantId &&
     recommendation.visionUnavailable?.recommendedSize === null &&
     recommendation.manual.variantId !== recommendation.automatic.variantId;
-  const vision =
+  const strictVisionEvidence =
     protocol &&
     protocol.protocol === "vem.vision.v2" &&
     eventFence?.source === "installed_machine_runtime_trace_generation" &&
@@ -1265,10 +1268,18 @@ function validateVisionTrack(report, reportPath) {
     visionDown.experienceCapabilityDegraded === true &&
     visionDown.saleStartStillAvailable === true &&
     recommendationComplete &&
-    mediaComplete
+    mediaComplete;
+  const vision =
+    (strictRecommendationScope && strictVisionEvidence) ||
+    (vmFastCoreScope && mediaComplete)
       ? passedTrack("vision", "Vision", reportPath, {
-          experienceCapabilityDegraded: true,
-          saleStartStillAvailable: true,
+          recommendationScope,
+          ...(strictRecommendationScope
+            ? {
+                experienceCapabilityDegraded: true,
+                saleStartStillAvailable: true,
+              }
+            : {}),
         })
       : failedTrack(
           "vision",
@@ -1279,6 +1290,7 @@ function validateVisionTrack(report, reportPath) {
             protocol,
             eventFence,
             visionDown,
+            recommendationScope,
             recommendation,
             mediaPresentation,
           },
@@ -1296,7 +1308,9 @@ function validateVisionTrack(report, reportPath) {
     ) &&
     report.ui?.tryOnSelectedProduct?.variantId === alternate?.variantId &&
     report.ui?.tryOnAttempts?.some((attempt) => attempt?.result === "passed") &&
-    visionDown.saleStartStillAvailable === true
+    (strictRecommendationScope
+      ? visionDown.saleStartStillAvailable === true
+      : vmFastCoreScope)
       ? passedTrack("tryOn", "try-on", reportPath, {
           resultWidth: tryOnSummary.width,
           resultHeight: tryOnSummary.height,

@@ -38,6 +38,7 @@ function visionExperienceReport() {
   return {
     schemaVersion: "vem-vision-try-on-acceptance/v1",
     ok: true,
+    acceptanceScope: { visionRecommendation: "strict" },
     health: {
       vision: {
         protocolSummary: {
@@ -1789,6 +1790,42 @@ describe("full workflow aggregate validator", () => {
         descriptor("visionExperience"),
         wrongOwnedMedia,
         "/reports/vision.json",
+      ).status,
+      "failed",
+    );
+  });
+
+  it("accepts the explicit VM Fast core scope without recommendation evidence", () => {
+    const bypass = visionExperienceReport();
+    bypass.acceptanceScope.visionRecommendation = "vm_fast_core";
+    delete bypass.health.vision.protocolSummary;
+    delete bypass.degradations.visionDown;
+    delete bypass.ui.recommendationPresentation;
+    const accepted = validateBusinessCheckReport(
+      descriptor("visionExperience"),
+      bypass,
+      "vision-experience.json",
+    );
+    assert.equal(accepted.status, "passed");
+
+    const strict = structuredClone(bypass);
+    strict.acceptanceScope.visionRecommendation = "strict";
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("visionExperience"),
+        strict,
+        "vision-experience.json",
+      ).status,
+      "failed",
+    );
+
+    const unmarked = structuredClone(bypass);
+    delete unmarked.acceptanceScope;
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("visionExperience"),
+        unmarked,
+        "vision-experience.json",
       ).status,
       "failed",
     );
