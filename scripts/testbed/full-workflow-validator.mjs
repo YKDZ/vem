@@ -1289,7 +1289,7 @@ function validateVisionTrack(report, reportPath) {
     mediaComplete;
   const vision =
     (strictRecommendationScope && strictVisionEvidence) ||
-    (vmFastCoreScope && mediaComplete)
+    (vmFastCoreScope && vmFastCoreAttemptComplete)
       ? passedTrack("vision", "Vision", reportPath, {
           recommendationScope,
           ...(strictRecommendationScope

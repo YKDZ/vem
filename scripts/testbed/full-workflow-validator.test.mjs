@@ -1801,6 +1801,14 @@ describe("full workflow aggregate validator", () => {
     delete bypass.health.vision.protocolSummary;
     delete bypass.degradations.visionDown;
     delete bypass.ui.recommendationPresentation;
+    for (const [
+      index,
+      card,
+    ] of bypass.ui.mediaPresentation.productCards.entries()) {
+      const proxy = `/media/sha256:${String(index + 1).repeat(64)}?grant=media-${index + 1}`;
+      card.mainImageUrl = proxy;
+      card.finalUrl = proxy;
+    }
     bypass.ui.tryOnAttempts = [
       {
         result: "completed",
