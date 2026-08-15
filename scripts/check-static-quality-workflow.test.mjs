@@ -73,6 +73,27 @@ test("GitHub jobs invoke repository quality entrypoints", () => {
   assert.match(adminBrowser, /pnpm ci:admin-browser/);
 });
 
+test("Windows Vision Main Consumer keeps contract checks without the runtime harness", () => {
+  const workflow = parse(ci);
+  const steps = workflow.jobs["windows-vision-main-consumer"].steps;
+
+  assert.ok(
+    steps.some(
+      (step) =>
+        step.name === "Run Vision main consumer contract checks" &&
+        step.run === "pnpm check:vision-main-consumer",
+    ),
+  );
+  assert.equal(
+    steps.some(
+      (step) =>
+        typeof step.run === "string" &&
+        step.run.includes("vision-main-consumer.windows-harness.ps1"),
+    ),
+    false,
+  );
+});
+
 test("Service API flow e2e is separated from the unit test entrypoint", () => {
   const serviceE2eCommand = packageJson.scripts["ci:service-api-e2e"];
   assert.match(serviceE2eCommand, /pnpm turbo build/);

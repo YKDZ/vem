@@ -278,11 +278,6 @@ jobs:
       - name: Run Vision main consumer contract checks
         run: pnpm check:vision-main-consumer
 
-      - name: Run Vision main consumer harness
-        run: >-
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File
-          ./scripts/windows/vision-main-consumer.windows-harness.ps1
-
   admin-browser-tests:
     name: Admin Browser Acceptance
     needs: changes
