@@ -1196,6 +1196,24 @@ function validateVisionTrack(report, reportPath) {
   const protocol = report.health?.vision?.protocolSummary ?? null;
   const eventFence = protocol?.eventFence ?? null;
   const tryOnSummary = report.ui?.tryOnSummary ?? null;
+  const vmFastCoreAttempt = Array.isArray(report.ui?.tryOnAttempts)
+    ? report.ui.tryOnAttempts[0]
+    : null;
+  const vmFastCoreAttemptComplete =
+    vmFastCoreScope &&
+    report.ui?.tryOnAttempts?.length === 1 &&
+    vmFastCoreAttempt?.result === "completed" &&
+    vmFastCoreAttempt?.summary?.attemptId === tryOnSummary?.attemptId &&
+    vmFastCoreAttempt?.summary?.resultUrl === tryOnSummary?.resultUrl &&
+    vmFastCoreAttempt?.resultEvidence?.ok === true &&
+    vmFastCoreAttempt?.resultEvidence?.httpStatus === 200 &&
+    vmFastCoreAttempt?.resultEvidence?.contentType === "image/png" &&
+    Number.isInteger(vmFastCoreAttempt?.resultEvidence?.byteLength) &&
+    vmFastCoreAttempt.resultEvidence.byteLength >= 64 &&
+    Number.isInteger(vmFastCoreAttempt?.resultEvidence?.width) &&
+    vmFastCoreAttempt.resultEvidence.width > 0 &&
+    Number.isInteger(vmFastCoreAttempt?.resultEvidence?.height) &&
+    vmFastCoreAttempt.resultEvidence.height > 0;
   const recommendation = report.ui?.recommendationPresentation ?? {};
   const mediaPresentation = report.ui?.mediaPresentation ?? {};
   const productCards = Array.isArray(mediaPresentation.productCards)
@@ -1307,7 +1325,11 @@ function validateVisionTrack(report, reportPath) {
       `/v2/try-on/results/${tryOnSummary.attemptId}`,
     ) &&
     report.ui?.tryOnSelectedProduct?.variantId === alternate?.variantId &&
-    report.ui?.tryOnAttempts?.some((attempt) => attempt?.result === "passed") &&
+    (strictRecommendationScope
+      ? report.ui?.tryOnAttempts?.some(
+          (attempt) => attempt?.result === "passed",
+        )
+      : vmFastCoreAttemptComplete) &&
     (strictRecommendationScope
       ? visionDown.saleStartStillAvailable === true
       : vmFastCoreScope)

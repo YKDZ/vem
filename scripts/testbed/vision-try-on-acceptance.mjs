@@ -4056,38 +4056,42 @@ async function runVisionTryOnAcceptance(options) {
       }),
     );
 
-    stage = "retry-completed-try-on";
-    await activateVisibleSelector(client, '[data-test="try-on-retry"]', {
-      kind: "touch",
-      timeoutMs: 30_000,
-    });
-    const retrySurface = await waitForTryOnSurface(client, 25_000, {
-      excludeAttemptId: tryOnSurface.attemptId,
-    });
-    if (retrySurface.resultUrl === tryOnSurface.resultUrl) {
-      throw new Error("try-on retry reused the previous attempt result path");
+    let retrySurface = null;
+    let retrySummary = null;
+    if (!skipVisionRecommendation) {
+      stage = "retry-completed-try-on";
+      await activateVisibleSelector(client, '[data-test="try-on-retry"]', {
+        kind: "touch",
+        timeoutMs: 30_000,
+      });
+      retrySurface = await waitForTryOnSurface(client, 25_000, {
+        excludeAttemptId: tryOnSurface.attemptId,
+      });
+      if (retrySurface.resultUrl === tryOnSurface.resultUrl) {
+        throw new Error("try-on retry reused the previous attempt result path");
+      }
+      const retryResultEvidence = await readResultImageEvidence(
+        client,
+        retrySurface.resultUrl,
+      );
+      retrySummary = validateTryOnPresentation({
+        selectedProduct: {
+          catalogKey: manualSelectedProduct.catalogKey,
+          variantId: manualSelectedProduct.variantId,
+        },
+        tryOnState: retrySurface,
+        resultEvidence: retryResultEvidence,
+        expectedResults,
+        runtimeExpectation,
+      });
+      tryOnAttempts.push({
+        attempt: 2,
+        result: "completed",
+        tryOnSurface: retrySurface,
+        resultEvidence: retryResultEvidence,
+        summary: retrySummary,
+      });
     }
-    const retryResultEvidence = await readResultImageEvidence(
-      client,
-      retrySurface.resultUrl,
-    );
-    const retrySummary = validateTryOnPresentation({
-      selectedProduct: {
-        catalogKey: manualSelectedProduct.catalogKey,
-        variantId: manualSelectedProduct.variantId,
-      },
-      tryOnState: retrySurface,
-      resultEvidence: retryResultEvidence,
-      expectedResults,
-      runtimeExpectation,
-    });
-    tryOnAttempts.push({
-      attempt: 2,
-      result: "completed",
-      tryOnSurface: retrySurface,
-      resultEvidence: retryResultEvidence,
-      summary: retrySummary,
-    });
 
     stage = "return-from-try-on";
     await activateVisibleSelector(client, '[data-test="try-on-return"]', {

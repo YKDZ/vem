@@ -1381,7 +1381,7 @@ describe("vision try-on acceptance script", () => {
     );
     assert.match(
       source,
-      /retry-completed-try-on[\s\S]*try-on-retry[\s\S]*excludeAttemptId:[\s\S]*tryOnSurface\.attemptId/,
+      /if \(!skipVisionRecommendation\) \{[\s\S]*retry-completed-try-on[\s\S]*try-on-retry[\s\S]*excludeAttemptId:[\s\S]*tryOnSurface\.attemptId/,
     );
     assert.match(
       source,
@@ -1417,6 +1417,10 @@ describe("vision try-on acceptance script", () => {
     assert.match(
       source,
       /if \(!skipVisionRecommendation\) \{[\s\S]*stop-real-vision-runtime[\s\S]*validate-vision-unavailable-recommendation-presentation/,
+    );
+    assert.match(
+      source,
+      /if \(!skipVisionRecommendation\) \{[\s\S]*retry-completed-try-on[\s\S]*try-on-retry[\s\S]*\n    \}\n\n    stage = "return-from-try-on"[\s\S]*try-on-return[\s\S]*prove-ordinary-checkout-after-try-on[\s\S]*product-buy/,
     );
     assert.match(
       source,

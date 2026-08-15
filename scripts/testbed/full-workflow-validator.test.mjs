@@ -1801,6 +1801,23 @@ describe("full workflow aggregate validator", () => {
     delete bypass.health.vision.protocolSummary;
     delete bypass.degradations.visionDown;
     delete bypass.ui.recommendationPresentation;
+    bypass.ui.tryOnAttempts = [
+      {
+        result: "completed",
+        resultEvidence: {
+          ok: true,
+          httpStatus: 200,
+          contentType: "image/png",
+          byteLength: 2048,
+          width: 640,
+          height: 480,
+        },
+        summary: {
+          attemptId: bypass.ui.tryOnSummary.attemptId,
+          resultUrl: bypass.ui.tryOnSummary.resultUrl,
+        },
+      },
+    ];
     const accepted = validateBusinessCheckReport(
       descriptor("visionExperience"),
       bypass,
@@ -1829,6 +1846,36 @@ describe("full workflow aggregate validator", () => {
       ).status,
       "failed",
     );
+
+    for (const [label, mutate] of [
+      ["a second attempt", (report) => report.ui.tryOnAttempts.push({})],
+      [
+        "a failed attempt",
+        (report) => (report.ui.tryOnAttempts[0].result = "failed"),
+      ],
+      [
+        "a non-PNG result",
+        (report) =>
+          (report.ui.tryOnAttempts[0].resultEvidence.contentType =
+            "image/jpeg"),
+      ],
+      [
+        "a missing result image",
+        (report) => delete report.ui.tryOnAttempts[0].resultEvidence,
+      ],
+    ]) {
+      const invalid = structuredClone(bypass);
+      mutate(invalid);
+      assert.equal(
+        validateBusinessCheckReport(
+          descriptor("visionExperience"),
+          invalid,
+          "vision-experience.json",
+        ).status,
+        "failed",
+        label,
+      );
+    }
   });
 
   it("lets the owning sale validator decide its business claim", () => {
