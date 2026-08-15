@@ -3,11 +3,103 @@ import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 import {
+  admitFreshSerialSessionForSale,
+  buildFastRouteStressSaleSuccessReport,
+  runCleanupStep,
+} from "./fast-route-stress-sale.mjs";
+import {
   parseDaemonPayload,
   parseServiceApiEnvelope,
   parseStockMaintenanceGuestArgs,
+  saleEvidence,
   validateStockMaintenanceReport,
 } from "./stock-maintenance-guest-full.mjs";
+
+async function producerSaleReport({
+  runId = "RUN-STOCK-1",
+  outerReplacementSessionId = "stock-pre-admission-session",
+  freshSessionId = "producer-fresh-session",
+  cleanupOverrides = {},
+} = {}) {
+  const guestInput = {
+    runId,
+    machineCode: "VEM-STOCK-1",
+    hostControlPlane: {
+      targetIdentity: "vm-target://stock",
+      runtimeBaseIdentity: "runtime-base://stock",
+    },
+  };
+  const handoff = {
+    commissioningSerialSession: { sessionId: outerReplacementSessionId },
+  };
+  const controls = [];
+  const control = async (_input, path) => {
+    controls.push(path);
+    if (path.endsWith(`/${outerReplacementSessionId}/abort`)) {
+      return { aborted: true };
+    }
+    if (path === "/v1/serial-sessions/start")
+      return { sessionId: freshSessionId };
+    if (path.endsWith(`/${freshSessionId}/abort`)) {
+      return { sessionId: freshSessionId, aborted: true };
+    }
+    throw new Error(`unexpected serial control path: ${path}`);
+  };
+  const admission = await admitFreshSerialSessionForSale({
+    guestInput,
+    handoff,
+    handoffPath: "C:\\handoff.json",
+    control,
+    daemonGet: async () => ({ canStartSale: true }),
+    armCreateOrderGate: async () => ({ state: "open" }),
+    writeJsonFile: () => {},
+    waitForHardwareReady: async () => ({
+      lower: { ready: true },
+      capability: { canStartSale: true },
+    }),
+  });
+  const reopened = await runCleanupStep(
+    "reopen payment create gate",
+    async () => ({
+      state: "open",
+      ...cleanupOverrides.reopened,
+    }),
+  );
+  const verified = await runCleanupStep(
+    "verify payment create gate",
+    async () => ({
+      status: { state: "open", pending: null, ...cleanupOverrides.verified },
+    }),
+  );
+  const aborted = await runCleanupStep("abort serial session", async () => ({
+    ...(await control(
+      guestInput,
+      `/v1/serial-sessions/${freshSessionId}/abort`,
+    )),
+    ...cleanupOverrides.aborted,
+  }));
+  return {
+    sale: buildFastRouteStressSaleSuccessReport({
+      mode: "full",
+      runId,
+      machineCode: guestInput.machineCode,
+      resultRoute: "#/result/success",
+      sessionStart: admission.serialSession,
+      serialStart: admission,
+      summary: {
+        orderId: "order-stock-1",
+        paymentId: "payment-stock-1",
+        paymentNo: "PAY-STOCK-1",
+        vendingCommandId: "command-stock-1",
+        commandNo: "COMMAND-STOCK-1",
+        movementId: "sale-movement-1",
+        serialSessionId: freshSessionId,
+      },
+      cleanup: [reopened, verified, aborted],
+    }),
+    controls,
+  };
+}
 
 function report() {
   return {
@@ -39,7 +131,19 @@ function report() {
       controlPlaneSessionId: "session-stock-1",
       serialSessionId: "serial-stock-1",
       resultRoute: "#/result/success",
-      gateCleanup: { paymentGateOpen: true, serialSessionInactive: true },
+      handoff: {
+        previousControlPlaneSessionId: "stock-handoff-0",
+        replacementControlPlaneSessionId: "stock-pre-admission-1",
+      },
+      gateCleanup: {
+        paymentGateOpen: true,
+        paymentGateVerified: true,
+        serialSessionInactive: true,
+        serialSessionId: "session-stock-1",
+        freshControlPlaneSessionId: "session-stock-1",
+        lowerControllerReady: true,
+        saleStartReady: true,
+      },
     },
     unavailable: {
       daemon: {
@@ -98,7 +202,19 @@ function report() {
       controlPlaneSessionId: "session-stock-2",
       serialSessionId: "serial-stock-2",
       resultRoute: "#/result/success",
-      gateCleanup: { paymentGateOpen: true, serialSessionInactive: true },
+      handoff: {
+        previousControlPlaneSessionId: "stock-handoff-1",
+        replacementControlPlaneSessionId: "stock-pre-admission-2",
+      },
+      gateCleanup: {
+        paymentGateOpen: true,
+        paymentGateVerified: true,
+        serialSessionInactive: true,
+        serialSessionId: "session-stock-2",
+        freshControlPlaneSessionId: "session-stock-2",
+        lowerControllerReady: true,
+        saleStartReady: true,
+      },
     },
     terminal: {
       daemon: {
@@ -151,6 +267,91 @@ function report() {
 }
 
 describe("stock maintenance guest full", () => {
+  it("accepts the producer's B-to-C fresh session cleanup evidence after stock handoff", async () => {
+    const handoff = {
+      previousControlPlaneSessionId: "stock-handoff-session",
+      replacementControlPlaneSessionId: "stock-pre-admission-session",
+    };
+    const produced = await producerSaleReport();
+    const sale = produced.sale;
+    const evidence = saleEvidence(sale, "RUN-STOCK-1", handoff);
+
+    assert.deepEqual(evidence.gateCleanup, {
+      paymentGateOpen: true,
+      paymentGateVerified: true,
+      serialSessionInactive: true,
+      serialSessionId: "producer-fresh-session",
+      freshControlPlaneSessionId: "producer-fresh-session",
+      lowerControllerReady: true,
+      saleStartReady: true,
+    });
+    assert.equal(evidence.controlPlaneSessionId, "producer-fresh-session");
+    assert.deepEqual(produced.controls, [
+      "/v1/serial-sessions/stock-pre-admission-session/abort",
+      "/v1/serial-sessions/start",
+      "/v1/serial-sessions/producer-fresh-session/abort",
+    ]);
+  });
+
+  it("rejects a producer report whose fresh serial admission cannot start a sale", async () => {
+    const handoff = {
+      previousControlPlaneSessionId: "stock-handoff-session",
+      replacementControlPlaneSessionId: "stock-pre-admission-session",
+    };
+    const { sale } = await producerSaleReport();
+    sale.serial.start.hardware.capability.canStartSale = false;
+
+    assert.throws(
+      () => saleEvidence(sale, "RUN-STOCK-1", handoff),
+      /independent session cleanup evidence/,
+    );
+  });
+
+  it("rejects cleanup evidence with a mismatched session or missing required label", async () => {
+    const handoff = {
+      previousControlPlaneSessionId: "stock-handoff-session",
+      replacementControlPlaneSessionId: "stock-pre-admission-session",
+    };
+    for (const mutate of [
+      async (sale) => {
+        sale.cleanup[2].detail.aborted = false;
+      },
+      async (sale) => {
+        sale.runId = "RUN-OTHER";
+      },
+      async (sale) => {
+        sale.handoffSerialSessionId = "other-session";
+      },
+      async (sale) => {
+        sale.cleanup = sale.cleanup.filter(
+          (step) => step.label !== "reopen payment create gate",
+        );
+      },
+      async (sale) => {
+        sale.cleanup = sale.cleanup.filter(
+          (step) => step.label !== "verify payment create gate",
+        );
+      },
+      async (sale) => {
+        sale.serial.start.serialSession.sessionId = "other-session";
+      },
+      async (sale) => {
+        sale.serial.start.hardware.lower.ready = false;
+      },
+      async (sale) => {
+        sale.controlPlaneSessionId = "stock-pre-admission-session";
+      },
+    ]) {
+      const produced = await producerSaleReport();
+      const sale = produced.sale;
+      await mutate(sale);
+      assert.throws(
+        () => saleEvidence(sale, "RUN-STOCK-1", handoff),
+        /independent session cleanup evidence/,
+      );
+    }
+  });
+
   it("keeps daemon bare JSON separate from the Service API success envelope", () => {
     const daemonTask = {
       taskId: "refill-task-1",
@@ -281,6 +482,15 @@ describe("stock maintenance guest full", () => {
     missingScreenshot.screenshots.refillConfirmed = null;
     assert.throws(
       () => validateStockMaintenanceReport(missingScreenshot),
+      /1-to-0-to-2-to-1 evidence/,
+    );
+  });
+
+  it("rejects persisted stock evidence that loses the exact cleanup session", () => {
+    const incomplete = report();
+    incomplete.secondSale.gateCleanup.serialSessionId = "other-session";
+    assert.throws(
+      () => validateStockMaintenanceReport(incomplete),
       /1-to-0-to-2-to-1 evidence/,
     );
   });

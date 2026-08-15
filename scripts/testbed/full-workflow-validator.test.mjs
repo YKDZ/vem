@@ -421,7 +421,19 @@ function stockSale(index) {
     controlPlaneSessionId: `control-session-${index}`,
     serialSessionId: `serial-session-${index}`,
     resultRoute: "#/result/success",
-    gateCleanup: { paymentGateOpen: true, serialSessionInactive: true },
+    handoff: {
+      previousControlPlaneSessionId: `stock-handoff-${index}`,
+      replacementControlPlaneSessionId: `stock-pre-admission-${index}`,
+    },
+    gateCleanup: {
+      paymentGateOpen: true,
+      paymentGateVerified: true,
+      serialSessionInactive: true,
+      serialSessionId: `control-session-${index}`,
+      freshControlPlaneSessionId: `control-session-${index}`,
+      lowerControllerReady: true,
+      saleStartReady: true,
+    },
   };
 }
 

@@ -2059,6 +2059,39 @@ export function buildFastRouteStressSaleFailureReport(input) {
   };
 }
 
+export function buildFastRouteStressSaleSuccessReport(input) {
+  const sessionStart = input?.sessionStart;
+  const sessionId = required(
+    sessionStart?.sessionId,
+    "successful sale serial session id",
+  );
+  return {
+    schemaVersion: "vem-fast-route-stress-sale/v2",
+    ok: true,
+    handoffSerialSessionId: sessionId,
+    mode: input.mode,
+    runId: input.runId,
+    machineCode: input.machineCode,
+    resultRoute: input.resultRoute,
+    controlPlaneSessionId: sessionId,
+    renderedSale: input.renderedSale,
+    liveSale: input.liveSale,
+    summary: input.summary,
+    boundaries: input.boundaries,
+    evidence: input.evidence,
+    serial: {
+      start: input.serialStart ?? sessionStart,
+      collect: input.collect,
+      stop: input.stop,
+      stopRepeat: input.stopRepeat,
+    },
+    runtimeTrace: input.runtimeTrace,
+    checkpoints: input.checkpoints,
+    logs: input.logs,
+    cleanup: input.cleanup,
+  };
+}
+
 export async function controlPlaneRequest(
   guestInput,
   path,
@@ -3557,15 +3590,13 @@ async function runFastRouteStressSale(options) {
       vendingCommandId: liveSale.vendingCommandId,
       idempotencyCheck: true,
     });
-    successReport = {
-      schemaVersion: "vem-fast-route-stress-sale/v2",
-      ok: true,
-      handoffSerialSessionId: sessionStart.sessionId,
+    successReport = buildFastRouteStressSaleSuccessReport({
       mode: options.mode,
       runId,
       machineCode,
       resultRoute: resultSurface.route,
-      controlPlaneSessionId: sessionStart.sessionId,
+      sessionStart,
+      serialStart: serialAdmission,
       renderedSale,
       liveSale,
       summary,
@@ -3578,12 +3609,6 @@ async function runFastRouteStressSale(options) {
         f2: f2Boundary.frame,
       },
       evidence: compactEvidenceForReport(evidence, summary),
-      serial: {
-        start: sessionStart,
-        collect,
-        stop,
-        stopRepeat,
-      },
       runtimeTrace: compactRuntimeTrace(runtimeTrace.entries),
       checkpoints,
       logs: {
@@ -3605,7 +3630,7 @@ async function runFastRouteStressSale(options) {
           screenshot: checkpoint.screenshot?.ref ?? null,
         })),
       },
-    };
+    });
   } catch (error) {
     primaryError = error instanceof Error ? error : new Error(String(error));
     failureCurrentTransaction = handoff

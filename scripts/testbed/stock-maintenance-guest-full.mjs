@@ -671,26 +671,49 @@ async function replaceSaleHandoff(input, handoff, options) {
   };
 }
 
-function saleEvidence(sale, runId, handoff) {
+export function saleEvidence(sale, runId, handoff) {
   const summary = sale?.summary ?? {};
   const cleanup = Array.isArray(sale?.cleanup) ? sale.cleanup : [];
-  const paymentGateOpen = cleanup.some(
-    (step) => step?.label === "reopen payment create gate" && step?.ok === true,
+  const reopenedPaymentGate = cleanup.find(
+    (step) =>
+      step?.label === "reopen payment create gate" &&
+      step?.ok === true &&
+      step?.detail?.state === "open",
   );
-  const serialSessionInactive = cleanup.some(
-    (step) => step?.label === "abort serial session" && step?.ok === true,
+  const verifiedPaymentGate = cleanup.find(
+    (step) =>
+      step?.label === "verify payment create gate" &&
+      step?.ok === true &&
+      step?.detail?.status?.state === "open" &&
+      step?.detail?.status?.pending === null,
   );
   const controlPlaneSessionId = required(
     sale?.controlPlaneSessionId,
     "sale control-plane session id",
   );
+  const abortedSerialSession = cleanup.find(
+    (step) =>
+      step?.label === "abort serial session" &&
+      step?.ok === true &&
+      step?.detail?.sessionId === controlPlaneSessionId &&
+      step?.detail?.aborted === true,
+  );
+  const freshAdmission = sale?.serial?.start;
+  const freshSessionId = freshAdmission?.serialSession?.sessionId;
+  const hardwareReady =
+    freshAdmission?.hardware?.lower?.ready === true &&
+    freshAdmission?.hardware?.capability?.canStartSale === true;
   if (
     sale?.schemaVersion !== "vem-fast-route-stress-sale/v2" ||
     sale?.ok !== true ||
     sale?.runId !== runId ||
-    controlPlaneSessionId !== handoff.replacementControlPlaneSessionId ||
-    !paymentGateOpen ||
-    !serialSessionInactive
+    sale?.handoffSerialSessionId !== controlPlaneSessionId ||
+    freshSessionId !== controlPlaneSessionId ||
+    controlPlaneSessionId === handoff.replacementControlPlaneSessionId ||
+    !hardwareReady ||
+    !reopenedPaymentGate ||
+    !verifiedPaymentGate ||
+    !abortedSerialSession
   ) {
     throw new Error(
       "installed sale report is missing independent session cleanup evidence",
@@ -714,7 +737,15 @@ function saleEvidence(sale, runId, handoff) {
     ),
     resultRoute: required(sale?.resultRoute, "sale result route"),
     handoff,
-    gateCleanup: { paymentGateOpen, serialSessionInactive },
+    gateCleanup: {
+      paymentGateOpen: true,
+      paymentGateVerified: true,
+      serialSessionInactive: true,
+      serialSessionId: controlPlaneSessionId,
+      freshControlPlaneSessionId: controlPlaneSessionId,
+      lowerControllerReady: true,
+      saleStartReady: true,
+    },
   };
 }
 
@@ -747,7 +778,19 @@ export function validateStockMaintenanceReport(report) {
     ].every((key) => typeof sale?.[key] === "string" && sale[key] !== "") &&
     sale?.resultRoute === "#/result/success" &&
     sale?.gateCleanup?.paymentGateOpen === true &&
-    sale?.gateCleanup?.serialSessionInactive === true;
+    sale?.gateCleanup?.paymentGateVerified === true &&
+    sale?.gateCleanup?.serialSessionInactive === true &&
+    sale?.gateCleanup?.serialSessionId === sale?.controlPlaneSessionId &&
+    sale?.gateCleanup?.freshControlPlaneSessionId ===
+      sale?.controlPlaneSessionId &&
+    sale?.gateCleanup?.lowerControllerReady === true &&
+    sale?.gateCleanup?.saleStartReady === true &&
+    typeof sale?.handoff?.previousControlPlaneSessionId === "string" &&
+    sale.handoff.previousControlPlaneSessionId !== "" &&
+    typeof sale?.handoff?.replacementControlPlaneSessionId === "string" &&
+    sale.handoff.replacementControlPlaneSessionId !== "" &&
+    sale.handoff.replacementControlPlaneSessionId !==
+      sale.controlPlaneSessionId;
   if (
     report?.schemaVersion !== SCHEMA_VERSION ||
     report?.ok !== true ||
