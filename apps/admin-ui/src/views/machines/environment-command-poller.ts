@@ -76,6 +76,9 @@ export function startEnvironmentCommandPoller(
       return latestMatched;
     }
     const machine = await config.fetchMachine();
+    if (stopSignal.signal.aborted || !config.isActive()) {
+      return latestMatched;
+    }
     const command = machine.latestEnvironmentCommand ?? null;
     const nextMatched =
       command?.commandNo === config.commandNo ? command : latestMatched;

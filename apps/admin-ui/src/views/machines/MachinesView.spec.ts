@@ -1204,7 +1204,7 @@ describe("MachinesView environment controls", () => {
     expect(dialog.textContent).toContain("命令超时");
   });
 
-  it("stops polling when view is unmounted while command remains pending", async () => {
+  it("does not start polling after unmount when a pending command response arrives", async () => {
     const machine = createMachineFixture({
       latestEnvironment: {
         temperatureCelsius: 21,
@@ -1237,10 +1237,82 @@ describe("MachinesView environment controls", () => {
         ...machine,
         latestEnvironmentCommand: pendingCommand,
       });
-    commandEnvironment.mockResolvedValue({
-      ...pendingCommand,
+    let resolveCommand: ((command: typeof pendingCommand) => void) | undefined;
+    commandEnvironment.mockImplementationOnce(
+      () =>
+        new Promise<typeof pendingCommand>((resolve) => {
+          resolveCommand = resolve;
+        }),
+    );
+
+    const { app, root } = await mountMachinesView();
+    vi.useFakeTimers();
+    try {
+      const environmentButton = Array.from(
+        root.querySelectorAll("button"),
+      ).find((button) => button.textContent?.includes("环境"));
+      environmentButton?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+      await Promise.resolve();
+      await nextTick();
+      const openButton = Array.from(
+        root.querySelectorAll('[role="dialog"] button'),
+      ).find((button) => button.textContent?.includes("开启"));
+      openButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+
+      app.unmount();
+      const callsAfterUnmount = getMachine.mock.calls.length;
+      requireElement(
+        resolveCommand,
+        "resolve pending command",
+      )({
+        ...pendingCommand,
+        status: "sent",
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(getMachine).toHaveBeenCalledTimes(callsAfterUnmount);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops an in-flight environment poll on unmount without stale feedback", async () => {
+    const machine = createMachineFixture();
+    const pendingCommand = {
+      id: "cmd-unmount-in-flight",
+      machineId: machine.id,
+      commandNo: "MCMD-PENDING-IN-FLIGHT",
+      type: "environment-control",
       status: "sent",
+      payloadJson: { airConditionerOn: true },
+    };
+    let resolvePolledMachine:
+      | ((
+          value: typeof machine & { latestEnvironmentCommand: unknown },
+        ) => void)
+      | undefined;
+
+    listMachines.mockResolvedValue({
+      items: [machine],
+      total: 1,
+      page: 1,
+      pageSize: 20,
     });
+    getMachine
+      .mockResolvedValueOnce({
+        ...machine,
+        latestEnvironmentCommand: null,
+      })
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolvePolledMachine = resolve;
+          }),
+      );
+    commandEnvironment.mockResolvedValue(pendingCommand);
 
     const { app, root } = await mountMachinesView();
     vi.useFakeTimers();
@@ -1258,13 +1330,25 @@ describe("MachinesView environment controls", () => {
       ).find((button) => button.textContent?.includes("开启"));
       openButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       await vi.advanceTimersByTimeAsync(0);
-      await Promise.resolve();
+      expect(getMachine).toHaveBeenCalledTimes(2);
 
       app.unmount();
-      await Promise.resolve();
       const callsAfterUnmount = getMachine.mock.calls.length;
+      requireElement(
+        resolvePolledMachine,
+        "resolve in-flight poll",
+      )({
+        ...machine,
+        latestEnvironmentCommand: {
+          ...pendingCommand,
+          status: "succeeded",
+        },
+      });
       await vi.advanceTimersByTimeAsync(2000);
+
       expect(getMachine).toHaveBeenCalledTimes(callsAfterUnmount);
+      expect(apiMocks.messageSuccess).not.toHaveBeenCalled();
+      expect(apiMocks.messageError).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }

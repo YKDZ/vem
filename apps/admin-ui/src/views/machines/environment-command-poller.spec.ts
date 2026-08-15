@@ -45,4 +45,45 @@ describe("environment command poller", () => {
       "succeeded",
     ]);
   });
+
+  it("ignores an in-flight terminal result after it is stopped", async () => {
+    vi.useFakeTimers();
+    let resolveMachine:
+      | ((machine: {
+          latestEnvironmentCommand: EnvironmentCommandSnapshot;
+        }) => void)
+      | undefined;
+    const fetchMachine = vi.fn(
+      () =>
+        new Promise<{ latestEnvironmentCommand: EnvironmentCommandSnapshot }>(
+          (resolve) => {
+            resolveMachine = resolve;
+          },
+        ),
+    );
+    const onCommand = vi.fn();
+    const poller = startEnvironmentCommandPoller({
+      commandNo: "MCMD-POLL",
+      fetchMachine,
+      isActive: () => true,
+      onCommand,
+      intervalMs: 50,
+      maxAttempts: 4,
+    });
+
+    expect(fetchMachine).toHaveBeenCalledTimes(1);
+    poller.stop();
+    if (!resolveMachine) throw new Error("Expected in-flight fetch resolver");
+    resolveMachine({
+      latestEnvironmentCommand: {
+        commandNo: "MCMD-POLL",
+        status: "succeeded",
+      },
+    });
+    await vi.advanceTimersByTimeAsync(200);
+
+    await expect(poller.promise).resolves.toBeNull();
+    expect(onCommand).not.toHaveBeenCalled();
+    expect(fetchMachine).toHaveBeenCalledTimes(1);
+  });
 });

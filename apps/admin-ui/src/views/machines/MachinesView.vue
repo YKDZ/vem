@@ -197,6 +197,7 @@ const environmentSubmittingAction = ref<EnvironmentControlAction | null>(null);
 const environmentCommandPoller = ref<ReturnType<
   typeof startEnvironmentCommandPoller
 > | null>(null);
+let environmentViewUnmounted = false;
 
 function stopEnvironmentCommandPoller(): void {
   environmentCommandPoller.value?.stop();
@@ -262,6 +263,7 @@ async function submitEnvironmentCommand(
   environmentSubmittingAction.value = action;
   try {
     const command = await commandEnvironment(environmentMachine.value.id, body);
+    if (environmentViewUnmounted) return;
     syncEnvironmentCommandStateFromMachine(command);
     const terminalFeedback = environmentControlFeedback(action, command);
     if (terminalFeedback) {
@@ -424,6 +426,7 @@ watch(environmentDrawerOpen, (open) => {
 });
 
 onBeforeUnmount(() => {
+  environmentViewUnmounted = true;
   stopEnvironmentCommandPoller();
 });
 
