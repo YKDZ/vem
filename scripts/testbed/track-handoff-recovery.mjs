@@ -239,6 +239,12 @@ export async function recoverTrackHandoff({
       return { ok: false, actions, errors, evidence };
     }
   }
+  // A completed customer sale must leave through the rendered result control
+  // before recovery is allowed to start a Local Operations stock task.
+  if (/^#\/result(?:\/|$)/.test(route ?? "")) {
+    await attempt("returnToCatalog", returnToCatalog);
+    if (errors.length > 0) return { ok: false, actions, errors, evidence };
+  }
   if (hasWholeMachineLockBlocker(terminal?.facts?.saleStartCapability)) {
     if (typeof selfCheckHardware !== "function") {
       errors.push(
@@ -294,7 +300,7 @@ export async function recoverTrackHandoff({
       if (fixtureStock !== undefined) evidence.fixtureStock = fixtureStock;
     }
   }
-  if (route && route !== "#/catalog") {
+  if (route && route !== "#/catalog" && !/^#\/result(?:\/|$)/.test(route)) {
     await attempt("returnToCatalog", returnToCatalog);
   }
   return { ok: errors.length === 0, actions, errors, evidence };

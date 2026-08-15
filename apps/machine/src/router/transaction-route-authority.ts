@@ -218,6 +218,28 @@ export function createMachineNavigationAuthority(
     }
 
     if (transactionTarget && intent.type !== "customer.touch") {
+      const requestedRouteName = requestedTarget
+        ? router.resolve(requestedTarget).name
+        : null;
+      const terminalResultKind =
+        checkoutStore.customerCheckoutView.result?.kind;
+      const returnsReleasedPaymentToProduct =
+        intent.type === "customer.navigate" &&
+        routeName(router) === "checkout" &&
+        (requestedRouteName === "product-detail" ||
+          requestedRouteName === "catalog") &&
+        (terminalResultKind === "payment_failed" ||
+          terminalResultKind === "payment_expired");
+      if (returnsReleasedPaymentToProduct && requestedTarget !== null) {
+        checkoutStore.dismissCurrentTerminalTransaction();
+        recordDecision(
+          "accepted",
+          "released_payment_checkout_back",
+          requestedTarget,
+        );
+        await writeRoute(requestedTarget);
+        return;
+      }
       if (intent.type === "transaction.projection") {
         recordDecision("accepted", "transaction_projection", transactionTarget);
         await writeRoute(transactionTarget);

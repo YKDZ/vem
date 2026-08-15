@@ -1116,7 +1116,7 @@ export async function returnToCatalogFromClient({
   }
   if (/^#\/result(?:\/|$)/.test(route)) {
     const activated = await activateUnlessAlreadyCatalog(
-      ".result-return-button, .failure-return-button",
+      '[data-test="result-return-catalog"]:not(:disabled)',
       {
         kind: "touch",
         timeoutMs: 10_000,
@@ -1160,7 +1160,7 @@ export async function returnToCatalogFromClient({
     if (/^#\/result(?:\/|$)/.test(route)) {
       if (
         !(await activateUnlessAlreadyCatalog(
-          ".result-return-button, .failure-return-button",
+          '[data-test="result-return-catalog"]:not(:disabled)',
           {
             kind: "touch",
             timeoutMs: 10_000,

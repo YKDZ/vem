@@ -326,6 +326,44 @@ describe("Track Handoff Recovery", () => {
     });
   });
 
+  it("returns a successful result to Catalog before stock recovery enters local maintenance", async () => {
+    const calls = [];
+    const result = await recoverTrackHandoff({
+      track: {
+        key: "stockMaintenance",
+        fixtureKey: "stockMaintenance",
+        restoreFixtureStock: true,
+      },
+      terminal: {
+        facts: {
+          route: "#/result/success",
+          transaction: { orderId: "sale-terminal", nextAction: "success" },
+        },
+      },
+      fixtureAllocation: {
+        stockMaintenance: { inventoryId: "inventory-stock-1", onHandQty: 1 },
+      },
+      returnToCatalog: async () => calls.push("result-return-catalog"),
+      disableFaultInjection: async () => calls.push("fault-open"),
+      restoreFixtureStock: async () => {
+        calls.push("local-maintenance");
+        return { targetQuantity: 1 };
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(calls, [
+      "result-return-catalog",
+      "fault-open",
+      "local-maintenance",
+    ]);
+    assert.deepEqual(result.actions, [
+      "returnToCatalog",
+      "disableFaultInjection",
+      "restoreFixtureStock",
+    ]);
+  });
+
   it("preserves every available terminal fact when one daemon observation fails", async () => {
     const terminal = await captureTrackTerminalFacts({
       track: { key: "ipcRecovery" },

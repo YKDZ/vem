@@ -22,6 +22,7 @@ import {
 import {
   buildMqttTopic,
   buildSerialOperationCommand,
+  mergeFrozenSerialMilestones,
   createHostSerialControlPlane,
   mockPaymentCreateGatePaths,
   mockPaymentQueryFaultPaths,
@@ -125,6 +126,58 @@ async function requestJson(baseUrl, token, path, body = {}) {
 }
 
 describe("host serial control plane", () => {
+  it("retains ordered milestone evidence when the same session journal ends in a heartbeat tail", () => {
+    const sessionId = "serial-session-milestones";
+    const frozen = mergeFrozenSerialMilestones({
+      sessionId,
+      existing: [],
+      boundary: {
+        protocolFrames: [
+          { sequence: 21, parsedOpcode: "VEND" },
+          { sequence: 22, parsedOpcode: "F0" },
+        ],
+      },
+    });
+    const accumulated = mergeFrozenSerialMilestones({
+      sessionId,
+      existing: frozen,
+      boundary: {
+        protocolFrames: [
+          { sequence: 21, parsedOpcode: "VEND" },
+          { sequence: 22, parsedOpcode: "F0" },
+          { sequence: 23, parsedOpcode: "F1" },
+          { sequence: 24, parsedOpcode: "F2" },
+        ],
+      },
+    });
+    const tailEvidence = mergeFrozenSerialMilestones({
+      sessionId,
+      existing: accumulated,
+      boundary: {
+        protocolFrames: [{ sequence: 99, parsedOpcode: "AB" }],
+      },
+    });
+
+    assert.deepEqual(
+      tailEvidence.map((frame) => [frame.sessionId, frame.parsedOpcode]),
+      [
+        [sessionId, "VEND"],
+        [sessionId, "F0"],
+        [sessionId, "F1"],
+        [sessionId, "F2"],
+        [sessionId, "AB"],
+      ],
+    );
+    assert.throws(
+      () =>
+        mergeFrozenSerialMilestones({
+          sessionId: "different-session",
+          existing: tailEvidence,
+          boundary: { protocolFrames: [] },
+        }),
+      /belongs to another serial session/,
+    );
+  });
   it("atomically replaces the mock payment create gate with a protected release state", () => {
     const root = makeTempDir("mock-payment-create-gate");
     try {

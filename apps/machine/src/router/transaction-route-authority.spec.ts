@@ -298,6 +298,52 @@ describe("transaction route authority", () => {
     expect(router.currentRoute.value.name).toBe("catalog");
   });
 
+  it("lets checkout back leave a canceled, released payment without recreating its order", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: "/catalog", name: "catalog", component: {} },
+        { path: "/products/:id", name: "product-detail", component: {} },
+        { path: "/checkout", name: "checkout", component: {} },
+        { path: "/result/:kind", name: "result", component: {} },
+      ],
+    });
+    const authority = createMachineNavigationAuthority(router, pinia);
+    const checkoutStore = useCheckoutStore(pinia);
+    await router.replace("/checkout");
+    checkoutStore.checkoutAttemptIdempotencyKey = "checkout:released-payment";
+    checkoutStore.applyTransaction({
+      ...activePaymentTransaction(),
+      paymentStatus: "canceled",
+      orderStatus: "canceled",
+      nextAction: "payment_failed",
+      errorCode: "provider_create_failed",
+    });
+
+    await authority.submit({
+      type: "customer.navigate",
+      target: { name: "product-detail", params: { id: "product-1" } },
+    });
+
+    expect(router.currentRoute.value.name).toBe("product-detail");
+    expect(checkoutStore.transaction).toBeNull();
+    expect(checkoutStore.checkoutAttemptIdempotencyKey).toBe(
+      "checkout:released-payment",
+    );
+    expect(authority.trace.snapshot()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          intentType: "customer.navigate",
+          decision: "accepted",
+          reasonCode: "released_payment_checkout_back",
+        }),
+      ]),
+    );
+    authority.dispose();
+  });
+
   it("does not claim product navigation while order creation has no transaction", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);

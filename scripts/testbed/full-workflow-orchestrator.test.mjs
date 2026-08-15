@@ -1831,6 +1831,33 @@ describe("full workflow serial lifecycle", () => {
     ]);
   });
 
+  it("settles a terminal sale through the official result return control", async () => {
+    const calls = [];
+    const result = await returnToCatalogFromClient({
+      client: { id: "client" },
+      evaluateExpressionFn: async () => "#/result/success",
+      activateVisibleSelectorFn: async (_client, selector, options) => {
+        calls.push({ selector, options });
+        return { selector };
+      },
+      waitForRouteFn: async (_client, expected, options) => {
+        calls.push({ expected, options });
+        return { route: "#/catalog" };
+      },
+    });
+    assert.equal(result, "#/catalog");
+    assert.deepEqual(calls, [
+      {
+        selector: '[data-test="result-return-catalog"]:not(:disabled)',
+        options: { kind: "touch", timeoutMs: 10_000 },
+      },
+      {
+        expected: "#/catalog",
+        options: { timeoutMs: 10_000, pollMs: 250 },
+      },
+    ]);
+  });
+
   it("accepts an automatic return to catalog while activating a stale route control", async () => {
     const routes = ["#/result/success", "#/catalog"];
     const result = await returnToCatalogFromClient({
@@ -1887,7 +1914,7 @@ describe("full workflow serial lifecycle", () => {
     assert.deepEqual(calls, [
       '[data-test="payment-cancel"]:not(:disabled)',
       "wait:^(?:#\\/catalog|#\\/result(?:\\/|$)|#\\/checkout|#\\/products(?:\\/|$))",
-      ".result-return-button, .failure-return-button",
+      '[data-test="result-return-catalog"]:not(:disabled)',
       "wait:#/catalog",
     ]);
   });

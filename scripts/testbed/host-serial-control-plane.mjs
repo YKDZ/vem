@@ -869,6 +869,55 @@ function orderedMilestoneFrames(frames, expected) {
   return null;
 }
 
+function frozenFrameKey(frame) {
+  if (Number.isSafeInteger(frame?.sequence))
+    return `sequence:${frame.sequence}`;
+  return JSON.stringify([
+    frame?.direction ?? null,
+    frame?.parsedOpcode ?? null,
+    frame?.rawFrameHex ?? null,
+    frame?.capturedAt ?? null,
+  ]);
+}
+
+export function mergeFrozenSerialMilestones({
+  sessionId,
+  existing = [],
+  boundary,
+}) {
+  const boundSessionId = required(sessionId, "serial session id");
+  const frozen = Array.isArray(existing) ? existing : [];
+  for (const frame of frozen) {
+    if (frame?.sessionId !== boundSessionId) {
+      throw new Error(
+        "frozen serial milestone belongs to another serial session",
+      );
+    }
+  }
+  const observed = Array.isArray(boundary?.protocolFrames)
+    ? boundary.protocolFrames
+    : [];
+  const byKey = new Map();
+  for (const frame of [...frozen, ...observed]) {
+    const normalized = {
+      ...frame,
+      sessionId: boundSessionId,
+      provenance: frame?.provenance ?? "host_pty_raw_serial_journal",
+    };
+    const key = frozenFrameKey(normalized);
+    if (!byKey.has(key)) byKey.set(key, normalized);
+  }
+  return [...byKey.values()].sort((left, right) => {
+    if (
+      Number.isSafeInteger(left.sequence) &&
+      Number.isSafeInteger(right.sequence)
+    ) {
+      return left.sequence - right.sequence;
+    }
+    return 0;
+  });
+}
+
 export async function waitForRawSerialFrame({
   journalPath,
   parsedOpcode,
@@ -983,6 +1032,11 @@ async function waitForSessionFrame(server, input) {
     ),
     timeoutMs: Number(input.timeoutMs ?? 30_000),
   });
+  session.frozenMilestoneFrames = mergeFrozenSerialMilestones({
+    sessionId: session.binding.serialSessionId,
+    existing: session.frozenMilestoneFrames,
+    boundary,
+  });
   return boundary;
 }
 
@@ -1088,17 +1142,25 @@ function boundedSessionEvidence(server, input) {
     input.rawFrameLimit <= 1_024
       ? input.rawFrameLimit
       : 64;
+  const tailFrames = readRawSerialJournal(paths.journalPath)
+    .slice(-rawFrameLimit)
+    .map((frame) => ({
+      ...frame,
+      sessionId: session.binding.serialSessionId,
+      provenance: "host_pty_raw_serial_journal",
+    }));
+  const rawFrames = mergeFrozenSerialMilestones({
+    sessionId: session.binding.serialSessionId,
+    existing: session.frozenMilestoneFrames,
+    boundary: { protocolFrames: tailFrames },
+  });
   return {
     serialSessionId: session.binding.serialSessionId,
     saleBinding: session.sale ?? null,
-    rawFrames: readRawSerialJournal(paths.journalPath)
-      .slice(-rawFrameLimit)
-      .map((frame) => ({
-        ...frame,
-        boundaryId: `host-pty:${session.binding.serialSessionId}:${frame.sequence}`,
-        sessionId: session.binding.serialSessionId,
-        provenance: "host_pty_raw_serial_journal",
-      })),
+    rawFrames: rawFrames.map((frame) => ({
+      ...frame,
+      boundaryId: `host-pty:${session.binding.serialSessionId}:${frame.sequence}`,
+    })),
     mqtt: {
       ...session.mqttCapture.snapshot(),
       messages: session.mqttCapture.snapshot().messages.slice(-4),
@@ -1693,6 +1755,7 @@ async function createSerialSession(server, input) {
       startOperationReference: report.serialSession.startOperationReference,
       deviceMappingDigest: report.serialSession.deviceMappingDigest,
     },
+    frozenMilestoneFrames: [],
     mqttCapture,
     machineMqttCapture,
     deviceLifecycle: [],
