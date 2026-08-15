@@ -44,6 +44,7 @@ const GUEST_SETUP_TIMEOUT_MS = 120_000;
 const GUEST_TRANSFER_TIMEOUT_MS = 300_000;
 const GUEST_FAST_EXECUTION_TIMEOUT_MS = 15 * 60_000;
 const GUEST_FULL_EXECUTION_TIMEOUT_MS = 45 * 60_000;
+const WINDOWS_REMOTE_COMMAND_MAX_CHARS = 8_000;
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -610,6 +611,40 @@ function encodedPowerShell(script) {
   return Buffer.from(script, "utf16le").toString("base64");
 }
 
+function remotePowerShellCommandLength(script) {
+  return [
+    "powershell.exe",
+    "-NoProfile",
+    "-EncodedCommand",
+    encodedPowerShell(script),
+  ].join(" ").length;
+}
+
+function boundedPowerShellChunks(blocks) {
+  const chunks = [];
+  let current = "";
+  for (const block of blocks) {
+    const candidate = current ? `${current}\n${block}` : block;
+    if (
+      remotePowerShellCommandLength(candidate) <=
+      WINDOWS_REMOTE_COMMAND_MAX_CHARS
+    ) {
+      current = candidate;
+      continue;
+    }
+    if (
+      !current ||
+      remotePowerShellCommandLength(block) > WINDOWS_REMOTE_COMMAND_MAX_CHARS
+    ) {
+      throw new Error("guest input staging command exceeds Windows limit");
+    }
+    chunks.push(current);
+    current = block;
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
 function requiresAiAcceptanceInputs(options) {
   return (
     options.mode === "full" ||
@@ -964,29 +999,35 @@ export async function stageAiAcceptanceInputs({
   const missingTransfers = transfers.filter(
     (transfer) => !cachedGuestFiles.has(transfer.guestPath),
   );
-  const cleanup = [
-    ...missingTransfers.flatMap((transfer) => [
-      `Remove-Item -LiteralPath ${powerShellLiteral(transfer.guestPath)} -Recurse -Force -ErrorAction SilentlyContinue`,
-      `New-Item -ItemType Directory -Force -Path (Split-Path -Parent ${powerShellLiteral(transfer.guestPath)}) | Out-Null`,
-    ]),
-    `$guestInput = ${powerShellLiteral(guest.stagingPath)}`,
-    "New-Item -ItemType Directory -Force -Path (Split-Path -Parent $guestInput) | Out-Null",
-  ].join("\n");
-  await run(
-    "ssh",
+  const cleanupBlocks = [
+    ...missingTransfers.map((transfer) =>
+      [
+        `Remove-Item -LiteralPath ${powerShellLiteral(transfer.guestPath)} -Recurse -Force -ErrorAction SilentlyContinue`,
+        `New-Item -ItemType Directory -Force -Path (Split-Path -Parent ${powerShellLiteral(transfer.guestPath)}) | Out-Null`,
+      ].join("\n"),
+    ),
     [
-      ...ssh,
-      remote,
-      "powershell.exe",
-      "-NoProfile",
-      "-EncodedCommand",
-      encodedPowerShell(cleanup),
-    ],
-    {
-      timeoutMs: GUEST_SETUP_TIMEOUT_MS,
-      timeoutLabel: "AI guest input staging setup",
-    },
-  );
+      `$guestInput = ${powerShellLiteral(guest.stagingPath)}`,
+      "New-Item -ItemType Directory -Force -Path (Split-Path -Parent $guestInput) | Out-Null",
+    ].join("\n"),
+  ];
+  for (const cleanup of boundedPowerShellChunks(cleanupBlocks)) {
+    await run(
+      "ssh",
+      [
+        ...ssh,
+        remote,
+        "powershell.exe",
+        "-NoProfile",
+        "-EncodedCommand",
+        encodedPowerShell(cleanup),
+      ],
+      {
+        timeoutMs: GUEST_SETUP_TIMEOUT_MS,
+        timeoutLabel: "AI guest input staging setup",
+      },
+    );
+  }
   for (const transfer of missingTransfers) {
     await run(
       "scp",

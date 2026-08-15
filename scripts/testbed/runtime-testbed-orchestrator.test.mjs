@@ -893,6 +893,102 @@ describe("runtime testbed scheduler contract", () => {
     );
   });
 
+  it("keeps full-run guest input cleanup below the Windows command-line limit", async () => {
+    const calls = [];
+    const aiRoot = `C:\\ProgramData\\VEM\\testbed\\ai-inputs\\${"a".repeat(64)}`;
+    const coreRoot = `C:\\ProgramData\\VEM\\testbed\\vision-core\\${"b".repeat(64)}`;
+    const file = (hostPath, guestPath, byteSize) => ({
+      hostPath,
+      guestPath,
+      byteSize,
+      sha256: "c".repeat(64),
+    });
+    const directory = (hostPath, guestPath) => ({
+      hostPath,
+      guestPath,
+      byteSize: 1,
+      sha256: "d".repeat(64),
+      members: [{ name: "member", byteSize: 1, sha256: "e".repeat(64) }],
+    });
+    const coreTransfers = [
+      file(
+        "/snapshot/core-runtime.zip",
+        `${coreRoot}\\vision-runtime.zip`,
+        1_484_082_923,
+      ),
+      file(
+        "/snapshot/core-fixtures.zip",
+        `${coreRoot}\\recorded-fixtures.zip`,
+        1_788_616,
+      ),
+    ];
+    const aiTransfers = [
+      directory("/snapshot/candidate", `${aiRoot}\\candidate`),
+      directory("/snapshot/windows-proof", `${aiRoot}\\windows-proof`),
+      file(
+        "/snapshot/acceptance-authority-receipt.json",
+        `${aiRoot}\\acceptance-authority-receipt.json`,
+        2_570,
+      ),
+      file(
+        "/snapshot/vision-runtime.zip",
+        `${aiRoot}\\vision-runtime.zip`,
+        1_484_082_923,
+      ),
+      file(
+        "/snapshot/recorded-fixtures.zip",
+        `${aiRoot}\\recorded-fixtures.zip`,
+        1_788_616,
+      ),
+      file(
+        "/snapshot/model-pack.zip",
+        `${aiRoot}\\model-pack.zip`,
+        4_506_259_239,
+      ),
+      directory("/snapshot/model-pack", `${aiRoot}\\model-pack`),
+    ];
+
+    await stageAiAcceptanceInputs({
+      config: { stateRoot: "/var/lib/vem-testbed/state" },
+      contract: {
+        testbed: {
+          guest: {
+            user: "VEMKiosk",
+            host: "win10-testbed.local",
+            identityFile: "/tmp/id",
+            knownHostsFile: "/tmp/known_hosts",
+            stagingPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
+          },
+        },
+      },
+      corePreparation: { transfers: coreTransfers },
+      preparation: { transfers: aiTransfers },
+      captureResult: async () => ({ stdout: '{"cacheHits":[]}' }),
+      run: async (command, args) => calls.push({ command, args }),
+    });
+
+    const cleanupCalls = calls.filter((call) => call.command === "ssh");
+    assert.ok(cleanupCalls.length > 0);
+    for (const call of cleanupCalls) {
+      const remoteCommand = call.args.slice(-4).join(" ");
+      assert.ok(
+        remoteCommand.length <= 8_191,
+        `remote Windows command is ${remoteCommand.length} characters`,
+      );
+    }
+    const cleanup = cleanupCalls
+      .map((call) =>
+        Buffer.from(call.args.at(-1), "base64").toString("utf16le"),
+      )
+      .join("\n");
+    for (const transfer of [...coreTransfers, ...aiTransfers]) {
+      assert.match(
+        cleanup,
+        new RegExp(transfer.guestPath.replaceAll("\\", "\\\\")),
+      );
+    }
+  });
+
   it("retains matching regular guest archives while refreshing the guest projection", async () => {
     const calls = [];
     const runtimePath =
