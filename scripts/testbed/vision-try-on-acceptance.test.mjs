@@ -16,8 +16,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
-import { CdpClient, enablePageRuntime } from "./machine-ui-cdp-driver.mjs";
+import { collectInstalledAiOwnerAttempts } from "./ai-virtual-try-on-installed-entry.mjs";
 import {
+  activateVisibleSelector,
+  CdpClient,
+  enablePageRuntime,
+} from "./machine-ui-cdp-driver.mjs";
+import {
+  activateAfterFreshVisionPresenceArrival,
   buildVisionInstalledRuntimeBinding,
   buildRecordedVisionSiteConfiguration,
   combineCleanupFailure,
@@ -31,6 +37,7 @@ import {
   normalizeSeededVisionAcceptance,
   normalizeVisionExpectedResults,
   parseVisionTryOnAcceptanceArgs,
+  runFastTryOnOwnerAttempts,
   readVisionV2ContractIdentity,
   READ_TRY_ON_LIFECYCLE_EXPRESSION,
   startVisionMockScenario,
@@ -45,11 +52,136 @@ import {
   validateVisionProtocolEvidence as validateRawVisionProtocolEvidence,
   validateVisionRuntimeEvidence as validateRawVisionRuntimeEvidence,
   waitForClearedVisionRecommendationBaseline,
+  waitForFreshVisionPresenceArrival,
   waitForVisionInstalledBindingObservation,
   waitForVisionPortRelease,
 } from "./vision-try-on-acceptance.mjs";
 
 const VISION_V2_IDENTITY = readVisionV2ContractIdentity();
+
+describe("try-on presence-window coordination", () => {
+  const snapshot = (entries, runtimeGenerationId = "installed-run-1") => ({
+    runtimeGenerationId,
+    entries,
+  });
+  const welcome = (id, number) => ({
+    id,
+    type: "journey_transition",
+    transitionId: `vision:presence-${number}:welcome`,
+  });
+  const departed = (id, number) => ({
+    id,
+    type: "journey_transition",
+    transitionId: `vision:presence-${number}:departed`,
+  });
+  it("waits for an arrival after the captured runtime-trace cursor", async () => {
+    const snapshots = [
+      {
+        runtimeGenerationId: "installed-run-1",
+        entries: [
+          {
+            id: 41,
+            type: "journey_transition",
+            transitionId: "vision:presence-4:welcome",
+          },
+        ],
+      },
+      {
+        runtimeGenerationId: "installed-run-1",
+        entries: [
+          {
+            id: 41,
+            type: "journey_transition",
+            transitionId: "vision:presence-4:welcome",
+          },
+          {
+            id: 42,
+            type: "journey_transition",
+            transitionId: "vision:presence-5:welcome",
+          },
+        ],
+      },
+    ];
+
+    const arrival = await waitForFreshVisionPresenceArrival(
+      {
+        readRuntimeTraceSnapshot: async () =>
+          snapshots.shift() ?? snapshots.at(-1),
+      },
+      { timeoutMs: 100, pollMs: 1 },
+    );
+
+    assert.equal(arrival.baselineTraceId, 41);
+    assert.equal(arrival.entry.id, 42);
+    assert.equal(arrival.entry.transitionId, "vision:presence-5:welcome");
+  });
+
+  it("does not admit an arrival that already departed in the same trace snapshot", async () => {
+    const departedSnapshot = {
+      runtimeGenerationId: "installed-run-1",
+      entries: [
+        {
+          id: 42,
+          type: "journey_transition",
+          transitionId: "vision:presence-5:welcome",
+        },
+        {
+          id: 43,
+          type: "journey_transition",
+          transitionId: "vision:presence-6:departed",
+        },
+      ],
+    };
+    const snapshots = [
+      { runtimeGenerationId: "installed-run-1", entries: [] },
+      departedSnapshot,
+    ];
+
+    await assert.rejects(
+      waitForFreshVisionPresenceArrival(
+        {
+          readRuntimeTraceSnapshot: async () =>
+            snapshots.shift() ?? departedSnapshot,
+        },
+        { timeoutMs: 10, pollMs: 1 },
+      ),
+      /fresh Vision presence arrival did not become true/,
+    );
+  });
+
+  it("fails closed for stale, duplicate, other-journey, drifted, and departed arrivals", async () => {
+    const invalidTraces = [
+      [snapshot([welcome(9, 1)]), snapshot([welcome(9, 1)])],
+      [snapshot([welcome(9, 1)]), snapshot([welcome(9, 1), welcome(10, 1)])],
+      [
+        snapshot([]),
+        snapshot([
+          {
+            id: 1,
+            type: "journey_transition",
+            transitionId: "checkout:welcome",
+          },
+        ]),
+      ],
+      [snapshot([]), snapshot([welcome(1, 1)], "other-generation")],
+      [snapshot([]), snapshot([welcome(1, 1), departed(2, 2)])],
+    ];
+    for (const snapshots of invalidTraces) {
+      let index = 0;
+      await assert.rejects(
+        activateAfterFreshVisionPresenceArrival(
+          {
+            readRuntimeTraceSnapshot: async () =>
+              snapshots[Math.min(index++, snapshots.length - 1)],
+            activate: async () => assert.fail("invalid trace must not click"),
+          },
+          { timeoutMs: 10, pollMs: 1 },
+        ),
+        /generation changed|fresh Vision presence arrival did not become true|timed out/,
+      );
+    }
+  });
+});
 
 function cdpValue(value, id) {
   return { id, result: { result: { value } } };
@@ -106,6 +238,164 @@ class AcceptanceFakeWebSocket {
     );
   }
 }
+
+async function withTryOnOwnerTouchHarness(
+  { firstArrivalId, secondArrivalId },
+  callback,
+) {
+  const welcome = (id) => ({
+    id,
+    type: "journey_transition",
+    transitionId: `vision:presence-${id}:welcome`,
+  });
+  const first = welcome(firstArrivalId);
+  const second = welcome(secondArrivalId);
+  const snapshot = (entries) => ({ runtimeGenerationId: "run-1", entries });
+  const snapshots = [
+    snapshot([]),
+    snapshot([first]),
+    snapshot([first]),
+    snapshot([first]),
+    snapshot([first, second]),
+    snapshot([first, second]),
+  ];
+  const trace = [];
+  let snapshotIndex = 0;
+  const readRuntimeTraceSnapshot = async () => {
+    const value = snapshots[Math.min(snapshotIndex++, snapshots.length - 1)];
+    trace.push(`read:${value.entries.at(-1)?.id ?? 0}`);
+    return value;
+  };
+  let pendingSelector = null;
+  const socket = new AcceptanceFakeWebSocket((message) => {
+    if (message.method === "Runtime.evaluate") {
+      pendingSelector = message.params.expression.includes("try-on-retry")
+        ? "retry"
+        : "initial";
+      return cdpValue(
+        {
+          exists: true,
+          actionable: true,
+          inViewport: true,
+          hitTarget: true,
+          pointerEvents: "auto",
+          bounds: { x: 10, y: 20, width: 40, height: 60 },
+          center: { x: 30, y: 50 },
+        },
+        message.id,
+      );
+    }
+    if (
+      message.method === "Input.dispatchTouchEvent" &&
+      message.params.type === "touchStart"
+    )
+      trace.push(`touch:${pendingSelector}`);
+    return { id: message.id, result: {} };
+  });
+  const client = new CdpClient("ws://127.0.0.1/devtools/page/owner", {
+    webSocketFactory: () => socket,
+    defaultTimeoutMs: 250,
+  });
+  try {
+    await client.connect();
+    await enablePageRuntime(client);
+    return await callback({ client, readRuntimeTraceSnapshot, trace });
+  } finally {
+    await client.close();
+  }
+}
+
+describe("Fast try-on production owner", () => {
+  it("admits a fresh active arrival independently before initial and retry touches", async () => {
+    await withTryOnOwnerTouchHarness(
+      { firstArrivalId: 1, secondArrivalId: 2 },
+      async ({ client, readRuntimeTraceSnapshot, trace }) => {
+        const result = await runFastTryOnOwnerAttempts({
+          client,
+          collectInitial: async () => "initial-result",
+          collectRetry: async () => "retry-result",
+          readRuntimeTraceSnapshot,
+          timeoutMs: 100,
+          pollMs: 1,
+        });
+
+        assert.deepEqual(
+          result.admissions.map((admission) => admission.entry.id),
+          [1, 2],
+        );
+        assert.deepEqual(result.results, ["initial-result", "retry-result"]);
+        assert.deepEqual(trace, [
+          "read:0",
+          "read:1",
+          "read:1",
+          "touch:initial",
+          "read:1",
+          "read:2",
+          "read:2",
+          "touch:retry",
+        ]);
+      },
+    );
+  });
+});
+
+describe("AI try-on production owner", () => {
+  it("passes a fresh active arrival gate to initial and retry collectors before touch", async () => {
+    await withTryOnOwnerTouchHarness(
+      { firstArrivalId: 11, secondArrivalId: 12 },
+      async ({ client, readRuntimeTraceSnapshot, trace }) => {
+        const collectAttempt = async (options) => {
+          const admitted = await activateAfterFreshVisionPresenceArrival(
+            {
+              activate: async () =>
+                await activateVisibleSelector(
+                  client,
+                  options.activationSelector,
+                  { kind: "touch", timeoutMs: 100, pollMs: 1 },
+                ),
+              readRuntimeTraceSnapshot: options.readRuntimeTraceSnapshot,
+            },
+            { timeoutMs: 100, pollMs: 1 },
+          );
+          return {
+            admission: admitted.admission,
+            attemptId:
+              options.activationSelector === '[data-test="try-on-ai"]'
+                ? "ai-initial"
+                : "ai-retry",
+          };
+        };
+        const result = await collectInstalledAiOwnerAttempts({
+          collectAttempt,
+          initialOptions: { client },
+          readRuntimeTraceSnapshot,
+          retryOptions: { client },
+        });
+
+        assert.deepEqual(
+          [result.initial, result.retry].map((attempt) => ({
+            admissionId: attempt.admission.entry.id,
+            attemptId: attempt.attemptId,
+          })),
+          [
+            { admissionId: 11, attemptId: "ai-initial" },
+            { admissionId: 12, attemptId: "ai-retry" },
+          ],
+        );
+        assert.deepEqual(trace, [
+          "read:0",
+          "read:11",
+          "read:11",
+          "touch:initial",
+          "read:11",
+          "read:12",
+          "read:12",
+          "touch:retry",
+        ]);
+      },
+    );
+  });
+});
 
 async function withInstalledAiHarness(options, callback) {
   const attemptId = "0198f44e-21bd-7c62-8f52-b7c86cc2d101";
@@ -1381,7 +1671,7 @@ describe("vision try-on acceptance script", () => {
     );
     assert.match(
       source,
-      /if \(!skipVisionRecommendation\) \{[\s\S]*retry-completed-try-on[\s\S]*try-on-retry[\s\S]*excludeAttemptId:[\s\S]*tryOnSurface\.attemptId/,
+      /runFastTryOnOwnerAttempts\(\{[\s\S]*retry-completed-try-on[\s\S]*collectRetry: skipVisionRecommendation[\s\S]*excludeAttemptId: initial\.tryOnSurface\.attemptId/,
     );
     assert.match(
       source,
@@ -1420,7 +1710,7 @@ describe("vision try-on acceptance script", () => {
     );
     assert.match(
       source,
-      /if \(!skipVisionRecommendation\) \{[\s\S]*retry-completed-try-on[\s\S]*try-on-retry[\s\S]*\n    \}\n\n    stage = "return-from-try-on"[\s\S]*try-on-return[\s\S]*prove-ordinary-checkout-after-try-on[\s\S]*product-buy/,
+      /runFastTryOnOwnerAttempts\(\{[\s\S]*retry-completed-try-on[\s\S]*collectRetry: skipVisionRecommendation[\s\S]*\}\);[\s\S]*stage = "return-from-try-on"[\s\S]*try-on-return[\s\S]*prove-ordinary-checkout-after-try-on[\s\S]*product-buy/,
     );
     assert.match(
       source,

@@ -159,6 +159,48 @@ async function collectInstalledAiTryOnAttemptWithVmHeartbeat(options) {
   }
 }
 
+export async function collectInstalledAiOwnerAttempts({
+  collectAttempt = collectInstalledAiTryOnAttemptWithVmHeartbeat,
+  initialOptions,
+  retryOptions = null,
+  readRuntimeTraceSnapshot,
+  afterInitial = null,
+  onInitialSettled = null,
+}) {
+  if (
+    typeof collectAttempt !== "function" ||
+    typeof readRuntimeTraceSnapshot !== "function" ||
+    !initialOptions ||
+    typeof initialOptions !== "object" ||
+    (retryOptions !== null &&
+      (!retryOptions || typeof retryOptions !== "object")) ||
+    (afterInitial !== null && typeof afterInitial !== "function") ||
+    (onInitialSettled !== null && typeof onInitialSettled !== "function")
+  )
+    throw new Error("installed AI owner inputs are invalid");
+  let initial;
+  try {
+    initial = await collectAttempt({
+      ...initialOptions,
+      activationSelector:
+        initialOptions.activationSelector ?? '[data-test="try-on-ai"]',
+      readRuntimeTraceSnapshot,
+    });
+  } finally {
+    await onInitialSettled?.();
+  }
+  await afterInitial?.(initial);
+  const retry = retryOptions
+    ? await collectAttempt({
+        ...retryOptions,
+        activationSelector:
+          retryOptions.activationSelector ?? '[data-test="try-on-retry"]',
+        readRuntimeTraceSnapshot,
+      })
+    : null;
+  return { initial, retry };
+}
+
 export function buildInstalledVisionWorkerSampleScript() {
   return [
     "$ErrorActionPreference='Stop'",
@@ -932,43 +974,61 @@ export async function runInstalledAiAttemptPhase(options) {
       acceptance.selectedCatalogKey,
       acceptance.selectedVariantId,
     );
+    const readRuntimeTraceSnapshot = async () =>
+      (
+        await client.send("Runtime.evaluate", {
+          expression: "window.__VEM_MACHINE_RUNTIME_TRACE_SNAPSHOT__ || null",
+          returnByValue: true,
+        })
+      )?.result?.value;
     const startedAt = performance.now();
     let completed = false;
-    const attemptPromise = collectInstalledAiTryOnAttemptWithVmHeartbeat({
-      client,
-      captureAttemptScreenshot: installedAiScreenshotCapture(
-        options.artifactRoot,
-        options.caseKey,
-      ),
-      expectedTryOnRoute,
-      regionalEvidenceRoot: options.regionalEvidenceRoot,
-    }).finally(() => {
-      completed = true;
+    let archived = null;
+    const ownerPromise = collectInstalledAiOwnerAttempts({
+      initialOptions: {
+        client,
+        captureAttemptScreenshot: installedAiScreenshotCapture(
+          options.artifactRoot,
+          options.caseKey,
+        ),
+        expectedTryOnRoute,
+        regionalEvidenceRoot: options.regionalEvidenceRoot,
+      },
+      retryOptions:
+        options.caseKey === "short"
+          ? {
+              client,
+              expectedTryOnRoute,
+              regionalEvidenceRoot: options.regionalEvidenceRoot,
+            }
+          : null,
+      readRuntimeTraceSnapshot,
+      onInitialSettled: () => {
+        completed = true;
+      },
+      afterInitial: (collected) => {
+        if (options.caseKey !== "short") return;
+        archived = archiveSidecar(
+          collected,
+          options.caseKey,
+          options.artifactRoot,
+        );
+        clearCollectedRegionalEvidenceForRetry(
+          collected,
+          options.regionalEvidenceRoot,
+        );
+      },
     });
     const skipAiRss = isVmAcceptanceAiRssSkipEnabled();
-    const [collected, resource] = await Promise.all([
-      attemptPromise,
+    const [ownerAttempts, resource] = await Promise.all([
+      ownerPromise,
       skipAiRss
         ? Promise.resolve(null)
         : sampleInstalledAiWorkerPeakRss(() => completed),
     ]);
-    let archived = null;
-    if (options.caseKey === "short") {
-      archived = archiveSidecar(
-        collected,
-        options.caseKey,
-        options.artifactRoot,
-      );
-      clearCollectedRegionalEvidenceForRetry(
-        collected,
-        options.regionalEvidenceRoot,
-      );
-      const retried = await collectInstalledAiTryOnAttemptWithVmHeartbeat({
-        activationSelector: '[data-test="try-on-retry"]',
-        client,
-        expectedTryOnRoute,
-        regionalEvidenceRoot: options.regionalEvidenceRoot,
-      });
+    const collected = ownerAttempts.initial;
+    const retried = ownerAttempts.retry;
+    if (retried) {
       if (retried.attemptId === collected.attemptId)
         throw new Error(
           "AI try-on retry reused the completed attempt identity",

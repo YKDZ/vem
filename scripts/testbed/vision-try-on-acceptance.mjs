@@ -2307,6 +2307,170 @@ async function readRuntimeTrace(client) {
   );
 }
 
+export async function waitForFreshVisionPresenceArrival(
+  { readRuntimeTraceSnapshot },
+  { timeoutMs = 45_000, pollMs = 250 } = {},
+) {
+  if (typeof readRuntimeTraceSnapshot !== "function") {
+    throw new Error("Vision presence arrival requires a runtime trace reader");
+  }
+  const baseline = normalizeRuntimeTraceSnapshot(
+    await readRuntimeTraceSnapshot(),
+    "Vision presence arrival baseline runtime trace",
+  );
+  const baselineTraceId = baseline.entries.reduce(
+    (maximum, entry) =>
+      Number.isInteger(entry?.id) && entry.id > maximum ? entry.id : maximum,
+    0,
+  );
+  const arrival = await waitForCondition(
+    "fresh Vision presence arrival",
+    async () => {
+      const runtime = normalizeRuntimeTraceSnapshot(
+        await readRuntimeTraceSnapshot(),
+        "fresh Vision presence arrival runtime trace",
+      );
+      if (runtime.runtimeGenerationId !== baseline.runtimeGenerationId) {
+        throw new Error(
+          "Machine Runtime generation changed while waiting for Vision presence arrival",
+        );
+      }
+      const entry = runtime.entries.find((candidate) => {
+        if (
+          !Number.isInteger(candidate?.id) ||
+          candidate.id <= baselineTraceId ||
+          candidate.type !== "journey_transition" ||
+          !/^vision:presence-\d+:welcome$/.test(candidate.transitionId ?? "")
+        ) {
+          return false;
+        }
+        if (
+          runtime.entries.some(
+            (earlier) =>
+              Number.isInteger(earlier?.id) &&
+              earlier.id < candidate.id &&
+              earlier.type === "journey_transition" &&
+              earlier.transitionId === candidate.transitionId,
+          )
+        ) {
+          return false;
+        }
+        return !runtime.entries.some(
+          (later) =>
+            Number.isInteger(later?.id) &&
+            later.id > candidate.id &&
+            later.type === "journey_transition" &&
+            /^vision:presence-\d+:departed$/.test(later.transitionId ?? ""),
+        );
+      });
+      return { ok: entry !== undefined, value: { runtime, entry } };
+    },
+    timeoutMs,
+    pollMs,
+  );
+  return {
+    baselineTraceId,
+    entry: arrival.entry,
+    runtimeGenerationId: baseline.runtimeGenerationId,
+  };
+}
+
+function admissionRemainsActive(runtime, admission) {
+  return (
+    runtime.runtimeGenerationId === admission.runtimeGenerationId &&
+    !runtime.entries.some(
+      (entry) =>
+        Number.isInteger(entry?.id) &&
+        entry.id > admission.entry.id &&
+        entry.type === "journey_transition" &&
+        /^vision:presence-\d+:departed$/.test(entry.transitionId ?? ""),
+    )
+  );
+}
+
+export async function activateAfterFreshVisionPresenceArrival(
+  { activate, readRuntimeTraceSnapshot },
+  { timeoutMs = 45_000, pollMs = 250 } = {},
+) {
+  if (typeof activate !== "function") {
+    throw new Error(
+      "Vision presence admission requires an activation callback",
+    );
+  }
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const admission = await waitForFreshVisionPresenceArrival(
+      { readRuntimeTraceSnapshot },
+      { timeoutMs: Math.max(1, deadline - Date.now()), pollMs },
+    );
+    const runtime = normalizeRuntimeTraceSnapshot(
+      await readRuntimeTraceSnapshot(),
+      "Vision presence admission final runtime trace",
+    );
+    if (!admissionRemainsActive(runtime, admission)) continue;
+    return { admission, activation: await activate() };
+  }
+  throw new Error("Vision presence admission timed out before activation");
+}
+
+export async function runFastTryOnOwnerAttempts({
+  client,
+  beforeAttempt = null,
+  collectInitial,
+  collectRetry = null,
+  readRuntimeTraceSnapshot,
+  activationTimeoutMs = 30_000,
+  timeoutMs = 45_000,
+  pollMs = 250,
+}) {
+  if (
+    typeof collectInitial !== "function" ||
+    (collectRetry !== null && typeof collectRetry !== "function") ||
+    (beforeAttempt !== null && typeof beforeAttempt !== "function")
+  )
+    throw new Error("Fast try-on owner collectors are invalid");
+  const attempts = [
+    {
+      collect: collectInitial,
+      selector: '[data-test="try-on-fast"]',
+    },
+    ...(collectRetry
+      ? [
+          {
+            collect: collectRetry,
+            selector: '[data-test="try-on-retry"]',
+          },
+        ]
+      : []),
+  ];
+  const admissions = [];
+  const results = [];
+  for (const [index, attempt] of attempts.entries()) {
+    await beforeAttempt?.(index);
+    const admitted = await activateAfterFreshVisionPresenceArrival(
+      {
+        activate: async () =>
+          await activateVisibleSelector(client, attempt.selector, {
+            kind: "touch",
+            timeoutMs: activationTimeoutMs,
+            pollMs,
+          }),
+        readRuntimeTraceSnapshot,
+      },
+      { timeoutMs, pollMs },
+    );
+    admissions.push(admitted.admission);
+    results.push(
+      await attempt.collect({
+        activation: admitted.activation,
+        admission: admitted.admission,
+        previousResults: [...results],
+      }),
+    );
+  }
+  return { admissions, results };
+}
+
 async function readCatalogRecommendationState(client) {
   const state = await evaluateExpression(
     client,
@@ -3393,6 +3557,7 @@ async function collectInstalledAiTryOnAttemptInternal(
     regionalEvidenceRoot,
     captureAttemptScreenshot = null,
     activationSelector = '[data-test="try-on-ai"]',
+    readRuntimeTraceSnapshot = null,
     timeoutMs = 60_000,
     pollMs = 250,
   },
@@ -3428,11 +3593,20 @@ async function collectInstalledAiTryOnAttemptInternal(
   const networkCapture = startResultNetworkCapture(client);
   try {
     await installTryOnLifecycleObserver(client);
-    const activation = await activateVisibleSelector(
-      client,
-      activationSelector,
-      { kind: "touch", timeoutMs: remaining(), pollMs },
-    );
+    const activate = async () =>
+      await activateVisibleSelector(client, activationSelector, {
+        kind: "touch",
+        timeoutMs: remaining(),
+        pollMs,
+      });
+    const activation = readRuntimeTraceSnapshot
+      ? (
+          await activateAfterFreshVisionPresenceArrival(
+            { activate, readRuntimeTraceSnapshot },
+            { timeoutMs: remaining(), pollMs },
+          )
+        ).activation
+      : await activate();
     if (
       activation.input?.kind !== "touch" ||
       activation.input?.method !== "Input.dispatchTouchEvent"
@@ -4016,82 +4190,86 @@ async function runVisionTryOnAcceptance(options) {
     }
 
     const expectedTryOnRoute = `#/try-on?catalogKey=${manualSelectedProduct.catalogKey}&variantId=${manualSelectedProduct.variantId}&mode=fast`;
-    const tryOnAttempts = [];
     stage = "open-try-on-attempt";
     await installTryOnLifecycleObserver(client);
-    await activateVisibleSelector(client, '[data-test="try-on-fast"]', {
-      kind: "touch",
-      timeoutMs: 30_000,
-    });
-    await waitForRoute(client, expectedTryOnRoute, {
-      timeoutMs: 30_000,
+    const fastOwner = await runFastTryOnOwnerAttempts({
+      client,
+      beforeAttempt: async (index) => {
+        if (index === 1) stage = "retry-completed-try-on";
+      },
+      readRuntimeTraceSnapshot: () => readRuntimeTrace(client),
+      collectInitial: async () => {
+        await waitForRoute(client, expectedTryOnRoute, {
+          timeoutMs: 30_000,
+          pollMs: 250,
+        });
+        const tryOnSurface = await waitForTryOnSurface(client, 25_000);
+        const resultEvidence = await readResultImageEvidence(
+          client,
+          tryOnSurface.resultUrl,
+        );
+        const summary = validateTryOnPresentation({
+          selectedProduct: {
+            catalogKey: manualSelectedProduct.catalogKey,
+            variantId: manualSelectedProduct.variantId,
+          },
+          tryOnState: tryOnSurface,
+          resultEvidence,
+          expectedResults,
+          runtimeExpectation,
+        });
+        checkpoints.push(
+          await captureCheckpoint(client, "try-on-fast-result", {
+            screenshot: true,
+            screenshotSink: sink,
+          }),
+        );
+        return { resultEvidence, summary, tryOnSurface };
+      },
+      collectRetry: skipVisionRecommendation
+        ? null
+        : async ({ previousResults }) => {
+            const initial = previousResults[0];
+            const tryOnSurface = await waitForTryOnSurface(client, 25_000, {
+              excludeAttemptId: initial.tryOnSurface.attemptId,
+            });
+            if (tryOnSurface.resultUrl === initial.tryOnSurface.resultUrl) {
+              throw new Error(
+                "try-on retry reused the previous attempt result path",
+              );
+            }
+            const resultEvidence = await readResultImageEvidence(
+              client,
+              tryOnSurface.resultUrl,
+            );
+            const summary = validateTryOnPresentation({
+              selectedProduct: {
+                catalogKey: manualSelectedProduct.catalogKey,
+                variantId: manualSelectedProduct.variantId,
+              },
+              tryOnState: tryOnSurface,
+              resultEvidence,
+              expectedResults,
+              runtimeExpectation,
+            });
+            return { resultEvidence, summary, tryOnSurface };
+          },
+      timeoutMs: 45_000,
       pollMs: 250,
     });
-    const tryOnSurface = await waitForTryOnSurface(client, 25_000);
-    const resultEvidence = await readResultImageEvidence(
-      client,
-      tryOnSurface.resultUrl,
-    );
-    const tryOnSummary = validateTryOnPresentation({
-      selectedProduct: {
-        catalogKey: manualSelectedProduct.catalogKey,
-        variantId: manualSelectedProduct.variantId,
-      },
-      tryOnState: tryOnSurface,
-      resultEvidence,
-      expectedResults,
-      runtimeExpectation,
-    });
-    tryOnAttempts.push({
-      attempt: 1,
+    const [initialTryOn, retryTryOn = null] = fastOwner.results;
+    const tryOnSurface = initialTryOn.tryOnSurface;
+    const resultEvidence = initialTryOn.resultEvidence;
+    const tryOnSummary = initialTryOn.summary;
+    const retrySurface = retryTryOn?.tryOnSurface ?? null;
+    const retrySummary = retryTryOn?.summary ?? null;
+    const tryOnAttempts = fastOwner.results.map((attempt, index) => ({
+      attempt: index + 1,
       result: "completed",
-      tryOnSurface,
-      resultEvidence,
-      summary: tryOnSummary,
-    });
-    checkpoints.push(
-      await captureCheckpoint(client, "try-on-fast-result", {
-        screenshot: true,
-        screenshotSink: sink,
-      }),
-    );
-
-    let retrySurface = null;
-    let retrySummary = null;
-    if (!skipVisionRecommendation) {
-      stage = "retry-completed-try-on";
-      await activateVisibleSelector(client, '[data-test="try-on-retry"]', {
-        kind: "touch",
-        timeoutMs: 30_000,
-      });
-      retrySurface = await waitForTryOnSurface(client, 25_000, {
-        excludeAttemptId: tryOnSurface.attemptId,
-      });
-      if (retrySurface.resultUrl === tryOnSurface.resultUrl) {
-        throw new Error("try-on retry reused the previous attempt result path");
-      }
-      const retryResultEvidence = await readResultImageEvidence(
-        client,
-        retrySurface.resultUrl,
-      );
-      retrySummary = validateTryOnPresentation({
-        selectedProduct: {
-          catalogKey: manualSelectedProduct.catalogKey,
-          variantId: manualSelectedProduct.variantId,
-        },
-        tryOnState: retrySurface,
-        resultEvidence: retryResultEvidence,
-        expectedResults,
-        runtimeExpectation,
-      });
-      tryOnAttempts.push({
-        attempt: 2,
-        result: "completed",
-        tryOnSurface: retrySurface,
-        resultEvidence: retryResultEvidence,
-        summary: retrySummary,
-      });
-    }
+      tryOnSurface: attempt.tryOnSurface,
+      resultEvidence: attempt.resultEvidence,
+      summary: attempt.summary,
+    }));
 
     stage = "return-from-try-on";
     await activateVisibleSelector(client, '[data-test="try-on-return"]', {
