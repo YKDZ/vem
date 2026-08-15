@@ -553,10 +553,10 @@ try {
     CommandLine = "`"$canonicalExecutablePath`" --config `"$([IO.Path]::GetFullPath("C:\ProgramData\VEM\vision\wrong-site.json"))`""
   }
   Set-TestbedVisionCleanupFixture @() @{ 4104 = $wrongConfigCanonicalProcess }
-  $wrongConfigRejected = $false
-  try { Clear-TestbedVisionProcesses $testbedGuestInput } catch { $wrongConfigRejected = $_.Exception.Message -match "unknown canonical executable processes" }
-  Assert-True $wrongConfigRejected "wrong-config canonical process did not fail closed"
-  Assert-True ($global:TestbedCanonicalVisionStops.Count -eq 0 -and $global:TestbedVisionStoppedProcessIds.Count -eq 0) "wrong-config canonical process was stopped"
+  Clear-TestbedVisionProcesses $testbedGuestInput
+  Assert-True ($global:TestbedCanonicalVisionStops.Count -eq 0) "wrong-config canonical process was misclassified as managed"
+  Assert-True ($global:TestbedVisionStoppedProcessIds -contains 4104) "wrong-config canonical process was not cleared"
+  Assert-True ($global:TestbedVisionProcesses.Count -eq 0) "wrong-config canonical process remained running"
 
   $backupConfigCanonicalProcess = [pscustomobject]@{
     ProcessId = 4106
@@ -564,9 +564,10 @@ try {
     CommandLine = "`"$canonicalExecutablePath`" --config `"$canonicalConfigurationPath.bak`""
   }
   Set-TestbedVisionCleanupFixture @() @{ 4106 = $backupConfigCanonicalProcess }
-  $backupConfigRejected = $false
-  try { Clear-TestbedVisionProcesses $testbedGuestInput } catch { $backupConfigRejected = $_.Exception.Message -match "unknown canonical executable processes" }
-  Assert-True $backupConfigRejected "site.json.bak canonical process did not fail closed"
+  Clear-TestbedVisionProcesses $testbedGuestInput
+  Assert-True ($global:TestbedCanonicalVisionStops.Count -eq 0) "site.json.bak canonical process was misclassified as managed"
+  Assert-True ($global:TestbedVisionStoppedProcessIds -contains 4106) "site.json.bak canonical process was not cleared"
+  Assert-True ($global:TestbedVisionProcesses.Count -eq 0) "site.json.bak canonical process remained running"
 
   $otherArgumentCanonicalProcess = [pscustomobject]@{
     ProcessId = 4107
@@ -574,9 +575,10 @@ try {
     CommandLine = "`"$canonicalExecutablePath`" --log-path `"$canonicalConfigurationPath`""
   }
   Set-TestbedVisionCleanupFixture @() @{ 4107 = $otherArgumentCanonicalProcess }
-  $otherArgumentRejected = $false
-  try { Clear-TestbedVisionProcesses $testbedGuestInput } catch { $otherArgumentRejected = $_.Exception.Message -match "unknown canonical executable processes" }
-  Assert-True $otherArgumentRejected "canonical path in another argument did not fail closed"
+  Clear-TestbedVisionProcesses $testbedGuestInput
+  Assert-True ($global:TestbedCanonicalVisionStops.Count -eq 0) "canonical path in another argument was misclassified as managed"
+  Assert-True ($global:TestbedVisionStoppedProcessIds -contains 4107) "canonical path in another argument was not cleared"
+  Assert-True ($global:TestbedVisionProcesses.Count -eq 0) "canonical path in another argument remained running"
 
   $canonicalSecondProcess = [pscustomobject]@{
     ProcessId = 4105

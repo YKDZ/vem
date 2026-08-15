@@ -1695,7 +1695,7 @@ describe("supported API seeding", () => {
 });
 
 describe("Windows D cache contract", () => {
-  it("cleans only the uniquely managed canonical Vision and acceptance-owned Node mock before both full and fast runs", () => {
+  it("cleans all canonical Vision processes and the acceptance-owned Node mock before both full and fast runs", () => {
     const guestScript = readFileSync(
       new URL("./run-local-testbed-guest.ps1", import.meta.url),
       "utf8",
@@ -1757,7 +1757,19 @@ describe("Windows D cache contract", () => {
     assert.match(windowsHarness, /canonical non-listener was not stopped/);
     assert.match(
       windowsHarness,
-      /wrong-config canonical process did not fail closed/,
+      /wrong-config canonical process was not cleared/,
+    );
+    assert.match(
+      windowsHarness,
+      /site\.json\.bak canonical process was not cleared/,
+    );
+    assert.match(
+      windowsHarness,
+      /canonical path in another argument was not cleared/,
+    );
+    assert.doesNotMatch(
+      windowsHarness,
+      /canonical process did not fail closed/,
     );
     assert.match(windowsHarness, /canonical exit race was not tolerated/);
     assert.match(windowsHarness, /mock listener was not stopped/);
