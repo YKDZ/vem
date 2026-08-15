@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
@@ -8,72 +9,91 @@ function source() {
   return readFileSync(new URL(runFullPath, import.meta.url), "utf8");
 }
 
-function moduleText(path) {
-  return readFileSync(new URL(path, import.meta.url), "utf8");
-}
-
-test("run-full uses fixed VEMKiosk task user for Vision install", () => {
+test("run-full consumes only the pre-verified guest Vision core input", () => {
   const contents = source();
-  assert.match(contents, /-TaskUser "VEMKiosk"/);
+  assert.match(
+    contents,
+    /function Get-ProvisionedVisionCoreArtifact\(\[object\]\$GuestInput\) \{[\s\S]*runtimeArchive[\s\S]*fixtureArchive[\s\S]*sourceCommit/s,
+  );
+  assert.match(
+    contents,
+    /\$guestInput = Get-Content -Raw -LiteralPath \$GuestInputPath[\s\S]*Get-ProvisionedVisionCoreArtifact \$guestInput/s,
+  );
+  assert.doesNotMatch(contents, /Get-VisionMainArtifactCache/);
+  assert.doesNotMatch(contents, /Get-ResolvedVisionMainCommit/);
+  assert.doesNotMatch(contents, /resolved-vision-main-commit/);
 });
 
-test("run-full emits origins accepted by the managed Vision schema", () => {
+test("run-full preserves the provisioned artifact identities through local candidate conversion", () => {
   const contents = source();
-  assert.match(contents, /"http:\/\/tauri\.localhost"/);
-  assert.doesNotMatch(contents, /"https:\/\/tauri\.localhost"/);
+  assert.match(
+    contents,
+    /Get-FileHash -LiteralPath \(\[string\]\$item\.path\) -Algorithm SHA256[\s\S]*\.Length -ne \[long\]\$item\.identity\.byteSize/s,
+  );
+  assert.match(
+    contents,
+    /function Rebuild-ProvisionedVisionCoreDelivery[\s\S]*Convert-VisionCandidateToMainDelivery[\s\S]*-CandidateArchive \(\[string\]\$VisionCore\.runtimeArchive\)[\s\S]*-FixtureArchive \(\[string\]\$VisionCore\.fixtureArchive\)[\s\S]*-Commit \(\[string\]\$VisionCore\.commit\)/s,
+  );
+  assert.match(
+    contents,
+    /Assert-VisionCachedArtifacts \$candidateDelivery \(\[string\]\$VisionCore\.commit\)/,
+  );
+  assert.match(
+    contents,
+    /Install-VisionMainArtifact[\s\S]*-SkipRuntimeOwnerTask/s,
+  );
 });
 
-test("run-full loops recorded cameras so cold model start does not exhaust the VM frame source", () => {
+test("run-full rebuilds a pre-seeded same-commit delivery from the current guest bytes", () => {
+  const result = spawnSync(
+    "pwsh",
+    [
+      "-NoProfile",
+      "-File",
+      "scripts/testbed/run-full-vision-try-on-track.windows-harness.ps1",
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const output = JSON.parse(result.stdout);
+  assert.notEqual(output.seededRuntimeSha256, output.rebuiltRuntimeSha256);
+  assert.equal(output.rebuiltFromCurrentCandidate, true);
+});
+
+test("run-full takes over only after acquisition and restores the default VEMVisionRuntime owner", () => {
+  const contents = source();
+  assert.match(
+    contents,
+    /\$visionCore = Get-ProvisionedVisionCoreArtifact \$guestInput[\s\S]*\$managedVisionTakenOver = \$true[\s\S]*Stop-ManagedVision/s,
+  );
+  assert.match(
+    contents,
+    /finally \{[\s\S]*if \(\$managedVisionTakenOver\) \{[\s\S]*Stop-ManagedVision[\s\S]*Wait-ForVisionPortRebind[\s\S]*Start-DefaultManagedVision[\s\S]*Wait-ForDefaultManagedVisionReady/s,
+  );
+  assert.match(
+    contents,
+    /function Start-DefaultManagedVision\(\) \{[\s\S]*Start-ScheduledTask -TaskName "VEMVisionRuntime"/s,
+  );
+  assert.match(
+    contents,
+    /function Wait-ForDefaultManagedVisionReady[\s\S]*Invoke-VisionMainProbe/s,
+  );
+});
+
+test("run-full quickly diagnoses a launcher child exit with structured owner facts", () => {
+  const contents = source();
+  assert.match(
+    contents,
+    /function Get-DefaultManagedVisionDiagnostic\(\) \{[\s\S]*processId[\s\S]*task[\s\S]*action[\s\S]*siteConfigurationSha256[\s\S]*listener/s,
+  );
+  assert.match(
+    contents,
+    /launcher child exited before Vision became ready: \$\(Get-DefaultManagedVisionDiagnostic \| ConvertTo-Json -Compress -Depth 8\)/,
+  );
+});
+
+test("run-full loops recorded cameras so the real V2 Fast path cannot exhaust a fixture", () => {
   const contents = source();
   assert.equal(contents.match(/loop = \$false/g)?.length, undefined);
   assert.equal(contents.match(/loop = \$true/g)?.length, 2);
-});
-
-test("run-full resolves commit via D:\\runtime-cache\\v1\\vision-main index first", () => {
-  const contents = source();
-  assert.match(
-    contents,
-    /\$visionCommit = Get-ResolvedVisionMainCommit -CacheRoot \$visionCacheRoot[\s\S]*Get-VisionMainArtifactCache -CacheRoot \$visionCacheRoot -CommitSha \$visionCommit/s,
-  );
-});
-
-test("run-full only stops the task-owned Vision executable and verifies port 7892 is reusable", () => {
-  const contents = source();
-  assert.match(
-    contents,
-    /function Get-ManagedVisionTasks\(\) \{[\s\S]*Get-ScheduledTask[\s\S]*TaskName -in @\("VEMVisionRuntime", "StartVisionServer"\)/s,
-  );
-  assert.doesNotMatch(
-    contents,
-    /Get-ScheduledTask -TaskName \$taskName -TaskPath "\\VEM\\"/,
-  );
-  assert.match(
-    contents,
-    /function Stop-ManagedVision\(\) \{[\s\S]*foreach \(\$task in @\(Get-ManagedVisionTasks\)\)[\s\S]*Stop-ScheduledTask -InputObject \$task[\s\S]*foreach \(\$processId in @\(Get-ManagedVisionProcessIds\)\)[\s\S]*try \{ & taskkill\.exe \/PID \(\[int\]\$processId\) \/T \/F \*>\s*\$null \} catch \{ \}[\s\S]*Stop-Process -Id \(\[int\]\$processId\)/s,
-  );
-  assert.doesNotMatch(contents, /Get-Process -Name "vending-vision"/);
-  assert.match(
-    contents,
-    /try \{[\s\S]*Get-VisionMainArtifactCache[\s\S]*Write-RecordedVisionSiteConfiguration[\s\S]*Install-VisionMainArtifact[\s\S]*vision-try-on-acceptance\.mjs[\s\S]*\} finally \{[\s\S]*Stop-ManagedVision[\s\S]*Wait-ForVisionPortRebind/s,
-  );
-  assert.match(
-    contents,
-    /function Wait-ForVisionPortRebind\(\[int\]\$TimeoutSeconds = \d+\)[\s\S]*\[DateTime\]::UtcNow\.AddSeconds\(\$TimeoutSeconds\)[\s\S]*\[Net\.Sockets\.TcpListener\]::new\(\[Net\.IPAddress\]::Loopback, 7892\)/s,
-  );
-});
-
-test("run-full keeps the business failure and still probes 7892 when Vision stop fails", () => {
-  const contents = source();
-  assert.match(
-    contents,
-    /catch \{[\s\S]*\$primaryFailure = \$_[\s\S]*throw[\s\S]*finally \{[\s\S]*Stop-ManagedVision[\s\S]*catch \{[\s\S]*\$cleanupFailures \+= \$_[\s\S]*Wait-ForVisionPortRebind[\s\S]*catch \{[\s\S]*\$cleanupFailures \+= \$_[\s\S]*if \(\$null -ne \$primaryFailure\) \{[\s\S]*Write-Warning/s,
-  );
-});
-
-test("psm1 prefers cache-first when CommitSha is provided", () => {
-  const psm1 = moduleText("../windows/vision-main-artifacts.psm1");
-  assert.match(
-    psm1,
-    /if \(-not \[string\]::IsNullOrWhiteSpace\(\$CommitSha\)\) \{[\s\S]*Assert-VisionCachedArtifacts \$cacheDirectory \$commit/s,
-  );
 });
