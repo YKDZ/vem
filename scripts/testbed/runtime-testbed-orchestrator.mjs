@@ -42,6 +42,9 @@ const STATUS_SCHEMA = "vem-runtime-testbed-run/v1";
 const CONFIG_SCHEMA = "vem-runtime-testbed-host/v1";
 const GUEST_SETUP_TIMEOUT_MS = 120_000;
 const GUEST_TRANSFER_TIMEOUT_MS = 300_000;
+const GUEST_TRANSFER_STARTUP_ALLOWANCE_MS = 120_000;
+const GUEST_TRANSFER_MIN_BYTES_PER_SECOND = 8 * 1024 * 1024;
+const GUEST_TRANSFER_MAX_TIMEOUT_MS = 30 * 60_000;
 const GUEST_FAST_EXECUTION_TIMEOUT_MS = 15 * 60_000;
 const GUEST_FULL_EXECUTION_TIMEOUT_MS = 45 * 60_000;
 const WINDOWS_REMOTE_COMMAND_MAX_CHARS = 8_000;
@@ -917,6 +920,48 @@ function uniqueGuestTransfers(transfers) {
   return [...unique.values()];
 }
 
+function guestTransferByteSize(transfer) {
+  if (!transfer.members) {
+    if (!Number.isSafeInteger(transfer.byteSize) || transfer.byteSize <= 0) {
+      throw new Error(
+        `guest input transfer byte size invalid (kind=file, guestPath=${transfer.guestPath}, byteSize=${String(transfer.byteSize)}): expected a positive safe integer`,
+      );
+    }
+    return transfer.byteSize;
+  }
+  let total = 0;
+  for (const member of transfer.members) {
+    if (!Number.isSafeInteger(member.byteSize) || member.byteSize <= 0) {
+      throw new Error(
+        `guest input transfer byte size invalid (kind=directory_member, guestPath=${transfer.guestPath}, member=${member.name}, byteSize=${String(member.byteSize)}): expected a positive safe integer`,
+      );
+    }
+    if (total > Number.MAX_SAFE_INTEGER - member.byteSize) {
+      throw new Error(
+        `guest input transfer byte size invalid (kind=directory_total, guestPath=${transfer.guestPath}, accumulatedBytes=${total}, nextMemberBytes=${member.byteSize}): sum exceeds Number.MAX_SAFE_INTEGER`,
+      );
+    }
+    total += member.byteSize;
+  }
+  if (total <= 0) {
+    throw new Error(
+      `guest input transfer byte size invalid (kind=directory_total, guestPath=${transfer.guestPath}, byteSize=${total}): expected a positive safe integer`,
+    );
+  }
+  return total;
+}
+
+function guestTransferTimeout(byteSize) {
+  return Math.min(
+    GUEST_TRANSFER_MAX_TIMEOUT_MS,
+    Math.max(
+      GUEST_TRANSFER_TIMEOUT_MS,
+      GUEST_TRANSFER_STARTUP_ALLOWANCE_MS +
+        Math.ceil((byteSize / GUEST_TRANSFER_MIN_BYTES_PER_SECOND) * 1_000),
+    ),
+  );
+}
+
 function guestInputCacheProbes(transfer) {
   const candidate = {
     byteSize: transfer.byteSize,
@@ -1014,6 +1059,12 @@ export async function stageAiAcceptanceInputs({
     ...(corePreparation?.transfers ?? []),
     ...(preparation?.transfers ?? []),
   ]);
+  const transferByteSizes = new Map(
+    transfers.map((transfer) => [
+      transfer.guestPath,
+      guestTransferByteSize(transfer),
+    ]),
+  );
   const cachedGuestFiles = new Set();
   for (const transfer of transfers) {
     let cacheHit = true;
@@ -1080,6 +1131,8 @@ export async function stageAiAcceptanceInputs({
     );
   }
   for (const transfer of missingTransfers) {
+    const byteSize = transferByteSizes.get(transfer.guestPath);
+    const timeoutMs = guestTransferTimeout(byteSize);
     await run(
       "scp",
       [
@@ -1089,8 +1142,8 @@ export async function stageAiAcceptanceInputs({
         `${remote}:${transfer.guestPath}`,
       ],
       {
-        timeoutMs: GUEST_TRANSFER_TIMEOUT_MS,
-        timeoutLabel: "AI guest input staging",
+        timeoutMs,
+        timeoutLabel: `AI guest input staging; bytes=${byteSize}; budgetMs=${timeoutMs}`,
       },
     );
   }

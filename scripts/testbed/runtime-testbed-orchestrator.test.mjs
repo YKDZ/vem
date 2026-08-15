@@ -756,6 +756,294 @@ describe("runtime testbed scheduler contract", () => {
     );
   });
 
+  it("budgets a 4.5 GB guest input transfer for the observed slow link", async () => {
+    const calls = [];
+    const byteSize = 4_506_259_239;
+    await stageAiAcceptanceInputs({
+      config: { stateRoot: "/var/lib/vem-testbed/state" },
+      contract: {
+        testbed: {
+          guest: {
+            user: "VEMKiosk",
+            host: "win10-testbed.local",
+            identityFile: "/tmp/id",
+            knownHostsFile: "/tmp/known_hosts",
+            stagingPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
+          },
+        },
+      },
+      preparation: {
+        transfers: [
+          {
+            hostPath: "/host/model-pack.zip",
+            guestPath:
+              "D:\\runtime-cache\\v1\\acceptance-inputs\\files\\digest\\model-pack.zip",
+            sha256: "a".repeat(64),
+            byteSize,
+          },
+        ],
+      },
+      captureResult: async () => ({ stdout: '{"cacheHits":[]}' }),
+      run: async (command, args, options) =>
+        calls.push({ command, args, options }),
+    });
+
+    const transfer = calls.find(
+      (call) =>
+        call.command === "scp" && call.args.at(-1).endsWith("model-pack.zip"),
+    );
+    assert.equal(transfer.options.timeoutMs, 657_188);
+    assert.match(transfer.options.timeoutLabel, /4506259239/);
+    assert.match(
+      transfer.options.timeoutLabel,
+      new RegExp(String(transfer.options.timeoutMs)),
+    );
+  });
+
+  it("keeps independent guest input budgets bounded by the small-transfer floor and hard cap", async () => {
+    const calls = [];
+    const smallPath = "D:\\runtime-cache\\small.bin";
+    const directoryPath = "D:\\runtime-cache\\model-pack";
+    const hugePath = "D:\\runtime-cache\\huge.bin";
+    await stageAiAcceptanceInputs({
+      config: { stateRoot: "/var/lib/vem-testbed/state" },
+      contract: {
+        testbed: {
+          guest: {
+            user: "VEMKiosk",
+            host: "win10-testbed.local",
+            identityFile: "/tmp/id",
+            knownHostsFile: "/tmp/known_hosts",
+            stagingPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
+          },
+        },
+      },
+      preparation: {
+        transfers: [
+          {
+            hostPath: "/host/small.bin",
+            guestPath: smallPath,
+            sha256: "a".repeat(64),
+            byteSize: 1,
+          },
+          {
+            hostPath: "/host/model-pack",
+            guestPath: directoryPath,
+            sha256: "b".repeat(64),
+            byteSize: 100_000_000_000,
+            members: [
+              {
+                name: "weights/first.bin",
+                sha256: "c".repeat(64),
+                byteSize: 2_500_000_000,
+              },
+              {
+                name: "weights/second.bin",
+                sha256: "d".repeat(64),
+                byteSize: 2_006_259_239,
+              },
+            ],
+          },
+          {
+            hostPath: "/host/huge.bin",
+            guestPath: hugePath,
+            sha256: "e".repeat(64),
+            byteSize: 100_000_000_000,
+          },
+        ],
+      },
+      captureResult: async () => ({ stdout: '{"cacheHits":[]}' }),
+      run: async (command, args, options) =>
+        calls.push({ command, args, options }),
+    });
+
+    const transferOptions = (guestPath) =>
+      calls.find(
+        (call) =>
+          call.command === "scp" && call.args.at(-1).endsWith(guestPath),
+      ).options;
+    assert.equal(transferOptions(smallPath).timeoutMs, 300_000);
+    assert.equal(transferOptions(directoryPath).timeoutMs, 657_188);
+    assert.equal(transferOptions(hugePath).timeoutMs, 30 * 60_000);
+    assert.match(transferOptions(smallPath).timeoutLabel, /bytes=1/);
+    assert.match(
+      transferOptions(directoryPath).timeoutLabel,
+      /bytes=4506259239/,
+    );
+    assert.match(transferOptions(hugePath).timeoutLabel, /budgetMs=1800000/);
+  });
+
+  it("rejects an invalid file byte size before probing or mutating the guest", async () => {
+    for (const byteSize of [Number.NaN, -1, 0, Number.MAX_SAFE_INTEGER + 1]) {
+      const calls = [];
+      await assert.rejects(
+        stageAiAcceptanceInputs({
+          config: { stateRoot: "/var/lib/vem-testbed/state" },
+          contract: {
+            testbed: {
+              guest: {
+                user: "VEMKiosk",
+                host: "win10-testbed.local",
+                identityFile: "/tmp/id",
+                knownHostsFile: "/tmp/known_hosts",
+                stagingPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
+              },
+            },
+          },
+          preparation: {
+            transfers: [
+              {
+                hostPath: "/host/invalid.bin",
+                guestPath: "D:\\runtime-cache\\invalid.bin",
+                sha256: "f".repeat(64),
+                byteSize,
+              },
+            ],
+          },
+          captureResult: async (...args) => calls.push(["capture", ...args]),
+          run: async (...args) => calls.push(["run", ...args]),
+        }),
+        (error) => {
+          assert.match(error.message, /kind=file/);
+          assert.ok(error.message.includes(`byteSize=${String(byteSize)}`));
+          assert.match(error.message, /positive safe integer/);
+          return true;
+        },
+      );
+      assert.deepEqual(calls, []);
+    }
+  });
+
+  it("rejects an invalid directory member byte size before probing or mutating the guest", async () => {
+    for (const byteSize of [Number.NaN, -1, 0, Number.MAX_SAFE_INTEGER + 1]) {
+      const calls = [];
+      await assert.rejects(
+        stageAiAcceptanceInputs({
+          config: { stateRoot: "/var/lib/vem-testbed/state" },
+          contract: {
+            testbed: {
+              guest: {
+                user: "VEMKiosk",
+                host: "win10-testbed.local",
+                identityFile: "/tmp/id",
+                knownHostsFile: "/tmp/known_hosts",
+                stagingPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
+              },
+            },
+          },
+          preparation: {
+            transfers: [
+              {
+                hostPath: "/host/invalid-directory",
+                guestPath: "D:\\runtime-cache\\invalid-directory",
+                sha256: "f".repeat(64),
+                byteSize: 1,
+                members: [
+                  {
+                    name: "weights/model.bin",
+                    sha256: "e".repeat(64),
+                    byteSize,
+                  },
+                ],
+              },
+            ],
+          },
+          captureResult: async (...args) => calls.push(["capture", ...args]),
+          run: async (...args) => calls.push(["run", ...args]),
+        }),
+        (error) => {
+          assert.match(error.message, /kind=directory_member/);
+          assert.match(error.message, /member=weights\/model\.bin/);
+          assert.ok(error.message.includes(`byteSize=${String(byteSize)}`));
+          assert.match(error.message, /positive safe integer/);
+          return true;
+        },
+      );
+      assert.deepEqual(calls, []);
+    }
+  });
+
+  it("rejects a directory byte-size sum overflow before probing or mutating the guest", async () => {
+    const calls = [];
+    await assert.rejects(
+      stageAiAcceptanceInputs({
+        config: { stateRoot: "/var/lib/vem-testbed/state" },
+        contract: {
+          testbed: {
+            guest: {
+              user: "VEMKiosk",
+              host: "win10-testbed.local",
+              identityFile: "/tmp/id",
+              knownHostsFile: "/tmp/known_hosts",
+              stagingPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
+            },
+          },
+        },
+        preparation: {
+          transfers: [
+            {
+              hostPath: "/host/overflow-directory",
+              guestPath: "D:\\runtime-cache\\overflow-directory",
+              sha256: "f".repeat(64),
+              byteSize: Number.MAX_SAFE_INTEGER,
+              members: [
+                {
+                  name: "weights/first.bin",
+                  sha256: "e".repeat(64),
+                  byteSize: Number.MAX_SAFE_INTEGER,
+                },
+                {
+                  name: "weights/second.bin",
+                  sha256: "d".repeat(64),
+                  byteSize: 1,
+                },
+              ],
+            },
+          ],
+        },
+        captureResult: async (...args) => calls.push(["capture", ...args]),
+        run: async (...args) => calls.push(["run", ...args]),
+      }),
+      /guest input transfer byte size invalid.*kind=directory_total.*exceeds Number\.MAX_SAFE_INTEGER/,
+    );
+    assert.deepEqual(calls, []);
+  });
+
+  it("rejects a zero-byte directory before probing or mutating the guest", async () => {
+    const calls = [];
+    await assert.rejects(
+      stageAiAcceptanceInputs({
+        config: { stateRoot: "/var/lib/vem-testbed/state" },
+        contract: {
+          testbed: {
+            guest: {
+              user: "VEMKiosk",
+              host: "win10-testbed.local",
+              identityFile: "/tmp/id",
+              knownHostsFile: "/tmp/known_hosts",
+              stagingPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
+            },
+          },
+        },
+        preparation: {
+          transfers: [
+            {
+              hostPath: "/host/empty-directory",
+              guestPath: "D:\\runtime-cache\\empty-directory",
+              sha256: "f".repeat(64),
+              byteSize: 0,
+              members: [],
+            },
+          ],
+        },
+        captureResult: async (...args) => calls.push(["capture", ...args]),
+        run: async (...args) => calls.push(["run", ...args]),
+      }),
+      /guest input transfer byte size invalid.*kind=directory_total.*byteSize=0.*positive safe integer/,
+    );
+    assert.deepEqual(calls, []);
+  });
+
   it("compresses the commit archive before the guest transfer", () => {
     const source = readFileSync(
       new URL("./runtime-testbed-orchestrator.mjs", import.meta.url),
@@ -860,7 +1148,15 @@ describe("runtime testbed scheduler contract", () => {
       transfers: Array.from({ length: 7 }, (_, index) => ({
         hostPath: `/snapshot/${index}`,
         guestPath: `C:\\ProgramData\\VEM\\testbed\\ai-inputs\\digest\\entry-${index}`,
-        ...(index < 2 || index === 6 ? { members: [] } : {}),
+        byteSize: 1,
+        sha256: "a".repeat(64),
+        ...(index < 2 || index === 6
+          ? {
+              members: [
+                { name: "member", byteSize: 1, sha256: "b".repeat(64) },
+              ],
+            }
+          : {}),
       })),
     };
     await stageAiAcceptanceInputs({
