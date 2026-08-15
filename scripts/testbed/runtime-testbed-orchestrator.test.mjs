@@ -19,6 +19,7 @@ import {
   admitAiAcceptanceInputs,
   createRunId,
   identicalVisionCoreArtifactSnapshot,
+  guestAcceptanceExecutionBudget,
   loadVisionCoreArtifacts,
   materializeVisionCoreArtifactSnapshot,
   parseOrchestratorOptions,
@@ -31,6 +32,15 @@ import {
 import { parseTriggerOptions } from "./runtime-testbed-trigger.mjs";
 
 const sha = "a".repeat(40);
+const sevenFocusedBusinessSets = [
+  "visionExperience",
+  "aiVirtualTryOn",
+  "pickupProtocol",
+  "presenceAndAudio",
+  "paymentRecovery",
+  "stockMaintenance",
+  "localOperations",
+];
 const visionCore = (root) => ({
   runtimeArchive: {
     hostPath: join(root, "vision-runtime.zip"),
@@ -749,10 +759,83 @@ describe("runtime testbed scheduler contract", () => {
       /const GUEST_FAST_EXECUTION_TIMEOUT_MS = 15 \* 60_000/,
     );
     assert.match(source, /error\.timedOut = true/);
-    assert.match(source, /timeoutLabel: "guest acceptance execution"/);
+    assert.match(source, /timeoutLabel: executionBudget\.timeoutLabel/);
+    assert.match(source, /child\.kill\("SIGTERM"\)/);
     assert.match(
       source,
       /error\.exitCode === 255 \|\| error\.timedOut === true/,
+    );
+  });
+
+  it("extends the guest SSH execution budget for canonical multi-focus fast acceptance", () => {
+    const budget = guestAcceptanceExecutionBudget({
+      mode: "fast",
+      focus: sevenFocusedBusinessSets,
+    });
+
+    assert.ok(budget.timeoutMs >= 20 * 60_000);
+    assert.equal(
+      budget.selectedSets.join(","),
+      sevenFocusedBusinessSets.join(","),
+    );
+    assert.match(budget.timeoutLabel, /budgetMs=/);
+    assert.match(budget.timeoutLabel, /selectedSets=/);
+  });
+
+  it("keeps a single focused business set within the former fast execution limit", () => {
+    assert.equal(
+      guestAcceptanceExecutionBudget({
+        mode: "fast",
+        focus: ["visionExperience"],
+      }).timeoutMs,
+      15 * 60_000,
+    );
+  });
+
+  it("retains the 45-minute execution limit for full acceptance", () => {
+    assert.equal(
+      guestAcceptanceExecutionBudget({ mode: "full" }).timeoutMs,
+      45 * 60_000,
+    );
+  });
+
+  it("rejects unknown focus but saturates every legal canonical fast selection", () => {
+    assert.throws(
+      () =>
+        guestAcceptanceExecutionBudget({
+          mode: "fast",
+          focus: ["unknownBusinessSet"],
+        }),
+      /unknown business check set: unknownBusinessSet/,
+    );
+    const registry = Array.from({ length: 8 }, (_, index) => ({
+      name: `focused${index}`,
+      core: false,
+      fullRequired: true,
+    }));
+    const eight = guestAcceptanceExecutionBudget({
+      mode: "fast",
+      focus: registry.map((descriptor) => descriptor.name),
+      registry,
+    });
+    assert.equal(eight.timeoutMs, 45 * 60_000);
+    assert.deepEqual(
+      eight.selectedSets,
+      registry.map((descriptor) => descriptor.name),
+    );
+
+    const expandedRegistry = Array.from({ length: 12 }, (_, index) => ({
+      name: `expanded${index}`,
+      core: false,
+      fullRequired: true,
+    }));
+    assert.equal(
+      guestAcceptanceExecutionBudget({
+        mode: "fast",
+        focus: expandedRegistry.map((descriptor) => descriptor.name),
+        registry: expandedRegistry,
+      }).timeoutMs,
+      45 * 60_000,
     );
   });
 

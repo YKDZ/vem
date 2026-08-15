@@ -24,6 +24,7 @@ import {
   materializeAiAcceptanceInputSnapshot,
   validateAiAcceptanceInputManifest,
 } from "./ai-acceptance-input-provisioning.mjs";
+import { selectBusinessChecks } from "./business-check-registry.mjs";
 import {
   adjudicateCalibrationSourceClosure,
   readCalibrationSourceClosure,
@@ -46,6 +47,7 @@ const GUEST_TRANSFER_STARTUP_ALLOWANCE_MS = 120_000;
 const GUEST_TRANSFER_MIN_BYTES_PER_SECOND = 8 * 1024 * 1024;
 const GUEST_TRANSFER_MAX_TIMEOUT_MS = 30 * 60_000;
 const GUEST_FAST_EXECUTION_TIMEOUT_MS = 15 * 60_000;
+const GUEST_FAST_ADDITIONAL_FOCUS_TIMEOUT_MS = 5 * 60_000;
 const GUEST_FULL_EXECUTION_TIMEOUT_MS = 45 * 60_000;
 const WINDOWS_REMOTE_COMMAND_MAX_CHARS = 8_000;
 const GUEST_ACCEPTANCE_INPUT_CACHE = "D:\\runtime-cache\\v1\\acceptance-inputs";
@@ -55,6 +57,31 @@ function required(value, label) {
     throw new Error(`${label} is required`);
   }
   return value.trim();
+}
+
+export function guestAcceptanceExecutionBudget({ mode, focus = [], registry }) {
+  const selected = selectBusinessChecks({ mode, focus, registry });
+  const selectedSets = selected.map((descriptor) => descriptor.name);
+  let timeoutMs;
+  if (mode === "full") {
+    timeoutMs = GUEST_FULL_EXECUTION_TIMEOUT_MS;
+  } else {
+    const additionalSets = selectedSets.length - 1;
+    const uncappedTimeoutMs =
+      GUEST_FAST_EXECUTION_TIMEOUT_MS +
+      additionalSets * GUEST_FAST_ADDITIONAL_FOCUS_TIMEOUT_MS;
+    if (selectedSets.length === 0 || !Number.isSafeInteger(uncappedTimeoutMs)) {
+      throw new Error(
+        `guest acceptance execution budget is invalid: selectedSets=${selectedSets.join(",")}`,
+      );
+    }
+    timeoutMs = Math.min(uncappedTimeoutMs, GUEST_FULL_EXECUTION_TIMEOUT_MS);
+  }
+  return {
+    timeoutMs,
+    selectedSets,
+    timeoutLabel: `guest acceptance execution; mode=${mode}; budgetMs=${timeoutMs}; selectedSets=${selectedSets.join(",")}`,
+  };
 }
 
 function artifactFile(value, label, sourceCommit = false) {
@@ -1272,6 +1299,10 @@ async function stageAndRunGuest({
   const guestScript = `${config.guestSourcePath}\\scripts\\testbed\\run-local-testbed-guest.ps1`;
   const focusArgument = powerShellFocusArgument(focus);
   const guestMode = mode === "measurement" ? "fast" : mode;
+  const executionBudget = guestAcceptanceExecutionBudget({
+    mode: guestMode,
+    focus,
+  });
   const measurementArgument = mode === "measurement" ? " -Measurement" : "";
   const execute = `& '${guestScript.replaceAll("'", "''")}' -Mode '${guestMode}' -Commit '${commit}' -Pass ${pass}${focusArgument}${measurementArgument}`;
   const invokePowerShell7 = [
@@ -1294,11 +1325,8 @@ async function stageAndRunGuest({
         encodedPowerShell(invokePowerShell7),
       ],
       {
-        timeoutMs:
-          mode === "full"
-            ? GUEST_FULL_EXECUTION_TIMEOUT_MS
-            : GUEST_FAST_EXECUTION_TIMEOUT_MS,
-        timeoutLabel: "guest acceptance execution",
+        timeoutMs: executionBudget.timeoutMs,
+        timeoutLabel: executionBudget.timeoutLabel,
       },
     );
   } catch (error) {
