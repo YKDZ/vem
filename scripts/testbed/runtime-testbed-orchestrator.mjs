@@ -603,10 +603,7 @@ function sshArguments(guest) {
 }
 
 function scpArguments(guest) {
-  return [
-    "-O",
-    ...sshArguments(guest),
-  ];
+  return ["-O", ...sshArguments(guest)];
 }
 
 function encodedPowerShell(script) {

@@ -515,7 +515,10 @@ describe("runtime testbed scheduler contract", () => {
       source,
       /function sshArguments[\s\S]*"ConnectTimeout=15"[\s\S]*"ServerAliveInterval=5"[\s\S]*"ServerAliveCountMax=3"/,
     );
-    assert.match(source, /function scpArguments[\s\S]*"-O"[\s\S]*\.\.\.sshArguments\(guest\)/);
+    assert.match(
+      source,
+      /function scpArguments[\s\S]*"-O"[\s\S]*\.\.\.sshArguments\(guest\)/,
+    );
     assert.match(
       source,
       /const scp = scpArguments\(guest\)[\s\S]*await runProcess\("scp", \[\.\.\.scp, archive/,
