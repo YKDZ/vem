@@ -1511,20 +1511,10 @@ export function validateVisionInstalledBinding(binding) {
   ) {
     throw new Error("Vision installed record site configuration path drifted");
   }
-  const siteConfigurationSha256 = sha256Hex(
+  const actualSiteConfigurationSha256 = sha256Hex(
     facts.siteConfigurationSha256,
     "Vision site configuration digest",
   );
-  if (
-    sha256Hex(
-      siteConfiguration.sha256,
-      "Vision installed record site configuration sha256",
-    ) !== siteConfigurationSha256
-  ) {
-    throw new Error(
-      "Vision installed record site configuration digest drifted",
-    );
-  }
   const downloadManifest = requiredObject(
     installedRecord.downloadManifest,
     "Vision installed download manifest",
@@ -1557,7 +1547,7 @@ export function validateVisionInstalledBinding(binding) {
   const frameSourceBinding = normalizeFrameSourceBinding(
     {
       adapter: "recorded_video",
-      configSha256: siteConfigurationSha256,
+      configSha256: actualSiteConfigurationSha256,
       top: installedRecord.fixtureSet?.top,
       front: installedRecord.fixtureSet?.front,
       expectedResults: installedRecord.fixtureSet?.expectedResults,
@@ -1735,7 +1725,6 @@ export function validateVisionInstalledBinding(binding) {
     listenerBindingSource: facts.listenerBindingSource,
     visionProcessCount: facts.visionProcessCount,
     visionProcessIds: facts.visionProcessIds,
-    siteConfigurationSha256,
     frameSourceBinding,
   };
 }

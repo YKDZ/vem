@@ -3032,7 +3032,7 @@ describe("vision try-on acceptance script", () => {
       },
       executablePath: "C:\\VEM\\vision\\app\\vending-vision.exe",
       executableSha256: "b".repeat(64),
-      siteConfigurationSha256: "a".repeat(64),
+      siteConfigurationSha256: "9".repeat(64),
       downloadManifestSha256: "c".repeat(64),
       fixtureManifestSha256: "f".repeat(64),
       fixtureTopSha256: frameSourceBinding().top.sha256,
@@ -3062,7 +3062,35 @@ describe("vision try-on acceptance script", () => {
     assert.equal(binding.processId, 4242);
     assert.equal(binding.processOwner, "VEMKiosk");
     assert.deepEqual(binding.visionProcessIds, [4242]);
+    assert.equal(Object.hasOwn(binding, "siteConfigurationSha256"), false);
     assert.equal(binding.frameSourceBinding.front.sha256, "c".repeat(64));
+    for (const [label, mutate, expected] of [
+      [
+        "a non-recorded source",
+        (facts) => (facts.siteConfiguration.cameras.top.source = "camera"),
+        /top camera must use recorded_video/,
+      ],
+      [
+        "a wrong front role",
+        (facts) => (facts.siteConfiguration.cameras.front.role = "presence"),
+        /front role drifted/,
+      ],
+      [
+        "an unbound fixture path",
+        (facts) =>
+          (facts.siteConfiguration.cameras.front.video_path =
+            "C:\\ProgramData\\VEM\\vision\\fixtures\\other.mp4"),
+        /not bound to the committed top\/front fixtures/,
+      ],
+    ]) {
+      const invalidConfiguration = structuredClone(bindingFacts);
+      mutate(invalidConfiguration);
+      assert.throws(
+        () => validateVisionInstalledBinding(invalidConfiguration),
+        expected,
+        label,
+      );
+    }
     const collectedThreeProcessBinding = buildVisionInstalledRuntimeBinding({
       canonicalProcesses: [
         {
