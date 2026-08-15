@@ -157,6 +157,13 @@ export function validateStartupOwnerReadinessEvidence(evidence, mode = "fast") {
   ) {
     throw new Error("Vision must run in the active VEMKiosk session");
   }
+  const visionWorkerCount = observation.vision?.workerCount;
+  if (
+    visionWorkerCount !== undefined &&
+    (!Number.isSafeInteger(visionWorkerCount) || visionWorkerCount < 0)
+  ) {
+    throw new Error("Vision worker count must be a non-negative integer");
+  }
   return {
     daemonService: daemonOwner.name,
     machineUiTask: machineUiOwner.name,

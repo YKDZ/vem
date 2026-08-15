@@ -44,6 +44,51 @@ function Get-ProcessEvidence([string]$ProcessName) {
   )
 }
 
+function Get-VisionConfigurationPath($VisionOwner) {
+  $arguments = @($VisionOwner.arguments)
+  $configIndexes = @(
+    for ($index = 0; $index -lt $arguments.Count; $index += 1) {
+      if ([string]$arguments[$index] -ceq "--config") { $index }
+    }
+  )
+  if ($configIndexes.Count -ne 1 -or $configIndexes[0] -ge ($arguments.Count - 1)) { return $null }
+  $configurationPath = [string]$arguments[$configIndexes[0] + 1]
+  if ([string]::IsNullOrWhiteSpace($configurationPath)) { return $null }
+  return $configurationPath
+}
+
+function Get-VisionProcessTopology($VisionOwner, [object[]]$ObservedProcesses) {
+  $issues = [System.Collections.Generic.List[string]]::new()
+  $configurationPath = Get-VisionConfigurationPath $VisionOwner
+  if ([string]::IsNullOrWhiteSpace($configurationPath)) {
+    $issues.Add("Vision owner manifest does not declare one configuration path") | Out-Null
+    return [ordered]@{ mainProcesses = @(); workerProcesses = @(); issues = @($issues) }
+  }
+  try {
+    $visionModule = Import-Module (Join-Path $PSScriptRoot "vision-main-artifacts.psm1") -Force -PassThru
+    $binding = & $visionModule {
+      param($AppDirectory, $ConfigurationPath)
+      Get-VisionMainCanonicalProcessBinding $AppDirectory $ConfigurationPath
+    } (Split-Path -Parent ([string]$VisionOwner.executablePath)) $configurationPath
+  } catch {
+    $issues.Add("Vision process topology could not be observed: $($_.Exception.Message)") | Out-Null
+    return [ordered]@{ mainProcesses = @(); workerProcesses = @(); issues = @($issues) }
+  }
+  if ($null -eq $binding) {
+    $issues.Add("Vision process topology is invalid") | Out-Null
+    return [ordered]@{ mainProcesses = @(); workerProcesses = @(); issues = @($issues) }
+  }
+  $mainProcessId = [int]$binding.mainProcess.ProcessId
+  $mainProcesses = @($ObservedProcesses | Where-Object { [int]$_.id -eq $mainProcessId })
+  $workerProcessIds = @($binding.workerProcesses | ForEach-Object { [int]$_.ProcessId })
+  $workerProcesses = @($ObservedProcesses | Where-Object { [int]$_.id -in $workerProcessIds })
+  if ($mainProcesses.Count -ne 1 -or $workerProcesses.Count -ne $workerProcessIds.Count) {
+    $issues.Add("Vision process topology changed while evidence was collected") | Out-Null
+    return [ordered]@{ mainProcesses = @(); workerProcesses = @(); issues = @($issues) }
+  }
+  return [ordered]@{ mainProcesses = $mainProcesses; workerProcesses = $workerProcesses; issues = @($issues) }
+}
+
 function Test-KioskIdentity([string]$Identity, [string]$KioskUser) {
   if ([string]::IsNullOrWhiteSpace($Identity)) { return $false }
   if ($Identity -ieq $KioskUser) { return $true }
@@ -137,14 +182,24 @@ function Get-CompetingOwners($Manifest) {
 
 $owners = Read-OwnerManifest $OwnerManifestPath
 $readyPath = Join-Path $DaemonDataDirectory "daemon-ready.json"
-$processes = [ordered]@{
+$observedProcesses = [ordered]@{
   daemon = @(Get-ProcessEvidence "vending-daemon.exe")
   machineUi = @(Get-ProcessEvidence "machine.exe")
   vision = @(Get-ProcessEvidence "vending-vision.exe")
 }
+$visionTopology = Get-VisionProcessTopology $owners.owners.vision @($observedProcesses.vision)
+$processes = [ordered]@{
+  daemon = @($observedProcesses.daemon)
+  machineUi = @($observedProcesses.machineUi)
+  vision = @($visionTopology.mainProcesses)
+}
+$visionWorkers = @($visionTopology.workerProcesses)
 $duplicateProcesses = @(
-  foreach ($entry in $processes.GetEnumerator()) {
+  foreach ($entry in @($processes.GetEnumerator() | Where-Object { $_.Key -in @("daemon", "machineUi") })) {
     if ($entry.Value.Count -gt 1) { [ordered]@{ component = $entry.Key; count = $entry.Value.Count } }
+  }
+  if ($visionTopology.issues.Count -gt 0 -and $observedProcesses.vision.Count -gt 1) {
+    [ordered]@{ component = "vision"; count = $observedProcesses.vision.Count }
   }
 )
 $missingProcesses = @(
@@ -158,7 +213,7 @@ $expectedProcessPaths = [ordered]@{
   vision = [string]$owners.owners.vision.executablePath
 }
 $unexpectedProcesses = @(
-  foreach ($entry in $processes.GetEnumerator()) {
+  foreach ($entry in $observedProcesses.GetEnumerator()) {
     foreach ($process in @($entry.Value)) {
       if ([string]$process.path -ine [string]$expectedProcessPaths[$entry.Key]) {
         [ordered]@{
@@ -189,7 +244,7 @@ if ($null -eq $serviceConfig) {
 }
 $interactiveProcessOwnerIssues = @(
   foreach ($component in @("machineUi", "vision")) {
-    foreach ($process in @($processes[$component])) {
+    foreach ($process in @($observedProcesses[$component])) {
       if (-not [string]::IsNullOrWhiteSpace([string]$process.user) -and -not (Test-KioskIdentity ([string]$process.user) ([string]$owners.kiosk.user))) {
         "$component process $($process.id) is not owned by $($owners.kiosk.user)"
       }
@@ -244,6 +299,8 @@ $result = [ordered]@{
   }
   tasks = @($tasks)
   processes = $processes
+  visionWorkers = $visionWorkers
+  visionTopologyIssues = @($visionTopology.issues)
   competingOwners = @(Get-CompetingOwners $owners)
   duplicateProcesses = $duplicateProcesses
   missingProcesses = $missingProcesses
@@ -264,6 +321,7 @@ if ($RequireHealthy) {
   if ($result.competingOwners.Count -gt 0) { $failures.Add("competing runtime owners: $($result.competingOwners -join ', ')") | Out-Null }
   if ($result.duplicateProcesses.Count -gt 0) { $failures.Add("duplicate runtime processes") | Out-Null }
   if ($result.missingProcesses.Count -gt 0) { $failures.Add("missing runtime processes: $($result.missingProcesses -join ', ')") | Out-Null }
+  if ($result.visionTopologyIssues.Count -gt 0) { $failures.Add("Vision process topology is invalid") | Out-Null }
   if ($result.unexpectedProcesses.Count -gt 0) { $failures.Add("runtime process path differs from the owner manifest") | Out-Null }
   if ($result.interactiveProcessOwnerIssues.Count -gt 0) { $failures.Add("interactive runtime process ownership is invalid: $($result.interactiveProcessOwnerIssues -join ', ')") | Out-Null }
   if (-not $result.daemon.readyFilePresent -or -not $result.daemon.readiness.ok) { $failures.Add("daemon readiness is unavailable") | Out-Null }

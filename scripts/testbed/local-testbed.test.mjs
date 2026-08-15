@@ -2253,6 +2253,8 @@ describe("Windows D cache contract", () => {
     assert.deepEqual(JSON.parse(result.stdout), {
       schemaVersion: "vem-baseline-vision-owner-harness/v1",
       mainProcessId: 5900,
+      processCount: 1,
+      workerCount: 2,
     });
   });
 

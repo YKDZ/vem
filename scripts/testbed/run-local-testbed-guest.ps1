@@ -850,6 +850,7 @@ function Convert-TestbedStartupProbeToReadiness(
       vision = [ordered]@{
         taskState = [string](@($Probe.tasks | Where-Object { [string]$_.name -eq "VEMVisionRuntime" })[0].state)
         processCount = @($Probe.processes.vision).Count
+        workerCount = @($Probe.visionWorkers).Count
         sessionId = [int]$VisionEvidence.sessionId
       }
     }

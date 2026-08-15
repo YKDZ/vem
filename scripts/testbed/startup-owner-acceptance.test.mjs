@@ -40,7 +40,12 @@ function passingEvidence(mode = "fast") {
         sessionId: 3,
         route: "#/catalog",
       },
-      vision: { taskState: "Running", processCount: 1, sessionId: 3 },
+      vision: {
+        taskState: "Running",
+        processCount: 1,
+        workerCount: 2,
+        sessionId: 3,
+      },
     },
     modeEvidence:
       mode === "full"
@@ -98,6 +103,28 @@ describe("installed runtime startup-owner acceptance", () => {
     assert.equal(
       validateStartupOwnerReadinessEvidence(evidence).catalogRoute,
       "#/catalog",
+    );
+  });
+
+  it("counts the listener-owning Vision main as the owner while retaining fork-worker evidence", () => {
+    const evidence = passingEvidence();
+
+    assert.equal(
+      validateStartupOwnerReadinessEvidence(evidence).visionTask,
+      "VEMVisionRuntime",
+    );
+
+    evidence.observation.vision.processCount = 3;
+    assert.throws(
+      () => validateStartupOwnerReadinessEvidence(evidence),
+      /Vision must run in the active VEMKiosk session/,
+    );
+
+    evidence.observation.vision.processCount = 1;
+    evidence.observation.vision.workerCount = -1;
+    assert.throws(
+      () => validateStartupOwnerReadinessEvidence(evidence),
+      /Vision worker count must be a non-negative integer/,
     );
   });
 

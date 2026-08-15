@@ -22,7 +22,7 @@ try {
 @{} | ConvertTo-Json -Compress
 '@ | Set-Content -LiteralPath "$repoRoot\scripts\windows\install-vem-runtime-owners.ps1" -Encoding utf8
   @'
-@{} | ConvertTo-Json -Compress
+@{ processes = @{ vision = @(@{ id = 5900 }) }; visionWorkers = @(@{ id = 7920 }, @{ id = 5656 }) } | ConvertTo-Json -Compress -Depth 4
 '@ | Set-Content -LiteralPath "$repoRoot\scripts\windows\probe-vem-runtime.ps1" -Encoding utf8
 
   $guestScript = Get-Content -LiteralPath $guestScriptPath -Raw
@@ -55,7 +55,13 @@ try {
   }
   function Convert-TestbedStartupProbeToReadiness {
     param($Probe, $OwnerManifest, $MachineEvidence, $VisionEvidence, $Route)
-    return [ordered]@{ vision = $VisionEvidence }
+    return [ordered]@{
+      vision = [ordered]@{
+        processCount = @($Probe.processes.vision).Count
+        workerCount = @($Probe.visionWorkers).Count
+        mainProcessId = [int]$VisionEvidence.processId
+      }
+    }
   }
   function Start-Sleep { param([int]$Milliseconds); throw "unexpected observer retry: $lastError" }
 
@@ -126,6 +132,8 @@ try {
 
   $baseline = Invoke-OwnerStart -Processes @($machine, $main, $workerOne, $workerTwo) -Listeners @($listener)
   Assert-True ([int]$baseline.visionEvidence.processId -eq 5900) "baseline observer did not select the listener-owning Vision main"
+  Assert-True ([int]$baseline.readiness.vision.processCount -eq 1) "startup readiness counted Vision fork workers as owners"
+  Assert-True ([int]$baseline.readiness.vision.workerCount -eq 2) "startup readiness omitted Vision fork-worker evidence"
 
   foreach ($case in @(
     @{ name = "second listener"; processes = @($machine, $main, $workerOne); listeners = @($listener, [pscustomobject]@{ LocalAddress = "127.0.0.1"; LocalPort = 7892; OwningProcess = 7920 }) },
@@ -144,7 +152,7 @@ try {
     Assert-True (-not [string]::IsNullOrWhiteSpace($failure)) "baseline observer accepted $($case.name)"
   }
 
-  [ordered]@{ schemaVersion = "vem-baseline-vision-owner-harness/v1"; mainProcessId = 5900 } | ConvertTo-Json -Compress
+  [ordered]@{ schemaVersion = "vem-baseline-vision-owner-harness/v1"; mainProcessId = 5900; processCount = [int]$baseline.readiness.vision.processCount; workerCount = [int]$baseline.readiness.vision.workerCount } | ConvertTo-Json -Compress
 } finally {
   if ($createdCDrive) { Remove-PSDrive -Name C -Force -ErrorAction SilentlyContinue }
   Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
