@@ -600,6 +600,57 @@ function Test-VisionMainCanonicalConfigurationCommandLine([string]$CommandLine, 
   }
 }
 
+function Test-VisionMainMultiprocessingForkCommandLine([string]$CommandLine) {
+  return @(
+    Split-VisionWindowsCommandLine $CommandLine |
+      Where-Object { $_ -ceq "--multiprocessing-fork" }
+  ).Count -eq 1
+}
+
+function Get-VisionMainCanonicalProcessBinding([string]$AppDirectory, [string]$ConfigurationPath) {
+  $canonicalExecutablePath = [IO.Path]::GetFullPath((Join-Path $AppDirectory "vending-vision.exe"))
+  $canonicalConfigurationPath = [IO.Path]::GetFullPath($ConfigurationPath)
+  $canonicalProcesses = @(
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+      Where-Object {
+        $_.ExecutablePath -and
+        ([IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonicalExecutablePath)
+      }
+  )
+  $listeners = @(
+    Get-NetTCPConnection -LocalAddress "127.0.0.1" -LocalPort 7892 -State Listen -ErrorAction SilentlyContinue
+  )
+  if ($canonicalProcesses.Count -eq 0 -or $listeners.Count -ne 1) { return $null }
+
+  $processIds = [Collections.Generic.List[int]]::new()
+  foreach ($process in $canonicalProcesses) {
+    try { $processId = [int]$process.ProcessId } catch { return $null }
+    if ($processId -lt 1 -or $processIds.Contains($processId)) { return $null }
+    $processIds.Add($processId)
+  }
+  try { $listenerOwnerProcessId = [int]$listeners[0].OwningProcess } catch { return $null }
+  if ($listenerOwnerProcessId -lt 1) { return $null }
+  $mainProcesses = @($canonicalProcesses | Where-Object { [int]$_.ProcessId -eq $listenerOwnerProcessId })
+  if ($mainProcesses.Count -ne 1) { return $null }
+  $mainProcess = $mainProcesses[0]
+  if (-not (Test-VisionMainCanonicalConfigurationCommandLine $mainProcess.CommandLine $canonicalConfigurationPath)) {
+    return $null
+  }
+  $workerProcesses = @($canonicalProcesses | Where-Object { $_ -ne $mainProcess })
+  foreach ($workerProcess in $workerProcesses) {
+    try { $parentProcessId = [int]$workerProcess.ParentProcessId } catch { return $null }
+    if ($parentProcessId -ne $listenerOwnerProcessId -or -not (Test-VisionMainMultiprocessingForkCommandLine $workerProcess.CommandLine)) {
+      return $null
+    }
+  }
+  return [pscustomobject]@{
+    mainProcess = $mainProcess
+    workerProcesses = $workerProcesses
+    canonicalProcesses = $canonicalProcesses
+    listeners = $listeners
+  }
+}
+
 function Get-VisionMainOwnedProcessIds([string]$AppDirectory, [string]$ConfigurationPath) {
   $canonicalExecutablePath = [IO.Path]::GetFullPath((Join-Path $AppDirectory "vending-vision.exe"))
   $canonicalConfigurationPath = [IO.Path]::GetFullPath($ConfigurationPath)
@@ -820,4 +871,4 @@ function Install-VisionMainArtifact {
   }
 }
 
-Export-ModuleMember -Function Get-VisionMainArtifactCache, Resolve-VisionMainRun, Resolve-VisionMainArtifact, Assert-VisionCachedArtifacts, Assert-VisionArchive, Convert-VisionCandidateToMainDelivery, Assert-VisionSiteConfiguration, Get-VisionMainUris, Invoke-VisionMainProbe, Install-VisionMainArtifact, Test-VisionMainCanonicalConfigurationCommandLine
+Export-ModuleMember -Function Get-VisionMainArtifactCache, Resolve-VisionMainRun, Resolve-VisionMainArtifact, Assert-VisionCachedArtifacts, Assert-VisionArchive, Convert-VisionCandidateToMainDelivery, Assert-VisionSiteConfiguration, Get-VisionMainUris, Invoke-VisionMainProbe, Install-VisionMainArtifact, Test-VisionMainCanonicalConfigurationCommandLine, Test-VisionMainMultiprocessingForkCommandLine, Get-VisionMainCanonicalProcessBinding

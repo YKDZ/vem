@@ -85,6 +85,8 @@ test("installs one fixed app directory and probes health plus machine protocol",
   );
   assert.match(module, /Split-VisionWindowsCommandLine/);
   assert.match(module, /Test-VisionMainCanonicalConfigurationCommandLine/);
+  assert.match(module, /Test-VisionMainMultiprocessingForkCommandLine/);
+  assert.match(module, /Get-VisionMainCanonicalProcessBinding/);
   assert.doesNotMatch(
     module,
     /CommandLine\)\.Replace\(\[string\]\[char\]34, ''\)\.ToLowerInvariant\(\)\.Contains/,

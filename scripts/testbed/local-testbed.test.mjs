@@ -1718,7 +1718,7 @@ describe("Windows D cache contract", () => {
     );
     assert.match(
       guestScript,
-      /managedCanonicalVisionProcessIds[\s\S]*ParentProcessId[\s\S]*--multiprocessing-fork/,
+      /managedCanonicalVisionProcessIds[\s\S]*ParentProcessId[\s\S]*Test-VisionMainMultiprocessingForkCommandLine/,
     );
     assert.doesNotMatch(
       guestScript,
@@ -2237,6 +2237,23 @@ describe("Windows D cache contract", () => {
         "ready",
       ]);
     }
+  });
+
+  it("observes one listener-owning Vision main with direct multiprocessing workers at the installed owner boundary", () => {
+    const result = spawnSync(
+      "pwsh",
+      [
+        "-NoProfile",
+        "-File",
+        "scripts/testbed/run-local-testbed-guest-vision-owner.windows-harness.ps1",
+      ],
+      { cwd: new URL("../..", import.meta.url), encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      schemaVersion: "vem-baseline-vision-owner-harness/v1",
+      mainProcessId: 5900,
+    });
   });
 
   it("does not require reconstructed guest input for clear_cache", () => {

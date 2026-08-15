@@ -516,6 +516,39 @@ function Wait-CanonicalProcessEvidence([string]$Name, [string]$ExpectedPath, [in
   throw "canonical $Name process did not become observable: $lastError"
 }
 
+function Get-TestbedVisionRuntimeEvidence {
+  $visionModule = Import-Module (Join-Path $PSScriptRoot "..\windows\vision-main-artifacts.psm1") -Force -PassThru
+  $binding = & $visionModule {
+    param($AppDirectory, $ConfigurationPath)
+    Get-VisionMainCanonicalProcessBinding $AppDirectory $ConfigurationPath
+  } "C:\VEM\vision\app" "C:\ProgramData\VEM\vision\site.json"
+  if ($null -eq $binding) { throw "installed Vision process binding is not canonical" }
+  $cim = $binding.mainProcess
+  $process = Get-Process -Id ([int]$cim.ProcessId) -ErrorAction Stop
+  $owner = Invoke-CimMethod -InputObject $cim -MethodName GetOwner -ErrorAction Stop
+  if ([string]$owner.User -ine "VEMKiosk") {
+    throw "installed Vision process is not owned by the baseline interactive user"
+  }
+  return [ordered]@{
+    executablePath = [IO.Path]::GetFullPath($cim.ExecutablePath)
+    processId = [int]$process.Id
+    sessionId = [int]$process.SessionId
+    principal = "{0}\{1}" -f [string]$owner.Domain, [string]$owner.User
+    commandLine = [string]$cim.CommandLine
+  }
+}
+
+function Wait-TestbedVisionRuntimeEvidence([int]$TimeoutSeconds = 30) {
+  $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+  do {
+    try {
+      return Get-TestbedVisionRuntimeEvidence
+    } catch { $lastError = $_ }
+    Start-Sleep -Milliseconds 500
+  } while ([DateTime]::UtcNow -lt $deadline)
+  throw "canonical installed Vision process did not become observable: $lastError"
+}
+
 function Invoke-InstalledTauriRouteAdmission([string]$Endpoint, [int]$TimeoutSeconds = 120) {
   $stdoutPath = Join-Path $handoffRoot "installed-tauri-route-admission.stdout.log"
   $stderrPath = Join-Path $handoffRoot "installed-tauri-route-admission.stderr.log"
@@ -912,7 +945,7 @@ function Start-TestbedInstalledRuntimeOwners {
   $target = Wait-InstalledTauriRoute "#/catalog"
   $route = ([uri][string]$target.url).Fragment
   $machineEvidence = Wait-CanonicalProcessEvidence "machine.exe" $MachinePath 30
-  $visionEvidence = Wait-CanonicalProcessEvidence "vending-vision.exe" "C:\VEM\vision\app\vending-vision.exe" 30
+  $visionEvidence = Wait-TestbedVisionRuntimeEvidence 30
   $probeRaw = & (Join-Path $repoRoot "scripts\windows\probe-vem-runtime.ps1") -RequireHealthy
   $probe = $probeRaw | ConvertFrom-Json
   $readiness = Convert-TestbedStartupProbeToReadiness $probe $ownerManifest $machineEvidence $visionEvidence $route
@@ -966,7 +999,10 @@ function Get-TestbedCanonicalVisionProcesses([string]$AppDirectory, [string]$Con
   $managedCanonicalVisionChildProcesses = @(
     $canonicalVisionProcesses | Where-Object {
       [int]$_.ParentProcessId -in $managedCanonicalVisionProcessIds -and
-      [string]$_.CommandLine -match '(?:^|\s)"?--multiprocessing-fork"?(?:\s|$)'
+      (& $visionModule {
+        param($CommandLine)
+        Test-VisionMainMultiprocessingForkCommandLine $CommandLine
+      } $_.CommandLine)
     }
   )
   $managedCanonicalVisionProcesses = @(

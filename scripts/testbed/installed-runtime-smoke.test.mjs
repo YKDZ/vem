@@ -228,7 +228,9 @@ describe("installed production runtime smoke", () => {
     assert.match(guest, /installed-tauri-route-admission\.mjs/);
     assert.match(guest, /Write-TestbedPhase "admit-installed-tauri-catalog"/);
     assert.match(guest, /Wait-InstalledTauriRoute "#\/catalog"/);
-    assert.match(guest, /Wait-CanonicalProcessEvidence "vending-vision\.exe"/);
+    assert.match(guest, /function Wait-TestbedVisionRuntimeEvidence/);
+    assert.match(guest, /Get-VisionMainCanonicalProcessBinding/);
+    assert.match(guest, /Wait-TestbedVisionRuntimeEvidence 30/);
     assert.match(
       guest,
       /SetEnvironmentVariable\("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", \$null, \$scope\)/,
