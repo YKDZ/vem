@@ -3037,7 +3037,7 @@ async function setRecordedFrontFixture(fixtureFile) {
     "$config = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json",
     "$frontPath = [string]$config.cameras.front.video_path",
     `$config.cameras.front.video_path = Join-Path (Split-Path -Parent $frontPath) '${fixtureFile}'`,
-    "($config | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $path -Encoding utf8",
+    "[IO.File]::WriteAllText($path, ($config | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))",
   ].join("; ");
   await runPowerShell(
     command,
