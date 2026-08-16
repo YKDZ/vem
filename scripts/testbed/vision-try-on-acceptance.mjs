@@ -4006,7 +4006,7 @@ async function collectInstalledFieldRegressionChecks({
 
   // ---- Top-camera departure must not cancel an active try-on attempt ----
   await writeInstalledVisionSiteConfiguration(
-    "recorded-video/front-vertical-unstable.mp4",
+    "front-vertical-unstable.mp4",
     fixtureCommit,
     { profilePushIntervalMs: 5000 },
   );
@@ -4073,7 +4073,7 @@ async function collectInstalledFieldRegressionChecks({
 
   // ---- Manual capture works on the aligned vertical close-up ----
   await writeInstalledVisionSiteConfiguration(
-    "recorded-video/front-vertical.mp4",
+    "front-vertical.mp4",
     fixtureCommit,
   );
   const manualFence = await restartBaseline();
