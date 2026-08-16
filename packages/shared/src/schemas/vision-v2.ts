@@ -245,6 +245,14 @@ export const visionV2AttemptCancelMessageSchema = envelopeBaseSchema.extend({
   }),
 });
 
+export const visionV2AttemptAdjustMessageSchema = envelopeBaseSchema.extend({
+  type: z.literal("vision.try_on.attempt.adjust"),
+  payload: z.strictObject({
+    attemptId: nonSentinelUuidSchema,
+    garmentScale: z.number().min(0.8).max(1.6),
+  }),
+});
+
 const acquiringPayloadBase = {
   attemptId: nonSentinelUuidSchema,
   preview: visionV2AcquisitionPreviewSchema,
@@ -273,14 +281,9 @@ const visionV2AttemptAcquiringPayloadSchema = z.union([
   z.strictObject({
     ...acquiringPayloadBase,
     occupancy: z.literal("single"),
-    guidance: z.literal("hold_still"),
+    guidance: z.literal("counting_down"),
     manualCaptureAllowed: z.literal(true),
-  }),
-  z.strictObject({
-    ...acquiringPayloadBase,
-    occupancy: z.literal("single"),
-    guidance: z.literal("ready"),
-    manualCaptureAllowed: z.literal(false),
+    holdRemainingMs: z.number().int().min(0).max(10_000),
   }),
 ]);
 
@@ -307,6 +310,14 @@ export const visionV2AttemptGeneratingMessageSchema = envelopeBaseSchema.extend(
 
 export const visionV2AttemptCompletedMessageSchema = envelopeBaseSchema.extend({
   type: z.literal("vision.try_on.attempt.completed"),
+  payload: z.strictObject({
+    attemptId: nonSentinelUuidSchema,
+    result: visionV2ResultReferenceSchema,
+  }),
+});
+
+export const visionV2ResultAdjustedMessageSchema = envelopeBaseSchema.extend({
+  type: z.literal("vision.try_on.result.adjusted"),
   payload: z.strictObject({
     attemptId: nonSentinelUuidSchema,
     result: visionV2ResultReferenceSchema,
@@ -348,6 +359,7 @@ export const visionV2ClientMessageSchema = z.discriminatedUnion("type", [
   visionV2AttemptStartMessageSchema,
   visionV2AttemptCaptureMessageSchema,
   visionV2AttemptCancelMessageSchema,
+  visionV2AttemptAdjustMessageSchema,
 ]);
 
 export const visionV2ServerMessageSchema = z.discriminatedUnion("type", [
@@ -356,6 +368,7 @@ export const visionV2ServerMessageSchema = z.discriminatedUnion("type", [
   visionV2AttemptAcquiringMessageSchema,
   visionV2AttemptGeneratingMessageSchema,
   visionV2AttemptCompletedMessageSchema,
+  visionV2ResultAdjustedMessageSchema,
   visionV2AttemptFailedMessageSchema,
   visionV2AttemptCanceledMessageSchema,
 ]);

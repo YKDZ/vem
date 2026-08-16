@@ -78,6 +78,10 @@ export const visionV2ClientFixtures = {
     attemptId,
     reason: "user",
   }),
+  adjust: envelope("vision.try_on.attempt.adjust", {
+    attemptId,
+    garmentScale: 1.15,
+  }),
 } as const;
 
 export const visionV2ServerFixtures = {
@@ -141,25 +145,23 @@ export const visionV2ServerFixtures = {
     guidance: "align",
     manualCaptureAllowed: false,
   }),
-  acquiringHoldStill: envelope("vision.try_on.attempt.acquiring", {
+  acquiringCountingDown: envelope("vision.try_on.attempt.acquiring", {
     attemptId,
     preview: preview(),
     occupancy: "single",
-    guidance: "hold_still",
+    guidance: "counting_down",
     manualCaptureAllowed: true,
-  }),
-  acquiringReady: envelope("vision.try_on.attempt.acquiring", {
-    attemptId,
-    preview: preview(),
-    occupancy: "single",
-    guidance: "ready",
-    manualCaptureAllowed: false,
+    holdRemainingMs: 1500,
   }),
   generating: envelope("vision.try_on.attempt.generating", {
     attemptId,
     stage: "preparing",
   }),
   completed: envelope("vision.try_on.attempt.completed", {
+    attemptId,
+    result: result(),
+  }),
+  adjusted: envelope("vision.try_on.result.adjusted", {
     attemptId,
     result: result(),
   }),
@@ -397,6 +399,30 @@ export const invalidVisionV2ClientFixtures = [
       payload(message).unexpected = true;
     },
   ),
+  mutate(
+    "rejects-client-adjust-scale-too-small",
+    "payload.garmentScale",
+    visionV2ClientFixtures.adjust,
+    (message) => {
+      payload(message).garmentScale = 0.79;
+    },
+  ),
+  mutate(
+    "rejects-client-adjust-scale-too-large",
+    "payload.garmentScale",
+    visionV2ClientFixtures.adjust,
+    (message) => {
+      payload(message).garmentScale = 1.61;
+    },
+  ),
+  mutate(
+    "rejects-client-adjust-strict-extra",
+    "payload.unexpected",
+    visionV2ClientFixtures.adjust,
+    (message) => {
+      payload(message).unexpected = true;
+    },
+  ),
 ] as const;
 
 export const invalidVisionV2ServerFixtures = [
@@ -468,7 +494,7 @@ export const invalidVisionV2ServerFixtures = [
   mutate(
     "rejects-preview-wrong-static-path",
     "payload.preview.reference",
-    visionV2ServerFixtures.acquiringHoldStill,
+    visionV2ServerFixtures.acquiringCountingDown,
     (message) => {
       previewPayload(message).reference =
         "http://127.0.0.1:65000/v2/try-on/acquisition/other.mjpeg?token=preview-token";
@@ -477,7 +503,7 @@ export const invalidVisionV2ServerFixtures = [
   mutate(
     "rejects-preview-url-https",
     "payload.preview.reference",
-    visionV2ServerFixtures.acquiringHoldStill,
+    visionV2ServerFixtures.acquiringCountingDown,
     (message) => {
       previewPayload(message).reference =
         "https://127.0.0.1:65000/v2/try-on/acquisition/preview.mjpeg?token=preview-token";
@@ -486,7 +512,7 @@ export const invalidVisionV2ServerFixtures = [
   mutate(
     "rejects-preview-url-origin",
     "payload.preview.reference",
-    visionV2ServerFixtures.acquiringHoldStill,
+    visionV2ServerFixtures.acquiringCountingDown,
     (message) => {
       previewPayload(message).reference =
         "http://example.test/v2/try-on/acquisition/preview.mjpeg?token=preview-token";
@@ -495,7 +521,7 @@ export const invalidVisionV2ServerFixtures = [
   mutate(
     "rejects-preview-url-port",
     "payload.preview.reference",
-    visionV2ServerFixtures.acquiringHoldStill,
+    visionV2ServerFixtures.acquiringCountingDown,
     (message) => {
       previewPayload(message).reference =
         "http://127.0.0.1:65536/v2/try-on/acquisition/preview.mjpeg?token=preview-token";
@@ -504,7 +530,7 @@ export const invalidVisionV2ServerFixtures = [
   mutate(
     "rejects-preview-url-fragment",
     "payload.preview.reference",
-    visionV2ServerFixtures.acquiringHoldStill,
+    visionV2ServerFixtures.acquiringCountingDown,
     (message) => {
       previewPayload(message).reference =
         "http://127.0.0.1:65000/v2/try-on/acquisition/preview.mjpeg?token=preview-token#fragment";
@@ -513,7 +539,7 @@ export const invalidVisionV2ServerFixtures = [
   mutate(
     "rejects-preview-url-empty-token",
     "payload.preview.reference",
-    visionV2ServerFixtures.acquiringHoldStill,
+    visionV2ServerFixtures.acquiringCountingDown,
     (message) => {
       previewPayload(message).reference =
         "http://127.0.0.1:65000/v2/try-on/acquisition/preview.mjpeg?token=";
@@ -522,7 +548,7 @@ export const invalidVisionV2ServerFixtures = [
   mutate(
     "rejects-preview-url-duplicate-token",
     "payload.preview.reference",
-    visionV2ServerFixtures.acquiringHoldStill,
+    visionV2ServerFixtures.acquiringCountingDown,
     (message) => {
       previewPayload(message).reference =
         "http://127.0.0.1:65000/v2/try-on/acquisition/preview.mjpeg?token=one&token=two";
@@ -531,7 +557,7 @@ export const invalidVisionV2ServerFixtures = [
   mutate(
     "rejects-preview-url-overlong-token",
     "payload.preview.reference",
-    visionV2ServerFixtures.acquiringHoldStill,
+    visionV2ServerFixtures.acquiringCountingDown,
     (message) => {
       previewPayload(message).reference =
         `http://127.0.0.1:65000/v2/try-on/acquisition/preview.mjpeg?token=${overlongToken}`;
@@ -540,7 +566,7 @@ export const invalidVisionV2ServerFixtures = [
   mutate(
     "rejects-preview-url-non-base64url-token",
     "payload.preview.reference",
-    visionV2ServerFixtures.acquiringHoldStill,
+    visionV2ServerFixtures.acquiringCountingDown,
     (message) => {
       previewPayload(message).reference =
         "http://127.0.0.1:65000/v2/try-on/acquisition/preview.mjpeg?token=not%2Fsafe";
@@ -571,17 +597,57 @@ export const invalidVisionV2ServerFixtures = [
     },
   ),
   mutate(
-    "rejects-ready-manual",
+    "rejects-counting-down-manual-disabled",
     "payload.manualCaptureAllowed",
-    visionV2ServerFixtures.acquiringReady,
+    visionV2ServerFixtures.acquiringCountingDown,
     (message) => {
-      payload(message).manualCaptureAllowed = true;
+      payload(message).manualCaptureAllowed = false;
+    },
+  ),
+  mutate(
+    "rejects-counting-down-hold-missing",
+    "payload.holdRemainingMs",
+    visionV2ServerFixtures.acquiringCountingDown,
+    (message) => {
+      delete payload(message).holdRemainingMs;
+    },
+  ),
+  mutate(
+    "rejects-counting-down-hold-negative",
+    "payload.holdRemainingMs",
+    visionV2ServerFixtures.acquiringCountingDown,
+    (message) => {
+      payload(message).holdRemainingMs = -1;
+    },
+  ),
+  mutate(
+    "rejects-counting-down-hold-over-cap",
+    "payload.holdRemainingMs",
+    visionV2ServerFixtures.acquiringCountingDown,
+    (message) => {
+      payload(message).holdRemainingMs = 10_001;
+    },
+  ),
+  mutate(
+    "rejects-counting-down-hold-fractional",
+    "payload.holdRemainingMs",
+    visionV2ServerFixtures.acquiringCountingDown,
+    (message) => {
+      payload(message).holdRemainingMs = 1.5;
+    },
+  ),
+  mutate(
+    "rejects-legacy-ready-guidance",
+    "payload.guidance",
+    visionV2ServerFixtures.acquiringCountingDown,
+    (message) => {
+      payload(message).guidance = "ready";
     },
   ),
   mutate(
     "rejects-acquiring-extra",
     "payload.percentage",
-    visionV2ServerFixtures.acquiringHoldStill,
+    visionV2ServerFixtures.acquiringCountingDown,
     (message) => {
       payload(message).percentage = 50;
     },

@@ -55,13 +55,9 @@ describe("Vision V2 shared contract", () => {
       }),
       expect.objectContaining({
         occupancy: "single",
-        guidance: "hold_still",
+        guidance: "counting_down",
         manualCaptureAllowed: true,
-      }),
-      expect.objectContaining({
-        occupancy: "single",
-        guidance: "ready",
-        manualCaptureAllowed: false,
+        holdRemainingMs: 1500,
       }),
     ]);
   });

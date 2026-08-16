@@ -51,6 +51,7 @@ export const visionErrorCodeSchema = z.enum([
   "unsupported_version",
   "camera_unavailable",
   "fast_unavailable",
+  "adjustment_unavailable",
   "model_not_ready",
   "internal_error",
 ]);
