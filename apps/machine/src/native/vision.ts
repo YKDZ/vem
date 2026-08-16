@@ -643,6 +643,145 @@ export async function openVisionFastAttempt(
   );
 }
 
+export type VisionGarmentAdjustmentInput = {
+  attemptId: string;
+  garmentScale: number;
+};
+
+/**
+ * Re-render one completed Fast result at a customer-chosen garment scale.
+ *
+ * Adjustment deliberately uses its own short-lived socket instead of keeping
+ * the attempt socket open after its terminal: a completed attempt already
+ * released its owner, so the re-render is an independent post-result request.
+ */
+export async function openVisionGarmentAdjustment(
+  connection: VisionRuntimeConnection = {},
+  input: VisionGarmentAdjustmentInput,
+  signal?: AbortSignal,
+): Promise<{
+  result: Extract<
+    VisionV2ServerMessage,
+    { type: "vision.try_on.result.adjusted" }
+  >["payload"]["result"];
+  visionSocketUrl: string;
+}> {
+  const options = connectionOptions(connection);
+  if (!options.enabled) throw new Error("视觉模块未启用，无法调整试衣结果");
+  const socket = await openVisionSocket(options.url, options.timeoutMs, signal);
+  try {
+    socket.send(
+      JSON.stringify(createVisionV2HelloMessage(options.machineCode)),
+    );
+    const ready = await nextVisionV2Message(socket, options.timeoutMs, signal);
+    if (signal?.aborted) throw new Error("Vision V2 adjustment aborted");
+    if (ready.type !== "vision.ready") {
+      throw new Error(`unexpected Vision V2 handshake message: ${ready.type}`);
+    }
+    const identityMatches =
+      ready.payload.schemaVersion ===
+        VISION_V2_RUNTIME_IDENTITY.schemaVersion &&
+      ready.payload.bundleVersion ===
+        VISION_V2_RUNTIME_IDENTITY.bundleVersion &&
+      ready.payload.contractDigest ===
+        VISION_V2_RUNTIME_IDENTITY.contractDigest;
+    if (
+      !identityMatches ||
+      !ready.payload.fastReady ||
+      !ready.payload.capabilities.includes("try_on_fast") ||
+      !ready.payload.visionBusinessReady
+    ) {
+      throw new Error("Vision V2 Fast adjustment capability is unavailable");
+    }
+    const adjustMessage = visionV2ClientMessageSchema.parse({
+      protocol: VISION_V2_RUNTIME_IDENTITY.protocol,
+      type: "vision.try_on.attempt.adjust",
+      messageId: createMessageId("attempt-adjust"),
+      timestamp: nowIso(),
+      payload: {
+        attemptId: input.attemptId,
+        garmentScale: input.garmentScale,
+      },
+    });
+    socket.send(JSON.stringify(adjustMessage));
+    const deadline = Date.now() + options.timeoutMs;
+    while (Date.now() < deadline) {
+      const message = await nextVisionV2AdjustmentMessage(
+        socket,
+        Math.max(1, deadline - Date.now()),
+        signal,
+      );
+      if (
+        message.type === "vision.try_on.result.adjusted" &&
+        message.payload.attemptId === input.attemptId
+      ) {
+        return { result: message.payload.result, visionSocketUrl: options.url };
+      }
+    }
+    throw new Error("Vision V2 adjustment timed out");
+  } finally {
+    closeSocket(socket);
+  }
+}
+
+async function nextVisionV2AdjustmentMessage(
+  socket: WebSocket,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<
+  Extract<
+    VisionV2ServerMessage,
+    { type: "vision.try_on.result.adjusted" }
+  >
+> {
+  const event = await new Promise<MessageEvent>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error("waiting for vision message timed out"));
+    }, timeoutMs);
+    const onMessage = (messageEvent: MessageEvent): void => {
+      cleanup();
+      resolve(messageEvent);
+    };
+    const onError = (): void => {
+      cleanup();
+      reject(new Error("vision websocket error"));
+    };
+    const onAbort = (): void => {
+      cleanup();
+      reject(new Error("Vision V2 adjustment aborted"));
+    };
+    function cleanup(): void {
+      clearTimeout(timer);
+      socket.removeEventListener("message", onMessage);
+      socket.removeEventListener("error", onError);
+      signal?.removeEventListener("abort", onAbort);
+    }
+    socket.addEventListener("message", onMessage);
+    socket.addEventListener("error", onError);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+  if (typeof event.data !== "string") {
+    throw new Error("vision websocket returned a non-text frame");
+  }
+  const decoded: unknown = JSON.parse(event.data);
+  if (
+    typeof decoded === "object" &&
+    decoded !== null &&
+    "type" in decoded &&
+    decoded.type === "vision.error"
+  ) {
+    throw errorFromVisionMessage(
+      visionServerMessageSchema.parse(decoded) as VisionErrorMessage,
+    );
+  }
+  const message = parseVisionV2ServerMessage(decoded);
+  if (message.type !== "vision.try_on.result.adjusted") {
+    throw new Error(`unexpected vision message while adjusting: ${message.type}`);
+  }
+  return message;
+}
+
 function isPermittedFastAttemptEvent(
   message: VisionFastAttemptEvent,
   lifecycle: "starting" | "accepted" | "acquiring" | "generating",

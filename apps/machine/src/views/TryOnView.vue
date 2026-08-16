@@ -51,14 +51,33 @@ const guidanceText = computed(() => {
       return "请确保画面中只有一人";
     case "align":
       return "请面向镜头并调整站位";
-    case "hold_still":
-      return "请保持站稳，可手动采集";
-    case "ready":
-      return "正在采集，请保持站稳";
+    case "counting_down": {
+      const seconds = Math.max(
+        0,
+        Math.ceil((tryOn.holdRemainingMs ?? 0) / 1000),
+      );
+      return `请保持不动，${seconds} 秒后自动拍摄`;
+    }
     default:
       return "正在连接镜头";
   }
 });
+const manualCaptureLabel = computed(() =>
+  tryOn.guidance === "counting_down" ? "立即拍摄" : "手动采集",
+);
+const garmentScalePercent = computed(() => Math.round(tryOn.garmentScale * 100));
+const canScaleGarment = computed(
+  () =>
+    tryOn.phase === "completed" &&
+    tryOn.mode === "fast" &&
+    !tryOn.adjusting,
+);
+const canScaleUp = computed(
+  () => canScaleGarment.value && tryOn.garmentScale < 1.6,
+);
+const canScaleDown = computed(
+  () => canScaleGarment.value && tryOn.garmentScale > 0.8,
+);
 const cancellationText = computed(() => {
   switch (tryOn.failureReason) {
     case "departure":
@@ -159,6 +178,11 @@ async function returnToProduct(): Promise<void> {
     },
   });
 }
+
+function scaleGarment(delta: number): void {
+  if (!canScaleGarment.value) return;
+  void tryOn.requestGarmentScale(tryOn.garmentScale + delta);
+}
 </script>
 
 <template>
@@ -223,6 +247,36 @@ async function returnToProduct(): Promise<void> {
       >
         商品购买不受影响。
       </p>
+      <div
+        v-if="tryOn.phase === 'completed' && tryOn.mode === 'fast'"
+        class="flex items-center justify-center gap-4"
+        data-test="try-on-garment-scale"
+      >
+        <button
+          class="kiosk-touch-target rounded-lg border border-neutral-300 bg-white px-5 py-3 text-lg font-bold disabled:opacity-35"
+          type="button"
+          data-test="try-on-scale-down"
+          :disabled="!canScaleDown"
+          @click="scaleGarment(-0.05)"
+        >
+          − 缩小
+        </button>
+        <span
+          class="w-16 text-center text-lg font-bold text-neutral-700"
+          data-test="try-on-scale-value"
+        >
+          {{ garmentScalePercent }}%
+        </span>
+        <button
+          class="kiosk-touch-target rounded-lg border border-neutral-300 bg-white px-5 py-3 text-lg font-bold disabled:opacity-35"
+          type="button"
+          data-test="try-on-scale-up"
+          :disabled="!canScaleUp"
+          @click="scaleGarment(0.05)"
+        >
+          + 放大
+        </button>
+      </div>
       <div class="flex flex-wrap justify-center gap-4">
         <button
           v-if="tryOn.phase === 'acquiring'"
@@ -234,7 +288,7 @@ async function returnToProduct(): Promise<void> {
           data-test="try-on-manual-capture"
           @click="requestManualCapture"
         >
-          手动采集
+          {{ manualCaptureLabel }}
         </button>
         <button
           v-if="tryOn.hasActiveAttempt"

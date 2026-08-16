@@ -220,7 +220,7 @@ describe("try-on store current catalog boundary", () => {
     await expect(store.startAi()).resolves.toBe(true);
     const firstAttemptId = store.attemptId!;
     callbacks[0]?.(acceptedEvent(firstAttemptId, "ai"));
-    callbacks[0]?.(acquiringEvent(firstAttemptId, "hold_still", true));
+    callbacks[0]?.(acquiringEvent(firstAttemptId, "counting_down", true));
     callbacks[0]?.(generatingEvent(firstAttemptId, "preparing"));
     callbacks[0]?.(generatingEvent(firstAttemptId, "generating"));
 
@@ -246,7 +246,7 @@ describe("try-on store current catalog boundary", () => {
     expect(store.phase).toBe("starting");
 
     callbacks[1]?.(acceptedEvent(secondAttemptId, "ai"));
-    callbacks[1]?.(acquiringEvent(secondAttemptId, "hold_still", true));
+    callbacks[1]?.(acquiringEvent(secondAttemptId, "counting_down", true));
     callbacks[1]?.(generatingEvent(secondAttemptId, "generating"));
     callbacks[1]?.(completedEvent(secondAttemptId));
     expect(store.phase).toBe("completed");
@@ -361,16 +361,17 @@ describe("try-on store current catalog boundary", () => {
     pushEvent(acquiringEvent(attemptId, "multiple_people", false));
     expect(store.guidance).toBe("multiple_people");
     expect(store.occupancy).toBe("multiple");
-    pushEvent(acquiringEvent(attemptId, "hold_still", true));
+    pushEvent(acquiringEvent(attemptId, "counting_down", true));
 
     expect(store.phase).toBe("acquiring");
     expect(store.previewUrl).toContain("/v2/try-on/acquisition/preview.mjpeg");
-    expect(store.guidance).toBe("hold_still");
+    expect(store.guidance).toBe("counting_down");
+    expect(store.holdRemainingMs).toBe(1200);
     expect(store.requestManualCapture()).toBe(true);
     expect(store.requestManualCapture()).toBe(false);
     expect(capture).toHaveBeenCalledTimes(1);
-    pushEvent(acquiringEvent(attemptId, "ready", false));
-    expect(store.guidance).toBe("ready");
+    pushEvent(acquiringEvent(attemptId, "counting_down", false));
+    expect(store.guidance).toBe("counting_down");
     expect(store.manualCaptureSubmitted).toBe(true);
     expect(store.manualCaptureAllowed).toBe(false);
 
@@ -419,7 +420,7 @@ describe("try-on store current catalog boundary", () => {
     if (!pushEvent) throw new Error("expected Vision event boundary");
     const attemptId = store.attemptId!;
     pushEvent(acceptedEvent(attemptId));
-    const unsafe = acquiringEvent(attemptId, "hold_still", true);
+    const unsafe = acquiringEvent(attemptId, "counting_down", true);
     unsafe.payload.preview.reference =
       "http://127.0.0.1:65000/v2/try-on/acquisition/preview.mjpeg?token=preview-token";
     pushEvent(unsafe);
@@ -470,10 +471,10 @@ describe("try-on store current catalog boundary", () => {
     store.cancelCurrentAttempt();
     await store.retry();
     const currentAttemptId = store.attemptId!;
-    callbacks[0]?.(acquiringEvent(oldAttemptId, "hold_still", true));
+    callbacks[0]?.(acquiringEvent(oldAttemptId, "counting_down", true));
     expect(store.attemptId).toBe(currentAttemptId);
     expect(store.phase).toBe("starting");
-    const fresh = acquiringEvent(currentAttemptId, "hold_still", true);
+    const fresh = acquiringEvent(currentAttemptId, "counting_down", true);
     fresh.payload.preview.reference =
       "http://[::1]:7892/v2/try-on/acquisition/preview.mjpeg?token=preview-token";
     callbacks[1]?.(acceptedEvent(currentAttemptId));
@@ -513,7 +514,7 @@ describe("try-on store current catalog boundary", () => {
     pushEvent(acquiringEvent(attemptId, "multiple_people", false));
     expect(store.requestManualCapture()).toBe(false);
     pushEvent(generatingEvent(attemptId, "rendering"));
-    pushEvent(acquiringEvent(attemptId, "hold_still", true));
+    pushEvent(acquiringEvent(attemptId, "counting_down", true));
     expect(store.requestManualCapture()).toBe(false);
     expect(capture).not.toHaveBeenCalled();
   });
@@ -547,17 +548,17 @@ describe("try-on store current catalog boundary", () => {
 
     store.applyEvent(
       attemptId,
-      acquiringEvent(attemptId, "hold_still", true),
+      acquiringEvent(attemptId, "counting_down", true),
       resultContext,
     );
     store.manualCaptureSubmitted = true;
     store.applyEvent(
       attemptId,
-      acquiringEvent(attemptId, "ready", true),
+      acquiringEvent(attemptId, "counting_down", true),
       resultContext,
     );
     expect(store.phase).toBe("acquiring");
-    expect(store.guidance).toBe("ready");
+    expect(store.guidance).toBe("counting_down");
     expect(store.manualCaptureSubmitted).toBe(true);
     expect(store.manualCaptureAllowed).toBe(false);
 
@@ -600,7 +601,7 @@ function acceptedEvent(attemptId: string, mode: "fast" | "ai" = "fast") {
 
 function acquiringEvent(
   attemptId: string,
-  guidance: "no_person" | "multiple_people" | "align" | "hold_still" | "ready",
+  guidance: "no_person" | "multiple_people" | "align" | "counting_down",
   manualCaptureAllowed: boolean,
 ): Extract<
   Parameters<ReturnType<typeof useTryOnStore>["applyEvent"]>[1],
@@ -624,6 +625,7 @@ function acquiringEvent(
       occupancy,
       guidance,
       manualCaptureAllowed,
+      ...(guidance === "counting_down" ? { holdRemainingMs: 1200 } : {}),
     },
   } as Extract<
     Parameters<ReturnType<typeof useTryOnStore>["applyEvent"]>[1],

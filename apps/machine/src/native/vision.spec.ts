@@ -643,8 +643,9 @@ describe("vision native browser fallback - Fast attempt lifecycle", () => {
           streamType: "mjpeg",
         },
         occupancy: "single",
-        guidance: "hold_still",
+        guidance: "counting_down",
         manualCaptureAllowed: true,
+        holdRemainingMs: 1200,
       },
     });
     sockets[0].emit({
@@ -838,7 +839,7 @@ describe("vision native browser fallback - Fast attempt lifecycle", () => {
     for (const [occupancy, guidance, manualCaptureAllowed] of [
       ["none", "no_person", false],
       ["multiple", "multiple_people", false],
-      ["single", "hold_still", true],
+      ["single", "counting_down", true],
     ]) {
       sockets[0].emit(
         envelope("vision.try_on.attempt.acquiring", {
@@ -851,6 +852,7 @@ describe("vision native browser fallback - Fast attempt lifecycle", () => {
           occupancy,
           guidance,
           manualCaptureAllowed,
+          ...(guidance === "counting_down" ? { holdRemainingMs: 900 } : {}),
         }),
       );
     }
@@ -887,8 +889,9 @@ describe("vision native browser fallback - Fast attempt lifecycle", () => {
           streamType: "mjpeg",
         },
         occupancy: "single",
-        guidance: "ready",
-        manualCaptureAllowed: false,
+        guidance: "counting_down",
+        manualCaptureAllowed: true,
+        holdRemainingMs: 0,
       }),
     );
     sockets[0].emit(

@@ -4,6 +4,7 @@ import type { MachineCatalogItem } from "@/types/catalog";
 
 import {
   openVisionFastAttempt,
+  openVisionGarmentAdjustment,
   openVisionTryOnAttempt,
   type VisionTryOnAttempt,
   type VisionTryOnAttemptEvent,
@@ -34,8 +35,7 @@ export type TryOnGuidance =
   | "no_person"
   | "multiple_people"
   | "align"
-  | "hold_still"
-  | "ready";
+  | "counting_down";
 
 export type TryOnGenerationStage =
   | "preparing"
@@ -60,9 +60,12 @@ export const useTryOnStore = defineStore("tryOn", {
     failureReason: null as string | null,
     previewUrl: null as string | null,
     guidance: null as TryOnGuidance | null,
+    holdRemainingMs: null as number | null,
     occupancy: null as "none" | "single" | "multiple" | null,
     manualCaptureAllowed: false,
     manualCaptureSubmitted: false,
+    garmentScale: 1,
+    adjusting: false,
     generationStage: null as TryOnGenerationStage | null,
   }),
   getters: {
@@ -183,6 +186,8 @@ export const useTryOnStore = defineStore("tryOn", {
       this.context = null;
       this.result = null;
       this.failureReason = null;
+      this.garmentScale = 1;
+      this.adjusting = false;
       this.clearAcquisitionPresentation();
     },
     requestManualCapture(): boolean {
@@ -237,6 +242,10 @@ export const useTryOnStore = defineStore("tryOn", {
             this.phase = "acquiring";
             this.previewUrl = preview.reference;
             this.guidance = event.payload.guidance;
+            this.holdRemainingMs =
+              "holdRemainingMs" in event.payload
+                ? event.payload.holdRemainingMs
+                : null;
             this.occupancy = event.payload.occupancy;
             // An accepted manual intent is irrevocable for this attempt.
             // Subsequent Vision guidance is current display truth only.
@@ -275,6 +284,9 @@ export const useTryOnStore = defineStore("tryOn", {
           this.failureReason = null;
           this.clearAcquisitionPresentation();
           clearOperation(currentOperation);
+          // A persisted garment scale survives retry: the fresh result is
+          // immediately re-rendered at the customer's chosen proportion.
+          void this.reapplyGarmentScale();
         } catch {
           this.phase = "failed";
           this.failureReason = "fast_failed";
@@ -301,9 +313,47 @@ export const useTryOnStore = defineStore("tryOn", {
       this.clearAcquisitionPresentation();
       clearOperation(currentOperation);
     },
+    async requestGarmentScale(scale: number): Promise<boolean> {
+      if (
+        this.phase !== "completed" ||
+        this.mode !== "fast" ||
+        this.attemptId === null ||
+        this.adjusting
+      ) {
+        return false;
+      }
+      const bounded = Math.min(1.6, Math.max(0.8, scale));
+      const attemptId = this.attemptId;
+      this.adjusting = true;
+      try {
+        const adjusted = await openVisionGarmentAdjustment(
+          { machineCode: useMachineStore().machineCode },
+          { attemptId, garmentScale: bounded },
+        );
+        if (this.attemptId !== attemptId || this.phase !== "completed") {
+          return false;
+        }
+        this.result = validateTryOnResultReference(adjusted.result, {
+          attemptId,
+          visionSocketUrl: adjusted.visionSocketUrl,
+        });
+        this.garmentScale = bounded;
+        return true;
+      } catch {
+        return false;
+      } finally {
+        this.adjusting = false;
+      }
+    },
+    async reapplyGarmentScale(): Promise<void> {
+      if (this.phase !== "completed" || this.mode !== "fast") return;
+      if (this.garmentScale === 1) return;
+      await this.requestGarmentScale(this.garmentScale);
+    },
     clearAcquisitionPresentation(): void {
       this.previewUrl = null;
       this.guidance = null;
+      this.holdRemainingMs = null;
       this.occupancy = null;
       this.manualCaptureAllowed = false;
       this.manualCaptureSubmitted = false;

@@ -186,7 +186,8 @@ describe("TryOnView acquisition UI", () => {
           streamType: "mjpeg",
         },
         occupancy: "single",
-        guidance: "hold_still",
+        guidance: "counting_down",
+        holdRemainingMs: 1500,
         manualCaptureAllowed: true,
       }),
     );
@@ -295,7 +296,8 @@ describe("TryOnView acquisition UI", () => {
           streamType: "mjpeg",
         },
         occupancy: "single",
-        guidance: "hold_still",
+        guidance: "counting_down",
+        holdRemainingMs: 1500,
         manualCaptureAllowed: true,
       }),
     );
@@ -458,7 +460,8 @@ describe("TryOnView acquisition UI", () => {
               streamType: "mjpeg",
             },
             occupancy: "single",
-            guidance: "hold_still",
+            guidance: "counting_down",
+        holdRemainingMs: 1500,
             manualCaptureAllowed: true,
           },
         });
@@ -553,7 +556,8 @@ describe("TryOnView acquisition UI", () => {
           streamType: "mjpeg",
         },
         occupancy: "single",
-        guidance: "hold_still",
+        guidance: "counting_down",
+        holdRemainingMs: 1500,
         manualCaptureAllowed: true,
       }),
     );
