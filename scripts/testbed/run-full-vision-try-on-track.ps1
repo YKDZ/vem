@@ -190,19 +190,24 @@ function Start-DefaultManagedVision() {
 
 function Wait-ForDefaultManagedVisionReady([string]$FixtureRoot, [int]$TimeoutSeconds = 60) {
   $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
-  $childExitDeadline = [DateTime]::UtcNow.AddSeconds(10)
+  $lastDiagnostic = $null
   do {
     $hasCanonicalChild = @(Get-ManagedVisionProcessIds).Count -gt 0
     $hasListener = @(Get-NetTCPConnection -LocalAddress "127.0.0.1" -LocalPort 7892 -State Listen -ErrorAction SilentlyContinue).Count -gt 0
     if ($hasCanonicalChild -and $hasListener) {
       return Invoke-VisionMainProbe "C:\ProgramData\VEM\vision\site.json" $TimeoutSeconds $FixtureRoot "C:\VEM\vision\app"
     }
-    if (-not $hasCanonicalChild -and -not $hasListener -and [DateTime]::UtcNow -ge $childExitDeadline) {
-      throw "launcher child exited before Vision became ready: $(Get-DefaultManagedVisionDiagnostic | ConvertTo-Json -Compress -Depth 8)"
+    if (-not $hasCanonicalChild -and -not $hasListener) {
+      # The scheduled task restarts a failed launcher automatically.  A first
+      # launch immediately after a candidate reinstall can exit transiently
+      # (e.g. a locked executable path); keep polling until the managed task's
+      # restart policy brings the runtime up instead of aborting early.
+      $lastDiagnostic = Get-DefaultManagedVisionDiagnostic
     }
     Start-Sleep -Milliseconds 250
   } while ([DateTime]::UtcNow -lt $deadline)
-  throw "default VEMVisionRuntime did not become ready: $(Get-DefaultManagedVisionDiagnostic | ConvertTo-Json -Compress -Depth 8)"
+  $diagnostic = if ($null -ne $lastDiagnostic) { $lastDiagnostic } else { Get-DefaultManagedVisionDiagnostic }
+  throw "default VEMVisionRuntime did not become ready: $($diagnostic | ConvertTo-Json -Compress -Depth 8)"
 }
 
 $guestInput = Get-Content -Raw -LiteralPath $GuestInputPath -Encoding utf8 | ConvertFrom-Json -ErrorAction Stop

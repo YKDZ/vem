@@ -80,7 +80,7 @@ test("run-full takes over only after acquisition and restores the default VEMVis
   );
 });
 
-test("run-full quickly diagnoses a launcher child exit with structured owner facts", () => {
+test("run-full waits out managed Vision restarts and diagnoses with structured owner facts", () => {
   const contents = source();
   assert.match(
     contents,
@@ -88,7 +88,7 @@ test("run-full quickly diagnoses a launcher child exit with structured owner fac
   );
   assert.match(
     contents,
-    /launcher child exited before Vision became ready: \$\(Get-DefaultManagedVisionDiagnostic \| ConvertTo-Json -Compress -Depth 8\)/,
+    /function Wait-ForDefaultManagedVisionReady[\s\S]*lastDiagnostic[\s\S]*did not become ready: \$\(\$?diagnostic \| ConvertTo-Json -Compress -Depth 8\)/s,
   );
 });
 
