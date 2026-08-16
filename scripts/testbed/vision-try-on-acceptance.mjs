@@ -3845,6 +3845,70 @@ function assertTryOnAttemptNotCanceled(lifecycle, attemptId, label) {
   }
 }
 
+async function readTryOnButtonDiagnostics(client) {
+  return await evaluateExpression(
+    client,
+    `(() => {
+      const entry = document.querySelector("[data-test='try-on-entry']");
+      const fast = document.querySelector("[data-test='try-on-fast']");
+      const ai = document.querySelector("[data-test='try-on-ai']");
+      return {
+        route: location.hash,
+        entryPresent: entry instanceof HTMLElement,
+        fastPresent: fast instanceof HTMLElement,
+        fastDisabled: fast instanceof HTMLButtonElement ? fast.disabled : null,
+        aiPresent: ai instanceof HTMLElement,
+        pageText:
+          document.body?.textContent?.replace(/\\s+/g, " ").trim().slice(0, 400) ??
+          null,
+      };
+    })()`,
+  );
+}
+
+async function recordVisionBroadcast({ machineCode, timeoutMs }) {
+  const socket = await openVisionSocket("ws://127.0.0.1:7892/ws", 10_000);
+  socket.send(JSON.stringify(createVisionHello(machineCode)));
+  const messages = [];
+  const deadline = Date.now() + timeoutMs;
+  let closed = false;
+  const pump = (async () => {
+    while (Date.now() < deadline) {
+      const message = await nextVisionMessage(
+        socket,
+        Math.max(1_000, deadline - Date.now()),
+      ).catch(() => null);
+      if (!message) break;
+      messages.push({
+        type: message?.type ?? null,
+        at: new Date().toISOString(),
+        payload: message?.payload ?? null,
+      });
+    }
+  })().finally(() => {
+    closed = true;
+    try {
+      socket.close();
+    } catch {
+      // The diagnostic recorder is best-effort evidence.
+    }
+  });
+  return {
+    messages,
+    stop: async () => {
+      if (!closed) {
+        try {
+          socket.close();
+        } catch {
+          // Already closed by the remote side.
+        }
+      }
+      await pump;
+      return messages;
+    },
+  };
+}
+
 async function collectInstalledFieldRegressionChecks({
   client,
   guestInput,
@@ -4006,6 +4070,10 @@ async function collectInstalledFieldRegressionChecks({
   const healKeepalive = setInterval(() => {
     void dispatchIdleTouch(client);
   }, 8_000);
+  const broadcastRecorder = await recordVisionBroadcast({
+    machineCode: guestInput.machineCode,
+    timeoutMs: 240_000,
+  });
   try {
     await openTryOn();
     const healSurface = await waitForTryOnSurface(client, 150_000);
@@ -4019,8 +4087,18 @@ async function collectInstalledFieldRegressionChecks({
       attemptId: healSurface.attemptId,
       lifecycle: healSurface.lifecycle,
     });
+  } catch (error) {
+    const diagnostics = {
+      error: String(error?.message ?? error),
+      button: await readTryOnButtonDiagnostics(client).catch(() => null),
+      daemonHealthz: await daemonGet(handoff, "/healthz").catch(() => null),
+      visionBroadcastTail: broadcastRecorder.messages.slice(-30),
+    };
+    error.message = `${error.message} :: heal-diagnostics=${JSON.stringify(diagnostics)}`;
+    throw error;
   } finally {
     clearInterval(healKeepalive);
+    await broadcastRecorder.stop();
   }
 
   return { checks };
