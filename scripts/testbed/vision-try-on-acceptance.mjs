@@ -3791,7 +3791,18 @@ async function restartInstalledVisionForRegression({ handoff }) {
   await waitForVisionPortRelease();
   await waitForVisionDegradation(handoff, 45_000);
   await startInstalledVisionRuntime();
-  await waitForVisionOnline(handoff, 45_000);
+}
+
+async function waitForVisionListener(timeoutMs = 60_000) {
+  await waitForCondition(
+    "Vision listener after regression restart",
+    async () => {
+      const probe = await probeLoopbackPortRelease(7892);
+      return { ok: probe.released === false, value: probe };
+    },
+    timeoutMs,
+    250,
+  );
 }
 
 async function readInstalledTryOnManualControl(client) {
@@ -3884,6 +3895,7 @@ async function collectInstalledFieldRegressionChecks({
   const checks = [];
   const restartBaseline = async () => {
     await restartInstalledVisionForRegression({ handoff });
+    await waitForVisionListener();
     return createVisionEventFence({
       runtimeTraceSnapshot: await readRuntimeTrace(client),
       visionStartedAt: new Date().toISOString(),
