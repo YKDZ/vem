@@ -7,12 +7,14 @@ const {
   getSaleViewMock,
   openFastMock,
   openAiMock,
+  openAdjustMock,
   submitNavigationMock,
   routeMode,
 } = vi.hoisted(() => ({
   getSaleViewMock: vi.fn(),
   openFastMock: vi.fn(),
   openAiMock: vi.fn(),
+  openAdjustMock: vi.fn(),
   submitNavigationMock: vi.fn(),
   routeMode: { value: undefined as "fast" | "ai" | undefined },
 }));
@@ -38,6 +40,7 @@ vi.mock("@/daemon/client", () => ({
 vi.mock("@/native/vision", () => ({
   openVisionFastAttempt: openFastMock,
   openVisionTryOnAttempt: openAiMock,
+  openVisionGarmentAdjustment: openAdjustMock,
 }));
 
 import { useCatalogStore } from "@/stores/catalog";
@@ -240,6 +243,107 @@ describe("TryOnView acquisition UI", () => {
     expect(
       host.querySelector('[data-test="try-on-result-error"]'),
     ).not.toBeNull();
+  });
+
+  it("adjusts a completed Fast result around the locked center and shows the percentage", async () => {
+    let emit:
+      | ((event: {
+          type: string;
+          payload: { attemptId: string } & object;
+        }) => void)
+      | undefined;
+    openFastMock.mockImplementation((_connection, _input, onEvent) => {
+      emit = (event) =>
+        onEvent(event, {
+          attemptId: event.payload.attemptId,
+          visionSocketUrl: "ws://127.0.0.1:7892/ws",
+        });
+      return Promise.resolve({
+        close: vi.fn(),
+        capture: vi.fn(),
+        cancel: vi.fn(),
+      });
+    });
+    openAdjustMock.mockImplementation(
+      async (
+        _connection,
+        input: { attemptId: string; garmentScale: number },
+      ) => ({
+        result: {
+          reference: `http://127.0.0.1:7892/v2/try-on/results/${input.attemptId}?token=adjusted-token`,
+          digest: `sha256:${"c".repeat(64)}`,
+          contentType: "image/png",
+          byteSize: 2048,
+          width: 512,
+          height: 768,
+        },
+        visionSocketUrl: "ws://127.0.0.1:7892/ws",
+      }),
+    );
+    const host = await mount();
+    await vi.waitFor(() => {
+      expect(openFastMock).toHaveBeenCalledOnce();
+    });
+    const attemptId = useTryOnStore().attemptId!;
+    if (!emit) throw new Error("expected Vision event boundary");
+    emit(attemptEvent("vision.try_on.attempt.accepted", { attemptId }));
+    emit(
+      attemptEvent("vision.try_on.attempt.acquiring", {
+        attemptId,
+        preview: {
+          reference:
+            "http://127.0.0.1:7892/v2/try-on/acquisition/preview.mjpeg?token=preview-token",
+          streamType: "mjpeg",
+        },
+        occupancy: "single",
+        guidance: "counting_down",
+        manualCaptureAllowed: true,
+        holdRemainingMs: 1200,
+      }),
+    );
+    emit(
+      attemptEvent("vision.try_on.attempt.generating", {
+        attemptId,
+        stage: "rendering",
+      }),
+    );
+    emit(
+      attemptEvent("vision.try_on.attempt.completed", {
+        attemptId,
+        result: {
+          reference: `http://127.0.0.1:7892/v2/try-on/results/${attemptId}?token=result-token`,
+          digest: `sha256:${"b".repeat(64)}`,
+          contentType: "image/png",
+          byteSize: 2048,
+          width: 512,
+          height: 768,
+        },
+      }),
+    );
+    await nextTick();
+    expect(
+      host.querySelector('[data-test="try-on-scale-value"]')?.textContent,
+    ).toContain("100%");
+    const scaleUp = host.querySelector(
+      '[data-test="try-on-scale-up"]',
+    ) as HTMLButtonElement | null;
+    expect(scaleUp?.disabled).toBe(false);
+    scaleUp?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await vi.waitFor(() => {
+      expect(openAdjustMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ attemptId, garmentScale: 1.05 }),
+      );
+    });
+    await nextTick();
+    expect(
+      host.querySelector('[data-test="try-on-scale-value"]')?.textContent,
+    ).toContain("105%");
+    expect(
+      host
+        .querySelector('[data-test="try-on-result-image"]')
+        ?.getAttribute("src"),
+    ).toContain("token=adjusted-token");
   });
 
   it("runs the AI route through truthful coarse stages, result, retry, and never opens Fast", async () => {
@@ -461,7 +565,7 @@ describe("TryOnView acquisition UI", () => {
             },
             occupancy: "single",
             guidance: "counting_down",
-        holdRemainingMs: 1500,
+            holdRemainingMs: 1500,
             manualCaptureAllowed: true,
           },
         });

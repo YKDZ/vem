@@ -4147,6 +4147,53 @@ async function collectInstalledFieldRegressionChecks({
     await broadcastRecorder.stop();
   }
 
+  // ---- Locked-center garment scale on a completed Fast result ----
+  const resultBeforeAdjust = await evaluateExpression(
+    client,
+    `(() => {
+      const image = document.querySelector("[data-test='try-on-result-image']");
+      return image?.getAttribute("src") ?? null;
+    })()`,
+  );
+  await activateVisibleSelector(client, '[data-test="try-on-scale-up"]', {
+    kind: "touch",
+    timeoutMs: 30_000,
+  });
+  const adjustedSurface = await waitForCondition(
+    "adjusted Fast garment scale",
+    async () => {
+      const state = await evaluateExpression(
+        client,
+        `(() => {
+          const value = document.querySelector("[data-test='try-on-scale-value']");
+          const image = document.querySelector("[data-test='try-on-result-image']");
+          return {
+            route: location.hash,
+            percent: value?.textContent?.trim() ?? null,
+            resultUrl: image?.getAttribute("src") ?? null,
+            resultLoaded: image?.complete === true,
+          };
+        })()`,
+      );
+      return {
+        ok:
+          state?.percent === "105%" &&
+          typeof state?.resultUrl === "string" &&
+          state.resultUrl !== resultBeforeAdjust &&
+          state.resultLoaded === true,
+        value: state,
+      };
+    },
+    30_000,
+    250,
+  );
+  checks.push({
+    name: "fast-garment-scale-adjusts",
+    percent: adjustedSurface.percent,
+    resultBeforeAdjust,
+    resultAfterAdjust: adjustedSurface.resultUrl,
+  });
+
   return { checks };
 }
 
