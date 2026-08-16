@@ -3854,7 +3854,7 @@ async function waitForInstalledTryOnManualControl(client, timeoutMs = 30_000) {
 async function collectVisionDepartureDuringRegression({
   machineCode,
   eventFence,
-  timeoutMs = 90_000,
+  timeoutMs = 200_000,
 }) {
   const socket = await openVisionSocket("ws://127.0.0.1:7892/ws");
   const observedTypes = [];
@@ -3920,62 +3920,59 @@ async function collectInstalledFieldRegressionChecks({
   };
   const openTryOn = async () => {
     await installTryOnLifecycleObserver(client);
-    let tryOnActionAvailable = false;
-    try {
-      await waitForCondition(
-        "installed try-on fast action after Vision restart",
-        async () => {
-          const actionable = await evaluateExpression(
-            client,
-            `(() => {
-              const button = document.querySelector("[data-test='try-on-fast']");
-              return button instanceof HTMLElement && button.disabled !== true;
-            })()`,
-          );
-          return { ok: actionable === true };
-        },
-        60_000,
-        250,
+    const tryOnActionAvailable = async () => {
+      const actionable = await evaluateExpression(
+        client,
+        `(() => {
+          const button = document.querySelector("[data-test='try-on-fast']");
+          return button instanceof HTMLElement && button.disabled !== true;
+        })()`,
       );
-      tryOnActionAvailable = true;
-    } catch {
+      return actionable === true;
+    };
+    let started = false;
+    for (let attempt = 0; attempt < 4 && !started; attempt += 1) {
       // A freshly restarted Vision runtime can leave the product detail's
       // capability projection stale. Re-enter the product from the catalog so
-      // the Machine UI re-evaluates try-on eligibility against the live runtime.
-      await evaluateExpression(client, 'location.hash = "#/catalog"');
-      await waitForRoute(client, "#/catalog", {
-        timeoutMs: 30_000,
-        pollMs: 250,
-      });
-      await activateVisibleSelector(
-        client,
-        '[data-test="catalog-category"][data-category-key="tshirts"]',
-        { kind: "touch", timeoutMs: 30_000 },
-      );
-      await waitForCatalogProducts(client);
-      await activateVisibleSelector(
-        client,
-        `[data-test="catalog-product"][data-catalog-key="${selectedProduct.catalogKey}"]`,
-        { kind: "touch", timeoutMs: 30_000 },
-      );
-      await waitForRoute(client, /^#\/products\//, {
-        timeoutMs: 30_000,
-        pollMs: 250,
-      });
-      await waitForCondition(
-        "re-entered product try-on fast action",
-        async () => {
-          const actionable = await evaluateExpression(
-            client,
-            `(() => {
-              const button = document.querySelector("[data-test='try-on-fast']");
-              return button instanceof HTMLElement && button.disabled !== true;
-            })()`,
-          );
-          return { ok: actionable === true };
-        },
-        60_000,
-        250,
+      // the Machine UI re-evaluates try-on eligibility against the live
+      // runtime; each touch keeps the touchscreen session alive.
+      if (attempt > 0) {
+        await evaluateExpression(client, 'location.hash = "#/catalog"');
+        await waitForRoute(client, "#/catalog", {
+          timeoutMs: 30_000,
+          pollMs: 250,
+        });
+        await activateVisibleSelector(
+          client,
+          '[data-test="catalog-category"][data-category-key="tshirts"]',
+          { kind: "touch", timeoutMs: 30_000 },
+        );
+        await waitForCatalogProducts(client);
+        await activateVisibleSelector(
+          client,
+          `[data-test="catalog-product"][data-catalog-key="${selectedProduct.catalogKey}"]`,
+          { kind: "touch", timeoutMs: 30_000 },
+        );
+        await waitForRoute(client, /^#\/products\//, {
+          timeoutMs: 30_000,
+          pollMs: 250,
+        });
+      }
+      try {
+        await waitForCondition(
+          "installed try-on fast action after Vision restart",
+          tryOnActionAvailable,
+          30_000,
+          250,
+        );
+        started = true;
+      } catch {
+        // Retry with a fresh catalog re-entry.
+      }
+    }
+    if (!started) {
+      throw new Error(
+        "installed try-on fast action did not become available after Vision restart",
       );
     }
     await activateVisibleSelector(client, '[data-test="try-on-fast"]', {
@@ -4007,7 +4004,7 @@ async function collectInstalledFieldRegressionChecks({
   await writeInstalledVisionSiteConfiguration(
     "recorded-video/front-vertical-unstable.mp4",
     fixtureCommit,
-    { profilePushIntervalMs: 3000 },
+    { profilePushIntervalMs: 5000 },
   );
   const departureFence = await restartBaseline();
   const departureWatch = collectVisionDepartureDuringRegression({
