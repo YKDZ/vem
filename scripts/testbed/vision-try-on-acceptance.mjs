@@ -3932,6 +3932,7 @@ async function readMachineTryOnStores(client) {
           tryOnMode: tryOn?.mode ?? null,
           tryOnGarmentScale: tryOn?.garmentScale ?? null,
           tryOnAdjusting: tryOn?.adjusting ?? null,
+          tryOnFailureReason: tryOn?.failureReason ?? null,
         };
       } catch (error) {
         return { error: String(error) };
