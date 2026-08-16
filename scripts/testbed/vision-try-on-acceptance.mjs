@@ -3872,54 +3872,58 @@ async function collectInstalledFieldRegressionChecks({
       );
       return actionable === true;
     };
+    const keepalive = setInterval(() => {
+      void dispatchIdleTouch(client);
+    }, 8_000);
     let started = false;
-    for (let attempt = 0; attempt < 5 && !started; attempt += 1) {
-      // A freshly restarted Vision runtime can leave the product detail's
-      // capability projection stale. Re-enter the product from the catalog so
-      // the Machine UI re-evaluates try-on eligibility against the live
-      // runtime; each touch keeps the touchscreen session alive.
-      if (attempt > 0) {
-        await evaluateExpression(client, 'location.hash = "#/catalog"');
-        await waitForRoute(client, "#/catalog", {
-          timeoutMs: 30_000,
-          pollMs: 250,
-        });
-        await activateVisibleSelector(
-          client,
-          '[data-test="catalog-category"][data-category-key="tshirts"]',
-          { kind: "touch", timeoutMs: 30_000 },
-        );
-        await waitForCatalogProducts(client);
-        // Navigate with the explicit seeded variant so the product detail is
-        // opened for the try-on-eligible variant even before the post-restart
-        // recommendation profile has re-established.
-        await evaluateExpression(
-          client,
-          `location.hash = ${JSON.stringify(
-            `#/products/${selectedProduct.catalogKey}?variantId=${selectedProduct.variantId}`,
-          )}`,
-        );
-        await waitForRoute(client, /^#\/products\//, {
-          timeoutMs: 30_000,
-          pollMs: 250,
-        });
+    try {
+      for (let attempt = 0; attempt < 5 && !started; attempt += 1) {
+        // A freshly restarted Vision runtime can leave the product detail's
+        // capability projection stale. Re-enter the product from the catalog so
+        // the Machine UI re-evaluates try-on eligibility against the live
+        // runtime; each touch keeps the touchscreen session alive.
+        if (attempt > 0) {
+          await evaluateExpression(client, 'location.hash = "#/catalog"');
+          await waitForRoute(client, "#/catalog", {
+            timeoutMs: 30_000,
+            pollMs: 250,
+          });
+          await activateVisibleSelector(
+            client,
+            '[data-test="catalog-category"][data-category-key="tshirts"]',
+            { kind: "touch", timeoutMs: 30_000 },
+          );
+          await waitForCatalogProducts(client);
+          await evaluateExpression(
+            client,
+            `location.hash = ${JSON.stringify(
+              `#/products/${selectedProduct.catalogKey}?variantId=${selectedProduct.variantId}`,
+            )}`,
+          );
+          await waitForRoute(client, /^#\/products\//, {
+            timeoutMs: 30_000,
+            pollMs: 250,
+          });
+        }
+        try {
+          await waitForCondition(
+            "installed try-on fast action after Vision restart",
+            tryOnActionAvailable,
+            60_000,
+            250,
+          );
+          started = true;
+        } catch {
+          // Retry with a fresh catalog re-entry.
+        }
       }
-      try {
-        await waitForCondition(
-          "installed try-on fast action after Vision restart",
-          tryOnActionAvailable,
-          60_000,
-          250,
+      if (!started) {
+        throw new Error(
+          "installed try-on fast action did not become available after Vision restart",
         );
-        started = true;
-      } catch {
-        // Retry with a fresh catalog re-entry.
       }
-    }
-    if (!started) {
-      throw new Error(
-        "installed try-on fast action did not become available after Vision restart",
-      );
+    } finally {
+      clearInterval(keepalive);
     }
     await activateVisibleSelector(client, '[data-test="try-on-fast"]', {
       kind: "touch",
