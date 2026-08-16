@@ -4182,6 +4182,13 @@ async function collectInstalledFieldRegressionChecks({
       attemptId: healSurface.attemptId,
       resultUrl: healSurface.resultUrl,
       stores: await readMachineTryOnStores(client).catch(() => null),
+      tryOnViewHtml: await evaluateExpression(
+        client,
+        `(() => {
+          const view = document.querySelector("[data-test='try-on-view']");
+          return view?.outerHTML?.slice(0, 1200) ?? null;
+        })()`,
+      ).catch(() => null),
     };
     checks.push({
       name: "observer-self-heal-completes",
@@ -4211,50 +4218,68 @@ async function collectInstalledFieldRegressionChecks({
       return image?.getAttribute("src") ?? null;
     })()`,
   );
+  const scalePreState = {
+    at: new Date().toISOString(),
+    stores: await readMachineTryOnStores(client).catch(() => null),
+    tryOnViewHtml: await evaluateExpression(
+      client,
+      `(() => {
+        const view = document.querySelector("[data-test='try-on-view']");
+        return view?.outerHTML?.slice(0, 1200) ?? null;
+      })()`,
+    ).catch(() => null),
+  };
+  const scaleKeepalive = setInterval(() => {
+    void dispatchIdleTouch(client);
+  }, 8_000);
+  let adjustedSurface = null;
   try {
     await activateVisibleSelector(client, '[data-test="try-on-scale-up"]', {
       kind: "touch",
       timeoutMs: 30_000,
     });
+    adjustedSurface = await waitForCondition(
+      "adjusted Fast garment scale",
+      async () => {
+        const state = await evaluateExpression(
+          client,
+          `(() => {
+            const value = document.querySelector("[data-test='try-on-scale-value']");
+            const image = document.querySelector("[data-test='try-on-result-image']");
+            return {
+              route: location.hash,
+              percent: value?.textContent?.trim() ?? null,
+              resultUrl: image?.getAttribute("src") ?? null,
+              resultLoaded: image?.complete === true,
+            };
+          })()`,
+        );
+        return {
+          ok:
+            state?.percent === "105%" &&
+            typeof state?.resultUrl === "string" &&
+            state.resultUrl !== resultBeforeAdjust &&
+            state.resultLoaded === true,
+          value: state,
+        };
+      },
+      30_000,
+      250,
+    );
   } catch (error) {
     error.message = `${error.message} :: scale-diagnostics=${JSON.stringify({
       stores: await readMachineTryOnStores(client).catch(() => null),
       button: await readTryOnButtonDiagnostics(client).catch(() => null),
       resultBeforeAdjust,
+      scalePreState,
       healPostState:
         checks.find((check) => check.name === "observer-self-heal-completes")
           ?.healPostState ?? null,
     })}`;
     throw error;
+  } finally {
+    clearInterval(scaleKeepalive);
   }
-  const adjustedSurface = await waitForCondition(
-    "adjusted Fast garment scale",
-    async () => {
-      const state = await evaluateExpression(
-        client,
-        `(() => {
-          const value = document.querySelector("[data-test='try-on-scale-value']");
-          const image = document.querySelector("[data-test='try-on-result-image']");
-          return {
-            route: location.hash,
-            percent: value?.textContent?.trim() ?? null,
-            resultUrl: image?.getAttribute("src") ?? null,
-            resultLoaded: image?.complete === true,
-          };
-        })()`,
-      );
-      return {
-        ok:
-          state?.percent === "105%" &&
-          typeof state?.resultUrl === "string" &&
-          state.resultUrl !== resultBeforeAdjust &&
-          state.resultLoaded === true,
-        value: state,
-      };
-    },
-    30_000,
-    250,
-  );
   checks.push({
     name: "fast-garment-scale-adjusts",
     percent: adjustedSurface.percent,
