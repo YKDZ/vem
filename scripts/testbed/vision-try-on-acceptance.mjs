@@ -3955,6 +3955,8 @@ async function readMachineTryOnStores(client) {
           tryOnGarmentScale: tryOn?.garmentScale ?? null,
           tryOnAdjusting: tryOn?.adjusting ?? null,
           tryOnFailureReason: tryOn?.failureReason ?? null,
+          tryOnGuidance: tryOn?.guidance ?? null,
+          tryOnHoldRemainingMs: tryOn?.holdRemainingMs ?? null,
         };
       } catch (error) {
         return { error: String(error) };
@@ -4337,16 +4339,48 @@ async function collectInstalledFieldRegressionChecks({
     await waitForVisionPortRelease();
     await startInstalledVisionRuntime();
     await waitForVisionOnline(handoff, 45_000);
+    const switchedFixturePath = await runPowerShell(
+      [
+        "$ErrorActionPreference = 'Stop'",
+        `$path = '${VISION_SITE_CONFIGURATION_PATH}'`,
+        "$config = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json",
+        "[Console]::Out.Write([string]$config.cameras.front.video_path)",
+      ].join("; "),
+      "reading switched front fixture path",
+    );
     await openTryOn();
     let autoCaptured = false;
+    const autoWaitSamples = [];
+    const autoWaitSampler = (async () => {
+      const sampleDeadline = Date.now() + 26_000;
+      while (Date.now() < sampleDeadline) {
+        autoWaitSamples.push({
+          at: new Date().toISOString(),
+          stores: await readMachineTryOnStores(client).catch(() => null),
+        });
+        await new Promise((resolvePromise) =>
+          setTimeout(resolvePromise, 1_500),
+        );
+      }
+    })();
     try {
       await waitForTryOnSurface(client, 26_000);
       autoCaptured = true;
     } catch {
       autoCaptured = false;
+    } finally {
+      await autoWaitSampler;
     }
     if (autoCaptured) {
-      throw new Error("auto capture fired while alignment kept dropping");
+      throw new Error(
+        `auto capture fired while alignment kept dropping :: unstable-diagnostics=${JSON.stringify(
+          {
+            switchedFixturePath: switchedFixturePath?.stdout ?? null,
+            autoWaitSamples,
+            stores: await readMachineTryOnStores(client).catch(() => null),
+          },
+        )}`,
+      );
     }
     const unstableManualSurface = await captureWithManualFallback(
       client,
