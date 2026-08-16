@@ -4018,7 +4018,7 @@ async function collectInstalledFieldRegressionChecks({
                   actionable,
                 });
               }
-              return actionable;
+              return { ok: actionable, value: actionable };
             },
             60_000,
             250,
