@@ -3775,9 +3775,14 @@ export async function collectInstalledAiTryOnAttemptForTest(options, hooks) {
   return collectInstalledAiTryOnAttemptInternal(options, hooks);
 }
 
-async function writeInstalledVisionSiteConfiguration(frontVideoPath) {
+async function writeInstalledVisionSiteConfiguration(frontVideoFile, fixtureCommit) {
+  if (!/^[a-f0-9]{40}$/.test(fixtureCommit ?? "")) {
+    throw new Error("Vision fixture commit is required for site reconfiguration");
+  }
+  const fixtureRoot = `C:\\ProgramData\\VEM\\vision\\fixtures\\${fixtureCommit}`;
   const site = buildRecordedVisionSiteConfiguration();
-  site.cameras.front.video_path = frontVideoPath;
+  site.cameras.top.video_path = `${fixtureRoot}\\recorded-video\\top.mp4`;
+  site.cameras.front.video_path = `${fixtureRoot}\\recorded-video\\${frontVideoFile}`;
   writeFileSync(
     VISION_SITE_CONFIGURATION_PATH,
     `${JSON.stringify(site, null, 2)}\n`,
@@ -3891,6 +3896,9 @@ async function collectInstalledFieldRegressionChecks({
   selectedProduct,
 }) {
   const machineCode = guestInput.machineCode;
+  const fixtureCommit =
+    guestInput.visionCore?.runtimeArchive?.sourceCommit ??
+    guestInput.visionCore?.sourceCommit;
   const expectedTryOnRoute = `#/try-on?catalogKey=${selectedProduct.catalogKey}&variantId=${selectedProduct.variantId}&mode=fast`;
   const checks = [];
   const restartBaseline = async () => {
@@ -3989,6 +3997,7 @@ async function collectInstalledFieldRegressionChecks({
   // ---- Top-camera departure must not cancel an active try-on attempt ----
   await writeInstalledVisionSiteConfiguration(
     "recorded-video/front-vertical-unstable.mp4",
+    fixtureCommit,
   );
   const departureFence = await restartBaseline();
   const departureWatch = collectVisionDepartureDuringRegression({
@@ -4053,6 +4062,7 @@ async function collectInstalledFieldRegressionChecks({
   // ---- Manual capture works on the aligned vertical close-up ----
   await writeInstalledVisionSiteConfiguration(
     "recorded-video/front-vertical.mp4",
+    fixtureCommit,
   );
   const manualFence = await restartBaseline();
   await openTryOn();
