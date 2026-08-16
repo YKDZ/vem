@@ -3990,18 +3990,29 @@ async function collectInstalledFieldRegressionChecks({
     ].join("; "),
     "killing Vision observer children for self-heal regression",
   );
-  await openTryOn();
-  const healSurface = await waitForTryOnSurface(client, 90_000);
-  assertTryOnAttemptNotCanceled(
-    healSurface.lifecycle,
-    healSurface.attemptId,
-    "observer self-heal regression",
-  );
-  checks.push({
-    name: "observer-self-heal-completes",
-    attemptId: healSurface.attemptId,
-    lifecycle: healSurface.lifecycle,
-  });
+  // Respawn, prewarm, acquisition, and generation after the observer dies can
+  // take longer than the Machine UI's 45s touchscreen inactivity timeout. The
+  // UI would navigate back to the catalog mid-attempt and cancel the healed
+  // work, so keep the touchscreen session alive while the healed attempt runs.
+  const healKeepalive = setInterval(() => {
+    void dispatchIdleTouch(client);
+  }, 8_000);
+  try {
+    await openTryOn();
+    const healSurface = await waitForTryOnSurface(client, 150_000);
+    assertTryOnAttemptNotCanceled(
+      healSurface.lifecycle,
+      healSurface.attemptId,
+      "observer self-heal regression",
+    );
+    checks.push({
+      name: "observer-self-heal-completes",
+      attemptId: healSurface.attemptId,
+      lifecycle: healSurface.lifecycle,
+    });
+  } finally {
+    clearInterval(healKeepalive);
+  }
 
   return { checks };
 }
