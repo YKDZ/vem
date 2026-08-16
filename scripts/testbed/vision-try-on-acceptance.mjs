@@ -3047,6 +3047,19 @@ async function setRecordedFrontFixture(fixtureFile) {
   );
 }
 
+async function readRecordedFrontFixturePath() {
+  const result = await runPowerShell(
+    [
+      "$ErrorActionPreference = 'Stop'",
+      `$path = '${VISION_SITE_CONFIGURATION_PATH}'`,
+      "$config = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json",
+      "[Console]::Out.Write([string]$config.cameras.front.video_path)",
+    ].join("; "),
+    "reading recorded front fixture path",
+  ).catch(() => null);
+  return result?.stdout ?? null;
+}
+
 async function readInstalledVisionLogTail(lines = 120) {
   const command = [
     "$ErrorActionPreference = 'SilentlyContinue'",
@@ -4334,20 +4347,35 @@ async function collectInstalledFieldRegressionChecks({
     void dispatchIdleTouch(client);
   }, 8_000);
   try {
+    const fixtureTrace = [];
     await setRecordedFrontFixture("front-vertical-unstable.mp4");
+    fixtureTrace.push({
+      step: "after-rewrite",
+      path: await readRecordedFrontFixturePath(),
+    });
     await stopVisionRuntime();
+    fixtureTrace.push({
+      step: "after-stop",
+      path: await readRecordedFrontFixturePath(),
+    });
     await waitForVisionPortRelease();
     await startInstalledVisionRuntime();
     await waitForVisionOnline(handoff, 45_000);
-    const switchedFixturePath = await runPowerShell(
-      [
-        "$ErrorActionPreference = 'Stop'",
-        `$path = '${VISION_SITE_CONFIGURATION_PATH}'`,
-        "$config = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json",
-        "[Console]::Out.Write([string]$config.cameras.front.video_path)",
-      ].join("; "),
-      "reading switched front fixture path",
-    );
+    fixtureTrace.push({
+      step: "after-start",
+      path: await readRecordedFrontFixturePath(),
+    });
+    if (!fixtureTrace.at(-1)?.path?.includes("front-vertical-unstable.mp4")) {
+      await setRecordedFrontFixture("front-vertical-unstable.mp4");
+      await stopVisionRuntime();
+      await waitForVisionPortRelease();
+      await startInstalledVisionRuntime();
+      await waitForVisionOnline(handoff, 45_000);
+      fixtureTrace.push({
+        step: "after-retry",
+        path: await readRecordedFrontFixturePath(),
+      });
+    }
     await openTryOn();
     let autoCaptured = false;
     const autoWaitSamples = [];
@@ -4375,7 +4403,7 @@ async function collectInstalledFieldRegressionChecks({
       throw new Error(
         `auto capture fired while alignment kept dropping :: unstable-diagnostics=${JSON.stringify(
           {
-            switchedFixturePath: switchedFixturePath?.stdout ?? null,
+            fixtureTrace,
             autoWaitSamples,
             stores: await readMachineTryOnStores(client).catch(() => null),
           },
