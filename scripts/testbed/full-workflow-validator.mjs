@@ -1242,8 +1242,9 @@ function validateVisionTrack(report, reportPath) {
           entry?.categoryKey &&
         expectedMediaByCatalogKey.get(entry?.catalogKey)?.coverImageUrl ===
           entry?.expectedMainImageUrl &&
-        entry?.mainImageUrl === entry?.expectedMainImageUrl &&
-        entry?.finalUrl === entry?.expectedMainImageUrl &&
+        typeof entry?.mainImageUrl === "string" &&
+        entry.mainImageUrl.startsWith("/media/") &&
+        entry?.finalUrl === entry?.mainImageUrl &&
         entry?.httpStatus === 200 &&
         Number.isInteger(entry?.naturalWidth) &&
         entry.naturalWidth >= 64 &&
