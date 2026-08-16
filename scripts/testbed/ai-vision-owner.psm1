@@ -126,7 +126,8 @@ function Get-TestbedCanonicalVisionProcesses([string]$AppDirectory, [string]$Con
   $canonicalConfiguration = [IO.Path]::GetFullPath($ConfigurationPath)
   $visionModule = Import-Module (Join-Path $PSScriptRoot "..\windows\vision-main-artifacts.psm1") -Force -PassThru
   $canonical = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-    $_.ExecutablePath -and [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonicalExecutable
+    $_.ExecutablePath -and [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonicalExecutable -and
+      -not ($_.CommandLine -and $_.CommandLine.Contains("--multiprocessing-fork"))
   })
   $managed = @($canonical | Where-Object {
     $_.CommandLine -and (& $visionModule {

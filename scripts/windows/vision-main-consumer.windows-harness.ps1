@@ -55,7 +55,7 @@ function New-VisionArchiveFixture([string]$Root, [string]$Commit) {
   }
   [IO.File]::WriteAllText((Join-Path $runtimeSource "vision-artifact.json"), $manifest, [Text.Encoding]::UTF8)
   $recordedVideoSource = Join-Path $fixtureSource "recorded-video"
-  foreach ($name in @("top.mp4", "front.mp4", "expected-results.json")) { [IO.File]::WriteAllText((Join-Path $recordedVideoSource $name), "fixture", [Text.Encoding]::UTF8) }
+  foreach ($name in @("top.mp4", "front.mp4", "front-vertical.mp4", "expected-results.json")) { [IO.File]::WriteAllText((Join-Path $recordedVideoSource $name), "fixture", [Text.Encoding]::UTF8) }
   [IO.File]::WriteAllText((Join-Path $fixtureSource "vision-artifact.json"), $manifest, [Text.Encoding]::UTF8)
   $runtime = Join-Path $artifactSource "vending-vision-windows-x86_64.zip"
   $fixtures = Join-Path $artifactSource "vending-vision-test-fixtures.zip"
@@ -391,7 +391,7 @@ try {
 
   $recordedConfig = Join-Path $root "recorded-site-input.json"
   $recordedPort = New-VisionHarnessPort
-  @{ schemaVersion = "vending-vision-site-config/v1"; host = "127.0.0.1"; port = $recordedPort; allowed_origins = @("http://127.0.0.1:$recordedPort"); cameras = @{ top = @{ source = "recorded_video"; role = "presence"; video_path = "source-relative/top.mp4" }; front = @{ source = "recorded_video"; role = "profile_fast_try_on"; video_path = "source-relative/front.mp4" } } } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $recordedConfig -Encoding utf8
+  @{ schemaVersion = "vending-vision-site-config/v1"; host = "127.0.0.1"; port = $recordedPort; allowed_origins = @("http://127.0.0.1:$recordedPort"); cameras = @{ top = @{ source = "recorded_video"; role = "presence"; video_path = "source-relative/top.mp4" }; front = @{ source = "recorded_video"; role = "profile_fast_try_on"; video_path = "source-relative/front-vertical.mp4" } } } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $recordedConfig -Encoding utf8
   $missingFixtureRejected = $false
   try { Install-VisionMainArtifact -RuntimeArchive $cache.runtimeArchive -Commit $commit -SiteConfigurationPath $recordedConfig -AppDirectory (Join-Path $root "vision\app") -SiteConfigurationDestination (Join-Path $root "program-data\vision\site.json") -LauncherPath (Join-Path $root "bringup\start_vision.bat") -ProbeTimeoutSeconds 1 | Out-Null } catch { $missingFixtureRejected = $true }
   Assert-True $missingFixtureRejected "recorded-video configuration did not require the separate fixture archive"
@@ -415,7 +415,7 @@ try {
   Assert-True ((Get-Content -LiteralPath (Join-Path $root "program-data\vision\fixtures\$commit\recorded-video\top.mp4") -Raw) -eq "fixture") "stale fixture directory was trusted instead of atomically replaced"
   $installedRecordedConfig = Get-Content -LiteralPath $recordedInstall.siteConfiguration -Raw | ConvertFrom-Json
   $expectedTopVideo = [IO.Path]::GetFullPath((Join-Path $root "program-data\vision\fixtures\$commit\recorded-video\top.mp4"))
-  $expectedFrontVideo = [IO.Path]::GetFullPath((Join-Path $root "program-data\vision\fixtures\$commit\recorded-video\front.mp4"))
+  $expectedFrontVideo = [IO.Path]::GetFullPath((Join-Path $root "program-data\vision\fixtures\$commit\recorded-video\front-vertical.mp4"))
   Assert-True ($installedRecordedConfig.cameras.top.video_path -eq $expectedTopVideo) "top video_path was not normalized to the extracted fixture"
   Assert-True ($installedRecordedConfig.cameras.front.video_path -eq $expectedFrontVideo) "front video_path was not normalized to the extracted fixture"
   $fixtureManifestPath = Join-Path $root "program-data\vision\fixtures\$commit\recorded-video\fixture-manifest.json"
@@ -431,7 +431,7 @@ try {
   Assert-True ($recordedInstallRecord.fixtureSet.front.sha256 -eq (Get-Sha256 $expectedFrontVideo)) "installed record omitted the front fixture digest"
   Assert-True ($recordedInstallRecord.fixtureSet.expectedResults.sha256 -eq (Get-Sha256 (Join-Path $root "program-data\vision\fixtures\$commit\recorded-video\expected-results.json"))) "installed record omitted the expected-results digest"
   $installedRecordedConfig.cameras.top.video_path = "fixtures/$commit/recorded-video/top.mp4"
-  $installedRecordedConfig.cameras.front.video_path = "fixtures/$commit/recorded-video/front.mp4"
+  $installedRecordedConfig.cameras.front.video_path = "fixtures/$commit/recorded-video/front-vertical.mp4"
   $relativeConfigPath = Join-Path $root "program-data\vision\relative-site.json"
   [IO.File]::WriteAllText($relativeConfigPath, ($installedRecordedConfig | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
   Assert-VisionSiteConfiguration -ConfigurationPath $relativeConfigPath -FixtureRoot (Join-Path $root "program-data\vision\fixtures\$commit") | Out-Null

@@ -744,7 +744,7 @@ function frameSourceBinding() {
       sha256: "b".repeat(64),
     },
     front: {
-      path: "C:\\ProgramData\\VEM\\vision\\fixtures\\aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\recorded-video\\front.mp4",
+      path: "C:\\ProgramData\\VEM\\vision\\fixtures\\aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\recorded-video\\front-vertical.mp4",
       sha256: "c".repeat(64),
     },
     expectedResults: {
@@ -1805,7 +1805,7 @@ describe("vision try-on acceptance script", () => {
     assert.deepEqual(config.cameras.front, {
       source: "recorded_video",
       role: "profile_fast_try_on",
-      video_path: "recorded-video/front.mp4",
+      video_path: "recorded-video/front-vertical.mp4",
       loop: true,
     });
   });
@@ -2240,11 +2240,17 @@ describe("vision try-on acceptance script", () => {
       recordings: {
         top: { file: "top.mp4", sha256: "a".repeat(64), loop: false },
         front: { file: "front.mp4", sha256: "b".repeat(64), loop: true },
+        frontVertical: {
+          file: "front-vertical.mp4",
+          sha256: "c".repeat(64),
+          loop: true,
+        },
       },
       expected: {
         top: {
           protocolEvents: ["vision.presence_status", "vision.person_departed"],
         },
+        frontVertical: { tryOn: { jpeg: true } },
         front: { tryOn: { jpeg: true } },
       },
     });

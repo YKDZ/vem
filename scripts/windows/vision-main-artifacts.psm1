@@ -40,7 +40,7 @@ function Get-VisionFixtureCommitDigests([string]$FixtureRoot) {
   $recordedRoot = Join-Path $FixtureRoot "recorded-video"
   return [ordered]@{
     top = New-VisionDirectoryDigest (Join-Path $recordedRoot "top.mp4")
-    front = New-VisionDirectoryDigest (Join-Path $recordedRoot "front.mp4")
+    front = New-VisionDirectoryDigest (Join-Path $recordedRoot "front-vertical.mp4")
     expectedResults = New-VisionDirectoryDigest (Join-Path $recordedRoot "expected-results.json")
   }
 }
@@ -394,7 +394,7 @@ function Set-VisionRecordedVideoPaths([object]$Configuration, [string]$FixtureRo
   if ($recorded.Count -eq 0) { return $Configuration }
   Assert-VisionMainCondition ($recorded.Count -eq 2) "recorded-video configuration must configure both cameras"
   $recordedRoot = Join-Path ([IO.Path]::GetFullPath($FixtureRoot)) "recorded-video"
-  foreach ($binding in @(@($Configuration.cameras.top, "top.mp4"), @($Configuration.cameras.front, "front.mp4"))) {
+  foreach ($binding in @(@($Configuration.cameras.top, "top.mp4"), @($Configuration.cameras.front, "front-vertical.mp4"))) {
     $binding[0] | Add-Member -NotePropertyName video_path -NotePropertyValue ([IO.Path]::GetFullPath((Join-Path $recordedRoot $binding[1]))) -Force
   }
   return $Configuration

@@ -83,7 +83,7 @@ function Write-RecordedVisionSiteConfiguration([string]$Path) {
       front = @{
         source = "recorded_video"
         role = "profile_fast_try_on"
-        video_path = "recorded-video/front.mp4"
+        video_path = "recorded-video/front-vertical.mp4"
         loop = $true
       }
     }

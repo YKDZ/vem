@@ -490,7 +490,8 @@ function Wait-InstalledTauriRoute([string]$ExpectedRoute) {
 
 function Get-CanonicalProcessEvidence([string]$Name, [string]$ExpectedPath) {
   $matches = @(Get-CimInstance Win32_Process -Filter "Name = '$Name'" | Where-Object {
-    $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq $ExpectedPath)
+    $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq $ExpectedPath) -and
+      -not ($Name -ieq "vending-vision.exe" -and $_.CommandLine -and $_.CommandLine.Contains("--multiprocessing-fork"))
   })
   if ($matches.Count -ne 1) { throw "expected one canonical $Name process, found $($matches.Count)" }
   $cim = $matches[0]
@@ -634,7 +635,7 @@ function Write-RecordedVisionSiteConfiguration([string]$Path) {
       front = @{
         source = "recorded_video"
         role = "profile_fast_try_on"
-        video_path = "recorded-video/front.mp4"
+        video_path = "recorded-video/front-vertical.mp4"
         loop = $true
       }
     }
@@ -982,7 +983,8 @@ function Get-TestbedCanonicalVisionProcesses([string]$AppDirectory, [string]$Con
     Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
       Where-Object {
         $_.ExecutablePath -and
-        [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonicalVisionExecutablePath
+        [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonicalVisionExecutablePath -and
+        -not ($_.CommandLine -and $_.CommandLine.Contains("--multiprocessing-fork"))
       }
   )
   $managedCanonicalVisionProcesses = @(

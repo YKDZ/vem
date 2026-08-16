@@ -957,6 +957,7 @@ export function normalizeVisionExpectedResults(raw) {
     fixture.tryOn ??
       fixture.try_on ??
       fixture.fastTryOn ??
+      publishedExpected?.frontVertical?.tryOn ??
       publishedExpected?.front?.tryOn,
     "expected try-on block",
   );
@@ -1906,7 +1907,7 @@ export function buildRecordedVisionSiteConfiguration({
       front: {
         source: "recorded_video",
         role: "profile_fast_try_on",
-        video_path: "recorded-video/front.mp4",
+        video_path: "recorded-video/front-vertical.mp4",
         loop: true,
       },
     },
@@ -3769,6 +3770,261 @@ export async function collectInstalledAiTryOnAttemptForTest(options, hooks) {
   return collectInstalledAiTryOnAttemptInternal(options, hooks);
 }
 
+async function writeInstalledVisionSiteConfiguration(frontVideoPath) {
+  const site = buildRecordedVisionSiteConfiguration();
+  site.cameras.front.video_path = frontVideoPath;
+  writeFileSync(
+    VISION_SITE_CONFIGURATION_PATH,
+    `${JSON.stringify(site, null, 2)}\n`,
+    "utf8",
+  );
+  return site;
+}
+
+async function restartInstalledVisionForRegression({ handoff }) {
+  await stopVisionRuntime();
+  await waitForVisionPortRelease();
+  await waitForVisionDegradation(handoff, 45_000);
+  await startInstalledVisionRuntime();
+  await waitForVisionOnline(handoff, 45_000);
+}
+
+async function readInstalledTryOnManualControl(client) {
+  return await evaluateExpression(
+    client,
+    `(() => {
+      const button = document.querySelector("[data-test='try-on-manual-capture']");
+      const view = document.querySelector("[data-test='try-on-view']");
+      const phase = document.querySelector("[data-test='try-on-phase']");
+      return {
+        present: button instanceof HTMLElement,
+        enabled: button instanceof HTMLElement && button.disabled === false,
+        phase: view?.dataset?.state ?? null,
+        attemptId: view?.dataset?.attemptId ?? null,
+        guidanceText: phase?.textContent?.trim() ?? null,
+      };
+    })()`,
+  );
+}
+
+async function waitForInstalledTryOnManualControl(client, timeoutMs = 30_000) {
+  return await waitForCondition(
+    "installed try-on manual capture control",
+    async () => {
+      const state = await readInstalledTryOnManualControl(client);
+      return {
+        ok:
+          state?.present === true &&
+          state?.enabled === true &&
+          state?.phase === "acquiring",
+        value: state,
+      };
+    },
+    timeoutMs,
+    25,
+  );
+}
+
+async function collectVisionDepartureDuringRegression({
+  machineCode,
+  eventFence,
+  timeoutMs = 90_000,
+}) {
+  const socket = await openVisionSocket("ws://127.0.0.1:7892/ws");
+  const observedTypes = [];
+  try {
+    socket.send(JSON.stringify(createVisionHello(machineCode)));
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const message = await nextVisionMessage(
+        socket,
+        Math.max(1_000, deadline - Date.now()),
+      );
+      if (message?.type) observedTypes.push(message.type);
+      if (
+        message?.type === "vision.person_departed" &&
+        protocolEventAfter(message, eventFence.visionStartedAt)
+      ) {
+        return { departure: message, observedTypes };
+      }
+    }
+    throw new Error(
+      `installed Vision departure event did not arrive within ${timeoutMs} ms; observed=${observedTypes.join(",")}`,
+    );
+  } finally {
+    if (typeof socket?.close === "function") socket.close();
+  }
+}
+
+function assertTryOnAttemptNotCanceled(lifecycle, attemptId, label) {
+  const terminal = lifecycle
+    .filter((entry) => entry?.attemptId === attemptId)
+    .map((entry) => entry.phase)
+    .find((phase) => phase === "canceled" || phase === "failed");
+  if (terminal) {
+    throw new Error(
+      `${label} attempt terminated as ${terminal} before the regression expectation`,
+    );
+  }
+}
+
+async function collectInstalledFieldRegressionChecks({
+  client,
+  guestInput,
+  handoff,
+  selectedProduct,
+}) {
+  const machineCode = guestInput.machineCode;
+  const expectedTryOnRoute = `#/try-on?catalogKey=${selectedProduct.catalogKey}&variantId=${selectedProduct.variantId}&mode=fast`;
+  const checks = [];
+  const restartBaseline = async () => {
+    await restartInstalledVisionForRegression({ handoff });
+    return createVisionEventFence({
+      runtimeTraceSnapshot: await readRuntimeTrace(client),
+      visionStartedAt: new Date().toISOString(),
+    });
+  };
+  const openTryOn = async () => {
+    await installTryOnLifecycleObserver(client);
+    await activateVisibleSelector(client, '[data-test="try-on-fast"]', {
+      kind: "touch",
+      timeoutMs: 30_000,
+    });
+    await waitForRoute(client, expectedTryOnRoute, {
+      timeoutMs: 30_000,
+      pollMs: 250,
+    });
+  };
+  const returnToProduct = async () => {
+    await activateVisibleSelector(client, '[data-test="try-on-return"]', {
+      kind: "touch",
+      timeoutMs: 30_000,
+    });
+    await waitForRoute(client, /^#\/products\//, {
+      timeoutMs: 30_000,
+      pollMs: 250,
+    });
+    await waitForRecommendationPresentation(
+      client,
+      "manual",
+      selectedProduct.variantId,
+    );
+  };
+
+  // ---- Top-camera departure must not cancel an active try-on attempt ----
+  await writeInstalledVisionSiteConfiguration(
+    "recorded-video/front-vertical-unstable.mp4",
+  );
+  const departureFence = await restartBaseline();
+  const departureWatch = collectVisionDepartureDuringRegression({
+    machineCode,
+    eventFence: departureFence,
+  });
+  await openTryOn();
+  const departureAcquiring = await waitForCondition(
+    "try-on acquiring before recorded departure edge",
+    async () => {
+      const lifecycle = await readTryOnLifecycle(client);
+      const attemptId = lifecycle.map((entry) => entry.attemptId).find(Boolean);
+      const acquiring =
+        attemptId !== undefined &&
+        lifecycle.some(
+          (entry) =>
+            entry?.phase === "acquiring" && entry?.attemptId === attemptId,
+        );
+      return { ok: acquiring, value: lifecycle };
+    },
+    30_000,
+    100,
+  );
+  const departureAttemptId = departureAcquiring.value
+    .map((entry) => entry.attemptId)
+    .find(Boolean);
+  const { departure, observedTypes } = await departureWatch;
+  const lifecycleAtDeparture = await readTryOnLifecycle(client);
+  assertTryOnAttemptNotCanceled(
+    lifecycleAtDeparture,
+    departureAttemptId,
+    "departure regression",
+  );
+  await activateVisibleSelector(client, '[data-test="try-on-cancel"]', {
+    kind: "touch",
+    timeoutMs: 30_000,
+  });
+  const canceledLifecycle = await waitForCondition(
+    "user cancel after departure edge",
+    async () => {
+      const lifecycle = await readTryOnLifecycle(client);
+      const canceled = lifecycle.some(
+        (entry) =>
+          entry?.phase === "canceled" &&
+          entry?.attemptId === departureAttemptId,
+      );
+      return { ok: canceled, value: lifecycle };
+    },
+    30_000,
+    100,
+  );
+  checks.push({
+    name: "departure-does-not-cancel-try-on",
+    attemptId: departureAttemptId,
+    departureObserved: departure?.payload?.detectedAt ?? null,
+    departureProtocolTypes: observedTypes,
+    terminal: "canceled_by_user",
+    lifecycle: canceledLifecycle.value,
+  });
+  await returnToProduct();
+
+  // ---- Manual capture works on the aligned vertical close-up ----
+  await writeInstalledVisionSiteConfiguration(
+    "recorded-video/front-vertical.mp4",
+  );
+  const manualFence = await restartBaseline();
+  await openTryOn();
+  const manualControl = await waitForInstalledTryOnManualControl(client);
+  await activateVisibleSelector(client, '[data-test="try-on-manual-capture"]', {
+    kind: "touch",
+    timeoutMs: 5_000,
+  });
+  const manualSurface = await waitForTryOnSurface(client, 60_000);
+  checks.push({
+    name: "manual-capture-completes",
+    attemptId: manualSurface.attemptId,
+    manualButtonObserved: manualControl.value,
+    manualButtonTapped: true,
+    lifecycle: manualSurface.lifecycle,
+    eventFence: manualFence,
+  });
+  await returnToProduct();
+
+  // ---- Observer self-heal after killing the multiprocessing children ----
+  await runPowerShell(
+    [
+      "$canonical = [IO.Path]::GetFullPath('C:\\VEM\\vision\\app\\vending-vision.exe')",
+      "$children = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.ExecutablePath -and [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonical -and $_.CommandLine -and $_.CommandLine.Contains('--multiprocessing-fork') })",
+      "foreach ($child in $children) { Stop-Process -Id ([int]$child.ProcessId) -Force -ErrorAction Stop }",
+      "if (@($children).Count -eq 0) { throw 'no Vision multiprocessing children were found to kill' }",
+      "[Console]::Out.Write((@{ killed = @($children | ForEach-Object { [int]$_.ProcessId }) } | ConvertTo-Json -Compress))",
+    ].join("; "),
+    "killing Vision observer children for self-heal regression",
+  );
+  const healFence = createVisionEventFence({
+    runtimeTraceSnapshot: await readRuntimeTrace(client),
+    visionStartedAt: new Date().toISOString(),
+  });
+  await openTryOn();
+  const healSurface = await waitForTryOnSurface(client, 90_000);
+  checks.push({
+    name: "observer-self-heal-completes",
+    attemptId: healSurface.attemptId,
+    lifecycle: healSurface.lifecycle,
+    eventFence: healFence,
+  });
+  await returnToProduct();
+
+  return { checks };
+}
+
 async function runVisionTryOnAcceptance(options) {
   const guestInput = readJson(options.guestInputPath, "guest input");
   const handoff = readJson(options.handoffPath, "handoff");
@@ -4200,7 +4456,18 @@ async function runVisionTryOnAcceptance(options) {
       );
     }
 
-    const expectedTryOnRoute = `#/try-on?catalogKey=${manualSelectedProduct.catalogKey}&variantId=${manualSelectedProduct.variantId}&mode=fast`;
+    stage = "field-regression-installed-try-on-fixes";
+    const fieldRegression = await collectInstalledFieldRegressionChecks({
+      client,
+      guestInput,
+      handoff,
+      selectedProduct: {
+        catalogKey: manualSelectedProduct.catalogKey,
+        variantId: manualSelectedProduct.variantId,
+      },
+    });
+
+    const expectedTryOnRoute = `#/try-on?catalogKey=${manualSelectedProduct.catalogKey}&variantId=${manualSelectedProduct.variantId}`;
     stage = "open-try-on-attempt";
     await installTryOnLifecycleObserver(client);
     const fastOwner = await runFastTryOnProductionOwnerAttempts({
@@ -4435,6 +4702,7 @@ async function runVisionTryOnAcceptance(options) {
         retrySummary,
         returnedProductDetail,
         tryOnAttempts,
+        fieldRegression,
         resultEvidence,
         tryOnSummary,
         degradedProductDetail,
