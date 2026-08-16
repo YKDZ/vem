@@ -88,12 +88,12 @@ function visionExperienceReport() {
     },
     ui: {
       recommendationPresentation: {
-        automatic: { variantId: "variant-s", recommendedSize: "S" },
+        automatic: { variantId: "variant-m", recommendedSize: "M" },
         onlineUnmatched: { variantId: "variant-online", recommendedSize: null },
-        manual: { variantId: "variant-m", recommendedSize: null },
-        visionUnavailable: { variantId: "variant-m", recommendedSize: null },
+        manual: { variantId: "variant-s", recommendedSize: null },
+        visionUnavailable: { variantId: "variant-s", recommendedSize: null },
       },
-      tryOnSelectedProduct: { variantId: "variant-m" },
+      tryOnSelectedProduct: { variantId: "variant-s" },
       tryOnSummary: {
         attemptId: "attempt-fast-1",
         resultUrl:
@@ -103,7 +103,7 @@ function visionExperienceReport() {
         width: 640,
         height: 480,
       },
-      tryOnAttempts: [{ result: "passed" }],
+      tryOnAttempts: [{ result: "completed" }],
       mediaPresentation: {
         source: "installed_machine_runtime_cdp",
         productCards: [
@@ -1752,7 +1752,7 @@ describe("full workflow aggregate validator", () => {
 
     const reusedRecommendationVariant = visionExperienceReport();
     reusedRecommendationVariant.ui.recommendationPresentation.onlineUnmatched.variantId =
-      "variant-s";
+      "variant-m";
     assert.equal(
       validateBusinessCheckReport(
         descriptor("visionExperience"),
@@ -1763,7 +1763,7 @@ describe("full workflow aggregate validator", () => {
     );
 
     const wrongTryOnIdentity = visionExperienceReport();
-    wrongTryOnIdentity.ui.tryOnSelectedProduct.variantId = "variant-s";
+    wrongTryOnIdentity.ui.tryOnSelectedProduct.variantId = "variant-m";
     assert.equal(
       validateBusinessCheckReport(
         descriptor("visionExperience"),
@@ -1775,7 +1775,7 @@ describe("full workflow aggregate validator", () => {
 
     const wrongUnavailableIdentity = visionExperienceReport();
     wrongUnavailableIdentity.ui.recommendationPresentation.visionUnavailable.variantId =
-      "variant-s";
+      "variant-m";
     assert.equal(
       validateBusinessCheckReport(
         descriptor("visionExperience"),

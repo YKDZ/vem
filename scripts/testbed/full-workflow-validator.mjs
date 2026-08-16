@@ -1255,13 +1255,15 @@ function validateVisionTrack(report, reportPath) {
   const recommendationBySize = new Map(
     recommendationVariants.map((variant) => [variant?.size, variant]),
   );
-  const matched = recommendationBySize.get("S");
-  const alternate = recommendationBySize.get("M");
+  // The seeded recorded person deterministically receives the M variant as
+  // the untouched automatic recommendation; S is the manual alternate.
+  const matched = recommendationBySize.get("M");
+  const alternate = recommendationBySize.get("S");
   const recommendationComplete =
     recommendationVariants.length === 2 &&
     matched?.productId === alternate?.productId &&
     recommendation.automatic?.variantId === matched?.variantId &&
-    recommendation.automatic?.recommendedSize === "S" &&
+    recommendation.automatic?.recommendedSize === "M" &&
     recommendation.manual?.variantId === alternate?.variantId &&
     recommendation.manual?.recommendedSize === null &&
     typeof recommendation.onlineUnmatched?.variantId === "string" &&
@@ -1327,7 +1329,7 @@ function validateVisionTrack(report, reportPath) {
     report.ui?.tryOnSelectedProduct?.variantId === alternate?.variantId &&
     (strictRecommendationScope
       ? report.ui?.tryOnAttempts?.some(
-          (attempt) => attempt?.result === "passed",
+          (attempt) => attempt?.result === "completed",
         )
       : vmFastCoreAttemptComplete) &&
     (strictRecommendationScope
