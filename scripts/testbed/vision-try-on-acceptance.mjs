@@ -2252,6 +2252,7 @@ export function validateVisionProtocolEvidence(
     throw new Error("vision departure evidence is invalid");
   }
   return {
+    protocol: ready.protocol,
     healthStatus: health.status,
     readyServerName: ready.payload.serverName,
     readyServerVersion:
