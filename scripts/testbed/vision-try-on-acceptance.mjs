@@ -3891,6 +3891,64 @@ async function collectInstalledFieldRegressionChecks({
   };
   const openTryOn = async () => {
     await installTryOnLifecycleObserver(client);
+    let tryOnActionAvailable = false;
+    try {
+      await waitForCondition(
+        "installed try-on fast action after Vision restart",
+        async () => {
+          const actionable = await evaluateExpression(
+            client,
+            `(() => {
+              const button = document.querySelector("[data-test='try-on-fast']");
+              return button instanceof HTMLElement && button.disabled !== true;
+            })()`,
+          );
+          return { ok: actionable === true };
+        },
+        60_000,
+        250,
+      );
+      tryOnActionAvailable = true;
+    } catch {
+      // A freshly restarted Vision runtime can leave the product detail's
+      // capability projection stale. Re-enter the product from the catalog so
+      // the Machine UI re-evaluates try-on eligibility against the live runtime.
+      await evaluateExpression(client, 'location.hash = "#/catalog"');
+      await waitForRoute(client, "#/catalog", {
+        timeoutMs: 30_000,
+        pollMs: 250,
+      });
+      await activateVisibleSelector(
+        client,
+        '[data-test="catalog-category"][data-category-key="tshirts"]',
+        { kind: "touch", timeoutMs: 30_000 },
+      );
+      await waitForCatalogProducts(client);
+      await activateVisibleSelector(
+        client,
+        `[data-test="catalog-product"][data-catalog-key="${selectedProduct.catalogKey}"]`,
+        { kind: "touch", timeoutMs: 30_000 },
+      );
+      await waitForRoute(client, /^#\/products\//, {
+        timeoutMs: 30_000,
+        pollMs: 250,
+      });
+      await waitForCondition(
+        "re-entered product try-on fast action",
+        async () => {
+          const actionable = await evaluateExpression(
+            client,
+            `(() => {
+              const button = document.querySelector("[data-test='try-on-fast']");
+              return button instanceof HTMLElement && button.disabled !== true;
+            })()`,
+          );
+          return { ok: actionable === true };
+        },
+        60_000,
+        250,
+      );
+    }
     await activateVisibleSelector(client, '[data-test="try-on-fast"]', {
       kind: "touch",
       timeoutMs: 30_000,
