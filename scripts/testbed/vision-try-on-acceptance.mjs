@@ -3024,6 +3024,20 @@ async function startInstalledVisionRuntime() {
   await runPowerShell(command, "starting Vision runtime");
 }
 
+async function setRecordedFrontFixture(fixtureFile) {
+  const command = [
+    "$ErrorActionPreference = 'Stop'",
+    `$path = '${VISION_SITE_CONFIGURATION_PATH}'`,
+    "$config = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json",
+    `$config.cameras.front.video_path = 'recorded-video/${fixtureFile}'`,
+    "($config | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $path -Encoding utf8",
+  ].join("; ");
+  await runPowerShell(
+    command,
+    `switching recorded front fixture to ${fixtureFile}`,
+  );
+}
+
 async function probeLoopbackPortRelease(port, host = "127.0.0.1") {
   return await new Promise((resolve) => {
     const server = createServer();
@@ -3865,6 +3879,37 @@ async function readTryOnButtonDiagnostics(client) {
   );
 }
 
+async function captureWithManualFallback(client, timeoutMs = 90_000) {
+  await activateVisibleSelector(client, '[data-test="try-on-retry"]', {
+    kind: "touch",
+    timeoutMs: 30_000,
+  });
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const control = await readInstalledTryOnManualControl(client);
+    if (
+      control?.present === true &&
+      control?.enabled === true &&
+      control?.phase === "acquiring"
+    ) {
+      await activateVisibleSelector(
+        client,
+        '[data-test="try-on-manual-capture"]',
+        { kind: "touch", timeoutMs: 5_000 },
+      );
+    }
+    try {
+      return await waitForTryOnSurface(client, 2_000);
+    } catch {
+      // The unstable fixture only exposes the manual action during its brief
+      // aligned windows; keep polling until one is caught.
+    }
+  }
+  throw new Error(
+    "manual capture did not complete on the unstable recorded fixture",
+  );
+}
+
 async function readMachineTryOnStores(client) {
   return await evaluateExpression(
     client,
@@ -4193,6 +4238,45 @@ async function collectInstalledFieldRegressionChecks({
     resultBeforeAdjust,
     resultAfterAdjust: adjustedSurface.resultUrl,
   });
+
+  // ---- Countdown resets while alignment drops; manual capture still works ----
+  const unstableKeepalive = setInterval(() => {
+    void dispatchIdleTouch(client);
+  }, 8_000);
+  try {
+    await setRecordedFrontFixture("front-vertical-unstable.mp4");
+    await stopVisionRuntime();
+    await waitForVisionPortRelease();
+    await startInstalledVisionRuntime();
+    await waitForVisionOnline(handoff, 45_000);
+    await openTryOn();
+    let autoCaptured = false;
+    try {
+      await waitForTryOnSurface(client, 26_000);
+      autoCaptured = true;
+    } catch {
+      autoCaptured = false;
+    }
+    if (autoCaptured) {
+      throw new Error("auto capture fired while alignment kept dropping");
+    }
+    const unstableManualSurface = await captureWithManualFallback(
+      client,
+      90_000,
+    );
+    checks.push({
+      name: "countdown-resets-unstable-manual-capture-completes",
+      attemptId: unstableManualSurface.attemptId,
+      lifecycle: unstableManualSurface.lifecycle,
+    });
+  } finally {
+    clearInterval(unstableKeepalive);
+  }
+  await setRecordedFrontFixture("front-vertical.mp4");
+  await stopVisionRuntime();
+  await waitForVisionPortRelease();
+  await startInstalledVisionRuntime();
+  await waitForVisionOnline(handoff, 45_000);
 
   return { checks };
 }
