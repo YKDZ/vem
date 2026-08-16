@@ -3044,6 +3044,19 @@ async function setRecordedFrontFixture(fixtureFile) {
   );
 }
 
+async function readInstalledVisionLogTail(lines = 120) {
+  const command = [
+    "$ErrorActionPreference = 'SilentlyContinue'",
+    `$path = 'C:\\VEM\\vision\\app\\logs\\vision.log'`,
+    "if (-not (Test-Path -LiteralPath $path)) { [Console]::Out.Write('') } else { Get-Content -LiteralPath $path -Tail 120 }",
+  ].join("; ");
+  const result = await runPowerShell(
+    command,
+    "reading installed Vision log tail",
+  ).catch(() => null);
+  return result?.stdout ?? "";
+}
+
 async function probeLoopbackPortRelease(port, host = "127.0.0.1") {
   return await new Promise((resolve) => {
     const server = createServer();
@@ -4106,48 +4119,61 @@ async function collectInstalledFieldRegressionChecks({
   };
 
   // ---- Manual capture control is exposed and the attempt completes ----
-  await installTryOnLifecycleObserver(client);
-  await waitForSaleViewGarmentReady({
-    handoff,
-    variantId: selectedProduct.variantId,
-  });
-  let manualControl = null;
-  const manualProbe = (async () => {
-    const deadline = Date.now() + 8_000;
-    while (Date.now() < deadline) {
-      const state = await readInstalledTryOnManualControl(client);
-      if (
-        state?.present === true &&
-        state?.enabled === true &&
-        state?.phase === "acquiring"
-      ) {
-        manualControl = state;
-        return;
+  const manualKeepalive = setInterval(() => {
+    void dispatchIdleTouch(client);
+  }, 8_000);
+  try {
+    await installTryOnLifecycleObserver(client);
+    await waitForSaleViewGarmentReady({
+      handoff,
+      variantId: selectedProduct.variantId,
+    });
+    let manualControl = null;
+    const manualProbe = (async () => {
+      const deadline = Date.now() + 8_000;
+      while (Date.now() < deadline) {
+        const state = await readInstalledTryOnManualControl(client);
+        if (
+          state?.present === true &&
+          state?.enabled === true &&
+          state?.phase === "acquiring"
+        ) {
+          manualControl = state;
+          return;
+        }
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, 15));
       }
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, 15));
-    }
-  })();
-  await activateVisibleSelector(client, '[data-test="try-on-fast"]', {
-    kind: "touch",
-    timeoutMs: 30_000,
-  });
-  await waitForRoute(client, expectedTryOnRoute, {
-    timeoutMs: 30_000,
-    pollMs: 250,
-  });
-  const manualSurface = await waitForTryOnSurface(client, 60_000);
-  await manualProbe;
-  assertTryOnAttemptNotCanceled(
-    manualSurface.lifecycle,
-    manualSurface.attemptId,
-    "manual-capture regression",
-  );
-  checks.push({
-    name: "manual-capture-completes",
-    attemptId: manualSurface.attemptId,
-    manualButtonObserved: manualControl !== null,
-    lifecycle: manualSurface.lifecycle,
-  });
+    })();
+    await activateVisibleSelector(client, '[data-test="try-on-fast"]', {
+      kind: "touch",
+      timeoutMs: 30_000,
+    });
+    await waitForRoute(client, expectedTryOnRoute, {
+      timeoutMs: 30_000,
+      pollMs: 250,
+    });
+    const manualSurface = await waitForTryOnSurface(client, 60_000);
+    await manualProbe;
+    assertTryOnAttemptNotCanceled(
+      manualSurface.lifecycle,
+      manualSurface.attemptId,
+      "manual-capture regression",
+    );
+    checks.push({
+      name: "manual-capture-completes",
+      attemptId: manualSurface.attemptId,
+      manualButtonObserved: manualControl !== null,
+      lifecycle: manualSurface.lifecycle,
+    });
+  } catch (error) {
+    error.message = `${error.message} :: manual-diagnostics=${JSON.stringify({
+      stores: await readMachineTryOnStores(client).catch(() => null),
+      visionLogTail: (await readInstalledVisionLogTail()).slice(-1500),
+    })}`;
+    throw error;
+  } finally {
+    clearInterval(manualKeepalive);
+  }
 
   // ---- Observer self-heal after killing the multiprocessing children ----
   await runPowerShell(
@@ -5104,6 +5130,7 @@ async function runVisionTryOnAcceptance(options) {
           options.outPath,
           "daemon-stderr",
         ),
+        visionLogTail: (await readInstalledVisionLogTail()).slice(-8000),
         platform: PLATFORM_LOG_REFERENCE,
       },
     };
