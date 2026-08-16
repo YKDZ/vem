@@ -4579,17 +4579,6 @@ async function runVisionTryOnAcceptance(options) {
       );
     }
 
-    stage = "field-regression-installed-try-on-fixes";
-    const fieldRegression = await collectInstalledFieldRegressionChecks({
-      client,
-      guestInput,
-      handoff,
-      selectedProduct: {
-        catalogKey: manualSelectedProduct.catalogKey,
-        variantId: manualSelectedProduct.variantId,
-      },
-    });
-
     const expectedTryOnRoute = `#/try-on?catalogKey=${manualSelectedProduct.catalogKey}&variantId=${manualSelectedProduct.variantId}`;
     stage = "open-try-on-attempt";
     await installTryOnLifecycleObserver(client);
@@ -4713,6 +4702,17 @@ async function runVisionTryOnAcceptance(options) {
     await waitForRoute(client, expectedReturnedProductRoute, {
       timeoutMs: 30_000,
       pollMs: 250,
+    });
+
+    stage = "field-regression-installed-try-on-fixes";
+    const fieldRegression = await collectInstalledFieldRegressionChecks({
+      client,
+      guestInput,
+      handoff,
+      selectedProduct: {
+        catalogKey: manualSelectedProduct.catalogKey,
+        variantId: manualSelectedProduct.variantId,
+      },
     });
 
     const capabilityBeforeDegradation = await daemonGet(
