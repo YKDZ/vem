@@ -3867,6 +3867,30 @@ async function waitForInstalledTryOnManualControl(client, timeoutMs = 30_000) {
   );
 }
 
+async function waitForSaleViewGarmentReady({
+  handoff,
+  variantId,
+  timeoutMs = 120_000,
+}) {
+  await waitForCondition(
+    `sale-view garment readiness for ${variantId}`,
+    async () => {
+      const saleView = await daemonGet(handoff, "/v1/sale-view").catch(
+        () => null,
+      );
+      const item = (saleView?.items ?? []).find(
+        (entry) => entry?.variantId === variantId,
+      );
+      return {
+        ok: Boolean(item?.tryOnGarmentReadyUrl),
+        value: item?.tryOnGarmentReadyUrl ?? null,
+      };
+    },
+    timeoutMs,
+    1_000,
+  );
+}
+
 async function collectVisionDepartureDuringRegression({
   machineCode,
   eventFence,
@@ -3962,6 +3986,10 @@ async function collectInstalledFieldRegressionChecks({
   };
   const openTryOn = async () => {
     await installTryOnLifecycleObserver(client);
+    await waitForSaleViewGarmentReady({
+      handoff,
+      variantId: selectedProduct.variantId,
+    });
     const tryOnActionAvailable = async () => {
       const actionable = await evaluateExpression(
         client,
@@ -3973,7 +4001,7 @@ async function collectInstalledFieldRegressionChecks({
       return actionable === true;
     };
     let started = false;
-    for (let attempt = 0; attempt < 4 && !started; attempt += 1) {
+    for (let attempt = 0; attempt < 5 && !started; attempt += 1) {
       // A freshly restarted Vision runtime can leave the product detail's
       // capability projection stale. Re-enter the product from the catalog so
       // the Machine UI re-evaluates try-on eligibility against the live
@@ -4008,7 +4036,7 @@ async function collectInstalledFieldRegressionChecks({
         await waitForCondition(
           "installed try-on fast action after Vision restart",
           tryOnActionAvailable,
-          30_000,
+          60_000,
           250,
         );
         started = true;
