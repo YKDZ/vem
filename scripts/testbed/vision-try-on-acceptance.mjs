@@ -1994,13 +1994,19 @@ async function nextVisionMessage(socket, timeoutMs) {
       cleanup();
       reject(new Error("vision websocket error"));
     };
+    const onClose = () => {
+      cleanup();
+      reject(new Error("vision websocket closed"));
+    };
     function cleanup() {
       clearTimeout(timer);
       socket.removeEventListener("message", onMessage);
       socket.removeEventListener("error", onError);
+      socket.removeEventListener("close", onClose);
     }
     socket.addEventListener("message", onMessage);
     socket.addEventListener("error", onError);
+    socket.addEventListener("close", onClose);
   });
 }
 
@@ -3978,7 +3984,12 @@ async function recordVisionBroadcast({ machineCode, timeoutMs }) {
           // Already closed by the remote side.
         }
       }
-      await pump;
+      // A remote close that races the pending read must never stall the
+      // driver: bound the join so the regression can continue promptly.
+      await Promise.race([
+        pump,
+        new Promise((resolvePromise) => setTimeout(resolvePromise, 5_000)),
+      ]);
       return messages;
     },
   };
