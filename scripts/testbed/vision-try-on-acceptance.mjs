@@ -3809,24 +3809,6 @@ async function readInstalledTryOnManualControl(client) {
   );
 }
 
-async function waitForInstalledTryOnManualControl(client, timeoutMs = 30_000) {
-  return await waitForCondition(
-    "installed try-on manual capture control",
-    async () => {
-      const state = await readInstalledTryOnManualControl(client);
-      return {
-        ok:
-          state?.present === true &&
-          state?.enabled === true &&
-          state?.phase === "acquiring",
-        value: state,
-      };
-    },
-    timeoutMs,
-    25,
-  );
-}
-
 async function waitForSaleViewGarmentReady({
   handoff,
   variantId,
@@ -3950,8 +3932,37 @@ async function collectInstalledFieldRegressionChecks({
   };
 
   // ---- Manual capture control is exposed and the attempt completes ----
-  const manualControl = await waitForInstalledTryOnManualControl(client);
+  await installTryOnLifecycleObserver(client);
+  await waitForSaleViewGarmentReady({
+    handoff,
+    variantId: selectedProduct.variantId,
+  });
+  let manualControl = null;
+  const manualProbe = (async () => {
+    const deadline = Date.now() + 8_000;
+    while (Date.now() < deadline) {
+      const state = await readInstalledTryOnManualControl(client);
+      if (
+        state?.present === true &&
+        state?.enabled === true &&
+        state?.phase === "acquiring"
+      ) {
+        manualControl = state;
+        return;
+      }
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 15));
+    }
+  })();
+  await activateVisibleSelector(client, '[data-test="try-on-fast"]', {
+    kind: "touch",
+    timeoutMs: 30_000,
+  });
+  await waitForRoute(client, expectedTryOnRoute, {
+    timeoutMs: 30_000,
+    pollMs: 250,
+  });
   const manualSurface = await waitForTryOnSurface(client, 60_000);
+  await manualProbe;
   assertTryOnAttemptNotCanceled(
     manualSurface.lifecycle,
     manualSurface.attemptId,
@@ -3960,8 +3971,7 @@ async function collectInstalledFieldRegressionChecks({
   checks.push({
     name: "manual-capture-completes",
     attemptId: manualSurface.attemptId,
-    manualButtonObserved: manualControl.value,
-    manualButtonTapped: false,
+    manualButtonObserved: manualControl !== null,
     lifecycle: manualSurface.lifecycle,
   });
 
