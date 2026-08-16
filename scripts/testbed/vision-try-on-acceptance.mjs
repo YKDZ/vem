@@ -250,6 +250,18 @@ function writeBoundedLogTail(sourcePath, outPath, label, maxBytes = 64 * 1024) {
   }
 }
 
+function writeArtifactTextLog(outPath, label, text) {
+  if (typeof text !== "string" || text.trim() === "") return null;
+  const root = join(
+    dirname(localPath(outPath)),
+    "vision-try-on-acceptance-artifacts",
+  );
+  mkdirSync(root, { recursive: true });
+  const destination = join(root, `${label}.log`);
+  writeFileSync(destination, text, "utf8");
+  return { ref: destination, byteLength: Buffer.byteLength(text, "utf8") };
+}
+
 function compactRuntimeTrace(trace, maxEntries = 96) {
   return Array.isArray(trace) ? trace.slice(-maxEntries) : [];
 }
@@ -5146,6 +5158,11 @@ async function runVisionTryOnAcceptance(options) {
           handoff?.daemon?.logs?.stderr,
           options.outPath,
           "daemon-stderr",
+        ),
+        visionLog: writeArtifactTextLog(
+          options.outPath,
+          "vision-log",
+          await readInstalledVisionLogTail(),
         ),
         platform: PLATFORM_LOG_REFERENCE,
         milestones: checkpoints.map((checkpoint) => ({
