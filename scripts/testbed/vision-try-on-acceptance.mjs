@@ -3984,11 +3984,20 @@ async function collectInstalledFieldRegressionChecks({
     [
       "$canonical = [IO.Path]::GetFullPath('C:\\VEM\\vision\\app\\vending-vision.exe')",
       "$children = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.ExecutablePath -and [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonical -and $_.CommandLine -and $_.CommandLine.Contains('--multiprocessing-fork') })",
-      "foreach ($child in $children) { Stop-Process -Id ([int]$child.ProcessId) -Force -ErrorAction Stop }",
-      "if (@($children).Count -eq 0) { throw 'no Vision multiprocessing children were found to kill' }",
-      "[Console]::Out.Write((@{ killed = @($children | ForEach-Object { [int]$_.ProcessId }) } | ConvertTo-Json -Compress))",
+      "# The startup path prewarms the fast render broker before the acquisition",
+      "# observer, so the newest multiprocessing child is the observer. Only the",
+      "# observer self-heals on the next attempt; the render broker has no",
+      "# external recovery path and must stay alive.",
+      "if (@($children).Count -ne 2) { throw ('expected two Vision multiprocessing children, found ' + @($children).Count) }",
+      "$observer = $children | Sort-Object CreationDate -Descending | Select-Object -First 1",
+      "$broker = $children | Sort-Object CreationDate | Select-Object -First 1",
+      "Stop-Process -Id ([int]$observer.ProcessId) -Force -ErrorAction Stop",
+      "Start-Sleep -Milliseconds 500",
+      "$remaining = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.ExecutablePath -and [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonical -and $_.CommandLine -and $_.CommandLine.Contains('--multiprocessing-fork') })",
+      "if (@($remaining).Count -ne 1 -or [int]$remaining[0].ProcessId -ne [int]$broker.ProcessId) { throw 'fast render broker did not survive the observer kill' }",
+      "[Console]::Out.Write((@{ killedObserverPid = [int]$observer.ProcessId; survivingBrokerPid = [int]$broker.ProcessId } | ConvertTo-Json -Compress))",
     ].join("; "),
-    "killing Vision observer children for self-heal regression",
+    "killing only the Vision acquisition observer for self-heal regression",
   );
   // Respawn, prewarm, acquisition, and generation after the observer dies can
   // take longer than the Machine UI's 45s touchscreen inactivity timeout. The
