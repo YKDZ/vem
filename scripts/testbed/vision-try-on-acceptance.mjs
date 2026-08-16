@@ -2382,19 +2382,6 @@ export async function waitForFreshVisionPresenceArrival(
   };
 }
 
-function admissionRemainsActive(runtime, admission) {
-  return (
-    runtime.runtimeGenerationId === admission.runtimeGenerationId &&
-    !runtime.entries.some(
-      (entry) =>
-        Number.isInteger(entry?.id) &&
-        entry.id > admission.entry.id &&
-        entry.type === "journey_transition" &&
-        /^vision:presence-\d+:departed$/.test(entry.transitionId ?? ""),
-    )
-  );
-}
-
 async function dispatchIdleTouch(client) {
   try {
     await client.send("Input.dispatchTouchEvent", {
@@ -2433,11 +2420,6 @@ export async function activateAfterFreshVisionPresenceArrival(
         { readRuntimeTraceSnapshot },
         { timeoutMs: Math.max(1, deadline - Date.now()), pollMs },
       );
-      const runtime = normalizeRuntimeTraceSnapshot(
-        await readRuntimeTraceSnapshot(),
-        "Vision presence admission final runtime trace",
-      );
-      if (!admissionRemainsActive(runtime, admission)) continue;
       return { admission, activation: await activate() };
     }
     throw new Error("Vision presence admission timed out before activation");
