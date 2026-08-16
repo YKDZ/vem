@@ -3897,6 +3897,7 @@ async function collectInstalledFieldRegressionChecks({
 }) {
   const machineCode = guestInput.machineCode;
   const fixtureCommit =
+    guestInput.visionCore?.identity?.runtimeArchive?.sourceCommit ??
     guestInput.visionCore?.runtimeArchive?.sourceCommit ??
     guestInput.visionCore?.sourceCommit;
   const expectedTryOnRoute = `#/try-on?catalogKey=${selectedProduct.catalogKey}&variantId=${selectedProduct.variantId}&mode=fast`;
