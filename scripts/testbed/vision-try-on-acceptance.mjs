@@ -3866,6 +3866,33 @@ async function readTryOnButtonDiagnostics(client) {
   );
 }
 
+async function readMachineTryOnStores(client) {
+  return await evaluateExpression(
+    client,
+    `(() => {
+      try {
+        const app = document.querySelector("#app")?.__vue_app__;
+        const pinia = app?.config?.globalProperties?.$pinia;
+        const state = pinia?.state?.value;
+        if (!state) return null;
+        const vision = state.vision ?? null;
+        const tryOn = state.tryOn ?? null;
+        return {
+          fastReady: vision?.fastReady ?? null,
+          visionBusinessReady: vision?.visionBusinessReady ?? null,
+          tryOnCapability: vision?.tryOnCapability ?? null,
+          aiReady: vision?.aiReady ?? null,
+          online: vision?.online ?? null,
+          enabled: vision?.enabled ?? null,
+          tryOnPhase: tryOn?.phase ?? null,
+        };
+      } catch (error) {
+        return { error: String(error) };
+      }
+    })()`,
+  );
+}
+
 async function recordVisionBroadcast({ machineCode, timeoutMs }) {
   const socket = await openVisionSocket("ws://127.0.0.1:7892/ws", 10_000);
   socket.send(JSON.stringify(createVisionHello(machineCode)));
@@ -3940,6 +3967,7 @@ async function collectInstalledFieldRegressionChecks({
       void dispatchIdleTouch(client);
     }, 8_000);
     let started = false;
+    const pollDiagnostics = [];
     try {
       for (let attempt = 0; attempt < 5 && !started; attempt += 1) {
         // A freshly restarted Vision runtime can leave the product detail's
@@ -3970,9 +3998,28 @@ async function collectInstalledFieldRegressionChecks({
           });
         }
         try {
+          let lastSampleAt = 0;
           await waitForCondition(
             "installed try-on fast action after Vision restart",
-            tryOnActionAvailable,
+            async () => {
+              const actionable = await tryOnActionAvailable();
+              if (Date.now() - lastSampleAt >= 2_000) {
+                lastSampleAt = Date.now();
+                const button = await readTryOnButtonDiagnostics(client).catch(
+                  () => null,
+                );
+                pollDiagnostics.push({
+                  at: new Date().toISOString(),
+                  attempt,
+                  button,
+                  stores: await readMachineTryOnStores(client).catch(
+                    () => null,
+                  ),
+                  actionable,
+                });
+              }
+              return actionable;
+            },
             60_000,
             250,
           );
@@ -3983,7 +4030,7 @@ async function collectInstalledFieldRegressionChecks({
       }
       if (!started) {
         throw new Error(
-          "installed try-on fast action did not become available after Vision restart",
+          `installed try-on fast action did not become available after Vision restart :: poll-diagnostics=${JSON.stringify(pollDiagnostics)}`,
         );
       }
     } finally {
