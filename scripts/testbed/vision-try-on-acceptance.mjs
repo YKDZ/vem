@@ -2395,8 +2395,25 @@ function admissionRemainsActive(runtime, admission) {
   );
 }
 
+async function dispatchIdleTouch(client) {
+  try {
+    await client.send("Input.dispatchTouchEvent", {
+      type: "touchStart",
+      touchPoints: [
+        { x: 540, y: 960, radiusX: 1, radiusY: 1, force: 1, id: 1 },
+      ],
+    });
+    await client.send("Input.dispatchTouchEvent", {
+      type: "touchEnd",
+      touchPoints: [],
+    });
+  } catch {
+    // A keepalive touch is best-effort; it must never fail the acceptance.
+  }
+}
+
 export async function activateAfterFreshVisionPresenceArrival(
-  { activate, readRuntimeTraceSnapshot },
+  { activate, readRuntimeTraceSnapshot, client = null },
   { timeoutMs = 45_000, pollMs = 250 } = {},
 ) {
   if (typeof activate !== "function") {
@@ -2405,19 +2422,28 @@ export async function activateAfterFreshVisionPresenceArrival(
     );
   }
   const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const admission = await waitForFreshVisionPresenceArrival(
-      { readRuntimeTraceSnapshot },
-      { timeoutMs: Math.max(1, deadline - Date.now()), pollMs },
-    );
-    const runtime = normalizeRuntimeTraceSnapshot(
-      await readRuntimeTraceSnapshot(),
-      "Vision presence admission final runtime trace",
-    );
-    if (!admissionRemainsActive(runtime, admission)) continue;
-    return { admission, activation: await activate() };
+  const keepalive = client
+    ? setInterval(() => {
+        void dispatchIdleTouch(client);
+      }, 8_000)
+    : null;
+  try {
+    while (Date.now() < deadline) {
+      const admission = await waitForFreshVisionPresenceArrival(
+        { readRuntimeTraceSnapshot },
+        { timeoutMs: Math.max(1, deadline - Date.now()), pollMs },
+      );
+      const runtime = normalizeRuntimeTraceSnapshot(
+        await readRuntimeTraceSnapshot(),
+        "Vision presence admission final runtime trace",
+      );
+      if (!admissionRemainsActive(runtime, admission)) continue;
+      return { admission, activation: await activate() };
+    }
+    throw new Error("Vision presence admission timed out before activation");
+  } finally {
+    if (keepalive !== null) clearInterval(keepalive);
   }
-  throw new Error("Vision presence admission timed out before activation");
 }
 
 export async function runFastTryOnOwnerAttempts({
@@ -2456,6 +2482,7 @@ export async function runFastTryOnOwnerAttempts({
     await beforeAttempt?.(index);
     const admitted = await activateAfterFreshVisionPresenceArrival(
       {
+        client,
         activate: async () =>
           await activateVisibleSelector(client, attempt.selector, {
             kind: "touch",
