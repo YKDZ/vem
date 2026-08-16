@@ -3775,7 +3775,11 @@ export async function collectInstalledAiTryOnAttemptForTest(options, hooks) {
   return collectInstalledAiTryOnAttemptInternal(options, hooks);
 }
 
-async function writeInstalledVisionSiteConfiguration(frontVideoFile, fixtureCommit) {
+async function writeInstalledVisionSiteConfiguration(
+  frontVideoFile,
+  fixtureCommit,
+  { profilePushIntervalMs = 600 } = {},
+) {
   if (!/^[a-f0-9]{40}$/.test(fixtureCommit ?? "")) {
     throw new Error("Vision fixture commit is required for site reconfiguration");
   }
@@ -3783,6 +3787,7 @@ async function writeInstalledVisionSiteConfiguration(frontVideoFile, fixtureComm
   const site = buildRecordedVisionSiteConfiguration();
   site.cameras.top.video_path = `${fixtureRoot}\\recorded-video\\top.mp4`;
   site.cameras.front.video_path = `${fixtureRoot}\\recorded-video\\${frontVideoFile}`;
+  site.profile_push_interval_ms = profilePushIntervalMs;
   writeFileSync(
     VISION_SITE_CONFIGURATION_PATH,
     `${JSON.stringify(site, null, 2)}\n`,
@@ -3910,6 +3915,9 @@ async function collectInstalledFieldRegressionChecks({
       visionStartedAt: new Date().toISOString(),
     });
   };
+  const waitForOnlineAfterRestart = async () => {
+    await waitForVisionOnline(handoff, 45_000);
+  };
   const openTryOn = async () => {
     await installTryOnLifecycleObserver(client);
     let tryOnActionAvailable = false;
@@ -3999,12 +4007,14 @@ async function collectInstalledFieldRegressionChecks({
   await writeInstalledVisionSiteConfiguration(
     "recorded-video/front-vertical-unstable.mp4",
     fixtureCommit,
+    { profilePushIntervalMs: 3000 },
   );
   const departureFence = await restartBaseline();
   const departureWatch = collectVisionDepartureDuringRegression({
     machineCode,
     eventFence: departureFence,
   });
+  await waitForOnlineAfterRestart();
   await openTryOn();
   const departureAcquiring = await waitForCondition(
     "try-on acquiring before recorded departure edge",
@@ -4066,6 +4076,7 @@ async function collectInstalledFieldRegressionChecks({
     fixtureCommit,
   );
   const manualFence = await restartBaseline();
+  await waitForOnlineAfterRestart();
   await openTryOn();
   const manualControl = await waitForInstalledTryOnManualControl(client);
   await activateVisibleSelector(client, '[data-test="try-on-manual-capture"]', {
