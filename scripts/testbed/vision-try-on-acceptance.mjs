@@ -2399,6 +2399,10 @@ async function dispatchIdleTouch(client) {
   }
 }
 
+function tryOnRoute(catalogKey, variantId) {
+  return `#/try-on?catalogKey=${encodeURIComponent(catalogKey)}&mode=fast&variantId=${variantId}`;
+}
+
 export async function activateAfterFreshVisionPresenceArrival(
   { activate, readRuntimeTraceSnapshot, client = null },
   { timeoutMs = 45_000, pollMs = 250 } = {},
@@ -3917,7 +3921,10 @@ async function collectInstalledFieldRegressionChecks({
     guestInput.visionCore?.identity?.runtimeArchive?.sourceCommit ??
     guestInput.visionCore?.runtimeArchive?.sourceCommit ??
     guestInput.visionCore?.sourceCommit;
-  const expectedTryOnRoute = `#/try-on?catalogKey=${selectedProduct.catalogKey}&variantId=${selectedProduct.variantId}&mode=fast`;
+  const expectedTryOnRoute = tryOnRoute(
+    selectedProduct.catalogKey,
+    selectedProduct.variantId,
+  );
   const checks = [];
   const restartBaseline = async () => {
     await restartInstalledVisionForRegression({ handoff });
@@ -4591,7 +4598,10 @@ async function runVisionTryOnAcceptance(options) {
       );
     }
 
-    const expectedTryOnRoute = `#/try-on?catalogKey=${manualSelectedProduct.catalogKey}&variantId=${manualSelectedProduct.variantId}`;
+    const expectedTryOnRoute = tryOnRoute(
+      manualSelectedProduct.catalogKey,
+      manualSelectedProduct.variantId,
+    );
     stage = "open-try-on-attempt";
     await installTryOnLifecycleObserver(client);
     const fastOwner = await runFastTryOnProductionOwnerAttempts({
