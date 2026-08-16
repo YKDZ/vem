@@ -3035,7 +3035,10 @@ async function setRecordedFrontFixture(fixtureFile) {
     "$ErrorActionPreference = 'Stop'",
     `$path = '${VISION_SITE_CONFIGURATION_PATH}'`,
     "$config = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json",
-    `$config.cameras.front.video_path = 'recorded-video/${fixtureFile}'`,
+    "# The installed site configuration binds absolute fixture paths. Preserve",
+    "# the fixture directory and swap only the front recording file name.",
+    "$frontPath = [string]$config.cameras.front.video_path",
+    `$config.cameras.front.video_path = Join-Path (Split-Path -Parent $frontPath) '${fixtureFile}'`,
     "($config | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $path -Encoding utf8",
   ].join("; ");
   await runPowerShell(
