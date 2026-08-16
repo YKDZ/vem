@@ -3948,10 +3948,14 @@ async function collectInstalledFieldRegressionChecks({
           { kind: "touch", timeoutMs: 30_000 },
         );
         await waitForCatalogProducts(client);
-        await activateVisibleSelector(
+        // Navigate with the explicit seeded variant so the product detail is
+        // opened for the try-on-eligible variant even before the post-restart
+        // recommendation profile has re-established.
+        await evaluateExpression(
           client,
-          `[data-test="catalog-product"][data-catalog-key="${selectedProduct.catalogKey}"]`,
-          { kind: "touch", timeoutMs: 30_000 },
+          `location.hash = ${JSON.stringify(
+            `#/products/${selectedProduct.catalogKey}?variantId=${selectedProduct.variantId}`,
+          )}`,
         );
         await waitForRoute(client, /^#\/products\//, {
           timeoutMs: 30_000,
