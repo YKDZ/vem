@@ -3227,16 +3227,15 @@ async function waitForTryOnButtonDisabled(client, timeoutMs = 30_000) {
   );
 }
 
-async function waitForTryOnButtonEnabled(client, timeoutMs = 30_000) {
+async function waitForDegradedProductDetail(client, timeoutMs = 30_000) {
+  // Vision degradation removes only the customer try-on action. The Machine
+  // UI hides the try-on entry entirely while ordinary sale stays usable.
   return waitForCondition(
-    "try-on available button state",
+    "degraded product detail keeps ordinary sale",
     async () => {
       const state = await readProductDetailState(client);
       return {
-        ok:
-          state?.tryOnPresent === true &&
-          state?.tryOnDisabled === false &&
-          state?.buyDisabled === false,
+        ok: state?.tryOnPresent === false && state?.buyDisabled === false,
         value: state,
       };
     },
@@ -4740,7 +4739,10 @@ async function runVisionTryOnAcceptance(options) {
       realVisionStopped = true;
       await waitForVisionPortRelease();
       degradedDaemon = await waitForVisionDegradation(handoff, 45_000);
-      degradedProductDetail = await waitForTryOnButtonEnabled(client, 30_000);
+      degradedProductDetail = await waitForDegradedProductDetail(
+        client,
+        30_000,
+      );
       assert.equal(degradedProductDetail?.buyDisabled, false);
       stage = "validate-vision-unavailable-recommendation-presentation";
       unavailableRecommendationPresentation =
