@@ -3918,6 +3918,29 @@ async function collectInstalledFieldRegressionChecks({
   const waitForOnlineAfterRestart = async () => {
     await waitForVisionOnline(handoff, 45_000);
   };
+  const reloadToCatalog = async () => {
+    // A freshly restarted Vision runtime requires the Machine UI to re-initialize
+    // its native Vision subscription and re-fetch the sale-view before the
+    // try-on capability is re-armed; a full page reload is the deterministic
+    // way to force that re-initialization.
+    await evaluateExpression(client, "location.reload()").catch(() => undefined);
+    await waitForRoute(client, /#\/catalog|#\/products\//, {
+      timeoutMs: 30_000,
+      pollMs: 250,
+    });
+    await waitForCondition(
+      "Machine UI re-initialized after Vision restart",
+      async () => {
+        const ready = await evaluateExpression(
+          client,
+          `(() => document.readyState === "complete" && !!document.querySelector("[data-test='catalog-page'], [data-test='product-detail-page']"))()`,
+        );
+        return { ok: ready === true };
+      },
+      30_000,
+      250,
+    );
+  };
   const openTryOn = async () => {
     await installTryOnLifecycleObserver(client);
     const tryOnActionAvailable = async () => {
@@ -4016,6 +4039,7 @@ async function collectInstalledFieldRegressionChecks({
     eventFence: departureFence,
   });
   await waitForOnlineAfterRestart();
+  await reloadToCatalog();
   await openTryOn();
   const departureAcquiring = await waitForCondition(
     "try-on acquiring before recorded departure edge",
@@ -4078,6 +4102,7 @@ async function collectInstalledFieldRegressionChecks({
   );
   const manualFence = await restartBaseline();
   await waitForOnlineAfterRestart();
+  await reloadToCatalog();
   await openTryOn();
   const manualControl = await waitForInstalledTryOnManualControl(client);
   await activateVisibleSelector(client, '[data-test="try-on-manual-capture"]', {
