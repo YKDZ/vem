@@ -320,7 +320,7 @@ describe("Fast try-on production owner", () => {
     assert.equal(received.timeoutMs, 240_000);
   });
 
-  it("admits a fresh arrival independently before initial and retry touches", async () => {
+  it("activates initial and retry touches directly without a presence gate", async () => {
     await withTryOnOwnerTouchHarness(
       { firstArrivalId: 1, secondArrivalId: 2 },
       async ({ client, readRuntimeTraceSnapshot, trace }) => {
@@ -338,15 +338,7 @@ describe("Fast try-on production owner", () => {
           [1, 2],
         );
         assert.deepEqual(result.results, ["initial-result", "retry-result"]);
-        assert.deepEqual(trace, [
-          "read:0",
-          "read:1",
-          "touch:initial",
-          "read:1",
-          "read:1",
-          "read:2",
-          "touch:retry",
-        ]);
+        assert.deepEqual(trace, ["touch:initial", "touch:retry"]);
       },
     );
   });

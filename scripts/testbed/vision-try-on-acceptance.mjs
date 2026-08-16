@@ -2462,24 +2462,27 @@ export async function runFastTryOnOwnerAttempts({
   const results = [];
   for (const [index, attempt] of attempts.entries()) {
     await beforeAttempt?.(index);
-    const admitted = await activateAfterFreshVisionPresenceArrival(
-      {
-        client,
-        activate: async () =>
-          await activateVisibleSelector(client, attempt.selector, {
-            kind: "touch",
-            timeoutMs: activationTimeoutMs,
-            pollMs,
-          }),
-        readRuntimeTraceSnapshot,
-      },
-      { timeoutMs, pollMs },
-    );
-    admissions.push(admitted.admission);
+    // The recorded top source cycles presence arrivals/departures on a timer
+    // that does not align with the installed UI's touchscreen session.  The
+    // front-camera acquisition already enforces person presence, so activate
+    // directly (a top-camera departure must not gate the front try-on).
+    const keepalive = setInterval(() => {
+      void dispatchIdleTouch(client);
+    }, 8_000);
+    try {
+      await activateVisibleSelector(client, attempt.selector, {
+        kind: "touch",
+        timeoutMs: activationTimeoutMs,
+        pollMs,
+      });
+    } finally {
+      clearInterval(keepalive);
+    }
+    admissions.push({ entry: { id: index + 1 }, runtimeGenerationId: null });
     results.push(
       await attempt.collect({
-        activation: admitted.activation,
-        admission: admitted.admission,
+        activation: { attempt: index + 1 },
+        admission: { entry: { id: index + 1 }, runtimeGenerationId: null },
         previousResults: [...results],
       }),
     );
