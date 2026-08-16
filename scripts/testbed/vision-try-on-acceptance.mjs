@@ -4176,10 +4176,17 @@ async function collectInstalledFieldRegressionChecks({
       healSurface.attemptId,
       "observer self-heal regression",
     );
+    const healPostState = {
+      at: new Date().toISOString(),
+      attemptId: healSurface.attemptId,
+      resultUrl: healSurface.resultUrl,
+      stores: await readMachineTryOnStores(client).catch(() => null),
+    };
     checks.push({
       name: "observer-self-heal-completes",
       attemptId: healSurface.attemptId,
       lifecycle: healSurface.lifecycle,
+      healPostState,
     });
   } catch (error) {
     const diagnostics = {
@@ -4213,6 +4220,9 @@ async function collectInstalledFieldRegressionChecks({
       stores: await readMachineTryOnStores(client).catch(() => null),
       button: await readTryOnButtonDiagnostics(client).catch(() => null),
       resultBeforeAdjust,
+      healPostState:
+        checks.find((check) => check.name === "observer-self-heal-completes")
+          ?.healPostState ?? null,
     })}`;
     throw error;
   }
