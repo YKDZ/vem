@@ -4719,6 +4719,17 @@ async function runVisionTryOnAcceptance(options) {
         variantId: manualSelectedProduct.variantId,
       },
     });
+    // The self-heal check leaves the customer on the try-on result route.
+    // Degradation evidence is asserted on the product detail, so return to
+    // the same product and variant before stopping the real Vision runtime.
+    await evaluateExpression(
+      client,
+      `location.hash = ${JSON.stringify(expectedReturnedProductRoute)}`,
+    );
+    await waitForRoute(client, expectedReturnedProductRoute, {
+      timeoutMs: 30_000,
+      pollMs: 250,
+    });
 
     const capabilityBeforeDegradation = await daemonGet(
       handoff,
