@@ -1559,7 +1559,7 @@ describe("supported API seeding", () => {
         selectedCatalogKey: result.visionAcceptance.selectedCatalogKey,
         selectedVariantId:
           result.visionAcceptance.recommendationVariants[0].variantId,
-        size: "S",
+        size: "M",
       },
       {
         caseKey: "long",
@@ -1572,7 +1572,7 @@ describe("supported API seeding", () => {
         selectedCatalogKey: result.visionAcceptance.selectedCatalogKey,
         selectedVariantId:
           result.visionAcceptance.recommendationVariants[1].variantId,
-        size: "M",
+        size: "S",
       },
     ]);
     assert.equal(result.visionAcceptance.tryOnCategoryKey, "tshirts");
@@ -1624,7 +1624,7 @@ describe("supported API seeding", () => {
             result.visionAcceptance.recommendationVariants[0].productId,
           variantId:
             result.visionAcceptance.recommendationVariants[0].variantId,
-          size: "S",
+          size: "M",
           slotId: result.visionAcceptance.recommendationVariants[0].slotId,
           inventoryId:
             result.visionAcceptance.recommendationVariants[0].inventoryId,
@@ -1635,7 +1635,7 @@ describe("supported API seeding", () => {
             result.visionAcceptance.recommendationVariants[0].productId,
           variantId:
             result.visionAcceptance.recommendationVariants[1].variantId,
-          size: "M",
+          size: "S",
           slotId: result.visionAcceptance.recommendationVariants[1].slotId,
           inventoryId:
             result.visionAcceptance.recommendationVariants[1].inventoryId,
