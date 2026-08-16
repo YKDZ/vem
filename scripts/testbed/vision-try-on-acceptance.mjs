@@ -3929,6 +3929,9 @@ async function readMachineTryOnStores(client) {
           online: vision?.online ?? null,
           enabled: vision?.enabled ?? null,
           tryOnPhase: tryOn?.phase ?? null,
+          tryOnMode: tryOn?.mode ?? null,
+          tryOnGarmentScale: tryOn?.garmentScale ?? null,
+          tryOnAdjusting: tryOn?.adjusting ?? null,
         };
       } catch (error) {
         return { error: String(error) };
@@ -4200,10 +4203,19 @@ async function collectInstalledFieldRegressionChecks({
       return image?.getAttribute("src") ?? null;
     })()`,
   );
-  await activateVisibleSelector(client, '[data-test="try-on-scale-up"]', {
-    kind: "touch",
-    timeoutMs: 30_000,
-  });
+  try {
+    await activateVisibleSelector(client, '[data-test="try-on-scale-up"]', {
+      kind: "touch",
+      timeoutMs: 30_000,
+    });
+  } catch (error) {
+    error.message = `${error.message} :: scale-diagnostics=${JSON.stringify({
+      stores: await readMachineTryOnStores(client).catch(() => null),
+      button: await readTryOnButtonDiagnostics(client).catch(() => null),
+      resultBeforeAdjust,
+    })}`;
+    throw error;
+  }
   const adjustedSurface = await waitForCondition(
     "adjusted Fast garment scale",
     async () => {
