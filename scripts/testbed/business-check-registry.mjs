@@ -98,7 +98,7 @@ export const BUSINESS_CHECK_REGISTRY = Object.freeze([
       script: "scripts/testbed/run-full-vision-try-on-track.ps1",
       args: [],
       reportFileName: "vision-experience.json",
-      artifactDirectory: "vision-experience-artifacts",
+      artifactDirectory: "vision-try-on-acceptance-artifacts",
     },
     validator: "visionExperience",
   }),
