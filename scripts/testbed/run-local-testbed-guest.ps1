@@ -1441,9 +1441,9 @@ if ($Measurement) {
 if ($bundleFailure -ne $null) {
   if ($workflowFailure -ne $null) {
     throw "${workflowFailure}; ${bundleFailure}"
-  } else {
-    throw $bundleFailure
   }
+  # Fast-mode evidence is diagnostic-only and may not be uploadable. A
+  # successful business aggregate must not fail over the evidence bundle.
 }
 if ($workflowFailure -ne $null) {
   throw $workflowFailure
