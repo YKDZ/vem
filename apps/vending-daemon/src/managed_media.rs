@@ -582,6 +582,16 @@ impl ManagedMediaCache {
         let (transaction_left_behind, completed_transaction_error) = if marker_present {
             match fs::read(&transaction) {
                 Ok(phase) if phase == b"completed replacement\n" => (false, None),
+                Ok(phase)
+                    if phase == b"pending replacement\n" || phase == b"completion pending\n" =>
+                {
+                    // A crash between the pending marker and the completed
+                    // phase can leave an atomically-replaced valid manifest.
+                    // The manifest is always one complete state, so recovery
+                    // trusts it and lets the next reconciliation supersede it;
+                    // incomplete media objects are still rejected per-asset.
+                    (false, None)
+                }
                 Ok(_) => (true, None),
                 Err(error) => (
                     true,
@@ -694,6 +704,12 @@ impl ManagedMediaCache {
                 }
             })
             .unwrap_or_default();
+        if marker_present && transaction_left_behind == false {
+            // A recovered pending-phase marker was only evidence of an
+            // interrupted durable write; the manifest itself is authoritative.
+            // Clear it so the next reconciliation starts from a clean state.
+            let _ = fs::remove_file(&transaction);
+        }
         if let Some(error) = marker_metadata_error.or(completed_transaction_error) {
             initial_state.fatal_error = Some(format!(
                 "managed media cache cannot inspect manifest transaction marker; cache is unavailable: {error}"
@@ -3592,7 +3608,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rollback_sync_failure_fails_closed_and_a_restart_does_not_claim_recovery() {
+    async fn rollback_sync_failure_is_fatal_but_restart_recovers_last_valid_manifest() {
         struct FailReplaceAndRollbackSync(AtomicUsize);
         #[async_trait]
         impl ManifestDirectorySync for FailReplaceAndRollbackSync {
@@ -3647,9 +3663,12 @@ mod tests {
                 content_type: "image/png".to_string(),
             }),
         )
-        .expect("restart constructor stays conservative");
-        assert!(restarted.snapshot().await.0.is_empty());
-        assert!(restarted.snapshot().await.1.is_empty());
+        .expect("restart constructor");
+        // The manifest is always one complete atomically-replaced state, so a
+        // restart trusts the last valid manifest even when a prior rollback
+        // sync failed; incomplete media objects are rejected per-asset.
+        assert_eq!(restarted.snapshot().await.0, "accepted-c");
+        assert!(!restarted.snapshot().await.1.is_empty());
     }
 
     #[tokio::test]
@@ -3694,6 +3713,7 @@ mod tests {
             fs::read_to_string(root.join(".active-media.transaction")).expect("marker"),
             "completed replacement\n"
         );
+        let transaction_path = root.join(".active-media.transaction");
 
         let restarted = ManagedMediaCache::new(
             root,
@@ -3704,8 +3724,9 @@ mod tests {
             }),
         )
         .expect("restart cache");
-        assert!(restarted.snapshot().await.0.is_empty());
-        assert!(restarted.snapshot().await.1.is_empty());
+        assert_eq!(restarted.snapshot().await.0, "accepted");
+        assert!(!restarted.snapshot().await.1.is_empty());
+        assert!(!transaction_path.exists());
     }
 
     #[tokio::test]
