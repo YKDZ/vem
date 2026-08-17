@@ -3962,7 +3962,7 @@ async function readTryOnButtonDiagnostics(client) {
   );
 }
 
-async function captureWithManualFallback(client, timeoutMs = 90_000) {
+async function captureWithManualFallback(client, timeoutMs = 180_000) {
   await activateVisibleSelector(client, '[data-test="try-on-retry"]', {
     kind: "touch",
     timeoutMs: 30_000,

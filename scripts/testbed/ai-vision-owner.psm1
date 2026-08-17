@@ -152,6 +152,11 @@ function Stop-TestbedAiVisionOwner([string]$AppDirectory, [string]$Configuration
   $owned = @(Get-TestbedProcessTreeIds @($initialCanonical | ForEach-Object { [int]$_.ProcessId }))
   $canonicalExecutable = [IO.Path]::GetFullPath((Join-Path $AppDirectory "vending-vision.exe"))
   Stop-ScheduledTask -TaskName "VEMVisionRuntime" -ErrorAction SilentlyContinue
+  # The owner task may be configured to restart the launcher. Disable it for
+  # the duration of the stop so an auto-restart cannot keep the process tree
+  # alive until the 60s deadline. Install/restart paths re-register or start
+  # the task afterwards.
+  Disable-ScheduledTask -TaskName "VEMVisionRuntime" -ErrorAction SilentlyContinue
   Stop-TestbedCanonicalVision $AppDirectory $ConfigurationPath
   $deadline = [DateTime]::UtcNow.AddSeconds(60)
   do {

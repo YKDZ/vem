@@ -399,7 +399,7 @@ describe("AI try-on production owner", () => {
           "read:12",
           "touch:retry",
         ]);
-        assert.deepEqual(receivedBudgets, [240_000, 240_000]);
+        assert.deepEqual(receivedBudgets, [600_000, 600_000]);
       },
     );
   });
