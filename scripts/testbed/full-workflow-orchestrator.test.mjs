@@ -1970,4 +1970,15 @@ describe("functional AI evidence gate", () => {
       /report\?\.execution\?\.functional === true[\s\S]*\{ ok: true, reason: null \}/,
     );
   });
+
+  it("propagates the VM AI RSS skip into the orchestrator validator", () => {
+    const source = readFileSync(
+      new URL("./full-workflow-orchestrator.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(
+      source,
+      /guestInput\?\.aiVirtualTryOn\?\.functional === true[\s\S]*VEM_VM_ACCEPTANCE_SKIP_AI_RSS = "1"/,
+    );
+  });
 });

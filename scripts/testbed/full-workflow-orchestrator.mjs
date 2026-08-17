@@ -1440,6 +1440,12 @@ function terminalOperations(guestInput, handoff, handoffPath) {
 
 export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
   const guestInput = jsonIfPresent(options.guestInputPath);
+  if (
+    guestInput?.aiVirtualTryOn?.skipAiRss === true ||
+    guestInput?.aiVirtualTryOn?.functional === true
+  ) {
+    process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS = "1";
+  }
   const plan = buildWorkflowTrackCommands(options);
   const aiBlock = guestInput?.acceptanceBlocks?.aiVirtualTryOn;
   if (typeof aiBlock === "string" && aiBlock.length > 0) {
