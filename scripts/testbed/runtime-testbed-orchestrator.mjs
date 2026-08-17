@@ -1682,10 +1682,9 @@ async function executeRun(options, config) {
         );
       }
       if (aiAcceptanceInputs) {
-        let currentAiAcceptanceInputs = await admitAiAcceptanceInputs(
-          config,
-          workspace,
-        );
+        let currentAiAcceptanceInputs = config.aiVirtualTryOnInputManifest
+          ? await admitAiAcceptanceInputs(config, workspace)
+          : await admitFunctionalAiAcceptanceInputs(config);
         currentAiAcceptanceInputs = await materializeAiAcceptanceInputSnapshot(
           currentAiAcceptanceInputs,
           join(root, "ai-input-snapshots"),
