@@ -167,6 +167,7 @@ export async function collectInstalledAiOwnerAttempts({
   readRuntimeTraceSnapshot,
   afterInitial = null,
   onInitialSettled = null,
+  onInitialStarted = null,
 }) {
   if (
     typeof collectAttempt !== "function" ||
@@ -176,7 +177,8 @@ export async function collectInstalledAiOwnerAttempts({
     (retryOptions !== null &&
       (!retryOptions || typeof retryOptions !== "object")) ||
     (afterInitial !== null && typeof afterInitial !== "function") ||
-    (onInitialSettled !== null && typeof onInitialSettled !== "function")
+    (onInitialSettled !== null && typeof onInitialSettled !== "function") ||
+    (onInitialStarted !== null && typeof onInitialStarted !== "function")
   )
     throw new Error("installed AI owner inputs are invalid");
   let initial;
@@ -185,6 +187,7 @@ export async function collectInstalledAiOwnerAttempts({
       ...initialOptions,
       activationSelector:
         initialOptions.activationSelector ?? '[data-test="try-on-ai"]',
+      onStarted: onInitialStarted,
       readRuntimeTraceSnapshot,
       timeoutMs: RECORDED_VISION_NEXT_ARRIVAL_TIMEOUT_MS,
     });
@@ -987,6 +990,10 @@ export async function runInstalledAiAttemptPhase(options) {
     const startedAt = performance.now();
     let completed = false;
     let archived = null;
+    let markStarted;
+    const started = new Promise((resolve) => {
+      markStarted = resolve;
+    });
     const ownerPromise = collectInstalledAiOwnerAttempts({
       initialOptions: {
         client,
@@ -1021,13 +1028,16 @@ export async function runInstalledAiAttemptPhase(options) {
           options.regionalEvidenceRoot,
         );
       },
+      onInitialStarted: () => markStarted(),
     });
     const skipAiRss = isVmAcceptanceAiRssSkipEnabled();
+    const sampler = (async () => {
+      await started;
+      return sampleInstalledAiWorkerPeakRss(() => completed);
+    })();
     const [ownerAttempts, resource] = await Promise.all([
       ownerPromise,
-      skipAiRss
-        ? Promise.resolve(null)
-        : sampleInstalledAiWorkerPeakRss(() => completed),
+      skipAiRss ? Promise.resolve(null) : sampler,
     ]);
     const collected = ownerAttempts.initial;
     const retried = ownerAttempts.retry;

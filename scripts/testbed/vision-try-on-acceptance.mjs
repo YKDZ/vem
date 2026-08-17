@@ -3686,6 +3686,7 @@ async function collectInstalledAiTryOnAttemptInternal(
     captureAttemptScreenshot = null,
     activationSelector = '[data-test="try-on-ai"]',
     readRuntimeTraceSnapshot = null,
+    onStarted = null,
     timeoutMs = RECORDED_VISION_NEXT_ARRIVAL_TIMEOUT_MS,
     pollMs = 250,
   },
@@ -3711,6 +3712,8 @@ async function collectInstalledAiTryOnAttemptInternal(
     throw new Error("installed AI screenshot capture is invalid");
   if (typeof activationSelector !== "string" || activationSelector === "")
     throw new Error("installed AI activation selector is invalid");
+  if (onStarted !== null && typeof onStarted !== "function")
+    throw new Error("installed AI onStarted hook is invalid");
   const deadline = performance.now() + timeoutMs;
   const remaining = () => {
     const value = deadline - performance.now();
@@ -3744,6 +3747,7 @@ async function collectInstalledAiTryOnAttemptInternal(
       timeoutMs: remaining(),
       pollMs,
     });
+    await onStarted?.();
     const acquisition = await waitForCondition(
       "installed AI acquisition surface",
       async () => {
