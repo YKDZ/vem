@@ -1075,18 +1075,42 @@ export async function validateAiAcceptanceInputManifest(
   };
 }
 
-export async function materializeAiAcceptanceInputSnapshot(preparation, root) {
+export async function materializeAiAcceptanceInputSnapshot(
+  preparation,
+  root,
+  { reuse = false } = {},
+) {
   const snapshotRoot = resolve(root, preparation.manifestSha256);
-  const files = preparation.transfers.map((transfer) => [
-    transfer.hostPath,
-    transfer.guestPath.split("\\").at(-1),
-  ]);
+  const reusableGuestPaths = reuse
+    ? new Set(
+        [
+          preparation.guestInput.candidateInputDirectory,
+          preparation.guestInput.windowsProofInputDirectory,
+          preparation.guestInput.acceptanceAuthorityReceipt,
+          preparation.guestInput.calibratedRegionalPolicy,
+          preparation.guestInput.installedVisionRuntimeArchive,
+          preparation.guestInput.recordedFixtureArchive,
+          preparation.guestInput.modelPackArchive,
+          preparation.guestInput.materializedModelPackRoot,
+        ].filter(Boolean),
+      )
+    : new Set();
+  const files = preparation.transfers.map((transfer) => {
+    const name = transfer.guestPath.split("\\").at(-1);
+    return {
+      copy: !reusableGuestPaths.has(transfer.guestPath),
+      name,
+      source: transfer.hostPath,
+    };
+  });
   await mkdir(snapshotRoot, { recursive: true });
-  for (const [source, name] of files)
-    await cp(source, resolve(snapshotRoot, name), {
+  for (const entry of files) {
+    if (!entry.copy) continue;
+    await cp(entry.source, resolve(snapshotRoot, entry.name), {
       recursive: true,
       force: true,
     });
+  }
   let calibrationReceiptIdentity;
   let calibrationSourceIdentity;
   if (preparation.calibrationSource) {
@@ -1148,16 +1172,29 @@ export async function materializeAiAcceptanceInputSnapshot(preparation, root) {
       byteSize: Buffer.byteLength(receiptRaw),
     };
   }
-  const remapped = preparation.transfers.map((transfer, index) => ({
-    ...transfer,
-    hostPath: resolve(snapshotRoot, files[index][1]),
-    ...(transfer.guestPath === preparation.guestInput.calibrationReceipt
-      ? calibrationReceiptIdentity
-      : {}),
-    ...(transfer.guestPath === preparation.guestInput.calibrationSourceInput
-      ? calibrationSourceIdentity
-      : {}),
-  }));
+  const remapped = preparation.transfers.map((transfer, index) => {
+    const entry = files[index];
+    return {
+      ...transfer,
+      hostPath: entry.copy
+        ? resolve(snapshotRoot, entry.name)
+        : transfer.hostPath,
+      ...(transfer.guestPath === preparation.guestInput.calibrationReceipt
+        ? calibrationReceiptIdentity
+        : {}),
+      ...(transfer.guestPath === preparation.guestInput.calibrationSourceInput
+        ? calibrationSourceIdentity
+        : {}),
+    };
+  });
+  if (reuse) {
+    for (const transfer of remapped) {
+      await assertAiAcceptanceTransferIdentity(
+        transfer,
+        "reused AI acceptance input",
+      );
+    }
+  }
   return {
     ...preparation,
     transfers: remapped,
@@ -1183,6 +1220,25 @@ export async function materializeAiAcceptanceInputSnapshot(preparation, root) {
       },
     },
   };
+}
+
+async function assertAiAcceptanceTransferIdentity(transfer, label) {
+  if (transfer.members) {
+    const actual = await collectDirectoryMembers(
+      transfer.hostPath,
+      true,
+      label,
+    );
+    if (JSON.stringify(actual) !== JSON.stringify(transfer.members)) {
+      fail(`${label} member identities mismatch`);
+    }
+    const total = actual.reduce((sum, member) => sum + member.byteSize, 0);
+    if (total !== transfer.byteSize) {
+      fail(`${label} byte size mismatch`);
+    }
+    return;
+  }
+  await regularFile(transfer.hostPath, transfer, label);
 }
 
 export async function materializeHostCalibrationSourceSnapshot(

@@ -1541,6 +1541,7 @@ async function executeRun(options, config) {
             ? await materializeAiAcceptanceInputSnapshot(
                 await admitAiAcceptanceInputs(config, workspace),
                 join(root, "ai-input-snapshots"),
+                { reuse: true },
               )
             : await admitFunctionalAiAcceptanceInputs(config);
         } catch (error) {
@@ -1698,6 +1699,7 @@ async function executeRun(options, config) {
           ? await materializeAiAcceptanceInputSnapshot(
               await admitAiAcceptanceInputs(config, workspace),
               join(root, "ai-input-snapshots"),
+              { reuse: true },
             )
           : await admitFunctionalAiAcceptanceInputs(config);
         const currentSnapshot = {

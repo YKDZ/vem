@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -538,6 +539,67 @@ test("rewrites a copied Windows measurement closure into host-calibratable paths
         ),
       ).files.every((entry) => entry.path.startsWith(snapshot.artifactRoot)),
       true,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("reuses durable AI acceptance inputs without copying them into run snapshots", async () => {
+  const root = mkdtempSync(join(tmpdir(), "vem-ai-input-reuse-"));
+  try {
+    const value = manifest(root, "formal");
+    const checked = await validateAiAcceptanceInputManifest(
+      canonicalAiAcceptanceInputManifest(value),
+    );
+    const snapshot = await materializeAiAcceptanceInputSnapshot(
+      checked,
+      join(root, "snapshots"),
+      { reuse: true },
+    );
+    const modelTransfer = snapshot.transfers.find(
+      (transfer) => transfer.guestPath === snapshot.guestInput.modelPackArchive,
+    );
+    const materializedTransfer = snapshot.transfers.find(
+      (transfer) =>
+        transfer.guestPath === snapshot.guestInput.materializedModelPackRoot,
+    );
+    const runtimeTransfer = snapshot.transfers.find(
+      (transfer) =>
+        transfer.guestPath === snapshot.guestInput.installedVisionRuntimeArchive,
+    );
+    assert.equal(modelTransfer.hostPath, value.modelPack.archive.hostPath);
+    assert.equal(
+      materializedTransfer.hostPath,
+      value.modelPack.materializedRoot.hostPath,
+    );
+    assert.equal(
+      runtimeTransfer.hostPath,
+      value.installedVisionRuntimeArchive.hostPath,
+    );
+    assert.equal(
+      existsSync(join(root, "snapshots", "model-pack.zip")),
+      false,
+    );
+    assert.equal(
+      existsSync(
+        join(root, "snapshots", value.modelPack.materializedRoot.sha256),
+      ),
+      false,
+    );
+    const calibrationTransfer = snapshot.transfers.find(
+      (transfer) =>
+        transfer.guestPath === snapshot.guestInput.calibrationSourceInput,
+    );
+    assert.match(calibrationTransfer.hostPath, /snapshots/);
+    writeFileSync(value.modelPack.archive.hostPath, "corrupt model archive");
+    await assert.rejects(
+      materializeAiAcceptanceInputSnapshot(
+        checked,
+        join(root, "snapshots-corrupt"),
+        { reuse: true },
+      ),
+      /byte size mismatch|SHA-256 mismatch/,
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
