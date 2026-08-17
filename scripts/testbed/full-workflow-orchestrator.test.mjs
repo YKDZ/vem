@@ -1958,3 +1958,16 @@ describe("full workflow runtime barrier", () => {
     );
   });
 });
+
+describe("functional AI evidence gate", () => {
+  it("skips pending regional calibration only for functional AI reports", () => {
+    const source = readFileSync(
+      new URL("./full-workflow-orchestrator.mjs", import.meta.url),
+      "utf8",
+    );
+    assert.match(
+      source,
+      /report\?\.execution\?\.functional === true[\s\S]*\{ ok: true, reason: null \}/,
+    );
+  });
+});

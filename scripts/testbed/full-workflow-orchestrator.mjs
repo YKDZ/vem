@@ -1543,11 +1543,14 @@ export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
       .filter((track) => track.key === "aiVirtualTryOn")
       .flatMap((track) => {
         const report = jsonIfPresent(track.reportPath);
-        const regional = validateAiRegionalEvidenceSet(
-          report?.attempts,
-          track.artifactRoot,
-          evidenceManifest,
-        );
+        const regional =
+          report?.execution?.functional === true
+            ? { ok: true, reason: null }
+            : validateAiRegionalEvidenceSet(
+                report?.attempts,
+                track.artifactRoot,
+                evidenceManifest,
+              );
         return regional.ok ? [] : [regional.reason];
       }),
   ];

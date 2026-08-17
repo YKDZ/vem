@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import {
   closeSync,
   constants,
+  existsSync,
   fstatSync,
   linkSync,
   lstatSync,
@@ -910,12 +911,28 @@ async function returnInstalledAiAttemptToCatalog(client, resultAttemptId) {
 
 export async function runInstalledAiAttemptPhase(options) {
   const guestInput = readJson(options.guestInputPath, "guest input");
+  const validatedInputIdentityPath = join(
+    options.artifactRoot,
+    "validated-input-identity.json",
+  );
+  if (existsSync(validatedInputIdentityPath)) {
+    writeFileSync(
+      validatedInputIdentityPath,
+      canonicalBytes(
+        JSON.parse(readFileSync(validatedInputIdentityPath, "utf8")),
+      ),
+    );
+  }
   writeFileSync(
     join(options.artifactRoot, "attempt-debug.json"),
-    `${JSON.stringify({
-      functional: guestInput.aiVirtualTryOn?.functional ?? null,
-      skipAiRssFlag: guestInput.aiVirtualTryOn?.skipAiRss ?? null,
-    })}\n`,
+    canonicalBytes({
+      facts: {
+        functional: guestInput.aiVirtualTryOn?.functional ?? null,
+        skipAiRssFlag: guestInput.aiVirtualTryOn?.skipAiRss ?? null,
+      },
+      kind: "installed-runtime",
+      schemaVersion: AI_SUPPORT_EVIDENCE_SCHEMA,
+    }),
   );
   if (guestInput.aiVirtualTryOn?.skipAiRss === true) {
     process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS = "1";
@@ -1318,6 +1335,7 @@ export async function assembleInstalledAiTryOnAcceptance(
       degradations: { workerFailure: input.workerFailure },
       error: null,
       execution: {
+        functional: input.functional === true,
         ...(skipAiRss ? { aiRssObservation: "skipped_by_vm_acceptance" } : {}),
         identities: Object.fromEntries(
           Object.entries(input.identities).map(([key, value]) => [
@@ -1351,6 +1369,7 @@ export async function assembleInstalledAiTryOnAcceptance(
       ? "installed worker failure probe not executed"
       : "regional_check_failed",
     execution: {
+      functional: input.functional === true,
       ...(skipAiRss ? { aiRssObservation: "skipped_by_vm_acceptance" } : {}),
       identities: Object.fromEntries(
         Object.entries(input.identities).map(([key, value]) => [
@@ -1550,6 +1569,7 @@ export async function assembleInstalledAiTryOnAcceptanceFiles(options) {
       skipAiRss:
         isVmAcceptanceAiRssSkipEnabled() ||
         options.functionalIdentity?.skipAiRss === true,
+      functional: Boolean(functionalIdentity),
       workerFailure: workerFailureDegradation,
     },
     { ordinarySale: async () => sale },

@@ -872,6 +872,12 @@ test("supports the ADR 0084 functional AI input without trusted pipeline prerequ
   assert.match(source, /\$env:VEM_VM_ACCEPTANCE_AI_STEPS = "1"/);
   assert.match(source, /"--functional", "true"[\s\S]*"--model-sha"/);
   assert.doesNotMatch(source, /"--model-pack-sha"/);
+  const entry = readFileSync(installedEntry, "utf8");
+  assert.match(
+    entry,
+    /canonicalBytes\(\{[\s\S]*schemaVersion: AI_SUPPORT_EVIDENCE_SCHEMA/,
+  );
+  assert.match(entry, /functional: input\.functional === true/);
 });
 
 test("AI installed attempts wait for the same 10-minute product terminal window", () => {
