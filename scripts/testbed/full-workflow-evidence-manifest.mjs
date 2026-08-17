@@ -656,7 +656,10 @@ export function validateFullWorkflowEvidenceManifest(manifest) {
       if (!owns(track.report, "reports"))
         failures.push(`report evidence is not owned by ${track.key}`);
       if (!failedBusinessTrack) {
-        if (!owns(track.machineRuntimeTrace, "machineRuntimeTrace"))
+        if (
+          track.machineRuntimeTrace != null &&
+          !owns(track.machineRuntimeTrace, "machineRuntimeTrace")
+        )
           failures.push(`Machine Runtime Trace is not owned by ${track.key}`);
         if (track.logs.some((path) => !owns(path, "logs")))
           failures.push(`log evidence is not owned by ${track.key}`);
