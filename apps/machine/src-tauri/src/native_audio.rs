@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::{
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
     mpsc::{Receiver, Sender},
     Arc, Mutex,
 };
@@ -105,6 +105,7 @@ struct WindowsDefaultAudioOutputFactory;
 struct WindowsDefaultAudioOutputSession {
     sink: MixerDeviceSink,
     unhealthy: Arc<AtomicBool>,
+    stream_errors: Arc<AtomicU8>,
 }
 
 #[cfg(windows)]
@@ -113,16 +114,24 @@ impl DefaultAudioOutputFactory for WindowsDefaultAudioOutputFactory {
 
     fn open_default_session(&self) -> Result<Self::Session, String> {
         let unhealthy = Arc::new(AtomicBool::new(false));
+        let stream_errors = Arc::new(AtomicU8::new(0));
         let callback_unhealthy = Arc::clone(&unhealthy);
+        let callback_errors = Arc::clone(&stream_errors);
         let mut sink = DeviceSinkBuilder::from_default_device()
             .map_err(|error| format!("query Windows default audio output failed: {error}"))?
             .with_error_callback(move |_| {
-                callback_unhealthy.store(true, Ordering::Release);
+                if stream_error_threshold_reached(&callback_errors) {
+                    callback_unhealthy.store(true, Ordering::Release);
+                }
             })
             .open_sink_or_fallback()
             .map_err(|error| format!("open Windows default audio output failed: {error}"))?;
         sink.log_on_drop(false);
-        Ok(WindowsDefaultAudioOutputSession { sink, unhealthy })
+        Ok(WindowsDefaultAudioOutputSession {
+            sink,
+            unhealthy,
+            stream_errors,
+        })
     }
 }
 
@@ -136,7 +145,12 @@ impl DefaultAudioOutputSession for WindowsDefaultAudioOutputSession {
 
     fn is_unhealthy(&self) -> bool {
         self.unhealthy.load(Ordering::Acquire)
+            || self.stream_errors.load(Ordering::Acquire) >= 2
     }
+}
+
+fn stream_error_threshold_reached(errors: &AtomicU8) -> bool {
+    errors.fetch_add(1, Ordering::Relaxed) + 1 >= 2
 }
 
 pub struct MachineAudioState {
@@ -822,6 +836,15 @@ fn safe_relative_path(path: &str) -> PathBuf {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn one_transient_stream_error_does_not_rebuild_but_two_do() {
+        let errors = AtomicU8::new(0);
+        assert!(!stream_error_threshold_reached(&errors));
+        assert_eq!(errors.load(Ordering::Relaxed), 1);
+        assert!(stream_error_threshold_reached(&errors));
+        assert_eq!(errors.load(Ordering::Relaxed), 2);
+    }
 
     #[derive(Clone)]
     struct FakeDefaultOutputFactory {
