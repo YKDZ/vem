@@ -824,6 +824,7 @@ export async function buildFunctionalAiAcceptanceGuestInput(config) {
     inputRoot: root,
     phase: "measurement",
     functional: true,
+    skipAiRss: true,
     installedVisionRuntimeArchive: windowsJoin(
       GUEST_ROOT,
       "files",

@@ -92,6 +92,12 @@ $inputs = if ($null -eq $inputsProperty) { $null } else { $inputsProperty.Value 
 if ($null -eq $inputs) { throw "candidate exact-four input directory is required" }
 
 $functional = if ($null -eq $inputs.functional) { $false } else { [bool]$inputs.functional }
+if ($functional) {
+  # The VM stabilization path (ADR 0084) validates the full AI business flow
+  # without the RSS peak gate, which is hard to observe reliably across the
+  # PyInstaller onefile child boundary. The report marks it explicitly.
+  $env:VEM_VM_ACCEPTANCE_SKIP_AI_RSS = "1"
+}
 if (-not $functional) {
   Require-AbsoluteDirectory ([string]$inputs.candidateInputDirectory) "candidate exact-four input directory"
   Require-AbsoluteDirectory ([string]$inputs.windowsProofInputDirectory) "companion proof exact-three input directory"
