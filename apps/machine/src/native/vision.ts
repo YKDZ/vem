@@ -745,11 +745,14 @@ async function nextVisionV2AdjustmentMessage(
       }
       try {
         const decoded: unknown = JSON.parse(messageEvent.data);
-        const serverMessage = visionServerMessageSchema.parse(decoded);
-        if (serverMessage.type === "vision.error") {
+        const serverMessage = visionServerMessageSchema.safeParse(decoded);
+        if (
+          serverMessage.success &&
+          serverMessage.data.type === "vision.error"
+        ) {
           settled = true;
           cleanup();
-          reject(errorFromVisionMessage(serverMessage));
+          reject(errorFromVisionMessage(serverMessage.data));
           return;
         }
         const message = parseVisionV2ServerMessage(decoded);

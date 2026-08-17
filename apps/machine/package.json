@@ -33,6 +33,7 @@
     "@tsconfig/node24": "^24.0.4",
     "@types/node": "catalog:",
     "@types/qrcode": "catalog:",
+    "@types/ws": "^8.18.1",
     "@vitejs/plugin-vue": "catalog:",
     "oxfmt": "catalog:",
     "oxlint": "catalog:",
@@ -42,6 +43,7 @@
     "vision-mock": "workspace:*",
     "vite": "catalog:",
     "vitest": "catalog:",
+    "ws": "^8.21.0",
     "vue-tsc": "catalog:"
   }
 }

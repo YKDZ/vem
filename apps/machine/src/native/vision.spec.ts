@@ -1,13 +1,17 @@
 import { VISION_V2_RUNTIME_IDENTITY } from "@vem/shared";
+import { visionV2ServerFixtures } from "@vem/shared/fixtures/vision-v2";
+import { createServer as createHttpServer } from "node:http";
 import {
   startMockVisionServer,
   type MockVisionScenario,
   type MockVisionServer,
 } from "vision-mock";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { WebSocketServer } from "ws";
 
 import {
   openVisionFastAttempt,
+  openVisionGarmentAdjustment,
   openVisionTryOnAttempt,
   subscribeVisionProfiles,
   type VisionPersonDepartedPayload,
@@ -134,6 +138,63 @@ describe("vision native browser fallback - self-check", () => {
     expect(ready.schemaVersion).toBe("unavailable");
     expect(ready.bundleVersion).toBe("unavailable");
     expect(ready.contractDigest).toBe("0".repeat(64));
+  });
+});
+
+describe("vision native garment adjustment", () => {
+  it("accepts a V2 result.adjusted message after an adjust request", async () => {
+    const http = createHttpServer();
+    const wss = new WebSocketServer({ server: http, path: "/ws" });
+    await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve));
+    const address = http.address() as { port: number };
+    const url = `ws://127.0.0.1:${address.port}/ws`;
+    const attemptId = "550e8400-e29b-41d4-a716-446655440124";
+    wss.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const message = JSON.parse(String(raw)) as { type?: string };
+        if (message.type === "vision.hello") {
+          socket.send(
+            JSON.stringify({
+              ...visionV2ServerFixtures.ready,
+              payload: {
+                ...visionV2ServerFixtures.ready.payload,
+                schemaVersion: VISION_V2_RUNTIME_IDENTITY.schemaVersion,
+                bundleVersion: VISION_V2_RUNTIME_IDENTITY.bundleVersion,
+                contractDigest: VISION_V2_RUNTIME_IDENTITY.contractDigest,
+              },
+            }),
+          );
+          return;
+        }
+        if (message.type === "vision.try_on.attempt.adjust") {
+          socket.send(
+            JSON.stringify({
+              ...visionV2ServerFixtures.adjusted,
+              payload: {
+                ...visionV2ServerFixtures.adjusted.payload,
+                attemptId,
+              },
+            }),
+          );
+        }
+      });
+    });
+    try {
+      const adjusted = await openVisionGarmentAdjustment(
+        { url },
+        { attemptId, garmentScale: 1.15 },
+      );
+      expect(typeof adjusted.result.reference).toBe("string");
+      expect(adjusted.result.contentType).toBe("image/png");
+    } finally {
+      await new Promise<void>((resolve) => {
+        wss.close(() => {
+          http.close(() => {
+            resolve();
+          });
+        });
+      });
+    }
   });
 });
 
