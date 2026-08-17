@@ -1293,6 +1293,27 @@ export async function runInstalledAiDegradationPhase(options) {
   }
 }
 
+export async function runInstalledAiRestoreCatalogPhase(options) {
+  const handoff = readJson(options.handoffPath, "runtime handoff");
+  const target = await discoverMachineUiTarget({
+    endpoint: handoff.cdp.endpoint,
+    expectedTargetId: handoff.cdp.targetId,
+  });
+  const client = new CdpClient(
+    rewriteWebSocketDebuggerUrl(
+      target.webSocketDebuggerUrl,
+      handoff.cdp.endpoint,
+    ),
+  );
+  try {
+    await client.connect();
+    await enablePageRuntime(client);
+    await restoreCatalogHomeFromClient({ client });
+  } finally {
+    await client.close().catch(() => {});
+  }
+}
+
 export async function assembleInstalledAiTryOnAcceptance(
   input,
   dependencies = {},
@@ -1783,9 +1804,13 @@ export async function assembleInstalledAiTryOnAcceptanceForTest(
 
 function parseCli(argv) {
   const [command, ...tokens] = argv;
-  if (!["attempt", "degradation", "sale", "assemble"].includes(command))
+  if (
+    !["attempt", "degradation", "restore-catalog", "sale", "assemble"].includes(
+      command,
+    )
+  )
     throw new Error(
-      "installed AI entry command must be attempt, degradation, sale, or assemble",
+      "installed AI entry command must be attempt, degradation, restore-catalog, sale, or assemble",
     );
   const values = { command };
   for (let index = 0; index < tokens.length; index += 2) {
@@ -1838,6 +1863,12 @@ async function main() {
       guestInputPath: options["guest-input"],
       handoffPath: options.handoff,
       phaseOutputPath: options.out,
+    });
+  }
+  if (options.command === "restore-catalog") {
+    return runInstalledAiRestoreCatalogPhase({
+      guestInputPath: options["guest-input"],
+      handoffPath: options.handoff,
     });
   }
   return assembleInstalledAiTryOnAcceptanceFiles({

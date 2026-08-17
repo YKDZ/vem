@@ -256,6 +256,8 @@ try {
   $assemble += @("--short-attempt", $shortFacts, "--long-attempt", $longFacts, "--sale", $saleFacts, "--missing-degradation", $missingFacts, "--corrupt-degradation", $corruptFacts, "--worker-failure-degradation", $workerFailureFacts, "--recovery", $verifiedRecoveryFacts, "--out", $OutPath)
   node $nodeEntry @assemble
   if ($LASTEXITCODE -ne 0) { throw "installed AI acceptance assembly failed" }
+  & node $nodeEntry restore-catalog --guest-input $GuestInputPath --handoff $HandoffPath
+  if ($LASTEXITCODE -ne 0) { throw "installed AI acceptance restore catalog failed" }
   $trackSucceeded = $true
 } catch {
   $trackFailure = $_.Exception
