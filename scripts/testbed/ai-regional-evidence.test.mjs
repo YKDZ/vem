@@ -24,7 +24,7 @@ const roots = [];
 const ATTEMPT_ID = "0198f44e-21bd-7c62-8f52-b7c86cc2b001";
 const visionRoot = "/workspaces/vending-vision";
 const regionalEvaluatorAuthorityRevision =
-  "3798b51756ffbb6fb6193071a430679f7667718b";
+  "d9e7cd5275cd1c70fb2a9d216829ecf15dd539e1";
 afterEach(() => {
   for (const root of roots.splice(0))
     rmSync(root, { recursive: true, force: true });

@@ -77,7 +77,7 @@ export function loadAiRegionalEvidencePolicy(path = POLICY_PATH) {
     value?.algorithm !== "rgb-absolute-delta-rle/v1" ||
     value?.atrEvaluator !== "schp-atr" ||
     value?.lipEvaluator !== "schp-lip" ||
-    value?.poseEvaluator !== "mediapipe-pose" ||
+    value?.poseEvaluator !== "mediapipe-pose-or-frame-proportional" ||
     !DIGEST.test(value?.sourceDescriptorSha256 ?? "") ||
     value.minimumUpperBodySampledPixels !== 1024 ||
     !["pending_issue10_two_garment", "calibrated_issue10"].includes(

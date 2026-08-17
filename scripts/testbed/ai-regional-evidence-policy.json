@@ -4,7 +4,7 @@
   "calibrationStatus": "pending_issue10_two_garment",
   "lipEvaluator": "schp-lip",
   "minimumUpperBodySampledPixels": 1024,
-  "poseEvaluator": "mediapipe-pose",
+  "poseEvaluator": "mediapipe-pose-or-frame-proportional",
   "schemaVersion": "vem-ai-regional-evidence-policy/v1",
-  "sourceDescriptorSha256": "b927be073ba17e6388264f392db5655a2077f5abec750e5300839ff9dc90750a"
+  "sourceDescriptorSha256": "f80f41699806f14af32844df3af2657cc5bd0f72d6363e6f4efa6f8a9e73584e"
 }

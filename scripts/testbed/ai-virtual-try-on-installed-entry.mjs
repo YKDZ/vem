@@ -1545,7 +1545,7 @@ export async function assembleInstalledAiTryOnAcceptanceForTest(
         algorithm: "rgb-absolute-delta-rle/v1",
         atr: "schp-atr",
         lip: "schp-lip",
-        pose: "mediapipe-pose",
+        pose: "mediapipe-pose-or-frame-proportional",
         sourceDescriptorSha256: "0".repeat(64),
       },
       kind: "regional-evidence",

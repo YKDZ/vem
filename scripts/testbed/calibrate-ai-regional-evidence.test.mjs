@@ -483,7 +483,7 @@ describe("AI regional evidence calibration", () => {
       minimumUpperBodyChangedFractionBps: 7998,
       minimumUpperBodyMeanDelta: 40,
       minimumUpperBodySampledPixels: 1024,
-      poseEvaluator: "mediapipe-pose",
+      poseEvaluator: "mediapipe-pose-or-frame-proportional",
       schemaVersion: "vem-ai-regional-evidence-policy/v1",
       sourceDescriptorSha256:
         AI_REGIONAL_EVIDENCE_POLICY.sourceDescriptorSha256,
