@@ -4178,25 +4178,41 @@ async function collectInstalledFieldRegressionChecks({
     } finally {
       clearInterval(keepalive);
     }
-    await activateVisibleSelector(client, '[data-test="try-on-fast"]', {
-      kind: "touch",
-      timeoutMs: 30_000,
-    });
     // Re-entering the product from the catalog can resolve to the product's
     // preferred variant rather than the manual-selected one. The heal
     // regression is variant-agnostic, so accept any variant of the same
     // product as long as the fast mode is preserved.
     const encodedCatalogKey = encodeURIComponent(selectedProduct.catalogKey);
-    await waitForRoute(
-      client,
+    await activateFastTryOnToRoute(
       new RegExp(
         `^#/try-on\\?catalogKey=${encodedCatalogKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}&mode=fast&variantId=[^&]+`,
       ),
-      {
-        timeoutMs: 30_000,
-        pollMs: 250,
-      },
+      "heal try-on route",
     );
+  };
+
+  const activateFastTryOnToRoute = async (routePattern, label) => {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await activateVisibleSelector(client, '[data-test="try-on-fast"]', {
+          kind: "touch",
+          timeoutMs: 15_000,
+        });
+        await waitForRoute(client, routePattern, {
+          timeoutMs: 10_000,
+          pollMs: 250,
+        });
+        return;
+      } catch (error) {
+        if (attempt + 1 >= 3) {
+          error.message = `${label} did not enter the Fast try-on route: ${error.message}`;
+          throw error;
+        }
+        // Under full-serial load a synthetic touch can be dropped by the
+        // WebView; re-probe and re-click instead of failing the whole track.
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
+      }
+    }
   };
 
   // ---- Manual capture control is exposed and the attempt completes ----
@@ -4225,14 +4241,7 @@ async function collectInstalledFieldRegressionChecks({
         await new Promise((resolvePromise) => setTimeout(resolvePromise, 15));
       }
     })();
-    await activateVisibleSelector(client, '[data-test="try-on-fast"]', {
-      kind: "touch",
-      timeoutMs: 30_000,
-    });
-    await waitForRoute(client, expectedTryOnRoute, {
-      timeoutMs: 30_000,
-      pollMs: 250,
-    });
+    await activateFastTryOnToRoute(expectedTryOnRoute, "manual capture");
     const manualSurface = await waitForTryOnSurface(client, 60_000);
     await manualProbe;
     assertTryOnAttemptNotCanceled(

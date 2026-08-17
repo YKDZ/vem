@@ -1736,6 +1736,20 @@ describe("vision try-on acceptance script", () => {
     );
   });
 
+  it("retries a dropped Fast try-on activation under full-serial load", () => {
+    const source = readFileSync(
+      new URL("./vision-try-on-acceptance.mjs", import.meta.url),
+      "utf8",
+    );
+    const activation = source.slice(
+      source.indexOf("const activateFastTryOnToRoute"),
+      source.indexOf("// ---- Manual capture control is exposed"),
+    );
+    assert.match(activation, /for \(let attempt = 0; attempt < 3/);
+    assert.match(activation, /waitForRoute\(client, routePattern/);
+    assert.match(activation, /re-probe and re-click/);
+  });
+
   it("proves matched, manual, online-unmatched, and unavailable recommendation states", () => {
     const source = readFileSync(
       new URL("./vision-try-on-acceptance.mjs", import.meta.url),
