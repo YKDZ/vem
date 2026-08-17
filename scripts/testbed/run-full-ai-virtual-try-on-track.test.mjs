@@ -873,6 +873,19 @@ test("supports the ADR 0084 functional AI input without trusted pipeline prerequ
   assert.doesNotMatch(source, /"--model-pack-sha"/);
 });
 
+test("AI installed attempts wait for the same 10-minute product terminal window", () => {
+  const timeouts = readFileSync(
+    new URL("./try-on-timeouts.mjs", import.meta.url),
+    "utf8",
+  );
+  const entry = readFileSync(installedEntry, "utf8");
+  assert.match(timeouts, /AI_ATTEMPT_ACCEPTANCE_TIMEOUT_MS = 600_000/);
+  assert.match(
+    entry,
+    /timeoutMs: AI_ATTEMPT_ACCEPTANCE_TIMEOUT_MS/,
+  );
+});
+
 test("AI Vision owner stop waits for physical death and kills the 7892 listener owner", () => {
   const source = readFileSync(ownerModule, "utf8");
   assert.match(source, /AddSeconds\(60\)/);
