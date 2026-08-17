@@ -29,10 +29,7 @@ function walk(directory) {
     const entry = statSync(path);
     if (entry.isDirectory()) {
       found.push(...walk(path));
-    } else if (
-      /\.(mjs|ps1|psm1)$/.test(name) &&
-      !name.endsWith(".test.mjs")
-    ) {
+    } else if (/\.(mjs|ps1|psm1)$/.test(name) && !name.endsWith(".test.mjs")) {
       found.push(path);
     }
   }
@@ -53,7 +50,9 @@ export function findStaticTraps(source, path) {
   while (cursor < source.length) {
     const joinIndex = source.indexOf(".join(", cursor);
     if (joinIndex < 0) break;
-    const joinerMatch = source.slice(joinIndex).match(/^\.join\(\s*(?:"; ?"|'; ?')\s*\)/);
+    const joinerMatch = source
+      .slice(joinIndex)
+      .match(/^\.join\(\s*(?:"; ?"|'; ?')\s*\)/);
     if (!joinerMatch) {
       cursor = joinIndex + 1;
       continue;

@@ -729,10 +729,7 @@ async function nextVisionV2AdjustmentMessage(
   timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<
-  Extract<
-    VisionV2ServerMessage,
-    { type: "vision.try_on.result.adjusted" }
-  >
+  Extract<VisionV2ServerMessage, { type: "vision.try_on.result.adjusted" }>
 > {
   const event = await new Promise<MessageEvent>((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -777,7 +774,9 @@ async function nextVisionV2AdjustmentMessage(
   }
   const message = parseVisionV2ServerMessage(decoded);
   if (message.type !== "vision.try_on.result.adjusted") {
-    throw new Error(`unexpected vision message while adjusting: ${message.type}`);
+    throw new Error(
+      `unexpected vision message while adjusting: ${message.type}`,
+    );
   }
   return message;
 }

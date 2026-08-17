@@ -65,12 +65,12 @@ const guidanceText = computed(() => {
 const manualCaptureLabel = computed(() =>
   tryOn.guidance === "counting_down" ? "立即拍摄" : "手动采集",
 );
-const garmentScalePercent = computed(() => Math.round(tryOn.garmentScale * 100));
+const garmentScalePercent = computed(() =>
+  Math.round(tryOn.garmentScale * 100),
+);
 const canScaleGarment = computed(
   () =>
-    tryOn.phase === "completed" &&
-    tryOn.mode === "fast" &&
-    !tryOn.adjusting,
+    tryOn.phase === "completed" && tryOn.mode === "fast" && !tryOn.adjusting,
 );
 const canScaleUp = computed(
   () => canScaleGarment.value && tryOn.garmentScale < 1.6,
