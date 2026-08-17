@@ -43,7 +43,7 @@
     "vision-mock": "workspace:*",
     "vite": "catalog:",
     "vitest": "catalog:",
-    "ws": "^8.21.0",
-    "vue-tsc": "catalog:"
+    "vue-tsc": "catalog:",
+    "ws": "^8.21.0"
   }
 }
