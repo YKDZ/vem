@@ -3932,23 +3932,28 @@ async function captureWithManualFallback(client, timeoutMs = 90_000) {
   });
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const control = await readInstalledTryOnManualControl(client);
-    if (
-      control?.present === true &&
-      control?.enabled === true &&
-      control?.phase === "acquiring"
-    ) {
-      await activateVisibleSelector(
-        client,
-        '[data-test="try-on-manual-capture"]',
-        { kind: "touch", timeoutMs: 5_000 },
-      );
+    // The unstable fixture only exposes the manual action during brief
+    // aligned windows (~333 ms). Check and click inside one page evaluation so
+    // the window cannot close between detection and the click.
+    const clicked = await evaluateExpression(
+      client,
+      `(() => {
+        const button = document.querySelector("[data-test='try-on-manual-capture']");
+        if (button instanceof HTMLElement && button.disabled === false) {
+          button.click();
+          return true;
+        }
+        return false;
+      })()`,
+    );
+    if (clicked !== true) {
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 40));
+      continue;
     }
     try {
       return await waitForTryOnSurface(client, 2_000);
     } catch {
-      // The unstable fixture only exposes the manual action during its brief
-      // aligned windows; keep polling until one is caught.
+      // A click that landed at the tail of a window is harmless; retry.
     }
   }
   throw new Error(
