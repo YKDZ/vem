@@ -704,21 +704,13 @@ export async function openVisionGarmentAdjustment(
       },
     });
     socket.send(JSON.stringify(adjustMessage));
-    const deadline = Date.now() + options.timeoutMs;
-    while (Date.now() < deadline) {
-      const message = await nextVisionV2AdjustmentMessage(
-        socket,
-        Math.max(1, deadline - Date.now()),
-        signal,
-      );
-      if (
-        message.type === "vision.try_on.result.adjusted" &&
-        message.payload.attemptId === input.attemptId
-      ) {
-        return { result: message.payload.result, visionSocketUrl: options.url };
-      }
-    }
-    throw new Error("Vision V2 adjustment timed out");
+    const message = await nextVisionV2AdjustmentMessage(
+      socket,
+      options.timeoutMs,
+      input.attemptId,
+      signal,
+    );
+    return { result: message.payload.result, visionSocketUrl: options.url };
   } finally {
     closeSocket(socket);
   }
@@ -727,24 +719,69 @@ export async function openVisionGarmentAdjustment(
 async function nextVisionV2AdjustmentMessage(
   socket: WebSocket,
   timeoutMs: number,
+  attemptId: string,
   signal?: AbortSignal,
 ): Promise<
   Extract<VisionV2ServerMessage, { type: "vision.try_on.result.adjusted" }>
 > {
-  const event = await new Promise<MessageEvent>((resolve, reject) => {
+  if (signal?.aborted) throw new Error("Vision V2 adjustment aborted");
+  return await new Promise<
+    Extract<VisionV2ServerMessage, { type: "vision.try_on.result.adjusted" }>
+  >((resolve, reject) => {
+    let settled = false;
     const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
       cleanup();
       reject(new Error("waiting for vision message timed out"));
     }, timeoutMs);
     const onMessage = (messageEvent: MessageEvent): void => {
-      cleanup();
-      resolve(messageEvent);
+      if (settled) return;
+      if (typeof messageEvent.data !== "string") {
+        settled = true;
+        cleanup();
+        reject(new Error("vision websocket returned a non-text frame"));
+        return;
+      }
+      try {
+        const decoded: unknown = JSON.parse(messageEvent.data);
+        const serverMessage = visionServerMessageSchema.parse(decoded);
+        if (serverMessage.type === "vision.error") {
+          settled = true;
+          cleanup();
+          reject(errorFromVisionMessage(serverMessage));
+          return;
+        }
+        const message = parseVisionV2ServerMessage(decoded);
+        if (message.type !== "vision.try_on.result.adjusted") {
+          settled = true;
+          cleanup();
+          reject(
+            new Error(
+              `unexpected vision message while adjusting: ${message.type}`,
+            ),
+          );
+          return;
+        }
+        if (message.payload.attemptId !== attemptId) return;
+        settled = true;
+        cleanup();
+        resolve(message);
+      } catch (error) {
+        settled = true;
+        cleanup();
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
     };
     const onError = (): void => {
+      if (settled) return;
+      settled = true;
       cleanup();
       reject(new Error("vision websocket error"));
     };
     const onAbort = (): void => {
+      if (settled) return;
+      settled = true;
       cleanup();
       reject(new Error("Vision V2 adjustment aborted"));
     };
@@ -758,27 +795,6 @@ async function nextVisionV2AdjustmentMessage(
     socket.addEventListener("error", onError);
     signal?.addEventListener("abort", onAbort, { once: true });
   });
-  if (typeof event.data !== "string") {
-    throw new Error("vision websocket returned a non-text frame");
-  }
-  const decoded: unknown = JSON.parse(event.data);
-  if (
-    typeof decoded === "object" &&
-    decoded !== null &&
-    "type" in decoded &&
-    decoded.type === "vision.error"
-  ) {
-    throw errorFromVisionMessage(
-      visionServerMessageSchema.parse(decoded) as VisionErrorMessage,
-    );
-  }
-  const message = parseVisionV2ServerMessage(decoded);
-  if (message.type !== "vision.try_on.result.adjusted") {
-    throw new Error(
-      `unexpected vision message while adjusting: ${message.type}`,
-    );
-  }
-  return message;
 }
 
 function isPermittedFastAttemptEvent(
