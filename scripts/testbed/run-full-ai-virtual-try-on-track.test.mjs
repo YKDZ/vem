@@ -877,6 +877,8 @@ test("AI Vision owner stop waits for physical death and kills the 7892 listener 
   const source = readFileSync(ownerModule, "utf8");
   assert.match(source, /AddSeconds\(60\)/);
   assert.match(source, /\[int\]\$listener\.OwningProcess/);
+  assert.match(source, /\[string\]\$health\.status -ceq "ok"/);
+  assert.match(source, /\$health\.cameraReady -eq \$true/);
   assert.match(source, /--multiprocessing-fork/);
   assert.match(source, /foreach \(\$fork in \$forkChildren\)/);
   assert.match(source, /did not become physically dead before restart/);

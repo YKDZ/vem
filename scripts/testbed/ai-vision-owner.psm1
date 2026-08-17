@@ -89,7 +89,7 @@ function Wait-TestbedVisionReady {
   do {
     try {
       $health = Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:7892/health" -TimeoutSec 2
-      if ($null -ne $health -and $health.fastReady -eq $true -and $health.visionBusinessReady -eq $true -and @(Get-NetTCPConnection -LocalAddress "127.0.0.1" -LocalPort 7892 -State Listen -ErrorAction SilentlyContinue).Count -eq 1) { return $health }
+      if ($null -ne $health -and [string]$health.status -ceq "ok" -and $health.cameraReady -eq $true -and @(Get-NetTCPConnection -LocalAddress "127.0.0.1" -LocalPort 7892 -State Listen -ErrorAction SilentlyContinue).Count -eq 1) { return $health }
     } catch {}
     Start-Sleep -Milliseconds 250
   } while ([DateTime]::UtcNow -lt $deadline)
