@@ -3730,14 +3730,11 @@ async function collectInstalledAiTryOnAttemptInternal(
         timeoutMs: remaining(),
         pollMs,
       });
-    const activation = readRuntimeTraceSnapshot
-      ? (
-          await activateAfterFreshVisionPresenceArrival(
-            { activate, readRuntimeTraceSnapshot },
-            { timeoutMs: remaining(), pollMs },
-          )
-        ).activation
-      : await activate();
+    // The recorded top camera is a one-shot approach/departure clip. By the
+    // time an installed AI attempt starts it is already exhausted/frozen, so a
+    // fresh top-camera presence arrival can never gate the front try-on.
+    // Front acquisition itself enforces person presence; activate directly.
+    const activation = await activate();
     if (
       activation.input?.kind !== "touch" ||
       activation.input?.method !== "Input.dispatchTouchEvent"
