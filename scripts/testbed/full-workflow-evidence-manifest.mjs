@@ -17,11 +17,11 @@ import {
 import { pathToFileURL } from "node:url";
 
 export const EVIDENCE_LIMITS = Object.freeze({
-  reportPerFileBytes: 512 * 1024,
+  reportPerFileBytes: 2 * 1024 * 1024,
   tracePerTrackBytes: 512 * 1024,
   logPerFileBytes: 256 * 1024,
   screenshotPerFileBytes: 2 * 1024 * 1024,
-  totalBytes: 8 * 1024 * 1024,
+  totalBytes: 32 * 1024 * 1024,
 });
 
 const REQUIRED_KINDS = Object.freeze(["machineRuntimeTrace", "logs"]);
@@ -349,7 +349,13 @@ function physicalEvidence(track, artifactFiles) {
     .filter((path) => extname(path).toLowerCase() === ".json")
     .map((path) => bytesRecord(path, "supportingEvidence", track));
   const logs = artifactFiles
-    .filter((path) => [".log", ".txt"].includes(extname(path).toLowerCase()))
+    .filter((path) => {
+      const extension = extname(path).toLowerCase();
+      return (
+        [".log", ".txt"].includes(extension) ||
+        (track === "presenceAndAudio" && extension === ".wav")
+      );
+    })
     .map((path) => bytesRecord(path, "logs", track))
     .filter((record) => record.byteLength > 0);
   const screenshotCandidates = artifactFiles
@@ -426,15 +432,13 @@ export function buildFullWorkflowEvidenceManifest({ tracks = [] } = {}) {
   for (const input of tracks) {
     const track = input?.key;
     const reportPath = resolve(input?.reportPath ?? "");
-    const artifactRoot = resolve(input?.artifactRoot ?? "");
+    const artifactRoot = input?.artifactRoot
+      ? resolve(input?.artifactRoot)
+      : null;
     if (!track || !existsSync(reportPath)) {
       blockingFailures.push(
         `required report artifact is absent for ${track ?? "unknown"}`,
       );
-      continue;
-    }
-    if (!existsSync(artifactRoot)) {
-      blockingFailures.push(`required artifact root is absent for ${track}`);
       continue;
     }
     let report;
@@ -455,17 +459,23 @@ export function buildFullWorkflowEvidenceManifest({ tracks = [] } = {}) {
       input?.evidence?.[businessStatus] ??
       DEFAULT_EVIDENCE_POLICY[businessStatus];
     let artifactFiles = [];
-    try {
-      artifactFiles = filesUnder(artifactRoot);
-    } catch (error) {
-      blockingFailures.push(
-        error instanceof Error
-          ? error.message
-          : `invalid evidence artifact tree for ${track}`,
-      );
+    if (!artifactRoot || !existsSync(artifactRoot)) {
+      failures.push(`actual artifact root is absent for ${track}`);
+    } else {
+      try {
+        artifactFiles = filesUnder(artifactRoot);
+      } catch (error) {
+        blockingFailures.push(
+          error instanceof Error
+            ? error.message
+            : `invalid evidence artifact tree for ${track}`,
+        );
+      }
     }
     for (const path of artifactFiles) {
       const extension = extname(path).toLowerCase();
+      const allowedWav =
+        track === "presenceAndAudio" && extension === ".wav";
       if (
         track === "aiVirtualTryOn" &&
         ![".json", ".log", ".png"].includes(extension)
@@ -473,7 +483,7 @@ export function buildFullWorkflowEvidenceManifest({ tracks = [] } = {}) {
         blockingFailures.push(
           `forbidden AI evidence artifact for ${track}: ${path}`,
         );
-      } else if (FORBIDDEN_EXTENSIONS.has(extension)) {
+      } else if (FORBIDDEN_EXTENSIONS.has(extension) && !allowedWav) {
         blockingFailures.push(
           `forbidden evidence artifact for ${track}: ${path}`,
         );
@@ -484,11 +494,14 @@ export function buildFullWorkflowEvidenceManifest({ tracks = [] } = {}) {
         blockingFailures.push(
           `invalid PNG screenshot artifact for ${track}: ${path}`,
         );
-      } else if (![".json", ".log", ".txt", ".png"].includes(extension)) {
+      } else if (
+        ![".json", ".log", ".txt", ".png", ".wav"].includes(extension) ||
+        (extension === ".wav" && !allowedWav)
+      ) {
         blockingFailures.push(
           `unsupported evidence artifact for ${track}: ${path}`,
         );
-      } else {
+      } else if (!allowedWav) {
         const disguised = disguisedArtifact(path);
         if (disguised) blockingFailures.push(disguised);
       }

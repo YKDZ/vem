@@ -463,7 +463,7 @@ describe("full workflow evidence manifest", () => {
     writeFileSync(join(artifacts, "runtime.log"), "ok\n");
     const screenshot = Buffer.alloc(EVIDENCE_LIMITS.screenshotPerFileBytes);
     Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(screenshot);
-    for (let index = 0; index < 4; index += 1)
+    for (let index = 0; index < 17; index += 1)
       writeFileSync(join(artifacts, `capture-${index}.png`), screenshot);
 
     const manifest = buildFullWorkflowEvidenceManifest({
@@ -471,7 +471,7 @@ describe("full workflow evidence manifest", () => {
     });
 
     assert.equal(manifest.tracks[0].screenshots.length, 3);
-    assert.equal(manifest.totals.screenshots, 4);
+    assert.equal(manifest.totals.screenshots, 17);
     assert.equal(manifest.ok, false);
     assert.ok(
       manifest.failures.some((failure) => failure.includes("total size limit")),
