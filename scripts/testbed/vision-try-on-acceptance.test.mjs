@@ -1736,7 +1736,7 @@ describe("vision try-on acceptance script", () => {
     );
   });
 
-  it("activates Fast try-on with reliable mouse input and waits for the route", () => {
+  it("activates Fast try-on with a held touch press and waits for the route", () => {
     const source = readFileSync(
       new URL("./vision-try-on-acceptance.mjs", import.meta.url),
       "utf8",
@@ -1745,7 +1745,7 @@ describe("vision try-on acceptance script", () => {
       source.indexOf("const activateFastTryOnToRoute"),
       source.indexOf("// ---- Manual capture control is exposed"),
     );
-    assert.match(activation, /kind: "mouse"/);
+    assert.match(activation, /kind: "touch"/);
     assert.match(activation, /waitForRoute\(client, routePattern/);
     assert.doesNotMatch(activation, /for \(let attempt = 0; attempt < 3/);
   });

@@ -2192,3 +2192,18 @@ describe("machine UI CDP driver recovery observation", () => {
     );
   });
 });
+
+describe("machine UI CDP driver touch input", () => {
+  it("holds a touch press so the WebView synthesizes a real tap", () => {
+    const source = readFileSync(
+      new URL("./machine-ui-cdp-driver.mjs", import.meta.url),
+      "utf8",
+    );
+    const dispatch = source.slice(
+      source.indexOf("export async function dispatchPhysicalInput"),
+      source.indexOf("export async function activateVisibleSelector"),
+    );
+    assert.match(dispatch, /TOUCH_PRESS_HOLD_MS/);
+    assert.match(dispatch, /await sleep\(TOUCH_PRESS_HOLD_MS\)/);
+  });
+});

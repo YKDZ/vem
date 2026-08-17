@@ -4192,12 +4192,8 @@ async function collectInstalledFieldRegressionChecks({
   };
 
   const activateFastTryOnToRoute = async (routePattern, label) => {
-    // Touch dispatch has proven lossy in the WebView under full-serial load.
-    // Mouse input is the reliable CDP stand-in and preserves the click
-    // semantics for the kiosk buttons; the expected route is still the
-    // condition we wait for, not a retry loop.
     await activateVisibleSelector(client, '[data-test="try-on-fast"]', {
-      kind: "mouse",
+      kind: "touch",
       timeoutMs: 15_000,
     });
     await waitForRoute(client, routePattern, {

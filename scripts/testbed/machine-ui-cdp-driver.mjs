@@ -9,6 +9,7 @@ const STRICT_TAURI_HOST = "tauri.localhost";
 const DEFAULT_REMOTE_CDP_PORT = 9222;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_ROUTE_POLL_MS = 100;
+const TOUCH_PRESS_HOLD_MS = 40;
 const MAX_URL_LENGTH = 2_048;
 const MAX_LABEL_LENGTH = 160;
 const MAX_SELECTOR_LENGTH = 512;
@@ -1287,6 +1288,9 @@ export async function dispatchPhysicalInput(
         : { type: "mousePressed", x, y, button: "left", clickCount: 1 },
       { timeoutMs },
     );
+    // A zero-duration touch press is coalesced/dropped by the WebView under
+    // load. Hold the press briefly so the browser synthesizes a real tap.
+    if (kind === "touch") await sleep(TOUCH_PRESS_HOLD_MS);
   } catch (error) {
     primaryError = error;
   } finally {
