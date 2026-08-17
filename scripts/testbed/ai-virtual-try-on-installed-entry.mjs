@@ -1043,13 +1043,15 @@ export async function runInstalledAiAttemptPhase(options) {
     const skipAiRss =
       isVmAcceptanceAiRssSkipEnabled() ||
       guestInput.aiVirtualTryOn?.skipAiRss === true;
-    const sampler = (async () => {
-      await started;
-      return sampleInstalledAiWorkerPeakRss(() => completed);
-    })();
+    const sampler = skipAiRss
+      ? Promise.resolve(null)
+      : (async () => {
+          await started;
+          return sampleInstalledAiWorkerPeakRss(() => completed);
+        })();
     const [ownerAttempts, resource] = await Promise.all([
       ownerPromise,
-      skipAiRss ? Promise.resolve(null) : sampler,
+      sampler,
     ]);
     const collected = ownerAttempts.initial;
     const retried = ownerAttempts.retry;
