@@ -187,11 +187,17 @@ try {
   # The first stop is a mutating operation; restoration is required before it.
   $restorationRequired = $true
   $shortConfiguration = Restart-TestbedAiVisionOwner -GuestInput $guestInput -EvidencePhase short -ModelPackRoot $modelPackRoot
-  node $nodeEntry attempt --case short --guest-input $GuestInputPath --handoff $HandoffPath --regional-root ([string]$shortConfiguration.acceptanceEvidenceRoot) --artifact-root $artifactRoot --out $shortFacts
-  if ($LASTEXITCODE -ne 0) { throw "short installed AI attempt failed" }
+  $shortOutput = & node $nodeEntry attempt --case short --guest-input $GuestInputPath --handoff $HandoffPath --regional-root ([string]$shortConfiguration.acceptanceEvidenceRoot) --artifact-root $artifactRoot --out $shortFacts 2>&1
+  if ($LASTEXITCODE -ne 0) {
+    [IO.File]::WriteAllText((Join-Path $artifactRoot "short-attempt-error.txt"), ($shortOutput -join "`n"), [Text.UTF8Encoding]::new($false))
+    throw "short installed AI attempt failed: $($shortOutput -join ' | ')"
+  }
   $longConfiguration = Restart-TestbedAiVisionOwner -GuestInput $guestInput -EvidencePhase long -ModelPackRoot $modelPackRoot
-  node $nodeEntry attempt --case long --guest-input $GuestInputPath --handoff $HandoffPath --regional-root ([string]$longConfiguration.acceptanceEvidenceRoot) --artifact-root $artifactRoot --out $longFacts
-  if ($LASTEXITCODE -ne 0) { throw "long installed AI attempt failed" }
+  $longOutput = & node $nodeEntry attempt --case long --guest-input $GuestInputPath --handoff $HandoffPath --regional-root ([string]$longConfiguration.acceptanceEvidenceRoot) --artifact-root $artifactRoot --out $longFacts 2>&1
+  if ($LASTEXITCODE -ne 0) {
+    [IO.File]::WriteAllText((Join-Path $artifactRoot "long-attempt-error.txt"), ($longOutput -join "`n"), [Text.UTF8Encoding]::new($false))
+    throw "long installed AI attempt failed: $($longOutput -join ' | ')"
+  }
   node $nodeEntry sale --guest-input $GuestInputPath --handoff $HandoffPath --out $saleFacts
   if ($LASTEXITCODE -ne 0) { throw "ordinary installed-owner sale failed" }
   Restart-TestbedAiDegradedVisionOwner -GuestInput $guestInput -Fault missing | Out-Null
