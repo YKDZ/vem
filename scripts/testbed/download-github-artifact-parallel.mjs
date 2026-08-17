@@ -25,6 +25,7 @@ import { basename, dirname, isAbsolute } from "node:path";
 const MAX_ARIA2_CONNECTIONS = 16;
 const DEFAULT_MAX_URL_REFRESHES = 40;
 const DEFAULT_POLL_MS = 5_000;
+const ARIA2_RUN_TIMEOUT_MS = 120_000;
 
 export function parseDownloadOptions(args) {
   const flags = new Map();
@@ -104,12 +105,35 @@ function run(command, args, options = {}) {
     });
     let stdout = "";
     let stderr = "";
+    let settled = false;
+    const timer =
+      options.timeoutMs === undefined
+        ? null
+        : setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            child.kill("SIGKILL");
+            resolvePromise({
+              code: null,
+              stdout,
+              stderr,
+              timedOut: true,
+            });
+          }, options.timeoutMs);
     child.stdout?.on("data", (chunk) => (stdout += chunk));
     child.stderr?.on("data", (chunk) => (stderr += chunk));
-    child.once("error", reject);
-    child.once("exit", (code) =>
-      resolvePromise({ code: code ?? null, stdout, stderr }),
-    );
+    child.once("error", (error) => {
+      if (settled) return;
+      settled = true;
+      if (timer !== null) clearTimeout(timer);
+      reject(error);
+    });
+    child.once("exit", (code) => {
+      if (settled) return;
+      settled = true;
+      if (timer !== null) clearTimeout(timer);
+      resolvePromise({ code: code ?? null, stdout, stderr });
+    });
   });
 }
 
@@ -214,7 +238,7 @@ export async function aria2cOnce({
       name,
       url,
     ],
-    { capture: true },
+    { capture: true, timeoutMs: ARIA2_RUN_TIMEOUT_MS },
   );
 }
 

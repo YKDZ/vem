@@ -39,8 +39,10 @@ function runProcessFixture(behavior) {
 
 test("aria2cOnce splits an absolute output into --dir and --out", async () => {
   let observedArgs = null;
-  const runProcess = runProcessFixture(async (_command, args, _options) => {
+  let observedOptions = null;
+  const runProcess = runProcessFixture(async (_command, args, options) => {
     observedArgs = args;
+    observedOptions = options;
     return { code: 0, stdout: "", stderr: "" };
   });
   await aria2cOnce({
@@ -60,6 +62,8 @@ test("aria2cOnce splits an absolute output into --dir and --out", async () => {
     observedArgs.includes("/opt/candidate/actions-artifact.zip"),
     false,
   );
+  assert.equal(observedOptions.capture, true);
+  assert.equal(observedOptions.timeoutMs, 120_000);
 });
 
 test("parseDownloadOptions validates the download contract", () => {
