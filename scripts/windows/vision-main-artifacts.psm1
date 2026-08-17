@@ -778,7 +778,7 @@ function Install-VisionMainArtifact {
       $resolvedFixtureRoot = [string]$fixtureState.root
     }
     if (Test-Path -LiteralPath $AppDirectory) {
-      $removeDeadline = [DateTime]::UtcNow.AddSeconds(15)
+      $removeDeadline = [DateTime]::UtcNow.AddSeconds(30)
       $removeError = $null
       do {
         try {
@@ -787,6 +787,21 @@ function Install-VisionMainArtifact {
           break
         } catch {
           $removeError = $_
+          # A stale Vision process (main, spawn child, or AI worker) can keep
+          # the log handle open after the managed task stopped. Force-kill
+          # every process rooted under the app directory before retrying.
+          Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object {
+              $_.ExecutablePath -and
+              ([string]$_.ExecutablePath).StartsWith(
+                $AppDirectory,
+                [StringComparison]::OrdinalIgnoreCase
+              )
+            } |
+            ForEach-Object {
+              try { & taskkill.exe /PID ([int]$_.ProcessId) /T /F *> $null } catch { }
+              Stop-Process -Id ([int]$_.ProcessId) -Force -ErrorAction SilentlyContinue
+            }
           Start-Sleep -Milliseconds 500
         }
       } while ([DateTime]::UtcNow -lt $removeDeadline)
