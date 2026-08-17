@@ -777,7 +777,21 @@ function Install-VisionMainArtifact {
       $fixtureState = Install-VisionFixtureArchive $FixtureArchive $FixtureDirectory $Commit
       $resolvedFixtureRoot = [string]$fixtureState.root
     }
-    if (Test-Path -LiteralPath $AppDirectory) { Remove-Item -LiteralPath $AppDirectory -Recurse -Force -ErrorAction Stop }
+    if (Test-Path -LiteralPath $AppDirectory) {
+      $removeDeadline = [DateTime]::UtcNow.AddSeconds(15)
+      $removeError = $null
+      do {
+        try {
+          Remove-Item -LiteralPath $AppDirectory -Recurse -Force -ErrorAction Stop
+          $removeError = $null
+          break
+        } catch {
+          $removeError = $_
+          Start-Sleep -Milliseconds 500
+        }
+      } while ([DateTime]::UtcNow -lt $removeDeadline)
+      if ($null -ne $removeError) { throw $removeError }
+    }
     Move-Item -LiteralPath $staging -Destination $AppDirectory -ErrorAction Stop
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $SiteConfigurationDestination) | Out-Null
     if ($usesFixtures) {
