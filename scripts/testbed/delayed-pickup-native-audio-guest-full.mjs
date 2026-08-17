@@ -1252,33 +1252,44 @@ async function runDelayedPickupGuestFull(options) {
       uiSnapshotPath,
       screenshotRefs,
     });
-    const cleanupFailClosed = async (label, callback) => {
+    const cleanupFailClosed = async (
+      label,
+      callback,
+      timeoutMs = CLEANUP_TIMEOUT_MS,
+    ) => {
       try {
-        await runCleanupStep(label, callback);
+        await runCleanupStep(label, callback, timeoutMs);
       } catch (error) {
         cleanupErrors.push(`${label}: ${formatError(error)}`);
         cleanupFailures.push(error);
       }
     };
-    await cleanupFailClosed("pending-order", async () => {
-      if (!client || liveSale) return;
-      const onPayment = await waitForRoute(client, /^#\/payment/, {
-        timeoutMs: 250,
-        pollMs: 50,
-      })
-        .then(() => true)
-        .catch(() => false);
-      if (!onPayment) return;
-      await activateVisibleSelector(
-        client,
-        '[data-test="payment-cancel"]:not(:disabled)',
-        { kind: "touch", timeoutMs: 10_000 },
-      );
-      await waitForRoute(client, "#/catalog", {
-        timeoutMs: 30_000,
-        pollMs: 250,
-      });
-    });
+    await cleanupFailClosed(
+      "pending-order",
+      async () => {
+        if (!client || liveSale) return;
+        const onPayment = await waitForRoute(client, /^#\/payment/, {
+          timeoutMs: 250,
+          pollMs: 50,
+        })
+          .then(() => true)
+          .catch(() => false);
+        if (!onPayment) return;
+        await activateVisibleSelector(
+          client,
+          '[data-test="payment-cancel"]:not(:disabled)',
+          { kind: "touch", timeoutMs: 10_000 },
+        );
+        await waitForRoute(client, "#/catalog", {
+          timeoutMs: 30_000,
+          pollMs: 250,
+        });
+      },
+      // The pending-order cleanup may need to cancel a live payment and wait
+      // for the catalog route while the machine is already busy; the default
+      // 10s cleanup budget is structurally too tight for that path.
+      60_000,
+    );
     await cleanupFailClosed("audio-capture", async () => {
       if (liveEvidence?.audioStop) return;
       await controlPlaneRequest(guestInput, "/v1/audio-captures/cancel", {

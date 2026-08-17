@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 import {
@@ -38,5 +39,18 @@ describe("delayed pickup guest full runner", () => {
         },
       ],
     ]);
+  });
+
+  it("gives pending-order cleanup a budget covering cancel and catalog return", () => {
+    const source = readFileSync(
+      new URL("./delayed-pickup-native-audio-guest-full.mjs", import.meta.url),
+      "utf8",
+    );
+    const pendingOrderCleanup = source.slice(
+      source.indexOf('await cleanupFailClosed(\n      "pending-order"'),
+      source.indexOf('await cleanupFailClosed("audio-capture"'),
+    );
+    assert.match(pendingOrderCleanup, /timeoutMs: 30_000/);
+    assert.match(pendingOrderCleanup, /60_000/);
   });
 });
