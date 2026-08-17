@@ -1715,6 +1715,27 @@ describe("vision try-on acceptance script", () => {
     ]);
   });
 
+  it("verifies the self-heal broker survives even if the observer respawns", () => {
+    const source = readFileSync(
+      new URL("./vision-try-on-acceptance.mjs", import.meta.url),
+      "utf8",
+    );
+    const selfHealSection = source.slice(
+      source.indexOf(
+        "// ---- Observer self-heal after killing the multiprocessing children ----",
+      ),
+      source.indexOf("// Respawn, prewarm, acquisition, and generation"),
+    );
+    assert.match(
+      selfHealSection,
+      /\$remainingPids = @\(\$remaining \| ForEach-Object \{ \[int\]\$_\.[Pp]rocessId \}\)/,
+    );
+    assert.match(
+      selfHealSection,
+      /\$remainingPids -notcontains \[int\]\$broker\.ProcessId/,
+    );
+  });
+
   it("proves matched, manual, online-unmatched, and unavailable recommendation states", () => {
     const source = readFileSync(
       new URL("./vision-try-on-acceptance.mjs", import.meta.url),
