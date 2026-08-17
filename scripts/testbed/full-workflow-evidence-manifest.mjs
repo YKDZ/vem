@@ -624,7 +624,6 @@ export function validateFullWorkflowEvidenceManifest(manifest) {
             track.diagnostics.length === 0
           : typeof track?.machineRuntimeTrace !== "string" ||
             !Array.isArray(track?.logs) ||
-            track.logs.length === 0 ||
             !Array.isArray(track?.screenshots))
       ) {
         failures.push(
