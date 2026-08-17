@@ -282,6 +282,84 @@ function compactFrames(rawFrames) {
     : [];
 }
 
+async function interruptDaemonTransportAndObserveOverlay({
+  handoff,
+  client,
+  screenshotSink,
+  session,
+  attempts = 2,
+  overlayTimeoutMs = 45_000,
+}) {
+  let lastUiBefore = null;
+  let lastInterrupted = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const uiBefore = await captureRuntimeOperationObservation(client);
+    const interrupted = runLocalPowerShellJson(
+      buildInstalledKioskGuestOperationScript({
+        operation: "daemon_transport_interrupt",
+        phase: "interrupt",
+        daemonRuntime: handoff.daemon,
+      }),
+      "daemon transport interrupt",
+    );
+    const overlayDeadline = Date.now() + overlayTimeoutMs;
+    let recoveryOverlay = null;
+    do {
+      const observation = await captureRuntimeOperationObservation(client);
+      if (
+        Array.isArray(observation.recoveryOverlay) &&
+        observation.recoveryOverlay.length > 0
+      ) {
+        recoveryOverlay = {
+          observation,
+          screenshot: await captureScreenshot(client, {
+            screenshotSink,
+            label:
+              attempt === 0
+                ? "payment-recovery-overlay"
+                : `payment-recovery-overlay-retry-${attempt + 1}`,
+          }),
+        };
+        return { uiBefore, interruptedTransport: interrupted, recoveryOverlay };
+      }
+      await sleep(250);
+    } while (Date.now() < overlayDeadline);
+    lastUiBefore = uiBefore;
+    lastInterrupted = interrupted;
+    if (attempt + 1 >= attempts) {
+      return {
+        uiBefore: lastUiBefore,
+        interruptedTransport: lastInterrupted,
+        recoveryOverlay: null,
+      };
+    }
+    // Recover before the next attempt so the Machine UI event stream is live;
+    // a stale stream can miss the overlay even though the daemon really went
+    // down and came back.
+    runLocalPowerShellJson(
+      buildInstalledKioskGuestOperationScript({
+        operation: "daemon_transport_interrupt",
+        phase: "recover",
+        operationId: interrupted.guestOperationId,
+        daemonRuntime: handoff.daemon,
+        expectedTransaction: {
+          ...interrupted.daemon.transactionBefore,
+          machineCode: interrupted.platform.machineCode,
+        },
+      }),
+      "daemon transport recovery",
+    );
+    await waitForDaemonReadyRefresh(handoff);
+    await waitForHardwareBindings(handoff, session);
+    await sleep(3_000);
+  }
+  return {
+    uiBefore: lastUiBefore,
+    interruptedTransport: lastInterrupted,
+    recoveryOverlay: null,
+  };
+}
+
 export async function runInstalledIpcRecoveryGuest(options) {
   let guestInput;
   let handoff;
@@ -429,34 +507,15 @@ export async function runInstalledIpcRecoveryGuest(options) {
     report.renderedSale = renderedSale;
     await pushCheckpoint("payment-before-ipc-recovery");
 
-    const uiBefore = await captureRuntimeOperationObservation(client);
-    interruptedTransport = runLocalPowerShellJson(
-      buildInstalledKioskGuestOperationScript({
-        operation: "daemon_transport_interrupt",
-        phase: "interrupt",
-        daemonRuntime: handoff.daemon,
-      }),
-      "daemon transport interrupt",
-    );
-    const overlayDeadline = Date.now() + 30_000;
-    let recoveryOverlay = null;
-    do {
-      const observation = await captureRuntimeOperationObservation(client);
-      if (
-        Array.isArray(observation.recoveryOverlay) &&
-        observation.recoveryOverlay.length > 0
-      ) {
-        recoveryOverlay = {
-          observation,
-          screenshot: await captureScreenshot(client, {
-            screenshotSink,
-            label: "payment-recovery-overlay",
-          }),
-        };
-        break;
-      }
-      await sleep(250);
-    } while (Date.now() < overlayDeadline);
+    const interruption = await interruptDaemonTransportAndObserveOverlay({
+      handoff,
+      client,
+      screenshotSink,
+      session,
+    });
+    interruptedTransport = interruption.interruptedTransport;
+    const uiBefore = interruption.uiBefore;
+    const recoveryOverlay = interruption.recoveryOverlay;
     recoveredTransport = runLocalPowerShellJson(
       buildInstalledKioskGuestOperationScript({
         operation: "daemon_transport_interrupt",
