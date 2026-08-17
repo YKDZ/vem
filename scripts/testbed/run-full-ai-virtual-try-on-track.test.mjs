@@ -869,6 +869,7 @@ test("supports the ADR 0084 functional AI input without trusted pipeline prerequ
     source,
     /if \(-not \$functional\) \{[\s\S]*windows-proof-input-directory/,
   );
+  assert.match(source, /\$env:VEM_VM_ACCEPTANCE_AI_STEPS = "1"/);
   assert.match(source, /"--functional", "true"[\s\S]*"--model-sha"/);
   assert.doesNotMatch(source, /"--model-pack-sha"/);
 });
