@@ -1042,6 +1042,30 @@ export async function captureRuntimeOperationObservation(client, options = {}) {
   return value;
 }
 
+async function captureRecoveredOperationObservation(
+  client,
+  { uiBefore, timeoutMs, pollMs },
+) {
+  // After daemon transport recovery the UI may briefly pass through a
+  // loading/empty state before the payment surface re-exposes the order
+  // credential. Capture the stable state instead of racing the restore.
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    last = await withCdpRecovery(() =>
+      captureRuntimeOperationObservation(client, { timeoutMs }),
+    );
+    if (
+      uiBefore?.orderCredential &&
+      last?.orderCredential === uiBefore.orderCredential
+    ) {
+      return last;
+    }
+    await sleep(pollMs);
+  }
+  return last;
+}
+
 async function readRuntimeGeneration(client, options = {}) {
   const value = await evaluateExpression(
     client,
@@ -2042,11 +2066,18 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
             uiBefore,
           });
         }
-        const uiAfter = await withCdpRecovery(() =>
-          captureRuntimeOperationObservation(client, {
-            timeoutMs: step.timeoutMs ?? timeoutMs,
-          }),
-        );
+        const uiAfter =
+          step.operation === "daemon_transport_interrupt"
+            ? await captureRecoveredOperationObservation(client, {
+                uiBefore,
+                timeoutMs: step.timeoutMs ?? timeoutMs,
+                pollMs: routePollMs,
+              })
+            : await withCdpRecovery(() =>
+                captureRuntimeOperationObservation(client, {
+                  timeoutMs: step.timeoutMs ?? timeoutMs,
+                }),
+              );
         const provenance = boundExternalOperation(
           {
             ...rawProvenance,

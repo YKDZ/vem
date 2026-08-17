@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { describe, it } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -2168,3 +2169,26 @@ class FakeChildProcess extends EventEmitter {
     this.emit("close", code, signal);
   }
 }
+
+describe("machine UI CDP driver recovery observation", () => {
+  it("waits for the order credential to return after daemon transport recovery", () => {
+    const source = readFileSync(
+      new URL("./machine-ui-cdp-driver.mjs", import.meta.url),
+      "utf8",
+    );
+    const observationSection = source.slice(
+      source.indexOf(
+        "export async function captureRuntimeOperationObservation",
+      ),
+      source.indexOf("async function readRuntimeGeneration"),
+    );
+    assert.match(
+      observationSection,
+      /uiBefore\?\.orderCredential[\s\S]*last\?\.orderCredential === uiBefore\.orderCredential/,
+    );
+    assert.match(
+      source,
+      /step\.operation === "daemon_transport_interrupt"[\s\S]*captureRecoveredOperationObservation/,
+    );
+  });
+});
