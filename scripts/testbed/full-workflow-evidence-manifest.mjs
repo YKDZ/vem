@@ -19,7 +19,7 @@ import { pathToFileURL } from "node:url";
 export const EVIDENCE_LIMITS = Object.freeze({
   reportPerFileBytes: 2 * 1024 * 1024,
   tracePerTrackBytes: 512 * 1024,
-  logPerFileBytes: 256 * 1024,
+  logPerFileBytes: 4 * 1024 * 1024,
   screenshotPerFileBytes: 2 * 1024 * 1024,
   totalBytes: 32 * 1024 * 1024,
 });
