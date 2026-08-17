@@ -910,6 +910,9 @@ async function returnInstalledAiAttemptToCatalog(client, resultAttemptId) {
 
 export async function runInstalledAiAttemptPhase(options) {
   const guestInput = readJson(options.guestInputPath, "guest input");
+  if (guestInput.aiVirtualTryOn?.skipAiRss === true) {
+    process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS = "1";
+  }
   const handoff = readJson(options.handoffPath, "runtime handoff");
   const target = await discoverMachineUiTarget({
     endpoint: handoff.cdp.endpoint,
