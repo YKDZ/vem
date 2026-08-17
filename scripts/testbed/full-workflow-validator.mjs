@@ -228,6 +228,7 @@ function validateAiVirtualTryOnTrack(report, reportPath) {
       value.saleAvailable,
     ].every((fact) => fact === true);
   const skipAiRss = execution?.aiRssObservation === "skipped_by_vm_acceptance";
+  const functional = execution?.functional === true;
   const vmAiRssSkipEnabled = process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS === "1";
   const complete =
     exactKeys(report, [
@@ -248,6 +249,7 @@ function validateAiVirtualTryOnTrack(report, reportPath) {
     report.reasons.length === 0 &&
     exactKeys(execution, [
       ...(skipAiRss ? ["aiRssObservation"] : []),
+      ...(functional ? ["functional"] : []),
       "identities",
       "noDirectWorker",
       "protocol",
@@ -257,6 +259,7 @@ function validateAiVirtualTryOnTrack(report, reportPath) {
     execution.source === "installed_machine_ui_cdp" &&
     execution.protocol === "vem.vision.v2" &&
     execution.noDirectWorker === true &&
+    Boolean(execution.functional) === functional &&
     (!skipAiRss || vmAiRssSkipEnabled) &&
     JSON.stringify(execution.recordedSources) ===
       JSON.stringify(["front", "top"]) &&

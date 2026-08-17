@@ -1520,6 +1520,42 @@ describe("full workflow aggregate validator", () => {
     }
   });
 
+  it("accepts the functional execution marker only when strict", () => {
+    const original = process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS;
+    try {
+      process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS = "1";
+      const report = aiVirtualTryOnReport();
+      report.execution.aiRssObservation = "skipped_by_vm_acceptance";
+      report.execution.functional = true;
+      for (const attempt of report.attempts) delete attempt.result.peakRssBytes;
+      assert.equal(
+        validateBusinessCheckReport(
+          descriptor("aiVirtualTryOn"),
+          report,
+          "ai-virtual-try-on.json",
+        ).status,
+        "passed",
+      );
+      const invalid = aiVirtualTryOnReport();
+      invalid.execution.aiRssObservation = "skipped_by_vm_acceptance";
+      invalid.execution.functional = false;
+      for (const attempt of invalid.attempts)
+        delete attempt.result.peakRssBytes;
+      assert.equal(
+        validateBusinessCheckReport(
+          descriptor("aiVirtualTryOn"),
+          invalid,
+          "ai-virtual-try-on.json",
+        ).status,
+        "failed",
+      );
+    } finally {
+      if (original === undefined)
+        delete process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS;
+      else process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS = original;
+    }
+  });
+
   it("rejects a percent-encoded product hash that Vue Router never observed", () => {
     const report = aiVirtualTryOnReport();
     for (const attempt of report.attempts) {
