@@ -92,6 +92,7 @@ $inputs = if ($null -eq $inputsProperty) { $null } else { $inputsProperty.Value 
 if ($null -eq $inputs) { throw "candidate exact-four input directory is required" }
 
 $functional = if ($null -eq $inputs.functional) { $false } else { [bool]$inputs.functional }
+[IO.File]::WriteAllText("C:\ProgramData\VEM\testbed\ai-debug-functional.txt", "functional=$functional skip=$($inputs.skipAiRss)", [Text.UTF8Encoding]::new($false))
 if ($functional) {
   # The VM stabilization path (ADR 0084) validates the full AI business flow
   # without the RSS peak gate, which is hard to observe reliably across the

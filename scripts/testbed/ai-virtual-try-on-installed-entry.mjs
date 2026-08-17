@@ -910,6 +910,13 @@ async function returnInstalledAiAttemptToCatalog(client, resultAttemptId) {
 
 export async function runInstalledAiAttemptPhase(options) {
   const guestInput = readJson(options.guestInputPath, "guest input");
+  writeFileSync(
+    join(options.artifactRoot, "attempt-debug.json"),
+    `${JSON.stringify({
+      functional: guestInput.aiVirtualTryOn?.functional ?? null,
+      skipAiRssFlag: guestInput.aiVirtualTryOn?.skipAiRss ?? null,
+    })}\n`,
+  );
   if (guestInput.aiVirtualTryOn?.skipAiRss === true) {
     process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS = "1";
   }
