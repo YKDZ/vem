@@ -902,11 +902,23 @@ export async function loadVisionCoreArtifacts(config, authorityReceipt) {
   };
 }
 
-export async function materializeVisionCoreArtifactSnapshot(config, root) {
+export async function materializeVisionCoreArtifactSnapshot(
+  config,
+  root,
+  { reuse = false } = {},
+) {
   const preparation = await loadVisionCoreArtifacts(
     config,
     config.aiAcceptanceAuthorityReceipt,
   );
+  if (reuse) {
+    await Promise.all(
+      preparation.transfers.map((transfer) =>
+        assertVisionCoreArtifact(transfer, "Vision core artifact"),
+      ),
+    );
+    return preparation;
+  }
   const snapshotRoot = resolve(root, preparation.guestInput.identity.sha256);
   await mkdir(snapshotRoot, { recursive: true });
   const names = ["vision-runtime.zip", "recorded-fixtures.zip"];
@@ -1526,12 +1538,11 @@ async function executeRun(options, config) {
       if (aiInputRequired) {
         try {
           aiAcceptanceInputs = config.aiVirtualTryOnInputManifest
-            ? await admitAiAcceptanceInputs(config, workspace)
+            ? await materializeAiAcceptanceInputSnapshot(
+                await admitAiAcceptanceInputs(config, workspace),
+                join(root, "ai-input-snapshots"),
+              )
             : await admitFunctionalAiAcceptanceInputs(config);
-          aiAcceptanceInputs = await materializeAiAcceptanceInputSnapshot(
-            aiAcceptanceInputs,
-            join(root, "ai-input-snapshots"),
-          );
         } catch (error) {
           aiInputFailure =
             error instanceof Error ? error.message : String(error);
@@ -1663,6 +1674,7 @@ async function executeRun(options, config) {
             : {}),
         },
         join(root, "vision-core-snapshots", `pass-${pass}`),
+        { reuse: true },
       );
       if (
         options.mode === "full" &&
@@ -1683,12 +1695,11 @@ async function executeRun(options, config) {
       }
       if (aiAcceptanceInputs) {
         let currentAiAcceptanceInputs = config.aiVirtualTryOnInputManifest
-          ? await admitAiAcceptanceInputs(config, workspace)
+          ? await materializeAiAcceptanceInputSnapshot(
+              await admitAiAcceptanceInputs(config, workspace),
+              join(root, "ai-input-snapshots"),
+            )
           : await admitFunctionalAiAcceptanceInputs(config);
-        currentAiAcceptanceInputs = await materializeAiAcceptanceInputSnapshot(
-          currentAiAcceptanceInputs,
-          join(root, "ai-input-snapshots"),
-        );
         const currentSnapshot = {
           manifestSha256: currentAiAcceptanceInputs.manifestSha256,
           artifactDigests: currentAiAcceptanceInputs.artifactDigests,

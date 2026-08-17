@@ -868,6 +868,7 @@ export async function buildFunctionalAiAcceptanceGuestInput(config) {
   ];
   return {
     manifestSha256,
+    artifactDigests: guestInput.identities,
     guestInput,
     phase: "measurement",
     transfers,
