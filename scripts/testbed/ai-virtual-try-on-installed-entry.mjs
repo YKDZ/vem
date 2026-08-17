@@ -919,7 +919,15 @@ export async function runInstalledAiAttemptPhase(options) {
     writeFileSync(
       validatedInputIdentityPath,
       canonicalBytes(
-        JSON.parse(readFileSync(validatedInputIdentityPath, "utf8")),
+        {
+          facts: {
+            validatedInputIdentity: JSON.parse(
+              readFileSync(validatedInputIdentityPath, "utf8"),
+            ),
+          },
+          kind: "installed-runtime",
+          schemaVersion: AI_SUPPORT_EVIDENCE_SCHEMA,
+        },
       ),
     );
   }

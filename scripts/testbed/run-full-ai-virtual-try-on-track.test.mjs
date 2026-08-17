@@ -877,6 +877,7 @@ test("supports the ADR 0084 functional AI input without trusted pipeline prerequ
     entry,
     /canonicalBytes\(\{[\s\S]*schemaVersion: AI_SUPPORT_EVIDENCE_SCHEMA/,
   );
+  assert.match(entry, /validatedInputIdentity: JSON\.parse/);
   assert.match(entry, /functional: input\.functional === true/);
 });
 
