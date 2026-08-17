@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import {
+  buildFunctionalAiAcceptanceGuestInput,
   canonicalAiAcceptanceInputManifest,
   containedCalibrationSourcePath,
   identicalAiAcceptanceInputSnapshot,
@@ -83,6 +84,53 @@ function compactCanonical(value) {
   };
   return `${JSON.stringify(sort(value))}\n`;
 }
+
+test("builds a functional AI guest input without trusted pipeline prerequisites", async () => {
+  const root = mkdtempSync(join(tmpdir(), "vem-ai-functional-"));
+  try {
+    const runtime = file(
+      root,
+      "runtime/vision-runtime.zip",
+      "runtime",
+      "a".repeat(40),
+    );
+    const fixture = file(
+      root,
+      "fixture/recorded-fixtures.zip",
+      "fixture",
+      "a".repeat(40),
+    );
+    const modelPack = file(root, "model/model-pack.zip", "model");
+    const materialized = directory(root, "model-materialized", [
+      ["ai-model-manifest.json", "{}"],
+    ]);
+    const preparation = await buildFunctionalAiAcceptanceGuestInput({
+      visionCoreArtifacts: {
+        runtimeArchive: runtime,
+        recordedFixtureArchive: fixture,
+      },
+      aiVirtualTryOnFunctional: {
+        materializedModelPackRoot: materialized.hostPath,
+        modelPackArchive: modelPack.hostPath,
+        modelPackByteSize: modelPack.byteSize,
+        modelPackSha256: modelPack.sha256,
+      },
+    });
+    assert.equal(preparation.guestInput.functional, true);
+    assert.equal(preparation.guestInput.phase, "measurement");
+    assert.equal(preparation.guestInput.modelPackSha256, modelPack.sha256);
+    assert.equal(
+      preparation.guestInput.identities.materializedModelPackRoot.sha256,
+      materialized.sha256,
+    );
+    assert.equal(preparation.transfers.length, 4);
+    assert.equal("candidateInputDirectory" in preparation.guestInput, false);
+    assert.equal("windowsProofInputDirectory" in preparation.guestInput, false);
+    assert.equal("acceptanceAuthorityReceipt" in preparation.guestInput, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 function calibrationSourceBundle(root) {
   const bundleRoot = join(root, "calibration-source");

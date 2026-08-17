@@ -19,6 +19,7 @@ import { pathToFileURL } from "node:url";
 
 import { verifyAiAcceptanceAuthority } from "./ai-acceptance-authority.mjs";
 import {
+  buildFunctionalAiAcceptanceGuestInput,
   identicalAiAcceptanceInputSnapshot,
   materializeHostCalibrationSourceSnapshot,
   materializeAiAcceptanceInputSnapshot,
@@ -333,6 +334,58 @@ export function validateHostConfig(value) {
             });
           })(),
         }),
+    ...(value.aiVirtualTryOnFunctional === undefined
+      ? {}
+      : (() => {
+          const functional = value.aiVirtualTryOnFunctional;
+          if (
+            !functional ||
+            typeof functional !== "object" ||
+            Array.isArray(functional)
+          ) {
+            throw new Error(
+              "host config aiVirtualTryOnFunctional must be an object",
+            );
+          }
+          if (
+            Object.keys(functional).sort().join("\0") !==
+            [
+              "materializedModelPackRoot",
+              "modelPackArchive",
+              "modelPackByteSize",
+              "modelPackSha256",
+            ]
+              .sort()
+              .join("\0")
+          ) {
+            throw new Error(
+              "host config aiVirtualTryOnFunctional fields are invalid",
+            );
+          }
+          if (
+            !/^[a-f0-9]{64}$/.test(functional.modelPackSha256) ||
+            !Number.isSafeInteger(functional.modelPackByteSize) ||
+            functional.modelPackByteSize <= 0
+          ) {
+            throw new Error(
+              "host config aiVirtualTryOnFunctional model pack identity is invalid",
+            );
+          }
+          return {
+            aiVirtualTryOnFunctional: {
+              materializedModelPackRoot: absolute(
+                functional.materializedModelPackRoot,
+                "host config aiVirtualTryOnFunctional materializedModelPackRoot",
+              ),
+              modelPackArchive: absolute(
+                functional.modelPackArchive,
+                "host config aiVirtualTryOnFunctional modelPackArchive",
+              ),
+              modelPackByteSize: functional.modelPackByteSize,
+              modelPackSha256: functional.modelPackSha256,
+            },
+          };
+        })()),
     visionCoreArtifacts: {
       runtimeArchive: artifactFile(
         value.visionCoreArtifacts?.runtimeArchive,
@@ -750,6 +803,15 @@ export async function admitAiAcceptanceInputs(
   return preparation;
 }
 
+export async function admitFunctionalAiAcceptanceInputs(config) {
+  if (!config.aiVirtualTryOnFunctional) {
+    throw new Error(
+      "AI virtual try-on functional acceptance requires host config aiVirtualTryOnFunctional",
+    );
+  }
+  return await buildFunctionalAiAcceptanceGuestInput(config);
+}
+
 function visionCoreIdentity(runtime, fixture) {
   return createHash("sha256")
     .update(
@@ -898,7 +960,7 @@ export async function provisionAiAcceptanceGuestInput({
     workflowIdentity: {
       ...guestInput.workflowIdentity,
       aiVirtualTryOn: {
-        authority: preparation.acceptanceAuthorityReceipt.value,
+        authority: preparation.acceptanceAuthorityReceipt?.value ?? null,
         input: preparation.guestInput.identities,
       },
       pass,
@@ -1463,7 +1525,9 @@ async function executeRun(options, config) {
       let aiInputFailure = null;
       if (aiInputRequired) {
         try {
-          aiAcceptanceInputs = await admitAiAcceptanceInputs(config, workspace);
+          aiAcceptanceInputs = config.aiVirtualTryOnInputManifest
+            ? await admitAiAcceptanceInputs(config, workspace)
+            : await admitFunctionalAiAcceptanceInputs(config);
           aiAcceptanceInputs = await materializeAiAcceptanceInputSnapshot(
             aiAcceptanceInputs,
             join(root, "ai-input-snapshots"),

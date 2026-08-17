@@ -91,34 +91,42 @@ $inputsProperty = $guestInput.PSObject.Properties["aiVirtualTryOn"]
 $inputs = if ($null -eq $inputsProperty) { $null } else { $inputsProperty.Value }
 if ($null -eq $inputs) { throw "candidate exact-four input directory is required" }
 
-Require-AbsoluteDirectory ([string]$inputs.candidateInputDirectory) "candidate exact-four input directory"
-Require-AbsoluteDirectory ([string]$inputs.windowsProofInputDirectory) "companion proof exact-three input directory"
-Require-AbsoluteLeaf ([string]$inputs.acceptanceAuthorityReceipt) "installed Windows acceptance authority receipt"
+$functional = if ($null -eq $inputs.functional) { $false } else { [bool]$inputs.functional }
+if (-not $functional) {
+  Require-AbsoluteDirectory ([string]$inputs.candidateInputDirectory) "candidate exact-four input directory"
+  Require-AbsoluteDirectory ([string]$inputs.windowsProofInputDirectory) "companion proof exact-three input directory"
+  Require-AbsoluteLeaf ([string]$inputs.acceptanceAuthorityReceipt) "installed Windows acceptance authority receipt"
 
-$candidateArchives = @(Get-ChildItem -LiteralPath ([string]$inputs.candidateInputDirectory) -File | Where-Object { $_.Extension -ceq ".zip" })
-if ($candidateArchives.Count -ne 1) { throw "candidate exact-four archive set is invalid" }
-Require-ExactRegularMembers ([string]$inputs.candidateInputDirectory) @(
-  [string]$candidateArchives[0].Name,
-  "candidate-manifest.json",
-  "github-build-provenance.sigstore.json",
-  "trusted-builder-evidence.json"
-) "candidate exact-four input"
-Require-ExactRegularMembers ([string]$inputs.windowsProofInputDirectory) @(
-    "precutover-ai-proof.json",
-    "precutover-ai-proof.sigstore.json",
-    "trusted-precutover-proof-evidence.json"
-) "companion proof exact-three input"
+  $candidateArchives = @(Get-ChildItem -LiteralPath ([string]$inputs.candidateInputDirectory) -File | Where-Object { $_.Extension -ceq ".zip" })
+  if ($candidateArchives.Count -ne 1) { throw "candidate exact-four archive set is invalid" }
+  Require-ExactRegularMembers ([string]$inputs.candidateInputDirectory) @(
+    [string]$candidateArchives[0].Name,
+    "candidate-manifest.json",
+    "github-build-provenance.sigstore.json",
+    "trusted-builder-evidence.json"
+  ) "candidate exact-four input"
+  Require-ExactRegularMembers ([string]$inputs.windowsProofInputDirectory) @(
+      "precutover-ai-proof.json",
+      "precutover-ai-proof.sigstore.json",
+      "trusted-precutover-proof-evidence.json"
+  ) "companion proof exact-three input"
+}
 
-$authority = Get-Content -Raw -LiteralPath ([string]$inputs.acceptanceAuthorityReceipt) -Encoding utf8 | ConvertFrom-Json -ErrorAction Stop
-if ([string]$authority.schemaVersion -cne "vem.testbed.ai-acceptance-authority/v1" -or [string]$authority.scope -cne "installed_windows_acceptance" -or [string]$authority.trustStatus -cne "verified_for_acceptance") {
-  throw "installed Windows acceptance authority receipt identity is invalid"
+$authority = $null
+if (-not $functional) {
+  $authority = Get-Content -Raw -LiteralPath ([string]$inputs.acceptanceAuthorityReceipt) -Encoding utf8 | ConvertFrom-Json -ErrorAction Stop
+  if ([string]$authority.schemaVersion -cne "vem.testbed.ai-acceptance-authority/v1" -or [string]$authority.scope -cne "installed_windows_acceptance" -or [string]$authority.trustStatus -cne "verified_for_acceptance") {
+    throw "installed Windows acceptance authority receipt identity is invalid"
+  }
 }
 $installedVision = $guestInput.workflowIdentity.visionCore
 if ($null -eq $installedVision -or
+  (-not $functional -and (
   [string]$installedVision.runtimeArchive.sha256 -cne [string]$authority.candidate.subjectSha256 -or
   [string]$installedVision.runtimeArchive.sourceCommit -cne [string]$authority.candidate.sourceCommit -or
   [string]$installedVision.recordedFixtureArchive.sha256 -cne [string]$authority.visionCore.recordedFixtureArchive.sha256 -or
-  [string]$installedVision.recordedFixtureArchive.sourceCommit -cne [string]$authority.visionCore.recordedFixtureArchive.sourceCommit) {
+  [string]$installedVision.recordedFixtureArchive.sourceCommit -cne [string]$authority.visionCore.recordedFixtureArchive.sourceCommit)
+  )) {
   throw "installed Vision core identity does not match acceptance authority"
 }
 
@@ -131,7 +139,7 @@ if ($modelPackSource -cne "host-local-cache" -and [string]$inputs.modelPackUrl -
 if ($modelPackSource -notin @("host-local-cache", "host-controlled-https")) { throw "official model source is invalid" }
 if ([string]$inputs.modelPackSha256 -notmatch '^[a-f0-9]{64}$') { throw "official model SHA-256 is invalid" }
 if ($inputs.modelPackByteSize -isnot [long] -or [long]$inputs.modelPackByteSize -le 0) { throw "official model byte size is invalid" }
-if ([string]$inputs.modelPackSha256 -cne [string]$authority.modelPack.archive.sha256 -or [long]$inputs.modelPackByteSize -ne [long]$authority.modelPack.archive.byteSize) {
+if (-not $functional -and ([string]$inputs.modelPackSha256 -cne [string]$authority.modelPack.archive.sha256 -or [long]$inputs.modelPackByteSize -ne [long]$authority.modelPack.archive.byteSize)) {
   throw "materialized model pack does not match acceptance authority"
 }
 
@@ -147,9 +155,11 @@ $artifactRoot = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetDirectoryName($
 $pass = if ($guestInput.workflowIdentity.pass) { [int]$guestInput.workflowIdentity.pass } else { 1 }
 New-TestbedAiAcceptanceArtifactRoot -Root $artifactRoot -RunId ([string]$guestInput.runId) -Pass $pass -FixtureKey $FixtureKey | Out-Null
 $identities = $inputs.identities
-Assert-GuestDirectoryIdentity ([string]$inputs.candidateInputDirectory) $identities.candidateInput $false "candidate exact-four input"
-Assert-GuestDirectoryIdentity ([string]$inputs.windowsProofInputDirectory) $identities.windowsProofInput $false "companion proof exact-three input"
-Assert-GuestFileIdentity ([string]$inputs.acceptanceAuthorityReceipt) $identities.acceptanceAuthorityReceipt "installed Windows acceptance authority receipt"
+if (-not $functional) {
+  Assert-GuestDirectoryIdentity ([string]$inputs.candidateInputDirectory) $identities.candidateInput $false "candidate exact-four input"
+  Assert-GuestDirectoryIdentity ([string]$inputs.windowsProofInputDirectory) $identities.windowsProofInput $false "companion proof exact-three input"
+  Assert-GuestFileIdentity ([string]$inputs.acceptanceAuthorityReceipt) $identities.acceptanceAuthorityReceipt "installed Windows acceptance authority receipt"
+}
 Assert-GuestFileIdentity ([string]$inputs.installedVisionRuntimeArchive) $identities.installedVisionRuntimeArchive "installed Vision runtime archive"
 Assert-GuestFileIdentity ([string]$inputs.recordedFixtureArchive) $identities.recordedFixtureArchive "recorded front/top fixture archive"
 Assert-GuestFileIdentity ([string]$inputs.modelPackArchive) $identities.modelPackArchive "official model pack archive"
@@ -203,19 +213,29 @@ try {
   if ($null -eq $restoredWorker -or [string]$restoredWorker.workerExecutableSha256 -cnotmatch '^[a-f0-9]{64}$') {
     throw "restored installed AI worker identity is invalid"
   }
+  $modelPackSha256 = if ($functional) { [string]$inputs.modelPackSha256 } else { [string]$authority.modelPack.archive.sha256 }
+  $runtimeDescriptorPath = "C:\VEM\vision\app\_internal\ai-runtime-descriptor.json"
+  if (-not (Test-Path -LiteralPath $runtimeDescriptorPath -PathType Leaf)) { throw "installed AI runtime descriptor is missing" }
+  $runtimeDescriptorSha256 = (Get-FileHash -LiteralPath $runtimeDescriptorPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  $sourceCommit = if ($functional) { [string]$installedVision.runtimeArchive.sourceCommit } else { [string]$authority.candidate.sourceCommit }
   [ordered]@{
     facts = [ordered]@{ recovery = [ordered]@{
       aiReadinessDiagnostic = [string]$restoredConfiguration.health.aiReadinessDiagnostic
       aiReady = [bool]$restoredConfiguration.health.aiReady
-      modelPackSha256 = [string]$authority.modelPack.archive.sha256
-      runtimeDescriptorSha256 = [string]$authority.resources.runtimeDescriptorSha256
-      sourceCommit = [string]$authority.candidate.sourceCommit
+      modelPackSha256 = $modelPackSha256
+      runtimeDescriptorSha256 = $runtimeDescriptorSha256
+      sourceCommit = $sourceCommit
       workerExecutableSha256 = [string]$restoredWorker.workerExecutableSha256
     } }
     kind = "installed-runtime"
     schemaVersion = "vem.testbed.ai-virtual-try-on-support.v1"
   } | ConvertTo-Json -Compress -Depth 8 | ForEach-Object { [IO.File]::WriteAllText($verifiedRecoveryFacts, "$_`n", [Text.UTF8Encoding]::new($false)) }
-  $assemble = @("assemble", "--artifact-root", $artifactRoot, "--candidate-input-directory", [string]$inputs.candidateInputDirectory, "--windows-proof-input-directory", [string]$inputs.windowsProofInputDirectory)
+  $assemble = @("assemble", "--artifact-root", $artifactRoot)
+  if ($functional) {
+    $assemble += @("--functional", "true", "--runtime-sha", [string]$installedVision.runtimeArchive.sha256, "--runtime-descriptor-sha", $runtimeDescriptorSha256, "--model-sha", $modelPackSha256, "--source-commit", $sourceCommit)
+  } else {
+    $assemble += @("--candidate-input-directory", [string]$inputs.candidateInputDirectory, "--windows-proof-input-directory", [string]$inputs.windowsProofInputDirectory)
+  }
   $assemble += @("--short-attempt", $shortFacts, "--long-attempt", $longFacts, "--sale", $saleFacts, "--missing-degradation", $missingFacts, "--corrupt-degradation", $corruptFacts, "--worker-failure-degradation", $workerFailureFacts, "--recovery", $verifiedRecoveryFacts, "--out", $OutPath)
   node $nodeEntry @assemble
   if ($LASTEXITCODE -ne 0) { throw "installed AI acceptance assembly failed" }

@@ -757,6 +757,121 @@ function guestProjection(artifacts, manifestSha256) {
   };
 }
 
+async function describeFunctionalFile(path, label, { sourceCommit } = {}) {
+  const hostPathValue = hostPath(path, label);
+  let entry;
+  try {
+    entry = await lstat(hostPathValue);
+  } catch {
+    fail(`${label} is missing`);
+  }
+  if (!entry.isFile() || entry.isSymbolicLink())
+    fail(`${label} must be a regular file`);
+  const content = await describeFileContent(hostPathValue);
+  return {
+    hostPath: hostPathValue,
+    sha256: content.sha256,
+    byteSize: content.byteSize,
+    ...(sourceCommit ? { sourceCommit } : {}),
+  };
+}
+
+export async function buildFunctionalAiAcceptanceGuestInput(config) {
+  const runtime = await describeFunctionalFile(
+    config.visionCoreArtifacts.runtimeArchive.hostPath,
+    "functional installed Vision runtime archive",
+    {
+      sourceCommit: config.visionCoreArtifacts.runtimeArchive.sourceCommit,
+    },
+  );
+  const fixture = await describeFunctionalFile(
+    config.visionCoreArtifacts.recordedFixtureArchive.hostPath,
+    "functional recorded Vision fixture archive",
+    {
+      sourceCommit:
+        config.visionCoreArtifacts.recordedFixtureArchive.sourceCommit,
+    },
+  );
+  const modelConfig = config.aiVirtualTryOnFunctional;
+  const modelPack = await describeFunctionalFile(
+    modelConfig.modelPackArchive,
+    "functional official model pack archive",
+  );
+  if (
+    modelPack.sha256 !== modelConfig.modelPackSha256 ||
+    modelPack.byteSize !== modelConfig.modelPackByteSize
+  ) {
+    fail("functional official model pack identity is invalid");
+  }
+  const materializedRoot = await describeAiAcceptanceInputDirectory(
+    modelConfig.materializedModelPackRoot,
+    "functional materialized official model pack",
+    { nested: true },
+  );
+  const identity = {
+    schemaVersion: "vem-runtime-testbed-ai-functional-input/v1",
+    installedVisionRuntimeArchive: pickFile(runtime, true),
+    recordedFixtureArchive: pickFile(fixture, true),
+    modelPackArchive: pickFile(modelPack),
+    materializedModelPackRoot: pickDirectory(materializedRoot),
+  };
+  const manifestSha256 = createHash("sha256")
+    .update(canonicalAiAcceptanceInputManifest(identity))
+    .digest("hex");
+  const root = windowsJoin(GUEST_ROOT, "functional", manifestSha256);
+  const guestInput = {
+    schemaVersion: "vem-local-testbed-ai-virtual-try-on-input/v2",
+    inputRoot: root,
+    phase: "measurement",
+    functional: true,
+    installedVisionRuntimeArchive: windowsJoin(
+      GUEST_ROOT,
+      "files",
+      runtime.sha256,
+      "vision-runtime.zip",
+    ),
+    recordedFixtureArchive: windowsJoin(
+      GUEST_ROOT,
+      "files",
+      fixture.sha256,
+      "recorded-fixtures.zip",
+    ),
+    modelPackArchive: windowsJoin(
+      GUEST_ROOT,
+      "files",
+      modelPack.sha256,
+      "model-pack.zip",
+    ),
+    materializedModelPackRoot: windowsJoin(
+      GUEST_ROOT,
+      "directories",
+      materializedRoot.sha256,
+    ),
+    modelPackSource: "host-local-cache",
+    modelPackSha256: modelPack.sha256,
+    modelPackByteSize: modelPack.byteSize,
+    identities: {
+      manifestSha256,
+      installedVisionRuntimeArchive: pickFile(runtime, true),
+      recordedFixtureArchive: pickFile(fixture, true),
+      modelPackArchive: pickFile(modelPack),
+      materializedModelPackRoot: pickDirectory(materializedRoot),
+    },
+  };
+  const transfers = [
+    { ...runtime, guestPath: guestInput.installedVisionRuntimeArchive },
+    { ...fixture, guestPath: guestInput.recordedFixtureArchive },
+    { ...modelPack, guestPath: guestInput.modelPackArchive },
+    { ...materializedRoot, guestPath: guestInput.materializedModelPackRoot },
+  ];
+  return {
+    manifestSha256,
+    guestInput,
+    phase: "measurement",
+    transfers,
+  };
+}
+
 function pickFile(value, sourceCommit = false) {
   return {
     sha256: value.sha256,

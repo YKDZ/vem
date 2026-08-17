@@ -1459,10 +1459,30 @@ export async function assembleInstalledAiTryOnAcceptanceFiles(options) {
   )
     throw new Error("ordinary sale support evidence is invalid");
   const sale = saleSupport.facts.sale;
-  const proof = readCanonicalJson(
-    join(options.windowsProofInputDirectory, "precutover-ai-proof.json"),
-    "trusted Windows proof",
-  );
+  const functionalIdentity = options.functionalIdentity;
+  if (functionalIdentity) {
+    for (const key of [
+      "modelPackSha256",
+      "runtimeDescriptorSha256",
+      "runtimeSha256",
+    ]) {
+      requireDigest(functionalIdentity[key], `${key}`);
+    }
+    if (!/^[a-f0-9]{40}$/.test(functionalIdentity.sourceCommit ?? ""))
+      throw new Error("functional AI source commit is invalid");
+  }
+  const proof = functionalIdentity
+    ? {
+        modelPack: { archive: { sha256: functionalIdentity.modelPackSha256 } },
+        resources: {
+          runtimeDescriptorSha256: functionalIdentity.runtimeDescriptorSha256,
+        },
+        candidate: { sourceCommit: functionalIdentity.sourceCommit },
+      }
+    : readCanonicalJson(
+        join(options.windowsProofInputDirectory, "precutover-ai-proof.json"),
+        "trusted Windows proof",
+      );
   const missingDegradation =
     validateMissingDegradationSupport(degradationSupport);
   const corruptDegradation = validateCorruptDegradationSupport(
@@ -1476,14 +1496,6 @@ export async function assembleInstalledAiTryOnAcceptanceFiles(options) {
     "verified AI owner recovery facts",
   );
   validateVerifiedOwnerRecoverySupport(recoverySupport, proof);
-  const candidateManifest = readCanonicalJson(
-    join(options.candidateInputDirectory, "candidate-manifest.json"),
-    "candidate manifest",
-    { trailingNewline: false },
-  );
-  const candidateManifestRaw = readFileSync(
-    join(options.candidateInputDirectory, "candidate-manifest.json"),
-  );
   const contract = readCanonicalJson(
     resolve(
       dirname(fileURLToPath(import.meta.url)),
@@ -1496,10 +1508,16 @@ export async function assembleInstalledAiTryOnAcceptanceFiles(options) {
       attempts,
       artifactRoot: options.artifactRoot,
       identities: {
-        aiRuntime: proof.resources.runtimeDescriptorSha256,
+        aiRuntime: functionalIdentity
+          ? functionalIdentity.runtimeDescriptorSha256
+          : proof.resources.runtimeDescriptorSha256,
         contract: contract.bundleDigest,
-        modelPack: proof.modelPack.archive.sha256,
-        runtime: proof.candidate.subjectSha256,
+        modelPack: functionalIdentity
+          ? functionalIdentity.modelPackSha256
+          : proof.modelPack.archive.sha256,
+        runtime: functionalIdentity
+          ? functionalIdentity.runtimeSha256
+          : proof.candidate.subjectSha256,
       },
       saleInput: null,
       skipAiRss: isVmAcceptanceAiRssSkipEnabled(),
@@ -1509,12 +1527,24 @@ export async function assembleInstalledAiTryOnAcceptanceFiles(options) {
   );
   result.report.degradations.missingPack = missingDegradation;
   result.report.degradations.corruptPack = corruptDegradation;
-  if (
-    candidateManifest.sourceCommit !== proof.candidate.sourceCommit ||
-    proof.candidate.embeddedManifestSha256 !== sha256(candidateManifestRaw) ||
-    sale.ok !== true
-  )
+  if (!functionalIdentity) {
+    const candidateManifest = readCanonicalJson(
+      join(options.candidateInputDirectory, "candidate-manifest.json"),
+      "candidate manifest",
+      { trailingNewline: false },
+    );
+    const candidateManifestRaw = readFileSync(
+      join(options.candidateInputDirectory, "candidate-manifest.json"),
+    );
+    if (
+      candidateManifest.sourceCommit !== proof.candidate.sourceCommit ||
+      proof.candidate.embeddedManifestSha256 !== sha256(candidateManifestRaw) ||
+      sale.ok !== true
+    )
+      throw new Error("installed AI assembly input identity mismatched");
+  } else if (sale.ok !== true) {
     throw new Error("installed AI assembly input identity mismatched");
+  }
   writeExclusiveCanonical(options.outPath, result.report);
   return result;
 }
@@ -1755,8 +1785,17 @@ async function main() {
   }
   return assembleInstalledAiTryOnAcceptanceFiles({
     artifactRoot: options["artifact-root"],
-    candidateInputDirectory: options["candidate-input-directory"],
     corruptDegradationPath: options["corrupt-degradation"],
+    functionalIdentity:
+      options.functional === "true"
+        ? {
+            modelPackSha256: options["model-sha"],
+            runtimeDescriptorSha256: options["runtime-descriptor-sha"],
+            runtimeSha256: options["runtime-sha"],
+            sourceCommit: options["source-commit"],
+          }
+        : null,
+    candidateInputDirectory: options["candidate-input-directory"],
     longAttemptPath: options["long-attempt"],
     missingDegradationPath: options["missing-degradation"],
     recoveryPath: options.recovery,

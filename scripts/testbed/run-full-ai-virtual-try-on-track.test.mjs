@@ -852,6 +852,27 @@ test("AI virtual try-on runner accepts only approved external input identities",
   assert.doesNotMatch(source, /camera|captureUserMedia|getUserMedia/i);
 });
 
+test("supports the ADR 0084 functional AI input without trusted pipeline prerequisites", () => {
+  const source = readFileSync(
+    new URL("./run-full-ai-virtual-try-on-track.ps1", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /\$functional = if \(\$null -eq \$inputs\.functional\) \{ \$false \} else \{ \[bool\]\$inputs\.functional \}/,
+  );
+  assert.match(
+    source,
+    /if \(-not \$functional\) \{[\s\S]*candidate exact-four input/,
+  );
+  assert.match(
+    source,
+    /if \(-not \$functional\) \{[\s\S]*windows-proof-input-directory/,
+  );
+  assert.match(source, /"--functional", "true"[\s\S]*"--model-sha"/);
+  assert.doesNotMatch(source, /"--model-pack-sha"/);
+});
+
 test("assembles passed regional sidecars and worker-failure support without calibration", async () => {
   process.env.NODE_ENV = "test";
   const root = mkdtempSync(join(tmpdir(), "vem-ai-assembly-"));
