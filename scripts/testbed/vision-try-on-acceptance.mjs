@@ -2401,20 +2401,33 @@ export async function waitForFreshVisionPresenceArrival(
   };
 }
 
+let idleKeepaliveInFlight = false;
+
 async function dispatchIdleTouch(client) {
+  if (idleKeepaliveInFlight) return;
+  idleKeepaliveInFlight = true;
   try {
-    await client.send("Input.dispatchTouchEvent", {
-      type: "touchStart",
-      touchPoints: [
-        { x: 540, y: 960, radiusX: 1, radiusY: 1, force: 1, id: 1 },
-      ],
+    // Mouse input still produces `pointerdown`, which the Machine's touch
+    // session tracks, and cannot corrupt CDP's active-touch state the way a
+    // keepalive touch racing a physical click can.
+    await client.send("Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: 540,
+      y: 960,
+      button: "left",
+      clickCount: 1,
     });
-    await client.send("Input.dispatchTouchEvent", {
-      type: "touchEnd",
-      touchPoints: [],
+    await client.send("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x: 540,
+      y: 960,
+      button: "left",
+      clickCount: 1,
     });
   } catch {
     // A keepalive touch is best-effort; it must never fail the acceptance.
+  } finally {
+    idleKeepaliveInFlight = false;
   }
 }
 
