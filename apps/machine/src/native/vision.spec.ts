@@ -1,5 +1,6 @@
 import { VISION_V2_RUNTIME_IDENTITY } from "@vem/shared";
 import { visionV2ServerFixtures } from "@vem/shared/fixtures/vision-v2";
+import { readFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import {
   startMockVisionServer,
@@ -142,6 +143,17 @@ describe("vision native browser fallback - self-check", () => {
 });
 
 describe("vision native garment adjustment", () => {
+  it("gives AI attempts a longer terminal timeout than Fast", () => {
+    const source = readFileSync(
+      new URL("./vision.ts", import.meta.url),
+      "utf8",
+    );
+    expect(source).toMatch(/AI_ATTEMPT_TERMINAL_TIMEOUT_MS = 600_000/);
+    expect(source).toMatch(
+      /terminalTimer = setTimeout[\s\S]*input\.mode === "ai"[\s\S]*AI_ATTEMPT_TERMINAL_TIMEOUT_MS[\s\S]*options\.fastAttemptTimeoutMs/,
+    );
+  });
+
   it("accepts a V2 result.adjusted message after an adjust request", async () => {
     const http = createHttpServer();
     const wss = new WebSocketServer({ server: http, path: "/ws" });

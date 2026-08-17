@@ -108,6 +108,7 @@ export type VisionTryOnAttempt = VisionFastAttempt;
 
 const CONNECT_TIMEOUT_MS = 3000;
 const FAST_ATTEMPT_TERMINAL_TIMEOUT_MS = 30_000;
+const AI_ATTEMPT_TERMINAL_TIMEOUT_MS = 600_000;
 const PING_INTERVAL_MS = 10_000;
 const PONG_TIMEOUT_MS = 5_000;
 const RECONNECT_BASE_DELAY_MS = 1_000;
@@ -562,9 +563,14 @@ export async function openVisionTryOnAttempt(
     socket.addEventListener("message", onMessage);
     socket.addEventListener("close", onClose);
     socket.addEventListener("error", onError);
-    terminalTimer = setTimeout(() => {
-      emitCanceled("timeout");
-    }, options.fastAttemptTimeoutMs);
+    terminalTimer = setTimeout(
+      () => {
+        emitCanceled("timeout");
+      },
+      input.mode === "ai"
+        ? AI_ATTEMPT_TERMINAL_TIMEOUT_MS
+        : options.fastAttemptTimeoutMs,
+    );
     if (signal?.aborted) throw new Error("Vision V2 Fast attempt aborted");
     socket.send(JSON.stringify(startMessage));
     const capture = (): boolean => {
