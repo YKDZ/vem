@@ -635,7 +635,8 @@ export function validateFullWorkflowEvidenceManifest(manifest) {
             track.primaryReason.trim() === "" ||
             !Array.isArray(track?.diagnostics) ||
             track.diagnostics.length === 0
-          : typeof track?.machineRuntimeTrace !== "string" ||
+          : (typeof track?.machineRuntimeTrace !== "string" &&
+              track?.machineRuntimeTrace !== null) ||
             !Array.isArray(track?.logs) ||
             !Array.isArray(track?.screenshots))
       ) {
