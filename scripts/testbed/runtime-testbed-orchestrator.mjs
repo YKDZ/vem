@@ -1789,15 +1789,20 @@ async function executeRun(options, config) {
           },
         });
       }
+      const coreSummaryPath = await findFile(
+        join(compact, `pass-${pass}`),
+        "full-workflow-tracks.json",
+      );
+      if (!coreSummaryPath) {
+        throw new Error("guest did not publish validated Vision core identity");
+      }
+      const guestSummary = JSON.parse(await readFile(coreSummaryPath, "utf8"));
+      const guestAiInputIdentity = guestSummary?.identity?.aiVirtualTryOn?.input;
       if (aiAcceptanceInputs) {
-        const identityPath = await findFile(
-          join(compact, `pass-${pass}`),
-          "validated-input-identity.json",
-        );
-        if (!identityPath) {
+        if (!guestAiInputIdentity) {
           throw new Error("guest did not publish validated AI input identity");
         }
-        const guestIdentity = await readFile(identityPath, "utf8");
+        const guestIdentity = JSON.stringify(guestAiInputIdentity);
         if (options.mode === "full" && pass === 1) {
           passOneGuestAiIdentity = guestIdentity;
         } else if (
@@ -1809,16 +1814,8 @@ async function executeRun(options, config) {
           );
         }
       }
-      const coreSummaryPath = await findFile(
-        join(compact, `pass-${pass}`),
-        "full-workflow-tracks.json",
-      );
-      if (!coreSummaryPath) {
-        throw new Error("guest did not publish validated Vision core identity");
-      }
       const guestCoreIdentity = JSON.stringify(
-        JSON.parse(await readFile(coreSummaryPath, "utf8"))?.identity
-          ?.visionCore,
+        guestSummary?.identity?.visionCore,
       );
       if (
         guestCoreIdentity !==
