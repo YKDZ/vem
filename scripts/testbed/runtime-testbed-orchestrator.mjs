@@ -1658,7 +1658,7 @@ async function executeRun(options, config) {
           ...(aiAcceptanceInputs
             ? {
                 aiAcceptanceAuthorityReceipt:
-                  aiAcceptanceInputs.acceptanceAuthorityReceipt.value,
+                  aiAcceptanceInputs.acceptanceAuthorityReceipt?.value ?? null,
               }
             : {}),
         },
