@@ -4192,27 +4192,18 @@ async function collectInstalledFieldRegressionChecks({
   };
 
   const activateFastTryOnToRoute = async (routePattern, label) => {
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      try {
-        await activateVisibleSelector(client, '[data-test="try-on-fast"]', {
-          kind: "touch",
-          timeoutMs: 15_000,
-        });
-        await waitForRoute(client, routePattern, {
-          timeoutMs: 10_000,
-          pollMs: 250,
-        });
-        return;
-      } catch (error) {
-        if (attempt + 1 >= 3) {
-          error.message = `${label} did not enter the Fast try-on route: ${error.message}`;
-          throw error;
-        }
-        // Under full-serial load a synthetic touch can be dropped by the
-        // WebView; re-probe and re-click instead of failing the whole track.
-        await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
-      }
-    }
+    // Touch dispatch has proven lossy in the WebView under full-serial load.
+    // Mouse input is the reliable CDP stand-in and preserves the click
+    // semantics for the kiosk buttons; the expected route is still the
+    // condition we wait for, not a retry loop.
+    await activateVisibleSelector(client, '[data-test="try-on-fast"]', {
+      kind: "mouse",
+      timeoutMs: 15_000,
+    });
+    await waitForRoute(client, routePattern, {
+      timeoutMs: 30_000,
+      pollMs: 250,
+    });
   };
 
   // ---- Manual capture control is exposed and the attempt completes ----
