@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  aria2cOnce,
   downloadArtifactParallel,
   findArtifact,
   ghArtifactUrl,
@@ -35,6 +36,31 @@ function runProcessFixture(behavior) {
     return behavior(command, args, options);
   };
 }
+
+test("aria2cOnce splits an absolute output into --dir and --out", async () => {
+  let observedArgs = null;
+  const runProcess = runProcessFixture(async (_command, args, _options) => {
+    observedArgs = args;
+    return { code: 0, stdout: "", stderr: "" };
+  });
+  await aria2cOnce({
+    url: "https://example.test/artifact.zip",
+    output: "/opt/candidate/actions-artifact.zip",
+    connections: 16,
+    runProcess,
+  });
+  assert.ok(observedArgs);
+  const dirIndex = observedArgs.indexOf("--dir");
+  const outIndex = observedArgs.indexOf("--out");
+  assert.ok(dirIndex >= 0);
+  assert.ok(outIndex >= 0);
+  assert.equal(observedArgs[dirIndex + 1], "/opt/candidate");
+  assert.equal(observedArgs[outIndex + 1], "actions-artifact.zip");
+  assert.equal(
+    observedArgs.includes("/opt/candidate/actions-artifact.zip"),
+    false,
+  );
+});
 
 test("parseDownloadOptions validates the download contract", () => {
   const options = parseDownloadOptions([

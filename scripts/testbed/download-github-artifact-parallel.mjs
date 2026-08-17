@@ -20,7 +20,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, stat } from "node:fs/promises";
-import { dirname, isAbsolute } from "node:path";
+import { basename, dirname, isAbsolute } from "node:path";
 
 const MAX_ARIA2_CONNECTIONS = 16;
 const DEFAULT_MAX_URL_REFRESHES = 40;
@@ -188,6 +188,11 @@ export async function aria2cOnce({
   connections,
   runProcess = run,
 }) {
+  // aria2c's --out is always relative to --dir; an absolute --out would be
+  // re-rooted under the process cwd and the byte-count check would loop
+  // forever. Split an absolute target into --dir + basename instead.
+  const dir = dirname(output);
+  const name = basename(output);
   return runProcess(
     "aria2c",
     [
@@ -203,8 +208,10 @@ export async function aria2cOnce({
       "--timeout=30",
       "--connect-timeout=15",
       "--retry-wait=2",
-      "-o",
-      output,
+      "--dir",
+      dir,
+      "--out",
+      name,
       url,
     ],
     { capture: true },
