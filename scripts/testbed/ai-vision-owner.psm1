@@ -150,6 +150,7 @@ function Stop-TestbedAiVisionOwner([string]$AppDirectory, [string]$Configuration
   $initial = Get-TestbedCanonicalVisionProcesses $AppDirectory $ConfigurationPath
   $initialCanonical = @($initial.managed) + @($initial.unknown)
   $owned = @(Get-TestbedProcessTreeIds @($initialCanonical | ForEach-Object { [int]$_.ProcessId }))
+  $canonicalExecutable = [IO.Path]::GetFullPath((Join-Path $AppDirectory "vending-vision.exe"))
   Stop-ScheduledTask -TaskName "VEMVisionRuntime" -ErrorAction SilentlyContinue
   Stop-TestbedCanonicalVision $AppDirectory $ConfigurationPath
   $deadline = [DateTime]::UtcNow.AddSeconds(60)
@@ -160,11 +161,18 @@ function Stop-TestbedAiVisionOwner([string]$AppDirectory, [string]$Configuration
       Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction SilentlyContinue
     }
     $remaining = @($owned | Where-Object { $null -ne (Get-Process -Id $_ -ErrorAction SilentlyContinue) })
+    $forkChildren = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+      $_.ExecutablePath -and [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonicalExecutable -and
+        $_.CommandLine -and $_.CommandLine.Contains("--multiprocessing-fork")
+    })
+    foreach ($fork in $forkChildren) {
+      Stop-Process -Id ([int]$fork.ProcessId) -Force -ErrorAction SilentlyContinue
+    }
     $listeners = @(Get-NetTCPConnection -LocalAddress "127.0.0.1" -LocalPort 7892 -State Listen -ErrorAction SilentlyContinue)
     foreach ($listener in $listeners) {
       Stop-Process -Id ([int]$listener.OwningProcess) -Force -ErrorAction SilentlyContinue
     }
-    if (@($processes.managed).Count + @($processes.unknown).Count -eq 0 -and $remaining.Count -eq 0 -and $listeners.Count -eq 0) { return }
+    if (@($processes.managed).Count + @($processes.unknown).Count + $forkChildren.Count -eq 0 -and $remaining.Count -eq 0 -and $listeners.Count -eq 0) { return }
     Start-Sleep -Milliseconds 100
   } while ([DateTime]::UtcNow -lt $deadline)
   throw "managed Vision owner did not become physically dead before restart"
