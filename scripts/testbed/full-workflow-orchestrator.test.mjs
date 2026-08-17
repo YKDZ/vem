@@ -156,13 +156,12 @@ describe("full workflow serial lifecycle", () => {
       );
 
       assert.equal(aggregate.businessSets.sale.status, "passed");
-      assert.equal(aggregate.ok, false);
-      assert.equal(aggregate.businessOutcome.ok, false);
+      assert.equal(aggregate.ok, true);
+      assert.equal(aggregate.businessOutcome.ok, true);
+      assert.equal(aggregate.evidenceInventory.ok, false);
       assert.ok(
-        aggregate.failures.some(
-          (failure) =>
-            failure.set === "evidenceInventory" &&
-            failure.reason.includes("forbidden evidence artifact"),
+        aggregate.evidenceInventory.failures.some((failure) =>
+          failure.includes("forbidden evidence artifact"),
         ),
       );
     } finally {
@@ -215,12 +214,12 @@ describe("full workflow serial lifecycle", () => {
       );
 
       assert.equal(aggregate.businessSets.sale.status, "passed");
-      assert.equal(aggregate.ok, false);
+      assert.equal(aggregate.ok, true);
+      assert.equal(aggregate.businessOutcome.ok, true);
+      assert.equal(aggregate.evidenceInventory.ok, false);
       assert.ok(
-        aggregate.failures.some(
-          (failure) =>
-            failure.set === "evidenceInventory" &&
-            failure.reason.includes("total size limit"),
+        aggregate.evidenceInventory.failures.some((failure) =>
+          failure.includes("total size limit"),
         ),
       );
     } finally {

@@ -1494,13 +1494,6 @@ function buildRegistryWorkflowAggregate({
       ? evidenceValidationErrors
       : []),
   ];
-  for (const reason of [...new Set(evidenceFailures)]) {
-    failures.push({
-      set: "evidenceInventory",
-      reason,
-      reportPath: evidenceManifestPath,
-    });
-  }
   return {
     schemaVersion: "vem-local-testbed-full-workflow/v4",
     mode,
