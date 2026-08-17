@@ -873,6 +873,13 @@ test("supports the ADR 0084 functional AI input without trusted pipeline prerequ
   assert.doesNotMatch(source, /"--model-pack-sha"/);
 });
 
+test("AI Vision owner stop waits for physical death and kills the 7892 listener owner", () => {
+  const source = readFileSync(ownerModule, "utf8");
+  assert.match(source, /AddSeconds\(60\)/);
+  assert.match(source, /\[int\]\$listener\.OwningProcess/);
+  assert.match(source, /did not become physically dead before restart/);
+});
+
 test("assembles passed regional sidecars and worker-failure support without calibration", async () => {
   process.env.NODE_ENV = "test";
   const root = mkdtempSync(join(tmpdir(), "vem-ai-assembly-"));
