@@ -3097,6 +3097,29 @@ async function readInstalledVisionLogTail(lines = 120) {
   return result?.stdout ?? "";
 }
 
+export async function restartInstalledVisionWithRetry({
+  handoff,
+  attempts = 2,
+  startRuntime = startInstalledVisionRuntime,
+  waitOnline = waitForVisionOnline,
+  stopRuntime = stopVisionRuntime,
+  waitPortRelease = () => waitForVisionPortRelease(),
+}) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    await startRuntime();
+    try {
+      return await waitOnline(handoff, 45_000);
+    } catch (error) {
+      if (attempt + 1 >= attempts) throw error;
+      // The scheduled-task launcher can race a stale handle or a lingering
+      // port release; one bounded stop/start retry absorbs that transient
+      // state before declaring the restart failed.
+      await stopRuntime();
+      await waitPortRelease();
+    }
+  }
+}
+
 async function probeLoopbackPortRelease(port, host = "127.0.0.1") {
   return await new Promise((resolve) => {
     const server = createServer();
@@ -4395,8 +4418,7 @@ async function collectInstalledFieldRegressionChecks({
       path: await readRecordedFrontFixturePath(),
     });
     await waitForVisionPortRelease();
-    await startInstalledVisionRuntime();
-    await waitForVisionOnline(handoff, 45_000);
+    await restartInstalledVisionWithRetry({ handoff });
     fixtureTrace.push({
       step: "after-start",
       path: await readRecordedFrontFixturePath(),
@@ -4405,8 +4427,7 @@ async function collectInstalledFieldRegressionChecks({
       await setRecordedFrontFixture("front-vertical-unstable.mp4");
       await stopVisionRuntime();
       await waitForVisionPortRelease();
-      await startInstalledVisionRuntime();
-      await waitForVisionOnline(handoff, 45_000);
+      await restartInstalledVisionWithRetry({ handoff });
       fixtureTrace.push({
         step: "after-retry",
         path: await readRecordedFrontFixturePath(),
@@ -4461,8 +4482,7 @@ async function collectInstalledFieldRegressionChecks({
   await setRecordedFrontFixture("front-vertical.mp4");
   await stopVisionRuntime();
   await waitForVisionPortRelease();
-  await startInstalledVisionRuntime();
-  await waitForVisionOnline(handoff, 45_000);
+  await restartInstalledVisionWithRetry({ handoff });
 
   return { checks };
 }
@@ -5254,8 +5274,7 @@ async function runVisionTryOnAcceptance(options) {
   }
   if (realVisionStopped) {
     try {
-      await startInstalledVisionRuntime();
-      const daemonVision = await waitForVisionOnline(handoff, 45_000);
+      const daemonVision = await restartInstalledVisionWithRetry({ handoff });
       const restoredBinding = await collectVisionInstalledBinding();
       const restoredBindingSummary =
         validateVisionInstalledBinding(restoredBinding);

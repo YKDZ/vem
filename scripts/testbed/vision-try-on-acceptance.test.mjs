@@ -41,6 +41,7 @@ import {
   runFastTryOnOwnerAttempts,
   readVisionV2ContractIdentity,
   READ_TRY_ON_LIFECYCLE_EXPRESSION,
+  restartInstalledVisionWithRetry,
   startVisionMockScenario,
   stopVisionChild,
   validateRecommendationProjection,
@@ -1656,6 +1657,62 @@ describe("vision try-on acceptance script", () => {
     );
     assert.match(source, /runPowerShell\(command, "stopping Vision runtime"\)/);
     assert.match(source, /runPowerShell\(command, "starting Vision runtime"\)/);
+  });
+
+  it("retries a bounded Vision restart after a transient startup failure", async () => {
+    const calls = [];
+    let onlineAttempts = 0;
+    const restored = { visionStatus: { online: true } };
+    const value = await restartInstalledVisionWithRetry({
+      handoff: {},
+      attempts: 2,
+      startRuntime: async () => calls.push("start"),
+      waitOnline: async () => {
+        onlineAttempts += 1;
+        calls.push(`online:${onlineAttempts}`);
+        if (onlineAttempts === 1) throw new Error("stale handle");
+        return restored;
+      },
+      stopRuntime: async () => calls.push("stop"),
+      waitPortRelease: async () => calls.push("port"),
+    });
+    assert.deepEqual(calls, [
+      "start",
+      "online:1",
+      "stop",
+      "port",
+      "start",
+      "online:2",
+    ]);
+    assert.equal(value, restored);
+  });
+
+  it("throws after the final restart attempt instead of retrying forever", async () => {
+    const calls = [];
+    let onlineAttempts = 0;
+    await assert.rejects(
+      restartInstalledVisionWithRetry({
+        handoff: {},
+        attempts: 2,
+        startRuntime: async () => calls.push("start"),
+        waitOnline: async () => {
+          onlineAttempts += 1;
+          calls.push(`online:${onlineAttempts}`);
+          throw new Error("still offline");
+        },
+        stopRuntime: async () => calls.push("stop"),
+        waitPortRelease: async () => calls.push("port"),
+      }),
+      /still offline/,
+    );
+    assert.deepEqual(calls, [
+      "start",
+      "online:1",
+      "stop",
+      "port",
+      "start",
+      "online:2",
+    ]);
   });
 
   it("proves matched, manual, online-unmatched, and unavailable recommendation states", () => {
