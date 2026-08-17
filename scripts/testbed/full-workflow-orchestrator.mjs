@@ -54,6 +54,8 @@ const STOCK_READY_TIMEOUT_MS = 30_000;
 const PLATFORM_STOCK_READY_TIMEOUT_MS = 30_000;
 const STOCK_ATTESTATION_READY_TIMEOUT_MS = 180_000;
 const HARDWARE_READY_TIMEOUT_MS = 30_000;
+const RUNTIME_BARRIER_TIMEOUT_MS = 60_000;
+const RUNTIME_BARRIER_POLL_MS = 1_000;
 
 // This is the one canonical registry for business acceptance.
 export const FULL_WORKFLOW_TRACK_DESCRIPTORS = BUSINESS_CHECK_REGISTRY;
@@ -176,6 +178,35 @@ export function reloadRuntimeHandoff(handoffPath, handoff) {
   if (!current) throw new Error("runtime handoff is unavailable");
   Object.assign(handoff, current);
   return handoff;
+}
+
+export async function waitForInstalledRuntimeBarrier(
+  handoff,
+  {
+    discoverTarget = discoverCanonicalMachineUiTarget,
+    timeoutMs = RUNTIME_BARRIER_TIMEOUT_MS,
+    pollMs = RUNTIME_BARRIER_POLL_MS,
+  } = {},
+) {
+  const endpoint = handoff?.cdp?.endpoint ?? "http://127.0.0.1:9222";
+  const deadline = Date.now() + timeoutMs;
+  let lastError = null;
+  while (Date.now() < deadline) {
+    try {
+      const target = await discoverTarget({
+        endpoint,
+        timeoutMs: Math.min(5_000, Math.max(250, deadline - Date.now())),
+      });
+      return target;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, pollMs));
+    }
+  }
+  throw (
+    lastError ??
+    new Error("Machine UI CDP target did not become available before the track")
+  );
 }
 
 function commandForTrack(track, { mode, guestInputPath, handoffPath }) {
@@ -1439,6 +1470,7 @@ export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
           handoffPath: options.handoffPath,
           handoff,
         });
+        await waitForInstalledRuntimeBarrier(refreshed);
         await operations?.prepareTrack();
         const fixtureAllocation = fixtureAllocationForTrack(
           guestInput.fixtureAllocation,

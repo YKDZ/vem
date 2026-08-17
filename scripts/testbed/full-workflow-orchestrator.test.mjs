@@ -26,6 +26,7 @@ import {
   refreshDaemonReadyHandoff,
   runFullWorkflowOrchestrator,
   runSerialTrackLifecycle,
+  waitForInstalledRuntimeBarrier,
   waitForPlatformFixtureStock,
   waitForBusinessHardwareReady,
 } from "./full-workflow-orchestrator.mjs";
@@ -1916,5 +1917,44 @@ describe("full workflow serial lifecycle", () => {
       '[data-test="result-return-catalog"]:not(:disabled)',
       "wait:#/catalog",
     ]);
+  });
+});
+
+describe("full workflow runtime barrier", () => {
+  it("waits for the Machine UI CDP target to reappear before a track", async () => {
+    let attempts = 0;
+    const target = { id: "target-1" };
+    const result = await waitForInstalledRuntimeBarrier(
+      { cdp: { endpoint: "http://127.0.0.1:9222" } },
+      {
+        timeoutMs: 200,
+        pollMs: 1,
+        discoverTarget: async ({ endpoint, timeoutMs: discoveryTimeoutMs }) => {
+          attempts += 1;
+          assert.equal(endpoint, "http://127.0.0.1:9222");
+          assert.ok(discoveryTimeoutMs >= 1);
+          if (attempts < 3) throw new Error("target not ready yet");
+          return target;
+        },
+      },
+    );
+    assert.equal(result, target);
+    assert.equal(attempts, 3);
+  });
+
+  it("reports the last discovery error when the target never appears", async () => {
+    await assert.rejects(
+      waitForInstalledRuntimeBarrier(
+        { cdp: { endpoint: "http://127.0.0.1:9222" } },
+        {
+          timeoutMs: 50,
+          pollMs: 1,
+          discoverTarget: async () => {
+            throw new Error("exactly one strict tauri target; found 0");
+          },
+        },
+      ),
+      /found 0/,
+    );
   });
 });
