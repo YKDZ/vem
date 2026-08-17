@@ -920,6 +920,9 @@ export async function runInstalledAiAttemptPhase(options) {
   if (guestInput.aiVirtualTryOn?.skipAiRss === true) {
     process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS = "1";
   }
+  if (guestInput.aiVirtualTryOn?.keepAiActive === true) {
+    process.env.VEM_VM_ACCEPTANCE_KEEP_AI_ACTIVE = "1";
+  }
   const handoff = readJson(options.handoffPath, "runtime handoff");
   const target = await discoverMachineUiTarget({
     endpoint: handoff.cdp.endpoint,
