@@ -244,7 +244,7 @@ try {
   } | ConvertTo-Json -Compress -Depth 8 | ForEach-Object { [IO.File]::WriteAllText($verifiedRecoveryFacts, "$_`n", [Text.UTF8Encoding]::new($false)) }
   $assemble = @("assemble", "--artifact-root", $artifactRoot)
   if ($functional) {
-    $assemble += @("--functional", "true", "--runtime-sha", [string]$installedVision.runtimeArchive.sha256, "--runtime-descriptor-sha", $runtimeDescriptorSha256, "--model-sha", $modelPackSha256, "--source-commit", $sourceCommit)
+    $assemble += @("--functional", "true", "--runtime-sha", [string]$installedVision.runtimeArchive.sha256, "--runtime-descriptor-sha", $runtimeDescriptorSha256, "--model-sha", $modelPackSha256, "--skip-ai-rss", "true", "--source-commit", $sourceCommit)
   } else {
     $assemble += @("--candidate-input-directory", [string]$inputs.candidateInputDirectory, "--windows-proof-input-directory", [string]$inputs.windowsProofInputDirectory)
   }

@@ -1030,7 +1030,9 @@ export async function runInstalledAiAttemptPhase(options) {
       },
       onInitialStarted: () => markStarted(),
     });
-    const skipAiRss = isVmAcceptanceAiRssSkipEnabled();
+    const skipAiRss =
+      isVmAcceptanceAiRssSkipEnabled() ||
+      guestInput.aiVirtualTryOn?.skipAiRss === true;
     const sampler = (async () => {
       await started;
       return sampleInstalledAiWorkerPeakRss(() => completed);
@@ -1530,7 +1532,9 @@ export async function assembleInstalledAiTryOnAcceptanceFiles(options) {
           : proof.candidate.subjectSha256,
       },
       saleInput: null,
-      skipAiRss: isVmAcceptanceAiRssSkipEnabled(),
+      skipAiRss:
+        isVmAcceptanceAiRssSkipEnabled() ||
+        options.functionalIdentity?.skipAiRss === true,
       workerFailure: workerFailureDegradation,
     },
     { ordinarySale: async () => sale },
@@ -1802,6 +1806,7 @@ async function main() {
             modelPackSha256: options["model-sha"],
             runtimeDescriptorSha256: options["runtime-descriptor-sha"],
             runtimeSha256: options["runtime-sha"],
+            skipAiRss: options["skip-ai-rss"] === "true",
             sourceCommit: options["source-commit"],
           }
         : null,
