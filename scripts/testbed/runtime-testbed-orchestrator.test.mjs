@@ -280,7 +280,6 @@ describe("runtime testbed scheduler contract", () => {
     );
   });
 
-
   it("requires independent host-local Vision core artifacts before any AI input", () => {
     assert.throws(
       () =>

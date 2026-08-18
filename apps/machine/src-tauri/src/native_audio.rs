@@ -144,8 +144,7 @@ impl DefaultAudioOutputSession for WindowsDefaultAudioOutputSession {
     }
 
     fn is_unhealthy(&self) -> bool {
-        self.unhealthy.load(Ordering::Acquire)
-            || self.stream_errors.load(Ordering::Acquire) >= 2
+        self.unhealthy.load(Ordering::Acquire) || self.stream_errors.load(Ordering::Acquire) >= 2
     }
 }
 

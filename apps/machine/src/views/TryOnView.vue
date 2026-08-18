@@ -278,10 +278,7 @@ function scaleGarment(delta: number): void {
         >
           − 缩小
         </button>
-        <span
-          class="try-on-scale-value"
-          data-test="try-on-scale-value"
-        >
+        <span class="try-on-scale-value" data-test="try-on-scale-value">
           {{ garmentScalePercent }}%
         </span>
         <button

@@ -918,17 +918,15 @@ export async function runInstalledAiAttemptPhase(options) {
   if (existsSync(validatedInputIdentityPath)) {
     writeFileSync(
       validatedInputIdentityPath,
-      canonicalBytes(
-        {
-          facts: {
-            validatedInputIdentity: JSON.parse(
-              readFileSync(validatedInputIdentityPath, "utf8"),
-            ),
-          },
-          kind: "installed-runtime",
-          schemaVersion: AI_SUPPORT_EVIDENCE_SCHEMA,
+      canonicalBytes({
+        facts: {
+          validatedInputIdentity: JSON.parse(
+            readFileSync(validatedInputIdentityPath, "utf8"),
+          ),
         },
-      ),
+        kind: "installed-runtime",
+        schemaVersion: AI_SUPPORT_EVIDENCE_SCHEMA,
+      }),
     );
   }
   writeFileSync(

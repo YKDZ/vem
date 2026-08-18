@@ -85,9 +85,7 @@ export async function collectInstalledAiDegradationEvidence({
       };
     } catch (error) {
       lastError = error;
-      await new Promise((resolvePromise) =>
-        setTimeout(resolvePromise, 500),
-      );
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
     }
   }
   throw lastError ?? new Error("installed AI degradation evidence timed out");

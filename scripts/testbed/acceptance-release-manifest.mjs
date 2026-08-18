@@ -167,7 +167,10 @@ function validateIdentity(identity) {
     "AI input model archive",
   );
   if (authority !== null) {
-    const modelArchive = required(authority.modelPack.archive, "model pack archive");
+    const modelArchive = required(
+      authority.modelPack.archive,
+      "model pack archive",
+    );
     if (
       inputModelArchive.sha256 !== modelArchive.sha256 ||
       inputModelArchive.byteSize !== modelArchive.byteSize

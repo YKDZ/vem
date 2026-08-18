@@ -840,10 +840,7 @@ test("AI installed attempts wait for the same 10-minute product terminal window"
   );
   const entry = readFileSync(installedEntry, "utf8");
   assert.match(timeouts, /AI_ATTEMPT_ACCEPTANCE_TIMEOUT_MS = 600_000/);
-  assert.match(
-    entry,
-    /timeoutMs: AI_ATTEMPT_ACCEPTANCE_TIMEOUT_MS/,
-  );
+  assert.match(entry, /timeoutMs: AI_ATTEMPT_ACCEPTANCE_TIMEOUT_MS/);
 });
 
 test("AI Vision owner stop waits for physical death and kills the 7892 listener owner", () => {

@@ -66,7 +66,9 @@ function memberName(value, label, nested) {
   if (
     name.startsWith("/") ||
     name.includes("\\") ||
-    name.split("/").some((part) => part === "" || part === "." || part === "..") ||
+    name
+      .split("/")
+      .some((part) => part === "" || part === "." || part === "..") ||
     (!nested && name.includes("/"))
   ) {
     fail(`${label} is not a canonical relative file name`);

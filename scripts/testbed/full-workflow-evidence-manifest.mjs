@@ -474,8 +474,7 @@ export function buildFullWorkflowEvidenceManifest({ tracks = [] } = {}) {
     }
     for (const path of artifactFiles) {
       const extension = extname(path).toLowerCase();
-      const allowedWav =
-        track === "presenceAndAudio" && extension === ".wav";
+      const allowedWav = track === "presenceAndAudio" && extension === ".wav";
       if (
         track === "aiVirtualTryOn" &&
         ![".json", ".log", ".png"].includes(extension)
