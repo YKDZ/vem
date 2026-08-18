@@ -33,8 +33,12 @@ export async function runVisionExperienceSlice({
   await waitForCondition(
     "vision-ready",
     async () => {
-      const probe = await adapter.run("vision-ready");
-      return { ok: probe?.exitCode === 0, value: probe?.stdout ?? null };
+      try {
+        const probe = await adapter.run("vision-ready");
+        return { ok: probe?.exitCode === 0, value: probe?.stdout ?? null };
+      } catch {
+        return { ok: false, value: null };
+      }
     },
     { timeoutMs: Math.max(timeoutMs, 60_000), pollMs },
   );

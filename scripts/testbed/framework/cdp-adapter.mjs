@@ -149,7 +149,12 @@ export class CdpTestAdapter {
       };
     }
     if (command === "vision-ready") {
-      const response = await fetch(`${this.visionBaseUrl}/v2/runtime/roles`);
+      let response;
+      try {
+        response = await fetch(`${this.visionBaseUrl}/v2/runtime/roles`);
+      } catch {
+        return { exitCode: 1, stdout: "unreachable", stderr: "" };
+      }
       if (!response.ok) {
         return { exitCode: 1, stdout: "", stderr: await response.text() };
       }
