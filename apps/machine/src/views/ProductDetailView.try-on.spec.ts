@@ -147,7 +147,7 @@ describe("ProductDetailView try-on mode entries", () => {
 
     expect(
       both.querySelector('[data-test="try-on-fast"]')?.textContent,
-    ).toContain("Fast");
+    ).toContain("快速");
     expect(
       both.querySelector('[data-test="try-on-ai"]')?.textContent,
     ).toContain("AI");
