@@ -22,6 +22,13 @@ export async function runVisionExperienceSlice({
 }) {
   const fast = await runFastTryOnScenario(adapter, { timeoutMs, pollMs });
   const assertions = [...fast.assertions];
+  if (includeSelfHeal && manifest) {
+    const heal = await runObserverSelfHealScenario(adapter, manifest, {
+      timeoutMs,
+      pollMs,
+    });
+    assertions.push(...heal.assertions);
+  }
   if (includeGarmentScale) {
     const scale = await runGarmentScaleScenario(adapter, { timeoutMs, pollMs });
     assertions.push(...scale.assertions);
@@ -33,13 +40,6 @@ export async function runVisionExperienceSlice({
       pollMs,
     });
     assertions.push(...degradation.assertions);
-  }
-  if (includeSelfHeal && manifest) {
-    const heal = await runObserverSelfHealScenario(adapter, manifest, {
-      timeoutMs,
-      pollMs,
-    });
-    assertions.push(...heal.assertions);
   }
   return buildAcceptanceReport({
     runId: "slice-vision-experience",
