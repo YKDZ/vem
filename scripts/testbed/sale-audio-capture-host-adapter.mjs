@@ -550,12 +550,18 @@ function capturedQemuWav(bytes, startByteLength) {
   }
   const blockAlign = bytes.readUInt16LE(32);
   if (!blockAlign) return bytes;
-  const requestedStart = startByteLength >= 44 ? startByteLength : 44;
+  const requestedStart =
+    Number.isSafeInteger(startByteLength) && startByteLength >= 44
+      ? startByteLength
+      : 44;
   const alignedStart =
     44 + Math.ceil((requestedStart - 44) / blockAlign) * blockAlign;
-  if (alignedStart >= bytes.length) return bytes.subarray(0, 44);
+  if (alignedStart >= bytes.length || alignedStart < 44)
+    return bytes.subarray(0, 44);
   const dataLength =
     Math.floor((bytes.length - alignedStart) / blockAlign) * blockAlign;
+  if (!Number.isSafeInteger(dataLength) || dataLength < 0)
+    return bytes.subarray(0, 44);
   const captured = Buffer.alloc(44 + dataLength);
   bytes.copy(captured, 0, 0, 44);
   bytes.copy(captured, 44, alignedStart, alignedStart + dataLength);
