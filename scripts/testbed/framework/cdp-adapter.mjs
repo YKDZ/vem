@@ -26,8 +26,13 @@ const STATE_EXPRESSION = `(() => {
  * 与本地 fake 实现同一契约，visionExperience 切片代码无需区分环境。
  */
 export class CdpTestAdapter {
-  constructor({ endpoint = process.env.CDP_ENDPOINT ?? "http://127.0.0.1:19222" } = {}) {
+  constructor({
+    endpoint = process.env.CDP_ENDPOINT ?? "http://127.0.0.1:19222",
+    visionBaseUrl =
+      process.env.VISION_BASE_URL ?? "http://127.0.0.1:27892",
+  } = {}) {
     this.endpoint = endpoint;
+    this.visionBaseUrl = visionBaseUrl;
     this.client = null;
   }
 
@@ -92,6 +97,38 @@ export class CdpTestAdapter {
         pollMs: 100,
       });
       return { exitCode: 0, stdout: "clicked", stderr: "" };
+    }
+    if (command === "stop-vision-role") {
+      const roleIndex = args.indexOf("--role");
+      const role = roleIndex >= 0 ? args[roleIndex + 1] : args[0];
+      if (typeof role !== "string" || role.length === 0) {
+        throw new Error("stop-vision-role requires a role argument");
+      }
+      const response = await fetch(
+        `${this.visionBaseUrl}/v2/runtime/roles/${encodeURIComponent(role)}/stop`,
+        { method: "POST" },
+      );
+      if (!response.ok) {
+        return { exitCode: 1, stdout: "", stderr: await response.text() };
+      }
+      return { exitCode: 0, stdout: "stopped", stderr: "" };
+    }
+    if (command === "probe-vision-role") {
+      const role = args[0];
+      const response = await fetch(`${this.visionBaseUrl}/v2/runtime/roles`);
+      if (!response.ok) {
+        return { exitCode: 1, stdout: "", stderr: await response.text() };
+      }
+      const payload = await response.json();
+      const declared = (payload.roles ?? []).find(
+        (entry) => entry.name === role,
+      );
+      const dead = !declared || declared.pid === null || declared.ready === false;
+      return {
+        exitCode: dead ? 0 : 1,
+        stdout: dead ? "dead" : "alive",
+        stderr: "",
+      };
     }
     throw new Error(`CDP adapter does not implement command: ${command}`);
   }
