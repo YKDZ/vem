@@ -17,6 +17,8 @@ import { downloadArtifactParallel } from "./download-github-artifact-parallel.mj
 
 const DELIVERY_SCHEMA = "vending-vision-main-artifacts/v1";
 const DELIVERY_FILE = "vending-vision-main-artifacts.json";
+const CANDIDATE_SCHEMA = "vending-vision-candidate-artifact/v3";
+const CANDIDATE_MANIFEST = "candidate-manifest.json";
 
 async function sha256File(path) {
   const bytes = await readFile(path);
@@ -34,27 +36,52 @@ export async function writeHostConfigVisionCore(configPath, identities) {
   await rename(temporary, configPath);
 }
 
-/**
- * 从 CI 外层归档同步同提交的 runtime/fixture 产物对：
- * 解包、校验交付清单、登记身份并原子更新宿主配置。
- */
-export async function syncVisionArtifactsFromArchive({
-  archivePath,
+export async function syncVisionArtifactPair({
+  candidateArchivePath,
+  mainArchivePath,
   commit,
   outputRoot,
   hostConfigPath,
 }) {
   const staging = mkdtempSync(join(tmpdir(), "vem-vision-sync-"));
-  execFileSync("unzip", ["-o", archivePath, "-d", staging], {
+  execFileSync("unzip", ["-o", candidateArchivePath, "-d", join(staging, "candidate")], {
     stdio: "pipe",
   });
-  const files = await readdir(staging);
-  const deliveryName = files.find((name) => name === DELIVERY_FILE);
+  execFileSync("unzip", ["-o", mainArchivePath, "-d", join(staging, "main")], {
+    stdio: "pipe",
+  });
+  const candidateFiles = await readdir(join(staging, "candidate"));
+  const candidateManifestName = candidateFiles.find(
+    (name) => name === CANDIDATE_MANIFEST,
+  );
+  if (!candidateManifestName) {
+    throw new Error(`candidate archive is missing ${CANDIDATE_MANIFEST}`);
+  }
+  const candidateManifest = JSON.parse(
+    await readFile(join(staging, "candidate", candidateManifestName), "utf8"),
+  );
+  if (candidateManifest.schemaVersion !== CANDIDATE_SCHEMA) {
+    throw new Error("candidate manifest schema is invalid");
+  }
+  if (candidateManifest.sourceCommit !== commit) {
+    throw new Error(
+      `candidate manifest commit mismatch: expected ${commit}, got ${candidateManifest.sourceCommit}`,
+    );
+  }
+  const runtimeZipName = candidateFiles.find((name) =>
+    name.startsWith("vending-vision-") && name.endsWith(".zip"),
+  );
+  if (!runtimeZipName) {
+    throw new Error("candidate archive is missing the runtime zip");
+  }
+
+  const mainFiles = await readdir(join(staging, "main"));
+  const deliveryName = mainFiles.find((name) => name === DELIVERY_FILE);
   if (!deliveryName) {
-    throw new Error(`outer archive is missing ${DELIVERY_FILE}`);
+    throw new Error(`main archive is missing ${DELIVERY_FILE}`);
   }
   const delivery = JSON.parse(
-    await readFile(join(staging, deliveryName), "utf8"),
+    await readFile(join(staging, "main", deliveryName), "utf8"),
   );
   if (delivery.schemaVersion !== DELIVERY_SCHEMA) {
     throw new Error("delivery manifest schema is invalid");
@@ -64,29 +91,35 @@ export async function syncVisionArtifactsFromArchive({
       `delivery manifest commit mismatch: expected ${commit}, got ${delivery.commit}`,
     );
   }
-  const pairs = [
-    ["runtimeArchive", delivery.runtime],
-    ["recordedFixtureArchive", delivery.fixtures],
-  ];
   const identities = {};
-  for (const [key, declared] of pairs) {
-    const source = join(staging, declared.file);
-    const actualSha = await sha256File(source);
-    if (actualSha !== declared.sha256) {
-      throw new Error(`${key} SHA-256 does not match the delivery manifest`);
-    }
-    const byteSize = (await readFile(source)).length;
-    const targetDir = join(outputRoot, key);
-    await mkdir(targetDir, { recursive: true });
-    const target = join(targetDir, `${declared.sha256}.zip`);
-    await copyFile(source, target);
-    identities[key] = {
-      hostPath: target,
-      sha256: actualSha,
-      byteSize,
-      sourceCommit: commit,
-    };
+  const runtimeSource = join(staging, "candidate", runtimeZipName);
+  const runtimeSha = await sha256File(runtimeSource);
+  const runtimeTargetDir = join(outputRoot, "runtimeArchive");
+  await mkdir(runtimeTargetDir, { recursive: true });
+  const runtimeTarget = join(runtimeTargetDir, `${runtimeSha}.zip`);
+  await copyFile(runtimeSource, runtimeTarget);
+  identities.runtimeArchive = {
+    hostPath: runtimeTarget,
+    sha256: runtimeSha,
+    byteSize: (await readFile(runtimeSource)).length,
+    sourceCommit: commit,
+  };
+
+  const fixtureSource = join(staging, "main", delivery.fixtures.file);
+  const fixtureSha = await sha256File(fixtureSource);
+  if (fixtureSha !== delivery.fixtures.sha256) {
+    throw new Error("fixture SHA-256 does not match the delivery manifest");
   }
+  const fixtureTargetDir = join(outputRoot, "recordedFixtureArchive");
+  await mkdir(fixtureTargetDir, { recursive: true });
+  const fixtureTarget = join(fixtureTargetDir, `${fixtureSha}.zip`);
+  await copyFile(fixtureSource, fixtureTarget);
+  identities.recordedFixtureArchive = {
+    hostPath: fixtureTarget,
+    sha256: fixtureSha,
+    byteSize: (await readFile(fixtureSource)).length,
+    sourceCommit: commit,
+  };
   await writeHostConfigVisionCore(hostConfigPath, identities);
   return identities;
 }
@@ -118,31 +151,48 @@ export function parseSyncOptions(args) {
     outputRoot: resolve(outputRoot),
     hostConfigPath: resolve(hostConfigPath),
     download: flags.has("download"),
-    archive: flags.get("archive") ? resolve(flags.get("archive")) : null,
+    candidateArchive: flags.get("candidate-archive")
+      ? resolve(flags.get("candidate-archive"))
+      : null,
+    mainArchive: flags.get("main-archive")
+      ? resolve(flags.get("main-archive"))
+      : null,
     repo: flags.get("repo") ?? "hbhjt/vending-vision",
   };
 }
 
 export async function main(args = process.argv.slice(2)) {
   const options = parseSyncOptions(args);
-  let archivePath = options.archive;
+  let candidateArchivePath = options.candidateArchive;
+  let mainArchivePath = options.mainArchive;
   if (options.download) {
-    const artifactName = `vending-vision-main-${options.commit}`;
-    const downloaded = await downloadArtifactParallel({
+    const candidateDownload = await downloadArtifactParallel({
       repo: options.repo,
-      artifactName,
+      artifactName: `vending-vision-candidate-${options.commit}`,
+      output: join(tmpdir(), `vem-vision-candidate-${options.commit}.zip`),
+      connections: 16,
+      maxUrlRefreshes: 60,
+      pollMs: 2_000,
+    });
+    candidateArchivePath = candidateDownload.path;
+    const mainDownload = await downloadArtifactParallel({
+      repo: options.repo,
+      artifactName: `vending-vision-main-${options.commit}`,
       output: join(tmpdir(), `vem-vision-main-${options.commit}.zip`),
       connections: 16,
       maxUrlRefreshes: 60,
       pollMs: 2_000,
     });
-    archivePath = downloaded.path;
+    mainArchivePath = mainDownload.path;
   }
-  if (!archivePath) {
-    throw new Error("--archive or --download is required");
+  if (!candidateArchivePath || !mainArchivePath) {
+    throw new Error(
+      "--candidate-archive and --main-archive or --download is required",
+    );
   }
-  const identities = await syncVisionArtifactsFromArchive({
-    archivePath,
+  const identities = await syncVisionArtifactPair({
+    candidateArchivePath,
+    mainArchivePath,
     commit: options.commit,
     outputRoot: options.outputRoot,
     hostConfigPath: options.hostConfigPath,
