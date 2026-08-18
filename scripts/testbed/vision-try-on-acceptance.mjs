@@ -3995,6 +3995,7 @@ async function captureWithManualFallback(client, timeoutMs = 180_000) {
           attributeFilter: ["disabled"],
         });
         window.__vemManualCaptureObserver = observer;
+        window.__vemManualCaptureInterval = setInterval(tryClick, 10);
         return true;
       })()`,
     );
@@ -4013,6 +4014,10 @@ async function captureWithManualFallback(client, timeoutMs = 180_000) {
         if (window.__vemManualCaptureObserver) {
           window.__vemManualCaptureObserver.disconnect();
           window.__vemManualCaptureObserver = null;
+        }
+        if (window.__vemManualCaptureInterval) {
+          clearInterval(window.__vemManualCaptureInterval);
+          window.__vemManualCaptureInterval = null;
         }
         return true;
       })()`,
