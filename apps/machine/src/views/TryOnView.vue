@@ -206,7 +206,7 @@ function scaleGarment(delta: number): void {
         "
         :src="tryOn.previewUrl"
         alt="虚拟试衣采集画面"
-        class="try-on-preview"
+        class="try-on-acquisition-preview"
         data-test="try-on-acquisition-preview"
         @error="previewErrored = true"
       />
@@ -354,7 +354,7 @@ function scaleGarment(delta: number): void {
   letter-spacing: 0.1em;
 }
 
-.try-on-preview,
+.try-on-acquisition-preview,
 .try-on-result {
   max-height: 55vh;
   max-width: 100%;
