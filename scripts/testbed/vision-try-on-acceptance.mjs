@@ -4120,6 +4120,44 @@ async function collectInstalledFieldRegressionChecks({
     selectedProduct.variantId,
   );
   const checks = [];
+  const reenterSelectedProductFromCatalog = async () => {
+    await evaluateExpression(client, 'location.hash = "#/catalog"');
+    await waitForRoute(client, "#/catalog", {
+      timeoutMs: 30_000,
+      pollMs: 250,
+    });
+    // The heal regression must land on the same product, not merely any
+    // route matching #/products/*. A direct location.hash rewrite can be
+    // overtaken by catalog recommendation navigation and leave the detail
+    // page on a different product without a try-on entry.
+    await activateVisibleSelector(
+      client,
+      '[data-test="catalog-category"][data-category-key="tshirts"]',
+      { kind: "touch", timeoutMs: 30_000 },
+    );
+    await waitForCatalogProducts(client);
+    await activateVisibleSelector(
+      client,
+      `[data-test="catalog-product"][data-catalog-key=${JSON.stringify(selectedProduct.catalogKey)}]`,
+      { kind: "touch", timeoutMs: 30_000 },
+    );
+    await waitForRoute(client, /^#\/products\//, {
+      timeoutMs: 30_000,
+      pollMs: 250,
+    });
+    await waitForCondition(
+      `product detail re-entry lands on ${selectedProduct.catalogKey}`,
+      async () => {
+        const state = await readProductDetailState(client);
+        return {
+          ok: state?.catalogKey === selectedProduct.catalogKey,
+          value: state,
+        };
+      },
+      30_000,
+      250,
+    );
+  };
   const openTryOn = async () => {
     await installTryOnLifecycleObserver(client);
     await waitForSaleViewGarmentReady({
@@ -4127,14 +4165,18 @@ async function collectInstalledFieldRegressionChecks({
       variantId: selectedProduct.variantId,
     });
     const tryOnActionAvailable = async () => {
-      const actionable = await evaluateExpression(
+      return await evaluateExpression(
         client,
         `(() => {
+          const page = document.querySelector("[data-test='product-detail-page']");
           const button = document.querySelector("[data-test='try-on-fast']");
-          return button instanceof HTMLElement && button.disabled !== true;
+          return (
+            page?.getAttribute("data-catalog-key") === ${JSON.stringify(selectedProduct.catalogKey)} &&
+            button instanceof HTMLElement &&
+            button.disabled !== true
+          );
         })()`,
       );
-      return actionable === true;
     };
     const keepalive = setInterval(() => {
       void dispatchIdleTouch(client);
@@ -4142,33 +4184,19 @@ async function collectInstalledFieldRegressionChecks({
     let started = false;
     const pollDiagnostics = [];
     try {
+      const initialDetail = await readProductDetailState(client).catch(
+        () => null,
+      );
+      if (initialDetail?.catalogKey !== selectedProduct.catalogKey) {
+        await reenterSelectedProductFromCatalog();
+      }
       for (let attempt = 0; attempt < 5 && !started; attempt += 1) {
         // A freshly restarted Vision runtime can leave the product detail's
         // capability projection stale. Re-enter the product from the catalog so
         // the Machine UI re-evaluates try-on eligibility against the live
         // runtime; each touch keeps the touchscreen session alive.
         if (attempt > 0) {
-          await evaluateExpression(client, 'location.hash = "#/catalog"');
-          await waitForRoute(client, "#/catalog", {
-            timeoutMs: 30_000,
-            pollMs: 250,
-          });
-          await activateVisibleSelector(
-            client,
-            '[data-test="catalog-category"][data-category-key="tshirts"]',
-            { kind: "touch", timeoutMs: 30_000 },
-          );
-          await waitForCatalogProducts(client);
-          await evaluateExpression(
-            client,
-            `location.hash = ${JSON.stringify(
-              `#/products/${selectedProduct.catalogKey}?variantId=${selectedProduct.variantId}`,
-            )}`,
-          );
-          await waitForRoute(client, /^#\/products\//, {
-            timeoutMs: 30_000,
-            pollMs: 250,
-          });
+          await reenterSelectedProductFromCatalog();
         }
         try {
           let lastSampleAt = 0;
