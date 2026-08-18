@@ -12,6 +12,7 @@ function fakeUiAdapter() {
       [statePath]: JSON.stringify({ route: "#/catalog", state: "idle" }),
     },
     commands: {
+      "vision-ready": () => ({ exitCode: 0, stdout: "ready", stderr: "" }),
       "navigate #/catalog": () => ({ exitCode: 0, stdout: "ok", stderr: "" }),
       'click [data-test="catalog-category"][data-category-key="tshirts"]':
         async () => {
@@ -121,6 +122,7 @@ describe("visionExperience slice runner", () => {
         [statePath]: JSON.stringify({ route: "#/catalog", state: "idle" }),
       },
       commands: {
+        "vision-ready": () => ({ exitCode: 0, stdout: "ready", stderr: "" }),
         "navigate #/catalog": () => ({ exitCode: 0, stdout: "ok", stderr: "" }),
         'click [data-test="catalog-category"][data-category-key="tshirts"]':
           async () => {

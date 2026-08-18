@@ -148,6 +148,21 @@ export class CdpTestAdapter {
         stderr: "",
       };
     }
+    if (command === "vision-ready") {
+      const response = await fetch(`${this.visionBaseUrl}/v2/runtime/roles`);
+      if (!response.ok) {
+        return { exitCode: 1, stdout: "", stderr: await response.text() };
+      }
+      const payload = await response.json();
+      const ready = (payload.roles ?? []).every(
+        (entry) => entry?.ready === true && entry?.pid !== null,
+      );
+      return {
+        exitCode: ready ? 0 : 1,
+        stdout: ready ? "ready" : "not-ready",
+        stderr: "",
+      };
+    }
     throw new Error(`CDP adapter does not implement command: ${command}`);
   }
 

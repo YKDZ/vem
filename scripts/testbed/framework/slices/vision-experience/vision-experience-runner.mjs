@@ -1,5 +1,6 @@
 import { buildAcceptanceReport } from "../../acceptance-report.mjs";
 import { CdpTestAdapter } from "../../cdp-adapter.mjs";
+import { waitForCondition } from "../../condition-waiter.mjs";
 import { createProcessRoleManifest } from "../../fault-injection.mjs";
 import { spawnSync } from "node:child_process";
 import { writeFile } from "node:fs/promises";
@@ -29,6 +30,14 @@ export async function runVisionExperienceSlice({
   timeoutMs = 60_000,
   pollMs = 250,
 }) {
+  await waitForCondition(
+    "vision-ready",
+    async () => {
+      const probe = await adapter.run("vision-ready");
+      return { ok: probe?.exitCode === 0, value: probe?.stdout ?? null };
+    },
+    { timeoutMs: Math.max(timeoutMs, 60_000), pollMs },
+  );
   const fast = await runFastTryOnScenario(adapter, { timeoutMs, pollMs });
   const assertions = [...fast.assertions];
   if (includeSelfHeal && manifest) {
