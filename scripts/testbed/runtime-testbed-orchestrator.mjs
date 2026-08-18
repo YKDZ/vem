@@ -1798,11 +1798,12 @@ async function executeRun(options, config) {
       }
       const guestSummary = JSON.parse(await readFile(coreSummaryPath, "utf8"));
       const guestAiInputIdentity = guestSummary?.identity?.aiVirtualTryOn?.input;
+      const canonical = (value) => JSON.stringify(canonicalIdentity(value));
       if (aiAcceptanceInputs) {
         if (!guestAiInputIdentity) {
           throw new Error("guest did not publish validated AI input identity");
         }
-        const guestIdentity = JSON.stringify(guestAiInputIdentity);
+        const guestIdentity = canonical(guestAiInputIdentity);
         if (options.mode === "full" && pass === 1) {
           passOneGuestAiIdentity = guestIdentity;
         } else if (
@@ -1814,12 +1815,10 @@ async function executeRun(options, config) {
           );
         }
       }
-      const guestCoreIdentity = JSON.stringify(
-        guestSummary?.identity?.visionCore,
-      );
+      const guestCoreIdentity = canonical(guestSummary?.identity?.visionCore);
       if (
         guestCoreIdentity !==
-        JSON.stringify(visionCoreInputs.guestInput.identity)
+        canonical(visionCoreInputs.guestInput.identity)
       ) {
         throw new Error("guest validated Vision core identity is invalid");
       }
