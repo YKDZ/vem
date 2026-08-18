@@ -1139,7 +1139,11 @@ async function provisionVisionCoreInput({ config, pass, preparation }) {
   const guestInput = JSON.parse(await readFile(path, "utf8"));
   await writeJson(path, {
     ...guestInput,
-    workflowIdentity: { ...guestInput.workflowIdentity, pass },
+    workflowIdentity: {
+      ...guestInput.workflowIdentity,
+      pass,
+      visionCore: preparation.guestInput.identity,
+    },
     visionCore: preparation.guestInput,
   });
 }
