@@ -124,7 +124,7 @@ describe("visionExperience vertical slice driver", () => {
       commands: {
         "stop-vision-role --role observer": async () => {
           await writeState({
-            route: "#/products/product:1",
+            route: "#/catalog",
             state: "idle",
             tryOnPresent: false,
           });
@@ -135,6 +135,31 @@ describe("visionExperience vertical slice driver", () => {
           stdout: "dead",
           stderr: "",
         }),
+        "navigate #/catalog": async () => {
+          await writeState({
+            route: "#/catalog",
+            state: "idle",
+            tryOnPresent: true,
+          });
+          return { exitCode: 0, stdout: "ok", stderr: "" };
+        },
+        'click [data-test="catalog-category"][data-category-key="tshirts"]':
+          async () => {
+            await writeState({
+              route: "#/catalog",
+              state: "idle",
+              tryOnPresent: true,
+            });
+            return { exitCode: 0, stdout: "ok", stderr: "" };
+          },
+        'click [data-test="catalog-product"]': async () => {
+          await writeState({
+            route: "#/products/product:1",
+            state: "idle",
+            tryOnPresent: true,
+          });
+          return { exitCode: 0, stdout: "ok", stderr: "" };
+        },
         'click [data-test="try-on-fast"]': async () => {
           await writeState({
             route: "#/try-on?catalogKey=product%3A1&mode=fast",

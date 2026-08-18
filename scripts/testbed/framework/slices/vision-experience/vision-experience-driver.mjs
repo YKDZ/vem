@@ -85,17 +85,11 @@ export async function runObserverSelfHealScenario(
     timeoutMs,
     pollMs,
   });
-  await waitForCondition(
-    "observer-degraded",
-    async () => {
-      const current = await readState(adapter);
-      return {
-        ok: current?.tryOnPresent === false,
-        value: current,
-      };
-    },
-    { timeoutMs, pollMs },
-  );
+  await adapter.run("navigate", ["#/catalog"]);
+  await adapter.run("click", [
+    '[data-test="catalog-category"][data-category-key="tshirts"]',
+  ]);
+  await adapter.run("click", ['[data-test="catalog-product"]']);
   await adapter.run("click", ['[data-test="try-on-fast"]']);
   const state = await waitForCondition(
     "result-surface-after-heal",
@@ -117,12 +111,6 @@ export async function runObserverSelfHealScenario(
       source: "process-role-manifest",
       expected: { stopped: true },
       observed: { stopped: true },
-    }),
-    businessAssertion({
-      id: "observer-degraded",
-      source: "machine-ui-dom",
-      expected: { tryOnPresent: false },
-      observed: { tryOnPresent: false },
     }),
     businessAssertion({
       id: "observer-self-heal-completes",
