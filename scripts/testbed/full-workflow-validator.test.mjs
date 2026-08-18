@@ -1857,7 +1857,55 @@ describe("full workflow aggregate validator", () => {
       const proxy = `/media/sha256:${String(index + 1).repeat(64)}?grant=media-${index + 1}`;
       card.mainImageUrl = proxy;
       card.finalUrl = proxy;
-    }
+  }
+  it("accepts the new v2 vision experience report when the business set passes", () => {
+    const report = {
+      schemaVersion: "vem-runtime-testbed-report/v2",
+      runId: "RUN-1",
+      mode: "fast",
+      pass: 1,
+      businessSets: [
+        {
+          name: "visionExperience",
+          status: "passed",
+          primaryFailure: null,
+          assertionCount: 9,
+          supportingEvidence: [],
+        },
+      ],
+    };
+    const result = validateBusinessCheckReport(
+      descriptor("visionExperience"),
+      report,
+      "vision-experience.json",
+    );
+    assert.equal(result.status, "passed");
+  });
+
+  it("fails the new v2 vision experience report when an assertion fails", () => {
+    const report = {
+      schemaVersion: "vem-runtime-testbed-report/v2",
+      runId: "RUN-1",
+      mode: "fast",
+      pass: 1,
+      businessSets: [
+        {
+          name: "visionExperience",
+          status: "failed",
+          primaryFailure: { id: "result-surface", reason: "expected completed" },
+          assertionCount: 9,
+          supportingEvidence: [],
+        },
+      ],
+    };
+    const result = validateBusinessCheckReport(
+      descriptor("visionExperience"),
+      report,
+      "vision-experience.json",
+    );
+    assert.equal(result.status, "failed");
+    assert.match(result.reason ?? "", /expected completed/);
+  });
     bypass.ui.tryOnAttempts = [
       {
         result: "completed",

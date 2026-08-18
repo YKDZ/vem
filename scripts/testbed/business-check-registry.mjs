@@ -94,8 +94,9 @@ export const BUSINESS_CHECK_REGISTRY = Object.freeze([
   descriptor({
     name: "visionExperience",
     runner: {
-      kind: "powershell",
-      script: "scripts/testbed/run-full-vision-try-on-track.ps1",
+      kind: "node",
+      script:
+        "scripts/testbed/framework/slices/vision-experience/vision-experience-runner.mjs",
       args: [],
       reportFileName: "vision-experience.json",
       artifactDirectory: "vision-try-on-acceptance-artifacts",

@@ -1411,6 +1411,33 @@ export function validateBusinessCheckReport(
     environmentControl: validateEnvironmentControlTrack,
   };
   if (descriptor.validator === "visionExperience") {
+    if (report?.schemaVersion === "vem-runtime-testbed-report/v2") {
+      const set = (report.businessSets ?? []).find(
+        (entry) => entry?.name === "visionExperience",
+      );
+      if (!set) {
+        return failedTrack(
+          descriptor.name,
+          descriptor.name,
+          reportPath,
+          "visionExperience v2 report has no business set",
+        );
+      }
+      return canonicalResult(
+        descriptor,
+        set.status === "passed"
+          ? passedTrack("visionExperience", "vision experience", reportPath, {
+              assertions: set.assertionCount,
+            })
+          : failedTrack(
+              descriptor.name,
+              descriptor.name,
+              reportPath,
+              set.primaryFailure?.reason ?? "vision assertions failed",
+            ),
+        reportPath,
+      );
+    }
     const result = validateVisionTrack(report, reportPath);
     const failed = Object.values(result).find(
       (entry) => entry.status !== "passed",

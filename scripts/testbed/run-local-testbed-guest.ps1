@@ -1395,6 +1395,8 @@ $workflowFailure = $null
 $bundleFailure = $null
 try {
   Write-TestbedPhase "acceptance-tracks"
+  $env:CDP_ENDPOINT = "http://127.0.0.1:9222"
+  $env:VISION_BASE_URL = "http://127.0.0.1:7892"
   $focusArguments = @()
   foreach ($name in $Focus) {
     if ([string]::IsNullOrWhiteSpace($name)) { throw "--focus requires a business check set name" }

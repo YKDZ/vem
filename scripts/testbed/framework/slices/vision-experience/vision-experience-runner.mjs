@@ -1,4 +1,8 @@
 import { buildAcceptanceReport } from "../../acceptance-report.mjs";
+import { CdpTestAdapter } from "../../cdp-adapter.mjs";
+import { createProcessRoleManifest } from "../../fault-injection.mjs";
+import { spawnSync } from "node:child_process";
+import { writeFile } from "node:fs/promises";
 import {
   runFastTryOnScenario,
   runDegradationScenario,
@@ -64,5 +68,71 @@ export async function runVisionExperienceSlice({
     mode: "fast",
     pass: 1,
     businessSets: [{ name: "visionExperience", assertions }],
+  });
+}
+
+export function validateVisionExperienceSet(set) {
+  return {
+    ok: set?.status === "passed",
+    errors: set?.status === "failed" ? ["vision assertions failed"] : [],
+  };
+}
+
+/**
+ * VM 轨道入口：从环境读取 CDP 与 Vision 地址，运行全部业务场景并输出 v2 报告。
+ */
+export async function main(args = process.argv.slice(2)) {
+  const outIndex = args.indexOf("--out");
+  const outPath = outIndex >= 0 ? args[outIndex + 1] : null;
+  const adapter = new CdpTestAdapter();
+  await adapter.connect({ timeoutMs: 20_000 });
+  try {
+    const manifest = createProcessRoleManifest({
+      roles: {
+        observer: {
+          stopCommand: ["stop-vision-role", "--role", "observer"],
+          probeCommand: ["probe-vision-role", "observer"],
+        },
+      },
+    });
+    const report = await runVisionExperienceSlice({
+      adapter,
+      manifest,
+      includeSelfHeal: process.env.SKIP_SELF_HEAL !== "1",
+      includeGarmentScale: process.env.SKIP_SCALE !== "1",
+      includeDegradation: process.env.RUN_DEGRADATION === "1",
+      includeManualCapture: process.env.RUN_MANUAL === "1",
+      includeDeparture: process.env.RUN_DEPARTURE === "1",
+      stopOwner: () => {
+        spawnSync(
+          "powershell",
+          [
+            "-NoProfile",
+            "-Command",
+            "Stop-ScheduledTask -TaskName VEMVisionRuntime; Get-Process vending-vision -ErrorAction SilentlyContinue | Stop-Process -Force",
+          ],
+          { stdio: "ignore" },
+        );
+      },
+      timeoutMs: 60_000,
+      pollMs: 250,
+    });
+    const serialized = `${JSON.stringify(report, null, 2)}\n`;
+    if (outPath) {
+      await writeFile(outPath, serialized, "utf8");
+    }
+    process.stdout.write(serialized);
+  } finally {
+    await adapter.close();
+  }
+}
+
+if (
+  typeof import.meta !== "undefined" &&
+  import.meta.url === `file://${process.argv[1]}`
+) {
+  main().catch((error) => {
+    console.error(error.message);
+    process.exitCode = 1;
   });
 }
