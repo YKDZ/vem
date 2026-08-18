@@ -74,14 +74,29 @@ describe("visionExperience slice runner", () => {
         }),
       },
     ]);
+    const adapter = fakeUiAdapter();
     const report = await runVisionExperienceSlice({
-      adapter: fakeUiAdapter(),
+      adapter,
       includeGarmentScale: true,
+      includeDegradation: true,
+      stopOwner: async () => {
+        const current = JSON.parse(
+          await adapter.readFile("ui/try-on-state.json"),
+        );
+        await adapter.writeFile(
+          "ui/try-on-state.json",
+          JSON.stringify({
+            ...current,
+            tryOnPresent: false,
+            buyDisabled: false,
+          }),
+        );
+      },
       timeoutMs: 2_000,
       pollMs: 10,
     });
     const result = registry.validateReport(report);
     assert.equal(result.businessSets.visionExperience.status, "passed");
-    assert.equal(report.businessSets[0].assertionCount, 4);
+    assert.equal(report.businessSets[0].assertionCount, 7);
   });
 });

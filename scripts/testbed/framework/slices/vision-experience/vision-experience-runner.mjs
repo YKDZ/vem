@@ -1,6 +1,7 @@
 import { buildAcceptanceReport } from "../../acceptance-report.mjs";
 import {
   runFastTryOnScenario,
+  runDegradationScenario,
   runGarmentScaleScenario,
   runObserverSelfHealScenario,
 } from "./vision-experience-driver.mjs";
@@ -14,6 +15,8 @@ export async function runVisionExperienceSlice({
   manifest = null,
   includeSelfHeal = false,
   includeGarmentScale = false,
+  includeDegradation = false,
+  stopOwner = null,
   timeoutMs = 60_000,
   pollMs = 250,
 }) {
@@ -22,6 +25,14 @@ export async function runVisionExperienceSlice({
   if (includeGarmentScale) {
     const scale = await runGarmentScaleScenario(adapter, { timeoutMs, pollMs });
     assertions.push(...scale.assertions);
+  }
+  if (includeDegradation && stopOwner) {
+    const degradation = await runDegradationScenario(adapter, {
+      stopOwner,
+      timeoutMs,
+      pollMs,
+    });
+    assertions.push(...degradation.assertions);
   }
   if (includeSelfHeal && manifest) {
     const heal = await runObserverSelfHealScenario(adapter, manifest, {

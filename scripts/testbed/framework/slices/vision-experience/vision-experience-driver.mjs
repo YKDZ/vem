@@ -178,3 +178,60 @@ export async function runGarmentScaleScenario(adapter, { timeoutMs, pollMs }) {
     }),
   };
 }
+
+/**
+ * 降级购买：停止整个 Vision owner 后，商品页试衣入口隐藏但购买保持可用。
+ * stopOwner 由调用方提供（安装 owner 的受控停止），driver 不猜测进程。
+ */
+export async function runDegradationScenario(
+  adapter,
+  { stopOwner, timeoutMs, pollMs },
+) {
+  await adapter.run("navigate", ["#/catalog"]);
+  await adapter.run("click", [
+    '[data-test="catalog-category"][data-category-key="tshirts"]',
+  ]);
+  await adapter.run("click", ['[data-test="catalog-product"]']);
+  const before = await readState(adapter);
+  await stopOwner();
+  const degraded = await waitForCondition(
+    "degraded-product-detail",
+    async () => {
+      const current = await readState(adapter);
+      return {
+        ok: current?.tryOnPresent === false && current?.buyDisabled === false,
+        value: current,
+      };
+    },
+    { timeoutMs, pollMs },
+  );
+  const assertions = [
+    businessAssertion({
+      id: "vision-owner-stop-declared",
+      source: "install-owner",
+      expected: { stopped: true },
+      observed: { stopped: true },
+    }),
+    businessAssertion({
+      id: "degraded-try-on-hidden",
+      source: "machine-ui-dom",
+      expected: { tryOnPresent: false },
+      observed: { tryOnPresent: degraded.tryOnPresent },
+    }),
+    businessAssertion({
+      id: "degraded-buy-available",
+      source: "machine-ui-dom",
+      expected: { buyDisabled: false },
+      observed: { buyDisabled: degraded.buyDisabled },
+    }),
+  ];
+  return {
+    assertions,
+    report: buildAcceptanceReport({
+      runId: "slice-vision-experience-degradation",
+      mode: "fast",
+      pass: 1,
+      businessSets: [{ name: "visionExperience", assertions }],
+    }),
+  };
+}
