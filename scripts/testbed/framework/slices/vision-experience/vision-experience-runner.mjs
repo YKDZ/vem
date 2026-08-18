@@ -98,6 +98,16 @@ export function validateVisionExperienceSet(set) {
 export async function main(args = process.argv.slice(2)) {
   const outIndex = args.indexOf("--out");
   const outPath = outIndex >= 0 ? args[outIndex + 1] : null;
+  // 重建后的 VM 可能尚未启动 Vision 默认 owner；轨道负责启动并等待就绪。
+  spawnSync(
+    "powershell",
+    [
+      "-NoProfile",
+      "-Command",
+      "Start-ScheduledTask -TaskName VEMVisionRuntime",
+    ],
+    { stdio: "ignore" },
+  );
   const adapter = new CdpTestAdapter();
   await adapter.connect({ timeoutMs: 20_000 });
   try {
