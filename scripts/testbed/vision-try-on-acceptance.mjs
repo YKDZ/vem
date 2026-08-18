@@ -3968,38 +3968,77 @@ async function captureWithManualFallback(client, timeoutMs = 180_000) {
     timeoutMs: 30_000,
   });
   const deadline = Date.now() + timeoutMs;
+  let retried = 0;
   try {
     // The unstable fixture only exposes the manual action during brief
     // aligned windows (~333 ms). Install an in-page MutationObserver so a
     // click lands in the same task that enables the button; the outer loop is
     // only a safety net for an already-mounted enabled button.
-    await evaluateExpression(
-      client,
-      `(() => {
-        window.__vemManualCaptureClicked = false;
-        const tryClick = () => {
-          const button = document.querySelector("[data-test='try-on-manual-capture']");
-          if (button instanceof HTMLElement && button.disabled === false) {
-            button.click();
-            window.__vemManualCaptureClicked = true;
-            return true;
+    const installManualClicker = () =>
+      evaluateExpression(
+        client,
+        `(() => {
+          if (window.__vemManualCaptureObserver) {
+            window.__vemManualCaptureObserver.disconnect();
+            window.__vemManualCaptureObserver = null;
           }
-          return false;
-        };
-        tryClick();
-        const observer = new MutationObserver(() => tryClick());
-        observer.observe(document.documentElement, {
-          childList: true,
-          subtree: true,
-          attributes: true,
-          attributeFilter: ["disabled"],
-        });
-        window.__vemManualCaptureObserver = observer;
-        window.__vemManualCaptureInterval = setInterval(tryClick, 10);
-        return true;
-      })()`,
-    );
+          if (window.__vemManualCaptureInterval) {
+            clearInterval(window.__vemManualCaptureInterval);
+            window.__vemManualCaptureInterval = null;
+          }
+          window.__vemManualCaptureClicked = false;
+          const tryClick = () => {
+            const button = document.querySelector("[data-test='try-on-manual-capture']");
+            if (button instanceof HTMLElement && button.disabled === false) {
+              button.click();
+              window.__vemManualCaptureClicked = true;
+              return true;
+            }
+            return false;
+          };
+          tryClick();
+          const observer = new MutationObserver(() => tryClick());
+          observer.observe(document.documentElement, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ["disabled"],
+          });
+          window.__vemManualCaptureObserver = observer;
+          window.__vemManualCaptureInterval = setInterval(tryClick, 10);
+          return true;
+        })()`,
+      );
+    await installManualClicker();
     while (Date.now() < deadline) {
+      const terminalState = await evaluateExpression(
+        client,
+        `(() => {
+          const view = document.querySelector("[data-test='try-on-view']");
+          const retry = document.querySelector("[data-test='try-on-retry']");
+          return {
+            state: view?.dataset?.state ?? null,
+            attemptId: view?.dataset?.attemptId ?? null,
+            retryVisible:
+              retry instanceof HTMLElement && retry.offsetParent !== null,
+            retryDisabled: retry instanceof HTMLButtonElement ? retry.disabled : null,
+          };
+        })()`,
+      ).catch(() => null);
+      if (
+        terminalState &&
+        (terminalState.state === "canceled" ||
+          terminalState.state === "failed") &&
+        terminalState.retryVisible === true &&
+        terminalState.retryDisabled !== true
+      ) {
+        retried += 1;
+        await activateVisibleSelector(client, '[data-test="try-on-retry"]', {
+          kind: "touch",
+          timeoutMs: 10_000,
+        });
+        await installManualClicker();
+      }
       try {
         return await waitForTryOnSurface(client, 2_000);
       } catch {
@@ -4024,7 +4063,7 @@ async function captureWithManualFallback(client, timeoutMs = 180_000) {
     ).catch(() => {});
   }
   throw new Error(
-    "manual capture did not complete on the unstable recorded fixture",
+    `manual capture did not complete on the unstable recorded fixture after ${retried} retries`,
   );
 }
 
