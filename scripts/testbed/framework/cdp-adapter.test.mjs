@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { describe, it } from "node:test";
 
-import { assertAdapterContract } from "./test-adapter.mjs";
 import { CdpTestAdapter } from "./cdp-adapter.mjs";
+import { assertAdapterContract } from "./test-adapter.mjs";
 
 describe("CDP test adapter", () => {
   it("implements the shared adapter contract", () => {

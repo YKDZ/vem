@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { createFakeTestAdapter, assertAdapterContract } from "./test-adapter.mjs";
+import {
+  createFakeTestAdapter,
+  assertAdapterContract,
+} from "./test-adapter.mjs";
 
 describe("test adapter contract", () => {
   it("reads and writes files through the same capability surface", async () => {
@@ -26,16 +29,13 @@ describe("test adapter contract", () => {
 
   it("reports a missing remote file as an observable error", async () => {
     const adapter = createFakeTestAdapter({ files: {} });
-    await assert.rejects(
-      adapter.readFile("C:\\missing.json"),
-      /missing file/,
-    );
+    await assert.rejects(adapter.readFile("C:\\missing.json"), /missing file/);
   });
 
   it("passes the shared adapter contract", async () => {
     const adapter = createFakeTestAdapter({
       files: { "C:\\evidence.json": "{}" },
-      commands: { "whoami": { exitCode: 0, stdout: "vemkiosk" } },
+      commands: { whoami: { exitCode: 0, stdout: "vemkiosk" } },
     });
     await assertAdapterContract(adapter);
   });

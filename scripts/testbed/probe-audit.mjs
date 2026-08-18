@@ -36,7 +36,10 @@ function walk(directory) {
     const entry = statSync(path);
     if (entry.isDirectory()) {
       found.push(...walk(path));
-    } else if (/\.(mjs|js|ps1|psm1)$/.test(name) && !name.endsWith(".test.mjs")) {
+    } else if (
+      /\.(mjs|js|ps1|psm1)$/.test(name) &&
+      !name.endsWith(".test.mjs")
+    ) {
       found.push(path);
     }
   }

@@ -22,9 +22,7 @@ export async function runFailureDrill() {
     runId: "drill",
     mode: "fast",
     pass: 1,
-    businessSets: [
-      { name: "drill", assertions: [failing] },
-    ],
+    businessSets: [{ name: "drill", assertions: [failing] }],
   });
   return {
     status: report.businessSets[0].status,

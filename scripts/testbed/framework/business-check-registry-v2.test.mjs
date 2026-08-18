@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
+import { buildAcceptanceReport } from "./acceptance-report.mjs";
 import {
   createBusinessCheckRegistryV2,
   collectSupportingEvidence,
 } from "./business-check-registry-v2.mjs";
-import { buildAcceptanceReport } from "./acceptance-report.mjs";
 import { businessAssertion } from "./observation-record.mjs";
 
 function registry() {

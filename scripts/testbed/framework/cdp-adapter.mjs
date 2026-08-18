@@ -46,8 +46,7 @@ const STATE_EXPRESSION = `(() => {
 export class CdpTestAdapter {
   constructor({
     endpoint = process.env.CDP_ENDPOINT ?? "http://127.0.0.1:19222",
-    visionBaseUrl =
-      process.env.VISION_BASE_URL ?? "http://127.0.0.1:27892",
+    visionBaseUrl = process.env.VISION_BASE_URL ?? "http://127.0.0.1:27892",
   } = {}) {
     this.endpoint = endpoint;
     this.visionBaseUrl = visionBaseUrl;
@@ -65,9 +64,7 @@ export class CdpTestAdapter {
           candidate.url.includes("tauri.localhost"),
       );
       if (!target) {
-        await new Promise((resolvePromise) =>
-          setTimeout(resolvePromise, 250),
-        );
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
       }
     }
     if (!target) {
@@ -141,7 +138,8 @@ export class CdpTestAdapter {
       const declared = (payload.roles ?? []).find(
         (entry) => entry.name === role,
       );
-      const dead = !declared || declared.pid === null || declared.ready === false;
+      const dead =
+        !declared || declared.pid === null || declared.ready === false;
       return {
         exitCode: dead ? 0 : 1,
         stdout: dead ? "dead" : "alive",

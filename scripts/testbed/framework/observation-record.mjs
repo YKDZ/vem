@@ -49,7 +49,9 @@ export function summarizeAssertions(assertions) {
     throw new TypeError("assertions must be a non-empty array");
   }
   const failed = assertions.find((assertion) => assertion?.status === "failed");
-  const skipped = assertions.every((assertion) => assertion?.status === "skipped");
+  const skipped = assertions.every(
+    (assertion) => assertion?.status === "skipped",
+  );
   return {
     status: failed ? "failed" : skipped ? "skipped" : "passed",
     primaryFailure: failed ?? null,

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { createFakeTestAdapter } from "../../test-adapter.mjs";
 import { createProcessRoleManifest } from "../../fault-injection.mjs";
+import { createFakeTestAdapter } from "../../test-adapter.mjs";
 import {
   runFastTryOnScenario,
   runObserverSelfHealScenario,
@@ -18,7 +18,9 @@ function fakeUiAdapter() {
       }, 20);
     });
   const adapter = createFakeTestAdapter({
-    files: { [statePath]: JSON.stringify({ route: "#/catalog", state: "idle" }) },
+    files: {
+      [statePath]: JSON.stringify({ route: "#/catalog", state: "idle" }),
+    },
     commands: {
       "navigate #/catalog": async () => {
         await writeState({ route: "#/catalog", state: "idle" });
@@ -34,9 +36,9 @@ function fakeUiAdapter() {
       },
       'click [data-test="catalog-category"][data-category-key="tshirts"]':
         async () => {
-        await writeState({ route: "#/catalog", state: "idle" });
-        return { exitCode: 0, stdout: "ok", stderr: "" };
-      },
+          await writeState({ route: "#/catalog", state: "idle" });
+          return { exitCode: 0, stdout: "ok", stderr: "" };
+        },
       'click [data-test="try-on-fast"]': async () => {
         await writeState({
           route: "#/try-on?catalogKey=product%3A1&mode=fast",
@@ -70,7 +72,9 @@ describe("visionExperience vertical slice driver", () => {
       pollMs: 10,
     });
     assert.equal(outcome.assertions.length, 3);
-    assert.ok(outcome.assertions.every((assertion) => assertion.status === "passed"));
+    assert.ok(
+      outcome.assertions.every((assertion) => assertion.status === "passed"),
+    );
     assert.equal(outcome.report.businessSets[0].name, "visionExperience");
     assert.equal(outcome.report.businessSets[0].status, "passed");
   });
@@ -87,9 +91,9 @@ describe("visionExperience vertical slice driver", () => {
         "navigate #/catalog": () => ({ exitCode: 0, stdout: "ok", stderr: "" }),
         'click [data-test="catalog-category"][data-category-key="tshirts"]':
           () => ({
-          exitCode: 0,
-          stdout: "ok",
-          stderr: "",
+            exitCode: 0,
+            stdout: "ok",
+            stderr: "",
           }),
         'click [data-test="catalog-product"]': () => ({
           exitCode: 0,
@@ -166,8 +170,7 @@ describe("visionExperience vertical slice driver", () => {
             state: "completed",
             tryOnPresent: true,
             preview: { naturalWidth: 720, naturalHeight: 1280 },
-            resultUrl:
-              "http://127.0.0.1:7892/v2/try-on/results/healed?token=y",
+            resultUrl: "http://127.0.0.1:7892/v2/try-on/results/healed?token=y",
           });
           return { exitCode: 0, stdout: "ok", stderr: "" };
         },
@@ -181,11 +184,10 @@ describe("visionExperience vertical slice driver", () => {
         },
       },
     });
-    const outcome = await runObserverSelfHealScenario(
-      adapter,
-      manifest,
-      { timeoutMs: 2_000, pollMs: 10 },
-    );
+    const outcome = await runObserverSelfHealScenario(adapter, manifest, {
+      timeoutMs: 2_000,
+      pollMs: 10,
+    });
     assert.ok(
       outcome.assertions.some(
         (assertion) =>

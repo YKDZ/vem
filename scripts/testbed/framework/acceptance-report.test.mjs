@@ -6,7 +6,10 @@ import {
   validateAcceptanceReport,
   validateReportWithValidators,
 } from "./acceptance-report.mjs";
-import { businessAssertion, summarizeAssertions } from "./observation-record.mjs";
+import {
+  businessAssertion,
+  summarizeAssertions,
+} from "./observation-record.mjs";
 
 function passingAssertions() {
   return [

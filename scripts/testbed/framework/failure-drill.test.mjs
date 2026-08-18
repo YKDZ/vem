@@ -9,7 +9,10 @@ describe("failure drill", () => {
     const drill = await runFailureDrill();
     assert.equal(drill.status, "failed");
     assert.equal(drill.primaryFailure.id, "drill-result-surface");
-    assert.match(drill.primaryFailure.reason, /expected.*completed.*observed.*acquiring/s);
+    assert.match(
+      drill.primaryFailure.reason,
+      /expected.*completed.*observed.*acquiring/s,
+    );
     const restored = await deserializeObservation(drill.serializedLine);
     assert.equal(restored.record.status, "failed");
     assert.equal(restored.record.reason, drill.primaryFailure.reason);

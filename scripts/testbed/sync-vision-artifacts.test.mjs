@@ -18,7 +18,11 @@ function makeCandidateArchive(root, commit) {
   mkdirSync(inner, { recursive: true });
   writeFileSync(join(inner, "runtime.bin"), "runtime-bytes");
   const runtimeZipName = `vending-vision-${commit}.zip`;
-  execFileSync("zip", ["-qj", join(inner, runtimeZipName), join(inner, "runtime.bin")]);
+  execFileSync("zip", [
+    "-qj",
+    join(inner, runtimeZipName),
+    join(inner, "runtime.bin"),
+  ]);
   const manifest = {
     schemaVersion: "vending-vision-candidate-artifact/v3",
     sourceCommit: commit,
@@ -29,7 +33,12 @@ function makeCandidateArchive(root, commit) {
     `${JSON.stringify(manifest)}\n`,
   );
   const outer = join(root, "candidate-outer.zip");
-  execFileSync("zip", ["-qj", outer, join(inner, runtimeZipName), join(inner, "candidate-manifest.json")]);
+  execFileSync("zip", [
+    "-qj",
+    outer,
+    join(inner, runtimeZipName),
+    join(inner, "candidate-manifest.json"),
+  ]);
   return outer;
 }
 
@@ -37,7 +46,11 @@ function makeMainArchive(root, commit) {
   const inner = join(root, "main-inner");
   mkdirSync(inner, { recursive: true });
   writeFileSync(join(inner, "fixture.bin"), "fixture-bytes");
-  execFileSync("zip", ["-qj", join(inner, "fixture.zip"), join(inner, "fixture.bin")]);
+  execFileSync("zip", [
+    "-qj",
+    join(inner, "fixture.zip"),
+    join(inner, "fixture.bin"),
+  ]);
   const manifest = {
     schemaVersion: "vending-vision-main-artifacts/v1",
     commit: COMMIT,
@@ -49,7 +62,12 @@ function makeMainArchive(root, commit) {
     `${JSON.stringify(manifest)}\n`,
   );
   const outer = join(root, "outer.zip");
-  execFileSync("zip", ["-qj", outer, join(inner, "fixture.zip"), join(inner, "vending-vision-main-artifacts.json")]);
+  execFileSync("zip", [
+    "-qj",
+    outer,
+    join(inner, "fixture.zip"),
+    join(inner, "vending-vision-main-artifacts.json"),
+  ]);
   return { outer, manifest };
 }
 
@@ -74,7 +92,12 @@ describe("Vision artifact pair sync", () => {
       JSON.stringify({
         schemaVersion: "vem-runtime-testbed-host/v1",
         visionCoreArtifacts: {
-          runtimeArchive: { hostPath: "", sha256: "", byteSize: 0, sourceCommit: "" },
+          runtimeArchive: {
+            hostPath: "",
+            sha256: "",
+            byteSize: 0,
+            sourceCommit: "",
+          },
           recordedFixtureArchive: {
             hostPath: "",
             sha256: "",
@@ -95,9 +118,15 @@ describe("Vision artifact pair sync", () => {
 
     assert.equal(result.runtimeArchive.sourceCommit, COMMIT);
     assert.ok(result.runtimeArchive.sha256.match(/^[a-f0-9]{64}$/));
-    assert.equal(result.recordedFixtureArchive.sha256, manifest.fixtures.sha256);
+    assert.equal(
+      result.recordedFixtureArchive.sha256,
+      manifest.fixtures.sha256,
+    );
     const config = JSON.parse(readFileSync(configPath, "utf8"));
-    assert.equal(config.visionCoreArtifacts.runtimeArchive.sourceCommit, COMMIT);
+    assert.equal(
+      config.visionCoreArtifacts.runtimeArchive.sourceCommit,
+      COMMIT,
+    );
     assert.equal(
       config.visionCoreArtifacts.recordedFixtureArchive.sha256,
       manifest.fixtures.sha256,
@@ -113,12 +142,12 @@ describe("Vision artifact pair sync", () => {
     writeFileSync(configPath, "{}");
     await assert.rejects(
       syncVisionArtifactPair({
-          candidateArchivePath: candidateOuter,
-          mainArchivePath: outer,
-          commit: "a".repeat(40),
-          outputRoot,
-          hostConfigPath: configPath,
-        }),
+        candidateArchivePath: candidateOuter,
+        mainArchivePath: outer,
+        commit: "a".repeat(40),
+        outputRoot,
+        hostConfigPath: configPath,
+      }),
       /commit mismatch/,
     );
     assert.equal(readFileSync(configPath, "utf8"), "{}");

@@ -38,11 +38,11 @@ describe("bounded condition waiter", () => {
 
   it("stops early when the abort signal fires", async () => {
     const controller = new AbortController();
-    const wait = waitForCondition(
-      "aborted",
-      () => condition(false),
-      { timeoutMs: 1_000, pollMs: 5, signal: controller.signal },
-    );
+    const wait = waitForCondition("aborted", () => condition(false), {
+      timeoutMs: 1_000,
+      pollMs: 5,
+      signal: controller.signal,
+    });
     controller.abort();
     await assert.rejects(wait, /aborted/);
   });

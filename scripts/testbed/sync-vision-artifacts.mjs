@@ -44,9 +44,13 @@ export async function syncVisionArtifactPair({
   hostConfigPath,
 }) {
   const staging = mkdtempSync(join(tmpdir(), "vem-vision-sync-"));
-  execFileSync("unzip", ["-o", candidateArchivePath, "-d", join(staging, "candidate")], {
-    stdio: "pipe",
-  });
+  execFileSync(
+    "unzip",
+    ["-o", candidateArchivePath, "-d", join(staging, "candidate")],
+    {
+      stdio: "pipe",
+    },
+  );
   execFileSync("unzip", ["-o", mainArchivePath, "-d", join(staging, "main")], {
     stdio: "pipe",
   });
@@ -68,8 +72,8 @@ export async function syncVisionArtifactPair({
       `candidate manifest commit mismatch: expected ${commit}, got ${candidateManifest.sourceCommit}`,
     );
   }
-  const runtimeZipName = candidateFiles.find((name) =>
-    name.startsWith("vending-vision-") && name.endsWith(".zip"),
+  const runtimeZipName = candidateFiles.find(
+    (name) => name.startsWith("vending-vision-") && name.endsWith(".zip"),
   );
   if (!runtimeZipName) {
     throw new Error("candidate archive is missing the runtime zip");

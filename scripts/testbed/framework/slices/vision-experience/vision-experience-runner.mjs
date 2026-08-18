@@ -1,10 +1,11 @@
+import { spawnSync } from "node:child_process";
+import { writeFile } from "node:fs/promises";
+import { pathToFileURL } from "node:url";
+
 import { buildAcceptanceReport } from "../../acceptance-report.mjs";
 import { CdpTestAdapter } from "../../cdp-adapter.mjs";
 import { waitForCondition } from "../../condition-waiter.mjs";
 import { createProcessRoleManifest } from "../../fault-injection.mjs";
-import { spawnSync } from "node:child_process";
-import { writeFile } from "node:fs/promises";
-import { pathToFileURL } from "node:url";
 import {
   runFastTryOnScenario,
   runDegradationScenario,

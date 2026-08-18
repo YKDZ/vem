@@ -25,7 +25,10 @@ export async function runFastTryOnScenario(adapter, { timeoutMs, pollMs }) {
     "result-surface",
     async () => {
       const current = await readState(adapter);
-      if (current?.state === "acquiring" && current?.preview?.naturalWidth > 0) {
+      if (
+        current?.state === "acquiring" &&
+        current?.preview?.naturalWidth > 0
+      ) {
         previewSeen = true;
       }
       return {
@@ -138,7 +141,10 @@ export async function runObserverSelfHealScenario(
  */
 export async function runGarmentScaleScenario(adapter, { timeoutMs, pollMs }) {
   const initial = await readState(adapter);
-  if (initial?.state !== "completed" || typeof initial?.resultUrl !== "string") {
+  if (
+    initial?.state !== "completed" ||
+    typeof initial?.resultUrl !== "string"
+  ) {
     throw new Error("garment scale scenario requires a completed result");
   }
   const beforeUrl = initial.resultUrl;

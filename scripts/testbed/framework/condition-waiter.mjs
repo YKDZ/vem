@@ -9,11 +9,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 export async function waitForCondition(
   name,
   predicate,
-  {
-    timeoutMs = 60_000,
-    pollMs = 250,
-    signal = undefined,
-  } = {},
+  { timeoutMs = 60_000, pollMs = 250, signal = undefined } = {},
 ) {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new TypeError("timeoutMs must be a positive finite number");

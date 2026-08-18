@@ -27,7 +27,9 @@ describe("waiter duplication audit", () => {
     );
     const violations = auditDuplicatedWaiters(root);
     assert.ok(
-      violations.some((entry) => entry.includes("duplicated-wait-for-condition")),
+      violations.some((entry) =>
+        entry.includes("duplicated-wait-for-condition"),
+      ),
     );
     assert.throws(() => assertNoDuplicatedWaiters(root), /duplicated waiter/);
   });
