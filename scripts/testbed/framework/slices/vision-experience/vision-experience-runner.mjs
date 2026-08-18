@@ -123,6 +123,8 @@ export async function main(args = process.argv.slice(2)) {
       await writeFile(outPath, serialized, "utf8");
     }
     process.stdout.write(serialized);
+    // 轨道结束后恢复基线：Machine UI 回到 Catalog，避免干扰后续轨道。
+    await adapter.run("navigate", ["#/catalog"]).catch(() => {});
   } finally {
     await adapter.close();
   }
