@@ -160,9 +160,12 @@ export class CdpTestAdapter {
       const ready = (payload.roles ?? []).every(
         (entry) => entry?.ready === true && entry?.pid !== null,
       );
+      const pids = (payload.roles ?? [])
+        .filter((entry) => entry?.pid !== null)
+        .map((entry) => entry.pid);
       return {
         exitCode: ready ? 0 : 1,
-        stdout: ready ? "ready" : "not-ready",
+        stdout: JSON.stringify({ ready, pids }),
         stderr: "",
       };
     }

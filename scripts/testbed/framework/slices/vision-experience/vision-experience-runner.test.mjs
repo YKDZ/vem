@@ -114,6 +114,46 @@ describe("visionExperience slice runner", () => {
     assert.equal(report.businessSets[0].assertionCount, 7);
   });
 
+  it("waits for a stable Vision role PID set before starting the flow", async () => {
+    let readyPolls = 0;
+    let navigateCalls = 0;
+    const adapter = fakeUiAdapter();
+    const originalRun = adapter.run.bind(adapter);
+    adapter.run = async (command, args = []) => {
+      if (command === "navigate") navigateCalls += 1;
+      if (command === "vision-ready") {
+        readyPolls += 1;
+        if (readyPolls <= 2) {
+          return {
+            exitCode: 1,
+            stdout: JSON.stringify({ ready: false, pids: [100 + readyPolls] }),
+            stderr: "",
+          };
+        }
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({ ready: true, pids: [999, 1000] }),
+          stderr: "",
+        };
+      }
+      return originalRun(command, args);
+    };
+    const report = await runVisionExperienceSlice({
+      adapter,
+      includeGarmentScale: false,
+      visionStabilityMs: 40,
+      visionStabilityTimeoutMs: 2_000,
+      timeoutMs: 2_000,
+      pollMs: 10,
+    });
+    assert.equal(report.businessSets[0].status, "passed");
+    assert.equal(navigateCalls, 1);
+    assert.ok(
+      readyPolls >= 4,
+      `expected multiple readiness polls, got ${readyPolls}`,
+    );
+  });
+
   it("covers manual capture and departure cancellation", async () => {
     const statePath = "ui/try-on-state.json";
     let fastEntries = 0;

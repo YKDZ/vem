@@ -30,6 +30,8 @@ export async function runVisionExperienceSlice({
   stopOwner = null,
   timeoutMs = 60_000,
   pollMs = 250,
+  visionStabilityMs = 10_000,
+  visionStabilityTimeoutMs = 60_000,
 }) {
   await waitForCondition(
     "vision-ready",
@@ -43,6 +45,11 @@ export async function runVisionExperienceSlice({
     },
     { timeoutMs: Math.max(timeoutMs, 300_000), pollMs: 1_000 },
   );
+  await waitForVisionStable(adapter, {
+    timeoutMs: visionStabilityTimeoutMs,
+    stabilityMs: visionStabilityMs,
+    pollMs: 1_000,
+  });
   const fast = await runFastTryOnScenario(adapter, { timeoutMs, pollMs });
   const assertions = [...fast.assertions];
   if (includeSelfHeal && manifest) {
@@ -84,6 +91,50 @@ export async function runVisionExperienceSlice({
     pass: 1,
     businessSets: [{ name: "visionExperience", assertions }],
   });
+}
+
+/**
+ * 启动期竞态守卫：Vision 角色可能刚 ready 又立刻重启（owner 拉起/旧进程退出）。
+ * 只有角色 PID 集合在 stabilityMs 窗口内保持不变，才认为 Vision 已经稳定，
+ * 避免 attempt 发给正在重启的进程。这是有界条件等待，不是重试循环。
+ */
+export async function waitForVisionStable(
+  adapter,
+  { timeoutMs = 60_000, stabilityMs = 10_000, pollMs = 1_000 },
+) {
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
+  let lastSignature = null;
+  let stableSince = null;
+  let lastObservation = null;
+  while (Date.now() < deadline) {
+    const probe = await adapter.run("vision-ready");
+    let signature;
+    try {
+      const parsed = JSON.parse(probe.stdout ?? "");
+      signature = JSON.stringify(parsed?.pids ?? null);
+    } catch {
+      // 非 JSON 的 fake 适配器不提供 PID 数据，ready 已由 vision-ready 门保证。
+      return probe.stdout ?? "";
+    }
+    lastObservation = { signature, exitCode: probe.exitCode };
+    if (signature !== lastSignature) {
+      lastSignature = signature;
+      stableSince = Date.now();
+    } else if (Date.now() - stableSince >= stabilityMs) {
+      return signature;
+    }
+    await new Promise((resolvePromise) =>
+      setTimeout(
+        resolvePromise,
+        Math.min(pollMs, Math.max(1, deadline - Date.now())),
+      ),
+    );
+  }
+  const durationMs = Date.now() - startedAt;
+  throw new Error(
+    `vision-stable did not become true in ${timeoutMs} ms (observed ${durationMs} ms): ${JSON.stringify(lastObservation ?? null)}`,
+  );
 }
 
 export function validateVisionExperienceSet(set) {
@@ -141,6 +192,10 @@ export async function main(args = process.argv.slice(2)) {
       },
       timeoutMs: 60_000,
       pollMs: 250,
+      visionStabilityMs: Number(process.env.VISION_STABILITY_MS ?? 10_000),
+      visionStabilityTimeoutMs: Number(
+        process.env.VISION_STABILITY_TIMEOUT_MS ?? 60_000,
+      ),
     });
     const serialized = `${JSON.stringify(report, null, 2)}\n`;
     if (outPath) {
