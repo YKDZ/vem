@@ -2,7 +2,9 @@ import { buildAcceptanceReport } from "../../acceptance-report.mjs";
 import {
   runFastTryOnScenario,
   runDegradationScenario,
+  runDepartureScenario,
   runGarmentScaleScenario,
+  runManualCaptureScenario,
   runObserverSelfHealScenario,
 } from "./vision-experience-driver.mjs";
 
@@ -16,6 +18,8 @@ export async function runVisionExperienceSlice({
   includeSelfHeal = false,
   includeGarmentScale = false,
   includeDegradation = false,
+  includeManualCapture = false,
+  includeDeparture = false,
   stopOwner = null,
   timeoutMs = 60_000,
   pollMs = 250,
@@ -40,6 +44,20 @@ export async function runVisionExperienceSlice({
       pollMs,
     });
     assertions.push(...degradation.assertions);
+  }
+  if (includeManualCapture) {
+    const manual = await runManualCaptureScenario(adapter, {
+      timeoutMs,
+      pollMs,
+    });
+    assertions.push(...manual.assertions);
+  }
+  if (includeDeparture) {
+    const departure = await runDepartureScenario(adapter, {
+      timeoutMs,
+      pollMs,
+    });
+    assertions.push(...departure.assertions);
   }
   return buildAcceptanceReport({
     runId: "slice-vision-experience",

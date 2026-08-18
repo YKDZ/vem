@@ -247,3 +247,109 @@ export async function runDegradationScenario(
     }),
   };
 }
+
+async function enterTryOn(adapter) {
+  await adapter.run("navigate", ["#/catalog"]);
+  await adapter.run("click", [
+    '[data-test="catalog-category"][data-category-key="tshirts"]',
+  ]);
+  await adapter.run("click", ['[data-test="catalog-product"]']);
+  await adapter.run("click", ['[data-test="try-on-fast"]']);
+}
+
+/**
+ * 手动采集与不稳定录播：进入试衣后自动拍摄不应在失稳时触发，
+ * 手动按钮可用时点击并完成。
+ */
+export async function runManualCaptureScenario(adapter, { timeoutMs, pollMs }) {
+  await enterTryOn(adapter);
+  let autoCaptured = false;
+  const acquiring = await waitForCondition(
+    "manual-capture-available",
+    async () => {
+      const current = await readState(adapter);
+      if (current?.state === "completed") autoCaptured = true;
+      return {
+        ok: current?.manualCaptureAllowed === true,
+        value: current,
+      };
+    },
+    { timeoutMs, pollMs },
+  );
+  await adapter.run("click", ['[data-test="try-on-manual-capture"]']);
+  const completed = await waitForCondition(
+    "manual-capture-completed",
+    async () => {
+      const current = await readState(adapter);
+      return {
+        ok: current?.state === "completed",
+        value: current,
+      };
+    },
+    { timeoutMs, pollMs },
+  );
+  const assertions = [
+    businessAssertion({
+      id: "auto-capture-not-fired",
+      source: "machine-ui-dom",
+      expected: { fired: false },
+      observed: { fired: autoCaptured },
+    }),
+    businessAssertion({
+      id: "manual-capture-completes",
+      source: "machine-ui-dom",
+      expected: { state: "completed" },
+      observed: { state: completed.state },
+    }),
+  ];
+  return {
+    assertions,
+    report: buildAcceptanceReport({
+      runId: "slice-vision-experience-manual",
+      mode: "fast",
+      pass: 1,
+      businessSets: [{ name: "visionExperience", assertions }],
+    }),
+  };
+}
+
+/**
+ * 离开取消：模拟顶部相机 departure 后当前 attempt 应被取消。
+ */
+export async function runDepartureScenario(adapter, { timeoutMs, pollMs }) {
+  await enterTryOn(adapter);
+  await adapter.run("simulate-departure");
+  const canceled = await waitForCondition(
+    "departure-canceled",
+    async () => {
+      const current = await readState(adapter);
+      return {
+        ok:
+          current?.state === "canceled" &&
+          /离开/.test(current?.phaseText ?? ""),
+        value: current,
+      };
+    },
+    { timeoutMs, pollMs },
+  );
+  const assertions = [
+    businessAssertion({
+      id: "departure-cancels-attempt",
+      source: "machine-ui-dom",
+      expected: { state: "canceled", departureDetected: true },
+      observed: {
+        state: canceled.state,
+        departureDetected: /离开/.test(canceled.phaseText ?? ""),
+      },
+    }),
+  ];
+  return {
+    assertions,
+    report: buildAcceptanceReport({
+      runId: "slice-vision-experience-departure",
+      mode: "fast",
+      pass: 1,
+      businessSets: [{ name: "visionExperience", assertions }],
+    }),
+  };
+}

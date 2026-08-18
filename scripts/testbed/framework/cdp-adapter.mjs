@@ -14,6 +14,9 @@ const STATE_EXPRESSION = `(() => {
   const detail = document.querySelector("[data-test='product-detail-page']");
   const buy = document.querySelector("[data-test='product-buy']");
   const fast = document.querySelector("[data-test='try-on-fast']");
+  const guidance = document.querySelector("[data-test='try-on-guidance']");
+  const manual = document.querySelector("[data-test='try-on-manual-capture']");
+  const phase = document.querySelector("[data-test='try-on-phase']");
   return JSON.stringify({
     route: location.hash,
     state: view?.dataset?.state ?? null,
@@ -27,6 +30,12 @@ const STATE_EXPRESSION = `(() => {
       ? Boolean(fast instanceof HTMLElement)
       : null,
     buyDisabled: buy instanceof HTMLButtonElement ? buy.disabled : null,
+    guidance: view?.dataset?.state === "acquiring"
+      ? guidance?.textContent?.trim() ?? null
+      : null,
+    phaseText: phase?.textContent?.trim() ?? null,
+    manualCaptureAllowed:
+      manual instanceof HTMLButtonElement ? manual.disabled === false : null,
   });
 })()`;
 
