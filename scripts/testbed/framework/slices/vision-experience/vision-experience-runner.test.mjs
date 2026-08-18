@@ -43,6 +43,19 @@ function fakeUiAdapter() {
         }, 50);
         return { exitCode: 0, stdout: "ok", stderr: "" };
       },
+      'click [data-test="try-on-scale-up"]': async () => {
+        const current = JSON.parse(await adapter.readFile(statePath));
+        await adapter.writeFile(
+          statePath,
+          JSON.stringify({
+            ...current,
+            scaleValue: "105%",
+            resultUrl:
+              "http://127.0.0.1:7892/v2/try-on/results/attempt-1?token=y",
+          }),
+        );
+        return { exitCode: 0, stdout: "ok", stderr: "" };
+      },
     },
   });
   return adapter;
@@ -63,10 +76,12 @@ describe("visionExperience slice runner", () => {
     ]);
     const report = await runVisionExperienceSlice({
       adapter: fakeUiAdapter(),
+      includeGarmentScale: true,
       timeoutMs: 2_000,
       pollMs: 10,
     });
     const result = registry.validateReport(report);
     assert.equal(result.businessSets.visionExperience.status, "passed");
+    assert.equal(report.businessSets[0].assertionCount, 4);
   });
 });

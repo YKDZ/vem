@@ -10,6 +10,10 @@ const STATE_EXPRESSION = `(() => {
   const view = document.querySelector("[data-test='try-on-view']");
   const preview = document.querySelector("[data-test='try-on-acquisition-preview']");
   const result = document.querySelector("[data-test='try-on-result-image']");
+  const scale = document.querySelector("[data-test='try-on-scale-value']");
+  const detail = document.querySelector("[data-test='product-detail-page']");
+  const buy = document.querySelector("[data-test='product-buy']");
+  const fast = document.querySelector("[data-test='try-on-fast']");
   return JSON.stringify({
     route: location.hash,
     state: view?.dataset?.state ?? null,
@@ -18,6 +22,11 @@ const STATE_EXPRESSION = `(() => {
       naturalHeight: Number(preview?.naturalHeight ?? 0),
     },
     resultUrl: result?.getAttribute("src") ?? null,
+    scaleValue: scale?.textContent?.trim() ?? null,
+    tryOnPresent: detail
+      ? Boolean(fast instanceof HTMLElement)
+      : null,
+    buyDisabled: buy instanceof HTMLButtonElement ? buy.disabled : null,
   });
 })()`;
 

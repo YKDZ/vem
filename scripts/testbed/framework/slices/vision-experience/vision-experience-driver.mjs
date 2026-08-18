@@ -132,3 +132,49 @@ export async function runObserverSelfHealScenario(
     }),
   };
 }
+
+/**
+ * 结果锁定中心缩放：完成 Fast 试衣后点击放大，等待 105% 与新的结果 URL。
+ */
+export async function runGarmentScaleScenario(adapter, { timeoutMs, pollMs }) {
+  const initial = await readState(adapter);
+  if (initial?.state !== "completed" || typeof initial?.resultUrl !== "string") {
+    throw new Error("garment scale scenario requires a completed result");
+  }
+  const beforeUrl = initial.resultUrl;
+  await adapter.run("click", ['[data-test="try-on-scale-up"]']);
+  const state = await waitForCondition(
+    "adjusted-garment-scale",
+    async () => {
+      const current = await readState(adapter);
+      return {
+        ok:
+          current?.scaleValue === "105%" &&
+          typeof current?.resultUrl === "string" &&
+          current.resultUrl !== beforeUrl,
+        value: current,
+      };
+    },
+    { timeoutMs, pollMs },
+  );
+  const assertions = [
+    businessAssertion({
+      id: "garment-scale-adjusts",
+      source: "machine-ui-dom",
+      expected: { scale: "105%", changed: true },
+      observed: {
+        scale: state.scaleValue,
+        changed: state.resultUrl !== beforeUrl,
+      },
+    }),
+  ];
+  return {
+    assertions,
+    report: buildAcceptanceReport({
+      runId: "slice-vision-experience-scale",
+      mode: "fast",
+      pass: 1,
+      businessSets: [{ name: "visionExperience", assertions }],
+    }),
+  };
+}
