@@ -20,7 +20,7 @@ function fakeUiAdapter() {
         await writeState({ route: "#/catalog", state: "idle" });
         return { exitCode: 0, stdout: "ok", stderr: "" };
       },
-      "click catalog-product": async () => {
+      'click [data-test="catalog-product"]': async () => {
         await writeState({
           route: "#/products/product:1",
           tryOnPresent: true,
@@ -28,7 +28,12 @@ function fakeUiAdapter() {
         });
         return { exitCode: 0, stdout: "ok", stderr: "" };
       },
-      "click try-on-fast": async () => {
+      'click [data-test="catalog-category"][data-category-key="tshirts"]':
+        async () => {
+        await writeState({ route: "#/catalog", state: "idle" });
+        return { exitCode: 0, stdout: "ok", stderr: "" };
+      },
+      'click [data-test="try-on-fast"]': async () => {
         await writeState({
           route: "#/try-on?catalogKey=product%3A1&mode=fast",
           state: "acquiring",
@@ -76,8 +81,22 @@ describe("visionExperience vertical slice driver", () => {
       },
       commands: {
         "navigate #/catalog": () => ({ exitCode: 0, stdout: "ok", stderr: "" }),
-        "click catalog-product": () => ({ exitCode: 0, stdout: "ok", stderr: "" }),
-        "click try-on-fast": () => ({ exitCode: 0, stdout: "ok", stderr: "" }),
+        'click [data-test="catalog-category"][data-category-key="tshirts"]':
+          () => ({
+          exitCode: 0,
+          stdout: "ok",
+          stderr: "",
+          }),
+        'click [data-test="catalog-product"]': () => ({
+          exitCode: 0,
+          stdout: "ok",
+          stderr: "",
+        }),
+        'click [data-test="try-on-fast"]': () => ({
+          exitCode: 0,
+          stdout: "ok",
+          stderr: "",
+        }),
       },
     });
     await assert.rejects(

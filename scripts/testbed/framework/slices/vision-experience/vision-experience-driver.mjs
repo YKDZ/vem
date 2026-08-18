@@ -14,8 +14,11 @@ async function readState(adapter) {
  */
 export async function runFastTryOnScenario(adapter, { timeoutMs, pollMs }) {
   await adapter.run("navigate", ["#/catalog"]);
-  await adapter.run("click", ["catalog-product"]);
-  await adapter.run("click", ["try-on-fast"]);
+  await adapter.run("click", [
+    '[data-test="catalog-category"][data-category-key="tshirts"]',
+  ]);
+  await adapter.run("click", ['[data-test="catalog-product"]']);
+  await adapter.run("click", ['[data-test="try-on-fast"]']);
   let previewSeen = false;
   const state = await waitForCondition(
     "result-surface",

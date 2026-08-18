@@ -1,7 +1,6 @@
 import {
   CdpClient,
   activateVisibleSelector,
-  discoverMachineUiTarget,
   enablePageRuntime,
   evaluateExpression,
   rewriteWebSocketDebuggerUrl,
@@ -33,10 +32,24 @@ export class CdpTestAdapter {
   }
 
   async connect({ timeoutMs = 15_000 } = {}) {
-    const target = await discoverMachineUiTarget({
-      endpoint: this.endpoint,
-      timeoutMs,
-    });
+    const deadline = Date.now() + timeoutMs;
+    let target = null;
+    while (Date.now() < deadline && !target) {
+      const targets = await (await fetch(`${this.endpoint}/json`)).json();
+      target = targets.find(
+        (candidate) =>
+          candidate.type === "page" &&
+          candidate.url.includes("tauri.localhost"),
+      );
+      if (!target) {
+        await new Promise((resolvePromise) =>
+          setTimeout(resolvePromise, 250),
+        );
+      }
+    }
+    if (!target) {
+      throw new Error("Machine UI CDP target was not found");
+    }
     this.client = new CdpClient(
       rewriteWebSocketDebuggerUrl(target.webSocketDebuggerUrl, this.endpoint),
     );
