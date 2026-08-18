@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { createFakeTestAdapter } from "../../test-adapter.mjs";
-import { runFastTryOnScenario } from "./vision-experience-driver.mjs";
+import { createProcessRoleManifest } from "../../fault-injection.mjs";
+import {
+  runFastTryOnScenario,
+  runObserverSelfHealScenario,
+} from "./vision-experience-driver.mjs";
 
 function fakeUiAdapter() {
   const statePath = "ui/try-on-state.json";
@@ -102,6 +106,67 @@ describe("visionExperience vertical slice driver", () => {
     await assert.rejects(
       runFastTryOnScenario(adapter, { timeoutMs: 30, pollMs: 5 }),
       /result-surface.*did not become true/,
+    );
+  });
+
+  it("recovers from an observer stop through the declared role boundary", async () => {
+    const statePath = "ui/try-on-state.json";
+    const writeState = (value) =>
+      adapter.writeFile(statePath, JSON.stringify(value));
+    const adapter = createFakeTestAdapter({
+      files: {
+        [statePath]: JSON.stringify({
+          route: "#/catalog",
+          state: "idle",
+          tryOnPresent: true,
+        }),
+      },
+      commands: {
+        "stop-vision-role --role observer": async () => {
+          await writeState({
+            route: "#/products/product:1",
+            state: "idle",
+            tryOnPresent: false,
+          });
+          return { exitCode: 0, stdout: "stopped", stderr: "" };
+        },
+        "probe-vision-role observer": () => ({
+          exitCode: 0,
+          stdout: "dead",
+          stderr: "",
+        }),
+        'click [data-test="try-on-fast"]': async () => {
+          await writeState({
+            route: "#/try-on?catalogKey=product%3A1&mode=fast",
+            state: "completed",
+            tryOnPresent: true,
+            preview: { naturalWidth: 720, naturalHeight: 1280 },
+            resultUrl:
+              "http://127.0.0.1:7892/v2/try-on/results/healed?token=y",
+          });
+          return { exitCode: 0, stdout: "ok", stderr: "" };
+        },
+      },
+    });
+    const manifest = createProcessRoleManifest({
+      roles: {
+        observer: {
+          stopCommand: ["stop-vision-role", "--role", "observer"],
+          probeCommand: ["probe-vision-role", "observer"],
+        },
+      },
+    });
+    const outcome = await runObserverSelfHealScenario(
+      adapter,
+      manifest,
+      { timeoutMs: 2_000, pollMs: 10 },
+    );
+    assert.ok(
+      outcome.assertions.some(
+        (assertion) =>
+          assertion.id === "observer-self-heal-completes" &&
+          assertion.status === "passed",
+      ),
     );
   });
 });
