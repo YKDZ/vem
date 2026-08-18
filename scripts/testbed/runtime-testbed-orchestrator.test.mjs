@@ -14,9 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
-import { canonicalAiAcceptanceInputManifest } from "./ai-acceptance-input-provisioning.mjs";
 import {
-  admitAiAcceptanceInputs,
   createRunId,
   identicalVisionCoreArtifactSnapshot,
   guestAcceptanceExecutionBudget,
@@ -72,150 +70,6 @@ function compactCanonical(value) {
           )
         : entry;
   return `${JSON.stringify(sort(value))}\n`;
-}
-
-function writeAiAdmissionManifest(root) {
-  const file = (name, content, sourceCommit) => {
-    const hostPath = join(root, name);
-    mkdirSync(join(hostPath, ".."), { recursive: true });
-    writeFileSync(hostPath, content);
-    return {
-      hostPath,
-      sha256: digest(content),
-      byteSize: Buffer.byteLength(content),
-      ...(sourceCommit ? { sourceCommit } : {}),
-    };
-  };
-  const directory = (name, entries) => {
-    const hostPath = join(root, name);
-    mkdirSync(hostPath, { recursive: true });
-    const members = entries
-      .map(([memberName, content]) => {
-        const memberPath = join(hostPath, memberName);
-        mkdirSync(join(memberPath, ".."), { recursive: true });
-        writeFileSync(memberPath, content);
-        return {
-          name: memberName,
-          sha256: digest(content),
-          byteSize: Buffer.byteLength(content),
-        };
-      })
-      .sort((left, right) => left.name.localeCompare(right.name));
-    return {
-      hostPath,
-      members,
-      byteSize: members.reduce((sum, member) => sum + member.byteSize, 0),
-      sha256: digest(
-        members
-          .map(
-            (member) =>
-              `${member.name}\0${member.sha256}\0${member.byteSize}\n`,
-          )
-          .join(""),
-      ),
-    };
-  };
-  const sourceCommit = "a".repeat(40);
-  const candidateInput = directory("candidate", [
-    ["candidate.zip", "candidate"],
-    ["candidate-manifest.json", "manifest"],
-    ["github-build-provenance.sigstore.json", "attestation"],
-    ["trusted-builder-evidence.json", "builder"],
-  ]);
-  const windowsProofInput = directory("proof", [
-    ["precutover-ai-proof.json", "proof"],
-    ["precutover-ai-proof.sigstore.json", "proof-attestation"],
-    ["trusted-precutover-proof-evidence.json", "proof-evidence"],
-  ]);
-  const candidateByName = Object.fromEntries(
-    candidateInput.members.map((member) => [member.name, member]),
-  );
-  const proofByName = Object.fromEntries(
-    windowsProofInput.members.map((member) => [member.name, member]),
-  );
-  const authority = {
-    candidate: {
-      attestationBundleSha256:
-        candidateByName["github-build-provenance.sigstore.json"].sha256,
-      embeddedManifestSha256: candidateByName["candidate-manifest.json"].sha256,
-      sourceCommit,
-      subjectSha256: candidateByName["candidate.zip"].sha256,
-      trustedBuilderEvidenceSha256:
-        candidateByName["trusted-builder-evidence.json"].sha256,
-    },
-    contract: {
-      bundleDigest: "b".repeat(64),
-      manifestSha256: "c".repeat(64),
-      protocol: "vem.vision.v2",
-    },
-    modelPack: {
-      archive: { byteSize: 10, sha256: digest("model-pack") },
-      descriptorSha256: "d".repeat(64),
-      sourceRevision: "e".repeat(40),
-    },
-    proofCompanion: {
-      archiveSha256: "f".repeat(64),
-      descriptorSha256: "1".repeat(64),
-      sourceCommit: "2".repeat(40),
-    },
-    resources: {
-      aiLockSha256: "3".repeat(64),
-      runtimeDescriptorSha256: "4".repeat(64),
-      sourceDescriptorSha256: "5".repeat(64),
-      workerExecutableSha256: "6".repeat(64),
-    },
-    schemaVersion: "vem.testbed.ai-acceptance-authority/v1",
-    scope: "installed_windows_acceptance",
-    trustStatus: "verified_for_acceptance",
-    visionCore: {
-      recordedFixtureArchive: {
-        format: "vending-vision-main-artifacts/v1",
-        sha256: digest("fixture"),
-        sourceCommit,
-      },
-      runtimeArchive: {
-        format: "vending-vision-candidate-artifact/v3",
-        sha256: candidateByName["candidate.zip"].sha256,
-        sourceCommit,
-      },
-    },
-    windowsProof: {
-      authorityDescriptorSha256: `sha256:${"7".repeat(64)}`,
-      proofAttestationBundleSha256:
-        proofByName["precutover-ai-proof.sigstore.json"].sha256,
-      signedProofSha256: proofByName["precutover-ai-proof.json"].sha256,
-      trustedProofEvidenceSha256:
-        proofByName["trusted-precutover-proof-evidence.json"].sha256,
-      workflowSha: "8".repeat(40),
-    },
-  };
-  const authorityRaw = compactCanonical(authority);
-  const modelArchive = file("model-pack.zip", "model-pack");
-  const manifest = canonicalAiAcceptanceInputManifest({
-    acceptanceAuthorityReceipt: file("authority.json", authorityRaw),
-    candidateInput,
-    installedVisionRuntimeArchive: {
-      ...file("vision-runtime.zip", "candidate"),
-      sourceCommit,
-    },
-    modelPack: {
-      archive: modelArchive,
-      delivery: { kind: "host-local-cache" },
-      materializedRoot: directory("model-pack", [
-        ["weights/model.bin", "weights"],
-      ]),
-    },
-    phase: "measurement",
-    recordedFixtureArchive: {
-      ...file("recorded-fixtures.zip", "fixture"),
-      sourceCommit,
-    },
-    schemaVersion: "vem-runtime-testbed-ai-input/v4",
-    windowsProofInput,
-  });
-  const manifestPath = join(root, "measurement-ai-input.json");
-  writeFileSync(manifestPath, manifest);
-  return { authority, manifestPath };
 }
 
 describe("runtime testbed scheduler contract", () => {
@@ -349,35 +203,6 @@ describe("runtime testbed scheduler contract", () => {
     );
   });
 
-  it("runs measurement as an explicit successful collection operation", () => {
-    const options = parseOrchestratorOptions([
-      "run",
-      "--mode",
-      "measurement",
-      "--commit",
-      sha,
-      "--config",
-      "/etc/vem/testbed.json",
-    ]);
-    assert.equal(options.mode, "measurement");
-    const source = readFileSync(
-      new URL("./runtime-testbed-orchestrator.mjs", import.meta.url),
-      "utf8",
-    );
-    assert.match(source, /mode === "measurement" \? "fast" : mode/);
-    assert.match(source, /measured_not_accepted/);
-    assert.match(source, /measurementPending/);
-    assert.match(source, /materializeHostCalibrationSourceSnapshot/);
-    assert.match(source, /sourceInputPath: hostSource\.inputPath/);
-    assert.match(source, /measurement-evidence-bundle/);
-    assert.match(source, /-Measurement/);
-    assert.match(source, /if \(mode === "measurement"\) throw error/);
-    assert.match(
-      source,
-      /validateMeasurementEvidenceTransport\(transportRoot\)/,
-    );
-  });
-
   it("tells the guest which reconstructed pass owns the runtime build", () => {
     const source = readFileSync(
       new URL("./runtime-testbed-orchestrator.mjs", import.meta.url),
@@ -432,7 +257,7 @@ describe("runtime testbed scheduler contract", () => {
     );
   });
 
-  it("accepts the AI input manifest only as an external host configuration", () => {
+  it("accepts only the functional AI input in host configuration", () => {
     const config = validateHostConfig({
       schemaVersion: "vem-runtime-testbed-host/v1",
       mirrorPath: "/var/lib/vem-testbed/mirror.git",
@@ -442,64 +267,19 @@ describe("runtime testbed scheduler contract", () => {
       hostPrivateAddress: "192.0.2.22",
       guestSourcePath: "C:\\VEM\\source",
       visionCoreArtifacts: visionCore("/var/lib/vem-testbed"),
-      aiVirtualTryOnInputManifest: "/var/lib/vem-testbed/ai-input.json",
-      aiVirtualTryOnAllowedHttpsOrigins: ["https://cache.example.test"],
+      aiVirtualTryOnFunctional: {
+        materializedModelPackRoot: "/var/lib/vem-testbed/model-pack",
+        modelPackArchive: "/var/lib/vem-testbed/model-pack.zip",
+        modelPackByteSize: 1024,
+        modelPackSha256: "a".repeat(64),
+      },
     });
     assert.equal(
-      config.aiVirtualTryOnInputManifest,
-      "/var/lib/vem-testbed/ai-input.json",
-    );
-    assert.deepEqual(config.aiVirtualTryOnAllowedHttpsOrigins, [
-      "https://cache.example.test",
-    ]);
-    assert.throws(
-      () =>
-        validateHostConfig({
-          ...config,
-          aiVirtualTryOnAllowedHttpsOrigins: "https://cache.example.test",
-        }),
-      /must be an array/,
+      config.aiVirtualTryOnFunctional.modelPackArchive,
+      "/var/lib/vem-testbed/model-pack.zip",
     );
   });
 
-  it("forwards the host proof-attestation bypass to AI authority admission", async () => {
-    const root = mkdtempSync(join(tmpdir(), "vem-ai-authority-environment-"));
-    try {
-      const { authority, manifestPath } = writeAiAdmissionManifest(root);
-      let authorityEnvironment;
-      await admitAiAcceptanceInputs(
-        {
-          aiVirtualTryOnInputManifest: manifestPath,
-          aiVirtualTryOnAuthority: {
-            ghBinary: "/trusted/gh",
-            gitBinary: "/trusted/git",
-            unzipBinary: "/trusted/unzip",
-            visionRepository: "/trusted/vision.git",
-            visionSourceRef: "refs/tags/v1.2.3",
-          },
-          environment: {
-            CARGO_HOME: "/cache/cargo",
-            VEM_VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION: "1",
-          },
-          visionCoreArtifacts: {
-            recordedFixtureArchive: {
-              hostPath: join(root, "recorded-fixtures.zip"),
-            },
-          },
-        },
-        root,
-        async (_options, environment) => {
-          authorityEnvironment = environment;
-          return authority;
-        },
-      );
-      assert.deepEqual(authorityEnvironment, {
-        VEM_VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION: "1",
-      });
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
 
   it("requires independent host-local Vision core artifacts before any AI input", () => {
     assert.throws(
@@ -645,56 +425,6 @@ describe("runtime testbed scheduler contract", () => {
       );
       assert.match(guest, /Properties\["visionCore"\]/);
       assert.doesNotMatch(guest, /Get-VisionMainArtifactCache/);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it("rejects the installed Vision pair when it diverges from host-verified acceptance authority", async () => {
-    const root = mkdtempSync(join(tmpdir(), "vem-ai-authority-core-"));
-    try {
-      const runtime = Buffer.from("runtime");
-      const fixture = Buffer.from("fixture");
-      writeFileSync(join(root, "vision-runtime.zip"), runtime);
-      writeFileSync(join(root, "recorded-fixtures.zip"), fixture);
-      const config = validateHostConfig({
-        schemaVersion: "vem-runtime-testbed-host/v1",
-        mirrorPath: join(root, "mirror.git"),
-        workspaceRoot: join(root, "workspaces"),
-        stateRoot: join(root, "state"),
-        baselineContract: join(root, "baseline.json"),
-        hostPrivateAddress: "192.0.2.22",
-        guestSourcePath: "C:\\VEM\\source",
-        visionCoreArtifacts: {
-          runtimeArchive: {
-            hostPath: join(root, "vision-runtime.zip"),
-            sha256: digest(runtime),
-            byteSize: runtime.length,
-            sourceCommit: "a".repeat(40),
-          },
-          recordedFixtureArchive: {
-            hostPath: join(root, "recorded-fixtures.zip"),
-            sha256: digest(fixture),
-            byteSize: fixture.length,
-            sourceCommit: "b".repeat(40),
-          },
-        },
-      });
-      await assert.rejects(
-        loadVisionCoreArtifacts(config, {
-          visionCore: {
-            runtimeArchive: {
-              sha256: "0".repeat(64),
-              sourceCommit: "a".repeat(40),
-            },
-            recordedFixtureArchive: {
-              sha256: digest(fixture),
-              sourceCommit: "b".repeat(40),
-            },
-          },
-        }),
-        /do not match host-verified AI acceptance authority/,
-      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -1309,13 +1039,6 @@ describe("runtime testbed scheduler contract", () => {
       ),
     ];
     const aiTransfers = [
-      directory("/snapshot/candidate", `${aiRoot}\\candidate`),
-      directory("/snapshot/windows-proof", `${aiRoot}\\windows-proof`),
-      file(
-        "/snapshot/acceptance-authority-receipt.json",
-        `${aiRoot}\\acceptance-authority-receipt.json`,
-        2_570,
-      ),
       file(
         "/snapshot/vision-runtime.zip",
         `${aiRoot}\\vision-runtime.zip`,
@@ -1864,9 +1587,6 @@ describe("runtime testbed scheduler contract", () => {
         config: { stateRoot: root },
         pass: 1,
         preparation: {
-          acceptanceAuthorityReceipt: {
-            value: { resources: { workerExecutableSha256: "a".repeat(64) } },
-          },
           guestInput: {
             inputRoot: "C:\\testbed\\ai",
             identities: { manifestSha256: "b".repeat(64) },
@@ -1881,7 +1601,6 @@ describe("runtime testbed scheduler contract", () => {
       });
       assert.equal(guestInput.aiVirtualTryOn.inputRoot, "C:\\testbed\\ai");
       assert.deepEqual(guestInput.workflowIdentity.aiVirtualTryOn, {
-        authority: { resources: { workerExecutableSha256: "a".repeat(64) } },
         input: { manifestSha256: "b".repeat(64) },
       });
       writeFileSync(
@@ -1896,7 +1615,6 @@ describe("runtime testbed scheduler contract", () => {
         config: { stateRoot: root },
         pass: 1,
         preparation: {
-          acceptanceAuthorityReceipt: { value: {} },
           guestInput: { inputRoot: "C:\\testbed\\ai", identities: {} },
         },
       });

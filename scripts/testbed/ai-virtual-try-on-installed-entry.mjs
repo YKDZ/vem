@@ -1546,18 +1546,16 @@ export async function assembleInstalledAiTryOnAcceptanceFiles(options) {
     if (!/^[a-f0-9]{40}$/.test(functionalIdentity.sourceCommit ?? ""))
       throw new Error("functional AI source commit is invalid");
   }
-  const proof = functionalIdentity
-    ? {
-        modelPack: { archive: { sha256: functionalIdentity.modelPackSha256 } },
-        resources: {
-          runtimeDescriptorSha256: functionalIdentity.runtimeDescriptorSha256,
-        },
-        candidate: { sourceCommit: functionalIdentity.sourceCommit },
-      }
-    : readCanonicalJson(
-        join(options.windowsProofInputDirectory, "precutover-ai-proof.json"),
-        "trusted Windows proof",
-      );
+  if (!functionalIdentity) {
+    throw new Error("functional AI identity is required");
+  }
+  const proof = {
+    modelPack: { archive: { sha256: functionalIdentity.modelPackSha256 } },
+    resources: {
+      runtimeDescriptorSha256: functionalIdentity.runtimeDescriptorSha256,
+    },
+    candidate: { sourceCommit: functionalIdentity.sourceCommit },
+  };
   const missingDegradation =
     validateMissingDegradationSupport(degradationSupport);
   const corruptDegradation = validateCorruptDegradationSupport(

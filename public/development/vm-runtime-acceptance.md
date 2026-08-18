@@ -31,67 +31,12 @@
   fixture ZIP。客体启动只使用这两个预置输入，绝不以 Vision 缓存缺失为由查询 GitHub。
 
 当执行完整验收或 `fast --focus aiVirtualTryOn` 时，配置还必须提供
-`aiVirtualTryOnInputManifest`，它是宿主机本地的绝对路径。清单版本为
-`vem-runtime-testbed-ai-input/v4`。它先声明 `phase`：`measurement` 不携带任何
-校准输入；`formal` 必须且只能额外携带三项校准输入（regional policy、receipt 和一个
-exact-eight 的自包含 calibration-source bundle）。该 bundle 的根成员仍名为
-`calibration-source-input.json`，连同五份绑定文档和两份 regional sidecar；宿主 admission
-复核闭包后把全部内部绝对引用重写到客体私有的固定输入根，客体从 bundle 内重新读取闭包，
-不会依赖原 host 路径。两种阶段都逐项声明候选 exact-four 目录、Windows proof exact-three
-目录、由 `vem.testbed.ai-acceptance-authority/v1` 验证器签发的验收 authority receipt、
-Vision runtime、录制 fixture、model-pack archive 和已物化 model root 的 host 路径、
-SHA-256 与字节数；目录还逐项锁定成员。authority receipt 的 scope 固定为
-`installed_windows_acceptance`、trustStatus 固定为 `verified_for_acceptance`，并交叉
-绑定候选、Windows proof、proof companion、模型、worker、可安装 runtime/fixture、source 与 Vision V2
-contract 身份；它不代表 release-set、数据库、媒体或后端发布审批。客体路径不是清单
-输入，而是编排器从 manifest SHA 派生为固定的 testbed `ai-inputs` 根。清单必须是
-canonical JSON，不能含 token 或其他凭据。默认交付
-方式是 `host-local-cache`：编排器验证后直接预置到 VM，不下载也不让 VM 访问
-GitHub。若确有 HTTPS 来源，须额外在宿主机配置的
-`aiVirtualTryOnAllowedHttpsOrigins` 中声明精确 origin，且 URL 不得含凭据、查询
-参数或 fragment。配置、清单和大文件都留在宿主机，不提交到仓库。
-
-启用 AI 输入时，宿主配置还必须提供 `aiVirtualTryOnAuthority`，其中的 `ghBinary`、
-`gitBinary`、`unzipBinary`、`visionRepository` 和 `visionSourceRef` 用于在每个 host admission 重跑 candidate exact-four 的可信构建者
-attestation 与 Windows proof exact-three 验证；编排器要求该重算结果与清单中的 canonical
-authority receipt 完全相同。宿主还从本地 Vision repository 的候选 source commit
-逐字节复核完整 recorded-video 源树与 fixture ZIP 加 manifest 的精确闭包；proof companion 只代表冻结证明执行器，
-不能冒充 fixture。随后它要求实际安装的 `visionCoreArtifacts` 与 authority 的
-`visionCore` runtime/fixture 身份完全一致，避免仅传输但未安装另一套 AI runtime/fixture。`measurement` 输入可被预置，
-但当前只记录“尚非验收证据”的失败闭环；`formal` 才读取其精确三项校准文件。
-
-在宿主机上以生产 CLI 生成这些不可变清单。先为一次测量生成 v4 清单；测量完成后，
-将客体的 exact-eight closure 复制并 rehome 到宿主机，再以该同一份 measurement 清单、
-校准产物和 rehomed bundle 生成 formal 清单：
-
-```bash
-node scripts/testbed/ai-acceptance-input-manifest.mjs create-measurement \
-  --acceptance-authority-receipt /absolute/authority.json \
-  --candidate-input-directory /absolute/candidate-input \
-  --windows-proof-input-directory /absolute/windows-proof-input \
-  --installed-vision-runtime-archive /absolute/vision-runtime.zip \
-  --recorded-fixture-archive /absolute/recorded-fixtures.zip \
-  --model-pack-archive /absolute/model-pack.zip \
-  --materialized-model-pack-root /absolute/model-pack \
-  --output /absolute/manifests/measurement.json
-
-node scripts/testbed/calibrate-ai-regional-evidence.mjs \
-  --input /absolute/rehomed-calibration-source/calibration-source-input.json \
-  --out-policy /absolute/calibration/calibrated-regional-policy.json \
-  --out-receipt /absolute/calibration/calibration-receipt.json
-
-node scripts/testbed/ai-acceptance-input-manifest.mjs create-formal \
-  --measurement-manifest /absolute/manifests/measurement.json \
-  --calibrated-regional-policy /absolute/calibration/calibrated-regional-policy.json \
-  --calibration-receipt /absolute/calibration/calibration-receipt.json \
-  --calibration-source-input-directory /absolute/rehomed-calibration-source \
-  --output /absolute/manifests/formal.json
-```
-
-`create-formal` 重新验证 measurement 清单锁定的全部 release identity，只添加三项
-formal calibration descriptor，并再次运行 v4 清单验证。两个命令均使用 canonical JSON
-和排他创建；formal 输出不得位于 candidate、Windows proof、model root 或 calibration
-source 输入目录中，也不能通过符号链接祖先绕过该限制。
+`aiVirtualTryOnFunctional`，其中包含宿主机本地的 `modelPackArchive`、
+`materializedModelPackRoot`、`modelPackSha256` 和 `modelPackByteSize`。编排器按
+摘要、字节数和目录成员验证这些输入后，把它们预置到 VM 的固定
+`D:\runtime-cache\v1\acceptance-inputs\functional\<manifest-sha>` 路径。AI 轨道只
+使用 functional 模式；正式的签名权威、proof attestation 和 calibration receipt
+链路已从默认验收路径移除，等未来发布治理需要时再单独设计。
 
 `full` 的第一轮还会从已验证的 workflow identity 生成 canonical
 `vem-runtime-testbed-acceptance-release/v1` 清单，绑定 VEM source commit、Service API

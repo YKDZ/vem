@@ -155,46 +155,6 @@ describe("Vision V2 hard-cutover absence guard", () => {
     }
   });
 
-  it("allows only the digest-bound DB absence query and rejects a runtime append", () => {
-    const root = mkdtempSync(join(tmpdir(), "vem-hard-cutover-db-proof-"));
-    try {
-      initGuardRepo(root);
-      const relativePath = "scripts/precutover-database-backup.mjs";
-      const target = join(root, relativePath);
-      mkdirSync(dirname(target), { recursive: true });
-      writeFileSync(
-        target,
-        readFileSync(
-          resolve(import.meta.dirname, "../precutover-database-backup.mjs"),
-        ),
-      );
-      execFileSync("git", ["add", relativePath], { cwd: root });
-      assert.deepEqual(scanHardCutoverAbsence({ root }), []);
-
-      const retired = ["sil", "houette"].join("");
-      writeFileSync(
-        target,
-        `${readFileSync(target, "utf8")}\nspawn("legacy-runtime", ["try_on_${retired}"]);\n`,
-      );
-      const violations = scanHardCutoverAbsence({ root });
-      assert.ok(
-        violations.includes(
-          `${relativePath}:legacy-absence-proof-digest-or-role`,
-        ),
-      );
-      assert.ok(
-        violations.some(
-          (entry) =>
-            entry.startsWith(`${relativePath}:legacy-`) &&
-            !entry.endsWith("digest-or-role"),
-        ),
-        "the appended runtime surface remains independently forbidden",
-      );
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
   it("scans every tracked regular file without relying on path or extension", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-hard-cutover-tracked-"));
     try {

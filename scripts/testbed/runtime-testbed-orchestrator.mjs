@@ -17,22 +17,13 @@ import { isIP } from "node:net";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { verifyAiAcceptanceAuthority } from "./ai-acceptance-authority.mjs";
 import {
   buildFunctionalAiAcceptanceGuestInput,
   identicalAiAcceptanceInputSnapshot,
-  materializeHostCalibrationSourceSnapshot,
-  materializeAiAcceptanceInputSnapshot,
-  validateAiAcceptanceInputManifest,
 } from "./ai-acceptance-input-provisioning.mjs";
 import { selectBusinessChecks } from "./business-check-registry.mjs";
-import {
-  adjudicateCalibrationSourceClosure,
-  readCalibrationSourceClosure,
-} from "./calibrate-ai-regional-evidence.mjs";
-import { validateMeasurementEvidenceTransport } from "./measurement-evidence-bundle.mjs";
 
-const MODES = new Set(["fast", "full", "clear_cache", "measurement"]);
+const MODES = new Set(["fast", "full", "clear_cache"]);
 const TERMINAL = new Set([
   "passed",
   "failed",
@@ -158,13 +149,13 @@ export function parseOrchestratorOptions(args) {
   }
   const mode = option(args, "mode");
   if (!MODES.has(mode))
-    throw new Error("--mode must be fast, full, clear_cache, or measurement");
+    throw new Error("--mode must be fast, full, or clear_cache");
   const commit = option(args, "commit").toLowerCase();
   if (!/^[0-9a-f]{40}$/.test(commit)) {
     throw new Error("--commit must be a full 40-character Git SHA");
   }
   const focus = repeatableOption(args, "focus");
-  if (mode !== "fast" && mode !== "measurement" && focus.length > 0) {
+  if (mode !== "fast" && focus.length > 0) {
     throw new Error("--focus is only valid with --mode fast");
   }
   return {
@@ -243,97 +234,6 @@ export function validateHostConfig(value) {
     pathPrepend: pathPrepend.map((path) =>
       absolute(path, "host config pathPrepend entry"),
     ),
-    ...(value.aiVirtualTryOnInputManifest === undefined
-      ? {}
-      : {
-          aiVirtualTryOnInputManifest: absolute(
-            value.aiVirtualTryOnInputManifest,
-            "host config aiVirtualTryOnInputManifest",
-          ),
-        }),
-    ...(value.aiVirtualTryOnAuthority === undefined
-      ? {}
-      : (() => {
-          const authority = value.aiVirtualTryOnAuthority;
-          if (
-            !authority ||
-            typeof authority !== "object" ||
-            Array.isArray(authority)
-          ) {
-            throw new Error(
-              "host config aiVirtualTryOnAuthority must be an object",
-            );
-          }
-          if (
-            Object.keys(authority).sort().join("\0") !==
-            [
-              "ghBinary",
-              "gitBinary",
-              "unzipBinary",
-              "visionRepository",
-              "visionSourceRef",
-            ]
-              .sort()
-              .join("\0")
-          ) {
-            throw new Error(
-              "host config aiVirtualTryOnAuthority fields are invalid",
-            );
-          }
-          return {
-            aiVirtualTryOnAuthority: {
-              ghBinary: absolute(
-                authority.ghBinary,
-                "host config AI authority ghBinary",
-              ),
-              gitBinary: absolute(
-                authority.gitBinary,
-                "host config AI authority gitBinary",
-              ),
-              unzipBinary: absolute(
-                authority.unzipBinary,
-                "host config AI authority unzipBinary",
-              ),
-              visionRepository: absolute(
-                authority.visionRepository,
-                "host config AI authority visionRepository",
-              ),
-              visionSourceRef: required(
-                authority.visionSourceRef,
-                "host config AI authority visionSourceRef",
-              ),
-            },
-          };
-        })()),
-    ...(value.aiVirtualTryOnAllowedHttpsOrigins === undefined
-      ? {}
-      : {
-          aiVirtualTryOnAllowedHttpsOrigins: (() => {
-            if (!Array.isArray(value.aiVirtualTryOnAllowedHttpsOrigins)) {
-              throw new Error(
-                "host config aiVirtualTryOnAllowedHttpsOrigins must be an array",
-              );
-            }
-            return value.aiVirtualTryOnAllowedHttpsOrigins.map((origin) => {
-              const parsed = new URL(
-                required(origin, "host config AI HTTPS origin"),
-              );
-              if (
-                parsed.protocol !== "https:" ||
-                parsed.username ||
-                parsed.password ||
-                parsed.search ||
-                parsed.hash ||
-                parsed.pathname !== "/"
-              ) {
-                throw new Error(
-                  "host config AI HTTPS origins must be credential-free HTTPS origins",
-                );
-              }
-              return parsed.origin;
-            });
-          })(),
-        }),
     ...(value.aiVirtualTryOnFunctional === undefined
       ? {}
       : (() => {
@@ -732,7 +632,6 @@ function boundedPowerShellChunks(blocks) {
 function requiresAiAcceptanceInputs(options) {
   return (
     options.mode === "full" ||
-    options.mode === "measurement" ||
     (options.mode === "fast" && options.focus.includes("aiVirtualTryOn"))
   );
 }
@@ -747,60 +646,6 @@ function canonicalIdentity(value) {
     );
   }
   return value;
-}
-
-export async function admitAiAcceptanceInputs(
-  config,
-  workspace,
-  verifyAuthority = verifyAiAcceptanceAuthority,
-) {
-  if (!config.aiVirtualTryOnInputManifest) {
-    throw new Error(
-      "AI virtual try-on acceptance requires host config aiVirtualTryOnInputManifest",
-    );
-  }
-  if (!config.aiVirtualTryOnAuthority) {
-    throw new Error(
-      "AI virtual try-on acceptance requires host config aiVirtualTryOnAuthority",
-    );
-  }
-  const preparation = await validateAiAcceptanceInputManifest(
-    await readFile(config.aiVirtualTryOnInputManifest, "utf8"),
-    { allowedHttpsOrigins: config.aiVirtualTryOnAllowedHttpsOrigins ?? [] },
-  );
-  const receipt = await verifyAuthority(
-    {
-      candidateInputDirectory: preparation.candidateInput.hostPath,
-      contractManifest: join(
-        workspace,
-        "packages/shared/generated/vision-v2/manifest.json",
-      ),
-      ghBinaryPath: config.aiVirtualTryOnAuthority.ghBinary,
-      gitBinaryPath: config.aiVirtualTryOnAuthority.gitBinary,
-      recordedFixtureArchive:
-        config.visionCoreArtifacts.recordedFixtureArchive.hostPath,
-      repoRoot: workspace,
-      unzipBinaryPath: config.aiVirtualTryOnAuthority.unzipBinary,
-      visionRepositoryPath: config.aiVirtualTryOnAuthority.visionRepository,
-      visionSourceRef: config.aiVirtualTryOnAuthority.visionSourceRef,
-      windowsProofInputDirectory: preparation.windowsProofInput.hostPath,
-    },
-    {
-      VEM_VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION:
-        config.environment?.VEM_VM_ACCEPTANCE_SKIP_PROOF_ATTESTATION,
-    },
-  );
-  if (
-    JSON.stringify(canonicalIdentity(receipt)) !==
-    JSON.stringify(
-      canonicalIdentity(preparation.acceptanceAuthorityReceipt.value),
-    )
-  ) {
-    throw new Error(
-      "AI acceptance authority receipt does not equal host-verified authority",
-    );
-  }
-  return preparation;
 }
 
 export async function admitFunctionalAiAcceptanceInputs(config) {
@@ -851,25 +696,11 @@ async function assertVisionCoreArtifact(artifact, label) {
   }
 }
 
-export async function loadVisionCoreArtifacts(config, authorityReceipt) {
+export async function loadVisionCoreArtifacts(config) {
   const runtime = config.visionCoreArtifacts.runtimeArchive;
   const fixture = config.visionCoreArtifacts.recordedFixtureArchive;
   await assertVisionCoreArtifact(runtime, "Vision runtime");
   await assertVisionCoreArtifact(fixture, "recorded Vision fixture");
-  if (
-    authorityReceipt &&
-    (runtime.sha256 !== authorityReceipt.visionCore.runtimeArchive.sha256 ||
-      runtime.sourceCommit !==
-        authorityReceipt.visionCore.runtimeArchive.sourceCommit ||
-      fixture.sha256 !==
-        authorityReceipt.visionCore.recordedFixtureArchive.sha256 ||
-      fixture.sourceCommit !==
-        authorityReceipt.visionCore.recordedFixtureArchive.sourceCommit)
-  ) {
-    throw new Error(
-      "Vision core artifacts do not match host-verified AI acceptance authority",
-    );
-  }
   const sha256 = visionCoreIdentity(runtime, fixture);
   const identity = {
     sha256,
@@ -907,10 +738,7 @@ export async function materializeVisionCoreArtifactSnapshot(
   root,
   { reuse = false } = {},
 ) {
-  const preparation = await loadVisionCoreArtifacts(
-    config,
-    config.aiAcceptanceAuthorityReceipt,
-  );
+  const preparation = await loadVisionCoreArtifacts(config);
   if (reuse) {
     await Promise.all(
       preparation.transfers.map((transfer) =>
@@ -972,7 +800,6 @@ export async function provisionAiAcceptanceGuestInput({
     workflowIdentity: {
       ...guestInput.workflowIdentity,
       aiVirtualTryOn: {
-        authority: preparation.acceptanceAuthorityReceipt?.value ?? null,
         input: preparation.guestInput.identities,
       },
       pass,
@@ -1376,19 +1203,16 @@ async function stageAndRunGuest({
   );
   const guestScript = `${config.guestSourcePath}\\scripts\\testbed\\run-local-testbed-guest.ps1`;
   const focusArgument = powerShellFocusArgument(focus);
-  const guestMode = mode === "measurement" ? "fast" : mode;
   const executionBudget = guestAcceptanceExecutionBudget({
-    mode: guestMode,
+    mode,
     focus,
   });
-  const measurementArgument = mode === "measurement" ? " -Measurement" : "";
-  const execute = `& '${guestScript.replaceAll("'", "''")}' -Mode '${guestMode}' -Commit '${commit}' -Pass ${pass}${focusArgument}${measurementArgument}`;
+  const execute = `& '${guestScript.replaceAll("'", "''")}' -Mode '${mode}' -Commit '${commit}' -Pass ${pass}${focusArgument}`;
   const invokePowerShell7 = [
     `$pwsh = 'D:\\runtime-cache\\v1\\powershell\\7.4.6\\pwsh.exe'`,
     `& $pwsh -NoProfile -EncodedCommand '${encodedPowerShell(execute)}'`,
     "exit $LASTEXITCODE",
   ].join("\n");
-  let measurementPending = false;
   try {
     await runProcess(
       "ssh",
@@ -1408,28 +1232,22 @@ async function stageAndRunGuest({
       },
     );
   } catch (error) {
-    if (mode === "measurement" && error.exitCode === 1) {
-      measurementPending = true;
+    if (
+      (error.command === "ssh" || error.command === "scp") &&
+      (error.exitCode === 255 || error.timedOut === true)
+    ) {
+      error.businessFailure = false;
     } else {
-      if (
-        (error.command === "ssh" || error.command === "scp") &&
-        (error.exitCode === 255 || error.timedOut === true)
-      ) {
-        error.businessFailure = false;
-      } else {
-        error.businessFailure = true;
-      }
-      throw error;
+      error.businessFailure = true;
     }
+    throw error;
   } finally {
     const evidence = join(runRoot, "compact", `pass-${pass}`);
     await mkdir(evidence, { recursive: true });
     const remoteEvidence =
-      mode === "measurement"
-        ? "C:/ProgramData/VEM/testbed/measurement-evidence-bundle"
-        : mode === "clear_cache"
-          ? "C:/ProgramData/VEM/testbed/clear-cache-report.json"
-          : "C:/ProgramData/VEM/testbed/full-workflow-evidence-bundle";
+      mode === "clear_cache"
+        ? "C:/ProgramData/VEM/testbed/clear-cache-report.json"
+        : "C:/ProgramData/VEM/testbed/full-workflow-evidence-bundle";
     await runProcess(
       "scp",
       [...scp, "-r", `${remote}:${remoteEvidence}`, evidence],
@@ -1437,12 +1255,9 @@ async function stageAndRunGuest({
         timeoutMs: GUEST_TRANSFER_TIMEOUT_MS,
         timeoutLabel: "guest evidence transfer",
       },
-    ).catch((error) => {
-      if (mode === "measurement") throw error;
-      return undefined;
-    });
+    ).catch(() => undefined);
   }
-  return { measurementPending };
+  return {};
 }
 
 async function findFile(root, name) {
@@ -1541,13 +1356,7 @@ async function executeRun(options, config) {
       let aiInputFailure = null;
       if (aiInputRequired) {
         try {
-          aiAcceptanceInputs = config.aiVirtualTryOnInputManifest
-            ? await materializeAiAcceptanceInputSnapshot(
-                await admitAiAcceptanceInputs(config, workspace),
-                join(root, "ai-input-snapshots"),
-                { reuse: true },
-              )
-            : await admitFunctionalAiAcceptanceInputs(config);
+          aiAcceptanceInputs = await admitFunctionalAiAcceptanceInputs(config);
         } catch (error) {
           aiInputFailure =
             error instanceof Error ? error.message : String(error);
@@ -1604,7 +1413,7 @@ async function executeRun(options, config) {
           },
         );
       }
-      if (options.mode === "fast" || options.mode === "measurement") {
+      if (options.mode === "fast") {
         const existingGuestInput = await readJson(
           join(config.stateRoot, "guest-input.json"),
         );
@@ -1669,15 +1478,7 @@ async function executeRun(options, config) {
         });
       }
       const visionCoreInputs = await materializeVisionCoreArtifactSnapshot(
-        {
-          ...config,
-          ...(aiAcceptanceInputs
-            ? {
-                aiAcceptanceAuthorityReceipt:
-                  aiAcceptanceInputs.acceptanceAuthorityReceipt?.value ?? null,
-              }
-            : {}),
-        },
+        config,
         join(root, "vision-core-snapshots", `pass-${pass}`),
         { reuse: true },
       );
@@ -1699,13 +1500,8 @@ async function executeRun(options, config) {
         );
       }
       if (aiAcceptanceInputs) {
-        let currentAiAcceptanceInputs = config.aiVirtualTryOnInputManifest
-          ? await materializeAiAcceptanceInputSnapshot(
-              await admitAiAcceptanceInputs(config, workspace),
-              join(root, "ai-input-snapshots"),
-              { reuse: true },
-            )
-          : await admitFunctionalAiAcceptanceInputs(config);
+        const currentAiAcceptanceInputs =
+          await admitFunctionalAiAcceptanceInputs(config);
         const currentSnapshot = {
           manifestSha256: currentAiAcceptanceInputs.manifestSha256,
           artifactDigests: currentAiAcceptanceInputs.artifactDigests,
@@ -1739,60 +1535,12 @@ async function executeRun(options, config) {
         workspace,
         commit: options.commit,
         mode: options.mode,
-        focus:
-          options.mode === "measurement" ? ["aiVirtualTryOn"] : options.focus,
+        focus: options.focus,
         pass,
         runRoot: root,
         aiAcceptanceInputs,
         visionCoreInputs,
       });
-      if (options.mode === "measurement") {
-        const transportRoot = join(
-          compact,
-          `pass-${pass}`,
-          "measurement-evidence-bundle",
-        );
-        validateMeasurementEvidenceTransport(transportRoot);
-        const measurementPath = await findFile(
-          join(compact, `pass-${pass}`),
-          "ai-regional-measurement.json",
-        );
-        if (!guestExecution.measurementPending || !measurementPath) {
-          throw new Error(
-            "measurement operation did not publish measured-not-accepted evidence",
-          );
-        }
-        const measurement = JSON.parse(await readFile(measurementPath, "utf8"));
-        if (
-          measurement?.schemaVersion !== "vem-ai-regional-measurement/v1" ||
-          measurement?.status !== "measured_not_accepted" ||
-          measurement?.acceptancePassed !== false ||
-          measurement?.calibrationRequired !== true
-        ) {
-          throw new Error("measurement operation output is invalid");
-        }
-        const guestSourceInput = await findFile(
-          join(compact, `pass-${pass}`),
-          "calibration-source-input.json",
-        );
-        if (!guestSourceInput)
-          throw new Error(
-            "measurement operation did not publish source closure",
-          );
-        const hostSource = await materializeHostCalibrationSourceSnapshot(
-          dirname(guestSourceInput),
-          join(root, "measurement-source", `pass-${pass}`),
-        );
-        const closure = readCalibrationSourceClosure(hostSource.inputPath);
-        adjudicateCalibrationSourceClosure(closure);
-        await update({
-          measurement: {
-            path: measurementPath,
-            sourceInputPath: hostSource.inputPath,
-            status: measurement.status,
-          },
-        });
-      }
       const coreSummaryPath = await findFile(
         join(compact, `pass-${pass}`),
         "full-workflow-tracks.json",

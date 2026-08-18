@@ -177,23 +177,7 @@ function isHistoricalLegacyRecord(path) {
 }
 
 const RETIRED_MEDIA_TOKEN = ["sil", "houette"].join("");
-const LEGACY_ABSENCE_PROOF_ALLOWANCES = Object.freeze({
-  "scripts/precutover-database-backup.mjs": {
-    digest: "30a2171880f0991c342f85b78f2c404e7382952fb7b97a006750192d6222bbfe",
-    lines: [
-      `'columns',(SELECT count(*)::int FROM information_schema.columns WHERE table_schema='public' AND column_name ILIKE '%${RETIRED_MEDIA_TOKEN}%'),`,
-      `'indexes',(SELECT count(*)::int FROM pg_indexes WHERE schemaname='public' AND (indexname ILIKE '%${RETIRED_MEDIA_TOKEN}%' OR indexdef ILIKE '%${RETIRED_MEDIA_TOKEN}%')),`,
-      `'constraints',(SELECT count(*)::int FROM pg_constraint WHERE conname ILIKE '%${RETIRED_MEDIA_TOKEN}%' OR pg_get_constraintdef(oid) ILIKE '%${RETIRED_MEDIA_TOKEN}%'),`,
-      `'purposeRows',(SELECT count(*)::int FROM media_assets WHERE purpose='try_on_${RETIRED_MEDIA_TOKEN}'),`,
-      `'storageReferences',(SELECT count(*)::int FROM media_assets WHERE storage_key ILIKE '%${RETIRED_MEDIA_TOKEN}%' OR coalesce(public_url,'') ILIKE '%${RETIRED_MEDIA_TOKEN}%')),`,
-    ],
-    occurrences: {
-      "legacy-silhouette": 7,
-      "legacy-silhouette-field": 1,
-      "legacy-silhouette-purpose": 1,
-    },
-  },
-});
+const LEGACY_ABSENCE_PROOF_ALLOWANCES = Object.freeze({});
 const LEGACY_MIGRATION_ALLOWANCES = Object.freeze({
   [`packages/db/drizzle/20260701170000_variant_try_on_${RETIRED_MEDIA_TOKEN}_media_assets/migration.sql`]:
     {

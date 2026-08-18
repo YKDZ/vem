@@ -684,23 +684,6 @@ const validateVisionRuntimeEvidence = validateRawVisionRuntimeEvidence;
 const compareObservedVisionProtocolToExpected =
   compareRawObservedVisionProtocolToExpected;
 
-function runMachineVisionAuthority(...args) {
-  return new Promise((resolvePromise, reject) => {
-    const child = spawn(process.execPath, [
-      "scripts/testbed/run-machine-vision-lifecycle-authority.mjs",
-      ...args,
-    ]);
-    let stderr = "";
-    child.stderr?.on("data", (chunk) => {
-      stderr += chunk;
-    });
-    child.once("error", reject);
-    child.once("close", (exitCode) => {
-      resolvePromise({ exitCode, stderr });
-    });
-  });
-}
-
 function baseExpectedResults() {
   return {
     schemaVersion: "vending-vision-expected-results/v1",
@@ -1333,40 +1316,6 @@ describe("vision try-on acceptance script", () => {
       if (prior == null) delete process.env.NODE_ENV;
       else process.env.NODE_ENV = prior;
     }
-  });
-
-  it("executes the production Machine Vitest lifecycle authority", async () => {
-    const result = await runMachineVisionAuthority();
-    assert.equal(result.exitCode, 0, result.stderr);
-  });
-
-  it("executes fixture tests and rejects every non-passing Vitest status", async () => {
-    const passing = await runMachineVisionAuthority("--fixture", "passed");
-    assert.equal(passing.exitCode, 0, passing.stderr);
-
-    for (const fixture of ["skipped", "failed", "pending", "todo"]) {
-      const result = await runMachineVisionAuthority("--fixture", fixture);
-      assert.notEqual(
-        result.exitCode,
-        0,
-        `${fixture} fixture must fail the authority guard`,
-      );
-      assert.match(result.stderr, new RegExp(fixture));
-    }
-  });
-
-  it("rejects an additional requested suite that Vitest silently omits", async () => {
-    const missing = "src/does-not-exist.spec.ts";
-    const result = await runMachineVisionAuthority(
-      "--spec",
-      "src/native/vision.spec.ts",
-      "--spec",
-      missing,
-    );
-
-    assert.notEqual(result.exitCode, 0);
-    assert.match(result.stderr, /missing suites/i);
-    assert.match(result.stderr, /apps\/machine\/src\/does-not-exist\.spec\.ts/);
   });
 
   it("binds CLI routes and selectors to the current Machine customer contract", () => {

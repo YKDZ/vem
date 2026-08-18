@@ -806,52 +806,6 @@ test("AI virtual try-on runner fails closed without emitting acceptance evidence
   }
 });
 
-test("AI virtual try-on runner accepts only approved external input identities", () => {
-  const source = readFileSync(runner, "utf8");
-  for (const name of [
-    "candidateInputDirectory",
-    "windowsProofInputDirectory",
-    "acceptanceAuthorityReceipt",
-    "modelPackUrl",
-    "modelPackSha256",
-    "modelPackByteSize",
-    "installedVisionRuntimeArchive",
-    "recordedFixtureArchive",
-  ]) {
-    assert.match(source, new RegExp(name));
-  }
-  for (const member of [
-    "candidate-manifest.json",
-    "github-build-provenance.sigstore.json",
-    "trusted-builder-evidence.json",
-    "precutover-ai-proof.json",
-    "precutover-ai-proof.sigstore.json",
-    "trusted-precutover-proof-evidence.json",
-  ]) {
-    assert.match(source, new RegExp(member.replaceAll(".", "\\.")));
-  }
-  assert.match(source, /vem\.testbed\.ai-acceptance-authority\/v1/);
-  assert.doesNotMatch(source, /\$phase/);
-  assert.doesNotMatch(source, /calibratedRegionalPolicy|calibrationReceipt/);
-  assert.doesNotMatch(source, /run-ai-regional-measurement\.mjs/);
-  assert.doesNotMatch(source, /calibrationSourceRoot/);
-  assert.match(
-    source,
-    /installed Vision core identity does not match acceptance authority/,
-  );
-  assert.match(
-    source,
-    /materialized model pack does not match acceptance authority/,
-  );
-  assert.match(source, /\^https:\/\//);
-  assert.doesNotMatch(
-    source,
-    /Start-Process[^\n]*worker|--probe-runtime|--model-pack/,
-  );
-  assert.doesNotMatch(source, /Invoke-WebRequest|Invoke-RestMethod|WebClient/);
-  assert.doesNotMatch(source, /camera|captureUserMedia|getUserMedia/i);
-});
-
 test("supports the ADR 0084 functional AI input without trusted pipeline prerequisites", () => {
   const source = readFileSync(
     new URL("./run-full-ai-virtual-try-on-track.ps1", import.meta.url),
@@ -863,11 +817,7 @@ test("supports the ADR 0084 functional AI input without trusted pipeline prerequ
   );
   assert.match(
     source,
-    /if \(-not \$functional\) \{[\s\S]*candidate exact-four input/,
-  );
-  assert.match(
-    source,
-    /if \(-not \$functional\) \{[\s\S]*windows-proof-input-directory/,
+    /if \(-not \$functional\) \{ throw "AI virtual try-on acceptance requires functional inputs" \}/,
   );
   assert.match(source, /\$env:VEM_VM_ACCEPTANCE_AI_STEPS = "1"/);
   assert.match(source, /"--functional", "true"[\s\S]*"--model-sha"/);

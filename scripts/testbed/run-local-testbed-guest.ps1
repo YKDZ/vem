@@ -3,7 +3,6 @@ param(
   [string]$Commit,
   [ValidateRange(1, 2)][int]$Pass = 1,
   [string[]]$Focus = @(),
-  [switch]$Measurement,
   [string]$GuestInputPath = "C:\ProgramData\VEM\testbed\guest-input.json"
 )
 
@@ -252,22 +251,6 @@ function New-BoundedEvidenceBundle([string]$ManifestPath, [string]$BundleRoot) {
     --smoke $smokePath `
     --out $BundleRoot
   if ($LASTEXITCODE -ne 0) { throw "workflow evidence bundle is not uploadable" }
-}
-
-function New-MeasurementEvidenceBundle([string]$BundleRoot) {
-  $artifactRoot = Join-Path $handoffRoot "ai-virtual-try-on-artifacts"
-  $measurement = Join-Path $artifactRoot "ai-regional-measurement.json"
-  $source = Join-Path $artifactRoot "calibration-source"
-  $report = Join-Path $handoffRoot "ai-virtual-try-on.json"
-  Require-Path $measurement
-  Require-Path $source
-  Require-Path $report
-  $aggregate = Join-Path $handoffRoot "full-workflow-tracks.json"
-  $manifest = Join-Path $handoffRoot "full-workflow-evidence-manifest.json"
-  Require-Path $aggregate
-  Require-Path $manifest
-  node scripts/testbed/measurement-evidence-bundle.mjs --measurement $measurement --report $report --aggregate $aggregate --manifest $manifest --source $source --out $BundleRoot
-  if ($LASTEXITCODE -ne 0) { throw "measurement evidence is not transportable" }
 }
 
 function Clear-TestbedRunReports {
@@ -1423,10 +1406,7 @@ try {
   $workflowFailure = "local testbed workflow aggregate command failed: $($_.Exception.Message)"
 }
 
-if ($Measurement) {
-  try { New-MeasurementEvidenceBundle -BundleRoot (Join-Path $handoffRoot "measurement-evidence-bundle") }
-  catch { $bundleFailure = "measurement evidence bundle failed: $($_.Exception.Message)" }
-} elseif ($Mode -ne "clear_cache") {
+if ($Mode -ne "clear_cache") {
   $manifestPath = Join-Path $handoffRoot "full-workflow-evidence-manifest.json"
   if (Test-Path -LiteralPath $manifestPath) {
     try {

@@ -45,8 +45,8 @@ export function parseTriggerOptions(args) {
     throw new Error("usage: runtime-testbed-trigger.mjs run --mode ...");
   }
   const mode = option(args, "mode");
-  if (!new Set(["fast", "full", "clear_cache", "measurement"]).has(mode)) {
-    throw new Error("--mode must be fast, full, clear_cache, or measurement");
+  if (!new Set(["fast", "full", "clear_cache"]).has(mode)) {
+    throw new Error("--mode must be fast, full, or clear_cache");
   }
   const commit = option(args, "commit").toLowerCase();
   if (!/^[0-9a-f]{40}$/.test(commit)) {
@@ -58,7 +58,7 @@ export function parseTriggerOptions(args) {
     throw new Error("--config and --out must be absolute paths");
   }
   const focus = repeatableOption(args, "focus");
-  if (mode !== "fast" && mode !== "measurement" && focus.length > 0) {
+  if (mode !== "fast" && focus.length > 0) {
     throw new Error("--focus is only valid with --mode fast");
   }
   return { mode, focus, commit, config: resolve(config), out: resolve(out) };
