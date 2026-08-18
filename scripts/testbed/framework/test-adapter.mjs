@@ -35,15 +35,22 @@ export function createFakeTestAdapter({
     async run(command, args = []) {
       const key = [command, ...args].join(" ");
       calls.push({ command, args });
-      const canned = commands[key] ?? {
+      const canned = commands[key];
+      if (typeof canned === "function") {
+        return await canned(args, {
+          readFile: this.readFile.bind(this),
+          writeFile: this.writeFile.bind(this),
+        });
+      }
+      const resolved = canned ?? {
         exitCode: defaultExitCode,
         stdout: "",
         stderr: "",
       };
       return {
-        exitCode: canned.exitCode ?? defaultExitCode,
-        stdout: canned.stdout ?? "",
-        stderr: canned.stderr ?? "",
+        exitCode: resolved.exitCode ?? defaultExitCode,
+        stdout: resolved.stdout ?? "",
+        stderr: resolved.stderr ?? "",
       };
     },
   };
