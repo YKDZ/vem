@@ -62,6 +62,9 @@ const guidanceText = computed(() => {
       return "正在连接镜头";
   }
 });
+const countdownSeconds = computed(() =>
+  Math.max(0, Math.ceil((tryOn.holdRemainingMs ?? 0) / 1000)),
+);
 const manualCaptureLabel = computed(() =>
   tryOn.guidance === "counting_down" ? "立即拍摄" : "手动采集",
 );
@@ -234,11 +237,25 @@ function scaleGarment(delta: number): void {
         试衣结果暂不可显示，请重试或返回商品。
       </p>
       <p
-        v-else
+        v-else-if="tryOn.phase !== 'acquiring'"
         class="try-on-phase"
         data-test="try-on-phase"
       >
         {{ phaseText }}
+      </p>
+      <p
+        v-if="tryOn.phase === 'acquiring'"
+        class="try-on-guidance"
+        data-test="try-on-guidance"
+      >
+        <span
+          v-if="tryOn.guidance === 'counting_down'"
+          class="try-on-countdown"
+          data-test="try-on-countdown"
+        >
+          {{ countdownSeconds }}
+        </span>
+        {{ guidanceText }}
       </p>
       <p
         v-if="tryOn.phase === 'failed'"
@@ -360,6 +377,38 @@ function scaleGarment(delta: number): void {
   font-size: 1.35rem;
   font-weight: 700;
   letter-spacing: 0.06em;
+}
+
+.try-on-guidance {
+  display: flex;
+  min-height: 58px;
+  align-items: center;
+  justify-content: center;
+  gap: 0.9rem;
+  border: 1px solid rgba(211, 203, 180, 0.92);
+  border-radius: 18px;
+  background: rgba(255, 253, 248, 0.82);
+  padding: 0.7rem 1.4rem;
+  color: #6b6258;
+  font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  box-shadow: 0 10px 20px rgba(102, 92, 64, 0.08);
+}
+
+.try-on-countdown {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #758868, #627655);
+  color: #fffdf7;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 1.45rem;
+  font-weight: 800;
+  line-height: 1;
 }
 
 .try-on-button {
