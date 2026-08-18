@@ -3,6 +3,7 @@ import { CdpTestAdapter } from "../../cdp-adapter.mjs";
 import { createProcessRoleManifest } from "../../fault-injection.mjs";
 import { spawnSync } from "node:child_process";
 import { writeFile } from "node:fs/promises";
+import { pathToFileURL } from "node:url";
 import {
   runFastTryOnScenario,
   runDegradationScenario,
@@ -129,7 +130,7 @@ export async function main(args = process.argv.slice(2)) {
 
 if (
   typeof import.meta !== "undefined" &&
-  import.meta.url === `file://${process.argv[1]}`
+  import.meta.url === pathToFileURL(process.argv[1] ?? "").href
 ) {
   main().catch((error) => {
     console.error(error.message);
