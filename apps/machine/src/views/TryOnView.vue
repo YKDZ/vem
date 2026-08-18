@@ -195,15 +195,15 @@ function scaleGarment(delta: number): void {
       :data-attempt-id="tryOn.attemptId ?? ''"
       :data-state="tryOn.phase"
     >
-      <p class="text-sm text-neutral-500">{{ title }}</p>
-      <h1 class="text-4xl font-black text-neutral-950">虚拟试衣</h1>
+      <p class="try-on-subtitle">{{ title }}</p>
+      <h1 class="try-on-title">虚拟试衣</h1>
       <img
         v-if="
           tryOn.phase === 'acquiring' && tryOn.previewUrl && !previewErrored
         "
         :src="tryOn.previewUrl"
         alt="虚拟试衣采集画面"
-        class="max-h-[55vh] max-w-full rounded-xl object-contain shadow-lg"
+        class="try-on-preview"
         data-test="try-on-acquisition-preview"
         @error="previewErrored = true"
       />
@@ -222,7 +222,7 @@ function scaleGarment(delta: number): void {
         :width="tryOn.result.width"
         :height="tryOn.result.height"
         alt="虚拟试衣结果"
-        class="max-h-[60vh] max-w-full rounded-xl object-contain shadow-lg"
+        class="try-on-result"
         data-test="try-on-result-image"
         @error="resultErrored = true"
       />
@@ -235,7 +235,7 @@ function scaleGarment(delta: number): void {
       </p>
       <p
         v-else
-        class="text-xl font-bold text-neutral-700"
+        class="try-on-phase"
         data-test="try-on-phase"
       >
         {{ phaseText }}
@@ -253,7 +253,7 @@ function scaleGarment(delta: number): void {
         data-test="try-on-garment-scale"
       >
         <button
-          class="kiosk-touch-target rounded-lg border border-neutral-300 bg-white px-5 py-3 text-lg font-bold disabled:opacity-35"
+          class="try-on-button kiosk-touch-target disabled:opacity-35"
           type="button"
           data-test="try-on-scale-down"
           :disabled="!canScaleDown"
@@ -262,13 +262,13 @@ function scaleGarment(delta: number): void {
           − 缩小
         </button>
         <span
-          class="w-16 text-center text-lg font-bold text-neutral-700"
+          class="try-on-scale-value"
           data-test="try-on-scale-value"
         >
           {{ garmentScalePercent }}%
         </span>
         <button
-          class="kiosk-touch-target rounded-lg border border-neutral-300 bg-white px-5 py-3 text-lg font-bold disabled:opacity-35"
+          class="try-on-button kiosk-touch-target disabled:opacity-35"
           type="button"
           data-test="try-on-scale-up"
           :disabled="!canScaleUp"
@@ -280,7 +280,7 @@ function scaleGarment(delta: number): void {
       <div class="flex flex-wrap justify-center gap-4">
         <button
           v-if="tryOn.phase === 'acquiring'"
-          class="kiosk-touch-target rounded-lg border border-neutral-300 bg-white px-6 py-3 text-lg font-bold disabled:opacity-35"
+          class="try-on-button kiosk-touch-target disabled:opacity-35"
           type="button"
           :disabled="
             !tryOn.manualCaptureAllowed || tryOn.manualCaptureSubmitted
@@ -292,7 +292,7 @@ function scaleGarment(delta: number): void {
         </button>
         <button
           v-if="tryOn.hasActiveAttempt"
-          class="kiosk-touch-target rounded-lg border border-red-300 bg-white px-6 py-3 text-lg font-bold text-red-700"
+          class="try-on-button try-on-button-danger kiosk-touch-target"
           type="button"
           data-test="try-on-cancel"
           @click="cancel"
@@ -301,7 +301,7 @@ function scaleGarment(delta: number): void {
         </button>
         <button
           v-if="canRetry"
-          class="kiosk-touch-target rounded-lg bg-neutral-950 px-6 py-3 text-lg font-bold text-white"
+          class="try-on-button try-on-button-primary kiosk-touch-target"
           type="button"
           data-test="try-on-retry"
           @click="retry"
@@ -309,7 +309,7 @@ function scaleGarment(delta: number): void {
           重试
         </button>
         <button
-          class="kiosk-touch-target rounded-lg border border-neutral-300 bg-white px-6 py-3 text-lg font-bold"
+          class="try-on-button kiosk-touch-target"
           type="button"
           data-test="try-on-return"
           @click="returnToProduct"
@@ -320,3 +320,80 @@ function scaleGarment(delta: number): void {
     </main>
   </KioskLayout>
 </template>
+
+<style scoped>
+.try-on-subtitle {
+  color: #8b8174;
+  font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
+  font-size: 0.95rem;
+  letter-spacing: 0.08em;
+}
+
+.try-on-title {
+  color: #474039;
+  font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
+  font-size: 2.6rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+}
+
+.try-on-preview,
+.try-on-result {
+  max-height: 55vh;
+  max-width: 100%;
+  border: 1px solid rgba(211, 203, 180, 0.92);
+  border-radius: 24px;
+  background: rgba(255, 253, 248, 0.72);
+  object-fit: contain;
+  box-shadow:
+    inset 0 0 0 6px rgba(255, 255, 255, 0.5),
+    0 16px 34px rgba(102, 92, 64, 0.1);
+}
+
+.try-on-result {
+  max-height: 60vh;
+}
+
+.try-on-phase {
+  color: #6b6258;
+  font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.try-on-button {
+  min-height: 54px;
+  border: 1px solid rgba(211, 203, 180, 0.92);
+  border-radius: 18px;
+  background: rgba(255, 253, 248, 0.78);
+  color: #5f584f;
+  font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
+  font-size: 1.08rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 0 1.5rem;
+  box-shadow: 0 10px 20px rgba(102, 92, 64, 0.08);
+}
+
+.try-on-button-primary {
+  border-color: rgba(111, 131, 95, 0.72);
+  background: linear-gradient(180deg, #758868, #627655);
+  color: #fffdf7;
+  box-shadow: 0 14px 24px rgba(82, 101, 65, 0.2);
+}
+
+.try-on-button-danger {
+  border-color: rgba(210, 169, 155, 0.72);
+  color: #a65a4a;
+}
+
+.try-on-scale-value {
+  width: 4rem;
+  color: #6b6258;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 1.15rem;
+  font-weight: 700;
+  text-align: center;
+}
+</style>

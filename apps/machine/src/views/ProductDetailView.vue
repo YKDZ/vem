@@ -504,10 +504,10 @@ async function startTryOn(mode: "fast" | "ai"): Promise<void> {
             class="detail-section"
             data-test="try-on-entry"
           >
-            <h2>虚拟试衣</h2>
+            <h2>❀ 虚拟试衣</h2>
             <button
               v-if="canFastTryOn"
-              class="kiosk-touch-target w-full rounded-lg border-2 border-neutral-950 bg-white px-5 py-3 text-lg font-black text-neutral-950"
+              class="try-on-entry-button kiosk-touch-target w-full"
               type="button"
               data-test="try-on-fast"
               :data-variant-id="selectedVariant?.variantId ?? ''"
@@ -517,7 +517,7 @@ async function startTryOn(mode: "fast" | "ai"): Promise<void> {
             </button>
             <button
               v-if="canAiTryOn"
-              class="kiosk-touch-target mt-3 w-full rounded-lg border-2 border-neutral-950 bg-neutral-950 px-5 py-3 text-lg font-black text-white"
+              class="try-on-entry-button try-on-entry-button-ai kiosk-touch-target mt-3 w-full"
               type="button"
               data-test="try-on-ai"
               :data-variant-id="selectedVariant?.variantId ?? ''"
@@ -924,6 +924,26 @@ async function startTryOn(mode: "fast" | "ai"): Promise<void> {
   color: #6f835f;
   font-family: Georgia, "Times New Roman", serif;
   font-size: 1.4rem;
+}
+
+.try-on-entry-button {
+  min-height: 58px;
+  border: 1px solid rgba(211, 203, 180, 0.92);
+  border-radius: 18px;
+  background: rgba(255, 253, 248, 0.72);
+  color: #5f584f;
+  font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
+  font-size: 1.18rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  box-shadow: 0 10px 20px rgba(102, 92, 64, 0.08);
+}
+
+.try-on-entry-button-ai {
+  border-color: rgba(111, 131, 95, 0.72);
+  background: linear-gradient(180deg, #758868, #627655);
+  color: #fffdf7;
+  box-shadow: 0 14px 24px rgba(82, 101, 65, 0.2);
 }
 
 .detail-mascot {
