@@ -130,6 +130,12 @@ test("refuses an incomplete release identity before it can become a manifest", (
   );
 });
 
+test("accepts a functional AI identity without release authority", () => {
+  const functional = identity();
+  functional.aiVirtualTryOn.authority = null;
+  assert.doesNotThrow(() => buildAcceptanceReleaseManifest(functional));
+});
+
 test("rejects a pass-two release identity that drifts from pass one", () => {
   const passA = identity();
   const passB = structuredClone(passA);
