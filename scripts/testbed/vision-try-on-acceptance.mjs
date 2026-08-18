@@ -3968,30 +3968,55 @@ async function captureWithManualFallback(client, timeoutMs = 180_000) {
     timeoutMs: 30_000,
   });
   const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+  try {
     // The unstable fixture only exposes the manual action during brief
-    // aligned windows (~333 ms). Check and click inside one page evaluation so
-    // the window cannot close between detection and the click.
-    const clicked = await evaluateExpression(
+    // aligned windows (~333 ms). Install an in-page MutationObserver so a
+    // click lands in the same task that enables the button; the outer loop is
+    // only a safety net for an already-mounted enabled button.
+    await evaluateExpression(
       client,
       `(() => {
-        const button = document.querySelector("[data-test='try-on-manual-capture']");
-        if (button instanceof HTMLElement && button.disabled === false) {
-          button.click();
-          return true;
-        }
-        return false;
+        window.__vemManualCaptureClicked = false;
+        const tryClick = () => {
+          const button = document.querySelector("[data-test='try-on-manual-capture']");
+          if (button instanceof HTMLElement && button.disabled === false) {
+            button.click();
+            window.__vemManualCaptureClicked = true;
+            return true;
+          }
+          return false;
+        };
+        tryClick();
+        const observer = new MutationObserver(() => tryClick());
+        observer.observe(document.documentElement, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: ["disabled"],
+        });
+        window.__vemManualCaptureObserver = observer;
+        return true;
       })()`,
     );
-    if (clicked !== true) {
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, 40));
-      continue;
+    while (Date.now() < deadline) {
+      try {
+        return await waitForTryOnSurface(client, 2_000);
+      } catch {
+        // A click that landed at the tail of a window is harmless; retry.
+      }
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
     }
-    try {
-      return await waitForTryOnSurface(client, 2_000);
-    } catch {
-      // A click that landed at the tail of a window is harmless; retry.
-    }
+  } finally {
+    await evaluateExpression(
+      client,
+      `(() => {
+        if (window.__vemManualCaptureObserver) {
+          window.__vemManualCaptureObserver.disconnect();
+          window.__vemManualCaptureObserver = null;
+        }
+        return true;
+      })()`,
+    ).catch(() => {});
   }
   throw new Error(
     "manual capture did not complete on the unstable recorded fixture",
