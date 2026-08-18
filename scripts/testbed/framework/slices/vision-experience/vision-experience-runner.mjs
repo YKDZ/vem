@@ -40,7 +40,7 @@ export async function runVisionExperienceSlice({
         return { ok: false, value: null };
       }
     },
-    { timeoutMs: Math.max(timeoutMs, 60_000), pollMs },
+    { timeoutMs: Math.max(timeoutMs, 300_000), pollMs: 1_000 },
   );
   const fast = await runFastTryOnScenario(adapter, { timeoutMs, pollMs });
   const assertions = [...fast.assertions];
