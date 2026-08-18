@@ -1410,6 +1410,10 @@ if ($Mode -ne "clear_cache") {
   $manifestPath = Join-Path $handoffRoot "full-workflow-evidence-manifest.json"
   if (Test-Path -LiteralPath $manifestPath) {
     try {
+      $bundleRoot = Join-Path $handoffRoot "full-workflow-evidence-bundle"
+      if (Test-Path -LiteralPath $bundleRoot) {
+        Remove-Item -LiteralPath $bundleRoot -Recurse -Force
+      }
       New-BoundedEvidenceBundle `
         -ManifestPath $manifestPath `
         -BundleRoot (Join-Path $handoffRoot "full-workflow-evidence-bundle")
