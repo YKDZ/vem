@@ -14,12 +14,25 @@ function fakeUiAdapter() {
     commands: {
       "navigate #/catalog": () => ({ exitCode: 0, stdout: "ok", stderr: "" }),
       'click [data-test="catalog-category"][data-category-key="tshirts"]':
-        () => ({ exitCode: 0, stdout: "ok", stderr: "" }),
-      'click [data-test="catalog-product"]': () => ({
-        exitCode: 0,
-        stdout: "ok",
-        stderr: "",
-      }),
+        async () => {
+          await adapter.writeFile(
+            statePath,
+            JSON.stringify({ route: "#/catalog", state: "idle" }),
+          );
+          return { exitCode: 0, stdout: "ok", stderr: "" };
+        },
+      'click [data-test="catalog-product"]': async () => {
+        await adapter.writeFile(
+          statePath,
+          JSON.stringify({
+            route: "#/products/product:1",
+            state: "idle",
+            tryOnPresent: true,
+            buyDisabled: false,
+          }),
+        );
+        return { exitCode: 0, stdout: "ok", stderr: "" };
+      },
       'click [data-test="try-on-fast"]': async () => {
         await adapter.writeFile(
           statePath,

@@ -192,7 +192,19 @@ export async function runDegradationScenario(
     '[data-test="catalog-category"][data-category-key="tshirts"]',
   ]);
   await adapter.run("click", ['[data-test="catalog-product"]']);
-  const before = await readState(adapter);
+  await waitForCondition(
+    "product-detail-ready",
+    async () => {
+      const current = await readState(adapter);
+      return {
+        ok:
+          current?.route?.startsWith("#/products") &&
+          current?.tryOnPresent !== null,
+        value: current,
+      };
+    },
+    { timeoutMs, pollMs },
+  );
   await stopOwner();
   const degraded = await waitForCondition(
     "degraded-product-detail",
