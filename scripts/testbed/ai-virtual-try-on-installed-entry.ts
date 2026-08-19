@@ -119,6 +119,7 @@ function startVmAiActiveHeartbeat(
   let stopped = false;
   let currentWait = null;
   let lastFailure = null;
+  let nextDelayMs = intervalMs;
   const beat = async () => {
     try {
       // 与 vision-try-on-acceptance 中成熟的 idle keepalive 保持一致：鼠标事件
@@ -156,13 +157,11 @@ function startVmAiActiveHeartbeat(
   };
   const task = (async () => {
     while (!stopped) {
-      const previousBeatSucceeded = await beat();
-      if (stopped) return;
-      currentWait = waitForInterval(
-        previousBeatSucceeded ? intervalMs : retryIntervalMs,
-      );
+      currentWait = waitForInterval(nextDelayMs);
       await currentWait.promise;
       currentWait = null;
+      if (stopped) return;
+      nextDelayMs = (await beat()) ? intervalMs : retryIntervalMs;
     }
   })().catch(() => {});
   return {
