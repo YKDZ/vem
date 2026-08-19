@@ -989,7 +989,10 @@ export async function runInstalledAiAttemptPhase(options) {
       kind: "touch",
       timeoutMs: 30_000,
     });
-    await waitForRoute(client, /^#\/products\//, {
+    const expectedProductRoute = expectedInstalledProductRoute(
+      acceptance.selectedCatalogKey,
+    );
+    await waitForRoute(client, expectedProductRoute, {
       timeoutMs: 30_000,
       pollMs: 250,
     });
@@ -999,12 +1002,9 @@ export async function runInstalledAiAttemptPhase(options) {
         returnByValue: true,
       })
     )?.result?.value;
-    const expectedProductRoute = expectedInstalledProductRoute(
-      acceptance.selectedCatalogKey,
-    );
     if (productRoute !== expectedProductRoute)
       throw new Error(
-        "AI try-on product route does not bind the selected catalog item",
+        `AI try-on product route does not bind the selected catalog item: expected ${expectedProductRoute}, got ${productRoute}`,
       );
     await activateVisibleSelector(
       client,

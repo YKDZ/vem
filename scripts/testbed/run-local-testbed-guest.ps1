@@ -239,17 +239,26 @@ function Update-WorkflowIdentityCacheObservation(
   Write-TestbedGuestInputAtomically $Path $guestInput
 }
 
-function New-BoundedEvidenceBundle([string]$ManifestPath, [string]$BundleRoot) {
+function New-BoundedEvidenceBundle(
+  [string]$ManifestPath,
+  [string]$BundleRoot,
+  [switch]$AllowIncomplete
+) {
   Require-Path $ManifestPath
   $summaryPath = Join-Path $handoffRoot "full-workflow-tracks.json"
   $smokePath = Join-Path $handoffRoot "installed-runtime-smoke.json"
   Require-Path $summaryPath
   Require-Path $smokePath
+  $allowIncompleteArgument = @()
+  if ($AllowIncomplete) {
+    $allowIncompleteArgument = @("--allow-incomplete")
+  }
   & node scripts/testbed/full-workflow-evidence-bundle.mjs `
     --manifest $ManifestPath `
     --summary $summaryPath `
     --smoke $smokePath `
-    --out $BundleRoot
+    --out $BundleRoot `
+    @allowIncompleteArgument
   if ($LASTEXITCODE -ne 0) { throw "workflow evidence bundle is not uploadable" }
 }
 
@@ -1418,7 +1427,8 @@ if ($Mode -ne "clear_cache") {
       }
       New-BoundedEvidenceBundle `
         -ManifestPath $manifestPath `
-        -BundleRoot (Join-Path $handoffRoot "full-workflow-evidence-bundle")
+        -BundleRoot (Join-Path $handoffRoot "full-workflow-evidence-bundle") `
+        -AllowIncomplete:($workflowFailure -ne $null)
     } catch {
       $bundleFailure = "compact evidence bundle failed: $($_.Exception.Message)"
     }

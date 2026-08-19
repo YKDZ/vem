@@ -182,6 +182,29 @@ describe("full workflow evidence bundle", () => {
     );
   });
 
+  it("publishes a diagnostic metadata-only bundle when a failed track left no report", () => {
+    const input = fixture();
+    rmSync(join(input.root, "sale.json"));
+    const result = createFullWorkflowEvidenceBundle(
+      {
+        ...input,
+        allowIncomplete: true,
+      },
+      {
+        copyFile(source, destination) {
+          copyFileSync(source, destination);
+        },
+        publishDirectory: publishNoReplace,
+      },
+    );
+    assert.equal(existsSync(input.bundleRoot), true);
+    assert.ok(result.files.length > 0);
+    assert.ok(
+      result.files.every((file) => file.startsWith("metadata/")),
+      `diagnostic bundle must be metadata-only: ${result.files.join(", ")}`,
+    );
+  });
+
   it(
     "fails closed where an exclusive directory publish primitive is unavailable",
     {

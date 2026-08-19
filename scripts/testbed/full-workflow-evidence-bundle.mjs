@@ -113,9 +113,18 @@ function publishDirectoryNoReplace(source, destination) {
 
 function validateOptions(options) {
   for (const [name, value] of Object.entries(options)) {
+    if (name === "allowIncomplete") continue;
     if (typeof value !== "string" || !isAbsolute(value))
       throw new Error(`${name} must be an absolute path`);
   }
+}
+
+function readRegularJson(path, label) {
+  const stat = lstatSync(path);
+  if (stat.isSymbolicLink() || !stat.isFile())
+    throw new Error(`${label} must be a regular non-linked file: ${path}`);
+  const raw = readFileSync(path);
+  return { path, raw, value: JSON.parse(raw.toString("utf8")) };
 }
 
 export function createFullWorkflowEvidenceBundle(options, dependencies = {}) {
@@ -124,20 +133,25 @@ export function createFullWorkflowEvidenceBundle(options, dependencies = {}) {
   const summaryPath = resolve(options.summaryPath);
   const smokePath = resolve(options.smokePath);
   const bundleRoot = resolve(options.bundleRoot);
+  const allowIncomplete = options.allowIncomplete === true;
   if (existsSync(bundleRoot))
     throw new Error(`evidence bundle destination exists: ${bundleRoot}`);
 
-  const { manifestFile, summaryFile } = validateFullWorkflowEvidenceUploadFiles(
-    manifestPath,
-    summaryPath,
-  );
+  const { manifestFile, summaryFile } = allowIncomplete
+    ? {
+        manifestFile: readRegularJson(manifestPath, "evidence manifest"),
+        summaryFile: readRegularJson(summaryPath, "workflow summary"),
+      }
+    : validateFullWorkflowEvidenceUploadFiles(manifestPath, summaryPath);
   const manifest = manifestFile.value;
   const declared = new Map();
-  for (const file of manifest.files) {
-    const path = resolve(file.path);
-    if (declared.has(path))
-      throw new Error(`duplicate evidence source path: ${path}`);
-    declared.set(path, file);
+  if (!allowIncomplete) {
+    for (const file of manifest.files) {
+      const path = resolve(file.path);
+      if (declared.has(path))
+        throw new Error(`duplicate evidence source path: ${path}`);
+      declared.set(path, file);
+    }
   }
 
   const metadata = [
@@ -147,11 +161,13 @@ export function createFullWorkflowEvidenceBundle(options, dependencies = {}) {
   ];
   const members = [
     ...metadata.map(([source, target]) => ({ source, target, expected: null })),
-    ...[...declared.entries()].map(([source, expected], index) => ({
-      source,
-      target: `evidence/${String(index).padStart(4, "0")}-${expected.sha256}${extname(source).toLowerCase()}`,
-      expected,
-    })),
+    ...(allowIncomplete
+      ? []
+      : [...declared.entries()].map(([source, expected], index) => ({
+          source,
+          target: `evidence/${String(index).padStart(4, "0")}-${expected.sha256}${extname(source).toLowerCase()}`,
+          expected,
+        }))),
   ];
   if (new Set(members.map(({ target }) => target)).size !== members.length)
     throw new Error("evidence bundle member names collide");
@@ -264,21 +280,24 @@ export function createFullWorkflowEvidenceBundle(options, dependencies = {}) {
 }
 
 function main(args) {
+  const allowIncomplete = args.includes("--allow-incomplete");
+  const positional = args.filter((arg) => arg !== "--allow-incomplete");
   if (
-    args.length !== 8 ||
-    args[0] !== "--manifest" ||
-    args[2] !== "--summary" ||
-    args[4] !== "--smoke" ||
-    args[6] !== "--out"
+    positional.length !== 8 ||
+    positional[0] !== "--manifest" ||
+    positional[2] !== "--summary" ||
+    positional[4] !== "--smoke" ||
+    positional[6] !== "--out"
   )
     throw new Error(
-      "usage: --manifest <absolute-path> --summary <absolute-path> --smoke <absolute-path> --out <absolute-path>",
+      "usage: --manifest <absolute-path> --summary <absolute-path> --smoke <absolute-path> --out <absolute-path> [--allow-incomplete]",
     );
   createFullWorkflowEvidenceBundle({
-    manifestPath: args[1],
-    summaryPath: args[3],
-    smokePath: args[5],
-    bundleRoot: args[7],
+    manifestPath: positional[1],
+    summaryPath: positional[3],
+    smokePath: positional[5],
+    bundleRoot: positional[7],
+    allowIncomplete,
   });
 }
 
