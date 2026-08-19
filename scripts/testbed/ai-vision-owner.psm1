@@ -81,18 +81,29 @@ function Get-TestbedKioskPassword([object]$GuestInput) {
 }
 
 function Wait-TestbedVisionReady {
+  param([switch]$RequireAiReady)
   $context = Assert-TestbedAiOwnerContext
   if ($null -ne $context.testOperations -and $context.testOperations.ContainsKey("WaitReady")) {
     return & $context.testOperations.WaitReady
   }
-  $deadline = [DateTime]::UtcNow.AddSeconds(60)
+  $deadline = [DateTime]::UtcNow.AddSeconds($(if ($RequireAiReady) { 300 } else { 60 }))
   do {
     try {
       $health = Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:7892/health" -TimeoutSec 2
-      if ($null -ne $health -and [string]$health.status -ceq "ok" -and $health.cameraReady -eq $true -and @(Get-NetTCPConnection -LocalAddress "127.0.0.1" -LocalPort 7892 -State Listen -ErrorAction SilentlyContinue).Count -eq 1) { return $health }
+      $aiReady = $RequireAiReady -and $health.aiReady -eq $true -and [string]$health.aiReadinessDiagnostic -ceq "ready"
+      if (
+        $null -ne $health -and
+        [string]$health.status -ceq "ok" -and
+        $health.cameraReady -eq $true -and
+        @(Get-NetTCPConnection -LocalAddress "127.0.0.1" -LocalPort 7892 -State Listen -ErrorAction SilentlyContinue).Count -eq 1 -and
+        (-not $RequireAiReady -or $aiReady)
+      ) { return $health }
     } catch {}
     Start-Sleep -Milliseconds 250
   } while ([DateTime]::UtcNow -lt $deadline)
+  if ($RequireAiReady) {
+    throw "managed AI Vision owner did not expose ready model and worker identities on 127.0.0.1:7892 within 300s"
+  }
   throw "managed Vision owner did not become ready on 127.0.0.1:7892"
 }
 
@@ -325,7 +336,7 @@ function Restart-TestbedAiVisionOwner {
     $context = Assert-TestbedAiOwnerContext
     if ($null -ne $context.testOperations -and $context.testOperations.ContainsKey("StartOwner")) { & $context.testOperations.StartOwner }
     else { Start-ScheduledTask -TaskName "VEMVisionRuntime" -ErrorAction Stop }
-    $health = Wait-TestbedVisionReady
+    $health = Wait-TestbedVisionReady -RequireAiReady
     if ($health.aiReady -ne $true -or [string]$health.aiReadinessDiagnostic -cne "ready") {
       throw "verified AI owner did not expose ready model and worker identities"
     }
