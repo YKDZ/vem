@@ -34,7 +34,7 @@ Copy-Item -LiteralPath $VisionSiteSource -Destination (Join-Path $StagingDirecto
 Write-Output "== Step 3/5: extract AI model pack =="
 $modelRoot = Join-Path "C:\ProgramData\VEM\vision\ai-model-packs\packs" $modelPackSha256
 $modelManifestPath = Join-Path $modelRoot "ai-model-manifest.json"
-$modelMarkerPath = Join-Path $modelRoot "field-kit-install.marker"
+$modelMarkerPath = Join-Path (Split-Path -Parent $modelRoot) ".field-kit-install-$modelPackSha256.marker"
 $modelCached = (Test-Path -LiteralPath $modelRoot -PathType Container) -and
   (Test-Path -LiteralPath $modelManifestPath -PathType Leaf) -and
   (Test-Path -LiteralPath $modelMarkerPath -PathType Leaf) -and
@@ -51,6 +51,10 @@ if ($modelCached) {
   if ($LASTEXITCODE -ne 0) { throw "AI model pack extraction failed" }
   if (-not (Test-Path -LiteralPath $modelManifestPath)) {
     throw "AI model pack manifest is missing after extraction"
+  }
+  $legacyMarker = Join-Path $modelRoot "field-kit-install.marker"
+  if (Test-Path -LiteralPath $legacyMarker) {
+    Remove-Item -LiteralPath $legacyMarker -Force
   }
   Set-Content -LiteralPath $modelMarkerPath -Value $modelPackSha256 -Encoding UTF8 -NoNewline
 }
