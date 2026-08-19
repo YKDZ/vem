@@ -1,18 +1,32 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-function required(args, name) {
+interface DeploymentRecord {
+  schemaVersion: string;
+  requestedCommit: string;
+  deployedAt: string;
+  repoDigests: { serviceApi: string; adminUi: string };
+  environmentFile: string;
+  composeFile: string;
+}
+
+function required(args: string[], name: string): string {
   const index = args.indexOf(`--${name}`);
   if (index < 0) throw new Error(`--${name} is required`);
   const value = args[index + 1];
-  if (!value || value.startsWith("--")) throw new Error(`--${name} requires a value`);
+  if (!value || value.startsWith("--"))
+    throw new Error(`--${name} requires a value`);
   return value;
 }
 
-function run(command, args, options = {}) {
+function run(
+  command: string,
+  args: string[],
+  options: { cwd?: string } = {},
+): string {
   const result = spawnSync(command, args, {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
@@ -26,19 +40,20 @@ function run(command, args, options = {}) {
   return result.stdout.trim();
 }
 
-function remote(host, script) {
+function remote(host: string, script: string): string {
   return run("ssh", [host, script], {});
 }
 
-export function deployBackendImages(args) {
+export function deployBackendImages(args: string[]): DeploymentRecord {
   const host = required(args, "ssh");
   const commit = required(args, "commit");
-  if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error("--commit must be 40 hex");
+  if (!/^[a-f0-9]{40}$/.test(commit))
+    throw new Error("--commit must be 40 hex");
   const envFile = required(args, "env-file");
   const composeFile = required(args, "compose-file");
   const recordPath = required(args, "record");
   const bundleIndex = args.indexOf("--bundle");
-  const bundle = bundleIndex >= 0 ? args[bundleIndex + 1] : null;
+  const bundle: string | null = bundleIndex >= 0 ? args[bundleIndex + 1] : null;
 
   if (bundle) {
     run("scp", [bundle, `${host}:/tmp/vem-backend-images.tar.gz`]);
@@ -67,7 +82,7 @@ export function deployBackendImages(args) {
     host,
     `docker inspect --format '{{index .RepoDigests 0}}' ghcr.io/ykdz/vem-admin-ui:sha-${commit}`,
   );
-  const record = {
+  const record: DeploymentRecord = {
     schemaVersion: "vem-backend-deployment/v1",
     requestedCommit: commit,
     deployedAt: new Date().toISOString(),
@@ -82,9 +97,14 @@ export function deployBackendImages(args) {
   return record;
 }
 
-if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
+if (
+  process.argv[1] &&
+  import.meta.url === new URL(`file://${process.argv[1]}`).href
+) {
   try {
-    process.stdout.write(`${JSON.stringify(deployBackendImages(process.argv.slice(2)), null, 2)}\n`);
+    process.stdout.write(
+      `${JSON.stringify(deployBackendImages(process.argv.slice(2)), null, 2)}\n`,
+    );
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
