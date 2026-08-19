@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 interface DeploymentRecord {
@@ -49,14 +50,15 @@ export function deployBackendImages(args: string[]): DeploymentRecord {
   const commit = required(args, "commit");
   if (!/^[a-f0-9]{40}$/.test(commit))
     throw new Error("--commit must be 40 hex");
-  const envFile = required(args, "env-file");
+  const envFile = required(args, "remote-env");
   const composeFile = required(args, "compose-file");
   const recordPath = required(args, "record");
   const bundleIndex = args.indexOf("--bundle");
   const bundle: string | null = bundleIndex >= 0 ? args[bundleIndex + 1] : null;
 
   if (bundle) {
-    run("scp", [bundle, `${host}:/tmp/vem-backend-images.tar.gz`]);
+    const resolvedBundle = resolveBundle(bundle);
+    run("scp", [resolvedBundle, `${host}:/tmp/vem-backend-images.tar.gz`]);
     remote(host, "docker load -i /tmp/vem-backend-images.tar.gz");
   } else {
     remote(
@@ -95,6 +97,16 @@ export function deployBackendImages(args: string[]): DeploymentRecord {
   writeFileSync(localRecord, recordJson);
   run("scp", [localRecord, `${host}:${recordPath}`]);
   return record;
+}
+
+function resolveBundle(bundle: string): string {
+  const head = readFileSync(bundle).subarray(0, 2).toString("latin1");
+  if (head !== "PK") return bundle;
+  const dir = mkdtempSync(join(tmpdir(), "vem-backend-bundle-"));
+  run("unzip", ["-o", "-q", bundle, "-d", dir]);
+  const archive = readdirSync(dir).find((name) => name.endsWith(".tar.gz"));
+  if (!archive) throw new Error("backend image bundle zip contains no tar.gz");
+  return join(dir, archive);
 }
 
 if (
