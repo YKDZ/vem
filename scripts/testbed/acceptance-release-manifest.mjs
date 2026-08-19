@@ -121,7 +121,7 @@ function validateIdentity(identity) {
   }
   const ai = required(identity.aiVirtualTryOn, "AI identity");
   const authority = ai.authority;
-  if (authority !== null) {
+  if (authority != null) {
     const candidate = required(authority.candidate, "AI candidate");
     if (
       commit(candidate.sourceCommit, "AI candidate") !==
@@ -166,7 +166,7 @@ function validateIdentity(identity) {
     input.modelPackArchive,
     "AI input model archive",
   );
-  if (authority !== null) {
+  if (authority != null) {
     const modelArchive = required(
       authority.modelPack.archive,
       "model pack archive",

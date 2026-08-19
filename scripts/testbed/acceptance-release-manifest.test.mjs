@@ -136,6 +136,12 @@ test("accepts a functional AI identity without release authority", () => {
   assert.doesNotThrow(() => buildAcceptanceReleaseManifest(functional));
 });
 
+test("accepts a functional AI identity with no authority key at all", () => {
+  const functional = identity();
+  delete functional.aiVirtualTryOn.authority;
+  assert.doesNotThrow(() => buildAcceptanceReleaseManifest(functional));
+});
+
 test("rejects a pass-two release identity that drifts from pass one", () => {
   const passA = identity();
   const passB = structuredClone(passA);
