@@ -42,8 +42,8 @@
     "test:e2e": "turbo run test:e2e --output-logs=errors-only --log-order=grouped --log-prefix=task",
     "test:hard-cutover-pg": "VEM_D2_PG16_PROOF=1 node scripts/testbed/hard-cutover-postgres-atomicity.ts",
     "typecheck": "turbo run typecheck --output-logs=errors-only --log-order=grouped --log-prefix=task",
-    "typecheck:testbed": "tsc -p tsconfig.testbed.json --noEmit --pretty false",
-    "typecheck:scripts": "tsc -p tsconfig.scripts.json"
+    "typecheck:scripts": "tsc -p tsconfig.scripts.json",
+    "typecheck:testbed": "tsc -p tsconfig.testbed.json --noEmit --pretty false"
   },
   "dependencies": {
     "ajv": "8.20.0"
