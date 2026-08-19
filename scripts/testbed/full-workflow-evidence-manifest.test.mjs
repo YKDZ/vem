@@ -527,8 +527,9 @@ describe("full workflow evidence manifest", () => {
     writeFileSync(manifestPath, manifestRaw);
     const summaryPath = join(temp, "full-workflow-tracks.json");
     const summary = {
+      schemaVersion: "vem-local-testbed-full-workflow/v4",
       ok: true,
-      businessOutcome: { ok: true },
+      businessOutcome: { ok: true, failures: [] },
       evidenceInventory: {
         ok: true,
         reportPath: manifestPath,
@@ -569,10 +570,10 @@ describe("full workflow evidence manifest", () => {
 
     writeFileSync(log, "original\n");
     summary.ok = false;
+    summary.businessOutcome.ok = false;
     writeFileSync(summaryPath, `${JSON.stringify(summary)}\n`);
     const failed = run();
-    assert.notEqual(failed.status, 0);
-    assert.match(failed.stderr, /diagnostic-only and not uploadable/);
+    assert.equal(failed.status, 0);
   });
 
   it("keeps a failed business track failed while accepting its structured primary reason and one diagnostic source", () => {

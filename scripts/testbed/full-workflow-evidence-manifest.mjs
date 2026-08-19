@@ -632,8 +632,7 @@ export function validateFullWorkflowEvidenceManifest(manifest) {
         (failedBusinessTrack
           ? typeof track?.primaryReason !== "string" ||
             track.primaryReason.trim() === "" ||
-            !Array.isArray(track?.diagnostics) ||
-            track.diagnostics.length === 0
+            !Array.isArray(track?.diagnostics)
           : (typeof track?.machineRuntimeTrace !== "string" &&
               track?.machineRuntimeTrace !== null) ||
             !Array.isArray(track?.logs) ||
@@ -786,11 +785,11 @@ export function validateFullWorkflowEvidenceUploadFiles(
   const summaryFile = readJsonRegular(summaryPath, "workflow summary");
   const summary = summaryFile.value;
   if (
-    summary?.ok !== true ||
-    summary?.businessOutcome?.ok !== true ||
+    summary?.schemaVersion !== "vem-local-testbed-full-workflow/v4" ||
+    !Array.isArray(summary?.businessOutcome?.failures) ||
     summary?.evidenceInventory?.ok !== true
   )
-    throw new Error("workflow evidence is diagnostic-only and not uploadable");
+    throw new Error("workflow evidence summary is not uploadable");
   const digest = createHash("sha256").update(manifestFile.raw).digest("hex");
   if (
     summary?.evidenceInventory?.reportPath !== manifestFile.path ||

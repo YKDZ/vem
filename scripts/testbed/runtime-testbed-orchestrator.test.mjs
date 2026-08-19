@@ -25,6 +25,7 @@ import {
   provisionAiAcceptanceBlock,
   provisionAiAcceptanceGuestInput,
   stageAiAcceptanceInputs,
+  summarizeGuestBusinessFailures,
   validateHostConfig,
 } from "./runtime-testbed-orchestrator.mjs";
 import { parseTriggerOptions } from "./runtime-testbed-trigger.mjs";
@@ -87,6 +88,30 @@ describe("runtime testbed scheduler contract", () => {
     );
     assert.match(source, /`\$\{options\.runId\}-PASS-\$\{pass\}`/);
     assert.doesNotMatch(source, /`\$\{options\.runId\}-pass-/);
+  });
+
+  it("summarizes guest business failures with set, reason, and report path", () => {
+    assert.equal(
+      summarizeGuestBusinessFailures({
+        businessOutcome: {
+          failures: [
+            {
+              set: "sale",
+              reason: "DaemonUnavailableError: daemon request failed",
+              reportPath: "C:\\ProgramData\\VEM\\testbed\\sale.json",
+            },
+          ],
+        },
+      }),
+      "sale: DaemonUnavailableError: daemon request failed (report: C:\\ProgramData\\VEM\\testbed\\sale.json)",
+    );
+    assert.equal(
+      summarizeGuestBusinessFailures({
+        businessOutcome: { failures: [] },
+      }),
+      null,
+    );
+    assert.equal(summarizeGuestBusinessFailures(null), null);
   });
   it("accepts one committed revision and host-local config", () => {
     assert.deepEqual(

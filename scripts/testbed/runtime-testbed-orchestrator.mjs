@@ -1213,6 +1213,8 @@ async function stageAndRunGuest({
     `& $pwsh -NoProfile -EncodedCommand '${encodedPowerShell(execute)}'`,
     "exit $LASTEXITCODE",
   ].join("\n");
+  let guestError = null;
+  let transportError = null;
   try {
     await runProcess(
       "ssh",
@@ -1236,28 +1238,60 @@ async function stageAndRunGuest({
       (error.command === "ssh" || error.command === "scp") &&
       (error.exitCode === 255 || error.timedOut === true)
     ) {
-      error.businessFailure = false;
+      transportError = error;
     } else {
-      error.businessFailure = true;
+      guestError = error;
+      guestError.businessFailure = true;
     }
-    throw error;
-  } finally {
-    const evidence = join(runRoot, "compact", `pass-${pass}`);
-    await mkdir(evidence, { recursive: true });
-    const remoteEvidence =
-      mode === "clear_cache"
-        ? "C:/ProgramData/VEM/testbed/clear-cache-report.json"
-        : "C:/ProgramData/VEM/testbed/full-workflow-evidence-bundle";
-    await runProcess(
-      "scp",
-      [...scp, "-r", `${remote}:${remoteEvidence}`, evidence],
-      {
-        timeoutMs: GUEST_TRANSFER_TIMEOUT_MS,
-        timeoutLabel: "guest evidence transfer",
-      },
-    ).catch(() => undefined);
+  }
+  const evidence = join(runRoot, "compact", `pass-${pass}`);
+  await mkdir(evidence, { recursive: true });
+  const remoteEvidence =
+    mode === "clear_cache"
+      ? "C:/ProgramData/VEM/testbed/clear-cache-report.json"
+      : "C:/ProgramData/VEM/testbed/full-workflow-evidence-bundle";
+  await runProcess(
+    "scp",
+    [...scp, "-r", `${remote}:${remoteEvidence}`, evidence],
+    {
+      timeoutMs: GUEST_TRANSFER_TIMEOUT_MS,
+      timeoutLabel: "guest evidence transfer",
+    },
+  ).catch(() => undefined);
+  if (transportError) throw transportError;
+  if (guestError) {
+    const summaryPath = await findFile(evidence, "full-workflow-tracks.json");
+    if (summaryPath) {
+      try {
+        const summary = JSON.parse(readFileSync(summaryPath, "utf8"));
+        const primary = summarizeGuestBusinessFailures(summary);
+        if (primary) {
+          guestError.message = `${guestError.message}; ${primary}; evidence=${evidence}`;
+        }
+      } catch {
+        // Evidence parsing must never hide the original guest failure.
+      }
+    }
+    throw guestError;
   }
   return {};
+}
+
+export function summarizeGuestBusinessFailures(summary) {
+  const failures = summary?.businessOutcome?.failures;
+  if (!Array.isArray(failures)) return null;
+  const entries = failures
+    .filter((entry) => entry && typeof entry.set === "string")
+    .map((entry) => {
+      const reason =
+        typeof entry.reason === "string" ? entry.reason.trim() : "";
+      const report =
+        typeof entry.reportPath === "string" && entry.reportPath !== ""
+          ? ` (report: ${entry.reportPath})`
+          : "";
+      return `${entry.set}: ${reason.slice(0, 400)}${report}`;
+    });
+  return entries.length > 0 ? entries.join("; ") : null;
 }
 
 async function findFile(root, name) {

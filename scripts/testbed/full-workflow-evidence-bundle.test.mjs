@@ -45,8 +45,9 @@ function fixture() {
   writeFileSync(
     summaryPath,
     `${JSON.stringify({
+      schemaVersion: "vem-local-testbed-full-workflow/v4",
       ok: true,
-      businessOutcome: { ok: true },
+      businessOutcome: { ok: true, failures: [] },
       evidenceInventory: {
         ok: true,
         reportPath: manifestPath,
