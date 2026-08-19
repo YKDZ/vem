@@ -108,36 +108,68 @@ function waitForHeartbeatInterval(intervalMs) {
 
 function startVmAiActiveHeartbeat(
   client,
-  { intervalMs = 10_000, waitForInterval = waitForHeartbeatInterval } = {},
+  {
+    intervalMs = 10_000,
+    retryIntervalMs = 2_000,
+    sendTimeoutMs = 30_000,
+    waitForInterval = waitForHeartbeatInterval,
+    onFailure = null,
+  } = {},
 ) {
   let stopped = false;
   let currentWait = null;
-  let failure = null;
+  let lastFailure = null;
+  const beat = async () => {
+    try {
+      // 与 vision-try-on-acceptance 中成熟的 idle keepalive 保持一致：鼠标事件
+      // 同样产生 pointerdown（Machine 的触摸会话会跟踪），且不会像保活触摸那样
+      // 与真实点击竞争破坏 CDP 活动触摸状态。保活是尽力而为，绝不因此判定验收失败。
+      await client.send(
+        "Input.dispatchMouseEvent",
+        {
+          type: "mousePressed",
+          x: 540,
+          y: 960,
+          button: "left",
+          clickCount: 1,
+        },
+        { timeoutMs: sendTimeoutMs },
+      );
+      await client.send(
+        "Input.dispatchMouseEvent",
+        {
+          type: "mouseReleased",
+          x: 540,
+          y: 960,
+          button: "left",
+          clickCount: 1,
+        },
+        { timeoutMs: sendTimeoutMs },
+      );
+      lastFailure = null;
+      return true;
+    } catch (error) {
+      lastFailure = error;
+      onFailure?.(error);
+      return false;
+    }
+  };
   const task = (async () => {
     while (!stopped) {
-      currentWait = waitForInterval(intervalMs);
+      const previousBeatSucceeded = await beat();
+      if (stopped) return;
+      currentWait = waitForInterval(
+        previousBeatSucceeded ? intervalMs : retryIntervalMs,
+      );
       await currentWait.promise;
       currentWait = null;
-      if (stopped) return;
-      await client.send("Input.dispatchTouchEvent", {
-        touchPoints: [{ x: 1, y: 1 }],
-        type: "touchStart",
-      });
-      await client.send("Input.dispatchTouchEvent", {
-        touchPoints: [],
-        type: "touchEnd",
-      });
     }
-  })().catch((error) => {
-    failure = error;
-  });
+  })().catch(() => {});
   return {
     async stop() {
       stopped = true;
       currentWait?.cancel();
       await task;
-      if (failure)
-        throw new Error("VM AI active heartbeat failed", { cause: failure });
     },
   };
 }
@@ -151,8 +183,27 @@ export function startVmAiActiveHeartbeatForTest(client, options) {
 }
 
 async function collectInstalledAiTryOnAttemptWithVmHeartbeat(options) {
+  const failureRecords = [];
+  const recordHeartbeatFailure = (error) => {
+    failureRecords.push(error);
+    if (options.artifactRoot && typeof options.artifactRoot === "string") {
+      try {
+        writeFileSync(
+          join(options.artifactRoot, "heartbeat-keepalive-errors.txt"),
+          `${failureRecords
+            .map((entry) => entry?.message ?? String(entry))
+            .join("\n")}\n`,
+          "utf8",
+        );
+      } catch {
+        // 保活错误记录是尽力而为的调试旁路，不能再次影响验收。
+      }
+    }
+  };
   const heartbeat = isVmAcceptanceKeepAiActiveEnabled()
-    ? startVmAiActiveHeartbeat(options.client)
+    ? startVmAiActiveHeartbeat(options.client, {
+        onFailure: recordHeartbeatFailure,
+      })
     : null;
   try {
     return await collectInstalledAiTryOnAttempt(options);

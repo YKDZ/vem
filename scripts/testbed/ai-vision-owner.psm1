@@ -81,15 +81,22 @@ function Get-TestbedKioskPassword([object]$GuestInput) {
 }
 
 function Wait-TestbedVisionReady {
-  param([switch]$RequireAiReady)
+  param(
+    [switch]$RequireAiReady,
+    [int]$DeadlineSeconds = 60
+  )
   $context = Assert-TestbedAiOwnerContext
   if ($null -ne $context.testOperations -and $context.testOperations.ContainsKey("WaitReady")) {
     return & $context.testOperations.WaitReady
   }
-  $deadline = [DateTime]::UtcNow.AddSeconds($(if ($RequireAiReady) { 300 } else { 60 }))
+  $effectiveDeadlineSeconds = if ($RequireAiReady) { [Math]::Max(300, $DeadlineSeconds) } else { $DeadlineSeconds }
+  $deadline = [DateTime]::UtcNow.AddSeconds($effectiveDeadlineSeconds)
+  $lastHealth = $null
+  $lastError = $null
   do {
     try {
       $health = Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:7892/health" -TimeoutSec 2
+      $lastHealth = $health
       $aiReady = $RequireAiReady -and $health.aiReady -eq $true -and [string]$health.aiReadinessDiagnostic -ceq "ready"
       if (
         $null -ne $health -and
@@ -99,12 +106,15 @@ function Wait-TestbedVisionReady {
         (-not $RequireAiReady -or $aiReady)
       ) { return $health }
     } catch {}
+    $listeners = @(Get-NetTCPConnection -LocalAddress "127.0.0.1" -LocalPort 7892 -State Listen -ErrorAction SilentlyContinue)
+    $lastError = if ($listeners.Count -eq 0) { "no listener on 127.0.0.1:7892" } else { $lastError }
     Start-Sleep -Milliseconds 250
   } while ([DateTime]::UtcNow -lt $deadline)
+  $diagnostic = if ($null -ne $lastHealth) { $lastHealth | ConvertTo-Json -Depth 8 -Compress } else { "no health response (last error: $lastError)" }
   if ($RequireAiReady) {
-    throw "managed AI Vision owner did not expose ready model and worker identities on 127.0.0.1:7892 within 300s"
+    throw "managed AI Vision owner did not expose ready model and worker identities on 127.0.0.1:7892 within ${effectiveDeadlineSeconds}s: $diagnostic"
   }
-  throw "managed Vision owner did not become ready on 127.0.0.1:7892"
+  throw "managed Vision owner did not become ready on 127.0.0.1:7892 within ${effectiveDeadlineSeconds}s: $diagnostic"
 }
 
 function Get-TestbedProcessTreeIds([int[]]$RootProcessIds) {
@@ -299,7 +309,7 @@ function Restore-TestbedDefaultVisionOwner([object]$GuestInput) {
   Install-TestbedVisionOwner $GuestInput $null
   if ($null -ne $context.testOperations -and $context.testOperations.ContainsKey("StartOwner")) { & $context.testOperations.StartOwner }
   else { Start-ScheduledTask -TaskName "VEMVisionRuntime" -ErrorAction Stop }
-  $health = Wait-TestbedVisionReady
+  $health = Wait-TestbedVisionReady -DeadlineSeconds 120
   if ($null -ne $context.testOperations -and $context.testOperations.ContainsKey("ReadOwnerIdentity")) {
     $owner = & $context.testOperations.ReadOwnerIdentity
   } else {
