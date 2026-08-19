@@ -59,28 +59,6 @@ function identity() {
       },
     },
     aiVirtualTryOn: {
-      authority: {
-        contract: {
-          bundleDigest: "c".repeat(64),
-          manifestSha256: "d".repeat(64),
-          protocol: "vem.vision.v2",
-        },
-        candidate: {
-          sourceCommit: "a".repeat(40),
-          subjectSha256: "9".repeat(64),
-        },
-        resources: {
-          aiLockSha256: "e".repeat(64),
-          runtimeDescriptorSha256: "f".repeat(64),
-          sourceDescriptorSha256: "0".repeat(64),
-          workerExecutableSha256: "1".repeat(64),
-        },
-        modelPack: {
-          archive: { byteSize: 23, sha256: "2".repeat(64) },
-          descriptorSha256: "3".repeat(64),
-          sourceRevision: "4".repeat(40),
-        },
-      },
       input: {
         manifestSha256: "5".repeat(64),
         modelPackArchive: { byteSize: 23, sha256: "2".repeat(64) },
@@ -107,10 +85,7 @@ test("builds one canonical acceptance release manifest from existing runtime ide
   assert.equal(value.backend.serviceApi.runtime.health, "ready");
   assert.equal(value.windowsRuntime.artifacts.machine.sha256, "6".repeat(64));
   assert.equal(value.vision.runtimeArchive.sha256, "9".repeat(64));
-  assert.equal(
-    value.aiVirtualTryOn.authority.contract.bundleDigest,
-    "c".repeat(64),
-  );
+  assert.equal(value.aiVirtualTryOn.input.manifestSha256, "5".repeat(64));
   assert.equal(createHash("sha256").update(raw).digest("hex").length, 64);
   assert.equal(raw, `${JSON.stringify(JSON.parse(raw), null, 2)}\n`);
 });
@@ -123,22 +98,15 @@ test("refuses an incomplete release identity before it can become a manifest", (
     /Admin UI build SHA-256 is invalid/,
   );
   const unbound = identity();
-  unbound.aiVirtualTryOn.input.modelPackArchive.sha256 = "8".repeat(64);
+  delete unbound.aiVirtualTryOn.input.materializedModelPackRoot;
   assert.throws(
     () => buildAcceptanceReleaseManifest(unbound),
-    /model archive drifted from authority/,
+    /materialized model pack is required/,
   );
 });
 
 test("accepts a functional AI identity without release authority", () => {
   const functional = identity();
-  functional.aiVirtualTryOn.authority = null;
-  assert.doesNotThrow(() => buildAcceptanceReleaseManifest(functional));
-});
-
-test("accepts a functional AI identity with no authority key at all", () => {
-  const functional = identity();
-  delete functional.aiVirtualTryOn.authority;
   assert.doesNotThrow(() => buildAcceptanceReleaseManifest(functional));
 });
 
@@ -148,9 +116,7 @@ test("rejects a pass-two release identity that drifts from pass one", () => {
   passB.runtimeArtifacts.reusedFromPass1 = true;
   const bound = bindAcceptanceReleaseManifest(passA, passB);
   assert.match(bound.sha256, /^[a-f0-9]{64}$/);
-  passB.aiVirtualTryOn.authority.resources.workerExecutableSha256 = "9".repeat(
-    64,
-  );
+  passB.visionCore.runtimeArchive.sha256 = "0".repeat(64);
   assert.throws(
     () => bindAcceptanceReleaseManifest(passA, passB),
     /pass 2 drifted from pass 1/,

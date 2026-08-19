@@ -1385,28 +1385,6 @@ function identity(reconstruction) {
       },
     },
     aiVirtualTryOn: {
-      authority: {
-        candidate: {
-          sourceCommit: "d".repeat(40),
-          subjectSha256: "5".repeat(64),
-        },
-        contract: {
-          bundleDigest: "7".repeat(64),
-          manifestSha256: "8".repeat(64),
-          protocol: "vem.vision.v2",
-        },
-        modelPack: {
-          archive: { byteSize: 14, sha256: "9".repeat(64) },
-          descriptorSha256: "a".repeat(64),
-          sourceRevision: "e".repeat(40),
-        },
-        resources: {
-          aiLockSha256: "b".repeat(64),
-          runtimeDescriptorSha256: "c".repeat(64),
-          sourceDescriptorSha256: "d".repeat(64),
-          workerExecutableSha256: "e".repeat(64),
-        },
-      },
       input: {
         manifestSha256: "f".repeat(64),
         modelPackArchive: { byteSize: 14, sha256: "9".repeat(64) },

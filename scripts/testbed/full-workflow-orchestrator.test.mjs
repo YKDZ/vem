@@ -204,7 +204,7 @@ describe("full workflow serial lifecycle", () => {
             writeFileSync(join(track.artifactRoot, "runtime.log"), "ok\n");
             const png = Buffer.alloc(2 * 1024 * 1024);
             Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(png);
-            for (let index = 0; index < 4; index += 1)
+            for (let index = 0; index < 17; index += 1)
               writeFileSync(join(track.artifactRoot, `${index}.png`), png);
             return { status: "passed", exitCode: 0, report };
           },
@@ -499,7 +499,10 @@ describe("full workflow serial lifecycle", () => {
       (entry) => entry.runner.kind === "node",
     )) {
       const modeIndex = track.command.indexOf("--mode");
-      assert.equal(track.command[modeIndex + 1], "full");
+      const expectedMode = track.runner.args.includes("--mode")
+        ? track.runner.args[track.runner.args.indexOf("--mode") + 1]
+        : "fast";
+      assert.equal(track.command[modeIndex + 1], expectedMode);
     }
   });
 

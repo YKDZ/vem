@@ -120,66 +120,12 @@ function validateIdentity(identity) {
     throw new Error("acceptance release Vision source commits drifted");
   }
   const ai = required(identity.aiVirtualTryOn, "AI identity");
-  const authority = ai.authority;
-  if (authority != null) {
-    const candidate = required(authority.candidate, "AI candidate");
-    if (
-      commit(candidate.sourceCommit, "AI candidate") !==
-        vision.runtimeArchive.sourceCommit ||
-      digest(candidate.subjectSha256, "AI candidate subject") !==
-        vision.runtimeArchive.sha256
-    ) {
-      throw new Error(
-        "acceptance release AI candidate drifted from Vision runtime",
-      );
-    }
-    const contractIdentity = required(authority.contract, "Vision V2 contract");
-    digest(contractIdentity.bundleDigest, "Vision V2 contract bundle");
-    digest(contractIdentity.manifestSha256, "Vision V2 contract manifest");
-    if (contractIdentity.protocol !== "vem.vision.v2") {
-      throw new Error("acceptance release Vision V2 protocol is invalid");
-    }
-    const resources = required(authority.resources, "AI environment");
-    for (const key of [
-      "aiLockSha256",
-      "runtimeDescriptorSha256",
-      "sourceDescriptorSha256",
-      "workerExecutableSha256",
-    ]) {
-      digest(resources[key], `AI environment ${key}`);
-    }
-    const model = required(authority.modelPack, "model pack authority");
-    const modelArchive = required(model.archive, "model pack archive");
-    digest(modelArchive.sha256, "model pack archive");
-    digest(model.descriptorSha256, "model pack descriptor");
-    commit(model.sourceRevision, "model pack source");
-    if (
-      !Number.isSafeInteger(modelArchive.byteSize) ||
-      modelArchive.byteSize <= 0
-    ) {
-      throw new Error("acceptance release model pack archive size is invalid");
-    }
-  }
   const input = required(ai.input, "AI input identity");
   digest(input.manifestSha256, "AI input manifest");
   const inputModelArchive = required(
     input.modelPackArchive,
     "AI input model archive",
   );
-  if (authority != null) {
-    const modelArchive = required(
-      authority.modelPack.archive,
-      "model pack archive",
-    );
-    if (
-      inputModelArchive.sha256 !== modelArchive.sha256 ||
-      inputModelArchive.byteSize !== modelArchive.byteSize
-    ) {
-      throw new Error(
-        "acceptance release model archive drifted from authority",
-      );
-    }
-  }
   const materialized = required(
     input.materializedModelPackRoot,
     "materialized model pack",
