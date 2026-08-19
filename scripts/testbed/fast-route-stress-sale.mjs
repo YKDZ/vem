@@ -1293,6 +1293,17 @@ export async function waitForSaleStartReady(
     wait = sleep,
   } = {},
 ) {
+  const mockPaymentOptionReady = (capability) =>
+    Array.isArray(capability?.paymentOptions?.options)
+      ? capability.paymentOptions.options.some(
+          (option) =>
+            option?.optionKey === "mock:mock" &&
+            option?.providerCode === "mock" &&
+            option?.method === "mock" &&
+            option?.ready === true &&
+            option?.disabledReason === null,
+        )
+      : false;
   const deadline = now() + timeoutMs;
   let stableSince = null;
   let last = null;
@@ -1302,7 +1313,11 @@ export async function waitForSaleStartReady(
       readCapability(handoff),
     ]);
     last = { route, capability };
-    if (route === "#/catalog" && capability?.canStartSale === true) {
+    if (
+      route === "#/catalog" &&
+      capability?.canStartSale === true &&
+      mockPaymentOptionReady(capability)
+    ) {
       stableSince ??= now();
       if (now() - stableSince >= 3_000) return capability;
     } else {

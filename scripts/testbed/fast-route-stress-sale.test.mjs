@@ -1853,7 +1853,21 @@ describe("fast route stress sale tracer", () => {
   it("waits for sale readiness and a stable Catalog before observing customer navigation", async () => {
     let nowMs = 0;
     let sample = 0;
-    const capability = { canStartSale: true, revision: 7 };
+    const capability = {
+      canStartSale: true,
+      revision: 7,
+      paymentOptions: {
+        options: [
+          {
+            optionKey: "mock:mock",
+            providerCode: "mock",
+            method: "mock",
+            ready: true,
+            disabledReason: null,
+          },
+        ],
+      },
+    };
     const result = await waitForSaleStartReady({}, {}, 5_000, {
       now: () => nowMs,
       readRoute: async () => {
@@ -1873,6 +1887,40 @@ describe("fast route stress sale tracer", () => {
 
     assert.equal(result, capability);
     assert.ok(sample >= 7);
+  });
+
+  it("does not consider sale ready until the mock payment option is ready", async () => {
+    let nowMs = 0;
+    let sample = 0;
+    const readyOption = {
+      optionKey: "mock:mock",
+      providerCode: "mock",
+      method: "mock",
+      ready: true,
+      disabledReason: null,
+    };
+    const result = await waitForSaleStartReady({}, {}, 5_000, {
+      now: () => nowMs,
+      readRoute: async () => "#/catalog",
+      readCapability: async () => {
+        sample += 1;
+        return sample < 3
+          ? {
+              canStartSale: true,
+              paymentOptions: {
+                options: [
+                  { ...readyOption, ready: false, disabledReason: "cold" },
+                ],
+              },
+            }
+          : { canStartSale: true, paymentOptions: { options: [readyOption] } };
+      },
+      wait: async (durationMs) => {
+        nowMs += durationMs;
+      },
+    });
+    assert.equal(result.paymentOptions.options[0].ready, true);
+    assert.ok(sample >= 14, `expected repeated readiness polls, got ${sample}`);
   });
 
   it("captures root as the first CDP transition away from Catalog without runtime trace input", async () => {
