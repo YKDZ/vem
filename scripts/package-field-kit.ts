@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import {
   closeSync,
   copyFileSync,
+  existsSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -18,6 +19,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const KIT_SCHEMA = "vem-field-kit/v1";
+const CACHE_SCHEMA = "vem-field-kit-build-cache/v1";
 const PART_SIZE_DEFAULT = 950 * 1024 * 1024;
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const KIT_SCRIPTS = [
@@ -64,6 +66,80 @@ function assertSha256(path: string, expected: string, label: string): void {
   }
 }
 
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value as Record<string, unknown>)
+        .sort()
+        .map((key) => [
+          key,
+          canonicalize((value as Record<string, unknown>)[key]),
+        ]),
+    );
+  }
+  return value;
+}
+
+function cacheKey(
+  identity: Record<string, unknown>,
+  modelPackSha256: string,
+  partSize: number,
+  kitScripts: { name: string; sha256: string }[],
+): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify(
+        canonicalize({
+          schemaVersion: CACHE_SCHEMA,
+          identity,
+          modelPackSha256,
+          partSize,
+          kitScripts,
+        }),
+      ),
+    )
+    .digest("hex");
+}
+
+function readCache(
+  cachePath: string,
+  key: string,
+  outDir: string,
+): Record<string, unknown> | null {
+  try {
+    const cache = JSON.parse(readFileSync(cachePath, "utf8"));
+    if (
+      cache?.schemaVersion !== CACHE_SCHEMA ||
+      cache.key !== key ||
+      !cache.result?.zip?.name ||
+      !Array.isArray(cache.result.parts)
+    ) {
+      return null;
+    }
+    const zipPath = join(outDir, cache.result.zip.name);
+    if (
+      !existsSync(zipPath) ||
+      statSync(zipPath).size !== cache.result.zip.byteSize
+    ) {
+      return null;
+    }
+    for (const part of cache.result.parts as {
+      name: string;
+      byteSize: number;
+    }[]) {
+      const partPath = join(outDir, part.name);
+      if (!existsSync(partPath) || statSync(partPath).size !== part.byteSize) {
+        return null;
+      }
+    }
+    if (!existsSync(join(outDir, "verify-parts.cmd"))) return null;
+    return cache.result as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
 function copyVerified(
   source: string,
   destination: string,
@@ -81,6 +157,7 @@ function copyVerified(
 }
 
 export function packageFieldKit(args: string[]): Record<string, unknown> {
+  const force = args.includes("--force");
   const vemCommit = required(args, "vem-commit");
   if (!/^[a-f0-9]{40}$/.test(vemCommit))
     throw new Error("--vem-commit must be 40 hex");
@@ -126,6 +203,26 @@ export function packageFieldKit(args: string[]): Record<string, unknown> {
   const visionManifest = JSON.parse(readFileSync(visionManifestPath, "utf8"));
   if (visionManifest.schemaVersion !== "vending-vision-main-artifacts/v1") {
     throw new Error("vision manifest schema is invalid");
+  }
+
+  const kitScripts = KIT_SCRIPTS.map((name) => {
+    const source = join(REPO_ROOT, "scripts", "windows", name);
+    return { name, sha256: sha256File(source) };
+  });
+  const key = cacheKey(
+    {
+      vemCommit,
+      runtimeManifest: normalizedRuntimeManifest,
+      visionManifest,
+    },
+    modelPackSha256,
+    partSize,
+    kitScripts,
+  );
+  const cachePath = join(outDir, "vem-field-kit.cache.json");
+  if (!force) {
+    const cached = readCache(cachePath, key, outDir);
+    if (cached) return cached;
   }
 
   const stage = join(outDir, ".stage");
@@ -283,7 +380,7 @@ export function packageFieldKit(args: string[]): Record<string, unknown> {
       "utf8",
     );
 
-    return {
+    const result = {
       schemaVersion: KIT_SCHEMA,
       vemCommit,
       visionCommit: visionManifest.commit,
@@ -296,6 +393,16 @@ export function packageFieldKit(args: string[]): Record<string, unknown> {
       members,
       outDir,
     };
+    writeFileSync(
+      cachePath,
+      `${JSON.stringify(
+        { schemaVersion: CACHE_SCHEMA, key, result },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    return result;
   } finally {
     rmSync(stage, { recursive: true, force: true });
   }

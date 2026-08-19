@@ -33,15 +33,26 @@ Copy-Item -LiteralPath $VisionSiteSource -Destination (Join-Path $StagingDirecto
 
 Write-Output "== Step 3/5: extract AI model pack =="
 $modelRoot = Join-Path "C:\ProgramData\VEM\vision\ai-model-packs\packs" $modelPackSha256
-if (Test-Path -LiteralPath $modelRoot) {
-  Remove-Item -LiteralPath $modelRoot -Recurse -Force
-}
-New-Item -ItemType Directory -Force -Path $modelRoot | Out-Null
-$tar = Join-Path $env:SystemRoot "System32\tar.exe"
-& $tar -xf (Join-Path $StagingDirectory "vending-vision-ai-models.zip") -C $modelRoot
-if ($LASTEXITCODE -ne 0) { throw "AI model pack extraction failed" }
-if (-not (Test-Path -LiteralPath (Join-Path $modelRoot "ai-model-manifest.json"))) {
-  throw "AI model pack manifest is missing after extraction"
+$modelManifestPath = Join-Path $modelRoot "ai-model-manifest.json"
+$modelMarkerPath = Join-Path $modelRoot "field-kit-install.marker"
+$modelCached = (Test-Path -LiteralPath $modelRoot -PathType Container) -and
+  (Test-Path -LiteralPath $modelManifestPath -PathType Leaf) -and
+  (Test-Path -LiteralPath $modelMarkerPath -PathType Leaf) -and
+  ((Get-Content -Raw -LiteralPath $modelMarkerPath -Encoding UTF8).Trim() -ceq $modelPackSha256)
+if ($modelCached) {
+  Write-Output "AI model pack already materialized (sha $modelPackSha256); skipping extraction"
+} else {
+  if (Test-Path -LiteralPath $modelRoot) {
+    Remove-Item -LiteralPath $modelRoot -Recurse -Force
+  }
+  New-Item -ItemType Directory -Force -Path $modelRoot | Out-Null
+  $tar = Join-Path $env:SystemRoot "System32\tar.exe"
+  & $tar -xf (Join-Path $StagingDirectory "vending-vision-ai-models.zip") -C $modelRoot
+  if ($LASTEXITCODE -ne 0) { throw "AI model pack extraction failed" }
+  if (-not (Test-Path -LiteralPath $modelManifestPath)) {
+    throw "AI model pack manifest is missing after extraction"
+  }
+  Set-Content -LiteralPath $modelMarkerPath -Value $modelPackSha256 -Encoding UTF8 -NoNewline
 }
 
 Write-Output "== Step 4/5: deploy runtime owners and Vision =="
