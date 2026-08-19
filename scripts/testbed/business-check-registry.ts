@@ -1,0 +1,265 @@
+const passedEvidence = Object.freeze({
+  trace: true,
+  logs: true,
+  screenshot: true,
+});
+const failedEvidence = Object.freeze({
+  primaryReason: true,
+  diagnostic: true,
+  trace: false,
+  logs: false,
+  screenshot: false,
+});
+
+function descriptor({
+  name,
+  core = false,
+  fullRequired = true,
+  fixtureKey = name,
+  runner = null,
+  validator,
+  blockedReason = null,
+  allowActiveTransactionHandoff = false,
+  restoreFixtureStock = false,
+  evidence = { passed: passedEvidence, failed: failedEvidence },
+}) {
+  return Object.freeze({
+    name,
+    key: name,
+    core,
+    fullRequired,
+    fixtureKey,
+    runner: runner && Object.freeze(runner),
+    validator,
+    blockedReason,
+    allowActiveTransactionHandoff,
+    restoreFixtureStock,
+    evidence: Object.freeze({
+      passed: Object.freeze(evidence.passed),
+      failed: Object.freeze(evidence.failed),
+    }),
+  });
+}
+
+export const BUSINESS_CHECK_REGISTRY = Object.freeze([
+  descriptor({
+    name: "commissioning",
+    runner: {
+      kind: "node",
+      script: "scripts/testbed/commissioning-acceptance.ts",
+      args: [],
+      reportFileName: "commissioning.json",
+      artifactDirectory: "commissioning-artifacts",
+    },
+    validator: "commissioning",
+  }),
+  descriptor({
+    name: "startup",
+    runner: {
+      kind: "node",
+      script: "scripts/testbed/startup-owner-acceptance.ts",
+      args: [],
+      reportFileName: "startup-owner-readiness.json",
+      artifactDirectory: "startup-owner-readiness-artifacts",
+    },
+    validator: "startup",
+    evidence: {
+      passed: { trace: false, logs: false, screenshot: false },
+      failed: failedEvidence,
+    },
+  }),
+  descriptor({
+    name: "sale",
+    core: true,
+    runner: {
+      kind: "node",
+      script: "scripts/testbed/fast-route-stress-sale.ts",
+      args: [],
+      reportFileName: "sale.json",
+      artifactDirectory: "sale-artifacts",
+    },
+    validator: "sale",
+  }),
+  descriptor({
+    name: "scannerPayment",
+    runner: {
+      kind: "node",
+      script: "scripts/testbed/scanner-payment-code-guest-full.ts",
+      args: ["--mode", "full"],
+      reportFileName: "scanner-payment.json",
+      artifactDirectory: "scanner-payment-artifacts",
+    },
+    validator: "scannerPayment",
+  }),
+  descriptor({
+    name: "visionExperience",
+    runner: {
+      kind: "node",
+      script:
+        "scripts/testbed/framework/slices/vision-experience/vision-experience-runner.ts",
+      args: [],
+      reportFileName: "vision-experience.json",
+      artifactDirectory: "vision-try-on-acceptance-artifacts",
+    },
+    validator: "visionExperience",
+  }),
+  descriptor({
+    name: "aiVirtualTryOn",
+    runner: {
+      kind: "powershell",
+      script: "scripts/testbed/run-full-ai-virtual-try-on-track.ps1",
+      args: [],
+      reportFileName: "ai-virtual-try-on.json",
+      artifactDirectory: "ai-virtual-try-on-artifacts",
+    },
+    validator: "aiVirtualTryOn",
+  }),
+  descriptor({
+    name: "pickupProtocol",
+    runner: {
+      kind: "node",
+      script: "scripts/testbed/delayed-pickup-native-audio-guest-full.ts",
+      args: ["--mode", "full"],
+      reportFileName: "pickup-protocol.json",
+      artifactDirectory: "pickup-protocol-artifacts",
+    },
+    validator: "pickupProtocol",
+  }),
+  descriptor({
+    name: "presenceAndAudio",
+    fixtureKey: "sale",
+    runner: {
+      kind: "node",
+      script: "scripts/testbed/presence-and-audio-guest-full.ts",
+      args: ["--mode", "full"],
+      reportFileName: "presence-and-audio.json",
+      artifactDirectory: "presence-and-audio-artifacts",
+    },
+    validator: "presenceAndAudio",
+  }),
+  descriptor({
+    name: "ipcRecovery",
+    runner: {
+      kind: "node",
+      script: "scripts/testbed/installed-ipc-recovery-guest-full.ts",
+      args: ["--mode", "full"],
+      reportFileName: "ipc-recovery.json",
+      artifactDirectory: "ipc-recovery-artifacts",
+    },
+    validator: "ipcRecovery",
+  }),
+  descriptor({
+    name: "fulfillmentRecovery",
+    restoreFixtureStock: true,
+    runner: {
+      kind: "node",
+      script: "scripts/testbed/serial-fulfillment-error-guest-full.ts",
+      args: ["--mode", "full"],
+      reportFileName: "fulfillment-recovery.json",
+      artifactDirectory: "fulfillment-recovery-artifacts",
+    },
+    validator: "fulfillmentRecovery",
+  }),
+  descriptor({
+    name: "paymentRecovery",
+    fixtureKey: "sale",
+    allowActiveTransactionHandoff: true,
+    runner: {
+      kind: "node",
+      script: "scripts/testbed/payment-recovery-guest-full.ts",
+      args: ["--mode", "full"],
+      reportFileName: "payment-recovery.json",
+      artifactDirectory: "payment-recovery-artifacts",
+    },
+    validator: "paymentRecovery",
+  }),
+  descriptor({
+    name: "paymentProvider",
+    fullRequired: false,
+    fixtureKey: "sale",
+    runner: {
+      kind: "node",
+      script: "scripts/testbed/payment-provider-guest-full.ts",
+      args: ["--mode", "full"],
+      reportFileName: "payment-provider.json",
+      artifactDirectory: "payment-provider-artifacts",
+    },
+    validator: "paymentProvider",
+  }),
+  descriptor({
+    name: "stockMaintenance",
+    core: true,
+    fixtureKey: "stockMaintenance",
+    restoreFixtureStock: true,
+    runner: {
+      kind: "node",
+      script: "scripts/testbed/stock-maintenance-guest-full.ts",
+      args: ["--mode", "full"],
+      reportFileName: "stock-maintenance.json",
+      artifactDirectory: "stock-maintenance-artifacts",
+    },
+    validator: "stockMaintenance",
+  }),
+  descriptor({
+    name: "hardwareLifecycle",
+    runner: {
+      kind: "node",
+      script: "scripts/testbed/hardware-lifecycle-guest-full.ts",
+      args: ["--mode", "full"],
+      reportFileName: "hardware-lifecycle.json",
+      artifactDirectory: "hardware-lifecycle-artifacts",
+    },
+    validator: "hardwareLifecycle",
+  }),
+  descriptor({
+    name: "localOperations",
+    fixtureKey: "sale",
+    runner: {
+      kind: "node",
+      script: "scripts/testbed/local-operations-guest-full.ts",
+      args: ["--mode", "full"],
+      reportFileName: "local-operations.json",
+      artifactDirectory: "local-operations-artifacts",
+    },
+    validator: "localOperations",
+  }),
+  descriptor({
+    name: "environmentControl",
+    runner: {
+      kind: "node",
+      script: "scripts/testbed/environment-control-guest-full.ts",
+      args: ["--mode", "full"],
+      reportFileName: "environment-control.json",
+      artifactDirectory: "environment-control-artifacts",
+    },
+    validator: "environmentControl",
+  }),
+]);
+
+export function businessCheckByName(name, registry = BUSINESS_CHECK_REGISTRY) {
+  return registry.find((descriptor) => descriptor.name === name) ?? null;
+}
+
+export function selectBusinessChecks({
+  mode,
+  focus = [],
+  registry = BUSINESS_CHECK_REGISTRY,
+}) {
+  if (!Array.isArray(focus)) throw new Error("focus must be an array");
+  if (mode === "full") {
+    if (focus.length > 0)
+      throw new Error("--focus is only valid with --mode fast");
+    return registry.filter((descriptor) => descriptor.fullRequired);
+  }
+  if (mode !== "fast")
+    throw new Error("business check mode must be fast or full");
+  const selected = new Set(focus);
+  for (const name of selected) {
+    if (!businessCheckByName(name, registry)) {
+      throw new Error(`unknown business check set: ${name}`);
+    }
+  }
+  return registry.filter((descriptor) =>
+    selected.size > 0 ? selected.has(descriptor.name) : descriptor.core,
+  );
+}

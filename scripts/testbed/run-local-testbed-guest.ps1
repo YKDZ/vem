@@ -253,7 +253,7 @@ function New-BoundedEvidenceBundle(
   if ($AllowIncomplete) {
     $allowIncompleteArgument = @("--allow-incomplete")
   }
-  & node scripts/testbed/full-workflow-evidence-bundle.mjs `
+  & node scripts/testbed/full-workflow-evidence-bundle.ts `
     --manifest $ManifestPath `
     --summary $summaryPath `
     --smoke $smokePath `
@@ -550,7 +550,7 @@ function Invoke-InstalledTauriRouteAdmission([string]$Endpoint, [int]$TimeoutSec
   Remove-Item -LiteralPath $diagnosticsPath -Force -ErrorAction SilentlyContinue
   $process = Start-Process `
     -FilePath "node" `
-    -ArgumentList @((Join-Path $repoRoot "scripts\testbed\installed-tauri-route-admission.mjs"), "--endpoint", $Endpoint) `
+    -ArgumentList @((Join-Path $repoRoot "scripts\testbed\installed-tauri-route-admission.ts"), "--endpoint", $Endpoint) `
     -WorkingDirectory $repoRoot `
     -RedirectStandardOutput $stdoutPath `
     -RedirectStandardError $stderrPath `
@@ -653,7 +653,7 @@ function Invoke-FullVisionTryOnAcceptance(
   if ([string]$visionInstallation.commit -ne [string]$visionCache.commit) {
     throw "installed Vision commit does not match the resolved cached commit"
   }
-  node scripts/testbed/vision-try-on-acceptance.mjs --mode full --guest-input $GuestInputPath --handoff $HandoffPath --out $OutPath
+  node scripts/testbed/vision-try-on-acceptance.ts --mode full --guest-input $GuestInputPath --handoff $HandoffPath --out $OutPath
   if ($LASTEXITCODE -ne 0) { throw "vision try-on acceptance failed" }
 }
 
@@ -1388,7 +1388,7 @@ $smokeOutPath = Join-Path $handoffRoot "installed-runtime-smoke.json"
 } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $handoffPath -Encoding utf8
 
 Write-TestbedPhase "installed-smoke"
-node scripts/testbed/installed-runtime-smoke.mjs --mode $Mode --evidence $handoffPath --out $smokeOutPath
+node scripts/testbed/installed-runtime-smoke.ts --mode $Mode --evidence $handoffPath --out $smokeOutPath
 if ($LASTEXITCODE -ne 0) { throw "installed production runtime smoke failed" }
 if ($Mode -eq "full") {
   Write-RecordedVisionSiteConfiguration (Join-Path $handoffRoot "vision-recorded-site-config.json")
@@ -1411,7 +1411,7 @@ try {
     if ([string]::IsNullOrWhiteSpace($name)) { throw "--focus requires a business check set name" }
     $focusArguments += @("--focus", $name)
   }
-  node scripts/testbed/full-workflow-orchestrator.mjs --mode $Mode --commit $Commit @focusArguments --guest-input $GuestInputPath --handoff $handoffPath --out $workflowSummaryOutPath
+  node scripts/testbed/full-workflow-orchestrator.ts --mode $Mode --commit $Commit @focusArguments --guest-input $GuestInputPath --handoff $handoffPath --out $workflowSummaryOutPath
   if ($LASTEXITCODE -ne 0) { $workflowFailure = "local testbed workflow aggregate failed" }
 } catch {
   $workflowFailure = "local testbed workflow aggregate command failed: $($_.Exception.Message)"

@@ -1,0 +1,1516 @@
+#!/usr/bin/env node
+
+import { spawnSync } from "node:child_process";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
+
+import { waitForDaemonReadyRefresh } from "./daemon-ready-refresh.ts";
+import { catalogProductSelectorForFixture } from "./full-workflow-fixtures.ts";
+import { buildInstalledKioskSaleScenarioSteps } from "./installed-kiosk-sale-acceptance.ts";
+import {
+  activateVisibleSelector,
+  captureCheckpoint,
+  CdpClient,
+  discoverMachineUiTarget,
+  enablePageRuntime,
+  evaluateExpression,
+  rewriteWebSocketDebuggerUrl,
+  waitForRoute,
+} from "./machine-ui-cdp-driver.ts";
+import { replaceSerialSessionAndUpdateHandoff } from "./serial-session-handoff.ts";
+
+const MODES = new Set(["full"]);
+const DEFAULT_VALID_SCANNER_CODE = "621234567890123456\r";
+const MALFORMED_SCANNER_BYTES = Buffer.from([
+  0x36, 0x32, 0x31, 0x32, 0xff, 0x62, 0x61, 0x64, 0x0d,
+]);
+const TIMEOUT_PARTIAL_SCANNER_BYTES = Buffer.from("621234567890123456", "utf8");
+const CLEANUP_TIMEOUT_MS = 10_000;
+const SCANNER_QUIET_BOUNDARY_MS = 750;
+
+export function scannerFrameBytes(value = DEFAULT_VALID_SCANNER_CODE) {
+  const bytes = Buffer.isBuffer(value)
+    ? Buffer.from(value)
+    : typeof value === "string"
+      ? Buffer.from(value, "utf8")
+      : null;
+  if (
+    !bytes ||
+    bytes.length <= 1 ||
+    !bytes.subarray(-1).equals(Buffer.from("\r"))
+  ) {
+    throw new Error(
+      "scannerAcceptance.validCode must end with exactly one CR frame suffix",
+    );
+  }
+  const body = bytes.subarray(0, -1);
+  if (body.includes(0x0d) || body.includes(0x0a)) {
+    throw new Error(
+      "scannerAcceptance.validCode must contain exactly one trailing CR frame suffix",
+    );
+  }
+  return bytes;
+}
+
+function required(value, label) {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(`${label} is required`);
+  }
+  return value.trim();
+}
+
+function windowsAbsolute(value, label) {
+  const path = required(value, label);
+  if (!/^[A-Za-z]:\\/.test(path) || path.includes("\0")) {
+    throw new Error(`${label} must be an absolute Windows path`);
+  }
+  return path;
+}
+
+function option(args, name) {
+  const index = args.indexOf(`--${name}`);
+  const value = index === -1 ? undefined : args[index + 1];
+  if (!value || value.startsWith("--")) {
+    throw new Error(`--${name} requires a value`);
+  }
+  return value;
+}
+
+function optionalOption(args, name) {
+  const index = args.indexOf(`--${name}`);
+  return index === -1 ? null : required(args[index + 1], `--${name}`);
+}
+
+function localPath(path) {
+  return process.platform === "win32"
+    ? path
+    : resolve(
+        `/mnt/${path[0].toLowerCase()}/${path.slice(3).replaceAll("\\", "/")}`,
+      );
+}
+
+function readJson(path, label) {
+  return JSON.parse(readFileSync(localPath(path), "utf8"));
+}
+
+function writeJson(path, value) {
+  mkdirSync(dirname(localPath(path)), { recursive: true });
+  writeFileSync(localPath(path), `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function serializeError(error) {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      stack: String(error.stack ?? "").slice(0, 16 * 1024),
+    };
+  }
+  return { name: "Error", message: String(error) };
+}
+
+function cleanupTimeout(label, timeoutMs) {
+  return new Promise((_, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label} exceeded ${timeoutMs}ms cleanup deadline`));
+    }, timeoutMs);
+    timer.unref?.();
+  });
+}
+
+export async function runCleanupStep(
+  label,
+  action,
+  timeoutMs = CLEANUP_TIMEOUT_MS,
+) {
+  try {
+    const detail = await Promise.race([
+      action(),
+      cleanupTimeout(label, timeoutMs),
+    ]);
+    return { label, ok: true, detail };
+  } catch (error) {
+    const wrapped = new Error(
+      `${label} failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    wrapped.cause = error;
+    wrapped.cleanupLabel = label;
+    throw wrapped;
+  }
+}
+
+export function combineCleanupError(primaryError, cleanupErrors) {
+  if (cleanupErrors.length === 0) return primaryError;
+  if (primaryError) {
+    return new AggregateError(
+      [primaryError, ...cleanupErrors],
+      `${primaryError.message}; cleanup failed: ${cleanupErrors.map((error) => error.message).join("; ")}`,
+    );
+  }
+  return new AggregateError(
+    cleanupErrors,
+    `cleanup failed: ${cleanupErrors.map((error) => error.message).join("; ")}`,
+  );
+}
+
+async function finalizeScannerCleanup({
+  guestInput,
+  sessionStart,
+  sessionControl,
+  client,
+}) {
+  const cleanup = [];
+  const cleanupErrors = [];
+  if (sessionStart?.sessionId) {
+    try {
+      cleanup.push(
+        await runCleanupStep("abort serial session", async () => {
+          const result = sessionControl
+            ? await sessionControl.abort()
+            : await controlPlaneRequest(
+                guestInput,
+                `/v1/serial-sessions/${sessionStart.sessionId}/abort`,
+              );
+          if (result?.aborted !== true) {
+            throw new Error(
+              "serial session abort did not confirm inactive state",
+            );
+          }
+          return result;
+        }),
+      );
+    } catch (error) {
+      cleanupErrors.push(error);
+      cleanup.push({
+        label: error.cleanupLabel ?? "abort serial session",
+        ok: false,
+        error: serializeError(error),
+      });
+    }
+  }
+  if (client) {
+    try {
+      cleanup.push(
+        await runCleanupStep("close CDP client", async () => {
+          await client.close();
+          return { closed: true };
+        }),
+      );
+    } catch (error) {
+      cleanupErrors.push(error);
+      cleanup.push({
+        label: error.cleanupLabel ?? "close CDP client",
+        ok: false,
+        error: serializeError(error),
+      });
+    }
+  }
+  return { cleanup, cleanupErrors };
+}
+
+function rows(raw, key) {
+  return Array.isArray(raw?.[key]) ? raw[key] : [];
+}
+
+function paymentRowsByOrder(report, orderId) {
+  return rows(report?.raw, "payments").filter(
+    (entry) => entry.orderId === orderId,
+  );
+}
+
+function attemptRowsByOrder(report, orderId) {
+  return rows(report?.raw, "paymentCodeAttempts").filter(
+    (entry) => entry.orderId === orderId,
+  );
+}
+
+function movementRowsByOrderNo(report, orderNo) {
+  return rows(report?.raw, "movements").filter(
+    (entry) => entry.orderNo === orderNo,
+  );
+}
+
+function daemonBaseUrl(handoff) {
+  const healthzUrl = required(
+    handoff.daemon?.ready?.healthzUrl,
+    "daemon healthzUrl",
+  );
+  if (!healthzUrl.endsWith("/healthz")) {
+    throw new Error("daemon healthzUrl must end with /healthz");
+  }
+  return healthzUrl.slice(0, -"/healthz".length);
+}
+
+function daemonHeaders(handoff) {
+  return {
+    authorization: `Bearer ${required(handoff.daemon?.ready?.ipcToken, "daemon ipcToken")}`,
+  };
+}
+
+function daemonEventsUrl(handoff) {
+  const baseUrl = daemonBaseUrl(handoff).replace(/^http/i, "ws");
+  return `${baseUrl}/v1/events?token=${encodeURIComponent(required(handoff.daemon?.ready?.ipcToken, "daemon ipcToken"))}`;
+}
+
+function captureNextSerialScannerEvent(handoff, timeoutMs = 30_000) {
+  let socket = null;
+  let settled = false;
+  let timer = null;
+  let resolveOpen;
+  let rejectOpen;
+  let resolveEvent;
+  let rejectEvent;
+  const events = [];
+  const close = () => {
+    if (timer) clearTimeout(timer);
+    socket?.close();
+  };
+  const opened = new Promise((resolvePromise, reject) => {
+    resolveOpen = resolvePromise;
+    rejectOpen = reject;
+  });
+  const nextEvent = new Promise((resolvePromise, reject) => {
+    resolveEvent = resolvePromise;
+    rejectEvent = reject;
+  });
+  void nextEvent.catch(() => undefined);
+  socket = new WebSocket(daemonEventsUrl(handoff));
+  timer = setTimeout(() => {
+    const error = new Error(
+      "timed out waiting for daemon scanner event stream",
+    );
+    if (!settled) {
+      rejectOpen(error);
+      rejectEvent(error);
+    }
+  }, timeoutMs);
+  socket.addEventListener("open", () => resolveOpen());
+  socket.addEventListener("error", () => {
+    const error = new Error("daemon scanner event stream failed");
+    if (!settled) {
+      rejectOpen(error);
+      rejectEvent(error);
+    }
+  });
+  socket.addEventListener("message", (message) => {
+    let event;
+    try {
+      event = JSON.parse(String(message.data));
+    } catch {
+      return;
+    }
+    if (
+      event?.type === "scanner_code" &&
+      event.source === "serial_text" &&
+      typeof event.eventId === "string" &&
+      event.eventId.length > 0
+    ) {
+      events.push(event);
+      if (!settled) {
+        settled = true;
+        resolveEvent(event);
+      }
+    }
+  });
+  return {
+    opened,
+    nextEvent,
+    events,
+    async waitForEventId(eventId, timeoutMs = 30_000) {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        const event = events.find((candidate) => candidate.eventId === eventId);
+        if (event) return event;
+        await sleep(50);
+      }
+      throw new Error(
+        `timed out waiting for correlated scanner event ${eventId}`,
+      );
+    },
+    async assertQuiet(timeoutMs = SCANNER_QUIET_BOUNDARY_MS) {
+      await opened;
+      await sleep(timeoutMs);
+      if (events.length > 0) {
+        throw new Error(
+          "scanner binding probe left a serial scanner event before sale scans",
+        );
+      }
+      return { quietForMs: timeoutMs, scannerEventCount: events.length };
+    },
+    close,
+  };
+}
+
+function matchesStableGuestUsbIdentity(expected, actual) {
+  if (!expected || !actual || expected.identityKey !== actual.identityKey) {
+    return false;
+  }
+  if (expected.containerId) return expected.containerId === actual.containerId;
+  return (
+    expected.serialNumber === actual.serialNumber &&
+    expected.hardwareIds.every((hardwareId) =>
+      actual.hardwareIds?.includes(hardwareId),
+    )
+  );
+}
+
+export function pnpObservationMatchesLibvirtTopology(observation, topology) {
+  if (
+    !observation ||
+    !topology ||
+    !/^COM[1-9][0-9]*$/.test(observation.currentPort ?? "")
+  )
+    return false;
+  const paths = Array.isArray(observation.locationPaths)
+    ? observation.locationPaths
+    : [];
+  const portSegments = String(topology.usbPort).split(".").map(Number);
+  return paths.some((path) => {
+    const root = String(path).match(/USBROOT\((\d+)\)/i);
+    const ports = [...String(path).matchAll(/USB\((\d+)\)/gi)].map((match) =>
+      Number(match[1]),
+    );
+    return (
+      Number(root?.[1]) === topology.usbBus &&
+      ports.length >= portSegments.length &&
+      portSegments.every(
+        (port, index) =>
+          ports[ports.length - portSegments.length + index] === port,
+      )
+    );
+  });
+}
+
+export function pnpObservationMatchesDaemonIdentity(
+  observation,
+  identity,
+  expectedCurrentPort,
+) {
+  if (!observation || !identity) return false;
+  const currentPort = String(observation.currentPort ?? "").toUpperCase();
+  if (
+    !/^COM[1-9][0-9]*$/.test(currentPort) ||
+    currentPort !== String(expectedCurrentPort ?? "").toUpperCase()
+  ) {
+    return false;
+  }
+  const pnpDeviceId = String(observation.pnpDeviceId ?? "").toUpperCase();
+  const instanceId = String(identity.instanceId ?? "").toUpperCase();
+  if (!pnpDeviceId || pnpDeviceId !== instanceId) return false;
+  const observedContainer = String(observation.containerId ?? "")
+    .replace(/^\{|\}$/g, "")
+    .toLowerCase();
+  const identityContainer = String(identity.containerId ?? "").toLowerCase();
+  if (Boolean(observedContainer) !== Boolean(identityContainer)) return false;
+  return observedContainer === identityContainer;
+}
+
+function observeWindowsSerialPnP() {
+  const script = String.raw`$ErrorActionPreference = 'Stop'
+$devices = @(Get-CimInstance Win32_SerialPort | ForEach-Object {
+  $instanceId = [string]$_.PNPDeviceID
+  $property = { param($key) try { (Get-PnpDeviceProperty -InstanceId $instanceId -KeyName $key -ErrorAction Stop).Data } catch { $null } }
+  [pscustomobject]@{
+    currentPort = [string]$_.DeviceID
+    pnpDeviceId = $instanceId
+    containerId = [string](& $property 'DEVPKEY_Device_ContainerId')
+    locationPaths = @(& $property 'DEVPKEY_Device_LocationPaths' | ForEach-Object { [string]$_ })
+    locationInformation = [string](& $property 'DEVPKEY_Device_LocationInfo')
+    address = & $property 'DEVPKEY_Device_Address'
+  }
+})
+ConvertTo-Json -Compress -Depth 4 -InputObject $devices`;
+  const result = spawnSync(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-Command", script],
+    {
+      encoding: "utf8",
+      windowsHide: true,
+    },
+  );
+  if (result.status !== 0)
+    throw new Error(`Windows PnP serial observation failed: ${result.stderr}`);
+  const parsed = JSON.parse(result.stdout);
+  return Array.isArray(parsed) ? parsed : [parsed];
+}
+
+function scannerQemuMapping(sessionStart) {
+  const qemuMappings = sessionStart?.qemuUsbSerialMappings;
+  if (!Array.isArray(qemuMappings) || qemuMappings.length !== 2) {
+    throw new Error(
+      "serial session did not expose the real QEMU USB device mappings",
+    );
+  }
+  for (const role of ["lower-controller", "scanner"]) {
+    const mapping = qemuMappings.find((entry) => entry.role === role);
+    if (!mapping || !mapping.guestUsbTopology?.alias) {
+      throw new Error(
+        `QEMU USB mapping for ${role} is missing live libvirt USB topology`,
+      );
+    }
+  }
+  return qemuMappings.find((entry) => entry.role === "scanner");
+}
+
+async function fetchJson(url, options = {}) {
+  const response = await fetch(url, options);
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(
+      `${options.method ?? "GET"} ${url} failed with HTTP ${response.status}: ${JSON.stringify(payload)}`,
+    );
+  }
+  return payload;
+}
+
+async function daemonGet(handoff, path) {
+  return fetchJson(`${daemonBaseUrl(handoff)}${path}`, {
+    headers: daemonHeaders(handoff),
+  });
+}
+
+async function controlPlaneRequest(guestInput, path, body = {}) {
+  const endpoint = required(
+    guestInput?.hostControlPlane?.endpoint,
+    "hostControlPlane.endpoint",
+  );
+  const token = required(
+    guestInput?.hostControlPlane?.token,
+    "hostControlPlane.token",
+  );
+  return fetchJson(`${endpoint}${path}`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+async function queryPlatform(guestInput, runId, machineCode, sessionId = null) {
+  return (
+    await controlPlaneRequest(guestInput, "/v1/platform/query", {
+      runId,
+      machineCode,
+      ...(sessionId ? { sessionId } : {}),
+    })
+  ).report;
+}
+
+async function waitForCommand(handoff, renderedSale, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastTransaction = null;
+  while (Date.now() < deadline) {
+    const transaction = await daemonGet(
+      handoff,
+      "/v1/transactions/current",
+    ).catch(() => null);
+    lastTransaction = transaction;
+    const commandId =
+      transaction?.vending?.commandId ?? transaction?.dispenseCommandId ?? null;
+    const commandNo = transaction?.vending?.commandNo ?? null;
+    if (
+      transaction?.orderId === renderedSale.orderId &&
+      transaction?.paymentId === renderedSale.paymentId &&
+      typeof commandId === "string" &&
+      commandId &&
+      typeof commandNo === "string" &&
+      commandNo
+    ) {
+      return {
+        orderId: transaction.orderId,
+        paymentId: transaction.paymentId,
+        orderNo: transaction.orderNo,
+        vendingCommandId: commandId,
+        vendingCommandNo: commandNo,
+        vendingStatus: transaction?.vending?.status ?? null,
+      };
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `vending command did not appear for ${renderedSale.orderId}: ${JSON.stringify(lastTransaction)}`,
+  );
+}
+
+export function paymentCodeAttemptCorrelationReady(transaction, renderedSale) {
+  const attempt = transaction?.paymentCodeAttempt ?? null;
+  return (
+    transaction?.orderId === renderedSale.orderId &&
+    transaction?.paymentId === renderedSale.paymentId &&
+    typeof attempt?.scannerEventId === "string" &&
+    attempt.scannerEventId.length > 0 &&
+    attempt.source === "serial_text" &&
+    Number.isSafeInteger(attempt.attemptNo) &&
+    typeof attempt.idempotencyKey === "string" &&
+    attempt.idempotencyKey.length > 0
+  );
+}
+
+async function waitForPaymentCodeAttempt(
+  handoff,
+  renderedSale,
+  timeoutMs = 30_000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  let lastTransaction = null;
+  while (Date.now() < deadline) {
+    const transaction = await daemonGet(
+      handoff,
+      "/v1/transactions/current",
+    ).catch(() => null);
+    lastTransaction = transaction;
+    if (paymentCodeAttemptCorrelationReady(transaction, renderedSale)) {
+      return transaction;
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `serial-text payment-code attempt did not appear: ${JSON.stringify(lastTransaction)}`,
+  );
+}
+
+export async function waitForHardwareBindings(
+  handoff,
+  sessionStart,
+  timeoutMs = 30_000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    const snapshot = await daemonGet(handoff, "/v1/hardware-bindings").catch(
+      () => null,
+    );
+    last = snapshot;
+    const roles = Array.isArray(snapshot?.roles) ? snapshot.roles : [];
+    const resolved = Object.fromEntries(roles.map((role) => [role.role, role]));
+    const lower = resolved.lower_controller;
+    const scanner = resolved.scanner;
+    const scannerMapping = scannerQemuMapping(sessionStart);
+    const windowsPnp = observeWindowsSerialPnP();
+    const scannerPnp = windowsPnp.find(
+      (observation) =>
+        observation.currentPort === scanner?.currentPort &&
+        pnpObservationMatchesLibvirtTopology(
+          observation,
+          scannerMapping.guestUsbTopology,
+        ),
+    );
+    const scannerCandidate = scanner?.candidates?.find(
+      (candidate) =>
+        candidate.currentPort === scanner.currentPort &&
+        matchesStableGuestUsbIdentity(
+          candidate.identity,
+          scanner.binding?.identity,
+        ),
+    );
+    if (
+      lower?.ready === true &&
+      scanner?.ready === true &&
+      /^COM[1-9][0-9]*$/.test(lower.currentPort ?? "") &&
+      /^COM[1-9][0-9]*$/.test(scanner.currentPort ?? "") &&
+      lower.currentPort !== scanner.currentPort &&
+      typeof lower.binding?.identity?.identityKey === "string" &&
+      scannerCandidate
+    ) {
+      const qemuMappings = sessionStart?.qemuUsbSerialMappings;
+      return {
+        daemon: snapshot,
+        qemuUsbSerialMappings: qemuMappings,
+        scanner: {
+          libvirtUsbTopology: scannerMapping.guestUsbTopology,
+          windowsPnpObservation: scannerPnp ?? null,
+          daemonBindingIdentity: scanner.binding.identity,
+          currentPort: scanner.currentPort,
+          observedCandidate: scannerCandidate,
+        },
+      };
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `daemon hardware bindings were not ready: ${JSON.stringify(last)}`,
+  );
+}
+
+async function waitForScannerSaleCapability(handoff, timeoutMs = 30_000) {
+  try {
+    return await waitForSaleStartCapability(
+      (path) => daemonGet(handoff, path),
+      {
+        timeoutMs,
+        paymentOptionKey: "payment_code:mock",
+      },
+    );
+  } catch (error) {
+    throw new Error(
+      `scanner sale capability did not recover after binding: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+export async function waitForSaleStartCapability(
+  daemonGetRequest,
+  { timeoutMs = 30_000, paymentOptionKey = "mock:mock" } = {},
+) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    last = await daemonGetRequest("/v1/sale-start-capability").catch(
+      () => null,
+    );
+    const options = last?.paymentOptions?.options;
+    const option = Array.isArray(options)
+      ? options.find((entry) => entry?.optionKey === paymentOptionKey)
+      : null;
+    if (
+      last?.canStartSale === true &&
+      Number.isInteger(last?.revision) &&
+      option?.ready === true &&
+      option?.disabledReason === null
+    ) {
+      return last;
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `${paymentOptionKey} sale capability did not recover: ${JSON.stringify(last)}`,
+  );
+}
+
+async function waitForSuccessfulResultSurface(
+  client,
+  expected,
+  timeoutMs = 60_000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  do {
+    await waitForRoute(client, /^#\/(payment|dispensing|result\/success)/, {
+      timeoutMs: 5_000,
+      pollMs: 250,
+    });
+    last = await readUiBoundary(client);
+    if (
+      last.route === "#/result/success" &&
+      last.result?.kind === "success" &&
+      last.result.orderId === expected.orderId &&
+      last.result.paymentId === expected.paymentId &&
+      last.result.orderNo === expected.orderNo &&
+      last.result.commandId === expected.commandId
+    ) {
+      return last;
+    }
+    await sleep(250);
+  } while (Date.now() < deadline);
+  throw new Error(
+    `timed out waiting for successful result surface: ${JSON.stringify(last)}`,
+  );
+}
+
+async function readRenderedPaymentSurface(client) {
+  const hook = await evaluateExpression(
+    client,
+    `(() => {
+      const el = document.querySelector("[data-installed-kiosk-sale-payment-surface]");
+      return el ? {
+        orderId: el.dataset.orderId || null,
+        paymentId: el.dataset.paymentId || null,
+        orderNo: el.dataset.orderNo || null,
+        commandId: el.dataset.commandId || null,
+        route: location.hash
+      } : null;
+    })()`,
+  );
+  if (!hook?.orderId || !hook?.paymentId || !hook?.orderNo) {
+    throw new Error("required rendered payment surface hook is missing");
+  }
+  return hook;
+}
+
+async function readUiBoundary(client) {
+  return evaluateExpression(
+    client,
+    `(() => {
+      const payment = document.querySelector("[data-installed-kiosk-sale-payment-surface]");
+      const result = document.querySelector("[data-installed-kiosk-sale-result-surface]");
+      return {
+        route: location.hash,
+        payment: payment ? {
+          orderId: payment.dataset.orderId || null,
+          paymentId: payment.dataset.paymentId || null,
+          orderNo: payment.dataset.orderNo || null
+        } : null,
+        result: result ? {
+          kind: result.dataset.resultKind || null,
+          orderId: result.dataset.orderId || null,
+          paymentId: result.dataset.paymentId || null,
+          orderNo: result.dataset.orderNo || null,
+          commandId: result.dataset.commandId || null
+        } : null
+      };
+    })()`,
+  );
+}
+
+async function readRuntimeTrace(client) {
+  return evaluateExpression(
+    client,
+    "window.__VEM_MACHINE_RUNTIME_TRACE__ || []",
+  );
+}
+
+export async function replaceScannerSerialSessionAndUpdateHandoff({
+  guestInput,
+  handoff,
+  handoffPath,
+  control = controlPlaneRequest,
+  writeJsonFile,
+}) {
+  const { replacement } = await replaceSerialSessionAndUpdateHandoff({
+    guestInput,
+    handoff,
+    handoffPath,
+    sessionId: required(
+      handoff?.commissioningSerialSession?.sessionId,
+      "handoff commissioning serial session id",
+    ),
+    control,
+    writeJsonFile,
+  });
+  required(replacement?.sessionId, "scanner replacement serial session id");
+  return replacement;
+}
+
+export function createScannerPaymentSerialControl({
+  guestInput,
+  sessionId,
+  control = controlPlaneRequest,
+}) {
+  const activeSessionId = required(sessionId, "scanner serial session id");
+  const request = (operation, body = {}) =>
+    control(
+      guestInput,
+      `/v1/serial-sessions/${encodeURIComponent(activeSessionId)}/${operation}`,
+      body,
+    );
+  return {
+    sessionId: activeSessionId,
+    inject(renderedSale, bytes) {
+      return request("inject", {
+        orderId: renderedSale.orderId,
+        paymentId: renderedSale.paymentId,
+        scannerCodeBase64: Buffer.from(bytes).toString("base64"),
+      });
+    },
+    bindSale(command) {
+      return request("bind-sale", command);
+    },
+    stopScannerProbe() {
+      return request("stop-scanner-probe");
+    },
+    waitFrame(parsedOpcode, timeoutMs = 30_000) {
+      return request("wait-frame", { parsedOpcode, timeoutMs });
+    },
+    releaseF0() {
+      return request("release-f0");
+    },
+    releaseF2() {
+      return request("release-f2");
+    },
+    evidence() {
+      return request("evidence");
+    },
+    stop(payload) {
+      return request("stop", payload);
+    },
+    abort() {
+      return request("abort");
+    },
+  };
+}
+
+export async function admitScannerPaymentSession({
+  guestInput,
+  handoff,
+  handoffPath,
+  control = controlPlaneRequest,
+  writeJsonFile,
+  replaceSession = replaceScannerSerialSessionAndUpdateHandoff,
+  waitForDaemonReady = waitForDaemonReadyRefresh,
+  waitForHardware = waitForHardwareBindings,
+  waitForSale = waitForScannerSaleCapability,
+  captureScannerEvent = captureNextSerialScannerEvent,
+}) {
+  const sessionStart = await replaceSession({
+    guestInput,
+    handoff,
+    handoffPath,
+    control,
+    writeJsonFile,
+  });
+  const sessionControl = createScannerPaymentSerialControl({
+    guestInput,
+    sessionId: sessionStart.sessionId,
+    control,
+  });
+  const abortFreshSession = async () => {
+    try {
+      await sessionControl.abort();
+    } catch {
+      // Preserve the admission failure after best-effort session cleanup.
+    }
+  };
+  let quietScannerCapture = null;
+  let primaryError = null;
+  try {
+    await waitForDaemonReady(handoff);
+    const hardwareBindings = await waitForHardware(handoff, sessionStart);
+    const saleStartCapability = await waitForSale(handoff);
+    quietScannerCapture = captureScannerEvent(handoff);
+    await quietScannerCapture.opened;
+    const scannerBindingProbe = await sessionControl.stopScannerProbe();
+    if (
+      scannerBindingProbe?.scannerBindingProbe?.purpose !==
+        "non_payment_scanner_binding_probe" ||
+      scannerBindingProbe.scannerBindingProbe.stopReason !==
+        "daemon_binding_confirmed" ||
+      typeof scannerBindingProbe.scannerBindingProbe.stoppedAt !== "string"
+    ) {
+      throw new Error(
+        "scanner binding probe did not stop after daemon binding confirmation",
+      );
+    }
+    const scannerQuietBoundary = await quietScannerCapture.assertQuiet();
+    return {
+      sessionStart,
+      sessionControl,
+      hardwareBindings,
+      saleStartCapability,
+      scannerBindingProbe,
+      scannerQuietBoundary,
+    };
+  } catch (error) {
+    primaryError = error;
+    await abortFreshSession();
+    throw error;
+  } finally {
+    try {
+      await quietScannerCapture?.close();
+    } catch (closeError) {
+      if (!primaryError) {
+        await abortFreshSession();
+        throw closeError;
+      }
+    }
+  }
+}
+
+export function assertNoAttemptOrDuplicatePayment(
+  label,
+  baseline,
+  post,
+  renderedSale,
+) {
+  const baselineAttempts = attemptRowsByOrder(baseline, renderedSale.orderId);
+  const postAttempts = attemptRowsByOrder(post, renderedSale.orderId);
+  if (baselineAttempts.length !== 0 || postAttempts.length !== 0) {
+    throw new Error(`${label} must not create a payment-code attempt`);
+  }
+  const paymentIds = new Set(
+    paymentRowsByOrder(post, renderedSale.orderId).map((entry) => entry.id),
+  );
+  if (paymentIds.size !== 1 || !paymentIds.has(renderedSale.paymentId)) {
+    throw new Error(`${label} duplicated or replaced the payment row`);
+  }
+  if (movementRowsByOrderNo(post, renderedSale.orderNo).length !== 0) {
+    throw new Error(`${label} must not vend before a valid scanner frame`);
+  }
+  if (
+    paymentRowsByOrder(post, renderedSale.orderId).length !==
+    paymentRowsByOrder(baseline, renderedSale.orderId).length
+  ) {
+    throw new Error(`${label} must have platform payment delta 0`);
+  }
+}
+
+export function validateSuccessfulOutcome({
+  baseline,
+  post,
+  renderedSale,
+  command,
+  attemptSnapshot,
+  scannerEvent,
+  afterF2Ui,
+}) {
+  const order = rows(post?.raw, "orders").filter(
+    (entry) =>
+      entry.id === renderedSale.orderId &&
+      entry.orderNo === renderedSale.orderNo,
+  );
+  if (
+    order.length !== 1 ||
+    order[0].paymentState !== "paid" ||
+    order[0].status !== "fulfilled" ||
+    order[0].fulfillmentState !== "dispensed"
+  ) {
+    throw new Error(
+      "successful scan must persist one paid and fulfilled order",
+    );
+  }
+  const attempts = attemptRowsByOrder(post, renderedSale.orderId);
+  if (attempts.length !== 1) {
+    throw new Error("valid scan must produce exactly one payment-code attempt");
+  }
+  const attempt = attempts[0];
+  if (
+    attempt.paymentId !== renderedSale.paymentId ||
+    attempt.status !== "succeeded" ||
+    attempt.isActive !== false ||
+    attempt.source !== "serial_text"
+  ) {
+    throw new Error(
+      "successful attempt did not converge to one succeeded serial-text attempt",
+    );
+  }
+  const paymentRows = paymentRowsByOrder(post, renderedSale.orderId);
+  if (
+    paymentRows.length !== 1 ||
+    paymentRows[0].id !== renderedSale.paymentId ||
+    paymentRows[0].status !== "succeeded"
+  ) {
+    throw new Error("successful scan must persist one authorized payment row");
+  }
+  const orderItems = rows(post?.raw, "orderItems").filter(
+    (entry) => entry.orderId === renderedSale.orderId,
+  );
+  if (
+    orderItems.length !== 1 ||
+    orderItems[0].quantity !== 1 ||
+    orderItems[0].fulfillmentStatus !== "dispensed"
+  ) {
+    throw new Error("successful scan must persist one dispensed order item");
+  }
+  const commands = rows(post?.raw, "commands").filter(
+    (entry) => entry.orderId === renderedSale.orderId,
+  );
+  if (
+    commands.length !== 1 ||
+    commands[0].id !== command.vendingCommandId ||
+    commands[0].commandNo !== command.vendingCommandNo ||
+    commands[0].orderItemId !== orderItems[0].id ||
+    commands[0].slotId !== orderItems[0].slotId ||
+    commands[0].commandKind !== "dispatch" ||
+    commands[0].status !== "succeeded"
+  ) {
+    throw new Error(
+      "successful scan must complete exactly one correlated vending command",
+    );
+  }
+  const movements = movementRowsByOrderNo(post, renderedSale.orderNo);
+  if (movements.length !== 1) {
+    throw new Error(
+      "successful scan must produce exactly one total movement for the order",
+    );
+  }
+  const movement = movements[0];
+  if (
+    movement.commandNo !== commands[0].commandNo ||
+    movement.orderItemId !== orderItems[0].id ||
+    movement.inventoryId !== orderItems[0].inventoryId ||
+    movement.slotId !== orderItems[0].slotId ||
+    movement.quantity !== orderItems[0].quantity ||
+    movement.movementType !== "dispense_succeeded" ||
+    movement.status !== "accepted"
+  ) {
+    throw new Error(
+      "successful command-bound movement is not bound to the completed order item and inventory",
+    );
+  }
+  if (
+    afterF2Ui.route !== "#/result/success" ||
+    afterF2Ui.result?.kind !== "success" ||
+    afterF2Ui.result?.orderId !== renderedSale.orderId ||
+    afterF2Ui.result?.paymentId !== renderedSale.paymentId ||
+    afterF2Ui.result?.commandId !== command.vendingCommandId
+  ) {
+    throw new Error(
+      "successful scan did not reach a correlated success result surface",
+    );
+  }
+  const daemonAttempt = attemptSnapshot?.paymentCodeAttempt;
+  if (
+    scannerEvent?.type !== "scanner_code" ||
+    scannerEvent.source !== "serial_text" ||
+    typeof scannerEvent.eventId !== "string" ||
+    daemonAttempt?.scannerEventId !== scannerEvent.eventId ||
+    attempt.scannerEventId !== scannerEvent.eventId ||
+    daemonAttempt?.attemptNo !== attempt.attemptNo ||
+    daemonAttempt?.idempotencyKey !== attempt.idempotencyKey
+  ) {
+    throw new Error(
+      "ScannerCode event id does not strictly correlate daemon and platform payment attempts",
+    );
+  }
+  const baselineInventory = rows(baseline?.raw, "inventories").find(
+    (entry) => entry.id === movement.inventoryId,
+  );
+  const finalInventory = rows(post?.raw, "inventories").find(
+    (entry) => entry.id === movement.inventoryId,
+  );
+  if (
+    !baselineInventory ||
+    !finalInventory ||
+    baselineInventory.id !== finalInventory.id ||
+    baselineInventory.onHandQty - finalInventory.onHandQty !== movement.quantity
+  ) {
+    throw new Error(
+      "successful scan must decrement the same platform inventory by the completed movement quantity",
+    );
+  }
+  return {
+    attempt,
+    order: order[0],
+    payment: paymentRows[0],
+    command: commands[0],
+    movement,
+    baselinePaymentCount: paymentRowsByOrder(baseline, renderedSale.orderId)
+      .length,
+    finalPaymentCount: paymentRowsByOrder(post, renderedSale.orderId).length,
+    inventory: {
+      id: baselineInventory.id,
+      baselineOnHandQty: baselineInventory.onHandQty,
+      finalOnHandQty: finalInventory.onHandQty,
+      deltaOnHandQty: finalInventory.onHandQty - baselineInventory.onHandQty,
+    },
+  };
+}
+
+export async function waitForSuccessfulOutcomeSnapshot({
+  queryPlatformFn,
+  guestInput,
+  runId,
+  machineCode,
+  sessionId,
+  baseline,
+  renderedSale,
+  command,
+  attemptSnapshot,
+  scannerEvent,
+  afterF2Ui,
+  timeoutMs = 30_000,
+  pollMs = 500,
+}) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = null;
+  do {
+    const postPlatform = await queryPlatformFn(
+      guestInput,
+      runId,
+      machineCode,
+      sessionId,
+    );
+    try {
+      return {
+        postPlatform,
+        success: validateSuccessfulOutcome({
+          baseline,
+          post: postPlatform,
+          renderedSale,
+          command,
+          attemptSnapshot,
+          scannerEvent,
+          afterF2Ui,
+        }),
+      };
+    } catch (error) {
+      lastError = error;
+    }
+    await sleep(pollMs);
+  } while (Date.now() < deadline);
+  throw new Error(
+    `successful platform outcome did not become observable: ${
+      lastError instanceof Error ? lastError.message : String(lastError)
+    }`,
+    { cause: lastError },
+  );
+}
+
+export function parseScannerPaymentCodeGuestArgs(args) {
+  const mode = required(option(args, "mode"), "--mode");
+  if (!MODES.has(mode)) throw new Error("--mode must be full");
+  return {
+    mode,
+    guestInputPath: windowsAbsolute(
+      option(args, "guest-input"),
+      "--guest-input",
+    ),
+    handoffPath: windowsAbsolute(option(args, "handoff"), "--handoff"),
+    outPath: windowsAbsolute(option(args, "out"), "--out"),
+    fixtureKey: optionalOption(args, "fixture-key"),
+  };
+}
+
+export async function runScannerPaymentCodeGuest(options) {
+  let guestInput = null;
+  let handoff = null;
+  const artifactRoot = join(
+    dirname(localPath(options.outPath)),
+    "scanner-payment-code-artifacts",
+  );
+  mkdirSync(artifactRoot, { recursive: true });
+  const checkpoints = [];
+  let client = null;
+  let sessionStart = null;
+  let sessionControl = null;
+  let scannerEventCapture = null;
+  let stage = "connect";
+  let successReport = null;
+  let failureReport = null;
+  let primaryError = null;
+  try {
+    guestInput = readJson(options.guestInputPath, "guest input");
+    handoff = readJson(options.handoffPath, "handoff");
+    const runId = required(guestInput.runId, "runId");
+    const machineCode = required(guestInput.machineCode, "machineCode");
+    const target = await discoverMachineUiTarget({
+      endpoint: "http://127.0.0.1:9222",
+      expectedTargetId: handoff.cdp.targetId,
+    });
+    client = new CdpClient(
+      rewriteWebSocketDebuggerUrl(
+        target.webSocketDebuggerUrl,
+        "http://127.0.0.1:9222",
+      ),
+    );
+    await client.connect();
+    await enablePageRuntime(client);
+    await waitForRoute(client, "#/catalog", { timeoutMs: 30_000, pollMs: 250 });
+
+    stage = "start-session";
+    const admission = await admitScannerPaymentSession({
+      guestInput,
+      handoff,
+      handoffPath: options.handoffPath,
+    });
+    sessionStart = admission.sessionStart;
+    sessionControl = admission.sessionControl;
+    const {
+      hardwareBindings,
+      saleStartCapability,
+      scannerBindingProbe,
+      scannerQuietBoundary,
+    } = admission;
+
+    const steps = buildInstalledKioskSaleScenarioSteps(
+      "vm-scanner-payment-code",
+    );
+    if (options.fixtureKey) {
+      steps.find((step) => step.name === "catalog product").selector =
+        catalogProductSelectorForFixture(
+          guestInput.fixtureAllocation,
+          options.fixtureKey,
+        );
+    }
+    for (const step of steps) {
+      await waitForRoute(client, step.routeBefore, {
+        timeoutMs: 30_000,
+        pollMs: 250,
+      });
+      await activateVisibleSelector(client, step.selector, {
+        kind: step.inputKind,
+        timeoutMs: step.timeoutMs ?? 30_000,
+      });
+      await waitForRoute(client, step.routeAfter, {
+        timeoutMs: 30_000,
+        pollMs: 250,
+      });
+    }
+
+    await waitForRoute(client, /^#\/payment/, {
+      timeoutMs: 30_000,
+      pollMs: 250,
+    });
+    checkpoints.push(
+      await captureCheckpoint(client, "scanner-payment", {
+        screenshot: true,
+        screenshotSink({ bytes, label }) {
+          const ref = join(artifactRoot, `${label}.png`);
+          writeFileSync(ref, bytes);
+          return { ref };
+        },
+      }),
+    );
+
+    const renderedSale = await readRenderedPaymentSurface(client);
+    const paymentBaseline = await queryPlatform(
+      guestInput,
+      runId,
+      machineCode,
+      sessionStart.sessionId,
+    );
+
+    stage = "malformed-scan";
+    await sessionControl.inject(renderedSale, MALFORMED_SCANNER_BYTES);
+    await sleep(250);
+    const postMalformed = await queryPlatform(
+      guestInput,
+      runId,
+      machineCode,
+      sessionStart.sessionId,
+    );
+    assertNoAttemptOrDuplicatePayment(
+      "malformed scan",
+      paymentBaseline,
+      postMalformed,
+      renderedSale,
+    );
+
+    stage = "timeout-scan";
+    await sessionControl.inject(renderedSale, TIMEOUT_PARTIAL_SCANNER_BYTES);
+    await sleep(1_200);
+    const postTimeout = await queryPlatform(
+      guestInput,
+      runId,
+      machineCode,
+      sessionStart.sessionId,
+    );
+    assertNoAttemptOrDuplicatePayment(
+      "scanner timeout",
+      paymentBaseline,
+      postTimeout,
+      renderedSale,
+    );
+
+    stage = "valid-scan";
+    const validScannerBytes = scannerFrameBytes(
+      guestInput?.scannerAcceptance?.validCode ?? DEFAULT_VALID_SCANNER_CODE,
+    );
+    scannerEventCapture = captureNextSerialScannerEvent(handoff);
+    await scannerEventCapture.opened;
+    await sessionControl.inject(renderedSale, validScannerBytes);
+
+    const attemptSnapshot = await waitForPaymentCodeAttempt(
+      handoff,
+      renderedSale,
+      30_000,
+    );
+    const scannerEvent = await scannerEventCapture.waitForEventId(
+      attemptSnapshot.paymentCodeAttempt.scannerEventId,
+    );
+    scannerEventCapture.close();
+    scannerEventCapture = null;
+    const command = await waitForCommand(handoff, renderedSale, 30_000);
+    await sessionControl.bindSale(command);
+
+    stage = "vend-boundaries";
+    const vendBoundary = await sessionControl.waitFrame("VEND");
+    const beforeF0Platform = await queryPlatform(
+      guestInput,
+      runId,
+      machineCode,
+      sessionStart.sessionId,
+    );
+    const releaseF0 = await sessionControl.releaseF0();
+    const f0Boundary = await sessionControl.waitFrame("F0");
+    const f1Boundary = await sessionControl.waitFrame("F1");
+    const afterF1Platform = await queryPlatform(
+      guestInput,
+      runId,
+      machineCode,
+      sessionStart.sessionId,
+    );
+    const releaseF2 = await sessionControl.releaseF2();
+    const f2Boundary = await sessionControl.waitFrame("F2");
+    const afterF2Ui = await waitForSuccessfulResultSurface(
+      client,
+      {
+        orderId: renderedSale.orderId,
+        paymentId: renderedSale.paymentId,
+        orderNo: renderedSale.orderNo,
+        commandId: command.vendingCommandId,
+      },
+      60_000,
+    );
+    const { postPlatform, success } = await waitForSuccessfulOutcomeSnapshot({
+      queryPlatformFn: queryPlatform,
+      guestInput,
+      runId,
+      machineCode,
+      sessionId: sessionStart.sessionId,
+      baseline: paymentBaseline,
+      renderedSale,
+      command,
+      attemptSnapshot,
+      scannerEvent,
+      afterF2Ui,
+    });
+    const sessionEvidence = await sessionControl.evidence();
+    const runtimeTrace = await readRuntimeTrace(client);
+
+    const stop = await sessionControl.stop({
+      orderId: renderedSale.orderId,
+      paymentId: renderedSale.paymentId,
+      vendingCommandId: command.vendingCommandId,
+    });
+
+    successReport = {
+      schemaVersion: "vem-scanner-payment-code-guest-full/v1",
+      ok: true,
+      handoffSerialSessionId: required(
+        sessionStart?.sessionId,
+        "scanner payment serial session id",
+      ),
+      mode: options.mode,
+      runId,
+      machineCode,
+      renderedSale,
+      scannerAttempt: {
+        attemptNo: attemptSnapshot.paymentCodeAttempt.attemptNo,
+        status: attemptSnapshot.paymentCodeAttempt.status,
+        source: attemptSnapshot.paymentCodeAttempt.source,
+        scannerEventId: attemptSnapshot.paymentCodeAttempt.scannerEventId,
+        idempotencyKey: attemptSnapshot.paymentCodeAttempt.idempotencyKey,
+      },
+      scannerEvent: {
+        eventId: scannerEvent.eventId,
+        source: scannerEvent.source,
+        scannedAtMs: scannerEvent.scannedAtMs,
+      },
+      hardwareBindings,
+      saleStartCapability,
+      scannerBindingProbe: scannerBindingProbe.scannerBindingProbe,
+      platformAssertions: success,
+      checkpoints,
+      boundaries: {
+        vend: vendBoundary,
+        beforeF0PlatformCapturedAt: beforeF0Platform.capturedAt,
+        releaseF0,
+        f0: f0Boundary,
+        f1: f1Boundary,
+        afterF1PlatformCapturedAt: afterF1Platform.capturedAt,
+        releaseF2,
+        f2: f2Boundary,
+      },
+      invalidScanEvidence: {
+        malformed: {
+          platformCapturedAt: postMalformed.capturedAt,
+          attemptCount: attemptRowsByOrder(postMalformed, renderedSale.orderId)
+            .length,
+          paymentDelta:
+            paymentRowsByOrder(postMalformed, renderedSale.orderId).length -
+            paymentRowsByOrder(paymentBaseline, renderedSale.orderId).length,
+        },
+        timeout: {
+          platformCapturedAt: postTimeout.capturedAt,
+          attemptCount: attemptRowsByOrder(postTimeout, renderedSale.orderId)
+            .length,
+          paymentDelta:
+            paymentRowsByOrder(postTimeout, renderedSale.orderId).length -
+            paymentRowsByOrder(paymentBaseline, renderedSale.orderId).length,
+        },
+        scannerQuietBoundary,
+      },
+      final: {
+        route: afterF2Ui.route,
+        result: afterF2Ui.result,
+        stop,
+      },
+      serial: sessionEvidence,
+      runtimeTrace,
+    };
+  } catch (error) {
+    primaryError = error instanceof Error ? error : new Error(String(error));
+    failureReport = {
+      schemaVersion: "vem-scanner-payment-code-guest-full/v1",
+      ok: false,
+      handoffSerialSessionId: sessionStart?.sessionId ?? null,
+      stage,
+      error: serializeError(primaryError),
+      evidence: { checkpoints },
+    };
+    if (guestInput) {
+      const runId = guestInput.runId;
+      const machineCode = guestInput.machineCode;
+      if (runId && machineCode) {
+        failureReport.evidence.platform = await queryPlatform(
+          guestInput,
+          runId,
+          machineCode,
+          sessionStart?.sessionId ?? null,
+        ).catch((captureError) => ({ error: String(captureError) }));
+      }
+      if (sessionStart?.sessionId) {
+        failureReport.evidence.serial = await sessionControl
+          .evidence()
+          .catch((captureError) => ({ error: String(captureError) }));
+      }
+    }
+    if (handoff) {
+      failureReport.evidence.daemon = await daemonGet(
+        handoff,
+        "/v1/transactions/current",
+      ).catch((captureError) => ({ error: String(captureError) }));
+    }
+    if (client) {
+      failureReport.evidence.ui = await readUiBoundary(client).catch(
+        (captureError) => ({ error: String(captureError) }),
+      );
+      checkpoints.push(
+        await captureCheckpoint(client, "scanner-payment-code-failure", {
+          screenshot: true,
+          screenshotSink({ bytes, label }) {
+            const ref = join(artifactRoot, `${label}.png`);
+            writeFileSync(ref, bytes);
+            return { ref };
+          },
+        }).catch((captureError) => ({ error: String(captureError) })),
+      );
+    }
+  }
+
+  const { cleanup, cleanupErrors } = await finalizeScannerCleanup({
+    guestInput,
+    sessionStart,
+    sessionControl,
+    client,
+  });
+  if (successReport) successReport.cleanup = cleanup;
+  if (failureReport) failureReport.cleanup = cleanup;
+  scannerEventCapture?.close();
+  const finalError = combineCleanupError(primaryError, cleanupErrors);
+  if (finalError) {
+    if (!failureReport) {
+      failureReport = {
+        schemaVersion: "vem-scanner-payment-code-guest-full/v1",
+        ok: false,
+        handoffSerialSessionId: sessionStart?.sessionId ?? null,
+        stage: "cleanup",
+        error: serializeError(finalError),
+        evidence: {
+          checkpoints,
+          report: successReport,
+        },
+        cleanup,
+      };
+    } else {
+      failureReport.cleanupError = serializeError(finalError);
+    }
+    writeJson(options.outPath, failureReport);
+    throw finalError;
+  }
+
+  writeJson(options.outPath, successReport);
+  return successReport;
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  const options = parseScannerPaymentCodeGuestArgs(process.argv.slice(2));
+  runScannerPaymentCodeGuest(options).catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}

@@ -4,5 +4,6 @@
     "types": ["node", "vitest"],
     "noEmit": true
   },
-  "include": ["scripts/**/*.ts", "*.config.ts"]
+  "include": ["scripts/**/*.ts", "*.config.ts"],
+  "exclude": ["scripts/testbed"]
 }
