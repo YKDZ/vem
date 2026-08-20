@@ -10,7 +10,7 @@ import {
   visionV2ClientMessageSchema,
   visionV2ServerMessageSchema,
   type VisionV2AttemptEvent,
-  type VisionV2FastAttemptStartMessage,
+  type VisionV2AttemptStartMessage,
   type VisionV2ServerMessage,
   type VisionClientMessage,
   type VisionErrorMessage,
@@ -73,26 +73,20 @@ export type VisionRuntimeConnection = {
   enabled?: boolean;
 };
 
-export type VisionFastAttemptEvent = VisionV2AttemptEvent;
-export type VisionTryOnMode = "fast" | "ai";
 export type VisionTryOnAttemptEvent = VisionV2AttemptEvent;
 type VisionTryOnGenerationStage =
   | "preparing"
-  | "loading_model"
   | "generating"
   | "validating_result"
   | "rendering";
 
-export type VisionFastAttemptInput = {
+export type VisionTryOnAttemptInput = {
   attemptId: string;
   variantId: string;
-  garment: VisionV2FastAttemptStartMessage["payload"]["garment"];
-};
-export type VisionTryOnAttemptInput = VisionFastAttemptInput & {
-  mode: VisionTryOnMode;
+  garment: VisionV2AttemptStartMessage["payload"]["garment"];
 };
 
-export interface VisionFastAttempt {
+export interface VisionTryOnAttempt {
   attemptId: string;
   resultContext: {
     attemptId: string;
@@ -104,16 +98,14 @@ export interface VisionFastAttempt {
   cancel: (reason: "user" | "route_leave") => boolean;
   close: () => void;
 }
-export type VisionTryOnAttempt = VisionFastAttempt;
 
 const CONNECT_TIMEOUT_MS = 3000;
-const FAST_ATTEMPT_TERMINAL_TIMEOUT_MS = 30_000;
-const AI_ATTEMPT_TERMINAL_TIMEOUT_MS = 600_000;
+const TRY_ON_ATTEMPT_TERMINAL_TIMEOUT_MS = 30_000;
 const PING_INTERVAL_MS = 10_000;
 const PONG_TIMEOUT_MS = 5_000;
 const RECONNECT_BASE_DELAY_MS = 1_000;
 const RECONNECT_MAX_DELAY_MS = 10_000;
-const FAST_UNAVAILABLE_PREFIX = "vision fast_unavailable:";
+const TRY_ON_UNAVAILABLE_PREFIX = "vision try_on_unavailable:";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -143,7 +135,7 @@ function createHelloMessage(machineCode: string | null): VisionClientMessage {
         "presence_status",
         "person_departed",
         "ambient_light",
-        "try_on_fast",
+        "try_on",
       ],
     },
   } satisfies VisionClientMessage;
@@ -158,7 +150,7 @@ function normalizedVisionReady(
     ready.schemaVersion === "unavailable" &&
     ready.bundleVersion === "unavailable" &&
     ready.contractDigest === "0".repeat(64) &&
-    !ready.fastReady &&
+    !ready.tryOnReady &&
     !ready.visionBusinessReady;
   if (contractBundleUnavailable) return ready;
   const versionMatches =
@@ -169,7 +161,7 @@ function normalizedVisionReady(
   if (versionMatches && digestMatches) return ready;
   return {
     ...ready,
-    fastReady: false,
+    tryOnReady: false,
     visionBusinessReady: false,
     businessReadinessDiagnostic: versionMatches
       ? "contract_digest_mismatch"
@@ -206,7 +198,7 @@ function connectionOptions(
     url: connection.url ?? DEFAULT_VISION_WS_URL,
     timeoutMs: connection.timeoutMs ?? CONNECT_TIMEOUT_MS,
     fastAttemptTimeoutMs:
-      connection.fastAttemptTimeoutMs ?? FAST_ATTEMPT_TERMINAL_TIMEOUT_MS,
+      connection.fastAttemptTimeoutMs ?? TRY_ON_ATTEMPT_TERMINAL_TIMEOUT_MS,
     enabled: connection.enabled ?? true,
   };
 }
@@ -306,15 +298,15 @@ async function nextServerMessage(
   });
 }
 
-class VisionFastUnavailableError extends Error {
+class VisionTryOnUnavailableError extends Error {
   constructor(message: string) {
-    super(`${FAST_UNAVAILABLE_PREFIX} ${message}`);
-    this.name = "VisionFastUnavailableError";
+    super(`${TRY_ON_UNAVAILABLE_PREFIX} ${message}`);
+    this.name = "VisionTryOnUnavailableError";
   }
 }
 
 function tryOnUnavailableError(message: string): Error {
-  return new VisionFastUnavailableError(message);
+  return new VisionTryOnUnavailableError(message);
 }
 
 function errorFromVisionMessage(message: VisionErrorMessage): Error {
@@ -327,7 +319,7 @@ function errorFromVisionMessage(message: VisionErrorMessage): Error {
 }
 
 export function isVisionTryOnCapabilityDegraded(error: unknown): boolean {
-  return error instanceof VisionFastUnavailableError;
+  return error instanceof VisionTryOnUnavailableError;
 }
 
 function createVisionV2HelloMessage(machineCode: string | null) {
@@ -342,7 +334,7 @@ function createVisionV2HelloMessage(machineCode: string | null) {
       schemaVersion: VISION_V2_RUNTIME_IDENTITY.schemaVersion,
       bundleVersion: VISION_V2_RUNTIME_IDENTITY.bundleVersion,
       contractDigest: VISION_V2_RUNTIME_IDENTITY.contractDigest,
-      capabilities: ["try_on_fast", "try_on_ai"],
+      capabilities: ["try_on"],
     },
   });
 }
@@ -407,19 +399,23 @@ export async function openVisionTryOnAttempt(
   connection: VisionRuntimeConnection = {},
   input: VisionTryOnAttemptInput,
   onEvent: (
-    event: VisionFastAttemptEvent,
-    resultContext: VisionFastAttempt["resultContext"],
+    event: VisionTryOnAttemptEvent,
+    resultContext: VisionTryOnAttempt["resultContext"],
   ) => void,
   signal?: AbortSignal,
-): Promise<VisionFastAttempt> {
+): Promise<VisionTryOnAttempt> {
   const options = connectionOptions(connection);
   if (!options.enabled) throw new Error("视觉模块未启用，无法启动快速试衣");
   const socket = await openVisionSocket(options.url, options.timeoutMs, signal);
   let closed = false;
   let terminal = false;
   let captureSubmitted = false;
-  let lifecycle: "starting" | "accepted" | "acquiring" | "generating" =
-    "starting";
+  let lifecycle:
+    | "starting"
+    | "accepted"
+    | "acquiring"
+    | "captured"
+    | "generating" = "starting";
   let generationStage: VisionTryOnGenerationStage | null = null;
   let terminalTimer: ReturnType<typeof setTimeout> | null = null;
   let onMessage: ((event: MessageEvent) => void) | null = null;
@@ -484,14 +480,13 @@ export async function openVisionTryOnAttempt(
         VISION_V2_RUNTIME_IDENTITY.bundleVersion &&
       ready.payload.contractDigest ===
         VISION_V2_RUNTIME_IDENTITY.contractDigest;
-    const modeReady =
-      input.mode === "fast"
-        ? ready.payload.fastReady &&
-          ready.payload.capabilities.includes("try_on_fast")
-        : ready.payload.aiReady &&
-          ready.payload.capabilities.includes("try_on_ai");
-    if (!identityMatches || !modeReady || !ready.payload.visionBusinessReady) {
-      throw new Error("Vision V2 Fast capability is unavailable");
+    if (
+      !identityMatches ||
+      !ready.payload.tryOnReady ||
+      !ready.payload.capabilities.includes("try_on") ||
+      !ready.payload.visionBusinessReady
+    ) {
+      throw new Error("Vision V2 try-on capability is unavailable");
     }
     if (socket.readyState !== WebSocket.OPEN) {
       throw new Error("Vision V2 websocket closed during Fast handshake");
@@ -503,7 +498,6 @@ export async function openVisionTryOnAttempt(
       timestamp: nowIso(),
       payload: {
         attemptId: input.attemptId,
-        mode: input.mode,
         variantId: input.variantId,
         garment: input.garment,
       },
@@ -515,6 +509,7 @@ export async function openVisionTryOnAttempt(
         if (
           (message.type === "vision.try_on.attempt.accepted" ||
             message.type === "vision.try_on.attempt.acquiring" ||
+            message.type === "vision.try_on.attempt.captured" ||
             message.type === "vision.try_on.attempt.generating" ||
             message.type === "vision.try_on.attempt.completed" ||
             message.type === "vision.try_on.attempt.failed" ||
@@ -522,13 +517,7 @@ export async function openVisionTryOnAttempt(
           message.payload.attemptId === input.attemptId
         ) {
           if (
-            message.type === "vision.try_on.attempt.accepted" &&
-            message.payload.mode !== input.mode
-          ) {
-            return;
-          }
-          if (
-            !isPermittedFastAttemptEvent(message, lifecycle, generationStage)
+            !isPermittedTryOnAttemptEvent(message, lifecycle, generationStage)
           ) {
             return;
           }
@@ -537,6 +526,8 @@ export async function openVisionTryOnAttempt(
             lifecycle = "accepted";
           } else if (message.type === "vision.try_on.attempt.acquiring") {
             lifecycle = "acquiring";
+          } else if (message.type === "vision.try_on.attempt.captured") {
+            lifecycle = "captured";
           } else if (message.type === "vision.try_on.attempt.generating") {
             lifecycle = "generating";
             generationStage = message.payload.stage;
@@ -563,14 +554,9 @@ export async function openVisionTryOnAttempt(
     socket.addEventListener("message", onMessage);
     socket.addEventListener("close", onClose);
     socket.addEventListener("error", onError);
-    terminalTimer = setTimeout(
-      () => {
-        emitCanceled("timeout");
-      },
-      input.mode === "ai"
-        ? AI_ATTEMPT_TERMINAL_TIMEOUT_MS
-        : options.fastAttemptTimeoutMs,
-    );
+    terminalTimer = setTimeout(() => {
+      emitCanceled("timeout");
+    }, options.fastAttemptTimeoutMs);
     if (signal?.aborted) throw new Error("Vision V2 Fast attempt aborted");
     socket.send(JSON.stringify(startMessage));
     const capture = (): boolean => {
@@ -631,24 +617,6 @@ export async function openVisionTryOnAttempt(
   }
 }
 
-/** Kept for callers outside the try-on store while the public wire mode is unified. */
-export async function openVisionFastAttempt(
-  connection: VisionRuntimeConnection = {},
-  input: VisionFastAttemptInput,
-  onEvent: (
-    event: VisionFastAttemptEvent,
-    resultContext: VisionFastAttempt["resultContext"],
-  ) => void,
-  signal?: AbortSignal,
-): Promise<VisionFastAttempt> {
-  return await openVisionTryOnAttempt(
-    connection,
-    { ...input, mode: "fast" },
-    onEvent,
-    signal,
-  );
-}
-
 export type VisionGarmentAdjustmentInput = {
   attemptId: string;
   garmentScale: number;
@@ -693,8 +661,8 @@ export async function openVisionGarmentAdjustment(
         VISION_V2_RUNTIME_IDENTITY.contractDigest;
     if (
       !identityMatches ||
-      !ready.payload.fastReady ||
-      !ready.payload.capabilities.includes("try_on_fast") ||
+      !ready.payload.tryOnReady ||
+      !ready.payload.capabilities.includes("try_on") ||
       !ready.payload.visionBusinessReady
     ) {
       throw new Error("Vision V2 Fast adjustment capability is unavailable");
@@ -806,9 +774,9 @@ async function nextVisionV2AdjustmentMessage(
   });
 }
 
-function isPermittedFastAttemptEvent(
-  message: VisionFastAttemptEvent,
-  lifecycle: "starting" | "accepted" | "acquiring" | "generating",
+function isPermittedTryOnAttemptEvent(
+  message: VisionTryOnAttemptEvent,
+  lifecycle: "starting" | "accepted" | "acquiring" | "captured" | "generating",
   generationStage: VisionTryOnGenerationStage | null,
 ): boolean {
   if (message.type === "vision.try_on.attempt.completed") {
@@ -826,8 +794,11 @@ function isPermittedFastAttemptEvent(
   if (message.type === "vision.try_on.attempt.acquiring") {
     return lifecycle === "accepted" || lifecycle === "acquiring";
   }
+  if (message.type === "vision.try_on.attempt.captured") {
+    return lifecycle === "acquiring";
+  }
   return (
-    lifecycle === "acquiring" ||
+    lifecycle === "captured" ||
     (lifecycle === "generating" &&
       (generationStage === null ||
         generationStageOrder(message.payload.stage) >=
@@ -836,13 +807,9 @@ function isPermittedFastAttemptEvent(
 }
 
 function generationStageOrder(stage: VisionTryOnGenerationStage): number {
-  return [
-    "preparing",
-    "loading_model",
-    "generating",
-    "validating_result",
-    "rendering",
-  ].indexOf(stage);
+  return ["preparing", "generating", "validating_result", "rendering"].indexOf(
+    stage,
+  );
 }
 
 function closeSocket(socket: WebSocket): void {

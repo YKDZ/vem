@@ -20,7 +20,7 @@ import { useCheckoutStore } from "@/stores/checkout";
 import { useSaleCapabilityStore } from "@/stores/sale-capability";
 import { useTryOnStore } from "@/stores/try-on";
 import { useVisionStore } from "@/stores/vision";
-import { canStartAiTryOn, canStartFastTryOn } from "@/try-on/eligibility";
+import { canStartTryOn } from "@/try-on/eligibility";
 import { formatCents } from "@/utils/format";
 
 type VariantOption = {
@@ -104,11 +104,8 @@ const priceText = computed(() =>
   formatCents(selectedVariant.value?.priceCents ?? item.value?.priceCents ?? 0),
 );
 const stockText = computed(() => selectedVariant.value?.saleableStock ?? 0);
-const canFastTryOn = computed(() =>
-  canStartFastTryOn(selectedConcreteItem.value, visionStore),
-);
-const canAiTryOn = computed(() =>
-  canStartAiTryOn(selectedConcreteItem.value, visionStore),
+const canTryOn = computed(() =>
+  canStartTryOn(selectedConcreteItem.value, visionStore),
 );
 const skuText = computed(
   () => selectedVariant.value?.sku ?? item.value?.sku ?? "-",
@@ -276,21 +273,9 @@ async function purchase(): Promise<void> {
   });
 }
 
-async function startFastTryOn(): Promise<void> {
-  await startTryOn("fast");
-}
-
-async function startAiTryOn(): Promise<void> {
-  await startTryOn("ai");
-}
-
-async function startTryOn(mode: "fast" | "ai"): Promise<void> {
+async function startTryOn(): Promise<void> {
   const concreteItem = selectedConcreteItem.value;
-  if (
-    !concreteItem ||
-    (mode === "fast" ? !canFastTryOn.value : !canAiTryOn.value)
-  )
-    return;
+  if (!concreteItem || !canTryOn.value) return;
   tryOnStore.prepare(concreteItem);
   await submitMachineNavigationIntent({
     type: "customer.navigate",
@@ -299,7 +284,6 @@ async function startTryOn(mode: "fast" | "ai"): Promise<void> {
       query: {
         catalogKey: concreteItem.catalogKey,
         variantId: concreteItem.variantId,
-        mode,
       },
     },
   });
@@ -500,30 +484,19 @@ async function startTryOn(mode: "fast" | "ai"): Promise<void> {
           </section>
 
           <section
-            v-if="canFastTryOn || canAiTryOn"
+            v-if="canTryOn"
             class="detail-section"
             data-test="try-on-entry"
           >
             <h2>❀ 虚拟试衣</h2>
             <button
-              v-if="canFastTryOn"
               class="try-on-entry-button kiosk-touch-target w-full"
               type="button"
-              data-test="try-on-fast"
+              data-test="try-on"
               :data-variant-id="selectedVariant?.variantId ?? ''"
-              @click="startFastTryOn"
+              @click="startTryOn"
             >
-              快速虚拟试衣
-            </button>
-            <button
-              v-if="canAiTryOn"
-              class="try-on-entry-button try-on-entry-button-ai kiosk-touch-target mt-3 w-full"
-              type="button"
-              data-test="try-on-ai"
-              :data-variant-id="selectedVariant?.variantId ?? ''"
-              @click="startAiTryOn"
-            >
-              AI虚拟试衣
+              虚拟试衣
             </button>
           </section>
 

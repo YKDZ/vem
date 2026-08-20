@@ -3,19 +3,17 @@ import { defineStore } from "pinia";
 import type { MachineCatalogItem } from "@/types/catalog";
 
 import {
-  openVisionFastAttempt,
   openVisionGarmentAdjustment,
   openVisionTryOnAttempt,
   type VisionTryOnAttempt,
   type VisionTryOnAttemptEvent,
-  type VisionTryOnMode,
 } from "@/native/vision";
 import { useCatalogStore } from "@/stores/catalog";
 import { useMachineStore } from "@/stores/machine";
 import { useVisionStore } from "@/stores/vision";
 import {
-  canStartAiTryOn,
-  canStartFastTryOn,
+  canStartTryOn,
+  validateTryOnCapturedFrame,
   validateTryOnPreviewReference,
   validateTryOnResultReference,
   visionGarmentSourceFor,
@@ -26,6 +24,7 @@ export type TryOnPhase =
   | "starting"
   | "accepted"
   | "acquiring"
+  | "captured"
   | "generating"
   | "completed"
   | "failed"
@@ -39,7 +38,6 @@ export type TryOnGuidance =
 
 export type TryOnGenerationStage =
   | "preparing"
-  | "loading_model"
   | "generating"
   | "validating_result"
   | "rendering";
@@ -54,11 +52,11 @@ export const useTryOnStore = defineStore("tryOn", {
   state: () => ({
     phase: "idle" as TryOnPhase,
     attemptId: null as string | null,
-    mode: null as VisionTryOnMode | null,
     context: null as TryOnContext | null,
     result: null as ReturnType<typeof validateTryOnResultReference> | null,
     failureReason: null as string | null,
     previewUrl: null as string | null,
+    captured: null as ReturnType<typeof validateTryOnCapturedFrame> | null,
     guidance: null as TryOnGuidance | null,
     holdRemainingMs: null as number | null,
     occupancy: null as "none" | "single" | "multiple" | null,
@@ -73,6 +71,7 @@ export const useTryOnStore = defineStore("tryOn", {
       state.phase === "starting" ||
       state.phase === "accepted" ||
       state.phase === "acquiring" ||
+      state.phase === "captured" ||
       state.phase === "generating",
   },
   actions: {
@@ -83,10 +82,7 @@ export const useTryOnStore = defineStore("tryOn", {
         variantId: item.variantId,
       };
     },
-    async start(
-      mode: VisionTryOnMode,
-      item?: MachineCatalogItem,
-    ): Promise<boolean> {
+    async start(item?: MachineCatalogItem): Promise<boolean> {
       if (item) this.prepare(item);
       const context = this.context;
       if (!context) return false;
@@ -94,7 +90,6 @@ export const useTryOnStore = defineStore("tryOn", {
       const owner = beginOperation(attemptId);
       this.phase = "starting";
       this.attemptId = attemptId;
-      this.mode = mode;
       this.result = null;
       this.failureReason = null;
       this.clearAcquisitionPresentation();
@@ -115,15 +110,11 @@ export const useTryOnStore = defineStore("tryOn", {
       }
       if (!isCurrentOperation(owner, attemptId)) return false;
       const vision = useVisionStore();
-      const available =
-        mode === "fast"
-          ? canStartFastTryOn(currentItem, vision)
-          : canStartAiTryOn(currentItem, vision);
+      const available = canStartTryOn(currentItem, vision);
       if (!currentItem || !available) {
         if (isCurrentOperation(owner, attemptId)) {
           this.phase = "failed";
-          this.failureReason =
-            mode === "fast" ? "fast_unavailable" : "ai_unavailable";
+          this.failureReason = "try_on_unavailable";
           clearOperation(owner);
         }
         return false;
@@ -139,20 +130,12 @@ export const useTryOnStore = defineStore("tryOn", {
             this.applyEvent(attemptId, event, resultContext);
           }
         };
-        const attempt =
-          mode === "fast"
-            ? await openVisionFastAttempt(
-                { machineCode: useMachineStore().machineCode },
-                { attemptId, variantId: currentItem.variantId, garment },
-                onEvent,
-                owner.controller.signal,
-              )
-            : await openVisionTryOnAttempt(
-                { machineCode: useMachineStore().machineCode },
-                { attemptId, mode, variantId: currentItem.variantId, garment },
-                onEvent,
-                owner.controller.signal,
-              );
+        const attempt = await openVisionTryOnAttempt(
+          { machineCode: useMachineStore().machineCode },
+          { attemptId, variantId: currentItem.variantId, garment },
+          onEvent,
+          owner.controller.signal,
+        );
         if (!isCurrentOperation(owner, attemptId)) {
           attempt.close();
           return false;
@@ -162,27 +145,19 @@ export const useTryOnStore = defineStore("tryOn", {
       } catch {
         if (isCurrentOperation(owner, attemptId)) {
           this.phase = "failed";
-          this.failureReason =
-            mode === "fast" ? "fast_unavailable" : "ai_unavailable";
+          this.failureReason = "try_on_unavailable";
           clearOperation(owner);
         }
         return false;
       }
     },
-    async startFast(item?: MachineCatalogItem): Promise<boolean> {
-      return await this.start("fast", item);
-    },
-    async startAi(item?: MachineCatalogItem): Promise<boolean> {
-      return await this.start("ai", item);
-    },
     async retry(): Promise<boolean> {
-      return await this.start(this.mode ?? "fast");
+      return await this.start();
     },
     clear(): void {
       this.cancelCurrentAttempt("route_leave");
       this.phase = "idle";
       this.attemptId = null;
-      this.mode = null;
       this.context = null;
       this.result = null;
       this.failureReason = null;
@@ -254,7 +229,7 @@ export const useTryOnStore = defineStore("tryOn", {
               : event.payload.manualCaptureAllowed;
           } catch {
             this.phase = "failed";
-            this.failureReason = "fast_failed";
+            this.failureReason = "try_on_failed";
             this.clearAcquisitionPresentation();
             clearOperation(currentOperation);
           }
@@ -263,13 +238,35 @@ export const useTryOnStore = defineStore("tryOn", {
       }
       if (event.type === "vision.try_on.attempt.generating") {
         if (
-          this.phase === "acquiring" ||
+          this.phase === "captured" ||
           (this.phase === "generating" &&
             isGenerationStageAtLeast(event.payload.stage, this.generationStage))
         ) {
           this.phase = "generating";
-          this.clearAcquisitionPresentation();
+          this.previewUrl = null;
+          this.guidance = null;
+          this.holdRemainingMs = null;
+          this.occupancy = null;
+          this.manualCaptureAllowed = false;
+          this.manualCaptureSubmitted = false;
           this.generationStage = event.payload.stage;
+        }
+        return;
+      }
+      if (event.type === "vision.try_on.attempt.captured") {
+        if (this.phase !== "acquiring") return;
+        try {
+          this.captured = validateTryOnCapturedFrame(
+            event.payload.captured,
+            resultContext,
+          );
+          this.phase = "captured";
+          this.previewUrl = null;
+        } catch {
+          this.phase = "failed";
+          this.failureReason = "try_on_failed";
+          this.clearAcquisitionPresentation();
+          clearOperation(currentOperation);
         }
         return;
       }
@@ -289,7 +286,7 @@ export const useTryOnStore = defineStore("tryOn", {
           void this.reapplyGarmentScale();
         } catch {
           this.phase = "failed";
-          this.failureReason = "fast_failed";
+          this.failureReason = "try_on_failed";
           this.clearAcquisitionPresentation();
           clearOperation(currentOperation);
         }
@@ -316,7 +313,6 @@ export const useTryOnStore = defineStore("tryOn", {
     async requestGarmentScale(scale: number): Promise<boolean> {
       if (
         this.phase !== "completed" ||
-        this.mode !== "fast" ||
         this.attemptId === null ||
         this.adjusting
       ) {
@@ -346,12 +342,13 @@ export const useTryOnStore = defineStore("tryOn", {
       }
     },
     async reapplyGarmentScale(): Promise<void> {
-      if (this.phase !== "completed" || this.mode !== "fast") return;
+      if (this.phase !== "completed") return;
       if (this.garmentScale === 1) return;
       await this.requestGarmentScale(this.garmentScale);
     },
     clearAcquisitionPresentation(): void {
       this.previewUrl = null;
+      this.captured = null;
       this.guidance = null;
       this.holdRemainingMs = null;
       this.occupancy = null;
@@ -431,11 +428,7 @@ function isGenerationStageAtLeast(
 }
 
 function generationStageOrder(stage: TryOnGenerationStage): number {
-  return [
-    "preparing",
-    "loading_model",
-    "generating",
-    "validating_result",
-    "rendering",
-  ].indexOf(stage);
+  return ["preparing", "generating", "validating_result", "rendering"].indexOf(
+    stage,
+  );
 }

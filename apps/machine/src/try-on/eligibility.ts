@@ -3,6 +3,7 @@ import type { z } from "zod";
 import {
   managedMediaLoopbackUrlSchema,
   visionV2AcquisitionPreviewSchema,
+  visionV2CapturedFrameSchema,
   visionV2GarmentSourceSchema,
   visionV2ResultReferenceSchema,
 } from "@vem/shared";
@@ -14,10 +15,10 @@ type VisionV2ResultReference = z.infer<typeof visionV2ResultReferenceSchema>;
 type VisionV2AcquisitionPreview = z.infer<
   typeof visionV2AcquisitionPreviewSchema
 >;
+type VisionV2CapturedFrame = z.infer<typeof visionV2CapturedFrameSchema>;
 
-export type VisionFastReadiness = {
-  fastReady: boolean;
-  aiReady?: boolean;
+export type VisionTryOnReadiness = {
+  tryOnReady: boolean;
   visionBusinessReady: boolean;
 };
 
@@ -28,11 +29,11 @@ export type VisionTryOnResultContext = {
 };
 
 /** The platform's active association is represented by a valid garment descriptor. */
-export function canStartFastTryOn(
+export function canStartTryOn(
   item: MachineCatalogItem | null | undefined,
-  readiness: VisionFastReadiness,
+  readiness: VisionTryOnReadiness,
 ): boolean {
-  if (!item || !readiness.fastReady || !readiness.visionBusinessReady) {
+  if (!item || !readiness.tryOnReady || !readiness.visionBusinessReady) {
     return false;
   }
   if (item.slotSalesState !== "sale_ready") {
@@ -48,20 +49,6 @@ export function canStartFastTryOn(
     return false;
   }
   return isReadyLoopbackMediaUrl(item.tryOnGarmentReadyUrl);
-}
-
-/** The garment/acquisition boundary is shared; only readiness is mode-specific. */
-export function canStartAiTryOn(
-  item: MachineCatalogItem | null | undefined,
-  readiness: VisionFastReadiness,
-): boolean {
-  return (
-    readiness.aiReady === true &&
-    canStartFastTryOn(item, {
-      ...readiness,
-      fastReady: true,
-    })
-  );
 }
 
 export function visionGarmentSourceFor(
@@ -118,6 +105,25 @@ export function validateTryOnResultReference(
     !/^\?token=[A-Za-z0-9_-]{1,128}$/.test(url.search)
   ) {
     throw new Error("Vision returned an unsafe try-on result reference");
+  }
+  return parsed;
+}
+
+export function validateTryOnCapturedFrame(
+  value: unknown,
+  context: VisionTryOnResultContext,
+): VisionV2CapturedFrame {
+  const parsed = visionV2CapturedFrameSchema.parse(value);
+  const socket = visionHttpLoopbackOrigin(context.visionSocketUrl);
+  const url = new URL(parsed.reference);
+  if (
+    parsed.reference.includes("%") ||
+    url.protocol !== "http:" ||
+    url.host !== socket.host ||
+    url.pathname !== "/v2/try-on/captured/frame.png" ||
+    !/^\?token=[A-Za-z0-9_-]{1,128}$/.test(url.search)
+  ) {
+    throw new Error("Vision returned an unsafe captured try-on frame");
   }
   return parsed;
 }

@@ -2,7 +2,6 @@ import {
   type VisionProfile,
   type VisionPresenceOccupancyState,
   type VisionProfileNotUsableReason,
-  type VisionV2AiReadinessDiagnostic,
   visionErrorPayloadSchema,
   visionPresenceStatusPayloadSchema,
   visionPersonDepartedPayloadSchema,
@@ -77,9 +76,7 @@ export const useVisionStore = defineStore("vision", {
     updatedAt: null as string | null,
     latestDiagnosticPayload: null as unknown,
     tryOnCapability: "unknown" as VisionTryOnCapability,
-    fastReady: false,
-    aiReady: false,
-    aiReadinessDiagnostic: null as VisionV2AiReadinessDiagnostic | null,
+    tryOnReady: false,
     visionBusinessReady: false,
     presence: { ...EMPTY_PRESENCE } as VisionPresenceState,
     recommendationProfile: null as VisionProfile | null,
@@ -171,22 +168,16 @@ export const useVisionStore = defineStore("vision", {
       if (!result.success) return;
       this.tryOnCapability =
         result.data.cameraReady &&
-        result.data.fastReady &&
+        result.data.tryOnReady &&
         result.data.visionBusinessReady &&
-        result.data.capabilities.includes("try_on_fast")
+        result.data.capabilities.includes("try_on")
           ? "available"
           : "degraded";
-      this.fastReady =
+      this.tryOnReady =
         result.data.cameraReady &&
-        result.data.fastReady &&
+        result.data.tryOnReady &&
         result.data.visionBusinessReady &&
-        result.data.capabilities.includes("try_on_fast");
-      this.aiReady =
-        result.data.cameraReady &&
-        result.data.aiReady &&
-        result.data.visionBusinessReady &&
-        result.data.capabilities.includes("try_on_ai");
-      this.aiReadinessDiagnostic = result.data.aiReadinessDiagnostic;
+        result.data.capabilities.includes("try_on");
       this.visionBusinessReady = result.data.visionBusinessReady;
     },
     markTryOnCapabilityDegraded(): void {
@@ -194,9 +185,7 @@ export const useVisionStore = defineStore("vision", {
     },
     clearTryOnReadiness(): void {
       this.tryOnCapability = "degraded";
-      this.fastReady = false;
-      this.aiReady = false;
-      this.aiReadinessDiagnostic = null;
+      this.tryOnReady = false;
       this.visionBusinessReady = false;
     },
     clearLatestDiagnosticPayload(): void {

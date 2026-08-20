@@ -59,17 +59,10 @@ export const visionV2ClientFixtures = {
     schemaVersion: VISION_V2_BUNDLE_SCHEMA_VERSION,
     bundleVersion: VISION_V2_BUNDLE_VERSION,
     contractDigest: digest,
-    capabilities: ["try_on_fast"],
+    capabilities: ["try_on"],
   }),
   start: envelope("vision.try_on.attempt.start", {
     attemptId,
-    mode: "fast",
-    variantId,
-    garment: garment(),
-  }),
-  startAi: envelope("vision.try_on.attempt.start", {
-    attemptId,
-    mode: "ai",
     variantId,
     garment: garment(),
   }),
@@ -92,12 +85,10 @@ export const visionV2ServerFixtures = {
     bundleVersion: VISION_V2_BUNDLE_VERSION,
     contractDigest: digest,
     cameraReady: true,
-    fastReady: true,
-    aiReady: true,
-    aiReadinessDiagnostic: "ready",
+    tryOnReady: true,
     visionBusinessReady: true,
     businessReadinessDiagnostic: "ready",
-    capabilities: ["try_on_fast"],
+    capabilities: ["try_on"],
   }),
   readyUnicodeBounds: {
     ...envelope("vision.ready", {
@@ -107,23 +98,14 @@ export const visionV2ServerFixtures = {
       bundleVersion: "包".repeat(64),
       contractDigest: digest,
       cameraReady: true,
-      fastReady: true,
-      aiReady: true,
-      aiReadinessDiagnostic: "ready",
+      tryOnReady: true,
       visionBusinessReady: true,
       businessReadinessDiagnostic: "ready",
       capabilities: ["能".repeat(64)],
     }),
     messageId: "\u{1f600}".repeat(128),
   },
-  accepted: envelope("vision.try_on.attempt.accepted", {
-    attemptId,
-    mode: "fast",
-  }),
-  acceptedAi: envelope("vision.try_on.attempt.accepted", {
-    attemptId,
-    mode: "ai",
-  }),
+  accepted: envelope("vision.try_on.attempt.accepted", { attemptId }),
   acquiringNone: envelope("vision.try_on.attempt.acquiring", {
     attemptId,
     preview: preview(),
@@ -157,6 +139,19 @@ export const visionV2ServerFixtures = {
     attemptId,
     stage: "preparing",
   }),
+  captured: envelope("vision.try_on.attempt.captured", {
+    attemptId,
+    captured: {
+      reference:
+        "http://127.0.0.1:65000/v2/try-on/captured/frame.png?token=captured-token",
+      digest: `sha256:${digest}`,
+      contentType: "image/png",
+      byteSize: 4096,
+      width: 512,
+      height: 768,
+      frameId: "frame-000042",
+    },
+  }),
   completed: envelope("vision.try_on.attempt.completed", {
     attemptId,
     result: result(),
@@ -167,7 +162,7 @@ export const visionV2ServerFixtures = {
   }),
   failed: envelope("vision.try_on.attempt.failed", {
     attemptId,
-    reason: "fast_failed",
+    reason: "try_on_failed",
   }),
   canceled: envelope("vision.try_on.attempt.canceled", {
     attemptId,
@@ -444,35 +439,10 @@ export const invalidVisionV2ServerFixtures = [
   ),
   mutate(
     "rejects-server-wrong-payload",
-    "payload.fastReady",
+    "payload.tryOnReady",
     visionV2ServerFixtures.ready,
     (message) => {
-      payload(message).fastReady = "true";
-    },
-  ),
-  mutate(
-    "rejects-server-unstable-ai-readiness-diagnostic",
-    "payload.aiReadinessDiagnostic",
-    visionV2ServerFixtures.ready,
-    (message) => {
-      payload(message).aiReadinessDiagnostic =
-        "C:\\private\\models\\missing-weight.bin";
-    },
-  ),
-  mutate(
-    "rejects-server-ai-ready-with-degraded-diagnostic",
-    "payload.aiReadinessDiagnostic",
-    visionV2ServerFixtures.ready,
-    (message) => {
-      payload(message).aiReadinessDiagnostic = "model_pack_missing";
-    },
-  ),
-  mutate(
-    "rejects-server-ai-unready-with-ready-diagnostic",
-    "payload.aiReady",
-    visionV2ServerFixtures.ready,
-    (message) => {
-      payload(message).aiReady = false;
+      payload(message).tryOnReady = "true";
     },
   ),
   mutate(

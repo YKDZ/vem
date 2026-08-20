@@ -62,38 +62,42 @@ describe("Vision V2 shared contract", () => {
     ]);
   });
 
-  it("accepts an independently selected AI attempt and AI readiness fact", () => {
-    const aiStart = structuredClone(validVisionV2ClientFixtures[1]);
-    aiStart.payload.mode = "ai";
-    expect(visionV2ClientMessageSchema.parse(aiStart)).toMatchObject({
+  it("publishes one mode-free attempt contract and the exact captured source frame", () => {
+    const start = structuredClone(validVisionV2ClientFixtures[1]);
+    delete start.payload.mode;
+    expect(visionV2ClientMessageSchema.parse(start)).toMatchObject({
       type: "vision.try_on.attempt.start",
-      payload: { mode: "ai" },
+      payload: { attemptId: start.payload.attemptId },
     });
 
-    const ready = structuredClone(validVisionV2ServerFixtures[0]);
-    ready.payload.aiReady = true;
-    ready.payload.capabilities = ["try_on_fast", "try_on_ai"];
-    expect(visionV2ServerMessageSchema.parse(ready)).toMatchObject({
-      payload: { fastReady: true, aiReady: true },
-    });
-  });
-
-  it("carries only stable AI readiness diagnostics without changing Fast readiness", () => {
-    const ready = structuredClone(validVisionV2ServerFixtures[0]);
-    ready.payload.aiReady = false;
-    ready.payload.aiReadinessDiagnostic = "model_pack_missing";
-    ready.payload.capabilities = ["try_on_fast"];
-
-    expect(visionV2ServerMessageSchema.parse(ready)).toMatchObject({
+    const captured = {
+      protocol: "vem.vision.v2",
+      messageId: "captured-source-frame",
+      timestamp: "2026-08-20T00:00:00.000Z",
+      type: "vision.try_on.attempt.captured",
       payload: {
-        fastReady: true,
-        aiReady: false,
-        aiReadinessDiagnostic: "model_pack_missing",
+        attemptId: start.payload.attemptId,
+        captured: {
+          reference:
+            "http://127.0.0.1:65000/v2/try-on/captured/frame.png?token=captured-token",
+          digest: `sha256:${"b".repeat(64)}`,
+          contentType: "image/png",
+          byteSize: 4096,
+          width: 512,
+          height: 768,
+          frameId: "frame-000042",
+        },
       },
-    });
+    };
+    expect(visionV2ServerMessageSchema.parse(captured)).toMatchObject(captured);
 
-    ready.payload.aiReadinessDiagnostic = "C:\\private\\models\\missing.bin";
-    expect(() => visionV2ServerMessageSchema.parse(ready)).toThrow();
+    const legacyMode = structuredClone(start);
+    legacyMode.payload.mode = "fast";
+    expect(() => visionV2ClientMessageSchema.parse(legacyMode)).toThrow();
+
+    const legacyAiReady = structuredClone(validVisionV2ServerFixtures[0]);
+    legacyAiReady.payload.aiReady = false;
+    expect(() => visionV2ServerMessageSchema.parse(legacyAiReady)).toThrow();
   });
 
   it("rejects every single-mutation fixture in its declared direction with Zod and standalone Ajv", () => {

@@ -72,8 +72,7 @@ const garmentScalePercent = computed(() =>
   Math.round(tryOn.garmentScale * 100),
 );
 const canScaleGarment = computed(
-  () =>
-    tryOn.phase === "completed" && tryOn.mode === "fast" && !tryOn.adjusting,
+  () => tryOn.phase === "completed" && !tryOn.adjusting,
 );
 const canScaleUp = computed(
   () => canScaleGarment.value && tryOn.garmentScale < 1.6,
@@ -140,8 +139,7 @@ onMounted(() => {
     const item = catalog.saleableVariantItemFor(key, variantId);
     if (item) tryOn.prepare(item);
   }
-  const mode = route.query.mode === "ai" ? "ai" : "fast";
-  if (tryOn.context && tryOn.phase === "idle") void tryOn.start(mode);
+  if (tryOn.context && tryOn.phase === "idle") void tryOn.start();
 });
 
 onUnmounted(() => {
@@ -265,7 +263,7 @@ function scaleGarment(delta: number): void {
         商品购买不受影响。
       </p>
       <div
-        v-if="tryOn.phase === 'completed' && tryOn.mode === 'fast'"
+        v-if="tryOn.phase === 'completed'"
         class="flex items-center justify-center gap-4"
         data-test="try-on-garment-scale"
       >

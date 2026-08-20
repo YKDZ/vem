@@ -113,9 +113,7 @@ function createReadyMessage(
           ? "f".repeat(64)
           : VISION_V2_RUNTIME_IDENTITY.contractDigest,
       cameraReady: true,
-      fastReady: !contractBundleUnavailable,
-      aiReady: false,
-      aiReadinessDiagnostic: "model_pack_missing",
+      tryOnReady: !contractBundleUnavailable,
       visionBusinessReady: !contractBundleUnavailable,
       businessReadinessDiagnostic: contractBundleUnavailable
         ? "contract_bundle_unavailable"
@@ -125,7 +123,7 @@ function createReadyMessage(
         "presence_status",
         "person_departed",
         "ambient_light",
-        "try_on_fast",
+        "try_on",
       ],
     },
   } satisfies VisionServerMessage;
