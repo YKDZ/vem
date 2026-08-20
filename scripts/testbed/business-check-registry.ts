@@ -99,7 +99,7 @@ export const BUSINESS_CHECK_REGISTRY = Object.freeze([
         "scripts/testbed/framework/slices/vision-experience/vision-experience-runner.ts",
       args: [],
       reportFileName: "vision-experience.json",
-      artifactDirectory: "vision-try-on-acceptance-artifacts",
+      artifactDirectory: "vision-experience-artifacts",
     },
     validator: "visionExperience",
   }),

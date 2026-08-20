@@ -160,6 +160,28 @@ describe("runtime business-check registry", () => {
     );
   });
 
+  it("keeps the single-path Vision runner as the full installed check", () => {
+    const visionExperience = BUSINESS_CHECK_REGISTRY.find(
+      (descriptor) => descriptor.name === "visionExperience",
+    );
+    assert.equal(
+      visionExperience?.runner?.script,
+      "scripts/testbed/framework/slices/vision-experience/vision-experience-runner.ts",
+    );
+    assert.equal(
+      visionExperience?.runner?.artifactDirectory,
+      "vision-experience-artifacts",
+    );
+    assert.equal(visionExperience?.validator, "visionExperience");
+    assert.equal(visionExperience?.fullRequired, true);
+    assert.deepEqual(
+      selectBusinessChecks({ mode: "fast", focus: ["visionExperience"] }).map(
+        (descriptor) => descriptor.name,
+      ),
+      ["visionExperience"],
+    );
+  });
+
   it("keeps the real payment-provider boundary out of default selections while allowing fast focus", () => {
     assert.deepEqual(
       selectBusinessChecks({ mode: "fast" }).map(

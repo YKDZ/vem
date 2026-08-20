@@ -8,8 +8,40 @@ import {
   runObserverSelfHealScenario,
 } from "./vision-experience-driver.ts";
 
-function fakeUiAdapter() {
+function fakeUiAdapter({
+  includeCaptured = true,
+  frameId = "frame-000042",
+  resourceDigest = null,
+  capturedReference = "http://127.0.0.1:7892/v2/try-on/captured/frame.png?token=captured-token",
+}: {
+  includeCaptured?: boolean;
+  frameId?: string;
+  resourceDigest?: string | null;
+  capturedReference?: string;
+} = {}) {
   const statePath = "ui/try-on-state.json";
+  const attemptId = "attempt-1";
+  const captured = {
+    reference: capturedReference,
+    digest: `sha256:${"a".repeat(64)}`,
+    contentType: "image/png",
+    byteSize: 4096,
+    width: 720,
+    height: 1280,
+    frameId,
+  };
+  const protocolTimeline = [
+    { type: "vision.try_on.attempt.accepted", payload: { attemptId } },
+    { type: "vision.try_on.attempt.acquiring", payload: { attemptId } },
+    {
+      type: "vision.try_on.attempt.captured",
+      payload: { attemptId, captured },
+    },
+    {
+      type: "vision.try_on.attempt.generating",
+      payload: { attemptId, stage: "generating" },
+    },
+  ];
   const writeState = (value: Record<string, unknown>) =>
     new Promise<void>((resolvePromise) => {
       setTimeout(async () => {
@@ -43,6 +75,7 @@ function fakeUiAdapter() {
         await writeState({
           route: "#/try-on?catalogKey=product%3A1",
           state: "acquiring",
+          attemptId,
           preview: { naturalWidth: 720, naturalHeight: 1280 },
         });
         setTimeout(() => {
@@ -51,9 +84,26 @@ function fakeUiAdapter() {
             JSON.stringify({
               route: "#/try-on?catalogKey=product%3A1",
               state: "completed",
+              attemptId,
               preview: { naturalWidth: 720, naturalHeight: 1280 },
               resultUrl:
                 "http://127.0.0.1:7892/v2/try-on/results/attempt-1?token=x",
+              ...(includeCaptured
+                ? {
+                    protocolTimeline,
+                    capturedResource: {
+                      reference: captured.reference,
+                      finalUrl: captured.reference,
+                      ok: true,
+                      httpStatus: 200,
+                      contentType: "image/png",
+                      byteSize: captured.byteSize,
+                      digest: resourceDigest ?? captured.digest,
+                      width: captured.width,
+                      height: captured.height,
+                    },
+                  }
+                : {}),
             }),
           );
         }, 100);
@@ -65,13 +115,50 @@ function fakeUiAdapter() {
 }
 
 describe("visionExperience vertical slice driver", () => {
+  it("rejects a completed attempt without the captured V2 source fact", async () => {
+    await assert.rejects(
+      runTryOnScenario(fakeUiAdapter({ includeCaptured: false }), {
+        timeoutMs: 2_000,
+        pollMs: 10,
+      }),
+      /captured/i,
+    );
+  });
+
+  it("rejects a captured digest or frame identity that cannot bind the input", async () => {
+    await assert.rejects(
+      runTryOnScenario(
+        fakeUiAdapter({ resourceDigest: `sha256:${"b".repeat(64)}` }),
+        { timeoutMs: 2_000, pollMs: 10 },
+      ),
+      /captured resource/i,
+    );
+    await assert.rejects(
+      runTryOnScenario(fakeUiAdapter({ frameId: "" }), {
+        timeoutMs: 2_000,
+        pollMs: 10,
+      }),
+      /captured evidence has invalid V2 source facts/i,
+    );
+    await assert.rejects(
+      runTryOnScenario(
+        fakeUiAdapter({
+          capturedReference:
+            "http://127.0.0.1:99999/v2/try-on/captured/frame.png?token=captured-token",
+        }),
+        { timeoutMs: 2_000, pollMs: 10 },
+      ),
+      /captured evidence has invalid V2 source facts/i,
+    );
+  });
+
   it("drives the single-path try-on journey and produces passing assertions", async () => {
     const adapter = fakeUiAdapter();
     const outcome = await runTryOnScenario(adapter, {
       timeoutMs: 2_000,
       pollMs: 10,
     });
-    assert.equal(outcome.assertions.length, 3);
+    assert.equal(outcome.assertions.length, 4);
     assert.ok(
       outcome.assertions.every((assertion) => assertion.status === "passed"),
     );

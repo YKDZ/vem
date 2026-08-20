@@ -270,7 +270,6 @@ function Clear-TestbedRunReports {
     (Join-Path $handoffRoot "serial-fulfillment-error.json"),
     (Join-Path $handoffRoot "scanner-payment-code.json"),
     (Join-Path $handoffRoot "delayed-pickup-native-audio.json"),
-    (Join-Path $handoffRoot "vision-try-on-acceptance.json"),
     (Join-Path $handoffRoot "full-workflow-tracks.json"),
     (Join-Path $handoffRoot "full-workflow-evidence-manifest.json"),
     (Join-Path $handoffRoot "payment-provider.json"),
@@ -629,29 +628,6 @@ function Write-RecordedVisionSiteConfiguration([string]$Path) {
       }
     }
   } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $Path -Encoding utf8
-}
-
-function Invoke-FullVisionTryOnAcceptance(
-  [string]$GuestInputPath,
-  [string]$HandoffPath,
-  [string]$OutPath
-) {
-  $visionModulePath = Join-Path $PSScriptRoot "..\windows\vision-main-artifacts.psm1"
-  Import-Module $visionModulePath -Force
-  $visionSiteConfigurationSourcePath = Join-Path $handoffRoot "vision-recorded-site-config.json"
-  Write-RecordedVisionSiteConfiguration $visionSiteConfigurationSourcePath
-  $visionCache = Get-TestbedProvisionedVisionCoreArtifact $guestInput
-  $visionInstallation = Install-VisionMainArtifact `
-    -RuntimeArchive ([string]$visionCache.runtimeArchive) `
-    -FixtureArchive ([string]$visionCache.fixtureArchive) `
-    -Commit ([string]$visionCache.commit) `
-    -SiteConfigurationPath $visionSiteConfigurationSourcePath `
-    -ProbeTimeoutSeconds 60
-  if ([string]$visionInstallation.commit -ne [string]$visionCache.commit) {
-    throw "installed Vision commit does not match the resolved cached commit"
-  }
-  node scripts/testbed/vision-try-on-acceptance.ts --mode full --guest-input $GuestInputPath --handoff $HandoffPath --out $OutPath
-  if ($LASTEXITCODE -ne 0) { throw "vision try-on acceptance failed" }
 }
 
 function Get-TestbedKioskPassword([object]$GuestInput) {
@@ -1343,7 +1319,6 @@ $smokeOutPath = Join-Path $handoffRoot "installed-runtime-smoke.json"
 [string]$fulfillmentFailureOutPath = Join-Path $handoffRoot "serial-fulfillment-error.json"
 [string]$scannerPaymentCodeOutPath = Join-Path $handoffRoot "scanner-payment-code.json"
 [string]$delayedPickupOutPath = Join-Path $handoffRoot "delayed-pickup-native-audio.json"
-[string]$visionTryOnOutPath = Join-Path $handoffRoot "vision-try-on-acceptance.json"
 [string]$workflowSummaryOutPath = Join-Path $handoffRoot "full-workflow-tracks.json"
 [ordered]@{
   schemaVersion = "vem-installed-runtime-handoff/v1"

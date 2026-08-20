@@ -135,10 +135,6 @@ export const visionV2ServerFixtures = {
     manualCaptureAllowed: true,
     holdRemainingMs: 1500,
   }),
-  generating: envelope("vision.try_on.attempt.generating", {
-    attemptId,
-    stage: "preparing",
-  }),
   captured: envelope("vision.try_on.attempt.captured", {
     attemptId,
     captured: {
@@ -151,6 +147,10 @@ export const visionV2ServerFixtures = {
       height: 768,
       frameId: "frame-000042",
     },
+  }),
+  generating: envelope("vision.try_on.attempt.generating", {
+    attemptId,
+    stage: "preparing",
   }),
   completed: envelope("vision.try_on.attempt.completed", {
     attemptId,
@@ -206,6 +206,8 @@ const previewPayload = (message: Envelope): Record<string, unknown> =>
   nestedPayload(message, "preview");
 const resultPayload = (message: Envelope): Record<string, unknown> =>
   nestedPayload(message, "result");
+const capturedPayload = (message: Envelope): Record<string, unknown> =>
+  nestedPayload(message, "captured");
 const overlongToken = "a".repeat(129);
 const overlongCodePoints = "\u{1f600}".repeat(129);
 
@@ -636,6 +638,39 @@ export const invalidVisionV2ServerFixtures = [
     visionV2ServerFixtures.generating,
     (message) => {
       payload(message).attemptId = 1;
+    },
+  ),
+  mutate(
+    "rejects-captured-wrong-static-path",
+    "payload.captured.reference",
+    visionV2ServerFixtures.captured,
+    (message) => {
+      capturedPayload(message).reference =
+        "http://127.0.0.1:65000/v2/try-on/captured/other.png?token=captured-token";
+    },
+  ),
+  mutate(
+    "rejects-captured-digest-invalid",
+    "payload.captured.digest",
+    visionV2ServerFixtures.captured,
+    (message) => {
+      capturedPayload(message).digest = "sha256:not-a-digest";
+    },
+  ),
+  mutate(
+    "rejects-captured-frame-id-empty",
+    "payload.captured.frameId",
+    visionV2ServerFixtures.captured,
+    (message) => {
+      capturedPayload(message).frameId = "";
+    },
+  ),
+  mutate(
+    "rejects-captured-byte-size-coercion",
+    "payload.captured.byteSize",
+    visionV2ServerFixtures.captured,
+    (message) => {
+      capturedPayload(message).byteSize = "4096";
     },
   ),
   mutate(

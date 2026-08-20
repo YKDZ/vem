@@ -1,3 +1,4 @@
+import { visionV2CapturedFrameSchema } from "../../packages/shared/src/schemas/vision-v2.ts";
 import { validatePaymentRecoveryEvidence } from "./payment-recovery-guest-full.ts";
 import { validatePresenceAndAudioGuestReport } from "./presence-and-audio-guest-full.ts";
 import { validateStockMaintenanceReport } from "./stock-maintenance-guest-full.ts";
@@ -874,193 +875,6 @@ function validateEnvironmentControlTrack(report, reportPath) {
   });
 }
 
-function validateVisionTrack(report, reportPath) {
-  if (
-    report?.schemaVersion !== "vem-vision-try-on-acceptance/v1" ||
-    report?.ok !== true
-  ) {
-    return {
-      vision: failedTrack(
-        "vision",
-        "Vision",
-        reportPath,
-        "vision acceptance did not finish successfully",
-      ),
-      tryOn: failedTrack(
-        "tryOn",
-        "try-on",
-        reportPath,
-        "try-on acceptance did not finish successfully",
-      ),
-    };
-  }
-  const recommendationScope = report.acceptanceScope?.visionRecommendation;
-  const strictRecommendationScope = recommendationScope === "strict";
-  const vmFastCoreScope = recommendationScope === "vm_fast_core";
-  const visionDown = report.degradations?.visionDown ?? {};
-  const protocol = report.health?.vision?.protocolSummary ?? null;
-  const eventFence = protocol?.eventFence ?? null;
-  const tryOnSummary = report.ui?.tryOnSummary ?? null;
-  const vmFastCoreAttempt = Array.isArray(report.ui?.tryOnAttempts)
-    ? report.ui.tryOnAttempts[0]
-    : null;
-  const vmFastCoreAttemptComplete =
-    vmFastCoreScope &&
-    report.ui?.tryOnAttempts?.length === 1 &&
-    vmFastCoreAttempt?.result === "completed" &&
-    vmFastCoreAttempt?.summary?.attemptId === tryOnSummary?.attemptId &&
-    vmFastCoreAttempt?.summary?.resultUrl === tryOnSummary?.resultUrl &&
-    vmFastCoreAttempt?.resultEvidence?.ok === true &&
-    vmFastCoreAttempt?.resultEvidence?.httpStatus === 200 &&
-    vmFastCoreAttempt?.resultEvidence?.contentType === "image/png" &&
-    Number.isInteger(vmFastCoreAttempt?.resultEvidence?.byteLength) &&
-    vmFastCoreAttempt.resultEvidence.byteLength >= 64 &&
-    Number.isInteger(vmFastCoreAttempt?.resultEvidence?.width) &&
-    vmFastCoreAttempt.resultEvidence.width > 0 &&
-    Number.isInteger(vmFastCoreAttempt?.resultEvidence?.height) &&
-    vmFastCoreAttempt.resultEvidence.height > 0;
-  const recommendation = report.ui?.recommendationPresentation ?? {};
-  const mediaPresentation = report.ui?.mediaPresentation ?? {};
-  const productCards = Array.isArray(mediaPresentation.productCards)
-    ? mediaPresentation.productCards
-    : [];
-  const distinctCategoryKeys = new Set(
-    productCards.map((entry) => entry?.categoryKey).filter(Boolean),
-  );
-  const distinctMainImageUrls = new Set(
-    productCards.map((entry) => entry?.mainImageUrl).filter(Boolean),
-  );
-  const expectedMedia =
-    report.visionInstall?.runtimeExpectation?.productMedia ?? [];
-  const expectedMediaByCatalogKey = new Map(
-    expectedMedia.map((entry) => [entry?.catalogKey, entry]),
-  );
-  const mediaComplete =
-    mediaPresentation.source === "installed_machine_runtime_cdp" &&
-    expectedMediaByCatalogKey.size >= 3 &&
-    productCards.length >= 3 &&
-    distinctCategoryKeys.size >= 3 &&
-    distinctMainImageUrls.size >= 3 &&
-    productCards.every(
-      (entry) =>
-        expectedMediaByCatalogKey.get(entry?.catalogKey)?.categoryKey ===
-          entry?.categoryKey &&
-        expectedMediaByCatalogKey.get(entry?.catalogKey)?.coverImageUrl ===
-          entry?.expectedMainImageUrl &&
-        typeof entry?.mainImageUrl === "string" &&
-        entry.mainImageUrl.startsWith("/media/") &&
-        entry?.finalUrl === entry?.mainImageUrl &&
-        entry?.httpStatus === 200 &&
-        Number.isInteger(entry?.naturalWidth) &&
-        entry.naturalWidth >= 64 &&
-        Number.isInteger(entry?.naturalHeight) &&
-        entry.naturalHeight >= 64,
-    );
-  const recommendationVariants =
-    report.visionInstall?.runtimeExpectation?.recommendationVariants ?? [];
-  const recommendationBySize = new Map(
-    recommendationVariants.map((variant) => [variant?.size, variant]),
-  );
-  // The seeded recorded person deterministically receives the M variant as
-  // the untouched automatic recommendation; S is the manual alternate.
-  const matched = recommendationBySize.get("M");
-  const alternate = recommendationBySize.get("S");
-  const recommendationComplete =
-    recommendationVariants.length === 2 &&
-    matched?.productId === alternate?.productId &&
-    recommendation.automatic?.variantId === matched?.variantId &&
-    recommendation.automatic?.recommendedSize === "M" &&
-    recommendation.manual?.variantId === alternate?.variantId &&
-    recommendation.manual?.recommendedSize === null &&
-    typeof recommendation.onlineUnmatched?.variantId === "string" &&
-    recommendation.onlineUnmatched.variantId.length > 0 &&
-    recommendation.onlineUnmatched.variantId !== matched?.variantId &&
-    recommendation.onlineUnmatched?.recommendedSize === null &&
-    recommendation.visionUnavailable?.variantId === alternate?.variantId &&
-    recommendation.visionUnavailable?.recommendedSize === null &&
-    recommendation.manual.variantId !== recommendation.automatic.variantId;
-  const strictVisionEvidence =
-    protocol &&
-    protocol.protocol === "vem.vision.v2" &&
-    eventFence?.source === "installed_machine_runtime_trace_generation" &&
-    typeof eventFence.runtimeGenerationId === "string" &&
-    eventFence.runtimeGenerationId.length > 0 &&
-    Number.isInteger(eventFence.lastEntryId) &&
-    eventFence.lastEntryId >= 0 &&
-    typeof eventFence.visionStartedAt === "string" &&
-    eventFence.visionStartedAt.length > 0 &&
-    typeof protocol.presenceDetectedAt === "string" &&
-    typeof protocol.profileDetectedAt === "string" &&
-    visionDown.experienceCapabilityDegraded === true &&
-    visionDown.saleStartStillAvailable === true &&
-    recommendationComplete &&
-    mediaComplete;
-  const vision =
-    (strictRecommendationScope && strictVisionEvidence) ||
-    (vmFastCoreScope && vmFastCoreAttemptComplete)
-      ? passedTrack("vision", "Vision", reportPath, {
-          recommendationScope,
-          ...(strictRecommendationScope
-            ? {
-                experienceCapabilityDegraded: true,
-                saleStartStillAvailable: true,
-              }
-            : {}),
-        })
-      : failedTrack(
-          "vision",
-          "Vision",
-          reportPath,
-          "vision degradation evidence is incomplete",
-          {
-            protocol,
-            eventFence,
-            visionDown,
-            recommendationScope,
-            recommendation,
-            mediaPresentation,
-          },
-        );
-  const tryOn =
-    tryOnSummary &&
-    tryOnSummary.width > 0 &&
-    tryOnSummary.height > 0 &&
-    tryOnSummary.contentType === "image/png" &&
-    Number.isInteger(tryOnSummary.byteLength) &&
-    tryOnSummary.byteLength >= 64 &&
-    typeof tryOnSummary.attemptId === "string" &&
-    tryOnSummary.resultUrl?.includes(
-      `/v2/try-on/results/${tryOnSummary.attemptId}`,
-    ) &&
-    report.ui?.tryOnSelectedProduct?.variantId === alternate?.variantId &&
-    (strictRecommendationScope
-      ? report.ui?.tryOnAttempts?.some(
-          (attempt) => attempt?.result === "completed",
-        )
-      : vmFastCoreAttemptComplete) &&
-    (strictRecommendationScope
-      ? visionDown.saleStartStillAvailable === true
-      : vmFastCoreScope)
-      ? passedTrack("tryOn", "try-on", reportPath, {
-          resultWidth: tryOnSummary.width,
-          resultHeight: tryOnSummary.height,
-          attemptId: tryOnSummary.attemptId,
-        })
-      : failedTrack(
-          "tryOn",
-          "try-on",
-          reportPath,
-          "try-on degradation evidence is incomplete",
-          {
-            tryOnSummary,
-            tryOnAttempts: report.ui?.tryOnAttempts ?? null,
-            tryOnSelectedProduct: report.ui?.tryOnSelectedProduct ?? null,
-            visionDown,
-          },
-        );
-  return { vision, tryOn };
-}
-
 function canonicalResult(descriptor, result, reportPath) {
   return {
     ...result,
@@ -1068,6 +882,20 @@ function canonicalResult(descriptor, result, reportPath) {
     label: descriptor.name,
     reportPath,
   };
+}
+
+function hasVisionExperienceCapturedSource(set) {
+  const source = Array.isArray(set?.supportingEvidence)
+    ? set.supportingEvidence.find(
+        (entry) => entry?.kind === "vision-v2-captured-source",
+      )
+    : null;
+  const captured = source?.captured;
+  return (
+    typeof source?.attemptId === "string" &&
+    source.attemptId.length > 0 &&
+    visionV2CapturedFrameSchema.safeParse(captured).success
+  );
 }
 
 export function validateBusinessCheckReport(
@@ -1126,30 +954,32 @@ export function validateBusinessCheckReport(
       }
       return canonicalResult(
         descriptor,
-        set.status === "passed"
+        set.status === "passed" && hasVisionExperienceCapturedSource(set)
           ? passedTrack("visionExperience", "vision experience", reportPath, {
               assertions: set.assertionCount,
+              capturedFrameId: set.supportingEvidence.find(
+                (entry) => entry?.kind === "vision-v2-captured-source",
+              ).captured.frameId,
             })
           : failedTrack(
               descriptor.name,
               descriptor.name,
               reportPath,
-              set.primaryFailure?.reason ?? "vision assertions failed",
+              set.status !== "passed"
+                ? (set.primaryFailure?.reason ?? "vision assertions failed")
+                : "visionExperience captured source evidence is incomplete",
             ),
         reportPath,
       );
     }
-    const result = validateVisionTrack(report, reportPath);
-    const failed = Object.values(result).find(
-      (entry) => entry.status !== "passed",
-    );
     return canonicalResult(
       descriptor,
-      failed ??
-        passedTrack("visionExperience", "vision experience", reportPath, {
-          vision: result.vision.details,
-          tryOn: result.tryOn.details,
-        }),
+      failedTrack(
+        descriptor.name,
+        descriptor.name,
+        reportPath,
+        "visionExperience requires a V2 business-set report",
+      ),
       reportPath,
     );
   }

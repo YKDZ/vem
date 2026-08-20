@@ -102,7 +102,17 @@ describe("Vision V2 hard-cutover absence guard", () => {
       const retiredEnvironment = ["VEM_VM_ACCEPTANCE_", "A", "I_HEIGHT"].join(
         "",
       );
+      const retiredWireMode = [
+        'type: "vision.try_on.attempt.start",',
+        `payload: { mode: "${["f", "ast"].join("")}" }`,
+      ].join("\n");
+      const retiredSchemaMode = `mode: z.enum(["${["f", "ast"].join("")}", "${["a", "i"].join("")}"])`;
+      const retiredWeights = `${["we", "ights"].join("")}: "retired.bin"`;
       const retiredArtifactPath = ["a", "i-acceptance-artifacts.ts"].join("");
+      const retiredLegacyRunner = ["vision", "-try", "-on", "-acceptance"].join(
+        "",
+      );
+      const retiredLegacyScope = ["vm", "_f", "ast", "_core"].join("");
       const fixtures = [
         ["protocol.txt", dot("vem", "vision", "v1")],
         ["fixture.txt", retiredProtocolFixture],
@@ -134,6 +144,13 @@ describe("Vision V2 hard-cutover absence guard", () => {
         ["retired-worker.txt", retiredWorker],
         ["retired-model.txt", retiredArchiveProperty],
         ["retired-environment.txt", retiredEnvironment],
+        ["retired-wire-mode.txt", retiredWireMode],
+        ["retired-schema-mode.txt", retiredSchemaMode],
+        ["retired-weights.txt", retiredWeights],
+        [
+          "retired-legacy-runner.txt",
+          `${retiredLegacyRunner}\n${retiredLegacyScope}`,
+        ],
         [retiredArtifactPath, "export {}"],
       ];
       for (const [name, body] of fixtures) {
@@ -164,8 +181,11 @@ describe("Vision V2 hard-cutover absence guard", () => {
           "protocol-v1",
           "retired-ai-artifact",
           "retired-ai-artifact-path",
+          "retired-ai-model-weights",
           "retired-ai-readiness",
           "retired-ai-try-on-mode",
+          "retired-ai-try-on-runner",
+          "retired-ai-try-on-wire-mode",
           "standalone-browser-camera-owner",
           "standalone-repository-path",
           "standalone-repository-url",

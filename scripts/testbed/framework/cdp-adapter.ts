@@ -1,5 +1,9 @@
+import { createHash } from "node:crypto";
+
 import type { CommandResult, TestAdapter } from "./test-adapter.ts";
 
+import { visionV2CapturedFrameSchema } from "../../../packages/shared/src/schemas/vision-v2.ts";
+import { isStructurallyValidPng } from "../../lib/png-structure.mjs";
 import {
   CdpClient,
   activateVisibleSelector,
@@ -20,6 +24,37 @@ interface RuntimeRole {
   ready: boolean;
 }
 
+type TryOnProtocolEvent = {
+  type: string;
+  payload: {
+    attemptId: string;
+    captured?: {
+      reference?: string;
+    };
+  };
+};
+
+type CapturedFrameResource = {
+  reference: string;
+  finalUrl: string | null;
+  ok: boolean;
+  httpStatus: number | null;
+  contentType: string | null;
+  byteSize: number;
+  digest: string | null;
+  width: number | null;
+  height: number | null;
+};
+
+export function isControlledCapturedFrameReference(
+  reference: unknown,
+): reference is string {
+  return (
+    typeof reference === "string" &&
+    visionV2CapturedFrameSchema.shape.reference.safeParse(reference).success
+  );
+}
+
 const STATE_EXPRESSION = `(() => {
   const view = document.querySelector("[data-test='try-on-view']");
   const preview = document.querySelector("[data-test='try-on-acquisition-preview']");
@@ -34,6 +69,7 @@ const STATE_EXPRESSION = `(() => {
   return JSON.stringify({
     route: location.hash,
     state: view?.dataset?.state ?? null,
+    attemptId: view?.dataset?.attemptId ?? null,
     preview: {
       naturalWidth: Number(preview?.naturalWidth ?? 0),
       naturalHeight: Number(preview?.naturalHeight ?? 0),
@@ -61,6 +97,9 @@ export class CdpTestAdapter implements TestAdapter {
   endpoint: string;
   visionBaseUrl: string;
   client: CdpClient | null = null;
+  tryOnProtocolEvents: TryOnProtocolEvent[] = [];
+  capturedFrameResources = new Map<string, Promise<CapturedFrameResource>>();
+  stopTryOnProtocolObserver: (() => void) | null = null;
 
   constructor({
     endpoint = process.env.CDP_ENDPOINT ?? "http://127.0.0.1:19222",
@@ -96,6 +135,48 @@ export class CdpTestAdapter implements TestAdapter {
     );
     await this.client.connect({ timeoutMs });
     await enablePageRuntime(this.client);
+    await this.client.send("Network.enable");
+    this.stopTryOnProtocolObserver = this.client.on(
+      "Network.webSocketFrameReceived",
+      (event: unknown) => {
+        const payloadData = (
+          event as { response?: { payloadData?: unknown } } | null
+        )?.response?.payloadData;
+        if (typeof payloadData !== "string") return;
+        try {
+          const message = JSON.parse(payloadData) as {
+            protocol?: unknown;
+            type?: unknown;
+            payload?: unknown;
+          };
+          const payload = message.payload as { attemptId?: unknown } | null;
+          if (
+            message.protocol !== "vem.vision.v2" ||
+            typeof message.type !== "string" ||
+            !/^vision[.]try_on[.]attempt[.](?:accepted|acquiring|captured|generating|completed|failed|canceled)$/.test(
+              message.type,
+            ) ||
+            !payload ||
+            typeof payload.attemptId !== "string"
+          ) {
+            return;
+          }
+          this.tryOnProtocolEvents.push({
+            type: message.type,
+            payload: structuredClone(payload) as TryOnProtocolEvent["payload"],
+          });
+          if (this.tryOnProtocolEvents.length > 256) {
+            this.tryOnProtocolEvents.splice(
+              0,
+              this.tryOnProtocolEvents.length - 256,
+            );
+          }
+        } catch {
+          // Unrelated or malformed WebSocket frames cannot alter acceptance
+          // evidence. The strict Machine adapter separately rejects them.
+        }
+      },
+    );
     return this;
   }
 
@@ -103,7 +184,24 @@ export class CdpTestAdapter implements TestAdapter {
     if (path !== "ui/try-on-state.json") {
       throw new Error(`unknown adapter file: ${path}`);
     }
-    return await evaluateExpression(this.client!, STATE_EXPRESSION);
+    const state = JSON.parse(
+      await evaluateExpression(this.client!, STATE_EXPRESSION),
+    ) as { attemptId?: string | null };
+    const protocolTimeline =
+      typeof state.attemptId === "string"
+        ? this.tryOnProtocolEvents.filter(
+            (event) => event.payload.attemptId === state.attemptId,
+          )
+        : [];
+    const captured = protocolTimeline.find(
+      (event) => event.type === "vision.try_on.attempt.captured",
+    )?.payload.captured;
+    const capturedResource = isControlledCapturedFrameReference(
+      captured?.reference,
+    )
+      ? await this.readCapturedFrameResource(captured.reference)
+      : null;
+    return JSON.stringify({ ...state, protocolTimeline, capturedResource });
   }
 
   async writeFile(): Promise<never> {
@@ -194,7 +292,63 @@ export class CdpTestAdapter implements TestAdapter {
   }
 
   async close(): Promise<void> {
+    this.stopTryOnProtocolObserver?.();
+    this.stopTryOnProtocolObserver = null;
+    this.tryOnProtocolEvents = [];
+    this.capturedFrameResources.clear();
     await this.client?.close().catch(() => {});
     this.client = null;
   }
+
+  private async readCapturedFrameResource(
+    reference: string,
+  ): Promise<CapturedFrameResource> {
+    let resource = this.capturedFrameResources.get(reference);
+    if (!resource) {
+      resource = inspectCapturedFrameResource(reference);
+      this.capturedFrameResources.set(reference, resource);
+    }
+    return await resource;
+  }
+}
+
+async function inspectCapturedFrameResource(
+  reference: string,
+): Promise<CapturedFrameResource> {
+  try {
+    const response = await fetch(reference);
+    const bytes = Buffer.from(await response.arrayBuffer());
+    const dimensions = pngDimensions(bytes);
+    return {
+      reference,
+      finalUrl: response.url,
+      ok: response.ok,
+      httpStatus: response.status,
+      contentType:
+        response.headers.get("content-type")?.split(";", 1)[0] ?? null,
+      byteSize: bytes.byteLength,
+      digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+      width: dimensions?.width ?? null,
+      height: dimensions?.height ?? null,
+    };
+  } catch {
+    return {
+      reference,
+      finalUrl: null,
+      ok: false,
+      httpStatus: null,
+      contentType: null,
+      byteSize: 0,
+      digest: null,
+      width: null,
+      height: null,
+    };
+  }
+}
+
+function pngDimensions(
+  bytes: Buffer,
+): { width: number; height: number } | null {
+  if (!isStructurallyValidPng(bytes)) return null;
+  return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
 }

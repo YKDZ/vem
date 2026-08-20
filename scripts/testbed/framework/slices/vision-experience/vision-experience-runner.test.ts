@@ -7,6 +7,42 @@ import { runVisionExperienceSlice } from "./vision-experience-runner.ts";
 
 function fakeUiAdapter() {
   const statePath = "ui/try-on-state.json";
+  const attemptId = "attempt-1";
+  const captured = {
+    reference:
+      "http://127.0.0.1:7892/v2/try-on/captured/frame.png?token=captured-token",
+    digest: `sha256:${"a".repeat(64)}`,
+    contentType: "image/png",
+    byteSize: 4096,
+    width: 720,
+    height: 1280,
+    frameId: "frame-000042",
+  };
+  const capturedEvidence = {
+    protocolTimeline: [
+      { type: "vision.try_on.attempt.accepted", payload: { attemptId } },
+      { type: "vision.try_on.attempt.acquiring", payload: { attemptId } },
+      {
+        type: "vision.try_on.attempt.captured",
+        payload: { attemptId, captured },
+      },
+      {
+        type: "vision.try_on.attempt.generating",
+        payload: { attemptId, stage: "generating" },
+      },
+    ],
+    capturedResource: {
+      reference: captured.reference,
+      finalUrl: captured.reference,
+      ok: true,
+      httpStatus: 200,
+      contentType: "image/png",
+      byteSize: captured.byteSize,
+      digest: captured.digest,
+      width: captured.width,
+      height: captured.height,
+    },
+  };
   const adapter = createFakeTestAdapter({
     files: {
       [statePath]: JSON.stringify({ route: "#/catalog", state: "idle" }),
@@ -40,6 +76,7 @@ function fakeUiAdapter() {
           JSON.stringify({
             route: "#/try-on?catalogKey=product%3A1",
             state: "acquiring",
+            attemptId,
             preview: { naturalWidth: 720, naturalHeight: 1280 },
           }),
         );
@@ -49,9 +86,11 @@ function fakeUiAdapter() {
             JSON.stringify({
               route: "#/try-on?catalogKey=product%3A1",
               state: "completed",
+              attemptId,
               preview: { naturalWidth: 720, naturalHeight: 1280 },
               resultUrl:
                 "http://127.0.0.1:7892/v2/try-on/results/attempt-1?token=x",
+              ...capturedEvidence,
             }),
           );
         }, 50);
@@ -111,7 +150,7 @@ describe("visionExperience slice runner", () => {
     });
     const result = registry.validateReport(report);
     assert.equal(result.businessSets.visionExperience.status, "passed");
-    assert.equal(report.businessSets[0].assertionCount, 7);
+    assert.equal(report.businessSets[0].assertionCount, 8);
   });
 
   it("waits for a stable Vision role PID set before starting the flow", async () => {
@@ -156,6 +195,42 @@ describe("visionExperience slice runner", () => {
 
   it("covers manual capture and departure cancellation", async () => {
     const statePath = "ui/try-on-state.json";
+    const attemptId = "attempt-1";
+    const captured = {
+      reference:
+        "http://127.0.0.1:7892/v2/try-on/captured/frame.png?token=captured-token",
+      digest: `sha256:${"a".repeat(64)}`,
+      contentType: "image/png",
+      byteSize: 4096,
+      width: 720,
+      height: 1280,
+      frameId: "frame-000042",
+    };
+    const capturedEvidence = {
+      protocolTimeline: [
+        { type: "vision.try_on.attempt.accepted", payload: { attemptId } },
+        { type: "vision.try_on.attempt.acquiring", payload: { attemptId } },
+        {
+          type: "vision.try_on.attempt.captured",
+          payload: { attemptId, captured },
+        },
+        {
+          type: "vision.try_on.attempt.generating",
+          payload: { attemptId, stage: "generating" },
+        },
+      ],
+      capturedResource: {
+        reference: captured.reference,
+        finalUrl: captured.reference,
+        ok: true,
+        httpStatus: 200,
+        contentType: "image/png",
+        byteSize: captured.byteSize,
+        digest: captured.digest,
+        width: captured.width,
+        height: captured.height,
+      },
+    };
     let tryOnEntries = 0;
     const adapter = createFakeTestAdapter({
       files: {
@@ -191,6 +266,7 @@ describe("visionExperience slice runner", () => {
               JSON.stringify({
                 route: "#/try-on?catalogKey=product%3A1",
                 state: "acquiring",
+                attemptId,
                 preview: { naturalWidth: 720, naturalHeight: 1280 },
               }),
             );
@@ -200,9 +276,11 @@ describe("visionExperience slice runner", () => {
                 JSON.stringify({
                   route: "#/try-on?catalogKey=product%3A1",
                   state: "completed",
+                  attemptId,
                   preview: { naturalWidth: 720, naturalHeight: 1280 },
                   resultUrl:
                     "http://127.0.0.1:7892/v2/try-on/results/attempt-1?token=x",
+                  ...capturedEvidence,
                 }),
               );
             }, 50);
@@ -253,6 +331,6 @@ describe("visionExperience slice runner", () => {
       pollMs: 10,
     });
     assert.equal(report.businessSets[0].status, "passed");
-    assert.equal(report.businessSets[0].assertionCount, 6);
+    assert.equal(report.businessSets[0].assertionCount, 7);
   });
 });

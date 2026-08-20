@@ -69,6 +69,7 @@ export async function runVisionExperienceSlice({
   });
   const tryOn = await runTryOnScenario(adapter, { timeoutMs, pollMs });
   const assertions = [...tryOn.assertions];
+  const supportingEvidence = [...tryOn.supportingEvidence];
   if (includeSelfHeal && manifest) {
     const heal = await runObserverSelfHealScenario(adapter, manifest, {
       timeoutMs,
@@ -106,7 +107,9 @@ export async function runVisionExperienceSlice({
     runId: "slice-vision-experience",
     mode: "fast",
     pass: 1,
-    businessSets: [{ name: "visionExperience", assertions }],
+    businessSets: [
+      { name: "visionExperience", assertions, supportingEvidence },
+    ],
   });
 }
 

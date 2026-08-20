@@ -14,6 +14,7 @@ import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import { parse as parseYaml } from "yaml";
 
+import { BUSINESS_CHECK_REGISTRY } from "./business-check-registry.ts";
 import { mockPaymentCreateGatePaths } from "./host-serial-control-plane.ts";
 import {
   baselinePublicationLayout,
@@ -2250,7 +2251,7 @@ describe("Windows D cache contract", () => {
     assert.match(guest, /Get-CdpProcessBinding \$machineEvidence\.processId/);
   });
 
-  it("installs the real Vision artifact and runs the independent try-on acceptance only in full mode", () => {
+  it("installs the real Vision artifact and runs the registry-owned single-path check in full mode", () => {
     const guest = readFileSync(
       new URL("./run-local-testbed-guest.ps1", import.meta.url),
       "utf8",
@@ -2266,7 +2267,6 @@ describe("Windows D cache contract", () => {
       "only the front try-on source loops during horizontal acceptance",
     );
     assert.equal(guest.match(/loop = \$false/g)?.length, 1);
-    assert.match(guest, /function Invoke-FullVisionTryOnAcceptance/);
     assert.match(guest, /Get-TestbedProvisionedVisionCoreArtifact/);
     assert.doesNotMatch(guest, /Get-VisionMainArtifactCache/);
     assert.match(
@@ -2285,6 +2285,18 @@ describe("Windows D cache contract", () => {
     assert.match(orchestrator, /business-check-registry\.ts/);
     assert.match(orchestrator, /selectBusinessChecks/);
     assert.match(orchestrator, /runner\.script[\s\S]*runner\.args/);
+    const visionExperience = BUSINESS_CHECK_REGISTRY.find(
+      (descriptor) => descriptor.name === "visionExperience",
+    );
+    assert.equal(
+      visionExperience?.runner?.script,
+      "scripts/testbed/framework/slices/vision-experience/vision-experience-runner.ts",
+    );
+    assert.equal(
+      visionExperience?.runner?.artifactDirectory,
+      "vision-experience-artifacts",
+    );
+    assert.equal(visionExperience?.fullRequired, true);
     assert.match(
       guest,
       /if \(\$Mode -eq "full"\) \{\s+Write-RecordedVisionSiteConfiguration/,

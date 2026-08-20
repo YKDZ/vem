@@ -34,115 +34,6 @@ function descriptor(name) {
   return BUSINESS_CHECK_REGISTRY.find((entry) => entry.name === name);
 }
 
-function visionExperienceReport() {
-  return {
-    schemaVersion: "vem-vision-try-on-acceptance/v1",
-    ok: true,
-    acceptanceScope: { visionRecommendation: "strict" },
-    health: {
-      vision: {
-        protocolSummary: {
-          protocol: "vem.vision.v2",
-          presenceDetectedAt: "2026-07-22T00:00:02.000Z",
-          profileDetectedAt: "2026-07-22T00:00:03.000Z",
-          departureDetectedAt: "2026-07-22T00:00:04.000Z",
-          eventFence: {
-            source: "installed_machine_runtime_trace_generation",
-            runtimeGenerationId: "runtime:vision-acceptance",
-            lastEntryId: 4,
-            visionStartedAt: "2026-07-22T00:00:01.000Z",
-          },
-        },
-      },
-    },
-    visionInstall: {
-      runtimeExpectation: {
-        recommendationVariants: [
-          { productId: "product-t", variantId: "variant-s", size: "S" },
-          { productId: "product-t", variantId: "variant-m", size: "M" },
-        ],
-        productMedia: [
-          {
-            categoryKey: "socks",
-            catalogKey: "product-socks",
-            coverImageUrl: "/api/media-assets/main-socks/content",
-          },
-          {
-            categoryKey: "underwear",
-            catalogKey: "product-underwear",
-            coverImageUrl: "/api/media-assets/main-underwear/content",
-          },
-          {
-            categoryKey: "tshirts",
-            catalogKey: "product-tshirts",
-            coverImageUrl: "/api/media-assets/main-tshirts/content",
-          },
-        ],
-      },
-    },
-    degradations: {
-      visionDown: {
-        experienceCapabilityDegraded: true,
-        saleStartStillAvailable: true,
-      },
-    },
-    ui: {
-      recommendationPresentation: {
-        automatic: { variantId: "variant-m", recommendedSize: "M" },
-        onlineUnmatched: { variantId: "variant-online", recommendedSize: null },
-        manual: { variantId: "variant-s", recommendedSize: null },
-        visionUnavailable: { variantId: "variant-s", recommendedSize: null },
-      },
-      tryOnSelectedProduct: { variantId: "variant-s" },
-      tryOnSummary: {
-        attemptId: "attempt-fast-1",
-        resultUrl:
-          "http://127.0.0.1:7892/v2/try-on/results/attempt-fast-1?token=result-token",
-        contentType: "image/png",
-        byteLength: 2048,
-        width: 640,
-        height: 480,
-      },
-      tryOnAttempts: [{ result: "completed" }],
-      mediaPresentation: {
-        source: "installed_machine_runtime_cdp",
-        productCards: [
-          {
-            categoryKey: "socks",
-            catalogKey: "product-socks",
-            expectedMainImageUrl: "/api/media-assets/main-socks/content",
-            mainImageUrl: "/media/sha256:main-socks?grant=socks-grant",
-            finalUrl: "/media/sha256:main-socks?grant=socks-grant",
-            httpStatus: 200,
-            naturalWidth: 320,
-            naturalHeight: 320,
-          },
-          {
-            categoryKey: "underwear",
-            catalogKey: "product-underwear",
-            expectedMainImageUrl: "/api/media-assets/main-underwear/content",
-            mainImageUrl: "/media/sha256:main-underwear?grant=underwear-grant",
-            finalUrl: "/media/sha256:main-underwear?grant=underwear-grant",
-            httpStatus: 200,
-            naturalWidth: 320,
-            naturalHeight: 320,
-          },
-          {
-            categoryKey: "tshirts",
-            catalogKey: "product-tshirts",
-            expectedMainImageUrl: "/api/media-assets/main-tshirts/content",
-            mainImageUrl: "/media/sha256:main-tshirts?grant=tshirts-grant",
-            finalUrl: "/media/sha256:main-tshirts?grant=tshirts-grant",
-            httpStatus: 200,
-            naturalWidth: 320,
-            naturalHeight: 320,
-          },
-        ],
-      },
-    },
-  };
-}
-
 function stockMaintenanceReport() {
   return {
     schemaVersion: "vem-stock-maintenance-guest-full/v1",
@@ -1251,257 +1142,92 @@ function passingExecution(descriptors) {
 }
 
 describe("full workflow aggregate validator", () => {
-  it("rejects vision experience reports without each recommendation presentation state", () => {
-    const complete = validateBusinessCheckReport(
-      descriptor("visionExperience"),
-      visionExperienceReport(),
-      "vision-experience.json",
-    );
-    assert.equal(complete.status, "passed");
-
-    const unsupportedProtocol = visionExperienceReport();
-    unsupportedProtocol.health.vision.protocolSummary.protocol =
-      "vem.vision.unsupported";
-    assert.equal(
-      validateBusinessCheckReport(
-        descriptor("visionExperience"),
-        unsupportedProtocol,
-        "vision-experience.json",
-      ).status,
-      "failed",
-    );
-
-    const incomplete = visionExperienceReport();
-    delete incomplete.ui.recommendationPresentation.onlineUnmatched;
+  it("rejects vision experience reports outside the V2 business-set contract", () => {
     const rejected = validateBusinessCheckReport(
       descriptor("visionExperience"),
-      incomplete,
+      { schemaVersion: "retired-report/v1", ok: true },
       "vision-experience.json",
     );
     assert.equal(rejected.status, "failed");
-    assert.match(rejected.reason, /vision degradation evidence is incomplete/);
-
-    const unfenced = visionExperienceReport();
-    delete unfenced.health.vision.protocolSummary.eventFence;
-    assert.equal(
-      validateBusinessCheckReport(
-        descriptor("visionExperience"),
-        unfenced,
-        "vision-experience.json",
-      ).status,
-      "failed",
-    );
-
-    const forgedIdentity = visionExperienceReport();
-    forgedIdentity.visionInstall.runtimeExpectation.recommendationVariants[0].variantId =
-      "variant-forged";
-    assert.equal(
-      validateBusinessCheckReport(
-        descriptor("visionExperience"),
-        forgedIdentity,
-        "vision-experience.json",
-      ).status,
-      "failed",
-    );
-
-    const reusedRecommendationVariant = visionExperienceReport();
-    reusedRecommendationVariant.ui.recommendationPresentation.onlineUnmatched.variantId =
-      "variant-m";
-    assert.equal(
-      validateBusinessCheckReport(
-        descriptor("visionExperience"),
-        reusedRecommendationVariant,
-        "vision-experience.json",
-      ).status,
-      "failed",
-    );
-
-    const wrongTryOnIdentity = visionExperienceReport();
-    wrongTryOnIdentity.ui.tryOnSelectedProduct.variantId = "variant-m";
-    assert.equal(
-      validateBusinessCheckReport(
-        descriptor("visionExperience"),
-        wrongTryOnIdentity,
-        "vision-experience.json",
-      ).status,
-      "failed",
-    );
-
-    const wrongUnavailableIdentity = visionExperienceReport();
-    wrongUnavailableIdentity.ui.recommendationPresentation.visionUnavailable.variantId =
-      "variant-m";
-    assert.equal(
-      validateBusinessCheckReport(
-        descriptor("visionExperience"),
-        wrongUnavailableIdentity,
-        "vision-experience.json",
-      ).status,
-      "failed",
-    );
-    const reusedMedia = visionExperienceReport();
-    reusedMedia.ui.mediaPresentation.productCards[2].mainImageUrl =
-      reusedMedia.ui.mediaPresentation.productCards[1].mainImageUrl;
-    assert.equal(
-      validateBusinessCheckReport(
-        descriptor("visionExperience"),
-        reusedMedia,
-        "/reports/vision.json",
-      ).status,
-      "failed",
-    );
-    const wrongOwnedMedia = visionExperienceReport();
-    wrongOwnedMedia.ui.mediaPresentation.productCards[0].expectedMainImageUrl =
-      "/api/media-assets/main-underwear/content";
-    assert.equal(
-      validateBusinessCheckReport(
-        descriptor("visionExperience"),
-        wrongOwnedMedia,
-        "/reports/vision.json",
-      ).status,
-      "failed",
-    );
+    assert.match(rejected.reason ?? "", /requires a V2 business-set report/);
   });
 
-  it("accepts the explicit VM Fast core scope without recommendation evidence", () => {
-    const bypass = visionExperienceReport();
-    bypass.acceptanceScope.visionRecommendation = "vm_fast_core";
-    delete bypass.health.vision.protocolSummary;
-    delete bypass.degradations.visionDown;
-    delete bypass.ui.recommendationPresentation;
-    for (const [
-      index,
-      card,
-    ] of bypass.ui.mediaPresentation.productCards.entries()) {
-      const proxy = `/media/sha256:${String(index + 1).repeat(64)}?grant=media-${index + 1}`;
-      card.mainImageUrl = proxy;
-      card.finalUrl = proxy;
-    }
-    it("accepts the new v2 vision experience report when the business set passes", () => {
-      const report = {
-        schemaVersion: "vem-runtime-testbed-report/v2",
-        runId: "RUN-1",
-        mode: "fast",
-        pass: 1,
-        businessSets: [
-          {
-            name: "visionExperience",
-            status: "passed",
-            primaryFailure: null,
-            assertionCount: 9,
-            supportingEvidence: [],
-          },
-        ],
-      };
-      const result = validateBusinessCheckReport(
-        descriptor("visionExperience"),
-        report,
-        "vision-experience.json",
-      );
-      assert.equal(result.status, "passed");
-    });
-
-    it("fails the new v2 vision experience report when an assertion fails", () => {
-      const report = {
-        schemaVersion: "vem-runtime-testbed-report/v2",
-        runId: "RUN-1",
-        mode: "fast",
-        pass: 1,
-        businessSets: [
-          {
-            name: "visionExperience",
-            status: "failed",
-            primaryFailure: {
-              id: "result-surface",
-              reason: "expected completed",
+  it("accepts a V2 vision experience report only with captured source evidence", () => {
+    const report = {
+      schemaVersion: "vem-runtime-testbed-report/v2",
+      runId: "RUN-1",
+      mode: "fast",
+      pass: 1,
+      businessSets: [
+        {
+          name: "visionExperience",
+          status: "passed",
+          primaryFailure: null,
+          assertionCount: 4,
+          supportingEvidence: [
+            {
+              kind: "vision-v2-captured-source",
+              attemptId: "attempt-1",
+              captured: {
+                reference:
+                  "http://127.0.0.1:7892/v2/try-on/captured/frame.png?token=captured-token",
+                digest: `sha256:${"a".repeat(64)}`,
+                contentType: "image/png",
+                byteSize: 2048,
+                width: 640,
+                height: 480,
+                frameId: "frame-000042",
+              },
             },
-            assertionCount: 9,
-            supportingEvidence: [],
-          },
-        ],
-      };
-      const result = validateBusinessCheckReport(
+          ],
+        },
+      ],
+    };
+    assert.equal(
+      validateBusinessCheckReport(
         descriptor("visionExperience"),
         report,
         "vision-experience.json",
-      );
-      assert.equal(result.status, "failed");
-      assert.match(result.reason ?? "", /expected completed/);
-    });
-    bypass.ui.tryOnAttempts = [
-      {
-        result: "completed",
-        resultEvidence: {
-          ok: true,
-          httpStatus: 200,
-          contentType: "image/png",
-          byteLength: 2048,
-          width: 640,
-          height: 480,
-        },
-        summary: {
-          attemptId: bypass.ui.tryOnSummary.attemptId,
-          resultUrl: bypass.ui.tryOnSummary.resultUrl,
-        },
-      },
-    ];
-    const accepted = validateBusinessCheckReport(
+      ).status,
+      "passed",
+    );
+
+    const missingCaptured = structuredClone(report);
+    missingCaptured.businessSets[0].supportingEvidence = [];
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("visionExperience"),
+        missingCaptured,
+        "vision-experience.json",
+      ).status,
+      "failed",
+    );
+
+    const invalidCapturedReference = structuredClone(report);
+    invalidCapturedReference.businessSets[0].supportingEvidence[0].captured.reference =
+      "http://127.0.0.1:99999/v2/try-on/captured/frame.png?token=captured-token";
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("visionExperience"),
+        invalidCapturedReference,
+        "vision-experience.json",
+      ).status,
+      "failed",
+    );
+
+    const failedAssertion = structuredClone(report);
+    failedAssertion.businessSets[0].status = "failed";
+    failedAssertion.businessSets[0].primaryFailure = {
+      id: "result-surface",
+      reason: "expected completed",
+    };
+    const failed = validateBusinessCheckReport(
       descriptor("visionExperience"),
-      bypass,
+      failedAssertion,
       "vision-experience.json",
     );
-    assert.equal(accepted.status, "passed");
-
-    const strict = structuredClone(bypass);
-    strict.acceptanceScope.visionRecommendation = "strict";
-    assert.equal(
-      validateBusinessCheckReport(
-        descriptor("visionExperience"),
-        strict,
-        "vision-experience.json",
-      ).status,
-      "failed",
-    );
-
-    const unmarked = structuredClone(bypass);
-    delete unmarked.acceptanceScope;
-    assert.equal(
-      validateBusinessCheckReport(
-        descriptor("visionExperience"),
-        unmarked,
-        "vision-experience.json",
-      ).status,
-      "failed",
-    );
-
-    for (const [label, mutate] of [
-      ["a second attempt", (report) => report.ui.tryOnAttempts.push({})],
-      [
-        "a failed attempt",
-        (report) => (report.ui.tryOnAttempts[0].result = "failed"),
-      ],
-      [
-        "a non-PNG result",
-        (report) =>
-          (report.ui.tryOnAttempts[0].resultEvidence.contentType =
-            "image/jpeg"),
-      ],
-      [
-        "a missing result image",
-        (report) => delete report.ui.tryOnAttempts[0].resultEvidence,
-      ],
-    ]) {
-      const invalid = structuredClone(bypass);
-      mutate(invalid);
-      assert.equal(
-        validateBusinessCheckReport(
-          descriptor("visionExperience"),
-          invalid,
-          "vision-experience.json",
-        ).status,
-        "failed",
-        label,
-      );
-    }
+    assert.equal(failed.status, "failed");
+    assert.match(failed.reason ?? "", /expected completed/);
   });
 
   it("lets the owning sale validator decide its business claim", () => {

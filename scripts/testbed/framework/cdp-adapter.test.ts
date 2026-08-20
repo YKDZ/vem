@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { describe, it } from "node:test";
 
-import { CdpTestAdapter } from "./cdp-adapter.ts";
+import {
+  CdpTestAdapter,
+  isControlledCapturedFrameReference,
+} from "./cdp-adapter.ts";
 import { assertAdapterContract } from "./test-adapter.ts";
 
 describe("CDP test adapter", () => {
@@ -18,6 +21,33 @@ describe("CDP test adapter", () => {
     await assert.rejects(
       adapter.readFile("other.json"),
       /unknown adapter file/,
+    );
+  });
+
+  it("allows only the controlled V2 captured-frame reference before fetching it", () => {
+    assert.equal(
+      isControlledCapturedFrameReference(
+        "http://127.0.0.1:7892/v2/try-on/captured/frame.png?token=captured-token",
+      ),
+      true,
+    );
+    assert.equal(
+      isControlledCapturedFrameReference(
+        "https://example.test/v2/try-on/captured/frame.png?token=captured-token",
+      ),
+      false,
+    );
+    assert.equal(
+      isControlledCapturedFrameReference(
+        "http://127.0.0.1:7892/v2/try-on/results/frame.png?token=captured-token",
+      ),
+      false,
+    );
+    assert.equal(
+      isControlledCapturedFrameReference(
+        "http://127.0.0.1:99999/v2/try-on/captured/frame.png?token=captured-token",
+      ),
+      false,
     );
   });
 
