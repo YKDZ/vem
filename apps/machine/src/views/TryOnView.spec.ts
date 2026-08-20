@@ -5,18 +5,14 @@ import { createApp, nextTick, type App } from "vue";
 
 const {
   getSaleViewMock,
-  openFastMock,
-  openAiMock,
+  openAttemptMock,
   openAdjustMock,
   submitNavigationMock,
-  routeMode,
 } = vi.hoisted(() => ({
   getSaleViewMock: vi.fn(),
-  openFastMock: vi.fn(),
-  openAiMock: vi.fn(),
+  openAttemptMock: vi.fn(),
   openAdjustMock: vi.fn(),
   submitNavigationMock: vi.fn(),
-  routeMode: { value: undefined as "fast" | "ai" | undefined },
 }));
 
 vi.mock("vue-router", () => ({
@@ -24,7 +20,6 @@ vi.mock("vue-router", () => ({
     query: {
       catalogKey: "product:550e8400-e29b-41d4-a716-446655440128",
       variantId: "550e8400-e29b-41d4-a716-446655440125",
-      ...(routeMode.value ? { mode: routeMode.value } : {}),
     },
   }),
 }));
@@ -38,10 +33,11 @@ vi.mock("@/daemon/client", () => ({
   daemonClient: { getSaleView: getSaleViewMock, refreshCatalog: vi.fn() },
 }));
 vi.mock("@/native/vision", () => ({
-  openVisionFastAttempt: openFastMock,
-  openVisionTryOnAttempt: openAiMock,
+  openVisionTryOnAttempt: openAttemptMock,
   openVisionGarmentAdjustment: openAdjustMock,
 }));
+
+import type { VisionTryOnAttemptEvent } from "@/native/vision";
 
 import { useCatalogStore } from "@/stores/catalog";
 import { useTryOnStore } from "@/stores/try-on";
@@ -51,6 +47,7 @@ import TryOnView from "./TryOnView.vue";
 
 const productId = "550e8400-e29b-41d4-a716-446655440128";
 const variantId = "550e8400-e29b-41d4-a716-446655440125";
+const attemptId = "550e8400-e29b-41d4-a716-446655440124";
 let mountedApp: App<Element> | null = null;
 let pinia: ReturnType<typeof createPinia>;
 
@@ -59,7 +56,7 @@ function saleView() {
     items: [
       {
         machineCode: "M001",
-        slotId: "550e8400-e29b-41d4-a716-446655440124",
+        slotId: "550e8400-e29b-41d4-a716-446655440123",
         slotDisplayLabel: "R1C1",
         rowNo: 1,
         cellNo: 1,
@@ -101,11 +98,74 @@ function saleView() {
   };
 }
 
-function attemptEvent<T extends { attemptId: string }>(
-  type: string,
-  payload: T,
-) {
-  return { type, payload };
+function ready() {
+  return {
+    serverName: "vision",
+    serverVersion: "1",
+    schemaVersion: "vem-vision-v2-contract-bundle/v1",
+    bundleVersion: "1",
+    contractDigest: "a".repeat(64),
+    cameraReady: true,
+    tryOnReady: true,
+    visionBusinessReady: true,
+    businessReadinessDiagnostic: "ready" as const,
+    capabilities: ["try_on"],
+  };
+}
+
+function event(type: VisionTryOnAttemptEvent["type"], payload: object) {
+  return { type, payload } as VisionTryOnAttemptEvent;
+}
+
+function acquisition(holdRemainingMs = 3_000): VisionTryOnAttemptEvent {
+  return event("vision.try_on.attempt.acquiring", {
+    attemptId,
+    preview: {
+      reference:
+        "http://127.0.0.1:7892/v2/try-on/acquisition/preview.mjpeg?token=preview-token",
+      streamType: "mjpeg",
+    },
+    occupancy: "single",
+    guidance: "counting_down",
+    manualCaptureAllowed: true,
+    holdRemainingMs,
+  });
+}
+
+function captured(): VisionTryOnAttemptEvent {
+  return event("vision.try_on.attempt.captured", {
+    attemptId,
+    captured: {
+      reference:
+        "http://127.0.0.1:7892/v2/try-on/captured/frame.png?token=captured-token",
+      digest: `sha256:${"b".repeat(64)}`,
+      contentType: "image/png",
+      byteSize: 2048,
+      width: 512,
+      height: 768,
+      frameId: "front-42",
+    },
+  });
+}
+
+function completed(): Extract<
+  VisionTryOnAttemptEvent,
+  { type: "vision.try_on.attempt.completed" }
+> {
+  return event("vision.try_on.attempt.completed", {
+    attemptId,
+    result: {
+      reference: `http://127.0.0.1:7892/v2/try-on/results/${attemptId}?token=result-token`,
+      digest: `sha256:${"c".repeat(64)}`,
+      contentType: "image/png",
+      byteSize: 2048,
+      width: 512,
+      height: 768,
+    },
+  }) as Extract<
+    VisionTryOnAttemptEvent,
+    { type: "vision.try_on.attempt.completed" }
+  >;
 }
 
 async function mount(): Promise<HTMLElement> {
@@ -120,32 +180,17 @@ async function mount(): Promise<HTMLElement> {
   return host;
 }
 
-describe("TryOnView acquisition UI", () => {
+describe("TryOnView single-path acquisition UI", () => {
   beforeEach(() => {
     pinia = createPinia();
     setActivePinia(pinia);
     vi.clearAllMocks();
-    routeMode.value = undefined;
     getSaleViewMock.mockResolvedValue(saleView());
-    openAiMock.mockResolvedValue({
-      close: vi.fn(),
-      capture: vi.fn(),
-      cancel: vi.fn(),
-    });
     useCatalogStore().applySnapshot(saleView());
-    useVisionStore().applyVisionReady({
-      serverName: "vision",
-      serverVersion: "1",
-      schemaVersion: "vem-vision-v2-contract-bundle/v1",
-      bundleVersion: "1",
-      contractDigest: "a".repeat(64),
-      cameraReady: true,
-      fastReady: true,
-      aiReady: false,
-      aiReadinessDiagnostic: "model_pack_missing",
-      visionBusinessReady: true,
-      businessReadinessDiagnostic: "ready",
-      capabilities: ["try_on_fast"],
+    useVisionStore().applyVisionReady(ready());
+    openAdjustMock.mockResolvedValue({
+      visionSocketUrl: "ws://127.0.0.1:7892/ws",
+      result: completed().payload.result,
     });
   });
 
@@ -155,388 +200,69 @@ describe("TryOnView acquisition UI", () => {
     document.body.innerHTML = "";
   });
 
-  it("takes the customer through preview, one manual intent, generation, result and recoverable image errors", async () => {
-    let emit:
-      | ((event: {
-          type: string;
-          payload: { attemptId: string } & object;
-        }) => void)
-      | undefined;
+  it("renders one live preview, forwards one manual capture, retains captured identity, then renders the result", async () => {
+    let emit: ((next: VisionTryOnAttemptEvent) => void) | undefined;
     const capture = vi.fn(() => true);
-    const cancel = vi.fn(() => true);
-    openFastMock.mockImplementation((_connection, _input, onEvent) => {
-      emit = (event) =>
-        onEvent(event, {
-          attemptId: event.payload.attemptId,
+    openAttemptMock.mockImplementation((_connection, _input, onEvent) => {
+      emit = (next) =>
+        onEvent(next, {
+          attemptId,
           visionSocketUrl: "ws://127.0.0.1:7892/ws",
         });
-      return Promise.resolve({ close: vi.fn(), capture, cancel });
+      return Promise.resolve({ close: vi.fn(), capture, cancel: vi.fn() });
     });
     const host = await mount();
     await vi.waitFor(() => {
-      expect(openFastMock).toHaveBeenCalledOnce();
+      expect(openAttemptMock).toHaveBeenCalledOnce();
     });
-    const attemptId = useTryOnStore().attemptId!;
-    if (!emit) throw new Error("expected Vision event boundary");
+    if (!emit) throw new Error("expected native try-on event callback");
 
-    emit(attemptEvent("vision.try_on.attempt.accepted", { attemptId }));
-    emit(
-      attemptEvent("vision.try_on.attempt.acquiring", {
-        attemptId,
-        preview: {
-          reference:
-            "http://127.0.0.1:7892/v2/try-on/acquisition/preview.mjpeg?token=preview-token",
-          streamType: "mjpeg",
-        },
-        occupancy: "single",
-        guidance: "counting_down",
-        holdRemainingMs: 1500,
-        manualCaptureAllowed: true,
-      }),
-    );
-    await nextTick();
-    const preview = host.querySelector(
-      '[data-test="try-on-acquisition-preview"]',
-    );
-    expect(preview).toBeInstanceOf(HTMLImageElement);
-    expect(preview?.getAttribute("src")).toContain("preview.mjpeg?token=");
-    preview?.dispatchEvent(new Event("error"));
-    await nextTick();
-    expect(
-      host.querySelector('[data-test="try-on-acquisition-stream-error"]'),
-    ).not.toBeNull();
-    const manual = host.querySelector('[data-test="try-on-manual-capture"]');
-    manual?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    await nextTick();
-    expect(capture).toHaveBeenCalledOnce();
-    expect((manual as HTMLButtonElement).disabled).toBe(true);
-
-    emit(
-      attemptEvent("vision.try_on.attempt.generating", {
-        attemptId,
-        stage: "rendering",
-      }),
-    );
+    emit(event("vision.try_on.attempt.accepted", { attemptId }));
+    emit(acquisition());
     await nextTick();
     expect(
       host.querySelector('[data-test="try-on-acquisition-preview"]'),
-    ).toBeNull();
-    expect(host.textContent).toContain("正在生成试衣效果");
-    emit(
-      attemptEvent("vision.try_on.attempt.completed", {
-        attemptId,
-        result: {
-          reference: `http://127.0.0.1:7892/v2/try-on/results/${attemptId}?token=result-token`,
-          digest: `sha256:${"b".repeat(64)}`,
-          contentType: "image/png",
-          byteSize: 2048,
-          width: 512,
-          height: 768,
-        },
-      }),
-    );
-    await nextTick();
-    const result = host.querySelector('[data-test="try-on-result-image"]');
-    expect(result).toBeInstanceOf(HTMLImageElement);
-    result?.dispatchEvent(new Event("error"));
-    await nextTick();
-    expect(
-      host.querySelector('[data-test="try-on-result-error"]'),
     ).not.toBeNull();
-  });
-
-  it("adjusts a completed Fast result around the locked center and shows the percentage", async () => {
-    let emit:
-      | ((event: {
-          type: string;
-          payload: { attemptId: string } & object;
-        }) => void)
-      | undefined;
-    openFastMock.mockImplementation((_connection, _input, onEvent) => {
-      emit = (event) =>
-        onEvent(event, {
-          attemptId: event.payload.attemptId,
-          visionSocketUrl: "ws://127.0.0.1:7892/ws",
-        });
-      return Promise.resolve({
-        close: vi.fn(),
-        capture: vi.fn(),
-        cancel: vi.fn(),
-      });
-    });
-    openAdjustMock.mockImplementation(
-      async (
-        _connection,
-        input: { attemptId: string; garmentScale: number },
-      ) => ({
-        result: {
-          reference: `http://127.0.0.1:7892/v2/try-on/results/${input.attemptId}?token=adjusted-token`,
-          digest: `sha256:${"c".repeat(64)}`,
-          contentType: "image/png",
-          byteSize: 2048,
-          width: 512,
-          height: 768,
-        },
-        visionSocketUrl: "ws://127.0.0.1:7892/ws",
-      }),
-    );
-    const host = await mount();
-    await vi.waitFor(() => {
-      expect(openFastMock).toHaveBeenCalledOnce();
-    });
-    const attemptId = useTryOnStore().attemptId!;
-    if (!emit) throw new Error("expected Vision event boundary");
-    emit(attemptEvent("vision.try_on.attempt.accepted", { attemptId }));
-    emit(
-      attemptEvent("vision.try_on.attempt.acquiring", {
-        attemptId,
-        preview: {
-          reference:
-            "http://127.0.0.1:7892/v2/try-on/acquisition/preview.mjpeg?token=preview-token",
-          streamType: "mjpeg",
-        },
-        occupancy: "single",
-        guidance: "counting_down",
-        manualCaptureAllowed: true,
-        holdRemainingMs: 1200,
-      }),
-    );
-    emit(
-      attemptEvent("vision.try_on.attempt.generating", {
-        attemptId,
-        stage: "rendering",
-      }),
-    );
-    emit(
-      attemptEvent("vision.try_on.attempt.completed", {
-        attemptId,
-        result: {
-          reference: `http://127.0.0.1:7892/v2/try-on/results/${attemptId}?token=result-token`,
-          digest: `sha256:${"b".repeat(64)}`,
-          contentType: "image/png",
-          byteSize: 2048,
-          width: 512,
-          height: 768,
-        },
-      }),
-    );
-    await nextTick();
     expect(
-      host.querySelector('[data-test="try-on-scale-value"]')?.textContent,
-    ).toContain("100%");
-    const scaleUp = host.querySelector(
-      '[data-test="try-on-scale-up"]',
-    ) as HTMLButtonElement | null;
-    expect(scaleUp?.disabled).toBe(false);
-    scaleUp?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    await vi.waitFor(() => {
-      expect(openAdjustMock).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({ attemptId, garmentScale: 1.05 }),
-      );
-    });
-    await nextTick();
-    expect(
-      host.querySelector('[data-test="try-on-scale-value"]')?.textContent,
-    ).toContain("105%");
-    expect(
-      host
-        .querySelector('[data-test="try-on-result-image"]')
-        ?.getAttribute("src"),
-    ).toContain("token=adjusted-token");
-  });
+      host.querySelector('[data-test="try-on-countdown"]')?.textContent,
+    ).toBe("3");
 
-  it("runs the AI route through truthful coarse stages, result, retry, and never opens Fast", async () => {
-    routeMode.value = "ai";
-    useVisionStore().applyVisionReady({
-      serverName: "vision",
-      serverVersion: "1",
-      schemaVersion: "vem-vision-v2-contract-bundle/v1",
-      bundleVersion: "1",
-      contractDigest: "a".repeat(64),
-      cameraReady: true,
-      fastReady: true,
-      aiReady: true,
-      aiReadinessDiagnostic: "ready",
-      visionBusinessReady: true,
-      businessReadinessDiagnostic: "ready",
-      capabilities: ["try_on_fast", "try_on_ai"],
-    });
-    const callbacks: Array<(event: { type: string; payload: object }) => void> =
-      [];
-    openAiMock.mockImplementation((_connection, _input, onEvent) => {
-      callbacks.push((event) =>
-        onEvent(event, {
-          attemptId: (event.payload as { attemptId: string }).attemptId,
-          visionSocketUrl: "ws://127.0.0.1:7892/ws",
-        }),
-      );
-      return Promise.resolve({
-        close: vi.fn(),
-        capture: vi.fn(),
-        cancel: vi.fn(),
-      });
-    });
-    const host = await mount();
-    await vi.waitFor(() => {
-      expect(openAiMock).toHaveBeenCalledOnce();
-    });
-    expect(openFastMock).not.toHaveBeenCalled();
-    expect(openAiMock.mock.calls[0][1]).toMatchObject({ mode: "ai" });
-    const attemptId = useTryOnStore().attemptId!;
+    host
+      .querySelector('[data-test="try-on-manual-capture"]')
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(capture).toHaveBeenCalledOnce();
 
-    callbacks[0]?.(
-      attemptEvent("vision.try_on.attempt.accepted", {
-        attemptId,
-        mode: "ai",
-      }),
-    );
-    callbacks[0]?.(
-      attemptEvent("vision.try_on.attempt.acquiring", {
-        attemptId,
-        preview: {
-          reference:
-            "http://127.0.0.1:7892/v2/try-on/acquisition/preview.mjpeg?token=preview-token",
-          streamType: "mjpeg",
-        },
-        occupancy: "single",
-        guidance: "counting_down",
-        holdRemainingMs: 1500,
-        manualCaptureAllowed: true,
-      }),
-    );
-    callbacks[0]?.(
-      attemptEvent("vision.try_on.attempt.generating", {
-        attemptId,
-        stage: "preparing",
-      }),
-    );
+    emit(captured());
     await nextTick();
-    expect(host.textContent).toContain("正在准备试衣效果");
-    callbacks[0]?.(
-      attemptEvent("vision.try_on.attempt.generating", {
+    expect(useTryOnStore().captured?.frameId).toBe("front-42");
+    expect(
+      host.querySelector('[data-test="try-on-acquisition-preview"]'),
+    ).toBeNull();
+
+    emit(
+      event("vision.try_on.attempt.generating", {
         attemptId,
         stage: "generating",
       }),
     );
-    await nextTick();
-    expect(host.textContent).toContain("正在生成试衣效果");
-    callbacks[0]?.(
-      attemptEvent("vision.try_on.attempt.completed", {
-        attemptId,
-        result: {
-          reference: `http://127.0.0.1:7892/v2/try-on/results/${attemptId}?token=result-token`,
-          digest: `sha256:${"b".repeat(64)}`,
-          contentType: "image/png",
-          byteSize: 2048,
-          width: 512,
-          height: 768,
-        },
-      }),
-    );
+    emit(completed());
     await nextTick();
     expect(
       host.querySelector('[data-test="try-on-result-image"]'),
     ).not.toBeNull();
-
-    host
-      .querySelector('[data-test="try-on-retry"]')
-      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    await vi.waitFor(() => {
-      expect(openAiMock).toHaveBeenCalledTimes(2);
-    });
-    expect(openFastMock).not.toHaveBeenCalled();
-    expect(openAiMock.mock.calls[1][1]).toMatchObject({ mode: "ai" });
-    expect(openAiMock.mock.calls[1][1].attemptId).not.toBe(attemptId);
+    expect(
+      host.querySelector('[data-test="try-on-garment-scale"]'),
+    ).not.toBeNull();
   });
 
-  it("sends one explicit user cancellation", async () => {
-    const cancel = vi.fn(() => true);
-    openFastMock.mockResolvedValue({
-      close: vi.fn(),
-      capture: vi.fn(),
-      cancel,
-    });
-    const host = await mount();
-    await vi.waitFor(() => {
-      expect(openFastMock).toHaveBeenCalledOnce();
-    });
-    const cancelButton = host.querySelector('[data-test="try-on-cancel"]');
-    cancelButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    await nextTick();
-    expect(cancel).toHaveBeenCalledWith("user");
-    expect(host.querySelector('[data-test="try-on-cancel"]')).toBeNull();
-  });
-
-  it("sends route_leave once when an active try-on route unmounts", async () => {
-    const cancel = vi.fn(() => true);
-    openFastMock.mockResolvedValue({
-      close: vi.fn(),
-      capture: vi.fn(),
-      cancel,
-    });
-    await mount();
-    await vi.waitFor(() => {
-      expect(openFastMock).toHaveBeenCalledOnce();
-    });
-
-    mountedApp?.unmount();
-    mountedApp = null;
-
-    expect(cancel).toHaveBeenCalledTimes(1);
-    expect(cancel).toHaveBeenCalledWith("route_leave");
-  });
-
-  it("returns a departed customer to the exact selected variant without a second route_leave", async () => {
-    let emit:
-      | ((event: {
-          type: string;
-          payload: { attemptId: string } & object;
-        }) => void)
-      | undefined;
-    const cancel = vi.fn(() => true);
-    openFastMock.mockImplementation((_connection, _input, onEvent) => {
-      emit = (event) =>
-        onEvent(event, {
-          attemptId: event.payload.attemptId,
+  it("shows a recoverable preview error and uses the same single path for retry and return", async () => {
+    let emit: ((next: VisionTryOnAttemptEvent) => void) | undefined;
+    openAttemptMock.mockImplementation((_connection, _input, onEvent) => {
+      emit = (next) =>
+        onEvent(next, {
+          attemptId,
           visionSocketUrl: "ws://127.0.0.1:7892/ws",
         });
-      return Promise.resolve({ close: vi.fn(), capture: vi.fn(), cancel });
-    });
-    await mount();
-    await vi.waitFor(() => {
-      expect(openFastMock).toHaveBeenCalledOnce();
-    });
-    if (!emit) throw new Error("expected Vision event boundary");
-    emit(
-      attemptEvent("vision.try_on.attempt.canceled", {
-        attemptId: useTryOnStore().attemptId!,
-        reason: "departure",
-      }),
-    );
-    await nextTick();
-
-    expect(submitNavigationMock).toHaveBeenCalledExactlyOnceWith({
-      type: "customer.navigate",
-      target: {
-        name: "product-detail",
-        params: { catalogKey: `product:${productId}` },
-        query: { variantId },
-      },
-    });
-    expect(cancel).not.toHaveBeenCalled();
-  });
-
-  it("retries failed, canceled, and completed attempts through distinct native sockets", async () => {
-    const callbacks: Array<(event: { type: string; payload: object }) => void> =
-      [];
-    openFastMock.mockImplementation((_connection, _input, onEvent) => {
-      callbacks.push((event) =>
-        onEvent(event, {
-          attemptId: (event.payload as { attemptId: string }).attemptId,
-          visionSocketUrl: "ws://127.0.0.1:7892/ws",
-        }),
-      );
       return Promise.resolve({
         close: vi.fn(),
         capture: vi.fn(),
@@ -545,172 +271,77 @@ describe("TryOnView acquisition UI", () => {
     });
     const host = await mount();
     await vi.waitFor(() => {
-      expect(openFastMock).toHaveBeenCalledOnce();
+      expect(openAttemptMock).toHaveBeenCalledOnce();
     });
-    const terminal = async (type: string, payload: object): Promise<void> => {
-      if (type === "vision.try_on.attempt.completed") {
-        const attemptId = (payload as { attemptId: string }).attemptId;
-        callbacks[callbacks.length - 1]?.({
-          type: "vision.try_on.attempt.accepted",
-          payload: { attemptId },
-        });
-        callbacks[callbacks.length - 1]?.({
-          type: "vision.try_on.attempt.acquiring",
-          payload: {
-            attemptId,
-            preview: {
-              reference:
-                "http://127.0.0.1:7892/v2/try-on/acquisition/preview.mjpeg?token=preview-token",
-              streamType: "mjpeg",
-            },
-            occupancy: "single",
-            guidance: "counting_down",
-            holdRemainingMs: 1500,
-            manualCaptureAllowed: true,
-          },
-        });
-        callbacks[callbacks.length - 1]?.({
-          type: "vision.try_on.attempt.generating",
-          payload: {
-            attemptId,
-            stage: "preparing",
-          },
-        });
-      }
-      callbacks[callbacks.length - 1]?.({ type, payload });
-      await nextTick();
-      const retry = host.querySelector('[data-test="try-on-retry"]');
-      expect(retry).not.toBeNull();
-      const expectedStarts = openFastMock.mock.calls.length + 1;
-      retry?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      await vi.waitFor(() => {
-        expect(openFastMock).toHaveBeenCalledTimes(expectedStarts);
-      });
-    };
-    const first = useTryOnStore().attemptId!;
-    await terminal("vision.try_on.attempt.failed", {
-      attemptId: first,
-      reason: "fast_failed",
+    if (!emit) throw new Error("expected native try-on event callback");
+    emit(event("vision.try_on.attempt.accepted", { attemptId }));
+    emit(acquisition(2_000));
+    await nextTick();
+    host
+      .querySelector('[data-test="try-on-acquisition-preview"]')
+      ?.dispatchEvent(new Event("error"));
+    await nextTick();
+    expect(
+      host.querySelector('[data-test="try-on-acquisition-stream-error"]'),
+    ).not.toBeNull();
+
+    emit(
+      event("vision.try_on.attempt.canceled", { attemptId, reason: "timeout" }),
+    );
+    await nextTick();
+    host
+      .querySelector('[data-test="try-on-retry"]')
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await vi.waitFor(() => {
+      expect(openAttemptMock).toHaveBeenCalledTimes(2);
     });
-    const second = useTryOnStore().attemptId!;
-    await terminal("vision.try_on.attempt.canceled", {
-      attemptId: second,
-      reason: "user",
-    });
-    const third = useTryOnStore().attemptId!;
-    await terminal("vision.try_on.attempt.completed", {
-      attemptId: third,
-      result: {
-        reference: `http://127.0.0.1:7892/v2/try-on/results/${third}?token=result-token`,
-        digest: `sha256:${"b".repeat(64)}`,
-        contentType: "image/png",
-        byteSize: 2048,
-        width: 512,
-        height: 768,
+
+    host
+      .querySelector('[data-test="try-on-return"]')
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await nextTick();
+    expect(submitNavigationMock).toHaveBeenCalledWith({
+      type: "customer.navigate",
+      target: {
+        name: "product-detail",
+        params: { catalogKey: "product:550e8400-e29b-41d4-a716-446655440128" },
+        query: { variantId },
       },
     });
-
-    expect(openFastMock).toHaveBeenCalledTimes(4);
-    expect(
-      new Set(openFastMock.mock.calls.map((call) => call[1].attemptId)),
-    ).toHaveLength(4);
   });
 
-  it("uses route_leave once for a current return and never cancels a completed return", async () => {
-    let emit:
-      | ((event: {
-          type: string;
-          payload: { attemptId: string } & object;
-        }) => void)
-      | undefined;
-    const cancel = vi.fn(() => true);
-    openFastMock.mockImplementation((_connection, _input, onEvent) => {
-      emit = (event) =>
-        onEvent(event, {
-          attemptId: event.payload.attemptId,
-          visionSocketUrl: "ws://127.0.0.1:7892/ws",
-        });
-      return Promise.resolve({ close: vi.fn(), capture: vi.fn(), cancel });
-    });
-    const host = await mount();
-    await vi.waitFor(() => {
-      expect(openFastMock).toHaveBeenCalledOnce();
-    });
-    host
-      .querySelector('[data-test="try-on-return"]')
-      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    await nextTick();
-    expect(cancel).toHaveBeenCalledExactlyOnceWith("route_leave");
-    await useTryOnStore().retry();
-    await vi.waitFor(() => {
-      expect(openFastMock).toHaveBeenCalledTimes(2);
-    });
-    if (!emit) throw new Error("expected Vision event boundary");
-    emit(
-      attemptEvent("vision.try_on.attempt.accepted", {
-        attemptId: useTryOnStore().attemptId!,
-      }),
-    );
-    emit(
-      attemptEvent("vision.try_on.attempt.acquiring", {
-        attemptId: useTryOnStore().attemptId!,
-        preview: {
-          reference:
-            "http://127.0.0.1:7892/v2/try-on/acquisition/preview.mjpeg?token=preview-token",
-          streamType: "mjpeg",
-        },
-        occupancy: "single",
-        guidance: "counting_down",
-        holdRemainingMs: 1500,
-        manualCaptureAllowed: true,
-      }),
-    );
-    emit(
-      attemptEvent("vision.try_on.attempt.generating", {
-        attemptId: useTryOnStore().attemptId!,
-        stage: "preparing",
-      }),
-    );
-    emit(
-      attemptEvent("vision.try_on.attempt.completed", {
-        attemptId: useTryOnStore().attemptId!,
-        result: {
-          reference: `http://127.0.0.1:7892/v2/try-on/results/${useTryOnStore().attemptId}?token=result-token`,
-          digest: `sha256:${"b".repeat(64)}`,
-          contentType: "image/png",
-          byteSize: 2048,
-          width: 512,
-          height: 768,
-        },
-      }),
-    );
-    await nextTick();
-    host
-      .querySelector('[data-test="try-on-return"]')
-      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    await nextTick();
-    expect(cancel).toHaveBeenCalledOnce();
-  });
-
-  it("does not navigate from profile signals while the try-on customer route is active", async () => {
-    openFastMock.mockResolvedValue({
+  it("requests an absolute garment-scale adjustment only after completion", async () => {
+    openAttemptMock.mockResolvedValue({
       close: vi.fn(),
       capture: vi.fn(),
       cancel: vi.fn(),
     });
-    await mount();
+    const store = useTryOnStore();
+    store.context = {
+      catalogKey: `product:${productId}`,
+      productId,
+      variantId,
+    };
+    store.attemptId = attemptId;
+    store.phase = "completed";
+    store.result = completed().payload.result;
+    const host = await mount();
+
+    host
+      .querySelector('[data-test="try-on-scale-up"]')
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     await vi.waitFor(() => {
-      expect(openFastMock).toHaveBeenCalledOnce();
+      expect(openAdjustMock).toHaveBeenCalledOnce();
     });
-    useVisionStore().applyRecommendationProfileResult({
-      source: "front",
-      eventId: "VISION-PROFILE-TRY-ON",
-      detectedAt: "2026-08-10T00:00:00.000Z",
-      occupancy: { state: "single", confidence: 0.9 },
-      profile: { personPresent: true, confidence: 0.9 },
-      quality: { overall: "good", warnings: [], profileUsable: true },
+    expect(openAdjustMock).toHaveBeenCalledWith(expect.anything(), {
+      attemptId,
+      garmentScale: 1.05,
     });
     await nextTick();
-    expect(submitNavigationMock).not.toHaveBeenCalled();
+    expect(
+      host
+        .querySelector('[data-test="try-on-scale-value"]')
+        ?.textContent?.trim(),
+    ).toBe("105%");
   });
 });

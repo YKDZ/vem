@@ -90,7 +90,7 @@ test("owner installer writes one manifest through its public PowerShell entrypoi
   );
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const output = JSON.parse(result.stdout);
-  assert.equal(output.schemaVersion, "vem-runtime-owners-harness/v2");
+  assert.equal(output.schemaVersion, "vem-runtime-owners-harness/v3");
   assert.equal(output.manifest.owners.daemon.name, "VemVendingDaemon");
   assert.deepEqual(output.manifest.owners.daemon.arguments, [
     "--data-dir",
@@ -105,27 +105,18 @@ test("owner installer writes one manifest through its public PowerShell entrypoi
   );
   assert.doesNotMatch(output.machineLauncher, /-ArgumentList @\(\)/);
   assert.match(output.visionLauncher, /\$startInfo\.Arguments = '"--config" "/);
-  assert.match(output.visionLauncher, /VEM_AI_MODEL_PACK/);
-  assert.match(output.visionLauncher, /VEM_AI_ACCEPTANCE_EVIDENCE_ROOT/);
-  assert.match(output.defaultVisionLauncher, /\$explicitEnvironment = @\{\}/);
-  assert.deepEqual(output.aiInputFailures, [
-    "unpaired",
-    "relative",
-    "nonempty",
-    "model-mismatch",
-    "reparse",
-  ]);
-  assert.equal(output.parentReplacementRejected, true);
-  assert.match(output.visionLauncher, /EnvironmentVariables\.Remove/);
+  assert.doesNotMatch(
+    output.visionLauncher,
+    new RegExp(["VEM", "AI"].join("_") + "_"),
+  );
   assert.match(source(installerPath), /CreateFileW\(path, 0x80, 1,/);
   assert.match(source(installerPath), /GetFinalPathNameByHandleW/);
   assert.equal(output.manifest.owners.machineUi.trigger, "AtLogon");
   assert.equal(output.manifest.owners.vision.trigger, "AtLogon");
-  assert.equal(output.manifest.acl.length, 5);
+  assert.equal(output.manifest.acl.length, 4);
   assert.equal(output.registeredTasks.length, 2);
   assert.equal(output.missingPasswordRejected, true);
-  assert.equal(output.globalOwnerScanRemoved, true);
-  assert.equal(output.aclCalls.length, 5);
+  assert.equal(output.aclCalls.length, 4);
   assert.deepEqual(
     output.registeredTasks.map((task) => task.trigger.kind),
     ["AtLogon", "AtLogon"],

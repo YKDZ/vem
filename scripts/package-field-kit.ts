@@ -83,7 +83,6 @@ function canonicalize(value: unknown): unknown {
 
 function cacheKey(
   identity: Record<string, unknown>,
-  modelPackSha256: string,
   partSize: number,
   kitScripts: { name: string; sha256: string }[],
 ): string {
@@ -93,7 +92,6 @@ function cacheKey(
         canonicalize({
           schemaVersion: CACHE_SCHEMA,
           identity,
-          modelPackSha256,
           partSize,
           kitScripts,
         }),
@@ -167,10 +165,6 @@ export function packageFieldKit(args: string[]): Record<string, unknown> {
   const runtimeDirArg = args[args.indexOf("--runtime-dir") + 1] ?? null;
   const runtimeDir = runtimeDirArg ? resolve(runtimeDirArg) : null;
   const visionManifestPath = resolve(required(args, "vision-manifest"));
-  const modelPackPath = resolve(required(args, "model-pack"));
-  const modelPackSha256 = required(args, "model-pack-sha256");
-  if (!/^[a-f0-9]{64}$/.test(modelPackSha256))
-    throw new Error("--model-pack-sha256 must be 64 hex");
   const outDir = resolve(required(args, "out-dir"));
   const partSizeMbIndex = args.indexOf("--part-size-mb");
   const partSize =
@@ -215,7 +209,6 @@ export function packageFieldKit(args: string[]): Record<string, unknown> {
       runtimeManifest: normalizedRuntimeManifest,
       visionManifest,
     },
-    modelPackSha256,
     partSize,
     kitScripts,
   );
@@ -284,12 +277,6 @@ export function packageFieldKit(args: string[]): Record<string, unknown> {
         visionManifest.runtime.sha256,
         "vision runtime",
       ),
-      copyVerified(
-        modelPackPath,
-        join(stage, "vending-vision-ai-models.zip"),
-        modelPackSha256,
-        "AI model pack",
-      ),
     );
     for (const script of KIT_SCRIPTS) {
       const source = join(REPO_ROOT, "scripts", "windows", script);
@@ -305,7 +292,6 @@ export function packageFieldKit(args: string[]): Record<string, unknown> {
       schemaVersion: KIT_SCHEMA,
       vemCommit,
       visionCommit: visionManifest.commit,
-      modelPackSha256,
       members,
     };
     writeFileSync(

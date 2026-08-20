@@ -89,6 +89,21 @@ function saleView() {
   };
 }
 
+function ready(tryOnReady = true) {
+  return {
+    serverName: "vision",
+    serverVersion: "1",
+    schemaVersion: "vem-vision-v2-contract-bundle/v1",
+    bundleVersion: "1",
+    contractDigest: "a".repeat(64),
+    cameraReady: true,
+    tryOnReady,
+    visionBusinessReady: true,
+    businessReadinessDiagnostic: "ready" as const,
+    capabilities: ["try_on"],
+  };
+}
+
 async function mount(): Promise<HTMLElement> {
   const host = document.createElement("div");
   document.body.append(host);
@@ -101,24 +116,7 @@ async function mount(): Promise<HTMLElement> {
   return host;
 }
 
-function applyReady(aiReady: boolean): void {
-  useVisionStore().applyVisionReady({
-    serverName: "vision",
-    serverVersion: "1",
-    schemaVersion: "vem-vision-v2-contract-bundle/v1",
-    bundleVersion: "1",
-    contractDigest: "a".repeat(64),
-    cameraReady: true,
-    fastReady: true,
-    aiReady,
-    aiReadinessDiagnostic: aiReady ? "ready" : "model_pack_missing",
-    visionBusinessReady: true,
-    businessReadinessDiagnostic: "ready",
-    capabilities: aiReady ? ["try_on_fast", "try_on_ai"] : ["try_on_fast"],
-  });
-}
-
-describe("ProductDetailView try-on mode entries", () => {
+describe("ProductDetailView virtual try-on entry", () => {
   beforeEach(() => {
     pinia = createPinia();
     setActivePinia(pinia);
@@ -132,33 +130,22 @@ describe("ProductDetailView try-on mode entries", () => {
     document.body.innerHTML = "";
   });
 
-  it("shows independent Fast and AI entries only when their own readiness is available", async () => {
-    applyReady(false);
-    const fastOnly = await mount();
-
-    expect(fastOnly.querySelector('[data-test="try-on-fast"]')).not.toBeNull();
-    expect(fastOnly.querySelector('[data-test="try-on-ai"]')).toBeNull();
-
-    mountedApp?.unmount();
-    mountedApp = null;
-    document.body.innerHTML = "";
-    applyReady(true);
-    const both = await mount();
-
-    expect(
-      both.querySelector('[data-test="try-on-fast"]')?.textContent,
-    ).toContain("快速");
-    expect(
-      both.querySelector('[data-test="try-on-ai"]')?.textContent,
-    ).toContain("AI");
-  });
-
-  it("navigates with exactly the selected try-on mode and prepares the same current item", async () => {
-    applyReady(true);
+  it("only exposes one ready single-path entry", async () => {
+    useVisionStore().applyVisionReady(ready());
     const host = await mount();
 
+    expect(host.querySelectorAll('[data-test="try-on"]')).toHaveLength(1);
+    expect(host.querySelector('[data-test="try-on"]')?.textContent).toContain(
+      "虚拟试衣",
+    );
+    expect(host.querySelectorAll("button.try-on-entry-button")).toHaveLength(1);
+  });
+
+  it("prepares the active item and navigates without a mode query", async () => {
+    useVisionStore().applyVisionReady(ready());
+    const host = await mount();
     host
-      .querySelector('[data-test="try-on-ai"]')
+      .querySelector('[data-test="try-on"]')
       ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     await nextTick();
 
@@ -169,27 +156,18 @@ describe("ProductDetailView try-on mode entries", () => {
         query: {
           catalogKey: "product:550e8400-e29b-41d4-a716-446655440128",
           variantId: "550e8400-e29b-41d4-a716-446655440125",
-          mode: "ai",
         },
       },
     });
     expect(useTryOnStore().context).toMatchObject({
       catalogKey: "product:550e8400-e29b-41d4-a716-446655440128",
-      productId: "550e8400-e29b-41d4-a716-446655440128",
       variantId: "550e8400-e29b-41d4-a716-446655440125",
     });
+  });
 
-    submitNavigationMock.mockClear();
-    host
-      .querySelector('[data-test="try-on-fast"]')
-      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    await nextTick();
-    expect(submitNavigationMock).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({
-        target: expect.objectContaining({
-          query: expect.objectContaining({ mode: "fast" }),
-        }),
-      }),
-    );
+  it("withholds the entry when Vision does not publish the single capability", async () => {
+    useVisionStore().applyVisionReady(ready(false));
+    const host = await mount();
+    expect(host.querySelector('[data-test="try-on"]')).toBeNull();
   });
 });

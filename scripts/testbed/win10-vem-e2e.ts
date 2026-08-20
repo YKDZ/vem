@@ -789,7 +789,7 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
     typeof facts.visionRuntime?.readyCameraReady !== "boolean" ||
     facts.visionRuntime?.readyCameraReady !==
       facts.visionRuntime?.cameraReady ||
-    facts.visionRuntime?.readyFastReady !== true ||
+    facts.visionRuntime?.readyTryOnReady !== true ||
     facts.visionRuntime?.readyVisionBusinessReady !== true ||
     facts.visionRuntime?.readyBusinessReadinessDiagnostic !== "ready" ||
     facts.visionRuntime?.readySchemaVersion !== visionIdentity.schemaVersion ||
@@ -803,13 +803,9 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
         capability.trim().length > 0 &&
         capability.length <= 64,
     ) ||
-    ![
-      "profile_push",
-      "presence_status",
-      "person_departed",
-      "try_on_fast",
-    ].every((capability) =>
-      facts.visionRuntime.readyCapabilities.includes(capability),
+    !["profile_push", "presence_status", "person_departed", "try_on"].every(
+      (capability) =>
+        facts.visionRuntime.readyCapabilities.includes(capability),
     )
   ) {
     addDiagnostic(

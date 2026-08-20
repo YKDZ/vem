@@ -71,11 +71,9 @@ function New-VisionArchiveFixture([string]$Root, [string]$Commit) {
 function New-VisionCandidateFixture([string]$Root, [string]$Commit, [switch]$LegacySeparators) {
   $source = Join-Path $Root "candidate-source"
   $main = Join-Path $source "vending-vision"
-  $worker = Join-Path $source "vending-vision-ai-worker"
   $contractFixtures = Join-Path $main "_internal/contracts/vem_vision_v2/fixtures"
-  New-Item -ItemType Directory -Force -Path $main, $worker, $contractFixtures | Out-Null
+  New-Item -ItemType Directory -Force -Path $main, $contractFixtures | Out-Null
   [IO.File]::WriteAllText((Join-Path $main "vending-vision.exe"), "main", [Text.Encoding]::ASCII)
-  [IO.File]::WriteAllText((Join-Path $worker "vending-vision-ai-worker.exe"), "worker", [Text.Encoding]::ASCII)
   foreach ($name in @("client-invalid.json", "client-valid.json", "server-invalid.json", "server-valid.json")) {
     [IO.File]::WriteAllText((Join-Path $contractFixtures $name), "{}", [Text.Encoding]::ASCII)
   }
@@ -166,15 +164,13 @@ function Start-VisionProbeServer([int]$Port, [string]$Status = "ok", [bool]$Came
             serverName = "vision-harness"
             serverVersion = $Version
             cameraReady = $CameraReady
-            fastReady = $true
-            aiReady = $false
-            aiReadinessDiagnostic = "model_pack_missing"
+            tryOnReady = $true
             visionBusinessReady = $true
             businessReadinessDiagnostic = "ready"
             schemaVersion = "vem-vision-v2-contract-bundle/v1"
             bundleVersion = "1"
             contractDigest = ("a" * 64)
-            capabilities = @("profile_push", "presence_status", "person_departed", "ambient_light", "try_on_fast")
+            capabilities = @("profile_push", "presence_status", "person_departed", "ambient_light", "try_on")
           }
         } | ConvertTo-Json -Compress -Depth 8
       }
@@ -227,9 +223,7 @@ try {
     $adaptedMembers = @($adaptedZip.Entries | ForEach-Object {
       [pscustomobject]@{ archiveName = $_.FullName; canonicalName = $_.FullName.Replace('\', '/') }
     })
-    $workerMembers = @($adaptedMembers | Where-Object { $_.canonicalName -ceq "vending-vision-ai-worker/vending-vision-ai-worker.exe" })
-    $adaptedMemberDiagnostic = $adaptedMembers | ConvertTo-Json -Compress
-    Assert-True ($workerMembers.Count -eq 1) "candidate runtime adapter AI worker inventory is invalid: $adaptedMemberDiagnostic"
+    Assert-True ($adaptedMembers.canonicalName -contains "vending-vision/vending-vision.exe") "candidate runtime adapter omitted the main executable"
   } finally { $adaptedZip.Dispose() }
   $apiCalls = [Collections.Generic.List[string]]::new(); $downloads = [Collections.Generic.List[string]]::new()
   $api = {
@@ -308,7 +302,7 @@ try {
   Assert-True ($ipv6Uris.webSocketUrl -eq "ws://[::1]:7892/ws") "IPv6 WebSocket URI authority was not bracketed"
   $config = Join-Path $root "site-input.json"
   $dshowPort = New-VisionHarnessPort
-  @{ schemaVersion = "vending-vision-site-config/v1"; host = "127.0.0.1"; port = $dshowPort; allowed_origins = @("http://127.0.0.1:$dshowPort"); cameras = @{ top = @{ source = "dshow"; role = "presence" }; front = @{ source = "dshow"; role = "profile_fast_try_on" } } } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $config -Encoding utf8
+  @{ schemaVersion = "vending-vision-site-config/v1"; host = "127.0.0.1"; port = $dshowPort; allowed_origins = @("http://127.0.0.1:$dshowPort"); cameras = @{ top = @{ source = "dshow"; role = "presence" }; front = @{ source = "dshow"; role = "profile_try_on" } } } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $config -Encoding utf8
   $runtimeWorkDirectory = Join-Path $root "program-data\vision\runtime"
   $server = Start-ReadyVisionProbeServer "dshow" $dshowPort "degraded" $false "9.8.7"
   try {
@@ -376,7 +370,7 @@ try {
   Wait-Job $fragmentedServer | Out-Null; Receive-Job $fragmentedServer | Out-Null; Remove-Job $fragmentedServer
   Assert-True ($fragmentedProbe.ready.type -eq "vision.ready") "fragmented Vision ready envelope was not assembled"
 
-  $independentVersionReady = '{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440124","timestamp":"2026-07-17T00:00:00.000Z","payload":{"serverName":"vision-harness","serverVersion":"independent-version","cameraReady":true,"fastReady":true,"aiReady":false,"aiReadinessDiagnostic":"model_pack_missing","visionBusinessReady":true,"businessReadinessDiagnostic":"ready","schemaVersion":"vem-vision-v2-contract-bundle/v1","bundleVersion":"1","contractDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","capabilities":["profile_push","presence_status","person_departed","ambient_light","try_on_fast"]}}'
+  $independentVersionReady = '{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440124","timestamp":"2026-07-17T00:00:00.000Z","payload":{"serverName":"vision-harness","serverVersion":"independent-version","cameraReady":true,"tryOnReady":true,"visionBusinessReady":true,"businessReadinessDiagnostic":"ready","schemaVersion":"vem-vision-v2-contract-bundle/v1","bundleVersion":"1","contractDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","capabilities":["profile_push","presence_status","person_departed","ambient_light","try_on"]}}'
   $versionDiagnosticPort = New-VisionHarnessPort
   Set-VisionHarnessSitePort $install.siteConfiguration $versionDiagnosticPort
   $versionDiagnosticServer = Start-ReadyVisionProbeServer "version" $versionDiagnosticPort "ok" $true "9.8.7" $true $independentVersionReady
@@ -386,12 +380,12 @@ try {
 
   Assert-VisionProbeRejected "malformed" $install.siteConfiguration '{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440128","timestamp":"2026-07-17T00:00:00.000Z","payload":{"serverName":"vision-harness","cameraReady":true}}'
   Assert-VisionProbeRejected "camera-string" $install.siteConfiguration '{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440125","timestamp":"2026-07-17T00:00:00.000Z","payload":{"serverName":"vision-harness","cameraReady":"true"}}'
-  Assert-VisionProbeRejected "business-string" $install.siteConfiguration '{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440126","timestamp":"2026-07-17T00:00:00.000Z","payload":{"serverName":"vision-harness","cameraReady":true,"fastReady":"true"}}'
-  Assert-VisionProbeRejected "missing-fast" $install.siteConfiguration '{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440127","timestamp":"2026-07-17T00:00:00.000Z","payload":{"serverName":"vision-harness","cameraReady":true,"visionBusinessReady":true}}'
+  Assert-VisionProbeRejected "try-on-string" $install.siteConfiguration '{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440126","timestamp":"2026-07-17T00:00:00.000Z","payload":{"serverName":"vision-harness","cameraReady":true,"tryOnReady":"true"}}'
+  Assert-VisionProbeRejected "missing-try-on" $install.siteConfiguration '{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440127","timestamp":"2026-07-17T00:00:00.000Z","payload":{"serverName":"vision-harness","cameraReady":true,"visionBusinessReady":true}}'
 
   $recordedConfig = Join-Path $root "recorded-site-input.json"
   $recordedPort = New-VisionHarnessPort
-  @{ schemaVersion = "vending-vision-site-config/v1"; host = "127.0.0.1"; port = $recordedPort; allowed_origins = @("http://127.0.0.1:$recordedPort"); cameras = @{ top = @{ source = "recorded_video"; role = "presence"; video_path = "source-relative/top.mp4" }; front = @{ source = "recorded_video"; role = "profile_fast_try_on"; video_path = "source-relative/front-vertical.mp4" } } } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $recordedConfig -Encoding utf8
+  @{ schemaVersion = "vending-vision-site-config/v1"; host = "127.0.0.1"; port = $recordedPort; allowed_origins = @("http://127.0.0.1:$recordedPort"); cameras = @{ top = @{ source = "recorded_video"; role = "presence"; video_path = "source-relative/top.mp4" }; front = @{ source = "recorded_video"; role = "profile_try_on"; video_path = "source-relative/front-vertical.mp4" } } } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $recordedConfig -Encoding utf8
   $missingFixtureRejected = $false
   try { Install-VisionMainArtifact -RuntimeArchive $cache.runtimeArchive -Commit $commit -SiteConfigurationPath $recordedConfig -AppDirectory (Join-Path $root "vision\app") -SiteConfigurationDestination (Join-Path $root "program-data\vision\site.json") -LauncherPath (Join-Path $root "bringup\start_vision.bat") -ProbeTimeoutSeconds 1 | Out-Null } catch { $missingFixtureRejected = $true }
   Assert-True $missingFixtureRejected "recorded-video configuration did not require the separate fixture archive"

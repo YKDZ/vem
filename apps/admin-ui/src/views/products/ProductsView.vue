@@ -835,7 +835,7 @@ watch(
               上传并校验 PNG
             </a-button>
             <p class="text-xs leading-5 text-slate-500">
-              仅接受透明 PNG；不会自动抠图、生成来源或运行 Fast/AI
+              仅接受透明 PNG；不会自动抠图或生成来源
               推理。请人工确认：正面单件服装、无人物/衣架/文字，并且预览可见后再继续。
             </p>
           </div>

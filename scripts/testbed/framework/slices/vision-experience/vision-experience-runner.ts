@@ -11,7 +11,7 @@ import { CdpTestAdapter } from "../../cdp-adapter.ts";
 import { waitForCondition } from "../../condition-waiter.ts";
 import { createProcessRoleManifest } from "../../fault-injection.ts";
 import {
-  runFastTryOnScenario,
+  runTryOnScenario,
   runDegradationScenario,
   runDepartureScenario,
   runGarmentScaleScenario,
@@ -20,7 +20,7 @@ import {
 } from "./vision-experience-driver.ts";
 
 /**
- * visionExperience 切片 runner：用同一 adapter 跑快速试衣与可选自愈场景，
+ * visionExperience 切片 runner：用同一 adapter 跑虚拟试衣与可选自愈场景，
  * 合并断言输出统一报告；fake 与真实 CDP adapter 共用。
  */
 export async function runVisionExperienceSlice({
@@ -67,8 +67,8 @@ export async function runVisionExperienceSlice({
     stabilityMs: visionStabilityMs,
     pollMs: 1_000,
   });
-  const fast = await runFastTryOnScenario(adapter, { timeoutMs, pollMs });
-  const assertions = [...fast.assertions];
+  const tryOn = await runTryOnScenario(adapter, { timeoutMs, pollMs });
+  const assertions = [...tryOn.assertions];
   if (includeSelfHeal && manifest) {
     const heal = await runObserverSelfHealScenario(adapter, manifest, {
       timeoutMs,

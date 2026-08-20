@@ -27,7 +27,7 @@ const STATE_EXPRESSION = `(() => {
   const scale = document.querySelector("[data-test='try-on-scale-value']");
   const detail = document.querySelector("[data-test='product-detail-page']");
   const buy = document.querySelector("[data-test='product-buy']");
-  const fast = document.querySelector("[data-test='try-on-fast']");
+  const tryOn = document.querySelector("[data-test='try-on']");
   const guidance = document.querySelector("[data-test='try-on-guidance']");
   const manual = document.querySelector("[data-test='try-on-manual-capture']");
   const phase = document.querySelector("[data-test='try-on-phase']");
@@ -41,7 +41,7 @@ const STATE_EXPRESSION = `(() => {
     resultUrl: result?.getAttribute("src") ?? null,
     scaleValue: scale?.textContent?.trim() ?? null,
     tryOnPresent: detail
-      ? Boolean(fast instanceof HTMLElement)
+      ? Boolean(tryOn instanceof HTMLElement)
       : null,
     buyDisabled: buy instanceof HTMLButtonElement ? buy.disabled : null,
     guidance: view?.dataset?.state === "acquiring"

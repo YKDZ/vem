@@ -58,19 +58,6 @@ function identity() {
         sourceCommit: "a".repeat(40),
       },
     },
-    aiVirtualTryOn: {
-      input: {
-        manifestSha256: "5".repeat(64),
-        modelPackArchive: { byteSize: 23, sha256: "2".repeat(64) },
-        materializedModelPackRoot: {
-          byteSize: 29,
-          sha256: "6".repeat(64),
-          members: [
-            { name: "weights/model.bin", byteSize: 29, sha256: "7".repeat(64) },
-          ],
-        },
-      },
-    },
   };
 }
 
@@ -85,7 +72,13 @@ test("builds one canonical acceptance release manifest from existing runtime ide
   assert.equal(value.backend.serviceApi.runtime.health, "ready");
   assert.equal(value.windowsRuntime.artifacts.machine.sha256, "6".repeat(64));
   assert.equal(value.vision.runtimeArchive.sha256, "9".repeat(64));
-  assert.equal(value.aiVirtualTryOn.input.manifestSha256, "5".repeat(64));
+  assert.deepEqual(Object.keys(value).sort(), [
+    "backend",
+    "schemaVersion",
+    "vem",
+    "vision",
+    "windowsRuntime",
+  ]);
   assert.equal(createHash("sha256").update(raw).digest("hex").length, 64);
   assert.equal(raw, `${JSON.stringify(JSON.parse(raw), null, 2)}\n`);
 });
@@ -97,17 +90,6 @@ test("refuses an incomplete release identity before it can become a manifest", (
     () => buildAcceptanceReleaseManifest(incomplete),
     /Admin UI build SHA-256 is invalid/,
   );
-  const unbound = identity();
-  delete unbound.aiVirtualTryOn.input.materializedModelPackRoot;
-  assert.throws(
-    () => buildAcceptanceReleaseManifest(unbound),
-    /materialized model pack is required/,
-  );
-});
-
-test("accepts a functional AI identity without release authority", () => {
-  const functional = identity();
-  assert.doesNotThrow(() => buildAcceptanceReleaseManifest(functional));
 });
 
 test("rejects a pass-two release identity that drifts from pass one", () => {

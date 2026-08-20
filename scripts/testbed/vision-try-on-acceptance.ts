@@ -3,22 +3,9 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-  closeSync,
-  constants as fsConstants,
-  fstatSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  opendirSync,
-  readSync,
-  readdirSync,
-  readFileSync,
-  realpathSync,
-  writeFileSync,
-} from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { waitForDaemonReadyRefresh } from "./daemon-ready-refresh.ts";
@@ -975,7 +962,6 @@ export function normalizeVisionExpectedResults(raw) {
   const tryOn = requiredObject(
     fixture.tryOn ??
       fixture.try_on ??
-      fixture.fastTryOn ??
       publishedExpected?.frontVertical?.tryOn ??
       publishedExpected?.front?.tryOn,
     "expected try-on block",
@@ -984,7 +970,7 @@ export function normalizeVisionExpectedResults(raw) {
     ? protocol.ready.capabilities.map((value) =>
         required(String(value), "ready capability"),
       )
-    : ["profile_push", "presence_status", "person_departed", "try_on_fast"];
+    : ["profile_push", "presence_status", "person_departed", "try_on"];
   const orderedCatalogKeys = Array.isArray(recommendation.orderedCatalogKeys)
     ? recommendation.orderedCatalogKeys.map((value) =>
         required(value, "expected ordered catalog key"),
@@ -1484,7 +1470,7 @@ export function validateTryOnPresentation({
       "selected product catalogKey does not match the seeded productId for the selected variantId",
     );
   }
-  const expectedRoute = `#/try-on?catalogKey=${selectedProduct.catalogKey}&variantId=${selectedProduct.variantId}&mode=fast`;
+  const expectedRoute = `#/try-on?catalogKey=${selectedProduct.catalogKey}&variantId=${selectedProduct.variantId}`;
   if (tryOnState.route !== expectedRoute) {
     throw new Error("try-on route is not bound to the selected catalog item");
   }
@@ -1711,7 +1697,7 @@ export function validateVisionInstalledBinding(binding) {
   if (siteConfigurationObject.cameras?.top?.role !== "presence") {
     throw new Error("Vision site configuration top role drifted");
   }
-  if (siteConfigurationObject.cameras?.front?.role !== "profile_fast_try_on") {
+  if (siteConfigurationObject.cameras?.front?.role !== "profile_try_on") {
     throw new Error("Vision site configuration front role drifted");
   }
   if (
@@ -1925,7 +1911,7 @@ export function buildRecordedVisionSiteConfiguration({
       },
       front: {
         source: "recorded_video",
-        role: "profile_fast_try_on",
+        role: "profile_try_on",
         video_path: "recorded-video/front-vertical.mp4",
         loop: true,
       },
@@ -1951,7 +1937,7 @@ function createVisionHello(machineCode) {
         "presence_status",
         "person_departed",
         "ambient_light",
-        "try_on_fast",
+        "try_on",
       ],
     },
   };
@@ -2195,14 +2181,7 @@ export function validateVisionProtocolEvidence(
     !isVisionProtocolTimestamp(ready.timestamp) ||
     typeof ready.payload?.serverName !== "string" ||
     ready.payload.serverName.trim() === "" ||
-    ready.payload.fastReady !== true ||
-    typeof ready.payload.aiReady !== "boolean" ||
-    ![
-      "ready",
-      "model_pack_missing",
-      "model_pack_invalid",
-      "worker_unavailable",
-    ].includes(ready.payload.aiReadinessDiagnostic) ||
+    ready.payload.tryOnReady !== true ||
     ready.payload.visionBusinessReady !== true ||
     ready.payload.businessReadinessDiagnostic !== "ready" ||
     ready.payload.schemaVersion !== identity.schemaVersion ||
@@ -2224,7 +2203,7 @@ export function validateVisionProtocolEvidence(
     "profile_push",
     "presence_status",
     "person_departed",
-    "try_on_fast",
+    "try_on",
   ]) {
     if (!ready.payload.capabilities.includes(capability)) {
       throw new Error(`vision ready handshake is missing ${capability}`);
@@ -2431,7 +2410,7 @@ async function dispatchIdleTouch(client) {
 }
 
 function tryOnRoute(catalogKey, variantId) {
-  return `#/try-on?catalogKey=${encodeURIComponent(catalogKey)}&mode=fast&variantId=${variantId}`;
+  return `#/try-on?catalogKey=${encodeURIComponent(catalogKey)}&variantId=${variantId}`;
 }
 
 export async function activateAfterFreshVisionPresenceArrival(
@@ -2463,7 +2442,7 @@ export async function activateAfterFreshVisionPresenceArrival(
   }
 }
 
-export async function runFastTryOnOwnerAttempts({
+export async function runTryOnOwnerAttempts({
   client,
   beforeAttempt = null,
   collectInitial,
@@ -2478,11 +2457,11 @@ export async function runFastTryOnOwnerAttempts({
     (collectRetry !== null && typeof collectRetry !== "function") ||
     (beforeAttempt !== null && typeof beforeAttempt !== "function")
   )
-    throw new Error("Fast try-on owner collectors are invalid");
+    throw new Error("try-on owner collectors are invalid");
   const attempts = [
     {
       collect: collectInitial,
-      selector: '[data-test="try-on-fast"]',
+      selector: '[data-test="try-on"]',
     },
     ...(collectRetry
       ? [
@@ -2525,9 +2504,9 @@ export async function runFastTryOnOwnerAttempts({
   return { admissions, results };
 }
 
-export async function runFastTryOnProductionOwnerAttempts(
+export async function runTryOnProductionOwnerAttempts(
   options,
-  runOwner = runFastTryOnOwnerAttempts,
+  runOwner = runTryOnOwnerAttempts,
 ) {
   return await runOwner({
     ...options,
@@ -2819,7 +2798,7 @@ async function waitForTryOnSurface(
   { excludeAttemptId = null, pollMs = 500 } = {},
 ) {
   return waitForCondition(
-    "Fast V2 try-on result surface",
+    "V2 try-on result surface",
     async () => {
       const state = await evaluateExpression(
         client,
@@ -3368,524 +3347,6 @@ async function waitForTryOnFailure(client, timeoutMs = 30_000) {
   );
 }
 
-async function readResultImageEvidence(
-  client,
-  resultUrl,
-  timeoutMs = 30_000,
-  pollMs = 500,
-) {
-  return waitForCondition(
-    "decoded Fast V2 result image",
-    async () => {
-      const controller = new AbortController();
-      const timeout = globalThis.setTimeout(
-        () => controller.abort(),
-        Math.min(5_000, timeoutMs),
-      );
-      try {
-        const response = await fetch(resultUrl, { signal: controller.signal });
-        const bytes = Buffer.from(await response.arrayBuffer());
-        if (!response.ok) {
-          return {
-            ok: false,
-            value: { ok: false, reason: "http", status: response.status },
-          };
-        }
-        const decoded = await evaluateExpression(
-          client,
-          `(async () => {
-              const bytes = Uint8Array.from(atob(${JSON.stringify(bytes.toString("base64"))}), (character) => character.charCodeAt(0));
-              const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
-              const canvas = document.createElement("canvas");
-              canvas.width = bitmap.width;
-              canvas.height = bitmap.height;
-              const context = canvas.getContext("2d");
-              if (!context) return { ok: false, reason: "context" };
-              context.drawImage(bitmap, 0, 0);
-              const imageData = context.getImageData(0, 0, canvas.width, canvas.height).data;
-              const rgbaSha256 = Array.from(
-                new Uint8Array(await crypto.subtle.digest("SHA-256", imageData)),
-                (value) => value.toString(16).padStart(2, "0"),
-              ).join("");
-              let nonBlackPixelCount = 0;
-              for (let i = 0; i < imageData.length; i += 4) {
-                if (imageData[i] !== 0 || imageData[i + 1] !== 0 || imageData[i + 2] !== 0) {
-                  nonBlackPixelCount += 1;
-                  if (nonBlackPixelCount >= 8) break;
-                }
-              }
-              return { ok: true, width: canvas.width, height: canvas.height, nonBlackPixelCount, rgbaSha256 };
-            })()`,
-        );
-        const result = {
-          ...decoded,
-          httpStatus: response.status,
-          contentType:
-            response.headers.get("content-type")?.split(";")[0] ?? null,
-          byteLength: bytes.byteLength,
-          finalUrl: response.url,
-          sha256: createHash("sha256").update(bytes).digest("hex"),
-        };
-        return { ok: result.ok === true, value: result };
-      } catch (error) {
-        return { ok: false, value: { ok: false, reason: String(error) } };
-      } finally {
-        globalThis.clearTimeout(timeout);
-      }
-    },
-    timeoutMs,
-    pollMs,
-  );
-}
-
-function startResultNetworkCapture(client) {
-  const responses = new Map();
-  const responseCounts = new Map();
-  const redirected = new Set();
-  const failures = new Set();
-  const finished = new Map();
-  const servedFromCache = new Set();
-  const offResponse = client.on("Network.responseReceived", (event) => {
-    if (event?.type === "Image" && typeof event?.requestId === "string") {
-      responseCounts.set(
-        event.requestId,
-        (responseCounts.get(event.requestId) ?? 0) + 1,
-      );
-      responses.set(event.requestId, event.response);
-    }
-  });
-  const offFinished = client.on("Network.loadingFinished", (event) => {
-    if (typeof event?.requestId === "string")
-      finished.set(event.requestId, event.encodedDataLength);
-  });
-  const offFailed = client.on("Network.loadingFailed", (event) => {
-    if (typeof event?.requestId === "string") failures.add(event.requestId);
-  });
-  const offRequest = client.on("Network.requestWillBeSent", (event) => {
-    if (event?.redirectResponse && typeof event?.requestId === "string")
-      redirected.add(event.requestId);
-  });
-  const offCache = client.on("Network.requestServedFromCache", (event) => {
-    if (typeof event?.requestId === "string")
-      servedFromCache.add(event.requestId);
-  });
-  return {
-    async read(resultUrl, deadline, pollMs) {
-      const remaining = () => {
-        const value = deadline - performance.now();
-        if (value <= 0)
-          throw new Error("installed AI Network capture timed out");
-        return Math.max(1, Math.ceil(value));
-      };
-      const matched = await waitForCondition(
-        "unique AI result Network response",
-        async () => {
-          const values = [...responses.entries()].filter(
-            ([, response]) => response?.url === resultUrl,
-          );
-          const done = values.filter(([requestId]) => finished.has(requestId));
-          return {
-            ok: done.length === 1 && values.length === 1,
-            value: { done, values },
-          };
-        },
-        remaining(),
-        pollMs,
-      );
-      const [[requestId, response]] = matched.done;
-      await new Promise((resolvePromise) =>
-        globalThis.setTimeout(resolvePromise, Math.min(pollMs, remaining())),
-      );
-      remaining();
-      const exactResponses = [...responses.entries()].filter(
-        ([, candidate]) => candidate?.url === resultUrl,
-      );
-      if (
-        exactResponses.length !== 1 ||
-        responseCounts.get(requestId) !== 1 ||
-        failures.has(requestId) ||
-        redirected.has(requestId) ||
-        servedFromCache.has(requestId) ||
-        response.status !== 200 ||
-        response.mimeType !== "image/png" ||
-        response.fromDiskCache === true ||
-        response.fromServiceWorker === true
-      )
-        throw new Error("installed AI Network response is invalid");
-      const contentTypeHeaders = Object.entries(response.headers ?? {}).filter(
-        ([name]) => name.toLowerCase() === "content-type",
-      );
-      if (
-        contentTypeHeaders.length !== 1 ||
-        contentTypeHeaders[0][1] !== "image/png"
-      )
-        throw new Error("installed AI Network Content-Type header is invalid");
-      const encodedDataLength = finished.get(requestId);
-      if (
-        !Number.isSafeInteger(encodedDataLength) ||
-        encodedDataLength <= 0 ||
-        encodedDataLength > 8 * 1024 * 1024
-      )
-        throw new Error("installed AI Network encoded size is invalid");
-      return { requestId, response };
-    },
-    close() {
-      offResponse();
-      offFinished();
-      offFailed();
-      offRequest();
-      offCache();
-    },
-  };
-}
-
-function readRegionalEvidenceMember(rootPath, attemptId, testHooks = null) {
-  const rootStat = lstatSync(rootPath, { bigint: true });
-  if (rootStat.isSymbolicLink() || !rootStat.isDirectory())
-    throw new Error("AI regional evidence root must be a regular directory");
-  const root = realpathSync(rootPath);
-  const rootIdentity = fileIdentity(rootStat);
-  let rootFd = null;
-  let rootDirectory = null;
-  let memberFd = null;
-  try {
-    if (process.platform === "win32") rootDirectory = opendirSync(root);
-    else
-      rootFd = openSync(
-        root,
-        fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
-      );
-    const expectedName = `${attemptId}.regional-evidence.json`;
-    const members = readdirSync(root);
-    if (members.length !== 1 || members[0] !== expectedName) {
-      if (rootFd !== null) closeSync(rootFd);
-      if (rootDirectory !== null) rootDirectory.closeSync();
-      return null;
-    }
-    const path = resolve(root, expectedName);
-    const stat = lstatSync(path, { bigint: true });
-    if (stat.isSymbolicLink() || !stat.isFile())
-      throw new Error("AI regional evidence member must be a regular file");
-    const canonical = realpathSync(path);
-    if (dirname(canonical) !== root)
-      throw new Error("AI regional evidence member escaped its root");
-    memberFd = openSync(
-      canonical,
-      fsConstants.O_RDONLY |
-        (process.platform === "win32" ? 0 : fsConstants.O_NOFOLLOW),
-    );
-    const heldIdentity = fileIdentity(fstatSync(memberFd, { bigint: true }));
-    if (!sameFileIdentity(heldIdentity, fileIdentity(stat)))
-      throw new Error(
-        "AI regional evidence member identity changed before read",
-      );
-    testHooks?.afterIdentityCheck?.({ path: canonical, root });
-    const bytes = readHeldFile(memberFd, heldIdentity.size);
-    testHooks?.afterRead?.({ path: canonical, root });
-    if (bytes.byteLength === 0 || bytes.byteLength > 512 * 1024)
-      throw new Error("AI regional evidence member size is invalid");
-    const expectedSha256 = createHash("sha256").update(bytes).digest("hex");
-    return {
-      evidence: {
-        path: canonical,
-        bytes,
-        byteLength: bytes.byteLength,
-        physicalIdentity: heldIdentity,
-        sha256: expectedSha256,
-      },
-      finalizeAndClose() {
-        const finalHeldIdentity = fileIdentity(
-          fstatSync(memberFd, { bigint: true }),
-        );
-        const finalPathIdentity = fileIdentity(
-          lstatSync(canonical, { bigint: true }),
-        );
-        const finalRootIdentity = fileIdentity(
-          lstatSync(root, { bigint: true }),
-        );
-        const finalBytes = readHeldFile(memberFd, finalHeldIdentity.size);
-        if (
-          !sameFileIdentity(rootIdentity, finalRootIdentity) ||
-          !sameFileIdentity(heldIdentity, finalHeldIdentity) ||
-          !sameFileIdentity(heldIdentity, finalPathIdentity) ||
-          createHash("sha256").update(finalBytes).digest("hex") !==
-            expectedSha256
-        )
-          throw new Error("AI regional evidence identity or bytes changed");
-        const value = this.evidence;
-        this.close();
-        return value;
-      },
-      close() {
-        if (memberFd !== null) {
-          closeSync(memberFd);
-          memberFd = null;
-        }
-        if (rootFd !== null) {
-          closeSync(rootFd);
-          rootFd = null;
-        }
-        if (rootDirectory !== null) {
-          rootDirectory.closeSync();
-          rootDirectory = null;
-        }
-      },
-    };
-  } catch (error) {
-    if (memberFd !== null) closeSync(memberFd);
-    if (rootFd !== null) closeSync(rootFd);
-    if (rootDirectory !== null) rootDirectory.closeSync();
-    throw error;
-  }
-}
-
-function fileIdentity(stat) {
-  return {
-    device: String(stat.dev),
-    inode: String(stat.ino),
-    mode: String(stat.mode),
-    linkCount: String(stat.nlink),
-    size: String(stat.size),
-    modifiedNs: String(stat.mtimeNs ?? BigInt(Math.trunc(stat.mtimeMs * 1e6))),
-    changedNs: String(stat.ctimeNs ?? BigInt(Math.trunc(stat.ctimeMs * 1e6))),
-  };
-}
-
-function sameFileIdentity(left, right) {
-  return Object.keys(left).every((key) => left[key] === right[key]);
-}
-
-function readHeldFile(fd, declaredSize) {
-  const size = Number(declaredSize);
-  if (!Number.isSafeInteger(size) || size <= 0 || size > 512 * 1024)
-    throw new Error("AI regional evidence member size is invalid");
-  const bytes = Buffer.alloc(size);
-  let offset = 0;
-  while (offset < bytes.byteLength) {
-    const count = readSync(
-      fd,
-      bytes,
-      offset,
-      bytes.byteLength - offset,
-      offset,
-    );
-    if (count === 0) break;
-    offset += count;
-  }
-  if (offset !== bytes.byteLength)
-    throw new Error("AI regional evidence member changed while reading");
-  return bytes;
-}
-
-async function collectInstalledAiTryOnAttemptInternal(
-  {
-    client,
-    expectedTryOnRoute,
-    regionalEvidenceRoot,
-    captureAttemptScreenshot = null,
-    activationSelector = '[data-test="try-on-ai"]',
-    readRuntimeTraceSnapshot = null,
-    onStarted = null,
-    timeoutMs = RECORDED_VISION_NEXT_ARRIVAL_TIMEOUT_MS,
-    pollMs = 250,
-  },
-  regionalEvidenceTestHooks = null,
-) {
-  if (!(client instanceof CdpClient))
-    throw new Error("installed AI attempt requires a production CdpClient");
-  if (
-    typeof expectedTryOnRoute !== "string" ||
-    !expectedTryOnRoute.startsWith("#/try-on?") ||
-    typeof regionalEvidenceRoot !== "string" ||
-    !isAbsolute(regionalEvidenceRoot) ||
-    !Number.isSafeInteger(timeoutMs) ||
-    timeoutMs <= 0 ||
-    !Number.isSafeInteger(pollMs) ||
-    pollMs <= 0
-  )
-    throw new Error("installed AI attempt inputs are invalid");
-  if (
-    captureAttemptScreenshot !== null &&
-    typeof captureAttemptScreenshot !== "function"
-  )
-    throw new Error("installed AI screenshot capture is invalid");
-  if (typeof activationSelector !== "string" || activationSelector === "")
-    throw new Error("installed AI activation selector is invalid");
-  if (onStarted !== null && typeof onStarted !== "function")
-    throw new Error("installed AI onStarted hook is invalid");
-  const deadline = performance.now() + timeoutMs;
-  const remaining = () => {
-    const value = deadline - performance.now();
-    if (value <= 0) throw new Error("installed AI attempt timed out");
-    return Math.max(1, Math.ceil(value));
-  };
-  await client.send("Network.enable", {}, { timeoutMs: remaining() });
-  const networkCapture = startResultNetworkCapture(client);
-  try {
-    await installTryOnLifecycleObserver(client);
-    const activate = async () =>
-      await activateVisibleSelector(client, activationSelector, {
-        kind: "touch",
-        timeoutMs: remaining(),
-        pollMs,
-      });
-    // The recorded top camera is a one-shot approach/departure clip. By the
-    // time an installed AI attempt starts it is already exhausted/frozen, so a
-    // fresh top-camera presence arrival can never gate the front try-on.
-    // Front acquisition itself enforces person presence; activate directly.
-    const activation = await activate();
-    if (
-      activation.input?.kind !== "touch" ||
-      activation.input?.method !== "Input.dispatchTouchEvent"
-    )
-      throw new Error("installed AI attempt was not activated by touch");
-    await waitForRoute(client, expectedTryOnRoute, {
-      timeoutMs: remaining(),
-      pollMs,
-    });
-    await onStarted?.();
-    const acquisition = await waitForCondition(
-      "installed AI acquisition surface",
-      async () => {
-        const lifecycle = await readTryOnLifecycle(client);
-        return {
-          ok: lifecycle.some((entry) => entry?.phase === "acquiring"),
-          value: lifecycle,
-        };
-      },
-      remaining(),
-      pollMs,
-    );
-    const acquisitionScreenshot = captureAttemptScreenshot
-      ? await captureAttemptScreenshot({
-          attemptId: acquisition.at(-1)?.attemptId,
-          client,
-          stage: "acquisition",
-        })
-      : null;
-    const surface = await waitForTryOnSurface(client, remaining(), { pollMs });
-    if (surface.route !== expectedTryOnRoute)
-      throw new Error("installed AI result route mismatched");
-    validateTryOnLifecycleEvidence(surface.lifecycle, surface.attemptId);
-    const expectedResultPath = `/v2/try-on/results/${surface.attemptId}`;
-    let resultUrl;
-    try {
-      resultUrl = new URL(surface.resultUrl);
-    } catch {
-      throw new Error("installed AI result URL is not bound to its attempt");
-    }
-    if (
-      resultUrl.protocol !== "http:" ||
-      !["127.0.0.1", "localhost", "[::1]"].includes(resultUrl.hostname) ||
-      resultUrl.pathname !== expectedResultPath ||
-      !/^\?token=[A-Za-z0-9_-]{1,128}$/.test(resultUrl.search) ||
-      resultUrl.hash !== ""
-    )
-      throw new Error("installed AI result URL is not bound to its attempt");
-    const network = await networkCapture.read(
-      surface.resultUrl,
-      deadline,
-      pollMs,
-    );
-    const resultEvidence = await readResultImageEvidence(
-      client,
-      surface.resultUrl,
-      remaining(),
-      pollMs,
-    );
-    let finalResultUrl;
-    try {
-      finalResultUrl = new URL(resultEvidence.finalUrl);
-    } catch {
-      throw new Error("installed AI result image evidence is invalid");
-    }
-    if (
-      resultEvidence.ok !== true ||
-      resultEvidence.httpStatus !== 200 ||
-      resultEvidence.contentType !== "image/png" ||
-      resultEvidence.byteLength < 64 ||
-      resultEvidence.byteLength > 8 * 1024 * 1024 ||
-      resultEvidence.width <= 0 ||
-      resultEvidence.height <= 0 ||
-      resultEvidence.width !== surface.resultNaturalWidth ||
-      resultEvidence.height !== surface.resultNaturalHeight ||
-      !/^[a-f0-9]{64}$/.test(resultEvidence.rgbaSha256 ?? "") ||
-      finalResultUrl.protocol !== "http:" ||
-      !["127.0.0.1", "localhost", "[::1]"].includes(finalResultUrl.hostname) ||
-      finalResultUrl.pathname !== expectedResultPath ||
-      !/^\?token=[A-Za-z0-9_-]{1,128}$/.test(finalResultUrl.search) ||
-      finalResultUrl.hash !== ""
-    )
-      throw new Error("installed AI result image evidence is invalid");
-    const regionalLease = await waitForCondition(
-      "matching AI regional evidence sidecar",
-      async () => {
-        const value = readRegionalEvidenceMember(
-          regionalEvidenceRoot,
-          surface.attemptId,
-          regionalEvidenceTestHooks,
-        );
-        return { ok: value !== null, value };
-      },
-      remaining(),
-      pollMs,
-    );
-    try {
-      regionalEvidenceTestHooks?.beforeReturn?.(regionalLease.evidence);
-      const regionalEvidence = regionalLease.finalizeAndClose();
-      const resultScreenshot = captureAttemptScreenshot
-        ? await captureAttemptScreenshot({
-            attemptId: surface.attemptId,
-            client,
-            stage: "result",
-          })
-        : null;
-      return {
-        attemptId: surface.attemptId,
-        activation,
-        lifecycle: surface.lifecycle,
-        resultEvidence: {
-          ...resultEvidence,
-          network: {
-            requestId: network.requestId,
-            httpStatus: network.response.status,
-            contentType: network.response.mimeType,
-            byteLength: resultEvidence.byteLength,
-            sha256: resultEvidence.sha256,
-          },
-        },
-        regionalEvidence,
-        screenshots:
-          acquisitionScreenshot && resultScreenshot
-            ? [acquisitionScreenshot, resultScreenshot]
-            : [],
-        surface,
-      };
-    } finally {
-      regionalLease.close();
-    }
-  } finally {
-    networkCapture.close();
-    await client
-      .send(
-        "Network.disable",
-        {},
-        { timeoutMs: Math.max(1, Math.ceil(deadline - performance.now())) },
-      )
-      .catch(() => {});
-  }
-}
-
-export async function collectInstalledAiTryOnAttempt(options) {
-  return collectInstalledAiTryOnAttemptInternal(options);
-}
-
-export async function collectInstalledAiTryOnAttemptForTest(options, hooks) {
-  if (process.env.NODE_ENV !== "test")
-    throw new Error("installed AI attempt test hook is unavailable");
-  return collectInstalledAiTryOnAttemptInternal(options, hooks);
-}
-
 async function readInstalledTryOnManualControl(client) {
   return await evaluateExpression(
     client,
@@ -3945,14 +3406,13 @@ async function readTryOnButtonDiagnostics(client) {
     client,
     `(() => {
       const entry = document.querySelector("[data-test='try-on-entry']");
-      const fast = document.querySelector("[data-test='try-on-fast']");
-      const ai = document.querySelector("[data-test='try-on-ai']");
+      const tryOn = document.querySelector("[data-test='try-on']");
       return {
         route: location.hash,
         entryPresent: entry instanceof HTMLElement,
-        fastPresent: fast instanceof HTMLElement,
-        fastDisabled: fast instanceof HTMLButtonElement ? fast.disabled : null,
-        aiPresent: ai instanceof HTMLElement,
+        tryOnPresent: tryOn instanceof HTMLElement,
+        tryOnDisabled:
+          tryOn instanceof HTMLButtonElement ? tryOn.disabled : null,
         pageText:
           document.body?.textContent?.replace(/\\s+/g, " ").trim().slice(0, 400) ??
           null,
@@ -4078,14 +3538,12 @@ async function readMachineTryOnStores(client) {
         const vision = state.vision ?? null;
         const tryOn = state.tryOn ?? null;
         return {
-          fastReady: vision?.fastReady ?? null,
+          tryOnReady: vision?.tryOnReady ?? null,
           visionBusinessReady: vision?.visionBusinessReady ?? null,
           tryOnCapability: vision?.tryOnCapability ?? null,
-          aiReady: vision?.aiReady ?? null,
           online: vision?.online ?? null,
           enabled: vision?.enabled ?? null,
           tryOnPhase: tryOn?.phase ?? null,
-          tryOnMode: tryOn?.mode ?? null,
           tryOnGarmentScale: tryOn?.garmentScale ?? null,
           tryOnAdjusting: tryOn?.adjusting ?? null,
           tryOnFailureReason: tryOn?.failureReason ?? null,
@@ -4207,7 +3665,7 @@ async function collectInstalledFieldRegressionChecks({
         client,
         `(() => {
           const page = document.querySelector("[data-test='product-detail-page']");
-          const button = document.querySelector("[data-test='try-on-fast']");
+          const button = document.querySelector("[data-test='try-on']");
           return (
             page?.getAttribute("data-catalog-key") === ${JSON.stringify(selectedProduct.catalogKey)} &&
             button instanceof HTMLElement &&
@@ -4239,7 +3697,7 @@ async function collectInstalledFieldRegressionChecks({
         try {
           let lastSampleAt = 0;
           await waitForCondition(
-            "installed try-on fast action after Vision restart",
+            "installed try-on action after Vision restart",
             async () => {
               const actionable = await tryOnActionAvailable();
               if (Date.now() - lastSampleAt >= 2_000) {
@@ -4269,7 +3727,7 @@ async function collectInstalledFieldRegressionChecks({
       }
       if (!started) {
         throw new Error(
-          `installed try-on fast action did not become available after Vision restart :: poll-diagnostics=${JSON.stringify(pollDiagnostics)}`,
+          `installed try-on action did not become available after Vision restart :: poll-diagnostics=${JSON.stringify(pollDiagnostics)}`,
         );
       }
     } finally {
@@ -4278,18 +3736,18 @@ async function collectInstalledFieldRegressionChecks({
     // Re-entering the product from the catalog can resolve to the product's
     // preferred variant rather than the manual-selected one. The heal
     // regression is variant-agnostic, so accept any variant of the same
-    // product as long as the fast mode is preserved.
+    // product as long as the single try-on path remains available.
     const encodedCatalogKey = encodeURIComponent(selectedProduct.catalogKey);
-    await activateFastTryOnToRoute(
+    await activateTryOnToRoute(
       new RegExp(
-        `^#/try-on\\?catalogKey=${encodedCatalogKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}&mode=fast&variantId=[^&]+`,
+        `^#/try-on\\?catalogKey=${encodedCatalogKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}&variantId=[^&]+`,
       ),
       "heal try-on route",
     );
   };
 
-  const activateFastTryOnToRoute = async (routePattern, label) => {
-    await activateVisibleSelector(client, '[data-test="try-on-fast"]', {
+  const activateTryOnToRoute = async (routePattern, label) => {
+    await activateVisibleSelector(client, '[data-test="try-on"]', {
       kind: "touch",
       timeoutMs: 15_000,
     });
@@ -4325,7 +3783,7 @@ async function collectInstalledFieldRegressionChecks({
         await new Promise((resolvePromise) => setTimeout(resolvePromise, 15));
       }
     })();
-    await activateFastTryOnToRoute(expectedTryOnRoute, "manual capture");
+    await activateTryOnToRoute(expectedTryOnRoute, "manual capture");
     const manualSurface = await waitForTryOnSurface(client, 60_000);
     await manualProbe;
     assertTryOnAttemptNotCanceled(
@@ -4361,7 +3819,7 @@ async function collectInstalledFieldRegressionChecks({
       "Start-Sleep -Milliseconds 500",
       "$remaining = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.ExecutablePath -and [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $canonical -and $_.CommandLine -and $_.CommandLine.Contains('--multiprocessing-fork') })",
       "$remainingPids = @($remaining | ForEach-Object { [int]$_.ProcessId })",
-      "if ($remainingPids -notcontains [int]$broker.ProcessId) { throw 'fast render broker did not survive the observer kill' }",
+      "if ($remainingPids -notcontains [int]$broker.ProcessId) { throw 'render broker did not survive the observer kill' }",
       "[Console]::Out.Write((@{ killedObserverPid = [int]$observer.ProcessId; survivingBrokerPid = [int]$broker.ProcessId } | ConvertTo-Json -Compress))",
     ].join("; "),
     "killing only the Vision acquisition observer for self-heal regression",
@@ -4418,7 +3876,7 @@ async function collectInstalledFieldRegressionChecks({
     await broadcastRecorder.stop();
   }
 
-  // ---- Locked-center garment scale on a completed Fast result ----
+  // ---- Locked-center garment scale on a completed try-on result ----
   const resultBeforeAdjust = await evaluateExpression(
     client,
     `(() => {
@@ -4447,7 +3905,7 @@ async function collectInstalledFieldRegressionChecks({
       timeoutMs: 30_000,
     });
     adjustedSurface = await waitForCondition(
-      "adjusted Fast garment scale",
+      "adjusted garment scale",
       async () => {
         const state = await evaluateExpression(
           client,
@@ -4489,7 +3947,7 @@ async function collectInstalledFieldRegressionChecks({
     clearInterval(scaleKeepalive);
   }
   checks.push({
-    name: "fast-garment-scale-adjusts",
+    name: "garment-scale-adjusts",
     percent: adjustedSurface.percent,
     resultBeforeAdjust,
     resultAfterAdjust: adjustedSurface.resultUrl,

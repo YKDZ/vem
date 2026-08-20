@@ -119,26 +119,6 @@ function validateIdentity(identity) {
   ) {
     throw new Error("acceptance release Vision source commits drifted");
   }
-  const ai = required(identity.aiVirtualTryOn, "AI identity");
-  const input = required(ai.input, "AI input identity");
-  digest(input.manifestSha256, "AI input manifest");
-  const inputModelArchive = required(
-    input.modelPackArchive,
-    "AI input model archive",
-  );
-  const materialized = required(
-    input.materializedModelPackRoot,
-    "materialized model pack",
-  );
-  digest(materialized.sha256, "materialized model pack");
-  if (
-    !Number.isSafeInteger(materialized.byteSize) ||
-    materialized.byteSize <= 0 ||
-    !Array.isArray(materialized.members) ||
-    materialized.members.length === 0
-  ) {
-    throw new Error("acceptance release materialized model pack is invalid");
-  }
 }
 
 export function buildAcceptanceReleaseManifest(identity) {
@@ -149,7 +129,6 @@ export function buildAcceptanceReleaseManifest(identity) {
     "Windows runtime identity",
   );
   return canonical({
-    aiVirtualTryOn: required(identity.aiVirtualTryOn, "AI identity"),
     backend: required(identity.backend, "backend identity"),
     schemaVersion: SCHEMA_VERSION,
     vem: { sourceCommit: identity.githubSha },

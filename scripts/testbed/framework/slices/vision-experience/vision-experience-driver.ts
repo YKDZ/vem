@@ -26,10 +26,10 @@ async function readState(adapter: TestAdapter): Promise<TryOnState> {
 }
 
 /**
- * 最小 Fast 试衣垂直切片：导航、进入商品、点击快速试衣、等待结果表面。
+ * 最小虚拟试衣垂直切片：导航、进入商品、点击试衣、等待结果表面。
  * 断言通过统一记录产出 v2 报告；VM 上由真实适配器提供同一状态读取。
  */
-export async function runFastTryOnScenario(
+export async function runTryOnScenario(
   adapter: TestAdapter,
   { timeoutMs, pollMs }: { timeoutMs?: number; pollMs?: number },
 ) {
@@ -38,7 +38,7 @@ export async function runFastTryOnScenario(
     '[data-test="catalog-category"][data-category-key="tshirts"]',
   ]);
   await adapter.run("click", ['[data-test="catalog-product"]']);
-  await adapter.run("click", ['[data-test="try-on-fast"]']);
+  await adapter.run("click", ['[data-test="try-on"]']);
   let previewSeen = false;
   const state = await waitForCondition(
     "result-surface",
@@ -112,7 +112,7 @@ export async function runObserverSelfHealScenario(
     '[data-test="catalog-category"][data-category-key="tshirts"]',
   ]);
   await adapter.run("click", ['[data-test="catalog-product"]']);
-  await adapter.run("click", ['[data-test="try-on-fast"]']);
+  await adapter.run("click", ['[data-test="try-on"]']);
   const state = await waitForCondition(
     "result-surface-after-heal",
     async () => {
@@ -156,7 +156,7 @@ export async function runObserverSelfHealScenario(
 }
 
 /**
- * 结果锁定中心缩放：完成 Fast 试衣后点击放大，等待 105% 与新的结果 URL。
+ * 结果锁定中心缩放：完成试衣后点击放大，等待 105% 与新的结果 URL。
  */
 export async function runGarmentScaleScenario(
   adapter: TestAdapter,
@@ -292,7 +292,7 @@ async function enterTryOn(adapter: TestAdapter) {
     '[data-test="catalog-category"][data-category-key="tshirts"]',
   ]);
   await adapter.run("click", ['[data-test="catalog-product"]']);
-  await adapter.run("click", ['[data-test="try-on-fast"]']);
+  await adapter.run("click", ['[data-test="try-on"]']);
 }
 
 /**

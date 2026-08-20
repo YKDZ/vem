@@ -45,10 +45,8 @@ test("packages a field kit with verified members, zip, and fixed-size parts", ()
   const machine = make("machine.exe", Buffer.alloc(32, 2));
   const loader = make("WebView2Loader.dll", Buffer.alloc(16, 3));
   const visionZip = make("vision.zip", Buffer.alloc(64, 4));
-  const modelPack = make("models.zip", Buffer.alloc(128, 5));
   const vemCommit = "a".repeat(40);
   const visionCommit = "b".repeat(40);
-  const modelSha = modelPack.sha256;
 
   const runtimeManifestPath = join(source, "vem-runtime-artifacts.json");
   writeFileSync(
@@ -85,10 +83,6 @@ test("packages a field kit with verified members, zip, and fixed-size parts", ()
     runtimeManifestPath,
     "--vision-manifest",
     visionManifestPath,
-    "--model-pack",
-    modelPack.path,
-    "--model-pack-sha256",
-    modelSha,
     "--out-dir",
     out,
     "--part-size-mb",
@@ -107,9 +101,10 @@ test("packages a field kit with verified members, zip, and fixed-size parts", ()
     daemon.sha256,
   );
   assert.equal(
-    result.members.find((m) => m.name === "vending-vision-ai-models.zip")
-      ?.sha256,
-    modelSha,
+    result.members.find(
+      (member) => member.name === "vending-vision-windows-x86_64.zip",
+    )?.sha256,
+    visionZip.sha256,
   );
   assert.ok(result.parts.length >= 1);
   assert.ok(result.parts[0].byteSize <= 1024 * 1024);
@@ -140,7 +135,6 @@ test("reuses an unchanged field kit output and rebuilds with --force", () => {
   const machine = make("machine.exe", Buffer.alloc(32, 2));
   const loader = make("WebView2Loader.dll", Buffer.alloc(16, 3));
   const visionZip = make("vision.zip", Buffer.alloc(64, 4));
-  const modelPack = make("models.zip", Buffer.alloc(128, 5));
   const vemCommit = "a".repeat(40);
   const visionCommit = "b".repeat(40);
   const runtimeManifestPath = join(source, "vem-runtime-artifacts.json");
@@ -177,10 +171,6 @@ test("reuses an unchanged field kit output and rebuilds with --force", () => {
     runtimeManifestPath,
     "--vision-manifest",
     visionManifestPath,
-    "--model-pack",
-    modelPack.path,
-    "--model-pack-sha256",
-    modelPack.sha256,
     "--out-dir",
     out,
     "--part-size-mb",

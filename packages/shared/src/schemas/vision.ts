@@ -50,7 +50,7 @@ export const visionErrorCodeSchema = z.enum([
   "invalid_message",
   "unsupported_version",
   "camera_unavailable",
-  "fast_unavailable",
+  "try_on_unavailable",
   "adjustment_unavailable",
   "model_not_ready",
   "internal_error",

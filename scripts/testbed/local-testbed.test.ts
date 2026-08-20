@@ -655,16 +655,6 @@ describe("local testbed orchestration", () => {
               onHandQty: 1,
               sku: "SKU-STOCK",
             },
-            {
-              slotId: "slot-ai-try-on",
-              rowNo: 2,
-              cellNo: 5,
-              slotDisplayLabel: "B5",
-              categoryKey: "tshirts",
-              inventoryId: "inventory-ai-try-on",
-              onHandQty: 3,
-              sku: "SKU-AI-TRY-ON",
-            },
           ],
         };
       },
@@ -677,11 +667,7 @@ describe("local testbed orchestration", () => {
       refreshed.fixtureAllocation.stockMaintenance.slotId,
       "slot-stock",
     );
-    assert.equal(Object.keys(refreshed.fixtureAllocation).length, 8);
-    assert.equal(
-      refreshed.fixtureAllocation.aiVirtualTryOn.slotId,
-      "slot-ai-try-on",
-    );
+    assert.equal(Object.keys(refreshed.fixtureAllocation).length, 7);
   });
 
   it("keeps the refresh fixture when the current machine is still present", async () => {
@@ -1545,34 +1531,6 @@ describe("supported API seeding", () => {
       result.visionAcceptance.tryOnGarmentMediaAssetId,
       "550e8400-e29b-41d4-a716-446655440125",
     );
-    assert.deepEqual(result.visionAcceptance.aiTryOnCases, [
-      {
-        caseKey: "short",
-        template: "tshirt_short_sleeve",
-        garmentId: "garment-1",
-        garmentMediaAssetId: "550e8400-e29b-41d4-a716-446655440125",
-        garmentSha256: createHash("sha256")
-          .update(uploads[0].buffer)
-          .digest("hex"),
-        selectedCatalogKey: result.visionAcceptance.selectedCatalogKey,
-        selectedVariantId:
-          result.visionAcceptance.recommendationVariants[0].variantId,
-        size: "M",
-      },
-      {
-        caseKey: "long",
-        template: "tshirt_long_sleeve",
-        garmentId: "garment-2",
-        garmentMediaAssetId: "550e8400-e29b-41d4-a716-446655440128",
-        garmentSha256: createHash("sha256")
-          .update(uploads[1].buffer)
-          .digest("hex"),
-        selectedCatalogKey: result.visionAcceptance.selectedCatalogKey,
-        selectedVariantId:
-          result.visionAcceptance.recommendationVariants[1].variantId,
-        size: "S",
-      },
-    ]);
     assert.equal(result.visionAcceptance.tryOnCategoryKey, "tshirts");
     assert.deepEqual(
       result.visionAcceptance.productMedia.map((entry) => ({
@@ -1650,8 +1608,8 @@ describe("supported API seeding", () => {
       1,
     );
     const seededTryOnVariantIds = new Set(
-      result.visionAcceptance.aiTryOnCases.map(
-        (entry) => entry.selectedVariantId,
+      result.visionAcceptance.seededTryOnVariants.map(
+        (entry) => entry.variantId,
       ),
     );
     const tryOnInventoryCalls = calls.filter(
@@ -2190,51 +2148,6 @@ describe("Windows D cache contract", () => {
     );
     assert.doesNotMatch(guest, /Remove-Item -LiteralPath \$cacheRoot -Recurse/);
     assert.doesNotMatch(guest, /CARGO_REGISTRY_CACHE|CARGO_GIT_CACHE/);
-  });
-
-  it("leaves the default Vision owner AI-free until the selected track starts a fresh phase", () => {
-    const guest = readFileSync(
-      new URL("./run-local-testbed-guest.ps1", import.meta.url),
-      "utf8",
-    );
-    const started = guest.indexOf(
-      "$startupState = Start-TestbedInstalledRuntimeOwners",
-    );
-    assert.ok(started >= 0);
-    assert.match(
-      guest,
-      /Start-TestbedInstalledRuntimeOwners[\s\S]*-VisionAiModelPackRoot \$null[\s\S]*-VisionAiAcceptanceEvidenceRoot \$null/,
-    );
-    assert.doesNotMatch(
-      guest,
-      /New-TestbedAiVisionOwnerConfiguration \$guestInput "short"/,
-    );
-  });
-
-  it("restarts the one Vision owner without overlapping short and long sinks", () => {
-    const result = spawnSync(
-      "pwsh",
-      [
-        "-NoProfile",
-        "-File",
-        "scripts/testbed/run-local-testbed-guest-ai-owner.windows-harness.ps1",
-      ],
-      { cwd: new URL("../..", import.meta.url), encoding: "utf8" },
-    );
-    assert.equal(result.status, 0, result.stderr || result.stdout);
-    const output = JSON.parse(result.stdout);
-    assert.equal(output.schemaVersion, "vem-ai-owner-restart-harness/v1");
-    assert.notEqual(output.shortRoot, output.longRoot);
-    for (const failurePoint of ["install", "start", "ready"]) {
-      assert.equal(
-        output.failures[failurePoint].includes("install-default"),
-        true,
-      );
-      assert.deepEqual(output.failures[failurePoint].slice(-2), [
-        "start-task:VEMVisionRuntime",
-        "ready",
-      ]);
-    }
   });
 
   it("observes one listener-owning Vision main with direct multiprocessing workers at the installed owner boundary", () => {

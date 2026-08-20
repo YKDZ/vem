@@ -69,7 +69,7 @@ export type VisionRuntimeConnection = {
   machineCode?: string | null;
   url?: string;
   timeoutMs?: number;
-  fastAttemptTimeoutMs?: number;
+  tryOnAttemptTimeoutMs?: number;
   enabled?: boolean;
 };
 
@@ -197,8 +197,8 @@ function connectionOptions(
     machineCode: connection.machineCode ?? null,
     url: connection.url ?? DEFAULT_VISION_WS_URL,
     timeoutMs: connection.timeoutMs ?? CONNECT_TIMEOUT_MS,
-    fastAttemptTimeoutMs:
-      connection.fastAttemptTimeoutMs ?? TRY_ON_ATTEMPT_TERMINAL_TIMEOUT_MS,
+    tryOnAttemptTimeoutMs:
+      connection.tryOnAttemptTimeoutMs ?? TRY_ON_ATTEMPT_TERMINAL_TIMEOUT_MS,
     enabled: connection.enabled ?? true,
   };
 }
@@ -310,7 +310,7 @@ function tryOnUnavailableError(message: string): Error {
 }
 
 function errorFromVisionMessage(message: VisionErrorMessage): Error {
-  if (message.payload.code === "fast_unavailable") {
+  if (message.payload.code === "try_on_unavailable") {
     return tryOnUnavailableError(message.payload.message);
   }
   return new Error(
@@ -405,7 +405,7 @@ export async function openVisionTryOnAttempt(
   signal?: AbortSignal,
 ): Promise<VisionTryOnAttempt> {
   const options = connectionOptions(connection);
-  if (!options.enabled) throw new Error("视觉模块未启用，无法启动快速试衣");
+  if (!options.enabled) throw new Error("视觉模块未启用，无法启动虚拟试衣");
   const socket = await openVisionSocket(options.url, options.timeoutMs, signal);
   let closed = false;
   let terminal = false;
@@ -463,13 +463,13 @@ export async function openVisionTryOnAttempt(
   };
   try {
     onAbort = close;
-    if (signal?.aborted) throw new Error("Vision V2 Fast attempt aborted");
+    if (signal?.aborted) throw new Error("Vision V2 try-on attempt aborted");
     signal?.addEventListener("abort", onAbort, { once: true });
     socket.send(
       JSON.stringify(createVisionV2HelloMessage(options.machineCode)),
     );
     const ready = await nextVisionV2Message(socket, options.timeoutMs, signal);
-    if (signal?.aborted) throw new Error("Vision V2 Fast attempt aborted");
+    if (signal?.aborted) throw new Error("Vision V2 try-on attempt aborted");
     if (ready.type !== "vision.ready") {
       throw new Error(`unexpected Vision V2 handshake message: ${ready.type}`);
     }
@@ -489,7 +489,7 @@ export async function openVisionTryOnAttempt(
       throw new Error("Vision V2 try-on capability is unavailable");
     }
     if (socket.readyState !== WebSocket.OPEN) {
-      throw new Error("Vision V2 websocket closed during Fast handshake");
+      throw new Error("Vision V2 websocket closed during try-on handshake");
     }
     const startMessage = visionV2ClientMessageSchema.parse({
       protocol: VISION_V2_RUNTIME_IDENTITY.protocol,
@@ -556,8 +556,8 @@ export async function openVisionTryOnAttempt(
     socket.addEventListener("error", onError);
     terminalTimer = setTimeout(() => {
       emitCanceled("timeout");
-    }, options.fastAttemptTimeoutMs);
-    if (signal?.aborted) throw new Error("Vision V2 Fast attempt aborted");
+    }, options.tryOnAttemptTimeoutMs);
+    if (signal?.aborted) throw new Error("Vision V2 try-on attempt aborted");
     socket.send(JSON.stringify(startMessage));
     const capture = (): boolean => {
       if (
@@ -623,7 +623,7 @@ export type VisionGarmentAdjustmentInput = {
 };
 
 /**
- * Re-render one completed Fast result at a customer-chosen garment scale.
+ * Re-render one completed try-on result at a customer-chosen garment scale.
  *
  * Adjustment deliberately uses its own short-lived socket instead of keeping
  * the attempt socket open after its terminal: a completed attempt already
@@ -665,7 +665,7 @@ export async function openVisionGarmentAdjustment(
       !ready.payload.capabilities.includes("try_on") ||
       !ready.payload.visionBusinessReady
     ) {
-      throw new Error("Vision V2 Fast adjustment capability is unavailable");
+      throw new Error("Vision V2 try-on adjustment capability is unavailable");
     }
     const adjustMessage = visionV2ClientMessageSchema.parse({
       protocol: VISION_V2_RUNTIME_IDENTITY.protocol,
@@ -1070,7 +1070,7 @@ export function subscribeVisionProfiles(
           if (!established) {
             if (message.type === "vision.ready") {
               // A readiness mismatch still establishes core presence/profile;
-              // normalized readiness withholds only the business Fast capability.
+              // Normalized readiness withholds only the business try-on capability.
               established = true;
               handleServerMessage(message);
             } else if (message.type === "vision.error") {

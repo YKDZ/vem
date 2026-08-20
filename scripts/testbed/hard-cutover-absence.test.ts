@@ -93,6 +93,16 @@ describe("Vision V2 hard-cutover absence guard", () => {
       const standaloneServer = ["app", "main"].join(".") + ":app";
       const standaloneCamera =
         ["navigator", "mediaDevices", "getUserMedia"].join(".") + "()";
+      const retiredFastCapability = ["try", "_on_", "f", "ast"].join("");
+      const retiredAiCapability = ["try", "_on_", "a", "i"].join("");
+      const retiredProfile = ["profile_", "f", "ast_", "try_on"].join("");
+      const retiredReadiness = ["a", "i", "Ready"].join("");
+      const retiredWorker = ["vending-vision-", "a", "i-worker"].join("");
+      const retiredArchiveProperty = ["model", "PackArchive"].join("");
+      const retiredEnvironment = ["VEM_VM_ACCEPTANCE_", "A", "I_HEIGHT"].join(
+        "",
+      );
+      const retiredArtifactPath = ["a", "i-acceptance-artifacts.ts"].join("");
       const fixtures = [
         ["protocol.txt", dot("vem", "vision", "v1")],
         ["fixture.txt", retiredProtocolFixture],
@@ -117,6 +127,14 @@ describe("Vision V2 hard-cutover absence guard", () => {
         ["standalone-path.txt", standalonePath],
         ["standalone-server.txt", standaloneServer],
         ["standalone-camera.txt", standaloneCamera],
+        ["retired-fast-capability.txt", retiredFastCapability],
+        ["retired-ai-capability.txt", retiredAiCapability],
+        ["retired-profile.txt", retiredProfile],
+        ["retired-readiness.txt", retiredReadiness],
+        ["retired-worker.txt", retiredWorker],
+        ["retired-model.txt", retiredArchiveProperty],
+        ["retired-environment.txt", retiredEnvironment],
+        [retiredArtifactPath, "export {}"],
       ];
       for (const [name, body] of fixtures) {
         writeFileSync(join(root, name), `${body}\n`);
@@ -144,6 +162,10 @@ describe("Vision V2 hard-cutover absence guard", () => {
           "legacy-v1-fixture",
           "obsolete-try-on-progress-event",
           "protocol-v1",
+          "retired-ai-artifact",
+          "retired-ai-artifact-path",
+          "retired-ai-readiness",
+          "retired-ai-try-on-mode",
           "standalone-browser-camera-owner",
           "standalone-repository-path",
           "standalone-repository-url",

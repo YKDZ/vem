@@ -92,9 +92,7 @@ pub struct VisionReadyPayload {
     pub bundle_version: String,
     pub contract_digest: String,
     pub camera_ready: bool,
-    pub fast_ready: bool,
-    pub ai_ready: bool,
-    pub ai_readiness_diagnostic: VisionAiReadinessDiagnostic,
+    pub try_on_ready: bool,
     pub vision_business_ready: bool,
     pub business_readiness_diagnostic: VisionBusinessReadinessDiagnostic,
     pub capabilities: Vec<String>,
@@ -108,15 +106,6 @@ pub enum VisionBusinessReadinessDiagnostic {
     ContractDigestMismatch,
     ContractVersionMismatch,
     ContractBundleUnavailable,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum VisionAiReadinessDiagnostic {
-    Ready,
-    ModelPackMissing,
-    ModelPackInvalid,
-    WorkerUnavailable,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -305,13 +294,6 @@ fn validate_ready_payload(ready: &VisionReadyPayload) -> Result<(), String> {
     {
         return Err("invalid vision.ready contractDigest".to_string());
     }
-    let diagnostic_ready = matches!(
-        ready.ai_readiness_diagnostic,
-        VisionAiReadinessDiagnostic::Ready
-    );
-    if ready.ai_ready != diagnostic_ready {
-        return Err("contradictory vision.ready AI readiness".to_string());
-    }
     if ready.capabilities.len() > 32
         || ready
             .capabilities
@@ -361,8 +343,7 @@ async fn send_hello(socket: &mut VisionSocket, machine_code: Option<String>) -> 
                 "presence_status",
                 "person_departed",
                 "ambient_light",
-                "try_on_fast",
-                "try_on_ai",
+                "try_on",
             ],
         },
     )
@@ -384,14 +365,12 @@ async fn wait_ready(socket: &mut VisionSocket) -> Result<VisionReadyPayload, Str
             } else if ready.schema_version != identity.schema_version
                 || ready.bundle_version != identity.bundle_version
             {
-                ready.fast_ready = false;
-                ready.ai_ready = false;
+                ready.try_on_ready = false;
                 ready.vision_business_ready = false;
                 ready.business_readiness_diagnostic =
                     VisionBusinessReadinessDiagnostic::ContractVersionMismatch;
             } else if ready.contract_digest != identity.bundle_digest {
-                ready.fast_ready = false;
-                ready.ai_ready = false;
+                ready.try_on_ready = false;
                 ready.vision_business_ready = false;
                 ready.business_readiness_diagnostic =
                     VisionBusinessReadinessDiagnostic::ContractDigestMismatch;
@@ -492,8 +471,8 @@ mod tests {
             .expect("generated ready envelope accepted");
         // The corpus deliberately uses a placeholder digest.  It is still a
         // valid server envelope; runtime identity comparison must withhold
-        // Fast without rewriting the source corpus.
-        assert!(!ready.fast_ready);
+        // try-on availability without rewriting the source corpus.
+        assert!(!ready.try_on_ready);
         assert!(!ready.vision_business_ready);
         assert_eq!(
             ready.business_readiness_diagnostic,
@@ -710,7 +689,7 @@ mod tests {
         fixture["payload"]["schemaVersion"] = Value::String("unavailable".to_string());
         fixture["payload"]["bundleVersion"] = Value::String("unavailable".to_string());
         fixture["payload"]["contractDigest"] = Value::String("0".repeat(64));
-        fixture["payload"]["fastReady"] = Value::Bool(false);
+        fixture["payload"]["tryOnReady"] = Value::Bool(false);
         fixture["payload"]["visionBusinessReady"] = Value::Bool(false);
         fixture["payload"]["businessReadinessDiagnostic"] =
             Value::String("contract_bundle_unavailable".to_string());
@@ -728,7 +707,7 @@ mod tests {
         let ready = check_ready(&ws_url, None, 2000)
             .await
             .expect("degraded ready remains a reachable Vision core");
-        assert!(!ready.fast_ready);
+        assert!(!ready.try_on_ready);
         assert!(!ready.vision_business_ready);
         assert_eq!(
             ready.business_readiness_diagnostic,
@@ -836,13 +815,12 @@ mod tests {
                     "presence_status",
                     "person_departed",
                     "ambient_light",
-                    "try_on_fast",
-                    "try_on_ai"
+                    "try_on"
                 ])
             );
             ws_stream
                 .send(Message::Text(
-                    r#"{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440120","timestamp":"2026-08-09T00:00:00.000Z","payload":{"serverName":"s","serverVersion":"1","schemaVersion":"vem-vision-v2-contract-bundle/v1","bundleVersion":"1","contractDigest":"f5c86bc2def1a41328cccf7c2e864452fe2913265b99f36139d64c9c9028a386","cameraReady":true,"fastReady":true,"aiReady":false,"aiReadinessDiagnostic":"model_pack_missing","visionBusinessReady":true,"businessReadinessDiagnostic":"ready","capabilities":[]}}"#
+                    r#"{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440120","timestamp":"2026-08-09T00:00:00.000Z","payload":{"serverName":"s","serverVersion":"1","schemaVersion":"vem-vision-v2-contract-bundle/v1","bundleVersion":"1","contractDigest":"f5c86bc2def1a41328cccf7c2e864452fe2913265b99f36139d64c9c9028a386","cameraReady":true,"tryOnReady":true,"visionBusinessReady":true,"businessReadinessDiagnostic":"ready","capabilities":[]}}"#
                         .into(),
                 ))
                 .await
@@ -891,7 +869,7 @@ mod tests {
             let _ = ws_stream.next().await.expect("next");
             ws_stream
                 .send(Message::Text(
-                    r#"{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440122","timestamp":"2026-08-09T00:00:00.000Z","payload":{"serverName":"s","serverVersion":"1","schemaVersion":"vem-vision-v2-contract-bundle/v1","bundleVersion":"1","contractDigest":"f5c86bc2def1a41328cccf7c2e864452fe2913265b99f36139d64c9c9028a386","cameraReady":true,"fastReady":true,"aiReady":false,"aiReadinessDiagnostic":"model_pack_missing","visionBusinessReady":true,"businessReadinessDiagnostic":"ready","capabilities":[]},"unexpected":true}"#
+                    r#"{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440122","timestamp":"2026-08-09T00:00:00.000Z","payload":{"serverName":"s","serverVersion":"1","schemaVersion":"vem-vision-v2-contract-bundle/v1","bundleVersion":"1","contractDigest":"f5c86bc2def1a41328cccf7c2e864452fe2913265b99f36139d64c9c9028a386","cameraReady":true,"tryOnReady":true,"visionBusinessReady":true,"businessReadinessDiagnostic":"ready","capabilities":[]},"unexpected":true}"#
                         .into(),
                 ))
                 .await
@@ -915,7 +893,7 @@ mod tests {
             let _ = ws_stream.next().await.expect("next");
             ws_stream
                 .send(Message::Text(
-                    r#"{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440124","timestamp":"not-a-timestamp","payload":{"serverName":"s","serverVersion":"1","schemaVersion":"vem-vision-v2-contract-bundle/v1","bundleVersion":"1","contractDigest":"f5c86bc2def1a41328cccf7c2e864452fe2913265b99f36139d64c9c9028a386","cameraReady":true,"fastReady":true,"aiReady":false,"aiReadinessDiagnostic":"model_pack_missing","visionBusinessReady":true,"businessReadinessDiagnostic":"ready","capabilities":[]}}"#
+                    r#"{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440124","timestamp":"not-a-timestamp","payload":{"serverName":"s","serverVersion":"1","schemaVersion":"vem-vision-v2-contract-bundle/v1","bundleVersion":"1","contractDigest":"f5c86bc2def1a41328cccf7c2e864452fe2913265b99f36139d64c9c9028a386","cameraReady":true,"tryOnReady":true,"visionBusinessReady":true,"businessReadinessDiagnostic":"ready","capabilities":[]}}"#
                         .into(),
                 ))
                 .await
@@ -939,7 +917,7 @@ mod tests {
             let _ = ws_stream.next().await.expect("next");
             ws_stream
                 .send(Message::Text(
-                    r#"{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440124","timestamp":"2026-08-09T00:00:00.000Z","payload":{"serverName":"s","serverVersion":"1","schemaVersion":"vem-vision-v2-contract-bundle/v1","bundleVersion":"1","contractDigest":"f5c86bc2def1a41328cccf7c2e864452fe2913265b99f36139d64c9c9028a386","cameraReady":true,"fastReady":true,"aiReady":false,"aiReadinessDiagnostic":"model_pack_missing","visionBusinessReady":true,"businessReadinessDiagnostic":"unrecognized","capabilities":[]}}"#
+                    r#"{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440124","timestamp":"2026-08-09T00:00:00.000Z","payload":{"serverName":"s","serverVersion":"1","schemaVersion":"vem-vision-v2-contract-bundle/v1","bundleVersion":"1","contractDigest":"f5c86bc2def1a41328cccf7c2e864452fe2913265b99f36139d64c9c9028a386","cameraReady":true,"tryOnReady":true,"visionBusinessReady":true,"businessReadinessDiagnostic":"unrecognized","capabilities":[]}}"#
                         .into(),
                 ))
                 .await
@@ -949,31 +927,6 @@ mod tests {
         let result = check_ready(&ws_url, None, 2000).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("unknown variant"));
-    }
-
-    #[tokio::test]
-    async fn check_ready_rejects_contradictory_ai_readiness_facts() {
-        for (ai_ready, diagnostic) in [(true, "model_pack_missing"), (false, "ready")] {
-            let listener = TcpListener::bind("127.0.0.1:0").await.expect("listen");
-            let addr = listener.local_addr().expect("local addr");
-            let ws_url = format!("ws://{addr}/");
-            let mut fixture = generated_ready_fixture();
-            fixture["payload"]["aiReady"] = Value::Bool(ai_ready);
-            fixture["payload"]["aiReadinessDiagnostic"] = Value::String(diagnostic.to_string());
-
-            tokio::spawn(async move {
-                let (stream, _) = listener.accept().await.expect("accept");
-                let mut ws_stream = accept_async(stream).await.expect("accept ws");
-                let _ = ws_stream.next().await.expect("next");
-                ws_stream
-                    .send(Message::Text(fixture.to_string()))
-                    .await
-                    .expect("send");
-            });
-
-            let result = check_ready(&ws_url, None, 2000).await;
-            assert!(result.is_err(), "accepted {ai_ready}+{diagnostic}");
-        }
     }
 
     #[tokio::test]
@@ -988,7 +941,7 @@ mod tests {
             let _ = ws_stream.next().await.expect("next").expect("hello");
             ws_stream
                 .send(Message::Text(
-                    r#"{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440123","timestamp":"2026-08-09T00:00:00.000Z","payload":{"serverName":"s","serverVersion":"1","schemaVersion":"vem-vision-v2-contract-bundle/v1","bundleVersion":"1","contractDigest":"f5c86bc2def1a41328cccf7c2e864452fe2913265b99f36139d64c9c9028a386","cameraReady":true,"fastReady":true,"aiReady":false,"aiReadinessDiagnostic":"model_pack_missing","visionBusinessReady":true,"businessReadinessDiagnostic":"ready","capabilities":["person_departed"]}}"#.into(),
+                    r#"{"protocol":"vem.vision.v2","type":"vision.ready","messageId":"550e8400-e29b-41d4-a716-446655440123","timestamp":"2026-08-09T00:00:00.000Z","payload":{"serverName":"s","serverVersion":"1","schemaVersion":"vem-vision-v2-contract-bundle/v1","bundleVersion":"1","contractDigest":"f5c86bc2def1a41328cccf7c2e864452fe2913265b99f36139d64c9c9028a386","cameraReady":true,"tryOnReady":true,"visionBusinessReady":true,"businessReadinessDiagnostic":"ready","capabilities":["person_departed"]}}"#.into(),
                 ))
                 .await
                 .expect("send ready");

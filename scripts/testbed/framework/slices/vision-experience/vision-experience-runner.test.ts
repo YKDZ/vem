@@ -34,11 +34,11 @@ function fakeUiAdapter() {
         );
         return { exitCode: 0, stdout: "ok", stderr: "" };
       },
-      'click [data-test="try-on-fast"]': async () => {
+      'click [data-test="try-on"]': async () => {
         await adapter.writeFile(
           statePath,
           JSON.stringify({
-            route: "#/try-on?catalogKey=product%3A1&mode=fast",
+            route: "#/try-on?catalogKey=product%3A1",
             state: "acquiring",
             preview: { naturalWidth: 720, naturalHeight: 1280 },
           }),
@@ -47,7 +47,7 @@ function fakeUiAdapter() {
           void adapter.writeFile(
             statePath,
             JSON.stringify({
-              route: "#/try-on?catalogKey=product%3A1&mode=fast",
+              route: "#/try-on?catalogKey=product%3A1",
               state: "completed",
               preview: { naturalWidth: 720, naturalHeight: 1280 },
               resultUrl:
@@ -156,7 +156,7 @@ describe("visionExperience slice runner", () => {
 
   it("covers manual capture and departure cancellation", async () => {
     const statePath = "ui/try-on-state.json";
-    let fastEntries = 0;
+    let tryOnEntries = 0;
     const adapter = createFakeTestAdapter({
       files: {
         [statePath]: JSON.stringify({ route: "#/catalog", state: "idle" }),
@@ -183,13 +183,13 @@ describe("visionExperience slice runner", () => {
           );
           return { exitCode: 0, stdout: "ok", stderr: "" };
         },
-        'click [data-test="try-on-fast"]': async () => {
-          fastEntries += 1;
-          if (fastEntries === 1) {
+        'click [data-test="try-on"]': async () => {
+          tryOnEntries += 1;
+          if (tryOnEntries === 1) {
             await adapter.writeFile(
               statePath,
               JSON.stringify({
-                route: "#/try-on?catalogKey=product%3A1&mode=fast",
+                route: "#/try-on?catalogKey=product%3A1",
                 state: "acquiring",
                 preview: { naturalWidth: 720, naturalHeight: 1280 },
               }),
@@ -198,7 +198,7 @@ describe("visionExperience slice runner", () => {
               void adapter.writeFile(
                 statePath,
                 JSON.stringify({
-                  route: "#/try-on?catalogKey=product%3A1&mode=fast",
+                  route: "#/try-on?catalogKey=product%3A1",
                   state: "completed",
                   preview: { naturalWidth: 720, naturalHeight: 1280 },
                   resultUrl:
@@ -211,7 +211,7 @@ describe("visionExperience slice runner", () => {
           await adapter.writeFile(
             statePath,
             JSON.stringify({
-              route: "#/try-on?catalogKey=product%3A1&mode=fast",
+              route: "#/try-on?catalogKey=product%3A1",
               state: "acquiring",
               manualCaptureAllowed: true,
               guidance: "请保持不动，3 秒后自动拍摄",

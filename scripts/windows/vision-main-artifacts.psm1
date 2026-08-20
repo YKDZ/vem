@@ -167,7 +167,6 @@ function Convert-VisionCandidateToMainDelivery {
         $declared[$name] = $file
       }
       Assert-VisionMainCondition ($declared.ContainsKey("vending-vision/vending-vision.exe")) "candidate main executable is missing"
-      Assert-VisionMainCondition ($declared.ContainsKey("vending-vision-ai-worker/vending-vision-ai-worker.exe")) "candidate AI worker is missing"
       Assert-VisionMainCondition ($entries.Count -eq $declared.Count + 1) "candidate archive member set is invalid"
       foreach ($entry in $entries) {
         if ($entry.name -ceq "candidate-manifest.json") { continue }
@@ -185,7 +184,6 @@ function Convert-VisionCandidateToMainDelivery {
       }
     } finally { $archive.Dispose() }
     Copy-Item -Path (Join-Path $extract "vending-vision\*") -Destination $stage -Recurse
-    Copy-Item -LiteralPath (Join-Path $extract "vending-vision-ai-worker") -Destination $stage -Recurse
     $legacyManifest = [ordered]@{
       schemaVersion = $script:VisionArtifactSchema
       commit = $Commit
@@ -413,7 +411,7 @@ function Assert-VisionSiteConfiguration([string]$ConfigurationPath, [string]$Fix
     Assert-VisionMainCondition ($configuration.cameras.top.source -ceq "recorded_video") "site configuration must bind the top camera to recorded_video"
     Assert-VisionMainCondition ($configuration.cameras.front.source -ceq "recorded_video") "site configuration must bind the front camera to recorded_video"
     Assert-VisionMainCondition ($configuration.cameras.top.role -ceq "presence") "site configuration top camera role must remain presence"
-    Assert-VisionMainCondition ($configuration.cameras.front.role -ceq "profile_fast_try_on") "site configuration front camera role must remain profile_fast_try_on"
+    Assert-VisionMainCondition ($configuration.cameras.front.role -ceq "profile_try_on") "site configuration front camera role must remain profile_try_on"
     foreach ($binding in @(
       @{ camera = $configuration.cameras.top; expected = $fixtureState.digests.top.path; label = "top" },
       @{ camera = $configuration.cameras.front; expected = $fixtureState.digests.front.path; label = "front" }
@@ -508,10 +506,10 @@ function Invoke-VisionMainProbe([string]$ConfigurationPath, [int]$TimeoutSeconds
       $socket = [Net.WebSockets.ClientWebSocket]::new(); $cancellation = [Threading.CancellationTokenSource]::new(); $cancellation.CancelAfter(5000)
       try {
         [void]$socket.ConnectAsync([Uri]$uris.webSocketUrl, $cancellation.Token).GetAwaiter().GetResult()
-        $hello = @{ protocol = $contractIdentity.protocol; type = "vision.hello"; messageId = [guid]::NewGuid().ToString(); timestamp = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"); payload = @{ clientRole = "machine"; schemaVersion = $contractIdentity.schemaVersion; bundleVersion = $contractIdentity.bundleVersion; contractDigest = $contractIdentity.contractDigest; capabilities = @("profile_push", "presence_status", "person_departed", "ambient_light", "try_on_fast") } } | ConvertTo-Json -Compress -Depth 8
+        $hello = @{ protocol = $contractIdentity.protocol; type = "vision.hello"; messageId = [guid]::NewGuid().ToString(); timestamp = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"); payload = @{ clientRole = "machine"; schemaVersion = $contractIdentity.schemaVersion; bundleVersion = $contractIdentity.bundleVersion; contractDigest = $contractIdentity.contractDigest; capabilities = @("profile_push", "presence_status", "person_departed", "ambient_light", "try_on") } } | ConvertTo-Json -Compress -Depth 8
         $bytes = [Text.Encoding]::UTF8.GetBytes($hello); [void]$socket.SendAsync([ArraySegment[byte]]::new($bytes), [Net.WebSockets.WebSocketMessageType]::Text, $true, $cancellation.Token).GetAwaiter().GetResult()
         $ready = Receive-VisionMainTextMessage $socket $cancellation.Token | ConvertFrom-Json -ErrorAction Stop
-        $requiredCapabilities = @("profile_push", "presence_status", "person_departed", "try_on_fast")
+        $requiredCapabilities = @("profile_push", "presence_status", "person_departed", "try_on")
         $readyValid = (
           $null -ne $ready -and
           $ready.protocol -is [string] -and $ready.protocol -ceq $contractIdentity.protocol -and
@@ -521,10 +519,7 @@ function Invoke-VisionMainProbe([string]$ConfigurationPath, [int]$TimeoutSeconds
           $ready.payload -is [System.Management.Automation.PSCustomObject] -and
           $ready.payload.serverName -is [string] -and -not [string]::IsNullOrWhiteSpace($ready.payload.serverName) -and $ready.payload.serverName.Length -le 128 -and
           $ready.payload.cameraReady -is [bool] -and
-          $ready.payload.fastReady -is [bool] -and $ready.payload.fastReady -eq $true -and
-          $ready.payload.aiReady -is [bool] -and
-          $ready.payload.aiReadinessDiagnostic -is [string] -and
-          @("ready", "model_pack_missing", "model_pack_invalid", "worker_unavailable") -ccontains $ready.payload.aiReadinessDiagnostic -and
+          $ready.payload.tryOnReady -is [bool] -and $ready.payload.tryOnReady -eq $true -and
           $ready.payload.visionBusinessReady -is [bool] -and $ready.payload.visionBusinessReady -eq $true -and
           $ready.payload.businessReadinessDiagnostic -is [string] -and $ready.payload.businessReadinessDiagnostic -ceq "ready" -and
           $ready.payload.schemaVersion -is [string] -and $ready.payload.schemaVersion -ceq $contractIdentity.schemaVersion -and
@@ -787,7 +782,7 @@ function Install-VisionMainArtifact {
           break
         } catch {
           $removeError = $_
-          # A stale Vision process (main, spawn child, or AI worker) can keep
+          # A stale Vision process (main or spawn child) can keep
           # the log handle open after the managed task stopped. Force-kill
           # every process rooted under the app directory before retrying.
           Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |

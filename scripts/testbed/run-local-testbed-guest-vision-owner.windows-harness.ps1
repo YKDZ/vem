@@ -114,9 +114,7 @@ try {
     return Start-TestbedInstalledRuntimeOwners `
       -GuestInput ([pscustomobject]@{ interactiveUserPassword = "harness-password" }) `
       -DaemonPath "C:\VEM\bringup\vending-daemon.exe" `
-      -MachinePath ([IO.Path]::GetFullPath("C:\VEM\bringup\machine.exe")) `
-      -VisionAiModelPackRoot $null `
-      -VisionAiAcceptanceEvidenceRoot $null
+      -MachinePath ([IO.Path]::GetFullPath("C:\VEM\bringup\machine.exe"))
   }
 
   $main = New-VisionProcess 5900 1892 "`"$canonicalPath`" --config `"$canonicalConfig`""

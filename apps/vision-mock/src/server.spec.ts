@@ -282,7 +282,7 @@ describe("vision mock server - protocol conformance", () => {
       expect(ready.payload.capabilities).toContain("profile_push");
       expect(ready.payload.capabilities).toContain("presence_status");
       expect(ready.payload.capabilities).toContain("person_departed");
-      expect(ready.payload.capabilities).toContain("try_on_fast");
+      expect(ready.payload.capabilities).toContain("try_on");
 
       const presence = await messages.next();
       if (presence.type !== "vision.presence_status") {

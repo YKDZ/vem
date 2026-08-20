@@ -1122,7 +1122,7 @@ describe("machine-ui-cdp-driver", () => {
           return cdpValue(
             scrollCalls === 0
               ? {
-                  selector: '[data-test="try-on-ai"]',
+                  selector: '[data-test="try-on"]',
                   exists: true,
                   actionable: false,
                   inViewport: true,
@@ -1132,7 +1132,7 @@ describe("machine-ui-cdp-driver", () => {
                   center: { x: 190, y: 1857 },
                 }
               : {
-                  selector: '[data-test="try-on-ai"]',
+                  selector: '[data-test="try-on"]',
                   exists: true,
                   actionable: true,
                   inViewport: true,
@@ -1150,7 +1150,7 @@ describe("machine-ui-cdp-driver", () => {
       webSocketFactory: factory,
     });
     await client.connect();
-    await activateVisibleSelector(client, '[data-test="try-on-ai"]', {
+    await activateVisibleSelector(client, '[data-test="try-on"]', {
       timeoutMs: 50,
       pollMs: 1,
     });

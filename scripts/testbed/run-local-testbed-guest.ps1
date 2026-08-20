@@ -283,9 +283,6 @@ function Clear-TestbedRunReports {
   )) {
     Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
   }
-  $aiArtifactRoot = Join-Path $handoffRoot "ai-virtual-try-on-artifacts"
-  $artifactModule = Import-Module (Join-Path $PSScriptRoot "ai-acceptance-artifacts.psm1") -Force -PassThru
-  & $artifactModule { param($Root, $RunId) Remove-TestbedAiAcceptanceArtifactRoot -Root $Root -RunId $RunId -FixtureKey "aiVirtualTryOn" } $aiArtifactRoot ([string]$guestInput.runId)
 }
 
 function Assert-DeclaredCachePath([string]$Path, [string]$Name) {
@@ -626,7 +623,7 @@ function Write-RecordedVisionSiteConfiguration([string]$Path) {
       }
       front = @{
         source = "recorded_video"
-        role = "profile_fast_try_on"
+        role = "profile_try_on"
         video_path = "recorded-video/front-vertical.mp4"
         loop = $true
       }
@@ -894,8 +891,6 @@ function Start-TestbedInstalledRuntimeOwners {
     [object]$GuestInput,
     [string]$DaemonPath,
     [string]$MachinePath,
-    [string]$VisionAiModelPackRoot,
-    [string]$VisionAiAcceptanceEvidenceRoot,
     [switch]$ClaimBeforeInteractiveOwners
   )
   Write-TestbedPhase "install-startup-vision"
@@ -911,8 +906,6 @@ function Start-TestbedInstalledRuntimeOwners {
     -VisionDataDirectory "C:\ProgramData\VEM\vision" `
     -KioskPassword (Get-TestbedKioskPassword $GuestInput) `
     -MachineUiWebViewDebugPort 9222 `
-    -VisionAiModelPackRoot $VisionAiModelPackRoot `
-    -VisionAiAcceptanceEvidenceRoot $VisionAiAcceptanceEvidenceRoot `
     -OwnerManifestPath $ownerManifestPath | ConvertFrom-Json
 
   Remove-Item -LiteralPath (Join-Path $daemonDataRoot "daemon-ready.json") -Force -ErrorAction SilentlyContinue
@@ -1329,8 +1322,6 @@ $startupState = Start-TestbedInstalledRuntimeOwners `
   -GuestInput $guestInput `
   -DaemonPath $daemonPath `
   -MachinePath $machinePath `
-  -VisionAiModelPackRoot $null `
-  -VisionAiAcceptanceEvidenceRoot $null `
   -ClaimBeforeInteractiveOwners:($Mode -eq "full" -or -not $isWarmFastRun)
 if ($null -ne $startupState.claim) {
   $claim = $startupState.claim

@@ -22,18 +22,15 @@ import {
   materializeVisionCoreArtifactSnapshot,
   parseOrchestratorOptions,
   powerShellFocusArgument,
-  provisionAiAcceptanceBlock,
-  provisionAiAcceptanceGuestInput,
-  stageAiAcceptanceInputs,
+  stageGuestInputs,
   summarizeGuestBusinessFailures,
   validateHostConfig,
 } from "./runtime-testbed-orchestrator.ts";
 import { parseTriggerOptions } from "./runtime-testbed-trigger.ts";
 
 const sha = "a".repeat(40);
-const sevenFocusedBusinessSets = [
+const coreFocusedBusinessSets = [
   "visionExperience",
-  "aiVirtualTryOn",
   "pickupProtocol",
   "presenceAndAudio",
   "paymentRecovery",
@@ -209,25 +206,6 @@ describe("runtime testbed scheduler contract", () => {
     );
   });
 
-  it("passes the independent AI virtual try-on focus through the host boundary", () => {
-    const options = parseOrchestratorOptions([
-      "run",
-      "--mode",
-      "fast",
-      "--focus",
-      "aiVirtualTryOn",
-      "--commit",
-      sha,
-      "--config",
-      "/etc/vem/testbed.json",
-    ]);
-    assert.deepEqual(options.focus, ["aiVirtualTryOn"]);
-    assert.equal(
-      powerShellFocusArgument(options.focus),
-      " -Focus @('aiVirtualTryOn')",
-    );
-  });
-
   it("tells the guest which reconstructed pass owns the runtime build", () => {
     const source = readFileSync(
       new URL("./runtime-testbed-orchestrator.ts", import.meta.url),
@@ -282,30 +260,7 @@ describe("runtime testbed scheduler contract", () => {
     );
   });
 
-  it("accepts only the functional AI input in host configuration", () => {
-    const config = validateHostConfig({
-      schemaVersion: "vem-runtime-testbed-host/v1",
-      mirrorPath: "/var/lib/vem-testbed/mirror.git",
-      workspaceRoot: "/var/lib/vem-testbed/workspaces",
-      stateRoot: "/var/lib/vem-testbed/state",
-      baselineContract: "/var/lib/vem-testbed/baseline.json",
-      hostPrivateAddress: "192.0.2.22",
-      guestSourcePath: "C:\\VEM\\source",
-      visionCoreArtifacts: visionCore("/var/lib/vem-testbed"),
-      aiVirtualTryOnFunctional: {
-        materializedModelPackRoot: "/var/lib/vem-testbed/model-pack",
-        modelPackArchive: "/var/lib/vem-testbed/model-pack.zip",
-        modelPackByteSize: 1024,
-        modelPackSha256: "a".repeat(64),
-      },
-    });
-    assert.equal(
-      config.aiVirtualTryOnFunctional.modelPackArchive,
-      "/var/lib/vem-testbed/model-pack.zip",
-    );
-  });
-
-  it("requires independent host-local Vision core artifacts before any AI input", () => {
+  it("requires independent host-local Vision core artifacts", () => {
     assert.throws(
       () =>
         validateHostConfig({
@@ -368,7 +323,7 @@ describe("runtime testbed scheduler contract", () => {
     assert.doesNotMatch(guest, /Get-VisionMainArtifactCache/);
   });
 
-  it("snapshots the exact two Vision core archives for a blocked AI pass without a guest cache fallback", async () => {
+  it("snapshots the exact two Vision core archives without a guest cache fallback", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-vision-core-input-"));
     try {
       const runtime = Buffer.from("runtime archive");
@@ -524,13 +479,13 @@ describe("runtime testbed scheduler contract", () => {
   it("extends the guest SSH execution budget for canonical multi-focus fast acceptance", () => {
     const budget = guestAcceptanceExecutionBudget({
       mode: "fast",
-      focus: sevenFocusedBusinessSets,
+      focus: coreFocusedBusinessSets,
     });
 
     assert.ok(budget.timeoutMs >= 20 * 60_000);
     assert.equal(
       budget.selectedSets.join(","),
-      sevenFocusedBusinessSets.join(","),
+      coreFocusedBusinessSets.join(","),
     );
     assert.match(budget.timeoutLabel, /budgetMs=/);
     assert.match(budget.timeoutLabel, /selectedSets=/);
@@ -593,292 +548,75 @@ describe("runtime testbed scheduler contract", () => {
     );
   });
 
-  it("budgets a 4.5 GB guest input transfer for the observed slow link", async () => {
-    const calls = [];
-    const byteSize = 4_506_259_239;
-    await stageAiAcceptanceInputs({
-      config: { stateRoot: "/var/lib/vem-testbed/state" },
-      contract: {
-        testbed: {
-          guest: {
-            user: "VEMKiosk",
-            host: "win10-testbed.local",
-            identityFile: "/tmp/id",
-            knownHostsFile: "/tmp/known_hosts",
-            stagingPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
-          },
-        },
-      },
-      preparation: {
+  it("stages only verified Vision core archives and the current guest projection", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-vision-core-stage-"));
+    try {
+      writeFileSync(join(root, "guest-input.json"), "{}\n");
+      const calls = [];
+      const corePreparation = {
         transfers: [
           {
-            hostPath: "/host/model-pack.zip",
+            hostPath: "/snapshot/vision-runtime.zip",
             guestPath:
-              "D:\\runtime-cache\\v1\\acceptance-inputs\\files\\digest\\model-pack.zip",
+              "D:\\runtime-cache\\v1\\acceptance-inputs\\files\\runtime-digest\\vision-runtime.zip",
             sha256: "a".repeat(64),
-            byteSize,
+            byteSize: 128,
+          },
+          {
+            hostPath: "/snapshot/recorded-fixtures.zip",
+            guestPath:
+              "D:\\runtime-cache\\v1\\acceptance-inputs\\files\\fixture-digest\\recorded-fixtures.zip",
+            sha256: "b".repeat(64),
+            byteSize: 64,
           },
         ],
-      },
-      captureResult: async () => ({ stdout: '{"cacheHits":[]}' }),
-      run: async (command, args, options) =>
-        calls.push({ command, args, options }),
-    });
-
-    const transfer = calls.find(
-      (call) =>
-        call.command === "scp" && call.args.at(-1).endsWith("model-pack.zip"),
-    );
-    assert.equal(transfer.options.timeoutMs, 657_188);
-    assert.match(transfer.options.timeoutLabel, /4506259239/);
-    assert.match(
-      transfer.options.timeoutLabel,
-      new RegExp(String(transfer.options.timeoutMs)),
-    );
-  });
-
-  it("keeps independent guest input budgets bounded by the small-transfer floor and hard cap", async () => {
-    const calls = [];
-    const smallPath = "D:\\runtime-cache\\small.bin";
-    const directoryPath = "D:\\runtime-cache\\model-pack";
-    const hugePath = "D:\\runtime-cache\\huge.bin";
-    await stageAiAcceptanceInputs({
-      config: { stateRoot: "/var/lib/vem-testbed/state" },
-      contract: {
+      };
+      const contract = {
         testbed: {
           guest: {
             user: "VEMKiosk",
             host: "win10-testbed.local",
             identityFile: "/tmp/id",
-            knownHostsFile: "/tmp/known_hosts",
+            knownHostsFile: "/tmp/known-hosts",
             stagingPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
           },
         },
-      },
-      preparation: {
-        transfers: [
-          {
-            hostPath: "/host/small.bin",
-            guestPath: smallPath,
-            sha256: "a".repeat(64),
-            byteSize: 1,
-          },
-          {
-            hostPath: "/host/model-pack",
-            guestPath: directoryPath,
-            sha256: "b".repeat(64),
-            byteSize: 100_000_000_000,
-            members: [
-              {
-                name: "weights/first.bin",
-                sha256: "c".repeat(64),
-                byteSize: 2_500_000_000,
-              },
-              {
-                name: "weights/second.bin",
-                sha256: "d".repeat(64),
-                byteSize: 2_006_259_239,
-              },
-            ],
-          },
-          {
-            hostPath: "/host/huge.bin",
-            guestPath: hugePath,
-            sha256: "e".repeat(64),
-            byteSize: 100_000_000_000,
-          },
-        ],
-      },
-      captureResult: async () => ({ stdout: '{"cacheHits":[]}' }),
-      run: async (command, args, options) =>
-        calls.push({ command, args, options }),
-    });
+      };
+      await stageGuestInputs({
+        config: { stateRoot: root },
+        contract,
+        corePreparation,
+        captureResult: async () => ({ stdout: '{"cacheHits":[]}' }),
+        run: async (command, args, options) =>
+          calls.push({ command, args, options }),
+      });
+      const destinations = calls
+        .filter((call) => call.command === "scp")
+        .map((call) => call.args.at(-1));
+      assert.deepEqual(destinations, [
+        "VEMKiosk@win10-testbed.local:D:\\runtime-cache\\v1\\acceptance-inputs\\files\\runtime-digest\\vision-runtime.zip",
+        "VEMKiosk@win10-testbed.local:D:\\runtime-cache\\v1\\acceptance-inputs\\files\\fixture-digest\\recorded-fixtures.zip",
+        "VEMKiosk@win10-testbed.local:C:\\ProgramData\\VEM\\testbed\\guest-input.json",
+      ]);
+      assert.ok(calls.some((call) => call.command === "ssh"));
 
-    const transferOptions = (guestPath) =>
-      calls.find(
-        (call) =>
-          call.command === "scp" && call.args.at(-1).endsWith(guestPath),
-      ).options;
-    assert.equal(transferOptions(smallPath).timeoutMs, 300_000);
-    assert.equal(transferOptions(directoryPath).timeoutMs, 657_188);
-    assert.equal(transferOptions(hugePath).timeoutMs, 30 * 60_000);
-    assert.match(transferOptions(smallPath).timeoutLabel, /bytes=1/);
-    assert.match(
-      transferOptions(directoryPath).timeoutLabel,
-      /bytes=4506259239/,
-    );
-    assert.match(transferOptions(hugePath).timeoutLabel, /budgetMs=1800000/);
-  });
-
-  it("rejects an invalid file byte size before probing or mutating the guest", async () => {
-    for (const byteSize of [Number.NaN, -1, 0, Number.MAX_SAFE_INTEGER + 1]) {
-      const calls = [];
+      const invalidCalls = [];
       await assert.rejects(
-        stageAiAcceptanceInputs({
-          config: { stateRoot: "/var/lib/vem-testbed/state" },
-          contract: {
-            testbed: {
-              guest: {
-                user: "VEMKiosk",
-                host: "win10-testbed.local",
-                identityFile: "/tmp/id",
-                knownHostsFile: "/tmp/known_hosts",
-                stagingPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
-              },
-            },
+        stageGuestInputs({
+          config: { stateRoot: root },
+          contract,
+          corePreparation: {
+            transfers: [{ ...corePreparation.transfers[0], byteSize: 0 }],
           },
-          preparation: {
-            transfers: [
-              {
-                hostPath: "/host/invalid.bin",
-                guestPath: "D:\\runtime-cache\\invalid.bin",
-                sha256: "f".repeat(64),
-                byteSize,
-              },
-            ],
-          },
-          captureResult: async (...args) => calls.push(["capture", ...args]),
-          run: async (...args) => calls.push(["run", ...args]),
+          captureResult: async (...args) => invalidCalls.push(args),
+          run: async (...args) => invalidCalls.push(args),
         }),
-        (error) => {
-          assert.match(error.message, /kind=file/);
-          assert.ok(error.message.includes(`byteSize=${String(byteSize)}`));
-          assert.match(error.message, /positive safe integer/);
-          return true;
-        },
+        /positive safe integer/,
       );
-      assert.deepEqual(calls, []);
+      assert.deepEqual(invalidCalls, []);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
-  });
-
-  it("rejects an invalid directory member byte size before probing or mutating the guest", async () => {
-    for (const byteSize of [Number.NaN, -1, 0, Number.MAX_SAFE_INTEGER + 1]) {
-      const calls = [];
-      await assert.rejects(
-        stageAiAcceptanceInputs({
-          config: { stateRoot: "/var/lib/vem-testbed/state" },
-          contract: {
-            testbed: {
-              guest: {
-                user: "VEMKiosk",
-                host: "win10-testbed.local",
-                identityFile: "/tmp/id",
-                knownHostsFile: "/tmp/known_hosts",
-                stagingPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
-              },
-            },
-          },
-          preparation: {
-            transfers: [
-              {
-                hostPath: "/host/invalid-directory",
-                guestPath: "D:\\runtime-cache\\invalid-directory",
-                sha256: "f".repeat(64),
-                byteSize: 1,
-                members: [
-                  {
-                    name: "weights/model.bin",
-                    sha256: "e".repeat(64),
-                    byteSize,
-                  },
-                ],
-              },
-            ],
-          },
-          captureResult: async (...args) => calls.push(["capture", ...args]),
-          run: async (...args) => calls.push(["run", ...args]),
-        }),
-        (error) => {
-          assert.match(error.message, /kind=directory_member/);
-          assert.match(error.message, /member=weights\/model\.bin/);
-          assert.ok(error.message.includes(`byteSize=${String(byteSize)}`));
-          assert.match(error.message, /positive safe integer/);
-          return true;
-        },
-      );
-      assert.deepEqual(calls, []);
-    }
-  });
-
-  it("rejects a directory byte-size sum overflow before probing or mutating the guest", async () => {
-    const calls = [];
-    await assert.rejects(
-      stageAiAcceptanceInputs({
-        config: { stateRoot: "/var/lib/vem-testbed/state" },
-        contract: {
-          testbed: {
-            guest: {
-              user: "VEMKiosk",
-              host: "win10-testbed.local",
-              identityFile: "/tmp/id",
-              knownHostsFile: "/tmp/known_hosts",
-              stagingPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
-            },
-          },
-        },
-        preparation: {
-          transfers: [
-            {
-              hostPath: "/host/overflow-directory",
-              guestPath: "D:\\runtime-cache\\overflow-directory",
-              sha256: "f".repeat(64),
-              byteSize: Number.MAX_SAFE_INTEGER,
-              members: [
-                {
-                  name: "weights/first.bin",
-                  sha256: "e".repeat(64),
-                  byteSize: Number.MAX_SAFE_INTEGER,
-                },
-                {
-                  name: "weights/second.bin",
-                  sha256: "d".repeat(64),
-                  byteSize: 1,
-                },
-              ],
-            },
-          ],
-        },
-        captureResult: async (...args) => calls.push(["capture", ...args]),
-        run: async (...args) => calls.push(["run", ...args]),
-      }),
-      /guest input transfer byte size invalid.*kind=directory_total.*exceeds Number\.MAX_SAFE_INTEGER/,
-    );
-    assert.deepEqual(calls, []);
-  });
-
-  it("rejects a zero-byte directory before probing or mutating the guest", async () => {
-    const calls = [];
-    await assert.rejects(
-      stageAiAcceptanceInputs({
-        config: { stateRoot: "/var/lib/vem-testbed/state" },
-        contract: {
-          testbed: {
-            guest: {
-              user: "VEMKiosk",
-              host: "win10-testbed.local",
-              identityFile: "/tmp/id",
-              knownHostsFile: "/tmp/known_hosts",
-              stagingPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
-            },
-          },
-        },
-        preparation: {
-          transfers: [
-            {
-              hostPath: "/host/empty-directory",
-              guestPath: "D:\\runtime-cache\\empty-directory",
-              sha256: "f".repeat(64),
-              byteSize: 0,
-              members: [],
-            },
-          ],
-        },
-        captureResult: async (...args) => calls.push(["capture", ...args]),
-        run: async (...args) => calls.push(["run", ...args]),
-      }),
-      /guest input transfer byte size invalid.*kind=directory_total.*byteSize=0.*positive safe integer/,
-    );
-    assert.deepEqual(calls, []);
   });
 
   it("compresses the commit archive before the guest transfer", () => {
@@ -947,711 +685,6 @@ describe("runtime testbed scheduler contract", () => {
     );
     assert.match(source, /C:\/ProgramData\/VEM\/testbed\/full-workflow/);
     assert.doesNotMatch(source, /C:\/ProgramData\/VEM\/runtime\/testbed/);
-  });
-
-  it("provisions digest-bound AI inputs before each selected guest execution", () => {
-    const source = readFileSync(
-      new URL("./runtime-testbed-orchestrator.ts", import.meta.url),
-      "utf8",
-    );
-    assert.match(source, /requiresAiAcceptanceInputs\(options\)/);
-    assert.match(source, /aiVirtualTryOn: preparation\.guestInput/);
-    assert.match(source, /await stageAiAcceptanceInputs/);
-    assert.match(source, /full pass 2 AI acceptance input drifted from pass 1/);
-    assert.match(
-      source,
-      /AI acceptance inputs changed during host preparation/,
-    );
-  });
-
-  it("stages every fixed AI destination and always sends the current blocked guest input", async () => {
-    const calls = [];
-    const config = { stateRoot: "/var/lib/vem-testbed/state" };
-    const contract = {
-      testbed: {
-        guest: {
-          user: "VEMKiosk",
-          host: "win10-testbed.local",
-          identityFile: "/tmp/id",
-          knownHostsFile: "/tmp/known_hosts",
-          stagingPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
-        },
-      },
-    };
-    const preparation = {
-      guestInput: {
-        inputRoot: "C:\\ProgramData\\VEM\\testbed\\ai-inputs\\a".repeat(64),
-      },
-      transfers: Array.from({ length: 7 }, (_, index) => ({
-        hostPath: `/snapshot/${index}`,
-        guestPath: `C:\\ProgramData\\VEM\\testbed\\ai-inputs\\digest\\entry-${index}`,
-        byteSize: 1,
-        sha256: "a".repeat(64),
-        ...(index < 2 || index === 6
-          ? {
-              members: [
-                { name: "member", byteSize: 1, sha256: "b".repeat(64) },
-              ],
-            }
-          : {}),
-      })),
-    };
-    await stageAiAcceptanceInputs({
-      config,
-      contract,
-      preparation,
-      captureResult: async () => ({ stdout: '{"cacheHits":[]}' }),
-      run: async (command, args) => calls.push({ command, args }),
-    });
-    await stageAiAcceptanceInputs({
-      config,
-      contract,
-      preparation: null,
-      captureResult: async () => ({ stdout: '{"cacheHits":[]}' }),
-      run: async (command, args) => calls.push({ command, args }),
-    });
-    const destinations = calls
-      .filter((call) => call.command === "scp")
-      .map((call) => call.args.at(-1));
-    assert.ok(
-      destinations.includes(
-        "VEMKiosk@win10-testbed.local:C:\\ProgramData\\VEM\\testbed\\ai-inputs\\digest\\entry-0",
-      ),
-    );
-    assert.ok(
-      destinations.includes(
-        "VEMKiosk@win10-testbed.local:C:\\ProgramData\\VEM\\testbed\\guest-input.json",
-      ),
-    );
-    assert.equal(
-      destinations.filter((value) => value.endsWith("guest-input.json")).length,
-      2,
-    );
-    assert.equal(
-      destinations.some((value) => value.endsWith("undefined")),
-      false,
-    );
-  });
-
-  it("keeps full-run guest input cleanup below the Windows command-line limit", async () => {
-    const calls = [];
-    const aiRoot = `C:\\ProgramData\\VEM\\testbed\\ai-inputs\\${"a".repeat(64)}`;
-    const coreRoot = `C:\\ProgramData\\VEM\\testbed\\vision-core\\${"b".repeat(64)}`;
-    const file = (hostPath, guestPath, byteSize) => ({
-      hostPath,
-      guestPath,
-      byteSize,
-      sha256: "c".repeat(64),
-    });
-    const directory = (hostPath, guestPath) => ({
-      hostPath,
-      guestPath,
-      byteSize: 1,
-      sha256: "d".repeat(64),
-      members: [{ name: "member", byteSize: 1, sha256: "e".repeat(64) }],
-    });
-    const coreTransfers = [
-      file(
-        "/snapshot/core-runtime.zip",
-        `${coreRoot}\\vision-runtime.zip`,
-        1_484_082_923,
-      ),
-      file(
-        "/snapshot/core-fixtures.zip",
-        `${coreRoot}\\recorded-fixtures.zip`,
-        1_788_616,
-      ),
-    ];
-    const aiTransfers = [
-      file(
-        "/snapshot/vision-runtime.zip",
-        `${aiRoot}\\vision-runtime.zip`,
-        1_484_082_923,
-      ),
-      file(
-        "/snapshot/recorded-fixtures.zip",
-        `${aiRoot}\\recorded-fixtures.zip`,
-        1_788_616,
-      ),
-      file(
-        "/snapshot/model-pack.zip",
-        `${aiRoot}\\model-pack.zip`,
-        4_506_259_239,
-      ),
-      directory("/snapshot/model-pack", `${aiRoot}\\model-pack`),
-    ];
-
-    await stageAiAcceptanceInputs({
-      config: { stateRoot: "/var/lib/vem-testbed/state" },
-      contract: {
-        testbed: {
-          guest: {
-            user: "VEMKiosk",
-            host: "win10-testbed.local",
-            identityFile: "/tmp/id",
-            knownHostsFile: "/tmp/known_hosts",
-            stagingPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
-          },
-        },
-      },
-      corePreparation: { transfers: coreTransfers },
-      preparation: { transfers: aiTransfers },
-      captureResult: async () => ({ stdout: '{"cacheHits":[]}' }),
-      run: async (command, args) => calls.push({ command, args }),
-    });
-
-    const cleanupCalls = calls.filter((call) => call.command === "ssh");
-    assert.ok(cleanupCalls.length > 0);
-    for (const call of cleanupCalls) {
-      const remoteCommand = call.args.slice(-4).join(" ");
-      assert.ok(
-        remoteCommand.length <= 8_191,
-        `remote Windows command is ${remoteCommand.length} characters`,
-      );
-    }
-    const cleanup = cleanupCalls
-      .map((call) =>
-        Buffer.from(call.args.at(-1), "base64").toString("utf16le"),
-      )
-      .join("\n");
-    for (const transfer of [...coreTransfers, ...aiTransfers]) {
-      assert.match(
-        cleanup,
-        new RegExp(transfer.guestPath.replaceAll("\\", "\\\\")),
-      );
-    }
-  });
-
-  it("retains matching regular guest archives while refreshing the guest projection", async () => {
-    const calls = [];
-    const probes = [];
-    const runtimePath =
-      "C:\\ProgramData\\VEM\\testbed\\vision-core\\digest\\vision-runtime.zip";
-    const modelPath =
-      "C:\\ProgramData\\VEM\\testbed\\ai-inputs\\digest\\official-model-pack.zip";
-    await stageAiAcceptanceInputs({
-      config: { stateRoot: "/var/lib/vem-testbed/state" },
-      contract: {
-        testbed: {
-          guest: {
-            user: "VEMKiosk",
-            host: "win10-testbed.local",
-            identityFile: "/tmp/id",
-            knownHostsFile: "/tmp/known_hosts",
-            stagingPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
-          },
-        },
-      },
-      corePreparation: {
-        guestInput: {
-          inputRoot: "C:\\ProgramData\\VEM\\testbed\\vision-core\\digest",
-        },
-        transfers: [
-          {
-            hostPath: "/host/vision-runtime.zip",
-            guestPath: runtimePath,
-            sha256: "a".repeat(64),
-            byteSize: 1_484_082_923,
-          },
-        ],
-      },
-      preparation: {
-        guestInput: {
-          inputRoot: "C:\\ProgramData\\VEM\\testbed\\ai-inputs\\digest",
-        },
-        transfers: [
-          {
-            hostPath: "/host/official-model-pack.zip",
-            guestPath: modelPath,
-            sha256: "b".repeat(64),
-            byteSize: 4_506_000_000,
-          },
-        ],
-      },
-      captureResult: async (command, args) => {
-        assert.equal(command, "ssh");
-        const probe = Buffer.from(args.at(-1), "base64").toString("utf16le");
-        probes.push(probe);
-        assert.match(probe, /System\.IO\.FileInfo/);
-        assert.match(probe, /FileAttributes\]::ReparsePoint/);
-        assert.match(probe, /Get-FileHash/);
-        return {
-          stdout: JSON.stringify({
-            cacheHits: [probe.includes("1484082923") ? runtimePath : modelPath],
-          }),
-        };
-      },
-      run: async (command, args) => calls.push({ command, args }),
-    });
-    const destinations = calls
-      .filter((call) => call.command === "scp")
-      .map((call) => call.args.at(-1));
-    assert.deepEqual(destinations, [
-      "VEMKiosk@win10-testbed.local:C:\\ProgramData\\VEM\\testbed\\guest-input.json",
-    ]);
-    assert.match(probes.join("\n"), /1484082923/);
-    assert.match(probes.join("\n"), /4506000000/);
-  });
-
-  it("retains exact guest directories and deduplicates shared digest destinations", async () => {
-    const calls = [];
-    const probes = [];
-    const cacheRoot =
-      "D:\\runtime-cache\\v1\\acceptance-inputs\\directories\\digest";
-    const archivePath =
-      "D:\\runtime-cache\\v1\\acceptance-inputs\\files\\digest\\vision-runtime.zip";
-    const archive = {
-      hostPath: "/host/vision-runtime.zip",
-      guestPath: archivePath,
-      sha256: "a".repeat(64),
-      byteSize: 1_484_082_923,
-    };
-    await stageAiAcceptanceInputs({
-      config: { stateRoot: "/var/lib/vem-testbed/state" },
-      contract: {
-        testbed: {
-          guest: {
-            user: "VEMKiosk",
-            host: "win10-testbed.local",
-            identityFile: "/tmp/id",
-            knownHostsFile: "/tmp/known_hosts",
-            stagingPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
-          },
-        },
-      },
-      corePreparation: { transfers: [archive] },
-      preparation: {
-        transfers: [
-          { ...archive, hostPath: "/other-snapshot/vision-runtime.zip" },
-          {
-            hostPath: "/host/model-pack",
-            guestPath: cacheRoot,
-            sha256: "b".repeat(64),
-            byteSize: 7,
-            members: [
-              {
-                name: "weights/model.bin",
-                sha256: "c".repeat(64),
-                byteSize: 7,
-              },
-            ],
-          },
-        ],
-      },
-      captureResult: async (_command, args) => {
-        const probe = Buffer.from(args.at(-1), "base64").toString("utf16le");
-        probes.push(probe);
-        return {
-          stdout: JSON.stringify({
-            cacheHits: [
-              probe.includes("Get-ChildItem") ? cacheRoot : archivePath,
-            ],
-          }),
-        };
-      },
-      run: async (command, args) => calls.push({ command, args }),
-    });
-
-    assert.ok(probes.some((probe) => probe.includes("Get-ChildItem")));
-    assert.deepEqual(
-      calls
-        .filter((call) => call.command === "scp")
-        .map((call) => call.args.at(-1)),
-      [
-        "VEMKiosk@win10-testbed.local:C:\\ProgramData\\VEM\\testbed\\guest-input.json",
-      ],
-    );
-  });
-
-  it("rejects changed, incomplete, extra-file, and reparse-point guest directories", async () => {
-    const root = mkdtempSync(join(tmpdir(), "vem-guest-directory-cache-"));
-    const modelRoot = join(root, "model-pack");
-    const modelDirectory = join(modelRoot, "weights");
-    const modelPath = join(modelDirectory, "model.bin");
-    const extraPath = join(modelRoot, "extra.bin");
-    const emptyDirectory = join(modelRoot, "empty");
-    const linkPath = join(modelRoot, "model-link.bin");
-    const content = "model-v1";
-    const transfer = {
-      hostPath: "/host/model-pack",
-      guestPath: modelRoot,
-      sha256: digest(`${digest(content)}\0${content.length}`),
-      byteSize: content.length,
-      members: [
-        {
-          name: "weights/model.bin",
-          sha256: digest(content),
-          byteSize: content.length,
-        },
-      ],
-    };
-    const stage = async () => {
-      const calls = [];
-      await stageAiAcceptanceInputs({
-        config: { stateRoot: root },
-        contract: {
-          testbed: {
-            guest: {
-              user: "VEMKiosk",
-              host: "win10-testbed.local",
-              identityFile: "/tmp/id",
-              knownHostsFile: "/tmp/known_hosts",
-              stagingPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
-            },
-          },
-        },
-        preparation: { transfers: [transfer] },
-        captureResult: async (_command, args) => {
-          const result = spawnSync(
-            "pwsh",
-            ["-NoProfile", "-EncodedCommand", args.at(-1)],
-            { encoding: "utf8" },
-          );
-          assert.equal(result.status, 0, result.stderr);
-          return { stdout: result.stdout };
-        },
-        run: async (command, args) => calls.push({ command, args }),
-      });
-      return calls.some(
-        (call) =>
-          call.command === "scp" && call.args.at(-1).endsWith(modelRoot),
-      );
-    };
-    try {
-      mkdirSync(modelDirectory, { recursive: true });
-      writeFileSync(modelPath, content);
-      assert.equal(await stage(), false);
-
-      writeFileSync(modelPath, "changed!");
-      assert.equal(await stage(), true);
-      writeFileSync(modelPath, content);
-
-      rmSync(modelPath);
-      assert.equal(await stage(), true);
-      writeFileSync(modelPath, content);
-
-      writeFileSync(extraPath, "extra");
-      assert.equal(await stage(), true);
-      rmSync(extraPath);
-
-      mkdirSync(join(emptyDirectory, "nested"), { recursive: true });
-      assert.equal(await stage(), false);
-      rmSync(emptyDirectory, { recursive: true });
-
-      symlinkSync("weights/model.bin", linkPath);
-      assert.equal(await stage(), true);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it("retains a cold-staged host directory with non-authoritative empty directories", async () => {
-    const root = mkdtempSync(join(tmpdir(), "vem-empty-directory-cache-"));
-    const sourceRoot = join(root, "host-source");
-    const cacheRoot = join(root, "guest-cache");
-    const content = "model-v1";
-    const transfer = {
-      hostPath: sourceRoot,
-      guestPath: cacheRoot,
-      sha256: digest(`${digest(content)}\0${content.length}`),
-      byteSize: content.length,
-      members: [
-        {
-          name: "weights/model.bin",
-          sha256: digest(content),
-          byteSize: content.length,
-        },
-      ],
-    };
-    const stage = async ({ populateCache = false } = {}) => {
-      const calls = [];
-      await stageAiAcceptanceInputs({
-        config: { stateRoot: root },
-        contract: {
-          testbed: {
-            guest: {
-              user: "VEMKiosk",
-              host: "win10-testbed.local",
-              identityFile: "/tmp/id",
-              knownHostsFile: "/tmp/known_hosts",
-              stagingPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
-            },
-          },
-        },
-        preparation: { transfers: [transfer] },
-        captureResult: async (_command, args) => {
-          const result = spawnSync(
-            "pwsh",
-            ["-NoProfile", "-EncodedCommand", args.at(-1)],
-            { encoding: "utf8" },
-          );
-          assert.equal(result.status, 0, result.stderr);
-          return { stdout: result.stdout };
-        },
-        run: async (command, args) => {
-          calls.push({ command, args });
-          if (
-            populateCache &&
-            command === "scp" &&
-            args.at(-1).endsWith(cacheRoot)
-          ) {
-            cpSync(sourceRoot, cacheRoot, { recursive: true });
-          }
-        },
-      });
-      return calls
-        .filter((call) => call.command === "scp")
-        .map((call) => call.args.at(-1));
-    };
-    try {
-      mkdirSync(join(sourceRoot, "weights"), { recursive: true });
-      mkdirSync(join(sourceRoot, "empty", "nested"), { recursive: true });
-      writeFileSync(join(sourceRoot, "weights", "model.bin"), content);
-
-      assert.ok(
-        (await stage({ populateCache: true })).some((destination) =>
-          destination.endsWith(cacheRoot),
-        ),
-      );
-      assert.deepEqual(await stage(), [
-        "VEMKiosk@win10-testbed.local:C:\\ProgramData\\VEM\\testbed\\guest-input.json",
-      ]);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it("rejects duplicate guest destinations with different identities", async () => {
-    const destination =
-      "D:\\runtime-cache\\v1\\acceptance-inputs\\files\\digest\\runtime.zip";
-    await assert.rejects(
-      stageAiAcceptanceInputs({
-        config: { stateRoot: "/var/lib/vem-testbed/state" },
-        contract: {
-          testbed: {
-            guest: {
-              user: "VEMKiosk",
-              host: "win10-testbed.local",
-              identityFile: "/tmp/id",
-              knownHostsFile: "/tmp/known_hosts",
-              stagingPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
-            },
-          },
-        },
-        corePreparation: {
-          transfers: [
-            {
-              hostPath: "/host/runtime.zip",
-              guestPath: destination,
-              sha256: "a".repeat(64),
-              byteSize: 1,
-            },
-          ],
-        },
-        preparation: {
-          transfers: [
-            {
-              hostPath: "/other/runtime.zip",
-              guestPath: destination,
-              sha256: "b".repeat(64),
-              byteSize: 1,
-            },
-          ],
-        },
-      }),
-      /destination identity conflicts/,
-    );
-  });
-
-  it("replaces a digest-mismatched regular guest archive without clearing a matching sibling", async () => {
-    const calls = [];
-    const runtimePath =
-      "C:\\ProgramData\\VEM\\testbed\\vision-core\\digest\\vision-runtime.zip";
-    const modelPath =
-      "C:\\ProgramData\\VEM\\testbed\\ai-inputs\\digest\\official-model-pack.zip";
-    await stageAiAcceptanceInputs({
-      config: { stateRoot: "/var/lib/vem-testbed/state" },
-      contract: {
-        testbed: {
-          guest: {
-            user: "VEMKiosk",
-            host: "win10-testbed.local",
-            identityFile: "/tmp/id",
-            knownHostsFile: "/tmp/known_hosts",
-            stagingPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
-          },
-        },
-      },
-      corePreparation: {
-        guestInput: {
-          inputRoot: "C:\\ProgramData\\VEM\\testbed\\vision-core\\digest",
-        },
-        transfers: [
-          {
-            hostPath: "/host/vision-runtime.zip",
-            guestPath: runtimePath,
-            sha256: "a".repeat(64),
-            byteSize: 1_484_082_923,
-          },
-        ],
-      },
-      preparation: {
-        guestInput: {
-          inputRoot: "C:\\ProgramData\\VEM\\testbed\\ai-inputs\\digest",
-        },
-        transfers: [
-          {
-            hostPath: "/host/official-model-pack.zip",
-            guestPath: modelPath,
-            sha256: "b".repeat(64),
-            byteSize: 4_506_000_000,
-          },
-        ],
-      },
-      captureResult: async (_command, args) => {
-        const probe = Buffer.from(args.at(-1), "base64").toString("utf16le");
-        return {
-          stdout: JSON.stringify({
-            cacheHits: probe.includes("1484082923") ? [runtimePath] : [],
-          }),
-        };
-      },
-      run: async (command, args) => calls.push({ command, args }),
-    });
-    const destinations = calls
-      .filter((call) => call.command === "scp")
-      .map((call) => call.args.at(-1));
-    assert.deepEqual(destinations, [
-      `VEMKiosk@win10-testbed.local:${modelPath}`,
-      "VEMKiosk@win10-testbed.local:C:\\ProgramData\\VEM\\testbed\\guest-input.json",
-    ]);
-    const cleanup = Buffer.from(
-      calls.find((call) => call.command === "ssh").args.at(-1),
-      "base64",
-    ).toString("utf16le");
-    assert.equal(
-      cleanup.includes(`Remove-Item -LiteralPath '${modelPath}`),
-      true,
-    );
-    assert.equal(
-      cleanup.includes(`Remove-Item -LiteralPath '${runtimePath}`),
-      false,
-    );
-  });
-
-  it("writes a blocked marker before synchronizing the guest projection", async () => {
-    const root = mkdtempSync(join(tmpdir(), "vem-ai-blocked-projection-"));
-    try {
-      writeFileSync(
-        join(root, "guest-input.json"),
-        '{"schemaVersion":"vem-local-testbed-guest-input/v1","workflowIdentity":{}}\n',
-      );
-      await provisionAiAcceptanceBlock({
-        config: { stateRoot: root },
-        pass: 1,
-        reason: "AI acceptance input blocked: manifest is missing",
-      });
-      const guestInput = JSON.parse(
-        readFileSync(join(root, "guest-input.json"), "utf8"),
-      );
-      assert.equal(
-        guestInput.acceptanceBlocks.aiVirtualTryOn,
-        "AI acceptance input blocked: manifest is missing",
-      );
-      assert.equal(guestInput.workflowIdentity.pass, 1);
-      let staged;
-      await stageAiAcceptanceInputs({
-        config: { stateRoot: root },
-        contract: {
-          testbed: {
-            guest: {
-              user: "VEMKiosk",
-              host: "win10-testbed.local",
-              identityFile: "/tmp/id",
-              knownHostsFile: "/tmp/known_hosts",
-              stagingPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
-            },
-          },
-        },
-        preparation: null,
-        run: async (command, args) => {
-          if (command === "scp")
-            staged = JSON.parse(readFileSync(args.at(-2), "utf8"));
-        },
-      });
-      assert.equal(
-        staged.acceptanceBlocks.aiVirtualTryOn,
-        "AI acceptance input blocked: manifest is missing",
-      );
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it("unblocks a warm AI rerun when valid host inputs replace an earlier AI block", async () => {
-    const root = mkdtempSync(join(tmpdir(), "vem-ai-warm-unblock-"));
-    try {
-      writeFileSync(
-        join(root, "guest-input.json"),
-        JSON.stringify({
-          schemaVersion: "vem-local-testbed-guest-input/v1",
-          workflowIdentity: {},
-          acceptanceBlocks: {
-            aiVirtualTryOn: "earlier host input failure",
-            payment: "provider unavailable",
-          },
-        }),
-      );
-      await provisionAiAcceptanceBlock({
-        config: { stateRoot: root },
-        pass: 1,
-        reason: "AI acceptance input blocked: manifest is missing",
-      });
-      await provisionAiAcceptanceGuestInput({
-        config: { stateRoot: root },
-        pass: 1,
-        preparation: {
-          guestInput: {
-            inputRoot: "C:\\testbed\\ai",
-            identities: { manifestSha256: "b".repeat(64) },
-          },
-        },
-      });
-      const guestInput = JSON.parse(
-        readFileSync(join(root, "guest-input.json"), "utf8"),
-      );
-      assert.deepEqual(guestInput.acceptanceBlocks, {
-        payment: "provider unavailable",
-      });
-      assert.equal(guestInput.aiVirtualTryOn.inputRoot, "C:\\testbed\\ai");
-      assert.deepEqual(guestInput.workflowIdentity.aiVirtualTryOn, {
-        input: { manifestSha256: "b".repeat(64) },
-      });
-      writeFileSync(
-        join(root, "guest-input.json"),
-        JSON.stringify({
-          schemaVersion: "vem-local-testbed-guest-input/v1",
-          workflowIdentity: {},
-          acceptanceBlocks: { aiVirtualTryOn: "earlier host input failure" },
-        }),
-      );
-      await provisionAiAcceptanceGuestInput({
-        config: { stateRoot: root },
-        pass: 1,
-        preparation: {
-          guestInput: { inputRoot: "C:\\testbed\\ai", identities: {} },
-        },
-      });
-      assert.equal(
-        Object.hasOwn(
-          JSON.parse(readFileSync(join(root, "guest-input.json"), "utf8")),
-          "acceptanceBlocks",
-        ),
-        false,
-      );
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
   });
 
   it("keeps terminal status writes from overwriting an old superseded terminal", () => {

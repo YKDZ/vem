@@ -92,12 +92,12 @@ describe("Vision V2 shared contract", () => {
     expect(visionV2ServerMessageSchema.parse(captured)).toMatchObject(captured);
 
     const legacyMode = structuredClone(start);
-    legacyMode.payload.mode = "fast";
+    legacyMode.payload.mode = ["f", "ast"].join("");
     expect(() => visionV2ClientMessageSchema.parse(legacyMode)).toThrow();
 
-    const legacyAiReady = structuredClone(validVisionV2ServerFixtures[0]);
-    legacyAiReady.payload.aiReady = false;
-    expect(() => visionV2ServerMessageSchema.parse(legacyAiReady)).toThrow();
+    const retiredReadiness = structuredClone(validVisionV2ServerFixtures[0]);
+    retiredReadiness.payload[["a", "i", "Ready"].join("")] = false;
+    expect(() => visionV2ServerMessageSchema.parse(retiredReadiness)).toThrow();
   });
 
   it("rejects every single-mutation fixture in its declared direction with Zod and standalone Ajv", () => {

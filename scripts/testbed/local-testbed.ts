@@ -1951,32 +1951,6 @@ export async function seedThroughSupportedApis({
           garmentMediaAssetId: longTryOnGarmentAsset.id,
         },
       ],
-      aiTryOnCases: [
-        {
-          caseKey: "short",
-          template: "tshirt_short_sleeve",
-          garmentId: tryOnGarment.id,
-          garmentMediaAssetId: tryOnGarmentAsset.id,
-          garmentSha256: createHash("sha256")
-            .update(TESTBED_MEDIA_FIXTURES.tryOnGarment)
-            .digest("hex"),
-          selectedCatalogKey: `product:${shortVariant.productId}`,
-          selectedVariantId: shortVariant.variantId,
-          size: shortVariant.size,
-        },
-        {
-          caseKey: "long",
-          template: "tshirt_long_sleeve",
-          garmentId: longTryOnGarment.id,
-          garmentMediaAssetId: longTryOnGarmentAsset.id,
-          garmentSha256: createHash("sha256")
-            .update(TESTBED_MEDIA_FIXTURES.tryOnGarmentLong)
-            .digest("hex"),
-          selectedCatalogKey: `product:${longVariant.productId}`,
-          selectedVariantId: longVariant.variantId,
-          size: longVariant.size,
-        },
-      ],
       productMedia,
     },
     slots: seededSlots.map(({ slot, product, machineSlot, inventory }) => ({

@@ -53,14 +53,6 @@ const FORBIDDEN_EXTENSIONS = new Set([
   ".webm",
   ".zip",
 ]);
-export const AI_SUPPORT_EVIDENCE_SCHEMA =
-  "vem.testbed.ai-virtual-try-on-support.v1";
-const AI_SUPPORT_KINDS = new Set([
-  "degradation-diagnostic",
-  "installed-runtime",
-  "regional-evidence",
-  "resource-observation",
-]);
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const FORBIDDEN_MAGIC = Object.freeze([
   ["PE", Buffer.from("MZ")],
@@ -198,17 +190,6 @@ function isPng(path) {
   return signature.equals(PNG_SIGNATURE);
 }
 
-function canonicalJson(value) {
-  if (Array.isArray(value)) return value.map(canonicalJson);
-  if (value != null && typeof value === "object")
-    return Object.fromEntries(
-      Object.keys(value)
-        .sort()
-        .map((key) => [key, canonicalJson(value[key])]),
-    );
-  return value;
-}
-
 function forbiddenMagic(content) {
   for (const [label, signature] of FORBIDDEN_MAGIC) {
     if (content.subarray(0, signature.length).equals(signature)) return label;
@@ -234,41 +215,6 @@ function forbiddenMagic(content) {
   return null;
 }
 
-function validateAiSupportingJson(path) {
-  const content = readFileSync(path);
-  const magic = forbiddenMagic(content);
-  if (magic)
-    return `disguised executable or archive/media (${magic}) in AI evidence artifact: ${path}`;
-  let value;
-  try {
-    const raw = content.toString("utf8");
-    value = JSON.parse(raw);
-    if (`${JSON.stringify(canonicalJson(value))}\n` !== raw)
-      return `noncanonical AI supporting JSON artifact: ${path}`;
-  } catch {
-    return `invalid AI supporting JSON artifact: ${path}`;
-  }
-  if (
-    value == null ||
-    typeof value !== "object" ||
-    Array.isArray(value) ||
-    ![AI_SUPPORT_EVIDENCE_SCHEMA, "vem-ai-regional-evidence/v1"].includes(
-      value.schemaVersion,
-    ) ||
-    !AI_SUPPORT_KINDS.has(value.kind) ||
-    (value.schemaVersion === AI_SUPPORT_EVIDENCE_SCHEMA &&
-      (value.facts == null ||
-        typeof value.facts !== "object" ||
-        Array.isArray(value.facts) ||
-        JSON.stringify(Object.keys(value).sort()) !==
-          JSON.stringify(["facts", "kind", "schemaVersion"]))) ||
-    (value.schemaVersion === "vem-ai-regional-evidence/v1" &&
-      value.kind !== "regional-evidence")
-  )
-    return `unsupported AI supporting JSON schema: ${path}`;
-  return null;
-}
-
 function disguisedArtifact(path) {
   if (extname(path).toLowerCase() === ".png") return null;
   const magic = forbiddenMagic(readFileSync(path));
@@ -282,7 +228,6 @@ function reportTrace(track, reportPath, report, artifactFiles) {
     sale: ["runtimeTrace", report?.runtimeTrace],
     scannerPayment: ["runtimeTrace", report?.runtimeTrace],
     visionExperience: ["runtimeTrace", report?.runtimeTrace],
-    aiVirtualTryOn: ["runtimeTrace", report?.runtimeTrace],
     presenceAndAudio: [
       "presenceAndAudio.runtimeTrace",
       report?.presenceAndAudio?.runtimeTrace,
@@ -375,42 +320,13 @@ function physicalEvidence(track, artifactFiles) {
         screenshotScore(right) - screenshotScore(left) ||
         right.path.localeCompare(left.path),
     )
-    .slice(0, track === "aiVirtualTryOn" ? 4 : 3);
+    .slice(0, 3);
   return {
     supporting,
     logs,
     screenshots: screenshotCandidates,
     selectedScreenshots,
   };
-}
-
-function validateAiReportScreenshots(report, artifactRoot, evidence, files) {
-  if (
-    report?.schemaVersion !== "vem-ai-virtual-try-on-acceptance/v2" ||
-    report?.ok !== true
-  )
-    return null;
-  const expected = report?.attempts?.flatMap(
-    (attempt) => attempt.screenshots ?? [],
-  );
-  if (!Array.isArray(expected) || expected.length !== 4)
-    return "AI virtual try-on report screenshots are incomplete";
-  const actual = evidence.screenshots;
-  if (!Array.isArray(actual) || actual.length !== 4)
-    return "AI virtual try-on manifest screenshots are incomplete";
-  for (const screenshot of expected) {
-    const path = resolve(artifactRoot, screenshot.path);
-    const record = files.find(
-      (file) =>
-        file.kind === "screenshots" &&
-        file.path === path &&
-        file.byteLength === screenshot.byteLength &&
-        file.sha256 === screenshot.sha256,
-    );
-    if (!record || !actual.includes(record.path))
-      return "AI virtual try-on manifest screenshots do not bind report screenshots";
-  }
-  return null;
 }
 
 function perFileLimit(file) {
@@ -475,20 +391,10 @@ export function buildFullWorkflowEvidenceManifest({ tracks = [] } = {}) {
     for (const path of artifactFiles) {
       const extension = extname(path).toLowerCase();
       const allowedWav = track === "presenceAndAudio" && extension === ".wav";
-      if (
-        track === "aiVirtualTryOn" &&
-        ![".json", ".log", ".png"].includes(extension)
-      ) {
-        blockingFailures.push(
-          `forbidden AI evidence artifact for ${track}: ${path}`,
-        );
-      } else if (FORBIDDEN_EXTENSIONS.has(extension) && !allowedWav) {
+      if (FORBIDDEN_EXTENSIONS.has(extension) && !allowedWav) {
         blockingFailures.push(
           `forbidden evidence artifact for ${track}: ${path}`,
         );
-      } else if (track === "aiVirtualTryOn" && extension === ".json") {
-        const invalidJson = validateAiSupportingJson(path);
-        if (invalidJson) blockingFailures.push(invalidJson);
       } else if (extension === ".png" && !isPng(path)) {
         blockingFailures.push(
           `invalid PNG screenshot artifact for ${track}: ${path}`,
@@ -534,25 +440,12 @@ export function buildFullWorkflowEvidenceManifest({ tracks = [] } = {}) {
       ],
     };
     trackEvidence.push(evidence);
-    if (track === "aiVirtualTryOn" && businessStatus === "passed") {
-      const screenshotFailure = validateAiReportScreenshots(
-        report,
-        artifactRoot,
-        evidence,
-        files,
-      );
-      if (screenshotFailure) blockingFailures.push(screenshotFailure);
-    }
     if (businessStatus === "passed") {
       if (evidencePolicy.trace && !trace)
         failures.push(`actual Machine Runtime Trace is absent for ${track}`);
       if (evidencePolicy.logs && logs.length === 0)
         failures.push(`actual log evidence is absent for ${track}`);
-      if (track === "aiVirtualTryOn" && physical.selectedScreenshots.length < 4)
-        blockingFailures.push(
-          "AI virtual try-on requires acquisition and result PNG evidence for both attempts",
-        );
-      else if (physical.selectedScreenshots.length === 0)
+      if (physical.selectedScreenshots.length === 0)
         failures.push(
           `optional PNG screenshot evidence is absent for ${track}`,
         );
@@ -663,7 +556,7 @@ export function validateFullWorkflowEvidenceManifest(manifest) {
           failures.push(`log evidence is not owned by ${track.key}`);
         if (track.screenshots.some((path) => !owns(path, "screenshots")))
           failures.push(`screenshot evidence is not owned by ${track.key}`);
-        if (track.screenshots.length > (track.key === "aiVirtualTryOn" ? 4 : 3))
+        if (track.screenshots.length > 3)
           failures.push(`too many selected screenshots for ${track.key}`);
       } else if (
         track.diagnostics.some(

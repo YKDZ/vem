@@ -912,13 +912,6 @@ async function startTryOn(): Promise<void> {
   box-shadow: 0 10px 20px rgba(102, 92, 64, 0.08);
 }
 
-.try-on-entry-button-ai {
-  border-color: rgba(111, 131, 95, 0.72);
-  background: linear-gradient(180deg, #758868, #627655);
-  color: #fffdf7;
-  box-shadow: 0 14px 24px rgba(82, 101, 65, 0.2);
-}
-
 .detail-mascot {
   position: absolute;
   bottom: 0.72rem;

@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import { createProcessRoleManifest } from "../../fault-injection.ts";
 import { createFakeTestAdapter } from "../../test-adapter.ts";
 import {
-  runFastTryOnScenario,
+  runTryOnScenario,
   runObserverSelfHealScenario,
 } from "./vision-experience-driver.ts";
 
@@ -39,9 +39,9 @@ function fakeUiAdapter() {
           await writeState({ route: "#/catalog", state: "idle" });
           return { exitCode: 0, stdout: "ok", stderr: "" };
         },
-      'click [data-test="try-on-fast"]': async () => {
+      'click [data-test="try-on"]': async () => {
         await writeState({
-          route: "#/try-on?catalogKey=product%3A1&mode=fast",
+          route: "#/try-on?catalogKey=product%3A1",
           state: "acquiring",
           preview: { naturalWidth: 720, naturalHeight: 1280 },
         });
@@ -49,7 +49,7 @@ function fakeUiAdapter() {
           void adapter.writeFile(
             statePath,
             JSON.stringify({
-              route: "#/try-on?catalogKey=product%3A1&mode=fast",
+              route: "#/try-on?catalogKey=product%3A1",
               state: "completed",
               preview: { naturalWidth: 720, naturalHeight: 1280 },
               resultUrl:
@@ -65,9 +65,9 @@ function fakeUiAdapter() {
 }
 
 describe("visionExperience vertical slice driver", () => {
-  it("drives the fast try-on journey and produces passing assertions", async () => {
+  it("drives the single-path try-on journey and produces passing assertions", async () => {
     const adapter = fakeUiAdapter();
-    const outcome = await runFastTryOnScenario(adapter, {
+    const outcome = await runTryOnScenario(adapter, {
       timeoutMs: 2_000,
       pollMs: 10,
     });
@@ -100,7 +100,7 @@ describe("visionExperience vertical slice driver", () => {
           stdout: "ok",
           stderr: "",
         }),
-        'click [data-test="try-on-fast"]': () => ({
+        'click [data-test="try-on"]': () => ({
           exitCode: 0,
           stdout: "ok",
           stderr: "",
@@ -108,7 +108,7 @@ describe("visionExperience vertical slice driver", () => {
       },
     });
     await assert.rejects(
-      runFastTryOnScenario(adapter, { timeoutMs: 30, pollMs: 5 }),
+      runTryOnScenario(adapter, { timeoutMs: 30, pollMs: 5 }),
       /result-surface.*did not become true/,
     );
   });
@@ -164,9 +164,9 @@ describe("visionExperience vertical slice driver", () => {
           });
           return { exitCode: 0, stdout: "ok", stderr: "" };
         },
-        'click [data-test="try-on-fast"]': async () => {
+        'click [data-test="try-on"]': async () => {
           await writeState({
-            route: "#/try-on?catalogKey=product%3A1&mode=fast",
+            route: "#/try-on?catalogKey=product%3A1",
             state: "completed",
             tryOnPresent: true,
             preview: { naturalWidth: 720, naturalHeight: 1280 },

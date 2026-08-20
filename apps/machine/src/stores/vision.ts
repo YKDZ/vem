@@ -239,7 +239,7 @@ export const useVisionStore = defineStore("vision", {
         this.applyVisionReady(value.payload);
         return;
       }
-      if (isVisionFastUnavailableDiagnostic(value)) {
+      if (isVisionTryOnUnavailableDiagnostic(value)) {
         this.markTryOnCapabilityDegraded();
       }
     },
@@ -480,7 +480,7 @@ function isVisionReadyDiagnostic(
   );
 }
 
-function isVisionFastUnavailableDiagnostic(value: unknown): boolean {
+function isVisionTryOnUnavailableDiagnostic(value: unknown): boolean {
   if (
     typeof value !== "object" ||
     value === null ||
@@ -491,7 +491,7 @@ function isVisionFastUnavailableDiagnostic(value: unknown): boolean {
     return false;
   }
   const result = visionErrorPayloadSchema.safeParse(value.payload);
-  return result.success && result.data.code === "fast_unavailable";
+  return result.success && result.data.code === "try_on_unavailable";
 }
 
 function parsePresenceStatusDiagnostic(

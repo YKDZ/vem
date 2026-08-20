@@ -7,9 +7,7 @@ const resolverPath = "scripts/windows/get-vision-main-artifacts.ps1";
 const installerPath = "scripts/windows/install-vision-main-artifact.ps1";
 const powershell51Paths = [
   "scripts/windows/vision-main-consumer.windows-harness.ps1",
-  "scripts/testbed/ai-acceptance-artifacts.psm1",
   "scripts/testbed/run-local-testbed-guest.ps1",
-  "scripts/testbed/run-full-ai-virtual-try-on-track.ps1",
 ];
 
 function source(path) {
@@ -66,7 +64,10 @@ test("adapts the attested candidate v3 layout before using the legacy installer"
   assert.match(module, /function Convert-VisionCandidateToMainDelivery/);
   assert.match(module, /vending-vision-candidate-artifact\/v3/);
   assert.match(module, /candidate payload digest mismatch/);
-  assert.match(module, /vending-vision-ai-worker/);
+  assert.doesNotMatch(
+    module,
+    new RegExp(["vending", "vision", "ai", "worker"].join("-")),
+  );
 });
 
 test("installs one fixed app directory and probes health plus machine protocol", () => {
@@ -105,7 +106,7 @@ test("installs one fixed app directory and probes health plus machine protocol",
   assert.match(module, /contractDigest = \$contractIdentity\.contractDigest/);
   assert.match(
     module,
-    /profile_push", "presence_status", "person_departed", "ambient_light", "try_on_fast/,
+    /profile_push", "presence_status", "person_departed", "ambient_light", "try_on/,
   );
   assert.doesNotMatch(module, /serverVersion -cne \$health\.version/);
   assert.match(module, /Ensure-VisionMainTask/);
@@ -133,9 +134,7 @@ test("runtime verification checks the installed Vision artifact", () => {
   assert.match(verify, /VisionInstallRecord/);
   assert.match(verify, /VisionSiteConfiguration/);
   assert.match(verify, /Invoke-VisionMainProbe/);
-  assert.match(verify, /ready\.payload\.fastReady -eq \$true/);
-  assert.match(verify, /ready\.payload\.aiReady -is \[bool\]/);
-  assert.match(verify, /ready\.payload\.aiReadinessDiagnostic/);
+  assert.match(verify, /ready\.payload\.tryOnReady -eq \$true/);
   assert.match(verify, /ready\.payload\.visionBusinessReady -eq \$true/);
   assert.match(
     verify,

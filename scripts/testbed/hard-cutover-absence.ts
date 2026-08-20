@@ -111,6 +111,28 @@ const FORBIDDEN_PATTERNS = Object.freeze([
     pattern:
       /\bnavigator\s*(?:[?]?[.]\s*mediaDevices|(?:[?][.])?\s*\[\s*["']mediaDevices["']\s*\])\s*(?:[?]?[.]\s*getUserMedia|(?:[?][.])?\s*\[\s*["']getUserMedia["']\s*\])\s*[(]/,
   },
+  {
+    category: "retired-ai-try-on-mode",
+    pattern:
+      /\b(?:try[_-]on[_-](?:f[a]st|[a]i)|profile[_-]f[a]st[_-]try[_-]on|(?:f[a]st|[a]i)(?:Virtual)?TryOn|(?:f[a]st|[a]i)\s+(?:virtual\s+)?try-on|(?:f[a]st|[a]i)\s*\/\s*(?:f[a]st|[a]i)\s+(?:virtual\s+)?try-on)\b/i,
+  },
+  {
+    category: "retired-ai-readiness",
+    pattern: /\b(?:f[a]stReady|[a]iReady|[a]iReadinessDiagnostic)\b/,
+  },
+  {
+    category: "retired-ai-artifact",
+    pattern:
+      /\b(?:vending-vision-[a]i-worker|VEM_[A-Z0-9_]*[A]I(?:_[A-Z0-9_]+)?|Vision[A]i|[a]i[-_ ]worker|model(?:[-_ ]p|P)[a]ck(?:[A-Z][A-Za-z0-9]*|s)?)\b/i,
+  },
+]);
+
+const RETIRED_PATH_PATTERNS = Object.freeze([
+  {
+    category: "retired-ai-artifact-path",
+    pattern:
+      /(?:^|\/)(?:[a]i[-_](?:acceptance|installed|regional|virtual|vision)|run-(?:full|local)-testbed-guest-[a]i-owner|vision-[a]i-model-p[a]ck)(?:[._-]|\/|$)/i,
+  },
 ]);
 
 function splitLegacyConstructionMatches(source) {
@@ -857,6 +879,9 @@ export function scanHardCutoverAbsence({
           : [];
       return [
         ...integrityViolations,
+        ...RETIRED_PATH_PATTERNS.flatMap(({ category, pattern }) =>
+          pattern.test(relativePath) ? [`${relativePath}:${category}`] : [],
+        ),
         ...FORBIDDEN_PATTERNS.flatMap(({ category, pattern }) => {
           const matches = patternMatches(source, pattern);
           if (matches.length === 0) return [];

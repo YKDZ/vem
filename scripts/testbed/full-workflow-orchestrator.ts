@@ -6,7 +6,6 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { validateAiRegionalEvidenceSet } from "./ai-regional-evidence.ts";
 import {
   BUSINESS_CHECK_REGISTRY,
   selectBusinessChecks,
@@ -1440,22 +1439,7 @@ function terminalOperations(guestInput, handoff, handoffPath) {
 
 export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
   const guestInput = jsonIfPresent(options.guestInputPath);
-  if (
-    guestInput?.aiVirtualTryOn?.skipAiRss === true ||
-    guestInput?.aiVirtualTryOn?.functional === true
-  ) {
-    process.env.VEM_VM_ACCEPTANCE_SKIP_AI_RSS = "1";
-  }
   const plan = buildWorkflowTrackCommands(options);
-  const aiBlock = guestInput?.acceptanceBlocks?.aiVirtualTryOn;
-  if (typeof aiBlock === "string" && aiBlock.length > 0) {
-    const aiTrack = plan.tracks.find((track) => track.key === "aiVirtualTryOn");
-    if (aiTrack) {
-      aiTrack.runner = null;
-      aiTrack.command = null;
-      aiTrack.blockedReason = aiBlock;
-    }
-  }
   const handoff = jsonIfPresent(options.handoffPath);
   const operations =
     dependencies.captureTerminal ||
@@ -1545,20 +1529,6 @@ export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
   };
   const evidenceValidationErrors = [
     ...validateFullWorkflowEvidenceManifest(evidenceManifest),
-    ...plan.tracks
-      .filter((track) => track.key === "aiVirtualTryOn")
-      .flatMap((track) => {
-        const report = jsonIfPresent(track.reportPath);
-        const regional =
-          report?.execution?.functional === true
-            ? { ok: true, reason: null }
-            : validateAiRegionalEvidenceSet(
-                report?.attempts,
-                track.artifactRoot,
-                evidenceManifest,
-              );
-        return regional.ok ? [] : [regional.reason];
-      }),
   ];
   const aggregate = buildFullWorkflowAggregate({
     mode: options.mode,

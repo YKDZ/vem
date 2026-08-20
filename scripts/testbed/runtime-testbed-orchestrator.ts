@@ -17,10 +17,6 @@ import { isIP } from "node:net";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import {
-  buildFunctionalAiAcceptanceGuestInput,
-  identicalAiAcceptanceInputSnapshot,
-} from "./ai-acceptance-input-provisioning.ts";
 import { selectBusinessChecks } from "./business-check-registry.ts";
 
 const MODES = new Set(["fast", "full", "clear_cache"]);
@@ -234,58 +230,6 @@ export function validateHostConfig(value) {
     pathPrepend: pathPrepend.map((path) =>
       absolute(path, "host config pathPrepend entry"),
     ),
-    ...(value.aiVirtualTryOnFunctional === undefined
-      ? {}
-      : (() => {
-          const functional = value.aiVirtualTryOnFunctional;
-          if (
-            !functional ||
-            typeof functional !== "object" ||
-            Array.isArray(functional)
-          ) {
-            throw new Error(
-              "host config aiVirtualTryOnFunctional must be an object",
-            );
-          }
-          if (
-            Object.keys(functional).sort().join("\0") !==
-            [
-              "materializedModelPackRoot",
-              "modelPackArchive",
-              "modelPackByteSize",
-              "modelPackSha256",
-            ]
-              .sort()
-              .join("\0")
-          ) {
-            throw new Error(
-              "host config aiVirtualTryOnFunctional fields are invalid",
-            );
-          }
-          if (
-            !/^[a-f0-9]{64}$/.test(functional.modelPackSha256) ||
-            !Number.isSafeInteger(functional.modelPackByteSize) ||
-            functional.modelPackByteSize <= 0
-          ) {
-            throw new Error(
-              "host config aiVirtualTryOnFunctional model pack identity is invalid",
-            );
-          }
-          return {
-            aiVirtualTryOnFunctional: {
-              materializedModelPackRoot: absolute(
-                functional.materializedModelPackRoot,
-                "host config aiVirtualTryOnFunctional materializedModelPackRoot",
-              ),
-              modelPackArchive: absolute(
-                functional.modelPackArchive,
-                "host config aiVirtualTryOnFunctional modelPackArchive",
-              ),
-              modelPackByteSize: functional.modelPackByteSize,
-              modelPackSha256: functional.modelPackSha256,
-            },
-          };
-        })()),
     visionCoreArtifacts: {
       runtimeArchive: artifactFile(
         value.visionCoreArtifacts?.runtimeArchive,
@@ -629,13 +573,6 @@ function boundedPowerShellChunks(blocks) {
   return chunks;
 }
 
-function requiresAiAcceptanceInputs(options) {
-  return (
-    options.mode === "full" ||
-    (options.mode === "fast" && options.focus.includes("aiVirtualTryOn"))
-  );
-}
-
 function canonicalIdentity(value) {
   if (Array.isArray(value)) return value.map(canonicalIdentity);
   if (value && typeof value === "object") {
@@ -646,15 +583,6 @@ function canonicalIdentity(value) {
     );
   }
   return value;
-}
-
-export async function admitFunctionalAiAcceptanceInputs(config) {
-  if (!config.aiVirtualTryOnFunctional) {
-    throw new Error(
-      "AI virtual try-on functional acceptance requires host config aiVirtualTryOnFunctional",
-    );
-  }
-  return await buildFunctionalAiAcceptanceGuestInput(config);
 }
 
 function visionCoreIdentity(runtime, fixture) {
@@ -777,51 +705,6 @@ export function identicalVisionCoreArtifactSnapshot(left, right) {
   );
 }
 
-export async function provisionAiAcceptanceGuestInput({
-  config,
-  preparation,
-  pass,
-}) {
-  const path = join(config.stateRoot, "guest-input.json");
-  const guestInput = JSON.parse(await readFile(path, "utf8"));
-  if (guestInput?.schemaVersion !== "vem-local-testbed-guest-input/v1") {
-    throw new Error(
-      "AI guest input provision requires canonical local testbed guest input",
-    );
-  }
-  const acceptanceBlocks = { ...(guestInput.acceptanceBlocks ?? {}) };
-  delete acceptanceBlocks.aiVirtualTryOn;
-  const {
-    acceptanceBlocks: _previousAcceptanceBlocks,
-    ...guestInputWithoutBlocks
-  } = guestInput;
-  await writeJson(path, {
-    ...guestInputWithoutBlocks,
-    workflowIdentity: {
-      ...guestInput.workflowIdentity,
-      aiVirtualTryOn: {
-        input: preparation.guestInput.identities,
-      },
-      pass,
-    },
-    aiVirtualTryOn: preparation.guestInput,
-    ...(Object.keys(acceptanceBlocks).length > 0 ? { acceptanceBlocks } : {}),
-  });
-}
-
-export async function provisionAiAcceptanceBlock({ config, pass, reason }) {
-  const path = join(config.stateRoot, "guest-input.json");
-  const guestInput = JSON.parse(await readFile(path, "utf8"));
-  await writeJson(path, {
-    ...guestInput,
-    workflowIdentity: { ...guestInput.workflowIdentity, pass },
-    acceptanceBlocks: {
-      ...guestInput.acceptanceBlocks,
-      aiVirtualTryOn: reason,
-    },
-  });
-}
-
 function powerShellLiteral(value) {
   return `'${value.replaceAll("'", "''")}'`;
 }
@@ -939,7 +822,7 @@ function parseGuestInputCacheHits(output, transfers) {
   try {
     value = JSON.parse(output.trim());
   } catch {
-    throw new Error("AI guest input cache probe returned invalid JSON");
+    throw new Error("guest input cache probe returned invalid JSON");
   }
   if (
     value === null ||
@@ -948,13 +831,13 @@ function parseGuestInputCacheHits(output, transfers) {
     Object.keys(value).sort().join("\0") !== "cacheHits" ||
     !Array.isArray(value.cacheHits)
   ) {
-    throw new Error("AI guest input cache probe returned invalid results");
+    throw new Error("guest input cache probe returned invalid results");
   }
   const eligible = new Set(transfers.map((transfer) => transfer.guestPath));
   const hits = new Set();
   for (const path of value.cacheHits) {
     if (typeof path !== "string" || !eligible.has(path) || hits.has(path)) {
-      throw new Error("AI guest input cache probe returned invalid results");
+      throw new Error("guest input cache probe returned invalid results");
     }
     hits.add(path);
   }
@@ -975,10 +858,9 @@ async function provisionVisionCoreInput({ config, pass, preparation }) {
   });
 }
 
-export async function stageAiAcceptanceInputs({
+export async function stageGuestInputs({
   config,
   contract,
-  preparation,
   corePreparation,
   captureResult = capture,
   run = runProcess,
@@ -987,10 +869,7 @@ export async function stageAiAcceptanceInputs({
   const remote = `${guest.user}@${guest.host}`;
   const ssh = sshArguments(guest);
   const scp = scpArguments(guest);
-  const transfers = uniqueGuestTransfers([
-    ...(corePreparation?.transfers ?? []),
-    ...(preparation?.transfers ?? []),
-  ]);
+  const transfers = uniqueGuestTransfers(corePreparation?.transfers ?? []);
   const transferByteSizes = new Map(
     transfers.map((transfer) => [
       transfer.guestPath,
@@ -1020,7 +899,7 @@ export async function stageAiAcceptanceInputs({
             ],
             {
               timeoutMs: GUEST_SETUP_TIMEOUT_MS,
-              timeoutLabel: "AI guest input cache probe",
+              timeoutLabel: "guest input cache probe",
             },
           )
         ).stdout,
@@ -1058,7 +937,7 @@ export async function stageAiAcceptanceInputs({
       ],
       {
         timeoutMs: GUEST_SETUP_TIMEOUT_MS,
-        timeoutLabel: "AI guest input staging setup",
+        timeoutLabel: "guest input staging setup",
       },
     );
   }
@@ -1075,7 +954,7 @@ export async function stageAiAcceptanceInputs({
       ],
       {
         timeoutMs,
-        timeoutLabel: `AI guest input staging; bytes=${byteSize}; budgetMs=${timeoutMs}`,
+        timeoutLabel: `guest input staging; bytes=${byteSize}; budgetMs=${timeoutMs}`,
       },
     );
   }
@@ -1088,7 +967,7 @@ export async function stageAiAcceptanceInputs({
     ],
     {
       timeoutMs: GUEST_TRANSFER_TIMEOUT_MS,
-      timeoutLabel: "AI guest input projection staging",
+      timeoutLabel: "guest input projection staging",
     },
   );
 }
@@ -1110,7 +989,6 @@ async function stageAndRunGuest({
   focus = [],
   pass,
   runRoot,
-  aiAcceptanceInputs,
   visionCoreInputs,
 }) {
   const guest = contract.testbed.guest;
@@ -1145,10 +1023,9 @@ async function stageAndRunGuest({
       timeoutLabel: "guest archive parent setup",
     },
   );
-  await stageAiAcceptanceInputs({
+  await stageGuestInputs({
     config,
     contract,
-    preparation: aiAcceptanceInputs,
     corePreparation: visionCoreInputs,
   });
   await runProcess("scp", [...scp, archive, `${remote}:${remoteArchive}`], {
@@ -1342,7 +1219,6 @@ async function executeRun(options, config) {
     await assertMirrorCommit(config, options.commit);
     const workspace = await materializeWorkspace(config, options.commit);
     const environment = executionEnvironment(config);
-    const aiInputRequired = requiresAiAcceptanceInputs(options);
     const lockHash = (
       await capture("git", ["hash-object", "pnpm-lock.yaml"], {
         cwd: workspace,
@@ -1381,40 +1257,9 @@ async function executeRun(options, config) {
     const contract = JSON.parse(readFileSync(config.baselineContract, "utf8"));
     const currentFixtureIdentity = fixtureIdentityForWorkspace(workspace);
     const passes = options.mode === "full" ? 2 : 1;
-    let passOneAiInputSnapshot = null;
-    let passOneGuestAiIdentity = null;
     let passOneVisionCoreSnapshot = null;
     let passOneGuestVisionCoreIdentity = null;
     for (let pass = 1; pass <= passes; pass += 1) {
-      let aiAcceptanceInputs = null;
-      let aiInputFailure = null;
-      if (aiInputRequired) {
-        try {
-          aiAcceptanceInputs = await admitFunctionalAiAcceptanceInputs(config);
-        } catch (error) {
-          aiInputFailure =
-            error instanceof Error ? error.message : String(error);
-        }
-      }
-      const snapshot = aiAcceptanceInputs && {
-        manifestSha256: aiAcceptanceInputs.manifestSha256,
-        artifactDigests: aiAcceptanceInputs.artifactDigests,
-      };
-      if (
-        options.mode === "full" &&
-        pass === 2 &&
-        !identicalAiAcceptanceInputSnapshot(passOneAiInputSnapshot, snapshot)
-      ) {
-        aiAcceptanceInputs = null;
-        aiInputFailure = "full pass 2 AI acceptance input drifted from pass 1";
-      }
-      if (options.mode === "full" && pass === 1 && snapshot) {
-        passOneAiInputSnapshot = snapshot;
-        await writeJson(
-          join(root, "ai-acceptance-input-pass-1.json"),
-          snapshot,
-        );
-      }
       if (options.mode === "full") {
         await update({ phase: `reconstruct-pass-${pass}`, pass });
         const reconstructionOut = join(
@@ -1533,30 +1378,6 @@ async function executeRun(options, config) {
           visionCoreInputs.guestInput.identity,
         );
       }
-      if (aiAcceptanceInputs) {
-        const currentAiAcceptanceInputs =
-          await admitFunctionalAiAcceptanceInputs(config);
-        const currentSnapshot = {
-          manifestSha256: currentAiAcceptanceInputs.manifestSha256,
-          artifactDigests: currentAiAcceptanceInputs.artifactDigests,
-        };
-        if (!identicalAiAcceptanceInputSnapshot(snapshot, currentSnapshot)) {
-          throw new Error(
-            "AI acceptance inputs changed during host preparation",
-          );
-        }
-        await provisionAiAcceptanceGuestInput({
-          config,
-          preparation: currentAiAcceptanceInputs,
-          pass,
-        });
-      } else if (aiInputFailure) {
-        await provisionAiAcceptanceBlock({
-          config,
-          pass,
-          reason: `AI acceptance input blocked: ${aiInputFailure}`,
-        });
-      }
       await provisionVisionCoreInput({
         config,
         pass,
@@ -1572,7 +1393,6 @@ async function executeRun(options, config) {
         focus: options.focus,
         pass,
         runRoot: root,
-        aiAcceptanceInputs,
         visionCoreInputs,
       });
       const coreSummaryPath = await findFile(
@@ -1583,25 +1403,7 @@ async function executeRun(options, config) {
         throw new Error("guest did not publish validated Vision core identity");
       }
       const guestSummary = JSON.parse(await readFile(coreSummaryPath, "utf8"));
-      const guestAiInputIdentity =
-        guestSummary?.identity?.aiVirtualTryOn?.input;
       const canonical = (value) => JSON.stringify(canonicalIdentity(value));
-      if (aiAcceptanceInputs) {
-        if (!guestAiInputIdentity) {
-          throw new Error("guest did not publish validated AI input identity");
-        }
-        const guestIdentity = canonical(guestAiInputIdentity);
-        if (options.mode === "full" && pass === 1) {
-          passOneGuestAiIdentity = guestIdentity;
-        } else if (
-          options.mode === "full" &&
-          guestIdentity !== passOneGuestAiIdentity
-        ) {
-          throw new Error(
-            "full pass 2 guest validated AI input drifted from pass 1",
-          );
-        }
-      }
       const guestCoreIdentity = canonical(guestSummary?.identity?.visionCore);
       if (
         guestCoreIdentity !== canonical(visionCoreInputs.guestInput.identity)
