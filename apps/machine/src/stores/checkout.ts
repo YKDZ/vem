@@ -277,6 +277,22 @@ function canAdvanceTransactionProjection(input: {
   return input.requestNo >= input.lastAcceptedRequestNo;
 }
 
+function matchesActiveTransactionIdentity(
+  current: TransactionSnapshot | null,
+  orderCredential: string | null,
+  incoming: TransactionSnapshot,
+): boolean {
+  if (orderCredential === null || incoming.orderNo !== orderCredential) {
+    return false;
+  }
+  const currentOrderId = current?.orderId;
+  return (
+    currentOrderId === null ||
+    currentOrderId === undefined ||
+    incoming.orderId === currentOrderId
+  );
+}
+
 export const useCheckoutStore = defineStore("checkout", {
   state: () => ({
     selectedItem: null as CheckoutSelectedItem | null,
@@ -597,7 +613,11 @@ export const useCheckoutStore = defineStore("checkout", {
             const currentView = this.customerCheckoutView;
             if (
               currentView.stage !== "none" &&
-              snapshot.orderNo !== currentView.orderCredential
+              !matchesActiveTransactionIdentity(
+                this.transaction,
+                currentView.orderCredential,
+                snapshot,
+              )
             ) {
               this.transactionRecoveryOrderNo = currentView.orderCredential;
               this.setCustomerError(

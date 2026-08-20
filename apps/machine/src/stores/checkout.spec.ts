@@ -1315,6 +1315,36 @@ describe("checkout store", () => {
     });
   });
 
+  it("keeps the payment transaction when a daemon refresh changes its orderId", async () => {
+    const created = makeTransactionSnapshot();
+    getCurrentTransactionMock.mockResolvedValue(
+      makeTransactionSnapshot({
+        orderId: "550e8400-e29b-41d4-a716-446655440099",
+        paymentStatus: "succeeded",
+        orderStatus: "dispensing",
+        nextAction: "dispensing",
+        updatedAt: "2026-07-18T08:35:00.000Z",
+      }),
+    );
+    const store = useCheckoutStore();
+    store.applyTransaction(created);
+
+    await expect(store.refreshCurrentTransaction()).resolves.toEqual({
+      status: "refreshed",
+      snapshot: null,
+    });
+
+    expect(store.transaction?.orderId).toBe(created.orderId);
+    expect(store.customerCheckoutView).toMatchObject({
+      stage: "payment",
+      orderCredential: "ORD-001",
+    });
+    expect(store.customerCheckoutRecovery).toEqual({
+      active: true,
+      orderCredential: "ORD-001",
+    });
+  });
+
   it("clears recovery only after the daemon restores the same transaction identity and advances it", async () => {
     getCurrentTransactionMock
       .mockRejectedValueOnce(new Error("daemon IPC disconnected"))

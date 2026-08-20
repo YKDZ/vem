@@ -5,44 +5,74 @@ import { createBusinessCheckRegistryV2 } from "../../business-check-registry-v2.
 import { createFakeTestAdapter } from "../../test-adapter.ts";
 import { runVisionExperienceSlice } from "./vision-experience-runner.ts";
 
-function fakeUiAdapter() {
-  const statePath = "ui/try-on-state.json";
-  const attemptId = "attempt-1";
+function capturedEvidenceFor(attemptId: string) {
+  const visionOrigin = "http://127.0.0.1:7892";
+  const requestId = "vision-websocket-1";
   const captured = {
-    reference:
-      "http://127.0.0.1:7892/v2/try-on/captured/frame.png?token=captured-token",
+    reference: `${visionOrigin}/v2/try-on/captured/frame.png?token=captured-token`,
     digest: `sha256:${"a".repeat(64)}`,
-    contentType: "image/png",
+    contentType: "image/png" as const,
     byteSize: 4096,
     width: 720,
     height: 1280,
     frameId: "frame-000042",
   };
-  const capturedEvidence = {
+  return {
+    visionOrigin,
     protocolTimeline: [
-      { type: "vision.try_on.attempt.accepted", payload: { attemptId } },
-      { type: "vision.try_on.attempt.acquiring", payload: { attemptId } },
+      {
+        type: "vision.try_on.attempt.accepted",
+        requestId,
+        origin: visionOrigin,
+        payload: { attemptId },
+      },
+      {
+        type: "vision.try_on.attempt.acquiring",
+        requestId,
+        origin: visionOrigin,
+        payload: { attemptId },
+      },
       {
         type: "vision.try_on.attempt.captured",
+        requestId,
+        origin: visionOrigin,
         payload: { attemptId, captured },
       },
       {
         type: "vision.try_on.attempt.generating",
+        requestId,
+        origin: visionOrigin,
         payload: { attemptId, stage: "generating" },
+      },
+      {
+        type: "vision.try_on.attempt.completed",
+        requestId,
+        origin: visionOrigin,
+        payload: { attemptId },
       },
     ],
     capturedResource: {
+      attemptId,
+      capturedDigest: captured.digest,
+      capturedFrameId: captured.frameId,
+      visionOrigin,
       reference: captured.reference,
       finalUrl: captured.reference,
       ok: true,
       httpStatus: 200,
-      contentType: "image/png",
+      contentType: "image/png" as const,
       byteSize: captured.byteSize,
       digest: captured.digest,
       width: captured.width,
       height: captured.height,
     },
   };
+}
+
+function fakeUiAdapter() {
+  const statePath = "ui/try-on-state.json";
+  const attemptId = "attempt-1";
+  const capturedEvidence = capturedEvidenceFor(attemptId);
   const adapter = createFakeTestAdapter({
     files: {
       [statePath]: JSON.stringify({ route: "#/catalog", state: "idle" }),
@@ -196,41 +226,7 @@ describe("visionExperience slice runner", () => {
   it("covers manual capture and departure cancellation", async () => {
     const statePath = "ui/try-on-state.json";
     const attemptId = "attempt-1";
-    const captured = {
-      reference:
-        "http://127.0.0.1:7892/v2/try-on/captured/frame.png?token=captured-token",
-      digest: `sha256:${"a".repeat(64)}`,
-      contentType: "image/png",
-      byteSize: 4096,
-      width: 720,
-      height: 1280,
-      frameId: "frame-000042",
-    };
-    const capturedEvidence = {
-      protocolTimeline: [
-        { type: "vision.try_on.attempt.accepted", payload: { attemptId } },
-        { type: "vision.try_on.attempt.acquiring", payload: { attemptId } },
-        {
-          type: "vision.try_on.attempt.captured",
-          payload: { attemptId, captured },
-        },
-        {
-          type: "vision.try_on.attempt.generating",
-          payload: { attemptId, stage: "generating" },
-        },
-      ],
-      capturedResource: {
-        reference: captured.reference,
-        finalUrl: captured.reference,
-        ok: true,
-        httpStatus: 200,
-        contentType: "image/png",
-        byteSize: captured.byteSize,
-        digest: captured.digest,
-        width: captured.width,
-        height: captured.height,
-      },
-    };
+    const capturedEvidence = capturedEvidenceFor(attemptId);
     let tryOnEntries = 0;
     const adapter = createFakeTestAdapter({
       files: {

@@ -1141,6 +1141,111 @@ function passingExecution(descriptors) {
   }));
 }
 
+function visionExperienceCapturedReport({
+  visionOrigin = "http://127.0.0.1:27892",
+}: {
+  visionOrigin?: string;
+} = {}) {
+  const attemptId = "attempt-1";
+  const requestId = "vision-websocket-1";
+  const captured = {
+    reference: `${visionOrigin}/v2/try-on/captured/frame.png?token=captured-token`,
+    digest: `sha256:${"a".repeat(64)}`,
+    contentType: "image/png",
+    byteSize: 2048,
+    width: 640,
+    height: 480,
+    frameId: "frame-000042",
+  };
+  const resource = {
+    attemptId,
+    capturedDigest: captured.digest,
+    capturedFrameId: captured.frameId,
+    visionOrigin,
+    reference: captured.reference,
+    finalUrl: captured.reference,
+    ok: true,
+    httpStatus: 200,
+    contentType: captured.contentType,
+    byteSize: captured.byteSize,
+    digest: captured.digest,
+    width: captured.width,
+    height: captured.height,
+  };
+  const protocolTimeline = [
+    {
+      type: "vision.try_on.attempt.accepted",
+      requestId,
+      origin: visionOrigin,
+      payload: { attemptId },
+    },
+    {
+      type: "vision.try_on.attempt.acquiring",
+      requestId,
+      origin: visionOrigin,
+      payload: { attemptId },
+    },
+    {
+      type: "vision.try_on.attempt.captured",
+      requestId,
+      origin: visionOrigin,
+      payload: { attemptId, captured },
+    },
+    {
+      type: "vision.try_on.attempt.generating",
+      requestId,
+      origin: visionOrigin,
+      payload: { attemptId },
+    },
+    {
+      type: "vision.try_on.attempt.completed",
+      requestId,
+      origin: visionOrigin,
+      payload: { attemptId },
+    },
+  ];
+  const binding = {
+    attemptId,
+    visionOrigin,
+    requestId,
+    captured,
+    resource,
+    terminal: protocolTimeline.at(-1),
+  };
+  return {
+    schemaVersion: "vem-runtime-testbed-report/v2",
+    runId: "RUN-1",
+    mode: "fast",
+    pass: 1,
+    businessSets: [
+      {
+        name: "visionExperience",
+        status: "passed",
+        primaryFailure: null,
+        assertionCount: 1,
+        assertions: [
+          {
+            schemaVersion: "vem-runtime-testbed-business-assertion/v1",
+            id: "captured-source-bound",
+            source: "vision-v2-protocol",
+            expected: binding,
+            observed: binding,
+            status: "passed",
+            reason: null,
+          },
+        ],
+        supportingEvidence: [
+          {
+            kind: "vision-v2-captured-source",
+            ...binding,
+            protocolTimeline,
+          },
+        ],
+      },
+    ],
+  };
+}
+
 describe("full workflow aggregate validator", () => {
   it("rejects vision experience reports outside the V2 business-set contract", () => {
     const rejected = validateBusinessCheckReport(
@@ -1153,36 +1258,7 @@ describe("full workflow aggregate validator", () => {
   });
 
   it("accepts a V2 vision experience report only with captured source evidence", () => {
-    const report = {
-      schemaVersion: "vem-runtime-testbed-report/v2",
-      runId: "RUN-1",
-      mode: "fast",
-      pass: 1,
-      businessSets: [
-        {
-          name: "visionExperience",
-          status: "passed",
-          primaryFailure: null,
-          assertionCount: 4,
-          supportingEvidence: [
-            {
-              kind: "vision-v2-captured-source",
-              attemptId: "attempt-1",
-              captured: {
-                reference:
-                  "http://127.0.0.1:7892/v2/try-on/captured/frame.png?token=captured-token",
-                digest: `sha256:${"a".repeat(64)}`,
-                contentType: "image/png",
-                byteSize: 2048,
-                width: 640,
-                height: 480,
-                frameId: "frame-000042",
-              },
-            },
-          ],
-        },
-      ],
-    };
+    const report = visionExperienceCapturedReport();
     assert.equal(
       validateBusinessCheckReport(
         descriptor("visionExperience"),
@@ -1228,6 +1304,94 @@ describe("full workflow aggregate validator", () => {
     );
     assert.equal(failed.status, "failed");
     assert.match(failed.reason ?? "", /expected completed/);
+  });
+
+  it("rejects a forged captured binding instead of trusting schema-valid support facts", () => {
+    const report = visionExperienceCapturedReport();
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("visionExperience"),
+        report,
+        "vision-experience.json",
+      ).status,
+      "passed",
+    );
+
+    const wrongAttempt = structuredClone(report);
+    wrongAttempt.businessSets[0].supportingEvidence[0].attemptId = "attempt-2";
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("visionExperience"),
+        wrongAttempt,
+        "vision-experience.json",
+      ).status,
+      "failed",
+    );
+
+    const inventedFrame = structuredClone(report);
+    inventedFrame.businessSets[0].supportingEvidence[0].captured.frameId =
+      "invented-frame";
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("visionExperience"),
+        inventedFrame,
+        "vision-experience.json",
+      ).status,
+      "failed",
+    );
+
+    const foreignVisionOrigin = visionExperienceCapturedReport({
+      visionOrigin: "http://127.0.0.1:27893",
+    });
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("visionExperience"),
+        foreignVisionOrigin,
+        "vision-experience.json",
+        { visionBaseUrl: "http://127.0.0.1:27893" },
+      ).status,
+      "passed",
+    );
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("visionExperience"),
+        foreignVisionOrigin,
+        "vision-experience.json",
+      ).status,
+      "failed",
+    );
+
+    const missingBindingAssertion = structuredClone(report);
+    delete missingBindingAssertion.businessSets[0].assertions;
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("visionExperience"),
+        missingBindingAssertion,
+        "vision-experience.json",
+      ).status,
+      "failed",
+    );
+
+    const forgedBindingAssertion = structuredClone(report);
+    forgedBindingAssertion.businessSets[0].assertions = [
+      {
+        schemaVersion: "vem-runtime-testbed-business-assertion/v1",
+        id: "captured-source-bound",
+        source: "vision-v2-protocol",
+        expected: { verified: true },
+        observed: { verified: true },
+        status: "passed",
+        reason: null,
+      },
+    ];
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("visionExperience"),
+        forgedBindingAssertion,
+        "vision-experience.json",
+      ).status,
+      "failed",
+    );
   });
 
   it("lets the owning sale validator decide its business claim", () => {

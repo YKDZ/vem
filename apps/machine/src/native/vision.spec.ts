@@ -6,13 +6,17 @@ import { WebSocketServer } from "ws";
 import {
   openVisionGarmentAdjustment,
   openVisionTryOnAttempt,
+  subscribeVisionProfiles,
   visionSelfCheck,
 } from "./vision";
 
 const servers: Array<ReturnType<typeof createHttpServer>> = [];
 const attemptId = "550e8400-e29b-41d4-a716-446655440124";
+const nativeWebSocket = globalThis.WebSocket;
 
 afterEach(async () => {
+  globalThis.WebSocket = nativeWebSocket;
+  vi.useRealTimers();
   await Promise.all(
     servers.splice(0).map(
       (server) =>
@@ -83,6 +87,95 @@ function input() {
       template: "tshirt_short_sleeve" as const,
     },
   };
+}
+
+function presence(state: "approach" | "empty") {
+  return envelope("vision.presence_status", {
+    source: "top",
+    eventId: `presence-${state}`,
+    detectedAt: "2026-08-20T00:00:00.000Z",
+    state,
+    reason: "test",
+    personPresent: state === "approach",
+    occupancy: {
+      state: state === "approach" ? "single" : "none",
+      confidence: 0.9,
+    },
+    closeNow: false,
+    close: false,
+    closeTrigger: null,
+    proximity: {},
+  });
+}
+
+function profile() {
+  return envelope("vision.profile_result", {
+    source: "front",
+    eventId: "profile-after-reconnect",
+    detectedAt: "2026-08-20T00:00:01.000Z",
+    occupancy: { state: "single", confidence: 0.9 },
+    profile: {
+      personPresent: true,
+      heightCm: 172,
+      shoulderWidthCm: 43,
+      gender: "unknown",
+    },
+    quality: { overall: "fair", warnings: [], profileUsable: true },
+  });
+}
+
+class FakeVisionSocket extends EventTarget {
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSING = 2;
+  static readonly CLOSED = 3;
+  static instances: FakeVisionSocket[] = [];
+
+  readyState = FakeVisionSocket.OPEN;
+  closeCount = 0;
+  listenerBalance = 0;
+
+  constructor(_url: string) {
+    super();
+    FakeVisionSocket.instances.push(this);
+    setTimeout(() => this.dispatchEvent(new Event("open")), 0);
+  }
+
+  override addEventListener(
+    ...args: Parameters<EventTarget["addEventListener"]>
+  ): void {
+    this.listenerBalance += 1;
+    super.addEventListener(...args);
+  }
+
+  override removeEventListener(
+    ...args: Parameters<EventTarget["removeEventListener"]>
+  ): void {
+    this.listenerBalance -= 1;
+    super.removeEventListener(...args);
+  }
+
+  send(): void {
+    return undefined;
+  }
+
+  close(): void {
+    this.closeCount += 1;
+    if (this.readyState === FakeVisionSocket.CLOSED) return;
+    this.readyState = FakeVisionSocket.CLOSED;
+    this.dispatchEvent(new Event("close"));
+  }
+
+  emit(message: object): void {
+    this.dispatchEvent(
+      new MessageEvent("message", { data: JSON.stringify(message) }),
+    );
+  }
+}
+
+function installFakeVisionSocket(): void {
+  FakeVisionSocket.instances = [];
+  globalThis.WebSocket = FakeVisionSocket as unknown as typeof WebSocket;
 }
 
 describe("native Vision single-path adapter", () => {
@@ -226,6 +319,141 @@ describe("native Vision single-path adapter", () => {
       expect(received).toContain("vision.try_on.attempt.cancel");
     });
     expect(events).toEqual(["vision.try_on.attempt.canceled"]);
+  });
+
+  it("fences stale profile-connection messages while delivering only the current generation", async () => {
+    vi.useFakeTimers();
+    installFakeVisionSocket();
+    const received: string[] = [];
+    const subscription = subscribeVisionProfiles(
+      { url: "ws://vision.invalid/ws" },
+      {
+        onReady: () => received.push("ready"),
+        onPresenceStatus: (event) => {
+          received.push(`presence:${event.state}`);
+        },
+        onProfile: () => undefined,
+        onError: (error) => {
+          throw error;
+        },
+      },
+    );
+
+    await vi.advanceTimersByTimeAsync(0);
+    const first = FakeVisionSocket.instances[0];
+    first.emit(presence("approach"));
+    first.emit(ready());
+    first.emit(presence("empty"));
+    await Promise.resolve();
+    expect(received).toEqual(["ready", "presence:empty"]);
+
+    first.close();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1);
+    await Promise.resolve();
+    await Promise.resolve();
+    const second = FakeVisionSocket.instances[1];
+    first.emit(ready());
+    first.emit(presence("approach"));
+    await Promise.resolve();
+    expect(received).toEqual(["ready", "presence:empty"]);
+
+    second.emit(ready());
+    second.emit(presence("approach"));
+    await Promise.resolve();
+    expect(received).toEqual([
+      "ready",
+      "presence:empty",
+      "ready",
+      "presence:approach",
+    ]);
+    subscription.close();
+  });
+
+  it("reconnects the profile stream and delivers a post-ready profile", async () => {
+    vi.useFakeTimers();
+    installFakeVisionSocket();
+    const received: number[] = [];
+    const subscription = subscribeVisionProfiles(
+      { url: "ws://vision.invalid/ws" },
+      {
+        onProfile: (event) => {
+          received.push(event.profile.heightCm ?? 0);
+        },
+        onError: (error) => {
+          throw error;
+        },
+      },
+    );
+
+    await vi.advanceTimersByTimeAsync(0);
+    const first = FakeVisionSocket.instances[0];
+    first.emit(ready());
+    first.close();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1);
+    await Promise.resolve();
+    await Promise.resolve();
+    const second = FakeVisionSocket.instances[1];
+    second.emit(ready());
+    second.emit(profile());
+    await Promise.resolve();
+
+    expect(received).toEqual([172]);
+    subscription.close();
+  });
+
+  it("emits one disconnect cancellation and releases the single-path attempt resources", async () => {
+    vi.useFakeTimers();
+    installFakeVisionSocket();
+    const events: string[] = [];
+    const opening = openVisionTryOnAttempt(
+      {
+        url: "ws://127.0.0.1:65499/v2/machine",
+        tryOnAttemptTimeoutMs: 100,
+      },
+      input(),
+      (event) => events.push(event.type),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    const socket = FakeVisionSocket.instances[0];
+    socket.emit(ready());
+    const attempt = await opening;
+
+    socket.close();
+    socket.dispatchEvent(new Event("error"));
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(events).toEqual(["vision.try_on.attempt.canceled"]);
+    expect(attempt.resultContext).toEqual({
+      attemptId,
+      visionSocketUrl: "ws://127.0.0.1:65499/v2/machine",
+    });
+    expect(socket.listenerBalance).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("aborts a pending single-path handshake and releases the socket exactly once", async () => {
+    vi.useFakeTimers();
+    installFakeVisionSocket();
+    const controller = new AbortController();
+    const opening = openVisionTryOnAttempt(
+      { url: "ws://127.0.0.1:65499/v2/machine" },
+      input(),
+      () => undefined,
+      controller.signal,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    controller.abort();
+    controller.abort();
+
+    await expect(opening).rejects.toThrow(/aborted/);
+    const socket = FakeVisionSocket.instances[0];
+    expect(socket.closeCount).toBe(1);
+    expect(socket.listenerBalance).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("uses the same ready gate for garment-scale adjustment", async () => {

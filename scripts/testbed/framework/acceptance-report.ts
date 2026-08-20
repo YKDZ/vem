@@ -55,6 +55,7 @@ export function buildAcceptanceReport({
         status: summary.status,
         primaryFailure: summary.primaryFailure,
         assertionCount: summary.assertionCount,
+        assertions: [...set.assertions],
         supportingEvidence: Array.isArray(set.supportingEvidence)
           ? set.supportingEvidence
           : [],
@@ -89,6 +90,13 @@ export function validateAcceptanceReport(report: unknown): void {
     }
     if (!Array.isArray(set.supportingEvidence)) {
       throw new TypeError(`business set ${set.name} evidence must be an array`);
+    }
+    if (
+      set.assertions !== undefined &&
+      (!Array.isArray(set.assertions) ||
+        set.assertionCount !== set.assertions.length)
+    ) {
+      throw new TypeError(`business set ${set.name} assertions are invalid`);
     }
   }
 }

@@ -123,11 +123,12 @@ const FORBIDDEN_PATTERNS = Object.freeze([
   {
     category: "retired-ai-try-on-wire-mode",
     pattern:
-      /(?:\btype\s*:\s*["']vision[.]try_on[.]attempt[.]start["'][\s\S]{0,512}?\bmode\s*:\s*["'](?:f[a]st|[a]i)["']|\bpayload[.]mode\s*=\s*["'](?:f[a]st|[a]i)["']|\bmode\s*:\s*z[.]enum\(\s*\[\s*(?:["']f[a]st["']\s*,\s*["'][a]i["']|["'][a]i["']\s*,\s*["']f[a]st["'])\s*\]\s*\))/i,
+      /(?:\btype\s*:\s*["']vision[.]try_on[.]attempt[.]start["'][\s\S]{0,512}?\bmode\s*:\s*["'](?:f[a]st|[a]i)["']|\bpayload\s*(?:[.]\s*mode|\[\s*["']mode["']\s*\])\s*=\s*["'](?:f[a]st|[a]i)["']|(?:^|[,{]\s*)(?:mode|["']mode["'])\s*:\s*["'][a]i["']|\bmode\s*:\s*z[.]enum\(\s*\[\s*(?:["']f[a]st["']\s*,\s*["'][a]i["']|["'][a]i["']\s*,\s*["']f[a]st["'])\s*\]\s*\))/i,
   },
   {
     category: "retired-ai-model-weights",
-    pattern: /(?:^|[,{]\s*)(?:[a]i[_-]?)?(?:model[_-]?)?[w]eights\s*[:=]/im,
+    pattern:
+      /(?:^|[^A-Za-z0-9_$])["']?(?:(?:[a]i[_-]?)?model(?:[_-]?weights?|Weight(?:s|Path)?)|weights)["']?\s*[:=]/im,
   },
   {
     category: "retired-ai-try-on-runner",

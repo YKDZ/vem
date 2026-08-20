@@ -325,7 +325,10 @@ export async function runSerialTrackLifecycle({
       track,
       report,
       track.reportPath,
-      { artifactRoot: track.artifactRoot },
+      {
+        artifactRoot: track.artifactRoot,
+        visionBaseUrl: process.env.VISION_BASE_URL ?? "http://127.0.0.1:27892",
+      },
     );
     const childFailed =
       child.status !== "passed" || validation.status !== "passed";

@@ -10,14 +10,28 @@ import {
 
 function fakeUiAdapter({
   includeCaptured = true,
+  includeCompleted = true,
   frameId = "frame-000042",
   resourceDigest = null,
   capturedReference = "http://127.0.0.1:7892/v2/try-on/captured/frame.png?token=captured-token",
+  visionOrigin = "http://127.0.0.1:7892",
+  requestId = "vision-websocket-1",
+  terminalAttemptId = "attempt-1",
+  terminalRequestId = requestId,
+  resourceAttemptId = "attempt-1",
+  resourceFrameId = frameId,
 }: {
   includeCaptured?: boolean;
+  includeCompleted?: boolean;
   frameId?: string;
   resourceDigest?: string | null;
   capturedReference?: string;
+  visionOrigin?: string;
+  requestId?: string;
+  terminalAttemptId?: string;
+  terminalRequestId?: string;
+  resourceAttemptId?: string;
+  resourceFrameId?: string;
 } = {}) {
   const statePath = "ui/try-on-state.json";
   const attemptId = "attempt-1";
@@ -31,16 +45,40 @@ function fakeUiAdapter({
     frameId,
   };
   const protocolTimeline = [
-    { type: "vision.try_on.attempt.accepted", payload: { attemptId } },
-    { type: "vision.try_on.attempt.acquiring", payload: { attemptId } },
+    {
+      type: "vision.try_on.attempt.accepted",
+      requestId,
+      origin: visionOrigin,
+      payload: { attemptId },
+    },
+    {
+      type: "vision.try_on.attempt.acquiring",
+      requestId,
+      origin: visionOrigin,
+      payload: { attemptId },
+    },
     {
       type: "vision.try_on.attempt.captured",
+      requestId,
+      origin: visionOrigin,
       payload: { attemptId, captured },
     },
     {
       type: "vision.try_on.attempt.generating",
+      requestId,
+      origin: visionOrigin,
       payload: { attemptId, stage: "generating" },
     },
+    ...(includeCompleted
+      ? [
+          {
+            type: "vision.try_on.attempt.completed",
+            requestId: terminalRequestId,
+            origin: visionOrigin,
+            payload: { attemptId: terminalAttemptId },
+          },
+        ]
+      : []),
   ];
   const writeState = (value: Record<string, unknown>) =>
     new Promise<void>((resolvePromise) => {
@@ -85,6 +123,7 @@ function fakeUiAdapter({
               route: "#/try-on?catalogKey=product%3A1",
               state: "completed",
               attemptId,
+              visionOrigin,
               preview: { naturalWidth: 720, naturalHeight: 1280 },
               resultUrl:
                 "http://127.0.0.1:7892/v2/try-on/results/attempt-1?token=x",
@@ -92,6 +131,10 @@ function fakeUiAdapter({
                 ? {
                     protocolTimeline,
                     capturedResource: {
+                      attemptId: resourceAttemptId,
+                      capturedDigest: captured.digest,
+                      capturedFrameId: resourceFrameId,
+                      visionOrigin,
                       reference: captured.reference,
                       finalUrl: captured.reference,
                       ok: true,
@@ -131,14 +174,14 @@ describe("visionExperience vertical slice driver", () => {
         fakeUiAdapter({ resourceDigest: `sha256:${"b".repeat(64)}` }),
         { timeoutMs: 2_000, pollMs: 10 },
       ),
-      /captured resource/i,
+      /captured/i,
     );
     await assert.rejects(
       runTryOnScenario(fakeUiAdapter({ frameId: "" }), {
         timeoutMs: 2_000,
         pollMs: 10,
       }),
-      /captured evidence has invalid V2 source facts/i,
+      /captured/i,
     );
     await assert.rejects(
       runTryOnScenario(
@@ -148,7 +191,41 @@ describe("visionExperience vertical slice driver", () => {
         }),
         { timeoutMs: 2_000, pollMs: 10 },
       ),
-      /captured evidence has invalid V2 source facts/i,
+      /captured/i,
+    );
+  });
+
+  it("rejects captured facts that are not bound to the current Vision terminal", async () => {
+    await assert.rejects(
+      runTryOnScenario(
+        fakeUiAdapter({
+          capturedReference:
+            "http://127.0.0.1:7893/v2/try-on/captured/frame.png?token=captured-token",
+        }),
+        { timeoutMs: 2_000, pollMs: 10 },
+      ),
+      /captured/i,
+    );
+    await assert.rejects(
+      runTryOnScenario(fakeUiAdapter({ resourceAttemptId: "attempt-old" }), {
+        timeoutMs: 2_000,
+        pollMs: 10,
+      }),
+      /captured/i,
+    );
+    await assert.rejects(
+      runTryOnScenario(fakeUiAdapter({ includeCompleted: false }), {
+        timeoutMs: 2_000,
+        pollMs: 10,
+      }),
+      /captured/i,
+    );
+    await assert.rejects(
+      runTryOnScenario(fakeUiAdapter({ terminalAttemptId: "attempt-old" }), {
+        timeoutMs: 2_000,
+        pollMs: 10,
+      }),
+      /captured/i,
     );
   });
 

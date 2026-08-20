@@ -197,6 +197,45 @@ describe("Vision V2 hard-cutover absence guard", () => {
     }
   });
 
+  it("rejects structured retired mode and model-weight forms without banning testbed fast mode", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-hard-cutover-structured-"));
+    try {
+      initGuardRepo(root);
+      const mode = ["mo", "de"].join("");
+      const fast = ["f", "ast"].join("");
+      const ai = ["a", "i"].join("");
+      const snakeWeights = ["model", "_", "weights"].join("");
+      const camelWeights = ["model", "Weights"].join("");
+      const camelWeightPath = ["model", "Weight", "Path"].join("");
+      const fixtures = new Map([
+        ["object-mode.ts", `const retired = { ${mode}: \"${ai}\" };`],
+        ["payload-index.ts", `payload[\"${mode}\"] = \"${fast}\";`],
+        ["weights.json", JSON.stringify({ [snakeWeights]: "retired.bin" })],
+        [
+          "camel.ts",
+          `const retired = { ${camelWeights}: \"a.bin\", ${camelWeightPath}: \"b.bin\" };`,
+        ],
+        [
+          "ordinary-testbed-fast.ts",
+          `const execution = { ${mode}: \"${fast}\" };`,
+        ],
+      ]);
+      for (const [relativePath, source] of fixtures) {
+        writeFileSync(join(root, relativePath), `${source}\n`);
+      }
+      execFileSync("git", ["add", "--", ...fixtures.keys()], { cwd: root });
+
+      assert.deepEqual(scanHardCutoverAbsence({ root }).sort(), [
+        "camel.ts:retired-ai-model-weights",
+        "object-mode.ts:retired-ai-try-on-wire-mode",
+        "payload-index.ts:retired-ai-try-on-wire-mode",
+        "weights.json:retired-ai-model-weights",
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("scans every tracked regular file without relying on path or extension", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-hard-cutover-tracked-"));
     try {

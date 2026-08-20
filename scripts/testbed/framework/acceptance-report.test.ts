@@ -46,6 +46,7 @@ describe("acceptance report v2", () => {
     assert.equal(report.schemaVersion, "vem-runtime-testbed-report/v2");
     assert.equal(report.businessSets[0].status, "passed");
     assert.equal(report.businessSets[0].assertionCount, 1);
+    assert.deepEqual(report.businessSets[0].assertions, passingAssertions());
     validateAcceptanceReport(report);
   });
 

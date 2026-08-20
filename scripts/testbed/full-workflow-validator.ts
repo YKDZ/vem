@@ -1,4 +1,8 @@
-import { visionV2CapturedFrameSchema } from "../../packages/shared/src/schemas/vision-v2.ts";
+import {
+  capturedSourceBinding,
+  normalizeVisionOrigin,
+  validateCapturedSourceEvidence,
+} from "./framework/slices/vision-experience/captured-source-evidence.ts";
 import { validatePaymentRecoveryEvidence } from "./payment-recovery-guest-full.ts";
 import { validatePresenceAndAudioGuestReport } from "./presence-and-audio-guest-full.ts";
 import { validateStockMaintenanceReport } from "./stock-maintenance-guest-full.ts";
@@ -884,25 +888,45 @@ function canonicalResult(descriptor, result, reportPath) {
   };
 }
 
-function hasVisionExperienceCapturedSource(set) {
-  const source = Array.isArray(set?.supportingEvidence)
-    ? set.supportingEvidence.find(
+function hasVisionExperienceCapturedSource(
+  set,
+  visionBaseUrl = "http://127.0.0.1:27892",
+) {
+  const expectedVisionOrigin = normalizeVisionOrigin(visionBaseUrl);
+  if (!expectedVisionOrigin) return null;
+  const sources = Array.isArray(set?.supportingEvidence)
+    ? set.supportingEvidence.filter(
         (entry) => entry?.kind === "vision-v2-captured-source",
       )
-    : null;
-  const captured = source?.captured;
-  return (
-    typeof source?.attemptId === "string" &&
-    source.attemptId.length > 0 &&
-    visionV2CapturedFrameSchema.safeParse(captured).success
+    : [];
+  if (sources.length !== 1) return null;
+  const source = validateCapturedSourceEvidence(sources[0]);
+  if (!source || source.visionOrigin !== expectedVisionOrigin) return null;
+  const assertions = Array.isArray(set?.assertions) ? set.assertions : [];
+  const bindings = assertions.filter(
+    (assertion) => assertion?.id === "captured-source-bound",
   );
+  const binding = capturedSourceBinding(source);
+  const assertion = bindings[0];
+  if (
+    bindings.length !== 1 ||
+    assertion?.schemaVersion !== "vem-runtime-testbed-business-assertion/v1" ||
+    assertion?.source !== "vision-v2-protocol" ||
+    assertion?.status !== "passed" ||
+    assertion?.reason !== null ||
+    JSON.stringify(assertion?.expected) !== JSON.stringify(binding) ||
+    JSON.stringify(assertion?.observed) !== JSON.stringify(binding)
+  ) {
+    return null;
+  }
+  return source;
 }
 
 export function validateBusinessCheckReport(
   descriptor,
   report,
   reportPath,
-  _context = {},
+  context = {},
 ) {
   if (!descriptor?.runner) {
     return failedTrack(
@@ -952,14 +976,16 @@ export function validateBusinessCheckReport(
           "visionExperience v2 report has no business set",
         );
       }
+      const capturedSource = hasVisionExperienceCapturedSource(
+        set,
+        context.visionBaseUrl,
+      );
       return canonicalResult(
         descriptor,
-        set.status === "passed" && hasVisionExperienceCapturedSource(set)
+        set.status === "passed" && capturedSource
           ? passedTrack("visionExperience", "vision experience", reportPath, {
               assertions: set.assertionCount,
-              capturedFrameId: set.supportingEvidence.find(
-                (entry) => entry?.kind === "vision-v2-captured-source",
-              ).captured.frameId,
+              capturedFrameId: capturedSource.captured.frameId,
             })
           : failedTrack(
               descriptor.name,

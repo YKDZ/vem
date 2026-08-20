@@ -21,6 +21,7 @@ export interface BusinessSetReport {
   status: "passed" | "failed" | "skipped";
   primaryFailure: BusinessAssertionRecord | null;
   assertionCount: number;
+  assertions?: BusinessAssertionRecord[];
   supportingEvidence: unknown[];
 }
 

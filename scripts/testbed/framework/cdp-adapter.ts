@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 
+import type {
+  CapturedFrameResource,
+  VisionProtocolEvent,
+} from "./slices/vision-experience/captured-source-evidence.ts";
 import type { CommandResult, TestAdapter } from "./test-adapter.ts";
 
 import { visionV2CapturedFrameSchema } from "../../../packages/shared/src/schemas/vision-v2.ts";
@@ -11,6 +15,10 @@ import {
   evaluateExpression,
   rewriteWebSocketDebuggerUrl,
 } from "../machine-ui-cdp-driver.ts";
+import {
+  hasVisionOrigin,
+  normalizeVisionOrigin,
+} from "./slices/vision-experience/captured-source-evidence.ts";
 
 interface CdpTarget {
   type: string;
@@ -24,28 +32,6 @@ interface RuntimeRole {
   ready: boolean;
 }
 
-type TryOnProtocolEvent = {
-  type: string;
-  payload: {
-    attemptId: string;
-    captured?: {
-      reference?: string;
-    };
-  };
-};
-
-type CapturedFrameResource = {
-  reference: string;
-  finalUrl: string | null;
-  ok: boolean;
-  httpStatus: number | null;
-  contentType: string | null;
-  byteSize: number;
-  digest: string | null;
-  width: number | null;
-  height: number | null;
-};
-
 export function isControlledCapturedFrameReference(
   reference: unknown,
 ): reference is string {
@@ -53,6 +39,164 @@ export function isControlledCapturedFrameReference(
     typeof reference === "string" &&
     visionV2CapturedFrameSchema.shape.reference.safeParse(reference).success
   );
+}
+
+function websocketHttpOrigin(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "ws:") return null;
+    url.protocol = "http:";
+    return normalizeVisionOrigin(url.origin);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 将 CDP 网络事件收敛为当前配置 Vision websocket 的有界 attempt timeline。
+ * 任何其他 loopback 服务即使复用了 V2 envelope，也不能贡献试衣验收事实。
+ */
+export class VisionProtocolEvidenceCollector {
+  readonly visionOrigin: string;
+  private requestIds = new Set<string>();
+  private events: VisionProtocolEvent[] = [];
+
+  constructor(visionBaseUrl: string) {
+    const visionOrigin = normalizeVisionOrigin(visionBaseUrl);
+    if (!visionOrigin) {
+      throw new Error("Vision base URL must be a loopback HTTP origin");
+    }
+    this.visionOrigin = visionOrigin;
+  }
+
+  observeWebSocketCreated(event: unknown): void {
+    const value = event as { requestId?: unknown; url?: unknown } | null;
+    if (
+      typeof value?.requestId === "string" &&
+      websocketHttpOrigin(value.url) === this.visionOrigin
+    ) {
+      this.requestIds.add(value.requestId);
+    }
+  }
+
+  observeWebSocketClosed(event: unknown): void {
+    const requestId = (event as { requestId?: unknown } | null)?.requestId;
+    if (typeof requestId === "string") this.requestIds.delete(requestId);
+  }
+
+  observeWebSocketFrameReceived(event: unknown): void {
+    const value = event as {
+      requestId?: unknown;
+      response?: { payloadData?: unknown };
+    } | null;
+    if (
+      typeof value?.requestId !== "string" ||
+      !this.requestIds.has(value.requestId) ||
+      typeof value.response?.payloadData !== "string"
+    ) {
+      return;
+    }
+    try {
+      const message = JSON.parse(value.response.payloadData) as {
+        protocol?: unknown;
+        type?: unknown;
+        payload?: unknown;
+      };
+      const payload = message.payload as { attemptId?: unknown } | null;
+      if (
+        message.protocol !== "vem.vision.v2" ||
+        typeof message.type !== "string" ||
+        !/^vision[.]try_on[.]attempt[.](?:accepted|acquiring|captured|generating|completed|failed|canceled)$/.test(
+          message.type,
+        ) ||
+        !payload ||
+        typeof payload.attemptId !== "string"
+      ) {
+        return;
+      }
+      this.events.push({
+        type: message.type,
+        requestId: value.requestId,
+        origin: this.visionOrigin,
+        payload: structuredClone(payload) as VisionProtocolEvent["payload"],
+      });
+      if (this.events.length > 256) {
+        this.events.splice(0, this.events.length - 256);
+      }
+    } catch {
+      // 无关或损坏的 CDP frame 不得改变 acceptance evidence。
+    }
+  }
+
+  eventsForAttempt(attemptId: string): VisionProtocolEvent[] {
+    return this.events.filter((event) => event.payload.attemptId === attemptId);
+  }
+
+  clear(): void {
+    this.requestIds.clear();
+    this.events = [];
+  }
+}
+
+/**
+ * captured 资源按 attempt 与不可变 captured identity 隔离缓存，避免同 URL 在
+ * 下一 attempt 被重用时把旧字节当成当前输入。
+ */
+export class CapturedFrameEvidenceCache {
+  private entries = new Map<string, Promise<CapturedFrameResource | null>>();
+  private fetchImpl: typeof fetch;
+
+  constructor({ fetchImpl = fetch }: { fetchImpl?: typeof fetch } = {}) {
+    this.fetchImpl = fetchImpl;
+  }
+
+  async read({
+    attemptId,
+    visionOrigin,
+    captured,
+  }: {
+    attemptId: string;
+    visionOrigin: string;
+    captured: {
+      reference: string;
+      digest: string;
+      contentType: "image/png";
+      byteSize: number;
+      width: number;
+      height: number;
+      frameId: string;
+    };
+  }): Promise<CapturedFrameResource | null> {
+    if (
+      !isControlledCapturedFrameReference(captured.reference) ||
+      !hasVisionOrigin(captured.reference, visionOrigin)
+    ) {
+      return null;
+    }
+    const key = [
+      attemptId,
+      visionOrigin,
+      captured.reference,
+      captured.digest,
+      captured.frameId,
+    ].join("\u0000");
+    let entry = this.entries.get(key);
+    if (!entry) {
+      entry = inspectCapturedFrameResource({
+        fetchImpl: this.fetchImpl,
+        attemptId,
+        visionOrigin,
+        captured,
+      });
+      this.entries.set(key, entry);
+    }
+    return await entry;
+  }
+
+  clear(): void {
+    this.entries.clear();
+  }
 }
 
 const STATE_EXPRESSION = `(() => {
@@ -97,8 +241,8 @@ export class CdpTestAdapter implements TestAdapter {
   endpoint: string;
   visionBaseUrl: string;
   client: CdpClient | null = null;
-  tryOnProtocolEvents: TryOnProtocolEvent[] = [];
-  capturedFrameResources = new Map<string, Promise<CapturedFrameResource>>();
+  protocolEvidence: VisionProtocolEvidenceCollector;
+  capturedFrameResources = new CapturedFrameEvidenceCache();
   stopTryOnProtocolObserver: (() => void) | null = null;
 
   constructor({
@@ -107,6 +251,7 @@ export class CdpTestAdapter implements TestAdapter {
   }: { endpoint?: string; visionBaseUrl?: string } = {}) {
     this.endpoint = endpoint;
     this.visionBaseUrl = visionBaseUrl;
+    this.protocolEvidence = new VisionProtocolEvidenceCollector(visionBaseUrl);
   }
 
   async connect({
@@ -136,47 +281,24 @@ export class CdpTestAdapter implements TestAdapter {
     await this.client.connect({ timeoutMs });
     await enablePageRuntime(this.client);
     await this.client.send("Network.enable");
-    this.stopTryOnProtocolObserver = this.client.on(
-      "Network.webSocketFrameReceived",
-      (event: unknown) => {
-        const payloadData = (
-          event as { response?: { payloadData?: unknown } } | null
-        )?.response?.payloadData;
-        if (typeof payloadData !== "string") return;
-        try {
-          const message = JSON.parse(payloadData) as {
-            protocol?: unknown;
-            type?: unknown;
-            payload?: unknown;
-          };
-          const payload = message.payload as { attemptId?: unknown } | null;
-          if (
-            message.protocol !== "vem.vision.v2" ||
-            typeof message.type !== "string" ||
-            !/^vision[.]try_on[.]attempt[.](?:accepted|acquiring|captured|generating|completed|failed|canceled)$/.test(
-              message.type,
-            ) ||
-            !payload ||
-            typeof payload.attemptId !== "string"
-          ) {
-            return;
-          }
-          this.tryOnProtocolEvents.push({
-            type: message.type,
-            payload: structuredClone(payload) as TryOnProtocolEvent["payload"],
-          });
-          if (this.tryOnProtocolEvents.length > 256) {
-            this.tryOnProtocolEvents.splice(
-              0,
-              this.tryOnProtocolEvents.length - 256,
-            );
-          }
-        } catch {
-          // Unrelated or malformed WebSocket frames cannot alter acceptance
-          // evidence. The strict Machine adapter separately rejects them.
-        }
-      },
+    const stopCreated = this.client.on(
+      "Network.webSocketCreated",
+      (event: unknown) => this.protocolEvidence.observeWebSocketCreated(event),
     );
+    const stopReceived = this.client.on(
+      "Network.webSocketFrameReceived",
+      (event: unknown) =>
+        this.protocolEvidence.observeWebSocketFrameReceived(event),
+    );
+    const stopClosed = this.client.on(
+      "Network.webSocketClosed",
+      (event: unknown) => this.protocolEvidence.observeWebSocketClosed(event),
+    );
+    this.stopTryOnProtocolObserver = () => {
+      stopCreated();
+      stopReceived();
+      stopClosed();
+    };
     return this;
   }
 
@@ -189,19 +311,26 @@ export class CdpTestAdapter implements TestAdapter {
     ) as { attemptId?: string | null };
     const protocolTimeline =
       typeof state.attemptId === "string"
-        ? this.tryOnProtocolEvents.filter(
-            (event) => event.payload.attemptId === state.attemptId,
-          )
+        ? this.protocolEvidence.eventsForAttempt(state.attemptId)
         : [];
     const captured = protocolTimeline.find(
       (event) => event.type === "vision.try_on.attempt.captured",
     )?.payload.captured;
-    const capturedResource = isControlledCapturedFrameReference(
-      captured?.reference,
-    )
-      ? await this.readCapturedFrameResource(captured.reference)
-      : null;
-    return JSON.stringify({ ...state, protocolTimeline, capturedResource });
+    const parsedCaptured = visionV2CapturedFrameSchema.safeParse(captured);
+    const capturedResource =
+      typeof state.attemptId === "string" && parsedCaptured.success
+        ? await this.capturedFrameResources.read({
+            attemptId: state.attemptId,
+            visionOrigin: this.protocolEvidence.visionOrigin,
+            captured: parsedCaptured.data,
+          })
+        : null;
+    return JSON.stringify({
+      ...state,
+      visionOrigin: this.protocolEvidence.visionOrigin,
+      protocolTimeline,
+      capturedResource,
+    });
   }
 
   async writeFile(): Promise<never> {
@@ -294,55 +423,63 @@ export class CdpTestAdapter implements TestAdapter {
   async close(): Promise<void> {
     this.stopTryOnProtocolObserver?.();
     this.stopTryOnProtocolObserver = null;
-    this.tryOnProtocolEvents = [];
+    this.protocolEvidence.clear();
     this.capturedFrameResources.clear();
     await this.client?.close().catch(() => {});
     this.client = null;
   }
-
-  private async readCapturedFrameResource(
-    reference: string,
-  ): Promise<CapturedFrameResource> {
-    let resource = this.capturedFrameResources.get(reference);
-    if (!resource) {
-      resource = inspectCapturedFrameResource(reference);
-      this.capturedFrameResources.set(reference, resource);
-    }
-    return await resource;
-  }
 }
 
-async function inspectCapturedFrameResource(
-  reference: string,
-): Promise<CapturedFrameResource> {
+async function inspectCapturedFrameResource({
+  fetchImpl,
+  attemptId,
+  visionOrigin,
+  captured,
+}: {
+  fetchImpl: typeof fetch;
+  attemptId: string;
+  visionOrigin: string;
+  captured: {
+    reference: string;
+    digest: string;
+    contentType: "image/png";
+    byteSize: number;
+    width: number;
+    height: number;
+    frameId: string;
+  };
+}): Promise<CapturedFrameResource | null> {
   try {
-    const response = await fetch(reference);
+    const response = await fetchImpl(captured.reference);
     const bytes = Buffer.from(await response.arrayBuffer());
     const dimensions = pngDimensions(bytes);
+    const contentType = response.headers.get("content-type")?.split(";", 1)[0];
+    if (
+      !response.ok ||
+      response.status !== 200 ||
+      response.url !== captured.reference ||
+      contentType !== "image/png" ||
+      !dimensions
+    ) {
+      return null;
+    }
     return {
-      reference,
+      attemptId,
+      capturedDigest: captured.digest,
+      capturedFrameId: captured.frameId,
+      visionOrigin,
+      reference: captured.reference,
       finalUrl: response.url,
-      ok: response.ok,
-      httpStatus: response.status,
-      contentType:
-        response.headers.get("content-type")?.split(";", 1)[0] ?? null,
+      ok: true,
+      httpStatus: 200,
+      contentType: "image/png",
       byteSize: bytes.byteLength,
       digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
-      width: dimensions?.width ?? null,
-      height: dimensions?.height ?? null,
+      width: dimensions.width,
+      height: dimensions.height,
     };
   } catch {
-    return {
-      reference,
-      finalUrl: null,
-      ok: false,
-      httpStatus: null,
-      contentType: null,
-      byteSize: 0,
-      digest: null,
-      width: null,
-      height: null,
-    };
+    return null;
   }
 }
 

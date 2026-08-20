@@ -1,11 +1,18 @@
 import type { ProcessRoleManifest } from "../../fault-injection.ts";
 import type { TestAdapter } from "../../test-adapter.ts";
+import type {
+  CapturedFrameResource,
+  CapturedSourceEvidence,
+} from "./captured-source-evidence.ts";
 
-import { visionV2CapturedFrameSchema } from "../../../../../packages/shared/src/schemas/vision-v2.ts";
 import { buildAcceptanceReport } from "../../acceptance-report.ts";
 import { waitForCondition } from "../../condition-waiter.ts";
 import { stopDeclaredRole } from "../../fault-injection.ts";
 import { businessAssertion } from "../../observation-record.ts";
+import {
+  capturedSourceBinding,
+  validateCapturedSourceEvidence,
+} from "./captured-source-evidence.ts";
 
 const STATE_PATH = "ui/try-on-state.json";
 
@@ -13,6 +20,7 @@ export interface TryOnState {
   route?: string;
   state?: string | null;
   attemptId?: string | null;
+  visionOrigin?: string | null;
   preview?: { naturalWidth: number; naturalHeight: number };
   resultUrl?: string | null;
   scaleValue?: string | null;
@@ -27,32 +35,20 @@ export interface TryOnState {
 
 export interface TryOnProtocolEvent {
   type?: string;
+  requestId?: string;
+  origin?: string;
   payload?: {
     attemptId?: string;
-    captured?: CapturedFrameFacts;
+    captured?: {
+      reference?: string;
+      digest?: string;
+      contentType?: string;
+      byteSize?: number;
+      width?: number;
+      height?: number;
+      frameId?: string;
+    };
   };
-}
-
-export interface CapturedFrameFacts {
-  reference?: string;
-  digest?: string;
-  contentType?: string;
-  byteSize?: number;
-  width?: number;
-  height?: number;
-  frameId?: string;
-}
-
-export interface CapturedFrameResource {
-  reference?: string;
-  finalUrl?: string | null;
-  ok?: boolean;
-  httpStatus?: number | null;
-  contentType?: string | null;
-  byteSize?: number;
-  digest?: string;
-  width?: number;
-  height?: number;
 }
 
 /**
@@ -60,7 +56,9 @@ export interface CapturedFrameResource {
  * exact generation input.  This deliberately observes the protocol boundary,
  * not Pinia internals or the deferred captured-image presentation.
  */
-export function validateCapturedTryOnEvidence(state: TryOnState) {
+export function validateCapturedTryOnEvidence(
+  state: TryOnState,
+): CapturedSourceEvidence {
   const attemptId = state?.attemptId;
   if (typeof attemptId !== "string" || attemptId.length === 0) {
     throw new Error(
@@ -72,62 +70,27 @@ export function validateCapturedTryOnEvidence(state: TryOnState) {
         (event) => event?.payload?.attemptId === attemptId,
       )
     : [];
-  const position = (type: string): number =>
-    timeline.findIndex((event) => event?.type === type);
-  const accepted = position("vision.try_on.attempt.accepted");
-  const acquiring = position("vision.try_on.attempt.acquiring");
-  const captured = position("vision.try_on.attempt.captured");
-  const generating = position("vision.try_on.attempt.generating");
-  if (
-    accepted === -1 ||
-    acquiring === -1 ||
-    captured === -1 ||
-    generating === -1 ||
-    !(accepted < acquiring && acquiring < captured && captured < generating)
-  ) {
-    throw new Error(
-      "captured evidence must occur once between acquiring and generating",
-    );
-  }
   const capturedEvents = timeline.filter(
     (event) => event?.type === "vision.try_on.attempt.captured",
   );
-  if (capturedEvents.length !== 1) {
-    throw new Error("captured evidence must contain exactly one source frame");
-  }
-  const facts = capturedEvents[0]?.payload?.captured;
-  if (!facts || !visionV2CapturedFrameSchema.safeParse(facts).success) {
-    throw new Error("captured evidence has invalid V2 source facts");
-  }
-  const resource = state.capturedResource;
-  if (
-    !resource ||
-    resource.reference !== facts.reference ||
-    resource.finalUrl !== facts.reference ||
-    resource.ok !== true ||
-    resource.httpStatus !== 200 ||
-    resource.contentType !== "image/png" ||
-    resource.byteSize !== facts.byteSize ||
-    resource.digest !== facts.digest ||
-    resource.width !== facts.width ||
-    resource.height !== facts.height
-  ) {
+  const capturedEvent = capturedEvents[0];
+  const terminal = timeline.at(-1);
+  const evidence = validateCapturedSourceEvidence({
+    kind: "vision-v2-captured-source",
+    attemptId,
+    visionOrigin: state.visionOrigin,
+    requestId: capturedEvent?.requestId,
+    captured: capturedEvent?.payload?.captured,
+    resource: state.capturedResource,
+    terminal,
+    protocolTimeline: timeline,
+  });
+  if (!evidence) {
     throw new Error(
-      "captured resource does not match its announced V2 source facts",
+      "captured evidence is not bound to the completed Vision attempt",
     );
   }
-  return {
-    attemptId,
-    captured: {
-      reference: facts.reference,
-      digest: facts.digest,
-      contentType: facts.contentType,
-      byteSize: facts.byteSize,
-      width: facts.width,
-      height: facts.height,
-      frameId: facts.frameId,
-    },
-  };
+  return evidence;
 }
 
 async function readState(adapter: TestAdapter): Promise<TryOnState> {
@@ -169,7 +132,8 @@ export async function runTryOnScenario(
     },
     { timeoutMs, pollMs },
   );
-  const captured = validateCapturedTryOnEvidence(state);
+  const capturedEvidence = validateCapturedTryOnEvidence(state);
+  const captured = capturedSourceBinding(capturedEvidence);
   const assertions = [
     businessAssertion({
       id: "try-on-route",
@@ -195,16 +159,15 @@ export async function runTryOnScenario(
     businessAssertion({
       id: "captured-source-bound",
       source: "vision-v2-protocol",
-      expected: { verified: true },
-      observed: { verified: true },
+      expected: captured,
+      observed: captured,
     }),
   ];
   return {
     assertions,
     supportingEvidence: [
       {
-        kind: "vision-v2-captured-source",
-        ...captured,
+        ...capturedEvidence,
       },
     ],
     report: buildAcceptanceReport({
@@ -217,8 +180,7 @@ export async function runTryOnScenario(
           assertions,
           supportingEvidence: [
             {
-              kind: "vision-v2-captured-source",
-              ...captured,
+              ...capturedEvidence,
             },
           ],
         },
