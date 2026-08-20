@@ -204,7 +204,7 @@ function scaleGarment(delta: number): void {
         "
         :src="tryOn.previewUrl"
         alt="虚拟试衣采集画面"
-        class="try-on-acquisition-preview"
+        class="try-on-acquisition-preview try-on-media"
         data-test="try-on-acquisition-preview"
         @error="previewErrored = true"
       />
@@ -223,9 +223,21 @@ function scaleGarment(delta: number): void {
         :width="tryOn.result.width"
         :height="tryOn.result.height"
         alt="虚拟试衣结果"
-        class="try-on-result"
+        class="try-on-result try-on-media"
         data-test="try-on-result-image"
         @error="resultErrored = true"
+      />
+      <img
+        v-else-if="
+          (tryOn.phase === 'captured' || tryOn.phase === 'generating') &&
+          tryOn.captured
+        "
+        :src="tryOn.captured.reference"
+        :width="tryOn.captured.width"
+        :height="tryOn.captured.height"
+        alt="虚拟试衣捕获画面"
+        class="try-on-captured try-on-media"
+        data-test="try-on-captured-image"
       />
       <p
         v-else-if="tryOn.phase === 'completed' && resultErrored"
@@ -349,8 +361,7 @@ function scaleGarment(delta: number): void {
   letter-spacing: 0.1em;
 }
 
-.try-on-acquisition-preview,
-.try-on-result {
+.try-on-media {
   max-height: 55vh;
   max-width: 100%;
   border: 1px solid rgba(211, 203, 180, 0.92);

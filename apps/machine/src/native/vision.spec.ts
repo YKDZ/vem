@@ -7,6 +7,7 @@ import {
   openVisionGarmentAdjustment,
   openVisionTryOnAttempt,
   subscribeVisionProfiles,
+  type VisionTryOnAttemptEvent,
   visionSelfCheck,
 } from "./vision";
 
@@ -283,6 +284,129 @@ describe("native Vision single-path adapter", () => {
       "vision.try_on.attempt.generating",
       "vision.try_on.attempt.completed",
     ]);
+  });
+
+  it("拒绝畸形或其他尝试的捕获消息且不分发", async () => {
+    const otherAttemptId = "550e8400-e29b-41d4-a716-446655440129";
+    let url = "";
+    url = await withVisionServer((socket, message) => {
+      if (message.type === "vision.hello") {
+        socket.send(JSON.stringify(ready()));
+        return;
+      }
+      if (message.type !== "vision.try_on.attempt.start") return;
+      const reference = url.replace("ws://", "http://").replace("/ws", "");
+      socket.send(
+        JSON.stringify(
+          envelope("vision.try_on.attempt.accepted", { attemptId }),
+        ),
+      );
+      socket.send(
+        JSON.stringify(
+          envelope("vision.try_on.attempt.acquiring", {
+            attemptId,
+            preview: {
+              reference: "http://example.test/unsafe-preview.mjpeg?token=nope",
+              streamType: "mjpeg",
+            },
+            occupancy: "single",
+            guidance: "counting_down",
+            manualCaptureAllowed: true,
+            holdRemainingMs: 3_000,
+          }),
+        ),
+      );
+      socket.send(
+        JSON.stringify(
+          envelope("vision.try_on.attempt.acquiring", {
+            attemptId,
+            preview: {
+              reference: `${reference}/v2/try-on/acquisition/preview.mjpeg?token=preview-token`,
+              streamType: "mjpeg",
+            },
+            occupancy: "single",
+            guidance: "counting_down",
+            manualCaptureAllowed: true,
+            holdRemainingMs: 3_000,
+          }),
+        ),
+      );
+      socket.send(
+        JSON.stringify(
+          envelope("vision.try_on.attempt.captured", {
+            attemptId: otherAttemptId,
+            captured: {
+              reference: `${reference}/v2/try-on/captured/frame.png?token=other-token`,
+              digest: `sha256:${"b".repeat(64)}`,
+              contentType: "image/png",
+              byteSize: 2048,
+              width: 512,
+              height: 768,
+              frameId: "other-customer",
+            },
+          }),
+        ),
+      );
+      socket.send(
+        JSON.stringify(
+          envelope("vision.try_on.attempt.captured", {
+            attemptId,
+            captured: {
+              reference: `${reference}/v2/try-on/captured/frame.png?token=captured-token`,
+              digest: `sha256:${"b".repeat(64)}`,
+              contentType: "image/png",
+              byteSize: 2048,
+              width: 512,
+              height: 768,
+              frameId: "front-42",
+            },
+          }),
+        ),
+      );
+      socket.send(
+        JSON.stringify(
+          envelope("vision.try_on.attempt.generating", {
+            attemptId,
+            stage: "generating",
+          }),
+        ),
+      );
+      socket.send(
+        JSON.stringify(
+          envelope("vision.try_on.attempt.completed", {
+            attemptId,
+            result: {
+              reference: `${reference}/v2/try-on/results/${attemptId}?token=result-token`,
+              digest: `sha256:${"c".repeat(64)}`,
+              contentType: "image/png",
+              byteSize: 2048,
+              width: 512,
+              height: 768,
+            },
+          }),
+        ),
+      );
+    });
+    const events: VisionTryOnAttemptEvent[] = [];
+    let resolveTerminal!: () => void;
+    const terminal = new Promise<void>((resolve) => {
+      resolveTerminal = resolve;
+    });
+
+    await openVisionTryOnAttempt({ url }, input(), (message) => {
+      events.push(message);
+      if (message.type === "vision.try_on.attempt.completed") resolveTerminal();
+    });
+    await terminal;
+
+    expect(events.map((message) => message.type)).toEqual([
+      "vision.try_on.attempt.accepted",
+      "vision.try_on.attempt.acquiring",
+      "vision.try_on.attempt.captured",
+      "vision.try_on.attempt.generating",
+      "vision.try_on.attempt.completed",
+    ]);
+    expect(events[2]?.payload.attemptId).toBe(attemptId);
   });
 
   it("rejects readiness that omits the one try-on capability", async () => {

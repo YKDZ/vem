@@ -263,6 +263,23 @@ describe("try-on store lifecycle", () => {
     expect(store.result?.reference).toContain(`/results/${firstAttemptId}`);
   });
 
+  it("捕获资源属于其他尝试时保持拒绝状态", () => {
+    const store = useTryOnStore();
+    store.attemptId = firstAttemptId;
+    store.phase = "acquiring";
+    const context = {
+      attemptId: firstAttemptId,
+      visionSocketUrl: "ws://127.0.0.1:7892/ws",
+    };
+    const lateCaptured = captured("550e8400-e29b-41d4-a716-446655440129");
+
+    store.applyEvent(firstAttemptId, lateCaptured, context);
+
+    expect(store.phase).toBe("acquiring");
+    expect(store.captured).toBeNull();
+    expect(store.previewUrl).toBeNull();
+  });
+
   it("submits manual capture once and rejects cross-origin current-attempt resources", async () => {
     const store = useTryOnStore();
     const capture = vi.fn(() => true);
@@ -302,7 +319,54 @@ describe("try-on store lifecycle", () => {
     expect(store.failureReason).toBe("try_on_failed");
   });
 
-  it("fences an old attempt after retry and sends absolute garment-scale adjustments", async () => {
+  it("手动采集不会绕过无人、多人或未对齐资格", async () => {
+    const catalog = useCatalogStore();
+    const capture = vi.fn(() => true);
+    openAttemptMock.mockResolvedValue({
+      close: vi.fn(),
+      capture,
+      cancel: vi.fn(),
+    });
+    const store = useTryOnStore();
+    store.prepare(
+      catalog.saleableVariantItemFor(`product:${productId}`, variantId)!,
+    );
+    await store.start();
+    const currentAttempt = store.attemptId!;
+    const context = {
+      attemptId: currentAttempt,
+      visionSocketUrl: "ws://127.0.0.1:7892/ws",
+    };
+    store.applyEvent(currentAttempt, accepted(currentAttempt), context);
+
+    for (const [occupancy, guidance] of [
+      ["none", "no_person"],
+      ["multiple", "multiple_people"],
+      ["single", "align"],
+    ] as const) {
+      store.applyEvent(
+        currentAttempt,
+        event("vision.try_on.attempt.acquiring", {
+          attemptId: currentAttempt,
+          preview: {
+            reference:
+              "http://127.0.0.1:7892/v2/try-on/acquisition/preview.mjpeg?token=preview-token",
+            streamType: "mjpeg",
+          },
+          occupancy,
+          guidance,
+          manualCaptureAllowed: true,
+        }),
+        context,
+      );
+
+      expect(store.requestManualCapture()).toBe(false);
+    }
+
+    expect(capture).not.toHaveBeenCalled();
+  });
+
+  it("重试后隔离旧尝试的迟到终态并发送绝对成衣缩放", async () => {
     const catalog = useCatalogStore();
     await catalog.refresh();
     const store = useTryOnStore();
@@ -327,12 +391,21 @@ describe("try-on store lifecycle", () => {
     await store.start();
     const oldAttempt = store.attemptId!;
     store.cancelCurrentAttempt();
+    callbacks[0]?.(completed(oldAttempt));
+    expect(store.phase).toBe("canceled");
     await store.retry();
     const currentAttempt = store.attemptId!;
-    callbacks[0]?.(accepted(oldAttempt));
-    expect(store.attemptId).toBe(currentAttempt);
     callbacks[1]?.(accepted(currentAttempt));
     callbacks[1]?.(acquiring(currentAttempt));
+    const currentPreview = store.previewUrl;
+    callbacks[0]?.(accepted(oldAttempt));
+    callbacks[0]?.(captured(oldAttempt));
+    callbacks[0]?.(generating(oldAttempt));
+    callbacks[0]?.(completed(oldAttempt));
+    expect(store.attemptId).toBe(currentAttempt);
+    expect(store.phase).toBe("acquiring");
+    expect(store.previewUrl).toBe(currentPreview);
+    expect(store.result).toBeNull();
     callbacks[1]?.(captured(currentAttempt));
     callbacks[1]?.(generating(currentAttempt));
     callbacks[1]?.(completed(currentAttempt));
@@ -347,5 +420,170 @@ describe("try-on store lifecycle", () => {
       attemptId: currentAttempt,
       garmentScale: 1.05,
     });
+  });
+
+  it("每次重试都将成衣缩放重置到绝对的百分之百基线", async () => {
+    const catalog = useCatalogStore();
+    await catalog.refresh();
+    const store = useTryOnStore();
+    store.prepare(
+      catalog.saleableVariantItemFor(`product:${productId}`, variantId)!,
+    );
+    openAttemptMock.mockResolvedValue({
+      close: vi.fn(),
+      capture: vi.fn(),
+      cancel: vi.fn(),
+    });
+    await store.start();
+    const activeAttemptId = store.attemptId!;
+    const context = {
+      attemptId: activeAttemptId,
+      visionSocketUrl: "ws://127.0.0.1:7892/ws",
+    };
+    store.applyEvent(activeAttemptId, accepted(activeAttemptId), context);
+    store.applyEvent(activeAttemptId, acquiring(activeAttemptId), context);
+    store.applyEvent(activeAttemptId, captured(activeAttemptId), context);
+    store.applyEvent(activeAttemptId, generating(activeAttemptId), context);
+    store.applyEvent(activeAttemptId, completed(activeAttemptId), context);
+    store.garmentScale = 1.6;
+
+    await store.retry();
+
+    expect(store.garmentScale).toBe(1);
+  });
+
+  it("只接受百分之八十至一百六十范围内绝对的百分之五成衣缩放步进", async () => {
+    const store = useTryOnStore();
+    store.attemptId = firstAttemptId;
+    store.phase = "completed";
+    store.result = completed(firstAttemptId).payload.result;
+
+    await expect(store.requestGarmentScale(1.03)).resolves.toBe(false);
+    await expect(store.requestGarmentScale(1.65)).resolves.toBe(false);
+    expect(openAdjustMock).not.toHaveBeenCalled();
+
+    openAdjustMock.mockResolvedValue({
+      visionSocketUrl: "ws://127.0.0.1:7892/ws",
+      result: completed(firstAttemptId).payload.result,
+    });
+    await expect(store.requestGarmentScale(1.1)).resolves.toBe(true);
+    expect(openAdjustMock).toHaveBeenLastCalledWith(expect.anything(), {
+      attemptId: firstAttemptId,
+      garmentScale: 1.1,
+    });
+  });
+
+  it("重试后不让旧结果调整覆盖新尝试", async () => {
+    const catalog = useCatalogStore();
+    await catalog.refresh();
+    const store = useTryOnStore();
+    const resolveAdjustment = vi.fn();
+    openAdjustMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveAdjustment.mockImplementation(resolve);
+        }),
+    );
+    store.prepare(
+      catalog.saleableVariantItemFor(`product:${productId}`, variantId)!,
+    );
+    store.attemptId = firstAttemptId;
+    store.phase = "completed";
+    store.result = completed(firstAttemptId).payload.result;
+
+    const pendingAdjustment = store.requestGarmentScale(1.05);
+    await vi.waitFor(() => {
+      expect(openAdjustMock).toHaveBeenCalledOnce();
+    });
+    openAttemptMock.mockResolvedValue({
+      close: vi.fn(),
+      capture: vi.fn(),
+      cancel: vi.fn(),
+    });
+    await store.retry();
+    const currentAttempt = store.attemptId;
+    resolveAdjustment({
+      visionSocketUrl: "ws://127.0.0.1:7892/ws",
+      result: completed(firstAttemptId).payload.result,
+    });
+
+    await expect(pendingAdjustment).resolves.toBe(false);
+    expect(store.attemptId).toBe(currentAttempt);
+    expect(store.result).toBeNull();
+    expect(store.garmentScale).toBe(1);
+  });
+
+  it("旧调整完成时不清除新尝试的调整状态", async () => {
+    const catalog = useCatalogStore();
+    await catalog.refresh();
+    const store = useTryOnStore();
+    const resolveAdjustments: Array<(value: unknown) => void> = [];
+    openAdjustMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveAdjustments.push(resolve);
+        }),
+    );
+    openAttemptMock.mockResolvedValue({
+      close: vi.fn(),
+      capture: vi.fn(),
+      cancel: vi.fn(),
+    });
+    store.prepare(
+      catalog.saleableVariantItemFor(`product:${productId}`, variantId)!,
+    );
+
+    await store.start();
+    const oldAttempt = store.attemptId!;
+    const oldContext = {
+      attemptId: oldAttempt,
+      visionSocketUrl: "ws://127.0.0.1:7892/ws",
+    };
+    store.applyEvent(oldAttempt, accepted(oldAttempt), oldContext);
+    store.applyEvent(oldAttempt, acquiring(oldAttempt), oldContext);
+    store.applyEvent(oldAttempt, captured(oldAttempt), oldContext);
+    store.applyEvent(oldAttempt, generating(oldAttempt), oldContext);
+    store.applyEvent(oldAttempt, completed(oldAttempt), oldContext);
+
+    const oldAdjustment = store.requestGarmentScale(1.05);
+    await vi.waitFor(() => {
+      expect(openAdjustMock).toHaveBeenCalledOnce();
+    });
+
+    await store.retry();
+    const newAttempt = store.attemptId!;
+    const newContext = {
+      attemptId: newAttempt,
+      visionSocketUrl: "ws://127.0.0.1:7892/ws",
+    };
+    store.applyEvent(newAttempt, accepted(newAttempt), newContext);
+    store.applyEvent(newAttempt, acquiring(newAttempt), newContext);
+    store.applyEvent(newAttempt, captured(newAttempt), newContext);
+    store.applyEvent(newAttempt, generating(newAttempt), newContext);
+    store.applyEvent(newAttempt, completed(newAttempt), newContext);
+
+    const newAdjustment = store.requestGarmentScale(1.1);
+    await vi.waitFor(() => {
+      expect(openAdjustMock).toHaveBeenCalledTimes(2);
+    });
+    expect(store.adjusting).toBe(true);
+
+    resolveAdjustments[0]?.({
+      visionSocketUrl: "ws://127.0.0.1:7892/ws",
+      result: completed(oldAttempt).payload.result,
+    });
+
+    await expect(oldAdjustment).resolves.toBe(false);
+    expect(store.attemptId).toBe(newAttempt);
+    expect(store.adjusting).toBe(true);
+
+    resolveAdjustments[1]?.({
+      visionSocketUrl: "ws://127.0.0.1:7892/ws",
+      result: completed(newAttempt).payload.result,
+    });
+    await expect(newAdjustment).resolves.toBe(true);
+    expect(store.adjusting).toBe(false);
+    expect(store.result).toEqual(completed(newAttempt).payload.result);
+    expect(store.garmentScale).toBe(1.1);
   });
 });

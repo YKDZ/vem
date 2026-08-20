@@ -148,14 +148,16 @@ function captured(): VisionTryOnAttemptEvent {
   });
 }
 
-function completed(): Extract<
+function completed(
+  eventAttemptId = attemptId,
+): Extract<
   VisionTryOnAttemptEvent,
   { type: "vision.try_on.attempt.completed" }
 > {
   return event("vision.try_on.attempt.completed", {
-    attemptId,
+    attemptId: eventAttemptId,
     result: {
-      reference: `http://127.0.0.1:7892/v2/try-on/results/${attemptId}?token=result-token`,
+      reference: `http://127.0.0.1:7892/v2/try-on/results/${eventAttemptId}?token=result-token`,
       digest: `sha256:${"c".repeat(64)}`,
       contentType: "image/png",
       byteSize: 2048,
@@ -202,13 +204,19 @@ describe("TryOnView single-path acquisition UI", () => {
 
   it("renders one live preview, forwards one manual capture, retains captured identity, then renders the result", async () => {
     let emit: ((next: VisionTryOnAttemptEvent) => void) | undefined;
+    let emittedAttemptId = attemptId;
     const capture = vi.fn(() => true);
     openAttemptMock.mockImplementation((_connection, _input, onEvent) => {
+      const localAttemptId = _input.attemptId;
+      emittedAttemptId = localAttemptId;
       emit = (next) =>
-        onEvent(next, {
-          attemptId,
-          visionSocketUrl: "ws://127.0.0.1:7892/ws",
-        });
+        onEvent(
+          { ...next, payload: { ...next.payload, attemptId: localAttemptId } },
+          {
+            attemptId: localAttemptId,
+            visionSocketUrl: "ws://127.0.0.1:7892/ws",
+          },
+        );
       return Promise.resolve({ close: vi.fn(), capture, cancel: vi.fn() });
     });
     const host = await mount();
@@ -226,6 +234,45 @@ describe("TryOnView single-path acquisition UI", () => {
     expect(
       host.querySelector('[data-test="try-on-countdown"]')?.textContent,
     ).toBe("3");
+    emit(acquisition(2_000));
+    await nextTick();
+    expect(
+      host.querySelector('[data-test="try-on-acquisition-preview"]'),
+    ).not.toBeNull();
+    expect(
+      host.querySelector('[data-test="try-on-countdown"]')?.textContent,
+    ).toBe("2");
+    emit(acquisition(1_000));
+    await nextTick();
+    expect(
+      host.querySelector('[data-test="try-on-acquisition-preview"]'),
+    ).not.toBeNull();
+    expect(
+      host.querySelector('[data-test="try-on-countdown"]')?.textContent,
+    ).toBe("1");
+    emit(
+      event("vision.try_on.attempt.acquiring", {
+        attemptId,
+        preview: {
+          reference:
+            "http://127.0.0.1:7892/v2/try-on/acquisition/preview.mjpeg?token=preview-token",
+          streamType: "mjpeg",
+        },
+        occupancy: "single",
+        guidance: "align",
+        manualCaptureAllowed: false,
+      }),
+    );
+    await nextTick();
+    expect(
+      host.querySelector('[data-test="try-on-acquisition-preview"]'),
+    ).not.toBeNull();
+    expect(host.querySelector('[data-test="try-on-countdown"]')).toBeNull();
+    expect(
+      host.querySelector('[data-test="try-on-guidance"]')?.textContent,
+    ).toContain("请面向镜头并调整站位");
+    emit(acquisition());
+    await nextTick();
 
     host
       .querySelector('[data-test="try-on-manual-capture"]')
@@ -238,6 +285,21 @@ describe("TryOnView single-path acquisition UI", () => {
     expect(
       host.querySelector('[data-test="try-on-acquisition-preview"]'),
     ).toBeNull();
+    expect(
+      host.querySelector<HTMLImageElement>(
+        '[data-test="try-on-captured-image"]',
+      )?.src,
+    ).toContain("/v2/try-on/captured/frame.png?token=captured-token");
+    expect(
+      host.querySelector<HTMLImageElement>(
+        '[data-test="try-on-captured-image"]',
+      )?.width,
+    ).toBe(512);
+    expect(
+      host
+        .querySelector('[data-test="try-on-captured-image"]')
+        ?.classList.contains("try-on-media"),
+    ).toBe(true);
 
     emit(
       event("vision.try_on.attempt.generating", {
@@ -245,8 +307,15 @@ describe("TryOnView single-path acquisition UI", () => {
         stage: "generating",
       }),
     );
-    emit(completed());
     await nextTick();
+    expect(
+      host.querySelector('[data-test="try-on-captured-image"]'),
+    ).not.toBeNull();
+    emit(completed(emittedAttemptId));
+    await nextTick();
+    expect(
+      host.querySelector('[data-test="try-on-captured-image"]'),
+    ).toBeNull();
     expect(
       host.querySelector('[data-test="try-on-result-image"]'),
     ).not.toBeNull();
@@ -255,14 +324,18 @@ describe("TryOnView single-path acquisition UI", () => {
     ).not.toBeNull();
   });
 
-  it("shows a recoverable preview error and uses the same single path for retry and return", async () => {
+  it("超时后提供可重试和返回商品的恢复路径", async () => {
     let emit: ((next: VisionTryOnAttemptEvent) => void) | undefined;
     openAttemptMock.mockImplementation((_connection, _input, onEvent) => {
+      const localAttemptId = _input.attemptId;
       emit = (next) =>
-        onEvent(next, {
-          attemptId,
-          visionSocketUrl: "ws://127.0.0.1:7892/ws",
-        });
+        onEvent(
+          { ...next, payload: { ...next.payload, attemptId: localAttemptId } },
+          {
+            attemptId: localAttemptId,
+            visionSocketUrl: "ws://127.0.0.1:7892/ws",
+          },
+        );
       return Promise.resolve({
         close: vi.fn(),
         capture: vi.fn(),
@@ -299,6 +372,130 @@ describe("TryOnView single-path acquisition UI", () => {
     host
       .querySelector('[data-test="try-on-return"]')
       ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await nextTick();
+    expect(submitNavigationMock).toHaveBeenCalledWith({
+      type: "customer.navigate",
+      target: {
+        name: "product-detail",
+        params: { catalogKey: "product:550e8400-e29b-41d4-a716-446655440128" },
+        query: { variantId },
+      },
+    });
+  });
+
+  it("失败状态支持重试并在返回商品时取消活动尝试", async () => {
+    let emit: ((next: VisionTryOnAttemptEvent) => void) | undefined;
+    const cancel = vi.fn(() => true);
+    openAttemptMock.mockImplementation((_connection, _input, onEvent) => {
+      const localAttemptId = _input.attemptId;
+      emit = (next) =>
+        onEvent(
+          { ...next, payload: { ...next.payload, attemptId: localAttemptId } },
+          {
+            attemptId: localAttemptId,
+            visionSocketUrl: "ws://127.0.0.1:7892/ws",
+          },
+        );
+      return Promise.resolve({ close: vi.fn(), capture: vi.fn(), cancel });
+    });
+    const host = await mount();
+    await vi.waitFor(() => {
+      expect(openAttemptMock).toHaveBeenCalledOnce();
+    });
+    if (!emit) throw new Error("预期收到原生试衣事件回调");
+
+    emit(
+      event("vision.try_on.attempt.failed", {
+        attemptId,
+        reason: "try_on_failed",
+      }),
+    );
+    await nextTick();
+    expect(host.querySelector('[data-test="try-on-retry"]')).not.toBeNull();
+
+    host
+      .querySelector('[data-test="try-on-retry"]')
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await vi.waitFor(() => {
+      expect(openAttemptMock).toHaveBeenCalledTimes(2);
+    });
+
+    host
+      .querySelector('[data-test="try-on-return"]')
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await nextTick();
+    expect(cancel).toHaveBeenCalledWith("route_leave");
+  });
+
+  it("取消按钮向当前尝试提交顾客取消", async () => {
+    const cancel = vi.fn(() => true);
+    openAttemptMock.mockResolvedValue({
+      close: vi.fn(),
+      capture: vi.fn(),
+      cancel,
+    });
+    const host = await mount();
+    await vi.waitFor(() => {
+      expect(openAttemptMock).toHaveBeenCalledOnce();
+    });
+
+    host
+      .querySelector('[data-test="try-on-cancel"]')
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await nextTick();
+
+    expect(cancel).toHaveBeenCalledWith("user");
+    expect(useTryOnStore().phase).toBe("canceled");
+  });
+
+  it("路由离开时取消仍在运行的尝试", async () => {
+    const cancel = vi.fn(() => true);
+    openAttemptMock.mockResolvedValue({
+      close: vi.fn(),
+      capture: vi.fn(),
+      cancel,
+    });
+    await mount();
+    await vi.waitFor(() => {
+      expect(openAttemptMock).toHaveBeenCalledOnce();
+    });
+
+    mountedApp?.unmount();
+    mountedApp = null;
+
+    expect(cancel).toHaveBeenCalledWith("route_leave");
+  });
+
+  it("顾客离场会通过既有导航接口自动返回商品", async () => {
+    let emit: ((next: VisionTryOnAttemptEvent) => void) | undefined;
+    openAttemptMock.mockImplementation((_connection, _input, onEvent) => {
+      const localAttemptId = _input.attemptId;
+      emit = (next) =>
+        onEvent(
+          { ...next, payload: { ...next.payload, attemptId: localAttemptId } },
+          {
+            attemptId: localAttemptId,
+            visionSocketUrl: "ws://127.0.0.1:7892/ws",
+          },
+        );
+      return Promise.resolve({
+        close: vi.fn(),
+        capture: vi.fn(),
+        cancel: vi.fn(),
+      });
+    });
+    await mount();
+    await vi.waitFor(() => {
+      expect(openAttemptMock).toHaveBeenCalledOnce();
+    });
+    if (!emit) throw new Error("预期收到原生试衣事件回调");
+
+    emit(
+      event("vision.try_on.attempt.canceled", {
+        attemptId,
+        reason: "departure",
+      }),
+    );
     await nextTick();
     expect(submitNavigationMock).toHaveBeenCalledWith({
       type: "customer.navigate",

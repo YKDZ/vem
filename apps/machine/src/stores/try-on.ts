@@ -92,6 +92,9 @@ export const useTryOnStore = defineStore("tryOn", {
       this.attemptId = attemptId;
       this.result = null;
       this.failureReason = null;
+      // 成衣缩放属于单个已完成结果；重试会新建捕获，必须回到合同规定的 100% 基线。
+      this.garmentScale = 1;
+      this.adjusting = false;
       this.clearAcquisitionPresentation();
       let currentItem: MachineCatalogItem | null = null;
       try {
@@ -170,6 +173,8 @@ export const useTryOnStore = defineStore("tryOn", {
       if (
         this.phase !== "acquiring" ||
         !this.manualCaptureAllowed ||
+        this.occupancy !== "single" ||
+        this.guidance !== "counting_down" ||
         this.manualCaptureSubmitted ||
         !this.attemptId ||
         !isCurrentOperation(owner, this.attemptId)
@@ -202,7 +207,14 @@ export const useTryOnStore = defineStore("tryOn", {
       event: VisionTryOnAttemptEvent,
       resultContext: Parameters<typeof validateTryOnResultReference>[1],
     ): void {
-      if (this.attemptId !== attemptId) return;
+      // 回调闭包、签名协议载荷和结果上下文都必须指向同一活跃 attempt。另一位顾客的
+      // 迟到资源不是可恢复的显示更新，必须保持当前 attempt 不变。
+      if (
+        this.attemptId !== attemptId ||
+        event.payload.attemptId !== attemptId ||
+        resultContext.attemptId !== attemptId
+      )
+        return;
       if (event.type === "vision.try_on.attempt.accepted") {
         if (this.phase === "starting") this.phase = "accepted";
         return;
@@ -281,9 +293,6 @@ export const useTryOnStore = defineStore("tryOn", {
           this.failureReason = null;
           this.clearAcquisitionPresentation();
           clearOperation(currentOperation);
-          // A persisted garment scale survives retry: the fresh result is
-          // immediately re-rendered at the customer's chosen proportion.
-          void this.reapplyGarmentScale();
         } catch {
           this.phase = "failed";
           this.failureReason = "try_on_failed";
@@ -314,17 +323,17 @@ export const useTryOnStore = defineStore("tryOn", {
       if (
         this.phase !== "completed" ||
         this.attemptId === null ||
-        this.adjusting
+        this.adjusting ||
+        !isSupportedGarmentScale(scale)
       ) {
         return false;
       }
-      const bounded = Math.min(1.6, Math.max(0.8, scale));
       const attemptId = this.attemptId;
       this.adjusting = true;
       try {
         const adjusted = await openVisionGarmentAdjustment(
           { machineCode: useMachineStore().machineCode },
-          { attemptId, garmentScale: bounded },
+          { attemptId, garmentScale: scale },
         );
         if (this.attemptId !== attemptId || this.phase !== "completed") {
           return false;
@@ -333,18 +342,15 @@ export const useTryOnStore = defineStore("tryOn", {
           attemptId,
           visionSocketUrl: adjusted.visionSocketUrl,
         });
-        this.garmentScale = bounded;
+        this.garmentScale = scale;
         return true;
       } catch {
         return false;
       } finally {
-        this.adjusting = false;
+        if (this.attemptId === attemptId) {
+          this.adjusting = false;
+        }
       }
-    },
-    async reapplyGarmentScale(): Promise<void> {
-      if (this.phase !== "completed") return;
-      if (this.garmentScale === 1) return;
-      await this.requestGarmentScale(this.garmentScale);
     },
     clearAcquisitionPresentation(): void {
       this.previewUrl = null;
@@ -430,5 +436,20 @@ function isGenerationStageAtLeast(
 function generationStageOrder(stage: TryOnGenerationStage): number {
   return ["preparing", "generating", "validating_result", "rendering"].indexOf(
     stage,
+  );
+}
+
+function isSupportedGarmentScale(scale: number): boolean {
+  const percent = scale * 100;
+  const roundedPercent = Math.round(percent);
+  const isWholePercent =
+    Math.abs(percent - roundedPercent) <=
+    Number.EPSILON * Math.max(1, Math.abs(percent)) * 4;
+  return (
+    Number.isFinite(scale) &&
+    isWholePercent &&
+    roundedPercent >= 80 &&
+    roundedPercent <= 160 &&
+    roundedPercent % 5 === 0
   );
 }
