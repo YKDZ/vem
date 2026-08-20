@@ -81,6 +81,31 @@ export const visionFrameSourceEvidenceSchema = z
   })
   .loose();
 
+/**
+ * 帧来源溯源信息（机器侧可读的协议字段）。
+ *
+ * 与 `visionFrameSourceEvidenceSchema` 不同，这里允许生产环境（dshow）
+ * 只携带部分来源信息（如 `{source: "dshow", brokerPid}`），也允许验收环境
+ * 携带完整证据字段；两种形态都应当被机器 UI 接受。`synthetic`/`relabeled`
+ * 一旦出现仍必须为 false，避免把合成的帧冒充真实捕获。
+ */
+export const visionFrameSourceProvenanceSchema = z
+  .object({
+    adapter: z.string().min(1).max(64).optional(),
+    role: z.enum(["top", "front"]).optional(),
+    configSha256: visionSha256HexSchema.optional(),
+    fixtureSha256: visionSha256HexSchema.optional(),
+    frameIndex: z.number().int().nonnegative().optional(),
+    decodedFrameCount: z.number().int().positive().optional(),
+    synthetic: z.literal(false).optional(),
+    relabeled: z.literal(false).optional(),
+    eventId: z.string().min(1).max(128).optional(),
+    sessionId: z.string().min(1).max(128).optional(),
+    source: z.string().min(1).max(64).optional(),
+    brokerPid: z.number().int().positive().optional(),
+  })
+  .loose();
+
 export const visionFrameSourceBindingSchema = z
   .object({
     adapter: z.string().min(1).max(64),
@@ -140,7 +165,7 @@ export const visionProfileResultPayloadSchema = z.object({
   source: z.literal("front").default("front"),
   eventId: z.string().min(1).max(128),
   detectedAt: z.iso.datetime(),
-  sourceFrame: visionFrameSourceEvidenceSchema.optional(),
+  sourceFrame: visionFrameSourceProvenanceSchema.optional(),
   occupancy: visionPresenceOccupancySchema.optional(),
   profile: visionProfileSchema,
   quality: z
@@ -165,7 +190,7 @@ export const visionPresenceStatusPayloadSchema = z
     closeNow: z.boolean().optional(),
     close: z.boolean().optional(),
     closeTrigger: z.string().min(1).max(64).nullable().optional(),
-    sourceFrame: visionFrameSourceEvidenceSchema.optional(),
+    sourceFrame: visionFrameSourceProvenanceSchema.optional(),
     proximity: z.record(z.string(), z.unknown()).default({}),
   })
   .loose();
@@ -187,7 +212,7 @@ export const visionPersonDepartedPayloadSchema = z
       ])
       .default("unknown"),
     absenceDurationMs: z.number().int().nonnegative().optional(),
-    sourceFrame: visionFrameSourceEvidenceSchema.optional(),
+    sourceFrame: visionFrameSourceProvenanceSchema.optional(),
   })
   .loose();
 

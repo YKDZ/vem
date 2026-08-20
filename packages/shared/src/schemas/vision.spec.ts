@@ -148,6 +148,81 @@ describe("vision protocol schemas", () => {
     expect(message.payload.personPresent).toBe(true);
   });
 
+  it("accepts dshow frame provenance in presence status payloads", () => {
+    const message = visionPresenceStatusMessageSchema.parse({
+      ...BASE_ENVELOPE,
+      type: "vision.presence_status",
+      payload: {
+        source: "top",
+        eventId: "presence-event-dshow",
+        state: "empty",
+        reason: "no_person",
+        detectedAt: "2026-08-20T05:56:42.045674Z",
+        sourceFrame: {
+          source: "dshow",
+          brokerPid: 4976,
+        },
+        personPresent: false,
+        occupancy: { state: "none", confidence: 0.8 },
+        proximity: { bodyPresent: false },
+      },
+    });
+
+    expect(message.type).toBe("vision.presence_status");
+    expect(message.payload.sourceFrame?.source).toBe("dshow");
+  });
+
+  it("accepts dshow frame provenance in person departed payloads", () => {
+    const message = visionPersonDepartedMessageSchema.parse({
+      ...BASE_ENVELOPE,
+      type: "vision.person_departed",
+      payload: {
+        source: "top",
+        eventId: "departure-event-dshow",
+        detectedAt: "2026-08-20T05:57:00.000Z",
+        lastSeenAt: "2026-08-20T05:56:50.000Z",
+        reason: "left_frame",
+        sourceFrame: {
+          source: "dshow",
+          brokerPid: 4976,
+        },
+      },
+    });
+
+    expect(message.type).toBe("vision.person_departed");
+    expect(message.payload.sourceFrame?.brokerPid).toBe(4976);
+  });
+
+  it("accepts dshow frame provenance in profile result payloads", () => {
+    const message = visionProfileResultMessageSchema.parse({
+      ...BASE_ENVELOPE,
+      type: "vision.profile_result",
+      payload: {
+        source: "front",
+        eventId: "profile-event-dshow",
+        detectedAt: "2026-08-20T05:58:00.000Z",
+        sourceFrame: {
+          source: "dshow",
+          brokerPid: 4977,
+        },
+        profile: {
+          personPresent: true,
+          heightCm: 172,
+          bodyType: "regular",
+          confidence: 0.86,
+        },
+        quality: {
+          overall: "good",
+          warnings: [],
+          profileUsable: true,
+        },
+      },
+    });
+
+    expect(message.type).toBe("vision.profile_result");
+    expect(message.payload.sourceFrame?.brokerPid).toBe(4977);
+  });
+
   it("parses presence occupancy without requiring a precise headcount", () => {
     const message = visionPresenceStatusMessageSchema.parse({
       ...BASE_ENVELOPE,
