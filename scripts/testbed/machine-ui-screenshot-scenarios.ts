@@ -14,6 +14,7 @@ import {
   evaluateExpression,
   inspectWindowsMachineUiRuntime,
   rewriteWebSocketDebuggerUrl,
+  setCdpLocationHash,
   validatePngScreenshot,
   waitForRoute,
   openMachineUiCdpSidecar,
@@ -98,11 +99,7 @@ async function prepareDirectScenario({ client, scenario, timeoutMs }) {
       `${scenario.name} requires its owning real-runtime business scenario adapter`,
     );
   }
-  await evaluateExpression(
-    client,
-    `location.hash = ${JSON.stringify(scenario.route.slice(1))}`,
-    { timeoutMs },
-  );
+  await setCdpLocationHash(client, scenario.route.slice(1), { timeoutMs });
   await waitForRoute(client, scenario.route, {
     timeoutMs,
     ...routeWaitOptionsForScreenshotScenario(scenario),

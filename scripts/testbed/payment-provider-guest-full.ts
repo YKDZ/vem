@@ -13,7 +13,9 @@ import {
   discoverMachineUiTarget,
   enablePageRuntime,
   evaluateExpression,
+  readMachineRuntimeTraceSnapshot,
   rewriteWebSocketDebuggerUrl,
+  setCdpLocationHash,
   waitForRoute,
 } from "./machine-ui-cdp-driver.ts";
 import { replaceSerialSessionAndUpdateHandoff } from "./serial-session-handoff.ts";
@@ -35,6 +37,12 @@ const PROVIDER_FAILURE_STAGES = new Set([
   "terminal-state",
   "serial-cleanup",
 ]);
+const DISPATCH_CHECKOUT_SUBMIT_DOM_CLICK_EXPRESSION = `(() => {
+  const el = document.querySelector('[data-test="checkout-submit"]');
+  if (!el || el.disabled || !el.getClientRects().length) return false;
+  el.click();
+  return true;
+})()`;
 
 function required(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -469,9 +477,10 @@ async function visiblePaymentSurface(client, method, timeoutMs) {
 }
 
 async function readPaymentFlowDiagnostic(client, method) {
-  return await evaluateExpression(
-    client,
-    `(() => {
+  const [diagnostic, traceSnapshot] = await Promise.all([
+    evaluateExpression(
+      client,
+      `(() => {
       const submit = document.querySelector('[data-test="checkout-submit"]');
       const selected = document.querySelector('[data-test="payment-option"].payment-option-selected');
       const surface = document.querySelector('[data-installed-kiosk-sale-payment-surface]');
@@ -492,18 +501,6 @@ async function readPaymentFlowDiagnostic(client, method) {
         summary.lastTrusted = event.trusted;
         return summary;
       }, {});
-      const runtimeEntries = window.__VEM_MACHINE_RUNTIME_TRACE_SNAPSHOT__?.entries ?? [];
-      const checkoutSubmitTrace = runtimeEntries
-        .filter((entry) => entry?.type === 'checkout_submit')
-        .slice(-8)
-        .map((entry) => ({
-          phase: entry.phase,
-          canSubmit: entry.canSubmit,
-          loading: entry.loading,
-          selectedPaymentOptionKey: entry.selectedPaymentOptionKey,
-          customerErrorMessage: entry.customerErrorMessage,
-          orderNo: entry.orderNo ?? null,
-        }));
       return {
         expectedMethod: ${JSON.stringify(method)},
         route: location.hash,
@@ -523,11 +520,27 @@ async function readPaymentFlowDiagnostic(client, method) {
         },
         customerMessages: visibleText('[role="alert"], .ant-message, .ant-alert, .checkout-error, .payment-error, [data-test*="error"]'),
         submitEventSummary,
-        checkoutSubmitTrace,
         submitEvents: submitEvents.slice(-4),
       };
     })()`,
-  );
+    ),
+    readMachineRuntimeTraceSnapshot(client),
+  ]);
+  const runtimeEntries = Array.isArray(traceSnapshot?.entries)
+    ? traceSnapshot.entries
+    : [];
+  const checkoutSubmitTrace = runtimeEntries
+    .filter((entry) => entry?.type === "checkout_submit")
+    .slice(-8)
+    .map((entry) => ({
+      phase: entry.phase,
+      canSubmit: entry.canSubmit,
+      loading: entry.loading,
+      selectedPaymentOptionKey: entry.selectedPaymentOptionKey,
+      customerErrorMessage: entry.customerErrorMessage,
+      orderNo: entry.orderNo ?? null,
+    }));
+  return { ...diagnostic, checkoutSubmitTrace };
 }
 
 async function installCheckoutSubmitEventProbe(client) {
@@ -558,12 +571,7 @@ async function installCheckoutSubmitEventProbe(client) {
 
 async function dispatchCheckoutSubmitDomClick(client) {
   const result = await client.send("Runtime.evaluate", {
-    expression: `(() => {
-      const el = document.querySelector('[data-test="checkout-submit"]');
-      if (!el || el.disabled || !el.getClientRects().length) return false;
-      el.click();
-      return true;
-    })()`,
+    expression: DISPATCH_CHECKOUT_SUBMIT_DOM_CLICK_EXPRESSION,
     awaitPromise: true,
     returnByValue: true,
     userGesture: true,
@@ -657,7 +665,7 @@ async function waitForCheckoutPaymentSelection(client, method, timeoutMs) {
 }
 
 async function beginMachineUiOrder(client, input, fixture, method, timeoutMs) {
-  await evaluateExpression(client, "location.hash = '#/catalog'");
+  await setCdpLocationHash(client, "#/catalog");
   await waitForRoute(client, "#/catalog", {
     timeoutMs,
     pollMs: POLL_INTERVAL_MS,
@@ -796,7 +804,7 @@ async function cleanAuthoritativeOrderBeforeDiagnostics(
   );
   const route = await evaluateExpression(client, "location.hash");
   if (!["#/catalog", "#/products"].includes(route)) {
-    await evaluateExpression(client, "location.hash = '#/catalog'");
+    await setCdpLocationHash(client, "#/catalog");
     await waitForRoute(client, "#/catalog", {
       timeoutMs,
       pollMs: POLL_INTERVAL_MS,

@@ -969,6 +969,78 @@ export async function evaluateExpression(
   return result.result?.value;
 }
 
+const MACHINE_RUNTIME_TRACE_SNAPSHOT_EXPRESSION =
+  "window.__VEM_MACHINE_RUNTIME_TRACE_SNAPSHOT__ || null";
+const MACHINE_RUNTIME_GENERATION_EXPRESSION =
+  "window.__VEM_MACHINE_RUNTIME_TRACE_SNAPSHOT__?.runtimeGenerationId ?? null";
+const LOCATION_HASH_EXPRESSION = "location.hash";
+const RUNTIME_OPERATION_OBSERVATION_EXPRESSION = `(() => {
+  const traceSnapshot = window.__VEM_MACHINE_RUNTIME_TRACE_SNAPSHOT__;
+  const transactionSurface = document.querySelector([
+    '[data-installed-kiosk-sale-payment-surface]',
+    '[data-installed-kiosk-sale-fulfillment-surface]',
+    '[data-installed-kiosk-sale-result-surface]'
+  ].join(','));
+  const overlays = [...document.querySelectorAll(
+    '[data-test*="recovery"], [data-vem-recovery-overlay], [role="alert"]'
+  )].map((element) => ({
+    test: element.getAttribute('data-test'),
+    recoveryMarker: element.hasAttribute('data-vem-recovery-overlay'),
+    text: (element.textContent || '').trim().slice(0, 256),
+    visible: Boolean(element.getClientRects().length)
+  })).filter((entry) => entry.visible && (entry.recoveryMarker || /recover|reconnect|daemon|connection/i.test((entry.test || '') + ' ' + entry.text)));
+  const catalogRequests = performance.getEntriesByType('resource')
+    .map((entry) => entry.name)
+    .filter((name) => /\\/v1\\/catalog(?:[?#]|$)/.test(name))
+    .slice(-32);
+  return {
+    runtimeTraceSnapshot:
+      traceSnapshot && typeof traceSnapshot === 'object'
+        ? structuredClone(traceSnapshot)
+        : null,
+    runtimeTrace: Array.isArray(traceSnapshot?.entries)
+      ? structuredClone(traceSnapshot.entries).slice(-256)
+      : [],
+    catalogRequests,
+    catalogRevision: document.documentElement?.dataset.catalogRevision || document.querySelector('[data-catalog-revision]')?.dataset.catalogRevision || null,
+    catalogInvalidationId: document.documentElement?.dataset.catalogInvalidationId || document.querySelector('[data-catalog-invalidation-id]')?.dataset.catalogInvalidationId || null,
+    recoveryOverlay: overlays,
+    orderCredential: transactionSurface?.dataset.orderNo || transactionSurface?.dataset.orderCredential || null,
+    route: location.hash
+  };
+})()`;
+
+/**
+ * 读取 Machine UI 暴露的运行时轨迹快照（`window.__VEM_MACHINE_RUNTIME_TRACE_SNAPSHOT__`）。
+ * 这是唯一读取该全局的入口；轨道代码不应再内联此表达式。
+ */
+export async function readMachineRuntimeTraceSnapshot(
+  client: any,
+  options: any = {},
+) {
+  return evaluateExpression(
+    client,
+    MACHINE_RUNTIME_TRACE_SNAPSHOT_EXPRESSION,
+    options,
+  );
+}
+
+export async function readCdpLocationHash(client: any, options: any = {}) {
+  return evaluateExpression(client, LOCATION_HASH_EXPRESSION, options);
+}
+
+export async function setCdpLocationHash(
+  client: any,
+  hash: string,
+  options: any = {},
+) {
+  return evaluateExpression(
+    client,
+    `location.hash = ${JSON.stringify(hash)}`,
+    options,
+  );
+}
+
 export async function captureDomIdentity(client, options = {}) {
   const identity = await evaluateExpression(
     client,
@@ -1000,41 +1072,7 @@ export async function captureDomIdentity(client, options = {}) {
 export async function captureRuntimeOperationObservation(client, options = {}) {
   const value = await evaluateExpression(
     client,
-    `(() => {
-      const traceSnapshot = window.__VEM_MACHINE_RUNTIME_TRACE_SNAPSHOT__;
-      const transactionSurface = document.querySelector([
-        '[data-installed-kiosk-sale-payment-surface]',
-        '[data-installed-kiosk-sale-fulfillment-surface]',
-        '[data-installed-kiosk-sale-result-surface]'
-      ].join(','));
-      const overlays = [...document.querySelectorAll(
-        '[data-test*="recovery"], [data-vem-recovery-overlay], [role="alert"]'
-      )].map((element) => ({
-        test: element.getAttribute('data-test'),
-        recoveryMarker: element.hasAttribute('data-vem-recovery-overlay'),
-        text: (element.textContent || '').trim().slice(0, 256),
-        visible: Boolean(element.getClientRects().length)
-      })).filter((entry) => entry.visible && (entry.recoveryMarker || /recover|reconnect|daemon|connection/i.test((entry.test || '') + ' ' + entry.text)));
-      const catalogRequests = performance.getEntriesByType('resource')
-        .map((entry) => entry.name)
-        .filter((name) => /\\/v1\\/catalog(?:[?#]|$)/.test(name))
-        .slice(-32);
-      return {
-        runtimeTraceSnapshot:
-          traceSnapshot && typeof traceSnapshot === 'object'
-            ? structuredClone(traceSnapshot)
-            : null,
-        runtimeTrace: Array.isArray(traceSnapshot?.entries)
-          ? structuredClone(traceSnapshot.entries).slice(-256)
-          : [],
-        catalogRequests,
-        catalogRevision: document.documentElement?.dataset.catalogRevision || document.querySelector('[data-catalog-revision]')?.dataset.catalogRevision || null,
-        catalogInvalidationId: document.documentElement?.dataset.catalogInvalidationId || document.querySelector('[data-catalog-invalidation-id]')?.dataset.catalogInvalidationId || null,
-        recoveryOverlay: overlays,
-        orderCredential: transactionSurface?.dataset.orderNo || transactionSurface?.dataset.orderCredential || null,
-        route: location.hash
-      };
-    })()`,
+    RUNTIME_OPERATION_OBSERVATION_EXPRESSION,
     options,
   );
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -1070,7 +1108,7 @@ async function captureRecoveredOperationObservation(
 async function readRuntimeGeneration(client, options = {}) {
   const value = await evaluateExpression(
     client,
-    "window.__VEM_MACHINE_RUNTIME_TRACE_SNAPSHOT__?.runtimeGenerationId ?? null",
+    MACHINE_RUNTIME_GENERATION_EXPRESSION,
     options,
   );
   // Older focused driver tests do not expose the optional trace snapshot. A

@@ -11,6 +11,7 @@ import {
   enablePageRuntime,
   evaluateExpression,
   rewriteWebSocketDebuggerUrl,
+  setCdpLocationHash,
   waitForRoute,
 } from "./machine-ui-cdp-driver.ts";
 
@@ -96,7 +97,7 @@ async function waitFor(predicate, label, timeoutMs = WINDOW_QUERY_TIMEOUT_MS) {
 }
 
 async function setRoute(client, route) {
-  await evaluateExpression(client, `location.hash = ${JSON.stringify(route)}`);
+  await setCdpLocationHash(client, route);
   return waitForRoute(client, route, {
     timeoutMs: FIELD_TIMEOUT_MS,
     pollMs: 150,

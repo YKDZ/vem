@@ -29,7 +29,9 @@ import {
   discoverMachineUiTarget,
   enablePageRuntime,
   evaluateExpression,
+  readMachineRuntimeTraceSnapshot,
   rewriteWebSocketDebuggerUrl,
+  setCdpLocationHash,
   waitForRoute,
 } from "./machine-ui-cdp-driver.ts";
 import { waitForHardwareBindings } from "./scanner-payment-code-guest-full.ts";
@@ -2325,10 +2327,7 @@ export function validateVisionRuntimeEvidence({
 
 async function readRuntimeTrace(client) {
   return normalizeRuntimeTraceSnapshot(
-    await evaluateExpression(
-      client,
-      "window.__VEM_MACHINE_RUNTIME_TRACE_SNAPSHOT__ || null",
-    ),
+    await readMachineRuntimeTraceSnapshot(client),
     "Machine Runtime Trace",
   );
 }
@@ -4160,7 +4159,7 @@ async function collectInstalledFieldRegressionChecks({
   );
   const checks = [];
   const reenterSelectedProductFromCatalog = async () => {
-    await evaluateExpression(client, 'location.hash = "#/catalog"');
+    await setCdpLocationHash(client, "#/catalog");
     await waitForRoute(client, "#/catalog", {
       timeoutMs: 30_000,
       pollMs: 250,

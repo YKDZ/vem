@@ -17,6 +17,8 @@ import {
   discoverMachineUiTarget,
   enablePageRuntime,
   evaluateExpression,
+  readCdpLocationHash,
+  readMachineRuntimeTraceSnapshot,
   rewriteWebSocketDebuggerUrl,
   waitForRoute,
 } from "./machine-ui-cdp-driver.ts";
@@ -1441,16 +1443,9 @@ async function waitForSuccessfulResultSurface(
 
 async function readRuntimeTraceSnapshot(client) {
   return runtimeTraceSnapshot(
-    await evaluateExpression(
-      client,
-      "window.__VEM_MACHINE_RUNTIME_TRACE_SNAPSHOT__ || null",
-    ),
+    await readMachineRuntimeTraceSnapshot(client),
     "Machine Runtime Trace",
   );
-}
-
-async function readCdpLocationHash(client) {
-  return evaluateExpression(client, "location.hash");
 }
 
 export async function startContinuousCdpLocationHashObservation(

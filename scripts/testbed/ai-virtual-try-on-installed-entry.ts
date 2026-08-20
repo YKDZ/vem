@@ -37,6 +37,8 @@ import {
   CdpClient,
   discoverMachineUiTarget,
   enablePageRuntime,
+  readCdpLocationHash,
+  readMachineRuntimeTraceSnapshot,
   rewriteWebSocketDebuggerUrl,
   activateVisibleSelector,
   captureScreenshot,
@@ -911,12 +913,7 @@ function installedAiScreenshotCapture(artifactRoot, caseKey) {
 async function returnInstalledAiAttemptToCatalog(client, resultAttemptId) {
   if (!UUID_PATTERN.test(resultAttemptId ?? ""))
     throw new Error("AI try-on return attempt identity is invalid");
-  const resultRoute = (
-    await client.send("Runtime.evaluate", {
-      expression: "location.hash",
-      returnByValue: true,
-    })
-  )?.result?.value;
+  const resultRoute = await readCdpLocationHash(client);
   await activateVisibleSelector(client, '[data-test="try-on-return"]', {
     kind: "touch",
     timeoutMs: 30_000,
@@ -925,23 +922,14 @@ async function returnInstalledAiAttemptToCatalog(client, resultAttemptId) {
     timeoutMs: 30_000,
     pollMs: 250,
   });
-  const productRoute = (
-    await client.send("Runtime.evaluate", {
-      expression: "location.hash",
-      returnByValue: true,
-    })
-  )?.result?.value;
+  const productRoute = await readCdpLocationHash(client);
   await activateVisibleSelector(
     client,
     '[data-test="product-detail-return-catalog"]',
     { kind: "touch", timeoutMs: 30_000 },
   );
   await waitForRoute(client, "#/catalog", { timeoutMs: 30_000, pollMs: 250 });
-  const observation = await client.send("Runtime.evaluate", {
-    expression: "location.hash",
-    returnByValue: true,
-  });
-  const catalogRoute = observation?.result?.value;
+  const catalogRoute = await readCdpLocationHash(client);
   if (catalogRoute !== "#/catalog")
     throw new Error("AI try-on return did not reach the public catalog route");
   if (
@@ -1018,12 +1006,7 @@ export async function runInstalledAiAttemptPhase(options) {
         `${options.caseKey} installed AI garment case is unavailable`,
       );
     await restoreCatalogHomeFromClient({ client });
-    const catalogRoute = (
-      await client.send("Runtime.evaluate", {
-        expression: "location.hash",
-        returnByValue: true,
-      })
-    )?.result?.value;
+    const catalogRoute = await readCdpLocationHash(client);
     if (catalogRoute !== "#/catalog")
       throw new Error(
         "AI try-on did not start from the observed catalog route",
@@ -1046,12 +1029,7 @@ export async function runInstalledAiAttemptPhase(options) {
       timeoutMs: 30_000,
       pollMs: 250,
     });
-    const productRoute = (
-      await client.send("Runtime.evaluate", {
-        expression: "location.hash",
-        returnByValue: true,
-      })
-    )?.result?.value;
+    const productRoute = await readCdpLocationHash(client);
     if (productRoute !== expectedProductRoute)
       throw new Error(
         `AI try-on product route does not bind the selected catalog item: expected ${expectedProductRoute}, got ${productRoute}`,
@@ -1067,12 +1045,7 @@ export async function runInstalledAiAttemptPhase(options) {
       acceptance.selectedVariantId,
     );
     const readRuntimeTraceSnapshot = async () =>
-      (
-        await client.send("Runtime.evaluate", {
-          expression: "window.__VEM_MACHINE_RUNTIME_TRACE_SNAPSHOT__ || null",
-          returnByValue: true,
-        })
-      )?.result?.value;
+      await readMachineRuntimeTraceSnapshot(client);
     const startedAt = performance.now();
     let completed = false;
     let archived = null;

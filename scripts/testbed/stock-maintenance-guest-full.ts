@@ -13,6 +13,7 @@ import {
   discoverMachineUiTarget,
   enablePageRuntime,
   evaluateExpression,
+  readMachineRuntimeTraceSnapshot,
   rewriteWebSocketDebuggerUrl,
   waitForRoute,
 } from "./machine-ui-cdp-driver.ts";
@@ -418,17 +419,15 @@ async function primeCatalogTouchSession(client) {
     pollMs: POLL_MS,
     forbiddenRoutes: [],
   });
-  const boundary = await evaluateExpression(
-    client,
-    `(() => {
-      const entries = window.__VEM_MACHINE_RUNTIME_TRACE_SNAPSHOT__?.entries ?? [];
-      const last = entries.at(-1);
-      return {
-        id: Number(last?.id ?? 0),
-        touchscreenSessionActive: Boolean(last?.touchscreenSessionActive)
-      };
-    })()`,
-  );
+  const traceSnapshot = await readMachineRuntimeTraceSnapshot(client);
+  const entries = Array.isArray(traceSnapshot?.entries)
+    ? traceSnapshot.entries
+    : [];
+  const last = entries.at(-1);
+  const boundary = {
+    id: Number(last?.id ?? 0),
+    touchscreenSessionActive: Boolean(last?.touchscreenSessionActive),
+  };
   await activateVisibleSelector(client, "[data-test='catalog-page']", {
     kind: "touch",
     timeoutMs: TIMEOUT_MS,
@@ -436,21 +435,26 @@ async function primeCatalogTouchSession(client) {
   });
   return await waitFor(
     "catalog touch session before stock sale",
-    () =>
-      evaluateExpression(
-        client,
-        `(() => {
-          const entries = window.__VEM_MACHINE_RUNTIME_TRACE_SNAPSHOT__?.entries ?? [];
-          const touch = entries.findLast((entry) =>
-            Number(entry?.id ?? 0) > ${Number(boundary?.id ?? 0)} &&
-            entry?.type === "navigation" &&
-            entry?.intentType === "customer.touch" &&
-            entry?.decision === "accepted" &&
-            entry?.reasonCode === "touchscreen_session_renewed"
-          );
-          return touch ? { id: touch.id, touchscreenSessionActive: touch.touchscreenSessionActive } : null;
-        })()`,
-      ),
+    async () => {
+      const snapshot = await readMachineRuntimeTraceSnapshot(client);
+      const currentEntries = Array.isArray(snapshot?.entries)
+        ? snapshot.entries
+        : [];
+      const touch = currentEntries.findLast(
+        (entry) =>
+          Number(entry?.id ?? 0) > Number(boundary?.id ?? 0) &&
+          entry?.type === "navigation" &&
+          entry?.intentType === "customer.touch" &&
+          entry?.decision === "accepted" &&
+          entry?.reasonCode === "touchscreen_session_renewed",
+      );
+      return touch
+        ? {
+            id: touch.id,
+            touchscreenSessionActive: touch.touchscreenSessionActive,
+          }
+        : null;
+    },
     (touch) => touch?.touchscreenSessionActive === true,
   );
 }

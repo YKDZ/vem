@@ -15,6 +15,7 @@ import {
   enablePageRuntime,
   evaluateExpression,
   rewriteWebSocketDebuggerUrl,
+  setCdpLocationHash,
   waitForRoute,
 } from "./machine-ui-cdp-driver.ts";
 import { replaceSerialSessionAndUpdateHandoff } from "./serial-session-handoff.ts";
@@ -262,7 +263,7 @@ async function setDaemonAudioPreferences(handoff, preferences, daemonRequest) {
   return normalizeAudioPreferences(configuration?.experience?.audio);
 }
 async function setRoute(client, route) {
-  await evaluateExpression(client, `location.hash = ${JSON.stringify(route)}`);
+  await setCdpLocationHash(client, route);
   return waitForRoute(client, route, {
     timeoutMs: AUDIO_PREFERENCE_TIMEOUT_MS,
     pollMs: 150,

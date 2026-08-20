@@ -26,6 +26,7 @@ import {
   discoverCanonicalMachineUiTarget,
   enablePageRuntime,
   evaluateExpression,
+  readCdpLocationHash,
   rewriteWebSocketDebuggerUrl,
   waitForRoute,
 } from "./machine-ui-cdp-driver.ts";
@@ -1350,8 +1351,7 @@ function terminalOperations(guestInput, handoff, handoffPath) {
       return captureTrackTerminalFacts({
         track,
         context,
-        readRoute: () =>
-          withClient((client) => evaluateExpression(client, "location.hash")),
+        readRoute: () => withClient((client) => readCdpLocationHash(client)),
         daemonGet: (path) => daemonGet(handoff, path),
         platformQuery: () =>
           controlPlaneRequest(guestInput, "/v1/platform/query", {

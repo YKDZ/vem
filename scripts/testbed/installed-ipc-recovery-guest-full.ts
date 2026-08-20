@@ -22,6 +22,7 @@ import {
   discoverMachineUiTarget,
   enablePageRuntime,
   evaluateExpression,
+  readCdpLocationHash,
   rewriteWebSocketDebuggerUrl,
   waitForRoute,
 } from "./machine-ui-cdp-driver.ts";
@@ -472,7 +473,7 @@ export async function runInstalledIpcRecoveryGuest(options) {
     }
     let paymentRouteReached = false;
     for (let attempt = 0; attempt < 3 && !paymentRouteReached; attempt += 1) {
-      const currentRoute = await evaluateExpression(client, "location.hash");
+      const currentRoute = await readCdpLocationHash(client);
       if (/^#\/payment/.test(currentRoute)) {
         paymentRouteReached = true;
         break;

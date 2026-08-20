@@ -12,6 +12,7 @@ import {
   enablePageRuntime,
   evaluateExpression,
   rewriteWebSocketDebuggerUrl,
+  setCdpLocationHash,
   waitForRoute,
 } from "./machine-ui-cdp-driver.ts";
 
@@ -199,7 +200,7 @@ async function waitForText(client, label, predicateSource) {
 }
 
 async function setRoute(client, route) {
-  await evaluateExpression(client, `location.hash = ${JSON.stringify(route)}`);
+  await setCdpLocationHash(client, route);
   return waitForRoute(client, route, {
     timeoutMs: TIMEOUT_MS,
     pollMs: POLL_MS,
