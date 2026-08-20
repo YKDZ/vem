@@ -1,10 +1,10 @@
 {
   "schemaVersion": "vem-backend-deployment/v1",
-  "requestedCommit": "c5d7eabb95c685ccfab7777aaeab22acf8e58ffb",
-  "deployedAt": "2026-08-19T12:09:23.517Z",
+  "requestedCommit": "8bf960caed788ff7c8ef33ce83d6adc5807e76bd",
+  "deployedAt": "2026-08-20T00:23:43.756Z",
   "repoDigests": {
-    "serviceApi": "ghcr.io/ykdz/vem-service-api@sha256:7a3f2a0cc90001c81e3b422df48d79c769646ead661fb46d999e6c6629fc09ff",
-    "adminUi": "ghcr.io/ykdz/vem-admin-ui@sha256:a5a7eb35193a70ceaeb86772f8493842b5c724552a4b10178d6415278c8d14e0"
+    "serviceApi": "ghcr.io/ykdz/vem-service-api@sha256:be1b4e545a845dd6ba5c26be0e31ff03531cd94e0f46f2f6ee0cfdfaa1ae6b74",
+    "adminUi": "ghcr.io/ykdz/vem-admin-ui@sha256:fb012c08e51fd3268a91bf2d0d7d4339452ea1e507f158989386176eba08fd7f"
   },
   "environmentFile": "/etc/vem/backend.env",
   "composeFile": "/opt/vem-backend/apps/service-api/docker-compose.yml"
