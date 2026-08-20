@@ -220,6 +220,10 @@ try {
   $trackFailure = $_.Exception
 } finally {
   $cleanupFailures = [Collections.Generic.List[Exception]]::new()
+  $readinessFailureSource = "C:\ProgramData\VEM\testbed\vision-readiness-failure.log"
+  if (Test-Path -LiteralPath $readinessFailureSource -PathType Leaf) {
+    Copy-Item -LiteralPath $readinessFailureSource -Destination (Join-Path $artifactRoot "vision-readiness-failure.log") -Force
+  }
   try {
     if ($restorationRequired) {
       if ($null -ne $workerFault) {

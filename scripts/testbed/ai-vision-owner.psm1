@@ -80,6 +80,37 @@ function Get-TestbedKioskPassword([object]$GuestInput) {
   return [string]$winlogon.DefaultPassword
 }
 
+function Write-TestbedVisionReadinessFailureLog {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][bool]$RequireAiReady,
+    [Parameter(Mandatory = $true)][int]$DeadlineSeconds,
+    [Parameter(Mandatory = $true)][string]$StartedAt,
+    [Parameter(Mandatory = $true)][int]$SampleCount,
+    [object]$LastHealth,
+    [string]$LastError,
+    [object]$DiagnosticSamples
+  )
+  $listeners = @(Get-NetTCPConnection -LocalAddress "127.0.0.1" -LocalPort 7892 -State Listen -ErrorAction SilentlyContinue | ForEach-Object {
+    [ordered]@{ processId = [int]$_.OwningProcess; state = [string]$_.State }
+  })
+  $record = [ordered]@{
+    schemaVersion = "vem.testbed.vision-readiness-failure/v1"
+    requireAiReady = $RequireAiReady
+    deadlineSeconds = $DeadlineSeconds
+    startedAt = $StartedAt
+    observedAt = [DateTime]::UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'")
+    sampleCount = $SampleCount
+    listenerState = @($listeners)
+    lastHealth = $LastHealth
+    lastError = $LastError
+    diagnosticSamples = $DiagnosticSamples
+  }
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) | Out-Null
+  $json = $record | ConvertTo-Json -Depth 30
+  [IO.File]::WriteAllText($Path, ($json + "`n"), [Text.UTF8Encoding]::new($false))
+}
+
 function Wait-TestbedVisionReady {
   param(
     [switch]$RequireAiReady,
@@ -91,12 +122,32 @@ function Wait-TestbedVisionReady {
   }
   $effectiveDeadlineSeconds = if ($RequireAiReady) { [Math]::Max(300, $DeadlineSeconds) } else { $DeadlineSeconds }
   $deadline = [DateTime]::UtcNow.AddSeconds($effectiveDeadlineSeconds)
+  $startedAt = [DateTime]::UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'")
   $lastHealth = $null
   $lastError = $null
+  $sampleCount = 0
+  $diagnosticSamples = @{}
   do {
     try {
       $health = Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:7892/health" -TimeoutSec 2
       $lastHealth = $health
+      $sampleCount += 1
+      if ($RequireAiReady) {
+        $diagnosticKey = [string]$health.aiReadinessDiagnostic
+        $entry = $diagnosticSamples[$diagnosticKey]
+        if ($null -eq $entry) {
+          $diagnosticSamples[$diagnosticKey] = [ordered]@{
+            firstSeen = [DateTime]::UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'")
+            lastSeen = [DateTime]::UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'")
+            count = 1
+            aiReady = [bool]$health.aiReady
+          }
+        } else {
+          $entry.lastSeen = [DateTime]::UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'")
+          $entry.count = [int]$entry.count + 1
+          $entry.aiReady = [bool]$health.aiReady
+        }
+      }
       $aiReady = $RequireAiReady -and $health.aiReady -eq $true -and [string]$health.aiReadinessDiagnostic -ceq "ready"
       if (
         $null -ne $health -and
@@ -110,6 +161,18 @@ function Wait-TestbedVisionReady {
     $lastError = if ($listeners.Count -eq 0) { "no listener on 127.0.0.1:7892" } else { $lastError }
     Start-Sleep -Milliseconds 250
   } while ([DateTime]::UtcNow -lt $deadline)
+  $readinessFailurePath = Join-Path $context.runtimeRoot "testbed\vision-readiness-failure.log"
+  if (-not (Test-Path -LiteralPath $readinessFailurePath -PathType Leaf)) {
+    Write-TestbedVisionReadinessFailureLog `
+      -Path $readinessFailurePath `
+      -RequireAiReady $RequireAiReady `
+      -DeadlineSeconds $effectiveDeadlineSeconds `
+      -StartedAt $startedAt `
+      -SampleCount $sampleCount `
+      -LastHealth $lastHealth `
+      -LastError $lastError `
+      -DiagnosticSamples $diagnosticSamples
+  }
   $diagnostic = if ($null -ne $lastHealth) { $lastHealth | ConvertTo-Json -Depth 8 -Compress } else { "no health response (last error: $lastError)" }
   if ($RequireAiReady) {
     throw "managed AI Vision owner did not expose ready model and worker identities on 127.0.0.1:7892 within ${effectiveDeadlineSeconds}s: $diagnostic"
