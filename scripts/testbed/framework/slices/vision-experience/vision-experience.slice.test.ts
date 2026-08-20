@@ -8,21 +8,26 @@ import {
   runObserverSelfHealScenario,
 } from "./vision-experience-driver.ts";
 
+const attemptId = "550e8400-e29b-41d4-a716-446655440124";
+const alternateAttemptId = "550e8400-e29b-41d4-a716-446655440125";
+
 function fakeUiAdapter({
   includeCaptured = true,
   includeCompleted = true,
+  terminalResult = "valid",
   frameId = "frame-000042",
   resourceDigest = null,
   capturedReference = "http://127.0.0.1:7892/v2/try-on/captured/frame.png?token=captured-token",
   visionOrigin = "http://127.0.0.1:7892",
   requestId = "vision-websocket-1",
-  terminalAttemptId = "attempt-1",
+  terminalAttemptId = attemptId,
   terminalRequestId = requestId,
-  resourceAttemptId = "attempt-1",
+  resourceAttemptId = attemptId,
   resourceFrameId = frameId,
 }: {
   includeCaptured?: boolean;
   includeCompleted?: boolean;
+  terminalResult?: "valid" | "missing" | "forged";
   frameId?: string;
   resourceDigest?: string | null;
   capturedReference?: string;
@@ -34,7 +39,6 @@ function fakeUiAdapter({
   resourceFrameId?: string;
 } = {}) {
   const statePath = "ui/try-on-state.json";
-  const attemptId = "attempt-1";
   const captured = {
     reference: capturedReference,
     digest: `sha256:${"a".repeat(64)}`,
@@ -44,6 +48,7 @@ function fakeUiAdapter({
     height: 1280,
     frameId,
   };
+  const completedResultReference = `${visionOrigin}/v2/try-on/results/${attemptId}?token=result-token`;
   const protocolTimeline = [
     {
       type: "vision.try_on.attempt.accepted",
@@ -55,7 +60,17 @@ function fakeUiAdapter({
       type: "vision.try_on.attempt.acquiring",
       requestId,
       origin: visionOrigin,
-      payload: { attemptId },
+      payload: {
+        attemptId,
+        preview: {
+          reference: `${visionOrigin}/v2/try-on/acquisition/preview.mjpeg?token=preview-token`,
+          streamType: "mjpeg",
+        },
+        occupancy: "single",
+        guidance: "counting_down",
+        manualCaptureAllowed: true,
+        holdRemainingMs: 3_000,
+      },
     },
     {
       type: "vision.try_on.attempt.captured",
@@ -75,7 +90,24 @@ function fakeUiAdapter({
             type: "vision.try_on.attempt.completed",
             requestId: terminalRequestId,
             origin: visionOrigin,
-            payload: { attemptId: terminalAttemptId },
+            payload: {
+              attemptId: terminalAttemptId,
+              ...(terminalResult === "missing"
+                ? {}
+                : {
+                    result: {
+                      reference:
+                        terminalResult === "forged"
+                          ? `${visionOrigin}/v2/try-on/results/${attemptId}?token=forged-token`
+                          : completedResultReference,
+                      digest: `sha256:${"b".repeat(64)}`,
+                      contentType: "image/png",
+                      byteSize: 8192,
+                      width: 720,
+                      height: 1280,
+                    },
+                  }),
+            },
           },
         ]
       : []),
@@ -125,8 +157,7 @@ function fakeUiAdapter({
               attemptId,
               visionOrigin,
               preview: { naturalWidth: 720, naturalHeight: 1280 },
-              resultUrl:
-                "http://127.0.0.1:7892/v2/try-on/results/attempt-1?token=x",
+              resultUrl: completedResultReference,
               ...(includeCaptured
                 ? {
                     protocolTimeline,
@@ -207,10 +238,13 @@ describe("visionExperience vertical slice driver", () => {
       /captured/i,
     );
     await assert.rejects(
-      runTryOnScenario(fakeUiAdapter({ resourceAttemptId: "attempt-old" }), {
-        timeoutMs: 2_000,
-        pollMs: 10,
-      }),
+      runTryOnScenario(
+        fakeUiAdapter({ resourceAttemptId: alternateAttemptId }),
+        {
+          timeoutMs: 2_000,
+          pollMs: 10,
+        },
+      ),
       /captured/i,
     );
     await assert.rejects(
@@ -221,11 +255,39 @@ describe("visionExperience vertical slice driver", () => {
       /captured/i,
     );
     await assert.rejects(
-      runTryOnScenario(fakeUiAdapter({ terminalAttemptId: "attempt-old" }), {
+      runTryOnScenario(
+        fakeUiAdapter({ terminalAttemptId: alternateAttemptId }),
+        {
+          timeoutMs: 2_000,
+          pollMs: 10,
+        },
+      ),
+      /captured/i,
+    );
+  });
+
+  it("preserves a real V2 completed result payload in terminal evidence", async () => {
+    const outcome = await runTryOnScenario(fakeUiAdapter(), {
+      timeoutMs: 2_000,
+      pollMs: 10,
+    });
+    assert.equal(outcome.report.businessSets[0].status, "passed");
+  });
+
+  it("rejects missing or forged completed result evidence", async () => {
+    await assert.rejects(
+      runTryOnScenario(fakeUiAdapter({ terminalResult: "missing" }), {
         timeoutMs: 2_000,
         pollMs: 10,
       }),
       /captured/i,
+    );
+    await assert.rejects(
+      runTryOnScenario(fakeUiAdapter({ terminalResult: "forged" }), {
+        timeoutMs: 2_000,
+        pollMs: 10,
+      }),
+      /terminal result/i,
     );
   });
 

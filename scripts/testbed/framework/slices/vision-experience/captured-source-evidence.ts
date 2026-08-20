@@ -1,4 +1,7 @@
-import { visionV2CapturedFrameSchema } from "../../../../../packages/shared/src/schemas/vision-v2.ts";
+import {
+  visionV2CapturedFrameSchema,
+  visionV2ServerMessageSchema,
+} from "../../../../../packages/shared/src/schemas/vision-v2.ts";
 
 export interface CapturedFrameFacts {
   reference: string;
@@ -26,14 +29,16 @@ export interface CapturedFrameResource {
   height: number;
 }
 
+export type VisionAttemptPayload = Record<string, unknown> & {
+  attemptId: string;
+  captured?: CapturedFrameFacts;
+};
+
 export interface VisionProtocolEvent {
   type: string;
   requestId: string;
   origin: string;
-  payload: {
-    attemptId: string;
-    captured?: CapturedFrameFacts;
-  };
+  payload: VisionAttemptPayload;
 }
 
 export interface CapturedSourceBinding {
@@ -65,10 +70,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function canonical(value: unknown): string {
-  return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    return `[${value.map(canonical).join(",")}]`;
+  }
+  if (isRecord(value)) {
+    return `{${Object.entries(value)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([key, nested]) => `${JSON.stringify(key)}:${canonical(nested)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? String(value);
 }
 
-function sameValue(left: unknown, right: unknown): boolean {
+export function hasSameCapturedEvidenceValue(
+  left: unknown,
+  right: unknown,
+): boolean {
   return canonical(left) === canonical(right);
 }
 
@@ -112,35 +129,35 @@ export function hasVisionOrigin(
 function parseEvent(value: unknown): VisionProtocolEvent | null {
   if (!isRecord(value) || !isRecord(value.payload)) return null;
   const { type, requestId, origin } = value;
-  const { attemptId, captured } = value.payload;
   if (
     typeof type !== "string" ||
     !ATTEMPT_EVENT_TYPES.has(type) ||
     typeof requestId !== "string" ||
     requestId.length === 0 ||
     typeof origin !== "string" ||
-    !normalizeVisionOrigin(origin) ||
-    typeof attemptId !== "string" ||
-    attemptId.length === 0
+    !normalizeVisionOrigin(origin)
   ) {
     return null;
   }
-  if (
-    captured !== undefined &&
-    !visionV2CapturedFrameSchema.safeParse(captured).success
-  ) {
+  const parsedMessage = visionV2ServerMessageSchema.safeParse({
+    protocol: "vem.vision.v2",
+    messageId: "captured-evidence",
+    timestamp: "2026-01-01T00:00:00.000Z",
+    type,
+    payload: value.payload,
+  });
+  if (!parsedMessage.success) {
+    return null;
+  }
+  const payload = parsedMessage.data.payload as VisionAttemptPayload;
+  if (typeof payload.attemptId !== "string" || payload.attemptId.length === 0) {
     return null;
   }
   return {
     type,
     requestId,
     origin: normalizeVisionOrigin(origin)!,
-    payload: {
-      attemptId,
-      ...(captured === undefined
-        ? {}
-        : { captured: captured as CapturedFrameFacts }),
-    },
+    payload: structuredClone(payload),
   };
 }
 
@@ -246,12 +263,15 @@ export function validateCapturedSourceEvidence(
     capturedEvents.length !== 1 ||
     terminalEvents.length !== 1 ||
     events.at(-1)?.type !== "vision.try_on.attempt.completed" ||
-    !sameValue(capturedEvents[0]?.payload.captured, capturedResult.data)
+    !hasSameCapturedEvidenceValue(
+      capturedEvents[0]?.payload.captured,
+      capturedResult.data,
+    )
   ) {
     return null;
   }
   const terminal = events.at(-1)!;
-  if (!sameValue(value.terminal, terminal)) return null;
+  if (!hasSameCapturedEvidenceValue(value.terminal, terminal)) return null;
   const resource = parseResource(value.resource, {
     attemptId,
     visionOrigin,

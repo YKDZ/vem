@@ -5,6 +5,8 @@ import { createBusinessCheckRegistryV2 } from "../../business-check-registry-v2.
 import { createFakeTestAdapter } from "../../test-adapter.ts";
 import { runVisionExperienceSlice } from "./vision-experience-runner.ts";
 
+const tryOnAttemptId = "550e8400-e29b-41d4-a716-446655440124";
+
 function capturedEvidenceFor(attemptId: string) {
   const visionOrigin = "http://127.0.0.1:7892";
   const requestId = "vision-websocket-1";
@@ -16,6 +18,14 @@ function capturedEvidenceFor(attemptId: string) {
     width: 720,
     height: 1280,
     frameId: "frame-000042",
+  };
+  const result = {
+    reference: `${visionOrigin}/v2/try-on/results/${attemptId}?token=result-token`,
+    digest: `sha256:${"b".repeat(64)}`,
+    contentType: "image/png" as const,
+    byteSize: 8192,
+    width: 720,
+    height: 1280,
   };
   return {
     visionOrigin,
@@ -30,7 +40,17 @@ function capturedEvidenceFor(attemptId: string) {
         type: "vision.try_on.attempt.acquiring",
         requestId,
         origin: visionOrigin,
-        payload: { attemptId },
+        payload: {
+          attemptId,
+          preview: {
+            reference: `${visionOrigin}/v2/try-on/acquisition/preview.mjpeg?token=preview-token`,
+            streamType: "mjpeg",
+          },
+          occupancy: "single",
+          guidance: "counting_down",
+          manualCaptureAllowed: true,
+          holdRemainingMs: 3_000,
+        },
       },
       {
         type: "vision.try_on.attempt.captured",
@@ -48,7 +68,7 @@ function capturedEvidenceFor(attemptId: string) {
         type: "vision.try_on.attempt.completed",
         requestId,
         origin: visionOrigin,
-        payload: { attemptId },
+        payload: { attemptId, result },
       },
     ],
     capturedResource: {
@@ -71,7 +91,8 @@ function capturedEvidenceFor(attemptId: string) {
 
 function fakeUiAdapter() {
   const statePath = "ui/try-on-state.json";
-  const attemptId = "attempt-1";
+  const attemptId = tryOnAttemptId;
+  const resultReference = `http://127.0.0.1:7892/v2/try-on/results/${attemptId}?token=result-token`;
   const capturedEvidence = capturedEvidenceFor(attemptId);
   const adapter = createFakeTestAdapter({
     files: {
@@ -118,8 +139,7 @@ function fakeUiAdapter() {
               state: "completed",
               attemptId,
               preview: { naturalWidth: 720, naturalHeight: 1280 },
-              resultUrl:
-                "http://127.0.0.1:7892/v2/try-on/results/attempt-1?token=x",
+              resultUrl: resultReference,
               ...capturedEvidence,
             }),
           );
@@ -133,8 +153,7 @@ function fakeUiAdapter() {
           JSON.stringify({
             ...current,
             scaleValue: "105%",
-            resultUrl:
-              "http://127.0.0.1:7892/v2/try-on/results/attempt-1?token=y",
+            resultUrl: `http://127.0.0.1:7892/v2/try-on/results/${attemptId}?token=y`,
           }),
         );
         return { exitCode: 0, stdout: "ok", stderr: "" };
@@ -225,7 +244,7 @@ describe("visionExperience slice runner", () => {
 
   it("covers manual capture and departure cancellation", async () => {
     const statePath = "ui/try-on-state.json";
-    const attemptId = "attempt-1";
+    const attemptId = tryOnAttemptId;
     const capturedEvidence = capturedEvidenceFor(attemptId);
     let tryOnEntries = 0;
     const adapter = createFakeTestAdapter({
@@ -274,8 +293,7 @@ describe("visionExperience slice runner", () => {
                   state: "completed",
                   attemptId,
                   preview: { naturalWidth: 720, naturalHeight: 1280 },
-                  resultUrl:
-                    "http://127.0.0.1:7892/v2/try-on/results/attempt-1?token=x",
+                  resultUrl: `http://127.0.0.1:7892/v2/try-on/results/${attemptId}?token=result-token`,
                   ...capturedEvidence,
                 }),
               );

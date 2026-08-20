@@ -1,5 +1,6 @@
 import {
   capturedSourceBinding,
+  hasSameCapturedEvidenceValue,
   normalizeVisionOrigin,
   validateCapturedSourceEvidence,
 } from "./framework/slices/vision-experience/captured-source-evidence.ts";
@@ -888,7 +889,7 @@ function canonicalResult(descriptor, result, reportPath) {
   };
 }
 
-function hasVisionExperienceCapturedSource(
+function validateVisionExperienceCapturedSource(
   set,
   visionBaseUrl = "http://127.0.0.1:27892",
 ) {
@@ -914,8 +915,8 @@ function hasVisionExperienceCapturedSource(
     assertion?.source !== "vision-v2-protocol" ||
     assertion?.status !== "passed" ||
     assertion?.reason !== null ||
-    JSON.stringify(assertion?.expected) !== JSON.stringify(binding) ||
-    JSON.stringify(assertion?.observed) !== JSON.stringify(binding)
+    !hasSameCapturedEvidenceValue(assertion?.expected, binding) ||
+    !hasSameCapturedEvidenceValue(assertion?.observed, binding)
   ) {
     return null;
   }
@@ -976,7 +977,7 @@ export function validateBusinessCheckReport(
           "visionExperience v2 report has no business set",
         );
       }
-      const capturedSource = hasVisionExperienceCapturedSource(
+      const capturedSource = validateVisionExperienceCapturedSource(
         set,
         context.visionBaseUrl,
       );

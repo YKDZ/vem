@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import type {
+  CapturedFrameFacts,
   CapturedFrameResource,
   VisionProtocolEvent,
 } from "./slices/vision-experience/captured-source-evidence.ts";
@@ -158,15 +159,7 @@ export class CapturedFrameEvidenceCache {
   }: {
     attemptId: string;
     visionOrigin: string;
-    captured: {
-      reference: string;
-      digest: string;
-      contentType: "image/png";
-      byteSize: number;
-      width: number;
-      height: number;
-      frameId: string;
-    };
+    captured: CapturedFrameFacts;
   }): Promise<CapturedFrameResource | null> {
     if (
       !isControlledCapturedFrameReference(captured.reference) ||
@@ -439,15 +432,7 @@ async function inspectCapturedFrameResource({
   fetchImpl: typeof fetch;
   attemptId: string;
   visionOrigin: string;
-  captured: {
-    reference: string;
-    digest: string;
-    contentType: "image/png";
-    byteSize: number;
-    width: number;
-    height: number;
-    frameId: string;
-  };
+  captured: CapturedFrameFacts;
 }): Promise<CapturedFrameResource | null> {
   try {
     const response = await fetchImpl(captured.reference);

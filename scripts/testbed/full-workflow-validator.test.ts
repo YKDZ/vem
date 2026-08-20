@@ -1146,7 +1146,7 @@ function visionExperienceCapturedReport({
 }: {
   visionOrigin?: string;
 } = {}) {
-  const attemptId = "attempt-1";
+  const attemptId = "550e8400-e29b-41d4-a716-446655440124";
   const requestId = "vision-websocket-1";
   const captured = {
     reference: `${visionOrigin}/v2/try-on/captured/frame.png?token=captured-token`,
@@ -1172,6 +1172,14 @@ function visionExperienceCapturedReport({
     width: captured.width,
     height: captured.height,
   };
+  const result = {
+    reference: `${visionOrigin}/v2/try-on/results/${attemptId}?token=result-token`,
+    digest: `sha256:${"b".repeat(64)}`,
+    contentType: "image/png",
+    byteSize: 8192,
+    width: 640,
+    height: 480,
+  };
   const protocolTimeline = [
     {
       type: "vision.try_on.attempt.accepted",
@@ -1183,7 +1191,17 @@ function visionExperienceCapturedReport({
       type: "vision.try_on.attempt.acquiring",
       requestId,
       origin: visionOrigin,
-      payload: { attemptId },
+      payload: {
+        attemptId,
+        preview: {
+          reference: `${visionOrigin}/v2/try-on/acquisition/preview.mjpeg?token=preview-token`,
+          streamType: "mjpeg",
+        },
+        occupancy: "single",
+        guidance: "counting_down",
+        manualCaptureAllowed: true,
+        holdRemainingMs: 3_000,
+      },
     },
     {
       type: "vision.try_on.attempt.captured",
@@ -1195,13 +1213,13 @@ function visionExperienceCapturedReport({
       type: "vision.try_on.attempt.generating",
       requestId,
       origin: visionOrigin,
-      payload: { attemptId },
+      payload: { attemptId, stage: "generating" },
     },
     {
       type: "vision.try_on.attempt.completed",
       requestId,
       origin: visionOrigin,
-      payload: { attemptId },
+      payload: { attemptId, result },
     },
   ];
   const binding = {
@@ -1318,7 +1336,8 @@ describe("full workflow aggregate validator", () => {
     );
 
     const wrongAttempt = structuredClone(report);
-    wrongAttempt.businessSets[0].supportingEvidence[0].attemptId = "attempt-2";
+    wrongAttempt.businessSets[0].supportingEvidence[0].attemptId =
+      "550e8400-e29b-41d4-a716-446655440125";
     assert.equal(
       validateBusinessCheckReport(
         descriptor("visionExperience"),

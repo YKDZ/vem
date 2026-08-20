@@ -3,6 +3,7 @@ import type { TestAdapter } from "../../test-adapter.ts";
 import type {
   CapturedFrameResource,
   CapturedSourceEvidence,
+  VisionProtocolEvent,
 } from "./captured-source-evidence.ts";
 
 import { buildAcceptanceReport } from "../../acceptance-report.ts";
@@ -29,26 +30,8 @@ export interface TryOnState {
   guidance?: string | null;
   phaseText?: string | null;
   manualCaptureAllowed?: boolean | null;
-  protocolTimeline?: TryOnProtocolEvent[];
+  protocolTimeline?: VisionProtocolEvent[];
   capturedResource?: CapturedFrameResource | null;
-}
-
-export interface TryOnProtocolEvent {
-  type?: string;
-  requestId?: string;
-  origin?: string;
-  payload?: {
-    attemptId?: string;
-    captured?: {
-      reference?: string;
-      digest?: string;
-      contentType?: string;
-      byteSize?: number;
-      width?: number;
-      height?: number;
-      frameId?: string;
-    };
-  };
 }
 
 /**
@@ -88,6 +71,17 @@ export function validateCapturedTryOnEvidence(
   if (!evidence) {
     throw new Error(
       "captured evidence is not bound to the completed Vision attempt",
+    );
+  }
+  const terminalResult = evidence.terminal.payload.result as {
+    reference?: unknown;
+  } | null;
+  if (
+    typeof state.resultUrl !== "string" ||
+    terminalResult?.reference !== state.resultUrl
+  ) {
+    throw new Error(
+      "captured evidence terminal result is not bound to the completed surface",
     );
   }
   return evidence;
