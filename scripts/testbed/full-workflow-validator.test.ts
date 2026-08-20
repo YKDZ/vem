@@ -1240,7 +1240,7 @@ function visionExperienceCapturedReport({
         name: "visionExperience",
         status: "passed",
         primaryFailure: null,
-        assertionCount: 1,
+        assertionCount: 10,
         assertions: [
           {
             schemaVersion: "vem-runtime-testbed-business-assertion/v1",
@@ -1248,6 +1248,43 @@ function visionExperienceCapturedReport({
             source: "vision-v2-protocol",
             expected: binding,
             observed: binding,
+            status: "passed",
+            reason: null,
+          },
+          ...[
+            "countdown-rendered-sequence",
+            "capture-after-countdown",
+            "preview-live-through-countdown",
+            "captured-frame-held-during-generation",
+          ].map((id) => ({
+            schemaVersion: "vem-runtime-testbed-business-assertion/v1",
+            id,
+            source: "vision-experience-observation-timeline",
+            expected: true,
+            observed: true,
+            status: "passed",
+            reason: null,
+          })),
+          ...[
+            "result-sleeves-retained",
+            "result-uniform-placement",
+            "result-automatic-scale",
+            "garment-scale-renders-pixels",
+          ].map((id) => ({
+            schemaVersion: "vem-runtime-testbed-business-assertion/v1",
+            id,
+            source: "vision-result-png-pixels",
+            expected: true,
+            observed: true,
+            status: "passed",
+            reason: null,
+          })),
+          {
+            schemaVersion: "vem-runtime-testbed-business-assertion/v1",
+            id: "garment-scale-v2-adjustment",
+            source: "vision-v2-protocol",
+            expected: true,
+            observed: true,
             status: "passed",
             reason: null,
           },
@@ -1292,6 +1329,59 @@ describe("full workflow aggregate validator", () => {
       validateBusinessCheckReport(
         descriptor("visionExperience"),
         missingCaptured,
+        "vision-experience.json",
+      ).status,
+      "failed",
+    );
+
+    const missingGeometryFixture = structuredClone(report);
+    missingGeometryFixture.businessSets[0].status = "failed";
+    missingGeometryFixture.businessSets[0].primaryFailure = {
+      schemaVersion: "vem-runtime-testbed-business-assertion/v1",
+      id: "result-automatic-scale",
+      source: "vision-result-png-pixels",
+      expected: true,
+      observed: false,
+      status: "failed",
+      reason: "expected true observed false",
+    };
+    missingGeometryFixture.businessSets[0].supportingEvidence.push({
+      kind: "vision-recorded-geometry-fixture",
+      status: "blocked",
+      reason: "候选未提供动态 far/mid/near 录播夹具",
+      segments: ["far"],
+    });
+    const fixtureBlocked = validateBusinessCheckReport(
+      descriptor("visionExperience"),
+      missingGeometryFixture,
+      "vision-experience.json",
+    );
+    assert.equal(fixtureBlocked.status, "failed");
+    assert.match(fixtureBlocked.reason ?? "", /几何录播夹具不可用/);
+
+    const urlOnlyScale = structuredClone(report);
+    urlOnlyScale.businessSets[0].assertions =
+      urlOnlyScale.businessSets[0].assertions.filter(
+        (assertion) => assertion.id !== "garment-scale-renders-pixels",
+      );
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("visionExperience"),
+        urlOnlyScale,
+        "vision-experience.json",
+      ).status,
+      "failed",
+    );
+
+    const missingTimelineAssertion = structuredClone(report);
+    missingTimelineAssertion.businessSets[0].assertions =
+      missingTimelineAssertion.businessSets[0].assertions.filter(
+        (assertion) => assertion.id !== "preview-live-through-countdown",
+      );
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("visionExperience"),
+        missingTimelineAssertion,
         "vision-experience.json",
       ).status,
       "failed",

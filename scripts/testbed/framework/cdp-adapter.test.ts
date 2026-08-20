@@ -6,17 +6,343 @@ import { describe, it } from "node:test";
 import {
   CapturedFrameEvidenceCache,
   CdpTestAdapter,
+  hashPreviewScreenshot,
   isControlledCapturedFrameReference,
+  readResultPngResource,
+  readSourceGarmentPngResource,
+  selectRecordedVideoFixture,
+  validateRecordedVideoFixtureSelection,
   VisionProtocolEvidenceCollector,
 } from "./cdp-adapter.ts";
+import {
+  isSourceGarmentAttemptBound,
+  parseSourceGarmentMetadata,
+} from "./slices/vision-experience/source-garment-evidence.ts";
 import { assertAdapterContract } from "./test-adapter.ts";
 
 describe("CDP test adapter", () => {
+  it("以 CDP 截图哈希跨源 preview，canvas 受 CORS 限制时也不会静态假绿", () => {
+    const frameA = Buffer.from("cross-origin-preview-a").toString("base64");
+    const frameB = Buffer.from("cross-origin-preview-b").toString("base64");
+    assert.notEqual(
+      hashPreviewScreenshot(frameA),
+      hashPreviewScreenshot(frameB),
+    );
+    assert.throws(() => hashPreviewScreenshot("not-base64!"), /预览截图/);
+  });
+
   it("implements the shared adapter contract", () => {
     const adapter = new CdpTestAdapter({ endpoint: "http://127.0.0.1:1" });
     assertAdapterContract(adapter);
     assert.equal(typeof adapter.connect, "function");
     assert.equal(typeof adapter.close, "function");
+  });
+
+  it("录播选择不接受未注入的环境映射，只信任安装中的规范 manifest", () => {
+    const source = selectRecordedVideoFixture.toString();
+    assert.doesNotMatch(source, /VEM_RECORDED_GEOMETRY_ENTRIES/);
+    assert.match(source, /geometryFar/);
+    assert.match(source, /Get-VisionMainCanonicalProcessBinding/);
+    assert.match(source, /rolesBelongToNewOwner/);
+  });
+
+  it("只接受安装 manifest 中摘要匹配且互异的录播 entry", () => {
+    const manifest = {
+      recordings: {
+        geometryFar: {
+          file: "far.mp4",
+          sha256: "a".repeat(64),
+          loop: true,
+          source: "person.png",
+          sourceSha256: "d".repeat(64),
+          generator: "fixture.py",
+        },
+        geometryMid: {
+          file: "mid.mp4",
+          sha256: "b".repeat(64),
+          loop: true,
+          source: "person.png",
+          sourceSha256: "d".repeat(64),
+          generator: "fixture.py",
+        },
+        geometryNear: {
+          file: "near.mp4",
+          sha256: "c".repeat(64),
+          loop: true,
+          source: "person.png",
+          sourceSha256: "d".repeat(64),
+          generator: "fixture.py",
+        },
+      },
+    };
+    assert.deepEqual(
+      validateRecordedVideoFixtureSelection({
+        segment: "mid",
+        mapping: {
+          far: "geometryFar",
+          mid: "geometryMid",
+          near: "geometryNear",
+        },
+        manifest,
+        actualDigest: "b".repeat(64),
+      }),
+      { ok: true, file: "mid.mp4" },
+    );
+    for (const input of [
+      {
+        mapping: {
+          far: "geometryFar",
+          mid: "geometryMid",
+          near: "geometryMid",
+        },
+      },
+      { mapping: { far: "geometryFar", mid: "missing", near: "geometryNear" } },
+      { actualDigest: "d".repeat(64) },
+      {
+        manifest: {
+          recordings: {
+            ...manifest.recordings,
+            geometryNear: {
+              ...manifest.recordings.geometryNear,
+              sourceSha256: "e".repeat(64),
+            },
+          },
+        },
+      },
+      {
+        manifest: {
+          recordings: {
+            ...manifest.recordings,
+            geometryNear: {
+              ...manifest.recordings.geometryNear,
+              file: "mid.mp4",
+            },
+          },
+        },
+      },
+    ]) {
+      assert.equal(
+        validateRecordedVideoFixtureSelection({
+          segment: "mid",
+          mapping: input.mapping ?? {
+            far: "geometryFar",
+            mid: "geometryMid",
+            near: "geometryNear",
+          },
+          manifest: input.manifest ?? manifest,
+          actualDigest: input.actualDigest ?? "b".repeat(64),
+        }).ok,
+        false,
+      );
+    }
+  });
+
+  it("拒绝超出响应、像素与解压上限的 result PNG", async () => {
+    const reference = "http://127.0.0.1:27892/v2/try-on/results/x?token=t";
+    const oversized = Buffer.alloc(8 * 1024 * 1024 + 1);
+    const rejected = await readResultPngResource({
+      reference,
+      visionOrigin: "http://127.0.0.1:27892",
+      fetchImpl: async () =>
+        ({
+          ok: true,
+          status: 200,
+          url: reference,
+          headers: new Headers({
+            "content-type": "image/png",
+            "content-length": String(oversized.length),
+          }),
+          arrayBuffer: async () => oversized,
+        }) as Response,
+    });
+    assert.equal(rejected, null);
+  });
+
+  it("将 source garment 限为本次 Service API 的精确资产 URL，拒绝外域、重定向和篡改字节", async () => {
+    const assetId = "550e8400-e29b-41d4-a716-446655440126";
+    const sourceOrigin = "http://127.0.0.1:26849";
+    const metadata = {
+      reference: `${sourceOrigin}/api/media-assets/${assetId}/content`,
+      origin: sourceOrigin,
+      assetId,
+      digest: `sha256:${"a".repeat(64)}`,
+      contentType: "image/png",
+      byteSize: 12,
+      template: "tshirt_short_sleeve",
+      width: 512,
+      height: 640,
+    } as const;
+    assert.equal(
+      parseSourceGarmentMetadata(metadata, sourceOrigin)?.assetId,
+      assetId,
+    );
+    assert.equal(
+      parseSourceGarmentMetadata(
+        {
+          ...metadata,
+          reference: "https://foreign.invalid/api/media-assets/x/content",
+        },
+        sourceOrigin,
+      ),
+      null,
+    );
+    assert.equal(
+      parseSourceGarmentMetadata(
+        {
+          ...metadata,
+          reference: `${sourceOrigin}/api/media-assets/other/content`,
+        },
+        sourceOrigin,
+      ),
+      null,
+    );
+    let fetched = false;
+    assert.equal(
+      await readSourceGarmentPngResource({
+        metadata: { ...metadata, origin: "http://127.0.0.1:9" },
+        serviceApiOrigin: sourceOrigin,
+        fetchImpl: async () => {
+          fetched = true;
+          throw new Error("不得请求外部来源");
+        },
+      }),
+      null,
+    );
+    assert.equal(fetched, false);
+    assert.equal(
+      await readSourceGarmentPngResource({
+        metadata,
+        serviceApiOrigin: sourceOrigin,
+        fetchImpl: async () =>
+          ({
+            ok: true,
+            status: 200,
+            url: `${sourceOrigin}/redirected`,
+            headers: new Headers({ "content-type": "image/png" }),
+            arrayBuffer: async () => Buffer.alloc(12),
+          }) as Response,
+      }),
+      null,
+    );
+  });
+
+  it("仅把同 websocket、唯一 V2 start 的成衣描述绑定给对应 attempt", () => {
+    const collector = new VisionProtocolEvidenceCollector(
+      "http://127.0.0.1:27892",
+    );
+    collector.observeWebSocketCreated({
+      requestId: "vision-current",
+      url: "ws://127.0.0.1:27892/v2/machine",
+    });
+    const garment = {
+      assetId: "550e8400-e29b-41d4-a716-446655440126",
+      reference: "http://127.0.0.1:27892/media/garment?token=source-token",
+      digest: `sha256:${"a".repeat(64)}`,
+      byteSize: 12,
+      contentType: "image/png",
+      template: "tshirt_short_sleeve",
+    };
+    const start = {
+      protocol: "vem.vision.v2",
+      type: "vision.try_on.attempt.start",
+      messageId: "start-1",
+      timestamp: "2026-08-20T00:00:00.000Z",
+      payload: {
+        attemptId: "550e8400-e29b-41d4-a716-446655440124",
+        variantId: "550e8400-e29b-41d4-a716-446655440125",
+        garment,
+      },
+    };
+    collector.observeWebSocketFrameSent({
+      requestId: "vision-current",
+      response: { payloadData: JSON.stringify(start) },
+    });
+    assert.deepEqual(
+      collector.startGarmentForAttempt("550e8400-e29b-41d4-a716-446655440124"),
+      garment,
+    );
+    assert.equal(
+      isSourceGarmentAttemptBound(
+        parseSourceGarmentMetadata(
+          {
+            reference:
+              "http://127.0.0.1:26849/api/media-assets/550e8400-e29b-41d4-a716-446655440126/content",
+            origin: "http://127.0.0.1:26849",
+            ...garment,
+            width: 512,
+            height: 640,
+          },
+          "http://127.0.0.1:26849",
+        ),
+        { ...garment, assetId: "550e8400-e29b-41d4-a716-446655440127" },
+      ),
+      false,
+    );
+    collector.observeWebSocketFrameSent({
+      requestId: "vision-current",
+      response: { payloadData: JSON.stringify(start) },
+    });
+    assert.equal(
+      collector.startGarmentForAttempt("550e8400-e29b-41d4-a716-446655440124"),
+      null,
+    );
+  });
+
+  it("只记录同 websocket 上唯一的绝对试衣调整及其 adjusted 结果", () => {
+    const collector = new VisionProtocolEvidenceCollector(
+      "http://127.0.0.1:27892",
+    );
+    const attemptId = "550e8400-e29b-41d4-a716-446655440124";
+    collector.observeWebSocketCreated({
+      requestId: "vision-current",
+      url: "ws://127.0.0.1:27892/v2/machine",
+    });
+    collector.observeWebSocketFrameSent({
+      requestId: "vision-current",
+      response: {
+        payloadData: JSON.stringify({
+          protocol: "vem.vision.v2",
+          type: "vision.try_on.attempt.adjust",
+          messageId: "adjust-1",
+          timestamp: "2026-08-20T00:00:00.000Z",
+          payload: { attemptId, garmentScale: 1.05 },
+        }),
+      },
+    });
+    const reference = `http://127.0.0.1:27892/v2/try-on/results/${attemptId}?token=adjusted`;
+    collector.observeWebSocketFrameReceived({
+      requestId: "vision-current",
+      response: {
+        payloadData: JSON.stringify({
+          protocol: "vem.vision.v2",
+          type: "vision.try_on.result.adjusted",
+          messageId: "adjusted-1",
+          timestamp: "2026-08-20T00:00:01.000Z",
+          payload: {
+            attemptId,
+            result: {
+              reference,
+              digest: `sha256:${"b".repeat(64)}`,
+              contentType: "image/png",
+              byteSize: 12,
+              width: 1,
+              height: 1,
+            },
+          },
+        }),
+      },
+    });
+    assert.deepEqual(collector.adjustmentForAttempt(attemptId).scales, [1.05]);
+    assert.deepEqual(collector.adjustmentForAttempt(attemptId).results, [
+      {
+        reference,
+        digest: `sha256:${"b".repeat(64)}`,
+        contentType: "image/png",
+        byteSize: 12,
+        width: 1,
+        height: 1,
+      },
+    ]);
   });
 
   it("exposes only the try-on state file the slice driver reads", async () => {

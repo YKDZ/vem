@@ -539,6 +539,11 @@ describe("local testbed orchestration", () => {
     const refreshed = await reprepareGuestInputForRefresh({
       input: {
         runId: "RUN-PREVIOUS-FULL",
+        visionAcceptance: {
+          sourceGarment: {
+            assetId: "550e8400-e29b-41d4-a716-446655440126",
+          },
+        },
         paymentProvider: {
           identity: {
             providerCode: "alipay",
@@ -555,6 +560,11 @@ describe("local testbed orchestration", () => {
       refreshed.paymentProvider.identity.providerConfigId,
       "fresh-config",
     );
+    assert.deepEqual(refreshed.visionAcceptance, {
+      sourceGarment: {
+        assetId: "550e8400-e29b-41d4-a716-446655440126",
+      },
+    });
   });
 
   it("reseeds the platform fixture when a fast refresh finds no current machine", async () => {
@@ -1532,6 +1542,17 @@ describe("supported API seeding", () => {
       result.visionAcceptance.tryOnGarmentMediaAssetId,
       "550e8400-e29b-41d4-a716-446655440125",
     );
+    assert.deepEqual(result.visionAcceptance.sourceGarment, {
+      publicPath:
+        "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+      assetId: "550e8400-e29b-41d4-a716-446655440125",
+      digest: `sha256:${createHash("sha256").update(uploads[0].buffer).digest("hex")}`,
+      contentType: "image/png",
+      byteSize: uploads[0].buffer.byteLength,
+      template: "tshirt_short_sleeve",
+      width: 512,
+      height: 640,
+    });
     assert.equal(result.visionAcceptance.tryOnCategoryKey, "tshirts");
     assert.deepEqual(
       result.visionAcceptance.productMedia.map((entry) => ({

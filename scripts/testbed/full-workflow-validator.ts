@@ -923,6 +923,74 @@ function validateVisionExperienceCapturedSource(
   return source;
 }
 
+const VISION_EXPERIENCE_TIMELINE_ASSERTIONS = [
+  "countdown-rendered-sequence",
+  "capture-after-countdown",
+  "preview-live-through-countdown",
+  "captured-frame-held-during-generation",
+];
+const VISION_EXPERIENCE_GEOMETRY_ASSERTIONS = [
+  "result-sleeves-retained",
+  "result-uniform-placement",
+  "result-automatic-scale",
+  "garment-scale-renders-pixels",
+];
+const VISION_EXPERIENCE_ADJUSTMENT_ASSERTIONS = [
+  "garment-scale-v2-adjustment",
+];
+
+function hasPassingAssertions(set, ids, source) {
+  const assertions = Array.isArray(set?.assertions) ? set.assertions : [];
+  return ids.every((id) => {
+    const matches = assertions.filter((assertion) => assertion?.id === id);
+    return (
+      matches.length === 1 &&
+      matches[0]?.schemaVersion ===
+        "vem-runtime-testbed-business-assertion/v1" &&
+      matches[0]?.source === source &&
+      matches[0]?.status === "passed" &&
+      matches[0]?.reason === null
+    );
+  });
+}
+
+function hasPassingVisionExperienceTimelineAssertions(set) {
+  return hasPassingAssertions(
+    set,
+    VISION_EXPERIENCE_TIMELINE_ASSERTIONS,
+    "vision-experience-observation-timeline",
+  );
+}
+
+function hasPassingVisionExperienceGeometryAssertions(set) {
+  return hasPassingAssertions(
+    set,
+    VISION_EXPERIENCE_GEOMETRY_ASSERTIONS,
+    "vision-result-png-pixels",
+  );
+}
+
+function hasPassingVisionExperienceAdjustmentAssertions(set) {
+  return hasPassingAssertions(
+    set,
+    VISION_EXPERIENCE_ADJUSTMENT_ASSERTIONS,
+    "vision-v2-protocol",
+  );
+}
+
+function visionGeometryFixtureBlocker(set) {
+  const evidence = Array.isArray(set?.supportingEvidence)
+    ? set.supportingEvidence.find(
+        (entry) =>
+          entry?.kind === "vision-recorded-geometry-fixture" &&
+          entry?.status === "blocked" &&
+          typeof entry?.reason === "string" &&
+          entry.reason.length > 0,
+      )
+    : null;
+  return evidence?.reason ?? null;
+}
+
 export function validateBusinessCheckReport(
   descriptor,
   report,
@@ -981,9 +1049,14 @@ export function validateBusinessCheckReport(
         set,
         context.visionBaseUrl,
       );
+      const geometryFixtureBlocker = visionGeometryFixtureBlocker(set);
       return canonicalResult(
         descriptor,
-        set.status === "passed" && capturedSource
+        set.status === "passed" &&
+          capturedSource &&
+          hasPassingVisionExperienceTimelineAssertions(set) &&
+          hasPassingVisionExperienceGeometryAssertions(set) &&
+          hasPassingVisionExperienceAdjustmentAssertions(set)
           ? passedTrack("visionExperience", "vision experience", reportPath, {
               assertions: set.assertionCount,
               capturedFrameId: capturedSource.captured.frameId,
@@ -992,9 +1065,11 @@ export function validateBusinessCheckReport(
               descriptor.name,
               descriptor.name,
               reportPath,
-              set.status !== "passed"
-                ? (set.primaryFailure?.reason ?? "vision assertions failed")
-                : "visionExperience captured source evidence is incomplete",
+              geometryFixtureBlocker
+                ? `visionExperience 几何录播夹具不可用：${geometryFixtureBlocker}`
+                : set.status !== "passed"
+                  ? (set.primaryFailure?.reason ?? "vision assertions failed")
+                  : "visionExperience timeline or captured source evidence is incomplete",
             ),
         reportPath,
       );

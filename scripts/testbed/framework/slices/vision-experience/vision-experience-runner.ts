@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
@@ -17,6 +18,7 @@ import {
   runGarmentScaleScenario,
   runManualCaptureScenario,
   runObserverSelfHealScenario,
+  runRecordedResultGeometryScenario,
 } from "./vision-experience-driver.ts";
 
 /**
@@ -67,7 +69,12 @@ export async function runVisionExperienceSlice({
     stabilityMs: visionStabilityMs,
     pollMs: 1_000,
   });
-  const tryOn = await runTryOnScenario(adapter, { timeoutMs, pollMs });
+  const geometry = includeGarmentScale
+    ? await runRecordedResultGeometryScenario(adapter, { timeoutMs, pollMs })
+    : null;
+  const tryOn = geometry?.ok
+    ? geometry.mid
+    : await runTryOnScenario(adapter, { timeoutMs, pollMs });
   const assertions = [...tryOn.assertions];
   const supportingEvidence = [...tryOn.supportingEvidence];
   if (includeSelfHeal && manifest) {
@@ -78,8 +85,34 @@ export async function runVisionExperienceSlice({
     assertions.push(...heal.assertions);
   }
   if (includeGarmentScale) {
-    const scale = await runGarmentScaleScenario(adapter, { timeoutMs, pollMs });
-    assertions.push(...scale.assertions);
+    if (geometry) {
+      assertions.push(
+        ...geometry.assertions.filter(
+          (assertion) =>
+            geometry.ok || assertion.id !== "garment-scale-renders-pixels",
+        ),
+      );
+      assertions.push(...geometry.scaleAssertions);
+      assertions.push(...geometry.adjustmentAssertions);
+      if (!geometry.ok) {
+        const scale = await runGarmentScaleScenario(adapter, {
+          timeoutMs,
+          pollMs,
+        });
+      assertions.push(
+        ...scale.assertions,
+        ...scale.adjustmentAssertions,
+        ...scale.pixelAssertions,
+      );
+      }
+      supportingEvidence.push(geometry.evidence);
+    } else {
+      const scale = await runGarmentScaleScenario(adapter, {
+        timeoutMs,
+        pollMs,
+      });
+      assertions.push(...scale.assertions, ...scale.adjustmentAssertions);
+    }
   }
   if (includeDegradation && stopOwner) {
     const degradation = await runDegradationScenario(adapter, {
@@ -169,6 +202,69 @@ export function validateVisionExperienceSet(set: BusinessSetReport) {
 }
 
 /**
+ * guest-input 不提供顶层 API 地址；以 Runtime Bootstrap 为唯一权威来源，
+ * 把带 /api 路径的 provisioning URL 规范化为 Service API origin。
+ */
+export function sourceGarmentBindingFromGuestInput(guestInput: unknown): {
+  sourceGarmentMetadata: unknown;
+  sourceGarmentServiceApiOrigin: string | null;
+} {
+  const input = guestInput as {
+    runtimeBootstrap?: { provisioningApiBaseUrl?: unknown };
+    visionAcceptance?: { sourceGarment?: unknown };
+  } | null;
+  const provisioningApiBaseUrl =
+    input?.runtimeBootstrap?.provisioningApiBaseUrl;
+  if (typeof provisioningApiBaseUrl !== "string") {
+    return {
+      sourceGarmentMetadata: null,
+      sourceGarmentServiceApiOrigin: null,
+    };
+  }
+  try {
+    const serviceApiUrl = new URL(provisioningApiBaseUrl);
+    if (
+      serviceApiUrl.protocol !== "http:" &&
+      serviceApiUrl.protocol !== "https:"
+    ) {
+      throw new Error("Service API origin must use HTTP(S)");
+    }
+    const seeded = input?.visionAcceptance?.sourceGarment;
+    if (!seeded || typeof seeded !== "object" || Array.isArray(seeded)) {
+      throw new Error("source garment seed is missing");
+    }
+    const publicPath = (seeded as { publicPath?: unknown }).publicPath;
+    if (typeof publicPath !== "string" || !publicPath.startsWith("/")) {
+      throw new Error("source garment publicPath must be origin-relative");
+    }
+    const reference = new URL(publicPath, serviceApiUrl.origin);
+    const assetId = (seeded as { assetId?: unknown }).assetId;
+    if (
+      reference.origin !== serviceApiUrl.origin ||
+      typeof assetId !== "string" ||
+      reference.pathname !== `/api/media-assets/${assetId}/content` ||
+      reference.search !== "" ||
+      reference.hash !== ""
+    ) {
+      throw new Error("source garment publicPath is not canonical");
+    }
+    return {
+      sourceGarmentMetadata: {
+        ...seeded,
+        reference: reference.toString(),
+        origin: serviceApiUrl.origin,
+      },
+      sourceGarmentServiceApiOrigin: serviceApiUrl.origin,
+    };
+  } catch {
+    return {
+      sourceGarmentMetadata: null,
+      sourceGarmentServiceApiOrigin: null,
+    };
+  }
+}
+
+/**
  * VM 轨道入口：从环境读取 CDP 与 Vision 地址，运行全部业务场景并输出 v2 报告。
  */
 export async function main(args: string[] = process.argv.slice(2)) {
@@ -184,7 +280,26 @@ export async function main(args: string[] = process.argv.slice(2)) {
     ],
     { stdio: "ignore" },
   );
-  const adapter = new CdpTestAdapter();
+  const guestInputIndex = args.indexOf("--guest-input");
+  const guestInputPath =
+    guestInputIndex >= 0 ? args[guestInputIndex + 1] : null;
+  let sourceGarmentMetadata: unknown = null;
+  let sourceGarmentServiceApiOrigin: string | null = null;
+  if (guestInputPath) {
+    try {
+      ({ sourceGarmentMetadata, sourceGarmentServiceApiOrigin } =
+        sourceGarmentBindingFromGuestInput(
+          JSON.parse(readFileSync(guestInputPath, "utf8")),
+        ));
+    } catch {
+      sourceGarmentMetadata = null;
+      sourceGarmentServiceApiOrigin = null;
+    }
+  }
+  const adapter = new CdpTestAdapter({
+    sourceGarmentMetadata,
+    sourceGarmentServiceApiOrigin,
+  });
   await adapter.connect({ timeoutMs: 20_000 });
   try {
     const manifest = createProcessRoleManifest({
@@ -209,7 +324,7 @@ export async function main(args: string[] = process.argv.slice(2)) {
           [
             "-NoProfile",
             "-Command",
-            "Stop-ScheduledTask -TaskName VEMVisionRuntime; Get-Process vending-vision -ErrorAction SilentlyContinue | Stop-Process -Force",
+            "Stop-ScheduledTask -TaskName VEMVisionRuntime -ErrorAction Stop",
           ],
           { stdio: "ignore" },
         );

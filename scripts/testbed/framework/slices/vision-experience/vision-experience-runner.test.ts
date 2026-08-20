@@ -3,7 +3,10 @@ import { describe, it } from "node:test";
 
 import { createBusinessCheckRegistryV2 } from "../../business-check-registry-v2.ts";
 import { createFakeTestAdapter } from "../../test-adapter.ts";
-import { runVisionExperienceSlice } from "./vision-experience-runner.ts";
+import {
+  sourceGarmentBindingFromGuestInput,
+  runVisionExperienceSlice,
+} from "./vision-experience-runner.ts";
 
 const tryOnAttemptId = "550e8400-e29b-41d4-a716-446655440124";
 
@@ -91,15 +94,67 @@ function capturedEvidenceFor(attemptId: string) {
 
 function fakeUiAdapter() {
   const statePath = "ui/try-on-state.json";
-  const attemptId = tryOnAttemptId;
-  const resultReference = `http://127.0.0.1:7892/v2/try-on/results/${attemptId}?token=result-token`;
-  const capturedEvidence = capturedEvidenceFor(attemptId);
+  let selectedSegment: "far" | "mid" | "near" = "mid";
+  const segmentScale = { far: 0.8, mid: 1, near: 1.2 } as const;
+  const segmentAttemptId = {
+    far: "550e8400-e29b-41d4-a716-446655440121",
+    mid: tryOnAttemptId,
+    near: "550e8400-e29b-41d4-a716-446655440123",
+  } as const;
+  const resultPng = (scale: number) => ({
+    width: 720,
+    height: 1280,
+    leftSleevePixels: 120,
+    torsoPixels: 1_200,
+    rightSleevePixels: 120,
+    garment: {
+      x: 360 - Math.round(100 * scale) / 2,
+      y: 640 - Math.round(125 * scale) / 2,
+      width: Math.round(100 * scale),
+      height: Math.round(125 * scale),
+      centerX: 359.5,
+      centerY: 639.5,
+      aspect: 0.8,
+    },
+  });
+  const sourceGarmentMetadata = {
+    reference:
+      "http://127.0.0.1:26849/api/media-assets/550e8400-e29b-41d4-a716-446655440126/content",
+    origin: "http://127.0.0.1:26849",
+    assetId: "550e8400-e29b-41d4-a716-446655440126",
+    digest: `sha256:${"a".repeat(64)}`,
+    contentType: "image/png" as const,
+    byteSize: 12,
+    template: "tshirt_short_sleeve" as const,
+    width: 512,
+    height: 640,
+  };
+  const startGarment = {
+    assetId: sourceGarmentMetadata.assetId,
+    reference: "http://127.0.0.1:7892/media/garment?token=source-token",
+    digest: sourceGarmentMetadata.digest,
+    contentType: sourceGarmentMetadata.contentType,
+    byteSize: sourceGarmentMetadata.byteSize,
+    template: sourceGarmentMetadata.template,
+  };
   const adapter = createFakeTestAdapter({
     files: {
       [statePath]: JSON.stringify({ route: "#/catalog", state: "idle" }),
     },
     commands: {
       "vision-ready": () => ({ exitCode: 0, stdout: "ready", stderr: "" }),
+      "select-recorded-video-fixture far": () => {
+        selectedSegment = "far";
+        return { exitCode: 0, stdout: "far", stderr: "" };
+      },
+      "select-recorded-video-fixture mid": () => {
+        selectedSegment = "mid";
+        return { exitCode: 0, stdout: "mid", stderr: "" };
+      },
+      "select-recorded-video-fixture near": () => {
+        selectedSegment = "near";
+        return { exitCode: 0, stdout: "near", stderr: "" };
+      },
       "navigate #/catalog": () => ({ exitCode: 0, stdout: "ok", stderr: "" }),
       'click [data-test="catalog-category"][data-category-key="tshirts"]':
         async () => {
@@ -122,6 +177,9 @@ function fakeUiAdapter() {
         return { exitCode: 0, stdout: "ok", stderr: "" };
       },
       'click [data-test="try-on"]': async () => {
+        const attemptId = segmentAttemptId[selectedSegment];
+        const resultReference = `http://127.0.0.1:7892/v2/try-on/results/${attemptId}?token=result-token`;
+        const capturedEvidence = capturedEvidenceFor(attemptId);
         await adapter.writeFile(
           statePath,
           JSON.stringify({
@@ -140,6 +198,10 @@ function fakeUiAdapter() {
               attemptId,
               preview: { naturalWidth: 720, naturalHeight: 1280 },
               resultUrl: resultReference,
+              resultPng: resultPng(segmentScale[selectedSegment]),
+              sourceGarmentPng: resultPng(1),
+              sourceGarmentMetadata,
+              startGarment,
               ...capturedEvidence,
             }),
           );
@@ -153,7 +215,16 @@ function fakeUiAdapter() {
           JSON.stringify({
             ...current,
             scaleValue: "105%",
-            resultUrl: `http://127.0.0.1:7892/v2/try-on/results/${attemptId}?token=y`,
+            resultUrl: `http://127.0.0.1:7892/v2/try-on/results/${current.attemptId}?token=105`,
+            resultPng: resultPng(1.05),
+            adjustmentEvidence: {
+              scales: [1.05],
+              results: [
+                {
+                  reference: `http://127.0.0.1:7892/v2/try-on/results/${current.attemptId}?token=105`,
+                },
+              ],
+            },
           }),
         );
         return { exitCode: 0, stdout: "ok", stderr: "" };
@@ -164,6 +235,104 @@ function fakeUiAdapter() {
 }
 
 describe("visionExperience slice runner", () => {
+  it("从实际 guest-input 的 runtime bootstrap 派生 Service API 规范来源", () => {
+    const sourceGarment = {
+      publicPath:
+        "/api/media-assets/550e8400-e29b-41d4-a716-446655440126/content",
+      assetId: "550e8400-e29b-41d4-a716-446655440126",
+      digest: `sha256:${"a".repeat(64)}`,
+      contentType: "image/png",
+      byteSize: 12,
+      template: "tshirt_short_sleeve",
+      width: 512,
+      height: 640,
+    };
+    assert.deepEqual(
+      sourceGarmentBindingFromGuestInput({
+        schemaVersion: "vem-local-testbed-guest-input/v1",
+        runtimeBootstrap: {
+          provisioningApiBaseUrl: "http://10.0.0.15:26849/api",
+        },
+        visionAcceptance: { sourceGarment },
+      }),
+      {
+        sourceGarmentMetadata: {
+          ...sourceGarment,
+          reference:
+            "http://10.0.0.15:26849/api/media-assets/550e8400-e29b-41d4-a716-446655440126/content",
+          origin: "http://10.0.0.15:26849",
+        },
+        sourceGarmentServiceApiOrigin: "http://10.0.0.15:26849",
+      },
+    );
+  });
+
+  it("拒绝把 host loopback 的 source garment 带进 guest", () => {
+    assert.deepEqual(
+      sourceGarmentBindingFromGuestInput({
+        runtimeBootstrap: {
+          provisioningApiBaseUrl: "http://10.0.0.15:26849/api",
+        },
+        visionAcceptance: {
+          sourceGarment: {
+            publicPath:
+              "http://127.0.0.1:26849/api/media-assets/550e8400-e29b-41d4-a716-446655440126/content",
+          },
+        },
+      }),
+      { sourceGarmentMetadata: null, sourceGarmentServiceApiOrigin: null },
+    );
+  });
+
+  it("从三次结果资源与同一 attempt 的 100/105 资源生成几何业务断言", async () => {
+    const report = await runVisionExperienceSlice({
+      adapter: fakeUiAdapter(),
+      includeGarmentScale: true,
+      timeoutMs: 2_000,
+      pollMs: 10,
+    });
+    const ids =
+      report.businessSets[0].assertions?.map((assertion) => assertion.id) ?? [];
+    assert.ok(ids.includes("result-sleeves-retained"));
+    assert.ok(ids.includes("garment-scale-renders-pixels"));
+    assert.equal(report.businessSets[0].status, "passed");
+  });
+
+  it("三段受控录播缺失时保留结构化 fail-closed 几何诊断", async () => {
+    const adapter = fakeUiAdapter();
+    const originalRun = adapter.run.bind(adapter);
+    adapter.run = async (command, args = []) => {
+      if (command === "select-recorded-video-fixture") {
+        return {
+          exitCode: 1,
+          stdout: "",
+          stderr: "候选未提供动态 far/mid/near 录播夹具",
+        };
+      }
+      return originalRun(command, args);
+    };
+    const report = await runVisionExperienceSlice({
+      adapter,
+      includeGarmentScale: true,
+      timeoutMs: 2_000,
+      pollMs: 10,
+    });
+    const set = report.businessSets[0];
+    assert.equal(set.status, "failed");
+    assert.equal(
+      set.assertions?.find(
+        (assertion) => assertion.id === "result-automatic-scale",
+      )?.status,
+      "failed",
+    );
+    assert.deepEqual(set.supportingEvidence.at(-1), {
+      kind: "vision-recorded-geometry-fixture",
+      status: "blocked",
+      reason: "候选未提供动态 far/mid/near 录播夹具",
+      segments: ["far"],
+    });
+  });
+
   it("produces a registry-validated passed report", async () => {
     const registry = createBusinessCheckRegistryV2([
       {
@@ -199,7 +368,7 @@ describe("visionExperience slice runner", () => {
     });
     const result = registry.validateReport(report);
     assert.equal(result.businessSets.visionExperience.status, "passed");
-    assert.equal(report.businessSets[0].assertionCount, 8);
+    assert.equal(report.businessSets[0].assertionCount, 13);
   });
 
   it("waits for a stable Vision role PID set before starting the flow", async () => {

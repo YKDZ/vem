@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 
 import type {
@@ -5,9 +6,16 @@ import type {
   CapturedFrameResource,
   VisionProtocolEvent,
 } from "./slices/vision-experience/captured-source-evidence.ts";
+import type { SemanticResultPng } from "./slices/vision-experience/result-geometry-evidence.ts";
+import type { VisionExperienceObservation } from "./slices/vision-experience/vision-experience-driver.ts";
 import type { CommandResult, TestAdapter } from "./test-adapter.ts";
 
-import { visionV2CapturedFrameSchema } from "../../../packages/shared/src/schemas/vision-v2.ts";
+import {
+  visionV2AttemptAdjustMessageSchema,
+  visionV2AttemptStartMessageSchema,
+  visionV2CapturedFrameSchema,
+  visionV2ResultAdjustedMessageSchema,
+} from "../../../packages/shared/src/schemas/vision-v2.ts";
 import { isStructurallyValidPng } from "../../lib/png-structure.mjs";
 import {
   CdpClient,
@@ -20,6 +28,13 @@ import {
   hasVisionOrigin,
   normalizeVisionOrigin,
 } from "./slices/vision-experience/captured-source-evidence.ts";
+import { decodeSemanticResultPng } from "./slices/vision-experience/result-geometry-evidence.ts";
+import {
+  parseSourceGarmentMetadata,
+  type SourceGarmentMetadata,
+} from "./slices/vision-experience/source-garment-evidence.ts";
+
+const MAX_RESULT_PNG_BYTES = 8 * 1024 * 1024;
 
 interface CdpTarget {
   type: string;
@@ -54,6 +69,81 @@ function websocketHttpOrigin(value: unknown): string | null {
   }
 }
 
+type GeometrySegment = "far" | "mid" | "near";
+const GEOMETRY_ENTRY = {
+  far: "geometryFar",
+  mid: "geometryMid",
+  near: "geometryNear",
+} as const;
+
+/** 从安装 manifest 的规范 entry、文件名与摘要裁决录播选择。 */
+export function validateRecordedVideoFixtureSelection({
+  segment,
+  mapping,
+  manifest,
+  actualDigest,
+}: {
+  segment: GeometrySegment;
+  mapping: Record<GeometrySegment, unknown>;
+  manifest: unknown;
+  actualDigest: unknown;
+}): { ok: true; file: string } | { ok: false; reason: string } {
+  const entries = (["far", "mid", "near"] as const).map((key) => mapping[key]);
+  if (
+    !entries.every((entry) => typeof entry === "string") ||
+    new Set(entries).size !== 3 ||
+    entries.some((entry) => !/^geometry(?:Far|Mid|Near)$/.test(entry)) ||
+    mapping[segment] !== GEOMETRY_ENTRY[segment]
+  ) {
+    return {
+      ok: false,
+      reason: "三段录播 entry 必须是互异的规范 geometry entry",
+    };
+  }
+  const recordings = (manifest as { recordings?: Record<string, unknown> } | null)
+    ?.recordings;
+  const candidates = (Object.values(GEOMETRY_ENTRY) as string[]).map(
+    (entry) => recordings?.[entry] as
+    | {
+        file?: unknown;
+        sha256?: unknown;
+        loop?: unknown;
+        source?: unknown;
+        sourceSha256?: unknown;
+        generator?: unknown;
+      }
+    | undefined,
+  );
+  if (
+    candidates.length !== 3 ||
+    candidates.some(
+      (recording) =>
+        !recording ||
+        typeof recording.file !== "string" ||
+        !/^[A-Za-z0-9][A-Za-z0-9._-]*[.]mp4$/.test(recording.file) ||
+        !/^[a-f0-9]{64}$/.test(recording.sha256 as string) ||
+        recording.loop !== true ||
+        typeof recording.source !== "string" ||
+        !/^[a-f0-9]{64}$/.test(recording.sourceSha256 as string) ||
+        typeof recording.generator !== "string",
+    ) ||
+    new Set(candidates.map((recording) => recording!.file)).size !== 3 ||
+    new Set(candidates.map((recording) => recording!.sha256)).size !== 3 ||
+    new Set(candidates.map((recording) => recording!.source)).size !== 1 ||
+    new Set(candidates.map((recording) => recording!.sourceSha256)).size !== 1 ||
+    new Set(candidates.map((recording) => recording!.generator)).size !== 1
+  ) {
+    return { ok: false, reason: "安装 manifest 缺少同源规范 geometry 三段 entry" };
+  }
+  const recording = candidates[
+    (Object.keys(GEOMETRY_ENTRY) as GeometrySegment[]).indexOf(segment)
+  ]!;
+  if (actualDigest !== recording.sha256) {
+    return { ok: false, reason: "安装录播文件摘要与 manifest 不匹配" };
+  }
+  return { ok: true, file: recording.file };
+}
+
 /**
  * 将 CDP 网络事件收敛为当前配置 Vision websocket 的有界 attempt timeline。
  * 任何其他 loopback 服务即使复用了 V2 envelope，也不能贡献试衣验收事实。
@@ -62,6 +152,9 @@ export class VisionProtocolEvidenceCollector {
   readonly visionOrigin: string;
   private requestIds = new Set<string>();
   private events: VisionProtocolEvent[] = [];
+  private startGarments = new Map<string, unknown[]>();
+  private adjustmentScales = new Map<string, number[]>();
+  private adjustedResults = new Map<string, unknown[]>();
 
   constructor(visionBaseUrl: string) {
     const visionOrigin = normalizeVisionOrigin(visionBaseUrl);
@@ -99,6 +192,15 @@ export class VisionProtocolEvidenceCollector {
       return;
     }
     try {
+      const adjusted = visionV2ResultAdjustedMessageSchema.safeParse(
+        JSON.parse(value.response.payloadData),
+      );
+      if (adjusted.success) {
+        const results = this.adjustedResults.get(adjusted.data.payload.attemptId) ?? [];
+        results.push(structuredClone(adjusted.data.payload.result));
+        this.adjustedResults.set(adjusted.data.payload.attemptId, results);
+        return;
+      }
       const message = JSON.parse(value.response.payloadData) as {
         protocol?: unknown;
         type?: unknown;
@@ -130,6 +232,61 @@ export class VisionProtocolEvidenceCollector {
     }
   }
 
+  /** 只记录当前 Vision websocket 上、通过公开 V2 schema 的实际 start 载荷。 */
+  observeWebSocketFrameSent(event: unknown): void {
+    const value = event as {
+      requestId?: unknown;
+      response?: { payloadData?: unknown };
+    } | null;
+    if (
+      typeof value?.requestId !== "string" ||
+      !this.requestIds.has(value.requestId) ||
+      typeof value.response?.payloadData !== "string"
+    ) {
+      return;
+    }
+    try {
+      const adjustment = visionV2AttemptAdjustMessageSchema.safeParse(
+        JSON.parse(value.response.payloadData),
+      );
+      if (adjustment.success) {
+        const scales = this.adjustmentScales.get(adjustment.data.payload.attemptId) ?? [];
+        scales.push(adjustment.data.payload.garmentScale);
+        this.adjustmentScales.set(adjustment.data.payload.attemptId, scales);
+        return;
+      }
+      const parsed = visionV2AttemptStartMessageSchema.safeParse(
+        JSON.parse(value.response.payloadData),
+      );
+      if (!parsed.success) return;
+      const garments =
+        this.startGarments.get(parsed.data.payload.attemptId) ?? [];
+      garments.push(structuredClone(parsed.data.payload.garment));
+      this.startGarments.set(parsed.data.payload.attemptId, garments);
+      if (this.startGarments.size > 128) {
+        this.startGarments.delete(this.startGarments.keys().next().value!);
+      }
+    } catch {
+      // 无关或损坏的 CDP frame 不得改变 acceptance evidence。
+    }
+  }
+
+  /** 重发或缺失 start 都不提供身份，避免把不唯一的 attempt 当作已绑定。 */
+  startGarmentForAttempt(attemptId: string): unknown | null {
+    const garments = this.startGarments.get(attemptId);
+    return garments?.length === 1 ? (garments[0] ?? null) : null;
+  }
+
+  adjustmentForAttempt(attemptId: string): {
+    scales: number[];
+    results: unknown[];
+  } {
+    return {
+      scales: [...(this.adjustmentScales.get(attemptId) ?? [])],
+      results: structuredClone(this.adjustedResults.get(attemptId) ?? []),
+    };
+  }
+
   eventsForAttempt(attemptId: string): VisionProtocolEvent[] {
     return this.events.filter((event) => event.payload.attemptId === attemptId);
   }
@@ -137,6 +294,9 @@ export class VisionProtocolEvidenceCollector {
   clear(): void {
     this.requestIds.clear();
     this.events = [];
+    this.startGarments.clear();
+    this.adjustmentScales.clear();
+    this.adjustedResults.clear();
   }
 }
 
@@ -203,6 +363,8 @@ const STATE_EXPRESSION = `(() => {
   const guidance = document.querySelector("[data-test='try-on-guidance']");
   const manual = document.querySelector("[data-test='try-on-manual-capture']");
   const phase = document.querySelector("[data-test='try-on-phase']");
+  const countdown = document.querySelector("[data-test='try-on-countdown']");
+  const previewRect = preview?.getBoundingClientRect();
   return JSON.stringify({
     route: location.hash,
     state: view?.dataset?.state ?? null,
@@ -223,8 +385,108 @@ const STATE_EXPRESSION = `(() => {
     phaseText: phase?.textContent?.trim() ?? null,
     manualCaptureAllowed:
       manual instanceof HTMLButtonElement ? manual.disabled === false : null,
+    countdownText: countdown?.textContent?.trim() ?? null,
+    previewVisible: Boolean(preview?.getClientRects().length),
+    previewRect: previewRect && previewRect.width > 0 && previewRect.height > 0
+      ? { x: previewRect.x, y: previewRect.y, width: previewRect.width, height: previewRect.height }
+      : null,
   });
 })()`;
+
+/**
+ * 将 CDP 截图字节作为跨源预览帧身份。它不读取 image canvas，因而 Vision 与
+ * Machine UI 使用不同 loopback origin 时不会因 CORS taint 退化成空或常量 hash。
+ */
+export function hashPreviewScreenshot(data: unknown): string {
+  if (
+    typeof data !== "string" ||
+    data.length === 0 ||
+    data.length % 4 !== 0 ||
+    !/^[A-Za-z0-9+/]*={0,2}$/.test(data)
+  ) {
+    throw new Error("预览截图不是规范 base64");
+  }
+  const bytes = Buffer.from(data, "base64");
+  if (bytes.length === 0 || bytes.toString("base64") !== data) {
+    throw new Error("预览截图不是规范 base64");
+  }
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+/** 下载并解码受控 Vision 结果 PNG；URL 或 digest 本身绝不能充当像素断言。 */
+export async function readResultPngResource({
+  reference,
+  visionOrigin,
+  fetchImpl = fetch,
+}: {
+  reference: unknown;
+  visionOrigin: string;
+  fetchImpl?: typeof fetch;
+}): Promise<SemanticResultPng | null> {
+  if (
+    typeof reference !== "string" ||
+    !hasVisionOrigin(reference, visionOrigin)
+  )
+    return null;
+  try {
+    const response = await fetchImpl(reference);
+    const declaredLength = Number(response.headers.get("content-length"));
+    if (
+      Number.isFinite(declaredLength) &&
+      (declaredLength < 1 || declaredLength > MAX_RESULT_PNG_BYTES)
+    ) {
+      return null;
+    }
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (
+      !response.ok ||
+      response.status !== 200 ||
+      response.url !== reference ||
+      response.headers.get("content-type")?.split(";", 1)[0] !== "image/png" ||
+      bytes.byteLength > MAX_RESULT_PNG_BYTES
+    ) {
+      return null;
+    }
+    return decodeSemanticResultPng(bytes);
+  } catch {
+    return null;
+  }
+}
+
+/** 下载 guest-input 绑定的上传成衣源图；摘要、尺寸和无重定向缺一不可。 */
+export async function readSourceGarmentPngResource({
+  metadata,
+  serviceApiOrigin,
+  fetchImpl = fetch,
+}: {
+  metadata: unknown;
+  serviceApiOrigin: unknown;
+  fetchImpl?: typeof fetch;
+}): Promise<SemanticResultPng | null> {
+  const value = parseSourceGarmentMetadata(metadata, serviceApiOrigin);
+  if (!value) return null;
+  try {
+    const response = await fetchImpl(value.reference);
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (
+      !response.ok ||
+      response.status !== 200 ||
+      response.url !== value.reference ||
+      response.headers.get("content-type")?.split(";", 1)[0] !== "image/png" ||
+      bytes.byteLength > MAX_RESULT_PNG_BYTES ||
+      bytes.byteLength !== value.byteSize ||
+      `sha256:${createHash("sha256").update(bytes).digest("hex")}` !==
+        value.digest
+    )
+      return null;
+    const decoded = decodeSemanticResultPng(bytes);
+    return decoded.width === value.width && decoded.height === value.height
+      ? decoded
+      : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * 真实 VM 适配器：把 CDP 页面状态读取与触摸点击映射为 testAdapter 接口。
@@ -236,15 +498,28 @@ export class CdpTestAdapter implements TestAdapter {
   client: CdpClient | null = null;
   protocolEvidence: VisionProtocolEvidenceCollector;
   capturedFrameResources = new CapturedFrameEvidenceCache();
+  tryOnObservations: VisionExperienceObservation[] = [];
+  sourceGarmentMetadata: unknown;
+  sourceGarmentServiceApiOrigin: unknown;
+  sourceGarmentPng: Promise<SemanticResultPng | null> | null = null;
   stopTryOnProtocolObserver: (() => void) | null = null;
 
   constructor({
     endpoint = process.env.CDP_ENDPOINT ?? "http://127.0.0.1:19222",
     visionBaseUrl = process.env.VISION_BASE_URL ?? "http://127.0.0.1:27892",
-  }: { endpoint?: string; visionBaseUrl?: string } = {}) {
+    sourceGarmentMetadata = null,
+    sourceGarmentServiceApiOrigin = null,
+  }: {
+    endpoint?: string;
+    visionBaseUrl?: string;
+    sourceGarmentMetadata?: unknown;
+    sourceGarmentServiceApiOrigin?: unknown;
+  } = {}) {
     this.endpoint = endpoint;
     this.visionBaseUrl = visionBaseUrl;
     this.protocolEvidence = new VisionProtocolEvidenceCollector(visionBaseUrl);
+    this.sourceGarmentMetadata = sourceGarmentMetadata;
+    this.sourceGarmentServiceApiOrigin = sourceGarmentServiceApiOrigin;
   }
 
   async connect({
@@ -283,6 +558,11 @@ export class CdpTestAdapter implements TestAdapter {
       (event: unknown) =>
         this.protocolEvidence.observeWebSocketFrameReceived(event),
     );
+    const stopSent = this.client.on(
+      "Network.webSocketFrameSent",
+      (event: unknown) =>
+        this.protocolEvidence.observeWebSocketFrameSent(event),
+    );
     const stopClosed = this.client.on(
       "Network.webSocketClosed",
       (event: unknown) => this.protocolEvidence.observeWebSocketClosed(event),
@@ -290,6 +570,7 @@ export class CdpTestAdapter implements TestAdapter {
     this.stopTryOnProtocolObserver = () => {
       stopCreated();
       stopReceived();
+      stopSent();
       stopClosed();
     };
     return this;
@@ -302,6 +583,7 @@ export class CdpTestAdapter implements TestAdapter {
     const state = JSON.parse(
       await evaluateExpression(this.client!, STATE_EXPRESSION),
     ) as { attemptId?: string | null };
+    const previewFrameHash = await this.capturePreviewFrameHash(state);
     const protocolTimeline =
       typeof state.attemptId === "string"
         ? this.protocolEvidence.eventsForAttempt(state.attemptId)
@@ -318,12 +600,106 @@ export class CdpTestAdapter implements TestAdapter {
             captured: parsedCaptured.data,
           })
         : null;
+    const resultPng = await readResultPngResource({
+      reference: (state as { resultUrl?: unknown }).resultUrl,
+      visionOrigin: this.protocolEvidence.visionOrigin,
+    });
+    this.sourceGarmentPng ??= readSourceGarmentPngResource({
+      metadata: this.sourceGarmentMetadata,
+      serviceApiOrigin: this.sourceGarmentServiceApiOrigin,
+    });
+    const countdownText =
+      typeof (state as { countdownText?: unknown }).countdownText ===
+        "string" &&
+      ["3", "2", "1"].includes(
+        (state as { countdownText: string }).countdownText,
+      )
+        ? (state as { countdownText: string }).countdownText
+        : null;
+    if (typeof state.attemptId === "string") {
+      const latestAcquiring = [...protocolTimeline]
+        .reverse()
+        .find((event) => event.type === "vision.try_on.attempt.acquiring");
+      this.tryOnObservations.push({
+        atMs: Date.now(),
+        attemptId: state.attemptId,
+        state: (state as { state?: string | null }).state ?? null,
+        holdRemainingMs:
+          typeof latestAcquiring?.payload.holdRemainingMs === "number"
+            ? latestAcquiring.payload.holdRemainingMs
+            : null,
+        countdownText,
+        previewVisible:
+          (state as { previewVisible?: unknown }).previewVisible === true,
+        previewFrameHash: previewFrameHash,
+        capturedFrameId:
+          typeof captured?.frameId === "string" ? captured.frameId : null,
+        capturedDigest:
+          typeof captured?.digest === "string" ? captured.digest : null,
+      });
+      if (this.tryOnObservations.length > 512) {
+        this.tryOnObservations.splice(0, this.tryOnObservations.length - 512);
+      }
+    }
     return JSON.stringify({
       ...state,
       visionOrigin: this.protocolEvidence.visionOrigin,
       protocolTimeline,
       capturedResource,
+      resultPng,
+      sourceGarmentPng: await this.sourceGarmentPng,
+      sourceGarmentMetadata: parseSourceGarmentMetadata(
+        this.sourceGarmentMetadata,
+        this.sourceGarmentServiceApiOrigin,
+      ),
+      startGarment:
+        typeof state.attemptId === "string"
+          ? this.protocolEvidence.startGarmentForAttempt(state.attemptId)
+          : null,
+      adjustmentEvidence:
+        typeof state.attemptId === "string"
+          ? this.protocolEvidence.adjustmentForAttempt(state.attemptId)
+          : null,
+      observationTimeline: this.tryOnObservations.filter(
+        (sample) => sample.attemptId === state.attemptId,
+      ),
     });
+  }
+
+  private async capturePreviewFrameHash(
+    state: unknown,
+  ): Promise<string | null> {
+    const preview =
+      (state as { previewVisible?: unknown; previewRect?: unknown }) ?? {};
+    const rect = preview.previewRect as {
+      x?: unknown;
+      y?: unknown;
+      width?: unknown;
+      height?: unknown;
+    } | null;
+    if (
+      preview.previewVisible !== true ||
+      !rect ||
+      ![rect.x, rect.y, rect.width, rect.height].every(
+        (value) => typeof value === "number" && Number.isFinite(value),
+      ) ||
+      (rect.width as number) <= 0 ||
+      (rect.height as number) <= 0
+    ) {
+      return null;
+    }
+    const screenshot = await this.client!.send("Page.captureScreenshot", {
+      format: "png",
+      fromSurface: true,
+      clip: {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+        scale: Math.min(1, 16 / Math.max(rect.width, rect.height)),
+      },
+    });
+    return hashPreviewScreenshot(screenshot.data);
   }
 
   async writeFile(): Promise<never> {
@@ -353,6 +729,15 @@ export class CdpTestAdapter implements TestAdapter {
         pollMs: 100,
       });
       return { exitCode: 0, stdout: "clicked", stderr: "" };
+    }
+    if (command === "select-recorded-video-fixture") {
+      const segment = args[0];
+      if (segment !== "far" && segment !== "mid" && segment !== "near") {
+        throw new Error(
+          "recorded video fixture segment must be far, mid, or near",
+        );
+      }
+      return selectRecordedVideoFixture(segment);
     }
     if (command === "stop-vision-role") {
       const roleIndex = args.indexOf("--role");
@@ -418,9 +803,99 @@ export class CdpTestAdapter implements TestAdapter {
     this.stopTryOnProtocolObserver = null;
     this.protocolEvidence.clear();
     this.capturedFrameResources.clear();
+    this.tryOnObservations = [];
     await this.client?.close().catch(() => {});
     this.client = null;
   }
+}
+
+/**
+ * 仅由 testbed 环境提供三段录播文件名，原子替换 site config 后重启同一安装 owner。
+ * 产品协议与业务代码不接受该命令；候选未携带三段夹具时以非零结果 fail closed。
+ */
+export function selectRecordedVideoFixture(
+  segment: "far" | "mid" | "near",
+): CommandResult {
+  const entry = GEOMETRY_ENTRY[segment];
+  const script = String.raw`
+$ErrorActionPreference = 'Stop'
+$entry = '${entry}'
+$configPath = 'C:\ProgramData\VEM\vision\site.json'
+$config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+if ($null -eq $config.cameras -or $null -eq $config.cameras.front) { throw 'Vision site config has no front camera' }
+$activeVideoPath = [string]$config.cameras.front.video_path
+if (-not [IO.Path]::IsPathFullyQualified($activeVideoPath)) { throw 'Vision site config front video is not an installed fixture path' }
+$recordedRoot = Split-Path -Parent $activeVideoPath
+$manifestPath = Join-Path $recordedRoot 'expected-results.json'
+if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw '安装 recorded-video manifest 缺失' }
+$manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+$entries = @($manifest.recordings.geometryFar, $manifest.recordings.geometryMid, $manifest.recordings.geometryNear)
+if ($entries.Count -ne 3 -or @($entries | Where-Object { $null -eq $_ -or $_.loop -ne $true -or [string]$_.file -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*\.mp4$' -or [string]$_.sha256 -notmatch '^[a-f0-9]{64}$' -or [string]$_.sourceSha256 -notmatch '^[a-f0-9]{64}$' -or [string]::IsNullOrWhiteSpace([string]$_.source) -or [string]::IsNullOrWhiteSpace([string]$_.generator) }).Count -ne 0 -or @($entries.file | Select-Object -Unique).Count -ne 3 -or @($entries.sha256 | Select-Object -Unique).Count -ne 3 -or @($entries.source | Select-Object -Unique).Count -ne 1 -or @($entries.sourceSha256 | Select-Object -Unique).Count -ne 1 -or @($entries.generator | Select-Object -Unique).Count -ne 1) { throw '安装 manifest 缺少同源规范 geometry 三段 entry' }
+$recording = $manifest.recordings.$entry
+$filename = [string]$recording.file
+$videoPath = Join-Path $recordedRoot $filename
+if (-not (Test-Path -LiteralPath $videoPath -PathType Leaf)) { throw "安装录播文件缺失: $filename" }
+$actualDigest = (Get-FileHash -LiteralPath $videoPath -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($actualDigest -cne [string]$recording.sha256) { throw "安装录播文件摘要不匹配: $filename" }
+$config.cameras.front.source = 'recorded_video'
+$config.cameras.front.role = 'profile_try_on'
+$config.cameras.front.video_path = $videoPath
+$config.cameras.front.loop = $true
+$tempPath = "$configPath.$PID.tmp"
+$config | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $tempPath -Encoding utf8 -NoNewline
+Move-Item -LiteralPath $tempPath -Destination $configPath -Force
+$rolesUri = 'http://127.0.0.1:7892/v2/runtime/roles'
+$visionModule = Import-Module (Join-Path (Get-Location) 'scripts\windows\vision-main-artifacts.psm1') -Force -PassThru
+if ($null -eq $visionModule) { throw '安装 Vision canonical owner helper 缺失' }
+function Get-CanonicalVisionOwner {
+  return & $visionModule {
+    Get-VisionMainCanonicalProcessBinding 'C:\VEM\vision\app' 'C:\ProgramData\VEM\vision\site.json'
+  }
+}
+try { $before = Invoke-RestMethod -Uri $rolesUri -TimeoutSec 2 } catch { throw '切换前 Vision runtime 未就绪' }
+if (@($before.roles).Count -eq 0 -or @($before.roles | Where-Object { $_.ready -ne $true -or $null -eq $_.pid }).Count -ne 0) { throw '切换前 Vision runtime 角色未全部 ready' }
+$oldOwner = Get-CanonicalVisionOwner
+if ($null -eq $oldOwner) { throw '切换前缺少唯一 canonical Vision owner' }
+$oldMainPid = [int]$oldOwner.mainProcess.ProcessId
+$oldCanonicalPids = @($oldOwner.canonicalProcesses | ForEach-Object { [int]$_.ProcessId })
+Stop-ScheduledTask -TaskName 'VEMVisionRuntime' -ErrorAction SilentlyContinue
+$deadline = [DateTime]::UtcNow.AddSeconds(30)
+do {
+  try { $afterStop = Invoke-RestMethod -Uri $rolesUri -TimeoutSec 2; $rolesStopped = $false } catch { $rolesStopped = $true }
+  $remainingOldPids = @($oldCanonicalPids | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
+  $oldOwnerExited = $rolesStopped -and $remainingOldPids.Count -eq 0 -and $null -eq (Get-CanonicalVisionOwner)
+  if ($oldOwnerExited) { break }
+  Start-Sleep -Milliseconds 100
+} while ([DateTime]::UtcNow -lt $deadline)
+if (-not $oldOwnerExited) { throw '停止后旧 Vision owner 仍提供 runtime 角色端点' }
+Start-ScheduledTask -TaskName 'VEMVisionRuntime' -ErrorAction Stop
+$deadline = [DateTime]::UtcNow.AddSeconds(60)
+$stableRoleSignature = $null
+$stableSince = $null
+do {
+  try { $roles = Invoke-RestMethod -Uri $rolesUri -TimeoutSec 2 } catch { $roles = $null }
+  $ready = $null -ne $roles -and @($roles.roles).Count -gt 0 -and @($roles.roles | Where-Object { $_.ready -ne $true -or $null -eq $_.pid }).Count -eq 0
+  $task = Get-ScheduledTask -TaskName 'VEMVisionRuntime' -ErrorAction SilentlyContinue
+  $owner = Get-CanonicalVisionOwner
+  $singleOwner = $null -ne $task -and [string]$task.TaskName -eq 'VEMVisionRuntime' -and [string]$task.State -eq 'Running' -and $null -ne $owner
+  $newCanonicalPids = if ($null -ne $owner) { @($owner.canonicalProcesses | ForEach-Object { [int]$_.ProcessId }) } else { @() }
+  $rolesBelongToNewOwner = $ready -and $null -ne $owner -and [int]$owner.mainProcess.ProcessId -ne $oldMainPid -and @($roles.roles | ForEach-Object { [int]$_.pid } | Where-Object { $newCanonicalPids -notcontains $_ }).Count -eq 0
+  $signature = if ($ready) { (@($roles.roles | Sort-Object name | ForEach-Object { "$($_.name):$($_.pid)" }) -join '|') } else { $null }
+  if ($signature -ne $stableRoleSignature) { $stableRoleSignature = $signature; $stableSince = [DateTime]::UtcNow }
+  if ($singleOwner -and $rolesBelongToNewOwner -and $null -ne $stableSince -and ([DateTime]::UtcNow - $stableSince).TotalMilliseconds -ge 1000) { break }
+  Start-Sleep -Milliseconds 250
+} while ([DateTime]::UtcNow -lt $deadline)
+if (-not $singleOwner -or -not $rolesBelongToNewOwner -or $null -eq $stableSince) { throw '新 VEMVisionRuntime owner 未以唯一稳定 roles/PID ready 状态启动' }
+[Console]::Out.WriteLine($filename)
+`;
+  const result = spawnSync("powershell", ["-NoProfile", "-Command", script], {
+    encoding: "utf8",
+  });
+  return {
+    exitCode: result.status ?? 1,
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? "",
+  };
 }
 
 async function inspectCapturedFrameResource({

@@ -6,6 +6,8 @@ import { createFakeTestAdapter } from "../../test-adapter.ts";
 import {
   runTryOnScenario,
   runObserverSelfHealScenario,
+  validateVisionExperienceTimeline,
+  validateGarmentScaleAdjustment,
 } from "./vision-experience-driver.ts";
 
 const attemptId = "550e8400-e29b-41d4-a716-446655440124";
@@ -24,6 +26,8 @@ function fakeUiAdapter({
   terminalRequestId = requestId,
   resourceAttemptId = attemptId,
   resourceFrameId = frameId,
+  observationTimeline = null,
+  resultGeometryEvidence = null,
 }: {
   includeCaptured?: boolean;
   includeCompleted?: boolean;
@@ -37,6 +41,10 @@ function fakeUiAdapter({
   terminalRequestId?: string;
   resourceAttemptId?: string;
   resourceFrameId?: string;
+  observationTimeline?: Array<
+    [number, string | null, string | null, string?]
+  > | null;
+  resultGeometryEvidence?: Record<string, unknown> | null;
 } = {}) {
   const statePath = "ui/try-on-state.json";
   const captured = {
@@ -178,6 +186,38 @@ function fakeUiAdapter({
                     },
                   }
                 : {}),
+              ...(observationTimeline
+                ? {
+                    observationTimeline: observationTimeline.map(
+                      ([
+                        atMs,
+                        countdownText,
+                        previewFrameHash,
+                        state = "acquiring",
+                      ]) => ({
+                        atMs,
+                        attemptId,
+                        state,
+                        holdRemainingMs:
+                          countdownText === null
+                            ? null
+                            : Number(countdownText) * 1_000,
+                        countdownText,
+                        previewVisible: state === "acquiring",
+                        previewFrameHash,
+                        capturedFrameId:
+                          state === "captured" || state === "generating"
+                            ? frameId
+                            : null,
+                        capturedDigest:
+                          state === "captured" || state === "generating"
+                            ? captured.digest
+                            : null,
+                      }),
+                    ),
+                  }
+                : {}),
+              ...(resultGeometryEvidence ? { resultGeometryEvidence } : {}),
             }),
           );
         }, 100);
@@ -189,6 +229,283 @@ function fakeUiAdapter({
 }
 
 describe("visionExperience vertical slice driver", () => {
+  it("将唯一同 attempt 的绝对 100→105 V2 调整意图绑定到 adjusted resource", () => {
+    const resultUrl = "http://127.0.0.1:7892/v2/try-on/results/attempt?token=105";
+    assert.equal(
+      validateGarmentScaleAdjustment({
+        evidence: { scales: [1.05], results: [{ reference: resultUrl }] },
+        resultUrl,
+      }),
+      true,
+    );
+    for (const evidence of [
+      { scales: [1.1], results: [{ reference: resultUrl }] },
+      { scales: [], results: [{ reference: resultUrl }] },
+      { scales: [1.05, 1.05], results: [{ reference: resultUrl }] },
+      { scales: [1.05], results: [] },
+      { scales: [1.05], results: [{ reference: resultUrl }, { reference: resultUrl }] },
+    ]) {
+      assert.equal(validateGarmentScaleAdjustment({ evidence, resultUrl }), false);
+    }
+  });
+  it("拒绝跳过倒计时、过早捕获、非单调时间和静态预览", () => {
+    const attempt = "attempt-time-line";
+    const observation = (
+      atMs: number,
+      countdownText: string,
+      frameHash: string,
+    ) => ({
+      atMs,
+      attemptId: attempt,
+      state: "acquiring",
+      holdRemainingMs: Number(countdownText) * 1_000,
+      countdownText,
+      previewVisible: true,
+      previewFrameHash: frameHash,
+    });
+    const result = validateVisionExperienceTimeline({
+      attemptId: attempt,
+      samples: [
+        observation(0, "3", "a"),
+        observation(800, "1", "a"),
+        observation(700, "1", "a"),
+        {
+          atMs: 900,
+          attemptId: attempt,
+          state: "captured",
+          holdRemainingMs: null,
+          countdownText: null,
+          previewVisible: false,
+          previewFrameHash: null,
+        },
+      ],
+    });
+
+    assert.deepEqual(result.countdownRenderedSequence.observed, ["3", "1"]);
+    assert.equal(result.captureAfterCountdown.observed, false);
+    assert.equal(result.previewLiveThroughCountdown.observed, false);
+    assert.equal(result.ok, false);
+  });
+
+  it("将每个连续倒计时样本的 protocol hold 与 DOM ceil(hold/1000) 绑定", () => {
+    const attemptId = "attempt-hold";
+    const baseline = [
+      [0, 3_000, "3"],
+      [800, 2_200, "3"],
+      [1_000, 2_000, "2"],
+      [1_400, 1_600, "2"],
+      [1_800, 1_100, "2"],
+      [2_000, 1_000, "1"],
+      [2_800, 100, "1"],
+    ] as const;
+    const validate = (samples: readonly (readonly [number, number | null, string])[]) =>
+      validateVisionExperienceTimeline({
+        attemptId,
+        samples: [
+          ...samples.map(([atMs, holdRemainingMs, countdownText]) => ({
+            atMs,
+            attemptId,
+            state: "acquiring",
+            holdRemainingMs,
+            countdownText,
+            previewVisible: true,
+            previewFrameHash: `${atMs}`,
+          })),
+          {
+            atMs: 3_000,
+            attemptId,
+            state: "captured",
+            holdRemainingMs: null,
+            countdownText: null,
+            previewVisible: false,
+            previewFrameHash: null,
+            capturedFrameId: "frame",
+            capturedDigest: "sha256:one",
+          },
+          {
+            atMs: 3_100,
+            attemptId,
+            state: "generating",
+            holdRemainingMs: null,
+            countdownText: null,
+            previewVisible: false,
+            previewFrameHash: null,
+            capturedFrameId: "frame",
+            capturedDigest: "sha256:one",
+          },
+        ],
+      });
+    assert.equal(validate(baseline).ok, true);
+    assert.equal(
+      validate(baseline.map((entry, index) => index === 2 ? [entry[0], entry[1], "3"] : entry)).ok,
+      false,
+    );
+    assert.equal(
+      validate(baseline.map((entry, index) => index === 3 ? [entry[0], 2_300, entry[2]] : entry)).ok,
+      false,
+    );
+    assert.equal(
+      validate(baseline.map((entry, index) => index === 3 ? [entry[0], null, entry[2]] : entry)).ok,
+      false,
+    );
+  });
+
+  it("倒计时的任一样本失去预览或在完整 1 桶结束前进入 held 状态均 fail closed", () => {
+    const attemptId = "attempt-countdown-boundary";
+    const countdown = [
+      [0, 3_000, "3"],
+      [800, 2_200, "3"],
+      [1_000, 2_000, "2"],
+      [1_400, 1_600, "2"],
+      [1_800, 1_100, "2"],
+      [2_000, 1_000, "1"],
+      [2_800, 100, "1"],
+    ] as const;
+    const samples = (options: {
+      invisibleAt?: number;
+      generatingAt?: number;
+      capturedAt?: number;
+    }) => [
+      ...countdown.map(([atMs, holdRemainingMs, countdownText], index) => ({
+        atMs,
+        attemptId,
+        state: "acquiring",
+        holdRemainingMs,
+        countdownText,
+        previewVisible: index !== options.invisibleAt,
+        previewFrameHash: `${atMs}`,
+      })),
+      ...(options.generatingAt === undefined
+        ? []
+        : [{
+            atMs: options.generatingAt,
+            attemptId,
+            state: "generating",
+            holdRemainingMs: null,
+            countdownText: null,
+            previewVisible: false,
+            previewFrameHash: null,
+            capturedFrameId: "frame",
+            capturedDigest: "sha256:one",
+          }]),
+      {
+        atMs: options.capturedAt ?? 3_000,
+        attemptId,
+        state: "captured",
+        holdRemainingMs: null,
+        countdownText: null,
+        previewVisible: false,
+        previewFrameHash: null,
+        capturedFrameId: "frame",
+        capturedDigest: "sha256:one",
+      },
+      {
+        atMs: 3_100,
+        attemptId,
+        state: "generating",
+        holdRemainingMs: null,
+        countdownText: null,
+        previewVisible: false,
+        previewFrameHash: null,
+        capturedFrameId: "frame",
+        capturedDigest: "sha256:one",
+      },
+    ].sort((left, right) => left.atMs - right.atMs);
+    assert.equal(
+      validateVisionExperienceTimeline({ attemptId, samples: samples({ invisibleAt: 3 }) }).ok,
+      false,
+    );
+    assert.equal(
+      validateVisionExperienceTimeline({ attemptId, samples: samples({ generatingAt: 2_500 }) }).ok,
+      false,
+    );
+    assert.equal(
+      validateVisionExperienceTimeline({ attemptId, samples: samples({ capturedAt: 2_500 }) }).ok,
+      false,
+    );
+  });
+
+  it("失稳后的倒计时必须从新的 3 完整重走", () => {
+    const attemptId = "attempt-reset";
+    const sample = (
+      atMs: number,
+      countdownText: string | null,
+      previewFrameHash: string | null,
+      state = "acquiring",
+    ) => ({
+      atMs,
+      attemptId,
+      state,
+      holdRemainingMs:
+        countdownText === null ? null : Number(countdownText) * 1_000,
+      countdownText,
+      previewVisible: state === "acquiring",
+      previewFrameHash,
+      capturedFrameId:
+        state === "captured" || state === "generating" ? "frame-1" : null,
+      capturedDigest:
+        state === "captured" || state === "generating" ? "sha256:one" : null,
+    });
+    const result = validateVisionExperienceTimeline({
+      attemptId,
+      samples: [
+        sample(0, "3", "old-a"),
+        sample(500, "2", "old-b"),
+        sample(700, null, null),
+        sample(800, "3", "new-a"),
+        sample(1_550, "3", "new-b"),
+        sample(1_700, "2", "new-c"),
+        sample(2_450, "2", "new-d"),
+        sample(2_600, "1", "new-e"),
+        sample(3_350, "1", "new-f"),
+        sample(3_800, null, null, "captured"),
+        sample(4_000, null, null, "generating"),
+      ],
+    });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.countdownRenderedSequence.observed, [
+      "3",
+      "2",
+      "1",
+    ]);
+  });
+
+  it("对齐中断后第二轮 3 不得借用第一轮的等待时间", () => {
+    const attemptId = "attempt-alignment-reset";
+    const sample = (
+      atMs: number,
+      countdownText: string | null,
+      state = "acquiring",
+    ) => ({
+      atMs,
+      attemptId,
+      state,
+      holdRemainingMs:
+        countdownText === null ? null : Number(countdownText) * 1_000,
+      countdownText,
+      previewVisible: state === "acquiring",
+      previewFrameHash: countdownText ? `${countdownText}-${atMs}` : null,
+      capturedFrameId: state === "captured" ? "frame-1" : null,
+      capturedDigest: state === "captured" ? "sha256:one" : null,
+    });
+    const result = validateVisionExperienceTimeline({
+      attemptId,
+      samples: [
+        sample(0, "3"),
+        sample(800, null),
+        sample(900, "3"),
+        sample(1_200, "2"),
+        sample(1_950, "2"),
+        sample(2_100, "1"),
+        sample(2_850, "1"),
+        sample(3_500, null, "captured"),
+      ],
+    });
+    assert.equal(result.countdownRenderedSequence.observed[0], "3");
+    assert.equal(result.captureAfterCountdown.observed, false);
+    assert.equal(result.ok, false);
+  });
+
   it("rejects a completed attempt without the captured V2 source fact", async () => {
     await assert.rejects(
       runTryOnScenario(fakeUiAdapter({ includeCaptured: false }), {
@@ -197,6 +514,58 @@ describe("visionExperience vertical slice driver", () => {
       }),
       /captured/i,
     );
+  });
+
+  it("将完整倒计时、动态预览和捕获顺序写成结构化业务断言", async () => {
+    const outcome = await runTryOnScenario(
+      fakeUiAdapter({
+        observationTimeline: [
+          [0, "3", "a"],
+          [750, "3", "b"],
+          [900, "2", "c"],
+          [1_650, "2", "d"],
+          [1_800, "1", "e"],
+          [2_550, "1", "f"],
+          [3_000, null, null, "captured"],
+          [3_300, null, null, "generating"],
+        ],
+      }),
+      { timeoutMs: 2_000, pollMs: 10 },
+    );
+    const byId = new Map(
+      outcome.assertions.map((assertion) => [assertion.id, assertion]),
+    );
+    assert.equal(byId.get("countdown-rendered-sequence")?.status, "passed");
+    assert.equal(byId.get("capture-after-countdown")?.status, "passed");
+    assert.equal(byId.get("preview-live-through-countdown")?.status, "passed");
+    assert.equal(
+      byId.get("captured-frame-held-during-generation")?.status,
+      "passed",
+    );
+  });
+
+  it("把已解码结果 PNG 的几何判定写成业务断言", async () => {
+    const passing = {
+      ok: true,
+      resultSleevesRetained: { expected: true, observed: true },
+      resultUniformPlacement: { expected: true, observed: true },
+      resultAutomaticScale: { expected: true, observed: true },
+      garmentScaleRendersPixels: { expected: true, observed: true },
+    };
+    const outcome = await runTryOnScenario(
+      fakeUiAdapter({ resultGeometryEvidence: passing }),
+      { timeoutMs: 2_000, pollMs: 10 },
+    );
+    const geometry = outcome.assertions.filter((assertion) =>
+      [
+        "result-sleeves-retained",
+        "result-uniform-placement",
+        "result-automatic-scale",
+        "garment-scale-renders-pixels",
+      ].includes(assertion.id),
+    );
+    assert.equal(geometry.length, 4);
+    assert.ok(geometry.every((assertion) => assertion.status === "passed"));
   });
 
   it("rejects a captured digest or frame identity that cannot bind the input", async () => {

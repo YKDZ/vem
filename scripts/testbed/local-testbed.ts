@@ -1446,12 +1446,20 @@ const TESTBED_MEDIA_FIXTURES = Object.freeze({
       x < width * 0.76 &&
       y > height * 0.26 &&
       y < height * 0.9;
-    const sleeves =
+    const leftSleeve =
       y > height * 0.2 &&
       y < height * 0.52 &&
-      ((x > width * 0.08 && x < width * 0.26) ||
-        (x > width * 0.74 && x < width * 0.92));
-    return torso || sleeves ? [38, 128, 212, 235] : [0, 0, 0, 0];
+      x > width * 0.08 &&
+      x < width * 0.26;
+    const rightSleeve =
+      y > height * 0.2 &&
+      y < height * 0.52 &&
+      x > width * 0.74 &&
+      x < width * 0.92;
+    if (leftSleeve) return [255, 0, 0, 255];
+    if (torso) return [0, 220, 0, 255];
+    if (rightSleeve) return [0, 0, 255, 255];
+    return [0, 0, 0, 0];
   }),
   tryOnGarmentLong: createRgbaPng(512, 640, (x, y, width, height) => {
     const torso =
@@ -1919,6 +1927,18 @@ export async function seedThroughSupportedApis({
     visionAcceptance: {
       tryOnGarmentId: tryOnGarment.id,
       tryOnGarmentMediaAssetId: tryOnGarmentAsset.id,
+      sourceGarment: {
+        // Service API 在 host loopback 上 seed；guest 只能按其 Runtime Bootstrap
+        // 的私网 origin 解析这个相对公共资源路径。
+        publicPath: new URL(tryOnGarmentAsset.publicUrl, baseUrl).pathname,
+        assetId: tryOnGarmentAsset.id,
+        digest: `sha256:${createHash("sha256").update(testbedTryOnGarmentAsset().buffer).digest("hex")}`,
+        contentType: "image/png",
+        byteSize: testbedTryOnGarmentAsset().buffer.byteLength,
+        template: "tshirt_short_sleeve",
+        width: 512,
+        height: 640,
+      },
       tryOnCategoryKey: "tshirts",
       selectedCatalogKey: `product:${recommendationBase.product.product.id}`,
       selectedVariantId: recommendationVariants[0].variantId,
