@@ -25,24 +25,15 @@
   小写 SHA-256 和 `byteSize`；运行时归档额外声明 40 位小写 `sourceCommit`。
   编排器只接受普通文件并在每个 pass 校验摘要和大小、生成快照，再传输到由这两项
   身份聚合值派生的固定 `C:\ProgramData\VEM\testbed\vision-core\<aggregate>`。
-  `runtimeArchive` 是已证明的 candidate v3 ZIP；客体逐成员复核其内嵌清单后，把
-  `vending-vision` 与同候选中的 `vending-vision-ai-worker` 组装为现有安装器可消费的
-  本地 delivery。`recordedFixtureArchive` 是同一 Vision source commit 生成的独立录播
-  fixture ZIP。客体启动只使用这两个预置输入，绝不以 Vision 缓存缺失为由查询 GitHub。
-
-当执行完整验收或 `fast --focus aiVirtualTryOn` 时，配置还必须提供
-`aiVirtualTryOnFunctional`，其中包含宿主机本地的 `modelPackArchive`、
-`materializedModelPackRoot`、`modelPackSha256` 和 `modelPackByteSize`。编排器按
-摘要、字节数和目录成员验证这些输入后，把它们预置到 VM 的固定
-`D:\runtime-cache\v1\acceptance-inputs\functional\<manifest-sha>` 路径。AI 轨道只
-使用 functional 模式；正式的签名权威、proof attestation 和 calibration receipt
-链路已从默认验收路径移除，等未来发布治理需要时再单独设计。
+  `runtimeArchive` 是已证明的 candidate v3 ZIP；客体逐成员复核其内嵌清单后，只把
+  `vending-vision` 组装为现有安装器可消费的本地 delivery。
+  `recordedFixtureArchive` 是同一 Vision source commit 生成的独立录播 fixture ZIP。
+  客体启动只使用这两个预置输入，绝不以 Vision 缓存缺失为由查询 GitHub。
 
 `full` 的第一轮还会从已验证的 workflow identity 生成 canonical
 `vem-runtime-testbed-acceptance-release/v1` 清单，绑定 VEM source commit、Service API
-实际健康与 Service API/Admin UI 构建摘要、宿主 owned loopback HTTP 对 Admin UI delivery 入口的逐字节观测、daemon/Machine/WebViewLoader、Vision runtime/fixture、
-Vision V2 contract、AI worker/environment 以及 model-pack archive/materialized tree。第二轮从自身事实
-重新生成同一清单；任何差异都会使 stability gate 失败。成功时 compact 根同时保留
+实际健康与 Service API/Admin UI 构建摘要、宿主 owned loopback HTTP 对 Admin UI delivery 入口的逐字节观测、daemon/Machine/WebViewLoader、Vision runtime/fixture
+及 Vision V2 contract。第二轮从自身事实重新生成同一清单；任何差异都会使 stability gate 失败。成功时 compact 根同时保留
 `acceptance-release-manifest.json`，`full-workflow-stability-gate.json` 记录其小写 SHA-256。
 
 Windows 基线由测试宿主机从标准 Windows 10 安装介质生成，并以 qcow2 形式保存在宿主机本地。仓库维护生成脚本、验收合同和运行期约束。`baselineContract` 指向宿主机上的小型 JSON 合同或当前发布清单，用来描述本地基线的路径、摘要、显示分辨率、缓存盘和运行时准备状态。
