@@ -555,6 +555,8 @@ const STATE_EXPRESSION = `(() => {
   const previewRect = preview?.getBoundingClientRect();
   return JSON.stringify({
     route: location.hash,
+    catalogKey: detail?.dataset?.catalogKey ?? null,
+    variantId: detail?.dataset?.variantId ?? null,
     state: view?.dataset?.state ?? null,
     attemptId: view?.dataset?.attemptId ?? null,
     preview: {

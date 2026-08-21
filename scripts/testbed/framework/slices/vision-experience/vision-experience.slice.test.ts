@@ -18,6 +18,7 @@ const firstLongSleeveVariantId = "550e8400-e29b-41d4-a716-446655440129";
 const visionAcceptanceBinding = {
   selectedCatalogKey,
   selectedVariantId,
+  selectedSize: "M",
   sourceGarmentMetadata: {
     reference:
       "http://127.0.0.1:26849/api/media-assets/550e8400-e29b-41d4-a716-446655440128/content",
@@ -33,8 +34,10 @@ const visionAcceptanceBinding = {
 };
 const selectedProductSelector =
   `[data-test="catalog-product"]` +
-  `[data-catalog-key="${selectedCatalogKey}"]` +
-  `[data-variant-id="${selectedVariantId}"]`;
+  `[data-catalog-key="${selectedCatalogKey}"]`;
+const selectedSizeSelector =
+  `[data-test="product-size-option"]` +
+  `[data-size="${visionAcceptanceBinding.selectedSize}"]`;
 const selectedProductRoute = `#/products/${encodeURIComponent(
   selectedCatalogKey,
 )}?variantId=${selectedVariantId}`;
@@ -186,7 +189,19 @@ function fakeUiAdapter({
       },
       [`click ${selectedProductSelector}`]: async () => {
         await writeState({
-          route: `#/products/${selectedCatalogKey}?variantId=${selectedVariantId}`,
+          route: `#/products/${selectedCatalogKey}?variantId=${firstLongSleeveVariantId}`,
+          catalogKey: selectedCatalogKey,
+          variantId: firstLongSleeveVariantId,
+          tryOnPresent: true,
+          state: "idle",
+        });
+        return { exitCode: 0, stdout: "ok", stderr: "" };
+      },
+      [`click ${selectedSizeSelector}`]: async () => {
+        await writeState({
+          route: `#/products/${selectedCatalogKey}?variantId=${firstLongSleeveVariantId}`,
+          catalogKey: selectedCatalogKey,
+          variantId: selectedVariantId,
           tryOnPresent: true,
           state: "idle",
         });
@@ -299,9 +314,9 @@ function fakeUiAdapter({
 }
 
 describe("visionExperience vertical slice driver", () => {
-  it("目录首项为长袖时仍按 guest-input identity 点击短袖规格", async () => {
+  it("聚合商品卡首项为长袖 S 时按 catalogKey 进详情并选择 guest-input 短袖 M", async () => {
     const adapter = fakeUiAdapter();
-    await runTryOnScenario(adapter, {
+    const outcome = await runTryOnScenario(adapter, {
       timeoutMs: 2_000,
       pollMs: 10,
       acceptanceBinding: visionAcceptanceBinding,
@@ -314,13 +329,102 @@ describe("visionExperience vertical slice driver", () => {
       ),
       true,
     );
+    assert.deepEqual(outcome.supportingEvidence[0], {
+      kind: "vision-catalog-selection",
+      catalogKey: selectedCatalogKey,
+      variantId: selectedVariantId,
+      size: "M",
+      actions: ["catalog-card", "size-option"],
+      route: `#/products/${selectedCatalogKey}?variantId=${firstLongSleeveVariantId}`,
+    });
+    assert.equal(
+      JSON.stringify(outcome.supportingEvidence[0]).includes("token"),
+      false,
+    );
     assert.equal(
       adapter.calls.some(
         (call) =>
-          call.command === "click" &&
-          call.args[0] === '[data-test="catalog-product"]',
+          call.command === "click" && call.args[0] === selectedSizeSelector,
       ),
-      false,
+      true,
+    );
+  });
+
+  it("尺码 click 未改变公开 variant identity 时结构化 fail closed", async () => {
+    const adapter = fakeUiAdapter();
+    const originalRun = adapter.run.bind(adapter);
+    adapter.run = async (command, args = []) =>
+      command === "click" && args[0] === selectedSizeSelector
+        ? { exitCode: 0, stdout: "size-unchanged", stderr: "" }
+        : originalRun(command, args);
+
+    await assert.rejects(
+      runTryOnScenario(adapter, {
+        timeoutMs: 30,
+        pollMs: 5,
+        acceptanceBinding: visionAcceptanceBinding,
+      }),
+      (error: any) =>
+        error?.stage === "vision-catalog-selection" &&
+        error?.evidence?.expected?.size === "M" &&
+        error?.evidence?.observed?.variantId === firstLongSleeveVariantId &&
+        error?.report?.businessSets?.[0]?.status === "failed",
+    );
+  });
+
+  it("尺码 click 仅伪装目标 route 但 DOM variant 错误时不能假绿", async () => {
+    const adapter = fakeUiAdapter();
+    const originalRun = adapter.run.bind(adapter);
+    adapter.run = async (command, args = []) => {
+      if (command === "click" && args[0] === selectedSizeSelector) {
+        await adapter.writeFile(
+          "ui/try-on-state.json",
+          JSON.stringify({
+            route: selectedProductRoute,
+            catalogKey: selectedCatalogKey,
+            variantId: firstLongSleeveVariantId,
+            state: "idle",
+          }),
+        );
+        return { exitCode: 0, stdout: "route-forged", stderr: "" };
+      }
+      return originalRun(command, args);
+    };
+
+    await assert.rejects(
+      runTryOnScenario(adapter, {
+        timeoutMs: 30,
+        pollMs: 5,
+        acceptanceBinding: visionAcceptanceBinding,
+      }),
+      (error: any) =>
+        error?.stage === "vision-catalog-selection" &&
+        error?.evidence?.observed?.route === selectedProductRoute &&
+        error?.evidence?.observed?.variantId === firstLongSleeveVariantId &&
+        error?.report?.businessSets?.[0]?.status === "failed",
+    );
+  });
+
+  it("目标 catalog card 不存在时保留结构化 selection failure", async () => {
+    const adapter = fakeUiAdapter();
+    const originalRun = adapter.run.bind(adapter);
+    adapter.run = async (command, args = []) => {
+      if (command === "click" && args[0] === selectedProductSelector) {
+        throw new Error("catalog card selector absent");
+      }
+      return originalRun(command, args);
+    };
+
+    await assert.rejects(
+      runTryOnScenario(adapter, {
+        timeoutMs: 30,
+        pollMs: 5,
+        acceptanceBinding: visionAcceptanceBinding,
+      }),
+      (error: any) =>
+        error?.stage === "vision-catalog-selection" &&
+        error?.evidence?.expected?.catalogKey === selectedCatalogKey &&
+        error?.report?.businessSets?.[0]?.status === "failed",
     );
   });
 
@@ -914,7 +1018,12 @@ describe("visionExperience vertical slice driver", () => {
         [`click ${selectedProductSelector}`]: async () => {
           await adapter.writeFile(
             "ui/try-on-state.json",
-            JSON.stringify({ route: selectedProductRoute, state: "idle" }),
+            JSON.stringify({
+              route: selectedProductRoute,
+              catalogKey: selectedCatalogKey,
+              variantId: selectedVariantId,
+              state: "idle",
+            }),
           );
           return { exitCode: 0, stdout: "ok", stderr: "" };
         },
@@ -955,7 +1064,12 @@ describe("visionExperience vertical slice driver", () => {
         [`click ${selectedProductSelector}`]: async () => {
           await adapter.writeFile(
             "ui/try-on-state.json",
-            JSON.stringify({ route: selectedProductRoute, state: "idle" }),
+            JSON.stringify({
+              route: selectedProductRoute,
+              catalogKey: selectedCatalogKey,
+              variantId: selectedVariantId,
+              state: "idle",
+            }),
           );
           return { exitCode: 0, stdout: "ok", stderr: "" };
         },
@@ -989,7 +1103,12 @@ describe("visionExperience vertical slice driver", () => {
         [`click ${selectedProductSelector}`]: async () => {
           await adapter.writeFile(
             "ui/try-on-state.json",
-            JSON.stringify({ route: selectedProductRoute, state: "idle" }),
+            JSON.stringify({
+              route: selectedProductRoute,
+              catalogKey: selectedCatalogKey,
+              variantId: selectedVariantId,
+              state: "idle",
+            }),
           );
           return { exitCode: 0, stdout: "ok", stderr: "" };
         },
@@ -1062,6 +1181,8 @@ describe("visionExperience vertical slice driver", () => {
         [`click ${selectedProductSelector}`]: async () => {
           await writeState({
             route: selectedProductRoute,
+            catalogKey: selectedCatalogKey,
+            variantId: selectedVariantId,
             state: "idle",
             tryOnPresent: true,
           });

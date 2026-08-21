@@ -578,6 +578,7 @@ function serializeFailureDiagnostics(diagnostics: unknown): string {
 export function sourceGarmentBindingFromGuestInput(guestInput: unknown): {
   selectedCatalogKey: string;
   selectedVariantId: string;
+  selectedSize: string;
   sourceGarmentMetadata: NonNullable<
     ReturnType<typeof parseSourceGarmentMetadata>
   >;
@@ -588,6 +589,7 @@ export function sourceGarmentBindingFromGuestInput(guestInput: unknown): {
     visionAcceptance?: {
       selectedCatalogKey?: unknown;
       selectedVariantId?: unknown;
+      seededTryOnVariants?: unknown;
       sourceGarment?: unknown;
     };
   } | null;
@@ -634,10 +636,38 @@ export function sourceGarmentBindingFromGuestInput(guestInput: unknown): {
     if (!sourceGarmentMetadata) {
       throw new Error("source garment metadata is invalid");
     }
+    const selectedVariantId = input?.visionAcceptance?.selectedVariantId;
+    const seededTryOnVariants = input?.visionAcceptance?.seededTryOnVariants;
+    if (!Array.isArray(seededTryOnVariants)) {
+      throw new Error("seeded try-on variants are missing");
+    }
+    const selectedRecords = seededTryOnVariants.filter(
+      (record) =>
+        record !== null &&
+        typeof record === "object" &&
+        !Array.isArray(record) &&
+        (record as { variantId?: unknown }).variantId === selectedVariantId,
+    );
+    if (selectedRecords.length !== 1) {
+      throw new Error("selected try-on variant must have one seed record");
+    }
+    const selectedRecord = selectedRecords[0] as {
+      productId?: unknown;
+      size?: unknown;
+      garmentMediaAssetId?: unknown;
+    };
+    if (
+      input?.visionAcceptance?.selectedCatalogKey !==
+        `product:${selectedRecord.productId}` ||
+      selectedRecord.garmentMediaAssetId !== sourceGarmentMetadata.assetId
+    ) {
+      throw new Error("selected try-on variant is not bound to source garment");
+    }
     return {
       ...createVisionAcceptanceBinding({
         selectedCatalogKey: input?.visionAcceptance?.selectedCatalogKey,
-        selectedVariantId: input?.visionAcceptance?.selectedVariantId,
+        selectedVariantId,
+        selectedSize: selectedRecord.size,
         sourceGarmentMetadata,
       }),
       sourceGarmentServiceApiOrigin: serviceApiUrl.origin,

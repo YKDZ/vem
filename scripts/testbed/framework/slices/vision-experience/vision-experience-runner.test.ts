@@ -31,12 +31,12 @@ const sourceGarmentMetadataFixture = {
 const visionAcceptanceBinding = {
   selectedCatalogKey,
   selectedVariantId,
+  selectedSize: "M",
   sourceGarmentMetadata: sourceGarmentMetadataFixture,
 };
 const selectedProductSelector =
   `[data-test="catalog-product"]` +
-  `[data-catalog-key="${selectedCatalogKey}"]` +
-  `[data-variant-id="${selectedVariantId}"]`;
+  `[data-catalog-key="${selectedCatalogKey}"]`;
 const selectedProductRoute = `#/products/${encodeURIComponent(
   selectedCatalogKey,
 )}?variantId=${selectedVariantId}`;
@@ -52,6 +52,14 @@ function writeVisionGuestInput(root: string): string {
       visionAcceptance: {
         selectedCatalogKey,
         selectedVariantId,
+        seededTryOnVariants: [
+          {
+            productId: selectedCatalogKey.slice("product:".length),
+            variantId: selectedVariantId,
+            size: visionAcceptanceBinding.selectedSize,
+            garmentMediaAssetId: sourceGarmentMetadataFixture.assetId,
+          },
+        ],
         sourceGarment: {
           ...sourceGarmentMetadataFixture,
           publicPath: new URL(sourceGarmentMetadataFixture.reference).pathname,
@@ -222,6 +230,8 @@ function fakeUiAdapter() {
           statePath,
           JSON.stringify({
             route: selectedProductRoute,
+            catalogKey: selectedCatalogKey,
+            variantId: selectedVariantId,
             state: "idle",
             tryOnPresent: true,
             buyDisabled: false,
@@ -657,12 +667,21 @@ describe("visionExperience slice runner", () => {
         visionAcceptance: {
           selectedCatalogKey: "product:550e8400-e29b-41d4-a716-446655440120",
           selectedVariantId: "550e8400-e29b-41d4-a716-446655440121",
+          seededTryOnVariants: [
+            {
+              productId: "550e8400-e29b-41d4-a716-446655440120",
+              variantId: "550e8400-e29b-41d4-a716-446655440121",
+              size: "M",
+              garmentMediaAssetId: sourceGarment.assetId,
+            },
+          ],
           sourceGarment,
         },
       }),
       {
         selectedCatalogKey: "product:550e8400-e29b-41d4-a716-446655440120",
         selectedVariantId: "550e8400-e29b-41d4-a716-446655440121",
+        selectedSize: "M",
         sourceGarmentMetadata: {
           ...sourceGarment,
           reference:
@@ -672,6 +691,47 @@ describe("visionExperience slice runner", () => {
         sourceGarmentServiceApiOrigin: "http://10.0.0.15:26849",
       },
     );
+  });
+
+  it("selected variant seed 缺失、重复、错绑或 size 注入时 fail closed", () => {
+    const sourceGarment = {
+      ...sourceGarmentMetadataFixture,
+      publicPath: new URL(sourceGarmentMetadataFixture.reference).pathname,
+    };
+    const selectedSeed = {
+      productId: selectedCatalogKey.slice("product:".length),
+      variantId: selectedVariantId,
+      size: "M",
+      garmentMediaAssetId: sourceGarment.assetId,
+    };
+    const parse = (seededTryOnVariants: unknown) =>
+      sourceGarmentBindingFromGuestInput({
+        runtimeBootstrap: {
+          provisioningApiBaseUrl: "http://127.0.0.1:26849/api",
+        },
+        visionAcceptance: {
+          selectedCatalogKey,
+          selectedVariantId,
+          seededTryOnVariants,
+          sourceGarment,
+        },
+      });
+
+    for (const invalid of [
+      [],
+      [selectedSeed, { ...selectedSeed }],
+      [{ ...selectedSeed, productId: "550e8400-e29b-41d4-a716-446655440129" }],
+      [
+        {
+          ...selectedSeed,
+          garmentMediaAssetId: "550e8400-e29b-41d4-a716-446655440129",
+        },
+      ],
+      [{ ...selectedSeed, size: 'M"] [data-test="try-on' }],
+      [{ ...selectedSeed, size: "" }],
+    ]) {
+      assert.throws(() => parse(invalid), /vision acceptance binding/i);
+    }
   });
 
   it("拒绝把 host loopback 的 source garment 带进 guest", () => {
@@ -1054,6 +1114,8 @@ describe("visionExperience slice runner", () => {
             statePath,
             JSON.stringify({
               route: selectedProductRoute,
+              catalogKey: selectedCatalogKey,
+              variantId: selectedVariantId,
               state: "idle",
               tryOnPresent: true,
             }),

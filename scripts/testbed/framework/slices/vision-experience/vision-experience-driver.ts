@@ -101,10 +101,12 @@ const UUID_PATTERN =
   "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const CATALOG_KEY_PATTERN = new RegExp(`^product:${UUID_PATTERN}$`);
 const VARIANT_ID_PATTERN = new RegExp(`^${UUID_PATTERN}$`);
+const PRODUCT_SIZE_PATTERN = /^[\p{L}\p{N}][\p{L}\p{N} ._+/-]{0,31}$/u;
 
 export interface VisionAcceptanceBinding {
   selectedCatalogKey: string;
   selectedVariantId: string;
+  selectedSize: string;
   sourceGarmentMetadata: SourceGarmentMetadata;
 }
 
@@ -112,13 +114,15 @@ export interface VisionCatalogSelectionEvidence {
   kind: "vision-catalog-selection";
   catalogKey: string;
   variantId: string;
+  size: string;
+  actions: ("catalog-card" | "size-option")[];
   route: string;
 }
 
 export interface VisionStartGarmentBindingEvidence {
   kind: "vision-start-garment-binding";
   status: "bound" | "mismatch";
-  selection: { catalogKey: string; variantId: string };
+  selection: { catalogKey: string; variantId: string; size: string };
   expected: {
     assetId: string;
     digest: string;
@@ -138,29 +142,45 @@ export interface VisionStartGarmentBindingEvidence {
 export function createVisionAcceptanceBinding({
   selectedCatalogKey,
   selectedVariantId,
+  selectedSize,
   sourceGarmentMetadata,
 }: {
   selectedCatalogKey: unknown;
   selectedVariantId: unknown;
+  selectedSize: unknown;
   sourceGarmentMetadata: SourceGarmentMetadata;
 }): VisionAcceptanceBinding {
   if (
     typeof selectedCatalogKey !== "string" ||
     !CATALOG_KEY_PATTERN.test(selectedCatalogKey) ||
     typeof selectedVariantId !== "string" ||
-    !VARIANT_ID_PATTERN.test(selectedVariantId)
+    !VARIANT_ID_PATTERN.test(selectedVariantId) ||
+    typeof selectedSize !== "string" ||
+    !PRODUCT_SIZE_PATTERN.test(selectedSize)
   ) {
     throw new Error("vision acceptance catalog selection identity is invalid");
   }
-  return { selectedCatalogKey, selectedVariantId, sourceGarmentMetadata };
+  return {
+    selectedCatalogKey,
+    selectedVariantId,
+    selectedSize,
+    sourceGarmentMetadata,
+  };
 }
 
 function selectedProductSelector(binding: VisionAcceptanceBinding): string {
   createVisionAcceptanceBinding(binding);
   return (
     '[data-test="catalog-product"]' +
-    `[data-catalog-key="${binding.selectedCatalogKey}"]` +
-    `[data-variant-id="${binding.selectedVariantId}"]`
+    `[data-catalog-key="${binding.selectedCatalogKey}"]`
+  );
+}
+
+function selectedSizeSelector(binding: VisionAcceptanceBinding): string {
+  createVisionAcceptanceBinding(binding);
+  return (
+    '[data-test="product-size-option"]' +
+    `[data-size="${binding.selectedSize}"]`
   );
 }
 
@@ -181,6 +201,7 @@ function startGarmentBindingEvidence(
     selection: {
       catalogKey: binding.selectedCatalogKey,
       variantId: binding.selectedVariantId,
+      size: binding.selectedSize,
     },
     expected: {
       assetId: expected.assetId,
@@ -260,38 +281,62 @@ async function enterSelectedProduct(
   { timeoutMs, pollMs }: { timeoutMs?: number; pollMs?: number },
 ): Promise<VisionCatalogSelectionEvidence> {
   const selector = selectedProductSelector(binding);
-  await adapter.run("navigate", ["#/catalog"]);
-  await adapter.run("click", [
-    '[data-test="catalog-category"][data-category-key="tshirts"]',
-  ]);
-  await adapter.run("click", [selector]);
-  let state: TryOnState;
+  const actions: VisionCatalogSelectionEvidence["actions"] = [];
   try {
-    state = await waitForCondition(
-      "selected-product-detail",
+    await adapter.run("navigate", ["#/catalog"]);
+    await adapter.run("click", [
+      '[data-test="catalog-category"][data-category-key="tshirts"]',
+    ]);
+    await adapter.run("click", [selector]);
+    actions.push("catalog-card");
+    const detailState = await waitForCondition(
+      "selected-product-catalog-detail",
       async () => {
         const current = await readState(adapter);
         const routeIdentity = routeSelectionIdentity(current.route);
         return {
-          ok:
-            (current.catalogKey ?? routeIdentity.catalogKey) ===
-              binding.selectedCatalogKey &&
-            (current.variantId ?? routeIdentity.variantId) ===
-              binding.selectedVariantId,
+          ok: routeIdentity.catalogKey === binding.selectedCatalogKey,
           value: current,
         };
       },
       { timeoutMs, pollMs },
     );
+    if (detailState.variantId !== binding.selectedVariantId) {
+      await adapter.run("click", [selectedSizeSelector(binding)]);
+      actions.push("size-option");
+    }
+    const state = await waitForCondition(
+      "selected-product-variant-detail",
+      async () => {
+        const current = await readState(adapter);
+        return {
+          ok:
+            current.catalogKey === binding.selectedCatalogKey &&
+            current.variantId === binding.selectedVariantId,
+          value: current,
+        };
+      },
+      { timeoutMs, pollMs },
+    );
+    return {
+      kind: "vision-catalog-selection",
+      catalogKey: binding.selectedCatalogKey,
+      variantId: binding.selectedVariantId,
+      size: binding.selectedSize,
+      actions,
+      route: state.route!,
+    };
   } catch (cause) {
-    const current = await readState(adapter).catch(() => ({}));
+    const current = await readState(adapter).catch((): TryOnState => ({}));
     const routeIdentity = routeSelectionIdentity(current.route);
     const evidence = {
       kind: "vision-catalog-selection" as const,
       status: "mismatch" as const,
+      actions,
       expected: {
         catalogKey: binding.selectedCatalogKey,
         variantId: binding.selectedVariantId,
+        size: binding.selectedSize,
       },
       observed: {
         catalogKey: current.catalogKey ?? routeIdentity.catalogKey,
@@ -330,12 +375,6 @@ async function enterSelectedProduct(
     });
     throw error;
   }
-  return {
-    kind: "vision-catalog-selection",
-    catalogKey: binding.selectedCatalogKey,
-    variantId: binding.selectedVariantId,
-    route: state.route!,
-  };
 }
 
 function collapsedCountdownSequence(samples: VisionExperienceObservation[]) {

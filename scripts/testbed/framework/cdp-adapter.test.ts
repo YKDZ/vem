@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { describe, it } from "node:test";
+import { runInNewContext } from "node:vm";
 
 import {
   CapturedFrameEvidenceCache,
@@ -38,6 +39,53 @@ describe("CDP test adapter", () => {
     assertAdapterContract(adapter);
     assert.equal(typeof adapter.connect, "function");
     assert.equal(typeof adapter.close, "function");
+  });
+
+  it("公开 readState 从 ProductDetail dataset 返回当前商品与规格 identity", async () => {
+    class FakeHtmlElement {}
+    const detail = Object.assign(new FakeHtmlElement(), {
+      dataset: { catalogKey: "product:one", variantId: "variant-m" },
+    });
+    const fakeCdp = createFakeCdpWebSocketFactory((message) => {
+      if (message.method === "Runtime.evaluate") {
+        return {
+          id: message.id,
+          result: {
+            result: {
+              value: runInNewContext(message.params.expression, {
+                document: {
+                  querySelector: (selector: string) =>
+                    selector === "[data-test='product-detail-page']"
+                      ? detail
+                      : null,
+                },
+                location: { hash: "#/products/product:one" },
+                HTMLElement: FakeHtmlElement,
+                HTMLButtonElement: class extends FakeHtmlElement {},
+                JSON,
+                Number,
+                Boolean,
+              }),
+            },
+          },
+        };
+      }
+      return { id: message.id, result: {} };
+    });
+    const endpoint = await startFakeCdpEndpoint();
+    const adapter = new CdpTestAdapter({
+      endpoint: endpoint.url,
+      cdpWebSocketFactory: fakeCdp.factory,
+    });
+    try {
+      await adapter.connect();
+      const state = JSON.parse(await adapter.readFile("ui/try-on-state.json"));
+      assert.equal(state.catalogKey, "product:one");
+      assert.equal(state.variantId, "variant-m");
+    } finally {
+      await adapter.close();
+      await endpoint.close();
+    }
   });
 
   it("通过公开 click command 经真实 CdpClient 发出 touch CDP 输入", async () => {
