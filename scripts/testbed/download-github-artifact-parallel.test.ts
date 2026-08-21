@@ -14,7 +14,7 @@ import {
 
 const ARTIFACT = {
   id: 42,
-  name: "vending-vision-candidate-deadbeef",
+  name: "vending-vision-main-deadbeef",
   size_in_bytes: 8,
   expired: false,
 };

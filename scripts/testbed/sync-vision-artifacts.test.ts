@@ -1,155 +1,251 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync, mkdtempSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
 import {
+  parseSyncOptions,
   syncVisionArtifactPair,
   writeHostConfigVisionCore,
 } from "./sync-vision-artifacts.ts";
 
 const COMMIT = "234e2961adff5c4e8fc58b29b6f67869007e5718";
 
-function makeCandidateArchive(root, commit) {
-  const inner = join(root, "candidate-inner");
-  mkdirSync(inner, { recursive: true });
-  writeFileSync(join(inner, "runtime.bin"), "runtime-bytes");
-  const runtimeZipName = `vending-vision-${commit}.zip`;
-  execFileSync("zip", [
-    "-qj",
-    join(inner, runtimeZipName),
-    join(inner, "runtime.bin"),
-  ]);
-  const manifest = {
-    schemaVersion: "vending-vision-candidate-artifact/v3",
-    sourceCommit: commit,
-    files: [],
-  };
-  writeFileSync(
-    join(inner, "candidate-manifest.json"),
-    `${JSON.stringify(manifest)}\n`,
-  );
-  const outer = join(root, "candidate-outer.zip");
-  execFileSync("zip", [
-    "-qj",
-    outer,
-    join(inner, runtimeZipName),
-    join(inner, "candidate-manifest.json"),
-  ]);
-  return outer;
+function sha256(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
-function makeMainArchive(root, commit) {
-  const inner = join(root, "main-inner");
-  mkdirSync(inner, { recursive: true });
-  writeFileSync(join(inner, "fixture.bin"), "fixture-bytes");
-  execFileSync("zip", [
-    "-qj",
-    join(inner, "fixture.zip"),
-    join(inner, "fixture.bin"),
-  ]);
+function makeMainArtifactRoot(root, commit = COMMIT) {
+  const artifactRoot = join(root, "main-artifact");
+  mkdirSync(artifactRoot, { recursive: true });
+  const runtime = Buffer.from("runtime-bytes");
+  const fixtures = Buffer.from("fixture-bytes");
+  writeFileSync(
+    join(artifactRoot, "vending-vision-windows-x86_64.zip"),
+    runtime,
+  );
+  writeFileSync(
+    join(artifactRoot, "vending-vision-test-fixtures.zip"),
+    fixtures,
+  );
   const manifest = {
     schemaVersion: "vending-vision-main-artifacts/v1",
-    commit: COMMIT,
-    fixtures: { file: "fixture.zip", sha256: "" },
+    commit,
+    runtime: {
+      file: "vending-vision-windows-x86_64.zip",
+      sha256: sha256(runtime),
+      bytes: runtime.byteLength,
+    },
+    fixtures: {
+      file: "vending-vision-test-fixtures.zip",
+      sha256: sha256(fixtures),
+      bytes: fixtures.byteLength,
+    },
   };
-  manifest.fixtures.sha256 = sha256File(join(inner, "fixture.zip"));
   writeFileSync(
-    join(inner, "vending-vision-main-artifacts.json"),
+    join(artifactRoot, "vending-vision-main-artifacts.json"),
     `${JSON.stringify(manifest)}\n`,
   );
-  const outer = join(root, "outer.zip");
-  execFileSync("zip", [
-    "-qj",
-    outer,
-    join(inner, "fixture.zip"),
-    join(inner, "vending-vision-main-artifacts.json"),
-  ]);
-  return { outer, manifest };
+  return { artifactRoot, manifest };
 }
 
-function sha256File(path) {
-  return createHash("sha256").update(readFileSync(path)).digest("hex");
+function makeHostConfig(root) {
+  const configPath = join(root, "host-config.json");
+  writeFileSync(configPath, JSON.stringify({ schemaVersion: "host/v1" }));
+  return configPath;
 }
 
-function hostConfigPath() {
-  const root = mkdtempSync(join(tmpdir(), "vem-sync-"));
-  return join(root, "host-config.json");
-}
-
-describe("Vision artifact pair sync", () => {
-  it("registers the runtime and fixture identities from a valid outer archive", async () => {
-    const root = mkdtempSync(join(tmpdir(), "vem-sync-outer-"));
-    const candidateOuter = makeCandidateArchive(root, COMMIT);
-    const { outer, manifest } = makeMainArchive(root, COMMIT);
-    const outputRoot = join(root, "cache");
-    const configPath = hostConfigPath();
-    writeFileSync(
-      configPath,
-      JSON.stringify({
-        schemaVersion: "vem-runtime-testbed-host/v1",
-        visionCoreArtifacts: {
-          runtimeArchive: {
-            hostPath: "",
-            sha256: "",
-            byteSize: 0,
-            sourceCommit: "",
-          },
-          recordedFixtureArchive: {
-            hostPath: "",
-            sha256: "",
-            byteSize: 0,
-            sourceCommit: "",
-          },
-        },
-      }),
-    );
+describe("Vision main artifact sync", () => {
+  it("registers the manifest-bound runtime and fixture from one local artifact root", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-sync-main-"));
+    const { artifactRoot, manifest } = makeMainArtifactRoot(root);
+    const configPath = makeHostConfig(root);
 
     const result = await syncVisionArtifactPair({
-      candidateArchivePath: candidateOuter,
-      mainArchivePath: outer,
+      mainArtifactRoot: artifactRoot,
       commit: COMMIT,
-      outputRoot,
+      outputRoot: join(root, "cache"),
       hostConfigPath: configPath,
     });
 
-    assert.equal(result.runtimeArchive.sourceCommit, COMMIT);
-    assert.ok(result.runtimeArchive.sha256.match(/^[a-f0-9]{64}$/));
+    assert.equal(result.runtimeArchive.sha256, manifest.runtime.sha256);
+    assert.equal(result.runtimeArchive.byteSize, manifest.runtime.bytes);
     assert.equal(
       result.recordedFixtureArchive.sha256,
       manifest.fixtures.sha256,
     );
-    const config = JSON.parse(readFileSync(configPath, "utf8"));
     assert.equal(
-      config.visionCoreArtifacts.runtimeArchive.sourceCommit,
-      COMMIT,
+      result.recordedFixtureArchive.byteSize,
+      manifest.fixtures.bytes,
     );
-    assert.equal(
-      config.visionCoreArtifacts.recordedFixtureArchive.sha256,
-      manifest.fixtures.sha256,
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    assert.deepEqual(Object.keys(config.visionCoreArtifacts).sort(), [
+      "recordedFixtureArchive",
+      "runtimeArchive",
+    ]);
+  });
+
+  it("rejects a manifest-bound archive when its bytes or digest are tampered", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-sync-tampered-"));
+    const { artifactRoot } = makeMainArtifactRoot(root);
+    writeFileSync(
+      join(artifactRoot, "vending-vision-windows-x86_64.zip"),
+      "tampered",
+    );
+    const configPath = makeHostConfig(root);
+
+    await assert.rejects(
+      syncVisionArtifactPair({
+        mainArtifactRoot: artifactRoot,
+        commit: COMMIT,
+        outputRoot: join(root, "cache"),
+        hostConfigPath: configPath,
+      }),
+      /runtime .*SHA-256|runtime .*bytes/,
     );
   });
 
-  it("rejects an outer archive whose manifest commit does not match", async () => {
-    const root = mkdtempSync(join(tmpdir(), "vem-sync-commit-"));
-    const candidateOuter = makeCandidateArchive(root, COMMIT);
-    const { outer } = makeMainArchive(root, COMMIT);
-    const outputRoot = join(root, "cache");
-    const configPath = hostConfigPath();
-    writeFileSync(configPath, "{}");
+  it("rejects a missing manifest-bound member", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-sync-missing-member-"));
+    const { artifactRoot } = makeMainArtifactRoot(root);
+    const configPath = makeHostConfig(root);
+    rmSync(join(artifactRoot, "vending-vision-test-fixtures.zip"));
+
     await assert.rejects(
       syncVisionArtifactPair({
-        candidateArchivePath: candidateOuter,
-        mainArchivePath: outer,
-        commit: "a".repeat(40),
-        outputRoot,
+        mainArtifactRoot: artifactRoot,
+        commit: COMMIT,
+        outputRoot: join(root, "cache"),
+        hostConfigPath: configPath,
+      }),
+      /fixtures delivery manifest member is missing/,
+    );
+  });
+
+  it("rejects a manifest-bound member redirected to a non-regular file", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-sync-invalid-member-"));
+    const { artifactRoot } = makeMainArtifactRoot(root);
+    const configPath = makeHostConfig(root);
+    const fixturePath = join(artifactRoot, "vending-vision-test-fixtures.zip");
+    const linkedTarget = join(artifactRoot, "linked.zip");
+    renameSync(fixturePath, linkedTarget);
+    symlinkSync(linkedTarget, fixturePath);
+
+    await assert.rejects(
+      syncVisionArtifactPair({
+        mainArtifactRoot: artifactRoot,
+        commit: COMMIT,
+        outputRoot: join(root, "cache"),
+        hostConfigPath: configPath,
+      }),
+      /fixtures .*regular file/,
+    );
+  });
+
+  it("rejects an invalid delivery schema", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-sync-invalid-manifest-"));
+    const { artifactRoot } = makeMainArtifactRoot(root);
+    const configPath = makeHostConfig(root);
+    const manifestPath = join(
+      artifactRoot,
+      "vending-vision-main-artifacts.json",
+    );
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    manifest.schemaVersion = "invalid/v1";
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+
+    await assert.rejects(
+      syncVisionArtifactPair({
+        mainArtifactRoot: artifactRoot,
+        commit: COMMIT,
+        outputRoot: join(root, "cache"),
+        hostConfigPath: configPath,
+      }),
+      /schema is invalid/,
+    );
+  });
+
+  it("rejects a delivery manifest from another commit", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-sync-wrong-commit-"));
+    const { artifactRoot } = makeMainArtifactRoot(root, "a".repeat(40));
+    const configPath = makeHostConfig(root);
+
+    await assert.rejects(
+      syncVisionArtifactPair({
+        mainArtifactRoot: artifactRoot,
+        commit: COMMIT,
+        outputRoot: join(root, "cache"),
         hostConfigPath: configPath,
       }),
       /commit mismatch/,
     );
-    assert.equal(readFileSync(configPath, "utf8"), "{}");
+  });
+
+  it("accepts a local main artifact root", () => {
+    const options = parseSyncOptions([
+      "--commit",
+      COMMIT,
+      "--output-root",
+      "/tmp/cache",
+      "--host-config",
+      "/tmp/host.json",
+      "--main-artifact-root",
+      "/tmp/main-artifact",
+    ]);
+    assert.equal(options.mainArtifactRoot, "/tmp/main-artifact");
+  });
+
+  it("accepts the main download entry and rejects unknown inputs", () => {
+    const downloaded = parseSyncOptions([
+      "--commit",
+      COMMIT,
+      "--output-root",
+      "/tmp/cache",
+      "--host-config",
+      "/tmp/host.json",
+      "--download",
+    ]);
+    assert.equal(downloaded.download, true);
+    assert.throws(
+      () =>
+        parseSyncOptions([
+          "--commit",
+          COMMIT,
+          "--output-root",
+          "/tmp/cache",
+          "--host-config",
+          "/tmp/host.json",
+          "--retired-input",
+          "/tmp/retired.zip",
+        ]),
+      /unknown option/,
+    );
+  });
+});
+
+describe("host config", () => {
+  it("replaces Vision core artifacts atomically", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-sync-config-"));
+    const configPath = makeHostConfig(root);
+    await writeHostConfigVisionCore(configPath, {
+      runtimeArchive: { hostPath: "/tmp/runtime.zip" },
+      recordedFixtureArchive: { hostPath: "/tmp/fixtures.zip" },
+    });
+    assert.deepEqual(
+      Object.keys(
+        JSON.parse(readFileSync(configPath, "utf8")).visionCoreArtifacts,
+      ).sort(),
+      ["recordedFixtureArchive", "runtimeArchive"],
+    );
   });
 });
