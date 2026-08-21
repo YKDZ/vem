@@ -25,16 +25,24 @@ function Get-ContainedRelativePath([string]$Root, [string]$Path, [string]$Label)
   return $normalizedPath.Substring($prefix.Length)
 }
 
-function New-Zip([string]$Source, [string]$Destination, [switch]$LegacySeparators) {
+function New-Zip([string]$Source, [string]$Destination, [switch]$LegacySeparators, [switch]$DirectoryEntries) {
   Add-Type -AssemblyName System.IO.Compression.FileSystem
-  if (-not $LegacySeparators) {
+  if (-not $LegacySeparators -and -not $DirectoryEntries) {
     [IO.Compression.ZipFile]::CreateFromDirectory($Source, $Destination)
     return
   }
   $archive = [IO.Compression.ZipFile]::Open($Destination, [IO.Compression.ZipArchiveMode]::Create)
   try {
+    if ($DirectoryEntries) {
+      foreach ($directory in @(Get-ChildItem -LiteralPath $Source -Directory -Recurse | Sort-Object FullName)) {
+        $entryName = Get-ContainedRelativePath $Source $directory.FullName "ZIP fixture directory member"
+        if ($LegacySeparators) { $entryName = $entryName.Replace('/', '\') }
+        [void]$archive.CreateEntry($entryName + $(if ($LegacySeparators) { '\' } else { '/' }))
+      }
+    }
     foreach ($file in @(Get-ChildItem -LiteralPath $Source -File -Recurse | Sort-Object FullName)) {
       $entryName = (Get-ContainedRelativePath $Source $file.FullName "legacy ZIP fixture member").Replace('/', '\')
+      if (-not $LegacySeparators) { $entryName = $entryName.Replace('\', '/') }
       [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $file.FullName, $entryName)
     }
   } finally { $archive.Dispose() }
@@ -59,42 +67,13 @@ function New-VisionArchiveFixture([string]$Root, [string]$Commit) {
   [IO.File]::WriteAllText((Join-Path $fixtureSource "vision-artifact.json"), $manifest, [Text.Encoding]::UTF8)
   $runtime = Join-Path $artifactSource "vending-vision-windows-x86_64.zip"
   $fixtures = Join-Path $artifactSource "vending-vision-test-fixtures.zip"
-  New-Zip $runtimeSource $runtime
+  New-Zip $runtimeSource $runtime -LegacySeparators -DirectoryEntries
   New-Zip $fixtureSource $fixtures
   $delivery = @{ schemaVersion = "vending-vision-main-artifacts/v1"; commit = $Commit; runtime = @{ file = "vending-vision-windows-x86_64.zip"; sha256 = (Get-FileHash $runtime -Algorithm SHA256).Hash.ToLowerInvariant() }; fixtures = @{ file = "vending-vision-test-fixtures.zip"; sha256 = (Get-FileHash $fixtures -Algorithm SHA256).Hash.ToLowerInvariant() } } | ConvertTo-Json -Depth 5
   [IO.File]::WriteAllText((Join-Path $artifactSource "vending-vision-main-artifacts.json"), $delivery, [Text.Encoding]::UTF8)
   $actionZip = Join-Path $Root "actions-artifact.zip"
   New-Zip $artifactSource $actionZip
   return [pscustomobject]@{ runtime = $runtime; fixtures = $fixtures; actionZip = $actionZip }
-}
-
-function New-VisionCandidateFixture([string]$Root, [string]$Commit, [switch]$LegacySeparators) {
-  $source = Join-Path $Root "candidate-source"
-  $main = Join-Path $source "vending-vision"
-  $contractFixtures = Join-Path $main "_internal/contracts/vem_vision_v2/fixtures"
-  New-Item -ItemType Directory -Force -Path $main, $contractFixtures | Out-Null
-  [IO.File]::WriteAllText((Join-Path $main "vending-vision.exe"), "main", [Text.Encoding]::ASCII)
-  foreach ($name in @("client-invalid.json", "client-valid.json", "server-invalid.json", "server-valid.json")) {
-    [IO.File]::WriteAllText((Join-Path $contractFixtures $name), "{}", [Text.Encoding]::ASCII)
-  }
-  $files = @(Get-ChildItem -LiteralPath $source -File -Recurse | ForEach-Object {
-    [ordered]@{
-      path = (Get-ContainedRelativePath $source $_.FullName "candidate fixture member").Replace('\', '/')
-      sha256 = Get-Sha256 $_.FullName
-      size = [long]$_.Length
-    }
-  } | Sort-Object path)
-  $manifest = [ordered]@{
-    bindings = @{}
-    files = $files
-    layout = @{}
-    schemaVersion = "vending-vision-candidate-artifact/v3"
-    sourceCommit = $Commit
-  } | ConvertTo-Json -Compress -Depth 8
-  [IO.File]::WriteAllText((Join-Path $source "candidate-manifest.json"), $manifest, [Text.UTF8Encoding]::new($false))
-  $archive = Join-Path $Root "candidate.zip"
-  New-Zip $source $archive -LegacySeparators:$LegacySeparators
-  return $archive
 }
 
 function New-VisionHarnessPort() {
@@ -214,17 +193,29 @@ try {
   $unrelatedCommit = "fedcba9876543210fedcba9876543210fedcba98"
   New-Item -ItemType Directory -Force -Path $root | Out-Null
   $archives = New-VisionArchiveFixture $root $commit
-  $candidate = New-VisionCandidateFixture $root $commit -LegacySeparators
-  $candidateDelivery = Join-Path $root "candidate-delivery"
-  Convert-VisionCandidateToMainDelivery -CandidateArchive $candidate -FixtureArchive $archives.fixtures -Commit $commit -Destination $candidateDelivery | Out-Null
-  $adapted = Assert-VisionCachedArtifacts $candidateDelivery $commit
-  $adaptedZip = [IO.Compression.ZipFile]::OpenRead($adapted.runtimeArchive)
-  try {
-    $adaptedMembers = @($adaptedZip.Entries | ForEach-Object {
-      [pscustomobject]@{ archiveName = $_.FullName; canonicalName = $_.FullName.Replace('\', '/') }
-    })
-    Assert-True ($adaptedMembers.canonicalName -contains "vending-vision/vending-vision.exe") "candidate runtime adapter omitted the main executable"
-  } finally { $adaptedZip.Dispose() }
+  $directArtifactDirectory = Join-Path $root "direct-main-artifacts"
+  New-Item -ItemType Directory -Force -Path $directArtifactDirectory | Out-Null
+  $directRuntimeArchive = Join-Path $directArtifactDirectory "vending-vision-windows-x86_64.zip"
+  $directFixtureArchive = Join-Path $directArtifactDirectory "vending-vision-test-fixtures.zip"
+  Copy-Item -LiteralPath $archives.runtime -Destination $directRuntimeArchive
+  Copy-Item -LiteralPath $archives.fixtures -Destination $directFixtureArchive
+  foreach ($unsafeEntryName in @("..\escaped.txt", "C:\escaped.txt")) {
+    $unsafeArchive = Join-Path $root ("unsafe-" + [guid]::NewGuid().ToString("N") + ".zip")
+    $unsafe = [IO.Compression.ZipFile]::Open($unsafeArchive, [IO.Compression.ZipArchiveMode]::Create)
+    try {
+      $entry = $unsafe.CreateEntry($unsafeEntryName)
+      $writer = [IO.StreamWriter]::new($entry.Open(), [Text.Encoding]::UTF8)
+      try { $writer.Write("unsafe") } finally { $writer.Dispose() }
+    } finally { $unsafe.Dispose() }
+    $unsafeRejected = $false
+    try {
+      & $visionArtifactModule {
+        param($ArchivePath, $Destination)
+        Expand-VisionActionArtifact $ArchivePath $Destination
+      } $unsafeArchive (Join-Path $root ("unsafe-output-" + [guid]::NewGuid().ToString("N")))
+    } catch { $unsafeRejected = $true }
+    Assert-True $unsafeRejected "ZIP traversal or drive-root entry was accepted"
+  }
   $apiCalls = [Collections.Generic.List[string]]::new(); $downloads = [Collections.Generic.List[string]]::new()
   $api = {
     param($Uri)
@@ -402,7 +393,7 @@ try {
   $fixtureCommitRoot = Join-Path $root "program-data\vision\fixtures\$commit"
   New-Item -ItemType Directory -Force -Path (Join-Path $fixtureCommitRoot "recorded-video") | Out-Null
   [IO.File]::WriteAllText((Join-Path $fixtureCommitRoot "recorded-video\top.mp4"), "stale", [Text.Encoding]::UTF8)
-  $recordedInstall = Install-VisionMainArtifact -RuntimeArchive $cache.runtimeArchive -Commit $commit -SiteConfigurationPath $recordedConfig -FixtureArchive $cache.fixtureArchive -AppDirectory (Join-Path $root "vision\app") -SiteConfigurationDestination (Join-Path $root "program-data\vision\site.json") -FixtureDirectory (Join-Path $root "program-data\vision\fixtures") -RuntimeWorkDirectory $runtimeWorkDirectory -LauncherPath (Join-Path $root "bringup\start_vision.bat") -ProbeTimeoutSeconds 15
+  $recordedInstall = Install-VisionMainArtifact -RuntimeArchive $directRuntimeArchive -Commit $commit -SiteConfigurationPath $recordedConfig -FixtureArchive $directFixtureArchive -AppDirectory (Join-Path $root "vision\app") -SiteConfigurationDestination (Join-Path $root "program-data\vision\site.json") -FixtureDirectory (Join-Path $root "program-data\vision\fixtures") -RuntimeWorkDirectory $runtimeWorkDirectory -LauncherPath (Join-Path $root "bringup\start_vision.bat") -ProbeTimeoutSeconds 15
   Wait-Job $server | Out-Null; Receive-Job $server | Out-Null; Remove-Job $server
   Assert-True (Test-Path -LiteralPath (Join-Path $root "program-data\vision\fixtures\$commit\recorded-video\top.mp4")) "recorded-video fixture was not extracted outside the app"
   Assert-True (-not (Test-Path -LiteralPath (Join-Path $recordedInstall.appDirectory "recorded-video"))) "recorded-video fixture entered the production app"
@@ -418,7 +409,6 @@ try {
   Assert-True ($recordedInstallRecord.executablePath -eq (Join-Path $root "vision\app\vending-vision.exe")) "installed record omitted the fixed executablePath"
   Assert-True ($recordedInstallRecord.siteConfiguration.path -eq (Join-Path $root "program-data\vision\site.json")) "installed record omitted the fixed site configuration path"
   Assert-True ($recordedInstallRecord.siteConfiguration.sha256 -eq (Get-Sha256 (Join-Path $root "program-data\vision\site.json"))) "installed record omitted the site configuration digest"
-  Assert-True ($recordedInstallRecord.downloadManifest.sha256 -eq (Get-Sha256 (Join-Path $root "artifact-source\vending-vision-main-artifacts.json"))) "installed record omitted the download manifest digest"
   Assert-True ($recordedInstallRecord.fixtureSet.manifestPath -eq $fixtureManifestPath) "installed record omitted the fixture manifest path"
   Assert-True ($recordedInstallRecord.fixtureSet.manifestSha256 -eq (Get-Sha256 $fixtureManifestPath)) "installed record omitted the fixture manifest digest"
   Assert-True ($recordedInstallRecord.fixtureSet.top.sha256 -eq (Get-Sha256 $expectedTopVideo)) "installed record omitted the top fixture digest"

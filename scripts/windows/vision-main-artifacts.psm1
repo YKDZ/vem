@@ -24,6 +24,10 @@ function Read-VisionJson([string]$Path, [string]$Label) {
   catch { throw "Vision main artifact: $Label is not valid JSON" }
 }
 
+function Get-VisionArchiveEntryName([string]$EntryName) {
+  return $EntryName.Replace("\", "/")
+}
+
 function New-VisionDirectoryDigest([string]$Path) {
   Assert-VisionMainCondition (Test-Path -LiteralPath $Path -PathType Leaf) "missing file for digest: $Path"
   return [pscustomobject]@{
@@ -86,9 +90,9 @@ function Get-VisionArchiveManifest([string]$ArchivePath) {
   Add-Type -AssemblyName System.IO.Compression.FileSystem
   $archive = [IO.Compression.ZipFile]::OpenRead($ArchivePath)
   try {
-    $entry = $archive.GetEntry("vision-artifact.json")
-    Assert-VisionMainCondition ($null -ne $entry) "archive is missing vision-artifact.json"
-    $reader = [IO.StreamReader]::new($entry.Open(), [Text.Encoding]::UTF8, $true)
+    $manifestEntries = @($archive.Entries | Where-Object { (Get-VisionArchiveEntryName $_.FullName) -ceq "vision-artifact.json" })
+    Assert-VisionMainCondition ($manifestEntries.Count -eq 1) "archive is missing vision-artifact.json"
+    $reader = [IO.StreamReader]::new($manifestEntries[0].Open(), [Text.Encoding]::UTF8, $true)
     try { return $reader.ReadToEnd() | ConvertFrom-Json -ErrorAction Stop }
     finally { $reader.Dispose() }
   } catch { throw "Vision main artifact: archive manifest is invalid: $($_.Exception.Message)" }
@@ -100,7 +104,11 @@ function Assert-VisionArchive([string]$ArchivePath, [string]$Commit, [ValidateSe
   Add-Type -AssemblyName System.IO.Compression.FileSystem
   $archive = [IO.Compression.ZipFile]::OpenRead($ArchivePath)
   try {
-    $entries = @($archive.Entries | ForEach-Object { $_.FullName.Replace("\", "/") })
+    $entries = @(
+      $archive.Entries |
+        ForEach-Object { Get-VisionArchiveEntryName $_.FullName } |
+        Where-Object { -not $_.EndsWith("/") }
+    )
     if ($Kind -eq "runtime") {
       Assert-VisionMainCondition ($entries -contains "vending-vision.exe") "runtime archive must contain vending-vision.exe at its root"
       $contractFixtures = @(
@@ -127,89 +135,6 @@ function Assert-VisionArchive([string]$ArchivePath, [string]$Commit, [ValidateSe
   Assert-VisionMainCondition ($manifest.runtimeArchive -ceq $script:VisionRuntimeArchive -and $manifest.fixtureArchive -ceq $script:VisionFixtureArchive) "$Kind archive manifest names unexpected artifacts"
 }
 
-function Convert-VisionCandidateToMainDelivery {
-  param(
-    [Parameter(Mandatory = $true)][string]$CandidateArchive,
-    [Parameter(Mandatory = $true)][string]$FixtureArchive,
-    [Parameter(Mandatory = $true)][string]$Commit,
-    [Parameter(Mandatory = $true)][string]$Destination
-  )
-  $Commit = Assert-VisionCommit $Commit
-  Assert-VisionMainCondition (Test-Path -LiteralPath $CandidateArchive -PathType Leaf) "candidate archive is missing"
-  Assert-VisionMainCondition (Test-Path -LiteralPath $FixtureArchive -PathType Leaf) "candidate fixture archive is missing"
-  Assert-VisionMainCondition (-not (Test-Path -LiteralPath $Destination)) "candidate delivery destination already exists"
-  Add-Type -AssemblyName System.IO.Compression.FileSystem
-  $extract = "$Destination.extract-$([guid]::NewGuid().ToString('N'))"
-  $stage = "$Destination.stage-$([guid]::NewGuid().ToString('N'))"
-  $deliveryOutput = "$Destination.output-$([guid]::NewGuid().ToString('N'))"
-  try {
-    New-Item -ItemType Directory -Path $extract, $stage, $deliveryOutput | Out-Null
-    $archive = [IO.Compression.ZipFile]::OpenRead($CandidateArchive)
-    try {
-      $entries = @($archive.Entries | ForEach-Object {
-        $name = $_.FullName.Replace('\', '/')
-        if (-not $name.EndsWith('/')) {
-          [pscustomobject]@{ archiveEntry = $_; name = $name }
-        }
-      })
-      $manifestEntry = @($entries | Where-Object { $_.name -ceq "candidate-manifest.json" })
-      Assert-VisionMainCondition ($manifestEntry.Count -eq 1) "candidate manifest is missing"
-      $reader = [IO.StreamReader]::new($manifestEntry[0].archiveEntry.Open(), [Text.Encoding]::UTF8, $false)
-      try { $manifestRaw = $reader.ReadToEnd() } finally { $reader.Dispose() }
-      $manifest = $manifestRaw | ConvertFrom-Json -ErrorAction Stop
-      Assert-VisionMainCondition ([string]$manifest.schemaVersion -ceq "vending-vision-candidate-artifact/v3") "candidate manifest schema is invalid"
-      Assert-VisionMainCondition ([string]$manifest.sourceCommit -ceq $Commit) "candidate manifest source commit is invalid"
-      $declared = @{}
-      foreach ($file in @($manifest.files)) {
-        $name = [string]$file.path
-        Assert-VisionMainCondition (-not $declared.ContainsKey($name) -and $name -notmatch '^[\\/]|^[A-Za-z]:|(^|[\\/])\.\.([\\/]|$)') "candidate manifest path is unsafe"
-        Assert-VisionMainCondition ([string]$file.sha256 -cmatch '^[a-f0-9]{64}$' -and [long]$file.size -ge 0) "candidate manifest file identity is invalid"
-        $declared[$name] = $file
-      }
-      Assert-VisionMainCondition ($declared.ContainsKey("vending-vision/vending-vision.exe")) "candidate main executable is missing"
-      Assert-VisionMainCondition ($entries.Count -eq $declared.Count + 1) "candidate archive member set is invalid"
-      foreach ($entry in $entries) {
-        if ($entry.name -ceq "candidate-manifest.json") { continue }
-        $entryDiagnostic = [ordered]@{ archiveName = $entry.archiveEntry.FullName; canonicalName = $entry.name } | ConvertTo-Json -Compress
-        Assert-VisionMainCondition ($entry.name -notmatch '^/|^[A-Za-z]:|(^|/)\.\.(/|$)') "candidate archive path is unsafe $entryDiagnostic"
-        Assert-VisionMainCondition ($declared.ContainsKey($entry.name)) "candidate archive has an undeclared member $entryDiagnostic"
-        $target = [IO.Path]::GetFullPath((Join-Path $extract $entry.name))
-        $root = [IO.Path]::GetFullPath($extract).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
-        Assert-VisionMainCondition ($target.StartsWith($root, [StringComparison]::Ordinal)) "candidate archive path is unsafe"
-        New-Item -ItemType Directory -Force (Split-Path -Parent $target) | Out-Null
-        $input = $entry.archiveEntry.Open(); $output = [IO.File]::Open($target, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write)
-        try { $input.CopyTo($output) } finally { $output.Dispose(); $input.Dispose() }
-        $identity = $declared[$entry.name]
-        Assert-VisionMainCondition ((Get-Item -LiteralPath $target).Length -eq [long]$identity.size -and (Get-VisionSha256 $target) -ceq [string]$identity.sha256) "candidate payload digest mismatch"
-      }
-    } finally { $archive.Dispose() }
-    Copy-Item -Path (Join-Path $extract "vending-vision\*") -Destination $stage -Recurse
-    $legacyManifest = [ordered]@{
-      schemaVersion = $script:VisionArtifactSchema
-      commit = $Commit
-      runtimeArchive = $script:VisionRuntimeArchive
-      fixtureArchive = $script:VisionFixtureArchive
-    }
-    [IO.File]::WriteAllText((Join-Path $stage "vision-artifact.json"), ($legacyManifest | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
-    $runtime = Join-Path $deliveryOutput $script:VisionRuntimeArchive
-    [IO.Compression.ZipFile]::CreateFromDirectory($stage, $runtime, [IO.Compression.CompressionLevel]::Optimal, $false)
-    $fixtures = Join-Path $deliveryOutput $script:VisionFixtureArchive
-    Copy-Item -LiteralPath $FixtureArchive -Destination $fixtures
-    $delivery = [ordered]@{
-      schemaVersion = $script:VisionArtifactSchema
-      commit = $Commit
-      runtime = [ordered]@{ file = $script:VisionRuntimeArchive; sha256 = Get-VisionSha256 $runtime }
-      fixtures = [ordered]@{ file = $script:VisionFixtureArchive; sha256 = Get-VisionSha256 $fixtures }
-    }
-    [IO.File]::WriteAllText((Join-Path $deliveryOutput $script:VisionDeliveryManifest), ($delivery | ConvertTo-Json -Compress -Depth 5), [Text.UTF8Encoding]::new($false))
-    Assert-VisionCachedArtifacts $deliveryOutput $Commit | Out-Null
-    Move-Item -LiteralPath $deliveryOutput -Destination $Destination -ErrorAction Stop
-    return Assert-VisionCachedArtifacts $Destination $Commit
-  } finally {
-    Remove-Item -LiteralPath $extract, $stage, $deliveryOutput -Recurse -Force -ErrorAction SilentlyContinue
-  }
-}
-
 function Assert-VisionCachedArtifacts([string]$CacheDirectory, [string]$Commit) {
   $Commit = Assert-VisionCommit $Commit
   $runtime = Join-Path $CacheDirectory $script:VisionRuntimeArchive
@@ -231,9 +156,10 @@ function Expand-VisionActionArtifact([string]$ArtifactZip, [string]$Destination)
   $archive = [IO.Compression.ZipFile]::OpenRead($ArtifactZip)
   try {
     foreach ($entry in $archive.Entries) {
-      if ($entry.FullName.EndsWith("/")) { continue }
-      Assert-VisionMainCondition ($entry.FullName -notmatch '^[\\/]|^[A-Za-z]:|(^|[\\/])\.\.([\\/]|$)') "download contains an unsafe archive path"
-      $target = [IO.Path]::GetFullPath((Join-Path $Destination $entry.FullName))
+      $entryName = Get-VisionArchiveEntryName $entry.FullName
+      if ($entryName.EndsWith("/")) { continue }
+      Assert-VisionMainCondition ($entryName -notmatch '^[\\/]|^[A-Za-z]:|(^|[\\/])\.\.([\\/]|$)') "download contains an unsafe archive path"
+      $target = [IO.Path]::GetFullPath((Join-Path $Destination $entryName))
       $root = [IO.Path]::GetFullPath($Destination).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
       Assert-VisionMainCondition ($target.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) "download escapes its staging directory"
       $parent = Split-Path -Parent $target
@@ -750,10 +676,6 @@ function Install-VisionMainArtifact {
   )
   $Commit = Assert-VisionCommit $Commit
   Assert-VisionArchive $RuntimeArchive $Commit runtime
-  $deliveryManifestPath = Join-Path (Split-Path -Parent $RuntimeArchive) $script:VisionDeliveryManifest
-  Assert-VisionMainCondition (Test-Path -LiteralPath $deliveryManifestPath -PathType Leaf) "download manifest is missing next to the runtime archive"
-  $deliveryManifest = Read-VisionJson $deliveryManifestPath "download manifest"
-  Assert-VisionMainCondition ($deliveryManifest.commit -ceq $Commit) "download manifest does not bind commit $Commit"
   $staging = "$AppDirectory.staging-$([guid]::NewGuid().ToString('N'))"
   if (-not $SkipRuntimeOwnerTask) {
     Stop-VisionMainTask -AppDirectory $AppDirectory -ConfigurationPath $SiteConfigurationDestination -TaskName $TaskName -TaskPath $TaskPath
@@ -858,22 +780,6 @@ function Install-VisionMainArtifact {
       }
       launcher = if ($null -ne $legacyOwner) { $legacyOwner.launcher } else { $null }
       startTask = if ($null -ne $legacyOwner) { $legacyOwner.startTask } else { $null }
-      downloadManifest = [ordered]@{
-        path = $deliveryManifestPath
-        sha256 = Get-VisionSha256 $deliveryManifestPath
-        runtimeArchive = [ordered]@{
-          path = $RuntimeArchive
-          sha256 = [string]$deliveryManifest.runtime.sha256
-        }
-        fixtureArchive = if ($usesFixtures) {
-          [ordered]@{
-            path = $FixtureArchive
-            sha256 = [string]$deliveryManifest.fixtures.sha256
-          }
-        } else {
-          $null
-        }
-      }
       fixtureSet = if ($null -ne $fixtureState) {
         [ordered]@{
           root = [string]$fixtureState.root
@@ -895,4 +801,4 @@ function Install-VisionMainArtifact {
   }
 }
 
-Export-ModuleMember -Function Get-VisionMainArtifactCache, Resolve-VisionMainRun, Resolve-VisionMainArtifact, Assert-VisionCachedArtifacts, Assert-VisionArchive, Convert-VisionCandidateToMainDelivery, Assert-VisionSiteConfiguration, Get-VisionMainUris, Invoke-VisionMainProbe, Install-VisionMainArtifact, Test-VisionMainCanonicalConfigurationCommandLine, Test-VisionMainMultiprocessingForkCommandLine, Get-VisionMainCanonicalProcessBinding
+Export-ModuleMember -Function Get-VisionMainArtifactCache, Resolve-VisionMainRun, Resolve-VisionMainArtifact, Assert-VisionCachedArtifacts, Assert-VisionArchive, Assert-VisionSiteConfiguration, Get-VisionMainUris, Invoke-VisionMainProbe, Install-VisionMainArtifact, Test-VisionMainCanonicalConfigurationCommandLine, Test-VisionMainMultiprocessingForkCommandLine, Get-VisionMainCanonicalProcessBinding

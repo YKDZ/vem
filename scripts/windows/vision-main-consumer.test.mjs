@@ -59,14 +59,25 @@ test("keeps the runtime and recorded-video fixture archives separate", () => {
   );
 });
 
-test("adapts the attested candidate v3 layout before using the legacy installer", () => {
+test("extracts published ZIP directory entries with either Windows separator", () => {
   const module = source(modulePath);
-  assert.match(module, /function Convert-VisionCandidateToMainDelivery/);
-  assert.match(module, /vending-vision-candidate-artifact\/v3/);
-  assert.match(module, /candidate payload digest mismatch/);
-  assert.doesNotMatch(
-    module,
-    new RegExp(["vending", "vision", "ai", "worker"].join("-")),
+  assert.match(module, /function Get-VisionArchiveEntryName/);
+  assert.match(module, /Get-VisionArchiveEntryName \$entry\.FullName/);
+  assert.match(module, /Get-VisionArchiveEntryName \$_\.FullName/);
+  assert.match(module, /\$entryName\.EndsWith\("\/"\)/);
+  assert.match(module, /\$entryName -notmatch '\^\[\\\\\/\]\|\^\[A-Za-z\]:/);
+  assert.match(module, /\$target\.StartsWith\(\$root/);
+});
+
+test("guest installs the already verified main artifact pair without a retired adapter", () => {
+  const module = source(modulePath);
+  const guest = source("scripts/testbed/run-local-testbed-guest.ps1");
+  assert.doesNotMatch(module, /Convert-VisionCandidateToMainDelivery/);
+  assert.doesNotMatch(module, /candidate-manifest\.json/);
+  assert.doesNotMatch(guest, /installable-main|Convert-VisionCandidateToMainDelivery/);
+  assert.match(
+    guest,
+    /Install-VisionMainArtifact[\s\S]*-RuntimeArchive \(\[string\]\$visionCache\.runtimeArchive\)[\s\S]*-FixtureArchive \(\[string\]\$visionCache\.fixtureArchive\)/,
   );
 });
 
@@ -111,7 +122,7 @@ test("installs one fixed app directory and probes health plus machine protocol",
   assert.doesNotMatch(module, /serverVersion -cne \$health\.version/);
   assert.match(module, /Ensure-VisionMainTask/);
   assert.match(module, /vending-vision\.exe`" --config/);
-  assert.match(module, /downloadManifest/);
+  assert.doesNotMatch(module, /download manifest is missing next to the runtime archive/);
   assert.match(module, /siteConfiguration = \[ordered\]@\{/);
   assert.match(module, /executableSha256 = \(Get-VisionSha256/);
   assert.match(module, /health\s*=\s*@\{\s*version\s*=\s*\$healthVersion/);

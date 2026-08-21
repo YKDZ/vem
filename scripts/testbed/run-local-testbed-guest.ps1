@@ -761,18 +761,9 @@ function Install-TestbedStartupVisionArtifact([object]$GuestInput) {
   $visionSiteConfigurationSourcePath = Join-Path $handoffRoot "vision-recorded-site-config.json"
   Write-RecordedVisionSiteConfiguration $visionSiteConfigurationSourcePath
   $visionCache = Get-TestbedProvisionedVisionCoreArtifact $GuestInput
-  $candidateDelivery = Join-Path ([IO.Path]::GetDirectoryName([string]$visionCache.runtimeArchive)) "installable-main"
-  if (-not (Test-Path -LiteralPath $candidateDelivery -PathType Container)) {
-    Convert-VisionCandidateToMainDelivery `
-      -CandidateArchive ([string]$visionCache.runtimeArchive) `
-      -FixtureArchive ([string]$visionCache.fixtureArchive) `
-      -Commit ([string]$visionCache.commit) `
-      -Destination $candidateDelivery | Out-Null
-  }
-  $installable = Assert-VisionCachedArtifacts $candidateDelivery ([string]$visionCache.commit)
   $visionInstallation = Install-VisionMainArtifact `
-    -RuntimeArchive ([string]$installable.runtimeArchive) `
-    -FixtureArchive ([string]$installable.fixtureArchive) `
+    -RuntimeArchive ([string]$visionCache.runtimeArchive) `
+    -FixtureArchive ([string]$visionCache.fixtureArchive) `
     -Commit ([string]$visionCache.commit) `
     -SiteConfigurationPath $visionSiteConfigurationSourcePath `
     -SkipRuntimeOwnerTask
@@ -1180,13 +1171,13 @@ $reuseRuntimeArtifacts = $false
 $runtimeArtifactReuseSource = $null
 if (Test-Path -LiteralPath $runtimeArtifactManifestPath -PathType Leaf) {
   try {
-    $candidateManifest = Get-Content -Raw -LiteralPath $runtimeArtifactManifestPath -Encoding utf8 | ConvertFrom-Json
-    if ($candidateManifest.schemaVersion -ne "vem-runtime-artifacts/v1" -or
-      [string]$candidateManifest.sourceDigest -ne $runtimeArtifactSourceDigest) {
+    $runtimeManifest = Get-Content -Raw -LiteralPath $runtimeArtifactManifestPath -Encoding utf8 | ConvertFrom-Json
+    if ($runtimeManifest.schemaVersion -ne "vem-runtime-artifacts/v1" -or
+      [string]$runtimeManifest.sourceDigest -ne $runtimeArtifactSourceDigest) {
       throw "runtime artifact manifest does not match the requested runtime source digest"
     }
     foreach ($artifactName in $expectedRuntimeArtifactPaths.Keys) {
-      $artifact = $candidateManifest.artifacts.$artifactName
+      $artifact = $runtimeManifest.artifacts.$artifactName
       $expectedPath = [string]$expectedRuntimeArtifactPaths[$artifactName]
       if ($null -eq $artifact -or [string]$artifact.path -ine $expectedPath) {
         throw "runtime artifact path mismatch: $artifactName"
@@ -1197,7 +1188,7 @@ if (Test-Path -LiteralPath $runtimeArtifactManifestPath -PathType Leaf) {
         throw "runtime artifact digest mismatch: $artifactName"
       }
     }
-    $runtimeArtifactManifest = $candidateManifest
+    $runtimeArtifactManifest = $runtimeManifest
     $reuseRuntimeArtifacts = $true
     $runtimeArtifactReuseSource = if ($requirePass1RuntimeArtifacts) { "pass_1" } else { "commit_cache" }
   } catch {
