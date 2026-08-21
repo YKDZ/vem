@@ -168,8 +168,17 @@ function requestManualCapture(): void {
 
 function recordCapturedImageLoad(event: Event): void {
   const image = event.currentTarget as HTMLImageElement;
-  capturedImageState.value =
-    image.naturalWidth > 0 && image.naturalHeight > 0 ? "ready" : "error";
+  const loaded = image.naturalWidth > 0 && image.naturalHeight > 0;
+  if (loaded) {
+    capturedImageState.value = "ready";
+    tryOn.reportCapturedImageLoad(image.currentSrc || image.src);
+  }
+}
+
+function recordCapturedImageError(event: Event): void {
+  const image = event.currentTarget as HTMLImageElement;
+  capturedImageState.value = "error";
+  tryOn.reportCapturedImageError(image.currentSrc || image.src);
 }
 
 function cancel(): void {
@@ -256,7 +265,7 @@ function scaleGarment(delta: number): void {
         class="try-on-captured try-on-media"
         data-test="try-on-captured-image"
         :data-image-state="capturedImageState"
-        @error="capturedImageState = 'error'"
+        @error="recordCapturedImageError"
         @load="recordCapturedImageLoad"
       />
       <p

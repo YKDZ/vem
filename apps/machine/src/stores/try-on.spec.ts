@@ -23,7 +23,7 @@ vi.mock("@/native/vision", () => ({
 import type { VisionTryOnAttemptEvent } from "@/native/vision";
 
 import { useCatalogStore } from "./catalog";
-import { useTryOnStore } from "./try-on";
+import { MIN_CAPTURED_FRAME_VISIBLE_MS, useTryOnStore } from "./try-on";
 import { useVisionStore } from "./vision";
 
 const productId = "550e8400-e29b-41d4-a716-446655440128";
@@ -190,6 +190,20 @@ function captureStoreAttempt(
   return context;
 }
 
+async function confirmCapturedFrameDisplayed(
+  store: ReturnType<typeof useTryOnStore>,
+): Promise<void> {
+  const reference = store.captured?.reference;
+  if (!reference) throw new Error("预期存在已验证的捕获帧");
+  vi.useFakeTimers();
+  try {
+    store.reportCapturedImageLoad(reference);
+    await vi.advanceTimersByTimeAsync(MIN_CAPTURED_FRAME_VISIBLE_MS);
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
 async function startCompletedStoreAttempt(close = vi.fn()) {
   const catalog = useCatalogStore();
   let emit: ((next: VisionTryOnAttemptEvent) => void) | undefined;
@@ -217,6 +231,7 @@ async function startCompletedStoreAttempt(close = vi.fn()) {
   emit(accepted(activeAttemptId));
   emit(acquiring(activeAttemptId));
   emit(captured(activeAttemptId));
+  await confirmCapturedFrameDisplayed(store);
   emit(generating(activeAttemptId));
   emit(completed(activeAttemptId));
   return {
@@ -291,7 +306,7 @@ describe("try-on store lifecycle", () => {
     useVisionStore().applyVisionReady(ready());
   });
 
-  it("preserves acquisition facts, captures the signed identity, and completes only after generating", async () => {
+  it("保留采集事实并拒绝没有活动 owner 的完成事件", async () => {
     const store = useTryOnStore();
     store.attemptId = firstAttemptId;
     store.phase = "starting";
@@ -315,8 +330,8 @@ describe("try-on store lifecycle", () => {
     expect(store.phase).toBe("captured");
     store.applyEvent(firstAttemptId, generating(firstAttemptId), context);
     store.applyEvent(firstAttemptId, completed(firstAttemptId), context);
-    expect(store.phase).toBe("completed");
-    expect(store.result?.reference).toContain(`/results/${firstAttemptId}`);
+    expect(store.phase).toBe("generating");
+    expect(store.result).toBeNull();
   });
 
   it.each([
@@ -598,6 +613,7 @@ describe("try-on store lifecycle", () => {
     expect(store.previewUrl).toBe(currentPreview);
     expect(store.result).toBeNull();
     callbacks[1]?.(captured(currentAttempt));
+    await confirmCapturedFrameDisplayed(store);
     callbacks[1]?.(generating(currentAttempt));
     callbacks[1]?.(completed(currentAttempt));
     expect(store.phase).toBe("completed");
@@ -638,6 +654,7 @@ describe("try-on store lifecycle", () => {
     store.applyEvent(activeAttemptId, accepted(activeAttemptId), context);
     store.applyEvent(activeAttemptId, acquiring(activeAttemptId), context);
     store.applyEvent(activeAttemptId, captured(activeAttemptId), context);
+    await confirmCapturedFrameDisplayed(store);
     store.applyEvent(activeAttemptId, generating(activeAttemptId), context);
     store.applyEvent(activeAttemptId, completed(activeAttemptId), context);
     store.garmentScale = 1.6;
@@ -667,6 +684,7 @@ describe("try-on store lifecycle", () => {
     store.applyEvent(activeAttemptId, accepted(activeAttemptId), context);
     store.applyEvent(activeAttemptId, acquiring(activeAttemptId), context);
     store.applyEvent(activeAttemptId, captured(activeAttemptId), context);
+    await confirmCapturedFrameDisplayed(store);
     store.applyEvent(activeAttemptId, generating(activeAttemptId), context);
     store.applyEvent(activeAttemptId, completed(activeAttemptId), context);
 
@@ -716,6 +734,7 @@ describe("try-on store lifecycle", () => {
     store.applyEvent(oldAttemptId, accepted(oldAttemptId), oldContext);
     store.applyEvent(oldAttemptId, acquiring(oldAttemptId), oldContext);
     store.applyEvent(oldAttemptId, captured(oldAttemptId), oldContext);
+    await confirmCapturedFrameDisplayed(store);
     store.applyEvent(oldAttemptId, generating(oldAttemptId), oldContext);
     store.applyEvent(oldAttemptId, completed(oldAttemptId), oldContext);
 
@@ -766,6 +785,7 @@ describe("try-on store lifecycle", () => {
     store.applyEvent(oldAttempt, accepted(oldAttempt), oldContext);
     store.applyEvent(oldAttempt, acquiring(oldAttempt), oldContext);
     store.applyEvent(oldAttempt, captured(oldAttempt), oldContext);
+    await confirmCapturedFrameDisplayed(store);
     store.applyEvent(oldAttempt, generating(oldAttempt), oldContext);
     store.applyEvent(oldAttempt, completed(oldAttempt), oldContext);
 
@@ -783,6 +803,7 @@ describe("try-on store lifecycle", () => {
     store.applyEvent(newAttempt, accepted(newAttempt), newContext);
     store.applyEvent(newAttempt, acquiring(newAttempt), newContext);
     store.applyEvent(newAttempt, captured(newAttempt), newContext);
+    await confirmCapturedFrameDisplayed(store);
     store.applyEvent(newAttempt, generating(newAttempt), newContext);
     store.applyEvent(newAttempt, completed(newAttempt), newContext);
 
@@ -809,5 +830,206 @@ describe("try-on store lifecycle", () => {
     expect(store.adjusting).toBe(false);
     expect(store.result).toEqual(completed(newAttempt).payload.result);
     expect(store.garmentScale).toBe(1.1);
+  });
+
+  it("捕获帧加载失败会终止当前尝试，迟到结果不能恢复它", async () => {
+    const catalog = useCatalogStore();
+    const store = useTryOnStore();
+    const close = vi.fn();
+    openAttemptMock.mockResolvedValue({
+      close,
+      capture: vi.fn(),
+      cancel: vi.fn(),
+    });
+    store.prepare(
+      catalog.saleableVariantItemFor(`product:${productId}`, variantId)!,
+    );
+    await store.start();
+    const activeAttemptId = store.attemptId!;
+    const context = {
+      attemptId: activeAttemptId,
+      visionSocketUrl: "ws://127.0.0.1:7892/ws",
+    };
+    store.applyEvent(activeAttemptId, accepted(activeAttemptId), context);
+    store.applyEvent(activeAttemptId, acquiring(activeAttemptId), context);
+    store.applyEvent(activeAttemptId, captured(activeAttemptId), context);
+    const reference = store.captured?.reference;
+    if (!reference) throw new Error("预期存在已验证的捕获帧");
+
+    store.reportCapturedImageError(reference);
+    store.applyEvent(activeAttemptId, generating(activeAttemptId), context);
+    store.applyEvent(activeAttemptId, completed(activeAttemptId), context);
+
+    expect(store.phase).toBe("failed");
+    expect(store.captured).toBeNull();
+    expect(store.result).toBeNull();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("替换尝试后旧捕获帧的最小展示计时不会改变新尝试", async () => {
+    const catalog = useCatalogStore();
+    const store = useTryOnStore();
+    const callbacks: Array<(next: VisionTryOnAttemptEvent) => void> = [];
+    openAttemptMock.mockImplementation((_connection, input, onEvent) => {
+      callbacks.push((next) =>
+        onEvent(next, {
+          attemptId: input.attemptId,
+          visionSocketUrl: "ws://127.0.0.1:7892/ws",
+        }),
+      );
+      return Promise.resolve({
+        close: vi.fn(),
+        capture: vi.fn(),
+        cancel: vi.fn(),
+      });
+    });
+    store.prepare(
+      catalog.saleableVariantItemFor(`product:${productId}`, variantId)!,
+    );
+    await store.start();
+    const oldAttempt = store.attemptId!;
+    callbacks[0]?.(accepted(oldAttempt));
+    callbacks[0]?.(acquiring(oldAttempt));
+    callbacks[0]?.(captured(oldAttempt));
+    const oldReference = store.captured?.reference;
+    if (!oldReference) throw new Error("预期存在旧捕获帧");
+
+    vi.useFakeTimers();
+    try {
+      store.reportCapturedImageLoad(oldReference);
+      await store.retry();
+      const newAttempt = store.attemptId!;
+      callbacks[1]?.(accepted(newAttempt));
+      callbacks[1]?.(acquiring(newAttempt));
+      callbacks[1]?.(captured(newAttempt));
+      callbacks[1]?.(generating(newAttempt));
+      callbacks[1]?.(completed(newAttempt));
+      expect(store.phase).toBe("generating");
+      await vi.advanceTimersByTimeAsync(MIN_CAPTURED_FRAME_VISIBLE_MS);
+      callbacks[0]?.(generating(oldAttempt));
+      callbacks[0]?.(completed(oldAttempt));
+
+      expect(store.attemptId).toBe(newAttempt);
+      expect(store.phase).toBe("generating");
+      expect(store.result).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("捕获帧窗口先结束而结果晚到时会立即显示结果", async () => {
+    const catalog = useCatalogStore();
+    const store = useTryOnStore();
+    openAttemptMock.mockResolvedValue({
+      close: vi.fn(),
+      capture: vi.fn(),
+      cancel: vi.fn(),
+    });
+    store.prepare(
+      catalog.saleableVariantItemFor(`product:${productId}`, variantId)!,
+    );
+    await store.start();
+    const activeAttemptId = store.attemptId!;
+    const context = {
+      attemptId: activeAttemptId,
+      visionSocketUrl: "ws://127.0.0.1:7892/ws",
+    };
+    store.applyEvent(activeAttemptId, accepted(activeAttemptId), context);
+    store.applyEvent(activeAttemptId, acquiring(activeAttemptId), context);
+    store.applyEvent(activeAttemptId, captured(activeAttemptId), context);
+    const reference = store.captured?.reference;
+    if (!reference) throw new Error("预期存在已验证的捕获帧");
+
+    vi.useFakeTimers();
+    try {
+      store.reportCapturedImageLoad(reference);
+      store.applyEvent(activeAttemptId, generating(activeAttemptId), context);
+      await vi.advanceTimersByTimeAsync(MIN_CAPTURED_FRAME_VISIBLE_MS);
+      expect(store.phase).toBe("generating");
+      expect(store.result).toBeNull();
+
+      store.applyEvent(activeAttemptId, completed(activeAttemptId), context);
+      expect(store.phase).toBe("completed");
+      expect(store.result?.reference).toContain(`/results/${activeAttemptId}`);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ["失败", "failed"],
+    ["超时取消", "timeout"],
+    ["显式清理", "clear"],
+    ["重试", "retry"],
+    ["开始替换尝试", "start"],
+  ] as const)("%s会清除早到结果和捕获展示计时", async (_label, action) => {
+    const catalog = useCatalogStore();
+    const store = useTryOnStore();
+    const callbacks: Array<(next: VisionTryOnAttemptEvent) => void> = [];
+    openAttemptMock.mockImplementation((_connection, input, onEvent) => {
+      callbacks.push((next) =>
+        onEvent(next, {
+          attemptId: input.attemptId,
+          visionSocketUrl: "ws://127.0.0.1:7892/ws",
+        }),
+      );
+      return Promise.resolve({
+        close: vi.fn(),
+        capture: vi.fn(),
+        cancel: vi.fn(),
+      });
+    });
+    store.prepare(
+      catalog.saleableVariantItemFor(`product:${productId}`, variantId)!,
+    );
+    await store.start();
+    const oldAttempt = store.attemptId!;
+    callbacks[0]?.(accepted(oldAttempt));
+    callbacks[0]?.(acquiring(oldAttempt));
+    callbacks[0]?.(captured(oldAttempt));
+    const reference = store.captured?.reference;
+    if (!reference) throw new Error("预期存在旧捕获帧");
+
+    vi.useFakeTimers();
+    try {
+      store.reportCapturedImageLoad(reference);
+      callbacks[0]?.(generating(oldAttempt));
+      callbacks[0]?.(completed(oldAttempt));
+      expect(store.phase).toBe("generating");
+      expect(store.result).toBeNull();
+
+      if (action === "failed") {
+        callbacks[0]?.(
+          event("vision.try_on.attempt.failed", {
+            attemptId: oldAttempt,
+            reason: "try_on_failed",
+          }),
+        );
+      } else if (action === "timeout") {
+        callbacks[0]?.(
+          event("vision.try_on.attempt.canceled", {
+            attemptId: oldAttempt,
+            reason: "timeout",
+          }),
+        );
+      } else if (action === "clear") {
+        store.clear();
+      } else if (action === "retry") {
+        await store.retry();
+      } else {
+        await store.start();
+      }
+
+      await vi.advanceTimersByTimeAsync(MIN_CAPTURED_FRAME_VISIBLE_MS);
+      callbacks[0]?.(completed(oldAttempt));
+
+      expect(store.result).toBeNull();
+      expect(store.captured).toBeNull();
+      if (action === "retry" || action === "start") {
+        expect(store.attemptId).not.toBe(oldAttempt);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

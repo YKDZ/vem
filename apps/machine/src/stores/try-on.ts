@@ -42,6 +42,9 @@ export type TryOnGenerationStage =
   | "validating_result"
   | "rendering";
 
+// 捕获帧必须先真实呈现，才允许切换到已准备好的结果；1000ms 跨过倒计时约 700ms 的完整显示桶。
+export const MIN_CAPTURED_FRAME_VISIBLE_MS = 1_000;
+
 type TryOnContext = {
   catalogKey: string;
   productId: string;
@@ -141,14 +144,20 @@ export const useTryOnStore = defineStore("tryOn", {
           if (
             !isCurrentOperation(owner, attemptId) ||
             resultContext.attemptId !== attemptId ||
-            this.phase !== "completed"
+            (this.phase !== "completed" && owner.pendingResult === null)
           ) {
             return;
           }
-          this.result = null;
-          this.resultUnavailable = true;
-          this.adjusting = false;
           owner.controller.abort();
+          if (this.phase === "completed") {
+            this.result = null;
+            this.resultUnavailable = true;
+            this.adjusting = false;
+          } else {
+            this.phase = "failed";
+            this.failureReason = "try_on_failed";
+            this.clearAcquisitionPresentation();
+          }
           clearOperation(owner);
         };
         const attempt = await openVisionTryOnAttempt(
@@ -222,6 +231,60 @@ export const useTryOnStore = defineStore("tryOn", {
         clearOperation(owner);
       }
       return sent || owner.attempt === null;
+    },
+    reportCapturedImageLoad(reference: string): void {
+      const owner = currentOperation;
+      if (
+        !this.attemptId ||
+        !this.captured ||
+        this.captured.reference !== reference ||
+        !isCurrentOperation(owner, this.attemptId)
+      ) {
+        return;
+      }
+      if (owner.captureHoldTimer === null && !owner.captureHoldElapsed) {
+        owner.captureHoldElapsed = false;
+        owner.captureHoldTimer = setTimeout(() => {
+          if (!isCurrentOperation(owner, owner.attemptId)) return;
+          owner.captureHoldElapsed = true;
+          this.revealPendingResult();
+        }, MIN_CAPTURED_FRAME_VISIBLE_MS);
+      }
+      this.revealPendingResult();
+    },
+    reportCapturedImageError(reference: string): void {
+      const owner = currentOperation;
+      if (
+        !this.attemptId ||
+        !this.captured ||
+        this.captured.reference !== reference ||
+        !isCurrentOperation(owner, this.attemptId)
+      ) {
+        return;
+      }
+      owner.controller.abort();
+      this.phase = "failed";
+      this.failureReason = "try_on_failed";
+      this.clearAcquisitionPresentation();
+      clearOperation(owner);
+    },
+    revealPendingResult(): void {
+      const owner = currentOperation;
+      if (
+        owner === null ||
+        !isCurrentOperation(owner, owner.attemptId) ||
+        owner.pendingResult === null ||
+        !owner.captureHoldElapsed
+      ) {
+        return;
+      }
+      this.result = owner.pendingResult;
+      owner.pendingResult = null;
+      clearCaptureHold(owner);
+      this.phase = "completed";
+      this.failureReason = null;
+      this.resultUnavailable = false;
+      this.clearAcquisitionPresentation();
     },
     applyEvent(
       attemptId: string,
@@ -306,14 +369,15 @@ export const useTryOnStore = defineStore("tryOn", {
       if (event.type === "vision.try_on.attempt.completed") {
         if (this.phase !== "generating") return;
         try {
-          this.result = validateTryOnResultReference(
+          const result = validateTryOnResultReference(
             event.payload.result,
             resultContext,
           );
-          this.phase = "completed";
-          this.failureReason = null;
-          this.resultUnavailable = false;
-          this.clearAcquisitionPresentation();
+          const owner = currentOperation;
+          if (isCurrentOperation(owner, attemptId)) {
+            owner.pendingResult = result;
+            this.revealPendingResult();
+          }
         } catch {
           this.phase = "failed";
           this.failureReason = "try_on_failed";
@@ -401,6 +465,9 @@ type OperationOwner = {
   attemptId: string;
   controller: AbortController;
   attempt: VisionTryOnAttempt | null;
+  captureHoldElapsed: boolean;
+  captureHoldTimer: ReturnType<typeof setTimeout> | null;
+  pendingResult: ReturnType<typeof validateTryOnResultReference> | null;
 };
 
 let nextOperationGeneration = 0;
@@ -413,6 +480,9 @@ function beginOperation(attemptId: string): OperationOwner {
     attemptId,
     controller: new AbortController(),
     attempt: null,
+    captureHoldElapsed: false,
+    captureHoldTimer: null,
+    pendingResult: null,
   };
   nextOperationGeneration = owner.generation;
   currentOperation = owner;
@@ -440,6 +510,7 @@ function cancelCurrentOperation(): void {
   currentOperation = null;
   nextOperationGeneration += 1;
   owner.controller.abort();
+  clearCaptureHold(owner);
   owner.attempt?.close();
   owner.attempt = null;
 }
@@ -447,8 +518,18 @@ function cancelCurrentOperation(): void {
 function clearOperation(owner: OperationOwner | null): void {
   if (!owner || currentOperation !== owner) return;
   currentOperation = null;
+  clearCaptureHold(owner);
   owner.attempt?.close();
   owner.attempt = null;
+}
+
+function clearCaptureHold(owner: OperationOwner): void {
+  if (owner.captureHoldTimer !== null) {
+    clearTimeout(owner.captureHoldTimer);
+    owner.captureHoldTimer = null;
+  }
+  owner.captureHoldElapsed = false;
+  owner.pendingResult = null;
 }
 
 function createAttemptId(): string {
