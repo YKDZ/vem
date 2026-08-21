@@ -244,6 +244,74 @@ function New-FixtureSwitchHarnessState([bool]$NewRolesOutsideOwner = $false) {
   }
 }
 
+# 生产默认摘要路径必须读取真实文件字节，不能依赖现场缺失的 Get-FileHash。
+$defaultHash = New-FixtureSwitchHarnessState
+$defaultHashFiles = $defaultHash.state.files
+$defaultExpectedResultsPath = "$($defaultHash.recordedRoot)\expected-results.json"
+$defaultFixtureManifestPath = "$($defaultHash.recordedRoot)\fixture-manifest.json"
+$defaultTopPath = "$($defaultHash.recordedRoot)\top.mp4"
+$defaultInstalledPath = 'C:\ProgramData\VEM\vision\installed.json'
+$defaultExpectedResults = $defaultHashFiles[$defaultExpectedResultsPath] | ConvertFrom-Json
+$defaultExpectedResults.recordings.top.sha256 = 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'
+$defaultExpectedResultsText = $defaultExpectedResults | ConvertTo-Json -Depth 8
+$defaultHashFiles[$defaultExpectedResultsPath] = $defaultExpectedResultsText
+$defaultFixtureManifest = $defaultHashFiles[$defaultFixtureManifestPath] | ConvertFrom-Json
+$defaultFixtureManifest.recordedVideo.expectedResults.sha256 = Get-TextSha256 $defaultExpectedResultsText
+$defaultFixtureManifestText = $defaultFixtureManifest | ConvertTo-Json -Depth 8
+$defaultHashFiles[$defaultFixtureManifestPath] = $defaultFixtureManifestText
+$defaultInstalled = $defaultHashFiles[$defaultInstalledPath] | ConvertFrom-Json
+$defaultInstalled.fixtureSet.manifestSha256 = Get-TextSha256 $defaultFixtureManifestText
+$defaultInstalled.fixtureSet.expectedResults.sha256 = Get-TextSha256 $defaultExpectedResultsText
+$defaultHashFiles[$defaultInstalledPath] = $defaultInstalled | ConvertTo-Json -Depth 8
+$defaultHashFiles[$defaultTopPath] = 'abc'
+$defaultHash.dependencies.Remove('GetSha256') | Out-Null
+$defaultSiteText = $defaultHashFiles[$defaultHash.sitePath]
+$defaultHashRoot = Join-Path ([IO.Path]::GetTempPath()) "vem-recorded-fixture-hash-$([Guid]::NewGuid())"
+$previousGetFileHash = Get-Item -LiteralPath Function:\global:Get-FileHash -ErrorAction SilentlyContinue
+try {
+  [void][IO.Directory]::CreateDirectory($defaultHashRoot)
+  $defaultHashFilePaths = @{}
+  $defaultHashFileIndex = 0
+  foreach ($file in $defaultHashFiles.GetEnumerator()) {
+    $resolvedPath = Join-Path $defaultHashRoot "file-$defaultHashFileIndex"
+    [IO.File]::WriteAllText($resolvedPath, [string]$file.Value, [Text.UTF8Encoding]::new($false))
+    $defaultHashFilePaths[[string]$file.Key] = $resolvedPath
+    $defaultHashFileIndex += 1
+  }
+  $defaultHash.dependencies['ResolveHashFilePath'] = {
+    param([string]$Path)
+    $resolvedPath = $defaultHashFilePaths[$Path]
+    if ([string]::IsNullOrWhiteSpace([string]$resolvedPath)) { throw "unmapped default hash path: $Path" }
+    return $resolvedPath
+  }.GetNewClosure()
+  $defaultTopFilePath = $defaultHashFilePaths[$defaultTopPath]
+  function global:Get-FileHash { throw 'Get-FileHash command is unavailable' }
+
+  # 单字节变化必须在写 site.json 或触碰 owner 之前 fail closed。
+  [IO.File]::WriteAllBytes($defaultTopFilePath, [byte[]](0x61, 0x62, 0x64))
+  Assert-ThrowsMessage {
+    Invoke-VemRecordedFixtureSwitch -Mode restore -Dependencies $defaultHash.dependencies -ReadyStabilityMs 0
+  } '安装录播文件摘要不匹配: top' 'default file-byte hash accepted a one-byte mutation'
+  Assert-True ($defaultHash.state.ownerCallCount -eq 0) 'default hash mismatch touched the runtime owner'
+  Assert-True ($defaultHash.state.files[$defaultHash.sitePath] -ceq $defaultSiteText) 'default hash mismatch wrote site.json'
+
+  # 已知 SHA-256 的 abc 恢复后，完整 switch 必须走到 fake owner success。
+  [IO.File]::WriteAllBytes($defaultTopFilePath, [byte[]](0x61, 0x62, 0x63))
+  Invoke-VemRecordedFixtureSwitch -Mode restore -Dependencies $defaultHash.dependencies -ReadyStabilityMs 0 | Out-Null
+  $defaultRestoredConfig = $defaultHash.state.files[$defaultHash.sitePath] | ConvertFrom-Json
+  Assert-True ($defaultRestoredConfig.cameras.top.video_path -eq $defaultTopPath -and $defaultRestoredConfig.cameras.top.loop -eq $false) 'default file-byte hash did not complete restore configuration'
+  Assert-True ($defaultHash.state.ownerCallCount -eq 2 -and $defaultHash.state.phase -eq 'new') 'default file-byte hash did not reach fake owner success'
+} finally {
+  if ($null -eq $previousGetFileHash) {
+    Remove-Item -LiteralPath Function:\global:Get-FileHash -ErrorAction SilentlyContinue
+  } else {
+    Set-Item -LiteralPath Function:\global:Get-FileHash -Value $previousGetFileHash.ScriptBlock
+  }
+  if ([IO.Directory]::Exists($defaultHashRoot)) {
+    Remove-Item -LiteralPath $defaultHashRoot -Recurse -Force
+  }
+}
+
 $selectState = New-FixtureSwitchHarnessState
 Invoke-VemRecordedFixtureSwitch -Mode select -Segment mid -Dependencies $selectState.dependencies -ReadyStabilityMs 0 | Out-Null
 $selectedConfig = $selectState.state.files[$selectState.sitePath] | ConvertFrom-Json

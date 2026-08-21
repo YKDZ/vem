@@ -257,10 +257,26 @@ function Invoke-VemRecordedFixtureSwitch {
   } else {
     { param([string]$Path) Test-Path -LiteralPath $Path -PathType Leaf }
   }
+  $resolveHashFilePath = Get-VemRecordedFixtureDependency $Dependencies 'ResolveHashFilePath' {
+    param([string]$Path)
+    return $Path
+  }
   $getSha256 = if ($null -ne $Dependencies['GetSha256']) {
     $Dependencies['GetSha256']
   } else {
-    { param([string]$Path) (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() }
+    {
+      param([string]$Path)
+      $stream = $null
+      $sha256 = $null
+      try {
+        $stream = [IO.File]::OpenRead((& $resolveHashFilePath $Path))
+        $sha256 = [Security.Cryptography.SHA256]::Create()
+        return -join ($sha256.ComputeHash($stream) | ForEach-Object { $_.ToString('x2') })
+      } finally {
+        if ($null -ne $sha256) { $sha256.Dispose() }
+        if ($null -ne $stream) { $stream.Dispose() }
+      }
+    }
   }
   $joinPath = Get-VemRecordedFixtureDependency $Dependencies 'JoinPath' {
     param([string]$Parent, [string]$Child)
