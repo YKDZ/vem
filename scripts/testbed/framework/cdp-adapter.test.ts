@@ -10,8 +10,6 @@ import {
   isControlledCapturedFrameReference,
   readResultPngResource,
   readSourceGarmentPngResource,
-  selectRecordedVideoFixture,
-  validateRecordedVideoFixtureSelection,
   VisionProtocolEvidenceCollector,
 } from "./cdp-adapter.ts";
 import {
@@ -36,6 +34,72 @@ describe("CDP test adapter", () => {
     assertAdapterContract(adapter);
     assert.equal(typeof adapter.connect, "function");
     assert.equal(typeof adapter.close, "function");
+  });
+
+  it("通过公开 click command 经真实 CdpClient 发出 touch CDP 输入", async () => {
+    const dispatched: { method: string; type?: string }[] = [];
+    const fakeCdp = createFakeCdpWebSocketFactory((message) => {
+      if (message.method === "Runtime.evaluate") {
+        return {
+          id: message.id,
+          result: {
+            result: {
+              value: {
+                exists: true,
+                actionable: true,
+                inViewport: true,
+                pointerEvents: "auto",
+                hitTarget: true,
+                center: { x: 120, y: 240 },
+                bounds: { x: 100, y: 220, width: 40, height: 40 },
+              },
+            },
+          },
+        };
+      }
+      if (message.method.startsWith("Input.")) {
+        dispatched.push({ method: message.method, type: message.params.type });
+      }
+      return { id: message.id, result: {} };
+    });
+    const endpoint = await startFakeCdpEndpoint();
+    const adapter = new CdpTestAdapter({
+      endpoint: endpoint.url,
+      cdpWebSocketFactory: fakeCdp.factory,
+    });
+    try {
+      await adapter.connect();
+      await adapter.run("click", ['[data-test="try-on"]']);
+      assert.deepEqual(dispatched, [
+        { method: "Input.dispatchTouchEvent", type: "touchStart" },
+        { method: "Input.dispatchTouchEvent", type: "touchEnd" },
+      ]);
+    } finally {
+      await adapter.close();
+      await endpoint.close();
+    }
+  });
+
+  it("通过公开 restore command 恰调用一次注入实现并透传结果", async () => {
+    let calls = 0;
+    const expected = {
+      exitCode: 1,
+      stdout: "restore output",
+      stderr: "restore error",
+    };
+    const adapter = new CdpTestAdapter({
+      endpoint: "http://127.0.0.1:1",
+      restoreRecordedVideoFixturesImpl: () => {
+        calls += 1;
+        return expected;
+      },
+    });
+
+    assert.deepEqual(
+      await adapter.run("restore-recorded-video-fixtures"),
+      expected,
+    );
+    assert.equal(calls, 1);
   });
 
   it("采集有界失败诊断且不保留 HTTP 头与正文", async () => {
@@ -244,105 +308,6 @@ describe("CDP test adapter", () => {
           entry.stage === "failure-screenshot" && entry.status === "failed",
       ),
     );
-  });
-
-  it("录播选择不接受未注入的环境映射，只信任安装中的规范 manifest", () => {
-    const source = selectRecordedVideoFixture.toString();
-    assert.doesNotMatch(source, /VEM_RECORDED_GEOMETRY_ENTRIES/);
-    assert.match(source, /geometryFar/);
-    assert.match(source, /Get-VisionMainCanonicalProcessBinding/);
-    assert.match(source, /rolesBelongToNewOwner/);
-  });
-
-  it("只接受安装 manifest 中摘要匹配且互异的录播 entry", () => {
-    const manifest = {
-      recordings: {
-        geometryFar: {
-          file: "far.mp4",
-          sha256: "a".repeat(64),
-          loop: true,
-          source: "person.png",
-          sourceSha256: "d".repeat(64),
-          generator: "fixture.py",
-        },
-        geometryMid: {
-          file: "mid.mp4",
-          sha256: "b".repeat(64),
-          loop: true,
-          source: "person.png",
-          sourceSha256: "d".repeat(64),
-          generator: "fixture.py",
-        },
-        geometryNear: {
-          file: "near.mp4",
-          sha256: "c".repeat(64),
-          loop: true,
-          source: "person.png",
-          sourceSha256: "d".repeat(64),
-          generator: "fixture.py",
-        },
-      },
-    };
-    assert.deepEqual(
-      validateRecordedVideoFixtureSelection({
-        segment: "mid",
-        mapping: {
-          far: "geometryFar",
-          mid: "geometryMid",
-          near: "geometryNear",
-        },
-        manifest,
-        actualDigest: "b".repeat(64),
-      }),
-      { ok: true, file: "mid.mp4" },
-    );
-    for (const input of [
-      {
-        mapping: {
-          far: "geometryFar",
-          mid: "geometryMid",
-          near: "geometryMid",
-        },
-      },
-      { mapping: { far: "geometryFar", mid: "missing", near: "geometryNear" } },
-      { actualDigest: "d".repeat(64) },
-      {
-        manifest: {
-          recordings: {
-            ...manifest.recordings,
-            geometryNear: {
-              ...manifest.recordings.geometryNear,
-              sourceSha256: "e".repeat(64),
-            },
-          },
-        },
-      },
-      {
-        manifest: {
-          recordings: {
-            ...manifest.recordings,
-            geometryNear: {
-              ...manifest.recordings.geometryNear,
-              file: "mid.mp4",
-            },
-          },
-        },
-      },
-    ]) {
-      assert.equal(
-        validateRecordedVideoFixtureSelection({
-          segment: "mid",
-          mapping: input.mapping ?? {
-            far: "geometryFar",
-            mid: "geometryMid",
-            near: "geometryNear",
-          },
-          manifest: input.manifest ?? manifest,
-          actualDigest: input.actualDigest ?? "b".repeat(64),
-        }).ok,
-        false,
-      );
-    }
   });
 
   it("拒绝超出响应、像素与解压上限的 result PNG", async () => {
@@ -740,3 +705,81 @@ describe("CDP test adapter", () => {
     }
   });
 });
+
+function createFakeCdpWebSocketFactory(
+  handler: (message: {
+    id: number;
+    method: string;
+    params: Record<string, any>;
+  }) => Record<string, unknown>,
+) {
+  return {
+    factory() {
+      const listeners = new Map<string, Set<(event: any) => void>>();
+      const emit = (type: string, event: unknown) => {
+        for (const listener of [...(listeners.get(type) ?? [])]) {
+          listener(event);
+        }
+      };
+      const socket = {
+        readyState: 1,
+        addEventListener(type: string, listener: (event: any) => void) {
+          if (!listeners.has(type)) listeners.set(type, new Set());
+          listeners.get(type)!.add(listener);
+        },
+        removeEventListener(type: string, listener: (event: any) => void) {
+          listeners.get(type)?.delete(listener);
+        },
+        send(raw: string) {
+          const response = handler(JSON.parse(raw));
+          queueMicrotask(() =>
+            emit("message", { data: JSON.stringify(response) }),
+          );
+        },
+        close() {
+          socket.readyState = 3;
+          emit("close", {});
+        },
+      };
+      return socket;
+    },
+  };
+}
+
+async function startFakeCdpEndpoint(): Promise<{
+  url: string;
+  close(): Promise<void>;
+}> {
+  const server = createServer((request, response) => {
+    if (request.url !== "/json") {
+      response.statusCode = 404;
+      response.end();
+      return;
+    }
+    response.setHeader("content-type", "application/json");
+    response.end(
+      JSON.stringify([
+        {
+          type: "page",
+          url: "http://tauri.localhost/#/products/product:1",
+          webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/machine-ui",
+        },
+      ]),
+    );
+  });
+  await new Promise<void>((resolvePromise, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolvePromise());
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("fake CDP endpoint did not bind a TCP port");
+  }
+  return {
+    url: `http://127.0.0.1:${address.port}`,
+    close: () =>
+      new Promise<void>((resolvePromise, reject) =>
+        server.close((error) => (error ? reject(error) : resolvePromise())),
+      ),
+  };
+}

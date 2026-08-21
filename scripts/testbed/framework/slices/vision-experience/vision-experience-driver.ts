@@ -599,7 +599,7 @@ export async function runRecordedResultGeometryScenario(
         const ready = await adapter.run("vision-ready");
         return { ok: ready.exitCode === 0, value: ready.stdout };
       },
-      { timeoutMs: Math.max(timeoutMs ?? 60_000, 300_000), pollMs: 1_000 },
+      { timeoutMs: timeoutMs ?? 60_000, pollMs: 1_000 },
     );
     const attempt = await runTryOnScenario(adapter, { timeoutMs, pollMs });
     if (!attempt.state.resultPng) {

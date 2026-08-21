@@ -21,11 +21,141 @@ import {
   runTryOnScenario,
   runDegradationScenario,
   runDepartureScenario,
-  runGarmentScaleScenario,
   runManualCaptureScenario,
   runObserverSelfHealScenario,
   runRecordedResultGeometryScenario,
 } from "./vision-experience-driver.ts";
+
+type RecordedFixtureRestoreFailure = {
+  kind: "vision-recorded-fixture-restore";
+  status: "failed";
+  stage: "restore-recorded-video-fixtures";
+  reason: string;
+};
+
+type VisionExperienceReport = ReturnType<typeof buildAcceptanceReport>;
+
+async function restoreRecordedVideoFixtures(
+  adapter: TestAdapter,
+): Promise<RecordedFixtureRestoreFailure | null> {
+  try {
+    const restored = await adapter.run("restore-recorded-video-fixtures");
+    if (restored.exitCode === 0) return null;
+    return {
+      kind: "vision-recorded-fixture-restore",
+      status: "failed",
+      stage: "restore-recorded-video-fixtures",
+      reason: restored.stderr || restored.stdout || "默认录播夹具恢复失败",
+    };
+  } catch (error) {
+    return {
+      kind: "vision-recorded-fixture-restore",
+      status: "failed",
+      stage: "restore-recorded-video-fixtures",
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function appendRestoreFailure(
+  report: VisionExperienceReport,
+  restoreFailure: RecordedFixtureRestoreFailure,
+): void {
+  report.businessSets
+    .find((entry) => entry.name === "visionExperience")
+    ?.supportingEvidence.push(restoreFailure);
+}
+
+function primaryFailureWithRestore(
+  primaryFailure: unknown,
+  restoreFailure: RecordedFixtureRestoreFailure,
+): Error & {
+  stage: "vision-experience-primary";
+  primaryFailure: unknown;
+  restoreFailure: RecordedFixtureRestoreFailure;
+} {
+  const error = new Error(
+    `visionExperience primary failure: ${
+      primaryFailure instanceof Error
+        ? primaryFailure.message
+        : String(primaryFailure)
+    }`,
+    primaryFailure instanceof Error ? { cause: primaryFailure } : undefined,
+  ) as Error & {
+    stage: "vision-experience-primary";
+    primaryFailure: unknown;
+    restoreFailure: RecordedFixtureRestoreFailure;
+  };
+  error.stage = "vision-experience-primary";
+  error.primaryFailure = primaryFailure;
+  error.restoreFailure = restoreFailure;
+  return error;
+}
+
+function restoreOperationalFailure(
+  report: VisionExperienceReport | null,
+  restoreFailure: RecordedFixtureRestoreFailure,
+): Error & {
+  stage: "restore-recorded-video-fixtures";
+  restoreFailure: RecordedFixtureRestoreFailure;
+  report: VisionExperienceReport | null;
+  primaryFailure: unknown;
+} {
+  const primaryFailure = report?.businessSets.find(
+    (entry) => entry.name === "visionExperience",
+  )?.primaryFailure;
+  const error = new Error(
+    `restore-recorded-video-fixtures failed: ${restoreFailure.reason}`,
+  ) as Error & {
+    stage: "restore-recorded-video-fixtures";
+    restoreFailure: RecordedFixtureRestoreFailure;
+    report: VisionExperienceReport | null;
+    primaryFailure: unknown;
+  };
+  error.stage = "restore-recorded-video-fixtures";
+  error.restoreFailure = restoreFailure;
+  error.report = report;
+  error.primaryFailure = primaryFailure ?? null;
+  return error;
+}
+
+function reportFromOperationalFailure(
+  error: unknown,
+): VisionExperienceReport | null {
+  const report = (error as { report?: unknown } | null)?.report;
+  return report && typeof report === "object"
+    ? (report as VisionExperienceReport)
+    : null;
+}
+
+function restoreFailureFromOperationalFailure(
+  error: unknown,
+): RecordedFixtureRestoreFailure | null {
+  const restoreFailure = (error as { restoreFailure?: unknown } | null)
+    ?.restoreFailure;
+  return restoreFailure && typeof restoreFailure === "object"
+    ? (restoreFailure as RecordedFixtureRestoreFailure)
+    : null;
+}
+
+function diagnosticsWithRestoreFailure(
+  diagnostics: unknown,
+  error: unknown,
+): unknown {
+  const restoreFailure = restoreFailureFromOperationalFailure(error);
+  if (!restoreFailure) return diagnostics;
+  const source =
+    diagnostics &&
+    typeof diagnostics === "object" &&
+    !Array.isArray(diagnostics)
+      ? (diagnostics as Record<string, unknown>)
+      : {};
+  const primaryFailure =
+    source.primaryFailure ??
+    (error as { primaryFailure?: unknown } | null)?.primaryFailure ??
+    null;
+  return { ...source, primaryFailure, restoreFailure };
+}
 
 /**
  * visionExperience 切片 runner：用同一 adapter 跑虚拟试衣与可选自愈场景，
@@ -58,98 +188,119 @@ export async function runVisionExperienceSlice({
   visionStabilityMs?: number;
   visionStabilityTimeoutMs?: number;
 }) {
-  await waitForCondition(
-    "vision-ready",
-    async () => {
-      try {
-        const probe = await adapter.run("vision-ready");
-        return { ok: probe?.exitCode === 0, value: probe?.stdout ?? null };
-      } catch {
-        return { ok: false, value: null };
-      }
-    },
-    { timeoutMs: Math.max(timeoutMs, 300_000), pollMs: 1_000 },
-  );
-  await waitForVisionStable(adapter, {
-    timeoutMs: visionStabilityTimeoutMs,
-    stabilityMs: visionStabilityMs,
-    pollMs: 1_000,
-  });
-  const geometry = includeGarmentScale
-    ? await runRecordedResultGeometryScenario(adapter, { timeoutMs, pollMs })
-    : null;
-  const tryOn = geometry?.ok
-    ? geometry.mid
-    : await runTryOnScenario(adapter, { timeoutMs, pollMs });
-  const assertions = [...tryOn.assertions];
-  const supportingEvidence = [...tryOn.supportingEvidence];
-  if (includeSelfHeal && manifest) {
-    const heal = await runObserverSelfHealScenario(adapter, manifest, {
-      timeoutMs,
-      pollMs,
+  let report: VisionExperienceReport | null = null;
+  let primaryError: unknown = null;
+  let hasPrimaryFailure = false;
+  let geometryFixtureSelectionStarted = false;
+  let restoreFailure: RecordedFixtureRestoreFailure | null = null;
+  try {
+    await waitForCondition(
+      "vision-ready",
+      async () => {
+        try {
+          const probe = await adapter.run("vision-ready");
+          return { ok: probe?.exitCode === 0, value: probe?.stdout ?? null };
+        } catch {
+          return { ok: false, value: null };
+        }
+      },
+      { timeoutMs: Math.max(timeoutMs, 300_000), pollMs: 1_000 },
+    );
+    await waitForVisionStable(adapter, {
+      timeoutMs: visionStabilityTimeoutMs,
+      stabilityMs: visionStabilityMs,
+      pollMs: 1_000,
     });
-    assertions.push(...heal.assertions);
-  }
-  if (includeGarmentScale) {
-    if (geometry) {
-      assertions.push(
-        ...geometry.assertions.filter(
-          (assertion) =>
-            geometry.ok || assertion.id !== "garment-scale-renders-pixels",
-        ),
-      );
-      assertions.push(...geometry.scaleAssertions);
-      assertions.push(...geometry.adjustmentAssertions);
-      if (!geometry.ok) {
-        const scale = await runGarmentScaleScenario(adapter, {
+    geometryFixtureSelectionStarted = includeGarmentScale;
+    const geometry = includeGarmentScale
+      ? await runRecordedResultGeometryScenario(adapter, { timeoutMs, pollMs })
+      : null;
+    if (geometry && !geometry.ok) {
+      report = buildAcceptanceReport({
+        runId: "slice-vision-experience",
+        mode: "fast",
+        pass: 1,
+        businessSets: [
+          {
+            name: "visionExperience",
+            assertions: geometry.assertions,
+            supportingEvidence: [geometry.evidence],
+          },
+        ],
+      });
+    } else {
+      const tryOn = geometry?.ok
+        ? geometry.mid
+        : await runTryOnScenario(adapter, { timeoutMs, pollMs });
+      const assertions = [...tryOn.assertions];
+      const supportingEvidence = [...tryOn.supportingEvidence];
+      if (includeSelfHeal && manifest) {
+        const heal = await runObserverSelfHealScenario(adapter, manifest, {
           timeoutMs,
           pollMs,
         });
-        assertions.push(
-          ...scale.assertions,
-          ...scale.adjustmentAssertions,
-          ...scale.pixelAssertions,
-        );
+        assertions.push(...heal.assertions);
       }
-      supportingEvidence.push(geometry.evidence);
-    } else {
-      const scale = await runGarmentScaleScenario(adapter, {
-        timeoutMs,
-        pollMs,
+      if (geometry) {
+        assertions.push(...geometry.assertions);
+        assertions.push(...geometry.scaleAssertions);
+        assertions.push(...geometry.adjustmentAssertions);
+        supportingEvidence.push(geometry.evidence);
+      }
+      if (includeDegradation && stopOwner) {
+        const degradation = await runDegradationScenario(adapter, {
+          stopOwner,
+          timeoutMs,
+          pollMs,
+        });
+        assertions.push(...degradation.assertions);
+      }
+      if (includeManualCapture) {
+        const manual = await runManualCaptureScenario(adapter, {
+          timeoutMs,
+          pollMs,
+        });
+        assertions.push(...manual.assertions);
+      }
+      if (includeDeparture) {
+        const departure = await runDepartureScenario(adapter, {
+          timeoutMs,
+          pollMs,
+        });
+        assertions.push(...departure.assertions);
+      }
+      report = buildAcceptanceReport({
+        runId: "slice-vision-experience",
+        mode: "fast",
+        pass: 1,
+        businessSets: [
+          { name: "visionExperience", assertions, supportingEvidence },
+        ],
       });
-      assertions.push(...scale.assertions, ...scale.adjustmentAssertions);
+    }
+  } catch (error) {
+    primaryError = error;
+    hasPrimaryFailure = true;
+  } finally {
+    // finally 只协调恢复；报告、主错误与 operational verdict 都在恢复完成后统一裁决。
+    if (geometryFixtureSelectionStarted) {
+      restoreFailure = await restoreRecordedVideoFixtures(adapter);
     }
   }
-  if (includeDegradation && stopOwner) {
-    const degradation = await runDegradationScenario(adapter, {
-      stopOwner,
-      timeoutMs,
-      pollMs,
-    });
-    assertions.push(...degradation.assertions);
+  if (hasPrimaryFailure) {
+    if (restoreFailure) {
+      throw primaryFailureWithRestore(primaryError, restoreFailure);
+    }
+    throw primaryError;
   }
-  if (includeManualCapture) {
-    const manual = await runManualCaptureScenario(adapter, {
-      timeoutMs,
-      pollMs,
-    });
-    assertions.push(...manual.assertions);
+  if (!report) {
+    throw new Error("visionExperience slice completed without a report");
   }
-  if (includeDeparture) {
-    const departure = await runDepartureScenario(adapter, {
-      timeoutMs,
-      pollMs,
-    });
-    assertions.push(...departure.assertions);
+  if (restoreFailure) {
+    appendRestoreFailure(report, restoreFailure);
+    throw restoreOperationalFailure(report, restoreFailure);
   }
-  return buildAcceptanceReport({
-    runId: "slice-vision-experience",
-    mode: "fast",
-    pass: 1,
-    businessSets: [
-      { name: "visionExperience", assertions, supportingEvidence },
-    ],
-  });
+  return report;
 }
 
 /**
@@ -479,6 +630,10 @@ async function persistFailureEvidence({
         screenshotPng: null,
       };
     }
+    failureEvidence.diagnostics = diagnosticsWithRestoreFailure(
+      failureEvidence.diagnostics,
+      error,
+    );
     await io.writeFile(
       diagnosticsPath,
       serializeFailureDiagnostics(failureEvidence.diagnostics),
@@ -617,8 +772,17 @@ export async function main(
     // 轨道结束后恢复基线：Machine UI 回到 Catalog，避免干扰后续轨道。
     await adapter.run("navigate", ["#/catalog"]).catch(() => {});
   } catch (error) {
+    const failedReport = reportFromOperationalFailure(error);
+    if (failedReport && outPath) {
+      await writeFile(
+        outPath,
+        `${JSON.stringify(failedReport, null, 2)}\n`,
+        "utf8",
+      );
+    }
     adapter.recordMilestone?.("runner:slice", "failed", {
       message: error instanceof Error ? error.message : String(error),
+      restoreFailure: restoreFailureFromOperationalFailure(error),
     });
     const diagnosticsPath = await persistFailureEvidence({
       adapter,

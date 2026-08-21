@@ -316,6 +316,99 @@ describe("visionExperience slice runner", () => {
     }
   });
 
+  it("主 geometry verdict 与 restore 失败会在同一轮恢复后再落盘", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-vision-runner-restore-"));
+    const outPath = join(root, "vision-experience.json");
+    const milestones: Record<string, unknown>[] = [];
+    const adapter = fakeUiAdapter() as any;
+    const originalRun = adapter.run.bind(adapter);
+    adapter.connect = async () => adapter;
+    adapter.close = async () => {};
+    adapter.recordMilestone = (
+      stage: string,
+      status: string,
+      detail = null,
+    ) => {
+      milestones.push({ stage, status, detail });
+    };
+    adapter.captureFailureEvidence = async () => ({
+      diagnostics: {
+        schemaVersion: "vem-vision-experience-failure-diagnostics/v1",
+        milestones,
+        primaryFailure: {
+          stage: "recorded-geometry-fixture",
+          reason: "geometry fixture blocked",
+        },
+        cdp: { console: [], exceptions: [], networkErrors: [] },
+      },
+      screenshotPng: null,
+    });
+    adapter.run = async (command: string, args = []) => {
+      const result =
+        command === "select-recorded-video-fixture"
+          ? { exitCode: 1, stdout: "", stderr: "geometry fixture blocked" }
+          : command === "restore-recorded-video-fixtures"
+            ? { exitCode: 1, stdout: "", stderr: "restore failed" }
+            : await originalRun(command, args);
+      milestones.push({
+        stage: `adapter:${command}`,
+        status: result.exitCode === 0 ? "completed" : "failed",
+        detail: result.stderr || result.stdout || null,
+      });
+      return result;
+    };
+    try {
+      await assert.rejects(
+        runVisionExperienceMain(["--out", outPath], {
+          startVisionOwner: () => undefined,
+          createAdapter: () => adapter,
+          runSlice: (options) => runVisionExperienceSlice(options),
+        }),
+        (error: any) =>
+          error?.stage === "restore-recorded-video-fixtures" &&
+          error?.report?.businessSets?.[0]?.status === "failed" &&
+          error?.restoreFailure?.reason === "restore failed",
+      );
+      const report = JSON.parse(readFileSync(outPath, "utf8"));
+      assert.equal(report.businessSets[0].status, "failed");
+      assert.deepEqual(report.businessSets[0].supportingEvidence.at(-1), {
+        kind: "vision-recorded-fixture-restore",
+        status: "failed",
+        stage: "restore-recorded-video-fixtures",
+        reason: "restore failed",
+      });
+      const diagnostics = JSON.parse(
+        readFileSync(
+          join(root, "vision-experience-artifacts", "failure-diagnostics.json"),
+          "utf8",
+        ),
+      );
+      assert.equal(
+        diagnostics.primaryFailure.stage,
+        "recorded-geometry-fixture",
+      );
+      assert.deepEqual(diagnostics.restoreFailure, {
+        kind: "vision-recorded-fixture-restore",
+        status: "failed",
+        stage: "restore-recorded-video-fixtures",
+        reason: "restore failed",
+      });
+      const stages = diagnostics.milestones
+        .map((entry: { stage?: string }) => entry.stage)
+        .filter((stage: string) => stage.startsWith("adapter:"));
+      assert.deepEqual(stages.slice(-2), [
+        "adapter:select-recorded-video-fixture",
+        "adapter:restore-recorded-video-fixtures",
+      ]);
+      assert.match(
+        readFileSync(outPath, "utf8"),
+        /vision-recorded-fixture-restore/,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("支持证据目录或文件无法写入时不替换业务错误", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-vision-runner-io-failure-"));
     const attempted: string[] = [];
@@ -525,7 +618,7 @@ describe("visionExperience slice runner", () => {
         return {
           exitCode: 1,
           stdout: "",
-          stderr: "候选未提供动态 far/mid/near 录播夹具",
+          stderr: "已安装产物未携带动态 far/mid/near 录播夹具",
         };
       }
       return originalRun(command, args);
@@ -547,9 +640,127 @@ describe("visionExperience slice runner", () => {
     assert.deepEqual(set.supportingEvidence.at(-1), {
       kind: "vision-recorded-geometry-fixture",
       status: "blocked",
-      reason: "候选未提供动态 far/mid/near 录播夹具",
+      reason: "已安装产物未携带动态 far/mid/near 录播夹具",
       segments: ["far"],
     });
+  });
+
+  it("录播夹具受阻时 fail closed、不会回退普通试衣，并在 finally 恢复默认录播", async () => {
+    const adapter = fakeUiAdapter();
+    const originalRun = adapter.run.bind(adapter);
+    adapter.run = async (command, args = []) => {
+      if (command === "select-recorded-video-fixture") {
+        return { exitCode: 1, stdout: "", stderr: "geometry fixture blocked" };
+      }
+      return originalRun(command, args);
+    };
+
+    const report = await runVisionExperienceSlice({
+      adapter,
+      includeGarmentScale: true,
+      timeoutMs: 30,
+      pollMs: 5,
+    });
+    assert.equal(report.businessSets[0].status, "failed");
+    assert.equal(
+      adapter.calls.some(
+        (call) =>
+          call.command === "click" && call.args[0] === '[data-test="try-on"]',
+      ),
+      false,
+    );
+    assert.deepEqual(adapter.calls.at(-1), {
+      command: "restore-recorded-video-fixtures",
+      args: [],
+    });
+  });
+
+  it("恢复默认录播失败会成为独立 operational failure", async () => {
+    const adapter = fakeUiAdapter();
+    const originalRun = adapter.run.bind(adapter);
+    adapter.run = async (command, args = []) =>
+      command === "restore-recorded-video-fixtures"
+        ? { exitCode: 1, stdout: "", stderr: "restore failed" }
+        : originalRun(command, args);
+
+    await assert.rejects(
+      runVisionExperienceSlice({
+        adapter,
+        includeGarmentScale: true,
+        timeoutMs: 2_000,
+        pollMs: 10,
+      }),
+      (error: any) =>
+        error?.stage === "restore-recorded-video-fixtures" &&
+        error?.message.includes("restore failed"),
+    );
+  });
+
+  it("未选择 geometry 夹具的轨道不会触发默认录播重启", async () => {
+    const adapter = fakeUiAdapter();
+    await runVisionExperienceSlice({ adapter, timeoutMs: 2_000, pollMs: 10 });
+    assert.equal(
+      adapter.calls.some(
+        (call) => call.command === "restore-recorded-video-fixtures",
+      ),
+      false,
+    );
+  });
+
+  it("主 geometry verdict 与恢复失败同时存在时以保留报告的 operational failure 退出", async () => {
+    const adapter = fakeUiAdapter();
+    const originalRun = adapter.run.bind(adapter);
+    adapter.run = async (command, args = []) => {
+      if (command === "select-recorded-video-fixture") {
+        return { exitCode: 1, stdout: "", stderr: "geometry fixture blocked" };
+      }
+      if (command === "restore-recorded-video-fixtures") {
+        return { exitCode: 1, stdout: "", stderr: "restore failed" };
+      }
+      return originalRun(command, args);
+    };
+
+    await assert.rejects(
+      runVisionExperienceSlice({
+        adapter,
+        includeGarmentScale: true,
+        timeoutMs: 30,
+        pollMs: 5,
+      }),
+      (error: any) =>
+        error?.stage === "restore-recorded-video-fixtures" &&
+        error?.report?.businessSets?.[0]?.status === "failed" &&
+        error?.report?.businessSets?.[0]?.supportingEvidence?.at(-1)?.kind ===
+          "vision-recorded-fixture-restore" &&
+        error?.primaryFailure?.id === "result-sleeves-retained",
+    );
+  });
+
+  it("非 Error 主失败也不会被默认录播恢复失败覆盖", async () => {
+    const adapter = fakeUiAdapter();
+    const originalRun = adapter.run.bind(adapter);
+    adapter.run = async (command, args = []) => {
+      if (command === "select-recorded-video-fixture") {
+        throw "fixture primary failed";
+      }
+      if (command === "restore-recorded-video-fixtures") {
+        return { exitCode: 1, stdout: "", stderr: "restore failed" };
+      }
+      return originalRun(command, args);
+    };
+
+    await assert.rejects(
+      runVisionExperienceSlice({
+        adapter,
+        includeGarmentScale: true,
+        timeoutMs: 30,
+        pollMs: 5,
+      }),
+      (error: any) =>
+        error?.stage === "vision-experience-primary" &&
+        error?.primaryFailure === "fixture primary failed" &&
+        error?.restoreFailure?.stage === "restore-recorded-video-fixtures",
+    );
   });
 
   it("produces a registry-validated passed report", async () => {

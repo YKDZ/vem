@@ -132,88 +132,6 @@ function websocketHttpOrigin(value: unknown): string | null {
   }
 }
 
-type GeometrySegment = "far" | "mid" | "near";
-const GEOMETRY_ENTRY = {
-  far: "geometryFar",
-  mid: "geometryMid",
-  near: "geometryNear",
-} as const;
-
-/** 从安装 manifest 的规范 entry、文件名与摘要裁决录播选择。 */
-export function validateRecordedVideoFixtureSelection({
-  segment,
-  mapping,
-  manifest,
-  actualDigest,
-}: {
-  segment: GeometrySegment;
-  mapping: Record<GeometrySegment, unknown>;
-  manifest: unknown;
-  actualDigest: unknown;
-}): { ok: true; file: string } | { ok: false; reason: string } {
-  const entries = (["far", "mid", "near"] as const).map((key) => mapping[key]);
-  if (
-    !entries.every((entry) => typeof entry === "string") ||
-    new Set(entries).size !== 3 ||
-    entries.some((entry) => !/^geometry(?:Far|Mid|Near)$/.test(entry)) ||
-    mapping[segment] !== GEOMETRY_ENTRY[segment]
-  ) {
-    return {
-      ok: false,
-      reason: "三段录播 entry 必须是互异的规范 geometry entry",
-    };
-  }
-  const recordings = (
-    manifest as { recordings?: Record<string, unknown> } | null
-  )?.recordings;
-  const candidates = (Object.values(GEOMETRY_ENTRY) as string[]).map(
-    (entry) =>
-      recordings?.[entry] as
-        | {
-            file?: unknown;
-            sha256?: unknown;
-            loop?: unknown;
-            source?: unknown;
-            sourceSha256?: unknown;
-            generator?: unknown;
-          }
-        | undefined,
-  );
-  if (
-    candidates.length !== 3 ||
-    candidates.some(
-      (recording) =>
-        !recording ||
-        typeof recording.file !== "string" ||
-        !/^[A-Za-z0-9][A-Za-z0-9._-]*[.]mp4$/.test(recording.file) ||
-        !/^[a-f0-9]{64}$/.test(recording.sha256 as string) ||
-        recording.loop !== true ||
-        typeof recording.source !== "string" ||
-        !/^[a-f0-9]{64}$/.test(recording.sourceSha256 as string) ||
-        typeof recording.generator !== "string",
-    ) ||
-    new Set(candidates.map((recording) => recording!.file)).size !== 3 ||
-    new Set(candidates.map((recording) => recording!.sha256)).size !== 3 ||
-    new Set(candidates.map((recording) => recording!.source)).size !== 1 ||
-    new Set(candidates.map((recording) => recording!.sourceSha256)).size !==
-      1 ||
-    new Set(candidates.map((recording) => recording!.generator)).size !== 1
-  ) {
-    return {
-      ok: false,
-      reason: "安装 manifest 缺少同源规范 geometry 三段 entry",
-    };
-  }
-  const recording =
-    candidates[
-      (Object.keys(GEOMETRY_ENTRY) as GeometrySegment[]).indexOf(segment)
-    ]!;
-  if (actualDigest !== recording.sha256) {
-    return { ok: false, reason: "安装录播文件摘要与 manifest 不匹配" };
-  }
-  return { ok: true, file: recording.file };
-}
-
 /**
  * 将 CDP 网络事件收敛为当前配置 Vision websocket 的有界 attempt timeline。
  * 任何其他 loopback 服务即使复用了 V2 envelope，也不能贡献试衣验收事实。
@@ -576,6 +494,8 @@ export class CdpTestAdapter implements TestAdapter {
   sourceGarmentPng: Promise<SemanticResultPng | null> | null = null;
   stopTryOnProtocolObserver: (() => void) | null = null;
   selectRecordedVideoFixtureImpl: typeof selectRecordedVideoFixture;
+  restoreRecordedVideoFixturesImpl: typeof restoreRecordedVideoFixtures;
+  cdpWebSocketFactory: ((url: string) => unknown) | null;
   diagnosticMilestones: unknown[] = [];
   stateObservations: unknown[] = [];
   consoleDiagnostics: unknown[] = [];
@@ -589,12 +509,16 @@ export class CdpTestAdapter implements TestAdapter {
     sourceGarmentMetadata = null,
     sourceGarmentServiceApiOrigin = null,
     selectRecordedVideoFixtureImpl = selectRecordedVideoFixture,
+    restoreRecordedVideoFixturesImpl = restoreRecordedVideoFixtures,
+    cdpWebSocketFactory = null,
   }: {
     endpoint?: string;
     visionBaseUrl?: string;
     sourceGarmentMetadata?: unknown;
     sourceGarmentServiceApiOrigin?: unknown;
     selectRecordedVideoFixtureImpl?: typeof selectRecordedVideoFixture;
+    restoreRecordedVideoFixturesImpl?: typeof restoreRecordedVideoFixtures;
+    cdpWebSocketFactory?: ((url: string) => unknown) | null;
   } = {}) {
     this.endpoint = endpoint;
     this.visionBaseUrl = visionBaseUrl;
@@ -602,6 +526,8 @@ export class CdpTestAdapter implements TestAdapter {
     this.sourceGarmentMetadata = sourceGarmentMetadata;
     this.sourceGarmentServiceApiOrigin = sourceGarmentServiceApiOrigin;
     this.selectRecordedVideoFixtureImpl = selectRecordedVideoFixtureImpl;
+    this.restoreRecordedVideoFixturesImpl = restoreRecordedVideoFixturesImpl;
+    this.cdpWebSocketFactory = cdpWebSocketFactory;
   }
 
   recordMilestone(
@@ -715,6 +641,9 @@ export class CdpTestAdapter implements TestAdapter {
     }
     this.client = new CdpClient(
       rewriteWebSocketDebuggerUrl(target.webSocketDebuggerUrl, this.endpoint),
+      this.cdpWebSocketFactory
+        ? { webSocketFactory: this.cdpWebSocketFactory }
+        : {},
     );
     await this.client.connect({ timeoutMs });
     await enablePageRuntime(this.client);
@@ -952,7 +881,7 @@ export class CdpTestAdapter implements TestAdapter {
         throw new Error("click requires a selector argument");
       }
       await activateVisibleSelector(this.client!, selector, {
-        kind: "mouse",
+        kind: "touch",
         timeoutMs: 15_000,
         pollMs: 100,
       });
@@ -966,6 +895,12 @@ export class CdpTestAdapter implements TestAdapter {
         );
       }
       return this.selectRecordedVideoFixtureImpl(segment);
+    }
+    if (command === "restore-recorded-video-fixtures") {
+      if (args.length !== 0) {
+        throw new Error("restore-recorded-video-fixtures accepts no arguments");
+      }
+      return this.restoreRecordedVideoFixturesImpl();
     }
     if (command === "stop-vision-role") {
       const roleIndex = args.indexOf("--role");
@@ -1168,84 +1103,17 @@ export class CdpTestAdapter implements TestAdapter {
   }
 }
 
-/**
- * 仅由 testbed 环境提供三段录播文件名，原子替换 site config 后重启同一安装 owner。
- * 产品协议与业务代码不接受该命令；候选未携带三段夹具时以非零结果 fail closed。
- */
-export function selectRecordedVideoFixture(
-  segment: "far" | "mid" | "near",
+/** 仅调用生产 PowerShell seam；夹具信任、写入与 owner 生命周期都在同一模块内。 */
+function invokeRecordedVideoFixtureSwitch(
+  mode: "select" | "restore",
+  segment?: "far" | "mid" | "near",
 ): CommandResult {
-  const entry = GEOMETRY_ENTRY[segment];
+  const segmentArgument = segment ? ` -Segment '${segment}'` : "";
   const script = String.raw`
 $ErrorActionPreference = 'Stop'
-$entry = '${entry}'
-$configPath = 'C:\ProgramData\VEM\vision\site.json'
-$config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
-if ($null -eq $config.cameras -or $null -eq $config.cameras.front) { throw 'Vision site config has no front camera' }
-$activeVideoPath = [string]$config.cameras.front.video_path
-if (-not [IO.Path]::IsPathFullyQualified($activeVideoPath)) { throw 'Vision site config front video is not an installed fixture path' }
-$recordedRoot = Split-Path -Parent $activeVideoPath
-$manifestPath = Join-Path $recordedRoot 'expected-results.json'
-if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw '安装 recorded-video manifest 缺失' }
-$manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-$entries = @($manifest.recordings.geometryFar, $manifest.recordings.geometryMid, $manifest.recordings.geometryNear)
-if ($entries.Count -ne 3 -or @($entries | Where-Object { $null -eq $_ -or $_.loop -ne $true -or [string]$_.file -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*\.mp4$' -or [string]$_.sha256 -notmatch '^[a-f0-9]{64}$' -or [string]$_.sourceSha256 -notmatch '^[a-f0-9]{64}$' -or [string]::IsNullOrWhiteSpace([string]$_.source) -or [string]::IsNullOrWhiteSpace([string]$_.generator) }).Count -ne 0 -or @($entries.file | Select-Object -Unique).Count -ne 3 -or @($entries.sha256 | Select-Object -Unique).Count -ne 3 -or @($entries.source | Select-Object -Unique).Count -ne 1 -or @($entries.sourceSha256 | Select-Object -Unique).Count -ne 1 -or @($entries.generator | Select-Object -Unique).Count -ne 1) { throw '安装 manifest 缺少同源规范 geometry 三段 entry' }
-$recording = $manifest.recordings.$entry
-$filename = [string]$recording.file
-$videoPath = Join-Path $recordedRoot $filename
-if (-not (Test-Path -LiteralPath $videoPath -PathType Leaf)) { throw "安装录播文件缺失: $filename" }
-$actualDigest = (Get-FileHash -LiteralPath $videoPath -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($actualDigest -cne [string]$recording.sha256) { throw "安装录播文件摘要不匹配: $filename" }
-$config.cameras.front.source = 'recorded_video'
-$config.cameras.front.role = 'profile_try_on'
-$config.cameras.front.video_path = $videoPath
-$config.cameras.front.loop = $true
-$tempPath = "$configPath.$PID.tmp"
-$config | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $tempPath -Encoding utf8 -NoNewline
-Move-Item -LiteralPath $tempPath -Destination $configPath -Force
-$rolesUri = 'http://127.0.0.1:7892/v2/runtime/roles'
-$visionModule = Import-Module (Join-Path (Get-Location) 'scripts\windows\vision-main-artifacts.psm1') -Force -PassThru
-if ($null -eq $visionModule) { throw '安装 Vision canonical owner helper 缺失' }
-function Get-CanonicalVisionOwner {
-  return & $visionModule {
-    Get-VisionMainCanonicalProcessBinding 'C:\VEM\vision\app' 'C:\ProgramData\VEM\vision\site.json'
-  }
-}
-try { $before = Invoke-RestMethod -Uri $rolesUri -TimeoutSec 2 } catch { throw '切换前 Vision runtime 未就绪' }
-if (@($before.roles).Count -eq 0 -or @($before.roles | Where-Object { $_.ready -ne $true -or $null -eq $_.pid }).Count -ne 0) { throw '切换前 Vision runtime 角色未全部 ready' }
-$oldOwner = Get-CanonicalVisionOwner
-if ($null -eq $oldOwner) { throw '切换前缺少唯一 canonical Vision owner' }
-$oldMainPid = [int]$oldOwner.mainProcess.ProcessId
-$oldCanonicalPids = @($oldOwner.canonicalProcesses | ForEach-Object { [int]$_.ProcessId })
-Stop-ScheduledTask -TaskName 'VEMVisionRuntime' -ErrorAction SilentlyContinue
-$deadline = [DateTime]::UtcNow.AddSeconds(30)
-do {
-  try { $afterStop = Invoke-RestMethod -Uri $rolesUri -TimeoutSec 2; $rolesStopped = $false } catch { $rolesStopped = $true }
-  $remainingOldPids = @($oldCanonicalPids | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
-  $oldOwnerExited = $rolesStopped -and $remainingOldPids.Count -eq 0 -and $null -eq (Get-CanonicalVisionOwner)
-  if ($oldOwnerExited) { break }
-  Start-Sleep -Milliseconds 100
-} while ([DateTime]::UtcNow -lt $deadline)
-if (-not $oldOwnerExited) { throw '停止后旧 Vision owner 仍提供 runtime 角色端点' }
-Start-ScheduledTask -TaskName 'VEMVisionRuntime' -ErrorAction Stop
-$deadline = [DateTime]::UtcNow.AddSeconds(60)
-$stableRoleSignature = $null
-$stableSince = $null
-do {
-  try { $roles = Invoke-RestMethod -Uri $rolesUri -TimeoutSec 2 } catch { $roles = $null }
-  $ready = $null -ne $roles -and @($roles.roles).Count -gt 0 -and @($roles.roles | Where-Object { $_.ready -ne $true -or $null -eq $_.pid }).Count -eq 0
-  $task = Get-ScheduledTask -TaskName 'VEMVisionRuntime' -ErrorAction SilentlyContinue
-  $owner = Get-CanonicalVisionOwner
-  $singleOwner = $null -ne $task -and [string]$task.TaskName -eq 'VEMVisionRuntime' -and [string]$task.State -eq 'Running' -and $null -ne $owner
-  $newCanonicalPids = if ($null -ne $owner) { @($owner.canonicalProcesses | ForEach-Object { [int]$_.ProcessId }) } else { @() }
-  $rolesBelongToNewOwner = $ready -and $null -ne $owner -and [int]$owner.mainProcess.ProcessId -ne $oldMainPid -and @($roles.roles | ForEach-Object { [int]$_.pid } | Where-Object { $newCanonicalPids -notcontains $_ }).Count -eq 0
-  $signature = if ($ready) { (@($roles.roles | Sort-Object name | ForEach-Object { "$($_.name):$($_.pid)" }) -join '|') } else { $null }
-  if ($signature -ne $stableRoleSignature) { $stableRoleSignature = $signature; $stableSince = [DateTime]::UtcNow }
-  if ($singleOwner -and $rolesBelongToNewOwner -and $null -ne $stableSince -and ([DateTime]::UtcNow - $stableSince).TotalMilliseconds -ge 1000) { break }
-  Start-Sleep -Milliseconds 250
-} while ([DateTime]::UtcNow -lt $deadline)
-if (-not $singleOwner -or -not $rolesBelongToNewOwner -or $null -eq $stableSince) { throw '新 VEMVisionRuntime owner 未以唯一稳定 roles/PID ready 状态启动' }
-[Console]::Out.WriteLine($filename)
+$fixtureModulePath = Join-Path (Get-Location) 'scripts\testbed\recorded-video-fixture-decision.psm1'
+Import-Module $fixtureModulePath -Force -ErrorAction Stop
+Invoke-VemRecordedFixtureSwitch -Mode '${mode}'${segmentArgument} | ConvertTo-Json -Compress
 `;
   const result = spawnSync("powershell", ["-NoProfile", "-Command", script], {
     encoding: "utf8",
@@ -1255,6 +1123,21 @@ if (-not $singleOwner -or -not $rolesBelongToNewOwner -or $null -eq $stableSince
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? "",
   };
+}
+
+/**
+ * 仅由 testbed 环境提供三段录播文件名，原子替换 site config 后重启同一安装 owner。
+ * 产品协议与业务代码不接受该命令；已安装产物未携带三段夹具时以非零结果 fail closed。
+ */
+export function selectRecordedVideoFixture(
+  segment: "far" | "mid" | "near",
+): CommandResult {
+  return invokeRecordedVideoFixtureSwitch("select", segment);
+}
+
+/** 在每条 Vision acceptance 轨道后恢复已安装的默认录播对。 */
+export function restoreRecordedVideoFixtures(): CommandResult {
+  return invokeRecordedVideoFixtureSwitch("restore");
 }
 
 async function inspectCapturedFrameResource({
