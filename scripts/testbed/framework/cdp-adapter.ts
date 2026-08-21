@@ -43,7 +43,26 @@ import {
 
 const MAX_RESULT_PNG_BYTES = 8 * 1024 * 1024;
 const MAX_DIAGNOSTIC_ENTRIES = 128;
+const MAX_NETWORK_REQUESTS = 128;
 const MAX_DIAGNOSTIC_TEXT = 2_048;
+const SAFE_DIAGNOSTIC_PATH_SEGMENTS = new Set([
+  "api",
+  "assets",
+  "content",
+  "images",
+  "media-assets",
+  "results",
+  "try-on",
+  "v2",
+]);
+const SAFE_DIAGNOSTIC_IMAGE_EXTENSIONS = new Set([
+  "gif",
+  "jpeg",
+  "jpg",
+  "png",
+  "svg",
+  "webp",
+]);
 
 function redactDiagnosticText(value: unknown): string {
   return redactSensitiveEvidenceText(value, MAX_DIAGNOSTIC_TEXT);
@@ -97,6 +116,97 @@ function boundedPush<T>(target: T[], value: T): void {
   if (target.length > MAX_DIAGNOSTIC_ENTRIES) {
     target.splice(0, target.length - MAX_DIAGNOSTIC_ENTRIES);
   }
+}
+
+interface NetworkRequestDiagnostic {
+  url: string | null;
+  resourceType: string | null;
+  responseStatus: number | null;
+  responseMimeType: string | null;
+  extraInfoStatus: number | null;
+  extraInfoMimeType: string | null;
+  responseObserved: boolean;
+  responseEvidenceRecorded: boolean;
+}
+
+function emptyNetworkRequestDiagnostic(): NetworkRequestDiagnostic {
+  return {
+    url: null,
+    resourceType: null,
+    responseStatus: null,
+    responseMimeType: null,
+    extraInfoStatus: null,
+    extraInfoMimeType: null,
+    responseObserved: false,
+    responseEvidenceRecorded: false,
+  };
+}
+
+function correlatedNetworkStatus(
+  request: NetworkRequestDiagnostic,
+): number | null {
+  return request.extraInfoStatus ?? request.responseStatus;
+}
+
+function correlatedNetworkMimeType(
+  request: NetworkRequestDiagnostic,
+): string | null {
+  return request.extraInfoMimeType ?? request.responseMimeType;
+}
+
+function safeDiagnosticUrl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  try {
+    const url = new URL(value);
+    if (!url.protocol || !url.host) return null;
+    const pathname = url.pathname
+      .split("/")
+      .map((segment) => {
+        if (segment === "") return "";
+        let decodedSegment = segment;
+        try {
+          decodedSegment = decodeURIComponent(segment);
+        } catch {
+          return "[REDACTED]";
+        }
+        const normalized = decodedSegment.toLowerCase();
+        if (SAFE_DIAGNOSTIC_PATH_SEGMENTS.has(normalized)) return normalized;
+        const extension = /[.]([a-z0-9]+)$/i
+          .exec(decodedSegment)?.[1]
+          ?.toLowerCase();
+        return extension && SAFE_DIAGNOSTIC_IMAGE_EXTENSIONS.has(extension)
+          ? `[REDACTED].${extension}`
+          : "[REDACTED]";
+      })
+      .join("/");
+    return `${url.protocol}//${url.host}${pathname}`;
+  } catch {
+    return null;
+  }
+}
+
+function networkStatus(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function networkMimeType(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const mimeType = value.split(";", 1)[0]?.trim() ?? "";
+  return mimeType.length <= 128 &&
+    /^[\w!#$&^_.+-]+\/[\w!#$&^_.+-]+$/.test(mimeType)
+    ? mimeType
+    : null;
+}
+
+function extraInfoMimeType(value: unknown): string | null {
+  const headers = (value as { headers?: unknown } | null)?.headers;
+  if (!headers || typeof headers !== "object" || Array.isArray(headers)) {
+    return null;
+  }
+  const contentType = Object.entries(headers as Record<string, unknown>).find(
+    ([key]) => key.toLowerCase() === "content-type",
+  )?.[1];
+  return networkMimeType(contentType);
 }
 
 interface CdpTarget {
@@ -501,6 +611,7 @@ export class CdpTestAdapter implements TestAdapter {
   consoleDiagnostics: unknown[] = [];
   exceptionDiagnostics: unknown[] = [];
   networkDiagnostics: unknown[] = [];
+  networkRequests = new Map<string, NetworkRequestDiagnostic>();
   lastDomState: Record<string, unknown> | null = null;
 
   constructor({
@@ -528,6 +639,112 @@ export class CdpTestAdapter implements TestAdapter {
     this.selectRecordedVideoFixtureImpl = selectRecordedVideoFixtureImpl;
     this.restoreRecordedVideoFixturesImpl = restoreRecordedVideoFixturesImpl;
     this.cdpWebSocketFactory = cdpWebSocketFactory;
+  }
+
+  private rememberNetworkRequest(
+    requestId: string,
+    update: Partial<NetworkRequestDiagnostic> = {},
+    { reset = false }: { reset?: boolean } = {},
+  ): NetworkRequestDiagnostic {
+    const previous = reset
+      ? emptyNetworkRequestDiagnostic()
+      : (this.networkRequests.get(requestId) ??
+        emptyNetworkRequestDiagnostic());
+    const request = { ...previous, ...update };
+    this.networkRequests.delete(requestId);
+    this.networkRequests.set(requestId, request);
+    while (this.networkRequests.size > MAX_NETWORK_REQUESTS) {
+      const oldestRequestId = this.networkRequests.keys().next().value;
+      if (typeof oldestRequestId !== "string") break;
+      this.networkRequests.delete(oldestRequestId);
+    }
+    this.refreshLoadingFailedDiagnostics(requestId, request);
+    return request;
+  }
+
+  private refreshLoadingFailedDiagnostics(
+    requestId: string,
+    request: NetworkRequestDiagnostic,
+  ): void {
+    for (const entry of this.networkDiagnostics) {
+      const diagnostic = entry as Record<string, unknown>;
+      if (
+        diagnostic.kind !== "loadingFailed" ||
+        diagnostic.requestId !== requestId
+      ) {
+        continue;
+      }
+      diagnostic.url = request.url;
+      diagnostic.status = correlatedNetworkStatus(request);
+      diagnostic.mimeType = correlatedNetworkMimeType(request);
+      if (diagnostic.resourceType == null) {
+        diagnostic.resourceType = request.resourceType;
+      }
+    }
+  }
+
+  private recordNetworkResponseEvidence(
+    requestId: string | null,
+    request: NetworkRequestDiagnostic,
+  ): void {
+    const status = correlatedNetworkStatus(request);
+    if (request.resourceType !== "Image" && (status == null || status < 400)) {
+      return;
+    }
+    boundedPush(
+      this.networkDiagnostics,
+      sanitizeDiagnosticValue({
+        at: new Date().toISOString(),
+        kind: status != null && status >= 400 ? "httpError" : "imageResponse",
+        requestId,
+        resourceType: request.resourceType,
+        url: request.url,
+        status,
+        mimeType: correlatedNetworkMimeType(request),
+      }),
+    );
+    request.responseEvidenceRecorded = true;
+  }
+
+  private reconcileNetworkResponseEvidence(
+    requestId: string,
+    request: NetworkRequestDiagnostic,
+  ): void {
+    const status = correlatedNetworkStatus(request);
+    const shouldRecord =
+      request.resourceType === "Image" || (status != null && status >= 400);
+    if (request.responseEvidenceRecorded) {
+      const diagnosticIndex = this.networkDiagnostics.findLastIndex((entry) => {
+        const diagnostic = entry as Record<string, unknown>;
+        return (
+          diagnostic.requestId === requestId &&
+          (diagnostic.kind === "imageResponse" ||
+            diagnostic.kind === "httpError")
+        );
+      });
+      if (diagnosticIndex >= 0) {
+        if (!shouldRecord) {
+          this.networkDiagnostics.splice(diagnosticIndex, 1);
+          request.responseEvidenceRecorded = false;
+          return;
+        }
+        const diagnostic = this.networkDiagnostics[diagnosticIndex] as Record<
+          string,
+          unknown
+        >;
+        diagnostic.kind =
+          status != null && status >= 400 ? "httpError" : "imageResponse";
+        diagnostic.resourceType = request.resourceType;
+        diagnostic.url = request.url;
+        diagnostic.status = status;
+        diagnostic.mimeType = correlatedNetworkMimeType(request);
+        return;
+      }
+      request.responseEvidenceRecorded = false;
+    }
+    if (request.responseObserved && shouldRecord) {
+      this.recordNetworkResponseEvidence(requestId, request);
+    }
   }
 
   recordMilestone(
@@ -584,7 +801,68 @@ export class CdpTestAdapter implements TestAdapter {
       );
       return;
     }
+    if (method === "Network.requestWillBeSent") {
+      if (typeof value?.requestId !== "string") return;
+      if (
+        value?.redirectResponse &&
+        typeof value.redirectResponse === "object"
+      ) {
+        const previous = this.networkRequests.get(value.requestId);
+        const redirect = this.rememberNetworkRequest(value.requestId, {
+          url:
+            safeDiagnosticUrl(value.redirectResponse.url) ??
+            previous?.url ??
+            null,
+          resourceType:
+            typeof value?.type === "string"
+              ? value.type.slice(0, 128)
+              : (previous?.resourceType ?? null),
+          responseStatus:
+            networkStatus(value.redirectResponse.status) ??
+            previous?.responseStatus ??
+            null,
+          responseMimeType:
+            networkMimeType(value.redirectResponse.mimeType) ??
+            previous?.responseMimeType ??
+            null,
+          responseObserved: true,
+        });
+        this.reconcileNetworkResponseEvidence(value.requestId, redirect);
+      }
+      const isRedirect = value?.redirectResponse != null;
+      const current = this.networkRequests.get(value.requestId);
+      const requestUrl = safeDiagnosticUrl(value?.request?.url);
+      const requestResourceType =
+        typeof value?.type === "string" ? value.type.slice(0, 128) : null;
+      this.rememberNetworkRequest(
+        value.requestId,
+        {
+          url: isRedirect ? requestUrl : (current?.url ?? requestUrl),
+          resourceType: isRedirect
+            ? requestResourceType
+            : (current?.resourceType ?? requestResourceType),
+        },
+        { reset: isRedirect },
+      );
+      return;
+    }
+    if (method === "Network.responseReceivedExtraInfo") {
+      if (typeof value?.requestId !== "string") return;
+      const previous = this.networkRequests.get(value.requestId);
+      const request = this.rememberNetworkRequest(value.requestId, {
+        extraInfoStatus:
+          networkStatus(value?.statusCode) ?? previous?.extraInfoStatus ?? null,
+        extraInfoMimeType:
+          extraInfoMimeType(value) ?? previous?.extraInfoMimeType ?? null,
+      });
+      this.reconcileNetworkResponseEvidence(value.requestId, request);
+      return;
+    }
     if (method === "Network.loadingFailed") {
+      const request =
+        typeof value?.requestId === "string"
+          ? this.rememberNetworkRequest(value.requestId)
+          : null;
       boundedPush(
         this.networkDiagnostics,
         sanitizeDiagnosticValue({
@@ -594,27 +872,47 @@ export class CdpTestAdapter implements TestAdapter {
           resourceType: value?.type ?? null,
           errorText: value?.errorText ?? null,
           canceled: value?.canceled ?? false,
+          url: request?.url ?? null,
+          status: request ? correlatedNetworkStatus(request) : null,
+          mimeType: request ? correlatedNetworkMimeType(request) : null,
         }),
       );
       return;
     }
-    if (
-      method === "Network.responseReceived" &&
-      Number(value?.response?.status) >= 400
-    ) {
-      boundedPush(
-        this.networkDiagnostics,
-        sanitizeDiagnosticValue({
-          at: new Date().toISOString(),
-          kind: "httpError",
-          requestId: value?.requestId ?? null,
-          resourceType: value?.type ?? null,
-          url: value?.response?.url ?? null,
-          status: value?.response?.status ?? null,
-          statusText: value?.response?.statusText ?? null,
-          mimeType: value?.response?.mimeType ?? null,
-        }),
-      );
+    if (method === "Network.responseReceived") {
+      const requestId =
+        typeof value?.requestId === "string" ? value.requestId : null;
+      const status = networkStatus(value?.response?.status);
+      const mimeType = networkMimeType(value?.response?.mimeType);
+      const previous = requestId ? this.networkRequests.get(requestId) : null;
+      const responseResourceType =
+        typeof value?.type === "string"
+          ? value.type.slice(0, 128)
+          : (previous?.resourceType ?? null);
+      const responseUrl =
+        safeDiagnosticUrl(value?.response?.url) ?? previous?.url ?? null;
+      const request = requestId
+        ? this.rememberNetworkRequest(requestId, {
+            url: responseUrl,
+            resourceType: responseResourceType,
+            responseStatus: status,
+            responseMimeType: mimeType,
+            responseObserved: true,
+          })
+        : ({
+            ...emptyNetworkRequestDiagnostic(),
+            url: responseUrl,
+            resourceType: responseResourceType,
+            responseStatus: status,
+            responseMimeType: mimeType,
+            responseObserved: true,
+          } satisfies NetworkRequestDiagnostic);
+      if (requestId) {
+        this.reconcileNetworkResponseEvidence(requestId, request);
+      } else {
+        this.recordNetworkResponseEvidence(requestId, request);
+      }
+      return;
     }
   }
 
@@ -672,8 +970,16 @@ export class CdpTestAdapter implements TestAdapter {
     const stopException = this.client.on("Runtime.exceptionThrown", (event) =>
       this.observeDiagnosticEvent("Runtime.exceptionThrown", event),
     );
+    const stopRequest = this.client.on("Network.requestWillBeSent", (event) =>
+      this.observeDiagnosticEvent("Network.requestWillBeSent", event),
+    );
     const stopResponse = this.client.on("Network.responseReceived", (event) =>
       this.observeDiagnosticEvent("Network.responseReceived", event),
+    );
+    const stopResponseExtraInfo = this.client.on(
+      "Network.responseReceivedExtraInfo",
+      (event) =>
+        this.observeDiagnosticEvent("Network.responseReceivedExtraInfo", event),
     );
     const stopLoadingFailed = this.client.on("Network.loadingFailed", (event) =>
       this.observeDiagnosticEvent("Network.loadingFailed", event),
@@ -685,7 +991,9 @@ export class CdpTestAdapter implements TestAdapter {
       stopClosed();
       stopConsole();
       stopException();
+      stopRequest();
       stopResponse();
+      stopResponseExtraInfo();
       stopLoadingFailed();
     };
     return this;
@@ -1097,6 +1405,7 @@ export class CdpTestAdapter implements TestAdapter {
     this.consoleDiagnostics = [];
     this.exceptionDiagnostics = [];
     this.networkDiagnostics = [];
+    this.networkRequests.clear();
     this.lastDomState = null;
     await this.client?.close().catch(() => {});
     this.client = null;

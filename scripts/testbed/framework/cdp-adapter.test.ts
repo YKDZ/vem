@@ -246,6 +246,632 @@ describe("CDP test adapter", () => {
     );
   });
 
+  it("把 ORB 图片失败关联到已净化的请求与响应且不泄漏凭据", async () => {
+    const adapter = new CdpTestAdapter({
+      visionBaseUrl: "http://127.0.0.1:1",
+    });
+    adapter.observeDiagnosticEvent("Network.requestWillBeSent", {
+      requestId: "result-image",
+      type: "Image",
+      request: {
+        url: "https://url-user:url-password@cdn.example.test/results/final.png?token=query-token&grant=query-grant&client_secret=query-secret#fragment-secret",
+        headers: { Authorization: "Bearer request-header-secret" },
+        postData: "request-body-secret",
+      },
+    });
+    adapter.observeDiagnosticEvent("Network.responseReceived", {
+      requestId: "result-image",
+      type: "Image",
+      response: {
+        url: "https://url-user:url-password@cdn.example.test/results/final.png?token=query-token&grant=query-grant&client_secret=query-secret#fragment-secret",
+        status: 404,
+        mimeType: "application/json",
+        headers: { Authorization: "Bearer response-header-secret" },
+        body: "response-body-secret",
+      },
+    });
+    adapter.observeDiagnosticEvent("Network.loadingFailed", {
+      requestId: "result-image",
+      type: "Image",
+      errorText: "net::ERR_BLOCKED_BY_ORB",
+      canceled: false,
+    });
+
+    const failure = await adapter.captureFailureEvidence(
+      new Error("result image failed"),
+    );
+    const events = failure.diagnostics.cdp.networkErrors.map(
+      ({ at: _at, ...event }: Record<string, unknown>) => event,
+    );
+    assert.deepEqual(events, [
+      {
+        kind: "httpError",
+        requestId: "result-image",
+        resourceType: "Image",
+        url: "https://cdn.example.test/results/[REDACTED].png",
+        status: 404,
+        mimeType: "application/json",
+      },
+      {
+        kind: "loadingFailed",
+        requestId: "result-image",
+        resourceType: "Image",
+        errorText: "net::ERR_BLOCKED_BY_ORB",
+        canceled: false,
+        url: "https://cdn.example.test/results/[REDACTED].png",
+        status: 404,
+        mimeType: "application/json",
+      },
+    ]);
+    const serialized = JSON.stringify(failure.diagnostics);
+    for (const secret of [
+      "url-user",
+      "url-password",
+      "query-token",
+      "query-grant",
+      "query-secret",
+      "fragment-secret",
+      "request-header-secret",
+      "request-body-secret",
+      "response-header-secret",
+      "response-body-secret",
+    ]) {
+      assert.doesNotMatch(serialized, new RegExp(secret));
+    }
+  });
+
+  it("为成功的图片响应保留有界状态与 MIME 支持证据", async () => {
+    const adapter = new CdpTestAdapter({
+      visionBaseUrl: "http://127.0.0.1:1",
+    });
+    adapter.observeDiagnosticEvent("Network.requestWillBeSent", {
+      requestId: "successful-image",
+      type: "Image",
+      request: {
+        url: "https://cdn.example.test/results/success.png?token=success-token",
+      },
+    });
+    adapter.observeDiagnosticEvent("Network.responseReceived", {
+      requestId: "successful-image",
+      type: "Image",
+      response: {
+        url: "https://cdn.example.test/results/success.png?token=success-token",
+        status: 200,
+        mimeType: "image/png",
+      },
+    });
+
+    const failure = await adapter.captureFailureEvidence(
+      new Error("later business assertion failed"),
+    );
+    const events = failure.diagnostics.cdp.networkErrors.map(
+      ({ at: _at, ...event }: Record<string, unknown>) => event,
+    );
+    assert.deepEqual(events, [
+      {
+        kind: "imageResponse",
+        requestId: "successful-image",
+        resourceType: "Image",
+        url: "https://cdn.example.test/results/[REDACTED].png",
+        status: 200,
+        mimeType: "image/png",
+      },
+    ]);
+    assert.doesNotMatch(JSON.stringify(failure.diagnostics), /success-token/);
+  });
+
+  it("响应事件缺失时仍把加载失败关联到安全请求路径", async () => {
+    const adapter = new CdpTestAdapter({
+      visionBaseUrl: "http://127.0.0.1:1",
+    });
+    adapter.observeDiagnosticEvent("Network.requestWillBeSent", {
+      requestId: "missing-response",
+      type: "Image",
+      request: {
+        url: "https://cdn.example.test/results/missing.png?grant=missing-grant",
+      },
+    });
+    adapter.observeDiagnosticEvent("Network.loadingFailed", {
+      requestId: "missing-response",
+      type: "Image",
+      errorText: "net::ERR_CONNECTION_RESET",
+    });
+
+    const failure = await adapter.captureFailureEvidence(
+      new Error("result image did not load"),
+    );
+    const event = failure.diagnostics.cdp.networkErrors.at(-1);
+    assert.equal(event.url, "https://cdn.example.test/results/[REDACTED].png");
+    assert.equal(event.status, null);
+    assert.equal(event.mimeType, null);
+    assert.doesNotMatch(JSON.stringify(failure.diagnostics), /missing-grant/);
+  });
+
+  it("按 requestId 隔离响应前后的 ExtraInfo 状态与 MIME", async () => {
+    const adapter = new CdpTestAdapter({
+      visionBaseUrl: "http://127.0.0.1:1",
+    });
+    for (const requestId of ["image-a", "image-b"]) {
+      adapter.observeDiagnosticEvent("Network.requestWillBeSent", {
+        requestId,
+        type: "Image",
+        request: { url: `https://cdn.example.test/results/${requestId}.png` },
+      });
+    }
+    adapter.observeDiagnosticEvent("Network.responseReceivedExtraInfo", {
+      requestId: "image-b",
+      statusCode: 403,
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        Authorization: "Bearer extra-info-secret",
+      },
+    });
+    adapter.observeDiagnosticEvent("Network.responseReceived", {
+      requestId: "image-a",
+      type: "Image",
+      response: {
+        status: 200,
+        mimeType: "image/png",
+      },
+    });
+    adapter.observeDiagnosticEvent("Network.responseReceivedExtraInfo", {
+      requestId: "image-a",
+      statusCode: 206,
+      headers: { "content-type": "image/webp" },
+    });
+    for (const requestId of ["image-a", "image-b"]) {
+      adapter.observeDiagnosticEvent("Network.loadingFailed", {
+        requestId,
+        type: "Image",
+        errorText: "net::ERR_BLOCKED_BY_ORB",
+      });
+    }
+
+    const failure = await adapter.captureFailureEvidence(
+      new Error("two images failed"),
+    );
+    const failures = failure.diagnostics.cdp.networkErrors.filter(
+      (event: { kind?: string }) => event.kind === "loadingFailed",
+    );
+    assert.deepEqual(
+      failures.map(({ at: _at, ...event }: Record<string, unknown>) => event),
+      [
+        {
+          kind: "loadingFailed",
+          requestId: "image-a",
+          resourceType: "Image",
+          errorText: "net::ERR_BLOCKED_BY_ORB",
+          canceled: false,
+          url: "https://cdn.example.test/results/[REDACTED].png",
+          status: 206,
+          mimeType: "image/webp",
+        },
+        {
+          kind: "loadingFailed",
+          requestId: "image-b",
+          resourceType: "Image",
+          errorText: "net::ERR_BLOCKED_BY_ORB",
+          canceled: false,
+          url: "https://cdn.example.test/results/[REDACTED].png",
+          status: 403,
+          mimeType: "application/json",
+        },
+      ],
+    );
+    assert.doesNotMatch(
+      JSON.stringify(failure.diagnostics),
+      /extra-info-secret/,
+    );
+  });
+
+  it("任意事件先后序都回填同 requestId 的加载失败诊断", async () => {
+    const adapter = new CdpTestAdapter({
+      visionBaseUrl: "http://127.0.0.1:1",
+    });
+    adapter.observeDiagnosticEvent("Network.responseReceivedExtraInfo", {
+      requestId: "extra-first",
+      statusCode: 404,
+      headers: { "content-type": "application/json" },
+    });
+    adapter.observeDiagnosticEvent("Network.requestWillBeSent", {
+      requestId: "extra-first",
+      type: "Image",
+      request: { url: "https://cdn.example.test/results/final.png" },
+    });
+    adapter.observeDiagnosticEvent("Network.responseReceived", {
+      requestId: "extra-first",
+      type: "Image",
+      response: { status: 404, mimeType: "application/octet-stream" },
+    });
+    adapter.observeDiagnosticEvent("Network.loadingFailed", {
+      requestId: "extra-first",
+      type: "Image",
+      errorText: "net::ERR_BLOCKED_BY_ORB",
+    });
+
+    adapter.observeDiagnosticEvent("Network.requestWillBeSent", {
+      requestId: "extra-late",
+      type: "Image",
+      request: { url: "https://cdn.example.test/results/final.png" },
+    });
+    adapter.observeDiagnosticEvent("Network.responseReceived", {
+      requestId: "extra-late",
+      type: "Image",
+      response: { status: 200, mimeType: "image/png" },
+    });
+    adapter.observeDiagnosticEvent("Network.loadingFailed", {
+      requestId: "extra-late",
+      type: "Image",
+      errorText: "net::ERR_BLOCKED_BY_ORB",
+    });
+    adapter.observeDiagnosticEvent("Network.responseReceivedExtraInfo", {
+      requestId: "extra-late",
+      statusCode: 502,
+      headers: { "content-type": "application/problem+json" },
+    });
+
+    adapter.observeDiagnosticEvent("Network.responseReceived", {
+      requestId: "response-first",
+      type: "Image",
+      response: {
+        url: "https://response.example.test/results/response.png",
+        status: 418,
+        mimeType: "application/problem+json",
+      },
+    });
+    adapter.observeDiagnosticEvent("Network.requestWillBeSent", {
+      requestId: "response-first",
+      type: "Image",
+      request: { url: "https://request.example.test/results/request.png" },
+    });
+    adapter.observeDiagnosticEvent("Network.loadingFailed", {
+      requestId: "response-first",
+      type: "Image",
+      errorText: "net::ERR_BLOCKED_BY_ORB",
+    });
+
+    const failure = await adapter.captureFailureEvidence(
+      new Error("out-of-order image failures"),
+    );
+    const extraLateDiagnostics = failure.diagnostics.cdp.networkErrors.filter(
+      (event: { requestId?: string }) => event.requestId === "extra-late",
+    );
+    assert.deepEqual(
+      extraLateDiagnostics.map(
+        ({ at: _at, ...event }: Record<string, unknown>) => event,
+      ),
+      [
+        {
+          kind: "httpError",
+          requestId: "extra-late",
+          resourceType: "Image",
+          url: "https://cdn.example.test/results/[REDACTED].png",
+          status: 502,
+          mimeType: "application/problem+json",
+        },
+        {
+          kind: "loadingFailed",
+          requestId: "extra-late",
+          resourceType: "Image",
+          errorText: "net::ERR_BLOCKED_BY_ORB",
+          canceled: false,
+          url: "https://cdn.example.test/results/[REDACTED].png",
+          status: 502,
+          mimeType: "application/problem+json",
+        },
+      ],
+    );
+    const loadingFailures = failure.diagnostics.cdp.networkErrors.filter(
+      (event: { kind?: string }) => event.kind === "loadingFailed",
+    );
+    assert.deepEqual(
+      loadingFailures.map(
+        ({ at: _at, ...event }: Record<string, unknown>) => event,
+      ),
+      [
+        {
+          kind: "loadingFailed",
+          requestId: "extra-first",
+          resourceType: "Image",
+          errorText: "net::ERR_BLOCKED_BY_ORB",
+          canceled: false,
+          url: "https://cdn.example.test/results/[REDACTED].png",
+          status: 404,
+          mimeType: "application/json",
+        },
+        {
+          kind: "loadingFailed",
+          requestId: "extra-late",
+          resourceType: "Image",
+          errorText: "net::ERR_BLOCKED_BY_ORB",
+          canceled: false,
+          url: "https://cdn.example.test/results/[REDACTED].png",
+          status: 502,
+          mimeType: "application/problem+json",
+        },
+        {
+          kind: "loadingFailed",
+          requestId: "response-first",
+          resourceType: "Image",
+          errorText: "net::ERR_BLOCKED_BY_ORB",
+          canceled: false,
+          url: "https://response.example.test/results/[REDACTED].png",
+          status: 418,
+          mimeType: "application/problem+json",
+        },
+      ],
+    );
+  });
+
+  it("迟到 ExtraInfo 把非图片 2xx 响应补记为 HTTP error", async () => {
+    const adapter = new CdpTestAdapter({
+      visionBaseUrl: "http://127.0.0.1:1",
+    });
+    adapter.observeDiagnosticEvent("Network.requestWillBeSent", {
+      requestId: "late-fetch-error",
+      type: "Fetch",
+      request: { url: "https://api.example.test/api/results/data" },
+    });
+    adapter.observeDiagnosticEvent("Network.responseReceived", {
+      requestId: "late-fetch-error",
+      type: "Fetch",
+      response: { status: 200, mimeType: "application/json" },
+    });
+    adapter.observeDiagnosticEvent("Network.loadingFailed", {
+      requestId: "late-fetch-error",
+      type: "Fetch",
+      errorText: "net::ERR_FAILED",
+    });
+    adapter.observeDiagnosticEvent("Network.responseReceivedExtraInfo", {
+      requestId: "late-fetch-error",
+      statusCode: 503,
+      headers: { "content-type": "application/problem+json" },
+    });
+
+    const failure = await adapter.captureFailureEvidence(
+      new Error("fetch response failed"),
+    );
+    assert.deepEqual(
+      failure.diagnostics.cdp.networkErrors.map(
+        ({ at: _at, ...event }: Record<string, unknown>) => event,
+      ),
+      [
+        {
+          kind: "loadingFailed",
+          requestId: "late-fetch-error",
+          resourceType: "Fetch",
+          errorText: "net::ERR_FAILED",
+          canceled: false,
+          url: "https://api.example.test/api/results/[REDACTED]",
+          status: 503,
+          mimeType: "application/problem+json",
+        },
+        {
+          kind: "httpError",
+          requestId: "late-fetch-error",
+          resourceType: "Fetch",
+          url: "https://api.example.test/api/results/[REDACTED]",
+          status: 503,
+          mimeType: "application/problem+json",
+        },
+      ],
+    );
+  });
+
+  it("redirect 复用 requestId 时保留中间响应并重置到下一跳", async () => {
+    const adapter = new CdpTestAdapter({
+      visionBaseUrl: "http://127.0.0.1:1",
+    });
+    adapter.observeDiagnosticEvent("Network.requestWillBeSent", {
+      requestId: "redirected-image",
+      type: "Image",
+      request: { url: "https://origin.example.test/results/final.png" },
+    });
+    adapter.observeDiagnosticEvent("Network.requestWillBeSent", {
+      requestId: "redirected-image",
+      type: "Image",
+      redirectResponse: {
+        url: "https://origin.example.test/results/final.png",
+        status: 302,
+        mimeType: "text/html",
+      },
+      request: { url: "https://cdn.example.test/images/final.png" },
+    });
+    adapter.observeDiagnosticEvent("Network.responseReceived", {
+      requestId: "redirected-image",
+      type: "Image",
+      response: {
+        url: "https://cdn.example.test/images/final.png",
+        status: 200,
+        mimeType: "image/png",
+      },
+    });
+    adapter.observeDiagnosticEvent("Network.loadingFailed", {
+      requestId: "redirected-image",
+      type: "Image",
+      errorText: "net::ERR_BLOCKED_BY_ORB",
+    });
+
+    const failure = await adapter.captureFailureEvidence(
+      new Error("redirected image failed"),
+    );
+    assert.deepEqual(
+      failure.diagnostics.cdp.networkErrors.map(
+        ({ at: _at, ...event }: Record<string, unknown>) => event,
+      ),
+      [
+        {
+          kind: "imageResponse",
+          requestId: "redirected-image",
+          resourceType: "Image",
+          url: "https://origin.example.test/results/[REDACTED].png",
+          status: 302,
+          mimeType: "text/html",
+        },
+        {
+          kind: "imageResponse",
+          requestId: "redirected-image",
+          resourceType: "Image",
+          url: "https://cdn.example.test/images/[REDACTED].png",
+          status: 200,
+          mimeType: "image/png",
+        },
+        {
+          kind: "loadingFailed",
+          requestId: "redirected-image",
+          resourceType: "Image",
+          errorText: "net::ERR_BLOCKED_BY_ORB",
+          canceled: false,
+          url: "https://cdn.example.test/images/[REDACTED].png",
+          status: 200,
+          mimeType: "image/png",
+        },
+      ],
+    );
+  });
+
+  it("安全 URL 只保留 allowlist 路由形状与图片扩展类别", async () => {
+    const adapter = new CdpTestAdapter({
+      visionBaseUrl: "http://127.0.0.1:1",
+    });
+    const requests = [
+      {
+        requestId: "opaque-path",
+        url: "https://url-user:url-password@cdn.example.test/results/opaque-credential/final.png?token=query-token#hash-secret",
+      },
+      {
+        requestId: "jwt-path",
+        url: "https://cdn.example.test/v2/try-on/results/eyJhbGciOiJIUzI1NiJ9.eyJhdHRlbXB0SWQiOiJzZWNyZXQifQ.signature",
+      },
+      {
+        requestId: "uuid-path",
+        url: "https://cdn.example.test/v2/try-on/results/550e8400-e29b-41d4-a716-446655440124",
+      },
+      {
+        requestId: "hex-path",
+        url: `https://cdn.example.test/assets/${"a1".repeat(32)}.png`,
+      },
+      {
+        requestId: "base64-path",
+        url: "https://cdn.example.test/images/c3VwZXItc2VjcmV0LWNyZWRlbnRpYWw.webp",
+      },
+    ];
+    for (const request of requests) {
+      adapter.observeDiagnosticEvent("Network.requestWillBeSent", {
+        requestId: request.requestId,
+        type: "Image",
+        request: { url: request.url },
+      });
+      adapter.observeDiagnosticEvent("Network.loadingFailed", {
+        requestId: request.requestId,
+        type: "Image",
+        errorText: "net::ERR_BLOCKED_BY_ORB",
+      });
+    }
+
+    const failure = await adapter.captureFailureEvidence(
+      new Error("unsafe paths failed"),
+    );
+    assert.deepEqual(
+      failure.diagnostics.cdp.networkErrors.map(
+        (event: { url?: unknown }) => event.url,
+      ),
+      [
+        "https://cdn.example.test/results/[REDACTED]/[REDACTED].png",
+        "https://cdn.example.test/v2/try-on/results/[REDACTED]",
+        "https://cdn.example.test/v2/try-on/results/[REDACTED]",
+        "https://cdn.example.test/assets/[REDACTED].png",
+        "https://cdn.example.test/images/[REDACTED].webp",
+      ],
+    );
+    const serialized = JSON.stringify(failure.diagnostics);
+    for (const secret of [
+      "url-user",
+      "url-password",
+      "opaque-credential",
+      "query-token",
+      "hash-secret",
+      "eyJhbGciOiJIUzI1NiJ9",
+      "550e8400-e29b-41d4-a716-446655440124",
+      "a1".repeat(32),
+      "c3VwZXItc2VjcmV0LWNyZWRlbnRpYWw",
+    ]) {
+      assert.doesNotMatch(serialized, new RegExp(secret));
+    }
+    assert.match(serialized, /\/v2\/try-on\/results\/\[REDACTED\]/);
+    assert.match(serialized, /\[REDACTED\][.]png/);
+  });
+
+  it("对网络关联与诊断设置硬上限并在关闭时清空", async () => {
+    const adapter = new CdpTestAdapter({
+      visionBaseUrl: "http://127.0.0.1:1",
+    });
+    for (let index = 0; index < 129; index += 1) {
+      adapter.observeDiagnosticEvent("Network.requestWillBeSent", {
+        requestId: `bounded-request-${index}`,
+        type: "Image",
+        request: {
+          url: `https://cdn.example.test/results/bounded-${index}.png`,
+        },
+      });
+    }
+    adapter.observeDiagnosticEvent("Network.loadingFailed", {
+      requestId: "bounded-request-0",
+      type: "Image",
+      errorText: "net::ERR_FAILED",
+    });
+    adapter.observeDiagnosticEvent("Network.loadingFailed", {
+      requestId: "bounded-request-128",
+      type: "Image",
+      errorText: "net::ERR_FAILED",
+    });
+    const correlated = await adapter.captureFailureEvidence(
+      new Error("bounded correlation"),
+    );
+    assert.equal(correlated.diagnostics.cdp.networkErrors[0].url, null);
+    assert.equal(
+      correlated.diagnostics.cdp.networkErrors[1].url,
+      "https://cdn.example.test/results/[REDACTED].png",
+    );
+
+    for (let index = 0; index < 129; index += 1) {
+      adapter.observeDiagnosticEvent("Network.loadingFailed", {
+        requestId: `bounded-failure-${index}`,
+        type: "Image",
+        errorText: "net::ERR_FAILED",
+      });
+    }
+    const bounded = await adapter.captureFailureEvidence(
+      new Error("bounded diagnostics"),
+    );
+    assert.equal(bounded.diagnostics.cdp.networkErrors.length, 128);
+    assert.equal(
+      bounded.diagnostics.cdp.networkErrors[0].requestId,
+      "bounded-failure-1",
+    );
+    assert.equal(
+      bounded.diagnostics.cdp.networkErrors.at(-1).requestId,
+      "bounded-failure-128",
+    );
+
+    adapter.observeDiagnosticEvent("Network.requestWillBeSent", {
+      requestId: "cleared-on-close",
+      type: "Image",
+      request: { url: "https://cdn.example.test/results/cleared.png" },
+    });
+    await adapter.close();
+    adapter.observeDiagnosticEvent("Network.loadingFailed", {
+      requestId: "cleared-on-close",
+      type: "Image",
+      errorText: "net::ERR_FAILED",
+    });
+    const failure = await adapter.captureFailureEvidence(
+      new Error("after close"),
+    );
+    assert.equal(failure.diagnostics.cdp.networkErrors.length, 1);
+    assert.equal(failure.diagnostics.cdp.networkErrors[0].url, null);
+  });
+
   it("公开角色集合为空时不得报告 Vision 就绪", async () => {
     const server = createServer((_request, response) => {
       response.setHeader("content-type", "application/json");
