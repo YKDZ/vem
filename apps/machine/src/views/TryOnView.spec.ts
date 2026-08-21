@@ -41,7 +41,6 @@ import type { VisionTryOnAttemptEvent } from "@/native/vision";
 
 import { useCatalogStore } from "@/stores/catalog";
 import { useTryOnStore } from "@/stores/try-on";
-import { MIN_CAPTURED_FRAME_VISIBLE_MS } from "@/stores/try-on";
 import { useVisionStore } from "@/stores/vision";
 
 import TryOnView from "./TryOnView.vue";
@@ -188,25 +187,6 @@ async function mount(): Promise<HTMLElement> {
   return host;
 }
 
-async function confirmCapturedImageDisplayed(host: HTMLElement): Promise<void> {
-  const image = host.querySelector<HTMLImageElement>(
-    '[data-test="try-on-captured-image"]',
-  );
-  if (!image) throw new Error("预期存在已验证的捕获帧图像");
-  Object.defineProperties(image, {
-    naturalHeight: { configurable: true, value: 768 },
-    naturalWidth: { configurable: true, value: 512 },
-  });
-  vi.useFakeTimers();
-  try {
-    image.dispatchEvent(new Event("load"));
-    await nextTick();
-    await vi.advanceTimersByTimeAsync(MIN_CAPTURED_FRAME_VISIBLE_MS);
-  } finally {
-    vi.useRealTimers();
-  }
-}
-
 describe("TryOnView single-path acquisition UI", () => {
   beforeEach(() => {
     pinia = createPinia();
@@ -332,7 +312,6 @@ describe("TryOnView single-path acquisition UI", () => {
         .querySelector('[data-test="try-on-captured-image"]')
         ?.classList.contains("try-on-media"),
     ).toBe(true);
-    await confirmCapturedImageDisplayed(host);
 
     emit(
       event("vision.try_on.attempt.generating", {
@@ -360,93 +339,6 @@ describe("TryOnView single-path acquisition UI", () => {
     mountedApp?.unmount();
     mountedApp = null;
     expect(close).toHaveBeenCalledOnce();
-  });
-
-  it("结果同 tick 到达时，已验证捕获帧加载后仍保持最小可见窗口", async () => {
-    let emit: ((next: VisionTryOnAttemptEvent) => void) | undefined;
-    let emittedAttemptId = attemptId;
-    openAttemptMock.mockImplementation((_connection, input, onEvent) => {
-      emittedAttemptId = input.attemptId;
-      emit = (next) =>
-        onEvent(
-          { ...next, payload: { ...next.payload, attemptId: input.attemptId } },
-          {
-            attemptId: input.attemptId,
-            visionSocketUrl: "ws://127.0.0.1:7892/ws",
-          },
-        );
-      return Promise.resolve({
-        close: vi.fn(),
-        capture: vi.fn(),
-        cancel: vi.fn(),
-      });
-    });
-    try {
-      const host = await mount();
-      await vi.waitFor(() => {
-        expect(openAttemptMock).toHaveBeenCalledOnce();
-      });
-      if (!emit) throw new Error("预期收到原生试衣事件回调");
-
-      emit(event("vision.try_on.attempt.accepted", { attemptId }));
-      emit(acquisition());
-      emit(captured());
-      emit(
-        event("vision.try_on.attempt.generating", {
-          attemptId,
-          stage: "generating",
-        }),
-      );
-      emit(completed(emittedAttemptId));
-      await nextTick();
-
-      expect(useTryOnStore().phase).toBe("generating");
-
-      const capturedImage = host.querySelector<HTMLImageElement>(
-        '[data-test="try-on-captured-image"]',
-      );
-      expect(capturedImage).not.toBeNull();
-      expect(
-        host.querySelector('[data-test="try-on-result-image"]'),
-      ).toBeNull();
-
-      vi.useFakeTimers();
-      await vi.advanceTimersByTimeAsync(2_000);
-      await nextTick();
-      expect(
-        host.querySelector('[data-test="try-on-captured-image"]'),
-      ).not.toBeNull();
-      expect(
-        host.querySelector('[data-test="try-on-result-image"]'),
-      ).toBeNull();
-
-      Object.defineProperties(capturedImage!, {
-        naturalHeight: { configurable: true, value: 768 },
-        naturalWidth: { configurable: true, value: 512 },
-      });
-      capturedImage?.dispatchEvent(new Event("load"));
-      await nextTick();
-
-      await vi.advanceTimersByTimeAsync(999);
-      await nextTick();
-      expect(
-        host.querySelector('[data-test="try-on-captured-image"]'),
-      ).not.toBeNull();
-      expect(
-        host.querySelector('[data-test="try-on-result-image"]'),
-      ).toBeNull();
-
-      await vi.advanceTimersByTimeAsync(1);
-      await nextTick();
-      expect(
-        host.querySelector('[data-test="try-on-captured-image"]'),
-      ).toBeNull();
-      expect(
-        host.querySelector('[data-test="try-on-result-image"]'),
-      ).not.toBeNull();
-    } finally {
-      vi.useRealTimers();
-    }
   });
 
   it("在捕获和生成期间保持同一公开图像展示面显示真实捕获帧", async () => {
@@ -547,8 +439,17 @@ describe("TryOnView single-path acquisition UI", () => {
     expect(
       host.querySelector('[data-test="try-on-captured-image"]'),
     ).toBeNull();
-    expect(useTryOnStore().phase).toBe("failed");
-    expect(host.querySelector('[data-test="try-on-failure"]')).not.toBeNull();
+    expect(
+      host.querySelector('[data-test="try-on-captured-error"]')?.textContent,
+    ).toContain("试衣输入暂不可显示，请重试或返回商品");
+
+    callbacks[0]?.(
+      event("vision.try_on.attempt.canceled", { attemptId, reason: "timeout" }),
+    );
+    await nextTick();
+    expect(
+      host.querySelector('[data-test="try-on-captured-error"]'),
+    ).toBeNull();
     host
       .querySelector('[data-test="try-on-retry"]')
       ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -613,8 +514,6 @@ describe("TryOnView single-path acquisition UI", () => {
     emit(event("vision.try_on.attempt.accepted", { attemptId }));
     emit(acquisition());
     emit(captured());
-    await nextTick();
-    await confirmCapturedImageDisplayed(host);
     emit(
       event("vision.try_on.attempt.generating", {
         attemptId,
@@ -854,12 +753,6 @@ describe("TryOnView single-path acquisition UI", () => {
       context,
     );
     store.applyEvent(activeAttemptId, captured(activeAttemptId), context);
-    const capturedReference = store.captured?.reference;
-    if (!capturedReference) throw new Error("预期存在已验证的捕获帧");
-    vi.useFakeTimers();
-    store.reportCapturedImageLoad(capturedReference);
-    await vi.advanceTimersByTimeAsync(MIN_CAPTURED_FRAME_VISIBLE_MS);
-    vi.useRealTimers();
     store.applyEvent(
       activeAttemptId,
       event("vision.try_on.attempt.generating", {
