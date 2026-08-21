@@ -180,6 +180,8 @@ describe("CDP test adapter", () => {
         new Error("forced before read"),
       );
       const beforeReadState = failureBeforeRead.diagnostics.lastDomState;
+      assert.equal(typeof beforeReadState.atMs, "number");
+      assert.equal(beforeReadState.holdRemainingMs, null);
       assert.equal(beforeReadState.capturedVisible, true);
       assert.equal(beforeReadState.capturedNaturalWidth, 720);
       assert.equal(beforeReadState.capturedNaturalHeight, 1280);
@@ -198,6 +200,10 @@ describe("CDP test adapter", () => {
       assert.match(observation.capturedSourceDigest, /^sha256:[0-9a-f]{64}$/);
       assert.match(observation.capturedFrameHash, /^sha256:[0-9a-f]{64}$/);
       const failure = await adapter.captureFailureEvidence(new Error("forced"));
+      const stateObservation = failure.diagnostics.stateObservations.at(-1);
+      assert.equal(typeof stateObservation.atMs, "number");
+      assert.equal(stateObservation.holdRemainingMs, null);
+      assert.ok(failure.diagnostics.stateObservations.length <= 128);
       assert.doesNotMatch(
         JSON.stringify(failure.diagnostics),
         /captured-dom-secret/,

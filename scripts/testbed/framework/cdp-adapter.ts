@@ -1363,12 +1363,24 @@ export class CdpTestAdapter implements TestAdapter {
       unknown
     > = this.retainedCapturedObservation(state),
   ): void {
+    const attemptId =
+      typeof state?.attemptId === "string" ? state.attemptId : null;
+    const latestAcquiring = attemptId
+      ? [...this.protocolEvidence.eventsForAttempt(attemptId)]
+          .reverse()
+          .find((event) => event.type === "vision.try_on.attempt.acquiring")
+      : null;
     const observation = sanitizeDiagnosticValue({
       at: new Date().toISOString(),
+      atMs: Date.now(),
       route: state?.route ?? null,
       state: state?.state ?? null,
-      attemptId: state?.attemptId ?? null,
+      attemptId,
       countdownText: state?.countdownText ?? null,
+      holdRemainingMs:
+        typeof latestAcquiring?.payload.holdRemainingMs === "number"
+          ? latestAcquiring.payload.holdRemainingMs
+          : null,
       previewVisible: state?.previewVisible ?? false,
       preview: state?.preview ?? null,
       resultPresent:

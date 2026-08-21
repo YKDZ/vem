@@ -92,10 +92,36 @@ interface CountdownVisibleDurationValue {
   };
 }
 
+export const MAX_COUNTDOWN_TIMELINE_EVIDENCE_SAMPLES = 512;
+
+export interface CountdownProtocolDomConsistencyEvidence {
+  kind: "vision-countdown-protocol-dom-consistency";
+  subchecks: {
+    monotonicAtMs: boolean;
+    holdMatchesDom: boolean;
+    holdNonIncreasing: boolean;
+  };
+  lastOneAtMs: number | null;
+  firstHeldAtMs: number | null;
+  samples: Array<{
+    atMs: number;
+    state: string | null;
+    countdownText: string | null;
+    holdRemainingMs: number | null;
+  }>;
+}
+
+interface CountdownProtocolDomConsistencyValue extends TimelineAssertionValue {
+  expected: true;
+  observed: boolean;
+  evidence: CountdownProtocolDomConsistencyEvidence;
+}
+
 export interface VisionExperienceTimelineValidation {
   ok: boolean;
   countdownRenderedSequence: TimelineAssertionValue;
   countdownVisibleDuration: CountdownVisibleDurationValue;
+  countdownProtocolDomConsistent: CountdownProtocolDomConsistencyValue;
   captureAfterCountdown: TimelineAssertionValue;
   previewLiveThroughCountdown: TimelineAssertionValue;
   capturedFrameHeldDuringGeneration: TimelineAssertionValue;
@@ -459,6 +485,29 @@ function collapsedCountdownSequence(samples: VisionExperienceObservation[]) {
   }, []);
 }
 
+function validCountdownRounds(samples: VisionExperienceObservation[]) {
+  const rounds: VisionExperienceObservation[][] = [];
+  let active: VisionExperienceObservation[] = [];
+  for (const sample of samples) {
+    const isCountdownSample =
+      sample.state === "acquiring" &&
+      sample.countdownText !== null &&
+      COUNTDOWN_SEQUENCE.includes(sample.countdownText);
+    if (!isCountdownSample) {
+      if (active.length > 0) rounds.push(active);
+      active = [];
+      continue;
+    }
+    if (sample.countdownText === "3" && active.at(-1)?.countdownText !== "3") {
+      if (active.length > 0) rounds.push(active);
+      active = [];
+    }
+    active.push(sample);
+  }
+  if (active.length > 0) rounds.push(active);
+  return rounds;
+}
+
 function activeCountdownRound(samples: VisionExperienceObservation[]) {
   let active: VisionExperienceObservation[] = [];
   let latest: VisionExperienceObservation[] = [];
@@ -494,14 +543,16 @@ export function validateVisionExperienceTimeline({
   const attemptSamples = (Array.isArray(samples) ? samples : []).filter(
     (sample) => sample?.attemptId === attemptId,
   );
-  const monotonic = attemptSamples.every(
+  const countdown = activeCountdownRound(attemptSamples);
+  const countdownRounds = validCountdownRounds(attemptSamples);
+  const allCountdownSamples = countdownRounds.flat();
+  const monotonicAtMs = attemptSamples.every(
     (sample, index) =>
       Number.isFinite(sample.atMs) &&
       (index === 0 || sample.atMs > attemptSamples[index - 1]!.atMs),
   );
-  const countdown = activeCountdownRound(attemptSamples);
   const sequence = collapsedCountdownSequence(countdown);
-  const holdMatchesDom = countdown.every(
+  const holdMatchesDom = allCountdownSamples.every(
     (sample) =>
       Number.isInteger(sample.holdRemainingMs) &&
       sample.holdRemainingMs! >= 0 &&
@@ -509,10 +560,12 @@ export function validateVisionExperienceTimeline({
       String(Math.ceil(sample.holdRemainingMs! / 1_000)) ===
         sample.countdownText,
   );
-  const holdNonIncreasing = countdown.every(
-    (sample, index) =>
-      index === 0 ||
-      sample.holdRemainingMs! <= countdown[index - 1]!.holdRemainingMs!,
+  const holdNonIncreasing = countdownRounds.every((round) =>
+    round.every(
+      (sample, index) =>
+        index === 0 ||
+        sample.holdRemainingMs! <= round[index - 1]!.holdRemainingMs!,
+    ),
   );
   const bucketDurations = Object.fromEntries(
     COUNTDOWN_SEQUENCE.map((digit) => {
@@ -537,14 +590,8 @@ export function validateVisionExperienceTimeline({
     Object.values(bucketDurations).every(
       (duration) => duration >= MIN_COUNTDOWN_BUCKET_MS,
     ) && totalDurationMs >= MIN_COUNTDOWN_TOTAL_MS;
-  const countdownComplete =
-    monotonic &&
-    holdMatchesDom &&
-    holdNonIncreasing &&
-    JSON.stringify(sequence) === JSON.stringify(COUNTDOWN_SEQUENCE) &&
-    countdownDurationComplete;
   const captureAfter = Boolean(
-    countdownComplete && lastOne && firstHeld && firstHeld.atMs > lastOne.atMs,
+    lastOne && firstHeld && firstHeld.atMs > lastOne.atMs,
   );
   const countdownVisibleDuration = {
     expected: true as const,
@@ -577,13 +624,31 @@ export function validateVisionExperienceTimeline({
     expected: COUNTDOWN_SEQUENCE,
     observed: sequence,
   };
+  const countdownProtocolDomConsistent = {
+    expected: true as const,
+    observed: monotonicAtMs && holdMatchesDom && holdNonIncreasing,
+    evidence: {
+      kind: "vision-countdown-protocol-dom-consistency" as const,
+      subchecks: { monotonicAtMs, holdMatchesDom, holdNonIncreasing },
+      lastOneAtMs: lastOne?.atMs ?? null,
+      firstHeldAtMs: firstHeld?.atMs ?? null,
+      samples: attemptSamples
+        .slice(-MAX_COUNTDOWN_TIMELINE_EVIDENCE_SAMPLES)
+        .map(({ atMs, state, countdownText, holdRemainingMs }) => ({
+          atMs,
+          state,
+          countdownText,
+          holdRemainingMs,
+        })),
+    },
+  };
   const captureAfterCountdown = {
     expected: true,
     observed: captureAfter,
   };
   const previewLiveThroughCountdown = {
     expected: true,
-    observed: monotonic && previewForAllBuckets,
+    observed: previewForAllBuckets,
   };
   const heldSamples = attemptSamples.filter(
     (sample) => sample.state === "captured" || sample.state === "generating",
@@ -643,14 +708,16 @@ export function validateVisionExperienceTimeline({
   };
   return {
     ok:
-      countdownComplete &&
+      JSON.stringify(sequence) === JSON.stringify(COUNTDOWN_SEQUENCE) &&
+      countdownDurationComplete &&
+      countdownProtocolDomConsistent.observed &&
       captureAfter &&
-      monotonic &&
       previewForAllBuckets &&
       capturedAbsentOutsideHeld.observed &&
       capturedFrameHeldDuringGeneration.observed,
     countdownRenderedSequence,
     countdownVisibleDuration,
+    countdownProtocolDomConsistent,
     captureAfterCountdown,
     previewLiveThroughCountdown,
     capturedAbsentOutsideHeld,
@@ -962,6 +1029,12 @@ export async function runTryOnScenario(
         observed: timeline.countdownVisibleDuration.observed.passed,
       }),
       businessAssertion({
+        id: "countdown-protocol-dom-consistent",
+        source: "vision-experience-observation-timeline",
+        expected: timeline.countdownProtocolDomConsistent.expected,
+        observed: timeline.countdownProtocolDomConsistent.observed,
+      }),
+      businessAssertion({
         id: "captured-absent-outside-held",
         source: "vision-experience-observation-timeline",
         expected: timeline.capturedAbsentOutsideHeld.expected,
@@ -1015,20 +1088,20 @@ export async function runTryOnScenario(
         ]
       : []),
   ];
+  const supportingEvidence = [
+    selectionEvidence,
+    garmentBindingEvidence,
+    {
+      kind: "vision-countdown-visible-duration",
+      ...timeline.countdownVisibleDuration.observed,
+    },
+    timeline.countdownProtocolDomConsistent.evidence,
+    { ...capturedEvidence },
+  ];
   return {
     state,
     assertions,
-    supportingEvidence: [
-      selectionEvidence,
-      garmentBindingEvidence,
-      {
-        kind: "vision-countdown-visible-duration",
-        ...timeline.countdownVisibleDuration.observed,
-      },
-      {
-        ...capturedEvidence,
-      },
-    ],
+    supportingEvidence,
     report: buildAcceptanceReport({
       runId: "slice-vision-experience",
       mode: "fast",
@@ -1037,17 +1110,7 @@ export async function runTryOnScenario(
         {
           name: "visionExperience",
           assertions,
-          supportingEvidence: [
-            selectionEvidence,
-            garmentBindingEvidence,
-            {
-              kind: "vision-countdown-visible-duration",
-              ...timeline.countdownVisibleDuration.observed,
-            },
-            {
-              ...capturedEvidence,
-            },
-          ],
+          supportingEvidence,
         },
       ],
     }),

@@ -1240,7 +1240,7 @@ function visionExperienceCapturedReport({
         name: "visionExperience",
         status: "passed",
         primaryFailure: null,
-        assertionCount: 12,
+        assertionCount: 13,
         assertions: [
           {
             schemaVersion: "vem-runtime-testbed-business-assertion/v1",
@@ -1254,6 +1254,7 @@ function visionExperienceCapturedReport({
           ...[
             "countdown-rendered-sequence",
             "countdown-visible-duration",
+            "countdown-protocol-dom-consistent",
             "captured-absent-outside-held",
             "capture-after-countdown",
             "preview-live-through-countdown",

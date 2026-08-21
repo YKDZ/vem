@@ -801,9 +801,264 @@ describe("visionExperience vertical slice driver", () => {
     });
 
     assert.deepEqual(result.countdownRenderedSequence.observed, ["3", "1"]);
-    assert.equal(result.captureAfterCountdown.observed, false);
+    assert.equal(result.captureAfterCountdown.observed, true);
     assert.equal(result.previewLiveThroughCountdown.observed, false);
     assert.equal(result.ok, false);
+  });
+
+  it("将倒计时协议与 DOM 一致性从顺序和时长判定中拆开", () => {
+    const attemptId = "attempt-countdown-protocol-dom-consistency";
+    const held = (atMs: number, state: "captured" | "generating") => ({
+      atMs,
+      attemptId,
+      state,
+      holdRemainingMs: null,
+      countdownText: null,
+      previewVisible: false,
+      previewFrameHash: null,
+      capturedFrameId: "captured-frame",
+      capturedDigest: "sha256:captured",
+      capturedVisible: true,
+      capturedNaturalWidth: 720,
+      capturedNaturalHeight: 1280,
+      capturedSourceMatchesProtocol: true,
+      capturedSourceDigest: "sha256:captured-source",
+      capturedFrameHash: "sha256:captured-frame",
+    });
+    const baseline: VisionExperienceObservation[] = [
+      [0, 3_000, "3"],
+      [750, 2_250, "3"],
+      [1_000, 2_000, "2"],
+      [1_750, 1_250, "2"],
+      [2_000, 1_000, "1"],
+      [2_750, 250, "1"],
+    ].map(([atMs, holdRemainingMs, countdownText]) => ({
+      atMs,
+      attemptId,
+      state: "acquiring",
+      holdRemainingMs,
+      countdownText,
+      previewVisible: true,
+      previewFrameHash: `preview-${atMs}`,
+    }));
+    const validate = (samples: VisionExperienceObservation[]) =>
+      validateVisionExperienceTimeline({ attemptId, samples });
+    const complete = [
+      ...baseline,
+      held(3_000, "captured"),
+      held(3_200, "generating"),
+    ];
+
+    assert.equal(
+      validate(complete).countdownProtocolDomConsistent.observed,
+      true,
+    );
+    const boundedEvidence = validate([
+      ...complete,
+      ...Array.from({ length: 513 }, (_, index) =>
+        held(3_300 + index, "generating"),
+      ),
+    ]).countdownProtocolDomConsistent.evidence;
+    assert.equal(boundedEvidence.samples.length, 512);
+    assert.deepEqual(Object.keys(boundedEvidence.samples[0]!).sort(), [
+      "atMs",
+      "countdownText",
+      "holdRemainingMs",
+      "state",
+    ]);
+
+    const reverseTime = structuredClone(complete);
+    reverseTime[2]!.atMs = 699;
+    const reverseTimeResult = validate(reverseTime);
+    assert.equal(
+      reverseTimeResult.countdownProtocolDomConsistent.observed,
+      false,
+    );
+    assert.equal(
+      reverseTimeResult.countdownVisibleDuration.observed.passed,
+      false,
+    );
+    assert.equal(reverseTimeResult.captureAfterCountdown.observed, true);
+
+    const mismatchedDigit = structuredClone(complete);
+    mismatchedDigit[3]!.holdRemainingMs = 2_300;
+    const mismatchedDigitResult = validate(mismatchedDigit);
+    assert.equal(
+      mismatchedDigitResult.countdownProtocolDomConsistent.observed,
+      false,
+    );
+    assert.deepEqual(mismatchedDigitResult.countdownRenderedSequence.observed, [
+      "3",
+      "2",
+      "1",
+    ]);
+    assert.equal(
+      mismatchedDigitResult.countdownVisibleDuration.observed.passed,
+      true,
+    );
+    assert.equal(mismatchedDigitResult.captureAfterCountdown.observed, true);
+
+    const reboundingHold = structuredClone(complete);
+    reboundingHold[4]!.holdRemainingMs = 1_500;
+    const reboundingHoldResult = validate(reboundingHold);
+    assert.equal(
+      reboundingHoldResult.countdownProtocolDomConsistent.observed,
+      false,
+    );
+    assert.deepEqual(reboundingHoldResult.countdownRenderedSequence.observed, [
+      "3",
+      "2",
+      "1",
+    ]);
+    assert.equal(
+      reboundingHoldResult.countdownVisibleDuration.observed.passed,
+      true,
+    );
+    assert.equal(reboundingHoldResult.captureAfterCountdown.observed, true);
+
+    const earlyCapture = structuredClone(complete);
+    earlyCapture[6]!.atMs = 2_400;
+    const earlyCaptureResult = validate(earlyCapture);
+    assert.equal(earlyCaptureResult.captureAfterCountdown.observed, false);
+    assert.equal(
+      earlyCaptureResult.countdownProtocolDomConsistent.observed,
+      false,
+    );
+    assert.equal(
+      earlyCaptureResult.countdownVisibleDuration.observed.passed,
+      false,
+    );
+
+    const nullObservationReverseTime = structuredClone(complete);
+    nullObservationReverseTime.push({
+      atMs: 2_900,
+      attemptId,
+      state: "acquiring",
+      holdRemainingMs: null,
+      countdownText: null,
+      previewVisible: false,
+      previewFrameHash: null,
+    });
+    const nullObservationReverseTimeResult = validate(
+      nullObservationReverseTime,
+    );
+    assert.equal(
+      nullObservationReverseTimeResult.countdownProtocolDomConsistent.observed,
+      false,
+    );
+    assert.equal(nullObservationReverseTimeResult.ok, false);
+
+    const heldObservationReverseTime = structuredClone(complete);
+    heldObservationReverseTime[7]!.atMs = 2_900;
+    const heldObservationReverseTimeResult = validate(
+      heldObservationReverseTime,
+    );
+    assert.equal(
+      heldObservationReverseTimeResult.countdownProtocolDomConsistent.observed,
+      false,
+    );
+    assert.equal(heldObservationReverseTimeResult.ok, false);
+  });
+
+  it("对被打断的旧倒计时轮次保留 protocol 与 DOM 一致性检查", () => {
+    const attemptId = "attempt-countdown-all-round-consistency";
+    const countdown = (
+      atMs: number,
+      holdRemainingMs: number,
+      countdownText: "3" | "2" | "1",
+    ): VisionExperienceObservation => ({
+      atMs,
+      attemptId,
+      state: "acquiring",
+      holdRemainingMs,
+      countdownText,
+      previewVisible: true,
+      previewFrameHash: `preview-${atMs}`,
+    });
+    const breakRound = (atMs: number): VisionExperienceObservation => ({
+      atMs,
+      attemptId,
+      state: "acquiring",
+      holdRemainingMs: null,
+      countdownText: null,
+      previewVisible: false,
+      previewFrameHash: null,
+    });
+    const held = (
+      atMs: number,
+      state: "captured" | "generating",
+    ): VisionExperienceObservation => ({
+      atMs,
+      attemptId,
+      state,
+      holdRemainingMs: null,
+      countdownText: null,
+      previewVisible: false,
+      previewFrameHash: null,
+      capturedFrameId: "frame",
+      capturedDigest: "sha256:captured",
+      capturedVisible: true,
+      capturedNaturalWidth: 720,
+      capturedNaturalHeight: 1280,
+      capturedSourceMatchesProtocol: true,
+      capturedSourceDigest: "sha256:captured-source",
+      capturedFrameHash: "sha256:captured-frame",
+    });
+    const validCurrentRound = [
+      countdown(1_000, 3_000, "3"),
+      countdown(1_750, 2_250, "3"),
+      countdown(2_000, 2_000, "2"),
+      countdown(2_750, 1_250, "2"),
+      countdown(3_000, 1_000, "1"),
+      countdown(3_750, 250, "1"),
+      held(4_000, "captured"),
+      held(4_200, "generating"),
+    ];
+    const validate = (samples: VisionExperienceObservation[]) =>
+      validateVisionExperienceTimeline({ attemptId, samples });
+
+    const interruptedCeilMismatch = validate([
+      countdown(0, 3_000, "3"),
+      countdown(100, 2_300, "2"),
+      breakRound(200),
+      ...validCurrentRound,
+    ]);
+    assert.equal(
+      interruptedCeilMismatch.countdownProtocolDomConsistent.observed,
+      false,
+    );
+    assert.equal(
+      interruptedCeilMismatch.countdownProtocolDomConsistent.evidence.subchecks
+        .holdMatchesDom,
+      false,
+    );
+    assert.equal(interruptedCeilMismatch.ok, false);
+
+    const interruptedHoldRebound = validate([
+      countdown(0, 3_000, "3"),
+      countdown(100, 2_100, "3"),
+      countdown(200, 2_200, "3"),
+      breakRound(300),
+      ...validCurrentRound,
+    ]);
+    assert.equal(
+      interruptedHoldRebound.countdownProtocolDomConsistent.observed,
+      false,
+    );
+    assert.equal(
+      interruptedHoldRebound.countdownProtocolDomConsistent.evidence.subchecks
+        .holdNonIncreasing,
+      false,
+    );
+    assert.equal(interruptedHoldRebound.ok, false);
+
+    const legalReset = validate([
+      countdown(0, 1_000, "1"),
+      breakRound(100),
+      ...validCurrentRound,
+    ]);
+    assert.equal(legalReset.countdownProtocolDomConsistent.observed, true);
+    assert.equal(legalReset.ok, true);
   });
 
   it("按每个数字后的首个非本数字观测计算可见桶，而不把 1 截到最后一次同数字轮询", () => {
@@ -951,7 +1206,7 @@ describe("visionExperience vertical slice driver", () => {
       2_499,
     );
     assert.equal(totalTooShort.countdownVisibleDuration.observed.passed, false);
-    const earlyCapture = validate(samples(baseline, 2_400, false));
+    const earlyCapture = validate(samples(baseline, 2_300, false));
     assert.equal(earlyCapture.captureAfterCountdown.observed, false);
     assert.equal(earlyCapture.ok, false);
     const skippedDigit = validate(
@@ -962,12 +1217,12 @@ describe("visionExperience vertical slice driver", () => {
         2_500,
       ),
     );
-    assert.equal(skippedDigit.captureAfterCountdown.observed, false);
+    assert.equal(skippedDigit.captureAfterCountdown.observed, true);
     assert.equal(skippedDigit.ok, false);
     const nonMonotonic = samples(baseline, 2_500);
     [nonMonotonic[1], nonMonotonic[2]] = [nonMonotonic[2]!, nonMonotonic[1]!];
     const nonMonotonicResult = validate(nonMonotonic);
-    assert.equal(nonMonotonicResult.captureAfterCountdown.observed, false);
+    assert.equal(nonMonotonicResult.captureAfterCountdown.observed, true);
     assert.equal(nonMonotonicResult.ok, false);
   });
 
@@ -1433,7 +1688,7 @@ describe("visionExperience vertical slice driver", () => {
       ],
     });
     assert.equal(result.countdownRenderedSequence.observed[0], "3");
-    assert.equal(result.captureAfterCountdown.observed, false);
+    assert.equal(result.captureAfterCountdown.observed, true);
     assert.equal(result.ok, false);
   });
 
@@ -1473,6 +1728,10 @@ describe("visionExperience vertical slice driver", () => {
     );
     assert.equal(byId.get("countdown-rendered-sequence")?.status, "passed");
     assert.equal(byId.get("countdown-visible-duration")?.status, "passed");
+    assert.equal(
+      byId.get("countdown-protocol-dom-consistent")?.status,
+      "passed",
+    );
     assert.equal(byId.get("capture-after-countdown")?.status, "passed");
     assert.equal(byId.get("preview-live-through-countdown")?.status, "passed");
     assert.equal(
@@ -1490,6 +1749,73 @@ describe("visionExperience vertical slice driver", () => {
         bucketDurationsMs: { "3": 900, "2": 900, "1": 1_200 },
         totalDurationMs: 3_000,
         passed: true,
+      },
+    );
+    assert.deepEqual(
+      outcome.supportingEvidence.find(
+        (evidence) =>
+          (evidence as { kind?: string }).kind ===
+          "vision-countdown-protocol-dom-consistency",
+      ),
+      {
+        kind: "vision-countdown-protocol-dom-consistency",
+        subchecks: {
+          monotonicAtMs: true,
+          holdMatchesDom: true,
+          holdNonIncreasing: true,
+        },
+        lastOneAtMs: 2_550,
+        firstHeldAtMs: 3_000,
+        samples: [
+          {
+            atMs: 0,
+            state: "acquiring",
+            countdownText: "3",
+            holdRemainingMs: 3_000,
+          },
+          {
+            atMs: 750,
+            state: "acquiring",
+            countdownText: "3",
+            holdRemainingMs: 3_000,
+          },
+          {
+            atMs: 900,
+            state: "acquiring",
+            countdownText: "2",
+            holdRemainingMs: 2_000,
+          },
+          {
+            atMs: 1_650,
+            state: "acquiring",
+            countdownText: "2",
+            holdRemainingMs: 2_000,
+          },
+          {
+            atMs: 1_800,
+            state: "acquiring",
+            countdownText: "1",
+            holdRemainingMs: 1_000,
+          },
+          {
+            atMs: 2_550,
+            state: "acquiring",
+            countdownText: "1",
+            holdRemainingMs: 1_000,
+          },
+          {
+            atMs: 3_000,
+            state: "captured",
+            countdownText: null,
+            holdRemainingMs: null,
+          },
+          {
+            atMs: 3_300,
+            state: "generating",
+            countdownText: null,
+            holdRemainingMs: null,
+          },
+        ],
       },
     );
   });
@@ -1640,7 +1966,7 @@ describe("visionExperience vertical slice driver", () => {
       pollMs: 10,
       acceptanceBinding: visionAcceptanceBinding,
     });
-    assert.equal(outcome.assertions.length, 12);
+    assert.equal(outcome.assertions.length, 13);
     assert.ok(
       outcome.assertions.every((assertion) => assertion.status === "passed"),
     );
@@ -1661,7 +1987,7 @@ describe("visionExperience vertical slice driver", () => {
       (assertion) =>
         assertion.source === "vision-experience-observation-timeline",
     );
-    assert.equal(timelineAssertions.length, 6);
+    assert.equal(timelineAssertions.length, 7);
     assert.equal(
       timelineAssertions.filter((assertion) => assertion.status === "failed")
         .length,

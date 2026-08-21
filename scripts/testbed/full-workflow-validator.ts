@@ -926,6 +926,7 @@ function validateVisionExperienceCapturedSource(
 const VISION_EXPERIENCE_TIMELINE_ASSERTIONS = [
   "countdown-rendered-sequence",
   "countdown-visible-duration",
+  "countdown-protocol-dom-consistent",
   "captured-absent-outside-held",
   "capture-after-countdown",
   "preview-live-through-countdown",
