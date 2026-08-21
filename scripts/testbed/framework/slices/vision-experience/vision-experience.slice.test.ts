@@ -12,6 +12,39 @@ import {
 
 const attemptId = "550e8400-e29b-41d4-a716-446655440124";
 const alternateAttemptId = "550e8400-e29b-41d4-a716-446655440125";
+const selectedCatalogKey = "product:550e8400-e29b-41d4-a716-446655440126";
+const selectedVariantId = "550e8400-e29b-41d4-a716-446655440127";
+const firstLongSleeveVariantId = "550e8400-e29b-41d4-a716-446655440129";
+const visionAcceptanceBinding = {
+  selectedCatalogKey,
+  selectedVariantId,
+  sourceGarmentMetadata: {
+    reference:
+      "http://127.0.0.1:26849/api/media-assets/550e8400-e29b-41d4-a716-446655440128/content",
+    origin: "http://127.0.0.1:26849",
+    assetId: "550e8400-e29b-41d4-a716-446655440128",
+    digest: `sha256:${"c".repeat(64)}`,
+    contentType: "image/png" as const,
+    byteSize: 3_506,
+    template: "tshirt_short_sleeve" as const,
+    width: 512,
+    height: 640,
+  },
+};
+const selectedProductSelector =
+  `[data-test="catalog-product"]` +
+  `[data-catalog-key="${selectedCatalogKey}"]` +
+  `[data-variant-id="${selectedVariantId}"]`;
+const selectedProductRoute = `#/products/${encodeURIComponent(
+  selectedCatalogKey,
+)}?variantId=${selectedVariantId}`;
+const expectedStartGarment = {
+  assetId: visionAcceptanceBinding.sourceGarmentMetadata.assetId,
+  digest: visionAcceptanceBinding.sourceGarmentMetadata.digest,
+  contentType: visionAcceptanceBinding.sourceGarmentMetadata.contentType,
+  byteSize: visionAcceptanceBinding.sourceGarmentMetadata.byteSize,
+  template: visionAcceptanceBinding.sourceGarmentMetadata.template,
+};
 
 function fakeUiAdapter({
   includeCaptured = true,
@@ -28,6 +61,8 @@ function fakeUiAdapter({
   resourceFrameId = frameId,
   observationTimeline = null,
   resultGeometryEvidence = null,
+  startGarment = expectedStartGarment,
+  routeBeforeAttempt = false,
 }: {
   includeCaptured?: boolean;
   includeCompleted?: boolean;
@@ -45,6 +80,8 @@ function fakeUiAdapter({
     [number, string | null, string | null, string?]
   > | null;
   resultGeometryEvidence?: Record<string, unknown> | null;
+  startGarment?: Record<string, unknown>;
+  routeBeforeAttempt?: boolean;
 } = {}) {
   const statePath = "ui/try-on-state.json";
   const captured = {
@@ -138,7 +175,18 @@ function fakeUiAdapter({
       },
       'click [data-test="catalog-product"]': async () => {
         await writeState({
-          route: "#/products/product:1",
+          route: `#/products/${selectedCatalogKey}?variantId=${firstLongSleeveVariantId}`,
+          catalogKey: selectedCatalogKey,
+          variantId: firstLongSleeveVariantId,
+          garmentTemplate: "tshirt_long_sleeve",
+          tryOnPresent: true,
+          state: "idle",
+        });
+        return { exitCode: 0, stdout: "ok", stderr: "" };
+      },
+      [`click ${selectedProductSelector}`]: async () => {
+        await writeState({
+          route: `#/products/${selectedCatalogKey}?variantId=${selectedVariantId}`,
           tryOnPresent: true,
           state: "idle",
         });
@@ -151,18 +199,40 @@ function fakeUiAdapter({
         },
       'click [data-test="try-on"]': async () => {
         await writeState({
-          route: "#/try-on?catalogKey=product%3A1",
-          state: "acquiring",
-          attemptId,
-          preview: { naturalWidth: 720, naturalHeight: 1280 },
+          route: `#/try-on?catalogKey=${encodeURIComponent(selectedCatalogKey)}&variantId=${selectedVariantId}`,
+          state: routeBeforeAttempt ? "idle" : "acquiring",
+          attemptId: routeBeforeAttempt ? null : attemptId,
+          ...(routeBeforeAttempt
+            ? {}
+            : {
+                preview: { naturalWidth: 720, naturalHeight: 1280 },
+                startGarment,
+              }),
         });
+        if (routeBeforeAttempt) {
+          setTimeout(() => {
+            void adapter.writeFile(
+              statePath,
+              JSON.stringify({
+                route: `#/try-on?catalogKey=${encodeURIComponent(selectedCatalogKey)}&variantId=${selectedVariantId}`,
+                state: "acquiring",
+                attemptId,
+                preview: { naturalWidth: 720, naturalHeight: 1280 },
+                startGarment,
+              }),
+            );
+          }, 20);
+        }
         setTimeout(() => {
           void adapter.writeFile(
             statePath,
             JSON.stringify({
-              route: "#/try-on?catalogKey=product%3A1",
+              route: `#/try-on?catalogKey=${encodeURIComponent(selectedCatalogKey)}&variantId=${selectedVariantId}`,
               state: "completed",
               attemptId,
+              startGarment,
+              sourceGarmentMetadata:
+                visionAcceptanceBinding.sourceGarmentMetadata,
               visionOrigin,
               preview: { naturalWidth: 720, naturalHeight: 1280 },
               resultUrl: completedResultReference,
@@ -229,6 +299,94 @@ function fakeUiAdapter({
 }
 
 describe("visionExperience vertical slice driver", () => {
+  it("目录首项为长袖时仍按 guest-input identity 点击短袖规格", async () => {
+    const adapter = fakeUiAdapter();
+    await runTryOnScenario(adapter, {
+      timeoutMs: 2_000,
+      pollMs: 10,
+      acceptanceBinding: visionAcceptanceBinding,
+    });
+
+    assert.equal(
+      adapter.calls.some(
+        (call) =>
+          call.command === "click" && call.args[0] === selectedProductSelector,
+      ),
+      true,
+    );
+    assert.equal(
+      adapter.calls.some(
+        (call) =>
+          call.command === "click" &&
+          call.args[0] === '[data-test="catalog-product"]',
+      ),
+      false,
+    );
+  });
+
+  it("首个 attempt 的 startGarment 错绑时立即结构化 fail closed", async () => {
+    const adapter = fakeUiAdapter({
+      startGarment: {
+        ...expectedStartGarment,
+        template: "tshirt_long_sleeve",
+      },
+    });
+    await assert.rejects(
+      runTryOnScenario(adapter, {
+        timeoutMs: 2_000,
+        pollMs: 10,
+        acceptanceBinding: visionAcceptanceBinding,
+      }),
+      (error: any) =>
+        error?.stage === "vision-start-garment-binding" &&
+        error?.evidence?.selection?.variantId === selectedVariantId &&
+        error?.evidence?.observed?.template === "tshirt_long_sleeve" &&
+        error?.report?.businessSets?.[0]?.status === "failed" &&
+        error?.report?.businessSets?.[0]?.supportingEvidence?.[0]?.kind ===
+          "vision-start-garment-binding",
+    );
+  });
+
+  it("selector click 未产生详情导航时不能由 driver 强制导航掩盖", async () => {
+    const adapter = fakeUiAdapter();
+    const originalRun = adapter.run.bind(adapter);
+    adapter.run = async (command, args = []) =>
+      command === "click" && args[0] === selectedProductSelector
+        ? { exitCode: 0, stdout: "click-no-navigation", stderr: "" }
+        : originalRun(command, args);
+
+    await assert.rejects(
+      runTryOnScenario(adapter, {
+        timeoutMs: 30,
+        pollMs: 5,
+        acceptanceBinding: visionAcceptanceBinding,
+      }),
+      (error: any) =>
+        error?.stage === "vision-catalog-selection" &&
+        error?.evidence?.expected?.variantId === selectedVariantId &&
+        error?.report?.businessSets?.[0]?.status === "failed",
+    );
+    assert.equal(
+      adapter.calls.some(
+        (call) =>
+          call.command === "navigate" && call.args[0] === selectedProductRoute,
+      ),
+      false,
+    );
+  });
+
+  it("仅在 attemptId 出现后的公开状态验证 startGarment", async () => {
+    const outcome = await runTryOnScenario(
+      fakeUiAdapter({ routeBeforeAttempt: true }),
+      {
+        timeoutMs: 2_000,
+        pollMs: 5,
+        acceptanceBinding: visionAcceptanceBinding,
+      },
+    );
+    assert.equal(outcome.report.businessSets[0].status, "passed");
+  });
+
   it("将唯一同 attempt 的绝对 100→105 V2 调整意图绑定到 adjusted resource", () => {
     const resultUrl =
       "http://127.0.0.1:7892/v2/try-on/results/attempt?token=105";
@@ -544,6 +702,7 @@ describe("visionExperience vertical slice driver", () => {
       runTryOnScenario(fakeUiAdapter({ includeCaptured: false }), {
         timeoutMs: 2_000,
         pollMs: 10,
+        acceptanceBinding: visionAcceptanceBinding,
       }),
       /captured/i,
     );
@@ -563,7 +722,11 @@ describe("visionExperience vertical slice driver", () => {
           [3_300, null, null, "generating"],
         ],
       }),
-      { timeoutMs: 2_000, pollMs: 10 },
+      {
+        timeoutMs: 2_000,
+        pollMs: 10,
+        acceptanceBinding: visionAcceptanceBinding,
+      },
     );
     const byId = new Map(
       outcome.assertions.map((assertion) => [assertion.id, assertion]),
@@ -587,7 +750,11 @@ describe("visionExperience vertical slice driver", () => {
     };
     const outcome = await runTryOnScenario(
       fakeUiAdapter({ resultGeometryEvidence: passing }),
-      { timeoutMs: 2_000, pollMs: 10 },
+      {
+        timeoutMs: 2_000,
+        pollMs: 10,
+        acceptanceBinding: visionAcceptanceBinding,
+      },
     );
     const geometry = outcome.assertions.filter((assertion) =>
       [
@@ -605,7 +772,11 @@ describe("visionExperience vertical slice driver", () => {
     await assert.rejects(
       runTryOnScenario(
         fakeUiAdapter({ resourceDigest: `sha256:${"b".repeat(64)}` }),
-        { timeoutMs: 2_000, pollMs: 10 },
+        {
+          timeoutMs: 2_000,
+          pollMs: 10,
+          acceptanceBinding: visionAcceptanceBinding,
+        },
       ),
       /captured/i,
     );
@@ -613,6 +784,7 @@ describe("visionExperience vertical slice driver", () => {
       runTryOnScenario(fakeUiAdapter({ frameId: "" }), {
         timeoutMs: 2_000,
         pollMs: 10,
+        acceptanceBinding: visionAcceptanceBinding,
       }),
       /captured/i,
     );
@@ -622,7 +794,11 @@ describe("visionExperience vertical slice driver", () => {
           capturedReference:
             "http://127.0.0.1:99999/v2/try-on/captured/frame.png?token=captured-token",
         }),
-        { timeoutMs: 2_000, pollMs: 10 },
+        {
+          timeoutMs: 2_000,
+          pollMs: 10,
+          acceptanceBinding: visionAcceptanceBinding,
+        },
       ),
       /captured/i,
     );
@@ -635,7 +811,11 @@ describe("visionExperience vertical slice driver", () => {
           capturedReference:
             "http://127.0.0.1:7893/v2/try-on/captured/frame.png?token=captured-token",
         }),
-        { timeoutMs: 2_000, pollMs: 10 },
+        {
+          timeoutMs: 2_000,
+          pollMs: 10,
+          acceptanceBinding: visionAcceptanceBinding,
+        },
       ),
       /captured/i,
     );
@@ -645,6 +825,7 @@ describe("visionExperience vertical slice driver", () => {
         {
           timeoutMs: 2_000,
           pollMs: 10,
+          acceptanceBinding: visionAcceptanceBinding,
         },
       ),
       /captured/i,
@@ -653,6 +834,7 @@ describe("visionExperience vertical slice driver", () => {
       runTryOnScenario(fakeUiAdapter({ includeCompleted: false }), {
         timeoutMs: 2_000,
         pollMs: 10,
+        acceptanceBinding: visionAcceptanceBinding,
       }),
       /captured/i,
     );
@@ -662,6 +844,7 @@ describe("visionExperience vertical slice driver", () => {
         {
           timeoutMs: 2_000,
           pollMs: 10,
+          acceptanceBinding: visionAcceptanceBinding,
         },
       ),
       /captured/i,
@@ -672,6 +855,7 @@ describe("visionExperience vertical slice driver", () => {
     const outcome = await runTryOnScenario(fakeUiAdapter(), {
       timeoutMs: 2_000,
       pollMs: 10,
+      acceptanceBinding: visionAcceptanceBinding,
     });
     assert.equal(outcome.report.businessSets[0].status, "passed");
   });
@@ -681,6 +865,7 @@ describe("visionExperience vertical slice driver", () => {
       runTryOnScenario(fakeUiAdapter({ terminalResult: "missing" }), {
         timeoutMs: 2_000,
         pollMs: 10,
+        acceptanceBinding: visionAcceptanceBinding,
       }),
       /captured/i,
     );
@@ -688,6 +873,7 @@ describe("visionExperience vertical slice driver", () => {
       runTryOnScenario(fakeUiAdapter({ terminalResult: "forged" }), {
         timeoutMs: 2_000,
         pollMs: 10,
+        acceptanceBinding: visionAcceptanceBinding,
       }),
       /terminal result/i,
     );
@@ -698,8 +884,9 @@ describe("visionExperience vertical slice driver", () => {
     const outcome = await runTryOnScenario(adapter, {
       timeoutMs: 2_000,
       pollMs: 10,
+      acceptanceBinding: visionAcceptanceBinding,
     });
-    assert.equal(outcome.assertions.length, 4);
+    assert.equal(outcome.assertions.length, 6);
     assert.ok(
       outcome.assertions.every((assertion) => assertion.status === "passed"),
     );
@@ -724,20 +911,33 @@ describe("visionExperience vertical slice driver", () => {
             stdout: "ok",
             stderr: "",
           }),
-        'click [data-test="catalog-product"]': () => ({
-          exitCode: 0,
-          stdout: "ok",
-          stderr: "",
-        }),
-        'click [data-test="try-on"]': () => ({
-          exitCode: 0,
-          stdout: "ok",
-          stderr: "",
-        }),
+        [`click ${selectedProductSelector}`]: async () => {
+          await adapter.writeFile(
+            "ui/try-on-state.json",
+            JSON.stringify({ route: selectedProductRoute, state: "idle" }),
+          );
+          return { exitCode: 0, stdout: "ok", stderr: "" };
+        },
+        'click [data-test="try-on"]': async () => {
+          await adapter.writeFile(
+            "ui/try-on-state.json",
+            JSON.stringify({
+              route: `#/try-on?catalogKey=${encodeURIComponent(selectedCatalogKey)}&variantId=${selectedVariantId}`,
+              state: "acquiring",
+              attemptId,
+              startGarment: expectedStartGarment,
+            }),
+          );
+          return { exitCode: 0, stdout: "ok", stderr: "" };
+        },
       },
     });
     await assert.rejects(
-      runTryOnScenario(adapter, { timeoutMs: 30, pollMs: 5 }),
+      runTryOnScenario(adapter, {
+        timeoutMs: 30,
+        pollMs: 5,
+        acceptanceBinding: visionAcceptanceBinding,
+      }),
       /result-surface.*did not become true/,
     );
   });
@@ -751,9 +951,27 @@ describe("visionExperience vertical slice driver", () => {
           attemptId: null,
         }),
       },
+      commands: {
+        [`click ${selectedProductSelector}`]: async () => {
+          await adapter.writeFile(
+            "ui/try-on-state.json",
+            JSON.stringify({ route: selectedProductRoute, state: "idle" }),
+          );
+          return { exitCode: 0, stdout: "ok", stderr: "" };
+        },
+        'click [data-test="try-on"]': () => ({
+          exitCode: 0,
+          stdout: "ok",
+          stderr: "",
+        }),
+      },
     });
     await assert.rejects(
-      runTryOnScenario(adapter, { timeoutMs: 30, pollMs: 5 }),
+      runTryOnScenario(adapter, {
+        timeoutMs: 30,
+        pollMs: 5,
+        acceptanceBinding: visionAcceptanceBinding,
+      }),
       /try-on-route.*did not become true/,
     );
   });
@@ -767,9 +985,33 @@ describe("visionExperience vertical slice driver", () => {
           attemptId: null,
         }),
       },
+      commands: {
+        [`click ${selectedProductSelector}`]: async () => {
+          await adapter.writeFile(
+            "ui/try-on-state.json",
+            JSON.stringify({ route: selectedProductRoute, state: "idle" }),
+          );
+          return { exitCode: 0, stdout: "ok", stderr: "" };
+        },
+        'click [data-test="try-on"]': async () => {
+          await adapter.writeFile(
+            "ui/try-on-state.json",
+            JSON.stringify({
+              route: `#/try-on?catalogKey=${encodeURIComponent(selectedCatalogKey)}&variantId=${selectedVariantId}`,
+              state: "idle",
+              attemptId: null,
+            }),
+          );
+          return { exitCode: 0, stdout: "ok", stderr: "" };
+        },
+      },
     });
     await assert.rejects(
-      runTryOnScenario(adapter, { timeoutMs: 30, pollMs: 5 }),
+      runTryOnScenario(adapter, {
+        timeoutMs: 30,
+        pollMs: 5,
+        acceptanceBinding: visionAcceptanceBinding,
+      }),
       /try-on-attempt.*did not become true/,
     );
   });
@@ -817,9 +1059,9 @@ describe("visionExperience vertical slice driver", () => {
             });
             return { exitCode: 0, stdout: "ok", stderr: "" };
           },
-        'click [data-test="catalog-product"]': async () => {
+        [`click ${selectedProductSelector}`]: async () => {
           await writeState({
-            route: "#/products/product:1",
+            route: selectedProductRoute,
             state: "idle",
             tryOnPresent: true,
           });
@@ -848,6 +1090,7 @@ describe("visionExperience vertical slice driver", () => {
     const outcome = await runObserverSelfHealScenario(adapter, manifest, {
       timeoutMs: 2_000,
       pollMs: 10,
+      acceptanceBinding: visionAcceptanceBinding,
     });
     assert.ok(
       outcome.assertions.some(

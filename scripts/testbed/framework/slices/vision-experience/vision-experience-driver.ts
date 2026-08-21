@@ -29,6 +29,8 @@ const STATE_PATH = "ui/try-on-state.json";
 
 export interface TryOnState {
   route?: string;
+  catalogKey?: string | null;
+  variantId?: string | null;
   state?: string | null;
   attemptId?: string | null;
   visionOrigin?: string | null;
@@ -95,6 +97,246 @@ const ATTEMPT_STATES = new Set([
   "generating",
   "completed",
 ]);
+const UUID_PATTERN =
+  "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+const CATALOG_KEY_PATTERN = new RegExp(`^product:${UUID_PATTERN}$`);
+const VARIANT_ID_PATTERN = new RegExp(`^${UUID_PATTERN}$`);
+
+export interface VisionAcceptanceBinding {
+  selectedCatalogKey: string;
+  selectedVariantId: string;
+  sourceGarmentMetadata: SourceGarmentMetadata;
+}
+
+export interface VisionCatalogSelectionEvidence {
+  kind: "vision-catalog-selection";
+  catalogKey: string;
+  variantId: string;
+  route: string;
+}
+
+export interface VisionStartGarmentBindingEvidence {
+  kind: "vision-start-garment-binding";
+  status: "bound" | "mismatch";
+  selection: { catalogKey: string; variantId: string };
+  expected: {
+    assetId: string;
+    digest: string;
+    contentType: "image/png";
+    byteSize: number;
+    template: "tshirt_short_sleeve" | "tshirt_long_sleeve";
+  };
+  observed: {
+    assetId: unknown;
+    digest: unknown;
+    contentType: unknown;
+    byteSize: unknown;
+    template: unknown;
+  };
+}
+
+export function createVisionAcceptanceBinding({
+  selectedCatalogKey,
+  selectedVariantId,
+  sourceGarmentMetadata,
+}: {
+  selectedCatalogKey: unknown;
+  selectedVariantId: unknown;
+  sourceGarmentMetadata: SourceGarmentMetadata;
+}): VisionAcceptanceBinding {
+  if (
+    typeof selectedCatalogKey !== "string" ||
+    !CATALOG_KEY_PATTERN.test(selectedCatalogKey) ||
+    typeof selectedVariantId !== "string" ||
+    !VARIANT_ID_PATTERN.test(selectedVariantId)
+  ) {
+    throw new Error("vision acceptance catalog selection identity is invalid");
+  }
+  return { selectedCatalogKey, selectedVariantId, sourceGarmentMetadata };
+}
+
+function selectedProductSelector(binding: VisionAcceptanceBinding): string {
+  createVisionAcceptanceBinding(binding);
+  return (
+    '[data-test="catalog-product"]' +
+    `[data-catalog-key="${binding.selectedCatalogKey}"]` +
+    `[data-variant-id="${binding.selectedVariantId}"]`
+  );
+}
+
+function startGarmentBindingEvidence(
+  binding: VisionAcceptanceBinding,
+  garment: unknown,
+): VisionStartGarmentBindingEvidence {
+  const observed =
+    garment && typeof garment === "object" && !Array.isArray(garment)
+      ? (garment as Record<string, unknown>)
+      : {};
+  const expected = binding.sourceGarmentMetadata;
+  return {
+    kind: "vision-start-garment-binding",
+    status: isSourceGarmentAttemptBound(expected, garment)
+      ? "bound"
+      : "mismatch",
+    selection: {
+      catalogKey: binding.selectedCatalogKey,
+      variantId: binding.selectedVariantId,
+    },
+    expected: {
+      assetId: expected.assetId,
+      digest: expected.digest,
+      contentType: expected.contentType,
+      byteSize: expected.byteSize,
+      template: expected.template,
+    },
+    observed: {
+      assetId: observed.assetId ?? null,
+      digest: observed.digest ?? null,
+      contentType: observed.contentType ?? null,
+      byteSize: observed.byteSize ?? null,
+      template: observed.template ?? null,
+    },
+  };
+}
+
+function requireStartGarmentBinding(
+  binding: VisionAcceptanceBinding,
+  garment: unknown,
+): VisionStartGarmentBindingEvidence {
+  const evidence = startGarmentBindingEvidence(binding, garment);
+  if (evidence.status === "bound") return evidence;
+  const error = new Error(
+    "first Vision attempt startGarment is not bound to guest-input",
+  ) as Error & {
+    stage: "vision-start-garment-binding";
+    evidence: VisionStartGarmentBindingEvidence;
+    report: ReturnType<typeof buildAcceptanceReport>;
+  };
+  error.stage = "vision-start-garment-binding";
+  error.evidence = evidence;
+  error.report = buildAcceptanceReport({
+    runId: "slice-vision-experience",
+    mode: "fast",
+    pass: 1,
+    businessSets: [
+      {
+        name: "visionExperience",
+        assertions: [
+          businessAssertion({
+            id: "start-garment-bound",
+            source: "vision-v2-protocol",
+            expected: evidence.expected,
+            observed: evidence.observed,
+          }),
+        ],
+        supportingEvidence: [evidence],
+      },
+    ],
+  });
+  throw error;
+}
+
+function routeSelectionIdentity(route: unknown): {
+  catalogKey: string | null;
+  variantId: string | null;
+} {
+  if (typeof route !== "string" || !route.startsWith("#/products/")) {
+    return { catalogKey: null, variantId: null };
+  }
+  try {
+    const url = new URL(route.slice(1), "http://machine.invalid");
+    return {
+      catalogKey: decodeURIComponent(url.pathname.slice("/products/".length)),
+      variantId: url.searchParams.get("variantId"),
+    };
+  } catch {
+    return { catalogKey: null, variantId: null };
+  }
+}
+
+async function enterSelectedProduct(
+  adapter: TestAdapter,
+  binding: VisionAcceptanceBinding,
+  { timeoutMs, pollMs }: { timeoutMs?: number; pollMs?: number },
+): Promise<VisionCatalogSelectionEvidence> {
+  const selector = selectedProductSelector(binding);
+  await adapter.run("navigate", ["#/catalog"]);
+  await adapter.run("click", [
+    '[data-test="catalog-category"][data-category-key="tshirts"]',
+  ]);
+  await adapter.run("click", [selector]);
+  let state: TryOnState;
+  try {
+    state = await waitForCondition(
+      "selected-product-detail",
+      async () => {
+        const current = await readState(adapter);
+        const routeIdentity = routeSelectionIdentity(current.route);
+        return {
+          ok:
+            (current.catalogKey ?? routeIdentity.catalogKey) ===
+              binding.selectedCatalogKey &&
+            (current.variantId ?? routeIdentity.variantId) ===
+              binding.selectedVariantId,
+          value: current,
+        };
+      },
+      { timeoutMs, pollMs },
+    );
+  } catch (cause) {
+    const current = await readState(adapter).catch(() => ({}));
+    const routeIdentity = routeSelectionIdentity(current.route);
+    const evidence = {
+      kind: "vision-catalog-selection" as const,
+      status: "mismatch" as const,
+      expected: {
+        catalogKey: binding.selectedCatalogKey,
+        variantId: binding.selectedVariantId,
+      },
+      observed: {
+        catalogKey: current.catalogKey ?? routeIdentity.catalogKey,
+        variantId: current.variantId ?? routeIdentity.variantId,
+        route: current.route ?? null,
+      },
+    };
+    const error = new Error(
+      "catalog selection did not enter the guest-input product variant",
+      { cause: cause instanceof Error ? cause : undefined },
+    ) as Error & {
+      stage: "vision-catalog-selection";
+      evidence: typeof evidence;
+      report: ReturnType<typeof buildAcceptanceReport>;
+    };
+    error.stage = "vision-catalog-selection";
+    error.evidence = evidence;
+    error.report = buildAcceptanceReport({
+      runId: "slice-vision-experience",
+      mode: "fast",
+      pass: 1,
+      businessSets: [
+        {
+          name: "visionExperience",
+          assertions: [
+            businessAssertion({
+              id: "catalog-selection-bound",
+              source: "machine-ui-dom",
+              expected: evidence.expected,
+              observed: evidence.observed,
+            }),
+          ],
+          supportingEvidence: [evidence],
+        },
+      ],
+    });
+    throw error;
+  }
+  return {
+    kind: "vision-catalog-selection",
+    catalogKey: binding.selectedCatalogKey,
+    variantId: binding.selectedVariantId,
+    route: state.route!,
+  };
+}
 
 function collapsedCountdownSequence(samples: VisionExperienceObservation[]) {
   return samples.reduce<string[]>((sequence, sample) => {
@@ -325,13 +567,24 @@ async function readState(adapter: TestAdapter): Promise<TryOnState> {
  */
 export async function runTryOnScenario(
   adapter: TestAdapter,
-  { timeoutMs, pollMs }: { timeoutMs?: number; pollMs?: number },
+  {
+    timeoutMs,
+    pollMs,
+    acceptanceBinding,
+  }: {
+    timeoutMs?: number;
+    pollMs?: number;
+    acceptanceBinding: VisionAcceptanceBinding;
+  },
 ) {
-  await adapter.run("navigate", ["#/catalog"]);
-  await adapter.run("click", [
-    '[data-test="catalog-category"][data-category-key="tshirts"]',
-  ]);
-  await adapter.run("click", ['[data-test="catalog-product"]']);
+  const selectionEvidence = await enterSelectedProduct(
+    adapter,
+    acceptanceBinding,
+    {
+      timeoutMs,
+      pollMs,
+    },
+  );
   await adapter.run("click", ['[data-test="try-on"]']);
   let previewSeen = false;
   const observeState = async () => {
@@ -359,7 +612,7 @@ export async function runTryOnScenario(
     },
     { timeoutMs: entryTimeoutMs, pollMs },
   );
-  await waitForCondition(
+  const attemptState = await waitForCondition(
     "try-on-attempt",
     async () => {
       const current = await observeState();
@@ -372,6 +625,10 @@ export async function runTryOnScenario(
       };
     },
     { timeoutMs: entryTimeoutMs, pollMs },
+  );
+  const garmentBindingEvidence = requireStartGarmentBinding(
+    acceptanceBinding,
+    attemptState.startGarment,
   );
   const state = await waitForCondition(
     "result-surface",
@@ -399,6 +656,24 @@ export async function runTryOnScenario(
       : null;
   const geometry = state.resultGeometryEvidence ?? null;
   const assertions = [
+    businessAssertion({
+      id: "catalog-selection-bound",
+      source: "machine-ui-dom",
+      expected: {
+        catalogKey: acceptanceBinding.selectedCatalogKey,
+        variantId: acceptanceBinding.selectedVariantId,
+      },
+      observed: {
+        catalogKey: selectionEvidence.catalogKey,
+        variantId: selectionEvidence.variantId,
+      },
+    }),
+    businessAssertion({
+      id: "start-garment-bound",
+      source: "vision-v2-protocol",
+      expected: garmentBindingEvidence.expected,
+      observed: garmentBindingEvidence.observed,
+    }),
     businessAssertion({
       id: "try-on-route",
       source: "machine-ui-dom",
@@ -487,6 +762,8 @@ export async function runTryOnScenario(
     state,
     assertions,
     supportingEvidence: [
+      selectionEvidence,
+      garmentBindingEvidence,
       {
         ...capturedEvidence,
       },
@@ -500,6 +777,8 @@ export async function runTryOnScenario(
           name: "visionExperience",
           assertions,
           supportingEvidence: [
+            selectionEvidence,
+            garmentBindingEvidence,
             {
               ...capturedEvidence,
             },
@@ -540,7 +819,15 @@ function geometryAssertions(validation: ResultGeometryValidation) {
  */
 export async function runRecordedResultGeometryScenario(
   adapter: TestAdapter,
-  { timeoutMs, pollMs }: { timeoutMs?: number; pollMs?: number },
+  {
+    timeoutMs,
+    pollMs,
+    acceptanceBinding,
+  }: {
+    timeoutMs?: number;
+    pollMs?: number;
+    acceptanceBinding: VisionAcceptanceBinding;
+  },
 ): Promise<
   | {
       ok: true;
@@ -601,7 +888,11 @@ export async function runRecordedResultGeometryScenario(
       },
       { timeoutMs: timeoutMs ?? 60_000, pollMs: 1_000 },
     );
-    const attempt = await runTryOnScenario(adapter, { timeoutMs, pollMs });
+    const attempt = await runTryOnScenario(adapter, {
+      timeoutMs,
+      pollMs,
+      acceptanceBinding,
+    });
     if (!attempt.state.resultPng) {
       return {
         ok: false,
@@ -627,6 +918,7 @@ export async function runRecordedResultGeometryScenario(
       scaleResult = await runGarmentScaleScenario(adapter, {
         timeoutMs,
         pollMs,
+        acceptanceBinding,
       });
       if (!scaleResult.beforeState.resultPng || !scaleResult.state.resultPng) {
         throw new Error(
@@ -695,17 +987,24 @@ export async function runRecordedResultGeometryScenario(
 export async function runObserverSelfHealScenario(
   adapter: TestAdapter,
   manifest: ProcessRoleManifest,
-  { timeoutMs, pollMs }: { timeoutMs?: number; pollMs?: number },
+  {
+    timeoutMs,
+    pollMs,
+    acceptanceBinding,
+  }: {
+    timeoutMs?: number;
+    pollMs?: number;
+    acceptanceBinding: VisionAcceptanceBinding;
+  },
 ) {
   await stopDeclaredRole(adapter, manifest, "observer", {
     timeoutMs,
     pollMs,
   });
-  await adapter.run("navigate", ["#/catalog"]);
-  await adapter.run("click", [
-    '[data-test="catalog-category"][data-category-key="tshirts"]',
-  ]);
-  await adapter.run("click", ['[data-test="catalog-product"]']);
+  await enterSelectedProduct(adapter, acceptanceBinding, {
+    timeoutMs,
+    pollMs,
+  });
   await adapter.run("click", ['[data-test="try-on"]']);
   const state = await waitForCondition(
     "result-surface-after-heal",
@@ -774,7 +1073,15 @@ export function validateGarmentScaleAdjustment({
 
 export async function runGarmentScaleScenario(
   adapter: TestAdapter,
-  { timeoutMs, pollMs }: { timeoutMs?: number; pollMs?: number },
+  {
+    timeoutMs,
+    pollMs,
+    acceptanceBinding,
+  }: {
+    timeoutMs?: number;
+    pollMs?: number;
+    acceptanceBinding: VisionAcceptanceBinding;
+  },
 ) {
   const initial = await readState(adapter);
   if (
@@ -783,6 +1090,7 @@ export async function runGarmentScaleScenario(
   ) {
     throw new Error("garment scale scenario requires a completed result");
   }
+  requireStartGarmentBinding(acceptanceBinding, initial.startGarment);
   const beforeUrl = initial.resultUrl;
   const beforeAttemptId = initial.attemptId;
   await adapter.run("click", ['[data-test="try-on-scale-up"]']);
@@ -872,17 +1180,18 @@ export async function runDegradationScenario(
     stopOwner,
     timeoutMs,
     pollMs,
+    acceptanceBinding,
   }: {
     stopOwner: () => Promise<void> | void;
     timeoutMs?: number;
     pollMs?: number;
+    acceptanceBinding: VisionAcceptanceBinding;
   },
 ) {
-  await adapter.run("navigate", ["#/catalog"]);
-  await adapter.run("click", [
-    '[data-test="catalog-category"][data-category-key="tshirts"]',
-  ]);
-  await adapter.run("click", ['[data-test="catalog-product"]']);
+  await enterSelectedProduct(adapter, acceptanceBinding, {
+    timeoutMs,
+    pollMs,
+  });
   await waitForCondition(
     "product-detail-ready",
     async () => {
@@ -941,12 +1250,12 @@ export async function runDegradationScenario(
   };
 }
 
-async function enterTryOn(adapter: TestAdapter) {
-  await adapter.run("navigate", ["#/catalog"]);
-  await adapter.run("click", [
-    '[data-test="catalog-category"][data-category-key="tshirts"]',
-  ]);
-  await adapter.run("click", ['[data-test="catalog-product"]']);
+async function enterTryOn(
+  adapter: TestAdapter,
+  acceptanceBinding: VisionAcceptanceBinding,
+  options: { timeoutMs?: number; pollMs?: number },
+) {
+  await enterSelectedProduct(adapter, acceptanceBinding, options);
   await adapter.run("click", ['[data-test="try-on"]']);
 }
 
@@ -956,9 +1265,17 @@ async function enterTryOn(adapter: TestAdapter) {
  */
 export async function runManualCaptureScenario(
   adapter: TestAdapter,
-  { timeoutMs, pollMs }: { timeoutMs?: number; pollMs?: number },
+  {
+    timeoutMs,
+    pollMs,
+    acceptanceBinding,
+  }: {
+    timeoutMs?: number;
+    pollMs?: number;
+    acceptanceBinding: VisionAcceptanceBinding;
+  },
 ) {
-  await enterTryOn(adapter);
+  await enterTryOn(adapter, acceptanceBinding, { timeoutMs, pollMs });
   let autoCaptured = false;
   await waitForCondition(
     "manual-capture-available",
@@ -1014,9 +1331,17 @@ export async function runManualCaptureScenario(
  */
 export async function runDepartureScenario(
   adapter: TestAdapter,
-  { timeoutMs, pollMs }: { timeoutMs?: number; pollMs?: number },
+  {
+    timeoutMs,
+    pollMs,
+    acceptanceBinding,
+  }: {
+    timeoutMs?: number;
+    pollMs?: number;
+    acceptanceBinding: VisionAcceptanceBinding;
+  },
 ) {
-  await enterTryOn(adapter);
+  await enterTryOn(adapter, acceptanceBinding, { timeoutMs, pollMs });
   await adapter.run("simulate-departure");
   const canceled = await waitForCondition(
     "departure-canceled",

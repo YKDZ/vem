@@ -17,13 +17,16 @@ import { buildAcceptanceReport } from "../../acceptance-report.ts";
 import { CdpTestAdapter } from "../../cdp-adapter.ts";
 import { waitForCondition } from "../../condition-waiter.ts";
 import { createProcessRoleManifest } from "../../fault-injection.ts";
+import { parseSourceGarmentMetadata } from "./source-garment-evidence.ts";
 import {
+  createVisionAcceptanceBinding,
   runTryOnScenario,
   runDegradationScenario,
   runDepartureScenario,
   runManualCaptureScenario,
   runObserverSelfHealScenario,
   runRecordedResultGeometryScenario,
+  type VisionAcceptanceBinding,
 } from "./vision-experience-driver.ts";
 
 type RecordedFixtureRestoreFailure = {
@@ -73,6 +76,8 @@ function primaryFailureWithRestore(
   stage: "vision-experience-primary";
   primaryFailure: unknown;
   restoreFailure: RecordedFixtureRestoreFailure;
+  report: VisionExperienceReport | null;
+  evidence: unknown;
 } {
   const error = new Error(
     `visionExperience primary failure: ${
@@ -85,10 +90,16 @@ function primaryFailureWithRestore(
     stage: "vision-experience-primary";
     primaryFailure: unknown;
     restoreFailure: RecordedFixtureRestoreFailure;
+    report: VisionExperienceReport | null;
+    evidence: unknown;
   };
   error.stage = "vision-experience-primary";
   error.primaryFailure = primaryFailure;
   error.restoreFailure = restoreFailure;
+  error.report = reportFromOperationalFailure(primaryFailure);
+  if (error.report) appendRestoreFailure(error.report, restoreFailure);
+  error.evidence =
+    (primaryFailure as { evidence?: unknown } | null)?.evidence ?? null;
   return error;
 }
 
@@ -157,12 +168,38 @@ function diagnosticsWithRestoreFailure(
   return { ...source, primaryFailure, restoreFailure };
 }
 
+function diagnosticsWithVisionAcceptanceFailure(
+  diagnostics: unknown,
+  error: unknown,
+): unknown {
+  const failure = error as {
+    stage?: unknown;
+    evidence?: unknown;
+  } | null;
+  if (
+    (failure?.stage !== "vision-start-garment-binding" &&
+      failure?.stage !== "vision-catalog-selection") ||
+    !failure.evidence ||
+    typeof failure.evidence !== "object"
+  ) {
+    return diagnostics;
+  }
+  const source =
+    diagnostics &&
+    typeof diagnostics === "object" &&
+    !Array.isArray(diagnostics)
+      ? (diagnostics as Record<string, unknown>)
+      : {};
+  return { ...source, visionAcceptanceFailure: failure.evidence };
+}
+
 /**
  * visionExperience 切片 runner：用同一 adapter 跑虚拟试衣与可选自愈场景，
  * 合并断言输出统一报告；fake 与真实 CDP adapter 共用。
  */
 export async function runVisionExperienceSlice({
   adapter,
+  acceptanceBinding,
   manifest = null,
   includeSelfHeal = false,
   includeGarmentScale = false,
@@ -176,6 +213,7 @@ export async function runVisionExperienceSlice({
   visionStabilityTimeoutMs = 60_000,
 }: {
   adapter: TestAdapter;
+  acceptanceBinding: VisionAcceptanceBinding;
   manifest?: ProcessRoleManifest | null;
   includeSelfHeal?: boolean;
   includeGarmentScale?: boolean;
@@ -213,7 +251,11 @@ export async function runVisionExperienceSlice({
     });
     geometryFixtureSelectionStarted = includeGarmentScale;
     const geometry = includeGarmentScale
-      ? await runRecordedResultGeometryScenario(adapter, { timeoutMs, pollMs })
+      ? await runRecordedResultGeometryScenario(adapter, {
+          timeoutMs,
+          pollMs,
+          acceptanceBinding,
+        })
       : null;
     if (geometry && !geometry.ok) {
       report = buildAcceptanceReport({
@@ -231,13 +273,18 @@ export async function runVisionExperienceSlice({
     } else {
       const tryOn = geometry?.ok
         ? geometry.mid
-        : await runTryOnScenario(adapter, { timeoutMs, pollMs });
+        : await runTryOnScenario(adapter, {
+            timeoutMs,
+            pollMs,
+            acceptanceBinding,
+          });
       const assertions = [...tryOn.assertions];
-      const supportingEvidence = [...tryOn.supportingEvidence];
+      const supportingEvidence: unknown[] = [...tryOn.supportingEvidence];
       if (includeSelfHeal && manifest) {
         const heal = await runObserverSelfHealScenario(adapter, manifest, {
           timeoutMs,
           pollMs,
+          acceptanceBinding,
         });
         assertions.push(...heal.assertions);
       }
@@ -252,6 +299,7 @@ export async function runVisionExperienceSlice({
           stopOwner,
           timeoutMs,
           pollMs,
+          acceptanceBinding,
         });
         assertions.push(...degradation.assertions);
       }
@@ -259,6 +307,7 @@ export async function runVisionExperienceSlice({
         const manual = await runManualCaptureScenario(adapter, {
           timeoutMs,
           pollMs,
+          acceptanceBinding,
         });
         assertions.push(...manual.assertions);
       }
@@ -266,6 +315,7 @@ export async function runVisionExperienceSlice({
         const departure = await runDepartureScenario(adapter, {
           timeoutMs,
           pollMs,
+          acceptanceBinding,
         });
         assertions.push(...departure.assertions);
       }
@@ -526,22 +576,27 @@ function serializeFailureDiagnostics(diagnostics: unknown): string {
  * 把带 /api 路径的 provisioning URL 规范化为 Service API origin。
  */
 export function sourceGarmentBindingFromGuestInput(guestInput: unknown): {
-  sourceGarmentMetadata: unknown;
-  sourceGarmentServiceApiOrigin: string | null;
+  selectedCatalogKey: string;
+  selectedVariantId: string;
+  sourceGarmentMetadata: NonNullable<
+    ReturnType<typeof parseSourceGarmentMetadata>
+  >;
+  sourceGarmentServiceApiOrigin: string;
 } {
   const input = guestInput as {
     runtimeBootstrap?: { provisioningApiBaseUrl?: unknown };
-    visionAcceptance?: { sourceGarment?: unknown };
+    visionAcceptance?: {
+      selectedCatalogKey?: unknown;
+      selectedVariantId?: unknown;
+      sourceGarment?: unknown;
+    };
   } | null;
   const provisioningApiBaseUrl =
     input?.runtimeBootstrap?.provisioningApiBaseUrl;
-  if (typeof provisioningApiBaseUrl !== "string") {
-    return {
-      sourceGarmentMetadata: null,
-      sourceGarmentServiceApiOrigin: null,
-    };
-  }
   try {
+    if (typeof provisioningApiBaseUrl !== "string") {
+      throw new Error("runtime bootstrap provisioning URL is missing");
+    }
     const serviceApiUrl = new URL(provisioningApiBaseUrl);
     if (
       serviceApiUrl.protocol !== "http:" &&
@@ -568,19 +623,27 @@ export function sourceGarmentBindingFromGuestInput(guestInput: unknown): {
     ) {
       throw new Error("source garment publicPath is not canonical");
     }
-    return {
-      sourceGarmentMetadata: {
+    const sourceGarmentMetadata = parseSourceGarmentMetadata(
+      {
         ...seeded,
         reference: reference.toString(),
         origin: serviceApiUrl.origin,
       },
+      serviceApiUrl.origin,
+    );
+    if (!sourceGarmentMetadata) {
+      throw new Error("source garment metadata is invalid");
+    }
+    return {
+      ...createVisionAcceptanceBinding({
+        selectedCatalogKey: input?.visionAcceptance?.selectedCatalogKey,
+        selectedVariantId: input?.visionAcceptance?.selectedVariantId,
+        sourceGarmentMetadata,
+      }),
       sourceGarmentServiceApiOrigin: serviceApiUrl.origin,
     };
-  } catch {
-    return {
-      sourceGarmentMetadata: null,
-      sourceGarmentServiceApiOrigin: null,
-    };
+  } catch (error) {
+    throw new Error("vision acceptance binding is invalid", { cause: error });
   }
 }
 
@@ -631,6 +694,10 @@ async function persistFailureEvidence({
       };
     }
     failureEvidence.diagnostics = diagnosticsWithRestoreFailure(
+      failureEvidence.diagnostics,
+      error,
+    );
+    failureEvidence.diagnostics = diagnosticsWithVisionAcceptanceFailure(
       failureEvidence.diagnostics,
       error,
     );
@@ -688,19 +755,14 @@ export async function main(
   const guestInputIndex = args.indexOf("--guest-input");
   const guestInputPath =
     guestInputIndex >= 0 ? args[guestInputIndex + 1] : null;
-  let sourceGarmentMetadata: unknown = null;
-  let sourceGarmentServiceApiOrigin: string | null = null;
-  if (guestInputPath) {
-    try {
-      ({ sourceGarmentMetadata, sourceGarmentServiceApiOrigin } =
-        sourceGarmentBindingFromGuestInput(
-          JSON.parse(readFileSync(guestInputPath, "utf8")),
-        ));
-    } catch {
-      sourceGarmentMetadata = null;
-      sourceGarmentServiceApiOrigin = null;
-    }
+  if (!guestInputPath) {
+    throw new Error("vision acceptance binding requires --guest-input");
   }
+  const acceptanceBinding = sourceGarmentBindingFromGuestInput(
+    JSON.parse(readFileSync(guestInputPath, "utf8")),
+  );
+  const { sourceGarmentMetadata, sourceGarmentServiceApiOrigin } =
+    acceptanceBinding;
   const adapter = (
     dependencies.createAdapter ?? ((options) => new CdpTestAdapter(options))
   )({
@@ -722,6 +784,7 @@ export async function main(
     adapter.recordMilestone?.("runner:slice", "started");
     const report = await (dependencies.runSlice ?? runVisionExperienceSlice)({
       adapter,
+      acceptanceBinding,
       manifest,
       includeSelfHeal: process.env.SKIP_SELF_HEAL !== "1",
       includeGarmentScale: process.env.SKIP_SCALE !== "1",

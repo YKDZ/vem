@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -14,6 +14,53 @@ import {
 } from "./vision-experience-runner.ts";
 
 const tryOnAttemptId = "550e8400-e29b-41d4-a716-446655440124";
+const selectedCatalogKey = "product:550e8400-e29b-41d4-a716-446655440125";
+const selectedVariantId = "550e8400-e29b-41d4-a716-446655440127";
+const sourceGarmentMetadataFixture = {
+  reference:
+    "http://127.0.0.1:26849/api/media-assets/550e8400-e29b-41d4-a716-446655440126/content",
+  origin: "http://127.0.0.1:26849",
+  assetId: "550e8400-e29b-41d4-a716-446655440126",
+  digest: `sha256:${"a".repeat(64)}`,
+  contentType: "image/png" as const,
+  byteSize: 12,
+  template: "tshirt_short_sleeve" as const,
+  width: 512,
+  height: 640,
+};
+const visionAcceptanceBinding = {
+  selectedCatalogKey,
+  selectedVariantId,
+  sourceGarmentMetadata: sourceGarmentMetadataFixture,
+};
+const selectedProductSelector =
+  `[data-test="catalog-product"]` +
+  `[data-catalog-key="${selectedCatalogKey}"]` +
+  `[data-variant-id="${selectedVariantId}"]`;
+const selectedProductRoute = `#/products/${encodeURIComponent(
+  selectedCatalogKey,
+)}?variantId=${selectedVariantId}`;
+
+function writeVisionGuestInput(root: string): string {
+  const path = join(root, "guest-input.json");
+  writeFileSync(
+    path,
+    JSON.stringify({
+      runtimeBootstrap: {
+        provisioningApiBaseUrl: "http://127.0.0.1:26849/api",
+      },
+      visionAcceptance: {
+        selectedCatalogKey,
+        selectedVariantId,
+        sourceGarment: {
+          ...sourceGarmentMetadataFixture,
+          publicPath: new URL(sourceGarmentMetadataFixture.reference).pathname,
+        },
+      },
+    }),
+  );
+  return path;
+}
 
 function capturedEvidenceFor(attemptId: string) {
   const visionOrigin = "http://127.0.0.1:7892";
@@ -122,18 +169,7 @@ function fakeUiAdapter() {
       aspect: 0.8,
     },
   });
-  const sourceGarmentMetadata = {
-    reference:
-      "http://127.0.0.1:26849/api/media-assets/550e8400-e29b-41d4-a716-446655440126/content",
-    origin: "http://127.0.0.1:26849",
-    assetId: "550e8400-e29b-41d4-a716-446655440126",
-    digest: `sha256:${"a".repeat(64)}`,
-    contentType: "image/png" as const,
-    byteSize: 12,
-    template: "tshirt_short_sleeve" as const,
-    width: 512,
-    height: 640,
-  };
+  const sourceGarmentMetadata = sourceGarmentMetadataFixture;
   const startGarment = {
     assetId: sourceGarmentMetadata.assetId,
     reference: "http://127.0.0.1:7892/media/garment?token=source-token",
@@ -181,6 +217,18 @@ function fakeUiAdapter() {
         );
         return { exitCode: 0, stdout: "ok", stderr: "" };
       },
+      [`click ${selectedProductSelector}`]: async () => {
+        await adapter.writeFile(
+          statePath,
+          JSON.stringify({
+            route: selectedProductRoute,
+            state: "idle",
+            tryOnPresent: true,
+            buyDisabled: false,
+          }),
+        );
+        return { exitCode: 0, stdout: "ok", stderr: "" };
+      },
       'click [data-test="try-on"]': async () => {
         const attemptId = segmentAttemptId[selectedSegment];
         const resultReference = `http://127.0.0.1:7892/v2/try-on/results/${attemptId}?token=result-token`;
@@ -188,17 +236,18 @@ function fakeUiAdapter() {
         await adapter.writeFile(
           statePath,
           JSON.stringify({
-            route: "#/try-on?catalogKey=product%3A1",
+            route: `#/try-on?catalogKey=${encodeURIComponent(selectedCatalogKey)}&variantId=${selectedVariantId}`,
             state: "acquiring",
             attemptId,
             preview: { naturalWidth: 720, naturalHeight: 1280 },
+            startGarment,
           }),
         );
         setTimeout(() => {
           void adapter.writeFile(
             statePath,
             JSON.stringify({
-              route: "#/try-on?catalogKey=product%3A1",
+              route: `#/try-on?catalogKey=${encodeURIComponent(selectedCatalogKey)}&variantId=${selectedVariantId}`,
               state: "completed",
               attemptId,
               preview: { naturalWidth: 720, naturalHeight: 1280 },
@@ -243,6 +292,7 @@ describe("visionExperience slice runner", () => {
   it("轨道在报告前退出时写入诊断与截图", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-vision-runner-failure-"));
     const outPath = join(root, "vision-experience.json");
+    const guestInputPath = writeVisionGuestInput(root);
     const screenshot = readFileSync(
       new URL(
         "../../../../../apps/machine/src-tauri/app-icon.png",
@@ -288,13 +338,30 @@ describe("visionExperience slice runner", () => {
     };
     try {
       await assert.rejects(
-        runVisionExperienceMain(["--out", outPath], {
-          startVisionOwner: () => undefined,
-          createAdapter: () => adapter,
-          runSlice: async () => {
-            throw new Error("try-on-route did not become true");
+        runVisionExperienceMain(
+          ["--out", outPath, "--guest-input", guestInputPath],
+          {
+            startVisionOwner: () => undefined,
+            createAdapter: () => adapter,
+            runSlice: async () => {
+              const error = new Error(
+                "try-on-route did not become true",
+              ) as Error & { stage: string; evidence: unknown };
+              error.stage = "vision-start-garment-binding";
+              error.evidence = {
+                kind: "vision-start-garment-binding",
+                status: "mismatch",
+                selection: {
+                  catalogKey: selectedCatalogKey,
+                  variantId: selectedVariantId,
+                },
+                expected: { template: "tshirt_short_sleeve" },
+                observed: { template: "tshirt_long_sleeve" },
+              };
+              throw error;
+            },
           },
-        }),
+        ),
         /try-on-route/,
       );
       const artifactRoot = join(root, "vision-experience-artifacts");
@@ -305,6 +372,14 @@ describe("visionExperience slice runner", () => {
       assert.deepEqual(diagnostics.machineRuntimeTrace, [
         { kind: "navigation" },
       ]);
+      assert.equal(
+        diagnostics.visionAcceptanceFailure.selection.variantId,
+        selectedVariantId,
+      );
+      assert.equal(
+        diagnostics.visionAcceptanceFailure.observed.template,
+        "tshirt_long_sleeve",
+      );
       assert.ok(
         readFileSync(join(artifactRoot, "failure-screenshot.png")).equals(
           screenshot,
@@ -319,6 +394,7 @@ describe("visionExperience slice runner", () => {
   it("主 geometry verdict 与 restore 失败会在同一轮恢复后再落盘", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-vision-runner-restore-"));
     const outPath = join(root, "vision-experience.json");
+    const guestInputPath = writeVisionGuestInput(root);
     const milestones: Record<string, unknown>[] = [];
     const adapter = fakeUiAdapter() as any;
     const originalRun = adapter.run.bind(adapter);
@@ -359,11 +435,14 @@ describe("visionExperience slice runner", () => {
     };
     try {
       await assert.rejects(
-        runVisionExperienceMain(["--out", outPath], {
-          startVisionOwner: () => undefined,
-          createAdapter: () => adapter,
-          runSlice: (options) => runVisionExperienceSlice(options),
-        }),
+        runVisionExperienceMain(
+          ["--out", outPath, "--guest-input", guestInputPath],
+          {
+            startVisionOwner: () => undefined,
+            createAdapter: () => adapter,
+            runSlice: (options) => runVisionExperienceSlice(options),
+          },
+        ),
         (error: any) =>
           error?.stage === "restore-recorded-video-fixtures" &&
           error?.report?.businessSets?.[0]?.status === "failed" &&
@@ -411,6 +490,7 @@ describe("visionExperience slice runner", () => {
 
   it("支持证据目录或文件无法写入时不替换业务错误", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-vision-runner-io-failure-"));
+    const guestInputPath = writeVisionGuestInput(root);
     const attempted: string[] = [];
     const adapter = {
       async connect() {
@@ -448,7 +528,12 @@ describe("visionExperience slice runner", () => {
       ]) {
         await assert.rejects(
           runVisionExperienceMain(
-            ["--out", join(root, "vision-experience.json")],
+            [
+              "--out",
+              join(root, "vision-experience.json"),
+              "--guest-input",
+              guestInputPath,
+            ],
             {
               startVisionOwner: () => undefined,
               createAdapter: () => adapter,
@@ -471,6 +556,7 @@ describe("visionExperience slice runner", () => {
   it("失败诊断整体超限时保留有界摘要而不写入超大文件", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-vision-runner-bounded-"));
     const outPath = join(root, "vision-experience.json");
+    const guestInputPath = writeVisionGuestInput(root);
     const consoleEvents = Array.from({ length: 128 }, (_, eventIndex) => ({
       type: "log",
       args: Array.from(
@@ -520,13 +606,16 @@ describe("visionExperience slice runner", () => {
     };
     try {
       await assert.rejects(
-        runVisionExperienceMain(["--out", outPath], {
-          startVisionOwner: () => undefined,
-          createAdapter: () => adapter,
-          runSlice: async () => {
-            throw new Error("result-surface timed out");
+        runVisionExperienceMain(
+          ["--out", outPath, "--guest-input", guestInputPath],
+          {
+            startVisionOwner: () => undefined,
+            createAdapter: () => adapter,
+            runSlice: async () => {
+              throw new Error("result-surface timed out");
+            },
           },
-        }),
+        ),
         /result-surface timed out/,
       );
       const diagnosticsPath = join(
@@ -565,9 +654,15 @@ describe("visionExperience slice runner", () => {
         runtimeBootstrap: {
           provisioningApiBaseUrl: "http://10.0.0.15:26849/api",
         },
-        visionAcceptance: { sourceGarment },
+        visionAcceptance: {
+          selectedCatalogKey: "product:550e8400-e29b-41d4-a716-446655440120",
+          selectedVariantId: "550e8400-e29b-41d4-a716-446655440121",
+          sourceGarment,
+        },
       }),
       {
+        selectedCatalogKey: "product:550e8400-e29b-41d4-a716-446655440120",
+        selectedVariantId: "550e8400-e29b-41d4-a716-446655440121",
         sourceGarmentMetadata: {
           ...sourceGarment,
           reference:
@@ -580,25 +675,53 @@ describe("visionExperience slice runner", () => {
   });
 
   it("拒绝把 host loopback 的 source garment 带进 guest", () => {
-    assert.deepEqual(
-      sourceGarmentBindingFromGuestInput({
-        runtimeBootstrap: {
-          provisioningApiBaseUrl: "http://10.0.0.15:26849/api",
-        },
-        visionAcceptance: {
-          sourceGarment: {
-            publicPath:
-              "http://127.0.0.1:26849/api/media-assets/550e8400-e29b-41d4-a716-446655440126/content",
+    assert.throws(
+      () =>
+        sourceGarmentBindingFromGuestInput({
+          runtimeBootstrap: {
+            provisioningApiBaseUrl: "http://10.0.0.15:26849/api",
           },
-        },
-      }),
-      { sourceGarmentMetadata: null, sourceGarmentServiceApiOrigin: null },
+          visionAcceptance: {
+            sourceGarment: {
+              publicPath:
+                "http://127.0.0.1:26849/api/media-assets/550e8400-e29b-41d4-a716-446655440126/content",
+            },
+          },
+        }),
+      /vision acceptance binding/i,
     );
+  });
+
+  it("guest-input 缺失或注入式目录 identity 时 fail closed", () => {
+    for (const visionAcceptance of [
+      {},
+      {
+        selectedCatalogKey:
+          'product:550e8400-e29b-41d4-a716-446655440120"] [data-test="try-on"',
+        selectedVariantId: "550e8400-e29b-41d4-a716-446655440121",
+      },
+      {
+        selectedCatalogKey: "product:550e8400-e29b-41d4-a716-446655440120",
+        selectedVariantId: "not-a-uuid",
+      },
+    ]) {
+      assert.throws(
+        () =>
+          sourceGarmentBindingFromGuestInput({
+            runtimeBootstrap: {
+              provisioningApiBaseUrl: "http://10.0.0.15:26849/api",
+            },
+            visionAcceptance,
+          }),
+        /vision acceptance binding/i,
+      );
+    }
   });
 
   it("从三次结果资源与同一 attempt 的 100/105 资源生成几何业务断言", async () => {
     const report = await runVisionExperienceSlice({
       adapter: fakeUiAdapter(),
+      acceptanceBinding: visionAcceptanceBinding,
       includeGarmentScale: true,
       timeoutMs: 2_000,
       pollMs: 10,
@@ -625,6 +748,7 @@ describe("visionExperience slice runner", () => {
     };
     const report = await runVisionExperienceSlice({
       adapter,
+      acceptanceBinding: visionAcceptanceBinding,
       includeGarmentScale: true,
       timeoutMs: 2_000,
       pollMs: 10,
@@ -657,6 +781,7 @@ describe("visionExperience slice runner", () => {
 
     const report = await runVisionExperienceSlice({
       adapter,
+      acceptanceBinding: visionAcceptanceBinding,
       includeGarmentScale: true,
       timeoutMs: 30,
       pollMs: 5,
@@ -686,6 +811,7 @@ describe("visionExperience slice runner", () => {
     await assert.rejects(
       runVisionExperienceSlice({
         adapter,
+        acceptanceBinding: visionAcceptanceBinding,
         includeGarmentScale: true,
         timeoutMs: 2_000,
         pollMs: 10,
@@ -698,7 +824,12 @@ describe("visionExperience slice runner", () => {
 
   it("未选择 geometry 夹具的轨道不会触发默认录播重启", async () => {
     const adapter = fakeUiAdapter();
-    await runVisionExperienceSlice({ adapter, timeoutMs: 2_000, pollMs: 10 });
+    await runVisionExperienceSlice({
+      adapter,
+      acceptanceBinding: visionAcceptanceBinding,
+      timeoutMs: 2_000,
+      pollMs: 10,
+    });
     assert.equal(
       adapter.calls.some(
         (call) => call.command === "restore-recorded-video-fixtures",
@@ -723,6 +854,7 @@ describe("visionExperience slice runner", () => {
     await assert.rejects(
       runVisionExperienceSlice({
         adapter,
+        acceptanceBinding: visionAcceptanceBinding,
         includeGarmentScale: true,
         timeoutMs: 30,
         pollMs: 5,
@@ -752,6 +884,7 @@ describe("visionExperience slice runner", () => {
     await assert.rejects(
       runVisionExperienceSlice({
         adapter,
+        acceptanceBinding: visionAcceptanceBinding,
         includeGarmentScale: true,
         timeoutMs: 30,
         pollMs: 5,
@@ -760,6 +893,38 @@ describe("visionExperience slice runner", () => {
         error?.stage === "vision-experience-primary" &&
         error?.primaryFailure === "fixture primary failed" &&
         error?.restoreFailure?.stage === "restore-recorded-video-fixtures",
+    );
+  });
+
+  it("startGarment 错绑与录播恢复失败并存时仍上卷业务报告", async () => {
+    const adapter = fakeUiAdapter();
+    const originalRun = adapter.run.bind(adapter);
+    adapter.run = async (command, args = []) =>
+      command === "restore-recorded-video-fixtures"
+        ? { exitCode: 1, stdout: "", stderr: "restore failed" }
+        : originalRun(command, args);
+
+    await assert.rejects(
+      runVisionExperienceSlice({
+        adapter,
+        acceptanceBinding: {
+          ...visionAcceptanceBinding,
+          sourceGarmentMetadata: {
+            ...sourceGarmentMetadataFixture,
+            template: "tshirt_long_sleeve",
+          },
+        },
+        includeGarmentScale: true,
+        timeoutMs: 2_000,
+        pollMs: 10,
+      }),
+      (error: any) =>
+        error?.stage === "vision-experience-primary" &&
+        error?.report?.businessSets?.[0]?.status === "failed" &&
+        error?.evidence?.kind === "vision-start-garment-binding" &&
+        error?.report?.businessSets?.[0]?.supportingEvidence?.at(-1)?.kind ===
+          "vision-recorded-fixture-restore" &&
+        error?.restoreFailure?.reason === "restore failed",
     );
   });
 
@@ -778,6 +943,7 @@ describe("visionExperience slice runner", () => {
     const adapter = fakeUiAdapter();
     const report = await runVisionExperienceSlice({
       adapter,
+      acceptanceBinding: visionAcceptanceBinding,
       includeGarmentScale: true,
       includeDegradation: true,
       stopOwner: async () => {
@@ -798,7 +964,7 @@ describe("visionExperience slice runner", () => {
     });
     const result = registry.validateReport(report);
     assert.equal(result.businessSets.visionExperience.status, "passed");
-    assert.equal(report.businessSets[0].assertionCount, 13);
+    assert.equal(report.businessSets[0].assertionCount, 15);
   });
 
   it("waits for a stable Vision role PID set before starting the flow", async () => {
@@ -827,6 +993,7 @@ describe("visionExperience slice runner", () => {
     };
     const report = await runVisionExperienceSlice({
       adapter,
+      acceptanceBinding: visionAcceptanceBinding,
       includeGarmentScale: false,
       visionStabilityMs: 40,
       visionStabilityTimeoutMs: 2_000,
@@ -882,11 +1049,11 @@ describe("visionExperience slice runner", () => {
             );
             return { exitCode: 0, stdout: "ok", stderr: "" };
           },
-        'click [data-test="catalog-product"]': async () => {
+        [`click ${selectedProductSelector}`]: async () => {
           await adapter.writeFile(
             statePath,
             JSON.stringify({
-              route: "#/products/product:1",
+              route: selectedProductRoute,
               state: "idle",
               tryOnPresent: true,
             }),
@@ -899,21 +1066,35 @@ describe("visionExperience slice runner", () => {
             await adapter.writeFile(
               statePath,
               JSON.stringify({
-                route: "#/try-on?catalogKey=product%3A1",
+                route: `#/try-on?catalogKey=${encodeURIComponent(selectedCatalogKey)}&variantId=${selectedVariantId}`,
                 state: "acquiring",
                 attemptId,
                 preview: { naturalWidth: 720, naturalHeight: 1280 },
+                startGarment: {
+                  assetId: sourceGarmentMetadataFixture.assetId,
+                  digest: sourceGarmentMetadataFixture.digest,
+                  contentType: sourceGarmentMetadataFixture.contentType,
+                  byteSize: sourceGarmentMetadataFixture.byteSize,
+                  template: sourceGarmentMetadataFixture.template,
+                },
               }),
             );
             setTimeout(() => {
               void adapter.writeFile(
                 statePath,
                 JSON.stringify({
-                  route: "#/try-on?catalogKey=product%3A1",
+                  route: `#/try-on?catalogKey=${encodeURIComponent(selectedCatalogKey)}&variantId=${selectedVariantId}`,
                   state: "completed",
                   attemptId,
                   preview: { naturalWidth: 720, naturalHeight: 1280 },
                   resultUrl: `http://127.0.0.1:7892/v2/try-on/results/${attemptId}?token=result-token`,
+                  startGarment: {
+                    assetId: sourceGarmentMetadataFixture.assetId,
+                    digest: sourceGarmentMetadataFixture.digest,
+                    contentType: sourceGarmentMetadataFixture.contentType,
+                    byteSize: sourceGarmentMetadataFixture.byteSize,
+                    template: sourceGarmentMetadataFixture.template,
+                  },
                   ...capturedEvidence,
                 }),
               );
@@ -959,12 +1140,13 @@ describe("visionExperience slice runner", () => {
     });
     const report = await runVisionExperienceSlice({
       adapter,
+      acceptanceBinding: visionAcceptanceBinding,
       includeManualCapture: true,
       includeDeparture: true,
       timeoutMs: 2_000,
       pollMs: 10,
     });
     assert.equal(report.businessSets[0].status, "passed");
-    assert.equal(report.businessSets[0].assertionCount, 7);
+    assert.equal(report.businessSets[0].assertionCount, 9);
   });
 });
