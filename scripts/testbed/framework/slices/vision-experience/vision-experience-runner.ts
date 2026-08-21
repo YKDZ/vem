@@ -804,9 +804,26 @@ export async function main(
   if (!guestInputPath) {
     throw new Error("vision acceptance binding requires --guest-input");
   }
+  const guestInputRaw = readFileSync(guestInputPath, "utf8");
   const acceptanceBinding = sourceGarmentBindingFromGuestInput(
-    JSON.parse(readFileSync(guestInputPath, "utf8")),
+    JSON.parse(guestInputRaw),
   );
+  const visionMockControlPort = (() => {
+    try {
+      const input = JSON.parse(guestInputRaw) as {
+        hostControlPlane?: { visionMockControlPort?: unknown };
+        visionMockControlPort?: unknown;
+      } | null;
+      const port =
+        input?.hostControlPlane?.visionMockControlPort ??
+        input?.visionMockControlPort;
+      return typeof port === "number" && Number.isInteger(port) && port > 0
+        ? port
+        : 7_893;
+    } catch {
+      return 7_893;
+    }
+  })();
   const { sourceGarmentMetadata, sourceGarmentServiceApiOrigin } =
     acceptanceBinding;
   const adapter = (
@@ -814,6 +831,7 @@ export async function main(
   )({
     sourceGarmentMetadata,
     sourceGarmentServiceApiOrigin,
+    visionMockControlPort,
   });
   let replaySummary: ProcessReplaySummary | null = null;
   adapter.recordMilestone?.("runner:connect", "started");

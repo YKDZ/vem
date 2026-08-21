@@ -1498,4 +1498,47 @@ describe("process replay 轨道集成", () => {
       },
     ),
   );
+
+  it(
+    "把 guest-input 的 Vision mock 控制端口传给真实 CDP adapter",
+    withEnv(
+      { VEM_PROCESS_REPLAY: undefined, VEM_PROCESS_REPLAY_DIR: undefined },
+      async () => {
+        const root = mkdtempSync(join(tmpdir(), "vem-vision-mock-port-"));
+        const outPath = join(root, "vision-experience.json");
+        const guestInputPath = writeVisionGuestInput(root);
+        const input = JSON.parse(readFileSync(guestInputPath, "utf8"));
+        input.hostControlPlane = { visionMockControlPort: 8123 };
+        writeFileSync(guestInputPath, JSON.stringify(input));
+        const adapter = fakeUiAdapter() as any;
+        adapter.connect = async () => adapter;
+        adapter.close = async () => {};
+        adapter.recordMilestone = () => {};
+        let adapterOptions = null;
+        try {
+          await runVisionExperienceMain(
+            [
+              "--mode",
+              "fast",
+              "--out",
+              outPath,
+              "--guest-input",
+              guestInputPath,
+            ],
+            {
+              startVisionOwner: () => undefined,
+              createAdapter: (options) => {
+                adapterOptions = options;
+                return adapter;
+              },
+              runSlice: async () => passedVisionReport(),
+            },
+          );
+          assert.equal(adapterOptions.visionMockControlPort, 8123);
+        } finally {
+          rmSync(root, { recursive: true, force: true });
+        }
+      },
+    ),
+  );
 });

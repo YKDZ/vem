@@ -1897,6 +1897,52 @@ describe("CDP test adapter", () => {
       );
     }
   });
+
+  it("maps simulate-departure to the guest-local Vision mock control boundary", async () => {
+    const requests: { source: string }[] = [];
+    let failNext = false;
+    const server = createServer((request, response) => {
+      if (request.url === "/control/departure" && request.method === "POST") {
+        let body = "";
+        request.on("data", (chunk) => (body += chunk));
+        request.on("end", () => {
+          requests.push(JSON.parse(body));
+          response.statusCode = failNext ? 500 : 200;
+          response.end(failNext ? "mock unavailable" : "ok");
+        });
+        return;
+      }
+      response.statusCode = 404;
+      response.end("not found");
+    });
+    await new Promise<void>((resolvePromise) =>
+      server.listen(0, "127.0.0.1", () => resolvePromise()),
+    );
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("test server did not bind a TCP port");
+    }
+    const { port } = address;
+    try {
+      const adapter = new CdpTestAdapter({
+        endpoint: "http://127.0.0.1:1",
+        visionBaseUrl: "http://127.0.0.1:1",
+        visionMockControlPort: port,
+      });
+      const departed = await adapter.run("simulate-departure");
+      assert.equal(departed.exitCode, 0);
+      assert.equal(departed.stdout, "departed");
+      assert.deepEqual(requests, [{ source: "vision-experience-departure" }]);
+      failNext = true;
+      const failed = await adapter.run("simulate-departure");
+      assert.equal(failed.exitCode, 1);
+      assert.equal(failed.stderr, "mock unavailable");
+    } finally {
+      await new Promise<void>((resolvePromise) =>
+        server.close(() => resolvePromise()),
+      );
+    }
+  });
 });
 
 function createFakeCdpWebSocketFactory(
