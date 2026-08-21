@@ -1,4 +1,4 @@
-# 已安装录播夹具完整切换深模块：锚验证、决策、配置写入与唯一 Vision owner 生命周期共用一个生产 seam。
+﻿# 已安装录播夹具完整切换深模块：锚验证、决策、配置写入与唯一 Vision owner 生命周期共用一个生产 seam。
 function Test-VemRecordedFixtureLocalPath {
   param([string]$Path)
 
