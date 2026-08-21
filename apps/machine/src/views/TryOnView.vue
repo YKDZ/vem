@@ -77,7 +77,16 @@ const guidanceText = computed(() => {
   }
 });
 const countdownSeconds = computed(() => {
-  const seconds = Math.ceil((tryOn.holdRemainingMs ?? 0) / 1000);
+  const holdRemainingMs = tryOn.holdRemainingMs;
+  if (
+    typeof holdRemainingMs !== "number" ||
+    !Number.isInteger(holdRemainingMs) ||
+    holdRemainingMs < 0 ||
+    holdRemainingMs > 3_000
+  ) {
+    return null;
+  }
+  const seconds = Math.ceil(holdRemainingMs / 1000);
   return seconds >= 1 && seconds <= 3 ? seconds : null;
 });
 const manualCaptureLabel = computed(() =>
@@ -501,6 +510,7 @@ function scaleGarment(delta: number): void {
           v-if="tryOn.guidance === 'counting_down' && countdownSeconds !== null"
           class="try-on-countdown"
           data-test="try-on-countdown"
+          :data-hold-remaining-ms="tryOn.holdRemainingMs"
         >
           {{ countdownSeconds }}
         </span>

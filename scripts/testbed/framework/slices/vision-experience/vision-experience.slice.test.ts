@@ -960,6 +960,67 @@ describe("visionExperience vertical slice driver", () => {
     assert.equal(heldObservationReverseTimeResult.ok, false);
   });
 
+  it("只用同次 DOM hold 判定倒计时，协议已前进值仅保留为竞态诊断", () => {
+    const attemptId = "attempt-countdown-dom-atomic-race";
+    const countdown = (
+      atMs: number,
+      holdRemainingMs: number | null,
+      countdownText: "3" | "2" | "1",
+      latestProtocolHoldRemainingMs: number | null,
+    ): VisionExperienceObservation => ({
+      atMs,
+      attemptId,
+      state: "acquiring",
+      holdRemainingMs,
+      latestProtocolHoldRemainingMs,
+      countdownText,
+      previewVisible: true,
+      previewFrameHash: `preview-${atMs}`,
+    });
+    const samples = [
+      countdown(0, 3_000, "3", 986),
+      countdown(750, 2_250, "3", 986),
+      countdown(1_000, 2_000, "2", 986),
+      countdown(1_750, 1_392, "2", 986),
+      countdown(2_000, 1_000, "1", 986),
+      countdown(2_750, 250, "1", 986),
+      {
+        atMs: 3_000,
+        attemptId,
+        state: "captured",
+        holdRemainingMs: null,
+        countdownText: null,
+        previewVisible: false,
+        previewFrameHash: null,
+      },
+    ];
+
+    const atomic = validateVisionExperienceTimeline({ attemptId, samples });
+    assert.equal(atomic.countdownProtocolDomConsistent.observed, true);
+    assert.equal(samples[3]!.holdRemainingMs, 1_392);
+    assert.equal(samples[3]!.latestProtocolHoldRemainingMs, 986);
+
+    const mixedSnapshot = structuredClone(samples);
+    mixedSnapshot[3]!.holdRemainingMs = 986;
+    assert.equal(
+      validateVisionExperienceTimeline({
+        attemptId,
+        samples: mixedSnapshot,
+      }).countdownProtocolDomConsistent.observed,
+      false,
+    );
+
+    const missingDomHold = structuredClone(samples);
+    missingDomHold[3]!.holdRemainingMs = null;
+    assert.equal(
+      validateVisionExperienceTimeline({
+        attemptId,
+        samples: missingDomHold,
+      }).countdownProtocolDomConsistent.observed,
+      false,
+    );
+  });
+
   it("对被打断的旧倒计时轮次保留 protocol 与 DOM 一致性检查", () => {
     const attemptId = "attempt-countdown-all-round-consistency";
     const countdown = (

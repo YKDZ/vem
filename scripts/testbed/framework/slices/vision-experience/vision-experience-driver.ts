@@ -64,6 +64,8 @@ export interface VisionExperienceObservation {
   attemptId: string;
   state: string | null;
   holdRemainingMs: number | null;
+  /** 同一时刻协议可能已前进；仅用于诊断，绝不参与 DOM 倒计时判定。 */
+  latestProtocolHoldRemainingMs?: number | null;
   countdownText: string | null;
   previewVisible: boolean;
   previewFrameHash: string | null;

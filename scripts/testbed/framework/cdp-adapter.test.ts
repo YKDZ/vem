@@ -231,6 +231,103 @@ describe("CDP test adapter", () => {
     }
   });
 
+  it("从同一次公开 CDP DOM 快照原子读取倒计时 hold，不把已前进的协议事件拼入判定", async () => {
+    class FakeHtmlElement {}
+    let holdAttribute: string | null = "1392";
+    const view = Object.assign(new FakeHtmlElement(), {
+      dataset: {
+        state: "acquiring",
+        attemptId: "550e8400-e29b-41d4-a716-446655440124",
+      },
+    });
+    const countdown = Object.assign(new FakeHtmlElement(), {
+      textContent: "2",
+      getAttribute: (name: string) =>
+        name === "data-hold-remaining-ms" ? holdAttribute : null,
+    });
+    const fakeCdp = createFakeCdpWebSocketFactory((message) => {
+      if (message.method === "Runtime.evaluate") {
+        return {
+          id: message.id,
+          result: {
+            result: {
+              value: runInNewContext(message.params.expression, {
+                document: {
+                  querySelector: (selector: string) =>
+                    selector === "[data-test='try-on-view']"
+                      ? view
+                      : selector === "[data-test='try-on-countdown']"
+                        ? countdown
+                        : null,
+                },
+                location: { hash: "#/try-on" },
+                HTMLElement: FakeHtmlElement,
+                HTMLButtonElement: class extends FakeHtmlElement {},
+                JSON,
+                Number,
+                Boolean,
+              }),
+            },
+          },
+        };
+      }
+      return { id: message.id, result: {} };
+    });
+    const endpoint = await startFakeCdpEndpoint();
+    const adapter = new CdpTestAdapter({
+      endpoint: endpoint.url,
+      cdpWebSocketFactory: fakeCdp.factory,
+    });
+    try {
+      adapter.protocolEvidence.observeWebSocketCreated({
+        requestId: "vision-current",
+        url: "ws://127.0.0.1:27892/v2/machine",
+      });
+      adapter.protocolEvidence.observeWebSocketFrameReceived({
+        requestId: "vision-current",
+        response: {
+          payloadData: JSON.stringify({
+            protocol: "vem.vision.v2",
+            type: "vision.try_on.attempt.acquiring",
+            messageId: "acquiring-advanced",
+            timestamp: "2026-08-21T00:00:00.000Z",
+            payload: {
+              attemptId: "550e8400-e29b-41d4-a716-446655440124",
+              holdRemainingMs: 986,
+            },
+          }),
+        },
+      });
+      await adapter.connect();
+      const state = JSON.parse(await adapter.readFile("ui/try-on-state.json"));
+      assert.equal(state.countdownText, "2");
+      assert.equal(state.holdRemainingMs, 1392);
+      assert.equal(state.observationTimeline.at(-1).holdRemainingMs, 1392);
+      assert.equal(
+        state.observationTimeline.at(-1).latestProtocolHoldRemainingMs,
+        986,
+      );
+      const failure = await adapter.captureFailureEvidence(
+        new Error("forced countdown diagnostic"),
+      );
+      const diagnosticObservation =
+        failure.diagnostics.stateObservations.at(-1);
+      assert.equal(diagnosticObservation.holdRemainingMs, 1392);
+      assert.equal(diagnosticObservation.latestProtocolHoldRemainingMs, 986);
+
+      for (const invalidHold of [null, "01392", "1392.0", "3001"]) {
+        holdAttribute = invalidHold;
+        const invalidState = JSON.parse(
+          await adapter.readFile("ui/try-on-state.json"),
+        );
+        assert.equal(invalidState.holdRemainingMs, null);
+      }
+    } finally {
+      await adapter.close();
+      await endpoint.close();
+    }
+  });
+
   it("通过公开 click command 经真实 CdpClient 发出 touch CDP 输入", async () => {
     const dispatched: { method: string; type?: string }[] = [];
     const fakeCdp = createFakeCdpWebSocketFactory((message) => {

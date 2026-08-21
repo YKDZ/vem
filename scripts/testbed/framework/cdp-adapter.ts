@@ -553,6 +553,15 @@ const STATE_EXPRESSION = `(() => {
   const manual = document.querySelector("[data-test='try-on-manual-capture']");
   const phase = document.querySelector("[data-test='try-on-phase']");
   const countdown = document.querySelector("[data-test='try-on-countdown']");
+  const holdRemainingMsAttribute = countdown?.getAttribute("data-hold-remaining-ms") ?? null;
+  const holdRemainingMs =
+    typeof holdRemainingMsAttribute === "string" &&
+    /^(0|[1-9]\\d*)$/.test(holdRemainingMsAttribute) &&
+    Number.isSafeInteger(Number(holdRemainingMsAttribute)) &&
+    Number(holdRemainingMsAttribute) >= 0 &&
+    Number(holdRemainingMsAttribute) <= 3_000
+      ? Number(holdRemainingMsAttribute)
+      : null;
   const previewRect = preview?.getBoundingClientRect();
   const capturedRect = captured?.getBoundingClientRect();
   return JSON.stringify({
@@ -583,6 +592,7 @@ const STATE_EXPRESSION = `(() => {
     manualCaptureAllowed:
       manual instanceof HTMLButtonElement ? manual.disabled === false : null,
     countdownText: countdown?.textContent?.trim() ?? null,
+    holdRemainingMs,
     previewVisible: Boolean(preview?.getClientRects().length),
     previewRect: previewRect && previewRect.width > 0 && previewRect.height > 0
       ? { x: previewRect.x, y: previewRect.y, width: previewRect.width, height: previewRect.height }
@@ -593,6 +603,18 @@ const STATE_EXPRESSION = `(() => {
       : null,
   });
 })()`;
+
+function validDomCountdownHoldRemainingMs(
+  state: Record<string, unknown>,
+): number | null {
+  const holdRemainingMs = state.holdRemainingMs;
+  return Number.isInteger(holdRemainingMs) &&
+    typeof holdRemainingMs === "number" &&
+    holdRemainingMs >= 0 &&
+    holdRemainingMs <= 3_000
+    ? holdRemainingMs
+    : null;
+}
 
 /**
  * 将 CDP 截图字节作为跨源预览帧身份。它不读取 image canvas，因而 Vision 与
@@ -1252,6 +1274,7 @@ export class CdpTestAdapter implements TestAdapter {
       )
         ? (state as { countdownText: string }).countdownText
         : null;
+    const holdRemainingMs = validDomCountdownHoldRemainingMs(state);
     if (typeof state.attemptId === "string") {
       const latestAcquiring = [...protocolTimeline]
         .reverse()
@@ -1260,7 +1283,8 @@ export class CdpTestAdapter implements TestAdapter {
         atMs: Date.now(),
         attemptId: state.attemptId,
         state: (state as { state?: string | null }).state ?? null,
-        holdRemainingMs:
+        holdRemainingMs,
+        latestProtocolHoldRemainingMs:
           typeof latestAcquiring?.payload.holdRemainingMs === "number"
             ? latestAcquiring.payload.holdRemainingMs
             : null,
@@ -1377,7 +1401,8 @@ export class CdpTestAdapter implements TestAdapter {
       state: state?.state ?? null,
       attemptId,
       countdownText: state?.countdownText ?? null,
-      holdRemainingMs:
+      holdRemainingMs: validDomCountdownHoldRemainingMs(state),
+      latestProtocolHoldRemainingMs:
         typeof latestAcquiring?.payload.holdRemainingMs === "number"
           ? latestAcquiring.payload.holdRemainingMs
           : null,

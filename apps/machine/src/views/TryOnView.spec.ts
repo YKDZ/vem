@@ -259,6 +259,11 @@ describe("TryOnView single-path acquisition UI", () => {
     expect(
       host.querySelector('[data-test="try-on-countdown"]')?.textContent,
     ).toBe("3");
+    expect(
+      host
+        .querySelector('[data-test="try-on-countdown"]')
+        ?.getAttribute("data-hold-remaining-ms"),
+    ).toBe("3000");
     emit(acquisition(2_000));
     await nextTick();
     expect(
@@ -267,6 +272,11 @@ describe("TryOnView single-path acquisition UI", () => {
     expect(
       host.querySelector('[data-test="try-on-countdown"]')?.textContent,
     ).toBe("2");
+    expect(
+      host
+        .querySelector('[data-test="try-on-countdown"]')
+        ?.getAttribute("data-hold-remaining-ms"),
+    ).toBe("2000");
     emit(acquisition(1_000));
     await nextTick();
     expect(
@@ -275,6 +285,11 @@ describe("TryOnView single-path acquisition UI", () => {
     expect(
       host.querySelector('[data-test="try-on-countdown"]')?.textContent,
     ).toBe("1");
+    expect(
+      host
+        .querySelector('[data-test="try-on-countdown"]')
+        ?.getAttribute("data-hold-remaining-ms"),
+    ).toBe("1000");
     emit(acquisition(0));
     await nextTick();
     expect(host.querySelector('[data-test="try-on-countdown"]')).toBeNull();
