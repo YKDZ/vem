@@ -36,6 +36,7 @@ import {
   renderBackendComposeOverride,
   buildServiceApiComposePlan,
   ensureLowerControllerSimCached,
+  guestSourceGarmentPublicPath,
   interpretServiceApiJournalCapture,
   lowerControllerSimCacheLayout,
   lowerControllerSimSourceFingerprint,
@@ -1326,6 +1327,58 @@ describe("local testbed orchestration", () => {
 });
 
 describe("supported API seeding", () => {
+  it("derives a guest-safe source garment path only from its managed reference", () => {
+    const id = "550e8400-e29b-41d4-a716-446655440125";
+    const asset = {
+      id,
+      managedReference: `/api/media-assets/${id}/content`,
+    };
+    assert.equal(
+      guestSourceGarmentPublicPath(asset),
+      `/api/media-assets/${id}/content`,
+    );
+    for (const invalidAsset of [
+      { id },
+      {
+        ...asset,
+        managedReference:
+          "/api/media-assets/550e8400-e29b-41d4-a716-446655440126/content",
+      },
+      {
+        ...asset,
+        managedReference: `http://foreign.example/api/media-assets/${id}/content`,
+      },
+      {
+        ...asset,
+        managedReference: `http://127.0.0.1:26849/api/media-assets/${id}/content`,
+      },
+      {
+        ...asset,
+        managedReference: `api/media-assets/${id}/content`,
+      },
+      { ...asset, managedReference: `/%2e%2e/api/media-assets/${id}/content` },
+      {
+        ...asset,
+        managedReference: `/x/%2e%2e/api/media-assets/${id}/content`,
+      },
+      {
+        ...asset,
+        managedReference: `/\\foreign.example/api/media-assets/${id}/content`,
+      },
+      { ...asset, managedReference: `${asset.managedReference}?download=1` },
+      { ...asset, managedReference: `${asset.managedReference}#fragment` },
+      {
+        ...asset,
+        managedReference: `http://user@127.0.0.1:26849/api/media-assets/${id}/content`,
+      },
+    ]) {
+      assert.throws(
+        () => guestSourceGarmentPublicPath(invalidAsset),
+        /managedReference/,
+      );
+    }
+  });
+
   it("uses only real Admin API endpoints with controller-compatible bodies", async () => {
     const fixture = JSON.parse(
       readFileSync(
@@ -1385,11 +1438,24 @@ describe("supported API seeding", () => {
                   upload.path === "/media-assets/product-display-images",
               ).length
             ];
-      const asset = {
-        id,
-        publicUrl: `/api/media-assets/${id}/content`,
-        contentType: "image/png",
-      };
+      const asset =
+        path === "/media-assets/try-on-garments"
+          ? {
+              id,
+              managedReference: `/api/media-assets/${id}/content`,
+              purpose: "try_on_garment",
+              contentType: "image/png",
+              byteSize: input.buffer.byteLength,
+              width: 512,
+              height: 640,
+              hasTransparency: true,
+              sha256: createHash("sha256").update(input.buffer).digest("hex"),
+            }
+          : {
+              id,
+              publicUrl: `/api/media-assets/${id}/content`,
+              contentType: "image/png",
+            };
       uploads.push({ path, ...input, asset });
       return asset;
     };

@@ -1599,6 +1599,23 @@ async function serviceApiFailure(error, options = null) {
   return new Error(`${error.message}\n${suffix}`);
 }
 
+export function guestSourceGarmentPublicPath(asset) {
+  if (typeof asset?.id !== "string" || asset.id.length === 0) {
+    throw new Error("try-on garment upload asset id is required");
+  }
+  if (
+    typeof asset.managedReference !== "string" ||
+    asset.managedReference.length === 0
+  ) {
+    throw new Error("try-on garment upload managedReference is required");
+  }
+  const expectedPath = `/api/media-assets/${asset.id}/content`;
+  if (asset.managedReference !== expectedPath) {
+    throw new Error("try-on garment upload managedReference is invalid");
+  }
+  return expectedPath;
+}
+
 export async function seedThroughSupportedApis({
   baseUrl,
   fixture,
@@ -1930,7 +1947,7 @@ export async function seedThroughSupportedApis({
       sourceGarment: {
         // Service API 在 host loopback 上 seed；guest 只能按其 Runtime Bootstrap
         // 的私网 origin 解析这个相对公共资源路径。
-        publicPath: new URL(tryOnGarmentAsset.publicUrl, baseUrl).pathname,
+        publicPath: guestSourceGarmentPublicPath(tryOnGarmentAsset),
         assetId: tryOnGarmentAsset.id,
         digest: `sha256:${createHash("sha256").update(testbedTryOnGarmentAsset().buffer).digest("hex")}`,
         contentType: "image/png",
