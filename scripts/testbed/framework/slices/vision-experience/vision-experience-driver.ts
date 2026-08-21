@@ -519,7 +519,6 @@ export function validateVisionExperienceTimeline({
   const lastOne = countdown
     .filter((sample) => sample.countdownText === "1")
     .at(-1);
-  const captured = attemptSamples.find((sample) => sample.state === "captured");
   const firstHeld = attemptSamples.find(
     (sample) => sample.state === "captured" || sample.state === "generating",
   );
@@ -531,16 +530,11 @@ export function validateVisionExperienceTimeline({
     bucketDurations.every((duration) => duration >= MIN_COUNTDOWN_BUCKET_MS) &&
     Boolean(
       firstThree &&
-      captured &&
-      captured.atMs - firstThree.atMs >= MIN_COUNTDOWN_TOTAL_MS,
+      firstHeld &&
+      firstHeld.atMs - firstThree.atMs >= MIN_COUNTDOWN_TOTAL_MS,
     );
   const captureAfter = Boolean(
-    countdownComplete &&
-    captured &&
-    lastOne &&
-    captured.atMs > lastOne.atMs &&
-    firstHeld &&
-    firstHeld.atMs > lastOne.atMs,
+    countdownComplete && lastOne && firstHeld && firstHeld.atMs > lastOne.atMs,
   );
   const previewForAllBuckets = COUNTDOWN_SEQUENCE.every((digit) => {
     const entries = countdown.filter(
@@ -593,9 +587,7 @@ export function validateVisionExperienceTimeline({
           sample.capturedFrameHash == null,
       ),
   };
-  const capturedIdentity = heldSamples.find(
-    (sample) => sample.state === "captured",
-  );
+  const capturedIdentity = firstHeld;
   const capturedImageReadyAndStable =
     heldSamples.length > 0 &&
     heldSamples.some((sample) => sample.state === "generating") &&

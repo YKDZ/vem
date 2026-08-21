@@ -1123,6 +1123,52 @@ describe("visionExperience vertical slice driver", () => {
     assert.equal(result.ok, false);
   });
 
+  it("轮询错过瞬时 captured phase 时以 generating 的独立 captured DOM 证明捕获已完成", () => {
+    const attemptId = "attempt-captured-between-polls";
+    const acquiring = [
+      [0, 3_000, "3"],
+      [800, 2_200, "3"],
+      [1_000, 2_000, "2"],
+      [1_800, 1_200, "2"],
+      [2_000, 1_000, "1"],
+      [2_800, 100, "1"],
+    ].map(([atMs, holdRemainingMs, countdownText]) => ({
+      atMs,
+      attemptId,
+      state: "acquiring",
+      holdRemainingMs,
+      countdownText,
+      previewVisible: true,
+      previewFrameHash: `preview-${atMs}`,
+    }));
+    const held = [3_000, 3_300].map((atMs) => ({
+      atMs,
+      attemptId,
+      state: "generating",
+      holdRemainingMs: null,
+      countdownText: null,
+      previewVisible: false,
+      previewFrameHash: null,
+      capturedFrameId: "frame-between-polls",
+      capturedDigest: "sha256:captured-between-polls",
+      capturedVisible: true,
+      capturedNaturalWidth: 720,
+      capturedNaturalHeight: 1280,
+      capturedSourceMatchesProtocol: true,
+      capturedSourceDigest: "sha256:captured-source",
+      capturedFrameHash: "sha256:captured-frame",
+    }));
+
+    const result = validateVisionExperienceTimeline({
+      attemptId,
+      samples: [...acquiring, ...held] as VisionExperienceObservation[],
+    });
+
+    assert.equal(result.captureAfterCountdown.observed, true);
+    assert.equal(result.capturedFrameHeldDuringGeneration.observed, true);
+    assert.equal(result.ok, true);
+  });
+
   it("失稳后的倒计时必须从新的 3 完整重走", () => {
     const attemptId = "attempt-reset";
     const sample = (

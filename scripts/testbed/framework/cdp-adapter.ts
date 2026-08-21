@@ -1195,7 +1195,6 @@ export class CdpTestAdapter implements TestAdapter {
     const state = JSON.parse(
       await evaluateExpression(this.client!, STATE_EXPRESSION),
     ) as { attemptId?: string | null; capturedUrl?: unknown };
-    this.recordStateObservation(state as Record<string, unknown>);
     const previewFrameHash = await this.captureImageFrameHash(state, "preview");
     const protocolTimeline =
       typeof state.attemptId === "string"
@@ -1216,6 +1215,18 @@ export class CdpTestAdapter implements TestAdapter {
       state,
       "captured",
     );
+    this.recordStateObservation(state as Record<string, unknown>, {
+      capturedVisible:
+        (state as { capturedVisible?: unknown }).capturedVisible === true,
+      capturedNaturalWidth: (state as { captured?: { naturalWidth?: unknown } })
+        .captured?.naturalWidth,
+      capturedNaturalHeight: (
+        state as { captured?: { naturalHeight?: unknown } }
+      ).captured?.naturalHeight,
+      capturedSourceMatchesProtocol,
+      capturedSourceDigest,
+      capturedFrameHash,
+    });
     const capturedResource =
       typeof state.attemptId === "string" && parsedCaptured.success
         ? await this.capturedFrameResources.read({
@@ -1345,7 +1356,13 @@ export class CdpTestAdapter implements TestAdapter {
     throw new Error("CDP adapter does not support remote file writes");
   }
 
-  private recordStateObservation(state: Record<string, unknown>): void {
+  private recordStateObservation(
+    state: Record<string, unknown>,
+    capturedObservation: Record<
+      string,
+      unknown
+    > = this.retainedCapturedObservation(state),
+  ): void {
     const observation = sanitizeDiagnosticValue({
       at: new Date().toISOString(),
       route: state?.route ?? null,
@@ -1356,9 +1373,53 @@ export class CdpTestAdapter implements TestAdapter {
       preview: state?.preview ?? null,
       resultPresent:
         typeof state?.resultUrl === "string" && state.resultUrl.length > 0,
+      capturedVisible: capturedObservation.capturedVisible,
+      capturedNaturalWidth: capturedObservation.capturedNaturalWidth,
+      capturedNaturalHeight: capturedObservation.capturedNaturalHeight,
+      capturedSourceMatchesProtocol:
+        capturedObservation.capturedSourceMatchesProtocol,
+      capturedSourceDigest: capturedObservation.capturedSourceDigest,
+      capturedFrameHash: capturedObservation.capturedFrameHash,
     }) as Record<string, unknown>;
     this.lastDomState = observation;
     boundedPush(this.stateObservations, observation);
+  }
+
+  private retainedCapturedObservation(
+    state: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const capturedSourceDigest =
+      typeof state.capturedUrl === "string" && state.capturedUrl.length > 0
+        ? `sha256:${createHash("sha256").update(state.capturedUrl).digest("hex")}`
+        : null;
+    const currentCapturedObservation = {
+      capturedVisible: state.capturedVisible === true,
+      capturedNaturalWidth: (
+        state.captured as { naturalWidth?: unknown } | undefined
+      )?.naturalWidth,
+      capturedNaturalHeight: (
+        state.captured as { naturalHeight?: unknown } | undefined
+      )?.naturalHeight,
+      capturedSourceDigest,
+    };
+    if (
+      capturedSourceDigest === null ||
+      this.lastDomState?.attemptId !== state.attemptId ||
+      this.lastDomState.state !== state.state ||
+      this.lastDomState.capturedSourceDigest !== capturedSourceDigest
+    ) {
+      return {
+        ...currentCapturedObservation,
+        capturedSourceMatchesProtocol: null,
+        capturedFrameHash: null,
+      };
+    }
+    return {
+      ...currentCapturedObservation,
+      capturedSourceMatchesProtocol:
+        this.lastDomState.capturedSourceMatchesProtocol,
+      capturedFrameHash: this.lastDomState.capturedFrameHash,
+    };
   }
 
   async run(command: string, args: string[] = []): Promise<CommandResult> {

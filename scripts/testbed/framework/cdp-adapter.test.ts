@@ -90,13 +90,13 @@ describe("CDP test adapter", () => {
 
   it("公开 readFile 仅返回 captured 来源匹配事实与摘要，不泄漏 DOM token 到状态或诊断", async () => {
     class FakeHtmlElement {}
-    const capturedReference =
+    let capturedReference =
       "http://127.0.0.1:27892/v2/try-on/captured/frame.png?token=captured-dom-secret";
     const protocolReference =
       "http://127.0.0.1:27892/v2/try-on/captured/frame.png?token=protocol-source-token";
     const view = Object.assign(new FakeHtmlElement(), {
       dataset: {
-        state: "captured",
+        state: "generating",
         attemptId: "550e8400-e29b-41d4-a716-446655440124",
       },
     });
@@ -176,18 +176,49 @@ describe("CDP test adapter", () => {
         },
       });
       await adapter.connect();
+      const failureBeforeRead = await adapter.captureFailureEvidence(
+        new Error("forced before read"),
+      );
+      const beforeReadState = failureBeforeRead.diagnostics.lastDomState;
+      assert.equal(beforeReadState.capturedVisible, true);
+      assert.equal(beforeReadState.capturedNaturalWidth, 720);
+      assert.equal(beforeReadState.capturedNaturalHeight, 1280);
+      assert.equal(beforeReadState.capturedSourceMatchesProtocol, null);
+      assert.equal(beforeReadState.capturedFrameHash, null);
       const state = JSON.parse(await adapter.readFile("ui/try-on-state.json"));
       const serialized = JSON.stringify(state);
       assert.doesNotMatch(serialized, /captured-dom-secret/);
       assert.equal(state.capturedUrl, undefined);
       const observation = state.observationTimeline.at(-1);
+      assert.equal(observation.state, "generating");
+      assert.equal(observation.capturedVisible, true);
+      assert.equal(observation.capturedNaturalWidth, 720);
+      assert.equal(observation.capturedNaturalHeight, 1280);
       assert.equal(observation.capturedSourceMatchesProtocol, false);
       assert.match(observation.capturedSourceDigest, /^sha256:[0-9a-f]{64}$/);
+      assert.match(observation.capturedFrameHash, /^sha256:[0-9a-f]{64}$/);
       const failure = await adapter.captureFailureEvidence(new Error("forced"));
       assert.doesNotMatch(
         JSON.stringify(failure.diagnostics),
         /captured-dom-secret/,
       );
+      assert.match(
+        JSON.stringify(failure.diagnostics),
+        /"capturedVisible":true/,
+        "宽失败证据必须保留 generating 阶段 captured DOM 的可见性事实",
+      );
+      capturedReference =
+        "http://127.0.0.1:27892/v2/try-on/captured/changed.png?token=changed-dom-secret";
+      const changedSourceFailure = await adapter.captureFailureEvidence(
+        new Error("forced after source change"),
+      );
+      const changedState = changedSourceFailure.diagnostics.lastDomState;
+      assert.notEqual(
+        changedState.capturedSourceDigest,
+        observation.capturedSourceDigest,
+      );
+      assert.equal(changedState.capturedSourceMatchesProtocol, null);
+      assert.equal(changedState.capturedFrameHash, null);
     } finally {
       await adapter.close();
       await endpoint.close();
