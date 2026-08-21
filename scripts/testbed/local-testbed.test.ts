@@ -2324,7 +2324,7 @@ describe("Windows D cache contract", () => {
     );
   });
 
-  it("keeps failed diagnostics but never packages them as uploadable evidence", () => {
+  it("打包有界失败诊断且不把它们当作业务证据", () => {
     const guest = readFileSync(
       new URL("./run-local-testbed-guest.ps1", import.meta.url),
       "utf8",
@@ -2357,6 +2357,19 @@ describe("Windows D cache contract", () => {
     );
     assert.ok(manifestCheck >= 0 && bundleCall > manifestCheck);
     assert.ok(bundleFailure > bundleCall);
+    assert.match(
+      guest,
+      /\$manifestOwnedBySummary = \[string\]\$workflowSummary\.evidenceInventory\.reportPath -eq \$manifestPath/,
+    );
+    assert.match(guest, /\$workflowStartedAtUtc = \[DateTime\]::UtcNow/);
+    assert.match(
+      guest,
+      /\$summaryItem\.LastWriteTimeUtc -ge \$workflowStartedAtUtc/,
+    );
+    assert.match(
+      guest,
+      /\$manifestItem\.LastWriteTimeUtc -ge \$workflowStartedAtUtc/,
+    );
     assert.match(guest, /if \(Test-Path -LiteralPath \$manifestPath\)/);
     assert.match(
       guest,
@@ -2367,9 +2380,14 @@ describe("Windows D cache contract", () => {
       guest.indexOf("function Clear-TestbedRunReports"),
     );
     assert.doesNotMatch(bundleFunction, /Copy-Item|Remove-Item|New-Item/);
-    assert.doesNotMatch(
+    assert.match(
       guest,
-      /Remove-Item[^\r\n]*full-workflow-evidence-bundle/,
+      /Remove-Item[^\r\n]*\$staleBundleRoot[^\r\n]*-Recurse[^\r\n]*-Force/,
+    );
+    assert.ok(
+      guest.indexOf(
+        '$staleBundleRoot = Join-Path $handoffRoot "full-workflow-evidence-bundle"',
+      ) < orchestratorStart,
     );
     assert.match(guest, /\$workflowFailure -ne \$null/);
     assert.match(guest, /\$bundleFailure -ne \$null/);

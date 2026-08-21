@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 
 import { createBusinessCheckRegistryV2 } from "../../business-check-registry-v2.ts";
 import { createFakeTestAdapter } from "../../test-adapter.ts";
 import {
   sourceGarmentBindingFromGuestInput,
+  main as runVisionExperienceMain,
   runVisionExperienceSlice,
+  waitForVisionStable,
 } from "./vision-experience-runner.ts";
 
 const tryOnAttemptId = "550e8400-e29b-41d4-a716-446655440124";
@@ -235,6 +240,220 @@ function fakeUiAdapter() {
 }
 
 describe("visionExperience slice runner", () => {
+  it("轨道在报告前退出时写入诊断与截图", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-vision-runner-failure-"));
+    const outPath = join(root, "vision-experience.json");
+    const screenshot = readFileSync(
+      new URL(
+        "../../../../../apps/machine/src-tauri/app-icon.png",
+        import.meta.url,
+      ),
+    );
+    const milestones: unknown[] = [];
+    const adapter = {
+      async connect() {
+        return this;
+      },
+      async close() {},
+      recordMilestone(stage: string, status: string) {
+        milestones.push({ stage, status });
+      },
+      async captureFailureEvidence() {
+        return {
+          diagnostics: {
+            schemaVersion: "vem-vision-experience-failure-diagnostics/v1",
+            lastDomState: {
+              route: "#/products/product:1",
+              state: null,
+              attemptId: null,
+            },
+            milestones,
+            machineRuntimeTrace: [{ kind: "navigation" }],
+            cdp: { console: [], exceptions: [], networkErrors: [] },
+            vision: {
+              listener: { reachable: false },
+              roles: [],
+            },
+          },
+          screenshotPng: screenshot,
+        };
+      },
+      async readFile() {
+        return "{}";
+      },
+      async writeFile() {},
+      async run() {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+    };
+    try {
+      await assert.rejects(
+        runVisionExperienceMain(["--out", outPath], {
+          startVisionOwner: () => undefined,
+          createAdapter: () => adapter,
+          runSlice: async () => {
+            throw new Error("try-on-route did not become true");
+          },
+        }),
+        /try-on-route/,
+      );
+      const artifactRoot = join(root, "vision-experience-artifacts");
+      const diagnostics = JSON.parse(
+        readFileSync(join(artifactRoot, "failure-diagnostics.json"), "utf8"),
+      );
+      assert.equal(diagnostics.lastDomState.route, "#/products/product:1");
+      assert.deepEqual(diagnostics.machineRuntimeTrace, [
+        { kind: "navigation" },
+      ]);
+      assert.ok(
+        readFileSync(join(artifactRoot, "failure-screenshot.png")).equals(
+          screenshot,
+        ),
+      );
+      assert.equal(rmSync(outPath, { force: true }), undefined);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("支持证据目录或文件无法写入时不替换业务错误", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-vision-runner-io-failure-"));
+    const attempted: string[] = [];
+    const adapter = {
+      async connect() {
+        return this;
+      },
+      async close() {},
+      recordMilestone() {},
+      async captureFailureEvidence() {
+        return { diagnostics: {}, screenshotPng: null };
+      },
+      async readFile() {
+        return "{}";
+      },
+      async writeFile() {},
+      async run() {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+    };
+    try {
+      for (const failureIo of [
+        {
+          mkdir: async () => {
+            attempted.push("mkdir");
+            throw new Error("diagnostic disk is full");
+          },
+          writeFile: async () => undefined,
+        },
+        {
+          mkdir: async () => undefined,
+          writeFile: async () => {
+            attempted.push("writeFile");
+            throw new Error("diagnostic write failed");
+          },
+        },
+      ]) {
+        await assert.rejects(
+          runVisionExperienceMain(
+            ["--out", join(root, "vision-experience.json")],
+            {
+              startVisionOwner: () => undefined,
+              createAdapter: () => adapter,
+              runSlice: async () => {
+                throw new Error("try-on-route did not become true");
+              },
+              failureIo,
+            },
+          ),
+          (error: Error) =>
+            error.message === "try-on-route did not become true",
+        );
+      }
+      assert.deepEqual(attempted, ["mkdir", "writeFile"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("失败诊断整体超限时保留有界摘要而不写入超大文件", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-vision-runner-bounded-"));
+    const outPath = join(root, "vision-experience.json");
+    const consoleEvents = Array.from({ length: 128 }, (_, eventIndex) => ({
+      type: "log",
+      args: Array.from(
+        { length: 16 },
+        (_, argumentIndex) =>
+          `console-${eventIndex}-${argumentIndex}-${"x".repeat(2_048)}`,
+      ),
+    }));
+    const diagnostics = {
+      schemaVersion: "vem-vision-experience-failure-diagnostics/v1",
+      capturedAt: new Date().toISOString(),
+      error: { message: "result-surface timed out" },
+      milestones: [{ stage: "result-surface", status: "failed" }],
+      stateObservations: [
+        { route: "#/try-on", state: "generating", attemptId: "attempt-1" },
+      ],
+      lastDomState: {
+        route: "#/try-on",
+        state: "generating",
+        attemptId: "attempt-1",
+      },
+      machineRuntimeTrace: [{ kind: "navigation", route: "#/try-on" }],
+      cdp: { console: consoleEvents, exceptions: [], networkErrors: [] },
+      vision: {
+        listener: { reachable: true, httpStatus: 200 },
+        roles: [{ name: "api", pid: 42, ready: true }],
+      },
+      fixtureRestarts: [],
+    };
+    assert.ok(Buffer.byteLength(JSON.stringify(diagnostics)) > 2 * 1024 * 1024);
+    const adapter = {
+      async connect() {
+        return this;
+      },
+      async close() {},
+      recordMilestone() {},
+      async captureFailureEvidence() {
+        return { diagnostics, screenshotPng: null };
+      },
+      async readFile() {
+        return "{}";
+      },
+      async writeFile() {},
+      async run() {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+    };
+    try {
+      await assert.rejects(
+        runVisionExperienceMain(["--out", outPath], {
+          startVisionOwner: () => undefined,
+          createAdapter: () => adapter,
+          runSlice: async () => {
+            throw new Error("result-surface timed out");
+          },
+        }),
+        /result-surface timed out/,
+      );
+      const diagnosticsPath = join(
+        root,
+        "vision-experience-artifacts",
+        "failure-diagnostics.json",
+      );
+      const serialized = readFileSync(diagnosticsPath);
+      assert.ok(serialized.byteLength <= 2 * 1024 * 1024);
+      const bounded = JSON.parse(serialized.toString("utf8"));
+      assert.equal(bounded.diagnosticsTruncated, true);
+      assert.equal(bounded.lastDomState.route, "#/try-on");
+      assert.equal(bounded.vision.roles[0].pid, 42);
+      assert.ok(bounded.machineRuntimeTrace.length > 0);
+      assert.ok(bounded.cdp.console.length > 0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("从实际 guest-input 的 runtime bootstrap 派生 Service API 规范来源", () => {
     const sourceGarment = {
       publicPath:
@@ -409,6 +628,27 @@ describe("visionExperience slice runner", () => {
       readyPolls >= 4,
       `expected multiple readiness polls, got ${readyPolls}`,
     );
+  });
+
+  it("失败探针的非 JSON 就绪输出不得被视为稳定", async () => {
+    let polls = 0;
+    const adapter = createFakeTestAdapter({
+      commands: {
+        "vision-ready": () => {
+          polls += 1;
+          return { exitCode: 1, stdout: "unreachable", stderr: "" };
+        },
+      },
+    });
+    await assert.rejects(
+      waitForVisionStable(adapter, {
+        timeoutMs: 30,
+        stabilityMs: 5,
+        pollMs: 5,
+      }),
+      /vision-stable did not become true/,
+    );
+    assert.ok(polls > 1);
   });
 
   it("covers manual capture and departure cancellation", async () => {

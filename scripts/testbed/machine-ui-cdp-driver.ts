@@ -1129,6 +1129,14 @@ export async function captureScreenshot(client, options = {}) {
   if (format !== "png" && format !== "jpeg") {
     throw new Error("screenshot format must be png or jpeg");
   }
+  const maxBytes = options.maxBytes ?? MAX_SCREENSHOT_BYTES;
+  if (
+    !Number.isInteger(maxBytes) ||
+    maxBytes <= 0 ||
+    maxBytes > MAX_SCREENSHOT_BYTES
+  ) {
+    throw new Error("screenshot maxBytes is invalid");
+  }
   const result = await client.send(
     "Page.captureScreenshot",
     {
@@ -1141,7 +1149,7 @@ export async function captureScreenshot(client, options = {}) {
   if (typeof result.data !== "string") {
     throw new Error("Page.captureScreenshot returned no image data");
   }
-  if (result.data.length > Math.ceil((MAX_SCREENSHOT_BYTES * 4) / 3) + 4) {
+  if (result.data.length > Math.ceil((maxBytes * 4) / 3) + 4) {
     throw new Error("Page.captureScreenshot exceeded the maximum size");
   }
   if (
@@ -1151,7 +1159,7 @@ export async function captureScreenshot(client, options = {}) {
     throw new Error("Page.captureScreenshot returned invalid base64");
   }
   const bytes = Buffer.from(result.data, "base64");
-  if (bytes.length > MAX_SCREENSHOT_BYTES) {
+  if (bytes.length > maxBytes) {
     throw new Error("Page.captureScreenshot exceeded the maximum size");
   }
   if (bytes.toString("base64") !== result.data) {

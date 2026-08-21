@@ -86,6 +86,15 @@ const COUNTDOWN_SEQUENCE = ["3", "2", "1"];
 const MIN_COUNTDOWN_BUCKET_MS = 700;
 const MIN_COUNTDOWN_TOTAL_MS = 2_500;
 const MAX_PREVIEW_STALE_MS = 1_000;
+const ACTIONABLE_ENTRY_TIMEOUT_MS = 15_000;
+const ATTEMPT_STATES = new Set([
+  "starting",
+  "accepted",
+  "acquiring",
+  "captured",
+  "generating",
+  "completed",
+]);
 
 function collapsedCountdownSequence(samples: VisionExperienceObservation[]) {
   return samples.reduce<string[]>((sequence, sample) => {
@@ -183,11 +192,11 @@ export function validateVisionExperienceTimeline({
     );
   const captureAfter = Boolean(
     countdownComplete &&
-      captured &&
-      lastOne &&
-      captured.atMs > lastOne.atMs &&
-      firstHeld &&
-      firstHeld.atMs > lastOne.atMs,
+    captured &&
+    lastOne &&
+    captured.atMs > lastOne.atMs &&
+    firstHeld &&
+    firstHeld.atMs > lastOne.atMs,
   );
   const previewForAllBuckets = COUNTDOWN_SEQUENCE.every((digit) => {
     const entries = countdown.filter(
@@ -325,16 +334,49 @@ export async function runTryOnScenario(
   await adapter.run("click", ['[data-test="catalog-product"]']);
   await adapter.run("click", ['[data-test="try-on"]']);
   let previewSeen = false;
+  const observeState = async () => {
+    const current = await readState(adapter);
+    if (
+      current?.state === "acquiring" &&
+      (current?.preview?.naturalWidth ?? 0) > 0
+    ) {
+      previewSeen = true;
+    }
+    return current;
+  };
+  const entryTimeoutMs = Math.min(
+    timeoutMs ?? ACTIONABLE_ENTRY_TIMEOUT_MS,
+    ACTIONABLE_ENTRY_TIMEOUT_MS,
+  );
+  await waitForCondition(
+    "try-on-route",
+    async () => {
+      const current = await observeState();
+      return {
+        ok: current?.route?.startsWith("#/try-on") === true,
+        value: current,
+      };
+    },
+    { timeoutMs: entryTimeoutMs, pollMs },
+  );
+  await waitForCondition(
+    "try-on-attempt",
+    async () => {
+      const current = await observeState();
+      return {
+        ok:
+          typeof current?.attemptId === "string" &&
+          current.attemptId.length > 0 &&
+          ATTEMPT_STATES.has(current.state ?? ""),
+        value: current,
+      };
+    },
+    { timeoutMs: entryTimeoutMs, pollMs },
+  );
   const state = await waitForCondition(
     "result-surface",
     async () => {
-      const current = await readState(adapter);
-      if (
-        current?.state === "acquiring" &&
-        (current?.preview?.naturalWidth ?? 0) > 0
-      ) {
-        previewSeen = true;
-      }
+      const current = await observeState();
       return {
         ok:
           current?.state === "completed" &&

@@ -1,12 +1,18 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import type { ProcessRoleManifest } from "../../fault-injection.ts";
 import type { BusinessSetReport } from "../../observation-record.ts";
 import type { TestAdapter } from "../../test-adapter.ts";
 
+import {
+  redactSensitiveEvidenceText,
+  sanitizeSensitiveEvidenceValue,
+} from "../../../failure-evidence-redaction.ts";
+import { EVIDENCE_LIMITS } from "../../../full-workflow-evidence-manifest.ts";
 import { buildAcceptanceReport } from "../../acceptance-report.ts";
 import { CdpTestAdapter } from "../../cdp-adapter.ts";
 import { waitForCondition } from "../../condition-waiter.ts";
@@ -99,11 +105,11 @@ export async function runVisionExperienceSlice({
           timeoutMs,
           pollMs,
         });
-      assertions.push(
-        ...scale.assertions,
-        ...scale.adjustmentAssertions,
-        ...scale.pixelAssertions,
-      );
+        assertions.push(
+          ...scale.assertions,
+          ...scale.adjustmentAssertions,
+          ...scale.pixelAssertions,
+        );
       }
       supportingEvidence.push(geometry.evidence);
     } else {
@@ -166,12 +172,27 @@ export async function waitForVisionStable(
   let lastObservation: { signature: string; exitCode: number } | null = null;
   while (Date.now() < deadline) {
     const probe = await adapter.run("vision-ready");
+    if (probe.exitCode !== 0) {
+      lastObservation = {
+        signature: probe.stdout || probe.stderr || "unavailable",
+        exitCode: probe.exitCode,
+      };
+      lastSignature = null;
+      stableSince = null;
+      await new Promise((resolvePromise) =>
+        setTimeout(
+          resolvePromise,
+          Math.min(pollMs, Math.max(1, deadline - Date.now())),
+        ),
+      );
+      continue;
+    }
     let signature: string;
     try {
       const parsed = JSON.parse(probe.stdout ?? "");
       signature = JSON.stringify(parsed?.pids ?? null);
     } catch {
-      // 非 JSON 的 fake 适配器不提供 PID 数据，ready 已由 vision-ready 门保证。
+      // 非 JSON 的 fake 适配器不提供 PID 数据；仅成功 probe 可兼容此形状。
       return probe.stdout ?? "";
     }
     lastObservation = { signature, exitCode: probe.exitCode };
@@ -199,6 +220,154 @@ export function validateVisionExperienceSet(set: BusinessSetReport) {
     ok: set?.status === "passed",
     errors: set?.status === "failed" ? ["vision assertions failed"] : [],
   };
+}
+
+function boundedFailureDiagnosticValue(
+  value: unknown,
+  {
+    depth = 0,
+    maxDepth = 8,
+    maxArrayEntries = 32,
+    maxObjectEntries = 64,
+    maxTextChars = 1_024,
+  } = {},
+): unknown {
+  if (value == null || typeof value === "boolean" || typeof value === "number")
+    return value;
+  if (typeof value === "string") {
+    if (value.length <= maxTextChars) return value;
+    return `${value.slice(0, maxTextChars)}…[truncated]`;
+  }
+  if (typeof value !== "object")
+    return redactSensitiveEvidenceText(value, maxTextChars);
+  if (depth >= maxDepth) return "[bounded]";
+  const nextOptions = {
+    depth: depth + 1,
+    maxDepth,
+    maxArrayEntries,
+    maxObjectEntries,
+    maxTextChars,
+  };
+  if (Array.isArray(value)) {
+    return value
+      .slice(-maxArrayEntries)
+      .map((entry) => boundedFailureDiagnosticValue(entry, nextOptions));
+  }
+  return Object.fromEntries(
+    Object.entries(value)
+      .slice(0, maxObjectEntries)
+      .map(([key, entry]) => [
+        key,
+        boundedFailureDiagnosticValue(entry, nextOptions),
+      ]),
+  );
+}
+
+function diagnosticCount(value: unknown): number {
+  return Array.isArray(value) ? value.length : 0;
+}
+
+function serializeFailureDiagnostics(diagnostics: unknown): string {
+  const safe = sanitizeSensitiveEvidenceValue(diagnostics) ?? null;
+  const serialize = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`;
+  const complete = serialize(safe);
+  if (Buffer.byteLength(complete) <= EVIDENCE_LIMITS.reportPerFileBytes) {
+    return complete;
+  }
+
+  const source =
+    safe && typeof safe === "object" && !Array.isArray(safe)
+      ? (safe as Record<string, unknown>)
+      : {};
+  const cdp =
+    source.cdp && typeof source.cdp === "object" && !Array.isArray(source.cdp)
+      ? (source.cdp as Record<string, unknown>)
+      : {};
+  const compact = boundedFailureDiagnosticValue({
+    schemaVersion:
+      source.schemaVersion ?? "vem-vision-experience-failure-diagnostics/v1",
+    capturedAt: source.capturedAt ?? new Date().toISOString(),
+    diagnosticsTruncated: true,
+    originalByteLength: Buffer.byteLength(complete),
+    error: source.error ?? null,
+    milestones: source.milestones ?? [],
+    stateObservations: source.stateObservations ?? [],
+    lastDomState: source.lastDomState ?? null,
+    machineRuntimeTraceSnapshot: source.machineRuntimeTraceSnapshot ?? null,
+    machineRuntimeTrace: source.machineRuntimeTrace ?? [],
+    cdp: {
+      console: cdp.console ?? [],
+      exceptions: cdp.exceptions ?? [],
+      networkErrors: cdp.networkErrors ?? [],
+    },
+    vision: source.vision ?? null,
+    fixtureRestarts: source.fixtureRestarts ?? [],
+  });
+  const compactSerialized = serialize(compact);
+  if (
+    Buffer.byteLength(compactSerialized) <= EVIDENCE_LIMITS.reportPerFileBytes
+  ) {
+    return compactSerialized;
+  }
+
+  const minimalOptions = {
+    maxDepth: 5,
+    maxArrayEntries: 1,
+    maxObjectEntries: 32,
+    maxTextChars: 256,
+  };
+  const minimal = {
+    schemaVersion:
+      source.schemaVersion ?? "vem-vision-experience-failure-diagnostics/v1",
+    capturedAt: source.capturedAt ?? new Date().toISOString(),
+    diagnosticsTruncated: true,
+    originalByteLength: Buffer.byteLength(complete),
+    error: boundedFailureDiagnosticValue(source.error ?? null, minimalOptions),
+    lastDomState: boundedFailureDiagnosticValue(
+      source.lastDomState ?? null,
+      minimalOptions,
+    ),
+    machineRuntimeTrace: boundedFailureDiagnosticValue(
+      source.machineRuntimeTrace ?? [],
+      minimalOptions,
+    ),
+    cdp: {
+      console: boundedFailureDiagnosticValue(cdp.console ?? [], minimalOptions),
+      exceptions: boundedFailureDiagnosticValue(
+        cdp.exceptions ?? [],
+        minimalOptions,
+      ),
+      networkErrors: boundedFailureDiagnosticValue(
+        cdp.networkErrors ?? [],
+        minimalOptions,
+      ),
+    },
+    vision: boundedFailureDiagnosticValue(
+      source.vision ?? null,
+      minimalOptions,
+    ),
+    diagnosticCounts: {
+      milestones: diagnosticCount(source.milestones),
+      stateObservations: diagnosticCount(source.stateObservations),
+      machineRuntimeTrace: diagnosticCount(source.machineRuntimeTrace),
+      console: diagnosticCount(cdp.console),
+      exceptions: diagnosticCount(cdp.exceptions),
+      networkErrors: diagnosticCount(cdp.networkErrors),
+      fixtureRestarts: diagnosticCount(source.fixtureRestarts),
+    },
+  };
+  const minimalSerialized = serialize(minimal);
+  if (
+    Buffer.byteLength(minimalSerialized) <= EVIDENCE_LIMITS.reportPerFileBytes
+  ) {
+    return minimalSerialized;
+  }
+  return `${JSON.stringify({
+    schemaVersion: "vem-vision-experience-failure-diagnostics/v1",
+    capturedAt: new Date().toISOString(),
+    diagnosticsTruncated: true,
+    error: { message: "failure diagnostics exceeded the storage budget" },
+  })}\n`;
 }
 
 /**
@@ -267,18 +436,99 @@ export function sourceGarmentBindingFromGuestInput(guestInput: unknown): {
 /**
  * VM 轨道入口：从环境读取 CDP 与 Vision 地址，运行全部业务场景并输出 v2 报告。
  */
-export async function main(args: string[] = process.argv.slice(2)) {
+async function persistFailureEvidence({
+  adapter,
+  artifactRoot,
+  error,
+  io = { mkdir, writeFile },
+}: {
+  adapter: CdpTestAdapter & {
+    captureFailureEvidence?: (error: unknown) => Promise<{
+      diagnostics: unknown;
+      screenshotPng: Buffer | null;
+    }>;
+  };
+  artifactRoot: string | null;
+  error: unknown;
+  io?: {
+    mkdir: typeof mkdir;
+    writeFile: typeof writeFile;
+  };
+}): Promise<string | null> {
+  if (!artifactRoot) return null;
+  try {
+    await io.mkdir(artifactRoot, { recursive: true });
+    const diagnosticsPath = join(artifactRoot, "failure-diagnostics.json");
+    let failureEvidence: {
+      diagnostics: unknown;
+      screenshotPng: Buffer | null;
+    };
+    try {
+      if (typeof adapter.captureFailureEvidence !== "function") {
+        throw new Error("adapter has no failure evidence boundary");
+      }
+      failureEvidence = await adapter.captureFailureEvidence(error);
+    } catch {
+      // 普通子进程 stderr 仍会保留；丰富诊断不可用时不序列化未脱敏异常。
+      failureEvidence = {
+        diagnostics: {
+          schemaVersion: "vem-vision-experience-failure-diagnostics/v1",
+          capturedAt: new Date().toISOString(),
+          error: { message: "failure evidence capture was unavailable" },
+        },
+        screenshotPng: null,
+      };
+    }
+    await io.writeFile(
+      diagnosticsPath,
+      serializeFailureDiagnostics(failureEvidence.diagnostics),
+      "utf8",
+    );
+    if (failureEvidence.screenshotPng) {
+      await io.writeFile(
+        join(artifactRoot, "failure-screenshot.png"),
+        failureEvidence.screenshotPng,
+      );
+    }
+    return diagnosticsPath;
+  } catch {
+    // 支持证据只做尽力采集，不得替换业务异常或改变 runner 控制流。
+    return null;
+  }
+}
+
+export async function main(
+  args: string[] = process.argv.slice(2),
+  dependencies: {
+    startVisionOwner?: () => unknown;
+    createAdapter?: (options: Record<string, unknown>) => CdpTestAdapter;
+    runSlice?: typeof runVisionExperienceSlice;
+    failureIo?: {
+      mkdir: typeof mkdir;
+      writeFile: typeof writeFile;
+    };
+  } = {},
+) {
   const outIndex = args.indexOf("--out");
   const outPath: string | null = outIndex >= 0 ? args[outIndex + 1] : null;
+  const artifactRoot = outPath
+    ? join(dirname(outPath), "vision-experience-artifacts")
+    : null;
   // 重建后的 VM 可能尚未启动 Vision 默认 owner；轨道负责启动并等待就绪。
-  spawnSync(
-    "powershell",
-    [
-      "-NoProfile",
-      "-Command",
-      "Start-ScheduledTask -TaskName VEMVisionRuntime",
-    ],
-    { stdio: "ignore" },
+  await Promise.resolve(
+    (
+      dependencies.startVisionOwner ??
+      (() =>
+        spawnSync(
+          "powershell",
+          [
+            "-NoProfile",
+            "-Command",
+            "Start-ScheduledTask -TaskName VEMVisionRuntime",
+          ],
+          { stdio: "ignore" },
+        ))
+    )(),
   );
   const guestInputIndex = args.indexOf("--guest-input");
   const guestInputPath =
@@ -296,12 +546,16 @@ export async function main(args: string[] = process.argv.slice(2)) {
       sourceGarmentServiceApiOrigin = null;
     }
   }
-  const adapter = new CdpTestAdapter({
+  const adapter = (
+    dependencies.createAdapter ?? ((options) => new CdpTestAdapter(options))
+  )({
     sourceGarmentMetadata,
     sourceGarmentServiceApiOrigin,
   });
-  await adapter.connect({ timeoutMs: 20_000 });
+  adapter.recordMilestone?.("runner:connect", "started");
   try {
+    await adapter.connect({ timeoutMs: 20_000 });
+    adapter.recordMilestone?.("runner:connect", "completed");
     const manifest = createProcessRoleManifest({
       roles: {
         observer: {
@@ -310,7 +564,8 @@ export async function main(args: string[] = process.argv.slice(2)) {
         },
       },
     });
-    const report = await runVisionExperienceSlice({
+    adapter.recordMilestone?.("runner:slice", "started");
+    const report = await (dependencies.runSlice ?? runVisionExperienceSlice)({
       adapter,
       manifest,
       includeSelfHeal: process.env.SKIP_SELF_HEAL !== "1",
@@ -336,13 +591,47 @@ export async function main(args: string[] = process.argv.slice(2)) {
         process.env.VISION_STABILITY_TIMEOUT_MS ?? 60_000,
       ),
     });
+    adapter.recordMilestone?.(
+      "runner:slice",
+      report.ok === true ? "completed" : "failed",
+      { reportOk: report.ok },
+    );
     const serialized = `${JSON.stringify(report, null, 2)}\n`;
     if (outPath) {
       await writeFile(outPath, serialized, "utf8");
     }
+    if (report.ok !== true) {
+      const diagnosticsPath = await persistFailureEvidence({
+        adapter,
+        artifactRoot,
+        error: new Error("visionExperience business assertions failed"),
+        io: dependencies.failureIo,
+      });
+      if (diagnosticsPath) {
+        process.stderr.write(
+          `visionExperience supportingEvidence=${diagnosticsPath}\n`,
+        );
+      }
+    }
     process.stdout.write(serialized);
     // 轨道结束后恢复基线：Machine UI 回到 Catalog，避免干扰后续轨道。
     await adapter.run("navigate", ["#/catalog"]).catch(() => {});
+  } catch (error) {
+    adapter.recordMilestone?.("runner:slice", "failed", {
+      message: error instanceof Error ? error.message : String(error),
+    });
+    const diagnosticsPath = await persistFailureEvidence({
+      adapter,
+      artifactRoot,
+      error,
+      io: dependencies.failureIo,
+    });
+    if (diagnosticsPath) {
+      process.stderr.write(
+        `visionExperience supportingEvidence=${diagnosticsPath}\n`,
+      );
+    }
+    throw error;
   } finally {
     await adapter.close();
   }

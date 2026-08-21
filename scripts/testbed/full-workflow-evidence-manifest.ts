@@ -16,6 +16,8 @@ import {
 } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { redactSensitiveEvidenceText } from "./failure-evidence-redaction.ts";
+
 export const EVIDENCE_LIMITS = Object.freeze({
   reportPerFileBytes: 2 * 1024 * 1024,
   tracePerTrackBytes: 512 * 1024,
@@ -30,9 +32,9 @@ const DEFAULT_EVIDENCE_POLICY = Object.freeze({
   failed: Object.freeze({
     primaryReason: true,
     diagnostic: true,
-    trace: false,
-    logs: false,
-    screenshot: false,
+    trace: true,
+    logs: true,
+    screenshot: true,
   }),
 });
 const FORBIDDEN_EXTENSIONS = new Set([
@@ -165,22 +167,31 @@ function meaningfulLog(value) {
   );
 }
 
-function primaryFailureReason(report) {
-  const candidates = [
+function primaryFailureReason(report, result = null) {
+  const reportCandidates = [
     report?.errors?.primary,
     report?.failure?.primaryReason,
     report?.failure?.message,
     report?.error,
   ];
-  for (const value of candidates) {
-    if (typeof value === "string" && value.trim() !== "") return value.trim();
+  for (const value of reportCandidates) {
+    if (typeof value === "string" && value.trim() !== "")
+      return redactSensitiveEvidenceText(value.trim());
     if (value && typeof value === "object") {
-      const name = typeof value.name === "string" ? value.name.trim() : "";
+      const name =
+        typeof value.name === "string"
+          ? redactSensitiveEvidenceText(value.name.trim())
+          : "";
       const message =
-        typeof value.message === "string" ? value.message.trim() : "";
+        typeof value.message === "string"
+          ? redactSensitiveEvidenceText(value.message.trim())
+          : "";
       if (name && message) return `${name}: ${message}`;
       if (message || name) return message || name;
     }
+  }
+  for (const value of [result?.error, result?.validator?.reason]) {
+    if (typeof value === "string" && value.trim() !== "") return value.trim();
   }
   return null;
 }
@@ -273,6 +284,28 @@ function reportTrace(track, reportPath, report, artifactFiles) {
       } catch {}
     }
   }
+  const failureDiagnosticsPath = artifactFiles.find(
+    (candidate) => basename(candidate) === "failure-diagnostics.json",
+  );
+  if (failureDiagnosticsPath) {
+    try {
+      const diagnostics = JSON.parse(
+        readFileSync(failureDiagnosticsPath, "utf8"),
+      );
+      const trace = Array.isArray(diagnostics?.machineRuntimeTrace)
+        ? diagnostics.machineRuntimeTrace
+        : diagnostics?.machineRuntimeTraceSnapshot?.entries;
+      if (nonEmptyArray(trace)) {
+        return virtualRecord(
+          failureDiagnosticsPath,
+          "machineRuntimeTrace",
+          "machineRuntimeTrace",
+          track,
+          trace,
+        );
+      }
+    } catch {}
+  }
   return null;
 }
 
@@ -351,31 +384,40 @@ export function buildFullWorkflowEvidenceManifest({ tracks = [] } = {}) {
     const artifactRoot = input?.artifactRoot
       ? resolve(input?.artifactRoot)
       : null;
-    if (!track || !existsSync(reportPath)) {
-      blockingFailures.push(
-        `required report artifact is absent for ${track ?? "unknown"}`,
-      );
+    const reportTrusted = input?.result?.evidenceTrust?.report !== false;
+    const artifactRootTrusted =
+      input?.result?.evidenceTrust?.artifactRoot !== false;
+    if (!track) {
+      blockingFailures.push("required evidence track identity is absent");
       continue;
     }
-    let report;
-    try {
-      requireRegularUnlinkedFile(reportPath, "required report artifact");
-      report = JSON.parse(readFileSync(reportPath, "utf8"));
-    } catch (error) {
-      blockingFailures.push(
-        error instanceof Error
-          ? `required report artifact is invalid for ${track}: ${error.message}`
-          : `required report artifact is invalid for ${track}`,
-      );
-      continue;
-    }
+    let report = null;
+    let reportRecord = null;
+    if (!reportTrusted) {
+      blockingFailures.push(`report artifact is untrusted for ${track}`);
+    } else if (!existsSync(reportPath)) {
+      blockingFailures.push(`required report artifact is absent for ${track}`);
+    } else
+      try {
+        requireRegularUnlinkedFile(reportPath, "required report artifact");
+        report = JSON.parse(readFileSync(reportPath, "utf8"));
+        reportRecord = bytesRecord(reportPath, "reports", track);
+      } catch (error) {
+        blockingFailures.push(
+          error instanceof Error
+            ? `required report artifact is invalid for ${track}: ${error.message}`
+            : `required report artifact is invalid for ${track}`,
+        );
+      }
     const businessStatus =
-      input?.result?.businessStatus === "failed" ? "failed" : "passed";
+      input?.result?.businessStatus === "passed" ? "passed" : "failed";
     const evidencePolicy =
       input?.evidence?.[businessStatus] ??
       DEFAULT_EVIDENCE_POLICY[businessStatus];
     let artifactFiles = [];
-    if (!artifactRoot || !existsSync(artifactRoot)) {
+    if (!artifactRootTrusted) {
+      blockingFailures.push(`artifact root is untrusted for ${track}`);
+    } else if (!artifactRoot || !existsSync(artifactRoot)) {
       failures.push(`actual artifact root is absent for ${track}`);
     } else {
       try {
@@ -388,37 +430,74 @@ export function buildFullWorkflowEvidenceManifest({ tracks = [] } = {}) {
         );
       }
     }
+    const validatedArtifactFiles = [];
     for (const path of artifactFiles) {
-      const extension = extname(path).toLowerCase();
-      const allowedWav = track === "presenceAndAudio" && extension === ".wav";
-      if (FORBIDDEN_EXTENSIONS.has(extension) && !allowedWav) {
+      try {
+        const extension = extname(path).toLowerCase();
+        const allowedWav = track === "presenceAndAudio" && extension === ".wav";
+        if (FORBIDDEN_EXTENSIONS.has(extension) && !allowedWav) {
+          blockingFailures.push(
+            `forbidden evidence artifact for ${track}: ${path}`,
+          );
+          continue;
+        }
+        if (extension === ".png" && !isPng(path)) {
+          blockingFailures.push(
+            `invalid PNG screenshot artifact for ${track}: ${path}`,
+          );
+          continue;
+        }
+        if (
+          ![".json", ".log", ".txt", ".png", ".wav"].includes(extension) ||
+          (extension === ".wav" && !allowedWav)
+        ) {
+          blockingFailures.push(
+            `unsupported evidence artifact for ${track}: ${path}`,
+          );
+          continue;
+        }
+        if (!allowedWav) {
+          const disguised = disguisedArtifact(path);
+          if (disguised) {
+            blockingFailures.push(disguised);
+            continue;
+          }
+        }
+        validatedArtifactFiles.push(path);
+      } catch (error) {
         blockingFailures.push(
-          `forbidden evidence artifact for ${track}: ${path}`,
+          `evidence artifact became unreadable for ${track}: ${path}: ${error instanceof Error ? error.message : String(error)}`,
         );
-      } else if (extension === ".png" && !isPng(path)) {
-        blockingFailures.push(
-          `invalid PNG screenshot artifact for ${track}: ${path}`,
-        );
-      } else if (
-        ![".json", ".log", ".txt", ".png", ".wav"].includes(extension) ||
-        (extension === ".wav" && !allowedWav)
-      ) {
-        blockingFailures.push(
-          `unsupported evidence artifact for ${track}: ${path}`,
-        );
-      } else if (!allowedWav) {
-        const disguised = disguisedArtifact(path);
-        if (disguised) blockingFailures.push(disguised);
       }
     }
-    const reportRecord = bytesRecord(reportPath, "reports", track);
-    const trace = reportTrace(track, reportPath, report, artifactFiles);
-    const physical = physicalEvidence(track, artifactFiles);
+    artifactFiles = validatedArtifactFiles;
+    let trace = null;
+    let physical = {
+      supporting: [],
+      logs: [],
+      screenshots: [],
+      selectedScreenshots: [],
+    };
+    try {
+      trace = reportTrace(track, reportPath, report, artifactFiles);
+      physical = physicalEvidence(track, artifactFiles);
+    } catch (error) {
+      blockingFailures.push(
+        `evidence artifact changed during capture for ${track}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      trace = null;
+      physical = {
+        supporting: [],
+        logs: [],
+        screenshots: [],
+        selectedScreenshots: [],
+      };
+    }
     const embeddedLog = reportLog(track, reportPath, report);
     const logs = [...physical.logs, ...(embeddedLog ? [embeddedLog] : [])];
     const physicalLogs = physical.logs;
     files.push(
-      reportRecord,
+      ...(reportRecord ? [reportRecord] : []),
       ...physical.supporting,
       ...physicalLogs,
       ...physical.screenshots,
@@ -429,11 +508,11 @@ export function buildFullWorkflowEvidenceManifest({ tracks = [] } = {}) {
       key: track,
       businessStatus,
       evidencePolicy,
-      report: reportRecord.path,
+      report: reportRecord?.path ?? null,
       machineRuntimeTrace: trace?.path ?? null,
       logs: logs.map((file) => file.path),
       screenshots: physical.selectedScreenshots.map((file) => file.path),
-      primaryReason: primaryFailureReason(report),
+      primaryReason: primaryFailureReason(report, input?.result),
       diagnostics: [
         ...physical.supporting.map((file) => file.path),
         ...logs.map((file) => file.path),
@@ -454,6 +533,15 @@ export function buildFullWorkflowEvidenceManifest({ tracks = [] } = {}) {
         failures.push(`primary failure reason is absent for ${track}`);
       if (evidencePolicy.diagnostic && evidence.diagnostics.length === 0)
         failures.push(`diagnostic evidence is absent for ${track}`);
+      if (evidencePolicy.trace && !trace)
+        failures.push(`failed Machine Runtime Trace is absent for ${track}`);
+      if (evidencePolicy.logs && logs.length === 0)
+        failures.push(`failed log evidence is absent for ${track}`);
+      if (
+        evidencePolicy.screenshot &&
+        physical.selectedScreenshots.length === 0
+      )
+        failures.push(`failure screenshot evidence is absent for ${track}`);
     }
   }
   for (const file of [...files, ...sections]) {
@@ -544,8 +632,10 @@ export function validateFullWorkflowEvidenceManifest(manifest) {
             record?.kind === kind &&
             record?.path === path,
         );
-      if (!owns(track.report, "reports"))
+      if (track.report !== null && !owns(track.report, "reports"))
         failures.push(`report evidence is not owned by ${track.key}`);
+      if (!failedBusinessTrack && track.report === null)
+        failures.push(`passing report evidence is absent for ${track.key}`);
       if (!failedBusinessTrack) {
         if (
           track.machineRuntimeTrace != null &&

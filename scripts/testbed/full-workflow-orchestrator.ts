@@ -12,7 +12,12 @@ import {
 } from "./business-check-registry.ts";
 import { waitForDaemonReadyRefresh } from "./daemon-ready-refresh.ts";
 import {
+  redactSensitiveEvidenceText,
+  sanitizeSensitiveEvidenceValue,
+} from "./failure-evidence-redaction.ts";
+import {
   buildFullWorkflowEvidenceManifest,
+  EVIDENCE_LIMITS,
   validateFullWorkflowEvidenceManifest,
 } from "./full-workflow-evidence-manifest.ts";
 import {
@@ -47,7 +52,8 @@ const PRODUCT_DETAIL_RETURN_SELECTOR =
   '[data-test="product-detail-return-catalog"]:not(:disabled), .detail-back-button';
 const PAYMENT_RETURN_WAIT_MS = 30_000;
 const CONTROL_PLANE_TIMEOUT_MS = 10_000;
-const CHILD_ERROR_TAIL_BYTES = 8 * 1024;
+const CHILD_OUTPUT_CAPTURE_BYTES = 512 * 1024;
+const CHILD_OUTPUT_EDGE_BYTES = 255 * 1024;
 const DAEMON_READY_FILE =
   "C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready.json";
 const STOCK_READY_TIMEOUT_MS = 30_000;
@@ -101,33 +107,162 @@ function parseArgs(args) {
   };
 }
 
+function boundedOutputCapture() {
+  let complete = Buffer.alloc(0);
+  let head = Buffer.alloc(0);
+  let tail = Buffer.alloc(0);
+  let totalBytes = 0;
+  let truncated = false;
+  return {
+    append(chunk) {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+      totalBytes += bytes.byteLength;
+      if (
+        !truncated &&
+        complete.byteLength + bytes.byteLength <= CHILD_OUTPUT_CAPTURE_BYTES
+      ) {
+        complete = Buffer.concat([complete, bytes]);
+        return;
+      }
+      if (!truncated) {
+        const combined = Buffer.concat([complete, bytes]);
+        head = combined.subarray(0, CHILD_OUTPUT_EDGE_BYTES);
+        tail = combined.subarray(-CHILD_OUTPUT_EDGE_BYTES);
+        complete = Buffer.alloc(0);
+        truncated = true;
+        return;
+      }
+      tail = Buffer.concat([tail, bytes]).subarray(-CHILD_OUTPUT_EDGE_BYTES);
+    },
+    finish() {
+      const marker = truncated
+        ? Buffer.from(
+            `\n...[bounded child output truncated; observedBytes=${totalBytes}]...\n`,
+          )
+        : Buffer.alloc(0);
+      const headLineEnd = head.lastIndexOf(0x0a);
+      const tailLineStart = tail.indexOf(0x0a);
+      const completeHead =
+        headLineEnd >= 0 ? head.subarray(0, headLineEnd + 1) : Buffer.alloc(0);
+      const completeTail =
+        tailLineStart >= 0 ? tail.subarray(tailLineStart + 1) : Buffer.alloc(0);
+      const captured = truncated
+        ? Buffer.concat([completeHead, marker, completeTail])
+        : complete;
+      return {
+        text: redactSensitiveEvidenceText(captured.toString("utf8")),
+        observedBytes: totalBytes,
+        truncated,
+      };
+    },
+  };
+}
+
+function normalizedOutputCapture(value) {
+  if (
+    value &&
+    typeof value === "object" &&
+    typeof value.text === "string" &&
+    Number.isInteger(value.observedBytes) &&
+    typeof value.truncated === "boolean"
+  ) {
+    return { ...value, text: redactSensitiveEvidenceText(value.text) };
+  }
+  const capture = boundedOutputCapture();
+  capture.append(value ?? "");
+  return capture.finish();
+}
+
+function persistTrackChildEvidence(
+  track,
+  child,
+  { artifactRootTrusted = true } = {},
+) {
+  const stdout = normalizedOutputCapture(child.stdoutCapture ?? child.stdout);
+  const stderr = normalizedOutputCapture(child.stderrCapture ?? child.stderr);
+  const artifactRoot =
+    artifactRootTrusted && track?.artifactRoot
+      ? resolve(track.artifactRoot)
+      : null;
+  let childEvidence = null;
+  if (artifactRoot) {
+    const stdoutPath = join(artifactRoot, "child-stdout.log");
+    const stderrPath = join(artifactRoot, "child-stderr.log");
+    const processPath = join(artifactRoot, "child-process.json");
+    try {
+      mkdirSync(artifactRoot, { recursive: true });
+      writeFileSync(stdoutPath, stdout.text, "utf8");
+      writeFileSync(stderrPath, stderr.text, "utf8");
+      writeJson(processPath, {
+        schemaVersion: "vem-testbed-child-process/v1",
+        track: track.key,
+        status: child.status,
+        exitCode: child.exitCode ?? null,
+        streams: {
+          stdout: {
+            path: stdoutPath,
+            observedBytes: stdout.observedBytes,
+            capturedBytes: Buffer.byteLength(stdout.text),
+            truncated: stdout.truncated,
+          },
+          stderr: {
+            path: stderrPath,
+            observedBytes: stderr.observedBytes,
+            capturedBytes: Buffer.byteLength(stderr.text),
+            truncated: stderr.truncated,
+          },
+        },
+      });
+      childEvidence = { stdoutPath, stderrPath, processPath };
+    } catch {
+      // 支持证据只做尽力采集，绝不替换子进程或前置检查的业务失败。
+      // 下方控制台短摘要仍使用已经有界并脱敏的内存文本。
+    }
+  }
+  return {
+    ...child,
+    stdout: stdout.text,
+    stderr: stderr.text,
+    stdoutCapture: stdout,
+    stderrCapture: stderr,
+    childEvidence,
+  };
+}
+
 function runTrack(command, label) {
   return new Promise((resolvePromise) => {
     const child = spawn(command[0], command.slice(1), {
       env: process.env,
-      stdio: ["ignore", "ignore", "pipe"],
+      stdio: ["ignore", "pipe", "pipe"],
     });
-    let stderr = "";
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk) => {
-      stderr = `${stderr}${chunk}`.slice(-CHILD_ERROR_TAIL_BYTES);
-    });
+    const stdout = boundedOutputCapture();
+    const stderr = boundedOutputCapture();
+    let settled = false;
+    child.stdout.on("data", (chunk) => stdout.append(chunk));
+    child.stderr.on("data", (chunk) => stderr.append(chunk));
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      resolvePromise(result);
+    };
     child.once("error", (error) =>
-      resolvePromise({
+      finish({
         label,
         command,
         exitCode: 1,
         status: "failed",
-        stderr: error.message,
+        stdoutCapture: stdout.finish(),
+        stderrCapture: normalizedOutputCapture(error.message),
       }),
     );
     child.once("close", (code) =>
-      resolvePromise({
+      finish({
         label,
         command,
         exitCode: code ?? 1,
         status: code === 0 ? "passed" : "failed",
-        stderr,
+        stdoutCapture: stdout.finish(),
+        stderrCapture: stderr.finish(),
       }),
     );
   });
@@ -146,9 +281,60 @@ function clearTrackReport(path) {
   rmSync(path, { force: true });
 }
 
+function clearTrackArtifacts(path) {
+  if (typeof path !== "string" || path.trim() === "") return;
+  rmSync(path, { recursive: true, force: true });
+}
+
 function workflowIdentity(guestInputPath, commit = null) {
   const identity = jsonIfPresent(guestInputPath)?.workflowIdentity ?? null;
   return commit ? { ...identity, githubSha: commit } : identity;
+}
+
+function supportingEvidenceFailure(label, error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return `${label}: ${redactSensitiveEvidenceText(message, 1_024)}`;
+}
+
+function unavailableEvidenceManifest({ tracks, reason }) {
+  const evidenceTracks = tracks.map((track) => {
+    const result = track.result ?? null;
+    const businessStatus =
+      result?.businessStatus === "passed" ? "passed" : "failed";
+    return {
+      key: track.key,
+      businessStatus,
+      evidencePolicy: null,
+      report: null,
+      machineRuntimeTrace: null,
+      logs: [],
+      screenshots: [],
+      primaryReason:
+        businessStatus === "failed"
+          ? (result?.error ?? "supporting evidence is unavailable")
+          : null,
+      diagnostics: [],
+    };
+  });
+  return {
+    schemaVersion: "vem-local-testbed-full-workflow-evidence-manifest/v2",
+    ok: false,
+    limits: EVIDENCE_LIMITS,
+    requiredKinds: ["machineRuntimeTrace", "logs"],
+    totals: {
+      byteLength: 0,
+      tracks: evidenceTracks.length,
+      reports: 0,
+      machineRuntimeTrace: 0,
+      logs: 0,
+      screenshots: 0,
+    },
+    tracks: evidenceTracks,
+    files: [],
+    sections: [],
+    warnings: [],
+    failures: [reason],
+  };
 }
 
 function writeJson(path, value) {
@@ -273,6 +459,12 @@ function shortError(result) {
   );
 }
 
+function redactedOptionalError(value) {
+  if (value == null) return null;
+  const redacted = redactSensitiveEvidenceText(value).trim();
+  return redacted || null;
+}
+
 export async function runSerialTrackLifecycle({
   tracks,
   runTrack: executeTrack,
@@ -282,12 +474,15 @@ export async function runSerialTrackLifecycle({
   haltOnRecoveryFailure = false,
   emitTrackProgress = () => undefined,
   now = () => new Date(),
+  clearReport = clearTrackReport,
+  clearArtifacts = clearTrackArtifacts,
 }) {
   const executed = [];
   for (const track of tracks) {
     const startedAt = now().toISOString();
     emitTrackProgress({ type: "started", track, startedAt });
     let child;
+    const evidenceTrust = { report: false, artifactRoot: false };
     try {
       if (!track.runner) {
         child = {
@@ -297,8 +492,26 @@ export async function runSerialTrackLifecycle({
           report: null,
         };
       } else {
-        // A report is valid only when produced by this invocation.
-        clearTrackReport(track.reportPath);
+        const cleanupErrors = [];
+        try {
+          clearReport(track.reportPath, track);
+          evidenceTrust.report = true;
+        } catch (error) {
+          cleanupErrors.push(
+            `report cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        try {
+          clearArtifacts(track.artifactRoot, track);
+          evidenceTrust.artifactRoot = true;
+        } catch (error) {
+          cleanupErrors.push(
+            `artifact cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        if (cleanupErrors.length > 0) {
+          throw new Error(cleanupErrors.join("; "));
+        }
         await beforeTrack(track);
         child = await executeTrack(track);
       }
@@ -309,7 +522,12 @@ export async function runSerialTrackLifecycle({
         stderr: `track preflight failed: ${error instanceof Error ? error.message : String(error)}`,
       };
     }
-    const report = child.report ?? jsonIfPresent(track.reportPath);
+    child = persistTrackChildEvidence(track, child, {
+      artifactRootTrusted: evidenceTrust.artifactRoot,
+    });
+    const report = evidenceTrust.report
+      ? (child.report ?? jsonIfPresent(track.reportPath))
+      : null;
     let terminal;
     try {
       terminal = await captureTerminal(track, { child, report });
@@ -326,7 +544,7 @@ export async function runSerialTrackLifecycle({
       report,
       track.reportPath,
       {
-        artifactRoot: track.artifactRoot,
+        artifactRoot: evidenceTrust.artifactRoot ? track.artifactRoot : null,
         visionBaseUrl: process.env.VISION_BASE_URL ?? "http://127.0.0.1:27892",
       },
     );
@@ -365,6 +583,7 @@ export async function runSerialTrackLifecycle({
             : "passed",
       exitCode: child.exitCode,
       reportOk: report?.ok ?? null,
+      evidenceTrust,
       validator: validation,
       startedAt,
       finishedAt,
@@ -381,18 +600,22 @@ export async function runSerialTrackLifecycle({
           ? shortError(child)
           : (shortError(child) ?? validation.reason)
         : terminalFailed
-          ? (terminal.reason ?? "terminal facts are incomplete")
+          ? redactedOptionalError(
+              terminal.reason ?? "terminal facts are incomplete",
+            )
           : recoveryFailed
-            ? (recovery.errors?.join("; ") ?? "handoff recovery failed")
+            ? redactedOptionalError(
+                recovery.errors?.join("; ") ?? "handoff recovery failed",
+              )
             : null,
-      terminal,
-      handoffRecovery: {
+      terminal: sanitizeSensitiveEvidenceValue(terminal),
+      handoffRecovery: sanitizeSensitiveEvidenceValue({
         ...recovery,
         startedAt: recoveryStartedAt,
         finishedAt: recoveryFinishedAt,
         durationMs:
           Date.parse(recoveryFinishedAt) - Date.parse(recoveryStartedAt),
-      },
+      }),
     };
     executed.push(entry);
     emitTrackProgress({ type: "finished", track, result: entry });
@@ -1441,6 +1664,21 @@ function terminalOperations(guestInput, handoff, handoffPath) {
 }
 
 export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
+  const evidenceManifestPath = join(
+    dirname(resolve(options.outPath)),
+    "full-workflow-evidence-manifest.json",
+  );
+  const clearEvidenceManifest =
+    dependencies.clearEvidenceManifest ??
+    ((path) => rmSync(path, { force: true }));
+  const clearAggregate =
+    dependencies.clearAggregate ?? ((path) => rmSync(path, { force: true }));
+  try {
+    clearEvidenceManifest(evidenceManifestPath);
+  } catch {}
+  try {
+    clearAggregate(options.outPath);
+  } catch {}
   const guestInput = jsonIfPresent(options.guestInputPath);
   const plan = buildWorkflowTrackCommands(options);
   const handoff = jsonIfPresent(options.handoffPath);
@@ -1513,44 +1751,117 @@ export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
         }
       }),
     now: dependencies.now,
+    clearReport: dependencies.clearTrackReport ?? clearTrackReport,
+    clearArtifacts: dependencies.clearTrackArtifacts ?? clearTrackArtifacts,
   });
-  const evidenceManifestPath = join(
-    dirname(resolve(options.outPath)),
-    "full-workflow-evidence-manifest.json",
-  );
-  const evidenceManifest = buildFullWorkflowEvidenceManifest({
-    tracks: plan.tracks.map((track) => ({
+  const evidenceTracks = plan.tracks.map((track) => {
+    const result = executedTracks.find((entry) => entry.key === track.key);
+    return {
       ...track,
-      result: executedTracks.find((entry) => entry.key === track.key),
-    })),
+      result: result ?? {
+        status: "blocked",
+        businessStatus: "failed",
+        error: "business track was not executed",
+        evidenceTrust: { report: false, artifactRoot: false },
+      },
+    };
   });
-  writeJson(evidenceManifestPath, evidenceManifest);
-  const evidenceManifestBytes = readFileSync(evidenceManifestPath);
-  const evidenceManifestFile = {
-    byteLength: evidenceManifestBytes.byteLength,
-    sha256: createHash("sha256").update(evidenceManifestBytes).digest("hex"),
-  };
-  const evidenceValidationErrors = [
-    ...validateFullWorkflowEvidenceManifest(evidenceManifest),
-  ];
+  const evidenceErrors = [];
+  let evidenceManifest;
+  try {
+    evidenceManifest = (
+      dependencies.buildEvidenceManifest ?? buildFullWorkflowEvidenceManifest
+    )({ tracks: evidenceTracks });
+  } catch (error) {
+    const reason = supportingEvidenceFailure(
+      "evidence manifest capture failed",
+      error,
+    );
+    evidenceErrors.push(reason);
+    evidenceManifest = unavailableEvidenceManifest({
+      tracks: evidenceTracks,
+      reason,
+    });
+  }
+  let evidenceManifestFile = null;
+  let publishedEvidenceManifestPath = null;
+  try {
+    clearEvidenceManifest(evidenceManifestPath);
+    (dependencies.writeEvidenceManifest ?? writeJson)(
+      evidenceManifestPath,
+      evidenceManifest,
+    );
+    const evidenceManifestBytes = (
+      dependencies.readEvidenceManifest ?? readFileSync
+    )(evidenceManifestPath);
+    evidenceManifestFile = {
+      byteLength: evidenceManifestBytes.byteLength,
+      sha256: createHash("sha256").update(evidenceManifestBytes).digest("hex"),
+    };
+    publishedEvidenceManifestPath = evidenceManifestPath;
+  } catch (error) {
+    try {
+      clearEvidenceManifest(evidenceManifestPath);
+    } catch {}
+    evidenceErrors.push(
+      supportingEvidenceFailure("evidence manifest persistence failed", error),
+    );
+  }
+  try {
+    evidenceErrors.push(
+      ...(
+        dependencies.validateEvidenceManifest ??
+        validateFullWorkflowEvidenceManifest
+      )(evidenceManifest),
+    );
+  } catch (error) {
+    evidenceErrors.push(
+      supportingEvidenceFailure("evidence manifest validation failed", error),
+    );
+  }
   const aggregate = buildFullWorkflowAggregate({
     mode: options.mode,
     selectedDescriptors: plan.tracks,
     identity: workflowIdentity(options.guestInputPath, options.commit),
     executedTracks,
-    evidenceManifestPath,
+    evidenceManifestPath: publishedEvidenceManifestPath,
     evidenceManifest,
     evidenceManifestFile,
-    evidenceValidationErrors,
+    evidenceValidationErrors: evidenceErrors,
   });
-  writeJson(options.outPath, aggregate);
+  aggregate.operationalOutcome = {
+    ok: true,
+    failures: [],
+    canonicalResultPath: resolve(options.outPath),
+  };
+  try {
+    (dependencies.writeAggregate ?? writeJson)(options.outPath, aggregate);
+  } catch (error) {
+    try {
+      clearAggregate(options.outPath);
+    } catch {}
+    aggregate.operationalOutcome = {
+      ok: false,
+      failures: [
+        supportingEvidenceFailure(
+          "canonical aggregate persistence failed",
+          error,
+        ),
+      ],
+      canonicalResultPath: null,
+    };
+  }
   return aggregate;
+}
+
+export function fullWorkflowCommandSucceeded(aggregate) {
+  return aggregate?.ok === true && aggregate?.operationalOutcome?.ok === true;
 }
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const aggregate = await runFullWorkflowOrchestrator(options);
-  if (!aggregate.ok) process.exitCode = 1;
+  if (!fullWorkflowCommandSucceeded(aggregate)) process.exitCode = 1;
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {

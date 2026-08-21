@@ -230,7 +230,8 @@ function fakeUiAdapter({
 
 describe("visionExperience vertical slice driver", () => {
   it("将唯一同 attempt 的绝对 100→105 V2 调整意图绑定到 adjusted resource", () => {
-    const resultUrl = "http://127.0.0.1:7892/v2/try-on/results/attempt?token=105";
+    const resultUrl =
+      "http://127.0.0.1:7892/v2/try-on/results/attempt?token=105";
     assert.equal(
       validateGarmentScaleAdjustment({
         evidence: { scales: [1.05], results: [{ reference: resultUrl }] },
@@ -243,9 +244,15 @@ describe("visionExperience vertical slice driver", () => {
       { scales: [], results: [{ reference: resultUrl }] },
       { scales: [1.05, 1.05], results: [{ reference: resultUrl }] },
       { scales: [1.05], results: [] },
-      { scales: [1.05], results: [{ reference: resultUrl }, { reference: resultUrl }] },
+      {
+        scales: [1.05],
+        results: [{ reference: resultUrl }, { reference: resultUrl }],
+      },
     ]) {
-      assert.equal(validateGarmentScaleAdjustment({ evidence, resultUrl }), false);
+      assert.equal(
+        validateGarmentScaleAdjustment({ evidence, resultUrl }),
+        false,
+      );
     }
   });
   it("拒绝跳过倒计时、过早捕获、非单调时间和静态预览", () => {
@@ -298,7 +305,9 @@ describe("visionExperience vertical slice driver", () => {
       [2_000, 1_000, "1"],
       [2_800, 100, "1"],
     ] as const;
-    const validate = (samples: readonly (readonly [number, number | null, string])[]) =>
+    const validate = (
+      samples: readonly (readonly [number, number | null, string])[],
+    ) =>
       validateVisionExperienceTimeline({
         attemptId,
         samples: [
@@ -337,15 +346,27 @@ describe("visionExperience vertical slice driver", () => {
       });
     assert.equal(validate(baseline).ok, true);
     assert.equal(
-      validate(baseline.map((entry, index) => index === 2 ? [entry[0], entry[1], "3"] : entry)).ok,
+      validate(
+        baseline.map((entry, index) =>
+          index === 2 ? [entry[0], entry[1], "3"] : entry,
+        ),
+      ).ok,
       false,
     );
     assert.equal(
-      validate(baseline.map((entry, index) => index === 3 ? [entry[0], 2_300, entry[2]] : entry)).ok,
+      validate(
+        baseline.map((entry, index) =>
+          index === 3 ? [entry[0], 2_300, entry[2]] : entry,
+        ),
+      ).ok,
       false,
     );
     assert.equal(
-      validate(baseline.map((entry, index) => index === 3 ? [entry[0], null, entry[2]] : entry)).ok,
+      validate(
+        baseline.map((entry, index) =>
+          index === 3 ? [entry[0], null, entry[2]] : entry,
+        ),
+      ).ok,
       false,
     );
   });
@@ -365,62 +386,74 @@ describe("visionExperience vertical slice driver", () => {
       invisibleAt?: number;
       generatingAt?: number;
       capturedAt?: number;
-    }) => [
-      ...countdown.map(([atMs, holdRemainingMs, countdownText], index) => ({
-        atMs,
-        attemptId,
-        state: "acquiring",
-        holdRemainingMs,
-        countdownText,
-        previewVisible: index !== options.invisibleAt,
-        previewFrameHash: `${atMs}`,
-      })),
-      ...(options.generatingAt === undefined
-        ? []
-        : [{
-            atMs: options.generatingAt,
-            attemptId,
-            state: "generating",
-            holdRemainingMs: null,
-            countdownText: null,
-            previewVisible: false,
-            previewFrameHash: null,
-            capturedFrameId: "frame",
-            capturedDigest: "sha256:one",
-          }]),
-      {
-        atMs: options.capturedAt ?? 3_000,
-        attemptId,
-        state: "captured",
-        holdRemainingMs: null,
-        countdownText: null,
-        previewVisible: false,
-        previewFrameHash: null,
-        capturedFrameId: "frame",
-        capturedDigest: "sha256:one",
-      },
-      {
-        atMs: 3_100,
-        attemptId,
-        state: "generating",
-        holdRemainingMs: null,
-        countdownText: null,
-        previewVisible: false,
-        previewFrameHash: null,
-        capturedFrameId: "frame",
-        capturedDigest: "sha256:one",
-      },
-    ].sort((left, right) => left.atMs - right.atMs);
+    }) =>
+      [
+        ...countdown.map(([atMs, holdRemainingMs, countdownText], index) => ({
+          atMs,
+          attemptId,
+          state: "acquiring",
+          holdRemainingMs,
+          countdownText,
+          previewVisible: index !== options.invisibleAt,
+          previewFrameHash: `${atMs}`,
+        })),
+        ...(options.generatingAt === undefined
+          ? []
+          : [
+              {
+                atMs: options.generatingAt,
+                attemptId,
+                state: "generating",
+                holdRemainingMs: null,
+                countdownText: null,
+                previewVisible: false,
+                previewFrameHash: null,
+                capturedFrameId: "frame",
+                capturedDigest: "sha256:one",
+              },
+            ]),
+        {
+          atMs: options.capturedAt ?? 3_000,
+          attemptId,
+          state: "captured",
+          holdRemainingMs: null,
+          countdownText: null,
+          previewVisible: false,
+          previewFrameHash: null,
+          capturedFrameId: "frame",
+          capturedDigest: "sha256:one",
+        },
+        {
+          atMs: 3_100,
+          attemptId,
+          state: "generating",
+          holdRemainingMs: null,
+          countdownText: null,
+          previewVisible: false,
+          previewFrameHash: null,
+          capturedFrameId: "frame",
+          capturedDigest: "sha256:one",
+        },
+      ].sort((left, right) => left.atMs - right.atMs);
     assert.equal(
-      validateVisionExperienceTimeline({ attemptId, samples: samples({ invisibleAt: 3 }) }).ok,
+      validateVisionExperienceTimeline({
+        attemptId,
+        samples: samples({ invisibleAt: 3 }),
+      }).ok,
       false,
     );
     assert.equal(
-      validateVisionExperienceTimeline({ attemptId, samples: samples({ generatingAt: 2_500 }) }).ok,
+      validateVisionExperienceTimeline({
+        attemptId,
+        samples: samples({ generatingAt: 2_500 }),
+      }).ok,
       false,
     );
     assert.equal(
-      validateVisionExperienceTimeline({ attemptId, samples: samples({ capturedAt: 2_500 }) }).ok,
+      validateVisionExperienceTimeline({
+        attemptId,
+        samples: samples({ capturedAt: 2_500 }),
+      }).ok,
       false,
     );
   });
@@ -680,6 +713,7 @@ describe("visionExperience vertical slice driver", () => {
         "ui/try-on-state.json": JSON.stringify({
           route: "#/try-on",
           state: "acquiring",
+          attemptId,
         }),
       },
       commands: {
@@ -705,6 +739,38 @@ describe("visionExperience vertical slice driver", () => {
     await assert.rejects(
       runTryOnScenario(adapter, { timeoutMs: 30, pollMs: 5 }),
       /result-surface.*did not become true/,
+    );
+  });
+
+  it("未进入试衣路由时在结果等待前按阶段快速失败", async () => {
+    const adapter = createFakeTestAdapter({
+      files: {
+        "ui/try-on-state.json": JSON.stringify({
+          route: "#/products/product:1",
+          state: null,
+          attemptId: null,
+        }),
+      },
+    });
+    await assert.rejects(
+      runTryOnScenario(adapter, { timeoutMs: 30, pollMs: 5 }),
+      /try-on-route.*did not become true/,
+    );
+  });
+
+  it("试衣路由没有尝试标识时按尝试阶段快速失败", async () => {
+    const adapter = createFakeTestAdapter({
+      files: {
+        "ui/try-on-state.json": JSON.stringify({
+          route: "#/try-on?catalogKey=product%3A1",
+          state: "idle",
+          attemptId: null,
+        }),
+      },
+    });
+    await assert.rejects(
+      runTryOnScenario(adapter, { timeoutMs: 30, pollMs: 5 }),
+      /try-on-attempt.*did not become true/,
     );
   });
 

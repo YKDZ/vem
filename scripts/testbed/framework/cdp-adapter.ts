@@ -18,10 +18,17 @@ import {
 } from "../../../packages/shared/src/schemas/vision-v2.ts";
 import { isStructurallyValidPng } from "../../lib/png-structure.mjs";
 import {
+  isSensitiveEvidenceKey,
+  redactSensitiveEvidenceText,
+} from "../failure-evidence-redaction.ts";
+import { EVIDENCE_LIMITS } from "../full-workflow-evidence-manifest.ts";
+import {
   CdpClient,
   activateVisibleSelector,
+  captureScreenshot,
   enablePageRuntime,
   evaluateExpression,
+  readMachineRuntimeTraceSnapshot,
   rewriteWebSocketDebuggerUrl,
 } from "../machine-ui-cdp-driver.ts";
 import {
@@ -35,6 +42,62 @@ import {
 } from "./slices/vision-experience/source-garment-evidence.ts";
 
 const MAX_RESULT_PNG_BYTES = 8 * 1024 * 1024;
+const MAX_DIAGNOSTIC_ENTRIES = 128;
+const MAX_DIAGNOSTIC_TEXT = 2_048;
+
+function redactDiagnosticText(value: unknown): string {
+  return redactSensitiveEvidenceText(value, MAX_DIAGNOSTIC_TEXT);
+}
+
+function sanitizeDiagnosticValue(value: unknown, depth = 0): unknown {
+  if (value == null || typeof value === "boolean" || typeof value === "number")
+    return value;
+  if (typeof value === "string") return redactDiagnosticText(value);
+  if (depth >= 6) return "[bounded]";
+  if (Array.isArray(value)) {
+    return value
+      .slice(-MAX_DIAGNOSTIC_ENTRIES)
+      .map((entry) => sanitizeDiagnosticValue(entry, depth + 1));
+  }
+  if (typeof value !== "object") return redactDiagnosticText(value);
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(
+        ([key]) =>
+          !/^(?:headers?|requestBody|responseBody|body|authorization|cookie|set-cookie)$/i.test(
+            key,
+          ),
+      )
+      .slice(0, MAX_DIAGNOSTIC_ENTRIES)
+      .map(([key, entry]) => [
+        key,
+        isSensitiveEvidenceKey(key)
+          ? "[REDACTED]"
+          : sanitizeDiagnosticValue(entry, depth + 1),
+      ]),
+  );
+}
+
+function diagnosticErrorTree(error: unknown, depth = 0): unknown {
+  if (depth >= 4) return { message: "[bounded error cause]" };
+  if (!(error instanceof Error)) {
+    return { message: redactDiagnosticText(error) };
+  }
+  const cause = (error as Error & { cause?: unknown }).cause;
+  return sanitizeDiagnosticValue({
+    name: error.name,
+    message: error.message,
+    stack: error.stack?.split("\n").slice(0, 12).join("\n") ?? null,
+    cause: cause == null ? null : diagnosticErrorTree(cause, depth + 1),
+  });
+}
+
+function boundedPush<T>(target: T[], value: T): void {
+  target.push(value);
+  if (target.length > MAX_DIAGNOSTIC_ENTRIES) {
+    target.splice(0, target.length - MAX_DIAGNOSTIC_ENTRIES);
+  }
+}
 
 interface CdpTarget {
   type: string;
@@ -100,19 +163,21 @@ export function validateRecordedVideoFixtureSelection({
       reason: "三段录播 entry 必须是互异的规范 geometry entry",
     };
   }
-  const recordings = (manifest as { recordings?: Record<string, unknown> } | null)
-    ?.recordings;
+  const recordings = (
+    manifest as { recordings?: Record<string, unknown> } | null
+  )?.recordings;
   const candidates = (Object.values(GEOMETRY_ENTRY) as string[]).map(
-    (entry) => recordings?.[entry] as
-    | {
-        file?: unknown;
-        sha256?: unknown;
-        loop?: unknown;
-        source?: unknown;
-        sourceSha256?: unknown;
-        generator?: unknown;
-      }
-    | undefined,
+    (entry) =>
+      recordings?.[entry] as
+        | {
+            file?: unknown;
+            sha256?: unknown;
+            loop?: unknown;
+            source?: unknown;
+            sourceSha256?: unknown;
+            generator?: unknown;
+          }
+        | undefined,
   );
   if (
     candidates.length !== 3 ||
@@ -130,14 +195,19 @@ export function validateRecordedVideoFixtureSelection({
     new Set(candidates.map((recording) => recording!.file)).size !== 3 ||
     new Set(candidates.map((recording) => recording!.sha256)).size !== 3 ||
     new Set(candidates.map((recording) => recording!.source)).size !== 1 ||
-    new Set(candidates.map((recording) => recording!.sourceSha256)).size !== 1 ||
+    new Set(candidates.map((recording) => recording!.sourceSha256)).size !==
+      1 ||
     new Set(candidates.map((recording) => recording!.generator)).size !== 1
   ) {
-    return { ok: false, reason: "安装 manifest 缺少同源规范 geometry 三段 entry" };
+    return {
+      ok: false,
+      reason: "安装 manifest 缺少同源规范 geometry 三段 entry",
+    };
   }
-  const recording = candidates[
-    (Object.keys(GEOMETRY_ENTRY) as GeometrySegment[]).indexOf(segment)
-  ]!;
+  const recording =
+    candidates[
+      (Object.keys(GEOMETRY_ENTRY) as GeometrySegment[]).indexOf(segment)
+    ]!;
   if (actualDigest !== recording.sha256) {
     return { ok: false, reason: "安装录播文件摘要与 manifest 不匹配" };
   }
@@ -196,7 +266,8 @@ export class VisionProtocolEvidenceCollector {
         JSON.parse(value.response.payloadData),
       );
       if (adjusted.success) {
-        const results = this.adjustedResults.get(adjusted.data.payload.attemptId) ?? [];
+        const results =
+          this.adjustedResults.get(adjusted.data.payload.attemptId) ?? [];
         results.push(structuredClone(adjusted.data.payload.result));
         this.adjustedResults.set(adjusted.data.payload.attemptId, results);
         return;
@@ -250,7 +321,8 @@ export class VisionProtocolEvidenceCollector {
         JSON.parse(value.response.payloadData),
       );
       if (adjustment.success) {
-        const scales = this.adjustmentScales.get(adjustment.data.payload.attemptId) ?? [];
+        const scales =
+          this.adjustmentScales.get(adjustment.data.payload.attemptId) ?? [];
         scales.push(adjustment.data.payload.garmentScale);
         this.adjustmentScales.set(adjustment.data.payload.attemptId, scales);
         return;
@@ -503,23 +575,121 @@ export class CdpTestAdapter implements TestAdapter {
   sourceGarmentServiceApiOrigin: unknown;
   sourceGarmentPng: Promise<SemanticResultPng | null> | null = null;
   stopTryOnProtocolObserver: (() => void) | null = null;
+  selectRecordedVideoFixtureImpl: typeof selectRecordedVideoFixture;
+  diagnosticMilestones: unknown[] = [];
+  stateObservations: unknown[] = [];
+  consoleDiagnostics: unknown[] = [];
+  exceptionDiagnostics: unknown[] = [];
+  networkDiagnostics: unknown[] = [];
+  lastDomState: Record<string, unknown> | null = null;
 
   constructor({
     endpoint = process.env.CDP_ENDPOINT ?? "http://127.0.0.1:19222",
     visionBaseUrl = process.env.VISION_BASE_URL ?? "http://127.0.0.1:27892",
     sourceGarmentMetadata = null,
     sourceGarmentServiceApiOrigin = null,
+    selectRecordedVideoFixtureImpl = selectRecordedVideoFixture,
   }: {
     endpoint?: string;
     visionBaseUrl?: string;
     sourceGarmentMetadata?: unknown;
     sourceGarmentServiceApiOrigin?: unknown;
+    selectRecordedVideoFixtureImpl?: typeof selectRecordedVideoFixture;
   } = {}) {
     this.endpoint = endpoint;
     this.visionBaseUrl = visionBaseUrl;
     this.protocolEvidence = new VisionProtocolEvidenceCollector(visionBaseUrl);
     this.sourceGarmentMetadata = sourceGarmentMetadata;
     this.sourceGarmentServiceApiOrigin = sourceGarmentServiceApiOrigin;
+    this.selectRecordedVideoFixtureImpl = selectRecordedVideoFixtureImpl;
+  }
+
+  recordMilestone(
+    stage: string,
+    status: "started" | "completed" | "failed",
+    detail: unknown = null,
+  ): void {
+    boundedPush(
+      this.diagnosticMilestones,
+      sanitizeDiagnosticValue({
+        at: new Date().toISOString(),
+        stage,
+        status,
+        detail,
+      }),
+    );
+  }
+
+  observeDiagnosticEvent(method: string, event: unknown): void {
+    const value = event as Record<string, any> | null;
+    if (method === "Runtime.consoleAPICalled") {
+      const args = Array.isArray(value?.args)
+        ? value.args.slice(0, 16).map((argument: Record<string, unknown>) => {
+            const raw =
+              argument?.value ?? argument?.description ?? argument?.type;
+            const text = String(raw ?? "").trim();
+            if (text.startsWith("{") || text.startsWith("[")) {
+              return "[structured console payload omitted]";
+            }
+            return redactDiagnosticText(text);
+          })
+        : [];
+      boundedPush(
+        this.consoleDiagnostics,
+        sanitizeDiagnosticValue({
+          at: new Date().toISOString(),
+          type: value?.type ?? null,
+          args,
+        }),
+      );
+      return;
+    }
+    if (method === "Runtime.exceptionThrown") {
+      boundedPush(
+        this.exceptionDiagnostics,
+        sanitizeDiagnosticValue({
+          at: new Date().toISOString(),
+          text: value?.exceptionDetails?.text ?? null,
+          description: value?.exceptionDetails?.exception?.description ?? null,
+          url: value?.exceptionDetails?.url ?? null,
+          lineNumber: value?.exceptionDetails?.lineNumber ?? null,
+          columnNumber: value?.exceptionDetails?.columnNumber ?? null,
+        }),
+      );
+      return;
+    }
+    if (method === "Network.loadingFailed") {
+      boundedPush(
+        this.networkDiagnostics,
+        sanitizeDiagnosticValue({
+          at: new Date().toISOString(),
+          kind: "loadingFailed",
+          requestId: value?.requestId ?? null,
+          resourceType: value?.type ?? null,
+          errorText: value?.errorText ?? null,
+          canceled: value?.canceled ?? false,
+        }),
+      );
+      return;
+    }
+    if (
+      method === "Network.responseReceived" &&
+      Number(value?.response?.status) >= 400
+    ) {
+      boundedPush(
+        this.networkDiagnostics,
+        sanitizeDiagnosticValue({
+          at: new Date().toISOString(),
+          kind: "httpError",
+          requestId: value?.requestId ?? null,
+          resourceType: value?.type ?? null,
+          url: value?.response?.url ?? null,
+          status: value?.response?.status ?? null,
+          statusText: value?.response?.statusText ?? null,
+          mimeType: value?.response?.mimeType ?? null,
+        }),
+      );
+    }
   }
 
   async connect({
@@ -567,11 +737,27 @@ export class CdpTestAdapter implements TestAdapter {
       "Network.webSocketClosed",
       (event: unknown) => this.protocolEvidence.observeWebSocketClosed(event),
     );
+    const stopConsole = this.client.on("Runtime.consoleAPICalled", (event) =>
+      this.observeDiagnosticEvent("Runtime.consoleAPICalled", event),
+    );
+    const stopException = this.client.on("Runtime.exceptionThrown", (event) =>
+      this.observeDiagnosticEvent("Runtime.exceptionThrown", event),
+    );
+    const stopResponse = this.client.on("Network.responseReceived", (event) =>
+      this.observeDiagnosticEvent("Network.responseReceived", event),
+    );
+    const stopLoadingFailed = this.client.on("Network.loadingFailed", (event) =>
+      this.observeDiagnosticEvent("Network.loadingFailed", event),
+    );
     this.stopTryOnProtocolObserver = () => {
       stopCreated();
       stopReceived();
       stopSent();
       stopClosed();
+      stopConsole();
+      stopException();
+      stopResponse();
+      stopLoadingFailed();
     };
     return this;
   }
@@ -583,6 +769,7 @@ export class CdpTestAdapter implements TestAdapter {
     const state = JSON.parse(
       await evaluateExpression(this.client!, STATE_EXPRESSION),
     ) as { attemptId?: string | null };
+    this.recordStateObservation(state as Record<string, unknown>);
     const previewFrameHash = await this.capturePreviewFrameHash(state);
     const protocolTimeline =
       typeof state.attemptId === "string"
@@ -706,7 +893,48 @@ export class CdpTestAdapter implements TestAdapter {
     throw new Error("CDP adapter does not support remote file writes");
   }
 
+  private recordStateObservation(state: Record<string, unknown>): void {
+    const observation = sanitizeDiagnosticValue({
+      at: new Date().toISOString(),
+      route: state?.route ?? null,
+      state: state?.state ?? null,
+      attemptId: state?.attemptId ?? null,
+      countdownText: state?.countdownText ?? null,
+      previewVisible: state?.previewVisible ?? false,
+      preview: state?.preview ?? null,
+      resultPresent:
+        typeof state?.resultUrl === "string" && state.resultUrl.length > 0,
+    }) as Record<string, unknown>;
+    this.lastDomState = observation;
+    boundedPush(this.stateObservations, observation);
+  }
+
   async run(command: string, args: string[] = []): Promise<CommandResult> {
+    this.recordMilestone(`adapter:${command}`, "started", { args });
+    try {
+      const result = await this.executeCommand(command, args);
+      this.recordMilestone(
+        `adapter:${command}`,
+        result.exitCode === 0 ? "completed" : "failed",
+        {
+          exitCode: result.exitCode,
+          stdout: result.stdout,
+          stderr: result.stderr,
+        },
+      );
+      return result;
+    } catch (error) {
+      this.recordMilestone(`adapter:${command}`, "failed", {
+        error: diagnosticErrorTree(error),
+      });
+      throw error;
+    }
+  }
+
+  private async executeCommand(
+    command: string,
+    args: string[] = [],
+  ): Promise<CommandResult> {
     if (command === "navigate") {
       const hash = args[0];
       if (typeof hash !== "string" || hash.length === 0) {
@@ -737,7 +965,7 @@ export class CdpTestAdapter implements TestAdapter {
           "recorded video fixture segment must be far, mid, or near",
         );
       }
-      return selectRecordedVideoFixture(segment);
+      return this.selectRecordedVideoFixtureImpl(segment);
     }
     if (command === "stop-vision-role") {
       const roleIndex = args.indexOf("--role");
@@ -783,11 +1011,17 @@ export class CdpTestAdapter implements TestAdapter {
         return { exitCode: 1, stdout: "", stderr: await response.text() };
       }
       const payload = (await response.json()) as { roles?: RuntimeRole[] };
-      const ready = (payload.roles ?? []).every(
-        (entry) => entry?.ready === true && entry?.pid !== null,
-      );
-      const pids = (payload.roles ?? [])
-        .filter((entry) => entry?.pid !== null)
+      const roles = payload.roles ?? [];
+      const ready =
+        roles.length > 0 &&
+        roles.every(
+          (entry) =>
+            entry?.ready === true &&
+            Number.isInteger(entry?.pid) &&
+            entry.pid! > 0,
+        );
+      const pids = roles
+        .filter((entry) => Number.isInteger(entry?.pid) && entry.pid! > 0)
         .map((entry) => entry.pid);
       return {
         exitCode: ready ? 0 : 1,
@@ -798,12 +1032,137 @@ export class CdpTestAdapter implements TestAdapter {
     throw new Error(`CDP adapter does not implement command: ${command}`);
   }
 
+  async captureFailureEvidence(error: unknown): Promise<{
+    diagnostics: Record<string, any>;
+    screenshotPng: Buffer | null;
+  }> {
+    this.recordMilestone("failure", "failed", {
+      error: diagnosticErrorTree(error),
+    });
+    if (this.client) {
+      try {
+        const state = JSON.parse(
+          await evaluateExpression(this.client, STATE_EXPRESSION, {
+            timeoutMs: 2_000,
+          }),
+        ) as Record<string, unknown>;
+        this.recordStateObservation(state);
+      } catch (captureError) {
+        this.recordMilestone("failure-dom-state", "failed", {
+          error: diagnosticErrorTree(captureError),
+        });
+      }
+    }
+
+    let machineRuntimeTraceSnapshot: unknown = null;
+    if (this.client) {
+      try {
+        machineRuntimeTraceSnapshot = sanitizeDiagnosticValue(
+          await readMachineRuntimeTraceSnapshot(this.client, {
+            timeoutMs: 2_000,
+          }),
+        );
+      } catch (captureError) {
+        this.recordMilestone("failure-runtime-trace", "failed", {
+          error: diagnosticErrorTree(captureError),
+        });
+      }
+    }
+
+    const listener = {
+      origin: this.visionBaseUrl,
+      reachable: false,
+      httpStatus: null as number | null,
+      error: null as string | null,
+    };
+    let roles: unknown[] = [];
+    try {
+      const response = await fetch(`${this.visionBaseUrl}/v2/runtime/roles`, {
+        signal: AbortSignal.timeout(2_000),
+      });
+      listener.reachable = true;
+      listener.httpStatus = response.status;
+      if (response.ok) {
+        const payload = (await response.json()) as { roles?: unknown[] };
+        roles = (Array.isArray(payload?.roles) ? payload.roles : [])
+          .slice(0, 32)
+          .map((entry) => {
+            const role = entry as Record<string, unknown>;
+            return {
+              name: typeof role?.name === "string" ? role.name : null,
+              pid: Number.isInteger(role?.pid) ? role.pid : null,
+              ready: role?.ready === true,
+            };
+          });
+      }
+    } catch (captureError) {
+      listener.error = redactDiagnosticText(
+        captureError instanceof Error ? captureError.message : captureError,
+      );
+    }
+
+    let screenshotPng: Buffer | null = null;
+    if (this.client) {
+      try {
+        await captureScreenshot(this.client, {
+          format: "png",
+          timeoutMs: 5_000,
+          label: "vision-experience-failure",
+          maxBytes: EVIDENCE_LIMITS.screenshotPerFileBytes,
+          screenshotSink: async ({ bytes }) => {
+            screenshotPng = Buffer.from(bytes);
+            return { ref: "memory://vision-experience-failure.png" };
+          },
+        });
+      } catch (captureError) {
+        this.recordMilestone("failure-screenshot", "failed", {
+          error: diagnosticErrorTree(captureError),
+        });
+      }
+    }
+
+    const traceEntries = Array.isArray(
+      (machineRuntimeTraceSnapshot as Record<string, unknown> | null)?.entries,
+    )
+      ? (machineRuntimeTraceSnapshot as { entries: unknown[] }).entries
+      : [];
+    return {
+      diagnostics: sanitizeDiagnosticValue({
+        schemaVersion: "vem-vision-experience-failure-diagnostics/v1",
+        capturedAt: new Date().toISOString(),
+        error: diagnosticErrorTree(error),
+        milestones: this.diagnosticMilestones,
+        stateObservations: this.stateObservations,
+        lastDomState: this.lastDomState,
+        machineRuntimeTraceSnapshot,
+        machineRuntimeTrace: traceEntries,
+        cdp: {
+          console: this.consoleDiagnostics,
+          exceptions: this.exceptionDiagnostics,
+          networkErrors: this.networkDiagnostics,
+        },
+        vision: { listener, roles },
+        fixtureRestarts: this.diagnosticMilestones.filter(
+          (entry: any) =>
+            entry?.stage === "adapter:select-recorded-video-fixture",
+        ),
+      }) as Record<string, any>,
+      screenshotPng,
+    };
+  }
+
   async close(): Promise<void> {
     this.stopTryOnProtocolObserver?.();
     this.stopTryOnProtocolObserver = null;
     this.protocolEvidence.clear();
     this.capturedFrameResources.clear();
     this.tryOnObservations = [];
+    this.diagnosticMilestones = [];
+    this.stateObservations = [];
+    this.consoleDiagnostics = [];
+    this.exceptionDiagnostics = [];
+    this.networkDiagnostics = [];
+    this.lastDomState = null;
     await this.client?.close().catch(() => {});
     this.client = null;
   }

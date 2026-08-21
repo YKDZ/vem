@@ -38,6 +38,214 @@ describe("CDP test adapter", () => {
     assert.equal(typeof adapter.close, "function");
   });
 
+  it("采集有界失败诊断且不保留 HTTP 头与正文", async () => {
+    const stops: string[] = [];
+    const server = createServer((request, response) => {
+      stops.push(request.url ?? "");
+      response.setHeader("content-type", "application/json");
+      response.end(
+        JSON.stringify({
+          roles: [
+            { name: "api", pid: 4100, ready: true, token: "role-secret" },
+          ],
+        }),
+      );
+    });
+    await new Promise<void>((resolvePromise) =>
+      server.listen(0, "127.0.0.1", () => resolvePromise()),
+    );
+    server.unref();
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("test server did not bind");
+    }
+    const screenshot = readFileSync(
+      new URL("../../../apps/machine/src-tauri/app-icon.png", import.meta.url),
+    );
+    const dom = {
+      route: "#/products/product:1",
+      state: null,
+      attemptId: null,
+      preview: { naturalWidth: 0, naturalHeight: 0 },
+      resultUrl: null,
+    };
+    const adapter = new CdpTestAdapter({
+      visionBaseUrl: `http://127.0.0.1:${address.port}`,
+      selectRecordedVideoFixtureImpl: () => ({
+        exitCode: 1,
+        stdout: "restart began",
+        stderr: "Authorization: Bearer fixture-secret\nowner exited",
+      }),
+    });
+    (adapter as any).client = {
+      async send(method: string, params: { expression?: string } = {}) {
+        if (method === "Runtime.evaluate") {
+          if (
+            params.expression?.includes(
+              "__VEM_MACHINE_RUNTIME_TRACE_SNAPSHOT__",
+            )
+          ) {
+            return {
+              result: {
+                value: {
+                  runtimeGenerationId: "runtime-1",
+                  entries: [{ kind: "navigation", route: dom.route }],
+                },
+              },
+            };
+          }
+          return { result: { value: JSON.stringify(dom) } };
+        }
+        if (method === "Page.captureScreenshot") {
+          return { data: screenshot.toString("base64") };
+        }
+        throw new Error(`unexpected CDP method: ${method}`);
+      },
+    };
+    adapter.observeDiagnosticEvent("Runtime.consoleAPICalled", {
+      type: "error",
+      args: [
+        {
+          type: "string",
+          value:
+            "token=console-secret Bearer standalone-console-secret crashed",
+        },
+      ],
+    });
+    adapter.observeDiagnosticEvent("Runtime.exceptionThrown", {
+      exceptionDetails: {
+        text: "uncaught",
+        exception: { description: "password=exception-secret" },
+      },
+    });
+    adapter.observeDiagnosticEvent("Network.responseReceived", {
+      requestId: "request-1",
+      type: "Fetch",
+      response: {
+        url: "http://127.0.0.1/fail?token=network-secret",
+        status: 503,
+        headers: { Authorization: "Bearer header-secret" },
+        body: "response-body-secret",
+      },
+    });
+    await adapter.readFile("ui/try-on-state.json");
+    await adapter.run("select-recorded-video-fixture", ["far"]);
+    adapter.recordMilestone("object-redaction", "failed", {
+      token: "object-secret",
+      password: "object-password",
+      apiKey: "object-api-key",
+      privateKeyPem: "object-private-key",
+      databaseUrl: "postgres://object-user:object-password@db/test",
+    });
+    const failure = await adapter.captureFailureEvidence(
+      new Error(
+        "try-on-route timed out; token=error-secret dsn=postgres://dsn-user:dsn-password@db/test",
+      ),
+    );
+    const serialized = JSON.stringify(failure.diagnostics);
+    assert.equal(failure.diagnostics.lastDomState.route, dom.route);
+    assert.equal(failure.diagnostics.lastDomState.attemptId, null);
+    assert.deepEqual(failure.diagnostics.machineRuntimeTrace, [
+      { kind: "navigation", route: dom.route },
+    ]);
+    assert.equal(failure.diagnostics.vision.listener.reachable, true);
+    assert.deepEqual(failure.diagnostics.vision.roles, [
+      { name: "api", pid: 4100, ready: true },
+    ]);
+    assert.match(serialized, /restart began/);
+    assert.match(serialized, /owner exited/);
+    assert.match(serialized, /\[REDACTED\]/);
+    for (const secret of [
+      "role-secret",
+      "fixture-secret",
+      "console-secret",
+      "exception-secret",
+      "network-secret",
+      "header-secret",
+      "response-body-secret",
+      "error-secret",
+      "standalone-console-secret",
+      "object-secret",
+      "object-password",
+      "object-api-key",
+      "object-private-key",
+      "object-user",
+      "dsn-user",
+      "dsn-password",
+    ]) {
+      assert.doesNotMatch(serialized, new RegExp(secret));
+    }
+    assert.ok(failure.screenshotPng?.equals(screenshot));
+    assert.deepEqual(stops, ["/v2/runtime/roles"]);
+    await new Promise<void>((resolvePromise) =>
+      server.close(() => resolvePromise()),
+    );
+  });
+
+  it("公开角色集合为空时不得报告 Vision 就绪", async () => {
+    const server = createServer((_request, response) => {
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ roles: [] }));
+    });
+    await new Promise<void>((resolvePromise) =>
+      server.listen(0, "127.0.0.1", () => resolvePromise()),
+    );
+    server.unref();
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("test server did not bind");
+    }
+    try {
+      const adapter = new CdpTestAdapter({
+        visionBaseUrl: `http://127.0.0.1:${address.port}`,
+      });
+      const result = await adapter.run("vision-ready");
+      assert.equal(result.exitCode, 1);
+      assert.deepEqual(JSON.parse(result.stdout), { ready: false, pids: [] });
+    } finally {
+      await new Promise<void>((resolvePromise) =>
+        server.close(() => resolvePromise()),
+      );
+    }
+  });
+
+  it("失败截图超过证据上限时不返回可落盘字节", async () => {
+    const oversizedScreenshot = Buffer.alloc(2 * 1024 * 1024 + 1, 1);
+    const adapter = new CdpTestAdapter({
+      visionBaseUrl: "http://127.0.0.1:1",
+    });
+    (adapter as any).client = {
+      async send(method: string, params: { expression?: string } = {}) {
+        if (method === "Runtime.evaluate") {
+          const value = params.expression?.includes(
+            "__VEM_MACHINE_RUNTIME_TRACE_SNAPSHOT__",
+          )
+            ? { entries: [] }
+            : JSON.stringify({
+                route: "#/try-on",
+                state: "starting",
+                attemptId: "attempt-1",
+              });
+          return { result: { value } };
+        }
+        if (method === "Page.captureScreenshot") {
+          return { data: oversizedScreenshot.toString("base64") };
+        }
+        throw new Error(`unexpected CDP method: ${method}`);
+      },
+    };
+    const failure = await adapter.captureFailureEvidence(
+      new Error("result-surface timed out"),
+    );
+    assert.equal(failure.screenshotPng, null);
+    assert.ok(
+      failure.diagnostics.milestones.some(
+        (entry: { stage?: string; status?: string }) =>
+          entry.stage === "failure-screenshot" && entry.status === "failed",
+      ),
+    );
+  });
+
   it("录播选择不接受未注入的环境映射，只信任安装中的规范 manifest", () => {
     const source = selectRecordedVideoFixture.toString();
     assert.doesNotMatch(source, /VEM_RECORDED_GEOMETRY_ENTRIES/);

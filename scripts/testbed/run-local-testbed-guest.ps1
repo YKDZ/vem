@@ -263,6 +263,11 @@ function New-BoundedEvidenceBundle(
 }
 
 function Clear-TestbedRunReports {
+  $staleBundleRoot = Join-Path $handoffRoot "full-workflow-evidence-bundle"
+  Remove-Item -LiteralPath $staleBundleRoot -Recurse -Force -ErrorAction SilentlyContinue
+  if (Test-Path -LiteralPath $staleBundleRoot) {
+    throw "stale testbed evidence bundle could not be removed: $staleBundleRoot"
+  }
   foreach ($path in @(
     (Join-Path $handoffRoot "installed-runtime-smoke.json"),
     (Join-Path $handoffRoot "fast-route-stress-sale.json"),
@@ -281,6 +286,9 @@ function Clear-TestbedRunReports {
     (Join-Path $handoffRoot "stock-maintenance.json")
   )) {
     Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $path) {
+      throw "stale testbed report could not be removed: $path"
+    }
   }
 }
 
@@ -1359,6 +1367,7 @@ if ($Mode -eq "full") {
 }
 $workflowFailure = $null
 $bundleFailure = $null
+$workflowStartedAtUtc = [DateTime]::UtcNow
 try {
   Write-TestbedPhase "acceptance-tracks"
   $env:CDP_ENDPOINT = "http://127.0.0.1:9222"
@@ -1376,18 +1385,36 @@ try {
 
 if ($Mode -ne "clear_cache") {
   $manifestPath = Join-Path $handoffRoot "full-workflow-evidence-manifest.json"
-  if (Test-Path -LiteralPath $manifestPath) {
+  $manifestOwnedBySummary = $false
+  if (Test-Path -LiteralPath $workflowSummaryOutPath) {
     try {
-      $bundleRoot = Join-Path $handoffRoot "full-workflow-evidence-bundle"
-      if (Test-Path -LiteralPath $bundleRoot) {
-        Remove-Item -LiteralPath $bundleRoot -Recurse -Force
+      $summaryItem = Get-Item -LiteralPath $workflowSummaryOutPath
+      if ($summaryItem.LastWriteTimeUtc -ge $workflowStartedAtUtc) {
+        $workflowSummary = Get-Content -Raw -LiteralPath $workflowSummaryOutPath -Encoding UTF8 | ConvertFrom-Json
+        if (Test-Path -LiteralPath $manifestPath) {
+          $manifestItem = Get-Item -LiteralPath $manifestPath
+          $manifestOwnedBySummary = [string]$workflowSummary.evidenceInventory.reportPath -eq $manifestPath -and
+            $manifestItem.LastWriteTimeUtc -ge $workflowStartedAtUtc
+        }
       }
-      New-BoundedEvidenceBundle `
-        -ManifestPath $manifestPath `
-        -BundleRoot (Join-Path $handoffRoot "full-workflow-evidence-bundle") `
-        -AllowIncomplete:($workflowFailure -ne $null)
     } catch {
-      $bundleFailure = "compact evidence bundle failed: $($_.Exception.Message)"
+      $manifestOwnedBySummary = $false
+    }
+  }
+  if ($manifestOwnedBySummary) {
+    if (Test-Path -LiteralPath $manifestPath) {
+      try {
+        $bundleRoot = Join-Path $handoffRoot "full-workflow-evidence-bundle"
+        if (Test-Path -LiteralPath $bundleRoot) {
+          Remove-Item -LiteralPath $bundleRoot -Recurse -Force
+        }
+        New-BoundedEvidenceBundle `
+          -ManifestPath $manifestPath `
+          -BundleRoot (Join-Path $handoffRoot "full-workflow-evidence-bundle") `
+          -AllowIncomplete:($workflowFailure -ne $null)
+      } catch {
+        $bundleFailure = "compact evidence bundle failed: $($_.Exception.Message)"
+      }
     }
   }
 }
