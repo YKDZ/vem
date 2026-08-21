@@ -32,6 +32,35 @@ export interface SemanticResultPng {
   };
 }
 
+export type SemanticResultPngDecodeFailureCode =
+  | "byte_size"
+  | "structure"
+  | "pixel_limit"
+  | "format"
+  | "decompressed_size"
+  | "scanlines"
+  | "filter"
+  | "decode"
+  | "semantic_pixels";
+
+/** 保留既有中文文案，同时让调用者不必匹配错误文本判断失败阶段。 */
+export class SemanticResultPngDecodeError extends Error {
+  readonly code: SemanticResultPngDecodeFailureCode;
+
+  constructor(code: SemanticResultPngDecodeFailureCode, message: string) {
+    super(message);
+    this.name = "SemanticResultPngDecodeError";
+    this.code = code;
+  }
+}
+
+function pngDecodeFailure(
+  code: SemanticResultPngDecodeFailureCode,
+  message: string,
+): never {
+  throw new SemanticResultPngDecodeError(code, message);
+}
+
 function paeth(left: number, above: number, upperLeft: number) {
   const predicted = left + above - upperLeft;
   const leftDistance = Math.abs(predicted - left);
@@ -48,8 +77,9 @@ function parseRgbPng(bytes: Buffer): {
   pixels: Buffer;
 } {
   if (bytes.byteLength > MAX_RESULT_PNG_BYTES)
-    throw new Error("结果 PNG 响应超过字节上限");
-  if (!isStructurallyValidPng(bytes)) throw new Error("结果不是结构有效的 PNG");
+    pngDecodeFailure("byte_size", "结果 PNG 响应超过字节上限");
+  if (!isStructurallyValidPng(bytes))
+    pngDecodeFailure("structure", "结果不是结构有效的 PNG");
   let offset = 8;
   let width = 0;
   let height = 0;
@@ -63,7 +93,7 @@ function parseRgbPng(bytes: Buffer): {
       width = data.readUInt32BE(0);
       height = data.readUInt32BE(4);
       if (width * height > MAX_RESULT_PNG_PIXELS) {
-        throw new Error("结果 PNG 像素尺寸超过上限");
+        pngDecodeFailure("pixel_limit", "结果 PNG 像素尺寸超过上限");
       }
       if (
         data[8] !== 8 ||
@@ -72,7 +102,7 @@ function parseRgbPng(bytes: Buffer): {
         data[11] !== 0 ||
         data[12] !== 0
       ) {
-        throw new Error("结果 PNG 必须是 8 位非隔行 RGB 或 RGBA");
+        pngDecodeFailure("format", "结果 PNG 必须是 8 位非隔行 RGB 或 RGBA");
       }
       colorType = data[9]!;
     }
@@ -83,12 +113,13 @@ function parseRgbPng(bytes: Buffer): {
   const stride = width * channels;
   const expectedRawLength = height * (stride + 1);
   if (expectedRawLength > MAX_RESULT_PNG_DECOMPRESSED_BYTES) {
-    throw new Error("结果 PNG 解压尺寸超过上限");
+    pngDecodeFailure("decompressed_size", "结果 PNG 解压尺寸超过上限");
   }
   const raw = inflateSync(Buffer.concat(idat), {
     maxOutputLength: MAX_RESULT_PNG_DECOMPRESSED_BYTES,
   });
-  if (raw.length !== expectedRawLength) throw new Error("结果 PNG 扫描线无效");
+  if (raw.length !== expectedRawLength)
+    pngDecodeFailure("scanlines", "结果 PNG 扫描线无效");
   const pixels = Buffer.alloc(width * height * channels);
   let previous = Buffer.alloc(stride);
   for (let row = 0; row < height; row += 1) {
@@ -106,7 +137,8 @@ function parseRgbPng(bytes: Buffer): {
         line[index] = (line[index]! + Math.floor((left + above) / 2)) & 255;
       else if (filter === 4)
         line[index] = (line[index]! + paeth(left, above, upperLeft)) & 255;
-      else if (filter !== 0) throw new Error("结果 PNG 使用了不支持的滤镜");
+      else if (filter !== 0)
+        pngDecodeFailure("filter", "结果 PNG 使用了不支持的滤镜");
     }
     line.copy(pixels, row * stride);
     previous = line;
@@ -124,7 +156,13 @@ function sameColor(value: Buffer, offset: number, color: readonly number[]) {
 
 /** 解码受控语义夹具的真实结果 PNG，并从像素计算成衣区域。 */
 export function decodeSemanticResultPng(bytes: Buffer): SemanticResultPng {
-  const decoded = parseRgbPng(bytes);
+  let decoded: ReturnType<typeof parseRgbPng>;
+  try {
+    decoded = parseRgbPng(bytes);
+  } catch (error) {
+    if (error instanceof SemanticResultPngDecodeError) throw error;
+    pngDecodeFailure("decode", "结果 PNG 无法解码");
+  }
   const channels = decoded.pixels.length / (decoded.width * decoded.height);
   let leftSleevePixels = 0;
   let torsoPixels = 0;
@@ -150,7 +188,8 @@ export function decodeSemanticResultPng(bytes: Buffer): SemanticResultPng {
       }
     }
   }
-  if (maxX < minX || maxY < minY) throw new Error("结果 PNG 没有语义成衣像素");
+  if (maxX < minX || maxY < minY)
+    pngDecodeFailure("semantic_pixels", "结果 PNG 没有语义成衣像素");
   const garmentWidth = maxX - minX + 1;
   const garmentHeight = maxY - minY + 1;
   return {

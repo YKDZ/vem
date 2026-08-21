@@ -35,7 +35,10 @@ import {
   hasVisionOrigin,
   normalizeVisionOrigin,
 } from "./slices/vision-experience/captured-source-evidence.ts";
-import { decodeSemanticResultPng } from "./slices/vision-experience/result-geometry-evidence.ts";
+import {
+  decodeSemanticResultPng,
+  SemanticResultPngDecodeError,
+} from "./slices/vision-experience/result-geometry-evidence.ts";
 import {
   parseSourceGarmentMetadata,
   type SourceGarmentMetadata,
@@ -63,6 +66,91 @@ const SAFE_DIAGNOSTIC_IMAGE_EXTENSIONS = new Set([
   "svg",
   "webp",
 ]);
+
+export type ResultPngReadStage =
+  | "来源"
+  | "HTTP 请求"
+  | "声明大小"
+  | "HTTP 响应"
+  | "重定向"
+  | "MIME"
+  | "响应体"
+  | "PNG 结构"
+  | "PNG 解码"
+  | "语义像素"
+  | "成功";
+
+/** 结果资源的脱敏支持证据；绝不包含 token、query、header 或原始字节。 */
+export interface ResultPngReadOutcome {
+  ok: boolean;
+  stage: ResultPngReadStage;
+  reason: string;
+  origin: string | null;
+  path: string | null;
+  status: number | null;
+  mimeType: string | null;
+  declaredByteSize: number | null;
+  actualByteSize: number | null;
+  redirected: boolean | null;
+  width?: number;
+  height?: number;
+  semanticPixelCount?: number;
+}
+
+export interface ResultPngResourceRead {
+  png: SemanticResultPng | null;
+  outcome: ResultPngReadOutcome;
+}
+
+function resultDiagnosticPath(reference: unknown): string | null {
+  if (typeof reference !== "string") return null;
+  try {
+    const path = new URL(reference).pathname;
+    const segments = path.split("/").filter(Boolean);
+    if (
+      segments.length !== 4 ||
+      segments[0] !== "v2" ||
+      segments[1] !== "try-on" ||
+      segments[2] !== "results"
+    )
+      return null;
+    return "/v2/try-on/results/:id";
+  } catch {
+    return null;
+  }
+}
+
+function parseDeclaredResultPngLength(value: string | null): number | null {
+  if (value == null) return null;
+  if (!/^(?:0|[1-9][0-9]*)$/.test(value)) return Number.NaN;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : Number.NaN;
+}
+
+async function readBoundedResultPngBody(response: Response): Promise<{
+  bytes: Buffer | null;
+  actualByteSize: number;
+}> {
+  if (!response.body) return { bytes: null, actualByteSize: 0 };
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let actualByteSize = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      actualByteSize += value.byteLength;
+      if (actualByteSize > MAX_RESULT_PNG_BYTES) {
+        await reader.cancel();
+        return { bytes: null, actualByteSize };
+      }
+      chunks.push(value);
+    }
+    return { bytes: Buffer.concat(chunks), actualByteSize };
+  } finally {
+    reader.releaseLock();
+  }
+}
 
 function redactDiagnosticText(value: unknown): string {
   return redactSensitiveEvidenceText(value, MAX_DIAGNOSTIC_TEXT);
@@ -522,34 +610,121 @@ export async function readResultPngResource({
   reference: unknown;
   visionOrigin: string;
   fetchImpl?: typeof fetch;
-}): Promise<SemanticResultPng | null> {
+}): Promise<ResultPngResourceRead> {
+  const origin = normalizeVisionOrigin(visionOrigin);
+  const path = resultDiagnosticPath(reference);
+  const failed = (
+    stage: ResultPngReadStage,
+    reason: string,
+    detail: Partial<ResultPngReadOutcome> = {},
+  ): ResultPngResourceRead => ({
+    png: null,
+    outcome: {
+      ok: false,
+      stage,
+      reason,
+      origin,
+      path,
+      status: null,
+      mimeType: null,
+      declaredByteSize: null,
+      actualByteSize: null,
+      redirected: null,
+      ...detail,
+    },
+  });
   if (
     typeof reference !== "string" ||
-    !hasVisionOrigin(reference, visionOrigin)
+    !origin ||
+    !hasVisionOrigin(reference, origin) ||
+    !path
   )
-    return null;
+    return failed("来源", "结果资源不属于允许的 Vision 来源或路径");
   try {
     const response = await fetchImpl(reference);
-    const declaredLength = Number(response.headers.get("content-length"));
+    const mimeType =
+      response.headers.get("content-type")?.split(";", 1)[0] ?? null;
+    const responseDetail = {
+      status: response.status,
+      mimeType,
+      declaredByteSize: null,
+      actualByteSize: null,
+      redirected: response.url !== reference,
+    };
+    if (!response.ok || response.status !== 200)
+      return failed("HTTP 响应", "结果 PNG HTTP 状态不是 200", responseDetail);
+    if (response.url !== reference)
+      return failed("重定向", "结果 PNG 请求发生重定向", responseDetail);
+    if (mimeType !== "image/png")
+      return failed("MIME", "结果资源 MIME 不是 image/png", responseDetail);
+    const declaredLength = parseDeclaredResultPngLength(
+      response.headers.get("content-length"),
+    );
     if (
-      Number.isFinite(declaredLength) &&
-      (declaredLength < 1 || declaredLength > MAX_RESULT_PNG_BYTES)
+      declaredLength !== null &&
+      (!Number.isSafeInteger(declaredLength) ||
+        declaredLength < 1 ||
+        declaredLength > MAX_RESULT_PNG_BYTES)
     ) {
-      return null;
+      return failed("声明大小", "结果 PNG 声明大小无效或超过上限", {
+        ...responseDetail,
+        declaredByteSize: declaredLength,
+      });
     }
-    const bytes = Buffer.from(await response.arrayBuffer());
+    const body = await readBoundedResultPngBody(response);
+    const detail = {
+      status: response.status,
+      mimeType,
+      declaredByteSize:
+        declaredLength !== null && Number.isFinite(declaredLength)
+          ? declaredLength
+          : null,
+      actualByteSize: body.actualByteSize,
+      redirected: response.url !== reference,
+    };
     if (
-      !response.ok ||
-      response.status !== 200 ||
-      response.url !== reference ||
-      response.headers.get("content-type")?.split(";", 1)[0] !== "image/png" ||
-      bytes.byteLength > MAX_RESULT_PNG_BYTES
-    ) {
-      return null;
+      body.bytes === null ||
+      body.actualByteSize < 1 ||
+      body.actualByteSize > MAX_RESULT_PNG_BYTES
+    )
+      return failed("响应体", "结果 PNG 响应体为空或超过上限", detail);
+    try {
+      const png = decodeSemanticResultPng(body.bytes);
+      const semanticPixelCount =
+        png.leftSleevePixels + png.torsoPixels + png.rightSleevePixels;
+      return {
+        png,
+        outcome: {
+          ok: true,
+          stage: "成功",
+          reason: "结果 PNG 已解码为语义像素",
+          origin,
+          path,
+          ...detail,
+          width: png.width,
+          height: png.height,
+          semanticPixelCount,
+        },
+      };
+    } catch (error) {
+      const code =
+        error instanceof SemanticResultPngDecodeError ? error.code : "decode";
+      return failed(
+        code === "structure"
+          ? "PNG 结构"
+          : code === "semantic_pixels"
+            ? "语义像素"
+            : "PNG 解码",
+        code === "structure"
+          ? "结果资源不是结构有效的 PNG"
+          : code === "semantic_pixels"
+            ? "结果 PNG 没有语义成衣像素"
+            : "结果 PNG 无法解码为受控语义像素",
+        detail,
+      );
     }
-    return decodeSemanticResultPng(bytes);
   } catch {
-    return null;
+    return failed("HTTP 请求", "结果 PNG 二次 HTTP 请求失败");
   }
 }
 
@@ -612,6 +787,7 @@ export class CdpTestAdapter implements TestAdapter {
   exceptionDiagnostics: unknown[] = [];
   networkDiagnostics: unknown[] = [];
   networkRequests = new Map<string, NetworkRequestDiagnostic>();
+  resultPngOutcomes: ResultPngReadOutcome[] = [];
   lastDomState: Record<string, unknown> | null = null;
 
   constructor({
@@ -1024,10 +1200,11 @@ export class CdpTestAdapter implements TestAdapter {
             captured: parsedCaptured.data,
           })
         : null;
-    const resultPng = await readResultPngResource({
+    const resultResource = await readResultPngResource({
       reference: (state as { resultUrl?: unknown }).resultUrl,
       visionOrigin: this.protocolEvidence.visionOrigin,
     });
+    boundedPush(this.resultPngOutcomes, resultResource.outcome);
     this.sourceGarmentPng ??= readSourceGarmentPngResource({
       metadata: this.sourceGarmentMetadata,
       serviceApiOrigin: this.sourceGarmentServiceApiOrigin,
@@ -1070,7 +1247,7 @@ export class CdpTestAdapter implements TestAdapter {
       visionOrigin: this.protocolEvidence.visionOrigin,
       protocolTimeline,
       capturedResource,
-      resultPng,
+      resultPng: resultResource.png,
       sourceGarmentPng: await this.sourceGarmentPng,
       sourceGarmentMetadata: parseSourceGarmentMetadata(
         this.sourceGarmentMetadata,
@@ -1383,6 +1560,7 @@ export class CdpTestAdapter implements TestAdapter {
           console: this.consoleDiagnostics,
           exceptions: this.exceptionDiagnostics,
           networkErrors: this.networkDiagnostics,
+          resultPngResources: this.resultPngOutcomes,
         },
         vision: { listener, roles },
         fixtureRestarts: this.diagnosticMilestones.filter(
@@ -1405,6 +1583,7 @@ export class CdpTestAdapter implements TestAdapter {
     this.consoleDiagnostics = [];
     this.exceptionDiagnostics = [];
     this.networkDiagnostics = [];
+    this.resultPngOutcomes = [];
     this.networkRequests.clear();
     this.lastDomState = null;
     await this.client?.close().catch(() => {});

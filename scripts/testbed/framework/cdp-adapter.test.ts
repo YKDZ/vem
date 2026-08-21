@@ -13,6 +13,10 @@ import {
   VisionProtocolEvidenceCollector,
 } from "./cdp-adapter.ts";
 import {
+  decodeSemanticResultPng,
+  SemanticResultPngDecodeError,
+} from "./slices/vision-experience/result-geometry-evidence.ts";
+import {
   isSourceGarmentAttemptBound,
   parseSourceGarmentMetadata,
 } from "./slices/vision-experience/source-garment-evidence.ts";
@@ -954,7 +958,282 @@ describe("CDP test adapter", () => {
           arrayBuffer: async () => oversized,
         }) as Response,
     });
-    assert.equal(rejected, null);
+    assert.equal(rejected.png, null);
+    assert.deepEqual(rejected.outcome, {
+      ok: false,
+      stage: "声明大小",
+      reason: "结果 PNG 声明大小无效或超过上限",
+      origin: "http://127.0.0.1:27892",
+      path: "/v2/try-on/results/:id",
+      status: 200,
+      mimeType: "image/png",
+      declaredByteSize: oversized.length,
+      actualByteSize: null,
+      redirected: false,
+    });
+  });
+
+  it("通过真实本地 HTTP 资源把 result PNG 每个拒绝阶段保留为脱敏原因", async () => {
+    const semantic = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAMAAAABCAIAAACUgoPjAAAAEklEQVR4nGP4z8DAcIeBgeE/AA5MAtubRGRAAAAAAElFTkSuQmCC",
+      "base64",
+    );
+    const emptySemantic = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGPYsmULAAQ8Ah36QelnAAAAAElFTkSuQmCC",
+      "base64",
+    );
+    let chunkedClientClosed = false;
+    const server = createServer((request, response) => {
+      const path = request.url?.split("?", 1)[0];
+      if (path === "/v2/try-on/results/status") response.statusCode = 503;
+      else if (path === "/v2/try-on/results/redirect") {
+        response.statusCode = 302;
+        response.setHeader("location", "/v2/try-on/results/ok");
+      } else if (path === "/v2/try-on/results/mime")
+        response.setHeader("content-type", "text/plain");
+      else if (path === "/v2/try-on/results/empty") {
+        response.setHeader("content-type", "image/png");
+        response.setHeader("transfer-encoding", "chunked");
+      } else if (path === "/v2/try-on/results/structure") {
+        response.setHeader("content-type", "image/png");
+        response.end("not a png");
+        return;
+      } else if (path === "/v2/try-on/results/semantic") {
+        response.setHeader("content-type", "image/png");
+        response.end(emptySemantic);
+        return;
+      } else if (path === "/v2/try-on/results/chunked-ok") {
+        response.setHeader("content-type", "image/png");
+        response.setHeader("transfer-encoding", "chunked");
+        response.end(semantic);
+        return;
+      } else if (path === "/v2/try-on/results/oversized") {
+        response.setHeader("content-type", "image/png");
+        response.setHeader("transfer-encoding", "chunked");
+        request.once("close", () => {
+          chunkedClientClosed = true;
+        });
+        const chunk = Buffer.alloc(64 * 1024, 1);
+        let sent = 0;
+        const interval = setInterval(() => {
+          if (chunkedClientClosed || sent > 9 * 1024 * 1024) {
+            clearInterval(interval);
+            response.end();
+            return;
+          }
+          sent += chunk.length;
+          response.write(chunk);
+        }, 0);
+        return;
+      } else {
+        response.setHeader("content-type", "image/png");
+        response.end(semantic);
+        return;
+      }
+      response.end();
+    });
+    await new Promise<void>((resolvePromise, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolvePromise());
+    });
+    const address = server.address();
+    if (!address || typeof address === "string")
+      throw new Error("test server did not bind");
+    const origin = `http://127.0.0.1:${address.port}`;
+    try {
+      const outcomeFor = async (name: string) =>
+        (
+          await readResultPngResource({
+            reference: `${origin}/v2/try-on/results/${name}?token=secret`,
+            visionOrigin: origin,
+          })
+        ).outcome;
+      assert.equal((await outcomeFor("status")).stage, "HTTP 响应");
+      assert.equal((await outcomeFor("redirect")).stage, "重定向");
+      assert.equal((await outcomeFor("mime")).stage, "MIME");
+      assert.equal((await outcomeFor("empty")).stage, "响应体");
+      const oversized = await outcomeFor("oversized");
+      assert.equal(oversized.stage, "响应体");
+      assert.ok(oversized.actualByteSize! > 8 * 1024 * 1024);
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 20));
+      assert.equal(chunkedClientClosed, true);
+      assert.equal((await outcomeFor("structure")).stage, "PNG 结构");
+      assert.equal((await outcomeFor("semantic")).stage, "语义像素");
+      assert.equal((await outcomeFor("chunked-ok")).stage, "成功");
+      const success = await readResultPngResource({
+        reference: `${origin}/v2/try-on/results/ok?token=secret`,
+        visionOrigin: origin,
+      });
+      assert.equal(success.outcome.stage, "成功");
+      assert.equal(success.outcome.path, "/v2/try-on/results/:id");
+      assert.equal(success.outcome.semanticPixelCount, 3);
+      assert.ok(success.png);
+      assert.equal(
+        (
+          await readResultPngResource({
+            reference: "https://example.test/v2/try-on/results/x",
+            visionOrigin: origin,
+          })
+        ).outcome.stage,
+        "来源",
+      );
+      assert.equal(
+        (
+          await readResultPngResource({
+            reference: `${origin}/v2/try-on/results/x`,
+            visionOrigin: origin,
+            fetchImpl: async () => {
+              throw new Error("offline");
+            },
+          })
+        ).outcome.stage,
+        "HTTP 请求",
+      );
+      for (const header of ["1.5", "1e3", "+12", " 12", "12,13"]) {
+        const rejected = await readResultPngResource({
+          reference: `${origin}/v2/try-on/results/ok`,
+          visionOrigin: origin,
+          fetchImpl: async (reference) =>
+            ({
+              ok: true,
+              status: 200,
+              url: reference.toString(),
+              headers: {
+                get(name: string) {
+                  return name === "content-type"
+                    ? "image/png"
+                    : name === "content-length"
+                      ? header
+                      : null;
+                },
+              },
+              arrayBuffer: async () => semantic,
+            }) as Response,
+        });
+        assert.equal(rejected.outcome.stage, "声明大小");
+        assert.ok(Number.isNaN(rejected.outcome.declaredByteSize!));
+      }
+    } finally {
+      await new Promise<void>((resolvePromise, reject) =>
+        server.close((error) => (error ? reject(error) : resolvePromise())),
+      );
+    }
+  });
+
+  it("把有界脱敏 result PNG outcome 接入 failure diagnostics 并在 close 清空", async () => {
+    const adapter = new CdpTestAdapter({ visionBaseUrl: "http://127.0.0.1:1" });
+    (adapter as any).client = {
+      async send(method: string) {
+        if (method !== "Runtime.evaluate")
+          throw new Error(`unexpected ${method}`);
+        return {
+          result: {
+            value: JSON.stringify({
+              route: "#/try-on",
+              state: "completed",
+              attemptId: "attempt-1",
+              resultUrl:
+                "https://foreign.invalid/v2/try-on/results/secret?token=must-not-leak",
+              previewVisible: false,
+            }),
+          },
+        };
+      },
+      async close() {},
+    };
+    for (let index = 0; index < 130; index += 1)
+      await adapter.readFile("ui/try-on-state.json");
+    const failure = await adapter.captureFailureEvidence(new Error("expected"));
+    const outcomes = failure.diagnostics.cdp.resultPngResources;
+    assert.equal(outcomes.length, 128);
+    assert.equal(outcomes.at(-1).stage, "来源");
+    const serialized = JSON.stringify(outcomes);
+    assert.equal(serialized.includes("must-not-leak"), false);
+    assert.equal(serialized.includes("token="), false);
+    assert.equal(serialized.includes("headers"), false);
+    assert.equal(serialized.includes("body"), false);
+    await adapter.close();
+    assert.deepEqual(adapter.resultPngOutcomes, []);
+  });
+
+  it("拒绝没有可读流的 body，且超限流恰好 cancel 一次并停止继续拉取", async () => {
+    const reference = "http://127.0.0.1:27892/v2/try-on/results/stream";
+    let arrayBufferCalled = false;
+    const missingBody = await readResultPngResource({
+      reference,
+      visionOrigin: "http://127.0.0.1:27892",
+      fetchImpl: async () =>
+        ({
+          ok: true,
+          status: 200,
+          url: reference,
+          body: null,
+          headers: new Headers({ "content-type": "image/png" }),
+          arrayBuffer: async () => {
+            arrayBufferCalled = true;
+            throw new Error("must not buffer");
+          },
+        }) as Response,
+    });
+    assert.equal(missingBody.outcome.stage, "响应体");
+    assert.equal(missingBody.outcome.actualByteSize, 0);
+    assert.equal(arrayBufferCalled, false);
+
+    let cancels = 0;
+    let pulls = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls += 1;
+        controller.enqueue(new Uint8Array(1024 * 1024));
+      },
+      cancel() {
+        cancels += 1;
+      },
+    });
+    const oversized = await readResultPngResource({
+      reference,
+      visionOrigin: "http://127.0.0.1:27892",
+      fetchImpl: async () =>
+        ({
+          ok: true,
+          status: 200,
+          url: reference,
+          body: stream,
+          headers: new Headers({ "content-type": "image/png" }),
+          arrayBuffer: async () => {
+            throw new Error("must not buffer");
+          },
+        }) as Response,
+    });
+    const pullsAtReturn = pulls;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 0));
+    assert.equal(oversized.outcome.stage, "响应体");
+    assert.ok(oversized.outcome.actualByteSize! > 8 * 1024 * 1024);
+    assert.equal(cancels, 1);
+    assert.equal(pulls, pullsAtReturn);
+  });
+
+  it("直接以 typed decode code 区分结构与语义像素失败", () => {
+    assert.throws(
+      () => decodeSemanticResultPng(Buffer.from("not a png")),
+      (error) =>
+        error instanceof SemanticResultPngDecodeError &&
+        error.code === "structure" &&
+        error.message === "结果不是结构有效的 PNG",
+    );
+    assert.throws(
+      () =>
+        decodeSemanticResultPng(
+          Buffer.from(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGPYsmULAAQ8Ah36QelnAAAAAElFTkSuQmCC",
+            "base64",
+          ),
+        ),
+      (error) =>
+        error instanceof SemanticResultPngDecodeError &&
+        error.code === "semantic_pixels" &&
+        error.message === "结果 PNG 没有语义成衣像素",
+    );
   });
 
   it("将 source garment 限为本次 Service API 的精确资产 URL，拒绝外域、重定向和篡改字节", async () => {
