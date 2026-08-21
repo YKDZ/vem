@@ -26,6 +26,16 @@ function Assert-ThrowsMessage([scriptblock]$Action, [string]$ExpectedMessage, [s
   throw $Message
 }
 
+function Assert-ThrowsExactMessage([scriptblock]$Action, [string]$ExpectedMessage, [string]$Message) {
+  try {
+    & $Action
+  } catch {
+    if ($_.Exception.Message -ceq $ExpectedMessage) { return }
+    throw "${Message}: $($_.Exception.Message)"
+  }
+  throw $Message
+}
+
 Assert-True (Test-VemRecordedFixtureLocalPath 'C:\fixtures\front.mp4') 'strict local absolute path was rejected'
 foreach ($path in @('front.mp4', 'C:relative\front.mp4', '\\server\share\front.mp4', 'file:///C:/fixtures/front.mp4', 'http://example.test/front.mp4', 'C:\fixtures\x:stream.mp4', 'C:\fixtures\..\front.mp4')) {
   Assert-True (-not (Test-VemRecordedFixtureLocalPath $path)) "invalid recorded fixture path was accepted: $path"
@@ -131,7 +141,11 @@ Assert-ThrowsMessage {
   Invoke-VemRecordedFixtureSwitch -Mode select -Segment mid -Dependencies $dependencies
 } 'fixture-manifest SHA-256 不匹配' 'installed.json manifest SHA drift did not fail closed with the manifest digest reason'
 
-function New-FixtureSwitchHarnessState([bool]$NewRolesOutsideOwner = $false) {
+function New-FixtureSwitchHarnessState(
+  [bool]$NewRolesOutsideOwner = $false,
+  [ValidateSet('old', 'partial', 'stopped', 'new')]
+  [string]$InitialPhase = 'old'
+) {
   $fixtureRoot = 'C:\ProgramData\VEM\vision\fixtures\commit-b'
   $recordedRoot = "$fixtureRoot\recorded-video"
   $installedPath = 'C:\ProgramData\VEM\vision\installed.json'
@@ -197,15 +211,17 @@ function New-FixtureSwitchHarnessState([bool]$NewRolesOutsideOwner = $false) {
     writeCount = 0
     ownerCallCount = 0
     events = [Collections.Generic.List[string]]::new()
-    phase = 'old'
+    phase = $InitialPhase
     now = [DateTime]::UtcNow
   }
   $oldOwner = [pscustomobject]@{
     mainProcess = [pscustomobject]@{ ProcessId = 1101 }
+    workerProcesses = @([pscustomobject]@{ ProcessId = 1102 })
     canonicalProcesses = @([pscustomobject]@{ ProcessId = 1101 }, [pscustomobject]@{ ProcessId = 1102 })
   }
   $newOwner = [pscustomobject]@{
     mainProcess = [pscustomobject]@{ ProcessId = 1201 }
+    workerProcesses = @([pscustomobject]@{ ProcessId = 1202 })
     canonicalProcesses = @([pscustomobject]@{ ProcessId = 1201 }, [pscustomobject]@{ ProcessId = 1202 })
   }
   $oldRoles = [pscustomobject]@{ roles = @([pscustomobject]@{ name = 'capture'; pid = 1101; ready = $true }, [pscustomobject]@{ name = 'worker'; pid = 1102; ready = $true }) }
@@ -217,13 +233,13 @@ function New-FixtureSwitchHarnessState([bool]$NewRolesOutsideOwner = $false) {
     GetSha256 = { param($Path) Get-TextSha256 $state.files[$Path] }.GetNewClosure()
     WriteTextAtomically = { param($Path, $Content) $state.writeCount += 1; $state.files[$Path] = $Content; [void]$state.events.Add('write-site') }.GetNewClosure()
     GetRoles = {
-      if ($state.phase -eq 'stopped') { throw 'roles offline' }
+      if ($state.phase -in @('partial', 'stopped')) { throw 'roles offline' }
       if ($state.phase -eq 'old') { return $oldRoles }
       return $newRoles
     }.GetNewClosure()
     GetCanonicalOwner = {
       if ($state.phase -eq 'stopped') { return $null }
-      if ($state.phase -eq 'old') { return $oldOwner }
+      if ($state.phase -in @('old', 'partial')) { return $oldOwner }
       return $newOwner
     }.GetNewClosure()
     StopCanonicalOwner = { $state.ownerCallCount += 1; $state.phase = 'stopped'; [void]$state.events.Add('stop-owner') }.GetNewClosure()
@@ -327,27 +343,171 @@ Assert-True ($restoredConfig.cameras.top.role -eq 'presence' -and $restoredConfi
 Assert-True ($restoredConfig.cameras.front.role -eq 'profile_try_on' -and $restoredConfig.cameras.front.video_path -eq "$($restoreState.recordedRoot)\front-vertical.mp4" -and $restoredConfig.cameras.front.loop -eq $true) 'restore did not write looping frontVertical profile camera'
 Assert-True (($restoreState.state.events -join '|') -eq 'write-site|stop-owner|start-owner') 'restore did not atomically write before restarting the canonical owner'
 
+# select 已停止 owner 时，roles 端点会消失；已停止状态的 restore 不能再等待旧 owner ready，必须直接拉起一个新 owner。
+$stoppedRestoreState = New-FixtureSwitchHarnessState $false 'stopped'
+Invoke-VemRecordedFixtureSwitch -Mode restore -Dependencies $stoppedRestoreState.dependencies -ReadyStabilityMs 0 | Out-Null
+Assert-True (($stoppedRestoreState.state.events -join '|') -eq 'write-site|start-owner') '已停止状态恢复未在写入默认 site 后启动替换 owner'
+
+# 部分停止仍有 canonical binding 时，必须以 canonical 进程完成停止后再启动新 owner。
+$partialRestoreState = New-FixtureSwitchHarnessState $false 'partial'
+Invoke-VemRecordedFixtureSwitch -Mode restore -Dependencies $partialRestoreState.dependencies -ReadyStabilityMs 0 | Out-Null
+Assert-True (($partialRestoreState.state.events -join '|') -eq 'write-site|stop-owner|start-owner') '部分停止状态恢复未在启动替换 owner 前完成 canonical stop'
+
+# Stop-VisionMainTask 返回后，roles/binding 可能已消失而其启动前 canonical worker 仍是孤儿；
+# switch 必须仅终止该已捕获 PID，不能等待超时或放宽停止谓词。
+$orphanWorkerState = New-FixtureSwitchHarnessState
+$orphanWorker = $orphanWorkerState.state
+$orphanWorker | Add-Member -NotePropertyName remainingOldPids -NotePropertyValue @(1101, 1102)
+$orphanWorkerState.dependencies.StopCanonicalOwner = {
+  $orphanWorker.ownerCallCount += 1
+  $orphanWorker.phase = 'stopped'
+  $orphanWorker.remainingOldPids = @($orphanWorker.remainingOldPids | Where-Object { $_ -ne 1101 })
+  [void]$orphanWorker.events.Add('stop-owner')
+}.GetNewClosure()
+$orphanWorkerState.dependencies.ProcessExists = {
+  param($ProcessId)
+  $ProcessId -in $orphanWorker.remainingOldPids
+}.GetNewClosure()
+$orphanWorkerState.dependencies.StopProcess = {
+  param($ProcessId)
+  if ($ProcessId -ne 1102) { throw "意外的孤儿进程终止目标: $ProcessId" }
+  $orphanWorker.remainingOldPids = @($orphanWorker.remainingOldPids | Where-Object { $_ -ne $ProcessId })
+  [void]$orphanWorker.events.Add("stop-process:$ProcessId")
+}.GetNewClosure()
+Invoke-VemRecordedFixtureSwitch -Mode select -Segment mid -Dependencies $orphanWorkerState.dependencies -ReadyStabilityMs 0 | Out-Null
+Assert-True ($orphanWorker.remainingOldPids.Count -eq 0) '停止生命周期后仍有孤立 canonical worker PID 存活'
+Assert-True (($orphanWorker.events -join '|') -eq 'write-site|stop-owner|stop-process:1102|start-owner') '未在启动替换 owner 前只终止残留 canonical worker PID'
+
+# roles 可达的运行中 owner 必须先通过 ready 与唯一 canonical binding 验证，不能以停止态恢复分支绕过。
+$missingInitialOwner = New-FixtureSwitchHarnessState
+$missingInitialState = $missingInitialOwner.state
+$missingInitialOwner.dependencies.GetCanonicalOwner = { $null }.GetNewClosure()
+Assert-ThrowsMessage {
+  Invoke-VemRecordedFixtureSwitch -Mode select -Segment mid -Dependencies $missingInitialOwner.dependencies -ReadyStabilityMs 0
+} '切换前 Vision runtime roles 可达但缺少唯一 canonical Vision owner' '运行中 owner 验证错误地接受了缺少 canonical binding 的可达 roles'
+Assert-True (($missingInitialState.events -join '|') -eq 'write-site') '缺少初始 canonical owner 时错误地尝试停止或启动替换 owner'
+
+# 三个停止谓词不一致时，超时诊断必须逐项暴露最后观测，且不可启动替换 owner。
+$inconsistentStopState = New-FixtureSwitchHarnessState
+$inconsistentState = $inconsistentStopState.state
+$inconsistentStopState.dependencies.StopCanonicalOwner = {
+  $inconsistentState.ownerCallCount += 1
+  $inconsistentState.phase = 'stopped'
+  [void]$inconsistentState.events.Add('stop-owner')
+}.GetNewClosure()
+$inconsistentStopState.dependencies.ProcessExists = {
+  param($ProcessId)
+  $ProcessId -eq 1102
+}.GetNewClosure()
+$inconsistentStopState.dependencies.StopProcess = {
+  param($ProcessId)
+  [void]$inconsistentState.events.Add("stop-process:$ProcessId")
+}.GetNewClosure()
+Assert-ThrowsExactMessage {
+  Invoke-VemRecordedFixtureSwitch -Mode select -Segment mid -Dependencies $inconsistentStopState.dependencies -ReadyStabilityMs 0
+} '停止后旧 Vision owner 未收敛（roles=stopped; remainingOldPids=1102; canonicalBinding=none）' '停止超时未报告有界的三分量最后观测'
+Assert-True (($inconsistentState.events -join '|') -eq 'write-site|stop-owner|stop-process:1102') '停止分量不一致时错误地启动了替换 owner'
+
+# roles 先 ready 而 task/canonical binding 尚未成立时，完整 ready 谓词必须从 binding 成立后重新稳定计时。
+$lateOwnerState = New-FixtureSwitchHarnessState
+$lateOwner = $lateOwnerState.state
+$lateOwner | Add-Member -NotePropertyName ownerStartedAt -NotePropertyValue $null
+$lateOwnerOriginalBinding = $lateOwnerState.dependencies.GetCanonicalOwner
+$lateOwnerState.dependencies.StartOwner = {
+  $lateOwner.ownerCallCount += 1
+  $lateOwner.phase = 'new'
+  $lateOwner.ownerStartedAt = $lateOwner.now
+  [void]$lateOwner.events.Add('start-owner')
+}.GetNewClosure()
+$lateOwnerState.dependencies.GetCanonicalOwner = {
+  if ($lateOwner.phase -eq 'new' -and ($lateOwner.now - $lateOwner.ownerStartedAt).TotalMilliseconds -lt 1000) {
+    return $null
+  }
+  return (& $lateOwnerOriginalBinding)
+}.GetNewClosure()
+Invoke-VemRecordedFixtureSwitch -Mode select -Segment mid -Dependencies $lateOwnerState.dependencies -ReadyStabilityMs 1000 | Out-Null
+Assert-True (($lateOwner.now - $lateOwner.ownerStartedAt).TotalMilliseconds -ge 2000) '完整 owner ready 谓词未从 canonical binding 成立后重新稳定计时'
+
 $wrongOwnerRoles = New-FixtureSwitchHarnessState $true
 Assert-ThrowsMessage {
   Invoke-VemRecordedFixtureSwitch -Mode select -Segment mid -Dependencies $wrongOwnerRoles.dependencies -ReadyStabilityMs 0
 } '新 VEMVisionRuntime owner 未以唯一稳定 roles/PID ready 状态启动' 'roles outside the replacement canonical owner were accepted'
 Assert-True (($wrongOwnerRoles.state.events -join '|') -eq 'write-site|stop-owner|start-owner') 'wrong replacement roles did not exercise the post-write owner lifecycle'
 
+# 替换 owner 即使 main PID 已变化，也不能复用任一旧 canonical worker PID。
+$reusedWorkerState = New-FixtureSwitchHarnessState
+$reusedWorker = $reusedWorkerState.state
+$reusedOldOwner = & $reusedWorkerState.dependencies.GetCanonicalOwner
+$reusedOldRoles = & $reusedWorkerState.dependencies.GetRoles
+$reusedNewOwner = [pscustomobject]@{
+  mainProcess = [pscustomobject]@{ ProcessId = 1201 }
+  workerProcesses = @([pscustomobject]@{ ProcessId = 1102 })
+  canonicalProcesses = @([pscustomobject]@{ ProcessId = 1201 }, [pscustomobject]@{ ProcessId = 1102 })
+}
+$reusedNewRoles = [pscustomobject]@{ roles = @([pscustomobject]@{ name = 'capture'; pid = 1201; ready = $true }, [pscustomobject]@{ name = 'worker'; pid = 1102; ready = $true }) }
+$reusedWorkerState.dependencies.GetCanonicalOwner = {
+  if ($reusedWorker.phase -eq 'stopped') { return $null }
+  if ($reusedWorker.phase -eq 'old') { return $reusedOldOwner }
+  return $reusedNewOwner
+}.GetNewClosure()
+$reusedWorkerState.dependencies.GetRoles = {
+  if ($reusedWorker.phase -eq 'stopped') { throw 'roles offline' }
+  if ($reusedWorker.phase -eq 'old') { return $reusedOldRoles }
+  return $reusedNewRoles
+}.GetNewClosure()
+Assert-ThrowsMessage {
+  Invoke-VemRecordedFixtureSwitch -Mode select -Segment mid -Dependencies $reusedWorkerState.dependencies -ReadyStabilityMs 0
+} '新 VEMVisionRuntime owner 未以唯一稳定 roles/PID ready 状态启动' '替换 owner 错误地复用了旧 canonical worker PID'
+Assert-True (($reusedWorker.events -join '|') -eq 'write-site|stop-owner|start-owner') '旧 worker PID 复用攻击未经过完整替换 owner 生命周期'
+
+# roles PID 全新也不能掩盖新 canonical 集合中未承载 role 的旧 PID 复用。
+$reusedCanonicalState = New-FixtureSwitchHarnessState
+$reusedCanonical = $reusedCanonicalState.state
+$reusedCanonicalOldOwner = & $reusedCanonicalState.dependencies.GetCanonicalOwner
+$reusedCanonicalOldRoles = & $reusedCanonicalState.dependencies.GetRoles
+$reusedCanonicalNewOwner = [pscustomobject]@{
+  mainProcess = [pscustomobject]@{ ProcessId = 1201 }
+  workerProcesses = @([pscustomobject]@{ ProcessId = 1202 }, [pscustomobject]@{ ProcessId = 1102 })
+  canonicalProcesses = @([pscustomobject]@{ ProcessId = 1201 }, [pscustomobject]@{ ProcessId = 1202 }, [pscustomobject]@{ ProcessId = 1102 })
+}
+$reusedCanonicalState.dependencies.GetCanonicalOwner = {
+  if ($reusedCanonical.phase -eq 'stopped') { return $null }
+  if ($reusedCanonical.phase -eq 'old') { return $reusedCanonicalOldOwner }
+  return $reusedCanonicalNewOwner
+}.GetNewClosure()
+$reusedCanonicalState.dependencies.GetRoles = {
+  if ($reusedCanonical.phase -eq 'stopped') { throw 'roles offline' }
+  if ($reusedCanonical.phase -eq 'old') { return $reusedCanonicalOldRoles }
+  return [pscustomobject]@{ roles = @([pscustomobject]@{ name = 'capture'; pid = 1201; ready = $true }, [pscustomobject]@{ name = 'worker'; pid = 1202; ready = $true }) }
+}.GetNewClosure()
+Assert-ThrowsMessage {
+  Invoke-VemRecordedFixtureSwitch -Mode select -Segment mid -Dependencies $reusedCanonicalState.dependencies -ReadyStabilityMs 0
+} '新 VEMVisionRuntime owner 未以唯一稳定 roles/PID ready 状态启动' '全新 roles 错误地掩盖了 canonical 集合中的旧 PID 复用'
+Assert-True (($reusedCanonical.events -join '|') -eq 'write-site|stop-owner|start-owner') '仅 canonical 的 PID 复用攻击未经过完整替换 owner 生命周期'
+
 $detachedOwner = New-FixtureSwitchHarnessState
 $detachedState = $detachedOwner.state
-# 模拟只停止短生命周期 launcher、却未结束已脱离 task 的 Vision 进程；完整 switch 必须拒绝启动替换 owner。
+# 进程感知辅助函数若连 main 都没有停止，补偿清理只能处理预捕获 worker，main 残留必须保守失败。
+$detachedState | Add-Member -NotePropertyName remainingOldPids -NotePropertyValue @(1101, 1102)
 $detachedOwner.dependencies.StopCanonicalOwner = {
   $detachedState.ownerCallCount += 1
+  $detachedState.phase = 'stopped'
   [void]$detachedState.events.Add('stop-owner')
 }.GetNewClosure()
 $detachedOwner.dependencies.ProcessExists = {
   param($ProcessId)
-  $ProcessId -in @(1101, 1102)
+  $ProcessId -in $detachedState.remainingOldPids
 }.GetNewClosure()
-Assert-ThrowsMessage {
+$detachedOwner.dependencies.StopProcess = {
+  param($ProcessId)
+  if ($ProcessId -ne 1102) { throw "补偿停止错误地触及非 worker PID: $ProcessId" }
+  $detachedState.remainingOldPids = @($detachedState.remainingOldPids | Where-Object { $_ -ne $ProcessId })
+  [void]$detachedState.events.Add("stop-process:$ProcessId")
+}.GetNewClosure()
+Assert-ThrowsExactMessage {
   Invoke-VemRecordedFixtureSwitch -Mode select -Segment mid -Dependencies $detachedOwner.dependencies -ReadyStabilityMs 0
-} '停止后旧 Vision owner 仍提供 runtime 角色端点' 'task-only stop was allowed to leave detached Vision owner running'
-Assert-True (($detachedOwner.state.events -join '|') -eq 'write-site|stop-owner') 'detached owner failure incorrectly started a replacement owner'
+} '停止后旧 Vision owner 未收敛（roles=stopped; remainingOldPids=1101; canonicalBinding=none）' '进程感知辅助函数遗留 main 时未精确保守失败'
+Assert-True (($detachedOwner.state.events -join '|') -eq 'write-site|stop-owner|stop-process:1102') 'main 残留时错误地启动了替换 owner'
 
 $missingNear = New-FixtureSwitchHarnessState
 $missingNear.state.files.Remove("$($missingNear.recordedRoot)\geometry-near.mp4")
