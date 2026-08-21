@@ -209,6 +209,24 @@ export const useTryOnStore = defineStore("tryOn", {
       }
       return submitted;
     },
+    failCapturedPresentation(attemptId: string): void {
+      const owner = currentOperation;
+      if (
+        this.attemptId !== attemptId ||
+        !this.captured ||
+        !isCurrentOperation(owner, attemptId)
+      ) {
+        return;
+      }
+      // 捕获 PNG 无法由浏览器解码时，不能继续向顾客展示可能属于另一帧的
+      // preview 或早到结果。把该 attempt 作为失败结束并释放其原生资源 owner。
+      this.phase = "failed";
+      this.failureReason = "try_on_failed";
+      this.result = null;
+      this.resultUnavailable = false;
+      this.clearAcquisitionPresentation();
+      clearOperation(owner);
+    },
     cancelCurrentAttempt(reason: "user" | "route_leave" = "user"): boolean {
       const owner = currentOperation;
       if (!this.hasActiveAttempt || !this.attemptId || !owner) return false;
@@ -276,7 +294,6 @@ export const useTryOnStore = defineStore("tryOn", {
             isGenerationStageAtLeast(event.payload.stage, this.generationStage))
         ) {
           this.phase = "generating";
-          this.previewUrl = null;
           this.guidance = null;
           this.holdRemainingMs = null;
           this.occupancy = null;
@@ -294,7 +311,6 @@ export const useTryOnStore = defineStore("tryOn", {
             resultContext,
           );
           this.phase = "captured";
-          this.previewUrl = null;
         } catch {
           this.phase = "failed";
           this.failureReason = "try_on_failed";
@@ -313,7 +329,13 @@ export const useTryOnStore = defineStore("tryOn", {
           this.phase = "completed";
           this.failureReason = null;
           this.resultUnavailable = false;
-          this.clearAcquisitionPresentation();
+          // 保留已校验的捕获候选直到当前尝试真正结束。原生事件可以在同一个
+          // Vue flush 中连续发出 captured、generating、completed；若这里清空，
+          // 展示层就永远没有机会对同一张已加载图片做原子晋升。
+          this.clearAcquisitionPresentation({
+            clearCaptured: false,
+            clearPreview: false,
+          });
         } catch {
           this.phase = "failed";
           this.failureReason = "try_on_failed";
@@ -383,9 +405,12 @@ export const useTryOnStore = defineStore("tryOn", {
         }
       }
     },
-    clearAcquisitionPresentation(): void {
-      this.previewUrl = null;
-      this.captured = null;
+    clearAcquisitionPresentation({
+      clearCaptured = true,
+      clearPreview = true,
+    } = {}): void {
+      if (clearPreview) this.previewUrl = null;
+      if (clearCaptured) this.captured = null;
       this.guidance = null;
       this.holdRemainingMs = null;
       this.occupancy = null;

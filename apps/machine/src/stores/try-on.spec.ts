@@ -309,7 +309,7 @@ describe("try-on store lifecycle", () => {
     store.applyEvent(firstAttemptId, captured(firstAttemptId), context);
     expect(store.phase).toBe("captured");
     expect(store.captured?.frameId).toBe("front-42");
-    expect(store.previewUrl).toBeNull();
+    expect(store.previewUrl).toContain("preview.mjpeg");
 
     store.applyEvent(firstAttemptId, completed(firstAttemptId), context);
     expect(store.phase).toBe("captured");

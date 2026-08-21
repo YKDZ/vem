@@ -5,7 +5,7 @@ import { useRoute } from "vue-router";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { submitMachineNavigationIntent } from "@/router/transaction-route-authority";
 import { useCatalogStore } from "@/stores/catalog";
-import { useTryOnStore } from "@/stores/try-on";
+import { type TryOnPhase, useTryOnStore } from "@/stores/try-on";
 
 const route = useRoute();
 const catalog = useCatalogStore();
@@ -14,6 +14,21 @@ const previewErrored = ref(false);
 const capturedImageState = ref<"loading" | "ready" | "error">("loading");
 const resultErrored = ref(false);
 const departureHandled = ref(false);
+const capturedPresentationError = ref(false);
+const presentedPreviewUrl = ref<string | null>(null);
+type CapturedPresentation = {
+  attemptId: string;
+  reference: string;
+  width: number;
+  height: number;
+};
+const presentedCaptured = ref<CapturedPresentation | null>(null);
+const capturedVisibleSince = ref<number | null>(null);
+const capturedPresentationPhase = ref<"captured" | "generating">("captured");
+const resultPresentationReady = ref(false);
+let resultPresentationTimer: ReturnType<typeof setTimeout> | null = null;
+// 从成功 load 起至少展示一秒，覆盖常规观测采样，不改变 Vision 协议超时。
+const minimumCapturedPresentationMs = 1_000;
 const context = computed(() => tryOn.context);
 const title = computed(() => {
   const current = context.value;
@@ -71,19 +86,6 @@ const manualCaptureLabel = computed(() =>
 const garmentScalePercent = computed(() =>
   Math.round(tryOn.garmentScale * 100),
 );
-const canScaleGarment = computed(
-  () =>
-    tryOn.phase === "completed" &&
-    Boolean(tryOn.result) &&
-    !tryOn.resultUnavailable &&
-    !tryOn.adjusting,
-);
-const canScaleUp = computed(
-  () => canScaleGarment.value && tryOn.garmentScale < 1.6,
-);
-const canScaleDown = computed(
-  () => canScaleGarment.value && tryOn.garmentScale > 0.8,
-);
 const cancellationText = computed(() => {
   switch (tryOn.failureReason) {
     case "departure":
@@ -106,23 +108,121 @@ const canRetry = computed(
     tryOn.phase === "failed" ||
     tryOn.phase === "canceled",
 );
+const isCapturedPreloading = computed(
+  () =>
+    presentedCaptured.value !== null && capturedImageState.value === "loading",
+);
+const isCapturedPresented = computed(
+  () =>
+    presentedCaptured.value !== null && capturedImageState.value === "ready",
+);
+const showLivePreview = computed(
+  () =>
+    (tryOn.phase === "acquiring" || isCapturedPreloading.value) &&
+    Boolean(presentedPreviewUrl.value) &&
+    !previewErrored.value,
+);
+const showResult = computed(
+  () =>
+    tryOn.phase === "completed" &&
+    Boolean(tryOn.result) &&
+    !tryOn.resultUnavailable &&
+    !resultErrored.value &&
+    resultPresentationReady.value,
+);
+const canScaleGarment = computed(() => showResult.value && !tryOn.adjusting);
+const canScaleUp = computed(
+  () => canScaleGarment.value && tryOn.garmentScale < 1.6,
+);
+const canScaleDown = computed(
+  () => canScaleGarment.value && tryOn.garmentScale > 0.8,
+);
+const presentationPhase = computed<TryOnPhase>(() => {
+  if (isCapturedPreloading.value) return "acquiring";
+  if (isCapturedPresented.value && !showResult.value) {
+    if (tryOn.phase === "captured" || tryOn.phase === "generating") {
+      return tryOn.phase;
+    }
+    return capturedPresentationPhase.value;
+  }
+  return tryOn.phase;
+});
 
 watch(
   () => tryOn.previewUrl,
-  () => {
+  (previewUrl) => {
+    if (previewUrl) presentedPreviewUrl.value = previewUrl;
     previewErrored.value = false;
   },
+  { immediate: true },
 );
 watch(
-  () => tryOn.captured?.reference,
-  () => {
+  () => ({ attemptId: tryOn.attemptId, captured: tryOn.captured }),
+  ({ attemptId, captured }, previous) => {
+    if (!attemptId || !captured) {
+      if (tryOn.phase !== "completed" && !capturedPresentationError.value) {
+        resetCapturedPresentation();
+      }
+      return;
+    }
+    if (
+      previous?.attemptId === attemptId &&
+      previous.captured?.reference === captured.reference
+    ) {
+      return;
+    }
+    clearResultPresentationTimer();
+    presentedCaptured.value = {
+      attemptId,
+      reference: captured.reference,
+      width: captured.width,
+      height: captured.height,
+    };
     capturedImageState.value = "loading";
+    capturedVisibleSince.value = null;
+    capturedPresentationPhase.value = "captured";
+    resultPresentationReady.value = false;
   },
+  { immediate: true },
 );
 watch(
   () => tryOn.result?.reference,
   () => {
     resultErrored.value = false;
+  },
+);
+watch(
+  [() => tryOn.resultUnavailable, resultErrored],
+  ([resultUnavailable, errored]) => {
+    if (resultUnavailable || errored) resetCapturedPresentation();
+  },
+);
+watch(
+  () => tryOn.phase,
+  (phase) => {
+    if (phase === "generating" && isCapturedPresented.value) {
+      capturedPresentationPhase.value = "generating";
+    }
+    if (phase === "completed" && tryOn.result) {
+      scheduleResultPresentation();
+      return;
+    }
+    if (phase !== "completed") resultPresentationReady.value = false;
+    if (
+      (phase === "failed" || phase === "canceled" || phase === "idle") &&
+      !capturedPresentationError.value
+    ) {
+      resetCapturedPresentation();
+    }
+  },
+);
+watch(
+  () => tryOn.attemptId,
+  (attemptId, previousAttemptId) => {
+    if (attemptId !== previousAttemptId) {
+      resetCapturedPresentation();
+      presentedPreviewUrl.value = null;
+    }
   },
 );
 watch(
@@ -153,6 +253,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  resetCapturedPresentation();
   if (tryOn.hasActiveAttempt) tryOn.cancelCurrentAttempt("route_leave");
   tryOn.clear();
 });
@@ -167,9 +268,110 @@ function requestManualCapture(): void {
 }
 
 function recordCapturedImageLoad(event: Event): void {
+  const resource = capturedResourceFor(event);
+  if (!resource) return;
+  if (!isCurrentCapturedPresentation(resource)) return;
   const image = event.currentTarget as HTMLImageElement;
-  capturedImageState.value =
-    image.naturalWidth > 0 && image.naturalHeight > 0 ? "ready" : "error";
+  if (image.naturalWidth <= 0 || image.naturalHeight <= 0) {
+    failCapturedPresentation(resource);
+    return;
+  }
+  capturedImageState.value = "ready";
+  capturedVisibleSince.value = Date.now();
+  capturedPresentationPhase.value =
+    tryOn.phase === "generating" ? "generating" : "captured";
+  scheduleResultPresentation();
+}
+
+function recordCapturedImageError(event: Event): void {
+  const resource = capturedResourceFor(event);
+  if (!resource) return;
+  if (!isCurrentCapturedPresentation(resource)) return;
+  failCapturedPresentation(resource);
+}
+
+function isCurrentCapturedPresentation(
+  resource: CapturedPresentation,
+): boolean {
+  return (
+    presentedCaptured.value?.attemptId === resource.attemptId &&
+    presentedCaptured.value.reference === resource.reference &&
+    tryOn.attemptId === resource.attemptId &&
+    tryOn.phase !== "failed" &&
+    tryOn.phase !== "canceled" &&
+    tryOn.phase !== "idle"
+  );
+}
+
+function capturedResourceFor(event: Event): CapturedPresentation | null {
+  const image = event.currentTarget as HTMLImageElement;
+  const attemptId = image.dataset.capturedAttemptId;
+  const reference = image.getAttribute("src");
+  if (!attemptId || !reference) return null;
+  return {
+    attemptId,
+    reference,
+    width: image.width,
+    height: image.height,
+  };
+}
+
+function scheduleResultPresentation(): void {
+  clearResultPresentationTimer();
+  if (
+    tryOn.phase !== "completed" ||
+    !tryOn.result ||
+    capturedImageState.value !== "ready" ||
+    capturedVisibleSince.value === null
+  ) {
+    return;
+  }
+  const remaining = Math.max(
+    0,
+    minimumCapturedPresentationMs - (Date.now() - capturedVisibleSince.value),
+  );
+  if (remaining === 0) {
+    resultPresentationReady.value = true;
+    return;
+  }
+  const owner = presentedCaptured.value;
+  resultPresentationTimer = setTimeout(() => {
+    if (
+      owner &&
+      isCurrentCapturedPresentation(owner) &&
+      tryOn.phase === "completed" &&
+      Boolean(tryOn.result)
+    ) {
+      resultPresentationReady.value = true;
+    }
+  }, remaining);
+}
+
+function clearResultPresentationTimer(): void {
+  if (resultPresentationTimer !== null) {
+    clearTimeout(resultPresentationTimer);
+    resultPresentationTimer = null;
+  }
+}
+
+function resetCapturedPresentation(): void {
+  clearResultPresentationTimer();
+  presentedCaptured.value = null;
+  capturedImageState.value = "loading";
+  capturedVisibleSince.value = null;
+  capturedPresentationPhase.value = "captured";
+  capturedPresentationError.value = false;
+  resultPresentationReady.value = false;
+}
+
+function failCapturedPresentation(resource: CapturedPresentation): void {
+  if (!isCurrentCapturedPresentation(resource)) return;
+  clearResultPresentationTimer();
+  presentedCaptured.value = null;
+  capturedImageState.value = "error";
+  capturedPresentationError.value = true;
+  resultPresentationReady.value = false;
+  tryOn.failCapturedPresentation(resource.attemptId);
 }
 
 function cancel(): void {
@@ -210,15 +412,13 @@ function scaleGarment(delta: number): void {
       :data-catalog-key="context?.catalogKey ?? ''"
       :data-variant-id="context?.variantId ?? ''"
       :data-attempt-id="tryOn.attemptId ?? ''"
-      :data-state="tryOn.phase"
+      :data-state="presentationPhase"
     >
       <p class="try-on-subtitle">{{ title }}</p>
       <h1 class="try-on-title">虚拟试衣</h1>
       <img
-        v-if="
-          tryOn.phase === 'acquiring' && tryOn.previewUrl && !previewErrored
-        "
-        :src="tryOn.previewUrl"
+        v-if="showLivePreview"
+        :src="presentedPreviewUrl ?? undefined"
         alt="虚拟试衣采集画面"
         class="try-on-acquisition-preview try-on-media"
         data-test="try-on-acquisition-preview"
@@ -232,9 +432,7 @@ function scaleGarment(delta: number): void {
         采集画面暂不可显示，请返回商品后重新开始。
       </p>
       <img
-        v-else-if="
-          tryOn.phase === 'completed' && tryOn.result && !resultErrored
-        "
+        v-else-if="showResult && tryOn.result"
         :src="tryOn.result.reference"
         :width="tryOn.result.width"
         :height="tryOn.result.height"
@@ -243,27 +441,8 @@ function scaleGarment(delta: number): void {
         data-test="try-on-result-image"
         @error="resultErrored = true"
       />
-      <img
-        v-else-if="
-          (tryOn.phase === 'captured' || tryOn.phase === 'generating') &&
-          tryOn.captured &&
-          capturedImageState !== 'error'
-        "
-        :src="tryOn.captured.reference"
-        :width="tryOn.captured.width"
-        :height="tryOn.captured.height"
-        alt="虚拟试衣捕获画面"
-        class="try-on-captured try-on-media"
-        data-test="try-on-captured-image"
-        :data-image-state="capturedImageState"
-        @error="capturedImageState = 'error'"
-        @load="recordCapturedImageLoad"
-      />
       <p
-        v-else-if="
-          (tryOn.phase === 'captured' || tryOn.phase === 'generating') &&
-          capturedImageState === 'error'
-        "
+        v-else-if="capturedPresentationError"
         class="text-base text-red-600"
         data-test="try-on-captured-error"
         data-image-state="error"
@@ -273,7 +452,8 @@ function scaleGarment(delta: number): void {
       <p
         v-else-if="
           tryOn.phase === 'completed' &&
-          (tryOn.resultUnavailable || resultErrored)
+          (tryOn.resultUnavailable || resultErrored) &&
+          capturedImageState !== 'error'
         "
         class="text-base text-red-600"
         data-test="try-on-result-error"
@@ -285,12 +465,33 @@ function scaleGarment(delta: number): void {
         }}
       </p>
       <p
-        v-else-if="tryOn.phase !== 'acquiring'"
+        v-else-if="presentationPhase !== 'acquiring' && !isCapturedPresented"
         class="try-on-phase"
         data-test="try-on-phase"
       >
         {{ phaseText }}
       </p>
+      <img
+        v-if="
+          presentedCaptured && capturedImageState !== 'error' && !showResult
+        "
+        :key="`${presentedCaptured.attemptId}:${presentedCaptured.reference}`"
+        :src="presentedCaptured.reference"
+        :width="presentedCaptured.width"
+        :height="presentedCaptured.height"
+        alt="虚拟试衣捕获画面"
+        class="try-on-captured-preload try-on-media"
+        :data-test="
+          capturedImageState === 'ready' ? 'try-on-captured-image' : undefined
+        "
+        :data-image-state="capturedImageState"
+        :data-captured-attempt-id="presentedCaptured.attemptId"
+        :style="{
+          display: capturedImageState === 'ready' ? undefined : 'none',
+        }"
+        @error="recordCapturedImageError"
+        @load="recordCapturedImageLoad"
+      />
       <p
         v-if="tryOn.phase === 'acquiring'"
         class="try-on-guidance"
@@ -313,7 +514,7 @@ function scaleGarment(delta: number): void {
         商品购买不受影响。
       </p>
       <div
-        v-if="tryOn.phase === 'completed' && tryOn.result"
+        v-if="showResult && tryOn.result"
         class="flex items-center justify-center gap-4"
         data-test="try-on-garment-scale"
       >

@@ -187,6 +187,24 @@ async function mount(): Promise<HTMLElement> {
   return host;
 }
 
+async function loadCapturedPreload(
+  host: HTMLElement,
+  width = 512,
+  height = 768,
+): Promise<HTMLImageElement> {
+  const image = host.querySelector<HTMLImageElement>(
+    ".try-on-captured-preload",
+  );
+  if (!image) throw new Error("预期存在隐藏的捕获帧预载元素");
+  Object.defineProperties(image, {
+    naturalHeight: { configurable: true, value: height },
+    naturalWidth: { configurable: true, value: width },
+  });
+  image.dispatchEvent(new Event("load"));
+  await nextTick();
+  return image;
+}
+
 describe("TryOnView single-path acquisition UI", () => {
   beforeEach(() => {
     pinia = createPinia();
@@ -202,6 +220,7 @@ describe("TryOnView single-path acquisition UI", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     mountedApp?.unmount();
     mountedApp = null;
     document.body.innerHTML = "";
@@ -296,17 +315,17 @@ describe("TryOnView single-path acquisition UI", () => {
     expect(useTryOnStore().captured?.frameId).toBe("front-42");
     expect(
       host.querySelector('[data-test="try-on-captured-image"]'),
+    ).toBeNull();
+    const capturedImage = await loadCapturedPreload(host);
+    expect(
+      host.querySelector('[data-test="try-on-captured-image"]'),
     ).not.toBeNull();
     expect(
       host.querySelector<HTMLImageElement>(
         '[data-test="try-on-captured-image"]',
       )?.src,
     ).toContain("/v2/try-on/captured/frame.png?token=captured-token");
-    expect(
-      host.querySelector<HTMLImageElement>(
-        '[data-test="try-on-captured-image"]',
-      )?.width,
-    ).toBe(512);
+    expect(capturedImage.width).toBe(512);
     expect(
       host
         .querySelector('[data-test="try-on-captured-image"]')
@@ -323,8 +342,16 @@ describe("TryOnView single-path acquisition UI", () => {
     expect(
       host.querySelector('[data-test="try-on-captured-image"]'),
     ).not.toBeNull();
+    vi.useFakeTimers();
     emit(completed(emittedAttemptId));
     await nextTick();
+    expect(host.querySelector('[data-test="try-on-result-image"]')).toBeNull();
+    expect(host.querySelector('[data-test="try-on-garment-scale"]')).toBeNull();
+    host
+      .querySelector('[data-test="try-on-scale-up"]')
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(openAdjustMock).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1_000);
     expect(
       host.querySelector('[data-test="try-on-captured-image"]'),
     ).toBeNull();
@@ -339,6 +366,223 @@ describe("TryOnView single-path acquisition UI", () => {
     mountedApp?.unmount();
     mountedApp = null;
     expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("预载捕获帧后原子替换预览，并在最短展示窗口后展示已缓存结果", async () => {
+    let emit: ((next: VisionTryOnAttemptEvent) => void) | undefined;
+    let emittedAttemptId = attemptId;
+    openAttemptMock.mockImplementation((_connection, input, onEvent) => {
+      emittedAttemptId = input.attemptId;
+      emit = (next) =>
+        onEvent(
+          { ...next, payload: { ...next.payload, attemptId: input.attemptId } },
+          {
+            attemptId: input.attemptId,
+            visionSocketUrl: "ws://127.0.0.1:7892/ws",
+          },
+        );
+      return Promise.resolve({
+        close: vi.fn(),
+        capture: vi.fn(),
+        cancel: vi.fn(),
+      });
+    });
+    const host = await mount();
+    await vi.waitFor(() => {
+      expect(openAttemptMock).toHaveBeenCalledOnce();
+    });
+    if (!emit) throw new Error("预期收到原生试衣事件回调");
+
+    vi.useFakeTimers();
+    emit(event("vision.try_on.attempt.accepted", { attemptId }));
+    emit(acquisition());
+    emit(captured());
+    await nextTick();
+    emit(
+      event("vision.try_on.attempt.generating", {
+        attemptId,
+        stage: "generating",
+      }),
+    );
+    await nextTick();
+
+    const root = host.querySelector('[data-test="try-on-view"]');
+    expect(root?.getAttribute("data-state")).toBe("acquiring");
+    expect(
+      host.querySelector('[data-test="try-on-acquisition-preview"]'),
+    ).not.toBeNull();
+    expect(
+      host.querySelector('[data-test="try-on-captured-image"]'),
+    ).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(70);
+    const preload = host.querySelector<HTMLImageElement>(
+      ".try-on-captured-preload",
+    );
+    expect(preload).not.toBeNull();
+    expect(preload?.getAttribute("data-test")).toBeNull();
+    Object.defineProperties(preload!, {
+      naturalHeight: { configurable: true, value: 1280 },
+      naturalWidth: { configurable: true, value: 720 },
+    });
+    preload?.dispatchEvent(new Event("load"));
+    await nextTick();
+
+    const displayed = host.querySelector<HTMLImageElement>(
+      '[data-test="try-on-captured-image"]',
+    );
+    expect(displayed).toBe(preload);
+    expect(root?.getAttribute("data-state")).toBe("generating");
+    expect(
+      host.querySelector('[data-test="try-on-acquisition-preview"]'),
+    ).toBeNull();
+    expect(displayed?.naturalWidth).toBe(720);
+    expect(displayed?.naturalHeight).toBe(1280);
+    expect(displayed?.src).toContain(
+      "/v2/try-on/captured/frame.png?token=captured-token",
+    );
+
+    await vi.advanceTimersByTimeAsync(263);
+    emit(completed(emittedAttemptId));
+    await nextTick();
+    expect(host.querySelector('[data-test="try-on-result-image"]')).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(736);
+    expect(host.querySelector('[data-test="try-on-result-image"]')).toBeNull();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(
+      host.querySelector('[data-test="try-on-result-image"]'),
+    ).not.toBeNull();
+  });
+
+  it("捕获帧已展示满窗口时立即展示迟到结果", async () => {
+    let emit: ((next: VisionTryOnAttemptEvent) => void) | undefined;
+    let emittedAttemptId = attemptId;
+    openAttemptMock.mockImplementation((_connection, input, onEvent) => {
+      emittedAttemptId = input.attemptId;
+      emit = (next) =>
+        onEvent(
+          { ...next, payload: { ...next.payload, attemptId: input.attemptId } },
+          {
+            attemptId: input.attemptId,
+            visionSocketUrl: "ws://127.0.0.1:7892/ws",
+          },
+        );
+      return Promise.resolve({
+        close: vi.fn(),
+        capture: vi.fn(),
+        cancel: vi.fn(),
+      });
+    });
+    const host = await mount();
+    await vi.waitFor(() => {
+      expect(openAttemptMock).toHaveBeenCalledOnce();
+    });
+    if (!emit) throw new Error("预期收到原生试衣事件回调");
+
+    vi.useFakeTimers();
+    emit(event("vision.try_on.attempt.accepted", { attemptId }));
+    emit(acquisition());
+    emit(captured());
+    emit(
+      event("vision.try_on.attempt.generating", {
+        attemptId,
+        stage: "generating",
+      }),
+    );
+    await nextTick();
+    await loadCapturedPreload(host);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    emit(completed(emittedAttemptId));
+    await nextTick();
+    expect(
+      host.querySelector('[data-test="try-on-result-image"]'),
+    ).not.toBeNull();
+  });
+
+  it("自然尺寸为零的捕获帧会失败关闭，迟到完成不得展示结果", async () => {
+    let emit: ((next: VisionTryOnAttemptEvent) => void) | undefined;
+    const close = vi.fn();
+    openAttemptMock.mockImplementation((_connection, input, onEvent) => {
+      emit = (next) =>
+        onEvent(
+          { ...next, payload: { ...next.payload, attemptId: input.attemptId } },
+          {
+            attemptId: input.attemptId,
+            visionSocketUrl: "ws://127.0.0.1:7892/ws",
+          },
+        );
+      return Promise.resolve({ close, capture: vi.fn(), cancel: vi.fn() });
+    });
+    const host = await mount();
+    await vi.waitFor(() => {
+      expect(openAttemptMock).toHaveBeenCalledOnce();
+    });
+    if (!emit) throw new Error("预期收到原生试衣事件回调");
+
+    emit(event("vision.try_on.attempt.accepted", { attemptId }));
+    emit(acquisition());
+    emit(captured());
+    await nextTick();
+    host
+      .querySelector(".try-on-captured-preload")
+      ?.dispatchEvent(new Event("load"));
+    await nextTick();
+
+    expect(useTryOnStore().phase).toBe("failed");
+    expect(close).toHaveBeenCalledOnce();
+    expect(
+      host.querySelector('[data-test="try-on-captured-image"]'),
+    ).toBeNull();
+    emit(
+      event("vision.try_on.attempt.generating", {
+        attemptId,
+        stage: "generating",
+      }),
+    );
+    emit(completed());
+    await nextTick();
+    expect(host.querySelector('[data-test="try-on-result-image"]')).toBeNull();
+  });
+
+  it.each([
+    ["失败", "vision.try_on.attempt.failed", { reason: "try_on_failed" }],
+    ["超时取消", "vision.try_on.attempt.canceled", { reason: "timeout" }],
+  ] as const)("%s会清理预载，并拒绝迟到完成", async (_name, type, payload) => {
+    let emit: ((next: VisionTryOnAttemptEvent) => void) | undefined;
+    openAttemptMock.mockImplementation((_connection, input, onEvent) => {
+      emit = (next) =>
+        onEvent(
+          { ...next, payload: { ...next.payload, attemptId: input.attemptId } },
+          {
+            attemptId: input.attemptId,
+            visionSocketUrl: "ws://127.0.0.1:7892/ws",
+          },
+        );
+      return Promise.resolve({
+        close: vi.fn(),
+        capture: vi.fn(),
+        cancel: vi.fn(),
+      });
+    });
+    const host = await mount();
+    await vi.waitFor(() => {
+      expect(openAttemptMock).toHaveBeenCalledOnce();
+    });
+    if (!emit) throw new Error("预期收到原生试衣事件回调");
+
+    emit(event("vision.try_on.attempt.accepted", { attemptId }));
+    emit(acquisition());
+    emit(captured());
+    await nextTick();
+    expect(host.querySelector(".try-on-captured-preload")).not.toBeNull();
+    emit(event(type, { attemptId, ...payload }));
+    await nextTick();
+    expect(host.querySelector(".try-on-captured-preload")).toBeNull();
+    emit(completed());
+    await nextTick();
+    expect(host.querySelector('[data-test="try-on-result-image"]')).toBeNull();
   });
 
   it("在捕获和生成期间保持同一公开图像展示面显示真实捕获帧", async () => {
@@ -375,20 +619,14 @@ describe("TryOnView single-path acquisition UI", () => {
     emit(captured());
     await nextTick();
     expect(
+      host.querySelector('[data-test="try-on-captured-image"]'),
+    ).toBeNull();
+    const capturedImage = await loadCapturedPreload(host);
+    expect(
       host.querySelector<HTMLImageElement>(
         '[data-test="try-on-captured-image"]',
       )?.src,
     ).toContain("/v2/try-on/captured/frame.png?token=captured-token");
-    const capturedImage = host.querySelector<HTMLImageElement>(
-      '[data-test="try-on-captured-image"]',
-    );
-    expect(capturedImage?.getAttribute("data-image-state")).toBe("loading");
-    Object.defineProperties(capturedImage!, {
-      naturalHeight: { configurable: true, value: 768 },
-      naturalWidth: { configurable: true, value: 512 },
-    });
-    capturedImage?.dispatchEvent(new Event("load"));
-    await nextTick();
     expect(capturedImage?.getAttribute("data-image-state")).toBe("ready");
 
     emit(
@@ -432,9 +670,10 @@ describe("TryOnView single-path acquisition UI", () => {
     callbacks[0]?.(acquisition());
     callbacks[0]?.(captured());
     await nextTick();
-    host
-      .querySelector('[data-test="try-on-captured-image"]')
-      ?.dispatchEvent(new Event("error"));
+    const oldPreload = host.querySelector<HTMLImageElement>(
+      ".try-on-captured-preload",
+    );
+    oldPreload?.dispatchEvent(new Event("error"));
     await nextTick();
     expect(
       host.querySelector('[data-test="try-on-captured-image"]'),
@@ -443,13 +682,6 @@ describe("TryOnView single-path acquisition UI", () => {
       host.querySelector('[data-test="try-on-captured-error"]')?.textContent,
     ).toContain("试衣输入暂不可显示，请重试或返回商品");
 
-    callbacks[0]?.(
-      event("vision.try_on.attempt.canceled", { attemptId, reason: "timeout" }),
-    );
-    await nextTick();
-    expect(
-      host.querySelector('[data-test="try-on-captured-error"]'),
-    ).toBeNull();
     host
       .querySelector('[data-test="try-on-retry"]')
       ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -464,15 +696,22 @@ describe("TryOnView single-path acquisition UI", () => {
       host.querySelector('[data-test="try-on-captured-error"]'),
     ).toBeNull();
     expect(
-      host.querySelector<HTMLImageElement>(
-        '[data-test="try-on-captured-image"]',
-      )?.src,
+      host.querySelector<HTMLImageElement>(".try-on-captured-preload")?.src,
     ).toContain("replacement-captured-token");
     expect(
       host
-        .querySelector('[data-test="try-on-captured-image"]')
+        .querySelector(".try-on-captured-preload")
         ?.getAttribute("data-image-state"),
     ).toBe("loading");
+    Object.defineProperties(oldPreload!, {
+      naturalHeight: { configurable: true, value: 768 },
+      naturalWidth: { configurable: true, value: 512 },
+    });
+    oldPreload?.dispatchEvent(new Event("load"));
+    await nextTick();
+    expect(
+      host.querySelector('[data-test="try-on-captured-image"]'),
+    ).toBeNull();
   });
 
   it("完成结果持有连接断开后隐藏不可读结果并显示明确提示", async () => {
@@ -511,9 +750,12 @@ describe("TryOnView single-path acquisition UI", () => {
     });
     if (!emit) throw new Error("预期收到原生试衣事件回调");
 
+    vi.useFakeTimers();
     emit(event("vision.try_on.attempt.accepted", { attemptId }));
     emit(acquisition());
     emit(captured());
+    await nextTick();
+    await loadCapturedPreload(host);
     emit(
       event("vision.try_on.attempt.generating", {
         attemptId,
@@ -522,9 +764,27 @@ describe("TryOnView single-path acquisition UI", () => {
     );
     emit(completed(emittedAttemptId));
     await nextTick();
+    await vi.advanceTimersByTimeAsync(1_000);
     expect(
       host.querySelector('[data-test="try-on-result-image"]'),
     ).not.toBeNull();
+    host
+      .querySelector('[data-test="try-on-result-image"]')
+      ?.dispatchEvent(new Event("error"));
+    await nextTick();
+    expect(host.querySelector('[data-test="try-on-result-image"]')).toBeNull();
+    expect(
+      host.querySelector('[data-test="try-on-captured-image"]'),
+    ).toBeNull();
+    expect(host.querySelector(".try-on-captured-preload")).toBeNull();
+    expect(
+      host
+        .querySelector('[data-test="try-on-view"]')
+        ?.getAttribute("data-state"),
+    ).toBe("completed");
+    expect(
+      host.querySelector('[data-test="try-on-result-error"]')?.textContent,
+    ).toContain("暂不可显示");
 
     if (!completedResourceOwnerLost)
       throw new Error("预期收到完成结果持有连接丢失回调");
@@ -534,6 +794,15 @@ describe("TryOnView single-path acquisition UI", () => {
 
     expect(host.querySelector('[data-test="try-on-result-image"]')).toBeNull();
     expect(useTryOnStore().phase).toBe("completed");
+    expect(
+      host.querySelector('[data-test="try-on-captured-image"]'),
+    ).toBeNull();
+    expect(host.querySelector(".try-on-captured-preload")).toBeNull();
+    expect(
+      host
+        .querySelector('[data-test="try-on-view"]')
+        ?.getAttribute("data-state"),
+    ).toBe("completed");
     expect(
       host.querySelector('[data-test="try-on-result-error"]')?.textContent,
     ).toContain("结果连接已断开");
@@ -766,7 +1035,10 @@ describe("TryOnView single-path acquisition UI", () => {
       visionSocketUrl: "ws://127.0.0.1:7892/ws",
       result: completed(activeAttemptId).payload.result,
     });
+    vi.useFakeTimers();
     const host = await mount();
+    await loadCapturedPreload(host);
+    await vi.advanceTimersByTimeAsync(1_000);
 
     host
       .querySelector('[data-test="try-on-scale-up"]')
