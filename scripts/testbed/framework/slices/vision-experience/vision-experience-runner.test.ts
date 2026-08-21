@@ -1315,6 +1315,7 @@ describe("visionExperience slice runner", () => {
 describe("process replay 轨道集成", () => {
   const originalReplayEnv = process.env.VEM_PROCESS_REPLAY;
   const originalReplayDir = process.env.VEM_PROCESS_REPLAY_DIR;
+  const originalDegradationEnv = process.env.RUN_DEGRADATION;
 
   function withEnv(values, callback) {
     return async () => {
@@ -1331,6 +1332,9 @@ describe("process replay 轨道集成", () => {
         if (originalReplayDir === undefined)
           delete process.env.VEM_PROCESS_REPLAY_DIR;
         else process.env.VEM_PROCESS_REPLAY_DIR = originalReplayDir;
+        if (originalDegradationEnv === undefined)
+          delete process.env.RUN_DEGRADATION;
+        else process.env.RUN_DEGRADATION = originalDegradationEnv;
       }
     };
   }
@@ -1497,5 +1501,41 @@ describe("process replay 轨道集成", () => {
         }
       },
     ),
+  );
+
+  it(
+    "降级场景把受控 Vision owner 停止注入 slice",
+    withEnv({ RUN_DEGRADATION: "1" }, async () => {
+      const root = mkdtempSync(join(tmpdir(), "vem-vision-degradation-"));
+      const outPath = join(root, "vision-experience.json");
+      const guestInputPath = writeVisionGuestInput(root);
+      const adapter = fakeUiAdapter() as any;
+      adapter.connect = async () => adapter;
+      adapter.close = async () => {};
+      adapter.recordMilestone = () => {};
+      let stopCalls = 0;
+      let sliceOptions = null;
+      try {
+        await runVisionExperienceMain(
+          ["--mode", "fast", "--out", outPath, "--guest-input", guestInputPath],
+          {
+            startVisionOwner: () => undefined,
+            stopVisionOwner: () => {
+              stopCalls += 1;
+            },
+            createAdapter: () => adapter,
+            runSlice: async (options) => {
+              sliceOptions = options;
+              await options.stopOwner();
+              return passedVisionReport();
+            },
+          },
+        );
+        assert.equal(stopCalls, 1);
+        assert.equal(sliceOptions.includeDegradation, true);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }),
   );
 });

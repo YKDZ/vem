@@ -757,6 +757,7 @@ export async function main(
   args: string[] = process.argv.slice(2),
   dependencies: {
     startVisionOwner?: () => unknown;
+    stopVisionOwner?: () => unknown;
     createAdapter?: (options: Record<string, unknown>) => CdpTestAdapter;
     runSlice?: typeof runVisionExperienceSlice;
     runReplay?: <T>(
@@ -839,17 +840,19 @@ export async function main(
         includeDegradation: process.env.RUN_DEGRADATION === "1",
         includeManualCapture: process.env.RUN_MANUAL === "1",
         includeDeparture: process.env.RUN_DEPARTURE === "1",
-        stopOwner: () => {
-          spawnSync(
-            "powershell",
-            [
-              "-NoProfile",
-              "-Command",
-              "Stop-ScheduledTask -TaskName VEMVisionRuntime -ErrorAction Stop",
-            ],
-            { stdio: "ignore" },
-          );
-        },
+        stopOwner: dependencies.stopVisionOwner
+          ? () => dependencies.stopVisionOwner!()
+          : () => {
+              spawnSync(
+                "powershell",
+                [
+                  "-NoProfile",
+                  "-Command",
+                  "Stop-ScheduledTask -TaskName VEMVisionRuntime -ErrorAction SilentlyContinue; Get-Process vending-vision -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue",
+                ],
+                { stdio: "ignore" },
+              );
+            },
         timeoutMs: 60_000,
         pollMs: 250,
         visionStabilityMs: Number(process.env.VISION_STABILITY_MS ?? 10_000),
