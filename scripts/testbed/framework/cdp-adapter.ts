@@ -805,7 +805,6 @@ export async function readSourceGarmentPngResource({
 export class CdpTestAdapter implements TestAdapter {
   endpoint: string;
   visionBaseUrl: string;
-  visionMockControlPort: number;
   client: CdpClient | null = null;
   protocolEvidence: VisionProtocolEvidenceCollector;
   capturedFrameResources = new CapturedFrameEvidenceCache();
@@ -829,9 +828,6 @@ export class CdpTestAdapter implements TestAdapter {
   constructor({
     endpoint = process.env.CDP_ENDPOINT ?? "http://127.0.0.1:19222",
     visionBaseUrl = process.env.VISION_BASE_URL ?? "http://127.0.0.1:27892",
-    visionMockControlPort = Number(
-      process.env.VISION_MOCK_CONTROL_PORT ?? 7_893,
-    ),
     sourceGarmentMetadata = null,
     sourceGarmentServiceApiOrigin = null,
     selectRecordedVideoFixtureImpl = selectRecordedVideoFixture,
@@ -840,7 +836,6 @@ export class CdpTestAdapter implements TestAdapter {
   }: {
     endpoint?: string;
     visionBaseUrl?: string;
-    visionMockControlPort?: number;
     sourceGarmentMetadata?: unknown;
     sourceGarmentServiceApiOrigin?: unknown;
     selectRecordedVideoFixtureImpl?: typeof selectRecordedVideoFixture;
@@ -849,7 +844,6 @@ export class CdpTestAdapter implements TestAdapter {
   } = {}) {
     this.endpoint = endpoint;
     this.visionBaseUrl = visionBaseUrl;
-    this.visionMockControlPort = visionMockControlPort;
     this.protocolEvidence = new VisionProtocolEvidenceCollector(visionBaseUrl);
     this.sourceGarmentMetadata = sourceGarmentMetadata;
     this.sourceGarmentServiceApiOrigin = sourceGarmentServiceApiOrigin;
@@ -1590,23 +1584,6 @@ export class CdpTestAdapter implements TestAdapter {
         stdout: JSON.stringify({ ready, pids }),
         stderr: "",
       };
-    }
-    if (command === "simulate-departure") {
-      if (args.length !== 0) {
-        throw new Error("simulate-departure accepts no arguments");
-      }
-      const response = await fetch(
-        `http://127.0.0.1:${this.visionMockControlPort}/control/departure`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ source: "vision-experience-departure" }),
-        },
-      );
-      if (!response.ok) {
-        return { exitCode: 1, stdout: "", stderr: await response.text() };
-      }
-      return { exitCode: 0, stdout: "departed", stderr: "" };
     }
     throw new Error(`CDP adapter does not implement command: ${command}`);
   }
