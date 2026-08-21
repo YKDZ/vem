@@ -221,8 +221,13 @@ describe("runtime testbed scheduler contract", () => {
     );
     const withReplay = guestAcceptanceExecuteCommand({
       ...base,
-      processReplayGuestDirectory:
-        "C:\\ProgramData\\VEM\\testbed\\process-replay-pass-1",
+      guestEnvironment: [
+        { name: "VEM_PROCESS_REPLAY", value: "1" },
+        {
+          name: "VEM_PROCESS_REPLAY_DIR",
+          value: "C:\\ProgramData\\VEM\\testbed\\process-replay-pass-1",
+        },
+      ],
     });
     assert.match(withReplay, /^\$env:VEM_PROCESS_REPLAY = '1'; /);
     assert.match(
@@ -230,6 +235,15 @@ describe("runtime testbed scheduler contract", () => {
       /\$env:VEM_PROCESS_REPLAY_DIR = 'C:\\ProgramData\\VEM\\testbed\\process-replay-pass-1'; /,
     );
     assert.match(withReplay, /-Pass 1$/);
+    const withScenarios = guestAcceptanceExecuteCommand({
+      ...base,
+      guestEnvironment: [
+        { name: "RUN_MANUAL", value: "1" },
+        { name: "RUN_DEPARTURE", value: "1" },
+      ],
+    });
+    assert.match(withScenarios, /^\$env:RUN_MANUAL = '1'; /);
+    assert.match(withScenarios, /\$env:RUN_DEPARTURE = '1'; /);
   });
 
   it("tells the guest which reconstructed pass owns the runtime build", () => {

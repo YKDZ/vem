@@ -986,13 +986,22 @@ export function guestAcceptanceExecuteCommand({
   commit,
   pass,
   focusArgument,
-  processReplayGuestDirectory = null,
+  guestEnvironment = [],
 }) {
-  const replayPrefix = processReplayGuestDirectory
-    ? `$env:VEM_PROCESS_REPLAY = '1'; $env:VEM_PROCESS_REPLAY_DIR = '${processReplayGuestDirectory.replaceAll("'", "''")}'; `
-    : "";
-  return `${replayPrefix}& '${guestScript.replaceAll("'", "''")}' -Mode '${mode}' -Commit '${commit}' -Pass ${pass}${focusArgument}`;
+  const environmentPrefix = guestEnvironment
+    .map(
+      (entry) =>
+        `$env:${entry.name} = '${entry.value.replaceAll("'", "''")}'; `,
+    )
+    .join("");
+  return `${environmentPrefix}& '${guestScript.replaceAll("'", "''")}' -Mode '${mode}' -Commit '${commit}' -Pass ${pass}${focusArgument}`;
 }
+
+const GUEST_SCENARIO_ENV_KEYS = [
+  "RUN_MANUAL",
+  "RUN_DEPARTURE",
+  "RUN_DEGRADATION",
+] as const;
 
 async function stageAndRunGuest({
   config,
@@ -1102,13 +1111,27 @@ async function stageAndRunGuest({
     process.env.VEM_PROCESS_REPLAY === "1" && mode === "fast"
       ? `C:\\ProgramData\\VEM\\testbed\\process-replay-pass-${pass}`
       : null;
+  const guestEnvironment = [
+    ...(processReplayGuestDirectory
+      ? [
+          { name: "VEM_PROCESS_REPLAY", value: "1" },
+          {
+            name: "VEM_PROCESS_REPLAY_DIR",
+            value: processReplayGuestDirectory,
+          },
+        ]
+      : []),
+    ...GUEST_SCENARIO_ENV_KEYS.filter((name) => process.env[name] === "1").map(
+      (name) => ({ name, value: "1" }),
+    ),
+  ];
   const execute = guestAcceptanceExecuteCommand({
     guestScript,
     mode,
     commit,
     pass,
     focusArgument,
-    processReplayGuestDirectory,
+    guestEnvironment,
   });
   const invokePowerShell7 = [
     `$pwsh = 'D:\\runtime-cache\\v1\\powershell\\7.4.6\\pwsh.exe'`,
