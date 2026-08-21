@@ -17,6 +17,10 @@ import { buildAcceptanceReport } from "../../acceptance-report.ts";
 import { CdpTestAdapter } from "../../cdp-adapter.ts";
 import { waitForCondition } from "../../condition-waiter.ts";
 import { createProcessRoleManifest } from "../../fault-injection.ts";
+import {
+  BusinessSetProcessReplay,
+  type ProcessReplaySummary,
+} from "../../process-replay.ts";
 import { parseSourceGarmentMetadata } from "./source-garment-evidence.ts";
 import {
   createVisionAcceptanceBinding,
@@ -755,6 +759,10 @@ export async function main(
     startVisionOwner?: () => unknown;
     createAdapter?: (options: Record<string, unknown>) => CdpTestAdapter;
     runSlice?: typeof runVisionExperienceSlice;
+    runReplay?: <T>(
+      context: Parameters<typeof BusinessSetProcessReplay.run>[0],
+      operation: () => Promise<T> | T,
+    ) => Promise<T>;
     failureIo?: {
       mkdir: typeof mkdir;
       writeFile: typeof writeFile;
@@ -766,6 +774,14 @@ export async function main(
   const artifactRoot = outPath
     ? join(dirname(outPath), "vision-experience-artifacts")
     : null;
+  const modeIndex = args.indexOf("--mode");
+  const mode = modeIndex >= 0 ? args[modeIndex + 1] : "fast";
+  const replayDirectory = process.env.VEM_PROCESS_REPLAY_DIR ?? null;
+  const replayEnabled =
+    mode === "fast" &&
+    process.env.VEM_PROCESS_REPLAY === "1" &&
+    outPath !== null &&
+    replayDirectory !== null;
   // 重建后的 VM 可能尚未启动 Vision 默认 owner；轨道负责启动并等待就绪。
   await Promise.resolve(
     (
@@ -799,6 +815,7 @@ export async function main(
     sourceGarmentMetadata,
     sourceGarmentServiceApiOrigin,
   });
+  let replaySummary: ProcessReplaySummary | null = null;
   adapter.recordMilestone?.("runner:connect", "started");
   try {
     await adapter.connect({ timeoutMs: 20_000 });
@@ -812,33 +829,55 @@ export async function main(
       },
     });
     adapter.recordMilestone?.("runner:slice", "started");
-    const report = await (dependencies.runSlice ?? runVisionExperienceSlice)({
-      adapter,
-      acceptanceBinding,
-      manifest,
-      includeSelfHeal: process.env.SKIP_SELF_HEAL !== "1",
-      includeGarmentScale: process.env.SKIP_SCALE !== "1",
-      includeDegradation: process.env.RUN_DEGRADATION === "1",
-      includeManualCapture: process.env.RUN_MANUAL === "1",
-      includeDeparture: process.env.RUN_DEPARTURE === "1",
-      stopOwner: () => {
-        spawnSync(
-          "powershell",
-          [
-            "-NoProfile",
-            "-Command",
-            "Stop-ScheduledTask -TaskName VEMVisionRuntime -ErrorAction Stop",
-          ],
-          { stdio: "ignore" },
-        );
-      },
-      timeoutMs: 60_000,
-      pollMs: 250,
-      visionStabilityMs: Number(process.env.VISION_STABILITY_MS ?? 10_000),
-      visionStabilityTimeoutMs: Number(
-        process.env.VISION_STABILITY_TIMEOUT_MS ?? 60_000,
-      ),
-    });
+    const executeSlice = () =>
+      (dependencies.runSlice ?? runVisionExperienceSlice)({
+        adapter,
+        acceptanceBinding,
+        manifest,
+        includeSelfHeal: process.env.SKIP_SELF_HEAL !== "1",
+        includeGarmentScale: process.env.SKIP_SCALE !== "1",
+        includeDegradation: process.env.RUN_DEGRADATION === "1",
+        includeManualCapture: process.env.RUN_MANUAL === "1",
+        includeDeparture: process.env.RUN_DEPARTURE === "1",
+        stopOwner: () => {
+          spawnSync(
+            "powershell",
+            [
+              "-NoProfile",
+              "-Command",
+              "Stop-ScheduledTask -TaskName VEMVisionRuntime -ErrorAction Stop",
+            ],
+            { stdio: "ignore" },
+          );
+        },
+        timeoutMs: 60_000,
+        pollMs: 250,
+        visionStabilityMs: Number(process.env.VISION_STABILITY_MS ?? 10_000),
+        visionStabilityTimeoutMs: Number(
+          process.env.VISION_STABILITY_TIMEOUT_MS ?? 60_000,
+        ),
+      });
+    const report = replayEnabled
+      ? await (dependencies.runReplay ?? BusinessSetProcessReplay.run)(
+          {
+            endpoint: adapter.endpoint,
+            outputDirectory: replayDirectory!,
+            businessSet: "visionExperience",
+            onSummary: (summary) => {
+              replaySummary = summary;
+            },
+          },
+          executeSlice,
+        )
+      : await executeSlice();
+    if (replaySummary) {
+      report.businessSets
+        .find((entry) => entry.name === "visionExperience")
+        ?.supportingEvidence.push({
+          kind: "business-set-process-replay",
+          summary: replaySummary,
+        });
+    }
     adapter.recordMilestone?.(
       "runner:slice",
       report.ok === true ? "completed" : "failed",
@@ -867,6 +906,14 @@ export async function main(
   } catch (error) {
     const failedReport = reportFromOperationalFailure(error);
     if (failedReport && outPath) {
+      if (replaySummary) {
+        failedReport.businessSets
+          .find((entry) => entry.name === "visionExperience")
+          ?.supportingEvidence.push({
+            kind: "business-set-process-replay",
+            summary: replaySummary,
+          });
+      }
       await writeFile(
         outPath,
         `${JSON.stringify(failedReport, null, 2)}\n`,

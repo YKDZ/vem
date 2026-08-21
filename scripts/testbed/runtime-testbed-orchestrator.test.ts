@@ -16,6 +16,7 @@ import { describe, it } from "node:test";
 
 import {
   createRunId,
+  guestAcceptanceExecuteCommand,
   identicalVisionCoreArtifactSnapshot,
   guestAcceptanceExecutionBudget,
   loadVisionCoreArtifacts,
@@ -204,6 +205,31 @@ describe("runtime testbed scheduler contract", () => {
       powerShellFocusArgument(["sale", "scannerPayment", "name'quoted"]),
       " -Focus @('sale', 'scannerPayment', 'name''quoted')",
     );
+  });
+
+  it("只在显式开启时把过程回放环境注入 guest 执行命令", () => {
+    const base = {
+      guestScript: "C:\\source\\run-local-testbed-guest.ps1",
+      mode: "fast",
+      commit: sha,
+      pass: 1,
+      focusArgument: "",
+    };
+    assert.equal(
+      guestAcceptanceExecuteCommand(base),
+      `& 'C:\\source\\run-local-testbed-guest.ps1' -Mode 'fast' -Commit '${sha}' -Pass 1`,
+    );
+    const withReplay = guestAcceptanceExecuteCommand({
+      ...base,
+      processReplayGuestDirectory:
+        "C:\\ProgramData\\VEM\\testbed\\process-replay-pass-1",
+    });
+    assert.match(withReplay, /^\$env:VEM_PROCESS_REPLAY = '1'; /);
+    assert.match(
+      withReplay,
+      /\$env:VEM_PROCESS_REPLAY_DIR = 'C:\\ProgramData\\VEM\\testbed\\process-replay-pass-1'; /,
+    );
+    assert.match(withReplay, /-Pass 1$/);
   });
 
   it("tells the guest which reconstructed pass owns the runtime build", () => {

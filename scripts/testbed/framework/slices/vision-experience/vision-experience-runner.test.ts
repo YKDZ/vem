@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
+import { buildAcceptanceReport } from "../../acceptance-report.ts";
 import { createBusinessCheckRegistryV2 } from "../../business-check-registry-v2.ts";
+import { businessAssertion } from "../../observation-record.ts";
 import { createFakeTestAdapter } from "../../test-adapter.ts";
 import {
   sourceGarmentBindingFromGuestInput,
@@ -68,6 +70,49 @@ function writeVisionGuestInput(root: string): string {
     }),
   );
   return path;
+}
+
+function passedVisionReport() {
+  return buildAcceptanceReport({
+    runId: "replay-integration",
+    mode: "fast",
+    pass: 1,
+    businessSets: [
+      {
+        name: "visionExperience",
+        assertions: [
+          businessAssertion({
+            id: "replay-passthrough",
+            source: "integration",
+            expected: true,
+            observed: true,
+          }),
+        ],
+      },
+    ],
+  });
+}
+
+function replaySummaryFixture(overrides = {}) {
+  return {
+    status: "completed",
+    reason: null,
+    startedAt: "2026-08-21T00:00:00.000Z",
+    finishedAt: "2026-08-21T00:00:01.000Z",
+    durationMs: 1_000,
+    framesReceived: 3,
+    framesWritten: 3,
+    framesDropped: 0,
+    framesSkipped: 0,
+    bytesWritten: 3_000,
+    truncated: false,
+    firstFrameTimestampMs: 1_000,
+    lastFrameTimestampMs: 2_000,
+    outputDirectory: "/tmp/replay",
+    capturePath: "/tmp/replay/capture.json",
+    playerPath: "/tmp/replay/player.html",
+    ...overrides,
+  };
 }
 
 function capturedEvidenceFor(attemptId: string) {
@@ -1265,4 +1310,192 @@ describe("visionExperience slice runner", () => {
     assert.equal(report.businessSets[0].status, "passed");
     assert.equal(report.businessSets[0].assertionCount, 16);
   });
+});
+
+describe("process replay 轨道集成", () => {
+  const originalReplayEnv = process.env.VEM_PROCESS_REPLAY;
+  const originalReplayDir = process.env.VEM_PROCESS_REPLAY_DIR;
+
+  function withEnv(values, callback) {
+    return async () => {
+      for (const [key, value] of Object.entries(values)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      try {
+        await callback();
+      } finally {
+        if (originalReplayEnv === undefined)
+          delete process.env.VEM_PROCESS_REPLAY;
+        else process.env.VEM_PROCESS_REPLAY = originalReplayEnv;
+        if (originalReplayDir === undefined)
+          delete process.env.VEM_PROCESS_REPLAY_DIR;
+        else process.env.VEM_PROCESS_REPLAY_DIR = originalReplayDir;
+      }
+    };
+  }
+
+  it(
+    "focused fast 显式开启时包装 slice 并把回放摘要写入 supportingEvidence",
+    withEnv(
+      { VEM_PROCESS_REPLAY: "1", VEM_PROCESS_REPLAY_DIR: "/tmp/replay" },
+      async () => {
+        const root = mkdtempSync(join(tmpdir(), "vem-vision-replay-on-"));
+        const outPath = join(root, "vision-experience.json");
+        const guestInputPath = writeVisionGuestInput(root);
+        const adapter = fakeUiAdapter() as any;
+        adapter.endpoint = "http://127.0.0.1:9222";
+        adapter.connect = async () => adapter;
+        adapter.close = async () => {};
+        adapter.recordMilestone = () => {};
+        let capturedContext = null;
+        try {
+          await runVisionExperienceMain(
+            [
+              "--mode",
+              "fast",
+              "--out",
+              outPath,
+              "--guest-input",
+              guestInputPath,
+            ],
+            {
+              startVisionOwner: () => undefined,
+              createAdapter: () => adapter,
+              runSlice: async () => passedVisionReport(),
+              runReplay: async (context, operation) => {
+                capturedContext = context;
+                const result = await operation();
+                context.onSummary?.(replaySummaryFixture());
+                return result;
+              },
+            },
+          );
+          assert.equal(capturedContext.businessSet, "visionExperience");
+          assert.equal(capturedContext.outputDirectory, "/tmp/replay");
+          assert.equal(capturedContext.endpoint, adapter.endpoint);
+          const report = JSON.parse(readFileSync(outPath, "utf8"));
+          const evidence = report.businessSets[0].supportingEvidence.find(
+            (entry) => entry.kind === "business-set-process-replay",
+          );
+          assert.equal(evidence.summary.status, "completed");
+          assert.equal(evidence.summary.framesWritten, 3);
+          assert.equal(report.businessSets[0].status, "passed");
+        } finally {
+          rmSync(root, { recursive: true, force: true });
+        }
+      },
+    ),
+  );
+
+  it(
+    "默认关闭：不包装 slice、不触碰回放环境",
+    withEnv(
+      { VEM_PROCESS_REPLAY: undefined, VEM_PROCESS_REPLAY_DIR: undefined },
+      async () => {
+        const root = mkdtempSync(join(tmpdir(), "vem-vision-replay-off-"));
+        const outPath = join(root, "vision-experience.json");
+        const guestInputPath = writeVisionGuestInput(root);
+        const adapter = fakeUiAdapter() as any;
+        adapter.endpoint = "http://127.0.0.1:9222";
+        adapter.connect = async () => adapter;
+        adapter.close = async () => {};
+        adapter.recordMilestone = () => {};
+        let replayInvoked = false;
+        try {
+          await runVisionExperienceMain(
+            [
+              "--mode",
+              "fast",
+              "--out",
+              outPath,
+              "--guest-input",
+              guestInputPath,
+            ],
+            {
+              startVisionOwner: () => undefined,
+              createAdapter: () => adapter,
+              runSlice: async () => passedVisionReport(),
+              runReplay: async () => {
+                replayInvoked = true;
+                return passedVisionReport();
+              },
+            },
+          );
+          assert.equal(replayInvoked, false);
+          const report = JSON.parse(readFileSync(outPath, "utf8"));
+          assert.equal(
+            report.businessSets[0].supportingEvidence.some(
+              (entry) => entry.kind === "business-set-process-replay",
+            ),
+            false,
+          );
+        } finally {
+          rmSync(root, { recursive: true, force: true });
+        }
+      },
+    ),
+  );
+
+  it(
+    "业务抛错时回放摘要仍进入失败报告且原样抛出业务错误",
+    withEnv(
+      { VEM_PROCESS_REPLAY: "1", VEM_PROCESS_REPLAY_DIR: "/tmp/replay" },
+      async () => {
+        const root = mkdtempSync(join(tmpdir(), "vem-vision-replay-fail-"));
+        const outPath = join(root, "vision-experience.json");
+        const guestInputPath = writeVisionGuestInput(root);
+        const adapter = fakeUiAdapter() as any;
+        adapter.endpoint = "http://127.0.0.1:9222";
+        adapter.connect = async () => adapter;
+        adapter.close = async () => {};
+        adapter.recordMilestone = () => {};
+        const businessError = new Error(
+          "business failed inside replay",
+        ) as Error & {
+          report?: unknown;
+        };
+        businessError.report = passedVisionReport();
+        try {
+          await assert.rejects(
+            runVisionExperienceMain(
+              [
+                "--mode",
+                "fast",
+                "--out",
+                outPath,
+                "--guest-input",
+                guestInputPath,
+              ],
+              {
+                startVisionOwner: () => undefined,
+                createAdapter: () => adapter,
+                runSlice: async () => {
+                  throw businessError;
+                },
+                runReplay: async (context, operation) => {
+                  try {
+                    return await operation();
+                  } catch (error) {
+                    context.onSummary?.(
+                      replaySummaryFixture({ status: "completed" }),
+                    );
+                    throw error;
+                  }
+                },
+              },
+            ),
+            (error) => error === businessError,
+          );
+          const report = JSON.parse(readFileSync(outPath, "utf8"));
+          const evidence = report.businessSets[0].supportingEvidence.find(
+            (entry) => entry.kind === "business-set-process-replay",
+          );
+          assert.equal(evidence.summary.status, "completed");
+        } finally {
+          rmSync(root, { recursive: true, force: true });
+        }
+      },
+    ),
+  );
 });

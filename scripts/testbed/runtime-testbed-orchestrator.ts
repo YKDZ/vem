@@ -980,6 +980,20 @@ export function powerShellFocusArgument(focus) {
   return ` -Focus @(${values})`;
 }
 
+export function guestAcceptanceExecuteCommand({
+  guestScript,
+  mode,
+  commit,
+  pass,
+  focusArgument,
+  processReplayGuestDirectory = null,
+}) {
+  const replayPrefix = processReplayGuestDirectory
+    ? `$env:VEM_PROCESS_REPLAY = '1'; $env:VEM_PROCESS_REPLAY_DIR = '${processReplayGuestDirectory.replaceAll("'", "''")}'; `
+    : "";
+  return `${replayPrefix}& '${guestScript.replaceAll("'", "''")}' -Mode '${mode}' -Commit '${commit}' -Pass ${pass}${focusArgument}`;
+}
+
 async function stageAndRunGuest({
   config,
   contract,
@@ -1084,7 +1098,18 @@ async function stageAndRunGuest({
     mode,
     focus,
   });
-  const execute = `& '${guestScript.replaceAll("'", "''")}' -Mode '${mode}' -Commit '${commit}' -Pass ${pass}${focusArgument}`;
+  const processReplayGuestDirectory =
+    process.env.VEM_PROCESS_REPLAY === "1" && mode === "fast"
+      ? `C:\\ProgramData\\VEM\\testbed\\process-replay-pass-${pass}`
+      : null;
+  const execute = guestAcceptanceExecuteCommand({
+    guestScript,
+    mode,
+    commit,
+    pass,
+    focusArgument,
+    processReplayGuestDirectory,
+  });
   const invokePowerShell7 = [
     `$pwsh = 'D:\\runtime-cache\\v1\\powershell\\7.4.6\\pwsh.exe'`,
     `& $pwsh -NoProfile -EncodedCommand '${encodedPowerShell(execute)}'`,
@@ -1135,6 +1160,23 @@ async function stageAndRunGuest({
       timeoutLabel: "guest evidence transfer",
     },
   ).catch(() => undefined);
+  if (processReplayGuestDirectory) {
+    const replayRoot = join(runRoot, "process-replay", `pass-${pass}`);
+    await mkdir(replayRoot, { recursive: true });
+    await runProcess(
+      "scp",
+      [
+        ...scp,
+        "-r",
+        `${remote}:C:/ProgramData/VEM/testbed/process-replay-pass-${pass}`,
+        replayRoot,
+      ],
+      {
+        timeoutMs: GUEST_TRANSFER_TIMEOUT_MS,
+        timeoutLabel: "guest process replay transfer",
+      },
+    ).catch(() => undefined);
+  }
   if (transportError) throw transportError;
   if (guestError) {
     const summaryPath = await findFile(evidence, "full-workflow-tracks.json");
