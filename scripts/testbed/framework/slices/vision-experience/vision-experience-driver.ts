@@ -97,6 +97,11 @@ const ATTEMPT_STATES = new Set([
   "generating",
   "completed",
 ]);
+const START_GARMENT_TERMINAL_STATES = new Set([
+  "failed",
+  "canceled",
+  "completed",
+]);
 const UUID_PATTERN =
   "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const CATALOG_KEY_PATTERN = new RegExp(`^product:${UUID_PATTERN}$`);
@@ -122,6 +127,15 @@ export interface VisionCatalogSelectionEvidence {
 export interface VisionStartGarmentBindingEvidence {
   kind: "vision-start-garment-binding";
   status: "bound" | "mismatch";
+  attemptId: string | null;
+  observedAttemptId: string | null;
+  lastStage: string | null;
+  failureReason:
+    | "timeout"
+    | "attempt-changed"
+    | "terminal-without-garment"
+    | "garment-mismatch"
+    | null;
   selection: { catalogKey: string; variantId: string; size: string };
   expected: {
     assetId: string;
@@ -187,6 +201,17 @@ function selectedSizeSelector(binding: VisionAcceptanceBinding): string {
 function startGarmentBindingEvidence(
   binding: VisionAcceptanceBinding,
   garment: unknown,
+  {
+    attemptId,
+    observedAttemptId = attemptId,
+    lastStage,
+    failureReason = null,
+  }: {
+    attemptId: string | null;
+    observedAttemptId?: string | null;
+    lastStage: string | null;
+    failureReason?: VisionStartGarmentBindingEvidence["failureReason"];
+  },
 ): VisionStartGarmentBindingEvidence {
   const observed =
     garment && typeof garment === "object" && !Array.isArray(garment)
@@ -198,6 +223,10 @@ function startGarmentBindingEvidence(
     status: isSourceGarmentAttemptBound(expected, garment)
       ? "bound"
       : "mismatch",
+    attemptId,
+    observedAttemptId,
+    lastStage,
+    failureReason,
     selection: {
       catalogKey: binding.selectedCatalogKey,
       variantId: binding.selectedVariantId,
@@ -223,11 +252,29 @@ function startGarmentBindingEvidence(
 function requireStartGarmentBinding(
   binding: VisionAcceptanceBinding,
   garment: unknown,
+  context: { attemptId: string | null; lastStage: string | null },
 ): VisionStartGarmentBindingEvidence {
-  const evidence = startGarmentBindingEvidence(binding, garment);
-  if (evidence.status === "bound") return evidence;
+  const evidence = startGarmentBindingEvidence(binding, garment, {
+    ...context,
+    failureReason: "garment-mismatch",
+  });
+  if (evidence.status === "bound") {
+    return { ...evidence, failureReason: null };
+  }
+  throw startGarmentBindingError(evidence);
+}
+
+function startGarmentBindingError(
+  evidence: VisionStartGarmentBindingEvidence,
+  cause?: unknown,
+): Error & {
+  stage: "vision-start-garment-binding";
+  evidence: VisionStartGarmentBindingEvidence;
+  report: ReturnType<typeof buildAcceptanceReport>;
+} {
   const error = new Error(
     "first Vision attempt startGarment is not bound to guest-input",
+    { cause: cause instanceof Error ? cause : undefined },
   ) as Error & {
     stage: "vision-start-garment-binding";
     evidence: VisionStartGarmentBindingEvidence;
@@ -246,15 +293,23 @@ function requireStartGarmentBinding(
           businessAssertion({
             id: "start-garment-bound",
             source: "vision-v2-protocol",
-            expected: evidence.expected,
-            observed: evidence.observed,
+            expected: {
+              attemptId: evidence.attemptId,
+              failureReason: null,
+              garment: evidence.expected,
+            },
+            observed: {
+              attemptId: evidence.observedAttemptId,
+              failureReason: evidence.failureReason,
+              garment: evidence.observed,
+            },
           }),
         ],
         supportingEvidence: [evidence],
       },
     ],
   });
-  throw error;
+  return error;
 }
 
 function routeSelectionIdentity(route: unknown): {
@@ -600,6 +655,98 @@ async function readState(adapter: TestAdapter): Promise<TryOnState> {
   return JSON.parse(await adapter.readFile(STATE_PATH));
 }
 
+async function waitForStartGarmentBinding({
+  binding,
+  attemptState,
+  observeState,
+  timeoutMs,
+  pollMs,
+}: {
+  binding: VisionAcceptanceBinding;
+  attemptState: TryOnState;
+  observeState: () => Promise<TryOnState>;
+  timeoutMs: number;
+  pollMs?: number;
+}): Promise<VisionStartGarmentBindingEvidence> {
+  const lockedAttemptId = attemptState.attemptId!;
+  if (
+    attemptState.startGarment !== null &&
+    attemptState.startGarment !== undefined
+  ) {
+    return requireStartGarmentBinding(binding, attemptState.startGarment, {
+      attemptId: lockedAttemptId,
+      lastStage: attemptState.state ?? null,
+    });
+  }
+  if (START_GARMENT_TERMINAL_STATES.has(attemptState.state ?? "")) {
+    throw startGarmentBindingError(
+      startGarmentBindingEvidence(binding, attemptState.startGarment, {
+        attemptId: lockedAttemptId,
+        lastStage: attemptState.state ?? null,
+        failureReason: "terminal-without-garment",
+      }),
+    );
+  }
+  let lastGarmentState = attemptState;
+  let garmentState: TryOnState;
+  try {
+    garmentState = await waitForCondition(
+      "vision-start-garment-binding",
+      async () => {
+        const current = await observeState();
+        lastGarmentState = current;
+        if (current.attemptId !== lockedAttemptId) {
+          throw startGarmentBindingError(
+            startGarmentBindingEvidence(binding, current.startGarment, {
+              attemptId: lockedAttemptId,
+              observedAttemptId: current.attemptId ?? null,
+              lastStage: current.state ?? null,
+              failureReason: "attempt-changed",
+            }),
+          );
+        }
+        if (
+          current.startGarment !== null &&
+          current.startGarment !== undefined
+        ) {
+          return { ok: true, value: current };
+        }
+        if (START_GARMENT_TERMINAL_STATES.has(current.state ?? "")) {
+          throw startGarmentBindingError(
+            startGarmentBindingEvidence(binding, current.startGarment, {
+              attemptId: lockedAttemptId,
+              lastStage: current.state ?? null,
+              failureReason: "terminal-without-garment",
+            }),
+          );
+        }
+        return { ok: false, value: current };
+      },
+      { timeoutMs, pollMs },
+    );
+  } catch (cause) {
+    if (
+      cause &&
+      typeof cause === "object" &&
+      (cause as { stage?: unknown }).stage === "vision-start-garment-binding"
+    ) {
+      throw cause;
+    }
+    throw startGarmentBindingError(
+      startGarmentBindingEvidence(binding, lastGarmentState.startGarment, {
+        attemptId: lockedAttemptId,
+        lastStage: lastGarmentState.state ?? null,
+        failureReason: "timeout",
+      }),
+      cause,
+    );
+  }
+  return requireStartGarmentBinding(binding, garmentState.startGarment, {
+    attemptId: lockedAttemptId,
+    lastStage: garmentState.state ?? null,
+  });
+}
+
 /**
  * 最小虚拟试衣垂直切片：导航、进入商品、点击试衣、等待结果表面。
  * 断言通过统一记录产出 v2 报告；VM 上由真实适配器提供同一状态读取。
@@ -665,10 +812,13 @@ export async function runTryOnScenario(
     },
     { timeoutMs: entryTimeoutMs, pollMs },
   );
-  const garmentBindingEvidence = requireStartGarmentBinding(
-    acceptanceBinding,
-    attemptState.startGarment,
-  );
+  const garmentBindingEvidence = await waitForStartGarmentBinding({
+    binding: acceptanceBinding,
+    attemptState,
+    observeState,
+    timeoutMs: entryTimeoutMs,
+    pollMs,
+  });
   const state = await waitForCondition(
     "result-surface",
     async () => {
@@ -1129,7 +1279,10 @@ export async function runGarmentScaleScenario(
   ) {
     throw new Error("garment scale scenario requires a completed result");
   }
-  requireStartGarmentBinding(acceptanceBinding, initial.startGarment);
+  requireStartGarmentBinding(acceptanceBinding, initial.startGarment, {
+    attemptId: initial.attemptId ?? null,
+    lastStage: initial.state ?? null,
+  });
   const beforeUrl = initial.resultUrl;
   const beforeAttemptId = initial.attemptId;
   await adapter.run("click", ['[data-test="try-on-scale-up"]']);

@@ -66,6 +66,7 @@ function fakeUiAdapter({
   resultGeometryEvidence = null,
   startGarment = expectedStartGarment,
   routeBeforeAttempt = false,
+  startGarmentAfterStarting = false,
 }: {
   includeCaptured?: boolean;
   includeCompleted?: boolean;
@@ -85,6 +86,7 @@ function fakeUiAdapter({
   resultGeometryEvidence?: Record<string, unknown> | null;
   startGarment?: Record<string, unknown>;
   routeBeforeAttempt?: boolean;
+  startGarmentAfterStarting?: boolean;
 } = {}) {
   const statePath = "ui/try-on-state.json";
   const captured = {
@@ -215,15 +217,35 @@ function fakeUiAdapter({
       'click [data-test="try-on"]': async () => {
         await writeState({
           route: `#/try-on?catalogKey=${encodeURIComponent(selectedCatalogKey)}&variantId=${selectedVariantId}`,
-          state: routeBeforeAttempt ? "idle" : "acquiring",
+          state: routeBeforeAttempt
+            ? "idle"
+            : startGarmentAfterStarting
+              ? "starting"
+              : "acquiring",
           attemptId: routeBeforeAttempt ? null : attemptId,
           ...(routeBeforeAttempt
             ? {}
-            : {
+            : startGarmentAfterStarting
+              ? { startGarment: null }
+              : {
+                  preview: { naturalWidth: 720, naturalHeight: 1280 },
+                  startGarment,
+                }),
+        });
+        if (startGarmentAfterStarting) {
+          setTimeout(() => {
+            void adapter.writeFile(
+              statePath,
+              JSON.stringify({
+                route: `#/try-on?catalogKey=${encodeURIComponent(selectedCatalogKey)}&variantId=${selectedVariantId}`,
+                state: "acquiring",
+                attemptId,
                 preview: { naturalWidth: 720, naturalHeight: 1280 },
                 startGarment,
               }),
-        });
+            );
+          }, 40);
+        }
         if (routeBeforeAttempt) {
           setTimeout(() => {
             void adapter.writeFile(
@@ -448,6 +470,201 @@ describe("visionExperience vertical slice driver", () => {
         error?.report?.businessSets?.[0]?.status === "failed" &&
         error?.report?.businessSets?.[0]?.supportingEvidence?.[0]?.kind ===
           "vision-start-garment-binding",
+    );
+  });
+
+  it("首个非空 startGarment 错绑后即使下一采样修正也立即失败", async () => {
+    const wrongGarment = {
+      ...expectedStartGarment,
+      template: "tshirt_long_sleeve",
+    };
+    const adapter = fakeUiAdapter({ startGarment: wrongGarment });
+    const originalRun = adapter.run.bind(adapter);
+    const originalReadFile = adapter.readFile.bind(adapter);
+    let tryOnEntered = false;
+    let tryOnReads = 0;
+    adapter.run = async (command, args = []) => {
+      const result = await originalRun(command, args);
+      if (command === "click" && args[0] === '[data-test="try-on"]') {
+        tryOnEntered = true;
+      }
+      return result;
+    };
+    adapter.readFile = async (path) => {
+      const value = await originalReadFile(path);
+      if (!tryOnEntered || path !== "ui/try-on-state.json") return value;
+      tryOnReads += 1;
+      if (tryOnReads !== 3) return value;
+      return JSON.stringify({
+        ...JSON.parse(value),
+        startGarment: expectedStartGarment,
+      });
+    };
+
+    await assert.rejects(
+      runTryOnScenario(adapter, {
+        timeoutMs: 2_000,
+        pollMs: 5,
+        acceptanceBinding: visionAcceptanceBinding,
+      }),
+      (error: any) =>
+        error?.stage === "vision-start-garment-binding" &&
+        error?.evidence?.failureReason === "garment-mismatch" &&
+        error?.evidence?.observed?.template === "tshirt_long_sleeve" &&
+        error?.report?.businessSets?.[0]?.status === "failed",
+    );
+  });
+
+  it("starting 阶段 descriptor 暂缺时等待同 attempt accepted 的 startGarment", async () => {
+    const outcome = await runTryOnScenario(
+      fakeUiAdapter({ startGarmentAfterStarting: true }),
+      {
+        timeoutMs: 2_000,
+        pollMs: 5,
+        acceptanceBinding: visionAcceptanceBinding,
+      },
+    );
+
+    assert.equal(outcome.report.businessSets[0].status, "passed");
+    assert.deepEqual(outcome.supportingEvidence[1], {
+      kind: "vision-start-garment-binding",
+      status: "bound",
+      attemptId,
+      observedAttemptId: attemptId,
+      lastStage: "acquiring",
+      failureReason: null,
+      selection: {
+        catalogKey: selectedCatalogKey,
+        variantId: selectedVariantId,
+        size: "M",
+      },
+      expected: expectedStartGarment,
+      observed: expectedStartGarment,
+    });
+  });
+
+  it("route 已伪装正确但同 attempt 的 startGarment 永久缺失时仍 timeout", async () => {
+    const adapter = fakeUiAdapter();
+    const originalRun = adapter.run.bind(adapter);
+    adapter.run = async (command, args = []) => {
+      if (command === "click" && args[0] === '[data-test="try-on"]') {
+        await adapter.writeFile(
+          "ui/try-on-state.json",
+          JSON.stringify({
+            route: `#/try-on?catalogKey=${encodeURIComponent(selectedCatalogKey)}&variantId=${selectedVariantId}`,
+            state: "starting",
+            attemptId,
+            startGarment: null,
+          }),
+        );
+        return { exitCode: 0, stdout: "starting", stderr: "" };
+      }
+      return originalRun(command, args);
+    };
+
+    await assert.rejects(
+      runTryOnScenario(adapter, {
+        timeoutMs: 30,
+        pollMs: 5,
+        acceptanceBinding: visionAcceptanceBinding,
+      }),
+      (error: any) =>
+        error?.stage === "vision-start-garment-binding" &&
+        error?.evidence?.failureReason === "timeout" &&
+        error?.evidence?.attemptId === attemptId &&
+        error?.evidence?.lastStage === "starting" &&
+        error?.evidence?.observed?.assetId === null &&
+        error?.report?.businessSets?.[0]?.status === "failed" &&
+        !JSON.stringify(error.evidence).includes("token"),
+    );
+  });
+
+  it("后续 attempt 的 startGarment 不得绑定到首个 attempt", async () => {
+    const adapter = fakeUiAdapter();
+    const originalRun = adapter.run.bind(adapter);
+    adapter.run = async (command, args = []) => {
+      if (command === "click" && args[0] === '[data-test="try-on"]') {
+        await adapter.writeFile(
+          "ui/try-on-state.json",
+          JSON.stringify({
+            route: "#/try-on?variantId=forged-route",
+            state: "starting",
+            attemptId,
+            startGarment: null,
+          }),
+        );
+        setTimeout(() => {
+          void adapter.writeFile(
+            "ui/try-on-state.json",
+            JSON.stringify({
+              route: `#/try-on?catalogKey=${encodeURIComponent(selectedCatalogKey)}&variantId=${selectedVariantId}`,
+              state: "acquiring",
+              attemptId: alternateAttemptId,
+              startGarment: expectedStartGarment,
+            }),
+          );
+        }, 10);
+        return { exitCode: 0, stdout: "starting", stderr: "" };
+      }
+      return originalRun(command, args);
+    };
+
+    await assert.rejects(
+      runTryOnScenario(adapter, {
+        timeoutMs: 100,
+        pollMs: 5,
+        acceptanceBinding: visionAcceptanceBinding,
+      }),
+      (error: any) =>
+        error?.stage === "vision-start-garment-binding" &&
+        error?.evidence?.failureReason === "attempt-changed" &&
+        error?.evidence?.attemptId === attemptId &&
+        error?.evidence?.lastStage === "acquiring" &&
+        error?.report?.businessSets?.[0]?.status === "failed",
+    );
+  });
+
+  it("terminal failed 没有 startGarment 时立即结构化 fail closed", async () => {
+    const adapter = fakeUiAdapter();
+    const originalRun = adapter.run.bind(adapter);
+    adapter.run = async (command, args = []) => {
+      if (command === "click" && args[0] === '[data-test="try-on"]') {
+        await adapter.writeFile(
+          "ui/try-on-state.json",
+          JSON.stringify({
+            route: `#/try-on?catalogKey=${encodeURIComponent(selectedCatalogKey)}&variantId=${selectedVariantId}`,
+            state: "starting",
+            attemptId,
+            startGarment: null,
+          }),
+        );
+        setTimeout(() => {
+          void adapter.writeFile(
+            "ui/try-on-state.json",
+            JSON.stringify({
+              route: "#/catalog",
+              state: "failed",
+              attemptId,
+              startGarment: null,
+            }),
+          );
+        }, 10);
+        return { exitCode: 0, stdout: "starting", stderr: "" };
+      }
+      return originalRun(command, args);
+    };
+
+    await assert.rejects(
+      runTryOnScenario(adapter, {
+        timeoutMs: 100,
+        pollMs: 5,
+        acceptanceBinding: visionAcceptanceBinding,
+      }),
+      (error: any) =>
+        error?.stage === "vision-start-garment-binding" &&
+        error?.evidence?.failureReason === "terminal-without-garment" &&
+        error?.evidence?.lastStage === "failed" &&
+        error?.report?.businessSets?.[0]?.status === "failed",
     );
   });
 
