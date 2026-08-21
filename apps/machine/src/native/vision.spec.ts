@@ -1,5 +1,8 @@
 import { VISION_V2_RUNTIME_IDENTITY } from "@vem/shared";
-import { createServer as createHttpServer } from "node:http";
+import {
+  createServer as createHttpServer,
+  type RequestListener,
+} from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer } from "ws";
 
@@ -61,8 +64,9 @@ async function withVisionServer(
     socket: import("ws").WebSocket,
     message: { type?: string },
   ) => void,
+  onRequest?: RequestListener,
 ): Promise<string> {
-  const server = createHttpServer();
+  const server = createHttpServer(onRequest);
   const sockets = new WebSocketServer({ server, path: "/ws" });
   sockets.on("connection", (socket) => {
     socket.on("message", (raw) => {
@@ -179,6 +183,59 @@ function installFakeVisionSocket(): void {
   globalThis.WebSocket = FakeVisionSocket as unknown as typeof WebSocket;
 }
 
+function emitCompletedAttempt(
+  socket: FakeVisionSocket,
+  reference = "http://127.0.0.1:65499",
+): void {
+  socket.emit(envelope("vision.try_on.attempt.accepted", { attemptId }));
+  socket.emit(
+    envelope("vision.try_on.attempt.acquiring", {
+      attemptId,
+      preview: {
+        reference: `${reference}/v2/try-on/acquisition/preview.mjpeg?token=preview-token`,
+        streamType: "mjpeg",
+      },
+      occupancy: "single",
+      guidance: "counting_down",
+      manualCaptureAllowed: true,
+      holdRemainingMs: 1_000,
+    }),
+  );
+  socket.emit(
+    envelope("vision.try_on.attempt.captured", {
+      attemptId,
+      captured: {
+        reference: `${reference}/v2/try-on/captured/frame.png?token=captured-token`,
+        digest: `sha256:${"b".repeat(64)}`,
+        contentType: "image/png",
+        byteSize: 2048,
+        width: 512,
+        height: 768,
+        frameId: "front-42",
+      },
+    }),
+  );
+  socket.emit(
+    envelope("vision.try_on.attempt.generating", {
+      attemptId,
+      stage: "generating",
+    }),
+  );
+  socket.emit(
+    envelope("vision.try_on.attempt.completed", {
+      attemptId,
+      result: {
+        reference: `${reference}/v2/try-on/results/${attemptId}?token=result-token`,
+        digest: `sha256:${"c".repeat(64)}`,
+        contentType: "image/png",
+        byteSize: 2048,
+        width: 512,
+        height: 768,
+      },
+    }),
+  );
+}
+
 describe("native Vision single-path adapter", () => {
   it("performs the V2 ready self-check with the committed identity", async () => {
     const url = await withVisionServer((socket, message) => {
@@ -190,75 +247,92 @@ describe("native Vision single-path adapter", () => {
     expect(result.ready?.tryOnReady).toBe(true);
   });
 
-  it("opens one attempt and emits accepted, acquiring, captured, generating and completed in order", async () => {
+  it("完成后保持真实结果授权可读，直到调用方显式释放持有连接", async () => {
     let url = "";
-    url = await withVisionServer((socket, message) => {
-      if (message.type === "vision.hello") {
-        socket.send(JSON.stringify(ready()));
-        return;
-      }
-      if (message.type !== "vision.try_on.attempt.start") return;
-      const reference = url.replace("ws://", "http://").replace("/ws", "");
-      socket.send(
-        JSON.stringify(
-          envelope("vision.try_on.attempt.accepted", { attemptId }),
-        ),
-      );
-      socket.send(
-        JSON.stringify(
-          envelope("vision.try_on.attempt.acquiring", {
-            attemptId,
-            preview: {
-              reference: `${reference}/v2/try-on/acquisition/preview.mjpeg?token=preview-token`,
-              streamType: "mjpeg",
-            },
-            occupancy: "single",
-            guidance: "counting_down",
-            manualCaptureAllowed: true,
-            holdRemainingMs: 3_000,
-          }),
-        ),
-      );
-      socket.send(
-        JSON.stringify(
-          envelope("vision.try_on.attempt.captured", {
-            attemptId,
-            captured: {
-              reference: `${reference}/v2/try-on/captured/frame.png?token=captured-token`,
-              digest: `sha256:${"b".repeat(64)}`,
-              contentType: "image/png",
-              byteSize: 2048,
-              width: 512,
-              height: 768,
-              frameId: "front-42",
-            },
-          }),
-        ),
-      );
-      socket.send(
-        JSON.stringify(
-          envelope("vision.try_on.attempt.generating", {
-            attemptId,
-            stage: "generating",
-          }),
-        ),
-      );
-      socket.send(
-        JSON.stringify(
-          envelope("vision.try_on.attempt.completed", {
-            attemptId,
-            result: {
-              reference: `${reference}/v2/try-on/results/${attemptId}?token=result-token`,
-              digest: `sha256:${"c".repeat(64)}`,
-              contentType: "image/png",
-              byteSize: 2048,
-              width: 512,
-              height: 768,
-            },
-          }),
-        ),
-      );
-    });
+    let ownerSocket: import("ws").WebSocket | null = null;
+    let resultReference = "";
+    url = await withVisionServer(
+      (socket, message) => {
+        ownerSocket = socket;
+        if (message.type === "vision.hello") {
+          socket.send(JSON.stringify(ready()));
+          return;
+        }
+        if (message.type !== "vision.try_on.attempt.start") return;
+        const reference = url.replace("ws://", "http://").replace("/ws", "");
+        resultReference = `${reference}/v2/try-on/results/${attemptId}?token=result-token`;
+        socket.send(
+          JSON.stringify(
+            envelope("vision.try_on.attempt.accepted", { attemptId }),
+          ),
+        );
+        socket.send(
+          JSON.stringify(
+            envelope("vision.try_on.attempt.acquiring", {
+              attemptId,
+              preview: {
+                reference: `${reference}/v2/try-on/acquisition/preview.mjpeg?token=preview-token`,
+                streamType: "mjpeg",
+              },
+              occupancy: "single",
+              guidance: "counting_down",
+              manualCaptureAllowed: true,
+              holdRemainingMs: 3_000,
+            }),
+          ),
+        );
+        socket.send(
+          JSON.stringify(
+            envelope("vision.try_on.attempt.captured", {
+              attemptId,
+              captured: {
+                reference: `${reference}/v2/try-on/captured/frame.png?token=captured-token`,
+                digest: `sha256:${"b".repeat(64)}`,
+                contentType: "image/png",
+                byteSize: 2048,
+                width: 512,
+                height: 768,
+                frameId: "front-42",
+              },
+            }),
+          ),
+        );
+        socket.send(
+          JSON.stringify(
+            envelope("vision.try_on.attempt.generating", {
+              attemptId,
+              stage: "generating",
+            }),
+          ),
+        );
+        socket.send(
+          JSON.stringify(
+            envelope("vision.try_on.attempt.completed", {
+              attemptId,
+              result: {
+                reference: resultReference,
+                digest: `sha256:${"c".repeat(64)}`,
+                contentType: "image/png",
+                byteSize: 2048,
+                width: 512,
+                height: 768,
+              },
+            }),
+          ),
+        );
+      },
+      (request, response) => {
+        const grantUrl = resultReference ? new URL(resultReference) : null;
+        const isGrantRequest =
+          grantUrl !== null &&
+          request.url === `${grantUrl.pathname}${grantUrl.search}`;
+        response.statusCode =
+          isGrantRequest && ownerSocket?.readyState === 1 ? 200 : 404;
+        response.end(
+          response.statusCode === 200 ? "result-bytes" : "not-found",
+        );
+      },
+    );
     const events: string[] = [];
     let resolveTerminal!: () => void;
     const terminal = new Promise<void>((resolve) => {
@@ -284,6 +358,46 @@ describe("native Vision single-path adapter", () => {
       "vision.try_on.attempt.generating",
       "vision.try_on.attempt.completed",
     ]);
+    expect((await fetch(resultReference)).status).toBe(200);
+    attempt.close();
+    await vi.waitFor(() => {
+      expect(ownerSocket?.readyState).toBe(3);
+    });
+    expect((await fetch(resultReference)).status).toBe(404);
+  });
+
+  it("完成结果持有连接异常断开后发出本地资源丢失信号并隔离迟到事件", async () => {
+    vi.useFakeTimers();
+    installFakeVisionSocket();
+    const events: VisionTryOnAttemptEvent[] = [];
+    const completedResourceOwnerLost = vi.fn();
+    const opening = openVisionTryOnAttempt(
+      { url: "ws://127.0.0.1:65499/v2/machine" },
+      input(),
+      (event) => events.push(event),
+      undefined,
+      completedResourceOwnerLost,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    const socket = FakeVisionSocket.instances[0];
+    socket.emit(ready());
+    await opening;
+    emitCompletedAttempt(socket);
+
+    socket.close();
+    const eventCountAfterDisconnect = events.length;
+    socket.emit(envelope("vision.try_on.attempt.accepted", { attemptId }));
+
+    expect(events[events.length - 1]?.type).toBe(
+      "vision.try_on.attempt.completed",
+    );
+    expect(completedResourceOwnerLost).toHaveBeenCalledOnce();
+    expect(completedResourceOwnerLost).toHaveBeenCalledWith({
+      attemptId,
+      visionSocketUrl: "ws://127.0.0.1:65499/v2/machine",
+    });
+    expect(events).toHaveLength(eventCountAfterDisconnect);
+    expect(socket.listenerBalance).toBe(0);
   });
 
   it("拒绝畸形或其他尝试的捕获消息且不分发", async () => {
@@ -393,10 +507,15 @@ describe("native Vision single-path adapter", () => {
       resolveTerminal = resolve;
     });
 
-    await openVisionTryOnAttempt({ url }, input(), (message) => {
-      events.push(message);
-      if (message.type === "vision.try_on.attempt.completed") resolveTerminal();
-    });
+    const attempt = await openVisionTryOnAttempt(
+      { url },
+      input(),
+      (message) => {
+        events.push(message);
+        if (message.type === "vision.try_on.attempt.completed")
+          resolveTerminal();
+      },
+    );
     await terminal;
 
     expect(events.map((message) => message.type)).toEqual([
@@ -407,6 +526,7 @@ describe("native Vision single-path adapter", () => {
       "vision.try_on.attempt.completed",
     ]);
     expect(events[2]?.payload.attemptId).toBe(attemptId);
+    attempt.close();
   });
 
   it("rejects readiness that omits the one try-on capability", async () => {
@@ -443,6 +563,52 @@ describe("native Vision single-path adapter", () => {
       expect(received).toContain("vision.try_on.attempt.cancel");
     });
     expect(events).toEqual(["vision.try_on.attempt.canceled"]);
+  });
+
+  it.each([
+    ["failed", "vision.try_on.attempt.failed"],
+    ["canceled", "vision.try_on.attempt.canceled"],
+    ["timeout", "vision.try_on.attempt.canceled"],
+  ] as const)("%s 终态及时释放资源持有连接", async (outcome, expectedType) => {
+    vi.useFakeTimers();
+    installFakeVisionSocket();
+    const events: VisionTryOnAttemptEvent[] = [];
+    const opening = openVisionTryOnAttempt(
+      {
+        url: "ws://127.0.0.1:65499/v2/machine",
+        tryOnAttemptTimeoutMs: 100,
+      },
+      input(),
+      (event) => events.push(event),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    const socket = FakeVisionSocket.instances[0];
+    socket.emit(ready());
+    await opening;
+
+    if (outcome === "failed") {
+      socket.emit(
+        envelope("vision.try_on.attempt.failed", {
+          attemptId,
+          reason: "try_on_failed",
+        }),
+      );
+    } else if (outcome === "canceled") {
+      socket.emit(
+        envelope("vision.try_on.attempt.canceled", {
+          attemptId,
+          reason: "departure",
+        }),
+      );
+    } else {
+      await vi.advanceTimersByTimeAsync(100);
+    }
+
+    expect(events[events.length - 1]?.type).toBe(expectedType);
+    expect(socket.readyState).toBe(FakeVisionSocket.CLOSED);
+    expect(socket.closeCount).toBe(1);
+    expect(socket.listenerBalance).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("fences stale profile-connection messages while delivering only the current generation", async () => {

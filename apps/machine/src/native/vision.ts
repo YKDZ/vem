@@ -403,6 +403,9 @@ export async function openVisionTryOnAttempt(
     resultContext: VisionTryOnAttempt["resultContext"],
   ) => void,
   signal?: AbortSignal,
+  onCompletedResourceOwnerLost?: (
+    resultContext: VisionTryOnAttempt["resultContext"],
+  ) => void,
 ): Promise<VisionTryOnAttempt> {
   const options = connectionOptions(connection);
   if (!options.enabled) throw new Error("视觉模块未启用，无法启动虚拟试衣");
@@ -440,6 +443,14 @@ export async function openVisionTryOnAttempt(
     onError = null;
     onAbort = null;
   };
+  const retainCompletedOwner = (): void => {
+    if (terminalTimer !== null) {
+      clearTimeout(terminalTimer);
+      terminalTimer = null;
+    }
+    if (onMessage) socket.removeEventListener("message", onMessage);
+    onMessage = null;
+  };
   const close = (): void => {
     if (closed) return;
     closed = true;
@@ -459,6 +470,11 @@ export async function openVisionTryOnAttempt(
       payload: { attemptId: input.attemptId, reason },
     });
     onEvent(canceled, resultContext);
+    close();
+  };
+  const emitCompletedResourceOwnerLost = (): void => {
+    if (!terminal || closed) return;
+    onCompletedResourceOwnerLost?.(resultContext);
     close();
   };
   try {
@@ -538,7 +554,11 @@ export async function openVisionTryOnAttempt(
             message.type === "vision.try_on.attempt.canceled"
           ) {
             terminal = true;
-            close();
+            if (message.type === "vision.try_on.attempt.completed") {
+              retainCompletedOwner();
+            } else {
+              close();
+            }
           }
         }
       } catch {
@@ -546,10 +566,12 @@ export async function openVisionTryOnAttempt(
       }
     };
     onClose = () => {
-      emitCanceled("disconnect");
+      if (terminal) emitCompletedResourceOwnerLost();
+      else emitCanceled("disconnect");
     };
     onError = () => {
-      emitCanceled("disconnect");
+      if (terminal) emitCompletedResourceOwnerLost();
+      else emitCanceled("disconnect");
     };
     socket.addEventListener("message", onMessage);
     socket.addEventListener("close", onClose);
@@ -623,11 +645,10 @@ export type VisionGarmentAdjustmentInput = {
 };
 
 /**
- * Re-render one completed try-on result at a customer-chosen garment scale.
+ * 按顾客选择的成衣缩放比例重新渲染一个已完成结果。
  *
- * Adjustment deliberately uses its own short-lived socket instead of keeping
- * the attempt socket open after its terminal: a completed attempt already
- * released its owner, so the re-render is an independent post-result request.
+ * 调整请求使用独立短连接，但新结果授权仍属于原完成态资源持有连接。原尝试
+ * WebSocket 必须保持到页面离开、清理或重试；这里只在收到调整结果后释放请求连接。
  */
 export async function openVisionGarmentAdjustment(
   connection: VisionRuntimeConnection = {},

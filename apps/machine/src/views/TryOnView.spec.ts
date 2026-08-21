@@ -117,9 +117,12 @@ function event(type: VisionTryOnAttemptEvent["type"], payload: object) {
   return { type, payload } as VisionTryOnAttemptEvent;
 }
 
-function acquisition(holdRemainingMs = 3_000): VisionTryOnAttemptEvent {
+function acquisition(
+  holdRemainingMs = 3_000,
+  eventAttemptId = attemptId,
+): VisionTryOnAttemptEvent {
   return event("vision.try_on.attempt.acquiring", {
-    attemptId,
+    attemptId: eventAttemptId,
     preview: {
       reference:
         "http://127.0.0.1:7892/v2/try-on/acquisition/preview.mjpeg?token=preview-token",
@@ -132,9 +135,9 @@ function acquisition(holdRemainingMs = 3_000): VisionTryOnAttemptEvent {
   });
 }
 
-function captured(): VisionTryOnAttemptEvent {
+function captured(eventAttemptId = attemptId): VisionTryOnAttemptEvent {
   return event("vision.try_on.attempt.captured", {
-    attemptId,
+    attemptId: eventAttemptId,
     captured: {
       reference:
         "http://127.0.0.1:7892/v2/try-on/captured/frame.png?token=captured-token",
@@ -206,6 +209,7 @@ describe("TryOnView single-path acquisition UI", () => {
     let emit: ((next: VisionTryOnAttemptEvent) => void) | undefined;
     let emittedAttemptId = attemptId;
     const capture = vi.fn(() => true);
+    const close = vi.fn();
     openAttemptMock.mockImplementation((_connection, _input, onEvent) => {
       const localAttemptId = _input.attemptId;
       emittedAttemptId = localAttemptId;
@@ -217,7 +221,7 @@ describe("TryOnView single-path acquisition UI", () => {
             visionSocketUrl: "ws://127.0.0.1:7892/ws",
           },
         );
-      return Promise.resolve({ close: vi.fn(), capture, cancel: vi.fn() });
+      return Promise.resolve({ close, capture, cancel: vi.fn() });
     });
     const host = await mount();
     await vi.waitFor(() => {
@@ -322,6 +326,76 @@ describe("TryOnView single-path acquisition UI", () => {
     expect(
       host.querySelector('[data-test="try-on-garment-scale"]'),
     ).not.toBeNull();
+    expect(close).not.toHaveBeenCalled();
+
+    mountedApp?.unmount();
+    mountedApp = null;
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("完成结果持有连接断开后隐藏不可读结果并显示明确提示", async () => {
+    let emit: ((next: VisionTryOnAttemptEvent) => void) | undefined;
+    let completedResourceOwnerLost: (() => void) | undefined;
+    let emittedAttemptId = attemptId;
+    openAttemptMock.mockImplementation(
+      (_connection, input, onEvent, _signal, onOwnerLost) => {
+        emittedAttemptId = input.attemptId;
+        emit = (next) =>
+          onEvent(
+            {
+              ...next,
+              payload: { ...next.payload, attemptId: input.attemptId },
+            },
+            {
+              attemptId: input.attemptId,
+              visionSocketUrl: "ws://127.0.0.1:7892/ws",
+            },
+          );
+        completedResourceOwnerLost = () =>
+          onOwnerLost({
+            attemptId: input.attemptId,
+            visionSocketUrl: "ws://127.0.0.1:7892/ws",
+          });
+        return Promise.resolve({
+          close: vi.fn(),
+          capture: vi.fn(),
+          cancel: vi.fn(),
+        });
+      },
+    );
+    const host = await mount();
+    await vi.waitFor(() => {
+      expect(openAttemptMock).toHaveBeenCalledOnce();
+    });
+    if (!emit) throw new Error("预期收到原生试衣事件回调");
+
+    emit(event("vision.try_on.attempt.accepted", { attemptId }));
+    emit(acquisition());
+    emit(captured());
+    emit(
+      event("vision.try_on.attempt.generating", {
+        attemptId,
+        stage: "generating",
+      }),
+    );
+    emit(completed(emittedAttemptId));
+    await nextTick();
+    expect(
+      host.querySelector('[data-test="try-on-result-image"]'),
+    ).not.toBeNull();
+
+    if (!completedResourceOwnerLost)
+      throw new Error("预期收到完成结果持有连接丢失回调");
+    completedResourceOwnerLost();
+    emit(completed(emittedAttemptId));
+    await nextTick();
+
+    expect(host.querySelector('[data-test="try-on-result-image"]')).toBeNull();
+    expect(useTryOnStore().phase).toBe("completed");
+    expect(
+      host.querySelector('[data-test="try-on-result-error"]')?.textContent,
+    ).toContain("结果连接已断开");
+    expect(host.querySelector('[data-test="try-on-retry"]')).not.toBeNull();
   });
 
   it("超时后提供可重试和返回商品的恢复路径", async () => {
@@ -514,14 +588,42 @@ describe("TryOnView single-path acquisition UI", () => {
       cancel: vi.fn(),
     });
     const store = useTryOnStore();
-    store.context = {
-      catalogKey: `product:${productId}`,
-      productId,
-      variantId,
+    const catalog = useCatalogStore();
+    store.prepare(
+      catalog.saleableVariantItemFor(`product:${productId}`, variantId)!,
+    );
+    await store.start();
+    const activeAttemptId = store.attemptId!;
+    const context = {
+      attemptId: activeAttemptId,
+      visionSocketUrl: "ws://127.0.0.1:7892/ws",
     };
-    store.attemptId = attemptId;
-    store.phase = "completed";
-    store.result = completed().payload.result;
+    store.applyEvent(
+      activeAttemptId,
+      event("vision.try_on.attempt.accepted", {
+        attemptId: activeAttemptId,
+      }),
+      context,
+    );
+    store.applyEvent(
+      activeAttemptId,
+      acquisition(3_000, activeAttemptId),
+      context,
+    );
+    store.applyEvent(activeAttemptId, captured(activeAttemptId), context);
+    store.applyEvent(
+      activeAttemptId,
+      event("vision.try_on.attempt.generating", {
+        attemptId: activeAttemptId,
+        stage: "generating",
+      }),
+      context,
+    );
+    store.applyEvent(activeAttemptId, completed(activeAttemptId), context);
+    openAdjustMock.mockResolvedValue({
+      visionSocketUrl: "ws://127.0.0.1:7892/ws",
+      result: completed(activeAttemptId).payload.result,
+    });
     const host = await mount();
 
     host
@@ -530,10 +632,11 @@ describe("TryOnView single-path acquisition UI", () => {
     await vi.waitFor(() => {
       expect(openAdjustMock).toHaveBeenCalledOnce();
     });
-    expect(openAdjustMock).toHaveBeenCalledWith(expect.anything(), {
-      attemptId,
-      garmentScale: 1.05,
-    });
+    expect(openAdjustMock).toHaveBeenCalledWith(
+      expect.anything(),
+      { attemptId: activeAttemptId, garmentScale: 1.05 },
+      expect.any(AbortSignal),
+    );
     await nextTick();
     expect(
       host

@@ -72,7 +72,11 @@ const garmentScalePercent = computed(() =>
   Math.round(tryOn.garmentScale * 100),
 );
 const canScaleGarment = computed(
-  () => tryOn.phase === "completed" && !tryOn.adjusting,
+  () =>
+    tryOn.phase === "completed" &&
+    Boolean(tryOn.result) &&
+    !tryOn.resultUnavailable &&
+    !tryOn.adjusting,
 );
 const canScaleUp = computed(
   () => canScaleGarment.value && tryOn.garmentScale < 1.6,
@@ -240,11 +244,18 @@ function scaleGarment(delta: number): void {
         data-test="try-on-captured-image"
       />
       <p
-        v-else-if="tryOn.phase === 'completed' && resultErrored"
+        v-else-if="
+          tryOn.phase === 'completed' &&
+          (tryOn.resultUnavailable || resultErrored)
+        "
         class="text-base text-red-600"
         data-test="try-on-result-error"
       >
-        试衣结果暂不可显示，请重试或返回商品。
+        {{
+          tryOn.resultUnavailable
+            ? "试衣结果连接已断开，请重试或返回商品。"
+            : "试衣结果暂不可显示，请重试或返回商品。"
+        }}
       </p>
       <p
         v-else-if="tryOn.phase !== 'acquiring'"
@@ -275,7 +286,7 @@ function scaleGarment(delta: number): void {
         商品购买不受影响。
       </p>
       <div
-        v-if="tryOn.phase === 'completed'"
+        v-if="tryOn.phase === 'completed' && tryOn.result"
         class="flex items-center justify-center gap-4"
         data-test="try-on-garment-scale"
       >

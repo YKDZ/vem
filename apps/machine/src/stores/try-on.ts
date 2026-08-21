@@ -54,6 +54,7 @@ export const useTryOnStore = defineStore("tryOn", {
     attemptId: null as string | null,
     context: null as TryOnContext | null,
     result: null as ReturnType<typeof validateTryOnResultReference> | null,
+    resultUnavailable: false,
     failureReason: null as string | null,
     previewUrl: null as string | null,
     captured: null as ReturnType<typeof validateTryOnCapturedFrame> | null,
@@ -91,6 +92,7 @@ export const useTryOnStore = defineStore("tryOn", {
       this.phase = "starting";
       this.attemptId = attemptId;
       this.result = null;
+      this.resultUnavailable = false;
       this.failureReason = null;
       // 成衣缩放属于单个已完成结果；重试会新建捕获，必须回到合同规定的 100% 基线。
       this.garmentScale = 1;
@@ -133,11 +135,28 @@ export const useTryOnStore = defineStore("tryOn", {
             this.applyEvent(attemptId, event, resultContext);
           }
         };
+        const onCompletedResourceOwnerLost = (
+          resultContext: Parameters<typeof this.applyEvent>[2],
+        ) => {
+          if (
+            !isCurrentOperation(owner, attemptId) ||
+            resultContext.attemptId !== attemptId ||
+            this.phase !== "completed"
+          ) {
+            return;
+          }
+          this.result = null;
+          this.resultUnavailable = true;
+          this.adjusting = false;
+          owner.controller.abort();
+          clearOperation(owner);
+        };
         const attempt = await openVisionTryOnAttempt(
           { machineCode: useMachineStore().machineCode },
           { attemptId, variantId: currentItem.variantId, garment },
           onEvent,
           owner.controller.signal,
+          onCompletedResourceOwnerLost,
         );
         if (!isCurrentOperation(owner, attemptId)) {
           attempt.close();
@@ -159,10 +178,12 @@ export const useTryOnStore = defineStore("tryOn", {
     },
     clear(): void {
       this.cancelCurrentAttempt("route_leave");
+      cancelCurrentOperation();
       this.phase = "idle";
       this.attemptId = null;
       this.context = null;
       this.result = null;
+      this.resultUnavailable = false;
       this.failureReason = null;
       this.garmentScale = 1;
       this.adjusting = false;
@@ -291,8 +312,8 @@ export const useTryOnStore = defineStore("tryOn", {
           );
           this.phase = "completed";
           this.failureReason = null;
+          this.resultUnavailable = false;
           this.clearAcquisitionPresentation();
-          clearOperation(currentOperation);
         } catch {
           this.phase = "failed";
           this.failureReason = "try_on_failed";
@@ -320,11 +341,15 @@ export const useTryOnStore = defineStore("tryOn", {
       clearOperation(currentOperation);
     },
     async requestGarmentScale(scale: number): Promise<boolean> {
+      const owner = currentOperation;
       if (
         this.phase !== "completed" ||
         this.attemptId === null ||
+        !this.result ||
+        this.resultUnavailable ||
         this.adjusting ||
-        !isSupportedGarmentScale(scale)
+        !isSupportedGarmentScale(scale) ||
+        !isCurrentOperation(owner, this.attemptId)
       ) {
         return false;
       }
@@ -334,8 +359,14 @@ export const useTryOnStore = defineStore("tryOn", {
         const adjusted = await openVisionGarmentAdjustment(
           { machineCode: useMachineStore().machineCode },
           { attemptId, garmentScale: scale },
+          owner.controller.signal,
         );
-        if (this.attemptId !== attemptId || this.phase !== "completed") {
+        if (
+          this.attemptId !== attemptId ||
+          this.phase !== "completed" ||
+          this.resultUnavailable ||
+          !isCurrentOperation(owner, attemptId)
+        ) {
           return false;
         }
         this.result = validateTryOnResultReference(adjusted.result, {

@@ -173,6 +173,44 @@ function completed(
   >;
 }
 
+async function startCompletedStoreAttempt(close = vi.fn()) {
+  const catalog = useCatalogStore();
+  let emit: ((next: VisionTryOnAttemptEvent) => void) | undefined;
+  let completedResourceOwnerLost: (() => void) | undefined;
+  openAttemptMock.mockImplementationOnce(
+    (_connection, input, onEvent, _signal, onOwnerLost) => {
+      const resultContext = {
+        attemptId: input.attemptId,
+        visionSocketUrl: "ws://127.0.0.1:7892/ws",
+      };
+      emit = (next) => onEvent(next, resultContext);
+      completedResourceOwnerLost = () => onOwnerLost(resultContext);
+      return Promise.resolve({ close, capture: vi.fn(), cancel: vi.fn() });
+    },
+  );
+  const store = useTryOnStore();
+  store.prepare(
+    catalog.saleableVariantItemFor(`product:${productId}`, variantId)!,
+  );
+  await store.start();
+  const activeAttemptId = store.attemptId!;
+  if (!emit || !completedResourceOwnerLost) {
+    throw new Error("预期收到原生试衣事件和完成结果持有连接回调");
+  }
+  emit(accepted(activeAttemptId));
+  emit(acquiring(activeAttemptId));
+  emit(captured(activeAttemptId));
+  emit(generating(activeAttemptId));
+  emit(completed(activeAttemptId));
+  return {
+    activeAttemptId,
+    close,
+    completedResourceOwnerLost,
+    emit,
+    store,
+  };
+}
+
 describe("try-on store catalog boundary", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
@@ -207,6 +245,7 @@ describe("try-on store catalog boundary", () => {
       }),
       expect.any(Function),
       expect.any(AbortSignal),
+      expect.any(Function),
     );
   });
 
@@ -263,6 +302,95 @@ describe("try-on store lifecycle", () => {
     expect(store.result?.reference).toContain(`/results/${firstAttemptId}`);
   });
 
+  it("完成结果在显式清理前持续持有原尝试资源连接", async () => {
+    const { activeAttemptId, close, store } =
+      await startCompletedStoreAttempt();
+
+    expect(store.phase).toBe("completed");
+    expect(store.result?.reference).toContain(`/results/${activeAttemptId}`);
+    expect(close).not.toHaveBeenCalled();
+
+    openAdjustMock.mockResolvedValue({
+      visionSocketUrl: "ws://127.0.0.1:7892/ws",
+      result: completed(activeAttemptId).payload.result,
+    });
+    await expect(store.requestGarmentScale(1.05)).resolves.toBe(true);
+    expect(close).not.toHaveBeenCalled();
+
+    let resolveAdjustment!: (value: unknown) => void;
+    let adjustmentSignal: AbortSignal | undefined;
+    openAdjustMock.mockImplementation(
+      (_connection, _input, signal) =>
+        new Promise((resolve) => {
+          adjustmentSignal = signal;
+          resolveAdjustment = resolve;
+        }),
+    );
+    const pendingAdjustment = store.requestGarmentScale(1.1);
+    await vi.waitFor(() => {
+      expect(openAdjustMock).toHaveBeenCalledTimes(2);
+    });
+    store.clear();
+    expect(adjustmentSignal?.aborted).toBe(true);
+    expect(close).toHaveBeenCalledOnce();
+    resolveAdjustment({
+      visionSocketUrl: "ws://127.0.0.1:7892/ws",
+      result: completed(activeAttemptId).payload.result,
+    });
+    await expect(pendingAdjustment).resolves.toBe(false);
+  });
+
+  it("重试只释放旧完成态资源连接，不释放新尝试连接", async () => {
+    const oldClose = vi.fn();
+    const newClose = vi.fn();
+    const { store } = await startCompletedStoreAttempt(oldClose);
+    openAttemptMock.mockResolvedValueOnce({
+      close: newClose,
+      capture: vi.fn(),
+      cancel: vi.fn(),
+    });
+    expect(oldClose).not.toHaveBeenCalled();
+
+    await store.retry();
+
+    expect(oldClose).toHaveBeenCalledOnce();
+    expect(newClose).not.toHaveBeenCalled();
+    store.clear();
+    expect(newClose).toHaveBeenCalledOnce();
+  });
+
+  it("完成结果持有连接断开后移除不可读结果且不接收迟到完成", async () => {
+    const { activeAttemptId, close, completedResourceOwnerLost, emit, store } =
+      await startCompletedStoreAttempt();
+    let resolveAdjustment!: (value: unknown) => void;
+    let adjustmentSignal: AbortSignal | undefined;
+    openAdjustMock.mockImplementation(
+      (_connection, _input, signal) =>
+        new Promise((resolve) => {
+          adjustmentSignal = signal;
+          resolveAdjustment = resolve;
+        }),
+    );
+    const pendingAdjustment = store.requestGarmentScale(1.05);
+    await vi.waitFor(() => {
+      expect(openAdjustMock).toHaveBeenCalledOnce();
+    });
+    completedResourceOwnerLost();
+    emit(completed(activeAttemptId));
+    expect(adjustmentSignal?.aborted).toBe(true);
+    resolveAdjustment({
+      visionSocketUrl: "ws://127.0.0.1:7892/ws",
+      result: completed(activeAttemptId).payload.result,
+    });
+    await expect(pendingAdjustment).resolves.toBe(false);
+
+    expect(store.phase).toBe("completed");
+    expect(store.failureReason).toBeNull();
+    expect(store.result).toBeNull();
+    expect(store.resultUnavailable).toBe(true);
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it("捕获资源属于其他尝试时保持拒绝状态", () => {
     const store = useTryOnStore();
     store.attemptId = firstAttemptId;
@@ -286,7 +414,7 @@ describe("try-on store lifecycle", () => {
     store.attemptId = firstAttemptId;
     store.phase = "acquiring";
     store.manualCaptureAllowed = true;
-    // Start the operation through its public seam so the capture owner exists.
+    // 通过公开入口启动操作，以建立采集资源持有连接。
     const catalog = useCatalogStore();
     store.prepare(
       catalog.saleableVariantItemFor(`product:${productId}`, variantId)!,
@@ -416,10 +544,14 @@ describe("try-on store lifecycle", () => {
       result: completed(currentAttempt).payload.result,
     });
     await expect(store.requestGarmentScale(1.05)).resolves.toBe(true);
-    expect(openAdjustMock).toHaveBeenCalledWith(expect.anything(), {
-      attemptId: currentAttempt,
-      garmentScale: 1.05,
-    });
+    expect(openAdjustMock).toHaveBeenCalledWith(
+      expect.anything(),
+      {
+        attemptId: currentAttempt,
+        garmentScale: 1.05,
+      },
+      expect.any(AbortSignal),
+    );
   });
 
   it("每次重试都将成衣缩放重置到绝对的百分之百基线", async () => {
@@ -453,10 +585,27 @@ describe("try-on store lifecycle", () => {
   });
 
   it("只接受百分之八十至一百六十范围内绝对的百分之五成衣缩放步进", async () => {
+    const catalog = useCatalogStore();
     const store = useTryOnStore();
-    store.attemptId = firstAttemptId;
-    store.phase = "completed";
-    store.result = completed(firstAttemptId).payload.result;
+    store.prepare(
+      catalog.saleableVariantItemFor(`product:${productId}`, variantId)!,
+    );
+    openAttemptMock.mockResolvedValue({
+      close: vi.fn(),
+      capture: vi.fn(),
+      cancel: vi.fn(),
+    });
+    await store.start();
+    const activeAttemptId = store.attemptId!;
+    const context = {
+      attemptId: activeAttemptId,
+      visionSocketUrl: "ws://127.0.0.1:7892/ws",
+    };
+    store.applyEvent(activeAttemptId, accepted(activeAttemptId), context);
+    store.applyEvent(activeAttemptId, acquiring(activeAttemptId), context);
+    store.applyEvent(activeAttemptId, captured(activeAttemptId), context);
+    store.applyEvent(activeAttemptId, generating(activeAttemptId), context);
+    store.applyEvent(activeAttemptId, completed(activeAttemptId), context);
 
     await expect(store.requestGarmentScale(1.03)).resolves.toBe(false);
     await expect(store.requestGarmentScale(1.65)).resolves.toBe(false);
@@ -464,13 +613,14 @@ describe("try-on store lifecycle", () => {
 
     openAdjustMock.mockResolvedValue({
       visionSocketUrl: "ws://127.0.0.1:7892/ws",
-      result: completed(firstAttemptId).payload.result,
+      result: completed(activeAttemptId).payload.result,
     });
     await expect(store.requestGarmentScale(1.1)).resolves.toBe(true);
-    expect(openAdjustMock).toHaveBeenLastCalledWith(expect.anything(), {
-      attemptId: firstAttemptId,
-      garmentScale: 1.1,
-    });
+    expect(openAdjustMock).toHaveBeenLastCalledWith(
+      expect.anything(),
+      { attemptId: activeAttemptId, garmentScale: 1.1 },
+      expect.any(AbortSignal),
+    );
   });
 
   it("重试后不让旧结果调整覆盖新尝试", async () => {
@@ -478,33 +628,44 @@ describe("try-on store lifecycle", () => {
     await catalog.refresh();
     const store = useTryOnStore();
     const resolveAdjustment = vi.fn();
+    let adjustmentSignal: AbortSignal | undefined;
     openAdjustMock.mockImplementation(
-      () =>
+      (_connection, _input, signal) =>
         new Promise((resolve) => {
+          adjustmentSignal = signal;
           resolveAdjustment.mockImplementation(resolve);
         }),
     );
     store.prepare(
       catalog.saleableVariantItemFor(`product:${productId}`, variantId)!,
     );
-    store.attemptId = firstAttemptId;
-    store.phase = "completed";
-    store.result = completed(firstAttemptId).payload.result;
-
-    const pendingAdjustment = store.requestGarmentScale(1.05);
-    await vi.waitFor(() => {
-      expect(openAdjustMock).toHaveBeenCalledOnce();
-    });
     openAttemptMock.mockResolvedValue({
       close: vi.fn(),
       capture: vi.fn(),
       cancel: vi.fn(),
     });
+    await store.start();
+    const oldAttemptId = store.attemptId!;
+    const oldContext = {
+      attemptId: oldAttemptId,
+      visionSocketUrl: "ws://127.0.0.1:7892/ws",
+    };
+    store.applyEvent(oldAttemptId, accepted(oldAttemptId), oldContext);
+    store.applyEvent(oldAttemptId, acquiring(oldAttemptId), oldContext);
+    store.applyEvent(oldAttemptId, captured(oldAttemptId), oldContext);
+    store.applyEvent(oldAttemptId, generating(oldAttemptId), oldContext);
+    store.applyEvent(oldAttemptId, completed(oldAttemptId), oldContext);
+
+    const pendingAdjustment = store.requestGarmentScale(1.05);
+    await vi.waitFor(() => {
+      expect(openAdjustMock).toHaveBeenCalledOnce();
+    });
     await store.retry();
     const currentAttempt = store.attemptId;
+    expect(adjustmentSignal?.aborted).toBe(true);
     resolveAdjustment({
       visionSocketUrl: "ws://127.0.0.1:7892/ws",
-      result: completed(firstAttemptId).payload.result,
+      result: completed(oldAttemptId).payload.result,
     });
 
     await expect(pendingAdjustment).resolves.toBe(false);
