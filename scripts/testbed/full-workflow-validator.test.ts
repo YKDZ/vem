@@ -1240,7 +1240,7 @@ function visionExperienceCapturedReport({
         name: "visionExperience",
         status: "passed",
         primaryFailure: null,
-        assertionCount: 10,
+        assertionCount: 12,
         assertions: [
           {
             schemaVersion: "vem-runtime-testbed-business-assertion/v1",
@@ -1253,6 +1253,8 @@ function visionExperienceCapturedReport({
           },
           ...[
             "countdown-rendered-sequence",
+            "countdown-visible-duration",
+            "captured-absent-outside-held",
             "capture-after-countdown",
             "preview-live-through-countdown",
             "captured-frame-held-during-generation",
@@ -1382,6 +1384,20 @@ describe("full workflow aggregate validator", () => {
       validateBusinessCheckReport(
         descriptor("visionExperience"),
         missingTimelineAssertion,
+        "vision-experience.json",
+      ).status,
+      "failed",
+    );
+
+    const missingCountdownDuration = structuredClone(report);
+    missingCountdownDuration.businessSets[0].assertions =
+      missingCountdownDuration.businessSets[0].assertions.filter(
+        (assertion) => assertion.id !== "countdown-visible-duration",
+      );
+    assert.equal(
+      validateBusinessCheckReport(
+        descriptor("visionExperience"),
+        missingCountdownDuration,
         "vision-experience.json",
       ).status,
       "failed",

@@ -806,6 +806,171 @@ describe("visionExperience vertical slice driver", () => {
     assert.equal(result.ok, false);
   });
 
+  it("按每个数字后的首个非本数字观测计算可见桶，而不把 1 截到最后一次同数字轮询", () => {
+    const attemptId = "attempt-countdown-visible-boundary";
+    const countdown = [
+      [0, 3_000, "3", "preview-3a"],
+      [600, 2_400, "3", "preview-3b"],
+      [1_217, 1_900, "2", "preview-2a"],
+      [1_700, 1_400, "2", "preview-2b"],
+      [2_097, 900, "1", "preview-1a"],
+      [2_697, 300, "1", "preview-1b"],
+      [2_989, null, null, null],
+    ] as const;
+    const held = (atMs: number, state: "captured" | "generating") => ({
+      atMs,
+      attemptId,
+      state,
+      holdRemainingMs: null,
+      countdownText: null,
+      previewVisible: false,
+      previewFrameHash: null,
+      capturedFrameId: "frame-countdown-boundary",
+      capturedDigest: "sha256:countdown-boundary",
+      capturedVisible: true,
+      capturedNaturalWidth: 720,
+      capturedNaturalHeight: 1280,
+      capturedSourceMatchesProtocol: true,
+      capturedSourceDigest: "sha256:captured-source",
+      capturedFrameHash: "sha256:captured-frame",
+    });
+    const result = validateVisionExperienceTimeline({
+      attemptId,
+      samples: [
+        ...countdown.map(
+          ([atMs, holdRemainingMs, countdownText, previewFrameHash]) => ({
+            atMs,
+            attemptId,
+            state: "acquiring",
+            holdRemainingMs,
+            countdownText,
+            previewVisible: countdownText !== null,
+            previewFrameHash,
+          }),
+        ),
+        held(3_280, "captured"),
+        held(3_400, "generating"),
+      ],
+    });
+
+    assert.equal(result.countdownVisibleDuration.observed.passed, true);
+    assert.deepEqual(
+      result.countdownVisibleDuration.observed.bucketDurationsMs,
+      {
+        "3": 1_217,
+        "2": 880,
+        "1": 892,
+      },
+    );
+    assert.equal(
+      result.countdownVisibleDuration.observed.totalDurationMs,
+      3_280,
+    );
+    assert.equal(result.captureAfterCountdown.observed, true);
+    assert.equal(result.ok, true);
+  });
+
+  it("把 699ms 桶、2499ms 总时长、早捕获、跳号和非单调时间保持为时序失败", () => {
+    const attemptId = "attempt-countdown-visible-mutations";
+    const held = (
+      atMs: number,
+      state: "captured" | "generating",
+    ): VisionExperienceObservation => ({
+      atMs,
+      attemptId,
+      state,
+      holdRemainingMs: null,
+      countdownText: null,
+      previewVisible: false,
+      previewFrameHash: null,
+      capturedFrameId: "mutation-frame",
+      capturedDigest: "sha256:mutation",
+      capturedVisible: true,
+      capturedNaturalWidth: 720,
+      capturedNaturalHeight: 1280,
+      capturedSourceMatchesProtocol: true,
+      capturedSourceDigest: "sha256:captured-source",
+      capturedFrameHash: "sha256:captured-frame",
+    });
+    const samples = (
+      entries: readonly (readonly [number, number, string])[],
+      heldAt: number,
+      includeBoundary = true,
+    ): VisionExperienceObservation[] => [
+      ...entries.map(([atMs, holdRemainingMs, countdownText]) => ({
+        atMs,
+        attemptId,
+        state: "acquiring",
+        holdRemainingMs,
+        countdownText,
+        previewVisible: true,
+        previewFrameHash: `preview-${atMs}`,
+      })),
+      ...(includeBoundary
+        ? [
+            {
+              atMs: heldAt - 99,
+              attemptId,
+              state: "acquiring",
+              holdRemainingMs: null,
+              countdownText: null,
+              previewVisible: false,
+              previewFrameHash: null,
+            },
+          ]
+        : []),
+      held(heldAt, "captured"),
+      held(heldAt + 100, "generating"),
+    ];
+    const baseline = [
+      [0, 3_000, "3"],
+      [750, 2_250, "3"],
+      [800, 2_000, "2"],
+      [1_550, 1_250, "2"],
+      [1_600, 1_000, "1"],
+      [2_350, 250, "1"],
+    ] as const;
+    const validate = (input: VisionExperienceObservation[]) =>
+      validateVisionExperienceTimeline({ attemptId, samples: input });
+
+    assert.equal(validate(samples(baseline, 2_500)).ok, true);
+    assert.equal(
+      validate(
+        samples(
+          baseline.map((entry, index) =>
+            index === 2 ? [699, entry[1], entry[2]] : entry,
+          ),
+          2_500,
+        ),
+      ).countdownVisibleDuration.observed.passed,
+      false,
+    );
+    const totalTooShort = validate(samples(baseline, 2_499));
+    assert.equal(
+      totalTooShort.countdownVisibleDuration.observed.totalDurationMs,
+      2_499,
+    );
+    assert.equal(totalTooShort.countdownVisibleDuration.observed.passed, false);
+    const earlyCapture = validate(samples(baseline, 2_400, false));
+    assert.equal(earlyCapture.captureAfterCountdown.observed, false);
+    assert.equal(earlyCapture.ok, false);
+    const skippedDigit = validate(
+      samples(
+        baseline.map((entry, index) =>
+          index === 2 ? [entry[0], entry[1], "1"] : entry,
+        ),
+        2_500,
+      ),
+    );
+    assert.equal(skippedDigit.captureAfterCountdown.observed, false);
+    assert.equal(skippedDigit.ok, false);
+    const nonMonotonic = samples(baseline, 2_500);
+    [nonMonotonic[1], nonMonotonic[2]] = [nonMonotonic[2]!, nonMonotonic[1]!];
+    const nonMonotonicResult = validate(nonMonotonic);
+    assert.equal(nonMonotonicResult.captureAfterCountdown.observed, false);
+    assert.equal(nonMonotonicResult.ok, false);
+  });
+
   it("将每个连续倒计时样本的 protocol hold 与 DOM ceil(hold/1000) 绑定", () => {
     const attemptId = "attempt-hold";
     const baseline = [
@@ -1307,11 +1472,25 @@ describe("visionExperience vertical slice driver", () => {
       outcome.assertions.map((assertion) => [assertion.id, assertion]),
     );
     assert.equal(byId.get("countdown-rendered-sequence")?.status, "passed");
+    assert.equal(byId.get("countdown-visible-duration")?.status, "passed");
     assert.equal(byId.get("capture-after-countdown")?.status, "passed");
     assert.equal(byId.get("preview-live-through-countdown")?.status, "passed");
     assert.equal(
       byId.get("captured-frame-held-during-generation")?.status,
       "passed",
+    );
+    assert.deepEqual(
+      outcome.supportingEvidence.find(
+        (evidence) =>
+          (evidence as { kind?: string }).kind ===
+          "vision-countdown-visible-duration",
+      ),
+      {
+        kind: "vision-countdown-visible-duration",
+        bucketDurationsMs: { "3": 900, "2": 900, "1": 1_200 },
+        totalDurationMs: 3_000,
+        passed: true,
+      },
     );
   });
 
@@ -1461,7 +1640,7 @@ describe("visionExperience vertical slice driver", () => {
       pollMs: 10,
       acceptanceBinding: visionAcceptanceBinding,
     });
-    assert.equal(outcome.assertions.length, 11);
+    assert.equal(outcome.assertions.length, 12);
     assert.ok(
       outcome.assertions.every((assertion) => assertion.status === "passed"),
     );
@@ -1482,11 +1661,11 @@ describe("visionExperience vertical slice driver", () => {
       (assertion) =>
         assertion.source === "vision-experience-observation-timeline",
     );
-    assert.equal(timelineAssertions.length, 5);
+    assert.equal(timelineAssertions.length, 6);
     assert.equal(
       timelineAssertions.filter((assertion) => assertion.status === "failed")
         .length,
-      4,
+      5,
     );
     assert.equal(outcome.report.businessSets[0].status, "failed");
   });

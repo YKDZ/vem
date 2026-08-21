@@ -83,9 +83,19 @@ interface TimelineAssertionValue {
   observed: unknown;
 }
 
+interface CountdownVisibleDurationValue {
+  expected: true;
+  observed: {
+    bucketDurationsMs: Record<string, number>;
+    totalDurationMs: number;
+    passed: boolean;
+  };
+}
+
 export interface VisionExperienceTimelineValidation {
   ok: boolean;
   countdownRenderedSequence: TimelineAssertionValue;
+  countdownVisibleDuration: CountdownVisibleDurationValue;
   captureAfterCountdown: TimelineAssertionValue;
   previewLiveThroughCountdown: TimelineAssertionValue;
   capturedFrameHeldDuringGeneration: TimelineAssertionValue;
@@ -504,17 +514,16 @@ export function validateVisionExperienceTimeline({
       index === 0 ||
       sample.holdRemainingMs! <= countdown[index - 1]!.holdRemainingMs!,
   );
-  const bucketDurations = COUNTDOWN_SEQUENCE.map((digit) => {
-    const entries = countdown.filter(
-      (sample) => sample.countdownText === digit,
-    );
-    if (entries.length === 0) return 0;
-    const first = entries[0]!.atMs;
-    const next = countdown.find(
-      (sample) => sample.atMs > first && sample.countdownText !== digit,
-    );
-    return (next?.atMs ?? entries.at(-1)!.atMs) - first;
-  });
+  const bucketDurations = Object.fromEntries(
+    COUNTDOWN_SEQUENCE.map((digit) => {
+      const first = countdown.find((sample) => sample.countdownText === digit);
+      if (!first) return [digit, 0];
+      const next = attemptSamples.find(
+        (sample) => sample.atMs > first.atMs && sample.countdownText !== digit,
+      );
+      return [digit, (next?.atMs ?? first.atMs) - first.atMs];
+    }),
+  ) as Record<string, number>;
   const firstThree = countdown.find((sample) => sample.countdownText === "3");
   const lastOne = countdown
     .filter((sample) => sample.countdownText === "1")
@@ -522,20 +531,29 @@ export function validateVisionExperienceTimeline({
   const firstHeld = attemptSamples.find(
     (sample) => sample.state === "captured" || sample.state === "generating",
   );
+  const totalDurationMs =
+    firstThree && firstHeld ? firstHeld.atMs - firstThree.atMs : 0;
+  const countdownDurationComplete =
+    Object.values(bucketDurations).every(
+      (duration) => duration >= MIN_COUNTDOWN_BUCKET_MS,
+    ) && totalDurationMs >= MIN_COUNTDOWN_TOTAL_MS;
   const countdownComplete =
     monotonic &&
     holdMatchesDom &&
     holdNonIncreasing &&
     JSON.stringify(sequence) === JSON.stringify(COUNTDOWN_SEQUENCE) &&
-    bucketDurations.every((duration) => duration >= MIN_COUNTDOWN_BUCKET_MS) &&
-    Boolean(
-      firstThree &&
-      firstHeld &&
-      firstHeld.atMs - firstThree.atMs >= MIN_COUNTDOWN_TOTAL_MS,
-    );
+    countdownDurationComplete;
   const captureAfter = Boolean(
     countdownComplete && lastOne && firstHeld && firstHeld.atMs > lastOne.atMs,
   );
+  const countdownVisibleDuration = {
+    expected: true as const,
+    observed: {
+      bucketDurationsMs: bucketDurations,
+      totalDurationMs,
+      passed: countdownDurationComplete,
+    },
+  };
   const previewForAllBuckets = COUNTDOWN_SEQUENCE.every((digit) => {
     const entries = countdown.filter(
       (sample) => sample.countdownText === digit,
@@ -632,6 +650,7 @@ export function validateVisionExperienceTimeline({
       capturedAbsentOutsideHeld.observed &&
       capturedFrameHeldDuringGeneration.observed,
     countdownRenderedSequence,
+    countdownVisibleDuration,
     captureAfterCountdown,
     previewLiveThroughCountdown,
     capturedAbsentOutsideHeld,
@@ -937,16 +956,22 @@ export async function runTryOnScenario(
         observed: timeline.countdownRenderedSequence.observed,
       }),
       businessAssertion({
-        id: "captured-frame-held-during-generation",
+        id: "countdown-visible-duration",
         source: "vision-experience-observation-timeline",
-        expected: timeline.capturedFrameHeldDuringGeneration.expected,
-        observed: timeline.capturedFrameHeldDuringGeneration.observed,
+        expected: timeline.countdownVisibleDuration.expected,
+        observed: timeline.countdownVisibleDuration.observed.passed,
       }),
       businessAssertion({
         id: "captured-absent-outside-held",
         source: "vision-experience-observation-timeline",
         expected: timeline.capturedAbsentOutsideHeld.expected,
         observed: timeline.capturedAbsentOutsideHeld.observed,
+      }),
+      businessAssertion({
+        id: "captured-frame-held-during-generation",
+        source: "vision-experience-observation-timeline",
+        expected: timeline.capturedFrameHeldDuringGeneration.expected,
+        observed: timeline.capturedFrameHeldDuringGeneration.observed,
       }),
       businessAssertion({
         id: "capture-after-countdown",
@@ -997,6 +1022,10 @@ export async function runTryOnScenario(
       selectionEvidence,
       garmentBindingEvidence,
       {
+        kind: "vision-countdown-visible-duration",
+        ...timeline.countdownVisibleDuration.observed,
+      },
+      {
         ...capturedEvidence,
       },
     ],
@@ -1011,6 +1040,10 @@ export async function runTryOnScenario(
           supportingEvidence: [
             selectionEvidence,
             garmentBindingEvidence,
+            {
+              kind: "vision-countdown-visible-duration",
+              ...timeline.countdownVisibleDuration.observed,
+            },
             {
               ...capturedEvidence,
             },

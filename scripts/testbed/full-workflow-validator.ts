@@ -925,6 +925,8 @@ function validateVisionExperienceCapturedSource(
 
 const VISION_EXPERIENCE_TIMELINE_ASSERTIONS = [
   "countdown-rendered-sequence",
+  "countdown-visible-duration",
+  "captured-absent-outside-held",
   "capture-after-countdown",
   "preview-live-through-countdown",
   "captured-frame-held-during-generation",
@@ -935,9 +937,7 @@ const VISION_EXPERIENCE_GEOMETRY_ASSERTIONS = [
   "result-automatic-scale",
   "garment-scale-renders-pixels",
 ];
-const VISION_EXPERIENCE_ADJUSTMENT_ASSERTIONS = [
-  "garment-scale-v2-adjustment",
-];
+const VISION_EXPERIENCE_ADJUSTMENT_ASSERTIONS = ["garment-scale-v2-adjustment"];
 
 function hasPassingAssertions(set, ids, source) {
   const assertions = Array.isArray(set?.assertions) ? set.assertions : [];

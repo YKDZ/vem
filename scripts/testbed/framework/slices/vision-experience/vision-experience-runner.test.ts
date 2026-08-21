@@ -1077,7 +1077,7 @@ describe("visionExperience slice runner", () => {
     });
     const result = registry.validateReport(report);
     assert.equal(result.businessSets.visionExperience.status, "passed");
-    assert.equal(report.businessSets[0].assertionCount, 20);
+    assert.equal(report.businessSets[0].assertionCount, 21);
   });
 
   it("waits for a stable Vision role PID set before starting the flow", async () => {
@@ -1263,6 +1263,6 @@ describe("visionExperience slice runner", () => {
       pollMs: 10,
     });
     assert.equal(report.businessSets[0].status, "passed");
-    assert.equal(report.businessSets[0].assertionCount, 14);
+    assert.equal(report.businessSets[0].assertionCount, 15);
   });
 });
