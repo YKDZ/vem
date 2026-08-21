@@ -135,12 +135,14 @@ function acquisition(
   });
 }
 
-function captured(eventAttemptId = attemptId): VisionTryOnAttemptEvent {
+function captured(
+  eventAttemptId = attemptId,
+  capturedToken = "captured-token",
+): VisionTryOnAttemptEvent {
   return event("vision.try_on.attempt.captured", {
     attemptId: eventAttemptId,
     captured: {
-      reference:
-        "http://127.0.0.1:7892/v2/try-on/captured/frame.png?token=captured-token",
+      reference: `http://127.0.0.1:7892/v2/try-on/captured/frame.png?token=${capturedToken}`,
       digest: `sha256:${"b".repeat(64)}`,
       contentType: "image/png",
       byteSize: 2048,
@@ -254,6 +256,12 @@ describe("TryOnView single-path acquisition UI", () => {
     expect(
       host.querySelector('[data-test="try-on-countdown"]')?.textContent,
     ).toBe("1");
+    emit(acquisition(0));
+    await nextTick();
+    expect(host.querySelector('[data-test="try-on-countdown"]')).toBeNull();
+    expect(
+      host.querySelector('[data-test="try-on-guidance"]')?.textContent,
+    ).not.toContain("0");
     emit(
       event("vision.try_on.attempt.acquiring", {
         attemptId,
@@ -287,8 +295,8 @@ describe("TryOnView single-path acquisition UI", () => {
     await nextTick();
     expect(useTryOnStore().captured?.frameId).toBe("front-42");
     expect(
-      host.querySelector('[data-test="try-on-acquisition-preview"]'),
-    ).toBeNull();
+      host.querySelector('[data-test="try-on-captured-image"]'),
+    ).not.toBeNull();
     expect(
       host.querySelector<HTMLImageElement>(
         '[data-test="try-on-captured-image"]',
@@ -331,6 +339,140 @@ describe("TryOnView single-path acquisition UI", () => {
     mountedApp?.unmount();
     mountedApp = null;
     expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("在捕获和生成期间保持同一公开图像展示面显示真实捕获帧", async () => {
+    let emit: ((next: VisionTryOnAttemptEvent) => void) | undefined;
+    openAttemptMock.mockImplementation((_connection, input, onEvent) => {
+      emit = (next) =>
+        onEvent(
+          { ...next, payload: { ...next.payload, attemptId: input.attemptId } },
+          {
+            attemptId: input.attemptId,
+            visionSocketUrl: "ws://127.0.0.1:7892/ws",
+          },
+        );
+      return Promise.resolve({
+        close: vi.fn(),
+        capture: vi.fn(),
+        cancel: vi.fn(),
+      });
+    });
+    const host = await mount();
+    await vi.waitFor(() => {
+      expect(openAttemptMock).toHaveBeenCalledOnce();
+    });
+    if (!emit) throw new Error("预期收到原生试衣事件回调");
+
+    emit(event("vision.try_on.attempt.accepted", { attemptId }));
+    emit(acquisition());
+    await nextTick();
+    expect(
+      host.querySelector<HTMLImageElement>(
+        '[data-test="try-on-acquisition-preview"]',
+      )?.src,
+    ).toContain("/v2/try-on/acquisition/preview.mjpeg?token=preview-token");
+    emit(captured());
+    await nextTick();
+    expect(
+      host.querySelector<HTMLImageElement>(
+        '[data-test="try-on-captured-image"]',
+      )?.src,
+    ).toContain("/v2/try-on/captured/frame.png?token=captured-token");
+    const capturedImage = host.querySelector<HTMLImageElement>(
+      '[data-test="try-on-captured-image"]',
+    );
+    expect(capturedImage?.getAttribute("data-image-state")).toBe("loading");
+    Object.defineProperties(capturedImage!, {
+      naturalHeight: { configurable: true, value: 768 },
+      naturalWidth: { configurable: true, value: 512 },
+    });
+    capturedImage?.dispatchEvent(new Event("load"));
+    await nextTick();
+    expect(capturedImage?.getAttribute("data-image-state")).toBe("ready");
+
+    emit(
+      event("vision.try_on.attempt.generating", {
+        attemptId,
+        stage: "generating",
+      }),
+    );
+    await nextTick();
+    expect(
+      host.querySelector<HTMLImageElement>(
+        '[data-test="try-on-captured-image"]',
+      )?.src,
+    ).toContain("/v2/try-on/captured/frame.png?token=captured-token");
+  });
+
+  it("捕获帧无法加载时说明可恢复路径，并在新尝试的资源引用到达后恢复展示", async () => {
+    const callbacks: Array<(next: VisionTryOnAttemptEvent) => void> = [];
+    openAttemptMock.mockImplementation((_connection, input, onEvent) => {
+      callbacks.push((next) =>
+        onEvent(
+          { ...next, payload: { ...next.payload, attemptId: input.attemptId } },
+          {
+            attemptId: input.attemptId,
+            visionSocketUrl: "ws://127.0.0.1:7892/ws",
+          },
+        ),
+      );
+      return Promise.resolve({
+        close: vi.fn(),
+        capture: vi.fn(),
+        cancel: vi.fn(),
+      });
+    });
+    const host = await mount();
+    await vi.waitFor(() => {
+      expect(openAttemptMock).toHaveBeenCalledOnce();
+    });
+
+    callbacks[0]?.(event("vision.try_on.attempt.accepted", { attemptId }));
+    callbacks[0]?.(acquisition());
+    callbacks[0]?.(captured());
+    await nextTick();
+    host
+      .querySelector('[data-test="try-on-captured-image"]')
+      ?.dispatchEvent(new Event("error"));
+    await nextTick();
+    expect(
+      host.querySelector('[data-test="try-on-captured-image"]'),
+    ).toBeNull();
+    expect(
+      host.querySelector('[data-test="try-on-captured-error"]')?.textContent,
+    ).toContain("试衣输入暂不可显示，请重试或返回商品");
+
+    callbacks[0]?.(
+      event("vision.try_on.attempt.canceled", { attemptId, reason: "timeout" }),
+    );
+    await nextTick();
+    expect(
+      host.querySelector('[data-test="try-on-captured-error"]'),
+    ).toBeNull();
+    host
+      .querySelector('[data-test="try-on-retry"]')
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await vi.waitFor(() => {
+      expect(openAttemptMock).toHaveBeenCalledTimes(2);
+    });
+    callbacks[1]?.(event("vision.try_on.attempt.accepted", { attemptId }));
+    callbacks[1]?.(acquisition());
+    callbacks[1]?.(captured(attemptId, "replacement-captured-token"));
+    await nextTick();
+    expect(
+      host.querySelector('[data-test="try-on-captured-error"]'),
+    ).toBeNull();
+    expect(
+      host.querySelector<HTMLImageElement>(
+        '[data-test="try-on-captured-image"]',
+      )?.src,
+    ).toContain("replacement-captured-token");
+    expect(
+      host
+        .querySelector('[data-test="try-on-captured-image"]')
+        ?.getAttribute("data-image-state"),
+    ).toBe("loading");
   });
 
   it("完成结果持有连接断开后隐藏不可读结果并显示明确提示", async () => {

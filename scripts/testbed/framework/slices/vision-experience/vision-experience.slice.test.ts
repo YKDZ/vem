@@ -8,6 +8,7 @@ import {
   runObserverSelfHealScenario,
   validateVisionExperienceTimeline,
   validateGarmentScaleAdjustment,
+  type VisionExperienceObservation,
 } from "./vision-experience-driver.ts";
 
 const attemptId = "550e8400-e29b-41d4-a716-446655440124";
@@ -48,6 +49,18 @@ const expectedStartGarment = {
   byteSize: visionAcceptanceBinding.sourceGarmentMetadata.byteSize,
   template: visionAcceptanceBinding.sourceGarmentMetadata.template,
 };
+const validObservationTimeline: Array<
+  [number, string | null, string | null, string?]
+> = [
+  [0, "3", "preview-3a"],
+  [750, "3", "preview-3b"],
+  [1_000, "2", "preview-2a"],
+  [1_750, "2", "preview-2b"],
+  [2_000, "1", "preview-1a"],
+  [2_750, "1", "preview-1b"],
+  [3_000, null, null, "captured"],
+  [3_200, null, null, "generating"],
+];
 
 function fakeUiAdapter({
   includeCaptured = true,
@@ -62,7 +75,7 @@ function fakeUiAdapter({
   terminalRequestId = requestId,
   resourceAttemptId = attemptId,
   resourceFrameId = frameId,
-  observationTimeline = null,
+  observationTimeline = validObservationTimeline,
   resultGeometryEvidence = null,
   startGarment = expectedStartGarment,
   routeBeforeAttempt = false,
@@ -319,6 +332,26 @@ function fakeUiAdapter({
                         capturedDigest:
                           state === "captured" || state === "generating"
                             ? captured.digest
+                            : null,
+                        capturedVisible:
+                          state === "captured" || state === "generating",
+                        capturedNaturalWidth:
+                          state === "captured" || state === "generating"
+                            ? 720
+                            : 0,
+                        capturedNaturalHeight:
+                          state === "captured" || state === "generating"
+                            ? 1280
+                            : 0,
+                        capturedSourceMatchesProtocol:
+                          state === "captured" || state === "generating",
+                        capturedSourceDigest:
+                          state === "captured" || state === "generating"
+                            ? "sha256:captured-source"
+                            : null,
+                        capturedFrameHash:
+                          state === "captured" || state === "generating"
+                            ? "sha256:captured-frame"
                             : null,
                       }),
                     ),
@@ -809,6 +842,12 @@ describe("visionExperience vertical slice driver", () => {
             previewFrameHash: null,
             capturedFrameId: "frame",
             capturedDigest: "sha256:one",
+            capturedVisible: true,
+            capturedNaturalWidth: 720,
+            capturedNaturalHeight: 1280,
+            capturedSourceMatchesProtocol: true,
+            capturedSourceDigest: "sha256:captured-source",
+            capturedFrameHash: "sha256:captured-frame",
           },
           {
             atMs: 3_100,
@@ -820,6 +859,12 @@ describe("visionExperience vertical slice driver", () => {
             previewFrameHash: null,
             capturedFrameId: "frame",
             capturedDigest: "sha256:one",
+            capturedVisible: true,
+            capturedNaturalWidth: 720,
+            capturedNaturalHeight: 1280,
+            capturedSourceMatchesProtocol: true,
+            capturedSourceDigest: "sha256:captured-source",
+            capturedFrameHash: "sha256:captured-frame",
           },
         ],
       });
@@ -850,7 +895,7 @@ describe("visionExperience vertical slice driver", () => {
     );
   });
 
-  it("倒计时的任一样本失去预览或在完整 1 桶结束前进入 held 状态均 fail closed", () => {
+  it("倒计时的任一样本失去 live preview 时 captured 图像不得补救，且完整 1 桶结束前不得进入 held", () => {
     const attemptId = "attempt-countdown-boundary";
     const countdown = [
       [0, 3_000, "3"],
@@ -889,6 +934,12 @@ describe("visionExperience vertical slice driver", () => {
                 previewFrameHash: null,
                 capturedFrameId: "frame",
                 capturedDigest: "sha256:one",
+                capturedVisible: true,
+                capturedNaturalWidth: 720,
+                capturedNaturalHeight: 1280,
+                capturedSourceMatchesProtocol: true,
+                capturedSourceDigest: "sha256:captured-source",
+                capturedFrameHash: "sha256:captured-frame",
               },
             ]),
         {
@@ -901,6 +952,12 @@ describe("visionExperience vertical slice driver", () => {
           previewFrameHash: null,
           capturedFrameId: "frame",
           capturedDigest: "sha256:one",
+          capturedVisible: true,
+          capturedNaturalWidth: 720,
+          capturedNaturalHeight: 1280,
+          capturedSourceMatchesProtocol: true,
+          capturedSourceDigest: "sha256:captured-source",
+          capturedFrameHash: "sha256:captured-frame",
         },
         {
           atMs: 3_100,
@@ -912,6 +969,12 @@ describe("visionExperience vertical slice driver", () => {
           previewFrameHash: null,
           capturedFrameId: "frame",
           capturedDigest: "sha256:one",
+          capturedVisible: true,
+          capturedNaturalWidth: 720,
+          capturedNaturalHeight: 1280,
+          capturedSourceMatchesProtocol: true,
+          capturedSourceDigest: "sha256:captured-source",
+          capturedFrameHash: "sha256:captured-frame",
         },
       ].sort((left, right) => left.atMs - right.atMs);
     assert.equal(
@@ -937,6 +1000,129 @@ describe("visionExperience vertical slice driver", () => {
     );
   });
 
+  it("captured/generating 必须逐样本呈现已加载、可见且身份稳定的独立 captured 图像", () => {
+    const attemptId = "attempt-captured-dom-identity";
+    const countdown = [
+      [0, 3_000, "3"],
+      [800, 2_200, "3"],
+      [1_000, 2_000, "2"],
+      [1_800, 1_200, "2"],
+      [2_000, 1_000, "1"],
+      [2_800, 100, "1"],
+    ] as const;
+    const sample = (
+      atMs: number,
+      state: "captured" | "generating",
+      overrides: Partial<VisionExperienceObservation> = {},
+    ): VisionExperienceObservation => ({
+      atMs,
+      attemptId,
+      state,
+      holdRemainingMs: null,
+      countdownText: null,
+      previewVisible: false,
+      previewFrameHash: null,
+      capturedFrameId: "captured-frame",
+      capturedDigest: "sha256:captured",
+      ...overrides,
+    });
+    const validCountdown: VisionExperienceObservation[] = countdown.map(
+      ([atMs, holdRemainingMs, countdownText]) => ({
+        atMs,
+        attemptId,
+        state: "acquiring",
+        holdRemainingMs,
+        countdownText,
+        previewVisible: true,
+        previewFrameHash: `${atMs}`,
+      }),
+    );
+    const validate = (held: VisionExperienceObservation[]) =>
+      validateVisionExperienceTimeline({
+        attemptId,
+        samples: [...validCountdown, ...held],
+      });
+
+    // 当前实现只看 protocol identity，因而下列所有 DOM 缺陷都会错误通过。
+    assert.equal(
+      validate([sample(3_000, "captured"), sample(3_200, "generating")]).ok,
+      false,
+    );
+    assert.equal(
+      validate([
+        sample(3_000, "captured", {
+          capturedVisible: false,
+          capturedNaturalWidth: 0,
+          capturedNaturalHeight: 0,
+          capturedSourceMatchesProtocol: false,
+          capturedSourceDigest: null,
+          capturedFrameHash: null,
+        }),
+        sample(3_200, "generating", {
+          capturedVisible: true,
+          capturedNaturalWidth: 720,
+          capturedNaturalHeight: 1280,
+          capturedSourceMatchesProtocol: true,
+          capturedSourceDigest: "sha256:source-a",
+          capturedFrameHash: "sha256:frame-a",
+        }),
+      ]).ok,
+      false,
+    );
+    const validCaptured = {
+      capturedVisible: true,
+      capturedNaturalWidth: 720,
+      capturedNaturalHeight: 1280,
+      capturedSourceMatchesProtocol: true,
+      capturedSourceDigest: "sha256:source-a",
+      capturedFrameHash: "sha256:frame-a",
+    };
+    assert.equal(
+      validate([
+        sample(3_000, "captured", validCaptured),
+        sample(3_200, "generating", {
+          ...validCaptured,
+          capturedSourceDigest: "sha256:source-b",
+        }),
+      ]).ok,
+      false,
+    );
+    assert.equal(
+      validate([
+        sample(3_000, "captured", validCaptured),
+        sample(3_200, "generating", {
+          ...validCaptured,
+          capturedFrameHash: "sha256:frame-b",
+        }),
+      ]).ok,
+      false,
+    );
+  });
+
+  it("acquiring 阶段出现 captured DOM 即使 live preview 正常也 fail closed", () => {
+    const attemptId = "attempt-captured-wrong-phase";
+    const samples: VisionExperienceObservation[] = [
+      {
+        atMs: 0,
+        attemptId,
+        state: "acquiring",
+        holdRemainingMs: 3_000,
+        countdownText: "3",
+        previewVisible: true,
+        previewFrameHash: "preview",
+        capturedVisible: true,
+        capturedNaturalWidth: 720,
+        capturedNaturalHeight: 1280,
+        capturedSourceMatchesProtocol: true,
+        capturedSourceDigest: "sha256:captured-source",
+        capturedFrameHash: "sha256:captured-frame",
+      },
+    ];
+    const result = validateVisionExperienceTimeline({ attemptId, samples });
+    assert.equal(result.capturedAbsentOutsideHeld.observed, false);
+    assert.equal(result.ok, false);
+  });
+
   it("失稳后的倒计时必须从新的 3 完整重走", () => {
     const attemptId = "attempt-reset";
     const sample = (
@@ -957,6 +1143,21 @@ describe("visionExperience vertical slice driver", () => {
         state === "captured" || state === "generating" ? "frame-1" : null,
       capturedDigest:
         state === "captured" || state === "generating" ? "sha256:one" : null,
+      capturedVisible: state === "captured" || state === "generating",
+      capturedNaturalWidth:
+        state === "captured" || state === "generating" ? 720 : 0,
+      capturedNaturalHeight:
+        state === "captured" || state === "generating" ? 1280 : 0,
+      capturedSourceMatchesProtocol:
+        state === "captured" || state === "generating",
+      capturedSourceDigest:
+        state === "captured" || state === "generating"
+          ? "sha256:captured-source"
+          : null,
+      capturedFrameHash:
+        state === "captured" || state === "generating"
+          ? "sha256:captured-frame"
+          : null,
     });
     const result = validateVisionExperienceTimeline({
       attemptId,
@@ -999,6 +1200,13 @@ describe("visionExperience vertical slice driver", () => {
       previewFrameHash: countdownText ? `${countdownText}-${atMs}` : null,
       capturedFrameId: state === "captured" ? "frame-1" : null,
       capturedDigest: state === "captured" ? "sha256:one" : null,
+      capturedVisible: state === "captured",
+      capturedNaturalWidth: state === "captured" ? 720 : 0,
+      capturedNaturalHeight: state === "captured" ? 1280 : 0,
+      capturedSourceMatchesProtocol: state === "captured",
+      capturedSourceDigest:
+        state === "captured" ? "sha256:captured-source" : null,
+      capturedFrameHash: state === "captured" ? "sha256:captured-frame" : null,
     });
     const result = validateVisionExperienceTimeline({
       attemptId,
@@ -1207,12 +1415,34 @@ describe("visionExperience vertical slice driver", () => {
       pollMs: 10,
       acceptanceBinding: visionAcceptanceBinding,
     });
-    assert.equal(outcome.assertions.length, 6);
+    assert.equal(outcome.assertions.length, 11);
     assert.ok(
       outcome.assertions.every((assertion) => assertion.status === "passed"),
     );
     assert.equal(outcome.report.businessSets[0].name, "visionExperience");
     assert.equal(outcome.report.businessSets[0].status, "passed");
+  });
+
+  it("缺少 observation timeline 时仍返回结构化的失败时序断言", async () => {
+    const outcome = await runTryOnScenario(
+      fakeUiAdapter({ observationTimeline: null }),
+      {
+        timeoutMs: 2_000,
+        pollMs: 10,
+        acceptanceBinding: visionAcceptanceBinding,
+      },
+    );
+    const timelineAssertions = outcome.assertions.filter(
+      (assertion) =>
+        assertion.source === "vision-experience-observation-timeline",
+    );
+    assert.equal(timelineAssertions.length, 5);
+    assert.equal(
+      timelineAssertions.filter((assertion) => assertion.status === "failed")
+        .length,
+      4,
+    );
+    assert.equal(outcome.report.businessSets[0].status, "failed");
   });
 
   it("fails with a primary failure when the result surface never completes", async () => {

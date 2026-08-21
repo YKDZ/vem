@@ -173,6 +173,23 @@ function completed(
   >;
 }
 
+function captureStoreAttempt(
+  store: ReturnType<typeof useTryOnStore>,
+  attemptId = firstAttemptId,
+) {
+  const context = {
+    attemptId,
+    visionSocketUrl: "ws://127.0.0.1:7892/ws",
+  };
+  store.attemptId = attemptId;
+  store.phase = "starting";
+  store.applyEvent(attemptId, accepted(attemptId), context);
+  store.applyEvent(attemptId, acquiring(attemptId), context);
+  store.applyEvent(attemptId, captured(attemptId), context);
+  expect(store.captured?.frameId).toBe("front-42");
+  return context;
+}
+
 async function startCompletedStoreAttempt(close = vi.fn()) {
   const catalog = useCatalogStore();
   let emit: ((next: VisionTryOnAttemptEvent) => void) | undefined;
@@ -300,6 +317,52 @@ describe("try-on store lifecycle", () => {
     store.applyEvent(firstAttemptId, completed(firstAttemptId), context);
     expect(store.phase).toBe("completed");
     expect(store.result?.reference).toContain(`/results/${firstAttemptId}`);
+  });
+
+  it.each([
+    ["失败", "vision.try_on.attempt.failed", { reason: "try_on_failed" }],
+    ["取消", "vision.try_on.attempt.canceled", { reason: "timeout" }],
+  ] as const)("%s终态会清理捕获帧", (_name, type, terminalPayload) => {
+    const store = useTryOnStore();
+    const context = captureStoreAttempt(store);
+
+    store.applyEvent(
+      firstAttemptId,
+      event(type, { attemptId: firstAttemptId, ...terminalPayload }),
+      context,
+    );
+
+    expect(store.captured).toBeNull();
+  });
+
+  it("显式清理、重试和替换尝试都会丢弃旧捕获帧", async () => {
+    const catalog = useCatalogStore();
+    const item = catalog.saleableVariantItemFor(
+      `product:${productId}`,
+      variantId,
+    )!;
+    const store = useTryOnStore();
+    store.prepare(item);
+    captureStoreAttempt(store);
+    store.clear();
+    expect(store.captured).toBeNull();
+
+    store.prepare(item);
+    captureStoreAttempt(store);
+    openAttemptMock.mockResolvedValue({
+      close: vi.fn(),
+      capture: vi.fn(),
+      cancel: vi.fn(),
+    });
+    await store.retry();
+    expect(store.captured).toBeNull();
+
+    captureStoreAttempt(store, store.attemptId!);
+    const replacedAttemptId = store.attemptId;
+    await store.start();
+    expect(store.attemptId).not.toBe(replacedAttemptId);
+    expect(store.captured).toBeNull();
+    store.clear();
   });
 
   it("完成结果在显式清理前持续持有原尝试资源连接", async () => {

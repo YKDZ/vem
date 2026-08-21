@@ -152,6 +152,58 @@ function capturedEvidenceFor(attemptId: string) {
   };
 }
 
+function observationTimelineFor(attemptId: string) {
+  const held = {
+    capturedVisible: true,
+    capturedNaturalWidth: 720,
+    capturedNaturalHeight: 1280,
+    capturedSourceMatchesProtocol: true,
+    capturedSourceDigest: "sha256:captured-source",
+    capturedFrameHash: "sha256:captured-frame",
+    capturedFrameId: "frame-000042",
+    capturedDigest: `sha256:${"a".repeat(64)}`,
+  };
+  return [
+    [0, 3_000, "3", "preview-3a"],
+    [750, 2_250, "3", "preview-3b"],
+    [1_000, 2_000, "2", "preview-2a"],
+    [1_750, 1_250, "2", "preview-2b"],
+    [2_000, 1_000, "1", "preview-1a"],
+    [2_750, 250, "1", "preview-1b"],
+  ]
+    .map(([atMs, holdRemainingMs, countdownText, previewFrameHash]) => ({
+      atMs,
+      attemptId,
+      state: "acquiring",
+      holdRemainingMs,
+      countdownText,
+      previewVisible: true,
+      previewFrameHash,
+    }))
+    .concat([
+      {
+        atMs: 3_000,
+        attemptId,
+        state: "captured",
+        holdRemainingMs: null,
+        countdownText: null,
+        previewVisible: false,
+        previewFrameHash: null,
+        ...held,
+      },
+      {
+        atMs: 3_200,
+        attemptId,
+        state: "generating",
+        holdRemainingMs: null,
+        countdownText: null,
+        previewVisible: false,
+        previewFrameHash: null,
+        ...held,
+      },
+    ]);
+}
+
 function fakeUiAdapter() {
   const statePath = "ui/try-on-state.json";
   let selectedSegment: "far" | "mid" | "near" = "mid";
@@ -266,6 +318,7 @@ function fakeUiAdapter() {
               sourceGarmentPng: resultPng(1),
               sourceGarmentMetadata,
               startGarment,
+              observationTimeline: observationTimelineFor(attemptId),
               ...capturedEvidence,
             }),
           );
@@ -1024,7 +1077,7 @@ describe("visionExperience slice runner", () => {
     });
     const result = registry.validateReport(report);
     assert.equal(result.businessSets.visionExperience.status, "passed");
-    assert.equal(report.businessSets[0].assertionCount, 15);
+    assert.equal(report.businessSets[0].assertionCount, 20);
   });
 
   it("waits for a stable Vision role PID set before starting the flow", async () => {
@@ -1150,6 +1203,7 @@ describe("visionExperience slice runner", () => {
                   attemptId,
                   preview: { naturalWidth: 720, naturalHeight: 1280 },
                   resultUrl: `http://127.0.0.1:7892/v2/try-on/results/${attemptId}?token=result-token`,
+                  observationTimeline: observationTimelineFor(attemptId),
                   startGarment: {
                     assetId: sourceGarmentMetadataFixture.assetId,
                     digest: sourceGarmentMetadataFixture.digest,
@@ -1209,6 +1263,6 @@ describe("visionExperience slice runner", () => {
       pollMs: 10,
     });
     assert.equal(report.businessSets[0].status, "passed");
-    assert.equal(report.businessSets[0].assertionCount, 9);
+    assert.equal(report.businessSets[0].assertionCount, 14);
   });
 });

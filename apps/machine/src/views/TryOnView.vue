@@ -11,6 +11,7 @@ const route = useRoute();
 const catalog = useCatalogStore();
 const tryOn = useTryOnStore();
 const previewErrored = ref(false);
+const capturedImageState = ref<"loading" | "ready" | "error">("loading");
 const resultErrored = ref(false);
 const departureHandled = ref(false);
 const context = computed(() => tryOn.context);
@@ -52,19 +53,18 @@ const guidanceText = computed(() => {
     case "align":
       return "请面向镜头并调整站位";
     case "counting_down": {
-      const seconds = Math.max(
-        0,
-        Math.ceil((tryOn.holdRemainingMs ?? 0) / 1000),
-      );
-      return `请保持不动，${seconds} 秒后自动拍摄`;
+      return countdownSeconds.value === null
+        ? "请保持不动，正在拍摄"
+        : `请保持不动，${countdownSeconds.value} 秒后自动拍摄`;
     }
     default:
       return "正在连接镜头";
   }
 });
-const countdownSeconds = computed(() =>
-  Math.max(0, Math.ceil((tryOn.holdRemainingMs ?? 0) / 1000)),
-);
+const countdownSeconds = computed(() => {
+  const seconds = Math.ceil((tryOn.holdRemainingMs ?? 0) / 1000);
+  return seconds >= 1 && seconds <= 3 ? seconds : null;
+});
 const manualCaptureLabel = computed(() =>
   tryOn.guidance === "counting_down" ? "立即拍摄" : "手动采集",
 );
@@ -114,6 +114,12 @@ watch(
   },
 );
 watch(
+  () => tryOn.captured?.reference,
+  () => {
+    capturedImageState.value = "loading";
+  },
+);
+watch(
   () => tryOn.result?.reference,
   () => {
     resultErrored.value = false;
@@ -158,6 +164,12 @@ async function retry(): Promise<void> {
 
 function requestManualCapture(): void {
   tryOn.requestManualCapture();
+}
+
+function recordCapturedImageLoad(event: Event): void {
+  const image = event.currentTarget as HTMLImageElement;
+  capturedImageState.value =
+    image.naturalWidth > 0 && image.naturalHeight > 0 ? "ready" : "error";
 }
 
 function cancel(): void {
@@ -234,7 +246,8 @@ function scaleGarment(delta: number): void {
       <img
         v-else-if="
           (tryOn.phase === 'captured' || tryOn.phase === 'generating') &&
-          tryOn.captured
+          tryOn.captured &&
+          capturedImageState !== 'error'
         "
         :src="tryOn.captured.reference"
         :width="tryOn.captured.width"
@@ -242,7 +255,21 @@ function scaleGarment(delta: number): void {
         alt="虚拟试衣捕获画面"
         class="try-on-captured try-on-media"
         data-test="try-on-captured-image"
+        :data-image-state="capturedImageState"
+        @error="capturedImageState = 'error'"
+        @load="recordCapturedImageLoad"
       />
+      <p
+        v-else-if="
+          (tryOn.phase === 'captured' || tryOn.phase === 'generating') &&
+          capturedImageState === 'error'
+        "
+        class="text-base text-red-600"
+        data-test="try-on-captured-error"
+        data-image-state="error"
+      >
+        试衣输入暂不可显示，请重试或返回商品。
+      </p>
       <p
         v-else-if="
           tryOn.phase === 'completed' &&
@@ -270,7 +297,7 @@ function scaleGarment(delta: number): void {
         data-test="try-on-guidance"
       >
         <span
-          v-if="tryOn.guidance === 'counting_down'"
+          v-if="tryOn.guidance === 'counting_down' && countdownSeconds !== null"
           class="try-on-countdown"
           data-test="try-on-countdown"
         >

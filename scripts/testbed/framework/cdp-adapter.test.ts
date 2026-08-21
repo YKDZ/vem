@@ -88,6 +88,112 @@ describe("CDP test adapter", () => {
     }
   });
 
+  it("公开 readFile 仅返回 captured 来源匹配事实与摘要，不泄漏 DOM token 到状态或诊断", async () => {
+    class FakeHtmlElement {}
+    const capturedReference =
+      "http://127.0.0.1:27892/v2/try-on/captured/frame.png?token=captured-dom-secret";
+    const protocolReference =
+      "http://127.0.0.1:27892/v2/try-on/captured/frame.png?token=protocol-source-token";
+    const view = Object.assign(new FakeHtmlElement(), {
+      dataset: {
+        state: "captured",
+        attemptId: "550e8400-e29b-41d4-a716-446655440124",
+      },
+    });
+    const captured = Object.assign(new FakeHtmlElement(), {
+      naturalWidth: 720,
+      naturalHeight: 1280,
+      getAttribute: (name: string) =>
+        name === "src" ? capturedReference : null,
+      getClientRects: () => [{}],
+      getBoundingClientRect: () => ({ x: 1, y: 2, width: 720, height: 1280 }),
+    });
+    const fakeCdp = createFakeCdpWebSocketFactory((message) => {
+      if (message.method === "Runtime.evaluate") {
+        return {
+          id: message.id,
+          result: {
+            result: {
+              value: runInNewContext(message.params.expression, {
+                document: {
+                  querySelector: (selector: string) =>
+                    selector === "[data-test='try-on-captured-image']"
+                      ? captured
+                      : selector === "[data-test='try-on-view']"
+                        ? view
+                        : null,
+                },
+                location: { hash: "#/try-on" },
+                HTMLElement: FakeHtmlElement,
+                HTMLButtonElement: class extends FakeHtmlElement {},
+                JSON,
+                Number,
+                Boolean,
+              }),
+            },
+          },
+        };
+      }
+      if (message.method === "Page.captureScreenshot") {
+        return {
+          id: message.id,
+          result: { data: Buffer.from("captured-frame").toString("base64") },
+        };
+      }
+      return { id: message.id, result: {} };
+    });
+    const endpoint = await startFakeCdpEndpoint();
+    const adapter = new CdpTestAdapter({
+      endpoint: endpoint.url,
+      cdpWebSocketFactory: fakeCdp.factory,
+    });
+    try {
+      adapter.protocolEvidence.observeWebSocketCreated({
+        requestId: "vision-current",
+        url: "ws://127.0.0.1:27892/v2/machine",
+      });
+      adapter.protocolEvidence.observeWebSocketFrameReceived({
+        requestId: "vision-current",
+        response: {
+          payloadData: JSON.stringify({
+            protocol: "vem.vision.v2",
+            type: "vision.try_on.attempt.captured",
+            messageId: "captured-1",
+            timestamp: "2026-08-21T00:00:00.000Z",
+            payload: {
+              attemptId: "550e8400-e29b-41d4-a716-446655440124",
+              captured: {
+                reference: protocolReference,
+                digest: `sha256:${"a".repeat(64)}`,
+                contentType: "image/png",
+                byteSize: 4096,
+                width: 720,
+                height: 1280,
+                frameId: "frame-1",
+              },
+            },
+          }),
+        },
+      });
+      await adapter.connect();
+      const state = JSON.parse(await adapter.readFile("ui/try-on-state.json"));
+      const serialized = JSON.stringify(state);
+      assert.doesNotMatch(serialized, /captured-dom-secret/);
+      assert.equal(state.capturedUrl, undefined);
+      const observation = state.observationTimeline.at(-1);
+      assert.equal(observation.capturedSourceMatchesProtocol, false);
+      assert.match(observation.capturedSourceDigest, /^sha256:[0-9a-f]{64}$/);
+      const failure = await adapter.captureFailureEvidence(new Error("forced"));
+      assert.doesNotMatch(
+        JSON.stringify(failure.diagnostics),
+        /captured-dom-secret/,
+      );
+    } finally {
+      await adapter.close();
+      await endpoint.close();
+    }
+  });
+
   it("通过公开 click command 经真实 CdpClient 发出 touch CDP 输入", async () => {
     const dispatched: { method: string; type?: string }[] = [];
     const fakeCdp = createFakeCdpWebSocketFactory((message) => {

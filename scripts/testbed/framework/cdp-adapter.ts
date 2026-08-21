@@ -543,6 +543,7 @@ export class CapturedFrameEvidenceCache {
 const STATE_EXPRESSION = `(() => {
   const view = document.querySelector("[data-test='try-on-view']");
   const preview = document.querySelector("[data-test='try-on-acquisition-preview']");
+  const captured = document.querySelector("[data-test='try-on-captured-image']");
   const result = document.querySelector("[data-test='try-on-result-image']");
   const scale = document.querySelector("[data-test='try-on-scale-value']");
   const detail = document.querySelector("[data-test='product-detail-page']");
@@ -553,6 +554,7 @@ const STATE_EXPRESSION = `(() => {
   const phase = document.querySelector("[data-test='try-on-phase']");
   const countdown = document.querySelector("[data-test='try-on-countdown']");
   const previewRect = preview?.getBoundingClientRect();
+  const capturedRect = captured?.getBoundingClientRect();
   return JSON.stringify({
     route: location.hash,
     catalogKey: detail?.dataset?.catalogKey ?? null,
@@ -563,6 +565,11 @@ const STATE_EXPRESSION = `(() => {
       naturalWidth: Number(preview?.naturalWidth ?? 0),
       naturalHeight: Number(preview?.naturalHeight ?? 0),
     },
+    captured: {
+      naturalWidth: Number(captured?.naturalWidth ?? 0),
+      naturalHeight: Number(captured?.naturalHeight ?? 0),
+    },
+    capturedUrl: captured?.getAttribute("src") ?? null,
     resultUrl: result?.getAttribute("src") ?? null,
     scaleValue: scale?.textContent?.trim() ?? null,
     tryOnPresent: detail
@@ -579,6 +586,10 @@ const STATE_EXPRESSION = `(() => {
     previewVisible: Boolean(preview?.getClientRects().length),
     previewRect: previewRect && previewRect.width > 0 && previewRect.height > 0
       ? { x: previewRect.x, y: previewRect.y, width: previewRect.width, height: previewRect.height }
+      : null,
+    capturedVisible: Boolean(captured?.getClientRects().length),
+    capturedRect: capturedRect && capturedRect.width > 0 && capturedRect.height > 0
+      ? { x: capturedRect.x, y: capturedRect.y, width: capturedRect.width, height: capturedRect.height }
       : null,
   });
 })()`;
@@ -1183,9 +1194,9 @@ export class CdpTestAdapter implements TestAdapter {
     }
     const state = JSON.parse(
       await evaluateExpression(this.client!, STATE_EXPRESSION),
-    ) as { attemptId?: string | null };
+    ) as { attemptId?: string | null; capturedUrl?: unknown };
     this.recordStateObservation(state as Record<string, unknown>);
-    const previewFrameHash = await this.capturePreviewFrameHash(state);
+    const previewFrameHash = await this.captureImageFrameHash(state, "preview");
     const protocolTimeline =
       typeof state.attemptId === "string"
         ? this.protocolEvidence.eventsForAttempt(state.attemptId)
@@ -1194,6 +1205,17 @@ export class CdpTestAdapter implements TestAdapter {
       (event) => event.type === "vision.try_on.attempt.captured",
     )?.payload.captured;
     const parsedCaptured = visionV2CapturedFrameSchema.safeParse(captured);
+    const { capturedUrl, ...publicState } = state;
+    const capturedSourceMatchesProtocol =
+      parsedCaptured.success && capturedUrl === parsedCaptured.data.reference;
+    const capturedSourceDigest =
+      typeof capturedUrl === "string" && capturedUrl.length > 0
+        ? `sha256:${createHash("sha256").update(capturedUrl).digest("hex")}`
+        : null;
+    const capturedFrameHash = await this.captureImageFrameHash(
+      state,
+      "captured",
+    );
     const capturedResource =
       typeof state.attemptId === "string" && parsedCaptured.success
         ? await this.capturedFrameResources.read({
@@ -1239,13 +1261,24 @@ export class CdpTestAdapter implements TestAdapter {
           typeof captured?.frameId === "string" ? captured.frameId : null,
         capturedDigest:
           typeof captured?.digest === "string" ? captured.digest : null,
+        capturedVisible:
+          (state as { capturedVisible?: unknown }).capturedVisible === true,
+        capturedNaturalWidth: (
+          state as { captured?: { naturalWidth?: unknown } }
+        ).captured?.naturalWidth as number | undefined,
+        capturedNaturalHeight: (
+          state as { captured?: { naturalHeight?: unknown } }
+        ).captured?.naturalHeight as number | undefined,
+        capturedSourceMatchesProtocol,
+        capturedSourceDigest,
+        capturedFrameHash,
       });
       if (this.tryOnObservations.length > 512) {
         this.tryOnObservations.splice(0, this.tryOnObservations.length - 512);
       }
     }
     return JSON.stringify({
-      ...state,
+      ...publicState,
       visionOrigin: this.protocolEvidence.visionOrigin,
       protocolTimeline,
       capturedResource,
@@ -1269,19 +1302,22 @@ export class CdpTestAdapter implements TestAdapter {
     });
   }
 
-  private async capturePreviewFrameHash(
+  private async captureImageFrameHash(
     state: unknown,
+    kind: "preview" | "captured",
   ): Promise<string | null> {
-    const preview =
-      (state as { previewVisible?: unknown; previewRect?: unknown }) ?? {};
-    const rect = preview.previewRect as {
+    const image = (state as Record<string, unknown>) ?? {};
+    const visibleKey =
+      kind === "preview" ? "previewVisible" : "capturedVisible";
+    const rectKey = kind === "preview" ? "previewRect" : "capturedRect";
+    const rect = image[rectKey] as {
       x?: unknown;
       y?: unknown;
       width?: unknown;
       height?: unknown;
     } | null;
     if (
-      preview.previewVisible !== true ||
+      image[visibleKey] !== true ||
       !rect ||
       ![rect.x, rect.y, rect.width, rect.height].every(
         (value) => typeof value === "number" && Number.isFinite(value),

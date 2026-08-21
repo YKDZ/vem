@@ -69,6 +69,13 @@ export interface VisionExperienceObservation {
   previewFrameHash: string | null;
   capturedFrameId?: string | null;
   capturedDigest?: string | null;
+  /** captured/generating 期间独立 captured DOM 图像的公共、脱敏事实。 */
+  capturedVisible?: boolean;
+  capturedNaturalWidth?: number;
+  capturedNaturalHeight?: number;
+  capturedSourceMatchesProtocol?: boolean;
+  capturedSourceDigest?: string | null;
+  capturedFrameHash?: string | null;
 }
 
 interface TimelineAssertionValue {
@@ -82,6 +89,7 @@ export interface VisionExperienceTimelineValidation {
   captureAfterCountdown: TimelineAssertionValue;
   previewLiveThroughCountdown: TimelineAssertionValue;
   capturedFrameHeldDuringGeneration: TimelineAssertionValue;
+  capturedAbsentOutsideHeld: TimelineAssertionValue;
 }
 
 const COUNTDOWN_SEQUENCE = ["3", "2", "1"];
@@ -568,16 +576,55 @@ export function validateVisionExperienceTimeline({
   const heldSamples = attemptSamples.filter(
     (sample) => sample.state === "captured" || sample.state === "generating",
   );
+  const capturedAbsentOutsideHeld = {
+    expected: true,
+    observed: attemptSamples
+      .filter(
+        (sample) =>
+          sample.state !== "captured" && sample.state !== "generating",
+      )
+      .every(
+        (sample) =>
+          sample.capturedVisible !== true &&
+          (sample.capturedNaturalWidth ?? 0) === 0 &&
+          (sample.capturedNaturalHeight ?? 0) === 0 &&
+          sample.capturedSourceMatchesProtocol !== true &&
+          sample.capturedSourceDigest == null &&
+          sample.capturedFrameHash == null,
+      ),
+  };
   const capturedIdentity = heldSamples.find(
     (sample) => sample.state === "captured",
   );
+  const capturedImageReadyAndStable =
+    heldSamples.length > 0 &&
+    heldSamples.some((sample) => sample.state === "generating") &&
+    heldSamples.every(
+      (sample) =>
+        sample.capturedVisible === true &&
+        Number.isInteger(sample.capturedNaturalWidth) &&
+        sample.capturedNaturalWidth! > 0 &&
+        Number.isInteger(sample.capturedNaturalHeight) &&
+        sample.capturedNaturalHeight! > 0 &&
+        sample.capturedSourceMatchesProtocol === true &&
+        typeof sample.capturedSourceDigest === "string" &&
+        sample.capturedSourceDigest.length > 0 &&
+        typeof sample.capturedFrameHash === "string" &&
+        sample.capturedFrameHash.length > 0,
+    ) &&
+    heldSamples.every(
+      (sample) =>
+        sample.capturedSourceDigest ===
+          capturedIdentity?.capturedSourceDigest &&
+        sample.capturedFrameHash === capturedIdentity?.capturedFrameHash,
+    );
   const capturedFrameHeldDuringGeneration = {
     expected: true,
     observed:
       Boolean(
         capturedIdentity?.capturedFrameId && capturedIdentity.capturedDigest,
       ) &&
-      heldSamples.some((sample) => sample.state === "generating") &&
+      capturedImageReadyAndStable &&
       heldSamples.every(
         (sample) =>
           sample.capturedFrameId === capturedIdentity?.capturedFrameId &&
@@ -590,10 +637,12 @@ export function validateVisionExperienceTimeline({
       captureAfter &&
       monotonic &&
       previewForAllBuckets &&
+      capturedAbsentOutsideHeld.observed &&
       capturedFrameHeldDuringGeneration.observed,
     countdownRenderedSequence,
     captureAfterCountdown,
     previewLiveThroughCountdown,
+    capturedAbsentOutsideHeld,
     capturedFrameHeldDuringGeneration,
   };
 }
@@ -835,14 +884,12 @@ export async function runTryOnScenario(
   );
   const capturedEvidence = validateCapturedTryOnEvidence(state);
   const captured = capturedSourceBinding(capturedEvidence);
-  const timeline =
-    Array.isArray(state.observationTimeline) &&
-    state.observationTimeline.length > 0
-      ? validateVisionExperienceTimeline({
-          attemptId: state.attemptId!,
-          samples: state.observationTimeline,
-        })
-      : null;
+  const timeline = validateVisionExperienceTimeline({
+    attemptId: state.attemptId!,
+    samples: Array.isArray(state.observationTimeline)
+      ? state.observationTimeline
+      : [],
+  });
   const geometry = state.resultGeometryEvidence ?? null;
   const assertions = [
     businessAssertion({
@@ -890,34 +937,38 @@ export async function runTryOnScenario(
       expected: captured,
       observed: captured,
     }),
-    ...(timeline
-      ? [
-          businessAssertion({
-            id: "countdown-rendered-sequence",
-            source: "vision-experience-observation-timeline",
-            expected: timeline.countdownRenderedSequence.expected,
-            observed: timeline.countdownRenderedSequence.observed,
-          }),
-          businessAssertion({
-            id: "captured-frame-held-during-generation",
-            source: "vision-experience-observation-timeline",
-            expected: timeline.capturedFrameHeldDuringGeneration.expected,
-            observed: timeline.capturedFrameHeldDuringGeneration.observed,
-          }),
-          businessAssertion({
-            id: "capture-after-countdown",
-            source: "vision-experience-observation-timeline",
-            expected: timeline.captureAfterCountdown.expected,
-            observed: timeline.captureAfterCountdown.observed,
-          }),
-          businessAssertion({
-            id: "preview-live-through-countdown",
-            source: "vision-experience-observation-timeline",
-            expected: timeline.previewLiveThroughCountdown.expected,
-            observed: timeline.previewLiveThroughCountdown.observed,
-          }),
-        ]
-      : []),
+    ...[
+      businessAssertion({
+        id: "countdown-rendered-sequence",
+        source: "vision-experience-observation-timeline",
+        expected: timeline.countdownRenderedSequence.expected,
+        observed: timeline.countdownRenderedSequence.observed,
+      }),
+      businessAssertion({
+        id: "captured-frame-held-during-generation",
+        source: "vision-experience-observation-timeline",
+        expected: timeline.capturedFrameHeldDuringGeneration.expected,
+        observed: timeline.capturedFrameHeldDuringGeneration.observed,
+      }),
+      businessAssertion({
+        id: "captured-absent-outside-held",
+        source: "vision-experience-observation-timeline",
+        expected: timeline.capturedAbsentOutsideHeld.expected,
+        observed: timeline.capturedAbsentOutsideHeld.observed,
+      }),
+      businessAssertion({
+        id: "capture-after-countdown",
+        source: "vision-experience-observation-timeline",
+        expected: timeline.captureAfterCountdown.expected,
+        observed: timeline.captureAfterCountdown.observed,
+      }),
+      businessAssertion({
+        id: "preview-live-through-countdown",
+        source: "vision-experience-observation-timeline",
+        expected: timeline.previewLiveThroughCountdown.expected,
+        observed: timeline.previewLiveThroughCountdown.observed,
+      }),
+    ],
     ...(geometry
       ? [
           businessAssertion({
