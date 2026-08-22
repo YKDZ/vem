@@ -1,29 +1,22 @@
+import type { z } from "zod";
+
 import {
-  qweatherConfigResponseSchema,
-  qweatherConfigNoBodySchema,
+  adminGetQweatherConfigContract,
+  adminUpdateQweatherConfigContract,
   updateQweatherConfigSchema,
   type QweatherConfigResponse,
-  type UpdateQweatherConfigInput,
 } from "@vem/shared";
 
-import { getContract, putContract } from "./request";
+import { callAdminEndpointContract } from "./request";
 
 export async function getQweatherConfig(): Promise<QweatherConfigResponse> {
-  return await getContract(
-    "/qweather-config",
-    qweatherConfigNoBodySchema,
-    qweatherConfigResponseSchema,
-    {},
-  );
+  return await callAdminEndpointContract(adminGetQweatherConfigContract, {});
 }
 
 export async function updateQweatherConfig(
-  body: UpdateQweatherConfigInput,
+  body: z.input<typeof updateQweatherConfigSchema>,
 ): Promise<QweatherConfigResponse> {
-  return await putContract(
-    "/qweather-config",
-    updateQweatherConfigSchema,
-    qweatherConfigResponseSchema,
+  return await callAdminEndpointContract(adminUpdateQweatherConfigContract, {
     body,
-  );
+  });
 }

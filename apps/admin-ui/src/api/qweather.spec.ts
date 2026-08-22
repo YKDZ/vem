@@ -1,21 +1,22 @@
+import {
+  adminGetQweatherConfigContract,
+  adminUpdateQweatherConfigContract,
+} from "@vem/shared";
 import { describe, expect, it, vi } from "vitest";
 
-import { getContract, putContract } from "@/api/request";
+import { callAdminEndpointContract } from "@/api/request";
 
 import { getQweatherConfig, updateQweatherConfig } from "./qweather";
 
 vi.mock("@/api/request", () => ({
-  getContract: vi.fn().mockResolvedValue({}),
-  putContract: vi.fn().mockResolvedValue({}),
+  callAdminEndpointContract: vi.fn().mockResolvedValue({}),
 }));
 
 describe("和风天气后台接口", () => {
-  it("使用契约绑定的读取和保存接口", async () => {
+  it("使用完整共享端点契约读取和保存配置", async () => {
     await getQweatherConfig();
-    expect(getContract).toHaveBeenCalledWith(
-      "/qweather-config",
-      expect.any(Object),
-      expect.any(Object),
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminGetQweatherConfigContract,
       {},
     );
 
@@ -29,11 +30,9 @@ describe("和风天气后台接口", () => {
       timeoutMs: 3000,
     };
     await updateQweatherConfig(body);
-    expect(putContract).toHaveBeenCalledWith(
-      "/qweather-config",
-      expect.any(Object),
-      expect.any(Object),
-      body,
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminUpdateQweatherConfigContract,
+      { body },
     );
   });
 });

@@ -17,6 +17,7 @@ import {
   managedMediaDescriptorSchema,
   managedMediaDiagnosticReasonSchema,
 } from "./managed-media";
+import { pageQuerySchema } from "./pagination";
 
 function isIanaTimeZone(value: string): boolean {
   try {
@@ -829,3 +830,179 @@ export type ProductionMachinePaymentCapability = z.infer<
 export type MachineProvisioningProfile = z.infer<
   typeof machineProvisioningProfileSchema
 >;
+
+export const adminMachineSlotListResponseSchema = z.array(
+  adminMachineSlotResponseSchema,
+);
+
+export const adminMachinePlanogramVersionListResponseSchema = z.strictObject({
+  activePlanogramVersion: z.string().min(1).max(128).nullable(),
+  items: z.array(machinePlanogramVersionSnapshotSchema),
+});
+
+export const adminSecureDecommissionResponseSchema = z.strictObject({
+  machineId: z.uuid(),
+  machineCode: z.string().min(1).max(64),
+  decommissionedAt: z.iso.datetime(),
+  decommissionCommandId: z.uuid().nullable(),
+  decommissionCommandStatus: z.string().min(1).max(32),
+  deliveryAttemptCount: z.int().nonnegative(),
+  localTunnelRemoval: z.string().min(1).max(32),
+});
+
+const machineIdParamSchema = z.strictObject({ id: z.uuid() });
+const claimCodePathParamsSchema = z.strictObject({
+  id: z.uuid(),
+  claimCodeId: z.uuid(),
+});
+
+export const adminListMachinesContract = defineAdminEndpointContract({
+  method: "GET",
+  path: "/machines",
+  pathParamsSchema: noPathParamsSchema,
+  querySchema: pageQuerySchema,
+  bodySchema: adminMachineContractNoBodySchema,
+  responseSchema: adminMachinePageResponseSchema,
+});
+
+export const adminCreateMachineContract = defineAdminEndpointContract({
+  method: "POST",
+  path: "/machines",
+  pathParamsSchema: noPathParamsSchema,
+  querySchema: noQuerySchema,
+  bodySchema: createMachineSchema,
+  responseSchema: adminMachineResponseSchema,
+});
+
+export const adminGetMachineContract = defineAdminEndpointContract({
+  method: "GET",
+  path: "/machines/:id",
+  pathParamsSchema: machineIdParamSchema,
+  querySchema: noQuerySchema,
+  bodySchema: adminMachineContractNoBodySchema,
+  responseSchema: adminMachineResponseSchema,
+});
+
+export const adminUpdateMachineContract = defineAdminEndpointContract({
+  method: "PATCH",
+  path: "/machines/:id",
+  pathParamsSchema: machineIdParamSchema,
+  querySchema: noQuerySchema,
+  bodySchema: updateMachineSchema,
+  responseSchema: adminMachineResponseSchema,
+});
+
+export const adminGetMachineExternalNaturalEnvironmentContract =
+  defineAdminEndpointContract({
+    method: "GET",
+    path: "/machines/:id/external-natural-environment",
+    pathParamsSchema: machineIdParamSchema,
+    querySchema: noQuerySchema,
+    bodySchema: adminMachineContractNoBodySchema,
+    responseSchema: externalNaturalEnvironmentSchema,
+  });
+
+export const adminPublishMachinePlanogramVersionContract =
+  defineAdminEndpointContract({
+    method: "POST",
+    path: "/machines/:id/planogram-versions",
+    pathParamsSchema: machineIdParamSchema,
+    querySchema: noQuerySchema,
+    bodySchema: publishMachinePlanogramVersionSchema,
+    responseSchema: machinePlanogramVersionSnapshotSchema,
+  });
+
+export const adminListMachinePlanogramVersionsContract =
+  defineAdminEndpointContract({
+    method: "GET",
+    path: "/machines/:id/planogram-versions",
+    pathParamsSchema: machineIdParamSchema,
+    querySchema: noQuerySchema,
+    bodySchema: adminMachineContractNoBodySchema,
+    responseSchema: adminMachinePlanogramVersionListResponseSchema,
+  });
+
+export const adminCommandMachineEnvironmentContract =
+  defineAdminEndpointContract({
+    method: "POST",
+    path: "/machines/:id/commands/environment-control",
+    pathParamsSchema: machineIdParamSchema,
+    querySchema: noQuerySchema,
+    bodySchema: machineEnvironmentControlRequestSchema,
+    responseSchema: adminMachineCommandResponseSchema,
+  });
+
+export const adminListMachineSlotsContract = defineAdminEndpointContract({
+  method: "GET",
+  path: "/machines/:id/slots",
+  pathParamsSchema: machineIdParamSchema,
+  querySchema: noQuerySchema,
+  bodySchema: adminMachineContractNoBodySchema,
+  responseSchema: adminMachineSlotListResponseSchema,
+});
+
+export const adminCreateMachineSlotContract = defineAdminEndpointContract({
+  method: "POST",
+  path: "/machines/:id/slots",
+  pathParamsSchema: machineIdParamSchema,
+  querySchema: noQuerySchema,
+  bodySchema: createMachineSlotSchema,
+  responseSchema: adminMachineSlotResponseSchema,
+});
+
+export const adminRotateMachineCredentialsContract =
+  defineAdminEndpointContract({
+    method: "POST",
+    path: "/machines/:id/credentials/rotate",
+    pathParamsSchema: machineIdParamSchema,
+    querySchema: noQuerySchema,
+    bodySchema: adminMachineContractNoBodySchema,
+    responseSchema: rotateMachineCredentialsResponseSchema,
+  });
+
+export const adminSecureDecommissionMachineContract =
+  defineAdminEndpointContract({
+    method: "POST",
+    path: "/machines/:id/decommission",
+    pathParamsSchema: machineIdParamSchema,
+    querySchema: noQuerySchema,
+    bodySchema: adminMachineContractNoBodySchema,
+    responseSchema: adminSecureDecommissionResponseSchema,
+  });
+
+export const adminGenerateMachineClaimCodeContract =
+  defineAdminEndpointContract({
+    method: "POST",
+    path: "/machines/:id/claim-codes",
+    pathParamsSchema: machineIdParamSchema,
+    querySchema: noQuerySchema,
+    bodySchema: generateMachineClaimCodeRequestSchema,
+    responseSchema: generateMachineClaimCodeResponseSchema,
+  });
+
+export const adminListMachineClaimCodesContract = defineAdminEndpointContract({
+  method: "GET",
+  path: "/machines/:id/claim-codes",
+  pathParamsSchema: machineIdParamSchema,
+  querySchema: noQuerySchema,
+  bodySchema: adminMachineContractNoBodySchema,
+  responseSchema: machineClaimCodeListResponseSchema,
+});
+
+export const adminGetMachineClaimCodeContract = defineAdminEndpointContract({
+  method: "GET",
+  path: "/machines/:id/claim-codes/:claimCodeId",
+  pathParamsSchema: claimCodePathParamsSchema,
+  querySchema: noQuerySchema,
+  bodySchema: adminMachineContractNoBodySchema,
+  responseSchema: machineClaimCodeSnapshotSchema,
+});
+
+export const adminRevokeMachineClaimCodeContract = defineAdminEndpointContract({
+  method: "POST",
+  path: "/machines/:id/claim-codes/:claimCodeId/revoke",
+  pathParamsSchema: claimCodePathParamsSchema,
+  querySchema: noQuerySchema,
+  bodySchema: adminMachineContractNoBodySchema,
+  responseSchema: machineClaimCodeSnapshotSchema,
+});

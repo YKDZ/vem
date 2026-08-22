@@ -63,7 +63,7 @@ describe("MachinesController environment commands", () => {
     await expect(
       controller.updateMachine(
         { id: "admin-1" } as never,
-        "550e8400-e29b-41d4-a716-446655440000",
+        { id: "550e8400-e29b-41d4-a716-446655440000" },
         {
           geoLocation: {
             latitude: 31.2304,
@@ -99,7 +99,7 @@ describe("MachinesController environment commands", () => {
     await expect(
       controller.commandEnvironment(
         { id: "admin-1" } as never,
-        "550e8400-e29b-41d4-a716-446655440000",
+        { id: "550e8400-e29b-41d4-a716-446655440000" },
         { airConditionerOn: true },
       ),
     ).resolves.toEqual({ id: "command-1" });
@@ -189,9 +189,9 @@ describe("MachinesController External Natural Environment", () => {
 
     expect(permissions).toEqual(["machines.read"]);
     await expect(
-      controller.getExternalNaturalEnvironment(
-        "550e8400-e29b-41d4-a716-446655440000",
-      ),
+      controller.getExternalNaturalEnvironment({
+        id: "550e8400-e29b-41d4-a716-446655440000",
+      }),
     ).resolves.toEqual(
       expect.objectContaining({
         status: "unconfigured",
@@ -455,10 +455,9 @@ describe("MachinesController claim code lifecycle", () => {
 
     expect(permissions).toEqual(["machines.manage-credentials"]);
     await expect(
-      controller.generateClaimCode(
-        { id: "admin-1" } as never,
-        "550e8400-e29b-41d4-a716-446655440000",
-      ),
+      controller.generateClaimCode({ id: "admin-1" } as never, {
+        id: "550e8400-e29b-41d4-a716-446655440000",
+      }),
     ).resolves.toEqual({
       id: "claim-code-1",
       claimCode: "ABCD-2345",
@@ -485,7 +484,7 @@ describe("MachinesController claim code lifecycle", () => {
     await expect(
       controller.generateClaimCode(
         { id: "admin-1" } as never,
-        "550e8400-e29b-41d4-a716-446655440000",
+        { id: "550e8400-e29b-41d4-a716-446655440000" },
         { purpose: "reclaim" },
       ),
     ).resolves.toEqual({
@@ -551,7 +550,9 @@ describe("MachinesController claim code lifecycle", () => {
 
     expect(permissions).toEqual(["machines.manage-credentials"]);
     await expect(
-      controller.listClaimCodes("550e8400-e29b-41d4-a716-446655440000"),
+      controller.listClaimCodes({
+        id: "550e8400-e29b-41d4-a716-446655440000",
+      }),
     ).resolves.toEqual({ items: [{ id: "claim-code-1", state: "pending" }] });
     expect(listMachineClaimCodes).toHaveBeenCalledWith(
       "550e8400-e29b-41d4-a716-446655440000",
@@ -574,10 +575,10 @@ describe("MachinesController claim code lifecycle", () => {
 
     expect(permissions).toEqual(["machines.manage-credentials"]);
     await expect(
-      controller.getClaimCode(
-        "550e8400-e29b-41d4-a716-446655440000",
-        "550e8400-e29b-41d4-a716-446655440111",
-      ),
+      controller.getClaimCode({
+        id: "550e8400-e29b-41d4-a716-446655440000",
+        claimCodeId: "550e8400-e29b-41d4-a716-446655440111",
+      }),
     ).resolves.toEqual({
       id: "550e8400-e29b-41d4-a716-446655440111",
       state: "locked",
@@ -606,8 +607,10 @@ describe("MachinesController claim code lifecycle", () => {
     await expect(
       controller.revokeClaimCode(
         { id: "admin-1" } as never,
-        "550e8400-e29b-41d4-a716-446655440000",
-        "550e8400-e29b-41d4-a716-446655440111",
+        {
+          id: "550e8400-e29b-41d4-a716-446655440000",
+          claimCodeId: "550e8400-e29b-41d4-a716-446655440111",
+        },
         {},
       ),
     ).resolves.toEqual({
@@ -641,7 +644,7 @@ describe("MachinesController planogram lifecycle", () => {
     await expect(
       controller.publishPlanogramVersion(
         { id: "admin-1" } as never,
-        "550e8400-e29b-41d4-a716-446655440000",
+        { id: "550e8400-e29b-41d4-a716-446655440000" },
         body as never,
       ),
     ).resolves.toEqual({ planogramVersion: "PLAN-1" });

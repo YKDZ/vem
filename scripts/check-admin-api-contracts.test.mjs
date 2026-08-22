@@ -50,12 +50,23 @@ function completeOpsMaintenanceContractFixture() {
   const paths = [
     "packages/shared/src/schemas/notifications.ts",
     "packages/shared/src/schemas/machines.ts",
+    "packages/shared/src/schemas/qweather.ts",
+    "packages/shared/src/schemas/inventory.ts",
     "apps/service-api/src/maintenance-work-orders/maintenance-work-orders.controller.ts",
     "apps/service-api/src/maintenance-work-orders/maintenance-work-orders.module.ts",
     "apps/service-api/src/machine-ops/machine-ops.controller.ts",
     "apps/service-api/src/machine-ops/machine-ops.module.ts",
+    "apps/service-api/src/machines/machines.controller.ts",
+    "apps/service-api/src/machines/machines.module.ts",
+    "apps/service-api/src/machines/qweather-config.controller.ts",
+    "apps/service-api/src/inventory/inventory.controller.ts",
+    "apps/service-api/src/inventory/inventory.module.ts",
+    "apps/service-api/src/inventory/stock-reconciliation.controller.ts",
     "apps/admin-ui/src/api/work-orders.ts",
     "apps/admin-ui/src/api/machine-ops.ts",
+    "apps/admin-ui/src/api/machines.ts",
+    "apps/admin-ui/src/api/qweather.ts",
+    "apps/admin-ui/src/api/inventory.ts",
   ];
   return Object.fromEntries(
     paths.map((path) => [path, readFileSync(join(workspace, path), "utf8")]),
@@ -1057,6 +1068,12 @@ describe("admin api contract guard", () => {
       assert.equal(result.opsMaintenanceCoverage.callerHits.length, 4);
       assert.equal(result.opsMaintenanceCoverage.providerHits.length, 4);
       assert.equal(result.opsMaintenanceCoverage.bareRouteFailures.length, 0);
+      assert.equal(result.machinesInventoryCoverage.callerHits.length, 14);
+      assert.equal(result.machinesInventoryCoverage.providerHits.length, 18);
+      assert.equal(
+        result.machinesInventoryCoverage.bareRouteFailures.length,
+        0,
+      );
     });
   });
 

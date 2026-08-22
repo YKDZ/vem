@@ -1,35 +1,36 @@
-import type {
-  AdminMachineCommandResponse,
-  AdminMachineResponse,
-  AdminMachineSlotResponse,
-  ExternalNaturalEnvironment,
-  GenerateMachineClaimCodeResponse,
-  MachineClaimCodeListResponse,
-  MachineClaimCodeSnapshot,
-  PageResult,
-} from "@vem/shared";
+import type { z } from "zod";
 
 import {
-  adminMachineCommandResponseSchema,
-  adminMachineContractNoBodySchema,
-  adminMachinePageResponseSchema,
-  adminMachineResponseSchema,
-  adminMachineSlotResponseSchema,
+  adminCommandMachineEnvironmentContract,
+  adminCreateMachineContract,
+  adminCreateMachineSlotContract,
+  adminGenerateMachineClaimCodeContract,
+  adminGetMachineContract,
+  adminGetMachineExternalNaturalEnvironmentContract,
+  adminListMachineClaimCodesContract,
+  adminListMachineSlotsContract,
+  adminListMachinesContract,
+  adminRevokeMachineClaimCodeContract,
+  adminRotateMachineCredentialsContract,
+  adminUpdateMachineContract,
   createMachineSchema,
   createMachineSlotSchema,
   generateMachineClaimCodeRequestSchema,
-  generateMachineClaimCodeResponseSchema,
-  machineClaimCodeListResponseSchema,
-  machineClaimCodeSnapshotSchema,
   machineEnvironmentControlRequestSchema,
   pageQuerySchema,
-  rotateMachineCredentialsResponseSchema,
   updateMachineSchema,
+  type AdminMachineCommandResponse,
+  type AdminMachineResponse,
+  type AdminMachineSlotResponse,
+  type ExternalNaturalEnvironment,
+  type GenerateMachineClaimCodeResponse,
+  type MachineClaimCodeListResponse,
+  type MachineClaimCodeSnapshot,
+  type PageResult,
   type RotateMachineCredentialsResponse,
 } from "@vem/shared";
-import { z } from "zod";
 
-import { get, getContract, patchContract, postContract } from "./request";
+import { callAdminEndpointContract } from "./request";
 
 export type MachineGeoLocation = {
   latitude: number;
@@ -38,9 +39,7 @@ export type MachineGeoLocation = {
 };
 
 export type Machine = AdminMachineResponse;
-
 export type MachineCommand = AdminMachineCommandResponse;
-
 export type MachineSlot = AdminMachineSlotResponse;
 export type MachineClaimCodeListResult = MachineClaimCodeListResponse;
 export type GenerateMachineClaimCodeResult = GenerateMachineClaimCodeResponse;
@@ -53,12 +52,9 @@ function toMachine(response: AdminMachineResponse): Machine {
 export async function listMachines(
   query?: z.input<typeof pageQuerySchema>,
 ): Promise<PageResult<Machine>> {
-  const page = await getContract(
-    "/machines",
-    pageQuerySchema,
-    adminMachinePageResponseSchema,
-    query ?? {},
-  );
+  const page = await callAdminEndpointContract(adminListMachinesContract, {
+    query: query ?? {},
+  });
   return {
     ...page,
     items: page.items.map(toMachine),
@@ -66,14 +62,19 @@ export async function listMachines(
 }
 
 export async function getMachine(id: string): Promise<Machine> {
-  return toMachine(await get<AdminMachineResponse>(`/machines/${id}`));
+  return toMachine(
+    await callAdminEndpointContract(adminGetMachineContract, {
+      pathParams: { id },
+    }),
+  );
 }
 
 export async function getExternalNaturalEnvironment(
   id: string,
 ): Promise<ExternalNaturalEnvironment> {
-  return await get<ExternalNaturalEnvironment>(
-    `/machines/${id}/external-natural-environment`,
+  return await callAdminEndpointContract(
+    adminGetMachineExternalNaturalEnvironmentContract,
+    { pathParams: { id } },
   );
 }
 
@@ -81,12 +82,7 @@ export async function createMachine(
   body: z.input<typeof createMachineSchema>,
 ): Promise<Machine> {
   return toMachine(
-    await postContract(
-      "/machines",
-      createMachineSchema,
-      adminMachineResponseSchema,
-      body,
-    ),
+    await callAdminEndpointContract(adminCreateMachineContract, { body }),
   );
 }
 
@@ -95,12 +91,10 @@ export async function updateMachine(
   body: z.input<typeof updateMachineSchema>,
 ): Promise<Machine> {
   return toMachine(
-    await patchContract(
-      `/machines/${id}`,
-      updateMachineSchema,
-      adminMachineResponseSchema,
+    await callAdminEndpointContract(adminUpdateMachineContract, {
+      pathParams: { id },
       body,
-    ),
+    }),
   );
 }
 
@@ -108,52 +102,45 @@ export async function commandEnvironment(
   id: string,
   body: z.input<typeof machineEnvironmentControlRequestSchema>,
 ): Promise<MachineCommand> {
-  return await postContract(
-    `/machines/${id}/commands/environment-control`,
-    machineEnvironmentControlRequestSchema,
-    adminMachineCommandResponseSchema,
-    body,
+  return await callAdminEndpointContract(
+    adminCommandMachineEnvironmentContract,
+    { pathParams: { id }, body },
   );
 }
 
 export async function listMachineSlots(
   machineId: string,
 ): Promise<MachineSlot[]> {
-  return await get<MachineSlot[]>(`/machines/${machineId}/slots`);
+  return await callAdminEndpointContract(adminListMachineSlotsContract, {
+    pathParams: { id: machineId },
+  });
 }
 
 export async function createMachineSlot(
   machineId: string,
   body: z.input<typeof createMachineSlotSchema>,
 ): Promise<MachineSlot> {
-  return await postContract(
-    `/machines/${machineId}/slots`,
-    createMachineSlotSchema,
-    adminMachineSlotResponseSchema,
+  return await callAdminEndpointContract(adminCreateMachineSlotContract, {
+    pathParams: { id: machineId },
     body,
-  );
+  });
 }
 
 export async function listMachineClaimCodes(
   machineId: string,
 ): Promise<MachineClaimCodeListResult> {
-  return await getContract(
-    `/machines/${machineId}/claim-codes`,
-    adminMachineContractNoBodySchema,
-    machineClaimCodeListResponseSchema,
-    {},
-  );
+  return await callAdminEndpointContract(adminListMachineClaimCodesContract, {
+    pathParams: { id: machineId },
+  });
 }
 
 export async function generateMachineClaimCode(
   machineId: string,
   body?: z.input<typeof generateMachineClaimCodeRequestSchema>,
 ): Promise<GenerateMachineClaimCodeResult> {
-  return await postContract(
-    `/machines/${machineId}/claim-codes`,
-    generateMachineClaimCodeRequestSchema,
-    generateMachineClaimCodeResponseSchema,
-    body ?? {},
+  return await callAdminEndpointContract(
+    adminGenerateMachineClaimCodeContract,
+    { pathParams: { id: machineId }, body: body ?? {} },
   );
 }
 
@@ -161,12 +148,10 @@ export async function revokeMachineClaimCode(
   machineId: string,
   claimCodeId: string,
 ): Promise<MachineClaimCodeSnapshot> {
-  return await postContract(
-    `/machines/${machineId}/claim-codes/${claimCodeId}/revoke`,
-    adminMachineContractNoBodySchema,
-    machineClaimCodeSnapshotSchema,
-    {},
-  );
+  return await callAdminEndpointContract(adminRevokeMachineClaimCodeContract, {
+    pathParams: { id: machineId, claimCodeId },
+    body: {},
+  });
 }
 
 export type RotateCredentialsResult = RotateMachineCredentialsResponse;
@@ -174,10 +159,8 @@ export type RotateCredentialsResult = RotateMachineCredentialsResponse;
 export async function rotateMachineCredentials(
   machineId: string,
 ): Promise<RotateCredentialsResult> {
-  return await postContract(
-    `/machines/${machineId}/credentials/rotate`,
-    adminMachineContractNoBodySchema,
-    rotateMachineCredentialsResponseSchema,
-    {},
+  return await callAdminEndpointContract(
+    adminRotateMachineCredentialsContract,
+    { pathParams: { id: machineId }, body: {} },
   );
 }

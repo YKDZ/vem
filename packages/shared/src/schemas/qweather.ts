@@ -1,6 +1,11 @@
 import { z } from "zod";
 
+import { defineAdminEndpointContract } from "../admin-api-contract";
+
 export const qweatherConfigNoBodySchema = z.strictObject({});
+
+const noPathParamsSchema = z.strictObject({});
+const noQuerySchema = z.strictObject({});
 
 export const qweatherConfigResponseSchema = z.strictObject({
   source: z.enum(["database", "environment", "unconfigured"]),
@@ -36,6 +41,24 @@ export const updateQweatherConfigSchema = z.strictObject({
   weatherNowPath: z.string().regex(/^\/.+/),
   sunPath: z.string().regex(/^\/.+/),
   timeoutMs: z.int().min(500).max(30_000),
+});
+
+export const adminGetQweatherConfigContract = defineAdminEndpointContract({
+  method: "GET",
+  path: "/qweather-config",
+  pathParamsSchema: noPathParamsSchema,
+  querySchema: noQuerySchema,
+  bodySchema: qweatherConfigNoBodySchema,
+  responseSchema: qweatherConfigResponseSchema,
+});
+
+export const adminUpdateQweatherConfigContract = defineAdminEndpointContract({
+  method: "PUT",
+  path: "/qweather-config",
+  pathParamsSchema: noPathParamsSchema,
+  querySchema: noQuerySchema,
+  bodySchema: updateQweatherConfigSchema,
+  responseSchema: qweatherConfigResponseSchema,
 });
 
 export type QweatherConfigResponse = z.infer<

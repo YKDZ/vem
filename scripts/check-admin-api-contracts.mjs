@@ -35,6 +35,8 @@ const MIGRATION_ADMIN_API_PATHS = new Set([
   "apps/admin-ui/src/api/try-on-garments.ts",
   "apps/admin-ui/src/api/work-orders.ts",
   "apps/admin-ui/src/api/machine-ops.ts",
+  "apps/admin-ui/src/api/machines.ts",
+  "apps/admin-ui/src/api/qweather.ts",
 ]);
 const TEMPLATE_SLICE_CONTRACT_EXPECTATIONS = {
   adminListMaintenanceWorkOrdersContract: {
@@ -69,7 +71,129 @@ const TEMPLATE_SLICE_CONTRACT_EXPECTATIONS = {
 const TEMPLATE_SLICE_CONTROLLER_PATHS = [
   "apps/service-api/src/maintenance-work-orders/maintenance-work-orders.controller.ts",
   "apps/service-api/src/machine-ops/machine-ops.controller.ts",
+  "apps/service-api/src/machines/machines.controller.ts",
+  "apps/service-api/src/machines/qweather-config.controller.ts",
 ];
+const MACHINES_INVENTORY_CONTRACT_EXPECTATIONS = {
+  adminListMachinesContract: {
+    method: "GET",
+    path: "/machines",
+    providerMethod: "listMachines",
+    callerPath: "apps/admin-ui/src/api/machines.ts",
+    callerMethods: ["listMachines"],
+  },
+  adminCreateMachineContract: {
+    method: "POST",
+    path: "/machines",
+    providerMethod: "createMachine",
+    callerPath: "apps/admin-ui/src/api/machines.ts",
+    callerMethods: ["createMachine"],
+  },
+  adminUpdateMachineContract: {
+    method: "PATCH",
+    path: "/machines/:id",
+    providerMethod: "updateMachine",
+    callerPath: "apps/admin-ui/src/api/machines.ts",
+    callerMethods: ["updateMachine"],
+  },
+  adminGetMachineContract: {
+    method: "GET",
+    path: "/machines/:id",
+    providerMethod: "getMachine",
+    callerPath: "apps/admin-ui/src/api/machines.ts",
+    callerMethods: ["getMachine"],
+  },
+  adminGetMachineExternalNaturalEnvironmentContract: {
+    method: "GET",
+    path: "/machines/:id/external-natural-environment",
+    providerMethod: "getExternalNaturalEnvironment",
+    callerPath: "apps/admin-ui/src/api/machines.ts",
+    callerMethods: ["getExternalNaturalEnvironment"],
+  },
+  adminPublishMachinePlanogramVersionContract: {
+    method: "POST",
+    path: "/machines/:id/planogram-versions",
+    providerMethod: "publishPlanogramVersion",
+  },
+  adminListMachinePlanogramVersionsContract: {
+    method: "GET",
+    path: "/machines/:id/planogram-versions",
+    providerMethod: "listPlanogramVersions",
+  },
+  adminCommandMachineEnvironmentContract: {
+    method: "POST",
+    path: "/machines/:id/commands/environment-control",
+    providerMethod: "commandEnvironment",
+    callerPath: "apps/admin-ui/src/api/machines.ts",
+    callerMethods: ["commandEnvironment"],
+  },
+  adminListMachineSlotsContract: {
+    method: "GET",
+    path: "/machines/:id/slots",
+    providerMethod: "listSlots",
+    callerPath: "apps/admin-ui/src/api/machines.ts",
+    callerMethods: ["listMachineSlots"],
+  },
+  adminCreateMachineSlotContract: {
+    method: "POST",
+    path: "/machines/:id/slots",
+    providerMethod: "createSlot",
+    callerPath: "apps/admin-ui/src/api/machines.ts",
+    callerMethods: ["createMachineSlot"],
+  },
+  adminRotateMachineCredentialsContract: {
+    method: "POST",
+    path: "/machines/:id/credentials/rotate",
+    providerMethod: "rotateMachineCredentials",
+    callerPath: "apps/admin-ui/src/api/machines.ts",
+    callerMethods: ["rotateMachineCredentials"],
+  },
+  adminSecureDecommissionMachineContract: {
+    method: "POST",
+    path: "/machines/:id/decommission",
+    providerMethod: "secureDecommission",
+  },
+  adminGenerateMachineClaimCodeContract: {
+    method: "POST",
+    path: "/machines/:id/claim-codes",
+    providerMethod: "generateClaimCode",
+    callerPath: "apps/admin-ui/src/api/machines.ts",
+    callerMethods: ["generateMachineClaimCode"],
+  },
+  adminListMachineClaimCodesContract: {
+    method: "GET",
+    path: "/machines/:id/claim-codes",
+    providerMethod: "listClaimCodes",
+    callerPath: "apps/admin-ui/src/api/machines.ts",
+    callerMethods: ["listMachineClaimCodes"],
+  },
+  adminGetMachineClaimCodeContract: {
+    method: "GET",
+    path: "/machines/:id/claim-codes/:claimCodeId",
+    providerMethod: "getClaimCode",
+  },
+  adminRevokeMachineClaimCodeContract: {
+    method: "POST",
+    path: "/machines/:id/claim-codes/:claimCodeId/revoke",
+    providerMethod: "revokeClaimCode",
+    callerPath: "apps/admin-ui/src/api/machines.ts",
+    callerMethods: ["revokeMachineClaimCode"],
+  },
+  adminGetQweatherConfigContract: {
+    method: "GET",
+    path: "/qweather-config",
+    providerMethod: "getConfig",
+    callerPath: "apps/admin-ui/src/api/qweather.ts",
+    callerMethods: ["getQweatherConfig"],
+  },
+  adminUpdateQweatherConfigContract: {
+    method: "PUT",
+    path: "/qweather-config",
+    providerMethod: "updateConfig",
+    callerPath: "apps/admin-ui/src/api/qweather.ts",
+    callerMethods: ["updateQweatherConfig"],
+  },
+};
 const ROUTE_DECORATORS = new Set(["Get", "Post", "Patch", "Put", "Delete"]);
 const WRITE_CALL_PATTERN =
   /\b(?:post|patch|postContract|patchContract|postResponseContract|callAdminEndpointContract)\s*(?:<[\s\S]*?>)?\s*\(/;
@@ -527,6 +651,8 @@ function contractDefinitions(root) {
     "packages/shared/src/schemas/try-on-garments.ts",
     "packages/shared/src/schemas/notifications.ts",
     "packages/shared/src/schemas/machines.ts",
+    "packages/shared/src/schemas/qweather.ts",
+    "packages/shared/src/schemas/inventory.ts",
   ]) {
     if (!pathExists(root, path)) continue;
     const source = readText(root, path);
@@ -1382,7 +1508,7 @@ function checkMigratedProviderBareRoutes(root) {
   return failures;
 }
 
-function checkOpsMaintenanceContractCoverage(root) {
+function checkContractSliceCoverage(root, expectations, label) {
   const failures = [];
   const definitions = contractDefinitions(root);
   const providers = decoratedMethods(
@@ -1392,7 +1518,7 @@ function checkOpsMaintenanceContractCoverage(root) {
   );
   const registered = registeredControllers(root);
   const migrationCalls = migrationNetworkCalls(root);
-  const names = Object.keys(TEMPLATE_SLICE_CONTRACT_EXPECTATIONS);
+  const names = Object.keys(expectations);
   const callerHits = [];
   const providerHits = [];
 
@@ -1405,25 +1531,25 @@ function checkOpsMaintenanceContractCoverage(root) {
   }
 
   for (const name of names) {
-    const expected = TEMPLATE_SLICE_CONTRACT_EXPECTATIONS[name];
+    const expected = expectations[name];
     const definition = definitions.get(name);
     if (!definition) {
-      failures.push(`ops-maintenance contract definition missing: ${name}`);
+      failures.push(`${label} contract definition missing: ${name}`);
     } else {
       const invalidSchemas = [...definition.invalidSchemaFields];
       if (invalidSchemas.length > 0) {
         failures.push(
-          `ops-maintenance contract definition schema escape: ${name} uses unknown schema for ${invalidSchemas.join(", ")}`,
+          `${label} contract definition schema escape: ${name} uses unknown schema for ${invalidSchemas.join(", ")}`,
         );
       }
       if (stringLiteralValue(definition.values.method) !== expected.method) {
         failures.push(
-          `ops-maintenance contract method drift: ${name} expected ${expected.method}`,
+          `${label} contract method drift: ${name} expected ${expected.method}`,
         );
       }
       if (stringLiteralValue(definition.values.path) !== expected.path) {
         failures.push(
-          `ops-maintenance contract path drift: ${name} expected ${expected.path}`,
+          `${label} contract path drift: ${name} expected ${expected.path}`,
         );
       }
     }
@@ -1434,43 +1560,58 @@ function checkOpsMaintenanceContractCoverage(root) {
         candidate.method === expected.providerMethod,
     );
     if (!provider) {
-      failures.push(
-        `ops-maintenance endpoint contract provider missing: ${name}`,
-      );
+      failures.push(`${label} endpoint contract provider missing: ${name}`);
     } else if (!provider.controller || !registered.has(provider.controller)) {
       failures.push(
-        `ops-maintenance endpoint contract provider controller unregistered: ${name}`,
+        `${label} endpoint contract provider controller unregistered: ${name}`,
       );
     } else {
       providerHits.push(name);
     }
 
-    const callerNetworkCalls = migrationCalls.filter(
-      (candidate) =>
-        candidate.path === expected.callerPath &&
-        expected.callerMethods.includes(candidate.method),
-    );
-    const matchingCalls = callerNetworkCalls.filter(
-      (candidate) =>
-        candidate.entry === "callAdminEndpointContract" &&
-        candidate.contract === name,
-    );
-    if (matchingCalls.length === 0) {
-      failures.push(
-        `ops-maintenance endpoint contract caller missing: ${name}`,
+    if (expected.callerPath && expected.callerMethods) {
+      const callerNetworkCalls = migrationCalls.filter(
+        (candidate) =>
+          candidate.path === expected.callerPath &&
+          expected.callerMethods.includes(candidate.method),
       );
-    } else if (matchingCalls.length !== 1 || callerNetworkCalls.length !== 1) {
-      failures.push(
-        `ops-maintenance endpoint contract caller ambiguous: ${name}`,
+      const matchingCalls = callerNetworkCalls.filter(
+        (candidate) =>
+          candidate.entry === "callAdminEndpointContract" &&
+          candidate.contract === name,
       );
-    } else {
-      callerHits.push(name);
+      if (matchingCalls.length === 0) {
+        failures.push(`${label} endpoint contract caller missing: ${name}`);
+      } else if (
+        matchingCalls.length !== 1 ||
+        callerNetworkCalls.length !== 1
+      ) {
+        failures.push(`${label} endpoint contract caller ambiguous: ${name}`);
+      } else {
+        callerHits.push(name);
+      }
     }
   }
 
   const bareRouteFailures = checkMigratedProviderBareRoutes(root);
   failures.push(...bareRouteFailures);
   return { failures, callerHits, providerHits, bareRouteFailures };
+}
+
+function checkOpsMaintenanceContractCoverage(root) {
+  return checkContractSliceCoverage(
+    root,
+    TEMPLATE_SLICE_CONTRACT_EXPECTATIONS,
+    "ops-maintenance",
+  );
+}
+
+function checkMachinesInventoryContractCoverage(root) {
+  return checkContractSliceCoverage(
+    root,
+    MACHINES_INVENTORY_CONTRACT_EXPECTATIONS,
+    "machines-inventory",
+  );
 }
 
 function stringLiteralValue(value) {
@@ -1597,6 +1738,9 @@ export function checkAdminApiContracts(options = {}) {
   failures.push(...tryOnCoverage.failures);
   const opsMaintenanceCoverage = checkOpsMaintenanceContractCoverage(root);
   failures.push(...opsMaintenanceCoverage.failures);
+  const machinesInventoryCoverage =
+    checkMachinesInventoryContractCoverage(root);
+  failures.push(...machinesInventoryCoverage.failures);
 
   checks.push({
     name: "admin-writes-use-schema-bound-contracts",
@@ -1616,6 +1760,11 @@ export function checkAdminApiContracts(options = {}) {
     detail: `callers=${opsMaintenanceCoverage.callerHits.length}, providers=${opsMaintenanceCoverage.providerHits.length}, bareRoutes=${opsMaintenanceCoverage.bareRouteFailures.length}`,
   });
   checks.push({
+    name: "machines-inventory-providers-and-callers-share-complete-contracts",
+    passed: machinesInventoryCoverage.failures.length === 0,
+    detail: `callers=${machinesInventoryCoverage.callerHits.length}, providers=${machinesInventoryCoverage.providerHits.length}, bareRoutes=${machinesInventoryCoverage.bareRouteFailures.length}`,
+  });
+  checks.push({
     name: "admin-write-modules-avoid-broad-query-shortcuts",
     passed: !failures.some((failure) =>
       failure.startsWith("admin api write module uses broad query type"),
@@ -1630,6 +1779,7 @@ export function checkAdminApiContracts(options = {}) {
     writeCallers: [...callers.keys()].sort(),
     tryOnCoverage,
     opsMaintenanceCoverage,
+    machinesInventoryCoverage,
   };
 }
 

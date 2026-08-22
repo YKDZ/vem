@@ -4,21 +4,34 @@ import {
   ForbiddenException,
   Get,
   Param,
-  ParseUUIDPipe,
-  Patch,
   Post,
   Query,
   UseGuards,
 } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import {
+  adminCommandMachineEnvironmentContract,
+  adminCreateMachineContract,
+  adminCreateMachineSlotContract,
+  adminGenerateMachineClaimCodeContract,
+  adminGetMachineClaimCodeContract,
+  adminGetMachineContract,
+  adminGetMachineExternalNaturalEnvironmentContract,
+  adminListMachineClaimCodesContract,
+  adminListMachinePlanogramVersionsContract,
+  adminListMachineSlotsContract,
+  adminListMachinesContract,
   adminMachineContractNoBodySchema,
+  adminPublishMachinePlanogramVersionContract,
+  adminRevokeMachineClaimCodeContract,
+  adminRotateMachineCredentialsContract,
+  adminSecureDecommissionMachineContract,
+  adminUpdateMachineContract,
   createMachineSchema,
   createMachineSlotSchema,
   generateMachineClaimCodeRequestSchema,
   machineClaimRequestSchema,
   machineEnvironmentControlRequestSchema,
-  pageQuerySchema,
   publishMachinePlanogramVersionSchema,
   updateMachineSchema,
 } from "@vem/shared";
@@ -29,6 +42,7 @@ import type { AuthenticatedAdmin } from "../common/request-user";
 import { RequirePermissions } from "../access/permissions.decorator";
 import { CurrentAdmin } from "../auth/current-admin.decorator";
 import { Public } from "../auth/public.decorator";
+import { AdminEndpointContract } from "../common/admin-endpoint-contract.decorator";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
 import {
   CurrentMachine,
@@ -53,27 +67,27 @@ type GenerateMachineClaimCodeRequestInput = z.infer<
 type AdminMachineContractNoBodyInput = z.infer<
   typeof adminMachineContractNoBodySchema
 >;
-type PageQueryInput = z.infer<typeof pageQuerySchema>;
 type ExternalNaturalEnvironment = Awaited<
   ReturnType<MachinesService["getExternalNaturalEnvironmentForMachine"]>
 >;
 
 @ApiTags("machines")
 @ApiBearerAuth()
-@Controller("machines")
+@Controller()
 export class MachinesController {
   constructor(private readonly machinesService: MachinesService) {}
 
   @RequirePermissions("machines.read")
-  @Get()
+  @AdminEndpointContract(adminListMachinesContract)
   async listMachines(
-    @Query(new ZodValidationPipe(pageQuerySchema)) query: PageQueryInput,
+    @Query(new ZodValidationPipe(adminListMachinesContract.querySchema))
+    query: z.infer<typeof adminListMachinesContract.querySchema>,
   ) {
     return await this.machinesService.listMachines(query);
   }
 
   @RequirePermissions("machines.write")
-  @Post()
+  @AdminEndpointContract(adminCreateMachineContract)
   async createMachine(
     @Body(new ZodValidationPipe(createMachineSchema)) body: CreateMachineInput,
   ) {
@@ -81,7 +95,7 @@ export class MachinesController {
   }
 
   @Public()
-  @Post("claim")
+  @Post("/machines/claim")
   async claimMachine(
     @Body(new ZodValidationPipe(machineClaimRequestSchema))
     body: MachineClaimRequestInput,
@@ -90,150 +104,225 @@ export class MachinesController {
   }
 
   @RequirePermissions("machines.write")
-  @Patch(":id")
+  @AdminEndpointContract(adminUpdateMachineContract)
   async updateMachine(
     @CurrentAdmin() admin: AuthenticatedAdmin,
-    @Param("id", ParseUUIDPipe) id: string,
+    @Param(new ZodValidationPipe(adminUpdateMachineContract.pathParamsSchema))
+    params: { id: string },
     @Body(new ZodValidationPipe(updateMachineSchema)) body: UpdateMachineInput,
   ) {
-    return await this.machinesService.updateMachine(id, body, admin.id);
+    return await this.machinesService.updateMachine(params.id, body, admin.id);
   }
 
   @RequirePermissions("machines.read")
-  @Get(":id/external-natural-environment")
+  @AdminEndpointContract(adminGetMachineExternalNaturalEnvironmentContract)
   async getExternalNaturalEnvironment(
-    @Param("id", ParseUUIDPipe) id: string,
+    @Param(
+      new ZodValidationPipe(
+        adminGetMachineExternalNaturalEnvironmentContract.pathParamsSchema,
+      ),
+    )
+    params: { id: string },
   ): Promise<ExternalNaturalEnvironment> {
     return await this.machinesService.getExternalNaturalEnvironmentForMachine(
-      id,
+      params.id,
     );
   }
 
   @RequirePermissions("machines.read")
-  @Get(":id")
-  async getMachine(@Param("id", ParseUUIDPipe) id: string) {
-    return await this.machinesService.getMachine(id);
+  @AdminEndpointContract(adminGetMachineContract)
+  async getMachine(
+    @Param(new ZodValidationPipe(adminGetMachineContract.pathParamsSchema))
+    params: { id: string },
+  ) {
+    return await this.machinesService.getMachine(params.id);
   }
 
   @RequirePermissions("machines.write")
-  @Post(":id/planogram-versions")
+  @AdminEndpointContract(adminPublishMachinePlanogramVersionContract)
   async publishPlanogramVersion(
     @CurrentAdmin() admin: AuthenticatedAdmin,
-    @Param("id", ParseUUIDPipe) id: string,
+    @Param(
+      new ZodValidationPipe(
+        adminPublishMachinePlanogramVersionContract.pathParamsSchema,
+      ),
+    )
+    params: { id: string },
     @Body(new ZodValidationPipe(publishMachinePlanogramVersionSchema))
     body: PublishMachinePlanogramVersionInput,
   ) {
     return await this.machinesService.publishMachinePlanogramVersion(
-      id,
+      params.id,
       body,
       admin.id,
     );
   }
 
   @RequirePermissions("machines.read")
-  @Get(":id/planogram-versions")
-  async listPlanogramVersions(@Param("id", ParseUUIDPipe) id: string) {
-    return await this.machinesService.getMachinePlanogramVersions(id);
+  @AdminEndpointContract(adminListMachinePlanogramVersionsContract)
+  async listPlanogramVersions(
+    @Param(
+      new ZodValidationPipe(
+        adminListMachinePlanogramVersionsContract.pathParamsSchema,
+      ),
+    )
+    params: { id: string },
+  ) {
+    return await this.machinesService.getMachinePlanogramVersions(params.id);
   }
 
   @RequirePermissions("machines.command")
-  @Post(":id/commands/environment-control")
+  @AdminEndpointContract(adminCommandMachineEnvironmentContract)
   async commandEnvironment(
     @CurrentAdmin() admin: AuthenticatedAdmin,
-    @Param("id", ParseUUIDPipe) id: string,
+    @Param(
+      new ZodValidationPipe(
+        adminCommandMachineEnvironmentContract.pathParamsSchema,
+      ),
+    )
+    params: { id: string },
     @Body(new ZodValidationPipe(machineEnvironmentControlRequestSchema))
     body: MachineEnvironmentControlInput,
   ) {
-    return await this.machinesService.commandEnvironment(id, body, admin.id);
+    return await this.machinesService.commandEnvironment(
+      params.id,
+      body,
+      admin.id,
+    );
   }
 
   @RequirePermissions("machines.read")
-  @Get(":id/slots")
-  async listSlots(@Param("id", ParseUUIDPipe) machineId: string) {
-    return await this.machinesService.listSlots(machineId);
+  @AdminEndpointContract(adminListMachineSlotsContract)
+  async listSlots(
+    @Param(
+      new ZodValidationPipe(adminListMachineSlotsContract.pathParamsSchema),
+    )
+    params: { id: string },
+  ) {
+    return await this.machinesService.listSlots(params.id);
   }
 
   @RequirePermissions("machines.write")
-  @Post(":id/slots")
+  @AdminEndpointContract(adminCreateMachineSlotContract)
   async createSlot(
-    @Param("id", ParseUUIDPipe) machineId: string,
+    @Param(
+      new ZodValidationPipe(adminCreateMachineSlotContract.pathParamsSchema),
+    )
+    params: { id: string },
     @Body(new ZodValidationPipe(createMachineSlotSchema))
     body: CreateMachineSlotInput,
   ) {
-    return await this.machinesService.createSlot(machineId, body);
+    return await this.machinesService.createSlot(params.id, body);
   }
 
   @RequirePermissions("machines.manage-credentials")
-  @Post(":id/credentials/rotate")
+  @AdminEndpointContract(adminRotateMachineCredentialsContract)
   async rotateMachineCredentials(
     @CurrentAdmin() admin: AuthenticatedAdmin,
-    @Param("id", ParseUUIDPipe) id: string,
+    @Param(
+      new ZodValidationPipe(
+        adminRotateMachineCredentialsContract.pathParamsSchema,
+      ),
+    )
+    params: { id: string },
     @Body(new ZodValidationPipe(adminMachineContractNoBodySchema))
     _body: AdminMachineContractNoBodyInput,
   ) {
-    return await this.machinesService.rotateMachineCredentials(id, admin.id);
+    return await this.machinesService.rotateMachineCredentials(
+      params.id,
+      admin.id,
+    );
   }
 
   @RequirePermissions("machines.manage-credentials")
-  @Post(":id/decommission")
+  @AdminEndpointContract(adminSecureDecommissionMachineContract)
   async secureDecommission(
     @CurrentAdmin() admin: AuthenticatedAdmin,
-    @Param("id", ParseUUIDPipe) id: string,
+    @Param(
+      new ZodValidationPipe(
+        adminSecureDecommissionMachineContract.pathParamsSchema,
+      ),
+    )
+    params: { id: string },
     @Body(new ZodValidationPipe(adminMachineContractNoBodySchema))
     _body: AdminMachineContractNoBodyInput,
   ) {
-    return await this.machinesService.secureDecommissionMachine(id, admin.id);
+    return await this.machinesService.secureDecommissionMachine(
+      params.id,
+      admin.id,
+    );
   }
 
   @RequirePermissions("machines.manage-credentials")
-  @Post(":id/claim-codes")
+  @AdminEndpointContract(adminGenerateMachineClaimCodeContract)
   async generateClaimCode(
     @CurrentAdmin() admin: AuthenticatedAdmin,
-    @Param("id", ParseUUIDPipe) id: string,
+    @Param(
+      new ZodValidationPipe(
+        adminGenerateMachineClaimCodeContract.pathParamsSchema,
+      ),
+    )
+    params: { id: string },
     @Body(new ZodValidationPipe(generateMachineClaimCodeRequestSchema))
     body: GenerateMachineClaimCodeRequestInput = { purpose: "first_claim" },
   ) {
     return await this.machinesService.generateMachineClaimCode(
-      id,
+      params.id,
       admin.id,
       body,
     );
   }
 
   @RequirePermissions("machines.manage-credentials")
-  @Get(":id/claim-codes")
-  async listClaimCodes(@Param("id", ParseUUIDPipe) id: string) {
-    return await this.machinesService.listMachineClaimCodes(id);
-  }
-
-  @RequirePermissions("machines.manage-credentials")
-  @Get(":id/claim-codes/:claimCodeId")
-  async getClaimCode(
-    @Param("id", ParseUUIDPipe) id: string,
-    @Param("claimCodeId", ParseUUIDPipe) claimCodeId: string,
+  @AdminEndpointContract(adminListMachineClaimCodesContract)
+  async listClaimCodes(
+    @Param(
+      new ZodValidationPipe(
+        adminListMachineClaimCodesContract.pathParamsSchema,
+      ),
+    )
+    params: { id: string },
   ) {
-    return await this.machinesService.getMachineClaimCode(id, claimCodeId);
+    return await this.machinesService.listMachineClaimCodes(params.id);
   }
 
   @RequirePermissions("machines.manage-credentials")
-  @Post(":id/claim-codes/:claimCodeId/revoke")
+  @AdminEndpointContract(adminGetMachineClaimCodeContract)
+  async getClaimCode(
+    @Param(
+      new ZodValidationPipe(adminGetMachineClaimCodeContract.pathParamsSchema),
+    )
+    params: { id: string; claimCodeId: string },
+  ) {
+    return await this.machinesService.getMachineClaimCode(
+      params.id,
+      params.claimCodeId,
+    );
+  }
+
+  @RequirePermissions("machines.manage-credentials")
+  @AdminEndpointContract(adminRevokeMachineClaimCodeContract)
   async revokeClaimCode(
     @CurrentAdmin() admin: AuthenticatedAdmin,
-    @Param("id", ParseUUIDPipe) id: string,
-    @Param("claimCodeId", ParseUUIDPipe) claimCodeId: string,
+    @Param(
+      new ZodValidationPipe(
+        adminRevokeMachineClaimCodeContract.pathParamsSchema,
+      ),
+    )
+    params: { id: string; claimCodeId: string },
     @Body(new ZodValidationPipe(adminMachineContractNoBodySchema))
     _body: AdminMachineContractNoBodyInput,
   ) {
     return await this.machinesService.revokeMachineClaimCode(
-      id,
-      claimCodeId,
+      params.id,
+      params.claimCodeId,
       admin.id,
     );
   }
 
   @Public()
   @UseGuards(MachineAuthGuard)
-  @Get(":code/provisioning-profile")
+  @Get("/machines/:code/provisioning-profile")
   async getOwnProvisioningProfile(
     @CurrentMachine() machine: AuthenticatedMachine,
     @Param("code") code: string,
@@ -248,7 +337,7 @@ export class MachinesController {
 
   @Public()
   @UseGuards(MachineAuthGuard)
-  @Get("by-code/:code/external-natural-environment")
+  @Get("/machines/by-code/:code/external-natural-environment")
   async getOwnExternalNaturalEnvironment(
     @CurrentMachine() machine: AuthenticatedMachine,
     @Param("code") code: string,
@@ -263,7 +352,7 @@ export class MachinesController {
 
   @Public()
   @UseGuards(MachineAuthGuard)
-  @Get(":code/planogram-versions/published")
+  @Get("/machines/:code/planogram-versions/published")
   async getPublishedPlanogramVersion(
     @CurrentMachine() machine: AuthenticatedMachine,
     @Param("code") code: string,
@@ -275,7 +364,7 @@ export class MachinesController {
 
   @Public()
   @UseGuards(MachineAuthGuard)
-  @Post(":code/planogram-versions/:planogramVersion/ack")
+  @Post("/machines/:code/planogram-versions/:planogramVersion/ack")
   async acknowledgePlanogramVersion(
     @CurrentMachine() machine: AuthenticatedMachine,
     @Param("code") code: string,
@@ -289,7 +378,7 @@ export class MachinesController {
 
   @Public()
   @UseGuards(MachineAuthGuard)
-  @Get(":code/catalog")
+  @Get("/machines/:code/catalog")
   async getMachineCatalog(
     @CurrentMachine() machine: AuthenticatedMachine,
     @Param("code") code: string,
@@ -301,7 +390,7 @@ export class MachinesController {
 
   @Public()
   @UseGuards(MachineAuthGuard)
-  @Get(":code/stock-snapshot")
+  @Get("/machines/:code/stock-snapshot")
   async getMachineStockSnapshot(
     @CurrentMachine() machine: AuthenticatedMachine,
     @Param("code") code: string,
