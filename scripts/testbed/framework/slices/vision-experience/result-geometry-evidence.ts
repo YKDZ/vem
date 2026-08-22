@@ -220,27 +220,53 @@ export interface ResultGeometryValidation {
   resultSleevesRetained: AssertionValue;
   resultUniformPlacement: AssertionValue;
   resultAutomaticScale: AssertionValue;
-  garmentScaleRendersPixels: AssertionValue;
 }
 
-/** 同一 Vision attempt 的 100%/105% PNG 对，独立确认真实成衣像素与锁定中心。 */
-export function validateResultScalePair({
-  scale100,
-  scale105,
+export type ResultScaleDirection = "up" | "down";
+
+/** 同一 attempt 相邻两步：确认成衣 bbox 真的放大/缩小且中心锁定。 */
+export function validateResultScaleStep({
+  before,
+  after,
+  direction,
 }: {
-  scale100: SemanticResultPng;
-  scale105: SemanticResultPng;
+  before: SemanticResultPng;
+  after: SemanticResultPng;
+  direction: ResultScaleDirection;
 }): AssertionValue {
-  const widthGrowth = scale105.garment.width / scale100.garment.width;
-  const heightGrowth = scale105.garment.height / scale100.garment.height;
+  const widthRatio = after.garment.width / before.garment.width;
+  const heightRatio = after.garment.height / before.garment.height;
   const centerDrift = Math.hypot(
-    scale105.garment.centerX - scale100.garment.centerX,
-    scale105.garment.centerY - scale100.garment.centerY,
+    after.garment.centerX - before.garment.centerX,
+    after.garment.centerY - before.garment.centerY,
   );
+  const ratiosOk =
+    direction === "up"
+      ? widthRatio >= 1.03 && heightRatio >= 1.03
+      : widthRatio <= 0.97 && heightRatio <= 0.97;
   return {
     expected: true,
-    observed: widthGrowth >= 1.03 && heightGrowth >= 1.03 && centerDrift <= 2,
+    observed: ratiosOk && centerDrift <= 2,
   };
+}
+
+/** 回程 100%：与初始 100% 的成衣 bbox 在容差内一致且中心锁定。 */
+export function validateResultScaleRoundTrip({
+  before,
+  after,
+}: {
+  before: SemanticResultPng;
+  after: SemanticResultPng;
+}): AssertionValue {
+  const widthRatio = after.garment.width / before.garment.width;
+  const heightRatio = after.garment.height / before.garment.height;
+  const centerDrift = Math.hypot(
+    after.garment.centerX - before.garment.centerX,
+    after.garment.centerY - before.garment.centerY,
+  );
+  const sizeConsistent =
+    Math.abs(widthRatio - 1) <= 0.02 && Math.abs(heightRatio - 1) <= 0.02;
+  return { expected: true, observed: sizeConsistent && centerDrift <= 2 };
 }
 
 /** 以独立语义色块夹具验证结果的袖子、等比、自动尺度和 105% 像素变化。 */
@@ -250,14 +276,14 @@ export function validateResultGeometryEvidence({
   mid,
   near,
   scale100,
-  scale105,
+  scaled,
 }: {
   source: SemanticResultPng;
   far: SemanticResultPng;
   mid: SemanticResultPng;
   near: SemanticResultPng;
   scale100: SemanticResultPng;
-  scale105: SemanticResultPng;
+  scaled: SemanticResultPng;
 }): ResultGeometryValidation {
   const expectedSleevePixels = (
     result: SemanticResultPng,
@@ -280,7 +306,7 @@ export function validateResultGeometryEvidence({
       Math.max(mid.leftSleevePixels, mid.rightSleevePixels) >=
       MIN_SLEEVE_SYMMETRY_RATIO;
   const sleeves = retained && sleeveSymmetry;
-  const uniform = [far, mid, near, scale100, scale105].every(
+  const uniform = [far, mid, near, scale100, scaled].every(
     (result) =>
       Math.abs(result.garment.aspect - source.garment.aspect) <=
       MAX_ASPECT_ERROR,
@@ -294,13 +320,10 @@ export function validateResultGeometryEvidence({
       MIN_ADJACENT_AUTOMATIC_SCALE_GROWTH &&
     near.garment.height / mid.garment.height >=
       MIN_ADJACENT_AUTOMATIC_SCALE_GROWTH;
-  const scalePixels = validateResultScalePair({ scale100, scale105 })
-    .observed as boolean;
   return {
-    ok: sleeves && uniform && automaticScale && scalePixels,
+    ok: sleeves && uniform && automaticScale,
     resultSleevesRetained: { expected: true, observed: sleeves },
     resultUniformPlacement: { expected: true, observed: uniform },
     resultAutomaticScale: { expected: true, observed: automaticScale },
-    garmentScaleRendersPixels: { expected: true, observed: scalePixels },
   };
 }

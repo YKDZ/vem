@@ -296,6 +296,7 @@ export async function runVisionExperienceSlice({
         assertions.push(...geometry.assertions);
         assertions.push(...geometry.scaleAssertions);
         assertions.push(...geometry.adjustmentAssertions);
+        assertions.push(...geometry.pixelAssertions);
         supportingEvidence.push(geometry.evidence);
       }
       if (includeDegradation && stopOwner) {

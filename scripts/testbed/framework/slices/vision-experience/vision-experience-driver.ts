@@ -17,8 +17,9 @@ import {
   validateCapturedSourceEvidence,
 } from "./captured-source-evidence.ts";
 import {
+  validateResultScaleRoundTrip,
+  validateResultScaleStep,
   validateResultGeometryEvidence,
-  validateResultScalePair,
 } from "./result-geometry-evidence.ts";
 import {
   isSourceGarmentAttemptBound,
@@ -1081,12 +1082,6 @@ export async function runTryOnScenario(
             expected: geometry.resultAutomaticScale.expected,
             observed: geometry.resultAutomaticScale.observed,
           }),
-          businessAssertion({
-            id: "garment-scale-renders-pixels",
-            source: "vision-result-png-pixels",
-            expected: geometry.garmentScaleRendersPixels.expected,
-            observed: geometry.garmentScaleRendersPixels.observed,
-          }),
         ]
       : []),
   ];
@@ -1131,7 +1126,6 @@ function geometryAssertions(validation: ResultGeometryValidation) {
     ["result-sleeves-retained", validation.resultSleevesRetained],
     ["result-uniform-placement", validation.resultUniformPlacement],
     ["result-automatic-scale", validation.resultAutomaticScale],
-    ["garment-scale-renders-pixels", validation.garmentScaleRendersPixels],
   ].map(([id, value]) =>
     businessAssertion({
       id,
@@ -1169,6 +1163,9 @@ export async function runRecordedResultGeometryScenario(
       adjustmentAssertions: Awaited<
         ReturnType<typeof runGarmentScaleScenario>
       >["adjustmentAssertions"];
+      pixelAssertions: Awaited<
+        ReturnType<typeof runGarmentScaleScenario>
+      >["pixelAssertions"];
       evidence: RecordedGeometryFixtureEvidence;
     }
   | {
@@ -1176,6 +1173,7 @@ export async function runRecordedResultGeometryScenario(
       assertions: ReturnType<typeof geometryAssertions>;
       scaleAssertions: [];
       adjustmentAssertions: [];
+      pixelAssertions: [];
       evidence: RecordedGeometryFixtureEvidence;
     }
 > {
@@ -1197,10 +1195,10 @@ export async function runRecordedResultGeometryScenario(
           resultSleevesRetained: { expected: true, observed: false },
           resultUniformPlacement: { expected: true, observed: false },
           resultAutomaticScale: { expected: true, observed: false },
-          garmentScaleRendersPixels: { expected: true, observed: false },
         }),
         scaleAssertions: [],
         adjustmentAssertions: [],
+        pixelAssertions: [],
         evidence: {
           kind: "vision-recorded-geometry-fixture",
           status: "blocked",
@@ -1231,10 +1229,10 @@ export async function runRecordedResultGeometryScenario(
           resultSleevesRetained: { expected: true, observed: false },
           resultUniformPlacement: { expected: true, observed: false },
           resultAutomaticScale: { expected: true, observed: false },
-          garmentScaleRendersPixels: { expected: true, observed: false },
         }),
         scaleAssertions: [],
         adjustmentAssertions: [],
+        pixelAssertions: [],
         evidence: {
           kind: "vision-recorded-geometry-fixture",
           status: "blocked",
@@ -1250,13 +1248,17 @@ export async function runRecordedResultGeometryScenario(
         pollMs,
         acceptanceBinding,
       });
-      if (!scaleResult.beforeState.resultPng || !scaleResult.state.resultPng) {
+      if (
+        ![scaleResult.beforeState, ...scaleResult.states].every(
+          (state) => state?.resultPng !== null,
+        )
+      ) {
         throw new Error(
           "garment scale scenario did not retain result PNG observations",
         );
       }
       attempts.set("scale100", { ...attempt, state: scaleResult.beforeState });
-      attempts.set("scale105", { ...attempt, state: scaleResult.state });
+      attempts.set("scaled", { ...attempt, state: scaleResult.states[1]! });
     }
   }
   const mid = attempts.get("mid")!;
@@ -1273,10 +1275,10 @@ export async function runRecordedResultGeometryScenario(
         resultSleevesRetained: { expected: true, observed: false },
         resultUniformPlacement: { expected: true, observed: false },
         resultAutomaticScale: { expected: true, observed: false },
-        garmentScaleRendersPixels: { expected: true, observed: false },
       }),
       scaleAssertions: [],
       adjustmentAssertions: [],
+      pixelAssertions: [],
       evidence: {
         kind: "vision-recorded-geometry-fixture",
         status: "blocked",
@@ -1293,7 +1295,7 @@ export async function runRecordedResultGeometryScenario(
     mid: mid.state.resultPng,
     near: attempts.get("near")!.state.resultPng!,
     scale100: attempts.get("scale100")!.state.resultPng!,
-    scale105: attempts.get("scale105")!.state.resultPng!,
+    scaled: attempts.get("scaled")!.state.resultPng!,
   });
   return {
     ok: validation.ok,
@@ -1301,6 +1303,7 @@ export async function runRecordedResultGeometryScenario(
     assertions: geometryAssertions(validation),
     scaleAssertions: scaleResult!.assertions,
     adjustmentAssertions: scaleResult!.adjustmentAssertions,
+    pixelAssertions: scaleResult!.pixelAssertions,
     evidence: {
       kind: "vision-recorded-geometry-fixture",
       status: "ready",
@@ -1378,26 +1381,37 @@ export async function runObserverSelfHealScenario(
   };
 }
 
+const GARMENT_SCALE_SEQUENCE = [
+  { expectedScale: 1.05, label: "105%", selector: "try-on-scale-up" },
+  { expectedScale: 1.1, label: "110%", selector: "try-on-scale-up" },
+  { expectedScale: 1.05, label: "105%", selector: "try-on-scale-down" },
+  { expectedScale: 1.0, label: "100%", selector: "try-on-scale-down" },
+] as const;
+
 /**
- * 结果锁定中心缩放：完成试衣后点击放大，等待 105% 与新的结果 URL。
+ * 只接受同一 attempt 上的有序缩放序列：每个 V2 调整结果都必须绑定对应步的
+ * 结果 URL。乱序、漏步或 URL 错位都判失败。
  */
-/** 只接受同一 attempt 上唯一的绝对 105% 意图与唯一调整结果。 */
-export function validateGarmentScaleAdjustment({
+export function validateGarmentScaleAdjustmentSequence({
   evidence,
-  resultUrl,
+  resultUrls,
 }: {
   evidence: TryOnState["adjustmentEvidence"];
-  resultUrl: unknown;
+  resultUrls: string[];
 }): boolean {
+  const scales = evidence?.scales;
   const results = evidence?.results;
-  const adjustedReference =
-    Array.isArray(results) && results.length === 1
-      ? (results[0] as { reference?: unknown } | null)?.reference
-      : null;
+  const expected = GARMENT_SCALE_SEQUENCE.map((step) => step.expectedScale);
+  if (!Array.isArray(scales) || scales.length !== expected.length) return false;
+  if (!scales.every((scale, index) => scale === expected[index])) return false;
   return (
-    evidence?.scales.length === 1 &&
-    evidence.scales[0] === 1.05 &&
-    adjustedReference === resultUrl
+    Array.isArray(results) &&
+    results.length === resultUrls.length &&
+    results.every(
+      (result, index) =>
+        (result as { reference?: unknown } | null)?.reference ===
+        resultUrls[index],
+    )
   );
 }
 
@@ -1424,65 +1438,97 @@ export async function runGarmentScaleScenario(
     attemptId: initial.attemptId ?? null,
     lastStage: initial.state ?? null,
   });
-  const beforeUrl = initial.resultUrl;
   const beforeAttemptId = initial.attemptId;
-  await adapter.run("click", ['[data-test="try-on-scale-up"]']);
-  const state = await waitForCondition(
-    "adjusted-garment-scale",
-    async () => {
-      const current = await readState(adapter);
-      return {
-        ok:
-          current?.scaleValue === "105%" &&
-          typeof current?.resultUrl === "string" &&
-          current.resultUrl !== beforeUrl,
-        value: current,
-      };
-    },
-    { timeoutMs, pollMs },
+  const steps: TryOnState[] = [];
+  let previousUrl = initial.resultUrl;
+  for (const step of GARMENT_SCALE_SEQUENCE) {
+    await adapter.run("click", [`[data-test="${step.selector}"]`]);
+    const state = await waitForCondition(
+      `adjusted-garment-scale-${step.label}`,
+      async () => {
+        const current = await readState(adapter);
+        return {
+          ok:
+            current?.scaleValue === step.label &&
+            typeof current?.resultUrl === "string" &&
+            current.resultUrl !== previousUrl,
+          value: current,
+        };
+      },
+      { timeoutMs, pollMs },
+    );
+    if (
+      typeof beforeAttemptId !== "string" ||
+      state.attemptId !== beforeAttemptId
+    ) {
+      throw new Error(
+        "garment scale result must remain in the same Vision attempt",
+      );
+    }
+    steps.push(state);
+    previousUrl = state.resultUrl!;
+  }
+  const resultUrls = steps.map((step) => step.resultUrl as string);
+  const finalState = steps[3]!;
+  const adjustmentBound = validateGarmentScaleAdjustmentSequence({
+    evidence: finalState.adjustmentEvidence,
+    resultUrls,
+  });
+  const pairs = [
+    { before: initial, after: steps[0]!, direction: "up" as const },
+    { before: steps[0]!, after: steps[1]!, direction: "up" as const },
+    { before: steps[1]!, after: steps[2]!, direction: "down" as const },
+    { before: steps[2]!, after: steps[3]!, direction: "down" as const },
+  ];
+  let pixelsOk = pairs.every(
+    (pair) =>
+      pair.before.resultPng !== null &&
+      pair.after.resultPng !== null &&
+      validateResultScaleStep({
+        before: pair.before.resultPng,
+        after: pair.after.resultPng,
+        direction: pair.direction,
+      }).observed === true,
   );
+  const roundTrip =
+    initial.resultPng !== null && finalState.resultPng !== null
+      ? validateResultScaleRoundTrip({
+          before: initial.resultPng,
+          after: finalState.resultPng,
+        })
+      : { expected: true, observed: false };
+  pixelsOk = pixelsOk && roundTrip.observed === true;
   const assertions = [
     businessAssertion({
-      id: "garment-scale-adjusts",
+      id: "garment-scale-sequence",
       source: "machine-ui-dom",
-      expected: { scale: "105%", changed: true },
+      expected: {
+        scales: ["105%", "110%", "105%", "100%"],
+        urlChanged: true,
+        sameAttempt: true,
+      },
       observed: {
-        scale: state.scaleValue,
-        changed: state.resultUrl !== beforeUrl,
+        scales: steps.map((step) => step.scaleValue),
+        urlChanged: new Set(resultUrls).size === resultUrls.length,
+        sameAttempt: steps.every((step) => step.attemptId === beforeAttemptId),
       },
     }),
   ];
-  if (
-    typeof beforeAttemptId !== "string" ||
-    state.attemptId !== beforeAttemptId
-  ) {
-    throw new Error(
-      "garment scale result must remain in the same Vision attempt",
-    );
-  }
-  const adjustmentBound = validateGarmentScaleAdjustment({
-    evidence: state.adjustmentEvidence,
-    resultUrl: state.resultUrl,
-  });
-  const scalePixels =
-    initial.resultPng && state.resultPng
-      ? validateResultScalePair({
-          scale100: initial.resultPng,
-          scale105: state.resultPng,
-        })
-      : { expected: true, observed: false };
   return {
     beforeState: initial,
-    state,
+    states: steps,
     assertions,
     adjustmentAssertions: [
       businessAssertion({
-        id: "garment-scale-v2-adjustment",
+        id: "garment-scale-v2-adjustment-sequence",
         source: "vision-v2-protocol",
-        expected: { scales: [1.05], adjustedResultBound: true },
+        expected: {
+          scales: [1.05, 1.1, 1.05, 1.0],
+          adjustedResultsBound: true,
+        },
         observed: {
-          scales: state.adjustmentEvidence?.scales ?? [],
-          adjustedResultBound: adjustmentBound,
+          scales: finalState.adjustmentEvidence?.scales ?? [],
+          adjustedResultsBound: adjustmentBound,
         },
       }),
     ],
@@ -1490,8 +1536,8 @@ export async function runGarmentScaleScenario(
       businessAssertion({
         id: "garment-scale-renders-pixels",
         source: "vision-result-png-pixels",
-        expected: scalePixels.expected,
-        observed: scalePixels.observed,
+        expected: true,
+        observed: pixelsOk,
       }),
     ],
     report: buildAcceptanceReport({

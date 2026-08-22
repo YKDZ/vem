@@ -1356,7 +1356,7 @@ function visionExperienceCapturedReport({
           })),
           {
             schemaVersion: "vem-runtime-testbed-business-assertion/v1",
-            id: "garment-scale-v2-adjustment",
+            id: "garment-scale-v2-adjustment-sequence",
             source: "vision-v2-protocol",
             expected: true,
             observed: true,

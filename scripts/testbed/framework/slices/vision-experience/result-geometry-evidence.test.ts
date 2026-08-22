@@ -5,6 +5,8 @@ import { deflateSync } from "node:zlib";
 import {
   decodeSemanticResultPng,
   validateResultGeometryEvidence,
+  validateResultScaleRoundTrip,
+  validateResultScaleStep,
 } from "./result-geometry-evidence.ts";
 
 const PALETTE = {
@@ -123,7 +125,7 @@ describe("试衣结果像素几何证据", () => {
       mid: decodeSemanticResultPng(semanticPng({ scale: 1 })),
       near: decodeSemanticResultPng(semanticPng({ scale: 1.2 })),
       scale100: decodeSemanticResultPng(semanticPng({ scale: 1 })),
-      scale105: decodeSemanticResultPng(semanticPng({ scale: 1.05 })),
+      scaled: decodeSemanticResultPng(semanticPng({ scale: 1.05 })),
     });
     assert.equal(evidence.ok, true, JSON.stringify(evidence));
   });
@@ -152,7 +154,7 @@ describe("试衣结果像素几何证据", () => {
       mid: scaled(1),
       near: scaled(1.2),
       scale100: scaled(1),
-      scale105: scaled(1.05),
+      scaled: scaled(1.05),
     });
     assert.equal(evidence.ok, true, JSON.stringify(evidence));
   });
@@ -168,22 +170,61 @@ describe("试衣结果像素几何证据", () => {
         mid: decodeSemanticResultPng(semanticPng(input)),
         near: decodeSemanticResultPng(semanticPng({ scale: 1.2 })),
         scale100: decodeSemanticResultPng(semanticPng({ scale: 1 })),
-        scale105: decodeSemanticResultPng(semanticPng({ scale: 1.05 })),
+        scaled: decodeSemanticResultPng(semanticPng({ scale: 1.05 })),
       });
       assert.equal(evidence.ok, false);
     });
   }
 
-  it("拒绝远中近不单调、仅改 URL/digest 的缩放和中心漂移", () => {
+  it("拒绝远中近不单调的自动尺度", () => {
     const evidence = validateResultGeometryEvidence({
       source: decodeSemanticResultPng(semanticPng({ scale: 1 })),
       far: decodeSemanticResultPng(semanticPng({ scale: 1 })),
       mid: decodeSemanticResultPng(semanticPng({ scale: 0.8 })),
       near: decodeSemanticResultPng(semanticPng({ scale: 1.2 })),
       scale100: decodeSemanticResultPng(semanticPng({ scale: 1 })),
-      scale105: decodeSemanticResultPng(semanticPng({ scale: 1, centerX: 36 })),
+      scaled: decodeSemanticResultPng(semanticPng({ scale: 1.05 })),
     });
     assert.equal(evidence.ok, false);
+  });
+
+  for (const [name, direction, beforeScale, afterScale, expected] of [
+    ["放大步真的放大", "up", 1, 1.05, true],
+    ["放大步不足 3% 判失败", "up", 1, 1.02, false],
+    ["缩小步真的缩小", "down", 1.1, 1.05, true],
+    ["缩小步不足 3% 判失败", "down", 1.1, 1.08, false],
+  ] as const) {
+    it(`缩放步校验：${name}`, () => {
+      const check = validateResultScaleStep({
+        before: decodeSemanticResultPng(semanticPng({ scale: beforeScale })),
+        after: decodeSemanticResultPng(semanticPng({ scale: afterScale })),
+        direction,
+      });
+      assert.equal(check.observed, expected);
+    });
+  }
+
+  it("缩放步拒绝中心漂移", () => {
+    const check = validateResultScaleStep({
+      before: decodeSemanticResultPng(semanticPng({ scale: 1 })),
+      after: decodeSemanticResultPng(semanticPng({ scale: 1.05, centerX: 36 })),
+      direction: "up",
+    });
+    assert.equal(check.observed, false);
+  });
+
+  it("回程 100% 与初始 100% 的成衣 bbox 在容差内一致", () => {
+    const initial = decodeSemanticResultPng(semanticPng({ scale: 1 }));
+    const roundTrip = validateResultScaleRoundTrip({
+      before: initial,
+      after: decodeSemanticResultPng(semanticPng({ scale: 1 })),
+    });
+    assert.equal(roundTrip.observed, true);
+    const drifted = validateResultScaleRoundTrip({
+      before: initial,
+      after: decodeSemanticResultPng(semanticPng({ scale: 1.03 })),
+    });
+    assert.equal(drifted.observed, false);
   });
 
   it("按 source 到 result 的实际面积归一化袖子，拒绝缩小或放大后的半袖", () => {
@@ -209,7 +250,7 @@ describe("试衣结果像素几何证据", () => {
       far: proportional(0.8, 1),
       near: proportional(1.2, 1),
       scale100: proportional(1, 1),
-      scale105: proportional(1.05, 1),
+      scaled: proportional(1.05, 1),
     };
     for (const mid of [
       proportional(0.8, 0.5),
@@ -241,7 +282,7 @@ describe("试衣结果像素几何证据", () => {
       mid: withSize(101, 126),
       near: withSize(102, 127),
       scale100: source,
-      scale105: withSize(
+      scaled: withSize(
         Math.ceil(source.garment.width * 1.05),
         Math.ceil(source.garment.height * 1.05),
       ),

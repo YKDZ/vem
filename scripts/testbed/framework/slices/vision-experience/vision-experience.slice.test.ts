@@ -7,7 +7,7 @@ import {
   runTryOnScenario,
   runObserverSelfHealScenario,
   validateVisionExperienceTimeline,
-  validateGarmentScaleAdjustment,
+  validateGarmentScaleAdjustmentSequence,
   type VisionExperienceObservation,
 } from "./vision-experience-driver.ts";
 
@@ -741,28 +741,40 @@ describe("visionExperience vertical slice driver", () => {
     assert.equal(outcome.report.businessSets[0].status, "passed");
   });
 
-  it("将唯一同 attempt 的绝对 100→105 V2 调整意图绑定到 adjusted resource", () => {
-    const resultUrl =
-      "http://127.0.0.1:7892/v2/try-on/results/attempt?token=105";
+  it("将同 attempt 的有序缩放序列绑定到每一步 adjusted resource", () => {
+    const urls = [
+      "http://127.0.0.1:7892/v2/try-on/results/attempt?token=105",
+      "http://127.0.0.1:7892/v2/try-on/results/attempt?token=110",
+      "http://127.0.0.1:7892/v2/try-on/results/attempt?token=105b",
+      "http://127.0.0.1:7892/v2/try-on/results/attempt?token=100",
+    ];
+    const bound = (references: string[]) => ({
+      scales: [1.05, 1.1, 1.05, 1.0],
+      results: references.map((reference) => ({ reference })),
+    });
     assert.equal(
-      validateGarmentScaleAdjustment({
-        evidence: { scales: [1.05], results: [{ reference: resultUrl }] },
-        resultUrl,
+      validateGarmentScaleAdjustmentSequence({
+        evidence: bound(urls),
+        resultUrls: urls,
       }),
       true,
     );
     for (const evidence of [
-      { scales: [1.1], results: [{ reference: resultUrl }] },
-      { scales: [], results: [{ reference: resultUrl }] },
-      { scales: [1.05, 1.05], results: [{ reference: resultUrl }] },
-      { scales: [1.05], results: [] },
+      { scales: [1.1, 1.05, 1.0, 1.05], results: bound(urls).results },
+      { scales: [1.05, 1.1, 1.05, 1.0], results: [] },
       {
-        scales: [1.05],
-        results: [{ reference: resultUrl }, { reference: resultUrl }],
+        scales: [1.05, 1.1, 1.05, 1.0],
+        results: urls.map((reference, index) => ({
+          reference: index === 1 ? "wrong-resource" : reference,
+        })),
       },
+      { scales: [1.05], results: [{ reference: urls[0] }] },
     ]) {
       assert.equal(
-        validateGarmentScaleAdjustment({ evidence, resultUrl }),
+        validateGarmentScaleAdjustmentSequence({
+          evidence,
+          resultUrls: urls,
+        }),
         false,
       );
     }
@@ -1887,7 +1899,6 @@ describe("visionExperience vertical slice driver", () => {
       resultSleevesRetained: { expected: true, observed: true },
       resultUniformPlacement: { expected: true, observed: true },
       resultAutomaticScale: { expected: true, observed: true },
-      garmentScaleRendersPixels: { expected: true, observed: true },
     };
     const outcome = await runTryOnScenario(
       fakeUiAdapter({ resultGeometryEvidence: passing }),
@@ -1902,10 +1913,9 @@ describe("visionExperience vertical slice driver", () => {
         "result-sleeves-retained",
         "result-uniform-placement",
         "result-automatic-scale",
-        "garment-scale-renders-pixels",
       ].includes(assertion.id),
     );
-    assert.equal(geometry.length, 4);
+    assert.equal(geometry.length, 3);
     assert.ok(geometry.every((assertion) => assertion.status === "passed"));
   });
 

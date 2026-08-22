@@ -115,6 +115,23 @@ function replaySummaryFixture(overrides = {}) {
   };
 }
 
+const fixedResultPng = {
+  width: 720,
+  height: 1280,
+  leftSleevePixels: 120,
+  torsoPixels: 1_200,
+  rightSleevePixels: 120,
+  garment: {
+    x: 310,
+    y: 577.5,
+    width: 100,
+    height: 125,
+    centerX: 359.5,
+    centerY: 639.5,
+    aspect: 0.8,
+  },
+};
+
 function capturedEvidenceFor(attemptId: string) {
   const visionOrigin = "http://127.0.0.1:7892";
   const requestId = "vision-websocket-1";
@@ -252,6 +269,7 @@ function observationTimelineFor(attemptId: string) {
 function fakeUiAdapter() {
   const statePath = "ui/try-on-state.json";
   let selectedSegment: "far" | "mid" | "near" = "mid";
+  let scaleClickCount = 0;
   const segmentScale = { far: 0.8, mid: 1, near: 1.2 } as const;
   const segmentAttemptId = {
     far: "550e8400-e29b-41d4-a716-446655440121",
@@ -372,18 +390,59 @@ function fakeUiAdapter() {
       },
       'click [data-test="try-on-scale-up"]': async () => {
         const current = JSON.parse(await adapter.readFile(statePath));
+        const nextScale =
+          Math.round(((current.garmentScale ?? 1) + 0.05) * 100) / 100;
+        const percent = Math.round(nextScale * 100);
+        scaleClickCount += 1;
+        const resultReference = `http://127.0.0.1:7892/v2/try-on/results/${current.attemptId}?token=${percent}-${scaleClickCount}`;
         await adapter.writeFile(
           statePath,
           JSON.stringify({
             ...current,
-            scaleValue: "105%",
-            resultUrl: `http://127.0.0.1:7892/v2/try-on/results/${current.attemptId}?token=105`,
-            resultPng: resultPng(1.05),
+            garmentScale: nextScale,
+            scaleValue: `${percent}%`,
+            resultUrl: resultReference,
+            resultPng: resultPng(nextScale),
             adjustmentEvidence: {
-              scales: [1.05],
+              scales: [
+                ...(current.adjustmentEvidence?.scales ?? []),
+                nextScale,
+              ],
               results: [
+                ...(current.adjustmentEvidence?.results ?? []),
                 {
-                  reference: `http://127.0.0.1:7892/v2/try-on/results/${current.attemptId}?token=105`,
+                  reference: resultReference,
+                },
+              ],
+            },
+          }),
+        );
+        return { exitCode: 0, stdout: "ok", stderr: "" };
+      },
+      'click [data-test="try-on-scale-down"]': async () => {
+        const current = JSON.parse(await adapter.readFile(statePath));
+        const nextScale =
+          Math.round(((current.garmentScale ?? 1) - 0.05) * 100) / 100;
+        const percent = Math.round(nextScale * 100);
+        scaleClickCount += 1;
+        const resultReference = `http://127.0.0.1:7892/v2/try-on/results/${current.attemptId}?token=${percent}-${scaleClickCount}`;
+        await adapter.writeFile(
+          statePath,
+          JSON.stringify({
+            ...current,
+            garmentScale: nextScale,
+            scaleValue: `${percent}%`,
+            resultUrl: resultReference,
+            resultPng: resultPng(nextScale),
+            adjustmentEvidence: {
+              scales: [
+                ...(current.adjustmentEvidence?.scales ?? []),
+                nextScale,
+              ],
+              results: [
+                ...(current.adjustmentEvidence?.results ?? []),
+                {
+                  reference: resultReference,
                 },
               ],
             },
@@ -889,6 +948,69 @@ describe("visionExperience slice runner", () => {
     assert.ok(ids.includes("result-sleeves-retained"));
     assert.ok(ids.includes("garment-scale-renders-pixels"));
     assert.equal(report.businessSets[0].status, "passed");
+  });
+
+  it("缩放序列只改文案不改像素时以像素断言失败", async () => {
+    const adapter = fakeUiAdapter();
+    const originalRun = adapter.run.bind(adapter);
+    adapter.run = async (command: string, args: string[] = []) => {
+      const result = await originalRun(command, args);
+      if (command === "click" && args[0]?.includes("try-on-scale")) {
+        const current = JSON.parse(
+          await adapter.readFile("ui/try-on-state.json"),
+        );
+        await adapter.writeFile(
+          "ui/try-on-state.json",
+          JSON.stringify({ ...current, resultPng: fixedResultPng }),
+        );
+      }
+      return result;
+    };
+    const report = await runVisionExperienceSlice({
+      adapter,
+      acceptanceBinding: visionAcceptanceBinding,
+      includeGarmentScale: true,
+      timeoutMs: 2_000,
+      pollMs: 10,
+    });
+    const pixelAssertion = report.businessSets[0].assertions?.find(
+      (assertion) => assertion.id === "garment-scale-renders-pixels",
+    );
+    assert.equal(pixelAssertion?.status, "failed");
+    assert.equal(report.businessSets[0].status, "failed");
+  });
+
+  it("缩放序列复用结果 URL 时以序列断言失败", async () => {
+    const adapter = fakeUiAdapter();
+    const originalRun = adapter.run.bind(adapter);
+    adapter.run = async (command: string, args: string[] = []) => {
+      const result = await originalRun(command, args);
+      if (command === "click" && args[0]?.includes("try-on-scale-down")) {
+        const current = JSON.parse(
+          await adapter.readFile("ui/try-on-state.json"),
+        );
+        if (current.adjustmentEvidence?.scales?.length === 3) {
+          const firstUrl = current.adjustmentEvidence.results[0].reference;
+          await adapter.writeFile(
+            "ui/try-on-state.json",
+            JSON.stringify({ ...current, resultUrl: firstUrl }),
+          );
+        }
+      }
+      return result;
+    };
+    const report = await runVisionExperienceSlice({
+      adapter,
+      acceptanceBinding: visionAcceptanceBinding,
+      includeGarmentScale: true,
+      timeoutMs: 2_000,
+      pollMs: 10,
+    });
+    const sequenceAssertion = report.businessSets[0].assertions?.find(
+      (assertion) => assertion.id === "garment-scale-sequence",
+    );
+    assert.equal(sequenceAssertion?.status, "failed");
+    assert.equal(report.businessSets[0].status, "failed");
   });
 
   it("三段受控录播缺失时保留结构化 fail-closed 几何诊断", async () => {

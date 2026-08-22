@@ -1009,7 +1009,9 @@ const VISION_EXPERIENCE_GEOMETRY_ASSERTIONS = [
   "result-automatic-scale",
   "garment-scale-renders-pixels",
 ];
-const VISION_EXPERIENCE_ADJUSTMENT_ASSERTIONS = ["garment-scale-v2-adjustment"];
+const VISION_EXPERIENCE_ADJUSTMENT_ASSERTIONS = [
+  "garment-scale-v2-adjustment-sequence",
+];
 
 function hasPassingAssertions(set, ids, source) {
   const assertions = Array.isArray(set?.assertions) ? set.assertions : [];
