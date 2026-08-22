@@ -248,7 +248,10 @@ describe("try-on store catalog boundary", () => {
   it("refreshes the current sale view before opening the only public native attempt", async () => {
     getSaleViewMock
       .mockResolvedValueOnce(saleView("tshirt_short_sleeve"))
-      .mockResolvedValueOnce(saleView("tshirt_long_sleeve"));
+      .mockResolvedValueOnce({
+        ...saleView("tshirt_long_sleeve"),
+        lastUpdatedAt: "2026-08-10T00:00:01.000Z",
+      });
     const catalog = useCatalogStore();
     await catalog.refresh();
     const store = useTryOnStore();
@@ -281,7 +284,10 @@ describe("try-on store catalog boundary", () => {
     store.prepare(
       catalog.saleableVariantItemFor(`product:${productId}`, variantId)!,
     );
-    getSaleViewMock.mockResolvedValueOnce(saleView(null));
+    getSaleViewMock.mockResolvedValueOnce({
+      ...saleView(null),
+      lastUpdatedAt: "2026-08-10T00:00:01.000Z",
+    });
 
     await expect(store.start()).resolves.toBe(false);
     expect(openAttemptMock).not.toHaveBeenCalled();

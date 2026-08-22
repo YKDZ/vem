@@ -13,7 +13,7 @@ vi.mock("@/daemon/client", () => ({
 
 import type { MachineSaleViewItem } from "@/types/catalog";
 
-import { useCatalogStore } from "./catalog";
+import { decideCatalogSnapshotAcceptance, useCatalogStore } from "./catalog";
 
 function saleViewItem(
   overrides: Record<string, unknown> = {},
@@ -396,5 +396,160 @@ describe("catalog store sale view", () => {
       }),
     ]);
     expect(store.operatorDiagnostics).toHaveLength(2);
+  });
+
+  function catalogSnapshot(
+    overrides: {
+      items?: MachineSaleViewItem[];
+      source?: string;
+      planogramVersion?: string | null;
+      lastUpdatedAt?: string | null;
+      cached?: boolean;
+    } = {},
+  ) {
+    return {
+      items: [saleViewItem()],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+      cached: false,
+      ...overrides,
+    };
+  }
+
+  it("keeps catalog item identity when an identical snapshot arrives", () => {
+    const store = useCatalogStore();
+    store.applySnapshot(catalogSnapshot());
+    const acceptedItems = store.items;
+
+    store.applySnapshot(catalogSnapshot());
+
+    expect(store.items).toBe(acceptedItems);
+  });
+
+  it("rejects an older same-planogram snapshot", () => {
+    const store = useCatalogStore();
+    store.applySnapshot(
+      catalogSnapshot({ lastUpdatedAt: "2026-06-04T00:00:10Z" }),
+    );
+    const acceptedItems = store.items;
+
+    store.applySnapshot(
+      catalogSnapshot({
+        lastUpdatedAt: "2026-06-04T00:00:00Z",
+        items: [saleViewItem({ saleableStock: 7 })],
+      }),
+    );
+
+    expect(store.items).toBe(acceptedItems);
+    expect(store.items[0]?.saleableStock).toBe(2);
+  });
+
+  it("accepts a newer same-planogram snapshot atomically", () => {
+    const store = useCatalogStore();
+    store.applySnapshot(catalogSnapshot());
+    const acceptedItems = store.items;
+
+    store.applySnapshot(
+      catalogSnapshot({
+        lastUpdatedAt: "2026-06-04T00:00:01Z",
+        items: [saleViewItem({ saleableStock: 7 })],
+      }),
+    );
+
+    expect(store.items).not.toBe(acceptedItems);
+    expect(store.items[0]?.saleableStock).toBe(7);
+  });
+
+  it("accepts any snapshot with a different planogram version", () => {
+    const store = useCatalogStore();
+    store.applySnapshot(catalogSnapshot());
+    const acceptedItems = store.items;
+
+    store.applySnapshot(
+      catalogSnapshot({
+        planogramVersion: "PLAN-2",
+        items: [saleViewItem({ saleableStock: 7 })],
+      }),
+    );
+
+    expect(store.items).not.toBe(acceptedItems);
+    expect(store.planogramVersion).toBe("PLAN-2");
+  });
+
+  it("upgrades cached freshness metadata without rebuilding items", () => {
+    const store = useCatalogStore();
+    store.applySnapshot(catalogSnapshot({ cached: true, source: "cache" }));
+    const acceptedItems = store.items;
+
+    store.applySnapshot(catalogSnapshot({ cached: false, source: "backend" }));
+
+    expect(store.items).toBe(acceptedItems);
+    expect(store.cachedOnly).toBe(false);
+    expect(store.source).toBe("backend");
+  });
+
+  it("keeps authoritative data when an equal-time cached snapshot arrives", () => {
+    const store = useCatalogStore();
+    store.applySnapshot(catalogSnapshot({ cached: false, source: "backend" }));
+    const acceptedItems = store.items;
+
+    store.applySnapshot(catalogSnapshot({ cached: true, source: "cache" }));
+
+    expect(store.items).toBe(acceptedItems);
+    expect(store.cachedOnly).toBe(false);
+    expect(store.source).toBe("backend");
+  });
+
+  it("accepts an incomparable candidate timestamp as a refresh", () => {
+    const store = useCatalogStore();
+    store.applySnapshot(catalogSnapshot());
+    const acceptedItems = store.items;
+
+    store.applySnapshot(
+      catalogSnapshot({
+        lastUpdatedAt: null,
+        items: [saleViewItem({ saleableStock: 7 })],
+      }),
+    );
+
+    expect(store.items).not.toBe(acceptedItems);
+    expect(store.items[0]?.saleableStock).toBe(7);
+  });
+});
+
+describe("catalog snapshot acceptance decision", () => {
+  const base = {
+    planogramVersion: "PLAN-1",
+    lastUpdatedAt: "2026-06-04T00:00:00Z",
+    cached: false,
+    source: "backend",
+  };
+
+  it("accepts a different planogram version", () => {
+    expect(
+      decideCatalogSnapshotAcceptance(base, {
+        ...base,
+        planogramVersion: "PLAN-2",
+      }),
+    ).toBe("accepted");
+  });
+
+  it("accepts an incomparable candidate timestamp", () => {
+    expect(
+      decideCatalogSnapshotAcceptance(base, {
+        ...base,
+        lastUpdatedAt: null,
+      }),
+    ).toBe("accepted");
+  });
+
+  it("upgrades cached freshness metadata only", () => {
+    expect(
+      decideCatalogSnapshotAcceptance(
+        { ...base, cached: true, source: "cache" },
+        base,
+      ),
+    ).toBe("metadata_only");
   });
 });

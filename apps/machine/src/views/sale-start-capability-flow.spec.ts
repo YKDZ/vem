@@ -1608,6 +1608,7 @@ describe("sale-start capability UI flow", () => {
     unmountMountedView();
     useCatalogStore().applySnapshot({
       ...snapshot,
+      lastUpdatedAt: "2026-07-22T00:00:01Z",
       items: [
         frozenDefault,
         {

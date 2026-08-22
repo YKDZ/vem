@@ -30,6 +30,37 @@ export type CatalogOperatorDiagnostic = CatalogMediaDiagnostic & {
   kind: "media" | "category";
 };
 
+export type CatalogSnapshotAcceptance = "accepted" | "metadata_only" | "same";
+
+type CatalogSnapshotFreshness = {
+  planogramVersion: string | null;
+  lastUpdatedAt: string | null;
+  cached: boolean;
+  source: string;
+};
+
+function comparableTimestamp(value: string | null): number | null {
+  if (value === null) return null;
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? time : null;
+}
+
+export function decideCatalogSnapshotAcceptance(
+  current: CatalogSnapshotFreshness | null,
+  candidate: CatalogSnapshotFreshness,
+): CatalogSnapshotAcceptance {
+  if (current === null) return "accepted";
+  if (candidate.planogramVersion !== current.planogramVersion)
+    return "accepted";
+  const currentTime = comparableTimestamp(current.lastUpdatedAt);
+  const candidateTime = comparableTimestamp(candidate.lastUpdatedAt);
+  if (currentTime === null || candidateTime === null) return "accepted";
+  if (candidateTime > currentTime) return "accepted";
+  if (candidateTime < currentTime) return "same";
+  if (current.cached && !candidate.cached) return "metadata_only";
+  return "same";
+}
+
 let refreshInFlight: Promise<void> | null = null;
 let autoRefreshTimer: ReturnType<typeof setInterval> | null = null;
 let autoRefreshConsumers = 0;
@@ -318,6 +349,31 @@ export const useCatalogStore = defineStore("catalog", {
       lastError?: string | null;
       mediaDiagnostics?: readonly SaleViewMediaDiagnostic[];
     }): void {
+      const acceptance = decideCatalogSnapshotAcceptance(
+        this.source === "uninitialized"
+          ? null
+          : {
+              planogramVersion: this.planogramVersion,
+              lastUpdatedAt: this.lastUpdatedAt,
+              cached: this.cachedOnly,
+              source: this.source,
+            },
+        {
+          planogramVersion: snapshot.planogramVersion ?? null,
+          lastUpdatedAt: snapshot.lastUpdatedAt,
+          cached: snapshot.cached ?? false,
+          source: snapshot.source,
+        },
+      );
+      if (acceptance === "same") return;
+      if (acceptance === "metadata_only") {
+        this.cachedOnly = snapshot.cached ?? false;
+        this.source = snapshot.source;
+        this.planogramVersion = snapshot.planogramVersion ?? null;
+        this.lastUpdatedAt = snapshot.lastUpdatedAt;
+        this.error = snapshot.lastError ?? null;
+        return;
+      }
       this.items = snapshot.items.map((item) => asCatalogItem(item));
       this.mediaDiagnosticKeysByLocation = mediaDiagnosticKeysFor(
         snapshot.items,
