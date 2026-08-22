@@ -469,6 +469,7 @@ async function requestAutomaticVentIntent({
   sessionId,
   edgeId,
   ventSpeed,
+  expectedSpeed = ventSpeed,
 }) {
   const beforeEvidence = await control(
     guestInput,
@@ -504,11 +505,12 @@ async function requestAutomaticVentIntent({
     sessionId,
     beforeFrameCount: beforeCursor,
     expectedOpcode: "B3",
-    expectedSpeed: ventSpeed,
+    expectedSpeed,
   });
   return {
     edgeId,
     requestedSpeed: ventSpeed,
+    expectedSpeed,
     outcome: response.outcome,
     beforeFrameCount: beforeCursor.frameCount,
     frame,
@@ -708,6 +710,53 @@ export async function collectAutomaticVentPrecedence({
     ventSpeed: 0,
   });
   report.daemon.automaticVent.outcomes.push(nextStableEdge);
+  // 操作员风速挡位保持回归：Admin 设为 2 档后，后续每次来人都应打开 2 档，
+  // 而不是回到固定 3 档；离开仍应关闭（0）。
+  const operatorGearCommand = await commandEnvironmentRequest({
+    guestInput,
+    token,
+    machineId,
+    sessionId,
+    action: "ventSpeed",
+    body: { ventSpeed: 2 },
+  });
+  report.commands.push(operatorGearCommand);
+  const departureAfterOperatorGear = await requestAutomaticVentIntentRequest({
+    guestInput,
+    handoff,
+    sessionId,
+    edgeId: `environment-control:${runId}:departure-after-gear`,
+    ventSpeed: 0,
+  });
+  report.daemon.automaticVent.outcomes.push(departureAfterOperatorGear);
+  const arrivalAfterOperatorGear = await requestAutomaticVentIntentRequest({
+    guestInput,
+    handoff,
+    sessionId,
+    edgeId: `environment-control:${runId}:arrival-after-gear`,
+    ventSpeed: 3,
+    expectedSpeed: 2,
+  });
+  report.daemon.automaticVent.outcomes.push(arrivalAfterOperatorGear);
+  const secondDepartureAfterOperatorGear =
+    await requestAutomaticVentIntentRequest({
+      guestInput,
+      handoff,
+      sessionId,
+      edgeId: `environment-control:${runId}:departure-after-gear-2`,
+      ventSpeed: 0,
+    });
+  report.daemon.automaticVent.outcomes.push(secondDepartureAfterOperatorGear);
+  const secondArrivalAfterOperatorGear =
+    await requestAutomaticVentIntentRequest({
+      guestInput,
+      handoff,
+      sessionId,
+      edgeId: `environment-control:${runId}:arrival-after-gear-2`,
+      ventSpeed: 3,
+      expectedSpeed: 2,
+    });
+  report.daemon.automaticVent.outcomes.push(secondArrivalAfterOperatorGear);
   report.precedence = {
     initialVentReset,
     automaticArrival,
@@ -721,12 +770,20 @@ export async function collectAutomaticVentPrecedence({
     sameEdgeAfterAdmin,
     nextStableEdge,
   };
+  report.operatorGearPersistence = {
+    operatorGearCommand,
+    departureAfterOperatorGear,
+    arrivalAfterOperatorGear,
+    secondDepartureAfterOperatorGear,
+    secondArrivalAfterOperatorGear,
+  };
   return {
     initialVentReset,
     automaticArrival,
     adminVent,
     sameEdgeAfterAdmin,
     nextStableEdge,
+    operatorGearPersistence: report.operatorGearPersistence,
   };
 }
 
@@ -787,6 +844,7 @@ export async function runEnvironmentControlGuest(options) {
     overlapRejection: null,
     daemon: { automaticVent: { health: null, outcomes: [] } },
     precedence: null,
+    operatorGearPersistence: null,
     boundaries: {
       adminApi: false,
       mqtt: false,

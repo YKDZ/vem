@@ -743,6 +743,15 @@ function validateEnvironmentControlTrack(report, reportPath) {
   const adminB3 = precedence.adminB3 ?? {};
   const sameEdgeAfterAdmin = precedence.sameEdgeAfterAdmin ?? {};
   const nextStableEdge = precedence.nextStableEdge ?? {};
+  const operatorGear = report.operatorGearPersistence ?? {};
+  const operatorGearCommand = operatorGear.operatorGearCommand ?? {};
+  const departureAfterOperatorGear =
+    operatorGear.departureAfterOperatorGear ?? {};
+  const arrivalAfterOperatorGear = operatorGear.arrivalAfterOperatorGear ?? {};
+  const secondDepartureAfterOperatorGear =
+    operatorGear.secondDepartureAfterOperatorGear ?? {};
+  const secondArrivalAfterOperatorGear =
+    operatorGear.secondArrivalAfterOperatorGear ?? {};
   const b3Speed = (frame) => {
     const match = /^55b3(0[0-4])$/i.exec(String(frame?.rawFrameHex ?? ""));
     return match ? Number.parseInt(match[1], 16) : null;
@@ -785,7 +794,7 @@ function validateEnvironmentControlTrack(report, reportPath) {
     automaticArrival.b3FrameCountDelta === 1 &&
     onlyAutomaticB3(automaticArrival, 1) &&
     validReplacementB3(automaticArrival.frame, 3) &&
-    adminB3.commandNo === byAction.get("ventSpeed")?.admin?.commandNo &&
+    commands.some((entry) => entry?.admin?.commandNo === adminB3.commandNo) &&
     adminB3.resultStatus === "succeeded" &&
     adminB3.mqttCommandNo === adminB3.commandNo &&
     adminB3.mqttResultNo === adminB3.commandNo &&
@@ -807,6 +816,45 @@ function validateEnvironmentControlTrack(report, reportPath) {
       Date.parse(adminB3.frame.capturedAt) &&
     Date.parse(adminB3.frame.capturedAt) <
       Date.parse(nextStableEdge.frame.capturedAt);
+  const operatorGearFrameAt = (entry) => Date.parse(entry?.capturedAt ?? "");
+  const operatorGearCorrelated =
+    operatorGearCommand.admin?.commandNo &&
+    operatorGearCommand.result?.status === "succeeded" &&
+    validReplacementB3(operatorGearCommand.serial?.protocolFrame, 2) &&
+    departureAfterOperatorGear.edgeId &&
+    departureAfterOperatorGear.requestedSpeed === 0 &&
+    departureAfterOperatorGear.outcome === "accepted" &&
+    departureAfterOperatorGear.b3FrameCountDelta === 1 &&
+    onlyAutomaticB3(departureAfterOperatorGear, 1) &&
+    validReplacementB3(departureAfterOperatorGear.frame, 0) &&
+    arrivalAfterOperatorGear.edgeId &&
+    arrivalAfterOperatorGear.requestedSpeed === 3 &&
+    arrivalAfterOperatorGear.expectedSpeed === 2 &&
+    arrivalAfterOperatorGear.outcome === "accepted" &&
+    arrivalAfterOperatorGear.b3FrameCountDelta === 1 &&
+    onlyAutomaticB3(arrivalAfterOperatorGear, 1) &&
+    validReplacementB3(arrivalAfterOperatorGear.frame, 2) &&
+    secondDepartureAfterOperatorGear.edgeId &&
+    secondDepartureAfterOperatorGear.requestedSpeed === 0 &&
+    secondDepartureAfterOperatorGear.outcome === "accepted" &&
+    secondDepartureAfterOperatorGear.b3FrameCountDelta === 1 &&
+    onlyAutomaticB3(secondDepartureAfterOperatorGear, 1) &&
+    validReplacementB3(secondDepartureAfterOperatorGear.frame, 0) &&
+    secondArrivalAfterOperatorGear.edgeId &&
+    secondArrivalAfterOperatorGear.requestedSpeed === 3 &&
+    secondArrivalAfterOperatorGear.expectedSpeed === 2 &&
+    secondArrivalAfterOperatorGear.outcome === "accepted" &&
+    secondArrivalAfterOperatorGear.b3FrameCountDelta === 1 &&
+    onlyAutomaticB3(secondArrivalAfterOperatorGear, 1) &&
+    validReplacementB3(secondArrivalAfterOperatorGear.frame, 2) &&
+    operatorGearFrameAt(operatorGearCommand.serial?.protocolFrame) <
+      operatorGearFrameAt(departureAfterOperatorGear.frame) &&
+    operatorGearFrameAt(departureAfterOperatorGear.frame) <
+      operatorGearFrameAt(arrivalAfterOperatorGear.frame) &&
+    operatorGearFrameAt(arrivalAfterOperatorGear.frame) <
+      operatorGearFrameAt(secondDepartureAfterOperatorGear.frame) &&
+    operatorGearFrameAt(secondDepartureAfterOperatorGear.frame) <
+      operatorGearFrameAt(secondArrivalAfterOperatorGear.frame);
   const automaticVent = report.daemon?.automaticVent ?? {};
   const automaticVentOutcomes = Array.isArray(automaticVent.outcomes)
     ? automaticVent.outcomes
@@ -828,6 +876,26 @@ function validateEnvironmentControlTrack(report, reportPath) {
       (entry) =>
         entry?.edgeId === nextStableEdge.edgeId &&
         entry?.outcome === nextStableEdge.outcome,
+    ) &&
+    automaticVentOutcomes.some(
+      (entry) =>
+        entry?.edgeId === departureAfterOperatorGear.edgeId &&
+        entry?.outcome === departureAfterOperatorGear.outcome,
+    ) &&
+    automaticVentOutcomes.some(
+      (entry) =>
+        entry?.edgeId === arrivalAfterOperatorGear.edgeId &&
+        entry?.outcome === arrivalAfterOperatorGear.outcome,
+    ) &&
+    automaticVentOutcomes.some(
+      (entry) =>
+        entry?.edgeId === secondDepartureAfterOperatorGear.edgeId &&
+        entry?.outcome === secondDepartureAfterOperatorGear.outcome,
+    ) &&
+    automaticVentOutcomes.some(
+      (entry) =>
+        entry?.edgeId === secondArrivalAfterOperatorGear.edgeId &&
+        entry?.outcome === secondArrivalAfterOperatorGear.outcome,
     );
   const replacementEvidence =
     typeof sessionReplacement.previousControlPlaneSessionId === "string" &&
@@ -849,6 +917,7 @@ function validateEnvironmentControlTrack(report, reportPath) {
     report.daemon?.health?.hardwareOnline !== true ||
     report.daemon?.readiness?.ready !== true ||
     precedenceCorrelated !== true ||
+    operatorGearCorrelated !== true ||
     replacementEvidence !== true ||
     automaticVentEvidence !== true
   ) {
@@ -875,6 +944,8 @@ function validateEnvironmentControlTrack(report, reportPath) {
       adminCommandNo: adminB3.commandNo,
       automaticArrivalEdgeId: automaticArrival.edgeId,
       nextStableEdgeId: nextStableEdge.edgeId,
+      operatorGearArrivalEdgeId: arrivalAfterOperatorGear.edgeId,
+      operatorGearCommandNo: operatorGearCommand.admin?.commandNo ?? null,
       replacementSessionId,
     },
   });

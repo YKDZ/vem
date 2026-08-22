@@ -40,6 +40,7 @@ struct AutomaticVentState {
     executing: Option<AutomaticVentIntent>,
     executing_worker_generation: Option<u64>,
     confirmed_speed: Option<u8>,
+    operator_speed: Option<u8>,
     last_attempt_at: Option<Instant>,
     last_error: Option<String>,
     latest_intent_generation: u64,
@@ -212,6 +213,15 @@ impl AutomaticVentController {
             return Ok(AutomaticVentRequestOutcome::Deduplicated);
         }
         state.seen_edge_ids.insert(edge_id.to_string());
+        // The Machine intent only carries open (3) / close (0) semantics.
+        // Opening reuses the last operator-configured gear so a maintenance or
+        // Admin fan-speed setting is not a one-shot override; without an
+        // operator setting the gear defaults to medium airflow (3).
+        let effective_speed = if speed == 3 {
+            state.operator_speed.unwrap_or(3)
+        } else {
+            0
+        };
         // Only a newly observed stable edge can re-arm automatic control after
         // a one-shot Admin B3 command. A transport retry of the same edge does
         // not get to countermand the operator.
@@ -225,7 +235,7 @@ impl AutomaticVentController {
         let now = std::time::Instant::now();
         state.pending = Some(AutomaticVentIntent {
             edge_id: edge_id.to_string(),
-            speed,
+            speed: effective_speed,
             force,
             generation: state.latest_intent_generation,
             retry_deadline: now.checked_add(self.retry_budget).unwrap_or(now),
@@ -277,7 +287,15 @@ impl AutomaticVentController {
                 state.last_attempt_at = Some(Instant::now());
             }
             hardware.set_vent_speed(speed).await?;
-            self.state.lock().await.confirmed_speed = Some(speed);
+            {
+                let mut state = self.state.lock().await;
+                state.confirmed_speed = Some(speed);
+                // Gear 0 is a one-shot close, not a durable preference: it
+                // must not erase the gear used by the next automatic arrival.
+                if speed > 0 {
+                    state.operator_speed = Some(speed);
+                }
+            }
             Ok(())
         };
         let result = result.await;
@@ -1081,6 +1099,99 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 
         assert_eq!(*adapter.vent_speeds.lock().expect("speeds"), vec![3, 3]);
+    }
+
+    #[tokio::test]
+    async fn arrival_reuses_the_last_operator_gear_instead_of_fixed_medium() {
+        let adapter = Arc::new(RecordingHardware::default());
+        let controller = AutomaticVentController::new_with_guard(
+            HardwareSupervisor::from_adapter(adapter.clone()),
+            CancellationToken::new(),
+            std::time::Duration::from_millis(1),
+        );
+
+        controller
+            .request("presence-1:arrival", 3)
+            .await
+            .expect("initial arrival defaults to medium");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        controller.supersede_by_admin().await;
+        controller
+            .execute_admin_one_shot(2)
+            .await
+            .expect("operator selects gear 2");
+        controller
+            .request("presence-2:arrival", 3)
+            .await
+            .expect("fresh arrival reuses the operator gear");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        // The operator one-shot already applied gear 2; the arrival must not
+        // countermand it back to medium. No additional frame is required.
+        assert_eq!(*adapter.vent_speeds.lock().expect("speeds"), vec![3, 2]);
+    }
+
+    #[tokio::test]
+    async fn operator_gear_survives_departure_and_is_reused_by_the_next_arrival() {
+        let adapter = Arc::new(RecordingHardware::default());
+        let controller = AutomaticVentController::new_with_guard(
+            HardwareSupervisor::from_adapter(adapter.clone()),
+            CancellationToken::new(),
+            std::time::Duration::from_millis(1),
+        );
+
+        controller.supersede_by_admin().await;
+        controller
+            .execute_admin_one_shot(4)
+            .await
+            .expect("operator selects gear 4");
+        controller
+            .request("presence-1:arrival", 3)
+            .await
+            .expect("arrival opens at gear 4");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        controller
+            .request("presence-1:departure", 0)
+            .await
+            .expect("departure closes the vent");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        controller
+            .request("presence-2:arrival", 3)
+            .await
+            .expect("next arrival still opens at gear 4");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        // Gear 4 was already confirmed by the operator; arrival skips the
+        // redundant open, departure closes, and the next arrival reopens.
+        assert_eq!(*adapter.vent_speeds.lock().expect("speeds"), vec![4, 0, 4]);
+    }
+
+    #[tokio::test]
+    async fn operator_gear_zero_is_a_one_shot_close_that_keeps_the_previous_gear() {
+        let adapter = Arc::new(RecordingHardware::default());
+        let controller = AutomaticVentController::new_with_guard(
+            HardwareSupervisor::from_adapter(adapter.clone()),
+            CancellationToken::new(),
+            std::time::Duration::from_millis(1),
+        );
+
+        controller.supersede_by_admin().await;
+        controller
+            .execute_admin_one_shot(2)
+            .await
+            .expect("operator selects gear 2");
+        controller.supersede_by_admin().await;
+        controller
+            .execute_admin_one_shot(0)
+            .await
+            .expect("operator closes the vent without erasing the gear");
+        controller
+            .request("presence-1:arrival", 3)
+            .await
+            .expect("arrival reopens at the remembered gear");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        assert_eq!(*adapter.vent_speeds.lock().expect("speeds"), vec![2, 0, 2]);
     }
 
     #[tokio::test]
