@@ -1,16 +1,10 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Param,
-  ParseUUIDPipe,
-  Post,
-  Query,
-} from "@nestjs/common";
+import { Body, Controller, Param, Query } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import {
+  adminListMaintenanceWorkOrdersContract,
   adminMaintenanceWorkOrderListQuerySchema,
   adminMaintenanceWorkOrderResolveRequestSchema,
+  adminResolveMaintenanceWorkOrderContract,
 } from "@vem/shared";
 import { z } from "zod";
 
@@ -18,17 +12,18 @@ import type { AuthenticatedAdmin } from "../common/request-user";
 
 import { RequirePermissions } from "../access/permissions.decorator";
 import { CurrentAdmin } from "../auth/current-admin.decorator";
+import { AdminEndpointContract } from "../common/admin-endpoint-contract.decorator";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
 import { MaintenanceWorkOrdersService } from "./maintenance-work-orders.service";
 
 @ApiTags("maintenance-work-orders")
 @ApiBearerAuth()
-@Controller("maintenance-work-orders")
+@Controller()
 export class MaintenanceWorkOrdersController {
   constructor(private readonly service: MaintenanceWorkOrdersService) {}
 
-  @Get()
   @RequirePermissions("maintenanceWorkOrders.read")
+  @AdminEndpointContract(adminListMaintenanceWorkOrdersContract)
   async list(
     @Query(new ZodValidationPipe(adminMaintenanceWorkOrderListQuerySchema))
     query: z.infer<typeof adminMaintenanceWorkOrderListQuerySchema>,
@@ -36,14 +31,19 @@ export class MaintenanceWorkOrdersController {
     return this.service.list(query);
   }
 
-  @Post(":id/resolve")
   @RequirePermissions("maintenanceWorkOrders.write")
+  @AdminEndpointContract(adminResolveMaintenanceWorkOrderContract)
   async resolve(
-    @Param("id", ParseUUIDPipe) id: string,
+    @Param(
+      new ZodValidationPipe(
+        adminResolveMaintenanceWorkOrderContract.pathParamsSchema,
+      ),
+    )
+    params: { id: string },
     @CurrentAdmin() admin: AuthenticatedAdmin,
     @Body(new ZodValidationPipe(adminMaintenanceWorkOrderResolveRequestSchema))
     body: z.infer<typeof adminMaintenanceWorkOrderResolveRequestSchema>,
   ) {
-    return this.service.resolve(id, admin.id, body);
+    return this.service.resolve(params.id, admin.id, body);
   }
 }

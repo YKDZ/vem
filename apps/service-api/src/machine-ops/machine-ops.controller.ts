@@ -10,8 +10,10 @@ import {
 } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import {
+  adminListMachineOpsContract,
   adminMachineContractNoBodySchema,
   adminMachineOpsListQuerySchema,
+  adminRequestMachineLogExportContract,
 } from "@vem/shared";
 import { z } from "zod";
 
@@ -21,6 +23,7 @@ import type { AuthenticatedMachine } from "../machine-auth/current-machine.decor
 import { RequirePermissions } from "../access/permissions.decorator";
 import { CurrentAdmin } from "../auth/current-admin.decorator";
 import { Public } from "../auth/public.decorator";
+import { AdminEndpointContract } from "../common/admin-endpoint-contract.decorator";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
 import { CurrentMachine } from "../machine-auth/current-machine.decorator";
 import { MachineAuthGuard } from "../machine-auth/machine-auth.guard";
@@ -41,23 +44,28 @@ type AdminMachineOpsListQuery = z.infer<typeof adminMachineOpsListQuerySchema>;
 
 @ApiTags("machine-ops")
 @ApiBearerAuth()
-@Controller("machine-ops")
+@Controller()
 export class MachineOpsController {
   constructor(private readonly machineOpsService: MachineOpsService) {}
 
-  @Post("machines/:machineId/export-logs")
   @RequirePermissions("machineOps.write")
+  @AdminEndpointContract(adminRequestMachineLogExportContract)
   async requestLogExport(
-    @Param("machineId", ParseUUIDPipe) machineId: string,
+    @Param(
+      new ZodValidationPipe(
+        adminRequestMachineLogExportContract.pathParamsSchema,
+      ),
+    )
+    params: { machineId: string },
     @CurrentAdmin() admin: AuthenticatedAdmin,
     @Body(new ZodValidationPipe(adminMachineContractNoBodySchema))
     _body: z.infer<typeof adminMachineContractNoBodySchema>,
   ) {
-    return this.machineOpsService.requestLogExport(machineId, admin.id);
+    return this.machineOpsService.requestLogExport(params.machineId, admin.id);
   }
 
-  @Get()
   @RequirePermissions("machineOps.read")
+  @AdminEndpointContract(adminListMachineOpsContract)
   async listOps(
     @Query(new ZodValidationPipe(adminMachineOpsListQuerySchema))
     query: AdminMachineOpsListQuery,
@@ -65,14 +73,14 @@ export class MachineOpsController {
     return this.machineOpsService.listAllOps(query.machineId);
   }
 
-  @Get("pending")
+  @Get("/machine-ops/pending")
   @Public()
   @UseGuards(MachineAuthGuard)
   async listPendingOps(@CurrentMachine() machine: AuthenticatedMachine) {
     return this.machineOpsService.listPendingForMachine(machine.id);
   }
 
-  @Post(":id/complete-log-export")
+  @Post("/machine-ops/:id/complete-log-export")
   @Public()
   @UseGuards(MachineAuthGuard)
   async completeLogExport(
@@ -85,7 +93,7 @@ export class MachineOpsController {
     return this.machineOpsService.completeLogExport(opId, machine.id, body);
   }
 
-  @Post(":id/fail")
+  @Post("/machine-ops/:id/fail")
   @Public()
   @UseGuards(MachineAuthGuard)
   async failOp(

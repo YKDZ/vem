@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { defineAdminEndpointContract } from "../admin-api-contract";
 import {
   maintenanceWorkOrderPrioritySchema,
   maintenanceWorkOrderStatusSchema,
@@ -61,6 +62,31 @@ export const adminMaintenanceWorkOrderResponseSchema = z.strictObject({
 
 export const adminMaintenanceWorkOrderPageResponseSchema =
   createPageResultSchema(adminMaintenanceWorkOrderResponseSchema);
+
+const noPathParamsSchema = z.strictObject({});
+const noQuerySchema = z.strictObject({});
+const noBodySchema = z.strictObject({});
+const workOrderIdPathParamsSchema = z.strictObject({ id: z.uuid() });
+
+export const adminListMaintenanceWorkOrdersContract =
+  defineAdminEndpointContract({
+    method: "GET",
+    path: "/maintenance-work-orders",
+    pathParamsSchema: noPathParamsSchema,
+    querySchema: adminMaintenanceWorkOrderListQuerySchema,
+    bodySchema: noBodySchema,
+    responseSchema: adminMaintenanceWorkOrderPageResponseSchema,
+  });
+
+export const adminResolveMaintenanceWorkOrderContract =
+  defineAdminEndpointContract({
+    method: "POST",
+    path: "/maintenance-work-orders/:id/resolve",
+    pathParamsSchema: workOrderIdPathParamsSchema,
+    querySchema: noQuerySchema,
+    bodySchema: adminMaintenanceWorkOrderResolveRequestSchema,
+    responseSchema: adminMaintenanceWorkOrderResponseSchema,
+  });
 
 export const adminNotificationListQuerySchema = z.strictObject({
   page: z.coerce.number().int().min(1).default(1),

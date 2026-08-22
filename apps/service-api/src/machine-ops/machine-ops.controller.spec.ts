@@ -23,7 +23,7 @@ describe("MachineOpsController admin contracts", () => {
 
     await expect(
       controller.requestLogExport(
-        "550e8400-e29b-41d4-a716-446655440000",
+        { machineId: "550e8400-e29b-41d4-a716-446655440000" },
         {
           id: "550e8400-e29b-41d4-a716-446655440010",
           userId: "550e8400-e29b-41d4-a716-446655440099",

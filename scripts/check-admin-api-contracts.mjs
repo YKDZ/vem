@@ -33,7 +33,44 @@ const REQUEST_HELPERS = new Set([
 const MIGRATION_ADMIN_API_PATHS = new Set([
   "apps/admin-ui/src/api/products.ts",
   "apps/admin-ui/src/api/try-on-garments.ts",
+  "apps/admin-ui/src/api/work-orders.ts",
+  "apps/admin-ui/src/api/machine-ops.ts",
 ]);
+const TEMPLATE_SLICE_CONTRACT_EXPECTATIONS = {
+  adminListMaintenanceWorkOrdersContract: {
+    method: "GET",
+    path: "/maintenance-work-orders",
+    providerMethod: "list",
+    callerPath: "apps/admin-ui/src/api/work-orders.ts",
+    callerMethods: ["listWorkOrders"],
+  },
+  adminResolveMaintenanceWorkOrderContract: {
+    method: "POST",
+    path: "/maintenance-work-orders/:id/resolve",
+    providerMethod: "resolve",
+    callerPath: "apps/admin-ui/src/api/work-orders.ts",
+    callerMethods: ["resolveWorkOrder"],
+  },
+  adminListMachineOpsContract: {
+    method: "GET",
+    path: "/machine-ops",
+    providerMethod: "listOps",
+    callerPath: "apps/admin-ui/src/api/machine-ops.ts",
+    callerMethods: ["listMachineOps"],
+  },
+  adminRequestMachineLogExportContract: {
+    method: "POST",
+    path: "/machine-ops/machines/:machineId/export-logs",
+    providerMethod: "requestLogExport",
+    callerPath: "apps/admin-ui/src/api/machine-ops.ts",
+    callerMethods: ["requestLogExport"],
+  },
+};
+const TEMPLATE_SLICE_CONTROLLER_PATHS = [
+  "apps/service-api/src/maintenance-work-orders/maintenance-work-orders.controller.ts",
+  "apps/service-api/src/machine-ops/machine-ops.controller.ts",
+];
+const ROUTE_DECORATORS = new Set(["Get", "Post", "Patch", "Put", "Delete"]);
 const WRITE_CALL_PATTERN =
   /\b(?:post|patch|postContract|patchContract|postResponseContract|callAdminEndpointContract)\s*(?:<[\s\S]*?>)?\s*\(/;
 const BROAD_TYPE_PATTERN = /\b(?:Record\s*<\s*string\s*,\s*unknown\s*>|any)\b/;
@@ -488,6 +525,8 @@ function contractDefinitions(root) {
   for (const path of [
     "packages/shared/src/schemas/products.ts",
     "packages/shared/src/schemas/try-on-garments.ts",
+    "packages/shared/src/schemas/notifications.ts",
+    "packages/shared/src/schemas/machines.ts",
   ]) {
     if (!pathExists(root, path)) continue;
     const source = readText(root, path);
@@ -1176,7 +1215,9 @@ function checkTryOnContractCoverage(root) {
   const providerHits = [];
 
   const targetsTryOn =
-    definitions.size > 0 ||
+    [...definitions.keys()].some((name) =>
+      TRY_ON_CONTRACT_NAMES.includes(name),
+    ) ||
     providers.some((candidate) =>
       TRY_ON_CONTRACT_NAMES.includes(candidate.contract),
     ) ||
@@ -1309,6 +1350,129 @@ function checkTryOnContractCoverage(root) {
   return { failures, callerHits, providerHits };
 }
 
+function checkMigratedProviderBareRoutes(root) {
+  const failures = [];
+  for (const path of TEMPLATE_SLICE_CONTROLLER_PATHS) {
+    if (!pathExists(root, path)) continue;
+    const file = parseTypeScript(path, readText(root, path));
+    const visit = (node) => {
+      if (
+        ts.isMethodDeclaration(node) &&
+        node.name &&
+        ts.isIdentifier(node.name)
+      ) {
+        const decoratorNames = decoratorsOf(node)
+          .map((decorator) => decoratorCall(decorator)?.name)
+          .filter(Boolean);
+        const hasRoute = decoratorNames.some((name) =>
+          ROUTE_DECORATORS.has(name),
+        );
+        const isPublic = decoratorNames.includes("Public");
+        const hasContract = decoratorNames.includes("AdminEndpointContract");
+        if (hasRoute && !isPublic && !hasContract) {
+          failures.push(
+            `ops-maintenance provider bare admin route: ${path}#${node.name.text} lacks AdminEndpointContract`,
+          );
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+  }
+  return failures;
+}
+
+function checkOpsMaintenanceContractCoverage(root) {
+  const failures = [];
+  const definitions = contractDefinitions(root);
+  const providers = decoratedMethods(
+    root,
+    "apps/service-api/src",
+    "AdminEndpointContract",
+  );
+  const registered = registeredControllers(root);
+  const migrationCalls = migrationNetworkCalls(root);
+  const names = Object.keys(TEMPLATE_SLICE_CONTRACT_EXPECTATIONS);
+  const callerHits = [];
+  const providerHits = [];
+
+  const targetsPresent =
+    [...definitions.keys()].some((name) => names.includes(name)) ||
+    providers.some((candidate) => names.includes(candidate.contract)) ||
+    migrationCalls.some((candidate) => names.includes(candidate.contract));
+  if (!targetsPresent) {
+    return { failures, callerHits, providerHits, bareRouteFailures: [] };
+  }
+
+  for (const name of names) {
+    const expected = TEMPLATE_SLICE_CONTRACT_EXPECTATIONS[name];
+    const definition = definitions.get(name);
+    if (!definition) {
+      failures.push(`ops-maintenance contract definition missing: ${name}`);
+    } else {
+      const invalidSchemas = [...definition.invalidSchemaFields];
+      if (invalidSchemas.length > 0) {
+        failures.push(
+          `ops-maintenance contract definition schema escape: ${name} uses unknown schema for ${invalidSchemas.join(", ")}`,
+        );
+      }
+      if (stringLiteralValue(definition.values.method) !== expected.method) {
+        failures.push(
+          `ops-maintenance contract method drift: ${name} expected ${expected.method}`,
+        );
+      }
+      if (stringLiteralValue(definition.values.path) !== expected.path) {
+        failures.push(
+          `ops-maintenance contract path drift: ${name} expected ${expected.path}`,
+        );
+      }
+    }
+
+    const provider = providers.find(
+      (candidate) =>
+        candidate.contract === name &&
+        candidate.method === expected.providerMethod,
+    );
+    if (!provider) {
+      failures.push(
+        `ops-maintenance endpoint contract provider missing: ${name}`,
+      );
+    } else if (!provider.controller || !registered.has(provider.controller)) {
+      failures.push(
+        `ops-maintenance endpoint contract provider controller unregistered: ${name}`,
+      );
+    } else {
+      providerHits.push(name);
+    }
+
+    const callerNetworkCalls = migrationCalls.filter(
+      (candidate) =>
+        candidate.path === expected.callerPath &&
+        expected.callerMethods.includes(candidate.method),
+    );
+    const matchingCalls = callerNetworkCalls.filter(
+      (candidate) =>
+        candidate.entry === "callAdminEndpointContract" &&
+        candidate.contract === name,
+    );
+    if (matchingCalls.length === 0) {
+      failures.push(
+        `ops-maintenance endpoint contract caller missing: ${name}`,
+      );
+    } else if (matchingCalls.length !== 1 || callerNetworkCalls.length !== 1) {
+      failures.push(
+        `ops-maintenance endpoint contract caller ambiguous: ${name}`,
+      );
+    } else {
+      callerHits.push(name);
+    }
+  }
+
+  const bareRouteFailures = checkMigratedProviderBareRoutes(root);
+  failures.push(...bareRouteFailures);
+  return { failures, callerHits, providerHits, bareRouteFailures };
+}
+
 function stringLiteralValue(value) {
   return value && ts.isStringLiteral(value) ? value.text : undefined;
 }
@@ -1431,6 +1595,8 @@ export function checkAdminApiContracts(options = {}) {
   failures.push(...checkWriteModuleQueryTypes(root, writeModulePaths));
   const tryOnCoverage = checkTryOnContractCoverage(root);
   failures.push(...tryOnCoverage.failures);
+  const opsMaintenanceCoverage = checkOpsMaintenanceContractCoverage(root);
+  failures.push(...opsMaintenanceCoverage.failures);
 
   checks.push({
     name: "admin-writes-use-schema-bound-contracts",
@@ -1443,6 +1609,11 @@ export function checkAdminApiContracts(options = {}) {
     name: "try-on-providers-and-callers-share-complete-contracts",
     passed: tryOnCoverage.failures.length === 0,
     detail: `callers=${tryOnCoverage.callerHits.length}, providers=${tryOnCoverage.providerHits.length}`,
+  });
+  checks.push({
+    name: "ops-maintenance-providers-and-callers-share-complete-contracts",
+    passed: opsMaintenanceCoverage.failures.length === 0,
+    detail: `callers=${opsMaintenanceCoverage.callerHits.length}, providers=${opsMaintenanceCoverage.providerHits.length}, bareRoutes=${opsMaintenanceCoverage.bareRouteFailures.length}`,
   });
   checks.push({
     name: "admin-write-modules-avoid-broad-query-shortcuts",
@@ -1458,6 +1629,7 @@ export function checkAdminApiContracts(options = {}) {
     failures,
     writeCallers: [...callers.keys()].sort(),
     tryOnCoverage,
+    opsMaintenanceCoverage,
   };
 }
 

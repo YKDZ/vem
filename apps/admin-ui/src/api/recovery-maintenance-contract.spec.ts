@@ -1,6 +1,11 @@
+import { adminResolveMaintenanceWorkOrderContract } from "@vem/shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { getContract, postContract } from "@/api/request";
+import {
+  callAdminEndpointContract,
+  getContract,
+  postContract,
+} from "@/api/request";
 
 import { markNotificationRead } from "./notifications";
 import {
@@ -11,6 +16,7 @@ import {
 import { resolveWorkOrder } from "./work-orders";
 
 vi.mock("@/api/request", () => ({
+  callAdminEndpointContract: vi.fn().mockResolvedValue({}),
   get: vi.fn(),
   getContract: vi.fn().mockResolvedValue({}),
   post: vi.fn(),
@@ -55,11 +61,14 @@ describe("recovery and maintenance admin api contracts", () => {
     );
     await markNotificationRead("550e8400-e29b-41d4-a716-446655440003");
 
-    expect(postContract).toHaveBeenCalledWith(
-      "/maintenance-work-orders/550e8400-e29b-41d4-a716-446655440002/resolve",
-      expect.any(Object),
-      expect.any(Object),
-      { resolutionNote: "replaced jammed spring and verified dispense" },
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminResolveMaintenanceWorkOrderContract,
+      {
+        pathParams: { id: "550e8400-e29b-41d4-a716-446655440002" },
+        body: {
+          resolutionNote: "replaced jammed spring and verified dispense",
+        },
+      },
     );
     expect(postContract).toHaveBeenCalledWith(
       "/notifications/550e8400-e29b-41d4-a716-446655440003/read",

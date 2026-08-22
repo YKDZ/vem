@@ -45,6 +45,23 @@ function completeCatalogContractFixture() {
   );
 }
 
+function completeOpsMaintenanceContractFixture() {
+  const workspace = process.cwd();
+  const paths = [
+    "packages/shared/src/schemas/notifications.ts",
+    "packages/shared/src/schemas/machines.ts",
+    "apps/service-api/src/maintenance-work-orders/maintenance-work-orders.controller.ts",
+    "apps/service-api/src/maintenance-work-orders/maintenance-work-orders.module.ts",
+    "apps/service-api/src/machine-ops/machine-ops.controller.ts",
+    "apps/service-api/src/machine-ops/machine-ops.module.ts",
+    "apps/admin-ui/src/api/work-orders.ts",
+    "apps/admin-ui/src/api/machine-ops.ts",
+  ];
+  return Object.fromEntries(
+    paths.map((path) => [path, readFileSync(join(workspace, path), "utf8")]),
+  );
+}
+
 describe("admin api contract guard", () => {
   const tryOnFixture = (
     providerDecorator = "AdminEndpointContract",
@@ -1031,5 +1048,35 @@ describe("admin api contract guard", () => {
         );
       },
     );
+  });
+
+  it("enumerates every maintenance and machine-ops contract on both sides", () => {
+    withFixture(completeOpsMaintenanceContractFixture(), (root) => {
+      const result = checkAdminApiContracts({ root });
+      assert.equal(result.ok, true, result.failures.join("\n"));
+      assert.equal(result.opsMaintenanceCoverage.callerHits.length, 4);
+      assert.equal(result.opsMaintenanceCoverage.providerHits.length, 4);
+      assert.equal(result.opsMaintenanceCoverage.bareRouteFailures.length, 0);
+    });
+  });
+
+  it("rejects a bare admin route added to a migrated provider controller", () => {
+    withFixture(completeOpsMaintenanceContractFixture(), (root) => {
+      const path = "apps/service-api/src/machine-ops/machine-ops.controller.ts";
+      const fixture = readFileSync(join(root, path), "utf8").replace(
+        "export class MachineOpsController {",
+        `export class MachineOpsController {
+          @Get("/machine-ops/extra")
+          @RequirePermissions("machineOps.read")
+          async extraOp() {
+            return null;
+          }`,
+      );
+      writeFileSync(join(root, path), fixture);
+
+      const result = checkAdminApiContracts({ root });
+      assert.equal(result.ok, false);
+      assert.match(result.failures.join("\n"), /provider bare admin route/);
+    });
   });
 });

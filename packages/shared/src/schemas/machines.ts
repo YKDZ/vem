@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { defineAdminEndpointContract } from "../admin-api-contract";
 import {
   machineClaimCodePurposeSchema,
   machineClaimCodeStateSchema,
@@ -405,6 +406,30 @@ export const adminMachineOpsListQuerySchema = z.strictObject({
 
 export const adminMachineRemoteOpListResponseSchema = z.array(
   adminMachineRemoteOpResponseSchema,
+);
+
+const noPathParamsSchema = z.strictObject({});
+const noQuerySchema = z.strictObject({});
+const machineIdPathParamsSchema = z.strictObject({ machineId: z.uuid() });
+
+export const adminListMachineOpsContract = defineAdminEndpointContract({
+  method: "GET",
+  path: "/machine-ops",
+  pathParamsSchema: noPathParamsSchema,
+  querySchema: adminMachineOpsListQuerySchema,
+  bodySchema: adminMachineContractNoBodySchema,
+  responseSchema: adminMachineRemoteOpListResponseSchema,
+});
+
+export const adminRequestMachineLogExportContract = defineAdminEndpointContract(
+  {
+    method: "POST",
+    path: "/machine-ops/machines/:machineId/export-logs",
+    pathParamsSchema: machineIdPathParamsSchema,
+    querySchema: noQuerySchema,
+    bodySchema: adminMachineContractNoBodySchema,
+    responseSchema: adminMachineRemoteOpResponseSchema,
+  },
 );
 
 export type MachineHeartbeatStatusPayload = z.infer<
