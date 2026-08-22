@@ -48,6 +48,11 @@ type TryOnContext = {
   variantId: string;
 };
 
+const HOLD_COUNTDOWN_TICK_MS = 50;
+let holdDeadlineEpochMs: number | null = null;
+let holdTicker: ReturnType<typeof setInterval> | null = null;
+let holdTickerStore: ReturnType<typeof useTryOnStore> | null = null;
+
 export const useTryOnStore = defineStore("tryOn", {
   state: () => ({
     phase: "idle" as TryOnPhase,
@@ -268,16 +273,40 @@ export const useTryOnStore = defineStore("tryOn", {
             this.phase = "acquiring";
             this.previewUrl = preview.reference;
             this.guidance = event.payload.guidance;
-            this.holdRemainingMs =
+            const holdRemainingMs =
               "holdRemainingMs" in event.payload
                 ? event.payload.holdRemainingMs
                 : null;
+            this.holdRemainingMs = holdRemainingMs;
             this.occupancy = event.payload.occupancy;
             // An accepted manual intent is irrevocable for this attempt.
             // Subsequent Vision guidance is current display truth only.
             this.manualCaptureAllowed = this.manualCaptureSubmitted
               ? false
               : event.payload.manualCaptureAllowed;
+            if (
+              this.guidance === "counting_down" &&
+              typeof holdRemainingMs === "number"
+            ) {
+              ensureHoldCountdownOwner(this);
+              const eventTimeMs = Date.parse(event.timestamp);
+              const anchoredDeadlineEpochMs =
+                (Number.isFinite(eventTimeMs) ? eventTimeMs : Date.now()) +
+                holdRemainingMs;
+              if (
+                holdDeadlineEpochMs === null ||
+                anchoredDeadlineEpochMs < holdDeadlineEpochMs
+              ) {
+                holdDeadlineEpochMs = anchoredDeadlineEpochMs;
+              }
+              startHoldCountdown(this, () => {
+                this.tickHoldRemaining();
+              });
+              this.tickHoldRemaining();
+            } else {
+              stopHoldCountdown();
+              this.holdRemainingMs = null;
+            }
           } catch {
             this.phase = "failed";
             this.failureReason = "try_on_failed";
@@ -294,6 +323,7 @@ export const useTryOnStore = defineStore("tryOn", {
             isGenerationStageAtLeast(event.payload.stage, this.generationStage))
         ) {
           this.phase = "generating";
+          stopHoldCountdown();
           this.guidance = null;
           this.holdRemainingMs = null;
           this.occupancy = null;
@@ -311,6 +341,7 @@ export const useTryOnStore = defineStore("tryOn", {
             resultContext,
           );
           this.phase = "captured";
+          stopHoldCountdown();
         } catch {
           this.phase = "failed";
           this.failureReason = "try_on_failed";
@@ -409,6 +440,7 @@ export const useTryOnStore = defineStore("tryOn", {
       clearCaptured = true,
       clearPreview = true,
     } = {}): void {
+      stopHoldCountdown();
       if (clearPreview) this.previewUrl = null;
       if (clearCaptured) this.captured = null;
       this.guidance = null;
@@ -417,6 +449,22 @@ export const useTryOnStore = defineStore("tryOn", {
       this.manualCaptureAllowed = false;
       this.manualCaptureSubmitted = false;
       this.generationStage = null;
+    },
+    tickHoldRemaining(): void {
+      if (
+        holdDeadlineEpochMs === null ||
+        this.phase !== "acquiring" ||
+        this.guidance !== "counting_down"
+      ) {
+        stopHoldCountdown();
+        return;
+      }
+      const remaining = Math.max(
+        0,
+        Math.min(3_000, Math.ceil(holdDeadlineEpochMs - Date.now())),
+      );
+      if (this.holdRemainingMs !== remaining) this.holdRemainingMs = remaining;
+      if (remaining === 0) stopHoldCountdown();
     },
   },
 });
@@ -508,4 +556,32 @@ function isSupportedGarmentScale(scale: number): boolean {
     roundedPercent <= 160 &&
     roundedPercent % 5 === 0
   );
+}
+
+function startHoldCountdown(
+  store: ReturnType<typeof useTryOnStore>,
+  tick: () => void,
+): void {
+  ensureHoldCountdownOwner(store);
+  if (holdTicker === null) {
+    holdTicker = setInterval(tick, HOLD_COUNTDOWN_TICK_MS);
+  }
+}
+
+function ensureHoldCountdownOwner(
+  store: ReturnType<typeof useTryOnStore>,
+): void {
+  if (holdTickerStore !== store) {
+    stopHoldCountdown();
+    holdTickerStore = store;
+  }
+}
+
+function stopHoldCountdown(): void {
+  if (holdTicker !== null) {
+    clearInterval(holdTicker);
+    holdTicker = null;
+  }
+  holdDeadlineEpochMs = null;
+  holdTickerStore = null;
 }

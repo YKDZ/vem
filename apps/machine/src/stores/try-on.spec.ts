@@ -1,5 +1,5 @@
 import { createPinia, setActivePinia } from "pinia";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { getSaleViewMock, refreshCatalogMock, openAttemptMock, openAdjustMock } =
   vi.hoisted(() => ({
@@ -19,6 +19,14 @@ vi.mock("@/native/vision", () => ({
   openVisionTryOnAttempt: openAttemptMock,
   openVisionGarmentAdjustment: openAdjustMock,
 }));
+
+beforeEach(() => {
+  vi.useFakeTimers();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 import type { VisionTryOnAttemptEvent } from "@/native/vision";
 
@@ -809,5 +817,199 @@ describe("try-on store lifecycle", () => {
     expect(store.adjusting).toBe(false);
     expect(store.result).toEqual(completed(newAttempt).payload.result);
     expect(store.garmentScale).toBe(1.1);
+  });
+});
+
+describe("try-on store countdown presentation", () => {
+  const baseMs = Date.parse("2026-08-22T00:00:00.000Z");
+
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    vi.setSystemTime(baseMs);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function acquiringAt(
+    eventTimestampMs: number,
+    holdRemainingMs: number,
+    eventAttemptId = firstAttemptId,
+  ): VisionTryOnAttemptEvent {
+    return {
+      type: "vision.try_on.attempt.acquiring",
+      timestamp: new Date(eventTimestampMs).toISOString(),
+      payload: {
+        attemptId: eventAttemptId,
+        preview: {
+          reference:
+            "http://127.0.0.1:7892/v2/try-on/acquisition/preview.mjpeg?token=preview-token",
+          streamType: "mjpeg",
+        },
+        occupancy: "single",
+        guidance: "counting_down",
+        manualCaptureAllowed: true,
+        holdRemainingMs,
+      },
+    } as VisionTryOnAttemptEvent;
+  }
+
+  function startCountdown(
+    store: ReturnType<typeof useTryOnStore>,
+    eventTimestampMs = baseMs,
+    holdRemainingMs = 3_000,
+  ): void {
+    const context = {
+      attemptId: firstAttemptId,
+      visionSocketUrl: "ws://127.0.0.1:7892/ws",
+    };
+    store.attemptId = firstAttemptId;
+    store.phase = "starting";
+    store.applyEvent(firstAttemptId, accepted(firstAttemptId), context);
+    store.applyEvent(
+      firstAttemptId,
+      acquiringAt(eventTimestampMs, holdRemainingMs),
+      context,
+    );
+  }
+
+  it("advances 3→2→1→0 locally without new events", () => {
+    const store = useTryOnStore();
+    startCountdown(store);
+    expect(store.holdRemainingMs).toBe(3_000);
+
+    vi.advanceTimersByTime(1_000);
+    expect(store.holdRemainingMs).toBe(2_000);
+    expect(String(Math.ceil(store.holdRemainingMs! / 1_000))).toBe("2");
+
+    vi.advanceTimersByTime(1_000);
+    expect(store.holdRemainingMs).toBe(1_000);
+    expect(String(Math.ceil(store.holdRemainingMs! / 1_000))).toBe("1");
+
+    vi.advanceTimersByTime(1_000);
+    expect(store.holdRemainingMs).toBe(0);
+  });
+
+  it("never lets a late event pull remaining time back up", () => {
+    const store = useTryOnStore();
+    startCountdown(store);
+    vi.advanceTimersByTime(1_500);
+    expect(store.holdRemainingMs).toBe(1_500);
+
+    const context = {
+      attemptId: firstAttemptId,
+      visionSocketUrl: "ws://127.0.0.1:7892/ws",
+    };
+    const observed = [store.holdRemainingMs!];
+    // 迟到的协议事实：截止点与已锚定截止点相同，剩余时间不得回跳。
+    store.applyEvent(
+      firstAttemptId,
+      acquiringAt(baseMs + 1_400, 1_600),
+      context,
+    );
+    observed.push(store.holdRemainingMs!);
+    // 更晚投递但截止点更迟的事件同样不得把倒计时拉回。
+    store.applyEvent(firstAttemptId, acquiringAt(baseMs + 3_100, 100), context);
+    observed.push(store.holdRemainingMs!);
+    // 真正收紧的协议事实仍然生效。
+    store.applyEvent(firstAttemptId, acquiringAt(baseMs + 2_900, 0), context);
+    observed.push(store.holdRemainingMs!);
+    vi.advanceTimersByTime(1_000);
+    observed.push(store.holdRemainingMs!);
+
+    for (let index = 1; index < observed.length; index += 1) {
+      expect(observed[index]).toBeLessThanOrEqual(observed[index - 1]);
+    }
+  });
+
+  it.each([
+    [
+      "缺失",
+      () =>
+        ({
+          type: "vision.try_on.attempt.acquiring",
+          payload: {
+            attemptId: firstAttemptId,
+            preview: {
+              reference:
+                "http://127.0.0.1:7892/v2/try-on/acquisition/preview.mjpeg?token=preview-token",
+              streamType: "mjpeg",
+            },
+            occupancy: "single",
+            guidance: "counting_down",
+            manualCaptureAllowed: true,
+            holdRemainingMs: 3_000,
+          },
+        }) as VisionTryOnAttemptEvent,
+    ],
+    [
+      "非法",
+      () =>
+        ({
+          ...acquiringAt(baseMs, 3_000),
+          timestamp: "not-a-date",
+        }) as VisionTryOnAttemptEvent,
+    ],
+  ] as const)("事件时间戳%s时回退到收到时刻锚定", (_label, makeEvent) => {
+    const store = useTryOnStore();
+    const context = {
+      attemptId: firstAttemptId,
+      visionSocketUrl: "ws://127.0.0.1:7892/ws",
+    };
+    store.attemptId = firstAttemptId;
+    store.phase = "starting";
+    store.applyEvent(firstAttemptId, accepted(firstAttemptId), context);
+    store.applyEvent(firstAttemptId, makeEvent(), context);
+    expect(store.holdRemainingMs).toBe(3_000);
+
+    vi.advanceTimersByTime(1_500);
+    expect(store.holdRemainingMs).toBe(1_500);
+    expect(Number.isInteger(store.holdRemainingMs)).toBe(true);
+    expect(store.holdRemainingMs!).toBeGreaterThanOrEqual(0);
+    expect(store.holdRemainingMs!).toBeLessThanOrEqual(3_000);
+  });
+
+  it("stops and clears the countdown when guidance or phase leaves counting_down", () => {
+    const store = useTryOnStore();
+    const context = {
+      attemptId: firstAttemptId,
+      visionSocketUrl: "ws://127.0.0.1:7892/ws",
+    };
+    startCountdown(store);
+    vi.advanceTimersByTime(1_000);
+    expect(store.holdRemainingMs).toBe(2_000);
+
+    store.applyEvent(
+      firstAttemptId,
+      acquiring(firstAttemptId, "align"),
+      context,
+    );
+    expect(store.holdRemainingMs).toBeNull();
+    vi.advanceTimersByTime(2_000);
+    expect(store.holdRemainingMs).toBeNull();
+
+    store.applyEvent(
+      firstAttemptId,
+      acquiringAt(baseMs + 3_000, 3_000),
+      context,
+    );
+    expect(store.holdRemainingMs).toBe(3_000);
+    vi.advanceTimersByTime(500);
+    expect(store.holdRemainingMs).toBe(2_500);
+
+    store.applyEvent(firstAttemptId, captured(firstAttemptId), context);
+    vi.advanceTimersByTime(2_000);
+    expect(store.holdRemainingMs).toBe(2_500);
+
+    store.applyEvent(firstAttemptId, generating(firstAttemptId), context);
+    expect(store.holdRemainingMs).toBeNull();
+    vi.advanceTimersByTime(2_000);
+    expect(store.holdRemainingMs).toBeNull();
+
+    store.clear();
+    expect(store.holdRemainingMs).toBeNull();
   });
 });
