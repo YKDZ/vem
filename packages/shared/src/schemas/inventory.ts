@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { defineAdminEndpointContract } from "../admin-api-contract";
 import { inventoryMovementReasonSchema } from "../enums/inventory";
 import { machineSlotStatusSchema } from "../enums/machine";
 import {
@@ -294,6 +295,76 @@ export const adminStockReconciliationCaseDetailResponseSchema =
 
 export const adminStockReconciliationCasePageResponseSchema =
   createPageResultSchema(adminStockReconciliationCaseSummaryResponseSchema);
+
+const noPathParamsSchema = z.strictObject({});
+const noQuerySchema = z.strictObject({});
+const caseIdPathParamsSchema = z.strictObject({ id: z.uuid() });
+
+export const adminListInventoriesContract = defineAdminEndpointContract({
+  method: "GET",
+  path: "/inventories",
+  pathParamsSchema: noPathParamsSchema,
+  querySchema: adminInventoryListQuerySchema,
+  bodySchema: adminInventoryContractNoBodySchema,
+  responseSchema: adminInventoryPageResponseSchema,
+});
+
+export const adminCreateInventoryContract = defineAdminEndpointContract({
+  method: "POST",
+  path: "/inventories",
+  pathParamsSchema: noPathParamsSchema,
+  querySchema: noQuerySchema,
+  bodySchema: createInventorySchema,
+  responseSchema: adminInventoryResponseSchema,
+});
+
+export const adminAdjustInventoryContract = defineAdminEndpointContract({
+  method: "POST",
+  path: "/inventories/adjust",
+  pathParamsSchema: noPathParamsSchema,
+  querySchema: noQuerySchema,
+  bodySchema: adjustInventorySchema,
+  responseSchema: adminInventoryResponseSchema,
+});
+
+export const adminListInventoryMovementsContract = defineAdminEndpointContract({
+  method: "GET",
+  path: "/inventory-movements",
+  pathParamsSchema: noPathParamsSchema,
+  querySchema: adminInventoryMovementListQuerySchema,
+  bodySchema: adminInventoryContractNoBodySchema,
+  responseSchema: adminInventoryMovementPageResponseSchema,
+});
+
+export const adminListStockReconciliationCasesContract =
+  defineAdminEndpointContract({
+    method: "GET",
+    path: "/stock-reconciliation-cases",
+    pathParamsSchema: noPathParamsSchema,
+    querySchema: adminStockReconciliationListQuerySchema,
+    bodySchema: adminInventoryContractNoBodySchema,
+    responseSchema: adminStockReconciliationCasePageResponseSchema,
+  });
+
+export const adminGetStockReconciliationCaseContract =
+  defineAdminEndpointContract({
+    method: "GET",
+    path: "/stock-reconciliation-cases/:id",
+    pathParamsSchema: caseIdPathParamsSchema,
+    querySchema: noQuerySchema,
+    bodySchema: adminInventoryContractNoBodySchema,
+    responseSchema: adminStockReconciliationCaseDetailResponseSchema,
+  });
+
+export const adminResolveStockReconciliationCaseContract =
+  defineAdminEndpointContract({
+    method: "POST",
+    path: "/stock-reconciliation-cases/:id/resolve",
+    pathParamsSchema: caseIdPathParamsSchema,
+    querySchema: noQuerySchema,
+    bodySchema: adminStockReconciliationResolveRequestSchema,
+    responseSchema: adminStockReconciliationCaseDetailResponseSchema,
+  });
 
 export type AdminInventoryListQuery = z.infer<
   typeof adminInventoryListQuerySchema

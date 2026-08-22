@@ -31,7 +31,7 @@ describe("StockReconciliationController", () => {
     };
     const controller = new StockReconciliationController(service as never);
 
-    await controller.getCase("raw-1");
+    await controller.getCase({ id: "raw-1" });
 
     expect(service.getCase).toHaveBeenCalledWith("raw-1");
   });
@@ -42,12 +42,16 @@ describe("StockReconciliationController", () => {
     };
     const controller = new StockReconciliationController(service as never);
 
-    await controller.resolveCase({ id: "admin-1" } as never, "raw-1", {
-      action: "manual_correct",
-      correctedOnHandQty: 3,
-      note: "现场复核为 3 件",
-      clearBlocker: true,
-    });
+    await controller.resolveCase(
+      { id: "admin-1" } as never,
+      { id: "raw-1" },
+      {
+        action: "manual_correct",
+        correctedOnHandQty: 3,
+        note: "现场复核为 3 件",
+        clearBlocker: true,
+      },
+    );
 
     expect(service.resolveCase).toHaveBeenCalledWith("admin-1", "raw-1", {
       action: "manual_correct",

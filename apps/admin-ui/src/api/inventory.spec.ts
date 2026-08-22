@@ -1,6 +1,14 @@
+import {
+  adminAdjustInventoryContract,
+  adminCreateInventoryContract,
+  adminListInventoryMovementsContract,
+  adminListInventoriesContract,
+  adminListStockReconciliationCasesContract,
+  adminResolveStockReconciliationCaseContract,
+} from "@vem/shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { getContract, postContract } from "@/api/request";
+import { callAdminEndpointContract } from "@/api/request";
 
 import {
   adjustInventory,
@@ -12,20 +20,21 @@ import {
 } from "./inventory";
 
 vi.mock("@/api/request", () => ({
-  get: vi.fn().mockResolvedValue({}),
-  getContract: vi.fn().mockResolvedValue({ items: [], total: 0 }),
-  post: vi.fn(),
-  postContract: vi.fn().mockResolvedValue({}),
+  callAdminEndpointContract: vi.fn().mockResolvedValue({}),
 }));
 
 describe("inventory api", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(getContract).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(postContract).mockResolvedValue({});
+    vi.mocked(callAdminEndpointContract).mockResolvedValue({
+      items: [],
+      total: 0,
+      page: 1,
+      pageSize: 20,
+    });
   });
 
-  it("uses schema-bound helpers for inventory writes", async () => {
+  it("uses complete shared endpoint contracts for inventory writes", async () => {
     const inventoryId = "550e8400-e29b-41d4-a716-446655440000";
 
     await createInventory({
@@ -50,51 +59,37 @@ describe("inventory api", () => {
       },
     );
 
-    expect(postContract).toHaveBeenCalledWith(
-      "/inventories",
-      expect.any(Object),
-      expect.any(Object),
-      expect.objectContaining({ onHandQty: 10 }),
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminCreateInventoryContract,
+      { body: expect.objectContaining({ onHandQty: 10 }) },
     );
-    expect(postContract).toHaveBeenCalledWith(
-      "/inventories/adjust",
-      expect.any(Object),
-      expect.any(Object),
-      expect.objectContaining({ deltaQty: -1 }),
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminAdjustInventoryContract,
+      { body: expect.objectContaining({ deltaQty: -1 }) },
     );
-    expect(postContract).toHaveBeenCalledWith(
-      "/stock-reconciliation-cases/550e8400-e29b-41d4-a716-446655440004/resolve",
-      expect.any(Object),
-      expect.any(Object),
-      expect.objectContaining({ action: "manual_correct" }),
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminResolveStockReconciliationCaseContract,
+      {
+        pathParams: { id: "550e8400-e29b-41d4-a716-446655440004" },
+        body: expect.objectContaining({ action: "manual_correct" }),
+      },
     );
   });
 
-  it("rejects invalid stock reconciliation resolution bodies through the schema-bound helper", async () => {
-    vi.mocked(postContract).mockImplementation(
-      async (_url, bodySchema, _responseSchema, body) => {
-        (bodySchema as { parse(value: unknown): unknown }).parse(body);
-        throw new Error("expected invalid stock reconciliation body");
-      },
-    );
-
-    const retiredMachineStockAcceptance = {
-      action: "accept_machine_stock" as const,
-      note: "counted by machine",
-    };
-    await expect(
-      resolveStockReconciliationCase(
-        "550e8400-e29b-41d4-a716-446655440004",
-        retiredMachineStockAcceptance as never,
-      ),
-    ).rejects.toThrow();
-    await expect(
-      resolveStockReconciliationCase("550e8400-e29b-41d4-a716-446655440004", {
+  it("rejects invalid stock reconciliation resolution bodies through the shared contract", () => {
+    expect(() =>
+      adminResolveStockReconciliationCaseContract.bodySchema.parse({
+        action: "accept_machine_stock",
+        note: "counted by machine",
+      }),
+    ).toThrow();
+    expect(() =>
+      adminResolveStockReconciliationCaseContract.bodySchema.parse({
         action: "manual_correct",
         note: "   ",
         correctedOnHandQty: 4,
       }),
-    ).rejects.toThrow();
+    ).toThrow();
   });
 
   it("parses key inventory queries and responses through shared contracts", async () => {
@@ -102,23 +97,17 @@ describe("inventory api", () => {
     await listInventoryMovements({ page: 1, pageSize: 20 });
     await listStockReconciliationCases({ page: 1, machineId: undefined });
 
-    expect(getContract).toHaveBeenCalledWith(
-      "/inventories",
-      expect.any(Object),
-      expect.any(Object),
-      { page: 1, pageSize: 200 },
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminListInventoriesContract,
+      { query: { page: 1, pageSize: 200 } },
     );
-    expect(getContract).toHaveBeenCalledWith(
-      "/inventory-movements",
-      expect.any(Object),
-      expect.any(Object),
-      { page: 1, pageSize: 20 },
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminListInventoryMovementsContract,
+      { query: { page: 1, pageSize: 20 } },
     );
-    expect(getContract).toHaveBeenCalledWith(
-      "/stock-reconciliation-cases",
-      expect.any(Object),
-      expect.any(Object),
-      { page: 1, machineId: undefined },
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminListStockReconciliationCasesContract,
+      { query: { page: 1, machineId: undefined } },
     );
   });
 });

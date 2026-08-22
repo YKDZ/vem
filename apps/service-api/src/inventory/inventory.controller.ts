@@ -1,11 +1,12 @@
-import { Body, Controller, Get, Post, Query } from "@nestjs/common";
+import { Body, Controller, Query } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import {
+  adminAdjustInventoryContract,
+  adminCreateInventoryContract,
+  adminListInventoryMovementsContract,
+  adminListInventoriesContract,
   adjustInventorySchema,
   createInventorySchema,
-  adminInventoryMovementListQuerySchema,
-  inventoryQuerySchema,
-  pageQuerySchema,
 } from "@vem/shared";
 import { z } from "zod";
 
@@ -13,17 +14,16 @@ import type { AuthenticatedAdmin } from "../common/request-user";
 
 import { RequirePermissions } from "../access/permissions.decorator";
 import { CurrentAdmin } from "../auth/current-admin.decorator";
+import { AdminEndpointContract } from "../common/admin-endpoint-contract.decorator";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
 import { InventoryService } from "./inventory.service";
 
-type InventoryQuery = z.infer<typeof inventoryQuerySchema> &
-  z.infer<typeof pageQuerySchema>;
+type InventoryQuery = z.infer<typeof adminListInventoriesContract.querySchema>;
 type AdjustInventoryInput = z.infer<typeof adjustInventorySchema>;
 type CreateInventoryInput = z.infer<typeof createInventorySchema>;
-type PageQueryInput = z.infer<typeof adminInventoryMovementListQuerySchema>;
-const inventoryListQuerySchema = inventoryQuerySchema.extend(
-  pageQuerySchema.shape,
-);
+type PageQueryInput = z.infer<
+  typeof adminListInventoryMovementsContract.querySchema
+>;
 
 @ApiTags("inventory")
 @ApiBearerAuth()
@@ -32,16 +32,16 @@ export class InventoryController {
   constructor(private readonly inventoryService: InventoryService) {}
 
   @RequirePermissions("inventory.read")
-  @Get("inventories")
+  @AdminEndpointContract(adminListInventoriesContract)
   async listInventories(
-    @Query(new ZodValidationPipe(inventoryListQuerySchema))
+    @Query(new ZodValidationPipe(adminListInventoriesContract.querySchema))
     query: InventoryQuery,
   ) {
     return await this.inventoryService.listInventories(query);
   }
 
   @RequirePermissions("inventory.adjust")
-  @Post("inventories")
+  @AdminEndpointContract(adminCreateInventoryContract)
   async createInventory(
     @CurrentAdmin() admin: AuthenticatedAdmin,
     @Body(new ZodValidationPipe(createInventorySchema))
@@ -51,7 +51,7 @@ export class InventoryController {
   }
 
   @RequirePermissions("inventory.adjust")
-  @Post("inventories/adjust")
+  @AdminEndpointContract(adminAdjustInventoryContract)
   async adjust(
     @CurrentAdmin() admin: AuthenticatedAdmin,
     @Body(new ZodValidationPipe(adjustInventorySchema))
@@ -61,9 +61,11 @@ export class InventoryController {
   }
 
   @RequirePermissions("inventory.read")
-  @Get("inventory-movements")
+  @AdminEndpointContract(adminListInventoryMovementsContract)
   async listMovements(
-    @Query(new ZodValidationPipe(adminInventoryMovementListQuerySchema))
+    @Query(
+      new ZodValidationPipe(adminListInventoryMovementsContract.querySchema),
+    )
     query: PageQueryInput,
   ) {
     return await this.inventoryService.listMovements(query);

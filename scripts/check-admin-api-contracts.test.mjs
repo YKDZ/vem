@@ -1068,8 +1068,8 @@ describe("admin api contract guard", () => {
       assert.equal(result.opsMaintenanceCoverage.callerHits.length, 4);
       assert.equal(result.opsMaintenanceCoverage.providerHits.length, 4);
       assert.equal(result.opsMaintenanceCoverage.bareRouteFailures.length, 0);
-      assert.equal(result.machinesInventoryCoverage.callerHits.length, 14);
-      assert.equal(result.machinesInventoryCoverage.providerHits.length, 18);
+      assert.equal(result.machinesInventoryCoverage.callerHits.length, 21);
+      assert.equal(result.machinesInventoryCoverage.providerHits.length, 25);
       assert.equal(
         result.machinesInventoryCoverage.bareRouteFailures.length,
         0,

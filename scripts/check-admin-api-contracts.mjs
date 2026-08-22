@@ -37,6 +37,7 @@ const MIGRATION_ADMIN_API_PATHS = new Set([
   "apps/admin-ui/src/api/machine-ops.ts",
   "apps/admin-ui/src/api/machines.ts",
   "apps/admin-ui/src/api/qweather.ts",
+  "apps/admin-ui/src/api/inventory.ts",
 ]);
 const TEMPLATE_SLICE_CONTRACT_EXPECTATIONS = {
   adminListMaintenanceWorkOrdersContract: {
@@ -73,6 +74,8 @@ const TEMPLATE_SLICE_CONTROLLER_PATHS = [
   "apps/service-api/src/machine-ops/machine-ops.controller.ts",
   "apps/service-api/src/machines/machines.controller.ts",
   "apps/service-api/src/machines/qweather-config.controller.ts",
+  "apps/service-api/src/inventory/inventory.controller.ts",
+  "apps/service-api/src/inventory/stock-reconciliation.controller.ts",
 ];
 const MACHINES_INVENTORY_CONTRACT_EXPECTATIONS = {
   adminListMachinesContract: {
@@ -192,6 +195,55 @@ const MACHINES_INVENTORY_CONTRACT_EXPECTATIONS = {
     providerMethod: "updateConfig",
     callerPath: "apps/admin-ui/src/api/qweather.ts",
     callerMethods: ["updateQweatherConfig"],
+  },
+  adminListInventoriesContract: {
+    method: "GET",
+    path: "/inventories",
+    providerMethod: "listInventories",
+    callerPath: "apps/admin-ui/src/api/inventory.ts",
+    callerMethods: ["listInventories"],
+  },
+  adminCreateInventoryContract: {
+    method: "POST",
+    path: "/inventories",
+    providerMethod: "createInventory",
+    callerPath: "apps/admin-ui/src/api/inventory.ts",
+    callerMethods: ["createInventory"],
+  },
+  adminAdjustInventoryContract: {
+    method: "POST",
+    path: "/inventories/adjust",
+    providerMethod: "adjust",
+    callerPath: "apps/admin-ui/src/api/inventory.ts",
+    callerMethods: ["adjustInventory"],
+  },
+  adminListInventoryMovementsContract: {
+    method: "GET",
+    path: "/inventory-movements",
+    providerMethod: "listMovements",
+    callerPath: "apps/admin-ui/src/api/inventory.ts",
+    callerMethods: ["listInventoryMovements"],
+  },
+  adminListStockReconciliationCasesContract: {
+    method: "GET",
+    path: "/stock-reconciliation-cases",
+    providerMethod: "listCases",
+    callerPath: "apps/admin-ui/src/api/inventory.ts",
+    callerMethods: ["listStockReconciliationCases"],
+  },
+  adminGetStockReconciliationCaseContract: {
+    method: "GET",
+    path: "/stock-reconciliation-cases/:id",
+    providerMethod: "getCase",
+    callerPath: "apps/admin-ui/src/api/inventory.ts",
+    callerMethods: ["getStockReconciliationCase"],
+  },
+  adminResolveStockReconciliationCaseContract: {
+    method: "POST",
+    path: "/stock-reconciliation-cases/:id/resolve",
+    providerMethod: "resolveCase",
+    callerPath: "apps/admin-ui/src/api/inventory.ts",
+    callerMethods: ["resolveStockReconciliationCase"],
   },
 };
 const ROUTE_DECORATORS = new Set(["Get", "Post", "Patch", "Put", "Delete"]);

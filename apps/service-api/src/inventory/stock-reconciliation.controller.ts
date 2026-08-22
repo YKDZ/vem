@@ -1,6 +1,9 @@
-import { Body, Controller, Get, Param, Post, Query } from "@nestjs/common";
+import { Body, Controller, Param, Query } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import {
+  adminGetStockReconciliationCaseContract,
+  adminListStockReconciliationCasesContract,
+  adminResolveStockReconciliationCaseContract,
   adminStockReconciliationListQuerySchema,
   adminStockReconciliationResolveRequestSchema,
 } from "@vem/shared";
@@ -10,6 +13,7 @@ import type { AuthenticatedAdmin } from "../common/request-user";
 
 import { RequirePermissions } from "../access/permissions.decorator";
 import { CurrentAdmin } from "../auth/current-admin.decorator";
+import { AdminEndpointContract } from "../common/admin-endpoint-contract.decorator";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
 import { StockReconciliationService } from "./stock-reconciliation.service";
 
@@ -22,33 +26,49 @@ type StockReconciliationResolveRequest = z.infer<
 
 @ApiTags("stock-reconciliation")
 @ApiBearerAuth()
-@Controller("stock-reconciliation-cases")
+@Controller()
 export class StockReconciliationController {
   constructor(private readonly service: StockReconciliationService) {}
 
   @RequirePermissions("inventory.read")
-  @Get()
+  @AdminEndpointContract(adminListStockReconciliationCasesContract)
   async listCases(
-    @Query(new ZodValidationPipe(adminStockReconciliationListQuerySchema))
+    @Query(
+      new ZodValidationPipe(
+        adminListStockReconciliationCasesContract.querySchema,
+      ),
+    )
     query: StockReconciliationQuery,
   ) {
     return await this.service.listCases(query);
   }
 
   @RequirePermissions("inventory.read")
-  @Get(":id")
-  async getCase(@Param("id") id: string) {
-    return await this.service.getCase(id);
+  @AdminEndpointContract(adminGetStockReconciliationCaseContract)
+  async getCase(
+    @Param(
+      new ZodValidationPipe(
+        adminGetStockReconciliationCaseContract.pathParamsSchema,
+      ),
+    )
+    params: { id: string },
+  ) {
+    return await this.service.getCase(params.id);
   }
 
   @RequirePermissions("inventory.adjust")
-  @Post(":id/resolve")
+  @AdminEndpointContract(adminResolveStockReconciliationCaseContract)
   async resolveCase(
     @CurrentAdmin() admin: AuthenticatedAdmin,
-    @Param("id") id: string,
+    @Param(
+      new ZodValidationPipe(
+        adminResolveStockReconciliationCaseContract.pathParamsSchema,
+      ),
+    )
+    params: { id: string },
     @Body(new ZodValidationPipe(adminStockReconciliationResolveRequestSchema))
     body: StockReconciliationResolveRequest,
   ) {
-    return await this.service.resolveCase(admin.id, id, body);
+    return await this.service.resolveCase(admin.id, params.id, body);
   }
 }
