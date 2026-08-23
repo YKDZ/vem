@@ -9,6 +9,18 @@ import { TextDecoder } from "node:util";
 
 import { isStructurallyValidPng } from "../lib/png-structure.ts";
 
+type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? (value as unknown[]) : [];
+}
+
 const DEFAULT_ROOT = resolve(import.meta.dirname, "../..");
 const BINARY_ALLOWLIST_NAME = "hard-cutover-binary-allowlist.json";
 const BINARY_ALLOWLIST_SCHEMA = "vem-hard-cutover-binary-allowlist/v1";
@@ -149,7 +161,7 @@ const RETIRED_PATH_PATTERNS = Object.freeze([
   },
 ]);
 
-function splitLegacyConstructionMatches(source) {
+function splitLegacyConstructionMatches(source: string): RegExpMatchArray[] {
   const matches = source.matchAll(
     /\[[\s\S]{0,200}?\][.]join\(\s*["']{2}\s*\)/g,
   );
@@ -185,20 +197,26 @@ const TEXT_EXTENSIONS = new Set([
   ".yml",
 ]);
 
-function extension(path) {
+function extension(path: string): string {
   const name = path.split(/[\\/]/).pop() ?? "";
   const index = name.lastIndexOf(".");
   return index === -1 ? "" : name.slice(index);
 }
 
-function shouldSkip(path, { scanArtifacts = false } = {}) {
+function shouldSkip(
+  path: string,
+  { scanArtifacts = false }: { scanArtifacts?: boolean } = {},
+): boolean {
   const names = scanArtifacts
     ? /(?:^|[\\/])(?:node_modules|target|coverage|[.]turbo|[.]git)(?:[\\/]|$)/
     : /(?:^|[\\/])(?:node_modules|dist|target|coverage|[.]turbo|[.]git)(?:[\\/]|$)/;
   return names.test(path);
 }
 
-function filesUnder(path, options = {}) {
+function filesUnder(
+  path: string,
+  options: { scanArtifacts?: boolean } = {},
+): string[] {
   if (shouldSkip(path, options)) return [];
   const stats = statSync(path);
   if (!stats.isDirectory())
@@ -208,7 +226,7 @@ function filesUnder(path, options = {}) {
   );
 }
 
-function isHistoricalLegacyRecord(path) {
+function isHistoricalLegacyRecord(path: string): boolean {
   return /(?:^|[\\/])docs[\\/](?:archive|软著|adr)(?:[\\/]|$)/.test(path);
 }
 
@@ -269,20 +287,34 @@ const SQLITE_HISTORICAL_MIGRATION_DIGESTS = Object.freeze({
     "d9661dc18064b8da335115f142ebde3e879858a0b3a37e3064194441bea98333",
 });
 
-function digest(source) {
+function digest(source: string | Buffer): string {
   return createHash("sha256").update(source).digest("hex");
 }
 
-function rustMigrationLiteral(source, name) {
+function rustMigrationLiteral(
+  source: string,
+  name: string,
+): string | undefined {
   return source.match(
     new RegExp(`pub const ${name}: &str = r#"([\\s\\S]*?)"#;`),
   )?.[1];
 }
 
-function legacyAllowance(path, root, source) {
+function legacyAllowance(
+  path: string,
+  root: string,
+  source: string,
+): JsonRecord | null {
   const relativePath = relative(root, path);
-  const absenceProof = LEGACY_ABSENCE_PROOF_ALLOWANCES[relativePath];
-  if (absenceProof) {
+  const absenceProof = recordValue(
+    LEGACY_ABSENCE_PROOF_ALLOWANCES[
+      relativePath as keyof typeof LEGACY_ABSENCE_PROOF_ALLOWANCES
+    ] as JsonRecord | undefined,
+  );
+  if (
+    relativePath in LEGACY_ABSENCE_PROOF_ALLOWANCES &&
+    absenceProof
+  ) {
     const observedLines = source
       .split(/\r?\n/)
       .map((line) => line.trim())
@@ -297,8 +329,12 @@ function legacyAllowance(path, root, source) {
       integrityLabel: "legacy-absence-proof-digest-or-role",
     };
   }
-  const migration = LEGACY_MIGRATION_ALLOWANCES[relativePath];
-  if (migration) {
+  const migration = recordValue(
+    LEGACY_MIGRATION_ALLOWANCES[
+      relativePath as keyof typeof LEGACY_MIGRATION_ALLOWANCES
+    ] as JsonRecord | undefined,
+  );
+  if (relativePath in LEGACY_MIGRATION_ALLOWANCES && migration) {
     return {
       valid: digest(source) === migration.digest,
       occurrences: migration.occurrences,
@@ -329,36 +365,51 @@ function legacyAllowance(path, root, source) {
   return null;
 }
 
-function patternMatches(source, pattern) {
+function patternMatches(
+  source: string,
+  pattern: RegExp,
+): RegExpMatchArray[] {
   const flags = pattern.flags.includes("g")
     ? pattern.flags
     : `${pattern.flags}g`;
   return [...source.matchAll(new RegExp(pattern.source, flags))];
 }
 
-function canonicalJson(value) {
+function canonicalJson(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalJson);
   if (value !== null && typeof value === "object") {
+    const record = value as JsonRecord;
     return Object.fromEntries(
       Object.keys(value)
         .sort()
-        .map((key) => [key, canonicalJson(value[key])]),
+        .map((key) => [key, canonicalJson(record[key])]),
     );
   }
   return value;
 }
 
-function binaryEntryMatchesPolicy(entry) {
-  const policy = BINARY_POLICIES[entry.category];
+function binaryEntryMatchesPolicy(entry: JsonRecord): boolean {
+  const policy = BINARY_POLICIES[entry.category as keyof typeof BINARY_POLICIES];
   if (!policy || entry.reason !== policy.reason) return false;
-  if (policy.exactPath) return entry.path === policy.exactPath;
+  if ("exactPath" in policy && policy.exactPath)
+    return entry.path === policy.exactPath;
   return (
-    policy.prefixes.some((prefix) => entry.path.startsWith(prefix)) &&
-    policy.suffixes.some((suffix) => entry.path.endsWith(suffix))
+    "prefixes" in policy &&
+    policy.prefixes.some((prefix: string) =>
+      String(entry.path).startsWith(prefix),
+    ) &&
+    "suffixes" in policy &&
+    policy.suffixes.some((suffix: string) =>
+      String(entry.path).endsWith(suffix),
+    )
   );
 }
 
-function loadBinaryAllowlist(root, trackedEntries, violations) {
+function loadBinaryAllowlist(
+  root: string,
+  trackedEntries: Array<{ relativePath: string; mode: string; path: string }>,
+  violations: string[],
+): { approved: Map<string, JsonRecord>; source: string | null } {
   const trackedManifest = trackedEntries.find(
     ({ relativePath }) => relativePath === BINARY_ALLOWLIST_NAME,
   );
@@ -366,13 +417,13 @@ function loadBinaryAllowlist(root, trackedEntries, violations) {
     violations.push(`${BINARY_ALLOWLIST_NAME}:binary-allowlist-untracked`);
     return { approved: new Map(), source: null };
   }
-  let source;
-  let manifest;
+  let source: string | null = null;
+  let manifest: JsonRecord;
   try {
     source = new TextDecoder("utf-8", { fatal: true }).decode(
       readFileSync(resolve(root, BINARY_ALLOWLIST_NAME)),
     );
-    manifest = JSON.parse(source);
+    manifest = JSON.parse(source) as JsonRecord;
   } catch {
     violations.push(`${BINARY_ALLOWLIST_NAME}:binary-allowlist-invalid`);
     return { approved: new Map(), source: null };
@@ -390,8 +441,11 @@ function loadBinaryAllowlist(root, trackedEntries, violations) {
     violations.push(`${BINARY_ALLOWLIST_NAME}:binary-allowlist-invalid`);
     return { approved: new Map(), source: null };
   }
-  const approved = new Map();
-  for (const entry of manifest.entries) {
+  const approved = new Map<string, JsonRecord>();
+  for (const entry of arrayValue(manifest.entries).map((value: unknown) =>
+    recordValue(value),
+  )) {
+    const entryPath = String(entry.path);
     if (
       !entry ||
       typeof entry !== "object" ||
@@ -399,18 +453,18 @@ function loadBinaryAllowlist(root, trackedEntries, violations) {
       Object.keys(entry).sort().join(",") !==
         "category,gitMode,path,reason,sha256" ||
       Object.values(entry).some((value) => typeof value !== "string") ||
-      approved.has(entry.path) ||
-      entry.path.startsWith("/") ||
-      entry.path.includes("\\") ||
-      entry.path.split("/").includes("..") ||
+      approved.has(entryPath) ||
+      entryPath.startsWith("/") ||
+      entryPath.includes("\\") ||
+      entryPath.split("/").includes("..") ||
       entry.gitMode !== "100644" ||
-      !/^[0-9a-f]{64}$/.test(entry.sha256) ||
+      !/^[0-9a-f]{64}$/.test(String(entry.sha256)) ||
       !binaryEntryMatchesPolicy(entry)
     ) {
       violations.push(`${BINARY_ALLOWLIST_NAME}:binary-allowlist-invalid`);
       return { approved: new Map(), source: null };
     }
-    approved.set(entry.path, entry);
+    approved.set(entryPath, entry);
   }
   if (
     [...approved.keys()].join("\0") !== [...approved.keys()].sort().join("\0")
@@ -432,14 +486,14 @@ const EXECUTABLE_MAGICS = [
   Buffer.from([0xbe, 0xba, 0xfe, 0xca]),
 ];
 
-function startsWith(bytes, prefix) {
+function startsWith(bytes: Buffer, prefix: Buffer): boolean {
   return (
     bytes.length >= prefix.length &&
     bytes.subarray(0, prefix.length).equals(prefix)
   );
 }
 
-function validJpeg(bytes) {
+function validJpeg(bytes: Buffer): boolean {
   if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) {
     return false;
   }
@@ -528,7 +582,11 @@ function validJpeg(bytes) {
   return false;
 }
 
-function validDib(bytes, directoryWidth, directoryHeight) {
+function validDib(
+  bytes: Buffer,
+  directoryWidth: number,
+  directoryHeight: number,
+): boolean {
   if (bytes.length < 40) return false;
   const headerSize = bytes.readUInt32LE(0);
   if (
@@ -571,7 +629,7 @@ function validDib(bytes, directoryWidth, directoryHeight) {
   return expectedSize === BigInt(bytes.length);
 }
 
-function validIco(bytes) {
+function validIco(bytes: Buffer): boolean {
   if (bytes.length < 6) return false;
   const count = bytes.readUInt16LE(4);
   if (
@@ -615,7 +673,7 @@ function validIco(bytes) {
   return cursor === bytes.length;
 }
 
-function validWav(bytes) {
+function validWav(bytes: Buffer): boolean {
   if (
     bytes.length < 12 ||
     bytes.toString("ascii", 0, 4) !== "RIFF" ||
@@ -645,7 +703,7 @@ function validWav(bytes) {
   return offset === bytes.length && sawFormat && sawData;
 }
 
-function validMp3(bytes) {
+function validMp3(bytes: Buffer): boolean {
   let offset = 0;
   if (bytes.toString("ascii", 0, 3) === "ID3") {
     if (
@@ -681,12 +739,12 @@ function validMp3(bytes) {
   ) {
     return false;
   }
-  const mpeg1Bitrates = {
+  const mpeg1Bitrates: Record<number, number[]> = {
     1: [32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320],
     2: [32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384],
     3: [32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448],
   };
-  const mpeg2Bitrates = {
+  const mpeg2Bitrates: Record<number, number[]> = {
     1: [8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160],
     2: [8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160],
     3: [32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256],
@@ -709,7 +767,7 @@ function validMp3(bytes) {
   return frameLength >= 4 && offset + frameLength <= bytes.length;
 }
 
-function validOgg(bytes) {
+function validOgg(bytes: Buffer): boolean {
   if (
     bytes.length < 27 ||
     bytes.toString("ascii", 0, 4) !== "OggS" ||
@@ -726,7 +784,7 @@ function validOgg(bytes) {
   return 27 + segmentCount + payloadSize <= bytes.length;
 }
 
-function validMp4(bytes) {
+function validMp4(bytes: Buffer): boolean {
   let offset = 0;
   let boxCount = 0;
   while (offset + 8 <= bytes.length) {
@@ -753,7 +811,7 @@ function validMp4(bytes) {
   return boxCount > 0 && offset === bytes.length;
 }
 
-function validWebp(bytes) {
+function validWebp(bytes: Buffer): boolean {
   if (
     bytes.length < 20 ||
     bytes.toString("ascii", 0, 4) !== "RIFF" ||
@@ -775,7 +833,7 @@ function validWebp(bytes) {
   return sawImage && offset === bytes.length;
 }
 
-function binaryFormatIsValid(path, bytes) {
+function binaryFormatIsValid(path: string, bytes: Buffer): boolean {
   if (
     startsWith(bytes, Buffer.from("#!")) ||
     EXECUTABLE_MAGICS.some((magic) => startsWith(bytes, magic))
@@ -800,11 +858,18 @@ function binaryFormatIsValid(path, bytes) {
 export function scanHardCutoverAbsence({
   root = DEFAULT_ROOT,
   artifactScopes = [],
-} = {}) {
+}: {
+  root?: string;
+  artifactScopes?: string[];
+} = {}): string[] {
   const trackedOutput = execFileSync("git", ["ls-files", "--stage", "-z"], {
     cwd: root,
   });
-  const trackedEntries = trackedOutput
+  const trackedEntries: Array<{
+    mode: string;
+    path: string;
+    relativePath: string;
+  }> = trackedOutput
     .toString("utf8")
     .split("\0")
     .filter(Boolean)
@@ -828,10 +893,10 @@ export function scanHardCutoverAbsence({
   const violations = [...indexViolations];
   const { approved: approvedBinary, source: binaryManifestSource } =
     loadBinaryAllowlist(root, trackedEntries, violations);
-  const actualBinary = new Map();
-  const paths = [
+  const actualBinary = new Map<string, { gitMode: string; sha256: string }>();
+  const paths: string[] = [
     ...trackedPaths,
-    ...artifactScopes.flatMap((scope) =>
+    ...artifactScopes.flatMap((scope: string) =>
       filesUnder(resolve(root, scope), { scanArtifacts: true }),
     ),
   ].filter((path, index, all) => all.indexOf(path) === index);
@@ -856,7 +921,9 @@ export function scanHardCutoverAbsence({
       const relativePath = relative(root, path);
       if (approvedBinary.has(relativePath)) {
         actualBinary.set(relativePath, {
-          gitMode: trackedEntries.find((entry) => entry.path === path).mode,
+          gitMode:
+            trackedEntries.find((entry) => entry.path === path)?.mode ??
+            "100644",
           sha256: digest(bytes),
         });
         return binaryFormatIsValid(relativePath, bytes)
@@ -866,7 +933,9 @@ export function scanHardCutoverAbsence({
       if (bytes.includes(0)) {
         if (trackedPathSet.has(path)) {
           actualBinary.set(relative(root, path), {
-            gitMode: trackedEntries.find((entry) => entry.path === path).mode,
+            gitMode:
+              trackedEntries.find((entry) => entry.path === path)?.mode ??
+              "100644",
             sha256: digest(bytes),
           });
           return [];
@@ -879,7 +948,9 @@ export function scanHardCutoverAbsence({
       } catch {
         if (trackedPathSet.has(path)) {
           actualBinary.set(relative(root, path), {
-            gitMode: trackedEntries.find((entry) => entry.path === path).mode,
+            gitMode:
+              trackedEntries.find((entry) => entry.path === path)?.mode ??
+              "100644",
             sha256: digest(bytes),
           });
           return [];
@@ -910,7 +981,7 @@ export function scanHardCutoverAbsence({
           ) {
             return [];
           }
-          const permitted = allowance?.occurrences[category];
+          const permitted = recordValue(allowance?.occurrences)[category];
           if (allowance?.valid && permitted === matches.length) return [];
           if (
             isHistoricalLegacyRecord(path) &&
@@ -944,6 +1015,10 @@ export function scanHardCutoverAbsence({
       continue;
     }
     const actual = actualBinary.get(path);
+    if (!actual) {
+      violations.push(`${path}:binary-identity-mismatch`);
+      continue;
+    }
     if (
       actual.gitMode !== expected.gitMode ||
       actual.sha256 !== expected.sha256
@@ -959,7 +1034,10 @@ export function scanHardCutoverAbsence({
   return violations;
 }
 
-export function assertHardCutoverAbsence(options) {
+export function assertHardCutoverAbsence(options: {
+  root?: string;
+  artifactScopes?: string[];
+}): string[] {
   const violations = scanHardCutoverAbsence(options);
   if (violations.length > 0) {
     throw new Error(
