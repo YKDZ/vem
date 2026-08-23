@@ -1292,10 +1292,10 @@ function resolveVmRuntimeAcceptanceArtifacts(options = {}) {
 }
 
 export function buildAcceptanceScriptCommand(
-  mode,
-  options = {},
-  extraArgs = [],
-) {
+  mode: string,
+  options: Record<string, unknown> = {},
+  extraArgs: string[] = [],
+): string[] {
   const command = [
     process.execPath,
     "scripts/testbed/win10-vem-e2e.ts",
@@ -1306,29 +1306,32 @@ export function buildAcceptanceScriptCommand(
     "--machine-code",
     buildTestbedMachineCodeFromRun(options),
     "--platform-target",
-    options.platformTarget,
+    String(options.platformTarget),
     ...extraArgs,
   ];
   if (options.remote) {
-    command.push("--remote", options.remote);
+    command.push("--remote", String(options.remote));
   }
   if (options.sshPort) {
     command.push("--ssh-port", String(options.sshPort));
   }
   if (options.sshKnownHostsPath) {
-    command.push("--ssh-known-hosts-path", options.sshKnownHostsPath);
+    command.push("--ssh-known-hosts-path", String(options.sshKnownHostsPath));
   }
   if (options.sshHostKeyAlias) {
-    command.push("--ssh-host-key-alias", options.sshHostKeyAlias);
+    command.push("--ssh-host-key-alias", String(options.sshHostKeyAlias));
   }
   if (options.expectedTestbedUser) {
-    command.push("--expected-testbed-user", options.expectedTestbedUser);
+    command.push(
+      "--expected-testbed-user",
+      String(options.expectedTestbedUser),
+    );
   }
   if (options.identity) {
-    command.push("--identity", options.identity);
+    command.push("--identity", String(options.identity));
   }
   if (options.certificate) {
-    command.push("--certificate", options.certificate);
+    command.push("--certificate", String(options.certificate));
   }
   return command;
 }

@@ -46,7 +46,88 @@ const PROFILE_NAMES = new Set([
 ]);
 const MACHINE_PATH = "C:\\VEM\\bringup\\machine.exe";
 
-function required(options, name) {
+type JsonRecord = Record<string, unknown>;
+
+interface InstalledKioskSaleCliOptions {
+  run_id: string;
+  machine_code: string;
+  platform_target: string;
+  ephemeral_platform_evidence: string;
+  runtime_acceptance_report: string;
+  identity: string;
+  certificate: string;
+  adapter: string;
+  target_identity: string;
+  runtime_base: string;
+  out: string;
+  profile: string;
+  already_claimed?: boolean;
+  dry_run?: boolean;
+  lifecycle_reference?: string;
+  remote?: string;
+  ssh_port?: number;
+  ssh_known_hosts_path?: string;
+  ssh_host_key_alias?: string;
+  runtime_guest_endpoint_json?: string;
+  expected_testbed_user?: string;
+  scanner_code_file?: string;
+  [key: string]: unknown;
+}
+
+interface InstalledKioskRuntimeBinding {
+  normalTargetId: string | null;
+  sessionUser: string;
+  sessionId: number;
+  route: string;
+  url: unknown;
+  productionCdpDisabled: boolean;
+  [key: string]: unknown;
+}
+
+interface InstalledKioskRunnerTrust {
+  signingKeyFile: string;
+  signingKeyPem: Buffer | string;
+  publicKey: string;
+}
+
+interface InstalledKioskSaleReport extends JsonRecord {
+  schemaVersion: string;
+  kind: string;
+  status: string;
+  ok: boolean;
+  runId: string;
+  profile: string;
+  evidence: JsonRecord;
+}
+
+interface InstalledKioskCaptureInput {
+  options: JsonRecord;
+  attestation: JsonRecord;
+  selector: string;
+  route: RegExp;
+}
+
+type InstalledKioskRunCommand = (
+  command: string[],
+  label: string,
+  options?: { env?: NodeJS.ProcessEnv },
+) => Promise<JsonRecord>;
+type InstalledKioskRunRemote = (
+  options: JsonRecord,
+  script: string,
+) => JsonRecord;
+type InstalledKioskCapture = (
+  input: InstalledKioskCaptureInput,
+) => Promise<JsonRecord>;
+
+interface InstalledKioskSaleDependencies {
+  runCommand?: InstalledKioskRunCommand;
+  runRemote?: InstalledKioskRunRemote;
+  drive?: (options: JsonRecord) => Promise<unknown>;
+  capture?: InstalledKioskCapture;
+}
+
+function required(options: JsonRecord, name: string): string {
   const value = options[name.replaceAll("-", "_")];
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`--${name} is required`);
@@ -54,8 +135,8 @@ function required(options, name) {
   return value.trim();
 }
 
-function parseArgs(argv) {
-  const options = {};
+function parseArgs(argv: string[]): JsonRecord {
+  const options: JsonRecord = {};
   const stringOptions = new Set([
     "run-id",
     "machine-code",
@@ -114,24 +195,66 @@ function parseArgs(argv) {
     required(options, name.replaceAll("_", "-"));
   }
   if (options.profile == null) options.profile = "vm-normal";
-  if (!PROFILE_NAMES.has(options.profile)) {
+  if (!PROFILE_NAMES.has(String(options.profile))) {
     throw new Error(
       "--profile must be vm-normal, vm-scanner-payment-code, vm-route-competition, vm-ipc-recovery, or vm-delayed-pickup-native-audio",
     );
   }
   if (options.ssh_port != null) {
     options.ssh_port = Number(options.ssh_port);
-    if (!Number.isInteger(options.ssh_port) || options.ssh_port < 1) {
+    if (
+      !Number.isInteger(options.ssh_port) ||
+      (options.ssh_port as number) < 1
+    ) {
       throw new Error("--ssh-port must be a positive integer");
     }
   }
   return options;
 }
 
-function readRuntimeBinding(path) {
-  const report = JSON.parse(readFileSync(path, "utf8"));
-  const runtime = report?.runtimeAcceptanceReport;
-  const kiosk = runtime?.kioskRuntime;
+function installedKioskSaleCliOptions(
+  options: JsonRecord,
+): InstalledKioskSaleCliOptions {
+  const optionalString = (name: string): string | undefined => {
+    const value = options[name];
+    return typeof value === "string" ? value : undefined;
+  };
+  return {
+    run_id: required(options, "run-id"),
+    machine_code: required(options, "machine-code"),
+    platform_target: required(options, "platform-target"),
+    ephemeral_platform_evidence: required(
+      options,
+      "ephemeral-platform-evidence",
+    ),
+    runtime_acceptance_report: required(
+      options,
+      "runtime-acceptance-report",
+    ),
+    identity: required(options, "identity"),
+    certificate: required(options, "certificate"),
+    adapter: required(options, "adapter"),
+    target_identity: required(options, "target-identity"),
+    runtime_base: required(options, "runtime-base"),
+    out: required(options, "out"),
+    profile: String(options.profile ?? "vm-normal"),
+    already_claimed: options.already_claimed === true,
+    dry_run: options.dry_run === true,
+    lifecycle_reference: optionalString("lifecycle_reference"),
+    remote: optionalString("remote"),
+    ssh_port: typeof options.ssh_port === "number" ? options.ssh_port : undefined,
+    ssh_known_hosts_path: optionalString("ssh_known_hosts_path"),
+    ssh_host_key_alias: optionalString("ssh_host_key_alias"),
+    runtime_guest_endpoint_json: optionalString("runtime_guest_endpoint_json"),
+    expected_testbed_user: optionalString("expected_testbed_user"),
+    scanner_code_file: optionalString("scanner_code_file"),
+  };
+}
+
+function readRuntimeBinding(path: string): InstalledKioskRuntimeBinding {
+  const report = JSON.parse(readFileSync(path, "utf8")) as JsonRecord;
+  const runtime = report?.runtimeAcceptanceReport as JsonRecord | undefined;
+  const kiosk = runtime?.kioskRuntime as JsonRecord | undefined;
   const cdpRoute =
     typeof kiosk?.url === "string" &&
     kiosk.url.startsWith("http://tauri.localhost/#/");
@@ -141,7 +264,7 @@ function readRuntimeBinding(path) {
     kiosk?.url === "unavailable:production-cdp-disabled" &&
     kiosk?.machineProcessCount === 1 &&
     kiosk?.machineExecutablePath === "C:\\VEM\\bringup\\machine.exe" &&
-    kiosk?.webView2ProcessCount >= 1;
+    (kiosk?.webView2ProcessCount as number) >= 1;
   if (
     report?.ok !== true ||
     runtime?.schemaVersion !== "runtime-acceptance-report/v1" ||
@@ -149,7 +272,7 @@ function readRuntimeBinding(path) {
     kiosk.sessionUser.trim() !== kiosk.sessionUser ||
     kiosk.sessionUser.length === 0 ||
     !Number.isInteger(kiosk?.sessionId) ||
-    kiosk.sessionId < 1 ||
+    (kiosk.sessionId as number) < 1 ||
     (!cdpRoute && !productionNormalUi)
   ) {
     throw new Error(
@@ -159,17 +282,17 @@ function readRuntimeBinding(path) {
   return {
     normalTargetId:
       cdpRoute && typeof kiosk.cdpTargetId === "string" && kiosk.cdpTargetId
-        ? kiosk.cdpTargetId
+        ? (kiosk.cdpTargetId as string)
         : null,
-    sessionUser: kiosk.sessionUser,
-    sessionId: kiosk.sessionId,
+    sessionUser: kiosk.sessionUser as string,
+    sessionId: kiosk.sessionId as number,
     route: cdpRoute ? routeFromTauriUrl(kiosk.url) : "#/catalog",
     url: kiosk.url,
     productionCdpDisabled: productionNormalUi,
   };
 }
 
-function resolveRemoteOptions(options) {
+function resolveRemoteOptions(options: JsonRecord): JsonRecord {
   const remote = options.remote;
   const endpointJson = options.runtime_guest_endpoint_json;
   if (remote && endpointJson) {
@@ -177,10 +300,17 @@ function resolveRemoteOptions(options) {
       "--remote and --runtime-guest-endpoint-json are mutually exclusive",
     );
   }
-  if (remote) return { remote, sshPort: options.ssh_port };
+  if (remote) {
+    return {
+      remote: String(remote),
+      sshPort: options.ssh_port as number | undefined,
+    };
+  }
   let endpoint;
   try {
-    endpoint = JSON.parse(required(options, "runtime-guest-endpoint-json"));
+    endpoint = JSON.parse(
+      required(options, "runtime-guest-endpoint-json"),
+    ) as JsonRecord;
   } catch {
     throw new Error(
       "--runtime-guest-endpoint-json must contain a discovered SSH endpoint",
@@ -197,15 +327,15 @@ function resolveRemoteOptions(options) {
     );
   }
   return {
-    remote: `${options.expected_testbed_user}@${endpoint.host}`,
-    sshPort: endpoint.port,
+    remote: `${String(options.expected_testbed_user)}@${String(endpoint.host)}`,
+    sshPort: endpoint.port as number,
     sshHostKeyAlias:
-      options.ssh_host_key_alias ??
-      `vem-installed-kiosk-${options.run_id.toLowerCase()}`,
+      (options.ssh_host_key_alias as string | undefined) ??
+      `vem-installed-kiosk-${String(options.run_id).toLowerCase()}`,
   };
 }
 
-function executionOptions(options) {
+function executionOptions(options: JsonRecord): JsonRecord {
   return {
     runId: options.run_id,
     machineCode: options.machine_code,
@@ -219,8 +349,10 @@ function executionOptions(options) {
   };
 }
 
-export function buildInstalledKioskSaleScenarioSteps(profile) {
-  const steps = [
+export function buildInstalledKioskSaleScenarioSteps(
+  profile: string,
+): Array<Record<string, unknown>> {
+  const steps: Array<Record<string, unknown>> = [
     {
       type: "customer-activation",
       name: "catalog category",
@@ -305,8 +437,13 @@ export function buildInstalledKioskSaleScenarioSteps(profile) {
   return steps;
 }
 
-export function buildInstalledKioskSaleLaunchFailureRecoveryScript(runtime) {
-  if (!Number.isSafeInteger(runtime?.sessionId) || runtime.sessionId < 1) {
+export function buildInstalledKioskSaleLaunchFailureRecoveryScript(
+  runtime: JsonRecord,
+): string {
+  if (
+    !Number.isSafeInteger(runtime?.sessionId) ||
+    (runtime.sessionId as number) < 1
+  ) {
     throw new Error(
       "installed kiosk launch failure recovery requires the saved interactive session",
     );
@@ -575,7 +712,7 @@ if ([string]$after.orderNo -cne [string]$before.orderNo) { throw 'daemon transpo
 `.trim();
 }
 
-function createRunnerTrust(root) {
+function createRunnerTrust(root: string): InstalledKioskRunnerTrust {
   const signingKeyFile = join(root, "runner-ed25519.pem");
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const signingKeyPem = privateKey.export({ type: "pkcs8", format: "pem" });
@@ -589,10 +726,13 @@ function createRunnerTrust(root) {
   };
 }
 
-function prepareScannerCode(options, root) {
+function prepareScannerCode(
+  options: JsonRecord,
+  root: string,
+): { path: string; code: Buffer; owned: boolean } {
   const path = join(root, "scanner-code.txt");
   const scannerCode = options.scanner_code_file
-    ? readFileSync(options.scanner_code_file)
+    ? readFileSync(String(options.scanner_code_file))
     : Buffer.from(`TEST-${randomBytes(8).toString("hex")}\r`, "utf8");
   if (scannerCode.length === 0) {
     throw new Error("--scanner-code-file must not be empty");
@@ -603,12 +743,18 @@ function prepareScannerCode(options, root) {
   return { path, code: scannerCode, owned: true };
 }
 
-function restoreConsumedSerialInputs(scanner, trust) {
+function restoreConsumedSerialInputs(
+  scanner: { path: string; code: Buffer },
+  trust: { signingKeyFile: string; signingKeyPem: Buffer | string },
+): void {
   restoreConsumedSerialInput(scanner.path, scanner.code);
   restoreConsumedSerialInput(trust.signingKeyFile, trust.signingKeyPem);
 }
 
-function restoreConsumedSerialInput(path, expected) {
+function restoreConsumedSerialInput(
+  path: string,
+  expected: Buffer | string,
+): void {
   if (existsSync(path)) {
     const actual = readFileSync(path);
     if (!actual.equals(Buffer.from(expected))) {
@@ -620,8 +766,12 @@ function restoreConsumedSerialInput(path, expected) {
   writeFileSync(path, expected, { mode: 0o600, flag: "wx" });
 }
 
-async function runCommand(command, label, { env = process.env } = {}) {
-  return new Promise((resolve, reject) => {
+async function runCommand(
+  command: string[],
+  label: string,
+  { env = process.env }: { env?: NodeJS.ProcessEnv } = {},
+): Promise<JsonRecord> {
+  return new Promise<JsonRecord>((resolve, reject) => {
     const child = spawn(command[0], command.slice(1), {
       cwd: process.cwd(),
       env,
@@ -649,14 +799,20 @@ async function runCommand(command, label, { env = process.env } = {}) {
   });
 }
 
-export function nonQueryChildEnvironment(environment = process.env) {
+export function nonQueryChildEnvironment(
+  environment: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
   const childEnvironment = { ...environment };
   delete childEnvironment.DATABASE_URL;
   delete childEnvironment[INSTALLED_KIOSK_SALE_DATABASE_URL_ENV];
   return childEnvironment;
 }
 
-function writeJson(path, value, mode) {
+function writeJson(
+  path: string,
+  value: unknown,
+  mode?: number,
+): void {
   const resolved = resolve(path);
   const temporary = `${resolved}.tmp-${process.pid}-${Date.now()}`;
   writeFileSync(
@@ -667,15 +823,17 @@ function writeJson(path, value, mode) {
   renameSync(temporary, resolved);
 }
 
-function installedKioskScreenshotSink(root) {
+function installedKioskScreenshotSink(root: string): (
+  input: { bytes: Uint8Array; sha256: string; label: string },
+) => Promise<{ ref: string }> {
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  return ({ bytes, sha256, label }) => {
+  return ({ bytes, sha256, label }): Promise<{ ref: string }> => {
     const safeLabel = String(label).replaceAll(/[^A-Za-z0-9._-]+/g, "-");
     const path = join(root, `${safeLabel}-${sha256}.png`);
     const temporary = `${path}.tmp-${process.pid}-${Date.now()}`;
     writeFileSync(temporary, bytes, { mode: 0o600 });
     renameSync(temporary, path);
-    return { ref: path };
+    return Promise.resolve({ ref: path });
   };
 }
 
@@ -704,38 +862,53 @@ function delayedPickupEvidenceIndex({
   liveEvidence = null,
   plan,
   scenario = null,
-}) {
+}: {
+  track: JsonRecord | null | undefined;
+  liveEvidence?: JsonRecord | null;
+  plan: JsonRecord;
+  scenario?: JsonRecord | null;
+}): JsonRecord | null {
   if (!track) return null;
-  const source = liveEvidence ?? track;
+  const source = (liveEvidence ?? track) as JsonRecord;
+  const sourcePaths = source.paths as JsonRecord;
+  const planArtifacts = plan.artifacts as JsonRecord;
+  const scenarioCheckpoints = (scenario?.checkpoints ?? []) as unknown[];
   const screenshots =
-    scenario?.checkpoints
-      ?.map((checkpoint) => checkpoint?.screenshot?.ref)
+    scenarioCheckpoints
+      .map(
+        (checkpoint) =>
+          ((checkpoint as JsonRecord)?.screenshot as JsonRecord | undefined)
+            ?.ref,
+      )
       .filter(Boolean) ?? [];
   return {
     platform: {
-      baselinePath: plan.artifacts.platformRawBaselineReport,
-      atF1Path: source.paths.platformF1,
-      postF2Path: plan.artifacts.platformRawRecordsReport,
+      baselinePath: planArtifacts.platformRawBaselineReport,
+      atF1Path: sourcePaths.platformF1,
+      postF2Path: planArtifacts.platformRawRecordsReport,
     },
     daemon: {
-      evidencePath: source.paths.daemon,
+      evidencePath: sourcePaths.daemon,
     },
     serial: {
-      conformancePath: plan.artifacts.serialReport,
+      conformancePath: planArtifacts.serialReport,
     },
     audio: {
       evidenceDirectory: source.evidenceDirectory,
-      startReportPath: source.paths.audioStart,
-      stopReportPath: source.paths.audioStop,
+      startReportPath: sourcePaths.audioStart,
+      stopReportPath: sourcePaths.audioStop,
     },
     trace: {
-      machineEvidencePath: source.paths.machine,
+      machineEvidencePath: sourcePaths.machine,
     },
     screenshots,
   };
 }
 
-function observedIdentity(values, name) {
+function observedIdentity(
+  values: unknown[],
+  name: string,
+): JsonRecord {
   const occurrences = values.filter(
     (value) => typeof value === "string" && value.trim() !== "",
   );
@@ -746,7 +919,7 @@ function observedIdentity(values, name) {
   return { occurrences, unique, count: occurrences.length };
 }
 
-function requiredRawRecords(platformRaw) {
+function requiredRawRecords(platformRaw: JsonRecord): JsonRecord {
   if (
     platformRaw?.schemaVersion !==
       "installed-kiosk-sale-platform-raw-records/v3" ||
@@ -767,15 +940,16 @@ function requiredRawRecords(platformRaw) {
     "commands",
     "movements",
   ];
+  const raw = platformRaw.raw as JsonRecord;
   for (const name of names) {
-    if (!Array.isArray(platformRaw.raw[name])) {
+    if (!Array.isArray(raw[name])) {
       throw new Error(`authoritative platform raw query omitted ${name}`);
     }
   }
-  return platformRaw.raw;
+  return raw;
 }
 
-function rawRecordId(name, record) {
+function rawRecordId(name: string, record: JsonRecord): string {
   const id = record?.id;
   if (typeof id !== "string" || id.length === 0) {
     throw new Error(
@@ -785,17 +959,24 @@ function rawRecordId(name, record) {
   return id;
 }
 
-function paymentCodeAttemptDelta({ baseline, post }) {
+function paymentCodeAttemptDelta({
+  baseline,
+  post,
+}: {
+  baseline: JsonRecord;
+  post: JsonRecord;
+}): JsonRecord {
   const delta = postMinusBaselinePlatformRaw({ baseline, post });
-  const attempts = Array.isArray(delta.raw.paymentCodeAttempts)
-    ? delta.raw.paymentCodeAttempts
+  const raw = (delta.raw ?? {}) as JsonRecord;
+  const attempts = Array.isArray(raw.paymentCodeAttempts)
+    ? (raw.paymentCodeAttempts as unknown[])
     : [];
   if (attempts.length !== 1) {
     throw new Error(
       "authoritative platform raw query must expose exactly one new payment-code attempt",
     );
   }
-  const attempt = attempts[0];
+  const attempt = attempts[0] as JsonRecord;
   if (
     typeof attempt?.id !== "string" ||
     attempt.id.length === 0 ||
@@ -804,7 +985,7 @@ function paymentCodeAttemptDelta({ baseline, post }) {
     typeof attempt?.orderId !== "string" ||
     attempt.orderId.length === 0 ||
     !Number.isInteger(attempt?.attemptNo) ||
-    attempt.attemptNo < 1 ||
+    (attempt.attemptNo as number) < 1 ||
     typeof attempt?.idempotencyKey !== "string" ||
     attempt.idempotencyKey.length === 0
   ) {
@@ -815,17 +996,25 @@ function paymentCodeAttemptDelta({ baseline, post }) {
   return { delta, attempt };
 }
 
-export function postMinusBaselinePlatformRaw({ baseline, post }) {
+export function postMinusBaselinePlatformRaw({
+  baseline,
+  post,
+}: {
+  baseline: JsonRecord;
+  post: JsonRecord;
+}): JsonRecord {
   const baselineRaw = requiredRawRecords(baseline);
   const postRaw = requiredRawRecords(post);
+  const baselineScope = baseline?.scope as JsonRecord | undefined;
+  const postScope = post?.scope as JsonRecord | undefined;
   if (
-    baseline?.scope?.runId !== post?.scope?.runId ||
-    baseline?.scope?.machineCode !== post?.scope?.machineCode ||
-    baseline?.scope?.machineId !== post?.scope?.machineId
+    baselineScope?.runId !== postScope?.runId ||
+    baselineScope?.machineCode !== postScope?.machineCode ||
+    baselineScope?.machineId !== postScope?.machineId
   ) {
     throw new Error("authoritative platform baseline and post scopes differ");
   }
-  const raw = {};
+  const raw: JsonRecord = {};
   for (const name of [
     "orders",
     "orderItems",
@@ -836,53 +1025,81 @@ export function postMinusBaselinePlatformRaw({ baseline, post }) {
     "movements",
   ]) {
     const baselineIds = new Set(
-      baselineRaw[name].map((record) => rawRecordId(name, record)),
+      (baselineRaw[name] as unknown[]).map((record) =>
+        rawRecordId(name, record as JsonRecord),
+      ),
     );
-    raw[name] = postRaw[name].filter(
-      (record) => !baselineIds.has(rawRecordId(name, record)),
+    raw[name] = (postRaw[name] as unknown[]).filter(
+      (record) =>
+        !baselineIds.has(rawRecordId(name, record as JsonRecord)),
     );
   }
-  return { scope: post.scope, raw };
+  return { scope: postScope, raw };
 }
 
-function serialSaleBinding(conformance) {
-  const injected =
-    conformance?.reports?.inject?.request?.serialSession?.saleBindings;
-  const collected =
-    conformance?.reports?.collect?.request?.serialSession?.saleBindings;
+function serialSaleBinding(conformance: JsonRecord): JsonRecord {
+  const injected = (
+    (conformance?.reports as JsonRecord | undefined)?.inject as
+      | JsonRecord
+      | undefined
+  )?.request as JsonRecord | undefined;
+  const collected = (
+    (conformance?.reports as JsonRecord | undefined)?.collect as
+      | JsonRecord
+      | undefined
+  )?.request as JsonRecord | undefined;
+  const injectedBindings = (injected?.serialSession as
+    | JsonRecord
+    | undefined)?.saleBindings;
+  const collectedBindings = (collected?.serialSession as
+    | JsonRecord
+    | undefined)?.saleBindings;
   if (
-    !Array.isArray(injected) ||
-    !Array.isArray(collected) ||
-    injected.length !== 1 ||
-    collected.length !== 1
+    !Array.isArray(injectedBindings) ||
+    !Array.isArray(collectedBindings) ||
+    injectedBindings.length !== 1 ||
+    collectedBindings.length !== 1
   ) {
     throw new Error(
       "serial conformance must expose exactly one injected and collected sale binding",
     );
   }
   return {
-    injected: injected[0],
-    collected: collected[0],
-    counts: { injected: injected.length, collected: collected.length },
+    injected: injectedBindings[0] as JsonRecord,
+    collected: collectedBindings[0] as JsonRecord,
+    counts: {
+      injected: injectedBindings.length,
+      collected: collectedBindings.length,
+    },
   };
 }
 
-function terminalCheckpoint(scenario) {
-  const checkpoints = scenario?.evidence?.filter(
-    (entry) =>
-      entry?.type === "checkpoint" &&
-      entry?.label === "continuous" &&
+function terminalCheckpoint(scenario: JsonRecord): JsonRecord {
+  const evidence = (scenario?.evidence ?? []) as unknown[];
+  const checkpoints = evidence.filter(
+    (entry) => {
+      const entryRecord = entry as JsonRecord;
+      return (
+      entryRecord?.type === "checkpoint" &&
+      entryRecord?.label === "continuous" &&
       /^#\/(dispensing|result)/.test(
-        entry?.identity?.route ?? entry?.route ?? "",
-      ),
+        String(
+          (entryRecord?.identity as JsonRecord | undefined)?.route ??
+            entryRecord?.route ??
+            "",
+        ),
+      )
+      );
+    },
   );
   const checkpoint = checkpoints?.at(-1);
-  if (!checkpoint || !Number.isSafeInteger(checkpoint.ordinal)) {
+  const checkpointRecord = checkpoint as JsonRecord | undefined;
+  if (!checkpointRecord || !Number.isSafeInteger(checkpointRecord.ordinal)) {
     throw new Error(
       "fulfillment binding requires a continuous terminal checkpoint before catalog return",
     );
   }
-  return checkpoint;
+  return checkpointRecord;
 }
 
 export function deriveFulfillmentBinding({
@@ -891,20 +1108,29 @@ export function deriveFulfillmentBinding({
   completion,
   scenario,
   observedFulfillment = null,
-}) {
+}: {
+  payment: JsonRecord;
+  serial: JsonRecord;
+  completion: JsonRecord;
+  scenario: JsonRecord;
+  observedFulfillment?: JsonRecord | null;
+}): JsonRecord {
   const checkpoint = terminalCheckpoint(scenario);
   const bindings = serialSaleBinding(serial);
-  const sale = completion?.simulatedHardwareSaleFlow?.sale;
+  const sale = ((completion?.simulatedHardwareSaleFlow as JsonRecord | undefined)
+    ?.sale ?? {}) as JsonRecord;
   const commandId = sale?.vendingCommandId;
+  const injectedBinding = bindings.injected as JsonRecord;
+  const collectedBinding = bindings.collected as JsonRecord;
   const identitiesMatch =
     payment?.orderId === sale?.orderId &&
     payment?.paymentId === sale?.paymentId &&
     payment?.orderNo === sale?.orderNo &&
-    bindings.injected.orderId === payment?.orderId &&
-    bindings.injected.paymentId === payment?.paymentId &&
-    bindings.collected.orderId === payment?.orderId &&
-    bindings.collected.paymentId === payment?.paymentId &&
-    bindings.collected.vendingCommandId === commandId;
+    injectedBinding.orderId === payment?.orderId &&
+    injectedBinding.paymentId === payment?.paymentId &&
+    collectedBinding.orderId === payment?.orderId &&
+    collectedBinding.paymentId === payment?.paymentId &&
+    collectedBinding.vendingCommandId === commandId;
   if (
     !identitiesMatch ||
     sale?.paymentStatus !== "succeeded" ||
@@ -931,7 +1157,9 @@ export function deriveFulfillmentBinding({
   }
   return {
     source: "terminal_checkpoint_serial_completion",
-    terminalRoute: checkpoint.identity?.route ?? checkpoint.route,
+    terminalRoute:
+      (checkpoint.identity as JsonRecord | undefined)?.route ??
+      checkpoint.route,
     terminalCheckpointOrdinal: checkpoint.ordinal,
     orderId: payment.orderId,
     paymentId: payment.paymentId,
@@ -950,110 +1178,146 @@ export function deriveCorrelation({
   runId,
   machineCode,
   saleCorrelationId,
-}) {
-  const platform = completion?.simulatedHardwareSaleFlow;
-  const sale = platform?.sale;
-  const projectedMovementId =
-    platform?.platformState?.postSaleDispenseMovement?.movementId;
-  const { delta: attemptDelta, attempt: rawAttempt } = paymentCodeAttemptDelta({
+}: {
+  payment: JsonRecord;
+  fulfillment: JsonRecord;
+  serial: JsonRecord;
+  completion: JsonRecord;
+  platformRawBaseline: JsonRecord;
+  platformRawPost: JsonRecord;
+  runId: string;
+  machineCode: string;
+  saleCorrelationId: string;
+}): JsonRecord {
+  const platform = completion?.simulatedHardwareSaleFlow as
+    | JsonRecord
+    | undefined;
+  const sale = platform?.sale as JsonRecord | undefined;
+  const projectedMovementId = (
+    (platform?.platformState as JsonRecord | undefined)
+      ?.postSaleDispenseMovement as JsonRecord | undefined
+  )?.movementId;
+  const {
+    delta: attemptDelta,
+    attempt: rawAttemptValue,
+  } = paymentCodeAttemptDelta({
     baseline: platformRawBaseline,
     post: platformRawPost,
   });
-  const { scope: platformRawScope, raw } = attemptDelta;
-  const rawOrder = raw.orders[0] ?? null;
-  const rawOrderItem = raw.orderItems[0] ?? null;
-  const rawPayment = raw.payments[0] ?? null;
-  const rawReservation = raw.reservations[0] ?? null;
-  const rawCommand = raw.commands[0] ?? null;
-  const rawMovement = raw.movements[0] ?? null;
+  const rawAttempt = rawAttemptValue as JsonRecord;
+  const attemptDeltaRecord = attemptDelta as JsonRecord;
+  const platformRawScope = attemptDeltaRecord.scope as
+    | JsonRecord
+    | undefined;
+  const raw = (attemptDeltaRecord.raw ?? {}) as JsonRecord;
+  const rawOrders = (raw.orders ?? []) as unknown[];
+  const rawOrderItems = (raw.orderItems ?? []) as unknown[];
+  const rawPayments = (raw.payments ?? []) as unknown[];
+  const rawReservations = (raw.reservations ?? []) as unknown[];
+  const rawCommands = (raw.commands ?? []) as unknown[];
+  const rawMovements = (raw.movements ?? []) as unknown[];
+  const rawPaymentCodeAttempts = (raw.paymentCodeAttempts ?? []) as unknown[];
+  const rawOrder = rawOrders[0] as JsonRecord | undefined;
+  const rawOrderItem = rawOrderItems[0] as JsonRecord | undefined;
+  const rawPayment = rawPayments[0] as JsonRecord | undefined;
+  const rawReservation = rawReservations[0] as JsonRecord | undefined;
+  const rawCommand = rawCommands[0] as JsonRecord | undefined;
+  const rawMovement = rawMovements[0] as JsonRecord | undefined;
   const bindings = serialSaleBinding(serial);
+  const injectedBinding = bindings.injected as JsonRecord;
+  const collectedBinding = bindings.collected as JsonRecord;
   const rendered = {
-    orderId: payment.orderId,
-    paymentId: payment.paymentId,
-    orderNo: payment.orderNo,
-    commandId: fulfillment.commandId,
+    orderId: String(payment.orderId),
+    paymentId: String(payment.paymentId),
+    orderNo: String(payment.orderNo),
+    commandId: String(fulfillment.commandId),
   };
   const identitiesMatch =
-    fulfillment.orderId === rendered.orderId &&
-    fulfillment.paymentId === rendered.paymentId &&
-    fulfillment.orderNo === rendered.orderNo &&
-    bindings.injected.orderId === rendered.orderId &&
-    bindings.injected.paymentId === rendered.paymentId &&
-    bindings.collected.orderId === rendered.orderId &&
-    bindings.collected.paymentId === rendered.paymentId &&
-    bindings.collected.vendingCommandId === rendered.commandId &&
-    sale?.orderId === rendered.orderId &&
-    sale?.paymentId === rendered.paymentId &&
-    sale?.orderNo === rendered.orderNo &&
-    sale?.vendingCommandId === rendered.commandId &&
-    rawOrder?.id === rendered.orderId &&
-    rawOrder?.orderNo === rendered.orderNo &&
-    rawPayment?.id === rendered.paymentId &&
-    rawPayment?.orderId === rendered.orderId &&
-    rawAttempt?.id &&
-    rawAttempt?.orderId === rendered.orderId &&
-    rawAttempt?.paymentId === rendered.paymentId &&
+    String(fulfillment.orderId) === rendered.orderId &&
+    String(fulfillment.paymentId) === rendered.paymentId &&
+    String(fulfillment.orderNo) === rendered.orderNo &&
+    String(injectedBinding.orderId) === rendered.orderId &&
+    String(injectedBinding.paymentId) === rendered.paymentId &&
+    String(collectedBinding.orderId) === rendered.orderId &&
+    String(collectedBinding.paymentId) === rendered.paymentId &&
+    String(collectedBinding.vendingCommandId) === rendered.commandId &&
+    String(sale?.orderId) === rendered.orderId &&
+    String(sale?.paymentId) === rendered.paymentId &&
+    String(sale?.orderNo) === rendered.orderNo &&
+    String(sale?.vendingCommandId) === rendered.commandId &&
+    String(rawOrder?.id) === rendered.orderId &&
+    String(rawOrder?.orderNo) === rendered.orderNo &&
+    String(rawPayment?.id) === rendered.paymentId &&
+    String(rawPayment?.orderId) === rendered.orderId &&
+    Boolean(rawAttempt?.id) &&
+    String(rawAttempt?.orderId) === rendered.orderId &&
+    String(rawAttempt?.paymentId) === rendered.paymentId &&
     rawAttempt?.attemptNo === 1 &&
     rawAttempt?.status === "succeeded" &&
     rawAttempt?.isActive === false &&
     rawAttempt?.source === "serial_text" &&
-    rawCommand?.id === rendered.commandId &&
-    rawCommand?.orderId === rendered.orderId &&
-    rawMovement?.movementId === projectedMovementId &&
-    rawMovement?.orderNo === rendered.orderNo &&
-    rawMovement?.orderItemId === rawOrderItem?.id &&
-    rawMovement?.inventoryId === rawOrderItem?.inventoryId &&
-    rawMovement?.slotId === rawOrderItem?.slotId &&
-    rawMovement?.commandNo === rawCommand?.commandNo;
+    String(rawCommand?.id) === rendered.commandId &&
+    String(rawCommand?.orderId) === rendered.orderId &&
+    String(rawMovement?.movementId) === String(projectedMovementId) &&
+    String(rawMovement?.orderNo) === rendered.orderNo &&
+    String(rawMovement?.orderItemId) === String(rawOrderItem?.id) &&
+    String(rawMovement?.inventoryId) === String(rawOrderItem?.inventoryId) &&
+    String(rawMovement?.slotId) === String(rawOrderItem?.slotId) &&
+    String(rawMovement?.commandNo) === String(rawCommand?.commandNo);
   const observations = {
     orderIds: observedIdentity(
-      raw.orders.map((record) => record?.id),
+      rawOrders.map((record) => (record as JsonRecord)?.id),
       "platform order evidence",
     ),
     paymentIds: observedIdentity(
-      raw.payments.map((record) => record?.id),
+      rawPayments.map((record) => (record as JsonRecord)?.id),
       "platform payment evidence",
     ),
     paymentCodeAttemptIds: observedIdentity(
-      raw.paymentCodeAttempts.map((record) => record?.id),
+      rawPaymentCodeAttempts.map((record) => (record as JsonRecord)?.id),
       "platform payment-code-attempt evidence",
     ),
     paymentCodeAttemptNos: observedIdentity(
-      raw.paymentCodeAttempts.map((record) => String(record?.attemptNo ?? "")),
+      rawPaymentCodeAttempts.map((record) =>
+        String((record as JsonRecord)?.attemptNo ?? ""),
+      ),
       "platform payment-code-attempt number evidence",
     ),
     paymentCodeIdempotencyKeys: observedIdentity(
-      raw.paymentCodeAttempts.map((record) => record?.idempotencyKey),
+      rawPaymentCodeAttempts.map(
+        (record) => (record as JsonRecord)?.idempotencyKey,
+      ),
       "platform payment-code-attempt idempotency evidence",
     ),
     orderNos: observedIdentity(
-      raw.orders.map((record) => record?.orderNo),
+      rawOrders.map((record) => (record as JsonRecord)?.orderNo),
       "platform order-number evidence",
     ),
     orderItemIds: observedIdentity(
-      raw.orderItems.map((record) => record?.id),
+      rawOrderItems.map((record) => (record as JsonRecord)?.id),
       "platform order-item evidence",
     ),
     commandIds: observedIdentity(
-      raw.commands.map((record) => record?.id),
+      rawCommands.map((record) => (record as JsonRecord)?.id),
       "platform command evidence",
     ),
     movementIds: observedIdentity(
-      raw.movements.map((record) => record?.movementId),
+      rawMovements.map((record) => (record as JsonRecord)?.movementId),
       "platform movement evidence",
     ),
     reservationIds: observedIdentity(
-      raw.reservations.map((record) => record?.id),
+      rawReservations.map((record) => (record as JsonRecord)?.id),
       "platform reservation evidence",
     ),
   };
   const reservationEvidenceMatches =
-    raw.orderItems.length === 1 &&
-    rawOrderItem?.id === observations.orderItemIds.unique[0] &&
+    rawOrderItems.length === 1 &&
+    rawOrderItem?.id === (observations.orderItemIds.unique as unknown[])[0] &&
     rawOrderItem?.orderId === rendered.orderId &&
     rawOrderItem?.quantity === 1 &&
-    raw.reservations.length === 1 &&
-    rawReservation?.id === observations.reservationIds.unique[0] &&
+    rawReservations.length === 1 &&
+    rawReservation?.id ===
+      (observations.reservationIds.unique as unknown[])[0] &&
     rawReservation?.orderId === rendered.orderId &&
     rawReservation?.quantity === 1 &&
     rawReservation?.status === "confirmed" &&
@@ -1084,7 +1348,7 @@ export function deriveCorrelation({
     reservationCount: observations.reservationIds.count,
     commandCount: observations.commandIds.count,
     movementCount: observations.movementIds.count,
-    stockDelta: rawMovement ? -rawMovement.quantity : null,
+    stockDelta: rawMovement ? -(rawMovement.quantity as number) : null,
     serialSaleBindingCount: bindings.counts,
   };
   if (
@@ -1117,49 +1381,53 @@ export function deriveCorrelation({
       paymentId: sale.paymentId,
       orderNo: sale.orderNo,
       paymentCodeAttempt: {
-        attemptId: rawAttempt.id,
-        attemptNo: rawAttempt.attemptNo,
-        paymentId: rawAttempt.paymentId,
-        orderId: rawAttempt.orderId,
-        idempotencyKey: rawAttempt.idempotencyKey,
-        status: rawAttempt.status,
-        isActive: rawAttempt.isActive,
-        source: rawAttempt.source,
+        attemptId: rawAttempt?.id,
+        attemptNo: rawAttempt?.attemptNo,
+        paymentId: rawAttempt?.paymentId,
+        orderId: rawAttempt?.orderId,
+        idempotencyKey: rawAttempt?.idempotencyKey,
+        status: rawAttempt?.status,
+        isActive: rawAttempt?.isActive,
+        source: rawAttempt?.source,
       },
-      commandId: sale.vendingCommandId,
-      stockMovementId: rawMovement.movementId,
-      stockDelta: -rawMovement.quantity,
-      status: rawMovement.status,
+      commandId: sale?.vendingCommandId,
+      stockMovementId: rawMovement?.movementId,
+      stockDelta: rawMovement ? -(rawMovement.quantity as number) : null,
+      status: rawMovement?.status,
       observations,
       orderItem: {
-        id: rawOrderItem.id,
-        orderId: rawOrderItem.orderId,
-        inventoryId: rawOrderItem.inventoryId,
-        slotId: rawOrderItem.slotId,
-        quantity: rawOrderItem.quantity,
+        id: rawOrderItem?.id,
+        orderId: rawOrderItem?.orderId,
+        inventoryId: rawOrderItem?.inventoryId,
+        slotId: rawOrderItem?.slotId,
+        quantity: rawOrderItem?.quantity,
       },
       reservation: {
         exposed: true,
         source: "authoritative_ephemeral_platform.inventory_reservations",
-        rawRecordCount: raw.reservations.length,
-        reservationId: rawReservation.id,
-        orderId: rawReservation.orderId,
-        orderItemId: rawReservation.orderItemId,
-        inventoryId: rawReservation.inventoryId,
-        quantity: rawReservation.quantity,
-        status: rawReservation.status,
+        rawRecordCount: rawReservations.length,
+        reservationId: rawReservation?.id,
+        orderId: rawReservation?.orderId,
+        orderItemId: rawReservation?.orderItemId,
+        inventoryId: rawReservation?.inventoryId,
+        quantity: rawReservation?.quantity,
+        status: rawReservation?.status,
       },
     },
     serial: {
-      sessionId: serial.session?.serialSessionId,
-      injected: bindings.injected,
-      collected: bindings.collected,
+      sessionId:
+        ((serial.session as JsonRecord | undefined)?.serialSession as
+          | JsonRecord
+          | undefined)?.serialSessionId,
+      injected: injectedBinding,
+      collected: collectedBinding,
     },
     exactOnce,
   };
 }
 
-export function buildInstalledKioskSaleAcceptancePlan(options) {
+export function buildInstalledKioskSaleAcceptancePlan(rawOptions: JsonRecord) {
+  const options = installedKioskSaleCliOptions(rawOptions);
   const remote = executionOptions(options);
   const outputRoot = dirname(resolve(options.out));
   const fixtureReport = join(
@@ -1234,9 +1502,10 @@ export function buildInstalledKioskSaleAcceptancePlan(options) {
 }
 
 export async function runInstalledKioskSaleAcceptanceCli(
-  options,
-  dependencies = {},
+  rawOptions: JsonRecord,
+  dependencies: InstalledKioskSaleDependencies = {},
 ) {
+  const options = installedKioskSaleCliOptions(rawOptions);
   const queryDatabaseUrl = process.env[INSTALLED_KIOSK_SALE_DATABASE_URL_ENV];
   if (typeof queryDatabaseUrl !== "string" || queryDatabaseUrl.trim() === "") {
     throw new Error(`${INSTALLED_KIOSK_SALE_DATABASE_URL_ENV} is required`);
@@ -1262,12 +1531,14 @@ export async function runInstalledKioskSaleAcceptanceCli(
     [INSTALLED_KIOSK_SALE_DATABASE_URL_ENV]: queryDatabaseUrl,
   };
   const saleCorrelationId = `sale-correlation://installed-kiosk-${options.run_id.toLowerCase()}`;
-  let launch;
-  let cleanup;
-  let delayedPickupTrack;
-  let primaryError;
-  let scenario = null;
-  let report = {
+  let launch: JsonRecord | undefined;
+  let cleanup: JsonRecord | undefined;
+  let delayedPickupTrack: Awaited<
+    ReturnType<typeof startDelayedPickupLiveProductionTrack>
+  > | null = null;
+  let primaryError: unknown;
+  let scenario: JsonRecord | null = null;
+  let report: InstalledKioskSaleReport = {
     schemaVersion: SCHEMA_VERSION,
     kind: "installed-kiosk-sale-acceptance",
     status: "failed",
@@ -1282,6 +1553,19 @@ export async function runInstalledKioskSaleAcceptanceCli(
       platformRawBaselinePath: plan.artifacts.platformRawBaselineReport,
     },
   };
+  const platformRawQuery = (out: string): string[] => [
+    process.execPath,
+    "--conditions=vem-source",
+    "--import",
+    "tsx",
+    "apps/service-api/src/testbed/query-installed-kiosk-sale-platform.cli.ts",
+    "--run-id",
+    options.run_id,
+    "--machine-code",
+    options.machine_code,
+    "--out",
+    out,
+  ];
   try {
     await run(
       [
@@ -1322,36 +1606,25 @@ export async function runInstalledKioskSaleAcceptanceCli(
     // immediately before the customer journey begins.
     runRemote(remote, buildInstalledKioskSerialReadinessScript());
     launch = runRemote(remote, buildInstalledKioskSaleLaunchScript());
+    const launchPrelaunch = launch?.prelaunch as JsonRecord | undefined;
+    const launchDebugTarget = launch?.debugTarget as JsonRecord | undefined;
     if (
-      launch?.prelaunch?.principal == null ||
-      launch.prelaunch.sessionId !== runtime.sessionId ||
-      launch.prelaunch.executablePath !== MACHINE_PATH ||
-      !String(launch.prelaunch.principal)
+      launchPrelaunch?.principal == null ||
+      launchPrelaunch.sessionId !== runtime.sessionId ||
+      launchPrelaunch.executablePath !== MACHINE_PATH ||
+      !String(launchPrelaunch.principal)
         .toLowerCase()
         .endsWith(`\\${runtime.sessionUser.toLowerCase()}`) ||
-      typeof launch?.debugTarget?.id !== "string"
+      typeof launchDebugTarget?.id !== "string"
     ) {
       throw new Error(
         "temporary CDP launch did not preserve the active interactive process binding",
       );
     }
     const attestation = {
-      targetId: launch.debugTarget.id,
-      machine: launch.machine,
+      targetId: launchDebugTarget?.id as string,
+      machine: launch?.machine,
     };
-    const platformRawQuery = (out) => [
-      process.execPath,
-      "--conditions=vem-source",
-      "--import",
-      "tsx",
-      "apps/service-api/src/testbed/query-installed-kiosk-sale-platform.cli.ts",
-      "--run-id",
-      options.run_id,
-      "--machine-code",
-      options.machine_code,
-      "--out",
-      out,
-    ];
     if (options.profile === "vm-delayed-pickup-native-audio") {
       const delayedRoot = join(
         dirname(resolve(options.out)),
@@ -1400,19 +1673,19 @@ export async function runInstalledKioskSaleAcceptanceCli(
         "authoritative platform raw baseline query",
         { env: queryEnvironment },
       );
-    let payment;
-    let serial;
-    let completion;
-    let fulfillmentProbe;
-    let fulfillmentProbeError;
-    scenario = await drive({
+    let payment: JsonRecord | undefined;
+    let serial: JsonRecord | undefined;
+    let completion: JsonRecord | undefined;
+    let fulfillmentProbe: JsonRecord | undefined;
+    let fulfillmentProbeError: string | undefined;
+    const drivenScenario = await drive({
       tunnelOptions: {
-        remote: remote.remote,
-        sshPort: remote.sshPort,
-        identityFile: remote.identity,
-        certificateFile: remote.certificate,
-        sshKnownHostsPath: remote.sshKnownHostsPath,
-        sshHostKeyAlias: remote.sshHostKeyAlias,
+        remote: String(remote.remote ?? ""),
+        sshPort: remote.sshPort as number | undefined,
+        identityFile: String(remote.identity ?? ""),
+        certificateFile: String(remote.certificate ?? ""),
+        sshKnownHostsPath: String(remote.sshKnownHostsPath ?? ""),
+        sshHostKeyAlias: String(remote.sshHostKeyAlias ?? ""),
         sshArgs: ["-o", "ProxyCommand=none"],
         remoteCdpPort: 9222,
       },
@@ -1423,13 +1696,13 @@ export async function runInstalledKioskSaleAcceptanceCli(
         screenshotSink: installedKioskScreenshotSink(
           plan.artifacts.screenshotDirectory,
         ),
-        async executeExternalOperation({ operation }) {
+        async executeExternalOperation({ operation }: { operation: string }) {
           return runRemote(
             remote,
             buildInstalledKioskGuestOperationScript({ operation }),
           );
         },
-        async beginExternalOperation({ operation }) {
+        async beginExternalOperation({ operation }: { operation: string }) {
           if (operation !== "daemon_transport_interrupt") {
             throw new Error("only daemon transport interruption is two-phase");
           }
@@ -1444,8 +1717,13 @@ export async function runInstalledKioskSaleAcceptanceCli(
           );
           return { operationId, interrupted };
         },
-        async completeExternalOperation(pending, { operation }) {
-          const interrupted = await pending.interrupted;
+        async completeExternalOperation(
+          pending: { operationId: string; interrupted: Promise<JsonRecord> },
+          { operation }: { operation: string },
+        ) {
+          const interrupted = (await pending.interrupted) as JsonRecord;
+          const interruptedDaemon = interrupted.daemon as JsonRecord;
+          const interruptedPlatform = interrupted.platform as JsonRecord;
           const recovered = runRemote(
             remote,
             buildInstalledKioskGuestOperationScript({
@@ -1453,8 +1731,8 @@ export async function runInstalledKioskSaleAcceptanceCli(
               phase: "recover",
               operationId: pending.operationId,
               expectedTransaction: {
-                ...interrupted.daemon.transactionBefore,
-                machineCode: interrupted.platform.machineCode,
+                ...(interruptedDaemon.transactionBefore as JsonRecord),
+                machineCode: interruptedPlatform.machineCode,
               },
             }),
           );
@@ -1465,18 +1743,19 @@ export async function runInstalledKioskSaleAcceptanceCli(
       continuousCapture: true,
       steps: buildInstalledKioskSaleScenarioSteps(options.profile),
       onPaymentWindow: async () => {
-        payment = await capture({
+        const paymentRecord = (await capture({
           options: remote,
           attestation,
           selector: "[data-installed-kiosk-sale-payment-surface]",
           route: /^#\/payment/,
-        });
+        })) as JsonRecord;
+        payment = paymentRecord;
         const binding = {
-          orderId: payment.orderId,
-          paymentId: payment.paymentId,
-          orderNo: payment.orderNo,
+          orderId: paymentRecord.orderId,
+          paymentId: paymentRecord.paymentId,
+          orderNo: paymentRecord.orderNo,
           scenarioSha256: createHash("sha256")
-            .update(`${options.run_id}:${payment.paymentId}`)
+            .update(`${options.run_id}:${paymentRecord.paymentId}`)
             .digest("hex"),
         };
         writeJson(plan.artifacts.bindingReport, binding, 0o600);
@@ -1533,18 +1812,20 @@ export async function runInstalledKioskSaleAcceptanceCli(
         await run(serialCommand, "serial conformance", {
           env: nonQueryEnvironment,
         });
-        serial = JSON.parse(readFileSync(plan.artifacts.serialReport, "utf8"));
+        serial = JSON.parse(
+          readFileSync(plan.artifacts.serialReport, "utf8"),
+        ) as JsonRecord;
         completion = JSON.parse(
           readFileSync(plan.artifacts.completionReport, "utf8"),
-        );
+        ) as JsonRecord;
         try {
-          fulfillmentProbe = await capture({
+          fulfillmentProbe = (await capture({
             options: remote,
             attestation,
             selector:
               "[data-installed-kiosk-sale-fulfillment-surface], [data-installed-kiosk-sale-result-surface]",
             route: /^#\/(dispensing|result)/,
-          });
+          })) as JsonRecord;
         } catch (error) {
           fulfillmentProbeError =
             error instanceof Error ? error.message : String(error);
@@ -1555,10 +1836,22 @@ export async function runInstalledKioskSaleAcceptanceCli(
         };
       },
     });
+    scenario = (drivenScenario ?? null) as JsonRecord | null;
     writeJson(plan.artifacts.scenarioReport, scenario);
-    const projectedMovementId =
-      completion?.simulatedHardwareSaleFlow?.platformState
-        ?.postSaleDispenseMovement?.movementId;
+    if (!payment || !serial || !completion || !scenario || !launch) {
+      throw new Error(
+        "installed kiosk sale scenario did not complete the payment and serial chain",
+      );
+    }
+    const completionFlow = completion?.simulatedHardwareSaleFlow as
+      | JsonRecord
+      | undefined;
+    const completionPlatformState = completionFlow?.platformState as
+      | JsonRecord
+      | undefined;
+    const projectedMovement = completionPlatformState
+      ?.postSaleDispenseMovement as JsonRecord | undefined;
+    const projectedMovementId = projectedMovement?.movementId;
     if (
       typeof projectedMovementId !== "string" ||
       projectedMovementId.trim() === ""
@@ -1574,10 +1867,10 @@ export async function runInstalledKioskSaleAcceptanceCli(
     );
     const platformRawBaseline = JSON.parse(
       readFileSync(plan.artifacts.platformRawBaselineReport, "utf8"),
-    );
+    ) as JsonRecord;
     const platformRawPost = JSON.parse(
       readFileSync(plan.artifacts.platformRawRecordsReport, "utf8"),
-    );
+    ) as JsonRecord;
     const fulfillment = deriveFulfillmentBinding({
       payment,
       serial,
@@ -1609,9 +1902,9 @@ export async function runInstalledKioskSaleAcceptanceCli(
         normal: runtime,
         prelaunch: launch.prelaunch,
         debug: {
-          targetId: launch.debugTarget.id,
-          targetUrl: launch.debugTarget.url,
-          machine: launch.machine,
+          targetId: (launch?.debugTarget as JsonRecord | undefined)?.id,
+          targetUrl: (launch?.debugTarget as JsonRecord | undefined)?.url,
+          machine: launch?.machine,
         },
       },
       machineUiCdpScenario: scenario,
@@ -1632,9 +1925,12 @@ export async function runInstalledKioskSaleAcceptanceCli(
       },
     };
     if (delayedPickupTrack) {
-      const command = platformRawPost.raw.commands.find(
-        (entry) => entry.id === fulfillment.commandId,
-      );
+      const platformRaw = platformRawPost.raw as JsonRecord;
+      const commands = (platformRaw.commands ?? []) as unknown[];
+      const command = commands.find(
+        (entry: unknown) =>
+          (entry as JsonRecord).id === fulfillment.commandId,
+      ) as JsonRecord | undefined;
       if (typeof command?.commandNo !== "string")
         throw new Error("delayed pickup terminal command number is missing");
       const liveEvidence = await delayedPickupTrack.finish({
@@ -1655,18 +1951,19 @@ export async function runInstalledKioskSaleAcceptanceCli(
         "installed-sale-production-handoff.json",
       );
       writeJson(handoffPath, report, 0o600);
+      const liveEvidencePaths = liveEvidence.paths as JsonRecord;
       const artifacts = collectDelayedPickupProductionEvidence({
         installedSaleReportPath: handoffPath,
-        machineEvidencePath: liveEvidence.paths.machine,
-        daemonEvidencePath: liveEvidence.paths.daemon,
-        platformF1Path: liveEvidence.paths.platformF1,
-        audioStartReportPath: liveEvidence.paths.audioStart,
-        audioStopReportPath: liveEvidence.paths.audioStop,
+        machineEvidencePath: liveEvidencePaths.machine,
+        daemonEvidencePath: liveEvidencePaths.daemon,
+        platformF1Path: liveEvidencePaths.platformF1,
+        audioStartReportPath: liveEvidencePaths.audioStart,
+        audioStopReportPath: liveEvidencePaths.audioStop,
       });
       const delayedAcceptance =
         verifyDelayedPickupNativeAudioProductionEvidence({
           artifacts,
-          audioEvidenceDirectory: liveEvidence.evidenceDirectory,
+          audioEvidenceDirectory: String(liveEvidence.evidenceDirectory),
         });
       report.evidence.delayedPickupNativeAudio = delayedPickupEvidenceIndex({
         track: delayedPickupTrack,
@@ -1683,7 +1980,19 @@ export async function runInstalledKioskSaleAcceptanceCli(
     }
   } catch (error) {
     primaryError = error;
-    const failure = {
+    const failure: {
+      schemaVersion: string;
+      capturedAt: string;
+      error: string;
+      daemon: JsonRecord | null;
+      platform: {
+        path: string;
+        captured: boolean;
+        error: string | null;
+      };
+      trace: { path: string };
+      screenshots: string;
+    } = {
       schemaVersion: "installed-kiosk-sale-failure/v1",
       capturedAt: new Date().toISOString(),
       error: formatInstalledKioskSaleError(error),
@@ -1731,28 +2040,32 @@ export async function runInstalledKioskSaleAcceptanceCli(
     try {
       await delayedPickupTrack?.close();
       if (launch?.prelaunch) {
+        const launchPrelaunch = launch?.prelaunch as JsonRecord;
+        const launchPrelaunchTask = launchPrelaunch.task as JsonRecord;
         cleanup = runRemote(
           remote,
           buildInstalledKioskSaleCleanupScript({
-            ...launch.prelaunch,
+            ...launchPrelaunch,
             expectedRoute: "#/catalog",
           }),
         );
+        const cleanupNormal = cleanup?.normal as JsonRecord | undefined;
+        const cleanupNormalTask = cleanupNormal?.task as JsonRecord | undefined;
         if (
           cleanup?.restored !== "original_vem_machine_ui_task" ||
           cleanup?.daemonRunning !== true ||
           cleanup?.cdpListenerCount !== 0 ||
-          cleanup?.normal?.machineCount !== 1 ||
-          cleanup?.normal?.cdpListenerCount !== 0 ||
-          cleanup?.normal?.task?.name !== "VEMMachineUI" ||
-          cleanup.normal.task.execute !== launch.prelaunch.task?.execute ||
-          cleanup.normal.task.arguments !== launch.prelaunch.task?.arguments ||
-          cleanup.normal.task.workingDirectory !==
-            launch.prelaunch.task?.workingDirectory ||
-          cleanup.normal.task.xmlSha256 !== launch.prelaunch.task?.xmlSha256 ||
-          cleanup.normal.task
+          cleanupNormal?.machineCount !== 1 ||
+          cleanupNormal?.cdpListenerCount !== 0 ||
+          cleanupNormalTask?.name !== "VEMMachineUI" ||
+          cleanupNormalTask?.execute !== launchPrelaunchTask?.execute ||
+          cleanupNormalTask?.arguments !== launchPrelaunchTask?.arguments ||
+          cleanupNormalTask?.workingDirectory !==
+            launchPrelaunchTask?.workingDirectory ||
+          cleanupNormalTask?.xmlSha256 !== launchPrelaunchTask?.xmlSha256 ||
+          cleanupNormalTask
             .triggersSettingsConditionsPrincipalActionRestored !== true ||
-          cleanup.normal.simulatedOrFaultProcessCount !== 0
+          cleanupNormal?.simulatedOrFaultProcessCount !== 0
         ) {
           throw new Error(
             "installed kiosk cleanup did not restore the original VEMMachineUI task without CDP",
@@ -1763,13 +2076,14 @@ export async function runInstalledKioskSaleAcceptanceCli(
           remote,
           buildInstalledKioskSaleLaunchFailureRecoveryScript(runtime),
         );
+        const cleanupNormal = cleanup?.normal as JsonRecord | undefined;
         if (
           cleanup?.recovery !== "launch_failure_normal_task_restart" ||
           cleanup?.normalTask !== "VEMMachineUI" ||
           cleanup?.cdpListenerCount !== 0 ||
-          cleanup?.normal?.machineCount !== 1 ||
-          cleanup.normal.sessionId !== runtime.sessionId ||
-          !String(cleanup.normal.principal ?? "")
+          cleanupNormal?.machineCount !== 1 ||
+          cleanupNormal?.sessionId !== runtime.sessionId ||
+          !String(cleanupNormal?.principal ?? "")
             .toLowerCase()
             .endsWith(`\\${runtime.sessionUser.toLowerCase()}`)
         ) {
@@ -1804,7 +2118,7 @@ export async function runInstalledKioskSaleAcceptanceCli(
     report.evidence.delayedPickupNativeAudio = delayedPickupEvidenceIndex({
       track: delayedPickupTrack,
       plan,
-      scenario: report.machineUiCdpScenario,
+      scenario: report.machineUiCdpScenario as JsonRecord | null | undefined,
     });
   }
   if (primaryError) {
@@ -1817,12 +2131,12 @@ export async function runInstalledKioskSaleAcceptanceCli(
   return report;
 }
 
-export function formatInstalledKioskSaleError(error) {
+export function formatInstalledKioskSaleError(error: unknown): string {
   if (error instanceof AggregateError) {
     return [
       error.message,
       ...error.errors.map(
-        (cause, index) =>
+        (cause: unknown, index: number) =>
           `cause ${index + 1}: ${formatInstalledKioskSaleError(cause)}`,
       ),
     ].join("\n");
@@ -1834,24 +2148,36 @@ export function evaluateInstalledErrorMatrixEvidence({
   profile,
   scenario,
   correlation,
-}) {
+}: {
+  profile: string;
+  scenario: JsonRecord | null | undefined;
+  correlation: JsonRecord | null | undefined;
+}): JsonRecord {
   const expected =
     profile === "vm-route-competition"
       ? ["vision_departure", "catalog_projection_refresh"]
       : profile === "vm-ipc-recovery"
         ? ["daemon_transport_interrupt"]
         : [];
-  const entries = Array.isArray(scenario?.evidence) ? scenario.evidence : [];
+  const entries = Array.isArray(scenario?.evidence)
+    ? (scenario.evidence as unknown[])
+    : [];
   for (const operation of expected) {
     const entry = entries.find(
-      (candidate) =>
-        candidate?.type === "external-operation" &&
-        candidate.operation === operation &&
-        candidate.routeBefore === "#/payment" &&
-        candidate.routeAfter === "#/payment",
+      (candidate: unknown) => {
+        const record = candidate as JsonRecord;
+        return (
+          record?.type === "external-operation" &&
+          record.operation === operation &&
+          record.routeBefore === "#/payment" &&
+          record.routeAfter === "#/payment"
+        );
+      },
     );
-    const provenance = entry?.provenance;
-    const requiredString = (value, field) => {
+    const provenance = (entry as JsonRecord | undefined)?.provenance as
+      | JsonRecord
+      | undefined;
+    const requiredString = (value: unknown, field: string): string => {
       if (typeof value !== "string" || value.trim() === "") {
         throw new Error(`${operation} requires reproducible ${field}`);
       }
@@ -1860,39 +2186,49 @@ export function evaluateInstalledErrorMatrixEvidence({
     if (!provenance || typeof provenance !== "object") {
       throw new Error(`${operation} requires operation provenance`);
     }
+    const session = provenance.session as JsonRecord | undefined;
+    const log = provenance.log as JsonRecord | undefined;
+    const platform = provenance.platform as JsonRecord | undefined;
+    const daemon = provenance.daemon as JsonRecord | undefined;
+    const vision = provenance.vision as JsonRecord | undefined;
+    const ui = provenance.ui as JsonRecord | undefined;
+    const before = ui?.before as JsonRecord | undefined;
+    const after = ui?.after as JsonRecord | undefined;
+    const transactionBefore = daemon?.transactionBefore as
+      | JsonRecord
+      | undefined;
+    const transactionAfter = daemon?.transactionAfter as
+      | JsonRecord
+      | undefined;
     requiredString(provenance.guestOperationId, "operation id");
     requiredString(provenance.adapterSessionId, "adapter session");
-    requiredString(
-      provenance.session?.daemonReadyFile,
-      "daemon session ready file",
-    );
-    requiredString(
-      provenance.session?.daemonEndpoint,
-      "daemon session endpoint",
-    );
-    requiredString(provenance.log?.collector, "operation log collector");
-    requiredString(provenance.log?.digest, "operation log digest");
+    requiredString(session?.daemonReadyFile, "daemon session ready file");
+    requiredString(session?.daemonEndpoint, "daemon session endpoint");
+    requiredString(log?.collector, "operation log collector");
+    requiredString(log?.digest, "operation log digest");
     if (
-      !Number.isInteger(provenance.log?.recordCount) ||
-      provenance.log.recordCount < 0
+      !Number.isInteger(log?.recordCount) ||
+      (log?.recordCount as number) < 0
     ) {
       throw new Error(
         `${operation} requires a bounded operation log record count`,
       );
     }
     if (
-      provenance.platform?.orderNo !== correlation?.rendered?.orderNo ||
-      provenance.platform?.orderNo !== correlation?.platform?.orderNo
+      platform?.orderNo !==
+        (correlation?.rendered as JsonRecord | undefined)?.orderNo ||
+      platform?.orderNo !==
+        (correlation?.platform as JsonRecord | undefined)?.orderNo
     ) {
       throw new Error(
         `${operation} platform fact does not bind the rendered order`,
       );
     }
     if (
-      provenance.daemon?.transactionBefore?.orderNo !==
-        correlation?.rendered?.orderNo ||
-      provenance.daemon?.transactionAfter?.orderNo !==
-        correlation?.rendered?.orderNo
+      transactionBefore?.orderNo !==
+        (correlation?.rendered as JsonRecord | undefined)?.orderNo ||
+      transactionAfter?.orderNo !==
+        (correlation?.rendered as JsonRecord | undefined)?.orderNo
     ) {
       throw new Error(
         `${operation} daemon transaction fact does not bind the rendered order`,
@@ -1900,18 +2236,18 @@ export function evaluateInstalledErrorMatrixEvidence({
     }
     if (operation === "vision_departure") {
       const eventId = requiredString(
-        provenance.vision?.eventId,
+        vision?.eventId,
         "Vision event id",
       );
       if (
-        provenance.vision?.delivered !== true ||
-        provenance.daemon?.runtimeTrace?.eventId !== eventId ||
-        !Array.isArray(provenance.ui?.after?.runtimeTrace) ||
-        !provenance.ui.after.runtimeTrace.some(
-          (entry) =>
-            entry?.type === "navigation" &&
-            entry?.intentType === "presence.departed" &&
-            entry?.sourceEventId === eventId,
+        vision?.delivered !== true ||
+        (daemon?.runtimeTrace as JsonRecord | undefined)?.eventId !== eventId ||
+        !Array.isArray(after?.runtimeTrace) ||
+        !(after?.runtimeTrace as unknown[]).some(
+          (entry: unknown) =>
+            (entry as JsonRecord)?.type === "navigation" &&
+            (entry as JsonRecord)?.intentType === "presence.departed" &&
+            (entry as JsonRecord)?.sourceEventId === eventId,
         )
       ) {
         throw new Error(
@@ -1920,21 +2256,22 @@ export function evaluateInstalledErrorMatrixEvidence({
       }
     }
     if (operation === "catalog_projection_refresh") {
+      const catalog = daemon?.catalog as JsonRecord | undefined;
       const revision = requiredString(
-        provenance.daemon?.catalog?.revision,
+        catalog?.revision,
         "daemon catalog revision",
       );
       const invalidationId = requiredString(
-        provenance.daemon?.catalog?.invalidationId,
+        catalog?.invalidationId,
         "daemon catalog invalidation",
       );
       if (
         !invalidationId.includes(revision) ||
-        provenance.ui?.after?.catalogRevision !== revision ||
-        provenance.ui?.after?.catalogInvalidationId !== invalidationId ||
-        !Array.isArray(provenance.ui?.after?.catalogRequests) ||
-        provenance.ui.after.catalogRequests.length <=
-          (provenance.ui?.before?.catalogRequests?.length ?? 0)
+        after?.catalogRevision !== revision ||
+        after?.catalogInvalidationId !== invalidationId ||
+        !Array.isArray(after?.catalogRequests) ||
+        (after?.catalogRequests as unknown[]).length <=
+          ((before?.catalogRequests as unknown[] | undefined)?.length ?? 0)
       ) {
         throw new Error(
           "catalog refresh must prove the daemon revision and invalidation reached the UI",
@@ -1942,14 +2279,17 @@ export function evaluateInstalledErrorMatrixEvidence({
       }
     }
     if (operation === "daemon_transport_interrupt") {
-      const overlay = provenance.ui?.recoveryOverlay;
+      const overlay = ui?.recoveryOverlay as JsonRecord | undefined;
+      const overlayScreenshot = overlay?.screenshot as JsonRecord | undefined;
       if (
-        provenance.daemon?.transport?.phase !== "recovered" ||
-        overlay?.observation?.recoveryOverlay?.length < 1 ||
-        !/^[a-f0-9]{64}$/.test(overlay?.screenshot?.sha256 ?? "") ||
-        provenance.ui?.before?.orderCredential !==
-          correlation?.rendered?.orderNo ||
-        provenance.ui?.after?.orderCredential !== correlation?.rendered?.orderNo
+        (daemon?.transport as JsonRecord | undefined)?.phase !== "recovered" ||
+        (((overlay?.observation as JsonRecord | undefined)
+          ?.recoveryOverlay as unknown[] | undefined)?.length ?? 0) < 1 ||
+        !/^[a-f0-9]{64}$/.test(String(overlayScreenshot?.sha256 ?? "")) ||
+        before?.orderCredential !==
+          (correlation?.rendered as JsonRecord | undefined)?.orderNo ||
+        after?.orderCredential !==
+          (correlation?.rendered as JsonRecord | undefined)?.orderNo
       ) {
         throw new Error(
           "daemon transport recovery must preserve the rendered order credential and recovery-overlay screenshot",
