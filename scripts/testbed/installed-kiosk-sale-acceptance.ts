@@ -104,7 +104,7 @@ interface InstalledKioskCaptureInput {
   options: JsonRecord;
   attestation: JsonRecord;
   selector: string;
-  route: RegExp;
+  route: string | RegExp;
 }
 
 type InstalledKioskRunCommand = (

@@ -147,7 +147,7 @@ describe("runtime business-check registry", () => {
     );
     assert.equal(startup?.core, false);
     assert.equal(startup?.fullRequired, true);
-    assert.deepEqual(startup?.evidence.passed, {
+    assert.deepEqual(startup?.evidence?.passed, {
       trace: false,
       logs: false,
       screenshot: false,

@@ -11,6 +11,18 @@ import {
   type VisionExperienceObservation,
 } from "./vision-experience-driver.ts";
 
+type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? (value as unknown[]) : [];
+}
+
 const attemptId = "550e8400-e29b-41d4-a716-446655440124";
 const alternateAttemptId = "550e8400-e29b-41d4-a716-446655440125";
 const selectedCatalogKey = "product:550e8400-e29b-41d4-a716-446655440126";
@@ -837,22 +849,26 @@ describe("visionExperience vertical slice driver", () => {
       capturedSourceDigest: "sha256:captured-source",
       capturedFrameHash: "sha256:captured-frame",
     });
-    const baseline: VisionExperienceObservation[] = [
-      [0, 3_000, "3"],
-      [750, 2_250, "3"],
-      [1_000, 2_000, "2"],
-      [1_750, 1_250, "2"],
-      [2_000, 1_000, "1"],
-      [2_750, 250, "1"],
-    ].map(([atMs, holdRemainingMs, countdownText]) => ({
-      atMs,
-      attemptId,
-      state: "acquiring",
-      holdRemainingMs,
-      countdownText,
-      previewVisible: true,
-      previewFrameHash: `preview-${atMs}`,
-    }));
+    const baseline: VisionExperienceObservation[] = (
+      [
+        [0, 3_000, "3"],
+        [750, 2_250, "3"],
+        [1_000, 2_000, "2"],
+        [1_750, 1_250, "2"],
+        [2_000, 1_000, "1"],
+        [2_750, 250, "1"],
+      ] as [number, number, string][]
+    ).map(
+      ([atMs, holdRemainingMs, countdownText]: [number, number, string]) => ({
+        atMs,
+        attemptId,
+        state: "acquiring",
+        holdRemainingMs,
+        countdownText,
+        previewVisible: true,
+        previewFrameHash: `preview-${atMs}`,
+      }),
+    );
     const validate = (samples: VisionExperienceObservation[]) =>
       validateVisionExperienceTimeline({ attemptId, samples });
     const complete = [
@@ -1760,7 +1776,10 @@ describe("visionExperience vertical slice driver", () => {
         sample(3_500, null, "captured"),
       ],
     });
-    assert.equal(result.countdownRenderedSequence.observed[0], "3");
+    assert.equal(
+      arrayValue(recordValue(result.countdownRenderedSequence).observed)[0],
+      "3",
+    );
     assert.equal(result.captureAfterCountdown.observed, true);
     assert.equal(result.ok, false);
   });

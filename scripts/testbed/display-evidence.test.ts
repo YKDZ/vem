@@ -12,7 +12,7 @@ import {
 } from "./display-evidence.ts";
 
 function png() {
-  const chunk = (type, data) => {
+  const chunk = (type: string, data: Buffer) => {
     const bytes = Buffer.alloc(12 + data.length);
     bytes.writeUInt32BE(data.length, 0);
     bytes.write(type, 4);

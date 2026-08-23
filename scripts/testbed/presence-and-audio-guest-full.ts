@@ -37,6 +37,12 @@ const ADMIN_USER = "local-testbed-admin";
 const ADMIN_PASSWORD = "LocalTestbedAdminPassword!";
 
 type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
 type GuestInputRecord = JsonRecord;
 type HandoffRecord = JsonRecord;
 
@@ -1619,7 +1625,11 @@ export async function runPresenceAndAudioGuestFull(
     });
     const visionRecord = vision as JsonRecord | null;
     if (visionRecord?.started) {
-      await shutdownControlledVisionMock(visionRecord.child).catch((error) => {
+      await shutdownControlledVisionMock(
+        visionRecord.child as Parameters<
+          typeof shutdownControlledVisionMock
+        >[0],
+      ).catch((error) => {
         report.cleanupError =
           error instanceof Error ? error.message : String(error);
       });
@@ -1663,7 +1673,7 @@ export function validatePresenceAndAudioGuestReport(
     throw new Error("presence and audio cue capture artifacts are incomplete");
   }
   const summary = validatePresenceAndAudioAcceptanceEvidence(
-    report.presenceAndAudio,
+    recordValue(report.presenceAndAudio),
   );
   return { schemaVersion: report.schemaVersion, ...summary };
 }

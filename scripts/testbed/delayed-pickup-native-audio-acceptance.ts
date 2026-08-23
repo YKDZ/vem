@@ -284,7 +284,7 @@ export function verifyDelayedPickupNativeAudioProductionEvidence({
       const start = recordValue(
         validateSaleAudioCaptureReport(
           audioStartValue,
-          recordValue(audioStartValue).request,
+          recordValue(recordValue(audioStartValue).request),
         ),
       );
       const startRequest = recordValue(start.request);

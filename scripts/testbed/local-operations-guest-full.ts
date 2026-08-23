@@ -62,6 +62,12 @@ const HARDWARE_READY_TIMEOUT_MS = 30_000;
 const HARDWARE_READY_POLL_MS = 500;
 
 type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
 type GuestInputRecord = JsonRecord;
 type HandoffRecord = JsonRecord;
 type MachineUiClientDependencies = {
@@ -1588,7 +1594,7 @@ export async function runLocalOperationsGuest(
     report.serialSessionReplacement = {
       previousControlPlaneSessionId: String(activeSession.sessionId),
       replacementControlPlaneSessionId: required(
-        replacement?.replacement?.sessionId,
+        recordValue(replacement?.replacement).sessionId,
         "local operations replacement serial session id",
       ),
     };

@@ -1750,7 +1750,7 @@ export async function captureInstalledKioskSaleHook({
   options: RunOptions;
   attestation: { targetId?: string };
   selector: string;
-  route: string;
+  route: string | RegExp;
 }) {
   const sidecar = await openMachineUiCdpSidecar({
     remote: options.remote === undefined ? undefined : String(options.remote),

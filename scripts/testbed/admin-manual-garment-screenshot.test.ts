@@ -6,6 +6,14 @@ import { describe, it } from "node:test";
 
 import { evaluateDocumentationScreenshotFile } from "./documentation-screenshot-quality.ts";
 
+type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
 const screenshotRoot = resolve("public/manual/screenshots");
 const screenshot = resolve(screenshotRoot, "admin-try-on-garment-upload.png");
 const metadata = resolve(screenshotRoot, "admin-try-on-garment-upload.json");
@@ -25,9 +33,9 @@ describe("Try-On Garment operator-manual screenshot", () => {
       metadataPath: metadata,
     });
     assert.equal(result.status, "passed");
-    assert.equal(result.capture.widthPx, 1440);
-    assert.equal(result.capture.heightPx, 1080);
-    assert.equal(result.metadata.source, "admin-ui");
+    assert.equal(recordValue(result.capture).widthPx, 1440);
+    assert.equal(recordValue(result.capture).heightPx, 1080);
+    assert.equal(recordValue(result.metadata).source, "admin-ui");
     const rawMetadata = JSON.parse(readFileSync(metadata, "utf8"));
     const currentHead = execFileSync("git", ["rev-parse", "HEAD"], {
       encoding: "utf8",
@@ -65,7 +73,7 @@ describe("Try-On Garment operator-manual screenshot", () => {
     );
     assert.equal(localBlob, committedBlob);
     assert.equal(statSync(screenshot).size, committedSize);
-    assert.deepEqual(result.metadata.expectedTexts, [
+    assert.deepEqual(recordValue(result.metadata).expectedTexts, [
       "Try-On Garment 草稿",
       "透明 PNG 来源",
       "共享尺码影响范围",

@@ -4,7 +4,15 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 
-function option(args, name) {
+type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function option(args: string[], name: string): string {
   const index = args.indexOf(`--${name}`);
   const value = index >= 0 ? args[index + 1] : null;
   if (!value || value.startsWith("--"))
@@ -12,19 +20,25 @@ function option(args, name) {
   return value;
 }
 
-export function validateCommissioningAdmission(guestInput, handoff) {
+export function validateCommissioningAdmission(
+  guestInput: JsonRecord | null | undefined,
+  handoff: JsonRecord | null | undefined,
+) {
   if (guestInput?.mode !== "full") {
     throw new Error(
       "commissioning requires a reconstructed full-pass guest input",
     );
   }
   if (
-    handoff?.claim?.status !== "provisioned" ||
-    handoff.claim.machineCode !== guestInput.machineCode
+    recordValue(handoff?.claim).status !== "provisioned" ||
+    recordValue(handoff?.claim).machineCode !== guestInput.machineCode
   ) {
     throw new Error("commissioning claim admission is absent or mismatched");
   }
-  return { machineCode: guestInput.machineCode, status: handoff.claim.status };
+  return {
+    machineCode: guestInput.machineCode,
+    status: recordValue(handoff?.claim).status,
+  };
 }
 
 async function main() {

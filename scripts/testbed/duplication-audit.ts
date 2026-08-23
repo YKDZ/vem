@@ -3,8 +3,8 @@ import { join } from "node:path";
 
 const DUPLICATED_WAITER = /(?:function|const)\s+waitForCondition\s*(?:\(|=)/;
 
-function walk(directory) {
-  const found = [];
+function walk(directory: string): string[] {
+  const found: string[] = [];
   for (const name of readdirSync(directory)) {
     const path = join(directory, name);
     const entry = statSync(path);
@@ -17,8 +17,8 @@ function walk(directory) {
   return found;
 }
 
-export function auditDuplicatedWaiters(root) {
-  const violations = [];
+export function auditDuplicatedWaiters(root: string): string[] {
+  const violations: string[] = [];
   for (const path of walk(root)) {
     if (path.endsWith("condition-waiter.ts")) continue;
     const source = readFileSync(path, "utf8");
@@ -29,7 +29,7 @@ export function auditDuplicatedWaiters(root) {
   return violations;
 }
 
-export function assertNoDuplicatedWaiters(root) {
+export function assertNoDuplicatedWaiters(root: string): string[] {
   const violations = auditDuplicatedWaiters(root);
   if (violations.length > 0) {
     throw new Error(`duplicated waiter violations:\n${violations.join("\n")}`);

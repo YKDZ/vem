@@ -6,9 +6,11 @@ import {
   inspectWavPcm,
 } from "./default-audio-evidence.ts";
 
-function wav(samples, sampleRateHz = 48_000) {
+function wav(samples: number[], sampleRateHz = 48_000) {
   const data = Buffer.alloc(samples.length * 2);
-  samples.forEach((sample, index) => data.writeInt16LE(sample, index * 2));
+  samples.forEach((sample: number, index: number) =>
+    data.writeInt16LE(sample, index * 2),
+  );
   const bytes = Buffer.alloc(44 + data.length);
   bytes.write("RIFF", 0);
   bytes.writeUInt32LE(bytes.length - 8, 4);

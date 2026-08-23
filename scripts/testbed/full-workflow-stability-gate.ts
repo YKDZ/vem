@@ -110,7 +110,10 @@ export function buildStabilityGateReport({
   let acceptanceRelease: JsonRecord | null = null;
   try {
     acceptanceRelease = recordValue(
-      bindAcceptanceReleaseManifest(passA.identity, passB.identity),
+      bindAcceptanceReleaseManifest(
+        recordValue(passA.identity),
+        recordValue(passB.identity),
+      ),
     );
   } catch (error) {
     gateFailures.push(error instanceof Error ? error.message : String(error));
