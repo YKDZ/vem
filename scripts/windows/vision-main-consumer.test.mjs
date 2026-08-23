@@ -74,7 +74,10 @@ test("guest installs the already verified main artifact pair without a retired a
   const guest = source("scripts/testbed/run-local-testbed-guest.ps1");
   assert.doesNotMatch(module, /Convert-VisionCandidateToMainDelivery/);
   assert.doesNotMatch(module, /candidate-manifest\.json/);
-  assert.doesNotMatch(guest, /installable-main|Convert-VisionCandidateToMainDelivery/);
+  assert.doesNotMatch(
+    guest,
+    /installable-main|Convert-VisionCandidateToMainDelivery/,
+  );
   assert.match(
     guest,
     /Install-VisionMainArtifact[\s\S]*-RuntimeArchive \(\[string\]\$visionCache\.runtimeArchive\)[\s\S]*-FixtureArchive \(\[string\]\$visionCache\.fixtureArchive\)/,
@@ -122,7 +125,10 @@ test("installs one fixed app directory and probes health plus machine protocol",
   assert.doesNotMatch(module, /serverVersion -cne \$health\.version/);
   assert.match(module, /Ensure-VisionMainTask/);
   assert.match(module, /vending-vision\.exe`" --config/);
-  assert.doesNotMatch(module, /download manifest is missing next to the runtime archive/);
+  assert.doesNotMatch(
+    module,
+    /download manifest is missing next to the runtime archive/,
+  );
   assert.match(module, /siteConfiguration = \[ordered\]@\{/);
   assert.match(module, /executableSha256 = \(Get-VisionSha256/);
   assert.match(module, /health\s*=\s*@\{\s*version\s*=\s*\$healthVersion/);
