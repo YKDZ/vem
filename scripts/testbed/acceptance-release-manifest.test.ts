@@ -8,7 +8,15 @@ import {
   canonicalAcceptanceReleaseManifest,
 } from "./acceptance-release-manifest.ts";
 
-function identity() {
+type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function identity(): JsonRecord {
   return {
     githubSha: "1".repeat(40),
     backend: {
@@ -68,10 +76,23 @@ test("builds one canonical acceptance release manifest from existing runtime ide
     value.schemaVersion,
     "vem-runtime-testbed-acceptance-release/v1",
   );
-  assert.equal(value.vem.sourceCommit, "1".repeat(40));
-  assert.equal(value.backend.serviceApi.runtime.health, "ready");
-  assert.equal(value.windowsRuntime.artifacts.machine.sha256, "6".repeat(64));
-  assert.equal(value.vision.runtimeArchive.sha256, "9".repeat(64));
+  assert.equal(recordValue(value.vem).sourceCommit, "1".repeat(40));
+  assert.equal(
+    recordValue(
+      recordValue(recordValue(value.backend).serviceApi).runtime,
+    ).health,
+    "ready",
+  );
+  assert.equal(
+    recordValue(
+      recordValue(recordValue(value.windowsRuntime).artifacts).machine,
+    ).sha256,
+    "6".repeat(64),
+  );
+  assert.equal(
+    recordValue(recordValue(value.vision).runtimeArchive).sha256,
+    "9".repeat(64),
+  );
   assert.deepEqual(Object.keys(value).sort(), [
     "backend",
     "schemaVersion",
@@ -85,7 +106,8 @@ test("builds one canonical acceptance release manifest from existing runtime ide
 
 test("refuses an incomplete release identity before it can become a manifest", () => {
   const incomplete = identity();
-  delete incomplete.backend.adminUi.build.sha256;
+  const adminUi = recordValue(recordValue(incomplete.backend).adminUi);
+  delete recordValue(adminUi.build).sha256;
   assert.throws(
     () => buildAcceptanceReleaseManifest(incomplete),
     /Admin UI build SHA-256 is invalid/,
@@ -95,10 +117,11 @@ test("refuses an incomplete release identity before it can become a manifest", (
 test("rejects a pass-two release identity that drifts from pass one", () => {
   const passA = identity();
   const passB = structuredClone(passA);
-  passB.runtimeArtifacts.reusedFromPass1 = true;
+  recordValue(passB.runtimeArtifacts).reusedFromPass1 = true;
   const bound = bindAcceptanceReleaseManifest(passA, passB);
-  assert.match(bound.sha256, /^[a-f0-9]{64}$/);
-  passB.visionCore.runtimeArchive.sha256 = "0".repeat(64);
+  assert.match(String(bound.sha256), /^[a-f0-9]{64}$/);
+  recordValue(recordValue(passB.visionCore).runtimeArchive).sha256 =
+    "0".repeat(64);
   assert.throws(
     () => bindAcceptanceReleaseManifest(passA, passB),
     /pass 2 drifted from pass 1/,
