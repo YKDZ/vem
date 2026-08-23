@@ -22,7 +22,18 @@ function descriptor({
   allowActiveTransactionHandoff = false,
   restoreFixtureStock = false,
   evidence = { passed: passedEvidence, failed: failedEvidence },
-}) {
+}: {
+  name: string;
+  core?: boolean;
+  fullRequired?: boolean;
+  fixtureKey?: string;
+  runner?: BusinessCheckDescriptor["runner"];
+  validator?: unknown;
+  blockedReason?: string | null;
+  allowActiveTransactionHandoff?: boolean;
+  restoreFixtureStock?: boolean;
+  evidence?: Record<string, unknown>;
+}): BusinessCheckDescriptor {
   return Object.freeze({
     name,
     key: name,
