@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from "node:child_process";
-import { createHash, generateKeyPairSync } from "node:crypto";
+import type {
+  SpawnSyncOptionsWithStringEncoding,
+  SpawnSyncReturns,
+} from "node:child_process";
+import { generateKeyPairSync } from "node:crypto";
 import {
   chmodSync,
   copyFileSync,
-  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -18,17 +21,245 @@ import { fileURLToPath } from "node:url";
 
 import {
   CdpClient,
-  activateVisibleSelector,
-  captureCheckpoint,
   discoverMachineUiTarget,
-  enablePageRuntime,
   evaluateExpression,
   openMachineUiCdpSidecar,
   rewriteWebSocketDebuggerUrl,
-  runVisibleMachineSaleScenario,
   waitForRoute,
 } from "./machine-ui-cdp-driver.ts";
 import { validateSerialConformanceReport } from "./vm-host-adapter-serial-conformance.ts";
+
+type JsonRecord = Record<string, unknown>;
+
+interface RunOptions extends JsonRecord {
+  mode?: unknown;
+  remote?: unknown;
+  sshPort?: unknown;
+  sshKnownHostsPath?: unknown;
+  sshHostKeyAlias?: unknown;
+  identity?: unknown;
+  certificate?: unknown;
+  machineCode?: unknown;
+  platformTarget?: unknown;
+  claimCode?: unknown;
+  ephemeralPlatformEvidence?: unknown;
+  salePhase?: unknown;
+  saleBindingJson?: unknown;
+  alreadyClaimed?: unknown;
+  ephemeralApiBaseUrl?: unknown;
+  ephemeralMqttUrl?: unknown;
+  scannerCodeFile?: unknown;
+  serialRunnerSigningKeyFile?: unknown;
+  expectedSerialRunnerPublicKey?: unknown;
+  approvedRuntimeBase?: unknown;
+  machineCodePrefix?: unknown;
+  platformApiBaseUrl?: unknown;
+  platformMqttUrl?: unknown;
+  evidenceRoot?: unknown;
+  daemonArtifact?: unknown;
+  machineUiArtifact?: unknown;
+  daemonArtifactSha256?: unknown;
+  machineUiArtifactSha256?: unknown;
+  runId?: unknown;
+  out?: unknown;
+  runtimeGuestEndpointJson?: unknown;
+  expectedTestbedUser?: unknown;
+  dryRun?: unknown;
+  help?: unknown;
+  runtimeHardwareModel?: unknown;
+  ephemeralDatabaseUrl?: unknown;
+}
+
+interface SessionEvidence extends JsonRecord {
+  state?: unknown;
+  sessionName?: unknown;
+  user?: unknown;
+  sessionId?: unknown;
+  source?: unknown;
+}
+
+interface ScreenEvidence extends JsonRecord {
+  widthPx?: unknown;
+  heightPx?: unknown;
+  source?: unknown;
+}
+
+interface ProcessEvidence extends JsonRecord {
+  ownerUser?: unknown;
+  sessionId?: unknown;
+  processId?: unknown;
+  executablePath?: unknown;
+  machineAncestorProcessId?: unknown;
+}
+
+interface CdpTargetEvidence extends JsonRecord {
+  id?: unknown;
+  url?: unknown;
+}
+
+interface CdpListenerEvidence extends JsonRecord {
+  processId?: unknown;
+  sessionId?: unknown;
+  machineAncestorProcessId?: unknown;
+}
+
+interface RuntimeAcceptanceReportFacts extends JsonRecord {
+  target?: { machineCode?: unknown };
+  provisioning?: {
+    machineCode?: unknown;
+    provisioned?: unknown;
+    usedDaemonIpcTaskExecute?: unknown;
+  };
+  artifacts?: { daemonSha256?: unknown; machineUiSha256?: unknown };
+  readyFile?: {
+    exists?: unknown;
+    readableByKioskUser?: unknown;
+    ipcEndpointPresent?: unknown;
+    tokenPresent?: unknown;
+  };
+  daemonRuntime?: {
+    ipcReachable?: unknown;
+    processRunning?: unknown;
+    processId?: unknown;
+    processUser?: unknown;
+    executablePath?: unknown;
+    readyz?: { ready?: unknown };
+    healthz?: { backendOnline?: unknown; mqttConnected?: unknown };
+  };
+  visionRuntime?: {
+    healthReachable?: unknown;
+    healthStatus?: unknown;
+    healthProtocol?: unknown;
+    healthModule?: unknown;
+    healthMockScenario?: unknown;
+    cameraReady?: unknown;
+    installedProcessBound?: unknown;
+    installedRecordPresent?: unknown;
+    installedCommit?: unknown;
+    installedRuntime?: unknown;
+    installedAppDirectory?: unknown;
+    installedRuntimeWorkDirectory?: unknown;
+    executablePath?: unknown;
+    processId?: unknown;
+    listenerBound?: unknown;
+    listenerProcessId?: unknown;
+    listenerOwnerCount?: unknown;
+    listenerBindingSource?: unknown;
+    webSocketConnected?: unknown;
+    readyProtocol?: unknown;
+    readyType?: unknown;
+    readyMessageId?: unknown;
+    readyTimestamp?: unknown;
+    readyServerName?: unknown;
+    readyCameraReady?: unknown;
+    readyTryOnReady?: unknown;
+    readyVisionBusinessReady?: unknown;
+    readyBusinessReadinessDiagnostic?: unknown;
+    readySchemaVersion?: unknown;
+    readyBundleVersion?: unknown;
+    readyContractDigest?: unknown;
+    readyCapabilities?: unknown;
+  };
+  kioskRuntime?: {
+    webviewRunning?: unknown;
+    sessionUser?: unknown;
+    sessionId?: unknown;
+    processId?: unknown;
+    machineProcessCount?: unknown;
+    machineExecutablePath?: unknown;
+    cdpAvailable?: unknown;
+    acceptanceOverlayCdp?: unknown;
+    cdpListenerProcessId?: unknown;
+    cdpListenerSessionId?: unknown;
+    cdpMachineAncestorProcessId?: unknown;
+    source?: unknown;
+    webView2ProcessCount?: unknown;
+    url?: unknown;
+  };
+  displayEvidence?: {
+    interactiveDesktopDisplayBaseline?: {
+      sessionId?: unknown;
+      status?: unknown;
+      widthPx?: unknown;
+      heightPx?: unknown;
+    };
+    portraitKioskAcceptance?: {
+      sessionId?: unknown;
+      sessionUser?: unknown;
+      status?: unknown;
+      source?: unknown;
+      widthPx?: unknown;
+      heightPx?: unknown;
+    };
+  };
+}
+
+interface VmRuntimeAcceptanceStep extends JsonRecord {
+  name?: unknown;
+  mode?: unknown;
+  status?: unknown;
+  cwd?: unknown;
+  report?: unknown;
+  ephemeralPlatformEvidence?: unknown;
+  blocksOnFailure?: unknown;
+  requiresEphemeralDatabase?: unknown;
+  command?: string[];
+  env?: JsonRecord;
+  startedAt?: unknown;
+  finishedAt?: unknown;
+  exitCode?: unknown;
+  stdoutPath?: unknown;
+  stderrPath?: unknown;
+  parsed?: JsonRecord | null;
+  serialConformance?: JsonRecord | null;
+  error?: unknown;
+}
+
+interface VmRuntimeAcceptancePlan extends JsonRecord {
+  schemaVersion?: unknown;
+  mode?: unknown;
+  runId?: unknown;
+  target?: JsonRecord;
+  evidenceRoot?: unknown;
+  artifacts?: {
+    screenshotsRoot?: unknown;
+    sessionsRoot?: unknown;
+    report?: unknown;
+    logsRoot?: unknown;
+    ephemeralPlatformEvidence?: unknown;
+    serialConformance?: unknown;
+    simulatedHardwareSaleFlow?: unknown;
+    customerUiSaleNormal?: unknown;
+    customerUiSaleScanner?: unknown;
+    customerUiSaleRouteCompetition?: unknown;
+    customerUiSaleIpcRecovery?: unknown;
+    delayedPickupNativeAudio?: unknown;
+    failureMatrix?: JsonRecord | null;
+  };
+  serialRunnerExpectedPublicKey?: unknown;
+  expectedAdapterIdentity?: unknown;
+  steps?: VmRuntimeAcceptanceStep[];
+}
+
+interface ResetPlan extends JsonRecord {
+  stopServices?: unknown[];
+  unregisterScheduledTasks?: unknown[];
+  removeDirectories?: unknown[];
+  removeFiles?: unknown[];
+  preservedResources?: unknown[];
+}
+
+interface Diagnostic {
+  code: string;
+  message: string;
+  detail?: unknown;
+}
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
 
 const VEM_RESET_ROOTS = [
   "C:\\VEM\\bringup",
@@ -56,10 +287,6 @@ const TESTBED_PROVISIONING_EVIDENCE_FILE =
   "C:\\ProgramData\\VEM\\vending-daemon\\testbed-provisioning-evidence.json";
 const RUNTIME_ACCEPTANCE_REPORT_FILE =
   "C:\\ProgramData\\VEM\\vending-daemon\\runtime-acceptance-report.json";
-const SIMULATED_HARDWARE_SALE_FLOW_REPORT_FILE =
-  "C:\\ProgramData\\VEM\\vending-daemon\\simulated-hardware-sale-flow.json";
-const SIMULATED_HARDWARE_SALE_CONTEXT_FILE =
-  "C:\\ProgramData\\VEM\\vending-daemon\\simulated-hardware-sale-context.json";
 const INSTALLED_KIOSK_SALE_DEBUG_TASK = "VEMInstalledKioskSaleDebug";
 const INSTALLED_KIOSK_SALE_DEBUG_LAUNCHER =
   "C:\\VEM\\bringup\\launch-machine-ui-debug.vbs";
@@ -124,10 +351,7 @@ const EXPECTED_DAEMON_USER = "Admin";
 const EXPECTED_DAEMON_PATH = "C:\\VEM\\bringup\\vending-daemon.exe";
 const TESTBED_MACHINE_CODE_PREFIX = "VEM-TESTBED-";
 const EXPECTED_MACHINE_UI_PATH = "C:\\VEM\\bringup\\machine.exe";
-const EXPECTED_VISION_TASK_NAME = "VEM\\StartVisionServer";
-const EXPECTED_VISION_COMMAND = "C:\\Windows\\System32\\cmd.exe";
-const EXPECTED_VISION_LAUNCHER = "C:\\VEM\\bringup\\start_vision.bat";
-const EXPECTED_VISION_WORKING_DIRECTORY = "C:\\VEM\\vision\\app";
+const EXPECTED_MACHINE_UI_TASK_NAME = "VEMMachineUI";
 const EXPECTED_VISION_WORK_DIRECTORY = "C:\\ProgramData\\VEM\\vision\\runtime";
 const EXPECTED_VISION_ENTRYPOINT = "C:\\VEM\\vision\\app\\vending-vision.exe";
 const DEFAULT_RUNTIME_REMOTE = "operator@runtime.test";
@@ -149,16 +373,16 @@ export function nonQueryChildEnvironment(environment = process.env) {
   return childEnvironment;
 }
 
-export function assertTestbedMachineCode(machineCode) {
+export function assertTestbedMachineCode(machineCode: unknown): string {
   if (!String(machineCode ?? "").startsWith("VEM-TESTBED-")) {
     throw new Error(
       `machine code must be a dedicated testbed identity: ${machineCode}`,
     );
   }
-  return machineCode;
+  return String(machineCode ?? "");
 }
 
-function isSharedPlatformTarget(value) {
+function isSharedPlatformTarget(value: unknown): boolean {
   return SHARED_PLATFORM_TARGET_MARKERS.some((marker) =>
     String(value ?? "")
       .toLowerCase()
@@ -166,7 +390,7 @@ function isSharedPlatformTarget(value) {
   );
 }
 
-function normalizeEphemeralRunId(runId) {
+function normalizeEphemeralRunId(runId: unknown): string {
   const normalized = String(runId ?? "")
     .trim()
     .toUpperCase()
@@ -189,6 +413,10 @@ function buildTestbedMachineCodeFromRun({
   machineCode,
   machineCodePrefix,
   runId,
+}: {
+  machineCode?: unknown;
+  machineCodePrefix?: unknown;
+  runId?: unknown;
 } = {}) {
   if (machineCode) {
     return assertTestbedMachineCode(machineCode);
@@ -204,7 +432,7 @@ function buildTestbedMachineCodeFromRun({
   );
 }
 
-function buildEphemeralMachineCodeBinding(options = {}) {
+function buildEphemeralMachineCodeBinding(options: RunOptions = {}) {
   const canonicalRunId = normalizeEphemeralRunId(options.runId);
   const defaultPrefix = String(
     options.machineCodePrefix ?? DEFAULT_VM_ACCEPTANCE_MACHINE_CODE_PREFIX,
@@ -239,7 +467,10 @@ function buildEphemeralMachineCodeBinding(options = {}) {
   };
 }
 
-function assertNotSharedOrKnownProductionTarget(label, value) {
+function assertNotSharedOrKnownProductionTarget(
+  label: string,
+  value: unknown,
+): string {
   const text = String(value ?? "").trim();
   if (text.length === 0) {
     throw new Error(`VM runtime acceptance requires ${label}`);
@@ -266,7 +497,7 @@ function assertNotSharedOrKnownProductionTarget(label, value) {
   return text;
 }
 
-function requireEvidenceString(value, message) {
+function requireEvidenceString(value: unknown, message: string): string {
   const text = String(value ?? "").trim();
   if (text.length === 0) {
     throw new Error(message);
@@ -274,17 +505,18 @@ function requireEvidenceString(value, message) {
   return text;
 }
 
-export function readEphemeralPlatformSetupEvidence(options = {}) {
+export function readEphemeralPlatformSetupEvidence(options: RunOptions = {}) {
+  const mode = String(options.mode ?? "");
   const consumesEphemeralPlatform = new Set([
     "provision",
     "runtime-acceptance",
     "simulated-hardware-sale-flow",
-  ]).has(options.mode);
+  ]).has(mode);
   if (!consumesEphemeralPlatform) {
     return null;
   }
   if (
-    options.mode !== "simulated-hardware-sale-flow" &&
+    mode !== "simulated-hardware-sale-flow" &&
     !String(options.ephemeralPlatformEvidence ?? "").trim()
   ) {
     return null;
@@ -398,6 +630,13 @@ export function assertSimulatedSaleFlowPreMutationTarget({
   daemonMqttUrl,
   hardwareMode,
   platformSetup = {},
+}: {
+  target?: JsonRecord;
+  daemonMachineCode?: unknown;
+  daemonApiBaseUrl?: unknown;
+  daemonMqttUrl?: unknown;
+  hardwareMode?: unknown;
+  platformSetup?: JsonRecord;
 } = {}) {
   const machineCode = String(target.machineCode ?? "");
   if (!machineCode.startsWith(TESTBED_MACHINE_CODE_PREFIX)) {
@@ -432,7 +671,7 @@ export function assertSimulatedSaleFlowPreMutationTarget({
   return { ok: true, code: "pre_mutation_target_verified" };
 }
 
-function present(value) {
+function present(value: unknown): boolean {
   if (value === null || value === undefined) {
     return false;
   }
@@ -442,7 +681,7 @@ function present(value) {
   return true;
 }
 
-function isVisionProtocolTimestamp(value) {
+function isVisionProtocolTimestamp(value: unknown): boolean {
   if (typeof value !== "string") {
     return false;
   }
@@ -465,21 +704,23 @@ function isVisionProtocolTimestamp(value) {
   );
 }
 
-function normalizeWindowsUser(user) {
+function normalizeWindowsUser(user: unknown): string {
   const value = String(user ?? "").trim();
   if (value.length === 0) {
     return "";
   }
-  return value.split("\\").at(-1);
+  return value.split("\\").at(-1) ?? "";
 }
 
-function normalizeSessionState(state) {
+function normalizeSessionState(state: unknown): string {
   return String(state ?? "")
     .trim()
     .toLowerCase();
 }
 
-function isActiveKioskSessionEvidence(session) {
+function isActiveKioskSessionEvidence(
+  session: SessionEvidence | null | undefined,
+): boolean {
   const state = normalizeSessionState(session?.state);
   const sessionName = String(session?.sessionName ?? "")
     .trim()
@@ -497,16 +738,16 @@ function isActiveKioskSessionEvidence(session) {
   );
 }
 
-function toNullableSessionId(value) {
+function toNullableSessionId(value: unknown): number | null {
   const number = Number(value);
   return Number.isInteger(number) && number >= 0 ? number : null;
 }
 
-function normalizeSessionEvidence(session) {
+function normalizeSessionEvidence(session: SessionEvidence | null | undefined) {
   return {
     user: normalizeWindowsUser(session?.user),
     sessionName: present(session?.sessionName)
-      ? String(session.sessionName)
+      ? String(session?.sessionName)
       : null,
     sessionId: toNullableSessionId(session?.sessionId),
     state: String(session?.state ?? "unknown"),
@@ -514,7 +755,7 @@ function normalizeSessionEvidence(session) {
   };
 }
 
-export function findActiveKioskSession(sessions = []) {
+export function findActiveKioskSession(sessions: SessionEvidence[] = []) {
   const normalizedSessions = Array.isArray(sessions)
     ? sessions.map(normalizeSessionEvidence)
     : [];
@@ -525,7 +766,7 @@ export function findActiveKioskSession(sessions = []) {
   );
 }
 
-function normalizeScreenDimensions(screen) {
+function normalizeScreenDimensions(screen: ScreenEvidence | null | undefined) {
   const widthPx = Number(screen?.widthPx);
   const heightPx = Number(screen?.heightPx);
   return {
@@ -537,6 +778,9 @@ function normalizeScreenDimensions(screen) {
 export function buildInteractiveDesktopDisplayBaseline({
   activeSession,
   screen,
+}: {
+  activeSession?: SessionEvidence | null;
+  screen?: ScreenEvidence | null;
 } = {}) {
   const session = activeSession
     ? normalizeSessionEvidence(activeSession)
@@ -559,7 +803,7 @@ export function buildInteractiveDesktopDisplayBaseline({
   };
 }
 
-export function buildPortraitKioskAcceptance(baseline = {}) {
+export function buildPortraitKioskAcceptance(baseline: JsonRecord = {}) {
   const passed =
     baseline.status === "passed" &&
     baseline.widthPx === EXPECTED_PORTRAIT_WIDTH_PX &&
@@ -581,7 +825,7 @@ export function buildPortraitKioskAcceptance(baseline = {}) {
   };
 }
 
-export function isStrictTauriHashRouteUrl(value) {
+export function isStrictTauriHashRouteUrl(value: unknown): boolean {
   try {
     const url = new URL(String(value ?? ""));
     return (
@@ -595,20 +839,26 @@ export function isStrictTauriHashRouteUrl(value) {
   }
 }
 
-function isSha256(value) {
+function isSha256(value: unknown): boolean {
   return /^[a-fA-F0-9]{64}$/.test(String(value ?? ""));
 }
 
-function addDiagnostic(diagnostics, code, message) {
+function addDiagnostic(
+  diagnostics: { code: string; message: string }[],
+  code: string,
+  message: string,
+) {
   diagnostics.push({ code, message });
 }
 
-function runtimeAssertion(status, asserted) {
+function runtimeAssertion(status: string, asserted: boolean) {
   return { status, asserted };
 }
 
-export function buildRuntimeAcceptanceReport(facts = {}) {
-  const diagnostics = [];
+export function buildRuntimeAcceptanceReport(
+  facts: RuntimeAcceptanceReportFacts = {},
+) {
+  const diagnostics: Diagnostic[] = [];
   const visionIdentity = readVisionV2ContractIdentity();
 
   if (
@@ -738,7 +988,9 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
   }
   if (
     facts.visionRuntime?.healthReachable !== true ||
-    !["ok", "degraded"].includes(facts.visionRuntime?.healthStatus) ||
+    !["ok", "degraded"].includes(
+      String(facts.visionRuntime?.healthStatus),
+    ) ||
     facts.visionRuntime?.healthProtocol !== visionIdentity.protocol ||
     facts.visionRuntime?.healthModule !== "vision" ||
     facts.visionRuntime?.healthMockScenario !== "off" ||
@@ -753,20 +1005,22 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
   if (
     facts.visionRuntime?.installedProcessBound !== true ||
     facts.visionRuntime?.installedRecordPresent !== true ||
-    !/^[a-f0-9]{40}$/.test(facts.visionRuntime?.installedCommit ?? "") ||
+    !/^[a-f0-9]{40}$/.test(
+      String(facts.visionRuntime?.installedCommit ?? ""),
+    ) ||
     facts.visionRuntime?.installedRuntime !== "vending-vision.exe" ||
     facts.visionRuntime?.installedAppDirectory !== "C:\\VEM\\vision\\app" ||
     facts.visionRuntime?.installedRuntimeWorkDirectory !==
       EXPECTED_VISION_WORK_DIRECTORY ||
     facts.visionRuntime?.executablePath !== EXPECTED_VISION_ENTRYPOINT ||
     !Number.isInteger(facts.visionRuntime?.processId) ||
-    facts.visionRuntime.processId < 1 ||
+    Number(facts.visionRuntime.processId) < 1 ||
     facts.visionRuntime?.listenerBound !== true ||
     !Number.isInteger(facts.visionRuntime?.listenerProcessId) ||
     facts.visionRuntime.listenerProcessId !== facts.visionRuntime.processId ||
     facts.visionRuntime?.listenerOwnerCount !== 1 ||
     !["Get-NetTCPConnection", "netstat"].includes(
-      facts.visionRuntime?.listenerBindingSource,
+      String(facts.visionRuntime?.listenerBindingSource),
     )
   ) {
     addDiagnostic(
@@ -775,6 +1029,7 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
       "Vision acceptance must bind the listener to the fixed installed app and installed.json record.",
     );
   }
+  const readyCapabilities = facts.visionRuntime?.readyCapabilities;
   if (
     facts.visionRuntime?.webSocketConnected !== true ||
     facts.visionRuntime?.readyProtocol !== visionIdentity.protocol ||
@@ -796,16 +1051,15 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
     facts.visionRuntime?.readyBundleVersion !== visionIdentity.bundleVersion ||
     facts.visionRuntime?.readyContractDigest !==
       visionIdentity.contractDigest ||
-    !Array.isArray(facts.visionRuntime?.readyCapabilities) ||
-    !facts.visionRuntime.readyCapabilities.every(
-      (capability) =>
+    !Array.isArray(readyCapabilities) ||
+    !readyCapabilities.every(
+      (capability: unknown) =>
         typeof capability === "string" &&
         capability.trim().length > 0 &&
         capability.length <= 64,
     ) ||
     !["profile_push", "presence_status", "person_departed", "try_on"].every(
-      (capability) =>
-        facts.visionRuntime.readyCapabilities.includes(capability),
+      (capability) => readyCapabilities.includes(capability),
     )
   ) {
     addDiagnostic(
@@ -881,7 +1135,7 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
   } else if (
     facts.kioskRuntime?.cdpAvailable !== false ||
     facts.kioskRuntime?.source !== "webview2_process" ||
-    facts.kioskRuntime?.webView2ProcessCount < 1 ||
+    Number(facts.kioskRuntime?.webView2ProcessCount) < 1 ||
     facts.kioskRuntime?.url !== "unavailable:production-cdp-disabled"
   ) {
     addDiagnostic(
@@ -954,6 +1208,14 @@ export function buildKioskRuntimeEvidence({
   cdpAvailable = Array.isArray(cdpTargets),
   cdpListener = null,
   acceptanceOverlayCdp = false,
+}: {
+  activeSession?: SessionEvidence | null;
+  machineProcesses?: ProcessEvidence[];
+  webView2Processes?: ProcessEvidence[];
+  cdpTargets?: CdpTargetEvidence[];
+  cdpAvailable?: boolean;
+  cdpListener?: CdpListenerEvidence | null;
+  acceptanceOverlayCdp?: boolean;
 } = {}) {
   const session = activeSession
     ? normalizeSessionEvidence(activeSession)
@@ -1020,7 +1282,10 @@ export function buildKioskRuntimeEvidence({
   };
 }
 
-export function buildPreClaimPublicConfig(publicConfig = {}, platform) {
+export function buildPreClaimPublicConfig(
+  publicConfig: JsonRecord,
+  platform: { apiBaseUrl?: unknown; mqttUrl?: unknown },
+) {
   return {
     ...publicConfig,
     machineCode: null,
@@ -1039,8 +1304,8 @@ export function buildPreClaimPublicConfig(publicConfig = {}, platform) {
   };
 }
 
-export function evaluateFirstClaimPrecondition(configSnapshot = {}) {
-  const publicConfig = configSnapshot.public ?? {};
+export function evaluateFirstClaimPrecondition(configSnapshot: JsonRecord = {}) {
+  const publicConfig = recordValue(configSnapshot.public);
   if (configSnapshot.provisioned === true) {
     return {
       ok: false,
@@ -1085,9 +1350,10 @@ export function evaluateFirstClaimPrecondition(configSnapshot = {}) {
   return { ok: true, code: "ready_for_first_claim", message: null };
 }
 
-export function classifyProvisioningFailure(errorInfo = {}) {
-  if (present(errorInfo.body?.code)) {
-    return String(errorInfo.body.code);
+export function classifyProvisioningFailure(errorInfo: JsonRecord = {}) {
+  const body = recordValue(errorInfo.body);
+  if (present(body.code)) {
+    return String(body.code);
   }
   if (Number.isInteger(errorInfo.statusCode)) {
     return `http_${errorInfo.statusCode}`;
@@ -1095,7 +1361,7 @@ export function classifyProvisioningFailure(errorInfo = {}) {
   return "request_failed";
 }
 
-export function buildReadyFileEvidence(readyFile) {
+export function buildReadyFileEvidence(readyFile: JsonRecord | null | undefined) {
   if (!readyFile) {
     return {
       exists: false,
@@ -1125,26 +1391,33 @@ export function buildReadyFileEvidence(readyFile) {
   };
 }
 
-export function buildProvisioningFacts({ configSnapshot, actions = [] } = {}) {
+export function buildProvisioningFacts({
+  configSnapshot,
+  actions = [],
+}: {
+  configSnapshot?: JsonRecord | null;
+  actions?: JsonRecord[];
+} = {}) {
   const actionList = Array.isArray(actions) ? actions : [];
   const usedDaemonIpcTaskExecute = actionList.some((action) => {
-    const evidence = action?.evidence ?? {};
+    const evidence = recordValue(action?.evidence);
     return (
       evidence.usedDaemonIpcTaskExecute === true &&
       String(evidence.endpoint ?? "").endsWith("/v1/provisioning/claim") &&
       ["provisioned", "failed"].includes(String(evidence.claimStatus ?? ""))
     );
   });
+  const provisioningIssues = configSnapshot?.provisioningIssues;
   return {
     provisioned: configSnapshot?.provisioned === true,
     usedDaemonIpcTaskExecute,
-    machineCode: configSnapshot?.public?.machineCode ?? null,
+    machineCode: recordValue(configSnapshot?.public).machineCode ?? null,
     machineSecretConfigured: configSnapshot?.machineSecretConfigured === true,
     mqttSigningSecretConfigured:
       configSnapshot?.mqttSigningSecretConfigured === true,
     mqttPasswordConfigured: configSnapshot?.mqttPasswordConfigured === true,
-    provisioningIssues: Array.isArray(configSnapshot?.provisioningIssues)
-      ? configSnapshot.provisioningIssues.map(String)
+    provisioningIssues: Array.isArray(provisioningIssues)
+      ? provisioningIssues.map(String)
       : [],
   };
 }
@@ -1165,7 +1438,7 @@ export function buildResetPlan() {
   };
 }
 
-export function assertResetPlanPreservesTestbed(plan) {
+export function assertResetPlanPreservesTestbed(plan: ResetPlan): ResetPlan {
   const candidatePaths = [
     ...(plan.removeDirectories ?? []),
     ...(plan.removeFiles ?? []),
@@ -1209,25 +1482,15 @@ export function assertResetPlanPreservesTestbed(plan) {
   return plan;
 }
 
-function psString(value) {
+function psString(value: unknown) {
   return `'${String(value).replaceAll("'", "''")}'`;
 }
 
-function psArray(values) {
+function psArray(values: unknown[]) {
   return `@(${values.map(psString).join(", ")})`;
 }
 
-function psArgumentValue(value) {
-  if (Array.isArray(value)) {
-    return psArray(value);
-  }
-  if (String(value).startsWith("$env:")) {
-    return String(value);
-  }
-  return psString(value);
-}
-
-function sanitizeRunId(value) {
+function sanitizeRunId(value: unknown): string {
   const runId = String(value ?? "").trim();
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(runId)) {
     throw new Error(
@@ -1235,60 +1498,6 @@ function sanitizeRunId(value) {
     );
   }
   return runId;
-}
-
-function sha256File(path) {
-  const hash = createHash("sha256");
-  hash.update(readFileSync(path));
-  return hash.digest("hex");
-}
-
-function assertSha256Hash(value, label) {
-  const hash = String(value ?? "").trim();
-  if (!SHA256_PATTERN.test(hash)) {
-    throw new Error(`${label} requires lowercase SHA-256 hash`);
-  }
-  return hash;
-}
-
-function resolveMachineUiSidecarArtifactPath(machineUiArtifactPath) {
-  const sidecarPath = join(
-    dirname(machineUiArtifactPath),
-    "WebView2Loader.dll",
-  );
-  if (!existsSync(sidecarPath)) {
-    throw new Error(
-      `machine UI artifact requires WebView2Loader.dll next to machine.exe: ${sidecarPath}`,
-    );
-  }
-  return sidecarPath;
-}
-
-function resolveVmRuntimeAcceptanceArtifacts(options = {}) {
-  if (options.daemonArtifactSha256 && options.machineUiArtifactSha256) {
-    return {
-      source: "uploaded_local_artifacts",
-      daemonSha256: assertSha256Hash(
-        options.daemonArtifactSha256,
-        "VM runtime acceptance daemon artifact",
-      ),
-      machineUiSha256: assertSha256Hash(
-        options.machineUiArtifactSha256,
-        "VM runtime acceptance machine UI artifact",
-      ),
-    };
-  }
-  if (!options.daemonArtifact || !options.machineUiArtifact) {
-    throw new Error(
-      "VM runtime acceptance requires --daemon-artifact and --machine-ui-artifact",
-    );
-  }
-  resolveMachineUiSidecarArtifactPath(options.machineUiArtifact);
-  return {
-    source: "uploaded_local_artifacts",
-    daemonSha256: sha256File(options.daemonArtifact),
-    machineUiSha256: sha256File(options.machineUiArtifact),
-  };
 }
 
 export function buildAcceptanceScriptCommand(
@@ -1406,16 +1615,15 @@ if ($targets.Count -ne 1 -or [string]::IsNullOrWhiteSpace([string]$targets[0].id
 `.trim();
 }
 
-export function buildInstalledKioskSaleCleanupScript(prelaunch = {}) {
+export function buildInstalledKioskSaleCleanupScript(prelaunch: JsonRecord = {}) {
   const principal = String(prelaunch.principal ?? "");
   const sessionId = Number(prelaunch.sessionId);
-  const expectedRoute = String(prelaunch.expectedRoute ?? "#/catalog");
   if (!principal || !Number.isSafeInteger(sessionId) || sessionId < 1) {
     throw new Error(
       "installed kiosk cleanup requires the saved active interactive principal and session",
     );
   }
-  const task = prelaunch.task;
+  const task = recordValue(prelaunch.task);
   if (
     !task ||
     task.name !== EXPECTED_MACHINE_UI_TASK_NAME ||
@@ -1424,14 +1632,14 @@ export function buildInstalledKioskSaleCleanupScript(prelaunch = {}) {
     typeof task.arguments !== "string" ||
     typeof task.workingDirectory !== "string" ||
     typeof task.xmlBase64 !== "string" ||
-    !/^[a-f0-9]{64}$/i.test(task.xmlSha256 ?? "")
+    !/^[a-f0-9]{64}$/i.test(String(task.xmlSha256 ?? ""))
   ) {
     throw new Error(
       "installed kiosk cleanup requires the complete original VEMMachineUI task XML",
     );
   }
   const taskXmlBase64 = task.xmlBase64.replaceAll("'", "''");
-  const taskXmlSha256 = task.xmlSha256.toLowerCase();
+  const taskXmlSha256 = String(task.xmlSha256).toLowerCase();
   return String.raw`
 $ErrorActionPreference = 'Stop'
 $debugTask = '${INSTALLED_KIOSK_SALE_DEBUG_TASK}'
@@ -1469,7 +1677,10 @@ if ($simulatedOrFaultProcesses.Count -ne 0) { throw 'VEMMachineUI cleanup retain
 `.trim();
 }
 
-export function runInstalledKioskSaleRemoteScript(options, script) {
+export function runInstalledKioskSaleRemoteScript(
+  options: RunOptions,
+  script: string,
+) {
   const ssh = buildSshCommand(options);
   const diagnosticScript = String.raw`trap {
   [Console]::Error.WriteLine(("installed kiosk remote error: {0}" -f [string]$_.Exception.Message))
@@ -1482,12 +1693,12 @@ ${script}`;
   const localScriptPath = join(stagingRoot, "run.ps1");
   const remoteScriptPath = `C:\\Windows\\Temp\\vem-kiosk-${process.pid}-${Date.now()}.ps1`;
   writeFileSync(localScriptPath, `${diagnosticScript}\n`, "utf8");
-  const childOptions = {
+  const childOptions: SpawnSyncOptionsWithStringEncoding = {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     env: nonQueryChildEnvironment(),
   };
-  let result;
+  let result: SpawnSyncReturns<string>;
   try {
     const scp = buildScpCommand(localScriptPath, remoteScriptPath, options);
     const copy = spawnSync(scp[0], scp.slice(1), childOptions);
@@ -1535,14 +1746,30 @@ export async function captureInstalledKioskSaleHook({
   attestation,
   selector,
   route,
+}: {
+  options: RunOptions;
+  attestation: { targetId?: string };
+  selector: string;
+  route: string;
 }) {
   const sidecar = await openMachineUiCdpSidecar({
-    remote: options.remote,
-    sshPort: options.sshPort,
-    identityFile: options.identity,
-    certificateFile: options.certificate,
-    sshKnownHostsPath: options.sshKnownHostsPath,
-    sshHostKeyAlias: options.sshHostKeyAlias,
+    remote: options.remote === undefined ? undefined : String(options.remote),
+    sshPort:
+      options.sshPort === undefined ? undefined : Number(options.sshPort),
+    identityFile:
+      options.identity === undefined ? undefined : String(options.identity),
+    certificateFile:
+      options.certificate === undefined
+        ? undefined
+        : String(options.certificate),
+    sshKnownHostsPath:
+      options.sshKnownHostsPath === undefined
+        ? undefined
+        : String(options.sshKnownHostsPath),
+    sshHostKeyAlias:
+      options.sshHostKeyAlias === undefined
+        ? undefined
+        : String(options.sshHostKeyAlias),
     remoteCdpPort: 9222,
   });
   let client;
@@ -1563,11 +1790,12 @@ export async function captureInstalledKioskSaleHook({
       client,
       `(() => { const el = document.querySelector(${JSON.stringify(selector)}); return el ? { orderId: el.dataset.orderId, paymentId: el.dataset.paymentId, orderNo: el.dataset.orderNo, commandId: el.dataset.commandId || null, route: location.hash } : null; })()`,
     );
-    if (!hook || !hook.orderId || !hook.paymentId || !hook.orderNo)
+    const hookRecord = recordValue(hook);
+    if (!hook || !hookRecord.orderId || !hookRecord.paymentId || !hookRecord.orderNo)
       throw new Error(
         `required rendered customer UI hook is missing: ${selector}`,
       );
-    return { targetId: target.id, route: hook.route, ...hook };
+    return { targetId: target.id, route: hookRecord.route, ...hookRecord };
   } finally {
     await Promise.allSettled([
       client?.close() ?? Promise.resolve(),
@@ -1576,87 +1804,7 @@ export async function captureInstalledKioskSaleHook({
   }
 }
 
-async function runInstalledKioskCatalogScenario({ options, attestation }) {
-  const sidecar = await openMachineUiCdpSidecar({
-    remote: options.remote,
-    sshPort: options.sshPort,
-    identityFile: options.identity,
-    certificateFile: options.certificate,
-    sshKnownHostsPath: options.sshKnownHostsPath,
-    sshHostKeyAlias: options.sshHostKeyAlias,
-    remoteCdpPort: 9222,
-  });
-  let client;
-  try {
-    const target = await discoverMachineUiTarget({
-      endpoint: sidecar.endpoint,
-      expectedTargetId: attestation.targetId,
-    });
-    client = new CdpClient(
-      rewriteWebSocketDebuggerUrl(
-        target.webSocketDebuggerUrl,
-        sidecar.endpoint,
-      ),
-    );
-    await client.connect();
-    await enablePageRuntime(client);
-    const evidence = [];
-    for (const step of [
-      {
-        name: "catalog category",
-        selector: '[data-test="catalog-category"]:not(:disabled)',
-        before: "#/catalog",
-        after: "#/catalog",
-      },
-      {
-        name: "catalog product",
-        selector: '[data-test="catalog-product"]',
-        before: "#/catalog",
-        after: /^#\/products\//,
-      },
-      {
-        name: "buy",
-        selector: '[data-test="product-buy"]',
-        before: /^#\/products\//,
-        after: "#/checkout",
-      },
-    ]) {
-      const before = await waitForRoute(client, step.before, {
-        timeoutMs: 30_000,
-      });
-      const activation = await activateVisibleSelector(client, step.selector, {
-        kind: "touch",
-        timeoutMs: 30_000,
-      });
-      const after = await waitForRoute(client, step.after, {
-        timeoutMs: 30_000,
-      });
-      evidence.push({
-        type: "customer-activation",
-        label: step.name,
-        selector: step.selector,
-        input: activation.input,
-        routeBefore: before.route,
-        routeAfter: after.route,
-      });
-    }
-    return {
-      schemaVersion: "installed-kiosk-catalog-scenario/v1",
-      targetId: target.id,
-      evidence,
-      final: await captureCheckpoint(client, "checkout-ready", {
-        timeoutMs: 30_000,
-      }),
-    };
-  } finally {
-    await Promise.allSettled([
-      client?.close() ?? Promise.resolve(),
-      sidecar.close(),
-    ]);
-  }
-}
-
-export function buildVmRuntimeAcceptancePlan(options = {}) {
+export function buildVmRuntimeAcceptancePlan(options: RunOptions = {}) {
   const { canonicalRunId, machineCode, machineCodePrefix } =
     buildEphemeralMachineCodeBinding(options);
   const runId = canonicalRunId;
@@ -1726,31 +1874,6 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
       postSaleRuntimeAcceptanceReport,
     ],
   );
-  const salePrepareCommand = buildAcceptanceScriptCommand(
-    "simulated-hardware-sale-flow",
-    { ...options, runId, machineCode, platformTarget },
-    [
-      "--ephemeral-platform-evidence",
-      ephemeralPlatformEvidence,
-      "--sale-phase",
-      "fixture",
-      "--already-claimed",
-      "--out",
-      `${evidenceRoot}/simulated-hardware-sale-prepare-response.json`,
-    ],
-  );
-  const saleCompleteCommand = buildAcceptanceScriptCommand(
-    "simulated-hardware-sale-flow",
-    { ...options, runId, machineCode, platformTarget },
-    [
-      "--ephemeral-platform-evidence",
-      ephemeralPlatformEvidence,
-      "--sale-phase",
-      "complete",
-      "--out",
-      saleFlowReport,
-    ],
-  );
   const failureMatrixArtifacts = {
     "malformed-frame": {
       report: `${evidenceRoot}/failure-matrix/malformed-frame/serial-conformance-failure.json`,
@@ -1778,7 +1901,11 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
     },
   };
   const serialLifecycleReference = `vm-lifecycle://${runId.toLowerCase()}.runtime-acceptance`;
-  const buildInstalledKioskSaleCommand = (profile, out, alreadyClaimed) => {
+  const buildInstalledKioskSaleCommand = (
+    profile: string,
+    out: string,
+    alreadyClaimed: boolean,
+  ) => {
     const command = [
       process.execPath,
       "scripts/testbed/installed-kiosk-sale-acceptance.ts",
@@ -1793,15 +1920,17 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
       "--runtime-acceptance-report",
       runtimeAcceptanceReport,
       "--identity",
-      options.identity ?? "certificate-ssh-identity-required",
+      String(options.identity ?? "certificate-ssh-identity-required"),
       "--certificate",
-      options.certificate ?? "certificate-ssh-certificate-required",
+      String(options.certificate ?? "certificate-ssh-certificate-required"),
       "--adapter",
       process.env.VEM_VM_HOST_ADAPTER ?? "runner-service-adapter",
       "--target-identity",
       process.env.VEM_VM_HOST_TARGET_ID ?? "vm-target://runtime-testbed",
       "--runtime-base",
-      options.approvedRuntimeBase ?? "runner-approved-runtime-base-required",
+      String(
+        options.approvedRuntimeBase ?? "runner-approved-runtime-base-required",
+      ),
       "--lifecycle-reference",
       serialLifecycleReference,
       "--profile",
@@ -1811,24 +1940,30 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
       out,
     ];
     if (options.scannerCodeFile) {
-      command.push("--scanner-code-file", options.scannerCodeFile);
+      command.push("--scanner-code-file", String(options.scannerCodeFile));
     }
     if (options.runtimeGuestEndpointJson) {
       command.push(
         "--runtime-guest-endpoint-json",
-        options.runtimeGuestEndpointJson,
+        String(options.runtimeGuestEndpointJson),
         "--expected-testbed-user",
-        options.expectedTestbedUser ?? "Admin",
+        String(options.expectedTestbedUser ?? "Admin"),
       );
     } else {
-      command.push("--remote", options.remote ?? DEFAULT_RUNTIME_REMOTE);
+      command.push(
+        "--remote",
+        String(options.remote ?? DEFAULT_RUNTIME_REMOTE),
+      );
       if (options.sshPort) command.push("--ssh-port", String(options.sshPort));
     }
     if (options.sshKnownHostsPath) {
-      command.push("--ssh-known-hosts-path", options.sshKnownHostsPath);
+      command.push(
+        "--ssh-known-hosts-path",
+        String(options.sshKnownHostsPath),
+      );
     }
     if (options.sshHostKeyAlias) {
-      command.push("--ssh-host-key-alias", options.sshHostKeyAlias);
+      command.push("--ssh-host-key-alias", String(options.sshHostKeyAlias));
     }
     return command;
   };
@@ -1857,118 +1992,6 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
     delayedPickupNativeAudioReport,
     true,
   );
-  const failureMatrixCommands = {
-    "swapped-roles": {
-      salePrepareCommand: buildAcceptanceScriptCommand(
-        "simulated-hardware-sale-flow",
-        { ...options, runId, machineCode, platformTarget },
-        [
-          "--ephemeral-platform-evidence",
-          ephemeralPlatformEvidence,
-          "--sale-phase",
-          "fixture",
-          "--already-claimed",
-          "--out",
-          failureMatrixArtifacts["swapped-roles"].salePrepare,
-        ],
-      ),
-      runtimeRecoveryCommand: buildAcceptanceScriptCommand(
-        "runtime-acceptance",
-        { ...options, runId, machineCode, platformTarget },
-        ["--out", failureMatrixArtifacts["swapped-roles"].runtimeRecovery],
-      ),
-    },
-    "missing-device": {
-      salePrepareCommand: buildAcceptanceScriptCommand(
-        "simulated-hardware-sale-flow",
-        { ...options, runId, machineCode, platformTarget },
-        [
-          "--ephemeral-platform-evidence",
-          ephemeralPlatformEvidence,
-          "--sale-phase",
-          "fixture",
-          "--already-claimed",
-          "--out",
-          failureMatrixArtifacts["missing-device"].salePrepare,
-        ],
-      ),
-      runtimeRecoveryCommand: buildAcceptanceScriptCommand(
-        "runtime-acceptance",
-        { ...options, runId, machineCode, platformTarget },
-        ["--out", failureMatrixArtifacts["missing-device"].runtimeRecovery],
-      ),
-    },
-    "scanner-timeout": {
-      salePrepareCommand: buildAcceptanceScriptCommand(
-        "simulated-hardware-sale-flow",
-        { ...options, runId, machineCode, platformTarget },
-        [
-          "--ephemeral-platform-evidence",
-          ephemeralPlatformEvidence,
-          "--sale-phase",
-          "fixture",
-          "--already-claimed",
-          "--out",
-          failureMatrixArtifacts["scanner-timeout"].salePrepare,
-        ],
-      ),
-    },
-    "dispense-failed": {
-      saleCompleteCommand: buildAcceptanceScriptCommand(
-        "simulated-hardware-sale-flow",
-        { ...options, runId, machineCode, platformTarget },
-        [
-          "--ephemeral-platform-evidence",
-          ephemeralPlatformEvidence,
-          "--sale-phase",
-          "complete",
-          "--out",
-          failureMatrixArtifacts["dispense-failed"].saleComplete,
-        ],
-      ),
-    },
-  };
-  const saleCorrelationId = `sale-correlation://vm-runtime-${runId.toLowerCase()}`;
-  const saleFlowCommand = [
-    process.execPath,
-    "scripts/testbed/vm-host-adapter-serial-conformance.ts",
-    "--adapter",
-    process.env.VEM_VM_HOST_ADAPTER ?? "runner-service-adapter",
-    "--scanner-code-file",
-    options.scannerCodeFile ?? "runner-owned-scanner-code-file-required",
-    "--runner-signing-key-file",
-    options.serialRunnerSigningKeyFile ??
-      "runner-owned-serial-signing-key-file-required",
-    "--expected-runner-public-key",
-    options.expectedSerialRunnerPublicKey ??
-      "expected-serial-runner-public-key-required",
-    "--run-id",
-    runId,
-    "--target-identity",
-    process.env.VEM_VM_HOST_TARGET_ID ?? "vm-target://runtime-testbed",
-    "--runtime-base",
-    options.approvedRuntimeBase ?? "runner-approved-runtime-base-required",
-    "--lifecycle-reference",
-    serialLifecycleReference,
-    "--sale-correlation-id",
-    saleCorrelationId,
-    "--machine-code",
-    machineCode,
-    "--ephemeral-platform-evidence",
-    ephemeralPlatformEvidence,
-    "--sale-prepare-command-json",
-    JSON.stringify(salePrepareCommand),
-    "--sale-complete-command-json",
-    JSON.stringify(saleCompleteCommand),
-    "--runtime-recovery-command-json",
-    JSON.stringify(runtimeCommand),
-    "--failure-matrix-commands-json",
-    JSON.stringify(failureMatrixCommands),
-    "--failure-matrix-artifact-paths-json",
-    JSON.stringify(failureMatrixArtifacts),
-    "--out",
-    serialConformanceReport,
-  ];
   return {
     schemaVersion: "vm-runtime-acceptance-plan/v1",
     mode: "vm-runtime-acceptance",
@@ -2122,16 +2145,16 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
   };
 }
 
-function readJsonIfPresent(path) {
+function readJsonIfPresent(path: string): JsonRecord | null {
   try {
-    return JSON.parse(readFileSync(path, "utf8"));
+    return JSON.parse(readFileSync(path, "utf8")) as JsonRecord;
   } catch {
     return null;
   }
 }
 
-function readFailureMatrixArtifacts(paths) {
-  if (!paths || typeof paths !== "object") return null;
+function readFailureMatrixArtifacts(paths: unknown): JsonRecord | null {
+  if (!paths || typeof paths !== "object" || Array.isArray(paths)) return null;
   const artifactKinds = [
     "report",
     "salePrepare",
@@ -2149,11 +2172,8 @@ function readFailureMatrixArtifacts(paths) {
 }
 
 const REDACTED = "[REDACTED]";
-const REDACTED_KEY = "[REDACTED_KEY]";
-const SENSITIVE_REPORT_KEY_PATTERN =
-  /claim[-_]?code|token|secret|password|passwd|pwd|credential|api[-_]?key|access[-_]?key|private[-_]?key|client[-_]?secret|wifi[-_]?password|network[-_]?password|ssid[-_]?password/i;
 
-function redactSensitiveText(value) {
+function redactSensitiveText(value: unknown): string {
   return String(value)
     .replace(
       /\b([a-z][a-z0-9+.-]*:\/\/)([^/\s:@]+):([^@\s/]+)@/gi,
@@ -2187,51 +2207,15 @@ function redactSensitiveText(value) {
     );
 }
 
-function isSensitiveReportKey(key) {
-  const keyText = String(key);
-  return (
-    SENSITIVE_REPORT_KEY_PATTERN.test(keyText) ||
-    redactSensitiveText(keyText) !== keyText
-  );
-}
-
-function sanitizeReportKey(key) {
-  return isSensitiveReportKey(key) ? REDACTED_KEY : key;
-}
-
-function sanitizeReportValue(value) {
-  if (value === null || value === undefined) {
-    return value;
-  }
-  if (typeof value === "string") {
-    return redactSensitiveText(value);
-  }
-  if (typeof value !== "object") {
-    return value;
-  }
-  if (Array.isArray(value)) {
-    return value.map((item) => sanitizeReportValue(item));
-  }
-  return Object.fromEntries(
-    Object.entries(value).map(([key, item]) => {
-      const sensitiveKey = isSensitiveReportKey(key);
-      return [
-        sanitizeReportKey(key),
-        sensitiveKey ? REDACTED : sanitizeReportValue(item),
-      ];
-    }),
-  );
-}
-
-function sanitizeVmRuntimeAcceptancePlan(plan) {
+function sanitizeVmRuntimeAcceptancePlan(plan: JsonRecord): JsonRecord {
   return JSON.parse(
     JSON.stringify(plan, (_key, value) =>
       typeof value === "string" ? redactSensitiveText(value) : value,
     ),
-  );
+  ) as JsonRecord;
 }
 
-function sanitizeVmRuntimeAcceptanceStep(step = {}) {
+function sanitizeVmRuntimeAcceptanceStep(step: VmRuntimeAcceptanceStep = {}) {
   return {
     name: step.name,
     mode: step.mode,
@@ -2249,7 +2233,7 @@ function sanitizeVmRuntimeAcceptanceStep(step = {}) {
   };
 }
 
-function sanitizeVmRuntimeAcceptanceDiagnostics(diagnostics) {
+function sanitizeVmRuntimeAcceptanceDiagnostics(diagnostics: Diagnostic[]) {
   return diagnostics.map((diagnostic) => ({
     ...diagnostic,
     detail:
@@ -2259,23 +2243,33 @@ function sanitizeVmRuntimeAcceptanceDiagnostics(diagnostics) {
   }));
 }
 
-function appendDisplayEvidence(displayEvidence, source, evidence) {
+function appendDisplayEvidence(
+  displayEvidence: { source: string; evidence: unknown }[],
+  source: string,
+  evidence: unknown,
+) {
   if (evidence) {
     displayEvidence.push({ source, evidence });
   }
 }
 
-function appendSessionsFromDisplayEvidence(sessions, source, displayEvidence) {
-  const sessionList = displayEvidence?.interactiveWindowsSessions?.sessions;
+function appendSessionsFromDisplayEvidence(
+  sessions: JsonRecord[],
+  source: string,
+  displayEvidence: unknown,
+) {
+  const sessionList = recordValue(
+    recordValue(displayEvidence).interactiveWindowsSessions,
+  ).sessions;
   if (!Array.isArray(sessionList)) {
     return;
   }
   for (const session of sessionList) {
-    sessions.push({ source, ...normalizeSessionEvidence(session) });
+    sessions.push({ ...normalizeSessionEvidence(session), source });
   }
 }
 
-function vmStepArtifactSummary(step = {}) {
+function vmStepArtifactSummary(step: VmRuntimeAcceptanceStep) {
   return {
     name: step.name,
     mode: step.mode,
@@ -2286,45 +2280,52 @@ function vmStepArtifactSummary(step = {}) {
   };
 }
 
-function buildVmRuntimeAcceptanceEvidenceIndexes({ plan, steps }) {
-  const displayEvidence = [];
-  const sessions = [];
-  const screenshotArtifacts = [];
+function buildVmRuntimeAcceptanceEvidenceIndexes({
+  plan,
+  steps,
+}: {
+  plan: VmRuntimeAcceptancePlan;
+  steps: VmRuntimeAcceptanceStep[];
+}) {
+  const displayEvidence: { source: string; evidence: unknown }[] = [];
+  const sessions: JsonRecord[] = [];
+  const screenshotArtifacts: { source: string; path: string }[] = [];
   const stepArtifacts = steps.map(vmStepArtifactSummary);
 
   for (const step of steps) {
+    const parsed = recordValue(step.parsed);
     appendDisplayEvidence(
       displayEvidence,
       `${step.name}:inventory-display-evidence`,
-      step.parsed?.inventory?.displayEvidence,
+      recordValue(parsed.inventory).displayEvidence,
     );
     appendDisplayEvidence(
       displayEvidence,
       `${step.name}:runtime-acceptance-display-evidence`,
-      step.parsed?.runtimeAcceptanceReport?.displayEvidence,
+      recordValue(parsed.runtimeAcceptanceReport).displayEvidence,
     );
     appendDisplayEvidence(
       displayEvidence,
       `${step.name}:facts-subset-display-evidence`,
-      step.parsed?.runtimeAcceptanceFactsSubset?.displayEvidence,
+      recordValue(parsed.runtimeAcceptanceFactsSubset).displayEvidence,
     );
     appendSessionsFromDisplayEvidence(
       sessions,
       `${step.name}:inventory-display-evidence`,
-      step.parsed?.inventory?.displayEvidence,
+      recordValue(parsed.inventory).displayEvidence,
     );
     appendSessionsFromDisplayEvidence(
       sessions,
       `${step.name}:runtime-acceptance-display-evidence`,
-      step.parsed?.runtimeAcceptanceReport?.displayEvidence,
+      recordValue(parsed.runtimeAcceptanceReport).displayEvidence,
     );
 
-    const stepScreenshots = step.parsed?.screenshots;
+    const stepScreenshots = parsed.screenshots;
     if (Array.isArray(stepScreenshots)) {
       for (const screenshot of stepScreenshots) {
         screenshotArtifacts.push({
           source: `${step.name}:screenshots`,
-          path: String(screenshot?.path ?? screenshot),
+          path: String(recordValue(screenshot).path ?? screenshot),
         });
       }
     }
@@ -2336,7 +2337,7 @@ function buildVmRuntimeAcceptanceEvidenceIndexes({ plan, steps }) {
       status: screenshotArtifacts.length > 0 ? "indexed" : "missing",
       missingReason:
         screenshotArtifacts.length > 0 ? null : "no_screenshot_artifacts",
-      root: plan.artifacts.screenshotsRoot,
+      root: String(plan.artifacts?.screenshotsRoot),
       screenshots: screenshotArtifacts,
       displayEvidence,
       stepArtifacts,
@@ -2345,75 +2346,93 @@ function buildVmRuntimeAcceptanceEvidenceIndexes({ plan, steps }) {
       schemaVersion: "vm-runtime-acceptance-session-index/v1",
       status: sessions.length > 0 ? "indexed" : "missing",
       missingReason: sessions.length > 0 ? null : "no_session_evidence",
-      root: plan.artifacts.sessionsRoot,
+      root: String(plan.artifacts?.sessionsRoot),
       sessions,
       stepArtifacts,
     },
   };
 }
 
-export function writeVmRuntimeAcceptanceEvidenceIndexes({ plan, steps }) {
+export function writeVmRuntimeAcceptanceEvidenceIndexes({
+  plan,
+  steps,
+}: {
+  plan: VmRuntimeAcceptancePlan;
+  steps: VmRuntimeAcceptanceStep[];
+}) {
   const indexes = buildVmRuntimeAcceptanceEvidenceIndexes({ plan, steps });
-  mkdirSync(plan.artifacts.screenshotsRoot, { recursive: true });
-  mkdirSync(plan.artifacts.sessionsRoot, { recursive: true });
+  mkdirSync(String(plan.artifacts?.screenshotsRoot), { recursive: true });
+  mkdirSync(String(plan.artifacts?.sessionsRoot), { recursive: true });
   writeFileSync(
-    `${plan.artifacts.screenshotsRoot}/index.json`,
+    `${String(plan.artifacts?.screenshotsRoot)}/index.json`,
     `${JSON.stringify(indexes.screenshots, null, 2)}\n`,
     "utf8",
   );
   writeFileSync(
-    `${plan.artifacts.sessionsRoot}/index.json`,
+    `${String(plan.artifacts?.sessionsRoot)}/index.json`,
     `${JSON.stringify(indexes.sessions, null, 2)}\n`,
     "utf8",
   );
   return indexes;
 }
 
-function windowsComPathFromGuestIdentity(identity) {
+function windowsComPathFromGuestIdentity(identity: unknown): string | null {
   const match = String(identity ?? "").match(
     /^(?:windows-com|guest-com|serial-com):\/\/(COM[1-9][0-9]*)$/i,
   );
   return match ? match[1].toUpperCase() : null;
 }
 
-function serialAcceptanceDiagnostic(code, message) {
+function serialAcceptanceDiagnostic(code: string, message: string): Diagnostic {
   return { code, message };
 }
 
-function hasOneObservedIdentity(observation, expected) {
+function hasOneObservedIdentity(
+  observation: unknown,
+  expected: unknown,
+): boolean {
+  const observationRecord = recordValue(observation);
+  const occurrences = observationRecord.occurrences;
+  const unique = observationRecord.unique;
   return (
-    Array.isArray(observation?.occurrences) &&
-    observation.occurrences.length === 1 &&
-    Array.isArray(observation?.unique) &&
-    observation.unique.length === 1 &&
-    observation.unique[0] === expected &&
-    observation.count === 1
+    Array.isArray(occurrences) &&
+    occurrences.length === 1 &&
+    Array.isArray(unique) &&
+    unique.length === 1 &&
+    unique[0] === expected &&
+    observationRecord.count === 1
   );
 }
 
-function hasReservationExactOnce(reservation, observation, count, orderId) {
+function hasReservationExactOnce(
+  reservation: unknown,
+  observation: unknown,
+  count: unknown,
+  orderId: unknown,
+): boolean {
+  const reservationRecord = recordValue(reservation);
   if (
-    !reservation ||
-    typeof reservation.source !== "string" ||
-    !Number.isSafeInteger(reservation.rawRecordCount) ||
-    typeof reservation.reservationId !== "string" ||
-    typeof reservation.orderId !== "string" ||
-    typeof reservation.orderItemId !== "string" ||
-    typeof reservation.inventoryId !== "string" ||
-    !Number.isSafeInteger(reservation.quantity)
+    Object.keys(reservationRecord).length === 0 ||
+    typeof reservationRecord.source !== "string" ||
+    !Number.isSafeInteger(reservationRecord.rawRecordCount) ||
+    typeof reservationRecord.reservationId !== "string" ||
+    typeof reservationRecord.orderId !== "string" ||
+    typeof reservationRecord.orderItemId !== "string" ||
+    typeof reservationRecord.inventoryId !== "string" ||
+    !Number.isSafeInteger(reservationRecord.quantity)
   ) {
     return false;
   }
   return (
-    reservation.exposed === true &&
-    reservation.source ===
+    reservationRecord.exposed === true &&
+    reservationRecord.source ===
       "authoritative_ephemeral_platform.inventory_reservations" &&
-    reservation.rawRecordCount === 1 &&
-    reservation.orderId === orderId &&
-    reservation.quantity === 1 &&
-    reservation.status === "confirmed" &&
+    reservationRecord.rawRecordCount === 1 &&
+    reservationRecord.orderId === orderId &&
+    reservationRecord.quantity === 1 &&
+    reservationRecord.status === "confirmed" &&
     count === 1 &&
-    hasOneObservedIdentity(observation, reservation.reservationId)
+    hasOneObservedIdentity(observation, reservationRecord.reservationId)
   );
 }
 
@@ -2424,17 +2443,25 @@ export function evaluateSimulatedHardwareSerialEvidence({
   expectedAdapterIdentity,
   failureArtifacts = null,
   requireFailureArtifacts = false,
+}: {
+  saleFlow?: JsonRecord | null;
+  serialConformance?: JsonRecord | null;
+  expectedRunnerPublicKey?: unknown;
+  expectedAdapterIdentity?: unknown;
+  failureArtifacts?: JsonRecord | null;
+  requireFailureArtifacts?: boolean;
 } = {}) {
-  const diagnostics = [];
-  const facts = saleFlow?.simulatedHardwareSaleFlow ?? saleFlow;
-  const serialConfiguration = facts?.daemonSerialConfiguration;
-  const sale = facts?.sale;
-  let validatedConformance = null;
+  const diagnostics: Diagnostic[] = [];
+  const facts = recordValue(saleFlow?.simulatedHardwareSaleFlow ?? saleFlow);
+  const serialConfiguration = recordValue(facts.daemonSerialConfiguration);
+  const sale = recordValue(facts.sale);
+  let validatedConformance: JsonRecord | null = null;
   try {
     validatedConformance = validateSerialConformanceReport(serialConformance, {
       expectedRunnerPublicKey,
       expectedAdapterIdentity,
     });
+    if (!validatedConformance) throw new Error("missing serial conformance");
   } catch {
     diagnostics.push(
       serialAcceptanceDiagnostic(
@@ -2443,11 +2470,12 @@ export function evaluateSimulatedHardwareSerialEvidence({
       ),
     );
   }
-  const session = validatedConformance?.reports.start.serialSession;
-  const collect = validatedConformance?.reports.collect;
-  const records = collect?.serialEvidence?.records;
-  const firstStop = validatedConformance?.reports.firstStop;
-  const repeatedStop = validatedConformance?.reports.repeatedStop;
+  const conformanceReports = recordValue(validatedConformance?.reports);
+  const session = recordValue(recordValue(conformanceReports.start).serialSession);
+  const collect = recordValue(conformanceReports.collect);
+  const records = recordValue(collect.serialEvidence).records;
+  const firstStop = recordValue(conformanceReports.firstStop);
+  const repeatedStop = recordValue(conformanceReports.repeatedStop);
 
   if (
     facts?.phase !== "complete" ||
@@ -2500,7 +2528,7 @@ export function evaluateSimulatedHardwareSerialEvidence({
   }
   const mappings = session?.deviceMappings;
   if (
-    validatedConformance?.reports?.start?.result !== "succeeded" ||
+    recordValue(conformanceReports.start).result !== "succeeded" ||
     !Array.isArray(mappings) ||
     !session?.serialSessionId ||
     !session?.deviceMappingDigest
@@ -2533,7 +2561,7 @@ export function evaluateSimulatedHardwareSerialEvidence({
       );
     }
   }
-  const hasBoundFrame = (role, event) =>
+  const hasBoundFrame = (role: string, event: string) =>
     Array.isArray(records) &&
     records.some(
       (record) =>
@@ -2553,8 +2581,9 @@ export function evaluateSimulatedHardwareSerialEvidence({
     );
   if (
     collect?.result !== "succeeded" ||
-    collect?.serialEvidence?.serialSessionId !== session?.serialSessionId ||
-    collect?.serialEvidence?.deviceMappingDigest !==
+    recordValue(collect.serialEvidence).serialSessionId !==
+      session?.serialSessionId ||
+    recordValue(collect.serialEvidence).deviceMappingDigest !==
       session?.deviceMappingDigest ||
     !hasBoundFrame("scanner", "scanner-injection") ||
     !hasBoundFrame("lower-controller", "dispense-request") ||
@@ -2581,12 +2610,18 @@ export function evaluateSimulatedHardwareSerialEvidence({
       ? failureMatrix.map((entry) => [entry?.failureMode, entry])
       : [],
   );
-  const lifecycleMatchesSession = (report) =>
-    report?.result === "succeeded" &&
-    report?.serialSession?.serialSessionId === session?.serialSessionId &&
-    report?.serialSession?.deviceMappingDigest ===
-      session?.deviceMappingDigest &&
-    report?.serialSession?.simulatorCleanup?.survivingProcessCount === 0;
+  const lifecycleMatchesSession = (
+    report: JsonRecord | null | undefined,
+  ): boolean => {
+    const serialSession = recordValue(report?.serialSession);
+    const simulatorCleanup = recordValue(serialSession.simulatorCleanup);
+    return (
+      report?.result === "succeeded" &&
+      serialSession.serialSessionId === session?.serialSessionId &&
+      serialSession.deviceMappingDigest === session?.deviceMappingDigest &&
+      simulatorCleanup.survivingProcessCount === 0
+    );
+  };
   const failureMatrixComplete =
     Array.isArray(failureMatrix) &&
     failureMatrix.length === expectedFailureDiagnostics.size &&
@@ -2665,8 +2700,8 @@ export function evaluateSimulatedHardwareSerialEvidence({
   if (
     !lifecycleMatchesSession(firstStop) ||
     !lifecycleMatchesSession(repeatedStop) ||
-    repeatedStop?.serialSession?.simulatorCleanup?.idempotencyVerified !==
-      true ||
+    recordValue(recordValue(repeatedStop?.serialSession).simulatorCleanup)
+      .idempotencyVerified !== true ||
     !failureMatrixComplete
   ) {
     diagnostics.push(
@@ -2679,13 +2714,19 @@ export function evaluateSimulatedHardwareSerialEvidence({
   const malformedFrame = failureByMode.get("malformed-frame");
   const scannerTimeout = failureByMode.get("scanner-timeout");
   const dispenseFailed = failureByMode.get("dispense-failed");
+  const dispenseFailedArtifacts = recordValue(
+    failureArtifacts?.["dispense-failed"],
+  );
+  const dispenseFailedSaleComplete = recordValue(
+    dispenseFailedArtifacts.saleComplete,
+  );
+  const dispenseFailedFlow = dispenseFailedSaleComplete.simulatedHardwareSaleFlow;
   const dispenseFailedSale =
-    failureArtifacts?.["dispense-failed"]?.saleComplete
-      ?.simulatedHardwareSaleFlow ??
-    failureArtifacts?.["dispense-failed"]?.saleComplete ??
-    null;
-  const dispenseFailedSaleFacts = dispenseFailedSale?.sale ?? null;
-  const dispenseFailedPlatform = dispenseFailedSale?.platformState ?? null;
+    dispenseFailedFlow !== null && dispenseFailedFlow !== undefined
+      ? recordValue(dispenseFailedFlow)
+      : dispenseFailedSaleComplete;
+  const dispenseFailedSaleFacts = recordValue(dispenseFailedSale.sale);
+  const dispenseFailedPlatform = recordValue(dispenseFailedSale.platformState);
   const dispenseFailedOutcomeValid =
     dispenseFailedSale?.phase === "complete" &&
     dispenseFailed?.orderId &&
@@ -2708,8 +2749,10 @@ export function evaluateSimulatedHardwareSerialEvidence({
     dispenseFailedSaleFacts?.dispenseSucceeded !== true &&
     dispenseFailedPlatform?.fulfillmentStatus === "dispense_failed" &&
     dispenseFailedPlatform?.stockMovementAccepted !== true &&
-    dispenseFailedPlatform?.postSaleDispenseMovement?.status === "missing" &&
-    dispenseFailedPlatform?.postSaleDispenseMovement?.movementId == null;
+    recordValue(dispenseFailedPlatform.postSaleDispenseMovement).status ===
+      "missing" &&
+    recordValue(dispenseFailedPlatform.postSaleDispenseMovement).movementId ==
+      null;
   if (requireFailureArtifacts && !dispenseFailedOutcomeValid) {
     diagnostics.push(
       serialAcceptanceDiagnostic(
@@ -2797,8 +2840,9 @@ export function evaluateSimulatedHardwareSerialEvidence({
                 stockMovementAccepted:
                   dispenseFailedPlatform?.stockMovementAccepted ?? null,
                 movementStatus:
-                  dispenseFailedPlatform?.postSaleDispenseMovement?.status ??
-                  null,
+                  recordValue(
+                    dispenseFailedPlatform.postSaleDispenseMovement,
+                  ).status ?? null,
               }
             : null,
       },
@@ -2806,11 +2850,16 @@ export function evaluateSimulatedHardwareSerialEvidence({
   };
 }
 
-function evaluateInstalledKioskSaleEvidence(step, plan) {
-  const report = step?.parsed;
-  const serialPath = report?.evidence?.serialConformancePath;
-  const serial = serialPath ? readJsonIfPresent(serialPath) : null;
-  const diagnostics = [];
+function evaluateInstalledKioskSaleEvidence(
+  step: VmRuntimeAcceptanceStep | null | undefined,
+  plan: VmRuntimeAcceptancePlan,
+) {
+  const report = recordValue(step?.parsed);
+  const serialPath = recordValue(report.evidence).serialConformancePath;
+  const serial = serialPath
+    ? readJsonIfPresent(String(serialPath))
+    : null;
+  const diagnostics: Diagnostic[] = [];
   if (
     step?.status !== "passed" ||
     report?.ok !== true ||
@@ -2825,7 +2874,7 @@ function evaluateInstalledKioskSaleEvidence(step, plan) {
   }
   try {
     validateSerialConformanceReport(serial, {
-      expectedRunnerPublicKey: serial?.runnerEvidence?.publicKey,
+      expectedRunnerPublicKey: recordValue(serial?.runnerEvidence).publicKey,
       expectedAdapterIdentity: plan.expectedAdapterIdentity,
     });
   } catch {
@@ -2836,14 +2885,16 @@ function evaluateInstalledKioskSaleEvidence(step, plan) {
       ),
     );
   }
-  const rendered = report?.correlation?.rendered;
-  const platform = report?.correlation?.platform;
-  const paymentCodeAttempt = platform?.paymentCodeAttempt;
-  const exactOnce = report?.correlation?.exactOnce;
-  const observations = platform?.observations;
-  const reservation = platform?.reservation;
-  const scenarioEvidence = Array.isArray(report?.machineUiCdpScenario?.evidence)
-    ? report.machineUiCdpScenario.evidence
+  const correlation = recordValue(report.correlation);
+  const rendered = recordValue(correlation.rendered);
+  const platform = recordValue(correlation.platform);
+  const paymentCodeAttempt = recordValue(platform.paymentCodeAttempt);
+  const exactOnce = recordValue(correlation.exactOnce);
+  const observations = recordValue(platform.observations);
+  const reservation = recordValue(platform.reservation);
+  const machineUiCdpScenario = recordValue(report.machineUiCdpScenario);
+  const scenarioEvidence = Array.isArray(machineUiCdpScenario.evidence)
+    ? machineUiCdpScenario.evidence
     : [];
   if (
     !rendered?.orderId ||
@@ -2874,8 +2925,8 @@ function evaluateInstalledKioskSaleEvidence(step, plan) {
     ) ||
     exactOnce.commandCount !== 1 ||
     exactOnce.movementCount !== 1 ||
-    exactOnce.serialSaleBindingCount?.injected !== 1 ||
-    exactOnce.serialSaleBindingCount?.collected !== 1 ||
+    recordValue(exactOnce.serialSaleBindingCount).injected !== 1 ||
+    recordValue(exactOnce.serialSaleBindingCount).collected !== 1 ||
     !hasOneObservedIdentity(observations?.orderIds, rendered?.orderId) ||
     !hasOneObservedIdentity(observations?.paymentIds, rendered?.paymentId) ||
     !hasOneObservedIdentity(
@@ -2989,10 +3040,15 @@ function evaluateInstalledKioskSaleEvidence(step, plan) {
   };
 }
 
-function evaluateDelayedPickupNativeAudioEvidence(step) {
-  const report = step?.parsed;
-  const acceptance = step?.parsed?.delayedPickupNativeAudio;
-  const diagnostics = [];
+function evaluateDelayedPickupNativeAudioEvidence(
+  step: VmRuntimeAcceptanceStep | null | undefined,
+) {
+  const report = recordValue(step?.parsed);
+  const acceptance = recordValue(step?.parsed?.delayedPickupNativeAudio);
+  const audio = recordValue(acceptance.audio);
+  const cueWindows = audio.cueWindows;
+  const diagnosticsValue = acceptance.diagnostics;
+  const diagnostics: Diagnostic[] = [];
   if (
     step?.status !== "passed" ||
     report?.ok !== true ||
@@ -3010,13 +3066,13 @@ function evaluateDelayedPickupNativeAudioEvidence(step) {
     acceptance?.result !== "passed" ||
     !acceptance?.binding ||
     !acceptance?.runtime ||
-    acceptance?.audio?.source !== "windows_default_output" ||
-    acceptance?.audio?.physicalSpeakerAudibility !== "hitl_required_issue_22" ||
-    !Array.isArray(acceptance?.audio?.cueWindows) ||
-    acceptance.audio.cueWindows.length !== 5 ||
-    acceptance.audio.cueWindows.some((window) => window?.kind !== "passed") ||
-    !Array.isArray(acceptance?.diagnostics) ||
-    acceptance.diagnostics.length !== 0
+    audio?.source !== "windows_default_output" ||
+    audio?.physicalSpeakerAudibility !== "hitl_required_issue_22" ||
+    !Array.isArray(cueWindows) ||
+    cueWindows.length !== 5 ||
+    cueWindows.some((window) => window?.kind !== "passed") ||
+    !Array.isArray(diagnosticsValue) ||
+    diagnosticsValue.length !== 0
   )
     diagnostics.push(
       serialAcceptanceDiagnostic(
@@ -3032,7 +3088,13 @@ function evaluateDelayedPickupNativeAudioEvidence(step) {
   };
 }
 
-export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
+export function buildVmRuntimeAcceptanceReport({
+  plan,
+  steps,
+}: {
+  plan: VmRuntimeAcceptancePlan;
+  steps: VmRuntimeAcceptanceStep[];
+}) {
   const stepMap = new Map(steps.map((step) => [step.name, step]));
   const ephemeral = stepMap.get("ephemeral platform setup");
   const runtime = stepMap.get("runtime acceptance");
@@ -3043,6 +3105,15 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
   const saleIpcRecovery = stepMap.get("installed kiosk sale ipc recovery");
   const postSaleRuntime = stepMap.get("post-sale runtime acceptance");
   const delayedPickup = stepMap.get("delayed pickup native audio live sale");
+  const ephemeralParsed = recordValue(ephemeral?.parsed);
+  const ephemeralTestbedMachine = recordValue(ephemeralParsed.testbedMachine);
+  const rawPostSaleRuntimeReport =
+    postSaleRuntime?.parsed?.runtimeAcceptanceReport;
+  const postSaleRuntimeReport = rawPostSaleRuntimeReport
+    ? recordValue(rawPostSaleRuntimeReport)
+    : null;
+  const postSaleKioskRuntime = recordValue(postSaleRuntimeReport?.kioskRuntime);
+  const postSaleRuntimeResult = recordValue(postSaleRuntimeReport?.result);
   const failureArtifacts = readFailureMatrixArtifacts(
     plan?.artifacts?.failureMatrix,
   );
@@ -3145,45 +3216,46 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
     },
     platformSetup: {
       status: ephemeral?.status ?? "missing",
-      evidencePath: plan.artifacts.ephemeralPlatformEvidence,
+      evidencePath: plan.artifacts?.ephemeralPlatformEvidence,
       identifiers: ephemeral?.parsed?.testbedMachine
         ? {
-            machineId: ephemeral.parsed.testbedMachine.id,
-            machineCode: ephemeral.parsed.testbedMachine.code,
-            claimCodeId: ephemeral.parsed.testbedMachine.claim?.claimCodeId,
-            planogramVersion:
-              ephemeral.parsed.seededData?.planogram?.planogramVersion,
+            machineId: ephemeralTestbedMachine.id,
+            machineCode: ephemeralTestbedMachine.code,
+            claimCodeId: recordValue(ephemeralTestbedMachine.claim).claimCodeId,
+            planogramVersion: recordValue(
+              recordValue(ephemeralTestbedMachine.seededData).planogram,
+            ).planogramVersion,
           }
         : null,
     },
     evidenceReview: buildVmRuntimeAcceptanceEvidenceIndexes({ plan, steps }),
     simulatedHardwareMode: {
       status: saleFlow?.status ?? "missing",
-      evidencePath: plan.artifacts.simulatedHardwareSaleFlow,
-      serialConformancePath: plan.artifacts.serialConformance,
+      evidencePath: plan.artifacts?.simulatedHardwareSaleFlow,
+      serialConformancePath: plan.artifacts?.serialConformance,
       serialEvidence: simulatedHardwareEvidence.evidence,
     },
     installedKioskSale: {
       status: installedKioskEvidence.status,
       normal: {
         status: saleNormal?.status ?? "missing",
-        evidencePath: plan.artifacts.customerUiSaleNormal,
+        evidencePath: plan.artifacts?.customerUiSaleNormal,
       },
       scannerPaymentCode: {
         status: saleScanner?.status ?? "missing",
-        evidencePath: plan.artifacts.customerUiSaleScanner,
+        evidencePath: plan.artifacts?.customerUiSaleScanner,
       },
       routeCompetition: {
         status: saleCompetition?.status ?? "missing",
-        evidencePath: plan.artifacts.customerUiSaleRouteCompetition,
+        evidencePath: plan.artifacts?.customerUiSaleRouteCompetition,
       },
       ipcRecovery: {
         status: saleIpcRecovery?.status ?? "missing",
-        evidencePath: plan.artifacts.customerUiSaleIpcRecovery,
+        evidencePath: plan.artifacts?.customerUiSaleIpcRecovery,
       },
       delayedPickupNativeAudio: {
         status: delayedPickupEvidence.status,
-        evidencePath: plan.artifacts.delayedPickupNativeAudio,
+        evidencePath: plan.artifacts?.delayedPickupNativeAudio,
         acceptance: delayedPickupEvidence.evidence,
       },
       serialEvidence: installedKioskEvidence.evidence,
@@ -3192,24 +3264,15 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
         asserted: false,
       },
     },
-    runtimeAcceptanceReport:
-      postSaleRuntime?.parsed?.runtimeAcceptanceReport ?? null,
-    displayBinding: postSaleRuntime?.parsed?.runtimeAcceptanceReport
-      ?.kioskRuntime
+    runtimeAcceptanceReport: postSaleRuntimeReport,
+    displayBinding: postSaleRuntimeReport?.kioskRuntime
       ? {
           activeKioskSession: {
-            sessionUser:
-              postSaleRuntime.parsed.runtimeAcceptanceReport.kioskRuntime
-                .sessionUser,
-            sessionId:
-              postSaleRuntime.parsed.runtimeAcceptanceReport.kioskRuntime
-                .sessionId,
+            sessionUser: postSaleKioskRuntime.sessionUser,
+            sessionId: postSaleKioskRuntime.sessionId,
           },
-          tauriRoute:
-            postSaleRuntime.parsed.runtimeAcceptanceReport.kioskRuntime.url,
-          cdpTargetId:
-            postSaleRuntime.parsed.runtimeAcceptanceReport.kioskRuntime
-              .cdpTargetId,
+          tauriRoute: postSaleKioskRuntime.url,
+          cdpTargetId: postSaleKioskRuntime.cdpTargetId,
         }
       : null,
     finalReadiness: {
@@ -3217,8 +3280,7 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
         status: "asserted_by_overlay_restore",
         asserted: true,
       },
-      runtimeReady: postSaleRuntime?.parsed?.runtimeAcceptanceReport?.result
-        ?.runtimeReady ?? {
+      runtimeReady: postSaleRuntimeResult.runtimeReady ?? {
         status: postSaleRuntime?.status ?? "missing",
         asserted: false,
       },
@@ -3236,7 +3298,12 @@ export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
   };
 }
 
-export async function runVmRuntimeAcceptance(options, dependencies = {}) {
+export async function runVmRuntimeAcceptance(
+  options: RunOptions,
+  dependencies: {
+    spawnSync?: typeof spawnSync;
+  } = {},
+) {
   if (!options.scannerCodeFile || !options.approvedRuntimeBase)
     throw new Error(
       "VM runtime acceptance requires --scanner-code-file and --runtime-base",
@@ -3246,12 +3313,12 @@ export async function runVmRuntimeAcceptance(options, dependencies = {}) {
   const childEnvironment = nonQueryChildEnvironment();
   delete childEnvironment[EPHEMERAL_DATABASE_URL_ENV];
   delete childEnvironment[INSTALLED_KIOSK_SALE_DATABASE_URL_ENV];
-  mkdirSync(plan.evidenceRoot, { recursive: true });
-  mkdirSync(plan.artifacts.logsRoot, { recursive: true });
-  mkdirSync(plan.artifacts.screenshotsRoot, { recursive: true });
-  mkdirSync(plan.artifacts.sessionsRoot, { recursive: true });
+  mkdirSync(String(plan.evidenceRoot), { recursive: true });
+  mkdirSync(String(plan.artifacts?.logsRoot), { recursive: true });
+  mkdirSync(String(plan.artifacts?.screenshotsRoot), { recursive: true });
+  mkdirSync(String(plan.artifacts?.sessionsRoot), { recursive: true });
 
-  const steps = [];
+  const steps: VmRuntimeAcceptanceStep[] = [];
   let blocked = false;
   let serialRunnerTrust = null;
   const scannerCopiesRoot = mkdtempSync(
@@ -3259,13 +3326,13 @@ export async function runVmRuntimeAcceptance(options, dependencies = {}) {
   );
   chmodSync(scannerCopiesRoot, 0o700);
   try {
-    for (const [index, originalStep] of plan.steps.entries()) {
+    for (const [index, originalStep] of (plan.steps ?? []).entries()) {
       let step = originalStep;
       const startedAt = new Date().toISOString();
-      const stdoutPath = `${plan.artifacts.logsRoot}/${String(
+      const stdoutPath = `${String(plan.artifacts?.logsRoot)}/${String(
         index + 1,
       ).padStart(2, "0")}-${step.mode}.stdout.log`;
-      const stderrPath = `${plan.artifacts.logsRoot}/${String(
+      const stderrPath = `${String(plan.artifacts?.logsRoot)}/${String(
         index + 1,
       ).padStart(2, "0")}-${step.mode}.stderr.log`;
       if (blocked) {
@@ -3318,17 +3385,23 @@ export async function runVmRuntimeAcceptance(options, dependencies = {}) {
           ),
         };
       }
-      let result;
+      let result: SpawnSyncReturns<string>;
       try {
+        const command = step.command ?? [];
         result = (dependencies.spawnSync ?? spawnSync)(
-          step.command[0],
-          step.command.slice(1),
+          command[0],
+          command.slice(1),
           {
-            cwd: step.cwd ?? process.cwd(),
+            cwd: String(step.cwd ?? process.cwd()),
             encoding: "utf8",
             env: {
               ...childEnvironment,
-              ...(step.env ?? {}),
+              ...Object.fromEntries(
+                Object.entries(step.env ?? {}).map(([key, value]) => [
+                  key,
+                  value === undefined ? undefined : String(value),
+                ]),
+              ),
               ...(step.requiresEphemeralDatabase
                 ? step.mode === "installed-kiosk-sale"
                   ? {
@@ -3347,10 +3420,10 @@ export async function runVmRuntimeAcceptance(options, dependencies = {}) {
       const status = result.status === 0 ? "passed" : "failed";
       const parsed =
         status === "passed"
-          ? (readJsonIfPresent(step.report) ??
+          ? (readJsonIfPresent(String(step.report)) ??
             JSON.parse(result.stdout || "null"))
-          : readJsonIfPresent(step.report);
-      const stepResult = {
+          : readJsonIfPresent(String(step.report));
+      const stepResult: VmRuntimeAcceptanceStep = {
         ...step,
         status,
         startedAt,
@@ -3364,7 +3437,7 @@ export async function runVmRuntimeAcceptance(options, dependencies = {}) {
       };
       if (step.name === "simulated hardware sale flow") {
         stepResult.serialConformance = readJsonIfPresent(
-          plan.artifacts.serialConformance,
+          String(plan.artifacts?.serialConformance),
         );
       }
       steps.push(stepResult);
@@ -3376,7 +3449,7 @@ export async function runVmRuntimeAcceptance(options, dependencies = {}) {
     const report = buildVmRuntimeAcceptanceReport({ plan, steps });
     writeVmRuntimeAcceptanceEvidenceIndexes({ plan, steps });
     writeFileSync(
-      plan.artifacts.report,
+      String(plan.artifacts?.report),
       `${JSON.stringify(report, null, 2)}\n`,
     );
     return report;
@@ -3410,7 +3483,11 @@ function createSerialRunnerTrustAnchor() {
   };
 }
 
-function replaceCommandOption(command, option, value) {
+function replaceCommandOption(
+  command: string[],
+  option: string,
+  value: string,
+): string[] {
   const index = command.indexOf(option);
   if (index === -1 || !command[index + 1])
     throw new Error(`${option} is required for serial conformance`);
@@ -3419,12 +3496,16 @@ function replaceCommandOption(command, option, value) {
   return replaced;
 }
 
-function commandOption(command, option) {
+function commandOption(command: string[], option: string): string | null {
   const index = command.indexOf(option);
   return index === -1 ? null : (command[index + 1] ?? null);
 }
 
-function createRunScopedScannerCodeCopy(source, root, stepIndex) {
+function createRunScopedScannerCodeCopy(
+  source: string,
+  root: string,
+  stepIndex: number,
+): string {
   const target = join(
     root,
     `${String(stepIndex + 1).padStart(2, "0")}-scanner-code`,
@@ -3434,12 +3515,15 @@ function createRunScopedScannerCodeCopy(source, root, stepIndex) {
   return target;
 }
 
-function writeJsonOutput(path, value) {
+function writeJsonOutput(path: string, value: unknown) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
-function splitTaskName(taskName) {
+function splitTaskName(taskName: string): {
+  taskPath: string;
+  taskName: string;
+} {
   const index = taskName.lastIndexOf("\\");
   if (index === -1) {
     return { taskPath: "\\", taskName };
@@ -3450,9 +3534,11 @@ function splitTaskName(taskName) {
   };
 }
 
-export function buildRemotePowerShellScript(options = {}) {
-  const mode = options.mode ?? "inventory";
-  const machineCode = options.machineCode ?? "VEM-TESTBED-WINVM-01";
+export function buildRemotePowerShellScript(options: RunOptions = {}) {
+  const mode = String(options.mode ?? "inventory");
+  const machineCode = String(
+    options.machineCode ?? "VEM-TESTBED-WINVM-01",
+  );
   const supportedModes = [
     "inventory",
     "reset",
@@ -3484,8 +3570,9 @@ export function buildRemotePowerShellScript(options = {}) {
           mqttUrl: options.platformMqttUrl,
         }
       : null;
-  const platformTarget =
-    ephemeralPlatformSetup?.target ?? options.platformTarget ?? "vem-vps";
+  const platformTarget = String(
+    ephemeralPlatformSetup?.target ?? options.platformTarget ?? "vem-vps",
+  );
   if (
     mode === "provision" &&
     !ephemeralPlatformSetup &&
@@ -3493,24 +3580,34 @@ export function buildRemotePowerShellScript(options = {}) {
   ) {
     throw new Error(`unsupported platform target: ${platformTarget}`);
   }
-  const platform =
+  const platform: {
+    apiBaseUrl?: unknown;
+    mqttUrl?: unknown;
+    hardwareTopologyIdentity?: unknown;
+    hardwareTopologyVersion?: unknown;
+    claimCode?: unknown;
+    claimCodeId?: unknown;
+  } =
     ephemeralPlatformSetup ??
     platformOverride ??
-    PLATFORM_TARGETS[platformTarget] ??
-    PLATFORM_TARGETS["vem-vps"];
+    (Object.hasOwn(PLATFORM_TARGETS, platformTarget)
+      ? PLATFORM_TARGETS[
+          platformTarget as keyof typeof PLATFORM_TARGETS
+        ]
+      : PLATFORM_TARGETS["vem-vps"]);
   const claimCode =
     mode === "simulated-hardware-sale-flow" ||
     ((mode === "provision" || mode === "runtime-acceptance") &&
       ephemeralPlatformSetup)
-      ? ephemeralPlatformSetup.claimCode
+      ? (ephemeralPlatformSetup?.claimCode ?? "")
       : (options.claimCode ?? "");
   if (mode === "provision" && String(claimCode).trim().length === 0) {
     throw new Error("provision mode requires --claim-code");
   }
   const plan = assertResetPlanPreservesTestbed(buildResetPlan());
-  const taskRemovals = plan.unregisterScheduledTasks
-    .map((task) => {
-      const { taskPath, taskName } = splitTaskName(task);
+  const taskRemovals = (plan.unregisterScheduledTasks ?? [])
+    .map((task: unknown) => {
+      const { taskPath, taskName } = splitTaskName(String(task));
       return `Invoke-ResetStep $resetActions "unregister scheduled task ${task}" {
   $task = Get-ScheduledTask -TaskName ${psString(taskName)} -TaskPath ${psString(taskPath)} -ErrorAction SilentlyContinue
   if ($null -ne $task) {
@@ -3522,9 +3619,9 @@ Assert-ResetPostcondition $resetActions "scheduled task ${task} removed" {
 }`;
     })
     .join("\n");
-  const serviceStops = plan.stopServices
+  const serviceStops = (plan.stopServices ?? [])
     .map(
-      (service) => `Invoke-ResetStep $resetActions "stop service ${service}" {
+      (service: unknown) => `Invoke-ResetStep $resetActions "stop service ${service}" {
   $service = Get-Service -Name ${psString(service)} -ErrorAction SilentlyContinue
   if ($null -ne $service) {
     if ($service.Status -ne "Stopped") {
@@ -3541,9 +3638,9 @@ Assert-ResetPostcondition $resetActions "service ${service} removed" {
 }`,
     )
     .join("\n");
-  const directoryRemovals = plan.removeDirectories
+  const directoryRemovals = (plan.removeDirectories ?? [])
     .map(
-      (path) => `Invoke-ResetStep $resetActions "remove directory ${path}" {
+      (path: unknown) => `Invoke-ResetStep $resetActions "remove directory ${path}" {
   if (Test-Path -LiteralPath ${psString(path)}) {
     Remove-Item -LiteralPath ${psString(path)} -Recurse -Force -ErrorAction Stop
   }
@@ -3553,9 +3650,9 @@ Assert-ResetPostcondition $resetActions "directory ${path} removed" {
 }`,
     )
     .join("\n");
-  const fileRemovals = plan.removeFiles
+  const fileRemovals = (plan.removeFiles ?? [])
     .map(
-      (path) => `Invoke-ResetStep $resetActions "remove file ${path}" {
+      (path: unknown) => `Invoke-ResetStep $resetActions "remove file ${path}" {
   if (Test-Path -LiteralPath ${psString(path)}) {
     Remove-Item -LiteralPath ${psString(path)} -Force -ErrorAction Stop
   }
@@ -4608,11 +4705,11 @@ function Get-InventoryFacts($ProvisioningActions = @()) {
 $mode = ${psString(mode)}
 $inventoryBefore = Get-InventoryFacts
 $resetPlan = [ordered]@{
-  stopServices = ${psArray(plan.stopServices)}
-  unregisterScheduledTasks = ${psArray(plan.unregisterScheduledTasks)}
-  removeDirectories = ${psArray(plan.removeDirectories)}
-  removeFiles = ${psArray(plan.removeFiles)}
-  preservedResources = ${psArray(plan.preservedResources)}
+  stopServices = ${psArray(plan.stopServices ?? [])}
+  unregisterScheduledTasks = ${psArray(plan.unregisterScheduledTasks ?? [])}
+  removeDirectories = ${psArray(plan.removeDirectories ?? [])}
+  removeFiles = ${psArray(plan.removeFiles ?? [])}
+  preservedResources = ${psArray(plan.preservedResources ?? [])}
 }
 $resetActions = [System.Collections.Generic.List[object]]::new()
 $provisioningActions = [System.Collections.Generic.List[object]]::new()
@@ -4692,15 +4789,18 @@ $result = [ordered]@{
 `;
 }
 
-export function buildSshCommand(options = {}) {
+export function buildSshCommand(options: RunOptions = {}) {
   return [
     "ssh",
     ...buildSshOptionArgs(options),
-    options.remote ?? DEFAULT_RUNTIME_REMOTE,
+    String(options.remote ?? DEFAULT_RUNTIME_REMOTE),
   ];
 }
 
-function buildSshOptionArgs(options = {}, { portFlag = "-p" } = {}) {
+function buildSshOptionArgs(
+  options: RunOptions = {},
+  { portFlag = "-p" }: { portFlag?: string } = {},
+): string[] {
   const identity = String(options.identity ?? "").trim();
   const certificate = String(options.certificate ?? "").trim();
   if (!identity || !certificate) {
@@ -4748,21 +4848,28 @@ function buildSshOptionArgs(options = {}, { portFlag = "-p" } = {}) {
   return sshArgs;
 }
 
-function remotePathForScp(remotePath) {
+function remotePathForScp(remotePath: string): string {
   return remotePath.replaceAll("\\", "/");
 }
 
-function quotePowerShellSingleQuoted(value) {
+function quotePowerShellSingleQuoted(value: unknown): string {
   return `'${String(value).replaceAll("'", "''")}'`;
 }
 
-export function buildRemotePowerShellCommand(remoteScriptPath, options = {}) {
+export function buildRemotePowerShellCommand(
+  remoteScriptPath: string,
+  options: RunOptions = {},
+): string {
   const scriptInvocation = `& ${quotePowerShellSingleQuoted(remoteScriptPath)}`;
   return `powershell -NoProfile -ExecutionPolicy Bypass -Command "${scriptInvocation}"`;
 }
 
-export function buildScpCommand(sourcePath, remoteScriptPath, options = {}) {
-  const remote = options.remote ?? DEFAULT_RUNTIME_REMOTE;
+export function buildScpCommand(
+  sourcePath: string,
+  remoteScriptPath: string,
+  options: RunOptions = {},
+): string[] {
+  const remote = String(options.remote ?? DEFAULT_RUNTIME_REMOTE);
   return [
     "scp",
     "-O",
@@ -4772,7 +4879,7 @@ export function buildScpCommand(sourcePath, remoteScriptPath, options = {}) {
   ];
 }
 
-function buildEncodedPowerShellCommand(script) {
+function buildEncodedPowerShellCommand(script: string): string {
   return `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${Buffer.from(
     script,
     "utf16le",
@@ -4782,21 +4889,33 @@ function buildEncodedPowerShellCommand(script) {
 const TRANSIENT_SSH_TRANSPORT_FAILURE =
   /(?:kex_exchange_identification|ssh_exchange_identification|connection (?:closed|refused|reset|timed out)|no route to host|operation timed out)/i;
 
-export function parseStructuredSshVerifierEvidence(stdout) {
+export function parseStructuredSshVerifierEvidence(
+  stdout: unknown,
+): JsonRecord | null {
   try {
     const parsed = JSON.parse(String(stdout ?? ""));
     return parsed !== null &&
       typeof parsed === "object" &&
       !Array.isArray(parsed)
-      ? parsed
+      ? (parsed as JsonRecord)
       : null;
   } catch {
     return null;
   }
 }
 
-function spawnSshOperation(command, args, { input, signal } = {}) {
-  return new Promise((resolve) => {
+function spawnSshOperation(
+  command: string,
+  args: string[],
+  { input, signal }: { input?: string; signal?: AbortSignal } = {},
+) {
+  return new Promise<{
+    stdout: string;
+    stderr: string;
+    status: number | null;
+    signal: NodeJS.Signals | null;
+    error?: Error;
+  }>((resolve) => {
     let stdout = "";
     let stderr = "";
     let settled = false;
@@ -4806,14 +4925,20 @@ function spawnSshOperation(command, args, { input, signal } = {}) {
       env: nonQueryChildEnvironment(),
     });
     if (input !== undefined) {
-      child.stdin.on("error", () => {});
-      child.stdin.end(input);
+      if (child.stdin) {
+        child.stdin.on("error", () => {});
+        child.stdin.end(input);
+      }
     }
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => (stdout += chunk));
-    child.stderr.on("data", (chunk) => (stderr += chunk));
-    const finish = (result) => {
+    if (child.stdout) child.stdout.setEncoding("utf8");
+    if (child.stderr) child.stderr.setEncoding("utf8");
+    if (child.stdout) child.stdout.on("data", (chunk) => (stdout += chunk));
+    if (child.stderr) child.stderr.on("data", (chunk) => (stderr += chunk));
+    const finish = (result: {
+      status: number | null;
+      signal: NodeJS.Signals | null;
+      error?: Error;
+    }) => {
       if (settled) return;
       settled = true;
       resolve({ stdout, stderr, ...result });
@@ -4824,8 +4949,8 @@ function spawnSshOperation(command, args, { input, signal } = {}) {
 }
 
 export async function runTransientSshOperation(
-  command,
-  args,
+  command: string,
+  args: string[],
   {
     run = spawnSshOperation,
     sleep = (milliseconds) =>
@@ -4834,6 +4959,13 @@ export async function runTransientSshOperation(
     retryDelayMs = 5000,
     input,
     signal,
+  }: {
+    run?: typeof spawnSshOperation;
+    sleep?: (milliseconds: number) => Promise<void>;
+    maxAttempts?: number;
+    retryDelayMs?: number;
+    input?: string;
+    signal?: AbortSignal;
   } = {},
 ) {
   if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
@@ -4876,10 +5008,14 @@ export function getRuntimeAcceptanceExitStatus({
   mode,
   sshStatus,
   stdout,
+}: {
+  mode?: unknown;
+  sshStatus?: unknown;
+  stdout?: unknown;
 } = {}) {
   const status = sshStatus ?? 1;
   if (status !== 0) {
-    return status;
+    return Number(status);
   }
   if (mode === "simulated-hardware-sale-flow") {
     try {
@@ -4932,8 +5068,8 @@ VM runtime acceptance mode is the CI/manual gate entrypoint. It uses the restore
 `);
 }
 
-function parseArgs(argv) {
-  const options = {};
+function parseArgs(argv: string[]): RunOptions {
+  const options: RunOptions = {};
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     const next = argv[index + 1];
@@ -4986,7 +5122,7 @@ function parseArgs(argv) {
       index += 1;
     } else if (arg === "--sale-binding-json") {
       try {
-        const binding = JSON.parse(next);
+        const binding = JSON.parse(String(next));
         for (const field of ["orderId", "paymentId", "orderNo"]) {
           if (typeof binding?.[field] !== "string" || !binding[field].trim()) {
             throw new Error();
@@ -5066,11 +5202,11 @@ function parseArgs(argv) {
   return options;
 }
 
-function applyRuntimeGuestEndpoint(options) {
+function applyRuntimeGuestEndpoint(options: RunOptions): RunOptions {
   if (!options.runtimeGuestEndpointJson) return options;
   let endpoint;
   try {
-    endpoint = JSON.parse(options.runtimeGuestEndpointJson);
+    endpoint = JSON.parse(String(options.runtimeGuestEndpointJson));
   } catch {
     throw new Error(
       "--runtime-guest-endpoint-json must be adapter-discovered endpoint JSON",
@@ -5118,15 +5254,18 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         if (options.dryRun) {
           const sanitizedPlan = sanitizeVmRuntimeAcceptancePlan(plan);
           if (options.out) {
-            writeJsonOutput(options.out, sanitizedPlan);
+            writeJsonOutput(String(options.out), sanitizedPlan);
           }
           console.log(JSON.stringify(sanitizedPlan, null, 2));
           process.exit(0);
         }
         const report = await runVmRuntimeAcceptance(options);
         if (options.out) {
-          writeFileSync(options.out, `${JSON.stringify(report, null, 2)}\n`);
-          console.error(`wrote report: ${options.out}`);
+          writeFileSync(
+            String(options.out),
+            `${JSON.stringify(report, null, 2)}\n`,
+          );
+          console.error(`wrote report: ${String(options.out)}`);
         } else {
           process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
         }
@@ -5204,8 +5343,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
           { maxAttempts: 1 },
         );
         if (result.stdout && options.out) {
-          writeFileSync(options.out, result.stdout, "utf8");
-          console.error(`wrote report: ${options.out}`);
+          writeFileSync(String(options.out), result.stdout, "utf8");
+          console.error(`wrote report: ${String(options.out)}`);
         } else if (result.stdout) {
           process.stdout.write(result.stdout);
         }
