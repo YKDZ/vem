@@ -44,24 +44,28 @@ const DISPATCH_CHECKOUT_SUBMIT_DOM_CLICK_EXPRESSION = `(() => {
   return true;
 })()`;
 
-function required(value, label) {
+type JsonRecord = Record<string, unknown>;
+type InputRecord = JsonRecord;
+type HandoffRecord = JsonRecord;
+
+function required(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${label} is required`);
   }
   return value.trim();
 }
 
-function option(args, name) {
+function option(args: string[], name: string): string {
   const index = args.indexOf(`--${name}`);
   return required(index === -1 ? undefined : args[index + 1], `--${name}`);
 }
 
-function optionalOption(args, name) {
+function optionalOption(args: string[], name: string): string | null {
   const index = args.indexOf(`--${name}`);
   return index === -1 ? null : required(args[index + 1], `--${name}`);
 }
 
-function localPath(value) {
+function localPath(value: unknown): string {
   const path = required(value, "Windows path");
   return process.platform === "win32"
     ? path
@@ -70,29 +74,30 @@ function localPath(value) {
       );
 }
 
-function readJson(path) {
-  return JSON.parse(readFileSync(localPath(path), "utf8"));
+function readJson(path: string): JsonRecord {
+  return JSON.parse(readFileSync(localPath(path), "utf8")) as JsonRecord;
 }
 
-function writeJson(path, value) {
+function writeJson(path: string, value: unknown): void {
   mkdirSync(dirname(localPath(path)), { recursive: true });
   writeFileSync(localPath(path), `${JSON.stringify(value, null, 2)}\n`);
 }
 
-function unwrap(payload) {
-  return payload &&
+function unwrap(payload: unknown): unknown {
+  const record = payload as JsonRecord | null;
+  return record !== null &&
     typeof payload === "object" &&
-    payload.code === 0 &&
-    Object.hasOwn(payload, "data")
-    ? payload.data
+    record.code === 0 &&
+    Object.hasOwn(record, "data")
+    ? record.data
     : payload;
 }
 
-function errorMessage(error) {
+function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function boundedText(value) {
+function boundedText(value: unknown): string {
   return String(value ?? "")
     .replaceAll(
       /-----BEGIN [^-]+-----[\s\S]*?-----END [^-]+-----/g,
@@ -108,7 +113,10 @@ function boundedText(value) {
 const sensitiveEvidenceKey =
   /(?:private|secret|password|token|auth.?code|cert|notify|credential|key)/i;
 
-export function sanitizeProviderEvidence(value, depth = 0) {
+export function sanitizeProviderEvidence(
+  value: unknown,
+  depth = 0,
+): unknown {
   if (depth > 4 || value == null) return value ?? null;
   if (typeof value === "string") return boundedText(value);
   if (typeof value === "number" || typeof value === "boolean") return value;
@@ -130,7 +138,13 @@ const ALIPAY_SANDBOX_UNCERTAIN_CODES = new Set([
   "PAYMENT_CODE_QUERY_UNKNOWN",
 ]);
 
-export function parsePaymentProviderGuestArgs(args) {
+export function parsePaymentProviderGuestArgs(args: string[]): {
+  mode: string;
+  guestInputPath: string;
+  handoffPath: string;
+  outPath: string;
+  fixtureKey: string | null;
+} {
   if (option(args, "mode") !== "full") throw new Error("--mode must be full");
   return {
     mode: "full",
@@ -141,9 +155,11 @@ export function parsePaymentProviderGuestArgs(args) {
   };
 }
 
-function daemonBaseUrl(handoff) {
+function daemonBaseUrl(handoff: HandoffRecord): string {
+  const daemon = handoff?.daemon as JsonRecord | undefined;
+  const ready = daemon?.ready as JsonRecord | undefined;
   const healthzUrl = required(
-    handoff?.daemon?.ready?.healthzUrl,
+    ready?.healthzUrl,
     "daemon healthzUrl",
   );
   if (!healthzUrl.endsWith("/healthz"))
@@ -151,44 +167,64 @@ function daemonBaseUrl(handoff) {
   return healthzUrl.slice(0, -"/healthz".length);
 }
 
-async function json(url, options = {}) {
+async function json(
+  url: string,
+  options: JsonRecord = {},
+): Promise<unknown> {
   const response = await fetch(url, {
     ...options,
     signal:
-      options.signal ??
-      AbortSignal.timeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+      (options.signal as AbortSignal | undefined) ??
+      AbortSignal.timeout(Number(options.timeoutMs ?? DEFAULT_TIMEOUT_MS)),
   });
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
     const error = new Error(
       `${options.method ?? "GET"} ${url} failed: ${JSON.stringify(sanitizeProviderEvidence(payload))}`,
     );
-    error.httpStatus = response.status;
-    error.payload = sanitizeProviderEvidence(payload);
+    (error as Error & { httpStatus?: number; payload?: unknown }).httpStatus =
+      response.status;
+    (error as Error & { httpStatus?: number; payload?: unknown }).payload =
+      sanitizeProviderEvidence(payload);
     throw error;
   }
   return unwrap(payload);
 }
 
-function daemon(handoff, path, body) {
+function daemon(
+  handoff: HandoffRecord,
+  path: string,
+  body?: unknown,
+): Promise<unknown> {
+  const daemon = handoff?.daemon as JsonRecord | undefined;
+  const ready = daemon?.ready as JsonRecord | undefined;
   return json(`${daemonBaseUrl(handoff)}${path}`, {
     method: body === undefined ? "GET" : "POST",
     headers: {
-      authorization: `Bearer ${required(handoff?.daemon?.ready?.ipcToken, "daemon ipcToken")}`,
+      authorization: `Bearer ${required(ready?.ipcToken, "daemon ipcToken")}`,
       ...(body === undefined ? {} : { "content-type": "application/json" }),
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
 }
 
-function apiBase(input) {
+function apiBase(input: InputRecord): string {
+  const bootstrap = input.runtimeBootstrap as JsonRecord | undefined;
   return required(
-    input.runtimeBootstrap?.provisioningApiBaseUrl,
+    bootstrap?.provisioningApiBaseUrl,
     "runtimeBootstrap.provisioningApiBaseUrl",
   ).replace(/\/+$/, "");
 }
 
-function api(input, path, { token = null, method = "GET", body } = {}) {
+function api(
+  input: InputRecord,
+  path: string,
+  { token = null, method = "GET", body }: {
+    token?: string | null;
+    method?: string;
+    body?: unknown;
+  } = {},
+): Promise<unknown> {
   return json(`${apiBase(input)}${path}`, {
     method,
     headers: {
@@ -199,8 +235,12 @@ function api(input, path, { token = null, method = "GET", body } = {}) {
   });
 }
 
-async function control(input, path, body = {}) {
-  const plane = input.hostControlPlane;
+async function control(
+  input: InputRecord,
+  path: string,
+  body: JsonRecord = {},
+): Promise<unknown> {
+  const plane = input.hostControlPlane as JsonRecord | undefined;
   return await json(
     `${required(plane?.endpoint, "hostControlPlane.endpoint")}${path}`,
     {
@@ -214,45 +254,57 @@ async function control(input, path, body = {}) {
   );
 }
 
-async function adminToken(input) {
+async function adminToken(input: InputRecord): Promise<string> {
+  const serviceApi = input.serviceApi as JsonRecord | undefined;
   const result = await api(input, "/auth/login", {
     method: "POST",
     body: {
       username: required(
-        input.serviceApi?.adminUsername ?? "local-testbed-admin",
+        serviceApi?.adminUsername ?? "local-testbed-admin",
         "serviceApi.adminUsername",
       ),
       password: required(
-        input.serviceApi?.adminPassword ?? "LocalTestbedAdminPassword!",
+        serviceApi?.adminPassword ?? "LocalTestbedAdminPassword!",
         "serviceApi.adminPassword",
       ),
     },
   });
-  return required(result?.accessToken, "auth.login.accessToken");
+  return required(
+    (result as JsonRecord | undefined)?.accessToken,
+    "auth.login.accessToken",
+  );
 }
 
-export function validateInstallationOwnedAlipaySandboxFixture(fixture) {
+export function validateInstallationOwnedAlipaySandboxFixture(
+  fixture: JsonRecord | null | undefined,
+): JsonRecord {
+  const providerConfig = fixture?.providerConfig as JsonRecord | undefined;
+  const publicConfigJson = providerConfig?.publicConfigJson as
+    | JsonRecord
+    | undefined;
+  const sensitiveConfigJson = providerConfig?.sensitiveConfigJson as
+    | JsonRecord
+    | undefined;
   if (
     fixture?.schemaVersion !== "vem-installation-alipay-sandbox-fixture/v1" ||
     fixture?.ownership !== "host-installation" ||
     fixture?.target !== "local-service-api" ||
-    fixture?.providerConfig?.providerCode !== "alipay" ||
-    fixture?.providerConfig?.publicConfigJson?.mode !== "sandbox" ||
-    fixture?.providerConfig?.publicConfigJson?.keyType !== "PKCS1" ||
-    fixture?.providerConfig?.publicConfigJson?.gatewayUrl !==
+    providerConfig?.providerCode !== "alipay" ||
+    publicConfigJson?.mode !== "sandbox" ||
+    publicConfigJson?.keyType !== "PKCS1" ||
+    publicConfigJson?.gatewayUrl !==
       "https://openapi-sandbox.dl.alipaydev.com/gateway.do" ||
-    typeof fixture?.providerConfig?.sensitiveConfigJson?.privateKeyPem !==
-      "string" ||
-    fixture.providerConfig.sensitiveConfigJson.privateKeyPem.trim() === ""
+    typeof sensitiveConfigJson?.privateKeyPem !== "string" ||
+    String(sensitiveConfigJson?.privateKeyPem ?? "").trim() === ""
   ) {
     throw new Error(
       "installation-owned Alipay sandbox fixture is invalid or incomplete",
     );
   }
-  return fixture;
+  return fixture as JsonRecord;
 }
 
-function containsSecretMaterial(value, key = "") {
+function containsSecretMaterial(value: unknown, key = ""): boolean {
   if (/(?:sensitiveConfigJson|privateKey|cert|secret)/i.test(key)) return true;
   if (Array.isArray(value))
     return value.some((entry) => containsSecretMaterial(entry));
@@ -264,10 +316,14 @@ function containsSecretMaterial(value, key = "") {
   return false;
 }
 
-function providerIdentity(input) {
-  const identity = input?.paymentProvider?.identity;
+function providerIdentity(input: InputRecord): JsonRecord {
+  const paymentProvider = input?.paymentProvider as JsonRecord | undefined;
+  const identity = paymentProvider?.identity as JsonRecord | undefined;
+  const hostPreparation = paymentProvider?.hostPreparation as
+    | JsonRecord
+    | undefined;
   if (
-    containsSecretMaterial(input?.paymentProvider) ||
+    containsSecretMaterial(paymentProvider) ||
     identity?.providerCode !== "alipay" ||
     typeof identity?.providerConfigId !== "string" ||
     identity.providerConfigId.length === 0 ||
@@ -279,30 +335,36 @@ function providerIdentity(input) {
     identity?.keyType !== "PKCS1" ||
     identity?.gatewayUrl !==
       "https://openapi-sandbox.dl.alipaydev.com/gateway.do" ||
-    input?.paymentProvider?.hostPreparation?.source !==
-      "host_installation_fixture" ||
-    input?.paymentProvider?.hostPreparation?.preflight !== "configured"
+    hostPreparation?.source !== "host_installation_fixture" ||
+    hostPreparation?.preflight !== "configured"
   ) {
     throw new Error(
       "guest input must contain host-prepared Alipay identity without provider secrets",
     );
   }
-  return identity;
+  return identity as JsonRecord;
 }
 
-function alipayOptions(capability) {
-  return (capability?.paymentOptions?.options ?? []).filter(
-    (option) => option?.providerCode === "alipay" && option?.ready === true,
+function alipayOptions(capability: JsonRecord | null | undefined): unknown[] {
+  const paymentOptions = capability?.paymentOptions as JsonRecord | undefined;
+  const options = (paymentOptions?.options ?? []) as unknown[];
+  return options.filter(
+    (option) =>
+      (option as JsonRecord)?.providerCode === "alipay" &&
+      (option as JsonRecord)?.ready === true,
   );
 }
 
 export async function waitForCondition(
-  read,
-  matches,
-  { timeoutMs = DEFAULT_TIMEOUT_MS, label },
-) {
+  read: () => Promise<unknown>,
+  matches: (value: unknown) => boolean,
+  { timeoutMs = DEFAULT_TIMEOUT_MS, label }: {
+    timeoutMs?: number;
+    label: string;
+  },
+): Promise<unknown> {
   const deadline = Date.now() + timeoutMs;
-  let last = null;
+  let last: unknown = null;
   do {
     last = await read();
     if (matches(last)) return last;
@@ -314,24 +376,35 @@ export async function waitForCondition(
   );
 }
 
-async function waitForProviderReadiness(handoff, timeoutMs) {
-  return await waitForCondition(
+async function waitForProviderReadiness(
+  handoff: HandoffRecord,
+  timeoutMs: number,
+): Promise<unknown> {
+  return (await waitForCondition(
     async () => ({
       environment: await daemon(handoff, "/v1/maintenance/payment-environment"),
       capability: await daemon(handoff, "/v1/sale-start-capability"),
     }),
-    ({ environment, capability }) =>
-      environment?.environment === "sandbox" &&
-      environment?.readiness === "ready" &&
-      capability?.canStartSale === true &&
-      ["qr_code:alipay", "payment_code:alipay"].every((key) =>
-        alipayOptions(capability).some((option) => option.optionKey === key),
-      ),
+    (state) => {
+      const stateRecord = state as JsonRecord;
+      const environment = stateRecord.environment as JsonRecord | undefined;
+      const capability = stateRecord.capability as JsonRecord | undefined;
+      return (
+        environment?.environment === "sandbox" &&
+        environment?.readiness === "ready" &&
+        capability?.canStartSale === true &&
+        ["qr_code:alipay", "payment_code:alipay"].every((key) =>
+          alipayOptions(capability).some(
+            (option) => (option as JsonRecord).optionKey === key,
+          ),
+        )
+      );
+    },
     { timeoutMs, label: "local Alipay sandbox readiness" },
-  );
+  )) as JsonRecord;
 }
 
-function orderIdentity(snapshot) {
+function orderIdentity(snapshot: JsonRecord | null | undefined): JsonRecord {
   const order = {
     orderId: required(snapshot?.orderId, "orderId"),
     paymentId: required(snapshot?.paymentId, "paymentId"),
@@ -347,52 +420,80 @@ function orderIdentity(snapshot) {
   return order;
 }
 
-async function platformReport(input, runId, machineCode) {
-  return (await control(input, "/v1/platform/query", { runId, machineCode }))
-    .report;
+async function platformReport(
+  input: InputRecord,
+  runId: string,
+  machineCode: string,
+): Promise<JsonRecord> {
+  const response = (await control(input, "/v1/platform/query", {
+    runId,
+    machineCode,
+  })) as JsonRecord;
+  return response.report as JsonRecord;
 }
 
-function terminalFromReport(report, order) {
-  const raw = report?.raw ?? {};
-  const payment = (raw.payments ?? []).find(
-    (entry) => entry?.id === order.paymentId,
+function terminalFromReport(
+  report: JsonRecord | null | undefined,
+  order: JsonRecord,
+): JsonRecord {
+  const raw = (report?.raw ?? {}) as JsonRecord;
+  const payments = (raw.payments ?? []) as unknown[];
+  const orders = (raw.orders ?? []) as unknown[];
+  const reservations = (raw.reservations ?? []) as unknown[];
+  const payment = payments.find(
+    (entry) => (entry as JsonRecord)?.id === order.paymentId,
   );
-  const platformOrder = (raw.orders ?? []).find(
-    (entry) => entry?.id === order.orderId,
+  const platformOrder = orders.find(
+    (entry) => (entry as JsonRecord)?.id === order.orderId,
   );
-  const reservation = (raw.reservations ?? []).some(
+  const reservation = reservations.some(
     (entry) =>
-      entry?.orderId === order.orderId &&
-      ["reserved", "active", "pending"].includes(entry?.status),
+      (entry as JsonRecord)?.orderId === order.orderId &&
+      ["reserved", "active", "pending"].includes(
+        String((entry as JsonRecord)?.status),
+      ),
   );
   return {
-    paymentStatus: payment?.status ?? null,
-    orderStatus: platformOrder?.status ?? null,
-    paymentState: platformOrder?.paymentState ?? null,
+    paymentStatus: (payment as JsonRecord)?.status ?? null,
+    orderStatus: (platformOrder as JsonRecord)?.status ?? null,
+    paymentState: (platformOrder as JsonRecord)?.paymentState ?? null,
     reservedInventory: reservation,
   };
 }
 
-async function waitForTerminal(input, runId, machineCode, order, timeoutMs) {
-  return await waitForCondition(
+async function waitForTerminal(
+  input: InputRecord,
+  runId: string,
+  machineCode: string,
+  order: JsonRecord,
+  timeoutMs: number,
+): Promise<unknown> {
+  const matched = await waitForCondition(
     () => platformReport(input, runId, machineCode),
     (report) => {
-      const terminal = terminalFromReport(report, order);
+      const terminal = terminalFromReport(report as JsonRecord, order);
       return (
         terminal.reservedInventory === false &&
-        (["failed", "canceled", "expired"].includes(terminal.paymentStatus) ||
+        (["failed", "canceled", "expired"].includes(
+          String(terminal.paymentStatus),
+        ) ||
           (terminal.paymentStatus === "unknown" &&
             terminal.orderStatus === "manual_handling"))
       );
     },
     { timeoutMs, label: `terminal state for ${order.orderNo}` },
   );
+  return matched as JsonRecord;
 }
 
-async function closePayment(input, token, order) {
+async function closePayment(
+  input: InputRecord,
+  token: string,
+  order: JsonRecord,
+): Promise<unknown> {
   return await api(
     input,
-    `/payments/${encodeURIComponent(order.paymentId)}/incident-actions`,
+    `/payments/${encodeURIComponent(String(order.paymentId))}/incident-actions`,
     {
       method: "POST",
       token,
@@ -404,35 +505,49 @@ async function closePayment(input, token, order) {
   );
 }
 
-async function waitForPreScanQueryEvidence(input, token, order, timeoutMs) {
+async function waitForPreScanQueryEvidence(
+  input: InputRecord,
+  token: string,
+  order: JsonRecord,
+  timeoutMs: number,
+): Promise<unknown> {
   return await waitForCondition(
     async () => {
       const page = await api(
         input,
-        `/payments/reconciliation-attempts?paymentNo=${encodeURIComponent(order.paymentNo)}&trigger=manual&page=1&pageSize=5`,
+        `/payments/reconciliation-attempts?paymentNo=${encodeURIComponent(String(order.paymentNo))}&trigger=manual&page=1&pageSize=5`,
         { token },
       );
+      const pageRecord = page as JsonRecord | null;
+      const items = (pageRecord?.items ?? []) as unknown[];
       return (
-        (page?.items ?? []).find(
-          (entry) => entry?.paymentId === order.paymentId,
+        items.find(
+          (entry) => (entry as JsonRecord)?.paymentId === order.paymentId,
         ) ?? null
       );
     },
-    (attempt) =>
-      attempt?.id &&
-      attempt?.paymentId === order.paymentId &&
-      attempt?.providerCode === "alipay" &&
-      attempt?.status === "provider_trade_not_exist" &&
-      attempt?.providerPaymentStatus === "pending",
+    (attempt) => {
+      const attemptRecord = attempt as JsonRecord | null;
+      return (
+        Boolean(attemptRecord?.id) &&
+        attemptRecord?.paymentId === order.paymentId &&
+        attemptRecord?.providerCode === "alipay" &&
+        attemptRecord?.status === "provider_trade_not_exist" &&
+        attemptRecord?.providerPaymentStatus === "pending"
+      );
+    },
     { timeoutMs, label: `pre-scan query evidence for ${order.orderNo}` },
   );
 }
 
-async function connectMachineUi(handoff) {
-  const endpoint = required(handoff?.cdp?.endpoint, "handoff cdp endpoint");
+async function connectMachineUi(
+  handoff: HandoffRecord,
+): Promise<InstanceType<typeof CdpClient>> {
+  const cdp = handoff?.cdp as JsonRecord | undefined;
+  const endpoint = required(cdp?.endpoint, "handoff cdp endpoint");
   const target = await discoverMachineUiTarget({
     endpoint,
-    expectedTargetId: required(handoff?.cdp?.targetId, "handoff cdp targetId"),
+    expectedTargetId: required(cdp?.targetId, "handoff cdp targetId"),
   });
   const client = new CdpClient(
     rewriteWebSocketDebuggerUrl(target.webSocketDebuggerUrl, endpoint),
@@ -442,7 +557,9 @@ async function connectMachineUi(handoff) {
   return client;
 }
 
-async function readVisiblePaymentSurface(client) {
+async function readVisiblePaymentSurface(
+  client: InstanceType<typeof CdpClient>,
+): Promise<unknown> {
   return await evaluateExpression(
     client,
     `(() => {
@@ -464,19 +581,10 @@ async function readVisiblePaymentSurface(client) {
   );
 }
 
-async function visiblePaymentSurface(client, method, timeoutMs) {
-  return await waitForCondition(
-    () => readVisiblePaymentSurface(client),
-    (surface) =>
-      surface?.paymentMethod === method &&
-      surface?.providerCode === "alipay" &&
-      typeof surface?.orderId === "string" &&
-      typeof surface?.paymentId === "string",
-    { timeoutMs, label: `visible ${method} Alipay payment surface` },
-  );
-}
-
-async function readPaymentFlowDiagnostic(client, method) {
+async function readPaymentFlowDiagnostic(
+  client: InstanceType<typeof CdpClient>,
+  method: string,
+): Promise<JsonRecord> {
   const [diagnostic, traceSnapshot] = await Promise.all([
     evaluateExpression(
       client,
@@ -526,24 +634,30 @@ async function readPaymentFlowDiagnostic(client, method) {
     ),
     readMachineRuntimeTraceSnapshot(client),
   ]);
-  const runtimeEntries = Array.isArray(traceSnapshot?.entries)
-    ? traceSnapshot.entries
+  const traceRecord = traceSnapshot as JsonRecord | null;
+  const runtimeEntries = Array.isArray(traceRecord?.entries)
+    ? (traceRecord.entries as unknown[])
     : [];
   const checkoutSubmitTrace = runtimeEntries
-    .filter((entry) => entry?.type === "checkout_submit")
+    .filter((entry) => (entry as JsonRecord)?.type === "checkout_submit")
     .slice(-8)
-    .map((entry) => ({
-      phase: entry.phase,
-      canSubmit: entry.canSubmit,
-      loading: entry.loading,
-      selectedPaymentOptionKey: entry.selectedPaymentOptionKey,
-      customerErrorMessage: entry.customerErrorMessage,
-      orderNo: entry.orderNo ?? null,
-    }));
-  return { ...diagnostic, checkoutSubmitTrace };
+    .map((entry) => {
+      const entryRecord = entry as JsonRecord;
+      return {
+        phase: entryRecord.phase,
+        canSubmit: entryRecord.canSubmit,
+        loading: entryRecord.loading,
+        selectedPaymentOptionKey: entryRecord.selectedPaymentOptionKey,
+        customerErrorMessage: entryRecord.customerErrorMessage,
+        orderNo: entryRecord.orderNo ?? null,
+      };
+    });
+  return { ...(diagnostic as JsonRecord), checkoutSubmitTrace };
 }
 
-async function installCheckoutSubmitEventProbe(client) {
+async function installCheckoutSubmitEventProbe(
+  client: InstanceType<typeof CdpClient>,
+): Promise<void> {
   await evaluateExpression(
     client,
     `(() => {
@@ -569,29 +683,39 @@ async function installCheckoutSubmitEventProbe(client) {
   );
 }
 
-async function dispatchCheckoutSubmitDomClick(client) {
-  const result = await client.send("Runtime.evaluate", {
+async function dispatchCheckoutSubmitDomClick(
+  client: InstanceType<typeof CdpClient>,
+): Promise<boolean> {
+  const result = (await client.send("Runtime.evaluate", {
     expression: DISPATCH_CHECKOUT_SUBMIT_DOM_CLICK_EXPRESSION,
     awaitPromise: true,
     returnByValue: true,
     userGesture: true,
-  });
+  })) as JsonRecord;
+  const exceptionDetails = result.exceptionDetails as JsonRecord | undefined;
   if (result.exceptionDetails) {
     throw new Error(
-      `Runtime.evaluate failed: ${result.exceptionDetails.text ?? "exception"}`,
+      `Runtime.evaluate failed: ${String(exceptionDetails?.text ?? "exception")}`,
     );
   }
-  return result.result?.value === true;
+  const evaluateResult = result.result as JsonRecord | undefined;
+  return evaluateResult?.value === true;
 }
 
-async function submitUntilPaymentSurface(client, method, timeoutMs) {
+async function submitUntilPaymentSurface(
+  client: InstanceType<typeof CdpClient>,
+  method: string,
+  timeoutMs: number,
+): Promise<unknown> {
   const deadline = Date.now() + timeoutMs;
   let submitCount = 0;
   let mouseClickCount = 0;
   let domClickCount = 0;
   await installCheckoutSubmitEventProbe(client);
   while (Date.now() < deadline) {
-    const surface = await readVisiblePaymentSurface(client);
+    const surface = (await readVisiblePaymentSurface(client)) as
+      | JsonRecord
+      | null;
     if (
       surface?.paymentMethod === method &&
       surface?.providerCode === "alipay" &&
@@ -633,7 +757,9 @@ async function submitUntilPaymentSurface(client, method, timeoutMs) {
   );
 }
 
-async function readCheckoutPaymentSelection(client) {
+async function readCheckoutPaymentSelection(
+  client: InstanceType<typeof CdpClient>,
+): Promise<unknown> {
   return await evaluateExpression(
     client,
     `(() => {
@@ -651,20 +777,34 @@ async function readCheckoutPaymentSelection(client) {
   );
 }
 
-async function waitForCheckoutPaymentSelection(client, method, timeoutMs) {
+async function waitForCheckoutPaymentSelection(
+  client: InstanceType<typeof CdpClient>,
+  method: string,
+  timeoutMs: number,
+): Promise<unknown> {
   return await waitForCondition(
     () => readCheckoutPaymentSelection(client),
-    (selection) =>
-      selection?.route === "#/checkout" &&
-      selection?.submitVisible === true &&
-      selection?.submitDisabled === false &&
-      selection?.submitMethod === method &&
-      selection?.submitProvider === "alipay",
+    (selection) => {
+      const selectionRecord = selection as JsonRecord | null;
+      return (
+        selectionRecord?.route === "#/checkout" &&
+        selectionRecord?.submitVisible === true &&
+        selectionRecord?.submitDisabled === false &&
+        selectionRecord?.submitMethod === method &&
+        selectionRecord?.submitProvider === "alipay"
+      );
+    },
     { timeoutMs, label: `checkout ${method} Alipay selection` },
   );
 }
 
-async function beginMachineUiOrder(client, input, fixture, method, timeoutMs) {
+async function beginMachineUiOrder(
+  client: InstanceType<typeof CdpClient>,
+  input: InputRecord,
+  fixture: JsonRecord | null | undefined,
+  method: string,
+  timeoutMs: number,
+): Promise<unknown> {
   await setCdpLocationHash(client, "#/catalog");
   await waitForRoute(client, "#/catalog", {
     timeoutMs,
@@ -705,7 +845,7 @@ async function beginMachineUiOrder(client, input, fixture, method, timeoutMs) {
     timeoutMs,
     pollMs: POLL_INTERVAL_MS,
   });
-  const selected = await readCheckoutPaymentSelection(client);
+  const selected = (await readCheckoutPaymentSelection(client)) as JsonRecord;
   if (
     selected?.submitMethod !== method ||
     selected?.submitProvider !== "alipay"
@@ -724,7 +864,10 @@ async function beginMachineUiOrder(client, input, fixture, method, timeoutMs) {
   return await submitUntilPaymentSurface(client, method, timeoutMs);
 }
 
-async function cancelVisibleMachineOrder(client, timeoutMs) {
+async function cancelVisibleMachineOrder(
+  client: InstanceType<typeof CdpClient>,
+  timeoutMs: number,
+): Promise<void> {
   await activateVisibleSelector(
     client,
     '[data-test="payment-cancel"]:not(:disabled)',
@@ -740,15 +883,20 @@ async function cancelVisibleMachineOrder(client, timeoutMs) {
   });
 }
 
-async function cancelCurrentDaemonOrder(handoff, current) {
+async function cancelCurrentDaemonOrder(
+  handoff: HandoffRecord,
+  current: JsonRecord | null | undefined,
+): Promise<unknown> {
   const orderNo = required(current?.orderNo, "current transaction orderNo");
   return await daemon(handoff, "/v1/intents/cancel-order", { orderNo });
 }
 
-export function isCleanAuthoritativeTransaction(current) {
+export function isCleanAuthoritativeTransaction(
+  current: JsonRecord | null | undefined,
+): boolean {
   if (current == null || current?.orderId == null) return true;
-  const paymentStatus = current?.paymentStatus ?? null;
-  const orderStatus = current?.orderStatus ?? null;
+  const paymentStatus = String(current?.paymentStatus ?? "");
+  const orderStatus = String(current?.orderStatus ?? "");
   if (["canceled", "failed", "expired", "refunded"].includes(paymentStatus)) {
     return true;
   }
@@ -756,11 +904,11 @@ export function isCleanAuthoritativeTransaction(current) {
 }
 
 async function cleanAuthoritativeOrderBeforeDiagnostics(
-  client,
-  handoff,
-  timeoutMs,
-) {
-  const initialRoute = await evaluateExpression(client, "location.hash");
+  client: InstanceType<typeof CdpClient>,
+  handoff: HandoffRecord,
+  timeoutMs: number,
+): Promise<JsonRecord> {
+  const initialRoute = String(await evaluateExpression(client, "location.hash"));
   const visible = await evaluateExpression(
     client,
     "Boolean(document.querySelector('[data-installed-kiosk-sale-payment-surface]')?.getClientRects().length)",
@@ -774,7 +922,9 @@ async function cleanAuthoritativeOrderBeforeDiagnostics(
       await cancelVisibleMachineOrder(client, timeoutMs);
     }
   }
-  const routeBeforeCleanup = await evaluateExpression(client, "location.hash");
+  const routeBeforeCleanup = String(
+    await evaluateExpression(client, "location.hash"),
+  );
   if (/^#\/result\//.test(routeBeforeCleanup)) {
     await activateVisibleSelector(
       client,
@@ -791,18 +941,22 @@ async function cleanAuthoritativeOrderBeforeDiagnostics(
     "/v1/transactions/current",
   );
   let daemonCancel = null;
-  if (!isCleanAuthoritativeTransaction(currentBeforeCleanup)) {
+  const currentRecord = currentBeforeCleanup as JsonRecord | null;
+  if (!isCleanAuthoritativeTransaction(currentRecord)) {
     daemonCancel = await cancelCurrentDaemonOrder(
       handoff,
-      currentBeforeCleanup,
+      currentRecord,
     );
   }
   const transaction = await waitForCondition(
     () => daemon(handoff, "/v1/transactions/current"),
-    isCleanAuthoritativeTransaction,
+    (value) =>
+      isCleanAuthoritativeTransaction(
+        value as JsonRecord | null | undefined,
+      ),
     { timeoutMs, label: "authoritative order cleanup before diagnostics" },
   );
-  const route = await evaluateExpression(client, "location.hash");
+  const route = String(await evaluateExpression(client, "location.hash"));
   if (!["#/catalog", "#/products"].includes(route)) {
     await setCdpLocationHash(client, "#/catalog");
     await waitForRoute(client, "#/catalog", {
@@ -817,42 +971,52 @@ async function cleanAuthoritativeOrderBeforeDiagnostics(
   };
 }
 
-async function paymentCodeAttemptFromApi(input, token, order, timeoutMs) {
-  return await waitForCondition(
+async function paymentCodeAttemptFromApi(
+  input: InputRecord,
+  token: string,
+  order: JsonRecord,
+  timeoutMs: number,
+): Promise<JsonRecord> {
+  const matched = await waitForCondition(
     async () => {
       const page = await api(
         input,
-        `/payments/payment-code-attempts?orderNo=${encodeURIComponent(order.orderNo)}&providerCode=alipay&page=1&pageSize=10`,
+        `/payments/payment-code-attempts?orderNo=${encodeURIComponent(String(order.orderNo))}&providerCode=alipay&page=1&pageSize=10`,
         { token },
       );
-      const attempt = (page?.items ?? []).find(
+      const pageRecord = page as JsonRecord | null;
+      const items = (pageRecord?.items ?? []) as unknown[];
+      const attempt = items.find(
         (entry) =>
-          entry?.orderId === order.orderId &&
-          entry?.paymentNo === order.paymentNo &&
-          entry?.providerCode === "alipay",
+          (entry as JsonRecord)?.orderId === order.orderId &&
+          (entry as JsonRecord)?.paymentNo === order.paymentNo &&
+          (entry as JsonRecord)?.providerCode === "alipay",
       );
-      return attempt;
+      return attempt as JsonRecord;
     },
     (attempt) => {
+      const attemptRecord = attempt as JsonRecord | null;
       const rejected =
-        attempt?.status === "failed" &&
-        typeof attempt?.failureCode === "string" &&
-        attempt.failureCode.length > 0;
+        attemptRecord?.status === "failed" &&
+        typeof attemptRecord?.failureCode === "string" &&
+        String(attemptRecord?.failureCode ?? "").length > 0;
       const awaitingBuyer =
-        attempt?.status === "user_confirming" &&
-        attempt?.providerStatus === "WAIT_BUYER_PAY" &&
-        typeof attempt?.providerTradeNo === "string" &&
-        attempt.providerTradeNo.length > 0;
+        attemptRecord?.status === "user_confirming" &&
+        attemptRecord?.providerStatus === "WAIT_BUYER_PAY" &&
+        typeof attemptRecord?.providerTradeNo === "string" &&
+        String(attemptRecord?.providerTradeNo ?? "").length > 0;
       const uncertain =
-        attempt?.status === "querying" &&
-        ALIPAY_SANDBOX_UNCERTAIN_CODES.has(attempt?.failureCode);
+        attemptRecord?.status === "querying" &&
+        ALIPAY_SANDBOX_UNCERTAIN_CODES.has(
+          String(attemptRecord?.failureCode ?? ""),
+        );
       const reversed =
-        attempt?.status === "reversed" &&
-        attempt?.providerStatus === "cancel" &&
-        attempt?.failureCode === "payment_code_reverse_confirmed";
+        attemptRecord?.status === "reversed" &&
+        attemptRecord?.providerStatus === "cancel" &&
+        attemptRecord?.failureCode === "payment_code_reverse_confirmed";
       return (
-        typeof attempt?.id === "string" &&
-        attempt.id.length > 0 &&
+        typeof attemptRecord?.id === "string" &&
+        String(attemptRecord?.id ?? "").length > 0 &&
         (rejected || awaitingBuyer || uncertain || reversed)
       );
     },
@@ -861,6 +1025,7 @@ async function paymentCodeAttemptFromApi(input, token, order, timeoutMs) {
       label: `provider handled payment-code attempt for ${order.orderNo}`,
     },
   );
+  return matched as JsonRecord;
 }
 
 async function qrAttempt({
@@ -873,14 +1038,24 @@ async function qrAttempt({
   provider,
   setStage,
   publishHandoffSerialSessionId,
-}) {
-  const surface = await beginMachineUiOrder(
+}: {
+  input: InputRecord;
+  client: InstanceType<typeof CdpClient>;
+  token: string;
+  runId: string;
+  machineCode: string;
+  timeoutMs: number;
+  provider: JsonRecord;
+  setStage: (stage: string) => void;
+  publishHandoffSerialSessionId?: (sessionId: string) => void;
+}): Promise<JsonRecord> {
+  const surface = (await beginMachineUiOrder(
     client,
     input,
-    input.fixtureAllocation,
+    input.fixtureAllocation as JsonRecord | undefined,
     "qr_code",
     timeoutMs,
-  );
+  )) as JsonRecord;
   const order = orderIdentity({
     ...surface,
     paymentProviderCode: surface.providerCode,
@@ -888,15 +1063,15 @@ async function qrAttempt({
   const credential = {
     paymentUrlSha256:
       typeof surface.paymentUrl === "string" && surface.paymentUrl.length > 0
-        ? `sha256:${createHash("sha256").update(surface.paymentUrl).digest("hex")}`
+        ? `sha256:${createHash("sha256").update(String(surface.paymentUrl)).digest("hex")}`
         : null,
   };
   if (!credential.paymentUrlSha256)
     throw new Error("Alipay QR credential is empty");
   setStage("query");
-  const queryResult = await api(
+  const queryResult = (await api(
     input,
-    `/payments/${encodeURIComponent(order.paymentId)}/incident-actions`,
+    `/payments/${encodeURIComponent(String(order.paymentId))}/incident-actions`,
     {
       method: "POST",
       token,
@@ -905,13 +1080,13 @@ async function qrAttempt({
         reason: `payment provider VM acceptance queries ${order.orderNo} before scan`,
       },
     },
-  );
-  const reconciliation = await waitForPreScanQueryEvidence(
+  )) as JsonRecord | null;
+  const reconciliation = (await waitForPreScanQueryEvidence(
     input,
     token,
     order,
     timeoutMs,
-  );
+  )) as JsonRecord;
   const query = {
     reconciliationAttemptId: reconciliation.id,
     providerCode: reconciliation.providerCode,
@@ -937,6 +1112,7 @@ async function qrAttempt({
   const closure = sanitizeProviderEvidence(
     await closePayment(input, token, order),
   );
+  const closureRecord = closure as JsonRecord | null;
   setStage("terminal-state");
   const report = await waitForTerminal(
     input,
@@ -961,8 +1137,11 @@ async function qrAttempt({
     },
     credential,
     query,
-    closure: { ...closure, providerConfigId: provider.providerConfigId },
-    terminal: terminalFromReport(report, order),
+    closure: {
+      ...(closureRecord ?? {}),
+      providerConfigId: provider.providerConfigId,
+    },
+    terminal: terminalFromReport(report as JsonRecord, order),
   };
   validateUnattendedProviderAttempt(attempt);
   await activateVisibleSelector(
@@ -981,7 +1160,7 @@ async function qrAttempt({
   return attempt;
 }
 
-export function buildPaymentCodeSubmission(row) {
+export function buildPaymentCodeSubmission(row: JsonRecord): JsonRecord {
   return {
     status: row.status,
     providerCode: row.providerCode,
@@ -1008,32 +1187,46 @@ async function paymentCodeAttempt({
   provider,
   setStage,
   publishHandoffSerialSessionId,
-}) {
-  const { replacement: session } = await replaceSerialSessionAndUpdateHandoff({
+}: {
+  input: InputRecord;
+  handoff: HandoffRecord;
+  handoffPath: string;
+  client: InstanceType<typeof CdpClient>;
+  token: string;
+  runId: string;
+  machineCode: string;
+  timeoutMs: number;
+  provider: JsonRecord;
+  setStage: (stage: string) => void;
+  publishHandoffSerialSessionId: (sessionId: string) => void;
+}): Promise<JsonRecord> {
+  const replaced = (await replaceSerialSessionAndUpdateHandoff({
     guestInput: input,
     handoff,
     handoffPath,
     sessionId: required(
-      handoff?.commissioningSerialSession?.sessionId,
+      (handoff?.commissioningSerialSession as JsonRecord | undefined)
+        ?.sessionId,
       "handoff commissioning serial session id",
     ),
     control,
-  });
+  })) as JsonRecord;
+  const session = replaced.replacement as JsonRecord;
   publishHandoffSerialSessionId(
     required(session?.sessionId, "payment-code serial session id"),
   );
-  let order = null;
-  let completedAttempt = null;
-  let authoritativeError = null;
+  let order: JsonRecord | null = null;
+  let completedAttempt: JsonRecord | null = null;
+  let authoritativeError: unknown = null;
   try {
     setStage("creation");
-    const surface = await beginMachineUiOrder(
+    const surface = (await beginMachineUiOrder(
       client,
       input,
-      input.fixtureAllocation,
+      input.fixtureAllocation as JsonRecord | undefined,
       "payment_code",
       timeoutMs,
-    );
+    )) as JsonRecord;
     order = orderIdentity({
       ...surface,
       paymentProviderCode: surface.providerCode,
@@ -1086,7 +1279,7 @@ async function paymentCodeAttempt({
         providerConfigId: provider.providerConfigId,
         serialSession: null,
       },
-      terminal: terminalFromReport(terminalReport, order),
+      terminal: terminalFromReport(terminalReport as JsonRecord, order),
     };
   } catch (error) {
     authoritativeError = error;
@@ -1102,21 +1295,23 @@ async function paymentCodeAttempt({
   } finally {
     try {
       setStage("serial-cleanup");
-      const serialCleanup = await control(
+      const serialCleanup = (await control(
         input,
         `/v1/serial-sessions/${required(session.sessionId, "serial session id")}/abort`,
-      );
+      )) as JsonRecord | null;
       if (serialCleanup?.aborted !== true) {
         throw new Error(
           "payment-code serial session abort did not confirm cleanup",
         );
       }
-      if (completedAttempt)
-        completedAttempt.cleanup.serialSession = {
+      if (completedAttempt) {
+        const cleanup = completedAttempt.cleanup as JsonRecord;
+        cleanup.serialSession = {
           action: "abort",
           aborted: true,
           cleanup: sanitizeProviderEvidence(serialCleanup.cleanup),
         };
+      }
     } catch (cleanupError) {
       if (!authoritativeError) throw cleanupError;
     }
@@ -1125,8 +1320,10 @@ async function paymentCodeAttempt({
   return completedAttempt;
 }
 
-export function validateUnattendedProviderAttempt(attempt) {
-  const order = attempt?.order;
+export function validateUnattendedProviderAttempt(
+  attempt: JsonRecord | null | undefined,
+): void {
+  const order = attempt?.order as JsonRecord | undefined;
   if (
     order?.providerCode !== "alipay" ||
     !order?.orderId ||
@@ -1135,37 +1332,47 @@ export function validateUnattendedProviderAttempt(attempt) {
   ) {
     throw new Error("provider attempt is not correlated to one Alipay order");
   }
-  const terminal = attempt?.terminal ?? {};
+  const terminal = (attempt?.terminal ?? {}) as JsonRecord;
   if (terminal.reservedInventory !== false)
     throw new Error("provider attempt left reserved inventory");
   if (
-    ["succeeded", "paid", "fulfilled"].includes(terminal.paymentStatus) ||
-    ["paid", "fulfilled"].includes(terminal.paymentState)
+    ["succeeded", "paid", "fulfilled"].includes(
+      String(terminal.paymentStatus),
+    ) ||
+    ["paid", "fulfilled"].includes(String(terminal.paymentState))
   ) {
     throw new Error(
       "unattended provider attempt must not claim a paid customer result",
     );
   }
+  if (!attempt) throw new Error("provider attempt is missing");
+  const machine = attempt.machine as JsonRecord | undefined;
+  const surface = machine?.surface as JsonRecord | undefined;
+  const credential = attempt.credential as JsonRecord | undefined;
+  const query = attempt.query as JsonRecord | undefined;
+  const closure = attempt.closure as JsonRecord | undefined;
+  const cleanup = attempt.cleanup as JsonRecord | undefined;
+  const submission = attempt.submission as JsonRecord | undefined;
   if (attempt.channel === "qr_code:alipay") {
     if (
-      attempt.machine?.boundary !== "installed_machine_ui_cdp" ||
-      attempt.machine?.paymentMethod !== "qr_code" ||
-      attempt.machine?.providerCode !== "alipay" ||
-      attempt.machine?.surface?.orderId !== order.orderId ||
-      attempt.machine?.surface?.paymentId !== order.paymentId ||
-      attempt.machine?.surface?.orderNo !== order.orderNo ||
-      !String(attempt.credential?.paymentUrlSha256 ?? "").startsWith(
+      machine?.boundary !== "installed_machine_ui_cdp" ||
+      machine?.paymentMethod !== "qr_code" ||
+      machine?.providerCode !== "alipay" ||
+      surface?.orderId !== order.orderId ||
+      surface?.paymentId !== order.paymentId ||
+      surface?.orderNo !== order.orderNo ||
+      !String(credential?.paymentUrlSha256 ?? "").startsWith(
         "sha256:",
       ) ||
-      !attempt.query?.reconciliationAttemptId ||
-      attempt.query?.providerCode !== "alipay" ||
-      attempt.query?.status !== "provider_trade_not_exist" ||
-      attempt.query?.providerPaymentStatus !== "pending" ||
-      attempt.closure?.action !== "close_or_reverse_uncertain_payment" ||
-      attempt.closure?.handled !== true ||
-      !attempt.closure?.providerConfigId ||
+      !query?.reconciliationAttemptId ||
+      query?.providerCode !== "alipay" ||
+      query?.status !== "provider_trade_not_exist" ||
+      query?.providerPaymentStatus !== "pending" ||
+      closure?.action !== "close_or_reverse_uncertain_payment" ||
+      closure?.handled !== true ||
+      !closure?.providerConfigId ||
       !(
-        ["canceled", "expired"].includes(terminal.paymentStatus) ||
+        ["canceled", "expired"].includes(String(terminal.paymentStatus)) ||
         (terminal.paymentStatus === "unknown" &&
           terminal.orderStatus === "manual_handling")
       )
@@ -1178,38 +1385,42 @@ export function validateUnattendedProviderAttempt(attempt) {
   }
   if (attempt.channel === "payment_code:alipay") {
     const terminalCleaned =
-      ["failed", "canceled", "expired"].includes(terminal.paymentStatus) ||
+      ["failed", "canceled", "expired"].includes(
+        String(terminal.paymentStatus),
+      ) ||
       (terminal.paymentStatus === "unknown" &&
         terminal.orderStatus === "manual_handling");
     const closureObservedCleanTerminal =
-      attempt.cleanup?.closure?.handled === true || terminalCleaned;
+      (cleanup?.closure as JsonRecord | undefined)?.handled === true ||
+      terminalCleaned;
     if (
-      attempt.machine?.boundary !== "installed_machine_ui_cdp" ||
-      attempt.machine?.paymentMethod !== "payment_code" ||
-      attempt.machine?.providerCode !== "alipay" ||
-      attempt.machine?.surface?.orderId !== order.orderId ||
-      attempt.machine?.surface?.paymentId !== order.paymentId ||
-      attempt.machine?.surface?.orderNo !== order.orderNo ||
+      machine?.boundary !== "installed_machine_ui_cdp" ||
+      machine?.paymentMethod !== "payment_code" ||
+      machine?.providerCode !== "alipay" ||
+      surface?.orderId !== order.orderId ||
+      surface?.paymentId !== order.paymentId ||
+      surface?.orderNo !== order.orderNo ||
       !["failed", "querying", "reversed", "user_confirming"].includes(
-        attempt.submission?.status,
+        String(submission?.status),
       ) ||
-      attempt.submission?.providerCode !== "alipay" ||
-      !attempt.submission?.attemptId ||
-      (attempt.submission?.status === "failed" &&
-        !attempt.submission?.failureCode) ||
-      (attempt.submission?.status === "user_confirming" &&
-        attempt.submission?.providerStatus !== "WAIT_BUYER_PAY") ||
-      (attempt.submission?.status === "querying" &&
-        !ALIPAY_SANDBOX_UNCERTAIN_CODES.has(attempt.submission?.failureCode)) ||
-      (attempt.submission?.status === "reversed" &&
-        (attempt.submission?.providerStatus !== "cancel" ||
-          attempt.submission?.failureCode !==
+      submission?.providerCode !== "alipay" ||
+      !submission?.attemptId ||
+      (submission?.status === "failed" && !submission?.failureCode) ||
+      (submission?.status === "user_confirming" &&
+        submission?.providerStatus !== "WAIT_BUYER_PAY") ||
+      (submission?.status === "querying" &&
+        !ALIPAY_SANDBOX_UNCERTAIN_CODES.has(
+          String(submission?.failureCode ?? ""),
+        )) ||
+      (submission?.status === "reversed" &&
+        (submission?.providerStatus !== "cancel" ||
+          submission?.failureCode !==
             "payment_code_reverse_confirmed")) ||
-      attempt.cleanup?.action !== "close_or_reverse_uncertain_payment" ||
+      cleanup?.action !== "close_or_reverse_uncertain_payment" ||
       !closureObservedCleanTerminal ||
-      !attempt.cleanup?.providerConfigId ||
-      attempt.cleanup?.serialSession?.action !== "abort" ||
-      attempt.cleanup?.serialSession?.aborted !== true ||
+      !cleanup?.providerConfigId ||
+      (cleanup?.serialSession as JsonRecord | undefined)?.action !== "abort" ||
+      (cleanup?.serialSession as JsonRecord | undefined)?.aborted !== true ||
       !terminalCleaned
     ) {
       throw new Error(
@@ -1227,7 +1438,13 @@ export function buildProviderFailureReport({
   error,
   diagnostics = [],
   report = {},
-}) {
+}: {
+  runId: string;
+  stage: string;
+  error: unknown;
+  diagnostics?: unknown[];
+  report?: JsonRecord;
+}): JsonRecord {
   if (!PROVIDER_FAILURE_STAGES.has(stage)) {
     throw new Error(`payment provider failure stage is invalid: ${stage}`);
   }
@@ -1245,7 +1462,15 @@ export function buildProviderFailureReport({
   };
 }
 
-export function classifyProviderFailureOutcome({ stage, error, report }) {
+export function classifyProviderFailureOutcome({
+  stage,
+  error,
+  report,
+}: {
+  stage: string;
+  error: unknown;
+  report: JsonRecord | null | undefined;
+}): string {
   const message = errorMessage(error);
   const explicitProviderUnavailable =
     /支付宝支付通道暂不可用|aop\.ACQ\.SYSTEM_ERROR|ALIPAY_(?:REQUEST|QUERY|REVERSE)_UNKNOWN|gateway (?:time-out|timeout)/i.test(
@@ -1258,10 +1483,13 @@ export function classifyProviderFailureOutcome({ stage, error, report }) {
     "notification",
     "closure",
   ].includes(stage);
+  const cleanupBeforeDiagnostics = report?.cleanupBeforeDiagnostics as
+    | JsonRecord
+    | undefined;
   const cleanupProved =
-    report?.cleanupBeforeDiagnostics &&
-    report.cleanupBeforeDiagnostics.ok !== false &&
-    !report.cleanupBeforeDiagnostics.error;
+    Boolean(cleanupBeforeDiagnostics) &&
+    cleanupBeforeDiagnostics?.ok !== false &&
+    !cleanupBeforeDiagnostics?.error;
   return providerStage && explicitProviderUnavailable && cleanupProved
     ? "provider_unavailable"
     : "failed";
@@ -1270,8 +1498,11 @@ export function classifyProviderFailureOutcome({ stage, error, report }) {
 export async function collectPaymentProviderFailureEvidence({
   cleanAuthoritativeOrder,
   diagnosticRetries: collectDiagnostics,
-}) {
-  let cleanupBeforeDiagnostics;
+}: {
+  cleanAuthoritativeOrder: () => Promise<unknown>;
+  diagnosticRetries: () => Promise<unknown[]>;
+}): Promise<JsonRecord> {
+  let cleanupBeforeDiagnostics: unknown;
   try {
     cleanupBeforeDiagnostics = await cleanAuthoritativeOrder();
   } catch (error) {
@@ -1281,7 +1512,7 @@ export async function collectPaymentProviderFailureEvidence({
     };
   }
 
-  let diagnostics;
+  let diagnostics: unknown;
   try {
     diagnostics = await collectDiagnostics();
   } catch (error) {
@@ -1290,21 +1521,31 @@ export async function collectPaymentProviderFailureEvidence({
   return { cleanupBeforeDiagnostics, diagnostics };
 }
 
-async function diagnosticRetries(context, failedStage) {
-  const diagnostics = [];
+async function diagnosticRetries(
+  context: {
+    input: InputRecord;
+    client: InstanceType<typeof CdpClient>;
+    token: string;
+    runId: string;
+    machineCode: string;
+    timeoutMs: number;
+  },
+  failedStage: string,
+): Promise<unknown[]> {
+  const diagnostics: unknown[] = [];
   for (
     let attemptNo = 1;
     attemptNo <= MAX_DIAGNOSTIC_ATTEMPTS;
     attemptNo += 1
   ) {
     try {
-      const surface = await beginMachineUiOrder(
+      const surface = (await beginMachineUiOrder(
         context.client,
         context.input,
-        context.input.fixtureAllocation,
+        context.input.fixtureAllocation as JsonRecord | undefined,
         "qr_code",
         context.timeoutMs,
-      );
+      )) as JsonRecord;
       const order = orderIdentity({
         ...surface,
         paymentProviderCode: surface.providerCode,
@@ -1326,7 +1567,7 @@ async function diagnosticRetries(context, failedStage) {
           orderNo: order.orderNo,
         },
         closure: sanitizeProviderEvidence(closure),
-        terminal: terminalFromReport(terminalReport, order),
+        terminal: terminalFromReport(terminalReport as JsonRecord, order),
       });
     } catch (error) {
       diagnostics.push({
@@ -1339,17 +1580,23 @@ async function diagnosticRetries(context, failedStage) {
   return diagnostics;
 }
 
-export async function runPaymentProviderGuest(options) {
+export async function runPaymentProviderGuest(options: {
+  mode: string;
+  guestInputPath: string;
+  handoffPath: string;
+  outPath: string;
+  fixtureKey: string | null;
+}): Promise<JsonRecord> {
   const input = readJson(options.guestInputPath);
   const handoff = readJson(options.handoffPath);
   const runId = required(input.runId, "runId");
   const machineCode = required(input.machineCode, "machineCode");
   const timeoutMs = DEFAULT_TIMEOUT_MS;
   let stage = "host-preparation";
-  let token = null;
-  let client = null;
-  let provider = null;
-  const report = {
+  let token: string | null = null;
+  let client: InstanceType<typeof CdpClient> | null = null;
+  let provider: JsonRecord | null = null;
+  const report: JsonRecord = {
     schemaVersion: SCHEMA_VERSION,
     ok: false,
     outcome: "failed",
@@ -1367,15 +1614,20 @@ export async function runPaymentProviderGuest(options) {
     token = await adminToken(input);
     report.provider = {
       identity: provider,
-      hostPreparation: input.paymentProvider.hostPreparation,
+      hostPreparation: (input.paymentProvider as JsonRecord).hostPreparation,
     };
     stage = "readiness";
-    const readiness = await waitForProviderReadiness(handoff, timeoutMs);
+    const readiness = (await waitForProviderReadiness(
+      handoff,
+      timeoutMs,
+    )) as JsonRecord;
     report.environment = sanitizeProviderEvidence(readiness.environment);
     client = await connectMachineUi(handoff);
     await cleanAuthoritativeOrderBeforeDiagnostics(client, handoff, timeoutMs);
     stage = "creation";
-    report.authoritative.attempts.push(
+    const authoritative = report.authoritative as JsonRecord;
+    const attempts = (authoritative.attempts as unknown[]) ?? [];
+    attempts.push(
       await qrAttempt({
         input,
         client,
@@ -1389,8 +1641,9 @@ export async function runPaymentProviderGuest(options) {
         },
       }),
     );
+    authoritative.attempts = attempts;
     stage = "creation";
-    report.authoritative.attempts.push(
+    attempts.push(
       await paymentCodeAttempt({
         input,
         handoff,
@@ -1409,20 +1662,34 @@ export async function runPaymentProviderGuest(options) {
         },
       }),
     );
+    authoritative.attempts = attempts;
     await cleanAuthoritativeOrderBeforeDiagnostics(client, handoff, timeoutMs);
-    report.authoritative.ok = true;
+    authoritative.ok = true;
     report.ok = true;
     report.outcome = "passed";
     writeJson(options.outPath, report);
     return report;
   } catch (error) {
     if (token && client) {
+      const activeClient = client;
+      const activeToken = token;
       const recovery = await collectPaymentProviderFailureEvidence({
         cleanAuthoritativeOrder: () =>
-          cleanAuthoritativeOrderBeforeDiagnostics(client, handoff, timeoutMs),
+          cleanAuthoritativeOrderBeforeDiagnostics(
+            activeClient,
+            handoff,
+            timeoutMs,
+          ),
         diagnosticRetries: () =>
           diagnosticRetries(
-            { input, client, token, runId, machineCode, timeoutMs },
+            {
+              input,
+              client: activeClient,
+              token: activeToken,
+              runId,
+              machineCode,
+              timeoutMs,
+            },
             stage,
           ),
       });
@@ -1433,7 +1700,7 @@ export async function runPaymentProviderGuest(options) {
       runId,
       stage,
       error,
-      diagnostics: report.diagnostics,
+      diagnostics: (report.diagnostics as unknown[] | undefined) ?? [],
       report,
     });
     writeJson(options.outPath, failed);
