@@ -34,6 +34,8 @@ import {
   rewriteWebSocketDebuggerUrl,
   waitForRoute,
 } from "./machine-ui-cdp-driver.ts";
+
+type JsonRecord = Record<string, unknown>;
 import { replaceSerialSessionAndUpdateHandoff } from "./serial-session-handoff.ts";
 import {
   isActiveTransaction,
@@ -690,7 +692,7 @@ export async function runSerialTrackLifecycle({
     const finishedAt = now().toISOString();
     const validation = validateBusinessCheckReport(
       track,
-      report,
+      report as JsonRecord | null | undefined,
       track.reportPath ?? "",
       {
         artifactRoot: evidenceTrust.artifactRoot ? track.artifactRoot : null,
@@ -1914,8 +1916,8 @@ function terminalOperations(
         )?.sessionId,
         replaceSerialSession: (sessionId) =>
           replaceSerialSessionAndUpdateHandoff({
-            guestInput,
-            handoff,
+            guestInput: guestInput ?? {},
+            handoff: handoff ?? {},
             handoffPath,
             sessionId,
             control: controlPlaneRequest,
@@ -1951,7 +1953,10 @@ function terminalOperations(
     recover: (track, context) =>
       recoverTrackHandoff({
         track,
-        terminal: (context as Record<string, unknown>).terminal,
+        terminal: (context as Record<string, unknown>).terminal as
+          | Record<string, unknown>
+          | null
+          | undefined,
         recoverAfterFailure:
           (context.child as TrackChild | undefined)?.status !== "passed" ||
           (context.report as Record<string, unknown> | null)?.ok !== true,
@@ -1965,8 +1970,8 @@ function terminalOperations(
           controlPlaneRequest(guestInput, "/v1/mock-payment-create-gate/open"),
         restoreSerialSession: (sessionId: unknown) =>
           replaceSerialSessionAndUpdateHandoff({
-            guestInput,
-            handoff,
+            guestInput: guestInput ?? {},
+            handoff: handoff ?? {},
             handoffPath,
             sessionId,
             control: controlPlaneRequest,
