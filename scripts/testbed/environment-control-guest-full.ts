@@ -18,6 +18,12 @@ type JsonRecord = Record<string, unknown>;
 type GuestInputRecord = JsonRecord;
 type HandoffRecord = JsonRecord;
 
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
 function required(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "")
     throw new Error(`${label} is required`);
@@ -250,7 +256,11 @@ export async function replaceEnvironmentSerialHandoff({
   })) as JsonRecord;
   return {
     previousControlPlaneSessionId,
-    replacement: replaced.replacement,
+    replacementControlPlaneSessionId: required(
+      recordValue(replaced.replacement).sessionId,
+      "replacement serial session id",
+    ),
+    aborted: recordValue(replaced.aborted).aborted ?? null,
   };
 }
 
