@@ -1,13 +1,9 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-  cpSync,
-  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
-  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,7 +15,6 @@ import {
   guestAcceptanceExecuteCommand,
   identicalVisionCoreArtifactSnapshot,
   guestAcceptanceExecutionBudget,
-  loadVisionCoreArtifacts,
   materializeVisionCoreArtifactSnapshot,
   parseOrchestratorOptions,
   powerShellFocusArgument,
@@ -28,6 +23,22 @@ import {
   validateHostConfig,
 } from "./runtime-testbed-orchestrator.ts";
 import { parseTriggerOptions } from "./runtime-testbed-trigger.ts";
+
+type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? (value as unknown[]) : [];
+}
+
+type Registry = NonNullable<
+  Parameters<typeof guestAcceptanceExecutionBudget>[0]["registry"]
+>;
 
 const sha = "a".repeat(40);
 const coreFocusedBusinessSets = [
@@ -38,7 +49,7 @@ const coreFocusedBusinessSets = [
   "stockMaintenance",
   "localOperations",
 ];
-const visionCore = (root) => ({
+const visionCore = (root: string) => ({
   runtimeArchive: {
     hostPath: join(root, "vision-runtime.zip"),
     sha256: "b".repeat(64),
@@ -53,22 +64,8 @@ const visionCore = (root) => ({
   },
 });
 
-function digest(content) {
+function digest(content: string | Buffer) {
   return createHash("sha256").update(content).digest("hex");
-}
-
-function compactCanonical(value) {
-  const sort = (entry) =>
-    Array.isArray(entry)
-      ? entry.map(sort)
-      : entry && typeof entry === "object"
-        ? Object.fromEntries(
-            Object.keys(entry)
-              .sort()
-              .map((key) => [key, sort(entry[key])]),
-          )
-        : entry;
-  return `${JSON.stringify(sort(value))}\n`;
 }
 
 describe("runtime testbed scheduler contract", () => {
@@ -397,24 +394,28 @@ describe("runtime testbed scheduler contract", () => {
         config,
         join(root, "snapshots", "pass-1"),
       );
-      assert.match(snapshot.guestInput.identity.sha256, /^[a-f0-9]{64}$/);
+      assert.match(
+        String(recordValue(recordValue(snapshot.guestInput).identity).sha256),
+        /^[a-f0-9]{64}$/,
+      );
       assert.equal(
-        snapshot.guestInput.runtimeArchive,
+        recordValue(snapshot.guestInput).runtimeArchive,
         `D:\\runtime-cache\\v1\\acceptance-inputs\\files\\${digest(runtime)}\\vision-runtime.zip`,
       );
       assert.equal(
-        snapshot.guestInput.inputRoot,
-        `D:\\runtime-cache\\v1\\acceptance-inputs\\vision-core\\${snapshot.guestInput.identity.sha256}`,
+        recordValue(snapshot.guestInput).inputRoot,
+        `D:\\runtime-cache\\v1\\acceptance-inputs\\vision-core\\${recordValue(recordValue(snapshot.guestInput).identity).sha256}`,
       );
-      assert.equal(snapshot.transfers.length, 2);
+      assert.equal(arrayValue(snapshot.transfers).length, 2);
       assert.ok(
-        snapshot.transfers.every((entry) =>
-          entry.hostPath.includes("snapshots"),
+        arrayValue(snapshot.transfers).every((entry: unknown) =>
+          String(recordValue(entry).hostPath).includes("snapshots"),
         ),
       );
       assert.ok(
-        snapshot.transfers.every(
-          (entry) => !entry.hostPath.includes("vision-main"),
+        arrayValue(snapshot.transfers).every(
+          (entry: unknown) =>
+            !String(recordValue(entry).hostPath).includes("vision-main"),
         ),
       );
       writeFileSync(join(root, "vision-runtime.zip"), "changed source");
@@ -429,9 +430,9 @@ describe("runtime testbed scheduler contract", () => {
         identicalVisionCoreArtifactSnapshot(snapshot, {
           ...snapshot,
           guestInput: {
-            ...snapshot.guestInput,
+            ...recordValue(snapshot.guestInput),
             identity: {
-              ...snapshot.guestInput.identity,
+              ...recordValue(recordValue(snapshot.guestInput).identity),
               sha256: "0".repeat(64),
             },
           },
@@ -561,7 +562,7 @@ describe("runtime testbed scheduler contract", () => {
       name: `focused${index}`,
       core: false,
       fullRequired: true,
-    }));
+    })) as unknown as Registry;
     const eight = guestAcceptanceExecutionBudget({
       mode: "fast",
       focus: registry.map((descriptor) => descriptor.name),
@@ -577,7 +578,7 @@ describe("runtime testbed scheduler contract", () => {
       name: `expanded${index}`,
       core: false,
       fullRequired: true,
-    }));
+    })) as unknown as Registry;
     assert.equal(
       guestAcceptanceExecutionBudget({
         mode: "fast",
@@ -592,8 +593,9 @@ describe("runtime testbed scheduler contract", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-vision-core-stage-"));
     try {
       writeFileSync(join(root, "guest-input.json"), "{}\n");
-      const calls = [];
+      const calls: JsonRecord[] = [];
       const corePreparation = {
+        guestInput: {},
         transfers: [
           {
             hostPath: "/snapshot/vision-runtime.zip",
@@ -622,17 +624,45 @@ describe("runtime testbed scheduler contract", () => {
           },
         },
       };
+      const hostConfig = validateHostConfig({
+        schemaVersion: "vem-runtime-testbed-host/v1",
+        mirrorPath: join(root, "mirror.git"),
+        workspaceRoot: join(root, "workspaces"),
+        stateRoot: join(root, "state"),
+        baselineContract: join(root, "baseline.json"),
+        hostPrivateAddress: "192.0.2.22",
+        guestSourcePath: "C:\\VEM\\source",
+        visionCoreArtifacts: {
+          runtimeArchive: {
+            hostPath: "/snapshot/vision-runtime.zip",
+            sha256: "a".repeat(64),
+            byteSize: 128,
+            sourceCommit: "c".repeat(40),
+          },
+          recordedFixtureArchive: {
+            hostPath: "/snapshot/recorded-fixtures.zip",
+            sha256: "b".repeat(64),
+            byteSize: 64,
+            sourceCommit: "d".repeat(40),
+          },
+        },
+      });
       await stageGuestInputs({
-        config: { stateRoot: root },
+        config: hostConfig,
         contract,
         corePreparation,
-        captureResult: async () => ({ stdout: '{"cacheHits":[]}' }),
-        run: async (command, args, options) =>
-          calls.push({ command, args, options }),
+        captureResult: async () => ({
+          stdout: '{"cacheHits":[]}',
+          stderr: "",
+        }),
+        run: async (command: string, args: string[], options?: unknown) => {
+          calls.push({ command, args, options });
+          return { code: 0, signal: null, pid: undefined };
+        },
       });
       const destinations = calls
         .filter((call) => call.command === "scp")
-        .map((call) => call.args.at(-1));
+        .map((call) => arrayValue(call.args).at(-1));
       assert.deepEqual(destinations, [
         "VEMKiosk@win10-testbed.local:D:\\runtime-cache\\v1\\acceptance-inputs\\files\\runtime-digest\\vision-runtime.zip",
         "VEMKiosk@win10-testbed.local:D:\\runtime-cache\\v1\\acceptance-inputs\\files\\fixture-digest\\recorded-fixtures.zip",
@@ -640,16 +670,23 @@ describe("runtime testbed scheduler contract", () => {
       ]);
       assert.ok(calls.some((call) => call.command === "ssh"));
 
-      const invalidCalls = [];
+      const invalidCalls: unknown[] = [];
       await assert.rejects(
         stageGuestInputs({
-          config: { stateRoot: root },
+          config: hostConfig,
           contract,
           corePreparation: {
+            guestInput: {},
             transfers: [{ ...corePreparation.transfers[0], byteSize: 0 }],
           },
-          captureResult: async (...args) => invalidCalls.push(args),
-          run: async (...args) => invalidCalls.push(args),
+          captureResult: async (...args: unknown[]) => {
+            invalidCalls.push(args);
+            return { stdout: "", stderr: "" };
+          },
+          run: async (...args: unknown[]) => {
+            invalidCalls.push(args);
+            return { code: 0, signal: null, pid: undefined };
+          },
         }),
         /positive safe integer/,
       );
