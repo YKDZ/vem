@@ -22,8 +22,8 @@ const SCAN_DIRECTORIES = [
   join(ROOT, "scripts/windows"),
 ];
 
-function walk(directory) {
-  const found = [];
+function walk(directory: string): string[] {
+  const found: string[] = [];
   for (const name of readdirSync(directory)) {
     const path = join(directory, name);
     const entry = statSync(path);
@@ -36,7 +36,7 @@ function walk(directory) {
   return found;
 }
 
-function splitStringLiteral(source, start) {
+function splitStringLiteral(source: string, start: number): string | null {
   const quote = source[start];
   if (quote !== '"' && quote !== "'" && quote !== "`") return null;
   const end = source.indexOf(quote, start + 1);
@@ -44,8 +44,8 @@ function splitStringLiteral(source, start) {
   return source.slice(start + 1, end);
 }
 
-export function findStaticTraps(source, path) {
-  const traps = [];
+export function findStaticTraps(source: string, path: string): string[] {
+  const traps: string[] = [];
   let cursor = 0;
   while (cursor < source.length) {
     const joinIndex = source.indexOf(".join(", cursor);
@@ -110,9 +110,12 @@ export function findStaticTraps(source, path) {
   return traps;
 }
 
-export function checkTestbedStaticTraps() {
+export function checkTestbedStaticTraps(): {
+  files: string[];
+  traps: string[];
+} {
   const files = SCAN_DIRECTORIES.flatMap(walk);
-  const traps = [];
+  const traps: string[] = [];
   for (const path of files) {
     traps.push(...findStaticTraps(readFileSync(path, "utf8"), path));
   }
