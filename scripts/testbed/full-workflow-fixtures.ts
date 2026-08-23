@@ -18,16 +18,31 @@ const FIXTURE_SLOT_COORDINATES = Object.freeze([
   { rowNo: 2, cellNo: 2 },
 ]);
 
-function required(value, label) {
+type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? (value as unknown[]) : [];
+}
+
+function required(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${label} is required`);
   }
   return value.trim();
 }
 
-function fixtureForSlot(slots, coordinate) {
+function fixtureForSlot(
+  slots: JsonRecord[],
+  coordinate: { rowNo: number; cellNo: number },
+): JsonRecord {
   const fixture = slots.find(
-    (slot) =>
+    (slot: JsonRecord) =>
       slot?.rowNo === coordinate.rowNo && slot?.cellNo === coordinate.cellNo,
   );
   if (!fixture)
@@ -47,34 +62,45 @@ function fixtureForSlot(slots, coordinate) {
       fixture.inventoryId,
       `fixture ${fixture.slotId} inventoryId`,
     ),
-    onHandQty: Number.isInteger(fixture.onHandQty) ? fixture.onHandQty : null,
+    onHandQty: Number.isInteger(fixture.onHandQty)
+      ? fixture.onHandQty
+      : null,
     sku: required(fixture.sku, `fixture ${fixture.slotId} sku`),
   };
 }
 
-export function allocateFullWorkflowFixtures(slots) {
+export function allocateFullWorkflowFixtures(
+  slots: unknown,
+): JsonRecord {
   if (!Array.isArray(slots))
     throw new Error("seeded fixture slots are required");
   const allocation = Object.fromEntries(
-    FIXTURE_TRACK_KEYS.map((key, index) => [
+    FIXTURE_TRACK_KEYS.map((key, index: number) => [
       key,
-      fixtureForSlot(slots, FIXTURE_SLOT_COORDINATES[index]),
+      fixtureForSlot(
+        arrayValue(slots).map((slot: unknown) => recordValue(slot)),
+        FIXTURE_SLOT_COORDINATES[index],
+      ),
     ]),
   );
   const usedInventoryIds = new Set();
   for (const fixture of Object.values(allocation)) {
-    if (usedInventoryIds.has(fixture.inventoryId)) {
+    const fixtureRecord = recordValue(fixture);
+    if (usedInventoryIds.has(fixtureRecord.inventoryId)) {
       throw new Error(
-        `full workflow fixture allocation reuses inventory ${fixture.inventoryId}`,
+        `full workflow fixture allocation reuses inventory ${fixtureRecord.inventoryId}`,
       );
     }
-    usedInventoryIds.add(fixture.inventoryId);
+    usedInventoryIds.add(fixtureRecord.inventoryId);
   }
   return allocation;
 }
 
-export function catalogProductSelectorForFixture(allocation, trackKey) {
-  const fixture = allocation?.[trackKey];
+export function catalogProductSelectorForFixture(
+  allocation: JsonRecord | null | undefined,
+  trackKey: string,
+): string {
+  const fixture = recordValue(allocation?.[trackKey]);
   const slotId = required(fixture?.slotId, `${trackKey} fixture slotId`);
   if (
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
@@ -86,8 +112,11 @@ export function catalogProductSelectorForFixture(allocation, trackKey) {
   return `[data-test="catalog-product"][data-slot-id="${slotId}"]`;
 }
 
-export function catalogCategorySelectorForFixture(allocation, trackKey) {
-  const fixture = allocation?.[trackKey];
+export function catalogCategorySelectorForFixture(
+  allocation: JsonRecord | null | undefined,
+  trackKey: string,
+): string {
+  const fixture = recordValue(allocation?.[trackKey]);
   const categoryKey = required(
     fixture?.categoryKey,
     `${trackKey} fixture categoryKey`,
