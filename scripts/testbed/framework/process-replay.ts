@@ -9,7 +9,37 @@ import {
 const CAPTURE_SCHEMA = "vem-business-set-process-replay-capture/v1";
 const TARGET_URL_MARKER = "tauri.localhost";
 
-const DEFAULT_SCREENCAST = Object.freeze({
+interface ReplayLimits {
+  maxDurationMs: number;
+  maxTotalBytes: number;
+  maxFrameBytes: number;
+  maxQueuedFrames: number;
+  maxFrameCount: number;
+}
+
+interface ReplayBrowserSocket {
+  addEventListener(
+    type: string,
+    handler: (event: unknown) => void,
+    options?: { once?: boolean },
+  ): void;
+  removeEventListener(type: string, handler: (event: unknown) => void): void;
+  send(data: string): void;
+  close(): void;
+  readyState: number;
+}
+
+type ReplayWebSocketFactory = (url: string) => ReplayBrowserSocket;
+
+const DEFAULT_SCREENCAST: Readonly<{
+  format: string;
+  quality: number;
+  maxWidth: number;
+  maxHeight: number;
+  everyNthFrame: number;
+  maxFramesInFlight: number;
+  sendLastFrame: boolean;
+}> = Object.freeze({
   format: "jpeg",
   quality: 70,
   maxWidth: 540,
@@ -19,7 +49,7 @@ const DEFAULT_SCREENCAST = Object.freeze({
   sendLastFrame: false,
 });
 
-const DEFAULT_LIMITS = Object.freeze({
+const DEFAULT_LIMITS: Readonly<ReplayLimits> = Object.freeze({
   maxDurationMs: 10 * 60_000,
   maxTotalBytes: 512 * 1024 * 1024,
   maxFrameBytes: 4 * 1024 * 1024,
@@ -289,9 +319,9 @@ export class BusinessSetProcessReplay {
       outputDirectory: string;
       businessSet?: string | null;
       onSummary?: (summary: ProcessReplaySummary) => void;
-      webSocketFactory?: (url: string) => unknown;
+      webSocketFactory?: ReplayWebSocketFactory;
       screencast?: Record<string, unknown>;
-      limits?: Partial<typeof DEFAULT_LIMITS>;
+      limits?: Partial<ReplayLimits>;
       io?: { mkdir: typeof fsMkdir; writeFile: typeof fsWriteFile };
       now?: () => number;
     },
@@ -426,11 +456,11 @@ async function startProcessReplay({
 }: {
   context: {
     endpoint: string;
-    webSocketFactory?: (url: string) => unknown;
+    webSocketFactory?: ReplayWebSocketFactory;
   };
   io: { mkdir: typeof fsMkdir; writeFile: typeof fsWriteFile };
   now: () => number;
-  limits: typeof DEFAULT_LIMITS;
+  limits: ReplayLimits;
   screencast: typeof DEFAULT_SCREENCAST;
   outputDirectory: string;
   framesDirectory: string;
