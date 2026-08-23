@@ -4,15 +4,43 @@ import {
   normalizeVisionOrigin,
   validateCapturedSourceEvidence,
 } from "./framework/slices/vision-experience/captured-source-evidence.ts";
+import type { CapturedSourceEvidence } from "./framework/slices/vision-experience/captured-source-evidence.ts";
 import { validatePaymentRecoveryEvidence } from "./payment-recovery-guest-full.ts";
 import { validatePresenceAndAudioGuestReport } from "./presence-and-audio-guest-full.ts";
 import { validateStockMaintenanceReport } from "./stock-maintenance-guest-full.ts";
 
-function requiredString(value, label) {
+type JsonRecord = Record<string, unknown>;
+
+interface TrackResult extends JsonRecord {
+  key: string;
+  label: string;
+  status: string;
+  reportPath: string | null;
+  reason: string | null;
+  details: JsonRecord | null;
+}
+
+function requiredString(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${label} is required`);
   }
   return value.trim();
+}
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function maybeRecord(value: unknown): JsonRecord | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : null;
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? (value as unknown[]) : [];
 }
 
 function trackResult({
@@ -22,7 +50,14 @@ function trackResult({
   reportPath = null,
   details = null,
   reason = null,
-}) {
+}: {
+  key: string;
+  label: string;
+  status: string;
+  reportPath?: string | null;
+  details?: JsonRecord | null;
+  reason?: string | null;
+}): TrackResult {
   return {
     key,
     label,
@@ -33,7 +68,13 @@ function trackResult({
   };
 }
 
-function failedTrack(key, label, reportPath, reason, details = null) {
+function failedTrack(
+  key: string,
+  label: string,
+  reportPath: string | null | undefined,
+  reason: string,
+  details: JsonRecord | null | undefined = null,
+): TrackResult {
   return trackResult({
     key,
     label,
@@ -44,7 +85,12 @@ function failedTrack(key, label, reportPath, reason, details = null) {
   });
 }
 
-function passedTrack(key, label, reportPath, details = null) {
+function passedTrack(
+  key: string,
+  label: string,
+  reportPath: string | null | undefined,
+  details: JsonRecord | null | undefined = null,
+): TrackResult {
   return trackResult({
     key,
     label,
@@ -54,7 +100,10 @@ function passedTrack(key, label, reportPath, details = null) {
   });
 }
 
-function validateFastTrack(report, reportPath) {
+function validateFastTrack(
+  report: JsonRecord,
+  reportPath: string,
+): TrackResult {
   if (
     report?.schemaVersion !== "vem-fast-route-stress-sale/v2" ||
     report?.ok !== true
@@ -66,7 +115,7 @@ function validateFastTrack(report, reportPath) {
       "fast route stress sale did not finish successfully",
     );
   }
-  const summary = report.summary ?? {};
+  const summary = recordValue(report.summary);
   if (
     !summary.orderId ||
     !summary.paymentId ||
@@ -96,8 +145,14 @@ function validateFastTrack(report, reportPath) {
   });
 }
 
-function validateDelayedAudioTrack(report, reportPath) {
-  const acceptance = report?.delayedPickupNativeAudio ?? null;
+function validateDelayedAudioTrack(
+  report: JsonRecord,
+  reportPath: string,
+): TrackResult {
+  const acceptance = maybeRecord(report?.delayedPickupNativeAudio);
+  const audio = recordValue(acceptance?.audio);
+  const controller = recordValue(acceptance?.controller);
+  const capture = recordValue(audio.capture);
   if (
     report?.schemaVersion !== "local-testbed-delayed-pickup-native-audio/v1" ||
     report?.ok !== true ||
@@ -112,43 +167,47 @@ function validateDelayedAudioTrack(report, reportPath) {
       "delayed pickup native audio acceptance did not pass",
     );
   }
-  const cueWindows = Array.isArray(acceptance.audio?.cueWindows)
-    ? acceptance.audio.cueWindows
-    : [];
-  const cueStartLatencyMs = acceptance.controller?.cueStartLatencyMs ?? {};
+  const cueWindows = arrayValue(audio.cueWindows);
+  const cueStartLatencyMs = recordValue(controller.cueStartLatencyMs);
   const requiredCues = ["pickup_started", "ordinary_warning", "urgent_warning"];
-  const capture = acceptance.audio?.capture ?? {};
-  return acceptance.audio?.source === "windows_default_output" &&
+  return audio?.source === "windows_default_output" &&
     cueWindows.length > 0 &&
-    cueWindows.every((entry) => entry?.kind === "passed") &&
-    requiredCues.every(
-      (cue) =>
-        Number.isFinite(cueStartLatencyMs[cue]) &&
-        cueStartLatencyMs[cue] >= 0 &&
-        cueStartLatencyMs[cue] <= 2_000,
-    ) &&
-    capture.nonSilentFrameCount > 0 &&
-    capture.peakAbsoluteSample > 0
+    cueWindows.every((entry: unknown) => recordValue(entry).kind === "passed") &&
+    requiredCues.every((cue) => {
+      const latency = cueStartLatencyMs[cue];
+      return (
+        typeof latency === "number" &&
+        Number.isFinite(latency) &&
+        latency >= 0 &&
+        latency <= 2_000
+      );
+    }) &&
+    Number(capture.nonSilentFrameCount) > 0 &&
+    Number(capture.peakAbsoluteSample) > 0
     ? passedTrack("audio", "audio", reportPath, {
         cueCount: requiredCues.length,
-        source: acceptance.audio.source,
+        source: audio.source,
       })
     : failedTrack(
         "audio",
         "audio",
         reportPath,
         "audio cue windows are incomplete",
-        acceptance.audio ?? null,
+        audio ?? null,
       );
 }
 
-function validatePresenceAndAudioTrack(report, reportPath) {
+function validatePresenceAndAudioTrack(
+  report: JsonRecord,
+  reportPath: string,
+): TrackResult {
   try {
-    const summary = validatePresenceAndAudioGuestReport(report);
+    const summary = validatePresenceAndAudioGuestReport(report) as JsonRecord;
+    const categoryTransitions = arrayValue(summary.categoryTransitions);
     return passedTrack("presenceAndAudio", "presence and audio", reportPath, {
       welcomeTransitions: summary.welcomeTransitions,
-      categoryTransitions: summary.categoryTransitions.map(
-        (entry) => entry.key,
+      categoryTransitions: categoryTransitions.map((entry: unknown) =>
+        recordValue(entry).key,
       ),
       nativeSource: summary.nativeSource,
     });
@@ -160,14 +219,17 @@ function validatePresenceAndAudioTrack(report, reportPath) {
       error instanceof Error
         ? error.message
         : "presence and audio evidence is incomplete",
-      report?.presenceAndAudio ?? report ?? null,
+      maybeRecord(report?.presenceAndAudio) ?? report ?? null,
     );
   }
 }
 
-function validateStartupTrack(report, reportPath) {
-  const summary = report?.summary ?? {};
-  const modeEvidence = summary.modeEvidence ?? {};
+function validateStartupTrack(
+  report: JsonRecord,
+  reportPath: string,
+): TrackResult {
+  const summary = recordValue(report?.summary);
+  const modeEvidence = recordValue(summary.modeEvidence);
   const fullEvidenceComplete =
     report?.mode !== "full" ||
     (modeEvidence.source === "windows_reboot_logon_probe" &&
@@ -184,7 +246,7 @@ function validateStartupTrack(report, reportPath) {
     summary.machineUiTask !== "VEMMachineUI" ||
     summary.visionTask !== "VEMVisionRuntime" ||
     !Number.isSafeInteger(summary.kioskSessionId) ||
-    summary.kioskSessionId < 1 ||
+    (summary.kioskSessionId as number) < 1 ||
     summary.catalogRoute !== "#/catalog" ||
     !fullEvidenceComplete
   ) {
@@ -199,17 +261,10 @@ function validateStartupTrack(report, reportPath) {
   return passedTrack("startup", "startup", reportPath, summary);
 }
 
-function exactKeys(value, keys) {
-  return (
-    value !== null &&
-    typeof value === "object" &&
-    !Array.isArray(value) &&
-    JSON.stringify(Object.keys(value).sort()) ===
-      JSON.stringify([...keys].sort())
-  );
-}
-
-function validateScannerTrack(report, reportPath) {
+function validateScannerTrack(
+  report: JsonRecord,
+  reportPath: string,
+): TrackResult {
   if (
     report?.schemaVersion !== "vem-scanner-payment-code-guest-full/v1" ||
     report?.ok !== true
@@ -221,28 +276,33 @@ function validateScannerTrack(report, reportPath) {
       "scanner payment-code acceptance did not finish successfully",
     );
   }
-  const malformed = report.invalidScanEvidence?.malformed ?? {};
-  const timeout = report.invalidScanEvidence?.timeout ?? {};
-  const finalResult = report.final?.result ?? {};
-  const platformAttempt = report.platformAssertions?.attempt ?? {};
-  const orderId = report.renderedSale?.orderId ?? finalResult.orderId;
-  const paymentId = report.renderedSale?.paymentId ?? finalResult.paymentId;
-  const orderNo = report.renderedSale?.orderNo ?? finalResult.orderNo;
+  const invalidScan = maybeRecord(report.invalidScanEvidence);
+  const malformed = recordValue(invalidScan?.malformed);
+  const timeout = recordValue(invalidScan?.timeout);
+  const final = maybeRecord(report.final);
+  const finalResult = recordValue(final?.result);
+  const platformAssertions = maybeRecord(report.platformAssertions);
+  const platformAttempt = recordValue(platformAssertions?.attempt);
+  const renderedSale = maybeRecord(report.renderedSale);
+  const scannerAttempt = maybeRecord(report.scannerAttempt);
+  const orderId = renderedSale?.orderId ?? finalResult.orderId;
+  const paymentId = renderedSale?.paymentId ?? finalResult.paymentId;
+  const orderNo = renderedSale?.orderNo ?? finalResult.orderNo;
   const scanner =
     orderId &&
     paymentId &&
     orderNo &&
-    report.scannerAttempt?.source === "serial_text" &&
+    scannerAttempt?.source === "serial_text" &&
     platformAttempt.status === "succeeded" &&
-    report.platformAssertions?.movement &&
+    platformAssertions?.movement &&
     finalResult.kind === "success"
       ? passedTrack("scannerPayment", "scanner payment", reportPath, {
           orderId,
           paymentId,
           orderNo,
-          scannerEventId:
-            platformAttempt.scannerEventId ??
-            report.scannerAttempt?.scannerEventId ??
+            scannerEventId:
+              platformAttempt.scannerEventId ??
+            scannerAttempt?.scannerEventId ??
             null,
         })
       : failedTrack(
@@ -251,10 +311,10 @@ function validateScannerTrack(report, reportPath) {
           reportPath,
           "scanner payment-code success path is incomplete",
           {
-            renderedSale: report.renderedSale ?? null,
-            scannerAttempt: report.scannerAttempt ?? null,
-            platformAssertions: report.platformAssertions ?? null,
-            final: report.final ?? null,
+            renderedSale,
+            scannerAttempt,
+            platformAssertions,
+            final,
           },
         );
   if (
@@ -274,7 +334,10 @@ function validateScannerTrack(report, reportPath) {
   return scanner;
 }
 
-function validateIpcRecoveryTrack(report, reportPath) {
+function validateIpcRecoveryTrack(
+  report: JsonRecord,
+  reportPath: string,
+): TrackResult {
   if (
     report?.schemaVersion !== "vem-installed-ipc-recovery-guest-full/v1" ||
     report?.ok !== true
@@ -286,17 +349,22 @@ function validateIpcRecoveryTrack(report, reportPath) {
       "installed IPC recovery track did not finish successfully",
     );
   }
+  const cleanup = maybeRecord(report.cleanup);
+  const ipcRecovery = maybeRecord(report.ipcRecovery);
+  const assertions = recordValue(ipcRecovery?.assertions);
+  const evidence = recordValue(ipcRecovery?.evidence);
+  const result = maybeRecord(report.result);
+  const renderedSale = maybeRecord(report.renderedSale);
+  const liveSale = maybeRecord(report.liveSale);
   if (
-    report.cleanup?.ok !== true ||
-    report.ipcRecovery?.evidence?.status !== "passed" ||
-    report.ipcRecovery?.assertions?.overlayObserved !== true ||
-    report.ipcRecovery?.assertions?.retainedOrderCredential !==
-      report.renderedSale?.orderNo ||
-    report.ipcRecovery?.assertions?.resumedOrderCredential !==
-      report.renderedSale?.orderNo ||
-    report.ipcRecovery?.assertions?.daemonTransportPhase !== "recovered" ||
-    report.result?.kind !== "success" ||
-    report.liveSale?.vendingCommandId == null
+    cleanup?.ok !== true ||
+    evidence?.status !== "passed" ||
+    assertions?.overlayObserved !== true ||
+    assertions?.retainedOrderCredential !== renderedSale?.orderNo ||
+    assertions?.resumedOrderCredential !== renderedSale?.orderNo ||
+    assertions?.daemonTransportPhase !== "recovered" ||
+    result?.kind !== "success" ||
+    liveSale?.vendingCommandId == null
   ) {
     return failedTrack(
       "ipcRecovery",
@@ -304,21 +372,24 @@ function validateIpcRecoveryTrack(report, reportPath) {
       reportPath,
       "installed IPC recovery evidence is incomplete",
       {
-        renderedSale: report.renderedSale ?? null,
-        assertions: report.ipcRecovery?.assertions ?? null,
-        evidence: report.ipcRecovery?.evidence ?? null,
-        result: report.result ?? null,
-        cleanup: report.cleanup ?? null,
+        renderedSale,
+        assertions,
+        evidence,
+        result,
+        cleanup,
       },
     );
   }
   return passedTrack("ipcRecovery", "IPC recovery", reportPath, {
-    orderNo: report.renderedSale.orderNo,
-    vendingCommandId: report.liveSale.vendingCommandId,
+    orderNo: renderedSale?.orderNo,
+    vendingCommandId: liveSale?.vendingCommandId,
   });
 }
 
-function validateFulfillmentFailureTrack(report, reportPath) {
+function validateFulfillmentFailureTrack(
+  report: JsonRecord,
+  reportPath: string,
+): TrackResult {
   if (
     report?.schemaVersion !== "vem-serial-fulfillment-error-guest-full/v1" ||
     report?.ok !== true
@@ -330,14 +401,17 @@ function validateFulfillmentFailureTrack(report, reportPath) {
       "serial fulfillment failure track did not finish successfully",
     );
   }
+  const cleanup = maybeRecord(report.cleanup);
+  const assertions = recordValue(report.assertions);
+  const paymentCompletion = maybeRecord(report.paymentCompletion);
   if (
-    report.cleanup?.error ||
-    report.assertions?.inventoryDelta !== 0 ||
+    cleanup?.error ||
+    assertions?.inventoryDelta !== 0 ||
     !["refund_pending", "refunded", "manual_handling"].includes(
-      report.assertions?.orderStatus,
+      String(assertions?.orderStatus ?? ""),
     ) ||
-    report.assertions?.commandId == null ||
-    report.paymentCompletion == null
+    assertions?.commandId == null ||
+    paymentCompletion == null
   ) {
     return failedTrack(
       "fulfillmentRecovery",
@@ -345,9 +419,9 @@ function validateFulfillmentFailureTrack(report, reportPath) {
       reportPath,
       "post-payment fulfillment failure evidence is incomplete",
       {
-        assertions: report.assertions ?? null,
-        cleanup: report.cleanup ?? null,
-        paymentCompletion: report.paymentCompletion ?? null,
+        assertions,
+        cleanup,
+        paymentCompletion,
       },
     );
   }
@@ -356,16 +430,19 @@ function validateFulfillmentFailureTrack(report, reportPath) {
     "fulfillment recovery",
     reportPath,
     {
-      orderStatus: report.assertions.orderStatus,
-      commandId: report.assertions.commandId,
-      inventoryDelta: report.assertions.inventoryDelta,
+      orderStatus: assertions.orderStatus,
+      commandId: assertions.commandId,
+      inventoryDelta: assertions.inventoryDelta,
     },
   );
 }
 
-function validatePaymentRecoveryTrack(report, reportPath) {
+function validatePaymentRecoveryTrack(
+  report: JsonRecord,
+  reportPath: string,
+): TrackResult {
   try {
-    const summary = validatePaymentRecoveryEvidence(report);
+    const summary = validatePaymentRecoveryEvidence(report) as JsonRecord;
     return passedTrack(
       "paymentRecovery",
       "payment recovery",
@@ -387,14 +464,22 @@ function validatePaymentRecoveryTrack(report, reportPath) {
   }
 }
 
-function validatePaymentProviderTrack(report, reportPath) {
+function validatePaymentProviderTrack(
+  report: JsonRecord,
+  reportPath: string,
+): TrackResult {
+  const environment = recordValue(report?.environment);
+  const authoritative = maybeRecord(report?.authoritative);
+  const provider = maybeRecord(report?.provider);
+  const providerIdentity = maybeRecord(provider?.identity);
+  const hostPreparation = recordValue(provider?.hostPreparation);
   if (
     report?.schemaVersion !== "vem-payment-provider-guest-full/v1" ||
     report?.ok !== true ||
     report?.outcome !== "passed" ||
-    report?.environment?.environment !== "sandbox" ||
-    report?.environment?.readiness !== "ready" ||
-    report?.authoritative?.ok !== true
+    environment?.environment !== "sandbox" ||
+    environment?.readiness !== "ready" ||
+    authoritative?.ok !== true
   ) {
     return failedTrack(
       "paymentProvider",
@@ -404,76 +489,96 @@ function validatePaymentProviderTrack(report, reportPath) {
       report ?? null,
     );
   }
-  const attempts = report.authoritative.attempts;
-  const qr = attempts?.find((attempt) => attempt?.channel === "qr_code:alipay");
-  const code = attempts?.find(
-    (attempt) => attempt?.channel === "payment_code:alipay",
-  );
-  const terminalClean = (attempt) =>
-    attempt?.terminal?.reservedInventory === false &&
-    (["failed", "canceled", "expired"].includes(
-      attempt?.terminal?.paymentStatus,
-    ) ||
-      (attempt?.terminal?.paymentStatus === "unknown" &&
-        attempt?.terminal?.orderStatus === "manual_handling"));
+  const attempts = arrayValue(authoritative?.attempts);
+  const qr = attempts.find(
+    (attempt: unknown) => recordValue(attempt).channel === "qr_code:alipay",
+  ) as JsonRecord | undefined;
+  const code = attempts.find(
+    (attempt: unknown) =>
+      recordValue(attempt).channel === "payment_code:alipay",
+  ) as JsonRecord | undefined;
+  const terminalClean = (attempt: JsonRecord | undefined): boolean => {
+    const terminal = recordValue(attempt?.terminal);
+    return (
+      terminal?.reservedInventory === false &&
+      (["failed", "canceled", "expired"].includes(
+        String(terminal?.paymentStatus ?? ""),
+      ) ||
+        (terminal?.paymentStatus === "unknown" &&
+          terminal?.orderStatus === "manual_handling"))
+    );
+  };
+  const qrOrder = recordValue(qr?.order);
+  const qrMachine = recordValue(qr?.machine);
+  const qrSurface = recordValue(qrMachine.surface);
+  const qrCredential = recordValue(qr?.credential);
+  const qrQuery = recordValue(qr?.query);
+  const qrClosure = recordValue(qr?.closure);
+  const qrTerminal = recordValue(qr?.terminal);
   const qrValid =
-    qr?.order?.providerCode === "alipay" &&
-    qr?.machine?.boundary === "installed_machine_ui_cdp" &&
-    qr?.machine?.paymentMethod === "qr_code" &&
-    qr?.machine?.providerCode === "alipay" &&
-    qr?.machine?.surface?.orderId === qr?.order?.orderId &&
-    qr?.machine?.surface?.paymentId === qr?.order?.paymentId &&
-    qr?.machine?.surface?.orderNo === qr?.order?.orderNo &&
-    String(qr?.credential?.paymentUrlSha256 ?? "").startsWith("sha256:") &&
-    typeof qr?.query?.reconciliationAttemptId === "string" &&
-    qr.query.reconciliationAttemptId.length > 0 &&
-    qr?.query?.providerCode === "alipay" &&
-    qr?.query?.status === "provider_trade_not_exist" &&
-    qr?.query?.providerPaymentStatus === "pending" &&
-    qr?.closure?.action === "close_or_reverse_uncertain_payment" &&
-    qr?.closure?.handled === true &&
-    typeof qr?.closure?.providerConfigId === "string" &&
-    qr.closure.providerConfigId ===
-      report?.provider?.identity?.providerConfigId &&
-    (["canceled", "expired"].includes(qr?.terminal?.paymentStatus) ||
-      (qr?.terminal?.paymentStatus === "unknown" &&
-        qr?.terminal?.orderStatus === "manual_handling")) &&
+    qrOrder?.providerCode === "alipay" &&
+    qrMachine?.boundary === "installed_machine_ui_cdp" &&
+    qrMachine?.paymentMethod === "qr_code" &&
+    qrMachine?.providerCode === "alipay" &&
+    qrSurface?.orderId === qrOrder?.orderId &&
+    qrSurface?.paymentId === qrOrder?.paymentId &&
+    qrSurface?.orderNo === qrOrder?.orderNo &&
+    String(qrCredential?.paymentUrlSha256 ?? "").startsWith("sha256:") &&
+    typeof qrQuery?.reconciliationAttemptId === "string" &&
+    qrQuery.reconciliationAttemptId.length > 0 &&
+    qrQuery?.providerCode === "alipay" &&
+    qrQuery?.status === "provider_trade_not_exist" &&
+    qrQuery?.providerPaymentStatus === "pending" &&
+    qrClosure?.action === "close_or_reverse_uncertain_payment" &&
+    qrClosure?.handled === true &&
+    typeof qrClosure?.providerConfigId === "string" &&
+    qrClosure.providerConfigId === providerIdentity?.providerConfigId &&
+    (["canceled", "expired"].includes(
+      String(qrTerminal?.paymentStatus ?? ""),
+    ) ||
+      (qrTerminal?.paymentStatus === "unknown" &&
+        qrTerminal?.orderStatus === "manual_handling")) &&
     terminalClean(qr);
+  const codeOrder = recordValue(code?.order);
+  const codeMachine = recordValue(code?.machine);
+  const codeSurface = recordValue(codeMachine.surface);
+  const codeSubmission = recordValue(code?.submission);
+  const codeCleanup = recordValue(code?.cleanup);
+  const codeCleanupClosure = recordValue(codeCleanup.closure);
+  const codeSerialSession = recordValue(codeCleanup.serialSession);
   const codeValid =
-    code?.order?.providerCode === "alipay" &&
-    code?.machine?.boundary === "installed_machine_ui_cdp" &&
-    code?.machine?.paymentMethod === "payment_code" &&
-    code?.machine?.providerCode === "alipay" &&
-    code?.machine?.surface?.orderId === code?.order?.orderId &&
-    code?.machine?.surface?.paymentId === code?.order?.paymentId &&
-    code?.machine?.surface?.orderNo === code?.order?.orderNo &&
-    String(code?.machine?.scannerPrompt ?? "").includes("请出示付款码") &&
-    code?.submission?.providerCode === "alipay" &&
-    typeof code?.submission?.attemptId === "string" &&
-    code.submission.attemptId.length > 0 &&
+    codeOrder?.providerCode === "alipay" &&
+    codeMachine?.boundary === "installed_machine_ui_cdp" &&
+    codeMachine?.paymentMethod === "payment_code" &&
+    codeMachine?.providerCode === "alipay" &&
+    codeSurface?.orderId === codeOrder?.orderId &&
+    codeSurface?.paymentId === codeOrder?.paymentId &&
+    codeSurface?.orderNo === codeOrder?.orderNo &&
+    String(codeMachine?.scannerPrompt ?? "").includes("请出示付款码") &&
+    codeSubmission?.providerCode === "alipay" &&
+    typeof codeSubmission?.attemptId === "string" &&
+    codeSubmission.attemptId.length > 0 &&
     ["failed", "querying", "user_confirming"].includes(
-      code?.submission?.status,
+      String(codeSubmission?.status ?? ""),
     ) &&
-    (code?.submission?.status !== "failed" ||
-      (typeof code?.submission?.failureCode === "string" &&
-        code.submission.failureCode.length > 0)) &&
-    (code?.submission?.status !== "user_confirming" ||
-      code?.submission?.providerStatus === "WAIT_BUYER_PAY") &&
-    (code?.submission?.status !== "querying" ||
+    (codeSubmission?.status !== "failed" ||
+      (typeof codeSubmission?.failureCode === "string" &&
+        codeSubmission.failureCode.length > 0)) &&
+    (codeSubmission?.status !== "user_confirming" ||
+      codeSubmission?.providerStatus === "WAIT_BUYER_PAY") &&
+    (codeSubmission?.status !== "querying" ||
       ["aop.ACQ.SYSTEM_ERROR", "PAYMENT_CODE_QUERY_UNKNOWN"].includes(
-        code?.submission?.failureCode,
+        String(codeSubmission?.failureCode ?? ""),
       )) &&
-    typeof code?.submission?.providerStatus === "string" &&
-    code.submission.providerStatus.length > 0 &&
-    code?.cleanup?.action === "close_or_reverse_uncertain_payment" &&
-    (code?.cleanup?.closure?.handled === true || terminalClean(code)) &&
-    code?.cleanup?.serialSession?.action === "abort" &&
-    code?.cleanup?.serialSession?.aborted === true &&
-    typeof code?.cleanup?.providerConfigId === "string" &&
-    code.cleanup.providerConfigId ===
-      report?.provider?.identity?.providerConfigId &&
+    typeof codeSubmission?.providerStatus === "string" &&
+    codeSubmission.providerStatus.length > 0 &&
+    codeCleanup?.action === "close_or_reverse_uncertain_payment" &&
+    (codeCleanupClosure?.handled === true || terminalClean(code)) &&
+    codeSerialSession?.action === "abort" &&
+    codeSerialSession?.aborted === true &&
+    typeof codeCleanup?.providerConfigId === "string" &&
+    codeCleanup.providerConfigId === providerIdentity?.providerConfigId &&
     terminalClean(code);
-  const providerIdentity = report?.provider?.identity;
   const providerPrepared =
     providerIdentity?.providerCode === "alipay" &&
     typeof providerIdentity?.providerConfigId === "string" &&
@@ -486,16 +591,16 @@ function validatePaymentProviderTrack(report, reportPath) {
     providerIdentity?.keyType === "PKCS1" &&
     providerIdentity?.gatewayUrl ===
       "https://openapi-sandbox.dl.alipaydev.com/gateway.do" &&
-    report?.provider?.hostPreparation?.source === "host_installation_fixture" &&
-    report?.provider?.hostPreparation?.preflight === "configured";
+    hostPreparation?.source === "host_installation_fixture" &&
+    hostPreparation?.preflight === "configured";
   const uniqueOrders = new Set(
-    attempts.map((attempt) => attempt?.order?.orderId).filter(Boolean),
+    attempts
+      .map((attempt: unknown) => recordValue(recordValue(attempt).order).orderId)
+      .filter(Boolean),
   );
-  const diagnostics = Array.isArray(report.diagnostics)
-    ? report.diagnostics
-    : [];
+  const diagnostics = arrayValue(report.diagnostics);
   if (
-    attempts?.length !== 2 ||
+    attempts.length !== 2 ||
     uniqueOrders.size !== 2 ||
     !providerPrepared ||
     !qrValid ||
@@ -511,23 +616,18 @@ function validatePaymentProviderTrack(report, reportPath) {
     );
   }
   return passedTrack("paymentProvider", "payment provider", reportPath, {
-    qrOrderId: qr.order.orderId,
-    paymentCodeOrderId: code.order.orderId,
+    qrOrderId: qrOrder.orderId,
+    paymentCodeOrderId: codeOrder.orderId,
     diagnosticAttempts: diagnostics.length,
   });
 }
 
-function stockIs(value, quantity, saleable) {
-  return (
-    value?.physicalStock === quantity &&
-    value?.saleableStock === saleable &&
-    typeof value?.slotSalesState === "string"
-  );
-}
-
-function validateStockMaintenanceTrack(report, reportPath) {
+function validateStockMaintenanceTrack(
+  report: JsonRecord,
+  reportPath: string,
+): TrackResult {
   try {
-    const summary = validateStockMaintenanceReport(report);
+    const summary = validateStockMaintenanceReport(report) as JsonRecord;
     return passedTrack(
       "stockMaintenance",
       "stock maintenance",
@@ -547,7 +647,10 @@ function validateStockMaintenanceTrack(report, reportPath) {
   }
 }
 
-function validateLocalOperationsTrack(report, reportPath) {
+function validateLocalOperationsTrack(
+  report: JsonRecord,
+  reportPath: string,
+): TrackResult {
   if (
     report?.schemaVersion !== "vem-local-operations-guest-full/v1" ||
     report?.ok !== true
@@ -559,35 +662,49 @@ function validateLocalOperationsTrack(report, reportPath) {
       "local operations track did not finish successfully",
     );
   }
+  const boundaries = maybeRecord(report.boundaries);
+  const planogram = maybeRecord(report.planogram);
+  const manualDispense = maybeRecord(report.manualDispense);
+  const localEnvironmentControl = maybeRecord(report.localEnvironmentControl);
+  const localEnvironmentRequest = recordValue(
+    localEnvironmentControl?.request,
+  );
+  const localEnvironmentResult = recordValue(localEnvironmentControl?.result);
+  const localEnvironmentFrame = recordValue(
+    localEnvironmentControl?.protocolFrame,
+  );
+  const maintenanceEntry = maybeRecord(report.maintenanceEntry);
+  const maintenanceEntries = arrayValue(maintenanceEntry?.entries);
+  const maintenanceTaskReturns = arrayValue(maintenanceEntry?.taskReturns);
   if (
-    report.boundaries?.daemon !== true ||
-    report.boundaries?.hardwareSelfCheck !== true ||
-    report.boundaries?.serial !== true ||
-    report.planogram?.canonical !== true ||
-    !report.planogram?.planogramVersion ||
-    !report.planogram?.slotId ||
-    !report.planogram?.slotDisplayLabel ||
+    boundaries?.daemon !== true ||
+    boundaries?.hardwareSelfCheck !== true ||
+    boundaries?.serial !== true ||
+    planogram?.canonical !== true ||
+    !planogram?.planogramVersion ||
+    !planogram?.slotId ||
+    !planogram?.slotDisplayLabel ||
     !["completed", "failed", "result_unknown"].includes(
-      report.manualDispense?.outcome,
+      String(manualDispense?.outcome ?? ""),
     ) ||
-    report.manualDispense?.slotId !== report.planogram.slotId ||
-    report.localEnvironmentControl?.request?.ventSpeed !== 3 ||
-    report.localEnvironmentControl?.result?.success !== true ||
-    report.localEnvironmentControl?.protocolFrame?.parsedOpcode !== "B3" ||
-    !Array.isArray(report.maintenanceEntry?.entries) ||
-    report.maintenanceEntry.entries.length < 1 ||
-    report.maintenanceEntry.entries.some(
-      (entry) =>
-        entry?.ok !== true ||
-        entry.finalRoute !== "#/maintenance?source=operator",
+    manualDispense?.slotId !== planogram.slotId ||
+    localEnvironmentRequest?.ventSpeed !== 3 ||
+    localEnvironmentResult?.success !== true ||
+    localEnvironmentFrame?.parsedOpcode !== "B3" ||
+    maintenanceEntries.length < 1 ||
+    maintenanceEntries.some(
+      (entry: unknown) =>
+        recordValue(entry).ok !== true ||
+        recordValue(entry).finalRoute !== "#/maintenance?source=operator",
     ) ||
-    !report.maintenanceEntry.entries.some(
-      (entry) => entry.route === "#/catalog",
+    !maintenanceEntries.some(
+      (entry: unknown) => recordValue(entry).route === "#/catalog",
     ) ||
-    !Array.isArray(report.maintenanceEntry?.taskReturns) ||
-    report.maintenanceEntry.taskReturns.length < 1 ||
-    report.maintenanceEntry.taskReturns.some(
-      (entry) => entry?.ok !== true || entry.finalRoute !== "#/catalog",
+    maintenanceTaskReturns.length < 1 ||
+    maintenanceTaskReturns.some(
+      (entry: unknown) =>
+        recordValue(entry).ok !== true ||
+        recordValue(entry).finalRoute !== "#/catalog",
     )
   ) {
     return failedTrack(
@@ -596,23 +713,26 @@ function validateLocalOperationsTrack(report, reportPath) {
       reportPath,
       "local operations evidence is incomplete",
       {
-        boundaries: report.boundaries ?? null,
-        planogram: report.planogram ?? null,
-        manualDispense: report.manualDispense ?? null,
-        localEnvironmentControl: report.localEnvironmentControl ?? null,
+        boundaries,
+        planogram,
+        manualDispense,
+        localEnvironmentControl,
       },
     );
   }
   return passedTrack("localOperations", "local operations", reportPath, {
-    slotId: report.planogram.slotId,
-    slotDisplayLabel: report.planogram.slotDisplayLabel,
-    planogramVersion: report.planogram.planogramVersion,
-    manualOutcome: report.manualDispense.outcome,
-    localVentSpeed: report.localEnvironmentControl.request.ventSpeed,
+    slotId: planogram?.slotId,
+    slotDisplayLabel: planogram?.slotDisplayLabel,
+    planogramVersion: planogram?.planogramVersion,
+    manualOutcome: manualDispense?.outcome,
+    localVentSpeed: localEnvironmentRequest?.ventSpeed,
   });
 }
 
-function validateHardwareLifecycleTrack(report, reportPath) {
+function validateHardwareLifecycleTrack(
+  report: JsonRecord,
+  reportPath: string,
+): TrackResult {
   if (
     report?.schemaVersion !== "vem-hardware-lifecycle-guest-full/v1" ||
     report?.ok !== true
@@ -624,51 +744,74 @@ function validateHardwareLifecycleTrack(report, reportPath) {
       "hardware lifecycle track did not finish successfully",
     );
   }
-  const discovery = report.discovery ?? {};
-  const readiness = report.readiness ?? {};
-  const lifecycle = Array.isArray(report.lifecycle) ? report.lifecycle : [];
-  const byRole = new Map(lifecycle.map((entry) => [entry?.role, entry]));
-  const lower = byRole.get("lower_controller");
-  const scanner = byRole.get("scanner");
-  const roles = Array.isArray(discovery.roles) ? discovery.roles : [];
-  const qemuMappings = Array.isArray(discovery.qemuUsbSerialMappings)
-    ? discovery.qemuUsbSerialMappings
-    : [];
+  const discovery = recordValue(report.discovery);
+  const readiness = recordValue(report.readiness);
+  const readinessBefore = recordValue(readiness.before);
+  const readinessAfter = recordValue(readiness.after);
+  const lifecycle = arrayValue(report.lifecycle);
+  const lifecycleRecords = lifecycle.map((entry: unknown) =>
+    recordValue(entry),
+  );
+  const byRole = new Map(
+    lifecycleRecords.map((entry) => [entry.role, entry]),
+  );
+  const lower = maybeRecord(byRole.get("lower_controller"));
+  const scanner = maybeRecord(byRole.get("scanner"));
+  const roles = arrayValue(discovery.roles);
+  const qemuMappings = arrayValue(discovery.qemuUsbSerialMappings);
   const stableReadiness =
-    readiness.before?.canStartSale === true &&
-    readiness.after?.canStartSale === true &&
-    Number.isInteger(readiness.before?.revision) &&
-    Number.isInteger(readiness.after?.revision) &&
-    readiness.after.revision >= readiness.before.revision;
-  const validLifecycle = [lower, scanner].every(
-    (entry) =>
-      entry?.disconnect?.boundary?.adapter === "file_backed_windows_pnp" &&
-      entry.disconnect.boundary.operation === "disconnect" &&
-      entry.disconnect.boundary.identityKey === entry.identityKey &&
-      entry.disconnect?.daemon?.ready === false &&
-      entry.disconnect?.daemon?.currentPort == null &&
-      entry?.reconnect?.boundary?.adapter === "file_backed_windows_pnp" &&
-      entry.reconnect.boundary.operation === "reconnect" &&
-      entry.reconnect.boundary.identityKey === entry.identityKey &&
-      entry.reconnect?.daemon?.ready === true &&
-      typeof entry.reconnect?.daemon?.currentPort === "string" &&
-      entry.reconnect.daemon.identityKey === entry.identityKey,
+    readinessBefore?.canStartSale === true &&
+    readinessAfter?.canStartSale === true &&
+    Number.isInteger(readinessBefore?.revision) &&
+    Number.isInteger(readinessAfter?.revision) &&
+    (readinessAfter.revision as number) >= (readinessBefore.revision as number);
+  const validLifecycle = [lower, scanner].every((entry: JsonRecord | null) => {
+    const disconnect = recordValue(entry?.disconnect);
+    const disconnectBoundary = recordValue(disconnect.boundary);
+    const disconnectDaemon = recordValue(disconnect.daemon);
+    const reconnect = recordValue(entry?.reconnect);
+    const reconnectBoundary = recordValue(reconnect.boundary);
+    const reconnectDaemon = recordValue(reconnect.daemon);
+    return (
+      disconnectBoundary?.adapter === "file_backed_windows_pnp" &&
+      disconnectBoundary.operation === "disconnect" &&
+      disconnectBoundary.identityKey === entry?.identityKey &&
+      disconnectDaemon?.ready === false &&
+      disconnectDaemon?.currentPort == null &&
+      reconnectBoundary?.adapter === "file_backed_windows_pnp" &&
+      reconnectBoundary.operation === "reconnect" &&
+      reconnectBoundary.identityKey === entry?.identityKey &&
+      reconnectDaemon?.ready === true &&
+      typeof reconnectDaemon?.currentPort === "string" &&
+      reconnectDaemon.identityKey === entry?.identityKey
+    );
+  });
+  const lowerDisconnectCapability = recordValue(
+    recordValue(lower?.disconnect).saleStartCapability,
+  );
+  const lowerReconnectCapability = recordValue(
+    recordValue(lower?.reconnect).saleStartCapability,
   );
   const lowerCapabilityValid =
-    lower?.disconnect?.saleStartCapability?.canStartSale === false &&
-    lower?.reconnect?.saleStartCapability?.canStartSale === true;
-  const scannerPaymentOptions = (capability) =>
-    (capability?.paymentOptions?.options ?? []).filter(
-      (option) => option?.method === "payment_code",
+    lowerDisconnectCapability?.canStartSale === false &&
+    lowerReconnectCapability?.canStartSale === true;
+  const scannerPaymentOptions = (capability: unknown) =>
+    arrayValue(recordValue(recordValue(capability).paymentOptions).options).filter(
+      (option: unknown) => recordValue(option).method === "payment_code",
     );
+  const scannerDisconnectOptions = scannerPaymentOptions(
+    recordValue(scanner?.disconnect).saleStartCapability,
+  );
+  const scannerReconnectOptions = scannerPaymentOptions(
+    recordValue(scanner?.reconnect).saleStartCapability,
+  );
   const scannerCapabilityValid =
-    scannerPaymentOptions(scanner?.disconnect?.saleStartCapability).length >
-      0 &&
-    scannerPaymentOptions(scanner.disconnect.saleStartCapability).every(
-      (option) => option?.ready === false,
+    scannerDisconnectOptions.length > 0 &&
+    scannerDisconnectOptions.every(
+      (option: unknown) => recordValue(option).ready === false,
     ) &&
-    scannerPaymentOptions(scanner?.reconnect?.saleStartCapability).some(
-      (option) => option?.ready === true,
+    scannerReconnectOptions.some(
+      (option: unknown) => recordValue(option).ready === true,
     );
   if (
     roles.length < 2 ||
@@ -689,13 +832,16 @@ function validateHardwareLifecycleTrack(report, reportPath) {
     );
   }
   return passedTrack("hardwareLifecycle", "hardware lifecycle", reportPath, {
-    roles: roles.map((role) => role.role),
-    readinessRevision: readiness.after.revision,
-    lifecycleRoles: lifecycle.map((entry) => entry.role),
+    roles: roles.map((role: unknown) => recordValue(role).role),
+    readinessRevision: readinessAfter.revision,
+    lifecycleRoles: lifecycleRecords.map((entry) => entry.role),
   });
 }
 
-function validateEnvironmentControlTrack(report, reportPath) {
+function validateEnvironmentControlTrack(
+  report: JsonRecord,
+  reportPath: string,
+): TrackResult {
   if (
     report?.schemaVersion !== "vem-environment-control-guest-full/v1" ||
     report?.ok !== true
@@ -707,67 +853,100 @@ function validateEnvironmentControlTrack(report, reportPath) {
       "environment control track did not finish successfully",
     );
   }
-  const commands = Array.isArray(report.commands) ? report.commands : [];
-  const byAction = new Map(commands.map((entry) => [entry?.action, entry]));
+  const commands = arrayValue(report.commands);
+  const commandRecords = commands.map((entry: unknown) => recordValue(entry));
+  const byAction = new Map(
+    commandRecords.map((entry) => [entry.action, entry]),
+  );
   const requiredActions = [
     "airConditionerOnTrue",
     "airConditionerOnFalse",
     "ventSpeed",
   ];
-  const optionalTemperature = byAction.get("targetTemperatureCelsius") ?? null;
+  const optionalTemperature = maybeRecord(
+    byAction.get("targetTemperatureCelsius"),
+  );
   const hasRequiredActions = requiredActions.every((action) => {
-    const entry = byAction.get(action);
+    const entry = byAction.get(action) as JsonRecord | undefined;
+    const admin = recordValue(entry?.admin);
+    const result = recordValue(entry?.result);
+    const resultJson = recordValue(result.resultJson);
+    const mqtt = recordValue(entry?.mqtt);
+    const serial = recordValue(entry?.serial);
     return (
-      entry?.admin?.commandNo &&
-      entry?.admin?.status === "sent" &&
-      entry?.result?.status === "succeeded" &&
-      entry?.result?.resultJson?.success === true &&
-      entry?.mqtt?.commandObserved === true &&
-      entry?.mqtt?.resultObserved === true &&
-      entry?.mqtt?.commandNo === entry.admin.commandNo &&
-      entry?.mqtt?.resultCommandNo === entry.admin.commandNo &&
-      entry?.serial?.lowerBoundaryObserved === true
+      admin?.commandNo &&
+      admin?.status === "sent" &&
+      result?.status === "succeeded" &&
+      resultJson?.success === true &&
+      mqtt?.commandObserved === true &&
+      mqtt?.resultObserved === true &&
+      mqtt?.commandNo === admin.commandNo &&
+      mqtt?.resultCommandNo === admin.commandNo &&
+      serial?.lowerBoundaryObserved === true
     );
   });
+  const optionalTemperatureResult = recordValue(optionalTemperature?.result);
+  const optionalTemperatureResultJson = recordValue(
+    optionalTemperatureResult.resultJson,
+  );
+  const optionalTemperatureSerial = recordValue(optionalTemperature?.serial);
   const hasTemperature =
     optionalTemperature === null ||
-    (optionalTemperature.result?.status === "succeeded" &&
-      optionalTemperature.result?.resultJson?.success === true &&
-      optionalTemperature.serial?.lowerBoundaryObserved === true);
-  const overlap = report.overlapRejection ?? {};
-  const precedence = report.precedence ?? {};
-  const sessionReplacement = report.serialSessionReplacement ?? {};
+    (optionalTemperatureResult?.status === "succeeded" &&
+      optionalTemperatureResultJson?.success === true &&
+      optionalTemperatureSerial?.lowerBoundaryObserved === true);
+  const overlap = recordValue(report.overlapRejection);
+  const precedence = recordValue(report.precedence);
+  const sessionReplacement = recordValue(report.serialSessionReplacement);
   const replacementSessionId =
     sessionReplacement.replacementControlPlaneSessionId;
-  const automaticArrival = precedence.automaticArrival ?? {};
-  const adminB3 = precedence.adminB3 ?? {};
-  const sameEdgeAfterAdmin = precedence.sameEdgeAfterAdmin ?? {};
-  const nextStableEdge = precedence.nextStableEdge ?? {};
-  const operatorGear = report.operatorGearPersistence ?? {};
-  const operatorGearCommand = operatorGear.operatorGearCommand ?? {};
-  const departureAfterOperatorGear =
-    operatorGear.departureAfterOperatorGear ?? {};
-  const arrivalAfterOperatorGear = operatorGear.arrivalAfterOperatorGear ?? {};
-  const secondDepartureAfterOperatorGear =
-    operatorGear.secondDepartureAfterOperatorGear ?? {};
-  const secondArrivalAfterOperatorGear =
-    operatorGear.secondArrivalAfterOperatorGear ?? {};
-  const b3Speed = (frame) => {
-    const match = /^55b3(0[0-4])$/i.exec(String(frame?.rawFrameHex ?? ""));
+  const automaticArrival = recordValue(precedence.automaticArrival);
+  const adminB3 = recordValue(precedence.adminB3);
+  const sameEdgeAfterAdmin = recordValue(precedence.sameEdgeAfterAdmin);
+  const nextStableEdge = recordValue(precedence.nextStableEdge);
+  const operatorGear = recordValue(report.operatorGearPersistence);
+  const operatorGearCommand = recordValue(operatorGear.operatorGearCommand);
+  const departureAfterOperatorGear = recordValue(
+    operatorGear.departureAfterOperatorGear,
+  );
+  const arrivalAfterOperatorGear = recordValue(
+    operatorGear.arrivalAfterOperatorGear,
+  );
+  const secondDepartureAfterOperatorGear = recordValue(
+    operatorGear.secondDepartureAfterOperatorGear,
+  );
+  const secondArrivalAfterOperatorGear = recordValue(
+    operatorGear.secondArrivalAfterOperatorGear,
+  );
+  const b3Speed = (frame: unknown): number | null => {
+    const match = /^55b3(0[0-4])$/i.exec(
+      String(recordValue(frame).rawFrameHex ?? ""),
+    );
     return match ? Number.parseInt(match[1], 16) : null;
   };
-  const validPrecedenceFrame = (frame, speed) =>
-    frame?.parsedOpcode === "B3" &&
-    b3Speed(frame) === speed &&
-    Number.isFinite(Date.parse(frame?.capturedAt));
-  const validReplacementB3 = (frame, speed) =>
-    validPrecedenceFrame(frame, speed) &&
-    (frame?.sessionId === replacementSessionId ||
-      String(frame?.sessionId ?? "").startsWith("serial-session://"));
-  const onlyAutomaticB3 = (entry, expectedB3FrameCount) => {
-    const protocolFrames = entry?.protocolFrames;
-    if (!Array.isArray(protocolFrames)) return false;
-    const opcodeSet = new Set(protocolFrames);
+  const validPrecedenceFrame = (frame: unknown, speed: number): boolean => {
+    const frameRecord = recordValue(frame);
+    return (
+      frameRecord?.parsedOpcode === "B3" &&
+      b3Speed(frameRecord) === speed &&
+      Number.isFinite(Date.parse(String(frameRecord?.capturedAt ?? "")))
+    );
+  };
+  const validReplacementB3 = (frame: unknown, speed: number): boolean => {
+    const frameRecord = recordValue(frame);
+    return (
+      validPrecedenceFrame(frameRecord, speed) &&
+      (frameRecord?.sessionId === replacementSessionId ||
+        String(frameRecord?.sessionId ?? "").startsWith("serial-session://"))
+    );
+  };
+  const onlyAutomaticB3 = (
+    entry: unknown,
+    expectedB3FrameCount: number,
+  ): boolean => {
+    const entryRecord = recordValue(entry);
+    const protocolFrames = arrayValue(entryRecord.protocolFrames);
+    const opcodeSet = new Set(protocolFrames.map((frame) => String(frame)));
     return (
       protocolFrames.length === expectedB3FrameCount &&
       opcodeSet.size === 1 &&
@@ -776,15 +955,15 @@ function validateEnvironmentControlTrack(report, reportPath) {
       !opcodeSet.has("B2")
     );
   };
-  const validNoActionGuardWindow = (guardWindow) => {
-    const protocolFrames = guardWindow?.protocolFrames;
+  const validNoActionGuardWindow = (guardWindow: unknown): boolean => {
+    const guardRecord = recordValue(guardWindow);
+    const protocolFrames = arrayValue(guardRecord.protocolFrames);
     return (
-      guardWindow?.completed === true &&
-      Number.isFinite(guardWindow.durationMs) &&
-      guardWindow.durationMs >= 5_000 &&
-      Array.isArray(protocolFrames) &&
+      guardRecord?.completed === true &&
+      Number.isFinite(Number(guardRecord.durationMs)) &&
+      Number(guardRecord.durationMs) >= 5_000 &&
       protocolFrames.length === 0 &&
-      guardWindow.b3FrameCountDelta === 0
+      guardRecord.b3FrameCountDelta === 0
     );
   };
   const precedenceCorrelated =
@@ -794,7 +973,10 @@ function validateEnvironmentControlTrack(report, reportPath) {
     automaticArrival.b3FrameCountDelta === 1 &&
     onlyAutomaticB3(automaticArrival, 1) &&
     validReplacementB3(automaticArrival.frame, 3) &&
-    commands.some((entry) => entry?.admin?.commandNo === adminB3.commandNo) &&
+    commands.some(
+      (entry: unknown) =>
+        recordValue(recordValue(entry).admin).commandNo === adminB3.commandNo,
+    ) &&
     adminB3.resultStatus === "succeeded" &&
     adminB3.mqttCommandNo === adminB3.commandNo &&
     adminB3.mqttResultNo === adminB3.commandNo &&
@@ -802,8 +984,7 @@ function validateEnvironmentControlTrack(report, reportPath) {
     sameEdgeAfterAdmin.edgeId === automaticArrival.edgeId &&
     sameEdgeAfterAdmin.outcome === "deduplicated" &&
     sameEdgeAfterAdmin.b3FrameCountDelta === 0 &&
-    Array.isArray(sameEdgeAfterAdmin.protocolFrames) &&
-    sameEdgeAfterAdmin.protocolFrames.length === 0 &&
+    arrayValue(sameEdgeAfterAdmin.protocolFrames).length === 0 &&
     validNoActionGuardWindow(sameEdgeAfterAdmin.guardWindow) &&
     nextStableEdge.edgeId &&
     nextStableEdge.edgeId !== automaticArrival.edgeId &&
@@ -812,15 +993,19 @@ function validateEnvironmentControlTrack(report, reportPath) {
     nextStableEdge.b3FrameCountDelta === 1 &&
     onlyAutomaticB3(nextStableEdge, 1) &&
     validReplacementB3(nextStableEdge.frame, 0) &&
-    Date.parse(automaticArrival.frame.capturedAt) <
-      Date.parse(adminB3.frame.capturedAt) &&
-    Date.parse(adminB3.frame.capturedAt) <
-      Date.parse(nextStableEdge.frame.capturedAt);
-  const operatorGearFrameAt = (entry) => Date.parse(entry?.capturedAt ?? "");
+    Date.parse(String(recordValue(automaticArrival.frame).capturedAt ?? "")) <
+      Date.parse(String(recordValue(adminB3.frame).capturedAt ?? "")) &&
+    Date.parse(String(recordValue(adminB3.frame).capturedAt ?? "")) <
+      Date.parse(String(recordValue(nextStableEdge.frame).capturedAt ?? ""));
+  const operatorGearFrameAt = (entry: unknown): number =>
+    Date.parse(String(recordValue(entry).capturedAt ?? ""));
+  const operatorGearCommandAdmin = recordValue(operatorGearCommand.admin);
+  const operatorGearCommandResult = recordValue(operatorGearCommand.result);
+  const operatorGearCommandSerial = recordValue(operatorGearCommand.serial);
   const operatorGearCorrelated =
-    operatorGearCommand.admin?.commandNo &&
-    operatorGearCommand.result?.status === "succeeded" &&
-    validReplacementB3(operatorGearCommand.serial?.protocolFrame, 2) &&
+    operatorGearCommandAdmin?.commandNo &&
+    operatorGearCommandResult?.status === "succeeded" &&
+    validReplacementB3(operatorGearCommandSerial.protocolFrame, 2) &&
     departureAfterOperatorGear.edgeId &&
     departureAfterOperatorGear.requestedSpeed === 0 &&
     departureAfterOperatorGear.outcome === "accepted" &&
@@ -847,7 +1032,7 @@ function validateEnvironmentControlTrack(report, reportPath) {
     secondArrivalAfterOperatorGear.b3FrameCountDelta === 1 &&
     onlyAutomaticB3(secondArrivalAfterOperatorGear, 1) &&
     validReplacementB3(secondArrivalAfterOperatorGear.frame, 2) &&
-    operatorGearFrameAt(operatorGearCommand.serial?.protocolFrame) <
+    operatorGearFrameAt(operatorGearCommandSerial.protocolFrame) <
       operatorGearFrameAt(departureAfterOperatorGear.frame) &&
     operatorGearFrameAt(departureAfterOperatorGear.frame) <
       operatorGearFrameAt(arrivalAfterOperatorGear.frame) &&
@@ -855,47 +1040,48 @@ function validateEnvironmentControlTrack(report, reportPath) {
       operatorGearFrameAt(secondDepartureAfterOperatorGear.frame) &&
     operatorGearFrameAt(secondDepartureAfterOperatorGear.frame) <
       operatorGearFrameAt(secondArrivalAfterOperatorGear.frame);
-  const automaticVent = report.daemon?.automaticVent ?? {};
-  const automaticVentOutcomes = Array.isArray(automaticVent.outcomes)
-    ? automaticVent.outcomes
-    : [];
+  const daemon = maybeRecord(report.daemon);
+  const automaticVent = recordValue(daemon?.automaticVent);
+  const automaticVentHealth = recordValue(automaticVent.health);
+  const automaticVentOutcomes = arrayValue(automaticVent.outcomes);
   const automaticVentEvidence =
-    automaticVent.health?.component === "automatic_vent" &&
-    automaticVent.health?.level === "ok" &&
+    automaticVentHealth?.component === "automatic_vent" &&
+    automaticVentHealth?.level === "ok" &&
     automaticVentOutcomes.some(
-      (entry) =>
-        entry?.edgeId === automaticArrival.edgeId &&
-        entry?.outcome === automaticArrival.outcome,
+      (entry: unknown) =>
+        recordValue(entry).edgeId === automaticArrival.edgeId &&
+        recordValue(entry).outcome === automaticArrival.outcome,
     ) &&
     automaticVentOutcomes.some(
-      (entry) =>
-        entry?.edgeId === sameEdgeAfterAdmin.edgeId &&
-        entry?.outcome === sameEdgeAfterAdmin.outcome,
+      (entry: unknown) =>
+        recordValue(entry).edgeId === sameEdgeAfterAdmin.edgeId &&
+        recordValue(entry).outcome === sameEdgeAfterAdmin.outcome,
     ) &&
     automaticVentOutcomes.some(
-      (entry) =>
-        entry?.edgeId === nextStableEdge.edgeId &&
-        entry?.outcome === nextStableEdge.outcome,
+      (entry: unknown) =>
+        recordValue(entry).edgeId === nextStableEdge.edgeId &&
+        recordValue(entry).outcome === nextStableEdge.outcome,
     ) &&
     automaticVentOutcomes.some(
-      (entry) =>
-        entry?.edgeId === departureAfterOperatorGear.edgeId &&
-        entry?.outcome === departureAfterOperatorGear.outcome,
+      (entry: unknown) =>
+        recordValue(entry).edgeId === departureAfterOperatorGear.edgeId &&
+        recordValue(entry).outcome === departureAfterOperatorGear.outcome,
     ) &&
     automaticVentOutcomes.some(
-      (entry) =>
-        entry?.edgeId === arrivalAfterOperatorGear.edgeId &&
-        entry?.outcome === arrivalAfterOperatorGear.outcome,
+      (entry: unknown) =>
+        recordValue(entry).edgeId === arrivalAfterOperatorGear.edgeId &&
+        recordValue(entry).outcome === arrivalAfterOperatorGear.outcome,
     ) &&
     automaticVentOutcomes.some(
-      (entry) =>
-        entry?.edgeId === secondDepartureAfterOperatorGear.edgeId &&
-        entry?.outcome === secondDepartureAfterOperatorGear.outcome,
+      (entry: unknown) =>
+        recordValue(entry).edgeId === secondDepartureAfterOperatorGear.edgeId &&
+        recordValue(entry).outcome ===
+          secondDepartureAfterOperatorGear.outcome,
     ) &&
     automaticVentOutcomes.some(
-      (entry) =>
-        entry?.edgeId === secondArrivalAfterOperatorGear.edgeId &&
-        entry?.outcome === secondArrivalAfterOperatorGear.outcome,
+      (entry: unknown) =>
+        recordValue(entry).edgeId === secondArrivalAfterOperatorGear.edgeId &&
+        recordValue(entry).outcome === secondArrivalAfterOperatorGear.outcome,
     );
   const replacementEvidence =
     typeof sessionReplacement.previousControlPlaneSessionId === "string" &&
@@ -910,12 +1096,12 @@ function validateEnvironmentControlTrack(report, reportPath) {
     overlap.rejected !== true ||
     overlap.httpStatus !== 409 ||
     overlap.error !== "ENVIRONMENT_COMMAND_IN_PROGRESS" ||
-    report.boundaries?.adminApi !== true ||
-    report.boundaries?.mqtt !== true ||
-    report.boundaries?.daemonIpc !== true ||
-    report.boundaries?.lowerSerial !== true ||
-    report.daemon?.health?.hardwareOnline !== true ||
-    report.daemon?.readiness?.ready !== true ||
+    recordValue(report.boundaries)?.adminApi !== true ||
+    recordValue(report.boundaries)?.mqtt !== true ||
+    recordValue(report.boundaries)?.daemonIpc !== true ||
+    recordValue(report.boundaries)?.lowerSerial !== true ||
+    recordValue(daemon?.health)?.hardwareOnline !== true ||
+    recordValue(daemon?.readiness)?.ready !== true ||
     precedenceCorrelated !== true ||
     operatorGearCorrelated !== true ||
     replacementEvidence !== true ||
@@ -929,15 +1115,17 @@ function validateEnvironmentControlTrack(report, reportPath) {
       {
         commands,
         overlap,
-        boundaries: report.boundaries ?? null,
-        daemon: report.daemon ?? null,
+        boundaries: maybeRecord(report.boundaries),
+        daemon,
         precedence,
         sessionReplacement,
       },
     );
   }
   return passedTrack("environmentControl", "environment control", reportPath, {
-    commandNos: commands.map((entry) => entry.admin.commandNo),
+    commandNos: commandRecords.map((entry) =>
+      recordValue(entry.admin).commandNo,
+    ),
     overlapError: overlap.error,
     temperatureProved: optionalTemperature !== null,
     precedence: {
@@ -945,41 +1133,44 @@ function validateEnvironmentControlTrack(report, reportPath) {
       automaticArrivalEdgeId: automaticArrival.edgeId,
       nextStableEdgeId: nextStableEdge.edgeId,
       operatorGearArrivalEdgeId: arrivalAfterOperatorGear.edgeId,
-      operatorGearCommandNo: operatorGearCommand.admin?.commandNo ?? null,
+      operatorGearCommandNo: operatorGearCommandAdmin?.commandNo ?? null,
       replacementSessionId,
     },
   });
 }
 
-function canonicalResult(descriptor, result, reportPath) {
+function canonicalResult(
+  descriptor: JsonRecord,
+  result: TrackResult,
+  reportPath: string,
+): TrackResult {
   return {
     ...result,
-    key: descriptor.name,
-    label: descriptor.name,
+    key: String(descriptor.name),
+    label: String(descriptor.name),
     reportPath,
   };
 }
 
 function validateVisionExperienceCapturedSource(
-  set,
+  set: JsonRecord,
   visionBaseUrl = "http://127.0.0.1:27892",
-) {
+): CapturedSourceEvidence | null {
   const expectedVisionOrigin = normalizeVisionOrigin(visionBaseUrl);
   if (!expectedVisionOrigin) return null;
-  const sources = Array.isArray(set?.supportingEvidence)
-    ? set.supportingEvidence.filter(
-        (entry) => entry?.kind === "vision-v2-captured-source",
-      )
-    : [];
+  const sources = arrayValue(set?.supportingEvidence).filter(
+    (entry: unknown) =>
+      recordValue(entry).kind === "vision-v2-captured-source",
+  );
   if (sources.length !== 1) return null;
   const source = validateCapturedSourceEvidence(sources[0]);
   if (!source || source.visionOrigin !== expectedVisionOrigin) return null;
-  const assertions = Array.isArray(set?.assertions) ? set.assertions : [];
+  const assertions = arrayValue(set?.assertions);
   const bindings = assertions.filter(
-    (assertion) => assertion?.id === "captured-source-bound",
+    (assertion: unknown) => recordValue(assertion).id === "captured-source-bound",
   );
   const binding = capturedSourceBinding(source);
-  const assertion = bindings[0];
+  const assertion = maybeRecord(bindings[0]);
   if (
     bindings.length !== 1 ||
     assertion?.schemaVersion !== "vem-runtime-testbed-business-assertion/v1" ||
@@ -1013,22 +1204,28 @@ const VISION_EXPERIENCE_ADJUSTMENT_ASSERTIONS = [
   "garment-scale-v2-adjustment-sequence",
 ];
 
-function hasPassingAssertions(set, ids, source) {
-  const assertions = Array.isArray(set?.assertions) ? set.assertions : [];
-  return ids.every((id) => {
-    const matches = assertions.filter((assertion) => assertion?.id === id);
+function hasPassingAssertions(
+  set: JsonRecord,
+  ids: string[],
+  source: string,
+): boolean {
+  const assertions = arrayValue(set?.assertions);
+  return ids.every((id: string) => {
+    const matches = assertions.filter(
+      (assertion: unknown) => recordValue(assertion).id === id,
+    );
+    const match = maybeRecord(matches[0]);
     return (
       matches.length === 1 &&
-      matches[0]?.schemaVersion ===
-        "vem-runtime-testbed-business-assertion/v1" &&
-      matches[0]?.source === source &&
-      matches[0]?.status === "passed" &&
-      matches[0]?.reason === null
+      match?.schemaVersion === "vem-runtime-testbed-business-assertion/v1" &&
+      match?.source === source &&
+      match?.status === "passed" &&
+      match?.reason === null
     );
   });
 }
 
-function hasPassingVisionExperienceTimelineAssertions(set) {
+function hasPassingVisionExperienceTimelineAssertions(set: JsonRecord): boolean {
   return hasPassingAssertions(
     set,
     VISION_EXPERIENCE_TIMELINE_ASSERTIONS,
@@ -1036,7 +1233,7 @@ function hasPassingVisionExperienceTimelineAssertions(set) {
   );
 }
 
-function hasPassingVisionExperienceGeometryAssertions(set) {
+function hasPassingVisionExperienceGeometryAssertions(set: JsonRecord): boolean {
   return hasPassingAssertions(
     set,
     VISION_EXPERIENCE_GEOMETRY_ASSERTIONS,
@@ -1044,7 +1241,7 @@ function hasPassingVisionExperienceGeometryAssertions(set) {
   );
 }
 
-function hasPassingVisionExperienceAdjustmentAssertions(set) {
+function hasPassingVisionExperienceAdjustmentAssertions(set: JsonRecord): boolean {
   return hasPassingAssertions(
     set,
     VISION_EXPERIENCE_ADJUSTMENT_ASSERTIONS,
@@ -1052,46 +1249,61 @@ function hasPassingVisionExperienceAdjustmentAssertions(set) {
   );
 }
 
-function visionGeometryFixtureBlocker(set) {
-  const evidence = Array.isArray(set?.supportingEvidence)
-    ? set.supportingEvidence.find(
-        (entry) =>
-          entry?.kind === "vision-recorded-geometry-fixture" &&
-          entry?.status === "blocked" &&
-          typeof entry?.reason === "string" &&
-          entry.reason.length > 0,
-      )
+function visionGeometryFixtureBlocker(set: JsonRecord): string | null {
+  const evidence = arrayValue(set?.supportingEvidence).find(
+    (entry: unknown) => {
+      const record = recordValue(entry);
+      return (
+        record.kind === "vision-recorded-geometry-fixture" &&
+        record.status === "blocked" &&
+        typeof record.reason === "string" &&
+        record.reason.length > 0
+      );
+    },
+  );
+  const evidenceRecord = maybeRecord(evidence);
+  return typeof evidenceRecord?.reason === "string"
+    ? evidenceRecord.reason
     : null;
-  return evidence?.reason ?? null;
 }
 
 export function validateBusinessCheckReport(
-  descriptor,
-  report,
-  reportPath,
-  context = {},
-) {
+  descriptor: JsonRecord,
+  report: JsonRecord | null | undefined,
+  reportPath: string,
+  context: JsonRecord = {},
+): TrackResult {
+  const descriptorName = String(descriptor?.name ?? "unknown");
   if (!descriptor?.runner) {
     return failedTrack(
-      descriptor?.name ?? "unknown",
-      descriptor?.name ?? "unknown",
+      descriptorName,
+      descriptorName,
       reportPath,
-      descriptor?.blockedReason ?? "business runner is not implemented",
+      String(
+        descriptor?.blockedReason ?? "business runner is not implemented",
+      ),
     );
   }
-  const validators = {
-    commissioning: (value, path) =>
+  const validators: Record<
+    string,
+    (report: JsonRecord, reportPath: string) => TrackResult
+  > = {
+    commissioning: (value: JsonRecord, path: string): TrackResult => {
+      const admission = recordValue(value.admission);
+      return (
       value?.schemaVersion === "vem-runtime-commissioning-acceptance/v1" &&
       value?.ok === true &&
-      value?.admission?.status === "provisioned" &&
-      typeof value.admission.machineCode === "string"
-        ? passedTrack("commissioning", "commissioning", path, value.admission)
+      admission?.status === "provisioned" &&
+      typeof admission.machineCode === "string"
+        ? passedTrack("commissioning", "commissioning", path, admission)
         : failedTrack(
             "commissioning",
             "commissioning",
             path,
             "commissioning admission evidence is incomplete",
-          ),
+          )
+      );
+    },
     startup: validateStartupTrack,
     sale: validateFastTrack,
     scannerPayment: validateScannerTrack,
@@ -1108,22 +1320,32 @@ export function validateBusinessCheckReport(
   };
   if (descriptor.validator === "visionExperience") {
     if (report?.schemaVersion === "vem-runtime-testbed-report/v2") {
-      const set = (report.businessSets ?? []).find(
-        (entry) => entry?.name === "visionExperience",
-      );
+      const set = arrayValue(report.businessSets).find(
+        (entry: unknown) => recordValue(entry).name === "visionExperience",
+      ) as JsonRecord | undefined;
       if (!set) {
         return failedTrack(
-          descriptor.name,
-          descriptor.name,
+          descriptorName,
+          descriptorName,
           reportPath,
           "visionExperience v2 report has no business set",
         );
       }
       const capturedSource = validateVisionExperienceCapturedSource(
         set,
-        context.visionBaseUrl,
+        typeof context.visionBaseUrl === "string"
+          ? context.visionBaseUrl
+          : "http://127.0.0.1:27892",
       );
       const geometryFixtureBlocker = visionGeometryFixtureBlocker(set);
+      const setPrimaryFailure = recordValue(set.primaryFailure);
+      const fixtureBlockerReason = geometryFixtureBlocker
+        ? `visionExperience 几何录播夹具不可用：${geometryFixtureBlocker}`
+        : set.status !== "passed"
+          ? (typeof setPrimaryFailure?.reason === "string"
+              ? setPrimaryFailure.reason
+              : "vision assertions failed")
+          : "visionExperience timeline or captured source evidence is incomplete";
       return canonicalResult(
         descriptor,
         set.status === "passed" &&
@@ -1136,14 +1358,10 @@ export function validateBusinessCheckReport(
               capturedFrameId: capturedSource.captured.frameId,
             })
           : failedTrack(
-              descriptor.name,
-              descriptor.name,
+              descriptorName,
+              descriptorName,
               reportPath,
-              geometryFixtureBlocker
-                ? `visionExperience 几何录播夹具不可用：${geometryFixtureBlocker}`
-                : set.status !== "passed"
-                  ? (set.primaryFailure?.reason ?? "vision assertions failed")
-                  : "visionExperience timeline or captured source evidence is incomplete",
+              fixtureBlockerReason,
             ),
         reportPath,
       );
@@ -1151,24 +1369,30 @@ export function validateBusinessCheckReport(
     return canonicalResult(
       descriptor,
       failedTrack(
-        descriptor.name,
-        descriptor.name,
+        descriptorName,
+        descriptorName,
         reportPath,
         "visionExperience requires a V2 business-set report",
       ),
       reportPath,
     );
   }
-  const validator = validators[descriptor.validator];
+  const validatorKey =
+    typeof descriptor.validator === "string" ? descriptor.validator : "";
+  const validator = validators[validatorKey];
   if (!validator) {
     return failedTrack(
-      descriptor.name,
-      descriptor.name,
+      descriptorName,
+      descriptorName,
       reportPath,
-      `no validator is registered for ${descriptor.name}`,
+      `no validator is registered for ${descriptorName}`,
     );
   }
-  return canonicalResult(descriptor, validator(report, reportPath), reportPath);
+  return canonicalResult(
+    descriptor,
+    validator(report ?? {}, reportPath),
+    reportPath,
+  );
 }
 
 function buildRegistryWorkflowAggregate({
@@ -1180,10 +1404,25 @@ function buildRegistryWorkflowAggregate({
   evidenceManifestFile,
   evidenceValidationErrors,
   identity,
-}) {
-  const expected = selectedDescriptors.map((descriptor) => descriptor.name);
-  const executed = executedTracks.map((entry) => entry.key);
-  const failures = [];
+}: {
+  mode: string;
+  selectedDescriptors: JsonRecord[];
+  executedTracks: JsonRecord[];
+  evidenceManifestPath: string | null;
+  evidenceManifest: JsonRecord | null;
+  evidenceManifestFile: string | null;
+  evidenceValidationErrors: unknown[];
+  identity: JsonRecord | null;
+}): JsonRecord {
+  const expected = selectedDescriptors.map(
+    (descriptor: JsonRecord) => descriptor.name,
+  );
+  const executed = executedTracks.map((entry: JsonRecord) => entry.key);
+  const failures: Array<{
+    set: string;
+    reason: string;
+    reportPath: string | null;
+  }> = [];
   if (JSON.stringify(expected) !== JSON.stringify(executed)) {
     failures.push({
       set: "execution",
@@ -1192,44 +1431,50 @@ function buildRegistryWorkflowAggregate({
     });
   }
   const sets = Object.fromEntries(
-    selectedDescriptors.map((descriptor) => {
+    selectedDescriptors.map((descriptor: JsonRecord) => {
       const execution = executedTracks.find(
-        (entry) => entry.key === descriptor.name,
+        (entry: JsonRecord) => entry.key === descriptor.name,
       );
       const executionFailed =
         execution?.businessStatus === "failed" ||
         execution?.status === "failed";
       const result = executionFailed
         ? failedTrack(
-            descriptor.name,
-            descriptor.name,
-            execution?.reportPath ?? null,
-            execution?.error ?? "business check execution lifecycle failed",
+            String(descriptor.name),
+            String(descriptor.name),
+            typeof execution?.reportPath === "string"
+              ? execution.reportPath
+              : null,
+            String(
+              execution?.error ?? "business check execution lifecycle failed",
+            ),
           )
-        : (execution?.validator ??
+        : ((execution?.validator as TrackResult | undefined) ??
           failedTrack(
-            descriptor.name,
-            descriptor.name,
+            String(descriptor.name),
+            String(descriptor.name),
             null,
             "registered business check was not executed",
           ));
       if (result.status !== "passed") {
         failures.push({
-          set: descriptor.name,
-          reason: result.reason ?? execution?.error ?? "business check failed",
-          reportPath: result.reportPath ?? execution?.reportPath ?? null,
+          set: String(descriptor.name),
+          reason:
+            result.reason ??
+            String(execution?.error ?? "business check failed"),
+          reportPath:
+            result.reportPath ??
+            (typeof execution?.reportPath === "string"
+              ? execution.reportPath
+              : null),
         });
       }
-      return [descriptor.name, result];
+      return [String(descriptor.name), result] as const;
     }),
-  );
+  ) as Record<string, TrackResult>;
   const evidenceFailures = [
-    ...(Array.isArray(evidenceManifest?.failures)
-      ? evidenceManifest.failures
-      : []),
-    ...(Array.isArray(evidenceValidationErrors)
-      ? evidenceValidationErrors
-      : []),
+    ...arrayValue(evidenceManifest?.failures),
+    ...arrayValue(evidenceValidationErrors),
   ];
   return {
     schemaVersion: "vem-local-testbed-full-workflow/v4",
@@ -1264,7 +1509,16 @@ export function buildFullWorkflowAggregate({
   evidenceValidationErrors = [],
   identity = null,
   executedTracks = [],
-} = {}) {
+}: {
+  mode?: unknown;
+  selectedDescriptors?: unknown;
+  evidenceManifestPath?: string | null;
+  evidenceManifest?: JsonRecord | null;
+  evidenceManifestFile?: string | null;
+  evidenceValidationErrors?: unknown[];
+  identity?: JsonRecord | null;
+  executedTracks?: JsonRecord[];
+} = {}): JsonRecord {
   const normalizedMode = requiredString(mode, "mode");
   if (!["fast", "full"].includes(normalizedMode)) {
     throw new Error("full workflow mode must be fast or full");
@@ -1274,12 +1528,12 @@ export function buildFullWorkflowAggregate({
   }
   return buildRegistryWorkflowAggregate({
     mode: normalizedMode,
-    selectedDescriptors,
-    executedTracks,
-    evidenceManifestPath,
-    evidenceManifest,
-    evidenceManifestFile,
-    evidenceValidationErrors,
-    identity,
+    selectedDescriptors: selectedDescriptors as JsonRecord[],
+    executedTracks: executedTracks ?? [],
+    evidenceManifestPath: evidenceManifestPath ?? null,
+    evidenceManifest: evidenceManifest ?? null,
+    evidenceManifestFile: evidenceManifestFile ?? null,
+    evidenceValidationErrors: evidenceValidationErrors ?? [],
+    identity: identity ?? null,
   });
 }
