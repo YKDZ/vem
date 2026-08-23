@@ -384,7 +384,8 @@ pub struct IpcContext {
     pub scanner_runtime: ScannerRuntimeController,
     pub serial_device_platform: device_binding::SharedSerialDevicePlatform,
     pub(crate) device_binding_test_evidence: Arc<DeviceBindingTestEvidenceStore>,
-    pub(crate) sale_binding_gate: Arc<SaleBindingOperationGate>,
+    pub(crate) critical_section:
+        Arc<crate::payment_creation_critical_section::PaymentCreationCriticalSection>,
     pub(crate) environment_command_in_progress: Arc<AtomicBool>,
     pub disk_pressure_probe: Arc<dyn crate::health::DiskPressureProbe>,
     pub network_adapter: Arc<dyn NetworkAdapter>,
@@ -401,78 +402,6 @@ impl Drop for LocalEnvironmentCommandInProgressGuard {
     fn drop(&mut self) {
         self.in_progress.store(false, Ordering::Release);
     }
-}
-
-const GATE_IDLE: u8 = 0;
-const GATE_SALE: u8 = 1;
-const GATE_BINDING: u8 = 2;
-const GATE_MANUAL_DISPENSE: u8 = 3;
-
-#[derive(Debug, Default)]
-pub(crate) struct SaleBindingOperationGate {
-    state: std::sync::atomic::AtomicU8,
-}
-impl SaleBindingOperationGate {
-    pub(crate) async fn acquire_sale_start(
-        self: &Arc<Self>,
-        timeout: Duration,
-    ) -> Result<SaleBindingOperationLease, u8> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            match self.try_acquire_sale_start() {
-                Ok(lease) => return Ok(lease),
-                Err(active) if Instant::now() >= deadline => return Err(active),
-                Err(_) => tokio::time::sleep(Duration::from_millis(25)).await,
-            }
-        }
-    }
-
-    pub(crate) fn try_acquire_sale_start(
-        self: &Arc<Self>,
-    ) -> Result<SaleBindingOperationLease, u8> {
-        self.acquire(GATE_SALE)
-    }
-    pub(crate) fn try_acquire_reconfigure(
-        self: &Arc<Self>,
-    ) -> Result<SaleBindingOperationLease, u8> {
-        self.acquire(GATE_BINDING)
-    }
-    pub(crate) fn try_acquire_manual_dispense(
-        self: &Arc<Self>,
-    ) -> Result<SaleBindingOperationLease, u8> {
-        self.acquire(GATE_MANUAL_DISPENSE)
-    }
-    pub(crate) async fn acquire_manual_dispense(
-        self: &Arc<Self>,
-        timeout: Duration,
-    ) -> Result<SaleBindingOperationLease, u8> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            match self.try_acquire_manual_dispense() {
-                Ok(lease) => return Ok(lease),
-                Err(active) if Instant::now() >= deadline => return Err(active),
-                Err(_) => tokio::time::sleep(Duration::from_millis(25)).await,
-            }
-        }
-    }
-    fn acquire(self: &Arc<Self>, operation: u8) -> Result<SaleBindingOperationLease, u8> {
-        self.state
-            .compare_exchange(
-                GATE_IDLE,
-                operation,
-                std::sync::atomic::Ordering::AcqRel,
-                std::sync::atomic::Ordering::Acquire,
-            )
-            .map(|_| SaleBindingOperationLease {
-                gate: self.clone(),
-                operation,
-            })
-            .map_err(|active| active)
-    }
-}
-pub(crate) struct SaleBindingOperationLease {
-    gate: Arc<SaleBindingOperationGate>,
-    operation: u8,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -516,17 +445,6 @@ fn binding_mutation_safety_response(safety: BindingMutationSafety) -> axum::resp
         ),
     }
 }
-impl Drop for SaleBindingOperationLease {
-    fn drop(&mut self) {
-        let _ = self.gate.state.compare_exchange(
-            self.operation,
-            GATE_IDLE,
-            std::sync::atomic::Ordering::AcqRel,
-            std::sync::atomic::Ordering::Acquire,
-        );
-    }
-}
-
 #[derive(Clone)]
 pub struct IpcServerHandle {
     pub addr: SocketAddr,
@@ -2431,7 +2349,7 @@ async fn apply_planogram(
     if let Err(error) = require_token(&headers, &ctx.token).await {
         return error.into_response();
     }
-    let _lease = match ctx.sale_binding_gate.try_acquire_reconfigure() {
+    let _lease = match ctx.critical_section.try_acquire_reconfigure() {
         Ok(value) => value,
         Err(_) => {
             return error_response(
@@ -2442,7 +2360,7 @@ async fn apply_planogram(
         }
     };
     if matches!(
-        TransactionStateMachine::checkout_creation_in_flight(&ctx.state).await,
+        crate::payment_creation_critical_section::PaymentCreationCriticalSection::checkout_creation_in_flight(&ctx.state).await,
         Ok(true) | Err(_)
     ) {
         return error_response(
@@ -2853,7 +2771,7 @@ async fn manual_dispense_diagnostic(
         }
     };
     let _lease = match ctx
-        .sale_binding_gate
+        .critical_section
         .acquire_manual_dispense(Duration::from_secs(10))
         .await
     {
@@ -3309,7 +3227,7 @@ async fn confirm_runtime_binding(
             "unknown local hardware role",
         );
     };
-    let _lease = match ctx.sale_binding_gate.try_acquire_reconfigure() {
+    let _lease = match ctx.critical_section.try_acquire_reconfigure() {
         Ok(value) => value,
         Err(_) => {
             return error_response(
@@ -3498,7 +3416,7 @@ async fn clear_runtime_binding(
             "unknown local hardware role",
         );
     };
-    let _lease = match ctx.sale_binding_gate.try_acquire_reconfigure() {
+    let _lease = match ctx.critical_section.try_acquire_reconfigure() {
         Ok(value) => value,
         Err(_) => {
             return error_response(
@@ -5608,8 +5526,14 @@ mod tests {
 
     #[tokio::test]
     async fn sale_start_waits_for_an_in_flight_binding_refresh() {
-        let gate = Arc::new(SaleBindingOperationGate::default());
-        let binding = gate
+        let temp = tempfile::tempdir().expect("temp");
+        let state = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        let critical_section = Arc::new(
+            crate::payment_creation_critical_section::PaymentCreationCriticalSection::new(state),
+        );
+        let binding = critical_section
             .try_acquire_reconfigure()
             .expect("binding refresh lease");
         let release = tokio::spawn(async move {
@@ -5617,7 +5541,7 @@ mod tests {
             drop(binding);
         });
 
-        let sale = gate
+        let sale = critical_section
             .acquire_sale_start(Duration::from_secs(1))
             .await
             .expect("sale lease after binding refresh");
@@ -5627,8 +5551,14 @@ mod tests {
 
     #[tokio::test]
     async fn manual_dispense_waits_for_an_in_flight_binding_refresh() {
-        let gate = Arc::new(SaleBindingOperationGate::default());
-        let binding = gate
+        let temp = tempfile::tempdir().expect("temp");
+        let state = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        let critical_section = Arc::new(
+            crate::payment_creation_critical_section::PaymentCreationCriticalSection::new(state),
+        );
+        let binding = critical_section
             .try_acquire_reconfigure()
             .expect("binding refresh lease");
         let release = tokio::spawn(async move {
@@ -5636,7 +5566,7 @@ mod tests {
             drop(binding);
         });
 
-        let manual_dispense = gate
+        let manual_dispense = critical_section
             .acquire_manual_dispense(Duration::from_secs(1))
             .await
             .expect("manual dispense lease after binding refresh");
@@ -5646,13 +5576,21 @@ mod tests {
 
     #[tokio::test]
     async fn planogram_reconfigure_cannot_overlap_sale_start_and_can_retry_after_release() {
-        let gate = Arc::new(SaleBindingOperationGate::default());
-        let sale = gate.try_acquire_sale_start().expect("sale start lease");
+        let temp = tempfile::tempdir().expect("temp");
+        let state = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        let critical_section = Arc::new(
+            crate::payment_creation_critical_section::PaymentCreationCriticalSection::new(state),
+        );
+        let sale = critical_section
+            .try_acquire_sale_start()
+            .expect("sale start lease");
 
-        assert!(gate.try_acquire_reconfigure().is_err());
+        assert!(critical_section.try_acquire_reconfigure().is_err());
 
         drop(sale);
-        let reconfigure = gate
+        let reconfigure = critical_section
             .try_acquire_reconfigure()
             .expect("planogram reconfigure lease after sale completes");
         drop(reconfigure);
@@ -5682,6 +5620,11 @@ mod tests {
         let cache = RuntimeStatusCache::new(None, state.clone()).await;
         let transaction =
             TransactionStateMachine::new(state.clone(), backend.clone(), None, events.clone());
+        let critical_section = Arc::new(
+            crate::payment_creation_critical_section::PaymentCreationCriticalSection::new(
+                state.clone(),
+            ),
+        );
         let hardware =
             HardwareSupervisor::from_adapter(Arc::new(vending_core::hardware::MockHardwareAdapter));
         (
@@ -5701,7 +5644,7 @@ mod tests {
                 ),
                 serial_device_platform: Arc::new(device_binding::WindowsSerialDevicePlatform),
                 device_binding_test_evidence: Arc::new(DeviceBindingTestEvidenceStore::default()),
-                sale_binding_gate: Arc::new(SaleBindingOperationGate::default()),
+                critical_section,
                 environment_command_in_progress: Arc::new(AtomicBool::new(false)),
                 disk_pressure_probe: Arc::new(crate::health::DataDirDiskPressureProbe::new(0)),
                 network_adapter: crate::network::adapter_from_env(),

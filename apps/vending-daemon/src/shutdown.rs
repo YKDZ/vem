@@ -16,10 +16,11 @@ use crate::{
     device_binding::{self, LocalDeviceRole, LocalSerialRoleBinding, SerialDeviceRoleProbeConfig},
     events::DaemonEvent,
     hardware::HardwareSupervisor,
-    ipc::{self, IpcContext, SaleBindingOperationGate},
+    ipc::{self, IpcContext},
     local_runtime_settings::{effective_scanner_protocol, LocalRuntimeSettings},
     managed_media::{BackendMediaFetcher, ManagedMediaCache},
     mqtt::MqttSyncRuntime,
+    payment_creation_critical_section::PaymentCreationCriticalSection,
     provisioning,
     runtime::{DaemonRuntime, RuntimeStartInput},
     runtime_configuration::{ClaimedMachineCredentials, RuntimeSources},
@@ -208,7 +209,7 @@ async fn run_console_cycle(
     )?;
 
     let status_cache = ipc::RuntimeStatusCache::new(profile.as_ref(), state.clone()).await;
-    let sale_binding_gate = Arc::new(ipc::SaleBindingOperationGate::default());
+    let critical_section = Arc::new(PaymentCreationCriticalSection::new(state.clone()));
     let transaction = TransactionStateMachine::new(
         state.clone(),
         backend.clone(),
@@ -218,7 +219,7 @@ async fn run_console_cycle(
         events_tx.clone(),
     )
     .with_payment_code_scan_armer(payment_code_scan_armer)
-    .with_sale_binding_gate(sale_binding_gate.clone())
+    .with_critical_section(critical_section.clone())
     .with_payment_code_submit_guard(ipc::local_payment_code_submit_guard(
         status_cache.clone(),
         state.clone(),
@@ -245,7 +246,7 @@ async fn run_console_cycle(
         scanner_runtime: scanner_runtime.clone(),
         serial_device_platform: serial_device_platform.clone(),
         device_binding_test_evidence: Arc::new(ipc::DeviceBindingTestEvidenceStore::default()),
-        sale_binding_gate,
+        critical_section,
         environment_command_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         disk_pressure_probe: Arc::new(crate::health::DataDirDiskPressureProbe::from_env()),
         network_adapter: crate::network::adapter_from_env(),
@@ -289,7 +290,7 @@ async fn run_console_cycle(
         hardware.clone(),
         scanner_runtime.clone(),
         ipc_ctx.ui.status_cache.clone(),
-        ipc_ctx.sale_binding_gate.clone(),
+        ipc_ctx.critical_section.clone(),
         data_dir.clone(),
         bootstrap.hardware_model.to_string(),
         bootstrap.topology.identity.to_string(),
@@ -539,7 +540,7 @@ async fn run_device_binding_watch(
     hardware: HardwareSupervisor,
     scanner_runtime: ScannerRuntimeController,
     status_cache: ipc::RuntimeStatusCache,
-    sale_gate: Arc<ipc::SaleBindingOperationGate>,
+    sale_gate: Arc<PaymentCreationCriticalSection>,
     data_dir: PathBuf,
     hardware_model: String,
     topology_identity: String,
@@ -985,7 +986,7 @@ async fn run_platform_stock_sync_watcher(
             &runtime_sources,
             &state,
             &backend,
-            &ipc_context.sale_binding_gate,
+            &ipc_context.critical_section,
             &machine_code,
         )
         .await
@@ -1004,7 +1005,7 @@ async fn sync_platform_planogram_and_stock(
     runtime_sources: &RuntimeSources,
     state: &LocalStateStore,
     backend: &BackendClient,
-    sale_binding_gate: &Arc<SaleBindingOperationGate>,
+    sale_binding_gate: &Arc<PaymentCreationCriticalSection>,
     machine_code: &str,
 ) -> Result<(), String> {
     let published = backend.get_published_planogram(machine_code).await?;
@@ -1053,14 +1054,14 @@ async fn sync_platform_planogram_and_stock(
 
 async fn apply_platform_planogram_if_reconfigure_safe(
     state: &LocalStateStore,
-    sale_binding_gate: &Arc<SaleBindingOperationGate>,
+    sale_binding_gate: &Arc<PaymentCreationCriticalSection>,
     input: MachinePlanogramInput,
 ) -> Result<bool, String> {
     let _lease = match sale_binding_gate.try_acquire_reconfigure() {
         Ok(lease) => lease,
         Err(_) => return Ok(false),
     };
-    if TransactionStateMachine::checkout_creation_in_flight(state).await? {
+    if PaymentCreationCriticalSection::checkout_creation_in_flight(state).await? {
         return Ok(false);
     }
     if state
@@ -1483,11 +1484,11 @@ mod tests {
             .expect("watcher result");
         server.await.expect("server task");
     }
-    use crate::ipc::SaleBindingOperationGate;
     use crate::{
         backend::BackendClient,
         events::DaemonEvent,
         ipc::RuntimeStatusCache,
+        payment_creation_critical_section::PaymentCreationCriticalSection,
         runtime_configuration::RuntimeSources,
         secret::InMemorySecretStore,
         state::{
@@ -1530,7 +1531,7 @@ mod tests {
         let state = LocalStateStore::open(&temp.path().join("state.db"))
             .await
             .expect("state");
-        let gate = Arc::new(SaleBindingOperationGate::default());
+        let gate = Arc::new(PaymentCreationCriticalSection::new(state.clone()));
         let pending_checkout = gate.try_acquire_sale_start().expect("sale lease");
         let input = MachinePlanogramInput {
             planogram_version: "PLAN-BLOCKED".to_string(),

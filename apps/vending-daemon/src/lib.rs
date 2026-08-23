@@ -12,6 +12,7 @@ pub mod managed_media;
 pub mod mqtt;
 pub mod natural_context;
 pub mod network;
+pub mod payment_creation_critical_section;
 pub mod platform_fs;
 pub mod provisioning;
 pub mod runtime;

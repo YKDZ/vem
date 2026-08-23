@@ -1,22 +1,16 @@
-use serde::{Deserialize, Serialize};
-use std::{
-    future::Future,
-    ops::Deref,
-    pin::Pin,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    },
-};
+use std::{future::Future, pin::Pin, sync::Arc};
 use uuid::Uuid;
 use vending_core::domain::InternalCheckoutFlowAction;
 
-use tokio::sync::{broadcast, Mutex, Notify};
+use tokio::sync::{broadcast, Mutex};
 use tokio::time::{Duration, Instant};
 
 use crate::backend::BackendClient;
 use crate::events::DaemonEvent;
-use crate::ipc::SaleBindingOperationGate;
+use crate::payment_creation_critical_section::{
+    CheckoutCreationFlight, CheckoutCreationRequest, CheckoutCreationRole,
+    PaymentCreationCriticalSection,
+};
 use crate::state::{LocalStateStore, OrderSessionUpsert, StoreError};
 
 #[cfg(test)]
@@ -27,88 +21,6 @@ const PAYMENT_CODE_STATUS_POLL_INTERVAL: Duration = Duration::from_secs(3);
 const PAYMENT_CODE_STATUS_POLL_MAX: Duration = Duration::from_millis(250);
 #[cfg(not(test))]
 const PAYMENT_CODE_STATUS_POLL_MAX: Duration = Duration::from_secs(45);
-
-const CHECKOUT_CREATION_RECOVERY_KEY: &str = "checkout_creation_recovery";
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct CheckoutCreationRecovery {
-    payment_method: String,
-    payment_provider_code: Option<String>,
-    items: serde_json::Value,
-    profile_snapshot: Option<serde_json::Value>,
-    idempotency_key: String,
-    #[serde(default)]
-    generation: String,
-    #[serde(default)]
-    planogram_version: Option<String>,
-}
-
-#[derive(Clone)]
-struct CheckoutCreationFlight {
-    idempotency_key: String,
-    generation: String,
-    request: CheckoutCreationRequest,
-    completed: Arc<Notify>,
-    participants: Arc<AtomicUsize>,
-    participants_drained: Arc<Notify>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct CheckoutCreationRequest {
-    payment_method: String,
-    payment_provider_code: Option<String>,
-    items: serde_json::Value,
-    profile_snapshot: Option<serde_json::Value>,
-}
-
-struct CheckoutCreationParticipant {
-    flight: CheckoutCreationFlight,
-}
-
-impl Deref for CheckoutCreationParticipant {
-    type Target = CheckoutCreationFlight;
-
-    fn deref(&self) -> &Self::Target {
-        &self.flight
-    }
-}
-
-impl Drop for CheckoutCreationParticipant {
-    fn drop(&mut self) {
-        self.flight.leave();
-    }
-}
-
-impl CheckoutCreationFlight {
-    fn join(&self) -> CheckoutCreationParticipant {
-        self.participants.fetch_add(1, Ordering::AcqRel);
-        CheckoutCreationParticipant {
-            flight: self.clone(),
-        }
-    }
-
-    fn leave(&self) {
-        if self.participants.fetch_sub(1, Ordering::AcqRel) == 1 {
-            self.participants_drained.notify_waiters();
-        }
-    }
-
-    async fn wait_for_other_participants(&self) {
-        loop {
-            let drained = self.participants_drained.notified();
-            if self.participants.load(Ordering::Acquire) == 0 {
-                return;
-            }
-            drained.await;
-        }
-    }
-}
-
-enum CheckoutCreationRole {
-    Owner(CheckoutCreationFlight),
-    Join(CheckoutCreationParticipant),
-    Existing(vending_core::domain::InternalCurrentTransactionSnapshot),
-}
 
 pub type PaymentCodeSubmitGuard = Arc<
     dyn Fn(
@@ -272,17 +184,9 @@ pub struct TransactionStateMachine {
     machine_code: Option<String>,
     payment_code_submit_guard: Option<PaymentCodeSubmitGuard>,
     payment_code_scan_armer: PaymentCodeScanArmer,
-    /// Owns the complete checkout creation critical section.  The local
-    /// session is durable, but two IPC requests can both observe it as empty
-    /// before either has received the platform's order response.
-    checkout_creation_lock: Arc<Mutex<()>>,
-    /// A process-local flight is paired with the persistent recovery marker.
-    /// It lets duplicate IPC requests await the owner instead of replaying the
-    /// machine-order request while the marker is already durable.
-    checkout_creation_flight: Arc<Mutex<Option<CheckoutCreationFlight>>>,
-    /// Shares the hardware-reconfiguration exclusion boundary with planogram
-    /// and device-binding mutations. Recovery can create a checkout too.
-    sale_binding_gate: Arc<SaleBindingOperationGate>,
+    /// The single Payment Creation Critical Section authority: operation
+    /// fence, process-local checkout flight, and recovery-marker policy.
+    critical_section: Arc<PaymentCreationCriticalSection>,
 }
 
 impl TransactionStateMachine {
@@ -292,6 +196,7 @@ impl TransactionStateMachine {
         machine_code: Option<String>,
         events: broadcast::Sender<DaemonEvent>,
     ) -> Self {
+        let critical_section = Arc::new(PaymentCreationCriticalSection::new(state.clone()));
         Self {
             state,
             backend,
@@ -299,9 +204,7 @@ impl TransactionStateMachine {
             machine_code,
             payment_code_submit_guard: None,
             payment_code_scan_armer: PaymentCodeScanArmer::default(),
-            checkout_creation_lock: Arc::new(Mutex::new(())),
-            checkout_creation_flight: Arc::new(Mutex::new(None)),
-            sale_binding_gate: Arc::new(SaleBindingOperationGate::default()),
+            critical_section,
         }
     }
 
@@ -315,8 +218,11 @@ impl TransactionStateMachine {
         self
     }
 
-    pub(crate) fn with_sale_binding_gate(mut self, gate: Arc<SaleBindingOperationGate>) -> Self {
-        self.sale_binding_gate = gate;
+    pub(crate) fn with_critical_section(
+        mut self,
+        critical_section: Arc<PaymentCreationCriticalSection>,
+    ) -> Self {
+        self.critical_section = critical_section;
         self
     }
 
@@ -332,12 +238,7 @@ impl TransactionStateMachine {
         let current = if let Some(current) = self.refresh_current_from_backend().await? {
             Some(current)
         } else {
-            let Some(recovery) = self
-                .state
-                .get_metadata::<CheckoutCreationRecovery>(CHECKOUT_CREATION_RECOVERY_KEY)
-                .await
-                .map_err(|error| error.to_string())?
-            else {
+            let Some(recovery) = self.critical_section.read_recovery_marker().await? else {
                 self.sync_payment_code_scan_arm(None).await;
                 return Ok(None);
             };
@@ -414,7 +315,8 @@ impl TransactionStateMachine {
             return Ok(None);
         };
         if is_terminal_transaction(&current) {
-            self.clear_checkout_recovery_after_terminal_current(&current)
+            self.critical_section
+                .clear_recovery_marker_after_terminal(true)
                 .await?;
             return Ok(Some(current));
         }
@@ -571,50 +473,51 @@ impl TransactionStateMachine {
         machine_code: String,
         flight: CheckoutCreationFlight,
     ) -> Result<vending_core::domain::InternalCurrentTransactionSnapshot, String> {
-        // A new order must never inherit a scanner frame or arm from a
-        // terminal/replaced transaction.
-        self.clear_payment_code_scan_arm().await;
+        self.critical_section
+            .run_owner_flight(&flight, || async {
+                // A new order must never inherit a scanner frame or arm from a
+                // terminal/replaced transaction.
+                self.clear_payment_code_scan_arm().await;
 
-        let (result, clear_marker_after_flight) = match self
-            .backend
-            .create_order(
-                &machine_code,
-                vec![items.clone()],
-                &payment_method,
-                payment_provider_code.as_deref(),
-                profile_snapshot,
-                &idempotency_key,
-            )
-            .await
-        {
-            Ok(response) => {
-                let result = self
-                    .commit_created_order_under_sale_lease(
+                let (result, clear_marker_after_flight) = match self
+                    .backend
+                    .create_order(
+                        &machine_code,
+                        vec![items.clone()],
                         &payment_method,
-                        payment_provider_code,
-                        items,
-                        machine_code,
-                        response,
-                        &flight,
+                        payment_provider_code.as_deref(),
+                        profile_snapshot,
+                        &idempotency_key,
                     )
-                    .await;
-                let clear_marker_after_flight = result.is_ok();
+                    .await
+                {
+                    Ok(response) => {
+                        let result = self
+                            .commit_created_order_under_sale_lease(
+                                &payment_method,
+                                payment_provider_code,
+                                items,
+                                machine_code,
+                                response,
+                                &flight,
+                            )
+                            .await;
+                        let clear_marker_after_flight = result.is_ok();
+                        (result, clear_marker_after_flight)
+                    }
+                    Err(error) => {
+                        self.refresh_platform_stock_after_order_refusal(&machine_code)
+                            .await;
+                        let clear_marker_after_flight =
+                            PaymentCreationCriticalSection::should_clear_recovery_marker_after_failure(
+                                &error,
+                            );
+                        (Err(error), clear_marker_after_flight)
+                    }
+                };
                 (result, clear_marker_after_flight)
-            }
-            Err(error) => {
-                self.refresh_platform_stock_after_order_refusal(&machine_code)
-                    .await;
-                let clear_marker_after_flight = is_deterministic_checkout_creation_error(&error);
-                (Err(error), clear_marker_after_flight)
-            }
-        };
-        self.finish_checkout_creation_flight(&flight).await;
-        flight.leave();
-        flight.wait_for_other_participants().await;
-        if clear_marker_after_flight {
-            self.clear_checkout_recovery_if_owner(&flight).await?;
-        }
-        result
+            })
+            .await
     }
 
     async fn commit_created_order_under_sale_lease(
@@ -648,9 +551,16 @@ impl TransactionStateMachine {
             .unwrap_or("pending_payment")
             .to_string();
 
-        let _checkout_creation = self.checkout_creation_lock.lock().await;
+        let _checkout_creation = self.critical_section.lock_creation().await;
         let _sale = self.acquire_checkout_sale_lease().await?;
-        self.verify_checkout_recovery_owner(flight).await?;
+        let planogram_version = self
+            .state
+            .active_planogram_version()
+            .await
+            .map_err(|error| error.to_string())?;
+        self.critical_section
+            .verify_recovery_owner(flight, planogram_version)
+            .await?;
         let current = {
             let _mutation = self.state.lock_transaction_mutation().await;
             self.state
@@ -694,19 +604,23 @@ impl TransactionStateMachine {
             items: items.clone(),
             profile_snapshot: profile_snapshot.clone(),
         };
-        if let Some(flight) = self.checkout_creation_flight.lock().await.clone() {
+        if let Some(flight) = self.critical_section.active_flight().await {
             if flight.idempotency_key != idempotency_key || flight.request != request {
                 return Err("CHECKOUT_CREATION_RECOVERY_PENDING".to_string());
             }
-            return Ok(CheckoutCreationRole::Join(flight.join()));
+            return Ok(CheckoutCreationRole::Join(
+                self.critical_section.join_flight(&flight),
+            ));
         }
 
-        let _checkout_creation = self.checkout_creation_lock.lock().await;
-        if let Some(flight) = self.checkout_creation_flight.lock().await.clone() {
+        let _checkout_creation = self.critical_section.lock_creation().await;
+        if let Some(flight) = self.critical_section.active_flight().await {
             if flight.idempotency_key != idempotency_key || flight.request != request {
                 return Err("CHECKOUT_CREATION_RECOVERY_PENDING".to_string());
             }
-            return Ok(CheckoutCreationRole::Join(flight.join()));
+            return Ok(CheckoutCreationRole::Join(
+                self.critical_section.join_flight(&flight),
+            ));
         }
         let _sale = self.acquire_checkout_sale_lease().await?;
         if let Some(current) = self
@@ -719,7 +633,8 @@ impl TransactionStateMachine {
                 self.sync_payment_code_scan_arm(Some(&current)).await;
                 return Ok(CheckoutCreationRole::Existing(current));
             }
-            self.clear_checkout_recovery_after_terminal_current(&current)
+            self.critical_section
+                .clear_recovery_marker_after_terminal(true)
                 .await?;
         }
 
@@ -729,146 +644,14 @@ impl TransactionStateMachine {
             .await
             .map_err(|error| error.to_string())?;
         let recovery = self
-            .state
-            .get_metadata::<CheckoutCreationRecovery>(CHECKOUT_CREATION_RECOVERY_KEY)
-            .await
-            .map_err(|error| error.to_string())?;
-        let recovery = match recovery {
-            Some(recovery) if recovery.idempotency_key != idempotency_key => {
-                return Err("CHECKOUT_CREATION_RECOVERY_PENDING".to_string());
-            }
-            Some(recovery)
-                if recovery.payment_method != request.payment_method
-                    || recovery.payment_provider_code != request.payment_provider_code
-                    || recovery.items != request.items
-                    || recovery.profile_snapshot != request.profile_snapshot =>
-            {
-                return Err("CHECKOUT_CREATION_RECOVERY_PENDING".to_string());
-            }
-            Some(mut recovery) => {
-                // Legacy markers did not fence a planogram generation. A local
-                // replay owns the upgrade only while no flight exists.
-                recovery.generation = Uuid::new_v4().to_string();
-                recovery.planogram_version = planogram_version;
-                self.state
-                    .put_metadata(CHECKOUT_CREATION_RECOVERY_KEY, &recovery)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                recovery
-            }
-            None => {
-                let recovery = CheckoutCreationRecovery {
-                    payment_method: payment_method.to_string(),
-                    payment_provider_code,
-                    items,
-                    profile_snapshot,
-                    idempotency_key,
-                    generation: Uuid::new_v4().to_string(),
-                    planogram_version,
-                };
-                self.state
-                    .put_metadata(CHECKOUT_CREATION_RECOVERY_KEY, &recovery)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                recovery
-            }
-        };
-        let flight = CheckoutCreationFlight {
-            idempotency_key: recovery.idempotency_key,
-            generation: recovery.generation,
-            request,
-            completed: Arc::new(Notify::new()),
-            participants: Arc::new(AtomicUsize::new(1)),
-            participants_drained: Arc::new(Notify::new()),
-        };
-        *self.checkout_creation_flight.lock().await = Some(flight.clone());
+            .critical_section
+            .reserve_recovery_marker(&request, &idempotency_key, planogram_version)
+            .await?;
+        let flight = self.critical_section.new_flight(recovery, request);
+        self.critical_section
+            .set_active_flight(Some(flight.clone()))
+            .await;
         Ok(CheckoutCreationRole::Owner(flight))
-    }
-
-    async fn verify_checkout_recovery_owner(
-        &self,
-        flight: &CheckoutCreationFlight,
-    ) -> Result<(), String> {
-        let recovery = self
-            .state
-            .get_metadata::<CheckoutCreationRecovery>(CHECKOUT_CREATION_RECOVERY_KEY)
-            .await
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "CHECKOUT_CREATION_RECOVERY_REPLACED".to_string())?;
-        let planogram_version = self
-            .state
-            .active_planogram_version()
-            .await
-            .map_err(|error| error.to_string())?;
-        if recovery.idempotency_key != flight.idempotency_key
-            || recovery.generation != flight.generation
-            || recovery.planogram_version != planogram_version
-        {
-            return Err("CHECKOUT_CREATION_RECOVERY_REPLACED".to_string());
-        }
-        Ok(())
-    }
-
-    async fn delete_checkout_recovery_if_owner(
-        &self,
-        flight: &CheckoutCreationFlight,
-    ) -> Result<(), String> {
-        let recovery = self
-            .state
-            .get_metadata::<CheckoutCreationRecovery>(CHECKOUT_CREATION_RECOVERY_KEY)
-            .await
-            .map_err(|error| error.to_string())?;
-        if recovery.is_some_and(|recovery| {
-            recovery.idempotency_key == flight.idempotency_key
-                && recovery.generation == flight.generation
-        }) {
-            self.state
-                .delete_metadata(CHECKOUT_CREATION_RECOVERY_KEY)
-                .await
-                .map_err(|error| error.to_string())?;
-        }
-        Ok(())
-    }
-
-    async fn clear_checkout_recovery_if_owner(
-        &self,
-        flight: &CheckoutCreationFlight,
-    ) -> Result<(), String> {
-        let _checkout_creation = self.checkout_creation_lock.lock().await;
-        let _sale = self.acquire_checkout_sale_lease().await?;
-        self.delete_checkout_recovery_if_owner(flight).await
-    }
-
-    async fn clear_checkout_recovery_after_terminal_current(
-        &self,
-        current: &vending_core::domain::InternalCurrentTransactionSnapshot,
-    ) -> Result<(), String> {
-        if !is_terminal_transaction(current) {
-            return Ok(());
-        }
-        self.state
-            .delete_metadata(CHECKOUT_CREATION_RECOVERY_KEY)
-            .await
-            .map_err(|error| error.to_string())
-    }
-
-    async fn finish_checkout_creation_flight(&self, flight: &CheckoutCreationFlight) {
-        let mut active = self.checkout_creation_flight.lock().await;
-        if active
-            .as_ref()
-            .is_some_and(|current| current.generation == flight.generation)
-        {
-            *active = None;
-            flight.completed.notify_waiters();
-        }
-    }
-
-    async fn checkout_creation_flight_is_active(&self, flight: &CheckoutCreationFlight) -> bool {
-        self.checkout_creation_flight
-            .lock()
-            .await
-            .as_ref()
-            .is_some_and(|current| current.generation == flight.generation)
     }
 
     async fn wait_for_joined_checkout(
@@ -889,7 +672,7 @@ impl TransactionStateMachine {
                     return Ok(current);
                 }
             }
-            if !self.checkout_creation_flight_is_active(flight).await {
+            if !self.critical_section.flight_is_active(flight).await {
                 return Err("CHECKOUT_CREATION_RECOVERY_PENDING".to_string());
             }
             if Instant::now() >= deadline {
@@ -902,20 +685,10 @@ impl TransactionStateMachine {
         }
     }
 
-    pub(crate) async fn checkout_creation_in_flight(
-        state: &LocalStateStore,
-    ) -> Result<bool, String> {
-        state
-            .get_metadata::<CheckoutCreationRecovery>(CHECKOUT_CREATION_RECOVERY_KEY)
-            .await
-            .map(|recovery| recovery.is_some())
-            .map_err(|error| error.to_string())
-    }
-
     async fn acquire_checkout_sale_lease(
         &self,
-    ) -> Result<crate::ipc::SaleBindingOperationLease, String> {
-        self.sale_binding_gate
+    ) -> Result<crate::payment_creation_critical_section::OperationLease, String> {
+        self.critical_section
             .acquire_sale_start(Duration::from_secs(10))
             .await
             .map_err(|_| "SALE_BINDING_RECONFIGURING".to_string())
@@ -1271,17 +1044,6 @@ impl TransactionStateMachine {
     }
 }
 
-fn is_deterministic_checkout_creation_error(error: &str) -> bool {
-    let lower = error.to_ascii_lowercase();
-    !(lower.contains("timeout")
-        || lower.contains("offline")
-        || lower.contains("network")
-        || lower.contains("connection")
-        || lower.contains("backend_http_error: 5")
-        || lower.contains("status: 5")
-        || lower.contains("status: 504"))
-}
-
 fn should_follow_payment_code_attempt(
     current: &vending_core::domain::InternalCurrentTransactionSnapshot,
 ) -> bool {
@@ -1369,6 +1131,9 @@ fn is_terminal_transaction(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::payment_creation_critical_section::{
+        CheckoutCreationRecovery, CHECKOUT_CREATION_RECOVERY_KEY,
+    };
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use wiremock::matchers::{header, method, path};
@@ -1376,15 +1141,21 @@ mod tests {
 
     #[test]
     fn checkout_creation_keeps_recovery_marker_for_backend_5xx() {
-        assert!(!is_deterministic_checkout_creation_error(
-            "BACKEND_HTTP_ERROR: 500 internal server error"
-        ));
-        assert!(!is_deterministic_checkout_creation_error(
-            "BACKEND_HTTP_ERROR: 503 service unavailable"
-        ));
-        assert!(is_deterministic_checkout_creation_error(
-            "BACKEND_HTTP_ERROR: 409 inventory unavailable"
-        ));
+        assert!(
+            !PaymentCreationCriticalSection::should_clear_recovery_marker_after_failure(
+                "BACKEND_HTTP_ERROR: 500 internal server error"
+            )
+        );
+        assert!(
+            !PaymentCreationCriticalSection::should_clear_recovery_marker_after_failure(
+                "BACKEND_HTTP_ERROR: 503 service unavailable"
+            )
+        );
+        assert!(
+            PaymentCreationCriticalSection::should_clear_recovery_marker_after_failure(
+                "BACKEND_HTTP_ERROR: 409 inventory unavailable"
+            )
+        );
     }
 
     fn transaction_snapshot_with_status(
@@ -1967,7 +1738,7 @@ mod tests {
         });
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
-                if machine.checkout_creation_flight.lock().await.is_some() {
+                if machine.critical_section.active_flight().await.is_some() {
                     break;
                 }
                 tokio::task::yield_now().await;
@@ -2067,10 +1838,10 @@ mod tests {
             Err(error) if error == "CHECKOUT_CREATION_RECOVERY_PENDING"
         ));
 
-        machine.finish_checkout_creation_flight(&owner).await;
+        machine.critical_section.finish_flight(&owner).await;
         owner.leave();
         assert!(
-            TransactionStateMachine::checkout_creation_in_flight(&state)
+            PaymentCreationCriticalSection::checkout_creation_in_flight(&state)
                 .await
                 .expect("marker state"),
             "the owner must not clear a marker while a joined request is still in flight"
@@ -2079,11 +1850,12 @@ mod tests {
         drop(joined);
         owner.wait_for_other_participants().await;
         machine
-            .clear_checkout_recovery_if_owner(&owner)
+            .critical_section
+            .clear_recovery_if_owner(&owner)
             .await
             .expect("owner clears marker after all joiners leave");
         assert!(
-            !TransactionStateMachine::checkout_creation_in_flight(&state)
+            !PaymentCreationCriticalSection::checkout_creation_in_flight(&state)
                 .await
                 .expect("marker state"),
         );
@@ -2137,7 +1909,17 @@ mod tests {
         .expect("activate replacement planogram");
 
         assert_eq!(
-            machine.verify_checkout_recovery_owner(&owner).await,
+            machine
+                .critical_section
+                .verify_recovery_owner(
+                    &owner,
+                    machine
+                        .state
+                        .active_planogram_version()
+                        .await
+                        .expect("planogram"),
+                )
+                .await,
             Err("CHECKOUT_CREATION_RECOVERY_REPLACED".to_string())
         );
         assert!(
@@ -2296,11 +2078,15 @@ mod tests {
 
         let backend = Arc::new(BackendClient::new(server.uri()));
         backend.authenticate("M-1", "S-1").await.expect("auth");
-        let gate = Arc::new(crate::ipc::SaleBindingOperationGate::default());
+        let critical_section = Arc::new(
+            crate::payment_creation_critical_section::PaymentCreationCriticalSection::new(
+                state.clone(),
+            ),
+        );
         let (events_tx, _) = broadcast::channel(8);
         let machine =
             TransactionStateMachine::new(state, backend, Some("M-1".to_string()), events_tx)
-                .with_sale_binding_gate(gate.clone());
+                .with_critical_section(critical_section.clone());
 
         let recovery = tokio::spawn(async move { machine.restore_current().await });
         tokio::time::timeout(Duration::from_secs(1), async {
@@ -2318,7 +2104,7 @@ mod tests {
         .await
         .expect("recovery create-order request");
 
-        let reconfigure = gate
+        let reconfigure = critical_section
             .try_acquire_reconfigure()
             .expect("network replay must not hold the local sale lease");
         drop(reconfigure);
@@ -2326,7 +2112,7 @@ mod tests {
             .await
             .expect("recovery task")
             .expect("recovery result");
-        assert!(gate.try_acquire_reconfigure().is_ok());
+        assert!(critical_section.try_acquire_reconfigure().is_ok());
     }
 
     #[tokio::test]
