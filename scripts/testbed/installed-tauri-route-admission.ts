@@ -19,13 +19,25 @@ const DEFAULT_POLL_MS = 500;
 const DISMISSED_TERMINAL_ORDER_STORAGE_KEY =
   "vem.machine.dismissedTerminalOrderNos";
 
-function required(value, label) {
+type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function required(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "")
     throw new Error(`${label} is required`);
   return value.trim();
 }
 
-function option(args, name, fallback = null) {
+function option(
+  args: string[],
+  name: string,
+  fallback: string | null = null,
+): string | null {
   const index = args.indexOf(`--${name}`);
   if (index === -1) return fallback;
   return required(args[index + 1], name);
@@ -37,31 +49,47 @@ export async function admitInstalledTauriCatalog(
     timeoutMs = DEFAULT_TIMEOUT_MS,
     pollMs = DEFAULT_POLL_MS,
   } = {},
-  dependencies = {},
-) {
+  dependencies: JsonRecord = {},
+): Promise<JsonRecord> {
+  const dependenciesTyped = dependencies as {
+    discoverTarget?: typeof discoverCanonicalMachineUiTarget;
+    createClient?: (webSocketUrl: string) => CdpClient;
+    enableRuntime?: typeof enablePageRuntime;
+    evaluate?: typeof evaluateExpression;
+    returnToCatalog?: typeof returnToCatalogFromClient;
+    waitForRoute?: typeof waitForRoute;
+    rewriteUrl?: typeof rewriteWebSocketDebuggerUrl;
+    now?: () => number;
+    sleep?: (milliseconds: number) => Promise<void>;
+    webSocketFactory?: unknown;
+  };
   const discoverTarget =
-    dependencies.discoverTarget ?? discoverCanonicalMachineUiTarget;
+    dependenciesTyped.discoverTarget ?? discoverCanonicalMachineUiTarget;
   const createClient =
-    dependencies.createClient ??
+    dependenciesTyped.createClient ??
     ((webSocketUrl) =>
       new CdpClient(webSocketUrl, {
-        webSocketFactory: dependencies.webSocketFactory,
+        webSocketFactory: dependenciesTyped.webSocketFactory as NonNullable<
+          ConstructorParameters<typeof CdpClient>[1]
+        >["webSocketFactory"],
       }));
-  const enableRuntime = dependencies.enableRuntime ?? enablePageRuntime;
-  const evaluate = dependencies.evaluate ?? evaluateExpression;
+  const enableRuntime =
+    dependenciesTyped.enableRuntime ?? enablePageRuntime;
+  const evaluate = dependenciesTyped.evaluate ?? evaluateExpression;
   const returnToCatalog =
-    dependencies.returnToCatalog ?? returnToCatalogFromClient;
-  const waitForRouteFn = dependencies.waitForRoute ?? waitForRoute;
-  const rewriteUrl = dependencies.rewriteUrl ?? rewriteWebSocketDebuggerUrl;
+    dependenciesTyped.returnToCatalog ?? returnToCatalogFromClient;
+  const waitForRouteFn = dependenciesTyped.waitForRoute ?? waitForRoute;
+  const rewriteUrl =
+    dependenciesTyped.rewriteUrl ?? rewriteWebSocketDebuggerUrl;
 
-  const now = dependencies.now ?? (() => Date.now());
-  const sleepFor = dependencies.sleep ?? sleep;
+  const now = dependenciesTyped.now ?? (() => Date.now());
+  const sleepFor = dependenciesTyped.sleep ?? sleep;
   const deadline = now() + timeoutMs;
-  let target;
-  let lastError;
+  let target: JsonRecord | null = null;
+  let lastError: unknown;
   do {
     try {
-      target = await discoverTarget({ endpoint });
+      target = recordValue(await discoverTarget({ endpoint }));
       break;
     } catch (error) {
       lastError = error;
@@ -76,13 +104,13 @@ export async function admitInstalledTauriCatalog(
     );
   }
   const client = createClient(
-    rewriteUrl(target.webSocketDebuggerUrl, endpoint),
+    rewriteUrl(String(target.webSocketDebuggerUrl), endpoint),
   );
   await client.connect();
   try {
     await enableRuntime(client);
     const initialRoute = await evaluate(client, "location.hash");
-    let route;
+    let route: unknown;
     let staleResultFallback = false;
     let dismissedTerminalOrderNo = null;
     try {
@@ -91,7 +119,7 @@ export async function admitInstalledTauriCatalog(
         evaluateExpressionFn: evaluate,
       });
     } catch (error) {
-      if (!/^#\/result(?:\/|$)/.test(initialRoute ?? "")) throw error;
+      if (!/^#\/result(?:\/|$)/.test(String(initialRoute ?? ""))) throw error;
       staleResultFallback = true;
       await evaluate(client, 'location.hash = "#/catalog"');
       try {
@@ -148,12 +176,16 @@ export async function admitInstalledTauriCatalog(
   }
 }
 
-async function main() {
+async function main(): Promise<void> {
   const result = await admitInstalledTauriCatalog({
-    endpoint: option(process.argv.slice(2), "endpoint", DEFAULT_ENDPOINT),
+    endpoint: option(
+      process.argv.slice(2),
+      "endpoint",
+      DEFAULT_ENDPOINT,
+    ) as string,
   });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-  if (!result.ok) process.exitCode = 1;
+  if (result.ok !== true) process.exitCode = 1;
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
