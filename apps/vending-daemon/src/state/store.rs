@@ -829,6 +829,10 @@ impl LocalStateStore {
 
     /// Serializes short local transaction mutations across every clone of this
     /// store. It is deliberately not held across Service API or provider I/O.
+    /// Layering: the Payment Creation Critical Section fence owns business-
+    /// level exclusion and is acquired first; this lock only serializes the
+    /// short SQLite write, so runtime reads stay available on a two-core field
+    /// host.
     pub(crate) async fn lock_transaction_mutation(&self) -> OwnedMutexGuard<()> {
         self.transaction_mutation_lock.clone().lock_owned().await
     }
@@ -10273,6 +10277,32 @@ mod tests {
                 .expect("foreign key mode");
             assert_eq!(foreign_keys.0, 1);
         }
+    }
+
+    #[tokio::test]
+    async fn sqlite_wal_keeps_reads_available_while_a_write_transaction_is_held() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        let mut tx = store
+            .begin_immediate_write_transaction()
+            .await
+            .expect("write transaction");
+        sqlx::query(
+            "INSERT INTO runtime_metadata(key,value_json,updated_at)
+             VALUES ('held-write','{}','2026-08-23T00:00:00.000Z')",
+        )
+        .execute(&mut *tx)
+        .await
+        .expect("hold the write transaction open");
+
+        let read = tokio::time::timeout(Duration::from_secs(1), store.active_planogram_version())
+            .await
+            .expect("runtime read must not wait for the held write transaction")
+            .expect("read active planogram");
+        assert!(read.is_none());
+        tx.commit().await.expect("commit");
     }
 
     #[tokio::test]
