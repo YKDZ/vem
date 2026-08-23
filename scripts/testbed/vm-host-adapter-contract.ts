@@ -326,7 +326,9 @@ function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
 }
 
-export function createScannerCodeDescriptor(scannerCode) {
+export function createScannerCodeDescriptor(
+  scannerCode: unknown,
+): Record<string, unknown> {
   const bytes = normalizeScannerInput(scannerCode);
   if (bytes.length < 1 || bytes.length > 256)
     throw new Error("scanner input must contain 1 through 256 bytes");
@@ -2339,7 +2341,9 @@ function lifecycleSourceAsset(request) {
   return request.assets.find((asset) => asset.role === "approved-runtime-base");
 }
 
-export function validateVmHostAdapterRequest(input) {
+export function validateVmHostAdapterRequest(
+  input: unknown,
+): Record<string, unknown> {
   const request = structuredClone(input);
   const issues = [];
   assertExactKeys(
@@ -2564,12 +2568,17 @@ export function validateVmHostAdapterRequest(input) {
   return reconstructRequest(request);
 }
 
-export function createVmHostAdapterRequest(input) {
+export function createVmHostAdapterRequest(
+  input: unknown,
+): Record<string, unknown> {
   return validateVmHostAdapterRequest(input);
 }
 
-export function validateVmHostAdapterReport(input, requestInput) {
-  const report = structuredClone(input);
+export function validateVmHostAdapterReport(
+  input: unknown,
+  requestInput: unknown,
+): Record<string, unknown> {
+  const report = structuredClone(input) as Record<string, unknown>;
   const request = validateVmHostAdapterRequest(requestInput);
   const issues = [];
   assertExactKeys(
@@ -3717,7 +3726,17 @@ export async function runVmHostAdapter({
   onOperationStarted,
   scannerCode,
   allowTestAdapter = false,
-}) {
+}: {
+  request: unknown;
+  workDirectory: string;
+  environment?: NodeJS.ProcessEnv;
+  evidenceDirectory?: string;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  onOperationStarted?: (operation: Record<string, unknown>) => unknown;
+  scannerCode?: Buffer;
+  allowTestAdapter?: boolean;
+}): Promise<Record<string, unknown>> {
   const testAdapterAllowed =
     allowTestAdapter ||
     process.env.VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY === "1";

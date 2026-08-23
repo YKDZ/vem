@@ -10,6 +10,7 @@ import {
   sign,
   verify,
 } from "node:crypto";
+import type { KeyObject } from "node:crypto";
 import {
   mkdirSync,
   readFileSync,
@@ -28,34 +29,49 @@ import {
   VM_HOST_ADAPTER_CONTRACT_VERSION,
 } from "./vm-host-adapter-contract.ts";
 
-function assertConformance(condition, message) {
+interface RunnerEvidence {
+  privateKey: KeyObject;
+  publicKey: string;
+  expectedRunnerPublicKey?: string;
+  runnerChallenge?: string;
+  operations: Record<string, Record<string, unknown>>;
+}
+
+function assertConformance(
+  condition: unknown,
+  message: string,
+): asserts condition {
   if (!condition) throw new Error(message);
 }
 
-function sameJson(left, right) {
+function sameJson(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-export function deriveSerialOperationReportDigest(report) {
+export function deriveSerialOperationReportDigest(report: unknown): string {
   return `sha256:${createHash("sha256")
     .update(JSON.stringify(report))
     .digest("hex")}`;
 }
 
-export function deriveSerialConformanceReportDigest(report) {
+export function deriveSerialConformanceReportDigest(
+  report: Record<string, unknown>,
+): string {
   const committedReport = structuredClone(report);
-  if (committedReport?.runnerEvidence)
-    delete committedReport.runnerEvidence.conformance;
+  const runnerEvidence = committedReport.runnerEvidence as
+    | Record<string, unknown>
+    | undefined;
+  if (runnerEvidence) delete runnerEvidence.conformance;
   return `sha256:${createHash("sha256")
     .update(JSON.stringify(committedReport))
     .digest("hex")}`;
 }
 
-function runnerChallenge() {
+function runnerChallenge(): string {
   return `serial-runner-challenge://sha256-${randomBytes(32).toString("hex")}`;
 }
 
-function createRunnerEvidence() {
+function createRunnerEvidence(): RunnerEvidence {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   return {
     privateKey,
@@ -66,13 +82,13 @@ function createRunnerEvidence() {
   };
 }
 
-function publicKeyEncoding(publicKey) {
+function publicKeyEncoding(publicKey: KeyObject): string {
   return `ed25519-public-key:base64:${publicKey
     .export({ type: "spki", format: "der" })
     .toString("base64")}`;
 }
 
-function protectedRunnerSigningKey() {
+function protectedRunnerSigningKey(): RunnerEvidence {
   const signingKeyFile = readOption("--runner-signing-key-file", {
     optional: true,
   });
@@ -113,13 +129,17 @@ function protectedRunnerSigningKey() {
     throw new Error(
       "--runner-signing-key-file must be owned by the runner user",
     );
-  let privateKey;
+  let privateKey: KeyObject;
   try {
     privateKey = createPrivateKey(readFileSync(keyPath, "utf8"));
   } finally {
     rmSync(keyPath, { force: true });
   }
-  const publicKey = publicKeyEncoding(createPublicKey(privateKey));
+  const publicKey = publicKeyEncoding(
+    createPublicKey(
+      privateKey as unknown as Parameters<typeof createPublicKey>[0],
+    ),
+  );
   if (publicKey !== expectedRunnerPublicKey)
     throw new Error(
       "--runner-signing-key-file does not match --expected-runner-public-key",
@@ -127,10 +147,15 @@ function protectedRunnerSigningKey() {
   return { privateKey, publicKey, expectedRunnerPublicKey, operations: {} };
 }
 
-function commitRunnerOperation(evidence, stage, report) {
+function commitRunnerOperation(
+  evidence: RunnerEvidence,
+  stage: string,
+  report: Record<string, unknown>,
+): string {
   const reportDigest = deriveSerialOperationReportDigest(report);
   evidence.operations[stage] = {
-    operationReference: report.request.operationReference,
+    operationReference: (report.request as Record<string, unknown>)
+      .operationReference,
     reportDigest,
     signature: `ed25519-signature:base64:${sign(
       null,
@@ -141,9 +166,12 @@ function commitRunnerOperation(evidence, stage, report) {
   return reportDigest;
 }
 
-function commitRunnerConformance(evidence, report) {
+function commitRunnerConformance(
+  evidence: RunnerEvidence,
+  report: Record<string, unknown>,
+): void {
   const reportDigest = deriveSerialConformanceReportDigest(report);
-  report.runnerEvidence.conformance = {
+  (report.runnerEvidence as Record<string, unknown>).conformance = {
     reportDigest,
     signature: `ed25519-signature:base64:${sign(
       null,
@@ -153,7 +181,7 @@ function commitRunnerConformance(evidence, report) {
   };
 }
 
-function runnerPublicKey(expectedRunnerPublicKey) {
+function runnerPublicKey(expectedRunnerPublicKey: string): KeyObject {
   const keyPrefix = "ed25519-public-key:base64:";
   return createPublicKey({
     key: Buffer.from(expectedRunnerPublicKey.slice(keyPrefix.length), "base64"),
@@ -162,11 +190,17 @@ function runnerPublicKey(expectedRunnerPublicKey) {
   });
 }
 
-function validateRunnerConformanceEvidence(report, expectedRunnerPublicKey) {
-  const receipt = report?.runnerEvidence?.conformance;
+function validateRunnerConformanceEvidence(
+  report: Record<string, unknown>,
+  expectedRunnerPublicKey: string,
+): void {
+  const runnerEvidence = report.runnerEvidence as
+    | Record<string, unknown>
+    | undefined;
+  const receipt = runnerEvidence?.conformance as Record<string, unknown> | undefined;
   const signaturePrefix = "ed25519-signature:base64:";
   assertConformance(
-    report?.runnerEvidence?.publicKey === expectedRunnerPublicKey,
+    runnerEvidence?.publicKey === expectedRunnerPublicKey,
     "serial conformance does not match the expected runner public key",
   );
   assertConformance(
@@ -194,12 +228,12 @@ function validateRunnerConformanceEvidence(report, expectedRunnerPublicKey) {
 }
 
 function validateRunnerOperationEvidence(
-  evidence,
-  stage,
-  report,
-  expectedRunnerPublicKey,
-) {
-  const receipt = evidence?.operations?.[stage];
+  evidence: RunnerEvidence,
+  stage: string,
+  report: Record<string, unknown>,
+  expectedRunnerPublicKey: string,
+): Record<string, unknown> {
+  const receipt = evidence.operations?.[stage] as Record<string, unknown> | undefined;
   assertConformance(
     receipt &&
       typeof receipt === "object" &&
@@ -209,7 +243,8 @@ function validateRunnerOperationEvidence(
     `runner ${stage} operation evidence is required`,
   );
   assertConformance(
-    receipt.operationReference === report.request.operationReference &&
+    receipt.operationReference ===
+      (report.request as Record<string, unknown>).operationReference &&
       receipt.reportDigest === deriveSerialOperationReportDigest(report),
     `runner ${stage} operation evidence does not bind its validated report`,
   );
@@ -244,10 +279,16 @@ function validateRunnerOperationEvidence(
 }
 
 export function validateSerialConformanceReport(
-  input,
-  { expectedRunnerPublicKey, expectedAdapterIdentity } = {},
-) {
-  const conformance = structuredClone(input);
+  input: unknown,
+  {
+    expectedRunnerPublicKey,
+    expectedAdapterIdentity,
+  }: {
+    expectedRunnerPublicKey?: unknown;
+    expectedAdapterIdentity?: unknown;
+  } = {},
+): Record<string, unknown> {
+  const conformance = structuredClone(input) as Record<string, unknown>;
   assertConformance(
     typeof expectedRunnerPublicKey === "string" &&
       expectedRunnerPublicKey.startsWith("ed25519-public-key:base64:"),
@@ -262,8 +303,8 @@ export function validateSerialConformanceReport(
     "serial conformance runId is required",
   );
   validateRunnerConformanceEvidence(conformance, expectedRunnerPublicKey);
-  const reports = conformance.reports;
-  const requests = conformance.requests;
+  const reports = conformance.reports as Record<string, unknown> | undefined;
+  const requests = conformance.requests as Record<string, unknown> | undefined;
   assertConformance(
     reports && typeof reports === "object" && !Array.isArray(reports),
     "serial conformance reports are required",
@@ -295,7 +336,7 @@ export function validateSerialConformanceReport(
       `serial conformance ${name} request is required`,
     );
 
-  const validatedReports = {};
+  const validatedReports: Record<string, Record<string, unknown>> = {};
   for (const name of [
     "start",
     "inject",
@@ -315,7 +356,7 @@ export function validateSerialConformanceReport(
     validatedReports[name] = validateVmHostAdapterReport(
       report,
       requests[name],
-    );
+    ) as Record<string, unknown>;
   }
 
   const start = validatedReports.start;
@@ -328,34 +369,37 @@ export function validateSerialConformanceReport(
       expectedAdapterIdentity.length > 0,
     "expected adapter identity is required",
   );
-  const lifecycleIdentity = (report) => ({
+  const lifecycleIdentity = (
+    report: Record<string, unknown>,
+  ): Record<string, unknown> => ({
     adapter: report.adapter,
-    vmIdentity: report.observed.vmIdentity,
-    targetBinding: report.observed.targetBinding,
-    baseIdentity: report.observed.baseIdentity,
-    overlayIdentity: report.observed.overlayIdentity,
+    vmIdentity: (report.observed as Record<string, unknown>).vmIdentity,
+    targetBinding: (report.observed as Record<string, unknown>).targetBinding,
+    baseIdentity: (report.observed as Record<string, unknown>).baseIdentity,
+    overlayIdentity: (report.observed as Record<string, unknown>).overlayIdentity,
   });
   assertConformance(
-    start.adapter.identity === expectedAdapterIdentity &&
+    (start.adapter as Record<string, unknown>).identity ===
+      expectedAdapterIdentity &&
       [inject, collect, firstStop, repeatedStop].every((report) =>
         sameJson(lifecycleIdentity(report), lifecycleIdentity(start)),
       ),
     "serial conformance reports must bind one trusted adapter and VM lifecycle",
   );
   const startReceipt = validateRunnerOperationEvidence(
-    conformance.runnerEvidence,
+    conformance.runnerEvidence as RunnerEvidence,
     "start",
     start,
     expectedRunnerPublicKey,
   );
   const injectReceipt = validateRunnerOperationEvidence(
-    conformance.runnerEvidence,
+    conformance.runnerEvidence as RunnerEvidence,
     "inject",
     inject,
     expectedRunnerPublicKey,
   );
   validateRunnerOperationEvidence(
-    conformance.runnerEvidence,
+    conformance.runnerEvidence as RunnerEvidence,
     "collect",
     collect,
     expectedRunnerPublicKey,
@@ -367,29 +411,36 @@ export function validateSerialConformanceReport(
     "serial conformance lifecycle reports must succeed",
   );
   assertConformance(
-    start.request.operation === "start-serial-session" &&
-      inject.request.operation === "inject-scanner-code" &&
-      collect.request.operation === "collect-serial-evidence" &&
-      firstStop.request.operation === "stop-serial-session" &&
-      repeatedStop.request.operation === "stop-serial-session",
+    (start.request as Record<string, unknown>).operation ===
+      "start-serial-session" &&
+      (inject.request as Record<string, unknown>).operation ===
+        "inject-scanner-code" &&
+      (collect.request as Record<string, unknown>).operation ===
+        "collect-serial-evidence" &&
+      (firstStop.request as Record<string, unknown>).operation ===
+        "stop-serial-session" &&
+      (repeatedStop.request as Record<string, unknown>).operation ===
+        "stop-serial-session",
     "serial conformance lifecycle report operations are invalid",
   );
   assertConformance(
     [start, inject, collect, firstStop, repeatedStop].every(
-      (report) => report.request.runId === conformance.runId,
+      (report) =>
+        (report.request as Record<string, unknown>).runId === conformance.runId,
     ),
     "serial conformance reports must bind the declared run",
   );
   assertConformance(
     [inject, collect, firstStop, repeatedStop].every(
       (report) =>
-        report.request.lifecycleReference ===
-          start.request.lifecycleReference &&
-        report.request.targetIdentity === start.request.targetIdentity,
+        (report.request as Record<string, unknown>).lifecycleReference ===
+          (start.request as Record<string, unknown>).lifecycleReference &&
+        (report.request as Record<string, unknown>).targetIdentity ===
+          (start.request as Record<string, unknown>).targetIdentity,
     ),
     "serial conformance reports must bind one lifecycle target",
   );
-  const startSession = start.serialSession;
+  const startSession = start.serialSession as Record<string, unknown> | undefined;
   assertConformance(
     startSession,
     "serial conformance start session is required",
@@ -410,43 +461,93 @@ export function validateSerialConformanceReport(
         "startOperationReference",
         "deviceMappingDigest",
       ].every(
-        (key) => report.request.serialSession?.[key] === startSession[key],
+        (key) =>
+          (
+            (report.request as Record<string, unknown>).serialSession as
+              | Record<string, unknown>
+              | undefined
+          )?.[key] === startSession[key],
       ),
       "serial conformance reports must retain the validated start session",
     );
   assertConformance(
-    collect.request.serialSession.scannerInjection?.operationNonce ===
-      inject.request.operationNonce,
+    (
+      (
+        (collect.request as Record<string, unknown>).serialSession as Record<
+          string,
+          unknown
+        >
+      ).scannerInjection as Record<string, unknown> | undefined
+    )?.operationNonce === (inject.request as Record<string, unknown>).operationNonce,
     "serial evidence collection must bind the validated scanner injection",
   );
   assertConformance(
-    sameJson(collect.request.serialSession.operationEvidence, {
-      runnerChallenge: conformance.runnerEvidence.runnerChallenge,
+    sameJson(
+      (
+        (collect.request as Record<string, unknown>).serialSession as Record<
+          string,
+          unknown
+        >
+      ).operationEvidence,
+      {
+      runnerChallenge: (conformance.runnerEvidence as RunnerEvidence)
+        .runnerChallenge,
       startReportDigest: startReceipt.reportDigest,
       injectReportDigest: injectReceipt.reportDigest,
-    }),
+      },
+    ),
     "serial evidence collection must use runner-held start and inject commitments",
   );
-  const injectedSale = inject.request.serialSession.saleBindings?.[0];
-  const collectedSale = collect.request.serialSession.saleBindings?.[0];
+  const injectedSale = (
+    (inject.request as Record<string, unknown>).serialSession as Record<
+      string,
+      unknown
+    >
+  ).saleBindings as Array<Record<string, unknown>> | undefined;
+  const collectedSale = (
+    (collect.request as Record<string, unknown>).serialSession as Record<
+      string,
+      unknown
+    >
+  ).saleBindings as Array<Record<string, unknown>> | undefined;
   assertConformance(
-    injectedSale &&
-      collectedSale &&
-      injectedSale.saleCorrelationId === collectedSale.saleCorrelationId &&
-      injectedSale.orderId === collectedSale.orderId &&
-      injectedSale.paymentId === collectedSale.paymentId &&
-      injectedSale.vendingCommandId === null &&
-      typeof collectedSale.vendingCommandId === "string",
+    injectedSale?.length === 1 &&
+      collectedSale?.length === 1 &&
+      injectedSale[0].saleCorrelationId === collectedSale[0].saleCorrelationId &&
+      injectedSale[0].orderId === collectedSale[0].orderId &&
+      injectedSale[0].paymentId === collectedSale[0].paymentId &&
+      injectedSale[0].vendingCommandId === null &&
+      typeof collectedSale[0].vendingCommandId === "string",
     "serial collection must complete the injected sale without relabeling it",
   );
+  const injectSaleBindings = (
+    (inject.request as Record<string, unknown>).serialSession as Record<
+      string,
+      unknown
+    >
+  ).saleBindings as Array<Record<string, unknown>> | undefined;
+  const collectSaleBindings = (
+    (collect.request as Record<string, unknown>).serialSession as Record<
+      string,
+      unknown
+    >
+  ).saleBindings as Array<Record<string, unknown>> | undefined;
   if (conformance.profile === "installed-kiosk-sale") {
     assertConformance(
-      conformance.customerUiSale?.orderId === collectedSale.orderId &&
-        conformance.customerUiSale?.paymentId === collectedSale.paymentId &&
-        conformance.customerUiSale?.orderNo &&
-        conformance.customerUiSale?.scenarioSha256 &&
-        inject.request.serialSession.saleBindings?.length === 1 &&
-        collect.request.serialSession.saleBindings?.length === 1 &&
+      (
+        conformance.customerUiSale as Record<string, unknown> | undefined
+      )?.orderId === collectedSale?.[0]?.orderId &&
+        (
+          conformance.customerUiSale as Record<string, unknown> | undefined
+        )?.paymentId === collectedSale?.[0]?.paymentId &&
+        (
+          conformance.customerUiSale as Record<string, unknown> | undefined
+        )?.orderNo &&
+        (
+          conformance.customerUiSale as Record<string, unknown> | undefined
+        )?.scenarioSha256 &&
+        (injectSaleBindings?.length ?? 0) === 1 &&
+        (collectSaleBindings?.length ?? 0) === 1 &&
         !Object.hasOwn(conformance, "failureMatrix"),
       "installed kiosk sale conformance must derive one rendered customer sale from exact serial operations",
     );
@@ -461,10 +562,10 @@ export function validateSerialConformanceReport(
 }
 
 function validateFailureMatrix(
-  failureMatrix,
-  completedSale,
-  expectedLifecycleIdentity,
-) {
+  failureMatrix: unknown,
+  completedSale: Array<Record<string, unknown>> | undefined,
+  expectedLifecycleIdentity: Record<string, unknown>,
+): void {
   const expected = new Map([
     ["malformed-frame", ["collect-serial-evidence", "serial_malformed_frame"]],
     [
@@ -486,15 +587,35 @@ function validateFailureMatrix(
     Array.isArray(failureMatrix) && failureMatrix.length === expected.size,
     "serial conformance failure matrix is incomplete",
   );
-  const byMode = new Map(
-    failureMatrix.map((entry) => [entry?.failureMode, entry]),
+  const failureEntries = failureMatrix as Array<Record<string, unknown>>;
+  const byMode = new Map<string, Record<string, unknown>>(
+    failureEntries.map((entry) => [String(entry?.failureMode), entry]),
   );
+  const faultOf = (entry: Record<string, unknown>): Record<string, unknown> =>
+    (
+      (entry.source as Record<string, unknown> | undefined)?.fault as
+        | Record<string, unknown>
+        | undefined
+    ) ?? {};
+  const faultRequest = (entry: Record<string, unknown>): Record<string, unknown> =>
+    (faultOf(entry).request as Record<string, unknown> | undefined) ?? {};
+  const faultReport = (entry: Record<string, unknown>): Record<string, unknown> =>
+    (faultOf(entry).report as Record<string, unknown> | undefined) ?? {};
+  const serialSessionOf = (
+    request: Record<string, unknown>,
+  ): Record<string, unknown> =>
+    (request.serialSession as Record<string, unknown> | undefined) ?? {};
   assertConformance(
     byMode.size === expected.size,
     "serial conformance failure matrix modes must be unique",
   );
   for (const [failureMode, [operation, diagnosticCode]] of expected) {
     const entry = byMode.get(failureMode);
+    if (entry === undefined) {
+      throw new Error(
+        `serial conformance ${failureMode} failure evidence is invalid`,
+      );
+    }
     assertConformance(
       entry?.operation === operation &&
         entry.result === "observed_failure" &&
@@ -503,16 +624,18 @@ function validateFailureMatrix(
       `serial conformance ${failureMode} failure evidence is invalid`,
     );
     validateFailureSource(
-      entry?.source?.fault,
+      (entry.source as Record<string, unknown> | undefined)?.fault,
       `${failureMode} fault`,
       expectedLifecycleIdentity,
     );
+    const faultRequestRecord = faultRequest(entry);
+    const faultReportRecord = faultReport(entry);
     assertConformance(
       (failureMode === "swapped-roles" || failureMode === "missing-device"
-        ? entry.source.fault.request.operation === "start-serial-session" &&
-          sameJson(entry.source.fault.request.serialSession.saleBindings, [])
-        : entry.source.fault.request.operation === operation) &&
-        entry.source.fault.report.diagnostics?.some(
+        ? faultRequestRecord.operation === "start-serial-session" &&
+          sameJson(serialSessionOf(faultRequestRecord).saleBindings, [])
+        : faultRequestRecord.operation === operation) &&
+        (faultReportRecord.diagnostics as Array<Record<string, unknown>> | undefined)?.some(
           (diagnostic) => diagnostic?.code === diagnosticCode,
         ),
       `serial conformance ${failureMode} source does not prove the declared fault`,
@@ -521,109 +644,144 @@ function validateFailureMatrix(
 
   for (const failureMode of ["malformed-frame", "device-disconnected"]) {
     const entry = byMode.get(failureMode);
-    const sourceSale = entry.source.fault.request.serialSession.saleBindings;
+    if (entry === undefined) continue;
+    const sourceSale = serialSessionOf(faultRequest(entry)).saleBindings;
     assertConformance(
-      entry.orderId === completedSale.orderId &&
-        entry.paymentId === completedSale.paymentId &&
-        entry.vendingCommandId === completedSale.vendingCommandId &&
-        sameJson(sourceSale, [completedSale]),
+      entry.orderId === completedSale?.[0]?.orderId &&
+        entry.paymentId === completedSale?.[0]?.paymentId &&
+        entry.vendingCommandId === completedSale?.[0]?.vendingCommandId &&
+        sameJson(sourceSale, completedSale ? [completedSale[0]] : []),
       `serial conformance ${failureMode} must bind the completed sale`,
     );
   }
   const scannerTimeout = byMode.get("scanner-timeout");
   const dispenseFailed = byMode.get("dispense-failed");
-  const scannerSale =
-    scannerTimeout.source.fault.report.request.serialSession.saleBindings[0];
-  const dispenseSale =
-    dispenseFailed.source.fault.report.request.serialSession.saleBindings[0];
+  const scannerSale = scannerTimeout
+    ? (serialSessionOf(faultRequest(scannerTimeout)).saleBindings as
+        | Array<Record<string, unknown>>
+        | undefined)
+    : undefined;
+  const dispenseSale = dispenseFailed
+    ? (serialSessionOf(faultRequest(dispenseFailed)).saleBindings as
+        | Array<Record<string, unknown>>
+        | undefined)
+    : undefined;
+  if (scannerTimeout === undefined || dispenseFailed === undefined) {
+    throw new Error(
+      "serial conformance scanner timeout and failed dispense are required",
+    );
+  }
   assertConformance(
     typeof scannerTimeout.orderId === "string" &&
       typeof scannerTimeout.paymentId === "string" &&
-      scannerTimeout.orderId === scannerSale?.orderId &&
-      scannerTimeout.paymentId === scannerSale?.paymentId &&
+      scannerTimeout.orderId === scannerSale?.[0]?.orderId &&
+      scannerTimeout.paymentId === scannerSale?.[0]?.paymentId &&
       scannerTimeout.orderId === dispenseFailed.orderId &&
       scannerTimeout.paymentId === dispenseFailed.paymentId &&
       !Object.hasOwn(scannerTimeout, "vendingCommandId") &&
-      scannerSale?.vendingCommandId === null &&
+      scannerSale?.[0]?.vendingCommandId === null &&
       typeof dispenseFailed.vendingCommandId === "string" &&
-      dispenseFailed.orderId === dispenseSale?.orderId &&
-      dispenseFailed.paymentId === dispenseSale?.paymentId &&
-      dispenseFailed.vendingCommandId === dispenseSale?.vendingCommandId,
+      dispenseFailed.orderId === dispenseSale?.[0]?.orderId &&
+      dispenseFailed.paymentId === dispenseSale?.[0]?.paymentId &&
+      dispenseFailed.vendingCommandId === dispenseSale?.[0]?.vendingCommandId,
     "serial conformance scanner timeout and failed dispense must bind one failed sale",
   );
 
   for (const failureMode of ["swapped-roles", "missing-device"]) {
     const entry = byMode.get(failureMode);
+    if (entry === undefined) {
+      throw new Error(
+        `serial conformance ${failureMode} mapping failure is required`,
+      );
+    }
     const start = validateFailureSource(
-      entry?.source?.start,
+      (entry.source as Record<string, unknown> | undefined)?.start,
       `${failureMode} start`,
       expectedLifecycleIdentity,
     );
-    const fault = validateFailureSource(
-      entry.source.fault,
+  const fault = validateFailureSource(
+      (entry.source as Record<string, unknown> | undefined)?.fault,
       `${failureMode} fault session`,
       expectedLifecycleIdentity,
     );
-    const session = entry.startSerialSession;
-    const faultSession = fault.serialSession;
-    const failClosed = entry.daemonFailClosed;
+  const session = entry.startSerialSession as Record<string, unknown> | undefined;
+  const faultSession = fault.serialSession as Record<string, unknown> | undefined;
+  const failClosed = entry.daemonFailClosed as Record<string, unknown> | undefined;
+  if (failClosed === undefined) {
+    throw new Error(
+      `serial conformance ${failureMode} mapping failure is missing fail-closed evidence`,
+    );
+  }
+  const transactionEntry = failClosed.transactionEntry as
+    | Record<string, unknown>
+    | undefined;
+  const recovery = entry.recovery as Record<string, unknown> | undefined;
     assertConformance(
       !Object.hasOwn(entry, "orderId") &&
         !Object.hasOwn(entry, "paymentId") &&
         !Object.hasOwn(entry, "vendingCommandId") &&
-        sameJson(entry.source.start, entry.source.fault) &&
-        sameJson(fault.request.serialSession.saleBindings, []) &&
+        sameJson(
+          (entry.source as Record<string, unknown>).start,
+          (entry.source as Record<string, unknown>).fault,
+        ) &&
+        sameJson(serialSessionOf(faultRequest(entry)).saleBindings, []) &&
         sameJson(session, {
-          serialSessionId: start.serialSession?.serialSessionId,
-          startOperationReference: start.serialSession?.startOperationReference,
-          deviceMappingDigest: start.serialSession?.deviceMappingDigest,
+          serialSessionId: (start.serialSession as Record<string, unknown> | undefined)?.serialSessionId,
+          startOperationReference: (start.serialSession as Record<string, unknown> | undefined)?.startOperationReference,
+          deviceMappingDigest: (start.serialSession as Record<string, unknown> | undefined)?.deviceMappingDigest,
         }) &&
         [
           "serialSessionId",
           "startOperationReference",
           "deviceMappingDigest",
         ].every((key) => faultSession?.[key] === session?.[key]) &&
-        failClosed?.commandExitStatus > 0 &&
+        Number(failClosed.commandExitStatus) > 0 &&
         failClosed.simulatedHardwareReady === "failed" &&
         failClosed.daemonHealthObserved === true &&
         failClosed.hardwareOnline === false &&
         failClosed.readyzObserved === true &&
         sameJson(failClosed.adapterSession, {
           ...session,
-          faultStartedAt: failClosed.adapterSession?.faultStartedAt,
+          faultStartedAt: (
+            failClosed.adapterSession as Record<string, unknown> | undefined
+          )?.faultStartedAt,
         }) &&
-        typeof failClosed.adapterSession.faultStartedAt === "string" &&
+        typeof (
+          failClosed.adapterSession as Record<string, unknown>
+        ).faultStartedAt === "string" &&
         sameJson(failClosed.readinessBlockingCodes, [
           "LOWER_CONTROLLER_UNAVAILABLE",
         ]) &&
         sameJson(failClosed.responseBlockingCodes, [
           "LOWER_CONTROLLER_UNAVAILABLE",
         ]) &&
-        failClosed.transactionEntry?.endpoint === "/v1/intents/create-order" &&
-        failClosed.transactionEntry?.attempted === true &&
-        failClosed.transactionEntry?.rejected === true &&
-        failClosed.transactionEntry?.statusCode === 400 &&
-        failClosed.transactionEntry?.responseCode === "create_order_blocked" &&
-        sameJson(failClosed.transactionEntry?.readinessBlockingCodes, [
+        transactionEntry?.endpoint === "/v1/intents/create-order" &&
+        transactionEntry?.attempted === true &&
+        transactionEntry?.rejected === true &&
+        transactionEntry?.statusCode === 400 &&
+        transactionEntry?.responseCode === "create_order_blocked" &&
+        sameJson(transactionEntry?.readinessBlockingCodes, [
           "LOWER_CONTROLLER_UNAVAILABLE",
         ]) &&
-        failClosed.transactionEntry?.orderId === null &&
-        failClosed.transactionEntry?.paymentId === null &&
-        failClosed.transactionEntry?.vendingCommandId === null &&
+        transactionEntry?.orderId === null &&
+        transactionEntry?.paymentId === null &&
+        transactionEntry?.vendingCommandId === null &&
         failClosed.saleBindingCreated === false &&
-        entry.recovery?.runtimeReady === "passed" &&
-        entry.recovery?.hardwareOnline === true &&
-        entry.recovery?.scannerOnline === true &&
-        entry.recovery?.ready === true,
+        recovery?.runtimeReady === "passed" &&
+        recovery?.hardwareOnline === true &&
+        recovery?.scannerOnline === true &&
+        recovery?.ready === true,
       `serial conformance ${failureMode} mapping failure is not fail-closed and recovered`,
     );
   }
 }
 
-export function readFailureMatrixCommands(commandJson) {
-  let commands;
+export function readFailureMatrixCommands(
+  commandJson: unknown,
+): Record<string, unknown> {
+  let commands: Record<string, unknown>;
   try {
-    commands = JSON.parse(commandJson);
+    commands = JSON.parse(String(commandJson)) as Record<string, unknown>;
   } catch {
     throw new Error("failure matrix commands must be a JSON object");
   }
@@ -634,24 +792,28 @@ export function readFailureMatrixCommands(commandJson) {
     "dispense-failed": ["saleCompleteCommand"],
   };
   for (const [failureMode, keys] of Object.entries(required)) {
-    const entry = commands?.[failureMode];
+    const entry = commands?.[failureMode] as Record<string, unknown> | undefined;
     if (!entry || typeof entry !== "object")
       throw new Error(`${failureMode} failure matrix commands are required`);
     for (const key of keys)
       if (
         !Array.isArray(entry[key]) ||
-        entry[key].length < 2 ||
-        !entry[key].every((argument) => typeof argument === "string")
+        (entry[key] as unknown[]).length < 2 ||
+        !(entry[key] as unknown[]).every(
+          (argument) => typeof argument === "string",
+        )
       )
         throw new Error(`${failureMode} ${key} must be a command array`);
   }
   return commands;
 }
 
-function readFailureMatrixArtifactPaths(pathJson) {
-  let paths;
+function readFailureMatrixArtifactPaths(
+  pathJson: unknown,
+): Record<string, unknown> {
+  let paths: Record<string, unknown>;
   try {
-    paths = JSON.parse(pathJson);
+    paths = JSON.parse(String(pathJson)) as Record<string, unknown>;
   } catch {
     throw new Error("failure matrix artifact paths must be a JSON object");
   }
@@ -664,7 +826,9 @@ function readFailureMatrixArtifactPaths(pathJson) {
     "missing-device",
   ];
   const reports = failureModes.map((failureMode) => {
-    const report = paths?.[failureMode]?.report;
+    const report = (
+      paths?.[failureMode] as Record<string, unknown> | undefined
+    )?.report;
     if (typeof report !== "string" || report.trim().length === 0)
       throw new Error(`${failureMode} failure matrix report path is required`);
     return report;
@@ -674,9 +838,14 @@ function readFailureMatrixArtifactPaths(pathJson) {
   return paths;
 }
 
-function writeFailureMatrixArtifacts(failureMatrix, paths) {
+function writeFailureMatrixArtifacts(
+  failureMatrix: Array<Record<string, unknown>>,
+  paths: Record<string, unknown>,
+): void {
   for (const entry of failureMatrix) {
-    const reportPath = paths[entry.failureMode].report;
+    const reportPath = String(
+      (paths[String(entry.failureMode)] as Record<string, unknown>).report,
+    );
     mkdirSync(dirname(reportPath), { recursive: true, mode: 0o700 });
     writeFileSync(
       reportPath,
@@ -694,18 +863,26 @@ function writeFailureMatrixArtifacts(failureMatrix, paths) {
   }
 }
 
-function validateFailureSource(source, label, expectedLifecycleIdentity) {
+function validateFailureSource(
+  source: unknown,
+  label: string,
+  expectedLifecycleIdentity: Record<string, unknown>,
+): Record<string, unknown> {
+  const sourceRecord = source as Record<string, unknown> | null | undefined;
   assertConformance(
-    source?.request && source?.report,
+    sourceRecord?.request && sourceRecord?.report,
     `serial conformance ${label} source is required`,
   );
-  const report = validateVmHostAdapterReport(source.report, source.request);
+  const report = validateVmHostAdapterReport(
+    sourceRecord.report,
+    sourceRecord.request,
+  ) as Record<string, unknown>;
   const lifecycleIdentity = {
     adapter: report.adapter,
-    vmIdentity: report.observed.vmIdentity,
-    targetBinding: report.observed.targetBinding,
-    baseIdentity: report.observed.baseIdentity,
-    overlayIdentity: report.observed.overlayIdentity,
+    vmIdentity: (report.observed as Record<string, unknown>).vmIdentity,
+    targetBinding: (report.observed as Record<string, unknown>).targetBinding,
+    baseIdentity: (report.observed as Record<string, unknown>).baseIdentity,
+    overlayIdentity: (report.observed as Record<string, unknown>).overlayIdentity,
   };
   assertConformance(
     sameJson(lifecycleIdentity, expectedLifecycleIdentity),
@@ -714,7 +891,10 @@ function validateFailureSource(source, label, expectedLifecycleIdentity) {
   return report;
 }
 
-function readOption(name, { optional = false } = {}) {
+function readOption(
+  name: string,
+  { optional = false }: { optional?: boolean } = {},
+): string | null {
   const index = process.argv.indexOf(name);
   if (index === -1 || !process.argv[index + 1]) {
     if (optional) return null;
@@ -723,7 +903,7 @@ function readOption(name, { optional = false } = {}) {
   return process.argv[index + 1];
 }
 
-function readProtectedScannerCode() {
+function readProtectedScannerCode(): Buffer {
   const fromFile = process.argv.includes("--scanner-code-file")
     ? readOption("--scanner-code-file")
     : null;
@@ -758,14 +938,14 @@ function readProtectedScannerCode() {
   }
 }
 
-function readCustomerUiSaleBinding() {
+function readCustomerUiSaleBinding(): Record<string, unknown> | null {
   const path = readOption("--customer-ui-sale-binding-file", {
     optional: true,
   });
   if (!path) return null;
-  let binding;
+  let binding: Record<string, unknown>;
   try {
-    binding = JSON.parse(readFileSync(path, "utf8"));
+    binding = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
   } catch {
     throw new Error("--customer-ui-sale-binding-file must contain JSON");
   }
@@ -776,11 +956,11 @@ function readCustomerUiSaleBinding() {
   return binding;
 }
 
-function nonce() {
+function nonce(): string {
   return `op-${randomBytes(16).toString("hex")}`;
 }
 
-function asset(identity) {
+function asset(identity: unknown): Record<string, unknown> {
   const match = String(identity).match(
     /^runtime-base:\/\/sha256\/([a-f0-9]{64})$/,
   );
@@ -805,6 +985,18 @@ function requestFor({
   saleBinding,
   operationEvidence = null,
   idempotencyCheck = false,
+}: {
+  operation: string;
+  runId: string | null;
+  targetIdentity: string | null;
+  lifecycleReference: string | null;
+  approvedRuntimeBase: string | null;
+  session?: Record<string, unknown> | null;
+  scannerDescriptor?: Record<string, unknown> | null;
+  saleCorrelationId: string | null;
+  saleBinding?: Record<string, unknown> | null | undefined;
+  operationEvidence?: Record<string, unknown> | null;
+  idempotencyCheck?: boolean;
 }) {
   const operationNonce = nonce();
   const serialOperationEvidence =
@@ -815,7 +1007,7 @@ function requestFor({
           injectReportDigest: `sha256:${randomBytes(32).toString("hex")}`,
         }
       : operationEvidence;
-  const request = {
+  const request: Record<string, unknown> = {
     contractVersion: VM_HOST_ADAPTER_CONTRACT_VERSION,
     schemaVersion: "vem-vm-host-adapter-request/v2",
     kind: "vm-host-adapter-request",
@@ -878,10 +1070,10 @@ function requestFor({
           idempotencyCheck: false,
         }
       : {
-          serialSessionId: session.serialSessionId,
-          sessionBindingToken: session.sessionBindingToken,
-          startOperationReference: session.startOperationReference,
-          deviceMappingDigest: session.deviceMappingDigest,
+          serialSessionId: session?.serialSessionId,
+          sessionBindingToken: session?.sessionBindingToken,
+          startOperationReference: session?.startOperationReference,
+          deviceMappingDigest: session?.deviceMappingDigest,
           deviceRoles: ["lower-controller", "scanner"],
           scannerInjection:
             operation === "inject-scanner-code"
@@ -898,14 +1090,19 @@ function requestFor({
 }
 
 async function main() {
-  const adapter = readOption("--adapter");
-  const out = readOption("--out");
+  const requireOption = (name: string): string => {
+    const value = readOption(name);
+    if (value === null) throw new Error(`${name} is required`);
+    return value;
+  };
+  const adapter = requireOption("--adapter");
+  const out = requireOption("--out");
   const scannerCode = readProtectedScannerCode();
-  const runId = readOption("--run-id");
-  const targetIdentity = readOption("--target-identity");
-  const approvedRuntimeBase = readOption("--runtime-base");
-  const lifecycleReference = readOption("--lifecycle-reference");
-  const saleCorrelationId = readOption("--sale-correlation-id");
+  const runId = requireOption("--run-id");
+  const targetIdentity = requireOption("--target-identity");
+  const approvedRuntimeBase = requireOption("--runtime-base");
+  const lifecycleReference = requireOption("--lifecycle-reference");
+  const saleCorrelationId = requireOption("--sale-correlation-id");
   const startOnly = process.argv.includes("--start-only");
   const prestartedReportPath = readOption("--prestarted-report", {
     optional: true,
@@ -922,13 +1119,13 @@ async function main() {
   const environment = { ...process.env, VEM_VM_HOST_ADAPTER: adapter };
   mkdirSync(dirname(out), { recursive: true, mode: 0o700 });
 
-  let start;
-  let inject;
-  let collect;
-  let firstStop;
-  let repeatedStop;
-  let recoveryStop;
-  let failureMatrix;
+  let start: Record<string, unknown> | null = null;
+  let inject: Record<string, unknown> | null = null;
+  let collect: Record<string, unknown> | null = null;
+  let firstStop: Record<string, unknown> | null = null;
+  let repeatedStop: Record<string, unknown> | null = null;
+  let recoveryStop: Record<string, unknown> | null = null;
+  let failureMatrix: Array<Record<string, unknown>> | undefined;
   const failureMatrixArtifactPaths = startOnly
     ? null
     : customerUiSale
@@ -938,16 +1135,16 @@ async function main() {
         : readFailureMatrixArtifactPaths(
             readOption("--failure-matrix-artifact-paths-json"),
           );
-  let session;
-  let startRequest;
-  let injectRequest;
-  let collectRequest;
-  let firstStopRequest;
-  let repeatedStopRequest;
-  let recoveryStopRequest;
-  let preparedSale;
-  let completedSale;
-  let primaryError;
+  let session: Record<string, unknown> | null = null;
+  let startRequest: Record<string, unknown> | null = null;
+  let injectRequest: Record<string, unknown> | null = null;
+  let collectRequest: Record<string, unknown> | null = null;
+  let firstStopRequest: Record<string, unknown> | null = null;
+  let repeatedStopRequest: Record<string, unknown> | null = null;
+  let recoveryStopRequest: Record<string, unknown> | null = null;
+  let preparedSale: Record<string, unknown> | null = null;
+  let completedSale: Record<string, unknown> | null = null;
+  let primaryError: unknown;
   const runnerEvidence = protectedRunnerSigningKey();
   const serialRunnerChallenge = runnerChallenge();
   try {
@@ -959,8 +1156,8 @@ async function main() {
         prestarted.runId !== runId
       )
         throw new Error("prestarted serial report does not match this run");
-      startRequest = prestarted.request;
-      start = prestarted.report;
+      startRequest = prestarted.request as Record<string, unknown>;
+      start = prestarted.report as Record<string, unknown>;
     } else {
       startRequest = requestFor({
         operation: "start-serial-session",
@@ -971,18 +1168,20 @@ async function main() {
         saleCorrelationId,
         saleBinding: null,
       });
-      start = await runVmHostAdapter({
+      start = (await runVmHostAdapter({
         request: startRequest,
         workDirectory,
         environment,
-      });
+      })) as Record<string, unknown>;
     }
     const startReportDigest = commitRunnerOperation(
       runnerEvidence,
       "start",
       start,
     );
-    session = start.serialSession;
+    session = (start as Record<string, unknown>).serialSession as
+      | Record<string, unknown>
+      | null;
     if (startOnly) {
       writeFileSync(
         out,
@@ -1031,12 +1230,12 @@ async function main() {
       saleCorrelationId,
       saleBinding: preparedSale,
     });
-    inject = await runVmHostAdapter({
+    inject = (await runVmHostAdapter({
       request: injectRequest,
       workDirectory,
       environment,
       scannerCode,
-    });
+    })) as Record<string, unknown>;
     const injectReportDigest = commitRunnerOperation(
       runnerEvidence,
       "inject",
@@ -1066,7 +1265,14 @@ async function main() {
       approvedRuntimeBase,
       session,
       scannerDescriptor: {
-        operationNonce: inject.request.operationNonce,
+        operationNonce: (inject as Record<string, unknown>).request
+          ? (
+              (inject as Record<string, unknown>).request as Record<
+                string,
+                unknown
+              >
+            ).operationNonce
+          : undefined,
         ...scannerDescriptor,
       },
       saleCorrelationId,
@@ -1077,11 +1283,11 @@ async function main() {
         injectReportDigest,
       },
     });
-    collect = await runVmHostAdapter({
+    collect = (await runVmHostAdapter({
       request: collectRequest,
       workDirectory,
       environment,
-    });
+    })) as Record<string, unknown>;
     commitRunnerOperation(runnerEvidence, "collect", collect);
     firstStopRequest = requestFor({
       operation: "stop-serial-session",
@@ -1093,11 +1299,11 @@ async function main() {
       saleCorrelationId,
       saleBinding: completedSale,
     });
-    firstStop = await runVmHostAdapter({
+    firstStop = (await runVmHostAdapter({
       request: firstStopRequest,
       workDirectory,
       environment,
-    });
+    })) as Record<string, unknown>;
     repeatedStopRequest = requestFor({
       operation: "stop-serial-session",
       runId,
@@ -1109,12 +1315,24 @@ async function main() {
       saleBinding: completedSale,
       idempotencyCheck: true,
     });
-    repeatedStop = await runVmHostAdapter({
+    repeatedStop = (await runVmHostAdapter({
       request: repeatedStopRequest,
       workDirectory,
       environment,
-    });
-    if (!repeatedStop.serialSession.simulatorCleanup.idempotencyVerified)
+    })) as Record<string, unknown>;
+    const repeatedStopReport = repeatedStop;
+    if (repeatedStopReport === null) {
+      throw new Error("repeated serial stop report is missing");
+    }
+    if (
+      !(
+        (
+          (
+            repeatedStopReport.serialSession as Record<string, unknown>
+          ).simulatorCleanup as Record<string, unknown>
+        ).idempotencyVerified === true
+      )
+    )
       throw new Error("adapter did not prove repeated serial stop idempotency");
     failureMatrix = customerUiSale
       ? undefined
@@ -1159,7 +1377,7 @@ async function main() {
               readOption("--failure-matrix-commands-json"),
             ),
           });
-    if (failureMatrixArtifactPaths)
+    if (failureMatrixArtifactPaths && failureMatrix !== undefined)
       writeFailureMatrixArtifacts(failureMatrix, failureMatrixArtifactPaths);
   } catch (error) {
     primaryError = error;
@@ -1177,17 +1395,17 @@ async function main() {
           saleBinding: completedSale ?? preparedSale ?? null,
           idempotencyCheck: true,
         });
-        recoveryStop = await runVmHostAdapter({
+        recoveryStop = (await runVmHostAdapter({
           request: recoveryStopRequest,
           workDirectory,
           environment,
-        });
+        })) as Record<string, unknown>;
       } catch (error) {
         if (!primaryError) primaryError = error;
       }
     }
     if (!startOnly) {
-      const conformance = {
+      const conformance: Record<string, unknown> = {
         schemaVersion: "vem-vm-host-adapter-serial-conformance/v1",
         runId,
         ...(customerUiSale
@@ -1215,7 +1433,7 @@ async function main() {
           operations: runnerEvidence.operations,
         },
         session:
-          session === undefined
+          session == null
             ? null
             : {
                 serialSessionId: session.serialSessionId,
@@ -1240,7 +1458,7 @@ async function main() {
         validateSerialConformanceReport(conformance, {
           expectedRunnerPublicKey: runnerEvidence.expectedRunnerPublicKey,
           expectedAdapterIdentity: contractTest
-            ? start?.adapter?.identity
+            ? (start?.adapter as Record<string, unknown> | undefined)?.identity
             : process.env.VEM_VM_HOST_EXPECTED_ADAPTER_IDENTITY,
         });
     }
@@ -1248,10 +1466,10 @@ async function main() {
   if (primaryError) throw primaryError;
 }
 
-function readCommandJson(option) {
-  let command;
+function readCommandJson(option: string): string[] {
+  let command: string[];
   try {
-    command = JSON.parse(readOption(option));
+    command = JSON.parse(String(readOption(option))) as string[];
   } catch {
     throw new Error(`${option} must be a JSON command array`);
   }
@@ -1260,7 +1478,10 @@ function readCommandJson(option) {
   return command;
 }
 
-function runSaleCommand(command, expectedPhase) {
+function runSaleCommand(
+  command: string[],
+  expectedPhase: string,
+): Record<string, unknown> {
   if (!Array.isArray(command) || command.length < 2)
     throw new Error(`${expectedPhase} sale command must be a JSON array`);
   const result = spawnSync(command[0], command.slice(1), {
@@ -1272,7 +1493,7 @@ function runSaleCommand(command, expectedPhase) {
     throw new Error(
       `${expectedPhase} scanner sale failed: ${result.stderr || result.stdout}`,
     );
-  let output = JSON.parse(result.stdout || "null");
+  let output = JSON.parse(result.stdout || "null") as Record<string, unknown>;
   const outputOptionIndex = command.lastIndexOf("--out");
   if (
     outputOptionIndex >= 0 &&
@@ -1286,9 +1507,12 @@ function runSaleCommand(command, expectedPhase) {
       // Commands without a durable output file retain their stdout contract.
     }
   }
-  const sale = output?.simulatedHardwareSaleFlow?.sale;
+  const sale = (
+    output?.simulatedHardwareSaleFlow as Record<string, unknown> | undefined
+  )?.sale as Record<string, unknown> | undefined;
   if (
-    output?.simulatedHardwareSaleFlow?.phase !== expectedPhase ||
+    (output?.simulatedHardwareSaleFlow as Record<string, unknown> | undefined)
+      ?.phase !== expectedPhase ||
     typeof sale?.orderId !== "string" ||
     typeof sale?.paymentId !== "string"
   )
@@ -1308,9 +1532,9 @@ function runSaleCommand(command, expectedPhase) {
 }
 
 export function runFailedDispenseCommand(
-  command,
-  saleCorrelationId = readOption("--sale-correlation-id"),
-) {
+  command: string[],
+  saleCorrelationId: string | null = readOption("--sale-correlation-id"),
+): Record<string, unknown> {
   if (!Array.isArray(command) || command.length < 2)
     throw new Error("failed-dispense sale command must be a JSON array");
   const result = spawnSync(command[0], command.slice(1), {
@@ -1318,11 +1542,14 @@ export function runFailedDispenseCommand(
     env: process.env,
     encoding: "utf8",
   });
-  const output = JSON.parse(result.stdout || "null");
-  const sale = output?.simulatedHardwareSaleFlow?.sale;
+  const output = JSON.parse(result.stdout || "null") as Record<string, unknown>;
+  const sale = (
+    output?.simulatedHardwareSaleFlow as Record<string, unknown> | undefined
+  )?.sale as Record<string, unknown> | undefined;
   if (
     result.status === 0 ||
-    output?.simulatedHardwareSaleFlow?.phase !== "complete" ||
+    (output?.simulatedHardwareSaleFlow as Record<string, unknown> | undefined)
+      ?.phase !== "complete" ||
     sale?.dispenseResult !== "failed" ||
     typeof sale?.orderId !== "string" ||
     typeof sale?.paymentId !== "string" ||
@@ -1339,34 +1566,53 @@ export function runFailedDispenseCommand(
   };
 }
 
-function adapterSessionEvidence(startReport) {
+function adapterSessionEvidence(
+  startReport: Record<string, unknown>,
+): Record<string, unknown> {
+  const serialSession = startReport.serialSession as Record<string, unknown>;
+  const timestamps = startReport.timestamps as Record<string, unknown>;
   return {
-    serialSessionId: startReport.serialSession.serialSessionId,
-    startOperationReference: startReport.serialSession.startOperationReference,
-    deviceMappingDigest: startReport.serialSession.deviceMappingDigest,
-    faultStartedAt: startReport.timestamps.startedAt,
+    serialSessionId: serialSession.serialSessionId,
+    startOperationReference: serialSession.startOperationReference,
+    deviceMappingDigest: serialSession.deviceMappingDigest,
+    faultStartedAt: timestamps.startedAt,
   };
 }
 
-function runBlockedSaleCommand(command, failureMode, runId, startReport) {
+function runBlockedSaleCommand(
+  command: string[],
+  failureMode: string,
+  runId: string,
+  startReport: Record<string, unknown>,
+): Record<string, unknown> {
   if (!Array.isArray(command) || command.length < 2)
     throw new Error(`${failureMode} blocked-sale command must be a JSON array`);
   const result = spawnSync(command[0], command.slice(1), {
     cwd: process.cwd(),
     env: {
       ...process.env,
-      VEM_VM_HOST_FAULT_SESSION_ID: startReport.serialSession.serialSessionId,
+      VEM_VM_HOST_FAULT_SESSION_ID: String(
+        (startReport.serialSession as Record<string, unknown>)
+          .serialSessionId,
+      ),
       VEM_VM_HOST_FAULT_START_OPERATION_REFERENCE:
-        startReport.serialSession.startOperationReference,
-      VEM_VM_HOST_FAULT_DEVICE_MAPPING_DIGEST:
-        startReport.serialSession.deviceMappingDigest,
-      VEM_VM_HOST_FAULT_STARTED_AT: startReport.timestamps.startedAt,
+        String(
+          (startReport.serialSession as Record<string, unknown>)
+            .startOperationReference,
+        ),
+      VEM_VM_HOST_FAULT_DEVICE_MAPPING_DIGEST: String(
+        (startReport.serialSession as Record<string, unknown>)
+          .deviceMappingDigest,
+      ),
+      VEM_VM_HOST_FAULT_STARTED_AT: String(
+        (startReport.timestamps as Record<string, unknown>).startedAt,
+      ),
     },
     encoding: "utf8",
   });
-  let output;
+  let output: Record<string, unknown>;
   try {
-    output = JSON.parse(result.stdout || "null");
+    output = JSON.parse(result.stdout || "null") as Record<string, unknown>;
   } catch {
     throw new Error(
       `${failureMode} blocked-sale command returned invalid JSON`,
@@ -1381,7 +1627,10 @@ function runBlockedSaleCommand(command, failureMode, runId, startReport) {
   });
 }
 
-function runRuntimeRecoveryCommand(command, failureMode) {
+function runRuntimeRecoveryCommand(
+  command: string[],
+  failureMode: string,
+): Record<string, unknown> {
   if (!Array.isArray(command) || command.length < 2)
     throw new Error(`${failureMode} recovery command must be a JSON array`);
   const result = spawnSync(command[0], command.slice(1), {
@@ -1389,20 +1638,38 @@ function runRuntimeRecoveryCommand(command, failureMode) {
     env: process.env,
     encoding: "utf8",
   });
-  let output;
+  let output: Record<string, unknown>;
   try {
-    output = JSON.parse(result.stdout || "null");
+    output = JSON.parse(result.stdout || "null") as Record<string, unknown>;
   } catch {
     throw new Error(`${failureMode} recovery command returned invalid JSON`);
   }
-  const report = output?.runtimeAcceptanceReport;
+  const report = output?.runtimeAcceptanceReport as
+    | Record<string, unknown>
+    | undefined;
   if (
     result.status !== 0 ||
     output?.ok !== true ||
-    report?.result?.runtimeReady?.status !== "passed" ||
-    report?.daemonRuntime?.healthz?.hardwareOnline !== true ||
-    report?.daemonRuntime?.healthz?.scannerOnline !== true ||
-    report?.daemonRuntime?.readyz?.ready !== true
+    (
+      (
+        report?.result as Record<string, unknown> | undefined
+      )?.runtimeReady as Record<string, unknown> | undefined
+    )?.status !== "passed" ||
+    (
+      (
+        report?.daemonRuntime as Record<string, unknown> | undefined
+      )?.healthz as Record<string, unknown> | undefined
+    )?.hardwareOnline !== true ||
+    (
+      (
+        report?.daemonRuntime as Record<string, unknown> | undefined
+      )?.healthz as Record<string, unknown> | undefined
+    )?.scannerOnline !== true ||
+    (
+      (
+        report?.daemonRuntime as Record<string, unknown> | undefined
+      )?.readyz as Record<string, unknown> | undefined
+    )?.ready !== true
   )
     throw new Error(
       `${failureMode} did not restore healthy daemon runtime after serial stop`,
@@ -1415,7 +1682,7 @@ function runRuntimeRecoveryCommand(command, failureMode) {
   };
 }
 
-function isNonEmptyString(value) {
+function isNonEmptyString(value: unknown): boolean {
   return typeof value === "string" && value.trim().length > 0;
 }
 
@@ -1425,19 +1692,47 @@ export function assertBlockedSaleEvidence({
   failureMode,
   runId,
   expectedAdapterSession = null,
-}) {
-  const flow = output?.simulatedHardwareSaleFlow;
-  const sale = flow?.sale;
-  const healthz = flow?.daemonIpc?.healthz;
-  const readyz = flow?.daemonIpc?.readyz;
-  const mappingFault = flow?.hardwareMappingFault;
-  const transactionEntry = flow?.transactionEntry;
+}: {
+  commandExitStatus: unknown;
+  output: Record<string, unknown>;
+  failureMode: string;
+  runId: string;
+  expectedAdapterSession?: Record<string, unknown> | null;
+}): Record<string, unknown> {
+  const flow = output?.simulatedHardwareSaleFlow as
+    | Record<string, unknown>
+    | undefined;
+  const sale = flow?.sale as Record<string, unknown> | undefined;
+  const healthz = (
+    flow?.daemonIpc as Record<string, unknown> | undefined
+  )?.healthz as Record<string, unknown> | undefined;
+  const readyz = (
+    flow?.daemonIpc as Record<string, unknown> | undefined
+  )?.readyz as Record<string, unknown> | undefined;
+  const mappingFault = flow?.hardwareMappingFault as
+    | Record<string, unknown>
+    | undefined;
+  const transactionEntry = flow?.transactionEntry as
+    | Record<string, unknown>
+    | undefined;
   const readinessBlockingCodes = readyz?.blockingCodes;
   const responseBlockingCodes = transactionEntry?.responseBlockingCodes;
-  const context = transactionEntry?.context;
-  const request = transactionEntry?.request;
-  const selectedItem = context?.selectedItem;
-  const paymentOption = context?.paymentOption;
+  const context = transactionEntry?.context as
+    | {
+        runId?: unknown;
+        successfulPrepare?: {
+          runId?: unknown;
+          status?: unknown;
+          phase?: unknown;
+        };
+        planogramVersion?: unknown;
+        selectedItem?: Record<string, unknown>;
+        paymentOption?: Record<string, unknown>;
+      }
+    | undefined;
+  const request = transactionEntry?.request as Record<string, unknown> | undefined;
+  const selectedItem = context?.selectedItem as Record<string, unknown> | undefined;
+  const paymentOption = context?.paymentOption as Record<string, unknown> | undefined;
   const exactLowerControllerBlocker =
     Array.isArray(readinessBlockingCodes) &&
     readinessBlockingCodes.length === 1 &&
@@ -1447,11 +1742,15 @@ export function assertBlockedSaleEvidence({
     responseBlockingCodes.length === 1 &&
     responseBlockingCodes[0] === "LOWER_CONTROLLER_UNAVAILABLE";
   if (
+    typeof commandExitStatus !== "number" ||
     !Number.isInteger(commandExitStatus) ||
     commandExitStatus <= 0 ||
     output?.ok === true ||
     flow?.phase !== "prepare" ||
-    flow?.result?.simulatedHardwareReady?.status !== "failed" ||
+    (
+      (flow?.result as Record<string, unknown> | undefined)
+        ?.simulatedHardwareReady as Record<string, unknown> | undefined
+    )?.status !== "failed" ||
     healthz?.observed !== true ||
     healthz.hardwareOnline !== false ||
     readyz?.observed !== true ||
@@ -1527,18 +1826,30 @@ export function observedMappingFailureCase({
   expectedDiagnosticCode,
   daemonFailClosed,
   recovery,
-}) {
-  const serialSession = startReport?.serialSession;
-  const diagnosticCode = startReport?.diagnostics?.find(
-    (diagnostic) => diagnostic?.code === expectedDiagnosticCode,
-  )?.code;
+}: {
+  failureMode: string;
+  startRequest: Record<string, unknown>;
+  startReport: Record<string, unknown>;
+  expectedDiagnosticCode: string;
+  daemonFailClosed: Record<string, unknown>;
+  recovery: Record<string, unknown>;
+}): Record<string, unknown> {
+  const serialSession = startReport?.serialSession as
+    | Record<string, unknown>
+    | undefined;
+  const diagnosticCode = (
+    startReport?.diagnostics as Array<Record<string, unknown>> | undefined
+  )?.find((diagnostic) => diagnostic?.code === expectedDiagnosticCode)?.code;
   if (
     startReport?.result !== "succeeded" ||
     diagnosticCode !== expectedDiagnosticCode ||
     !isNonEmptyString(serialSession?.serialSessionId) ||
     !isNonEmptyString(serialSession?.startOperationReference) ||
     !isNonEmptyString(serialSession?.deviceMappingDigest) ||
-    !isNonEmptyString(startReport?.timestamps?.startedAt) ||
+    !isNonEmptyString(
+      (startReport?.timestamps as Record<string, unknown> | undefined)
+        ?.startedAt,
+    ) ||
     JSON.stringify(daemonFailClosed?.adapterSession) !==
       JSON.stringify(adapterSessionEvidence(startReport)) ||
     recovery?.runtimeReady !== "passed" ||
@@ -1557,9 +1868,9 @@ export function observedMappingFailureCase({
     adapterResult: startReport.result,
     diagnosticCode,
     startSerialSession: {
-      serialSessionId: serialSession.serialSessionId,
-      startOperationReference: serialSession.startOperationReference,
-      deviceMappingDigest: serialSession.deviceMappingDigest,
+      serialSessionId: serialSession?.serialSessionId,
+      startOperationReference: serialSession?.startOperationReference,
+      deviceMappingDigest: serialSession?.deviceMappingDigest,
     },
     daemonFailClosed,
     recovery,
@@ -1570,7 +1881,24 @@ export function observedMappingFailureCase({
   };
 }
 
-async function runProductionFailureMatrix(options) {
+interface FailureMatrixOptions {
+  runId: string;
+  targetIdentity: string;
+  lifecycleReference: string;
+  approvedRuntimeBase: string;
+  saleCorrelationId: string;
+  saleBinding?: Record<string, unknown> | null | undefined;
+  scannerCode: Buffer;
+  workDirectory: string;
+  environment: NodeJS.ProcessEnv;
+  failureCommands?: Record<string, unknown>;
+  successfulSaleBinding?: Record<string, unknown> | null;
+  failureModes?: string[];
+}
+
+async function runProductionFailureMatrix(
+  options: FailureMatrixOptions,
+): Promise<Array<Record<string, unknown>>> {
   const cases = await runFailureMatrix({
     ...options,
     saleBinding: options.successfulSaleBinding,
@@ -1581,11 +1909,11 @@ async function runProductionFailureMatrix(options) {
     ["swapped-roles", "serial_swapped_roles"],
     ["missing-device", "serial_missing_device"],
   ]) {
-    let mappingSession;
-    let failureCase;
-    let recovery;
+    let mappingSession: Record<string, unknown> | null = null;
+    let failureCase: Record<string, unknown> | undefined;
+    let recovery: Record<string, unknown> | undefined;
     try {
-      const faultEnvironment = {
+      const faultEnvironment: Record<string, string> = {
         ...options.environment,
         VEM_VM_HOST_SERIAL_CONFORMANCE_FAULT: failureMode,
       };
@@ -1599,7 +1927,7 @@ async function runProductionFailureMatrix(options) {
         workDirectory: options.workDirectory,
         environment: faultEnvironment,
       });
-      mappingSession = start.serialSession;
+      mappingSession = start.serialSession as Record<string, unknown>;
       const diagnosticCode = assertObservedDeviceFault(
         start,
         failureMode,
@@ -1607,7 +1935,9 @@ async function runProductionFailureMatrix(options) {
         null,
       );
       const failClosed = runBlockedSaleCommand(
-        options.failureCommands[failureMode].salePrepareCommand,
+        (
+          options.failureCommands?.[failureMode] as Record<string, unknown>
+        ).salePrepareCommand as string[],
         failureMode,
         options.runId,
         start,
@@ -1616,7 +1946,7 @@ async function runProductionFailureMatrix(options) {
         failureMode,
         startRequest,
         startReport: start,
-        expectedDiagnosticCode: diagnosticCode,
+        expectedDiagnosticCode: String(diagnosticCode),
         daemonFailClosed: failClosed,
       };
     } finally {
@@ -1627,16 +1957,33 @@ async function runProductionFailureMatrix(options) {
           options.successfulSaleBinding,
         );
         recovery = runRuntimeRecoveryCommand(
-          options.failureCommands[failureMode].runtimeRecoveryCommand,
+          (
+            options.failureCommands?.[failureMode] as Record<string, unknown>
+          ).runtimeRecoveryCommand as string[],
           failureMode,
         );
       }
     }
-    cases.push(observedMappingFailureCase({ ...failureCase, recovery }));
+    cases.push(
+      observedMappingFailureCase({
+        failureMode: String(failureCase?.failureMode),
+        startRequest: (failureCase?.startRequest ?? {}) as Record<
+          string,
+          unknown
+        >,
+        startReport: (failureCase?.startReport ?? {}) as Record<string, unknown>,
+        expectedDiagnosticCode: String(failureCase?.expectedDiagnosticCode),
+        daemonFailClosed: (failureCase?.daemonFailClosed ?? {}) as Record<
+          string,
+          unknown
+        >,
+        recovery: (recovery ?? {}) as Record<string, unknown>,
+      }),
+    );
   }
 
-  let pendingSale;
-  let scannerSession;
+  let pendingSale: Record<string, unknown> | undefined;
+  let scannerSession: Record<string, unknown> | undefined;
   try {
     const start = await runVmHostAdapter({
       request: requestFor({
@@ -1647,9 +1994,11 @@ async function runProductionFailureMatrix(options) {
       workDirectory: options.workDirectory,
       environment: options.environment,
     });
-    scannerSession = start.serialSession;
+    scannerSession = start.serialSession as Record<string, unknown>;
     pendingSale = runSaleCommand(
-      options.failureCommands["scanner-timeout"].salePrepareCommand,
+      (
+        options.failureCommands?.["scanner-timeout"] as Record<string, unknown>
+      ).salePrepareCommand as string[],
       "prepare",
     );
     const scannerTimeoutRequest = requestFor({
@@ -1691,8 +2040,8 @@ async function runProductionFailureMatrix(options) {
       await stopFailureSession(options, scannerSession, pendingSale);
   }
 
-  let dispenseSession;
-  let failedSale;
+  let dispenseSession: Record<string, unknown> | undefined;
+  let failedSale: Record<string, unknown> | undefined;
   try {
     const start = await runVmHostAdapter({
       request: requestFor({
@@ -1706,7 +2055,7 @@ async function runProductionFailureMatrix(options) {
         VEM_VM_HOST_SERIAL_CONFORMANCE_FAULT: "dispense-failed",
       },
     });
-    dispenseSession = start.serialSession;
+    dispenseSession = start.serialSession as Record<string, unknown>;
     const dispenseInject = await runVmHostAdapter({
       request: requestFor({
         operation: "inject-scanner-code",
@@ -1720,7 +2069,9 @@ async function runProductionFailureMatrix(options) {
       scannerCode: options.scannerCode,
     });
     failedSale = runFailedDispenseCommand(
-      options.failureCommands["dispense-failed"].saleCompleteCommand,
+      (
+        options.failureCommands?.["dispense-failed"] as Record<string, unknown>
+      ).saleCompleteCommand as string[],
     );
     if (
       failedSale.orderId !== pendingSale.orderId ||
@@ -1732,7 +2083,12 @@ async function runProductionFailureMatrix(options) {
       ...options,
       session: dispenseSession,
       scannerDescriptor: {
-        operationNonce: dispenseInject.request.operationNonce,
+        operationNonce: (
+          (dispenseInject as Record<string, unknown>).request as Record<
+            string,
+            unknown
+          >
+        ).operationNonce,
         ...createScannerCodeDescriptor(options.scannerCode),
       },
       saleBinding: failedSale,
@@ -1775,27 +2131,42 @@ async function runProductionFailureMatrix(options) {
 }
 
 function assertObservedDeviceFault(
-  report,
-  failureMode,
-  expectedCode,
-  saleBinding,
-) {
-  const actualCode = report.diagnostics?.find(
-    (diagnostic) => diagnostic?.code === expectedCode,
-  )?.code;
+  report: Record<string, unknown>,
+  failureMode: string,
+  expectedCode: string,
+  saleBinding: Record<string, unknown> | null | undefined,
+): unknown {
+  const actualCode = (
+    report.diagnostics as Array<Record<string, unknown>> | undefined
+  )?.find((diagnostic) => diagnostic?.code === expectedCode)?.code;
   if (report.result !== "succeeded" || actualCode !== expectedCode)
     throw new Error(
       `${failureMode} adapter returned ${actualCode ?? "no diagnostic"}, expected ${expectedCode}`,
     );
   if (
-    report.cleanup?.status !== "not-run" ||
-    report.cleanup?.overlayDisposition !== "active" ||
-    report.cleanup?.observed?.overlay !== "present" ||
-    report.cleanup?.observed?.runDirectory !== "present"
+    (report.cleanup as Record<string, unknown> | undefined)?.status !==
+      "not-run" ||
+    (report.cleanup as Record<string, unknown> | undefined)
+      ?.overlayDisposition !== "active" ||
+    (
+      (report.cleanup as Record<string, unknown> | undefined)
+        ?.observed as Record<string, unknown> | undefined
+    )?.overlay !== "present" ||
+    (
+      (report.cleanup as Record<string, unknown> | undefined)
+        ?.observed as Record<string, unknown> | undefined
+    )?.runDirectory !== "present"
   )
     throw new Error(`${failureMode} unexpectedly cleaned the active overlay`);
   if (
-    JSON.stringify(report.request.serialSession.saleBindings) !==
+    JSON.stringify(
+      (
+        (report.request as Record<string, unknown>).serialSession as Record<
+          string,
+          unknown
+        >
+      ).saleBindings,
+    ) !==
     JSON.stringify(saleBinding ? [saleBinding] : [])
   )
     throw new Error(`${failureMode} did not bind the observed device fault`);
@@ -1809,7 +2180,14 @@ function observedFailureCase({
   saleBinding,
   diagnosticCode,
   source,
-}) {
+}: {
+  failureMode: string;
+  operation: string;
+  report: Record<string, unknown>;
+  saleBinding: Record<string, unknown>;
+  diagnosticCode: unknown;
+  source: Record<string, unknown>;
+}): Record<string, unknown> {
   return {
     failureMode,
     operation,
@@ -1833,11 +2211,21 @@ function contractMappingFailureCase({
   faultReport,
   adapterResult,
   diagnosticCode,
-}) {
+}: {
+  failureMode: string;
+  startRequest: Record<string, unknown>;
+  startReport: Record<string, unknown>;
+  faultRequest: Record<string, unknown>;
+  faultReport: Record<string, unknown>;
+  adapterResult: unknown;
+  diagnosticCode: unknown;
+}): Record<string, unknown> {
+  const serialSession = startReport.serialSession as Record<string, unknown>;
+  const timestamps = startReport.timestamps as Record<string, unknown>;
   const startSerialSession = {
-    serialSessionId: startReport.serialSession.serialSessionId,
-    startOperationReference: startReport.serialSession.startOperationReference,
-    deviceMappingDigest: startReport.serialSession.deviceMappingDigest,
+    serialSessionId: serialSession.serialSessionId,
+    startOperationReference: serialSession.startOperationReference,
+    deviceMappingDigest: serialSession.deviceMappingDigest,
   };
   const blockingCodes = ["LOWER_CONTROLLER_UNAVAILABLE"];
   return {
@@ -1856,7 +2244,7 @@ function contractMappingFailureCase({
       readyzObserved: true,
       adapterSession: {
         ...startSerialSession,
-        faultStartedAt: startReport.timestamps.startedAt,
+        faultStartedAt: timestamps.startedAt,
       },
       readinessBlockingCodes: blockingCodes,
       responseBlockingCodes: blockingCodes,
@@ -1880,7 +2268,20 @@ function contractMappingFailureCase({
   };
 }
 
-async function stopFailureSession(options, session, saleBinding) {
+async function stopFailureSession(
+  options: Pick<
+    FailureMatrixOptions,
+    | "runId"
+    | "targetIdentity"
+    | "lifecycleReference"
+    | "approvedRuntimeBase"
+    | "saleCorrelationId"
+    | "workDirectory"
+    | "environment"
+  >,
+  session: Record<string, unknown>,
+  saleBinding: Record<string, unknown> | null | undefined,
+): Promise<Record<string, unknown>> {
   await runVmHostAdapter({
     request: requestFor({
       operation: "stop-serial-session",
@@ -1902,7 +2303,18 @@ async function stopFailureSession(options, session, saleBinding) {
     workDirectory: options.workDirectory,
     environment: options.environment,
   });
-  if (!repeatedStop.serialSession.simulatorCleanup.idempotencyVerified)
+  if (
+    !(
+      (
+        (
+          (repeatedStop as Record<string, unknown>).serialSession as Record<
+            string,
+            unknown
+          >
+        ).simulatorCleanup as Record<string, unknown>
+      ).idempotencyVerified === true
+    )
+  )
     throw new Error("adapter did not prove repeated serial stop idempotency");
   return repeatedStop;
 }
@@ -1925,17 +2337,20 @@ async function runFailureMatrix({
     "swapped-roles",
     "missing-device",
   ],
-}) {
-  const cases = [];
+}: Omit<FailureMatrixOptions, "failureCommands" | "successfulSaleBinding"> & {
+  failureModes?: string[];
+}): Promise<Array<Record<string, unknown>>> {
+  const cases: Array<Record<string, unknown>> = [];
   for (const failureMode of failureModes) {
-    const expectedCode = {
+    const expectedCodes: Record<string, string> = {
       "malformed-frame": "serial_malformed_frame",
       "device-disconnected": "serial_device_disconnected",
       "scanner-timeout": "serial_scanner_timeout",
       "dispense-failed": "serial_dispense_failed",
       "swapped-roles": "serial_swapped_roles",
       "missing-device": "serial_missing_device",
-    }[failureMode];
+    };
+    const expectedCode = expectedCodes[failureMode];
     const mappingFailure = ["swapped-roles", "missing-device"].includes(
       failureMode,
     );
@@ -1944,7 +2359,7 @@ async function runFailureMatrix({
       : failureMode === "scanner-timeout"
         ? { ...saleBinding, vendingCommandId: null }
         : saleBinding;
-    let session;
+    let session: Record<string, unknown> | null = null;
     try {
       const startRequest = requestFor({
         operation: "start-serial-session",
@@ -1953,7 +2368,7 @@ async function runFailureMatrix({
         lifecycleReference,
         approvedRuntimeBase,
         saleCorrelationId,
-        saleBinding: failureSaleBinding,
+        saleBinding: failureSaleBinding ?? {},
       });
       const start = await runVmHostAdapter({
         request: startRequest,
@@ -1965,7 +2380,7 @@ async function runFailureMatrix({
             }
           : environment,
       });
-      session = start.serialSession;
+      session = start.serialSession as Record<string, unknown>;
       if (mappingFailure) {
         const diagnosticCode = assertObservedDeviceFault(
           start,
@@ -1996,7 +2411,7 @@ async function runFailureMatrix({
         session,
         scannerDescriptor,
         saleCorrelationId,
-        saleBinding: failureSaleBinding,
+        saleBinding: failureSaleBinding ?? {},
       });
       const inject = await runVmHostAdapter({
         request: injectRequest,
@@ -2021,11 +2436,16 @@ async function runFailureMatrix({
               approvedRuntimeBase,
               session,
               scannerDescriptor: {
-                operationNonce: inject.request.operationNonce,
+                operationNonce: (
+                  (inject as Record<string, unknown>).request as Record<
+                    string,
+                    unknown
+                  >
+                ).operationNonce,
                 ...scannerDescriptor,
               },
               saleCorrelationId,
-              saleBinding: failureSaleBinding,
+              saleBinding: failureSaleBinding ?? {},
             });
       const observation =
         failureMode === "scanner-timeout"
@@ -2051,7 +2471,7 @@ async function runFailureMatrix({
             ? "inject-scanner-code"
             : "collect-serial-evidence",
         report: observation,
-        saleBinding: failureSaleBinding,
+        saleBinding: failureSaleBinding ?? {},
         diagnosticCode,
         source: {
           fault: { request: observationRequest, report: observation },
@@ -2075,7 +2495,16 @@ async function runFailureMatrix({
           session,
           mappingFailure ? saleBinding : failureSaleBinding,
         );
-        if (stop.serialSession.simulatorCleanup.survivingProcessCount !== 0)
+        if (
+          (
+            (
+              (stop as Record<string, unknown>).serialSession as Record<
+                string,
+                unknown
+              >
+            ).simulatorCleanup as Record<string, unknown>
+          ).survivingProcessCount !== 0
+        )
           throw new Error(
             `${failureMode} left serial simulator processes behind`,
           );
