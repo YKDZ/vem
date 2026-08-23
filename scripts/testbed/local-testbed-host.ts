@@ -28,20 +28,50 @@ const ACTIVATOR_SERVICE_OWNER_SCHEMA =
 const DOMAIN_ACPI_SHUTDOWN_TIMEOUT_MS = 20_000;
 const DOMAIN_ACPI_SHUTDOWN_POLL_MS = 1_000;
 
-function required(value, label) {
+type JsonRecord = Record<string, unknown>;
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? (value as unknown[]) : [];
+}
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+interface HostConfig extends JsonRecord {
+  libvirtUri: string;
+  domainName: string;
+  overlayPath: string;
+  runtimeXmlPath: string;
+  admissionFilterName: string;
+  admissionFilterXmlPath: string;
+  hostPrivateCidr: string;
+  ssh: {
+    host: string;
+    port: number;
+    user: string;
+    identityFile: string;
+    knownHostsFile: string;
+    readinessTimeoutSeconds: number;
+  };
+}
+
+function required(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${label} is required`);
   }
   return value.trim();
 }
 
-function absolute(value, label) {
+function absolute(value: unknown, label: string): string {
   const path = required(value, label);
   if (!isAbsolute(path)) throw new Error(`${label} must be absolute`);
   return resolve(path);
 }
 
-function option(args, name) {
+function option(args: string[], name: string): string {
   const index = args.indexOf(`--${name}`);
   const value = index === -1 ? undefined : args[index + 1];
   if (!value || value.startsWith("--")) {
@@ -50,7 +80,7 @@ function option(args, name) {
   return value;
 }
 
-function positiveInteger(value, label) {
+function positiveInteger(value: unknown, label: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) {
     throw new Error(`${label} must be a positive integer`);
@@ -58,7 +88,7 @@ function positiveInteger(value, label) {
   return parsed;
 }
 
-function xml(value) {
+function xml(value: unknown): string {
   return String(value)
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
@@ -67,7 +97,7 @@ function xml(value) {
     .replaceAll("'", "&apos;");
 }
 
-function windowsAbsolute(value, label) {
+function windowsAbsolute(value: unknown, label: string): string {
   const path = required(value, label);
   if (!/^[A-Za-z]:\\/.test(path) || path.includes("\0")) {
     throw new Error(`${label} must be an absolute Windows path`);
@@ -75,11 +105,12 @@ function windowsAbsolute(value, label) {
   return path;
 }
 
-function validateConfig(config) {
+function validateConfig(config: unknown): HostConfig {
   if (!config || typeof config !== "object" || Array.isArray(config)) {
     throw new Error("host lifecycle configuration is required");
   }
-  const hostPrivateCidr = required(config.hostPrivateCidr, "hostPrivateCidr");
+  const record = config as JsonRecord;
+  const hostPrivateCidr = required(record.hostPrivateCidr, "hostPrivateCidr");
   const [hostAddress, prefix, ...extra] = hostPrivateCidr.split("/");
   if (
     extra.length !== 0 ||
@@ -91,30 +122,33 @@ function validateConfig(config) {
     throw new Error("hostPrivateCidr must be an IPv4 CIDR");
   }
   const validated = {
-    libvirtUri: required(config.libvirtUri, "libvirtUri"),
-    domainName: required(config.domainName, "domainName"),
-    overlayPath: absolute(config.overlayPath, "overlayPath"),
-    runtimeXmlPath: absolute(config.runtimeXmlPath, "runtimeXmlPath"),
+    libvirtUri: required(record.libvirtUri, "libvirtUri"),
+    domainName: required(record.domainName, "domainName"),
+    overlayPath: absolute(record.overlayPath, "overlayPath"),
+    runtimeXmlPath: absolute(record.runtimeXmlPath, "runtimeXmlPath"),
     admissionFilterName: required(
-      config.admissionFilterName,
+      record.admissionFilterName,
       "admissionFilterName",
     ),
     admissionFilterXmlPath: absolute(
-      config.admissionFilterXmlPath,
+      record.admissionFilterXmlPath,
       "admissionFilterXmlPath",
     ),
     hostPrivateCidr,
     ssh: {
-      host: required(config.ssh?.host, "ssh.host"),
-      port: positiveInteger(config.ssh?.port, "ssh.port"),
-      user: required(config.ssh?.user, "ssh.user"),
-      identityFile: absolute(config.ssh?.identityFile, "ssh.identityFile"),
+      host: required(recordValue(record.ssh).host, "ssh.host"),
+      port: positiveInteger(recordValue(record.ssh).port, "ssh.port"),
+      user: required(recordValue(record.ssh).user, "ssh.user"),
+      identityFile: absolute(
+        recordValue(record.ssh).identityFile,
+        "ssh.identityFile",
+      ),
       knownHostsFile: absolute(
-        config.ssh?.knownHostsFile,
+        recordValue(record.ssh).knownHostsFile,
         "ssh.knownHostsFile",
       ),
       readinessTimeoutSeconds: positiveInteger(
-        config.ssh?.readinessTimeoutSeconds,
+        recordValue(record.ssh).readinessTimeoutSeconds,
         "ssh.readinessTimeoutSeconds",
       ),
     },
@@ -128,14 +162,18 @@ function validateConfig(config) {
   return validated;
 }
 
-function virsh(config, operation, ...args) {
+function virsh(
+  config: HostConfig,
+  operation: string,
+  ...args: string[]
+): JsonRecord {
   return {
     command: "virsh",
     args: ["--connect", config.libvirtUri, operation, ...args],
   };
 }
 
-function sshArgs(config, remoteCommand) {
+function sshArgs(config: HostConfig, remoteCommand: string): string[] {
   return [
     "-p",
     String(config.ssh.port),
@@ -156,15 +194,15 @@ function sshArgs(config, remoteCommand) {
   ];
 }
 
-function quotePowerShell(value) {
+function quotePowerShell(value: unknown): string {
   return `'${String(value).replaceAll("'", "''")}'`;
 }
 
-function encodedPowerShellCommand(script) {
+function encodedPowerShellCommand(script: string): string {
   return `powershell -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(script, "utf16le").toString("base64")}`;
 }
 
-function guestInputAssertion(path, runId) {
+function guestInputAssertion(path: string, runId: string): string {
   return `$ErrorActionPreference = 'Stop'
 $path = ${quotePowerShell(path)}
 if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'guest input is not staged' }
@@ -174,7 +212,11 @@ if ($guestDocument.runId -ne ${quotePowerShell(runId)}) { throw 'guest input run
 `;
 }
 
-function interactiveDisplayAssertion(expectedUser, width, height) {
+function interactiveDisplayAssertion(
+  expectedUser: string,
+  width: number,
+  height: number,
+): string {
   return `$ErrorActionPreference = 'Stop'
 function Convert-QuserSessionLine([string]$Line) {
   if ([string]::IsNullOrWhiteSpace($Line)) { return $null }
@@ -241,42 +283,57 @@ $proof | ConvertTo-Json -Compress
 `;
 }
 
-function parseJsonLine(stdout, label) {
+function parseJsonLine(stdout: unknown, label: string): JsonRecord {
   const trimmed = String(stdout ?? "").trim();
   if (trimmed.length === 0) {
     throw new Error(`${label} did not emit JSON`);
   }
   const lastLine = trimmed.split(/\r?\n/).at(-1);
+  if (lastLine === undefined) {
+    throw new Error(`${label} did not emit JSON`);
+  }
   try {
-    return JSON.parse(lastLine);
+    return JSON.parse(lastLine) as JsonRecord;
   } catch {
     throw new Error(`${label} emitted malformed JSON`);
   }
 }
 
 function validateDisplayAdmissionProof(
-  proof,
-  { expectedUser, width = PORTRAIT_WIDTH_PX, height = PORTRAIT_HEIGHT_PX } = {},
-) {
+  proof: unknown,
+  {
+    expectedUser,
+    width = PORTRAIT_WIDTH_PX,
+    height = PORTRAIT_HEIGHT_PX,
+  }: {
+    expectedUser: string;
+    width?: number;
+    height?: number;
+  },
+): JsonRecord {
   if (!proof || typeof proof !== "object" || Array.isArray(proof)) {
     throw new Error("interactive display admission proof is invalid");
   }
+  const proofRecord = proof as JsonRecord;
   if (
-    proof.schemaVersion !== DISPLAY_PROOF_SCHEMA ||
-    proof.status !== "passed" ||
-    proof.widthPx !== width ||
-    proof.heightPx !== height ||
-    String(proof.sessionUser ?? "").toLowerCase() !==
+    proofRecord.schemaVersion !== DISPLAY_PROOF_SCHEMA ||
+    proofRecord.status !== "passed" ||
+    proofRecord.widthPx !== width ||
+    proofRecord.heightPx !== height ||
+    String(proofRecord.sessionUser ?? "").toLowerCase() !==
       String(expectedUser).toLowerCase()
   ) {
     throw new Error(
       `interactive display admission proof must pass at exactly ${width}x${height} for ${expectedUser}`,
     );
   }
-  return proof;
+  return proofRecord;
 }
 
-function headlessVncActivatorOwner(stateRoot, domainName) {
+function headlessVncActivatorOwner(
+  stateRoot: unknown,
+  domainName: unknown,
+): JsonRecord {
   const systemStagingPath = absolute(stateRoot, "stateRoot");
   return {
     schemaVersion: ACTIVATOR_SERVICE_OWNER_SCHEMA,
@@ -286,7 +343,10 @@ function headlessVncActivatorOwner(stateRoot, domainName) {
   };
 }
 
-export function renderAdmissionFilterXml(configInput, admitted = false) {
+export function renderAdmissionFilterXml(
+  configInput: unknown,
+  admitted = false,
+): string {
   const config = validateConfig(configInput);
   if (admitted) {
     return `<filter name="${xml(config.admissionFilterName)}" chain="root">
@@ -307,11 +367,11 @@ export function renderAdmissionFilterXml(configInput, admitted = false) {
 `;
 }
 
-function countLiteral(value, needle) {
+function countLiteral(value: string, needle: string): number {
   return value.split(needle).length - 1;
 }
 
-export function runtimeAudioCapturePath(domainXml) {
+export function runtimeAudioCapturePath(domainXml: unknown): string {
   const devices = [
     ...String(domainXml).matchAll(/<audio\b[^>]*\btype="file"[^>]*\/?\s*>/g),
   ];
@@ -324,7 +384,9 @@ export function runtimeAudioCapturePath(domainXml) {
   return absolute(path, "runtime audio capture path");
 }
 
-export async function prepareRuntimeAudioCapture(domainXml) {
+export async function prepareRuntimeAudioCapture(
+  domainXml: unknown,
+): Promise<string> {
   const path = runtimeAudioCapturePath(domainXml);
   await writeFile(path, "", { mode: 0o666 });
   await chmod(path, 0o666);
@@ -336,7 +398,12 @@ export function renderReconstructedDomainXml({
   config: configInput,
   baselineSystem,
   cacheDisk,
-}) {
+}: {
+  templateXml: string;
+  config: unknown;
+  baselineSystem: unknown;
+  cacheDisk: unknown;
+}): string {
   const config = validateConfig(configInput);
   const baseline = absolute(baselineSystem, "baselineSystem");
   const cache = absolute(cacheDisk, "cacheDisk");
@@ -401,7 +468,13 @@ export function buildHostReconstructionPlan({
   baselineSystem,
   cacheDisk,
   domainXml,
-}) {
+}: {
+  config: unknown;
+  runId: unknown;
+  baselineSystem: unknown;
+  cacheDisk: unknown;
+  domainXml: unknown;
+}): JsonRecord[] {
   const config = validateConfig(configInput);
   required(runId, "runId");
   const baseline = absolute(baselineSystem, "baselineSystem");
@@ -451,7 +524,7 @@ export function buildHostReconstructionPlan({
   ];
 }
 
-function domainIsShutOff(state) {
+function domainIsShutOff(state: unknown): boolean {
   return (
     String(state ?? "")
       .trim()
@@ -460,37 +533,49 @@ function domainIsShutOff(state) {
 }
 
 export async function stopDomainBeforeReconstruction(
-  config,
+  config: HostConfig,
   {
     domainDefined,
     runCommand = run,
     runCaptureCommand = runCapture,
-    sleep = (milliseconds) =>
+    sleep = (milliseconds: number) =>
       new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds)),
     now = Date.now,
-  } = {},
-) {
+  }: {
+    domainDefined: boolean;
+    runCommand?: typeof run;
+    runCaptureCommand?: typeof runCapture;
+    sleep?: (milliseconds: number) => Promise<void>;
+    now?: () => number;
+  },
+): Promise<JsonRecord> {
   if (!domainDefined) return { stoppedBy: "absent" };
   const stateCommand = virsh(config, "domstate", config.domainName);
   const initialState = await runCaptureCommand(
-    stateCommand.command,
-    stateCommand.args,
+    String(stateCommand.command),
+    arrayValue(stateCommand.args).map((arg: unknown) => String(arg)),
   );
   if (domainIsShutOff(initialState.stdout)) return { stoppedBy: "shut-off" };
 
   const shutdownCommand = virsh(config, "shutdown", config.domainName);
-  await runCommand(shutdownCommand.command, shutdownCommand.args);
+  await runCommand(
+    String(shutdownCommand.command),
+    arrayValue(shutdownCommand.args).map((arg: unknown) => String(arg)),
+  );
   const deadline = now() + DOMAIN_ACPI_SHUTDOWN_TIMEOUT_MS;
   while (now() < deadline) {
     await sleep(DOMAIN_ACPI_SHUTDOWN_POLL_MS);
     const state = await runCaptureCommand(
-      stateCommand.command,
-      stateCommand.args,
+      String(stateCommand.command),
+      arrayValue(stateCommand.args).map((arg: unknown) => String(arg)),
     );
     if (domainIsShutOff(state.stdout)) return { stoppedBy: "acpi" };
   }
   const destroyCommand = virsh(config, "destroy", config.domainName);
-  await runCommand(destroyCommand.command, destroyCommand.args);
+  await runCommand(
+    String(destroyCommand.command),
+    arrayValue(destroyCommand.args).map((arg: unknown) => String(arg)),
+  );
   return { stoppedBy: "destroy" };
 }
 
@@ -499,7 +584,12 @@ export function buildHostAdmissionPlan({
   guestInputPath,
   runId,
   hostNow = new Date(),
-}) {
+}: {
+  config: unknown;
+  guestInputPath: unknown;
+  runId: unknown;
+  hostNow?: Date;
+}): JsonRecord[] {
   const config = validateConfig(configInput);
   const path = windowsAbsolute(guestInputPath, "guestInputPath");
   const expectedRunId = required(runId, "runId");
@@ -549,12 +639,17 @@ if ([Math]::Abs(($observedUtc - $hostUtc.UtcDateTime).TotalSeconds) -gt 30) { th
   ];
 }
 
-function run(command, args, input) {
-  return new Promise((resolvePromise, reject) => {
+function run(
+  command: string,
+  args: string[],
+  input?: string | Buffer,
+  _legacyInput?: unknown,
+): Promise<void> {
+  return new Promise<void>((resolvePromise, reject) => {
     const child = spawn(command, args, {
       stdio: [input === undefined ? "inherit" : "pipe", "inherit", "inherit"],
     });
-    if (input !== undefined) child.stdin.end(input);
+    if (input !== undefined) child.stdin?.end(input);
     child.once("error", reject);
     child.once("exit", (code) => {
       if (code === 0) resolvePromise();
@@ -563,20 +658,25 @@ function run(command, args, input) {
   });
 }
 
-function runCapture(command, args, input) {
-  return new Promise((resolvePromise, reject) => {
+function runCapture(
+  command: string,
+  args: string[],
+  input?: string | Buffer,
+  _legacyInput?: unknown,
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise<{ stdout: string; stderr: string }>((resolvePromise, reject) => {
     const child = spawn(command, args, {
       stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
     });
-    if (input !== undefined) child.stdin.end(input);
+    if (input !== undefined) child.stdin?.end(input);
     let stdout = "";
     let stderr = "";
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => {
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk) => {
       stdout += chunk;
     });
-    child.stderr.on("data", (chunk) => {
+    child.stderr?.on("data", (chunk) => {
       stderr += chunk;
     });
     child.once("error", reject);
@@ -593,7 +693,7 @@ function runCapture(command, args, input) {
   });
 }
 
-async function waitForSsh(config) {
+async function waitForSsh(config: HostConfig): Promise<void> {
   const deadline = Date.now() + config.ssh.readinessTimeoutSeconds * 1_000;
   const command = 'powershell -NoProfile -NonInteractive -Command "exit 0"';
   while (Date.now() < deadline) {
@@ -620,23 +720,29 @@ async function waitForSsh(config) {
   );
 }
 
-async function executeReconstruction(options) {
-  const config = options.config;
+async function executeReconstruction(options: JsonRecord): Promise<JsonRecord> {
+  const config = options.config as HostConfig;
   await Promise.all([
-    access(options.baselineSystem),
-    access(options.cacheDisk),
-    access(options.domainXml),
+    access(String(options.baselineSystem)),
+    access(String(options.cacheDisk)),
+    access(String(options.domainXml)),
     access(config.ssh.identityFile),
     access(config.ssh.knownHostsFile),
   ]);
-  const templateXml = await readFile(options.domainXml, "utf8");
+  const templateXml = await readFile(String(options.domainXml), "utf8");
   const runtimeXml = renderReconstructedDomainXml({
     templateXml,
     config,
     baselineSystem: options.baselineSystem,
     cacheDisk: options.cacheDisk,
   });
-  const plan = buildHostReconstructionPlan(options);
+  const plan = buildHostReconstructionPlan({
+    config,
+    runId: options.runId,
+    baselineSystem: options.baselineSystem,
+    cacheDisk: options.cacheDisk,
+    domainXml: options.domainXml,
+  });
   await Promise.all([
     mkdir(dirname(config.overlayPath), { recursive: true }),
     mkdir(dirname(config.runtimeXmlPath), { recursive: true }),
@@ -658,20 +764,30 @@ async function executeReconstruction(options) {
     } else if (step.type === "destroy-domain") {
       continue;
     } else if (step.type === "undefine-domain") {
-      if (domainDefined) await run(step.command, step.args);
+      if (domainDefined)
+        await run(
+          String(step.command),
+          arrayValue(step.args).map((arg: unknown) => String(arg)),
+        );
     } else if (step.type === "remove-file") {
-      await rm(step.path, { force: true });
+      await rm(String(step.path), { force: true });
     } else if (step.type === "create-overlay") {
-      await run(step.command, step.args);
+      await run(
+        String(step.command),
+        arrayValue(step.args).map((arg: unknown) => String(arg)),
+      );
     } else if (step.type === "publish-overlay") {
-      await rename(step.from, step.to);
+      await rename(String(step.from), String(step.to));
     } else if (step.type === "write-runtime-domain") {
       await prepareRuntimeAudioCapture(runtimeXml);
-      await writeFile(step.path, runtimeXml, "utf8");
+      await writeFile(String(step.path), runtimeXml, "utf8");
     } else if (step.type === "wait-ssh") {
       await waitForSsh(config);
     } else {
-      await run(step.command, step.args);
+      await run(
+        String(step.command),
+        arrayValue(step.args).map((arg: unknown) => String(arg)),
+      );
     }
   }
   return {
@@ -679,56 +795,68 @@ async function executeReconstruction(options) {
     runId: options.runId,
     domainName: config.domainName,
     overlayPath: config.overlayPath,
-    cacheDisk: options.cacheDisk,
+    cacheDisk: String(options.cacheDisk),
   };
 }
 
-async function executeAdmission(options) {
-  const plan = buildHostAdmissionPlan(options);
+async function executeAdmission(options: JsonRecord): Promise<JsonRecord> {
+  const plan = buildHostAdmissionPlan({
+    config: options.config,
+    guestInputPath: options.guestInputPath,
+    runId: options.runId,
+    hostNow:
+      options.hostNow instanceof Date ? options.hostNow : new Date(),
+  });
   const { displayAdmissionProof } = await executeHostAdmissionPlan(plan);
   return {
     action: "admit",
     runId: options.runId,
-    domainName: options.config.domainName,
-    guestInputPath: options.guestInputPath,
+    domainName: String(recordValue(options.config).domainName),
+    guestInputPath: String(options.guestInputPath),
     displayAdmissionProof,
   };
 }
 
 export async function executeHostAdmissionPlan(
-  plan,
-  { runCommand = run, runCaptureCommand = runCapture } = {},
-) {
-  let displayAdmissionProof = null;
+  plan: JsonRecord[],
+  {
+    runCommand = run,
+    runCaptureCommand = runCapture,
+  }: {
+    runCommand?: typeof run;
+    runCaptureCommand?: typeof runCapture;
+  } = {},
+): Promise<JsonRecord> {
+  let displayAdmissionProof: JsonRecord | null = null;
   for (const step of plan) {
     if (step.type === "assert-interactive-display") {
       const output = await runCaptureCommand(
-        step.command,
-        step.args,
-        step.encodedPowerShell ? undefined : step.input,
-        step.input,
+        String(step.command),
+        arrayValue(step.args).map((arg: unknown) => String(arg)),
+        step.encodedPowerShell ? undefined : String(step.input ?? ""),
+        String(step.input ?? ""),
       );
       displayAdmissionProof = validateDisplayAdmissionProof(
         parseJsonLine(output.stdout, "interactive display admission proof"),
         {
-          expectedUser: step.expectedUser,
-          width: step.expectedWidth,
-          height: step.expectedHeight,
+          expectedUser: String(step.expectedUser),
+          width: Number(step.expectedWidth),
+          height: Number(step.expectedHeight),
         },
       );
     } else {
       await runCommand(
-        step.command,
-        step.args,
-        step.encodedPowerShell ? undefined : step.input,
-        step.input,
+        String(step.command),
+        arrayValue(step.args).map((arg: unknown) => String(arg)),
+        step.encodedPowerShell ? undefined : String(step.input ?? ""),
+        String(step.input ?? ""),
       );
     }
   }
   return { displayAdmissionProof };
 }
 
-export function parseHostOptions(args) {
+export function parseHostOptions(args: string[]): JsonRecord {
   const action = args[0];
   if (
     action !== "reconstruct" &&
@@ -786,14 +914,21 @@ export function parseHostOptions(args) {
   };
 }
 
-function startProcess(command, args, options = {}) {
+function startProcess(
+  command: string,
+  args: string[],
+  options: { env?: NodeJS.ProcessEnv } = {},
+): {
+  child: ReturnType<typeof spawn>;
+  completion: Promise<void>;
+} {
   const child = spawn(command, args, {
     env: options.env,
     stdio: ["pipe", "pipe", "pipe"],
   });
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
-  const completion = new Promise((resolvePromise, reject) => {
+  const completion = new Promise<void>((resolvePromise, reject) => {
     child.once("error", reject);
     child.once("exit", (code) => {
       if (code === 0) resolvePromise();
@@ -803,16 +938,18 @@ function startProcess(command, args, options = {}) {
   return { child, completion };
 }
 
-async function executeHeadlessVncActivatorService(options) {
+async function executeHeadlessVncActivatorService(
+  options: JsonRecord,
+): Promise<JsonRecord> {
   const owner = headlessVncActivatorOwner(
     options.stateRoot,
     options.domainName,
   );
   const metadataPath = join(
-    owner.systemStagingPath,
+    String(owner.systemStagingPath),
     VNC_ACTIVATOR_METADATA_FILE,
   );
-  await mkdir(owner.systemStagingPath, { recursive: true });
+  await mkdir(String(owner.systemStagingPath), { recursive: true });
   const recovered = await recoverHeadlessVncActivator({
     metadataPath,
     owner,
@@ -820,11 +957,11 @@ async function executeHeadlessVncActivatorService(options) {
   if (!recovered.recovered) {
     throw new Error("headless VNC activator metadata could not be recovered");
   }
-  await rm(owner.systemStagingPath, { recursive: true, force: true });
-  await mkdir(owner.systemStagingPath, { recursive: true });
+  await rm(String(owner.systemStagingPath), { recursive: true, force: true });
+  await mkdir(String(owner.systemStagingPath), { recursive: true });
   let stopping = false;
-  let resolveStop;
-  const stopSignal = new Promise((resolvePromise) => {
+  let resolveStop: () => void = () => undefined;
+  const stopSignal = new Promise<void>((resolvePromise) => {
     resolveStop = resolvePromise;
   });
   const onSignal = () => {
@@ -834,14 +971,19 @@ async function executeHeadlessVncActivatorService(options) {
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
     process.once(signal, onSignal);
   }
-  let activator;
+  let activator: Awaited<ReturnType<typeof startHeadlessVncActivator>> | undefined;
   try {
     activator = await startHeadlessVncActivator({
       domainName: options.domainName,
       libvirtUri: options.libvirtUri,
       metadataPath,
       owner,
-      runCommand: runCapture,
+      runCommand: async (
+        command: string,
+        args: string[],
+        _options?: { allowFailure?: boolean },
+      ): Promise<{ stdout: string; stderr: string }> =>
+        runCapture(command, args),
       startProcess,
       commands: {
         width: PORTRAIT_WIDTH_PX,
@@ -871,16 +1013,16 @@ async function executeHeadlessVncActivatorService(options) {
         if (!stopping) throw error;
       });
     }
-    await rm(owner.systemStagingPath, { recursive: true, force: true });
+    await rm(String(owner.systemStagingPath), { recursive: true, force: true });
   }
   return {
     action: "headless-vnc-activator",
-    domainName: options.domainName,
+    domainName: String(options.domainName),
     stopped: true,
   };
 }
 
-async function main() {
+async function main(): Promise<void> {
   const options = parseHostOptions(process.argv.slice(2));
   const result =
     options.action === "reconstruct"
