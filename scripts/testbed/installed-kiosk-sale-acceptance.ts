@@ -445,7 +445,13 @@ export function buildInstalledKioskGuestOperationScript({
   operationId = `guest-operation-${randomBytes(12).toString("hex")}`,
   daemonRuntime = null,
   expectedTransaction = null,
-}) {
+}: {
+  operation: string;
+  phase?: string;
+  operationId?: string;
+  daemonRuntime?: Record<string, unknown> | null;
+  expectedTransaction?: Record<string, unknown> | null;
+}): string {
   if (
     ![
       "vision_departure",

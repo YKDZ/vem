@@ -35,14 +35,18 @@ const SCHEMA_VERSION = "vem-installed-ipc-recovery-guest-full/v1";
 const LOCAL_REQUEST_TIMEOUT_MS = 30_000;
 const POWERSHELL_OPERATION_TIMEOUT_MS = 45_000;
 
-function required(value, label) {
+type JsonRecord = Record<string, unknown>;
+type GuestInputRecord = JsonRecord;
+type HandoffRecord = JsonRecord;
+
+function required(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${label} is required`);
   }
   return value.trim();
 }
 
-function option(args, name) {
+function option(args: string[], name: string): string {
   const index = args.indexOf(`--${name}`);
   const value = index === -1 ? undefined : args[index + 1];
   if (!value || value.startsWith("--")) {
@@ -51,12 +55,12 @@ function option(args, name) {
   return value;
 }
 
-function optionalOption(args, name) {
+function optionalOption(args: string[], name: string): string | null {
   const index = args.indexOf(`--${name}`);
   return index === -1 ? null : required(args[index + 1], `--${name}`);
 }
 
-function windowsAbsolute(value, label) {
+function windowsAbsolute(value: unknown, label: string): string {
   const path = required(value, label);
   if (!/^[A-Za-z]:\\/.test(path) || path.includes("\0")) {
     throw new Error(`${label} must be an absolute Windows path`);
@@ -64,7 +68,7 @@ function windowsAbsolute(value, label) {
   return path;
 }
 
-function localPath(path) {
+function localPath(path: string): string {
   return process.platform === "win32"
     ? path
     : resolve(
@@ -72,16 +76,22 @@ function localPath(path) {
       );
 }
 
-function readJson(path) {
-  return JSON.parse(readFileSync(localPath(path), "utf8"));
+function readJson(path: string): JsonRecord {
+  return JSON.parse(readFileSync(localPath(path), "utf8")) as JsonRecord;
 }
 
-function writeJson(path, value) {
+function writeJson(path: string, value: unknown): void {
   mkdirSync(dirname(localPath(path)), { recursive: true });
   writeFileSync(localPath(path), `${JSON.stringify(value, null, 2)}\n`);
 }
 
-function parseArgs(args) {
+function parseArgs(args: string[]): {
+  mode: "full";
+  guestInputPath: string;
+  handoffPath: string;
+  outPath: string;
+  fixtureKey: string | null;
+} {
   if (required(option(args, "mode"), "--mode") !== "full") {
     throw new Error("--mode must be full");
   }
@@ -97,21 +107,27 @@ function parseArgs(args) {
   };
 }
 
-async function fetchJson(url, options = {}) {
+async function fetchJson(
+  url: string,
+  options: JsonRecord = {},
+): Promise<unknown> {
   const {
     retryTimeoutMs = LOCAL_REQUEST_TIMEOUT_MS,
     signal,
     ...fetchOptions
-  } = options;
+  } = options as JsonRecord & {
+    retryTimeoutMs?: number;
+    signal?: AbortSignal;
+  };
   const deadline = Date.now() + retryTimeoutMs;
-  let lastTransportError = null;
+  let lastTransportError: Error | null = null;
   while (Date.now() < deadline) {
     let response;
     try {
       response = await fetch(url, {
         ...fetchOptions,
         signal:
-          signal ??
+          (signal as AbortSignal | undefined) ??
           AbortSignal.timeout(
             Math.max(
               1,
@@ -136,9 +152,11 @@ async function fetchJson(url, options = {}) {
   throw lastTransportError ?? new Error(`fetch timed out: ${url}`);
 }
 
-function daemonBaseUrl(handoff) {
+function daemonBaseUrl(handoff: HandoffRecord): string {
+  const daemon = handoff.daemon as JsonRecord | undefined;
+  const ready = daemon?.ready as JsonRecord | undefined;
   const healthzUrl = required(
-    handoff.daemon?.ready?.healthzUrl,
+    ready?.healthzUrl,
     "daemon healthzUrl",
   );
   if (!healthzUrl.endsWith("/healthz")) {
@@ -147,21 +165,28 @@ function daemonBaseUrl(handoff) {
   return healthzUrl.slice(0, -"/healthz".length);
 }
 
-function daemonGet(handoff, path) {
+function daemonGet(handoff: HandoffRecord, path: string): Promise<unknown> {
+  const daemon = handoff.daemon as JsonRecord | undefined;
+  const ready = daemon?.ready as JsonRecord | undefined;
   return fetchJson(`${daemonBaseUrl(handoff)}${path}`, {
     headers: {
-      authorization: `Bearer ${required(handoff.daemon?.ready?.ipcToken, "daemon ipcToken")}`,
+      authorization: `Bearer ${required(ready?.ipcToken, "daemon ipcToken")}`,
     },
   });
 }
 
-function controlPlaneRequest(guestInput, path, body = {}) {
+function controlPlaneRequest(
+  guestInput: GuestInputRecord,
+  path: string,
+  body: JsonRecord = {},
+): Promise<unknown> {
+  const plane = guestInput.hostControlPlane as JsonRecord | undefined;
   return fetchJson(
-    `${required(guestInput.hostControlPlane?.endpoint, "hostControlPlane.endpoint")}${path}`,
+    `${required(plane?.endpoint, "hostControlPlane.endpoint")}${path}`,
     {
       method: "POST",
       headers: {
-        authorization: `Bearer ${required(guestInput.hostControlPlane?.token, "hostControlPlane.token")}`,
+        authorization: `Bearer ${required(plane?.token, "hostControlPlane.token")}`,
         "content-type": "application/json",
       },
       body: JSON.stringify(body),
@@ -169,23 +194,29 @@ function controlPlaneRequest(guestInput, path, body = {}) {
   );
 }
 
-async function waitForCommand(handoff, sale, timeoutMs = 30_000) {
+async function waitForCommand(
+  handoff: HandoffRecord,
+  sale: JsonRecord,
+  timeoutMs = 30_000,
+): Promise<JsonRecord> {
   const deadline = Date.now() + timeoutMs;
-  let last = null;
+  let last: JsonRecord | null = null;
   while (Date.now() < deadline) {
-    last = await daemonGet(handoff, "/v1/transactions/current").catch(
-      () => null,
-    );
-    const commandId = last?.vending?.commandId ?? last?.dispenseCommandId;
+    last = (await daemonGet(
+      handoff,
+      "/v1/transactions/current",
+    ).catch(() => null)) as JsonRecord | null;
+    const vending = last?.vending as JsonRecord | undefined;
+    const commandId = vending?.commandId ?? last?.dispenseCommandId;
     if (
       last?.orderId === sale.orderId &&
       last?.paymentId === sale.paymentId &&
-      commandId
+      commandId != null
     ) {
       return {
-        orderId: last.orderId,
-        paymentId: last.paymentId,
-        orderNo: last.orderNo,
+        orderId: last?.orderId,
+        paymentId: last?.paymentId,
+        orderNo: last?.orderNo,
         vendingCommandId: commandId,
       };
     }
@@ -194,8 +225,10 @@ async function waitForCommand(handoff, sale, timeoutMs = 30_000) {
   throw new Error(`vending command did not appear: ${JSON.stringify(last)}`);
 }
 
-async function readPaymentSurface(client) {
-  const surface = await evaluateExpression(
+async function readPaymentSurface(
+  client: InstanceType<typeof CdpClient>,
+): Promise<JsonRecord> {
+  const surface = (await evaluateExpression(
     client,
     `(() => {
       const el = document.querySelector("[data-installed-kiosk-sale-payment-surface]");
@@ -206,7 +239,7 @@ async function readPaymentSurface(client) {
         route: location.hash
       } : null;
     })()`,
-  );
+  )) as JsonRecord | null;
   if (!surface?.orderId || !surface?.paymentId || !surface?.orderNo) {
     throw new Error("required rendered payment surface hook is missing");
   }
@@ -214,13 +247,13 @@ async function readPaymentSurface(client) {
 }
 
 async function waitForSuccessfulResultSurface(
-  client,
-  sale,
+  client: InstanceType<typeof CdpClient>,
+  sale: JsonRecord,
   timeoutMs = 60_000,
-) {
+): Promise<unknown> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const value = await evaluateExpression(
+    const value = (await evaluateExpression(
       client,
       `(() => {
         const result = document.querySelector("[data-installed-kiosk-sale-result-surface]");
@@ -232,7 +265,7 @@ async function waitForSuccessfulResultSurface(
           commandId: result.dataset.commandId || null
         } : null;
       })()`,
-    );
+    )) as JsonRecord | null;
     if (
       value?.kind === "success" &&
       value.orderId === sale.orderId &&
@@ -248,19 +281,25 @@ async function waitForSuccessfulResultSurface(
   );
 }
 
-function runLocalPowerShellJson(script, label) {
+function runLocalPowerShellJson(
+  script: unknown,
+  label: string,
+): JsonRecord {
   const result = spawnSync(
     "pwsh",
-    ["-NoProfile", "-NonInteractive", "-Command", script],
+    ["-NoProfile", "-NonInteractive", "-Command", String(script)],
     {
       encoding: "utf8",
-      env: process.env,
+      env: process.env as NodeJS.ProcessEnv,
       stdio: ["ignore", "pipe", "pipe"],
       timeout: POWERSHELL_OPERATION_TIMEOUT_MS,
     },
   );
   if (result.status !== 0) {
-    const timeout = result.error?.code === "ETIMEDOUT" ? " timed out" : "";
+    const timeout =
+      (result.error as { code?: unknown } | undefined)?.code === "ETIMEDOUT"
+        ? " timed out"
+        : "";
     throw new Error(
       `${label}${timeout} failed: ${(result.stderr || result.stdout || "").trim() || result.error?.message || `exit ${result.status ?? 1}`}`,
     );
@@ -274,11 +313,11 @@ function runLocalPowerShellJson(script, label) {
   }
 }
 
-function compactFrames(rawFrames) {
+function compactFrames(rawFrames: unknown): JsonRecord[] {
   return Array.isArray(rawFrames)
-    ? rawFrames.map((frame) => ({
-        at: frame.at ?? null,
-        parsedOpcode: frame.parsedOpcode ?? null,
+    ? (rawFrames as unknown[]).map((frame) => ({
+        at: (frame as JsonRecord).at ?? null,
+        parsedOpcode: (frame as JsonRecord).parsedOpcode ?? null,
       }))
     : [];
 }
@@ -290,16 +329,25 @@ async function interruptDaemonTransportAndObserveOverlay({
   session,
   attempts = 2,
   overlayTimeoutMs = 45_000,
-}) {
-  let lastUiBefore = null;
-  let lastInterrupted = null;
+}: {
+  handoff: HandoffRecord;
+  client: InstanceType<typeof CdpClient>;
+  screenshotSink: (
+    input: { bytes: Uint8Array; label: string },
+  ) => Promise<{ ref: string }>;
+  session: JsonRecord;
+  attempts?: number;
+  overlayTimeoutMs?: number;
+}): Promise<JsonRecord> {
+  let lastUiBefore: unknown = null;
+  let lastInterrupted: unknown = null;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const uiBefore = await captureRuntimeOperationObservation(client);
     const interrupted = runLocalPowerShellJson(
       buildInstalledKioskGuestOperationScript({
         operation: "daemon_transport_interrupt",
         phase: "interrupt",
-        daemonRuntime: handoff.daemon,
+        daemonRuntime: handoff.daemon as JsonRecord | undefined,
       }),
       "daemon transport interrupt",
     );
@@ -341,11 +389,13 @@ async function interruptDaemonTransportAndObserveOverlay({
       buildInstalledKioskGuestOperationScript({
         operation: "daemon_transport_interrupt",
         phase: "recover",
-        operationId: interrupted.guestOperationId,
-        daemonRuntime: handoff.daemon,
+        operationId: String((interrupted as JsonRecord).guestOperationId),
+        daemonRuntime: handoff.daemon as JsonRecord | undefined,
         expectedTransaction: {
-          ...interrupted.daemon.transactionBefore,
-          machineCode: interrupted.platform.machineCode,
+          ...(((interrupted as JsonRecord).daemon as JsonRecord)
+            .transactionBefore as Record<string, unknown>),
+          machineCode: ((interrupted as JsonRecord).platform as JsonRecord)
+            .machineCode,
         },
       }),
       "daemon transport recovery",
@@ -361,23 +411,35 @@ async function interruptDaemonTransportAndObserveOverlay({
   };
 }
 
-export async function runInstalledIpcRecoveryGuest(options) {
-  let guestInput;
-  let handoff;
-  let client;
-  let session;
-  let recoveredTransport = null;
-  let interruptedTransport = null;
-  let liveSale = null;
-  let failure = null;
-  const report = {
+export async function runInstalledIpcRecoveryGuest(options: {
+  mode: "full";
+  guestInputPath: string;
+  handoffPath: string;
+  outPath: string;
+  fixtureKey: string | null;
+}): Promise<JsonRecord> {
+  let guestInput: GuestInputRecord | null = null;
+  let handoff: HandoffRecord | null = null;
+  let client: InstanceType<typeof CdpClient> | null = null;
+  let session: JsonRecord | null = null;
+  let recoveredTransport: JsonRecord | null = null;
+  let interruptedTransport: JsonRecord | null = null;
+  let liveSale: JsonRecord | null = null;
+  let failure: unknown = null;
+  const report: JsonRecord = {
     schemaVersion: SCHEMA_VERSION,
     ok: false,
     handoffSerialSessionId: null,
     mode: options.mode,
     artifacts: { milestones: [] },
   };
-  const screenshotSink = ({ bytes, label }) => {
+  const screenshotSink = ({
+    bytes,
+    label,
+  }: {
+    bytes: Uint8Array;
+    label: string;
+  }) => {
     const path = join(
       dirname(localPath(options.outPath)),
       "ipc-recovery-artifacts",
@@ -385,19 +447,24 @@ export async function runInstalledIpcRecoveryGuest(options) {
     );
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, bytes);
-    return { ref: path };
+    return Promise.resolve({ ref: path });
   };
-  const pushCheckpoint = async (label) => {
+  const pushCheckpoint = async (label: string): Promise<void> => {
     if (!client) return;
     const checkpoint = await captureCheckpoint(client, label, {
       screenshot: true,
       screenshotSink,
     });
-    report.artifacts.milestones.push({
-      label: checkpoint.label,
-      route: checkpoint.identity.route,
-      screenshot: checkpoint.screenshot?.ref ?? null,
-    });
+    (report.artifacts as JsonRecord).milestones = [
+      ...(((report.artifacts as JsonRecord).milestones as unknown[]) ?? []),
+      {
+      label: (checkpoint as JsonRecord).label,
+      route: ((checkpoint as JsonRecord).identity as JsonRecord).route,
+      screenshot:
+        ((checkpoint as JsonRecord).screenshot as JsonRecord | null | undefined)
+          ?.ref ?? null,
+      },
+    ];
   };
   try {
     guestInput = readJson(options.guestInputPath);
@@ -407,9 +474,10 @@ export async function runInstalledIpcRecoveryGuest(options) {
     report.runId = runId;
     report.machineCode = machineCode;
 
+    const handoffCdp = handoff.cdp as JsonRecord;
     const target = await discoverMachineUiTarget({
       endpoint: "http://127.0.0.1:9222",
-      expectedTargetId: handoff.cdp.targetId,
+      expectedTargetId: String(handoffCdp.targetId),
     });
     client = new CdpClient(
       rewriteWebSocketDebuggerUrl(
@@ -421,41 +489,57 @@ export async function runInstalledIpcRecoveryGuest(options) {
     await enablePageRuntime(client);
     await waitForRoute(client, "#/catalog", { timeoutMs: 30_000, pollMs: 250 });
 
-    session = await controlPlaneRequest(
+    session = (await controlPlaneRequest(
       guestInput,
       "/v1/serial-sessions/start",
       {
         runId,
         machineCode,
         saleCorrelationId: `sale-correlation://ipc-recovery-${Date.now()}`,
-        targetIdentity: required(
-          guestInput.hostControlPlane?.targetIdentity,
+      targetIdentity: required(
+        (guestInput.hostControlPlane as JsonRecord | undefined)
+          ?.targetIdentity,
           "hostControlPlane.targetIdentity",
         ),
         runtimeBase: required(
-          guestInput.hostControlPlane?.runtimeBaseIdentity,
+        (guestInput.hostControlPlane as JsonRecord | undefined)
+          ?.runtimeBaseIdentity,
           "hostControlPlane.runtimeBaseIdentity",
         ),
       },
-    );
+    )) as JsonRecord;
+    const activeSession = session as JsonRecord;
     report.handoffSerialSessionId = required(
-      session?.sessionId,
+      activeSession.sessionId,
       "IPC recovery serial session id",
     );
     await waitForDaemonReadyRefresh(handoff);
     await waitForHardwareBindings(handoff, session);
     await controlPlaneRequest(
       guestInput,
-      `/v1/serial-sessions/${session.sessionId}/stop-scanner-probe`,
+      `/v1/serial-sessions/${String(activeSession.sessionId)}/stop-scanner-probe`,
     );
 
-    const steps = buildInstalledKioskSaleScenarioSteps("vm-ipc-recovery");
+    const steps = buildInstalledKioskSaleScenarioSteps(
+      "vm-ipc-recovery",
+    ) as unknown as Array<{
+      name: string;
+      selector: string;
+      routeBefore: string;
+      routeAfter: string | RegExp;
+      timeoutMs?: number;
+    }>;
     if (options.fixtureKey) {
-      steps.find((step) => step.name === "catalog product").selector =
+      const productStep = steps.find(
+        (step) => step.name === "catalog product",
+      );
+      if (productStep) {
+        productStep.selector =
         catalogProductSelectorForFixture(
-          guestInput.fixtureAllocation,
+          guestInput.fixtureAllocation as JsonRecord | undefined,
           options.fixtureKey,
         );
+      }
     }
     for (const step of steps.slice(0, 4)) {
       await waitForRoute(client, step.routeBefore, {
@@ -474,7 +558,7 @@ export async function runInstalledIpcRecoveryGuest(options) {
     let paymentRouteReached = false;
     for (let attempt = 0; attempt < 3 && !paymentRouteReached; attempt += 1) {
       const currentRoute = await readCdpLocationHash(client);
-      if (/^#\/payment/.test(currentRoute)) {
+      if (/^#\/payment/.test(String(currentRoute))) {
         paymentRouteReached = true;
         break;
       }
@@ -488,7 +572,7 @@ export async function runInstalledIpcRecoveryGuest(options) {
           client,
           "location.hash",
         );
-        if (/^#\/payment/.test(projectedRoute)) {
+        if (/^#\/payment/.test(String(projectedRoute))) {
           paymentRouteReached = true;
           break;
         }
@@ -514,18 +598,20 @@ export async function runInstalledIpcRecoveryGuest(options) {
       screenshotSink,
       session,
     });
-    interruptedTransport = interruption.interruptedTransport;
-    const uiBefore = interruption.uiBefore;
-    const recoveryOverlay = interruption.recoveryOverlay;
+    interruptedTransport = interruption.interruptedTransport as JsonRecord;
+    const uiBefore = interruption.uiBefore as JsonRecord | undefined;
+    const recoveryOverlay = interruption.recoveryOverlay as JsonRecord | null;
     recoveredTransport = runLocalPowerShellJson(
       buildInstalledKioskGuestOperationScript({
         operation: "daemon_transport_interrupt",
         phase: "recover",
-        operationId: interruptedTransport.guestOperationId,
-        daemonRuntime: handoff.daemon,
+        operationId: String(interruptedTransport.guestOperationId),
+        daemonRuntime: handoff.daemon as JsonRecord | undefined,
         expectedTransaction: {
-          ...interruptedTransport.daemon.transactionBefore,
-          machineCode: interruptedTransport.platform.machineCode,
+          ...((interruptedTransport.daemon as JsonRecord)
+            .transactionBefore as Record<string, unknown>),
+          machineCode: (interruptedTransport.platform as JsonRecord)
+            .machineCode,
         },
       }),
       "daemon transport recovery",
@@ -537,7 +623,7 @@ export async function runInstalledIpcRecoveryGuest(options) {
     report.ipcRecovery = {
       operation: "daemon_transport_interrupt",
       provenance: {
-        ...recoveredTransport,
+        ...(recoveredTransport as JsonRecord),
         ui: {
           before: uiBefore,
           after: uiAfter,
@@ -546,7 +632,8 @@ export async function runInstalledIpcRecoveryGuest(options) {
       },
     };
 
-    report.ipcRecovery.evidence = evaluateInstalledErrorMatrixEvidence({
+    (report.ipcRecovery as JsonRecord).evidence =
+      evaluateInstalledErrorMatrixEvidence({
       profile: "vm-ipc-recovery",
       scenario: {
         evidence: [
@@ -555,28 +642,33 @@ export async function runInstalledIpcRecoveryGuest(options) {
             operation: "daemon_transport_interrupt",
             routeBefore: "#/payment",
             routeAfter: "#/payment",
-            provenance: report.ipcRecovery.provenance,
+            provenance: (report.ipcRecovery as JsonRecord).provenance,
           },
         ],
       },
       correlation: {
-        rendered: { orderNo: renderedSale.orderNo },
-        platform: { orderNo: renderedSale.orderNo },
+        rendered: { orderNo: String(renderedSale.orderNo) },
+        platform: { orderNo: String(renderedSale.orderNo) },
       },
     });
-    report.ipcRecovery.assertions = {
+    (report.ipcRecovery as JsonRecord).assertions = {
       overlayObserved: true,
-      retainedOrderCredential: uiBefore.orderCredential,
-      resumedOrderCredential: uiAfter.orderCredential,
-      daemonTransportPhase: recoveredTransport.daemon?.transport?.phase ?? null,
+      retainedOrderCredential: uiBefore?.orderCredential,
+      resumedOrderCredential: (uiAfter as JsonRecord | undefined)
+        ?.orderCredential,
+      daemonTransportPhase:
+        ((recoveredTransport?.daemon as JsonRecord | undefined)?.transport as
+          | JsonRecord
+          | undefined)?.phase ?? null,
     };
 
     const scannerBytes = scannerFrameBytes(
-      guestInput?.scannerAcceptance?.validCode,
+      (guestInput?.scannerAcceptance as JsonRecord | undefined)?.validCode,
     );
-    report.ipcRecovery.scannerInjection = await controlPlaneRequest(
+    (report.ipcRecovery as JsonRecord).scannerInjection =
+      await controlPlaneRequest(
       guestInput,
-      `/v1/serial-sessions/${session.sessionId}/inject`,
+      `/v1/serial-sessions/${String(activeSession.sessionId)}/inject`,
       {
         orderId: renderedSale.orderId,
         paymentId: renderedSale.paymentId,
@@ -635,13 +727,17 @@ export async function runInstalledIpcRecoveryGuest(options) {
     }
     const serialEvidence = await controlPlaneRequest(
       guestInput,
-      `/v1/serial-sessions/${session.sessionId}/evidence`,
+      `/v1/serial-sessions/${String(activeSession.sessionId)}/evidence`,
     );
-    report.serial.rawFrames = compactFrames(serialEvidence.rawFrames);
+    report.serial = {
+      rawFrames: compactFrames(
+        (serialEvidence as JsonRecord).rawFrames,
+      ),
+    };
     report.ok = true;
   } catch (error) {
     failure = error instanceof Error ? error : new Error(String(error));
-    report.error = failure.message;
+    report.error = (failure as Error).message;
     if (client) {
       try {
         await pushCheckpoint("failure");
@@ -649,7 +745,7 @@ export async function runInstalledIpcRecoveryGuest(options) {
     }
   }
 
-  const cleanup = [];
+  const cleanup: unknown[] = [];
   let cleanupFailed = false;
   if (interruptedTransport && !recoveredTransport && handoff?.daemon) {
     try {
@@ -657,11 +753,13 @@ export async function runInstalledIpcRecoveryGuest(options) {
         buildInstalledKioskGuestOperationScript({
           operation: "daemon_transport_interrupt",
           phase: "recover",
-          operationId: interruptedTransport.guestOperationId,
-          daemonRuntime: handoff.daemon,
+          operationId: String(interruptedTransport.guestOperationId),
+          daemonRuntime: handoff.daemon as JsonRecord | undefined,
           expectedTransaction: {
-            ...interruptedTransport.daemon.transactionBefore,
-            machineCode: interruptedTransport.platform.machineCode,
+            ...((interruptedTransport.daemon as JsonRecord)
+              .transactionBefore as Record<string, unknown>),
+            machineCode: (interruptedTransport.platform as JsonRecord)
+              .machineCode,
           },
         }),
         "daemon transport cleanup recovery",
