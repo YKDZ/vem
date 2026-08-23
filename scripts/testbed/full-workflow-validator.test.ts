@@ -13,6 +13,18 @@ import {
 } from "./full-workflow-validator.ts";
 import { buildPaymentCodeSubmission } from "./payment-provider-guest-full.ts";
 
+type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? (value as unknown[]) : [];
+}
+
 function saleReport() {
   return {
     schemaVersion: "vem-fast-route-stress-sale/v2",
@@ -30,8 +42,14 @@ function saleReport() {
   };
 }
 
-function descriptor(name) {
-  return BUSINESS_CHECK_REGISTRY.find((entry) => entry.name === name);
+function descriptor(name: string): JsonRecord {
+  const entry = BUSINESS_CHECK_REGISTRY.find(
+    (candidate) => candidate.name === name,
+  );
+  if (!entry) {
+    throw new Error(`missing business check descriptor: ${name}`);
+  }
+  return entry as unknown as JsonRecord;
 }
 
 function stockMaintenanceReport() {
@@ -151,7 +169,7 @@ function stockMaintenanceReport() {
   };
 }
 
-function stockSale(index) {
+function stockSale(index: unknown) {
   return {
     runId: "RUN-STOCK-1",
     orderId: `order-stock-${index}`,
@@ -263,7 +281,11 @@ function hardwareLifecycleReport() {
   };
 }
 
-function environmentCommand(action, commandNo, resultJson = { success: true }) {
+function environmentCommand(
+  action: string,
+  commandNo: string,
+  resultJson: JsonRecord = { success: true },
+) {
   return {
     action,
     admin: { commandNo, status: "sent" },
@@ -1129,7 +1151,7 @@ function presenceAndAudioReport() {
   };
 }
 
-function identity(reconstruction) {
+function identity(reconstruction: string) {
   const caches = [
     "D:\\runtime-cache\\v1\\pnpm-store",
     "D:\\runtime-cache\\v1\\pnpm-virtual-store",
@@ -1201,7 +1223,7 @@ function identity(reconstruction) {
   };
 }
 
-function passingExecution(descriptors) {
+function passingExecution(descriptors: JsonRecord[]) {
   return descriptors.map((descriptor) => ({
     key: descriptor.name,
     validator: {
@@ -1410,8 +1432,11 @@ describe("full workflow aggregate validator", () => {
     );
 
     const missingGeometryFixture = structuredClone(report);
-    missingGeometryFixture.businessSets[0].status = "failed";
-    missingGeometryFixture.businessSets[0].primaryFailure = {
+    const missingGeometryBusinessSet = recordValue(
+      arrayValue(missingGeometryFixture.businessSets)[0],
+    );
+    missingGeometryBusinessSet.status = "failed";
+    missingGeometryBusinessSet.primaryFailure = {
       schemaVersion: "vem-runtime-testbed-business-assertion/v1",
       id: "result-automatic-scale",
       source: "vision-result-png-pixels",
@@ -1420,7 +1445,7 @@ describe("full workflow aggregate validator", () => {
       status: "failed",
       reason: "expected true observed false",
     };
-    missingGeometryFixture.businessSets[0].supportingEvidence.push({
+    arrayValue(missingGeometryBusinessSet.supportingEvidence).push({
       kind: "vision-recorded-geometry-fixture",
       status: "blocked",
       reason: "候选未提供动态 far/mid/near 录播夹具",
@@ -1489,8 +1514,11 @@ describe("full workflow aggregate validator", () => {
     );
 
     const failedAssertion = structuredClone(report);
-    failedAssertion.businessSets[0].status = "failed";
-    failedAssertion.businessSets[0].primaryFailure = {
+    const failedBusinessSet = recordValue(
+      arrayValue(failedAssertion.businessSets)[0],
+    );
+    failedBusinessSet.status = "failed";
+    failedBusinessSet.primaryFailure = {
       id: "result-surface",
       reason: "expected completed",
     };
@@ -1560,7 +1588,8 @@ describe("full workflow aggregate validator", () => {
     );
 
     const missingBindingAssertion = structuredClone(report);
-    delete missingBindingAssertion.businessSets[0].assertions;
+    delete recordValue(arrayValue(missingBindingAssertion.businessSets)[0])
+      .assertions;
     assert.equal(
       validateBusinessCheckReport(
         descriptor("visionExperience"),
@@ -1571,7 +1600,8 @@ describe("full workflow aggregate validator", () => {
     );
 
     const forgedBindingAssertion = structuredClone(report);
-    forgedBindingAssertion.businessSets[0].assertions = [
+    recordValue(arrayValue(forgedBindingAssertion.businessSets)[0]).assertions =
+      [
       {
         schemaVersion: "vem-runtime-testbed-business-assertion/v1",
         id: "captured-source-bound",
@@ -1581,7 +1611,7 @@ describe("full workflow aggregate validator", () => {
         status: "passed",
         reason: null,
       },
-    ];
+      ];
     assert.equal(
       validateBusinessCheckReport(
         descriptor("visionExperience"),
@@ -1644,7 +1674,7 @@ describe("full workflow aggregate validator", () => {
       "failed",
     );
     const missingNextStableEdge = environmentControlReport();
-    delete missingNextStableEdge.precedence.nextStableEdge;
+    delete recordValue(missingNextStableEdge.precedence).nextStableEdge;
     assert.equal(
       validateBusinessCheckReport(
         descriptor("environmentControl"),
@@ -1664,10 +1694,18 @@ describe("full workflow aggregate validator", () => {
       "failed",
     );
     const delayedAutomaticRebound = environmentControlReport();
-    delayedAutomaticRebound.precedence.sameEdgeAfterAdmin.guardWindow.protocolFrames.push(
-      "B3",
-    );
-    delayedAutomaticRebound.precedence.sameEdgeAfterAdmin.guardWindow.b3FrameCountDelta = 1;
+    arrayValue(
+      recordValue(
+        recordValue(
+          recordValue(delayedAutomaticRebound.precedence).sameEdgeAfterAdmin,
+        ).guardWindow,
+      ).protocolFrames,
+    ).push("B3");
+    recordValue(
+      recordValue(
+        recordValue(delayedAutomaticRebound.precedence).sameEdgeAfterAdmin,
+      ).guardWindow,
+    ).b3FrameCountDelta = 1;
     assert.equal(
       validateBusinessCheckReport(
         descriptor("environmentControl"),
@@ -1903,11 +1941,11 @@ describe("full workflow aggregate validator", () => {
       evidenceManifestPath: "/reports/evidence.json",
     });
     assert.equal(aggregate.ok, true);
-    assert.deepEqual(aggregate.execution.selectedBusinessSets, [
+    assert.deepEqual(recordValue(aggregate.execution).selectedBusinessSets, [
       "sale",
       "ipcRecovery",
     ]);
-    assert.deepEqual(Object.keys(aggregate.businessSets), [
+    assert.deepEqual(Object.keys(recordValue(aggregate.businessSets)), [
       "sale",
       "ipcRecovery",
     ]);
@@ -1923,8 +1961,11 @@ describe("full workflow aggregate validator", () => {
       "passed",
     );
     const manualHandling = paymentProviderReport();
-    manualHandling.authoritative.attempts[0].closure.status = "manual_handling";
-    manualHandling.authoritative.attempts[0].terminal = {
+    const firstAttempt = recordValue(
+      arrayValue(manualHandling.authoritative.attempts)[0],
+    );
+    recordValue(firstAttempt.closure).status = "manual_handling";
+    firstAttempt.terminal = {
       paymentStatus: "unknown",
       orderStatus: "manual_handling",
       paymentState: "manual_handling",
@@ -1949,9 +1990,10 @@ describe("full workflow aggregate validator", () => {
       "failed",
     );
     const missingTerminal = paymentProviderReport();
-    missingTerminal.authoritative.attempts[1].terminal = {
+    recordValue(arrayValue(missingTerminal.authoritative.attempts)[1]).terminal =
+      {
       reservedInventory: false,
-    };
+      };
     assert.equal(
       validateBusinessCheckReport(
         descriptor("paymentProvider"),
@@ -1971,7 +2013,12 @@ describe("full workflow aggregate validator", () => {
       "failed",
     );
     const incompleteCleanup = paymentProviderReport();
-    incompleteCleanup.authoritative.attempts[1].cleanup.serialSession.aborted = false;
+    recordValue(
+      recordValue(
+        recordValue(arrayValue(incompleteCleanup.authoritative.attempts)[1])
+          .cleanup,
+      ).serialSession,
+    ).aborted = false;
     assert.equal(
       validateBusinessCheckReport(
         descriptor("paymentProvider"),
@@ -2009,21 +2056,26 @@ describe("full workflow aggregate validator", () => {
   });
 
   it("fails a full aggregate when a required registered set has incomplete evidence", () => {
-    const blocked = BUSINESS_CHECK_REGISTRY.find(
-      (descriptor) => descriptor.name === "paymentRecovery",
-    );
+    const blocked = descriptor("paymentRecovery");
     const aggregate = buildFullWorkflowAggregate({
       mode: "full",
       selectedDescriptors: [blocked],
       executedTracks: [
         {
           key: blocked.name,
-          validator: validateBusinessCheckReport(blocked, null, null),
+          validator: validateBusinessCheckReport(
+            blocked,
+            null,
+            "/reports/payment-recovery.json",
+          ),
         },
       ],
     });
     assert.equal(aggregate.ok, false);
-    assert.match(aggregate.failures[0].reason, /evidence is incomplete/);
+    assert.match(
+      String(recordValue(arrayValue(aggregate.failures)[0]).reason),
+      /evidence is incomplete/,
+    );
   });
 
   it("uses the execution lifecycle final failure even when its validator passed", () => {
@@ -2048,9 +2100,15 @@ describe("full workflow aggregate validator", () => {
     });
 
     assert.equal(aggregate.ok, false);
-    assert.equal(aggregate.businessSets.sale.status, "failed");
-    assert.equal(aggregate.businessOutcome.ok, false);
-    assert.match(aggregate.failures[0].reason, /terminal route is not settled/);
+    assert.equal(
+      recordValue(recordValue(aggregate.businessSets).sale).status,
+      "failed",
+    );
+    assert.equal(recordValue(aggregate.businessOutcome).ok, false);
+    assert.match(
+      String(recordValue(arrayValue(aggregate.failures)[0]).reason),
+      /terminal route is not settled/,
+    );
   });
 });
 
@@ -2061,7 +2119,7 @@ describe("full workflow stability gate", () => {
       const descriptors = BUSINESS_CHECK_REGISTRY.filter(
         (descriptor) => descriptor.fullRequired,
       );
-      const report = (reconstruction) => ({
+      const report = (reconstruction: string) => ({
         schemaVersion: "vem-local-testbed-full-workflow/v4",
         mode: "full",
         ok: true,
@@ -2088,9 +2146,12 @@ describe("full workflow stability gate", () => {
         passBPath: passB,
       });
       assert.equal(gate.ok, true);
-      assert.match(gate.acceptanceReleaseManifestSha256, /^[a-f0-9]{64}$/);
+      assert.match(
+        String(gate.acceptanceReleaseManifestSha256),
+        /^[a-f0-9]{64}$/,
+      );
       assert.equal(
-        gate.acceptanceReleaseManifest.schemaVersion,
+        recordValue(gate.acceptanceReleaseManifest).schemaVersion,
         "vem-runtime-testbed-acceptance-release/v1",
       );
     } finally {
@@ -2101,7 +2162,7 @@ describe("full workflow stability gate", () => {
   it("retains observed cache evidence without making it a drift gate", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-workflow-stability-"));
     try {
-      const report = (reconstruction) => {
+      const report = (reconstruction: string) => {
         const workflowIdentity = identity(reconstruction);
         workflowIdentity.observedRetainedCaches = [
           ...workflowIdentity.observedRetainedCaches,
@@ -2146,7 +2207,7 @@ describe("full workflow stability gate", () => {
       const descriptors = BUSINESS_CHECK_REGISTRY.filter(
         (descriptor) => descriptor.fullRequired,
       );
-      const report = (reconstruction) => ({
+      const report = (reconstruction: string) => ({
         schemaVersion: "vem-local-testbed-full-workflow/v4",
         mode: "full",
         ok: true,
@@ -2177,7 +2238,7 @@ describe("full workflow stability gate", () => {
       });
       assert.equal(gate.ok, false);
       assert.ok(
-        gate.gateFailures.includes(
+        arrayValue(gate.gateFailures).includes(
           "acceptance release pass 2 drifted from pass 1",
         ),
       );
@@ -2193,7 +2254,7 @@ describe("full workflow stability gate", () => {
       const descriptors = BUSINESS_CHECK_REGISTRY.filter(
         (descriptor) => descriptor.fullRequired,
       );
-      const report = (reconstruction) => ({
+      const report = (reconstruction: string) => ({
         schemaVersion: "vem-local-testbed-full-workflow/v4",
         mode: "full",
         ok: true,
