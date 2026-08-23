@@ -17,6 +17,18 @@ import { dirname, join, resolve } from "node:path";
 import { inspectWavPcm } from "./default-audio-evidence.ts";
 import { readRawSerialJournal } from "./qemu-usb-serial-host-adapter.ts";
 
+type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? (value as unknown[]) : [];
+}
+
 export const SALE_AUDIO_CAPTURE_SCHEMA_VERSION =
   "vm-sale-audio-capture-request/v1";
 export const SALE_AUDIO_REPORT_SCHEMA_VERSION =
@@ -37,20 +49,20 @@ const SALE_AUDIO_THRESHOLD = Object.freeze({
   minimumDistinctNonSilentSampleMagnitudes: 2,
 });
 
-function requiredString(value, name) {
+function requiredString(value: unknown, name: string): string {
   if (typeof value !== "string" || value.trim() === "")
     throw new Error(`${name} is required`);
   return value.trim();
 }
 
-function positiveInteger(value, name) {
+function positiveInteger(value: unknown, name: string): number {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 1)
     throw new Error(`${name} must be a positive integer`);
   return parsed;
 }
 
-function timestamp(value, name) {
+function timestamp(value: unknown, name: string): string {
   if (
     typeof value !== "string" ||
     !ISO_TIMESTAMP.test(value) ||
@@ -61,18 +73,18 @@ function timestamp(value, name) {
   return value;
 }
 
-function canonical(value, pattern, name) {
+function canonical(value: unknown, pattern: RegExp, name: string): string {
   const normalized = requiredString(value, name);
   if (normalized !== value || !pattern.test(value))
     throw new Error(`${name} format is invalid`);
   return value;
 }
 
-function same(left, right) {
+function same(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function exactKeys(value, keys, name) {
+function exactKeys(value: unknown, keys: string[], name: string): void {
   if (
     value === null ||
     typeof value !== "object" ||
@@ -82,8 +94,8 @@ function exactKeys(value, keys, name) {
     throw new Error(`${name} fields are invalid`);
 }
 
-function parseOptions(argv) {
-  const options = {};
+function parseOptions(argv: string[]): Record<string, string> {
+  const options: Record<string, string> = {};
   for (let index = 0; index < argv.length; index += 1) {
     const name = argv[index];
     if (!name.startsWith("--")) throw new Error(`unknown argument: ${name}`);
@@ -96,12 +108,12 @@ function parseOptions(argv) {
   return options;
 }
 
-function writeReport(out, report) {
+function writeReport(out: string, report: JsonRecord): void {
   mkdirSync(dirname(out), { recursive: true });
   writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
 }
 
-function runtimeBinding(options) {
+function runtimeBinding(options: Record<string, string>): JsonRecord {
   return {
     processId: positiveInteger(
       options["machine-process-id"],
@@ -124,7 +136,7 @@ function runtimeBinding(options) {
   };
 }
 
-function saleBinding(options) {
+function saleBinding(options: Record<string, string>): JsonRecord {
   return {
     saleCorrelationId: requiredString(
       options["sale-correlation-id"],
@@ -137,7 +149,7 @@ function saleBinding(options) {
   };
 }
 
-export function createSaleAudioCaptureRequest(options) {
+export function createSaleAudioCaptureRequest(options: JsonRecord): JsonRecord {
   const phase = requiredString(options.phase, "--capture-phase");
   if (!new Set(["start", "stop", "cancel"]).has(phase))
     throw new Error("--capture-phase must be start, stop, or cancel");
@@ -181,7 +193,7 @@ export function createSaleAudioCaptureRequest(options) {
   return request;
 }
 
-export function validateSaleAudioCaptureRequest(request) {
+export function validateSaleAudioCaptureRequest(request: JsonRecord): JsonRecord {
   exactKeys(
     request,
     [
@@ -206,7 +218,7 @@ export function validateSaleAudioCaptureRequest(request) {
   if (
     request.kind !== "vm-sale-audio-capture-request" ||
     request.operation !== "capture-sale-audio" ||
-    !new Set(["start", "stop", "cancel"]).has(request.phase)
+    !new Set(["start", "stop", "cancel"]).has(String(request.phase))
   )
     throw new Error("sale audio capture request operation is invalid");
   canonical(request.runId, TOKEN_ID, "request.runId");
@@ -219,7 +231,7 @@ export function validateSaleAudioCaptureRequest(request) {
     throw new Error("request.operationReference format is invalid");
   for (const name of ["lifecycleReference", "targetIdentity", "transactionId"])
     canonical(request[name], URI_ID, `request.${name}`);
-  const runtime = request.runtime;
+  const runtime = recordValue(request.runtime);
   exactKeys(
     runtime,
     [
@@ -253,8 +265,9 @@ export function validateSaleAudioCaptureRequest(request) {
         "capture start must not claim sale identifiers before observation",
       );
   } else {
+    const captureSession = recordValue(request.captureSession);
     exactKeys(
-      request.captureSession,
+      captureSession,
       ["captureSessionId", "startOperationReference", "startedAt"],
       "request.captureSession",
     );
@@ -264,38 +277,39 @@ export function validateSaleAudioCaptureRequest(request) {
       "startedAt",
     ])
       requiredString(
-        request.captureSession?.[name],
+        captureSession?.[name],
         `request.captureSession.${name}`,
       );
     canonical(
-      request.captureSession.captureSessionId,
+      captureSession.captureSessionId,
       URI_ID,
       "request.captureSession.captureSessionId",
     );
     canonical(
-      request.captureSession.startOperationReference,
+      captureSession.startOperationReference,
       URI_ID,
       "request.captureSession.startOperationReference",
     );
     timestamp(
-      request.captureSession.startedAt,
+      captureSession.startedAt,
       "request.captureSession.startedAt",
     );
     if (request.phase === "cancel") {
       if (request.sale !== null)
         throw new Error("capture cancel must not claim sale identifiers");
     } else {
+      const sale = recordValue(request.sale);
       canonical(
-        request.sale?.saleCorrelationId,
+        sale?.saleCorrelationId,
         URI_ID,
         "request.sale.saleCorrelationId",
       );
-      canonical(request.sale?.orderId, UUID, "request.sale.orderId");
-      canonical(request.sale?.orderNo, TOKEN_ID, "request.sale.orderNo");
-      canonical(request.sale?.commandId, UUID, "request.sale.commandId");
-      canonical(request.sale?.commandNo, TOKEN_ID, "request.sale.commandNo");
+      canonical(sale?.orderId, UUID, "request.sale.orderId");
+      canonical(sale?.orderNo, TOKEN_ID, "request.sale.orderNo");
+      canonical(sale?.commandId, UUID, "request.sale.commandId");
+      canonical(sale?.commandNo, TOKEN_ID, "request.sale.commandNo");
       exactKeys(
-        request.sale,
+        sale,
         ["saleCorrelationId", "orderId", "orderNo", "commandId", "commandNo"],
         "request.sale",
       );
@@ -304,43 +318,59 @@ export function validateSaleAudioCaptureRequest(request) {
   return structuredClone(request);
 }
 
-function validateEvidence(entry, role, extension) {
+function validateEvidence(entry: JsonRecord, role: string, extension: string): void {
   exactKeys(entry, ["role", "identity", "digest", "fileName"], role);
   if (
     entry?.role !== role ||
-    !EVIDENCE_ID.test(entry.identity ?? "") ||
-    !SHA256.test(entry.digest ?? "") ||
-    entry.identity !== `runtime-evidence://sha256/${entry.digest.slice(7)}` ||
-    entry.fileName !== `${entry.digest.slice(7)}.${extension}`
+    !EVIDENCE_ID.test(String(entry.identity ?? "")) ||
+    !SHA256.test(String(entry.digest ?? "")) ||
+    entry.identity !==
+      `runtime-evidence://sha256/${String(entry.digest).slice(7)}` ||
+    entry.fileName !== `${String(entry.digest).slice(7)}.${extension}`
   )
     throw new Error(`${role} evidence binding is invalid`);
 }
 
-function sha256(bytes) {
+function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-function sessionStatePath(evidenceDirectory, captureSessionId) {
+function sessionStatePath(
+  evidenceDirectory: string,
+  captureSessionId: unknown,
+): string {
   return join(
     resolve(requiredString(evidenceDirectory, "evidenceDirectory")),
-    `.capture-session-${sha256(captureSessionId)}.json`,
+    `.capture-session-${sha256(Buffer.from(String(captureSessionId), "utf8"))}.json`,
   );
 }
 
-function writeSessionState(evidenceDirectory, captureSessionId, state) {
+function writeSessionState(
+  evidenceDirectory: string,
+  captureSessionId: unknown,
+  state: JsonRecord,
+): void {
   const path = sessionStatePath(evidenceDirectory, captureSessionId);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
 }
 
-function readSessionState(evidenceDirectory, captureSessionId) {
+function readSessionState(
+  evidenceDirectory: string,
+  captureSessionId: unknown,
+): JsonRecord {
   const path = sessionStatePath(evidenceDirectory, captureSessionId);
   if (!existsSync(path))
     throw new Error("sale audio capture session was not found");
-  return JSON.parse(readFileSync(path, "utf8"));
+  return JSON.parse(readFileSync(path, "utf8")) as JsonRecord;
 }
 
-function evidenceEntry(directory, role, bytes, extension) {
+function evidenceEntry(
+  directory: string,
+  role: string,
+  bytes: Buffer,
+  extension: string,
+): JsonRecord {
   const digest = sha256(bytes);
   const fileName = `${digest}.${extension}`;
   const entry = {
@@ -353,26 +383,32 @@ function evidenceEntry(directory, role, bytes, extension) {
   return entry;
 }
 
-function normalizedSaleAudioBinding(request) {
+function normalizedSaleAudioBinding(request: JsonRecord): JsonRecord {
+  const sale = recordValue(request.sale);
   return {
     runId: request.runId,
     lifecycleReference: request.lifecycleReference,
     transactionId: request.transactionId,
-    saleCorrelationId: request.sale.saleCorrelationId,
-    orderId: request.sale.orderId,
-    orderNo: request.sale.orderNo,
-    commandId: request.sale.commandId,
-    commandNo: request.sale.commandNo,
+    saleCorrelationId: sale.saleCorrelationId,
+    orderId: sale.orderId,
+    orderNo: sale.orderNo,
+    commandId: sale.commandId,
+    commandNo: sale.commandNo,
   };
 }
 
-function buildSaleAudioFrameCapture(binding, rawFrames) {
+function buildSaleAudioFrameCapture(
+  binding: JsonRecord,
+  rawFrames: JsonRecord[],
+): JsonRecord {
   const frames = rawFrames
-    .filter((frame) =>
-      ["VEND", "F0", "E5", "F1", "AF", "F2"].includes(frame.parsedOpcode),
+    .filter((frame: JsonRecord) =>
+      ["VEND", "F0", "E5", "F1", "AF", "F2"].includes(
+        String(frame.parsedOpcode),
+      ),
     )
-    .map((frame, index) => {
-      const bytesHex = frame.rawFrameHex.toLowerCase();
+    .map((frame: JsonRecord, index: number) => {
+      const bytesHex = String(frame.rawFrameHex).toLowerCase();
       return {
         sequence: index + 1,
         role:
@@ -407,7 +443,7 @@ function buildSaleAudioFrameCapture(binding, rawFrames) {
   };
 }
 
-function libvirtDomainBinding(value) {
+function libvirtDomainBinding(value: JsonRecord): JsonRecord {
   exactKeys(
     value,
     ["libvirtUri", "domainName", "serialJournalPath"],
@@ -426,12 +462,12 @@ function libvirtDomainBinding(value) {
   };
 }
 
-function attribute(element, name) {
+function attribute(element: unknown, name: string): string | null {
   const match = String(element).match(new RegExp(`\\b${name}=(['\"])(.*?)\\1`));
   return match?.[2] ?? null;
 }
 
-function soleDomainAudioOutput(domainXml) {
+function soleDomainAudioOutput(domainXml: unknown): JsonRecord {
   const xml = String(domainXml);
   const sounds = [...xml.matchAll(/<sound\b[^>]*>([\s\S]*?)<\/sound>/g)];
   const audioXml = xml.replace(/<sound\b[^>]*>[\s\S]*?<\/sound>/g, "");
@@ -461,7 +497,7 @@ function soleDomainAudioOutput(domainXml) {
   return { model: "ich9", audioId: 1, outputPath: resolve(outputPath) };
 }
 
-function productionVirsh(args) {
+function productionVirsh(args: string[]): string {
   const result = spawnSync("/usr/bin/virsh", args, { encoding: "utf8" });
   if (result.error) throw result.error;
   if (result.status !== 0) {
@@ -472,26 +508,29 @@ function productionVirsh(args) {
   return String(result.stdout ?? "");
 }
 
-function runningDomainAudio(binding, runVirsh = productionVirsh) {
+function runningDomainAudio(
+  binding: JsonRecord,
+  runVirsh: (args: string[]) => string = productionVirsh,
+): JsonRecord {
   const state = runVirsh([
     "--connect",
-    binding.libvirtUri,
+    String(binding.libvirtUri),
     "domstate",
-    binding.domainName,
+    String(binding.domainName),
   ])
     .trim()
     .toLowerCase();
   if (state !== "running") throw new Error("libvirt domain is not running");
   const domainXml = runVirsh([
     "--connect",
-    binding.libvirtUri,
+    String(binding.libvirtUri),
     "dumpxml",
-    binding.domainName,
+    String(binding.domainName),
   ]);
   return { state, ...soleDomainAudioOutput(domainXml) };
 }
 
-function wavSnapshot(path) {
+function wavSnapshot(path: string): JsonRecord {
   const stat = statSync(path);
   if (!stat.isFile())
     throw new Error("running domain audio output is not a regular file");
@@ -503,12 +542,15 @@ function wavSnapshot(path) {
   };
 }
 
-function readStableWavSnapshot(path, expected) {
+function readStableWavSnapshot(
+  path: string,
+  expected: JsonRecord,
+): { bytes: Buffer; snapshot: JsonRecord } {
   const before = wavSnapshot(path);
   if (before.device !== expected.device || before.inode !== expected.inode) {
     throw new Error("running domain audio output inode changed during capture");
   }
-  const bytes = Buffer.alloc(before.byteLength);
+  const bytes = Buffer.alloc(Number(before.byteLength));
   const descriptor = openSync(path, "r");
   let offset = 0;
   try {
@@ -530,15 +572,15 @@ function readStableWavSnapshot(path, expected) {
   if (
     after.device !== before.device ||
     after.inode !== before.inode ||
-    after.byteLength < before.byteLength ||
-    offset !== before.byteLength
+    Number(after.byteLength) < Number(before.byteLength) ||
+    offset !== Number(before.byteLength)
   ) {
     throw new Error("running domain audio output changed while snapshotting");
   }
   return { bytes, snapshot: before };
 }
 
-function capturedQemuWav(bytes, startByteLength) {
+function capturedQemuWav(bytes: Buffer, startByteLength: number): Buffer {
   if (
     bytes.length < 44 ||
     bytes.toString("ascii", 0, 4) !== "RIFF" ||
@@ -570,13 +612,20 @@ function capturedQemuWav(bytes, startByteLength) {
   return captured;
 }
 
-function createLibvirtDomainBackend(binding, testOnlyRunVirsh) {
+function createLibvirtDomainBackend(
+  binding: JsonRecord,
+  testOnlyRunVirsh?: (args: string[]) => string,
+): {
+  start: (options?: JsonRecord) => Promise<JsonRecord>;
+  stop: (state: JsonRecord, options?: JsonRecord) => Promise<JsonRecord>;
+  abort: (state?: JsonRecord, options?: JsonRecord) => Promise<void>;
+} {
   const runVirsh = testOnlyRunVirsh ?? productionVirsh;
   return {
-    async start() {
+    async start(_options?: JsonRecord) {
       const domain = runningDomainAudio(binding, runVirsh);
-      const snapshot = existsSync(domain.outputPath)
-        ? wavSnapshot(domain.outputPath)
+      const snapshot = existsSync(String(domain.outputPath))
+        ? wavSnapshot(String(domain.outputPath))
         : null;
       return {
         kind: "libvirt-domain-file-output",
@@ -585,22 +634,32 @@ function createLibvirtDomainBackend(binding, testOnlyRunVirsh) {
       };
     },
     async stop(state) {
+      const stateRecord = recordValue(state);
+      const domainState = recordValue(stateRecord.domain);
       const domain = runningDomainAudio(binding, runVirsh);
       if (
-        domain.outputPath !== state.domain.outputPath ||
-        domain.model !== state.domain.model ||
-        domain.audioId !== state.domain.audioId
+        domain.outputPath !== domainState.outputPath ||
+        domain.model !== domainState.model ||
+        domain.audioId !== domainState.audioId
       ) {
         throw new Error("running domain audio output changed during capture");
       }
-      const completed = state.startSnapshot
-        ? readStableWavSnapshot(domain.outputPath, state.startSnapshot)
+      const completed = stateRecord.startSnapshot
+        ? readStableWavSnapshot(
+            String(domain.outputPath),
+            recordValue(stateRecord.startSnapshot),
+          )
         : (() => {
-            const snapshot = wavSnapshot(domain.outputPath);
-            return { bytes: readFileSync(domain.outputPath), snapshot };
+            const snapshot = wavSnapshot(String(domain.outputPath));
+            return {
+              bytes: readFileSync(String(domain.outputPath)),
+              snapshot,
+            };
           })();
-      const startByteLength = state.startSnapshot?.byteLength ?? 0;
-      if (completed.snapshot.byteLength <= startByteLength) {
+      const startByteLength = Number(
+        recordValue(stateRecord.startSnapshot).byteLength,
+      ) ?? 0;
+      if (Number(completed.snapshot.byteLength) <= startByteLength) {
         throw new Error(
           "running domain audio output did not advance after capture start",
         );
@@ -622,7 +681,8 @@ function createLibvirtDomainBackend(binding, testOnlyRunVirsh) {
             inode: completed.snapshot.inode,
             startOffset: startByteLength,
             endOffset: completed.snapshot.byteLength,
-            capturedByteLength: completed.snapshot.byteLength - startByteLength,
+            capturedByteLength:
+              Number(completed.snapshot.byteLength) - startByteLength,
           },
         },
       };
@@ -633,15 +693,21 @@ function createLibvirtDomainBackend(binding, testOnlyRunVirsh) {
 
 // This is intentionally test-only. Production always derives the path from the
 // running libvirt domain and never accepts an ambient audio file configuration.
-export function createFileBackedAudioCaptureTestBackend(wavPath) {
+export function createFileBackedAudioCaptureTestBackend(
+  wavPath: unknown,
+): {
+  start: (options?: JsonRecord) => Promise<JsonRecord>;
+  stop: (state: JsonRecord, options?: JsonRecord) => Promise<JsonRecord>;
+  abort: (state?: JsonRecord, options?: JsonRecord) => Promise<void>;
+} {
   const path = resolve(requiredString(wavPath, "test WAV path"));
   return {
-    async start() {
+    async start(_options?: JsonRecord) {
       return { kind: "test-file", wavPath: path };
     },
     async stop(state) {
       return {
-        bytes: readFileSync(state.wavPath),
+        bytes: readFileSync(String(recordValue(state).wavPath)),
         completedAt: new Date().toISOString(),
       };
     },
@@ -649,7 +715,7 @@ export function createFileBackedAudioCaptureTestBackend(wavPath) {
   };
 }
 
-function productionReadSerialJournal(path) {
+function productionReadSerialJournal(path: string): JsonRecord[] {
   if (
     existsSync(path) &&
     readFileSync(path, "utf8").trimStart().startsWith("{")
@@ -662,30 +728,46 @@ function productionReadSerialJournal(path) {
 }
 
 async function executeAdapterOperation(
-  request,
-  {
+  request: JsonRecord,
+  options: JsonRecord = {},
+): Promise<JsonRecord> {
+  const {
     evidenceDirectory,
     production,
     backendFactory,
     readSerialJournal,
     testOnlyRunVirsh,
-  } = {},
-) {
+  } = options;
   const exportDirectory = resolve(
     requiredString(evidenceDirectory, "evidenceDirectory"),
   );
   mkdirSync(exportDirectory, { recursive: true, mode: 0o700 });
   if (request.phase === "start") {
     const captureSession = {
-      captureSessionId: `sale-audio-session://sha256-${sha256(request.operationReference)}`,
+      captureSessionId: `sale-audio-session://sha256-${sha256(
+        Buffer.from(String(request.operationReference), "utf8"),
+      )}`,
       startOperationReference: request.operationReference,
       startedAt: new Date().toISOString(),
     };
-    const domainBinding = libvirtDomainBinding(production);
+    const domainBinding = libvirtDomainBinding(recordValue(production));
     const backend = await (
-      backendFactory
-        ? backendFactory()
-        : createLibvirtDomainBackend(domainBinding, testOnlyRunVirsh)
+      (backendFactory as
+        | (() => {
+            start: (options?: JsonRecord) => Promise<JsonRecord>;
+            stop: (state: JsonRecord, options?: JsonRecord) => Promise<JsonRecord>;
+            abort: (state?: JsonRecord, options?: JsonRecord) => Promise<void>;
+          })
+        | undefined)
+        ? (backendFactory as () => {
+            start: (options?: JsonRecord) => Promise<JsonRecord>;
+            stop: (state: JsonRecord, options?: JsonRecord) => Promise<JsonRecord>;
+            abort: (state?: JsonRecord, options?: JsonRecord) => Promise<void>;
+          })()
+        : createLibvirtDomainBackend(
+            domainBinding,
+            testOnlyRunVirsh as ((args: string[]) => string) | undefined,
+          )
     ).start({
       request,
       evidenceDirectory: exportDirectory,
@@ -715,7 +797,7 @@ async function executeAdapterOperation(
 
   const state = readSessionState(
     exportDirectory,
-    request.captureSession.captureSessionId,
+    recordValue(request.captureSession).captureSessionId,
   );
   if (
     JSON.stringify(state.captureSession) !==
@@ -723,11 +805,18 @@ async function executeAdapterOperation(
   ) {
     throw new Error("sale audio capture session binding is invalid");
   }
-  const domainBinding = libvirtDomainBinding(production);
+  const domainBinding = libvirtDomainBinding(recordValue(production));
   const backend = backendFactory
-    ? backendFactory()
-    : createLibvirtDomainBackend(domainBinding, testOnlyRunVirsh);
-  const stopped = await backend.stop(state.backend, {
+    ? (backendFactory as () => {
+        start: (options?: JsonRecord) => Promise<JsonRecord>;
+        stop: (state: JsonRecord, options?: JsonRecord) => Promise<JsonRecord>;
+        abort: (state?: JsonRecord, options?: JsonRecord) => Promise<void>;
+      })()
+    : createLibvirtDomainBackend(
+        domainBinding,
+        testOnlyRunVirsh as ((args: string[]) => string) | undefined,
+      );
+  const stopped = await backend.stop(recordValue(state.backend), {
     request,
     evidenceDirectory: exportDirectory,
     state,
@@ -735,18 +824,24 @@ async function executeAdapterOperation(
   const saleBinding = normalizedSaleAudioBinding(request);
   const serialCapture = buildSaleAudioFrameCapture(
     saleBinding,
-    (readSerialJournal ?? productionReadSerialJournal)(
-      state.rawSerialJournalPath,
+    (readSerialJournal as ((path: string) => JsonRecord[]) | undefined ??
+      productionReadSerialJournal)(
+      String(state.rawSerialJournalPath),
     ),
   );
-  const inspection = inspectWavPcm(stopped.bytes, SALE_AUDIO_THRESHOLD);
+  const inspection = recordValue(
+    inspectWavPcm(
+      stopped.bytes as Buffer,
+      SALE_AUDIO_THRESHOLD as unknown as Parameters<typeof inspectWavPcm>[1],
+    ),
+  );
   if (!inspection.ok || inspection.kind !== "passed") {
     throw new Error("sale default-audio WAV is silent or malformed");
   }
   const audioEvidence = evidenceEntry(
     exportDirectory,
     "sale-default-audio-capture",
-    stopped.bytes,
+    stopped.bytes as Buffer,
     "wav",
   );
   const serialEvidence = evidenceEntry(
@@ -755,11 +850,15 @@ async function executeAdapterOperation(
     Buffer.from(`${JSON.stringify(serialCapture)}\n`),
     "json",
   );
-  writeSessionState(exportDirectory, request.captureSession.captureSessionId, {
+  writeSessionState(
+    exportDirectory,
+    recordValue(request.captureSession).captureSessionId,
+    {
     ...state,
     status: "stopped",
     completedAt: stopped.completedAt,
-  });
+    },
+  );
   return {
     schemaVersion: SALE_AUDIO_REPORT_SCHEMA_VERSION,
     kind: "vm-sale-audio-capture-report",
@@ -773,7 +872,7 @@ async function executeAdapterOperation(
     capture: {
       source: "windows_default_output",
       binding: saleBinding,
-      startedAt: state.captureSession.startedAt,
+      startedAt: recordValue(state.captureSession).startedAt,
       completedAt: stopped.completedAt,
       audioArtifact: audioEvidence.identity,
       serialArtifact: serialEvidence.identity,
@@ -785,19 +884,27 @@ async function executeAdapterOperation(
 }
 
 export async function abortSaleAudioCaptureSession(
-  { captureSessionId, evidenceDirectory },
-  { production, backendFactory, testOnlyRunVirsh } = {},
-) {
+  { captureSessionId, evidenceDirectory }: {
+    captureSessionId: unknown;
+    evidenceDirectory: string;
+  },
+  options: JsonRecord = {},
+): Promise<JsonRecord> {
+  const { production, backendFactory, testOnlyRunVirsh } = options;
   const state = readSessionState(evidenceDirectory, captureSessionId);
   if (state.status !== "started")
     return { aborted: false, alreadyStopped: true };
   const backend = backendFactory
-    ? backendFactory()
+    ? (backendFactory as () => {
+        start: (options?: JsonRecord) => Promise<JsonRecord>;
+        stop: (state: JsonRecord, options?: JsonRecord) => Promise<JsonRecord>;
+        abort: (state?: JsonRecord, options?: JsonRecord) => Promise<void>;
+      })()
     : createLibvirtDomainBackend(
-        libvirtDomainBinding(production),
-        testOnlyRunVirsh,
+        libvirtDomainBinding(recordValue(production)),
+        testOnlyRunVirsh as ((args: string[]) => string) | undefined,
       );
-  await backend.abort(state.backend, {
+  await backend.abort(recordValue(state.backend), {
     evidenceDirectory,
     state,
   });
@@ -810,29 +917,42 @@ export async function abortSaleAudioCaptureSession(
 }
 
 export async function stopDefaultAudioCaptureSession(
-  { captureSessionId, evidenceDirectory },
-  { production, backendFactory, testOnlyRunVirsh } = {},
-) {
+  { captureSessionId, evidenceDirectory }: {
+    captureSessionId: unknown;
+    evidenceDirectory: string;
+  },
+  options: JsonRecord = {},
+): Promise<JsonRecord> {
+  const { production, backendFactory, testOnlyRunVirsh } = options;
   const state = readSessionState(evidenceDirectory, captureSessionId);
   if (state.status !== "started")
     throw new Error("default audio capture session is not active");
   const backend = backendFactory
-    ? backendFactory()
+    ? (backendFactory as () => {
+        start: (options?: JsonRecord) => Promise<JsonRecord>;
+        stop: (state: JsonRecord, options?: JsonRecord) => Promise<JsonRecord>;
+        abort: (state?: JsonRecord, options?: JsonRecord) => Promise<void>;
+      })()
     : createLibvirtDomainBackend(
-        libvirtDomainBinding(production),
-        testOnlyRunVirsh,
+        libvirtDomainBinding(recordValue(production)),
+        testOnlyRunVirsh as ((args: string[]) => string) | undefined,
       );
-  const stopped = await backend.stop(state.backend, {
+  const stopped = await backend.stop(recordValue(state.backend), {
     evidenceDirectory,
     state,
   });
-  const inspection = inspectWavPcm(stopped.bytes, SALE_AUDIO_THRESHOLD);
+  const inspection = recordValue(
+    inspectWavPcm(
+      stopped.bytes as Buffer,
+      SALE_AUDIO_THRESHOLD as unknown as Parameters<typeof inspectWavPcm>[1],
+    ),
+  );
   if (!inspection.ok || inspection.kind !== "passed")
     throw new Error("default-audio WAV is silent or malformed");
   const audioEvidence = evidenceEntry(
     evidenceDirectory,
     "default-audio-capture",
-    stopped.bytes,
+    stopped.bytes as Buffer,
     "wav",
   );
   writeSessionState(evidenceDirectory, captureSessionId, {
@@ -845,7 +965,7 @@ export async function stopDefaultAudioCaptureSession(
     result: "succeeded",
     capture: {
       source: "windows_default_output",
-      startedAt: state.captureSession.startedAt,
+      startedAt: recordValue(state.captureSession).startedAt,
       completedAt: stopped.completedAt,
       nonSilentFrameCount: inspection.nonSilentFrameCount,
       peakAbsoluteSample: inspection.peakAbsoluteSample,
@@ -856,7 +976,10 @@ export async function stopDefaultAudioCaptureSession(
   };
 }
 
-export function validateSaleAudioCaptureReport(report, requestInput) {
+export function validateSaleAudioCaptureReport(
+  report: JsonRecord,
+  requestInput: JsonRecord,
+): JsonRecord {
   const request = validateSaleAudioCaptureRequest(requestInput);
   exactKeys(
     report,
@@ -879,10 +1002,11 @@ export function validateSaleAudioCaptureReport(report, requestInput) {
     !same(report.request, request)
   )
     throw new Error("sale audio capture report envelope is invalid");
+  const adapter = recordValue(report.adapter);
   for (const name of ["identity", "version"])
-    requiredString(report.adapter?.[name], `report.adapter.${name}`);
-  exactKeys(report.adapter, ["identity", "version"], "report.adapter");
-  const session = report.captureSession;
+    requiredString(adapter?.[name], `report.adapter.${name}`);
+  exactKeys(adapter, ["identity", "version"], "report.adapter");
+  const session = recordValue(report.captureSession);
   exactKeys(
     session,
     ["captureSessionId", "startOperationReference", "startedAt"],
@@ -912,17 +1036,19 @@ export function validateSaleAudioCaptureReport(report, requestInput) {
   }
   if (
     !same(session, request.captureSession) ||
-    report.capture?.source !== "windows_default_output" ||
-    !same(report.capture?.binding, {
+    recordValue(report.capture).source !== "windows_default_output" ||
+    !same(recordValue(report.capture).binding, {
       runId: request.runId,
       lifecycleReference: request.lifecycleReference,
       transactionId: request.transactionId,
-      ...request.sale,
+      ...recordValue(request.sale),
     })
   )
     throw new Error("completed sale audio capture binding is invalid");
+  const capture = recordValue(report.capture);
+  const threshold = recordValue(capture.threshold);
   exactKeys(
-    report.capture,
+    capture,
     [
       "source",
       "binding",
@@ -936,7 +1062,7 @@ export function validateSaleAudioCaptureReport(report, requestInput) {
     "report.capture",
   );
   exactKeys(
-    report.capture.threshold,
+    threshold,
     [
       "minimumPeakAbsoluteSample",
       "minimumNonSilentFrames",
@@ -945,27 +1071,30 @@ export function validateSaleAudioCaptureReport(report, requestInput) {
     ],
     "report.capture.threshold",
   );
-  timestamp(report.capture.startedAt, "report.capture.startedAt");
-  timestamp(report.capture.completedAt, "report.capture.completedAt");
+  timestamp(capture.startedAt, "report.capture.startedAt");
+  timestamp(capture.completedAt, "report.capture.completedAt");
   if (
-    report.capture.startedAt !== request.captureSession.startedAt ||
-    Date.parse(report.capture.completedAt) <=
-      Date.parse(report.capture.startedAt)
+    capture.startedAt !== recordValue(request.captureSession).startedAt ||
+    Date.parse(String(capture.completedAt)) <=
+      Date.parse(String(capture.startedAt))
   )
     throw new Error("sale audio capture timestamps are invalid");
-  if (report.capture.provenance !== null) {
+  if (capture.provenance !== null) {
+    const provenance = recordValue(capture.provenance);
+    const domain = recordValue(provenance.domain);
+    const wav = recordValue(provenance.wav);
     exactKeys(
-      report.capture.provenance,
+      provenance,
       ["domain", "wav"],
       "report.capture.provenance",
     );
     exactKeys(
-      report.capture.provenance.domain,
+      domain,
       ["libvirtUri", "domainName", "state", "model", "audioId"],
       "report.capture.provenance.domain",
     );
     exactKeys(
-      report.capture.provenance.wav,
+      wav,
       [
         "path",
         "device",
@@ -977,19 +1106,17 @@ export function validateSaleAudioCaptureReport(report, requestInput) {
       "report.capture.provenance.wav",
     );
     if (
-      report.capture.provenance.domain.state !== "running" ||
-      report.capture.provenance.domain.model !== "ich9" ||
-      report.capture.provenance.domain.audioId !== 1 ||
-      !String(report.capture.provenance.wav.path ?? "").startsWith("/") ||
-      !Number.isInteger(report.capture.provenance.wav.device) ||
-      !Number.isInteger(report.capture.provenance.wav.inode) ||
-      !Number.isInteger(report.capture.provenance.wav.startOffset) ||
-      !Number.isInteger(report.capture.provenance.wav.endOffset) ||
-      report.capture.provenance.wav.endOffset <=
-        report.capture.provenance.wav.startOffset ||
-      report.capture.provenance.wav.capturedByteLength !==
-        report.capture.provenance.wav.endOffset -
-          report.capture.provenance.wav.startOffset
+      domain.state !== "running" ||
+      domain.model !== "ich9" ||
+      domain.audioId !== 1 ||
+      !String(wav.path ?? "").startsWith("/") ||
+      !Number.isInteger(wav.device) ||
+      !Number.isInteger(wav.inode) ||
+      !Number.isInteger(wav.startOffset) ||
+      !Number.isInteger(wav.endOffset) ||
+      Number(wav.endOffset) <= Number(wav.startOffset) ||
+      Number(wav.capturedByteLength) !==
+        Number(wav.endOffset) - Number(wav.startOffset)
     ) {
       throw new Error("sale audio capture provenance is invalid");
     }
@@ -998,18 +1125,21 @@ export function validateSaleAudioCaptureReport(report, requestInput) {
     throw new Error(
       "completed sale audio capture must export WAV and serial evidence",
     );
-  validateEvidence(report.evidence[0], "sale-default-audio-capture", "wav");
-  validateEvidence(report.evidence[1], "sale-serial-frame-capture", "json");
+  const evidence = arrayValue(report.evidence).map((entry: unknown) =>
+    recordValue(entry),
+  );
+  validateEvidence(evidence[0], "sale-default-audio-capture", "wav");
+  validateEvidence(evidence[1], "sale-serial-frame-capture", "json");
   if (
-    report.capture.audioArtifact !== report.evidence[0].identity ||
-    report.capture.serialArtifact !== report.evidence[1].identity
+    capture.audioArtifact !== evidence[0].identity ||
+    capture.serialArtifact !== evidence[1].identity
   )
     throw new Error("sale audio capture artifact references are invalid");
   return structuredClone(report);
 }
 
-function readContentAddressed(directory, evidence) {
-  const bytes = readFileSync(join(directory, evidence.fileName));
+function readContentAddressed(directory: string, evidence: JsonRecord): Buffer {
+  const bytes = readFileSync(join(directory, String(evidence.fileName)));
   const digest = createHash("sha256").update(bytes).digest("hex");
   if (`sha256:${digest}` !== evidence.digest)
     throw new Error(`${evidence.role} exported digest is invalid`);
@@ -1020,26 +1150,40 @@ export function inspectCompletedSaleAudioCapture({
   report,
   request,
   directory,
-}) {
+}: {
+  report: JsonRecord;
+  request: JsonRecord;
+  directory: string;
+}): JsonRecord {
   const validated = validateSaleAudioCaptureReport(report, request);
   if (request.phase !== "stop")
     throw new Error("only a stopped sale audio capture can be inspected");
-  const wavBytes = readContentAddressed(directory, validated.evidence[0]);
-  const serialBytes = readContentAddressed(directory, validated.evidence[1]);
-  const audio = inspectWavPcm(wavBytes, validated.capture.threshold);
+  const evidence = arrayValue(validated.evidence).map((entry: unknown) =>
+    recordValue(entry),
+  );
+  const wavBytes = readContentAddressed(directory, evidence[0]);
+  const serialBytes = readContentAddressed(directory, evidence[1]);
+  const audio = recordValue(
+    inspectWavPcm(
+      wavBytes,
+      recordValue(validated.capture).threshold as Parameters<
+        typeof inspectWavPcm
+      >[1],
+    ),
+  );
   if (!audio.ok || audio.kind !== "passed")
     throw new Error("sale default-audio WAV is silent or malformed");
-  const serial = JSON.parse(serialBytes.toString("utf8"));
+  const serial = JSON.parse(serialBytes.toString("utf8")) as JsonRecord;
   if (
     serial?.schemaVersion !== "host-production-serial-frame-capture/v1" ||
-    !same(serial.binding, validated.capture.binding) ||
+    !same(serial.binding, recordValue(validated.capture).binding) ||
     !Array.isArray(serial.frames)
   )
     throw new Error("host production serial frame capture is invalid");
   const inspection = {
     report: validated,
     audio: {
-      sha256: validated.evidence[0].digest.slice(7),
+      sha256: String(evidence[0].digest).slice(7),
       byteLength: wavBytes.length,
       format: audio.format,
       encoding: audio.encoding,
@@ -1062,9 +1206,9 @@ export function inspectCompletedSaleAudioCapture({
 }
 
 export async function runSaleAudioCaptureHostAdapterCli(
-  argv,
-  dependencies = {},
-) {
+  argv: string[],
+  dependencies: JsonRecord = {},
+): Promise<JsonRecord> {
   const options = parseOptions(argv);
   return executeSaleAudioCaptureHostAdapter(
     {
@@ -1094,9 +1238,9 @@ export async function runSaleAudioCaptureHostAdapterCli(
 }
 
 export async function executeSaleAudioCaptureHostAdapter(
-  options,
-  dependencies = {},
-) {
+  options: JsonRecord,
+  dependencies: JsonRecord = {},
+): Promise<JsonRecord> {
   const request = createSaleAudioCaptureRequest({
     phase: options.phase,
     runId: options.runId,
@@ -1109,7 +1253,9 @@ export async function executeSaleAudioCaptureHostAdapter(
     captureStartedAt: options.captureStartedAt,
     sale: options.phase === "stop" ? options.sale : null,
   });
-  const invoke = dependencies.invokeAdapter ?? executeAdapterOperation;
+  const invoke =
+    (dependencies.invokeAdapter as typeof executeAdapterOperation) ??
+    executeAdapterOperation;
   const report = validateSaleAudioCaptureReport(
     await invoke(request, {
       environment: dependencies.environment ?? process.env,
