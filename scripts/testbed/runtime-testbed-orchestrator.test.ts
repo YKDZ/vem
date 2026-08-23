@@ -84,8 +84,8 @@ describe("runtime testbed scheduler contract", () => {
       new URL("./runtime-testbed-orchestrator.ts", import.meta.url),
       "utf8",
     );
-    assert.match(source, /`\$\{options\.runId\}-PASS-\$\{pass\}`/);
-    assert.doesNotMatch(source, /`\$\{options\.runId\}-pass-/);
+    assert.match(source, /`\$\{runId\}-PASS-\$\{pass\}`/);
+    assert.doesNotMatch(source, /`\$\{runId\}-pass-/);
   });
 
   it("summarizes guest business failures with set, reason, and report path", () => {
@@ -512,7 +512,7 @@ describe("runtime testbed scheduler contract", () => {
     assert.match(source, /child\.kill\("SIGTERM"\)/);
     assert.match(
       source,
-      /error\.exitCode === 255 \|\| error\.timedOut === true/,
+      /processError\.exitCode === 255 \|\| processError\.timedOut === true/,
     );
   });
 
@@ -683,11 +683,11 @@ describe("runtime testbed scheduler contract", () => {
     );
     assert.match(
       source.slice(refresh, guest),
-      /"--run-id",\s*fixtureIsCurrent \? options\.runId : `\$\{options\.runId\}-PASS-\$\{pass\}`/,
+      /"--run-id",\s*fixtureIsCurrent \? runId : `\$\{runId\}-PASS-\$\{pass\}`/,
     );
     assert.match(
       source,
-      /guestInput:[\s\S]*sha256: preparation\.guestInput\.sha256/,
+      /guestInput:[\s\S]*sha256: preparationGuestInput\.sha256/,
     );
   });
 
@@ -697,10 +697,13 @@ describe("runtime testbed scheduler contract", () => {
       "utf8",
     );
     assert.match(source, /fixtureIdentityForWorkspace\(workspace\)/);
-    assert.match(source, /existingGuestInput\?\.fixtureIdentity\?\.sha256/);
     assert.match(
       source,
-      /reconstructionMarker\?\.guestInput\?\.fixtureIdentity\?\.sha256/,
+      /recordValue\(existingGuestInput\?\.fixtureIdentity\)\.sha256/,
+    );
+    assert.match(
+      source,
+      /recordValue\(\s*recordValue\(reconstructionMarker\?\.guestInput\)\.fixtureIdentity,\s*\)\.sha256/,
     );
     assert.match(source, /reconstruct-stale-fixture-pass-\$\{pass\}/);
     assert.match(
@@ -744,7 +747,7 @@ describe("runtime testbed scheduler contract", () => {
       'await writeJson(join(compact, "status.json"), status);',
     );
     const canonicalWrite = source.indexOf(
-      "await writeJson(statusPath(config, options.runId), status);",
+      "await writeJson(statusPath(config, runId), status);",
     );
     assert.ok(
       compactWrite >= 0 && canonicalWrite >= 0 && compactWrite < canonicalWrite,
@@ -758,7 +761,7 @@ describe("runtime testbed scheduler contract", () => {
     );
     assert.match(
       source,
-      /\(error\.command === "ssh" \|\| error\.command === "scp"\)\s*&&\s*\(\s*error\.exitCode === 255 \|\| error\.timedOut === true\s*\)/,
+      /\(processError\.command === "ssh" \|\| processError\.command === "scp"\)\s*&&\s*\(\s*processError\.exitCode === 255 \|\| processError\.timedOut === true\s*\)/,
     );
     assert.ok(
       source.includes("error.command = command;") &&

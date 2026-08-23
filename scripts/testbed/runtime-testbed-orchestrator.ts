@@ -3,6 +3,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, openSync, readFileSync } from "node:fs";
+import type { Dirent } from "node:fs";
 import {
   copyFile,
   lstat,
@@ -17,7 +18,92 @@ import { isIP } from "node:net";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { selectBusinessChecks } from "./business-check-registry.ts";
+import {
+  BUSINESS_CHECK_REGISTRY,
+  selectBusinessChecks,
+} from "./business-check-registry.ts";
+import type { BusinessCheckDescriptor } from "./business-check-registry.ts";
+
+type JsonRecord = Record<string, unknown>;
+
+interface Artifact {
+  hostPath: string;
+  sha256: string;
+  byteSize: number;
+  sourceCommit?: string;
+  guestPath?: string;
+  members?: TransferMember[];
+}
+
+interface GuestTransfer extends Artifact {
+  guestPath: string;
+}
+
+interface TransferMember {
+  name: string;
+  byteSize: number;
+  sha256: string;
+}
+
+interface HostConfig extends JsonRecord {
+  schemaVersion: string;
+  mirrorPath: string;
+  workspaceRoot: string;
+  stateRoot: string;
+  baselineContract: string;
+  hostPrivateAddress: string;
+  guestSourcePath: string;
+  environment: Record<string, string>;
+  pathPrepend: string[];
+  visionCoreArtifacts: {
+    runtimeArchive: Artifact;
+    recordedFixtureArchive: Artifact;
+  };
+}
+
+interface OrchestratorOptions extends JsonRecord {
+  command: string;
+  configPath: string;
+  runId?: string;
+  mode?: string;
+  commit?: string;
+  focus?: string[];
+}
+
+interface ProcessRunOptions {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  stdio?: "inherit" | "ignore" | "pipe";
+  detached?: boolean;
+  timeoutMs?: number;
+  timeoutLabel?: string;
+}
+
+interface CaptureOptions {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  timeoutMs?: number;
+  timeoutLabel?: string;
+}
+
+interface ProcessError extends Error {
+  command?: string;
+  exitCode?: number | null;
+  signal?: NodeJS.Signals | null;
+  timedOut?: boolean;
+  businessFailure?: boolean;
+}
+
+interface VisionCorePreparation {
+  guestInput: JsonRecord;
+  transfers: Artifact[];
+}
+
+interface GuestContract {
+  testbed: {
+    guest: JsonRecord;
+  };
+}
 
 const MODES = new Set(["fast", "full", "clear_cache"]);
 const TERMINAL = new Set([
@@ -26,7 +112,7 @@ const TERMINAL = new Set([
   "infrastructure_failed",
   "superseded",
 ]);
-const isTerminalStatus = (status) => TERMINAL.has(status);
+const isTerminalStatus = (status: string): boolean => TERMINAL.has(status);
 const STATUS_SCHEMA = "vem-runtime-testbed-run/v1";
 const CONFIG_SCHEMA = "vem-runtime-testbed-host/v1";
 const GUEST_SETUP_TIMEOUT_MS = 120_000;
@@ -40,14 +126,36 @@ const GUEST_FULL_EXECUTION_TIMEOUT_MS = 45 * 60_000;
 const WINDOWS_REMOTE_COMMAND_MAX_CHARS = 8_000;
 const GUEST_ACCEPTANCE_INPUT_CACHE = "D:\\runtime-cache\\v1\\acceptance-inputs";
 
-function required(value, label) {
+function required(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${label} is required`);
   }
   return value.trim();
 }
 
-export function guestAcceptanceExecutionBudget({ mode, focus = [], registry }) {
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? (value as unknown[]) : [];
+}
+
+export function guestAcceptanceExecutionBudget({
+  mode,
+  focus = [],
+  registry = BUSINESS_CHECK_REGISTRY,
+}: {
+  mode: string;
+  focus?: string[];
+  registry?: readonly BusinessCheckDescriptor[];
+}): {
+  timeoutMs: number;
+  selectedSets: string[];
+  timeoutLabel: string;
+} {
   const selected = selectBusinessChecks({ mode, focus, registry });
   const selectedSets = selected.map((descriptor) => descriptor.name);
   let timeoutMs;
@@ -72,41 +180,58 @@ export function guestAcceptanceExecutionBudget({ mode, focus = [], registry }) {
   };
 }
 
-function artifactFile(value, label, sourceCommit = false) {
+function artifactFile(
+  value: unknown,
+  label: string,
+  sourceCommit = false,
+): Artifact {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${label} must be an object`);
   }
+  const record = value as JsonRecord;
   const expectedKeys = sourceCommit
     ? ["hostPath", "sha256", "byteSize", "sourceCommit"]
     : ["hostPath", "sha256", "byteSize"];
-  if (Object.keys(value).sort().join("\0") !== expectedKeys.sort().join("\0")) {
+  if (Object.keys(record).sort().join("\0") !== expectedKeys.sort().join("\0")) {
     throw new Error(`${label} fields are invalid`);
   }
-  const path = absolute(value.hostPath, `${label} hostPath`);
-  if (!/^[a-f0-9]{64}$/.test(value.sha256 ?? "")) {
+  const path = absolute(record.hostPath, `${label} hostPath`);
+  if (!/^[a-f0-9]{64}$/.test(String(record.sha256 ?? ""))) {
     throw new Error(`${label} SHA-256 is invalid`);
   }
-  if (!Number.isSafeInteger(value.byteSize) || value.byteSize <= 0) {
+  if (
+    !Number.isSafeInteger(record.byteSize) ||
+    (record.byteSize as number) <= 0
+  ) {
     throw new Error(`${label} byte size is invalid`);
   }
-  if (sourceCommit && !/^[a-f0-9]{40}$/.test(value.sourceCommit ?? "")) {
+  if (
+    sourceCommit &&
+    !/^[a-f0-9]{40}$/.test(String(record.sourceCommit ?? ""))
+  ) {
     throw new Error(`${label} source commit is invalid`);
   }
   return {
     hostPath: path,
-    sha256: value.sha256,
-    byteSize: value.byteSize,
-    ...(sourceCommit ? { sourceCommit: value.sourceCommit } : {}),
+    sha256: String(record.sha256),
+    byteSize: record.byteSize as number,
+    ...(sourceCommit
+      ? { sourceCommit: String(record.sourceCommit) }
+      : {}),
   };
 }
 
-function absolute(value, label) {
+function absolute(value: unknown, label: string): string {
   const path = required(value, label);
   if (!isAbsolute(path)) throw new Error(`${label} must be absolute`);
   return resolve(path);
 }
 
-function option(args, name, optional = false) {
+function option(
+  args: string[],
+  name: string,
+  optional = false,
+): string | undefined {
   const index = args.indexOf(`--${name}`);
   if (index < 0) {
     if (optional) return undefined;
@@ -119,7 +244,7 @@ function option(args, name, optional = false) {
   return value;
 }
 
-function repeatableOption(args, name) {
+function repeatableOption(args: string[], name: string): string[] {
   const values = [];
   for (let index = 0; index < args.length; index += 1) {
     if (args[index] !== `--${name}`) continue;
@@ -129,7 +254,7 @@ function repeatableOption(args, name) {
   return values;
 }
 
-export function parseOrchestratorOptions(args) {
+export function parseOrchestratorOptions(args: string[]): OrchestratorOptions {
   const command = args[0];
   if (!new Set(["run", "status", "execute"]).has(command)) {
     throw new Error(
@@ -143,10 +268,10 @@ export function parseOrchestratorOptions(args) {
   if (command === "status") {
     return { ...common, runId: required(option(args, "run-id"), "--run-id") };
   }
-  const mode = option(args, "mode");
+  const mode = option(args, "mode") as string;
   if (!MODES.has(mode))
     throw new Error("--mode must be fast, full, or clear_cache");
-  const commit = option(args, "commit").toLowerCase();
+  const commit = (option(args, "commit") as string).toLowerCase();
   if (!/^[0-9a-f]{40}$/.test(commit)) {
     throw new Error("--commit must be a full 40-character Git SHA");
   }
@@ -163,15 +288,16 @@ export function parseOrchestratorOptions(args) {
   };
 }
 
-export function validateHostConfig(value) {
+export function validateHostConfig(value: unknown): HostConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("host config must be an object");
   }
-  if (value.schemaVersion !== CONFIG_SCHEMA) {
+  const config = value as JsonRecord;
+  if (config.schemaVersion !== CONFIG_SCHEMA) {
     throw new Error(`host config schemaVersion must be ${CONFIG_SCHEMA}`);
   }
   const hostPrivateAddress = required(
-    value.hostPrivateAddress,
+    config.hostPrivateAddress,
     "host config hostPrivateAddress",
   );
   if (isIP(hostPrivateAddress) !== 4 || hostPrivateAddress.startsWith("127.")) {
@@ -180,7 +306,7 @@ export function validateHostConfig(value) {
     );
   }
   const guestSourcePath = required(
-    value.guestSourcePath,
+    config.guestSourcePath,
     "host config guestSourcePath",
   );
   if (!/^[A-Za-z]:\\/.test(guestSourcePath)) {
@@ -188,7 +314,7 @@ export function validateHostConfig(value) {
       "host config guestSourcePath must be an absolute Windows path",
     );
   }
-  const environment = value.environment ?? {};
+  const environment = config.environment ?? {};
   if (
     !environment ||
     typeof environment !== "object" ||
@@ -200,15 +326,15 @@ export function validateHostConfig(value) {
   ) {
     throw new Error("host config environment must contain string values");
   }
-  const pathPrepend = value.pathPrepend ?? [];
+  const pathPrepend = config.pathPrepend ?? [];
   if (!Array.isArray(pathPrepend)) {
     throw new Error("host config pathPrepend must be an array");
   }
   if (
-    !value.visionCoreArtifacts ||
-    typeof value.visionCoreArtifacts !== "object" ||
-    Array.isArray(value.visionCoreArtifacts) ||
-    Object.keys(value.visionCoreArtifacts).sort().join("\0") !==
+    !config.visionCoreArtifacts ||
+    typeof config.visionCoreArtifacts !== "object" ||
+    Array.isArray(config.visionCoreArtifacts) ||
+    Object.keys(config.visionCoreArtifacts).sort().join("\0") !==
       ["runtimeArchive", "recordedFixtureArchive"].sort().join("\0")
   ) {
     throw new Error(
@@ -217,11 +343,14 @@ export function validateHostConfig(value) {
   }
   return {
     schemaVersion: CONFIG_SCHEMA,
-    mirrorPath: absolute(value.mirrorPath, "host config mirrorPath"),
-    workspaceRoot: absolute(value.workspaceRoot, "host config workspaceRoot"),
-    stateRoot: absolute(value.stateRoot, "host config stateRoot"),
+    mirrorPath: absolute(config.mirrorPath, "host config mirrorPath"),
+    workspaceRoot: absolute(
+      config.workspaceRoot,
+      "host config workspaceRoot",
+    ),
+    stateRoot: absolute(config.stateRoot, "host config stateRoot"),
     baselineContract: absolute(
-      value.baselineContract,
+      config.baselineContract,
       "host config baselineContract",
     ),
     hostPrivateAddress,
@@ -232,12 +361,12 @@ export function validateHostConfig(value) {
     ),
     visionCoreArtifacts: {
       runtimeArchive: artifactFile(
-        value.visionCoreArtifacts?.runtimeArchive,
+        (config.visionCoreArtifacts as JsonRecord)?.runtimeArchive,
         "host config visionCoreArtifacts.runtimeArchive",
         true,
       ),
       recordedFixtureArchive: artifactFile(
-        value.visionCoreArtifacts?.recordedFixtureArchive,
+        (config.visionCoreArtifacts as JsonRecord)?.recordedFixtureArchive,
         "host config visionCoreArtifacts.recordedFixtureArchive",
         true,
       ),
@@ -245,7 +374,7 @@ export function validateHostConfig(value) {
   };
 }
 
-function executionEnvironment(config) {
+function executionEnvironment(config: HostConfig): NodeJS.ProcessEnv {
   return {
     ...process.env,
     ...config.environment,
@@ -255,15 +384,23 @@ function executionEnvironment(config) {
   };
 }
 
-async function loadConfig(path) {
+async function loadConfig(path: string): Promise<HostConfig> {
   return validateHostConfig(JSON.parse(await readFile(path, "utf8")));
 }
 
-function runProcess(command, args, options = {}) {
+function runProcess(
+  command: string,
+  args: string[],
+  options: ProcessRunOptions = {},
+): Promise<{
+  code: number;
+  signal: NodeJS.Signals | null;
+  pid: number | undefined;
+}> {
   return new Promise((resolvePromise, reject) => {
     let settled = false;
-    let timeout = null;
-    let killTimeout = null;
+    let timeout: NodeJS.Timeout | null = null;
+    let killTimeout: NodeJS.Timeout | null = null;
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: options.env,
@@ -274,15 +411,19 @@ function runProcess(command, args, options = {}) {
       if (timeout) clearTimeout(timeout);
       if (killTimeout) clearTimeout(killTimeout);
     };
-    const rejectOnce = (error) => {
+    const rejectOnce = (error: unknown) => {
       if (settled) return;
       settled = true;
       clearTimers();
-      reject(error);
+      reject(error instanceof Error ? error : new Error(String(error)));
     };
-    if (Number.isInteger(options.timeoutMs) && options.timeoutMs > 0) {
+    if (
+      typeof options.timeoutMs === "number" &&
+      Number.isInteger(options.timeoutMs) &&
+      options.timeoutMs > 0
+    ) {
       timeout = setTimeout(() => {
-        const error = new Error(
+        const error: ProcessError = new Error(
           `${command} timed out after ${options.timeoutMs}ms${options.timeoutLabel ? ` (${options.timeoutLabel})` : ""}`,
         );
         error.command = command;
@@ -301,7 +442,7 @@ function runProcess(command, args, options = {}) {
       clearTimers();
       if (code === 0) resolvePromise({ code, signal, pid: child.pid });
       else {
-        const error = new Error(
+        const error: ProcessError = new Error(
           `${command} exited with ${code ?? `signal ${signal ?? "unknown"}`}`,
         );
         error.command = command;
@@ -313,18 +454,24 @@ function runProcess(command, args, options = {}) {
   });
 }
 
-async function capture(command, args, options = {}) {
+async function capture(
+  command: string,
+  args: string[],
+  options: CaptureOptions = {},
+): Promise<{ stdout: string; stderr: string }> {
   let stdout = "";
   let stderr = "";
-  await new Promise((resolvePromise, reject) => {
+  await new Promise<void>((resolvePromise, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: options.env,
       stdio: ["ignore", "pipe", "pipe"],
     });
     let timedOut = false;
-    const timeout =
-      Number.isInteger(options.timeoutMs) && options.timeoutMs > 0
+    const timeout: NodeJS.Timeout | undefined =
+      typeof options.timeoutMs === "number" &&
+      Number.isInteger(options.timeoutMs) &&
+      options.timeoutMs > 0
         ? setTimeout(() => {
             timedOut = true;
             child.kill("SIGTERM");
@@ -337,7 +484,7 @@ async function capture(command, args, options = {}) {
         : undefined;
     child.stdout.on("data", (chunk) => (stdout += chunk));
     child.stderr.on("data", (chunk) => (stderr += chunk));
-    child.once("error", (error) => {
+    child.once("error", (error: Error) => {
       if (timeout) clearTimeout(timeout);
       reject(error);
     });
@@ -352,11 +499,11 @@ async function capture(command, args, options = {}) {
   return { stdout, stderr };
 }
 
-function runDirectory(config, runId) {
+function runDirectory(config: HostConfig, runId: string): string {
   return join(config.stateRoot, "runs", runId);
 }
 
-function fixtureIdentityForWorkspace(workspace) {
+function fixtureIdentityForWorkspace(workspace: string): JsonRecord {
   const raw = readFileSync(
     join(workspace, "scripts/testbed/fixtures/local-testbed-catalog.json"),
     "utf8",
@@ -374,31 +521,41 @@ function fixtureIdentityForWorkspace(workspace) {
   };
 }
 
-export function createRunId(commit, mode, now = Date.now()) {
+export function createRunId(
+  commit: string,
+  mode: string,
+  now: number = Date.now(),
+): string {
   return `RUN-${now}-${commit.slice(0, 12).toUpperCase()}-${mode.toUpperCase()}`;
 }
 
-function statusPath(config, runId) {
+function statusPath(config: HostConfig, runId: string): string {
   return join(runDirectory(config, runId), "status.json");
 }
 
-async function writeJson(path, value) {
+async function writeJson(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const pending = `${path}.${process.pid}.tmp`;
   await writeFile(pending, `${JSON.stringify(value, null, 2)}\n`, "utf8");
   await rename(pending, path);
 }
 
-async function readJson(path, fallback = null) {
+async function readJson(
+  path: string,
+  fallback: unknown = null,
+): Promise<unknown> {
   try {
     return JSON.parse(await readFile(path, "utf8"));
   } catch (error) {
-    if (error.code === "ENOENT") return fallback;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return fallback;
     throw error;
   }
 }
 
-async function withRequestLock(config, action) {
+async function withRequestLock<T>(
+  config: HostConfig,
+  action: () => Promise<T>,
+): Promise<T> {
   const lock = join(config.stateRoot, "scheduler.lock");
   for (let attempt = 0; attempt < 200; attempt += 1) {
     try {
@@ -409,15 +566,19 @@ async function withRequestLock(config, action) {
         await rm(lock, { recursive: true, force: true });
       }
     } catch (error) {
-      if (error.code !== "EEXIST") throw error;
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      await new Promise<void>((resolvePromise) =>
+        setTimeout(resolvePromise, 25),
+      );
     }
   }
   throw new Error("timed out acquiring testbed scheduler lock");
 }
 
-function processExists(pid) {
-  if (!Number.isInteger(pid) || pid < 2) return false;
+function processExists(pid: unknown): boolean {
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid < 2) {
+    return false;
+  }
   try {
     process.kill(pid, 0);
     return true;
@@ -426,8 +587,14 @@ function processExists(pid) {
   }
 }
 
-function processGroupExists(processGroupId) {
-  if (!Number.isInteger(processGroupId) || processGroupId < 2) return false;
+function processGroupExists(processGroupId: unknown): boolean {
+  if (
+    typeof processGroupId !== "number" ||
+    !Number.isInteger(processGroupId) ||
+    processGroupId < 2
+  ) {
+    return false;
+  }
   try {
     process.kill(-processGroupId, 0);
     return true;
@@ -436,11 +603,11 @@ function processGroupExists(processGroupId) {
   }
 }
 
-async function terminateProcessGroup(processGroupId) {
+async function terminateProcessGroup(processGroupId: number): Promise<void> {
   try {
     process.kill(-processGroupId, "SIGTERM");
   } catch (error) {
-    if (error.code === "ESRCH") return;
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
     throw error;
   }
   for (let attempt = 0; attempt < 50; attempt += 1) {
@@ -450,30 +617,33 @@ async function terminateProcessGroup(processGroupId) {
   try {
     process.kill(-processGroupId, "SIGKILL");
   } catch (error) {
-    if (error.code !== "ESRCH") throw error;
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
   }
   if (processGroupExists(processGroupId)) {
     throw new Error(`failed to terminate process group ${processGroupId}`);
   }
 }
 
-async function waitForTerminal(config, runId) {
+async function waitForTerminal(
+  config: HostConfig,
+  runId: string,
+): Promise<JsonRecord> {
   while (true) {
-    const status = await readJson(statusPath(config, runId));
+    const status = (await readJson(statusPath(config, runId))) as JsonRecord;
     if (!status) throw new Error(`run ${runId} has no canonical status`);
-    if (TERMINAL.has(status.status)) return status;
+    if (TERMINAL.has(String(status.status))) return status;
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
   }
 }
 
-function exitCodeFor(status) {
+function exitCodeFor(status: JsonRecord): number {
   if (status.status === "passed") return 0;
   if (status.status === "superseded") return 75;
   if (status.status === "failed") return 1;
   return 2;
 }
 
-function callerResult(status) {
+function callerResult(status: JsonRecord): JsonRecord {
   return {
     schemaVersion: "vem-runtime-testbed-caller-result/v1",
     runId: status.runId,
@@ -485,7 +655,10 @@ function callerResult(status) {
   };
 }
 
-async function assertMirrorCommit(config, commit) {
+async function assertMirrorCommit(
+  config: HostConfig,
+  commit: string,
+): Promise<void> {
   await capture("git", [
     `--git-dir=${config.mirrorPath}`,
     "cat-file",
@@ -494,7 +667,10 @@ async function assertMirrorCommit(config, commit) {
   ]);
 }
 
-async function materializeWorkspace(config, commit) {
+async function materializeWorkspace(
+  config: HostConfig,
+  commit: string,
+): Promise<string> {
   const workspace = join(config.workspaceRoot, commit);
   await rm(workspace, { recursive: true, force: true });
   await mkdir(config.workspaceRoot, { recursive: true });
@@ -514,12 +690,12 @@ async function materializeWorkspace(config, commit) {
   return workspace;
 }
 
-function sshArguments(guest) {
+function sshArguments(guest: JsonRecord): string[] {
   return [
     "-i",
-    guest.identityFile,
+    String(guest.identityFile),
     "-o",
-    `UserKnownHostsFile=${guest.knownHostsFile}`,
+    `UserKnownHostsFile=${String(guest.knownHostsFile)}`,
     "-o",
     "StrictHostKeyChecking=yes",
     "-o",
@@ -531,15 +707,15 @@ function sshArguments(guest) {
   ];
 }
 
-function scpArguments(guest) {
+function scpArguments(guest: JsonRecord): string[] {
   return ["-O", ...sshArguments(guest)];
 }
 
-function encodedPowerShell(script) {
+function encodedPowerShell(script: string): string {
   return Buffer.from(script, "utf16le").toString("base64");
 }
 
-function remotePowerShellCommandLength(script) {
+function remotePowerShellCommandLength(script: string): number {
   return [
     "powershell.exe",
     "-NoProfile",
@@ -548,8 +724,8 @@ function remotePowerShellCommandLength(script) {
   ].join(" ").length;
 }
 
-function boundedPowerShellChunks(blocks) {
-  const chunks = [];
+function boundedPowerShellChunks(blocks: string[]): string[] {
+  const chunks: string[] = [];
   let current = "";
   for (const block of blocks) {
     const candidate = current ? `${current}\n${block}` : block;
@@ -573,19 +749,20 @@ function boundedPowerShellChunks(blocks) {
   return chunks;
 }
 
-function canonicalIdentity(value) {
+function canonicalIdentity(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalIdentity);
   if (value && typeof value === "object") {
+    const record = value as JsonRecord;
     return Object.fromEntries(
       Object.keys(value)
         .sort()
-        .map((key) => [key, canonicalIdentity(value[key])]),
+        .map((key) => [key, canonicalIdentity(record[key])]),
     );
   }
   return value;
 }
 
-function visionCoreIdentity(runtime, fixture) {
+function visionCoreIdentity(runtime: Artifact, fixture: Artifact): string {
   return createHash("sha256")
     .update(
       JSON.stringify({
@@ -605,8 +782,11 @@ function visionCoreIdentity(runtime, fixture) {
     .digest("hex");
 }
 
-async function assertVisionCoreArtifact(artifact, label) {
-  let entry;
+async function assertVisionCoreArtifact(
+  artifact: Artifact,
+  label: string,
+): Promise<void> {
+  let entry: Awaited<ReturnType<typeof lstat>>;
   try {
     entry = await lstat(artifact.hostPath);
   } catch {
@@ -624,7 +804,9 @@ async function assertVisionCoreArtifact(artifact, label) {
   }
 }
 
-export async function loadVisionCoreArtifacts(config) {
+export async function loadVisionCoreArtifacts(
+  config: HostConfig,
+): Promise<VisionCorePreparation> {
   const runtime = config.visionCoreArtifacts.runtimeArchive;
   const fixture = config.visionCoreArtifacts.recordedFixtureArchive;
   await assertVisionCoreArtifact(runtime, "Vision runtime");
@@ -644,7 +826,7 @@ export async function loadVisionCoreArtifacts(config) {
     },
   };
   const root = `${GUEST_ACCEPTANCE_INPUT_CACHE}\\vision-core\\${sha256}`;
-  const guestFile = (artifact, name) =>
+  const guestFile = (artifact: Artifact, name: string): string =>
     `${GUEST_ACCEPTANCE_INPUT_CACHE}\\files\\${artifact.sha256}\\${name}`;
   return {
     guestInput: {
@@ -655,17 +837,23 @@ export async function loadVisionCoreArtifacts(config) {
       identity,
     },
     transfers: [
-      { ...runtime, guestPath: guestFile(runtime, "vision-runtime.zip") },
-      { ...fixture, guestPath: guestFile(fixture, "recorded-fixtures.zip") },
+      {
+        ...runtime,
+        guestPath: guestFile(runtime, "vision-runtime.zip"),
+      } as Artifact,
+      {
+        ...fixture,
+        guestPath: guestFile(fixture, "recorded-fixtures.zip"),
+      } as Artifact,
     ],
   };
 }
 
 export async function materializeVisionCoreArtifactSnapshot(
-  config,
-  root,
-  { reuse = false } = {},
-) {
+  config: HostConfig,
+  root: string,
+  { reuse = false }: { reuse?: boolean } = {},
+): Promise<VisionCorePreparation> {
   const preparation = await loadVisionCoreArtifacts(config);
   if (reuse) {
     await Promise.all(
@@ -675,13 +863,18 @@ export async function materializeVisionCoreArtifactSnapshot(
     );
     return preparation;
   }
-  const snapshotRoot = resolve(root, preparation.guestInput.identity.sha256);
+  const snapshotRoot = resolve(
+    root,
+    String(recordValue(preparation.guestInput.identity).sha256),
+  );
   await mkdir(snapshotRoot, { recursive: true });
   const names = ["vision-runtime.zip", "recorded-fixtures.zip"];
-  const transfers = preparation.transfers.map((transfer, index) => ({
-    ...transfer,
-    hostPath: join(snapshotRoot, names[index]),
-  }));
+  const transfers: Artifact[] = preparation.transfers.map(
+    (transfer: Artifact, index: number) => ({
+      ...transfer,
+      hostPath: join(snapshotRoot, names[index]),
+    }),
+  );
   await Promise.all(
     preparation.transfers.map((transfer, index) =>
       copyFile(transfer.hostPath, join(snapshotRoot, names[index])),
@@ -697,27 +890,36 @@ export async function materializeVisionCoreArtifactSnapshot(
   };
 }
 
-export function identicalVisionCoreArtifactSnapshot(left, right) {
+export function identicalVisionCoreArtifactSnapshot(
+  left: VisionCorePreparation | null | undefined,
+  right: VisionCorePreparation | null | undefined,
+): boolean {
+  if (!left || !right) return false;
   return (
-    Boolean(left && right) &&
     JSON.stringify(left.guestInput.identity) ===
-      JSON.stringify(right.guestInput.identity)
+    JSON.stringify(right.guestInput.identity)
   );
 }
 
-function powerShellLiteral(value) {
-  return `'${value.replaceAll("'", "''")}'`;
+function powerShellLiteral(value: unknown): string {
+  return `'${String(value).replaceAll("'", "''")}'`;
 }
 
-function uniqueGuestTransfers(transfers) {
-  const unique = new Map();
+function uniqueGuestTransfers(transfers: Artifact[]): GuestTransfer[] {
+  const unique = new Map<string, GuestTransfer>();
   for (const transfer of transfers) {
-    const previous = unique.get(transfer.guestPath);
+    const guestPath = String(transfer.guestPath ?? "");
+    const previous = unique.get(guestPath);
     if (!previous) {
-      unique.set(transfer.guestPath, transfer);
+      unique.set(guestPath, transfer as GuestTransfer);
       continue;
     }
-    const identity = ({ byteSize, members, sha256, sourceCommit }) =>
+    const identity = ({
+      byteSize,
+      members,
+      sha256,
+      sourceCommit,
+    }: Artifact): string =>
       JSON.stringify({
         byteSize,
         members: members ?? null,
@@ -727,11 +929,12 @@ function uniqueGuestTransfers(transfers) {
     if (identity(previous) !== identity(transfer)) {
       throw new Error("guest input cache destination identity conflicts");
     }
+    unique.set(guestPath, transfer as GuestTransfer);
   }
   return [...unique.values()];
 }
 
-function guestTransferByteSize(transfer) {
+function guestTransferByteSize(transfer: GuestTransfer): number {
   if (!transfer.members) {
     if (!Number.isSafeInteger(transfer.byteSize) || transfer.byteSize <= 0) {
       throw new Error(
@@ -762,7 +965,7 @@ function guestTransferByteSize(transfer) {
   return total;
 }
 
-function guestTransferTimeout(byteSize) {
+function guestTransferTimeout(byteSize: number): number {
   return Math.min(
     GUEST_TRANSFER_MAX_TIMEOUT_MS,
     Math.max(
@@ -773,7 +976,7 @@ function guestTransferTimeout(byteSize) {
   );
 }
 
-function guestInputCacheProbes(transfer) {
+function guestInputCacheProbes(transfer: GuestTransfer): string[] {
   const candidate = {
     byteSize: transfer.byteSize,
     guestPath: transfer.guestPath,
@@ -817,10 +1020,13 @@ function guestInputCacheProbes(transfer) {
   ];
 }
 
-function parseGuestInputCacheHits(output, transfers) {
-  let value;
+function parseGuestInputCacheHits(
+  output: string,
+  transfers: GuestTransfer[],
+): Set<string> {
+  let value: JsonRecord;
   try {
-    value = JSON.parse(output.trim());
+    value = JSON.parse(output.trim()) as JsonRecord;
   } catch {
     throw new Error("guest input cache probe returned invalid JSON");
   }
@@ -834,8 +1040,8 @@ function parseGuestInputCacheHits(output, transfers) {
     throw new Error("guest input cache probe returned invalid results");
   }
   const eligible = new Set(transfers.map((transfer) => transfer.guestPath));
-  const hits = new Set();
-  for (const path of value.cacheHits) {
+  const hits = new Set<string>();
+  for (const path of arrayValue(value.cacheHits)) {
     if (typeof path !== "string" || !eligible.has(path) || hits.has(path)) {
       throw new Error("guest input cache probe returned invalid results");
     }
@@ -844,13 +1050,21 @@ function parseGuestInputCacheHits(output, transfers) {
   return hits;
 }
 
-async function provisionVisionCoreInput({ config, pass, preparation }) {
+async function provisionVisionCoreInput({
+  config,
+  pass,
+  preparation,
+}: {
+  config: HostConfig;
+  pass: number;
+  preparation: VisionCorePreparation;
+}): Promise<void> {
   const path = join(config.stateRoot, "guest-input.json");
-  const guestInput = JSON.parse(await readFile(path, "utf8"));
+  const guestInput = JSON.parse(await readFile(path, "utf8")) as JsonRecord;
   await writeJson(path, {
     ...guestInput,
     workflowIdentity: {
-      ...guestInput.workflowIdentity,
+      ...recordValue(guestInput.workflowIdentity),
       pass,
       visionCore: preparation.guestInput.identity,
     },
@@ -864,9 +1078,15 @@ export async function stageGuestInputs({
   corePreparation,
   captureResult = capture,
   run = runProcess,
-}) {
+}: {
+  config: HostConfig;
+  contract: GuestContract;
+  corePreparation?: VisionCorePreparation | null;
+  captureResult?: typeof capture;
+  run?: typeof runProcess;
+}): Promise<void> {
   const guest = contract.testbed.guest;
-  const remote = `${guest.user}@${guest.host}`;
+  const remote = `${String(guest.user)}@${String(guest.host)}`;
   const ssh = sshArguments(guest);
   const scp = scpArguments(guest);
   const transfers = uniqueGuestTransfers(corePreparation?.transfers ?? []);
@@ -912,7 +1132,7 @@ export async function stageGuestInputs({
   const missingTransfers = transfers.filter(
     (transfer) => !cachedGuestFiles.has(transfer.guestPath),
   );
-  const cleanupBlocks = [
+  const cleanupBlocks: string[] = [
     ...missingTransfers.map((transfer) =>
       [
         `Remove-Item -LiteralPath ${powerShellLiteral(transfer.guestPath)} -Recurse -Force -ErrorAction SilentlyContinue`,
@@ -942,7 +1162,7 @@ export async function stageGuestInputs({
     );
   }
   for (const transfer of missingTransfers) {
-    const byteSize = transferByteSizes.get(transfer.guestPath);
+    const byteSize = transferByteSizes.get(transfer.guestPath) ?? 0;
     const timeoutMs = guestTransferTimeout(byteSize);
     await run(
       "scp",
@@ -963,7 +1183,7 @@ export async function stageGuestInputs({
     [
       ...scp,
       join(config.stateRoot, "guest-input.json"),
-      `${remote}:${guest.stagingPath}`,
+      `${remote}:${String(guest.stagingPath)}`,
     ],
     {
       timeoutMs: GUEST_TRANSFER_TIMEOUT_MS,
@@ -972,7 +1192,7 @@ export async function stageGuestInputs({
   );
 }
 
-export function powerShellFocusArgument(focus) {
+export function powerShellFocusArgument(focus: string[]): string {
   if (focus.length === 0) return "";
   const values = focus
     .map((name) => `'${name.replaceAll("'", "''")}'`)
@@ -987,7 +1207,14 @@ export function guestAcceptanceExecuteCommand({
   pass,
   focusArgument,
   guestEnvironment = [],
-}) {
+}: {
+  guestScript: string;
+  mode: string;
+  commit: string;
+  pass: number;
+  focusArgument: string;
+  guestEnvironment?: Array<{ name: string; value: string }>;
+}): string {
   const environmentPrefix = guestEnvironment
     .map(
       (entry) =>
@@ -1013,9 +1240,19 @@ async function stageAndRunGuest({
   pass,
   runRoot,
   visionCoreInputs,
-}) {
+}: {
+  config: HostConfig;
+  contract: GuestContract;
+  workspace: string;
+  commit: string;
+  mode: string;
+  focus?: string[];
+  pass: number;
+  runRoot: string;
+  visionCoreInputs: VisionCorePreparation;
+}): Promise<unknown> {
   const guest = contract.testbed.guest;
-  const remote = `${guest.user}@${guest.host}`;
+  const remote = `${String(guest.user)}@${String(guest.host)}`;
   const ssh = sshArguments(guest);
   const scp = scpArguments(guest);
   const archive = join(runRoot, `source-pass-${pass}.tar.gz`);
@@ -1138,8 +1375,8 @@ async function stageAndRunGuest({
     `& $pwsh -NoProfile -EncodedCommand '${encodedPowerShell(execute)}'`,
     "exit $LASTEXITCODE",
   ].join("\n");
-  let guestError = null;
-  let transportError = null;
+  let guestError: ProcessError | null = null;
+  let transportError: ProcessError | null = null;
   try {
     await runProcess(
       "ssh",
@@ -1159,13 +1396,14 @@ async function stageAndRunGuest({
       },
     );
   } catch (error) {
+    const processError = error as ProcessError;
     if (
-      (error.command === "ssh" || error.command === "scp") &&
-      (error.exitCode === 255 || error.timedOut === true)
+      (processError.command === "ssh" || processError.command === "scp") &&
+      (processError.exitCode === 255 || processError.timedOut === true)
     ) {
-      transportError = error;
+      transportError = processError;
     } else {
-      guestError = error;
+      guestError = processError;
       guestError.businessFailure = true;
     }
   }
@@ -1205,7 +1443,9 @@ async function stageAndRunGuest({
     const summaryPath = await findFile(evidence, "full-workflow-tracks.json");
     if (summaryPath) {
       try {
-        const summary = JSON.parse(readFileSync(summaryPath, "utf8"));
+        const summary = JSON.parse(
+          readFileSync(summaryPath, "utf8"),
+        ) as JsonRecord;
         const primary = summarizeGuestBusinessFailures(summary);
         if (primary) {
           guestError.message = `${guestError.message}; ${primary}; evidence=${evidence}`;
@@ -1219,52 +1459,73 @@ async function stageAndRunGuest({
   return {};
 }
 
-export function summarizeGuestBusinessFailures(summary) {
-  const failures = summary?.businessOutcome?.failures;
-  if (!Array.isArray(failures)) return null;
+export function summarizeGuestBusinessFailures(
+  summary: JsonRecord | null | undefined,
+): string | null {
+  const failures = arrayValue(
+    recordValue(summary?.businessOutcome).failures,
+  );
+  if (failures.length === 0) return null;
   const entries = failures
-    .filter((entry) => entry && typeof entry.set === "string")
-    .map((entry) => {
+    .filter(
+      (entry: unknown) =>
+        entry && typeof recordValue(entry).set === "string",
+    )
+    .map((entry: unknown) => {
+      const record = recordValue(entry);
       const reason =
-        typeof entry.reason === "string" ? entry.reason.trim() : "";
+        typeof record.reason === "string" ? record.reason.trim() : "";
       const report =
-        typeof entry.reportPath === "string" && entry.reportPath !== ""
-          ? ` (report: ${entry.reportPath})`
+        typeof record.reportPath === "string" && record.reportPath !== ""
+          ? ` (report: ${record.reportPath})`
           : "";
-      return `${entry.set}: ${reason.slice(0, 400)}${report}`;
+      return `${record.set}: ${reason.slice(0, 400)}${report}`;
     });
   return entries.length > 0 ? entries.join("; ") : null;
 }
 
-async function findFile(root, name) {
-  let entries;
+async function findFile(
+  root: string,
+  name: string,
+): Promise<string | null> {
+  let entries: Dirent[];
   try {
     entries = await readdir(root, { withFileTypes: true });
   } catch (error) {
-    if (error.code === "ENOENT") return null;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
   for (const entry of entries) {
     const path = join(root, entry.name);
     if (entry.isFile() && entry.name === name) return path;
     if (entry.isDirectory()) {
-      const nested = await findFile(path, name);
+      const nested: string | null = await findFile(path, name);
       if (nested) return nested;
     }
   }
   return null;
 }
 
-async function executeRun(options, config) {
-  const root = runDirectory(config, options.runId);
+async function executeRun(
+  options: OrchestratorOptions,
+  config: HostConfig,
+): Promise<JsonRecord> {
+  const runId = options.runId as string;
+  const commit = options.commit as string;
+  const mode = options.mode as string;
+  const focus = options.focus ?? [];
+  const root = runDirectory(config, runId);
   const compact = join(root, "compact");
-  let status = await readJson(statusPath(config, options.runId));
-  const update = async (next) => {
+  let status = (await readJson(statusPath(config, runId))) as JsonRecord;
+  const update = async (next: JsonRecord): Promise<void> => {
     const current =
-      (await readJson(statusPath(config, options.runId), status)) ?? {};
+      ((await readJson(
+        statusPath(config, runId),
+        status,
+      )) as JsonRecord) ?? {};
     const nextStatus = {
       ...current,
-      ...status,
+      ...(status ?? {}),
       ...next,
       updatedAt: new Date().toISOString(),
     };
@@ -1273,16 +1534,16 @@ async function executeRun(options, config) {
       return;
     }
     status = nextStatus;
-    if (isTerminalStatus(status.status)) {
+    if (isTerminalStatus(String(status.status))) {
       await mkdir(compact, { recursive: true });
       await writeJson(join(compact, "status.json"), status);
     }
-    await writeJson(statusPath(config, options.runId), status);
+    await writeJson(statusPath(config, runId), status);
   };
   try {
     await update({ status: "running", phase: "source" });
-    await assertMirrorCommit(config, options.commit);
-    const workspace = await materializeWorkspace(config, options.commit);
+    await assertMirrorCommit(config, commit);
+    const workspace = await materializeWorkspace(config, commit);
     const environment = executionEnvironment(config);
     const lockHash = (
       await capture("git", ["hash-object", "pnpm-lock.yaml"], {
@@ -1310,7 +1571,10 @@ async function executeRun(options, config) {
       );
       await writeJson(cachedLockMarker, { lockHash });
     }
-    const workspaceMarker = await readJson(materializedMarker, null);
+    const workspaceMarker = (await readJson(
+      materializedMarker,
+      null,
+    )) as JsonRecord | null;
     if (workspaceMarker?.lockHash !== lockHash) {
       await runProcess(
         "pnpm",
@@ -1319,13 +1583,15 @@ async function executeRun(options, config) {
       );
       await writeJson(materializedMarker, { lockHash });
     }
-    const contract = JSON.parse(readFileSync(config.baselineContract, "utf8"));
+    const contract = JSON.parse(
+      readFileSync(config.baselineContract, "utf8"),
+    ) as GuestContract;
     const currentFixtureIdentity = fixtureIdentityForWorkspace(workspace);
-    const passes = options.mode === "full" ? 2 : 1;
-    let passOneVisionCoreSnapshot = null;
-    let passOneGuestVisionCoreIdentity = null;
+    const passes = mode === "full" ? 2 : 1;
+    let passOneVisionCoreSnapshot: VisionCorePreparation | null = null;
+    let passOneGuestVisionCoreIdentity: string | null = null;
     for (let pass = 1; pass <= passes; pass += 1) {
-      if (options.mode === "full") {
+      if (mode === "full") {
         await update({ phase: `reconstruct-pass-${pass}`, pass });
         const reconstructionOut = join(
           root,
@@ -1337,9 +1603,9 @@ async function executeRun(options, config) {
             "scripts/testbed/local-testbed.ts",
             "reconstruct",
             "--mode",
-            options.mode,
+            mode,
             "--run-id",
-            `${options.runId}-PASS-${pass}`,
+            `${runId}-PASS-${pass}`,
             "--workspace",
             workspace,
             "--state-root",
@@ -1353,21 +1619,23 @@ async function executeRun(options, config) {
           ],
           {
             cwd: workspace,
-            env: { ...environment, GITHUB_SHA: options.commit },
+            env: { ...environment, GITHUB_SHA: commit },
           },
         );
       }
-      if (options.mode === "fast") {
-        const existingGuestInput = await readJson(
+      if (mode === "fast") {
+        const existingGuestInput = (await readJson(
           join(config.stateRoot, "guest-input.json"),
-        );
-        const reconstructionMarker = await readJson(
+        )) as JsonRecord | null;
+        const reconstructionMarker = (await readJson(
           join(config.stateRoot, "reconstruction.json"),
-        );
+        )) as JsonRecord | null;
         const fixtureIsCurrent =
-          existingGuestInput?.fixtureIdentity?.sha256 ===
+          recordValue(existingGuestInput?.fixtureIdentity).sha256 ===
             currentFixtureIdentity.sha256 &&
-          reconstructionMarker?.guestInput?.fixtureIdentity?.sha256 ===
+          recordValue(
+            recordValue(reconstructionMarker?.guestInput).fixtureIdentity,
+          ).sha256 ===
             currentFixtureIdentity.sha256;
         const preparationOut = fixtureIsCurrent
           ? join(root, `host-runtime-refresh-pass-${pass}.json`)
@@ -1388,7 +1656,7 @@ async function executeRun(options, config) {
             "--state-root",
             config.stateRoot,
             "--run-id",
-            fixtureIsCurrent ? options.runId : `${options.runId}-PASS-${pass}`,
+            fixtureIsCurrent ? runId : `${runId}-PASS-${pass}`,
             ...(fixtureIsCurrent ? [] : ["--mode", "fast"]),
             "--baseline-contract",
             config.baselineContract,
@@ -1399,22 +1667,28 @@ async function executeRun(options, config) {
           ],
           {
             cwd: workspace,
-            env: { ...environment, GITHUB_SHA: options.commit },
+            env: { ...environment, GITHUB_SHA: commit },
           },
         );
-        const preparation = JSON.parse(await readFile(preparationOut, "utf8"));
+        const preparation = JSON.parse(
+          await readFile(preparationOut, "utf8"),
+        ) as JsonRecord;
+        const preparationGuestInput = recordValue(preparation.guestInput);
+        const preparationRuntimeTestbed = recordValue(
+          preparation.runtimeTestbed,
+        );
         await update({
           hostRuntimeRefresh: {
             kind: fixtureIsCurrent ? "refresh" : "reconstruct",
             workspace: preparation.workspace,
             guestInput: {
-              sha256: preparation.guestInput.sha256,
-              machineCode: preparation.guestInput.machineCode,
+              sha256: preparationGuestInput.sha256,
+              machineCode: preparationGuestInput.machineCode,
               hostControlPlane:
-                preparation.guestInput.hostControlPlane ??
-                preparation.runtimeTestbed?.hostControlPlane,
+                preparationGuestInput.hostControlPlane ??
+                preparationRuntimeTestbed.hostControlPlane,
               fixtureIdentity:
-                preparation.guestInput.fixtureIdentity ??
+                preparationGuestInput.fixtureIdentity ??
                 currentFixtureIdentity,
             },
             timing: preparation.timing,
@@ -1427,7 +1701,7 @@ async function executeRun(options, config) {
         { reuse: true },
       );
       if (
-        options.mode === "full" &&
+        mode === "full" &&
         pass === 2 &&
         !identicalVisionCoreArtifactSnapshot(
           passOneVisionCoreSnapshot,
@@ -1436,7 +1710,7 @@ async function executeRun(options, config) {
       ) {
         throw new Error("full pass 2 Vision core input drifted from pass 1");
       }
-      if (options.mode === "full" && pass === 1) {
+      if (mode === "full" && pass === 1) {
         passOneVisionCoreSnapshot = visionCoreInputs;
         await writeJson(
           join(root, "vision-core-input-pass-1.json"),
@@ -1449,13 +1723,13 @@ async function executeRun(options, config) {
         preparation: visionCoreInputs,
       });
       await update({ phase: `guest-pass-${pass}` });
-      const guestExecution = await stageAndRunGuest({
+      await stageAndRunGuest({
         config,
         contract,
         workspace,
-        commit: options.commit,
-        mode: options.mode,
-        focus: options.focus,
+        commit,
+        mode,
+        focus,
         pass,
         runRoot: root,
         visionCoreInputs,
@@ -1467,18 +1741,23 @@ async function executeRun(options, config) {
       if (!coreSummaryPath) {
         throw new Error("guest did not publish validated Vision core identity");
       }
-      const guestSummary = JSON.parse(await readFile(coreSummaryPath, "utf8"));
-      const canonical = (value) => JSON.stringify(canonicalIdentity(value));
-      const guestCoreIdentity = canonical(guestSummary?.identity?.visionCore);
+      const guestSummary = JSON.parse(
+        await readFile(coreSummaryPath, "utf8"),
+      ) as JsonRecord;
+      const canonical = (value: unknown): string =>
+        JSON.stringify(canonicalIdentity(value));
+      const guestCoreIdentity = canonical(
+        recordValue(recordValue(guestSummary.identity).visionCore),
+      );
       if (
         guestCoreIdentity !== canonical(visionCoreInputs.guestInput.identity)
       ) {
         throw new Error("guest validated Vision core identity is invalid");
       }
-      if (options.mode === "full" && pass === 1) {
+      if (mode === "full" && pass === 1) {
         passOneGuestVisionCoreIdentity = guestCoreIdentity;
       } else if (
-        options.mode === "full" &&
+        mode === "full" &&
         guestCoreIdentity !== passOneGuestVisionCoreIdentity
       ) {
         throw new Error(
@@ -1486,7 +1765,7 @@ async function executeRun(options, config) {
         );
       }
     }
-    if (options.mode === "full") {
+    if (mode === "full") {
       await update({ phase: "stability-gate" });
       const passA = await findFile(
         join(compact, "pass-1"),
@@ -1506,7 +1785,7 @@ async function executeRun(options, config) {
         [
           "scripts/testbed/full-workflow-stability-gate.ts",
           "--commit",
-          options.commit,
+          commit,
           "--pass-a",
           passA,
           "--pass-b",
@@ -1523,40 +1802,48 @@ async function executeRun(options, config) {
       finishedAt: new Date().toISOString(),
     });
   } catch (error) {
+    const processError = error as ProcessError;
     await update({
-      status: error.businessFailure ? "failed" : "infrastructure_failed",
+      status: processError.businessFailure ? "failed" : "infrastructure_failed",
       phase: status?.phase ?? "unknown",
-      error: error.message,
+      error: processError.message,
       finishedAt: new Date().toISOString(),
     });
   }
   return status;
 }
 
-async function startRun(options, config) {
+async function startRun(
+  options: OrchestratorOptions,
+  config: HostConfig,
+): Promise<JsonRecord> {
   await mkdir(join(config.stateRoot, "runs"), { recursive: true });
-  await assertMirrorCommit(config, options.commit);
+  const commit = options.commit as string;
+  const mode = options.mode as string;
+  const focus = options.focus ?? [];
+  await assertMirrorCommit(config, commit);
   const activePath = join(config.stateRoot, "active-run.json");
   const selected = await withRequestLock(config, async () => {
-    const active = await readJson(activePath);
-    const runId = createRunId(options.commit, options.mode);
+    const active = (await readJson(activePath)) as JsonRecord | null;
+    const runId = createRunId(commit, mode);
     if (active && processExists(active.processGroupId)) {
       if (
-        active.commit === options.commit &&
-        active.mode === options.mode &&
+        active.commit === commit &&
+        active.mode === mode &&
         JSON.stringify(active.focus ?? []) ===
-          JSON.stringify(options.focus ?? [])
+          JSON.stringify(focus)
       ) {
         return { existing: true, runId: active.runId };
       }
-      if (options.mode === "clear_cache") {
+      if (mode === "clear_cache") {
         throw new Error(
           "clear_cache is accepted only while the testbed is idle",
         );
       }
-      const previousPath = statusPath(config, active.runId);
-      const previous = await readJson(previousPath);
-      if (previous && !TERMINAL.has(previous.status)) {
+      const activeRunId = String(active.runId ?? "");
+      const previousPath = statusPath(config, activeRunId);
+      const previous = (await readJson(previousPath)) as JsonRecord | null;
+      if (previous && !TERMINAL.has(String(previous.status))) {
         const superseded = {
           ...previous,
           status: "superseded",
@@ -1565,22 +1852,24 @@ async function startRun(options, config) {
           updatedAt: new Date().toISOString(),
         };
         await writeJson(previousPath, superseded);
-        await mkdir(previous.compactArtifactPath, { recursive: true });
+        await mkdir(String(previous.compactArtifactPath), {
+          recursive: true,
+        });
         await writeJson(
-          join(previous.compactArtifactPath, "status.json"),
+          join(String(previous.compactArtifactPath), "status.json"),
           superseded,
         );
       }
-      await terminateProcessGroup(active.processGroupId);
+      await terminateProcessGroup(active.processGroupId as number);
     }
     const root = runDirectory(config, runId);
     await mkdir(join(root, "compact"), { recursive: true });
     const initial = {
       schemaVersion: STATUS_SCHEMA,
       runId,
-      commit: options.commit,
-      mode: options.mode,
-      focus: options.focus,
+      commit,
+      mode,
+      focus,
       status: "queued",
       phase: "queued",
       createdAt: new Date().toISOString(),
@@ -1591,7 +1880,7 @@ async function startRun(options, config) {
     await writeJson(statusPath(config, runId), initial);
     const stdout = openSync(join(root, "worker.stdout.log"), "a");
     const stderr = openSync(join(root, "worker.stderr.log"), "a");
-    let child;
+    let child: ReturnType<typeof spawn> | undefined;
     try {
       child = spawn(
         process.execPath,
@@ -1599,10 +1888,10 @@ async function startRun(options, config) {
           new URL(import.meta.url).pathname,
           "execute",
           "--mode",
-          options.mode,
-          ...options.focus.flatMap((name) => ["--focus", name]),
+          mode,
+          ...focus.flatMap((name) => ["--focus", name]),
           "--commit",
-          options.commit,
+          commit,
           "--run-id",
           runId,
           "--config",
@@ -1616,17 +1905,19 @@ async function startRun(options, config) {
     }
     await writeJson(activePath, {
       runId,
-      commit: options.commit,
-      mode: options.mode,
+      commit,
+      mode,
       processGroupId: child.pid,
       startedAt: new Date().toISOString(),
     });
     return { existing: false, runId, child };
   });
-  const status = await waitForTerminal(config, selected.runId);
+  const status = await waitForTerminal(config, String(selected.runId));
   await withRequestLock(config, async () => {
-    const active = await readJson(activePath);
-    if (active?.runId === selected.runId) await rm(activePath, { force: true });
+    const active = (await readJson(activePath)) as JsonRecord | null;
+    if (active?.runId === String(selected.runId)) {
+      await rm(activePath, { force: true });
+    }
   });
   return status;
 }
@@ -1634,9 +1925,11 @@ async function startRun(options, config) {
 async function main() {
   const options = parseOrchestratorOptions(process.argv.slice(2));
   const config = await loadConfig(options.configPath);
-  let status;
+  let status: JsonRecord;
   if (options.command === "status") {
-    status = await readJson(statusPath(config, options.runId));
+    status = (await readJson(
+      statusPath(config, options.runId as string),
+    )) as JsonRecord;
     if (!status) throw new Error(`unknown run ${options.runId}`);
   } else if (options.command === "execute") {
     status = await executeRun(options, config);
@@ -1649,7 +1942,7 @@ async function main() {
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   main().catch((error) => {
-    console.error(`ERROR: ${error.message}`);
+    console.error(`ERROR: ${(error as Error).message}`);
     process.exitCode = 2;
   });
 }
