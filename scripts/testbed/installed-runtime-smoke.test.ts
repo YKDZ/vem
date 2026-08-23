@@ -7,15 +7,27 @@ import {
   runInstalledRuntimeSmoke,
 } from "./installed-runtime-smoke.ts";
 
+type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+type SmokeOptions = Parameters<typeof runInstalledRuntimeSmoke>[0];
+type FetchImpl = NonNullable<SmokeOptions["fetchImpl"]>;
+
 class FakeCdpSocket extends EventTarget {
   readyState = 1;
+  documentReadyStates: string[];
 
-  constructor(documentReadyStates = ["complete"]) {
+  constructor(documentReadyStates: string[] = ["complete"]) {
     super();
     this.documentReadyStates = [...documentReadyStates];
   }
 
-  send(payload) {
+  send(payload: string) {
     const request = JSON.parse(payload);
     const result =
       request.method === "Runtime.evaluate"
@@ -83,10 +95,13 @@ function evidence() {
   };
 }
 
-function fetchBoundary(url, options = {}) {
+function fetchBoundary(url: string | URL | Request, options: RequestInit = {}) {
   const value = String(url);
   if (value.endsWith("/healthz")) {
-    assert.equal(options.headers.authorization, "Bearer local-ipc-token");
+    assert.equal(
+      new Headers(options.headers).get("authorization"),
+      "Bearer local-ipc-token",
+    );
     return Promise.resolve({
       ok: true,
       status: 200,
@@ -117,7 +132,10 @@ function fetchBoundary(url, options = {}) {
     });
   }
   if (value.endsWith("/readyz")) {
-    assert.equal(options.headers.authorization, "Bearer local-ipc-token");
+    assert.equal(
+      new Headers(options.headers).get("authorization"),
+      "Bearer local-ipc-token",
+    );
     return Promise.resolve({
       ok: true,
       status: 200,
@@ -161,16 +179,16 @@ describe("installed production runtime smoke", () => {
     const result = await runInstalledRuntimeSmoke({
       mode: "full",
       evidence: evidence(),
-      fetchImpl: fetchBoundary,
+      fetchImpl: fetchBoundary as unknown as FetchImpl,
       webSocketFactory: () => new FakeCdpSocket(),
     });
     assert.equal(result.ok, true);
     assert.equal(result.machineCode, "VEM-TESTBED-LOCAL");
-    assert.equal(result.tauri.route, "#/catalog");
-    assert.equal(result.tauri.readyState, "complete");
-    assert.equal(result.tauri.listenerProcessId, 303);
-    assert.equal(result.daemon.healthStatus, "healthy");
-    assert.equal(result.daemon.runtimeMode, "windows_service");
+    assert.equal(recordValue(result.tauri).route, "#/catalog");
+    assert.equal(recordValue(result.tauri).readyState, "complete");
+    assert.equal(recordValue(result.tauri).listenerProcessId, 303);
+    assert.equal(recordValue(result.daemon).healthStatus, "healthy");
+    assert.equal(recordValue(result.daemon).runtimeMode, "windows_service");
     assert.deepEqual(
       result.completedTracks,
       declaredInstalledRuntimeTracks("full"),
@@ -183,12 +201,12 @@ describe("installed production runtime smoke", () => {
     const result = await runInstalledRuntimeSmoke({
       mode: "fast",
       evidence: evidence(),
-      fetchImpl: fetchBoundary,
+      fetchImpl: fetchBoundary as unknown as FetchImpl,
       webSocketFactory: () => socket,
     });
 
     assert.equal(result.ok, true);
-    assert.equal(result.tauri.readyState, "complete");
+    assert.equal(recordValue(result.tauri).readyState, "complete");
   });
 
   it("retries transient loopback refusal without accepting an invalid response", async () => {
@@ -196,11 +214,13 @@ describe("installed production runtime smoke", () => {
     const result = await runInstalledRuntimeSmoke({
       mode: "fast",
       evidence: evidence(),
-      fetchImpl: async (...args) => {
+      fetchImpl: (async (
+        ...args: Parameters<typeof fetchBoundary>
+      ) => {
         attempts += 1;
         if (attempts === 1) throw new TypeError("fetch failed");
         return fetchBoundary(...args);
-      },
+      }) as unknown as FetchImpl,
       webSocketFactory: () => new FakeCdpSocket(),
     });
     assert.equal(result.ok, true);

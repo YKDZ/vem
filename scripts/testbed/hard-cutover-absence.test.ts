@@ -19,10 +19,12 @@ import {
   scanHardCutoverAbsence,
 } from "./hard-cutover-absence.ts";
 
+type JsonRecord = Record<string, unknown>;
+
 const BINARY_ALLOWLIST_NAME = "hard-cutover-binary-allowlist.json";
 const BINARY_ALLOWLIST_SCHEMA = "vem-hard-cutover-binary-allowlist/v1";
 
-function writeBinaryAllowlist(root, entries) {
+function writeBinaryAllowlist(root: string, entries: JsonRecord[]) {
   writeFileSync(
     join(root, BINARY_ALLOWLIST_NAME),
     `${JSON.stringify(
@@ -34,12 +36,12 @@ function writeBinaryAllowlist(root, entries) {
   execFileSync("git", ["add", BINARY_ALLOWLIST_NAME], { cwd: root });
 }
 
-function initGuardRepo(root) {
+function initGuardRepo(root: string) {
   execFileSync("git", ["init", "-q"], { cwd: root });
   writeBinaryAllowlist(root, []);
 }
 
-function machineAudioEntry(path, payload) {
+function machineAudioEntry(path: string, payload: Buffer) {
   return {
     category: "machine-audio",
     gitMode: "100644",
@@ -51,15 +53,15 @@ function machineAudioEntry(path, payload) {
 
 describe("Vision V2 hard-cutover absence guard", () => {
   it("covers Machine, shared contracts, testbed scripts, package metadata, specs, and generated bundles", () => {
-    assert.deepEqual(assertHardCutoverAbsence(), []);
+    assert.deepEqual(assertHardCutoverAbsence({}), []);
   });
 
   it("detects every retired try-on category through dynamic negative fixtures", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-hard-cutover-"));
     try {
       initGuardRepo(root);
-      const dot = (...parts) => parts.join(".");
-      const pathWithBracedPart = (...parts) => parts.join("/");
+      const dot = (...parts: string[]) => parts.join(".");
+      const pathWithBracedPart = (...parts: string[]) => parts.join("/");
       const nestedCustomerRoute = [
         "#",
         "products",
@@ -632,7 +634,7 @@ describe("Vision V2 hard-cutover absence guard", () => {
       ),
       Buffer.from("MZ"),
     ]);
-    const malformedAssets = new Map([
+    const malformedAssets = new Map<string, [string, Buffer]>([
       ["jpeg-trailer", ["trailer.jpg", realJpegWithTrailer]],
       [
         "jpeg-payload",
@@ -662,7 +664,9 @@ describe("Vision V2 hard-cutover absence guard", () => {
         ["reserved.mp3", Buffer.alloc(256, 0xff).fill(0, 4)],
       ],
     ]);
-    malformedAssets.get("reserved-mpeg-sync")[1].set([0xff, 0xeb, 0xf0, 0x00]);
+    const reservedMpegSync = malformedAssets.get("reserved-mpeg-sync");
+    assert.ok(reservedMpegSync);
+    reservedMpegSync[1].set(Buffer.from([0xff, 0xeb, 0xf0, 0x00]));
     for (const [name, [filename, payload]] of malformedAssets) {
       const root = mkdtempSync(
         join(tmpdir(), `vem-hard-cutover-media-${name}-`),
@@ -765,7 +769,7 @@ describe("Vision V2 hard-cutover absence guard", () => {
     overlappingIco.writeUInt32LE(38, 18);
     overlappingIco.writeUInt32LE(38, 34);
     sourceIco.copy(overlappingIco, 38, 22);
-    const malformedAssets = new Map([
+    const malformedAssets = new Map<string, [string, Buffer]>([
       ["png-without-idat", ["no-idat.png", Buffer.concat(pngParts)]],
       ["png-corrupt-crc", ["corrupt-crc.png", corruptCrc]],
       ["wav-empty-data", ["empty.wav", emptyWav]],
