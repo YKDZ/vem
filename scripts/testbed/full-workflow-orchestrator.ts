@@ -66,21 +66,82 @@ const RUNTIME_BARRIER_POLL_MS = 1_000;
 // This is the one canonical registry for business acceptance.
 export const FULL_WORKFLOW_TRACK_DESCRIPTORS = BUSINESS_CHECK_REGISTRY;
 
-function required(value, label) {
+interface TrackRunner {
+  kind?: string;
+  script?: string;
+  args?: string[];
+  reportFileName?: string;
+  artifactDirectory?: string;
+}
+
+interface Track {
+  name: string;
+  key: string;
+  core?: boolean;
+  fullRequired?: boolean;
+  fixtureKey?: string;
+  runner: TrackRunner | null;
+  validator?: unknown;
+  blockedReason?: string | null;
+  allowActiveTransactionHandoff?: boolean;
+  restoreFixtureStock?: boolean;
+  reportPath: string | null;
+  artifactRoot: string | null;
+  command: string[] | null;
+  result?: {
+    businessStatus?: string;
+    error?: string | null;
+    [key: string]: unknown;
+  } | null;
+  [key: string]: unknown;
+}
+
+interface OutputCapture {
+  text: string;
+  observedBytes: number;
+  truncated: boolean;
+}
+
+interface TrackChild {
+  status: string;
+  exitCode: number | null;
+  stdout?: string | null;
+  stderr?: string | null;
+  stdoutCapture?: OutputCapture;
+  stderrCapture?: OutputCapture;
+  report?: unknown;
+  reportPath?: string | null;
+  artifactRoot?: string | null;
+  [key: string]: unknown;
+}
+
+interface FixtureAllocationEntry {
+  inventoryId?: unknown;
+  slotId?: unknown;
+  rowNo?: unknown;
+  cellNo?: unknown;
+  sku?: unknown;
+  onHandQty?: unknown;
+  [key: string]: unknown;
+}
+
+type FixtureAllocation = Record<string, FixtureAllocationEntry>;
+
+function required(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${label} is required`);
   }
   return value.trim();
 }
 
-function option(args, name) {
+function option(args: string[], name: string): string {
   const index = args.indexOf(`--${name}`);
   if (index === -1) throw new Error(`--${name} is required`);
   return required(args[index + 1], name);
 }
 
-function repeatableOption(args, name) {
-  const values = [];
+function repeatableOption(args: string[], name: string): string[] {
+  const values: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
     if (args[index] !== `--${name}`) continue;
     values.push(required(args[index + 1], name));
@@ -89,7 +150,14 @@ function repeatableOption(args, name) {
   return values;
 }
 
-function parseArgs(args) {
+function parseArgs(args: string[]): {
+  mode: string;
+  focus: string[];
+  commit: string | null;
+  guestInputPath: string;
+  handoffPath: string;
+  outPath: string;
+} {
   const mode = option(args, "mode");
   if (!["fast", "full"].includes(mode))
     throw new Error("--mode must be fast or full");
@@ -107,7 +175,10 @@ function parseArgs(args) {
   };
 }
 
-function boundedOutputCapture() {
+function boundedOutputCapture(): {
+  append: (chunk: unknown) => void;
+  finish: () => OutputCapture;
+} {
   let complete = Buffer.alloc(0);
   let head = Buffer.alloc(0);
   let tail = Buffer.alloc(0);
@@ -158,15 +229,20 @@ function boundedOutputCapture() {
   };
 }
 
-function normalizedOutputCapture(value) {
+function normalizedOutputCapture(value: unknown): OutputCapture {
+  const record = value as Record<string, unknown> | null | undefined;
   if (
-    value &&
-    typeof value === "object" &&
-    typeof value.text === "string" &&
-    Number.isInteger(value.observedBytes) &&
-    typeof value.truncated === "boolean"
+    record &&
+    typeof record.text === "string" &&
+    typeof record.observedBytes === "number" &&
+    Number.isInteger(record.observedBytes) &&
+    typeof record.truncated === "boolean"
   ) {
-    return { ...value, text: redactSensitiveEvidenceText(value.text) };
+    return {
+      text: redactSensitiveEvidenceText(record.text),
+      observedBytes: record.observedBytes,
+      truncated: record.truncated,
+    };
   }
   const capture = boundedOutputCapture();
   capture.append(value ?? "");
@@ -174,10 +250,10 @@ function normalizedOutputCapture(value) {
 }
 
 function persistTrackChildEvidence(
-  track,
-  child,
-  { artifactRootTrusted = true } = {},
-) {
+  track: Track,
+  child: TrackChild,
+  { artifactRootTrusted = true }: { artifactRootTrusted?: boolean } = {},
+): TrackChild {
   const stdout = normalizedOutputCapture(child.stdoutCapture ?? child.stdout);
   const stderr = normalizedOutputCapture(child.stderrCapture ?? child.stderr);
   const artifactRoot =
@@ -229,7 +305,10 @@ function persistTrackChildEvidence(
   };
 }
 
-function runTrack(command, label) {
+function runTrack(
+  command: string[],
+  label: string,
+): Promise<TrackChild> {
   return new Promise((resolvePromise) => {
     const child = spawn(command[0], command.slice(1), {
       env: process.env,
@@ -240,12 +319,12 @@ function runTrack(command, label) {
     let settled = false;
     child.stdout.on("data", (chunk) => stdout.append(chunk));
     child.stderr.on("data", (chunk) => stderr.append(chunk));
-    const finish = (result) => {
+    const finish = (result: TrackChild) => {
       if (settled) return;
       settled = true;
       resolvePromise(result);
     };
-    child.once("error", (error) =>
+    child.once("error", (error: Error) =>
       finish({
         label,
         command,
@@ -268,7 +347,7 @@ function runTrack(command, label) {
   });
 }
 
-function jsonIfPresent(path) {
+function jsonIfPresent(path: string): unknown {
   try {
     return JSON.parse(readFileSync(path, "utf8"));
   } catch {
@@ -276,31 +355,40 @@ function jsonIfPresent(path) {
   }
 }
 
-function clearTrackReport(path) {
+function clearTrackReport(path: unknown): void {
   if (typeof path !== "string" || path.trim() === "") return;
   rmSync(path, { force: true });
 }
 
-function clearTrackArtifacts(path) {
+function clearTrackArtifacts(path: unknown): void {
   if (typeof path !== "string" || path.trim() === "") return;
   rmSync(path, { recursive: true, force: true });
 }
 
-function workflowIdentity(guestInputPath, commit = null) {
-  const identity = jsonIfPresent(guestInputPath)?.workflowIdentity ?? null;
+function workflowIdentity(guestInputPath: string, commit: string | null = null): unknown {
+  const identity =
+    (jsonIfPresent(guestInputPath) as Record<string, unknown> | null)
+      ?.workflowIdentity ?? null;
   return commit ? { ...identity, githubSha: commit } : identity;
 }
 
-function supportingEvidenceFailure(label, error) {
+function supportingEvidenceFailure(label: string, error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return `${label}: ${redactSensitiveEvidenceText(message, 1_024)}`;
 }
 
-function unavailableEvidenceManifest({ tracks, reason }) {
+function unavailableEvidenceManifest({
+  tracks,
+  reason,
+}: {
+  tracks: Track[];
+  reason: string;
+}): Record<string, unknown> {
   const evidenceTracks = tracks.map((track) => {
     const result = track.result ?? null;
+    const resultRecord = result as Record<string, unknown> | null;
     const businessStatus =
-      result?.businessStatus === "passed" ? "passed" : "failed";
+      resultRecord?.businessStatus === "passed" ? "passed" : "failed";
     return {
       key: track.key,
       businessStatus,
@@ -311,7 +399,7 @@ function unavailableEvidenceManifest({ tracks, reason }) {
       screenshots: [],
       primaryReason:
         businessStatus === "failed"
-          ? (result?.error ?? "supporting evidence is unavailable")
+          ? (resultRecord?.error ?? "supporting evidence is unavailable")
           : null,
       diagnostics: [],
     };
@@ -337,7 +425,7 @@ function unavailableEvidenceManifest({ tracks, reason }) {
   };
 }
 
-function writeJson(path, value) {
+function writeJson(path: string, value: unknown): void {
   mkdirSync(dirname(resolve(path)), { recursive: true });
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
@@ -345,21 +433,36 @@ function writeJson(path, value) {
 export function refreshDaemonReadyHandoff({
   handoffPath,
   readyPath = DAEMON_READY_FILE,
-  handoff = jsonIfPresent(handoffPath),
-}) {
-  const ready = jsonIfPresent(readyPath);
-  if (!handoff?.daemon || !ready) {
+  handoff = jsonIfPresent(handoffPath) as Record<string, unknown> | null,
+}: {
+  handoffPath: string;
+  readyPath?: string;
+  handoff?: Record<string, unknown> | null;
+}): Record<string, unknown> {
+  const ready = jsonIfPresent(readyPath) as Record<string, unknown> | null;
+  if (
+    !handoff ||
+    typeof handoff !== "object" ||
+    !handoff.daemon ||
+    !ready
+  ) {
     throw new Error("daemon ready handoff inputs are unavailable");
   }
   for (const key of ["healthzUrl", "readyzUrl", "ipcToken", "generation"]) {
     required(ready[key], `daemon ready ${key}`);
   }
-  handoff.daemon.ready = { ...ready };
+  (handoff as Record<string, unknown>).daemon = {
+    ...(handoff.daemon as Record<string, unknown>),
+    ready: { ...(ready as Record<string, unknown>) },
+  };
   writeJson(handoffPath, handoff);
   return handoff;
 }
 
-export function reloadRuntimeHandoff(handoffPath, handoff) {
+export function reloadRuntimeHandoff(
+  handoffPath: string,
+  handoff: Record<string, unknown>,
+): Record<string, unknown> {
   const current = jsonIfPresent(handoffPath);
   if (!current) throw new Error("runtime handoff is unavailable");
   Object.assign(handoff, current);
@@ -367,13 +470,19 @@ export function reloadRuntimeHandoff(handoffPath, handoff) {
 }
 
 export async function waitForInstalledRuntimeBarrier(
-  handoff,
+  handoff: { cdp?: { endpoint?: unknown } } | null | undefined,
   {
     discoverTarget = discoverCanonicalMachineUiTarget,
     timeoutMs = RUNTIME_BARRIER_TIMEOUT_MS,
     pollMs = RUNTIME_BARRIER_POLL_MS,
+  }: {
+    discoverTarget?: (
+      options: Record<string, unknown>,
+    ) => Promise<Record<string, unknown>>;
+    timeoutMs?: number;
+    pollMs?: number;
   } = {},
-) {
+): Promise<Record<string, unknown>> {
   const endpoint = handoff?.cdp?.endpoint ?? "http://127.0.0.1:9222";
   const deadline = Date.now() + timeoutMs;
   let lastError = null;
@@ -395,7 +504,14 @@ export async function waitForInstalledRuntimeBarrier(
   );
 }
 
-function commandForTrack(track, { mode, guestInputPath, handoffPath }) {
+function commandForTrack(
+  track: Track,
+  {
+    mode,
+    guestInputPath,
+    handoffPath,
+  }: { mode: string; guestInputPath: string; handoffPath: string },
+): string[] | null {
   if (!track.runner) return null;
   if (track.runner.kind === "powershell") {
     return [
@@ -403,29 +519,31 @@ function commandForTrack(track, { mode, guestInputPath, handoffPath }) {
       "-NoProfile",
       "-NonInteractive",
       "-File",
-      track.runner.script,
+      required(track.runner.script, "runner script"),
       "-GuestInputPath",
       guestInputPath,
       "-HandoffPath",
       handoffPath,
       "-OutPath",
-      track.reportPath,
+      required(track.reportPath, "track report path"),
       "-FixtureKey",
-      track.fixtureKey,
+      required(track.fixtureKey, "track fixture key"),
     ];
   }
   return [
     process.execPath,
-    track.runner.script,
-    ...(track.runner.args.length ? track.runner.args : ["--mode", mode]),
+    required(track.runner.script, "runner script"),
+    ...(track.runner.args && track.runner.args.length
+      ? track.runner.args
+      : ["--mode", mode]),
     "--guest-input",
     guestInputPath,
     "--handoff",
     handoffPath,
     "--out",
-    track.reportPath,
+    required(track.reportPath, "track report path"),
     "--fixture-key",
-    track.fixtureKey,
+    required(track.fixtureKey, "track fixture key"),
   ];
 }
 
@@ -435,15 +553,28 @@ export function buildWorkflowTrackCommands({
   guestInputPath,
   handoffPath,
   outPath,
-}) {
+}: {
+  mode: string;
+  focus?: string[];
+  guestInputPath: string;
+  handoffPath: string;
+  outPath: string;
+}): { tracks: Track[] } {
   const root = dirname(resolve(outPath));
-  const tracks = selectBusinessChecks({ mode, focus }).map((descriptor) => {
-    const runner = descriptor.runner;
-    const track = {
-      ...descriptor,
+  const tracks = (
+    selectBusinessChecks({ mode, focus }) as unknown as Track[]
+  ).map((descriptor) => {
+    const descriptorTrack = descriptor as unknown as Track;
+    const runner = descriptorTrack.runner;
+    const track: Track = {
+      ...descriptorTrack,
       key: descriptor.name,
-      reportPath: runner ? join(root, runner.reportFileName) : null,
-      artifactRoot: runner ? join(root, runner.artifactDirectory) : null,
+      reportPath: runner
+        ? join(root, required(runner.reportFileName, "report file name"))
+        : null,
+      artifactRoot: runner
+        ? join(root, required(runner.artifactDirectory, "artifact directory"))
+        : null,
     };
     return {
       ...track,
@@ -453,13 +584,14 @@ export function buildWorkflowTrackCommands({
   return { tracks };
 }
 
-function shortError(result) {
+function shortError(result: { stderr?: unknown }): string | null {
   return (
-    (result.stderr || "").trim().replaceAll(/\s+/g, " ").slice(-500) || null
+    String(result.stderr ?? "").trim().replaceAll(/\s+/g, " ").slice(-500) ||
+    null
   );
 }
 
-function redactedOptionalError(value) {
+function redactedOptionalError(value: unknown): string | null {
   if (value == null) return null;
   const redacted = redactSensitiveEvidenceText(value).trim();
   return redacted || null;
@@ -476,12 +608,29 @@ export async function runSerialTrackLifecycle({
   now = () => new Date(),
   clearReport = clearTrackReport,
   clearArtifacts = clearTrackArtifacts,
-}) {
-  const executed = [];
+}: {
+  tracks: Track[];
+  runTrack: (track: Track) => Promise<TrackChild>;
+  captureTerminal: (
+    track: Track,
+    context: { child: TrackChild; report: unknown },
+  ) => Promise<Record<string, unknown>>;
+  recover: (
+    track: Track,
+    context: { child: TrackChild; report: unknown; terminal: unknown },
+  ) => Promise<Record<string, unknown>>;
+  beforeTrack?: (track: Track) => unknown;
+  haltOnRecoveryFailure?: boolean;
+  emitTrackProgress?: (event: Record<string, unknown>) => unknown;
+  now?: () => Date;
+  clearReport?: (path: string | null, track: Track) => void;
+  clearArtifacts?: (path: string | null, track: Track) => void;
+}): Promise<Array<Record<string, unknown>>> {
+  const executed: Array<Record<string, unknown>> = [];
   for (const track of tracks) {
     const startedAt = now().toISOString();
     emitTrackProgress({ type: "started", track, startedAt });
-    let child;
+    let child: TrackChild;
     const evidenceTrust = { report: false, artifactRoot: false };
     try {
       if (!track.runner) {
@@ -492,7 +641,7 @@ export async function runSerialTrackLifecycle({
           report: null,
         };
       } else {
-        const cleanupErrors = [];
+        const cleanupErrors: string[] = [];
         try {
           clearReport(track.reportPath, track);
           evidenceTrust.report = true;
@@ -526,7 +675,7 @@ export async function runSerialTrackLifecycle({
       artifactRootTrusted: evidenceTrust.artifactRoot,
     });
     const report = evidenceTrust.report
-      ? (child.report ?? jsonIfPresent(track.reportPath))
+      ? (child.report ?? jsonIfPresent(track.reportPath ?? ""))
       : null;
     let terminal;
     try {
@@ -542,7 +691,7 @@ export async function runSerialTrackLifecycle({
     const validation = validateBusinessCheckReport(
       track,
       report,
-      track.reportPath,
+      track.reportPath ?? "",
       {
         artifactRoot: evidenceTrust.artifactRoot ? track.artifactRoot : null,
         visionBaseUrl: process.env.VISION_BASE_URL ?? "http://127.0.0.1:27892",
@@ -582,7 +731,7 @@ export async function runSerialTrackLifecycle({
             ? "failed"
             : "passed",
       exitCode: child.exitCode,
-      reportOk: report?.ok ?? null,
+      reportOk: (report as Record<string, unknown> | null)?.ok ?? null,
       evidenceTrust,
       validator: validation,
       startedAt,
@@ -601,11 +750,13 @@ export async function runSerialTrackLifecycle({
           : (shortError(child) ?? validation.reason)
         : terminalFailed
           ? redactedOptionalError(
-              terminal.reason ?? "terminal facts are incomplete",
+              (terminal as Record<string, unknown>).reason ??
+                "terminal facts are incomplete",
             )
           : recoveryFailed
             ? redactedOptionalError(
-                recovery.errors?.join("; ") ?? "handoff recovery failed",
+                (recovery.errors as string[] | undefined)?.join("; ") ??
+                  "handoff recovery failed",
               )
             : null,
       terminal: sanitizeSensitiveEvidenceValue(terminal),
@@ -625,30 +776,33 @@ export async function runSerialTrackLifecycle({
 }
 
 async function boundedFetch(
-  url,
-  options = {},
+  url: string | URL,
+  options: RequestInit = {},
   timeoutMs = CONTROL_PLANE_TIMEOUT_MS,
-) {
+): Promise<Response> {
   try {
     return await fetch(url, {
       ...options,
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
-    if (error?.name === "TimeoutError" || error?.name === "AbortError") {
+    if (
+      (error as { name?: unknown })?.name === "TimeoutError" ||
+      (error as { name?: unknown })?.name === "AbortError"
+    ) {
       throw new Error(`request timed out after ${timeoutMs} ms: ${url}`);
     }
     throw error;
   }
 }
 
-function sleepMs(milliseconds) {
+function sleepMs(milliseconds: number): Promise<void> {
   return new Promise((resolvePromise) =>
     setTimeout(resolvePromise, milliseconds),
   );
 }
 
-function isTransientBoundaryError(error) {
+function isTransientBoundaryError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return (
     error instanceof TypeError ||
@@ -659,10 +813,10 @@ function isTransientBoundaryError(error) {
 }
 
 async function retryTransientBoundary(
-  label,
-  operation,
-  { timeoutMs = 10_000, pollMs = 250 } = {},
-) {
+  label: string,
+  operation: () => Promise<unknown>,
+  { timeoutMs = 10_000, pollMs = 250 }: { timeoutMs?: number; pollMs?: number } = {},
+): Promise<unknown> {
   const deadline = Date.now() + timeoutMs;
   let lastError;
   do {
@@ -680,8 +834,14 @@ async function retryTransientBoundary(
   );
 }
 
-function controlPlaneRequest(guestInput, path, body = {}) {
-  const controlPlane = guestInput?.hostControlPlane;
+function controlPlaneRequest(
+  guestInput: Record<string, unknown> | null | undefined,
+  path: string,
+  body: unknown = {},
+): Promise<unknown> {
+  const controlPlane = guestInput?.hostControlPlane as
+    | Record<string, unknown>
+    | undefined;
   if (!controlPlane?.endpoint || !controlPlane?.token) {
     throw new Error(
       "guest input is missing hostControlPlane endpoint and token",
@@ -706,18 +866,24 @@ function controlPlaneRequest(guestInput, path, body = {}) {
   );
 }
 
-function daemonGet(handoff, path) {
-  const healthzUrl = required(
-    handoff?.daemon?.ready?.healthzUrl,
+function daemonGet(
+  handoff: Record<string, unknown> | null | undefined,
+  path: string,
+): Promise<unknown> {
+  const ready = (
+    handoff?.daemon as Record<string, unknown> | undefined
+  )?.ready as Record<string, unknown> | undefined;
+  const healthz = required(
+    ready?.healthzUrl,
     "daemon healthzUrl",
   );
-  const baseUrl = healthzUrl.endsWith("/healthz")
-    ? healthzUrl.slice(0, -"/healthz".length)
-    : healthzUrl;
+  const baseUrl = healthz.endsWith("/healthz")
+    ? healthz.slice(0, -"/healthz".length)
+    : healthz;
   return retryTransientBoundary(`daemon GET ${path}`, () =>
     boundedFetch(`${baseUrl}${path}`, {
       headers: {
-        authorization: `Bearer ${required(handoff?.daemon?.ready?.ipcToken, "daemon ipcToken")}`,
+        authorization: `Bearer ${required(ready?.ipcToken, "daemon ipcToken")}`,
       },
     }).then(async (response) => {
       const payload = await response.json().catch(() => null);
@@ -730,19 +896,26 @@ function daemonGet(handoff, path) {
   );
 }
 
-function daemonPost(handoff, path, body) {
-  const healthzUrl = required(
-    handoff?.daemon?.ready?.healthzUrl,
+function daemonPost(
+  handoff: Record<string, unknown> | null | undefined,
+  path: string,
+  body: unknown,
+): Promise<unknown> {
+  const ready = (
+    handoff?.daemon as Record<string, unknown> | undefined
+  )?.ready as Record<string, unknown> | undefined;
+  const healthz = required(
+    ready?.healthzUrl,
     "daemon healthzUrl",
   );
-  const baseUrl = healthzUrl.endsWith("/healthz")
-    ? healthzUrl.slice(0, -"/healthz".length)
-    : healthzUrl;
+  const baseUrl = healthz.endsWith("/healthz")
+    ? healthz.slice(0, -"/healthz".length)
+    : healthz;
   return retryTransientBoundary(`daemon POST ${path}`, () =>
     boundedFetch(`${baseUrl}${path}`, {
       method: "POST",
       headers: {
-        authorization: `Bearer ${required(handoff?.daemon?.ready?.ipcToken, "daemon ipcToken")}`,
+        authorization: `Bearer ${required(ready?.ipcToken, "daemon ipcToken")}`,
         "content-type": "application/json",
       },
       body: JSON.stringify(body),
@@ -757,26 +930,32 @@ function daemonPost(handoff, path, body) {
   );
 }
 
-function unwrapServiceApiEnvelope(payload) {
+function unwrapServiceApiEnvelope(payload: unknown): unknown {
+  const record = payload as Record<string, unknown> | null | undefined;
   if (
-    payload &&
-    typeof payload === "object" &&
-    !Array.isArray(payload) &&
-    payload.code === 0 &&
-    Object.hasOwn(payload, "data")
+    record &&
+    typeof record === "object" &&
+    !Array.isArray(record) &&
+    record.code === 0 &&
+    Object.hasOwn(record, "data")
   ) {
-    return payload.data;
+    return record.data;
   }
   return payload;
 }
 
-async function serviceApiRequest(guestInput, path, options = {}) {
+async function serviceApiRequest(
+  guestInput: Record<string, unknown> | null | undefined,
+  path: string,
+  options: { method?: unknown; token?: unknown; body?: unknown } = {},
+): Promise<unknown> {
   const baseUrl = required(
-    guestInput?.runtimeBootstrap?.provisioningApiBaseUrl,
+    (guestInput?.runtimeBootstrap as Record<string, unknown> | undefined)
+      ?.provisioningApiBaseUrl,
     "runtime bootstrap provisioning API base URL",
   ).replace(/\/+$/, "");
   const response = await boundedFetch(`${baseUrl}${path}`, {
-    method: options.method ?? "GET",
+    method: String(options.method ?? "GET"),
     headers: {
       ...(options.token ? { authorization: `Bearer ${options.token}` } : {}),
       ...(options.body ? { "content-type": "application/json" } : {}),
@@ -784,7 +963,10 @@ async function serviceApiRequest(guestInput, path, options = {}) {
     ...(options.body ? { body: JSON.stringify(options.body) } : {}),
   });
   const payload = await response.json().catch(() => null);
-  if (!response.ok || payload?.code !== 0) {
+  if (
+    !response.ok ||
+    (payload as Record<string, unknown> | null)?.code !== 0
+  ) {
     throw new Error(
       `${options.method ?? "GET"} ${path} returned HTTP ${response.status}: ${JSON.stringify(payload)}`,
     );
@@ -798,31 +980,44 @@ export async function waitForPlatformFixtureStock({
   request = serviceApiRequest,
   timeoutMs = PLATFORM_STOCK_READY_TIMEOUT_MS,
   pollMs = 250,
-}) {
+}: {
+  guestInput: Record<string, unknown> | null | undefined;
+  fixtureAllocation: FixtureAllocation | null | undefined;
+  request?: (
+    guestInput: Record<string, unknown> | null | undefined,
+    path: string,
+    options: Record<string, unknown>,
+  ) => Promise<unknown>;
+  timeoutMs?: number;
+  pollMs?: number;
+}): Promise<{ inventories: Array<Record<string, unknown>> }> {
   const fixtures = Object.values(fixtureAllocation ?? {});
   if (fixtures.length === 0) {
     throw new Error("platform fixture stock wait requires allocated slots");
   }
-  const login = await request(guestInput, "/auth/login", {
+  const guest = guestInput as Record<string, unknown> | null | undefined;
+  const login = (await request(guest, "/auth/login", {
     method: "POST",
     body: {
       username: required(
-        guestInput?.serviceApi?.adminUsername,
+        (guest?.serviceApi as Record<string, unknown> | undefined)
+          ?.adminUsername,
         "service API admin username",
       ),
       password: required(
-        guestInput?.serviceApi?.adminPassword,
+        (guest?.serviceApi as Record<string, unknown> | undefined)
+          ?.adminPassword,
         "service API admin password",
       ),
     },
-  });
+  })) as { accessToken?: unknown } | null;
   const token = required(login?.accessToken, "service API access token");
   const deadline = Date.now() + timeoutMs;
-  let last = [];
+  let last: Array<Record<string, unknown>> = [];
   while (Date.now() < deadline) {
-    const page = await request(guestInput, "/inventories?page=1&pageSize=100", {
+    const page = (await request(guest, "/inventories?page=1&pageSize=100", {
       token,
-    });
+    })) as { items?: Array<Record<string, unknown>> } | null;
     last = fixtures.map((fixture) => {
       const inventory = (page?.items ?? []).find(
         (entry) => entry?.id === fixture.inventoryId,
@@ -856,27 +1051,52 @@ export async function ensureFixtureStockReady({
   daemonPost: post,
   timeoutMs = STOCK_READY_TIMEOUT_MS,
   pollMs = 500,
-}) {
+}: {
+  fixtureAllocation: FixtureAllocation | null | undefined;
+  daemonGet: (path: string) => Promise<unknown>;
+  daemonPost: (path: string, body: unknown) => Promise<unknown>;
+  timeoutMs?: number;
+  pollMs?: number;
+}): Promise<Record<string, unknown>> {
   const fixtures = Object.values(fixtureAllocation ?? {});
-  const hasCoordinateIdentity = (fixture) =>
-    Number.isInteger(fixture?.rowNo) &&
-    Number.isInteger(fixture?.cellNo) &&
+  const asRecord = (value: unknown): Record<string, unknown> | null =>
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  const getRecord = async (
+    path: string,
+  ): Promise<Record<string, unknown> | null> => asRecord(await get(path));
+  const hasCoordinateIdentity = (fixture: FixtureAllocationEntry): boolean =>
+    typeof fixture?.rowNo === "number" &&
+    Number.isInteger(fixture.rowNo) &&
+    typeof fixture?.cellNo === "number" &&
+    Number.isInteger(fixture.cellNo) &&
     typeof fixture?.sku === "string" &&
     fixture.sku !== "";
-  const fixtureKey = (fixture) =>
+  const fixtureKey = (fixture: FixtureAllocationEntry): string =>
     hasCoordinateIdentity(fixture)
       ? `${fixture.rowNo}:${fixture.cellNo}:${fixture.sku}`
       : `slot:${fixture.slotId}`;
-  const itemMatchesFixture = (item, fixture) =>
+  const itemMatchesFixture = (
+    item: Record<string, unknown>,
+    fixture: FixtureAllocationEntry,
+  ): boolean =>
     hasCoordinateIdentity(fixture)
       ? item?.rowNo === fixture.rowNo &&
         item?.cellNo === fixture.cellNo &&
         item?.sku === fixture.sku
       : item?.slotId === fixture.slotId;
-  const itemForFixture = (saleView, fixture) =>
-    (saleView?.items ?? []).find((item) => itemMatchesFixture(item, fixture));
-  const desiredByFixtureKey = new Map(
-    fixtures.map((fixture) => [fixtureKey(fixture), fixture.onHandQty]),
+  const itemForFixture = (
+    saleView: Record<string, unknown> | null,
+    fixture: FixtureAllocationEntry,
+  ): Record<string, unknown> | undefined =>
+    (Array.isArray(saleView?.items) ? saleView.items : []).find((item) =>
+      itemMatchesFixture(item as Record<string, unknown>, fixture),
+    ) as Record<string, unknown> | undefined;
+  const desiredByFixtureKey = new Map<string, unknown>(
+    fixtures.map(
+      (fixture): [string, unknown] => [fixtureKey(fixture), fixture.onHandQty],
+    ),
   );
   if (
     desiredByFixtureKey.size === 0 ||
@@ -884,13 +1104,16 @@ export async function ensureFixtureStockReady({
       (fixture) =>
         (!hasCoordinateIdentity(fixture) &&
           (typeof fixture?.slotId !== "string" || fixture.slotId === "")) ||
-        !Number.isInteger(fixture?.onHandQty),
+        typeof fixture?.onHandQty !== "number" ||
+        !Number.isInteger(fixture.onHandQty),
     )
   ) {
     throw new Error("fixture stock preflight requires allocated slots");
   }
 
-  const targetIsReady = (saleView) => {
+  const targetIsReady = (
+    saleView: Record<string, unknown> | null,
+  ): boolean => {
     return fixtures.every((fixture) => {
       const item = itemForFixture(saleView, fixture);
       const desired = desiredByFixtureKey.get(fixtureKey(fixture));
@@ -901,7 +1124,9 @@ export async function ensureFixtureStockReady({
       );
     });
   };
-  const attestationStatusSummary = (status) =>
+  const attestationStatusSummary = (
+    status: Record<string, unknown> | null,
+  ): Record<string, unknown> | null =>
     status
       ? {
           status: status.status,
@@ -911,21 +1136,28 @@ export async function ensureFixtureStockReady({
           inconsistentSlots: status.inconsistentSlots,
         }
       : null;
-  const waitForAttestationReady = async (attestationId) => {
+  const waitForAttestationReady = async (
+    attestationId: unknown,
+  ): Promise<Record<string, unknown> | null> => {
     const attestationDeadline =
       Date.now() + Math.max(timeoutMs, STOCK_ATTESTATION_READY_TIMEOUT_MS);
-    let status = null;
+    let status: Record<string, unknown> | null = null;
     while (Date.now() < attestationDeadline) {
-      status = await get("/v1/stock/attestation");
+      status = await getRecord("/v1/stock/attestation");
       if (
         status?.status === "ready" &&
         status?.attestationId === attestationId &&
-        (status?.inconsistentSlots ?? []).length === 0
+        (Array.isArray(status?.inconsistentSlots)
+          ? status.inconsistentSlots
+          : []
+        ).length === 0
       ) {
         return status;
       }
       if (
-        ["failed", "rejected", "inconsistent", "stale"].includes(status?.status)
+        ["failed", "rejected", "inconsistent", "stale"].includes(
+          String(status?.status),
+        )
       ) {
         throw new Error(
           `fixture stock attestation did not complete: ${JSON.stringify(
@@ -941,7 +1173,9 @@ export async function ensureFixtureStockReady({
       )}`,
     );
   };
-  const fixtureReadinessSnapshot = (saleView) =>
+  const fixtureReadinessSnapshot = (
+    saleView: Record<string, unknown> | null,
+  ): Array<Record<string, unknown>> =>
     fixtures.map((fixture) => {
       const item = itemForFixture(saleView, fixture);
       const desired = desiredByFixtureKey.get(fixtureKey(fixture));
@@ -974,16 +1208,16 @@ export async function ensureFixtureStockReady({
       };
     });
   const deadline = Date.now() + timeoutMs;
-  let initialSaleView = null;
-  let task = null;
+  let initialSaleView: Record<string, unknown> | null = null;
+  let task: Record<string, unknown> | null = null;
   let taskError = null;
   while (Date.now() < deadline) {
-    initialSaleView = await get("/v1/sale-view");
+    initialSaleView = await getRecord("/v1/sale-view");
     try {
-      task = await get("/v1/stock/maintenance-task");
+      task = await getRecord("/v1/stock/maintenance-task");
       if (
         targetIsReady(initialSaleView) &&
-        !["initial_count", "recovery_count"].includes(task?.mode)
+        !["initial_count", "recovery_count"].includes(String(task?.mode))
       ) {
         return { changed: false };
       }
@@ -1002,7 +1236,9 @@ export async function ensureFixtureStockReady({
     );
   }
   if (
-    !["initial_count", "recovery_count", "routine_refill"].includes(task?.mode)
+    !["initial_count", "recovery_count", "routine_refill"].includes(
+      String(task?.mode),
+    )
   ) {
     throw new Error(
       `fixture stock requires a maintenance task, received ${task?.mode ?? "missing"}`,
@@ -1024,36 +1260,49 @@ export async function ensureFixtureStockReady({
       )}`,
     );
   }
-  const desiredByCurrentSlotId = new Map(
+  const desiredByCurrentSlotId = new Map<string, unknown>(
     initialFixtureItems.map(({ fixture, item }) => [
-      item.slotId,
+      String(item?.slotId),
       fixture.onHandQty,
     ]),
   );
-  const activeAttestationSlots = (initialSaleView?.items ?? [])
+  const activeAttestationSlots = (
+    Array.isArray(initialSaleView?.items) ? initialSaleView.items : []
+  )
     .filter(
-      (item) =>
-        typeof item?.slotId === "string" &&
-        item.slotId !== "" &&
-        typeof item?.sku === "string" &&
-        item.sku !== "",
+      (item) => {
+        const record = item as Record<string, unknown>;
+        return (
+          typeof record?.slotId === "string" &&
+          record.slotId !== "" &&
+          typeof record?.sku === "string" &&
+          record.sku !== ""
+        );
+      },
     )
-    .map((item) => ({
-      slotId: item.slotId,
-      sku: item.sku,
-      quantity: desiredByCurrentSlotId.get(item.slotId) ?? item.physicalStock,
-      enabled:
-        desiredByCurrentSlotId.has(item.slotId) ||
-        item.slotSalesState !== "frozen",
-    }));
-  const taskSlotsById = new Map(
-    (task.slots ?? []).map((slot) => [slot?.slotId, slot]),
+    .map((item) => {
+      const record = item as Record<string, unknown>;
+      return {
+        slotId: record.slotId,
+        sku: record.sku,
+        quantity:
+          desiredByCurrentSlotId.get(String(record.slotId)) ??
+          record.physicalStock,
+        enabled:
+          desiredByCurrentSlotId.has(String(record.slotId)) ||
+          record.slotSalesState !== "frozen",
+      };
+    });
+  const taskSlotsById = new Map<string, Record<string, unknown>>(
+    (Array.isArray(task?.slots) ? task.slots : []).map(
+      (slot) => [String((slot as Record<string, unknown>)?.slotId), slot as Record<string, unknown>],
+    ),
   );
   const fixtureTaskSlots = fixtures.map((fixture) => {
     const currentItem = initialFixtureItems.find(
       (entry) => entry.fixture === fixture,
     )?.item;
-    const taskSlot = taskSlotsById.get(currentItem?.slotId);
+    const taskSlot = taskSlotsById.get(String(currentItem?.slotId));
     if (!taskSlot) {
       throw new Error(
         `fixture stock ${task.mode} task does not contain fixture slot R${fixture.rowNo}C${fixture.cellNo}`,
@@ -1062,47 +1311,59 @@ export async function ensureFixtureStockReady({
     return { fixture, taskSlot };
   });
   const routineRefillSlots = fixtureTaskSlots.map(({ fixture, taskSlot }) => {
-    if (!Number.isInteger(taskSlot.currentQuantity)) {
+    if (
+      typeof taskSlot.currentQuantity !== "number" ||
+      !Number.isInteger(taskSlot.currentQuantity)
+    ) {
       throw new Error(
         `fixture stock routine_refill task has invalid current quantity for ${fixture.slotId}`,
       );
     }
     return {
       slotId: fixture.slotId,
-      addition: Math.max(0, fixture.onHandQty - taskSlot.currentQuantity),
+      addition: Math.max(
+        0,
+        Number(fixture.onHandQty) - Number(taskSlot.currentQuantity),
+      ),
     };
   });
   const requiresAttestation = initialFixtureItems.some(({ fixture, item }) => {
     const desired = desiredByFixtureKey.get(fixtureKey(fixture));
     return (
       item?.slotSalesState !== "sale_ready" ||
-      item?.saleableStock > desired ||
-      item?.physicalStock > desired
+      Number(item?.saleableStock) > Number(desired) ||
+      Number(item?.physicalStock) > Number(desired)
     );
   });
   let requiresFreshAttestation = false;
   if (
     task.mode === "routine_refill" &&
-    (!requiresAttestation || ["pending", "complete"].includes(task.status)) &&
+    (!requiresAttestation ||
+      ["pending", "complete"].includes(String(task.status))) &&
     routineRefillSlots.every((slot) => slot.addition === 0)
   ) {
-    let projection = null;
+    let projection: Record<string, unknown> | null = null;
     while (Date.now() < deadline) {
-      projection = await get(
-        `/v1/stock/maintenance-tasks/${encodeURIComponent(task.taskId)}/projection`,
+      projection = await getRecord(
+        `/v1/stock/maintenance-tasks/${encodeURIComponent(String(task.taskId))}/projection`,
       );
       if (
         projection?.taskId === task.taskId &&
         projection?.mode === "routine_refill"
       ) {
         const projectedSlots = new Map(
-          (projection?.slots ?? []).map((slot) => [slot?.slotId, slot]),
+          (Array.isArray(projection?.slots) ? projection.slots : []).map(
+            (slot) => [
+              String((slot as Record<string, unknown>)?.slotId),
+              slot as Record<string, unknown>,
+            ],
+          ),
         );
         const projectionStillNotSubmitted = fixtures.every((fixture) => {
           const currentItem = initialFixtureItems.find(
             (entry) => entry.fixture === fixture,
           )?.item;
-          const slot = projectedSlots.get(currentItem?.slotId);
+          const slot = projectedSlots.get(String(currentItem?.slotId));
           return (
             slot?.syncStatus === "not_submitted" &&
             (slot?.previewQuantity === fixture.onHandQty ||
@@ -1123,7 +1384,12 @@ export async function ensureFixtureStockReady({
     }
     if (!requiresFreshAttestation) {
       const projectedSlots = new Map(
-        (projection?.slots ?? []).map((slot) => [slot?.slotId, slot]),
+        (Array.isArray(projection?.slots) ? projection.slots : []).map(
+          (slot) => [
+            String((slot as Record<string, unknown>)?.slotId),
+            slot as Record<string, unknown>,
+          ],
+        ),
       );
       const projectionMatchesFixtures =
         projection?.taskId === task.taskId &&
@@ -1133,11 +1399,12 @@ export async function ensureFixtureStockReady({
           const currentItem = initialFixtureItems.find(
             (entry) => entry.fixture === fixture,
           )?.item;
-          const slot = projectedSlots.get(currentItem?.slotId);
+          const slot = projectedSlots.get(String(currentItem?.slotId));
           return (
             slot?.syncStatus === "accepted" &&
             slot?.previewQuantity === fixture.onHandQty &&
-            Number.isInteger(slot?.submittedAddition) &&
+            typeof slot?.submittedAddition === "number" &&
+            Number.isInteger(slot.submittedAddition) &&
             slot.submittedAddition >= 0
           );
         });
@@ -1148,7 +1415,7 @@ export async function ensureFixtureStockReady({
       }
       let projectedSaleView = initialSaleView;
       while (Date.now() < deadline) {
-        projectedSaleView = await get("/v1/sale-view");
+        projectedSaleView = await getRecord("/v1/sale-view");
         if (targetIsReady(projectedSaleView)) {
           return {
             changed: false,
@@ -1163,8 +1430,13 @@ export async function ensureFixtureStockReady({
       }
       throw new Error(
         `fixture stock routine_refill projection did not become sale-ready without a positive addition: ${JSON.stringify(
-          (projectedSaleView?.items ?? []).filter((item) =>
-            desiredByCurrentSlotId.has(item?.slotId),
+          (Array.isArray(projectedSaleView?.items)
+            ? projectedSaleView.items
+            : []
+          ).filter((item) =>
+            desiredByCurrentSlotId.has(
+              String((item as Record<string, unknown>)?.slotId),
+            ),
           ),
         )}`,
       );
@@ -1199,11 +1471,17 @@ export async function ensureFixtureStockReady({
     const slots =
       task.mode === "routine_refill"
         ? routineRefillSlots.filter((slot) => slot.addition > 0)
-        : (task.slots ?? []).map((slot) => ({
-            slotId: slot.slotId,
+        : (Array.isArray(task?.slots) ? task.slots : []).map(
+            (slot) => {
+              const record = slot as Record<string, unknown>;
+              return {
+                slotId: record.slotId,
             quantity:
-              desiredByCurrentSlotId.get(slot.slotId) ?? slot.currentQuantity,
-          }));
+                  desiredByCurrentSlotId.get(String(record.slotId)) ??
+                  record.currentQuantity,
+              };
+            },
+          );
     if (slots.length === 0) {
       throw new Error(`fixture stock ${task.mode} task has no restoring slots`);
     }
@@ -1216,7 +1494,7 @@ export async function ensureFixtureStockReady({
 
   let saleView = initialSaleView;
   while (Date.now() < deadline) {
-    saleView = await get("/v1/sale-view");
+    saleView = await getRecord("/v1/sale-view");
     if (targetIsReady(saleView)) {
       return { changed: true, taskId: operationId, mode: operationMode };
     }
@@ -1227,17 +1505,31 @@ export async function ensureFixtureStockReady({
   );
 }
 
-export function fixtureAllocationForTrack(fixtureAllocation, track) {
-  const fixture = fixtureAllocation?.[track?.fixtureKey];
-  return fixture ? { [track.fixtureKey]: fixture } : null;
+export function fixtureAllocationForTrack(
+  fixtureAllocation: FixtureAllocation | null | undefined,
+  track: Track,
+): FixtureAllocation | null {
+  const key = String(track?.fixtureKey ?? track.key);
+  const fixture = fixtureAllocation?.[key];
+  return fixture ? { [key]: fixture } : null;
 }
 
 export async function clearWholeMachineLockIfPresent({
   daemonGet: get,
   daemonPost: post,
-}) {
-  const capability = await get("/v1/sale-start-capability");
-  const locked = capability?.blockers?.some(
+}: {
+  daemonGet: (path: string) => Promise<unknown>;
+  daemonPost: (path: string, body: unknown) => Promise<unknown>;
+}): Promise<Record<string, unknown>> {
+  const asRecord = (value: unknown): Record<string, unknown> | null =>
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  const capability = asRecord(await get("/v1/sale-start-capability"));
+  const blockers = Array.isArray(capability?.blockers)
+    ? (capability.blockers as Array<Record<string, unknown>>)
+    : [];
+  const locked = blockers.some(
     (blocker) => blocker?.code === "WHOLE_MACHINE_LOCKED",
   );
   if (!locked) return { cleared: false };
@@ -1245,9 +1537,12 @@ export async function clearWholeMachineLockIfPresent({
   const result = await post("/v1/maintenance/whole-machine-lock/clear", {
     operatorNote: "testbed business-set handoff recovery",
   });
-  const refreshed = await get("/v1/sale-start-capability");
+  const refreshed = asRecord(await get("/v1/sale-start-capability"));
+  const refreshedBlockers = Array.isArray(refreshed?.blockers)
+    ? (refreshed.blockers as Array<Record<string, unknown>>)
+    : [];
   if (
-    refreshed?.blockers?.some(
+    refreshedBlockers.some(
       (blocker) => blocker?.code === "WHOLE_MACHINE_LOCKED",
     )
   ) {
@@ -1260,19 +1555,34 @@ export async function waitForBusinessHardwareReady({
   daemonGet: get,
   timeoutMs = HARDWARE_READY_TIMEOUT_MS,
   pollMs = 250,
-}) {
+}: {
+  daemonGet: (path: string) => Promise<unknown>;
+  timeoutMs?: number;
+  pollMs?: number;
+}): Promise<Record<string, unknown>> {
+  const asRecord = (value: unknown): Record<string, unknown> | null =>
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
   const deadline = Date.now() + timeoutMs;
-  let last = null;
+  let last: Record<string, unknown> | null = null;
   while (Date.now() < deadline) {
     const [bindings, capability] = await Promise.all([
       get("/v1/hardware-bindings").catch(() => null),
       get("/v1/sale-start-capability").catch(() => null),
     ]);
-    const lower = bindings?.roles?.find(
+    const bindingsRecord = asRecord(bindings);
+    const capabilityRecord = asRecord(capability);
+    const roles = Array.isArray(bindingsRecord?.roles)
+      ? (bindingsRecord.roles as Array<Record<string, unknown>>)
+      : [];
+    const lower = roles.find(
       (role) => role?.role === "lower_controller",
     );
-    last = { lower, capability };
-    if (lower?.ready === true && capability?.canStartSale === true) return last;
+    last = { lower: lower ?? null, capability: capabilityRecord };
+    if (lower?.ready === true && capabilityRecord?.canStartSale === true) {
+      return last;
+    }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, pollMs));
   }
   throw new Error(
@@ -1284,8 +1594,15 @@ export async function replaceUnavailableTestbedLowerController({
   capability,
   sessionId,
   replaceSerialSession,
-}) {
-  const unavailable = capability?.blockers?.some(
+}: {
+  capability: Record<string, unknown> | null | undefined;
+  sessionId: unknown;
+  replaceSerialSession: (sessionId: unknown) => Promise<unknown>;
+}): Promise<Record<string, unknown>> {
+  const blockers = Array.isArray(capability?.blockers)
+    ? (capability.blockers as Array<Record<string, unknown>>)
+    : [];
+  const unavailable = blockers.some(
     (blocker) => blocker?.code === "LOWER_CONTROLLER_UNAVAILABLE",
   );
   if (!unavailable) return { replaced: false };
@@ -1304,16 +1621,27 @@ export async function returnToCatalogFromClient({
   waitForRouteFn = waitForRoute,
   activateVisibleSelectorFn = activateVisibleSelector,
   settleRouteTimeoutMs = 10_000,
-}) {
+}: {
+  client: CdpClient;
+  evaluateExpressionFn?: typeof evaluateExpression;
+  waitForRouteFn?: typeof waitForRoute;
+  activateVisibleSelectorFn?: typeof activateVisibleSelector;
+  settleRouteTimeoutMs?: number;
+}): Promise<string> {
+  const routeValue = (result: unknown): string =>
+    String((result as { route?: unknown } | null | undefined)?.route ?? "");
   const waitForRouteWithTimeout = (
-    expected,
+    expected: string | RegExp | ((route: string) => boolean),
     timeoutMs = settleRouteTimeoutMs,
   ) =>
     waitForRouteFn(client, expected, {
       timeoutMs,
       pollMs: 250,
     });
-  const activateUnlessAlreadyCatalog = async (selector, options) => {
+  const activateUnlessAlreadyCatalog = async (
+    selector: string,
+    options: Record<string, unknown>,
+  ): Promise<boolean> => {
     try {
       await activateVisibleSelectorFn(client, selector, options);
       return true;
@@ -1334,7 +1662,7 @@ export async function returnToCatalogFromClient({
       }))
     )
       return "#/catalog";
-    return (await waitForRouteWithTimeout("#/catalog")).route;
+    return routeValue(await waitForRouteWithTimeout("#/catalog"));
   };
   const returnFromCheckoutToCatalog = async () => {
     const emptyCheckoutCanReturn = await evaluateExpressionFn(
@@ -1349,7 +1677,7 @@ export async function returnToCatalogFromClient({
         }))
       )
         return "#/catalog";
-      return (await waitForRouteWithTimeout("#/catalog")).route;
+      return routeValue(await waitForRouteWithTimeout("#/catalog"));
     }
     if (
       !(await activateUnlessAlreadyCatalog(CHECKOUT_BACK_PRODUCT_SELECTOR, {
@@ -1361,15 +1689,16 @@ export async function returnToCatalogFromClient({
     await waitForRouteWithTimeout(/^#\/products(?:\/|$)/, 10_000);
     return returnFromProductToCatalog();
   };
-  let route = await evaluateExpressionFn(client, "location.hash");
+  let route = String(await evaluateExpressionFn(client, "location.hash"));
   if (route === "#/catalog") return route;
   if (route === "" || route === "#" || route === "#/") {
-    route = (await waitForRouteWithTimeout(/^(?:#\/boot|#\/catalog)$/, 30_000))
-      .route;
+    route = routeValue(
+      await waitForRouteWithTimeout(/^(?:#\/boot|#\/catalog)$/, 30_000),
+    );
     if (route === "#/catalog") return "#/catalog";
   }
   if (route === "#/boot") {
-    return (await waitForRouteWithTimeout("#/catalog", 30_000)).route;
+    return routeValue(await waitForRouteWithTimeout("#/catalog", 30_000));
   }
   if (/^#\/result(?:\/|$)/.test(route)) {
     const activated = await activateUnlessAlreadyCatalog(
@@ -1380,7 +1709,7 @@ export async function returnToCatalogFromClient({
       },
     );
     if (!activated) return "#/catalog";
-    return (await waitForRouteWithTimeout("#/catalog")).route;
+    return routeValue(await waitForRouteWithTimeout("#/catalog"));
   }
   if (route === "#/checkout") {
     return returnFromCheckoutToCatalog();
@@ -1403,15 +1732,15 @@ export async function returnToCatalogFromClient({
         10_000,
       ).catch(() => null);
       if (!projected) throw error;
-      route = projected.route;
+      route = routeValue(projected);
     }
     if (/^#\/payment(?:\/|$)/.test(route)) {
-      route = (
+      route = routeValue(
         await waitForRouteWithTimeout(
           /^(?:#\/catalog|#\/result(?:\/|$)|#\/checkout|#\/products(?:\/|$))/,
           PAYMENT_RETURN_WAIT_MS,
-        )
-      ).route;
+        ),
+      );
     }
     if (route === "#/catalog") return "#/catalog";
     if (/^#\/result(?:\/|$)/.test(route)) {
@@ -1425,7 +1754,7 @@ export async function returnToCatalogFromClient({
         ))
       )
         return "#/catalog";
-      return (await waitForRouteWithTimeout("#/catalog")).route;
+      return routeValue(await waitForRouteWithTimeout("#/catalog"));
     }
     if (route === "#/checkout") {
       return returnFromCheckoutToCatalog();
@@ -1445,7 +1774,7 @@ export async function returnToCatalogFromClient({
       ))
     )
       return "#/catalog";
-    return (await waitForRouteWithTimeout("#/catalog", 30_000)).route;
+    return routeValue(await waitForRouteWithTimeout("#/catalog", 30_000));
   }
   throw new Error(
     `no supported customer return control was available for ${route}`,
@@ -1460,7 +1789,15 @@ export async function restoreCatalogHomeFromClient({
   waitForRouteFn = waitForRoute,
   waitForCatalogHomeStateFn = waitForCatalogHomeState,
   settleRouteTimeoutMs = 10_000,
-}) {
+}: {
+  client: CdpClient;
+  returnToCatalogFn?: typeof returnToCatalogFromClient;
+  evaluateExpressionFn?: typeof evaluateExpression;
+  activateVisibleSelectorFn?: typeof activateVisibleSelector;
+  waitForRouteFn?: typeof waitForRoute;
+  waitForCatalogHomeStateFn?: typeof waitForCatalogHomeState;
+  settleRouteTimeoutMs?: number;
+}): Promise<string> {
   await returnToCatalogFn({ client });
   const categoryIsOpen = await evaluateExpressionFn(
     client,
@@ -1488,17 +1825,22 @@ export async function waitForCatalogHomeState({
   evaluateExpressionFn = evaluateExpression,
   timeoutMs = 10_000,
   pollMs = 250,
-}) {
+}: {
+  client: CdpClient;
+  evaluateExpressionFn?: typeof evaluateExpression;
+  timeoutMs?: number;
+  pollMs?: number;
+}): Promise<string> {
   const deadline = Date.now() + timeoutMs;
-  let state = null;
+  let state: Record<string, unknown> | null = null;
   do {
-    state = await evaluateExpressionFn(
+    state = (await evaluateExpressionFn(
       client,
       `(() => ({
         homeMarkerVisible: Boolean(document.querySelector('[data-test="catalog-page"]:not([data-category-key])')),
         categoryBackVisible: Boolean(document.querySelector('.catalog-back-button')),
       }))()`,
-    );
+    )) as Record<string, unknown> | null;
     if (
       state?.homeMarkerVisible === true &&
       state.categoryBackVisible === false
@@ -1509,20 +1851,34 @@ export async function waitForCatalogHomeState({
   throw new Error(`Catalog home did not settle: ${JSON.stringify(state)}`);
 }
 
-function terminalOperations(guestInput, handoff, handoffPath) {
-  const withClient = async (operation) => {
-    reloadRuntimeHandoff(handoffPath, handoff);
-    const { client } = await retryTransientBoundary(
+function terminalOperations(
+  guestInput: Record<string, unknown> | null,
+  handoff: Record<string, unknown> | null,
+  handoffPath: string,
+): {
+  prepareTrack: () => Promise<unknown>;
+  captureTerminal: (
+    track: Track,
+    context: { child: TrackChild; report: unknown },
+  ) => Promise<Record<string, unknown>>;
+  recover: (
+    track: Track,
+    context: { child: TrackChild; report: unknown; terminal: unknown },
+  ) => Promise<Record<string, unknown>>;
+} {
+  const withClient = async <T>(operation: (client: CdpClient) => Promise<T>): Promise<T> => {
+    reloadRuntimeHandoff(handoffPath, handoff ?? {});
+    const attached = (await retryTransientBoundary(
       "machine UI CDP attach",
       async () => {
         const endpoint = required(
-          handoff?.cdp?.endpoint,
+          (handoff?.cdp as Record<string, unknown> | undefined)?.endpoint,
           "handoff cdp endpoint",
         );
         const target = await discoverCanonicalMachineUiTarget({
           endpoint,
         });
-        handoff.cdp.targetId = target.id;
+        (handoff?.cdp as Record<string, unknown>).targetId = target.id;
         writeJson(handoffPath, handoff);
         const client = new CdpClient(
           rewriteWebSocketDebuggerUrl(target.webSocketDebuggerUrl, endpoint),
@@ -1536,7 +1892,8 @@ function terminalOperations(guestInput, handoff, handoffPath) {
           throw error;
         }
       },
-    );
+    )) as { client: CdpClient };
+    const client = attached.client;
     try {
       return await operation(client);
     } finally {
@@ -1545,13 +1902,16 @@ function terminalOperations(guestInput, handoff, handoffPath) {
   };
   return {
     prepareTrack: async () => {
-      const capability = await daemonGet(
+      const capability = (await daemonGet(
         handoff,
         "/v1/sale-start-capability",
-      ).catch(() => null);
+      ).catch(() => null)) as Record<string, unknown> | null;
       await replaceUnavailableTestbedLowerController({
         capability,
-        sessionId: handoff?.commissioningSerialSession?.sessionId,
+        sessionId: (
+          handoff?.commissioningSerialSession as Record<string, unknown> |
+            undefined
+        )?.sessionId,
         replaceSerialSession: (sessionId) =>
           replaceSerialSessionAndUpdateHandoff({
             guestInput,
@@ -1562,43 +1922,48 @@ function terminalOperations(guestInput, handoff, handoffPath) {
           }),
       });
       await waitForBusinessHardwareReady({
-        daemonGet: (path) => daemonGet(handoff, path),
+        daemonGet: (path: string) => daemonGet(handoff, path),
       });
       await clearWholeMachineLockIfPresent({
-        daemonGet: (path) => daemonGet(handoff, path),
-        daemonPost: (path, body) => daemonPost(handoff, path, body),
+        daemonGet: (path: string) => daemonGet(handoff, path),
+        daemonPost: (path: string, body: unknown) =>
+          daemonPost(handoff, path, body),
       });
       return withClient((client) => restoreCatalogHomeFromClient({ client }));
     },
     captureTerminal: async (track, context) => {
-      reloadRuntimeHandoff(handoffPath, handoff);
-      refreshDaemonReadyHandoff({ handoffPath, handoff });
+      reloadRuntimeHandoff(handoffPath, handoff ?? {});
+      refreshDaemonReadyHandoff({ handoffPath, handoff: handoff ?? {} });
       return captureTrackTerminalFacts({
         track,
         context,
         readRoute: () => withClient((client) => readCdpLocationHash(client)),
-        daemonGet: (path) => daemonGet(handoff, path),
+        daemonGet: (path: string) => daemonGet(handoff, path),
         platformQuery: () =>
           controlPlaneRequest(guestInput, "/v1/platform/query", {
-            runId: guestInput.runId,
-            machineCode: guestInput.machineCode,
-          }).then((response) => response.report),
-      });
+            runId: (guestInput ?? {}).runId,
+            machineCode: (guestInput ?? {}).machineCode,
+          }).then((response) =>
+            (response as Record<string, unknown> | null)?.report,
+          ),
+      }) as Promise<Record<string, unknown>>;
     },
     recover: (track, context) =>
       recoverTrackHandoff({
         track,
-        terminal: context.terminal,
+        terminal: (context as Record<string, unknown>).terminal,
         recoverAfterFailure:
-          context.child?.status !== "passed" || context.report?.ok !== true,
-        fixtureAllocation: guestInput.fixtureAllocation,
+          (context.child as TrackChild | undefined)?.status !== "passed" ||
+          (context.report as Record<string, unknown> | null)?.ok !== true,
+        fixtureAllocation:
+          (guestInput ?? {}).fixtureAllocation as FixtureAllocation | undefined,
         returnToCatalog: () =>
           withClient(async (client) => {
             return returnToCatalogFromClient({ client });
           }),
         disableFaultInjection: () =>
           controlPlaneRequest(guestInput, "/v1/mock-payment-create-gate/open"),
-        restoreSerialSession: (sessionId) =>
+        restoreSerialSession: (sessionId: unknown) =>
           replaceSerialSessionAndUpdateHandoff({
             guestInput,
             handoff,
@@ -1606,7 +1971,9 @@ function terminalOperations(guestInput, handoff, handoffPath) {
             sessionId,
             control: controlPlaneRequest,
           }),
-        cancelActiveTransaction: (transaction) =>
+        cancelActiveTransaction: (
+          transaction: Record<string, unknown> | null,
+        ) =>
           daemonPost(handoff, "/v1/intents/cancel-order", {
             orderNo: required(
               transaction?.orderNo,
@@ -1639,12 +2006,12 @@ function terminalOperations(guestInput, handoff, handoffPath) {
         },
         selfCheckHardware: () =>
           daemonPost(handoff, "/v1/hardware/self-check", {}),
-        clearWholeMachineLock: (operatorNote) =>
+        clearWholeMachineLock: (operatorNote: unknown) =>
           daemonPost(handoff, "/v1/maintenance/whole-machine-lock/clear", {
             operatorNote,
           }),
         wholeMachineLockOperatorNote: "testbed business-set handoff recovery",
-        restoreFixtureStock: async (fixture) => {
+        restoreFixtureStock: async (fixture: FixtureAllocationEntry) => {
           const allocation = {
             [track.fixtureKey ?? track.key]: fixture,
           };
@@ -1659,11 +2026,47 @@ function terminalOperations(guestInput, handoff, handoffPath) {
           });
           return { targetQuantity: fixture.onHandQty, daemon, platform };
         },
-      }),
+      }) as Promise<Record<string, unknown>>,
   };
 }
 
-export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
+interface OrchestratorOptions {
+  mode: string;
+  focus?: string[];
+  commit?: string | null;
+  guestInputPath: string;
+  handoffPath: string;
+  outPath: string;
+}
+
+interface OrchestratorDependencies {
+  clearEvidenceManifest?: (path: string) => void;
+  clearAggregate?: (path: string) => void;
+  writeEvidenceManifest?: (path: string, value: unknown) => void;
+  readEvidenceManifest?: (path: string) => Buffer;
+  validateEvidenceManifest?: (value: unknown) => string[];
+  buildEvidenceManifest?: (context: Record<string, unknown>) => unknown;
+  writeAggregate?: (path: string, value: unknown) => void;
+  runTrack?: (track: Track) => Promise<TrackChild>;
+  beforeTrack?: (track: Track) => unknown;
+  captureTerminal?: (
+    track: Track,
+    context: { child: TrackChild; report: unknown },
+  ) => Promise<Record<string, unknown>>;
+  recover?: (
+    track: Track,
+    context: Record<string, unknown>,
+  ) => Promise<Record<string, unknown>>;
+  emitTrackProgress?: (event: Record<string, unknown>) => unknown;
+  now?: () => Date;
+  clearTrackReport?: (path: string | null, track: Track) => void;
+  clearTrackArtifacts?: (path: string | null, track: Track) => void;
+}
+
+export async function runFullWorkflowOrchestrator(
+  options: OrchestratorOptions,
+  dependencies: OrchestratorDependencies = {},
+): Promise<Record<string, unknown>> {
   const evidenceManifestPath = join(
     dirname(resolve(options.outPath)),
     "full-workflow-evidence-manifest.json",
@@ -1679,9 +2082,15 @@ export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
   try {
     clearAggregate(options.outPath);
   } catch {}
-  const guestInput = jsonIfPresent(options.guestInputPath);
+  const guestInput = jsonIfPresent(options.guestInputPath) as Record<
+    string,
+    unknown
+  > | null;
   const plan = buildWorkflowTrackCommands(options);
-  const handoff = jsonIfPresent(options.handoffPath);
+  const handoff = jsonIfPresent(options.handoffPath) as Record<
+    string,
+    unknown
+  > | null;
   const operations =
     dependencies.captureTerminal ||
     dependencies.recover ||
@@ -1692,7 +2101,8 @@ export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
   const executedTracks = await runSerialTrackLifecycle({
     tracks: plan.tracks,
     runTrack:
-      dependencies.runTrack ?? ((track) => runTrack(track.command, track.key)),
+      dependencies.runTrack ??
+      ((track) => runTrack(track.command ?? [], track.key)),
     beforeTrack:
       dependencies.beforeTrack ??
       (async (track) => {
@@ -1704,7 +2114,9 @@ export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
         await waitForInstalledRuntimeBarrier(refreshed);
         await operations?.prepareTrack();
         const fixtureAllocation = fixtureAllocationForTrack(
-          guestInput.fixtureAllocation,
+          (guestInput ?? {}).fixtureAllocation as
+            | FixtureAllocation
+            | undefined,
           track,
         );
         if (fixtureAllocation) {
@@ -1722,7 +2134,7 @@ export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
     captureTerminal:
       dependencies.captureTerminal ??
       operations?.captureTerminal ??
-      (() => ({
+      (async () => ({
         ok: false,
         facts: null,
         reason: "terminal inputs are unavailable",
@@ -1730,7 +2142,7 @@ export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
     recover:
       dependencies.recover ??
       operations?.recover ??
-      (() => ({
+      (async () => ({
         ok: false,
         actions: [],
         errors: ["handoff inputs are unavailable"],
@@ -1738,13 +2150,13 @@ export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
     haltOnRecoveryFailure: options.mode === "fast",
     emitTrackProgress:
       dependencies.emitTrackProgress ??
-      ((event) => {
+      ((event: Record<string, unknown>) => {
         if (event.type === "started") {
           process.stdout.write(
-            `track=${event.track.key} status=started startedAt=${event.startedAt}\n`,
+            `track=${(event.track as Track).key} status=started startedAt=${event.startedAt}\n`,
           );
         } else if (event.type === "finished") {
-          const track = event.result;
+          const track = event.result as Record<string, unknown>;
           process.stdout.write(
             `track=${track.key} status=${track.businessStatus} durationMs=${track.durationMs} failureStage=${track.failureStage ?? "none"} error=${track.error ?? "none"}\n`,
           );
@@ -1770,7 +2182,10 @@ export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
   let evidenceManifest;
   try {
     evidenceManifest = (
-      dependencies.buildEvidenceManifest ?? buildFullWorkflowEvidenceManifest
+      (
+        dependencies.buildEvidenceManifest ??
+        buildFullWorkflowEvidenceManifest
+      ) as (context: Record<string, unknown>) => unknown
     )({ tracks: evidenceTracks });
   } catch (error) {
     const reason = supportingEvidenceFailure(
@@ -1810,8 +2225,10 @@ export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
   try {
     evidenceErrors.push(
       ...(
-        dependencies.validateEvidenceManifest ??
-        validateFullWorkflowEvidenceManifest
+        (
+          dependencies.validateEvidenceManifest ??
+          validateFullWorkflowEvidenceManifest
+        ) as (manifest: unknown) => string[]
       )(evidenceManifest),
     );
   } catch (error) {
@@ -1819,7 +2236,11 @@ export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
       supportingEvidenceFailure("evidence manifest validation failed", error),
     );
   }
-  const aggregate = buildFullWorkflowAggregate({
+  const aggregate = (
+    buildFullWorkflowAggregate as unknown as (
+      options: Record<string, unknown>,
+    ) => Record<string, unknown>
+  )({
     mode: options.mode,
     selectedDescriptors: plan.tracks,
     identity: workflowIdentity(options.guestInputPath, options.commit),
@@ -1829,7 +2250,7 @@ export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
     evidenceManifestFile,
     evidenceValidationErrors: evidenceErrors,
   });
-  aggregate.operationalOutcome = {
+  (aggregate as Record<string, unknown>).operationalOutcome = {
     ok: true,
     failures: [],
     canonicalResultPath: resolve(options.outPath),
@@ -1840,7 +2261,7 @@ export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
     try {
       clearAggregate(options.outPath);
     } catch {}
-    aggregate.operationalOutcome = {
+    (aggregate as Record<string, unknown>).operationalOutcome = {
       ok: false,
       failures: [
         supportingEvidenceFailure(
@@ -1854,8 +2275,14 @@ export async function runFullWorkflowOrchestrator(options, dependencies = {}) {
   return aggregate;
 }
 
-export function fullWorkflowCommandSucceeded(aggregate) {
-  return aggregate?.ok === true && aggregate?.operationalOutcome?.ok === true;
+export function fullWorkflowCommandSucceeded(
+  aggregate: Record<string, unknown> | null | undefined,
+): boolean {
+  return (
+    aggregate?.ok === true &&
+    (aggregate?.operationalOutcome as Record<string, unknown> | undefined)
+      ?.ok === true
+  );
 }
 
 async function main() {

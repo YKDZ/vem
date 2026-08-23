@@ -225,7 +225,31 @@ export const BUSINESS_CHECK_REGISTRY = Object.freeze([
   }),
 ]);
 
-export function businessCheckByName(name, registry = BUSINESS_CHECK_REGISTRY) {
+export interface BusinessCheckDescriptor {
+  name: string;
+  key: string;
+  core?: boolean;
+  fullRequired?: boolean;
+  fixtureKey?: string;
+  runner?: {
+    kind?: string;
+    script?: string;
+    args?: string[];
+    reportFileName?: string;
+    artifactDirectory?: string;
+  } | null;
+  validator?: unknown;
+  blockedReason?: string | null;
+  allowActiveTransactionHandoff?: boolean;
+  restoreFixtureStock?: boolean;
+  evidence?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export function businessCheckByName(
+  name: string,
+  registry: readonly BusinessCheckDescriptor[] = BUSINESS_CHECK_REGISTRY,
+): BusinessCheckDescriptor | null {
   return registry.find((descriptor) => descriptor.name === name) ?? null;
 }
 
@@ -233,7 +257,11 @@ export function selectBusinessChecks({
   mode,
   focus = [],
   registry = BUSINESS_CHECK_REGISTRY,
-}) {
+}: {
+  mode: string;
+  focus?: string[];
+  registry?: readonly BusinessCheckDescriptor[];
+}): BusinessCheckDescriptor[] {
   if (!Array.isArray(focus)) throw new Error("focus must be an array");
   if (mode === "full") {
     if (focus.length > 0)
