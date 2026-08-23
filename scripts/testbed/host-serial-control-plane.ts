@@ -15,8 +15,6 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
-  paymentMockCreateGatePaths,
-  paymentMockQueryFaultPaths,
   readPaymentMockCreateGateStatus,
   readPaymentMockQueryFaultStatus,
   writePaymentMockCreateGateState,
@@ -49,20 +47,182 @@ const SERIAL_SCENARIOS = Object.freeze({
   E6: "e6",
 });
 
-function required(value, label) {
+type SerialScenario = "normal" | "delayed-pickup" | "e6";
+
+interface ControlPlaneOptions {
+  workspace: string;
+  stateRoot: string;
+  bind: string;
+  port: number;
+  token: string;
+  libvirtUri: string;
+  domainName: string;
+}
+
+interface RuntimeBinding {
+  processId: number;
+  executablePath: string;
+  principal: string;
+  sessionId: number;
+  cdpTargetId: string;
+  cdpSessionId: string;
+}
+
+interface CommandSpec {
+  command: string;
+  args: string[];
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+}
+
+interface MqttMessage {
+  topic: string;
+  payload: unknown;
+}
+
+interface MqttCapture {
+  child: ReturnType<typeof spawn>;
+  ready: Promise<{ topic: string; subscribedAt: string }>;
+  stop: () => void;
+  snapshot: () => {
+    topic: string;
+    messages: MqttMessage[];
+    stderr: string;
+  };
+}
+
+interface SerialSessionBinding {
+  serialSessionId: string;
+  sessionBindingToken: string;
+  startOperationReference: string;
+  deviceMappingDigest: string;
+}
+
+interface SaleBinding {
+  saleCorrelationId: string;
+  orderId: string;
+  paymentId: string;
+  vendingCommandId: string | null;
+}
+
+interface SerialSession {
+  id: string;
+  dir: string;
+  runId: string;
+  machineCode: string;
+  targetIdentity: string;
+  runtimeBase: string;
+  saleCorrelationId: string;
+  serialScenario: SerialScenario;
+  startReport: unknown;
+  binding: SerialSessionBinding;
+  frozenMilestoneFrames: unknown[];
+  mqttCapture: MqttCapture;
+  machineMqttCapture: MqttCapture;
+  deviceLifecycle: Array<Record<string, unknown>>;
+  detachedDeviceXml: Record<string, string>;
+  injectReport: unknown | null;
+  collectReport: unknown | null;
+  stopReports: unknown[];
+  sale: SaleBinding | null;
+}
+
+interface AudioCaptureSession {
+  id: string;
+  operationId: string;
+  sessionId: string;
+  startInput: Record<string, string>;
+  startReport: {
+    captureSession: {
+      captureSessionId: string;
+      startOperationReference: string;
+      startedAt: string;
+    };
+  };
+  runtime: RuntimeBinding;
+  evidenceDirectory: string;
+  cancelledAt: string | null;
+  stopReport:
+    | {
+        captureSession?: unknown;
+        evidence?: Array<{ fileName: string }>;
+      }
+    | null;
+}
+
+interface ControlPlaneDependencies {
+  executeSaleAudioCapture?: (
+    options: {
+      phase: string;
+      runId: string;
+      lifecycleReference: string;
+      targetIdentity: string;
+      transactionId: string;
+      runtime: RuntimeBinding;
+      captureSessionId?: string;
+      startOperationReference?: string;
+      captureStartedAt?: string;
+      sale?: unknown;
+      evidenceDirectory: string;
+      outPath: string;
+      production?: unknown;
+    },
+    dependencies?: Record<string, unknown>,
+  ) => Promise<unknown>;
+  stopDefaultAudioCapture?: (
+    options: {
+      captureSessionId: string;
+      evidenceDirectory: string;
+    },
+    dependencies?: Record<string, unknown>,
+  ) => Promise<unknown>;
+  abortSaleAudioCapture?: (
+    options: {
+      captureSessionId: string;
+      evidenceDirectory: string;
+    },
+    dependencies?: Record<string, unknown>,
+  ) => Promise<unknown>;
+  mqttCaptureFactory?: (options: {
+    machineCode: string;
+    topic?: string;
+    limit?: number;
+  }) => MqttCapture;
+}
+
+interface ControlPlaneServerState {
+  options: ControlPlaneOptions;
+  sessions: Map<string, SerialSession>;
+  audioCaptures: Map<string, AudioCaptureSession>;
+  audioCapturesByOperation: Map<string, string>;
+  dependencies: {
+    executeSaleAudioCapture: NonNullable<
+      ControlPlaneDependencies["executeSaleAudioCapture"]
+    >;
+    stopDefaultAudioCapture: NonNullable<
+      ControlPlaneDependencies["stopDefaultAudioCapture"]
+    >;
+    abortSaleAudioCapture: NonNullable<
+      ControlPlaneDependencies["abortSaleAudioCapture"]
+    >;
+    mqttCaptureFactory?: ControlPlaneDependencies["mqttCaptureFactory"];
+  };
+}
+
+function required(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${label} is required`);
   }
   return value.trim();
 }
 
-function absolute(value, label) {
+function absolute(value: unknown, label: string): string {
   const path = required(value, label);
   if (!isAbsolute(path)) throw new Error(`${label} must be absolute`);
   return resolve(path);
 }
 
-function option(args, name) {
+function option(args: string[], name: string): string {
   const index = args.indexOf(`--${name}`);
   const value = index === -1 ? undefined : args[index + 1];
   if (!value || value.startsWith("--")) {
@@ -71,7 +231,7 @@ function option(args, name) {
   return value;
 }
 
-function positiveInteger(value, label) {
+function positiveInteger(value: unknown, label: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) {
     throw new Error(`${label} must be a positive integer`);
@@ -79,7 +239,7 @@ function positiveInteger(value, label) {
   return parsed;
 }
 
-function runtimeBinding(runtime) {
+function runtimeBinding(runtime: unknown): RuntimeBinding {
   if (
     runtime === null ||
     typeof runtime !== "object" ||
@@ -87,8 +247,9 @@ function runtimeBinding(runtime) {
   ) {
     throw new Error("runtime binding is required");
   }
-  const processId = Number(runtime.processId);
-  const sessionId = Number(runtime.sessionId);
+  const record = runtime as Record<string, unknown>;
+  const processId = Number(record.processId);
+  const sessionId = Number(record.sessionId);
   if (!Number.isInteger(processId) || processId < 1) {
     throw new Error("runtime.processId must be a positive integer");
   }
@@ -97,20 +258,38 @@ function runtimeBinding(runtime) {
   }
   return {
     processId,
-    executablePath: required(runtime.executablePath, "runtime.executablePath"),
-    principal: required(runtime.principal, "runtime.principal"),
+    executablePath: required(
+      record.executablePath,
+      "runtime.executablePath",
+    ),
+    principal: required(record.principal, "runtime.principal"),
     sessionId,
-    cdpTargetId: required(runtime.cdpTargetId, "runtime.cdpTargetId"),
-    cdpSessionId: required(runtime.cdpSessionId, "runtime.cdpSessionId"),
+    cdpTargetId: required(record.cdpTargetId, "runtime.cdpTargetId"),
+    cdpSessionId: required(record.cdpSessionId, "runtime.cdpSessionId"),
   };
 }
 
-function cloneJson(value) {
-  return JSON.parse(JSON.stringify(value));
+function cloneJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function isErrnoCode(error: unknown, code: string): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === code
+  );
 }
 
 class TestbedInfrastructureError extends Error {
-  constructor(message, details = {}) {
+  readonly code: string;
+  readonly details: Record<string, unknown>;
+
+  constructor(
+    message: string,
+    details: Record<string, unknown> = {},
+  ) {
     super(message);
     this.name = "TestbedInfrastructureError";
     this.code = "testbed_infra_failed";
@@ -118,7 +297,7 @@ class TestbedInfrastructureError extends Error {
   }
 }
 
-function errorResponsePayload(error) {
+function errorResponsePayload(error: unknown): Record<string, unknown> {
   if (error instanceof TestbedInfrastructureError) {
     return {
       ok: false,
@@ -134,7 +313,15 @@ function errorResponsePayload(error) {
   };
 }
 
-export function parseHostSerialControlPlaneArgs(args) {
+export function parseHostSerialControlPlaneArgs(args: string[]): {
+  workspace: string;
+  stateRoot: string;
+  bind: string;
+  port: number;
+  token: string;
+  libvirtUri: string;
+  domainName: string;
+} {
   return {
     workspace: absolute(option(args, "workspace"), "--workspace"),
     stateRoot: absolute(option(args, "state-root"), "--state-root"),
@@ -146,24 +333,79 @@ export function parseHostSerialControlPlaneArgs(args) {
   };
 }
 
-export function buildMqttTopic(machineCode) {
+export function buildMqttTopic(machineCode: unknown): string {
   return `vem/machines/${required(machineCode, "machineCode")}/commands/dispense`;
 }
 
-function buildMachineMqttTopic(machineCode) {
+function buildMachineMqttTopic(machineCode: unknown): string {
   return `vem/machines/${required(machineCode, "machineCode")}/#`;
 }
 
-function normalizeSerialScenario(value) {
+function normalizeSerialScenario(value: unknown): SerialScenario {
   if (value == null) return SERIAL_SCENARIOS.NORMAL;
   const scenario = String(value).trim().toLowerCase();
-  if (!Object.values(SERIAL_SCENARIOS).includes(scenario)) {
+  if (
+    !Object.values(SERIAL_SCENARIOS).includes(scenario as SerialScenario)
+  ) {
     throw new Error("serialScenario must be normal, delayed-pickup, or e6");
   }
-  return scenario;
+  return scenario as SerialScenario;
 }
 
-function baseSerialArgs(request) {
+interface SerialOperationRequest {
+  operation: string;
+  runId: string;
+  targetIdentity: string;
+  runtimeBase: string;
+  outPath: string;
+  saleCorrelationId?: string;
+  sessionBinding?: SerialSessionBinding;
+  sale?: {
+    saleCorrelationId: string;
+    orderId: string;
+    paymentId: string;
+    vendingCommandId?: string | null;
+  };
+  scannerCodeFile?: string;
+  scannerInjection?: {
+    operationNonce: string;
+    scannerCodeDigest: string;
+    scannerCodeByteLength: number;
+    scannerCodeSuffix: string;
+  };
+  operationEvidence?: {
+    runnerChallenge: string;
+    startReportDigest: string;
+    injectReportDigest: string;
+  };
+  idempotencyCheck?: boolean;
+  serialScenario?: unknown;
+}
+
+interface SerialSessionStartReport {
+  serialSession: {
+    serialSessionId: string;
+    sessionBindingToken: string;
+    startOperationReference: string;
+    deviceMappingDigest: string;
+    deviceMappings: unknown;
+  };
+}
+
+interface SerialRunnerReport {
+  request?: {
+    serialSession?: {
+      scannerInjection?: {
+        operationNonce: string;
+        scannerCodeDigest: string;
+        scannerCodeByteLength: number;
+        scannerCodeSuffix: string;
+      };
+    };
+  };
+}
+
+function baseSerialArgs(request: SerialOperationRequest): string[] {
   return [
     "scripts/testbed/run-vm-host-adapter.ts",
     "--operation",
@@ -179,7 +421,7 @@ function baseSerialArgs(request) {
   ];
 }
 
-function sessionArgs(sessionBinding) {
+function sessionArgs(sessionBinding: SerialSessionBinding): string[] {
   return [
     "--serial-session-id",
     sessionBinding.serialSessionId,
@@ -192,7 +434,7 @@ function sessionArgs(sessionBinding) {
   ];
 }
 
-function saleArgs(sale) {
+function saleArgs(sale: NonNullable<SerialOperationRequest["sale"]>): string[] {
   return [
     "--sale-correlation-id",
     sale.saleCorrelationId,
@@ -203,38 +445,66 @@ function saleArgs(sale) {
   ];
 }
 
-export function buildSerialOperationCommand({ workspace, stateRoot, request }) {
+export function buildSerialOperationCommand({
+  workspace,
+  stateRoot,
+  request,
+}: {
+  workspace: string;
+  stateRoot: string;
+  request: SerialOperationRequest;
+}): CommandSpec {
   const args = baseSerialArgs(request);
   if (request.operation === "start-serial-session") {
-    args.push("--sale-correlation-id", request.saleCorrelationId);
-  } else {
     args.push(
-      ...sessionArgs(request.sessionBinding),
-      ...saleArgs(request.sale),
+      "--sale-correlation-id",
+      required(request.saleCorrelationId, "saleCorrelationId"),
+    );
+  } else {
+    const sessionBinding = request.sessionBinding;
+    const sale = request.sale;
+    if (sessionBinding === undefined || sale === undefined) {
+      throw new Error(
+        "serial session binding and sale are required for non-start operations",
+      );
+    }
+    args.push(
+      ...sessionArgs(sessionBinding),
+      ...saleArgs(sale),
     );
     if (request.operation === "inject-scanner-code") {
-      args.push("--scanner-code-file", request.scannerCodeFile);
+      args.push(
+        "--scanner-code-file",
+        required(request.scannerCodeFile, "scannerCodeFile"),
+      );
     } else if (request.operation === "collect-serial-evidence") {
+      const scannerInjection = request.scannerInjection;
+      const operationEvidence = request.operationEvidence;
+      if (scannerInjection === undefined || operationEvidence === undefined) {
+        throw new Error(
+          "scanner injection and operation evidence are required for collect-serial-evidence",
+        );
+      }
       args.push(
         "--vending-command-id",
-        request.sale.vendingCommandId,
+        required(sale.vendingCommandId, "vendingCommandId"),
         "--scanner-injection-operation-nonce",
-        request.scannerInjection.operationNonce,
+        scannerInjection.operationNonce,
         "--scanner-code-digest",
-        request.scannerInjection.scannerCodeDigest,
+        scannerInjection.scannerCodeDigest,
         "--scanner-code-byte-length",
-        String(request.scannerInjection.scannerCodeByteLength),
+        String(scannerInjection.scannerCodeByteLength),
         "--scanner-code-suffix",
-        request.scannerInjection.scannerCodeSuffix,
+        scannerInjection.scannerCodeSuffix,
         "--serial-runner-challenge",
-        request.operationEvidence.runnerChallenge,
+        operationEvidence.runnerChallenge,
         "--serial-start-report-digest",
-        request.operationEvidence.startReportDigest,
+        operationEvidence.startReportDigest,
         "--serial-inject-report-digest",
-        request.operationEvidence.injectReportDigest,
+        operationEvidence.injectReportDigest,
       );
-    } else if (request.sale.vendingCommandId) {
-      args.push("--vending-command-id", request.sale.vendingCommandId);
+    } else if (sale.vendingCommandId) {
+      args.push("--vending-command-id", sale.vendingCommandId);
     }
     if (request.idempotencyCheck === true) args.push("--idempotency-check");
   }
@@ -256,7 +526,17 @@ export function buildSerialOperationCommand({ workspace, stateRoot, request }) {
   };
 }
 
-function buildPlatformQueryCommand({ workspace, runId, machineCode, outPath }) {
+function buildPlatformQueryCommand({
+  workspace,
+  runId,
+  machineCode,
+  outPath,
+}: {
+  workspace: string;
+  runId: string;
+  machineCode: string;
+  outPath: string;
+}): CommandSpec {
   return {
     command: process.execPath,
     args: [
@@ -285,7 +565,13 @@ function buildPaymentExpiryInjectionCommand({
   machineCode,
   paymentId,
   expiresAt,
-}) {
+}: {
+  workspace: string;
+  runId: string;
+  machineCode: string;
+  paymentId: string;
+  expiresAt: string;
+}): CommandSpec {
   return {
     command: process.execPath,
     args: [
@@ -310,134 +596,31 @@ function buildPaymentExpiryInjectionCommand({
   };
 }
 
-function ensureParent(path) {
+function ensureParent(path: string): void {
   mkdirSync(dirname(path), { recursive: true });
 }
 
-function parseJsonLine(stdout, path) {
+function parseJsonLine(stdout: unknown, path?: string): unknown {
   const trimmed = String(stdout).trim();
   if (trimmed) {
     const lastLine = trimmed.split(/\r?\n/).at(-1);
-    try {
-      return JSON.parse(lastLine);
-    } catch {}
+    if (lastLine !== undefined) {
+      try {
+        return JSON.parse(lastLine);
+      } catch {}
+    }
   }
   if (!path) throw new Error("command did not emit JSON output");
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
-function audioBaseArgs({ input, outPath, evidenceDirectory, runtime, phase }) {
-  return [
-    "--operation",
-    "capture-sale-audio",
-    "--capture-phase",
-    phase,
-    "--run-id",
-    required(input.runId, "runId"),
-    "--lifecycle-reference",
-    required(input.lifecycleReference, "lifecycleReference"),
-    "--target-identity",
-    required(input.targetIdentity, "targetIdentity"),
-    "--transaction-id",
-    required(input.transactionId, "transactionId"),
-    "--machine-process-id",
-    String(runtime.processId),
-    "--machine-executable-path",
-    runtime.executablePath,
-    "--interactive-principal",
-    runtime.principal,
-    "--interactive-session-id",
-    String(runtime.sessionId),
-    "--cdp-target-id",
-    runtime.cdpTargetId,
-    "--cdp-session-id",
-    runtime.cdpSessionId,
-    "--evidence-dir",
-    evidenceDirectory,
-    "--out",
-    outPath,
-  ];
-}
-
-function audioStartArgs({ input, outPath, evidenceDirectory, runtime }) {
-  return audioBaseArgs({
-    input,
-    outPath,
-    evidenceDirectory,
-    runtime,
-    phase: "start",
-  });
-}
-
-function audioStopArgs({
-  capture,
-  input,
-  outPath,
-  evidenceDirectory,
-  runtime,
-}) {
-  return [
-    ...audioBaseArgs({
-      input: {
-        runId: capture.startInput.runId,
-        lifecycleReference: capture.startInput.lifecycleReference,
-        targetIdentity: capture.startInput.targetIdentity,
-        transactionId: capture.startInput.transactionId,
-      },
-      outPath,
-      evidenceDirectory,
-      runtime,
-      phase: "stop",
-    }).slice(0, -4),
-    "--capture-session-id",
-    capture.startReport.captureSession.captureSessionId,
-    "--start-operation-reference",
-    capture.startReport.captureSession.startOperationReference,
-    "--capture-started-at",
-    capture.startReport.captureSession.startedAt,
-    "--sale-correlation-id",
-    required(input.saleCorrelationId, "saleCorrelationId"),
-    "--order-id",
-    required(input.orderId, "orderId"),
-    "--order-no",
-    required(input.orderNo, "orderNo"),
-    "--command-id",
-    required(input.commandId, "commandId"),
-    "--command-no",
-    required(input.commandNo, "commandNo"),
-    "--evidence-dir",
-    evidenceDirectory,
-    "--out",
-    outPath,
-  ];
-}
-
-function audioCancelArgs({ capture, outPath, evidenceDirectory, runtime }) {
-  return [
-    ...audioBaseArgs({
-      input: capture.startInput,
-      outPath,
-      evidenceDirectory,
-      runtime,
-      phase: "cancel",
-    }).slice(0, -4),
-    "--capture-session-id",
-    capture.startReport.captureSession.captureSessionId,
-    "--start-operation-reference",
-    capture.startReport.captureSession.startOperationReference,
-    "--capture-started-at",
-    capture.startReport.captureSession.startedAt,
-    "--evidence-dir",
-    evidenceDirectory,
-    "--out",
-    outPath,
-  ];
-}
-
 export function runJsonCommand(
-  command,
-  { timeoutMs = 60_000, terminationGraceMs = 2_000 } = {},
-) {
+  command: CommandSpec,
+  {
+    timeoutMs = 60_000,
+    terminationGraceMs = 2_000,
+  }: { timeoutMs?: number; terminationGraceMs?: number } = {},
+): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command.command, command.args, {
       cwd: command.cwd,
@@ -456,8 +639,8 @@ export function runJsonCommand(
     });
     let settled = false;
     let timedOut = false;
-    let killTimer = null;
-    const settle = (callback, value) => {
+    let killTimer: NodeJS.Timeout | null = null;
+    const settle = <T>(callback: (value: T) => void, value: T) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
@@ -494,7 +677,9 @@ export function runJsonCommand(
   });
 }
 
-function readRequestBody(request) {
+function readRequestBody(
+  request: import("node:http").IncomingMessage,
+): Promise<Record<string, unknown>> {
   return new Promise((resolvePromise, reject) => {
     let body = "";
     request.setEncoding("utf8");
@@ -519,52 +704,20 @@ function readRequestBody(request) {
   });
 }
 
-function jsonResponse(response, statusCode, payload) {
+function jsonResponse(
+  response: import("node:http").ServerResponse,
+  statusCode: number,
+  payload: unknown,
+): void {
   response.statusCode = statusCode;
   response.setHeader("content-type", "application/json; charset=utf-8");
   response.end(`${JSON.stringify(payload)}\n`);
 }
 
-function runnerTempRoot(stateRoot) {
+function runnerTempRoot(stateRoot: string): string {
   const path = join(stateRoot, "runner-temp");
   mkdirSync(path, { recursive: true });
   return path;
-}
-
-function processAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    if (error?.code === "ESRCH") return false;
-    throw error;
-  }
-}
-
-async function waitForProcessExit(pid, timeoutMs = 5_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Number.isInteger(pid) && processAlive(pid) && Date.now() < deadline) {
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
-  }
-  return !Number.isInteger(pid) || !processAlive(pid);
-}
-
-async function terminateProcessGroup(pid) {
-  if (!Number.isInteger(pid)) return;
-  try {
-    process.kill(-pid, "SIGTERM");
-  } catch (error) {
-    if (error?.code !== "ESRCH") throw error;
-  }
-  if (await waitForProcessExit(pid)) return;
-  try {
-    process.kill(-pid, "SIGKILL");
-  } catch (error) {
-    if (error?.code !== "ESRCH") throw error;
-  }
-  if (!(await waitForProcessExit(pid, 2_000))) {
-    throw new Error("lower-controller simulator did not exit");
-  }
 }
 
 export {
@@ -572,7 +725,10 @@ export {
   paymentMockQueryFaultPaths as mockPaymentQueryFaultPaths,
 } from "./mock-payment-create-gate.ts";
 
-function armMockPaymentCreateGate(server, input) {
+function armMockPaymentCreateGate(
+  server: ControlPlaneServerState,
+  input: Record<string, unknown>,
+): Record<string, unknown> {
   const timeoutMs = Number(input?.timeoutMs);
   if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 30_000) {
     throw new Error("mock payment create gate timeoutMs must be 100..30000");
@@ -588,11 +744,16 @@ function armMockPaymentCreateGate(server, input) {
   };
 }
 
-function readMockPaymentCreateGateStatus(server) {
+function readMockPaymentCreateGateStatus(
+  server: ControlPlaneServerState,
+): Record<string, unknown> {
   return readPaymentMockCreateGateStatus(server.options.stateRoot);
 }
 
-function releaseMockPaymentCreateGate(server, input) {
+function releaseMockPaymentCreateGate(
+  server: ControlPlaneServerState,
+  input: Record<string, unknown>,
+): Record<string, unknown> {
   writePaymentMockCreateGateState(server.options.stateRoot, {
     state: "release",
     paymentNo: required(input.paymentNo, "paymentNo"),
@@ -603,7 +764,9 @@ function releaseMockPaymentCreateGate(server, input) {
   };
 }
 
-function openMockPaymentCreateGate(server) {
+function openMockPaymentCreateGate(
+  server: ControlPlaneServerState,
+): Record<string, unknown> {
   writePaymentMockCreateGateState(server.options.stateRoot, { state: "open" });
   return {
     openedAt: new Date().toISOString(),
@@ -611,7 +774,10 @@ function openMockPaymentCreateGate(server) {
   };
 }
 
-function armMockPaymentQueryFault(server, input) {
+function armMockPaymentQueryFault(
+  server: ControlPlaneServerState,
+  input: Record<string, unknown>,
+): Record<string, unknown> {
   const paymentNo = required(input.paymentNo, "paymentNo");
   writePaymentMockQueryFaultState(server.options.stateRoot, {
     state: "fail",
@@ -620,16 +786,24 @@ function armMockPaymentQueryFault(server, input) {
   return { armedAt: new Date().toISOString(), state: "fail", paymentNo };
 }
 
-function readMockPaymentQueryFault(server) {
+function readMockPaymentQueryFault(
+  server: ControlPlaneServerState,
+): Record<string, unknown> {
   return readPaymentMockQueryFaultStatus(server.options.stateRoot);
 }
 
-function openMockPaymentQueryFault(server) {
+function openMockPaymentQueryFault(
+  server: ControlPlaneServerState,
+): Record<string, unknown> {
   writePaymentMockQueryFaultState(server.options.stateRoot, { state: "open" });
   return { openedAt: new Date().toISOString(), state: "open" };
 }
 
-function writeProtectedTempFile(root, prefix, contents) {
+function writeProtectedTempFile(
+  root: string,
+  prefix: string,
+  contents: string | Buffer | Uint8Array,
+): string {
   const directory = mkdtempSync(join(root, `${prefix}-`));
   const path = join(directory, `${prefix}.bin`);
   const bytes = Buffer.isBuffer(contents)
@@ -644,7 +818,11 @@ function spawnMqttCapture({
   machineCode,
   topic = buildMqttTopic(machineCode),
   limit = 4,
-}) {
+}: {
+  machineCode: unknown;
+  topic?: string;
+  limit?: number;
+}): MqttCapture {
   const timeoutSeconds = Number.parseInt(
     process.env.VEM_TESTBED_MQTT_CAPTURE_TIMEOUT_SECONDS ?? "180",
     10,
@@ -679,15 +857,17 @@ function spawnMqttCapture({
     ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
-  const messages = [];
+  const messages: MqttMessage[] = [];
   let stderr = "";
   let readySettled = false;
-  let readyResolve;
-  let readyReject;
-  const ready = new Promise((resolve, reject) => {
+  let readyResolve!: (value: { topic: string; subscribedAt: string }) => void;
+  let readyReject!: (error: Error) => void;
+  const ready = new Promise<{ topic: string; subscribedAt: string }>(
+    (resolve, reject) => {
     readyResolve = resolve;
     readyReject = reject;
-  });
+    },
+  );
   const readyTimeout = setTimeout(() => {
     if (readySettled) return;
     readySettled = true;
@@ -735,15 +915,17 @@ function spawnMqttCapture({
         firstSpace > 0 ? trimmed.slice(firstSpace + 1).trim() : trimmed;
       if (observedTopic === probeTopic) {
         try {
-          const payload = JSON.parse(payloadText);
-          if (payload?.__vemTestbedMqttCaptureProbe === probeId) {
+          const payload = JSON.parse(payloadText) as {
+            __vemTestbedMqttCaptureProbe?: string;
+          };
+          if (payload.__vemTestbedMqttCaptureProbe === probeId) {
             markReady();
           }
         } catch {}
         continue;
       }
       try {
-        const payload = JSON.parse(payloadText);
+        const payload: unknown = JSON.parse(payloadText);
         messages.push({
           topic: observedTopic,
           payload,
@@ -825,12 +1007,20 @@ function spawnMqttCapture({
   };
 }
 
-function summarizeReport(report) {
+function summarizeReport(report: unknown): Record<string, unknown> {
+  const record = report as
+    | {
+        result?: unknown;
+        request?: { operation?: unknown; operationReference?: unknown };
+        serialSession?: { serialSessionId?: unknown };
+      }
+    | null
+    | undefined;
   return {
-    result: report?.result ?? null,
+    result: record?.result ?? null,
     operation:
-      report?.request?.operation ?? report?.request?.operationReference ?? null,
-    serialSessionId: report?.serialSession?.serialSessionId ?? null,
+      record?.request?.operation ?? record?.request?.operationReference ?? null,
+    serialSessionId: record?.serialSession?.serialSessionId ?? null,
   };
 }
 
@@ -847,18 +1037,33 @@ const RAW_PROTOCOL_DIRECTIONS = Object.freeze({
 
 const REPEATED_STATE_OPCODES = new Set(["F0", "F1", "AF", "F2"]);
 
-function collapseRepeatedStateFrames(frames) {
+interface SerialFrame {
+  sequence?: number;
+  direction?: string;
+  parsedOpcode?: string;
+  rawFrameHex?: string;
+  capturedAt?: string;
+  sessionId?: string;
+  provenance?: string;
+  [key: string]: unknown;
+}
+
+function collapseRepeatedStateFrames(frames: SerialFrame[]): SerialFrame[] {
   return frames.filter((frame, index) => {
     const previous = frames[index - 1];
     return !(
       previous?.parsedOpcode === frame.parsedOpcode &&
+      frame.parsedOpcode !== undefined &&
       REPEATED_STATE_OPCODES.has(frame.parsedOpcode)
     );
   });
 }
 
-function orderedMilestoneFrames(frames, expected) {
-  const milestones = [];
+function orderedMilestoneFrames(
+  frames: SerialFrame[],
+  expected: readonly string[],
+): SerialFrame[] | null {
+  const milestones: SerialFrame[] = [];
   let expectedIndex = 0;
   for (const frame of frames) {
     if (frame.parsedOpcode !== expected[expectedIndex]) continue;
@@ -869,7 +1074,7 @@ function orderedMilestoneFrames(frames, expected) {
   return null;
 }
 
-function frozenFrameKey(frame) {
+function frozenFrameKey(frame: SerialFrame): string {
   if (Number.isSafeInteger(frame?.sequence))
     return `sequence:${frame.sequence}`;
   return JSON.stringify([
@@ -884,9 +1089,13 @@ export function mergeFrozenSerialMilestones({
   sessionId,
   existing = [],
   boundary,
-}) {
+}: {
+  sessionId: unknown;
+  existing?: unknown;
+  boundary?: { protocolFrames?: unknown };
+}): SerialFrame[] {
   const boundSessionId = required(sessionId, "serial session id");
-  const frozen = Array.isArray(existing) ? existing : [];
+  const frozen: SerialFrame[] = Array.isArray(existing) ? existing : [];
   for (const frame of frozen) {
     if (frame?.sessionId !== boundSessionId) {
       throw new Error(
@@ -894,10 +1103,10 @@ export function mergeFrozenSerialMilestones({
       );
     }
   }
-  const observed = Array.isArray(boundary?.protocolFrames)
-    ? boundary.protocolFrames
+  const observed: SerialFrame[] = Array.isArray(boundary?.protocolFrames)
+    ? (boundary.protocolFrames as SerialFrame[])
     : [];
-  const byKey = new Map();
+  const byKey = new Map<string, SerialFrame>();
   for (const frame of [...frozen, ...observed]) {
     const normalized = {
       ...frame,
@@ -908,11 +1117,15 @@ export function mergeFrozenSerialMilestones({
     if (!byKey.has(key)) byKey.set(key, normalized);
   }
   return [...byKey.values()].sort((left, right) => {
+    const leftSequence = left.sequence;
+    const rightSequence = right.sequence;
     if (
-      Number.isSafeInteger(left.sequence) &&
-      Number.isSafeInteger(right.sequence)
+      typeof leftSequence === "number" &&
+      Number.isSafeInteger(leftSequence) &&
+      typeof rightSequence === "number" &&
+      Number.isSafeInteger(rightSequence)
     ) {
-      return left.sequence - right.sequence;
+      return leftSequence - rightSequence;
     }
     return 0;
   });
@@ -924,9 +1137,24 @@ export async function waitForRawSerialFrame({
   serialScenario = SERIAL_SCENARIOS.NORMAL,
   timeoutMs = 30_000,
   pollMs = 25,
-}) {
+}: {
+  journalPath: unknown;
+  parsedOpcode: unknown;
+  serialScenario?: unknown;
+  timeoutMs?: number;
+  pollMs?: number;
+}): Promise<{
+  parsedOpcode: string;
+  frame: SerialFrame | undefined;
+  protocolFrames: SerialFrame[];
+  observedProtocolFrames: SerialFrame[];
+}> {
+  const opcode = String(parsedOpcode ?? "");
   const scenario = normalizeSerialScenario(serialScenario);
-  const expected = {
+  const scenarioExpected: Record<
+    string,
+    Record<string, string[] | undefined>
+  > = {
     [SERIAL_SCENARIOS.NORMAL]: {
       VEND: ["VEND"],
       B3: ["B3"],
@@ -945,7 +1173,8 @@ export async function waitForRawSerialFrame({
       F0: ["VEND", "F0"],
       E6: ["VEND", "F0", "E5", "E5", "F1", "E6"],
     },
-  }[scenario]?.[parsedOpcode];
+  };
+  const expected = scenarioExpected[scenario]?.[opcode];
   if (!expected)
     throw new Error("parsedOpcode is not valid for the serial scenario");
   const deadline = Date.now() + timeoutMs;
@@ -953,11 +1182,15 @@ export async function waitForRawSerialFrame({
     const raw = readRawSerialJournal(journalPath);
     if (raw.length > 256)
       throw new Error("raw serial evidence exceeded 256 records");
-    const protocolFrames = raw.filter((frame) =>
-      Object.hasOwn(RAW_PROTOCOL_DIRECTIONS, frame.parsedOpcode),
+    const protocolFrames = raw.filter(
+      (frame: SerialFrame) =>
+        frame.parsedOpcode !== undefined &&
+        Object.hasOwn(RAW_PROTOCOL_DIRECTIONS, frame.parsedOpcode),
     );
     for (const frame of protocolFrames) {
-      const expectedDirections = RAW_PROTOCOL_DIRECTIONS[frame.parsedOpcode];
+      const expectedDirections = (
+        RAW_PROTOCOL_DIRECTIONS as Record<string, string | string[]>
+      )[frame.parsedOpcode ?? ""];
       const allowedDirections = Array.isArray(expectedDirections)
         ? expectedDirections
         : [expectedDirections];
@@ -970,17 +1203,17 @@ export async function waitForRawSerialFrame({
     const normalizedProtocolFrames =
       collapseRepeatedStateFrames(protocolFrames);
     const opcodes = normalizedProtocolFrames.map((frame) => frame.parsedOpcode);
-    if (parsedOpcode === "VEND" && opcodes.includes("F0")) {
+    if (opcode === "VEND" && opcodes.includes("F0")) {
       throw new Error("F0 appeared before the before-F0 gate was released");
     }
     if (
-      !["F2", "E6"].includes(parsedOpcode) &&
+      !["F2", "E6"].includes(opcode) &&
       opcodes.includes("F2") &&
-      !opcodes.includes(parsedOpcode)
+      !opcodes.includes(opcode)
     ) {
-      throw new Error(`F2 appeared before required ${parsedOpcode} boundary`);
+      throw new Error(`F2 appeared before required ${opcode} boundary`);
     }
-    const boundaryIndex = opcodes.indexOf(parsedOpcode);
+    const boundaryIndex = opcodes.indexOf(opcode);
     if (boundaryIndex >= 0) {
       const prefix = normalizedProtocolFrames.slice(0, boundaryIndex + 1);
       const milestones = orderedMilestoneFrames(prefix, expected);
@@ -990,7 +1223,7 @@ export async function waitForRawSerialFrame({
         );
       }
       return {
-        parsedOpcode,
+        parsedOpcode: opcode,
         frame: milestones.at(-1),
         protocolFrames: milestones,
         observedProtocolFrames: prefix,
@@ -998,10 +1231,13 @@ export async function waitForRawSerialFrame({
     }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, pollMs));
   } while (Date.now() < deadline);
-  throw new Error(`timed out waiting for inbound ${parsedOpcode}`);
+  throw new Error(`timed out waiting for inbound ${opcode}`);
 }
 
-function releaseSessionF0(server, input) {
+function releaseSessionF0(
+  server: ControlPlaneServerState,
+  input: Record<string, unknown>,
+): Record<string, unknown> {
   const session = requireSession(server, input.sessionId);
   const path = adapterSessionPaths(session).releaseF0Path;
   writeFileSync(path, `${new Date().toISOString()}\n`, {
@@ -1011,7 +1247,9 @@ function releaseSessionF0(server, input) {
   return { released: true, releaseFile: path };
 }
 
-function adapterSessionPaths(session) {
+function adapterSessionPaths(session: SerialSession): ReturnType<
+  typeof qemuUsbSerialSessionPaths
+> {
   const adapterRoot = required(
     process.env.VEM_VM_HOST_ADAPTER_STATE_ROOT,
     "VEM_VM_HOST_ADAPTER_STATE_ROOT",
@@ -1022,7 +1260,10 @@ function adapterSessionPaths(session) {
   );
 }
 
-async function waitForSessionFrame(server, input) {
+async function waitForSessionFrame(
+  server: ControlPlaneServerState,
+  input: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
   const session = requireSession(server, input.sessionId);
   const boundary = await waitForRawSerialFrame({
     journalPath: adapterSessionPaths(session).journalPath,
@@ -1037,10 +1278,13 @@ async function waitForSessionFrame(server, input) {
     existing: session.frozenMilestoneFrames,
     boundary,
   });
-  return boundary;
+  return boundary as unknown as Record<string, unknown>;
 }
 
-async function stopScannerBindingProbe(server, input) {
+async function stopScannerBindingProbe(
+  server: ControlPlaneServerState,
+  input: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
   const session = requireSession(server, input.sessionId);
   const root = required(
     process.env.VEM_VM_HOST_ADAPTER_STATE_ROOT,
@@ -1058,7 +1302,7 @@ async function stopScannerBindingProbe(server, input) {
       }),
     };
   } catch (error) {
-    if (error?.code !== "ESRCH") throw error;
+    if (!isErrnoCode(error, "ESRCH")) throw error;
     const state = JSON.parse(readFileSync(paths.statePath, "utf8"));
     return {
       sessionId: session.id,
@@ -1072,7 +1316,10 @@ async function stopScannerBindingProbe(server, input) {
   }
 }
 
-function releaseSessionF2(server, input) {
+function releaseSessionF2(
+  server: ControlPlaneServerState,
+  input: Record<string, unknown>,
+): Record<string, unknown> {
   const session = requireSession(server, input.sessionId);
   const path = adapterSessionPaths(session).releaseF2Path;
   writeFileSync(path, `${new Date().toISOString()}\n`, {
@@ -1082,10 +1329,15 @@ function releaseSessionF2(server, input) {
   return { released: true, releaseFile: path };
 }
 
-function collectPlatformLog(server, input) {
-  const lines = Number.isInteger(input.lines)
-    ? input.lines
-    : Number(input.lines ?? 200);
+function collectPlatformLog(
+  server: ControlPlaneServerState,
+  input: Record<string, unknown>,
+): Record<string, unknown> {
+  const rawLines = input.lines;
+  const lines =
+    typeof rawLines === "number" && Number.isInteger(rawLines)
+      ? rawLines
+      : Number(rawLines ?? 200);
   const lineCount =
     Number.isInteger(lines) && lines > 0 ? Math.min(lines, 400) : 200;
   const result = spawnSync(
@@ -1130,17 +1382,22 @@ function collectPlatformLog(server, input) {
   };
 }
 
-function boundedSessionEvidence(server, input) {
+function boundedSessionEvidence(
+  server: ControlPlaneServerState,
+  input: Record<string, unknown>,
+): Record<string, unknown> {
   const session = requireSession(server, input.sessionId);
   const paths = adapterSessionPaths(session);
   const simulatorLog = existsSync(paths.logPath)
     ? readFileSync(paths.logPath, "utf8").slice(-64 * 1024)
     : "";
+  const rawFrameLimitValue = input.rawFrameLimit;
   const rawFrameLimit =
-    Number.isSafeInteger(input.rawFrameLimit) &&
-    input.rawFrameLimit >= 64 &&
-    input.rawFrameLimit <= 1_024
-      ? input.rawFrameLimit
+    typeof rawFrameLimitValue === "number" &&
+    Number.isSafeInteger(rawFrameLimitValue) &&
+    rawFrameLimitValue >= 64 &&
+    rawFrameLimitValue <= 1_024
+      ? rawFrameLimitValue
       : 64;
   const tailFrames = readRawSerialJournal(paths.journalPath)
     .slice(-rawFrameLimit)
@@ -1178,14 +1435,16 @@ function boundedSessionEvidence(server, input) {
   };
 }
 
-function normalizeLifecycleRole(value) {
+function normalizeLifecycleRole(value: unknown): string {
   const role = required(value, "role");
   if (role === "lower_controller") return "lower-controller";
   if (role === "lower-controller" || role === "scanner") return role;
   throw new Error("role must be lower-controller or scanner");
 }
 
-function normalizeLifecycleOperation(value) {
+function normalizeLifecycleOperation(
+  value: unknown,
+): "disconnect" | "reconnect" {
   const operation = required(value, "operation");
   if (operation !== "disconnect" && operation !== "reconnect") {
     throw new Error("operation must be disconnect or reconnect");
@@ -1193,10 +1452,14 @@ function normalizeLifecycleOperation(value) {
   return operation;
 }
 
-export function serialDeviceXmlForRole(domainXml, role) {
+export function serialDeviceXmlForRole(
+  domainXml: unknown,
+  role: unknown,
+): string {
   const targetPort =
     normalizeLifecycleRole(role) === "lower-controller" ? 0 : 1;
-  const serialDevices = domainXml.match(/<serial\b[\s\S]*?<\/serial>/g) ?? [];
+  const serialDevices =
+    String(domainXml ?? "").match(/<serial\b[\s\S]*?<\/serial>/g) ?? [];
   const device = serialDevices.find((candidate) =>
     new RegExp(`<target\\b[^>]*\\bport=(['"])${targetPort}\\1`).test(candidate),
   );
@@ -1208,7 +1471,14 @@ export function serialDeviceXmlForRole(domainXml, role) {
   return device;
 }
 
-function runVirshDeviceLifecycle(server, { role, operation, xml }) {
+function runVirshDeviceLifecycle(
+  server: ControlPlaneServerState,
+  { role, operation, xml }: {
+    role: unknown;
+    operation: unknown;
+    xml: unknown;
+  },
+): Record<string, unknown> {
   const paths = qemuUsbSerialSessionPaths(
     server.options.stateRoot,
     `host-control-plane-device-${role}-${operation}-${randomUUID()}`,
@@ -1247,7 +1517,7 @@ function runVirshDeviceLifecycle(server, { role, operation, xml }) {
   };
 }
 
-function dumpDomainXml(server) {
+function dumpDomainXml(server: ControlPlaneServerState): string {
   const result = spawnSync(
     "virsh",
     [
@@ -1266,7 +1536,10 @@ function dumpDomainXml(server) {
   return String(result.stdout ?? "");
 }
 
-function serialDeviceLifecycle(server, input) {
+function serialDeviceLifecycle(
+  server: ControlPlaneServerState,
+  input: Record<string, unknown>,
+): Record<string, unknown> {
   const session = requireSession(server, input.sessionId);
   const role = normalizeLifecycleRole(input.role);
   const operation = normalizeLifecycleOperation(input.operation);
@@ -1305,7 +1578,10 @@ function serialDeviceLifecycle(server, input) {
   return { sessionId: session.id, lifecycle };
 }
 
-function audioCaptureProductionBinding(server, session) {
+function audioCaptureProductionBinding(
+  server: ControlPlaneServerState,
+  session: SerialSession,
+): Record<string, unknown> {
   const paths = adapterSessionPaths(session);
   return {
     libvirtUri: server.options.libvirtUri,
@@ -1314,7 +1590,10 @@ function audioCaptureProductionBinding(server, session) {
   };
 }
 
-function requireAudioCapture(server, audioCaptureId) {
+function requireAudioCapture(
+  server: ControlPlaneServerState,
+  audioCaptureId: unknown,
+): AudioCaptureSession {
   const capture = server.audioCaptures.get(
     required(audioCaptureId, "audioCaptureId"),
   );
@@ -1322,7 +1601,9 @@ function requireAudioCapture(server, audioCaptureId) {
   return capture;
 }
 
-function audioCaptureEvidencePayloads(capture) {
+function audioCaptureEvidencePayloads(
+  capture: AudioCaptureSession,
+): Array<{ fileName: string; bytesBase64: string }> {
   return (capture.stopReport?.evidence ?? []).map((artifact) => ({
     fileName: artifact.fileName,
     bytesBase64: readFileSync(
@@ -1331,7 +1612,10 @@ function audioCaptureEvidencePayloads(capture) {
   }));
 }
 
-async function startAudioCapture(server, input) {
+async function startAudioCapture(
+  server: ControlPlaneServerState,
+  input: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
   const session = requireSession(server, input.sessionId);
   const runtime = runtimeBinding(input.runtime);
   const operationId = required(input.operationId, "operationId");
@@ -1357,7 +1641,7 @@ async function startAudioCapture(server, input) {
     targetIdentity: required(input.targetIdentity, "targetIdentity"),
     transactionId: required(input.transactionId, "transactionId"),
   };
-  const startReport = await server.dependencies.executeSaleAudioCapture(
+  const startReport = (await server.dependencies.executeSaleAudioCapture(
     {
       phase: "start",
       runId: startInput.runId,
@@ -1370,7 +1654,7 @@ async function startAudioCapture(server, input) {
       production: audioCaptureProductionBinding(server, session),
     },
     {},
-  );
+  )) as AudioCaptureSession["startReport"];
   server.audioCaptures.set(audioCaptureId, {
     id: audioCaptureId,
     operationId,
@@ -1390,7 +1674,10 @@ async function startAudioCapture(server, input) {
   };
 }
 
-async function stopAudioCapture(server, input) {
+async function stopAudioCapture(
+  server: ControlPlaneServerState,
+  input: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
   const capture = requireAudioCapture(server, input.audioCaptureId);
   if (capture.stopReport) {
     return {
@@ -1402,8 +1689,7 @@ async function stopAudioCapture(server, input) {
   }
   const session = requireSession(server, capture.sessionId);
   const outPath = join(session.dir, "audio-capture-stop.json");
-  capture.stopReport =
-    input.captureKind === "default-audio"
+  capture.stopReport = (input.captureKind === "default-audio"
       ? await server.dependencies.stopDefaultAudioCapture(
           {
             captureSessionId:
@@ -1440,7 +1726,7 @@ async function stopAudioCapture(server, input) {
             production: audioCaptureProductionBinding(server, session),
           },
           {},
-        );
+        )) as NonNullable<AudioCaptureSession["stopReport"]>;
   return {
     audioCaptureId: capture.id,
     stopReport: capture.stopReport,
@@ -1449,7 +1735,10 @@ async function stopAudioCapture(server, input) {
   };
 }
 
-async function cancelAudioCapture(server, input) {
+async function cancelAudioCapture(
+  server: ControlPlaneServerState,
+  input: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
   const capture = requireAudioCapture(server, input.audioCaptureId);
   if (capture.stopReport) {
     return {
@@ -1481,7 +1770,10 @@ async function cancelAudioCapture(server, input) {
   };
 }
 
-async function cancelAudioCaptureByOperation(server, input) {
+async function cancelAudioCaptureByOperation(
+  server: ControlPlaneServerState,
+  input: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
   const operationId = required(input.operationId, "operationId");
   const captureId = server.audioCapturesByOperation.get(operationId);
   if (!captureId)
@@ -1492,7 +1784,10 @@ async function cancelAudioCaptureByOperation(server, input) {
   };
 }
 
-function audioCaptureDiagnostics(server, input) {
+function audioCaptureDiagnostics(
+  server: ControlPlaneServerState,
+  input: Record<string, unknown>,
+): Record<string, unknown> {
   const capture = requireAudioCapture(server, input.audioCaptureId);
   return {
     audioCaptureId: capture.id,
@@ -1510,7 +1805,10 @@ function audioCaptureDiagnostics(server, input) {
   };
 }
 
-function bindSale(server, input) {
+function bindSale(
+  server: ControlPlaneServerState,
+  input: Record<string, unknown>,
+): Record<string, unknown> {
   const session = requireSession(server, input.sessionId);
   const sale = {
     saleCorrelationId: session.saleCorrelationId,
@@ -1531,13 +1829,16 @@ function bindSale(server, input) {
   return { saleBinding: sale };
 }
 
-async function waitForProcessGroupExit(pid, timeoutMs) {
+async function waitForProcessGroupExit(
+  pid: number,
+  timeoutMs: number,
+): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
       process.kill(-pid, 0);
     } catch (error) {
-      if (error?.code === "ESRCH") return true;
+      if (isErrnoCode(error, "ESRCH")) return true;
       throw error;
     }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
@@ -1546,35 +1847,47 @@ async function waitForProcessGroupExit(pid, timeoutMs) {
     process.kill(-pid, 0);
     return false;
   } catch (error) {
-    if (error?.code === "ESRCH") return true;
+    if (isErrnoCode(error, "ESRCH")) return true;
     throw error;
   }
 }
 
-async function abortProcessGroup(label, pid) {
-  if (!Number.isInteger(pid))
+async function abortProcessGroup(
+  label: string,
+  pid: unknown,
+): Promise<Record<string, unknown>> {
+  const numericPid = Number(pid);
+  if (!Number.isInteger(numericPid) || numericPid < 1)
     return { label, pid: null, exitedAfter: "not_started" };
   try {
-    process.kill(-pid, "SIGTERM");
+    process.kill(-numericPid, "SIGTERM");
   } catch (error) {
-    if (error?.code === "ESRCH")
-      return { label, pid, exitedAfter: "already_exited" };
+    if (isErrnoCode(error, "ESRCH"))
+      return { label, pid: numericPid, exitedAfter: "already_exited" };
     throw error;
   }
-  if (await waitForProcessGroupExit(pid, 3_000))
-    return { label, pid, exitedAfter: "SIGTERM" };
-  process.kill(-pid, "SIGKILL");
-  if (await waitForProcessGroupExit(pid, 1_000))
-    return { label, pid, exitedAfter: "SIGKILL" };
+  if (await waitForProcessGroupExit(numericPid, 3_000))
+    return { label, pid: numericPid, exitedAfter: "SIGTERM" };
+  process.kill(-numericPid, "SIGKILL");
+  if (await waitForProcessGroupExit(numericPid, 1_000))
+    return { label, pid: numericPid, exitedAfter: "SIGKILL" };
   throw new Error(
-    `${label} process group ${pid} survived abort SIGTERM and SIGKILL`,
+    `${label} process group ${numericPid} survived abort SIGTERM and SIGKILL`,
   );
 }
 
-async function abortSession(server, input) {
+async function abortSession(
+  server: ControlPlaneServerState,
+  input: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
   const session = requireSession(server, input.sessionId);
   const paths = adapterSessionPaths(session);
-  const cleanup = {
+  const cleanup: {
+    termination: Array<Record<string, unknown>>;
+    errors: string[];
+    survivingProcessCount: number;
+    survivingSocketCount: number;
+  } = {
     termination: [],
     errors: [],
     survivingProcessCount: 0,
@@ -1606,12 +1919,20 @@ async function abortSession(server, input) {
     }
   }
   if (existsSync(paths.statePath)) {
-    const state = JSON.parse(readFileSync(paths.statePath, "utf8"));
-    for (const [label, pid] of [
+    const state = JSON.parse(readFileSync(paths.statePath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    const statePids: Array<[string, unknown]> = [
       ["lower-controller simulator", state.simulatorPid],
       ["host PTY capture", state.ptyCapturePid],
-      ["scanner binding probe", state.scannerBindingProbe?.pid],
-    ]) {
+      [
+        "scanner binding probe",
+        (state.scannerBindingProbe as { pid?: unknown } | null | undefined)
+          ?.pid,
+      ],
+    ];
+    for (const [label, pid] of statePids) {
       try {
         cleanup.termination.push(await abortProcessGroup(label, pid));
       } catch (error) {
@@ -1622,22 +1943,23 @@ async function abortSession(server, input) {
     }
     state.active = false;
     state.cleanupAttemptCount = Number(state.cleanupAttemptCount ?? 0) + 1;
-    const pids = [
-      state.simulatorPid,
-      state.ptyCapturePid,
-      state.scannerBindingProbe?.pid,
-    ].filter(Number.isInteger);
+    const pids = statePids
+      .map(([, pid]) => Number(pid))
+      .filter((pid) => Number.isInteger(pid) && pid >= 1);
     cleanup.survivingProcessCount = pids.filter((pid) => {
       try {
         process.kill(-pid, 0);
         return true;
       } catch (error) {
-        if (error?.code === "ESRCH") return false;
+        if (isErrnoCode(error, "ESRCH")) return false;
         throw error;
       }
     }).length;
-    cleanup.survivingSocketCount = (state.runtimeSocketPaths ?? []).filter(
-      (path) => existsSync(path),
+    const runtimeSocketPaths = Array.isArray(state.runtimeSocketPaths)
+      ? (state.runtimeSocketPaths as string[])
+      : [];
+    cleanup.survivingSocketCount = runtimeSocketPaths.filter((path: string) =>
+      existsSync(path),
     ).length;
     state.cleanup = cleanup;
     writeFileSync(paths.statePath, `${JSON.stringify(state, null, 2)}\n`, {
@@ -1658,14 +1980,19 @@ async function abortSession(server, input) {
   return { aborted: true, cleanup };
 }
 
-async function abortExistingSerialSessions(server) {
+async function abortExistingSerialSessions(
+  server: ControlPlaneServerState,
+): Promise<void> {
   for (const session of [...server.sessions.values()]) {
     await abortSession(server, { sessionId: session.id });
     server.sessions.delete(session.id);
   }
 }
 
-async function executePlatformQuery(server, input) {
+async function executePlatformQuery(
+  server: ControlPlaneServerState,
+  input: Record<string, unknown>,
+): Promise<unknown> {
   const sessionId = input.sessionId
     ? required(input.sessionId, "sessionId")
     : null;
@@ -1691,7 +2018,10 @@ async function executePlatformQuery(server, input) {
   return parseJsonLine(stdout, outPath);
 }
 
-async function injectPlatformPaymentExpiry(server, input) {
+async function injectPlatformPaymentExpiry(
+  server: ControlPlaneServerState,
+  input: Record<string, unknown>,
+): Promise<unknown> {
   const command = buildPaymentExpiryInjectionCommand({
     workspace: server.options.workspace,
     runId: required(input.runId, "runId"),
@@ -1703,7 +2033,10 @@ async function injectPlatformPaymentExpiry(server, input) {
   return parseJsonLine(stdout);
 }
 
-async function createSerialSession(server, input) {
+async function createSerialSession(
+  server: ControlPlaneServerState,
+  input: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
   await abortExistingSerialSessions(server);
   const runId = required(input.runId, "runId");
   const machineCode = required(input.machineCode, "machineCode");
@@ -1730,7 +2063,7 @@ async function createSerialSession(server, input) {
     },
   });
   const { stdout } = await runJsonCommand(command);
-  const report = parseJsonLine(stdout, outPath);
+  const report = parseJsonLine(stdout, outPath) as SerialSessionStartReport;
   const mqttCaptureFactory =
     server.dependencies.mqttCaptureFactory ?? spawnMqttCapture;
   const mqttCapture = mqttCaptureFactory({ machineCode });
@@ -1744,8 +2077,8 @@ async function createSerialSession(server, input) {
     dir,
     runId,
     machineCode,
-    targetIdentity: input.targetIdentity,
-    runtimeBase: input.runtimeBase,
+    targetIdentity: required(input.targetIdentity, "targetIdentity"),
+    runtimeBase: required(input.runtimeBase, "runtimeBase"),
     saleCorrelationId,
     serialScenario,
     startReport: report,
@@ -1755,14 +2088,15 @@ async function createSerialSession(server, input) {
       startOperationReference: report.serialSession.startOperationReference,
       deviceMappingDigest: report.serialSession.deviceMappingDigest,
     },
-    frozenMilestoneFrames: [],
+    frozenMilestoneFrames: [] as unknown[],
     mqttCapture,
     machineMqttCapture,
-    deviceLifecycle: [],
+    deviceLifecycle: [] as Array<Record<string, unknown>>,
     detachedDeviceXml: {},
     injectReport: null,
     collectReport: null,
-    stopReports: [],
+    stopReports: [] as unknown[],
+    sale: null,
   };
   server.sessions.set(sessionId, session);
   try {
@@ -1813,13 +2147,19 @@ async function createSerialSession(server, input) {
   };
 }
 
-function requireSession(server, sessionId) {
+function requireSession(
+  server: ControlPlaneServerState,
+  sessionId: unknown,
+): SerialSession {
   const session = server.sessions.get(required(sessionId, "sessionId"));
   if (!session) throw new Error("serial session was not found");
   return session;
 }
 
-async function injectScannerCode(server, input) {
+async function injectScannerCode(
+  server: ControlPlaneServerState,
+  input: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
   const session = requireSession(server, input.sessionId);
   const sale = {
     saleCorrelationId: session.saleCorrelationId,
@@ -1852,7 +2192,7 @@ async function injectScannerCode(server, input) {
     },
   });
   const { stdout } = await runJsonCommand(command);
-  const report = parseJsonLine(stdout, outPath);
+  const report = parseJsonLine(stdout, outPath) as SerialRunnerReport;
   session.injectReport = report;
   session.sale = {
     ...sale,
@@ -1861,17 +2201,25 @@ async function injectScannerCode(server, input) {
   return {
     sessionId: session.id,
     injectReport: summarizeReport(report),
-    scannerInjection: report.request.serialSession.scannerInjection,
+    scannerInjection:
+      report.request?.serialSession?.scannerInjection,
   };
 }
 
-async function collectSerialEvidence(server, input) {
+async function collectSerialEvidence(
+  server: ControlPlaneServerState,
+  input: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
   const session = requireSession(server, input.sessionId);
   if (!session.injectReport) {
     throw new Error("inject-scanner-code must complete before collect");
   }
-  const scannerInjection =
-    session.injectReport.request.serialSession.scannerInjection;
+  const scannerInjection = (
+    session.injectReport as SerialRunnerReport
+  ).request?.serialSession?.scannerInjection;
+  if (scannerInjection === undefined) {
+    throw new Error("inject report is missing scanner injection evidence");
+  }
   const sale = {
     saleCorrelationId: session.saleCorrelationId,
     orderId: required(input.orderId, "orderId"),
@@ -1879,7 +2227,7 @@ async function collectSerialEvidence(server, input) {
     vendingCommandId: required(input.vendingCommandId, "vendingCommandId"),
   };
   const outPath = join(session.dir, "collect.json");
-  const reportDigest = (report) =>
+  const reportDigest = (report: unknown) =>
     `sha256:${createHash("sha256").update(JSON.stringify(report)).digest("hex")}`;
   const command = buildSerialOperationCommand({
     workspace: server.options.workspace,
@@ -1906,7 +2254,7 @@ async function collectSerialEvidence(server, input) {
     },
   });
   const { stdout } = await runJsonCommand(command);
-  const report = parseJsonLine(stdout, outPath);
+  const report = parseJsonLine(stdout, outPath) as SerialRunnerReport;
   session.collectReport = report;
   session.sale = sale;
   return {
@@ -1917,7 +2265,10 @@ async function collectSerialEvidence(server, input) {
   };
 }
 
-async function stopSerialSession(server, input) {
+async function stopSerialSession(
+  server: ControlPlaneServerState,
+  input: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
   const session = requireSession(server, input.sessionId);
   const sale = {
     saleCorrelationId:
@@ -1951,7 +2302,7 @@ async function stopSerialSession(server, input) {
     },
   });
   const { stdout } = await runJsonCommand(command);
-  const report = parseJsonLine(stdout, outPath);
+  const report = parseJsonLine(stdout, outPath) as SerialRunnerReport;
   session.stopReports.push(report);
   if (input.idempotencyCheck !== true) {
     session.mqttCapture.stop();
@@ -1964,14 +2315,26 @@ async function stopSerialSession(server, input) {
   };
 }
 
-function authorize(request, token) {
+function authorize(
+  request: import("node:http").IncomingMessage,
+  token: unknown,
+): boolean {
   return request.headers.authorization === `Bearer ${token}`;
 }
 
-export function createHostSerialControlPlane(options, dependencies = {}) {
-  const sessions = new Map();
-  const audioCaptures = new Map();
-  const audioCapturesByOperation = new Map();
+export function createHostSerialControlPlane(
+  options: ControlPlaneOptions,
+  dependencies: ControlPlaneDependencies = {},
+): {
+  sessions: Map<string, SerialSession>;
+  audioCaptures: Map<string, AudioCaptureSession>;
+  audioCapturesByOperation: Map<string, string>;
+  listen: () => import("node:http").Server;
+  close: () => Promise<void>;
+} {
+  const sessions = new Map<string, SerialSession>();
+  const audioCaptures = new Map<string, AudioCaptureSession>();
+  const audioCapturesByOperation = new Map<string, string>();
   const serverState = {
     options,
     sessions,
@@ -2139,9 +2502,10 @@ export function createHostSerialControlPlane(options, dependencies = {}) {
         });
         return;
       }
-      const sessionMatch = request.url?.match(
-        /^\/v1\/serial-sessions\/([^/]+)(?:\/(inject|wait-frame|release-f0|release-f2|bind-sale|platform-log|evidence|device-lifecycle|abort|collect|stop|stop-scanner-probe))?$/,
-      );
+      const sessionMatch =
+        request.url?.match(
+          /^\/v1\/serial-sessions\/([^/]+)(?:\/(inject|wait-frame|release-f0|release-f2|bind-sale|platform-log|evidence|device-lifecycle|abort|collect|stop|stop-scanner-probe))?$/,
+        ) ?? [];
       const audioCaptureMatch = request.url?.match(
         /^\/v1\/audio-captures\/([^/]+)\/(stop|cancel|abort|diagnostics)$/,
       );
@@ -2334,7 +2698,7 @@ export function createHostSerialControlPlane(options, dependencies = {}) {
         } catch {}
         session.mqttCapture?.stop();
       }
-      await new Promise((resolve, reject) => {
+      await new Promise<void>((resolve, reject) => {
         server.close((error) => {
           if (error) reject(error);
           else resolve();
