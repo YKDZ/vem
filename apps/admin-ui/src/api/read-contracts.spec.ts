@@ -55,7 +55,7 @@ describe("admin read api contracts", () => {
     );
     expect(callAdminEndpointContract).toHaveBeenCalledWith(
       adminGetDashboardCustomerProfileContract,
-      {},
+      { query: {} },
     );
   });
 });
