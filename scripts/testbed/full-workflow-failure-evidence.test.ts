@@ -21,6 +21,30 @@ import {
   runSerialTrackLifecycle,
 } from "./full-workflow-orchestrator.ts";
 
+type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? (value as unknown[]) : [];
+}
+
+type OrchestratorDependencies = NonNullable<
+  Parameters<typeof runFullWorkflowOrchestrator>[1]
+>;
+
+function fakeRunTrack(
+  implementation: (track: { artifactRoot?: string }) => Promise<JsonRecord>,
+): NonNullable<OrchestratorDependencies["runTrack"]> {
+  return implementation as unknown as NonNullable<
+    OrchestratorDependencies["runTrack"]
+  >;
+}
+
 function writeSummaryBinding(summaryPath: string, manifestPath: string) {
   const manifest = readFileSync(manifestPath);
   writeFileSync(
@@ -69,10 +93,10 @@ describe("完整业务流失败证据", () => {
         },
         {
           beforeTrack: async () => undefined,
-          runTrack: async (track: { artifactRoot: string }) => {
-            mkdirSync(track.artifactRoot, { recursive: true });
+          runTrack: fakeRunTrack(async (track) => {
+            mkdirSync(String(track.artifactRoot), { recursive: true });
             writeFileSync(
-              join(track.artifactRoot, "failure-diagnostics.json"),
+              join(String(track.artifactRoot), "failure-diagnostics.json"),
               `${JSON.stringify({
                 machineRuntimeTrace: [
                   { kind: "navigation", route: "#/products/product:1" },
@@ -82,7 +106,7 @@ describe("完整业务流失败证据", () => {
               })}\n`,
             );
             writeFileSync(
-              join(track.artifactRoot, "failure-screenshot.png"),
+              join(String(track.artifactRoot), "failure-screenshot.png"),
               failureScreenshot,
             );
             return {
@@ -95,14 +119,14 @@ describe("完整业务流失败证据", () => {
                 'password="first second third\n' +
                 "Authorization: Bearer should-not-leak\nBearer standalone-secret\nresult-surface timed out\n",
             };
-          },
+          }),
           captureTerminal: async () => ({ ok: true, facts: {} }),
           recover: async () => ({ ok: true, actions: [], errors: [] }),
         },
       );
 
       assert.equal(aggregate.ok, false);
-      assert.equal(aggregate.businessOutcome.ok, false);
+      assert.equal(recordValue(aggregate.businessOutcome).ok, false);
       const stdoutPath = join(artifactRoot, "child-stdout.log");
       const stderrPath = join(artifactRoot, "child-stderr.log");
       const processPath = join(artifactRoot, "child-process.json");
@@ -175,13 +199,13 @@ describe("完整业务流失败证据", () => {
             renameSync(source, destination),
         },
       );
-      const evidenceMembers = bundle.files.filter((path: string) =>
-        path.startsWith("evidence/"),
+      const evidenceMembers = arrayValue(bundle.files).filter(
+        (path: unknown) => String(path).startsWith("evidence/"),
       );
       assert.equal(evidenceMembers.length, 5);
       assert.ok(
-        evidenceMembers.every((path: string) =>
-          existsSync(join(bundleRoot, path)),
+        evidenceMembers.every((path: unknown) =>
+          existsSync(join(bundleRoot, String(path))),
         ),
       );
     } finally {
@@ -230,7 +254,9 @@ describe("完整业务流失败证据", () => {
         },
       );
       assert.deepEqual(
-        bundle.files.filter((path: string) => path.startsWith("evidence/")),
+        arrayValue(bundle.files).filter((path: unknown) =>
+          String(path).startsWith("evidence/"),
+        ),
         [],
       );
     } finally {
@@ -279,7 +305,9 @@ describe("完整业务流失败证据", () => {
         },
       );
       assert.deepEqual(
-        bundle.files.filter((path: string) => path.startsWith("evidence/")),
+        arrayValue(bundle.files).filter((path: unknown) =>
+          String(path).startsWith("evidence/"),
+        ),
         [],
       );
     } finally {
@@ -358,25 +386,34 @@ describe("完整业务流失败证据", () => {
             throw new Error("artifact root is locked");
           },
           beforeTrack: async () => undefined,
-          runTrack: async () => {
+          runTrack: fakeRunTrack(async () => {
             childRuns += 1;
             return { status: "passed", exitCode: 0 };
-          },
+          }),
           captureTerminal: async () => ({ ok: true, facts: {} }),
           recover: async () => ({ ok: true, actions: [], errors: [] }),
         },
       );
 
       assert.equal(childRuns, 0);
-      assert.equal(aggregate.businessOutcome.ok, false);
+      assert.equal(recordValue(aggregate.businessOutcome).ok, false);
       assert.match(
-        aggregate.execution.executedTracks[0].error,
+        String(
+          recordValue(
+            arrayValue(recordValue(aggregate.execution).executedTracks)[0],
+          ).error,
+        ),
         /report is locked.*artifact root is locked/,
       );
-      assert.deepEqual(aggregate.execution.executedTracks[0].evidenceTrust, {
-        report: false,
-        artifactRoot: false,
-      });
+      assert.deepEqual(
+        recordValue(
+          arrayValue(recordValue(aggregate.execution).executedTracks)[0],
+        ).evidenceTrust,
+        {
+          report: false,
+          artifactRoot: false,
+        },
+      );
       const manifest = JSON.parse(
         readFileSync(
           join(root, "full-workflow-evidence-manifest.json"),
@@ -429,14 +466,14 @@ describe("完整业务流失败证据", () => {
         },
         {
           beforeTrack: async () => undefined,
-          runTrack: async () => {
+          runTrack: fakeRunTrack(async () => {
             childRuns += 1;
             return {
               status: "failed",
               exitCode: 1,
               stderr: "startup failed",
             };
-          },
+          }),
           captureTerminal: async () => ({ ok: true, facts: {} }),
           recover: async () => ({
             ok: false,
@@ -447,7 +484,10 @@ describe("完整业务流失败证据", () => {
       );
 
       assert.equal(childRuns, 1);
-      assert.equal(aggregate.execution.executedTracks.length, 1);
+      assert.equal(
+        arrayValue(recordValue(aggregate.execution).executedTracks).length,
+        1,
+      );
       const manifest = JSON.parse(
         readFileSync(
           join(root, "full-workflow-evidence-manifest.json"),
@@ -534,34 +574,41 @@ describe("完整业务流失败证据", () => {
           {
             ...failure.dependencies,
             beforeTrack: async () => undefined,
-            runTrack: async () => ({
+            runTrack: fakeRunTrack(async () => ({
               status: "failed",
               exitCode: 17,
               stderr: "result-surface timed out",
-            }),
+            })),
             captureTerminal: async () => ({ ok: true, facts: {} }),
             recover: async () => ({ ok: true, actions: [], errors: [] }),
           },
         );
-        assert.equal(aggregate.businessOutcome.ok, false);
+        const businessOutcome = recordValue(aggregate.businessOutcome);
+        const executedTracks = arrayValue(
+          recordValue(aggregate.execution).executedTracks,
+        );
+        const evidenceInventory = recordValue(aggregate.evidenceInventory);
+        const operationalOutcome = recordValue(aggregate.operationalOutcome);
+        assert.equal(businessOutcome.ok, false);
         assert.match(
-          aggregate.businessOutcome.failures[0].reason,
+          String(recordValue(arrayValue(businessOutcome.failures)[0]).reason),
           /result-surface timed out/,
         );
         assert.match(
-          aggregate.execution.executedTracks[0].error,
+          String(recordValue(executedTracks[0]).error),
           /result-surface timed out/,
         );
-        assert.equal(aggregate.evidenceInventory.ok, false);
+        assert.equal(evidenceInventory.ok, false);
         if (failure.name === "aggregate-write") {
-          assert.equal(aggregate.operationalOutcome.ok, false);
+          assert.equal(operationalOutcome.ok, false);
           assert.ok(
-            aggregate.operationalOutcome.failures.some((message: string) =>
-              message.includes(failure.expected),
+            arrayValue(operationalOutcome.failures).some(
+              (message: unknown) =>
+                String(message).includes(failure.expected),
             ),
           );
           assert.equal(fullWorkflowCommandSucceeded(aggregate), false);
-          assert.equal(aggregate.operationalOutcome.canonicalResultPath, null);
+          assert.equal(operationalOutcome.canonicalResultPath, null);
           assert.equal(existsSync(outPath), false);
           assert.equal(
             fullWorkflowCommandSucceeded({
@@ -573,13 +620,14 @@ describe("完整业务流失败证据", () => {
           );
         } else {
           assert.ok(
-            aggregate.evidenceInventory.failures.some((message: string) =>
-              message.includes(failure.expected),
+            arrayValue(evidenceInventory.failures).some(
+              (message: unknown) =>
+                String(message).includes(failure.expected),
             ),
           );
         }
         if (failure.name === "manifest-write") {
-          assert.equal(aggregate.evidenceInventory.reportPath, null);
+          assert.equal(evidenceInventory.reportPath, null);
           assert.equal(existsSync(manifestPath), false);
         }
       } finally {
@@ -600,15 +648,16 @@ describe("完整业务流失败证据", () => {
             name: "visionExperience",
             validator: "visionExperience",
             runner: { kind: "node" },
+            command: [],
             reportPath: join(root, "missing-report.json"),
             artifactRoot: join(parentFile, "artifacts"),
           },
         ],
-        runTrack: async () => ({
+        runTrack: fakeRunTrack(async () => ({
           status: "failed",
           exitCode: 9,
           stderr: "business child failed",
-        }),
+        })),
         beforeTrack: async () => undefined,
         captureTerminal: async () => ({ ok: true, facts: {} }),
         recover: async () => ({ ok: true, actions: [], errors: [] }),
@@ -645,13 +694,13 @@ describe("完整业务流失败证据", () => {
       assert.equal(manifest.ok, true);
       assert.deepEqual(manifest.failures, []);
       assert.ok(
-        manifest.warnings.some((message: string) =>
-          message.includes("failed Machine Runtime Trace"),
+        arrayValue(manifest.warnings).some((message: unknown) =>
+          String(message).includes("failed Machine Runtime Trace"),
         ),
       );
       assert.ok(
-        manifest.warnings.some((message: string) =>
-          message.includes("failure screenshot"),
+        arrayValue(manifest.warnings).some((message: unknown) =>
+          String(message).includes("failure screenshot"),
         ),
       );
     } finally {
@@ -681,11 +730,11 @@ describe("完整业务流失败证据", () => {
         },
         {
           beforeTrack: async () => undefined,
-          runTrack: async () => ({
+          runTrack: fakeRunTrack(async () => ({
             status: "failed",
             exitCode: 7,
             stderr: "route failed",
-          }),
+          })),
           captureTerminal: async () => ({
             ok: true,
             reason: "token=terminal-secret",
@@ -699,7 +748,7 @@ describe("完整业务流失败证据", () => {
           }),
         },
       );
-      assert.equal(aggregate.businessOutcome.ok, false);
+      assert.equal(recordValue(aggregate.businessOutcome).ok, false);
       const summary = readFileSync(outPath, "utf8");
       assert.doesNotMatch(
         summary,
