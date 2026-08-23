@@ -4,19 +4,33 @@ import type { Request } from "express";
 import {
   Body,
   Controller,
-  Get,
   Headers,
   Param,
-  ParseUUIDPipe,
-  Patch,
   Post,
-  Put,
   Query,
   Req,
   Res,
 } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import {
+  adminCreatePaymentIncidentActionContract,
+  adminGetPaymentChannelPolicyContract,
+  adminListPaymentEventsContract,
+  adminListPaymentProvidersContract,
+  adminListPaymentProviderConfigsContract,
+  adminListPaymentProviderNotifyUrlChecksContract,
+  adminListPaymentReconciliationAttemptsContract,
+  adminListPaymentRefundsContract,
+  adminListPaymentWebhookAttemptsContract,
+  adminListPaymentsContract,
+  adminManualReconcilePaymentContract,
+  adminMockPaymentFailContract,
+  adminMockPaymentSucceedContract,
+  adminQueryPaymentRefundContract,
+  adminUpdatePaymentChannelPolicyContract,
+  adminUpdatePaymentProviderConfigContract,
+  adminUpdatePaymentProviderContract,
+  adminUpsertPaymentProviderConfigContract,
   pageQuerySchema,
   paymentAdminNoBodySchema,
   paymentIncidentActionRequestSchema,
@@ -39,7 +53,7 @@ import type { AuthenticatedAdmin } from "../common/request-user";
 import { RequirePermissions } from "../access/permissions.decorator";
 import { CurrentAdmin } from "../auth/current-admin.decorator";
 import { Public } from "../auth/public.decorator";
-import { ZodValidationPipe } from "../common/zod-validation.pipe";
+import { AdminEndpointContract } from "../common/admin-endpoint-contract.decorator";
 import { PaymentChannelPolicyService } from "./payment-channel-policy.service";
 import { PaymentsService } from "./payments.service";
 
@@ -70,19 +84,9 @@ type PaymentIncidentActionInput = z.infer<
   typeof paymentIncidentActionRequestSchema
 >;
 
-const paymentEventListQuerySchema = paymentEventQuerySchema.extend(
-  pageQuerySchema.shape,
-);
-const webhookAttemptListQuerySchema = paymentWebhookAttemptQuerySchema.extend(
-  pageQuerySchema.shape,
-);
-const reconciliationAttemptListQuerySchema =
-  paymentReconciliationAttemptQuerySchema.extend(pageQuerySchema.shape);
-const refundListQuerySchema = refundQuerySchema.extend(pageQuerySchema.shape);
-
 @ApiTags("payments")
 @ApiBearerAuth()
-@Controller("payments")
+@Controller()
 export class PaymentsController {
   constructor(
     private readonly paymentsService: PaymentsService,
@@ -90,44 +94,40 @@ export class PaymentsController {
   ) {}
 
   @RequirePermissions("payments.read")
-  @Get()
-  async listPayments(
-    @Query(
-      new ZodValidationPipe(paymentQuerySchema.extend(pageQuerySchema.shape)),
-    )
-    query: PaymentQuery,
-  ) {
+  @AdminEndpointContract(adminListPaymentsContract)
+  async listPayments(@Query() query: PaymentQuery) {
     return await this.paymentsService.listPayments(query);
   }
 
   @RequirePermissions("payments.configure")
-  @Post("mock/:paymentNo/succeed")
+  @AdminEndpointContract(adminMockPaymentSucceedContract)
   async markMockSucceeded(
     @CurrentAdmin() admin: AuthenticatedAdmin,
-    @Param("paymentNo") paymentNo: string,
-    @Body(new ZodValidationPipe(paymentAdminNoBodySchema))
-    _body: z.infer<typeof paymentAdminNoBodySchema>,
+    @Param() params: { paymentNo: string },
+    @Body() _body: z.infer<typeof paymentAdminNoBodySchema>,
   ) {
-    return await this.paymentsService.markMockSucceeded(paymentNo, admin.id);
+    return await this.paymentsService.markMockSucceeded(
+      params.paymentNo,
+      admin.id,
+    );
   }
 
   @RequirePermissions("payments.configure")
-  @Post("mock/:paymentNo/fail")
+  @AdminEndpointContract(adminMockPaymentFailContract)
   async markMockFailed(
     @CurrentAdmin() admin: AuthenticatedAdmin,
-    @Param("paymentNo") paymentNo: string,
-    @Body(new ZodValidationPipe(paymentAdminNoBodySchema))
-    _body: z.infer<typeof paymentAdminNoBodySchema>,
+    @Param() params: { paymentNo: string },
+    @Body() _body: z.infer<typeof paymentAdminNoBodySchema>,
   ) {
     return await this.paymentsService.markMockFailed(
-      paymentNo,
+      params.paymentNo,
       "mock_failed",
       admin.id,
     );
   }
 
   @Public()
-  @Post("mock/:paymentNo/complete")
+  @Post("payments/mock/:paymentNo/complete")
   async completeMockPaymentFromProvider(@Param("paymentNo") paymentNo: string) {
     return await this.paymentsService.completeMockPaymentFromProvider(
       paymentNo,
@@ -135,156 +135,138 @@ export class PaymentsController {
   }
 
   @RequirePermissions("payments.configure")
-  @Get("providers")
-  async listProviders(
-    @Query(new ZodValidationPipe(paymentProviderQuerySchema))
-    query: PaymentProviderQuery,
-  ) {
+  @AdminEndpointContract(adminListPaymentProvidersContract)
+  async listProviders(@Query() query: PaymentProviderQuery) {
     return await this.paymentsService.listProviders(query);
   }
 
   @RequirePermissions("payments.configure")
-  @Patch("providers/:id")
+  @AdminEndpointContract(adminUpdatePaymentProviderContract)
   async updateProvider(
-    @Param("id", ParseUUIDPipe) id: string,
-    @Body(new ZodValidationPipe(updatePaymentProviderSchema))
-    body: UpdatePaymentProviderInput,
+    @Param() params: { id: string },
+    @Body() body: UpdatePaymentProviderInput,
   ) {
-    return await this.paymentsService.updateProvider(id, body);
+    return await this.paymentsService.updateProvider(params.id, body);
   }
 
   @RequirePermissions("payments.configure")
-  @Get("provider-configs")
+  @AdminEndpointContract(adminListPaymentProviderConfigsContract)
   async listProviderConfigs() {
     return await this.paymentsService.listProviderConfigs();
   }
 
   @RequirePermissions("payments.configure")
-  @Get("provider-configs/notify-url-checks")
+  @AdminEndpointContract(adminListPaymentProviderNotifyUrlChecksContract)
   async listProviderNotifyUrlChecks() {
     return await this.paymentsService.listProviderNotifyUrlChecks();
   }
 
   @RequirePermissions("payments.configure")
-  @Patch("provider-configs/:id")
+  @AdminEndpointContract(adminUpdatePaymentProviderConfigContract)
   async updateProviderConfig(
     @CurrentAdmin() admin: AuthenticatedAdmin,
-    @Param("id", ParseUUIDPipe) id: string,
-    @Body(new ZodValidationPipe(updatePaymentProviderConfigSchema))
-    body: UpdatePaymentProviderConfigInput,
+    @Param() params: { id: string },
+    @Body() body: UpdatePaymentProviderConfigInput,
   ) {
-    return await this.paymentsService.updateProviderConfig(id, admin.id, body);
-  }
-
-  @RequirePermissions("payments.configure")
-  @Post("provider-configs")
-  async upsertProviderConfig(
-    @CurrentAdmin() admin: AuthenticatedAdmin,
-    @Body(new ZodValidationPipe(upsertPaymentProviderConfigSchema))
-    body: UpsertPaymentProviderConfigInput,
-  ) {
-    return await this.paymentsService.upsertProviderConfig(admin.id, body);
-  }
-
-  @RequirePermissions("payments.read")
-  @Get("channel-policy")
-  async getChannelPolicy() {
-    return await this.paymentChannelPolicyService.getPolicy();
-  }
-
-  @RequirePermissions("payments.configure")
-  @Put("channel-policy")
-  async updateChannelPolicy(
-    @CurrentAdmin() admin: AuthenticatedAdmin,
-    @Body(new ZodValidationPipe(updatePaymentChannelPolicySchema))
-    body: UpdatePaymentChannelPolicyInput,
-  ) {
-    return await this.paymentChannelPolicyService.updatePolicy(admin.id, body);
-  }
-
-  @RequirePermissions("payments.read")
-  @Get("events")
-  async listPaymentEvents(
-    @Query(new ZodValidationPipe(paymentEventListQuerySchema))
-    query: PaymentEventQuery,
-  ) {
-    return await this.paymentsService.listPaymentEvents(query);
-  }
-
-  @RequirePermissions("payments.read")
-  @Get("webhook-attempts")
-  async listWebhookAttempts(
-    @Query(new ZodValidationPipe(webhookAttemptListQuerySchema))
-    query: WebhookAttemptQuery,
-  ) {
-    return await this.paymentsService.listWebhookAttempts(query);
-  }
-
-  @RequirePermissions("payments.read")
-  @Get("reconciliation-attempts")
-  async listReconciliationAttempts(
-    @Query(new ZodValidationPipe(reconciliationAttemptListQuerySchema))
-    query: ReconciliationAttemptQuery,
-  ) {
-    return await this.paymentsService.listReconciliationAttempts(query);
-  }
-
-  @RequirePermissions("payments.configure")
-  @Post(":id/incident-actions")
-  async paymentIncidentAction(
-    @CurrentAdmin() admin: AuthenticatedAdmin,
-    @Param("id", ParseUUIDPipe) id: string,
-    @Body(new ZodValidationPipe(paymentIncidentActionRequestSchema))
-    body: PaymentIncidentActionInput,
-  ) {
-    return await this.paymentsService.handlePaymentIncidentAction(
-      id,
+    return await this.paymentsService.updateProviderConfig(
+      params.id,
       admin.id,
       body,
     );
   }
 
   @RequirePermissions("payments.configure")
-  @Post(":id/reconcile")
+  @AdminEndpointContract(adminUpsertPaymentProviderConfigContract)
+  async upsertProviderConfig(
+    @CurrentAdmin() admin: AuthenticatedAdmin,
+    @Body() body: UpsertPaymentProviderConfigInput,
+  ) {
+    return await this.paymentsService.upsertProviderConfig(admin.id, body);
+  }
+
+  @RequirePermissions("payments.read")
+  @AdminEndpointContract(adminGetPaymentChannelPolicyContract)
+  async getChannelPolicy() {
+    return await this.paymentChannelPolicyService.getPolicy();
+  }
+
+  @RequirePermissions("payments.configure")
+  @AdminEndpointContract(adminUpdatePaymentChannelPolicyContract)
+  async updateChannelPolicy(
+    @CurrentAdmin() admin: AuthenticatedAdmin,
+    @Body() body: UpdatePaymentChannelPolicyInput,
+  ) {
+    return await this.paymentChannelPolicyService.updatePolicy(admin.id, body);
+  }
+
+  @RequirePermissions("payments.read")
+  @AdminEndpointContract(adminListPaymentEventsContract)
+  async listPaymentEvents(@Query() query: PaymentEventQuery) {
+    return await this.paymentsService.listPaymentEvents(query);
+  }
+
+  @RequirePermissions("payments.read")
+  @AdminEndpointContract(adminListPaymentWebhookAttemptsContract)
+  async listWebhookAttempts(@Query() query: WebhookAttemptQuery) {
+    return await this.paymentsService.listWebhookAttempts(query);
+  }
+
+  @RequirePermissions("payments.read")
+  @AdminEndpointContract(adminListPaymentReconciliationAttemptsContract)
+  async listReconciliationAttempts(@Query() query: ReconciliationAttemptQuery) {
+    return await this.paymentsService.listReconciliationAttempts(query);
+  }
+
+  @RequirePermissions("payments.configure")
+  @AdminEndpointContract(adminCreatePaymentIncidentActionContract)
+  async paymentIncidentAction(
+    @CurrentAdmin() admin: AuthenticatedAdmin,
+    @Param() params: { id: string },
+    @Body() body: PaymentIncidentActionInput,
+  ) {
+    return await this.paymentsService.handlePaymentIncidentAction(
+      params.id,
+      admin.id,
+      body,
+    );
+  }
+
+  @RequirePermissions("payments.configure")
+  @AdminEndpointContract(adminManualReconcilePaymentContract)
   async manualReconcile(
     @CurrentAdmin() admin: AuthenticatedAdmin,
-    @Param("id", ParseUUIDPipe) id: string,
-    @Body(new ZodValidationPipe(paymentOperatorReasonSchema))
-    body: z.infer<typeof paymentOperatorReasonSchema>,
+    @Param() params: { id: string },
+    @Body() body: z.infer<typeof paymentOperatorReasonSchema>,
   ) {
     return await this.paymentsService.manualReconcile(
-      id,
+      params.id,
       admin.id,
       body.reason,
     );
   }
 
   @RequirePermissions("payments.read")
-  @Get("refunds")
-  async listRefunds(
-    @Query(new ZodValidationPipe(refundListQuerySchema))
-    query: RefundListQuery,
-  ) {
+  @AdminEndpointContract(adminListPaymentRefundsContract)
+  async listRefunds(@Query() query: RefundListQuery) {
     return await this.paymentsService.listRefunds(query);
   }
 
   @RequirePermissions("payments.configure")
-  @Post("refunds/:id/query")
+  @AdminEndpointContract(adminQueryPaymentRefundContract)
   async queryRefund(
     @CurrentAdmin() admin: AuthenticatedAdmin,
-    @Param("id", ParseUUIDPipe) id: string,
-    @Body(new ZodValidationPipe(paymentOperatorReasonSchema))
-    body: z.infer<typeof paymentOperatorReasonSchema>,
+    @Param() params: { id: string },
+    @Body() body: z.infer<typeof paymentOperatorReasonSchema>,
   ) {
     return await this.paymentsService.manualReconcileRefund(
-      id,
+      params.id,
       admin.id,
       body.reason,
     );
   }
 
   @Public()
-  @Post("webhooks/:providerCode")
+  @Post("payments/webhooks/:providerCode")
   async handleWebhook(
     @Param("providerCode") providerCode: string,
     @Headers() headers: Record<string, string | string[] | undefined>,

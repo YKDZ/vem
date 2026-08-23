@@ -105,7 +105,7 @@ describe("PaymentCodeController", () => {
 
     const result = await controller.reverseAttempt(
       { id: "admin-1" } as never,
-      "550e8400-e29b-41d4-a716-446655440000",
+      { id: "550e8400-e29b-41d4-a716-446655440000" },
       {
         reason: "admin_manual_reverse",
       },
@@ -169,7 +169,7 @@ describe("PaymentCodeController", () => {
 
     const result = await controller.queryAttempt(
       { id: "admin-1" } as never,
-      "550e8400-e29b-41d4-a716-446655440000",
+      { id: "550e8400-e29b-41d4-a716-446655440000" },
       { reason: "operator checked uncertain payment code result" },
     );
 
@@ -229,7 +229,7 @@ describe("PaymentCodeController", () => {
 
     const result = await controller.reverseAttempt(
       { id: "admin-1" } as never,
-      "550e8400-e29b-41d4-a716-446655440000",
+      { id: "550e8400-e29b-41d4-a716-446655440000" },
       { reason: "customer cancelled" },
     );
 
@@ -282,7 +282,7 @@ describe("PaymentCodeController", () => {
 
     const result = await controller.queryAttempt(
       { id: "admin-1" } as never,
-      "550e8400-e29b-41d4-a716-446655440000",
+      { id: "550e8400-e29b-41d4-a716-446655440000" },
       { reason: "operator checked uncertain payment code result" },
     );
 
@@ -333,7 +333,7 @@ describe("PaymentCodeController", () => {
 
     const result = await controller.queryAttempt(
       { id: "admin-1" } as never,
-      "550e8400-e29b-41d4-a716-446655440000",
+      { id: "550e8400-e29b-41d4-a716-446655440000" },
       { reason: "customer says payment app is still confirming" },
     );
 

@@ -1,42 +1,34 @@
+import type { z } from "zod";
+
 import {
-  paymentAdminActionResultSchema,
-  paymentAdminNoBodySchema,
-  paymentChannelPolicyResponseSchema,
-  paymentAdminPageResponseSchema,
-  paymentCodeAttemptAdminActionSchema,
-  paymentCodeAttemptAdminPageResponseSchema,
-  paymentCodeAttemptAdminResponseSchema,
-  paymentCodeAttemptListQuerySchema,
-  paymentEventAdminPageResponseSchema,
-  paymentEventListQuerySchema,
-  paymentIncidentActionRequestSchema,
-  paymentIncidentActionResponseSchema,
-  paymentListQuerySchema,
-  paymentProviderConfigListResponseSchema,
-  paymentProviderListResponseSchema,
-  paymentProviderNotifyUrlCheckListResponseSchema,
-  paymentProviderQuerySchema,
-  paymentReconciliationAttemptListQuerySchema,
-  paymentReconciliationAttemptAdminPageResponseSchema,
-  paymentMockAdminActionResponseSchema,
-  paymentOperatorReasonSchema,
-  paymentWebhookAttemptAdminPageResponseSchema,
-  paymentWebhookAttemptListQuerySchema,
-  refundAdminPageResponseSchema,
-  refundListQuerySchema,
-  paymentProviderConfigSchema,
-  paymentProviderSchema,
-  paymentMachinePreflightSchema,
-  updatePaymentChannelPolicySchema,
-  updatePaymentProviderConfigSchema,
-  updatePaymentProviderSchema,
-  upsertPaymentProviderConfigSchema,
+  adminCreatePaymentIncidentActionContract,
+  adminGetPaymentChannelPolicyContract,
+  adminGetPaymentMachinePreflightContract,
+  adminListPaymentCodeAttemptsContract,
+  adminListPaymentEventsContract,
+  adminListPaymentProviderConfigsContract,
+  adminListPaymentProviderNotifyUrlChecksContract,
+  adminListPaymentProvidersContract,
+  adminListPaymentReconciliationAttemptsContract,
+  adminListPaymentRefundsContract,
+  adminListPaymentWebhookAttemptsContract,
+  adminListPaymentsContract,
+  adminManualReconcilePaymentContract,
+  adminMockPaymentFailContract,
+  adminMockPaymentSucceedContract,
+  adminQueryPaymentCodeAttemptContract,
+  adminQueryPaymentRefundContract,
+  adminReversePaymentCodeAttemptContract,
+  adminUpdatePaymentChannelPolicyContract,
+  adminUpdatePaymentProviderConfigContract,
+  adminUpdatePaymentProviderContract,
+  adminUpsertPaymentProviderConfigContract,
   type PaymentAdminResponse,
+  type PaymentChannelPolicyResponse,
   type PaymentCodeAttemptAdminResponse,
   type PaymentEventAdminResponse,
   type PaymentIncidentActionResponse,
   type PaymentMachinePreflight,
-  type PaymentChannelPolicyResponse,
   type PaymentProviderConfigResponse,
   type PaymentProviderNotifyUrlCheckResponse,
   type PaymentProviderResponse,
@@ -46,26 +38,24 @@ import {
   type RefundAdminResponse,
   type RefundReconciliationAttemptAdminResponse,
 } from "@vem/shared";
-import { z } from "zod";
 
-import {
-  getContract,
-  patchContract,
-  postContract,
-  putContract,
-} from "./request";
+import { callAdminEndpointContract } from "./request";
 
-type PaymentListQuery = z.input<typeof paymentListQuerySchema>;
-type PaymentEventListQuery = z.input<typeof paymentEventListQuerySchema>;
+type PaymentListQuery = z.input<typeof adminListPaymentsContract.querySchema>;
+type PaymentEventListQuery = z.input<
+  typeof adminListPaymentEventsContract.querySchema
+>;
 type PaymentWebhookAttemptListQuery = z.input<
-  typeof paymentWebhookAttemptListQuerySchema
+  typeof adminListPaymentWebhookAttemptsContract.querySchema
 >;
 type PaymentReconciliationAttemptListQuery = z.input<
-  typeof paymentReconciliationAttemptListQuerySchema
+  typeof adminListPaymentReconciliationAttemptsContract.querySchema
 >;
-type RefundListQuery = z.input<typeof refundListQuerySchema>;
+type RefundListQuery = z.input<
+  typeof adminListPaymentRefundsContract.querySchema
+>;
 type PaymentCodeAttemptListQuery = z.input<
-  typeof paymentCodeAttemptListQuerySchema
+  typeof adminListPaymentCodeAttemptsContract.querySchema
 >;
 
 export type Payment = PaymentAdminResponse;
@@ -83,128 +73,102 @@ export type { PageResult };
 export async function listPayments(
   query?: PaymentListQuery,
 ): Promise<PageResult<Payment>> {
-  return await getContract(
-    "/payments",
-    paymentListQuerySchema,
-    paymentAdminPageResponseSchema,
-    query ?? {},
-  );
+  return await callAdminEndpointContract(adminListPaymentsContract, {
+    query: query ?? {},
+  });
 }
 
 export async function mockSucceed(paymentNo: string): Promise<void> {
-  await postContract(
-    `/payments/mock/${paymentNo}/succeed`,
-    paymentAdminNoBodySchema,
-    paymentMockAdminActionResponseSchema,
-    {},
-  );
+  await callAdminEndpointContract(adminMockPaymentSucceedContract, {
+    pathParams: { paymentNo },
+  });
 }
 
 export async function mockFail(paymentNo: string): Promise<void> {
-  await postContract(
-    `/payments/mock/${paymentNo}/fail`,
-    paymentAdminNoBodySchema,
-    paymentMockAdminActionResponseSchema,
-    {},
-  );
+  await callAdminEndpointContract(adminMockPaymentFailContract, {
+    pathParams: { paymentNo },
+  });
 }
 
 export async function listPaymentProviders(
-  query?: z.input<typeof paymentProviderQuerySchema>,
+  query?: z.input<typeof adminListPaymentProvidersContract.querySchema>,
 ): Promise<PaymentProvider[]> {
-  return await getContract(
-    "/payments/providers",
-    paymentProviderQuerySchema,
-    paymentProviderListResponseSchema,
-    query ?? {},
-  );
+  return await callAdminEndpointContract(adminListPaymentProvidersContract, {
+    query: query ?? {},
+  });
 }
 
 export async function updatePaymentProvider(
   id: string,
-  body: z.input<typeof updatePaymentProviderSchema>,
+  body: z.input<typeof adminUpdatePaymentProviderContract.bodySchema>,
 ): Promise<PaymentProvider> {
-  return await patchContract(
-    `/payments/providers/${id}`,
-    updatePaymentProviderSchema,
-    paymentProviderSchema,
+  return await callAdminEndpointContract(adminUpdatePaymentProviderContract, {
+    pathParams: { id },
     body,
-  );
+  });
 }
 
 export async function listPaymentProviderConfigs(): Promise<
   PaymentProviderConfig[]
 > {
-  return await getContract(
-    "/payments/provider-configs",
-    paymentAdminNoBodySchema,
-    paymentProviderConfigListResponseSchema,
+  return await callAdminEndpointContract(
+    adminListPaymentProviderConfigsContract,
     {},
   );
 }
 
 export async function updatePaymentProviderConfig(
   id: string,
-  body: z.input<typeof updatePaymentProviderConfigSchema>,
+  body: z.input<typeof adminUpdatePaymentProviderConfigContract.bodySchema>,
 ): Promise<PaymentProviderConfig> {
-  return await patchContract(
-    `/payments/provider-configs/${id}`,
-    updatePaymentProviderConfigSchema,
-    paymentProviderConfigSchema,
-    body,
+  return await callAdminEndpointContract(
+    adminUpdatePaymentProviderConfigContract,
+    {
+      pathParams: { id },
+      body,
+    },
   );
 }
 
 export async function upsertPaymentProviderConfig(
-  body: z.input<typeof upsertPaymentProviderConfigSchema>,
+  body: z.input<typeof adminUpsertPaymentProviderConfigContract.bodySchema>,
 ): Promise<PaymentProviderConfig> {
-  return await postContract(
-    `/payments/provider-configs`,
-    upsertPaymentProviderConfigSchema,
-    paymentProviderConfigSchema,
-    body,
+  return await callAdminEndpointContract(
+    adminUpsertPaymentProviderConfigContract,
+    { body },
   );
 }
 
 export async function listPaymentEvents(
   query?: PaymentEventListQuery,
 ): Promise<PageResult<PaymentEvent>> {
-  return await getContract(
-    "/payments/events",
-    paymentEventListQuerySchema,
-    paymentEventAdminPageResponseSchema,
-    query ?? {},
-  );
+  return await callAdminEndpointContract(adminListPaymentEventsContract, {
+    query: query ?? {},
+  });
 }
 
 export async function listPaymentProviderNotifyUrlChecks(): Promise<
   PaymentProviderNotifyUrlCheck[]
 > {
-  return await getContract(
-    "/payments/provider-configs/notify-url-checks",
-    paymentAdminNoBodySchema,
-    paymentProviderNotifyUrlCheckListResponseSchema,
+  return await callAdminEndpointContract(
+    adminListPaymentProviderNotifyUrlChecksContract,
     {},
   );
 }
 
 export async function getPaymentChannelPolicy(): Promise<PaymentChannelPolicy> {
-  return await getContract(
-    "/payments/channel-policy",
-    paymentAdminNoBodySchema,
-    paymentChannelPolicyResponseSchema,
+  return await callAdminEndpointContract(
+    adminGetPaymentChannelPolicyContract,
     {},
   );
 }
 
 export async function updatePaymentChannelPolicy(
-  body: z.input<typeof updatePaymentChannelPolicySchema>,
+  body: z.input<typeof adminUpdatePaymentChannelPolicyContract.bodySchema>,
 ): Promise<PaymentChannelPolicy> {
-  return await putContract(
-    "/payments/channel-policy",
-    updatePaymentChannelPolicySchema,
-    paymentChannelPolicyResponseSchema,
-    body,
+  return await callAdminEndpointContract(
+    adminUpdatePaymentChannelPolicyContract,
+    { body },
   );
 }
 
@@ -218,94 +182,77 @@ export type PaymentIncidentActionResult = PaymentIncidentActionResponse;
 
 export async function createPaymentIncidentAction(
   paymentId: string,
-  body: z.input<typeof paymentIncidentActionRequestSchema>,
+  body: z.input<typeof adminCreatePaymentIncidentActionContract.bodySchema>,
 ): Promise<PaymentIncidentActionResult> {
-  return await postContract(
-    `/payments/${paymentId}/incident-actions`,
-    paymentIncidentActionRequestSchema,
-    paymentIncidentActionResponseSchema,
-    body,
+  return await callAdminEndpointContract(
+    adminCreatePaymentIncidentActionContract,
+    { pathParams: { id: paymentId }, body },
   );
 }
 
 export async function listWebhookAttempts(
   query?: PaymentWebhookAttemptListQuery,
 ): Promise<PageResult<WebhookAttempt>> {
-  return await getContract(
-    "/payments/webhook-attempts",
-    paymentWebhookAttemptListQuerySchema,
-    paymentWebhookAttemptAdminPageResponseSchema,
-    query ?? {},
+  return await callAdminEndpointContract(
+    adminListPaymentWebhookAttemptsContract,
+    { query: query ?? {} },
   );
 }
 
 export async function listReconciliationAttempts(
   query?: PaymentReconciliationAttemptListQuery,
 ): Promise<PageResult<ReconciliationAttempt>> {
-  return await getContract(
-    "/payments/reconciliation-attempts",
-    paymentReconciliationAttemptListQuerySchema,
-    paymentReconciliationAttemptAdminPageResponseSchema,
-    query ?? {},
+  return await callAdminEndpointContract(
+    adminListPaymentReconciliationAttemptsContract,
+    { query: query ?? {} },
   );
 }
 
 export async function listRefunds(
   query?: RefundListQuery,
 ): Promise<PageResult<Refund>> {
-  return await getContract(
-    "/payments/refunds",
-    refundListQuerySchema,
-    refundAdminPageResponseSchema,
-    query ?? {},
-  );
+  return await callAdminEndpointContract(adminListPaymentRefundsContract, {
+    query: query ?? {},
+  });
 }
 
 export async function queryRefund(
   refundId: string,
-  reason?: string,
-): Promise<z.output<typeof paymentAdminActionResultSchema>> {
-  return await postContract(
-    `/payments/refunds/${refundId}/query`,
-    paymentOperatorReasonSchema,
-    paymentAdminActionResultSchema,
-    { reason: reason ?? "admin_refund_status_query" },
-  );
+  reason = "admin_refund_status_query",
+): Promise<z.output<typeof adminQueryPaymentRefundContract.responseSchema>> {
+  return await callAdminEndpointContract(adminQueryPaymentRefundContract, {
+    pathParams: { id: refundId },
+    body: { reason },
+  });
 }
 
 export async function listPaymentCodeAttempts(
   query?: PaymentCodeAttemptListQuery,
 ): Promise<PageResult<PaymentCodeAttempt>> {
-  return await getContract(
-    "/payments/payment-code-attempts",
-    paymentCodeAttemptListQuerySchema,
-    paymentCodeAttemptAdminPageResponseSchema,
-    query ?? {},
-  );
+  return await callAdminEndpointContract(adminListPaymentCodeAttemptsContract, {
+    query: query ?? {},
+  });
 }
 
 export async function queryPaymentCodeAttempt(
   id: string,
   reason = "admin_payment_code_query",
 ): Promise<PaymentCodeAttempt> {
-  return await postContract(
-    `/payments/payment-code-attempts/${id}/query`,
-    paymentCodeAttemptAdminActionSchema,
-    paymentCodeAttemptAdminResponseSchema,
-    { reason },
-  );
+  return await callAdminEndpointContract(adminQueryPaymentCodeAttemptContract, {
+    pathParams: { id },
+    body: { reason },
+  });
 }
 
 export async function reversePaymentCodeAttempt(
   id: string,
   reason: string,
 ): Promise<PaymentCodeAttempt> {
-  return await postContract(
-    `/payments/payment-code-attempts/${id}/reverse`,
-    paymentCodeAttemptAdminActionSchema,
-    paymentCodeAttemptAdminResponseSchema,
+  return await callAdminEndpointContract(
+    adminReversePaymentCodeAttemptContract,
     {
-      reason,
+      pathParams: { id },
+      body: { reason },
     },
   );
 }
@@ -313,22 +260,20 @@ export async function reversePaymentCodeAttempt(
 export async function manualReconcile(
   paymentId: string,
   reason = "admin_manual_payment_reconcile",
-): Promise<z.output<typeof paymentAdminActionResultSchema>> {
-  return await postContract(
-    `/payments/${paymentId}/reconcile`,
-    paymentOperatorReasonSchema,
-    paymentAdminActionResultSchema,
-    { reason },
-  );
+): Promise<
+  z.output<typeof adminManualReconcilePaymentContract.responseSchema>
+> {
+  return await callAdminEndpointContract(adminManualReconcilePaymentContract, {
+    pathParams: { id: paymentId },
+    body: { reason },
+  });
 }
 
 export async function getPaymentMachinePreflight(
   machineId: string,
 ): Promise<PaymentMachinePreflight> {
-  return await getContract(
-    `/payments/ops/machines/${machineId}/preflight`,
-    paymentAdminNoBodySchema,
-    paymentMachinePreflightSchema,
-    {},
+  return await callAdminEndpointContract(
+    adminGetPaymentMachinePreflightContract,
+    { pathParams: { machineId } },
   );
 }

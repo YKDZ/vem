@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { defineAdminEndpointContract } from "../admin-api-contract";
 import {
   paymentCodeAttemptStatusSchema,
   paymentProviderStatusSchema,
@@ -14,6 +15,12 @@ import {
   paymentProviderEnvironmentDiagnosticSchema,
 } from "./orders";
 import { createPageResultSchema, pageQuerySchema } from "./pagination";
+
+const noPathParamsSchema = z.strictObject({});
+const noQuerySchema = z.strictObject({});
+const paymentNoPathParamsSchema = z.strictObject({
+  paymentNo: z.string().min(1).max(64),
+});
 
 export const supportedPaymentChannelKeys = [
   "qr_code:alipay",
@@ -797,6 +804,242 @@ export const paymentMachinePreflightSchema = z.object({
   defaultProviderCode: machinePaymentProviderCodeSchema.nullable(),
   checks: z.array(paymentOpsCheckSchema),
   checkedAt: z.iso.datetime(),
+});
+
+export const paymentOpsMetricsQuerySchema = z.strictObject({
+  windowMinutes: z.coerce.number().int().min(5).max(1440).optional(),
+});
+
+export const adminListPaymentsContract = defineAdminEndpointContract({
+  method: "GET",
+  path: "/payments",
+  pathParamsSchema: noPathParamsSchema,
+  querySchema: paymentListQuerySchema,
+  bodySchema: paymentAdminNoBodySchema,
+  responseSchema: paymentAdminPageResponseSchema,
+});
+
+export const adminMockPaymentSucceedContract = defineAdminEndpointContract({
+  method: "POST",
+  path: "/payments/mock/:paymentNo/succeed",
+  pathParamsSchema: paymentNoPathParamsSchema,
+  querySchema: noQuerySchema,
+  bodySchema: paymentAdminNoBodySchema,
+  responseSchema: paymentMockAdminActionResponseSchema,
+});
+
+export const adminMockPaymentFailContract = defineAdminEndpointContract({
+  method: "POST",
+  path: "/payments/mock/:paymentNo/fail",
+  pathParamsSchema: paymentNoPathParamsSchema,
+  querySchema: noQuerySchema,
+  bodySchema: paymentAdminNoBodySchema,
+  responseSchema: paymentMockAdminActionResponseSchema,
+});
+
+export const adminListPaymentProvidersContract = defineAdminEndpointContract({
+  method: "GET",
+  path: "/payments/providers",
+  pathParamsSchema: noPathParamsSchema,
+  querySchema: paymentProviderQuerySchema,
+  bodySchema: paymentAdminNoBodySchema,
+  responseSchema: paymentProviderListResponseSchema,
+});
+
+export const adminUpdatePaymentProviderContract = defineAdminEndpointContract({
+  method: "PATCH",
+  path: "/payments/providers/:id",
+  pathParamsSchema: z.strictObject({ id: z.uuid() }),
+  querySchema: noQuerySchema,
+  bodySchema: updatePaymentProviderSchema,
+  responseSchema: paymentProviderSchema,
+});
+
+export const adminListPaymentProviderConfigsContract =
+  defineAdminEndpointContract({
+    method: "GET",
+    path: "/payments/provider-configs",
+    pathParamsSchema: noPathParamsSchema,
+    querySchema: noQuerySchema,
+    bodySchema: paymentAdminNoBodySchema,
+    responseSchema: paymentProviderConfigListResponseSchema,
+  });
+
+export const adminListPaymentProviderNotifyUrlChecksContract =
+  defineAdminEndpointContract({
+    method: "GET",
+    path: "/payments/provider-configs/notify-url-checks",
+    pathParamsSchema: noPathParamsSchema,
+    querySchema: noQuerySchema,
+    bodySchema: paymentAdminNoBodySchema,
+    responseSchema: paymentProviderNotifyUrlCheckListResponseSchema,
+  });
+
+export const adminUpdatePaymentProviderConfigContract =
+  defineAdminEndpointContract({
+    method: "PATCH",
+    path: "/payments/provider-configs/:id",
+    pathParamsSchema: z.strictObject({ id: z.uuid() }),
+    querySchema: noQuerySchema,
+    bodySchema: updatePaymentProviderConfigSchema,
+    responseSchema: paymentProviderConfigSchema,
+  });
+
+export const adminUpsertPaymentProviderConfigContract =
+  defineAdminEndpointContract({
+    method: "POST",
+    path: "/payments/provider-configs",
+    pathParamsSchema: noPathParamsSchema,
+    querySchema: noQuerySchema,
+    bodySchema: upsertPaymentProviderConfigSchema,
+    responseSchema: paymentProviderConfigSchema,
+  });
+
+export const adminGetPaymentChannelPolicyContract = defineAdminEndpointContract(
+  {
+    method: "GET",
+    path: "/payments/channel-policy",
+    pathParamsSchema: noPathParamsSchema,
+    querySchema: noQuerySchema,
+    bodySchema: paymentAdminNoBodySchema,
+    responseSchema: paymentChannelPolicyResponseSchema,
+  },
+);
+
+export const adminUpdatePaymentChannelPolicyContract =
+  defineAdminEndpointContract({
+    method: "PUT",
+    path: "/payments/channel-policy",
+    pathParamsSchema: noPathParamsSchema,
+    querySchema: noQuerySchema,
+    bodySchema: updatePaymentChannelPolicySchema,
+    responseSchema: paymentChannelPolicyResponseSchema,
+  });
+
+export const adminListPaymentEventsContract = defineAdminEndpointContract({
+  method: "GET",
+  path: "/payments/events",
+  pathParamsSchema: noPathParamsSchema,
+  querySchema: paymentEventListQuerySchema,
+  bodySchema: paymentAdminNoBodySchema,
+  responseSchema: paymentEventAdminPageResponseSchema,
+});
+
+export const adminListPaymentWebhookAttemptsContract =
+  defineAdminEndpointContract({
+    method: "GET",
+    path: "/payments/webhook-attempts",
+    pathParamsSchema: noPathParamsSchema,
+    querySchema: paymentWebhookAttemptListQuerySchema,
+    bodySchema: paymentAdminNoBodySchema,
+    responseSchema: paymentWebhookAttemptAdminPageResponseSchema,
+  });
+
+export const adminListPaymentReconciliationAttemptsContract =
+  defineAdminEndpointContract({
+    method: "GET",
+    path: "/payments/reconciliation-attempts",
+    pathParamsSchema: noPathParamsSchema,
+    querySchema: paymentReconciliationAttemptListQuerySchema,
+    bodySchema: paymentAdminNoBodySchema,
+    responseSchema: paymentReconciliationAttemptAdminPageResponseSchema,
+  });
+
+export const adminCreatePaymentIncidentActionContract =
+  defineAdminEndpointContract({
+    method: "POST",
+    path: "/payments/:id/incident-actions",
+    pathParamsSchema: z.strictObject({ id: z.uuid() }),
+    querySchema: noQuerySchema,
+    bodySchema: paymentIncidentActionRequestSchema,
+    responseSchema: paymentIncidentActionResponseSchema,
+  });
+
+export const adminManualReconcilePaymentContract = defineAdminEndpointContract({
+  method: "POST",
+  path: "/payments/:id/reconcile",
+  pathParamsSchema: z.strictObject({ id: z.uuid() }),
+  querySchema: noQuerySchema,
+  bodySchema: paymentOperatorReasonSchema,
+  responseSchema: paymentAdminActionResultSchema,
+});
+
+export const adminListPaymentRefundsContract = defineAdminEndpointContract({
+  method: "GET",
+  path: "/payments/refunds",
+  pathParamsSchema: noPathParamsSchema,
+  querySchema: refundListQuerySchema,
+  bodySchema: paymentAdminNoBodySchema,
+  responseSchema: refundAdminPageResponseSchema,
+});
+
+export const adminQueryPaymentRefundContract = defineAdminEndpointContract({
+  method: "POST",
+  path: "/payments/refunds/:id/query",
+  pathParamsSchema: z.strictObject({ id: z.uuid() }),
+  querySchema: noQuerySchema,
+  bodySchema: paymentOperatorReasonSchema,
+  responseSchema: paymentAdminActionResultSchema,
+});
+
+export const adminListPaymentCodeAttemptsContract = defineAdminEndpointContract(
+  {
+    method: "GET",
+    path: "/payments/payment-code-attempts",
+    pathParamsSchema: noPathParamsSchema,
+    querySchema: paymentCodeAttemptListQuerySchema,
+    bodySchema: paymentAdminNoBodySchema,
+    responseSchema: paymentCodeAttemptAdminPageResponseSchema,
+  },
+);
+
+export const adminQueryPaymentCodeAttemptContract = defineAdminEndpointContract(
+  {
+    method: "POST",
+    path: "/payments/payment-code-attempts/:id/query",
+    pathParamsSchema: z.strictObject({ id: z.uuid() }),
+    querySchema: noQuerySchema,
+    bodySchema: paymentCodeAttemptAdminActionSchema,
+    responseSchema: paymentCodeAttemptAdminResponseSchema,
+  },
+);
+
+export const adminReversePaymentCodeAttemptContract =
+  defineAdminEndpointContract({
+    method: "POST",
+    path: "/payments/payment-code-attempts/:id/reverse",
+    pathParamsSchema: z.strictObject({ id: z.uuid() }),
+    querySchema: noQuerySchema,
+    bodySchema: paymentCodeAttemptAdminActionSchema,
+    responseSchema: paymentCodeAttemptAdminResponseSchema,
+  });
+
+export const adminGetPaymentMachinePreflightContract =
+  defineAdminEndpointContract({
+    method: "GET",
+    path: "/payments/ops/machines/:machineId/preflight",
+    pathParamsSchema: z.strictObject({ machineId: z.uuid() }),
+    querySchema: noQuerySchema,
+    bodySchema: paymentAdminNoBodySchema,
+    responseSchema: paymentMachinePreflightSchema,
+  });
+
+export const adminGetPaymentOpsReadinessContract = defineAdminEndpointContract({
+  method: "GET",
+  path: "/payments/ops/readiness",
+  pathParamsSchema: noPathParamsSchema,
+  querySchema: noQuerySchema,
+  bodySchema: paymentAdminNoBodySchema,
+  responseSchema: paymentOpsReadinessSchema,
+});
+
+export const adminGetPaymentOpsMetricsContract = defineAdminEndpointContract({
+  method: "GET",
+  path: "/payments/ops/metrics",
+  pathParamsSchema: noPathParamsSchema,
+  querySchema: paymentOpsMetricsQuerySchema,
+  bodySchema: paymentAdminNoBodySchema,
+  responseSchema: paymentOpsMetricsSchema,
 });
 
 export type PaymentOpsReadiness = z.infer<typeof paymentOpsReadinessSchema>;

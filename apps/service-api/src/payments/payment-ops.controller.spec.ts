@@ -111,7 +111,7 @@ describe("PaymentOpsController", () => {
       vi.mocked(service.getMachinePreflight).mockResolvedValue(expected);
 
       const controller = makeController(service);
-      const result = await controller.getMachinePreflight(machineId);
+      const result = await controller.getMachinePreflight({ machineId });
 
       expect(service.getMachinePreflight).toHaveBeenCalledWith(machineId);
       expect(result).toEqual(expected);

@@ -79,7 +79,7 @@ describe("PaymentsController", () => {
       await expect(
         controller.paymentIncidentAction(
           admin,
-          "550e8400-e29b-41d4-a716-446655440000",
+          { id: "550e8400-e29b-41d4-a716-446655440000" },
           body,
         ),
       ).resolves.toBe(result);
@@ -134,9 +134,13 @@ describe("PaymentsController", () => {
       } as import("../common/request-user").AuthenticatedAdmin;
 
       await expect(
-        controller.queryRefund(admin, "550e8400-e29b-41d4-a716-446655440000", {
-          reason: "customer refund status check",
-        }),
+        controller.queryRefund(
+          admin,
+          { id: "550e8400-e29b-41d4-a716-446655440000" },
+          {
+            reason: "customer refund status check",
+          },
+        ),
       ).resolves.toBe(result);
       expect(paymentsService.manualReconcileRefund).toHaveBeenCalledWith(
         "550e8400-e29b-41d4-a716-446655440000",
@@ -163,7 +167,7 @@ describe("PaymentsController", () => {
       await expect(
         controller.manualReconcile(
           admin,
-          "550e8400-e29b-41d4-a716-446655440000",
+          { id: "550e8400-e29b-41d4-a716-446655440000" },
           { reason: "customer sees paid but platform is pending" },
         ),
       ).resolves.toBe(result);

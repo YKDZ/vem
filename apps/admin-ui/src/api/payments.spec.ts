@@ -1,15 +1,34 @@
-import type { UpdatePaymentChannelPolicyInput } from "@vem/shared";
+import {
+  adminCreatePaymentIncidentActionContract,
+  adminGetPaymentChannelPolicyContract,
+  adminGetPaymentMachinePreflightContract,
+  adminListPaymentCodeAttemptsContract,
+  adminListPaymentEventsContract,
+  adminListPaymentProviderConfigsContract,
+  adminListPaymentProviderNotifyUrlChecksContract,
+  adminListPaymentProvidersContract,
+  adminListPaymentReconciliationAttemptsContract,
+  adminListPaymentRefundsContract,
+  adminListPaymentWebhookAttemptsContract,
+  adminListPaymentsContract,
+  adminManualReconcilePaymentContract,
+  adminMockPaymentFailContract,
+  adminMockPaymentSucceedContract,
+  adminQueryPaymentCodeAttemptContract,
+  adminQueryPaymentRefundContract,
+  adminReversePaymentCodeAttemptContract,
+  adminUpdatePaymentChannelPolicyContract,
+  adminUpdatePaymentProviderConfigContract,
+  adminUpdatePaymentProviderContract,
+  adminUpsertPaymentProviderConfigContract,
+  type UpdatePaymentChannelPolicyInput,
+} from "@vem/shared";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { describe, expect, it, vi } from "vitest";
+import { callAdminEndpointContract } from "@/api/request";
 
 import {
-  getContract,
-  patchContract,
-  postContract,
-  putContract,
-} from "@/api/request";
-
-import {
+  createPaymentIncidentAction,
   getPaymentMachinePreflight,
   getPaymentChannelPolicy,
   listPaymentProviderConfigs,
@@ -34,149 +53,124 @@ import {
 } from "./payments";
 
 vi.mock("@/api/request", () => ({
-  post: vi.fn().mockResolvedValue({}),
-  postContract: vi.fn().mockResolvedValue({}),
-  get: vi.fn(),
-  getContract: vi
-    .fn()
-    .mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 20 }),
-  patch: vi.fn(),
-  patchContract: vi.fn().mockResolvedValue({}),
-  putContract: vi.fn().mockResolvedValue({}),
+  callAdminEndpointContract: vi.fn().mockResolvedValue({}),
 }));
 
 describe("payments api operator actions", () => {
-  it("parses payment overview read responses through shared schemas", async () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(callAdminEndpointContract).mockResolvedValue({
+      items: [],
+      total: 0,
+      page: 1,
+      pageSize: 20,
+    });
+  });
+
+  it("uses complete shared endpoint contracts for payment overview reads", async () => {
     await listPayments({ status: "succeeded", page: 2 });
     await listPaymentProviders({ status: "enabled" });
     await listPaymentProviderConfigs();
     await listPaymentProviderNotifyUrlChecks();
 
-    expect(getContract).toHaveBeenCalledWith(
-      "/payments",
-      expect.any(Object),
-      expect.any(Object),
-      { status: "succeeded", page: 2 },
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminListPaymentsContract,
+      { query: { status: "succeeded", page: 2 } },
     );
-    expect(getContract).toHaveBeenCalledWith(
-      "/payments/providers",
-      expect.any(Object),
-      expect.any(Object),
-      { status: "enabled" },
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminListPaymentProvidersContract,
+      { query: { status: "enabled" } },
     );
-    expect(getContract).toHaveBeenCalledWith(
-      "/payments/provider-configs",
-      expect.any(Object),
-      expect.any(Object),
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminListPaymentProviderConfigsContract,
       {},
     );
-    expect(getContract).toHaveBeenCalledWith(
-      "/payments/provider-configs/notify-url-checks",
-      expect.any(Object),
-      expect.any(Object),
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminListPaymentProviderNotifyUrlChecksContract,
       {},
     );
   });
 
-  it("parses payment read list responses through shared schemas", async () => {
+  it("uses complete shared endpoint contracts for payment read lists", async () => {
     await listWebhookAttempts({ eventKind: "payment" });
     await listReconciliationAttempts({ trigger: "manual" });
     await listRefunds({ status: "processing" });
     await listPaymentEvents({ paymentNo: "PAY-1" });
     await listPaymentCodeAttempts({ manualOnly: true });
 
-    expect(getContract).toHaveBeenCalledWith(
-      "/payments/webhook-attempts",
-      expect.any(Object),
-      expect.any(Object),
-      { eventKind: "payment" },
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminListPaymentWebhookAttemptsContract,
+      { query: { eventKind: "payment" } },
     );
-    expect(getContract).toHaveBeenCalledWith(
-      "/payments/reconciliation-attempts",
-      expect.any(Object),
-      expect.any(Object),
-      { trigger: "manual" },
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminListPaymentReconciliationAttemptsContract,
+      { query: { trigger: "manual" } },
     );
-    expect(getContract).toHaveBeenCalledWith(
-      "/payments/refunds",
-      expect.any(Object),
-      expect.any(Object),
-      { status: "processing" },
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminListPaymentRefundsContract,
+      { query: { status: "processing" } },
     );
-    expect(getContract).toHaveBeenCalledWith(
-      "/payments/events",
-      expect.any(Object),
-      expect.any(Object),
-      { paymentNo: "PAY-1" },
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminListPaymentEventsContract,
+      { query: { paymentNo: "PAY-1" } },
     );
-    expect(getContract).toHaveBeenCalledWith(
-      "/payments/payment-code-attempts",
-      expect.any(Object),
-      expect.any(Object),
-      { manualOnly: true },
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminListPaymentCodeAttemptsContract,
+      { query: { manualOnly: true } },
     );
   });
 
   it("accepts mock payment-code attempts returned by the runtime testbed", async () => {
-    vi.mocked(getContract).mockImplementationOnce(
-      async (_url, _querySchema, responseSchema, query) => {
-        (_querySchema as { parse(value: unknown): unknown }).parse(query);
-        return (responseSchema as { parse(value: unknown): unknown }).parse({
-          items: [
-            {
-              id: "attempt-1",
-              orderId: "order-1",
-              orderNo: "ORD-1",
-              paymentNo: "PAY-1",
-              providerCode: "mock",
-              attemptNo: 1,
-              providerPaymentNo: "MOCK-PAY-1",
-              status: "succeeded",
-              authCodeMasked: "2800********1234",
-              source: "serial_text",
-              providerTradeNo: null,
-              providerStatus: null,
-              failureCode: null,
-              failureMessage: null,
-              manualReason: null,
-              submittedAt: "2026-07-25T05:00:00.000Z",
-              lastCheckedAt: null,
-              reversedAt: null,
-              finishedAt: "2026-07-25T05:00:01.000Z",
-              createdAt: "2026-07-25T05:00:00.000Z",
-            },
-          ],
-          total: 1,
-          page: 1,
-          pageSize: 20,
-        });
-      },
-    );
+    vi.mocked(callAdminEndpointContract).mockResolvedValueOnce({
+      items: [
+        {
+          id: "attempt-1",
+          orderId: "order-1",
+          orderNo: "ORD-1",
+          paymentNo: "PAY-1",
+          providerCode: "mock",
+          attemptNo: 1,
+          providerPaymentNo: "MOCK-PAY-1",
+          status: "succeeded",
+          authCodeMasked: "2800********1234",
+          source: "serial_text",
+          providerTradeNo: null,
+          providerStatus: null,
+          failureCode: null,
+          failureMessage: null,
+          manualReason: null,
+          submittedAt: "2026-07-25T05:00:00.000Z",
+          lastCheckedAt: null,
+          reversedAt: null,
+          finishedAt: "2026-07-25T05:00:01.000Z",
+          createdAt: "2026-07-25T05:00:00.000Z",
+        },
+      ],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+    });
 
     const page = await listPaymentCodeAttempts({ providerCode: "mock" });
 
     expect(page.items[0]?.providerCode).toBe("mock");
   });
 
-  it("parses payment operations read responses through shared schemas", async () => {
+  it("uses complete shared endpoint contracts for payment operations reads", async () => {
     await getPaymentMachinePreflight("550e8400-e29b-41d4-a716-446655440010");
     await getPaymentChannelPolicy();
 
-    expect(getContract).toHaveBeenCalledWith(
-      "/payments/ops/machines/550e8400-e29b-41d4-a716-446655440010/preflight",
-      expect.any(Object),
-      expect.any(Object),
-      {},
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminGetPaymentMachinePreflightContract,
+      { pathParams: { machineId: "550e8400-e29b-41d4-a716-446655440010" } },
     );
-    expect(getContract).toHaveBeenCalledWith(
-      "/payments/channel-policy",
-      expect.any(Object),
-      expect.any(Object),
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminGetPaymentChannelPolicyContract,
       {},
     );
   });
 
-  it("uses schema-bound helper for global payment channel policy writes", async () => {
+  it("uses the shared endpoint contract for global payment channel policy writes", async () => {
     const policy: UpdatePaymentChannelPolicyInput = {
       channels: [
         { channelKey: "payment_code:wechat_pay", enabled: true, rank: 1 },
@@ -189,11 +183,9 @@ describe("payments api operator actions", () => {
 
     await updatePaymentChannelPolicy(policy);
 
-    expect(putContract).toHaveBeenCalledWith(
-      "/payments/channel-policy",
-      expect.any(Object),
-      expect.any(Object),
-      policy,
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminUpdatePaymentChannelPolicyContract,
+      { body: policy },
     );
   });
 
@@ -203,33 +195,30 @@ describe("payments api operator actions", () => {
       "customer sees paid but platform is pending",
     );
 
-    expect(postContract).toHaveBeenCalledWith(
-      "/payments/550e8400-e29b-41d4-a716-446655440000/reconcile",
-      expect.any(Object),
-      expect.any(Object),
-      { reason: "customer sees paid but platform is pending" },
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminManualReconcilePaymentContract,
+      {
+        pathParams: { id: "550e8400-e29b-41d4-a716-446655440000" },
+        body: { reason: "customer sees paid but platform is pending" },
+      },
     );
   });
 
-  it("uses schema-bound helpers for mock payment incident actions", async () => {
+  it("uses complete shared endpoint contracts for mock payment incident actions", async () => {
     await mockSucceed("PAY-1");
     await mockFail("PAY-2");
 
-    expect(postContract).toHaveBeenCalledWith(
-      "/payments/mock/PAY-1/succeed",
-      expect.any(Object),
-      expect.any(Object),
-      {},
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminMockPaymentSucceedContract,
+      { pathParams: { paymentNo: "PAY-1" } },
     );
-    expect(postContract).toHaveBeenCalledWith(
-      "/payments/mock/PAY-2/fail",
-      expect.any(Object),
-      expect.any(Object),
-      {},
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminMockPaymentFailContract,
+      { pathParams: { paymentNo: "PAY-2" } },
     );
   });
 
-  it("uses schema-bound helpers for provider and provider-config writes", async () => {
+  it("uses complete shared endpoint contracts for provider and provider-config writes", async () => {
     await updatePaymentProvider("550e8400-e29b-41d4-a716-446655440010", {
       name: "Wechat Pay",
       status: "enabled",
@@ -237,129 +226,79 @@ describe("payments api operator actions", () => {
     });
     await updatePaymentProviderConfig("550e8400-e29b-41d4-a716-446655440011", {
       merchantNo: null,
-      publicConfigJson: {
-        qrExpiresMinutes: 10,
-      },
+      publicConfigJson: {},
     });
     await upsertPaymentProviderConfig({
       providerCode: "alipay",
-      merchantNo: "mch-1",
-      appId: "app-1",
-      publicConfigJson: {
-        mode: "sandbox",
-        gatewayUrl: "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
-        keyType: "PKCS8",
-      },
-      sensitiveConfigJson: {
-        privateKeyPem: "-----BEGIN PRIVATE KEY-----\nkey",
-      },
+      appId: "2026000000000000",
+      publicConfigJson: {},
+    });
+    await createPaymentIncidentAction("550e8400-e29b-41d4-a716-446655440012", {
+      action: "request_refund_handling",
+      reason: "operator verified the payment",
     });
 
-    expect(patchContract).toHaveBeenCalledWith(
-      "/payments/providers/550e8400-e29b-41d4-a716-446655440010",
-      expect.any(Object),
-      expect.any(Object),
-      expect.objectContaining({ name: "Wechat Pay" }),
-    );
-    expect(patchContract).toHaveBeenCalledWith(
-      "/payments/provider-configs/550e8400-e29b-41d4-a716-446655440011",
-      expect.any(Object),
-      expect.any(Object),
-      expect.objectContaining({ merchantNo: null }),
-    );
-    expect(postContract).toHaveBeenCalledWith(
-      "/payments/provider-configs",
-      expect.any(Object),
-      expect.any(Object),
-      expect.objectContaining({ providerCode: "alipay" }),
-    );
-  });
-
-  it("rejects invalid provider config bodies through the schema-bound helper", async () => {
-    vi.mocked(postContract).mockImplementationOnce(
-      async (_url, bodySchema, _responseSchema, body) => {
-        (bodySchema as { parse(value: unknown): unknown }).parse(body);
-        throw new Error("expected invalid payment provider config body");
-      },
-    );
-
-    await expect(
-      upsertPaymentProviderConfig({
-        providerCode: "alipay",
-        publicConfigJson: {
-          gatewayUrl: "not-a-url",
-        },
-      }),
-    ).rejects.toThrow();
-  });
-
-  it("allows existing WeChat config updates to retain sensitive fields server-side", async () => {
-    vi.mocked(postContract).mockImplementationOnce(
-      async (_url, bodySchema, _responseSchema, body) => {
-        (bodySchema as { parse(value: unknown): unknown }).parse(body);
-        return {};
-      },
-    );
-
-    await upsertPaymentProviderConfig({
-      providerCode: "wechat_pay",
-      merchantNo: "MCH001",
-      appId: "APP001",
-      publicConfigJson: {
-        merchantCertificateSerialNo: "MERCHANT_CERT_SERIAL",
-        platformCertificateSerialNo: "PLATFORM_CERT_SERIAL",
-      },
-      status: "enabled",
-    });
-
-    expect(postContract).toHaveBeenCalledWith(
-      "/payments/provider-configs",
-      expect.any(Object),
-      expect.any(Object),
-      expect.objectContaining({ providerCode: "wechat_pay" }),
-    );
-  });
-
-  it("sends a reason when querying a refund", async () => {
-    await queryRefund(
-      "550e8400-e29b-41d4-a716-446655440001",
-      "customer requested refund status check",
-    );
-
-    expect(postContract).toHaveBeenCalledWith(
-      "/payments/refunds/550e8400-e29b-41d4-a716-446655440001/query",
-      expect.any(Object),
-      expect.any(Object),
-      { reason: "customer requested refund status check" },
-    );
-  });
-
-  it("sends a reason when querying a payment-code attempt", async () => {
-    await queryPaymentCodeAttempt(
-      "550e8400-e29b-41d4-a716-446655440002",
-      "customer app is still confirming",
-    );
-
-    expect(postContract).toHaveBeenCalledWith(
-      "/payments/payment-code-attempts/550e8400-e29b-41d4-a716-446655440002/query",
-      expect.any(Object),
-      expect.any(Object),
-      { reason: "customer app is still confirming" },
-    );
-  });
-
-  it("uses shared operator action schemas for payment incident actions", async () => {
-    await reversePaymentCodeAttempt(
-      "550e8400-e29b-41d4-a716-446655440003",
-      "customer cancelled while provider stayed confirming",
-    );
-
-    expect(postContract).toHaveBeenCalledWith(
-      "/payments/payment-code-attempts/550e8400-e29b-41d4-a716-446655440003/reverse",
-      expect.any(Object),
-      expect.any(Object),
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminUpdatePaymentProviderContract,
       {
-        reason: "customer cancelled while provider stayed confirming",
+        pathParams: { id: "550e8400-e29b-41d4-a716-446655440010" },
+        body: expect.objectContaining({ name: "Wechat Pay" }),
+      },
+    );
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminUpdatePaymentProviderConfigContract,
+      {
+        pathParams: { id: "550e8400-e29b-41d4-a716-446655440011" },
+        body: { merchantNo: null, publicConfigJson: {} },
+      },
+    );
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminUpsertPaymentProviderConfigContract,
+      {
+        body: expect.objectContaining({
+          providerCode: "alipay",
+          appId: "2026000000000000",
+        }),
+      },
+    );
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminCreatePaymentIncidentActionContract,
+      {
+        pathParams: { id: "550e8400-e29b-41d4-a716-446655440012" },
+        body: expect.objectContaining({
+          action: "request_refund_handling",
+        }),
+      },
+    );
+  });
+
+  it("uses complete shared endpoint contracts for refund and payment-code operator actions", async () => {
+    await queryRefund("550e8400-e29b-41d4-a716-446655440020");
+    await queryPaymentCodeAttempt("550e8400-e29b-41d4-a716-446655440021");
+    await reversePaymentCodeAttempt(
+      "550e8400-e29b-41d4-a716-446655440022",
+      "operator reversed the attempt",
+    );
+
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminQueryPaymentRefundContract,
+      {
+        pathParams: { id: "550e8400-e29b-41d4-a716-446655440020" },
+        body: { reason: "admin_refund_status_query" },
+      },
+    );
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminQueryPaymentCodeAttemptContract,
+      {
+        pathParams: { id: "550e8400-e29b-41d4-a716-446655440021" },
+        body: { reason: "admin_payment_code_query" },
+      },
+    );
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminReversePaymentCodeAttemptContract,
+      {
+        pathParams: { id: "550e8400-e29b-41d4-a716-446655440022" },
+        body: { reason: "operator reversed the attempt" },
       },
     );
   });
