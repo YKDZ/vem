@@ -3290,7 +3290,7 @@ export async function runInstalledOwnerOrdinarySaleCompletion(
       const stepRecord = recordValue(step);
       await dependencies.waitForRoute(
         cdpClient,
-        String(stepRecord.routeBefore),
+        stepRecord.routeBefore as string | RegExp,
         {
           timeoutMs: 30_000,
           pollMs: 250,
@@ -3309,7 +3309,7 @@ export async function runInstalledOwnerOrdinarySaleCompletion(
       );
       await dependencies.waitForRoute(
         cdpClient,
-        String(stepRecord.routeAfter),
+        stepRecord.routeAfter as string | RegExp,
         {
           timeoutMs: 30_000,
           pollMs: 250,
@@ -3747,7 +3747,7 @@ async function runFastRouteStressSale(
     stage = "physical-catalog-to-checkout";
     for (const step of steps.slice(0, 4)) {
       const stepRecord = recordValue(step);
-      await waitForRoute(cdpClient, String(stepRecord.routeBefore), {
+      await waitForRoute(cdpClient, stepRecord.routeBefore as string | RegExp, {
         timeoutMs: 30_000,
         pollMs: 250,
       });
@@ -3765,7 +3765,7 @@ async function runFastRouteStressSale(
         String(recordValue(activation.input).method),
         /Input\.dispatchTouchEvent/,
       );
-      await waitForRoute(cdpClient, String(stepRecord.routeAfter), {
+      await waitForRoute(cdpClient, stepRecord.routeAfter as string | RegExp, {
         timeoutMs: 30_000,
         pollMs: 250,
       });
