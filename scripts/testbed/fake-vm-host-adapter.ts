@@ -16,14 +16,26 @@ import {
   VM_HOST_ADAPTER_CONTRACT_VERSION,
 } from "./vm-host-adapter-contract.ts";
 
-function readOption(name) {
+type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? (value as unknown[]) : [];
+}
+
+function readOption(name: string): string {
   const index = process.argv.indexOf(name);
   if (index === -1 || !process.argv[index + 1])
     throw new Error(`missing ${name}`);
   return process.argv[index + 1];
 }
 
-function evidence(role, hash) {
+function evidence(role: string, hash: string): JsonRecord {
   return {
     role,
     identity: `runtime-evidence://sha256/${hash}`,
@@ -31,14 +43,18 @@ function evidence(role, hash) {
   };
 }
 
-function defaultAudioCapture(request, evidenceEntry, calibrationEvidence) {
+function defaultAudioCapture(
+  request: JsonRecord,
+  evidenceEntry: JsonRecord,
+  calibrationEvidence: JsonRecord,
+): JsonRecord | null {
   if (request.operation !== "capture-default-audio") return null;
   return {
     schemaVersion: "vm-default-audio-capture-result/v2",
     runId: request.runId,
     lifecycleReference: request.lifecycleReference,
     captureOperationReference: request.operationReference,
-    activeKioskSession: request.audioCapture.activeKioskSession,
+    activeKioskSession: recordValue(request.audioCapture).activeKioskSession,
     defaultOutput: {
       status: "active",
     },
@@ -46,7 +62,9 @@ function defaultAudioCapture(request, evidenceEntry, calibrationEvidence) {
       status: "completed",
       source: "vending_daemon_ipc",
       command: "audio_output_calibration",
-      challenge: request.audioCapture.daemonCalibration.challenge,
+      challenge: recordValue(
+        recordValue(request.audioCapture).daemonCalibration,
+      ).challenge,
       responseArtifact: calibrationEvidence.identity,
       responseDigest: calibrationEvidence.digest,
       responseFileName: calibrationEvidence.fileName,
@@ -62,7 +80,7 @@ function defaultAudioCapture(request, evidenceEntry, calibrationEvidence) {
       sampleRateHz: 48_000,
       channels: 2,
       frameCount: 24_000,
-      threshold: request.audioCapture.threshold,
+      threshold: recordValue(request.audioCapture).threshold,
       nonSilentFrameCount: 24_000,
       peakAbsoluteSample: 2_048,
       durationMs: 500,
@@ -73,36 +91,51 @@ function defaultAudioCapture(request, evidenceEntry, calibrationEvidence) {
   };
 }
 
-function displayCapture(request, evidenceEntry) {
+function displayCapture(
+  request: JsonRecord,
+  evidenceEntry: JsonRecord,
+): JsonRecord | null {
   if (request.operation !== "capture-display") return null;
   return {
     schemaVersion: "vm-display-capture-result/v1",
     runId: request.runId,
     lifecycleReference: request.lifecycleReference,
     captureOperationReference: request.operationReference,
-    activeKioskSession: request.displayCapture.activeKioskSession,
-    tauriRoute: request.displayCapture.tauriRoute,
-    cdpTargetId: request.displayCapture.cdpTargetId,
+    activeKioskSession: recordValue(request.displayCapture).activeKioskSession,
+    tauriRoute: recordValue(request.displayCapture).tauriRoute,
+    cdpTargetId: recordValue(request.displayCapture).cdpTargetId,
     foregroundKiosk: {
-      activeKioskSession: request.displayCapture.activeKioskSession,
-      tauriRoute: request.displayCapture.tauriRoute,
-      cdpTargetId: request.displayCapture.cdpTargetId,
+      activeKioskSession: recordValue(request.displayCapture).activeKioskSession,
+      tauriRoute: recordValue(request.displayCapture).tauriRoute,
+      cdpTargetId: recordValue(request.displayCapture).cdpTargetId,
       visible: true,
     },
     cdpProbe: {
       endpoint: "http://127.0.0.1:9222/json",
-      targetId: request.displayCapture.cdpTargetId,
-      targetUrl: request.displayCapture.tauriRoute,
+      targetId: recordValue(request.displayCapture).cdpTargetId,
+      targetUrl: recordValue(request.displayCapture).tauriRoute,
       appVisible: true,
       appTextLength: 16,
       domNodeCount: 3,
-      challengeToken: request.displayCapture.visualChallenge.token,
+      challengeToken: recordValue(
+        recordValue(request.displayCapture).visualChallenge,
+      ).token,
     },
     visualChallenge: {
-      ...request.displayCapture.visualChallenge,
+      ...recordValue(recordValue(request.displayCapture).visualChallenge),
       matchingPixelCount:
-        request.displayCapture.visualChallenge.region.width *
-        request.displayCapture.visualChallenge.region.height,
+        Number(
+          recordValue(
+            recordValue(recordValue(request.displayCapture).visualChallenge)
+              .region,
+          ).width,
+        ) *
+          Number(
+            recordValue(
+              recordValue(recordValue(request.displayCapture).visualChallenge)
+                .region,
+            ).height,
+          ),
     },
     capture: {
       source: "contract-test-generated-png",
@@ -115,24 +148,26 @@ function displayCapture(request, evidenceEntry) {
       nonTransparentPixelCount: 2_073_600,
       nonTransparentPixelRatio: 1,
       distinctPixelCount: displayDistinctPixelCount(
-        request.displayCapture.visualChallenge,
+        recordValue(recordValue(request.displayCapture).visualChallenge),
       ),
     },
   };
 }
 
-function displayDistinctPixelCount(challenge) {
-  const [red, green, blue] = challenge.colorRgb;
+function displayDistinctPixelCount(challenge: JsonRecord): number {
+  const [red, green, blue] = arrayValue(challenge.colorRgb).map((value) =>
+    Number(value),
+  );
   const isBackground = red === 16 && green === 24 && blue === 32;
   const isPaletteColor = blue === 128 && (red === 0 || red === 1);
   return isBackground || isPaletteColor ? 513 : 514;
 }
 
-function materializeDisplayEvidence(challenge) {
+function materializeDisplayEvidence(challenge: JsonRecord): JsonRecord {
   const directory = process.env.VEM_VM_HOST_EVIDENCE_EXPORT_DIR;
   if (!directory) throw new Error("missing VEM_VM_HOST_EVIDENCE_EXPORT_DIR");
   const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
-  const chunk = (type, data) => {
+  const chunk = (type: string, data: Buffer): Buffer => {
     const bytes = Buffer.alloc(12 + data.length);
     bytes.writeUInt32BE(data.length, 0);
     bytes.write(type, 4);
@@ -162,20 +197,24 @@ function materializeDisplayEvidence(challenge) {
     pixels.writeUInt32BE(color >>> 0, 1 + index * 4);
   }
   for (
-    let row = challenge.region.y;
-    row < challenge.region.y + challenge.region.height;
+    let row = Number(recordValue(challenge.region).y);
+    row <
+      Number(recordValue(challenge.region).y) +
+        Number(recordValue(challenge.region).height);
     row += 1
   ) {
     const rowStart = row * (width * 4 + 1);
     for (
-      let column = challenge.region.x;
-      column < challenge.region.x + challenge.region.width;
+      let column = Number(recordValue(challenge.region).x);
+      column <
+        Number(recordValue(challenge.region).x) +
+          Number(recordValue(challenge.region).width);
       column += 1
     ) {
       const offset = rowStart + 1 + column * 4;
-      pixels[offset] = challenge.colorRgb[0];
-      pixels[offset + 1] = challenge.colorRgb[1];
-      pixels[offset + 2] = challenge.colorRgb[2];
+      pixels[offset] = Number(arrayValue(challenge.colorRgb)[0]);
+      pixels[offset + 1] = Number(arrayValue(challenge.colorRgb)[1]);
+      pixels[offset + 2] = Number(arrayValue(challenge.colorRgb)[2]);
       pixels[offset + 3] = 255;
     }
   }
@@ -192,7 +231,7 @@ function materializeDisplayEvidence(challenge) {
   return { ...evidence("display-capture", hash), fileName };
 }
 
-function materializeDefaultAudioEvidence() {
+function materializeDefaultAudioEvidence(): JsonRecord {
   const directory = process.env.VEM_VM_HOST_EVIDENCE_EXPORT_DIR;
   if (!directory) throw new Error("missing VEM_VM_HOST_EVIDENCE_EXPORT_DIR");
   const frameCount = 24_000;
@@ -224,7 +263,7 @@ function materializeDefaultAudioEvidence() {
   return { ...evidence("default-audio-capture", hash), fileName };
 }
 
-function materializeDaemonCalibrationEvidence(request) {
+function materializeDaemonCalibrationEvidence(request: JsonRecord): JsonRecord {
   const directory = process.env.VEM_VM_HOST_EVIDENCE_EXPORT_DIR;
   if (!directory) throw new Error("missing VEM_VM_HOST_EVIDENCE_EXPORT_DIR");
   const response = {
@@ -235,7 +274,9 @@ function materializeDaemonCalibrationEvidence(request) {
     configRevision: `sha256:${"b".repeat(64)}`,
     configGeneration: 11,
     proposedSettingsDigest: `sha256:${"c".repeat(64)}`,
-    challenge: request.audioCapture.daemonCalibration.challenge,
+    challenge: recordValue(
+      recordValue(request.audioCapture).daemonCalibration,
+    ).challenge,
   };
   const bytes = Buffer.from(`${JSON.stringify(response)}\n`, "utf8");
   const hash = createHash("sha256").update(bytes).digest("hex");
@@ -245,17 +286,17 @@ function materializeDaemonCalibrationEvidence(request) {
   return { ...evidence("daemon-audio-calibration-response", hash), fileName };
 }
 
-function readState(path) {
+function readState(path: string | undefined): JsonRecord {
   if (!path || !existsSync(path)) return { sessions: {} };
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
-function writeState(path, state) {
+function writeState(path: string | undefined, state: JsonRecord): void {
   if (!path) return;
   writeFileSync(path, `${JSON.stringify(state)}\n`, { mode: 0o600 });
 }
 
-function serialMappings(state) {
+function serialMappings(state: unknown): JsonRecord[] {
   return [
     {
       role: "lower-controller",
@@ -290,39 +331,52 @@ function serialMappings(state) {
   ];
 }
 
-function serialBinding(request) {
+function serialBinding(request: JsonRecord): JsonRecord | null {
   if (request.operation === "start-serial-session")
     return deriveSerialSessionBinding({
       runId: request.runId,
       lifecycleReference: request.lifecycleReference,
-      targetIdentity: request.target.identity,
+      targetIdentity: recordValue(request.target).identity,
       startOperationReference: request.operationReference,
     });
-  return request.serialSession;
+  return recordValue(request.serialSession);
 }
 
-function mutateSerialState(request, state) {
+function mutateSerialState(
+  request: JsonRecord,
+  state: JsonRecord,
+): JsonRecord | null {
   const binding = serialBinding(request);
   if (!binding?.serialSessionId) return null;
-  const session = state.sessions[binding.serialSessionId] ?? {
+  const sessions = recordValue(state.sessions);
+  const sessionId = String(binding.serialSessionId);
+  const existingSession = sessions[sessionId];
+  const session =
+    existingSession &&
+    typeof existingSession === "object" &&
+    !Array.isArray(existingSession)
+      ? (existingSession as JsonRecord)
+      : {
     cleanupAttemptCount: 0,
     active: true,
-  };
+        };
   if (request.operation === "start-serial-session") {
     session.active = true;
     session.cleanupAttemptCount = 0;
   }
   if (
-    ["stop-serial-session", "cleanup", "cancel"].includes(request.operation)
+    ["stop-serial-session", "cleanup", "cancel"].includes(
+      String(request.operation),
+    )
   ) {
     session.active = false;
-    session.cleanupAttemptCount += 1;
+    session.cleanupAttemptCount = Number(session.cleanupAttemptCount) + 1;
   }
-  state.sessions[binding.serialSessionId] = session;
+  sessions[sessionId] = session;
   return { ...binding, ...session };
 }
 
-function capturedFrame(sequence) {
+function capturedFrame(sequence: number): JsonRecord {
   return {
     source: "guest-serial-session",
     sequence,
@@ -331,10 +385,11 @@ function capturedFrame(sequence) {
   };
 }
 
-function semanticRecords(request) {
-  const session = request.serialSession;
-  const saleCorrelationId = session.saleCorrelationIds[0];
-  const saleBinding = session.saleBindings[0];
+function semanticRecords(request: JsonRecord): JsonRecord[] {
+  const session = recordValue(request.serialSession);
+  const scannerInjection = recordValue(session.scannerInjection);
+  const saleCorrelationId = arrayValue(session.saleCorrelationIds)[0];
+  const saleBinding = arrayValue(session.saleBindings)[0];
   let sequence = 0;
   const lower = [
     "handshake",
@@ -352,8 +407,9 @@ function semanticRecords(request) {
     scannerCodeByteLength: null,
     scannerCodeSuffix: null,
     saleCorrelationId:
-      event.startsWith("dispense-") && session.saleCorrelationIds.length > 0
-        ? session.saleCorrelationIds[0]
+      event.startsWith("dispense-") &&
+      arrayValue(session.saleCorrelationIds).length > 0
+        ? arrayValue(session.saleCorrelationIds)[0]
         : null,
     saleBinding: event.startsWith("dispense-") ? saleBinding : null,
     capturedFrame: capturedFrame((sequence += 1)),
@@ -363,12 +419,12 @@ function semanticRecords(request) {
     {
       role: "scanner",
       event: "scanner-injection",
-      operationNonce: session.scannerInjection.operationNonce,
+      operationNonce: scannerInjection.operationNonce,
       sessionBindingToken: session.sessionBindingToken,
       deviceMappingDigest: session.deviceMappingDigest,
-      scannerCodeDigest: session.scannerInjection.scannerCodeDigest,
-      scannerCodeByteLength: session.scannerInjection.scannerCodeByteLength,
-      scannerCodeSuffix: session.scannerInjection.scannerCodeSuffix,
+      scannerCodeDigest: scannerInjection.scannerCodeDigest,
+      scannerCodeByteLength: scannerInjection.scannerCodeByteLength,
+      scannerCodeSuffix: scannerInjection.scannerCodeSuffix,
       saleCorrelationId,
       saleBinding,
       capturedFrame: capturedFrame((sequence += 1)),
@@ -388,23 +444,31 @@ function semanticRecords(request) {
     })),
     ...lower.slice(2),
   ];
-  let previousCaptureBindingDigest = null;
+  let previousCaptureBindingDigest: unknown = null;
   return records.map((record, index) => {
-    const captured = {
+    const captured: JsonRecord = {
       ...record,
       capturedFrame: capturedFrame(index + 1),
     };
     captured.captureBindingDigest = deriveSerialFrameCaptureBindingDigest({
       request,
       record: captured,
-      previousCaptureBindingDigest,
+      previousCaptureBindingDigest:
+        typeof previousCaptureBindingDigest === "string"
+          ? previousCaptureBindingDigest
+          : null,
     });
     previousCaptureBindingDigest = captured.captureBindingDigest;
     return captured;
   });
 }
 
-function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
+function fakeReport(
+  request: JsonRecord,
+  scenario: string,
+  state: JsonRecord,
+  observedSerialFaultCode: string | null = null,
+): JsonRecord {
   const resultByScenario = {
     success: "succeeded",
     failure: "failed",
@@ -412,21 +476,31 @@ function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
     cancel: "cancelled",
     "evidence-mismatch": "succeeded",
   };
-  const result = resultByScenario[scenario];
+  const result = resultByScenario[scenario as keyof typeof resultByScenario];
   if (!result)
     throw new Error("unsupported deterministic fake adapter scenario");
   const isV2 = Object.hasOwn(request, "serialSession");
   const binding = isV2 ? serialBinding(request) : null;
   const statefulSession = isV2 ? mutateSerialState(request, state) : null;
-  const serialState = ["stop-serial-session", "cleanup", "cancel"].includes(
-    request.operation,
-  )
+  const requestTarget = recordValue(request.target);
+  const requestAssets = arrayValue(request.assets).map((asset: unknown) =>
+    recordValue(asset),
+  );
+  const requestDisplayCapture = recordValue(request.displayCapture);
+  const requestAudioCapture = recordValue(request.audioCapture);
+  const serialRequest = recordValue(request.serialSession);
+  const serialState = [
+    "stop-serial-session",
+    "cleanup",
+    "cancel",
+  ].includes(String(request.operation))
     ? "disconnected"
     : "connected";
   const mappings = serialMappings(serialState);
   const mappingDigest = deriveSerialDeviceMappingDigest(mappings);
+  const requestedCapabilities = arrayValue(request.requestedCapabilities);
   const negotiatedCapabilities =
-    result === "succeeded" ? request.requestedCapabilities : [];
+    result === "succeeded" ? requestedCapabilities : [];
   const deviceMappings = [];
   if (
     negotiatedCapabilities.includes("serial:lower-controller") ||
@@ -448,14 +522,17 @@ function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
     });
   const evidenceEntries =
     request.operation === "capture-display"
-      ? [materializeDisplayEvidence(request.displayCapture.visualChallenge)]
+      ? [
+          materializeDisplayEvidence(
+            recordValue(recordValue(request.displayCapture).visualChallenge),
+          ),
+        ]
       : request.operation === "capture-default-audio"
         ? [
             materializeDefaultAudioEvidence(),
             materializeDaemonCalibrationEvidence(request),
           ]
         : [];
-  const serialRequest = request.serialSession;
   const needsSerialReport =
     isV2 &&
     (request.operation === "start-serial-session" || serialRequest !== null) &&
@@ -480,10 +557,10 @@ function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
       operationReference: request.operationReference,
       lifecycleReference: request.lifecycleReference,
       cancelOperationReference: request.cancelOperationReference,
-      targetIdentity: request.target.identity,
-      displayCapture: request.displayCapture,
-      audioCapture: request.audioCapture,
-      requestedCapabilities: request.requestedCapabilities,
+      targetIdentity: requestTarget.identity,
+      displayCapture: requestDisplayCapture,
+      audioCapture: requestAudioCapture,
+      requestedCapabilities: requestedCapabilities,
       ...(isV2 ? { serialSession: request.serialSession } : {}),
     },
     result,
@@ -493,16 +570,16 @@ function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
       vmIdentity: "vm-observed://fake-runtime-testbed-001",
       targetBinding: {
         relation: "host-target-mapping/v1",
-        targetIdentity: request.target.identity,
+        targetIdentity: requestTarget.identity,
       },
       baseIdentity:
         request.operation === "capture-approved-base"
           ? `runtime-asset://sha256/${"f".repeat(64)}`
-          : request.assets[0].identity,
+          : requestAssets[0]?.identity ?? null,
       overlayIdentity: "vm-overlay://fake-run-001",
       firmwareMode: "bios",
     },
-    consumedAssets: request.assets,
+    consumedAssets: requestAssets,
     guest: {
       deviceMappings,
       defaultAudioIdentity: "guest-audio://fake-runtime-testbed-001",
@@ -554,8 +631,8 @@ function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
       ? {
           serialSession: needsSerialReport
             ? {
-                serialSessionId: binding.serialSessionId,
-                sessionBindingToken: binding.sessionBindingToken,
+                serialSessionId: (binding as JsonRecord).serialSessionId,
+                sessionBindingToken: (binding as JsonRecord).sessionBindingToken,
                 startOperationReference:
                   request.operation === "start-serial-session"
                     ? request.operationReference
@@ -564,7 +641,9 @@ function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
                 state:
                   request.operation === "stop-serial-session"
                     ? "stopped"
-                    : ["cleanup", "cancel"].includes(request.operation)
+                    : ["cleanup", "cancel"].includes(
+                        String(request.operation),
+                      )
                       ? "cleaned"
                       : "active",
                 deviceMappings: mappings,
@@ -572,11 +651,14 @@ function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
                   request.operation === "inject-scanner-code"
                     ? {
                         scannerCodeDigest:
-                          serialRequest.scannerInjection.scannerCodeDigest,
+                          recordValue(serialRequest.scannerInjection)
+                            .scannerCodeDigest,
                         scannerCodeByteLength:
-                          serialRequest.scannerInjection.scannerCodeByteLength,
+                          recordValue(serialRequest.scannerInjection)
+                            .scannerCodeByteLength,
                         scannerCodeSuffix:
-                          serialRequest.scannerInjection.scannerCodeSuffix,
+                          recordValue(serialRequest.scannerInjection)
+                            .scannerCodeSuffix,
                         accepted: true,
                       }
                     : null,
@@ -584,9 +666,10 @@ function fakeReport(request, scenario, state, observedSerialFaultCode = null) {
                   "stop-serial-session",
                   "cleanup",
                   "cancel",
-                ].includes(request.operation)
+                ].includes(String(request.operation))
                   ? {
-                      cleanupAttemptCount: statefulSession.cleanupAttemptCount,
+                      cleanupAttemptCount:
+                        (statefulSession as JsonRecord).cleanupAttemptCount,
                       idempotencyVerified:
                         request.operation === "stop-serial-session" &&
                         serialRequest.idempotencyCheck,
@@ -640,11 +723,17 @@ if (request.operation === "inject-scanner-code") {
     JSON.stringify(createScannerCodeDescriptor(protectedCode)) !==
     JSON.stringify({
       scannerCodeDigest:
-        request.serialSession.scannerInjection.scannerCodeDigest,
+        recordValue(
+          recordValue(request.serialSession).scannerInjection,
+        ).scannerCodeDigest,
       scannerCodeByteLength:
-        request.serialSession.scannerInjection.scannerCodeByteLength,
+        recordValue(
+          recordValue(request.serialSession).scannerInjection,
+        ).scannerCodeByteLength,
       scannerCodeSuffix:
-        request.serialSession.scannerInjection.scannerCodeSuffix,
+        recordValue(
+          recordValue(request.serialSession).scannerInjection,
+        ).scannerCodeSuffix,
     })
   )
     throw new Error(
@@ -690,10 +779,9 @@ if (
     `${request.cancelOperationReference}\n`,
     { mode: 0o600 },
   );
-  const pid = Number.parseInt(
-    readFileSync(process.env.VEM_VM_HOST_ADAPTER_PID_FILE, "utf8"),
-    10,
-  );
+  const pidFile = process.env.VEM_VM_HOST_ADAPTER_PID_FILE;
+  if (!pidFile) throw new Error("cancel request has no in-flight adapter PID file");
+  const pid = Number.parseInt(readFileSync(pidFile, "utf8"), 10);
   if (!Number.isInteger(pid) || pid < 1)
     throw new Error("cancel request has no in-flight adapter operation");
   process.kill(pid, "SIGTERM");
