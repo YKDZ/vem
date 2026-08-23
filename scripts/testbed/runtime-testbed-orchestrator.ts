@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
+import type { Dirent } from "node:fs";
+
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, openSync, readFileSync } from "node:fs";
-import type { Dirent } from "node:fs";
 import {
   copyFile,
   lstat,
@@ -18,11 +19,12 @@ import { isIP } from "node:net";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import type { BusinessCheckDescriptor } from "./business-check-registry.ts";
+
 import {
   BUSINESS_CHECK_REGISTRY,
   selectBusinessChecks,
 } from "./business-check-registry.ts";
-import type { BusinessCheckDescriptor } from "./business-check-registry.ts";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -192,7 +194,9 @@ function artifactFile(
   const expectedKeys = sourceCommit
     ? ["hostPath", "sha256", "byteSize", "sourceCommit"]
     : ["hostPath", "sha256", "byteSize"];
-  if (Object.keys(record).sort().join("\0") !== expectedKeys.sort().join("\0")) {
+  if (
+    Object.keys(record).sort().join("\0") !== expectedKeys.sort().join("\0")
+  ) {
     throw new Error(`${label} fields are invalid`);
   }
   const path = absolute(record.hostPath, `${label} hostPath`);
@@ -215,9 +219,7 @@ function artifactFile(
     hostPath: path,
     sha256: String(record.sha256),
     byteSize: record.byteSize as number,
-    ...(sourceCommit
-      ? { sourceCommit: String(record.sourceCommit) }
-      : {}),
+    ...(sourceCommit ? { sourceCommit: String(record.sourceCommit) } : {}),
   };
 }
 
@@ -344,10 +346,7 @@ export function validateHostConfig(value: unknown): HostConfig {
   return {
     schemaVersion: CONFIG_SCHEMA,
     mirrorPath: absolute(config.mirrorPath, "host config mirrorPath"),
-    workspaceRoot: absolute(
-      config.workspaceRoot,
-      "host config workspaceRoot",
-    ),
+    workspaceRoot: absolute(config.workspaceRoot, "host config workspaceRoot"),
     stateRoot: absolute(config.stateRoot, "host config stateRoot"),
     baselineContract: absolute(
       config.baselineContract,
@@ -1462,14 +1461,11 @@ async function stageAndRunGuest({
 export function summarizeGuestBusinessFailures(
   summary: JsonRecord | null | undefined,
 ): string | null {
-  const failures = arrayValue(
-    recordValue(summary?.businessOutcome).failures,
-  );
+  const failures = arrayValue(recordValue(summary?.businessOutcome).failures);
   if (failures.length === 0) return null;
   const entries = failures
     .filter(
-      (entry: unknown) =>
-        entry && typeof recordValue(entry).set === "string",
+      (entry: unknown) => entry && typeof recordValue(entry).set === "string",
     )
     .map((entry: unknown) => {
       const record = recordValue(entry);
@@ -1484,10 +1480,7 @@ export function summarizeGuestBusinessFailures(
   return entries.length > 0 ? entries.join("; ") : null;
 }
 
-async function findFile(
-  root: string,
-  name: string,
-): Promise<string | null> {
+async function findFile(root: string, name: string): Promise<string | null> {
   let entries: Dirent[];
   try {
     entries = await readdir(root, { withFileTypes: true });
@@ -1519,10 +1512,7 @@ async function executeRun(
   let status = (await readJson(statusPath(config, runId))) as JsonRecord;
   const update = async (next: JsonRecord): Promise<void> => {
     const current =
-      ((await readJson(
-        statusPath(config, runId),
-        status,
-      )) as JsonRecord) ?? {};
+      ((await readJson(statusPath(config, runId), status)) as JsonRecord) ?? {};
     const nextStatus = {
       ...current,
       ...(status ?? {}),
@@ -1635,8 +1625,7 @@ async function executeRun(
             currentFixtureIdentity.sha256 &&
           recordValue(
             recordValue(reconstructionMarker?.guestInput).fixtureIdentity,
-          ).sha256 ===
-            currentFixtureIdentity.sha256;
+          ).sha256 === currentFixtureIdentity.sha256;
         const preparationOut = fixtureIsCurrent
           ? join(root, `host-runtime-refresh-pass-${pass}.json`)
           : join(root, `reconstruction-pass-${pass}.json`);
@@ -1688,8 +1677,7 @@ async function executeRun(
                 preparationGuestInput.hostControlPlane ??
                 preparationRuntimeTestbed.hostControlPlane,
               fixtureIdentity:
-                preparationGuestInput.fixtureIdentity ??
-                currentFixtureIdentity,
+                preparationGuestInput.fixtureIdentity ?? currentFixtureIdentity,
             },
             timing: preparation.timing,
           },
@@ -1830,8 +1818,7 @@ async function startRun(
       if (
         active.commit === commit &&
         active.mode === mode &&
-        JSON.stringify(active.focus ?? []) ===
-          JSON.stringify(focus)
+        JSON.stringify(active.focus ?? []) === JSON.stringify(focus)
       ) {
         return { existing: true, runId: active.runId };
       }

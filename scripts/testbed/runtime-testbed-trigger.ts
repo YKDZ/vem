@@ -53,10 +53,7 @@ function run(
     child.stdout?.on("data", (chunk) => (stdout += chunk));
     child.once("error", reject);
     child.once("exit", (code) => {
-      if (
-        code !== null &&
-        (code === 0 || options.allowed?.includes(code))
-      ) {
+      if (code !== null && (code === 0 || options.allowed?.includes(code))) {
         resolvePromise({ code: code ?? -1, stdout });
       } else reject(new Error(`${command} exited with ${code}`));
     });
@@ -110,21 +107,21 @@ async function main(): Promise<void> {
   ]);
   const result = recordValue(
     await run(
-    process.execPath,
-    [
-      new URL("./runtime-testbed-orchestrator.ts", import.meta.url).pathname,
-      "run",
-      "--mode",
-      String(options.mode),
-      ...arrayValue(options.focus).flatMap((name) => [
-        "--focus",
-        String(name),
-      ]),
-      "--commit",
-      String(options.commit),
-      "--config",
-      String(options.config),
-    ],
+      process.execPath,
+      [
+        new URL("./runtime-testbed-orchestrator.ts", import.meta.url).pathname,
+        "run",
+        "--mode",
+        String(options.mode),
+        ...arrayValue(options.focus).flatMap((name) => [
+          "--focus",
+          String(name),
+        ]),
+        "--commit",
+        String(options.commit),
+        "--config",
+        String(options.config),
+      ],
       { capture: true, allowed: [1, 2, 75] },
     ),
   );

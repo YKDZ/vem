@@ -273,10 +273,7 @@ async function seedPreD2(client: PgClient): Promise<JsonRecord> {
   return ids;
 }
 
-async function assertPreD2(
-  client: PgClient,
-  ids: JsonRecord,
-): Promise<void> {
+async function assertPreD2(client: PgClient, ids: JsonRecord): Promise<void> {
   const result = await query(
     client,
     `SELECT

@@ -110,10 +110,7 @@ function validateIdentity(identity: JsonRecord): void {
     required(runtime.artifacts, "Windows runtime artifacts"),
   );
   for (const key of ["daemon", "machine", "webViewLoader"]) {
-    digest(
-      recordValue(runtimeArtifacts[key]).sha256,
-      `Windows runtime ${key}`,
-    );
+    digest(recordValue(runtimeArtifacts[key]).sha256, `Windows runtime ${key}`);
   }
   const vision = recordValue(required(identity.visionCore, "Vision identity"));
   digest(vision.sha256, "Vision aggregate");
@@ -136,7 +133,9 @@ function validateIdentity(identity: JsonRecord): void {
   }
 }
 
-export function buildAcceptanceReleaseManifest(identity: JsonRecord): JsonRecord {
+export function buildAcceptanceReleaseManifest(
+  identity: JsonRecord,
+): JsonRecord {
   required(identity, "workflow identity");
   validateIdentity(identity);
   const runtime = recordValue(

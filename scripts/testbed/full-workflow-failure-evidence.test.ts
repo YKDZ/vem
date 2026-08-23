@@ -199,8 +199,8 @@ describe("完整业务流失败证据", () => {
             renameSync(source, destination),
         },
       );
-      const evidenceMembers = arrayValue(bundle.files).filter(
-        (path: unknown) => String(path).startsWith("evidence/"),
+      const evidenceMembers = arrayValue(bundle.files).filter((path: unknown) =>
+        String(path).startsWith("evidence/"),
       );
       assert.equal(evidenceMembers.length, 5);
       assert.ok(
@@ -602,9 +602,8 @@ describe("完整业务流失败证据", () => {
         if (failure.name === "aggregate-write") {
           assert.equal(operationalOutcome.ok, false);
           assert.ok(
-            arrayValue(operationalOutcome.failures).some(
-              (message: unknown) =>
-                String(message).includes(failure.expected),
+            arrayValue(operationalOutcome.failures).some((message: unknown) =>
+              String(message).includes(failure.expected),
             ),
           );
           assert.equal(fullWorkflowCommandSucceeded(aggregate), false);
@@ -620,9 +619,8 @@ describe("完整业务流失败证据", () => {
           );
         } else {
           assert.ok(
-            arrayValue(evidenceInventory.failures).some(
-              (message: unknown) =>
-                String(message).includes(failure.expected),
+            arrayValue(evidenceInventory.failures).some((message: unknown) =>
+              String(message).includes(failure.expected),
             ),
           );
         }

@@ -96,23 +96,19 @@ type LowerControllerSimDependencies = NonNullable<
   Parameters<typeof ensureLowerControllerSimCached>[0]
 >["dependencies"];
 
-function simCacheDependencies(
-  implementation: {
-    ensureDirectory: () => Promise<void>;
-    isExecutable: () => Promise<boolean>;
-    markerPresent: () => Promise<boolean>;
-    publishMarker: () => Promise<void>;
-    runCommand: (
-      command: string,
-      args: string[],
-      commandOptions: { env?: unknown },
-    ) => Promise<void>;
-    listDirectory?: () => Promise<
-      { name: string; isDirectory: () => boolean }[]
-    >;
-    removeDirectory?: (path: string) => Promise<void>;
-  },
-): LowerControllerSimDependencies {
+function simCacheDependencies(implementation: {
+  ensureDirectory: () => Promise<void>;
+  isExecutable: () => Promise<boolean>;
+  markerPresent: () => Promise<boolean>;
+  publishMarker: () => Promise<void>;
+  runCommand: (
+    command: string,
+    args: string[],
+    commandOptions: { env?: unknown },
+  ) => Promise<void>;
+  listDirectory?: () => Promise<{ name: string; isDirectory: () => boolean }[]>;
+  removeDirectory?: (path: string) => Promise<void>;
+}): LowerControllerSimDependencies {
   return implementation as unknown as LowerControllerSimDependencies;
 }
 
@@ -458,9 +454,8 @@ describe("local testbed orchestration", () => {
       body: { status: "enabled" },
     });
     assert.equal(
-      recordValue(
-        recordValue(recordValue(calls[3]).body).sensitiveConfigJson,
-      ).privateKeyPem,
+      recordValue(recordValue(recordValue(calls[3]).body).sensitiveConfigJson)
+        .privateKeyPem,
       "host-only",
     );
     assert.equal(JSON.stringify(prepared).includes("host-only"), false);
@@ -757,7 +752,10 @@ describe("local testbed orchestration", () => {
         .slotId,
       "slot-stock",
     );
-    assert.equal(Object.keys(recordValue(refreshed.fixtureAllocation)).length, 7);
+    assert.equal(
+      Object.keys(recordValue(refreshed.fixtureAllocation)).length,
+      7,
+    );
   });
 
   it("keeps the refresh fixture when the current machine is still present", async () => {
@@ -1045,7 +1043,10 @@ describe("local testbed orchestration", () => {
         health: "ready",
         mqtt: "connected",
       });
-      assert.equal(recordValue(recordValue(first.serviceApi).build).fileCount, 1);
+      assert.equal(
+        recordValue(recordValue(first.serviceApi).build).fileCount,
+        1,
+      );
       assert.equal(recordValue(recordValue(first.adminUi).build).fileCount, 2);
       assert.deepEqual(recordValue(first.adminUi).delivery, {
         entrypoint: "index.html",
@@ -1489,7 +1490,8 @@ describe("supported API seeding", () => {
         return { id: "machine-1", code: "VEM-TESTBED-LOCAL" };
       if (path === "/machines/machine-1")
         return { id: "machine-1", code: "VEM-TESTBED-LOCAL", status: "online" };
-      if (String(path).endsWith("/slots")) return { id: `slot-${calls.length}` };
+      if (String(path).endsWith("/slots"))
+        return { id: `slot-${calls.length}` };
       if (path === "/inventories") return { id: `inventory-${calls.length}` };
       if (path === "/try-on-garments")
         return {
@@ -1609,9 +1611,7 @@ describe("supported API seeding", () => {
     assert.equal(productDisplayUploads.length, 3);
     assert.equal(
       new Set(
-        productDisplayUploads.map(
-          (upload) => recordValue(upload.asset).id,
-        ),
+        productDisplayUploads.map((upload) => recordValue(upload.asset).id),
       ).size,
       3,
     );
@@ -1662,9 +1662,8 @@ describe("supported API seeding", () => {
     );
     assert.deepEqual(
       recordValue(
-        requireCall(calls, (call) =>
-          String(call.path).endsWith("/claim-codes"),
-        ).body,
+        requireCall(calls, (call) => String(call.path).endsWith("/claim-codes"))
+          .body,
       ),
       { purpose: "first_claim" },
     );
@@ -1690,17 +1689,13 @@ describe("supported API seeding", () => {
             String(call.path).endsWith("/planogram-versions"),
           ).body,
         ).slots,
-      ).some(
-        (slot: unknown) => {
-          const slotRecord = recordValue(slot);
-          return slotRecord.capacity === 2 && slotRecord.slotId != null;
-        },
-      ),
+      ).some((slot: unknown) => {
+        const slotRecord = recordValue(slot);
+        return slotRecord.capacity === 2 && slotRecord.slotId != null;
+      }),
     );
     assert.deepEqual(
-      calls.filter((call) =>
-        String(call.path).startsWith("/try-on-garments/"),
-      ),
+      calls.filter((call) => String(call.path).startsWith("/try-on-garments/")),
       [
         {
           path: "/try-on-garments/garment-1/confirmation",
@@ -1762,7 +1757,9 @@ describe("supported API seeding", () => {
       ["socks", "underwear", "tshirts"].map((categoryKey, index) => ({
         categoryKey,
         catalogKey: `product:${productMedia[index].productId}`,
-        coverImageUrl: recordValue(recordValue(productDisplayUploads[index]).asset).publicUrl,
+        coverImageUrl: recordValue(
+          recordValue(productDisplayUploads[index]).asset,
+        ).publicUrl,
       })),
     );
     assert.deepEqual(
@@ -1775,14 +1772,12 @@ describe("supported API seeding", () => {
         {
           garmentId: "garment-1",
           garmentMediaAssetId: "550e8400-e29b-41d4-a716-446655440125",
-          variantId:
-            recommendationVariants[0].variantId,
+          variantId: recommendationVariants[0].variantId,
         },
         {
           garmentId: "garment-2",
           garmentMediaAssetId: "550e8400-e29b-41d4-a716-446655440128",
-          variantId:
-            recommendationVariants[1].variantId,
+          variantId: recommendationVariants[1].variantId,
         },
       ],
     );
@@ -1797,33 +1792,25 @@ describe("supported API seeding", () => {
       })),
       [
         {
-          productId:
-            recommendationVariants[0].productId,
-          variantId:
-            recommendationVariants[0].variantId,
+          productId: recommendationVariants[0].productId,
+          variantId: recommendationVariants[0].variantId,
           size: "M",
           slotId: recommendationVariants[0].slotId,
-          inventoryId:
-            recommendationVariants[0].inventoryId,
+          inventoryId: recommendationVariants[0].inventoryId,
           onHandQty: 3,
         },
         {
-          productId:
-            recommendationVariants[0].productId,
-          variantId:
-            recommendationVariants[1].variantId,
+          productId: recommendationVariants[0].productId,
+          variantId: recommendationVariants[1].variantId,
           size: "S",
           slotId: recommendationVariants[1].slotId,
-          inventoryId:
-            recommendationVariants[1].inventoryId,
+          inventoryId: recommendationVariants[1].inventoryId,
           onHandQty: 3,
         },
       ],
     );
     assert.equal(
-      new Set(
-        recommendationVariants.map((entry) => entry.productId),
-      ).size,
+      new Set(recommendationVariants.map((entry) => entry.productId)).size,
       1,
     );
     const seededTryOnVariantIds = new Set(
@@ -1843,9 +1830,9 @@ describe("supported API seeding", () => {
     const planogramCall = requireCall(calls, (call) =>
       String(call.path).endsWith("/planogram-versions"),
     );
-    const planogramSlots = arrayValue(recordValue(planogramCall.body).slots).map(
-      (slot) => recordValue(slot),
-    );
+    const planogramSlots = arrayValue(
+      recordValue(planogramCall.body).slots,
+    ).map((slot) => recordValue(slot));
     assert.ok(
       planogramSlots.every((slot) =>
         productDisplayUploads.some(

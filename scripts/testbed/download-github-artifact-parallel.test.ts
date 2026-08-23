@@ -45,17 +45,19 @@ function runProcessFixture(
       capture?: boolean;
       timeoutMs?: number;
     },
-  ) => {
-    code: number | null;
-    stdout: string;
-    stderr: string;
-    timedOut?: boolean;
-  } | Promise<{
-    code: number | null;
-    stdout: string;
-    stderr: string;
-    timedOut?: boolean;
-  }>,
+  ) =>
+    | {
+        code: number | null;
+        stdout: string;
+        stderr: string;
+        timedOut?: boolean;
+      }
+    | Promise<{
+        code: number | null;
+        stdout: string;
+        stderr: string;
+        timedOut?: boolean;
+      }>,
 ): RunProcessFixture {
   return async (command: string, args: string[], options = {}) => {
     assert.equal(typeof command, "string");

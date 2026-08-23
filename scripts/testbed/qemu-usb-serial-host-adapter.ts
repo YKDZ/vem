@@ -143,10 +143,7 @@ export function validateProductionRawSerialFrame(
       `${label} must expose a production opcode, got ${recordValue_.parsedOpcode}`,
     );
   }
-  const expectedOpcode = Number.parseInt(
-    String(recordValue_.parsedOpcode),
-    16,
-  );
+  const expectedOpcode = Number.parseInt(String(recordValue_.parsedOpcode), 16);
   if (expectedOpcode === 0xb0) {
     const validQuery =
       recordValue_.direction === "daemon-to-controller" &&
@@ -159,10 +156,7 @@ export function validateProductionRawSerialFrame(
         `${label} B0 must match the production environment query or sample frame`,
       );
     }
-    if (
-      bytes[1] !== expectedOpcode ||
-      recordValue_.opcode !== expectedOpcode
-    ) {
+    if (bytes[1] !== expectedOpcode || recordValue_.opcode !== expectedOpcode) {
       throw new Error(`${label} B0 opcode must match the production frame`);
     }
     return { ...recordValue_, bytes };
@@ -272,9 +266,7 @@ export function parseLibvirtUsbSerialMappings(
     });
   }
   for (const role of requireAll ? REQUIRED_ROLES : []) {
-    if (
-      mappings.filter((mapping) => mapping.role === role).length !== 1
-    ) {
+    if (mappings.filter((mapping) => mapping.role === role).length !== 1) {
       throw new Error(
         `running libvirt domain must expose exactly one ${role} QEMU USB serial PTY`,
       );
@@ -381,19 +373,15 @@ export function qemuUsbSerialSessionPaths(
 }
 
 function sessionDirectory(serialSessionId: unknown): string {
-  const path = qemuUsbSerialSessionPaths(
-    stateRoot(),
-    serialSessionId,
-  ).directory as string;
+  const path = qemuUsbSerialSessionPaths(stateRoot(), serialSessionId)
+    .directory as string;
   mkdirSync(path, { recursive: true, mode: 0o700 });
   return path;
 }
 
 function statePath(serialSessionId: unknown): string {
-  return qemuUsbSerialSessionPaths(
-    stateRoot(),
-    serialSessionId,
-  ).statePath as string;
+  return qemuUsbSerialSessionPaths(stateRoot(), serialSessionId)
+    .statePath as string;
 }
 
 function readState(serialSessionId: unknown): JsonRecord {
@@ -695,10 +683,7 @@ function startSession(request: JsonRecord): JsonRecord {
   return state;
 }
 
-function injectScanner(
-  request: JsonRecord,
-  scannerCode: Buffer,
-): JsonRecord {
+function injectScanner(request: JsonRecord, scannerCode: Buffer): JsonRecord {
   const serialSession = recordValue(request.serialSession);
   const state = readState(serialSession.serialSessionId);
   if (!state.active) throw new Error("serial session is not active");
@@ -715,9 +700,7 @@ function injectScanner(
   }
   const scanner = arrayValue(state.liveMappings)
     .map((mapping: unknown) => recordValue(mapping))
-    .find(
-    (mapping) => mapping.role === "scanner",
-    );
+    .find((mapping) => mapping.role === "scanner");
   if (!scanner) throw new Error("scanner mapping is missing");
   appendFileSync(String(scanner.path), scannerCode);
   state.scannerInjection = {
@@ -1028,7 +1011,10 @@ async function stopSession(request: JsonRecord): Promise<JsonRecord> {
   return state;
 }
 
-function serialSessionReport(request: JsonRecord, state: JsonRecord): JsonRecord {
+function serialSessionReport(
+  request: JsonRecord,
+  state: JsonRecord,
+): JsonRecord {
   const stopped = request.operation === "stop-serial-session";
   const binding = recordValue(state.binding);
   const serialSession = recordValue(request.serialSession);

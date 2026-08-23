@@ -109,7 +109,10 @@ function hasWholeMachineLockBlocker(capability: unknown): boolean {
   );
 }
 
-function terminalPolicyFailures(track: JsonRecord, facts: JsonRecord): string[] {
+function terminalPolicyFailures(
+  track: JsonRecord,
+  facts: JsonRecord,
+): string[] {
   const failures: string[] = [];
   if (
     transactionLeaked(facts.transaction) &&
@@ -280,9 +283,7 @@ export async function recoverTrackHandoff({
   const terminalFacts = recordValue(terminal?.facts);
   if (transactionLeaked(terminalFacts.transaction)) {
     if (
-      !(await cancelAndWaitForTerminal(
-        recordValue(terminalFacts.transaction),
-      ))
+      !(await cancelAndWaitForTerminal(recordValue(terminalFacts.transaction)))
     ) {
       return { ok: false, actions, errors, evidence };
     }
@@ -293,9 +294,7 @@ export async function recoverTrackHandoff({
     await attempt("returnToCatalog", returnToCatalog);
     if (errors.length > 0) return { ok: false, actions, errors, evidence };
   }
-  if (
-    hasWholeMachineLockBlocker(terminalFacts.saleStartCapability)
-  ) {
+  if (hasWholeMachineLockBlocker(terminalFacts.saleStartCapability)) {
     if (typeof selfCheckHardware !== "function") {
       errors.push(
         "recoverWholeMachineLock: selfCheckHardware is required for WHOLE_MACHINE_LOCKED",
@@ -338,9 +337,8 @@ export async function recoverTrackHandoff({
     );
   }
   if (track.restoreFixtureStock === true) {
-    const fixture = recordValue(fixtureAllocation)[
-      String(track.fixtureKey ?? track.key)
-    ];
+    const fixture =
+      recordValue(fixtureAllocation)[String(track.fixtureKey ?? track.key)];
     const fixtureRecord = recordValue(fixture);
     if (!fixtureRecord?.inventoryId) {
       errors.push(

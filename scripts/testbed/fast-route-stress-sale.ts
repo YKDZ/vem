@@ -210,8 +210,8 @@ export async function dispatchRepeatedPaymentTouch(
     client as Parameters<typeof dispatchPhysicalInput>[0],
     { x: center.x, y: center.y },
     {
-    kind: "touch",
-    timeoutMs: 5_000,
+      kind: "touch",
+      timeoutMs: 5_000,
     },
   );
   return { originalPoint: { x: center.x, y: center.y }, input };
@@ -239,8 +239,8 @@ async function waitForCreateOrderGatePending(
     try {
       const status = recordValue(
         await controlPlaneRequest(
-        guestInput,
-        "/v1/mock-payment-create-gate/status",
+          guestInput,
+          "/v1/mock-payment-create-gate/status",
         ),
       );
       const pending = maybeRecord(status.pending);
@@ -357,10 +357,7 @@ export function latestVisionPresence(entries: unknown[]): JsonRecord {
   return { active: false, transitionId: null };
 }
 
-function runtimeTraceSnapshot(
-  snapshot: JsonRecord,
-  label: string,
-): JsonRecord {
+function runtimeTraceSnapshot(snapshot: JsonRecord, label: string): JsonRecord {
   const rawEntries = snapshot.entries;
   if (
     !snapshot ||
@@ -449,7 +446,9 @@ function traceEntriesAfterBoundary(
       return false;
     }
     if (sameRuntime) {
-      return (entryRecord.id as number) > (boundaryRecord.lastEntryId as number);
+      return (
+        (entryRecord.id as number) > (boundaryRecord.lastEntryId as number)
+      );
     }
     // A trace id restarts with a recreated runtime. Its event must be newer
     // than the captured boundary; callers still verify the target semantics.
@@ -533,10 +532,7 @@ function compactPlatformBoundary(
   };
 }
 
-function compactDaemonBoundary(
-  view: unknown,
-  summary: JsonRecord,
-): JsonRecord {
+function compactDaemonBoundary(view: unknown, summary: JsonRecord): JsonRecord {
   const items = rows(view, "items").map((row: unknown) => recordValue(row));
   return {
     item:
@@ -580,10 +576,7 @@ function compactEvidenceForReport(
     daemon: {
       baseline: compactDaemonBoundary(daemon.baseline, summary),
       beforeF0: compactDaemonBoundary(daemon.beforeF0, summary),
-      afterF1BeforeF2: compactDaemonBoundary(
-        daemon.afterF1BeforeF2,
-        summary,
-      ),
+      afterF1BeforeF2: compactDaemonBoundary(daemon.afterF1BeforeF2, summary),
       afterF2: compactDaemonBoundary(daemon.afterF2, summary),
     },
     ui: evidence.ui,
@@ -757,7 +750,10 @@ export function validateFastRouteStressSaleEvidence(
       "correlated daemon physical stock must decrement exactly once without double-decrementing saleable stock after inbound F2",
     );
   }
-  if (Number(platformAfter.onHandQty) - Number(platformMiddle.onHandQty) !== -1) {
+  if (
+    Number(platformAfter.onHandQty) - Number(platformMiddle.onHandQty) !==
+    -1
+  ) {
     throw new Error(
       "correlated platform inventory must decrement exactly once after inbound F2",
     );
@@ -925,14 +921,15 @@ export function validateFastRouteStressSaleEvidence(
     throw new Error("sale-start-capability must allow the fast sale to start");
   }
   const paymentOptions = recordValue(saleStartCapability.paymentOptions);
-  const mockOption = arrayValue(paymentOptions.options)
-    .map((option: unknown) => recordValue(option))
-    .find(
-      (option) =>
-        option?.optionKey === "mock:mock" &&
-        option?.providerCode === "mock" &&
-        option?.method === "mock",
-    ) ?? null;
+  const mockOption =
+    arrayValue(paymentOptions.options)
+      .map((option: unknown) => recordValue(option))
+      .find(
+        (option) =>
+          option?.optionKey === "mock:mock" &&
+          option?.providerCode === "mock" &&
+          option?.method === "mock",
+      ) ?? null;
   if (
     !mockOption ||
     mockOption.ready !== true ||
@@ -982,9 +979,7 @@ export function validateFastRouteStressSaleEvidence(
   }
   if (!serial?.sessionId)
     throw new Error("serial session identity is required");
-  const gateObservedAt = Date.parse(
-    String(createOrderGate.pendingObservedAt),
-  );
+  const gateObservedAt = Date.parse(String(createOrderGate.pendingObservedAt));
   const gateReleasedAt = Date.parse(String(createOrderGate.releasedAt));
   if (
     !Number.isFinite(gateObservedAt) ||
@@ -1166,9 +1161,9 @@ export function validateFastRouteStressSaleEvidence(
             /^presence-\d+:departure$/.test(
               String(entry.sourceEventId ?? ""),
             ) &&
-        ["touchscreen_session_active", "active_transaction_route"].includes(
+            ["touchscreen_session_active", "active_transaction_route"].includes(
               String(entry.reasonCode ?? ""),
-        ) &&
+            ) &&
             entry.decision === "rejected" &&
             entry.finalRoute !== "#/catalog",
         ) ?? null;
@@ -1185,9 +1180,10 @@ export function validateFastRouteStressSaleEvidence(
             entry?.type === "navigation" &&
             entry?.intentType === "transaction.projection" &&
             entry?.decision === "accepted" &&
-            ["transaction_projection", "transaction_projection_current"].includes(
-              String(entry?.reasonCode ?? ""),
-            ) &&
+            [
+              "transaction_projection",
+              "transaction_projection_current",
+            ].includes(String(entry?.reasonCode ?? "")) &&
             entry?.transactionOrderNo === order.orderNo &&
             entry?.finalRoute !== "#/catalog" &&
             Number.isFinite(entry?.id) &&
@@ -1214,20 +1210,18 @@ export function validateFastRouteStressSaleEvidence(
       "successful UI result must correlate order, payment, and command after inbound F2",
     );
   }
-  const correlatedResultTraces = runtimeTrace.filter(
-    (entry: unknown) => {
-      const record = recordValue(entry);
-      return (
-        record?.type === "transaction_surface" &&
-        record?.stage === "result" &&
-        record?.route === "#/result/success" &&
-        record?.orderId === order.id &&
-        record?.paymentId === payment.id &&
-        record?.commandId === command.id &&
-        record?.resultKind === "success"
-      );
-    },
-  );
+  const correlatedResultTraces = runtimeTrace.filter((entry: unknown) => {
+    const record = recordValue(entry);
+    return (
+      record?.type === "transaction_surface" &&
+      record?.stage === "result" &&
+      record?.route === "#/result/success" &&
+      record?.orderId === order.id &&
+      record?.paymentId === payment.id &&
+      record?.commandId === command.id &&
+      record?.resultKind === "success"
+    );
+  });
   const correlatedResultTrace = correlatedResultTraces
     .map((entry: unknown) => recordValue(entry))
     .find((entry) => {
@@ -1248,17 +1242,15 @@ export function validateFastRouteStressSaleEvidence(
   }
   const catalogNavigation = noCatalogTrace
     .slice(0, noCatalogResultIndex + 1)
-    .find(
-      (entry: unknown) => {
-        const record = recordValue(entry);
-        return (
-          record?.type === "navigation" &&
-          (isCatalogRoute(record.finalRoute) ||
-            isCatalogRoute(record.decidedRoute) ||
-            isCatalogRoute(record.targetRoute))
-        );
-      },
-    );
+    .find((entry: unknown) => {
+      const record = recordValue(entry);
+      return (
+        record?.type === "navigation" &&
+        (isCatalogRoute(record.finalRoute) ||
+          isCatalogRoute(record.decidedRoute) ||
+          isCatalogRoute(record.targetRoute))
+      );
+    });
   if (catalogNavigation) {
     throw new Error(
       "runtime trace contains an actual or decided Catalog navigation after the stressed customer flow began",
@@ -1342,10 +1334,7 @@ function writeJsonLocal(path: string, value: JsonRecord): void {
 
 function daemonBaseUrl(handoff: JsonRecord): string {
   const ready = recordValue(recordValue(handoff.daemon).ready);
-  const healthzUrl = required(
-    ready.healthzUrl,
-    "daemon healthzUrl",
-  );
+  const healthzUrl = required(ready.healthzUrl, "daemon healthzUrl");
   if (!healthzUrl.endsWith("/healthz")) {
     throw new Error("daemon healthzUrl must end with /healthz");
   }
@@ -1503,9 +1492,7 @@ export async function waitForSaleStartReady(
   } = {},
 ): Promise<unknown> {
   const mockPaymentOptionReady = (capability: unknown): boolean => {
-    const paymentOptions = recordValue(
-      recordValue(capability).paymentOptions,
-    );
+    const paymentOptions = recordValue(recordValue(capability).paymentOptions);
     return arrayValue(paymentOptions.options)
       .map((option: unknown) => recordValue(option))
       .some(
@@ -1684,10 +1671,7 @@ async function readRuntimeTraceSnapshot(client: unknown): Promise<JsonRecord> {
 }
 
 interface CdpEventClient {
-  on: (
-    event: string,
-    listener: (params: JsonRecord) => void,
-  ) => () => void;
+  on: (event: string, listener: (params: JsonRecord) => void) => () => void;
 }
 
 interface CdpLocationHashObserver extends JsonRecord {
@@ -1748,13 +1732,11 @@ export async function startContinuousCdpLocationHashObservation(
       failure = error instanceof Error ? error : new Error(String(error));
     }
   };
-  const offWithinDocument = cdp.on(
-    "Page.navigatedWithinDocument",
-    (params) =>
-      recordUrl(
-        "Page.navigatedWithinDocument",
-        String(recordValue(params).url ?? ""),
-      ),
+  const offWithinDocument = cdp.on("Page.navigatedWithinDocument", (params) =>
+    recordUrl(
+      "Page.navigatedWithinDocument",
+      String(recordValue(params).url ?? ""),
+    ),
   );
   const offFrameNavigated = cdp.on("Page.frameNavigated", (params) => {
     const frame = recordValue(params.frame);
@@ -1884,9 +1866,7 @@ export async function waitForGuardedVisionDepartureTrace(
         (entry) =>
           entry?.type === "navigation" &&
           entry?.intentType === "presence.departed" &&
-          /^presence-\d+:departure$/.test(
-            String(entry?.sourceEventId ?? ""),
-          ) &&
+          /^presence-\d+:departure$/.test(String(entry?.sourceEventId ?? "")) &&
           entry?.decision === "rejected" &&
           ["touchscreen_session_active", "active_transaction_route"].includes(
             String(entry?.reasonCode ?? ""),
@@ -2180,14 +2160,14 @@ function writeReport(outPath: string, report: JsonRecord): void {
   writeFileSync(path, `${JSON.stringify(report, null, 2)}\n`);
 }
 
-function screenshotSink(outPath: string): (
-  input: {
-    bytes: Uint8Array;
-    sha256: string;
-    label: string;
-    format: string;
-  },
-) => Promise<JsonRecord> {
+function screenshotSink(
+  outPath: string,
+): (input: {
+  bytes: Uint8Array;
+  sha256: string;
+  label: string;
+  format: string;
+}) => Promise<JsonRecord> {
   const root = join(
     dirname(localPath(outPath)),
     "fast-route-stress-sale-artifacts",
@@ -2376,8 +2356,7 @@ export function buildFastRouteStressSaleFailureReport(
         beforeF0: daemon.beforeF0 ?? null,
         afterF1BeforeF2: daemon.afterF1BeforeF2 ?? null,
         afterF2: daemon.afterF2 ?? null,
-        failureCurrentTransaction:
-          daemon.failureCurrentTransaction ?? null,
+        failureCurrentTransaction: daemon.failureCurrentTransaction ?? null,
       },
     },
     hostEvidence: input.hostEvidence ?? null,
@@ -2391,8 +2370,9 @@ export function buildFastRouteStressSaleFailureReport(
       platformError: logs.platformError ?? null,
       simulator: logs.simulator ?? null,
       failureScreenshots: checkpoints
-        .map((checkpoint: unknown) =>
-          recordValue(recordValue(checkpoint).screenshot).ref,
+        .map(
+          (checkpoint: unknown) =>
+            recordValue(recordValue(checkpoint).screenshot).ref,
         )
         .filter(Boolean),
     },
@@ -2572,9 +2552,9 @@ export async function ensureControlledVisionMock(
   controlPort: number,
 ): Promise<JsonRecord> {
   try {
-    const status = recordValue(await fetchJson(
-      `http://127.0.0.1:${controlPort}/control/status`,
-    ));
+    const status = recordValue(
+      await fetchJson(`http://127.0.0.1:${controlPort}/control/status`),
+    );
     if (status.scenario === "controlled")
       return { child: null, started: false };
   } catch {}
@@ -2603,9 +2583,9 @@ export async function ensureControlledVisionMock(
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
     try {
-      const status = recordValue(await fetchJson(
-        `http://127.0.0.1:${controlPort}/control/status`,
-      ));
+      const status = recordValue(
+        await fetchJson(`http://127.0.0.1:${controlPort}/control/status`),
+      );
       if (status.scenario === "controlled") {
         return { child, started: true };
       }
@@ -2624,9 +2604,9 @@ export async function waitForControlledVisionRuntimeClient(
   let lastStatus: JsonRecord | null = null;
   while (Date.now() < deadline) {
     try {
-      lastStatus = recordValue(await fetchJson(
-        `http://127.0.0.1:${controlPort}/control/status`,
-      ));
+      lastStatus = recordValue(
+        await fetchJson(`http://127.0.0.1:${controlPort}/control/status`),
+      );
       if (
         lastStatus.scenario === "controlled" &&
         Number(lastStatus.connectedRuntimeClients) >= 1
@@ -2747,9 +2727,7 @@ async function dispatchVisionDeparture(
   throw lastError ?? new Error("Vision departure delivery timed out");
 }
 
-async function dispatchVisionArrival(
-  guestInput: JsonRecord,
-): Promise<unknown> {
+async function dispatchVisionArrival(guestInput: JsonRecord): Promise<unknown> {
   const controlPort = visionMockControlPort(guestInput);
   return fetchJson(`http://127.0.0.1:${controlPort}/control/presence`, {
     method: "POST",
@@ -2782,8 +2760,8 @@ async function dispatchCatalogTouchSession(
       client as Parameters<typeof dispatchPhysicalInput>[0],
       point as Parameters<typeof dispatchPhysicalInput>[1],
       {
-      kind: "touch",
-      timeoutMs: 5_000,
+        kind: "touch",
+        timeoutMs: 5_000,
       },
     ),
   };
@@ -2842,8 +2820,8 @@ export async function waitForVisionArrivalOrTouchSession(
         },
       };
     } catch (touchArrivalError) {
-    const snapshot = await readTrace(client);
-    if (latestTouchscreenSessionActive(arrayValue(snapshot.entries))) {
+      const snapshot = await readTrace(client);
+      if (latestTouchscreenSessionActive(arrayValue(snapshot.entries))) {
         return {
           trace: {
             type: "navigation",
@@ -3001,8 +2979,7 @@ const installedOwnerOrdinarySaleDependencies = Object.freeze({
   readCurrentTransaction: (
     handoff: JsonRecord,
     options: Pick<FetchOptions, "timeoutMs" | "signal"> = {},
-  ) =>
-    daemonGet(handoff, "/v1/transactions/current", options),
+  ) => daemonGet(handoff, "/v1/transactions/current", options),
   readPlatform: async (guestInput: JsonRecord, body: JsonRecord) =>
     recordValue(
       await controlPlaneRequest(guestInput, "/v1/platform/query", body),
@@ -3306,10 +3283,14 @@ export async function runInstalledOwnerOrdinarySaleCompletion(
     );
     for (const step of steps.slice(0, 4)) {
       const stepRecord = recordValue(step);
-      await dependencies.waitForRoute(cdpClient, String(stepRecord.routeBefore), {
-        timeoutMs: 30_000,
-        pollMs: 250,
-      });
+      await dependencies.waitForRoute(
+        cdpClient,
+        String(stepRecord.routeBefore),
+        {
+          timeoutMs: 30_000,
+          pollMs: 250,
+        },
+      );
       const activation = recordValue(
         await dependencies.activateVisibleSelector(
           cdpClient,
@@ -3321,10 +3302,14 @@ export async function runInstalledOwnerOrdinarySaleCompletion(
         String(recordValue(activation.input).method),
         /Input\.dispatchTouchEvent/,
       );
-      await dependencies.waitForRoute(cdpClient, String(stepRecord.routeAfter), {
-        timeoutMs: 30_000,
-        pollMs: 250,
-      });
+      await dependencies.waitForRoute(
+        cdpClient,
+        String(stepRecord.routeAfter),
+        {
+          timeoutMs: 30_000,
+          pollMs: 250,
+        },
+      );
     }
     observer.assertArmed();
     const submit = recordValue(
@@ -3354,9 +3339,8 @@ export async function runInstalledOwnerOrdinarySaleCompletion(
       timeoutMs: 30_000,
       pollMs: 250,
     });
-    const renderedSale = await dependencies.readRenderedPaymentSurface(
-      cdpClient,
-    );
+    const renderedSale =
+      await dependencies.readRenderedPaymentSurface(cdpClient);
     const pendingTransaction = recordValue(
       await dependencies.readCurrentTransaction(handoff),
     );
@@ -3617,10 +3601,8 @@ export async function runInstalledOwnerOrdinarySaleCompletion(
               ),
           }),
         Number(
-          input.testCleanupTimeoutMs ??
-            PENDING_TRANSACTION_CLEANUP_TIMEOUT_MS,
-        ) +
-          1_000,
+          input.testCleanupTimeoutMs ?? PENDING_TRANSACTION_CLEANUP_TIMEOUT_MS,
+        ) + 1_000,
       );
     }
     throw combineCleanupError(primaryError, cleanupErrors);
@@ -3731,9 +3713,7 @@ async function runFastRouteStressSale(
       pollMs: 250,
     });
     stage = "arm-create-order-gate";
-    createOrderGate = recordValue(
-      await serialAdmission.armCreateOrderGate(),
-    );
+    createOrderGate = recordValue(await serialAdmission.armCreateOrderGate());
     stage = "snapshot-baseline";
     uiViewport = recordValue(await readInstalledUiViewport(cdpClient));
     baselineSaleView = recordValue(await daemonGet(handoff, "/v1/sale-view"));
@@ -3746,10 +3726,12 @@ async function runFastRouteStressSale(
       ).report,
     );
     checkpoints.push(
-      recordValue(await captureCheckpoint(cdpClient, "catalog", {
-        screenshot: true,
-        screenshotSink: sink,
-      })),
+      recordValue(
+        await captureCheckpoint(cdpClient, "catalog", {
+          screenshot: true,
+          screenshotSink: sink,
+        }),
+      ),
     );
     stage = "establish-stable-vision-presence";
     visionArrival = recordValue(
@@ -3799,10 +3781,14 @@ async function runFastRouteStressSale(
     for (let attempt = 0; attempt < 3 && !pendingCreate; attempt += 1) {
       firstSubmit = recordValue(
         await serialAdmission.runCustomerAction(() =>
-          activateVisibleSelector(cdpClient, String(recordValue(steps[4]).selector), {
-            kind: "touch",
-            timeoutMs: 30_000,
-          }),
+          activateVisibleSelector(
+            cdpClient,
+            String(recordValue(steps[4]).selector),
+            {
+              kind: "touch",
+              timeoutMs: 30_000,
+            },
+          ),
         ),
       );
       assert.match(
@@ -3850,9 +3836,7 @@ async function runFastRouteStressSale(
       } catch {
         await shutdownControlledVisionMock(
           (vision?.child as ReturnType<typeof spawn> | null) ?? null,
-        ).catch(
-          () => undefined,
-        );
+        ).catch(() => undefined);
         vision = await ensureControlledVisionMock(
           visionMockControlPort(guestInput),
         );
@@ -3913,10 +3897,12 @@ async function runFastRouteStressSale(
       pollMs: 250,
     });
     checkpoints.push(
-      recordValue(await captureCheckpoint(cdpClient, "payment-creation", {
-        screenshot: true,
-        screenshotSink: sink,
-      })),
+      recordValue(
+        await captureCheckpoint(cdpClient, "payment-creation", {
+          screenshot: true,
+          screenshotSink: sink,
+        }),
+      ),
     );
     stage = "read-rendered-payment-surface";
     const renderedSale = await readRenderedPaymentSurface(cdpClient);
@@ -3956,10 +3942,12 @@ async function runFastRouteStressSale(
     beforeF0SaleView = recordValue(await daemonGet(handoff, "/v1/sale-view"));
     const beforeF0Ui = await readUiBoundary(cdpClient);
     checkpoints.push(
-      recordValue(await captureCheckpoint(cdpClient, "before-f0-active", {
-        screenshot: true,
-        screenshotSink: sink,
-      })),
+      recordValue(
+        await captureCheckpoint(cdpClient, "before-f0-active", {
+          screenshot: true,
+          screenshotSink: sink,
+        }),
+      ),
     );
     const releaseF0 = recordValue(
       await serialAdmission.serialRequest("release-f0"),
@@ -3994,10 +3982,12 @@ async function runFastRouteStressSale(
       throw new Error("UI must not show success before inbound F2");
     }
     checkpoints.push(
-      recordValue(await captureCheckpoint(cdpClient, "after-f1-before-f2", {
-        screenshot: true,
-        screenshotSink: sink,
-      })),
+      recordValue(
+        await captureCheckpoint(cdpClient, "after-f1-before-f2", {
+          screenshot: true,
+          screenshotSink: sink,
+        }),
+      ),
     );
     stage = "release-and-wait-inbound-f2";
     const releaseF2 = recordValue(
@@ -4028,10 +4018,12 @@ async function runFastRouteStressSale(
       ),
     );
     checkpoints.push(
-      recordValue(await captureCheckpoint(cdpClient, "result", {
-        screenshot: true,
-        screenshotSink: sink,
-      })),
+      recordValue(
+        await captureCheckpoint(cdpClient, "result", {
+          screenshot: true,
+          screenshotSink: sink,
+        }),
+      ),
     );
     stage = "collect-raw-serial-evidence";
     const collect = recordValue(
@@ -4066,10 +4058,7 @@ async function runFastRouteStressSale(
         terminalOrderItem?.inventoryId,
         "terminal order item inventoryId",
       ),
-      slotId: required(
-        terminalOrderItem?.slotId,
-        "terminal order item slotId",
-      ),
+      slotId: required(terminalOrderItem?.slotId, "terminal order item slotId"),
     };
     const terminalQuantity = Number(terminalOrderItem?.quantity);
     if (!Number.isInteger(terminalQuantity) || terminalQuantity < 1) {
@@ -4189,20 +4178,14 @@ async function runFastRouteStressSale(
       runtimeTrace: compactRuntimeTrace(runtimeTrace.entries),
       checkpoints,
       logs: {
-        daemonProcess: processLiveness(
-          recordValue(handoff.daemon).processId,
-        ),
+        daemonProcess: processLiveness(recordValue(handoff.daemon).processId),
         daemonStdout: writeBoundedLogTail(
-          String(
-            recordValue(recordValue(handoff.daemon).logs).stdout ?? "",
-          ),
+          String(recordValue(recordValue(handoff.daemon).logs).stdout ?? ""),
           String(options.outPath),
           "daemon-stdout",
         ),
         daemonStderr: writeBoundedLogTail(
-          String(
-            recordValue(recordValue(handoff.daemon).logs).stderr ?? "",
-          ),
+          String(recordValue(recordValue(handoff.daemon).logs).stderr ?? ""),
           String(options.outPath),
           "daemon-stderr",
         ),
@@ -4210,8 +4193,7 @@ async function runFastRouteStressSale(
         milestones: checkpoints.map((checkpoint) => ({
           label: checkpoint.label,
           route: recordValue(checkpoint.identity).route,
-          screenshot:
-            recordValue(checkpoint.screenshot).ref ?? null,
+          screenshot: recordValue(checkpoint.screenshot).ref ?? null,
         })),
       },
     });
@@ -4221,10 +4203,10 @@ async function runFastRouteStressSale(
       ? recordValue(
           await daemonGet(handoff, "/v1/transactions/current").catch(
             (transactionError) => ({
-            evidenceError:
-              transactionError instanceof Error
-                ? transactionError.message
-                : String(transactionError),
+              evidenceError:
+                transactionError instanceof Error
+                  ? transactionError.message
+                  : String(transactionError),
             }),
           ),
         )
@@ -4233,8 +4215,8 @@ async function runFastRouteStressSale(
     if (clientReady) {
       const failure = recordValue(
         await captureCheckpoint(client as CdpClient, `failure-${stage}`, {
-        screenshot: true,
-        screenshotSink: sink,
+          screenshot: true,
+          screenshotSink: sink,
         }).catch(() => null),
       );
       if (failure) failureCheckpoints.push(failure);
@@ -4307,16 +4289,12 @@ async function runFastRouteStressSale(
       checkpoints: failureCheckpoints,
       logs: {
         daemonStdout: writeBoundedLogTail(
-          String(
-            recordValue(recordValue(handoff?.daemon).logs).stdout ?? "",
-          ),
+          String(recordValue(recordValue(handoff?.daemon).logs).stdout ?? ""),
           String(options.outPath),
           "daemon-stdout",
         ),
         daemonStderr: writeBoundedLogTail(
-          String(
-            recordValue(recordValue(handoff?.daemon).logs).stderr ?? "",
-          ),
+          String(recordValue(recordValue(handoff?.daemon).logs).stderr ?? ""),
           String(options.outPath),
           "daemon-stderr",
         ),
@@ -4356,9 +4334,13 @@ async function runFastRouteStressSale(
           settlePendingCreateOrder({
             paymentNo: cleanupPaymentNo,
             readTransaction: () =>
-              daemonGet(activeHandoff as JsonRecord, "/v1/transactions/current", {
-                timeoutMs: CLEANUP_REQUEST_TIMEOUT_MS,
-              }),
+              daemonGet(
+                activeHandoff as JsonRecord,
+                "/v1/transactions/current",
+                {
+                  timeoutMs: CLEANUP_REQUEST_TIMEOUT_MS,
+                },
+              ),
             cancelTransaction: (active: JsonRecord) =>
               daemonPost(
                 activeHandoff as JsonRecord,

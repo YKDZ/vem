@@ -130,7 +130,9 @@ function parseTypeScript(path: string, source: string): ts.SourceFile {
   );
 }
 
-function stringLiteralValue(value: ts.Expression | undefined): string | undefined {
+function stringLiteralValue(
+  value: ts.Expression | undefined,
+): string | undefined {
   return value && ts.isStringLiteral(value) ? value.text : undefined;
 }
 
@@ -222,9 +224,7 @@ function isUnknownSchemaExpression(expression: ts.Expression): boolean {
   );
 }
 
-function contractDefinitions(
-  root: string,
-): Map<string, ContractDefinition> {
+function contractDefinitions(root: string): Map<string, ContractDefinition> {
   const definitions = new Map<string, ContractDefinition>();
   for (const path of listFiles(root, SHARED_SCHEMA_DIRECTORY)) {
     const source = readText(root, path);
@@ -835,8 +835,7 @@ function migrationNetworkCalls(root: string, paths: string[]): NetworkCall[] {
         );
         if (entry) {
           const contractArgument =
-            entry === "callAdminEndpointContract" &&
-            node.arguments.length > 0
+            entry === "callAdminEndpointContract" && node.arguments.length > 0
               ? unwrapTransparentExpression(node.arguments[0])
               : undefined;
           calls.push({
@@ -940,7 +939,11 @@ function checkMigratedProviderBareRoutes(
 function findExportedCallerFunction(
   file: ts.SourceFile,
   methodName: string,
-): ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression | undefined {
+):
+  | ts.FunctionDeclaration
+  | ts.ArrowFunction
+  | ts.FunctionExpression
+  | undefined {
   let found:
     | ts.FunctionDeclaration
     | ts.ArrowFunction
@@ -1273,7 +1276,9 @@ function uncoveredLegacyCallerModules(
   return uncovered.sort();
 }
 
-export function checkAdminApiContracts(options: { root?: string } = {}): CheckResult {
+export function checkAdminApiContracts(
+  options: { root?: string } = {},
+): CheckResult {
   const root = options.root ?? process.cwd();
   const failures: string[] = [];
   const manifests = manifestEntries(root);

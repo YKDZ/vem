@@ -193,7 +193,10 @@ export async function startDelayedPickupMachineEvidenceCapture({
         (await readSample(client, { timeoutMs: 5_000 })) as JsonRecord,
       );
       for (const observation of uiObservations) {
-        const observedSale = observation.observedSale as Record<string, unknown>;
+        const observedSale = observation.observedSale as Record<
+          string,
+          unknown
+        >;
         for (const name of ["orderId", "orderNo", "commandId", "commandNo"])
           if (observedSale[name] !== binding?.[name])
             throw new Error("installed Machine DOM sale binding is invalid");

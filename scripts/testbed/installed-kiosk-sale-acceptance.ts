@@ -227,10 +227,7 @@ function installedKioskSaleCliOptions(
       options,
       "ephemeral-platform-evidence",
     ),
-    runtime_acceptance_report: required(
-      options,
-      "runtime-acceptance-report",
-    ),
+    runtime_acceptance_report: required(options, "runtime-acceptance-report"),
     identity: required(options, "identity"),
     certificate: required(options, "certificate"),
     adapter: required(options, "adapter"),
@@ -242,7 +239,8 @@ function installedKioskSaleCliOptions(
     dry_run: options.dry_run === true,
     lifecycle_reference: optionalString("lifecycle_reference"),
     remote: optionalString("remote"),
-    ssh_port: typeof options.ssh_port === "number" ? options.ssh_port : undefined,
+    ssh_port:
+      typeof options.ssh_port === "number" ? options.ssh_port : undefined,
     ssh_known_hosts_path: optionalString("ssh_known_hosts_path"),
     ssh_host_key_alias: optionalString("ssh_host_key_alias"),
     runtime_guest_endpoint_json: optionalString("runtime_guest_endpoint_json"),
@@ -808,11 +806,7 @@ export function nonQueryChildEnvironment(
   return childEnvironment;
 }
 
-function writeJson(
-  path: string,
-  value: unknown,
-  mode?: number,
-): void {
+function writeJson(path: string, value: unknown, mode?: number): void {
   const resolved = resolve(path);
   const temporary = `${resolved}.tmp-${process.pid}-${Date.now()}`;
   writeFileSync(
@@ -823,9 +817,13 @@ function writeJson(
   renameSync(temporary, resolved);
 }
 
-function installedKioskScreenshotSink(root: string): (
-  input: { bytes: Uint8Array; sha256: string; label: string },
-) => Promise<{ ref: string }> {
+function installedKioskScreenshotSink(
+  root: string,
+): (input: {
+  bytes: Uint8Array;
+  sha256: string;
+  label: string;
+}) => Promise<{ ref: string }> {
   mkdirSync(root, { recursive: true, mode: 0o700 });
   return ({ bytes, sha256, label }): Promise<{ ref: string }> => {
     const safeLabel = String(label).replaceAll(/[^A-Za-z0-9._-]+/g, "-");
@@ -905,10 +903,7 @@ function delayedPickupEvidenceIndex({
   };
 }
 
-function observedIdentity(
-  values: unknown[],
-  name: string,
-): JsonRecord {
+function observedIdentity(values: unknown[], name: string): JsonRecord {
   const occurrences = values.filter(
     (value) => typeof value === "string" && value.trim() !== "",
   );
@@ -1030,8 +1025,7 @@ export function postMinusBaselinePlatformRaw({
       ),
     );
     raw[name] = (postRaw[name] as unknown[]).filter(
-      (record) =>
-        !baselineIds.has(rawRecordId(name, record as JsonRecord)),
+      (record) => !baselineIds.has(rawRecordId(name, record as JsonRecord)),
     );
   }
   return { scope: postScope, raw };
@@ -1048,12 +1042,10 @@ function serialSaleBinding(conformance: JsonRecord): JsonRecord {
       | JsonRecord
       | undefined
   )?.request as JsonRecord | undefined;
-  const injectedBindings = (injected?.serialSession as
-    | JsonRecord
-    | undefined)?.saleBindings;
-  const collectedBindings = (collected?.serialSession as
-    | JsonRecord
-    | undefined)?.saleBindings;
+  const injectedBindings = (injected?.serialSession as JsonRecord | undefined)
+    ?.saleBindings;
+  const collectedBindings = (collected?.serialSession as JsonRecord | undefined)
+    ?.saleBindings;
   if (
     !Array.isArray(injectedBindings) ||
     !Array.isArray(collectedBindings) ||
@@ -1076,10 +1068,9 @@ function serialSaleBinding(conformance: JsonRecord): JsonRecord {
 
 function terminalCheckpoint(scenario: JsonRecord): JsonRecord {
   const evidence = (scenario?.evidence ?? []) as unknown[];
-  const checkpoints = evidence.filter(
-    (entry) => {
-      const entryRecord = entry as JsonRecord;
-      return (
+  const checkpoints = evidence.filter((entry) => {
+    const entryRecord = entry as JsonRecord;
+    return (
       entryRecord?.type === "checkpoint" &&
       entryRecord?.label === "continuous" &&
       /^#\/(dispensing|result)/.test(
@@ -1089,9 +1080,8 @@ function terminalCheckpoint(scenario: JsonRecord): JsonRecord {
             "",
         ),
       )
-      );
-    },
-  );
+    );
+  });
   const checkpoint = checkpoints?.at(-1);
   const checkpointRecord = checkpoint as JsonRecord | undefined;
   if (!checkpointRecord || !Number.isSafeInteger(checkpointRecord.ordinal)) {
@@ -1117,8 +1107,9 @@ export function deriveFulfillmentBinding({
 }): JsonRecord {
   const checkpoint = terminalCheckpoint(scenario);
   const bindings = serialSaleBinding(serial);
-  const sale = ((completion?.simulatedHardwareSaleFlow as JsonRecord | undefined)
-    ?.sale ?? {}) as JsonRecord;
+  const sale = ((
+    completion?.simulatedHardwareSaleFlow as JsonRecord | undefined
+  )?.sale ?? {}) as JsonRecord;
   const commandId = sale?.vendingCommandId;
   const injectedBinding = bindings.injected as JsonRecord;
   const collectedBinding = bindings.collected as JsonRecord;
@@ -1197,18 +1188,14 @@ export function deriveCorrelation({
     (platform?.platformState as JsonRecord | undefined)
       ?.postSaleDispenseMovement as JsonRecord | undefined
   )?.movementId;
-  const {
-    delta: attemptDelta,
-    attempt: rawAttemptValue,
-  } = paymentCodeAttemptDelta({
-    baseline: platformRawBaseline,
-    post: platformRawPost,
-  });
+  const { delta: attemptDelta, attempt: rawAttemptValue } =
+    paymentCodeAttemptDelta({
+      baseline: platformRawBaseline,
+      post: platformRawPost,
+    });
   const rawAttempt = rawAttemptValue as JsonRecord;
   const attemptDeltaRecord = attemptDelta as JsonRecord;
-  const platformRawScope = attemptDeltaRecord.scope as
-    | JsonRecord
-    | undefined;
+  const platformRawScope = attemptDeltaRecord.scope as JsonRecord | undefined;
   const raw = (attemptDeltaRecord.raw ?? {}) as JsonRecord;
   const rawOrders = (raw.orders ?? []) as unknown[];
   const rawOrderItems = (raw.orderItems ?? []) as unknown[];
@@ -1415,10 +1402,11 @@ export function deriveCorrelation({
       },
     },
     serial: {
-      sessionId:
-        ((serial.session as JsonRecord | undefined)?.serialSession as
+      sessionId: (
+        (serial.session as JsonRecord | undefined)?.serialSession as
           | JsonRecord
-          | undefined)?.serialSessionId,
+          | undefined
+      )?.serialSessionId,
       injected: injectedBinding,
       collected: collectedBinding,
     },
@@ -1849,8 +1837,10 @@ export async function runInstalledKioskSaleAcceptanceCli(
     const completionPlatformState = completionFlow?.platformState as
       | JsonRecord
       | undefined;
-    const projectedMovement = completionPlatformState
-      ?.postSaleDispenseMovement as JsonRecord | undefined;
+    const projectedMovement =
+      completionPlatformState?.postSaleDispenseMovement as
+        | JsonRecord
+        | undefined;
     const projectedMovementId = projectedMovement?.movementId;
     if (
       typeof projectedMovementId !== "string" ||
@@ -1928,8 +1918,7 @@ export async function runInstalledKioskSaleAcceptanceCli(
       const platformRaw = platformRawPost.raw as JsonRecord;
       const commands = (platformRaw.commands ?? []) as unknown[];
       const command = commands.find(
-        (entry: unknown) =>
-          (entry as JsonRecord).id === fulfillment.commandId,
+        (entry: unknown) => (entry as JsonRecord).id === fulfillment.commandId,
       ) as JsonRecord | undefined;
       if (typeof command?.commandNo !== "string")
         throw new Error("delayed pickup terminal command number is missing");
@@ -2063,8 +2052,8 @@ export async function runInstalledKioskSaleAcceptanceCli(
           cleanupNormalTask?.workingDirectory !==
             launchPrelaunchTask?.workingDirectory ||
           cleanupNormalTask?.xmlSha256 !== launchPrelaunchTask?.xmlSha256 ||
-          cleanupNormalTask
-            .triggersSettingsConditionsPrincipalActionRestored !== true ||
+          cleanupNormalTask.triggersSettingsConditionsPrincipalActionRestored !==
+            true ||
           cleanupNormal?.simulatedOrFaultProcessCount !== 0
         ) {
           throw new Error(
@@ -2163,17 +2152,15 @@ export function evaluateInstalledErrorMatrixEvidence({
     ? (scenario.evidence as unknown[])
     : [];
   for (const operation of expected) {
-    const entry = entries.find(
-      (candidate: unknown) => {
-        const record = candidate as JsonRecord;
-        return (
-          record?.type === "external-operation" &&
-          record.operation === operation &&
-          record.routeBefore === "#/payment" &&
-          record.routeAfter === "#/payment"
-        );
-      },
-    );
+    const entry = entries.find((candidate: unknown) => {
+      const record = candidate as JsonRecord;
+      return (
+        record?.type === "external-operation" &&
+        record.operation === operation &&
+        record.routeBefore === "#/payment" &&
+        record.routeAfter === "#/payment"
+      );
+    });
     const provenance = (entry as JsonRecord | undefined)?.provenance as
       | JsonRecord
       | undefined;
@@ -2197,9 +2184,7 @@ export function evaluateInstalledErrorMatrixEvidence({
     const transactionBefore = daemon?.transactionBefore as
       | JsonRecord
       | undefined;
-    const transactionAfter = daemon?.transactionAfter as
-      | JsonRecord
-      | undefined;
+    const transactionAfter = daemon?.transactionAfter as JsonRecord | undefined;
     requiredString(provenance.guestOperationId, "operation id");
     requiredString(provenance.adapterSessionId, "adapter session");
     requiredString(session?.daemonReadyFile, "daemon session ready file");
@@ -2235,10 +2220,7 @@ export function evaluateInstalledErrorMatrixEvidence({
       );
     }
     if (operation === "vision_departure") {
-      const eventId = requiredString(
-        vision?.eventId,
-        "Vision event id",
-      );
+      const eventId = requiredString(vision?.eventId, "Vision event id");
       if (
         vision?.delivered !== true ||
         (daemon?.runtimeTrace as JsonRecord | undefined)?.eventId !== eventId ||
@@ -2283,8 +2265,11 @@ export function evaluateInstalledErrorMatrixEvidence({
       const overlayScreenshot = overlay?.screenshot as JsonRecord | undefined;
       if (
         (daemon?.transport as JsonRecord | undefined)?.phase !== "recovered" ||
-        (((overlay?.observation as JsonRecord | undefined)
-          ?.recoveryOverlay as unknown[] | undefined)?.length ?? 0) < 1 ||
+        ((
+          (overlay?.observation as JsonRecord | undefined)?.recoveryOverlay as
+            | unknown[]
+            | undefined
+        )?.length ?? 0) < 1 ||
         !/^[a-f0-9]{64}$/.test(String(overlayScreenshot?.sha256 ?? "")) ||
         before?.orderCredential !==
           (correlation?.rendered as JsonRecord | undefined)?.orderNo ||

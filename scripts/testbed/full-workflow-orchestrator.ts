@@ -307,10 +307,7 @@ function persistTrackChildEvidence(
   };
 }
 
-function runTrack(
-  command: string[],
-  label: string,
-): Promise<TrackChild> {
+function runTrack(command: string[], label: string): Promise<TrackChild> {
   return new Promise((resolvePromise) => {
     const child = spawn(command[0], command.slice(1), {
       env: process.env,
@@ -367,7 +364,10 @@ function clearTrackArtifacts(path: unknown): void {
   rmSync(path, { recursive: true, force: true });
 }
 
-function workflowIdentity(guestInputPath: string, commit: string | null = null): unknown {
+function workflowIdentity(
+  guestInputPath: string,
+  commit: string | null = null,
+): unknown {
   const identity =
     (jsonIfPresent(guestInputPath) as Record<string, unknown> | null)
       ?.workflowIdentity ?? null;
@@ -442,12 +442,7 @@ export function refreshDaemonReadyHandoff({
   handoff?: Record<string, unknown> | null;
 }): Record<string, unknown> {
   const ready = jsonIfPresent(readyPath) as Record<string, unknown> | null;
-  if (
-    !handoff ||
-    typeof handoff !== "object" ||
-    !handoff.daemon ||
-    !ready
-  ) {
+  if (!handoff || typeof handoff !== "object" || !handoff.daemon || !ready) {
     throw new Error("daemon ready handoff inputs are unavailable");
   }
   for (const key of ["healthzUrl", "readyzUrl", "ipcToken", "generation"]) {
@@ -588,8 +583,10 @@ export function buildWorkflowTrackCommands({
 
 function shortError(result: { stderr?: unknown }): string | null {
   return (
-    String(result.stderr ?? "").trim().replaceAll(/\s+/g, " ").slice(-500) ||
-    null
+    String(result.stderr ?? "")
+      .trim()
+      .replaceAll(/\s+/g, " ")
+      .slice(-500) || null
   );
 }
 
@@ -817,7 +814,10 @@ function isTransientBoundaryError(error: unknown): boolean {
 async function retryTransientBoundary(
   label: string,
   operation: () => Promise<unknown>,
-  { timeoutMs = 10_000, pollMs = 250 }: { timeoutMs?: number; pollMs?: number } = {},
+  {
+    timeoutMs = 10_000,
+    pollMs = 250,
+  }: { timeoutMs?: number; pollMs?: number } = {},
 ): Promise<unknown> {
   const deadline = Date.now() + timeoutMs;
   let lastError;
@@ -872,13 +872,9 @@ function daemonGet(
   handoff: Record<string, unknown> | null | undefined,
   path: string,
 ): Promise<unknown> {
-  const ready = (
-    handoff?.daemon as Record<string, unknown> | undefined
-  )?.ready as Record<string, unknown> | undefined;
-  const healthz = required(
-    ready?.healthzUrl,
-    "daemon healthzUrl",
-  );
+  const ready = (handoff?.daemon as Record<string, unknown> | undefined)
+    ?.ready as Record<string, unknown> | undefined;
+  const healthz = required(ready?.healthzUrl, "daemon healthzUrl");
   const baseUrl = healthz.endsWith("/healthz")
     ? healthz.slice(0, -"/healthz".length)
     : healthz;
@@ -903,13 +899,9 @@ function daemonPost(
   path: string,
   body: unknown,
 ): Promise<unknown> {
-  const ready = (
-    handoff?.daemon as Record<string, unknown> | undefined
-  )?.ready as Record<string, unknown> | undefined;
-  const healthz = required(
-    ready?.healthzUrl,
-    "daemon healthzUrl",
-  );
+  const ready = (handoff?.daemon as Record<string, unknown> | undefined)
+    ?.ready as Record<string, unknown> | undefined;
+  const healthz = required(ready?.healthzUrl, "daemon healthzUrl");
   const baseUrl = healthz.endsWith("/healthz")
     ? healthz.slice(0, -"/healthz".length)
     : healthz;
@@ -965,10 +957,7 @@ async function serviceApiRequest(
     ...(options.body ? { body: JSON.stringify(options.body) } : {}),
   });
   const payload = await response.json().catch(() => null);
-  if (
-    !response.ok ||
-    (payload as Record<string, unknown> | null)?.code !== 0
-  ) {
+  if (!response.ok || (payload as Record<string, unknown> | null)?.code !== 0) {
     throw new Error(
       `${options.method ?? "GET"} ${path} returned HTTP ${response.status}: ${JSON.stringify(payload)}`,
     );
@@ -1096,9 +1085,10 @@ export async function ensureFixtureStockReady({
       itemMatchesFixture(item as Record<string, unknown>, fixture),
     ) as Record<string, unknown> | undefined;
   const desiredByFixtureKey = new Map<string, unknown>(
-    fixtures.map(
-      (fixture): [string, unknown] => [fixtureKey(fixture), fixture.onHandQty],
-    ),
+    fixtures.map((fixture): [string, unknown] => [
+      fixtureKey(fixture),
+      fixture.onHandQty,
+    ]),
   );
   if (
     desiredByFixtureKey.size === 0 ||
@@ -1113,9 +1103,7 @@ export async function ensureFixtureStockReady({
     throw new Error("fixture stock preflight requires allocated slots");
   }
 
-  const targetIsReady = (
-    saleView: Record<string, unknown> | null,
-  ): boolean => {
+  const targetIsReady = (saleView: Record<string, unknown> | null): boolean => {
     return fixtures.every((fixture) => {
       const item = itemForFixture(saleView, fixture);
       const desired = desiredByFixtureKey.get(fixtureKey(fixture));
@@ -1271,17 +1259,15 @@ export async function ensureFixtureStockReady({
   const activeAttestationSlots = (
     Array.isArray(initialSaleView?.items) ? initialSaleView.items : []
   )
-    .filter(
-      (item) => {
-        const record = item as Record<string, unknown>;
-        return (
-          typeof record?.slotId === "string" &&
-          record.slotId !== "" &&
-          typeof record?.sku === "string" &&
-          record.sku !== ""
-        );
-      },
-    )
+    .filter((item) => {
+      const record = item as Record<string, unknown>;
+      return (
+        typeof record?.slotId === "string" &&
+        record.slotId !== "" &&
+        typeof record?.sku === "string" &&
+        record.sku !== ""
+      );
+    })
     .map((item) => {
       const record = item as Record<string, unknown>;
       return {
@@ -1296,9 +1282,10 @@ export async function ensureFixtureStockReady({
       };
     });
   const taskSlotsById = new Map<string, Record<string, unknown>>(
-    (Array.isArray(task?.slots) ? task.slots : []).map(
-      (slot) => [String((slot as Record<string, unknown>)?.slotId), slot as Record<string, unknown>],
-    ),
+    (Array.isArray(task?.slots) ? task.slots : []).map((slot) => [
+      String((slot as Record<string, unknown>)?.slotId),
+      slot as Record<string, unknown>,
+    ]),
   );
   const fixtureTaskSlots = fixtures.map((fixture) => {
     const currentItem = initialFixtureItems.find(
@@ -1473,17 +1460,15 @@ export async function ensureFixtureStockReady({
     const slots =
       task.mode === "routine_refill"
         ? routineRefillSlots.filter((slot) => slot.addition > 0)
-        : (Array.isArray(task?.slots) ? task.slots : []).map(
-            (slot) => {
-              const record = slot as Record<string, unknown>;
-              return {
-                slotId: record.slotId,
-            quantity:
-                  desiredByCurrentSlotId.get(String(record.slotId)) ??
-                  record.currentQuantity,
-              };
-            },
-          );
+        : (Array.isArray(task?.slots) ? task.slots : []).map((slot) => {
+            const record = slot as Record<string, unknown>;
+            return {
+              slotId: record.slotId,
+              quantity:
+                desiredByCurrentSlotId.get(String(record.slotId)) ??
+                record.currentQuantity,
+            };
+          });
     if (slots.length === 0) {
       throw new Error(`fixture stock ${task.mode} task has no restoring slots`);
     }
@@ -1578,9 +1563,7 @@ export async function waitForBusinessHardwareReady({
     const roles = Array.isArray(bindingsRecord?.roles)
       ? (bindingsRecord.roles as Array<Record<string, unknown>>)
       : [];
-    const lower = roles.find(
-      (role) => role?.role === "lower_controller",
-    );
+    const lower = roles.find((role) => role?.role === "lower_controller");
     last = { lower: lower ?? null, capability: capabilityRecord };
     if (lower?.ready === true && capabilityRecord?.canStartSale === true) {
       return last;
@@ -1868,7 +1851,9 @@ function terminalOperations(
     context: { child: TrackChild; report: unknown; terminal: unknown },
   ) => Promise<Record<string, unknown>>;
 } {
-  const withClient = async <T>(operation: (client: CdpClient) => Promise<T>): Promise<T> => {
+  const withClient = async <T>(
+    operation: (client: CdpClient) => Promise<T>,
+  ): Promise<T> => {
     reloadRuntimeHandoff(handoffPath, handoff ?? {});
     const attached = (await retryTransientBoundary(
       "machine UI CDP attach",
@@ -1911,8 +1896,9 @@ function terminalOperations(
       await replaceUnavailableTestbedLowerController({
         capability,
         sessionId: (
-          handoff?.commissioningSerialSession as Record<string, unknown> |
-            undefined
+          handoff?.commissioningSerialSession as
+            | Record<string, unknown>
+            | undefined
         )?.sessionId,
         replaceSerialSession: (sessionId) =>
           replaceSerialSessionAndUpdateHandoff({
@@ -1945,8 +1931,8 @@ function terminalOperations(
           controlPlaneRequest(guestInput, "/v1/platform/query", {
             runId: (guestInput ?? {}).runId,
             machineCode: (guestInput ?? {}).machineCode,
-          }).then((response) =>
-            (response as Record<string, unknown> | null)?.report,
+          }).then(
+            (response) => (response as Record<string, unknown> | null)?.report,
           ),
       }) as Promise<Record<string, unknown>>;
     },
@@ -1960,8 +1946,9 @@ function terminalOperations(
         recoverAfterFailure:
           (context.child as TrackChild | undefined)?.status !== "passed" ||
           (context.report as Record<string, unknown> | null)?.ok !== true,
-        fixtureAllocation:
-          (guestInput ?? {}).fixtureAllocation as FixtureAllocation | undefined,
+        fixtureAllocation: (guestInput ?? {}).fixtureAllocation as
+          | FixtureAllocation
+          | undefined,
         returnToCatalog: () =>
           withClient(async (client) => {
             return returnToCatalogFromClient({ client });
@@ -2119,9 +2106,7 @@ export async function runFullWorkflowOrchestrator(
         await waitForInstalledRuntimeBarrier(refreshed);
         await operations?.prepareTrack();
         const fixtureAllocation = fixtureAllocationForTrack(
-          (guestInput ?? {}).fixtureAllocation as
-            | FixtureAllocation
-            | undefined,
+          (guestInput ?? {}).fixtureAllocation as FixtureAllocation | undefined,
           track,
         );
         if (fixtureAllocation) {
@@ -2187,10 +2172,10 @@ export async function runFullWorkflowOrchestrator(
   let evidenceManifest;
   try {
     evidenceManifest = (
-      (
-        dependencies.buildEvidenceManifest ??
-        buildFullWorkflowEvidenceManifest
-      ) as (context: Record<string, unknown>) => unknown
+      (dependencies.buildEvidenceManifest ??
+        buildFullWorkflowEvidenceManifest) as (
+        context: Record<string, unknown>,
+      ) => unknown
     )({ tracks: evidenceTracks });
   } catch (error) {
     const reason = supportingEvidenceFailure(
@@ -2230,10 +2215,10 @@ export async function runFullWorkflowOrchestrator(
   try {
     evidenceErrors.push(
       ...(
-        (
-          dependencies.validateEvidenceManifest ??
-          validateFullWorkflowEvidenceManifest
-        ) as (manifest: unknown) => string[]
+        (dependencies.validateEvidenceManifest ??
+          validateFullWorkflowEvidenceManifest) as (
+          manifest: unknown,
+        ) => string[]
       )(evidenceManifest),
     );
   } catch (error) {

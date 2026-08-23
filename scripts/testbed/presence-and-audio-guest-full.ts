@@ -212,7 +212,8 @@ async function fetchJson(
 ): Promise<unknown> {
   const response = await fetch(url, {
     ...options,
-    signal: (options.signal as AbortSignal | undefined) ??
+    signal:
+      (options.signal as AbortSignal | undefined) ??
       AbortSignal.timeout(Number(options.timeoutMs ?? 30_000)),
   });
   const payload = await response.json().catch(() => null);
@@ -267,14 +268,16 @@ async function injectVisionPresence(
   if (state !== "approach" && state !== "empty")
     throw new Error("Vision presence state is invalid");
   const port = visionControlPort(guestInput);
-  return (dependencies.fetchJson as (url: string, options: JsonRecord) => Promise<unknown>)(
-    `http://127.0.0.1:${port}/control/presence`,
-    {
+  return (
+    dependencies.fetchJson as (
+      url: string,
+      options: JsonRecord,
+    ) => Promise<unknown>
+  )(`http://127.0.0.1:${port}/control/presence`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ state }),
-    },
-  );
+  });
 }
 
 async function injectVisionDeparture(
@@ -282,14 +285,16 @@ async function injectVisionDeparture(
   dependencies: PresenceAudioDependencies,
 ): Promise<unknown> {
   const port = visionControlPort(guestInput);
-  return (dependencies.fetchJson as (url: string, options: JsonRecord) => Promise<unknown>)(
-    `http://127.0.0.1:${port}/control/departure`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ source: "presence-and-audio-precondition" }),
-    },
-  );
+  return (
+    dependencies.fetchJson as (
+      url: string,
+      options: JsonRecord,
+    ) => Promise<unknown>
+  )(`http://127.0.0.1:${port}/control/departure`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ source: "presence-and-audio-precondition" }),
+  });
 }
 
 function traceId(trace: unknown[]): number {
@@ -326,7 +331,10 @@ export async function waitForTouchscreenSessionIdle(
   readTrace: () => Promise<unknown[]>,
   dependencies: PresenceAudioDependencies,
   label: string,
-  { timeoutMs = 50_000, pollMs = 250 }: {
+  {
+    timeoutMs = 50_000,
+    pollMs = 250,
+  }: {
     timeoutMs?: number;
     pollMs?: number;
   } = {},
@@ -356,7 +364,10 @@ async function waitForTraceEntry(
   predicate: (entry: JsonRecord) => boolean,
   dependencies: PresenceAudioDependencies,
   label: string,
-  { timeoutMs = TRACE_TIMEOUT_MS, pollMs = 100 }: {
+  {
+    timeoutMs = TRACE_TIMEOUT_MS,
+    pollMs = 100,
+  }: {
     timeoutMs?: number;
     pollMs?: number;
   } = {},
@@ -463,11 +474,13 @@ async function readSupportedCategoryKeys(
   client: InstanceType<typeof CdpClient>,
   dependencies: PresenceAudioDependencies,
 ): Promise<string[]> {
-  const keys = await (dependencies.evaluateExpression as (
-    client: InstanceType<typeof CdpClient>,
-    expression: string,
-    options?: JsonRecord,
-  ) => Promise<unknown>)(
+  const keys = await (
+    dependencies.evaluateExpression as (
+      client: InstanceType<typeof CdpClient>,
+      expression: string,
+      options?: JsonRecord,
+    ) => Promise<unknown>
+  )(
     client,
     `(() => Array.from(document.querySelectorAll('[data-test="catalog-category"]:not(:disabled)'))
       .map((element) => element.dataset.categoryKey || '')
@@ -507,10 +520,7 @@ async function returnToCatalogHome(
   ) => Promise<unknown>;
   let lastError: unknown = null;
   do {
-    await evaluate(
-      client,
-      'location.hash = "#/catalog"',
-    );
+    await evaluate(client, 'location.hash = "#/catalog"');
     try {
       await waitForRouteFn(client, "#/catalog", {
         timeoutMs: 5_000,
@@ -563,19 +573,17 @@ export async function observeGuestRuntimeIdentity(
   }
   if (typeof dependencies?.observeConnectedCdpIdentity === "function") {
     return Promise.resolve(
-      (dependencies.observeConnectedCdpIdentity as (
-        client: InstanceType<typeof CdpClient>,
-      ) => unknown)(
-        client,
-      ),
+      (
+        dependencies.observeConnectedCdpIdentity as (
+          client: InstanceType<typeof CdpClient>,
+        ) => unknown
+      )(client),
     );
   }
   throw new Error("connected production CDP client identity is unavailable");
 }
 
-function captureSummary(
-  stopReport: JsonRecord | null | undefined,
-): JsonRecord {
+function captureSummary(stopReport: JsonRecord | null | undefined): JsonRecord {
   const capture = stopReport?.capture as JsonRecord | undefined;
   if (
     !capture ||
@@ -848,10 +856,7 @@ function apiBaseUrl(guestInput: GuestInputRecord): string {
 function daemonBaseUrl(handoff: HandoffRecord): string {
   const daemon = handoff?.daemon as JsonRecord | undefined;
   const ready = daemon?.ready as JsonRecord | undefined;
-  const healthzUrl = required(
-    ready?.healthzUrl,
-    "daemon healthzUrl",
-  );
+  const healthzUrl = required(ready?.healthzUrl, "daemon healthzUrl");
   if (!healthzUrl.endsWith("/healthz")) {
     throw new Error("daemon healthzUrl must end with /healthz");
   }
@@ -876,10 +881,12 @@ async function issueAdminVentCommand(
     options: JsonRecord = {},
   ): Promise<unknown> =>
     unwrapServiceApiEnvelope(
-      await (dependencies.fetchJson as (
-        url: string,
-        options: JsonRecord,
-      ) => Promise<unknown>)(`${apiBaseUrl(guestInput)}${path}`, options),
+      await (
+        dependencies.fetchJson as (
+          url: string,
+          options: JsonRecord,
+        ) => Promise<unknown>
+      )(`${apiBaseUrl(guestInput)}${path}`, options),
     );
   const login = await request("/auth/login", {
     method: "POST",
@@ -968,20 +975,19 @@ async function submitDuplicateAutomaticVentIntent(
 ): Promise<unknown> {
   const daemon = handoff?.daemon as JsonRecord | undefined;
   const ready = daemon?.ready as JsonRecord | undefined;
-  const response = await (dependencies.fetchJson as (
-    url: string,
-    options: JsonRecord,
-  ) => Promise<unknown>)(
-    `${daemonBaseUrl(handoff)}/v1/intents/automatic-vent`,
-    {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${required(ready?.ipcToken, "daemon ipcToken")}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ edgeId, ventSpeed: 3 }),
+  const response = await (
+    dependencies.fetchJson as (
+      url: string,
+      options: JsonRecord,
+    ) => Promise<unknown>
+  )(`${daemonBaseUrl(handoff)}/v1/intents/automatic-vent`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${required(ready?.ipcToken, "daemon ipcToken")}`,
+      "content-type": "application/json",
     },
-  );
+    body: JSON.stringify({ edgeId, ventSpeed: 3 }),
+  });
   if (
     (response as JsonRecord | null)?.edgeId !== edgeId ||
     (response as JsonRecord | null)?.outcome !== "deduplicated"
@@ -1082,10 +1088,7 @@ export async function runPresenceAndAudioGuestFull(
     const handoffCdp = handoff?.cdp as JsonRecord | undefined;
     const target = await dependencies.discoverTarget({
       endpoint: "http://127.0.0.1:9222",
-      expectedTargetId: required(
-        handoffCdp?.targetId,
-        "handoff cdp targetId",
-      ),
+      expectedTargetId: required(handoffCdp?.targetId, "handoff cdp targetId"),
     });
     client = dependencies.createClient(
       dependencies.rewriteWebSocketDebuggerUrl(
@@ -1131,9 +1134,7 @@ export async function runPresenceAndAudioGuestFull(
     const cueWindows: unknown[] = [];
     const cueArtifactPaths: Array<{ start: string; stop: string | null }> = [];
     let cueOrdinal = 0;
-    const startCueCapture = async (
-      label: string,
-    ): Promise<JsonRecord> => {
+    const startCueCapture = async (label: string): Promise<JsonRecord> => {
       cueOrdinal += 1;
       const artifactLabel = `${String(cueOrdinal).padStart(2, "0")}-${label}`;
       const audioStart = (await dependencies.controlPlaneRequest(
@@ -1407,7 +1408,10 @@ export async function runPresenceAndAudioGuestFull(
       dependencies,
     );
     const automaticVent = automaticVentEvidence({
-      frames: [...afterAdminB3Frames, ...((departureB3 as JsonRecord).frames as unknown[])],
+      frames: [
+        ...afterAdminB3Frames,
+        ...((departureB3 as JsonRecord).frames as unknown[]),
+      ],
       initialTransitionId: initialWelcome.transitionId,
       departureTransitionId: departure.entry.transitionId,
       adminOverride: adminOverride as JsonRecord | null | undefined,
@@ -1503,10 +1507,14 @@ export async function runPresenceAndAudioGuestFull(
         detailCheckpointLabel: `category-${categoryKey}-detail`,
         checkoutCheckpointLabel: `category-${categoryKey}-checkout`,
       });
-      await dependencies.activateVisibleSelector(activeClient, ".checkout-back", {
-        kind: "touch",
-        timeoutMs: 30_000,
-      });
+      await dependencies.activateVisibleSelector(
+        activeClient,
+        ".checkout-back",
+        {
+          kind: "touch",
+          timeoutMs: 30_000,
+        },
+      );
       await dependencies.waitForRoute(activeClient, /^#\/products\//, {
         timeoutMs: 30_000,
         pollMs: 250,

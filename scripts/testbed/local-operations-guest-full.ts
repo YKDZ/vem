@@ -191,13 +191,11 @@ function writeJson(path: string, value: unknown): void {
   mkdirSync(dirname(localPath(path)), { recursive: true });
   writeFileSync(localPath(path), `${JSON.stringify(value, null, 2)}\n`);
 }
-async function json(
-  url: string,
-  options: JsonRecord = {},
-): Promise<unknown> {
+async function json(url: string, options: JsonRecord = {}): Promise<unknown> {
   const response = await fetch(url, {
     ...options,
-    signal: (options.signal as AbortSignal | undefined) ??
+    signal:
+      (options.signal as AbortSignal | undefined) ??
       AbortSignal.timeout(30_000),
   });
   const payload = await response.json().catch(() => null);
@@ -373,10 +371,7 @@ async function waitForMatch(
       label,
       read,
       (last) =>
-        audioPreferencesEqual(
-          last as JsonRecord | null | undefined,
-          expected,
-        ),
+        audioPreferencesEqual(last as JsonRecord | null | undefined, expected),
       describeAudioPreferences,
       timeoutMs,
     )) as JsonRecord | null | undefined,
@@ -557,8 +552,7 @@ async function setMachineUiCheckbox(
         (value) => {
           const valueRecord = value as JsonRecord | null;
           return (
-            valueRecord?.checked === expected &&
-            valueRecord?.disabled === false
+            valueRecord?.checked === expected && valueRecord?.disabled === false
           );
         },
       );
@@ -612,20 +606,14 @@ async function setMachineUiVolumePercent(
         return { value: Number(element.value), disabled: Boolean(element.disabled) };
       })()`,
     )) as JsonRecord | null;
-    if (!result)
-      throw new Error("machine UI volume control is unavailable");
+    if (!result) throw new Error("machine UI volume control is unavailable");
     try {
-      await waitForState(
-        "machine UI volume",
-        readState,
-        (value) => {
-          const valueRecord = value as JsonRecord;
-          return (
-            valueRecord?.value === percent &&
-            valueRecord?.disabled === false
-          );
-        },
-      );
+      await waitForState("machine UI volume", readState, (value) => {
+        const valueRecord = value as JsonRecord;
+        return (
+          valueRecord?.value === percent && valueRecord?.disabled === false
+        );
+      });
       return;
     } catch (error) {
       if (attempt === 1) throw error;
@@ -790,11 +778,12 @@ async function withMachineUiClient(
   })) as JsonRecord;
   if (cdp) cdp.targetId = target.id;
   const client = new cdpClientClass(
-    rewriteWebSocketDebuggerUrl(
-      String(target.webSocketDebuggerUrl),
-      endpoint,
-    ),
-    { webSocketFactory: webSocketFactory as ((url: string) => WebSocket) | undefined },
+    rewriteWebSocketDebuggerUrl(String(target.webSocketDebuggerUrl), endpoint),
+    {
+      webSocketFactory: webSocketFactory as
+        | ((url: string) => WebSocket)
+        | undefined,
+    },
   );
   await client.connect();
   await enablePageRuntime(client);
@@ -839,8 +828,8 @@ async function runLocalPowerShell(
   const result = await Promise.race([
     new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
       (resolve, reject) => {
-      child.once("error", reject);
-      child.once("close", (code, signal) => resolve({ code, signal }));
+        child.once("error", reject);
+        child.once("close", (code, signal) => resolve({ code, signal }));
       },
     ),
     sleep(timeoutMs).then(() => {
@@ -1041,8 +1030,11 @@ async function refreshRestartedRuntimeHandoff(
 ): Promise<JsonRecord> {
   const baselineGeneration = required(
     previousGeneration ??
-      ((handoff.daemon as JsonRecord | undefined)?.ready as JsonRecord | undefined)
-        ?.generation,
+      (
+        (handoff.daemon as JsonRecord | undefined)?.ready as
+          | JsonRecord
+          | undefined
+      )?.generation,
     "daemon ready generation before restart",
   );
   let ready: JsonRecord | null = null;
@@ -1110,15 +1102,17 @@ async function restartInstalledRuntime(
   await runPowerShell(
     buildInstalledRuntimeRestartScript({
       daemonPath:
-        String((handoff.daemon as JsonRecord | undefined)?.executablePath ?? "") ||
-        CANONICAL_DAEMON_PATH,
+        String(
+          (handoff.daemon as JsonRecord | undefined)?.executablePath ?? "",
+        ) || CANONICAL_DAEMON_PATH,
       daemonDataDirectory: required(
         (handoff.daemon as JsonRecord | undefined)?.dataDirectory,
         "handoff daemon dataDirectory",
       ),
       machinePath:
-        String((handoff.machine as JsonRecord | undefined)?.executablePath ?? "") ||
-        CANONICAL_MACHINE_PATH,
+        String(
+          (handoff.machine as JsonRecord | undefined)?.executablePath ?? "",
+        ) || CANONICAL_MACHINE_PATH,
     }),
   );
   return refreshRestartedRuntimeHandoff(handoff, handoffPath, {
@@ -1287,9 +1281,7 @@ export function selectPlanogramSlot(
 ): JsonRecord {
   const slotId = required(fixture?.slotId, "fixture.slotId");
   const items = ((saleView as JsonRecord | null)?.items ?? []) as unknown[];
-  const item = items.find(
-    (entry) => (entry as JsonRecord)?.slotId === slotId,
-  );
+  const item = items.find((entry) => (entry as JsonRecord)?.slotId === slotId);
   const itemRecord = item as JsonRecord | undefined;
   if (
     !itemRecord?.inventoryId ||
@@ -1347,10 +1339,7 @@ export function validateLocalOperationsEvidence(
     planogram?.canonical !== true
   )
     throw new Error("local operations boundary evidence is incomplete");
-  if (
-    planogram?.slotId == null ||
-    manualDispense?.slotId !== planogram?.slotId
-  )
+  if (planogram?.slotId == null || manualDispense?.slotId !== planogram?.slotId)
     throw new Error("manual dispense slotId must match the planogram slotId");
   if (
     manualDispense?.slotDisplayLabel == null ||
@@ -1372,16 +1361,14 @@ export function validateLocalOperationsEvidence(
     !Array.isArray(maintenanceEntry?.entries) ||
     (maintenanceEntry?.entries as unknown[]).length <
       DEFAULT_MAINTENANCE_ENTRY_ROUTES.length ||
-    (maintenanceEntry?.entries as unknown[]).some(
-      (entry) => {
-        const entryRecord = entry as JsonRecord;
-        return (
-          entryRecord?.ok !== true ||
-          typeof entryRecord.route !== "string" ||
-          entryRecord.finalRoute !== "#/maintenance?source=operator"
-        );
-      },
-    ) ||
+    (maintenanceEntry?.entries as unknown[]).some((entry) => {
+      const entryRecord = entry as JsonRecord;
+      return (
+        entryRecord?.ok !== true ||
+        typeof entryRecord.route !== "string" ||
+        entryRecord.finalRoute !== "#/maintenance?source=operator"
+      );
+    }) ||
     !DEFAULT_MAINTENANCE_ENTRY_ROUTES.every((route) =>
       (maintenanceEntry?.entries as unknown[]).some(
         (entry) => (entry as JsonRecord).route === route,
@@ -1390,16 +1377,14 @@ export function validateLocalOperationsEvidence(
     !Array.isArray(maintenanceEntry?.taskReturns) ||
     (maintenanceEntry?.taskReturns as unknown[]).length <
       MAINTENANCE_TASK_KEYS.length ||
-    (maintenanceEntry?.taskReturns as unknown[]).some(
-      (entry) => {
-        const entryRecord = entry as JsonRecord;
-        return (
-          entryRecord?.ok !== true ||
-          !MAINTENANCE_TASK_KEYS.includes(String(entryRecord.task)) ||
-          entryRecord.finalRoute !== "#/catalog"
-        );
-      },
-    )
+    (maintenanceEntry?.taskReturns as unknown[]).some((entry) => {
+      const entryRecord = entry as JsonRecord;
+      return (
+        entryRecord?.ok !== true ||
+        !MAINTENANCE_TASK_KEYS.includes(String(entryRecord.task)) ||
+        entryRecord.finalRoute !== "#/catalog"
+      );
+    })
   )
     throw new Error("maintenance entry evidence is incomplete");
   return {
@@ -1475,9 +1460,10 @@ export async function runLocalOperationsGuest(
       activeSession.sessionId,
       "local operations serial session id",
     );
-    const saleView = (await daemonRequest(handoff, "/v1/sale-view")) as
-      | JsonRecord
-      | null;
+    const saleView = (await daemonRequest(
+      handoff,
+      "/v1/sale-view",
+    )) as JsonRecord | null;
     const slot = selectPlanogramSlot(saleView, fixtureRecord);
     report.planogram = {
       canonical: true,
@@ -1542,11 +1528,10 @@ export async function runLocalOperationsGuest(
       "F1",
       "AF",
       "F2",
-    ].every(
-      (opcode) =>
-        operationFrames.some(
-          (frame) => (frame as JsonRecord)?.parsedOpcode === opcode,
-        ),
+    ].every((opcode) =>
+      operationFrames.some(
+        (frame) => (frame as JsonRecord)?.parsedOpcode === opcode,
+      ),
     );
     if (
       diagnostic.outcome !== "completed" ||
@@ -1564,11 +1549,7 @@ export async function runLocalOperationsGuest(
       "/v1/maintenance/environment-control",
       { ventSpeed: 3 },
     );
-    await waitForSerialBoundaryFn(
-      input,
-      String(activeSession.sessionId),
-      "B3",
-    );
+    await waitForSerialBoundaryFn(input, String(activeSession.sessionId), "B3");
     const environmentAfterEvidence = (await controlRequest(
       input,
       `/v1/serial-sessions/${String(activeSession.sessionId)}/evidence`,

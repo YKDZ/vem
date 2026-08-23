@@ -4,12 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
+import type { CdpTestAdapter } from "../../cdp-adapter.ts";
+import type { ProcessReplaySummary } from "../../process-replay.ts";
+
 import { buildAcceptanceReport } from "../../acceptance-report.ts";
 import { createBusinessCheckRegistryV2 } from "../../business-check-registry-v2.ts";
 import { businessAssertion } from "../../observation-record.ts";
 import { createFakeTestAdapter } from "../../test-adapter.ts";
-import type { CdpTestAdapter } from "../../cdp-adapter.ts";
-import type { ProcessReplaySummary } from "../../process-replay.ts";
 import {
   sourceGarmentBindingFromGuestInput,
   main as runVisionExperienceMain,
@@ -247,15 +248,18 @@ function observationTimelineFor(attemptId: string) {
       [2_750, 250, "1", "preview-1b"],
     ] as [number, number, string, string][]
   )
-    .map(([atMs, holdRemainingMs, countdownText, previewFrameHash]) => ({
-      atMs,
-      attemptId,
-      state: "acquiring",
-      holdRemainingMs,
-      countdownText,
-      previewVisible: true,
-      previewFrameHash,
-    }) as JsonRecord)
+    .map(
+      ([atMs, holdRemainingMs, countdownText, previewFrameHash]) =>
+        ({
+          atMs,
+          attemptId,
+          state: "acquiring",
+          holdRemainingMs,
+          countdownText,
+          previewVisible: true,
+          previewFrameHash,
+        }) as JsonRecord,
+    )
     .concat([
       {
         atMs: 3_000,
@@ -523,8 +527,7 @@ describe("visionExperience slice runner", () => {
           ["--out", outPath, "--guest-input", guestInputPath],
           {
             startVisionOwner: () => undefined,
-            createAdapter: () =>
-              adapter as unknown as CdpTestAdapter,
+            createAdapter: () => adapter as unknown as CdpTestAdapter,
             runSlice: async () => {
               const error = new Error(
                 "try-on-route did not become true",
@@ -718,8 +721,7 @@ describe("visionExperience slice runner", () => {
             ],
             {
               startVisionOwner: () => undefined,
-              createAdapter: () =>
-                adapter as unknown as CdpTestAdapter,
+              createAdapter: () => adapter as unknown as CdpTestAdapter,
               runSlice: async () => {
                 throw new Error("try-on-route did not become true");
               },
@@ -793,8 +795,7 @@ describe("visionExperience slice runner", () => {
           ["--out", outPath, "--guest-input", guestInputPath],
           {
             startVisionOwner: () => undefined,
-            createAdapter: () =>
-              adapter as unknown as CdpTestAdapter,
+            createAdapter: () => adapter as unknown as CdpTestAdapter,
             runSlice: async () => {
               throw new Error("result-surface timed out");
             },
@@ -1523,8 +1524,7 @@ describe("process replay 轨道集成", () => {
           assert.equal(capturedContext.value.endpoint, adapter.endpoint);
           const report = JSON.parse(readFileSync(outPath, "utf8"));
           const evidence = report.businessSets[0].supportingEvidence.find(
-            (entry: JsonRecord) =>
-              entry.kind === "business-set-process-replay",
+            (entry: JsonRecord) => entry.kind === "business-set-process-replay",
           );
           assert.equal(evidence.summary.status, "completed");
           assert.equal(evidence.summary.framesWritten, 3);
@@ -1638,8 +1638,7 @@ describe("process replay 轨道集成", () => {
           );
           const report = JSON.parse(readFileSync(outPath, "utf8"));
           const evidence = report.businessSets[0].supportingEvidence.find(
-            (entry: JsonRecord) =>
-              entry.kind === "business-set-process-replay",
+            (entry: JsonRecord) => entry.kind === "business-set-process-replay",
           );
           assert.equal(evidence.summary.status, "completed");
         } finally {

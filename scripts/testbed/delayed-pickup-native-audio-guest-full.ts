@@ -160,7 +160,8 @@ async function fetchJson(
   const { timeoutMs: _timeoutMs, ...requestOptions } = options;
   const response = await fetch(url, {
     ...requestOptions,
-    signal: (options.signal as AbortSignal | undefined) ??
+    signal:
+      (options.signal as AbortSignal | undefined) ??
       AbortSignal.timeout(Number(timeoutMs)),
   });
   const payload = await response.json().catch(() => null);
@@ -196,10 +197,7 @@ async function withinDeadline<T>(
 function daemonBaseUrl(handoff: HandoffRecord): string {
   const daemon = handoff.daemon as JsonRecord | undefined;
   const ready = daemon?.ready as JsonRecord | undefined;
-  const healthzUrl = required(
-    ready?.healthzUrl,
-    "daemon healthzUrl",
-  );
+  const healthzUrl = required(ready?.healthzUrl, "daemon healthzUrl");
   if (!healthzUrl.endsWith("/healthz"))
     throw new Error("daemon healthzUrl must end with /healthz");
   return healthzUrl.slice(0, -"/healthz".length);
@@ -230,10 +228,7 @@ export async function restoreTransactionAudioPreferences(
 ): Promise<unknown> {
   const setPreferences =
     (dependencies.setMachineUiAudioPreferences as
-      | ((
-          client: unknown,
-          preferences: JsonRecord,
-        ) => Promise<unknown>)
+      | ((client: unknown, preferences: JsonRecord) => Promise<unknown>)
       | undefined) ?? setMachineUiAudioPreferences;
   const evaluate =
     (dependencies.evaluateExpression as
@@ -271,10 +266,9 @@ async function prepareScannerForSale(
   const bindingDeadline = Date.now() + 30_000;
   let bindings: JsonRecord | null = null;
   while (Date.now() < bindingDeadline) {
-    bindings = (await daemonGet(
-      handoff,
-      "/v1/hardware-bindings",
-    ).catch(() => null)) as JsonRecord | null;
+    bindings = (await daemonGet(handoff, "/v1/hardware-bindings").catch(
+      () => null,
+    )) as JsonRecord | null;
     const roles = (bindings?.roles ?? []) as unknown[];
     const scanner = roles.find(
       (role) => (role as JsonRecord)?.role === "scanner",
@@ -303,17 +297,13 @@ async function prepareScannerForSale(
   const capabilityDeadline = Date.now() + 30_000;
   let capability: JsonRecord | null = null;
   while (Date.now() < capabilityDeadline) {
-    capability = (await daemonGet(
-      handoff,
-      "/v1/sale-start-capability",
-    ).catch(() => null)) as JsonRecord | null;
-    const paymentOptions = capability?.paymentOptions as
-      | JsonRecord
-      | undefined;
+    capability = (await daemonGet(handoff, "/v1/sale-start-capability").catch(
+      () => null,
+    )) as JsonRecord | null;
+    const paymentOptions = capability?.paymentOptions as JsonRecord | undefined;
     const options = (paymentOptions?.options ?? []) as unknown[];
     const paymentCode = options.find(
-      (option) =>
-        (option as JsonRecord)?.optionKey === "payment_code:mock",
+      (option) => (option as JsonRecord)?.optionKey === "payment_code:mock",
     ) as JsonRecord | undefined;
     if (capability?.canStartSale === true && paymentCode?.ready === true)
       return { bindings, capability };
@@ -336,10 +326,7 @@ async function controlPlaneRequest(
     hostControlPlane?.endpoint,
     "hostControlPlane.endpoint",
   );
-  const token = required(
-    hostControlPlane?.token,
-    "hostControlPlane.token",
-  );
+  const token = required(hostControlPlane?.token, "hostControlPlane.token");
   return fetchJson(`${endpoint}${path}`, {
     method: "POST",
     headers: {
@@ -446,35 +433,29 @@ async function waitForTransactionAudioSettled(
     if (
       last !== null &&
       Array.isArray(playback) &&
-      playback.every(
-        (entry) => {
-          const record = entry as JsonRecord;
-          return record.queued && record.started && record.terminal;
-        },
-      ) &&
+      playback.every((entry) => {
+        const record = entry as JsonRecord;
+        return record.queued && record.started && record.terminal;
+      }) &&
       Array.isArray(conditionalPlayback) &&
-      conditionalPlayback.every(
-        (entry) => {
-          const record = entry as JsonRecord;
-          return (
-            (record.queued && record.started && record.terminal) ||
-            Boolean(
-              terminalSuccess?.some(
-                (terminal) =>
-                  (terminal as JsonRecord).type === "journey_transition",
-              ),
-            )
-          );
-        },
-      ) &&
+      conditionalPlayback.every((entry) => {
+        const record = entry as JsonRecord;
+        return (
+          (record.queued && record.started && record.terminal) ||
+          Boolean(
+            terminalSuccess?.some(
+              (terminal) =>
+                (terminal as JsonRecord).type === "journey_transition",
+            ),
+          )
+        );
+      }) &&
       last.pickupWaitingQueued === false &&
       terminalSuccess?.filter(
-        (terminal) =>
-          (terminal as JsonRecord).type === "journey_transition",
+        (terminal) => (terminal as JsonRecord).type === "journey_transition",
       ).length === 1 &&
       terminalSuccess?.every(
-        (terminal) =>
-          (terminal as JsonRecord).type === "journey_transition",
+        (terminal) => (terminal as JsonRecord).type === "journey_transition",
       )
     ) {
       if (last === null)
@@ -1101,14 +1082,16 @@ async function runDelayedPickupGuestFull(
         kind: "touch",
         timeoutMs: 30_000,
       });
-      paymentCodeSelected = Boolean(await evaluateExpression(
-        client,
-        `(() => {
+      paymentCodeSelected = Boolean(
+        await evaluateExpression(
+          client,
+          `(() => {
           const option = document.querySelector(${JSON.stringify(paymentCodeSelector)});
           const submit = document.querySelector('[data-test="checkout-submit"]');
           return Boolean(option?.classList.contains('payment-option-selected') && !submit?.hasAttribute('disabled'));
         })()`,
-      ));
+        ),
+      );
     }
     if (!paymentCodeSelected)
       throw new Error(
@@ -1237,10 +1220,7 @@ async function runDelayedPickupGuestFull(
       if (checkpoint?.screenshot?.ref)
         screenshotRefs.push(checkpoint.screenshot.ref);
     });
-    await waitForTransactionAudioSettled(
-      client,
-      String(completedSale.orderNo),
-    );
+    await waitForTransactionAudioSettled(client, String(completedSale.orderNo));
     const platformPost = terminal.platform;
     const platformRaw = (platformPost?.raw ?? {}) as JsonRecord;
     const platformCommands = (platformRaw.commands ?? []) as unknown[];

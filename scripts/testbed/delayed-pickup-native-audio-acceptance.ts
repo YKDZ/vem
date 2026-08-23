@@ -31,7 +31,10 @@ function arrayValue(value: unknown): unknown[] {
   return Array.isArray(value) ? (value as unknown[]) : [];
 }
 
-function diagnostic(code: string, detail: JsonRecord | null = null): JsonRecord {
+function diagnostic(
+  code: string,
+  detail: JsonRecord | null = null,
+): JsonRecord {
   return detail === null ? { code } : { code, detail };
 }
 
@@ -88,10 +91,7 @@ function deriveSerialSaleBinding(serial: JsonRecord): JsonRecord {
     serialSession?.saleCorrelationIds,
     "serial sale correlations",
   );
-  const sale = one(
-    serialSession?.saleBindings,
-    "serial sale bindings",
-  );
+  const sale = one(serialSession?.saleBindings, "serial sale bindings");
   if (
     sale.saleCorrelationId !== correlationId ||
     ![sale.orderId, sale.paymentId, sale.vendingCommandId].every(
@@ -243,10 +243,7 @@ export function verifyDelayedPickupNativeAudioProductionEvidence({
     );
   }
   try {
-    runtime = canonicalRuntime(
-      installedSaleValue,
-      machineValue,
-    );
+    runtime = canonicalRuntime(installedSaleValue, machineValue);
   } catch (error) {
     diagnostics.push(
       diagnostic("installed_runtime_handoff_invalid", {
@@ -290,9 +287,7 @@ export function verifyDelayedPickupNativeAudioProductionEvidence({
       const startRequest = recordValue(start.request);
       const startCaptureSession = recordValue(start.captureSession);
       const stopRequestRecord = recordValue(stopRequest);
-      const stopCaptureSession = recordValue(
-        stopRequestRecord.captureSession,
-      );
+      const stopCaptureSession = recordValue(stopRequestRecord.captureSession);
       if (
         startRequest.phase !== "start" ||
         startRequest.runId !== runId ||
@@ -415,9 +410,8 @@ export function verifyDelayedPickupNativeAudioProductionEvidence({
         clockOffsetMs:
           Date.parse(
             String(
-              recordValue(
-                recordValue(traceCues.dispense_succeeded).journey,
-              ).at ?? "",
+              recordValue(recordValue(traceCues.dispense_succeeded).journey)
+                .at ?? "",
             ),
           ) - Number(controllerF2.atMs),
       }),
@@ -432,9 +426,8 @@ export function verifyDelayedPickupNativeAudioProductionEvidence({
       clockOffsetMs:
         Date.parse(
           String(
-            recordValue(
-              recordValue(traceCues.dispense_succeeded).journey,
-            ).at ?? "",
+            recordValue(recordValue(traceCues.dispense_succeeded).journey).at ??
+              "",
           ),
         ) - Number(controllerF2.atMs),
       toleranceMs: Number(timing.controllerTimingToleranceMs),

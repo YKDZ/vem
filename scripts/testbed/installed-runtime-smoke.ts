@@ -188,10 +188,7 @@ export function validateInstalledRuntimeEvidence(value: unknown): JsonRecord {
         daemonRuntimeMode === "windows_service"
           ? {
               name: "VemVendingDaemon",
-              status: required(
-                daemonService.status,
-                "daemon service status",
-              ),
+              status: required(daemonService.status, "daemon service status"),
             }
           : null,
       ready: {
@@ -248,9 +245,9 @@ export async function runInstalledRuntimeSmoke({
   const healthResponse = await retryingFetch(
     String(runtimeDaemonReady.healthzUrl),
     {
-    headers: {
-      authorization: `Bearer ${runtimeDaemonReady.ipcToken}`,
-    },
+      headers: {
+        authorization: `Bearer ${runtimeDaemonReady.ipcToken}`,
+      },
     },
   );
   if (!healthResponse.ok) {
@@ -271,9 +268,9 @@ export async function runInstalledRuntimeSmoke({
   const readyResponse = await retryingFetch(
     String(runtimeDaemonReady.readyzUrl),
     {
-    headers: {
-      authorization: `Bearer ${runtimeDaemonReady.ipcToken}`,
-    },
+      headers: {
+        authorization: `Bearer ${runtimeDaemonReady.ipcToken}`,
+      },
     },
   );
   if (!readyResponse.ok) {
@@ -360,7 +357,9 @@ async function main(): Promise<void> {
   if (!isAbsolute(evidencePath) || !isAbsolute(out)) {
     throw new Error("--evidence and --out must be absolute paths");
   }
-  const evidence = JSON.parse(await readFile(evidencePath, "utf8")) as JsonRecord;
+  const evidence = JSON.parse(
+    await readFile(evidencePath, "utf8"),
+  ) as JsonRecord;
   const result = await runInstalledRuntimeSmoke({ mode, evidence });
   await writeFile(out, `${JSON.stringify(result, null, 2)}\n`, "utf8");
   process.stdout.write(`${JSON.stringify(result)}\n`);

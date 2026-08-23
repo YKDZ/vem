@@ -56,7 +56,10 @@ const REFERENCES = Object.freeze({
   saleCorrelationId: /^sale-correlation:\/\/[a-z0-9][a-z0-9._:-]{2,127}$/,
 });
 
-function diagnostic(code: string, detail: JsonRecord | null = null): JsonRecord {
+function diagnostic(
+  code: string,
+  detail: JsonRecord | null = null,
+): JsonRecord {
   return detail === null ? { code } : { code, detail };
 }
 
@@ -78,9 +81,7 @@ function canonicalId(name: string, value: unknown): boolean {
   if (["orderId", "commandId"].includes(name)) return UUID.test(value);
   if (name === "runId" || name === "orderNo" || name === "commandNo")
     return TOKEN_ID.test(value);
-  return (
-    REFERENCES[name as keyof typeof REFERENCES]?.test(value) === true
-  );
+  return REFERENCES[name as keyof typeof REFERENCES]?.test(value) === true;
 }
 
 function completeBinding(value: unknown, expected: JsonRecord): boolean {
@@ -131,7 +132,7 @@ function crc8(bytes: number[]): number {
 
 function decodeControllerCode(bytesHex: unknown): string | null {
   const match = /^55(f0|e5|f1|af|f2)$/i.exec(String(bytesHex ?? ""));
-  return match ? CODES.get(match[1].toLowerCase()) ?? null : null;
+  return match ? (CODES.get(match[1].toLowerCase()) ?? null) : null;
 }
 
 function validDispenseCommand(bytesHex: unknown): boolean {
@@ -196,8 +197,7 @@ export function analyzeDelayedPickupControllerFrames(
   const capture = recordValue(serialCapture);
   const diagnostics: JsonRecord[] = [];
   if (
-    capture?.schemaVersion !==
-      "host-production-serial-frame-capture/v1" ||
+    capture?.schemaVersion !== "host-production-serial-frame-capture/v1" ||
     !completeBinding(capture?.binding, expectedBinding) ||
     !Array.isArray(capture?.frames)
   ) {
@@ -327,13 +327,11 @@ export function analyzeDelayedPickupControllerFrames(
   const ordered = [f0, e5[0], e5[1], f1, f2].filter(Boolean);
   if (
     ordered.length === 5 &&
-    ordered.some(
-      (entry: JsonRecord, index: number) => {
-        if (index === 0) return false;
-        const previous = ordered[index - 1] as JsonRecord;
-        return (entry.atMs as number) <= (previous.atMs as number);
-      },
-    )
+    ordered.some((entry: JsonRecord, index: number) => {
+      if (index === 0) return false;
+      const previous = ordered[index - 1] as JsonRecord;
+      return (entry.atMs as number) <= (previous.atMs as number);
+    })
   )
     diagnostics.push(diagnostic("controller_timeline_order_invalid"));
   if (
@@ -373,11 +371,9 @@ export function analyzeDelayedPickupControllerFrames(
       ],
     ] as Array<[string, number, string]>)
       if (
-        Math.abs(
-          (deltas as JsonRecord)[String(name)] as number,
-        ) -
+        Math.abs((deltas as JsonRecord)[String(name)] as number) -
           Number(expected) >
-          Number(timing.controllerTimingToleranceMs)
+        Number(timing.controllerTimingToleranceMs)
       )
         diagnostics.push(diagnostic(code));
   }
@@ -440,25 +436,30 @@ export function analyzeDelayedPickupUiEvidence(
     captureEndMs <= captureStartMs
   )
     diagnostics.push(diagnostic("machine_capture_window_invalid"));
-  arrayValue(evidence.uiObservations).forEach((entry: unknown, index: number) => {
-    const entryRecord = recordValue(entry);
-    const atMs = timestamp(entryRecord?.observedAt);
-    if (
-      !UI_SURFACES.includes(String(entryRecord?.surface ?? "")) ||
-      entryRecord.route !== "#/dispensing" ||
-      atMs === null ||
-      (captureStartMs !== null && atMs < captureStartMs) ||
-      (captureEndMs !== null && atMs > captureEndMs) ||
-      !["orderId", "orderNo", "commandId", "commandNo"].every(
-        (name) =>
-          recordValue(entryRecord.observedSale)[name] === expectedBinding[name],
-      )
-    ) {
-      diagnostics.push(diagnostic("ui_observation_binding_invalid", { index }));
-      return;
-    }
-    observations.push({ ...entryRecord, atMs });
-  });
+  arrayValue(evidence.uiObservations).forEach(
+    (entry: unknown, index: number) => {
+      const entryRecord = recordValue(entry);
+      const atMs = timestamp(entryRecord?.observedAt);
+      if (
+        !UI_SURFACES.includes(String(entryRecord?.surface ?? "")) ||
+        entryRecord.route !== "#/dispensing" ||
+        atMs === null ||
+        (captureStartMs !== null && atMs < captureStartMs) ||
+        (captureEndMs !== null && atMs > captureEndMs) ||
+        !["orderId", "orderNo", "commandId", "commandNo"].every(
+          (name) =>
+            recordValue(entryRecord.observedSale)[name] ===
+            expectedBinding[name],
+        )
+      ) {
+        diagnostics.push(
+          diagnostic("ui_observation_binding_invalid", { index }),
+        );
+        return;
+      }
+      observations.push({ ...entryRecord, atMs });
+    },
+  );
   const firstBySurface = Object.fromEntries(
     UI_SURFACES.map((surface) => [
       surface,
@@ -472,15 +473,13 @@ export function analyzeDelayedPickupUiEvidence(
   ).filter((entry): entry is JsonRecord => Boolean(entry));
   if (
     ordered.length === UI_SURFACES.length &&
-    ordered.some(
-      (entry: JsonRecord, index: number) => {
-        if (index === 0) return false;
-        return (
-          (entry.atMs as number) <=
-          ((ordered[index - 1] as JsonRecord).atMs as number)
-        );
-      },
-    )
+    ordered.some((entry: JsonRecord, index: number) => {
+      if (index === 0) return false;
+      return (
+        (entry.atMs as number) <=
+        ((ordered[index - 1] as JsonRecord).atMs as number)
+      );
+    })
   )
     diagnostics.push(diagnostic("ui_surface_sequence_order_invalid"));
   return {
@@ -524,14 +523,14 @@ export function analyzeDelayedPickupRuntimeTrace(
     .map((entry: unknown) => recordValue(entry))
     .filter(
       (entry) =>
-      [
-        "journey_transition",
-        "audio_queued",
-        "audio_started",
-        "audio_terminal",
-        "audio_rejected",
-      ].includes(String(entry?.type ?? "")) &&
-      String(entry?.transitionId ?? "").startsWith(transitionPrefix),
+        [
+          "journey_transition",
+          "audio_queued",
+          "audio_started",
+          "audio_terminal",
+          "audio_rejected",
+        ].includes(String(entry?.type ?? "")) &&
+        String(entry?.transitionId ?? "").startsWith(transitionPrefix),
     );
   const ids = new Set<unknown>();
   const journeyTransitionIds = new Set<unknown>();
@@ -586,8 +585,7 @@ export function analyzeDelayedPickupRuntimeTrace(
     .map((entry) => entry.requestId);
   if (
     queuedRequestIds.some(
-      (requestId: unknown) =>
-        !AUDIO_REQUEST_ID.test(String(requestId ?? "")),
+      (requestId: unknown) => !AUDIO_REQUEST_ID.test(String(requestId ?? "")),
     ) ||
     new Set(queuedRequestIds).size !== queuedRequestIds.length
   )
@@ -1061,8 +1059,8 @@ function stockFor(checkpoint: unknown, platform: JsonRecord): unknown {
     .map((item: unknown) => recordValue(item))
     .filter(
       (item) =>
-      item?.inventoryId === platform.inventoryId &&
-      item?.slotId === platform.slotId,
+        item?.inventoryId === platform.inventoryId &&
+        item?.slotId === platform.slotId,
     );
   return matches.length === 1 ? matches[0].physicalStock : null;
 }
@@ -1153,7 +1151,8 @@ export function analyzeDaemonFulfillmentStoreEvidence(
   const f2Transaction = recordValue(f2?.transaction);
   if (
     f2Transaction?.orderNo !== expectedBinding.orderNo ||
-    recordValue(f2Transaction.vending).commandNo !== expectedBinding.commandNo ||
+    recordValue(f2Transaction.vending).commandNo !==
+      expectedBinding.commandNo ||
     f2Transaction?.nextAction !== "success" ||
     f2Transaction?.orderStatus !== "fulfilled" ||
     recordValue(f2Transaction.vending).status !== "succeeded"
@@ -1177,10 +1176,9 @@ export function correlateDelayedPickupCueWindows({
   captureCompletedAt,
   cues,
   clockOffsetMs = 0,
-  threshold =
-    DEFAULT_AUDIO_CUE_WINDOW_THRESHOLD as unknown as Parameters<
-      typeof inspectWavPcm
-    >[1],
+  threshold = DEFAULT_AUDIO_CUE_WINDOW_THRESHOLD as unknown as Parameters<
+    typeof inspectWavPcm
+  >[1],
 }: {
   captureBytes: Buffer;
   captureStartedAt: unknown;
@@ -1242,9 +1240,7 @@ export function correlateDelayedPickupCueWindows({
       diagnostics,
       inspections: [],
     };
-  const sampleWindow = recordValue(
-    inspectWavPcm(captureBytes, threshold),
-  );
+  const sampleWindow = recordValue(inspectWavPcm(captureBytes, threshold));
   if (!sampleWindow.ok) {
     return {
       ok: false,

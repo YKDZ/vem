@@ -1122,11 +1122,13 @@ export interface RecordedGeometryFixtureEvidence {
 }
 
 function geometryAssertions(validation: ResultGeometryValidation) {
-  return ([
-    ["result-sleeves-retained", validation.resultSleevesRetained],
-    ["result-uniform-placement", validation.resultUniformPlacement],
-    ["result-automatic-scale", validation.resultAutomaticScale],
-  ] as const).map(([id, value]) =>
+  return (
+    [
+      ["result-sleeves-retained", validation.resultSleevesRetained],
+      ["result-uniform-placement", validation.resultUniformPlacement],
+      ["result-automatic-scale", validation.resultAutomaticScale],
+    ] as const
+  ).map(([id, value]) =>
     businessAssertion({
       id,
       source: "vision-result-png-pixels",

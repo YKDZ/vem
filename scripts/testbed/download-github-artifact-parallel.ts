@@ -212,9 +212,7 @@ export async function findArtifact({
   const parsed = JSON.parse(listing.stdout) as unknown;
   const artifacts = Array.isArray(parsed) ? parsed : [parsed];
   const match = artifactName
-    ? artifacts.find(
-        (candidate: JsonRecord) => candidate.name === artifactName,
-      )
+    ? artifacts.find((candidate: JsonRecord) => candidate.name === artifactName)
     : artifacts.find(
         (candidate: JsonRecord) => candidate.id === Number(artifactId),
       );

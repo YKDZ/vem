@@ -141,11 +141,7 @@ function requireRegularUnlinkedFile(path: string, label: string): void {
     throw new Error(`${label} must be a regular non-linked file: ${path}`);
 }
 
-function bytesRecord(
-  path: string,
-  kind: string,
-  track: string,
-): JsonRecord {
+function bytesRecord(path: string, kind: string, track: string): JsonRecord {
   const content = readFileSync(path);
   return {
     path,
@@ -206,9 +202,7 @@ function primaryFailureReason(
     if (value && typeof value === "object") {
       const name =
         typeof recordValue(value).name === "string"
-          ? redactSensitiveEvidenceText(
-              String(recordValue(value).name).trim(),
-            )
+          ? redactSensitiveEvidenceText(String(recordValue(value).name).trim())
           : "";
       const message =
         typeof recordValue(value).message === "string"
@@ -220,10 +214,7 @@ function primaryFailureReason(
       if (message || name) return message || name;
     }
   }
-  for (const value of [
-    result?.error,
-    recordValue(result?.validator).reason,
-  ]) {
+  for (const value of [result?.error, recordValue(result?.validator).reason]) {
     if (typeof value === "string" && value.trim() !== "") return value.trim();
   }
   return null;
@@ -313,9 +304,7 @@ function reportTrace(
     );
     if (path) {
       try {
-        const evidence = JSON.parse(
-          readFileSync(path, "utf8"),
-        ) as JsonRecord;
+        const evidence = JSON.parse(readFileSync(path, "utf8")) as JsonRecord;
         if (
           evidence?.schemaVersion === "machine-production-evidence/v2" &&
           evidence?.source === "installed_canonical_machine_cdp" &&
@@ -373,10 +362,7 @@ function reportLog(
       "serial.rawFrames",
       recordValue(reportRecord.serial).rawFrames,
     ],
-    fulfillmentRecovery: [
-      "evidence.platformLog",
-      evidence.platformLog,
-    ],
+    fulfillmentRecovery: ["evidence.platformLog", evidence.platformLog],
   }[track] as [string, unknown] | undefined;
   if (!source || !meaningfulLog(source[1])) return null;
   return virtualRecord(reportPath, source[0], "logs", track, source[1]);
@@ -460,8 +446,7 @@ export function buildFullWorkflowEvidenceManifest({
     const result = recordValue(inputRecord.result);
     const evidenceTrust = recordValue(result.evidenceTrust);
     const reportTrusted = evidenceTrust?.report !== false;
-    const artifactRootTrusted =
-      evidenceTrust?.artifactRoot !== false;
+    const artifactRootTrusted = evidenceTrust?.artifactRoot !== false;
     if (!track) {
       blockingFailures.push("required evidence track identity is absent");
       continue;
@@ -486,9 +471,7 @@ export function buildFullWorkflowEvidenceManifest({
       }
     const businessStatus =
       result?.businessStatus === "passed" ? "passed" : "failed";
-    const evidencePolicy = (recordValue(inputRecord.evidence)[
-      businessStatus
-    ] ??
+    const evidencePolicy = (recordValue(inputRecord.evidence)[businessStatus] ??
       DEFAULT_EVIDENCE_POLICY[businessStatus]) as JsonRecord;
     let artifactFiles: string[] = [];
     if (!artifactRootTrusted) {
@@ -605,9 +588,7 @@ export function buildFullWorkflowEvidenceManifest({
       ),
       primaryReason: primaryFailureReason(report, result),
       diagnostics: [
-        ...physical.supporting.map(
-          (file: JsonRecord) => file.path,
-        ),
+        ...physical.supporting.map((file: JsonRecord) => file.path),
         ...logs.map((file: JsonRecord) => file.path),
       ],
     };
@@ -702,7 +683,8 @@ export function validateFullWorkflowEvidenceManifest(
   if (manifestRecord?.ok !== true)
     failures.push("evidence manifest is not passing");
   if (
-    JSON.stringify(manifestRecord?.limits) !== JSON.stringify(EVIDENCE_LIMITS) ||
+    JSON.stringify(manifestRecord?.limits) !==
+      JSON.stringify(EVIDENCE_LIMITS) ||
     JSON.stringify(manifestRecord?.requiredKinds) !==
       JSON.stringify(REQUIRED_KINDS)
   )
@@ -755,13 +737,11 @@ export function validateFullWorkflowEvidenceManifest(
           !owns(track.machineRuntimeTrace, "machineRuntimeTrace")
         )
           failures.push(`Machine Runtime Trace is not owned by ${track.key}`);
-        if (
-          arrayValue(track.logs).some((path: unknown) => !owns(path, "logs"))
-        )
+        if (arrayValue(track.logs).some((path: unknown) => !owns(path, "logs")))
           failures.push(`log evidence is not owned by ${track.key}`);
         if (
-          arrayValue(track.screenshots).some((path: unknown) =>
-            !owns(path, "screenshots"),
+          arrayValue(track.screenshots).some(
+            (path: unknown) => !owns(path, "screenshots"),
           )
         )
           failures.push(`screenshot evidence is not owned by ${track.key}`);
@@ -825,12 +805,11 @@ export function validateFullWorkflowEvidenceManifest(
   }
   const totalBytes = manifestFiles.reduce(
     (total: number, file: JsonRecord) =>
-      total + (Number.isInteger(file?.byteLength) ? Number(file.byteLength) : 0),
+      total +
+      (Number.isInteger(file?.byteLength) ? Number(file.byteLength) : 0),
     0,
   );
-  if (
-    totalBytes !== Number(recordValue(manifestRecord.totals).byteLength)
-  )
+  if (totalBytes !== Number(recordValue(manifestRecord.totals).byteLength))
     failures.push("evidence manifest total byte count is inconsistent");
   if (totalBytes > EVIDENCE_LIMITS.totalBytes)
     failures.push("evidence artifacts exceed the total size limit");
@@ -847,10 +826,7 @@ export function validateFullWorkflowEvidenceOwnedFiles(
     (entry: unknown) => recordValue(entry),
   )) {
     try {
-      requireRegularUnlinkedFile(
-        String(file.path),
-        "owned evidence artifact",
-      );
+      requireRegularUnlinkedFile(String(file.path), "owned evidence artifact");
       const content = readFileSync(String(file.path));
       const digest = createHash("sha256").update(content).digest("hex");
       if (
@@ -914,8 +890,7 @@ export function validateFullWorkflowEvidenceUploadFiles(
   const digest = createHash("sha256").update(manifestFile.raw).digest("hex");
   if (
     evidenceInventory?.reportPath !== manifestFile.path ||
-    manifestFileValue?.byteLength !==
-      manifestFile.raw.byteLength ||
+    manifestFileValue?.byteLength !== manifestFile.raw.byteLength ||
     manifestFileValue?.sha256 !== digest
   )
     throw new Error(

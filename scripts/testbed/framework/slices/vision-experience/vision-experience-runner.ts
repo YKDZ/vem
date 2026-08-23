@@ -888,9 +888,7 @@ export async function main(
         ? "completed"
         : "failed",
       {
-        reportOk: report.businessSets.every(
-          (set) => set.status === "passed",
-        ),
+        reportOk: report.businessSets.every((set) => set.status === "passed"),
       },
     );
     const serialized = `${JSON.stringify(report, null, 2)}\n`;

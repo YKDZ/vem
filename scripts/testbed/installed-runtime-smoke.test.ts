@@ -214,9 +214,7 @@ describe("installed production runtime smoke", () => {
     const result = await runInstalledRuntimeSmoke({
       mode: "fast",
       evidence: evidence(),
-      fetchImpl: (async (
-        ...args: Parameters<typeof fetchBoundary>
-      ) => {
+      fetchImpl: (async (...args: Parameters<typeof fetchBoundary>) => {
         attempts += 1;
         if (attempts === 1) throw new TypeError("fetch failed");
         return fetchBoundary(...args);

@@ -210,9 +210,7 @@ export function parseSyncOptions(args: string[]): JsonRecord {
     outputRoot: resolve(outputRoot),
     hostConfigPath: resolve(hostConfigPath),
     mainArtifactRoot:
-      typeof mainArtifactRoot === "string"
-        ? resolve(mainArtifactRoot)
-        : null,
+      typeof mainArtifactRoot === "string" ? resolve(mainArtifactRoot) : null,
     download: flags.has("download"),
     repo:
       typeof flags.get("repo") === "string"
@@ -230,10 +228,7 @@ export async function main(
     const archive = await downloadArtifactParallel({
       repo: String(options.repo),
       artifactName: `vending-vision-main-${String(options.commit)}`,
-      output: join(
-        tmpdir(),
-        `vem-vision-main-${String(options.commit)}.zip`,
-      ),
+      output: join(tmpdir(), `vem-vision-main-${String(options.commit)}.zip`),
       connections: 16,
       maxUrlRefreshes: 60,
       pollMs: 2_000,

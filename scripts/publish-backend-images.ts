@@ -52,9 +52,10 @@ export function registryBuildArgs(
   return registry ? ["--build-arg", `NPM_CONFIG_REGISTRY=${registry}`] : [];
 }
 
-export function publish(
-  args: string[] = process.argv.slice(2),
-): { commit: string; images: string[] } {
+export function publish(args: string[] = process.argv.slice(2)): {
+  commit: string;
+  images: string[];
+} {
   const head = run("git", ["rev-parse", "HEAD"]);
   const commit = validateCommit(option(args, "--commit"));
   const checkedOut = run("git", [

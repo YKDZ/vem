@@ -98,9 +98,7 @@ export function inspectPng(
     if (
       !Array.isArray(colorRgb) ||
       colorRgb.length !== 3 ||
-      colorRgb.some(
-        (component: unknown) => !Number.isInteger(component),
-      ) ||
+      colorRgb.some((component: unknown) => !Number.isInteger(component)) ||
       !region ||
       !Number.isInteger(region.x) ||
       !Number.isInteger(region.y) ||
@@ -121,7 +119,7 @@ export function inspectPng(
   } catch {
     return malformed("PNG image data cannot be decompressed");
   }
-    if (raw.length !== height * (stride + 1))
+  if (raw.length !== height * (stride + 1))
     return malformed("PNG scanlines are invalid");
   let previous = Buffer.alloc(stride);
   const pixels = new Set();
@@ -163,8 +161,7 @@ export function inspectPng(
         row <
           Number(recordValue(challenge.region).y) +
             Number(recordValue(challenge.region).height) &&
-        pixel[0] ===
-          Number(arrayValue(challenge.colorRgb)[0]) &&
+        pixel[0] === Number(arrayValue(challenge.colorRgb)[0]) &&
         pixel[1] === Number(arrayValue(challenge.colorRgb)[1]) &&
         pixel[2] === Number(arrayValue(challenge.colorRgb)[2]) &&
         (channels === 3 || pixel[3] > 0)

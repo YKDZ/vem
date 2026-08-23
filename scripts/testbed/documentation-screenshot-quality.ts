@@ -324,8 +324,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   const result = await evaluateDocumentationScreenshotFile({
     screenshotPath: String(options.screenshotPath),
     metadataPath: String(options.metadataPath),
-    outputPath:
-      options.outputPath == null ? null : String(options.outputPath),
+    outputPath: options.outputPath == null ? null : String(options.outputPath),
   });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   if (result.status === "rejected") process.exitCode = 1;

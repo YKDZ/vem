@@ -292,10 +292,7 @@ function movementRowsByOrderNo(
 function daemonBaseUrl(handoff: HandoffRecord): string {
   const daemon = handoff.daemon as JsonRecord | undefined;
   const ready = daemon?.ready as JsonRecord | undefined;
-  const healthzUrl = required(
-    ready?.healthzUrl,
-    "daemon healthzUrl",
-  );
+  const healthzUrl = required(ready?.healthzUrl, "daemon healthzUrl");
   if (!healthzUrl.endsWith("/healthz")) {
     throw new Error("daemon healthzUrl must end with /healthz");
   }
@@ -387,9 +384,7 @@ function captureNextSerialScannerEvent(
     async waitForEventId(eventId, timeoutMs = 30_000) {
       const deadline = Date.now() + timeoutMs;
       while (Date.now() < deadline) {
-        const event = events.find(
-          (candidate) => candidate.eventId === eventId,
-        );
+        const event = events.find((candidate) => candidate.eventId === eventId);
         if (event) return event;
         await sleep(50);
       }
@@ -525,7 +520,7 @@ function scannerQemuMapping(sessionStart: JsonRecord | null | undefined) {
     ) as JsonRecord | undefined;
     if (
       !mapping ||
-      !((mapping.guestUsbTopology as JsonRecord | undefined)?.alias)
+      !(mapping.guestUsbTopology as JsonRecord | undefined)?.alias
     ) {
       throw new Error(
         `QEMU USB mapping for ${role} is missing live libvirt USB topology`,
@@ -551,7 +546,10 @@ async function fetchJson(
   return payload;
 }
 
-async function daemonGet(handoff: HandoffRecord, path: string): Promise<unknown> {
+async function daemonGet(
+  handoff: HandoffRecord,
+  path: string,
+): Promise<unknown> {
   return fetchJson(`${daemonBaseUrl(handoff)}${path}`, {
     headers: daemonHeaders(handoff),
   });
@@ -569,10 +567,7 @@ async function controlPlaneRequest(
     hostControlPlane?.endpoint,
     "hostControlPlane.endpoint",
   );
-  const token = required(
-    hostControlPlane?.token,
-    "hostControlPlane.token",
-  );
+  const token = required(hostControlPlane?.token, "hostControlPlane.token");
   return fetchJson(`${endpoint}${path}`, {
     method: "POST",
     headers: {
@@ -648,9 +643,8 @@ export function paymentCodeAttemptCorrelationReady(
   transaction: JsonRecord | null | undefined,
   renderedSale: JsonRecord,
 ): boolean {
-  const attempt = (transaction?.paymentCodeAttempt ?? null) as
-    | JsonRecord
-    | null;
+  const attempt = (transaction?.paymentCodeAttempt ??
+    null) as JsonRecord | null;
   return (
     transaction?.orderId === renderedSale.orderId &&
     transaction?.paymentId === renderedSale.paymentId &&
@@ -708,10 +702,7 @@ export async function waitForHardwareBindings(
       ? (snapshotRecord.roles as unknown[])
       : [];
     const resolved = Object.fromEntries(
-      roles.map((role) => [
-        (role as JsonRecord).role,
-        role,
-      ]),
+      roles.map((role) => [(role as JsonRecord).role, role]),
     ) as Record<string, JsonRecord>;
     const lower = resolved.lower_controller;
     const scanner = resolved.scanner;
@@ -921,7 +912,11 @@ export async function replaceScannerSerialSessionAndUpdateHandoff({
   guestInput: GuestInputRecord;
   handoff: HandoffRecord;
   handoffPath: string;
-  control?: (input: GuestInputRecord, path: string, body?: JsonRecord) => Promise<unknown>;
+  control?: (
+    input: GuestInputRecord,
+    path: string,
+    body?: JsonRecord,
+  ) => Promise<unknown>;
   writeJsonFile?: (path: string, value: unknown) => void;
 }): Promise<JsonRecord> {
   const replaced = (await replaceSerialSessionAndUpdateHandoff({
@@ -1051,9 +1046,8 @@ export async function admitScannerPaymentSession({
     const saleStartCapability = await waitForSale(handoff);
     quietScannerCapture = captureScannerEvent(handoff);
     await quietScannerCapture.opened;
-    const scannerBindingProbe = (await sessionControl.stopScannerProbe()) as
-      | JsonRecord
-      | null;
+    const scannerBindingProbe =
+      (await sessionControl.stopScannerProbe()) as JsonRecord | null;
     const scannerProbe = scannerBindingProbe?.scannerBindingProbe as
       | JsonRecord
       | undefined;
@@ -1113,9 +1107,7 @@ export function assertNoAttemptOrDuplicatePayment(
   if (paymentIds.size !== 1 || !paymentIds.has(renderedSale.paymentId)) {
     throw new Error(`${label} duplicated or replaced the payment row`);
   }
-  if (
-    movementRowsByOrderNo(post, String(renderedSale.orderNo)).length !== 0
-  ) {
+  if (movementRowsByOrderNo(post, String(renderedSale.orderNo)).length !== 0) {
     throw new Error(`${label} must not vend before a valid scanner frame`);
   }
   if (
@@ -1208,10 +1200,7 @@ export function validateSuccessfulOutcome({
       "successful scan must complete exactly one correlated vending command",
     );
   }
-  const movements = movementRowsByOrderNo(
-    post,
-    String(renderedSale.orderNo),
-  );
+  const movements = movementRowsByOrderNo(post, String(renderedSale.orderNo));
   if (movements.length !== 1) {
     throw new Error(
       "successful scan must produce exactly one total movement for the order",
@@ -1292,10 +1281,8 @@ export function validateSuccessfulOutcome({
       baseline,
       String(renderedSale.orderId),
     ).length,
-    finalPaymentCount: paymentRowsByOrder(
-      post,
-      String(renderedSale.orderId),
-    ).length,
+    finalPaymentCount: paymentRowsByOrder(post, String(renderedSale.orderId))
+      .length,
     inventory: {
       id: baselineInventoryRecord.id,
       baselineOnHandQty: baselineInventoryRecord.onHandQty,
@@ -1466,12 +1453,9 @@ export async function runScannerPaymentCodeGuest(options: {
       timeoutMs?: number;
     }>;
     if (options.fixtureKey) {
-      const productStep = steps.find(
-        (step) => step.name === "catalog product",
-      );
+      const productStep = steps.find((step) => step.name === "catalog product");
       if (productStep) {
-        productStep.selector =
-        catalogProductSelectorForFixture(
+        productStep.selector = catalogProductSelectorForFixture(
           guestInput.fixtureAllocation as JsonRecord | undefined,
           options.fixtureKey,
         );
@@ -1672,14 +1656,10 @@ export async function runScannerPaymentCodeGuest(options: {
             String(renderedSale.orderId),
           ).length,
           paymentDelta:
-            paymentRowsByOrder(
-              postMalformed,
-              String(renderedSale.orderId),
-            ).length -
-            paymentRowsByOrder(
-              paymentBaseline,
-              String(renderedSale.orderId),
-            ).length,
+            paymentRowsByOrder(postMalformed, String(renderedSale.orderId))
+              .length -
+            paymentRowsByOrder(paymentBaseline, String(renderedSale.orderId))
+              .length,
         },
         timeout: {
           platformCapturedAt: postTimeout.capturedAt,
@@ -1688,14 +1668,10 @@ export async function runScannerPaymentCodeGuest(options: {
             String(renderedSale.orderId),
           ).length,
           paymentDelta:
-            paymentRowsByOrder(
-              postTimeout,
-              String(renderedSale.orderId),
-            ).length -
-            paymentRowsByOrder(
-              paymentBaseline,
-              String(renderedSale.orderId),
-            ).length,
+            paymentRowsByOrder(postTimeout, String(renderedSale.orderId))
+              .length -
+            paymentRowsByOrder(paymentBaseline, String(renderedSale.orderId))
+              .length,
         },
         scannerQuietBoundary,
       },
@@ -1743,9 +1719,9 @@ export async function runScannerPaymentCodeGuest(options: {
       ).catch((captureError) => ({ error: String(captureError) }));
     }
     if (client) {
-      (failureReport.evidence as JsonRecord).ui = await readUiBoundary(client).catch(
-        (captureError) => ({ error: String(captureError) }),
-      );
+      (failureReport.evidence as JsonRecord).ui = await readUiBoundary(
+        client,
+      ).catch((captureError) => ({ error: String(captureError) }));
       checkpoints.push(
         await captureCheckpoint(client, "scanner-payment-code-failure", {
           screenshot: true,

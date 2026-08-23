@@ -44,7 +44,9 @@ function ensureMonotonicTrace(trace: JsonRecord[]): void {
   }
 }
 
-function checkpointsByLabel(checkpoints: JsonRecord[]): Map<string, JsonRecord> {
+function checkpointsByLabel(
+  checkpoints: JsonRecord[],
+): Map<string, JsonRecord> {
   const byLabel = new Map<string, JsonRecord>();
   for (const checkpoint of checkpoints) {
     const label = requiredString(checkpoint?.label, "checkpoint.label");
@@ -130,9 +132,7 @@ function assertLifecycleOnce(
   ) {
     throw new Error(`${label} audio request correlation is invalid`);
   }
-  if (
-    !allowedTerminalOutcomes.includes(String(terminal.outcome ?? ""))
-  ) {
+  if (!allowedTerminalOutcomes.includes(String(terminal.outcome ?? ""))) {
     throw new Error(
       `${label} audio terminal outcome must be ${allowedTerminalOutcomes.join(" or ")}`,
     );
@@ -198,15 +198,13 @@ function assertAutomaticVentEvidence(
     speeds.length !== 2 ||
     speeds[0] !== 3 ||
     speeds[1] !== 0 ||
-    protocolFrames.some(
-      (frame: unknown, index: number) => {
-        const frameRecord = recordValue(frame);
-        return (
-          frameRecord?.parsedOpcode !== "B3" ||
-          b3Speed(frameRecord) !== Number(speeds[index])
-        );
-      },
-    )
+    protocolFrames.some((frame: unknown, index: number) => {
+      const frameRecord = recordValue(frame);
+      return (
+        frameRecord?.parsedOpcode !== "B3" ||
+        b3Speed(frameRecord) !== Number(speeds[index])
+      );
+    })
   ) {
     throw new Error(
       "automatic B3 evidence must contain exactly one 3 then one 0",
@@ -234,7 +232,10 @@ function assertAutomaticVentEvidence(
   if (
     edgeCorrelation.length !== expected.length ||
     expected.some(
-      ([edgeId, transitionId, speed]: [string, string, number], index: number) =>
+      (
+        [edgeId, transitionId, speed]: [string, string, number],
+        index: number,
+      ) =>
         recordValue(edgeCorrelation[index]).edgeId !== edgeId ||
         recordValue(edgeCorrelation[index]).transitionId !== transitionId ||
         recordValue(edgeCorrelation[index]).speed !== speed ||
@@ -319,9 +320,7 @@ function validateCategoryScenario(
   if (lifecycle.started.message !== "native") {
     throw new Error(`category ${key} must start through native playback`);
   }
-  if (
-    Number(lifecycle.started.id) > Number(detailCheckpoint.traceId)
-  ) {
+  if (Number(lifecycle.started.id) > Number(detailCheckpoint.traceId)) {
     throw new Error(`category ${key} introduction started too late`);
   }
   const duplicateStarts = traceBetween(
@@ -397,14 +396,12 @@ export function validatePresenceAndAudioAcceptanceEvidence(
   ) {
     throw new Error("presence and audio native capture is incomplete");
   }
-  const cueWindows = assertArray(
-    audio.cueWindows,
-    "audio.cueWindows",
-  ).map((entry: unknown) => assertDetectedCueWindow(recordValue(entry)));
-  const trace = assertArray(
-    acceptance.runtimeTrace,
-    "runtimeTrace",
-  ).map((entry: unknown) => recordValue(entry));
+  const cueWindows = assertArray(audio.cueWindows, "audio.cueWindows").map(
+    (entry: unknown) => assertDetectedCueWindow(recordValue(entry)),
+  );
+  const trace = assertArray(acceptance.runtimeTrace, "runtimeTrace").map(
+    (entry: unknown) => recordValue(entry),
+  );
   ensureMonotonicTrace(trace);
   const checkpoints = checkpointsByLabel(
     assertArray(acceptance.checkpoints, "checkpoints").map((entry: unknown) =>
@@ -459,9 +456,7 @@ export function validatePresenceAndAudioAcceptanceEvidence(
     "initial welcome",
     ["completed", "stopped"],
   );
-  if (
-    Number(initialLifecycle.started.id) > Number(stableCheckpoint.traceId)
-  ) {
+  if (Number(initialLifecycle.started.id) > Number(stableCheckpoint.traceId)) {
     throw new Error("stable arrival did not start welcome before settling");
   }
   const initialWindow = welcomeStartsBetween(
@@ -510,14 +505,11 @@ export function validatePresenceAndAudioAcceptanceEvidence(
     ["completed", "stopped"],
   );
   if (
-    Number(rearmedLifecycle.started.id) <=
-    Number(departureCheckpoint.traceId)
+    Number(rearmedLifecycle.started.id) <= Number(departureCheckpoint.traceId)
   ) {
     throw new Error("rearmed welcome started before sustained departure");
   }
-  if (
-    Number(rearmedLifecycle.started.id) > Number(rearmedCheckpoint.traceId)
-  ) {
+  if (Number(rearmedLifecycle.started.id) > Number(rearmedCheckpoint.traceId)) {
     throw new Error("new arrival did not replay welcome after sustained empty");
   }
   const rearmedWindow = welcomeStartsBetween(
@@ -536,8 +528,7 @@ export function validatePresenceAndAudioAcceptanceEvidence(
       trace,
       initialFenceTraceId,
       Number(rearmedCheckpoint.traceId),
-    )
-      .length !== 2
+    ).length !== 2
   ) {
     throw new Error("welcome played an unexpected number of times");
   }

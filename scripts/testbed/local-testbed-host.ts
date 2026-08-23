@@ -664,33 +664,35 @@ function runCapture(
   input?: string | Buffer,
   _legacyInput?: unknown,
 ): Promise<{ stdout: string; stderr: string }> {
-  return new Promise<{ stdout: string; stderr: string }>((resolvePromise, reject) => {
-    const child = spawn(command, args, {
-      stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
-    });
-    if (input !== undefined) child.stdin?.end(input);
-    let stdout = "";
-    let stderr = "";
-    child.stdout?.setEncoding("utf8");
-    child.stderr?.setEncoding("utf8");
-    child.stdout?.on("data", (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr?.on("data", (chunk) => {
-      stderr += chunk;
-    });
-    child.once("error", reject);
-    child.once("exit", (code) => {
-      if (code === 0) resolvePromise({ stdout, stderr });
-      else {
-        reject(
-          new Error(
-            `${command} exited with ${code ?? "signal"}: ${stderr || stdout}`,
-          ),
-        );
-      }
-    });
-  });
+  return new Promise<{ stdout: string; stderr: string }>(
+    (resolvePromise, reject) => {
+      const child = spawn(command, args, {
+        stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+      });
+      if (input !== undefined) child.stdin?.end(input);
+      let stdout = "";
+      let stderr = "";
+      child.stdout?.setEncoding("utf8");
+      child.stderr?.setEncoding("utf8");
+      child.stdout?.on("data", (chunk) => {
+        stdout += chunk;
+      });
+      child.stderr?.on("data", (chunk) => {
+        stderr += chunk;
+      });
+      child.once("error", reject);
+      child.once("exit", (code) => {
+        if (code === 0) resolvePromise({ stdout, stderr });
+        else {
+          reject(
+            new Error(
+              `${command} exited with ${code ?? "signal"}: ${stderr || stdout}`,
+            ),
+          );
+        }
+      });
+    },
+  );
 }
 
 async function waitForSsh(config: HostConfig): Promise<void> {
@@ -804,8 +806,7 @@ async function executeAdmission(options: JsonRecord): Promise<JsonRecord> {
     config: options.config,
     guestInputPath: options.guestInputPath,
     runId: options.runId,
-    hostNow:
-      options.hostNow instanceof Date ? options.hostNow : new Date(),
+    hostNow: options.hostNow instanceof Date ? options.hostNow : new Date(),
   });
   const { displayAdmissionProof } = await executeHostAdmissionPlan(plan);
   return {
@@ -971,7 +972,9 @@ async function executeHeadlessVncActivatorService(
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
     process.once(signal, onSignal);
   }
-  let activator: Awaited<ReturnType<typeof startHeadlessVncActivator>> | undefined;
+  let activator:
+    | Awaited<ReturnType<typeof startHeadlessVncActivator>>
+    | undefined;
   try {
     activator = await startHeadlessVncActivator({
       domainName: options.domainName,

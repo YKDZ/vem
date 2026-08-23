@@ -127,10 +127,7 @@ function writeJson(path: string, value: unknown): void {
   writeFileSync(localPath(path), `${JSON.stringify(value, null, 2)}\n`);
 }
 
-function rows(
-  report: JsonRecord | null | undefined,
-  name: string,
-): unknown[] {
+function rows(report: JsonRecord | null | undefined, name: string): unknown[] {
   const raw = report?.raw as JsonRecord | undefined;
   return Array.isArray(raw?.[name]) ? (raw?.[name] as unknown[]) : [];
 }
@@ -138,10 +135,7 @@ function rows(
 function daemonBaseUrl(handoff: HandoffRecord): string {
   const daemon = handoff.daemon as JsonRecord | undefined;
   const ready = daemon?.ready as JsonRecord | undefined;
-  const healthzUrl = required(
-    ready?.healthzUrl,
-    "daemon healthzUrl",
-  );
+  const healthzUrl = required(ready?.healthzUrl, "daemon healthzUrl");
   if (!healthzUrl.endsWith("/healthz"))
     throw new Error("daemon healthzUrl must end with /healthz");
   return healthzUrl.slice(0, -"/healthz".length);
@@ -231,14 +225,16 @@ async function selectMockPaymentAndSubmit(
       kind: "touch",
       timeoutMs: 30_000,
     });
-    selected = Boolean(await evaluateExpression(
-      client,
-      `(() => {
+    selected = Boolean(
+      await evaluateExpression(
+        client,
+        `(() => {
         const option = document.querySelector(${JSON.stringify(paymentSelector)});
         const submit = document.querySelector('[data-test="checkout-submit"]');
         return Boolean(option?.classList.contains('payment-option-selected') && submit && !submit.hasAttribute('disabled'));
       })()`,
-    ));
+      ),
+    );
     if (!selected) await sleep(250);
   }
   if (!selected) {
@@ -295,16 +291,16 @@ export async function recoverWholeMachineLockAfterFulfillmentFailure({
     path: string,
     body?: JsonRecord,
   ) => Promise<unknown>;
-  waitForReady?: (handoff: HandoffRecord, options?: unknown) => Promise<unknown>;
+  waitForReady?: (
+    handoff: HandoffRecord,
+    options?: unknown,
+  ) => Promise<unknown>;
   waitForBindings?: (
     handoff: HandoffRecord,
     sessionStart: JsonRecord,
     timeoutMs?: number,
   ) => Promise<JsonRecord>;
-  daemonGetRequest?: (
-    handoff: HandoffRecord,
-    path: string,
-  ) => Promise<unknown>;
+  daemonGetRequest?: (handoff: HandoffRecord, path: string) => Promise<unknown>;
   daemonPostRequest?: (
     handoff: HandoffRecord,
     path: string,
@@ -320,8 +316,7 @@ export async function recoverWholeMachineLockAfterFulfillmentFailure({
       serialScenario: "normal",
       saleCorrelationId: `sale-correlation://serial-recovery-${Date.now()}`,
       targetIdentity: required(
-        (guestInput.hostControlPlane as JsonRecord | undefined)
-          ?.targetIdentity,
+        (guestInput.hostControlPlane as JsonRecord | undefined)?.targetIdentity,
         "hostControlPlane.targetIdentity",
       ),
       runtimeBase: required(
@@ -357,11 +352,11 @@ export async function recoverWholeMachineLockAfterFulfillmentFailure({
       "/v1/sale-start-capability",
     );
     if (
-      ((capability as JsonRecord | null)?.blockers as unknown[] | undefined)
-        ?.some(
-        (blocker) =>
-          (blocker as JsonRecord)?.code === "WHOLE_MACHINE_LOCKED",
-        )
+      (
+        (capability as JsonRecord | null)?.blockers as unknown[] | undefined
+      )?.some(
+        (blocker) => (blocker as JsonRecord)?.code === "WHOLE_MACHINE_LOCKED",
+      )
     ) {
       throw new Error(
         "whole-machine lock remained after healthy controller recovery",
@@ -385,10 +380,9 @@ async function waitForCommand(
   const deadline = Date.now() + timeoutMs;
   let last: JsonRecord | null = null;
   while (Date.now() < deadline) {
-    last = (await daemonGet(
-      handoff,
-      "/v1/transactions/current",
-    ).catch(() => null)) as JsonRecord | null;
+    last = (await daemonGet(handoff, "/v1/transactions/current").catch(
+      () => null,
+    )) as JsonRecord | null;
     const vending = last?.vending as JsonRecord | undefined;
     const commandId = vending?.commandId ?? last?.dispenseCommandId;
     if (
@@ -425,9 +419,7 @@ async function readPaymentSurface(
   return surface;
 }
 
-function readUi(
-  client: InstanceType<typeof CdpClient>,
-): Promise<unknown> {
+function readUi(client: InstanceType<typeof CdpClient>): Promise<unknown> {
   return evaluateExpression(
     client,
     `(() => {
@@ -460,9 +452,11 @@ function inventoryQuantity(
   report: JsonRecord | null | undefined,
   inventoryId: string,
 ): unknown {
-  return (rows(report, "inventories").find(
-    (row) => (row as JsonRecord).id === inventoryId,
-  ) as JsonRecord | undefined)?.onHandQty;
+  return (
+    rows(report, "inventories").find(
+      (row) => (row as JsonRecord).id === inventoryId,
+    ) as JsonRecord | undefined
+  )?.onHandQty;
 }
 
 export function validateSerialFulfillmentErrorEvidence(
@@ -542,25 +536,18 @@ export function validateSerialFulfillmentErrorEvidence(
   if (!opcodes.includes("E6") || opcodes.includes("F2")) {
     throw new Error("serial failure must contain E6 and must not contain F2");
   }
-  const protocolMilestones = orderedProtocolMilestones(
-    protocolFrames,
-    [...EXPECTED_E6_PROTOCOL_SEQUENCE],
-  );
+  const protocolMilestones = orderedProtocolMilestones(protocolFrames, [
+    ...EXPECTED_E6_PROTOCOL_SEQUENCE,
+  ]);
   if (!protocolMilestones) {
     throw new Error(
       `serial failure raw protocol must contain ${EXPECTED_E6_PROTOCOL_SEQUENCE.join(" -> ")}`,
     );
   }
 
-  const f0 = protocolMilestones.find(
-    (frame) => frame.parsedOpcode === "F0",
-  );
-  const e5 = protocolMilestones.filter(
-    (frame) => frame.parsedOpcode === "E5",
-  );
-  const f1 = protocolMilestones.find(
-    (frame) => frame.parsedOpcode === "F1",
-  );
+  const f0 = protocolMilestones.find((frame) => frame.parsedOpcode === "F0");
+  const e5 = protocolMilestones.filter((frame) => frame.parsedOpcode === "E5");
+  const f1 = protocolMilestones.find((frame) => frame.parsedOpcode === "F1");
   const f0At = parseIsoTimestamp(f0?.capturedAt);
   const firstE5At = parseIsoTimestamp(e5[0]?.capturedAt);
   const secondE5At = parseIsoTimestamp(e5[1]?.capturedAt);
@@ -670,7 +657,13 @@ export async function runSerialFulfillmentErrorGuest(options: {
     mode: options.mode,
     evidence: { checkpoints },
   };
-  const screenshotSink = ({ bytes, label }: { bytes: Uint8Array; label: string }) => {
+  const screenshotSink = ({
+    bytes,
+    label,
+  }: {
+    bytes: Uint8Array;
+    label: string;
+  }) => {
     const path = join(
       dirname(localPath(options.outPath)),
       "serial-fulfillment-error-artifacts",
@@ -687,9 +680,11 @@ export async function runSerialFulfillmentErrorGuest(options: {
       screenshotSink,
     }).catch((error) => ({ label, error: String(error) }));
     checkpoints.push(checkpoint);
-    (report.evidence as JsonRecord).ui = await readUi(client).catch((error) => ({
-      error: String(error),
-    }));
+    (report.evidence as JsonRecord).ui = await readUi(client).catch(
+      (error) => ({
+        error: String(error),
+      }),
+    );
   };
   const cleanup = async (): Promise<void> => {
     if (!session || cleaned) return;
@@ -703,7 +698,11 @@ export async function runSerialFulfillmentErrorGuest(options: {
           vendingCommandId: (liveSale as JsonRecord).vendingCommandId,
         }
       : {};
-    report.cleanup = await control(guestInput as GuestInputRecord, path, body as JsonRecord).catch((error) => ({
+    report.cleanup = await control(
+      guestInput as GuestInputRecord,
+      path,
+      body as JsonRecord,
+    ).catch((error) => ({
       error: String(error),
     }));
   };
@@ -739,8 +738,7 @@ export async function runSerialFulfillmentErrorGuest(options: {
       serialScenario: "e6",
       saleCorrelationId: `sale-correlation://serial-e6-${Date.now()}`,
       targetIdentity: required(
-        (guestInput.hostControlPlane as JsonRecord | undefined)
-          ?.targetIdentity,
+        (guestInput.hostControlPlane as JsonRecord | undefined)?.targetIdentity,
         "hostControlPlane.targetIdentity",
       ),
       runtimeBase: required(
@@ -762,14 +760,14 @@ export async function runSerialFulfillmentErrorGuest(options: {
     );
     (evidence as JsonRecord).saleStartCapability =
       await waitForSaleStartCapability(
-      (path) => daemonGet(handoff as HandoffRecord, path),
-      { paymentOptionKey: "mock:mock" },
-    );
+        (path) => daemonGet(handoff as HandoffRecord, path),
+        { paymentOptionKey: "mock:mock" },
+      );
     stage = "physical-tauri-payment";
     if (options.fixtureKey) {
-      const fixture = (guestInput.fixtureAllocation as JsonRecord | undefined)?.[
-        options.fixtureKey
-      ] as JsonRecord | undefined;
+      const fixture = (
+        guestInput.fixtureAllocation as JsonRecord | undefined
+      )?.[options.fixtureKey] as JsonRecord | undefined;
       await openFixtureProductFromCatalog({
         client,
         slotId: required(fixture?.slotId, `${options.fixtureKey} slotId`),
@@ -843,10 +841,7 @@ export async function runSerialFulfillmentErrorGuest(options: {
         { parsedOpcode: "F0", timeoutMs: 30_000 },
       ),
     };
-    evidence.daemon = await daemonGet(
-      handoff,
-      "/v1/transactions/current",
-    );
+    evidence.daemon = await daemonGet(handoff, "/v1/transactions/current");
     (evidence.boundaries as JsonRecord).e6 = await control(
       guestInput,
       `/v1/serial-sessions/${String(activeSession.sessionId)}/wait-frame`,
@@ -960,20 +955,20 @@ export async function runSerialFulfillmentErrorGuest(options: {
     report.stage = stage;
     report.error = error instanceof Error ? error.message : String(error);
     if (guestInput && report.runId && report.machineCode) {
-    (report.evidence as JsonRecord).failurePlatform = await platform(
-      guestInput as GuestInputRecord,
-      String(report.runId),
-      String(report.machineCode),
-      session?.sessionId != null ? String(session.sessionId) : null,
+      (report.evidence as JsonRecord).failurePlatform = await platform(
+        guestInput as GuestInputRecord,
+        String(report.runId),
+        String(report.machineCode),
+        session?.sessionId != null ? String(session.sessionId) : null,
       ).catch((failure) => ({ error: String(failure) }));
     }
     if (handoff)
-    (report.evidence as JsonRecord).failureDaemon = await daemonGet(
+      (report.evidence as JsonRecord).failureDaemon = await daemonGet(
         handoff as HandoffRecord,
         "/v1/transactions/current",
       ).catch((failure) => ({ error: String(failure) }));
     if (guestInput && session)
-    (report.evidence as JsonRecord).failureSerial = await control(
+      (report.evidence as JsonRecord).failureSerial = await control(
         guestInput as GuestInputRecord,
         `/v1/serial-sessions/${String((session as JsonRecord).sessionId)}/evidence`,
       ).catch((failure) => ({ error: String(failure) }));

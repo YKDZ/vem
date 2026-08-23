@@ -117,7 +117,8 @@ async function request(
 ): Promise<unknown> {
   const response = await fetch(url, {
     ...options,
-    signal: (options.signal as AbortSignal | undefined) ??
+    signal:
+      (options.signal as AbortSignal | undefined) ??
       AbortSignal.timeout(TIMEOUT_MS),
   });
   const payload = await response.json().catch(() => null);
@@ -167,10 +168,7 @@ async function openPaymentCreateGate(
 function daemonBase(handoff: HandoffRecord): string {
   const daemon = handoff?.daemon as JsonRecord | undefined;
   const ready = daemon?.ready as JsonRecord | undefined;
-  const healthzUrl = required(
-    ready?.healthzUrl,
-    "daemon healthzUrl",
-  );
+  const healthzUrl = required(ready?.healthzUrl, "daemon healthzUrl");
   if (!healthzUrl.endsWith("/healthz")) {
     throw new Error("daemon healthzUrl must end with /healthz");
   }
@@ -207,14 +205,8 @@ async function adminToken(input: GuestInputRecord): Promise<string> {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      username: required(
-        serviceApi?.adminUsername,
-        "serviceApi.adminUsername",
-      ),
-      password: required(
-        serviceApi?.adminPassword,
-        "serviceApi.adminPassword",
-      ),
+      username: required(serviceApi?.adminUsername, "serviceApi.adminUsername"),
+      password: required(serviceApi?.adminPassword, "serviceApi.adminPassword"),
     }),
   });
   return required(
@@ -242,7 +234,10 @@ async function inventoryMovements(
   );
 }
 
-function movementCursor(page: JsonRecord | null | undefined, inventoryId: string): JsonRecord {
+function movementCursor(
+  page: JsonRecord | null | undefined,
+  inventoryId: string,
+): JsonRecord {
   const items = (page?.items ?? []) as unknown[];
   const baselineItemIds = items.map((item) => (item as JsonRecord)?.id);
   if (
@@ -282,9 +277,7 @@ async function inventory(
   });
   const pageRecord = page as JsonRecord | null;
   const items = (pageRecord?.items ?? []) as unknown[];
-  const entry = items.find(
-    (item) => (item as JsonRecord)?.id === inventoryId,
-  );
+  const entry = items.find((item) => (item as JsonRecord)?.id === inventoryId);
   if (!entry)
     throw new Error(
       `fixture inventory ${inventoryId} is absent from Admin API`,
@@ -359,9 +352,9 @@ async function waitFor<T>(
   );
 }
 
-function screenshotSink(outPath: string): (
-  input: { bytes: Uint8Array; label: string },
-) => Promise<{ ref: string }> {
+function screenshotSink(
+  outPath: string,
+): (input: { bytes: Uint8Array; label: string }) => Promise<{ ref: string }> {
   const root = join(dirname(localPath(outPath)), "stock-maintenance-artifacts");
   return async ({ bytes, label }) => {
     mkdirSync(root, { recursive: true });
@@ -504,9 +497,9 @@ async function primeCatalogTouchSession(
     pollMs: POLL_MS,
     forbiddenRoutes: [],
   });
-  const traceSnapshot = (await readMachineRuntimeTraceSnapshot(client)) as
-    | JsonRecord
-    | null;
+  const traceSnapshot = (await readMachineRuntimeTraceSnapshot(
+    client,
+  )) as JsonRecord | null;
   const entries = Array.isArray(traceSnapshot?.entries)
     ? (traceSnapshot.entries as unknown[])
     : [];
@@ -514,9 +507,7 @@ async function primeCatalogTouchSession(
   const lastRecord = last as JsonRecord | undefined;
   const boundary = {
     id: Number(lastRecord?.id ?? 0),
-    touchscreenSessionActive: Boolean(
-      lastRecord?.touchscreenSessionActive,
-    ),
+    touchscreenSessionActive: Boolean(lastRecord?.touchscreenSessionActive),
   };
   await activateVisibleSelector(client, "[data-test='catalog-page']", {
     kind: "touch",
@@ -526,24 +517,22 @@ async function primeCatalogTouchSession(
   return await waitFor(
     "catalog touch session before stock sale",
     async () => {
-      const snapshot = (await readMachineRuntimeTraceSnapshot(client)) as
-        | JsonRecord
-        | null;
+      const snapshot = (await readMachineRuntimeTraceSnapshot(
+        client,
+      )) as JsonRecord | null;
       const currentEntries = Array.isArray(snapshot?.entries)
         ? (snapshot.entries as unknown[])
         : [];
-      const touch = currentEntries.findLast(
-        (entry) => {
-          const entryRecord = entry as JsonRecord;
-          return (
-            Number(entryRecord?.id ?? 0) > Number(boundary?.id ?? 0) &&
-            entryRecord?.type === "navigation" &&
-            entryRecord?.intentType === "customer.touch" &&
-            entryRecord?.decision === "accepted" &&
-            entryRecord?.reasonCode === "touchscreen_session_renewed"
-          );
-        },
-      ) as JsonRecord | undefined;
+      const touch = currentEntries.findLast((entry) => {
+        const entryRecord = entry as JsonRecord;
+        return (
+          Number(entryRecord?.id ?? 0) > Number(boundary?.id ?? 0) &&
+          entryRecord?.type === "navigation" &&
+          entryRecord?.intentType === "customer.touch" &&
+          entryRecord?.decision === "accepted" &&
+          entryRecord?.reasonCode === "touchscreen_session_renewed"
+        );
+      }) as JsonRecord | undefined;
       return touch
         ? {
             id: touch.id,
@@ -551,8 +540,7 @@ async function primeCatalogTouchSession(
           }
         : null;
     },
-    (touch) =>
-      (touch as JsonRecord | null)?.touchscreenSessionActive === true,
+    (touch) => (touch as JsonRecord | null)?.touchscreenSessionActive === true,
   );
 }
 
@@ -626,9 +614,10 @@ async function observeProductDetailStock(
 
 async function captureStockScreenshot(
   client: InstanceType<typeof CdpClient>,
-  sink: (
-    input: { bytes: Uint8Array; label: string },
-  ) => Promise<{ ref: string }>,
+  sink: (input: {
+    bytes: Uint8Array;
+    label: string;
+  }) => Promise<{ ref: string }>,
   label: string,
   route: unknown,
   identity: JsonRecord,
@@ -768,9 +757,11 @@ function runSale(
               (report.summary as JsonRecord | undefined)?.stage ??
               null,
             route:
-              ((report.ui as JsonRecord | undefined)?.afterF2 as
-                | JsonRecord
-                | undefined)?.route ??
+              (
+                (report.ui as JsonRecord | undefined)?.afterF2 as
+                  | JsonRecord
+                  | undefined
+              )?.route ??
               (report.summary as JsonRecord | undefined)?.route ??
               null,
             orderNo:
@@ -838,10 +829,16 @@ export function saleEvidence(
     (step) =>
       (step as JsonRecord)?.label === "verify payment create gate" &&
       (step as JsonRecord)?.ok === true &&
-      (((step as JsonRecord)?.detail as JsonRecord | undefined)
-        ?.status as JsonRecord | undefined)?.state === "open" &&
-      (((step as JsonRecord)?.detail as JsonRecord | undefined)
-        ?.status as JsonRecord | undefined)?.pending === null,
+      (
+        ((step as JsonRecord)?.detail as JsonRecord | undefined)?.status as
+          | JsonRecord
+          | undefined
+      )?.state === "open" &&
+      (
+        ((step as JsonRecord)?.detail as JsonRecord | undefined)?.status as
+          | JsonRecord
+          | undefined
+      )?.pending === null,
   );
   const controlPlaneSessionId = required(
     sale?.controlPlaneSessionId,
@@ -853,20 +850,26 @@ export function saleEvidence(
       (step as JsonRecord)?.ok === true &&
       ((step as JsonRecord)?.detail as JsonRecord | undefined)?.sessionId ===
         controlPlaneSessionId &&
-      ((step as JsonRecord)?.detail as JsonRecord | undefined)?.aborted === true,
+      ((step as JsonRecord)?.detail as JsonRecord | undefined)?.aborted ===
+        true,
   );
-  const freshAdmission = (sale?.serial as JsonRecord | undefined)
-    ?.start as JsonRecord | undefined;
-  const freshSessionId = (freshAdmission?.serialSession as
+  const freshAdmission = (sale?.serial as JsonRecord | undefined)?.start as
     | JsonRecord
-    | undefined)?.sessionId;
+    | undefined;
+  const freshSessionId = (
+    freshAdmission?.serialSession as JsonRecord | undefined
+  )?.sessionId;
   const hardwareReady =
-    ((freshAdmission?.hardware as JsonRecord | undefined)?.lower as
-      | JsonRecord
-      | undefined)?.ready === true &&
-    ((freshAdmission?.hardware as JsonRecord | undefined)?.capability as
-      | JsonRecord
-      | undefined)?.canStartSale === true;
+    (
+      (freshAdmission?.hardware as JsonRecord | undefined)?.lower as
+        | JsonRecord
+        | undefined
+    )?.ready === true &&
+    (
+      (freshAdmission?.hardware as JsonRecord | undefined)?.capability as
+        | JsonRecord
+        | undefined
+    )?.canStartSale === true;
   if (
     sale?.schemaVersion !== "vem-fast-route-stress-sale/v2" ||
     sale?.ok !== true ||
@@ -930,16 +933,19 @@ export function validateStockMaintenanceReport(
   const platformMovement = maintenance?.platformMovement as
     | JsonRecord
     | undefined;
-  const salePlatformMovements =
-    (movements?.salePlatformMovements ?? []) as unknown[];
-  const movementCursorBaselineItemIds =
-    (movementCursor?.baselineItemIds ?? []) as unknown[];
+  const salePlatformMovements = (movements?.salePlatformMovements ??
+    []) as unknown[];
+  const movementCursorBaselineItemIds = (movementCursor?.baselineItemIds ??
+    []) as unknown[];
   const runId = report?.runId;
   const firstOrderId = firstSale?.orderId;
   const secondOrderId = secondSale?.orderId;
   const stock = (value: JsonRecord | null | undefined, quantity: number) =>
     value?.physicalStock === quantity && value?.saleableStock === quantity;
-  const visibleStock = (value: JsonRecord | null | undefined, quantity: number) =>
+  const visibleStock = (
+    value: JsonRecord | null | undefined,
+    quantity: number,
+  ) =>
     value?.catalogKey === fixture?.catalogKey &&
     value?.saleableStock === quantity &&
     typeof value?.text === "string" &&
@@ -949,34 +955,33 @@ export function validateStockMaintenanceReport(
       if (!sale) return false;
       const gateCleanup = sale.gateCleanup as JsonRecord | undefined;
       const handoff = sale.handoff as JsonRecord | undefined;
-    return sale?.runId === runId &&
-    [
-      "orderId",
-      "paymentId",
-      "paymentNo",
-      "commandId",
-      "commandNo",
-      "fulfillmentMovementId",
-      "controlPlaneSessionId",
-      "serialSessionId",
-    ].every(
-      (key) => typeof sale?.[key] === "string" && sale[key] !== "",
-    ) &&
-    sale?.resultRoute === "#/result/success" &&
-    gateCleanup?.paymentGateOpen === true &&
-    gateCleanup?.paymentGateVerified === true &&
-    gateCleanup?.serialSessionInactive === true &&
-    gateCleanup?.serialSessionId === sale?.controlPlaneSessionId &&
-    gateCleanup?.freshControlPlaneSessionId ===
-      sale?.controlPlaneSessionId &&
-    gateCleanup?.lowerControllerReady === true &&
-    gateCleanup?.saleStartReady === true &&
-    typeof handoff?.previousControlPlaneSessionId === "string" &&
-    handoff.previousControlPlaneSessionId !== "" &&
-    typeof handoff?.replacementControlPlaneSessionId === "string" &&
-    handoff.replacementControlPlaneSessionId !== "" &&
-    handoff.replacementControlPlaneSessionId !==
-      sale.controlPlaneSessionId;
+      return (
+        sale?.runId === runId &&
+        [
+          "orderId",
+          "paymentId",
+          "paymentNo",
+          "commandId",
+          "commandNo",
+          "fulfillmentMovementId",
+          "controlPlaneSessionId",
+          "serialSessionId",
+        ].every((key) => typeof sale?.[key] === "string" && sale[key] !== "") &&
+        sale?.resultRoute === "#/result/success" &&
+        gateCleanup?.paymentGateOpen === true &&
+        gateCleanup?.paymentGateVerified === true &&
+        gateCleanup?.serialSessionInactive === true &&
+        gateCleanup?.serialSessionId === sale?.controlPlaneSessionId &&
+        gateCleanup?.freshControlPlaneSessionId ===
+          sale?.controlPlaneSessionId &&
+        gateCleanup?.lowerControllerReady === true &&
+        gateCleanup?.saleStartReady === true &&
+        typeof handoff?.previousControlPlaneSessionId === "string" &&
+        handoff.previousControlPlaneSessionId !== "" &&
+        typeof handoff?.replacementControlPlaneSessionId === "string" &&
+        handoff.replacementControlPlaneSessionId !== "" &&
+        handoff.replacementControlPlaneSessionId !== sale.controlPlaneSessionId
+      );
     })();
   const firstSaleValue = firstSale as JsonRecord | undefined;
   const secondSaleValue = secondSale as JsonRecord | undefined;
@@ -1030,16 +1035,10 @@ export function validateStockMaintenanceReport(
       `machine_stock_movement:${String(projection?.platformRawMovementId)}` ||
     !stock(restored?.daemon as JsonRecord | undefined, 2) ||
     (restored?.platform as JsonRecord | undefined)?.onHandQty !== 2 ||
-    !visibleStock(
-      restored?.visibleDetailStock as JsonRecord | undefined,
-      2,
-    ) ||
+    !visibleStock(restored?.visibleDetailStock as JsonRecord | undefined, 2) ||
     !stock(terminal?.daemon as JsonRecord | undefined, 1) ||
     (terminal?.platform as JsonRecord | undefined)?.onHandQty !== 1 ||
-    !visibleStock(
-      terminal?.visibleDetailStock as JsonRecord | undefined,
-      1,
-    ) ||
+    !visibleStock(terminal?.visibleDetailStock as JsonRecord | undefined, 1) ||
     !Array.isArray(movements?.saleDecrementOrderIds) ||
     new Set(movements.saleDecrementOrderIds as unknown[]).size !== 2 ||
     !(movements.saleDecrementOrderIds as unknown[]).includes(firstOrderId) ||
@@ -1066,29 +1065,23 @@ export function validateStockMaintenanceReport(
       (movement) => (movement as JsonRecord).orderId === secondOrderId,
     ) ||
     new Set(
-      salePlatformMovements.map(
-        (movement) => (movement as JsonRecord).orderId,
-      ),
+      salePlatformMovements.map((movement) => (movement as JsonRecord).orderId),
     ).size !== 2 ||
     new Set([
       platformMovement?.id,
-      ...salePlatformMovements.map(
-        (movement) => (movement as JsonRecord).id,
-      ),
+      ...salePlatformMovements.map((movement) => (movement as JsonRecord).id),
     ]).size !== 3 ||
     [
       platformMovement?.id,
-      ...salePlatformMovements.map(
-        (movement) => (movement as JsonRecord).id,
-      ),
+      ...salePlatformMovements.map((movement) => (movement as JsonRecord).id),
     ].some((movementId) =>
       movementCursorBaselineItemIds.includes(movementId),
     ) ||
     salePlatformMovements.some(
       (movement) =>
-        !(movements?.salePlatformMovementIds as unknown[] | undefined)?.includes(
-          (movement as JsonRecord).id,
-        ),
+        !(
+          movements?.salePlatformMovementIds as unknown[] | undefined
+        )?.includes((movement as JsonRecord).id),
     ) ||
     JSON.stringify(movements?.refillDeltas) !== JSON.stringify([2]) ||
     (screenshots?.unavailable as JsonRecord | undefined)?.route !==
@@ -1145,9 +1138,10 @@ export async function runStockMaintenanceGuest(options: {
   };
   let client: InstanceType<typeof CdpClient> | null = null;
   try {
-    const initialView = (await daemon(handoff, "/v1/sale-view")) as
-      | JsonRecord
-      | null;
+    const initialView = (await daemon(
+      handoff,
+      "/v1/sale-view",
+    )) as JsonRecord | null;
     const identity = fixtureIdentity(initialView, fixture);
     const initial = stockFact(initialView, identity);
     if (initial.physicalStock !== 1 || initial.saleableStock !== 1) {
@@ -1180,11 +1174,7 @@ export async function runStockMaintenanceGuest(options: {
       "stock-maintenance-first-sale.json",
     );
     const first = await runSale(options, firstReportPath);
-    report.firstSale = saleEvidence(
-      first,
-      String(report.runId),
-      firstHandoff,
-    );
+    report.firstSale = saleEvidence(first, String(report.runId), firstHandoff);
     const unavailableView = await waitFor(
       "fixture depletion after first installed sale",
       () => daemon(handoff, "/v1/sale-view"),
@@ -1207,13 +1197,14 @@ export async function runStockMaintenanceGuest(options: {
     await returnCustomerResultToCatalog(client);
     await openStockMaintenance(client);
     const sink = screenshotSink(options.outPath);
-    (report.screenshots as JsonRecord).unavailable = await captureStockScreenshot(
-      client,
-      sink,
-      "unavailable",
-      "#/maintenance?source=operator",
-      identity,
-    );
+    (report.screenshots as JsonRecord).unavailable =
+      await captureStockScreenshot(
+        client,
+        sink,
+        "unavailable",
+        "#/maintenance?source=operator",
+        identity,
+      );
     const refillTask = await waitFor(
       "routine refill task before submit",
       () => daemon(handoff, "/v1/stock/maintenance-task"),
@@ -1234,13 +1225,14 @@ export async function runStockMaintenanceGuest(options: {
       },
     );
     await enterRoutineRefill(client, identity);
-    (report.screenshots as JsonRecord).refillConfirmed = await captureStockScreenshot(
-      client,
-      sink,
-      "refill-confirmed",
-      "#/maintenance?source=operator",
-      identity,
-    );
+    (report.screenshots as JsonRecord).refillConfirmed =
+      await captureStockScreenshot(
+        client,
+        sink,
+        "refill-confirmed",
+        "#/maintenance?source=operator",
+        identity,
+      );
     const restoredView = await waitFor(
       "local refill synchronization",
       () => daemon(handoff, "/v1/sale-view"),
@@ -1281,7 +1273,8 @@ export async function runStockMaintenanceGuest(options: {
               (slot as JsonRecord)?.source === "local_maintenance" &&
               (slot as JsonRecord)?.attributedTo === "local_operations" &&
               typeof (slot as JsonRecord)?.platformRawMovementId === "string" &&
-              String((slot as JsonRecord)?.platformRawMovementId ?? "") !== "" &&
+              String((slot as JsonRecord)?.platformRawMovementId ?? "") !==
+                "" &&
               (slot as JsonRecord)?.syncStatus === "accepted",
           )
         );
@@ -1312,20 +1305,21 @@ export async function runStockMaintenanceGuest(options: {
     };
     const afterRefillMovements = await waitFor(
       "one correlated platform refill movement",
-      () =>
-        inventoryMovements(input, token, String(identity.inventoryId)),
+      () => inventoryMovements(input, token, String(identity.inventoryId)),
       (page) =>
-        movementDelta(page as JsonRecord, report.movementCursor as JsonRecord)
-          .filter(
-            (movement) =>
-              (movement as JsonRecord)?.reason === "hardware_sync" &&
-              (movement as JsonRecord)?.deltaQty === 2 &&
-              (movement as JsonRecord)?.inventoryId === identity.inventoryId &&
-              (movement as JsonRecord)?.note ===
-                `machine_stock_movement:${String(
-                  completedSlotRecord?.platformRawMovementId,
-                )}`,
-          ).length === 1,
+        movementDelta(
+          page as JsonRecord,
+          report.movementCursor as JsonRecord,
+        ).filter(
+          (movement) =>
+            (movement as JsonRecord)?.reason === "hardware_sync" &&
+            (movement as JsonRecord)?.deltaQty === 2 &&
+            (movement as JsonRecord)?.inventoryId === identity.inventoryId &&
+            (movement as JsonRecord)?.note ===
+              `machine_stock_movement:${String(
+                completedSlotRecord?.platformRawMovementId,
+              )}`,
+        ).length === 1,
     );
     const refillMovements = movementDelta(
       afterRefillMovements as JsonRecord,
@@ -1352,19 +1346,15 @@ export async function runStockMaintenanceGuest(options: {
     };
     await returnToCatalogFromMaintenance(client);
     (report.restored as JsonRecord).visibleDetailStock =
-      await observeProductDetailStock(
-      client,
-      identity,
-      2,
-    );
+      await observeProductDetailStock(client, identity, 2);
     (report.screenshots as JsonRecord).restoredSaleability =
       await captureStockScreenshot(
-      client,
-      sink,
-      "restored-saleability",
-      "#/catalog",
-      identity,
-    );
+        client,
+        sink,
+        "restored-saleability",
+        "#/catalog",
+        identity,
+      );
     await client.close();
     client = null;
     const secondReportPath = join(
@@ -1411,8 +1401,7 @@ export async function runStockMaintenanceGuest(options: {
     client = null;
     const terminalMovements = await waitFor(
       "two correlated sale decrements",
-      () =>
-        inventoryMovements(input, token, String(identity.inventoryId)),
+      () => inventoryMovements(input, token, String(identity.inventoryId)),
       (page) => {
         const ids = movementDelta(
           page as JsonRecord,
@@ -1464,8 +1453,7 @@ export async function runStockMaintenanceGuest(options: {
           report.movementCursor as JsonRecord,
         )
           .filter(
-            (movement) =>
-              (movement as JsonRecord)?.reason === "hardware_sync",
+            (movement) => (movement as JsonRecord)?.reason === "hardware_sync",
           )
           .map((movement) => (movement as JsonRecord).deltaQty),
       },

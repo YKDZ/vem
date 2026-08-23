@@ -311,10 +311,7 @@ function legacyAllowance(
       relativePath as keyof typeof LEGACY_ABSENCE_PROOF_ALLOWANCES
     ] as JsonRecord | undefined,
   );
-  if (
-    relativePath in LEGACY_ABSENCE_PROOF_ALLOWANCES &&
-    absenceProof
-  ) {
+  if (relativePath in LEGACY_ABSENCE_PROOF_ALLOWANCES && absenceProof) {
     const observedLines = source
       .split(/\r?\n/)
       .map((line) => line.trim())
@@ -365,10 +362,7 @@ function legacyAllowance(
   return null;
 }
 
-function patternMatches(
-  source: string,
-  pattern: RegExp,
-): RegExpMatchArray[] {
+function patternMatches(source: string, pattern: RegExp): RegExpMatchArray[] {
   const flags = pattern.flags.includes("g")
     ? pattern.flags
     : `${pattern.flags}g`;
@@ -389,7 +383,8 @@ function canonicalJson(value: unknown): unknown {
 }
 
 function binaryEntryMatchesPolicy(entry: JsonRecord): boolean {
-  const policy = BINARY_POLICIES[entry.category as keyof typeof BINARY_POLICIES];
+  const policy =
+    BINARY_POLICIES[entry.category as keyof typeof BINARY_POLICIES];
   if (!policy || entry.reason !== policy.reason) return false;
   if ("exactPath" in policy && policy.exactPath)
     return entry.path === policy.exactPath;

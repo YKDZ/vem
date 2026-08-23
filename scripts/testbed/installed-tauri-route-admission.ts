@@ -73,8 +73,7 @@ export async function admitInstalledTauriCatalog(
           ConstructorParameters<typeof CdpClient>[1]
         >["webSocketFactory"],
       }));
-  const enableRuntime =
-    dependenciesTyped.enableRuntime ?? enablePageRuntime;
+  const enableRuntime = dependenciesTyped.enableRuntime ?? enablePageRuntime;
   const evaluate = dependenciesTyped.evaluate ?? evaluateExpression;
   const returnToCatalog =
     dependenciesTyped.returnToCatalog ?? returnToCatalogFromClient;

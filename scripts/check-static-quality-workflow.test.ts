@@ -75,8 +75,10 @@ test("GitHub jobs invoke repository quality entrypoints", () => {
 
 test("Windows Vision Main Consumer keeps contract checks without the runtime harness", () => {
   const workflow = parse(ci);
-  const steps = workflow.jobs["windows-vision-main-consumer"]
-    .steps as Array<{ name?: string; run?: string }>;
+  const steps = workflow.jobs["windows-vision-main-consumer"].steps as Array<{
+    name?: string;
+    run?: string;
+  }>;
 
   assert.ok(
     steps.some(

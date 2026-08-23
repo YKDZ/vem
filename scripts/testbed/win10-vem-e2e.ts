@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 
-import { spawn, spawnSync } from "node:child_process";
 import type {
   SpawnSyncOptionsWithStringEncoding,
   SpawnSyncReturns,
 } from "node:child_process";
+
+import { spawn, spawnSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
 import {
   chmodSync,
@@ -988,9 +989,7 @@ export function buildRuntimeAcceptanceReport(
   }
   if (
     facts.visionRuntime?.healthReachable !== true ||
-    !["ok", "degraded"].includes(
-      String(facts.visionRuntime?.healthStatus),
-    ) ||
+    !["ok", "degraded"].includes(String(facts.visionRuntime?.healthStatus)) ||
     facts.visionRuntime?.healthProtocol !== visionIdentity.protocol ||
     facts.visionRuntime?.healthModule !== "vision" ||
     facts.visionRuntime?.healthMockScenario !== "off" ||
@@ -1304,7 +1303,9 @@ export function buildPreClaimPublicConfig(
   };
 }
 
-export function evaluateFirstClaimPrecondition(configSnapshot: JsonRecord = {}) {
+export function evaluateFirstClaimPrecondition(
+  configSnapshot: JsonRecord = {},
+) {
   const publicConfig = recordValue(configSnapshot.public);
   if (configSnapshot.provisioned === true) {
     return {
@@ -1361,7 +1362,9 @@ export function classifyProvisioningFailure(errorInfo: JsonRecord = {}) {
   return "request_failed";
 }
 
-export function buildReadyFileEvidence(readyFile: JsonRecord | null | undefined) {
+export function buildReadyFileEvidence(
+  readyFile: JsonRecord | null | undefined,
+) {
   if (!readyFile) {
     return {
       exists: false,
@@ -1615,7 +1618,9 @@ if ($targets.Count -ne 1 -or [string]::IsNullOrWhiteSpace([string]$targets[0].id
 `.trim();
 }
 
-export function buildInstalledKioskSaleCleanupScript(prelaunch: JsonRecord = {}) {
+export function buildInstalledKioskSaleCleanupScript(
+  prelaunch: JsonRecord = {},
+) {
   const principal = String(prelaunch.principal ?? "");
   const sessionId = Number(prelaunch.sessionId);
   if (!principal || !Number.isSafeInteger(sessionId) || sessionId < 1) {
@@ -1791,7 +1796,12 @@ export async function captureInstalledKioskSaleHook({
       `(() => { const el = document.querySelector(${JSON.stringify(selector)}); return el ? { orderId: el.dataset.orderId, paymentId: el.dataset.paymentId, orderNo: el.dataset.orderNo, commandId: el.dataset.commandId || null, route: location.hash } : null; })()`,
     );
     const hookRecord = recordValue(hook);
-    if (!hook || !hookRecord.orderId || !hookRecord.paymentId || !hookRecord.orderNo)
+    if (
+      !hook ||
+      !hookRecord.orderId ||
+      !hookRecord.paymentId ||
+      !hookRecord.orderNo
+    )
       throw new Error(
         `required rendered customer UI hook is missing: ${selector}`,
       );
@@ -1957,10 +1967,7 @@ export function buildVmRuntimeAcceptancePlan(options: RunOptions = {}) {
       if (options.sshPort) command.push("--ssh-port", String(options.sshPort));
     }
     if (options.sshKnownHostsPath) {
-      command.push(
-        "--ssh-known-hosts-path",
-        String(options.sshKnownHostsPath),
-      );
+      command.push("--ssh-known-hosts-path", String(options.sshKnownHostsPath));
     }
     if (options.sshHostKeyAlias) {
       command.push("--ssh-host-key-alias", String(options.sshHostKeyAlias));
@@ -2471,7 +2478,9 @@ export function evaluateSimulatedHardwareSerialEvidence({
     );
   }
   const conformanceReports = recordValue(validatedConformance?.reports);
-  const session = recordValue(recordValue(conformanceReports.start).serialSession);
+  const session = recordValue(
+    recordValue(conformanceReports.start).serialSession,
+  );
   const collect = recordValue(conformanceReports.collect);
   const records = recordValue(collect.serialEvidence).records;
   const firstStop = recordValue(conformanceReports.firstStop);
@@ -2720,7 +2729,8 @@ export function evaluateSimulatedHardwareSerialEvidence({
   const dispenseFailedSaleComplete = recordValue(
     dispenseFailedArtifacts.saleComplete,
   );
-  const dispenseFailedFlow = dispenseFailedSaleComplete.simulatedHardwareSaleFlow;
+  const dispenseFailedFlow =
+    dispenseFailedSaleComplete.simulatedHardwareSaleFlow;
   const dispenseFailedSale =
     dispenseFailedFlow !== null && dispenseFailedFlow !== undefined
       ? recordValue(dispenseFailedFlow)
@@ -2840,9 +2850,8 @@ export function evaluateSimulatedHardwareSerialEvidence({
                 stockMovementAccepted:
                   dispenseFailedPlatform?.stockMovementAccepted ?? null,
                 movementStatus:
-                  recordValue(
-                    dispenseFailedPlatform.postSaleDispenseMovement,
-                  ).status ?? null,
+                  recordValue(dispenseFailedPlatform.postSaleDispenseMovement)
+                    .status ?? null,
               }
             : null,
       },
@@ -2856,9 +2865,7 @@ function evaluateInstalledKioskSaleEvidence(
 ) {
   const report = recordValue(step?.parsed);
   const serialPath = recordValue(report.evidence).serialConformancePath;
-  const serial = serialPath
-    ? readJsonIfPresent(String(serialPath))
-    : null;
+  const serial = serialPath ? readJsonIfPresent(String(serialPath)) : null;
   const diagnostics: Diagnostic[] = [];
   if (
     step?.status !== "passed" ||
@@ -3536,9 +3543,7 @@ function splitTaskName(taskName: string): {
 
 export function buildRemotePowerShellScript(options: RunOptions = {}) {
   const mode = String(options.mode ?? "inventory");
-  const machineCode = String(
-    options.machineCode ?? "VEM-TESTBED-WINVM-01",
-  );
+  const machineCode = String(options.machineCode ?? "VEM-TESTBED-WINVM-01");
   const supportedModes = [
     "inventory",
     "reset",
@@ -3591,9 +3596,7 @@ export function buildRemotePowerShellScript(options: RunOptions = {}) {
     ephemeralPlatformSetup ??
     platformOverride ??
     (Object.hasOwn(PLATFORM_TARGETS, platformTarget)
-      ? PLATFORM_TARGETS[
-          platformTarget as keyof typeof PLATFORM_TARGETS
-        ]
+      ? PLATFORM_TARGETS[platformTarget as keyof typeof PLATFORM_TARGETS]
       : PLATFORM_TARGETS["vem-vps"]);
   const claimCode =
     mode === "simulated-hardware-sale-flow" ||
@@ -3621,7 +3624,9 @@ Assert-ResetPostcondition $resetActions "scheduled task ${task} removed" {
     .join("\n");
   const serviceStops = (plan.stopServices ?? [])
     .map(
-      (service: unknown) => `Invoke-ResetStep $resetActions "stop service ${service}" {
+      (
+        service: unknown,
+      ) => `Invoke-ResetStep $resetActions "stop service ${service}" {
   $service = Get-Service -Name ${psString(service)} -ErrorAction SilentlyContinue
   if ($null -ne $service) {
     if ($service.Status -ne "Stopped") {
@@ -3640,7 +3645,9 @@ Assert-ResetPostcondition $resetActions "service ${service} removed" {
     .join("\n");
   const directoryRemovals = (plan.removeDirectories ?? [])
     .map(
-      (path: unknown) => `Invoke-ResetStep $resetActions "remove directory ${path}" {
+      (
+        path: unknown,
+      ) => `Invoke-ResetStep $resetActions "remove directory ${path}" {
   if (Test-Path -LiteralPath ${psString(path)}) {
     Remove-Item -LiteralPath ${psString(path)} -Recurse -Force -ErrorAction Stop
   }

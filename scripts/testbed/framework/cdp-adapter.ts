@@ -39,9 +39,7 @@ import {
   decodeSemanticResultPng,
   SemanticResultPngDecodeError,
 } from "./slices/vision-experience/result-geometry-evidence.ts";
-import {
-  parseSourceGarmentMetadata,
-} from "./slices/vision-experience/source-garment-evidence.ts";
+import { parseSourceGarmentMetadata } from "./slices/vision-experience/source-garment-evidence.ts";
 
 type JsonRecord = Record<string, unknown>;
 

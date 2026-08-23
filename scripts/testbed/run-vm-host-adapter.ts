@@ -401,9 +401,7 @@ async function main(): Promise<void> {
       if (operation === "capture-default-audio") {
         const calibrationEvidence = arrayValue(report.evidence)
           .map((entry: unknown) => recordValue(entry))
-          .find(
-            (entry) => entry.role === "daemon-audio-calibration-response",
-          );
+          .find((entry) => entry.role === "daemon-audio-calibration-response");
         if (!calibrationEvidence)
           throw new Error("daemon calibration response evidence is missing");
         const source = join(

@@ -389,7 +389,8 @@ export function deriveSerialFrameCaptureBindingDigest({
     runId: request?.runId ?? null,
     lifecycleReference: request?.lifecycleReference ?? null,
     targetIdentity:
-      (request?.target as Record<string, unknown> | undefined)?.identity ?? null,
+      (request?.target as Record<string, unknown> | undefined)?.identity ??
+      null,
     operationReference: request?.operationReference ?? null,
     serialSessionId:
       (request?.serialSession as Record<string, unknown> | undefined)
@@ -433,7 +434,8 @@ export function deriveSerialEvidenceCaptureChainDigest({
     runId: request?.runId ?? null,
     lifecycleReference: request?.lifecycleReference ?? null,
     targetIdentity:
-      (request?.target as Record<string, unknown> | undefined)?.identity ?? null,
+      (request?.target as Record<string, unknown> | undefined)?.identity ??
+      null,
     operationReference: request?.operationReference ?? null,
     serialSessionId:
       (request?.serialSession as Record<string, unknown> | undefined)
@@ -738,9 +740,10 @@ function assertSerialSessionRequest(
       "must be null for this operation",
     );
   if (request.operation === "collect-serial-evidence") {
-    const evidence = sessionRecord.operationEvidence as
-      | Record<string, unknown>
-      | null;
+    const evidence = sessionRecord.operationEvidence as Record<
+      string,
+      unknown
+    > | null;
     if (
       !assertExactKeys(
         evidence,
@@ -788,19 +791,19 @@ function assertSerialSessionRequest(
     const seen = new Set();
     (sessionRecord.saleCorrelationIds as unknown[]).forEach(
       (value: unknown, index: number) => {
-      if (typeof value !== "string" || !SALE_CORRELATION_ID.test(value))
-        issue(
-          issues,
-          `request.serialSession.saleCorrelationIds[${index}]`,
-          "must be a logical sale correlation identity",
-        );
-      if (seen.has(value))
-        issue(
-          issues,
-          `request.serialSession.saleCorrelationIds[${index}]`,
-          "must not be duplicated",
-        );
-      seen.add(value);
+        if (typeof value !== "string" || !SALE_CORRELATION_ID.test(value))
+          issue(
+            issues,
+            `request.serialSession.saleCorrelationIds[${index}]`,
+            "must be a logical sale correlation identity",
+          );
+        if (seen.has(value))
+          issue(
+            issues,
+            `request.serialSession.saleCorrelationIds[${index}]`,
+            "must not be duplicated",
+          );
+        seen.add(value);
       },
     );
     if ((sessionRecord.saleCorrelationIds as unknown[]).length === 0)
@@ -842,41 +845,41 @@ function assertSerialSessionRequest(
       );
     (sessionRecord.saleBindings as unknown[]).forEach(
       (binding: unknown, index: number) => {
-      const path = `request.serialSession.saleBindings[${index}]`;
-      if (
-        !assertExactKeys(
-          binding,
-          ["saleCorrelationId", "orderId", "paymentId", "vendingCommandId"],
-          path,
-          issues,
-        )
-      )
-        return;
-      const bindingRecord = binding as Record<string, unknown>;
-      if (
-        bindingRecord.saleCorrelationId !==
-        (sessionRecord.saleCorrelationIds as unknown[])?.[index]
-      )
-        issue(
-          issues,
-          `${path}.saleCorrelationId`,
-          "must match its requested sale correlation identity",
-        );
-      for (const key of ["orderId", "paymentId", "vendingCommandId"])
+        const path = `request.serialSession.saleBindings[${index}]`;
         if (
-          !(
-            request.operation !== "collect-serial-evidence" &&
-            key === "vendingCommandId" &&
-            bindingRecord[key] === null
-          ) &&
-          (typeof bindingRecord[key] !== "string" ||
-            !BUSINESS_IDENTIFIER.test(bindingRecord[key]))
+          !assertExactKeys(
+            binding,
+            ["saleCorrelationId", "orderId", "paymentId", "vendingCommandId"],
+            path,
+            issues,
+          )
+        )
+          return;
+        const bindingRecord = binding as Record<string, unknown>;
+        if (
+          bindingRecord.saleCorrelationId !==
+          (sessionRecord.saleCorrelationIds as unknown[])?.[index]
         )
           issue(
             issues,
-            `${path}.${key}`,
-            "must be a concrete observed business identifier",
+            `${path}.saleCorrelationId`,
+            "must match its requested sale correlation identity",
           );
+        for (const key of ["orderId", "paymentId", "vendingCommandId"])
+          if (
+            !(
+              request.operation !== "collect-serial-evidence" &&
+              key === "vendingCommandId" &&
+              bindingRecord[key] === null
+            ) &&
+            (typeof bindingRecord[key] !== "string" ||
+              !BUSINESS_IDENTIFIER.test(bindingRecord[key]))
+          )
+            issue(
+              issues,
+              `${path}.${key}`,
+              "must be a concrete observed business identifier",
+            );
       },
     );
   }
@@ -935,9 +938,7 @@ function assertSerialSessionMapping(
     issues,
   );
   if (
-    !new Set(["connected", "disconnected"]).has(
-      String(record.connectionState),
-    )
+    !new Set(["connected", "disconnected"]).has(String(record.connectionState))
   )
     issue(
       issues,
@@ -1021,7 +1022,8 @@ function assertSemanticRecord(
       !Number.isInteger(
         (recordValue.capturedFrame as Record<string, unknown>).sequence,
       ) ||
-      Number((recordValue.capturedFrame as Record<string, unknown>).sequence) < 1
+      Number((recordValue.capturedFrame as Record<string, unknown>).sequence) <
+        1
     )
       issue(
         issues,
@@ -1046,8 +1048,9 @@ function assertSemanticRecord(
       !Number.isInteger(
         (recordValue.capturedFrame as Record<string, unknown>).byteLength,
       ) ||
-      Number((recordValue.capturedFrame as Record<string, unknown>).byteLength) <
-        1
+      Number(
+        (recordValue.capturedFrame as Record<string, unknown>).byteLength,
+      ) < 1
     )
       issue(
         issues,
@@ -1057,7 +1060,9 @@ function assertSemanticRecord(
   }
   const requestSerialSession = request.serialSession as Record<string, unknown>;
   const expectedSaleBinding = (
-    requestSerialSession.saleBindings as Array<Record<string, unknown>> | undefined
+    requestSerialSession.saleBindings as
+      | Array<Record<string, unknown>>
+      | undefined
   )?.find(
     (binding) => binding.saleCorrelationId === recordValue.saleCorrelationId,
   );
@@ -1074,8 +1079,7 @@ function assertSemanticRecord(
       "must bind the observed order, payment, and vending command for this sale",
     );
   if (
-    recordValue.sessionBindingToken !==
-    requestSerialSession.sessionBindingToken
+    recordValue.sessionBindingToken !== requestSerialSession.sessionBindingToken
   )
     issue(
       issues,
@@ -1083,8 +1087,7 @@ function assertSemanticRecord(
       "must bind the serial session token",
     );
   if (
-    recordValue.deviceMappingDigest !==
-    requestSerialSession.deviceMappingDigest
+    recordValue.deviceMappingDigest !== requestSerialSession.deviceMappingDigest
   )
     issue(
       issues,
@@ -1125,9 +1128,7 @@ function assertSemanticRecord(
     const isDispense = String(recordValue.event).startsWith("dispense-");
     if (isDispense) {
       if (
-        !(
-          requestSerialSession.saleCorrelationIds as unknown[]
-        ).includes(
+        !(requestSerialSession.saleCorrelationIds as unknown[]).includes(
           recordValue.saleCorrelationId,
         )
       )
@@ -1494,7 +1495,8 @@ function assertSerialSessionReport(
     );
   const deviceMappings = session.deviceMappings as unknown[];
   const guest = report.guest as Record<string, unknown> | undefined;
-  const guestDeviceMappings = (guest?.deviceMappings as unknown[] | undefined) ?? [];
+  const guestDeviceMappings =
+    (guest?.deviceMappings as unknown[] | undefined) ?? [];
   if (!Array.isArray(deviceMappings))
     issue(issues, "report.serialSession.deviceMappings", "must be an array");
   else {
@@ -1508,8 +1510,8 @@ function assertSerialSessionReport(
     );
     if (
       !sameValues(
-        deviceMappings.map((mapping) =>
-          (mapping as Record<string, unknown>)?.role,
+        deviceMappings.map(
+          (mapping) => (mapping as Record<string, unknown>)?.role,
         ),
         SERIAL_DEVICE_ROLES,
       )
@@ -1555,9 +1557,10 @@ function assertSerialSessionReport(
       );
   }
   if (request.operation === "inject-scanner-code") {
-    const acknowledgement = session.scannerAcknowledgement as
-      | Record<string, unknown>
-      | null;
+    const acknowledgement = session.scannerAcknowledgement as Record<
+      string,
+      unknown
+    > | null;
     if (
       !assertExactKeys(
         acknowledgement,
@@ -1573,7 +1576,10 @@ function assertSerialSessionReport(
     ) {
       // Exact-key diagnostics are sufficient when this object is malformed.
     } else if (acknowledgement !== null) {
-      const requestSerialSession = request.serialSession as Record<string, unknown>;
+      const requestSerialSession = request.serialSession as Record<
+        string,
+        unknown
+      >;
       const scannerInjection = requestSerialSession.scannerInjection as
         | Record<string, unknown>
         | undefined;
@@ -1601,11 +1607,9 @@ function assertSerialSessionReport(
       "report.serialSession.scannerAcknowledgement",
       "must be null outside scanner injection",
     );
-  const needsCleanup = [
-    "stop-serial-session",
-    "cleanup",
-    "cancel",
-  ].includes(String(request.operation));
+  const needsCleanup = ["stop-serial-session", "cleanup", "cancel"].includes(
+    String(request.operation),
+  );
   if (needsCleanup) {
     const cleanup = session.simulatorCleanup as Record<string, unknown> | null;
     const detailedCleanup =
@@ -1899,10 +1903,7 @@ function assertAudioCaptureRequest(
       "minimumDurationMs",
       "minimumDistinctNonSilentSampleMagnitudes",
     ]) {
-      if (
-        !Number.isInteger(threshold[key]) ||
-        (threshold[key] as number) <= 0
-      )
+      if (!Number.isInteger(threshold[key]) || (threshold[key] as number) <= 0)
         issue(issues, `${path}.threshold.${key}`, "must be a positive integer");
     }
   }
@@ -2000,12 +2001,7 @@ function assertAudioCaptureResult(
       "must match the requested active kiosk session",
     );
   if (
-    !assertExactKeys(
-      defaultOutput,
-      ["status"],
-      `${path}.defaultOutput`,
-      issues,
-    )
+    !assertExactKeys(defaultOutput, ["status"], `${path}.defaultOutput`, issues)
   ) {
     return;
   }
@@ -2040,12 +2036,9 @@ function assertAudioCaptureResult(
         "must attest a completed daemon calibration",
       );
     if (
-      daemonCalibration.source !==
-        requestedCalibration?.source ||
-      daemonCalibration.command !==
-        requestedCalibration?.command ||
-      daemonCalibration.challenge !==
-        requestedCalibration?.challenge
+      daemonCalibration.source !== requestedCalibration?.source ||
+      daemonCalibration.command !== requestedCalibration?.command ||
+      daemonCalibration.challenge !== requestedCalibration?.challenge
     )
       issue(
         issues,
@@ -2174,10 +2167,7 @@ function assertAudioCaptureResult(
       `${path}.capture.durationMs`,
       "must be a positive finite PCM duration",
     );
-  if (
-    JSON.stringify(captureThreshold) !==
-    JSON.stringify(requestedThreshold)
-  )
+  if (JSON.stringify(captureThreshold) !== JSON.stringify(requestedThreshold))
     issue(
       issues,
       `${path}.capture.threshold`,
@@ -2199,11 +2189,7 @@ function assertAudioCaptureResult(
       "must contain non-silent frames above the declared threshold",
     );
   assertTimestamp(capture.startedAt, `${path}.capture.startedAt`, issues);
-  assertTimestamp(
-    capture.completedAt,
-    `${path}.capture.completedAt`,
-    issues,
-  );
+  assertTimestamp(capture.completedAt, `${path}.capture.completedAt`, issues);
   const started = Date.parse(String(capture.startedAt ?? ""));
   const calibrationStarted = Date.parse(
     String(daemonCalibration?.startedAt ?? ""),
@@ -2334,8 +2320,7 @@ function assertDisplayCaptureResult(
       JSON.stringify(foregroundKiosk.activeKioskSession) !==
         JSON.stringify(displayCapture?.activeKioskSession) ||
       foregroundKiosk.tauriRoute !== displayCapture?.tauriRoute ||
-      foregroundKiosk.cdpTargetId !==
-        displayCapture?.cdpTargetId ||
+      foregroundKiosk.cdpTargetId !== displayCapture?.cdpTargetId ||
       foregroundKiosk.visible !== true
     )
       issue(
@@ -2385,10 +2370,7 @@ function assertDisplayCaptureResult(
         "must prove #app is visible",
       );
     for (const key of ["appTextLength", "domNodeCount"])
-      if (
-        !Number.isInteger(cdpProbe[key]) ||
-        (cdpProbe[key] as number) < 1
-      )
+      if (!Number.isInteger(cdpProbe[key]) || (cdpProbe[key] as number) < 1)
         issue(
           issues,
           `${path}.cdpProbe.${key}`,
@@ -2548,9 +2530,7 @@ function assertCleanupObservation(
   const record = observed as Record<string, unknown>;
   for (const key of ["overlay", "runDirectory"]) {
     if (
-      !new Set(["present", "removed", "unknown"]).has(
-        String(record[key] ?? ""),
-      )
+      !new Set(["present", "removed", "unknown"]).has(String(record[key] ?? ""))
     )
       issue(issues, `${path}.${key}`, "must be a supported observed state");
   }
@@ -2600,7 +2580,9 @@ function assertSanitizedDiagnostic(
     );
 }
 
-function requestEcho(request: Record<string, unknown>): Record<string, unknown> {
+function requestEcho(
+  request: Record<string, unknown>,
+): Record<string, unknown> {
   const target = request.target as Record<string, unknown>;
   return {
     contractVersion: request.contractVersion,
@@ -2614,7 +2596,7 @@ function requestEcho(request: Record<string, unknown>): Record<string, unknown> 
     displayCapture: request.displayCapture,
     audioCapture: request.audioCapture,
     requestedCapabilities: [
-      ...(request.requestedCapabilities as unknown[] | undefined ?? []),
+      ...((request.requestedCapabilities as unknown[] | undefined) ?? []),
     ],
     ...(isV2Request(request) ? { serialSession: request.serialSession } : {}),
   };
@@ -2656,7 +2638,8 @@ function reconstructRequest(
 function lifecycleSourceAsset(
   request: Record<string, unknown>,
 ): Record<string, unknown> | undefined {
-  const assets = (request.assets as Array<Record<string, unknown>> | undefined) ?? [];
+  const assets =
+    (request.assets as Array<Record<string, unknown>> | undefined) ?? [];
   if (
     request.operation === "clean-install" ||
     request.operation === "capture-approved-base"
@@ -2775,11 +2758,7 @@ export function validateVmHostAdapterRequest(
         "must be a logical VM target identity",
       );
     else
-      assertNoHostReference(
-        target.identity,
-        "request.target.identity",
-        issues,
-      );
+      assertNoHostReference(target.identity, "request.target.identity", issues);
   }
   if (request.operation === "capture-default-audio") {
     assertAudioCaptureRequest(
@@ -2849,19 +2828,19 @@ export function validateVmHostAdapterRequest(
     const seen = new Set<unknown>();
     (request.requestedCapabilities as unknown[]).forEach(
       (capability: unknown, index: number) => {
-      if (!VM_HOST_ADAPTER_CAPABILITIES.has(String(capability)))
-        issue(
-          issues,
-          `request.requestedCapabilities[${index}]`,
-          "is not supported",
-        );
-      if (seen.has(capability))
-        issue(
-          issues,
-          `request.requestedCapabilities[${index}]`,
-          "must not be duplicated",
-        );
-      seen.add(capability);
+        if (!VM_HOST_ADAPTER_CAPABILITIES.has(String(capability)))
+          issue(
+            issues,
+            `request.requestedCapabilities[${index}]`,
+            "is not supported",
+          );
+        if (seen.has(capability))
+          issue(
+            issues,
+            `request.requestedCapabilities[${index}]`,
+            "must not be duplicated",
+          );
+        seen.add(capability);
       },
     );
     const requiredCapability =
@@ -2938,11 +2917,18 @@ export function validateVmHostAdapterReport(
   const evidence = report.evidence as unknown[];
   const diagnostics = report.diagnostics as unknown[];
   const serialSession = report.serialSession as Record<string, unknown> | null;
-  const serialEvidence = report.serialEvidence as Record<string, unknown> | null;
-  const displayCapture = report.displayCapture as Record<string, unknown> | null;
-  const defaultAudioCapture = report.defaultAudioCapture as
-    | Record<string, unknown>
-    | null;
+  const serialEvidence = report.serialEvidence as Record<
+    string,
+    unknown
+  > | null;
+  const displayCapture = report.displayCapture as Record<
+    string,
+    unknown
+  > | null;
+  const defaultAudioCapture = report.defaultAudioCapture as Record<
+    string,
+    unknown
+  > | null;
   const requestAssets = (request.assets as unknown[] | undefined) ?? [];
   const requestedCapabilities =
     (request.requestedCapabilities as unknown[] | undefined) ?? [];
@@ -2987,26 +2973,11 @@ export function validateVmHostAdapterReport(
       issues,
     )
   ) {
-    assertLogicalIdentity(
-      adapter.identity,
-      "adapter.identity",
-      issues,
-    );
-    if (
-      typeof adapter.version !== "string" ||
-      !SEMVER.test(adapter.version)
-    )
-      issue(
-        issues,
-        "adapter.version",
-        "must be a strict semantic version",
-      );
+    assertLogicalIdentity(adapter.identity, "adapter.identity", issues);
+    if (typeof adapter.version !== "string" || !SEMVER.test(adapter.version))
+      issue(issues, "adapter.version", "must be a strict semantic version");
     if (adapter.contractVersion !== CONTRACT_VERSION)
-      issue(
-        issues,
-        "adapter.contractVersion",
-        `must be ${CONTRACT_VERSION}`,
-      );
+      issue(issues, "adapter.contractVersion", `must be ${CONTRACT_VERSION}`);
   }
   if (
     assertExactKeys(
@@ -3043,11 +3014,7 @@ export function validateVmHostAdapterReport(
     const seen = new Set();
     negotiatedCapabilities.forEach((capability, index) => {
       if (!requested.has(capability))
-        issue(
-          issues,
-          `negotiatedCapabilities[${index}]`,
-          "was not requested",
-        );
+        issue(issues, `negotiatedCapabilities[${index}]`, "was not requested");
       if (seen.has(capability))
         issue(
           issues,
@@ -3086,10 +3053,7 @@ export function validateVmHostAdapterReport(
       "completedOperations",
       "must contain only the requested completed operation",
     );
-  else if (
-    report.result !== "succeeded" &&
-    completedOperations.length !== 0
-  )
+  else if (report.result !== "succeeded" && completedOperations.length !== 0)
     issue(
       issues,
       "completedOperations",
@@ -3109,11 +3073,7 @@ export function validateVmHostAdapterReport(
       issues,
     )
   ) {
-    assertLogicalIdentity(
-      observed.vmIdentity,
-      "observed.vmIdentity",
-      issues,
-    );
+    assertLogicalIdentity(observed.vmIdentity, "observed.vmIdentity", issues);
     assertLogicalIdentity(
       observed.baseIdentity,
       "observed.baseIdentity",
@@ -3139,9 +3099,7 @@ export function validateVmHostAdapterReport(
           "observed.targetBinding.relation",
           "must attest the documented host target mapping",
         );
-      if (
-        targetBinding.targetIdentity !== requestTargetIdentity
-      )
+      if (targetBinding.targetIdentity !== requestTargetIdentity)
         issue(
           issues,
           "observed.targetBinding.targetIdentity",
@@ -3220,11 +3178,7 @@ export function validateVmHostAdapterReport(
           issues,
         );
       });
-      assertUniqueRoles(
-        guest.deviceMappings,
-        "guest.deviceMappings",
-        issues,
-      );
+      assertUniqueRoles(guest.deviceMappings, "guest.deviceMappings", issues);
       const mappings = new Set(
         guest.deviceMappings.map((mapping) => mapping?.role),
       );
@@ -3243,8 +3197,7 @@ export function validateVmHostAdapterReport(
   }
   assertSerialSessionReport(report, request, issues);
   assertSerialEvidence(report, request, issues);
-  if (!Array.isArray(evidence))
-    issue(issues, "evidence", "must be an array");
+  if (!Array.isArray(evidence)) issue(issues, "evidence", "must be an array");
   else {
     evidence.forEach((entry: unknown, index: number) => {
       const entryRecord = entry as Record<string, unknown>;
@@ -3347,16 +3300,8 @@ export function validateVmHostAdapterReport(
       issues,
     )
   ) {
-    assertTimestamp(
-      timestamps.startedAt,
-      "timestamps.startedAt",
-      issues,
-    );
-    assertTimestamp(
-      timestamps.completedAt,
-      "timestamps.completedAt",
-      issues,
-    );
+    assertTimestamp(timestamps.startedAt, "timestamps.startedAt", issues);
+    assertTimestamp(timestamps.completedAt, "timestamps.completedAt", issues);
     if (
       Date.parse(String(timestamps.completedAt ?? "")) <
       Date.parse(String(timestamps.startedAt ?? ""))
@@ -3373,11 +3318,7 @@ export function validateVmHostAdapterReport(
       issues,
     )
   ) {
-    assertCleanupObservation(
-      cleanup.observed,
-      "cleanup.observed",
-      issues,
-    );
+    assertCleanupObservation(cleanup.observed, "cleanup.observed", issues);
     const state = `${cleanup.status}/${cleanup.overlayDisposition}`;
     const cleanupObservedValue = cleanup.observed as
       | Record<string, unknown>
@@ -3432,14 +3373,22 @@ export function validateVmHostAdapterReport(
       assertSanitizedDiagnostic(diagnostic, index, issues),
     );
   if (issues.length > 0) throw new VmHostAdapterContractError(issues);
-  const observedTargetBinding = observed.targetBinding as Record<string, unknown>;
+  const observedTargetBinding = observed.targetBinding as Record<
+    string,
+    unknown
+  >;
   const cleanupObserved = cleanup.observed as Record<string, unknown>;
   const serialSessionDeviceMappings =
     (serialSession?.deviceMappings as unknown[] | undefined) ?? [];
-  const serialSessionScannerAcknowledgement = serialSession
-    ?.scannerAcknowledgement as Record<string, unknown> | null | undefined;
-  const serialSessionSimulatorCleanup = serialSession
-    ?.simulatorCleanup as Record<string, unknown> | null | undefined;
+  const serialSessionScannerAcknowledgement =
+    serialSession?.scannerAcknowledgement as
+      | Record<string, unknown>
+      | null
+      | undefined;
+  const serialSessionSimulatorCleanup = serialSession?.simulatorCleanup as
+    | Record<string, unknown>
+    | null
+    | undefined;
   const serialEvidenceRecords =
     (serialEvidence?.records as unknown[] | undefined) ?? [];
   return {
@@ -3551,42 +3500,33 @@ export function validateVmHostAdapterReport(
                       ? null
                       : {
                           scannerCodeDigest:
-                            serialSessionScannerAcknowledgement
-                              .scannerCodeDigest,
+                            serialSessionScannerAcknowledgement.scannerCodeDigest,
                           scannerCodeByteLength:
-                            serialSessionScannerAcknowledgement
-                              .scannerCodeByteLength,
+                            serialSessionScannerAcknowledgement.scannerCodeByteLength,
                           scannerCodeSuffix:
-                            serialSessionScannerAcknowledgement
-                              .scannerCodeSuffix,
+                            serialSessionScannerAcknowledgement.scannerCodeSuffix,
                           accepted:
-                            serialSessionScannerAcknowledgement
-                              .accepted,
+                            serialSessionScannerAcknowledgement.accepted,
                         },
                   simulatorCleanup:
                     serialSessionSimulatorCleanup == null
                       ? null
                       : {
                           cleanupAttemptCount:
-                            serialSessionSimulatorCleanup
-                              .cleanupAttemptCount,
+                            serialSessionSimulatorCleanup.cleanupAttemptCount,
                           idempotencyVerified:
-                            serialSessionSimulatorCleanup
-                              .idempotencyVerified,
+                            serialSessionSimulatorCleanup.idempotencyVerified,
                           survivingProcessCount:
-                            serialSessionSimulatorCleanup
-                              .survivingProcessCount,
+                            serialSessionSimulatorCleanup.survivingProcessCount,
                           survivingSocketCount:
-                            serialSessionSimulatorCleanup
-                              .survivingSocketCount,
+                            serialSessionSimulatorCleanup.survivingSocketCount,
                           ...(Object.hasOwn(
                             serialSessionSimulatorCleanup,
                             "termination",
                           )
                             ? {
                                 termination:
-                                  serialSessionSimulatorCleanup
-                                    .termination,
+                                  serialSessionSimulatorCleanup.termination,
                               }
                             : {}),
                           ...(Object.hasOwn(
@@ -3594,8 +3534,7 @@ export function validateVmHostAdapterReport(
                             "errors",
                           )
                             ? {
-                                errors:
-                                  serialSessionSimulatorCleanup.errors,
+                                errors: serialSessionSimulatorCleanup.errors,
                               }
                             : {}),
                         },
@@ -3605,10 +3544,8 @@ export function validateVmHostAdapterReport(
               ? null
               : {
                   serialSessionId: serialEvidence.serialSessionId,
-                  sessionBindingToken:
-                    serialEvidence.sessionBindingToken,
-                  deviceMappingDigest:
-                    serialEvidence.deviceMappingDigest,
+                  sessionBindingToken: serialEvidence.sessionBindingToken,
+                  deviceMappingDigest: serialEvidence.deviceMappingDigest,
                   operationEvidence: serialEvidence.operationEvidence,
                   captureChainDigest: serialEvidence.captureChainDigest,
                   records: serialEvidenceRecords.map((record: unknown) => {
@@ -3722,8 +3659,7 @@ export function redactScannerCode(
       : Buffer.isBuffer(scannerCode)
         ? scannerCode.toString("utf8")
         : "";
-  if (code.length === 0)
-    return structuredClone(value);
+  if (code.length === 0) return structuredClone(value);
   const redact = (entry: unknown): unknown => {
     if (typeof entry === "string")
       return entry.replaceAll(code, "[redacted-scanner-code]");
@@ -3835,7 +3771,10 @@ function inspectExportedDaemonCalibrationResponse({
     calibration.responseFileName !== evidence.fileName
   )
     throw new Error("daemon calibration response digest binding is invalid");
-  const response = JSON.parse(bytes.toString("utf8")) as Record<string, unknown>;
+  const response = JSON.parse(bytes.toString("utf8")) as Record<
+    string,
+    unknown
+  >;
   const responseKeys = [
     "challenge",
     "configGeneration",
@@ -3889,10 +3828,7 @@ function processGroupExists(child: ChildProcess): boolean {
   }
 }
 
-function signalProcessGroup(
-  child: ChildProcess,
-  signal: NodeJS.Signals,
-): void {
+function signalProcessGroup(child: ChildProcess, signal: NodeJS.Signals): void {
   if (child.pid === undefined || !Number.isInteger(child.pid)) return;
   try {
     process.kill(-child.pid, signal);
@@ -4039,7 +3975,10 @@ async function invokeAdapter({
       let reason: string | null = null;
       let settled = false;
       let termination: Promise<void> | null = null;
-      const finish = (value: { code: number | null; reason: string | null }) => {
+      const finish = (value: {
+        code: number | null;
+        reason: string | null;
+      }) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
@@ -4166,16 +4105,16 @@ function serialSessionForRecovery(
     deviceMappingDigest: null,
     deviceRoles: [...SERIAL_DEVICE_ROLES],
     scannerInjection: null,
-    saleCorrelationIds: [
-      ...(serialSession.saleCorrelationIds as unknown[]),
-    ],
+    saleCorrelationIds: [...(serialSession.saleCorrelationIds as unknown[])],
     saleBindings: structuredClone(serialSession.saleBindings),
     operationEvidence: null,
     idempotencyCheck: false,
   };
 }
 
-function cleanupRequestFor(request: Record<string, unknown>): Record<string, unknown> {
+function cleanupRequestFor(
+  request: Record<string, unknown>,
+): Record<string, unknown> {
   const nonce = `op-${randomBytes(16).toString("hex")}`;
   return createVmHostAdapterRequest({
     ...request,
@@ -4194,7 +4133,9 @@ function cleanupRequestFor(request: Record<string, unknown>): Record<string, unk
   });
 }
 
-function cancelRequestFor(request: Record<string, unknown>): Record<string, unknown> {
+function cancelRequestFor(
+  request: Record<string, unknown>,
+): Record<string, unknown> {
   const nonce = `op-${randomBytes(16).toString("hex")}`;
   return createVmHostAdapterRequest({
     ...request,
@@ -4288,19 +4229,20 @@ export async function runVmHostAdapter({
       : {}),
   };
   let cancellation: AdapterInvocationOutcome | undefined;
-  const cancelInFlightOperation = async (): Promise<AdapterInvocationOutcome> => {
-    if (cancellation) return cancellation;
-    cancellation = await invokeAdapter({
-      request: cancelRequestFor(request),
-      workDirectory: adapterWorkDirectory,
-      environment: adapterEnvironment,
-      timeoutMs: Math.min(timeoutMs, 30000),
-      signal: undefined,
-      scannerCode: undefined,
-      allowTestAdapter: testAdapterAllowed,
-    });
-    return cancellation;
-  };
+  const cancelInFlightOperation =
+    async (): Promise<AdapterInvocationOutcome> => {
+      if (cancellation) return cancellation;
+      cancellation = await invokeAdapter({
+        request: cancelRequestFor(request),
+        workDirectory: adapterWorkDirectory,
+        environment: adapterEnvironment,
+        timeoutMs: Math.min(timeoutMs, 30000),
+        signal: undefined,
+        scannerCode: undefined,
+        allowTestAdapter: testAdapterAllowed,
+      });
+      return cancellation;
+    };
   let outcome: AdapterInvocationOutcome = await invokeAdapter({
     request,
     workDirectory: adapterWorkDirectory,
@@ -4331,9 +4273,7 @@ export async function runVmHostAdapter({
     try {
       const report = outcome.report;
       if (report === null)
-        throw new Error(
-          "VM Host Adapter succeeded without a report",
-        );
+        throw new Error("VM Host Adapter succeeded without a report");
       const evidenceDirectory = scopedEvidenceDirectory;
       if (evidenceDirectory === null)
         throw new Error(
@@ -4379,7 +4319,10 @@ export async function runVmHostAdapter({
         inspectExportedDaemonCalibrationResponse({
           directory: evidenceDirectory,
           evidence: calibrationEvidence,
-          calibration: defaultAudioCapture?.daemonCalibration as Record<string, unknown>,
+          calibration: defaultAudioCapture?.daemonCalibration as Record<
+            string,
+            unknown
+          >,
           request,
         });
       }
@@ -4451,12 +4394,13 @@ export async function runVmHostAdapter({
       recovered
         ? "completed"
         : "failed",
-    observed: (recoveryCleanup?.observed as Record<string, unknown> | undefined) ??
-      {
-        overlay: "unknown",
-        runDirectory: "unknown",
-        bootstrapMedia: "unknown",
-      },
+    observed: (recoveryCleanup?.observed as
+      | Record<string, unknown>
+      | undefined) ?? {
+      overlay: "unknown",
+      runDirectory: "unknown",
+      bootstrapMedia: "unknown",
+    },
   };
   const diagnostic = createVmHostAdapterDiagnostic({
     request,

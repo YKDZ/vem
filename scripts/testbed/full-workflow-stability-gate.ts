@@ -162,9 +162,7 @@ export function buildStabilityGateReport({
     ) {
       gateFailures.push(`${label} reconstruction ID is invalid`);
     }
-    if (
-      !sameStringArray(identity?.retainedCaches, RETAINED_CACHE_CONTRACT)
-    ) {
+    if (!sameStringArray(identity?.retainedCaches, RETAINED_CACHE_CONTRACT)) {
       gateFailures.push(`${label} retained-cache contract drifted`);
     }
     if (!Array.isArray(identity?.removedUndeclaredCaches)) {
@@ -176,9 +174,7 @@ export function buildStabilityGateReport({
       gateFailures.push(`${label} runtime artifact evidence is invalid`);
     }
     if (
-      JSON.stringify(
-        recordValue(passA.execution).selectedBusinessSets,
-      ) !==
+      JSON.stringify(recordValue(passA.execution).selectedBusinessSets) !==
         JSON.stringify(REQUIRED_EXECUTION_ORDER) &&
       label === "passA"
     ) {
@@ -187,9 +183,7 @@ export function buildStabilityGateReport({
       );
     }
     if (
-      JSON.stringify(
-        recordValue(passB.execution).selectedBusinessSets,
-      ) !==
+      JSON.stringify(recordValue(passB.execution).selectedBusinessSets) !==
         JSON.stringify(REQUIRED_EXECUTION_ORDER) &&
       label === "passB"
     ) {
@@ -208,9 +202,15 @@ export function buildStabilityGateReport({
     recordValue(recordValue(passB.identity).baseline).digest
   )
     gateFailures.push("baseline digest differs between passes");
-  if (recordValue(passA.identity).runtimeBase !== recordValue(passB.identity).runtimeBase)
+  if (
+    recordValue(passA.identity).runtimeBase !==
+    recordValue(passB.identity).runtimeBase
+  )
     gateFailures.push("runtime-base differs between passes");
-  if (recordValue(passA.identity).reconstructionId === recordValue(passB.identity).reconstructionId)
+  if (
+    recordValue(passA.identity).reconstructionId ===
+    recordValue(passB.identity).reconstructionId
+  )
     gateFailures.push("two passes reused one reconstruction ID");
   if (
     !sameStringArray(

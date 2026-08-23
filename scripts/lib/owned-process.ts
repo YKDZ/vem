@@ -36,7 +36,10 @@ function processGroupExists(processGroupId: number): boolean {
   }
 }
 
-function signalProcessGroup(processGroupId: number, signal: NodeJS.Signals): void {
+function signalProcessGroup(
+  processGroupId: number,
+  signal: NodeJS.Signals,
+): void {
   try {
     process.kill(-processGroupId, signal);
   } catch (error) {

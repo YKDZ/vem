@@ -124,9 +124,7 @@ function inspectParsedWavPcm(
         : null;
   const startFrame = Math.max(
     0,
-    Math.floor(
-      (normalizedStartMs / 1_000) * Number(parsed.sampleRateHz),
-    ),
+    Math.floor((normalizedStartMs / 1_000) * Number(parsed.sampleRateHz)),
   );
   const unclampedEndFrame =
     normalizedEndMs === null
@@ -140,11 +138,7 @@ function inspectParsedWavPcm(
   const nonSilentSampleMagnitudes = new Set();
   for (let frame = startFrame; frame < endFrame; frame += 1) {
     let framePeak = 0;
-    for (
-      let channel = 0;
-      channel < Number(parsed.channels);
-      channel += 1
-    )
+    for (let channel = 0; channel < Number(parsed.channels); channel += 1)
       framePeak = Math.max(
         framePeak,
         sampleMagnitude(
@@ -209,8 +203,7 @@ export function inspectWavPcmWindows(
   return windows.map((window: JsonRecord) =>
     inspectParsedWavPcm(parsed, threshold, {
       startMs: Number(window?.startMs),
-      endMs:
-        window?.endMs == null ? null : Number(window?.endMs),
+      endMs: window?.endMs == null ? null : Number(window?.endMs),
       label: window?.label == null ? null : String(window?.label),
     }),
   );

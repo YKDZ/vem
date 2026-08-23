@@ -70,13 +70,11 @@ function writeJson(path: string, value: unknown): void {
   mkdirSync(dirname(localPath(path)), { recursive: true });
   writeFileSync(localPath(path), `${JSON.stringify(value, null, 2)}\n`);
 }
-async function json(
-  url: string,
-  options: JsonRecord = {},
-): Promise<unknown> {
+async function json(url: string, options: JsonRecord = {}): Promise<unknown> {
   const response = await fetch(url, {
     ...options,
-    signal: (options.signal as AbortSignal | undefined) ??
+    signal:
+      (options.signal as AbortSignal | undefined) ??
       AbortSignal.timeout(30_000),
   });
   const payload = await response.json().catch(() => null);
@@ -176,7 +174,11 @@ export function unwrapServiceApiEnvelope(payload: unknown): unknown {
 }
 export async function refreshAdminAccessToken(
   input: InputRecord,
-  login: (input: InputRecord, path: string, options: JsonRecord) => Promise<unknown> = api,
+  login: (
+    input: InputRecord,
+    path: string,
+    options: JsonRecord,
+  ) => Promise<unknown> = api,
 ): Promise<string> {
   const serviceApi = input.serviceApi as JsonRecord | undefined;
   const result = unwrapServiceApiEnvelope(
@@ -224,9 +226,7 @@ export async function waitForMachineOnline(
     );
     const pageRecord = page as JsonRecord | null;
     const items = (pageRecord?.items ?? []) as unknown[];
-    const machine = items.find(
-      (entry) => (entry as JsonRecord)?.code === code,
-    );
+    const machine = items.find((entry) => (entry as JsonRecord)?.code === code);
     if (!machine) throw new Error(`Service API machine ${code} was not found`);
     lastStatus = (machine as JsonRecord).status;
     if (lastStatus === "online") return machine;
@@ -245,9 +245,7 @@ export function selectFixtureSlot(
   const slotId = required(fixture?.slotId, "fixture.slotId");
   const saleViewRecord = saleView as JsonRecord | null;
   const items = (saleViewRecord?.items ?? []) as unknown[];
-  const item = items.find(
-    (entry) => (entry as JsonRecord)?.slotId === slotId,
-  );
+  const item = items.find((entry) => (entry as JsonRecord)?.slotId === slotId);
   const itemRecord = item as JsonRecord | undefined;
   if (!itemRecord?.inventoryId || saleViewRecord?.planogramVersion == null)
     throw new Error(
@@ -315,8 +313,7 @@ function daemonTransactionBelongsToAttempt(
   const order = attempt.order as JsonRecord | undefined;
   const payment = attempt.payment as JsonRecord | undefined;
   return (
-    transaction.orderId === order?.id ||
-    transaction.paymentId === payment?.id
+    transaction.orderId === order?.id || transaction.paymentId === payment?.id
   );
 }
 
@@ -354,9 +351,9 @@ export function validatePaymentRecoveryEvidence(
   ) {
     throw new Error("payment recovery MQTT evidence includes a dispense");
   }
-  const attempts = (Array.isArray(report.attempts)
-    ? report.attempts
-    : []) as unknown[];
+  const attempts = (
+    Array.isArray(report.attempts) ? report.attempts : []
+  ) as unknown[];
   for (const kind of REQUIRED_RECOVERY_ATTEMPT_KINDS) {
     const attempt = attempts.find(
       (candidate) => (candidate as JsonRecord)?.kind === kind,
@@ -448,10 +445,9 @@ export function validatePaymentRecoveryEvidence(
           String(customer.text),
         ) ||
         runtimeTrace?.source !== "installed_machine_runtime_trace_cdp" ||
-        runtimeTrace?.checkoutAttemptIdempotencyKey !== attempt.idempotencyKey ||
-        !Number.isFinite(
-          (runtimeTrace?.entry as JsonRecord | undefined)?.id,
-        ) ||
+        runtimeTrace?.checkoutAttemptIdempotencyKey !==
+          attempt.idempotencyKey ||
+        !Number.isFinite((runtimeTrace?.entry as JsonRecord | undefined)?.id) ||
         !semanticBackendApiError(
           runtimeTraceTechnicalMessage(
             runtimeTrace?.entry as JsonRecord | undefined,
@@ -498,9 +494,7 @@ export function validatePaymentRecoveryEvidence(
       (runtimeTrace?.orderId !== order.id ||
         runtimeTrace?.paymentId !== payment?.id ||
         runtimeTrace?.resultKind !== expectedTerminal?.resultKind ||
-        !Number.isFinite(
-          (runtimeTrace?.entry as JsonRecord | undefined)?.id,
-        ))
+        !Number.isFinite((runtimeTrace?.entry as JsonRecord | undefined)?.id))
     ) {
       throw new Error(
         `payment recovery ${kind} runtime trace correlation is invalid`,
@@ -516,8 +510,8 @@ export function validatePaymentRecoveryEvidence(
           ?.paymentId !== payment?.id ||
         (recovery?.reconciliationAttempt as JsonRecord | undefined)?.status !==
           "network_error" ||
-        (recovery?.reconciliationAttempt as JsonRecord | undefined)?.errorCode !==
-          "query_failed" ||
+        (recovery?.reconciliationAttempt as JsonRecord | undefined)
+          ?.errorCode !== "query_failed" ||
         (recovery?.closeAction as JsonRecord | undefined)?.action !==
           "close_or_reverse_uncertain_payment")
     ) {
@@ -527,8 +521,7 @@ export function validatePaymentRecoveryEvidence(
     }
     if (
       kind === "expired" &&
-      (expiryInjection?.source !==
-        "testbed_payment_expiry_time_injection" ||
+      (expiryInjection?.source !== "testbed_payment_expiry_time_injection" ||
         !["created", "pending", "processing"].includes(
           String(expiryInjection.beforePaymentStatus),
         ))
@@ -540,15 +533,11 @@ export function validatePaymentRecoveryEvidence(
   }
   const subsequentSale = report.subsequentSale as JsonRecord | undefined;
   const subsequentOrder = subsequentSale?.order as JsonRecord | undefined;
-  const subsequentTerminal = subsequentSale?.terminal as
-    | JsonRecord
-    | undefined;
+  const subsequentTerminal = subsequentSale?.terminal as JsonRecord | undefined;
   const subsequentInventory = subsequentSale?.inventory as
     | JsonRecord
     | undefined;
-  const subsequentCustomer = subsequentSale?.customer as
-    | JsonRecord
-    | undefined;
+  const subsequentCustomer = subsequentSale?.customer as JsonRecord | undefined;
   const subsequentSerial = subsequentSale?.serial as JsonRecord | undefined;
   const reportInventory = report.inventory as JsonRecord | undefined;
   if (
@@ -589,13 +578,9 @@ export function validatePaymentRecoveryEvidence(
     categoryKeys.size < 3 ||
     saleableCategories.some(
       (category) =>
-        !Number.isInteger(
-          (category as JsonRecord)?.daemonSaleableItemCount,
-        ) ||
+        !Number.isInteger((category as JsonRecord)?.daemonSaleableItemCount) ||
         ((category as JsonRecord).daemonSaleableItemCount as number) < 1 ||
-        !Number.isInteger(
-          (category as JsonRecord)?.saleableProductCount,
-        ) ||
+        !Number.isInteger((category as JsonRecord)?.saleableProductCount) ||
         ((category as JsonRecord).saleableProductCount as number) < 1,
     )
   ) {
@@ -651,8 +636,7 @@ async function platformReport(
   });
   const responseRecord = response as JsonRecord | null;
   const report = responseRecord?.report as JsonRecord | undefined;
-  if (!report?.raw)
-    throw new Error("platform query returned no raw rows");
+  if (!report?.raw) throw new Error("platform query returned no raw rows");
   return report;
 }
 
@@ -773,8 +757,7 @@ function dispenseMovementsForOrder(
     (movement) =>
       (movement as JsonRecord).inventoryId === inventoryId &&
       ((movement as JsonRecord).orderNo === order.orderNo ||
-        (movement as JsonRecord).orderItemId ===
-          (orderItem as JsonRecord).id),
+        (movement as JsonRecord).orderItemId === (orderItem as JsonRecord).id),
   );
 }
 
@@ -817,8 +800,7 @@ function saleableCategoriesFromDaemon(saleView: JsonRecord | null | undefined) {
       productName: String(item.productName ?? ""),
     });
     if (!key) continue;
-    const entry =
-      categories.get(key) ?? { key, daemonSaleableItemCount: 0 };
+    const entry = categories.get(key) ?? { key, daemonSaleableItemCount: 0 };
     entry.daemonSaleableItemCount = Number(entry.daemonSaleableItemCount) + 1;
     categories.set(key, entry);
   }
@@ -834,9 +816,10 @@ export async function observeSaleabilityRecovery({
   client: InstanceType<typeof CdpClient>;
   handoff: HandoffRecord;
 }): Promise<JsonRecord> {
-  const saleView = (await daemon(handoff, "/v1/sale-view")) as
-    | JsonRecord
-    | null;
+  const saleView = (await daemon(
+    handoff,
+    "/v1/sale-view",
+  )) as JsonRecord | null;
   const daemonCategories = saleableCategoriesFromDaemon(saleView);
   const categories: JsonRecord[] = [];
   for (const daemonCategory of daemonCategories) {
@@ -1158,8 +1141,7 @@ async function prepareCustomerCreateFailure(
         client,
         'document.querySelector("[data-test=checkout-submit]")?.dataset.checkoutAttemptIdempotencyKey || null',
       ),
-    (key) =>
-      typeof key === "string" && key.startsWith("checkout:"),
+    (key) => typeof key === "string" && key.startsWith("checkout:"),
     30_000,
   )) as string;
 }
@@ -1197,7 +1179,9 @@ async function waitForCustomerCreateFailure(
       return (
         surfaceRecord?.checkoutAttemptIdempotencyKey === idempotencyKey &&
         typeof surfaceRecord?.text === "string" &&
-        (surfaceRecord.text as string).includes(String(expected.customerCopy)) &&
+        (surfaceRecord.text as string).includes(
+          String(expected.customerCopy),
+        ) &&
         !/(?:provider|HTTP|MQTT|IPC|COM\d|schema|query_failed)/i.test(
           String(surfaceRecord.text),
         ) &&
@@ -1239,9 +1223,7 @@ const RECOVERY_TERMINALS = Object.freeze({
   },
 });
 
-async function waitForCreateGatePending(
-  input: InputRecord,
-): Promise<unknown> {
+async function waitForCreateGatePending(input: InputRecord): Promise<unknown> {
   return await waitFor(
     "mock payment create gate pending marker",
     () => control(input, "/v1/mock-payment-create-gate/status"),
@@ -1249,9 +1231,7 @@ async function waitForCreateGatePending(
       const pending = (state as JsonRecord | null)?.pending as
         | JsonRecord
         | undefined;
-      return (
-        pending?.state === "pending" && Boolean(pending.paymentNo)
-      );
+      return pending?.state === "pending" && Boolean(pending.paymentNo);
     },
   );
 }
@@ -1311,15 +1291,15 @@ export async function runPaymentRecoveryGuest(options: {
     };
     customer = await connectInstalledCustomerRuntime(handoff);
     const activeCustomer = customer;
-    const saleView = (await daemon(handoff, "/v1/sale-view")) as
-      | JsonRecord
-      | null;
+    const saleView = (await daemon(
+      handoff,
+      "/v1/sale-view",
+    )) as JsonRecord | null;
     const fixtureAllocation = input.fixtureAllocation as JsonRecord | undefined;
     const fixture =
       (fixtureAllocation?.[options.fixtureKey ?? "paymentRecovery"] as
         | JsonRecord
-        | undefined) ??
-      (fixtureAllocation?.sale as JsonRecord | undefined);
+        | undefined) ?? (fixtureAllocation?.sale as JsonRecord | undefined);
     const slot = selectFixtureSlot(saleView, fixture);
     report.inventory = {
       id: String(slot.inventoryId),
@@ -1415,11 +1395,11 @@ export async function runPaymentRecoveryGuest(options: {
             error: "mock payment create gate timed out before release",
             httpStatus: null,
           };
-          customerSurface = await waitForCustomerCreateFailure(
+          customerSurface = (await waitForCustomerCreateFailure(
             activeCustomer,
             idempotencyKey,
             RECOVERY_TERMINALS.create_failure,
-          ) as JsonRecord;
+          )) as JsonRecord;
           if (
             !semanticBackendApiError(
               runtimeTraceTechnicalMessage(
@@ -1563,13 +1543,15 @@ export async function runPaymentRecoveryGuest(options: {
               String(activeSession.sessionId),
             ),
           (platform) =>
-            rows((platform as JsonRecord).raw, "paymentReconciliationAttempts")
-              .some(
-                (attempt) =>
-                  (attempt as JsonRecord).paymentId === createdPayment.id &&
-                  (attempt as JsonRecord).status === "network_error" &&
-                  (attempt as JsonRecord).errorCode === "query_failed",
-              ),
+            rows(
+              (platform as JsonRecord).raw,
+              "paymentReconciliationAttempts",
+            ).some(
+              (attempt) =>
+                (attempt as JsonRecord).paymentId === createdPayment.id &&
+                (attempt as JsonRecord).status === "network_error" &&
+                (attempt as JsonRecord).errorCode === "query_failed",
+            ),
         );
         const queryFailureAttempt = exactlyOne(
           rows(
@@ -1631,14 +1613,12 @@ export async function runPaymentRecoveryGuest(options: {
           orderNo: createdOrder.orderNo,
         });
       } else if (kind === "expired") {
-        expiryInjection = (
-          await control(input, "/v1/platform/payment-expiry", {
-            runId,
-            machineCode,
-            paymentId: createdPayment.id,
-            expiresAt: new Date(Date.now() - 200_000).toISOString(),
-          })
-        ) as JsonRecord;
+        expiryInjection = (await control(input, "/v1/platform/payment-expiry", {
+          runId,
+          machineCode,
+          paymentId: createdPayment.id,
+          expiresAt: new Date(Date.now() - 200_000).toISOString(),
+        })) as JsonRecord;
         expiryInjection = (expiryInjection as JsonRecord).report;
       }
       const terminalPlatform = await waitFor(
@@ -1953,10 +1933,10 @@ export async function runPaymentRecoveryGuest(options: {
     const customerResult = (await waitForSuccessfulCustomerResult(
       activeCustomer,
       {
-      orderId: String(subsequentOrder.orderId),
-      paymentId: String(subsequentOrder.paymentId),
-      orderNo: String(subsequentOrder.orderNo),
-      commandId: vendingCommandId,
+        orderId: String(subsequentOrder.orderId),
+        paymentId: String(subsequentOrder.paymentId),
+        orderNo: String(subsequentOrder.orderNo),
+        commandId: vendingCommandId,
       },
     )) as JsonRecord;
     const subsequentInventoryAfter = inventorySnapshot(

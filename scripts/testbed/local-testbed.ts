@@ -208,9 +208,7 @@ export function validateHostPrivateAddress(
   return hostPrivateAddress;
 }
 
-export function parseOptions(
-  args: string[],
-):
+export function parseOptions(args: string[]):
   | {
       command: string;
       workspace: string;
@@ -281,9 +279,7 @@ interface BaselineContract {
   };
 }
 
-export function validateBaselineContract(
-  contract: unknown,
-): BaselineContract {
+export function validateBaselineContract(contract: unknown): BaselineContract {
   if (!contract || typeof contract !== "object" || Array.isArray(contract)) {
     throw new Error("baseline contract must be an object");
   }
@@ -356,10 +352,7 @@ export function validateBaselineContract(
   ) {
     throw new Error("baseline contract SSH files must be absolute");
   }
-  windowsAbsolute(
-    guest.stagingPath,
-    "baseline contract guest.stagingPath",
-  );
+  windowsAbsolute(guest.stagingPath, "baseline contract guest.stagingPath");
   windowsAbsolute(guest.cacheRoot, "baseline contract guest.cacheRoot");
   return contract as BaselineContract;
 }
@@ -649,9 +642,7 @@ export function buildComposeServiceApiEnvironment(
   };
 }
 
-export function renderBackendComposeEnv(
-  options: ReconstructOptions,
-): string {
+export function renderBackendComposeEnv(options: ReconstructOptions): string {
   return `${Object.entries(buildBackendComposeEnvironment(options))
     .map(([name, value]) => `${name}=${quoteComposeEnv(value)}`)
     .join("\n")}\n`;
@@ -857,9 +848,7 @@ async function buildDirectoryIdentity(
   };
 }
 
-async function observeAdminUiDelivery(
-  indexBytes: Buffer,
-): Promise<unknown> {
+async function observeAdminUiDelivery(indexBytes: Buffer): Promise<unknown> {
   const server = createServer((request, response) => {
     if (request.method !== "GET" || request.url !== "/") {
       response.writeHead(404).end();
@@ -1194,7 +1183,9 @@ function mergeCommandEnvironment(
 
 export function buildMigrationEnvironment(
   options: ReconstructOptions,
-  { baseEnvironment = process.env }: { baseEnvironment?: NodeJS.ProcessEnv } = {},
+  {
+    baseEnvironment = process.env,
+  }: { baseEnvironment?: NodeJS.ProcessEnv } = {},
 ): Record<string, string> {
   return {
     ...mergeCommandEnvironment(
@@ -1482,9 +1473,9 @@ function installationFixturePath(
   return absolute(fixturePath, INSTALLATION_ALIPAY_SANDBOX_FIXTURE_ENV);
 }
 
-function validateAlipayFixtureChannels(
-  fixture: { channelPolicy?: { channels?: unknown } },
-): void {
+function validateAlipayFixtureChannels(fixture: {
+  channelPolicy?: { channels?: unknown };
+}): void {
   const channels = fixture.channelPolicy?.channels;
   if (
     !Array.isArray(channels) ||
@@ -1520,8 +1511,10 @@ export async function prepareInstallationOwnedPaymentProvider({
   const fixture = validateInstallationOwnedAlipaySandboxFixture(
     (await readFixture(resolvedFixturePath)) as Record<string, unknown> | null,
   );
-  const providerConfig = (fixture.providerConfig ??
-    {}) as Record<string, unknown>;
+  const providerConfig = (fixture.providerConfig ?? {}) as Record<
+    string,
+    unknown
+  >;
   const channelPolicy = (fixture.channelPolicy ?? {}) as {
     channels?: unknown;
   };
@@ -1559,18 +1552,23 @@ export async function prepareInstallationOwnedPaymentProvider({
     token,
     body: channelPolicy,
   });
-  const publicConfig = (providerConfig.publicConfigJson ??
-    {}) as { mode?: unknown; gatewayUrl?: unknown; keyType?: unknown };
+  const publicConfig = (providerConfig.publicConfigJson ?? {}) as {
+    mode?: unknown;
+    gatewayUrl?: unknown;
+    keyType?: unknown;
+  };
   const providerConfigId = required(config?.id, "Alipay provider config id");
   const configured = (await request(baseUrl, "/payments/provider-configs", {
     token,
-  })) as
-    | Array<{
-        id?: unknown;
-        providerCode?: unknown;
-        publicConfigJson?: { mode?: unknown; gatewayUrl?: unknown; keyType?: unknown };
-      }>
-    | null;
+  })) as Array<{
+    id?: unknown;
+    providerCode?: unknown;
+    publicConfigJson?: {
+      mode?: unknown;
+      gatewayUrl?: unknown;
+      keyType?: unknown;
+    };
+  }> | null;
   const projection = Array.isArray(configured)
     ? configured.find((entry) => entry?.id === providerConfigId)
     : null;
@@ -1589,10 +1587,7 @@ export async function prepareInstallationOwnedPaymentProvider({
       providerCode: "alipay",
       providerConfigId,
       appId: required(providerConfig.appId, "Alipay appId"),
-      merchantNo: required(
-        providerConfig.merchantNo,
-        "Alipay merchantNo",
-      ),
+      merchantNo: required(providerConfig.merchantNo, "Alipay merchantNo"),
       mode: publicConfig.mode,
       gatewayUrl: publicConfig.gatewayUrl,
       keyType: publicConfig.keyType,
@@ -1604,9 +1599,11 @@ export async function prepareInstallationOwnedPaymentProvider({
   };
 }
 
-function testbedTryOnGarmentAsset(
-  template = "tshirt_short_sleeve",
-): { fileName: string; contentType: string; buffer: Buffer } {
+function testbedTryOnGarmentAsset(template = "tshirt_short_sleeve"): {
+  fileName: string;
+  contentType: string;
+  buffer: Buffer;
+} {
   const longSleeve = template === "tshirt_long_sleeve";
   return {
     fileName: longSleeve
@@ -1757,9 +1754,11 @@ const TESTBED_PRODUCT_DISPLAY_IMAGE_FIXTURES = Object.freeze({
   T恤: "tshirts",
 });
 
-function testbedProductDisplayImageAsset(
-  category: string,
-): { fileName: string; contentType: string; buffer: Buffer } {
+function testbedProductDisplayImageAsset(category: string): {
+  fileName: string;
+  contentType: string;
+  buffer: Buffer;
+} {
   const fixtureKey = (
     TESTBED_PRODUCT_DISPLAY_IMAGE_FIXTURES as Record<string, string>
   )[category];
@@ -1935,39 +1934,29 @@ export async function seedThroughSupportedApis({
     value && typeof value === "object"
       ? (value as Record<string, unknown>)
       : {};
-  const asRecordArray = (
-    value: unknown,
-  ): Array<Record<string, unknown>> =>
+  const asRecordArray = (value: unknown): Array<Record<string, unknown>> =>
     Array.isArray(value) ? (value as Array<Record<string, unknown>>) : [];
   const login = asRecord(
     await request(baseUrl, "/auth/login", {
-    method: "POST",
-    body: {
-      username: LOCAL_TESTBED_ADMIN_USERNAME,
-      password: LOCAL_TESTBED_ADMIN_PASSWORD,
-    },
+      method: "POST",
+      body: {
+        username: LOCAL_TESTBED_ADMIN_USERNAME,
+        password: LOCAL_TESTBED_ADMIN_PASSWORD,
+      },
     }),
   );
   const token = login.accessToken;
   const tryOnGarmentAsset = asRecord(
-    await upload(
-      baseUrl,
-      "/media-assets/try-on-garments",
-      {
+    await upload(baseUrl, "/media-assets/try-on-garments", {
       token,
       ...testbedTryOnGarmentAsset(),
-      },
-    ),
+    }),
   );
   const longTryOnGarmentAsset = asRecord(
-    await upload(
-      baseUrl,
-      "/media-assets/try-on-garments",
-      {
+    await upload(baseUrl, "/media-assets/try-on-garments", {
       token,
       ...testbedTryOnGarmentAsset("tshirt_long_sleeve"),
-      },
-    ),
+    }),
   );
   const productDisplayAssetsByCategory = new Map<
     string,
@@ -2003,31 +1992,35 @@ export async function seedThroughSupportedApis({
         `local testbed fixture product category has no display image asset: ${entry.category}`,
       );
     }
-    const product = asRecord(await request(baseUrl, "/products", {
-      method: "POST",
-      token,
-      body: {
-        name: entry.name,
-        description: `${entry.category} normalized testbed fixture`,
-        displayImageMediaAssetId: displayImageAsset.id,
-        status: "active",
-        sortOrder: index,
-      },
-    }));
-    const variant = asRecord(await request(baseUrl, "/product-variants", {
-      method: "POST",
-      token,
-      body: {
-        productId: product.id,
-        sku: `TSC-LOCAL-${String(entry.sourceRow).padStart(3, "0")}`,
-        size: entry.size,
-        color: null,
-        priceCents:
-          fixture.slots.find((slot) => slot.sourceRow === entry.sourceRow)
-            ?.priceCents ?? 5900,
-        status: "active",
-      },
-    }));
+    const product = asRecord(
+      await request(baseUrl, "/products", {
+        method: "POST",
+        token,
+        body: {
+          name: entry.name,
+          description: `${entry.category} normalized testbed fixture`,
+          displayImageMediaAssetId: displayImageAsset.id,
+          status: "active",
+          sortOrder: index,
+        },
+      }),
+    );
+    const variant = asRecord(
+      await request(baseUrl, "/product-variants", {
+        method: "POST",
+        token,
+        body: {
+          productId: product.id,
+          sku: `TSC-LOCAL-${String(entry.sourceRow).padStart(3, "0")}`,
+          size: entry.size,
+          color: null,
+          priceCents:
+            fixture.slots.find((slot) => slot.sourceRow === entry.sourceRow)
+              ?.priceCents ?? 5900,
+          status: "active",
+        },
+      }),
+    );
     products.push({
       ...entry,
       product,
@@ -2049,15 +2042,17 @@ export async function seedThroughSupportedApis({
       status: "enabled",
     },
   });
-  const machine = asRecord(await request(baseUrl, "/machines", {
-    method: "POST",
-    token,
-    body: {
-      code: "VEM-TESTBED-LOCAL",
-      name: "Local Windows Runtime Testbed",
-      locationLabel: "testbed host",
-    },
-  }));
+  const machine = asRecord(
+    await request(baseUrl, "/machines", {
+      method: "POST",
+      token,
+      body: {
+        code: "VEM-TESTBED-LOCAL",
+        name: "Local Windows Runtime Testbed",
+        locationLabel: "testbed host",
+      },
+    }),
+  );
   await request(baseUrl, `/machines/${machine.id}`, {
     method: "PATCH",
     token,
@@ -2089,27 +2084,27 @@ export async function seedThroughSupportedApis({
         },
       }),
     );
-    const product = products.find(
-      (item) => item.sourceRow === slot.sourceRow,
-    );
+    const product = products.find((item) => item.sourceRow === slot.sourceRow);
     if (product === undefined) {
       throw new Error(
         `local testbed fixture slot has no product: ${String(slot.sourceRow)}`,
       );
     }
-    const inventory = asRecord(await request(baseUrl, "/inventories", {
-      method: "POST",
-      token,
-      body: {
-        machineId: machine.id,
-        slotId: machineSlot.id,
-        variantId: product.variant.id,
-        onHandQty: slot.onHandQty,
-        reservedQty: 0,
-        lowStockThreshold: slot.lowStockThreshold,
-        note: "local testbed deterministic fixture",
-      },
-    }));
+    const inventory = asRecord(
+      await request(baseUrl, "/inventories", {
+        method: "POST",
+        token,
+        body: {
+          machineId: machine.id,
+          slotId: machineSlot.id,
+          variantId: product.variant.id,
+          onHandQty: slot.onHandQty,
+          reservedQty: 0,
+          lowStockThreshold: slot.lowStockThreshold,
+          note: "local testbed deterministic fixture",
+        },
+      }),
+    );
     seededSlots.push({ slot, product, machineSlot, inventory });
   }
   const recommendationBase = seededSlots.find(
@@ -2132,18 +2127,20 @@ export async function seedThroughSupportedApis({
   const recommendationVariants = [];
   const planogramSeededSlots = [...seededSlots];
   for (const definition of VISION_RECOMMENDATION_VARIANTS) {
-    const variant = asRecord(await request(baseUrl, "/product-variants", {
-      method: "POST",
-      token,
-      body: {
-        productId: recommendationBase.product.product.id,
-        sku: `${recommendationBase.product.variant.sku}-VISION-${definition.size}`,
-        size: definition.size,
-        color: null,
-        priceCents: recommendationBase.slot.priceCents,
-        status: "active",
-      },
-    }));
+    const variant = asRecord(
+      await request(baseUrl, "/product-variants", {
+        method: "POST",
+        token,
+        body: {
+          productId: recommendationBase.product.product.id,
+          sku: `${recommendationBase.product.variant.sku}-VISION-${definition.size}`,
+          size: definition.size,
+          color: null,
+          priceCents: recommendationBase.slot.priceCents,
+          status: "active",
+        },
+      }),
+    );
     const machineSlot = asRecord(
       await request(baseUrl, `/machines/${machine.id}/slots`, {
         method: "POST",
@@ -2156,19 +2153,21 @@ export async function seedThroughSupportedApis({
         },
       }),
     );
-    const inventory = asRecord(await request(baseUrl, "/inventories", {
-      method: "POST",
-      token,
-      body: {
-        machineId: machine.id,
-        slotId: machineSlot.id,
-        variantId: variant.id,
-        onHandQty: recommendationBase.slot.onHandQty,
-        reservedQty: 0,
-        lowStockThreshold: recommendationBase.slot.lowStockThreshold,
-        note: "local testbed vision recommendation fixture",
-      },
-    }));
+    const inventory = asRecord(
+      await request(baseUrl, "/inventories", {
+        method: "POST",
+        token,
+        body: {
+          machineId: machine.id,
+          slotId: machineSlot.id,
+          variantId: variant.id,
+          onHandQty: recommendationBase.slot.onHandQty,
+          reservedQty: 0,
+          lowStockThreshold: recommendationBase.slot.lowStockThreshold,
+          note: "local testbed vision recommendation fixture",
+        },
+      }),
+    );
     const slot = {
       ...recommendationBase.slot,
       rowNo: definition.rowNo,
@@ -2200,16 +2199,18 @@ export async function seedThroughSupportedApis({
     template: unknown,
     colorLabel: unknown,
   ): Promise<Record<string, unknown>> => {
-    const draft = asRecord(await request(baseUrl, "/try-on-garments", {
-      method: "POST",
-      token,
-      body: {
-        productId: recommendationBase.product.product.id,
-        colorLabel,
-        sourceMediaAssetId,
-        template,
-      },
-    }));
+    const draft = asRecord(
+      await request(baseUrl, "/try-on-garments", {
+        method: "POST",
+        token,
+        body: {
+          productId: recommendationBase.product.product.id,
+          colorLabel,
+          sourceMediaAssetId,
+          template,
+        },
+      }),
+    );
     for (const action of ["confirmation", "activation"]) {
       await request(baseUrl, `/try-on-garments/${draft.id}/${action}`, {
         method: "POST",
@@ -2369,9 +2370,9 @@ export async function seedThroughSupportedApis({
 
 async function stopServiceApiUnit(options: ReconstructOptions): Promise<void> {
   const stop = buildServiceApiComposePlan(options)[0];
-  await run(stop.command as string, stop.args as string[], { stdio: "ignore" }).catch(
-    () => undefined,
-  );
+  await run(stop.command as string, stop.args as string[], {
+    stdio: "ignore",
+  }).catch(() => undefined);
 }
 
 async function startServiceApiUnit(options: ReconstructOptions): Promise<void> {
@@ -2387,12 +2388,12 @@ async function stopHostControlPlaneUnit(
   contract: BaselineContract,
 ): Promise<void> {
   const [stop, reset] = buildHostControlPlaneUnitPlan(options, contract);
-  await run(stop.command as string, stop.args as string[], { stdio: "ignore" }).catch(
-    () => undefined,
-  );
-  await run(reset.command as string, reset.args as string[], { stdio: "ignore" }).catch(
-    () => undefined,
-  );
+  await run(stop.command as string, stop.args as string[], {
+    stdio: "ignore",
+  }).catch(() => undefined);
+  await run(reset.command as string, reset.args as string[], {
+    stdio: "ignore",
+  }).catch(() => undefined);
 }
 
 async function startHostControlPlaneUnit(
@@ -2418,12 +2419,12 @@ async function stopHeadlessVncActivatorUnit(
   contract: BaselineContract,
 ): Promise<void> {
   const [stop, reset] = buildHeadlessVncActivatorUnitPlan(options, contract);
-  await run(stop.command as string, stop.args as string[], { stdio: "ignore" }).catch(
-    () => undefined,
-  );
-  await run(reset.command as string, reset.args as string[], { stdio: "ignore" }).catch(
-    () => undefined,
-  );
+  await run(stop.command as string, stop.args as string[], {
+    stdio: "ignore",
+  }).catch(() => undefined);
+  await run(reset.command as string, reset.args as string[], {
+    stdio: "ignore",
+  }).catch(() => undefined);
 }
 
 async function startHeadlessVncActivatorUnit(
@@ -2481,9 +2482,8 @@ export function validateRefreshGuestInput(
     typeof record.hostControlPlane !== "object" ||
     typeof (record.hostControlPlane as Record<string, unknown>).token !==
       "string" ||
-    String(
-      (record.hostControlPlane as Record<string, unknown>).token,
-    ).length === 0
+    String((record.hostControlPlane as Record<string, unknown>).token)
+      .length === 0
   ) {
     throw new Error(
       "existing guest input must retain machine, claim, fixture, and host control plane token",
@@ -2567,13 +2567,15 @@ export async function refreshPlatformFixtureForRun({
     value && typeof value === "object"
       ? (value as Record<string, unknown>)
       : {};
-  const login = asRecord(await request(baseUrl, "/auth/login", {
-    method: "POST",
-    body: {
-      username: LOCAL_TESTBED_ADMIN_USERNAME,
-      password: LOCAL_TESTBED_ADMIN_PASSWORD,
-    },
-  }));
+  const login = asRecord(
+    await request(baseUrl, "/auth/login", {
+      method: "POST",
+      body: {
+        username: LOCAL_TESTBED_ADMIN_USERNAME,
+        password: LOCAL_TESTBED_ADMIN_PASSWORD,
+      },
+    }),
+  );
   const token = login.accessToken;
   const machinesPage = asRecord(
     await request(baseUrl, "/machines?page=1&pageSize=100", {
@@ -2584,18 +2586,18 @@ export async function refreshPlatformFixtureForRun({
     Array.isArray(machinesPage.items)
       ? (machinesPage.items as Array<Record<string, unknown>>)
       : []
-  ).find(
-    (machine) => machine.code === input.machineCode,
-  );
+  ).find((machine) => machine.code === input.machineCode);
   if (existingMachine) return input;
 
-  const seeded = asRecord(await seedPlatform({
-    baseUrl,
-    fixture,
-    hostPrivateAddress,
-    request,
-    upload,
-  }));
+  const seeded = asRecord(
+    await seedPlatform({
+      baseUrl,
+      fixture,
+      hostPrivateAddress,
+      request,
+      upload,
+    }),
+  );
   return {
     ...input,
     fixtureAllocation: allocateFullWorkflowFixtures(
@@ -2811,22 +2813,16 @@ async function reconstruct(
   await stopHeadlessVncActivatorUnit(options, contract);
   await run(plan[0].command, plan[0].args, {
     stdio: "ignore",
-  }).catch(
-    () => undefined,
-  );
+  }).catch(() => undefined);
   await run(plan[1].command, plan[1].args, {
     stdio: "ignore",
-  }).catch(
-    () => undefined,
-  );
+  }).catch(() => undefined);
   try {
     const hostSimulator = await ensureLowerControllerSimCached({ options });
     const reconstructionStartedAt = new Date().toISOString();
-    const reconstructHost = await runCapture(
-      plan[2].command,
-      plan[2].args,
-      { cwd: options.workspace },
-    );
+    const reconstructHost = await runCapture(plan[2].command, plan[2].args, {
+      cwd: options.workspace,
+    });
     const reconstructionFinishedAt = new Date().toISOString();
     const reconstructHostResult = parseJsonLine(
       reconstructHost.stdout,
@@ -2933,11 +2929,9 @@ async function reconstruct(
       throw new Error("host admission plan step is missing");
     }
     const admissionStartedAt = new Date().toISOString();
-    const admitHost = await runCapture(
-      admitGuest.command,
-      admitGuest.args,
-      { cwd: options.workspace },
-    );
+    const admitHost = await runCapture(admitGuest.command, admitGuest.args, {
+      cwd: options.workspace,
+    });
     const admissionFinishedAt = new Date().toISOString();
     const admitHostResult = parseJsonLine(
       admitHost.stdout,
@@ -2988,9 +2982,7 @@ async function reconstruct(
           host: String(contract.testbed?.guest?.host ?? ""),
           user: String(contract.testbed?.guest?.user ?? ""),
           identityFile: String(contract.testbed?.guest?.identityFile ?? ""),
-          knownHostsFile: String(
-            contract.testbed?.guest?.knownHostsFile ?? "",
-          ),
+          knownHostsFile: String(contract.testbed?.guest?.knownHostsFile ?? ""),
           handoffPath: GUEST_HANDOFF_PATH,
           smokePath: GUEST_SMOKE_PATH,
           visionMockControlPort: GUEST_VISION_MOCK_CONTROL_PORT,

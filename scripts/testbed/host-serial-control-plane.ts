@@ -142,12 +142,10 @@ interface AudioCaptureSession {
   runtime: RuntimeBinding;
   evidenceDirectory: string;
   cancelledAt: string | null;
-  stopReport:
-    | {
-        captureSession?: unknown;
-        evidence?: Array<{ fileName: string }>;
-      }
-    | null;
+  stopReport: {
+    captureSession?: unknown;
+    evidence?: Array<{ fileName: string }>;
+  } | null;
 }
 
 interface ControlPlaneDependencies {
@@ -258,10 +256,7 @@ function runtimeBinding(runtime: unknown): RuntimeBinding {
   }
   return {
     processId,
-    executablePath: required(
-      record.executablePath,
-      "runtime.executablePath",
-    ),
+    executablePath: required(record.executablePath, "runtime.executablePath"),
     principal: required(record.principal, "runtime.principal"),
     sessionId,
     cdpTargetId: required(record.cdpTargetId, "runtime.cdpTargetId"),
@@ -286,10 +281,7 @@ class TestbedInfrastructureError extends Error {
   readonly code: string;
   readonly details: Record<string, unknown>;
 
-  constructor(
-    message: string,
-    details: Record<string, unknown> = {},
-  ) {
+  constructor(message: string, details: Record<string, unknown> = {}) {
     super(message);
     this.name = "TestbedInfrastructureError";
     this.code = "testbed_infra_failed";
@@ -344,9 +336,7 @@ function buildMachineMqttTopic(machineCode: unknown): string {
 function normalizeSerialScenario(value: unknown): SerialScenario {
   if (value == null) return SERIAL_SCENARIOS.NORMAL;
   const scenario = String(value).trim().toLowerCase();
-  if (
-    !Object.values(SERIAL_SCENARIOS).includes(scenario as SerialScenario)
-  ) {
+  if (!Object.values(SERIAL_SCENARIOS).includes(scenario as SerialScenario)) {
     throw new Error("serialScenario must be normal, delayed-pickup, or e6");
   }
   return scenario as SerialScenario;
@@ -468,10 +458,7 @@ export function buildSerialOperationCommand({
         "serial session binding and sale are required for non-start operations",
       );
     }
-    args.push(
-      ...sessionArgs(sessionBinding),
-      ...saleArgs(sale),
-    );
+    args.push(...sessionArgs(sessionBinding), ...saleArgs(sale));
     if (request.operation === "inject-scanner-code") {
       args.push(
         "--scanner-code-file",
@@ -864,8 +851,8 @@ function spawnMqttCapture({
   let readyReject!: (error: Error) => void;
   const ready = new Promise<{ topic: string; subscribedAt: string }>(
     (resolve, reject) => {
-    readyResolve = resolve;
-    readyReject = reject;
+      readyResolve = resolve;
+      readyReject = reject;
     },
   );
   const readyTimeout = setTimeout(() => {
@@ -1247,9 +1234,9 @@ function releaseSessionF0(
   return { released: true, releaseFile: path };
 }
 
-function adapterSessionPaths(session: SerialSession): ReturnType<
-  typeof qemuUsbSerialSessionPaths
-> {
+function adapterSessionPaths(
+  session: SerialSession,
+): ReturnType<typeof qemuUsbSerialSessionPaths> {
   const adapterRoot = required(
     process.env.VEM_VM_HOST_ADAPTER_STATE_ROOT,
     "VEM_VM_HOST_ADAPTER_STATE_ROOT",
@@ -1475,7 +1462,11 @@ export function serialDeviceXmlForRole(
 
 function runVirshDeviceLifecycle(
   server: ControlPlaneServerState,
-  { role, operation, xml }: {
+  {
+    role,
+    operation,
+    xml,
+  }: {
     role: unknown;
     operation: unknown;
     xml: unknown;
@@ -1691,7 +1682,8 @@ async function stopAudioCapture(
   }
   const session = requireSession(server, capture.sessionId);
   const outPath = join(session.dir, "audio-capture-stop.json");
-  capture.stopReport = (input.captureKind === "default-audio"
+  capture.stopReport = (
+    input.captureKind === "default-audio"
       ? await server.dependencies.stopDefaultAudioCapture(
           {
             captureSessionId:
@@ -1728,7 +1720,8 @@ async function stopAudioCapture(
             production: audioCaptureProductionBinding(server, session),
           },
           {},
-        )) as NonNullable<AudioCaptureSession["stopReport"]>;
+        )
+  ) as NonNullable<AudioCaptureSession["stopReport"]>;
   return {
     audioCaptureId: capture.id,
     stopReport: capture.stopReport,
@@ -1921,10 +1914,9 @@ async function abortSession(
     }
   }
   if (existsSync(String(paths.statePath))) {
-    const state = JSON.parse(readFileSync(String(paths.statePath), "utf8")) as Record<
-      string,
-      unknown
-    >;
+    const state = JSON.parse(
+      readFileSync(String(paths.statePath), "utf8"),
+    ) as Record<string, unknown>;
     const statePids: Array<[string, unknown]> = [
       ["lower-controller simulator", state.simulatorPid],
       ["host PTY capture", state.ptyCapturePid],
@@ -1964,9 +1956,13 @@ async function abortSession(
       existsSync(path),
     ).length;
     state.cleanup = cleanup;
-    writeFileSync(String(paths.statePath), `${JSON.stringify(state, null, 2)}\n`, {
-      mode: 0o600,
-    });
+    writeFileSync(
+      String(paths.statePath),
+      `${JSON.stringify(state, null, 2)}\n`,
+      {
+        mode: 0o600,
+      },
+    );
   }
   session.mqttCapture.stop();
   session.machineMqttCapture.stop();
@@ -2203,8 +2199,7 @@ async function injectScannerCode(
   return {
     sessionId: session.id,
     injectReport: summarizeReport(report),
-    scannerInjection:
-      report.request?.serialSession?.scannerInjection,
+    scannerInjection: report.request?.serialSession?.scannerInjection,
   };
 }
 
@@ -2216,9 +2211,8 @@ async function collectSerialEvidence(
   if (!session.injectReport) {
     throw new Error("inject-scanner-code must complete before collect");
   }
-  const scannerInjection = (
-    session.injectReport as SerialRunnerReport
-  ).request?.serialSession?.scannerInjection;
+  const scannerInjection = (session.injectReport as SerialRunnerReport).request
+    ?.serialSession?.scannerInjection;
   if (scannerInjection === undefined) {
     throw new Error("inject report is missing scanner injection evidence");
   }

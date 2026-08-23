@@ -193,7 +193,9 @@ export function createSaleAudioCaptureRequest(options: JsonRecord): JsonRecord {
   return request;
 }
 
-export function validateSaleAudioCaptureRequest(request: JsonRecord): JsonRecord {
+export function validateSaleAudioCaptureRequest(
+  request: JsonRecord,
+): JsonRecord {
   exactKeys(
     request,
     [
@@ -276,10 +278,7 @@ export function validateSaleAudioCaptureRequest(request: JsonRecord): JsonRecord
       "startOperationReference",
       "startedAt",
     ])
-      requiredString(
-        captureSession?.[name],
-        `request.captureSession.${name}`,
-      );
+      requiredString(captureSession?.[name], `request.captureSession.${name}`);
     canonical(
       captureSession.captureSessionId,
       URI_ID,
@@ -290,10 +289,7 @@ export function validateSaleAudioCaptureRequest(request: JsonRecord): JsonRecord
       URI_ID,
       "request.captureSession.startOperationReference",
     );
-    timestamp(
-      captureSession.startedAt,
-      "request.captureSession.startedAt",
-    );
+    timestamp(captureSession.startedAt, "request.captureSession.startedAt");
     if (request.phase === "cancel") {
       if (request.sale !== null)
         throw new Error("capture cancel must not claim sale identifiers");
@@ -318,7 +314,11 @@ export function validateSaleAudioCaptureRequest(request: JsonRecord): JsonRecord
   return structuredClone(request);
 }
 
-function validateEvidence(entry: JsonRecord, role: string, extension: string): void {
+function validateEvidence(
+  entry: JsonRecord,
+  role: string,
+  extension: string,
+): void {
   exactKeys(entry, ["role", "identity", "digest", "fileName"], role);
   if (
     entry?.role !== role ||
@@ -656,9 +656,8 @@ function createLibvirtDomainBackend(
               snapshot,
             };
           })();
-      const startByteLength = Number(
-        recordValue(stateRecord.startSnapshot).byteLength,
-      ) ?? 0;
+      const startByteLength =
+        Number(recordValue(stateRecord.startSnapshot).byteLength) ?? 0;
       if (Number(completed.snapshot.byteLength) <= startByteLength) {
         throw new Error(
           "running domain audio output did not advance after capture start",
@@ -693,9 +692,7 @@ function createLibvirtDomainBackend(
 
 // This is intentionally test-only. Production always derives the path from the
 // running libvirt domain and never accepts an ambient audio file configuration.
-export function createFileBackedAudioCaptureTestBackend(
-  wavPath: unknown,
-): {
+export function createFileBackedAudioCaptureTestBackend(wavPath: unknown): {
   start: (options?: JsonRecord) => Promise<JsonRecord>;
   stop: (state: JsonRecord, options?: JsonRecord) => Promise<JsonRecord>;
   abort: (state?: JsonRecord, options?: JsonRecord) => Promise<void>;
@@ -755,15 +752,26 @@ async function executeAdapterOperation(
       (backendFactory as
         | (() => {
             start: (options?: JsonRecord) => Promise<JsonRecord>;
-            stop: (state: JsonRecord, options?: JsonRecord) => Promise<JsonRecord>;
+            stop: (
+              state: JsonRecord,
+              options?: JsonRecord,
+            ) => Promise<JsonRecord>;
             abort: (state?: JsonRecord, options?: JsonRecord) => Promise<void>;
           })
         | undefined)
-        ? (backendFactory as () => {
-            start: (options?: JsonRecord) => Promise<JsonRecord>;
-            stop: (state: JsonRecord, options?: JsonRecord) => Promise<JsonRecord>;
-            abort: (state?: JsonRecord, options?: JsonRecord) => Promise<void>;
-          })()
+        ? (
+            backendFactory as () => {
+              start: (options?: JsonRecord) => Promise<JsonRecord>;
+              stop: (
+                state: JsonRecord,
+                options?: JsonRecord,
+              ) => Promise<JsonRecord>;
+              abort: (
+                state?: JsonRecord,
+                options?: JsonRecord,
+              ) => Promise<void>;
+            }
+          )()
         : createLibvirtDomainBackend(
             domainBinding,
             testOnlyRunVirsh as ((args: string[]) => string) | undefined,
@@ -807,11 +815,16 @@ async function executeAdapterOperation(
   }
   const domainBinding = libvirtDomainBinding(recordValue(production));
   const backend = backendFactory
-    ? (backendFactory as () => {
-        start: (options?: JsonRecord) => Promise<JsonRecord>;
-        stop: (state: JsonRecord, options?: JsonRecord) => Promise<JsonRecord>;
-        abort: (state?: JsonRecord, options?: JsonRecord) => Promise<void>;
-      })()
+    ? (
+        backendFactory as () => {
+          start: (options?: JsonRecord) => Promise<JsonRecord>;
+          stop: (
+            state: JsonRecord,
+            options?: JsonRecord,
+          ) => Promise<JsonRecord>;
+          abort: (state?: JsonRecord, options?: JsonRecord) => Promise<void>;
+        }
+      )()
     : createLibvirtDomainBackend(
         domainBinding,
         testOnlyRunVirsh as ((args: string[]) => string) | undefined,
@@ -824,10 +837,10 @@ async function executeAdapterOperation(
   const saleBinding = normalizedSaleAudioBinding(request);
   const serialCapture = buildSaleAudioFrameCapture(
     saleBinding,
-    (readSerialJournal as ((path: string) => JsonRecord[]) | undefined ??
-      productionReadSerialJournal)(
-      String(state.rawSerialJournalPath),
-    ),
+    (
+      (readSerialJournal as ((path: string) => JsonRecord[]) | undefined) ??
+      productionReadSerialJournal
+    )(String(state.rawSerialJournalPath)),
   );
   const inspection = recordValue(
     inspectWavPcm(
@@ -854,9 +867,9 @@ async function executeAdapterOperation(
     exportDirectory,
     recordValue(request.captureSession).captureSessionId,
     {
-    ...state,
-    status: "stopped",
-    completedAt: stopped.completedAt,
+      ...state,
+      status: "stopped",
+      completedAt: stopped.completedAt,
     },
   );
   return {
@@ -884,7 +897,10 @@ async function executeAdapterOperation(
 }
 
 export async function abortSaleAudioCaptureSession(
-  { captureSessionId, evidenceDirectory }: {
+  {
+    captureSessionId,
+    evidenceDirectory,
+  }: {
     captureSessionId: unknown;
     evidenceDirectory: string;
   },
@@ -895,11 +911,16 @@ export async function abortSaleAudioCaptureSession(
   if (state.status !== "started")
     return { aborted: false, alreadyStopped: true };
   const backend = backendFactory
-    ? (backendFactory as () => {
-        start: (options?: JsonRecord) => Promise<JsonRecord>;
-        stop: (state: JsonRecord, options?: JsonRecord) => Promise<JsonRecord>;
-        abort: (state?: JsonRecord, options?: JsonRecord) => Promise<void>;
-      })()
+    ? (
+        backendFactory as () => {
+          start: (options?: JsonRecord) => Promise<JsonRecord>;
+          stop: (
+            state: JsonRecord,
+            options?: JsonRecord,
+          ) => Promise<JsonRecord>;
+          abort: (state?: JsonRecord, options?: JsonRecord) => Promise<void>;
+        }
+      )()
     : createLibvirtDomainBackend(
         libvirtDomainBinding(recordValue(production)),
         testOnlyRunVirsh as ((args: string[]) => string) | undefined,
@@ -917,7 +938,10 @@ export async function abortSaleAudioCaptureSession(
 }
 
 export async function stopDefaultAudioCaptureSession(
-  { captureSessionId, evidenceDirectory }: {
+  {
+    captureSessionId,
+    evidenceDirectory,
+  }: {
     captureSessionId: unknown;
     evidenceDirectory: string;
   },
@@ -928,11 +952,16 @@ export async function stopDefaultAudioCaptureSession(
   if (state.status !== "started")
     throw new Error("default audio capture session is not active");
   const backend = backendFactory
-    ? (backendFactory as () => {
-        start: (options?: JsonRecord) => Promise<JsonRecord>;
-        stop: (state: JsonRecord, options?: JsonRecord) => Promise<JsonRecord>;
-        abort: (state?: JsonRecord, options?: JsonRecord) => Promise<void>;
-      })()
+    ? (
+        backendFactory as () => {
+          start: (options?: JsonRecord) => Promise<JsonRecord>;
+          stop: (
+            state: JsonRecord,
+            options?: JsonRecord,
+          ) => Promise<JsonRecord>;
+          abort: (state?: JsonRecord, options?: JsonRecord) => Promise<void>;
+        }
+      )()
     : createLibvirtDomainBackend(
         libvirtDomainBinding(recordValue(production)),
         testOnlyRunVirsh as ((args: string[]) => string) | undefined,
@@ -1083,11 +1112,7 @@ export function validateSaleAudioCaptureReport(
     const provenance = recordValue(capture.provenance);
     const domain = recordValue(provenance.domain);
     const wav = recordValue(provenance.wav);
-    exactKeys(
-      provenance,
-      ["domain", "wav"],
-      "report.capture.provenance",
-    );
+    exactKeys(provenance, ["domain", "wav"], "report.capture.provenance");
     exactKeys(
       domain,
       ["libvirtUri", "domainName", "state", "model", "audioId"],

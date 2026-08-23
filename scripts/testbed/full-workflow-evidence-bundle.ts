@@ -319,8 +319,7 @@ export function createFullWorkflowEvidenceBundle(
         destination,
         "staged evidence bundle member",
       );
-      const expected =
-        member.expected ?? snapshots.get(member.source) ?? null;
+      const expected = member.expected ?? snapshots.get(member.source) ?? null;
       if (!expected) throw new Error("staged evidence snapshot is missing");
       if (
         Number(staged.byteLength) !== Number(expected.byteLength) ||
@@ -333,12 +332,9 @@ export function createFullWorkflowEvidenceBundle(
 
     for (const member of members) {
       const sourceSnapshot = snapshots.get(member.source);
-      if (!sourceSnapshot) throw new Error("evidence source snapshot is missing");
-      assertSnapshot(
-        sourceSnapshot,
-        member.expected,
-        "evidence bundle source",
-      );
+      if (!sourceSnapshot)
+        throw new Error("evidence source snapshot is missing");
+      assertSnapshot(sourceSnapshot, member.expected, "evidence bundle source");
     }
     const expectedPaths = members.map(({ target }) => target).sort();
     const actualPaths = filesRecursively(staging).sort();
@@ -349,8 +345,7 @@ export function createFullWorkflowEvidenceBundle(
         join(staging, member.target),
         "staged evidence bundle member",
       );
-      const expected =
-        member.expected ?? snapshots.get(member.source) ?? null;
+      const expected = member.expected ?? snapshots.get(member.source) ?? null;
       if (!expected) throw new Error("staged evidence snapshot is missing");
       if (
         Number(staged.byteLength) !== Number(expected.byteLength) ||

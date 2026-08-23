@@ -109,10 +109,7 @@ function adapterRequest(input: JsonRecord): AdapterRequest {
   return createRequest(input) as AdapterRequest;
 }
 
-function adapterReport(
-  report: JsonRecord,
-  request: JsonRecord,
-): AdapterReport {
+function adapterReport(report: JsonRecord, request: JsonRecord): AdapterReport {
   return validateReport(report, request) as AdapterReport;
 }
 
@@ -809,8 +806,8 @@ function reportFor(
                     request.operation === "stop-serial-session"
                       ? "stopped"
                       : ["cleanup", "cancel"].includes(
-                          String(request.operation),
-                        )
+                            String(request.operation),
+                          )
                         ? "cleaned"
                         : "active",
                   deviceMappings: serialMappings,
@@ -898,8 +895,7 @@ describe("VM Host Adapter contract", () => {
     );
     assert.equal(request.assets[0].role, "runtime-image");
     assert.equal(
-      adapterReport(reportFor(request), request).observed
-        .baseIdentity,
+      adapterReport(reportFor(request), request).observed.baseIdentity,
       request.assets[0].identity,
     );
   });
@@ -946,9 +942,7 @@ describe("VM Host Adapter contract", () => {
   });
 
   it("extends the existing lifecycle with v2 serial-session operations", () => {
-    const start = adapterRequest(
-      serialSessionRequest("start-serial-session"),
-    );
+    const start = adapterRequest(serialSessionRequest("start-serial-session"));
     const started = adapterReport(reportFor(start), start);
     const sessionId = started.serialSession.serialSessionId;
     assert.match(String(sessionId), /^serial-session:\/\/sha256-/);
@@ -958,9 +952,7 @@ describe("VM Host Adapter contract", () => {
       "collect-serial-evidence",
       "stop-serial-session",
     ]) {
-      const request = adapterRequest(
-        serialSessionRequest(operation),
-      );
+      const request = adapterRequest(serialSessionRequest(operation));
       const report = adapterReport(reportFor(request), request);
       assert.equal(report.request.runId, start.runId);
       assert.equal(report.request.lifecycleReference, start.lifecycleReference);
@@ -1053,9 +1045,7 @@ describe("VM Host Adapter contract", () => {
   });
 
   it("requires connected mapped simulators, exact scanner acknowledgement, and sanitized serial evidence", () => {
-    const inject = adapterRequest(
-      serialSessionRequest("inject-scanner-code"),
-    );
+    const inject = adapterRequest(serialSessionRequest("inject-scanner-code"));
     assert.throws(
       () =>
         adapterReport(
@@ -1136,10 +1126,7 @@ describe("VM Host Adapter contract", () => {
       },
     ])
       assert.throws(() =>
-        adapterReport(
-          reportFor(collect, { serialEvidence }),
-          collect,
-        ),
+        adapterReport(reportFor(collect, { serialEvidence }), collect),
       );
   });
 
@@ -1283,9 +1270,7 @@ describe("VM Host Adapter contract", () => {
   it("rejects plaintext scanner input persisted outside adapter-work but inside the run scope", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-vm-host-scanner-leak-"));
     const start = await runAdapter({
-      request: adapterRequest(
-        serialSessionRequest("start-serial-session"),
-      ),
+      request: adapterRequest(serialSessionRequest("start-serial-session")),
       workDirectory: root,
       environment: { VEM_VM_HOST_ADAPTER: FAKE_ADAPTER },
     });
@@ -1294,9 +1279,8 @@ describe("VM Host Adapter contract", () => {
       ...recordValue(inject.serialSession),
       serialSessionId: recordValue(start.serialSession).serialSessionId,
       sessionBindingToken: recordValue(start.serialSession).sessionBindingToken,
-      startOperationReference: recordValue(
-        start.serialSession,
-      ).startOperationReference,
+      startOperationReference: recordValue(start.serialSession)
+        .startOperationReference,
       deviceMappingDigest: recordValue(start.serialSession).deviceMappingDigest,
     };
     await assert.rejects(
@@ -1525,8 +1509,7 @@ describe("VM Host Adapter contract", () => {
     );
     const cleanup = adapterRequest(requestFor("cleanup"));
     assert.equal(
-      adapterReport(reportFor(cleanup), cleanup).cleanup
-        .overlayDisposition,
+      adapterReport(reportFor(cleanup), cleanup).cleanup.overlayDisposition,
       "removed",
     );
   });
@@ -1534,8 +1517,7 @@ describe("VM Host Adapter contract", () => {
   it("requires a digest-bound relative image file name for a display capture", () => {
     const capture = adapterRequest(requestFor("capture-display"));
     assert.equal(
-      adapterReport(reportFor(capture), capture).evidence[0]
-        .fileName,
+      adapterReport(reportFor(capture), capture).evidence[0].fileName,
       `${"b".repeat(64)}.png`,
     );
     assert.throws(
@@ -1622,17 +1604,12 @@ describe("VM Host Adapter contract", () => {
       },
     ])
       assert.throws(() =>
-        adapterReport(
-          reportFor(request, { displayCapture }),
-          request,
-        ),
+        adapterReport(reportFor(request, { displayCapture }), request),
       );
   });
 
   it("requires Windows default-output evidence without endpoint selection", () => {
-    const request = adapterRequest(
-      requestFor("capture-default-audio"),
-    );
+    const request = adapterRequest(requestFor("capture-default-audio"));
     const report = reportFor(request);
     const baseDefaultAudioCapture = report.defaultAudioCapture;
     assert.ok(baseDefaultAudioCapture);
@@ -1701,9 +1678,7 @@ describe("VM Host Adapter contract", () => {
       },
     ];
     for (const override of cases)
-      assert.throws(() =>
-        adapterReport(reportFor(request, override), request),
-      );
+      assert.throws(() => adapterReport(reportFor(request, override), request));
     assert.doesNotThrow(() =>
       adapterReport(
         reportFor(request, {
@@ -1726,9 +1701,7 @@ describe("VM Host Adapter contract", () => {
     await assert.rejects(
       () =>
         runVmHostAdapter({
-          request: adapterRequest(
-            requestFor("capture-default-audio"),
-          ),
+          request: adapterRequest(requestFor("capture-default-audio")),
           workDirectory: root,
           environment: {
             VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
@@ -1913,9 +1886,7 @@ describe("VM Host Adapter contract", () => {
       VEM_VM_HOST_ADAPTER_STATE_FILE: join(workDirectory, "state.json"),
     };
     const start = await runAdapter({
-      request: adapterRequest(
-        serialSessionRequest("start-serial-session"),
-      ),
+      request: adapterRequest(serialSessionRequest("start-serial-session")),
       workDirectory,
       environment,
     });
@@ -1935,12 +1906,12 @@ describe("VM Host Adapter contract", () => {
           serialSession: {
             ...recordValue(input.serialSession),
             serialSessionId: recordValue(start.serialSession).serialSessionId,
-            sessionBindingToken:
-              recordValue(start.serialSession).sessionBindingToken,
-            startOperationReference:
-              recordValue(start.serialSession).startOperationReference,
-            deviceMappingDigest:
-              recordValue(start.serialSession).deviceMappingDigest,
+            sessionBindingToken: recordValue(start.serialSession)
+              .sessionBindingToken,
+            startOperationReference: recordValue(start.serialSession)
+              .startOperationReference,
+            deviceMappingDigest: recordValue(start.serialSession)
+              .deviceMappingDigest,
             idempotencyCheck: retryStop,
           },
         }),
@@ -1974,9 +1945,7 @@ describe("VM Host Adapter contract", () => {
       VEM_VM_HOST_ADAPTER_STATE_FILE: statePath,
     };
     const start = await runAdapter({
-      request: adapterRequest(
-        serialSessionRequest("start-serial-session"),
-      ),
+      request: adapterRequest(serialSessionRequest("start-serial-session")),
       workDirectory,
       environment,
     });
@@ -2017,9 +1986,8 @@ describe("VM Host Adapter contract", () => {
       true,
     );
     assert.equal(
-      recordValue(
-        state.sessions[String(start.serialSession.serialSessionId)],
-      ).cleanupAttemptCount,
+      recordValue(state.sessions[String(start.serialSession.serialSessionId)])
+        .cleanupAttemptCount,
       0,
     );
   });
@@ -2035,9 +2003,7 @@ describe("VM Host Adapter contract", () => {
       VEM_VM_HOST_ADAPTER_STATE_FILE: statePath,
     };
     const start = await runAdapter({
-      request: adapterRequest(
-        serialSessionRequest("start-serial-session"),
-      ),
+      request: adapterRequest(serialSessionRequest("start-serial-session")),
       workDirectory,
       environment: {
         ...environment,
@@ -2067,9 +2033,8 @@ describe("VM Host Adapter contract", () => {
     );
     const state = JSON.parse(readFileSync(statePath, "utf8"));
     assert.equal(
-      recordValue(
-        state.sessions[String(start.serialSession.serialSessionId)],
-      ).cleanupAttemptCount,
+      recordValue(state.sessions[String(start.serialSession.serialSessionId)])
+        .cleanupAttemptCount,
       1,
     );
   });
@@ -2429,9 +2394,8 @@ describe("VM Host Adapter contract", () => {
         (error) =>
           error instanceof VmHostAdapterExecutionError &&
           recordValue(diagnosticRecord(error).cleanup).status === "completed" &&
-          recordValue(
-            recordValue(diagnosticRecord(error).cleanup).observed,
-          ).overlay === "removed",
+          recordValue(recordValue(diagnosticRecord(error).cleanup).observed)
+            .overlay === "removed",
       );
       assert.equal(readFileSync(cleanupFile, "utf8"), "cleanup\n");
     });
@@ -2829,9 +2793,7 @@ describe("VM Host Adapter contract", () => {
           records,
         }),
       });
-      assert.doesNotThrow(() =>
-        adapterReport(collectReport, collectRequest),
-      );
+      assert.doesNotThrow(() => adapterReport(collectReport, collectRequest));
       assert.throws(
         () =>
           validateSerialConformanceReport(forged, {

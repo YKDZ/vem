@@ -155,10 +155,7 @@ async function fetchJson(
 function daemonBaseUrl(handoff: HandoffRecord): string {
   const daemon = handoff.daemon as JsonRecord | undefined;
   const ready = daemon?.ready as JsonRecord | undefined;
-  const healthzUrl = required(
-    ready?.healthzUrl,
-    "daemon healthzUrl",
-  );
+  const healthzUrl = required(ready?.healthzUrl, "daemon healthzUrl");
   if (!healthzUrl.endsWith("/healthz")) {
     throw new Error("daemon healthzUrl must end with /healthz");
   }
@@ -202,10 +199,9 @@ async function waitForCommand(
   const deadline = Date.now() + timeoutMs;
   let last: JsonRecord | null = null;
   while (Date.now() < deadline) {
-    last = (await daemonGet(
-      handoff,
-      "/v1/transactions/current",
-    ).catch(() => null)) as JsonRecord | null;
+    last = (await daemonGet(handoff, "/v1/transactions/current").catch(
+      () => null,
+    )) as JsonRecord | null;
     const vending = last?.vending as JsonRecord | undefined;
     const commandId = vending?.commandId ?? last?.dispenseCommandId;
     if (
@@ -281,10 +277,7 @@ async function waitForSuccessfulResultSurface(
   );
 }
 
-function runLocalPowerShellJson(
-  script: unknown,
-  label: string,
-): JsonRecord {
+function runLocalPowerShellJson(script: unknown, label: string): JsonRecord {
   const result = spawnSync(
     "pwsh",
     ["-NoProfile", "-NonInteractive", "-Command", String(script)],
@@ -332,9 +325,10 @@ async function interruptDaemonTransportAndObserveOverlay({
 }: {
   handoff: HandoffRecord;
   client: InstanceType<typeof CdpClient>;
-  screenshotSink: (
-    input: { bytes: Uint8Array; label: string },
-  ) => Promise<{ ref: string }>;
+  screenshotSink: (input: {
+    bytes: Uint8Array;
+    label: string;
+  }) => Promise<{ ref: string }>;
   session: JsonRecord;
   attempts?: number;
   overlayTimeoutMs?: number;
@@ -458,11 +452,15 @@ export async function runInstalledIpcRecoveryGuest(options: {
     (report.artifacts as JsonRecord).milestones = [
       ...(((report.artifacts as JsonRecord).milestones as unknown[]) ?? []),
       {
-      label: (checkpoint as JsonRecord).label,
-      route: ((checkpoint as JsonRecord).identity as JsonRecord).route,
-      screenshot:
-        ((checkpoint as JsonRecord).screenshot as JsonRecord | null | undefined)
-          ?.ref ?? null,
+        label: (checkpoint as JsonRecord).label,
+        route: ((checkpoint as JsonRecord).identity as JsonRecord).route,
+        screenshot:
+          (
+            (checkpoint as JsonRecord).screenshot as
+              | JsonRecord
+              | null
+              | undefined
+          )?.ref ?? null,
       },
     ];
   };
@@ -496,14 +494,14 @@ export async function runInstalledIpcRecoveryGuest(options: {
         runId,
         machineCode,
         saleCorrelationId: `sale-correlation://ipc-recovery-${Date.now()}`,
-      targetIdentity: required(
-        (guestInput.hostControlPlane as JsonRecord | undefined)
-          ?.targetIdentity,
+        targetIdentity: required(
+          (guestInput.hostControlPlane as JsonRecord | undefined)
+            ?.targetIdentity,
           "hostControlPlane.targetIdentity",
         ),
         runtimeBase: required(
-        (guestInput.hostControlPlane as JsonRecord | undefined)
-          ?.runtimeBaseIdentity,
+          (guestInput.hostControlPlane as JsonRecord | undefined)
+            ?.runtimeBaseIdentity,
           "hostControlPlane.runtimeBaseIdentity",
         ),
       },
@@ -530,12 +528,9 @@ export async function runInstalledIpcRecoveryGuest(options: {
       timeoutMs?: number;
     }>;
     if (options.fixtureKey) {
-      const productStep = steps.find(
-        (step) => step.name === "catalog product",
-      );
+      const productStep = steps.find((step) => step.name === "catalog product");
       if (productStep) {
-        productStep.selector =
-        catalogProductSelectorForFixture(
+        productStep.selector = catalogProductSelectorForFixture(
           guestInput.fixtureAllocation as JsonRecord | undefined,
           options.fixtureKey,
         );
@@ -634,32 +629,34 @@ export async function runInstalledIpcRecoveryGuest(options: {
 
     (report.ipcRecovery as JsonRecord).evidence =
       evaluateInstalledErrorMatrixEvidence({
-      profile: "vm-ipc-recovery",
-      scenario: {
-        evidence: [
-          {
-            type: "external-operation",
-            operation: "daemon_transport_interrupt",
-            routeBefore: "#/payment",
-            routeAfter: "#/payment",
-            provenance: (report.ipcRecovery as JsonRecord).provenance,
-          },
-        ],
-      },
-      correlation: {
-        rendered: { orderNo: String(renderedSale.orderNo) },
-        platform: { orderNo: String(renderedSale.orderNo) },
-      },
-    });
+        profile: "vm-ipc-recovery",
+        scenario: {
+          evidence: [
+            {
+              type: "external-operation",
+              operation: "daemon_transport_interrupt",
+              routeBefore: "#/payment",
+              routeAfter: "#/payment",
+              provenance: (report.ipcRecovery as JsonRecord).provenance,
+            },
+          ],
+        },
+        correlation: {
+          rendered: { orderNo: String(renderedSale.orderNo) },
+          platform: { orderNo: String(renderedSale.orderNo) },
+        },
+      });
     (report.ipcRecovery as JsonRecord).assertions = {
       overlayObserved: true,
       retainedOrderCredential: uiBefore?.orderCredential,
       resumedOrderCredential: (uiAfter as JsonRecord | undefined)
         ?.orderCredential,
       daemonTransportPhase:
-        ((recoveredTransport?.daemon as JsonRecord | undefined)?.transport as
-          | JsonRecord
-          | undefined)?.phase ?? null,
+        (
+          (recoveredTransport?.daemon as JsonRecord | undefined)?.transport as
+            | JsonRecord
+            | undefined
+        )?.phase ?? null,
     };
 
     const scannerBytes = scannerFrameBytes(
@@ -667,14 +664,14 @@ export async function runInstalledIpcRecoveryGuest(options: {
     );
     (report.ipcRecovery as JsonRecord).scannerInjection =
       await controlPlaneRequest(
-      guestInput,
-      `/v1/serial-sessions/${String(activeSession.sessionId)}/inject`,
-      {
-        orderId: renderedSale.orderId,
-        paymentId: renderedSale.paymentId,
-        scannerCodeBase64: Buffer.from(scannerBytes).toString("base64"),
-      },
-    );
+        guestInput,
+        `/v1/serial-sessions/${String(activeSession.sessionId)}/inject`,
+        {
+          orderId: renderedSale.orderId,
+          paymentId: renderedSale.paymentId,
+          scannerCodeBase64: Buffer.from(scannerBytes).toString("base64"),
+        },
+      );
     liveSale = await waitForCommand(handoff, renderedSale);
     report.liveSale = liveSale;
 
@@ -730,9 +727,7 @@ export async function runInstalledIpcRecoveryGuest(options: {
       `/v1/serial-sessions/${String(activeSession.sessionId)}/evidence`,
     );
     report.serial = {
-      rawFrames: compactFrames(
-        (serialEvidence as JsonRecord).rawFrames,
-      ),
+      rawFrames: compactFrames((serialEvidence as JsonRecord).rawFrames),
     };
     report.ok = true;
   } catch (error) {

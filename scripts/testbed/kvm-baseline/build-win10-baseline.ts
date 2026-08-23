@@ -331,7 +331,10 @@ export function createConstructionCommandTracker({
   const startTrackedProcess = (
     command: string,
     args: string[],
-    { allowAfterAbort = false, ...options }: Record<string, unknown> & {
+    {
+      allowAfterAbort = false,
+      ...options
+    }: Record<string, unknown> & {
       allowAfterAbort?: boolean;
     } = {},
   ): { child: ChildProcess; completion: Promise<CommandResult> } => {
@@ -802,7 +805,7 @@ export async function createConfigurationMedia(
   }
   const secrets = {
     administratorPassword: (
-    await readFile(String(config.guest.administratorPasswordFile), "utf8")
+      await readFile(String(config.guest.administratorPasswordFile), "utf8")
     ).trim(),
   };
   if (!secrets.administratorPassword)
@@ -930,9 +933,7 @@ function prepareVmRuntimeCommand(request: Record<string, unknown>): string {
   );
 }
 
-function interactiveDisplayStatusCommand(
-  config: BaselineBuildConfig,
-): string {
+function interactiveDisplayStatusCommand(config: BaselineBuildConfig): string {
   return prepareVmRuntimeCommand({
     Mode: "GetInteractiveDisplayPreparationStatus",
     InteractiveUser: config.guest.sshUser,
@@ -942,9 +943,7 @@ function interactiveDisplayStatusCommand(
   });
 }
 
-function rearmInteractiveDisplayCommand(
-  config: BaselineBuildConfig,
-): string {
+function rearmInteractiveDisplayCommand(config: BaselineBuildConfig): string {
   return prepareVmRuntimeCommand({
     Mode: "RearmInteractiveDisplay",
     InteractiveUser: config.guest.sshUser,
@@ -1065,8 +1064,7 @@ function formatInteractiveDisplayDiagnostics(
       )} sshDown=${awaitingReboot.sshWentDown === true}`,
     );
   }
-  if (status.taskLogTail)
-    parts.push(`task log=${String(status.taskLogTail)}`);
+  if (status.taskLogTail) parts.push(`task log=${String(status.taskLogTail)}`);
   return parts.join(", ");
 }
 
@@ -1215,7 +1213,10 @@ export async function waitForInteractiveDisplayReport(
 
     let status: Record<string, unknown>;
     try {
-      status = readJsonWithBom(statusResult.stdout ?? "") as Record<string, unknown>;
+      status = readJsonWithBom(statusResult.stdout ?? "") as Record<
+        string,
+        unknown
+      >;
       if (!status || typeof status !== "object") {
         throw new Error("status output is not a JSON object");
       }
@@ -1320,9 +1321,10 @@ export async function waitForInteractiveDisplayReport(
         let rearmCompletion = null;
         if (!rearm.failed) {
           try {
-            const response = readJsonWithBom(
-              rearm.stdout ?? "",
-            ) as Record<string, unknown>;
+            const response = readJsonWithBom(rearm.stdout ?? "") as Record<
+              string,
+              unknown
+            >;
             if (interactiveDisplayCompleted(response))
               rearmCompletion = response;
           } catch {
@@ -1537,9 +1539,9 @@ if ($stageExitCode -ne 0) {
       ],
       { allowFailure: true },
     );
-      const detail = copied.failed
-        ? null
-        : await readFile(localFailurePath, "utf8").catch(() => null);
+    const detail = copied.failed
+      ? null
+      : await readFile(localFailurePath, "utf8").catch(() => null);
     throw new Error(
       `${error instanceof Error ? error.message : String(error)}${
         detail ? `\nrunner registration failure:\n${detail}` : ""
@@ -1567,9 +1569,9 @@ if ($stageExitCode -ne 0) {
       ],
       { allowFailure: true },
     );
-      const detail = copied.failed
-        ? null
-        : await readFile(localReport, "utf8").catch(() => null);
+    const detail = copied.failed
+      ? null
+      : await readFile(localReport, "utf8").catch(() => null);
     throw new Error(
       `${error instanceof Error ? error.message : String(error)}${
         detail ? `\nguest verification report:\n${detail}` : ""
@@ -1581,9 +1583,10 @@ if ($stageExitCode -ne 0) {
     `${target}:C:/ProgramData/WindowsRuntimeBaseline/verification.json`,
     localReport,
   ]);
-  const report = readJsonWithBom(
-    await readFile(localReport, "utf8"),
-  ) as Record<string, unknown>;
+  const report = readJsonWithBom(await readFile(localReport, "utf8")) as Record<
+    string,
+    unknown
+  >;
   if (report.ok !== true)
     throw new Error("guest prerequisite verification reported failure");
   return report;
@@ -1896,7 +1899,11 @@ async function rollbackPublishedDefinition(
 
 export async function buildWin10Baseline(
   config: BaselineBuildConfig,
-  options: { sourceCommit?: string; execute?: boolean; exitOnSignal?: boolean } = {},
+  options: {
+    sourceCommit?: string;
+    execute?: boolean;
+    exitOnSignal?: boolean;
+  } = {},
 ): Promise<unknown> {
   const commandTracker = createConstructionCommandTracker();
   const previousCommandTracker = activeConstructionCommandTracker;

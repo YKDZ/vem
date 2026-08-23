@@ -1602,15 +1602,15 @@ describe("full workflow aggregate validator", () => {
     const forgedBindingAssertion = structuredClone(report);
     recordValue(arrayValue(forgedBindingAssertion.businessSets)[0]).assertions =
       [
-      {
-        schemaVersion: "vem-runtime-testbed-business-assertion/v1",
-        id: "captured-source-bound",
-        source: "vision-v2-protocol",
-        expected: { verified: true },
-        observed: { verified: true },
-        status: "passed",
-        reason: null,
-      },
+        {
+          schemaVersion: "vem-runtime-testbed-business-assertion/v1",
+          id: "captured-source-bound",
+          source: "vision-v2-protocol",
+          expected: { verified: true },
+          observed: { verified: true },
+          status: "passed",
+          reason: null,
+        },
       ];
     assert.equal(
       validateBusinessCheckReport(
@@ -1990,10 +1990,11 @@ describe("full workflow aggregate validator", () => {
       "failed",
     );
     const missingTerminal = paymentProviderReport();
-    recordValue(arrayValue(missingTerminal.authoritative.attempts)[1]).terminal =
-      {
+    recordValue(
+      arrayValue(missingTerminal.authoritative.attempts)[1],
+    ).terminal = {
       reservedInventory: false,
-      };
+    };
     assert.equal(
       validateBusinessCheckReport(
         descriptor("paymentProvider"),

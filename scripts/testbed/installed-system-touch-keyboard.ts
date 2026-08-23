@@ -133,9 +133,9 @@ async function focusAndProbeField(
     client as Parameters<typeof activateVisibleSelector>[0],
     String(field.selector),
     {
-    kind: "touch",
-    timeoutMs: FIELD_TIMEOUT_MS,
-    pollMs: 150,
+      kind: "touch",
+      timeoutMs: FIELD_TIMEOUT_MS,
+      pollMs: 150,
     },
   );
   const shown = await waitFor<JsonRecord>(async () => {
@@ -145,10 +145,12 @@ async function focusAndProbeField(
   await (client as CdpClient).send("Input.insertText", {
     text: String(field.value),
   });
-  const binding = recordValue(await evaluateExpression(
-    client as Parameters<typeof evaluateExpression>[0],
-    `(() => { const element = document.querySelector(${JSON.stringify(field.selector)}); return { focused: document.activeElement === element, valuePresent: Boolean(element?.value), type: element?.type ?? null }; })()`,
-  ));
+  const binding = recordValue(
+    await evaluateExpression(
+      client as Parameters<typeof evaluateExpression>[0],
+      `(() => { const element = document.querySelector(${JSON.stringify(field.selector)}); return { focused: document.activeElement === element, valuePresent: Boolean(element?.value), type: element?.type ?? null }; })()`,
+    ),
+  );
   if (!binding?.focused || !binding.valuePresent) {
     throw new Error(
       `${field.name} did not retain input through its existing form binding`,
@@ -179,10 +181,7 @@ export async function runInstalledSystemTouchKeyboardAcceptance(
     String(options.handoffPath),
     "installed runtime handoff",
   );
-  const guestInput = readJson(
-    String(options.guestInputPath),
-    "guest input",
-  );
+  const guestInput = readJson(String(options.guestInputPath), "guest input");
   const report = {
     schemaVersion: "vem-installed-system-touch-keyboard/v1",
     ok: false,
@@ -212,14 +211,14 @@ export async function runInstalledSystemTouchKeyboardAcceptance(
     const cdpClient = client;
     const queryWindow =
       (dependencies.queryWindow as (() => Promise<JsonRecord>) | undefined) ??
-      (async () =>
+      ((async () =>
         recordValue(
           await evaluateExpression(
             cdpClient,
             `window.__TAURI_INTERNALS__.invoke("query_system_touch_keyboard_state")`,
             { timeoutMs: WINDOW_QUERY_TIMEOUT_MS },
           ),
-        )) as () => Promise<JsonRecord>;
+        )) as () => Promise<JsonRecord>);
     await setRoute(cdpClient, "#/maintenance?source=operator");
     await activateVisibleSelector(
       cdpClient,

@@ -164,16 +164,13 @@ export function verifyWindowsNativeAudioEvidence({
       Number(captureThreshold.minimumNonSilentFrames) ||
     Number(capture.peakAbsoluteSample) <
       Number(captureThreshold.minimumPeakAbsoluteSample) ||
-    Number(capture.durationMs) <
-      Number(captureThreshold.minimumDurationMs) ||
+    Number(capture.durationMs) < Number(captureThreshold.minimumDurationMs) ||
     Number(capture.distinctNonSilentSampleMagnitudes) <
       Number(captureThreshold.minimumDistinctNonSilentSampleMagnitudes)
   )
     diagnostics.push(diagnostic("default_audio_capture_silent_or_invalid"));
   const captureStartedAt = Date.parse(String(capture?.startedAt ?? ""));
-  const calibrationStartedAt = Date.parse(
-    String(calibration?.startedAt ?? ""),
-  );
+  const calibrationStartedAt = Date.parse(String(calibration?.startedAt ?? ""));
   const captureCompletedAt = Date.parse(String(capture?.completedAt ?? ""));
   if (
     !Number.isFinite(captureStartedAt) ||
@@ -200,8 +197,7 @@ export function verifyWindowsNativeAudioEvidence({
           version: recordValue(adapterReport.adapter).version,
         }
       : null,
-    captureOperationReference:
-      request?.operationReference ?? null,
+    captureOperationReference: request?.operationReference ?? null,
     lifecycleReference: request?.lifecycleReference ?? null,
     activeKioskSession: kiosk
       ? { sessionUser: kiosk.sessionUser, sessionId: kiosk.sessionId }

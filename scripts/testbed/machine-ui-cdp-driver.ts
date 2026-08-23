@@ -76,16 +76,11 @@ interface WindowsMachineUiInspectionOptions {
   timeoutMs?: number;
 }
 
-type WindowsRuntimeCommandRunner = (
-  options: SshRunOptions,
-) => Promise<unknown>;
+type WindowsRuntimeCommandRunner = (options: SshRunOptions) => Promise<unknown>;
 
 interface ProcessAdapter {
   spawn: typeof spawn;
-  waitForExit?: (
-    child: ChildProcess,
-    timeoutMs: number,
-  ) => Promise<unknown>;
+  waitForExit?: (child: ChildProcess, timeoutMs: number) => Promise<unknown>;
   waitForReady?: (options: {
     child: ChildProcess;
     endpoint: string;
@@ -258,10 +253,7 @@ export function validateExpectedRuntimeAttestation(
     targetId?: unknown;
     machine?: unknown;
   };
-  if (
-    typeof record.targetId !== "string" ||
-    record.targetId.trim() === ""
-  ) {
+  if (typeof record.targetId !== "string" || record.targetId.trim() === "") {
     throw new Error("expectedRuntimeAttestation.targetId is required");
   }
   if (!record.machine || typeof record.machine !== "object") {
@@ -270,7 +262,11 @@ export function validateExpectedRuntimeAttestation(
   const machine = record.machine as Record<string, unknown>;
   for (const field of ["processId", "sessionId"]) {
     const value = machine[field];
-    if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    if (
+      typeof value !== "number" ||
+      !Number.isSafeInteger(value) ||
+      value <= 0
+    ) {
       throw new Error(
         `expectedRuntimeAttestation.machine.${field} must be a positive integer`,
       );
@@ -502,7 +498,9 @@ export async function inspectWindowsMachineUiRuntime({
 
 export async function inspectWindowsMachineUiRuntimeForTest(
   options: WindowsMachineUiInspectionOptions = {},
-  { commandRunner = runWindowsPowerShellOverSsh }: {
+  {
+    commandRunner = runWindowsPowerShellOverSsh,
+  }: {
     commandRunner?: WindowsRuntimeCommandRunner;
   } = {},
 ): Promise<unknown> {
@@ -594,7 +592,11 @@ export function bindMachineUiRuntimeEvidence({
   > = [
     ["processId", expectedMachine.processId, actualMachine.processId],
     ["sessionId", expectedMachine.sessionId, actualMachine.sessionId],
-    ["executablePath", expectedMachine.executablePath, actualMachine.executablePath],
+    [
+      "executablePath",
+      expectedMachine.executablePath,
+      actualMachine.executablePath,
+    ],
     ["principal", expectedMachine.principal, actualMachine.principal],
   ];
   for (const [label, expectedValue, actualValue] of machineFields) {
@@ -942,7 +944,9 @@ export class CdpClient {
     this.connectedAt = null;
   }
 
-  async connect({ timeoutMs = this.defaultTimeoutMs }: { timeoutMs?: number } = {}): Promise<this> {
+  async connect({
+    timeoutMs = this.defaultTimeoutMs,
+  }: { timeoutMs?: number } = {}): Promise<this> {
     if (this.socket) return this;
     let socket: BrowserSocket;
     try {
@@ -1061,7 +1065,9 @@ export class CdpClient {
     );
   }
 
-  async close({ timeoutMs = this.defaultTimeoutMs }: { timeoutMs?: number } = {}): Promise<void> {
+  async close({
+    timeoutMs = this.defaultTimeoutMs,
+  }: { timeoutMs?: number } = {}): Promise<void> {
     if (this.closed && this.socket?.readyState === 3) return;
     this.closed = true;
     this.#rejectPending(new Error("CDP client closed"));
@@ -1107,7 +1113,8 @@ export class CdpClient {
     }
 
     if (message.method) {
-      for (const handler of this.eventHandlers.get(String(message.method)) ?? []) {
+      for (const handler of this.eventHandlers.get(String(message.method)) ??
+        []) {
         try {
           handler(message.params ?? {});
         } catch (error) {
@@ -1448,10 +1455,7 @@ export async function captureScreenshot(
   if (imageData.length > Math.ceil((maxBytes * 4) / 3) + 4) {
     throw new Error("Page.captureScreenshot exceeded the maximum size");
   }
-  if (
-    imageData.length % 4 !== 0 ||
-    !/^[A-Za-z0-9+/]*={0,2}$/.test(imageData)
-  ) {
+  if (imageData.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(imageData)) {
     throw new Error("Page.captureScreenshot returned invalid base64");
   }
   const bytes = Buffer.from(imageData, "base64");
@@ -1474,9 +1478,7 @@ export async function captureScreenshot(
       label: options.label ?? "screenshot",
     });
     ref =
-      typeof sinkResult === "string"
-        ? sinkResult
-        : sinkResult?.ref ?? null;
+      typeof sinkResult === "string" ? sinkResult : (sinkResult?.ref ?? null);
     if (typeof ref !== "string" || ref.trim() === "" || ref.length > 1_024) {
       throw new Error("screenshot sink must return a bounded nonempty ref");
     }
@@ -1883,9 +1885,7 @@ interface ScenarioOptions {
 }
 
 interface ScenarioDependencies {
-  openSidecar: (
-    options: TunnelOptions,
-  ) => Promise<{
+  openSidecar: (options: TunnelOptions) => Promise<{
     endpoint: string;
     process: ChildProcess | null;
     close: () => Promise<void>;
@@ -1908,10 +1908,7 @@ export async function waitForRoute(
   let lastIdentity: RouteIdentity | null = null;
   do {
     options.assertHealthy?.();
-    lastIdentity = (await captureDomIdentity(
-      client,
-      options,
-    )) as RouteIdentity;
+    lastIdentity = (await captureDomIdentity(client, options)) as RouteIdentity;
     assertAllowedRoute(
       lastIdentity.route,
       options.forbiddenRoutes,
@@ -1948,7 +1945,9 @@ interface ContinuousCaptureOptions extends ScreenshotOptions {
   screenshot?: boolean;
 }
 
-interface ContinuousCheckpoint extends Awaited<ReturnType<typeof captureCheckpoint>> {
+interface ContinuousCheckpoint extends Awaited<
+  ReturnType<typeof captureCheckpoint>
+> {
   ordinal?: number;
 }
 
@@ -2159,8 +2158,9 @@ async function runVisibleMachineSaleScenarioInternal(
   let runtimeEvidence: ReturnType<typeof bindMachineUiRuntimeEvidence> | null =
     null;
   let capture: ReturnType<typeof startContinuousIdentityCapture> | null = null;
-  const getCapture =
-    (): ReturnType<typeof startContinuousIdentityCapture> | null => capture;
+  const getCapture = (): ReturnType<
+    typeof startContinuousIdentityCapture
+  > | null => capture;
   const captureSegments: Array<{
     capture: ReturnType<typeof startContinuousIdentityCapture>;
     runtimeGeneration: string | null;
@@ -2309,8 +2309,9 @@ async function runVisibleMachineSaleScenarioInternal(
         classifyRouteEvent({ url: (params as { url?: unknown }).url }, "cdp"),
     );
     const offFrameNavigated = client.on("Page.frameNavigated", (params) => {
-      const frame = (params as { frame?: { parentId?: unknown; url?: unknown } })
-        .frame;
+      const frame = (
+        params as { frame?: { parentId?: unknown; url?: unknown } }
+      ).frame;
       if (frame?.parentId == null) {
         runtimeGenerationMayHaveChanged = true;
         classifyRouteEvent({ url: frame?.url }, "cdp");
@@ -2529,8 +2530,8 @@ async function runVisibleMachineSaleScenarioInternal(
                   requireConnectedClient(),
                   step.selector,
                   {
-                  kind: step.inputKind ?? inputKind,
-                  timeoutMs: step.timeoutMs ?? timeoutMs,
+                    kind: step.inputKind ?? inputKind,
+                    timeoutMs: step.timeoutMs ?? timeoutMs,
                   },
                 ),
               { retry: false },
@@ -2542,13 +2543,13 @@ async function runVisibleMachineSaleScenarioInternal(
                   requireConnectedClient(),
                   activation.center ?? {},
                   {
-                  kind: step.inputKind ?? inputKind,
-                  timeoutMs: step.timeoutMs ?? timeoutMs,
+                    kind: step.inputKind ?? inputKind,
+                    timeoutMs: step.timeoutMs ?? timeoutMs,
                   },
                 ),
               { retry: false },
             )
-          : activation.input ?? {};
+          : (activation.input ?? {});
         const dispatchedMethod = dispatchedInput.method;
         if (
           typeof dispatchedMethod !== "string" ||
@@ -2586,7 +2587,7 @@ async function runVisibleMachineSaleScenarioInternal(
             requireConnectedClient(),
             step.selector,
             {
-            timeoutMs: step.timeoutMs ?? timeoutMs,
+              timeoutMs: step.timeoutMs ?? timeoutMs,
             },
           ).catch(() => null);
           throw new Error(
@@ -2716,9 +2717,9 @@ async function runVisibleMachineSaleScenarioInternal(
             ? await captureRecoveredOperationObservation(
                 requireConnectedClient(),
                 {
-                uiBefore,
-                timeoutMs: step.timeoutMs ?? timeoutMs,
-                pollMs: routePollMs,
+                  uiBefore,
+                  timeoutMs: step.timeoutMs ?? timeoutMs,
+                  pollMs: routePollMs,
                 },
                 withCdpRecovery,
               )
@@ -3156,9 +3157,7 @@ function requiredStepInputKind(
   return step.inputKind;
 }
 
-function countScenarioSteps(
-  sequence: readonly ValidatedScenarioStep[],
-): {
+function countScenarioSteps(sequence: readonly ValidatedScenarioStep[]): {
   customerActivations: number;
   observations: number;
   externalOperations: number;
@@ -3208,9 +3207,7 @@ function assertAllowedRoute(
   const path = routePath(normalized);
   if (
     resolvedAllowed !== null &&
-    !resolvedAllowed.some((candidate) =>
-      routeMatchesRoutePath(path, candidate),
-    )
+    !resolvedAllowed.some((candidate) => routeMatchesRoutePath(path, candidate))
   ) {
     throw new Error(`payment barrier route observed: ${normalized}`);
   }
@@ -3307,11 +3304,8 @@ function snapshotRoutePolicy(options: {
       allowedRoutes?: unknown;
     };
     return Object.freeze({
-      epoch:
-        typeof policyRecord.epoch === "number" ? policyRecord.epoch : null,
-      forbiddenRoutes: validateForbiddenRoutes(
-        policyRecord.forbiddenRoutes,
-      ),
+      epoch: typeof policyRecord.epoch === "number" ? policyRecord.epoch : null,
+      forbiddenRoutes: validateForbiddenRoutes(policyRecord.forbiddenRoutes),
       allowedRoutes:
         policyRecord.allowedRoutes == null
           ? null
@@ -3352,8 +3346,8 @@ function boundIdentity(identity: unknown): RouteIdentity {
     domLength:
       typeof record.domLength === "number" &&
       Number.isSafeInteger(record.domLength)
-      ? record.domLength
-      : null,
+        ? record.domLength
+        : null,
     domHash:
       typeof record.domHash === "string"
         ? boundedString(record.domHash, 128)
@@ -3871,7 +3865,10 @@ async function terminateChildProcessWithOptions(
   }
 }
 
-async function waitForExit(child: ChildProcess, timeoutMs: number): Promise<void> {
+async function waitForExit(
+  child: ChildProcess,
+  timeoutMs: number,
+): Promise<void> {
   if (child.exitCode != null) return;
   let onExit: () => void;
   let onError: (error: Error) => void;
@@ -3921,10 +3918,7 @@ function normalizeWindowsRuntimeObservation(
     throw new Error("Windows runtime inspection returned no object");
   }
   const record = observation as Record<string, unknown>;
-  const machine = normalizeWindowsProcessObservation(
-    record.machine,
-    "machine",
-  );
+  const machine = normalizeWindowsProcessObservation(record.machine, "machine");
   const cdpListener = normalizeWindowsProcessObservation(
     record.cdpListener,
     "cdpListener",
@@ -3957,10 +3951,7 @@ function normalizeWindowsRuntimeObservation(
       "Windows runtime inspection requires cdpListener.localPort",
     );
   }
-  if (
-    remoteCdpPort != null &&
-    cdpListenerRecord.localPort !== remoteCdpPort
-  ) {
+  if (remoteCdpPort != null && cdpListenerRecord.localPort !== remoteCdpPort) {
     throw new Error(
       `Windows runtime inspection CDP port mismatch: expected ${remoteCdpPort}, observed ${localPort}`,
     );
@@ -3986,7 +3977,11 @@ function normalizeWindowsProcessObservation(
   const record = process as Record<string, unknown>;
   for (const field of ["processId", "sessionId"]) {
     const value = record[field];
-    if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    if (
+      typeof value !== "number" ||
+      !Number.isSafeInteger(value) ||
+      value <= 0
+    ) {
       throw new Error(`Windows runtime inspection requires ${label}.${field}`);
     }
   }
@@ -4108,9 +4103,7 @@ async function runWindowsPowerShellOverSshWithAdapter(
   if (typeof script !== "string") {
     throw new Error("script is required for Windows runtime inspection");
   }
-  const encodedScript = Buffer.from(script, "utf16le").toString(
-    "base64",
-  );
+  const encodedScript = Buffer.from(script, "utf16le").toString("base64");
   const args = [
     "-o",
     "BatchMode=yes",
@@ -4161,8 +4154,8 @@ async function runWindowsPowerShellOverSshWithAdapter(
     result = await withTimeout(
       new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
         (resolve, reject) => {
-        child.once("error", reject);
-        child.once("close", (code, signal) => resolve({ code, signal }));
+          child.once("error", reject);
+          child.once("close", (code, signal) => resolve({ code, signal }));
         },
       ),
       timeoutMs,
@@ -4244,7 +4237,9 @@ function sanitizeProductionTunnelOptions(
   return selectTunnelTransportFields(tunnelOptions);
 }
 
-function selectTunnelTransportFields(tunnelOptions: TunnelOptions = {}): TunnelOptions {
+function selectTunnelTransportFields(
+  tunnelOptions: TunnelOptions = {},
+): TunnelOptions {
   const selected: TunnelOptions = {};
   for (const key of PRODUCTION_TUNNEL_OPTION_KEYS) {
     if (Object.hasOwn(tunnelOptions, key)) selected[key] = tunnelOptions[key];

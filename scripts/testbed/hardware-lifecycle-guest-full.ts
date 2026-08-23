@@ -84,7 +84,8 @@ async function fetchJson(
 ): Promise<unknown> {
   const response = await fetch(url, {
     ...options,
-    signal: (options.signal as AbortSignal | undefined) ??
+    signal:
+      (options.signal as AbortSignal | undefined) ??
       AbortSignal.timeout(30_000),
   });
   const payload = await response.json().catch(() => null);
@@ -99,10 +100,7 @@ async function fetchJson(
 function daemonBaseUrl(handoff: HandoffRecord): string {
   const daemon = handoff.daemon as JsonRecord | undefined;
   const ready = daemon?.ready as JsonRecord | undefined;
-  const healthzUrl = required(
-    ready?.healthzUrl,
-    "daemon healthzUrl",
-  );
+  const healthzUrl = required(ready?.healthzUrl, "daemon healthzUrl");
   if (!healthzUrl.endsWith("/healthz"))
     throw new Error("daemon healthzUrl must end with /healthz");
   return healthzUrl.slice(0, -"/healthz".length);
@@ -170,9 +168,12 @@ async function waitForRoleState(
         ready,
         currentPort: state.currentPort ?? null,
         bindingRevision: state.bindingRevision ?? null,
-        identityKey: ((state.binding as JsonRecord | undefined)?.identity as
-          | JsonRecord
-          | undefined)?.identityKey ?? null,
+        identityKey:
+          (
+            (state.binding as JsonRecord | undefined)?.identity as
+              | JsonRecord
+              | undefined
+          )?.identityKey ?? null,
         healthz,
         readyz,
       };
@@ -194,11 +195,9 @@ export function capabilityReflectsRoleState(
     return capability.canStartSale === ready;
   }
   const paymentCodeOptions = (
-    ((capability.paymentOptions as JsonRecord | undefined)?.options ?? []) as
-      | unknown[]
-  ).filter(
-    (option) => (option as JsonRecord)?.method === "payment_code",
-  );
+    ((capability.paymentOptions as JsonRecord | undefined)?.options ??
+      []) as unknown[]
+  ).filter((option) => (option as JsonRecord)?.method === "payment_code");
   return (
     paymentCodeOptions.length > 0 &&
     paymentCodeOptions.some(
@@ -232,16 +231,19 @@ function roleSummary(snapshot: JsonRecord | null | undefined): JsonRecord[] {
   return ((snapshot?.roles ?? []) as unknown[]).map((role) => {
     const roleRecord = role as JsonRecord;
     return {
-    role: roleRecord.role,
-    ready: roleRecord.ready,
-    currentPort: roleRecord.currentPort ?? null,
-    bindingRevision: roleRecord.bindingRevision ?? null,
-    identityKey: ((roleRecord.binding as JsonRecord | undefined)?.identity as
-      | JsonRecord
-      | undefined)?.identityKey ?? null,
-    candidateCount: Array.isArray(roleRecord.candidates)
-      ? (roleRecord.candidates as unknown[]).length
-      : 0,
+      role: roleRecord.role,
+      ready: roleRecord.ready,
+      currentPort: roleRecord.currentPort ?? null,
+      bindingRevision: roleRecord.bindingRevision ?? null,
+      identityKey:
+        (
+          (roleRecord.binding as JsonRecord | undefined)?.identity as
+            | JsonRecord
+            | undefined
+        )?.identityKey ?? null,
+      candidateCount: Array.isArray(roleRecord.candidates)
+        ? (roleRecord.candidates as unknown[]).length
+        : 0,
     };
   });
 }
@@ -294,8 +296,7 @@ export async function runHardwareLifecycleGuest(options: {
       runId,
       machineCode,
       targetIdentity: required(
-        (guestInput.hostControlPlane as JsonRecord | undefined)
-          ?.targetIdentity,
+        (guestInput.hostControlPlane as JsonRecord | undefined)?.targetIdentity,
         "hostControlPlane.targetIdentity",
       ),
       runtimeBase: required(
@@ -351,15 +352,22 @@ export async function runHardwareLifecycleGuest(options: {
       (report.lifecycle as unknown[]).push({
         role,
         initialBindingRevision: initial?.bindingRevision ?? null,
-        identityKey: ((initial?.binding as JsonRecord | undefined)?.identity as
-          | JsonRecord
-          | undefined)?.identityKey ?? null,
+        identityKey:
+          (
+            (initial?.binding as JsonRecord | undefined)?.identity as
+              | JsonRecord
+              | undefined
+          )?.identityKey ?? null,
         disconnect: {
           boundary: {
             adapter: "file_backed_windows_pnp",
             operation: "disconnect",
-            identityKey: ((initial?.binding as JsonRecord | undefined)
-              ?.identity as JsonRecord | undefined)?.identityKey ?? null,
+            identityKey:
+              (
+                (initial?.binding as JsonRecord | undefined)?.identity as
+                  | JsonRecord
+                  | undefined
+              )?.identityKey ?? null,
           },
           daemon: {
             ready: disconnected.ready,
@@ -373,8 +381,12 @@ export async function runHardwareLifecycleGuest(options: {
           boundary: {
             adapter: "file_backed_windows_pnp",
             operation: "reconnect",
-            identityKey: ((initial?.binding as JsonRecord | undefined)
-              ?.identity as JsonRecord | undefined)?.identityKey ?? null,
+            identityKey:
+              (
+                (initial?.binding as JsonRecord | undefined)?.identity as
+                  | JsonRecord
+                  | undefined
+              )?.identityKey ?? null,
           },
           daemon: {
             ready: reconnected.ready,

@@ -113,10 +113,7 @@ function boundedText(value: unknown): string {
 const sensitiveEvidenceKey =
   /(?:private|secret|password|token|auth.?code|cert|notify|credential|key)/i;
 
-export function sanitizeProviderEvidence(
-  value: unknown,
-  depth = 0,
-): unknown {
+export function sanitizeProviderEvidence(value: unknown, depth = 0): unknown {
   if (depth > 4 || value == null) return value ?? null;
   if (typeof value === "string") return boundedText(value);
   if (typeof value === "number" || typeof value === "boolean") return value;
@@ -158,19 +155,13 @@ export function parsePaymentProviderGuestArgs(args: string[]): {
 function daemonBaseUrl(handoff: HandoffRecord): string {
   const daemon = handoff?.daemon as JsonRecord | undefined;
   const ready = daemon?.ready as JsonRecord | undefined;
-  const healthzUrl = required(
-    ready?.healthzUrl,
-    "daemon healthzUrl",
-  );
+  const healthzUrl = required(ready?.healthzUrl, "daemon healthzUrl");
   if (!healthzUrl.endsWith("/healthz"))
     throw new Error("daemon healthzUrl must end with /healthz");
   return healthzUrl.slice(0, -"/healthz".length);
 }
 
-async function json(
-  url: string,
-  options: JsonRecord = {},
-): Promise<unknown> {
+async function json(url: string, options: JsonRecord = {}): Promise<unknown> {
   const response = await fetch(url, {
     ...options,
     signal:
@@ -219,7 +210,11 @@ function apiBase(input: InputRecord): string {
 function api(
   input: InputRecord,
   path: string,
-  { token = null, method = "GET", body }: {
+  {
+    token = null,
+    method = "GET",
+    body,
+  }: {
     token?: string | null;
     method?: string;
     body?: unknown;
@@ -358,7 +353,10 @@ function alipayOptions(capability: JsonRecord | null | undefined): unknown[] {
 export async function waitForCondition(
   read: () => Promise<unknown>,
   matches: (value: unknown) => boolean,
-  { timeoutMs = DEFAULT_TIMEOUT_MS, label }: {
+  {
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+    label,
+  }: {
     timeoutMs?: number;
     label: string;
   },
@@ -713,9 +711,9 @@ async function submitUntilPaymentSurface(
   let domClickCount = 0;
   await installCheckoutSubmitEventProbe(client);
   while (Date.now() < deadline) {
-    const surface = (await readVisiblePaymentSurface(client)) as
-      | JsonRecord
-      | null;
+    const surface = (await readVisiblePaymentSurface(
+      client,
+    )) as JsonRecord | null;
     if (
       surface?.paymentMethod === method &&
       surface?.providerCode === "alipay" &&
@@ -908,7 +906,9 @@ async function cleanAuthoritativeOrderBeforeDiagnostics(
   handoff: HandoffRecord,
   timeoutMs: number,
 ): Promise<JsonRecord> {
-  const initialRoute = String(await evaluateExpression(client, "location.hash"));
+  const initialRoute = String(
+    await evaluateExpression(client, "location.hash"),
+  );
   const visible = await evaluateExpression(
     client,
     "Boolean(document.querySelector('[data-installed-kiosk-sale-payment-surface]')?.getClientRects().length)",
@@ -943,17 +943,12 @@ async function cleanAuthoritativeOrderBeforeDiagnostics(
   let daemonCancel = null;
   const currentRecord = currentBeforeCleanup as JsonRecord | null;
   if (!isCleanAuthoritativeTransaction(currentRecord)) {
-    daemonCancel = await cancelCurrentDaemonOrder(
-      handoff,
-      currentRecord,
-    );
+    daemonCancel = await cancelCurrentDaemonOrder(handoff, currentRecord);
   }
   const transaction = await waitForCondition(
     () => daemon(handoff, "/v1/transactions/current"),
     (value) =>
-      isCleanAuthoritativeTransaction(
-        value as JsonRecord | null | undefined,
-      ),
+      isCleanAuthoritativeTransaction(value as JsonRecord | null | undefined),
     { timeoutMs, label: "authoritative order cleanup before diagnostics" },
   );
   const route = String(await evaluateExpression(client, "location.hash"));
@@ -1361,9 +1356,7 @@ export function validateUnattendedProviderAttempt(
       surface?.orderId !== order.orderId ||
       surface?.paymentId !== order.paymentId ||
       surface?.orderNo !== order.orderNo ||
-      !String(credential?.paymentUrlSha256 ?? "").startsWith(
-        "sha256:",
-      ) ||
+      !String(credential?.paymentUrlSha256 ?? "").startsWith("sha256:") ||
       !query?.reconciliationAttemptId ||
       query?.providerCode !== "alipay" ||
       query?.status !== "provider_trade_not_exist" ||
@@ -1414,8 +1407,7 @@ export function validateUnattendedProviderAttempt(
         )) ||
       (submission?.status === "reversed" &&
         (submission?.providerStatus !== "cancel" ||
-          submission?.failureCode !==
-            "payment_code_reverse_confirmed")) ||
+          submission?.failureCode !== "payment_code_reverse_confirmed")) ||
       cleanup?.action !== "close_or_reverse_uncertain_payment" ||
       !closureObservedCleanTerminal ||
       !cleanup?.providerConfigId ||

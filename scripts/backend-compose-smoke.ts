@@ -75,10 +75,7 @@ export function backendComposeSmokeEnv({
   const adminPort = ports.adminUi ?? randomPort(34_000);
   const mqttPort = ports.mqtt ?? randomPort(36_000);
   const paymentWebhookBaseUrl = "https://payments.example";
-  const resolvedServiceApiImage = required(
-    serviceApiImage,
-    "serviceApiImage",
-  );
+  const resolvedServiceApiImage = required(serviceApiImage, "serviceApiImage");
   const resolvedAdminUiImage = required(adminUiImage, "adminUiImage");
   validateDigestPinnedImage(resolvedServiceApiImage, "serviceApiImage");
   validateDigestPinnedImage(resolvedAdminUiImage, "adminUiImage");
@@ -192,8 +189,7 @@ export async function runBackendComposeSmoke(
     env.ADMIN_UI_IMAGE ?? null,
   );
   const composeFile = resolve(
-    option(args, "--compose", null) ??
-      "apps/service-api/docker-compose.yml",
+    option(args, "--compose", null) ?? "apps/service-api/docker-compose.yml",
   );
   const timeoutSeconds = option(args, "--timeout-seconds", null) ?? "240";
   const keep = hasFlag(args, "--keep");

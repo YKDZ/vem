@@ -1,10 +1,11 @@
+import type { CapturedSourceEvidence } from "./framework/slices/vision-experience/captured-source-evidence.ts";
+
 import {
   capturedSourceBinding,
   hasSameCapturedEvidenceValue,
   normalizeVisionOrigin,
   validateCapturedSourceEvidence,
 } from "./framework/slices/vision-experience/captured-source-evidence.ts";
-import type { CapturedSourceEvidence } from "./framework/slices/vision-experience/captured-source-evidence.ts";
 import { validatePaymentRecoveryEvidence } from "./payment-recovery-guest-full.ts";
 import { validatePresenceAndAudioGuestReport } from "./presence-and-audio-guest-full.ts";
 import { validateStockMaintenanceReport } from "./stock-maintenance-guest-full.ts";
@@ -172,7 +173,9 @@ function validateDelayedAudioTrack(
   const requiredCues = ["pickup_started", "ordinary_warning", "urgent_warning"];
   return audio?.source === "windows_default_output" &&
     cueWindows.length > 0 &&
-    cueWindows.every((entry: unknown) => recordValue(entry).kind === "passed") &&
+    cueWindows.every(
+      (entry: unknown) => recordValue(entry).kind === "passed",
+    ) &&
     requiredCues.every((cue) => {
       const latency = cueStartLatencyMs[cue];
       return (
@@ -206,8 +209,8 @@ function validatePresenceAndAudioTrack(
     const categoryTransitions = arrayValue(summary.categoryTransitions);
     return passedTrack("presenceAndAudio", "presence and audio", reportPath, {
       welcomeTransitions: summary.welcomeTransitions,
-      categoryTransitions: categoryTransitions.map((entry: unknown) =>
-        recordValue(entry).key,
+      categoryTransitions: categoryTransitions.map(
+        (entry: unknown) => recordValue(entry).key,
       ),
       nativeSource: summary.nativeSource,
     });
@@ -300,8 +303,8 @@ function validateScannerTrack(
           orderId,
           paymentId,
           orderNo,
-            scannerEventId:
-              platformAttempt.scannerEventId ??
+          scannerEventId:
+            platformAttempt.scannerEventId ??
             scannerAttempt?.scannerEventId ??
             null,
         })
@@ -595,7 +598,9 @@ function validatePaymentProviderTrack(
     hostPreparation?.preflight === "configured";
   const uniqueOrders = new Set(
     attempts
-      .map((attempt: unknown) => recordValue(recordValue(attempt).order).orderId)
+      .map(
+        (attempt: unknown) => recordValue(recordValue(attempt).order).orderId,
+      )
       .filter(Boolean),
   );
   const diagnostics = arrayValue(report.diagnostics);
@@ -666,9 +671,7 @@ function validateLocalOperationsTrack(
   const planogram = maybeRecord(report.planogram);
   const manualDispense = maybeRecord(report.manualDispense);
   const localEnvironmentControl = maybeRecord(report.localEnvironmentControl);
-  const localEnvironmentRequest = recordValue(
-    localEnvironmentControl?.request,
-  );
+  const localEnvironmentRequest = recordValue(localEnvironmentControl?.request);
   const localEnvironmentResult = recordValue(localEnvironmentControl?.result);
   const localEnvironmentFrame = recordValue(
     localEnvironmentControl?.protocolFrame,
@@ -752,9 +755,7 @@ function validateHardwareLifecycleTrack(
   const lifecycleRecords = lifecycle.map((entry: unknown) =>
     recordValue(entry),
   );
-  const byRole = new Map(
-    lifecycleRecords.map((entry) => [entry.role, entry]),
-  );
+  const byRole = new Map(lifecycleRecords.map((entry) => [entry.role, entry]));
   const lower = maybeRecord(byRole.get("lower_controller"));
   const scanner = maybeRecord(byRole.get("scanner"));
   const roles = arrayValue(discovery.roles);
@@ -796,7 +797,9 @@ function validateHardwareLifecycleTrack(
     lowerDisconnectCapability?.canStartSale === false &&
     lowerReconnectCapability?.canStartSale === true;
   const scannerPaymentOptions = (capability: unknown) =>
-    arrayValue(recordValue(recordValue(capability).paymentOptions).options).filter(
+    arrayValue(
+      recordValue(recordValue(capability).paymentOptions).options,
+    ).filter(
       (option: unknown) => recordValue(option).method === "payment_code",
     );
   const scannerDisconnectOptions = scannerPaymentOptions(
@@ -1075,8 +1078,7 @@ function validateEnvironmentControlTrack(
     automaticVentOutcomes.some(
       (entry: unknown) =>
         recordValue(entry).edgeId === secondDepartureAfterOperatorGear.edgeId &&
-        recordValue(entry).outcome ===
-          secondDepartureAfterOperatorGear.outcome,
+        recordValue(entry).outcome === secondDepartureAfterOperatorGear.outcome,
     ) &&
     automaticVentOutcomes.some(
       (entry: unknown) =>
@@ -1123,8 +1125,8 @@ function validateEnvironmentControlTrack(
     );
   }
   return passedTrack("environmentControl", "environment control", reportPath, {
-    commandNos: commandRecords.map((entry) =>
-      recordValue(entry.admin).commandNo,
+    commandNos: commandRecords.map(
+      (entry) => recordValue(entry.admin).commandNo,
     ),
     overlapError: overlap.error,
     temperatureProved: optionalTemperature !== null,
@@ -1159,15 +1161,15 @@ function validateVisionExperienceCapturedSource(
   const expectedVisionOrigin = normalizeVisionOrigin(visionBaseUrl);
   if (!expectedVisionOrigin) return null;
   const sources = arrayValue(set?.supportingEvidence).filter(
-    (entry: unknown) =>
-      recordValue(entry).kind === "vision-v2-captured-source",
+    (entry: unknown) => recordValue(entry).kind === "vision-v2-captured-source",
   );
   if (sources.length !== 1) return null;
   const source = validateCapturedSourceEvidence(sources[0]);
   if (!source || source.visionOrigin !== expectedVisionOrigin) return null;
   const assertions = arrayValue(set?.assertions);
   const bindings = assertions.filter(
-    (assertion: unknown) => recordValue(assertion).id === "captured-source-bound",
+    (assertion: unknown) =>
+      recordValue(assertion).id === "captured-source-bound",
   );
   const binding = capturedSourceBinding(source);
   const assertion = maybeRecord(bindings[0]);
@@ -1225,7 +1227,9 @@ function hasPassingAssertions(
   });
 }
 
-function hasPassingVisionExperienceTimelineAssertions(set: JsonRecord): boolean {
+function hasPassingVisionExperienceTimelineAssertions(
+  set: JsonRecord,
+): boolean {
   return hasPassingAssertions(
     set,
     VISION_EXPERIENCE_TIMELINE_ASSERTIONS,
@@ -1233,7 +1237,9 @@ function hasPassingVisionExperienceTimelineAssertions(set: JsonRecord): boolean 
   );
 }
 
-function hasPassingVisionExperienceGeometryAssertions(set: JsonRecord): boolean {
+function hasPassingVisionExperienceGeometryAssertions(
+  set: JsonRecord,
+): boolean {
   return hasPassingAssertions(
     set,
     VISION_EXPERIENCE_GEOMETRY_ASSERTIONS,
@@ -1241,7 +1247,9 @@ function hasPassingVisionExperienceGeometryAssertions(set: JsonRecord): boolean 
   );
 }
 
-function hasPassingVisionExperienceAdjustmentAssertions(set: JsonRecord): boolean {
+function hasPassingVisionExperienceAdjustmentAssertions(
+  set: JsonRecord,
+): boolean {
   return hasPassingAssertions(
     set,
     VISION_EXPERIENCE_ADJUSTMENT_ASSERTIONS,
@@ -1279,9 +1287,7 @@ export function validateBusinessCheckReport(
       descriptorName,
       descriptorName,
       reportPath,
-      String(
-        descriptor?.blockedReason ?? "business runner is not implemented",
-      ),
+      String(descriptor?.blockedReason ?? "business runner is not implemented"),
     );
   }
   const validators: Record<
@@ -1290,19 +1296,18 @@ export function validateBusinessCheckReport(
   > = {
     commissioning: (value: JsonRecord, path: string): TrackResult => {
       const admission = recordValue(value.admission);
-      return (
-      value?.schemaVersion === "vem-runtime-commissioning-acceptance/v1" &&
-      value?.ok === true &&
-      admission?.status === "provisioned" &&
-      typeof admission.machineCode === "string"
+      return value?.schemaVersion ===
+        "vem-runtime-commissioning-acceptance/v1" &&
+        value?.ok === true &&
+        admission?.status === "provisioned" &&
+        typeof admission.machineCode === "string"
         ? passedTrack("commissioning", "commissioning", path, admission)
         : failedTrack(
             "commissioning",
             "commissioning",
             path,
             "commissioning admission evidence is incomplete",
-          )
-      );
+          );
     },
     startup: validateStartupTrack,
     sale: validateFastTrack,
@@ -1342,9 +1347,9 @@ export function validateBusinessCheckReport(
       const fixtureBlockerReason = geometryFixtureBlocker
         ? `visionExperience 几何录播夹具不可用：${geometryFixtureBlocker}`
         : set.status !== "passed"
-          ? (typeof setPrimaryFailure?.reason === "string"
-              ? setPrimaryFailure.reason
-              : "vision assertions failed")
+          ? typeof setPrimaryFailure?.reason === "string"
+            ? setPrimaryFailure.reason
+            : "vision assertions failed"
           : "visionExperience timeline or captured source evidence is incomplete";
       return canonicalResult(
         descriptor,

@@ -94,9 +94,7 @@ export function readPaymentMockCreateGateStatus(
   const pending = readJson(String(gate.pendingPath));
   return {
     state: typeof state?.state === "string" ? state.state : "open",
-    timeoutMs: Number.isInteger(state?.timeoutMs)
-      ? state?.timeoutMs
-      : null,
+    timeoutMs: Number.isInteger(state?.timeoutMs) ? state?.timeoutMs : null,
     pending:
       pending?.state === "pending" &&
       typeof pending.paymentNo === "string" &&

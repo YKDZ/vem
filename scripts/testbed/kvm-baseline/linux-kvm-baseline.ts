@@ -1,5 +1,7 @@
-import { createHash, randomUUID } from "node:crypto";
 import type { ChildProcess } from "node:child_process";
+import type { Readable } from "node:stream";
+
+import { createHash, randomUUID } from "node:crypto";
 import { constants, createReadStream } from "node:fs";
 import {
   access,
@@ -14,7 +16,6 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, normalize, resolve } from "node:path";
-import type { Readable } from "node:stream";
 
 import { createRuntimeProfile } from "./libvirt-runtime-profile.ts";
 
@@ -562,7 +563,8 @@ export function evaluateHostPreflight(
       "host.address must identify the executing host by hostname or resolved address",
     );
   }
-  if (observation.kvmAvailable !== true) throw new Error("KVM is not available");
+  if (observation.kvmAvailable !== true)
+    throw new Error("KVM is not available");
   if (observation.libvirtAvailable !== true)
     throw new Error("libvirt is not available");
   const commands = new Set(
@@ -585,12 +587,14 @@ export function evaluateHostPreflight(
   ) {
     throw new Error(`host memory must satisfy ${profile.memoryMiB} MiB`);
   }
-  const storage = (
-    observation.storageAvailableBytes ?? {}
-  ) as Record<string, unknown>;
-  const filesystemIds = (
-    observation.storageFilesystemIds ?? {}
-  ) as Record<string, unknown>;
+  const storage = (observation.storageAvailableBytes ?? {}) as Record<
+    string,
+    unknown
+  >;
+  const filesystemIds = (observation.storageFilesystemIds ?? {}) as Record<
+    string,
+    unknown
+  >;
   const requestedDiskBytes: Record<string, number> = {
     baseline: Number(config.storage.systemDiskGiB) * GiB,
     cache: Number(config.storage.cacheDiskGiB) * GiB,
@@ -996,9 +1000,7 @@ export async function publishVncActivatorSupervisorIdentity({
   ) {
     throw new Error("VNC activator metadata cannot register this supervisor");
   }
-  const identity = await readLinuxProcessIdentity(
-    integer(pid, "pid"),
-  );
+  const identity = await readLinuxProcessIdentity(integer(pid, "pid"));
   await writeJsonAtomicallyDurably(absolutePath(metadataPath, "metadataPath"), {
     ...metadata,
     processes: {
@@ -1075,12 +1077,13 @@ async function registeredSupervisorIdentity(
   if (ready !== VNC_LAUNCH_SUPERVISOR_READY) {
     throw new Error(`${role} launch supervisor did not register durably`);
   }
-  const metadata = JSON.parse(
-    await readFile(metadataPath, "utf8"),
-  ) as Record<string, unknown>;
-  const identity = (metadata.processes as Record<string, unknown> | undefined)?.[
-    role
-  ];
+  const metadata = JSON.parse(await readFile(metadataPath, "utf8")) as Record<
+    string,
+    unknown
+  >;
+  const identity = (
+    metadata.processes as Record<string, unknown> | undefined
+  )?.[role];
   if (
     !processIdentityShape(identity) ||
     (identity as { pid?: unknown }).pid !== handle.child.pid ||
@@ -1102,9 +1105,9 @@ async function registeredTargetIdentity(
       const metadata = JSON.parse(
         await readFile(metadataPath, "utf8"),
       ) as Record<string, unknown>;
-      const identity = (metadata.targets as Record<string, unknown> | undefined)?.[
-        role
-      ];
+      const identity = (
+        metadata.targets as Record<string, unknown> | undefined
+      )?.[role];
       if (processIdentityShape(identity)) {
         return identity as Record<string, unknown>;
       }
@@ -1233,10 +1236,7 @@ export async function startHeadlessVncActivator({
 }> {
   const normalizedDomainName = string(domainName, "domainName");
   const normalizedLibvirtUri = string(libvirtUri, "libvirtUri");
-  const normalizedMetadataPath = absolutePath(
-    metadataPath,
-    "metadataPath",
-  );
+  const normalizedMetadataPath = absolutePath(metadataPath, "metadataPath");
   if (typeof runCommand !== "function") {
     throw new Error("runCommand must be a function");
   }
@@ -1262,12 +1262,11 @@ export async function startHeadlessVncActivator({
   const xvfbCommand = String(commands.xvfb ?? "Xvfb");
   const windowManagerCommand = String(commands.windowManager ?? "openbox");
   const viewerCommand = String(commands.viewer ?? "xtigervncviewer");
-  const viewerArguments =
-    Array.isArray(commands.viewerArguments)
-      ? (commands.viewerArguments as string[])
-      : commands.viewer !== undefined
-        ? []
-        : ["-RemoteResize=0", "-ViewOnly=1"];
+  const viewerArguments = Array.isArray(commands.viewerArguments)
+    ? (commands.viewerArguments as string[])
+    : commands.viewer !== undefined
+      ? []
+      : ["-RemoteResize=0", "-ViewOnly=1"];
   let xvfb: VncHandle | null = null;
   let windowManager: VncHandle | null = null;
   let viewer: VncHandle | null = null;
@@ -1379,9 +1378,7 @@ export async function startHeadlessVncActivator({
     windowManager = startSupervisor(
       "window-manager",
       windowManagerCommand,
-      [
-        ...((commands.windowManagerArguments as string[] | undefined) ?? []),
-      ],
+      [...((commands.windowManagerArguments as string[] | undefined) ?? [])],
       { ...environment, DISPLAY: `:${displayNumber}` },
     );
     monitor(windowManager, "openbox");
@@ -1445,10 +1442,7 @@ async function fsyncDirectory(path: string): Promise<void> {
   }
 }
 
-async function writeJsonDurably(
-  path: string,
-  value: unknown,
-): Promise<void> {
+async function writeJsonDurably(path: string, value: unknown): Promise<void> {
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, {
     mode: 0o600,
   });
@@ -1551,7 +1545,9 @@ async function readCompleteRelease(
   config: BaselineBuildConfig,
   layout: Record<string, string>,
   id: unknown,
-): Promise<ReturnType<typeof releasePaths> & { manifest: Record<string, unknown> }> {
+): Promise<
+  ReturnType<typeof releasePaths> & { manifest: Record<string, unknown> }
+> {
   const paths = releasePaths(layout, id);
   const manifest = JSON.parse(
     await readFile(paths.manifestPath, "utf8"),
@@ -1583,10 +1579,12 @@ async function readCompleteRelease(
 async function readCurrentRelease(
   config: BaselineBuildConfig,
   layout: Record<string, string>,
-): Promise<ReturnType<typeof releasePaths> & {
-  manifest: Record<string, unknown>;
-  current: Record<string, unknown>;
-}> {
+): Promise<
+  ReturnType<typeof releasePaths> & {
+    manifest: Record<string, unknown>;
+    current: Record<string, unknown>;
+  }
+> {
   const current = JSON.parse(
     await readFile(layout.currentManifestPath, "utf8"),
   ) as Record<string, unknown>;
@@ -1934,9 +1932,7 @@ type DefinitionRecovery = (
   previous: Record<string, unknown> | null,
 ) => unknown;
 
-type DefinitionRollback = (
-  release: Record<string, unknown> | null,
-) => unknown;
+type DefinitionRollback = (release: Record<string, unknown> | null) => unknown;
 
 function requireDefinitionRecovery({
   recoverDefinition,
@@ -2233,15 +2229,7 @@ export async function publishVerifiedBaselineRelease({
   const systemStagingDirectory = `${layout.systemReleaseRoot}/.staging-${stagingSuffix}`;
   const cacheStagingDirectory = `${layout.cacheReleaseRoot}/.staging-${stagingSuffix}`;
   const sources: Array<
-    [
-      string,
-      string,
-      string,
-      string,
-      string,
-      string,
-      string,
-    ]
+    [string, string, string, string, string, string, string]
   > = [
     [
       absolutePath(stagedSystemPath, "stagedSystemPath"),

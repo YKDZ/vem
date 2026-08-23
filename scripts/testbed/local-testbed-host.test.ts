@@ -419,10 +419,7 @@ describe("tracked local testbed host lifecycle", () => {
         };
       },
     });
-    assert.equal(
-      recordValue(result.displayAdmissionProof).widthPx,
-      1080,
-    );
+    assert.equal(recordValue(result.displayAdmissionProof).widthPx, 1080);
     assert.equal(result.runnerAdmission, undefined);
     assert.deepEqual(operations, ["ssh", "ssh", "ssh"]);
   });

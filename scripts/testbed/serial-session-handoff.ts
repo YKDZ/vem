@@ -44,26 +44,28 @@ export async function replaceSerialSessionAndUpdateHandoff({
   if (typeof control !== "function") {
     throw new Error("serial session handoff control is required");
   }
-  const aborted = recordValue(await control(
-    guestInput,
-    `/v1/serial-sessions/${encodeURIComponent(String(sessionId))}/abort`,
-  ));
+  const aborted = recordValue(
+    await control(
+      guestInput,
+      `/v1/serial-sessions/${encodeURIComponent(String(sessionId))}/abort`,
+    ),
+  );
   if (aborted?.aborted !== true) {
     throw new Error("serial session abort did not confirm inactive state");
   }
   const replacement = recordValue(
     await control(guestInput, "/v1/serial-sessions/start", {
-    runId: required(guestInput.runId, "runId"),
-    machineCode: required(guestInput.machineCode, "machineCode"),
-    saleCorrelationId: `sale-correlation://${required(guestInput.runId, "runId").toLowerCase()}.handoff-${Date.now()}`,
-    targetIdentity: required(
-      recordValue(guestInput.hostControlPlane).targetIdentity,
-      "hostControlPlane.targetIdentity",
-    ),
-    runtimeBase: required(
-      recordValue(guestInput.hostControlPlane).runtimeBaseIdentity,
-      "hostControlPlane.runtimeBaseIdentity",
-    ),
+      runId: required(guestInput.runId, "runId"),
+      machineCode: required(guestInput.machineCode, "machineCode"),
+      saleCorrelationId: `sale-correlation://${required(guestInput.runId, "runId").toLowerCase()}.handoff-${Date.now()}`,
+      targetIdentity: required(
+        recordValue(guestInput.hostControlPlane).targetIdentity,
+        "hostControlPlane.targetIdentity",
+      ),
+      runtimeBase: required(
+        recordValue(guestInput.hostControlPlane).runtimeBaseIdentity,
+        "hostControlPlane.runtimeBaseIdentity",
+      ),
     }),
   );
   required(replacement.sessionId, "replacement serial session id");

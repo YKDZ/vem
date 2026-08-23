@@ -97,9 +97,9 @@ export function createRuntimeProfile(
   for (const key of ["width", "height", "scalePercent", "videoMemoryKiB"]) {
     positiveInteger(displayRecord[key], `display.${key}`);
   }
-  const serialRoles: unknown[] = (options.serialRoles as unknown[] | undefined) ?? [
-    ...DEFAULT_RUNTIME_PROFILE.serialRoles,
-  ];
+  const serialRoles: unknown[] = (options.serialRoles as
+    | unknown[]
+    | undefined) ?? [...DEFAULT_RUNTIME_PROFILE.serialRoles];
   if (
     !Array.isArray(serialRoles) ||
     serialRoles.length !== 2 ||
@@ -108,9 +108,9 @@ export function createRuntimeProfile(
   ) {
     throw new Error("serialRoles must contain two unique lowercase roles");
   }
-  const serialUsbPorts: unknown[] = (options.serialUsbPorts as unknown[] | undefined) ?? [
-    ...DEFAULT_RUNTIME_PROFILE.serialUsbPorts,
-  ];
+  const serialUsbPorts: unknown[] = (options.serialUsbPorts as
+    | unknown[]
+    | undefined) ?? [...DEFAULT_RUNTIME_PROFILE.serialUsbPorts];
   if (
     !Array.isArray(serialUsbPorts) ||
     serialUsbPorts.length !== serialRoles.length ||
@@ -179,7 +179,10 @@ export function createRuntimeProfile(
 
 export function renderLibvirtDomainXml(
   profile: RuntimeProfile,
-  { cdromPaths = [], domainUuid = null }: {
+  {
+    cdromPaths = [],
+    domainUuid = null,
+  }: {
     cdromPaths?: unknown[];
     domainUuid?: string | null;
   } = {},

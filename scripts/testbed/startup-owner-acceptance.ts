@@ -72,10 +72,7 @@ function validateModeEvidence(
       "full startup requires Windows reboot/logon probe evidence",
     );
   }
-  if (
-    logon?.user !== "VEMKiosk" ||
-    logon?.sessionId !== sessionId
-  ) {
+  if (logon?.user !== "VEMKiosk" || logon?.sessionId !== sessionId) {
     throw new Error(
       "full startup logon identity must match the active VEMKiosk session",
     );
@@ -129,11 +126,15 @@ export function validateStartupOwnerReadinessEvidence(
     account: "LocalSystem",
     startType: "Automatic",
   });
-  const machineUiOwner = assertOwner(recordValue(manifest.owners), "machineUi", {
-    name: "VEMMachineUI",
-    trigger: "AtLogon",
-    user: "VEMKiosk",
-  });
+  const machineUiOwner = assertOwner(
+    recordValue(manifest.owners),
+    "machineUi",
+    {
+      name: "VEMMachineUI",
+      trigger: "AtLogon",
+      user: "VEMKiosk",
+    },
+  );
   const visionOwner = assertOwner(recordValue(manifest.owners), "vision", {
     name: "VEMVisionRuntime",
     trigger: "AtLogon",

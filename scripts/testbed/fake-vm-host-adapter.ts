@@ -105,7 +105,8 @@ function displayCapture(
     tauriRoute: recordValue(request.displayCapture).tauriRoute,
     cdpTargetId: recordValue(request.displayCapture).cdpTargetId,
     foregroundKiosk: {
-      activeKioskSession: recordValue(request.displayCapture).activeKioskSession,
+      activeKioskSession: recordValue(request.displayCapture)
+        .activeKioskSession,
       tauriRoute: recordValue(request.displayCapture).tauriRoute,
       cdpTargetId: recordValue(request.displayCapture).cdpTargetId,
       visible: true,
@@ -130,12 +131,12 @@ function displayCapture(
               .region,
           ).width,
         ) *
-          Number(
-            recordValue(
-              recordValue(recordValue(request.displayCapture).visualChallenge)
-                .region,
-            ).height,
-          ),
+        Number(
+          recordValue(
+            recordValue(recordValue(request.displayCapture).visualChallenge)
+              .region,
+          ).height,
+        ),
     },
     capture: {
       source: "contract-test-generated-png",
@@ -199,16 +200,16 @@ function materializeDisplayEvidence(challenge: JsonRecord): JsonRecord {
   for (
     let row = Number(recordValue(challenge.region).y);
     row <
-      Number(recordValue(challenge.region).y) +
-        Number(recordValue(challenge.region).height);
+    Number(recordValue(challenge.region).y) +
+      Number(recordValue(challenge.region).height);
     row += 1
   ) {
     const rowStart = row * (width * 4 + 1);
     for (
       let column = Number(recordValue(challenge.region).x);
       column <
-        Number(recordValue(challenge.region).x) +
-          Number(recordValue(challenge.region).width);
+      Number(recordValue(challenge.region).x) +
+        Number(recordValue(challenge.region).width);
       column += 1
     ) {
       const offset = rowStart + 1 + column * 4;
@@ -274,9 +275,8 @@ function materializeDaemonCalibrationEvidence(request: JsonRecord): JsonRecord {
     configRevision: `sha256:${"b".repeat(64)}`,
     configGeneration: 11,
     proposedSettingsDigest: `sha256:${"c".repeat(64)}`,
-    challenge: recordValue(
-      recordValue(request.audioCapture).daemonCalibration,
-    ).challenge,
+    challenge: recordValue(recordValue(request.audioCapture).daemonCalibration)
+      .challenge,
   };
   const bytes = Buffer.from(`${JSON.stringify(response)}\n`, "utf8");
   const hash = createHash("sha256").update(bytes).digest("hex");
@@ -357,8 +357,8 @@ function mutateSerialState(
     !Array.isArray(existingSession)
       ? (existingSession as JsonRecord)
       : {
-    cleanupAttemptCount: 0,
-    active: true,
+          cleanupAttemptCount: 0,
+          active: true,
         };
   if (request.operation === "start-serial-session") {
     session.active = true;
@@ -498,11 +498,9 @@ function fakeReport(
     request.serialSession === null || request.serialSession === undefined
       ? null
       : recordValue(request.serialSession);
-  const serialState = [
-    "stop-serial-session",
-    "cleanup",
-    "cancel",
-  ].includes(String(request.operation))
+  const serialState = ["stop-serial-session", "cleanup", "cancel"].includes(
+    String(request.operation),
+  )
     ? "disconnected"
     : "connected";
   const mappings = serialMappings(serialState);
@@ -584,7 +582,7 @@ function fakeReport(
       baseIdentity:
         request.operation === "capture-approved-base"
           ? `runtime-asset://sha256/${"f".repeat(64)}`
-          : requestAssets[0]?.identity ?? null,
+          : (requestAssets[0]?.identity ?? null),
       overlayIdentity: "vm-overlay://fake-run-001",
       firmwareMode: "bios",
     },
@@ -641,52 +639,53 @@ function fakeReport(
           serialSession:
             needsSerialReport && serialRequest !== null
               ? {
-                serialSessionId: (binding as JsonRecord).serialSessionId,
-                sessionBindingToken: (binding as JsonRecord).sessionBindingToken,
-                startOperationReference:
-                  request.operation === "start-serial-session"
-                    ? request.operationReference
-                    : serialRequest.startOperationReference,
-                deviceMappingDigest: mappingDigest,
-                state:
-                  request.operation === "stop-serial-session"
-                    ? "stopped"
-                    : ["cleanup", "cancel"].includes(
-                        String(request.operation),
-                      )
-                      ? "cleaned"
-                      : "active",
-                deviceMappings: mappings,
-                scannerAcknowledgement:
-                  request.operation === "inject-scanner-code"
+                  serialSessionId: (binding as JsonRecord).serialSessionId,
+                  sessionBindingToken: (binding as JsonRecord)
+                    .sessionBindingToken,
+                  startOperationReference:
+                    request.operation === "start-serial-session"
+                      ? request.operationReference
+                      : serialRequest.startOperationReference,
+                  deviceMappingDigest: mappingDigest,
+                  state:
+                    request.operation === "stop-serial-session"
+                      ? "stopped"
+                      : ["cleanup", "cancel"].includes(
+                            String(request.operation),
+                          )
+                        ? "cleaned"
+                        : "active",
+                  deviceMappings: mappings,
+                  scannerAcknowledgement:
+                    request.operation === "inject-scanner-code"
+                      ? {
+                          scannerCodeDigest: recordValue(
+                            serialRequest.scannerInjection,
+                          ).scannerCodeDigest,
+                          scannerCodeByteLength: recordValue(
+                            serialRequest.scannerInjection,
+                          ).scannerCodeByteLength,
+                          scannerCodeSuffix: recordValue(
+                            serialRequest.scannerInjection,
+                          ).scannerCodeSuffix,
+                          accepted: true,
+                        }
+                      : null,
+                  simulatorCleanup: [
+                    "stop-serial-session",
+                    "cleanup",
+                    "cancel",
+                  ].includes(String(request.operation))
                     ? {
-                        scannerCodeDigest:
-                          recordValue(serialRequest.scannerInjection)
-                            .scannerCodeDigest,
-                        scannerCodeByteLength:
-                          recordValue(serialRequest.scannerInjection)
-                            .scannerCodeByteLength,
-                        scannerCodeSuffix:
-                          recordValue(serialRequest.scannerInjection)
-                            .scannerCodeSuffix,
-                        accepted: true,
+                        cleanupAttemptCount: (statefulSession as JsonRecord)
+                          .cleanupAttemptCount,
+                        idempotencyVerified:
+                          request.operation === "stop-serial-session" &&
+                          serialRequest.idempotencyCheck,
+                        survivingProcessCount: 0,
+                        survivingSocketCount: 0,
                       }
                     : null,
-                simulatorCleanup: [
-                  "stop-serial-session",
-                  "cleanup",
-                  "cancel",
-                ].includes(String(request.operation))
-                  ? {
-                      cleanupAttemptCount:
-                        (statefulSession as JsonRecord).cleanupAttemptCount,
-                      idempotencyVerified:
-                        request.operation === "stop-serial-session" &&
-                        serialRequest.idempotencyCheck,
-                      survivingProcessCount: 0,
-                      survivingSocketCount: 0,
-                    }
-                  : null,
                 }
               : null,
           serialEvidence:
@@ -733,18 +732,15 @@ if (request.operation === "inject-scanner-code") {
   if (
     JSON.stringify(createScannerCodeDescriptor(protectedCode)) !==
     JSON.stringify({
-      scannerCodeDigest:
-        recordValue(
-          recordValue(request.serialSession).scannerInjection,
-        ).scannerCodeDigest,
-      scannerCodeByteLength:
-        recordValue(
-          recordValue(request.serialSession).scannerInjection,
-        ).scannerCodeByteLength,
-      scannerCodeSuffix:
-        recordValue(
-          recordValue(request.serialSession).scannerInjection,
-        ).scannerCodeSuffix,
+      scannerCodeDigest: recordValue(
+        recordValue(request.serialSession).scannerInjection,
+      ).scannerCodeDigest,
+      scannerCodeByteLength: recordValue(
+        recordValue(request.serialSession).scannerInjection,
+      ).scannerCodeByteLength,
+      scannerCodeSuffix: recordValue(
+        recordValue(request.serialSession).scannerInjection,
+      ).scannerCodeSuffix,
     })
   )
     throw new Error(
@@ -791,7 +787,8 @@ if (
     { mode: 0o600 },
   );
   const pidFile = process.env.VEM_VM_HOST_ADAPTER_PID_FILE;
-  if (!pidFile) throw new Error("cancel request has no in-flight adapter PID file");
+  if (!pidFile)
+    throw new Error("cancel request has no in-flight adapter PID file");
   const pid = Number.parseInt(readFileSync(pidFile, "utf8"), 10);
   if (!Number.isInteger(pid) || pid < 1)
     throw new Error("cancel request has no in-flight adapter operation");

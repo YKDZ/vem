@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import type { KeyObject } from "node:crypto";
+
 import { spawnSync } from "node:child_process";
 import {
   createHash,
@@ -10,7 +12,6 @@ import {
   sign,
   verify,
 } from "node:crypto";
-import type { KeyObject } from "node:crypto";
 import {
   mkdirSync,
   readFileSync,
@@ -197,7 +198,9 @@ function validateRunnerConformanceEvidence(
   const runnerEvidence = report.runnerEvidence as
     | Record<string, unknown>
     | undefined;
-  const receipt = runnerEvidence?.conformance as Record<string, unknown> | undefined;
+  const receipt = runnerEvidence?.conformance as
+    | Record<string, unknown>
+    | undefined;
   const signaturePrefix = "ed25519-signature:base64:";
   assertConformance(
     runnerEvidence?.publicKey === expectedRunnerPublicKey,
@@ -233,7 +236,9 @@ function validateRunnerOperationEvidence(
   report: Record<string, unknown>,
   expectedRunnerPublicKey: string,
 ): Record<string, unknown> {
-  const receipt = evidence.operations?.[stage] as Record<string, unknown> | undefined;
+  const receipt = evidence.operations?.[stage] as
+    | Record<string, unknown>
+    | undefined;
   assertConformance(
     receipt &&
       typeof receipt === "object" &&
@@ -376,7 +381,8 @@ export function validateSerialConformanceReport(
     vmIdentity: (report.observed as Record<string, unknown>).vmIdentity,
     targetBinding: (report.observed as Record<string, unknown>).targetBinding,
     baseIdentity: (report.observed as Record<string, unknown>).baseIdentity,
-    overlayIdentity: (report.observed as Record<string, unknown>).overlayIdentity,
+    overlayIdentity: (report.observed as Record<string, unknown>)
+      .overlayIdentity,
   });
   assertConformance(
     (start.adapter as Record<string, unknown>).identity ===
@@ -440,7 +446,9 @@ export function validateSerialConformanceReport(
     ),
     "serial conformance reports must bind one lifecycle target",
   );
-  const startSession = start.serialSession as Record<string, unknown> | undefined;
+  const startSession = start.serialSession as
+    | Record<string, unknown>
+    | undefined;
   assertConformance(
     startSession,
     "serial conformance start session is required",
@@ -478,7 +486,8 @@ export function validateSerialConformanceReport(
           unknown
         >
       ).scannerInjection as Record<string, unknown> | undefined
-    )?.operationNonce === (inject.request as Record<string, unknown>).operationNonce,
+    )?.operationNonce ===
+      (inject.request as Record<string, unknown>).operationNonce,
     "serial evidence collection must bind the validated scanner injection",
   );
   assertConformance(
@@ -490,10 +499,10 @@ export function validateSerialConformanceReport(
         >
       ).operationEvidence,
       {
-      runnerChallenge: (conformance.runnerEvidence as RunnerEvidence)
-        .runnerChallenge,
-      startReportDigest: startReceipt.reportDigest,
-      injectReportDigest: injectReceipt.reportDigest,
+        runnerChallenge: (conformance.runnerEvidence as RunnerEvidence)
+          .runnerChallenge,
+        startReportDigest: startReceipt.reportDigest,
+        injectReportDigest: injectReceipt.reportDigest,
       },
     ),
     "serial evidence collection must use runner-held start and inject commitments",
@@ -513,7 +522,8 @@ export function validateSerialConformanceReport(
   assertConformance(
     injectedSale?.length === 1 &&
       collectedSale?.length === 1 &&
-      injectedSale[0].saleCorrelationId === collectedSale[0].saleCorrelationId &&
+      injectedSale[0].saleCorrelationId ===
+        collectedSale[0].saleCorrelationId &&
       injectedSale[0].orderId === collectedSale[0].orderId &&
       injectedSale[0].paymentId === collectedSale[0].paymentId &&
       injectedSale[0].vendingCommandId === null &&
@@ -534,18 +544,14 @@ export function validateSerialConformanceReport(
   ).saleBindings as Array<Record<string, unknown>> | undefined;
   if (conformance.profile === "installed-kiosk-sale") {
     assertConformance(
-      (
-        conformance.customerUiSale as Record<string, unknown> | undefined
-      )?.orderId === collectedSale?.[0]?.orderId &&
-        (
-          conformance.customerUiSale as Record<string, unknown> | undefined
-        )?.paymentId === collectedSale?.[0]?.paymentId &&
-        (
-          conformance.customerUiSale as Record<string, unknown> | undefined
-        )?.orderNo &&
-        (
-          conformance.customerUiSale as Record<string, unknown> | undefined
-        )?.scenarioSha256 &&
+      (conformance.customerUiSale as Record<string, unknown> | undefined)
+        ?.orderId === collectedSale?.[0]?.orderId &&
+        (conformance.customerUiSale as Record<string, unknown> | undefined)
+          ?.paymentId === collectedSale?.[0]?.paymentId &&
+        (conformance.customerUiSale as Record<string, unknown> | undefined)
+          ?.orderNo &&
+        (conformance.customerUiSale as Record<string, unknown> | undefined)
+          ?.scenarioSha256 &&
         (injectSaleBindings?.length ?? 0) === 1 &&
         (collectSaleBindings?.length ?? 0) === 1 &&
         !Object.hasOwn(conformance, "failureMatrix"),
@@ -592,14 +598,16 @@ function validateFailureMatrix(
     failureEntries.map((entry) => [String(entry?.failureMode), entry]),
   );
   const faultOf = (entry: Record<string, unknown>): Record<string, unknown> =>
-    (
-      (entry.source as Record<string, unknown> | undefined)?.fault as
-        | Record<string, unknown>
-        | undefined
-    ) ?? {};
-  const faultRequest = (entry: Record<string, unknown>): Record<string, unknown> =>
+    ((entry.source as Record<string, unknown> | undefined)?.fault as
+      | Record<string, unknown>
+      | undefined) ?? {};
+  const faultRequest = (
+    entry: Record<string, unknown>,
+  ): Record<string, unknown> =>
     (faultOf(entry).request as Record<string, unknown> | undefined) ?? {};
-  const faultReport = (entry: Record<string, unknown>): Record<string, unknown> =>
+  const faultReport = (
+    entry: Record<string, unknown>,
+  ): Record<string, unknown> =>
     (faultOf(entry).report as Record<string, unknown> | undefined) ?? {};
   const serialSessionOf = (
     request: Record<string, unknown>,
@@ -635,9 +643,11 @@ function validateFailureMatrix(
         ? faultRequestRecord.operation === "start-serial-session" &&
           sameJson(serialSessionOf(faultRequestRecord).saleBindings, [])
         : faultRequestRecord.operation === operation) &&
-        (faultReportRecord.diagnostics as Array<Record<string, unknown>> | undefined)?.some(
-          (diagnostic) => diagnostic?.code === diagnosticCode,
-        ),
+        (
+          faultReportRecord.diagnostics as
+            | Array<Record<string, unknown>>
+            | undefined
+        )?.some((diagnostic) => diagnostic?.code === diagnosticCode),
       `serial conformance ${failureMode} source does not prove the declared fault`,
     );
   }
@@ -699,23 +709,29 @@ function validateFailureMatrix(
       `${failureMode} start`,
       expectedLifecycleIdentity,
     );
-  const fault = validateFailureSource(
+    const fault = validateFailureSource(
       (entry.source as Record<string, unknown> | undefined)?.fault,
       `${failureMode} fault session`,
       expectedLifecycleIdentity,
     );
-  const session = entry.startSerialSession as Record<string, unknown> | undefined;
-  const faultSession = fault.serialSession as Record<string, unknown> | undefined;
-  const failClosed = entry.daemonFailClosed as Record<string, unknown> | undefined;
-  if (failClosed === undefined) {
-    throw new Error(
-      `serial conformance ${failureMode} mapping failure is missing fail-closed evidence`,
-    );
-  }
-  const transactionEntry = failClosed.transactionEntry as
-    | Record<string, unknown>
-    | undefined;
-  const recovery = entry.recovery as Record<string, unknown> | undefined;
+    const session = entry.startSerialSession as
+      | Record<string, unknown>
+      | undefined;
+    const faultSession = fault.serialSession as
+      | Record<string, unknown>
+      | undefined;
+    const failClosed = entry.daemonFailClosed as
+      | Record<string, unknown>
+      | undefined;
+    if (failClosed === undefined) {
+      throw new Error(
+        `serial conformance ${failureMode} mapping failure is missing fail-closed evidence`,
+      );
+    }
+    const transactionEntry = failClosed.transactionEntry as
+      | Record<string, unknown>
+      | undefined;
+    const recovery = entry.recovery as Record<string, unknown> | undefined;
     assertConformance(
       !Object.hasOwn(entry, "orderId") &&
         !Object.hasOwn(entry, "paymentId") &&
@@ -726,9 +742,15 @@ function validateFailureMatrix(
         ) &&
         sameJson(serialSessionOf(faultRequest(entry)).saleBindings, []) &&
         sameJson(session, {
-          serialSessionId: (start.serialSession as Record<string, unknown> | undefined)?.serialSessionId,
-          startOperationReference: (start.serialSession as Record<string, unknown> | undefined)?.startOperationReference,
-          deviceMappingDigest: (start.serialSession as Record<string, unknown> | undefined)?.deviceMappingDigest,
+          serialSessionId: (
+            start.serialSession as Record<string, unknown> | undefined
+          )?.serialSessionId,
+          startOperationReference: (
+            start.serialSession as Record<string, unknown> | undefined
+          )?.startOperationReference,
+          deviceMappingDigest: (
+            start.serialSession as Record<string, unknown> | undefined
+          )?.deviceMappingDigest,
         }) &&
         [
           "serialSessionId",
@@ -746,9 +768,8 @@ function validateFailureMatrix(
             failClosed.adapterSession as Record<string, unknown> | undefined
           )?.faultStartedAt,
         }) &&
-        typeof (
-          failClosed.adapterSession as Record<string, unknown>
-        ).faultStartedAt === "string" &&
+        typeof (failClosed.adapterSession as Record<string, unknown>)
+          .faultStartedAt === "string" &&
         sameJson(failClosed.readinessBlockingCodes, [
           "LOWER_CONTROLLER_UNAVAILABLE",
         ]) &&
@@ -792,7 +813,9 @@ export function readFailureMatrixCommands(
     "dispense-failed": ["saleCompleteCommand"],
   };
   for (const [failureMode, keys] of Object.entries(required)) {
-    const entry = commands?.[failureMode] as Record<string, unknown> | undefined;
+    const entry = commands?.[failureMode] as
+      | Record<string, unknown>
+      | undefined;
     if (!entry || typeof entry !== "object")
       throw new Error(`${failureMode} failure matrix commands are required`);
     for (const key of keys)
@@ -826,9 +849,8 @@ function readFailureMatrixArtifactPaths(
     "missing-device",
   ];
   const reports = failureModes.map((failureMode) => {
-    const report = (
-      paths?.[failureMode] as Record<string, unknown> | undefined
-    )?.report;
+    const report = (paths?.[failureMode] as Record<string, unknown> | undefined)
+      ?.report;
     if (typeof report !== "string" || report.trim().length === 0)
       throw new Error(`${failureMode} failure matrix report path is required`);
     return report;
@@ -882,7 +904,8 @@ function validateFailureSource(
     vmIdentity: (report.observed as Record<string, unknown>).vmIdentity,
     targetBinding: (report.observed as Record<string, unknown>).targetBinding,
     baseIdentity: (report.observed as Record<string, unknown>).baseIdentity,
-    overlayIdentity: (report.observed as Record<string, unknown>).overlayIdentity,
+    overlayIdentity: (report.observed as Record<string, unknown>)
+      .overlayIdentity,
   };
   assertConformance(
     sameJson(lifecycleIdentity, expectedLifecycleIdentity),
@@ -1179,9 +1202,10 @@ async function main() {
       "start",
       start,
     );
-    session = (start as Record<string, unknown>).serialSession as
-      | Record<string, unknown>
-      | null;
+    session = (start as Record<string, unknown>).serialSession as Record<
+      string,
+      unknown
+    > | null;
     if (startOnly) {
       writeFileSync(
         out,
@@ -1327,9 +1351,8 @@ async function main() {
     if (
       !(
         (
-          (
-            repeatedStopReport.serialSession as Record<string, unknown>
-          ).simulatorCleanup as Record<string, unknown>
+          (repeatedStopReport.serialSession as Record<string, unknown>)
+            .simulatorCleanup as Record<string, unknown>
         ).idempotencyVerified === true
       )
     )
@@ -1592,14 +1615,12 @@ function runBlockedSaleCommand(
     env: {
       ...process.env,
       VEM_VM_HOST_FAULT_SESSION_ID: String(
-        (startReport.serialSession as Record<string, unknown>)
-          .serialSessionId,
+        (startReport.serialSession as Record<string, unknown>).serialSessionId,
       ),
-      VEM_VM_HOST_FAULT_START_OPERATION_REFERENCE:
-        String(
-          (startReport.serialSession as Record<string, unknown>)
-            .startOperationReference,
-        ),
+      VEM_VM_HOST_FAULT_START_OPERATION_REFERENCE: String(
+        (startReport.serialSession as Record<string, unknown>)
+          .startOperationReference,
+      ),
       VEM_VM_HOST_FAULT_DEVICE_MAPPING_DIGEST: String(
         (startReport.serialSession as Record<string, unknown>)
           .deviceMappingDigest,
@@ -1651,24 +1672,22 @@ function runRuntimeRecoveryCommand(
     result.status !== 0 ||
     output?.ok !== true ||
     (
-      (
-        report?.result as Record<string, unknown> | undefined
-      )?.runtimeReady as Record<string, unknown> | undefined
+      (report?.result as Record<string, unknown> | undefined)?.runtimeReady as
+        | Record<string, unknown>
+        | undefined
     )?.status !== "passed" ||
     (
-      (
-        report?.daemonRuntime as Record<string, unknown> | undefined
-      )?.healthz as Record<string, unknown> | undefined
+      (report?.daemonRuntime as Record<string, unknown> | undefined)
+        ?.healthz as Record<string, unknown> | undefined
     )?.hardwareOnline !== true ||
     (
-      (
-        report?.daemonRuntime as Record<string, unknown> | undefined
-      )?.healthz as Record<string, unknown> | undefined
+      (report?.daemonRuntime as Record<string, unknown> | undefined)
+        ?.healthz as Record<string, unknown> | undefined
     )?.scannerOnline !== true ||
     (
-      (
-        report?.daemonRuntime as Record<string, unknown> | undefined
-      )?.readyz as Record<string, unknown> | undefined
+      (report?.daemonRuntime as Record<string, unknown> | undefined)?.readyz as
+        | Record<string, unknown>
+        | undefined
     )?.ready !== true
   )
     throw new Error(
@@ -1703,12 +1722,10 @@ export function assertBlockedSaleEvidence({
     | Record<string, unknown>
     | undefined;
   const sale = flow?.sale as Record<string, unknown> | undefined;
-  const healthz = (
-    flow?.daemonIpc as Record<string, unknown> | undefined
-  )?.healthz as Record<string, unknown> | undefined;
-  const readyz = (
-    flow?.daemonIpc as Record<string, unknown> | undefined
-  )?.readyz as Record<string, unknown> | undefined;
+  const healthz = (flow?.daemonIpc as Record<string, unknown> | undefined)
+    ?.healthz as Record<string, unknown> | undefined;
+  const readyz = (flow?.daemonIpc as Record<string, unknown> | undefined)
+    ?.readyz as Record<string, unknown> | undefined;
   const mappingFault = flow?.hardwareMappingFault as
     | Record<string, unknown>
     | undefined;
@@ -1730,9 +1747,15 @@ export function assertBlockedSaleEvidence({
         paymentOption?: Record<string, unknown>;
       }
     | undefined;
-  const request = transactionEntry?.request as Record<string, unknown> | undefined;
-  const selectedItem = context?.selectedItem as Record<string, unknown> | undefined;
-  const paymentOption = context?.paymentOption as Record<string, unknown> | undefined;
+  const request = transactionEntry?.request as
+    | Record<string, unknown>
+    | undefined;
+  const selectedItem = context?.selectedItem as
+    | Record<string, unknown>
+    | undefined;
+  const paymentOption = context?.paymentOption as
+    | Record<string, unknown>
+    | undefined;
   const exactLowerControllerBlocker =
     Array.isArray(readinessBlockingCodes) &&
     readinessBlockingCodes.length === 1 &&
@@ -1935,9 +1958,8 @@ async function runProductionFailureMatrix(
         null,
       );
       const failClosed = runBlockedSaleCommand(
-        (
-          options.failureCommands?.[failureMode] as Record<string, unknown>
-        ).salePrepareCommand as string[],
+        (options.failureCommands?.[failureMode] as Record<string, unknown>)
+          .salePrepareCommand as string[],
         failureMode,
         options.runId,
         start,
@@ -1957,9 +1979,8 @@ async function runProductionFailureMatrix(
           options.successfulSaleBinding,
         );
         recovery = runRuntimeRecoveryCommand(
-          (
-            options.failureCommands?.[failureMode] as Record<string, unknown>
-          ).runtimeRecoveryCommand as string[],
+          (options.failureCommands?.[failureMode] as Record<string, unknown>)
+            .runtimeRecoveryCommand as string[],
           failureMode,
         );
       }
@@ -1971,7 +1992,10 @@ async function runProductionFailureMatrix(
           string,
           unknown
         >,
-        startReport: (failureCase?.startReport ?? {}) as Record<string, unknown>,
+        startReport: (failureCase?.startReport ?? {}) as Record<
+          string,
+          unknown
+        >,
         expectedDiagnosticCode: String(failureCase?.expectedDiagnosticCode),
         daemonFailClosed: (failureCase?.daemonFailClosed ?? {}) as Record<
           string,
@@ -1996,9 +2020,8 @@ async function runProductionFailureMatrix(
     });
     scannerSession = start.serialSession as Record<string, unknown>;
     pendingSale = runSaleCommand(
-      (
-        options.failureCommands?.["scanner-timeout"] as Record<string, unknown>
-      ).salePrepareCommand as string[],
+      (options.failureCommands?.["scanner-timeout"] as Record<string, unknown>)
+        .salePrepareCommand as string[],
       "prepare",
     );
     const scannerTimeoutRequest = requestFor({
@@ -2069,9 +2092,8 @@ async function runProductionFailureMatrix(
       scannerCode: options.scannerCode,
     });
     failedSale = runFailedDispenseCommand(
-      (
-        options.failureCommands?.["dispense-failed"] as Record<string, unknown>
-      ).saleCompleteCommand as string[],
+      (options.failureCommands?.["dispense-failed"] as Record<string, unknown>)
+        .saleCompleteCommand as string[],
     );
     if (
       failedSale.orderId !== pendingSale.orderId ||
@@ -2149,12 +2171,14 @@ function assertObservedDeviceFault(
     (report.cleanup as Record<string, unknown> | undefined)
       ?.overlayDisposition !== "active" ||
     (
-      (report.cleanup as Record<string, unknown> | undefined)
-        ?.observed as Record<string, unknown> | undefined
+      (report.cleanup as Record<string, unknown> | undefined)?.observed as
+        | Record<string, unknown>
+        | undefined
     )?.overlay !== "present" ||
     (
-      (report.cleanup as Record<string, unknown> | undefined)
-        ?.observed as Record<string, unknown> | undefined
+      (report.cleanup as Record<string, unknown> | undefined)?.observed as
+        | Record<string, unknown>
+        | undefined
     )?.runDirectory !== "present"
   )
     throw new Error(`${failureMode} unexpectedly cleaned the active overlay`);
@@ -2166,8 +2190,7 @@ function assertObservedDeviceFault(
           unknown
         >
       ).saleBindings,
-    ) !==
-    JSON.stringify(saleBinding ? [saleBinding] : [])
+    ) !== JSON.stringify(saleBinding ? [saleBinding] : [])
   )
     throw new Error(`${failureMode} did not bind the observed device fault`);
   return actualCode;

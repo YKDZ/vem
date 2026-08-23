@@ -211,8 +211,8 @@ test("publishes standalone Unicode code-point bounds with the shared corpus", ()
       schema as unknown as AjvSchema,
     );
     assert.equal(validate(valid.at(-1)), true);
-    for (const fixture of invalid.filter((fixture) =>
-      fixture.name?.includes("code-point-over-limit") ?? false,
+    for (const fixture of invalid.filter(
+      (fixture) => fixture.name?.includes("code-point-over-limit") ?? false,
     )) {
       assert.equal(validate(fixture.message), false, fixture.name ?? "fixture");
     }

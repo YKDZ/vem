@@ -88,7 +88,8 @@ async function fetchJson(
 ): Promise<unknown> {
   const response = await fetch(url, {
     ...options,
-    signal: (options.signal as AbortSignal | undefined) ??
+    signal:
+      (options.signal as AbortSignal | undefined) ??
       AbortSignal.timeout(30_000),
   });
   const payload = await response.json().catch(() => null);
@@ -130,10 +131,7 @@ function apiBase(guestInput: GuestInputRecord): string {
 function daemonBaseUrl(handoff: HandoffRecord): string {
   const daemon = handoff.daemon as JsonRecord | undefined;
   const ready = daemon?.ready as JsonRecord | undefined;
-  const healthzUrl = required(
-    ready?.healthzUrl,
-    "daemon healthzUrl",
-  );
+  const healthzUrl = required(ready?.healthzUrl, "daemon healthzUrl");
   if (!healthzUrl.endsWith("/healthz"))
     throw new Error("daemon healthzUrl must end with /healthz");
   return healthzUrl.slice(0, -"/healthz".length);
@@ -208,7 +206,9 @@ function control(
   path: string,
   body: JsonRecord = {},
 ): Promise<unknown> {
-  const hostControlPlane = guestInput.hostControlPlane as JsonRecord | undefined;
+  const hostControlPlane = guestInput.hostControlPlane as
+    | JsonRecord
+    | undefined;
   return fetchJson(
     `${required(hostControlPlane?.endpoint, "hostControlPlane.endpoint")}${path}`,
     {
@@ -414,12 +414,10 @@ function serialTailIdentity(evidence: JsonRecord | null | undefined): string {
     : [];
   return frames
     .slice(-8)
-    .map(
-      (frame) => {
-        const frameRecord = frame as JsonRecord;
-        return `${frameRecord.boundaryId ?? ""}:${frameRecord.rawFrameHex ?? ""}:${frameRecord.parsedOpcode ?? ""}`;
-      },
-    )
+    .map((frame) => {
+      const frameRecord = frame as JsonRecord;
+      return `${frameRecord.boundaryId ?? ""}:${frameRecord.rawFrameHex ?? ""}:${frameRecord.parsedOpcode ?? ""}`;
+    })
     .join("|");
 }
 
@@ -487,14 +485,12 @@ export function serialFramesSince(
         (frame) => serialFrameIdentity(frame) === before.lastIdentity,
       );
       if (lastIdentityIndex >= 0) return frames.slice(lastIdentityIndex + 1);
-      const lastCapturedAt = Date.parse(
-        String(before.lastCapturedAt ?? ""),
-      );
+      const lastCapturedAt = Date.parse(String(before.lastCapturedAt ?? ""));
       if (Number.isFinite(lastCapturedAt)) {
         const byTime = frames.filter((frame) => {
-        const capturedAt = Date.parse(
-          String((frame as JsonRecord)?.capturedAt ?? ""),
-        );
+          const capturedAt = Date.parse(
+            String((frame as JsonRecord)?.capturedAt ?? ""),
+          );
           return Number.isFinite(capturedAt) && capturedAt > lastCapturedAt;
         });
         if (byTime.length > 0) return byTime;
@@ -760,9 +756,7 @@ async function commandEnvironment({
     afterEvidence as JsonRecord,
     beforeCursor,
   );
-  const commandMqttPayload = commandMqtt?.payload as
-    | JsonRecord
-    | undefined;
+  const commandMqttPayload = commandMqtt?.payload as JsonRecord | undefined;
   const resultMqttPayload = resultMqtt?.payload as JsonRecord | undefined;
   return {
     action,
@@ -872,8 +866,7 @@ export async function collectAutomaticVentPrecedence({
   });
   const guardWindow = sameEdgeRecord.guardWindow as JsonRecord;
   if (guardWindow.completed !== true) {
-    const { protocolFrames, b3FrameCountDelta } =
-      guardWindow;
+    const { protocolFrames, b3FrameCountDelta } = guardWindow;
     const reason =
       (b3FrameCountDelta as number) > 0
         ? "delayed automatic B3 rebound"
@@ -1153,8 +1146,10 @@ export async function runEnvironmentControlGuest(options: {
           "sent" &&
         ((entry as JsonRecord).result as JsonRecord | undefined)?.status ===
           "succeeded" &&
-        (((entry as JsonRecord).result as JsonRecord | undefined)
-          ?.resultJson as JsonRecord | undefined)?.success === true,
+        (
+          ((entry as JsonRecord).result as JsonRecord | undefined)
+            ?.resultJson as JsonRecord | undefined
+        )?.success === true,
     );
     (report.boundaries as JsonRecord).mqtt = commands.every(
       (entry) =>
@@ -1176,8 +1171,10 @@ export async function runEnvironmentControlGuest(options: {
           ?.protocolFrameObserved &&
         ((entry as JsonRecord).result as JsonRecord | undefined)?.status ===
           "succeeded" &&
-        (((entry as JsonRecord).serial as JsonRecord | undefined)
-          ?.protocolFrame as JsonRecord | undefined)?.parsedOpcode ===
+        (
+          ((entry as JsonRecord).serial as JsonRecord | undefined)
+            ?.protocolFrame as JsonRecord | undefined
+        )?.parsedOpcode ===
           ((entry as JsonRecord).serial as JsonRecord | undefined)
             ?.expectedOpcode,
     );
@@ -1207,8 +1204,9 @@ export async function runEnvironmentControlGuest(options: {
         3,
       ) &&
       isReplacementSessionB3(
-        (adminVentRecord.serial as JsonRecord | undefined)
-          ?.protocolFrame as JsonRecord | undefined,
+        (adminVentRecord.serial as JsonRecord | undefined)?.protocolFrame as
+          | JsonRecord
+          | undefined,
         replacementSessionId,
         3,
       ) &&
@@ -1217,14 +1215,17 @@ export async function runEnvironmentControlGuest(options: {
       (sameEdgeAfterAdminRecord.b3FrameCountDelta as number) === 0 &&
       ((sameEdgeAfterAdminRecord.protocolFrames as unknown[]) ?? []).length ===
         0 &&
-      (sameEdgeAfterAdminRecord.guardWindow as JsonRecord)?.completed === true &&
+      (sameEdgeAfterAdminRecord.guardWindow as JsonRecord)?.completed ===
+        true &&
       Number(
         (sameEdgeAfterAdminRecord.guardWindow as JsonRecord)?.durationMs,
       ) >= ADMIN_OVERRIDE_GUARD_MS &&
-      ((sameEdgeAfterAdminRecord.guardWindow as JsonRecord)
-        .protocolFrames as unknown[]).length === 0 &&
-      (sameEdgeAfterAdminRecord.guardWindow as JsonRecord)
-        .b3FrameCountDelta === 0 &&
+      (
+        (sameEdgeAfterAdminRecord.guardWindow as JsonRecord)
+          .protocolFrames as unknown[]
+      ).length === 0 &&
+      (sameEdgeAfterAdminRecord.guardWindow as JsonRecord).b3FrameCountDelta ===
+        0 &&
       nextStableEdgeRecord.edgeId !== automaticArrivalRecord.edgeId &&
       nextStableEdgeRecord.outcome === "accepted" &&
       nextStableEdgeRecord.requestedSpeed === 0 &&
@@ -1234,7 +1235,8 @@ export async function runEnvironmentControlGuest(options: {
         0,
       ) &&
       (automaticArrivalRecord.b3FrameCountDelta as number) === 1 &&
-      ((automaticArrivalRecord.protocolFrames as unknown[]) ?? []).length === 1 &&
+      ((automaticArrivalRecord.protocolFrames as unknown[]) ?? []).length ===
+        1 &&
       (automaticArrivalRecord.protocolFrames as unknown[])[0] === "B3" &&
       (nextStableEdgeRecord.b3FrameCountDelta as number) === 1 &&
       ((nextStableEdgeRecord.protocolFrames as unknown[]) ?? []).length === 1 &&

@@ -108,10 +108,7 @@ function sameBinding(
   ].every((name) => left?.[name] === right?.[name]);
 }
 
-function bindCheckpoint(
-  checkpoint: unknown,
-  binding: SaleBinding,
-): JsonRecord {
+function bindCheckpoint(checkpoint: unknown, binding: SaleBinding): JsonRecord {
   return {
     ...(checkpoint as JsonRecord),
     binding: { ...binding },
@@ -462,9 +459,10 @@ export async function startDelayedPickupLiveProductionTrack(
     dependencies.stopAudioCapture ?? options.stopAudioCapture;
   const cancelAudioCapture =
     dependencies.cancelAudioCapture ?? options.cancelAudioCapture;
-  const inspectRuntimeNow: (options: JsonRecord) => Promise<JsonRecord> = (
-    dependencies.inspectRuntime ?? inspectWindowsMachineUiRuntime
-  ) as (options: JsonRecord) => Promise<JsonRecord>;
+  const inspectRuntimeNow: (options: JsonRecord) => Promise<JsonRecord> =
+    (dependencies.inspectRuntime ?? inspectWindowsMachineUiRuntime) as (
+      options: JsonRecord,
+    ) => Promise<JsonRecord>;
   const inspectRuntime = (): Promise<JsonRecord> =>
     inspectRuntimeNow({
       remote: options.remote.remote as string | undefined,
@@ -546,10 +544,10 @@ export async function startDelayedPickupLiveProductionTrack(
     binding = activeBinding;
     f1Promise = settleF1Snapshots(activeBinding).then(
       ({ daemon, platform }) => {
-      daemonCheckpoints.push(bindCheckpoint(daemon, activeBinding));
-      f1Platform = platform;
-      writeJson(paths.platformF1, platform);
-      return { daemon, platform };
+        daemonCheckpoints.push(bindCheckpoint(daemon, activeBinding));
+        f1Platform = platform;
+        writeJson(paths.platformF1, platform);
+        return { daemon, platform };
       },
     );
     return f1Promise;
@@ -617,12 +615,8 @@ export async function startDelayedPickupLiveProductionTrack(
       evidenceDirectory,
       outPath: paths.audioStart,
     });
-    const captureSession = audioStart?.captureSession as
-      | JsonRecord
-      | undefined;
-    if (
-      !Number.isFinite(Date.parse(String(captureSession?.startedAt ?? "")))
-    )
+    const captureSession = audioStart?.captureSession as JsonRecord | undefined;
+    if (!Number.isFinite(Date.parse(String(captureSession?.startedAt ?? ""))))
       throw new Error(
         "host default-audio capture did not report a valid start timestamp",
       );

@@ -78,9 +78,8 @@ test("builds one canonical acceptance release manifest from existing runtime ide
   );
   assert.equal(recordValue(value.vem).sourceCommit, "1".repeat(40));
   assert.equal(
-    recordValue(
-      recordValue(recordValue(value.backend).serviceApi).runtime,
-    ).health,
+    recordValue(recordValue(recordValue(value.backend).serviceApi).runtime)
+      .health,
     "ready",
   );
   assert.equal(
@@ -120,8 +119,9 @@ test("rejects a pass-two release identity that drifts from pass one", () => {
   recordValue(passB.runtimeArtifacts).reusedFromPass1 = true;
   const bound = bindAcceptanceReleaseManifest(passA, passB);
   assert.match(String(bound.sha256), /^[a-f0-9]{64}$/);
-  recordValue(recordValue(passB.visionCore).runtimeArchive).sha256 =
-    "0".repeat(64);
+  recordValue(recordValue(passB.visionCore).runtimeArchive).sha256 = "0".repeat(
+    64,
+  );
   assert.throws(
     () => bindAcceptanceReleaseManifest(passA, passB),
     /pass 2 drifted from pass 1/,

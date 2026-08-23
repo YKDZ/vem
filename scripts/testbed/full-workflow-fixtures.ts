@@ -62,16 +62,12 @@ function fixtureForSlot(
       fixture.inventoryId,
       `fixture ${fixture.slotId} inventoryId`,
     ),
-    onHandQty: Number.isInteger(fixture.onHandQty)
-      ? fixture.onHandQty
-      : null,
+    onHandQty: Number.isInteger(fixture.onHandQty) ? fixture.onHandQty : null,
     sku: required(fixture.sku, `fixture ${fixture.slotId} sku`),
   };
 }
 
-export function allocateFullWorkflowFixtures(
-  slots: unknown,
-): JsonRecord {
+export function allocateFullWorkflowFixtures(slots: unknown): JsonRecord {
   if (!Array.isArray(slots))
     throw new Error("seeded fixture slots are required");
   const allocation = Object.fromEntries(
