@@ -46,6 +46,12 @@ export const REQUIRED_TRANSACTION_AUDIO_PREFERENCES = Object.freeze({
 });
 
 type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
 type HandoffRecord = JsonRecord;
 type GuestInputRecord = JsonRecord;
 type ParsedGuestFullArgs = {
@@ -1062,7 +1068,7 @@ async function runDelayedPickupGuestFull(
       [
         options.fixtureKey
           ? catalogProductSelectorForFixture(
-              guestInput.fixtureAllocation,
+              recordValue(guestInput.fixtureAllocation),
               options.fixtureKey,
             )
           : '[data-test="catalog-product"]',
@@ -1313,15 +1319,15 @@ async function runDelayedPickupGuestFull(
     const livePaths = liveEvidenceRecord.paths as JsonRecord;
     const artifacts = collectDelayedPickupProductionEvidence({
       installedSaleReportPath: installedSalePath,
-      machineEvidencePath: livePaths.machine,
-      daemonEvidencePath: livePaths.daemon,
-      platformF1Path: livePaths.platformF1,
-      audioStartReportPath: livePaths.audioStart,
-      audioStopReportPath: livePaths.audioStop,
+      machineEvidencePath: String(livePaths.machine),
+      daemonEvidencePath: String(livePaths.daemon),
+      platformF1Path: String(livePaths.platformF1),
+      audioStartReportPath: String(livePaths.audioStart),
+      audioStopReportPath: String(livePaths.audioStop),
     });
     const acceptance = verifyDelayedPickupNativeAudioProductionEvidence({
       artifacts,
-      audioEvidenceDirectory: liveEvidenceRecord.evidenceDirectory,
+      audioEvidenceDirectory: String(liveEvidenceRecord.evidenceDirectory),
     });
     if (acceptance.result !== "passed") {
       throw new Error(
