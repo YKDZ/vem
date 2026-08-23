@@ -28,19 +28,23 @@ const MAINTENANCE_ENTRY_SELECTOR = "[data-test='maintenance-entry-header']";
 const MAINTENANCE_RETURN_SELECTOR = "[data-test='maintenance-return-catalog']";
 const STOCK_FIXTURE_CATEGORY_KEY = "socks";
 
-function required(value, label) {
+type JsonRecord = Record<string, unknown>;
+type GuestInputRecord = JsonRecord;
+type HandoffRecord = JsonRecord;
+
+function required(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${label} is required`);
   }
   return value.trim();
 }
 
-function option(args, name) {
+function option(args: string[], name: string): string {
   const index = args.indexOf(`--${name}`);
   return required(index === -1 ? undefined : args[index + 1], `--${name}`);
 }
 
-function localPath(value) {
+function localPath(value: unknown): string {
   const path = required(value, "Windows path");
   return process.platform === "win32"
     ? path
@@ -49,7 +53,13 @@ function localPath(value) {
       );
 }
 
-export function parseStockMaintenanceGuestArgs(args) {
+export function parseStockMaintenanceGuestArgs(args: string[]): {
+  mode: "full";
+  guestInputPath: string;
+  handoffPath: string;
+  outPath: string;
+  fixtureKey: string;
+} {
   if (option(args, "mode") !== "full") throw new Error("--mode must be full");
   return {
     mode: "full",
@@ -62,17 +72,17 @@ export function parseStockMaintenanceGuestArgs(args) {
   };
 }
 
-function readJson(path) {
-  return JSON.parse(readFileSync(localPath(path), "utf8"));
+function readJson(path: string): JsonRecord {
+  return JSON.parse(readFileSync(localPath(path), "utf8")) as JsonRecord;
 }
 
-function writeJson(path, value) {
+function writeJson(path: string, value: unknown): void {
   const target = localPath(path);
   mkdirSync(dirname(target), { recursive: true });
   writeFileSync(target, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
-export function parseDaemonPayload(payload) {
+export function parseDaemonPayload(payload: unknown): JsonRecord {
   if (
     !payload ||
     typeof payload !== "object" ||
@@ -82,26 +92,33 @@ export function parseDaemonPayload(payload) {
   ) {
     throw new Error("daemon response must be bare JSON");
   }
-  return payload;
+  return payload as JsonRecord;
 }
 
-export function parseServiceApiEnvelope(payload) {
+export function parseServiceApiEnvelope(payload: unknown): unknown {
   if (
     !payload ||
     typeof payload !== "object" ||
     Array.isArray(payload) ||
-    payload.code !== 0 ||
+    (payload as JsonRecord).code !== 0 ||
     !Object.hasOwn(payload, "data")
   ) {
     throw new Error("Service API response must be a success envelope");
   }
-  return payload.data;
+  return (payload as JsonRecord).data;
 }
 
-async function request(url, { parse, ...options } = {}) {
+async function request(
+  url: string,
+  {
+    parse,
+    ...options
+  }: JsonRecord & { parse?: (payload: unknown) => unknown } = {},
+): Promise<unknown> {
   const response = await fetch(url, {
     ...options,
-    signal: options.signal ?? AbortSignal.timeout(TIMEOUT_MS),
+    signal: (options.signal as AbortSignal | undefined) ??
+      AbortSignal.timeout(TIMEOUT_MS),
   });
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
@@ -109,11 +126,15 @@ async function request(url, { parse, ...options } = {}) {
       `${options.method ?? "GET"} ${url} returned HTTP ${response.status}: ${JSON.stringify(payload)}`,
     );
   }
-  return parse(payload);
+  return parse ? parse(payload) : payload;
 }
 
-async function hostControlRequest(input, path, body = {}) {
-  const controlPlane = input?.hostControlPlane;
+async function hostControlRequest(
+  input: GuestInputRecord,
+  path: string,
+  body: JsonRecord = {},
+): Promise<unknown> {
+  const controlPlane = input?.hostControlPlane as JsonRecord | undefined;
   const endpoint = required(
     controlPlane?.endpoint,
     "hostControlPlane endpoint",
@@ -129,7 +150,7 @@ async function hostControlRequest(input, path, body = {}) {
     signal: AbortSignal.timeout(TIMEOUT_MS),
   });
   const payload = await response.json().catch(() => null);
-  if (!response.ok || payload?.ok !== true) {
+  if (!response.ok || (payload as JsonRecord | null)?.ok !== true) {
     throw new Error(
       `host control ${path} returned HTTP ${response.status}: ${JSON.stringify(payload)}`,
     );
@@ -137,13 +158,17 @@ async function hostControlRequest(input, path, body = {}) {
   return payload;
 }
 
-async function openPaymentCreateGate(input) {
+async function openPaymentCreateGate(
+  input: GuestInputRecord,
+): Promise<unknown> {
   return await hostControlRequest(input, "/v1/mock-payment-create-gate/open");
 }
 
-function daemonBase(handoff) {
+function daemonBase(handoff: HandoffRecord): string {
+  const daemon = handoff?.daemon as JsonRecord | undefined;
+  const ready = daemon?.ready as JsonRecord | undefined;
   const healthzUrl = required(
-    handoff?.daemon?.ready?.healthzUrl,
+    ready?.healthzUrl,
     "daemon healthzUrl",
   );
   if (!healthzUrl.endsWith("/healthz")) {
@@ -152,21 +177,29 @@ function daemonBase(handoff) {
   return healthzUrl.slice(0, -"/healthz".length);
 }
 
-function daemon(handoff, path, body) {
+function daemon(
+  handoff: HandoffRecord,
+  path: string,
+  body?: unknown,
+): Promise<unknown> {
+  const daemon = handoff?.daemon as JsonRecord | undefined;
+  const ready = daemon?.ready as JsonRecord | undefined;
   return request(`${daemonBase(handoff)}${path}`, {
     parse: parseDaemonPayload,
     method: body === undefined ? "GET" : "POST",
     headers: {
-      authorization: `Bearer ${required(handoff?.daemon?.ready?.ipcToken, "daemon ipcToken")}`,
+      authorization: `Bearer ${required(ready?.ipcToken, "daemon ipcToken")}`,
       "content-type": "application/json",
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
 }
 
-async function adminToken(input) {
+async function adminToken(input: GuestInputRecord): Promise<string> {
+  const bootstrap = input?.runtimeBootstrap as JsonRecord | undefined;
+  const serviceApi = input?.serviceApi as JsonRecord | undefined;
   const base = required(
-    input?.runtimeBootstrap?.provisioningApiBaseUrl,
+    bootstrap?.provisioningApiBaseUrl,
     "runtimeBootstrap.provisioningApiBaseUrl",
   ).replace(/\/+$/, "");
   const login = await request(`${base}/auth/login`, {
@@ -175,21 +208,29 @@ async function adminToken(input) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       username: required(
-        input?.serviceApi?.adminUsername,
+        serviceApi?.adminUsername,
         "serviceApi.adminUsername",
       ),
       password: required(
-        input?.serviceApi?.adminPassword,
+        serviceApi?.adminPassword,
         "serviceApi.adminPassword",
       ),
     }),
   });
-  return required(login?.accessToken, "admin access token");
+  return required(
+    (login as JsonRecord | undefined)?.accessToken,
+    "admin access token",
+  );
 }
 
-async function inventoryMovements(input, token, inventoryId) {
+async function inventoryMovements(
+  input: GuestInputRecord,
+  token: string,
+  inventoryId: string,
+): Promise<unknown> {
+  const bootstrap = input?.runtimeBootstrap as JsonRecord | undefined;
   const base = required(
-    input?.runtimeBootstrap?.provisioningApiBaseUrl,
+    bootstrap?.provisioningApiBaseUrl,
     "runtimeBootstrap.provisioningApiBaseUrl",
   ).replace(/\/+$/, "");
   return await request(
@@ -201,8 +242,9 @@ async function inventoryMovements(input, token, inventoryId) {
   );
 }
 
-function movementCursor(page, inventoryId) {
-  const baselineItemIds = (page?.items ?? []).map((item) => item?.id);
+function movementCursor(page: JsonRecord | null | undefined, inventoryId: string): JsonRecord {
+  const items = (page?.items ?? []) as unknown[];
+  const baselineItemIds = items.map((item) => (item as JsonRecord)?.id);
   if (
     baselineItemIds.some((id) => typeof id !== "string" || id === "") ||
     new Set(baselineItemIds).size !== baselineItemIds.length
@@ -214,38 +256,58 @@ function movementCursor(page, inventoryId) {
   return { inventoryId, capturedAt: new Date().toISOString(), baselineItemIds };
 }
 
-function movementDelta(page, cursor) {
-  return (page?.items ?? []).filter(
-    (item) => !cursor.baselineItemIds.includes(item?.id),
+function movementDelta(
+  page: JsonRecord | null | undefined,
+  cursor: JsonRecord,
+): unknown[] {
+  const baselineItemIds = cursor.baselineItemIds as unknown[];
+  return ((page?.items ?? []) as unknown[]).filter(
+    (item) => !baselineItemIds.includes((item as JsonRecord)?.id),
   );
 }
 
-async function inventory(input, token, inventoryId) {
+async function inventory(
+  input: GuestInputRecord,
+  token: string,
+  inventoryId: string,
+): Promise<JsonRecord> {
+  const bootstrap = input?.runtimeBootstrap as JsonRecord | undefined;
   const base = required(
-    input?.runtimeBootstrap?.provisioningApiBaseUrl,
+    bootstrap?.provisioningApiBaseUrl,
     "runtimeBootstrap.provisioningApiBaseUrl",
   ).replace(/\/+$/, "");
   const page = await request(`${base}/inventories?page=1&pageSize=100`, {
     parse: parseServiceApiEnvelope,
     headers: { authorization: `Bearer ${token}` },
   });
-  const entry = (page?.items ?? []).find((item) => item?.id === inventoryId);
+  const pageRecord = page as JsonRecord | null;
+  const items = (pageRecord?.items ?? []) as unknown[];
+  const entry = items.find(
+    (item) => (item as JsonRecord)?.id === inventoryId,
+  );
   if (!entry)
     throw new Error(
       `fixture inventory ${inventoryId} is absent from Admin API`,
     );
-  return entry;
+  return entry as JsonRecord;
 }
 
-function fixtureIdentity(saleView, fixture) {
+function fixtureIdentity(
+  saleView: JsonRecord | null | undefined,
+  fixture: JsonRecord | null | undefined,
+): JsonRecord {
   const slotId = required(fixture?.slotId, "stock fixture slotId");
   const rowNo = fixture?.rowNo;
   const cellNo = fixture?.cellNo;
   const sku = required(fixture?.sku, "stock fixture sku");
-  const item = (saleView?.items ?? []).find(
+  const saleViewRecord = saleView as JsonRecord | null;
+  const items = (saleViewRecord?.items ?? []) as unknown[];
+  const item = items.find(
     (entry) =>
-      entry?.rowNo === rowNo && entry?.cellNo === cellNo && entry?.sku === sku,
-  );
+      (entry as JsonRecord)?.rowNo === rowNo &&
+      (entry as JsonRecord)?.cellNo === cellNo &&
+      (entry as JsonRecord)?.sku === sku,
+  ) as JsonRecord | undefined;
   if (!item?.slotId || item.slotId !== slotId || !item?.inventoryId) {
     throw new Error(
       `fixture ${sku} at R${rowNo}C${cellNo} is absent from the daemon sale view`,
@@ -260,13 +322,17 @@ function fixtureIdentity(saleView, fixture) {
   };
 }
 
-function stockFact(saleView, identity) {
-  const item = (saleView?.items ?? []).find(
+function stockFact(
+  saleView: JsonRecord | null | undefined,
+  identity: JsonRecord,
+): JsonRecord {
+  const items = ((saleView as JsonRecord | null)?.items ?? []) as unknown[];
+  const item = items.find(
     (entry) =>
-      entry?.slotId === identity.slotId &&
-      entry?.inventoryId === identity.inventoryId &&
-      entry?.sku === identity.sku,
-  );
+      (entry as JsonRecord)?.slotId === identity.slotId &&
+      (entry as JsonRecord)?.inventoryId === identity.inventoryId &&
+      (entry as JsonRecord)?.sku === identity.sku,
+  ) as JsonRecord | undefined;
   if (!item)
     throw new Error("fixture identity no longer resolves in daemon sale view");
   return {
@@ -276,9 +342,13 @@ function stockFact(saleView, identity) {
   };
 }
 
-async function waitFor(label, read, accepts) {
+async function waitFor<T>(
+  label: string,
+  read: () => Promise<T>,
+  accepts: (value: T) => boolean,
+): Promise<T> {
   const deadline = Date.now() + TIMEOUT_MS;
-  let last = null;
+  let last: T | null = null;
   do {
     last = await read();
     if (accepts(last)) return last;
@@ -289,7 +359,9 @@ async function waitFor(label, read, accepts) {
   );
 }
 
-function screenshotSink(outPath) {
+function screenshotSink(outPath: string): (
+  input: { bytes: Uint8Array; label: string },
+) => Promise<{ ref: string }> {
   const root = join(dirname(localPath(outPath)), "stock-maintenance-artifacts");
   return async ({ bytes, label }) => {
     mkdirSync(root, { recursive: true });
@@ -299,11 +371,14 @@ function screenshotSink(outPath) {
   };
 }
 
-async function connectUi(handoff) {
-  const endpoint = required(handoff?.cdp?.endpoint, "handoff cdp endpoint");
+async function connectUi(
+  handoff: HandoffRecord,
+): Promise<InstanceType<typeof CdpClient>> {
+  const cdp = handoff?.cdp as JsonRecord | undefined;
+  const endpoint = required(cdp?.endpoint, "handoff cdp endpoint");
   const target = await discoverMachineUiTarget({
     endpoint,
-    expectedTargetId: required(handoff?.cdp?.targetId, "handoff cdp targetId"),
+    expectedTargetId: required(cdp?.targetId, "handoff cdp targetId"),
   });
   const client = new CdpClient(
     rewriteWebSocketDebuggerUrl(target.webSocketDebuggerUrl, endpoint),
@@ -313,7 +388,9 @@ async function connectUi(handoff) {
   return client;
 }
 
-async function openStockMaintenance(client) {
+async function openStockMaintenance(
+  client: InstanceType<typeof CdpClient>,
+): Promise<void> {
   await waitForRoute(client, "#/catalog", {
     timeoutMs: TIMEOUT_MS,
     pollMs: POLL_MS,
@@ -361,7 +438,9 @@ async function openStockMaintenance(client) {
   );
 }
 
-async function returnToCatalogFromMaintenance(client) {
+async function returnToCatalogFromMaintenance(
+  client: InstanceType<typeof CdpClient>,
+): Promise<void> {
   await activateVisibleSelector(client, MAINTENANCE_RETURN_SELECTOR, {
     kind: "touch",
     timeoutMs: TIMEOUT_MS,
@@ -374,7 +453,9 @@ async function returnToCatalogFromMaintenance(client) {
   });
 }
 
-async function selectStockFixtureCategory(client) {
+async function selectStockFixtureCategory(
+  client: InstanceType<typeof CdpClient>,
+): Promise<void> {
   await activateVisibleSelector(
     client,
     `[data-test="catalog-category"][data-category-key="${STOCK_FIXTURE_CATEGORY_KEY}"]:not(:disabled)`,
@@ -386,15 +467,17 @@ async function selectStockFixtureCategory(client) {
   );
 }
 
-async function returnCustomerResultToCatalog(client) {
-  const state = await evaluateExpression(
+async function returnCustomerResultToCatalog(
+  client: InstanceType<typeof CdpClient>,
+): Promise<unknown> {
+  const state = (await evaluateExpression(
     client,
     `(() => ({
       route: location.hash,
       catalogVisible: Boolean(document.querySelector("[data-test='catalog-page']")),
       returnVisible: Boolean(document.querySelector("[data-test='result-return-catalog']")?.getClientRects().length)
     }))()`,
-  );
+  )) as JsonRecord | null;
   if (state?.route === "#/catalog" && state.catalogVisible === true)
     return state;
   if (!state?.returnVisible) {
@@ -413,20 +496,27 @@ async function returnCustomerResultToCatalog(client) {
   });
 }
 
-async function primeCatalogTouchSession(client) {
+async function primeCatalogTouchSession(
+  client: InstanceType<typeof CdpClient>,
+): Promise<unknown> {
   await waitForRoute(client, "#/catalog", {
     timeoutMs: TIMEOUT_MS,
     pollMs: POLL_MS,
     forbiddenRoutes: [],
   });
-  const traceSnapshot = await readMachineRuntimeTraceSnapshot(client);
+  const traceSnapshot = (await readMachineRuntimeTraceSnapshot(client)) as
+    | JsonRecord
+    | null;
   const entries = Array.isArray(traceSnapshot?.entries)
-    ? traceSnapshot.entries
+    ? (traceSnapshot.entries as unknown[])
     : [];
   const last = entries.at(-1);
+  const lastRecord = last as JsonRecord | undefined;
   const boundary = {
-    id: Number(last?.id ?? 0),
-    touchscreenSessionActive: Boolean(last?.touchscreenSessionActive),
+    id: Number(lastRecord?.id ?? 0),
+    touchscreenSessionActive: Boolean(
+      lastRecord?.touchscreenSessionActive,
+    ),
   };
   await activateVisibleSelector(client, "[data-test='catalog-page']", {
     kind: "touch",
@@ -436,18 +526,24 @@ async function primeCatalogTouchSession(client) {
   return await waitFor(
     "catalog touch session before stock sale",
     async () => {
-      const snapshot = await readMachineRuntimeTraceSnapshot(client);
+      const snapshot = (await readMachineRuntimeTraceSnapshot(client)) as
+        | JsonRecord
+        | null;
       const currentEntries = Array.isArray(snapshot?.entries)
-        ? snapshot.entries
+        ? (snapshot.entries as unknown[])
         : [];
       const touch = currentEntries.findLast(
-        (entry) =>
-          Number(entry?.id ?? 0) > Number(boundary?.id ?? 0) &&
-          entry?.type === "navigation" &&
-          entry?.intentType === "customer.touch" &&
-          entry?.decision === "accepted" &&
-          entry?.reasonCode === "touchscreen_session_renewed",
-      );
+        (entry) => {
+          const entryRecord = entry as JsonRecord;
+          return (
+            Number(entryRecord?.id ?? 0) > Number(boundary?.id ?? 0) &&
+            entryRecord?.type === "navigation" &&
+            entryRecord?.intentType === "customer.touch" &&
+            entryRecord?.decision === "accepted" &&
+            entryRecord?.reasonCode === "touchscreen_session_renewed"
+          );
+        },
+      ) as JsonRecord | undefined;
       return touch
         ? {
             id: touch.id,
@@ -455,11 +551,16 @@ async function primeCatalogTouchSession(client) {
           }
         : null;
     },
-    (touch) => touch?.touchscreenSessionActive === true,
+    (touch) =>
+      (touch as JsonRecord | null)?.touchscreenSessionActive === true,
   );
 }
 
-async function observeProductDetailStock(client, identity, expectedQuantity) {
+async function observeProductDetailStock(
+  client: InstanceType<typeof CdpClient>,
+  identity: JsonRecord,
+  expectedQuantity: number,
+): Promise<unknown> {
   await selectStockFixtureCategory(client);
   const productSelector = `[data-test='catalog-product'][data-catalog-key='${identity.catalogKey}']`;
   await waitFor(
@@ -497,11 +598,15 @@ async function observeProductDetailStock(client, identity, expectedQuantity) {
           };
         })()`,
       ),
-    (value) =>
-      value?.catalogKey === identity.catalogKey &&
-      value.saleableStock === expectedQuantity &&
-      typeof value.text === "string" &&
-      value.text.includes(String(expectedQuantity)),
+    (value) => {
+      const valueRecord = value as JsonRecord;
+      return (
+        valueRecord?.catalogKey === identity.catalogKey &&
+        valueRecord.saleableStock === expectedQuantity &&
+        typeof valueRecord.text === "string" &&
+        String(valueRecord.text).includes(String(expectedQuantity))
+      );
+    },
   );
   await activateVisibleSelector(
     client,
@@ -519,7 +624,15 @@ async function observeProductDetailStock(client, identity, expectedQuantity) {
   return detail;
 }
 
-async function captureStockScreenshot(client, sink, label, route, identity) {
+async function captureStockScreenshot(
+  client: InstanceType<typeof CdpClient>,
+  sink: (
+    input: { bytes: Uint8Array; label: string },
+  ) => Promise<{ ref: string }>,
+  label: string,
+  route: unknown,
+  identity: JsonRecord,
+): Promise<JsonRecord> {
   return {
     ...(await captureScreenshot(client, {
       label,
@@ -532,7 +645,10 @@ async function captureStockScreenshot(client, sink, label, route, identity) {
   };
 }
 
-async function enterRoutineRefill(client, identity) {
+async function enterRoutineRefill(
+  client: InstanceType<typeof CdpClient>,
+  identity: JsonRecord,
+): Promise<void> {
   const slotSelector = `[data-test='stock-maintenance-slot'][data-slot-id='${identity.slotId}'][data-sku='${identity.sku}']`;
   const additionSelector = `[data-test='stock-maintenance-addition'][data-slot-id='${identity.slotId}']`;
   await waitFor(
@@ -555,7 +671,8 @@ async function enterRoutineRefill(client, identity) {
       return { value: element.value, disabled: element.disabled };
     })()`,
   );
-  if (!inputSet || inputSet.disabled) {
+  const inputSetRecord = inputSet as JsonRecord | null;
+  if (!inputSetRecord || inputSetRecord.disabled) {
     throw new Error(
       `stock maintenance refill input is unavailable: ${JSON.stringify(inputSet)}`,
     );
@@ -599,8 +716,16 @@ async function enterRoutineRefill(client, identity) {
   );
 }
 
-function runSale(options, outPath) {
-  return new Promise((resolvePromise, reject) => {
+function runSale(
+  options: {
+    guestInputPath: string;
+    handoffPath: string;
+    outPath: string;
+    fixtureKey: string;
+  },
+  outPath: string,
+): Promise<JsonRecord> {
+  return new Promise<JsonRecord>((resolvePromise, reject) => {
     const child = spawn(
       process.execPath,
       [
@@ -627,18 +752,31 @@ function runSale(options, outPath) {
     child.once("error", reject);
     child.once("close", (code) => {
       if (code === 0) return resolvePromise(readJson(outPath));
-      const report = existsSync(outPath) ? readJson(outPath) : null;
+      const report: JsonRecord | null = existsSync(outPath)
+        ? readJson(outPath)
+        : null;
       const reportError =
-        report?.error?.message ??
-        report?.summary?.error ??
-        report?.validator?.reason ??
+        (report?.error as JsonRecord | undefined)?.message ??
+        (report?.summary as JsonRecord | undefined)?.error ??
+        (report?.validator as JsonRecord | undefined)?.reason ??
         null;
       const reportSummary = report
         ? {
             ok: report.ok,
-            stage: report.stage ?? report.summary?.stage ?? null,
-            route: report.ui?.afterF2?.route ?? report.summary?.route ?? null,
-            orderNo: report.summary?.orderNo ?? report.order?.orderNo ?? null,
+            stage:
+              report.stage ??
+              (report.summary as JsonRecord | undefined)?.stage ??
+              null,
+            route:
+              ((report.ui as JsonRecord | undefined)?.afterF2 as
+                | JsonRecord
+                | undefined)?.route ??
+              (report.summary as JsonRecord | undefined)?.route ??
+              null,
+            orderNo:
+              (report.summary as JsonRecord | undefined)?.orderNo ??
+              (report.order as JsonRecord | undefined)?.orderNo ??
+              null,
             error:
               typeof reportError === "string"
                 ? reportError.slice(0, 2_048)
@@ -654,42 +792,56 @@ function runSale(options, outPath) {
   });
 }
 
-async function replaceSaleHandoff(input, handoff, options) {
+async function replaceSaleHandoff(
+  input: GuestInputRecord,
+  handoff: HandoffRecord,
+  options: { handoffPath: string },
+): Promise<JsonRecord> {
   const previousControlPlaneSessionId = required(
-    handoff?.commissioningSerialSession?.sessionId,
+    (handoff?.commissioningSerialSession as JsonRecord | undefined)?.sessionId,
     "handoff commissioning serial session id",
   );
-  const replacement = await replaceSerialSessionAndUpdateHandoff({
+  const replaced = (await replaceSerialSessionAndUpdateHandoff({
     guestInput: input,
     handoff,
     handoffPath: options.handoffPath,
     sessionId: previousControlPlaneSessionId,
     control: hostControlRequest,
-  });
+  })) as JsonRecord;
+  const replacement = replaced.replacement as JsonRecord;
   return {
     previousControlPlaneSessionId,
     replacementControlPlaneSessionId: required(
-      replacement?.replacement?.sessionId,
+      (replacement?.replacement as JsonRecord | undefined)?.sessionId,
       "replacement serial session id",
     ),
   };
 }
 
-export function saleEvidence(sale, runId, handoff) {
-  const summary = sale?.summary ?? {};
-  const cleanup = Array.isArray(sale?.cleanup) ? sale.cleanup : [];
+export function saleEvidence(
+  sale: JsonRecord | null | undefined,
+  runId: string,
+  handoff: JsonRecord,
+): JsonRecord {
+  const summary = (sale?.summary ?? {}) as JsonRecord;
+  const cleanup = Array.isArray(sale?.cleanup)
+    ? (sale.cleanup as unknown[])
+    : [];
   const reopenedPaymentGate = cleanup.find(
     (step) =>
-      step?.label === "reopen payment create gate" &&
-      step?.ok === true &&
-      step?.detail?.state === "open",
+      (step as JsonRecord)?.label === "reopen payment create gate" &&
+      (step as JsonRecord)?.ok === true &&
+      ((step as JsonRecord)?.detail as JsonRecord | undefined)?.state ===
+        "open",
   );
   const verifiedPaymentGate = cleanup.find(
     (step) =>
-      step?.label === "verify payment create gate" &&
-      step?.ok === true &&
-      step?.detail?.status?.state === "open" &&
-      step?.detail?.status?.pending === null,
+      (step as JsonRecord)?.label === "verify payment create gate" &&
+      (step as JsonRecord)?.ok === true &&
+      (((step as JsonRecord)?.detail as JsonRecord | undefined)
+        ?.status as JsonRecord | undefined)?.state === "open" &&
+      (((step as JsonRecord)?.detail as JsonRecord | undefined)
+        ?.status as JsonRecord | undefined)?.pending === null,
   );
   const controlPlaneSessionId = required(
     sale?.controlPlaneSessionId,
@@ -697,16 +849,24 @@ export function saleEvidence(sale, runId, handoff) {
   );
   const abortedSerialSession = cleanup.find(
     (step) =>
-      step?.label === "abort serial session" &&
-      step?.ok === true &&
-      step?.detail?.sessionId === controlPlaneSessionId &&
-      step?.detail?.aborted === true,
+      (step as JsonRecord)?.label === "abort serial session" &&
+      (step as JsonRecord)?.ok === true &&
+      ((step as JsonRecord)?.detail as JsonRecord | undefined)?.sessionId ===
+        controlPlaneSessionId &&
+      ((step as JsonRecord)?.detail as JsonRecord | undefined)?.aborted === true,
   );
-  const freshAdmission = sale?.serial?.start;
-  const freshSessionId = freshAdmission?.serialSession?.sessionId;
+  const freshAdmission = (sale?.serial as JsonRecord | undefined)
+    ?.start as JsonRecord | undefined;
+  const freshSessionId = (freshAdmission?.serialSession as
+    | JsonRecord
+    | undefined)?.sessionId;
   const hardwareReady =
-    freshAdmission?.hardware?.lower?.ready === true &&
-    freshAdmission?.hardware?.capability?.canStartSale === true;
+    ((freshAdmission?.hardware as JsonRecord | undefined)?.lower as
+      | JsonRecord
+      | undefined)?.ready === true &&
+    ((freshAdmission?.hardware as JsonRecord | undefined)?.capability as
+      | JsonRecord
+      | undefined)?.canStartSale === true;
   if (
     sale?.schemaVersion !== "vem-fast-route-stress-sale/v2" ||
     sale?.ok !== true ||
@@ -753,23 +913,43 @@ export function saleEvidence(sale, runId, handoff) {
   };
 }
 
-export function validateStockMaintenanceReport(report) {
+export function validateStockMaintenanceReport(
+  report: JsonRecord | null | undefined,
+): JsonRecord {
+  const fixture = report?.fixture as JsonRecord | undefined;
+  const movementCursor = report?.movementCursor as JsonRecord | undefined;
+  const firstSale = report?.firstSale as JsonRecord | undefined;
+  const secondSale = report?.secondSale as JsonRecord | undefined;
+  const unavailable = report?.unavailable as JsonRecord | undefined;
+  const maintenance = report?.maintenance as JsonRecord | undefined;
+  const restored = report?.restored as JsonRecord | undefined;
+  const terminal = report?.terminal as JsonRecord | undefined;
+  const screenshots = report?.screenshots as JsonRecord | undefined;
+  const movements = terminal?.movements as JsonRecord | undefined;
+  const projection = maintenance?.projection as JsonRecord | undefined;
+  const platformMovement = maintenance?.platformMovement as
+    | JsonRecord
+    | undefined;
+  const salePlatformMovements =
+    (movements?.salePlatformMovements ?? []) as unknown[];
+  const movementCursorBaselineItemIds =
+    (movementCursor?.baselineItemIds ?? []) as unknown[];
   const runId = report?.runId;
-  const firstOrderId = report?.firstSale?.orderId;
-  const secondOrderId = report?.secondSale?.orderId;
-  const movements = report?.terminal?.movements;
-  const projection = report?.maintenance?.projection;
-  const platformMovement = report?.maintenance?.platformMovement;
-  const salePlatformMovements = movements?.salePlatformMovements;
-  const stock = (value, quantity) =>
+  const firstOrderId = firstSale?.orderId;
+  const secondOrderId = secondSale?.orderId;
+  const stock = (value: JsonRecord | null | undefined, quantity: number) =>
     value?.physicalStock === quantity && value?.saleableStock === quantity;
-  const visibleStock = (value, quantity) =>
-    value?.catalogKey === report?.fixture?.catalogKey &&
+  const visibleStock = (value: JsonRecord | null | undefined, quantity: number) =>
+    value?.catalogKey === fixture?.catalogKey &&
     value?.saleableStock === quantity &&
     typeof value?.text === "string" &&
     value.text.includes(String(quantity));
-  const validSale = (sale) =>
-    sale?.runId === runId &&
+  const validSale = (sale: JsonRecord | null | undefined) =>
+    (() => {
+      if (!sale) return false;
+      const gateCleanup = sale.gateCleanup as JsonRecord | undefined;
+      const handoff = sale.handoff as JsonRecord | undefined;
+    return sale?.runId === runId &&
     [
       "orderId",
       "paymentId",
@@ -779,126 +959,150 @@ export function validateStockMaintenanceReport(report) {
       "fulfillmentMovementId",
       "controlPlaneSessionId",
       "serialSessionId",
-    ].every((key) => typeof sale?.[key] === "string" && sale[key] !== "") &&
+    ].every(
+      (key) => typeof sale?.[key] === "string" && sale[key] !== "",
+    ) &&
     sale?.resultRoute === "#/result/success" &&
-    sale?.gateCleanup?.paymentGateOpen === true &&
-    sale?.gateCleanup?.paymentGateVerified === true &&
-    sale?.gateCleanup?.serialSessionInactive === true &&
-    sale?.gateCleanup?.serialSessionId === sale?.controlPlaneSessionId &&
-    sale?.gateCleanup?.freshControlPlaneSessionId ===
+    gateCleanup?.paymentGateOpen === true &&
+    gateCleanup?.paymentGateVerified === true &&
+    gateCleanup?.serialSessionInactive === true &&
+    gateCleanup?.serialSessionId === sale?.controlPlaneSessionId &&
+    gateCleanup?.freshControlPlaneSessionId ===
       sale?.controlPlaneSessionId &&
-    sale?.gateCleanup?.lowerControllerReady === true &&
-    sale?.gateCleanup?.saleStartReady === true &&
-    typeof sale?.handoff?.previousControlPlaneSessionId === "string" &&
-    sale.handoff.previousControlPlaneSessionId !== "" &&
-    typeof sale?.handoff?.replacementControlPlaneSessionId === "string" &&
-    sale.handoff.replacementControlPlaneSessionId !== "" &&
-    sale.handoff.replacementControlPlaneSessionId !==
+    gateCleanup?.lowerControllerReady === true &&
+    gateCleanup?.saleStartReady === true &&
+    typeof handoff?.previousControlPlaneSessionId === "string" &&
+    handoff.previousControlPlaneSessionId !== "" &&
+    typeof handoff?.replacementControlPlaneSessionId === "string" &&
+    handoff.replacementControlPlaneSessionId !== "" &&
+    handoff.replacementControlPlaneSessionId !==
       sale.controlPlaneSessionId;
+    })();
+  const firstSaleValue = firstSale as JsonRecord | undefined;
+  const secondSaleValue = secondSale as JsonRecord | undefined;
   if (
     report?.schemaVersion !== SCHEMA_VERSION ||
     report?.ok !== true ||
     typeof runId !== "string" ||
     typeof report?.handoffSerialSessionId !== "string" ||
     report.handoffSerialSessionId === "" ||
-    report?.fixture?.initialQuantity !== 1 ||
-    typeof report?.fixture?.slotDisplayLabel !== "string" ||
-    typeof report?.fixture?.sku !== "string" ||
-    typeof report?.fixture?.slotId !== "string" ||
-    typeof report?.fixture?.inventoryId !== "string" ||
-    typeof report?.fixture?.catalogKey !== "string" ||
-    report?.movementCursor?.inventoryId !== report.fixture.inventoryId ||
-    !Number.isFinite(Date.parse(report?.movementCursor?.capturedAt)) ||
-    !Array.isArray(report?.movementCursor?.baselineItemIds) ||
-    new Set(report.movementCursor.baselineItemIds).size !==
-      report.movementCursor.baselineItemIds.length ||
-    !validSale(report?.firstSale) ||
-    !validSale(report?.secondSale) ||
+    fixture?.initialQuantity !== 1 ||
+    typeof fixture?.slotDisplayLabel !== "string" ||
+    typeof fixture?.sku !== "string" ||
+    typeof fixture?.slotId !== "string" ||
+    typeof fixture?.inventoryId !== "string" ||
+    typeof fixture?.catalogKey !== "string" ||
+    movementCursor?.inventoryId !== fixture.inventoryId ||
+    !Number.isFinite(Date.parse(String(movementCursor?.capturedAt ?? ""))) ||
+    !Array.isArray(movementCursor?.baselineItemIds) ||
+    new Set(movementCursorBaselineItemIds).size !==
+      movementCursorBaselineItemIds.length ||
+    !validSale(firstSale) ||
+    !validSale(secondSale) ||
     firstOrderId === secondOrderId ||
-    report.firstSale.controlPlaneSessionId ===
-      report.secondSale.controlPlaneSessionId ||
-    report.firstSale.serialSessionId === report.secondSale.serialSessionId ||
-    report.firstSale.paymentId === report.secondSale.paymentId ||
-    report.firstSale.commandId === report.secondSale.commandId ||
-    report.firstSale.fulfillmentMovementId ===
-      report.secondSale.fulfillmentMovementId ||
-    !stock(report?.unavailable?.daemon, 0) ||
-    report?.unavailable?.platform?.onHandQty !== 0 ||
-    report?.maintenance?.addition !== 2 ||
-    report?.maintenance?.previewQuantity !== 2 ||
-    report?.maintenance?.refillMovementCount !== 1 ||
+    firstSaleValue?.controlPlaneSessionId ===
+      secondSaleValue?.controlPlaneSessionId ||
+    firstSaleValue?.serialSessionId === secondSaleValue?.serialSessionId ||
+    firstSaleValue?.paymentId === secondSaleValue?.paymentId ||
+    firstSaleValue?.commandId === secondSaleValue?.commandId ||
+    firstSaleValue?.fulfillmentMovementId ===
+      secondSaleValue?.fulfillmentMovementId ||
+    !stock(unavailable?.daemon as JsonRecord | undefined, 0) ||
+    (unavailable?.platform as JsonRecord | undefined)?.onHandQty !== 0 ||
+    maintenance?.addition !== 2 ||
+    maintenance?.previewQuantity !== 2 ||
+    maintenance?.refillMovementCount !== 1 ||
     projection?.taskStatus !== "complete" ||
     projection?.slotSyncStatus !== "accepted" ||
     projection?.movementId !==
-      `${report.maintenance.taskId}:${report.fixture.slotId}` ||
+      `${String(maintenance?.taskId)}:${String(fixture?.slotId)}` ||
     projection?.movementType !== "planned_refill" ||
     projection?.source !== "local_maintenance" ||
     projection?.attributedTo !== "local_operations" ||
     typeof projection?.platformRawMovementId !== "string" ||
-    projection.platformRawMovementId === "" ||
-    platformMovement?.inventoryId !== report.fixture.inventoryId ||
+    projection?.platformRawMovementId === "" ||
+    platformMovement?.inventoryId !== fixture.inventoryId ||
     platformMovement?.reason !== "hardware_sync" ||
     platformMovement?.deltaQty !== 2 ||
     typeof platformMovement?.id !== "string" ||
-    platformMovement?.taskId !== report.maintenance.taskId ||
+    platformMovement?.taskId !== maintenance?.taskId ||
     platformMovement?.note !==
-      `machine_stock_movement:${projection.platformRawMovementId}` ||
-    !stock(report?.restored?.daemon, 2) ||
-    report?.restored?.platform?.onHandQty !== 2 ||
-    !visibleStock(report?.restored?.visibleDetailStock, 2) ||
-    !stock(report?.terminal?.daemon, 1) ||
-    report?.terminal?.platform?.onHandQty !== 1 ||
-    !visibleStock(report?.terminal?.visibleDetailStock, 1) ||
+      `machine_stock_movement:${String(projection?.platformRawMovementId)}` ||
+    !stock(restored?.daemon as JsonRecord | undefined, 2) ||
+    (restored?.platform as JsonRecord | undefined)?.onHandQty !== 2 ||
+    !visibleStock(
+      restored?.visibleDetailStock as JsonRecord | undefined,
+      2,
+    ) ||
+    !stock(terminal?.daemon as JsonRecord | undefined, 1) ||
+    (terminal?.platform as JsonRecord | undefined)?.onHandQty !== 1 ||
+    !visibleStock(
+      terminal?.visibleDetailStock as JsonRecord | undefined,
+      1,
+    ) ||
     !Array.isArray(movements?.saleDecrementOrderIds) ||
-    new Set(movements.saleDecrementOrderIds).size !== 2 ||
-    !movements.saleDecrementOrderIds.includes(firstOrderId) ||
-    !movements.saleDecrementOrderIds.includes(secondOrderId) ||
+    new Set(movements.saleDecrementOrderIds as unknown[]).size !== 2 ||
+    !(movements.saleDecrementOrderIds as unknown[]).includes(firstOrderId) ||
+    !(movements.saleDecrementOrderIds as unknown[]).includes(secondOrderId) ||
     !Array.isArray(movements?.salePlatformMovementIds) ||
-    movements.salePlatformMovementIds.length !== 2 ||
-    new Set(movements.salePlatformMovementIds).size !== 2 ||
-    movements.salePlatformMovementIds.some(
+    (movements.salePlatformMovementIds as unknown[]).length !== 2 ||
+    new Set(movements.salePlatformMovementIds as unknown[]).size !== 2 ||
+    (movements.salePlatformMovementIds as unknown[]).some(
       (movementId) => typeof movementId !== "string" || movementId === "",
     ) ||
     !Array.isArray(salePlatformMovements) ||
     salePlatformMovements.length !== 2 ||
     salePlatformMovements.some(
       (movement) =>
-        typeof movement?.id !== "string" ||
-        movement.id === "" ||
-        typeof movement?.orderId !== "string" ||
-        movement.orderId === "",
+        typeof (movement as JsonRecord)?.id !== "string" ||
+        String((movement as JsonRecord)?.id ?? "") === "" ||
+        typeof (movement as JsonRecord)?.orderId !== "string" ||
+        String((movement as JsonRecord)?.orderId ?? "") === "",
     ) ||
     !salePlatformMovements.some(
-      (movement) => movement.orderId === firstOrderId,
+      (movement) => (movement as JsonRecord).orderId === firstOrderId,
     ) ||
     !salePlatformMovements.some(
-      (movement) => movement.orderId === secondOrderId,
+      (movement) => (movement as JsonRecord).orderId === secondOrderId,
     ) ||
-    new Set(salePlatformMovements.map((movement) => movement.orderId)).size !==
-      2 ||
+    new Set(
+      salePlatformMovements.map(
+        (movement) => (movement as JsonRecord).orderId,
+      ),
+    ).size !== 2 ||
     new Set([
-      platformMovement.id,
-      ...salePlatformMovements.map((movement) => movement.id),
+      platformMovement?.id,
+      ...salePlatformMovements.map(
+        (movement) => (movement as JsonRecord).id,
+      ),
     ]).size !== 3 ||
     [
-      platformMovement.id,
-      ...salePlatformMovements.map((movement) => movement.id),
+      platformMovement?.id,
+      ...salePlatformMovements.map(
+        (movement) => (movement as JsonRecord).id,
+      ),
     ].some((movementId) =>
-      report.movementCursor.baselineItemIds.includes(movementId),
+      movementCursorBaselineItemIds.includes(movementId),
     ) ||
     salePlatformMovements.some(
-      (movement) => !movements.salePlatformMovementIds.includes(movement.id),
+      (movement) =>
+        !(movements?.salePlatformMovementIds as unknown[] | undefined)?.includes(
+          (movement as JsonRecord).id,
+        ),
     ) ||
-    JSON.stringify(movements.refillDeltas) !== JSON.stringify([2]) ||
-    report?.screenshots?.unavailable?.route !==
+    JSON.stringify(movements?.refillDeltas) !== JSON.stringify([2]) ||
+    (screenshots?.unavailable as JsonRecord | undefined)?.route !==
       "#/maintenance?source=operator" ||
-    report?.screenshots?.refillConfirmed?.route !==
+    (screenshots?.refillConfirmed as JsonRecord | undefined)?.route !==
       "#/maintenance?source=operator" ||
-    report?.screenshots?.restoredSaleability?.route !== "#/catalog" ||
+    (screenshots?.restoredSaleability as JsonRecord | undefined)?.route !==
+      "#/catalog" ||
     !["unavailable", "refillConfirmed", "restoredSaleability"].every(
       (key) =>
-        typeof report?.screenshots?.[key]?.ref === "string" &&
-        report.screenshots[key].slotId === report.fixture.slotId,
+        typeof (screenshots?.[key] as JsonRecord | undefined)?.ref ===
+          "string" &&
+        (screenshots?.[key] as JsonRecord | undefined)?.slotId ===
+          fixture?.slotId,
     )
   ) {
     throw new Error(
@@ -906,17 +1110,25 @@ export function validateStockMaintenanceReport(report) {
     );
   }
   return {
-    slotDisplayLabel: report.fixture.slotDisplayLabel,
+    slotDisplayLabel: fixture.slotDisplayLabel,
     firstOrderId,
     secondOrderId,
   };
 }
 
-export async function runStockMaintenanceGuest(options) {
+export async function runStockMaintenanceGuest(options: {
+  mode: string;
+  guestInputPath: string;
+  handoffPath: string;
+  outPath: string;
+  fixtureKey: string;
+}): Promise<JsonRecord> {
   const input = readJson(options.guestInputPath);
   let handoff = readJson(options.handoffPath);
-  const fixture = input.fixtureAllocation?.[options.fixtureKey];
-  const report = {
+  const fixture = (input.fixtureAllocation as JsonRecord | undefined)?.[
+    options.fixtureKey
+  ] as JsonRecord | undefined;
+  const report: JsonRecord = {
     schemaVersion: SCHEMA_VERSION,
     ok: false,
     runId: required(input.runId, "runId"),
@@ -931,9 +1143,11 @@ export async function runStockMaintenanceGuest(options) {
     terminal: null,
     screenshots: {},
   };
-  let client = null;
+  let client: InstanceType<typeof CdpClient> | null = null;
   try {
-    const initialView = await daemon(handoff, "/v1/sale-view");
+    const initialView = (await daemon(handoff, "/v1/sale-view")) as
+      | JsonRecord
+      | null;
     const identity = fixtureIdentity(initialView, fixture);
     const initial = stockFact(initialView, identity);
     if (initial.physicalStock !== 1 || initial.saleableStock !== 1) {
@@ -944,8 +1158,12 @@ export async function runStockMaintenanceGuest(options) {
     report.fixture = { ...identity, initialQuantity: 1 };
     const token = await adminToken(input);
     report.movementCursor = movementCursor(
-      await inventoryMovements(input, token, identity.inventoryId),
-      identity.inventoryId,
+      (await inventoryMovements(
+        input,
+        token,
+        String(identity.inventoryId),
+      )) as JsonRecord | null,
+      String(identity.inventoryId),
     );
     const firstHandoff = await replaceSaleHandoff(input, handoff, options);
     report.handoffSerialSessionId =
@@ -962,28 +1180,34 @@ export async function runStockMaintenanceGuest(options) {
       "stock-maintenance-first-sale.json",
     );
     const first = await runSale(options, firstReportPath);
-    report.firstSale = saleEvidence(first, report.runId, firstHandoff);
+    report.firstSale = saleEvidence(
+      first,
+      String(report.runId),
+      firstHandoff,
+    );
     const unavailableView = await waitFor(
       "fixture depletion after first installed sale",
       () => daemon(handoff, "/v1/sale-view"),
       (view) =>
-        stockFact(view, identity).physicalStock === 0 &&
-        stockFact(view, identity).saleableStock === 0,
+        stockFact(view as JsonRecord, identity).physicalStock === 0 &&
+        stockFact(view as JsonRecord, identity).saleableStock === 0,
     );
     const unavailablePlatform = await waitFor(
       "platform depletion after first installed sale",
-      () => inventory(input, token, identity.inventoryId),
-      (value) => value?.onHandQty === 0 && value?.reservedQty === 0,
+      () => inventory(input, token, String(identity.inventoryId)),
+      (value) =>
+        (value as JsonRecord)?.onHandQty === 0 &&
+        (value as JsonRecord)?.reservedQty === 0,
     );
     report.unavailable = {
-      daemon: stockFact(unavailableView, identity),
+      daemon: stockFact(unavailableView as JsonRecord, identity),
       platform: unavailablePlatform,
     };
     client = await connectUi(handoff);
     await returnCustomerResultToCatalog(client);
     await openStockMaintenance(client);
     const sink = screenshotSink(options.outPath);
-    report.screenshots.unavailable = await captureStockScreenshot(
+    (report.screenshots as JsonRecord).unavailable = await captureStockScreenshot(
       client,
       sink,
       "unavailable",
@@ -993,19 +1217,24 @@ export async function runStockMaintenanceGuest(options) {
     const refillTask = await waitFor(
       "routine refill task before submit",
       () => daemon(handoff, "/v1/stock/maintenance-task"),
-      (task) =>
-        task?.mode === "routine_refill" &&
-        typeof task?.taskId === "string" &&
-        task.taskId !== "" &&
-        task?.slots?.some(
-          (slot) =>
-            slot?.slotId === identity.slotId &&
-            slot?.currentQuantity === 0 &&
-            slot?.syncStatus === "not_submitted",
-        ),
+      (task) => {
+        const taskRecord = task as JsonRecord;
+        const slots = (taskRecord?.slots ?? []) as unknown[];
+        return (
+          taskRecord?.mode === "routine_refill" &&
+          typeof taskRecord?.taskId === "string" &&
+          taskRecord.taskId !== "" &&
+          slots.some(
+            (slot) =>
+              (slot as JsonRecord)?.slotId === identity.slotId &&
+              (slot as JsonRecord)?.currentQuantity === 0 &&
+              (slot as JsonRecord)?.syncStatus === "not_submitted",
+          )
+        );
+      },
     );
     await enterRoutineRefill(client, identity);
-    report.screenshots.refillConfirmed = await captureStockScreenshot(
+    (report.screenshots as JsonRecord).refillConfirmed = await captureStockScreenshot(
       client,
       sink,
       "refill-confirmed",
@@ -1016,98 +1245,120 @@ export async function runStockMaintenanceGuest(options) {
       "local refill synchronization",
       () => daemon(handoff, "/v1/sale-view"),
       (view) =>
-        stockFact(view, identity).physicalStock === 2 &&
-        stockFact(view, identity).saleableStock === 2,
+        stockFact(view as JsonRecord, identity).physicalStock === 2 &&
+        stockFact(view as JsonRecord, identity).saleableStock === 2,
     );
     const restoredPlatform = await waitFor(
       "platform refill synchronization",
-      () => inventory(input, token, identity.inventoryId),
-      (value) => value?.onHandQty === 2 && value?.reservedQty === 0,
+      () => inventory(input, token, String(identity.inventoryId)),
+      (value) =>
+        (value as JsonRecord)?.onHandQty === 2 &&
+        (value as JsonRecord)?.reservedQty === 0,
     );
     const completedTask = await waitFor(
       "accepted routine refill task projection",
       () =>
         daemon(
           handoff,
-          `/v1/stock/maintenance-tasks/${encodeURIComponent(refillTask.taskId)}/projection`,
+          `/v1/stock/maintenance-tasks/${encodeURIComponent(String((refillTask as JsonRecord).taskId))}/projection`,
         ),
-      (task) =>
-        task?.taskId === refillTask.taskId &&
-        task?.mode === "routine_refill" &&
-        task?.status === "complete" &&
-        task?.slots?.some(
-          (slot) =>
-            slot?.slotId === identity.slotId &&
-            slot?.submittedAddition === 2 &&
-            slot?.previewQuantity === 2 &&
-            slot?.movementId === `${refillTask.taskId}:${identity.slotId}` &&
-            slot?.movementType === "planned_refill" &&
-            slot?.source === "local_maintenance" &&
-            slot?.attributedTo === "local_operations" &&
-            typeof slot?.platformRawMovementId === "string" &&
-            slot.platformRawMovementId !== "" &&
-            slot?.syncStatus === "accepted",
-        ),
+      (task) => {
+        const taskRecord = task as JsonRecord;
+        const refillTaskRecord = refillTask as JsonRecord;
+        const slots = (taskRecord?.slots ?? []) as unknown[];
+        return (
+          taskRecord?.taskId === refillTaskRecord.taskId &&
+          taskRecord?.mode === "routine_refill" &&
+          taskRecord?.status === "complete" &&
+          slots.some(
+            (slot) =>
+              (slot as JsonRecord)?.slotId === identity.slotId &&
+              (slot as JsonRecord)?.submittedAddition === 2 &&
+              (slot as JsonRecord)?.previewQuantity === 2 &&
+              (slot as JsonRecord)?.movementId ===
+                `${String(refillTaskRecord.taskId)}:${String(identity.slotId)}` &&
+              (slot as JsonRecord)?.movementType === "planned_refill" &&
+              (slot as JsonRecord)?.source === "local_maintenance" &&
+              (slot as JsonRecord)?.attributedTo === "local_operations" &&
+              typeof (slot as JsonRecord)?.platformRawMovementId === "string" &&
+              String((slot as JsonRecord)?.platformRawMovementId ?? "") !== "" &&
+              (slot as JsonRecord)?.syncStatus === "accepted",
+          )
+        );
+      },
     );
-    const completedSlot = completedTask.slots.find(
-      (slot) => slot.slotId === identity.slotId,
-    );
+    const completedTaskRecord = completedTask as JsonRecord;
+    const completedSlots = (completedTaskRecord.slots ?? []) as unknown[];
+    const completedSlot = completedSlots.find(
+      (slot) => (slot as JsonRecord).slotId === identity.slotId,
+    ) as JsonRecord | undefined;
+    const completedSlotRecord = completedSlot as JsonRecord | undefined;
+    const refillTaskRecord = refillTask as JsonRecord;
     report.maintenance = {
-      taskId: refillTask.taskId,
-      addition: completedSlot.submittedAddition,
-      previewQuantity: completedSlot.previewQuantity,
+      taskId: refillTaskRecord.taskId,
+      addition: completedSlotRecord?.submittedAddition,
+      previewQuantity: completedSlotRecord?.previewQuantity,
       refillMovementCount: null,
       projection: {
-        taskStatus: completedTask.status,
-        slotSyncStatus: completedSlot.syncStatus,
-        movementId: completedSlot.movementId,
-        movementType: completedSlot.movementType,
-        source: completedSlot.source,
-        attributedTo: completedSlot.attributedTo,
-        platformRawMovementId: completedSlot.platformRawMovementId,
+        taskStatus: completedTaskRecord.status,
+        slotSyncStatus: completedSlotRecord?.syncStatus,
+        movementId: completedSlotRecord?.movementId,
+        movementType: completedSlotRecord?.movementType,
+        source: completedSlotRecord?.source,
+        attributedTo: completedSlotRecord?.attributedTo,
+        platformRawMovementId: completedSlotRecord?.platformRawMovementId,
       },
       platformMovement: null,
     };
     const afterRefillMovements = await waitFor(
       "one correlated platform refill movement",
-      () => inventoryMovements(input, token, identity.inventoryId),
+      () =>
+        inventoryMovements(input, token, String(identity.inventoryId)),
       (page) =>
-        movementDelta(page, report.movementCursor).filter(
-          (movement) =>
-            movement?.reason === "hardware_sync" &&
-            movement?.deltaQty === 2 &&
-            movement?.inventoryId === identity.inventoryId &&
-            movement?.note ===
-              `machine_stock_movement:${completedSlot.platformRawMovementId}`,
-        ).length === 1,
+        movementDelta(page as JsonRecord, report.movementCursor as JsonRecord)
+          .filter(
+            (movement) =>
+              (movement as JsonRecord)?.reason === "hardware_sync" &&
+              (movement as JsonRecord)?.deltaQty === 2 &&
+              (movement as JsonRecord)?.inventoryId === identity.inventoryId &&
+              (movement as JsonRecord)?.note ===
+                `machine_stock_movement:${String(
+                  completedSlotRecord?.platformRawMovementId,
+                )}`,
+          ).length === 1,
     );
     const refillMovements = movementDelta(
-      afterRefillMovements,
-      report.movementCursor,
+      afterRefillMovements as JsonRecord,
+      report.movementCursor as JsonRecord,
     ).filter(
       (movement) =>
-        movement?.reason === "hardware_sync" &&
-        movement?.deltaQty === 2 &&
-        movement?.inventoryId === identity.inventoryId &&
-        movement?.note ===
-          `machine_stock_movement:${completedSlot.platformRawMovementId}`,
+        (movement as JsonRecord)?.reason === "hardware_sync" &&
+        (movement as JsonRecord)?.deltaQty === 2 &&
+        (movement as JsonRecord)?.inventoryId === identity.inventoryId &&
+        (movement as JsonRecord)?.note ===
+          `machine_stock_movement:${String(
+            completedSlotRecord?.platformRawMovementId,
+          )}`,
     );
-    report.maintenance.refillMovementCount = refillMovements.length;
-    report.maintenance.platformMovement = {
-      ...refillMovements[0],
-      taskId: refillTask.taskId,
+    (report.maintenance as JsonRecord).refillMovementCount =
+      refillMovements.length;
+    (report.maintenance as JsonRecord).platformMovement = {
+      ...(refillMovements[0] as JsonRecord),
+      taskId: refillTaskRecord.taskId,
     };
     report.restored = {
-      daemon: stockFact(restoredView, identity),
+      daemon: stockFact(restoredView as JsonRecord, identity),
       platform: restoredPlatform,
     };
     await returnToCatalogFromMaintenance(client);
-    report.restored.visibleDetailStock = await observeProductDetailStock(
+    (report.restored as JsonRecord).visibleDetailStock =
+      await observeProductDetailStock(
       client,
       identity,
       2,
     );
-    report.screenshots.restoredSaleability = await captureStockScreenshot(
+    (report.screenshots as JsonRecord).restoredSaleability =
+      await captureStockScreenshot(
       client,
       sink,
       "restored-saleability",
@@ -1130,18 +1381,24 @@ export async function runStockMaintenanceGuest(options) {
     client = null;
     await openPaymentCreateGate(input);
     const second = await runSale(options, secondReportPath);
-    report.secondSale = saleEvidence(second, report.runId, secondHandoff);
+    report.secondSale = saleEvidence(
+      second,
+      String(report.runId),
+      secondHandoff,
+    );
     const terminalView = await waitFor(
       "fixture terminal quantity after second installed sale",
       () => daemon(handoff, "/v1/sale-view"),
       (view) =>
-        stockFact(view, identity).physicalStock === 1 &&
-        stockFact(view, identity).saleableStock === 1,
+        stockFact(view as JsonRecord, identity).physicalStock === 1 &&
+        stockFact(view as JsonRecord, identity).saleableStock === 1,
     );
     const terminalPlatform = await waitFor(
       "platform terminal quantity after second installed sale",
-      () => inventory(input, token, identity.inventoryId),
-      (value) => value?.onHandQty === 1 && value?.reservedQty === 0,
+      () => inventory(input, token, String(identity.inventoryId)),
+      (value) =>
+        (value as JsonRecord)?.onHandQty === 1 &&
+        (value as JsonRecord)?.reservedQty === 0,
     );
     client = await connectUi(handoff);
     await returnCustomerResultToCatalog(client);
@@ -1154,36 +1411,44 @@ export async function runStockMaintenanceGuest(options) {
     client = null;
     const terminalMovements = await waitFor(
       "two correlated sale decrements",
-      () => inventoryMovements(input, token, identity.inventoryId),
+      () =>
+        inventoryMovements(input, token, String(identity.inventoryId)),
       (page) => {
-        const ids = movementDelta(page, report.movementCursor)
+        const ids = movementDelta(
+          page as JsonRecord,
+          report.movementCursor as JsonRecord,
+        )
           .filter(
             (movement) =>
-              movement?.reason === "purchase_confirmed" &&
-              movement?.deltaQty === -1,
+              (movement as JsonRecord)?.reason === "purchase_confirmed" &&
+              (movement as JsonRecord)?.deltaQty === -1,
           )
-          .map((movement) => movement.orderId);
+          .map((movement) => (movement as JsonRecord).orderId);
         return (
-          ids.includes(report.firstSale.orderId) &&
-          ids.includes(report.secondSale.orderId)
+          ids.includes((report.firstSale as JsonRecord).orderId) &&
+          ids.includes((report.secondSale as JsonRecord).orderId)
         );
       },
     );
     const salePlatformMovements = movementDelta(
-      terminalMovements,
-      report.movementCursor,
+      terminalMovements as JsonRecord,
+      report.movementCursor as JsonRecord,
     )
       .filter(
         (movement) =>
-          movement?.reason === "purchase_confirmed" &&
-          movement?.deltaQty === -1 &&
-          [report.firstSale.orderId, report.secondSale.orderId].includes(
-            movement?.orderId,
-          ),
+          (movement as JsonRecord)?.reason === "purchase_confirmed" &&
+          (movement as JsonRecord)?.deltaQty === -1 &&
+          [
+            (report.firstSale as JsonRecord).orderId,
+            (report.secondSale as JsonRecord).orderId,
+          ].includes((movement as JsonRecord)?.orderId),
       )
-      .map((movement) => ({ id: movement.id, orderId: movement.orderId }));
+      .map((movement) => {
+        const movementRecord = movement as JsonRecord;
+        return { id: movementRecord.id, orderId: movementRecord.orderId };
+      });
     report.terminal = {
-      daemon: stockFact(terminalView, identity),
+      daemon: stockFact(terminalView as JsonRecord, identity),
       platform: terminalPlatform,
       visibleDetailStock: terminalVisibleDetailStock,
       movements: {
@@ -1194,9 +1459,15 @@ export async function runStockMaintenanceGuest(options) {
           (movement) => movement.id,
         ),
         salePlatformMovements,
-        refillDeltas: movementDelta(terminalMovements, report.movementCursor)
-          .filter((movement) => movement?.reason === "hardware_sync")
-          .map((movement) => movement.deltaQty),
+        refillDeltas: movementDelta(
+          terminalMovements as JsonRecord,
+          report.movementCursor as JsonRecord,
+        )
+          .filter(
+            (movement) =>
+              (movement as JsonRecord)?.reason === "hardware_sync",
+          )
+          .map((movement) => (movement as JsonRecord).deltaQty),
       },
     };
     report.ok = true;
