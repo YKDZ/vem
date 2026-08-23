@@ -4,6 +4,8 @@ import { createServer } from "node:http";
 import { describe, it } from "node:test";
 import { runInNewContext } from "node:vm";
 
+type JsonRecord = Record<string, unknown>;
+
 import {
   CapturedFrameEvidenceCache,
   CdpTestAdapter,
@@ -1244,7 +1246,7 @@ describe("CDP test adapter", () => {
             "content-length": String(oversized.length),
           }),
           arrayBuffer: async () => oversized,
-        }) as Response,
+        }) as unknown as Response,
     });
     assert.equal(rejected.png, null);
     assert.deepEqual(rejected.outcome, {
@@ -1396,7 +1398,7 @@ describe("CDP test adapter", () => {
                 },
               },
               arrayBuffer: async () => semantic,
-            }) as Response,
+            }) as unknown as Response,
         });
         assert.equal(rejected.outcome.stage, "声明大小");
         assert.ok(Number.isNaN(rejected.outcome.declaredByteSize!));
@@ -1461,7 +1463,7 @@ describe("CDP test adapter", () => {
             arrayBufferCalled = true;
             throw new Error("must not buffer");
           },
-        }) as Response,
+        }) as unknown as Response,
     });
     assert.equal(missingBody.outcome.stage, "响应体");
     assert.equal(missingBody.outcome.actualByteSize, 0);
@@ -1491,7 +1493,7 @@ describe("CDP test adapter", () => {
           arrayBuffer: async () => {
             throw new Error("must not buffer");
           },
-        }) as Response,
+        }) as unknown as Response,
     });
     const pullsAtReturn = pulls;
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 0));
@@ -1586,7 +1588,7 @@ describe("CDP test adapter", () => {
             url: `${sourceOrigin}/redirected`,
             headers: new Headers({ "content-type": "image/png" }),
             arrayBuffer: async () => Buffer.alloc(12),
-          }) as Response,
+          }) as unknown as Response,
       }),
       null,
     );
@@ -1634,7 +1636,7 @@ describe("CDP test adapter", () => {
             reference:
               "http://127.0.0.1:26849/api/media-assets/550e8400-e29b-41d4-a716-446655440126/content",
             origin: "http://127.0.0.1:26849",
-            ...garment,
+            ...(garment as JsonRecord),
             width: 512,
             height: 640,
           },
@@ -1813,7 +1815,7 @@ describe("CDP test adapter", () => {
               bytes.byteOffset,
               bytes.byteOffset + bytes.byteLength,
             ),
-        } as Response;
+        } as unknown as Response;
       },
     });
     const captured = {

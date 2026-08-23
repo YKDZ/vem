@@ -4,6 +4,18 @@ import { describe, it } from "node:test";
 
 import { verifyWindowsNativeAudioEvidence } from "./windows-native-audio-evidence.ts";
 
+type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? (value as unknown[]) : [];
+}
+
 function fixture() {
   const hash = "a".repeat(64);
   const daemonCalibrationResponse = {
@@ -121,7 +133,9 @@ describe("Windows native audio evidence", () => {
     const result = verifyWindowsNativeAudioEvidence(input);
     assert.equal(result.result, "failed");
     assert.deepEqual(
-      result.diagnostics.map((entry) => entry.code),
+      arrayValue(result.diagnostics).map(
+        (entry: unknown) => recordValue(entry).code,
+      ),
       [
         "audio_capture_semantic_binding_mismatch",
         "audio_capture_challenge_mismatch",
@@ -149,15 +163,19 @@ describe("Windows native audio evidence", () => {
 
     assert.equal(result.result, "failed");
     assert.ok(
-      result.diagnostics.some(
-        (entry) => entry.code === "daemon_audio_calibration_evidence_missing",
+      arrayValue(result.diagnostics).some(
+        (entry: unknown) =>
+          recordValue(entry).code ===
+          "daemon_audio_calibration_evidence_missing",
       ),
     );
   });
 
   it("requires the inner runtime response instead of accepting a response-shaped wrapper", () => {
     const input = fixture();
-    input.runtimeReport = input.runtimeReport.runtimeAcceptanceReport;
+    (input as JsonRecord).runtimeReport = recordValue(
+      input.runtimeReport.runtimeAcceptanceReport,
+    );
     const result = verifyWindowsNativeAudioEvidence(input);
     assert.equal(result.result, "failed");
     assert.deepEqual(result.diagnostics, [

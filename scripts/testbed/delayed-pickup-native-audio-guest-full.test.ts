@@ -6,21 +6,31 @@ import {
   REQUIRED_TRANSACTION_AUDIO_PREFERENCES,
   restoreTransactionAudioPreferences,
 } from "./delayed-pickup-native-audio-guest-full.ts";
+import { CdpClient } from "./machine-ui-cdp-driver.ts";
+
+type JsonRecord = Record<string, unknown>;
 
 describe("delayed pickup guest full runner", () => {
   it("restores transaction audio preferences before returning to catalog", async () => {
-    const calls = [];
-    const client = { id: "client-17" };
+    const calls: unknown[] = [];
+    const client = {} as unknown as InstanceType<typeof CdpClient>;
 
     const restored = await restoreTransactionAudioPreferences(client, {
-      async setMachineUiAudioPreferences(actualClient, preferences) {
+      async setMachineUiAudioPreferences(
+        actualClient: unknown,
+        preferences: JsonRecord,
+      ) {
         calls.push(["set", actualClient, preferences]);
         return { ...preferences };
       },
-      async evaluateExpression(actualClient, expression) {
+      async evaluateExpression(actualClient: unknown, expression: string) {
         calls.push(["eval", actualClient, expression]);
       },
-      async waitForRoute(actualClient, route, options) {
+      async waitForRoute(
+        actualClient: unknown,
+        route: string,
+        options: JsonRecord = {},
+      ) {
         calls.push(["wait", actualClient, route, options]);
       },
     });
