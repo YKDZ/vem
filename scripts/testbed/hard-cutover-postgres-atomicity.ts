@@ -70,7 +70,18 @@ const legacyStoragePrefix = `${legacyPurpose.replaceAll("_", "-")}s`;
 const legacyToken = legacyPurpose.split("_").at(-1);
 assert.ok(legacyToken, "D2 identifies one legacy media token");
 
-function migrationConfig(out) {
+type JsonRecord = Record<string, unknown>;
+
+interface PgClient {
+  query(
+    text: string,
+    values?: unknown[],
+  ): Promise<{ rows: Array<Record<string, unknown>> }>;
+  connect(): Promise<void>;
+  end(): Promise<void>;
+}
+
+function migrationConfig(out: string): string {
   const config = join(out, "drizzle.config.ts");
   writeFileSync(
     config,
@@ -79,7 +90,7 @@ function migrationConfig(out) {
   return config;
 }
 
-function migrate(directories) {
+function migrate(directories: readonly string[]): void {
   const temp = mkdtempSync(join(tmpdir(), "vem-d2-pg-migrations-"));
   try {
     for (const directory of directories) {
@@ -153,11 +164,15 @@ function runPublicApiTracer() {
   );
 }
 
-async function query(client, text, values = []) {
+async function query(
+  client: PgClient,
+  text: string,
+  values: unknown[] = [],
+): Promise<{ rows: Array<Record<string, unknown>> }> {
   return await client.query(text, values);
 }
 
-async function seedPreD2(client) {
+async function seedPreD2(client: PgClient): Promise<JsonRecord> {
   const ids = {
     legacyAsset: "00000000-0000-4000-8000-000000000001",
     newAsset: "00000000-0000-4000-8000-000000000002",
@@ -258,7 +273,10 @@ async function seedPreD2(client) {
   return ids;
 }
 
-async function assertPreD2(client, ids) {
+async function assertPreD2(
+  client: PgClient,
+  ids: JsonRecord,
+): Promise<void> {
   const result = await query(
     client,
     `SELECT
@@ -293,7 +311,7 @@ async function assertPreD2(client, ids) {
   });
 }
 
-async function assertFinalTryOnCatalog(client) {
+async function assertFinalTryOnCatalog(client: PgClient): Promise<void> {
   const columns = await query(
     client,
     `SELECT table_name,column_name,data_type,udt_name,is_nullable
@@ -606,7 +624,7 @@ async function assertFinalTryOnCatalog(client) {
   ]);
 }
 
-const client = new pg.Client({ connectionString: databaseUrl });
+const client = new pg.Client({ connectionString: databaseUrl }) as PgClient;
 await client.connect();
 try {
   await query(
