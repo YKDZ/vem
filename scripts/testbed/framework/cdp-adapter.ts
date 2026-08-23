@@ -41,8 +41,15 @@ import {
 } from "./slices/vision-experience/result-geometry-evidence.ts";
 import {
   parseSourceGarmentMetadata,
-  type SourceGarmentMetadata,
 } from "./slices/vision-experience/source-garment-evidence.ts";
+
+type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
 
 const MAX_RESULT_PNG_BYTES = 8 * 1024 * 1024;
 const MAX_DIAGNOSTIC_ENTRIES = 128;
@@ -1148,11 +1155,19 @@ export class CdpTestAdapter implements TestAdapter {
     if (!target) {
       throw new Error("Machine UI CDP target was not found");
     }
+    const clientOptions = this.cdpWebSocketFactory
+      ? {
+          webSocketFactory: this.cdpWebSocketFactory as NonNullable<
+            ConstructorParameters<typeof CdpClient>[1]
+          >["webSocketFactory"],
+        }
+      : undefined;
     this.client = new CdpClient(
-      rewriteWebSocketDebuggerUrl(target.webSocketDebuggerUrl, this.endpoint),
-      this.cdpWebSocketFactory
-        ? { webSocketFactory: this.cdpWebSocketFactory }
-        : {},
+      rewriteWebSocketDebuggerUrl(
+        String(target.webSocketDebuggerUrl),
+        this.endpoint,
+      ),
+      clientOptions,
     );
     await this.client.connect({ timeoutMs });
     await enablePageRuntime(this.client);
@@ -1215,7 +1230,7 @@ export class CdpTestAdapter implements TestAdapter {
       throw new Error(`unknown adapter file: ${path}`);
     }
     const state = JSON.parse(
-      await evaluateExpression(this.client!, STATE_EXPRESSION),
+      String(await evaluateExpression(this.client!, STATE_EXPRESSION)),
     ) as { attemptId?: string | null; capturedUrl?: unknown };
     const previewFrameHash = await this.captureImageFrameHash(state, "preview");
     const protocolTimeline =
@@ -1370,10 +1385,13 @@ export class CdpTestAdapter implements TestAdapter {
         y: rect.y,
         width: rect.width,
         height: rect.height,
-        scale: Math.min(1, 16 / Math.max(rect.width, rect.height)),
+        scale: Math.min(
+          1,
+          16 / Math.max(Number(rect.width), Number(rect.height)),
+        ),
       },
     });
-    return hashPreviewScreenshot(screenshot.data);
+    return hashPreviewScreenshot(String(recordValue(screenshot).data));
   }
 
   async writeFile(): Promise<never> {
@@ -1442,8 +1460,8 @@ export class CdpTestAdapter implements TestAdapter {
     if (
       capturedSourceDigest === null ||
       this.lastDomState?.attemptId !== state.attemptId ||
-      this.lastDomState.state !== state.state ||
-      this.lastDomState.capturedSourceDigest !== capturedSourceDigest
+      this.lastDomState?.state !== state.state ||
+      this.lastDomState?.capturedSourceDigest !== capturedSourceDigest
     ) {
       return {
         ...currentCapturedObservation,
@@ -1454,8 +1472,8 @@ export class CdpTestAdapter implements TestAdapter {
     return {
       ...currentCapturedObservation,
       capturedSourceMatchesProtocol:
-        this.lastDomState.capturedSourceMatchesProtocol,
-      capturedFrameHash: this.lastDomState.capturedFrameHash,
+        this.lastDomState?.capturedSourceMatchesProtocol,
+      capturedFrameHash: this.lastDomState?.capturedFrameHash,
     };
   }
 
@@ -1598,9 +1616,11 @@ export class CdpTestAdapter implements TestAdapter {
     if (this.client) {
       try {
         const state = JSON.parse(
-          await evaluateExpression(this.client, STATE_EXPRESSION, {
-            timeoutMs: 2_000,
-          }),
+          String(
+            await evaluateExpression(this.client, STATE_EXPRESSION, {
+              timeoutMs: 2_000,
+            }),
+          ),
         ) as Record<string, unknown>;
         this.recordStateObservation(state);
       } catch (captureError) {
