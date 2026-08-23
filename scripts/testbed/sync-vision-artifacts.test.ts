@@ -21,11 +21,29 @@ import {
 
 const COMMIT = "234e2961adff5c4e8fc58b29b6f67869007e5718";
 
-function sha256(bytes) {
+type JsonRecord = Record<string, unknown>;
+
+interface MainArtifactManifest {
+  schemaVersion: string;
+  commit: string;
+  runtime: { file: string; sha256: string; bytes: number };
+  fixtures: { file: string; sha256: string; bytes: number };
+}
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function sha256(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-function makeMainArtifactRoot(root, commit = COMMIT) {
+function makeMainArtifactRoot(
+  root: string,
+  commit: string = COMMIT,
+): { artifactRoot: string; manifest: MainArtifactManifest } {
   const artifactRoot = join(root, "main-artifact");
   mkdirSync(artifactRoot, { recursive: true });
   const runtime = Buffer.from("runtime-bytes");
@@ -38,7 +56,7 @@ function makeMainArtifactRoot(root, commit = COMMIT) {
     join(artifactRoot, "vending-vision-test-fixtures.zip"),
     fixtures,
   );
-  const manifest = {
+  const manifest: MainArtifactManifest = {
     schemaVersion: "vending-vision-main-artifacts/v1",
     commit,
     runtime: {
@@ -59,7 +77,7 @@ function makeMainArtifactRoot(root, commit = COMMIT) {
   return { artifactRoot, manifest };
 }
 
-function makeHostConfig(root) {
+function makeHostConfig(root: string): string {
   const configPath = join(root, "host-config.json");
   writeFileSync(configPath, JSON.stringify({ schemaVersion: "host/v1" }));
   return configPath;
@@ -78,21 +96,27 @@ describe("Vision main artifact sync", () => {
       hostConfigPath: configPath,
     });
 
-    assert.equal(result.runtimeArchive.sha256, manifest.runtime.sha256);
-    assert.equal(result.runtimeArchive.byteSize, manifest.runtime.bytes);
     assert.equal(
-      result.recordedFixtureArchive.sha256,
+      recordValue(result.runtimeArchive).sha256,
+      manifest.runtime.sha256,
+    );
+    assert.equal(
+      recordValue(result.runtimeArchive).byteSize,
+      manifest.runtime.bytes,
+    );
+    assert.equal(
+      recordValue(result.recordedFixtureArchive).sha256,
       manifest.fixtures.sha256,
     );
     assert.equal(
-      result.recordedFixtureArchive.byteSize,
+      recordValue(result.recordedFixtureArchive).byteSize,
       manifest.fixtures.bytes,
     );
-    const config = JSON.parse(readFileSync(configPath, "utf8"));
-    assert.deepEqual(Object.keys(config.visionCoreArtifacts).sort(), [
-      "recordedFixtureArchive",
-      "runtimeArchive",
-    ]);
+    const config = JSON.parse(readFileSync(configPath, "utf8")) as JsonRecord;
+    assert.deepEqual(
+      Object.keys(recordValue(config.visionCoreArtifacts)).sort(),
+      ["recordedFixtureArchive", "runtimeArchive"],
+    );
   });
 
   it("rejects a manifest-bound archive when its bytes or digest are tampered", async () => {
