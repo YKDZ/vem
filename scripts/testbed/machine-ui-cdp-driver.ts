@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { connect, createServer } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -50,7 +50,69 @@ const PRODUCTION_TUNNEL_OPTION_KEYS = new Set([
   "remoteCdpPort",
 ]);
 
-export function isStrictTauriHashRouteUrl(value) {
+interface SshRunOptions {
+  remote?: string;
+  sshPort?: number;
+  identityFile?: string;
+  certificateFile?: string;
+  sshKnownHostsPath?: string;
+  sshHostKeyAlias?: string;
+  sshArgs?: string[];
+  remoteCdpPort?: number;
+  timeoutMs?: number;
+  script?: string;
+}
+
+interface WindowsMachineUiInspectionOptions {
+  remote?: string;
+  sshPort?: number;
+  identityFile?: string;
+  certificateFile?: string;
+  sshKnownHostsPath?: string;
+  sshHostKeyAlias?: string;
+  sshArgs?: string[];
+  remoteCdpPort?: number;
+  expectedMachinePath?: string;
+  timeoutMs?: number;
+}
+
+type WindowsRuntimeCommandRunner = (
+  options: SshRunOptions,
+) => Promise<unknown>;
+
+interface ProcessAdapter {
+  spawn: typeof spawn;
+  waitForExit?: (
+    child: ChildProcess,
+    timeoutMs: number,
+  ) => Promise<unknown>;
+  waitForReady?: (options: {
+    child: ChildProcess;
+    endpoint: string;
+    host: string;
+    port: number;
+    timeoutMs: number;
+    pollMs: number;
+  }) => Promise<unknown>;
+}
+
+interface NormalizedWindowsProcessObservation {
+  processId: number;
+  sessionId: number;
+  executablePath: string;
+  principal: string;
+}
+
+interface NormalizedWindowsRuntimeObservation {
+  machine: NormalizedWindowsProcessObservation;
+  cdpListener: NormalizedWindowsProcessObservation & {
+    machineAncestorProcessId: number;
+    localAddress: string;
+    localPort: number;
+  };
+}
+
+export function isStrictTauriHashRouteUrl(value: unknown): boolean {
   try {
     const url = new URL(String(value));
     return (
@@ -66,7 +128,10 @@ export function isStrictTauriHashRouteUrl(value) {
   }
 }
 
-export function matchesRoute(value, expected) {
+export function matchesRoute(
+  value: unknown,
+  expected: string | RegExp | ((route: string) => boolean),
+): boolean {
   const route = normalizeMachineRoute(value);
   if (typeof expected === "string") {
     return route === normalizeMachineRoute(expected);
@@ -79,7 +144,7 @@ export function matchesRoute(value, expected) {
   throw new Error("expected route must be a string, RegExp, or predicate");
 }
 
-export function routeFromTauriUrl(value) {
+export function routeFromTauriUrl(value: unknown): string {
   const url = new URL(String(value));
   if (!isStrictTauriHashRouteUrl(url.toString())) {
     throw new Error(`not a strict tauri route URL: ${url}`);
@@ -87,7 +152,7 @@ export function routeFromTauriUrl(value) {
   return normalizeMachineRoute(url.hash);
 }
 
-export function normalizeMachineRoute(value) {
+export function normalizeMachineRoute(value: unknown): string {
   let raw = String(value ?? "").trim();
   if (raw.startsWith("http:") || raw.startsWith("https:")) {
     const url = new URL(raw);
@@ -135,12 +200,26 @@ export function normalizeMachineRoute(value) {
   return route;
 }
 
+interface ContinuousCaptureCheckpoint {
+  ordinal?: number;
+}
+
+interface ContinuousCaptureSegment {
+  stopped?: boolean;
+  capture: { checkpoints: Array<{ ordinal?: number }> };
+}
+
 export function findContinuousPaymentCheckpoint({
   startSegment,
   endSegment,
   startCheckpoint,
   endCheckpoint,
-}) {
+}: {
+  startSegment: ContinuousCaptureSegment | null | undefined;
+  endSegment: ContinuousCaptureSegment | null | undefined;
+  startCheckpoint: ContinuousCaptureCheckpoint | null | undefined;
+  endCheckpoint: ContinuousCaptureCheckpoint | null | undefined;
+}): ContinuousCaptureCheckpoint | null {
   if (
     startSegment == null ||
     startSegment !== endSegment ||
@@ -153,35 +232,53 @@ export function findContinuousPaymentCheckpoint({
   return (
     startSegment.capture.checkpoints.find(
       (checkpoint) =>
-        checkpoint.ordinal > startCheckpoint.ordinal &&
-        checkpoint.ordinal < endCheckpoint.ordinal,
+        (checkpoint.ordinal ?? 0) > (startCheckpoint.ordinal ?? 0) &&
+        (checkpoint.ordinal ?? 0) < (endCheckpoint.ordinal ?? 0),
     ) ?? null
   );
 }
 
-export function validateExpectedRuntimeAttestation(attestation) {
+export interface NormalizedExpectedRuntimeAttestation {
+  targetId: string;
+  machine: {
+    processId: number;
+    sessionId: number;
+    executablePath: string;
+    principal: string;
+  };
+}
+
+export function validateExpectedRuntimeAttestation(
+  attestation: unknown,
+): NormalizedExpectedRuntimeAttestation {
   if (!attestation || typeof attestation !== "object") {
     throw new Error("expectedRuntimeAttestation is required");
   }
+  const record = attestation as {
+    targetId?: unknown;
+    machine?: unknown;
+  };
   if (
-    typeof attestation.targetId !== "string" ||
-    attestation.targetId.trim() === ""
+    typeof record.targetId !== "string" ||
+    record.targetId.trim() === ""
   ) {
     throw new Error("expectedRuntimeAttestation.targetId is required");
   }
-  const machine = attestation.machine;
-  if (!machine || typeof machine !== "object") {
+  if (!record.machine || typeof record.machine !== "object") {
     throw new Error("expectedRuntimeAttestation.machine is required");
   }
+  const machine = record.machine as Record<string, unknown>;
   for (const field of ["processId", "sessionId"]) {
-    if (!Number.isSafeInteger(machine[field]) || machine[field] <= 0) {
+    const value = machine[field];
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
       throw new Error(
         `expectedRuntimeAttestation.machine.${field} must be a positive integer`,
       );
     }
   }
   for (const field of ["executablePath", "principal"]) {
-    if (typeof machine[field] !== "string" || machine[field].trim() === "") {
+    const value = machine[field];
+    if (typeof value !== "string" || value.trim() === "") {
       throw new Error(
         `expectedRuntimeAttestation.machine.${field} is required`,
       );
@@ -189,23 +286,23 @@ export function validateExpectedRuntimeAttestation(attestation) {
   }
   return {
     targetId: boundedRequiredString(
-      attestation.targetId,
+      record.targetId,
       "expectedRuntimeAttestation.targetId",
       MAX_TARGET_ID_LENGTH,
     ),
     machine: {
-      processId: machine.processId,
-      sessionId: machine.sessionId,
-      executablePath: normalizeWindowsPath(machine.executablePath),
-      principal: normalizeWindowsPrincipal(machine.principal),
+      processId: machine.processId as number,
+      sessionId: machine.sessionId as number,
+      executablePath: normalizeWindowsPath(machine.executablePath as string),
+      principal: normalizeWindowsPrincipal(machine.principal as string),
     },
   };
 }
 
 export function rewriteWebSocketDebuggerUrl(
-  webSocketDebuggerUrl,
-  forwardedEndpoint,
-) {
+  webSocketDebuggerUrl: unknown,
+  forwardedEndpoint: unknown,
+): string {
   const original = new URL(String(webSocketDebuggerUrl));
   const forwarded = normalizeEndpointUrl(forwardedEndpoint);
   if (original.protocol !== "ws:" && original.protocol !== "wss:") {
@@ -219,8 +316,8 @@ export function rewriteWebSocketDebuggerUrl(
   return original.toString();
 }
 
-function cdpTargetIdFromWebSocketUrl(webSocketUrl) {
-  let url;
+function cdpTargetIdFromWebSocketUrl(webSocketUrl: unknown): string {
+  let url: URL;
   try {
     url = new URL(String(webSocketUrl));
   } catch {
@@ -240,15 +337,15 @@ function cdpTargetIdFromWebSocketUrl(webSocketUrl) {
 }
 
 export function assertTargetDebuggerWebSocketUrl(
-  webSocketDebuggerUrl,
-  targetId,
-) {
+  webSocketDebuggerUrl: unknown,
+  targetId: unknown,
+): URL {
   const id = boundedRequiredString(
     targetId,
     "CDP target id",
     MAX_TARGET_ID_LENGTH,
   );
-  let url;
+  let url: URL;
   try {
     url = new URL(String(webSocketDebuggerUrl));
   } catch {
@@ -270,7 +367,12 @@ export async function discoverMachineUiTarget({
   expectedTargetId,
   fetchImpl = globalThis.fetch,
   timeoutMs = DEFAULT_TIMEOUT_MS,
-} = {}) {
+}: {
+  endpoint?: string;
+  expectedTargetId?: string;
+  fetchImpl?: typeof globalThis.fetch;
+  timeoutMs?: number;
+} = {}): Promise<Record<string, unknown>> {
   if (!endpoint) throw new Error("endpoint is required");
   if (typeof fetchImpl !== "function") throw new Error("fetch is unavailable");
   if (typeof expectedTargetId !== "string" || expectedTargetId.trim() === "") {
@@ -278,7 +380,7 @@ export async function discoverMachineUiTarget({
   }
   const jsonEndpoint = new URL("/json", normalizeEndpoint(endpoint));
   const deadline = Date.now() + timeoutMs;
-  let response;
+  let response: Response;
   while (true) {
     try {
       response = await withTimeout(
@@ -304,15 +406,16 @@ export async function discoverMachineUiTarget({
     throw new Error("CDP target discovery did not return a target array");
   }
 
-  const candidates = targets.filter((candidate) =>
-    isStrictTauriHashRouteUrl(candidate?.url),
+  const targetRecords = targets as Array<Record<string, unknown>>;
+  const candidates = targetRecords.filter((candidate) =>
+    isStrictTauriHashRouteUrl(candidate.url),
   );
   if (candidates.length !== 1) {
     throw new Error(
       `CDP target discovery requires exactly one strict tauri target; found ${candidates.length}`,
     );
   }
-  const target = candidates[0];
+  const target = candidates[0] ?? {};
   if (target.id !== expectedTargetId) {
     throw new Error(
       `CDP target binding is stale: expected ${expectedTargetId}, found ${String(target.id)}`,
@@ -332,7 +435,11 @@ export async function discoverCanonicalMachineUiTarget({
   endpoint,
   fetchImpl = globalThis.fetch,
   timeoutMs = DEFAULT_TIMEOUT_MS,
-} = {}) {
+}: {
+  endpoint?: string;
+  fetchImpl?: typeof globalThis.fetch;
+  timeoutMs?: number;
+} = {}): Promise<Record<string, unknown>> {
   if (!endpoint) throw new Error("endpoint is required");
   if (typeof fetchImpl !== "function") throw new Error("fetch is unavailable");
   const jsonEndpoint = new URL("/json", normalizeEndpoint(endpoint));
@@ -349,13 +456,15 @@ export async function discoverCanonicalMachineUiTarget({
     "CDP target discovery JSON",
   );
   const candidates = Array.isArray(targets)
-    ? targets.filter((candidate) => isStrictTauriHashRouteUrl(candidate?.url))
+    ? (targets as Array<Record<string, unknown>>).filter((candidate) =>
+        isStrictTauriHashRouteUrl(candidate.url),
+      )
     : [];
   if (candidates.length !== 1)
     throw new Error(
       `CDP target discovery requires exactly one strict tauri target; found ${candidates.length}`,
     );
-  const target = candidates[0];
+  const target = candidates[0] ?? {};
   if (typeof target.id !== "string" || !CANONICAL_CDP_TARGET_ID.test(target.id))
     throw new Error("CDP target identity is invalid");
   assertTargetDebuggerWebSocketUrl(target.webSocketDebuggerUrl, target.id);
@@ -373,7 +482,7 @@ export async function inspectWindowsMachineUiRuntime({
   remoteCdpPort = DEFAULT_REMOTE_CDP_PORT,
   expectedMachinePath,
   timeoutMs = DEFAULT_TIMEOUT_MS,
-} = {}) {
+}: WindowsMachineUiInspectionOptions = {}): Promise<unknown> {
   return inspectWindowsMachineUiRuntimeWithRunner(
     {
       remote,
@@ -392,9 +501,11 @@ export async function inspectWindowsMachineUiRuntime({
 }
 
 export async function inspectWindowsMachineUiRuntimeForTest(
-  options = {},
-  { commandRunner = runWindowsPowerShellOverSsh } = {},
-) {
+  options: WindowsMachineUiInspectionOptions = {},
+  { commandRunner = runWindowsPowerShellOverSsh }: {
+    commandRunner?: WindowsRuntimeCommandRunner;
+  } = {},
+): Promise<unknown> {
   return inspectWindowsMachineUiRuntimeWithRunner(options, commandRunner);
 }
 
@@ -410,9 +521,9 @@ async function inspectWindowsMachineUiRuntimeWithRunner(
     remoteCdpPort = DEFAULT_REMOTE_CDP_PORT,
     expectedMachinePath,
     timeoutMs = DEFAULT_TIMEOUT_MS,
-  } = {},
-  commandRunner,
-) {
+  }: WindowsMachineUiInspectionOptions = {},
+  commandRunner: WindowsRuntimeCommandRunner,
+): Promise<unknown> {
   if (typeof remote !== "string" || remote.trim() === "") {
     throw new Error("remote is required for Windows runtime inspection");
   }
@@ -444,7 +555,18 @@ export function bindMachineUiRuntimeEvidence({
   expectedRuntimeAttestation,
   observedRuntime,
   target,
-} = {}) {
+}: {
+  expectedRuntimeAttestation?: unknown;
+  observedRuntime?: unknown;
+  target?: { id?: unknown; url?: unknown };
+} = {}): {
+  expected: NormalizedExpectedRuntimeAttestation;
+  observed: {
+    machine: NormalizedWindowsProcessObservation;
+    cdpListener: NormalizedWindowsRuntimeObservation["cdpListener"];
+    cdpTarget: { id: string; url: string; route: string };
+  };
+} {
   const expected = validateExpectedRuntimeAttestation(
     expectedRuntimeAttestation,
   );
@@ -467,15 +589,18 @@ export function bindMachineUiRuntimeEvidence({
   canonicalTargetUrl.hash = route;
   const expectedMachine = expected.machine;
   const actualMachine = observed.machine;
-  for (const field of [
-    "processId",
-    "sessionId",
-    "executablePath",
-    "principal",
-  ]) {
-    if (actualMachine[field] !== expectedMachine[field]) {
+  const machineFields: Array<
+    [label: string, expected: string | number, actual: string | number]
+  > = [
+    ["processId", expectedMachine.processId, actualMachine.processId],
+    ["sessionId", expectedMachine.sessionId, actualMachine.sessionId],
+    ["executablePath", expectedMachine.executablePath, actualMachine.executablePath],
+    ["principal", expectedMachine.principal, actualMachine.principal],
+  ];
+  for (const [label, expectedValue, actualValue] of machineFields) {
+    if (actualValue !== expectedValue) {
       throw new Error(
-        `Windows machine process ${field} mismatch: expected ${String(expectedMachine[field])}, observed ${String(actualMachine[field])}`,
+        `Windows machine process ${label} mismatch: expected ${String(expectedValue)}, observed ${String(actualValue)}`,
       );
     }
   }
@@ -514,9 +639,16 @@ export function bindMachineUiRuntimeEvidence({
 export function buildWindowsMachineUiInspectionScript({
   machinePath,
   remoteCdpPort,
-} = {}) {
+}: {
+  machinePath?: string;
+  remoteCdpPort?: number;
+} = {}): string {
   const normalizedMachinePath = normalizeWindowsPath(machinePath);
-  if (!Number.isSafeInteger(remoteCdpPort) || remoteCdpPort <= 0) {
+  if (
+    typeof remoteCdpPort !== "number" ||
+    !Number.isSafeInteger(remoteCdpPort) ||
+    remoteCdpPort <= 0
+  ) {
     throw new Error("remoteCdpPort must be a positive integer");
   }
   const encodedMachinePath = Buffer.from(
@@ -592,7 +724,28 @@ export async function openMachineUiCdpSidecar({
   startupPollMs = 25,
   shutdownTimeoutMs = 1_000,
   processAdapter = defaultProcessAdapter,
-} = {}) {
+}: {
+  endpoint?: string;
+  remote?: string;
+  sshPort?: number;
+  identityFile?: string;
+  certificateFile?: string;
+  sshKnownHostsPath?: string;
+  sshHostKeyAlias?: string;
+  sshArgs?: string[];
+  localHost?: string;
+  localPort?: number;
+  remoteCdpHost?: string;
+  remoteCdpPort?: number;
+  startupTimeoutMs?: number;
+  startupPollMs?: number;
+  shutdownTimeoutMs?: number;
+  processAdapter?: ProcessAdapter;
+} = {}): Promise<{
+  endpoint: string;
+  process: ChildProcess | null;
+  close: () => Promise<void>;
+}> {
   if (endpoint) {
     return {
       endpoint: normalizeEndpoint(endpoint),
@@ -630,13 +783,13 @@ export async function openMachineUiCdpSidecar({
     ...sshArgs,
     remote,
   ];
-  let child;
+  let child: ChildProcess;
   try {
     child = processAdapter.spawn("ssh", args, {
       stdio: ["ignore", "ignore", "pipe"],
     });
   } catch (error) {
-    throw new Error(`SSH tunnel spawn failed: ${error.message}`, {
+    throw new Error(`SSH tunnel spawn failed: ${errorMessage(error)}`, {
       cause: error,
     });
   }
@@ -691,8 +844,80 @@ export async function openMachineUiCdpSidecar({
   };
 }
 
+interface BrowserSocket {
+  addEventListener(
+    type: string,
+    handler: (event: unknown) => void,
+    options?: { once?: boolean },
+  ): void;
+  removeEventListener(type: string, handler: (event: unknown) => void): void;
+  send(data: string): void;
+  close(): void;
+  readyState: number;
+}
+
+type WebSocketFactory = (url: string) => BrowserSocket;
+
+interface CdpClientOptions {
+  webSocketFactory?: WebSocketFactory;
+  defaultTimeoutMs?: number;
+}
+
+interface PendingCdpRequest {
+  method: string;
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
+  timer: NodeJS.Timeout;
+}
+
+type CdpEventHandler = (params: unknown) => void;
+
+interface CdpRuntimeClient {
+  closed?: boolean;
+  send: (
+    method: string,
+    params?: unknown,
+    options?: { timeoutMs?: number },
+  ) => Promise<unknown>;
+}
+
+interface EvaluateOptions {
+  timeoutMs?: number;
+  returnByValue?: boolean;
+}
+
+interface ScreenshotOptions {
+  format?: "png" | "jpeg";
+  maxBytes?: number;
+  fromSurface?: boolean;
+  captureBeyondViewport?: boolean;
+  timeoutMs?: number;
+  validatePng?: boolean;
+  expectedDimensions?: { width: number; height: number };
+  screenshotSink?: (input: {
+    bytes: Uint8Array;
+    sha256: string;
+    format: string;
+    label: string;
+  }) => Promise<string | { ref?: string }> | string | { ref?: string };
+  label?: string;
+  clock?: () => Date;
+}
+
 export class CdpClient {
-  constructor(webSocketUrl, options = {}) {
+  readonly webSocketUrl: string;
+  readonly webSocketFactory: WebSocketFactory;
+  readonly defaultTimeoutMs: number;
+  nextId = 1;
+  pending = new Map<number, PendingCdpRequest>();
+  eventHandlers = new Map<string, CdpEventHandler[]>();
+  closed = false;
+  socket: BrowserSocket | null = null;
+  targetId: string;
+  connectionSessionId: string | null = null;
+  connectedAt: string | null = null;
+
+  constructor(webSocketUrl: unknown, options: CdpClientOptions = {}) {
     const url = new URL(String(webSocketUrl));
     if (url.protocol !== "ws:" && url.protocol !== "wss:") {
       throw new Error("CDP WebSocket URL must use ws or wss");
@@ -717,14 +942,14 @@ export class CdpClient {
     this.connectedAt = null;
   }
 
-  async connect({ timeoutMs = this.defaultTimeoutMs } = {}) {
+  async connect({ timeoutMs = this.defaultTimeoutMs }: { timeoutMs?: number } = {}): Promise<this> {
     if (this.socket) return this;
-    let socket;
+    let socket: BrowserSocket;
     try {
       socket = this.webSocketFactory(this.webSocketUrl);
     } catch (error) {
       throw new Error(
-        `CDP WebSocket creation failed: ${boundedString(error.message, 512)}`,
+        `CDP WebSocket creation failed: ${boundedString(errorMessage(error), 512)}`,
         {
           cause: error,
         },
@@ -747,27 +972,39 @@ export class CdpClient {
       await this.close({ timeoutMs }).catch(() => {});
       throw error;
     }
-    this.connectionSessionId ??= `cdp-connection:${randomUUID()}`;
-    this.connectedAt ??= new Date().toISOString();
+    if (this.connectionSessionId === null) {
+      this.connectionSessionId = `cdp-connection:${randomUUID()}`;
+    }
+    if (this.connectedAt === null) {
+      this.connectedAt = new Date().toISOString();
+    }
     return this;
   }
 
-  async observeIdentity() {
+  async observeIdentity(): Promise<{
+    targetId: string;
+    sessionId: string;
+    connectedAt: string;
+  }> {
     if (!this.socket || this.closed || this.socket.readyState !== 1) {
       throw new Error("CDP client is closed");
     }
     return observeConnectedCdpIdentity(this);
   }
 
-  async send(method, params = {}, { timeoutMs = this.defaultTimeoutMs } = {}) {
+  async send(
+    method: string,
+    params: unknown = {},
+    { timeoutMs = this.defaultTimeoutMs }: { timeoutMs?: number } = {},
+  ): Promise<unknown> {
     if (!this.socket || this.closed || this.socket.readyState !== 1) {
       throw new Error("CDP client is closed");
     }
     const id = this.nextId++;
     const payload = JSON.stringify({ id, method, params });
-    let resolveResponse;
-    let rejectResponse;
-    const response = new Promise((resolve, reject) => {
+    let resolveResponse!: (value: unknown) => void;
+    let rejectResponse!: (error: Error) => void;
+    const response = new Promise<unknown>((resolve, reject) => {
       resolveResponse = resolve;
       rejectResponse = reject;
     });
@@ -786,16 +1023,17 @@ export class CdpClient {
     } catch (error) {
       clearTimeout(timer);
       this.pending.delete(id);
-      throw new Error(`CDP ${method} send failed: ${error.message}`, {
+      throw new Error(`CDP ${method} send failed: ${errorMessage(error)}`, {
         cause: error,
       });
     }
     return response;
   }
 
-  on(method, handler) {
-    if (!this.eventHandlers.has(method)) this.eventHandlers.set(method, []);
-    this.eventHandlers.get(method).push(handler);
+  on(method: string, handler: CdpEventHandler): () => void {
+    const handlers = this.eventHandlers.get(method) ?? [];
+    handlers.push(handler);
+    this.eventHandlers.set(method, handlers);
     return () => {
       const handlers = this.eventHandlers.get(method) ?? [];
       this.eventHandlers.set(
@@ -806,13 +1044,13 @@ export class CdpClient {
   }
 
   async waitForEvent(
-    method,
-    predicate = () => true,
-    { timeoutMs = this.defaultTimeoutMs } = {},
-  ) {
-    let off;
+    method: string,
+    predicate: (params: unknown) => boolean = () => true,
+    { timeoutMs = this.defaultTimeoutMs }: { timeoutMs?: number } = {},
+  ): Promise<unknown> {
+    let off: (() => void) | undefined;
     return withTimeout(
-      new Promise((resolve) => {
+      new Promise<unknown>((resolve) => {
         off = this.on(method, (params) => {
           if (predicate(params)) resolve(params);
         });
@@ -823,7 +1061,7 @@ export class CdpClient {
     );
   }
 
-  async close({ timeoutMs = this.defaultTimeoutMs } = {}) {
+  async close({ timeoutMs = this.defaultTimeoutMs }: { timeoutMs?: number } = {}): Promise<void> {
     if (this.closed && this.socket?.readyState === 3) return;
     this.closed = true;
     this.#rejectPending(new Error("CDP client closed"));
@@ -837,27 +1075,29 @@ export class CdpClient {
     await closed;
   }
 
-  #handleMessage(event) {
-    let message;
+  #handleMessage(event: unknown): void {
+    let message: Record<string, unknown>;
     try {
-      if (typeof event?.data !== "string") {
+      const data = (event as { data?: unknown } | null | undefined)?.data;
+      if (typeof data !== "string") {
         throw new Error("browser WebSocket message data must be a string");
       }
-      message = JSON.parse(event.data);
+      message = JSON.parse(data) as Record<string, unknown>;
     } catch (error) {
       this.#handleError(error);
       return;
     }
 
     if (message.id != null) {
-      const pending = this.pending.get(message.id);
+      const messageId = message.id as number;
+      const pending = this.pending.get(messageId);
       if (!pending) return;
-      this.pending.delete(message.id);
+      this.pending.delete(messageId);
       clearTimeout(pending.timer);
       if (message.error) {
         pending.reject(
           new Error(
-            `CDP ${pending.method} failed: ${message.error.message ?? "error"}`,
+            `CDP ${pending.method} failed: ${(message.error as { message?: string } | undefined)?.message ?? "error"}`,
           ),
         );
       } else {
@@ -867,7 +1107,7 @@ export class CdpClient {
     }
 
     if (message.method) {
-      for (const handler of this.eventHandlers.get(message.method) ?? []) {
+      for (const handler of this.eventHandlers.get(String(message.method)) ?? []) {
         try {
           handler(message.params ?? {});
         } catch (error) {
@@ -877,16 +1117,19 @@ export class CdpClient {
     }
   }
 
-  #handleClose() {
+  #handleClose(): void {
     this.closed = true;
     this.#rejectPending(new Error("CDP connection closed"));
   }
 
-  #handleError(event) {
+  #handleError(event: unknown): void {
     const error =
       event instanceof Error
         ? event
-        : new Error(event?.message ?? "CDP WebSocket error");
+        : new Error(
+            (event as { message?: string } | null | undefined)?.message ??
+              "CDP WebSocket error",
+          );
     this.#rejectPending(error);
     if (!this.closed) {
       this.closed = true;
@@ -896,7 +1139,7 @@ export class CdpClient {
     }
   }
 
-  #rejectPending(error) {
+  #rejectPending(error: Error): void {
     for (const [id, pending] of this.pending.entries()) {
       clearTimeout(pending.timer);
       pending.reject(
@@ -909,31 +1152,41 @@ export class CdpClient {
   }
 }
 
-export function observeConnectedCdpIdentity(client) {
+export function observeConnectedCdpIdentity(client: unknown): {
+  targetId: string;
+  sessionId: string;
+  connectedAt: string;
+} {
   if (!client || typeof client !== "object") {
     throw new Error("connected production CDP client is required");
   }
+  const record = client as Record<string, unknown> & {
+    targetId?: unknown;
+    webSocketUrl?: unknown;
+    connectionSessionId?: unknown;
+    connectedAt?: unknown;
+  };
   const targetId =
-    typeof client.targetId === "string" && client.targetId.trim() !== ""
+    typeof record.targetId === "string" && record.targetId.trim() !== ""
       ? boundedRequiredString(
-          client.targetId,
+          record.targetId,
           "CDP target id",
           MAX_TARGET_ID_LENGTH,
         )
-      : cdpTargetIdFromWebSocketUrl(client.webSocketUrl);
+      : cdpTargetIdFromWebSocketUrl(record.webSocketUrl);
   const sessionId =
-    typeof client.connectionSessionId === "string" &&
-    client.connectionSessionId.trim() !== ""
-      ? client.connectionSessionId
+    typeof record.connectionSessionId === "string" &&
+    record.connectionSessionId.trim() !== ""
+      ? record.connectionSessionId
       : `cdp-connection:${randomUUID()}`;
   const connectedAt =
-    typeof client.connectedAt === "string" &&
-    Number.isFinite(Date.parse(client.connectedAt))
-      ? client.connectedAt
+    typeof record.connectedAt === "string" &&
+    Number.isFinite(Date.parse(record.connectedAt))
+      ? record.connectedAt
       : new Date().toISOString();
-  client.targetId = targetId;
-  client.connectionSessionId = sessionId;
-  client.connectedAt = connectedAt;
+  record.targetId = targetId;
+  record.connectionSessionId = sessionId;
+  record.connectedAt = connectedAt;
   return {
     targetId,
     sessionId,
@@ -941,16 +1194,27 @@ export function observeConnectedCdpIdentity(client) {
   };
 }
 
-export async function enablePageRuntime(client) {
+export async function enablePageRuntime(client: {
+  send: (method: string, params?: unknown) => Promise<unknown>;
+}): Promise<void> {
   await client.send("Runtime.enable");
   await client.send("Page.enable");
 }
 
 export async function evaluateExpression(
-  client,
-  expression,
-  { timeoutMs, returnByValue = true } = {},
-) {
+  client: {
+    send: (
+      method: string,
+      params?: unknown,
+      options?: { timeoutMs?: number },
+    ) => Promise<unknown>;
+  },
+  expression: string,
+  {
+    timeoutMs,
+    returnByValue = true,
+  }: { timeoutMs?: number; returnByValue?: boolean } = {},
+): Promise<unknown> {
   const result = await client.send(
     "Runtime.evaluate",
     {
@@ -961,12 +1225,16 @@ export async function evaluateExpression(
     },
     { timeoutMs },
   );
-  if (result.exceptionDetails) {
+  const resultRecord = result as {
+    exceptionDetails?: { text?: string };
+    result?: { value?: unknown };
+  };
+  if (resultRecord.exceptionDetails) {
     throw new Error(
-      `Runtime.evaluate failed: ${result.exceptionDetails.text ?? "exception"}`,
+      `Runtime.evaluate failed: ${resultRecord.exceptionDetails.text ?? "exception"}`,
     );
   }
-  return result.result?.value;
+  return resultRecord.result?.value;
 }
 
 const MACHINE_RUNTIME_TRACE_SNAPSHOT_EXPRESSION =
@@ -1030,10 +1298,10 @@ export async function readCdpLocationHash(client: any, options: any = {}) {
 }
 
 export async function setCdpLocationHash(
-  client: any,
+  client: CdpRuntimeClient,
   hash: string,
-  options: any = {},
-) {
+  options: EvaluateOptions = {},
+): Promise<unknown> {
   return evaluateExpression(
     client,
     `location.hash = ${JSON.stringify(hash)}`,
@@ -1041,7 +1309,10 @@ export async function setCdpLocationHash(
   );
 }
 
-export async function captureDomIdentity(client, options = {}) {
+export async function captureDomIdentity(
+  client: CdpRuntimeClient,
+  options: EvaluateOptions = {},
+): Promise<unknown> {
   const identity = await evaluateExpression(
     client,
     `(() => {
@@ -1069,7 +1340,10 @@ export async function captureDomIdentity(client, options = {}) {
 
 // This is intentionally a CDP read-only probe.  Installed acceptance must not
 // manufacture a UI state while it is trying to observe the daemon transport.
-export async function captureRuntimeOperationObservation(client, options = {}) {
+export async function captureRuntimeOperationObservation(
+  client: CdpRuntimeClient,
+  options: EvaluateOptions = {},
+): Promise<Record<string, unknown>> {
   const value = await evaluateExpression(
     client,
     RUNTIME_OPERATION_OBSERVATION_EXPRESSION,
@@ -1078,20 +1352,29 @@ export async function captureRuntimeOperationObservation(client, options = {}) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("runtime operation observation returned no object");
   }
-  return value;
+  return value as Record<string, unknown>;
 }
 
 async function captureRecoveredOperationObservation(
-  client,
-  { uiBefore, timeoutMs, pollMs },
-) {
+  client: CdpRuntimeClient,
+  {
+    uiBefore,
+    timeoutMs,
+    pollMs,
+  }: {
+    uiBefore?: Record<string, unknown> | null;
+    timeoutMs: number;
+    pollMs: number;
+  },
+  recover: <T>(operation: () => Promise<T>) => Promise<T>,
+): Promise<Record<string, unknown> | null> {
   // After daemon transport recovery the UI may briefly pass through a
   // loading/empty state before the payment surface re-exposes the order
   // credential. Capture the stable state instead of racing the restore.
   const deadline = Date.now() + timeoutMs;
   let last = null;
   while (Date.now() < deadline) {
-    last = await withCdpRecovery(() =>
+    last = await recover(() =>
       captureRuntimeOperationObservation(client, { timeoutMs }),
     );
     if (
@@ -1105,7 +1388,10 @@ async function captureRecoveredOperationObservation(
   return last;
 }
 
-async function readRuntimeGeneration(client, options = {}) {
+async function readRuntimeGeneration(
+  client: CdpRuntimeClient,
+  options: EvaluateOptions = {},
+): Promise<string | null> {
   const value = await evaluateExpression(
     client,
     MACHINE_RUNTIME_GENERATION_EXPRESSION,
@@ -1124,7 +1410,15 @@ async function readRuntimeGeneration(client, options = {}) {
   );
 }
 
-export async function captureScreenshot(client, options = {}) {
+export async function captureScreenshot(
+  client: CdpRuntimeClient,
+  options: ScreenshotOptions = {},
+): Promise<{
+  sha256: string;
+  byteLength: number;
+  format: string;
+  ref: string | null;
+}> {
   const format = options.format ?? "png";
   if (format !== "png" && format !== "jpeg") {
     throw new Error("screenshot format must be png or jpeg");
@@ -1146,30 +1440,32 @@ export async function captureScreenshot(client, options = {}) {
     },
     { timeoutMs: options.timeoutMs },
   );
-  if (typeof result.data !== "string") {
+  const resultRecord = result as { data?: unknown };
+  if (typeof resultRecord.data !== "string") {
     throw new Error("Page.captureScreenshot returned no image data");
   }
-  if (result.data.length > Math.ceil((maxBytes * 4) / 3) + 4) {
+  const imageData = resultRecord.data;
+  if (imageData.length > Math.ceil((maxBytes * 4) / 3) + 4) {
     throw new Error("Page.captureScreenshot exceeded the maximum size");
   }
   if (
-    result.data.length % 4 !== 0 ||
-    !/^[A-Za-z0-9+/]*={0,2}$/.test(result.data)
+    imageData.length % 4 !== 0 ||
+    !/^[A-Za-z0-9+/]*={0,2}$/.test(imageData)
   ) {
     throw new Error("Page.captureScreenshot returned invalid base64");
   }
-  const bytes = Buffer.from(result.data, "base64");
+  const bytes = Buffer.from(imageData, "base64");
   if (bytes.length > maxBytes) {
     throw new Error("Page.captureScreenshot exceeded the maximum size");
   }
-  if (bytes.toString("base64") !== result.data) {
+  if (bytes.toString("base64") !== imageData) {
     throw new Error("Page.captureScreenshot returned noncanonical base64");
   }
   if (options.validatePng === true) {
     validatePngScreenshot(bytes, options.expectedDimensions);
   }
   const sha256 = createHash("sha256").update(bytes).digest("hex");
-  let ref = null;
+  let ref: string | null = null;
   if (options.screenshotSink) {
     const sinkResult = await options.screenshotSink({
       bytes,
@@ -1177,7 +1473,10 @@ export async function captureScreenshot(client, options = {}) {
       format,
       label: options.label ?? "screenshot",
     });
-    ref = typeof sinkResult === "string" ? sinkResult : sinkResult?.ref;
+    ref =
+      typeof sinkResult === "string"
+        ? sinkResult
+        : sinkResult?.ref ?? null;
     if (typeof ref !== "string" || ref.trim() === "" || ref.length > 1_024) {
       throw new Error("screenshot sink must return a bounded nonempty ref");
     }
@@ -1191,9 +1490,12 @@ export async function captureScreenshot(client, options = {}) {
 }
 
 export function validatePngScreenshot(
-  bytes,
-  expected = { width: 1080, height: 1920 },
-) {
+  bytes: unknown,
+  expected: { width: number; height: number } = {
+    width: 1080,
+    height: 1920,
+  },
+): { format: "png"; width: number; height: number } {
   if (!Buffer.isBuffer(bytes) || bytes.length < 24) {
     throw new Error("screenshot is not a readable PNG");
   }
@@ -1217,7 +1519,17 @@ export function validatePngScreenshot(
   return { format: "png", width, height };
 }
 
-export async function captureCheckpoint(client, label, options = {}) {
+export async function captureCheckpoint(
+  client: CdpRuntimeClient,
+  label: string,
+  options: ScreenshotOptions & { screenshot?: boolean } = {},
+): Promise<{
+  type: "checkpoint";
+  label: string;
+  capturedAt: string;
+  identity: unknown;
+  screenshot: Awaited<ReturnType<typeof captureScreenshot>> | null;
+}> {
   const capturedAt = nowIso(options.clock);
   const identity = await captureDomIdentity(client, options);
   return {
@@ -1232,7 +1544,11 @@ export async function captureCheckpoint(client, label, options = {}) {
   };
 }
 
-export async function probeSelectorBounds(client, selector, options = {}) {
+export async function probeSelectorBounds(
+  client: CdpRuntimeClient,
+  selector: string,
+  options: EvaluateOptions = {},
+): Promise<unknown> {
   if (typeof selector !== "string" || selector.trim() === "") {
     throw new Error("selector is required");
   }
@@ -1307,10 +1623,19 @@ export async function probeSelectorBounds(client, selector, options = {}) {
 }
 
 export async function dispatchPhysicalInput(
-  client,
-  point,
-  { kind = "touch", timeoutMs } = {},
-) {
+  client: CdpRuntimeClient,
+  point: { x?: unknown; y?: unknown },
+  {
+    kind = "touch",
+    timeoutMs,
+  }: { kind?: "touch" | "mouse"; timeoutMs?: number } = {},
+): Promise<{
+  method: string;
+  kind: "touch" | "mouse";
+  x: number;
+  y: number;
+  released: boolean;
+}> {
   const x = Number(point?.x);
   const y = Number(point?.y);
   if (!Number.isFinite(x) || !Number.isFinite(y)) {
@@ -1322,7 +1647,7 @@ export async function dispatchPhysicalInput(
 
   const method =
     kind === "touch" ? "Input.dispatchTouchEvent" : "Input.dispatchMouseEvent";
-  let primaryError;
+  let primaryError: Error | undefined;
   try {
     await client.send(
       method,
@@ -1338,7 +1663,7 @@ export async function dispatchPhysicalInput(
     // load. Hold the press briefly so the browser synthesizes a real tap.
     if (kind === "touch") await sleep(TOUCH_PRESS_HOLD_MS);
   } catch (error) {
-    primaryError = error;
+    primaryError = error instanceof Error ? error : new Error(String(error));
   } finally {
     try {
       await client.send(
@@ -1349,21 +1674,34 @@ export async function dispatchPhysicalInput(
         { timeoutMs },
       );
     } catch (releaseError) {
-      if (!primaryError) primaryError = releaseError;
+      if (!primaryError) {
+        primaryError =
+          releaseError instanceof Error
+            ? releaseError
+            : new Error(String(releaseError));
+      }
     }
   }
   if (primaryError) throw primaryError;
   return { method, kind, x, y, released: true };
 }
 
-export async function activateVisibleSelector(client, selector, options = {}) {
+export async function activateVisibleSelector(
+  client: CdpRuntimeClient,
+  selector: string,
+  options: EvaluateOptions & { pollMs?: number; kind?: "touch" | "mouse" } = {},
+): Promise<unknown> {
   const timeoutMs = options.timeoutMs ?? 0;
   const pollMs = options.pollMs ?? DEFAULT_ROUTE_POLL_MS;
   const deadline = Date.now() + timeoutMs;
   let scrolled = false;
-  let probe;
+  let probe: SelectorBoundsProbe | null = null;
   do {
-    probe = await probeSelectorBounds(client, selector, options);
+    probe = (await probeSelectorBounds(
+      client,
+      selector,
+      options,
+    )) as SelectorBoundsProbe | null;
     if (probe?.actionable) break;
     if (
       probe?.exists === true &&
@@ -1400,7 +1738,11 @@ export async function activateVisibleSelector(client, selector, options = {}) {
     }
     await sleep(Math.min(pollMs, Math.max(0, deadline - Date.now())));
   } while (true);
-  const input = await dispatchPhysicalInput(client, probe.center, options);
+  const input = await dispatchPhysicalInput(
+    client,
+    probe.center ?? {},
+    options,
+  );
   return {
     selector,
     center: probe.center,
@@ -1409,14 +1751,167 @@ export async function activateVisibleSelector(client, selector, options = {}) {
   };
 }
 
-export async function waitForRoute(client, expected, options = {}) {
+interface SelectorBoundsProbe {
+  selector?: unknown;
+  exists?: boolean;
+  actionable?: boolean;
+  inViewport?: boolean;
+  hitTarget?: boolean;
+  pointerEvents?: string;
+  disabled?: boolean;
+  ariaDisabled?: string | null;
+  bounds?: {
+    x?: number;
+    y?: number;
+    width?: number;
+    height?: number;
+  };
+  center?: { x: number; y: number };
+}
+
+interface RouteIdentity {
+  route?: string;
+  [key: string]: unknown;
+}
+
+interface WaitForRouteOptions {
+  timeoutMs?: number;
+  pollMs?: number;
+  assertHealthy?: () => void;
+  forbiddenRoutes?: unknown;
+  allowedRoutes?: unknown;
+  returnByValue?: boolean;
+}
+
+type RouteMatcher = string | RegExp | ((route: string) => boolean);
+
+interface TunnelOptions {
+  remote?: string;
+  sshPort?: number;
+  identityFile?: string;
+  certificateFile?: string;
+  sshKnownHostsPath?: string;
+  sshHostKeyAlias?: string;
+  sshArgs?: string[];
+  remoteCdpPort?: number;
+  localHost?: string;
+  localPort?: number;
+  remoteCdpHost?: string;
+  [key: string]: unknown;
+}
+
+interface ScenarioStepInput {
+  type?: unknown;
+  name?: unknown;
+  timeoutMs?: unknown;
+  screenshot?: unknown;
+  selector?: unknown;
+  routeBefore?: unknown;
+  routeAfter?: unknown;
+  inputKind?: unknown;
+  activatesRouteBarrier?: unknown;
+  completesRouteBarrier?: unknown;
+  repeatPreviousActivationCenter?: unknown;
+  operation?: unknown;
+  expectedOperation?: unknown;
+  expectedRoute?: unknown;
+  [key: string]: unknown;
+}
+
+interface ActivationResult {
+  selector?: string;
+  center?: { x: number; y: number };
+  bounds?: unknown;
+  input?: Record<string, unknown> | null;
+}
+
+interface ScenarioStepCommon {
+  name: string;
+  timeoutMs?: number;
+  screenshot?: boolean;
+}
+
+interface CustomerActivationStep extends ScenarioStepCommon {
+  type: "customer-activation";
+  selector: string;
+  routeBefore: RouteMatcher;
+  routeAfter: RouteMatcher;
+  inputKind?: "touch" | "mouse";
+  activatesRouteBarrier?: boolean;
+  completesRouteBarrier?: boolean;
+  repeatPreviousActivationCenter?: boolean;
+}
+
+interface ObservationStep extends ScenarioStepCommon {
+  type: "observation";
+  route: RouteMatcher;
+}
+
+interface ExternalOperationStep extends ScenarioStepCommon {
+  type: "external-operation";
+  operation: string;
+  routeBefore: RouteMatcher;
+  routeAfter: RouteMatcher;
+}
+
+type ValidatedScenarioStep =
+  | CustomerActivationStep
+  | ObservationStep
+  | ExternalOperationStep;
+
+interface ScenarioAdapter {
+  screenshotSink?: ScreenshotOptions["screenshotSink"];
+  [key: string]: unknown;
+}
+
+interface ScenarioOptions {
+  tunnelOptions?: TunnelOptions;
+  expectedRuntimeAttestation?: unknown;
+  expectedInitialRoute?: RouteMatcher;
+  sequenceName?: string;
+  steps?: ScenarioStepInput[];
+  adapter?: ScenarioAdapter;
+  timeoutMs?: number;
+  routePollMs?: number;
+  inputKind?: "touch" | "mouse";
+  continuousCapture?: boolean;
+  continuousCaptureIntervalMs?: number;
+  initialForbiddenRoutes?: unknown;
+  screenshotCheckpoints?: boolean;
+  onPaymentWindow?: unknown;
+  clock?: () => Date;
+}
+
+interface ScenarioDependencies {
+  openSidecar: (
+    options: TunnelOptions,
+  ) => Promise<{
+    endpoint: string;
+    process: ChildProcess | null;
+    close: () => Promise<void>;
+  }>;
+  inspectRuntime: (
+    options: WindowsMachineUiInspectionOptions,
+  ) => Promise<unknown>;
+  fetchImpl?: typeof globalThis.fetch;
+  webSocketFactory?: WebSocketFactory;
+}
+
+export async function waitForRoute(
+  client: CdpRuntimeClient,
+  expected: string | RegExp | ((route: string) => boolean),
+  options: WaitForRouteOptions = {},
+): Promise<RouteIdentity> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const pollMs = options.pollMs ?? DEFAULT_ROUTE_POLL_MS;
   const deadline = Date.now() + timeoutMs;
-  let lastIdentity = null;
+  let lastIdentity: RouteIdentity | null = null;
   do {
     options.assertHealthy?.();
-    lastIdentity = await captureDomIdentity(client, options);
+    lastIdentity = (await captureDomIdentity(
+      client,
+      options,
+    )) as RouteIdentity;
     assertAllowedRoute(
       lastIdentity.route,
       options.forbiddenRoutes,
@@ -1431,15 +1926,41 @@ export async function waitForRoute(client, expected, options = {}) {
   );
 }
 
-export function assertRouteIdentity(identity, expected, label = "route") {
-  if (!matchesRoute(identity?.route, expected)) {
+export function assertRouteIdentity(
+  identity: unknown,
+  expected: string | RegExp | ((route: string) => boolean),
+  label = "route",
+): void {
+  const route = (identity as { route?: unknown } | null | undefined)?.route;
+  if (!matchesRoute(route, expected)) {
     throw new Error(
-      `${label} route mismatch: expected ${formatExpectedRoute(expected)}, got ${identity?.route ?? "unknown"}`,
+      `${label} route mismatch: expected ${formatExpectedRoute(expected)}, got ${route ?? "unknown"}`,
     );
   }
 }
 
-export function startContinuousIdentityCapture(client, options = {}) {
+interface ContinuousCaptureOptions extends ScreenshotOptions {
+  intervalMs?: number;
+  maxCheckpoints?: number;
+  startOrdinal?: number;
+  label?: string;
+  routePolicy?: RoutePolicy | (() => RoutePolicy);
+  screenshot?: boolean;
+}
+
+interface ContinuousCheckpoint extends Awaited<ReturnType<typeof captureCheckpoint>> {
+  ordinal?: number;
+}
+
+export function startContinuousIdentityCapture(
+  client: CdpRuntimeClient,
+  options: ContinuousCaptureOptions = {},
+): {
+  checkpoints: ContinuousCheckpoint[];
+  throwIfFailed: () => void;
+  captureNow: () => Promise<ContinuousCheckpoint | null>;
+  stop: () => Promise<ContinuousCheckpoint[]>;
+} {
   const intervalMs =
     options.intervalMs ?? DEFAULT_CONTINUOUS_CAPTURE_INTERVAL_MS;
   const maxCheckpoints = options.maxCheckpoints ?? MAX_CONTINUOUS_CHECKPOINTS;
@@ -1448,19 +1969,19 @@ export function startContinuousIdentityCapture(client, options = {}) {
       "continuous capture maxCheckpoints must be a positive integer",
     );
   }
-  const checkpoints = [];
+  const checkpoints: ContinuousCheckpoint[] = [];
   let stopped = false;
-  let inFlight = null;
-  let failure = null;
+  let inFlight: Promise<void> | null = null;
+  let failure: Error | null = null;
   let ordinal = options.startOrdinal ?? 0;
 
-  const capture = () => {
+  const capture = (): void => {
     if (stopped || inFlight || failure) return;
     // A capture can complete after a payment barrier is armed. Its route must be
     // judged by the policy that existed when the capture began, not afterward.
     const policy = snapshotRoutePolicy(options);
     inFlight = captureCheckpoint(client, options.label ?? "continuous", options)
-      .then((checkpoint) => {
+      .then((checkpoint: ContinuousCheckpoint) => {
         if (checkpoints.length >= maxCheckpoints) {
           throw new Error(
             "continuous capture exceeded maximum evidence entries",
@@ -1468,16 +1989,17 @@ export function startContinuousIdentityCapture(client, options = {}) {
         }
         checkpoint.ordinal = ordinal++;
         assertAllowedRoute(
-          checkpoint.identity.route,
+          (checkpoint.identity as RouteIdentity).route,
           policy.forbiddenRoutes,
           policy.allowedRoutes,
         );
         checkpoints.push(checkpoint);
       })
       .catch((error) => {
-        failure = new Error(`continuous capture failed: ${error.message}`, {
-          cause: error,
-        });
+        failure = new Error(
+          `continuous capture failed: ${errorMessage(error)}`,
+          { cause: error },
+        );
       })
       .finally(() => {
         inFlight = null;
@@ -1507,7 +2029,9 @@ export function startContinuousIdentityCapture(client, options = {}) {
   };
 }
 
-export async function runVisibleMachineSaleScenario(options = {}) {
+export async function runVisibleMachineSaleScenario(
+  options: ScenarioOptions = {},
+): Promise<unknown> {
   assertProductionScenarioOptions(options);
   return runVisibleMachineSaleScenarioInternal(
     {
@@ -1524,9 +2048,16 @@ export async function runVisibleMachineSaleScenario(options = {}) {
 
 // This harness is intentionally not reachable from CLI argument parsing.
 export async function runVisibleMachineSaleScenarioForTest(
-  options = {},
-  testDependencies = {},
-) {
+  options: ScenarioOptions & { endpoint?: string } = {},
+  testDependencies: {
+    openSidecar?: ScenarioDependencies["openSidecar"];
+    inspectRuntime?: ScenarioDependencies["inspectRuntime"];
+    remoteCommandRunner?: WindowsRuntimeCommandRunner;
+    processAdapter?: ProcessAdapter;
+    fetchImpl?: typeof globalThis.fetch;
+    webSocketFactory?: WebSocketFactory;
+  } = {},
+): Promise<unknown> {
   const { endpoint, ...scenarioOptions } = options;
   return runVisibleMachineSaleScenarioInternal(scenarioOptions, {
     openSidecar:
@@ -1548,7 +2079,10 @@ export async function runVisibleMachineSaleScenarioForTest(
   });
 }
 
-async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
+async function runVisibleMachineSaleScenarioInternal(
+  options: ScenarioOptions,
+  dependencies: ScenarioDependencies,
+): Promise<unknown> {
   const {
     tunnelOptions = {},
     expectedRuntimeAttestation,
@@ -1584,7 +2118,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
     externalOperations: 0,
   };
   let activeForbiddenRoutes = validateForbiddenRoutes(initialForbiddenRoutes);
-  let activeAllowedRoutes = null;
+  let activeAllowedRoutes: readonly string[] | null = null;
   let routePolicyEpoch = 0;
   let paymentBarrierTerminalObserved = false;
   const currentRoutePolicy = () =>
@@ -1611,23 +2145,44 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
   const sidecar = await dependencies.openSidecar(
     buildSidecarTunnelOptions(tunnelTransport, inspectedRuntime),
   );
-  let client;
-  let target;
-  let runtimeEvidence;
-  let capture;
-  const captureSegments = [];
+  let client: CdpClient | null = null;
+  const getClient = (): CdpClient | null => client;
+  const requireConnectedClient = (): CdpRuntimeClient => {
+    const current = getClient();
+    if (current === null) {
+      throw new Error("CDP client is not connected");
+    }
+    return current;
+  };
+  let target: Record<string, unknown> | null = null;
+  const getTarget = (): Record<string, unknown> | null => target;
+  let runtimeEvidence: ReturnType<typeof bindMachineUiRuntimeEvidence> | null =
+    null;
+  let capture: ReturnType<typeof startContinuousIdentityCapture> | null = null;
+  const getCapture =
+    (): ReturnType<typeof startContinuousIdentityCapture> | null => capture;
+  const captureSegments: Array<{
+    capture: ReturnType<typeof startContinuousIdentityCapture>;
+    runtimeGeneration: string | null;
+    targetId: unknown;
+    stopped: boolean;
+  }> = [];
   let nextContinuousOrdinal = 1_000_000;
-  let unsubscribeCdpRoutes;
-  let runtimeGeneration = null;
+  let unsubscribeCdpRoutes: (() => void) | undefined;
+  let runtimeGeneration: string | null = null;
   let runtimeGenerationMayHaveChanged = false;
   let recoveryAttempts = 0;
-  let scenarioError;
-  let scenarioResult;
-  const evidence = [];
+  let scenarioError: unknown;
+  let scenarioResult: unknown;
+  const evidence: Array<Record<string, unknown>> = [];
   let ordinal = 0;
-  let fatalError = null;
-  let lastCustomerActivation = null;
-  const record = (entry) => {
+  let fatalError: Error | null = null;
+  let lastCustomerActivation: {
+    selector?: string;
+    center?: { x: number; y: number };
+    bounds?: unknown;
+  } | null = null;
+  const record = (entry: Record<string, unknown>): Record<string, unknown> => {
     if (evidence.length >= MAX_EVIDENCE_ENTRIES) {
       throw new Error("machine UI CDP evidence exceeded maximum entries");
     }
@@ -1646,11 +2201,12 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
     evidence.push(item);
     return item;
   };
-  const classifyRouteEvent = (event, source = "adapter") => {
+  const classifyRouteEvent = (event: unknown, source = "adapter"): void => {
     if (fatalError) return;
     try {
       const policy = currentRoutePolicy();
-      const identity = boundIdentity(event?.identity ?? event);
+      const eventRecord = event as { identity?: unknown } | null | undefined;
+      const identity = boundIdentity(eventRecord?.identity ?? eventRecord);
       assertAllowedRoute(
         identity.route,
         policy.forbiddenRoutes,
@@ -1669,7 +2225,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
       }
       record({ type: "route-changed", source, identity });
     } catch (error) {
-      fatalError = new Error(`route capture failed: ${error.message}`, {
+      fatalError = new Error(`route capture failed: ${errorMessage(error)}`, {
         cause: error,
       });
     }
@@ -1688,7 +2244,10 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
       await segment.capture.stop();
     } finally {
       const lastOrdinal = segment.capture.checkpoints.at(-1)?.ordinal;
-      if (Number.isSafeInteger(lastOrdinal)) {
+      if (
+        typeof lastOrdinal === "number" &&
+        Number.isSafeInteger(lastOrdinal)
+      ) {
         nextContinuousOrdinal = Math.max(
           nextContinuousOrdinal,
           lastOrdinal + 1,
@@ -1696,9 +2255,9 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
       }
     }
   };
-  const stopAllCaptures = async () => {
-    const checkpoints = [];
-    let captureError = null;
+  const stopAllCaptures = async (): Promise<ContinuousCheckpoint[]> => {
+    const checkpoints: ContinuousCheckpoint[] = [];
+    let captureError: Error | null = null;
     for (const segment of captureSegments) {
       try {
         if (!segment.stopped) {
@@ -1706,14 +2265,25 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
           await segment.capture.stop();
         }
       } catch (error) {
-        captureError ??= error;
+        if (captureError === null) {
+          captureError =
+            error instanceof Error ? error : new Error(String(error));
+        }
       }
       checkpoints.push(...segment.capture.checkpoints);
     }
     if (captureError) throw captureError;
     return checkpoints;
   };
-  const connectTarget = async ({ nextTarget, nextRuntime, expected }) => {
+  const connectTarget = async ({
+    nextTarget,
+    nextRuntime,
+    expected,
+  }: {
+    nextTarget: Record<string, unknown>;
+    nextRuntime: NormalizedWindowsRuntimeObservation;
+    expected: unknown;
+  }): Promise<void> => {
     target = nextTarget;
     inspectedRuntime = nextRuntime;
     runtimeEvidence = bindMachineUiRuntimeEvidence({
@@ -1735,12 +2305,15 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
     await client.connect({ timeoutMs });
     const offWithinDocument = client.on(
       "Page.navigatedWithinDocument",
-      (params) => classifyRouteEvent({ url: params.url }, "cdp"),
+      (params) =>
+        classifyRouteEvent({ url: (params as { url?: unknown }).url }, "cdp"),
     );
     const offFrameNavigated = client.on("Page.frameNavigated", (params) => {
-      if (params.frame?.parentId == null) {
+      const frame = (params as { frame?: { parentId?: unknown; url?: unknown } })
+        .frame;
+      if (frame?.parentId == null) {
         runtimeGenerationMayHaveChanged = true;
-        classifyRouteEvent({ url: params.frame?.url }, "cdp");
+        classifyRouteEvent({ url: frame?.url }, "cdp");
       }
     });
     unsubscribeCdpRoutes = () => {
@@ -1771,7 +2344,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
       });
     }
   };
-  const reattestRuntime = async (reason) => {
+  const reattestRuntime = async (reason: string): Promise<void> => {
     if (recoveryAttempts >= MAX_CDP_RUNTIME_RECOVERY_ATTEMPTS) {
       throw new Error(
         `CDP runtime recovery exceeded ${MAX_CDP_RUNTIME_RECOVERY_ATTEMPTS} attempts while ${reason}`,
@@ -1820,8 +2393,8 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
     });
     assertHealthy();
   };
-  const ensureRuntimeBoundary = async () => {
-    if (client?.closed) {
+  const ensureRuntimeBoundary = async (): Promise<void> => {
+    if (client === null || client.closed) {
       await reattestRuntime("the CDP WebSocket closed");
       return;
     }
@@ -1840,7 +2413,10 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
     runtimeGeneration = observedGeneration;
     runtimeGenerationMayHaveChanged = false;
   };
-  const withCdpRecovery = async (operation, { retry = true } = {}) => {
+  const withCdpRecovery = async <T>(
+    operation: () => Promise<T>,
+    { retry = true }: { retry?: boolean } = {},
+  ): Promise<T> => {
     let recovered = false;
     while (true) {
       try {
@@ -1852,7 +2428,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
         }
         recovered = true;
         await reattestRuntime(
-          `a CDP operation failed: ${boundedString(error?.message, 256)}`,
+          `a CDP operation failed: ${boundedString(errorMessage(error), 256)}`,
         );
       }
     }
@@ -1883,7 +2459,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
     assertHealthy();
 
     const initial = await withCdpRecovery(() =>
-      captureCheckpoint(client, "initial", {
+      captureCheckpoint(requireConnectedClient(), "initial", {
         timeoutMs,
         screenshot: screenshotCheckpoints,
         screenshotSink: adapter.screenshotSink,
@@ -1891,7 +2467,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
       }),
     );
     assertAllowedRoute(
-      initial.identity.route,
+      (initial.identity as RouteIdentity).route,
       activeForbiddenRoutes,
       activeAllowedRoutes,
     );
@@ -1902,7 +2478,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
       assertHealthy();
       if (step.type === "customer-activation") {
         const before = await withCdpRecovery(() =>
-          waitForRoute(client, step.routeBefore, {
+          waitForRoute(requireConnectedClient(), step.routeBefore, {
             timeoutMs: step.timeoutMs ?? timeoutMs,
             pollMs: routePollMs,
             forbiddenRoutes: activeForbiddenRoutes,
@@ -1933,8 +2509,8 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
           assertHealthy();
         }
         const repeatedActivation = step.repeatPreviousActivationCenter === true;
-        const activation = repeatedActivation
-          ? (() => {
+        const activation: ActivationResult = repeatedActivation
+          ? ((): ActivationResult => {
               if (!lastCustomerActivation?.center) {
                 throw new Error(
                   `${step.name} requires a previous physical activation center`,
@@ -1947,25 +2523,37 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
                 input: null,
               };
             })()
-          : await withCdpRecovery(
+          : ((await withCdpRecovery(
               () =>
-                activateVisibleSelector(client, step.selector, {
+                activateVisibleSelector(
+                  requireConnectedClient(),
+                  step.selector,
+                  {
                   kind: step.inputKind ?? inputKind,
                   timeoutMs: step.timeoutMs ?? timeoutMs,
-                }),
+                  },
+                ),
               { retry: false },
-            );
-        const dispatchedInput = repeatedActivation
+            )) as ActivationResult);
+        const dispatchedInput: Record<string, unknown> = repeatedActivation
           ? await withCdpRecovery(
               () =>
-                dispatchPhysicalInput(client, activation.center, {
+                dispatchPhysicalInput(
+                  requireConnectedClient(),
+                  activation.center ?? {},
+                  {
                   kind: step.inputKind ?? inputKind,
                   timeoutMs: step.timeoutMs ?? timeoutMs,
-                }),
+                  },
+                ),
               { retry: false },
             )
-          : activation.input;
-        if (!dispatchedInput.method.startsWith("Input.")) {
+          : activation.input ?? {};
+        const dispatchedMethod = dispatchedInput.method;
+        if (
+          typeof dispatchedMethod !== "string" ||
+          !dispatchedMethod.startsWith("Input.")
+        ) {
           throw new Error(`${step.name} emitted no physical Input evidence`);
         }
         lastCustomerActivation = {
@@ -1985,7 +2573,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
         let after;
         try {
           after = await withCdpRecovery(() =>
-            waitForRoute(client, step.routeAfter, {
+            waitForRoute(requireConnectedClient(), step.routeAfter, {
               timeoutMs: step.timeoutMs ?? timeoutMs,
               pollMs: routePollMs,
               forbiddenRoutes: activeForbiddenRoutes,
@@ -1994,9 +2582,13 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
             }),
           );
         } catch (error) {
-          const probe = await probeSelectorBounds(client, step.selector, {
+          const probe = await probeSelectorBounds(
+            requireConnectedClient(),
+            step.selector,
+            {
             timeoutMs: step.timeoutMs ?? timeoutMs,
-          }).catch(() => null);
+            },
+          ).catch(() => null);
           throw new Error(
             `${error instanceof Error ? error.message : String(error)}; activation probe=${JSON.stringify(probe)}`,
             { cause: error },
@@ -2021,7 +2613,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
         });
       } else if (step.type === "observation") {
         const observation = await withCdpRecovery(() =>
-          captureCheckpoint(client, step.name, {
+          captureCheckpoint(requireConnectedClient(), step.name, {
             timeoutMs: step.timeoutMs ?? timeoutMs,
             screenshot: screenshotCheckpoints || step.screenshot,
             screenshotSink: adapter.screenshotSink,
@@ -2029,7 +2621,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
           }),
         );
         assertAllowedRoute(
-          observation.identity.route,
+          (observation.identity as RouteIdentity).route,
           activeForbiddenRoutes,
           activeAllowedRoutes,
         );
@@ -2042,11 +2634,11 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
         executedExecution.observations += 1;
         continue;
       } else if (step.type === "external-operation") {
-        const before = await withCdpRecovery(() =>
-          captureDomIdentity(client, {
+        const before = (await withCdpRecovery(() =>
+          captureDomIdentity(requireConnectedClient(), {
             timeoutMs: step.timeoutMs ?? timeoutMs,
           }),
-        );
+        )) as RouteIdentity;
         assertAllowedRoute(
           before.route,
           activeForbiddenRoutes,
@@ -2059,12 +2651,12 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
           );
         }
         const uiBefore = await withCdpRecovery(() =>
-          captureRuntimeOperationObservation(client, {
+          captureRuntimeOperationObservation(requireConnectedClient(), {
             timeoutMs: step.timeoutMs ?? timeoutMs,
           }),
         );
-        let rawProvenance;
-        let recoveryOverlay = null;
+        let rawProvenance: Record<string, unknown>;
+        let recoveryOverlay: unknown = null;
         if (
           step.operation === "daemon_transport_interrupt" &&
           typeof adapter.beginExternalOperation === "function" &&
@@ -2079,14 +2671,17 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
           const overlayDeadline = Date.now() + (step.timeoutMs ?? timeoutMs);
           do {
             const observation = await withCdpRecovery(() =>
-              captureRuntimeOperationObservation(client, {
+              captureRuntimeOperationObservation(requireConnectedClient(), {
                 timeoutMs: step.timeoutMs ?? timeoutMs,
               }),
             );
-            if (observation.recoveryOverlay?.length > 0) {
+            const overlayLength = (
+              observation.recoveryOverlay as { length?: number } | null
+            )?.length;
+            if (overlayLength !== undefined && overlayLength > 0) {
               recoveryOverlay = {
                 observation,
-                screenshot: await captureScreenshot(client, {
+                screenshot: await captureScreenshot(requireConnectedClient(), {
                   timeoutMs: step.timeoutMs ?? timeoutMs,
                   screenshotSink: adapter.screenshotSink,
                   label: `${step.name}:recovery-overlay`,
@@ -2101,30 +2696,34 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
               "daemon transport interruption did not expose a recovery overlay to read-only CDP",
             );
           }
-          rawProvenance = await adapter.completeExternalOperation(pending, {
+          rawProvenance = (await adapter.completeExternalOperation(pending, {
             operation: step.operation,
             label: step.name,
             routeBefore: before.route,
             uiBefore,
             recoveryOverlay,
-          });
+          })) as Record<string, unknown>;
         } else {
-          rawProvenance = await adapter.executeExternalOperation({
+          rawProvenance = (await adapter.executeExternalOperation({
             operation: step.operation,
             label: step.name,
             routeBefore: before.route,
             uiBefore,
-          });
+          })) as Record<string, unknown>;
         }
         const uiAfter =
           step.operation === "daemon_transport_interrupt"
-            ? await captureRecoveredOperationObservation(client, {
+            ? await captureRecoveredOperationObservation(
+                requireConnectedClient(),
+                {
                 uiBefore,
                 timeoutMs: step.timeoutMs ?? timeoutMs,
                 pollMs: routePollMs,
-              })
+                },
+                withCdpRecovery,
+              )
             : await withCdpRecovery(() =>
-                captureRuntimeOperationObservation(client, {
+                captureRuntimeOperationObservation(requireConnectedClient(), {
                   timeoutMs: step.timeoutMs ?? timeoutMs,
                 }),
               );
@@ -2136,7 +2735,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
           step.operation,
         );
         const after = await withCdpRecovery(() =>
-          waitForRoute(client, step.routeAfter, {
+          waitForRoute(requireConnectedClient(), step.routeAfter, {
             timeoutMs: step.timeoutMs ?? timeoutMs,
             pollMs: routePollMs,
             forbiddenRoutes: activeForbiddenRoutes,
@@ -2156,7 +2755,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
         executedExecution.externalOperations += 1;
         if (step.screenshot) {
           const checkpoint = await withCdpRecovery(() =>
-            captureCheckpoint(client, `${step.name}:after`, {
+            captureCheckpoint(requireConnectedClient(), `${step.name}:after`, {
               timeoutMs: step.timeoutMs ?? timeoutMs,
               screenshot: true,
               screenshotSink: adapter.screenshotSink,
@@ -2164,7 +2763,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
             }),
           );
           assertAllowedRoute(
-            checkpoint.identity.route,
+            (checkpoint.identity as RouteIdentity).route,
             activeForbiddenRoutes,
             activeAllowedRoutes,
           );
@@ -2173,7 +2772,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
         continue;
       }
       const checkpoint = await withCdpRecovery(() =>
-        captureCheckpoint(client, step.name, {
+        captureCheckpoint(requireConnectedClient(), step.name, {
           timeoutMs: step.timeoutMs ?? timeoutMs,
           screenshot: screenshotCheckpoints || step.screenshot === true,
           screenshotSink: adapter.screenshotSink,
@@ -2181,7 +2780,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
         }),
       );
       assertAllowedRoute(
-        checkpoint.identity.route,
+        (checkpoint.identity as RouteIdentity).route,
         activeForbiddenRoutes,
         activeAllowedRoutes,
       );
@@ -2190,13 +2789,14 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
 
     if (typeof onPaymentWindow === "function") {
       const paymentCaptureSegment = captureSegments.at(-1) ?? null;
-      const continuousStart = capture
-        ? await withCdpRecovery(() => capture.captureNow())
+      const activeCapture = getCapture();
+      const continuousStart = activeCapture
+        ? await withCdpRecovery(() => activeCapture.captureNow())
         : null;
       const paymentWindow = await onPaymentWindow();
       const endingCaptureSegment = captureSegments.at(-1) ?? null;
-      const continuousEnd = capture
-        ? await withCdpRecovery(() => capture.captureNow())
+      const continuousEnd = activeCapture
+        ? await withCdpRecovery(() => activeCapture.captureNow())
         : null;
       const continuousDuring = findContinuousPaymentCheckpoint({
         startSegment: paymentCaptureSegment,
@@ -2233,7 +2833,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
     }
 
     const final = await withCdpRecovery(() =>
-      captureCheckpoint(client, "final", {
+      captureCheckpoint(requireConnectedClient(), "final", {
         timeoutMs,
         screenshot: screenshotCheckpoints,
         screenshotSink: adapter.screenshotSink,
@@ -2241,7 +2841,7 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
       }),
     );
     assertAllowedRoute(
-      final.identity.route,
+      (final.identity as RouteIdentity).route,
       activeForbiddenRoutes,
       activeAllowedRoutes,
     );
@@ -2258,8 +2858,8 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
       status: "passed",
       sequenceName: boundedString(sequenceName, MAX_LABEL_LENGTH),
       target: {
-        id: target.id,
-        route: target.route,
+        id: getTarget()?.id,
+        route: getTarget()?.route,
         attestation: runtimeEvidence,
       },
       execution: {
@@ -2271,10 +2871,11 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
   } catch (error) {
     scenarioError = error;
   } finally {
+    const activeClient = getClient();
     const cleanup = await Promise.allSettled([
       Promise.resolve().then(() => unsubscribeCdpRoutes?.()),
       stopAllCaptures(),
-      client?.close() ?? Promise.resolve(),
+      activeClient === null ? Promise.resolve() : activeClient.close(),
       sidecar.close(),
     ]);
     const failures = cleanup.filter((result) => result.status === "rejected");
@@ -2289,7 +2890,13 @@ async function runVisibleMachineSaleScenarioInternal(options, dependencies) {
   return scenarioResult;
 }
 
-function validateScenarioSequence({ sequenceName, steps }) {
+function validateScenarioSequence({
+  sequenceName,
+  steps,
+}: {
+  sequenceName: unknown;
+  steps: unknown;
+}): readonly ValidatedScenarioStep[] {
   if (typeof sequenceName !== "string" || sequenceName.trim() === "") {
     throw new Error("sequenceName is required");
   }
@@ -2305,7 +2912,7 @@ function validateScenarioSequence({ sequenceName, steps }) {
   let customerActivations = 0;
   let observations = 0;
   let externalOperations = 0;
-  const validatedSteps = [];
+  const validatedSteps: ValidatedScenarioStep[] = [];
   for (const [index, step] of steps.entries()) {
     if (
       !step ||
@@ -2323,7 +2930,7 @@ function validateScenarioSequence({ sequenceName, steps }) {
         `${name.slice(0, MAX_LABEL_LENGTH)} step name exceeds maximum length`,
       );
     }
-    const common = {
+    const common: ScenarioStepCommon & { type: string } = {
       type,
       name,
       ...(step.timeoutMs == null
@@ -2379,7 +2986,7 @@ function validateScenarioSequence({ sequenceName, steps }) {
                   index,
                 ),
               }),
-        }),
+        }) as CustomerActivationStep,
       );
     } else if (type === "observation") {
       observations += 1;
@@ -2389,7 +2996,7 @@ function validateScenarioSequence({ sequenceName, steps }) {
           route: normalizeMachineRoute(
             requiredStepString(step, "route", index),
           ),
-        }),
+        }) as ObservationStep,
       );
     } else if (type === "external-operation") {
       externalOperations += 1;
@@ -2399,7 +3006,7 @@ function validateScenarioSequence({ sequenceName, steps }) {
           operation: requiredStepExternalOperation(step, index),
           routeBefore: requiredStepRouteMatcher(step, "routeBefore", index),
           routeAfter: requiredStepRouteMatcher(step, "routeAfter", index),
-        }),
+        }) as ExternalOperationStep,
       );
     } else {
       throw new Error(`${name} has unsupported step type ${String(step.type)}`);
@@ -2417,7 +3024,11 @@ function validateScenarioSequence({ sequenceName, steps }) {
   return Object.freeze(validatedSteps);
 }
 
-function assertClosedStep(step, index, type) {
+function assertClosedStep(
+  step: ScenarioStepInput,
+  index: number,
+  type: string,
+): void {
   const allowed =
     type === "customer-activation"
       ? new Set([
@@ -2453,13 +3064,18 @@ function assertClosedStep(step, index, type) {
         `scenario step ${index + 1} has unsupported field ${key}`,
       );
     }
-    if (!Object.hasOwn(Object.getOwnPropertyDescriptor(step, key), "value")) {
+    const descriptor = Object.getOwnPropertyDescriptor(step, key);
+    if (descriptor === undefined || !Object.hasOwn(descriptor, "value")) {
       throw new Error(`scenario step ${index + 1} cannot use accessors`);
     }
   }
 }
 
-function requiredStepString(step, field, index) {
+function requiredStepString(
+  step: ScenarioStepInput,
+  field: string,
+  index: number,
+): string {
   const descriptor = Object.getOwnPropertyDescriptor(step, field);
   if (!descriptor || !Object.hasOwn(descriptor, "value")) {
     throw new Error(`scenario step ${index + 1} requires ${field}`);
@@ -2470,7 +3086,11 @@ function requiredStepString(step, field, index) {
   return descriptor.value.trim();
 }
 
-function requiredStepRouteMatcher(step, field, index) {
+function requiredStepRouteMatcher(
+  step: ScenarioStepInput,
+  field: string,
+  index: number,
+): RouteMatcher {
   const descriptor = Object.getOwnPropertyDescriptor(step, field);
   if (!descriptor || !Object.hasOwn(descriptor, "value")) {
     throw new Error(`scenario step ${index + 1} requires ${field}`);
@@ -2487,7 +3107,10 @@ function requiredStepRouteMatcher(step, field, index) {
   throw new Error(`scenario step ${index + 1} requires ${field}`);
 }
 
-function requiredStepExternalOperation(step, index) {
+function requiredStepExternalOperation(
+  step: ScenarioStepInput,
+  index: number,
+): string {
   const operation = requiredStepString(step, "operation", index);
   if (
     operation !== "vision_departure" &&
@@ -2499,9 +3122,10 @@ function requiredStepExternalOperation(step, index) {
   return operation;
 }
 
-function requiredStepTimeout(step, index) {
+function requiredStepTimeout(step: ScenarioStepInput, index: number): number {
   const value = step.timeoutMs;
   if (
+    typeof value !== "number" ||
     !Number.isSafeInteger(value) ||
     value <= 0 ||
     value > DEFAULT_TIMEOUT_MS * 12
@@ -2511,21 +3135,34 @@ function requiredStepTimeout(step, index) {
   return value;
 }
 
-function requiredStepBoolean(step, field, index) {
+function requiredStepBoolean(
+  step: ScenarioStepInput,
+  field: string,
+  index: number,
+): boolean {
   if (typeof step[field] !== "boolean") {
     throw new Error(`scenario step ${index + 1} ${field} must be boolean`);
   }
   return step[field];
 }
 
-function requiredStepInputKind(step, index) {
+function requiredStepInputKind(
+  step: ScenarioStepInput,
+  index: number,
+): "touch" | "mouse" {
   if (step.inputKind !== "touch" && step.inputKind !== "mouse") {
     throw new Error(`scenario step ${index + 1} inputKind is invalid`);
   }
   return step.inputKind;
 }
 
-function countScenarioSteps(sequence) {
+function countScenarioSteps(
+  sequence: readonly ValidatedScenarioStep[],
+): {
+  customerActivations: number;
+  observations: number;
+  externalOperations: number;
+} {
   return {
     customerActivations: sequence.filter(
       (step) => step.type === "customer-activation",
@@ -2537,12 +3174,21 @@ function countScenarioSteps(sequence) {
   };
 }
 
-function assertScenarioExecutionCounts(planned, executed) {
+interface ScenarioExecutionCounts {
+  customerActivations: number;
+  observations: number;
+  externalOperations: number;
+}
+
+function assertScenarioExecutionCounts(
+  planned: ScenarioExecutionCounts,
+  executed: ScenarioExecutionCounts,
+): void {
   for (const field of [
     "customerActivations",
     "observations",
     "externalOperations",
-  ]) {
+  ] as const) {
     if (planned[field] !== executed[field]) {
       throw new Error(
         `scenario executed ${executed[field]} ${field}, expected ${planned[field]}`,
@@ -2552,22 +3198,24 @@ function assertScenarioExecutionCounts(planned, executed) {
 }
 
 function assertAllowedRoute(
-  route,
-  forbiddenRoutes = INITIAL_FORBIDDEN_CUSTOMER_ROUTES,
-  allowedRoutes = null,
-) {
-  forbiddenRoutes = resolveForbiddenRoutes(forbiddenRoutes);
-  allowedRoutes = resolveAllowedRoutes(allowedRoutes);
+  route: unknown,
+  forbiddenRoutes: unknown = INITIAL_FORBIDDEN_CUSTOMER_ROUTES,
+  allowedRoutes: unknown = null,
+): void {
+  const resolvedForbidden = resolveForbiddenRoutes(forbiddenRoutes);
+  const resolvedAllowed = resolveAllowedRoutes(allowedRoutes);
   const normalized = normalizeMachineRoute(route);
   const path = routePath(normalized);
   if (
-    allowedRoutes !== null &&
-    !allowedRoutes.some((candidate) => routeMatchesRoutePath(path, candidate))
+    resolvedAllowed !== null &&
+    !resolvedAllowed.some((candidate) =>
+      routeMatchesRoutePath(path, candidate),
+    )
   ) {
     throw new Error(`payment barrier route observed: ${normalized}`);
   }
   if (
-    forbiddenRoutes.some((candidate) => {
+    resolvedForbidden.some((candidate) => {
       return routeMatchesRoutePath(path, candidate);
     })
   ) {
@@ -2575,7 +3223,10 @@ function assertAllowedRoute(
   }
 }
 
-function isCdpTransportFailure(error, client) {
+function isCdpTransportFailure(
+  error: unknown,
+  client: CdpRuntimeClient | null,
+): boolean {
   if (client?.closed) return true;
   const message = error instanceof Error ? error.message : String(error ?? "");
   return /CDP (?:client is closed|connection closed|WebSocket|.*send failed)|CDP connection closed|CDP client closed/.test(
@@ -2583,19 +3234,22 @@ function isCdpTransportFailure(error, client) {
   );
 }
 
-function routeMatchesRoutePath(path, candidate) {
+function routeMatchesRoutePath(path: string, candidate: string): boolean {
   const route = candidate.startsWith("#")
     ? routePath(normalizeMachineRoute(candidate))
     : normalizeForbiddenRoutePath(candidate);
   return path === route || path.startsWith(`${route}/`);
 }
 
-function matchesAnyRoutePath(route, candidates) {
+function matchesAnyRoutePath(
+  route: unknown,
+  candidates: readonly string[],
+): boolean {
   const path = routePath(normalizeMachineRoute(route));
   return candidates.some((candidate) => routeMatchesRoutePath(path, candidate));
 }
 
-function validateForbiddenRoutes(routes) {
+function validateForbiddenRoutes(routes: unknown): readonly string[] {
   if (!Array.isArray(routes)) {
     throw new Error("forbiddenRoutes must be an array");
   }
@@ -2611,39 +3265,57 @@ function validateForbiddenRoutes(routes) {
   );
 }
 
-function validateAllowedRoutes(routes) {
+function validateAllowedRoutes(routes: unknown): readonly string[] {
   if (!Array.isArray(routes) || routes.length === 0) {
     throw new Error("allowedRoutes must be a nonempty array");
   }
   return validateForbiddenRoutes(routes);
 }
 
-function resolveForbiddenRoutes(routes) {
+function resolveForbiddenRoutes(routes: unknown): readonly string[] {
   return typeof routes === "function"
     ? validateForbiddenRoutes(routes())
     : validateForbiddenRoutes(routes ?? INITIAL_FORBIDDEN_CUSTOMER_ROUTES);
 }
 
-function resolveAllowedRoutes(routes) {
+function resolveAllowedRoutes(routes: unknown): readonly string[] | null {
   if (routes == null) return null;
   const resolved = typeof routes === "function" ? routes() : routes;
   return resolved == null ? null : validateAllowedRoutes(resolved);
 }
 
-function snapshotRoutePolicy(options) {
+interface RoutePolicy {
+  epoch: number | null;
+  forbiddenRoutes: readonly string[];
+  allowedRoutes: readonly string[] | null;
+}
+
+function snapshotRoutePolicy(options: {
+  routePolicy?: (() => unknown) | RoutePolicy;
+  forbiddenRoutes?: unknown;
+  allowedRoutes?: unknown;
+}): RoutePolicy {
   const policy =
     typeof options.routePolicy === "function" ? options.routePolicy() : null;
   if (policy != null) {
     if (typeof policy !== "object") {
       throw new Error("routePolicy must return an object");
     }
+    const policyRecord = policy as {
+      epoch?: unknown;
+      forbiddenRoutes?: unknown;
+      allowedRoutes?: unknown;
+    };
     return Object.freeze({
-      epoch: policy.epoch ?? null,
-      forbiddenRoutes: validateForbiddenRoutes(policy.forbiddenRoutes),
+      epoch:
+        typeof policyRecord.epoch === "number" ? policyRecord.epoch : null,
+      forbiddenRoutes: validateForbiddenRoutes(
+        policyRecord.forbiddenRoutes,
+      ),
       allowedRoutes:
-        policy.allowedRoutes == null
+        policyRecord.allowedRoutes == null
           ? null
-          : validateAllowedRoutes(policy.allowedRoutes),
+          : validateAllowedRoutes(policyRecord.allowedRoutes),
     });
   }
   return Object.freeze({
@@ -2653,13 +3325,14 @@ function snapshotRoutePolicy(options) {
   });
 }
 
-function boundIdentity(identity) {
+function boundIdentity(identity: unknown): RouteIdentity {
   if (!identity || typeof identity !== "object") {
     throw new Error("DOM identity capture returned no object");
   }
-  let url;
+  const record = identity as Record<string, unknown>;
+  let url: URL;
   try {
-    url = new URL(String(identity.url));
+    url = new URL(String(record.url));
   } catch {
     throw new Error("DOM identity capture returned an invalid URL");
   }
@@ -2670,23 +3343,27 @@ function boundIdentity(identity) {
     url: boundedString(url.toString(), MAX_URL_LENGTH),
     route: normalizeMachineRoute(url.hash),
     pathname: boundedString(url.pathname, 256),
-    title: boundedString(identity.title ?? "", MAX_LABEL_LENGTH),
-    readyState: boundedString(identity.readyState ?? "unknown", 32),
+    title: boundedString(record.title ?? "", MAX_LABEL_LENGTH),
+    readyState: boundedString(record.readyState ?? "unknown", 32),
     activeElement:
-      identity.activeElement == null
+      record.activeElement == null
         ? null
-        : boundedString(identity.activeElement, 64),
-    domLength: Number.isSafeInteger(identity.domLength)
-      ? identity.domLength
+        : boundedString(record.activeElement, 64),
+    domLength:
+      typeof record.domLength === "number" &&
+      Number.isSafeInteger(record.domLength)
+      ? record.domLength
       : null,
     domHash:
-      typeof identity.domHash === "string"
-        ? boundedString(identity.domHash, 128)
+      typeof record.domHash === "string"
+        ? boundedString(record.domHash, 128)
         : null,
   };
 }
 
-function sortChronologically(items) {
+function sortChronologically(
+  items: Array<{ capturedAt?: unknown; ordinal?: unknown }>,
+): Array<{ capturedAt?: unknown; ordinal?: unknown }> {
   return items.sort((left, right) => {
     const time = String(left.capturedAt).localeCompare(
       String(right.capturedAt),
@@ -2695,14 +3372,14 @@ function sortChronologically(items) {
   });
 }
 
-function routePath(route) {
+function routePath(route: unknown): string {
   return new URL(
     normalizeMachineRoute(route).slice(1),
     "http://machine-route.invalid",
   ).pathname;
 }
 
-function normalizeForbiddenRoutePath(value) {
+function normalizeForbiddenRoutePath(value: unknown): string {
   const path = String(value ?? "")
     .trim()
     .replaceAll("\\", "/")
@@ -2713,12 +3390,16 @@ function normalizeForbiddenRoutePath(value) {
   return routePath(`#${path}`);
 }
 
-function boundExternalOperation(value, expectedOperation) {
+function boundExternalOperation(
+  value: unknown,
+  expectedOperation: string,
+): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("external operation returned no provenance");
   }
+  const record = value as Record<string, unknown>;
   const operation = boundedRequiredString(
-    value.operation,
+    record.operation,
     "external operation",
     MAX_LABEL_LENGTH,
   );
@@ -2728,21 +3409,21 @@ function boundExternalOperation(value, expectedOperation) {
     );
   }
   const guestOperationId = boundedRequiredString(
-    value.guestOperationId,
+    record.guestOperationId,
     "guest operation id",
     MAX_LABEL_LENGTH,
   );
   const adapterSessionId = boundedRequiredString(
-    value.adapterSessionId,
+    record.adapterSessionId,
     "adapter session id",
     MAX_LABEL_LENGTH,
   );
-  const session = value.session;
-  const daemon = value.daemon;
-  const platform = value.platform;
-  const log = value.log;
-  const vision = value.vision;
-  const ui = value.ui;
+  const session = record.session;
+  const daemon = record.daemon;
+  const platform = record.platform;
+  const log = record.log;
+  const vision = record.vision;
+  const ui = record.ui;
   for (const [name, fact] of Object.entries({
     session,
     daemon,
@@ -2768,7 +3449,9 @@ function boundExternalOperation(value, expectedOperation) {
   };
 }
 
-function boundEvidenceEntry(entry) {
+function boundEvidenceEntry(
+  entry: Record<string, unknown>,
+): Record<string, unknown> {
   if (!entry || typeof entry !== "object") {
     throw new Error("evidence entry must be an object");
   }
@@ -2838,12 +3521,21 @@ function boundEvidenceEntry(entry) {
       allowedRoutes: validateAllowedRoutes(entry.allowedRoutes),
       armedBeforeInput: entry.armedBeforeInput === true,
       armBaseline: {
-        identity: boundIdentity(entry.armBaseline?.identity),
-        route: normalizeMachineRoute(entry.armBaseline?.route),
+        identity: boundIdentity(
+          (entry.armBaseline as { identity?: unknown } | undefined)?.identity,
+        ),
+        route: normalizeMachineRoute(
+          (entry.armBaseline as { route?: unknown } | undefined)?.route,
+        ),
       },
     };
   }
   if (entry.type === "external-operation") {
+    const operationName = boundedRequiredString(
+      entry.operation,
+      "external operation",
+      MAX_LABEL_LENGTH,
+    );
     return {
       type: "external-operation",
       label: boundedRequiredString(
@@ -2851,31 +3543,29 @@ function boundEvidenceEntry(entry) {
         "external operation label",
         MAX_LABEL_LENGTH,
       ),
-      operation: boundedRequiredString(
-        entry.operation,
-        "external operation",
-        MAX_LABEL_LENGTH,
-      ),
+      operation: operationName,
       routeBefore: normalizeMachineRoute(entry.routeBefore),
       routeAfter: normalizeMachineRoute(entry.routeAfter),
-      provenance: boundExternalOperation(entry.provenance, entry.operation),
+      provenance: boundExternalOperation(entry.provenance, operationName),
     };
   }
   if (entry.type === "payment-window") {
+    const ordinals = entry.continuousCheckpointOrdinals;
     if (
       entry.serialCompleted !== true ||
       entry.postSaleStable !== true ||
       typeof entry.runtimeGeneration !== "string" ||
       entry.runtimeGeneration.trim() === "" ||
-      !Array.isArray(entry.continuousCheckpointOrdinals) ||
-      entry.continuousCheckpointOrdinals.length !== 3 ||
-      entry.continuousCheckpointOrdinals.some(
-        (ordinal) => !Number.isSafeInteger(ordinal) || ordinal < 0,
+      !Array.isArray(ordinals) ||
+      ordinals.length !== 3 ||
+      ordinals.some(
+        (ordinal: unknown) =>
+          typeof ordinal !== "number" ||
+          !Number.isSafeInteger(ordinal) ||
+          ordinal < 0,
       ) ||
-      entry.continuousCheckpointOrdinals[0] >=
-        entry.continuousCheckpointOrdinals[1] ||
-      entry.continuousCheckpointOrdinals[1] >=
-        entry.continuousCheckpointOrdinals[2]
+      (ordinals as number[])[0] >= (ordinals as number[])[1] ||
+      (ordinals as number[])[1] >= (ordinals as number[])[2]
     ) {
       throw new Error(
         "payment window did not prove continuous capture, completion, and stability",
@@ -2886,76 +3576,94 @@ function boundEvidenceEntry(entry) {
       serialCompleted: true,
       postSaleStable: true,
       runtimeGeneration: entry.runtimeGeneration,
-      continuousCheckpointOrdinals: [...entry.continuousCheckpointOrdinals],
+      continuousCheckpointOrdinals: [...(ordinals as number[])],
     };
   }
   if (entry.type === "runtime-attestation") {
+    const attestation = entry.attestation as
+      | { expected?: unknown; observed?: { cdpTarget?: unknown } }
+      | undefined;
     return {
       type: "runtime-attestation",
       attestation: bindMachineUiRuntimeEvidence({
-        expectedRuntimeAttestation: entry.attestation?.expected,
-        observedRuntime: entry.attestation?.observed,
-        target: entry.attestation?.observed?.cdpTarget,
+        expectedRuntimeAttestation: attestation?.expected,
+        observedRuntime: attestation?.observed,
+        target: attestation?.observed?.cdpTarget as
+          | { id?: unknown; url?: unknown }
+          | undefined,
       }),
     };
   }
   throw new Error(`unsupported evidence entry type ${String(entry.type)}`);
 }
 
-function boundScreenshot(screenshot) {
+function boundScreenshot(screenshot: unknown): Record<string, unknown> {
   if (!screenshot || typeof screenshot !== "object") {
     throw new Error("screenshot evidence must be an object");
   }
-  if (!/^[a-f0-9]{64}$/.test(screenshot.sha256)) {
+  const record = screenshot as Record<string, unknown>;
+  if (
+    typeof record.sha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(record.sha256)
+  ) {
     throw new Error("screenshot evidence requires a SHA-256 digest");
   }
   if (
-    !Number.isSafeInteger(screenshot.byteLength) ||
-    screenshot.byteLength < 0 ||
-    screenshot.byteLength > MAX_SCREENSHOT_BYTES
+    typeof record.byteLength !== "number" ||
+    !Number.isSafeInteger(record.byteLength) ||
+    record.byteLength < 0 ||
+    record.byteLength > MAX_SCREENSHOT_BYTES
   ) {
     throw new Error("screenshot evidence exceeds the maximum size");
   }
   const ref =
-    screenshot.ref == null
+    record.ref == null
       ? null
-      : boundedRequiredString(screenshot.ref, "screenshot ref", 1_024);
+      : boundedRequiredString(record.ref, "screenshot ref", 1_024);
   return {
-    sha256: screenshot.sha256,
-    byteLength: screenshot.byteLength,
-    format: screenshot.format === "jpeg" ? "jpeg" : "png",
+    sha256: record.sha256 as string,
+    byteLength: record.byteLength as number,
+    format: record.format === "jpeg" ? "jpeg" : "png",
     ref,
   };
 }
 
-function boundPhysicalInput(input) {
+function boundPhysicalInput(input: unknown): Record<string, unknown> {
+  if (!input || typeof input !== "object") {
+    throw new Error("activation requires physical CDP Input evidence");
+  }
+  const record = input as Record<string, unknown>;
   if (
-    !input ||
-    typeof input !== "object" ||
-    !String(input.method).startsWith("Input.")
+    typeof record.method !== "string" ||
+    !record.method.startsWith("Input.")
   ) {
     throw new Error("activation requires physical CDP Input evidence");
   }
-  if (input.kind !== "touch" && input.kind !== "mouse") {
+  if (record.kind !== "touch" && record.kind !== "mouse") {
     throw new Error("activation input kind is invalid");
   }
   for (const field of ["x", "y"]) {
-    if (!Number.isFinite(input[field]) || Math.abs(input[field]) > 100_000) {
+    const value = record[field];
+    if (
+      typeof value !== "number" ||
+      !Number.isFinite(value) ||
+      Math.abs(value) > 100_000
+    ) {
       throw new Error(`activation input ${field} is invalid`);
     }
   }
-  if (input.released !== true)
+  if (record.released !== true)
     throw new Error("activation input was not released");
   return {
-    method: input.method,
-    kind: input.kind,
-    x: input.x,
-    y: input.y,
+    method: record.method as string,
+    kind: record.kind as string,
+    x: record.x as number,
+    y: record.y as number,
     released: true,
   };
 }
 
-function normalizeEndpoint(endpoint) {
+function normalizeEndpoint(endpoint: unknown): string {
   const url = normalizeEndpointUrl(endpoint);
   url.pathname = url.pathname.replace(/\/json\/?$/, "/");
   url.search = "";
@@ -2963,7 +3671,7 @@ function normalizeEndpoint(endpoint) {
   return url.toString().replace(/\/$/, "");
 }
 
-function normalizeEndpointUrl(endpoint) {
+function normalizeEndpointUrl(endpoint: unknown): URL {
   const url = new URL(String(endpoint));
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new Error("forwarded endpoint must use http or https");
@@ -2971,12 +3679,17 @@ function normalizeEndpointUrl(endpoint) {
   return url;
 }
 
-async function withTimeout(promise, timeoutMs, label, onTimeout) {
-  let timer;
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  label: string,
+  onTimeout?: () => void,
+): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
   try {
     return await Promise.race([
       promise,
-      new Promise((_, reject) => {
+      new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
           onTimeout?.();
           reject(new Error(`${label} timed out after ${timeoutMs}ms`));
@@ -2984,17 +3697,20 @@ async function withTimeout(promise, timeoutMs, label, onTimeout) {
       }),
     ]);
   } finally {
-    clearTimeout(timer);
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 
-function requireBrowserWebSocket(socket) {
+function requireBrowserWebSocket(
+  socket: unknown,
+): asserts socket is BrowserSocket {
+  const candidate = socket as Partial<BrowserSocket> | null | undefined;
   if (
-    !socket ||
-    typeof socket.addEventListener !== "function" ||
-    typeof socket.removeEventListener !== "function" ||
-    typeof socket.send !== "function" ||
-    typeof socket.close !== "function"
+    !candidate ||
+    typeof candidate.addEventListener !== "function" ||
+    typeof candidate.removeEventListener !== "function" ||
+    typeof candidate.send !== "function" ||
+    typeof candidate.close !== "function"
   ) {
     throw new Error(
       "WebSocket adapter must implement the browser WebSocket EventTarget interface",
@@ -3003,12 +3719,16 @@ function requireBrowserWebSocket(socket) {
 }
 
 async function waitForSocketEvent(
-  socket,
-  eventName,
-  { timeoutMs, errorLabel, listenForError = true },
-) {
-  let eventHandler;
-  let errorHandler;
+  socket: BrowserSocket,
+  eventName: string,
+  {
+    timeoutMs,
+    errorLabel,
+    listenForError = true,
+  }: { timeoutMs: number; errorLabel?: string; listenForError?: boolean },
+): Promise<void> {
+  let eventHandler: ((event: unknown) => void) | undefined;
+  let errorHandler: ((event: unknown) => void) | undefined;
   try {
     await withTimeout(
       new Promise((resolve, reject) => {
@@ -3023,30 +3743,53 @@ async function waitForSocketEvent(
       `CDP WebSocket ${eventName}`,
     );
   } finally {
-    socket.removeEventListener(eventName, eventHandler);
-    if (listenForError) socket.removeEventListener("error", errorHandler);
+    if (eventHandler !== undefined) {
+      socket.removeEventListener(eventName, eventHandler);
+    }
+    if (listenForError && errorHandler !== undefined) {
+      socket.removeEventListener("error", errorHandler);
+    }
   }
 }
 
-async function findAvailableLocalPort(host) {
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function findAvailableLocalPort(host: string): Promise<number> {
   const server = createServer();
-  await new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, host, resolve);
   });
-  const port = server.address().port;
-  await new Promise((resolve, reject) =>
+  const address = server.address();
+  if (address === null || typeof address === "string") {
+    server.close();
+    throw new Error("SSH tunnel local port did not bind to a TCP address");
+  }
+  const port = address.port;
+  await new Promise<void>((resolve, reject) =>
     server.close((error) => (error ? reject(error) : resolve())),
   );
   return port;
 }
 
-async function waitForTcpEndpoint({ host, port, timeoutMs, pollMs }) {
+async function waitForTcpEndpoint({
+  host,
+  port,
+  timeoutMs,
+  pollMs,
+}: {
+  host: string;
+  port: number;
+  timeoutMs: number;
+  pollMs: number;
+}): Promise<void> {
   const deadline = Date.now() + timeoutMs;
-  let lastError;
+  let lastError: unknown;
   do {
     try {
-      await new Promise((resolve, reject) => {
+      await new Promise<void>((resolve, reject) => {
         const socket = connect({ host, port });
         socket.once("connect", () => {
           socket.destroy();
@@ -3064,21 +3807,24 @@ async function waitForTcpEndpoint({ host, port, timeoutMs, pollMs }) {
     }
   } while (Date.now() < deadline);
   throw new Error(
-    `SSH tunnel readiness timed out: ${lastError?.message ?? "unreachable"}`,
+    `SSH tunnel readiness timed out: ${errorMessage(lastError) || "unreachable"}`,
   );
 }
 
-function watchChildStartup(child, getStderr) {
-  let onError;
-  let onExit;
-  const failure = new Promise((_, reject) => {
-    onError = (error) =>
+function watchChildStartup(
+  child: ChildProcess,
+  getStderr: () => string,
+): { failure: Promise<never>; stop: () => void } {
+  let onError: (error: Error) => void;
+  let onExit: (code: number | null, signal: NodeJS.Signals | null) => void;
+  const failure = new Promise<never>((_, reject) => {
+    onError = (error: Error) =>
       reject(
         new Error(`SSH tunnel process error: ${error.message}`, {
           cause: error,
         }),
       );
-    onExit = (code, signal) => {
+    onExit = (code: number | null, signal: NodeJS.Signals | null) => {
       const detail = getStderr().trim();
       reject(
         new Error(
@@ -3098,18 +3844,22 @@ function watchChildStartup(child, getStderr) {
   };
 }
 
-async function terminateChildProcess(child, processAdapter, timeoutMs) {
+async function terminateChildProcess(
+  child: ChildProcess,
+  processAdapter: ProcessAdapter,
+  timeoutMs: number,
+): Promise<void> {
   return terminateChildProcessWithOptions(child, processAdapter, timeoutMs);
 }
 
 async function terminateChildProcessWithOptions(
-  child,
-  processAdapter,
-  timeoutMs,
-  { termAlreadySent = false } = {},
-) {
+  child: ChildProcess,
+  processAdapter: ProcessAdapter,
+  timeoutMs: number,
+  { termAlreadySent = false }: { termAlreadySent?: boolean } = {},
+): Promise<void> {
   if (!child || child.exitCode != null) return;
-  const wait = (limit) =>
+  const wait = (limit: number): Promise<unknown> =>
     processAdapter.waitForExit?.(child, limit) ?? waitForExit(child, limit);
   if (!termAlreadySent) child.kill?.("SIGTERM");
   try {
@@ -3121,13 +3871,13 @@ async function terminateChildProcessWithOptions(
   }
 }
 
-async function waitForExit(child, timeoutMs) {
+async function waitForExit(child: ChildProcess, timeoutMs: number): Promise<void> {
   if (child.exitCode != null) return;
-  let onExit;
-  let onError;
+  let onExit: () => void;
+  let onError: (error: Error) => void;
   await withTimeout(
-    new Promise((resolve, reject) => {
-      onExit = resolve;
+    new Promise<void>((resolve, reject) => {
+      onExit = () => resolve();
       onError = reject;
       child.once("exit", onExit);
       child.once("error", onError);
@@ -3140,60 +3890,68 @@ async function waitForExit(child, timeoutMs) {
   });
 }
 
-function formatSshHost(host) {
+function formatSshHost(host: unknown): string {
   return String(host).includes(":") ? `[${host}]` : String(host);
 }
 
-function formatUrlHost(host) {
+function formatUrlHost(host: unknown): string {
   return String(host).includes(":") ? `[${host}]` : String(host);
 }
 
-function boundedString(value, maxLength) {
+function boundedString(value: unknown, maxLength: number): string {
   return String(value ?? "").slice(0, maxLength);
 }
 
-function nowIso(clock) {
+function nowIso(clock?: () => Date): string {
   const value = clock?.() ?? new Date();
   return (value instanceof Date ? value : new Date(value)).toISOString();
 }
 
-function formatExpectedRoute(expected) {
+function formatExpectedRoute(expected: RouteMatcher): string {
   if (expected instanceof RegExp) return expected.toString();
   if (typeof expected === "function") return "predicate";
   return JSON.stringify(expected);
 }
 
 function normalizeWindowsRuntimeObservation(
-  observation,
-  { remoteCdpPort } = {},
-) {
+  observation: unknown,
+  { remoteCdpPort }: { remoteCdpPort?: number } = {},
+): NormalizedWindowsRuntimeObservation {
   if (!observation || typeof observation !== "object") {
     throw new Error("Windows runtime inspection returned no object");
   }
+  const record = observation as Record<string, unknown>;
   const machine = normalizeWindowsProcessObservation(
-    observation.machine,
+    record.machine,
     "machine",
   );
   const cdpListener = normalizeWindowsProcessObservation(
-    observation.cdpListener,
+    record.cdpListener,
     "cdpListener",
   );
+  const cdpListenerRecord = record.cdpListener as Record<string, unknown>;
+  const machineAncestorProcessId =
+    cdpListenerRecord.machineAncestorProcessId as number;
+  const localAddress = cdpListenerRecord.localAddress as string;
+  const localPort = cdpListenerRecord.localPort as number;
   if (
-    !Number.isSafeInteger(observation.cdpListener.machineAncestorProcessId) ||
-    observation.cdpListener.machineAncestorProcessId <= 0
+    typeof cdpListenerRecord.machineAncestorProcessId !== "number" ||
+    !Number.isSafeInteger(cdpListenerRecord.machineAncestorProcessId) ||
+    cdpListenerRecord.machineAncestorProcessId <= 0
   ) {
     throw new Error(
       "Windows runtime inspection requires cdpListener.machineAncestorProcessId",
     );
   }
-  if (observation.cdpListener.localAddress !== "127.0.0.1") {
+  if (cdpListenerRecord.localAddress !== "127.0.0.1") {
     throw new Error(
       "Windows runtime inspection requires a loopback CDP listener",
     );
   }
   if (
-    !Number.isSafeInteger(observation.cdpListener.localPort) ||
-    observation.cdpListener.localPort <= 0
+    typeof cdpListenerRecord.localPort !== "number" ||
+    !Number.isSafeInteger(cdpListenerRecord.localPort) ||
+    cdpListenerRecord.localPort <= 0
   ) {
     throw new Error(
       "Windows runtime inspection requires cdpListener.localPort",
@@ -3201,42 +3959,46 @@ function normalizeWindowsRuntimeObservation(
   }
   if (
     remoteCdpPort != null &&
-    observation.cdpListener.localPort !== remoteCdpPort
+    cdpListenerRecord.localPort !== remoteCdpPort
   ) {
     throw new Error(
-      `Windows runtime inspection CDP port mismatch: expected ${remoteCdpPort}, observed ${observation.cdpListener.localPort}`,
+      `Windows runtime inspection CDP port mismatch: expected ${remoteCdpPort}, observed ${localPort}`,
     );
   }
   return {
     machine,
     cdpListener: {
       ...cdpListener,
-      machineAncestorProcessId:
-        observation.cdpListener.machineAncestorProcessId,
-      localAddress: observation.cdpListener.localAddress,
-      localPort: observation.cdpListener.localPort,
+      machineAncestorProcessId,
+      localAddress,
+      localPort,
     },
   };
 }
 
-function normalizeWindowsProcessObservation(process, label) {
+function normalizeWindowsProcessObservation(
+  process: unknown,
+  label: string,
+): NormalizedWindowsProcessObservation {
   if (!process || typeof process !== "object") {
     throw new Error(`Windows runtime inspection requires ${label}`);
   }
+  const record = process as Record<string, unknown>;
   for (const field of ["processId", "sessionId"]) {
-    if (!Number.isSafeInteger(process[field]) || process[field] <= 0) {
+    const value = record[field];
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
       throw new Error(`Windows runtime inspection requires ${label}.${field}`);
     }
   }
   return {
-    processId: process.processId,
-    executablePath: normalizeWindowsPath(process.executablePath),
-    sessionId: process.sessionId,
-    principal: normalizeWindowsPrincipal(process.principal),
+    processId: record.processId as number,
+    executablePath: normalizeWindowsPath(record.executablePath as string),
+    sessionId: record.sessionId as number,
+    principal: normalizeWindowsPrincipal(record.principal as string),
   };
 }
 
-function normalizeWindowsPath(value) {
+function normalizeWindowsPath(value: unknown): string {
   const path = String(value ?? "")
     .trim()
     .replaceAll("/", "\\");
@@ -3260,7 +4022,7 @@ function normalizeWindowsPath(value) {
   return `${path.slice(0, 2).toLowerCase()}\\${segments.join("\\")}`;
 }
 
-function normalizeWindowsPrincipal(value) {
+function normalizeWindowsPrincipal(value: unknown): string {
   const principal = String(value ?? "").trim();
   if (
     !/^[^\\\0\r\n]+\\[^\\\0\r\n]+$/.test(principal) ||
@@ -3271,7 +4033,11 @@ function normalizeWindowsPrincipal(value) {
   return principal;
 }
 
-function boundedRequiredString(value, label, maxLength) {
+function boundedRequiredString(
+  value: unknown,
+  label: string,
+  maxLength: number,
+): string {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${label} is required`);
   }
@@ -3291,7 +4057,7 @@ export async function runWindowsPowerShellOverSsh({
   sshArgs = [],
   timeoutMs,
   script,
-}) {
+}: SshRunOptions): Promise<unknown> {
   return runWindowsPowerShellOverSshWithAdapter(
     {
       remote,
@@ -3309,9 +4075,12 @@ export async function runWindowsPowerShellOverSsh({
 }
 
 export async function runWindowsPowerShellOverSshForTest(
-  options,
-  { processAdapter = defaultProcessAdapter, shutdownTimeoutMs = 1_000 } = {},
-) {
+  options: SshRunOptions,
+  {
+    processAdapter = defaultProcessAdapter,
+    shutdownTimeoutMs = 1_000,
+  }: { processAdapter?: ProcessAdapter; shutdownTimeoutMs?: number } = {},
+): Promise<unknown> {
   return runWindowsPowerShellOverSshWithAdapter(
     { ...options, shutdownTimeoutMs },
     processAdapter,
@@ -3330,10 +4099,16 @@ async function runWindowsPowerShellOverSshWithAdapter(
     timeoutMs = DEFAULT_TIMEOUT_MS,
     shutdownTimeoutMs = 1_000,
     script,
-  },
-  processAdapter,
-) {
-  const encodedScript = Buffer.from(String(script), "utf16le").toString(
+  }: SshRunOptions & { shutdownTimeoutMs?: number },
+  processAdapter: ProcessAdapter,
+): Promise<unknown> {
+  if (typeof remote !== "string" || remote.trim() === "") {
+    throw new Error("remote is required for Windows runtime inspection");
+  }
+  if (typeof script !== "string") {
+    throw new Error("script is required for Windows runtime inspection");
+  }
+  const encodedScript = Buffer.from(script, "utf16le").toString(
     "base64",
   );
   const args = [
@@ -3360,32 +4135,36 @@ async function runWindowsPowerShellOverSshWithAdapter(
   });
   let stdout = "";
   let stderr = "";
-  let outputError = null;
-  const append = (current, chunk, label) => {
+  let outputError: Error | null = null;
+  const append = (current: string, chunk: unknown, label: string): string => {
     const next = `${current}${String(chunk)}`;
     if (Buffer.byteLength(next, "utf8") > MAX_REMOTE_OUTPUT_BYTES) {
-      outputError ??= new Error(
-        `Windows runtime inspection ${label} exceeded maximum output`,
-      );
+      if (outputError === null) {
+        outputError = new Error(
+          `Windows runtime inspection ${label} exceeded maximum output`,
+        );
+      }
       child.kill("SIGTERM");
       return current;
     }
     return next;
   };
-  child.stdout.on("data", (chunk) => {
+  child.stdout.on("data", (chunk: Buffer) => {
     stdout = append(stdout, chunk, "stdout");
   });
-  child.stderr.on("data", (chunk) => {
+  child.stderr.on("data", (chunk: Buffer) => {
     stderr = append(stderr, chunk, "stderr");
   });
   let timedOut = false;
-  let result;
+  let result: { code: number | null; signal: NodeJS.Signals | null };
   try {
     result = await withTimeout(
-      new Promise((resolve, reject) => {
+      new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+        (resolve, reject) => {
         child.once("error", reject);
         child.once("close", (code, signal) => resolve({ code, signal }));
-      }),
+        },
+      ),
       timeoutMs,
       "Windows runtime inspection",
       () => {
@@ -3412,15 +4191,15 @@ async function runWindowsPowerShellOverSshWithAdapter(
     return JSON.parse(stdout);
   } catch (error) {
     throw new Error(
-      `Windows runtime inspection returned invalid JSON: ${boundedString(error.message, 512)}`,
+      `Windows runtime inspection returned invalid JSON: ${boundedString(errorMessage(error), 512)}`,
       { cause: error },
     );
   }
 }
 
-const defaultProcessAdapter = { spawn };
+const defaultProcessAdapter: ProcessAdapter = { spawn };
 
-function assertProductionScenarioOptions(options) {
+function assertProductionScenarioOptions(options: ScenarioOptions): void {
   if (!options || typeof options !== "object") {
     throw new Error("scenario options must be an object");
   }
@@ -3441,7 +4220,9 @@ function assertProductionScenarioOptions(options) {
   sanitizeProductionTunnelOptions(options.tunnelOptions);
 }
 
-function sanitizeProductionTunnelOptions(tunnelOptions = {}) {
+function sanitizeProductionTunnelOptions(
+  tunnelOptions: TunnelOptions | null | undefined = {},
+): TunnelOptions {
   if (tunnelOptions == null) return {};
   if (typeof tunnelOptions !== "object" || Array.isArray(tunnelOptions)) {
     throw new Error("tunnelOptions must be an object");
@@ -3463,16 +4244,19 @@ function sanitizeProductionTunnelOptions(tunnelOptions = {}) {
   return selectTunnelTransportFields(tunnelOptions);
 }
 
-function selectTunnelTransportFields(tunnelOptions = {}) {
-  const selected = {};
+function selectTunnelTransportFields(tunnelOptions: TunnelOptions = {}): TunnelOptions {
+  const selected: TunnelOptions = {};
   for (const key of PRODUCTION_TUNNEL_OPTION_KEYS) {
     if (Object.hasOwn(tunnelOptions, key)) selected[key] = tunnelOptions[key];
   }
   return selected;
 }
 
-function buildSidecarTunnelOptions(tunnelTransport, inspectedRuntime) {
-  const sidecarOptions = {};
+function buildSidecarTunnelOptions(
+  tunnelTransport: TunnelOptions,
+  inspectedRuntime: NormalizedWindowsRuntimeObservation,
+): TunnelOptions {
+  const sidecarOptions: TunnelOptions = {};
   for (const key of [
     "remote",
     "sshPort",
@@ -3493,11 +4277,24 @@ function buildSidecarTunnelOptions(tunnelTransport, inspectedRuntime) {
   };
 }
 
-function parseCliArgs(argv) {
-  const options = {
-    steps: [],
-    expectedRuntimeAttestation: { machine: {} },
+function parseCliArgs(argv: string[]): ScenarioOptions {
+  const attestation: {
+    targetId?: string;
+    machine: {
+      processId?: number;
+      sessionId?: number;
+      executablePath?: string;
+      principal?: string;
+    };
+  } = {
+    machine: {},
   };
+  const options: ScenarioOptions = {
+    steps: [],
+    expectedRuntimeAttestation: attestation,
+  };
+  const steps = options.steps ?? [];
+  options.steps = steps;
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     const next = () => {
@@ -3521,22 +4318,22 @@ function parseCliArgs(argv) {
       options.tunnelOptions ??= {};
       options.tunnelOptions.remoteCdpPort = Number(next());
     } else if (arg === "--target-id") {
-      options.expectedRuntimeAttestation.targetId = next();
+      attestation.targetId = next();
     } else if (arg === "--machine-process-id") {
-      options.expectedRuntimeAttestation.machine.processId = Number(next());
+      attestation.machine.processId = Number(next());
     } else if (arg === "--machine-session-id") {
-      options.expectedRuntimeAttestation.machine.sessionId = Number(next());
+      attestation.machine.sessionId = Number(next());
     } else if (arg === "--machine-path") {
-      options.expectedRuntimeAttestation.machine.executablePath = next();
+      attestation.machine.executablePath = next();
     } else if (arg === "--machine-principal") {
-      options.expectedRuntimeAttestation.machine.principal = next();
+      attestation.machine.principal = next();
     } else if (arg === "--sequence") options.sequenceName = next();
     else if (arg === "--initial-route") options.expectedInitialRoute = next();
     else if (arg === "--mouse") options.inputKind = "mouse";
     else if (arg === "--screenshot") options.screenshotCheckpoints = true;
     else if (arg === "--step") {
       const [name, selector, routeBefore, routeAfter] = next().split("::");
-      options.steps.push({
+      steps.push({
         type: "customer-activation",
         name,
         selector,
@@ -3555,7 +4352,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     );
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   } catch (error) {
-    process.stderr.write(`${error.stack ?? error.message}\n`);
+    const message =
+      error instanceof Error && error.stack !== undefined
+        ? error.stack
+        : errorMessage(error);
+    process.stderr.write(`${message}\n`);
     process.exitCode = 1;
   }
 }

@@ -6,7 +6,8 @@
     "erasableSyntaxOnly": true,
     "module": "nodenext",
     "moduleResolution": "nodenext",
-    "rewriteRelativeImportExtensions": true
+    "rewriteRelativeImportExtensions": true,
+    "importHelpers": false
   },
   "include": ["scripts/testbed/**/*.ts"]
 }
