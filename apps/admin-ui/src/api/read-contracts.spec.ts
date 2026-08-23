@@ -1,7 +1,13 @@
-import { adminListAuditLogsContract } from "@vem/shared";
-import { describe, expect, it, vi } from "vitest";
+import {
+  adminGetDashboardCustomerProfileContract,
+  adminGetDashboardSalesTrendContract,
+  adminGetDashboardSummaryContract,
+  adminGetDashboardTopProductsContract,
+  adminListAuditLogsContract,
+} from "@vem/shared";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { callAdminEndpointContract, getContract } from "@/api/request";
+import { callAdminEndpointContract } from "@/api/request";
 
 import { listAuditLogs } from "./audit";
 import {
@@ -13,10 +19,13 @@ import {
 
 vi.mock("@/api/request", () => ({
   callAdminEndpointContract: vi.fn().mockResolvedValue({}),
-  getContract: vi.fn().mockResolvedValue({}),
 }));
 
 describe("admin read api contracts", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it("parses audit log page responses through the shared contract", async () => {
     await listAuditLogs({ resourceType: "order", page: 2 });
 
@@ -32,28 +41,20 @@ describe("admin read api contracts", () => {
     await getTopProducts({ to: "2026-07-05T00:00:00.000Z" });
     await getCustomerProfile();
 
-    expect(getContract).toHaveBeenCalledWith(
-      "/dashboard/summary",
-      expect.any(Object),
-      expect.any(Object),
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminGetDashboardSummaryContract,
       {},
     );
-    expect(getContract).toHaveBeenCalledWith(
-      "/dashboard/sales-trend",
-      expect.any(Object),
-      expect.any(Object),
-      { from: "2026-07-01T00:00:00.000Z" },
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminGetDashboardSalesTrendContract,
+      { query: { from: "2026-07-01T00:00:00.000Z" } },
     );
-    expect(getContract).toHaveBeenCalledWith(
-      "/dashboard/top-products",
-      expect.any(Object),
-      expect.any(Object),
-      { to: "2026-07-05T00:00:00.000Z" },
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminGetDashboardTopProductsContract,
+      { query: { to: "2026-07-05T00:00:00.000Z" } },
     );
-    expect(getContract).toHaveBeenCalledWith(
-      "/dashboard/customer-profile",
-      expect.any(Object),
-      expect.any(Object),
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminGetDashboardCustomerProfileContract,
       {},
     );
   });

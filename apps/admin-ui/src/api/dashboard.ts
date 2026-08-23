@@ -1,18 +1,17 @@
 import type { z } from "zod";
 
 import {
-  dashboardCustomerProfileResponseSchema,
-  dashboardDateRangeQuerySchema,
-  dashboardSalesTrendResponseSchema,
-  dashboardSummarySchema,
-  dashboardTopProductsResponseSchema,
+  adminGetDashboardCustomerProfileContract,
+  adminGetDashboardSalesTrendContract,
+  adminGetDashboardSummaryContract,
+  adminGetDashboardTopProductsContract,
   type DashboardCustomerProfile,
   type DashboardSummary,
   type DashboardTopProduct,
   type DashboardTrendPoint,
 } from "@vem/shared";
 
-import { getContract } from "./request";
+import { callAdminEndpointContract } from "./request";
 
 export type {
   DashboardCustomerProfile,
@@ -22,43 +21,30 @@ export type {
 } from "@vem/shared";
 
 export async function getDashboardSummary(): Promise<DashboardSummary> {
-  return await getContract(
-    "/dashboard/summary",
-    dashboardDateRangeQuerySchema,
-    dashboardSummarySchema,
-    {},
-  );
+  return await callAdminEndpointContract(adminGetDashboardSummaryContract, {});
 }
 
 export async function getSalesTrend(
-  query?: z.input<typeof dashboardDateRangeQuerySchema>,
+  query?: z.input<typeof adminGetDashboardSalesTrendContract.querySchema>,
 ): Promise<DashboardTrendPoint[]> {
-  return await getContract(
-    "/dashboard/sales-trend",
-    dashboardDateRangeQuerySchema,
-    dashboardSalesTrendResponseSchema,
-    query ?? {},
-  );
+  return await callAdminEndpointContract(adminGetDashboardSalesTrendContract, {
+    query: query ?? {},
+  });
 }
 
 export async function getTopProducts(
-  query?: z.input<typeof dashboardDateRangeQuerySchema>,
+  query?: z.input<typeof adminGetDashboardTopProductsContract.querySchema>,
 ): Promise<DashboardTopProduct[]> {
-  return await getContract(
-    "/dashboard/top-products",
-    dashboardDateRangeQuerySchema,
-    dashboardTopProductsResponseSchema,
-    query ?? {},
-  );
+  return await callAdminEndpointContract(adminGetDashboardTopProductsContract, {
+    query: query ?? {},
+  });
 }
 
 export async function getCustomerProfile(
-  query?: z.input<typeof dashboardDateRangeQuerySchema>,
+  query?: z.input<typeof adminGetDashboardCustomerProfileContract.querySchema>,
 ): Promise<DashboardCustomerProfile[]> {
-  return await getContract(
-    "/dashboard/customer-profile",
-    dashboardDateRangeQuerySchema,
-    dashboardCustomerProfileResponseSchema,
-    query ?? {},
+  return await callAdminEndpointContract(
+    adminGetDashboardCustomerProfileContract,
+    { query: query ?? {} },
   );
 }

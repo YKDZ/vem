@@ -1,5 +1,10 @@
 import { z } from "zod";
 
+import { defineAdminEndpointContract } from "../admin-api-contract";
+
+const noPathParamsSchema = z.strictObject({});
+const noBodySchema = z.strictObject({});
+
 export const dashboardDateRangeQuerySchema = z.object({
   from: z.iso.datetime().optional(),
   to: z.iso.datetime().optional(),
@@ -43,6 +48,45 @@ export const dashboardTopProductsResponseSchema = z.array(
 export const dashboardCustomerProfileResponseSchema = z.array(
   dashboardCustomerProfileSchema,
 );
+
+export const adminGetDashboardSummaryContract = defineAdminEndpointContract({
+  method: "GET",
+  path: "/dashboard/summary",
+  pathParamsSchema: noPathParamsSchema,
+  querySchema: dashboardDateRangeQuerySchema,
+  bodySchema: noBodySchema,
+  responseSchema: dashboardSummarySchema,
+});
+
+export const adminGetDashboardSalesTrendContract = defineAdminEndpointContract({
+  method: "GET",
+  path: "/dashboard/sales-trend",
+  pathParamsSchema: noPathParamsSchema,
+  querySchema: dashboardDateRangeQuerySchema,
+  bodySchema: noBodySchema,
+  responseSchema: dashboardSalesTrendResponseSchema,
+});
+
+export const adminGetDashboardTopProductsContract = defineAdminEndpointContract(
+  {
+    method: "GET",
+    path: "/dashboard/top-products",
+    pathParamsSchema: noPathParamsSchema,
+    querySchema: dashboardDateRangeQuerySchema,
+    bodySchema: noBodySchema,
+    responseSchema: dashboardTopProductsResponseSchema,
+  },
+);
+
+export const adminGetDashboardCustomerProfileContract =
+  defineAdminEndpointContract({
+    method: "GET",
+    path: "/dashboard/customer-profile",
+    pathParamsSchema: noPathParamsSchema,
+    querySchema: dashboardDateRangeQuerySchema,
+    bodySchema: noBodySchema,
+    responseSchema: dashboardCustomerProfileResponseSchema,
+  });
 
 export type DashboardSummary = z.infer<typeof dashboardSummarySchema>;
 export type DashboardTrendPoint = z.infer<typeof dashboardTrendPointSchema>;
