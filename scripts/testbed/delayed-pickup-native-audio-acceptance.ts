@@ -71,10 +71,10 @@ function collectDiagnostics(
     for (const entry of source ?? []) target.push(recordValue(entry));
 }
 
-function one(values: unknown, label: string): JsonRecord {
+function one(values: unknown, label: string): unknown {
   if (!Array.isArray(values) || values.length !== 1)
     throw new Error(`${label} must contain exactly one record`);
-  return recordValue(values[0]);
+  return values[0];
 }
 
 function deriveSerialSaleBinding(serial: JsonRecord): JsonRecord {
@@ -91,10 +91,12 @@ function deriveSerialSaleBinding(serial: JsonRecord): JsonRecord {
     serialSession?.saleCorrelationIds,
     "serial sale correlations",
   );
-  const sale = one(serialSession?.saleBindings, "serial sale bindings");
+  const sale = one(serialSession?.saleBindings, "serial sale bindings") as
+    | JsonRecord
+    | undefined;
   if (
-    sale.saleCorrelationId !== correlationId ||
-    ![sale.orderId, sale.paymentId, sale.vendingCommandId].every(
+    sale?.saleCorrelationId !== correlationId ||
+    ![sale?.orderId, sale?.paymentId, sale?.vendingCommandId].every(
       (value) => typeof value === "string" && value.length > 0,
     )
   )
