@@ -30,7 +30,40 @@ const TIMEOUT_PARTIAL_SCANNER_BYTES = Buffer.from("621234567890123456", "utf8");
 const CLEANUP_TIMEOUT_MS = 10_000;
 const SCANNER_QUIET_BOUNDARY_MS = 750;
 
-export function scannerFrameBytes(value = DEFAULT_VALID_SCANNER_CODE) {
+type JsonRecord = Record<string, unknown>;
+type HandoffRecord = JsonRecord;
+type GuestInputRecord = JsonRecord;
+
+type ScannerEventCapture = {
+  opened: Promise<void>;
+  nextEvent: Promise<JsonRecord>;
+  events: JsonRecord[];
+  waitForEventId: (eventId: string, timeoutMs?: number) => Promise<JsonRecord>;
+  assertQuiet: (
+    timeoutMs?: number,
+  ) => Promise<{ quietForMs: number; scannerEventCount: number }>;
+  close: () => void;
+};
+
+type ScannerSerialControl = {
+  sessionId: string;
+  inject: (
+    renderedSale: JsonRecord,
+    bytes: Buffer | string,
+  ) => Promise<unknown>;
+  bindSale: (command: JsonRecord) => Promise<unknown>;
+  stopScannerProbe: () => Promise<unknown>;
+  waitFrame: (parsedOpcode: string, timeoutMs?: number) => Promise<unknown>;
+  releaseF0: () => Promise<unknown>;
+  releaseF2: () => Promise<unknown>;
+  evidence: () => Promise<unknown>;
+  stop: (payload: JsonRecord) => Promise<unknown>;
+  abort: () => Promise<unknown>;
+};
+
+export function scannerFrameBytes(
+  value: unknown = DEFAULT_VALID_SCANNER_CODE,
+): Buffer {
   const bytes = Buffer.isBuffer(value)
     ? Buffer.from(value)
     : typeof value === "string"
@@ -54,14 +87,14 @@ export function scannerFrameBytes(value = DEFAULT_VALID_SCANNER_CODE) {
   return bytes;
 }
 
-function required(value, label) {
+function required(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${label} is required`);
   }
   return value.trim();
 }
 
-function windowsAbsolute(value, label) {
+function windowsAbsolute(value: unknown, label: string): string {
   const path = required(value, label);
   if (!/^[A-Za-z]:\\/.test(path) || path.includes("\0")) {
     throw new Error(`${label} must be an absolute Windows path`);
@@ -69,7 +102,7 @@ function windowsAbsolute(value, label) {
   return path;
 }
 
-function option(args, name) {
+function option(args: string[], name: string): string {
   const index = args.indexOf(`--${name}`);
   const value = index === -1 ? undefined : args[index + 1];
   if (!value || value.startsWith("--")) {
@@ -78,12 +111,12 @@ function option(args, name) {
   return value;
 }
 
-function optionalOption(args, name) {
+function optionalOption(args: string[], name: string): string | null {
   const index = args.indexOf(`--${name}`);
   return index === -1 ? null : required(args[index + 1], `--${name}`);
 }
 
-function localPath(path) {
+function localPath(path: string): string {
   return process.platform === "win32"
     ? path
     : resolve(
@@ -91,16 +124,16 @@ function localPath(path) {
       );
 }
 
-function readJson(path, label) {
-  return JSON.parse(readFileSync(localPath(path), "utf8"));
+function readJson(path: string, label: string): JsonRecord {
+  return JSON.parse(readFileSync(localPath(path), "utf8")) as JsonRecord;
 }
 
-function writeJson(path, value) {
+function writeJson(path: string, value: unknown): void {
   mkdirSync(dirname(localPath(path)), { recursive: true });
   writeFileSync(localPath(path), `${JSON.stringify(value, null, 2)}\n`);
 }
 
-function serializeError(error) {
+function serializeError(error: unknown): JsonRecord {
   if (error instanceof Error) {
     return {
       name: error.name,
@@ -111,8 +144,8 @@ function serializeError(error) {
   return { name: "Error", message: String(error) };
 }
 
-function cleanupTimeout(label, timeoutMs) {
-  return new Promise((_, reject) => {
+function cleanupTimeout(label: string, timeoutMs: number): Promise<never> {
+  return new Promise<never>((_, reject) => {
     const timer = setTimeout(() => {
       reject(new Error(`${label} exceeded ${timeoutMs}ms cleanup deadline`));
     }, timeoutMs);
@@ -121,10 +154,10 @@ function cleanupTimeout(label, timeoutMs) {
 }
 
 export async function runCleanupStep(
-  label,
-  action,
+  label: string,
+  action: () => Promise<unknown>,
   timeoutMs = CLEANUP_TIMEOUT_MS,
-) {
+): Promise<unknown> {
   try {
     const detail = await Promise.race([
       action(),
@@ -136,17 +169,20 @@ export async function runCleanupStep(
       `${label} failed: ${error instanceof Error ? error.message : String(error)}`,
     );
     wrapped.cause = error;
-    wrapped.cleanupLabel = label;
+    (wrapped as Error & { cleanupLabel?: string }).cleanupLabel = label;
     throw wrapped;
   }
 }
 
-export function combineCleanupError(primaryError, cleanupErrors) {
+export function combineCleanupError(
+  primaryError: unknown,
+  cleanupErrors: Error[],
+): unknown {
   if (cleanupErrors.length === 0) return primaryError;
   if (primaryError) {
     return new AggregateError(
       [primaryError, ...cleanupErrors],
-      `${primaryError.message}; cleanup failed: ${cleanupErrors.map((error) => error.message).join("; ")}`,
+      `${(primaryError as Error).message}; cleanup failed: ${cleanupErrors.map((error) => error.message).join("; ")}`,
     );
   }
   return new AggregateError(
@@ -160,9 +196,14 @@ async function finalizeScannerCleanup({
   sessionStart,
   sessionControl,
   client,
-}) {
-  const cleanup = [];
-  const cleanupErrors = [];
+}: {
+  guestInput: GuestInputRecord | null | undefined;
+  sessionStart: JsonRecord | null | undefined;
+  sessionControl: { abort: () => Promise<unknown> } | null | undefined;
+  client: InstanceType<typeof CdpClient> | null | undefined;
+}): Promise<{ cleanup: unknown[]; cleanupErrors: Error[] }> {
+  const cleanup: unknown[] = [];
+  const cleanupErrors: Error[] = [];
   if (sessionStart?.sessionId) {
     try {
       cleanup.push(
@@ -170,10 +211,10 @@ async function finalizeScannerCleanup({
           const result = sessionControl
             ? await sessionControl.abort()
             : await controlPlaneRequest(
-                guestInput,
+                guestInput as GuestInputRecord,
                 `/v1/serial-sessions/${sessionStart.sessionId}/abort`,
               );
-          if (result?.aborted !== true) {
+          if ((result as JsonRecord | null)?.aborted !== true) {
             throw new Error(
               "serial session abort did not confirm inactive state",
             );
@@ -182,9 +223,12 @@ async function finalizeScannerCleanup({
         }),
       );
     } catch (error) {
-      cleanupErrors.push(error);
+      const err = error as Error;
+      cleanupErrors.push(err);
       cleanup.push({
-        label: error.cleanupLabel ?? "abort serial session",
+        label:
+          (err as Error & { cleanupLabel?: string }).cleanupLabel ??
+          "abort serial session",
         ok: false,
         error: serializeError(error),
       });
@@ -199,9 +243,12 @@ async function finalizeScannerCleanup({
         }),
       );
     } catch (error) {
-      cleanupErrors.push(error);
+      const err = error as Error;
+      cleanupErrors.push(err);
       cleanup.push({
-        label: error.cleanupLabel ?? "close CDP client",
+        label:
+          (err as Error & { cleanupLabel?: string }).cleanupLabel ??
+          "close CDP client",
         ok: false,
         error: serializeError(error),
       });
@@ -210,31 +257,43 @@ async function finalizeScannerCleanup({
   return { cleanup, cleanupErrors };
 }
 
-function rows(raw, key) {
-  return Array.isArray(raw?.[key]) ? raw[key] : [];
+function rows(raw: unknown, key: string): unknown[] {
+  const record = raw as JsonRecord | null | undefined;
+  return Array.isArray(record?.[key]) ? (record?.[key] as unknown[]) : [];
 }
 
-function paymentRowsByOrder(report, orderId) {
+function paymentRowsByOrder(
+  report: JsonRecord | null | undefined,
+  orderId: string,
+): unknown[] {
   return rows(report?.raw, "payments").filter(
-    (entry) => entry.orderId === orderId,
+    (entry) => (entry as JsonRecord).orderId === orderId,
   );
 }
 
-function attemptRowsByOrder(report, orderId) {
+function attemptRowsByOrder(
+  report: JsonRecord | null | undefined,
+  orderId: string,
+): unknown[] {
   return rows(report?.raw, "paymentCodeAttempts").filter(
-    (entry) => entry.orderId === orderId,
+    (entry) => (entry as JsonRecord).orderId === orderId,
   );
 }
 
-function movementRowsByOrderNo(report, orderNo) {
+function movementRowsByOrderNo(
+  report: JsonRecord | null | undefined,
+  orderNo: string,
+): unknown[] {
   return rows(report?.raw, "movements").filter(
-    (entry) => entry.orderNo === orderNo,
+    (entry) => (entry as JsonRecord).orderNo === orderNo,
   );
 }
 
-function daemonBaseUrl(handoff) {
+function daemonBaseUrl(handoff: HandoffRecord): string {
+  const daemon = handoff.daemon as JsonRecord | undefined;
+  const ready = daemon?.ready as JsonRecord | undefined;
   const healthzUrl = required(
-    handoff.daemon?.ready?.healthzUrl,
+    ready?.healthzUrl,
     "daemon healthzUrl",
   );
   if (!healthzUrl.endsWith("/healthz")) {
@@ -243,35 +302,42 @@ function daemonBaseUrl(handoff) {
   return healthzUrl.slice(0, -"/healthz".length);
 }
 
-function daemonHeaders(handoff) {
+function daemonHeaders(handoff: HandoffRecord): JsonRecord {
+  const daemon = handoff.daemon as JsonRecord | undefined;
+  const ready = daemon?.ready as JsonRecord | undefined;
   return {
-    authorization: `Bearer ${required(handoff.daemon?.ready?.ipcToken, "daemon ipcToken")}`,
+    authorization: `Bearer ${required(ready?.ipcToken, "daemon ipcToken")}`,
   };
 }
 
-function daemonEventsUrl(handoff) {
+function daemonEventsUrl(handoff: HandoffRecord): string {
+  const daemon = handoff.daemon as JsonRecord | undefined;
+  const ready = daemon?.ready as JsonRecord | undefined;
   const baseUrl = daemonBaseUrl(handoff).replace(/^http/i, "ws");
-  return `${baseUrl}/v1/events?token=${encodeURIComponent(required(handoff.daemon?.ready?.ipcToken, "daemon ipcToken"))}`;
+  return `${baseUrl}/v1/events?token=${encodeURIComponent(required(ready?.ipcToken, "daemon ipcToken"))}`;
 }
 
-function captureNextSerialScannerEvent(handoff, timeoutMs = 30_000) {
-  let socket = null;
+function captureNextSerialScannerEvent(
+  handoff: HandoffRecord,
+  timeoutMs = 30_000,
+): ScannerEventCapture {
+  let socket: WebSocket | null = null;
   let settled = false;
-  let timer = null;
-  let resolveOpen;
-  let rejectOpen;
-  let resolveEvent;
-  let rejectEvent;
-  const events = [];
-  const close = () => {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let resolveOpen: () => void = () => {};
+  let rejectOpen: (error: Error) => void = () => {};
+  let resolveEvent: (event: JsonRecord) => void = () => {};
+  let rejectEvent: (error: Error) => void = () => {};
+  const events: JsonRecord[] = [];
+  const close = (): void => {
     if (timer) clearTimeout(timer);
     socket?.close();
   };
-  const opened = new Promise((resolvePromise, reject) => {
+  const opened = new Promise<void>((resolvePromise, reject) => {
     resolveOpen = resolvePromise;
     rejectOpen = reject;
   });
-  const nextEvent = new Promise((resolvePromise, reject) => {
+  const nextEvent = new Promise<JsonRecord>((resolvePromise, reject) => {
     resolveEvent = resolvePromise;
     rejectEvent = reject;
   });
@@ -295,9 +361,9 @@ function captureNextSerialScannerEvent(handoff, timeoutMs = 30_000) {
     }
   });
   socket.addEventListener("message", (message) => {
-    let event;
+    let event: JsonRecord;
     try {
-      event = JSON.parse(String(message.data));
+      event = JSON.parse(String(message.data)) as JsonRecord;
     } catch {
       return;
     }
@@ -321,7 +387,9 @@ function captureNextSerialScannerEvent(handoff, timeoutMs = 30_000) {
     async waitForEventId(eventId, timeoutMs = 30_000) {
       const deadline = Date.now() + timeoutMs;
       while (Date.now() < deadline) {
-        const event = events.find((candidate) => candidate.eventId === eventId);
+        const event = events.find(
+          (candidate) => candidate.eventId === eventId,
+        );
         if (event) return event;
         await sleep(50);
       }
@@ -343,24 +411,32 @@ function captureNextSerialScannerEvent(handoff, timeoutMs = 30_000) {
   };
 }
 
-function matchesStableGuestUsbIdentity(expected, actual) {
+function matchesStableGuestUsbIdentity(
+  expected: JsonRecord | null | undefined,
+  actual: JsonRecord | null | undefined,
+): boolean {
   if (!expected || !actual || expected.identityKey !== actual.identityKey) {
     return false;
   }
   if (expected.containerId) return expected.containerId === actual.containerId;
+  const expectedHardwareIds = (expected.hardwareIds ?? []) as unknown[];
+  const actualHardwareIds = (actual.hardwareIds ?? []) as unknown[];
   return (
     expected.serialNumber === actual.serialNumber &&
-    expected.hardwareIds.every((hardwareId) =>
-      actual.hardwareIds?.includes(hardwareId),
+    expectedHardwareIds.every((hardwareId) =>
+      actualHardwareIds.includes(hardwareId),
     )
   );
 }
 
-export function pnpObservationMatchesLibvirtTopology(observation, topology) {
+export function pnpObservationMatchesLibvirtTopology(
+  observation: JsonRecord | null | undefined,
+  topology: JsonRecord | null | undefined,
+): boolean {
   if (
     !observation ||
     !topology ||
-    !/^COM[1-9][0-9]*$/.test(observation.currentPort ?? "")
+    !/^COM[1-9][0-9]*$/.test(String(observation.currentPort ?? ""))
   )
     return false;
   const paths = Array.isArray(observation.locationPaths)
@@ -384,10 +460,10 @@ export function pnpObservationMatchesLibvirtTopology(observation, topology) {
 }
 
 export function pnpObservationMatchesDaemonIdentity(
-  observation,
-  identity,
-  expectedCurrentPort,
-) {
+  observation: JsonRecord | null | undefined,
+  identity: JsonRecord | null | undefined,
+  expectedCurrentPort: unknown,
+): boolean {
   if (!observation || !identity) return false;
   const currentPort = String(observation.currentPort ?? "").toUpperCase();
   if (
@@ -407,7 +483,7 @@ export function pnpObservationMatchesDaemonIdentity(
   return observedContainer === identityContainer;
 }
 
-function observeWindowsSerialPnP() {
+function observeWindowsSerialPnP(): unknown[] {
   const script = String.raw`$ErrorActionPreference = 'Stop'
 $devices = @(Get-CimInstance Win32_SerialPort | ForEach-Object {
   $instanceId = [string]$_.PNPDeviceID
@@ -432,30 +508,40 @@ ConvertTo-Json -Compress -Depth 4 -InputObject $devices`;
   );
   if (result.status !== 0)
     throw new Error(`Windows PnP serial observation failed: ${result.stderr}`);
-  const parsed = JSON.parse(result.stdout);
+  const parsed = JSON.parse(result.stdout) as unknown;
   return Array.isArray(parsed) ? parsed : [parsed];
 }
 
-function scannerQemuMapping(sessionStart) {
-  const qemuMappings = sessionStart?.qemuUsbSerialMappings;
+function scannerQemuMapping(sessionStart: JsonRecord | null | undefined) {
+  const qemuMappings = sessionStart?.qemuUsbSerialMappings as unknown[];
   if (!Array.isArray(qemuMappings) || qemuMappings.length !== 2) {
     throw new Error(
       "serial session did not expose the real QEMU USB device mappings",
     );
   }
   for (const role of ["lower-controller", "scanner"]) {
-    const mapping = qemuMappings.find((entry) => entry.role === role);
-    if (!mapping || !mapping.guestUsbTopology?.alias) {
+    const mapping = qemuMappings.find(
+      (entry) => (entry as JsonRecord).role === role,
+    ) as JsonRecord | undefined;
+    if (
+      !mapping ||
+      !((mapping.guestUsbTopology as JsonRecord | undefined)?.alias)
+    ) {
       throw new Error(
         `QEMU USB mapping for ${role} is missing live libvirt USB topology`,
       );
     }
   }
-  return qemuMappings.find((entry) => entry.role === "scanner");
+  return qemuMappings.find(
+    (entry) => (entry as JsonRecord).role === "scanner",
+  ) as JsonRecord;
 }
 
-async function fetchJson(url, options = {}) {
-  const response = await fetch(url, options);
+async function fetchJson(
+  url: string,
+  options: JsonRecord = {},
+): Promise<unknown> {
+  const response = await fetch(url, options as RequestInit);
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
     throw new Error(
@@ -465,19 +551,26 @@ async function fetchJson(url, options = {}) {
   return payload;
 }
 
-async function daemonGet(handoff, path) {
+async function daemonGet(handoff: HandoffRecord, path: string): Promise<unknown> {
   return fetchJson(`${daemonBaseUrl(handoff)}${path}`, {
     headers: daemonHeaders(handoff),
   });
 }
 
-async function controlPlaneRequest(guestInput, path, body = {}) {
+async function controlPlaneRequest(
+  guestInput: GuestInputRecord,
+  path: string,
+  body: JsonRecord = {},
+): Promise<unknown> {
+  const hostControlPlane = guestInput?.hostControlPlane as
+    | JsonRecord
+    | undefined;
   const endpoint = required(
-    guestInput?.hostControlPlane?.endpoint,
+    hostControlPlane?.endpoint,
     "hostControlPlane.endpoint",
   );
   const token = required(
-    guestInput?.hostControlPlane?.token,
+    hostControlPlane?.token,
     "hostControlPlane.token",
   );
   return fetchJson(`${endpoint}${path}`, {
@@ -490,43 +583,58 @@ async function controlPlaneRequest(guestInput, path, body = {}) {
   });
 }
 
-async function queryPlatform(guestInput, runId, machineCode, sessionId = null) {
-  return (
-    await controlPlaneRequest(guestInput, "/v1/platform/query", {
+async function queryPlatform(
+  guestInput: GuestInputRecord,
+  runId: string,
+  machineCode: string,
+  sessionId: string | null = null,
+): Promise<unknown> {
+  const response = (await controlPlaneRequest(
+    guestInput,
+    "/v1/platform/query",
+    {
       runId,
       machineCode,
       ...(sessionId ? { sessionId } : {}),
-    })
-  ).report;
+    },
+  )) as JsonRecord;
+  return response.report;
 }
 
-async function waitForCommand(handoff, renderedSale, timeoutMs = 30_000) {
+async function waitForCommand(
+  handoff: HandoffRecord,
+  renderedSale: JsonRecord,
+  timeoutMs = 30_000,
+): Promise<JsonRecord> {
   const deadline = Date.now() + timeoutMs;
-  let lastTransaction = null;
+  let lastTransaction: JsonRecord | null = null;
   while (Date.now() < deadline) {
     const transaction = await daemonGet(
       handoff,
       "/v1/transactions/current",
     ).catch(() => null);
-    lastTransaction = transaction;
+    lastTransaction = transaction as JsonRecord | null;
+    const transactionRecord = transaction as JsonRecord | null;
+    const vending = transactionRecord?.vending as JsonRecord | undefined;
     const commandId =
-      transaction?.vending?.commandId ?? transaction?.dispenseCommandId ?? null;
-    const commandNo = transaction?.vending?.commandNo ?? null;
+      vending?.commandId ?? transactionRecord?.dispenseCommandId ?? null;
+    const commandNo = vending?.commandNo ?? null;
     if (
-      transaction?.orderId === renderedSale.orderId &&
-      transaction?.paymentId === renderedSale.paymentId &&
+      transactionRecord !== null &&
+      transactionRecord?.orderId === renderedSale.orderId &&
+      transactionRecord?.paymentId === renderedSale.paymentId &&
       typeof commandId === "string" &&
       commandId &&
       typeof commandNo === "string" &&
       commandNo
     ) {
       return {
-        orderId: transaction.orderId,
-        paymentId: transaction.paymentId,
-        orderNo: transaction.orderNo,
+        orderId: transactionRecord.orderId,
+        paymentId: transactionRecord.paymentId,
+        orderNo: transactionRecord.orderNo,
         vendingCommandId: commandId,
         vendingCommandNo: commandNo,
-        vendingStatus: transaction?.vending?.status ?? null,
+        vendingStatus: vending?.status ?? null,
       };
     }
     await sleep(250);
@@ -536,35 +644,45 @@ async function waitForCommand(handoff, renderedSale, timeoutMs = 30_000) {
   );
 }
 
-export function paymentCodeAttemptCorrelationReady(transaction, renderedSale) {
-  const attempt = transaction?.paymentCodeAttempt ?? null;
+export function paymentCodeAttemptCorrelationReady(
+  transaction: JsonRecord | null | undefined,
+  renderedSale: JsonRecord,
+): boolean {
+  const attempt = (transaction?.paymentCodeAttempt ?? null) as
+    | JsonRecord
+    | null;
   return (
     transaction?.orderId === renderedSale.orderId &&
     transaction?.paymentId === renderedSale.paymentId &&
     typeof attempt?.scannerEventId === "string" &&
-    attempt.scannerEventId.length > 0 &&
+    String(attempt.scannerEventId ?? "").length > 0 &&
     attempt.source === "serial_text" &&
     Number.isSafeInteger(attempt.attemptNo) &&
     typeof attempt.idempotencyKey === "string" &&
-    attempt.idempotencyKey.length > 0
+    String(attempt.idempotencyKey ?? "").length > 0
   );
 }
 
 async function waitForPaymentCodeAttempt(
-  handoff,
-  renderedSale,
+  handoff: HandoffRecord,
+  renderedSale: JsonRecord,
   timeoutMs = 30_000,
-) {
+): Promise<JsonRecord> {
   const deadline = Date.now() + timeoutMs;
-  let lastTransaction = null;
+  let lastTransaction: JsonRecord | null = null;
   while (Date.now() < deadline) {
     const transaction = await daemonGet(
       handoff,
       "/v1/transactions/current",
     ).catch(() => null);
-    lastTransaction = transaction;
-    if (paymentCodeAttemptCorrelationReady(transaction, renderedSale)) {
-      return transaction;
+    lastTransaction = transaction as JsonRecord | null;
+    if (
+      paymentCodeAttemptCorrelationReady(
+        transaction as JsonRecord | null,
+        renderedSale,
+      )
+    ) {
+      return transaction as JsonRecord;
     }
     await sleep(250);
   }
@@ -574,46 +692,60 @@ async function waitForPaymentCodeAttempt(
 }
 
 export async function waitForHardwareBindings(
-  handoff,
-  sessionStart,
+  handoff: HandoffRecord,
+  sessionStart: JsonRecord,
   timeoutMs = 30_000,
-) {
+): Promise<JsonRecord> {
   const deadline = Date.now() + timeoutMs;
-  let last = null;
+  let last: JsonRecord | null = null;
   while (Date.now() < deadline) {
     const snapshot = await daemonGet(handoff, "/v1/hardware-bindings").catch(
       () => null,
     );
-    last = snapshot;
-    const roles = Array.isArray(snapshot?.roles) ? snapshot.roles : [];
-    const resolved = Object.fromEntries(roles.map((role) => [role.role, role]));
+    const snapshotRecord = snapshot as JsonRecord | null;
+    last = snapshotRecord;
+    const roles = Array.isArray(snapshotRecord?.roles)
+      ? (snapshotRecord.roles as unknown[])
+      : [];
+    const resolved = Object.fromEntries(
+      roles.map((role) => [
+        (role as JsonRecord).role,
+        role,
+      ]),
+    ) as Record<string, JsonRecord>;
     const lower = resolved.lower_controller;
     const scanner = resolved.scanner;
     const scannerMapping = scannerQemuMapping(sessionStart);
     const windowsPnp = observeWindowsSerialPnP();
     const scannerPnp = windowsPnp.find(
       (observation) =>
-        observation.currentPort === scanner?.currentPort &&
+        (observation as JsonRecord).currentPort === scanner?.currentPort &&
         pnpObservationMatchesLibvirtTopology(
-          observation,
-          scannerMapping.guestUsbTopology,
+          observation as JsonRecord,
+          scannerMapping.guestUsbTopology as JsonRecord,
         ),
     );
-    const scannerCandidate = scanner?.candidates?.find(
+    const candidates = (scanner?.candidates ?? []) as unknown[];
+    const scannerCandidate = candidates.find(
       (candidate) =>
-        candidate.currentPort === scanner.currentPort &&
+        (candidate as JsonRecord).currentPort === scanner.currentPort &&
         matchesStableGuestUsbIdentity(
-          candidate.identity,
-          scanner.binding?.identity,
+          (candidate as JsonRecord).identity as JsonRecord | undefined,
+          (scanner?.binding as JsonRecord | undefined)?.identity as
+            | JsonRecord
+            | undefined,
         ),
-    );
+    ) as JsonRecord | undefined;
+    const lowerBinding = lower?.binding as JsonRecord | undefined;
+    const scannerBinding = scanner?.binding as JsonRecord | undefined;
     if (
       lower?.ready === true &&
       scanner?.ready === true &&
-      /^COM[1-9][0-9]*$/.test(lower.currentPort ?? "") &&
-      /^COM[1-9][0-9]*$/.test(scanner.currentPort ?? "") &&
+      /^COM[1-9][0-9]*$/.test(String(lower.currentPort ?? "")) &&
+      /^COM[1-9][0-9]*$/.test(String(scanner.currentPort ?? "")) &&
       lower.currentPort !== scanner.currentPort &&
-      typeof lower.binding?.identity?.identityKey === "string" &&
+      typeof (lowerBinding?.identity as JsonRecord | undefined)?.identityKey ===
+        "string" &&
       scannerCandidate
     ) {
       const qemuMappings = sessionStart?.qemuUsbSerialMappings;
@@ -623,7 +755,7 @@ export async function waitForHardwareBindings(
         scanner: {
           libvirtUsbTopology: scannerMapping.guestUsbTopology,
           windowsPnpObservation: scannerPnp ?? null,
-          daemonBindingIdentity: scanner.binding.identity,
+          daemonBindingIdentity: scannerBinding?.identity,
           currentPort: scanner.currentPort,
           observedCandidate: scannerCandidate,
         },
@@ -636,7 +768,10 @@ export async function waitForHardwareBindings(
   );
 }
 
-async function waitForScannerSaleCapability(handoff, timeoutMs = 30_000) {
+async function waitForScannerSaleCapability(
+  handoff: HandoffRecord,
+  timeoutMs = 30_000,
+): Promise<unknown> {
   try {
     return await waitForSaleStartCapability(
       (path) => daemonGet(handoff, path),
@@ -653,24 +788,30 @@ async function waitForScannerSaleCapability(handoff, timeoutMs = 30_000) {
 }
 
 export async function waitForSaleStartCapability(
-  daemonGetRequest,
-  { timeoutMs = 30_000, paymentOptionKey = "mock:mock" } = {},
-) {
+  daemonGetRequest: (path: string) => Promise<unknown>,
+  {
+    timeoutMs = 30_000,
+    paymentOptionKey = "mock:mock",
+  }: { timeoutMs?: number; paymentOptionKey?: string } = {},
+): Promise<JsonRecord> {
   const deadline = Date.now() + timeoutMs;
-  let last = null;
+  let last: JsonRecord | null = null;
   while (Date.now() < deadline) {
-    last = await daemonGetRequest("/v1/sale-start-capability").catch(
+    last = (await daemonGetRequest("/v1/sale-start-capability").catch(
       () => null,
-    );
-    const options = last?.paymentOptions?.options;
+    )) as JsonRecord | null;
+    const paymentOptions = last?.paymentOptions as JsonRecord | undefined;
+    const options = paymentOptions?.options;
     const option = Array.isArray(options)
-      ? options.find((entry) => entry?.optionKey === paymentOptionKey)
+      ? (options as unknown[]).find(
+          (entry) => (entry as JsonRecord)?.optionKey === paymentOptionKey,
+        )
       : null;
     if (
       last?.canStartSale === true &&
       Number.isInteger(last?.revision) &&
-      option?.ready === true &&
-      option?.disabledReason === null
+      (option as JsonRecord)?.ready === true &&
+      (option as JsonRecord)?.disabledReason === null
     ) {
       return last;
     }
@@ -682,25 +823,26 @@ export async function waitForSaleStartCapability(
 }
 
 async function waitForSuccessfulResultSurface(
-  client,
-  expected,
+  client: InstanceType<typeof CdpClient>,
+  expected: JsonRecord,
   timeoutMs = 60_000,
-) {
+): Promise<unknown> {
   const deadline = Date.now() + timeoutMs;
-  let last = null;
+  let last: JsonRecord | null = null;
   do {
     await waitForRoute(client, /^#\/(payment|dispensing|result\/success)/, {
       timeoutMs: 5_000,
       pollMs: 250,
     });
-    last = await readUiBoundary(client);
+    last = (await readUiBoundary(client)) as JsonRecord | null;
+    const result = last?.result as JsonRecord | undefined;
     if (
-      last.route === "#/result/success" &&
-      last.result?.kind === "success" &&
-      last.result.orderId === expected.orderId &&
-      last.result.paymentId === expected.paymentId &&
-      last.result.orderNo === expected.orderNo &&
-      last.result.commandId === expected.commandId
+      last?.route === "#/result/success" &&
+      result?.kind === "success" &&
+      result.orderId === expected.orderId &&
+      result.paymentId === expected.paymentId &&
+      result.orderNo === expected.orderNo &&
+      result.commandId === expected.commandId
     ) {
       return last;
     }
@@ -711,8 +853,10 @@ async function waitForSuccessfulResultSurface(
   );
 }
 
-async function readRenderedPaymentSurface(client) {
-  const hook = await evaluateExpression(
+async function readRenderedPaymentSurface(
+  client: InstanceType<typeof CdpClient>,
+): Promise<JsonRecord> {
+  const hook = (await evaluateExpression(
     client,
     `(() => {
       const el = document.querySelector("[data-installed-kiosk-sale-payment-surface]");
@@ -724,14 +868,16 @@ async function readRenderedPaymentSurface(client) {
         route: location.hash
       } : null;
     })()`,
-  );
+  )) as JsonRecord | null;
   if (!hook?.orderId || !hook?.paymentId || !hook?.orderNo) {
     throw new Error("required rendered payment surface hook is missing");
   }
   return hook;
 }
 
-async function readUiBoundary(client) {
+async function readUiBoundary(
+  client: InstanceType<typeof CdpClient>,
+): Promise<unknown> {
   return evaluateExpression(
     client,
     `(() => {
@@ -756,7 +902,9 @@ async function readUiBoundary(client) {
   );
 }
 
-async function readRuntimeTrace(client) {
+async function readRuntimeTrace(
+  client: InstanceType<typeof CdpClient>,
+): Promise<unknown> {
   return evaluateExpression(
     client,
     "window.__VEM_MACHINE_RUNTIME_TRACE__ || []",
@@ -769,18 +917,26 @@ export async function replaceScannerSerialSessionAndUpdateHandoff({
   handoffPath,
   control = controlPlaneRequest,
   writeJsonFile,
-}) {
-  const { replacement } = await replaceSerialSessionAndUpdateHandoff({
+}: {
+  guestInput: GuestInputRecord;
+  handoff: HandoffRecord;
+  handoffPath: string;
+  control?: (input: GuestInputRecord, path: string, body?: JsonRecord) => Promise<unknown>;
+  writeJsonFile?: (path: string, value: unknown) => void;
+}): Promise<JsonRecord> {
+  const replaced = (await replaceSerialSessionAndUpdateHandoff({
     guestInput,
     handoff,
     handoffPath,
     sessionId: required(
-      handoff?.commissioningSerialSession?.sessionId,
+      (handoff?.commissioningSerialSession as JsonRecord | undefined)
+        ?.sessionId,
       "handoff commissioning serial session id",
     ),
     control,
     writeJsonFile,
-  });
+  })) as JsonRecord;
+  const replacement = replaced.replacement as JsonRecord;
   required(replacement?.sessionId, "scanner replacement serial session id");
   return replacement;
 }
@@ -789,9 +945,17 @@ export function createScannerPaymentSerialControl({
   guestInput,
   sessionId,
   control = controlPlaneRequest,
-}) {
+}: {
+  guestInput: GuestInputRecord;
+  sessionId: string;
+  control?: (
+    input: GuestInputRecord,
+    path: string,
+    body?: JsonRecord,
+  ) => Promise<unknown>;
+}): ScannerSerialControl {
   const activeSessionId = required(sessionId, "scanner serial session id");
-  const request = (operation, body = {}) =>
+  const request = (operation: string, body: JsonRecord = {}) =>
     control(
       guestInput,
       `/v1/serial-sessions/${encodeURIComponent(activeSessionId)}/${operation}`,
@@ -799,20 +963,20 @@ export function createScannerPaymentSerialControl({
     );
   return {
     sessionId: activeSessionId,
-    inject(renderedSale, bytes) {
+    inject(renderedSale: JsonRecord, bytes: Buffer | string) {
       return request("inject", {
         orderId: renderedSale.orderId,
         paymentId: renderedSale.paymentId,
         scannerCodeBase64: Buffer.from(bytes).toString("base64"),
       });
     },
-    bindSale(command) {
+    bindSale(command: JsonRecord) {
       return request("bind-sale", command);
     },
     stopScannerProbe() {
       return request("stop-scanner-probe");
     },
-    waitFrame(parsedOpcode, timeoutMs = 30_000) {
+    waitFrame(parsedOpcode: string, timeoutMs = 30_000) {
       return request("wait-frame", { parsedOpcode, timeoutMs });
     },
     releaseF0() {
@@ -824,7 +988,7 @@ export function createScannerPaymentSerialControl({
     evidence() {
       return request("evidence");
     },
-    stop(payload) {
+    stop(payload: JsonRecord) {
       return request("stop", payload);
     },
     abort() {
@@ -844,7 +1008,22 @@ export async function admitScannerPaymentSession({
   waitForHardware = waitForHardwareBindings,
   waitForSale = waitForScannerSaleCapability,
   captureScannerEvent = captureNextSerialScannerEvent,
-}) {
+}: {
+  guestInput: GuestInputRecord;
+  handoff: HandoffRecord;
+  handoffPath: string;
+  control?: (
+    input: GuestInputRecord,
+    path: string,
+    body?: JsonRecord,
+  ) => Promise<unknown>;
+  writeJsonFile?: (path: string, value: unknown) => void;
+  replaceSession?: typeof replaceScannerSerialSessionAndUpdateHandoff;
+  waitForDaemonReady?: typeof waitForDaemonReadyRefresh;
+  waitForHardware?: typeof waitForHardwareBindings;
+  waitForSale?: typeof waitForScannerSaleCapability;
+  captureScannerEvent?: typeof captureNextSerialScannerEvent;
+}): Promise<JsonRecord> {
   const sessionStart = await replaceSession({
     guestInput,
     handoff,
@@ -854,7 +1033,7 @@ export async function admitScannerPaymentSession({
   });
   const sessionControl = createScannerPaymentSerialControl({
     guestInput,
-    sessionId: sessionStart.sessionId,
+    sessionId: String(sessionStart.sessionId),
     control,
   });
   const abortFreshSession = async () => {
@@ -864,21 +1043,24 @@ export async function admitScannerPaymentSession({
       // Preserve the admission failure after best-effort session cleanup.
     }
   };
-  let quietScannerCapture = null;
-  let primaryError = null;
+  let quietScannerCapture: ScannerEventCapture | null = null;
+  let primaryError: unknown = null;
   try {
     await waitForDaemonReady(handoff);
     const hardwareBindings = await waitForHardware(handoff, sessionStart);
     const saleStartCapability = await waitForSale(handoff);
     quietScannerCapture = captureScannerEvent(handoff);
     await quietScannerCapture.opened;
-    const scannerBindingProbe = await sessionControl.stopScannerProbe();
+    const scannerBindingProbe = (await sessionControl.stopScannerProbe()) as
+      | JsonRecord
+      | null;
+    const scannerProbe = scannerBindingProbe?.scannerBindingProbe as
+      | JsonRecord
+      | undefined;
     if (
-      scannerBindingProbe?.scannerBindingProbe?.purpose !==
-        "non_payment_scanner_binding_probe" ||
-      scannerBindingProbe.scannerBindingProbe.stopReason !==
-        "daemon_binding_confirmed" ||
-      typeof scannerBindingProbe.scannerBindingProbe.stoppedAt !== "string"
+      scannerProbe?.purpose !== "non_payment_scanner_binding_probe" ||
+      scannerProbe.stopReason !== "daemon_binding_confirmed" ||
+      typeof scannerProbe.stoppedAt !== "string"
     ) {
       throw new Error(
         "scanner binding probe did not stop after daemon binding confirmation",
@@ -910,28 +1092,35 @@ export async function admitScannerPaymentSession({
 }
 
 export function assertNoAttemptOrDuplicatePayment(
-  label,
-  baseline,
-  post,
-  renderedSale,
-) {
-  const baselineAttempts = attemptRowsByOrder(baseline, renderedSale.orderId);
-  const postAttempts = attemptRowsByOrder(post, renderedSale.orderId);
+  label: string,
+  baseline: JsonRecord | null | undefined,
+  post: JsonRecord | null | undefined,
+  renderedSale: JsonRecord,
+): void {
+  const baselineAttempts = attemptRowsByOrder(
+    baseline,
+    String(renderedSale.orderId),
+  );
+  const postAttempts = attemptRowsByOrder(post, String(renderedSale.orderId));
   if (baselineAttempts.length !== 0 || postAttempts.length !== 0) {
     throw new Error(`${label} must not create a payment-code attempt`);
   }
   const paymentIds = new Set(
-    paymentRowsByOrder(post, renderedSale.orderId).map((entry) => entry.id),
+    paymentRowsByOrder(post, String(renderedSale.orderId)).map(
+      (entry) => (entry as JsonRecord).id,
+    ),
   );
   if (paymentIds.size !== 1 || !paymentIds.has(renderedSale.paymentId)) {
     throw new Error(`${label} duplicated or replaced the payment row`);
   }
-  if (movementRowsByOrderNo(post, renderedSale.orderNo).length !== 0) {
+  if (
+    movementRowsByOrderNo(post, String(renderedSale.orderNo)).length !== 0
+  ) {
     throw new Error(`${label} must not vend before a valid scanner frame`);
   }
   if (
-    paymentRowsByOrder(post, renderedSale.orderId).length !==
-    paymentRowsByOrder(baseline, renderedSale.orderId).length
+    paymentRowsByOrder(post, String(renderedSale.orderId)).length !==
+    paymentRowsByOrder(baseline, String(renderedSale.orderId)).length
   ) {
     throw new Error(`${label} must have platform payment delta 0`);
   }
@@ -945,27 +1134,35 @@ export function validateSuccessfulOutcome({
   attemptSnapshot,
   scannerEvent,
   afterF2Ui,
-}) {
-  const order = rows(post?.raw, "orders").filter(
+}: {
+  baseline: JsonRecord | null | undefined;
+  post: JsonRecord | null | undefined;
+  renderedSale: JsonRecord;
+  command: JsonRecord;
+  attemptSnapshot: JsonRecord | null | undefined;
+  scannerEvent: JsonRecord | null | undefined;
+  afterF2Ui: JsonRecord | null | undefined;
+}): JsonRecord {
+  const orderRows = rows(post?.raw, "orders").filter(
     (entry) =>
-      entry.id === renderedSale.orderId &&
-      entry.orderNo === renderedSale.orderNo,
+      (entry as JsonRecord).id === renderedSale.orderId &&
+      (entry as JsonRecord).orderNo === renderedSale.orderNo,
   );
   if (
-    order.length !== 1 ||
-    order[0].paymentState !== "paid" ||
-    order[0].status !== "fulfilled" ||
-    order[0].fulfillmentState !== "dispensed"
+    orderRows.length !== 1 ||
+    (orderRows[0] as JsonRecord).paymentState !== "paid" ||
+    (orderRows[0] as JsonRecord).status !== "fulfilled" ||
+    (orderRows[0] as JsonRecord).fulfillmentState !== "dispensed"
   ) {
     throw new Error(
       "successful scan must persist one paid and fulfilled order",
     );
   }
-  const attempts = attemptRowsByOrder(post, renderedSale.orderId);
+  const attempts = attemptRowsByOrder(post, String(renderedSale.orderId));
   if (attempts.length !== 1) {
     throw new Error("valid scan must produce exactly one payment-code attempt");
   }
-  const attempt = attempts[0];
+  const attempt = attempts[0] as JsonRecord;
   if (
     attempt.paymentId !== renderedSale.paymentId ||
     attempt.status !== "succeeded" ||
@@ -976,53 +1173,58 @@ export function validateSuccessfulOutcome({
       "successful attempt did not converge to one succeeded serial-text attempt",
     );
   }
-  const paymentRows = paymentRowsByOrder(post, renderedSale.orderId);
+  const paymentRows = paymentRowsByOrder(post, String(renderedSale.orderId));
   if (
     paymentRows.length !== 1 ||
-    paymentRows[0].id !== renderedSale.paymentId ||
-    paymentRows[0].status !== "succeeded"
+    (paymentRows[0] as JsonRecord).id !== renderedSale.paymentId ||
+    (paymentRows[0] as JsonRecord).status !== "succeeded"
   ) {
     throw new Error("successful scan must persist one authorized payment row");
   }
   const orderItems = rows(post?.raw, "orderItems").filter(
-    (entry) => entry.orderId === renderedSale.orderId,
+    (entry) => (entry as JsonRecord).orderId === renderedSale.orderId,
   );
   if (
     orderItems.length !== 1 ||
-    orderItems[0].quantity !== 1 ||
-    orderItems[0].fulfillmentStatus !== "dispensed"
+    (orderItems[0] as JsonRecord).quantity !== 1 ||
+    (orderItems[0] as JsonRecord).fulfillmentStatus !== "dispensed"
   ) {
     throw new Error("successful scan must persist one dispensed order item");
   }
   const commands = rows(post?.raw, "commands").filter(
-    (entry) => entry.orderId === renderedSale.orderId,
+    (entry) => (entry as JsonRecord).orderId === renderedSale.orderId,
   );
+  const orderItem = orderItems[0] as JsonRecord;
   if (
     commands.length !== 1 ||
-    commands[0].id !== command.vendingCommandId ||
-    commands[0].commandNo !== command.vendingCommandNo ||
-    commands[0].orderItemId !== orderItems[0].id ||
-    commands[0].slotId !== orderItems[0].slotId ||
-    commands[0].commandKind !== "dispatch" ||
-    commands[0].status !== "succeeded"
+    (commands[0] as JsonRecord).id !== command.vendingCommandId ||
+    (commands[0] as JsonRecord).commandNo !== command.vendingCommandNo ||
+    (commands[0] as JsonRecord).orderItemId !== orderItem.id ||
+    (commands[0] as JsonRecord).slotId !== orderItem.slotId ||
+    (commands[0] as JsonRecord).commandKind !== "dispatch" ||
+    (commands[0] as JsonRecord).status !== "succeeded"
   ) {
     throw new Error(
       "successful scan must complete exactly one correlated vending command",
     );
   }
-  const movements = movementRowsByOrderNo(post, renderedSale.orderNo);
+  const movements = movementRowsByOrderNo(
+    post,
+    String(renderedSale.orderNo),
+  );
   if (movements.length !== 1) {
     throw new Error(
       "successful scan must produce exactly one total movement for the order",
     );
   }
-  const movement = movements[0];
+  const movement = movements[0] as JsonRecord;
+  const commandRow = commands[0] as JsonRecord;
   if (
-    movement.commandNo !== commands[0].commandNo ||
-    movement.orderItemId !== orderItems[0].id ||
-    movement.inventoryId !== orderItems[0].inventoryId ||
-    movement.slotId !== orderItems[0].slotId ||
-    movement.quantity !== orderItems[0].quantity ||
+    movement.commandNo !== commandRow.commandNo ||
+    movement.orderItemId !== orderItem.id ||
+    movement.inventoryId !== orderItem.inventoryId ||
+    movement.slotId !== orderItem.slotId ||
+    movement.quantity !== orderItem.quantity ||
     movement.movementType !== "dispense_succeeded" ||
     movement.status !== "accepted"
   ) {
@@ -1031,17 +1233,22 @@ export function validateSuccessfulOutcome({
     );
   }
   if (
-    afterF2Ui.route !== "#/result/success" ||
-    afterF2Ui.result?.kind !== "success" ||
-    afterF2Ui.result?.orderId !== renderedSale.orderId ||
-    afterF2Ui.result?.paymentId !== renderedSale.paymentId ||
-    afterF2Ui.result?.commandId !== command.vendingCommandId
+    afterF2Ui?.route !== "#/result/success" ||
+    (afterF2Ui?.result as JsonRecord | undefined)?.kind !== "success" ||
+    (afterF2Ui?.result as JsonRecord | undefined)?.orderId !==
+      renderedSale.orderId ||
+    (afterF2Ui?.result as JsonRecord | undefined)?.paymentId !==
+      renderedSale.paymentId ||
+    (afterF2Ui?.result as JsonRecord | undefined)?.commandId !==
+      command.vendingCommandId
   ) {
     throw new Error(
       "successful scan did not reach a correlated success result surface",
     );
   }
-  const daemonAttempt = attemptSnapshot?.paymentCodeAttempt;
+  const daemonAttempt = attemptSnapshot?.paymentCodeAttempt as
+    | JsonRecord
+    | undefined;
   if (
     scannerEvent?.type !== "scanner_code" ||
     scannerEvent.source !== "serial_text" ||
@@ -1056,16 +1263,20 @@ export function validateSuccessfulOutcome({
     );
   }
   const baselineInventory = rows(baseline?.raw, "inventories").find(
-    (entry) => entry.id === movement.inventoryId,
+    (entry) => (entry as JsonRecord).id === movement.inventoryId,
   );
   const finalInventory = rows(post?.raw, "inventories").find(
-    (entry) => entry.id === movement.inventoryId,
+    (entry) => (entry as JsonRecord).id === movement.inventoryId,
   );
+  const baselineInventoryRecord = baselineInventory as JsonRecord | undefined;
+  const finalInventoryRecord = finalInventory as JsonRecord | undefined;
   if (
-    !baselineInventory ||
-    !finalInventory ||
-    baselineInventory.id !== finalInventory.id ||
-    baselineInventory.onHandQty - finalInventory.onHandQty !== movement.quantity
+    !baselineInventoryRecord ||
+    !finalInventoryRecord ||
+    baselineInventoryRecord.id !== finalInventoryRecord.id ||
+    (baselineInventoryRecord.onHandQty as number) -
+      (finalInventoryRecord.onHandQty as number) !==
+      movement.quantity
   ) {
     throw new Error(
       "successful scan must decrement the same platform inventory by the completed movement quantity",
@@ -1073,18 +1284,25 @@ export function validateSuccessfulOutcome({
   }
   return {
     attempt,
-    order: order[0],
-    payment: paymentRows[0],
-    command: commands[0],
+    order: orderRows[0] as JsonRecord,
+    payment: paymentRows[0] as JsonRecord,
+    command: commandRow,
     movement,
-    baselinePaymentCount: paymentRowsByOrder(baseline, renderedSale.orderId)
-      .length,
-    finalPaymentCount: paymentRowsByOrder(post, renderedSale.orderId).length,
+    baselinePaymentCount: paymentRowsByOrder(
+      baseline,
+      String(renderedSale.orderId),
+    ).length,
+    finalPaymentCount: paymentRowsByOrder(
+      post,
+      String(renderedSale.orderId),
+    ).length,
     inventory: {
-      id: baselineInventory.id,
-      baselineOnHandQty: baselineInventory.onHandQty,
-      finalOnHandQty: finalInventory.onHandQty,
-      deltaOnHandQty: finalInventory.onHandQty - baselineInventory.onHandQty,
+      id: baselineInventoryRecord.id,
+      baselineOnHandQty: baselineInventoryRecord.onHandQty,
+      finalOnHandQty: finalInventoryRecord.onHandQty,
+      deltaOnHandQty:
+        (finalInventoryRecord.onHandQty as number) -
+        (baselineInventoryRecord.onHandQty as number),
     },
   };
 }
@@ -1103,9 +1321,28 @@ export async function waitForSuccessfulOutcomeSnapshot({
   afterF2Ui,
   timeoutMs = 30_000,
   pollMs = 500,
-}) {
+}: {
+  queryPlatformFn: (
+    guestInput: GuestInputRecord,
+    runId: string,
+    machineCode: string,
+    sessionId: string | null,
+  ) => Promise<unknown>;
+  guestInput: GuestInputRecord;
+  runId: string;
+  machineCode: string;
+  sessionId: string | null;
+  baseline: JsonRecord | null | undefined;
+  renderedSale: JsonRecord;
+  command: JsonRecord;
+  attemptSnapshot: JsonRecord | null | undefined;
+  scannerEvent: JsonRecord | null | undefined;
+  afterF2Ui: JsonRecord | null | undefined;
+  timeoutMs?: number;
+  pollMs?: number;
+}): Promise<JsonRecord> {
   const deadline = Date.now() + timeoutMs;
-  let lastError = null;
+  let lastError: unknown = null;
   do {
     const postPlatform = await queryPlatformFn(
       guestInput,
@@ -1118,7 +1355,7 @@ export async function waitForSuccessfulOutcomeSnapshot({
         postPlatform,
         success: validateSuccessfulOutcome({
           baseline,
-          post: postPlatform,
+          post: postPlatform as JsonRecord,
           renderedSale,
           command,
           attemptSnapshot,
@@ -1139,7 +1376,13 @@ export async function waitForSuccessfulOutcomeSnapshot({
   );
 }
 
-export function parseScannerPaymentCodeGuestArgs(args) {
+export function parseScannerPaymentCodeGuestArgs(args: string[]): {
+  mode: string;
+  guestInputPath: string;
+  handoffPath: string;
+  outPath: string;
+  fixtureKey: string | null;
+} {
   const mode = required(option(args, "mode"), "--mode");
   if (!MODES.has(mode)) throw new Error("--mode must be full");
   return {
@@ -1154,31 +1397,38 @@ export function parseScannerPaymentCodeGuestArgs(args) {
   };
 }
 
-export async function runScannerPaymentCodeGuest(options) {
-  let guestInput = null;
-  let handoff = null;
+export async function runScannerPaymentCodeGuest(options: {
+  mode: string;
+  guestInputPath: string;
+  handoffPath: string;
+  outPath: string;
+  fixtureKey: string | null;
+}): Promise<JsonRecord> {
+  let guestInput: GuestInputRecord | null = null;
+  let handoff: HandoffRecord | null = null;
   const artifactRoot = join(
     dirname(localPath(options.outPath)),
     "scanner-payment-code-artifacts",
   );
   mkdirSync(artifactRoot, { recursive: true });
-  const checkpoints = [];
-  let client = null;
-  let sessionStart = null;
-  let sessionControl = null;
-  let scannerEventCapture = null;
+  const checkpoints: unknown[] = [];
+  let client: InstanceType<typeof CdpClient> | null = null;
+  let sessionStart: JsonRecord | null = null;
+  let sessionControl: ScannerSerialControl | null = null;
+  let scannerEventCapture: ScannerEventCapture | null = null;
   let stage = "connect";
-  let successReport = null;
-  let failureReport = null;
-  let primaryError = null;
+  let successReport: JsonRecord | null = null;
+  let failureReport: JsonRecord | null = null;
+  let primaryError: unknown = null;
   try {
     guestInput = readJson(options.guestInputPath, "guest input");
     handoff = readJson(options.handoffPath, "handoff");
     const runId = required(guestInput.runId, "runId");
     const machineCode = required(guestInput.machineCode, "machineCode");
+    const handoffCdp = handoff.cdp as JsonRecord;
     const target = await discoverMachineUiTarget({
       endpoint: "http://127.0.0.1:9222",
-      expectedTargetId: handoff.cdp.targetId,
+      expectedTargetId: String(handoffCdp.targetId),
     });
     client = new CdpClient(
       rewriteWebSocketDebuggerUrl(
@@ -1191,13 +1441,13 @@ export async function runScannerPaymentCodeGuest(options) {
     await waitForRoute(client, "#/catalog", { timeoutMs: 30_000, pollMs: 250 });
 
     stage = "start-session";
-    const admission = await admitScannerPaymentSession({
+    const admission = (await admitScannerPaymentSession({
       guestInput,
       handoff,
       handoffPath: options.handoffPath,
-    });
-    sessionStart = admission.sessionStart;
-    sessionControl = admission.sessionControl;
+    })) as JsonRecord;
+    sessionStart = admission.sessionStart as JsonRecord;
+    sessionControl = admission.sessionControl as ScannerSerialControl;
     const {
       hardwareBindings,
       saleStartCapability,
@@ -1207,13 +1457,25 @@ export async function runScannerPaymentCodeGuest(options) {
 
     const steps = buildInstalledKioskSaleScenarioSteps(
       "vm-scanner-payment-code",
-    );
+    ) as unknown as Array<{
+      name: string;
+      selector: string;
+      routeBefore: string;
+      routeAfter: string | RegExp;
+      inputKind: "touch" | "mouse";
+      timeoutMs?: number;
+    }>;
     if (options.fixtureKey) {
-      steps.find((step) => step.name === "catalog product").selector =
+      const productStep = steps.find(
+        (step) => step.name === "catalog product",
+      );
+      if (productStep) {
+        productStep.selector =
         catalogProductSelectorForFixture(
-          guestInput.fixtureAllocation,
+          guestInput.fixtureAllocation as JsonRecord | undefined,
           options.fixtureKey,
         );
+      }
     }
     for (const step of steps) {
       await waitForRoute(client, step.routeBefore, {
@@ -1246,22 +1508,22 @@ export async function runScannerPaymentCodeGuest(options) {
     );
 
     const renderedSale = await readRenderedPaymentSurface(client);
-    const paymentBaseline = await queryPlatform(
+    const paymentBaseline = (await queryPlatform(
       guestInput,
       runId,
       machineCode,
-      sessionStart.sessionId,
-    );
+      String(sessionStart.sessionId),
+    )) as JsonRecord;
 
     stage = "malformed-scan";
     await sessionControl.inject(renderedSale, MALFORMED_SCANNER_BYTES);
     await sleep(250);
-    const postMalformed = await queryPlatform(
+    const postMalformed = (await queryPlatform(
       guestInput,
       runId,
       machineCode,
-      sessionStart.sessionId,
-    );
+      String(sessionStart.sessionId),
+    )) as JsonRecord;
     assertNoAttemptOrDuplicatePayment(
       "malformed scan",
       paymentBaseline,
@@ -1272,12 +1534,12 @@ export async function runScannerPaymentCodeGuest(options) {
     stage = "timeout-scan";
     await sessionControl.inject(renderedSale, TIMEOUT_PARTIAL_SCANNER_BYTES);
     await sleep(1_200);
-    const postTimeout = await queryPlatform(
+    const postTimeout = (await queryPlatform(
       guestInput,
       runId,
       machineCode,
-      sessionStart.sessionId,
-    );
+      String(sessionStart.sessionId),
+    )) as JsonRecord;
     assertNoAttemptOrDuplicatePayment(
       "scanner timeout",
       paymentBaseline,
@@ -1287,7 +1549,8 @@ export async function runScannerPaymentCodeGuest(options) {
 
     stage = "valid-scan";
     const validScannerBytes = scannerFrameBytes(
-      guestInput?.scannerAcceptance?.validCode ?? DEFAULT_VALID_SCANNER_CODE,
+      (guestInput?.scannerAcceptance as JsonRecord | undefined)?.validCode ??
+        DEFAULT_VALID_SCANNER_CODE,
     );
     scannerEventCapture = captureNextSerialScannerEvent(handoff);
     await scannerEventCapture.opened;
@@ -1298,8 +1561,12 @@ export async function runScannerPaymentCodeGuest(options) {
       renderedSale,
       30_000,
     );
+    const attemptSnapshotRecord = attemptSnapshot as JsonRecord;
+    const paymentCodeAttempt = attemptSnapshotRecord.paymentCodeAttempt as
+      | JsonRecord
+      | undefined;
     const scannerEvent = await scannerEventCapture.waitForEventId(
-      attemptSnapshot.paymentCodeAttempt.scannerEventId,
+      String(paymentCodeAttempt?.scannerEventId ?? ""),
     );
     scannerEventCapture.close();
     scannerEventCapture = null;
@@ -1308,24 +1575,24 @@ export async function runScannerPaymentCodeGuest(options) {
 
     stage = "vend-boundaries";
     const vendBoundary = await sessionControl.waitFrame("VEND");
-    const beforeF0Platform = await queryPlatform(
+    const beforeF0Platform = (await queryPlatform(
       guestInput,
       runId,
       machineCode,
-      sessionStart.sessionId,
-    );
+      String(sessionStart.sessionId),
+    )) as JsonRecord;
     const releaseF0 = await sessionControl.releaseF0();
     const f0Boundary = await sessionControl.waitFrame("F0");
     const f1Boundary = await sessionControl.waitFrame("F1");
-    const afterF1Platform = await queryPlatform(
+    const afterF1Platform = (await queryPlatform(
       guestInput,
       runId,
       machineCode,
-      sessionStart.sessionId,
-    );
+      String(sessionStart.sessionId),
+    )) as JsonRecord;
     const releaseF2 = await sessionControl.releaseF2();
     const f2Boundary = await sessionControl.waitFrame("F2");
-    const afterF2Ui = await waitForSuccessfulResultSurface(
+    const afterF2Ui = (await waitForSuccessfulResultSurface(
       client,
       {
         orderId: renderedSale.orderId,
@@ -1334,13 +1601,13 @@ export async function runScannerPaymentCodeGuest(options) {
         commandId: command.vendingCommandId,
       },
       60_000,
-    );
-    const { postPlatform, success } = await waitForSuccessfulOutcomeSnapshot({
+    )) as JsonRecord;
+    const outcomeSnapshot = await waitForSuccessfulOutcomeSnapshot({
       queryPlatformFn: queryPlatform,
       guestInput,
       runId,
       machineCode,
-      sessionId: sessionStart.sessionId,
+      sessionId: String(sessionStart.sessionId),
       baseline: paymentBaseline,
       renderedSale,
       command,
@@ -1348,6 +1615,7 @@ export async function runScannerPaymentCodeGuest(options) {
       scannerEvent,
       afterF2Ui,
     });
+    const success = (outcomeSnapshot as JsonRecord).success;
     const sessionEvidence = await sessionControl.evidence();
     const runtimeTrace = await readRuntimeTrace(client);
 
@@ -1369,11 +1637,11 @@ export async function runScannerPaymentCodeGuest(options) {
       machineCode,
       renderedSale,
       scannerAttempt: {
-        attemptNo: attemptSnapshot.paymentCodeAttempt.attemptNo,
-        status: attemptSnapshot.paymentCodeAttempt.status,
-        source: attemptSnapshot.paymentCodeAttempt.source,
-        scannerEventId: attemptSnapshot.paymentCodeAttempt.scannerEventId,
-        idempotencyKey: attemptSnapshot.paymentCodeAttempt.idempotencyKey,
+        attemptNo: paymentCodeAttempt?.attemptNo,
+        status: paymentCodeAttempt?.status,
+        source: paymentCodeAttempt?.source,
+        scannerEventId: paymentCodeAttempt?.scannerEventId,
+        idempotencyKey: paymentCodeAttempt?.idempotencyKey,
       },
       scannerEvent: {
         eventId: scannerEvent.eventId,
@@ -1382,7 +1650,8 @@ export async function runScannerPaymentCodeGuest(options) {
       },
       hardwareBindings,
       saleStartCapability,
-      scannerBindingProbe: scannerBindingProbe.scannerBindingProbe,
+      scannerBindingProbe: (scannerBindingProbe as JsonRecord)
+        .scannerBindingProbe,
       platformAssertions: success,
       checkpoints,
       boundaries: {
@@ -1398,19 +1667,35 @@ export async function runScannerPaymentCodeGuest(options) {
       invalidScanEvidence: {
         malformed: {
           platformCapturedAt: postMalformed.capturedAt,
-          attemptCount: attemptRowsByOrder(postMalformed, renderedSale.orderId)
-            .length,
+          attemptCount: attemptRowsByOrder(
+            postMalformed,
+            String(renderedSale.orderId),
+          ).length,
           paymentDelta:
-            paymentRowsByOrder(postMalformed, renderedSale.orderId).length -
-            paymentRowsByOrder(paymentBaseline, renderedSale.orderId).length,
+            paymentRowsByOrder(
+              postMalformed,
+              String(renderedSale.orderId),
+            ).length -
+            paymentRowsByOrder(
+              paymentBaseline,
+              String(renderedSale.orderId),
+            ).length,
         },
         timeout: {
           platformCapturedAt: postTimeout.capturedAt,
-          attemptCount: attemptRowsByOrder(postTimeout, renderedSale.orderId)
-            .length,
+          attemptCount: attemptRowsByOrder(
+            postTimeout,
+            String(renderedSale.orderId),
+          ).length,
           paymentDelta:
-            paymentRowsByOrder(postTimeout, renderedSale.orderId).length -
-            paymentRowsByOrder(paymentBaseline, renderedSale.orderId).length,
+            paymentRowsByOrder(
+              postTimeout,
+              String(renderedSale.orderId),
+            ).length -
+            paymentRowsByOrder(
+              paymentBaseline,
+              String(renderedSale.orderId),
+            ).length,
         },
         scannerQuietBoundary,
       },
@@ -1430,33 +1715,35 @@ export async function runScannerPaymentCodeGuest(options) {
       handoffSerialSessionId: sessionStart?.sessionId ?? null,
       stage,
       error: serializeError(primaryError),
-      evidence: { checkpoints },
+      evidence: { checkpoints } as JsonRecord,
     };
     if (guestInput) {
-      const runId = guestInput.runId;
-      const machineCode = guestInput.machineCode;
+      const runId = String(guestInput.runId);
+      const machineCode = String(guestInput.machineCode);
       if (runId && machineCode) {
-        failureReport.evidence.platform = await queryPlatform(
+        (failureReport.evidence as JsonRecord).platform = await queryPlatform(
           guestInput,
           runId,
           machineCode,
-          sessionStart?.sessionId ?? null,
+          sessionStart?.sessionId != null
+            ? String(sessionStart.sessionId)
+            : null,
         ).catch((captureError) => ({ error: String(captureError) }));
       }
-      if (sessionStart?.sessionId) {
-        failureReport.evidence.serial = await sessionControl
+      if (sessionStart?.sessionId && sessionControl) {
+        (failureReport.evidence as JsonRecord).serial = await sessionControl
           .evidence()
           .catch((captureError) => ({ error: String(captureError) }));
       }
     }
     if (handoff) {
-      failureReport.evidence.daemon = await daemonGet(
+      (failureReport.evidence as JsonRecord).daemon = await daemonGet(
         handoff,
         "/v1/transactions/current",
       ).catch((captureError) => ({ error: String(captureError) }));
     }
     if (client) {
-      failureReport.evidence.ui = await readUiBoundary(client).catch(
+      (failureReport.evidence as JsonRecord).ui = await readUiBoundary(client).catch(
         (captureError) => ({ error: String(captureError) }),
       );
       checkpoints.push(
@@ -1499,10 +1786,14 @@ export async function runScannerPaymentCodeGuest(options) {
     } else {
       failureReport.cleanupError = serializeError(finalError);
     }
+    if (failureReport === null)
+      throw new Error("payment provider guest failed without a report");
     writeJson(options.outPath, failureReport);
     throw finalError;
   }
 
+  if (successReport === null)
+    throw new Error("scanner payment code guest finished without a report");
   writeJson(options.outPath, successReport);
   return successReport;
 }
