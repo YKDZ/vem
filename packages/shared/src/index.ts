@@ -31,6 +31,7 @@ export * from "./schemas/runtime-acceptance";
 export * from "./schemas/runtime-configuration";
 export * from "./schemas/simulated-hardware-sale-flow";
 export * from "./schemas/try-on-garments";
+export * from "./schemas/vending";
 export * from "./schemas/vision";
 export * from "./schemas/vision-v2";
 export * from "./generated/vision-v2-bundle";
