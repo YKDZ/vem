@@ -884,14 +884,20 @@ export async function main(
     }
     adapter.recordMilestone?.(
       "runner:slice",
-      report.ok === true ? "completed" : "failed",
-      { reportOk: report.ok },
+      report.businessSets.every((set) => set.status === "passed")
+        ? "completed"
+        : "failed",
+      {
+        reportOk: report.businessSets.every(
+          (set) => set.status === "passed",
+        ),
+      },
     );
     const serialized = `${JSON.stringify(report, null, 2)}\n`;
     if (outPath) {
       await writeFile(outPath, serialized, "utf8");
     }
-    if (report.ok !== true) {
+    if (!report.businessSets.every((set) => set.status === "passed")) {
       const diagnosticsPath = await persistFailureEvidence({
         adapter,
         artifactRoot,

@@ -1122,11 +1122,11 @@ export interface RecordedGeometryFixtureEvidence {
 }
 
 function geometryAssertions(validation: ResultGeometryValidation) {
-  return [
+  return ([
     ["result-sleeves-retained", validation.resultSleevesRetained],
     ["result-uniform-placement", validation.resultUniformPlacement],
     ["result-automatic-scale", validation.resultAutomaticScale],
-  ].map(([id, value]) =>
+  ] as const).map(([id, value]) =>
     businessAssertion({
       id,
       source: "vision-result-png-pixels",
@@ -1292,24 +1292,36 @@ export async function runRecordedResultGeometryScenario(
   const validation = validateResultGeometryEvidence({
     source,
     far: attempts.get("far")!.state.resultPng!,
-    mid: mid.state.resultPng,
+    mid: mid.state.resultPng!,
     near: attempts.get("near")!.state.resultPng!,
     scale100: attempts.get("scale100")!.state.resultPng!,
     scaled: attempts.get("scaled")!.state.resultPng!,
   });
+  const assertions = geometryAssertions(validation);
+  const evidence: RecordedGeometryFixtureEvidence = {
+    kind: "vision-recorded-geometry-fixture",
+    status: validation.ok ? "ready" : "blocked",
+    reason: validation.ok ? null : "result PNG 几何事实校验未通过",
+    segments: ["far", "mid", "near"],
+  };
+  if (!validation.ok) {
+    return {
+      ok: false,
+      assertions,
+      scaleAssertions: [],
+      adjustmentAssertions: [],
+      pixelAssertions: [],
+      evidence,
+    };
+  }
   return {
-    ok: validation.ok,
+    ok: true,
     mid,
-    assertions: geometryAssertions(validation),
+    assertions,
     scaleAssertions: scaleResult!.assertions,
     adjustmentAssertions: scaleResult!.adjustmentAssertions,
     pixelAssertions: scaleResult!.pixelAssertions,
-    evidence: {
-      kind: "vision-recorded-geometry-fixture",
-      status: "ready",
-      reason: null,
-      segments: ["far", "mid", "near"],
-    },
+    evidence,
   };
 }
 
@@ -1482,8 +1494,8 @@ export async function runGarmentScaleScenario(
   ];
   let pixelsOk = pairs.every(
     (pair) =>
-      pair.before.resultPng !== null &&
-      pair.after.resultPng !== null &&
+      pair.before.resultPng != null &&
+      pair.after.resultPng != null &&
       validateResultScaleStep({
         before: pair.before.resultPng,
         after: pair.after.resultPng,
@@ -1491,7 +1503,7 @@ export async function runGarmentScaleScenario(
       }).observed === true,
   );
   const roundTrip =
-    initial.resultPng !== null && finalState.resultPng !== null
+    initial.resultPng != null && finalState.resultPng != null
       ? validateResultScaleRoundTrip({
           before: initial.resultPng,
           after: finalState.resultPng,

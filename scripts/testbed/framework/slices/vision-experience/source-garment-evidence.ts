@@ -35,12 +35,15 @@ export function parseSourceGarmentMetadata(
     typeof metadata.digest !== "string" ||
     !/^sha256:[a-f0-9]{64}$/.test(metadata.digest) ||
     metadata.contentType !== "image/png" ||
+    typeof metadata.byteSize !== "number" ||
     !Number.isInteger(metadata.byteSize) ||
     metadata.byteSize < 1 ||
     metadata.byteSize > 8 * 1024 * 1024 ||
     (metadata.template !== "tshirt_short_sleeve" &&
       metadata.template !== "tshirt_long_sleeve") ||
+    typeof metadata.width !== "number" ||
     !Number.isInteger(metadata.width) ||
+    typeof metadata.height !== "number" ||
     !Number.isInteger(metadata.height) ||
     metadata.width < 1 ||
     metadata.height < 1
