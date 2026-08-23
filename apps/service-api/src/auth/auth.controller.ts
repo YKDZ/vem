@@ -1,17 +1,11 @@
-import {
-  Body,
-  Controller,
-  Get,
-  HttpCode,
-  HttpStatus,
-  Post,
-} from "@nestjs/common";
+import { Body, Controller, HttpCode, HttpStatus, Post } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
-import { loginRequestSchema } from "@vem/shared";
+import { adminGetCurrentAdminContract, loginRequestSchema } from "@vem/shared";
 import { z } from "zod";
 
 import type { AuthenticatedAdmin } from "../common/request-user";
 
+import { AdminEndpointContract } from "../common/admin-endpoint-contract.decorator";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
 import { AuthService } from "./auth.service";
 import { CurrentAdmin } from "./current-admin.decorator";
@@ -22,13 +16,13 @@ const refreshTokenRequestSchema = z.object({
 });
 
 @ApiTags("auth")
-@Controller("auth")
+@Controller()
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
   @Public()
   @HttpCode(HttpStatus.OK)
-  @Post("login")
+  @Post("auth/login")
   async login(
     @Body(new ZodValidationPipe(loginRequestSchema))
     body: z.infer<typeof loginRequestSchema>,
@@ -37,7 +31,7 @@ export class AuthController {
   }
 
   @ApiBearerAuth()
-  @Get("me")
+  @AdminEndpointContract(adminGetCurrentAdminContract)
   async me(
     @CurrentAdmin() admin: AuthenticatedAdmin,
   ): Promise<AuthenticatedAdmin> {
@@ -46,7 +40,7 @@ export class AuthController {
 
   @Public()
   @HttpCode(HttpStatus.OK)
-  @Post("refresh")
+  @Post("auth/refresh")
   async refresh(
     @Body(new ZodValidationPipe(refreshTokenRequestSchema))
     body: z.infer<typeof refreshTokenRequestSchema>,

@@ -2,7 +2,8 @@ import type { PermissionCode } from "@vem/shared";
 
 import { defineStore } from "pinia";
 
-import { loginApi, meApi, refreshApi, type CurrentAdmin } from "@/api/auth";
+import { loginApi, refreshApi } from "@/api/auth";
+import { meApi, type CurrentAdmin } from "@/api/current-admin";
 import { tokenStorage } from "@/api/request";
 
 export const useAuthStore = defineStore("auth", {

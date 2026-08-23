@@ -21,6 +21,9 @@ const messageMocks = vi.hoisted(() => ({
 
 vi.mock("@/api/auth", () => ({
   loginApi: authApiMocks.loginApi,
+}));
+
+vi.mock("@/api/current-admin", () => ({
   meApi: authApiMocks.meApi,
 }));
 
