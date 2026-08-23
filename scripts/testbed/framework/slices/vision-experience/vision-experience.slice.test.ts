@@ -431,11 +431,18 @@ describe("visionExperience vertical slice driver", () => {
         pollMs: 5,
         acceptanceBinding: visionAcceptanceBinding,
       }),
-      (error: any) =>
-        error?.stage === "vision-catalog-selection" &&
-        error?.evidence?.expected?.size === "M" &&
-        error?.evidence?.observed?.variantId === firstLongSleeveVariantId &&
-        error?.report?.businessSets?.[0]?.status === "failed",
+      (error: unknown) => {
+        const err = recordValue(error);
+        const evidence = recordValue(err.evidence);
+        return (
+          err.stage === "vision-catalog-selection" &&
+          recordValue(evidence.expected).size === "M" &&
+          recordValue(evidence.observed).variantId ===
+            firstLongSleeveVariantId &&
+          recordValue(arrayValue(recordValue(err.report).businessSets)[0])
+            .status === "failed"
+        );
+      },
     );
   });
 
@@ -464,11 +471,17 @@ describe("visionExperience vertical slice driver", () => {
         pollMs: 5,
         acceptanceBinding: visionAcceptanceBinding,
       }),
-      (error: any) =>
-        error?.stage === "vision-catalog-selection" &&
-        error?.evidence?.observed?.route === selectedProductRoute &&
-        error?.evidence?.observed?.variantId === firstLongSleeveVariantId &&
-        error?.report?.businessSets?.[0]?.status === "failed",
+      (error: unknown) => {
+        const err = recordValue(error);
+        const observed = recordValue(recordValue(err.evidence).observed);
+        return (
+          err.stage === "vision-catalog-selection" &&
+          observed.route === selectedProductRoute &&
+          observed.variantId === firstLongSleeveVariantId &&
+          recordValue(arrayValue(recordValue(err.report).businessSets)[0])
+            .status === "failed"
+        );
+      },
     );
   });
 
@@ -488,10 +501,16 @@ describe("visionExperience vertical slice driver", () => {
         pollMs: 5,
         acceptanceBinding: visionAcceptanceBinding,
       }),
-      (error: any) =>
-        error?.stage === "vision-catalog-selection" &&
-        error?.evidence?.expected?.catalogKey === selectedCatalogKey &&
-        error?.report?.businessSets?.[0]?.status === "failed",
+      (error: unknown) => {
+        const err = recordValue(error);
+        return (
+          err.stage === "vision-catalog-selection" &&
+          recordValue(recordValue(err.evidence).expected).catalogKey ===
+            selectedCatalogKey &&
+          recordValue(arrayValue(recordValue(err.report).businessSets)[0])
+            .status === "failed"
+        );
+      },
     );
   });
 
@@ -508,13 +527,21 @@ describe("visionExperience vertical slice driver", () => {
         pollMs: 10,
         acceptanceBinding: visionAcceptanceBinding,
       }),
-      (error: any) =>
-        error?.stage === "vision-start-garment-binding" &&
-        error?.evidence?.selection?.variantId === selectedVariantId &&
-        error?.evidence?.observed?.template === "tshirt_long_sleeve" &&
-        error?.report?.businessSets?.[0]?.status === "failed" &&
-        error?.report?.businessSets?.[0]?.supportingEvidence?.[0]?.kind ===
-          "vision-start-garment-binding",
+      (error: unknown) => {
+        const err = recordValue(error);
+        const evidence = recordValue(err.evidence);
+        const firstSet = recordValue(
+          arrayValue(recordValue(err.report).businessSets)[0],
+        );
+        return (
+          err.stage === "vision-start-garment-binding" &&
+          recordValue(evidence.selection).variantId === selectedVariantId &&
+          recordValue(evidence.observed).template === "tshirt_long_sleeve" &&
+          firstSet.status === "failed" &&
+          recordValue(arrayValue(firstSet.supportingEvidence)[0]).kind ===
+            "vision-start-garment-binding"
+        );
+      },
     );
   });
 
@@ -552,11 +579,17 @@ describe("visionExperience vertical slice driver", () => {
         pollMs: 5,
         acceptanceBinding: visionAcceptanceBinding,
       }),
-      (error: any) =>
-        error?.stage === "vision-start-garment-binding" &&
-        error?.evidence?.failureReason === "garment-mismatch" &&
-        error?.evidence?.observed?.template === "tshirt_long_sleeve" &&
-        error?.report?.businessSets?.[0]?.status === "failed",
+      (error: unknown) => {
+        const err = recordValue(error);
+        const evidence = recordValue(err.evidence);
+        return (
+          err.stage === "vision-start-garment-binding" &&
+          evidence.failureReason === "garment-mismatch" &&
+          recordValue(evidence.observed).template === "tshirt_long_sleeve" &&
+          recordValue(arrayValue(recordValue(err.report).businessSets)[0])
+            .status === "failed"
+        );
+      },
     );
   });
 
@@ -613,14 +646,20 @@ describe("visionExperience vertical slice driver", () => {
         pollMs: 5,
         acceptanceBinding: visionAcceptanceBinding,
       }),
-      (error: any) =>
-        error?.stage === "vision-start-garment-binding" &&
-        error?.evidence?.failureReason === "timeout" &&
-        error?.evidence?.attemptId === attemptId &&
-        error?.evidence?.lastStage === "starting" &&
-        error?.evidence?.observed?.assetId === null &&
-        error?.report?.businessSets?.[0]?.status === "failed" &&
-        !JSON.stringify(error.evidence).includes("token"),
+      (error: unknown) => {
+        const err = recordValue(error);
+        const evidence = recordValue(err.evidence);
+        return (
+          err.stage === "vision-start-garment-binding" &&
+          evidence.failureReason === "timeout" &&
+          evidence.attemptId === attemptId &&
+          evidence.lastStage === "starting" &&
+          recordValue(evidence.observed).assetId === null &&
+          recordValue(arrayValue(recordValue(err.report).businessSets)[0])
+            .status === "failed" &&
+          !JSON.stringify(evidence).includes("token")
+        );
+      },
     );
   });
 
@@ -660,12 +699,18 @@ describe("visionExperience vertical slice driver", () => {
         pollMs: 5,
         acceptanceBinding: visionAcceptanceBinding,
       }),
-      (error: any) =>
-        error?.stage === "vision-start-garment-binding" &&
-        error?.evidence?.failureReason === "attempt-changed" &&
-        error?.evidence?.attemptId === attemptId &&
-        error?.evidence?.lastStage === "acquiring" &&
-        error?.report?.businessSets?.[0]?.status === "failed",
+      (error: unknown) => {
+        const err = recordValue(error);
+        const evidence = recordValue(err.evidence);
+        return (
+          err.stage === "vision-start-garment-binding" &&
+          evidence.failureReason === "attempt-changed" &&
+          evidence.attemptId === attemptId &&
+          evidence.lastStage === "acquiring" &&
+          recordValue(arrayValue(recordValue(err.report).businessSets)[0])
+            .status === "failed"
+        );
+      },
     );
   });
 
@@ -705,11 +750,17 @@ describe("visionExperience vertical slice driver", () => {
         pollMs: 5,
         acceptanceBinding: visionAcceptanceBinding,
       }),
-      (error: any) =>
-        error?.stage === "vision-start-garment-binding" &&
-        error?.evidence?.failureReason === "terminal-without-garment" &&
-        error?.evidence?.lastStage === "failed" &&
-        error?.report?.businessSets?.[0]?.status === "failed",
+      (error: unknown) => {
+        const err = recordValue(error);
+        const evidence = recordValue(err.evidence);
+        return (
+          err.stage === "vision-start-garment-binding" &&
+          evidence.failureReason === "terminal-without-garment" &&
+          evidence.lastStage === "failed" &&
+          recordValue(arrayValue(recordValue(err.report).businessSets)[0])
+            .status === "failed"
+        );
+      },
     );
   });
 
@@ -727,10 +778,16 @@ describe("visionExperience vertical slice driver", () => {
         pollMs: 5,
         acceptanceBinding: visionAcceptanceBinding,
       }),
-      (error: any) =>
-        error?.stage === "vision-catalog-selection" &&
-        error?.evidence?.expected?.variantId === selectedVariantId &&
-        error?.report?.businessSets?.[0]?.status === "failed",
+      (error: unknown) => {
+        const err = recordValue(error);
+        return (
+          err.stage === "vision-catalog-selection" &&
+          recordValue(recordValue(err.evidence).expected).variantId ===
+            selectedVariantId &&
+          recordValue(arrayValue(recordValue(err.report).businessSets)[0])
+            .status === "failed"
+        );
+      },
     );
     assert.equal(
       adapter.calls.some(

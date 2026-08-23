@@ -1718,8 +1718,9 @@ export class CdpTestAdapter implements TestAdapter {
         },
         vision: { listener, roles },
         fixtureRestarts: this.diagnosticMilestones.filter(
-          (entry: any) =>
-            entry?.stage === "adapter:select-recorded-video-fixture",
+          (entry: unknown) =>
+            recordValue(entry).stage ===
+            "adapter:select-recorded-video-fixture",
         ),
       }) as Record<string, any>,
       screenshotPng,

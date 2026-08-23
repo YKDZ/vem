@@ -54,7 +54,7 @@ describe("CDP test adapter", () => {
           id: message.id,
           result: {
             result: {
-              value: runInNewContext(message.params.expression, {
+              value: runInNewContext(String(message.params.expression), {
                 document: {
                   querySelector: (selector: string) =>
                     selector === "[data-test='product-detail-page']"
@@ -116,7 +116,7 @@ describe("CDP test adapter", () => {
           id: message.id,
           result: {
             result: {
-              value: runInNewContext(message.params.expression, {
+              value: runInNewContext(String(message.params.expression), {
                 document: {
                   querySelector: (selector: string) =>
                     selector === "[data-test='try-on-captured-image']"
@@ -253,7 +253,7 @@ describe("CDP test adapter", () => {
           id: message.id,
           result: {
             result: {
-              value: runInNewContext(message.params.expression, {
+              value: runInNewContext(String(message.params.expression), {
                 document: {
                   querySelector: (selector: string) =>
                     selector === "[data-test='try-on-view']"
@@ -352,7 +352,10 @@ describe("CDP test adapter", () => {
         };
       }
       if (message.method.startsWith("Input.")) {
-        dispatched.push({ method: message.method, type: message.params.type });
+        dispatched.push({
+          method: message.method,
+          type: String(message.params.type),
+        });
       }
       return { id: message.id, result: {} };
     });
@@ -435,7 +438,7 @@ describe("CDP test adapter", () => {
         stderr: "Authorization: Bearer fixture-secret\nowner exited",
       }),
     });
-    (adapter as any).client = {
+    (adapter as unknown as { client: unknown }).client = {
       async send(method: string, params: { expression?: string } = {}) {
         if (method === "Runtime.evaluate") {
           if (
@@ -1198,7 +1201,7 @@ describe("CDP test adapter", () => {
     const adapter = new CdpTestAdapter({
       visionBaseUrl: "http://127.0.0.1:1",
     });
-    (adapter as any).client = {
+    (adapter as unknown as { client: unknown }).client = {
       async send(method: string, params: { expression?: string } = {}) {
         if (method === "Runtime.evaluate") {
           const value = params.expression?.includes(
@@ -1412,7 +1415,7 @@ describe("CDP test adapter", () => {
 
   it("把有界脱敏 result PNG outcome 接入 failure diagnostics 并在 close 清空", async () => {
     const adapter = new CdpTestAdapter({ visionBaseUrl: "http://127.0.0.1:1" });
-    (adapter as any).client = {
+    (adapter as unknown as { client: unknown }).client = {
       async send(method: string) {
         if (method !== "Runtime.evaluate")
           throw new Error(`unexpected ${method}`);
@@ -1905,12 +1908,12 @@ function createFakeCdpWebSocketFactory(
   handler: (message: {
     id: number;
     method: string;
-    params: Record<string, any>;
+    params: Record<string, unknown>;
   }) => Record<string, unknown>,
 ) {
   return {
     factory() {
-      const listeners = new Map<string, Set<(event: any) => void>>();
+      const listeners = new Map<string, Set<(event: unknown) => void>>();
       const emit = (type: string, event: unknown) => {
         for (const listener of [...(listeners.get(type) ?? [])]) {
           listener(event);
@@ -1918,11 +1921,11 @@ function createFakeCdpWebSocketFactory(
       };
       const socket = {
         readyState: 1,
-        addEventListener(type: string, listener: (event: any) => void) {
+        addEventListener(type: string, listener: (event: unknown) => void) {
           if (!listeners.has(type)) listeners.set(type, new Set());
           listeners.get(type)!.add(listener);
         },
-        removeEventListener(type: string, listener: (event: any) => void) {
+        removeEventListener(type: string, listener: (event: unknown) => void) {
           listeners.get(type)?.delete(listener);
         },
         send(raw: string) {

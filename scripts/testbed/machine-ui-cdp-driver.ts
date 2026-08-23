@@ -1290,8 +1290,14 @@ const RUNTIME_OPERATION_OBSERVATION_EXPRESSION = `(() => {
  * 这是唯一读取该全局的入口；轨道代码不应再内联此表达式。
  */
 export async function readMachineRuntimeTraceSnapshot(
-  client: any,
-  options: any = {},
+  client: {
+    send: (
+      method: string,
+      params?: unknown,
+      options?: { timeoutMs?: number },
+    ) => Promise<unknown>;
+  },
+  options: EvaluateOptions = {},
 ) {
   return evaluateExpression(
     client,
@@ -1300,7 +1306,16 @@ export async function readMachineRuntimeTraceSnapshot(
   );
 }
 
-export async function readCdpLocationHash(client: any, options: any = {}) {
+export async function readCdpLocationHash(
+  client: {
+    send: (
+      method: string,
+      params?: unknown,
+      options?: { timeoutMs?: number },
+    ) => Promise<unknown>;
+  },
+  options: EvaluateOptions = {},
+) {
   return evaluateExpression(client, LOCATION_HASH_EXPRESSION, options);
 }
 

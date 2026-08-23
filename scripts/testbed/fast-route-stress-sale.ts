@@ -1512,7 +1512,7 @@ export async function waitForSaleStartReady(
   let last: unknown = null;
   while (now() < deadline) {
     const [route, capability] = await Promise.all([
-      readRoute(client),
+      readRoute(client as Parameters<typeof readCdpLocationHash>[0]),
       readCapability(handoff),
     ]);
     last = { route, capability };
@@ -1668,7 +1668,11 @@ async function waitForSuccessfulResultSurface(
 
 async function readRuntimeTraceSnapshot(client: unknown): Promise<JsonRecord> {
   return runtimeTraceSnapshot(
-    recordValue(await readMachineRuntimeTraceSnapshot(client)),
+    recordValue(
+      await readMachineRuntimeTraceSnapshot(
+        client as Parameters<typeof readMachineRuntimeTraceSnapshot>[0],
+      ),
+    ),
     "Machine Runtime Trace",
   );
 }
@@ -1747,7 +1751,9 @@ export async function startContinuousCdpLocationHashObservation(
       recordUrl("Page.frameNavigated", String(frame.url ?? ""));
     }
   });
-  const initialHash = await readCdpLocationHash(client);
+  const initialHash = await readCdpLocationHash(
+    client as Parameters<typeof readCdpLocationHash>[0],
+  );
   if (initialHash !== "#/catalog") {
     offWithinDocument();
     offFrameNavigated();
@@ -1787,7 +1793,9 @@ export async function startContinuousCdpLocationHashObservation(
     },
     async finish(expectedTerminalHash: string) {
       const observedTerminalHash = String(
-        (await readCdpLocationHash(client)) ?? "",
+        (await readCdpLocationHash(
+          client as Parameters<typeof readCdpLocationHash>[0],
+        )) ?? "",
       );
       recordHash("Runtime.evaluate(location.hash)", observedTerminalHash);
       terminalAt = clock().toISOString();

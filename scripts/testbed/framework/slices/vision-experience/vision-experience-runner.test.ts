@@ -52,6 +52,16 @@ type MainDependencies = NonNullable<
   Parameters<typeof runVisionExperienceMain>[1]
 >;
 
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? (value as unknown[]) : [];
+}
+
 type SliceRunOptions = Parameters<typeof runVisionExperienceSlice>[0];
 
 function writeVisionGuestInput(root: string): string {
@@ -628,10 +638,15 @@ describe("visionExperience slice runner", () => {
             runSlice: (options) => runVisionExperienceSlice(options),
           },
         ),
-        (error: any) =>
-          error?.stage === "restore-recorded-video-fixtures" &&
-          error?.report?.businessSets?.[0]?.status === "failed" &&
-          error?.restoreFailure?.reason === "restore failed",
+        (error: unknown) => {
+          const err = recordValue(error);
+          return (
+            err.stage === "restore-recorded-video-fixtures" &&
+            recordValue(arrayValue(recordValue(err.report).businessSets)[0])
+              .status === "failed" &&
+            recordValue(err.restoreFailure).reason === "restore failed"
+          );
+        },
       );
       const report = JSON.parse(readFileSync(outPath, "utf8"));
       assert.equal(report.businessSets[0].status, "failed");
@@ -1114,9 +1129,13 @@ describe("visionExperience slice runner", () => {
         timeoutMs: 2_000,
         pollMs: 10,
       }),
-      (error: any) =>
-        error?.stage === "restore-recorded-video-fixtures" &&
-        error?.message.includes("restore failed"),
+      (error: unknown) => {
+        const err = recordValue(error);
+        return (
+          err.stage === "restore-recorded-video-fixtures" &&
+          String(err.message).includes("restore failed")
+        );
+      },
     );
   });
 
@@ -1157,12 +1176,19 @@ describe("visionExperience slice runner", () => {
         timeoutMs: 30,
         pollMs: 5,
       }),
-      (error: any) =>
-        error?.stage === "restore-recorded-video-fixtures" &&
-        error?.report?.businessSets?.[0]?.status === "failed" &&
-        error?.report?.businessSets?.[0]?.supportingEvidence?.at(-1)?.kind ===
-          "vision-recorded-fixture-restore" &&
-        error?.primaryFailure?.id === "result-sleeves-retained",
+      (error: unknown) => {
+        const err = recordValue(error);
+        const firstSet = recordValue(
+          arrayValue(recordValue(err.report).businessSets)[0],
+        );
+        return (
+          err.stage === "restore-recorded-video-fixtures" &&
+          firstSet.status === "failed" &&
+          recordValue(arrayValue(firstSet.supportingEvidence).at(-1)).kind ===
+            "vision-recorded-fixture-restore" &&
+          recordValue(err.primaryFailure).id === "result-sleeves-retained"
+        );
+      },
     );
   });
 
@@ -1187,10 +1213,15 @@ describe("visionExperience slice runner", () => {
         timeoutMs: 30,
         pollMs: 5,
       }),
-      (error: any) =>
-        error?.stage === "vision-experience-primary" &&
-        error?.primaryFailure === "fixture primary failed" &&
-        error?.restoreFailure?.stage === "restore-recorded-video-fixtures",
+      (error: unknown) => {
+        const err = recordValue(error);
+        return (
+          err.stage === "vision-experience-primary" &&
+          err.primaryFailure === "fixture primary failed" &&
+          recordValue(err.restoreFailure).stage ===
+            "restore-recorded-video-fixtures"
+        );
+      },
     );
   });
 
@@ -1216,13 +1247,20 @@ describe("visionExperience slice runner", () => {
         timeoutMs: 2_000,
         pollMs: 10,
       }),
-      (error: any) =>
-        error?.stage === "vision-experience-primary" &&
-        error?.report?.businessSets?.[0]?.status === "failed" &&
-        error?.evidence?.kind === "vision-start-garment-binding" &&
-        error?.report?.businessSets?.[0]?.supportingEvidence?.at(-1)?.kind ===
-          "vision-recorded-fixture-restore" &&
-        error?.restoreFailure?.reason === "restore failed",
+      (error: unknown) => {
+        const err = recordValue(error);
+        const firstSet = recordValue(
+          arrayValue(recordValue(err.report).businessSets)[0],
+        );
+        return (
+          err.stage === "vision-experience-primary" &&
+          firstSet.status === "failed" &&
+          recordValue(err.evidence).kind === "vision-start-garment-binding" &&
+          recordValue(arrayValue(firstSet.supportingEvidence).at(-1)).kind ===
+            "vision-recorded-fixture-restore" &&
+          recordValue(err.restoreFailure).reason === "restore failed"
+        );
+      },
     );
   });
 
