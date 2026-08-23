@@ -1,19 +1,28 @@
-function publishedHandoffSerialSessionId(report) {
-  if (report == null || typeof report !== "object") return null;
-  if (
-    typeof report.handoffSerialSessionId !== "string" ||
-    report.handoffSerialSessionId.trim() === ""
-  )
-    return null;
-  return report.handoffSerialSessionId.trim();
+type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
 }
 
-function terminalRoute(track, route) {
+function publishedHandoffSerialSessionId(report: unknown): string | null {
+  if (report == null || typeof report !== "object") return null;
+  const record = report as JsonRecord;
+  if (
+    typeof record.handoffSerialSessionId !== "string" ||
+    String(record.handoffSerialSessionId).trim() === ""
+  )
+    return null;
+  return String(record.handoffSerialSessionId).trim();
+}
+
+function terminalRoute(track: JsonRecord, route: unknown): boolean {
   return (
     route === "#/catalog" ||
-    /^#\/result(?:\/|$)/.test(route ?? "") ||
+    /^#\/result(?:\/|$)/.test(String(route ?? "")) ||
     (track.allowActiveTransactionHandoff === true &&
-      /^#\/payment(?:\/|$)/.test(route ?? ""))
+      /^#\/payment(?:\/|$)/.test(String(route ?? "")))
   );
 }
 
@@ -52,52 +61,56 @@ const activeOrderStatuses = new Set([
   "dispensing",
 ]);
 
-export function isTerminalTransaction(transaction) {
+export function isTerminalTransaction(transaction: unknown): boolean {
   if (typeof transaction !== "object" || transaction == null) return false;
+  const record = recordValue(transaction);
   if (
-    typeof transaction.nextAction === "string" &&
-    terminalNextActions.has(transaction.nextAction)
+    typeof record.nextAction === "string" &&
+    terminalNextActions.has(record.nextAction as string)
   )
     return true;
   if (
-    typeof transaction.orderStatus === "string" &&
-    terminalOrderStatuses.has(transaction.orderStatus)
+    typeof record.orderStatus === "string" &&
+    terminalOrderStatuses.has(record.orderStatus as string)
   )
     return true;
   return false;
 }
 
-export function isActiveTransaction(transaction) {
+export function isActiveTransaction(transaction: unknown): boolean {
   if (typeof transaction !== "object" || transaction == null) return false;
+  const record = recordValue(transaction);
   if (isTerminalTransaction(transaction)) return false;
   if (
-    typeof transaction.nextAction === "string" &&
-    activeNextActions.has(transaction.nextAction)
+    typeof record.nextAction === "string" &&
+    activeNextActions.has(record.nextAction as string)
   )
     return true;
   if (
-    typeof transaction.orderStatus === "string" &&
-    activeOrderStatuses.has(transaction.orderStatus)
+    typeof record.orderStatus === "string" &&
+    activeOrderStatuses.has(record.orderStatus as string)
   )
     return true;
   return false;
 }
 
-function transactionLeaked(transaction) {
+function transactionLeaked(transaction: unknown): boolean {
   return isActiveTransaction(transaction);
 }
 
-function hasWholeMachineLockBlocker(capability) {
+function hasWholeMachineLockBlocker(capability: unknown): boolean {
+  const capabilityRecord = recordValue(capability);
   return (
-    Array.isArray(capability?.blockers) &&
-    capability.blockers.some(
-      (blocker) => blocker?.code === "WHOLE_MACHINE_LOCKED",
+    Array.isArray(capabilityRecord.blockers) &&
+    (capabilityRecord.blockers as unknown[]).some(
+      (blocker: unknown) =>
+        recordValue(blocker).code === "WHOLE_MACHINE_LOCKED",
     )
   );
 }
 
-function terminalPolicyFailures(track, facts) {
-  const failures = [];
+function terminalPolicyFailures(track: JsonRecord, facts: JsonRecord): string[] {
+  const failures: string[] = [];
   if (
     transactionLeaked(facts.transaction) &&
     track.allowActiveTransactionHandoff !== true
@@ -114,10 +127,20 @@ export async function captureTrackTerminalFacts({
   readRoute,
   daemonGet,
   platformQuery,
-}) {
-  const diagnostics = [];
-  const observe = async (label, operation, { attempts = 1 } = {}) => {
-    let lastError = null;
+}: {
+  track: JsonRecord;
+  context: JsonRecord;
+  readRoute: () => Promise<unknown>;
+  daemonGet: (path: string) => Promise<unknown>;
+  platformQuery: () => Promise<unknown>;
+}): Promise<JsonRecord> {
+  const diagnostics: string[] = [];
+  const observe = async (
+    label: string,
+    operation: () => Promise<unknown>,
+    { attempts = 1 }: { attempts?: number } = {},
+  ): Promise<unknown> => {
+    let lastError: unknown = null;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       try {
         return await operation();
@@ -151,7 +174,9 @@ export async function captureTrackTerminalFacts({
       { attempts: 3 },
     ),
     inventory: await observe("inventory", platformQuery, { attempts: 3 }),
-    handoffSerialSessionId: publishedHandoffSerialSessionId(context?.report),
+    handoffSerialSessionId: publishedHandoffSerialSessionId(
+      recordValue(context).report,
+    ),
   };
   if (diagnostics.length > 0) {
     return {
@@ -196,11 +221,29 @@ export async function recoverTrackHandoff({
   selfCheckHardware,
   clearWholeMachineLock,
   wholeMachineLockOperatorNote = "verified track handoff recovery",
-}) {
-  const actions = [];
-  const errors = [];
-  const evidence = {};
-  const attempt = async (name, operation) => {
+}: {
+  track: JsonRecord;
+  terminal: JsonRecord | null | undefined;
+  fixtureAllocation: JsonRecord | null | undefined;
+  returnToCatalog: () => Promise<unknown>;
+  disableFaultInjection: () => Promise<unknown>;
+  restoreSerialSession: (sessionId: string) => Promise<unknown>;
+  restoreFixtureStock: (fixture: JsonRecord) => Promise<unknown>;
+  cancelActiveTransaction: (transaction: JsonRecord) => Promise<unknown>;
+  waitForTransactionTerminal?: () => Promise<unknown>;
+  recoverAfterFailure?: boolean;
+  readLateTransaction?: () => Promise<unknown>;
+  selfCheckHardware?: () => Promise<unknown>;
+  clearWholeMachineLock?: (note: string) => Promise<unknown>;
+  wholeMachineLockOperatorNote?: string;
+}): Promise<JsonRecord> {
+  const actions: string[] = [];
+  const errors: string[] = [];
+  const evidence: JsonRecord = {};
+  const attempt = async (
+    name: string,
+    operation: () => unknown | Promise<unknown>,
+  ): Promise<unknown> => {
     try {
       const result = await operation();
       actions.push(name);
@@ -212,8 +255,8 @@ export async function recoverTrackHandoff({
       return undefined;
     }
   };
-  const route = terminal?.facts?.route;
-  const cancelAndWaitForTerminal = async (transaction) => {
+  const route = recordValue(terminal?.facts).route;
+  const cancelAndWaitForTerminal = async (transaction: JsonRecord) => {
     await attempt("cancelActiveTransaction", () =>
       cancelActiveTransaction(transaction),
     );
@@ -234,18 +277,25 @@ export async function recoverTrackHandoff({
     }
     return true;
   };
-  if (transactionLeaked(terminal?.facts?.transaction)) {
-    if (!(await cancelAndWaitForTerminal(terminal.facts.transaction))) {
+  const terminalFacts = recordValue(terminal?.facts);
+  if (transactionLeaked(terminalFacts.transaction)) {
+    if (
+      !(await cancelAndWaitForTerminal(
+        recordValue(terminalFacts.transaction),
+      ))
+    ) {
       return { ok: false, actions, errors, evidence };
     }
   }
   // A completed customer sale must leave through the rendered result control
   // before recovery is allowed to start a Local Operations stock task.
-  if (/^#\/result(?:\/|$)/.test(route ?? "")) {
+  if (/^#\/result(?:\/|$)/.test(String(route ?? ""))) {
     await attempt("returnToCatalog", returnToCatalog);
     if (errors.length > 0) return { ok: false, actions, errors, evidence };
   }
-  if (hasWholeMachineLockBlocker(terminal?.facts?.saleStartCapability)) {
+  if (
+    hasWholeMachineLockBlocker(terminalFacts.saleStartCapability)
+  ) {
     if (typeof selfCheckHardware !== "function") {
       errors.push(
         "recoverWholeMachineLock: selfCheckHardware is required for WHOLE_MACHINE_LOCKED",
@@ -276,31 +326,38 @@ export async function recoverTrackHandoff({
     }
     if (
       transactionLeaked(lateTransaction) &&
-      !(await cancelAndWaitForTerminal(lateTransaction))
+      !(await cancelAndWaitForTerminal(recordValue(lateTransaction)))
     ) {
       return { ok: false, actions, errors, evidence };
     }
   }
-  const sessionId = terminal?.facts?.handoffSerialSessionId;
+  const sessionId = terminalFacts.handoffSerialSessionId;
   if (sessionId) {
     await attempt("restoreSerialSession", () =>
-      restoreSerialSession(sessionId),
+      restoreSerialSession(String(sessionId)),
     );
   }
   if (track.restoreFixtureStock === true) {
-    const fixture = fixtureAllocation?.[track.fixtureKey ?? track.key];
-    if (!fixture?.inventoryId) {
+    const fixture = recordValue(fixtureAllocation)[
+      String(track.fixtureKey ?? track.key)
+    ];
+    const fixtureRecord = recordValue(fixture);
+    if (!fixtureRecord?.inventoryId) {
       errors.push(
         `restoreFixtureStock: fixture allocation is absent for ${track.key}`,
       );
     } else {
       const fixtureStock = await attempt("restoreFixtureStock", () =>
-        restoreFixtureStock(fixture),
+        restoreFixtureStock(fixtureRecord),
       );
       if (fixtureStock !== undefined) evidence.fixtureStock = fixtureStock;
     }
   }
-  if (route && route !== "#/catalog" && !/^#\/result(?:\/|$)/.test(route)) {
+  if (
+    route &&
+    route !== "#/catalog" &&
+    !/^#\/result(?:\/|$)/.test(String(route))
+  ) {
     await attempt("returnToCatalog", returnToCatalog);
   }
   return { ok: errors.length === 0, actions, errors, evidence };
