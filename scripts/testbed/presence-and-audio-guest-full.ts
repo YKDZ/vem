@@ -36,14 +36,69 @@ const PRESENCE_PRECONDITION_TIMEOUT_MS = SUSTAINED_EMPTY_MS + 2_000;
 const ADMIN_USER = "local-testbed-admin";
 const ADMIN_PASSWORD = "LocalTestbedAdminPassword!";
 
-function required(value, label) {
+type JsonRecord = Record<string, unknown>;
+type GuestInputRecord = JsonRecord;
+type HandoffRecord = JsonRecord;
+
+type PresenceAudioDependencies = {
+  readJson: (path: string, label: string) => JsonRecord;
+  writeJson: (path: string, value: unknown) => void;
+  writeText: (path: string, value: unknown) => void;
+  captureScreenshotArtifact: (
+    client: InstanceType<typeof CdpClient>,
+    path: string,
+  ) => Promise<unknown>;
+  readTrace: (client: InstanceType<typeof CdpClient>) => Promise<unknown>;
+  setAudioPreferences: (
+    client: InstanceType<typeof CdpClient>,
+    preferences: JsonRecord,
+  ) => Promise<unknown>;
+  fetchJson: (url: string, options: JsonRecord) => Promise<unknown>;
+  controlPlaneRequest: (
+    guestInput: GuestInputRecord,
+    path: string,
+    body?: JsonRecord,
+  ) => Promise<unknown>;
+  ensureControlledVisionMock: typeof ensureControlledVisionMock;
+  stopInstalledVisionOwnerForControlledMock: typeof stopInstalledVisionOwnerForControlledMock;
+  waitForControlledVisionRuntimeClient: typeof waitForControlledVisionRuntimeClient;
+  discoverTarget: typeof discoverMachineUiTarget;
+  createClient: (url: string) => InstanceType<typeof CdpClient>;
+  enablePageRuntime: typeof enablePageRuntime;
+  waitForRoute: typeof waitForRoute;
+  waitForSaleStartReady: typeof waitForSaleStartReady;
+  activateVisibleSelector: typeof activateVisibleSelector;
+  evaluateExpression: typeof evaluateExpression;
+  rewriteWebSocketDebuggerUrl: typeof rewriteWebSocketDebuggerUrl;
+  observeConnectedCdpIdentity: typeof observeConnectedCdpIdentity;
+  sleep: (milliseconds: number) => Promise<void>;
+  now: () => number;
+  randomUUID: () => string;
+  issueAdminVentReset: (
+    guestInput: GuestInputRecord,
+    dependencies: PresenceAudioDependencies,
+  ) => Promise<JsonRecord>;
+  issueAdminVentOverride: (
+    guestInput: GuestInputRecord,
+    dependencies: PresenceAudioDependencies,
+  ) => Promise<JsonRecord>;
+  submitDuplicateAutomaticVentIntent: (
+    handoff: HandoffRecord,
+    edgeId: string,
+    dependencies: PresenceAudioDependencies,
+  ) => Promise<unknown>;
+  artifactRoot: (outPath: string) => string;
+  makeDirectory: (path: string) => void;
+};
+
+function required(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${label} is required`);
   }
   return value.trim();
 }
 
-function windowsAbsolute(value, label) {
+function windowsAbsolute(value: unknown, label: string): string {
   const path = required(value, label);
   if (!/^[A-Za-z]:\\/.test(path) || path.includes("\0")) {
     throw new Error(`${label} must be an absolute Windows path`);
@@ -51,7 +106,7 @@ function windowsAbsolute(value, label) {
   return path;
 }
 
-function localPath(path) {
+function localPath(path: string): string {
   return process.platform === "win32"
     ? path
     : resolve(
@@ -59,9 +114,9 @@ function localPath(path) {
       );
 }
 
-function readJson(path, label) {
+function readJson(path: string, label: string): JsonRecord {
   try {
-    return JSON.parse(readFileSync(localPath(path), "utf8"));
+    return JSON.parse(readFileSync(localPath(path), "utf8")) as JsonRecord;
   } catch (error) {
     throw new Error(
       `${label} is invalid: ${error instanceof Error ? error.message : String(error)}`,
@@ -69,7 +124,7 @@ function readJson(path, label) {
   }
 }
 
-function writeJson(path, value) {
+function writeJson(path: string, value: unknown): void {
   const target = localPath(path);
   mkdirSync(dirname(target), { recursive: true });
   const temporary = `${target}.tmp-${process.pid}-${Date.now()}`;
@@ -79,13 +134,16 @@ function writeJson(path, value) {
   renameSync(temporary, target);
 }
 
-function writeText(path, value) {
+function writeText(path: string, value: unknown): void {
   const target = localPath(path);
   mkdirSync(dirname(target), { recursive: true });
   writeFileSync(target, String(value), { mode: 0o600 });
 }
 
-async function captureScreenshotArtifact(client, path) {
+async function captureScreenshotArtifact(
+  client: InstanceType<typeof CdpClient>,
+  path: string,
+): Promise<unknown> {
   return captureScreenshot(client, {
     format: "png",
     label: "presence-and-audio-final",
@@ -96,7 +154,7 @@ async function captureScreenshotArtifact(client, path) {
   });
 }
 
-function option(args, name) {
+function option(args: string[], name: string): string {
   const index = args.indexOf(`--${name}`);
   const value = index === -1 ? undefined : args[index + 1];
   if (!value || value.startsWith("--"))
@@ -104,12 +162,18 @@ function option(args, name) {
   return value;
 }
 
-function optionalOption(args, name) {
+function optionalOption(args: string[], name: string): string | null {
   const index = args.indexOf(`--${name}`);
   return index === -1 ? null : required(args[index + 1], `--${name}`);
 }
 
-export function parsePresenceAndAudioGuestArgs(args) {
+export function parsePresenceAndAudioGuestArgs(args: string[]): {
+  mode: string;
+  guestInputPath: string;
+  handoffPath: string;
+  outPath: string;
+  fixtureKey: string | null;
+} {
   const allowed = new Set([
     "--mode",
     "--guest-input",
@@ -136,10 +200,14 @@ export function parsePresenceAndAudioGuestArgs(args) {
   };
 }
 
-async function fetchJson(url, options = {}) {
+async function fetchJson(
+  url: string,
+  options: JsonRecord = {},
+): Promise<unknown> {
   const response = await fetch(url, {
     ...options,
-    signal: options.signal ?? AbortSignal.timeout(options.timeoutMs ?? 30_000),
+    signal: (options.signal as AbortSignal | undefined) ??
+      AbortSignal.timeout(Number(options.timeoutMs ?? 30_000)),
   });
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
@@ -150,8 +218,12 @@ async function fetchJson(url, options = {}) {
   return payload;
 }
 
-async function controlPlaneRequest(guestInput, path, body = {}) {
-  const controlPlane = guestInput?.hostControlPlane;
+async function controlPlaneRequest(
+  guestInput: GuestInputRecord,
+  path: string,
+  body: JsonRecord = {},
+): Promise<unknown> {
+  const controlPlane = guestInput?.hostControlPlane as JsonRecord | undefined;
   if (!controlPlane?.endpoint || !controlPlane?.token) {
     throw new Error(
       "guest input is missing hostControlPlane endpoint and token",
@@ -167,9 +239,12 @@ async function controlPlaneRequest(guestInput, path, body = {}) {
   });
 }
 
-function visionControlPort(guestInput) {
+function visionControlPort(guestInput: GuestInputRecord): number {
+  const hostControlPlane = guestInput?.hostControlPlane as
+    | JsonRecord
+    | undefined;
   const port = Number(
-    guestInput?.hostControlPlane?.visionMockControlPort ??
+    hostControlPlane?.visionMockControlPort ??
       guestInput?.visionMockControlPort,
   );
   if (!Number.isInteger(port) || port < 1) {
@@ -178,100 +253,133 @@ function visionControlPort(guestInput) {
   return port;
 }
 
-async function injectVisionPresence(guestInput, state, dependencies) {
+async function injectVisionPresence(
+  guestInput: GuestInputRecord,
+  state: "approach" | "empty",
+  dependencies: PresenceAudioDependencies,
+): Promise<unknown> {
   if (state !== "approach" && state !== "empty")
     throw new Error("Vision presence state is invalid");
   const port = visionControlPort(guestInput);
-  return dependencies.fetchJson(`http://127.0.0.1:${port}/control/presence`, {
+  return (dependencies.fetchJson as (url: string, options: JsonRecord) => Promise<unknown>)(
+    `http://127.0.0.1:${port}/control/presence`,
+    {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ state }),
-  });
+    },
+  );
 }
 
-async function injectVisionDeparture(guestInput, dependencies) {
+async function injectVisionDeparture(
+  guestInput: GuestInputRecord,
+  dependencies: PresenceAudioDependencies,
+): Promise<unknown> {
   const port = visionControlPort(guestInput);
-  return dependencies.fetchJson(`http://127.0.0.1:${port}/control/departure`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ source: "presence-and-audio-precondition" }),
-  });
+  return (dependencies.fetchJson as (url: string, options: JsonRecord) => Promise<unknown>)(
+    `http://127.0.0.1:${port}/control/departure`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ source: "presence-and-audio-precondition" }),
+    },
+  );
 }
 
-function traceId(trace) {
-  return trace.reduce(
-    (maximum, entry) => Math.max(maximum, Number(entry?.id) || 0),
+function traceId(trace: unknown[]): number {
+  return trace.reduce<number>(
+    (maximum, entry) =>
+      Math.max(maximum, Number((entry as JsonRecord)?.id) || 0),
     0,
   );
 }
 
-function traceEntryAfter(trace, boundary, predicate) {
+function traceEntryAfter(
+  trace: unknown[],
+  boundary: number,
+  predicate: (entry: JsonRecord) => boolean,
+): unknown {
   return trace.find(
-    (entry) => Number(entry?.id) > boundary && predicate(entry),
+    (entry) =>
+      Number((entry as JsonRecord)?.id) > boundary &&
+      predicate(entry as JsonRecord),
   );
 }
 
-export function latestTouchscreenSessionActive(trace) {
+export function latestTouchscreenSessionActive(trace: unknown[]): boolean {
   for (const entry of [...trace].reverse()) {
-    if (typeof entry?.touchscreenSessionActive === "boolean") {
-      return entry.touchscreenSessionActive;
+    const entryRecord = entry as JsonRecord;
+    if (typeof entryRecord?.touchscreenSessionActive === "boolean") {
+      return entryRecord.touchscreenSessionActive;
     }
   }
-  return null;
+  return false;
 }
 
 export async function waitForTouchscreenSessionIdle(
-  readTrace,
-  dependencies,
-  label,
-  { timeoutMs = 50_000, pollMs = 250 } = {},
-) {
+  readTrace: () => Promise<unknown[]>,
+  dependencies: PresenceAudioDependencies,
+  label: string,
+  { timeoutMs = 50_000, pollMs = 250 }: {
+    timeoutMs?: number;
+    pollMs?: number;
+  } = {},
+): Promise<JsonRecord> {
   const deadline = dependencies.now() + timeoutMs;
+  const now = dependencies.now as () => number;
+  const sleepFn = dependencies.sleep as (milliseconds: number) => Promise<void>;
   let last = await readTrace();
   if (latestTouchscreenSessionActive(last) !== true) {
     return { waited: false, trace: last };
   }
   do {
-    await dependencies.sleep(pollMs);
+    await sleepFn(pollMs);
     last = await readTrace();
     if (latestTouchscreenSessionActive(last) !== true) {
       return { waited: true, trace: last };
     }
-  } while (dependencies.now() < deadline);
+  } while (now() < deadline);
   throw new Error(
     `${label} touchscreen session did not become idle: ${JSON.stringify(last.slice(-12))}`,
   );
 }
 
 async function waitForTraceEntry(
-  readTrace,
-  boundary,
-  predicate,
-  dependencies,
-  label,
-  { timeoutMs = TRACE_TIMEOUT_MS, pollMs = 100 } = {},
-) {
+  readTrace: () => Promise<unknown[]>,
+  boundary: number,
+  predicate: (entry: JsonRecord) => boolean,
+  dependencies: PresenceAudioDependencies,
+  label: string,
+  { timeoutMs = TRACE_TIMEOUT_MS, pollMs = 100 }: {
+    timeoutMs?: number;
+    pollMs?: number;
+  } = {},
+): Promise<{ entry: JsonRecord; trace: unknown[] }> {
   const deadline = dependencies.now() + timeoutMs;
-  let last = [];
+  const now = dependencies.now as () => number;
+  const sleepFn = dependencies.sleep as (milliseconds: number) => Promise<void>;
+  let last: unknown[] = [];
   do {
     last = await readTrace();
-    const entry = traceEntryAfter(last, boundary, predicate);
+    const entry = traceEntryAfter(last, boundary, predicate) as
+      | JsonRecord
+      | undefined;
     if (entry) return { entry, trace: last };
-    await dependencies.sleep(pollMs);
-  } while (dependencies.now() < deadline);
+    await sleepFn(pollMs);
+  } while (now() < deadline);
   throw new Error(
     `${label} was not observed in Machine runtimeTrace: ${JSON.stringify(last.slice(-12))}`,
   );
 }
 
 async function waitForAudioLifecycle(
-  readTrace,
-  boundary,
-  transitionPredicate,
-  dependencies,
-  label,
-  { requireTerminal = true } = {},
-) {
+  readTrace: () => Promise<unknown[]>,
+  boundary: number,
+  transitionPredicate: (entry: JsonRecord) => boolean,
+  dependencies: PresenceAudioDependencies,
+  label: string,
+  { requireTerminal = true }: { requireTerminal?: boolean } = {},
+): Promise<JsonRecord> {
   const transition = await waitForTraceEntry(
     readTrace,
     boundary,
@@ -308,10 +416,15 @@ async function waitForAudioLifecycle(
     : null;
   const observedTrace = terminal?.trace ?? startedResult.trace;
   const lifecycle = observedTrace.filter(
-    (entry) => entry?.transitionId === transitionId,
+    (entry) => (entry as JsonRecord)?.transitionId === transitionId,
   );
-  const started = lifecycle.filter((entry) => entry?.type === "audio_started");
-  if (started.length !== 1 || started[0]?.message !== "native") {
+  const started = lifecycle.filter(
+    (entry) => (entry as JsonRecord)?.type === "audio_started",
+  );
+  if (
+    started.length !== 1 ||
+    (started[0] as JsonRecord)?.message !== "native"
+  ) {
     throw new Error(`${label} did not use exactly one native audio start`);
   }
   return {
@@ -321,16 +434,18 @@ async function waitForAudioLifecycle(
   };
 }
 
-function categoryKeyFromTransition(transitionId) {
+function categoryKeyFromTransition(transitionId: unknown): string {
   const match = /^category:category-entry-([a-z0-9_-]+)-\d+$/i.exec(
-    transitionId,
+    String(transitionId),
   );
   if (!match)
-    throw new Error(`category transition id is invalid: ${transitionId}`);
+    throw new Error(
+      `category transition id is invalid: ${String(transitionId)}`,
+    );
   return match[1];
 }
 
-function categorySelector(key) {
+function categorySelector(key: unknown): string {
   const normalized = required(key, "supported category key");
   if (!/^[A-Za-z0-9_-]+$/.test(normalized)) {
     throw new Error(`supported category key is invalid: ${normalized}`);
@@ -338,8 +453,15 @@ function categorySelector(key) {
   return `[data-test="catalog-category"][data-category-key="${normalized}"]:not(:disabled)`;
 }
 
-async function readSupportedCategoryKeys(client, dependencies) {
-  const keys = await dependencies.evaluateExpression(
+async function readSupportedCategoryKeys(
+  client: InstanceType<typeof CdpClient>,
+  dependencies: PresenceAudioDependencies,
+): Promise<string[]> {
+  const keys = await (dependencies.evaluateExpression as (
+    client: InstanceType<typeof CdpClient>,
+    expression: string,
+    options?: JsonRecord,
+  ) => Promise<unknown>)(
     client,
     `(() => Array.from(document.querySelectorAll('[data-test="catalog-category"]:not(:disabled)'))
       .map((element) => element.dataset.categoryKey || '')
@@ -348,7 +470,9 @@ async function readSupportedCategoryKeys(client, dependencies) {
   if (!Array.isArray(keys) || keys.length === 0) {
     throw new Error("installed Catalog has no enabled product categories");
   }
-  const normalized = keys.map((key) => required(key, "supported category key"));
+  const normalized = (keys as unknown[]).map((key) =>
+    required(key, "supported category key"),
+  );
   if (new Set(normalized).size !== normalized.length) {
     throw new Error(
       "installed Catalog exposes duplicate enabled product categories",
@@ -358,22 +482,37 @@ async function readSupportedCategoryKeys(client, dependencies) {
   return normalized;
 }
 
-async function returnToCatalogHome(client, dependencies) {
+async function returnToCatalogHome(
+  client: InstanceType<typeof CdpClient>,
+  dependencies: PresenceAudioDependencies,
+): Promise<void> {
   const deadline = dependencies.now() + 30_000;
-  let lastError = null;
+  const now = dependencies.now as () => number;
+  const sleepFn = dependencies.sleep as (milliseconds: number) => Promise<void>;
+  const evaluate = dependencies.evaluateExpression as (
+    client: InstanceType<typeof CdpClient>,
+    expression: string,
+    options?: JsonRecord,
+  ) => Promise<unknown>;
+  const waitForRouteFn = dependencies.waitForRoute as (
+    client: InstanceType<typeof CdpClient>,
+    route: string | RegExp,
+    options?: JsonRecord,
+  ) => Promise<unknown>;
+  let lastError: unknown = null;
   do {
-    await dependencies.evaluateExpression(
+    await evaluate(
       client,
       'location.hash = "#/catalog"',
     );
     try {
-      await dependencies.waitForRoute(client, "#/catalog", {
+      await waitForRouteFn(client, "#/catalog", {
         timeoutMs: 5_000,
         pollMs: 100,
       });
       for (let attempt = 0; attempt < 4; attempt += 1) {
-        await dependencies.sleep(250);
-        await dependencies.waitForRoute(client, "#/catalog", {
+        await sleepFn(250);
+        await waitForRouteFn(client, "#/catalog", {
           timeoutMs: 500,
           pollMs: 100,
         });
@@ -381,16 +520,21 @@ async function returnToCatalogHome(client, dependencies) {
       return;
     } catch (error) {
       lastError = error;
-      await dependencies.sleep(250);
+      await sleepFn(250);
     }
-  } while (dependencies.now() < deadline);
+  } while (now() < deadline);
   throw new Error(
-    `Catalog route did not stay stable after maintenance recovery: ${lastError?.message ?? "unknown route error"}`,
+    `Catalog route did not stay stable after maintenance recovery: ${
+      lastError instanceof Error ? lastError.message : "unknown route error"
+    }`,
   );
 }
 
-function runtimeBinding(handoff, cdpIdentity) {
-  const machine = handoff?.machine ?? {};
+function runtimeBinding(
+  handoff: HandoffRecord,
+  cdpIdentity: JsonRecord | null | undefined,
+): JsonRecord {
+  const machine = (handoff?.machine ?? {}) as JsonRecord;
   return {
     processId: Number(machine.processId),
     executablePath: required(
@@ -404,18 +548,29 @@ function runtimeBinding(handoff, cdpIdentity) {
   };
 }
 
-export async function observeGuestRuntimeIdentity(client, dependencies) {
+export async function observeGuestRuntimeIdentity(
+  client: InstanceType<typeof CdpClient>,
+  dependencies: PresenceAudioDependencies,
+): Promise<unknown> {
   if (typeof client?.observeIdentity === "function") {
     return client.observeIdentity();
   }
   if (typeof dependencies?.observeConnectedCdpIdentity === "function") {
-    return dependencies.observeConnectedCdpIdentity(client);
+    return Promise.resolve(
+      (dependencies.observeConnectedCdpIdentity as (
+        client: InstanceType<typeof CdpClient>,
+      ) => unknown)(
+        client,
+      ),
+    );
   }
   throw new Error("connected production CDP client identity is unavailable");
 }
 
-function captureSummary(stopReport) {
-  const capture = stopReport?.capture;
+function captureSummary(
+  stopReport: JsonRecord | null | undefined,
+): JsonRecord {
+  const capture = stopReport?.capture as JsonRecord | undefined;
   if (
     !capture ||
     !Number.isInteger(capture.nonSilentFrameCount) ||
@@ -431,12 +586,12 @@ function captureSummary(stopReport) {
   };
 }
 
-function b3Speed(frame) {
+function b3Speed(frame: JsonRecord | null | undefined): number | null {
   const value = /^55b3(0[0-4])$/i.exec(String(frame?.rawFrameHex ?? ""))?.[1];
   return value ? Number.parseInt(value, 16) : null;
 }
 
-function stableEdgeId(transitionId) {
+function stableEdgeId(transitionId: unknown): string {
   const match = /^vision:presence-(\d+):(welcome|departed)$/.exec(
     required(transitionId, "presence transition id"),
   );
@@ -445,102 +600,139 @@ function stableEdgeId(transitionId) {
   return `presence-${match[1]}:${match[2] === "welcome" ? "arrival" : "departure"}`;
 }
 
-function serialFrameSequence(frame) {
-  if (Number.isInteger(frame?.sequence)) return frame.sequence;
-  const match = String(frame?.boundaryId ?? "").match(/:(\d+)$/);
+function serialFrameSequence(frame: unknown): number | null {
+  const frameRecord = frame as JsonRecord | undefined;
+  if (Number.isInteger(frameRecord?.sequence)) {
+    return frameRecord?.sequence as number;
+  }
+  const match = String(frameRecord?.boundaryId ?? "").match(/:(\d+)$/);
   return match ? Number(match[1]) : null;
 }
 
-function serialFrameIdentity(frame) {
-  if (!frame || typeof frame !== "object") return "";
+function serialFrameIdentity(frame: unknown): string {
+  const frameRecord = frame as JsonRecord | null | undefined;
+  if (!frameRecord || typeof frameRecord !== "object") return "";
   return [
-    frame.boundaryId ?? "",
-    frame.capturedAt ?? "",
-    frame.direction ?? "",
-    frame.rawFrameHex ?? "",
-    frame.parsedOpcode ?? "",
+    frameRecord.boundaryId ?? "",
+    frameRecord.capturedAt ?? "",
+    frameRecord.direction ?? "",
+    frameRecord.rawFrameHex ?? "",
+    frameRecord.parsedOpcode ?? "",
   ].join(":");
 }
 
-export function serialEvidenceCursor(evidence) {
-  const frames = Array.isArray(evidence?.rawFrames) ? evidence.rawFrames : [];
+export function serialEvidenceCursor(
+  evidence: JsonRecord | null | undefined,
+): JsonRecord {
+  const frames = Array.isArray(evidence?.rawFrames)
+    ? (evidence.rawFrames as unknown[])
+    : [];
   const sequences = frames
     .map((frame) => serialFrameSequence(frame))
-    .filter(Number.isInteger);
+    .filter((value): value is number => Number.isInteger(value));
   const lastFrame = frames.at(-1) ?? null;
+  const lastFrameRecord = lastFrame as JsonRecord | null;
   return {
     frameCount: frames.length,
     lastSequence: sequences.length > 0 ? Math.max(...sequences) : null,
-    lastCapturedAt: lastFrame?.capturedAt ?? null,
-    lastIdentity: serialFrameIdentity(lastFrame),
+    lastCapturedAt: lastFrameRecord?.capturedAt ?? null,
+    lastIdentity: serialFrameIdentity(lastFrameRecord),
   };
 }
 
-export function serialFramesSince(evidence, cursor) {
-  const frames = Array.isArray(evidence?.rawFrames) ? evidence.rawFrames : [];
-  if (Number.isInteger(cursor?.lastSequence)) {
+export function serialFramesSince(
+  evidence: JsonRecord | null | undefined,
+  cursor: JsonRecord | number | null | undefined,
+): unknown[] {
+  const frames = Array.isArray(evidence?.rawFrames)
+    ? (evidence.rawFrames as unknown[])
+    : [];
+  const cursorRecord = cursor as JsonRecord | null | undefined;
+  if (Number.isInteger(cursorRecord?.lastSequence)) {
     const bySequence = frames.filter((frame) => {
       const sequence = serialFrameSequence(frame);
-      return sequence !== null && sequence > cursor.lastSequence;
+      return (
+        sequence !== null && sequence > (cursorRecord?.lastSequence as number)
+      );
     });
     if (bySequence.length > 0) return bySequence;
     const lastIdentityIndex = frames.findIndex(
-      (frame) => serialFrameIdentity(frame) === cursor.lastIdentity,
+      (frame) => serialFrameIdentity(frame) === cursorRecord?.lastIdentity,
     );
     if (lastIdentityIndex >= 0) return frames.slice(lastIdentityIndex + 1);
-    const lastCapturedAt = Date.parse(cursor.lastCapturedAt ?? "");
+    const lastCapturedAt = Date.parse(
+      String(cursorRecord?.lastCapturedAt ?? ""),
+    );
     if (Number.isFinite(lastCapturedAt)) {
       const byTime = frames.filter((frame) => {
-        const capturedAt = Date.parse(frame?.capturedAt ?? "");
+        const capturedAt = Date.parse(
+          String((frame as JsonRecord)?.capturedAt ?? ""),
+        );
         return Number.isFinite(capturedAt) && capturedAt > lastCapturedAt;
       });
       if (byTime.length > 0) return byTime;
     }
     if (
-      Number.isInteger(cursor.frameCount) &&
-      frames.length <= cursor.frameCount
+      Number.isInteger(cursorRecord?.frameCount) &&
+      frames.length <= (cursorRecord?.frameCount as number)
     ) {
       return [];
     }
   }
-  const frameCount = Number.isInteger(cursor?.frameCount)
-    ? cursor.frameCount
-    : cursor;
+  const frameCount = Number.isInteger(cursorRecord?.frameCount)
+    ? (cursorRecord?.frameCount as number)
+    : typeof cursor === "number"
+      ? cursor
+      : 0;
   return frames.slice(frameCount > frames.length ? 0 : frameCount);
 }
 
-function b3FramesSince(evidence, cursor) {
+function b3FramesSince(
+  evidence: JsonRecord | null | undefined,
+  cursor: JsonRecord | number | null | undefined,
+): unknown[] {
   return serialFramesSince(evidence, cursor)
     .filter(
       (frame) =>
-        frame?.direction === "daemon-to-controller" &&
-        frame?.parsedOpcode === "B3",
+        (frame as JsonRecord)?.direction === "daemon-to-controller" &&
+        (frame as JsonRecord)?.parsedOpcode === "B3",
     )
-    .map((frame) => ({ ...frame, speed: b3Speed(frame) }));
+    .map((frame) => ({
+      ...(frame as JsonRecord),
+      speed: b3Speed(frame as JsonRecord),
+    }));
 }
 
 async function waitForB3Sequence(
-  guestInput,
-  sessionId,
-  beforeFrameCount,
-  expectedSpeeds,
-  dependencies,
-) {
+  guestInput: GuestInputRecord,
+  sessionId: string,
+  beforeFrameCount: JsonRecord | number,
+  expectedSpeeds: number[],
+  dependencies: PresenceAudioDependencies,
+): Promise<JsonRecord> {
   const deadline = dependencies.now() + TRACE_TIMEOUT_MS;
-  let evidence = null;
+  const now = dependencies.now as () => number;
+  const sleepFn = dependencies.sleep as (milliseconds: number) => Promise<void>;
+  const controlRequest = dependencies.controlPlaneRequest as (
+    guestInput: GuestInputRecord,
+    path: string,
+    body?: JsonRecord,
+  ) => Promise<unknown>;
+  let evidence: JsonRecord | null = null;
   do {
-    evidence = await dependencies.controlPlaneRequest(
+    evidence = (await controlRequest(
       guestInput,
       `/v1/serial-sessions/${sessionId}/evidence`,
-    );
+    )) as JsonRecord;
     const frames = b3FramesSince(evidence, beforeFrameCount);
     if (
-      frames.map((frame) => frame.speed).join(",") === expectedSpeeds.join(",")
+      frames.map((frame) => (frame as JsonRecord).speed).join(",") ===
+      expectedSpeeds.join(",")
     ) {
       return { evidence, frames };
     }
-    await dependencies.sleep(100);
-  } while (dependencies.now() < deadline);
+    await sleepFn(100);
+  } while (now() < deadline);
   throw new Error(
     `B3 sequence ${expectedSpeeds.join(",")} was not observed: ${JSON.stringify(b3FramesSince(evidence, beforeFrameCount))}`,
   );
@@ -552,17 +744,29 @@ function automaticVentEvidence({
   departureTransitionId,
   adminOverride,
   duplicateSameEdge,
-}) {
-  const speeds = frames.map((frame) => frame.speed);
+}: {
+  frames: unknown[];
+  initialTransitionId: unknown;
+  departureTransitionId: unknown;
+  adminOverride: JsonRecord | null | undefined;
+  duplicateSameEdge: JsonRecord | null | undefined;
+}): JsonRecord {
+  const speeds = frames.map((frame) => (frame as JsonRecord).speed);
   if (speeds.join(",") !== "3,3,0") {
     throw new Error(
       `automatic B3 evidence must be exactly 3,3,0: ${JSON.stringify(frames)}`,
     );
   }
   const [arrivalFrame, adminFrame, departureFrame] = frames;
-  const arrivalAt = Date.parse(arrivalFrame?.capturedAt);
-  const adminAt = Date.parse(adminFrame?.capturedAt);
-  const departureAt = Date.parse(departureFrame?.capturedAt);
+  const arrivalAt = Date.parse(
+    String((arrivalFrame as JsonRecord)?.capturedAt ?? ""),
+  );
+  const adminAt = Date.parse(
+    String((adminFrame as JsonRecord)?.capturedAt ?? ""),
+  );
+  const departureAt = Date.parse(
+    String((departureFrame as JsonRecord)?.capturedAt ?? ""),
+  );
   if (
     !Number.isFinite(arrivalAt) ||
     !Number.isFinite(adminAt) ||
@@ -602,39 +806,44 @@ function automaticVentEvidence({
       },
     ],
     adminPrecedence: {
-      ...adminOverride,
+      ...(adminOverride ?? {}),
       frame: adminFrame,
       duplicateSameEdge,
     },
   };
 }
 
-function aggregateCapture(cueWindows) {
-  const captures = cueWindows.map((window) => window.capture);
+function aggregateCapture(cueWindows: unknown[]): JsonRecord {
+  const captures = cueWindows.map(
+    (window) => (window as JsonRecord).capture as JsonRecord,
+  );
   if (captures.length === 0) throw new Error("audio cue captures are empty");
   return {
     nonSilentFrameCount: captures.reduce(
-      (total, capture) => total + capture.nonSilentFrameCount,
+      (total, capture) => total + (capture.nonSilentFrameCount as number),
       0,
     ),
     peakAbsoluteSample: Math.max(
-      ...captures.map((capture) => capture.peakAbsoluteSample),
+      ...captures.map((capture) => capture.peakAbsoluteSample as number),
     ),
     startedAt: captures[0].startedAt,
-    completedAt: captures.at(-1).completedAt,
+    completedAt: captures.at(-1)?.completedAt ?? null,
   };
 }
 
-function apiBaseUrl(guestInput) {
+function apiBaseUrl(guestInput: GuestInputRecord): string {
+  const bootstrap = guestInput?.runtimeBootstrap as JsonRecord | undefined;
   return required(
-    guestInput?.runtimeBootstrap?.provisioningApiBaseUrl,
+    bootstrap?.provisioningApiBaseUrl,
     "runtimeBootstrap.provisioningApiBaseUrl",
   ).replace(/\/+$/, "");
 }
 
-function daemonBaseUrl(handoff) {
+function daemonBaseUrl(handoff: HandoffRecord): string {
+  const daemon = handoff?.daemon as JsonRecord | undefined;
+  const ready = daemon?.ready as JsonRecord | undefined;
   const healthzUrl = required(
-    handoff?.daemon?.ready?.healthzUrl,
+    ready?.healthzUrl,
     "daemon healthzUrl",
   );
   if (!healthzUrl.endsWith("/healthz")) {
@@ -643,32 +852,52 @@ function daemonBaseUrl(handoff) {
   return healthzUrl.slice(0, -"/healthz".length);
 }
 
-function unwrapServiceApiEnvelope(payload) {
-  if (payload?.code === 0 && Object.hasOwn(payload, "data"))
-    return payload.data;
+function unwrapServiceApiEnvelope(payload: unknown): unknown {
+  const record = payload as JsonRecord | null;
+  if (record?.code === 0 && Object.hasOwn(record, "data")) {
+    return record.data;
+  }
   return payload;
 }
 
-async function issueAdminVentCommand(guestInput, ventSpeed, dependencies) {
-  const request = async (path, options = {}) =>
+async function issueAdminVentCommand(
+  guestInput: GuestInputRecord,
+  ventSpeed: number,
+  dependencies: PresenceAudioDependencies,
+): Promise<JsonRecord> {
+  const request = async (
+    path: string,
+    options: JsonRecord = {},
+  ): Promise<unknown> =>
     unwrapServiceApiEnvelope(
-      await dependencies.fetchJson(`${apiBaseUrl(guestInput)}${path}`, options),
+      await (dependencies.fetchJson as (
+        url: string,
+        options: JsonRecord,
+      ) => Promise<unknown>)(`${apiBaseUrl(guestInput)}${path}`, options),
     );
   const login = await request("/auth/login", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ username: ADMIN_USER, password: ADMIN_PASSWORD }),
   });
-  const token = required(login?.accessToken, "admin accessToken");
-  const machines = await request("/machines?page=1&pageSize=100", {
-    headers: { authorization: `Bearer ${token}` },
-  });
-  const machine = machines?.items?.find(
-    (entry) => entry?.code === required(guestInput.machineCode, "machineCode"),
+  const token = required(
+    (login as JsonRecord | undefined)?.accessToken,
+    "admin accessToken",
   );
-  if (!machine?.id) throw new Error("admin testbed machine was not found");
+  const machines = (await request("/machines?page=1&pageSize=100", {
+    headers: { authorization: `Bearer ${token}` },
+  })) as JsonRecord | null;
+  const items = (machines?.items ?? []) as unknown[];
+  const machine = items.find(
+    (entry) =>
+      (entry as JsonRecord)?.code ===
+      required(guestInput.machineCode, "machineCode"),
+  );
+  const machineRecord = machine as JsonRecord | undefined;
+  if (!machineRecord?.id)
+    throw new Error("admin testbed machine was not found");
   const command = await request(
-    `/machines/${machine.id}/commands/environment-control`,
+    `/machines/${String(machineRecord.id)}/commands/environment-control`,
     {
       method: "POST",
       headers: {
@@ -678,16 +907,21 @@ async function issueAdminVentCommand(guestInput, ventSpeed, dependencies) {
       body: JSON.stringify({ ventSpeed }),
     },
   );
-  const commandNo = required(command?.commandNo, "Admin environment commandNo");
+  const commandNo = required(
+    (command as JsonRecord | undefined)?.commandNo,
+    "Admin environment commandNo",
+  );
   const deadline = dependencies.now() + TRACE_TIMEOUT_MS;
+  const now = dependencies.now as () => number;
+  const sleepFn = dependencies.sleep as (milliseconds: number) => Promise<void>;
   do {
-    const status = await request(`/machines/${machine.id}`, {
+    const status = (await request(`/machines/${String(machineRecord.id)}`, {
       headers: { authorization: `Bearer ${token}` },
-    });
-    const latest = status?.latestEnvironmentCommand;
+    })) as JsonRecord | null;
+    const latest = status?.latestEnvironmentCommand as JsonRecord | undefined;
     if (
       latest?.commandNo === commandNo &&
-      ["succeeded", "failed", "timeout"].includes(latest?.status)
+      ["succeeded", "failed", "timeout"].includes(String(latest?.status))
     ) {
       if (latest.status !== "succeeded") {
         throw new Error(
@@ -700,38 +934,52 @@ async function issueAdminVentCommand(guestInput, ventSpeed, dependencies) {
         requestedSpeed: ventSpeed,
       };
     }
-    await dependencies.sleep(100);
-  } while (dependencies.now() < deadline);
+    await sleepFn(100);
+  } while (now() < deadline);
   throw new Error(
     `Admin B3 command did not reach a terminal result: ${commandNo}`,
   );
 }
 
-async function issueAdminVentReset(guestInput, dependencies) {
+async function issueAdminVentReset(
+  guestInput: GuestInputRecord,
+  dependencies: PresenceAudioDependencies,
+): Promise<JsonRecord> {
   return issueAdminVentCommand(guestInput, 0, dependencies);
 }
 
-async function issueAdminVentOverride(guestInput, dependencies) {
+async function issueAdminVentOverride(
+  guestInput: GuestInputRecord,
+  dependencies: PresenceAudioDependencies,
+): Promise<JsonRecord> {
   return issueAdminVentCommand(guestInput, 3, dependencies);
 }
 
 async function submitDuplicateAutomaticVentIntent(
-  handoff,
-  edgeId,
-  dependencies,
-) {
-  const response = await dependencies.fetchJson(
+  handoff: HandoffRecord,
+  edgeId: string,
+  dependencies: PresenceAudioDependencies,
+): Promise<unknown> {
+  const daemon = handoff?.daemon as JsonRecord | undefined;
+  const ready = daemon?.ready as JsonRecord | undefined;
+  const response = await (dependencies.fetchJson as (
+    url: string,
+    options: JsonRecord,
+  ) => Promise<unknown>)(
     `${daemonBaseUrl(handoff)}/v1/intents/automatic-vent`,
     {
       method: "POST",
       headers: {
-        authorization: `Bearer ${required(handoff?.daemon?.ready?.ipcToken, "daemon ipcToken")}`,
+        authorization: `Bearer ${required(ready?.ipcToken, "daemon ipcToken")}`,
         "content-type": "application/json",
       },
       body: JSON.stringify({ edgeId, ventSpeed: 3 }),
     },
   );
-  if (response?.edgeId !== edgeId || response?.outcome !== "deduplicated") {
+  if (
+    (response as JsonRecord | null)?.edgeId !== edgeId ||
+    (response as JsonRecord | null)?.outcome !== "deduplicated"
+  ) {
     throw new Error(
       `duplicate automatic vent edge was not deduplicated: ${JSON.stringify(response)}`,
     );
@@ -739,13 +987,13 @@ async function submitDuplicateAutomaticVentIntent(
   return response;
 }
 
-function defaultDependencies() {
+function defaultDependencies(): PresenceAudioDependencies {
   return {
     readJson,
     writeJson,
     writeText,
     captureScreenshotArtifact,
-    readTrace: (client) =>
+    readTrace: (client: InstanceType<typeof CdpClient>) =>
       evaluateExpression(client, "window.__VEM_MACHINE_RUNTIME_TRACE__ || []"),
     setAudioPreferences: setMachineUiAudioPreferences,
     fetchJson,
@@ -754,7 +1002,7 @@ function defaultDependencies() {
     stopInstalledVisionOwnerForControlledMock,
     waitForControlledVisionRuntimeClient,
     discoverTarget: discoverMachineUiTarget,
-    createClient: (url) => new CdpClient(url),
+    createClient: (url: string) => new CdpClient(url),
     enablePageRuntime,
     waitForRoute,
     waitForSaleStartReady,
@@ -768,15 +1016,27 @@ function defaultDependencies() {
     issueAdminVentReset,
     issueAdminVentOverride,
     submitDuplicateAutomaticVentIntent,
-    artifactRoot: (outPath) =>
+    artifactRoot: (outPath: string) =>
       join(dirname(localPath(outPath)), "presence-and-audio-artifacts"),
-    makeDirectory: (path) => mkdirSync(path, { recursive: true }),
+    makeDirectory: (path: string) => mkdirSync(path, { recursive: true }),
   };
 }
 
-export async function runPresenceAndAudioGuestFull(options, injected = {}) {
-  const dependencies = { ...defaultDependencies(), ...injected };
-  const report = {
+export async function runPresenceAndAudioGuestFull(
+  options: {
+    mode: string;
+    guestInputPath: string;
+    handoffPath: string;
+    outPath: string;
+    fixtureKey: string | null;
+  },
+  injected: Partial<PresenceAudioDependencies> = {},
+): Promise<JsonRecord> {
+  const dependencies: PresenceAudioDependencies = {
+    ...defaultDependencies(),
+    ...injected,
+  };
+  const report: JsonRecord = {
     schemaVersion: "vem-presence-and-audio-guest-full/v1",
     ok: false,
     mode: options.mode,
@@ -789,32 +1049,35 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
     presenceAndAudio: null,
     error: null,
   };
-  let guestInput = null;
-  let handoff = null;
-  let client = null;
-  let vision = null;
-  let activeAudioCaptureId = null;
-  let runtimeTrace = [];
-  let artifactRoot = null;
+  let guestInput: GuestInputRecord | null = null;
+  let handoff: HandoffRecord | null = null;
+  let client: InstanceType<typeof CdpClient> | null = null;
+  let vision: unknown = null;
+  let activeAudioCaptureId: string | null = null;
+  let runtimeTrace: unknown[] = [];
+  let artifactRoot: string | null = null;
 
   try {
     guestInput = dependencies.readJson(options.guestInputPath, "guest input");
+    const activeGuestInput = guestInput;
     handoff = dependencies.readJson(
       options.handoffPath,
       "installed runtime handoff",
     );
+    const activeHandoff = handoff;
     artifactRoot = dependencies.artifactRoot(options.outPath);
     dependencies.makeDirectory(artifactRoot);
     const visionPort = visionControlPort(guestInput);
     await dependencies.stopInstalledVisionOwnerForControlledMock();
     vision = await dependencies.ensureControlledVisionMock(visionPort);
     await dependencies.waitForControlledVisionRuntimeClient(visionPort);
-    report.boundaries.visionMock = true;
+    (report.boundaries as JsonRecord).visionMock = true;
 
+    const handoffCdp = handoff?.cdp as JsonRecord | undefined;
     const target = await dependencies.discoverTarget({
       endpoint: "http://127.0.0.1:9222",
       expectedTargetId: required(
-        handoff?.cdp?.targetId,
+        handoffCdp?.targetId,
         "handoff cdp targetId",
       ),
     });
@@ -824,106 +1087,123 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
         "http://127.0.0.1:9222",
       ),
     );
-    await client.connect();
-    await dependencies.enablePageRuntime(client);
-    await dependencies.waitForRoute(client, "#/catalog", {
+    const activeClient = client;
+    await activeClient.connect();
+    await dependencies.enablePageRuntime(activeClient);
+    await dependencies.waitForRoute(activeClient, "#/catalog", {
       timeoutMs: 30_000,
       pollMs: 250,
     });
-    await dependencies.waitForSaleStartReady(handoff, client);
-    await dependencies.setAudioPreferences(client, {
+    await dependencies.waitForSaleStartReady(activeHandoff, activeClient);
+    await dependencies.setAudioPreferences(activeClient, {
       volume: 0.7,
       cuesEnabled: true,
       presenceCuesEnabled: true,
       transactionCuesEnabled: true,
     });
     await dependencies.evaluateExpression(
-      client,
+      activeClient,
       'location.hash = "#/catalog"',
     );
-    await dependencies.waitForRoute(client, "#/catalog", {
+    await dependencies.waitForRoute(activeClient, "#/catalog", {
       timeoutMs: 30_000,
       pollMs: 250,
     });
-    report.boundaries.machineCdp = true;
+    (report.boundaries as JsonRecord).machineCdp = true;
 
-    const cdpIdentity = await observeGuestRuntimeIdentity(client, dependencies);
-    const runtime = runtimeBinding(handoff, cdpIdentity);
+    const cdpIdentity = (await observeGuestRuntimeIdentity(
+      activeClient,
+      dependencies,
+    )) as JsonRecord | null | undefined;
+    const runtime = runtimeBinding(activeHandoff, cdpIdentity);
     const sessionId = required(
-      handoff?.commissioningSerialSession?.sessionId,
+      (activeHandoff?.commissioningSerialSession as JsonRecord | undefined)
+        ?.sessionId,
       "commissioning serial session id",
     );
     const operationId = `presence-and-audio-${dependencies.randomUUID()}`;
-    const cueWindows = [];
-    const cueArtifactPaths = [];
+    const cueWindows: unknown[] = [];
+    const cueArtifactPaths: Array<{ start: string; stop: string | null }> = [];
     let cueOrdinal = 0;
-    const startCueCapture = async (label) => {
+    const startCueCapture = async (
+      label: string,
+    ): Promise<JsonRecord> => {
       cueOrdinal += 1;
       const artifactLabel = `${String(cueOrdinal).padStart(2, "0")}-${label}`;
-      const audioStart = await dependencies.controlPlaneRequest(
-        guestInput,
+      const audioStart = (await dependencies.controlPlaneRequest(
+        activeGuestInput,
         "/v1/audio-captures/start",
         {
           sessionId,
-          runId: required(guestInput.runId, "runId"),
-          lifecycleReference: `vm-lifecycle://${required(guestInput.runId, "runId").toLowerCase()}.presence-and-audio`,
-          transactionId: `transaction://${required(guestInput.runId, "runId").toLowerCase()}.presence-and-audio.${artifactLabel}`,
+          runId: required(activeGuestInput.runId, "runId"),
+          lifecycleReference: `vm-lifecycle://${required(activeGuestInput.runId, "runId").toLowerCase()}.presence-and-audio`,
+          transactionId: `transaction://${required(activeGuestInput.runId, "runId").toLowerCase()}.presence-and-audio.${artifactLabel}`,
           targetIdentity: required(
-            guestInput.hostControlPlane?.targetIdentity,
+            (activeGuestInput.hostControlPlane as JsonRecord | undefined)
+              ?.targetIdentity,
             "hostControlPlane.targetIdentity",
           ),
           runtime,
           operationId: `${operationId}-${artifactLabel}`,
         },
-      );
+      )) as JsonRecord;
       activeAudioCaptureId = required(
         audioStart?.audioCaptureId,
         "audio capture id",
       );
       const startPath = join(
-        artifactRoot,
+        artifactRoot as string,
         `audio-capture-${artifactLabel}-start.json`,
       );
       dependencies.writeJson(startPath, audioStart.startReport);
       cueArtifactPaths.push({ start: startPath, stop: null });
-      report.boundaries.windowsAudioCapture = true;
+      (report.boundaries as JsonRecord).windowsAudioCapture = true;
       return { id: activeAudioCaptureId, artifactLabel };
     };
-    const stopCueCapture = async (capture, transitionId) => {
-      const audioStop = await dependencies.controlPlaneRequest(
-        guestInput,
-        `/v1/audio-captures/${capture.id}/stop`,
+    const stopCueCapture = async (
+      capture: JsonRecord,
+      transitionId: unknown,
+    ): Promise<void> => {
+      const audioStop = (await dependencies.controlPlaneRequest(
+        activeGuestInput,
+        `/v1/audio-captures/${String(capture.id)}/stop`,
         { captureKind: "default-audio" },
-      );
+      )) as JsonRecord;
       activeAudioCaptureId = null;
       const stopPath = join(
-        artifactRoot,
-        `audio-capture-${capture.artifactLabel}-stop.json`,
+        artifactRoot as string,
+        `audio-capture-${String(capture.artifactLabel)}-stop.json`,
       );
       dependencies.writeJson(stopPath, audioStop.stopReport);
-      cueArtifactPaths.at(-1).stop = stopPath;
-      for (const artifact of audioStop.evidencePayloads ?? []) {
+      const lastArtifact = cueArtifactPaths.at(-1);
+      if (lastArtifact) lastArtifact.stop = stopPath;
+      const payloads = (audioStop.evidencePayloads ?? []) as unknown[];
+      for (const artifactValue of payloads) {
+        const artifact = artifactValue as JsonRecord;
         writeFileSync(
-          join(artifactRoot, `${capture.artifactLabel}-${artifact.fileName}`),
-          Buffer.from(artifact.bytesBase64, "base64"),
+          join(
+            artifactRoot as string,
+            `${String(capture.artifactLabel)}-${String(artifact.fileName)}`,
+          ),
+          Buffer.from(String(artifact.bytesBase64), "base64"),
           { mode: 0o600 },
         );
       }
       cueWindows.push({
         transitionId,
         kind: "detected",
-        capture: captureSummary(audioStop.stopReport),
+        capture: captureSummary(audioStop.stopReport as JsonRecord),
       });
     };
 
     const readTrace = async () => {
-      runtimeTrace = await dependencies.readTrace(client);
+      runtimeTrace = (await dependencies.readTrace(activeClient)) as unknown[];
       return runtimeTrace;
     };
     // A previous business set may leave the shared journey in a present state.
     // Observe a real departure when present state is still armed, even if the
     // bounded runtime trace no longer contains the original welcome edge.
-    await dependencies.setAudioPreferences(client, {
+    await dependencies.setAudioPreferences(activeClient, {
       volume: 0.7,
       cuesEnabled: true,
       presenceCuesEnabled: false,
@@ -931,15 +1211,26 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
     });
     const preconditionTrace = await readTrace();
     const preconditionBoundary = traceId(preconditionTrace);
-    let presencePrecondition = {
+    let presencePrecondition: JsonRecord = {
       boundaryTraceId: preconditionBoundary,
       outcome: "already_empty_or_unobserved",
       departureTransitionId: null,
     };
-    await injectVisionPresence(guestInput, "approach", dependencies);
+    await injectVisionPresence(
+      activeGuestInput as GuestInputRecord,
+      "approach",
+      dependencies,
+    );
     await dependencies.sleep(250);
-    await injectVisionDeparture(guestInput, dependencies).catch(() =>
-      injectVisionPresence(guestInput, "empty", dependencies),
+    await injectVisionDeparture(
+      activeGuestInput as GuestInputRecord,
+      dependencies,
+    ).catch(() =>
+      injectVisionPresence(
+        activeGuestInput as GuestInputRecord,
+        "empty",
+        dependencies,
+      ),
     );
     await waitForTraceEntry(
       readTrace,
@@ -965,23 +1256,25 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
       dependencies,
       "initial presence precondition",
     );
-    await dependencies.setAudioPreferences(client, {
+    await dependencies.setAudioPreferences(activeClient, {
       volume: 0.7,
       cuesEnabled: true,
       presenceCuesEnabled: true,
       transactionCuesEnabled: true,
     });
-    await dependencies.issueAdminVentReset(guestInput, dependencies);
-    await returnToCatalogHome(client, dependencies);
+    await dependencies.issueAdminVentReset(activeGuestInput, dependencies);
+    await returnToCatalogHome(activeClient, dependencies);
     const ventEvidenceBefore = await dependencies.controlPlaneRequest(
-      guestInput,
+      activeGuestInput,
       `/v1/serial-sessions/${sessionId}/evidence`,
     );
-    const ventFrameCursor = serialEvidenceCursor(ventEvidenceBefore);
+    const ventFrameCursor = serialEvidenceCursor(
+      ventEvidenceBefore as JsonRecord | null,
+    );
     let boundary = traceId(await readTrace());
     const initialFenceTraceId = boundary;
     const initialCapture = await startCueCapture("initial-welcome");
-    await injectVisionPresence(guestInput, "approach", dependencies);
+    await injectVisionPresence(activeGuestInput, "approach", dependencies);
     const initialWelcome = await waitForAudioLifecycle(
       readTrace,
       boundary,
@@ -993,7 +1286,7 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
     await dependencies.sleep(WELCOME_CAPTURE_MS);
     await stopCueCapture(initialCapture, initialWelcome.transitionId);
     await waitForB3Sequence(
-      guestInput,
+      activeGuestInput,
       sessionId,
       ventFrameCursor,
       [3],
@@ -1001,11 +1294,11 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
     );
     await dependencies.sleep(5_100);
     const adminOverride = await dependencies.issueAdminVentOverride(
-      guestInput,
+      activeGuestInput,
       dependencies,
     );
     const afterAdminB3 = await waitForB3Sequence(
-      guestInput,
+      activeGuestInput,
       sessionId,
       ventFrameCursor,
       [3, 3],
@@ -1019,12 +1312,12 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
     ];
     const duplicateSameEdge =
       await dependencies.submitDuplicateAutomaticVentIntent(
-        handoff,
+        activeHandoff,
         stableEdgeId(initialWelcome.transitionId),
         dependencies,
       );
     const duplicateFenceTraceId = traceId(await readTrace());
-    await injectVisionPresence(guestInput, "approach", dependencies);
+    await injectVisionPresence(activeGuestInput, "approach", dependencies);
     await dependencies.sleep(500);
     runtimeTrace = await readTrace();
     if (
@@ -1043,21 +1336,28 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
       traceId: traceId(runtimeTrace),
     });
     const duplicateB3 = await dependencies.controlPlaneRequest(
-      guestInput,
+      activeGuestInput,
       `/v1/serial-sessions/${sessionId}/evidence`,
     );
+    const duplicateB3Record = duplicateB3 as JsonRecord | null;
+    const afterAdminB3Record = afterAdminB3 as JsonRecord;
+    const afterAdminB3Frames = (afterAdminB3Record.frames as unknown[]) ?? [];
     if (
-      b3FramesSince(duplicateB3, serialEvidenceCursor(afterAdminB3.evidence))
-        .length !== 0 ||
-      b3FramesSince(duplicateB3, ventFrameCursor).length !== 2
+      b3FramesSince(
+        duplicateB3Record,
+        serialEvidenceCursor(
+          afterAdminB3Record.evidence as JsonRecord | null | undefined,
+        ),
+      ).length !== 0 ||
+      b3FramesSince(duplicateB3Record, ventFrameCursor).length !== 2
     ) {
       throw new Error("duplicate stable edge emitted an unexpected B3 frame");
     }
 
-    await injectVisionPresence(guestInput, "empty", dependencies);
+    await injectVisionPresence(activeGuestInput, "empty", dependencies);
     await dependencies.sleep(SHORT_EMPTY_MS);
     const transientFenceTraceId = traceId(await readTrace());
-    await injectVisionPresence(guestInput, "approach", dependencies);
+    await injectVisionPresence(activeGuestInput, "approach", dependencies);
     await dependencies.sleep(500);
     runtimeTrace = await readTrace();
     if (
@@ -1076,7 +1376,7 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
     });
 
     boundary = traceId(runtimeTrace);
-    await injectVisionPresence(guestInput, "empty", dependencies);
+    await injectVisionPresence(activeGuestInput, "empty", dependencies);
     await dependencies.sleep(SUSTAINED_EMPTY_MS);
     const departure = await waitForTraceEntry(
       readTrace,
@@ -1092,24 +1392,26 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
       traceId: Number(departure.entry.id),
     });
     const departureB3 = await waitForB3Sequence(
-      guestInput,
+      activeGuestInput,
       sessionId,
-      serialEvidenceCursor(afterAdminB3.evidence),
+      serialEvidenceCursor(
+        afterAdminB3Record.evidence as JsonRecord | null | undefined,
+      ),
       [0],
       dependencies,
     );
     const automaticVent = automaticVentEvidence({
-      frames: [...afterAdminB3.frames, ...departureB3.frames],
+      frames: [...afterAdminB3Frames, ...((departureB3 as JsonRecord).frames as unknown[])],
       initialTransitionId: initialWelcome.transitionId,
       departureTransitionId: departure.entry.transitionId,
-      adminOverride,
-      duplicateSameEdge,
+      adminOverride: adminOverride as JsonRecord | null | undefined,
+      duplicateSameEdge: duplicateSameEdge as JsonRecord | null | undefined,
     });
 
     boundary = traceId(departure.trace);
     const rearmedFenceTraceId = boundary;
     const rearmedCapture = await startCueCapture("rearmed-welcome");
-    await injectVisionPresence(guestInput, "approach", dependencies);
+    await injectVisionPresence(activeGuestInput, "approach", dependencies);
     const rearmedWelcome = await waitForAudioLifecycle(
       readTrace,
       boundary,
@@ -1126,7 +1428,7 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
     });
 
     const supportedCategoryKeys = await readSupportedCategoryKeys(
-      client,
+      activeClient,
       dependencies,
     );
     const categories = [];
@@ -1134,7 +1436,7 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
       boundary = traceId(await readTrace());
       const categoryCapture = await startCueCapture(`category-${expectedKey}`);
       await dependencies.activateVisibleSelector(
-        client,
+        activeClient,
         categorySelector(expectedKey),
         { kind: "touch", timeoutMs: 30_000 },
       );
@@ -1160,11 +1462,11 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
         traceId: category.terminalTraceId,
       });
       await dependencies.activateVisibleSelector(
-        client,
+        activeClient,
         '[data-test="catalog-product"]',
         { kind: "touch", timeoutMs: 30_000 },
       );
-      await dependencies.waitForRoute(client, /^#\/products\//, {
+      await dependencies.waitForRoute(activeClient, /^#\/products\//, {
         timeoutMs: 30_000,
         pollMs: 250,
       });
@@ -1174,11 +1476,11 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
         traceId: traceId(runtimeTrace),
       });
       await dependencies.activateVisibleSelector(
-        client,
+        activeClient,
         '[data-test="product-buy"]',
         { kind: "touch", timeoutMs: 30_000 },
       );
-      await dependencies.waitForRoute(client, "#/checkout", {
+      await dependencies.waitForRoute(activeClient, "#/checkout", {
         timeoutMs: 30_000,
         pollMs: 250,
       });
@@ -1195,23 +1497,23 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
         detailCheckpointLabel: `category-${categoryKey}-detail`,
         checkoutCheckpointLabel: `category-${categoryKey}-checkout`,
       });
-      await dependencies.activateVisibleSelector(client, ".checkout-back", {
+      await dependencies.activateVisibleSelector(activeClient, ".checkout-back", {
         kind: "touch",
         timeoutMs: 30_000,
       });
-      await dependencies.waitForRoute(client, /^#\/products\//, {
+      await dependencies.waitForRoute(activeClient, /^#\/products\//, {
         timeoutMs: 30_000,
         pollMs: 250,
       });
       await dependencies.activateVisibleSelector(
-        client,
+        activeClient,
         ".detail-back-button",
         {
           kind: "touch",
           timeoutMs: 30_000,
         },
       );
-      await dependencies.waitForRoute(client, "#/catalog", {
+      await dependencies.waitForRoute(activeClient, "#/catalog", {
         timeoutMs: 30_000,
         pollMs: 250,
       });
@@ -1255,7 +1557,7 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
     validatePresenceAndAudioAcceptanceEvidence(acceptance);
     const screenshotPath = join(artifactRoot, "presence-and-audio-final.png");
     const screenshot = await dependencies.captureScreenshotArtifact(
-      client,
+      activeClient,
       screenshotPath,
     );
     dependencies.writeJson(
@@ -1266,7 +1568,7 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
     dependencies.writeText(
       logPath,
       `${JSON.stringify({
-        runId: guestInput.runId,
+        runId: activeGuestInput.runId,
         welcomeTransitions: [
           initialWelcome.transitionId,
           rearmedWelcome.transitionId,
@@ -1278,11 +1580,14 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
     report.ok = true;
     report.presenceAndAudio = acceptance;
     report.artifacts = {
-      directory: artifactRoot,
+      directory: artifactRoot as string,
       audioCueCaptures: cueArtifactPaths,
       runtimeTrace: join(artifactRoot, "runtime-trace.json"),
       log: logPath,
-      screenshot: { path: screenshotPath, ...screenshot },
+      screenshot: {
+        path: screenshotPath,
+        ...(screenshot as JsonRecord),
+      },
     };
   } catch (error) {
     report.error =
@@ -1312,8 +1617,9 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
       report.cleanupError =
         error instanceof Error ? error.message : String(error);
     });
-    if (vision?.started) {
-      await shutdownControlledVisionMock(vision.child).catch((error) => {
+    const visionRecord = vision as JsonRecord | null;
+    if (visionRecord?.started) {
+      await shutdownControlledVisionMock(visionRecord.child).catch((error) => {
         report.cleanupError =
           error instanceof Error ? error.message : String(error);
       });
@@ -1323,7 +1629,9 @@ export async function runPresenceAndAudioGuestFull(options, injected = {}) {
   return report;
 }
 
-export function validatePresenceAndAudioGuestReport(report) {
+export function validatePresenceAndAudioGuestReport(
+  report: JsonRecord | null | undefined,
+): JsonRecord {
   if (
     report?.schemaVersion !== "vem-presence-and-audio-guest-full/v1" ||
     report?.ok !== true
@@ -1331,20 +1639,25 @@ export function validatePresenceAndAudioGuestReport(report) {
     throw new Error("presence and audio guest runner did not pass");
   }
   if (
-    report?.boundaries?.visionMock !== true ||
-    report?.boundaries?.machineCdp !== true ||
-    report?.boundaries?.windowsAudioCapture !== true
+    (report?.boundaries as JsonRecord | undefined)?.visionMock !== true ||
+    (report?.boundaries as JsonRecord | undefined)?.machineCdp !== true ||
+    (report?.boundaries as JsonRecord | undefined)?.windowsAudioCapture !== true
   ) {
     throw new Error("presence and audio guest boundaries are incomplete");
   }
   for (const name of ["runtimeTrace"]) {
-    required(report?.artifacts?.[name], `presence and audio artifact ${name}`);
+    required(
+      (report?.artifacts as JsonRecord | undefined)?.[name],
+      `presence and audio artifact ${name}`,
+    );
   }
+  const artifacts = report.artifacts as JsonRecord | undefined;
+  const audioCueCaptures = (artifacts?.audioCueCaptures ?? []) as unknown[];
   if (
-    !Array.isArray(report.artifacts.audioCueCaptures) ||
-    report.artifacts.audioCueCaptures.length === 0 ||
-    report.artifacts.audioCueCaptures.some(
-      (capture) => !capture?.start || !capture?.stop,
+    audioCueCaptures.length === 0 ||
+    audioCueCaptures.some(
+      (capture) =>
+        !(capture as JsonRecord)?.start || !(capture as JsonRecord)?.stop,
     )
   ) {
     throw new Error("presence and audio cue capture artifacts are incomplete");
