@@ -52,7 +52,71 @@ import {
   validateBaselineContract,
 } from "./local-testbed.ts";
 
-function pngDimensions(buffer) {
+type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? (value as unknown[]) : [];
+}
+
+function lastOf(values: readonly string[]): string {
+  const last = values.at(-1);
+  assert.ok(last);
+  return last;
+}
+
+interface AdminApiCall extends JsonRecord {
+  path?: string;
+  body?: JsonRecord;
+}
+
+function uploadBuffer(upload: JsonRecord): Buffer {
+  const buffer = recordValue(upload).buffer;
+  if (!Buffer.isBuffer(buffer)) {
+    throw new Error("upload record does not carry a Buffer");
+  }
+  return buffer;
+}
+
+function requireCall(
+  calls: AdminApiCall[],
+  predicate: (call: AdminApiCall) => boolean,
+): AdminApiCall {
+  const call = calls.find(predicate);
+  assert.ok(call);
+  return call;
+}
+
+type LowerControllerSimDependencies = NonNullable<
+  Parameters<typeof ensureLowerControllerSimCached>[0]
+>["dependencies"];
+
+function simCacheDependencies(
+  implementation: {
+    ensureDirectory: () => Promise<void>;
+    isExecutable: () => Promise<boolean>;
+    markerPresent: () => Promise<boolean>;
+    publishMarker: () => Promise<void>;
+    runCommand: (
+      command: string,
+      args: string[],
+      commandOptions: { env?: unknown },
+    ) => Promise<void>;
+    listDirectory?: () => Promise<
+      { name: string; isDirectory: () => boolean }[]
+    >;
+    removeDirectory?: (path: string) => Promise<void>;
+  },
+): LowerControllerSimDependencies {
+  return implementation as unknown as LowerControllerSimDependencies;
+}
+
+function pngDimensions(buffer: Buffer) {
   assert.equal(buffer.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
   return {
     width: buffer.readUInt32BE(16),
@@ -60,7 +124,7 @@ function pngDimensions(buffer) {
   };
 }
 
-function contract(root) {
+function contract(root: string) {
   const hostScript = "{repository}/scripts/testbed/local-testbed-host.ts";
   const commonHostArguments = [
     "--run-id",
@@ -138,7 +202,7 @@ function contract(root) {
   };
 }
 
-function options(root, mode = "full") {
+function options(root: string, mode: string = "full") {
   return parseOptions([
     "reconstruct",
     "--mode",
@@ -158,7 +222,7 @@ function options(root, mode = "full") {
   ]);
 }
 
-function producerConfig(root) {
+function producerConfig(root: string) {
   const hostScript = "{repository}/scripts/testbed/local-testbed-host.ts";
   const commonHostArguments = [
     "--run-id",
@@ -275,7 +339,7 @@ function producerConfig(root) {
   };
 }
 
-async function publishCurrentManifest(root) {
+async function publishCurrentManifest(root: string) {
   const config = producerConfig(root);
   const stagedSystemDirectory = join(root, "staging", "system");
   const stagedCacheDirectory = join(root, "staging", "cache");
@@ -319,7 +383,7 @@ async function publishCurrentManifest(root) {
 
 describe("local testbed orchestration", () => {
   it("imports the installation-owned Alipay fixture on the host without returning secrets", async () => {
-    const calls = [];
+    const calls: JsonRecord[] = [];
     const prepared = await prepareInstallationOwnedPaymentProvider({
       baseUrl: "http://127.0.0.1:26849/api",
       fixturePath: "/srv/vem/alipay-sandbox.fixture.json",
@@ -393,7 +457,12 @@ describe("local testbed orchestration", () => {
       path: "/payments/providers/provider-alipay",
       body: { status: "enabled" },
     });
-    assert.equal(calls[3].body.sensitiveConfigJson.privateKeyPem, "host-only");
+    assert.equal(
+      recordValue(
+        recordValue(recordValue(calls[3]).body).sensitiveConfigJson,
+      ).privateKeyPem,
+      "host-only",
+    );
     assert.equal(JSON.stringify(prepared).includes("host-only"), false);
   });
   it("plans a non-destructive host runtime refresh from the committed workspace", () => {
@@ -527,7 +596,11 @@ describe("local testbed orchestration", () => {
   });
 
   it("reimports the host-owned payment fixture before refreshing guest identity", async () => {
-    const preparePaymentProvider = async ({ baseUrl }) => {
+    const preparePaymentProvider = async ({
+      baseUrl,
+    }: {
+      baseUrl: unknown;
+    }) => {
       assert.equal(baseUrl, "http://127.0.0.1:26849/api");
       return {
         identity: { providerCode: "alipay", providerConfigId: "fresh-config" },
@@ -558,10 +631,11 @@ describe("local testbed orchestration", () => {
     });
     assert.equal(refreshed.runId, "RUN-CURRENT-FAST");
     assert.equal(
-      refreshed.paymentProvider.identity.providerConfigId,
+      recordValue(recordValue(refreshed.paymentProvider).identity)
+        .providerConfigId,
       "fresh-config",
     );
-    assert.deepEqual(refreshed.visionAcceptance, {
+    assert.deepEqual(recordValue(refreshed.visionAcceptance), {
       sourceGarment: {
         assetId: "550e8400-e29b-41d4-a716-446655440126",
       },
@@ -576,11 +650,11 @@ describe("local testbed orchestration", () => {
       fixtureAllocation: { sale: { slotDisplayLabel: "A1" } },
       visionAcceptance: { selectedCatalogKey: "old" },
     };
-    const calls = [];
+    const calls: JsonRecord[] = [];
     const refreshed = await refreshPlatformFixtureForRun({
       input,
       baseUrl: "http://127.0.0.1:26849/api",
-      fixture: { schemaVersion: "fixture" },
+      fixture: { products: [], slots: [] },
       hostPrivateAddress: "10.0.0.15",
       request: async (_base, path, options = {}) => {
         calls.push({ path, ...options });
@@ -671,15 +745,19 @@ describe("local testbed orchestration", () => {
         };
       },
     });
-    assert.equal(calls.at(0).path, "/auth/login");
-    assert.equal(refreshed.claimCode, "NEW-0001");
-    assert.equal(refreshed.planogramVersion, "LOCAL-TESTBED-V2");
-    assert.equal(refreshed.visionAcceptance.selectedCatalogKey, "new");
+    assert.equal(calls[0]?.path, "/auth/login");
+    assert.equal(recordValue(refreshed).claimCode, "NEW-0001");
+    assert.equal(recordValue(refreshed).planogramVersion, "LOCAL-TESTBED-V2");
     assert.equal(
-      refreshed.fixtureAllocation.stockMaintenance.slotId,
+      recordValue(refreshed.visionAcceptance).selectedCatalogKey,
+      "new",
+    );
+    assert.equal(
+      recordValue(recordValue(refreshed.fixtureAllocation).stockMaintenance)
+        .slotId,
       "slot-stock",
     );
-    assert.equal(Object.keys(refreshed.fixtureAllocation).length, 7);
+    assert.equal(Object.keys(recordValue(refreshed.fixtureAllocation)).length, 7);
   });
 
   it("keeps the refresh fixture when the current machine is still present", async () => {
@@ -691,7 +769,7 @@ describe("local testbed orchestration", () => {
     const refreshed = await refreshPlatformFixtureForRun({
       input,
       baseUrl: "http://127.0.0.1:26849/api",
-      fixture: { schemaVersion: "fixture" },
+      fixture: { products: [], slots: [] },
       hostPrivateAddress: "10.0.0.15",
       request: async (_base, path) => {
         if (path === "/auth/login") return { accessToken: "admin-token" };
@@ -709,9 +787,7 @@ describe("local testbed orchestration", () => {
   it("requires refresh to retain the existing guest identity and control-plane token", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-local-testbed-"));
     try {
-      const parsedOptions = {
-        hostPrivateAddress: "10.0.0.15",
-      };
+      const reconstructOptions = options(root);
       const guestInput = {
         schemaVersion: "vem-local-testbed-guest-input/v1",
         machineCode: "VEM-TESTBED-LOCAL",
@@ -727,16 +803,14 @@ describe("local testbed orchestration", () => {
         },
       };
       assert.equal(
-        validateRefreshGuestInput(guestInput, parsedOptions, {
-          schemaVersion: "vem-local-testbed-fixture/v1",
+        validateRefreshGuestInput(guestInput, reconstructOptions, {
           sha256: "sha256:current-fixture",
         }),
         guestInput,
       );
       assert.throws(
         () =>
-          validateRefreshGuestInput(guestInput, parsedOptions, {
-            schemaVersion: "vem-local-testbed-fixture/v1",
+          validateRefreshGuestInput(guestInput, reconstructOptions, {
             sha256: "sha256:new-fixture",
           }),
         /fixture identity is stale/,
@@ -748,7 +822,8 @@ describe("local testbed orchestration", () => {
               ...guestInput,
               hostControlPlane: { ...guestInput.hostControlPlane, token: "" },
             },
-            parsedOptions,
+            reconstructOptions,
+            {},
           ),
         /retain machine, claim, fixture, and host control plane token/,
       );
@@ -762,7 +837,8 @@ describe("local testbed orchestration", () => {
                 endpoint: "http:\/\/10.0.0.16:26851",
               },
             },
-            parsedOptions,
+            reconstructOptions,
+            {},
           ),
         /endpoint is invalid/,
       );
@@ -818,13 +894,10 @@ describe("local testbed orchestration", () => {
           }),
         /published win10-kvm-baseline-current\/v1/,
       );
-      delete value.artifacts.domainXmlPath;
+      const artifacts = value.artifacts as { domainXmlPath?: string };
+      delete artifacts.domainXmlPath;
       assert.throws(() => validateBaselineContract(value), /domainXmlPath/);
-      value.artifacts.domainXmlPath = join(
-        root,
-        "release",
-        "runtime-profile.xml",
-      );
+      artifacts.domainXmlPath = join(root, "release", "runtime-profile.xml");
       value.testbed.guest.stagingPath = "ProgramData\\VEM\\guest-input.json";
       assert.throws(() => validateBaselineContract(value), /stagingPath/);
       value.testbed.guest.stagingPath =
@@ -842,7 +915,8 @@ describe("local testbed orchestration", () => {
       );
       value.testbed.reconstructCommand[1] =
         "{repository}/scripts/testbed/local-testbed-host.ts";
-      delete value.testbed.admitGuestCommand;
+      const testbed = value.testbed as { admitGuestCommand?: unknown };
+      delete testbed.admitGuestCommand;
       assert.throws(() => validateBaselineContract(value), /admitGuestCommand/);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -886,7 +960,9 @@ describe("local testbed orchestration", () => {
 
       const plan = buildReconstructionPlan(options(root), current);
       assert.equal(plan[2].command, process.execPath);
-      assert.equal(plan.at(-1).command, process.execPath);
+      const lastStep = plan.at(-1);
+      assert.ok(lastStep);
+      assert.equal(lastStep.command, process.execPath);
       assert.equal(
         plan[2].args[0],
         join(root, "scripts/testbed/local-testbed-host.ts"),
@@ -911,7 +987,7 @@ describe("local testbed orchestration", () => {
       );
       assert.match(rendered[0], /docker compose .* rm -sf service-api/);
       assert.match(
-        rendered.at(-1),
+        lastOf(rendered),
         /docker compose .* up -d --force-recreate service-api/,
       );
       for (const [name, value] of Object.entries(serviceEnvironment)) {
@@ -963,15 +1039,15 @@ describe("local testbed orchestration", () => {
         mqtt: "connected",
       });
       assert.deepEqual(first, second);
-      assert.deepEqual(first.serviceApi.runtime, {
+      assert.deepEqual(recordValue(recordValue(first.serviceApi).runtime), {
         database: "ok",
         entrypoint: "main.js",
         health: "ready",
         mqtt: "connected",
       });
-      assert.equal(first.serviceApi.build.fileCount, 1);
-      assert.equal(first.adminUi.build.fileCount, 2);
-      assert.deepEqual(first.adminUi.delivery, {
+      assert.equal(recordValue(recordValue(first.serviceApi).build).fileCount, 1);
+      assert.equal(recordValue(recordValue(first.adminUi).build).fileCount, 2);
+      assert.deepEqual(recordValue(first.adminUi).delivery, {
         entrypoint: "index.html",
         observedHttp: {
           byteSize: 6,
@@ -980,7 +1056,10 @@ describe("local testbed orchestration", () => {
           status: 200,
         },
       });
-      assert.match(first.adminUi.build.sha256, /^[a-f0-9]{64}$/);
+      assert.match(
+        String(recordValue(recordValue(first.adminUi).build).sha256),
+        /^[a-f0-9]{64}$/,
+      );
       const plan = buildReconstructionPlan(
         options(root),
         await publishCurrentManifest(root),
@@ -1009,7 +1088,7 @@ describe("local testbed orchestration", () => {
         gate,
       );
       assert.match(
-        gate.pendingPath,
+        String(gate.pendingPath),
         /mock-payment-create-gate\.json\.pending\.json$/,
       );
       assert.equal(
@@ -1057,11 +1136,11 @@ describe("local testbed orchestration", () => {
         (step) => `${step.command} ${step.args.join(" ")}`,
       );
       assert.match(
-        rendered.at(-1),
+        lastOf(rendered),
         /systemd-run --unit=vem-local-testbed-host-control-plane --collect/,
       );
       assert.match(
-        rendered.at(-1),
+        lastOf(rendered),
         /scripts\/testbed\/host-serial-control-plane\.ts/,
       );
       const adapterPath = join(
@@ -1072,50 +1151,50 @@ describe("local testbed orchestration", () => {
         .update(readFileSync(adapterPath))
         .digest("hex");
       assert.match(
-        rendered.at(-1),
+        lastOf(rendered),
         new RegExp(
           `--setenv=VEM_VM_HOST_ADAPTER=${adapterPath.replaceAll("/", "\\/")}`,
         ),
       );
       assert.match(
-        rendered.at(-1),
+        lastOf(rendered),
         /--setenv=VEM_VM_HOST_ADAPTER_VERSION=1\.0\.0/,
       );
       assert.match(
-        rendered.at(-1),
+        lastOf(rendered),
         new RegExp(
           `--setenv=VEM_VM_HOST_ADAPTER_SHA256=sha256:${adapterSha256}`,
         ),
       );
       assert.match(
-        rendered.at(-1),
+        lastOf(rendered),
         /--setenv=VEM_VM_HOST_ADAPTER_DOMAIN=win10-runtime-testbed/,
       );
       assert.match(
-        rendered.at(-1),
+        lastOf(rendered),
         /--setenv=VEM_VM_HOST_ADAPTER_STATE_ROOT=.*host-adapter/,
       );
       assert.match(
-        rendered.at(-1),
+        lastOf(rendered),
         /--setenv=VEM_LOCAL_TESTBED_MQTT_USERNAME=vem_local_testbed_mqtt/,
       );
       assert.match(
-        rendered.at(-1),
+        lastOf(rendered),
         /--setenv=VEM_LOCAL_TESTBED_MQTT_PASSWORD=vem_local_testbed_mqtt_password/,
       );
-      assert.match(rendered.at(-1), /--libvirt-uri qemu:\/\/\/system/);
-      assert.match(rendered.at(-1), /--domain-name win10-runtime-testbed/);
+      assert.match(lastOf(rendered), /--libvirt-uri qemu:\/\/\/system/);
+      assert.match(lastOf(rendered), /--domain-name win10-runtime-testbed/);
       const retainedTokenPlan = buildHostControlPlaneUnitPlan(
         options(root),
         value,
         { token: "retained-host-control-plane-token" },
       );
+      const retainedTokenLast = retainedTokenPlan.at(-1);
+      assert.ok(retainedTokenLast);
       assert.ok(
-        retainedTokenPlan
-          .at(-1)
-          .args.includes("retained-host-control-plane-token"),
+        retainedTokenLast.args.includes("retained-host-control-plane-token"),
       );
-      assert.doesNotMatch(rendered.at(-1), /fake-vm-host-adapter/);
+      assert.doesNotMatch(lastOf(rendered), /fake-vm-host-adapter/);
       const implementation = readFileSync(
         new URL("./local-testbed.ts", import.meta.url),
         "utf8",
@@ -1144,17 +1223,17 @@ describe("local testbed orchestration", () => {
         (step) => `${step.command} ${step.args.join(" ")}`,
       );
       assert.match(
-        rendered.at(-1),
+        lastOf(rendered),
         /local-testbed-host\.ts headless-vnc-activator/,
       );
       assert.match(
-        rendered.at(-1),
+        lastOf(rendered),
         /--unit=vem-local-testbed-headless-vnc-activator/,
       );
-      assert.match(rendered.at(-1), /--libvirt-uri qemu:\/\/\/system/);
-      assert.match(rendered.at(-1), /--domain-name win10-runtime-testbed/);
+      assert.match(lastOf(rendered), /--libvirt-uri qemu:\/\/\/system/);
+      assert.match(lastOf(rendered), /--domain-name win10-runtime-testbed/);
       assert.match(
-        rendered.at(-1),
+        lastOf(rendered),
         new RegExp(
           `--state-root ${join(root, "state").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`,
         ),
@@ -1263,6 +1342,7 @@ describe("local testbed orchestration", () => {
     try {
       const value = contract(root);
       const withoutProxy = buildReconstructionPlan(options(root), value).at(-1);
+      assert.ok(withoutProxy);
       assert.equal(
         withoutProxy.args.includes("--runner-proxy-configured"),
         false,
@@ -1388,36 +1468,48 @@ describe("supported API seeding", () => {
     );
     fixture.slots[0].capacity = 2;
     fixture.slots[0].onHandQty = 10;
-    const calls = [];
-    const uploads = [];
-    const request = async (_base, path, input = {}) => {
-      calls.push({ path, ...input });
+    const calls: AdminApiCall[] = [];
+    const uploads: JsonRecord[] = [];
+    const request = async (
+      _base: unknown,
+      path: unknown,
+      input: JsonRecord = {},
+    ) => {
+      calls.push({ path: String(path), ...input });
       if (path === "/auth/login") return { accessToken: "admin-token" };
       if (path === "/products") return { id: `product-${calls.length}` };
       if (path === "/product-variants")
-        return { id: `variant-${calls.length}`, sku: input.body.sku };
+        return {
+          id: `variant-${calls.length}`,
+          sku: recordValue(input.body).sku,
+        };
       if (path === "/payments/providers")
         return [{ id: "mock-provider", code: "mock", status: "enabled" }];
       if (path === "/machines")
         return { id: "machine-1", code: "VEM-TESTBED-LOCAL" };
       if (path === "/machines/machine-1")
         return { id: "machine-1", code: "VEM-TESTBED-LOCAL", status: "online" };
-      if (path.endsWith("/slots")) return { id: `slot-${calls.length}` };
+      if (String(path).endsWith("/slots")) return { id: `slot-${calls.length}` };
       if (path === "/inventories") return { id: `inventory-${calls.length}` };
       if (path === "/try-on-garments")
         return {
           id: `garment-${calls.filter((call) => call.path === path).length}`,
         };
-      if (path.includes("/try-on-garments/")) return { id: path.split("/")[2] };
-      if (path.endsWith("/planogram-versions"))
+      if (String(path).includes("/try-on-garments/"))
+        return { id: String(path).split("/")[2] };
+      if (String(path).endsWith("/planogram-versions"))
         return { planogramVersion: "LOCAL-TESTBED-V1" };
-      if (path.endsWith("/claim-codes"))
+      if (String(path).endsWith("/claim-codes"))
         return { id: "claim-1", claimCode: "ABCD-1234" };
-      if (path.includes("/payments/providers/"))
+      if (String(path).includes("/payments/providers/"))
         return { id: "mock-provider", status: "enabled" };
       throw new Error(`unexpected path: ${path}`);
     };
-    const upload = async (_base, path, input = {}) => {
+    const upload = async (
+      _base: unknown,
+      path: unknown,
+      input: JsonRecord = {},
+    ) => {
       const productDisplayIds = [
         "550e8400-e29b-41d4-a716-446655440124",
         "550e8400-e29b-41d4-a716-446655440126",
@@ -1430,7 +1522,7 @@ describe("supported API seeding", () => {
       const id =
         path === "/media-assets/try-on-garments"
           ? garmentAssetIds[
-              uploads.filter((upload) => upload.path === path).length
+              uploads.filter((upload) => upload.path === String(path)).length
             ]
           : productDisplayIds[
               uploads.filter(
@@ -1439,24 +1531,26 @@ describe("supported API seeding", () => {
               ).length
             ];
       const asset =
-        path === "/media-assets/try-on-garments"
+        String(path) === "/media-assets/try-on-garments"
           ? {
               id,
               managedReference: `/api/media-assets/${id}/content`,
               purpose: "try_on_garment",
               contentType: "image/png",
-              byteSize: input.buffer.byteLength,
+              byteSize: uploadBuffer(input).byteLength,
               width: 512,
               height: 640,
               hasTransparency: true,
-              sha256: createHash("sha256").update(input.buffer).digest("hex"),
+              sha256: createHash("sha256")
+                .update(uploadBuffer(input))
+                .digest("hex"),
             }
           : {
               id,
               publicUrl: `/api/media-assets/${id}/content`,
               contentType: "image/png",
             };
-      uploads.push({ path, ...input, asset });
+      uploads.push({ path: String(path), ...input, asset });
       return asset;
     };
     const result = await seedThroughSupportedApis({
@@ -1466,7 +1560,17 @@ describe("supported API seeding", () => {
       request,
       upload,
     });
-    assert.equal(result.machine.code, "VEM-TESTBED-LOCAL");
+    const visionAcceptance = recordValue(result.visionAcceptance);
+    const productMedia = arrayValue(visionAcceptance.productMedia).map(
+      (entry) => recordValue(entry),
+    );
+    const recommendationVariants = arrayValue(
+      visionAcceptance.recommendationVariants,
+    ).map((entry) => recordValue(entry));
+    const seededTryOnVariants = arrayValue(
+      visionAcceptance.seededTryOnVariants,
+    ).map((entry) => recordValue(entry));
+    assert.equal(recordValue(result.machine).code, "VEM-TESTBED-LOCAL");
     assert.deepEqual(
       calls.find((call) => call.path === "/machines/machine-1"),
       {
@@ -1485,47 +1589,59 @@ describe("supported API seeding", () => {
       buffer: uploads[0].buffer,
       asset: uploads[0].asset,
     });
-    assert.ok(Buffer.isBuffer(uploads[0].buffer));
-    assert.deepEqual(pngDimensions(uploads[0].buffer), {
+    assert.ok(Buffer.isBuffer(uploadBuffer(uploads[0])));
+    assert.deepEqual(pngDimensions(uploadBuffer(uploads[0])), {
       width: 512,
       height: 640,
     });
-    assert.ok(createHash("sha256").update(uploads[0].buffer).digest("hex"));
+    assert.ok(
+      createHash("sha256").update(uploadBuffer(uploads[0])).digest("hex"),
+    );
     assert.equal(uploads[1].path, "/media-assets/try-on-garments");
     assert.equal(uploads[1].fileName, "local-testbed-try-on-garment-long.png");
     assert.notEqual(
-      createHash("sha256").update(uploads[0].buffer).digest("hex"),
-      createHash("sha256").update(uploads[1].buffer).digest("hex"),
+      createHash("sha256").update(uploadBuffer(uploads[0])).digest("hex"),
+      createHash("sha256").update(uploadBuffer(uploads[1])).digest("hex"),
     );
     const productDisplayUploads = uploads.filter(
       (upload) => upload.path === "/media-assets/product-display-images",
     );
     assert.equal(productDisplayUploads.length, 3);
     assert.equal(
-      new Set(productDisplayUploads.map((upload) => upload.asset.id)).size,
+      new Set(
+        productDisplayUploads.map(
+          (upload) => recordValue(upload.asset).id,
+        ),
+      ).size,
       3,
     );
     for (const upload of productDisplayUploads) {
       assert.equal(upload.contentType, "image/png");
       assert.ok(Buffer.isBuffer(upload.buffer));
-      assert.deepEqual(pngDimensions(upload.buffer), {
+      assert.deepEqual(pngDimensions(uploadBuffer(upload)), {
         width: 240,
         height: 240,
       });
     }
     const productDisplayAssetIds = new Set(
-      productDisplayUploads.map((upload) => upload.asset.id),
+      productDisplayUploads.map((upload) => recordValue(upload.asset).id),
     );
     const productCreateCalls = calls.filter(
       (call) => call.path === "/products",
     );
     assert.equal(productCreateCalls.length, 44);
     for (const call of productCreateCalls) {
-      assert.ok(productDisplayAssetIds.has(call.body.displayImageMediaAssetId));
+      assert.ok(
+        productDisplayAssetIds.has(
+          recordValue(call.body).displayImageMediaAssetId,
+        ),
+      );
     }
     assert.equal(
       new Set(
-        productCreateCalls.map((call) => call.body.displayImageMediaAssetId),
+        productCreateCalls.map(
+          (call) => recordValue(call.body).displayImageMediaAssetId,
+        ),
       ).size,
       3,
     );
@@ -1545,29 +1661,46 @@ describe("supported API seeding", () => {
       false,
     );
     assert.deepEqual(
-      calls.find((call) => call.path.endsWith("/claim-codes")).body,
+      recordValue(
+        requireCall(calls, (call) =>
+          String(call.path).endsWith("/claim-codes"),
+        ).body,
+      ),
       { purpose: "first_claim" },
     );
     assert.ok(
       calls.some(
-        (call) => call.path === "/inventories" && call.body.onHandQty === 3,
+        (call) =>
+          call.path === "/inventories" &&
+          Number(recordValue(call.body).onHandQty) === 3,
       ),
     );
     assert.ok(
       calls.some(
         (call) =>
           call.path === "/inventories" &&
-          call.body.slotId != null &&
-          call.body.onHandQty === 2,
+          recordValue(call.body).slotId != null &&
+          Number(recordValue(call.body).onHandQty) === 2,
       ),
     );
     assert.ok(
-      calls
-        .find((call) => call.path.endsWith("/planogram-versions"))
-        .body.slots.some((slot) => slot.capacity === 2 && slot.slotId != null),
+      arrayValue(
+        recordValue(
+          requireCall(calls, (call) =>
+            String(call.path).endsWith("/planogram-versions"),
+          ).body,
+        ).slots,
+      ).some(
+        (slot: unknown) => {
+          const slotRecord = recordValue(slot);
+          return slotRecord.capacity === 2 && slotRecord.slotId != null;
+        },
+      ),
     );
     assert.deepEqual(
-      calls.filter((call) => call.path.startsWith("/try-on-garments/")),
+      calls.filter((call) =>
+        String(call.path).startsWith("/try-on-garments/"),
+      ),
       [
         {
           path: "/try-on-garments/garment-1/confirmation",
@@ -1603,37 +1736,37 @@ describe("supported API seeding", () => {
         ),
       ],
     );
-    assert.equal(result.visionAcceptance.tryOnGarmentId, "garment-1");
+    assert.equal(visionAcceptance.tryOnGarmentId, "garment-1");
     assert.equal(
-      result.visionAcceptance.tryOnGarmentMediaAssetId,
+      visionAcceptance.tryOnGarmentMediaAssetId,
       "550e8400-e29b-41d4-a716-446655440125",
     );
-    assert.deepEqual(result.visionAcceptance.sourceGarment, {
+    assert.deepEqual(recordValue(visionAcceptance.sourceGarment), {
       publicPath:
         "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
       assetId: "550e8400-e29b-41d4-a716-446655440125",
-      digest: `sha256:${createHash("sha256").update(uploads[0].buffer).digest("hex")}`,
+      digest: `sha256:${createHash("sha256").update(uploadBuffer(uploads[0])).digest("hex")}`,
       contentType: "image/png",
-      byteSize: uploads[0].buffer.byteLength,
+      byteSize: uploadBuffer(uploads[0]).byteLength,
       template: "tshirt_short_sleeve",
       width: 512,
       height: 640,
     });
-    assert.equal(result.visionAcceptance.tryOnCategoryKey, "tshirts");
+    assert.equal(visionAcceptance.tryOnCategoryKey, "tshirts");
     assert.deepEqual(
-      result.visionAcceptance.productMedia.map((entry) => ({
+      productMedia.map((entry) => ({
         categoryKey: entry.categoryKey,
         catalogKey: entry.catalogKey,
         coverImageUrl: entry.coverImageUrl,
       })),
       ["socks", "underwear", "tshirts"].map((categoryKey, index) => ({
         categoryKey,
-        catalogKey: `product:${result.visionAcceptance.productMedia[index].productId}`,
-        coverImageUrl: productDisplayUploads[index].asset.publicUrl,
+        catalogKey: `product:${productMedia[index].productId}`,
+        coverImageUrl: recordValue(recordValue(productDisplayUploads[index]).asset).publicUrl,
       })),
     );
     assert.deepEqual(
-      result.visionAcceptance.seededTryOnVariants.map((entry) => ({
+      seededTryOnVariants.map((entry) => ({
         garmentId: entry.garmentId,
         garmentMediaAssetId: entry.garmentMediaAssetId,
         variantId: entry.variantId,
@@ -1643,18 +1776,18 @@ describe("supported API seeding", () => {
           garmentId: "garment-1",
           garmentMediaAssetId: "550e8400-e29b-41d4-a716-446655440125",
           variantId:
-            result.visionAcceptance.recommendationVariants[0].variantId,
+            recommendationVariants[0].variantId,
         },
         {
           garmentId: "garment-2",
           garmentMediaAssetId: "550e8400-e29b-41d4-a716-446655440128",
           variantId:
-            result.visionAcceptance.recommendationVariants[1].variantId,
+            recommendationVariants[1].variantId,
         },
       ],
     );
     assert.deepEqual(
-      result.visionAcceptance.recommendationVariants.map((entry) => ({
+      recommendationVariants.map((entry) => ({
         productId: entry.productId,
         variantId: entry.variantId,
         size: entry.size,
@@ -1665,71 +1798,75 @@ describe("supported API seeding", () => {
       [
         {
           productId:
-            result.visionAcceptance.recommendationVariants[0].productId,
+            recommendationVariants[0].productId,
           variantId:
-            result.visionAcceptance.recommendationVariants[0].variantId,
+            recommendationVariants[0].variantId,
           size: "M",
-          slotId: result.visionAcceptance.recommendationVariants[0].slotId,
+          slotId: recommendationVariants[0].slotId,
           inventoryId:
-            result.visionAcceptance.recommendationVariants[0].inventoryId,
+            recommendationVariants[0].inventoryId,
           onHandQty: 3,
         },
         {
           productId:
-            result.visionAcceptance.recommendationVariants[0].productId,
+            recommendationVariants[0].productId,
           variantId:
-            result.visionAcceptance.recommendationVariants[1].variantId,
+            recommendationVariants[1].variantId,
           size: "S",
-          slotId: result.visionAcceptance.recommendationVariants[1].slotId,
+          slotId: recommendationVariants[1].slotId,
           inventoryId:
-            result.visionAcceptance.recommendationVariants[1].inventoryId,
+            recommendationVariants[1].inventoryId,
           onHandQty: 3,
         },
       ],
     );
     assert.equal(
       new Set(
-        result.visionAcceptance.recommendationVariants.map(
-          (entry) => entry.productId,
-        ),
+        recommendationVariants.map((entry) => entry.productId),
       ).size,
       1,
     );
     const seededTryOnVariantIds = new Set(
-      result.visionAcceptance.seededTryOnVariants.map(
-        (entry) => entry.variantId,
-      ),
+      seededTryOnVariants.map((entry) => entry.variantId),
     );
     const tryOnInventoryCalls = calls.filter(
       (call) =>
         call.path === "/inventories" &&
-        seededTryOnVariantIds.has(call.body.variantId),
+        seededTryOnVariantIds.has(recordValue(call.body).variantId),
     );
     assert.ok(
-      tryOnInventoryCalls.some((call) => call.body.onHandQty > 0),
+      tryOnInventoryCalls.some(
+        (call) => Number(recordValue(call.body).onHandQty) > 0,
+      ),
       "at least one try-on T-shirt variant must have positive inventory",
     );
-    const planogramCall = calls.find((call) =>
-      call.path.endsWith("/planogram-versions"),
+    const planogramCall = requireCall(calls, (call) =>
+      String(call.path).endsWith("/planogram-versions"),
+    );
+    const planogramSlots = arrayValue(recordValue(planogramCall.body).slots).map(
+      (slot) => recordValue(slot),
     );
     assert.ok(
-      planogramCall.body.slots.every((slot) =>
+      planogramSlots.every((slot) =>
         productDisplayUploads.some(
-          (upload) => slot.coverImageUrl === upload.asset.publicUrl,
+          (upload) =>
+            slot.coverImageUrl ===
+            recordValue(recordValue(upload).asset).publicUrl,
         ),
       ),
       "every published slot must retain its product main-image managed reference",
     );
     assert.equal(
-      new Set(planogramCall.body.slots.map((slot) => slot.coverImageUrl)).size,
+      new Set(planogramSlots.map((slot) => slot.coverImageUrl)).size,
       3,
     );
     assert.ok(
-      planogramCall.body.slots.some(
+      planogramSlots.some(
         (slot) =>
           seededTryOnVariantIds.has(slot.variantId) &&
           tryOnInventoryCalls.some(
-            (inventory) => inventory.body.variantId === slot.variantId,
+            (inventory) =>
+              recordValue(inventory.body).variantId === slot.variantId,
           ),
       ),
       "a stocked try-on T-shirt variant must be present in the published planogram",
@@ -1930,19 +2067,19 @@ describe("Windows D cache contract", () => {
       const layout = lowerControllerSimCacheLayout(parsedOptions, sourceDigest);
       let binaryPresent = false;
       let markerPresent = false;
-      const commands = [];
-      const dependencies = {
+      const commands: JsonRecord[] = [];
+      const dependencies = simCacheDependencies({
         ensureDirectory: async () => {},
         isExecutable: async () => binaryPresent,
         markerPresent: async () => markerPresent,
         publishMarker: async () => {
           markerPresent = true;
         },
-        runCommand: async (command, args, commandOptions) => {
+        runCommand: async (command: string, args: string[], commandOptions) => {
           commands.push({ command, args, commandOptions });
           binaryPresent = true;
         },
-      };
+      });
       const first = await ensureLowerControllerSimCached({
         options: parsedOptions,
         sourceDigest,
@@ -1966,7 +2103,8 @@ describe("Windows D cache contract", () => {
         "--locked",
       ]);
       assert.equal(
-        commands[0].commandOptions.env.CARGO_TARGET_DIR,
+        recordValue(recordValue(commands[0].commandOptions).env)
+          .CARGO_TARGET_DIR,
         layout.targetDirectory,
       );
       assert.match(layout.binaryPath, /state\/host-lower-controller-sim\//);
@@ -1995,19 +2133,19 @@ describe("Windows D cache contract", () => {
 
       let binaryPresent = false;
       let markerPresent = false;
-      const commands = [];
-      const dependencies = {
+      const commands: JsonRecord[] = [];
+      const dependencies = simCacheDependencies({
         ensureDirectory: async () => {},
         isExecutable: async () => binaryPresent,
         markerPresent: async () => markerPresent,
         publishMarker: async () => {
           markerPresent = true;
         },
-        runCommand: async (command, args, commandOptions) => {
+        runCommand: async (command: string, args: string[], commandOptions) => {
           commands.push({ command, args, commandOptions });
           binaryPresent = true;
         },
-      };
+      });
       await ensureLowerControllerSimCached({
         options: parsedOptions,
         sourceDigest,
@@ -2044,7 +2182,7 @@ describe("Windows D cache contract", () => {
       const staleDigest = "b".repeat(64);
       const layout = lowerControllerSimCacheLayout(parsedOptions, sourceDigest);
       const cacheRoot = dirname(layout.root);
-      const removed = [];
+      const removed: string[] = [];
       mkdirSync(cacheRoot, { recursive: true });
       mkdirSync(join(cacheRoot, staleDigest), { recursive: true });
       let binaryPresent = false;
@@ -2054,7 +2192,7 @@ describe("Windows D cache contract", () => {
           ensureLowerControllerSimCached({
             options: parsedOptions,
             sourceDigest,
-            dependencies: {
+            dependencies: simCacheDependencies({
               ensureDirectory: async () => {},
               isExecutable: async () => binaryPresent,
               markerPresent: async () => markerPresent,
@@ -2068,11 +2206,11 @@ describe("Windows D cache contract", () => {
                 { name: staleDigest, isDirectory: () => true },
                 { name: sourceDigest, isDirectory: () => true },
               ],
-              removeDirectory: async (path) => {
+              removeDirectory: async (path: string) => {
                 removed.push(path);
                 throw new Error("remove-failed");
               },
-            },
+            }),
           }),
         /remove-failed/,
       );
@@ -2467,27 +2605,29 @@ describe("local testbed fixture", () => {
         new URL("./fixtures/local-testbed-catalog.json", import.meta.url),
         "utf8",
       ),
-    );
+    ) as JsonRecord;
+    const slots = arrayValue(fixture.slots).map((slot) => recordValue(slot));
     assert.equal(fixture.schemaVersion, "vem-local-testbed-catalog/v1");
     assert.equal(fixture.source, "tracked_testbed_fixture");
-    assert.equal(fixture.products.length, 44);
+    assert.equal(arrayValue(fixture.products).length, 44);
     assert.deepEqual(
-      fixture.slots.map((slot) => slot.slotDisplayLabel),
+      slots.map((slot) => slot.slotDisplayLabel),
       ["A1", "A2", "A3", "A4", "A5", "B5", "B1", "B2"],
     );
     assert.deepEqual(
-      fixture.slots.map((slot) => `${slot.rowNo}:${slot.cellNo}`),
+      slots.map((slot) => `${slot.rowNo}:${slot.cellNo}`),
       ["1:1", "1:2", "1:3", "1:4", "1:5", "2:5", "2:1", "2:2"],
     );
     assert.ok(
-      fixture.slots.every(
+      slots.every(
         (slot) =>
           Number.isInteger(slot.rowNo) &&
           Number.isInteger(slot.cellNo) &&
-          slot.rowNo >= 1 &&
-          slot.rowNo <= 9 &&
-          slot.cellNo >= 1 &&
-          slot.cellNo <= (slot.rowNo <= 6 ? 5 : slot.rowNo <= 8 ? 4 : 3),
+          Number(slot.rowNo) >= 1 &&
+          Number(slot.rowNo) <= 9 &&
+          Number(slot.cellNo) >= 1 &&
+          Number(slot.cellNo) <=
+            (Number(slot.rowNo) <= 6 ? 5 : Number(slot.rowNo) <= 8 ? 4 : 3),
       ),
     );
     const implementation = readFileSync(
