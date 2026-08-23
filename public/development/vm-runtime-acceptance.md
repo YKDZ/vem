@@ -8,9 +8,9 @@
 
 运行时验收由三个脚本入口组成：
 
-- `scripts/testbed/runtime-testbed-trigger.mjs`：开发者入口，负责校验当前提交、推送到测试宿主机镜像仓库，并触发运行。
-- `scripts/testbed/runtime-testbed-orchestrator.mjs`：宿主机编排入口，负责重置 VM、准备运行环境、执行指定验收模式并汇总结果。
-- `scripts/testbed/business-check-registry.mjs`：业务集合注册表，定义可单独执行的验收集合。
+- `scripts/testbed/runtime-testbed-trigger.ts`：开发者入口，负责校验当前提交、推送到测试宿主机镜像仓库，并触发运行。
+- `scripts/testbed/runtime-testbed-orchestrator.ts`：宿主机编排入口，负责重置 VM、准备运行环境、执行指定验收模式并汇总结果。
+- `scripts/testbed/business-check-registry.ts`：业务集合注册表，定义可单独执行的验收集合。
 
 测试宿主机需要提供一份 JSON 配置文件。配置版本为 `vem-runtime-testbed-host/v1`，至少包含：
 
@@ -109,7 +109,7 @@ mkdir -p \
   "testbed": {
     "reconstructCommand": [
       "/usr/bin/node",
-      "{repository}/scripts/testbed/local-testbed-host.mjs",
+      "{repository}/scripts/testbed/local-testbed-host.ts",
       "reconstruct",
       "--run-id",
       "{runId}",
@@ -148,7 +148,7 @@ mkdir -p \
     ],
     "admitRunnerCommand": [
       "/usr/bin/node",
-      "{repository}/scripts/testbed/local-testbed-host.mjs",
+      "{repository}/scripts/testbed/local-testbed-host.ts",
       "admit",
       "--run-id",
       "{runId}",
@@ -196,7 +196,7 @@ mkdir -p \
 重建前执行预检。该命令只校验配置、宿主机能力、安装介质、磁盘容量和生成计划。
 
 ```bash
-node scripts/testbed/kvm-baseline/build-win10-baseline.mjs \
+node scripts/testbed/kvm-baseline/build-win10-baseline.ts \
   --config "$VEM_BASELINE_CONFIG" \
   | tee "$VEM_BASELINE_ROOT/preflight-plan.json"
 ```
@@ -209,7 +209,7 @@ node scripts/testbed/kvm-baseline/build-win10-baseline.mjs \
 export VEM_COMMIT="$(git rev-parse HEAD)"
 export VEM_BASELINE_RESULT="$VEM_BASELINE_ROOT/build-result-$VEM_COMMIT.json"
 
-node scripts/testbed/kvm-baseline/build-win10-baseline.mjs \
+node scripts/testbed/kvm-baseline/build-win10-baseline.ts \
   --config "$VEM_BASELINE_CONFIG" \
   --source-commit "$VEM_COMMIT" \
   --execute \
@@ -272,7 +272,7 @@ export VEM_TESTBED_RESULT=/abs/path/to/runtime-testbed-result.json
 运行快速核心集合：
 
 ```bash
-node scripts/testbed/runtime-testbed-trigger.mjs run \
+node scripts/testbed/runtime-testbed-trigger.ts run \
   --mode fast \
   --commit "$VEM_COMMIT" \
   --config "$VEM_TESTBED_CONFIG" \
@@ -282,7 +282,7 @@ node scripts/testbed/runtime-testbed-trigger.mjs run \
 运行指定业务集合：
 
 ```bash
-node scripts/testbed/runtime-testbed-trigger.mjs run \
+node scripts/testbed/runtime-testbed-trigger.ts run \
   --mode fast \
   --focus sale \
   --focus scannerPayment \
@@ -294,7 +294,7 @@ node scripts/testbed/runtime-testbed-trigger.mjs run \
 运行完整集合：
 
 ```bash
-node scripts/testbed/runtime-testbed-trigger.mjs run \
+node scripts/testbed/runtime-testbed-trigger.ts run \
   --mode full \
   --commit "$VEM_COMMIT" \
   --config "$VEM_TESTBED_CONFIG" \
@@ -304,7 +304,7 @@ node scripts/testbed/runtime-testbed-trigger.mjs run \
 查看某次运行状态：
 
 ```bash
-node scripts/testbed/runtime-testbed-orchestrator.mjs status \
+node scripts/testbed/runtime-testbed-orchestrator.ts status \
   --config "$VEM_TESTBED_CONFIG" \
   --run-id <run-id>
 ```
@@ -312,7 +312,7 @@ node scripts/testbed/runtime-testbed-orchestrator.mjs status \
 清理测试缓存：
 
 ```bash
-node scripts/testbed/runtime-testbed-trigger.mjs run \
+node scripts/testbed/runtime-testbed-trigger.ts run \
   --mode clear_cache \
   --commit "$VEM_COMMIT" \
   --config "$VEM_TESTBED_CONFIG" \

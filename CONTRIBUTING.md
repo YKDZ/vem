@@ -72,7 +72,7 @@ pnpm compose-smoke:backend \
 机器端 VM full 验收：
 
 ```bash
-node scripts/testbed/runtime-testbed-trigger.mjs run \
+node scripts/testbed/runtime-testbed-trigger.ts run \
   --mode full \
   --commit "$(git rev-parse HEAD)" \
   --config /abs/path/to/runtime-testbed-host.json \
@@ -82,7 +82,7 @@ node scripts/testbed/runtime-testbed-trigger.mjs run \
 VM fast 验收可指定一个或多个业务集合：
 
 ```bash
-node scripts/testbed/runtime-testbed-trigger.mjs run \
+node scripts/testbed/runtime-testbed-trigger.ts run \
   --mode fast \
   --focus sale \
   --focus paymentRecovery \
@@ -91,7 +91,7 @@ node scripts/testbed/runtime-testbed-trigger.mjs run \
   --out /abs/path/to/runtime-testbed-result.json
 ```
 
-业务集合以 `scripts/testbed/business-check-registry.mjs` 为准。
+业务集合以 `scripts/testbed/business-check-registry.ts` 为准。
 
 ## CI
 

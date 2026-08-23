@@ -60,7 +60,7 @@ SERVICE_API_MEDIA_VOLUME_NAME=<existing-media-volume>
 发布前可在有 Docker 的工作站执行 Compose 冒烟测试，确认静态 Compose 文件和镜像入口仍可启动：
 
 ```bash
-node scripts/backend-compose-smoke.mjs \
+node scripts/backend-compose-smoke.ts \
   --service-api-image ghcr.io/ykdz/vem-service-api@sha256:<64-hex> \
   --admin-ui-image ghcr.io/ykdz/vem-admin-ui@sha256:<64-hex>
 ```
