@@ -28,22 +28,34 @@ const REQUIRED_EXECUTION_ORDER = Object.freeze(
   ),
 );
 
-function required(value, label) {
+type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? (value as unknown[]) : [];
+}
+
+function required(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${label} is required`);
   }
   return value.trim();
 }
 
-function option(args, name) {
+function option(args: string[], name: string): string {
   const index = args.indexOf(`--${name}`);
   if (index === -1) throw new Error(`--${name} is required`);
   return required(args[index + 1], name);
 }
 
-function loadReport(path, label) {
+function loadReport(path: string, label: string): JsonRecord {
   try {
-    const value = JSON.parse(readFileSync(path, "utf8"));
+    const value = JSON.parse(readFileSync(path, "utf8")) as JsonRecord;
     if (value?.schemaVersion !== "vem-local-testbed-full-workflow/v4") {
       throw new Error("unexpected schema version");
     }
@@ -57,20 +69,28 @@ function loadReport(path, label) {
   }
 }
 
-function sameStringArray(actual, expected) {
-  return JSON.stringify(actual) === JSON.stringify(expected);
+function sameStringArray(
+  actual: unknown,
+  expected: readonly unknown[],
+): boolean {
+  return JSON.stringify(arrayValue(actual)) === JSON.stringify(expected);
 }
 
-function runtimeArtifactDigests(identity) {
-  const runtimeArtifacts = identity?.runtimeArtifacts;
-  if (runtimeArtifacts?.commit !== identity?.githubSha) return null;
+function runtimeArtifactDigests(
+  identity: JsonRecord | null | undefined,
+): JsonRecord | null {
+  const runtimeArtifacts = recordValue(identity?.runtimeArtifacts);
+  if (runtimeArtifacts.commit !== identity?.githubSha) return null;
+  const artifacts = recordValue(runtimeArtifacts.artifacts);
   const digests = Object.fromEntries(
     ["daemon", "machine", "webViewLoader"].map((name) => [
       name,
-      runtimeArtifacts?.artifacts?.[name]?.sha256,
+      recordValue(artifacts[name]).sha256,
     ]),
-  );
-  return Object.values(digests).every((digest) => /^[a-f0-9]{64}$/.test(digest))
+  ) as JsonRecord;
+  return Object.values(digests).every((digest) =>
+    /^[a-f0-9]{64}$/.test(String(digest)),
+  )
     ? digests
     : null;
 }
@@ -79,15 +99,18 @@ export function buildStabilityGateReport({
   commit,
   passAPath,
   passBPath,
-} = {}) {
-  const passA = loadReport(passAPath, "passA");
-  const passB = loadReport(passBPath, "passB");
-  const gateFailures = [];
-  let acceptanceRelease = null;
+}: {
+  commit?: unknown;
+  passAPath?: unknown;
+  passBPath?: unknown;
+} = {}): JsonRecord {
+  const passA = loadReport(String(passAPath), "passA");
+  const passB = loadReport(String(passBPath), "passB");
+  const gateFailures: string[] = [];
+  let acceptanceRelease: JsonRecord | null = null;
   try {
-    acceptanceRelease = bindAcceptanceReleaseManifest(
-      passA.identity,
-      passB.identity,
+    acceptanceRelease = recordValue(
+      bindAcceptanceReleaseManifest(passA.identity, passB.identity),
     );
   } catch (error) {
     gateFailures.push(error instanceof Error ? error.message : String(error));
@@ -97,42 +120,48 @@ export function buildStabilityGateReport({
   }
   if (passA.ok !== true) gateFailures.push("pass A did not pass");
   if (passB.ok !== true) gateFailures.push("pass B did not pass");
+  const passASets = recordValue(passA.businessSets);
+  const passBSets = recordValue(passB.businessSets);
   for (const key of REQUIRED_EXECUTION_ORDER) {
-    if (passA.businessSets?.[key]?.status !== "passed") {
+    if (recordValue(passASets[key]).status !== "passed") {
       gateFailures.push(`pass A ${key} status is not passed`);
     }
-    if (passB.businessSets?.[key]?.status !== "passed") {
+    if (recordValue(passBSets[key]).status !== "passed") {
       gateFailures.push(`pass B ${key} status is not passed`);
     }
   }
   const identities = { passA: passA.identity, passB: passB.identity };
-  for (const [label, identity] of Object.entries(identities)) {
+  for (const [label, identityValue] of Object.entries(identities)) {
+    const identity = recordValue(identityValue);
     if (identity?.githubSha !== commit)
       gateFailures.push(`${label} GITHUB_SHA does not match gate commit`);
+    const baseline = recordValue(identity?.baseline);
     if (
-      typeof identity?.baseline?.releaseId !== "string" ||
-      identity.baseline.releaseId.trim() === ""
+      typeof baseline?.releaseId !== "string" ||
+      String(baseline.releaseId).trim() === ""
     ) {
       gateFailures.push(`${label} baseline release is missing`);
     }
-    if (!/^sha256:[a-f0-9]{64}$/.test(identity?.baseline?.digest ?? "")) {
+    if (!/^sha256:[a-f0-9]{64}$/.test(String(baseline?.digest ?? ""))) {
       gateFailures.push(`${label} baseline digest is invalid`);
     }
     if (
       !/^runtime-base:\/\/sha256\/[a-f0-9]{64}$/.test(
-        identity?.runtimeBase ?? "",
+        String(identity?.runtimeBase ?? ""),
       )
     ) {
       gateFailures.push(`${label} runtime-base is invalid`);
     }
     if (
       !/^reconstruction:\/\/sha256\/[a-f0-9]{64}$/.test(
-        identity?.reconstructionId ?? "",
+        String(identity?.reconstructionId ?? ""),
       )
     ) {
       gateFailures.push(`${label} reconstruction ID is invalid`);
     }
-    if (!sameStringArray(identity?.retainedCaches, RETAINED_CACHE_CONTRACT)) {
+    if (
+      !sameStringArray(identity?.retainedCaches, RETAINED_CACHE_CONTRACT)
+    ) {
       gateFailures.push(`${label} retained-cache contract drifted`);
     }
     if (!Array.isArray(identity?.removedUndeclaredCaches)) {
@@ -144,7 +173,9 @@ export function buildStabilityGateReport({
       gateFailures.push(`${label} runtime artifact evidence is invalid`);
     }
     if (
-      JSON.stringify(passA.execution?.selectedBusinessSets) !==
+      JSON.stringify(
+        recordValue(passA.execution).selectedBusinessSets,
+      ) !==
         JSON.stringify(REQUIRED_EXECUTION_ORDER) &&
       label === "passA"
     ) {
@@ -153,7 +184,9 @@ export function buildStabilityGateReport({
       );
     }
     if (
-      JSON.stringify(passB.execution?.selectedBusinessSets) !==
+      JSON.stringify(
+        recordValue(passB.execution).selectedBusinessSets,
+      ) !==
         JSON.stringify(REQUIRED_EXECUTION_ORDER) &&
       label === "passB"
     ) {
@@ -163,25 +196,29 @@ export function buildStabilityGateReport({
     }
   }
   if (
-    passA.identity?.baseline?.releaseId !== passB.identity?.baseline?.releaseId
+    recordValue(recordValue(passA.identity).baseline).releaseId !==
+    recordValue(recordValue(passB.identity).baseline).releaseId
   )
     gateFailures.push("baseline release differs between passes");
-  if (passA.identity?.baseline?.digest !== passB.identity?.baseline?.digest)
+  if (
+    recordValue(recordValue(passA.identity).baseline).digest !==
+    recordValue(recordValue(passB.identity).baseline).digest
+  )
     gateFailures.push("baseline digest differs between passes");
-  if (passA.identity?.runtimeBase !== passB.identity?.runtimeBase)
+  if (recordValue(passA.identity).runtimeBase !== recordValue(passB.identity).runtimeBase)
     gateFailures.push("runtime-base differs between passes");
-  if (passA.identity?.reconstructionId === passB.identity?.reconstructionId)
+  if (recordValue(passA.identity).reconstructionId === recordValue(passB.identity).reconstructionId)
     gateFailures.push("two passes reused one reconstruction ID");
   if (
     !sameStringArray(
-      passA.identity?.retainedCaches,
-      passB.identity?.retainedCaches,
+      recordValue(passA.identity).retainedCaches,
+      arrayValue(recordValue(passB.identity).retainedCaches),
     )
   )
     gateFailures.push("retained-cache contract differs between passes");
   if (
-    JSON.stringify(runtimeArtifactDigests(passA.identity)) !==
-    JSON.stringify(runtimeArtifactDigests(passB.identity))
+    JSON.stringify(runtimeArtifactDigests(recordValue(passA.identity))) !==
+    JSON.stringify(runtimeArtifactDigests(recordValue(passB.identity)))
   ) {
     gateFailures.push("runtime artifact digests differ between passes");
   }
@@ -204,12 +241,12 @@ export function buildStabilityGateReport({
     passes: {
       passA: {
         ok: passA.ok,
-        failures: passA.failures ?? [],
+        failures: arrayValue(passA.failures),
         identity: passA.identity ?? null,
       },
       passB: {
         ok: passB.ok,
-        failures: passB.failures ?? [],
+        failures: arrayValue(passB.failures),
         identity: passB.identity ?? null,
       },
     },
@@ -217,12 +254,12 @@ export function buildStabilityGateReport({
   };
 }
 
-function writeJson(path, value) {
+function writeJson(path: string, value: JsonRecord): void {
   mkdirSync(dirname(resolve(path)), { recursive: true });
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
-async function main() {
+async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const report = buildStabilityGateReport({
     commit: option(args, "commit"),
@@ -244,7 +281,7 @@ async function main() {
   }
   writeJson(outPath, report);
   process.stdout.write(`${JSON.stringify(report)}\n`);
-  if (!report.ok) process.exitCode = 1;
+  if (report.ok !== true) process.exitCode = 1;
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
