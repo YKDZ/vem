@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { generateKeyPairSync, sign } from "node:crypto";
 import { once } from "node:events";
 import {
   existsSync,
@@ -46,7 +46,113 @@ const SERIAL_CONFORMANCE = new URL(
 
 process.env.VEM_VM_HOST_ADAPTER_CONTRACT_TEST_ONLY = "1";
 
-function blockedSaleOutput(overrides = {}) {
+type JsonRecord = Record<string, unknown>;
+
+interface AdapterRequest extends JsonRecord {
+  contractVersion: unknown;
+  schemaVersion: unknown;
+  kind: unknown;
+  operation: unknown;
+  runId: unknown;
+  operationNonce: unknown;
+  operationReference: unknown;
+  lifecycleReference: unknown;
+  cancelOperationReference: unknown;
+  target: { identity: unknown };
+  displayCapture: {
+    activeKioskSession: unknown;
+    tauriRoute: unknown;
+    cdpTargetId: unknown;
+    visualChallenge: {
+      token: unknown;
+      colorRgb: unknown;
+      region: { x: unknown; y: unknown; width: unknown; height: unknown };
+    };
+  } | null;
+  audioCapture: JsonRecord | null;
+  assets: JsonRecord[];
+  requestedCapabilities: unknown;
+  serialSession: JsonRecord | null;
+}
+
+interface AdapterReport extends JsonRecord {
+  adapter: JsonRecord;
+  request: JsonRecord;
+  serialSession: JsonRecord;
+  serialEvidence: { records: JsonRecord[] };
+  displayCapture: {
+    activeKioskSession: JsonRecord;
+    tauriRoute: unknown;
+    cdpProbe: JsonRecord;
+    foregroundKiosk: JsonRecord;
+    visualChallenge: JsonRecord;
+    capture: JsonRecord;
+  } | null;
+  defaultAudioCapture: {
+    lifecycleReference: unknown;
+    activeKioskSession: JsonRecord;
+    defaultOutput: JsonRecord;
+    daemonCalibration: JsonRecord;
+    capture: JsonRecord;
+  } | null;
+  observed: JsonRecord;
+  guest: JsonRecord;
+  evidence: JsonRecord[];
+  cleanup: JsonRecord;
+  diagnostics: JsonRecord[];
+  result: unknown;
+  negotiatedCapabilities: unknown;
+  completedOperations: unknown;
+}
+
+function adapterRequest(input: JsonRecord): AdapterRequest {
+  return createRequest(input) as AdapterRequest;
+}
+
+function adapterReport(
+  report: JsonRecord,
+  request: JsonRecord,
+): AdapterReport {
+  return validateReport(report, request) as AdapterReport;
+}
+
+async function runAdapter(
+  options: Parameters<typeof runVmHostAdapter>[0],
+): Promise<AdapterReport> {
+  return (await runVmHostAdapter(options)) as AdapterReport;
+}
+
+function diagnosticRecord(error: unknown): JsonRecord {
+  return recordValue(
+    error instanceof VmHostAdapterExecutionError ? error.diagnostic : null,
+  );
+}
+
+const createRequest = createVmHostAdapterRequest;
+const validateReport = validateVmHostAdapterReport;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? (value as unknown[]) : [];
+}
+
+interface BlockedSaleFlow extends JsonRecord {
+  transactionEntry: JsonRecord;
+  daemonIpc: JsonRecord;
+  hardwareMappingFault: JsonRecord;
+}
+
+interface BlockedSaleOutput extends JsonRecord {
+  ok: boolean;
+  simulatedHardwareSaleFlow: BlockedSaleFlow;
+}
+
+function blockedSaleOutput(overrides: JsonRecord = {}): BlockedSaleOutput {
   const flow = {
     phase: "prepare",
     result: { simulatedHardwareReady: { status: "failed" } },
@@ -122,11 +228,14 @@ function blockedSaleOutput(overrides = {}) {
   };
 }
 
-function sleep(milliseconds) {
+function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-async function waitFor(assertion, message) {
+async function waitFor(
+  assertion: () => boolean,
+  message: string,
+): Promise<void> {
   const deadline = Date.now() + 3000;
   while (Date.now() < deadline) {
     if (assertion()) return;
@@ -135,7 +244,10 @@ async function waitFor(assertion, message) {
   assert.fail(message);
 }
 
-function requestFor(operation = "restore-approved-base", overrides = {}) {
+function requestFor(
+  operation = "restore-approved-base",
+  overrides: JsonRecord = {},
+): AdapterRequest {
   const nonce = "op-0123456789abcdef";
   const capabilities = {
     "clean-install": [
@@ -260,7 +372,10 @@ function requestFor(operation = "restore-approved-base", overrides = {}) {
   };
 }
 
-function serialSessionRequest(operation, overrides = {}) {
+function serialSessionRequest(
+  operation: string,
+  overrides: JsonRecord = {},
+): AdapterRequest {
   const base = requestFor(operation);
   const startOperationReference = base.operationReference;
   const binding = deriveSerialSessionBinding({
@@ -327,7 +442,7 @@ function serialSessionRequest(operation, overrides = {}) {
   });
 }
 
-function serialDeviceMappings(connectionState) {
+function serialDeviceMappings(connectionState: string): JsonRecord[] {
   return [
     {
       role: "lower-controller",
@@ -358,9 +473,11 @@ function serialDeviceMappings(connectionState) {
   ];
 }
 
-function serialEvidenceRecords(request) {
-  const saleCorrelationId = request.serialSession.saleCorrelationIds[0];
-  const saleBinding = request.serialSession.saleBindings[0];
+function serialEvidenceRecords(request: AdapterRequest): JsonRecord[] {
+  const serialSession = recordValue(request.serialSession);
+  const saleCorrelationId = arrayValue(serialSession.saleCorrelationIds)[0];
+  const saleBinding = recordValue(arrayValue(serialSession.saleBindings)[0]);
+  const scannerInjection = recordValue(serialSession.scannerInjection);
   let sequence = 0;
   const capturedFrame = () => ({
     source: "guest-serial-session",
@@ -378,13 +495,13 @@ function serialEvidenceRecords(request) {
     role: "lower-controller",
     event,
     operationNonce: request.operationNonce,
-    sessionBindingToken: request.serialSession.sessionBindingToken,
-    deviceMappingDigest: request.serialSession.deviceMappingDigest,
+    sessionBindingToken: serialSession.sessionBindingToken,
+    deviceMappingDigest: serialSession.deviceMappingDigest,
     scannerCodeDigest: null,
     scannerCodeByteLength: null,
     scannerCodeSuffix: null,
     saleCorrelationId: event.startsWith("dispense-")
-      ? (request.serialSession.saleCorrelationIds[0] ?? null)
+      ? (arrayValue(serialSession.saleCorrelationIds)[0] ?? null)
       : null,
     saleBinding: event.startsWith("dispense-") ? saleBinding : null,
     capturedFrame: capturedFrame(),
@@ -394,15 +511,12 @@ function serialEvidenceRecords(request) {
     {
       role: "scanner",
       event: "scanner-injection",
-      operationNonce: request.serialSession.scannerInjection.operationNonce,
-      sessionBindingToken: request.serialSession.sessionBindingToken,
-      deviceMappingDigest: request.serialSession.deviceMappingDigest,
-      scannerCodeDigest:
-        request.serialSession.scannerInjection.scannerCodeDigest,
-      scannerCodeByteLength:
-        request.serialSession.scannerInjection.scannerCodeByteLength,
-      scannerCodeSuffix:
-        request.serialSession.scannerInjection.scannerCodeSuffix,
+      operationNonce: scannerInjection.operationNonce,
+      sessionBindingToken: serialSession.sessionBindingToken,
+      deviceMappingDigest: serialSession.deviceMappingDigest,
+      scannerCodeDigest: scannerInjection.scannerCodeDigest,
+      scannerCodeByteLength: scannerInjection.scannerCodeByteLength,
+      scannerCodeSuffix: scannerInjection.scannerCodeSuffix,
       saleCorrelationId,
       saleBinding,
       capturedFrame: capturedFrame(),
@@ -411,8 +525,8 @@ function serialEvidenceRecords(request) {
       role: "payment",
       event,
       operationNonce: request.operationNonce,
-      sessionBindingToken: request.serialSession.sessionBindingToken,
-      deviceMappingDigest: request.serialSession.deviceMappingDigest,
+      sessionBindingToken: serialSession.sessionBindingToken,
+      deviceMappingDigest: serialSession.deviceMappingDigest,
       scannerCodeDigest: null,
       scannerCodeByteLength: null,
       scannerCodeSuffix: null,
@@ -422,26 +536,25 @@ function serialEvidenceRecords(request) {
     })),
     ...lower.slice(2),
   ];
-  let previousCaptureBindingDigest = null;
+  let previousCaptureBindingDigest: string | null = null;
   return records.map((record, index) => {
-    const captured = {
+    const captured: JsonRecord = {
       ...record,
-      capturedFrame: capturedFrame(index + 1),
+      capturedFrame: capturedFrame(),
     };
     captured.captureBindingDigest = deriveSerialFrameCaptureBindingDigest({
       request,
       record: captured,
       previousCaptureBindingDigest,
     });
-    previousCaptureBindingDigest = captured.captureBindingDigest;
+    previousCaptureBindingDigest = String(captured.captureBindingDigest);
     return captured;
   });
 }
 
-function cleanInstallRequest(overrides = {}) {
+function cleanInstallRequest(overrides: JsonRecord = {}): AdapterRequest {
   const isoHash = "d".repeat(64);
   const personalizationHash = "e".repeat(64);
-  const provenanceHash = "c".repeat(64);
   return requestFor("clean-install", {
     assets: [
       {
@@ -459,7 +572,10 @@ function cleanInstallRequest(overrides = {}) {
   });
 }
 
-function reportFor(request, overrides = {}) {
+function reportFor(
+  request: AdapterRequest,
+  overrides: JsonRecord = {},
+): AdapterReport {
   const completed = [request.operation];
   const evidence =
     request.operation === "capture-display"
@@ -489,8 +605,10 @@ function reportFor(request, overrides = {}) {
         : [];
   const isV2 = Object.hasOwn(request, "serialSession");
   const isSerialCleanup = ["stop-serial-session", "cleanup", "cancel"].includes(
-    request.operation,
+    String(request.operation),
   );
+  const displayCapture = request.displayCapture;
+  const audioCapture = request.audioCapture;
   const serialMappings = serialDeviceMappings(
     isSerialCleanup ? "disconnected" : "connected",
   );
@@ -540,14 +658,16 @@ function reportFor(request, overrides = {}) {
         relation: "host-target-mapping/v1",
         targetIdentity: request.target.identity,
       },
-      baseIdentity: request.assets[0].identity,
+      baseIdentity: recordValue(arrayValue(request.assets)[0]).identity,
       overlayIdentity: "vm-overlay://run-12-contract",
       firmwareMode: "bios",
     },
     consumedAssets: request.assets,
     guest: {
       deviceMappings:
-        request.requestedCapabilities.includes("serial:lower-controller") ||
+        arrayValue(request.requestedCapabilities).includes(
+          "serial:lower-controller",
+        ) ||
         (isV2 && request.serialSession !== null)
           ? serialMappings.map(
               ({ role, guestDeviceIdentity, guestUsbTopology }) => ({
@@ -565,35 +685,35 @@ function reportFor(request, overrides = {}) {
       completedAt: "2026-07-11T00:00:01.000Z",
     },
     displayCapture:
-      request.operation === "capture-display"
+      request.operation === "capture-display" && displayCapture
         ? {
             schemaVersion: "vm-display-capture-result/v1",
             runId: request.runId,
             lifecycleReference: request.lifecycleReference,
             captureOperationReference: request.operationReference,
-            activeKioskSession: request.displayCapture.activeKioskSession,
-            tauriRoute: request.displayCapture.tauriRoute,
-            cdpTargetId: request.displayCapture.cdpTargetId,
+            activeKioskSession: displayCapture.activeKioskSession,
+            tauriRoute: displayCapture.tauriRoute,
+            cdpTargetId: displayCapture.cdpTargetId,
             foregroundKiosk: {
-              activeKioskSession: request.displayCapture.activeKioskSession,
-              tauriRoute: request.displayCapture.tauriRoute,
-              cdpTargetId: request.displayCapture.cdpTargetId,
+              activeKioskSession: displayCapture.activeKioskSession,
+              tauriRoute: displayCapture.tauriRoute,
+              cdpTargetId: displayCapture.cdpTargetId,
               visible: true,
             },
             cdpProbe: {
               endpoint: "http://127.0.0.1:9222/json",
-              targetId: request.displayCapture.cdpTargetId,
-              targetUrl: request.displayCapture.tauriRoute,
+              targetId: displayCapture.cdpTargetId,
+              targetUrl: displayCapture.tauriRoute,
               appVisible: true,
               appTextLength: 16,
               domNodeCount: 3,
-              challengeToken: request.displayCapture.visualChallenge.token,
+              challengeToken: displayCapture.visualChallenge.token,
             },
             visualChallenge: {
-              ...request.displayCapture.visualChallenge,
+              ...displayCapture.visualChallenge,
               matchingPixelCount:
-                request.displayCapture.visualChallenge.region.width *
-                request.displayCapture.visualChallenge.region.height,
+                Number(displayCapture.visualChallenge.region.width) *
+                Number(displayCapture.visualChallenge.region.height),
             },
             capture: {
               source: "contract-test-generated-png",
@@ -610,13 +730,13 @@ function reportFor(request, overrides = {}) {
           }
         : null,
     defaultAudioCapture:
-      request.operation === "capture-default-audio"
+      request.operation === "capture-default-audio" && audioCapture
         ? {
             schemaVersion: "vm-default-audio-capture-result/v2",
             runId: request.runId,
             lifecycleReference: request.lifecycleReference,
             captureOperationReference: request.operationReference,
-            activeKioskSession: request.audioCapture.activeKioskSession,
+            activeKioskSession: audioCapture.activeKioskSession,
             defaultOutput: {
               status: "active",
             },
@@ -624,7 +744,7 @@ function reportFor(request, overrides = {}) {
               status: "completed",
               source: "vending_daemon_ipc",
               command: "audio_output_calibration",
-              challenge: request.audioCapture.daemonCalibration.challenge,
+              challenge: recordValue(audioCapture.daemonCalibration).challenge,
               responseArtifact: evidence[1].identity,
               responseDigest: evidence[1].digest,
               responseFileName: evidence[1].fileName,
@@ -640,7 +760,7 @@ function reportFor(request, overrides = {}) {
               sampleRateHz: 48_000,
               channels: 2,
               frameCount: 24_000,
-              threshold: request.audioCapture.threshold,
+              threshold: audioCapture.threshold,
               nonSilentFrameCount: 24_000,
               peakAbsoluteSample: 2_048,
               durationMs: 500,
@@ -678,30 +798,34 @@ function reportFor(request, overrides = {}) {
             request.operation !== "start-serial-session"
               ? null
               : {
-                  serialSessionId: serialBinding.serialSessionId,
-                  sessionBindingToken: serialBinding.sessionBindingToken,
+                  serialSessionId: recordValue(serialBinding).serialSessionId,
+                  sessionBindingToken:
+                    recordValue(serialBinding).sessionBindingToken,
                   startOperationReference:
-                    serialBinding.startOperationReference,
-                  deviceMappingDigest: serialBinding.deviceMappingDigest,
+                    recordValue(serialBinding).startOperationReference,
+                  deviceMappingDigest:
+                    recordValue(serialBinding).deviceMappingDigest,
                   state:
                     request.operation === "stop-serial-session"
                       ? "stopped"
-                      : ["cleanup", "cancel"].includes(request.operation)
+                      : ["cleanup", "cancel"].includes(
+                          String(request.operation),
+                        )
                         ? "cleaned"
                         : "active",
                   deviceMappings: serialMappings,
                   scannerAcknowledgement:
                     request.operation === "inject-scanner-code"
                       ? {
-                          scannerCodeDigest:
-                            request.serialSession.scannerInjection
-                              .scannerCodeDigest,
-                          scannerCodeByteLength:
-                            request.serialSession.scannerInjection
-                              .scannerCodeByteLength,
-                          scannerCodeSuffix:
-                            request.serialSession.scannerInjection
-                              .scannerCodeSuffix,
+                          scannerCodeDigest: recordValue(
+                            recordValue(request.serialSession).scannerInjection,
+                          ).scannerCodeDigest,
+                          scannerCodeByteLength: recordValue(
+                            recordValue(request.serialSession).scannerInjection,
+                          ).scannerCodeByteLength,
+                          scannerCodeSuffix: recordValue(
+                            recordValue(request.serialSession).scannerInjection,
+                          ).scannerCodeSuffix,
                           accepted: true,
                         }
                       : null,
@@ -723,13 +847,12 @@ function reportFor(request, overrides = {}) {
             request.operation === "collect-serial-evidence"
               ? (() => {
                   const records = serialEvidenceRecords(request);
+                  const session = recordValue(request.serialSession);
                   return {
-                    serialSessionId: request.serialSession.serialSessionId,
-                    sessionBindingToken:
-                      request.serialSession.sessionBindingToken,
-                    deviceMappingDigest:
-                      request.serialSession.deviceMappingDigest,
-                    operationEvidence: request.serialSession.operationEvidence,
+                    serialSessionId: session.serialSessionId,
+                    sessionBindingToken: session.sessionBindingToken,
+                    deviceMappingDigest: session.deviceMappingDigest,
+                    operationEvidence: session.operationEvidence,
                     records,
                     captureChainDigest: deriveSerialEvidenceCaptureChainDigest({
                       request,
@@ -741,7 +864,7 @@ function reportFor(request, overrides = {}) {
         }
       : {}),
     ...overrides,
-  };
+  } as AdapterReport;
 }
 
 describe("VM Host Adapter contract", () => {
@@ -756,13 +879,13 @@ describe("VM Host Adapter contract", () => {
       ],
     });
     assert.throws(
-      () => createVmHostAdapterRequest(request),
+      () => adapterRequest(request),
       /runtime-base SHA-256 identity/,
     );
   });
 
   it("permits lifecycle cleanup to recover a failed clean install from its runtime image", () => {
-    const request = createVmHostAdapterRequest(
+    const request = adapterRequest(
       requestFor("cleanup", {
         assets: [
           {
@@ -775,14 +898,14 @@ describe("VM Host Adapter contract", () => {
     );
     assert.equal(request.assets[0].role, "runtime-image");
     assert.equal(
-      validateVmHostAdapterReport(reportFor(request), request).observed
+      adapterReport(reportFor(request), request).observed
         .baseIdentity,
       request.assets[0].identity,
     );
   });
 
   it("accepts a strict logical restore request with operation and lifecycle references", () => {
-    const request = createVmHostAdapterRequest(requestFor());
+    const request = adapterRequest(requestFor());
     assert.deepEqual(validateVmHostAdapterRequest(request), request);
     assert.doesNotMatch(
       JSON.stringify(request),
@@ -791,16 +914,16 @@ describe("VM Host Adapter contract", () => {
   });
 
   it("hard-rejects stale request, report, and adapter contract versions", () => {
-    const request = createVmHostAdapterRequest(requestFor());
+    const request = adapterRequest(requestFor());
     const { serialSession: _serialSession, ...requestWithoutSerialSession } =
       request;
     assert.throws(
-      () => createVmHostAdapterRequest(requestWithoutSerialSession),
+      () => adapterRequest(requestWithoutSerialSession),
       /serialSession/,
     );
     assert.throws(
       () =>
-        createVmHostAdapterRequest({
+        adapterRequest({
           ...request,
           contractVersion: "vem-vm-host-adapter-contract/v1",
         }),
@@ -808,7 +931,7 @@ describe("VM Host Adapter contract", () => {
     );
     assert.throws(
       () =>
-        validateVmHostAdapterReport(
+        adapterReport(
           reportFor(request, {
             contractVersion: "vem-vm-host-adapter-contract/v1",
             adapter: {
@@ -823,22 +946,22 @@ describe("VM Host Adapter contract", () => {
   });
 
   it("extends the existing lifecycle with v2 serial-session operations", () => {
-    const start = createVmHostAdapterRequest(
+    const start = adapterRequest(
       serialSessionRequest("start-serial-session"),
     );
-    const started = validateVmHostAdapterReport(reportFor(start), start);
+    const started = adapterReport(reportFor(start), start);
     const sessionId = started.serialSession.serialSessionId;
-    assert.match(sessionId, /^serial-session:\/\/sha256-/);
+    assert.match(String(sessionId), /^serial-session:\/\/sha256-/);
 
     for (const operation of [
       "inject-scanner-code",
       "collect-serial-evidence",
       "stop-serial-session",
     ]) {
-      const request = createVmHostAdapterRequest(
+      const request = adapterRequest(
         serialSessionRequest(operation),
       );
-      const report = validateVmHostAdapterReport(reportFor(request), request);
+      const report = adapterReport(reportFor(request), request);
       assert.equal(report.request.runId, start.runId);
       assert.equal(report.request.lifecycleReference, start.lifecycleReference);
       assert.equal(report.serialSession.serialSessionId, sessionId);
@@ -861,12 +984,12 @@ describe("VM Host Adapter contract", () => {
 
   it("rejects serial-session requests that weaken the v2 session binding", () => {
     assert.throws(
-      () => createVmHostAdapterRequest(requestFor("start-serial-session")),
+      () => adapterRequest(requestFor("start-serial-session")),
       /must bind serial-session operations/,
     );
     assert.throws(
       () =>
-        createVmHostAdapterRequest(
+        adapterRequest(
           serialSessionRequest("inject-scanner-code", {
             serialSession: {
               serialSessionId: null,
@@ -887,7 +1010,7 @@ describe("VM Host Adapter contract", () => {
     );
     assert.throws(
       () =>
-        createVmHostAdapterRequest(
+        adapterRequest(
           serialSessionRequest("collect-serial-evidence", {
             requestedCapabilities: ["serial-session", "serial:evidence"],
           }),
@@ -896,7 +1019,7 @@ describe("VM Host Adapter contract", () => {
     );
     assert.throws(
       () =>
-        createVmHostAdapterRequest(
+        adapterRequest(
           serialSessionRequest("inject-scanner-code", {
             serialSession: {
               ...serialSessionRequest("inject-scanner-code").serialSession,
@@ -908,7 +1031,7 @@ describe("VM Host Adapter contract", () => {
     );
     assert.throws(
       () =>
-        createVmHostAdapterRequest(
+        adapterRequest(
           serialSessionRequest("collect-serial-evidence", {
             runId: "OTHER-RUN-12",
           }),
@@ -917,7 +1040,7 @@ describe("VM Host Adapter contract", () => {
     );
     assert.throws(
       () =>
-        createVmHostAdapterRequest(
+        adapterRequest(
           serialSessionRequest("collect-serial-evidence", {
             serialSession: {
               ...serialSessionRequest("collect-serial-evidence").serialSession,
@@ -930,17 +1053,19 @@ describe("VM Host Adapter contract", () => {
   });
 
   it("requires connected mapped simulators, exact scanner acknowledgement, and sanitized serial evidence", () => {
-    const inject = createVmHostAdapterRequest(
+    const inject = adapterRequest(
       serialSessionRequest("inject-scanner-code"),
     );
     assert.throws(
       () =>
-        validateVmHostAdapterReport(
+        adapterReport(
           reportFor(inject, {
             serialSession: {
               ...reportFor(inject).serialSession,
               scannerAcknowledgement: {
-                ...reportFor(inject).serialSession.scannerAcknowledgement,
+                ...recordValue(
+                  reportFor(inject).serialSession.scannerAcknowledgement,
+                ),
                 scannerCodeDigest: `sha256:${"0".repeat(64)}`,
               },
             },
@@ -951,16 +1076,22 @@ describe("VM Host Adapter contract", () => {
     );
     assert.throws(
       () =>
-        validateVmHostAdapterReport(
+        adapterReport(
           reportFor(inject, {
             serialSession: {
               ...reportFor(inject).serialSession,
               deviceMappings: [
                 {
-                  ...reportFor(inject).serialSession.deviceMappings[0],
+                  ...recordValue(
+                    arrayValue(
+                      reportFor(inject).serialSession.deviceMappings,
+                    )[0],
+                  ),
                   simulatorSocketIdentity: "not-a-logical-identity",
                 },
-                reportFor(inject).serialSession.deviceMappings[1],
+                recordValue(
+                  arrayValue(reportFor(inject).serialSession.deviceMappings)[1],
+                ),
               ],
             },
           }),
@@ -970,7 +1101,7 @@ describe("VM Host Adapter contract", () => {
     );
     assert.throws(
       () =>
-        validateVmHostAdapterReport(
+        adapterReport(
           reportFor(inject, {
             request: {
               ...reportFor(inject).request,
@@ -982,7 +1113,7 @@ describe("VM Host Adapter contract", () => {
       /lifecycleReference/,
     );
 
-    const collect = createVmHostAdapterRequest(
+    const collect = adapterRequest(
       serialSessionRequest("collect-serial-evidence"),
     );
     for (const serialEvidence of [
@@ -1005,7 +1136,7 @@ describe("VM Host Adapter contract", () => {
       },
     ])
       assert.throws(() =>
-        validateVmHostAdapterReport(
+        adapterReport(
           reportFor(collect, { serialEvidence }),
           collect,
         ),
@@ -1013,7 +1144,7 @@ describe("VM Host Adapter contract", () => {
   });
 
   it("requires frame-captured sale evidence to bind the actual order, payment, and vending command", () => {
-    const collect = createVmHostAdapterRequest(
+    const collect = adapterRequest(
       serialSessionRequest("collect-serial-evidence"),
     );
     const report = reportFor(collect);
@@ -1022,7 +1153,10 @@ describe("VM Host Adapter contract", () => {
         record.role === "scanner"
           ? {
               ...record,
-              capturedFrame: { ...record.capturedFrame, source: "sidecar" },
+              capturedFrame: {
+                ...recordValue(record.capturedFrame),
+                source: "sidecar",
+              },
             }
           : record,
       ),
@@ -1032,14 +1166,14 @@ describe("VM Host Adapter contract", () => {
           : {
               ...record,
               saleBinding: {
-                ...record.saleBinding,
+                ...recordValue(record.saleBinding),
                 paymentId: "payment-other",
               },
             },
       ),
     ])
       assert.throws(() =>
-        validateVmHostAdapterReport(
+        adapterReport(
           reportFor(collect, {
             serialEvidence: { ...report.serialEvidence, records },
           }),
@@ -1049,17 +1183,19 @@ describe("VM Host Adapter contract", () => {
   });
 
   it("rejects a completed sale relabeled without recapturing its serial frames", () => {
-    const collect = createVmHostAdapterRequest(
+    const collect = adapterRequest(
       serialSessionRequest("collect-serial-evidence"),
     );
     const original = reportFor(collect);
-    const retaggedRequest = createVmHostAdapterRequest({
+    const retaggedRequest = adapterRequest({
       ...collect,
       serialSession: {
-        ...collect.serialSession,
+        ...recordValue(collect.serialSession),
         saleBindings: [
           {
-            ...collect.serialSession.saleBindings[0],
+            ...recordValue(
+              arrayValue(recordValue(collect.serialSession).saleBindings)[0],
+            ),
             orderId: "order-attacker",
             paymentId: "payment-attacker",
             vendingCommandId: "vending-command-attacker",
@@ -1077,13 +1213,13 @@ describe("VM Host Adapter contract", () => {
     );
 
     assert.throws(
-      () => validateVmHostAdapterReport(retagged, retaggedRequest),
+      () => adapterReport(retagged, retaggedRequest),
       /immutably bind the run, sale, and raw serial frame at capture/,
     );
   });
 
   it("rejects duplicate, non-monotonic, and causally inverted sale frames", () => {
-    const collect = createVmHostAdapterRequest(
+    const collect = adapterRequest(
       serialSessionRequest("collect-serial-evidence"),
     );
     const report = reportFor(collect);
@@ -1103,8 +1239,10 @@ describe("VM Host Adapter contract", () => {
           ? {
               ...record,
               capturedFrame: {
-                ...record.capturedFrame,
-                sequence: records[scannerIndex].capturedFrame.sequence,
+                ...recordValue(record.capturedFrame),
+                sequence: recordValue(
+                  recordValue(records[scannerIndex]).capturedFrame,
+                ).sequence,
               },
             }
           : record,
@@ -1113,7 +1251,10 @@ describe("VM Host Adapter contract", () => {
         index === paymentRequestIndex
           ? {
               ...record,
-              capturedFrame: { ...record.capturedFrame, sequence: 1 },
+              capturedFrame: {
+                ...recordValue(record.capturedFrame),
+                sequence: 1,
+              },
             }
           : record,
       ),
@@ -1127,7 +1268,7 @@ describe("VM Host Adapter contract", () => {
     ];
     for (const invalidRecords of cases)
       assert.throws(() =>
-        validateVmHostAdapterReport(
+        adapterReport(
           reportFor(collect, {
             serialEvidence: {
               ...report.serialEvidence,
@@ -1141,8 +1282,8 @@ describe("VM Host Adapter contract", () => {
 
   it("rejects plaintext scanner input persisted outside adapter-work but inside the run scope", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-vm-host-scanner-leak-"));
-    const start = await runVmHostAdapter({
-      request: createVmHostAdapterRequest(
+    const start = await runAdapter({
+      request: adapterRequest(
         serialSessionRequest("start-serial-session"),
       ),
       workDirectory: root,
@@ -1150,33 +1291,36 @@ describe("VM Host Adapter contract", () => {
     });
     const inject = serialSessionRequest("inject-scanner-code");
     inject.serialSession = {
-      ...inject.serialSession,
-      serialSessionId: start.serialSession.serialSessionId,
-      sessionBindingToken: start.serialSession.sessionBindingToken,
-      startOperationReference: start.serialSession.startOperationReference,
-      deviceMappingDigest: start.serialSession.deviceMappingDigest,
+      ...recordValue(inject.serialSession),
+      serialSessionId: recordValue(start.serialSession).serialSessionId,
+      sessionBindingToken: recordValue(start.serialSession).sessionBindingToken,
+      startOperationReference: recordValue(
+        start.serialSession,
+      ).startOperationReference,
+      deviceMappingDigest: recordValue(start.serialSession).deviceMappingDigest,
     };
     await assert.rejects(
       () =>
         runVmHostAdapter({
-          request: createVmHostAdapterRequest(inject),
+          request: adapterRequest(inject),
           workDirectory: root,
           environment: {
             VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
             VEM_VM_HOST_ADAPTER_SCANNER_LEAK_FILE: join(root, "sidecar.txt"),
           },
-          scannerCode: PROTECTED_SCANNER_INPUT,
+          scannerCode: Buffer.from(PROTECTED_SCANNER_INPUT),
         }),
       (error) =>
         error instanceof VmHostAdapterExecutionError &&
-        error.diagnostic.diagnostics[0].code === "evidence_invalid",
+        recordValue(arrayValue(recordValue(error.diagnostic).diagnostics)[0])
+          .code === "evidence_invalid",
     );
     assert.equal(existsSync(join(root, "sidecar.txt")), true);
     rmSync(join(root, "sidecar.txt"), { force: true });
   });
 
   it("requires stopped sessions to prove idempotent simulator cleanup with no survivors", () => {
-    const stop = createVmHostAdapterRequest(
+    const stop = adapterRequest(
       serialSessionRequest("stop-serial-session", {
         serialSession: {
           ...serialSessionRequest("stop-serial-session").serialSession,
@@ -1206,7 +1350,7 @@ describe("VM Host Adapter contract", () => {
     ])
       assert.throws(
         () =>
-          validateVmHostAdapterReport(
+          adapterReport(
             reportFor(stop, {
               serialSession: {
                 ...reportFor(stop).serialSession,
@@ -1220,10 +1364,10 @@ describe("VM Host Adapter contract", () => {
   });
 
   it("allows a failed serial operation to report no invented session or traffic evidence", () => {
-    const request = createVmHostAdapterRequest(
+    const request = adapterRequest(
       serialSessionRequest("collect-serial-evidence"),
     );
-    const report = validateVmHostAdapterReport(
+    const report = adapterReport(
       reportFor(request, {
         result: "failed",
         negotiatedCapabilities: [],
@@ -1257,14 +1401,14 @@ describe("VM Host Adapter contract", () => {
   });
 
   it("requires a distinct canonical operation reference when cancelling", () => {
-    const valid = createVmHostAdapterRequest(requestFor("cancel"));
+    const valid = adapterRequest(requestFor("cancel"));
     assert.equal(
       valid.cancelOperationReference,
       "vm-operation://op-fedcba9876543210",
     );
     assert.throws(
       () =>
-        createVmHostAdapterRequest(
+        adapterRequest(
           requestFor("cancel", {
             cancelOperationReference: valid.operationReference,
           }),
@@ -1273,7 +1417,7 @@ describe("VM Host Adapter contract", () => {
     );
     assert.throws(
       () =>
-        createVmHostAdapterRequest(
+        adapterRequest(
           requestFor("restore-approved-base", {
             cancelOperationReference: valid.operationReference,
           }),
@@ -1283,12 +1427,12 @@ describe("VM Host Adapter contract", () => {
   });
 
   it("binds the observed VM to the exact requested logical target and reconstructs only allowed output", () => {
-    const request = createVmHostAdapterRequest(requestFor());
+    const request = adapterRequest(requestFor());
     const report = reportFor(request);
-    const validated = validateVmHostAdapterReport(report, request);
+    const validated = adapterReport(report, request);
     assert.deepEqual(validated, report);
     assert.throws(() =>
-      validateVmHostAdapterReport(
+      adapterReport(
         reportFor(request, {
           observed: {
             ...report.observed,
@@ -1302,7 +1446,7 @@ describe("VM Host Adapter contract", () => {
       ),
     );
     assert.throws(() =>
-      validateVmHostAdapterReport(
+      adapterReport(
         reportFor(request, {
           observed: { ...report.observed, hostPath: "/host-private/secret" },
         }),
@@ -1313,20 +1457,20 @@ describe("VM Host Adapter contract", () => {
 
   it("binds runtime image cancellation evidence to its lifecycle source", () => {
     const cleanInstall = cleanInstallRequest();
-    const request = createVmHostAdapterRequest(
+    const request = adapterRequest(
       requestFor("cancel", {
         assets: cleanInstall.assets,
       }),
     );
     const report = reportFor(request);
     report.observed.baseIdentity = `runtime-asset://sha256/${"b".repeat(64)}`;
-    assert.throws(() => validateVmHostAdapterReport(report, request));
+    assert.throws(() => adapterReport(report, request));
   });
 
   it("rejects ambiguous recovery lifecycle sources", () => {
     const cleanInstall = cleanInstallRequest();
     assert.throws(() =>
-      createVmHostAdapterRequest(
+      adapterRequest(
         requestFor("cancel", {
           assets: [
             ...cleanInstall.assets,
@@ -1343,17 +1487,17 @@ describe("VM Host Adapter contract", () => {
   });
 
   it("keeps overlay lifecycle active through restore and separates the completed operation from negotiated capabilities", () => {
-    const restore = createVmHostAdapterRequest(requestFor());
+    const restore = adapterRequest(requestFor());
     const report = reportFor(restore, {
       negotiatedCapabilities: restore.requestedCapabilities,
       completedOperations: ["restore-approved-base"],
     });
     assert.equal(
-      validateVmHostAdapterReport(report, restore).cleanup.overlayDisposition,
+      adapterReport(report, restore).cleanup.overlayDisposition,
       "active",
     );
     assert.throws(() =>
-      validateVmHostAdapterReport(
+      adapterReport(
         reportFor(restore, {
           cleanup: {
             status: "completed",
@@ -1368,35 +1512,35 @@ describe("VM Host Adapter contract", () => {
         restore,
       ),
     );
-    const capture = createVmHostAdapterRequest(requestFor("capture-display"));
+    const capture = adapterRequest(requestFor("capture-display"));
     assert.equal(
-      validateVmHostAdapterReport(reportFor(capture), capture).evidence[0].role,
+      adapterReport(reportFor(capture), capture).evidence[0].role,
       "display-capture",
     );
     assert.throws(() =>
-      validateVmHostAdapterReport(
+      adapterReport(
         reportFor(restore, { evidence: reportFor(capture).evidence }),
         restore,
       ),
     );
-    const cleanup = createVmHostAdapterRequest(requestFor("cleanup"));
+    const cleanup = adapterRequest(requestFor("cleanup"));
     assert.equal(
-      validateVmHostAdapterReport(reportFor(cleanup), cleanup).cleanup
+      adapterReport(reportFor(cleanup), cleanup).cleanup
         .overlayDisposition,
       "removed",
     );
   });
 
   it("requires a digest-bound relative image file name for a display capture", () => {
-    const capture = createVmHostAdapterRequest(requestFor("capture-display"));
+    const capture = adapterRequest(requestFor("capture-display"));
     assert.equal(
-      validateVmHostAdapterReport(reportFor(capture), capture).evidence[0]
+      adapterReport(reportFor(capture), capture).evidence[0]
         .fileName,
       `${"b".repeat(64)}.png`,
     );
     assert.throws(
       () =>
-        validateVmHostAdapterReport(
+        adapterReport(
           reportFor(capture, {
             evidence: [
               {
@@ -1412,71 +1556,73 @@ describe("VM Host Adapter contract", () => {
   });
 
   it("requires a foreground kiosk binding, 1080x1920 framebuffer, and a matching CDP visual challenge", () => {
-    const request = createVmHostAdapterRequest(requestFor("capture-display"));
+    const request = adapterRequest(requestFor("capture-display"));
     const report = reportFor(request);
+    const baseDisplayCapture = report.displayCapture;
+    assert.ok(baseDisplayCapture);
     for (const displayCapture of [
       {
-        ...report.displayCapture,
+        ...baseDisplayCapture,
         tauriRoute: "http://tauri.localhost/#/maintenance",
       },
       {
-        ...report.displayCapture,
-        cdpProbe: { ...report.displayCapture.cdpProbe, appTextLength: 0 },
+        ...baseDisplayCapture,
+        cdpProbe: { ...baseDisplayCapture.cdpProbe, appTextLength: 0 },
       },
       {
-        ...report.displayCapture,
+        ...baseDisplayCapture,
         foregroundKiosk: {
-          ...report.displayCapture.foregroundKiosk,
+          ...baseDisplayCapture.foregroundKiosk,
           visible: false,
         },
       },
       {
-        ...report.displayCapture,
+        ...baseDisplayCapture,
         cdpProbe: {
-          ...report.displayCapture.cdpProbe,
+          ...baseDisplayCapture.cdpProbe,
           targetId: "cdp-target-other-002",
         },
       },
       {
-        ...report.displayCapture,
+        ...baseDisplayCapture,
         visualChallenge: {
-          ...report.displayCapture.visualChallenge,
+          ...baseDisplayCapture.visualChallenge,
           matchingPixelCount: 1,
         },
       },
       {
-        ...report.displayCapture,
+        ...baseDisplayCapture,
         capture: {
-          ...report.displayCapture.capture,
+          ...baseDisplayCapture.capture,
           widthPx: 1920,
           heightPx: 1080,
         },
       },
       {
-        ...report.displayCapture,
+        ...baseDisplayCapture,
         capture: {
-          ...report.displayCapture.capture,
+          ...baseDisplayCapture.capture,
           source: "platform-framebuffer",
         },
       },
       {
-        ...report.displayCapture,
+        ...baseDisplayCapture,
         capture: {
-          ...report.displayCapture.capture,
+          ...baseDisplayCapture.capture,
           nonTransparentPixelCount: 1_000,
           nonTransparentPixelRatio: 1_000 / 2_073_600,
         },
       },
       {
-        ...report.displayCapture,
+        ...baseDisplayCapture,
         capture: {
-          ...report.displayCapture.capture,
+          ...baseDisplayCapture.capture,
           distinctPixelCount: 255,
         },
       },
     ])
       assert.throws(() =>
-        validateVmHostAdapterReport(
+        adapterReport(
           reportFor(request, { displayCapture }),
           request,
         ),
@@ -1484,61 +1630,63 @@ describe("VM Host Adapter contract", () => {
   });
 
   it("requires Windows default-output evidence without endpoint selection", () => {
-    const request = createVmHostAdapterRequest(
+    const request = adapterRequest(
       requestFor("capture-default-audio"),
     );
     const report = reportFor(request);
+    const baseDefaultAudioCapture = report.defaultAudioCapture;
+    assert.ok(baseDefaultAudioCapture);
     const cases = [
       {
         defaultAudioCapture: {
-          ...report.defaultAudioCapture,
+          ...baseDefaultAudioCapture,
           lifecycleReference: "vm-lifecycle://other-run.runtime",
         },
       },
       {
         defaultAudioCapture: {
-          ...report.defaultAudioCapture,
+          ...baseDefaultAudioCapture,
           activeKioskSession: { sessionUser: "VEMKiosk", sessionId: 4 },
         },
       },
       {
         defaultAudioCapture: {
-          ...report.defaultAudioCapture,
+          ...baseDefaultAudioCapture,
           defaultOutput: { status: "missing" },
         },
       },
       {
         defaultAudioCapture: {
-          ...report.defaultAudioCapture,
+          ...baseDefaultAudioCapture,
           daemonCalibration: {
-            ...report.defaultAudioCapture.daemonCalibration,
+            ...baseDefaultAudioCapture.daemonCalibration,
             command: "browser_audio_play",
           },
         },
       },
       {
         defaultAudioCapture: {
-          ...report.defaultAudioCapture,
+          ...baseDefaultAudioCapture,
           capture: {
-            ...report.defaultAudioCapture.capture,
+            ...baseDefaultAudioCapture.capture,
             nonSilentFrameCount: 0,
           },
         },
       },
       {
         defaultAudioCapture: {
-          ...report.defaultAudioCapture,
+          ...baseDefaultAudioCapture,
           capture: {
-            ...report.defaultAudioCapture.capture,
+            ...baseDefaultAudioCapture.capture,
             source: "",
           },
         },
       },
       {
         defaultAudioCapture: {
-          ...report.defaultAudioCapture,
+          ...baseDefaultAudioCapture,
           daemonCalibration: {
-            ...report.defaultAudioCapture.daemonCalibration,
+            ...baseDefaultAudioCapture.daemonCalibration,
             completedAt: "2026-07-11T00:00:02.000Z",
           },
         },
@@ -1554,15 +1702,15 @@ describe("VM Host Adapter contract", () => {
     ];
     for (const override of cases)
       assert.throws(() =>
-        validateVmHostAdapterReport(reportFor(request, override), request),
+        adapterReport(reportFor(request, override), request),
       );
     assert.doesNotThrow(() =>
-      validateVmHostAdapterReport(
+      adapterReport(
         reportFor(request, {
           defaultAudioCapture: {
-            ...report.defaultAudioCapture,
+            ...baseDefaultAudioCapture,
             capture: {
-              ...report.defaultAudioCapture.capture,
+              ...baseDefaultAudioCapture.capture,
               source: "windows-loopback-wav",
             },
           },
@@ -1578,7 +1726,7 @@ describe("VM Host Adapter contract", () => {
     await assert.rejects(
       () =>
         runVmHostAdapter({
-          request: createVmHostAdapterRequest(
+          request: adapterRequest(
             requestFor("capture-default-audio"),
           ),
           workDirectory: root,
@@ -1589,11 +1737,16 @@ describe("VM Host Adapter contract", () => {
             VEM_VM_HOST_ADAPTER_CLEANUP_FILE: cleanupFile,
           },
         }),
-      (error) =>
-        error instanceof VmHostAdapterExecutionError &&
-        error.diagnostic.result === "failed" &&
-        error.diagnostic.diagnostics[0].code === "evidence_invalid" &&
-        error.diagnostic.cleanup.status === "completed",
+      (error) => {
+        if (!(error instanceof VmHostAdapterExecutionError)) return false;
+        const diagnostic = recordValue(error.diagnostic);
+        return (
+          diagnostic.result === "failed" &&
+          recordValue(arrayValue(diagnostic.diagnostics)[0]).code ===
+            "evidence_invalid" &&
+          recordValue(diagnostic.cleanup).status === "completed"
+        );
+      },
     );
     assert.equal(readFileSync(cleanupFile, "utf8"), "cleanup\n");
   });
@@ -1602,7 +1755,7 @@ describe("VM Host Adapter contract", () => {
     await assert.rejects(
       () =>
         runVmHostAdapter({
-          request: createVmHostAdapterRequest(requestFor("capture-display")),
+          request: adapterRequest(requestFor("capture-display")),
           workDirectory: mkdtempSync(join(tmpdir(), "vem-vm-host-display-")),
           environment: { VEM_VM_HOST_ADAPTER: FAKE_ADAPTER },
         }),
@@ -1612,38 +1765,40 @@ describe("VM Host Adapter contract", () => {
 
   it("exports decoded display evidence under its run and operation scope", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-vm-host-display-scope-"));
-    const request = createVmHostAdapterRequest(requestFor("capture-display"));
-    const report = await runVmHostAdapter({
+    const request = adapterRequest(requestFor("capture-display"));
+    const report = await runAdapter({
       request,
       workDirectory: root,
       evidenceDirectory: join(root, "uploaded-evidence"),
       environment: { VEM_VM_HOST_ADAPTER: FAKE_ADAPTER },
     });
-    const file = report.evidence[0].fileName;
+    const file = String(report.evidence[0].fileName);
     assert.equal(
       existsSync(
         join(
           root,
           "uploaded-evidence",
-          request.runId,
-          request.operationNonce,
+          String(request.runId),
+          String(request.operationNonce),
           file,
         ),
       ),
       true,
     );
-    assert.deepEqual(report.displayCapture.activeKioskSession, {
+    const displayCapture = report.displayCapture;
+    assert.ok(displayCapture);
+    assert.deepEqual(displayCapture.activeKioskSession, {
       sessionUser: "VEMKiosk",
       sessionId: 3,
     });
-    assert.equal(report.displayCapture.tauriRoute, "http://tauri.localhost/#/");
+    assert.equal(displayCapture.tauriRoute, "http://tauri.localhost/#/");
   });
 
   it("accepts a successful operation only when every requested capability is negotiated", () => {
-    const request = createVmHostAdapterRequest(requestFor());
+    const request = adapterRequest(requestFor());
     assert.throws(
       () =>
-        validateVmHostAdapterReport(
+        adapterReport(
           reportFor(request, {
             negotiatedCapabilities: [
               "approved-base-restore",
@@ -1659,10 +1814,10 @@ describe("VM Host Adapter contract", () => {
   });
 
   it("requires every requested role-addressed device mapping before accepting a successful operation", () => {
-    const request = createVmHostAdapterRequest(requestFor());
+    const request = adapterRequest(requestFor());
     assert.throws(
       () =>
-        validateVmHostAdapterReport(
+        adapterReport(
           reportFor(request, {
             negotiatedCapabilities: [
               "approved-base-restore",
@@ -1688,7 +1843,7 @@ describe("VM Host Adapter contract", () => {
   });
 
   it("rejects duplicate serial and evidence roles, extra consumed asset fields, loose timestamps, and non-canonical evidence identity", () => {
-    const request = createVmHostAdapterRequest(requestFor("capture-display"));
+    const request = adapterRequest(requestFor("capture-display"));
     const report = reportFor(request);
     const cases = [
       { ...report, secret: "leak" },
@@ -1727,9 +1882,9 @@ describe("VM Host Adapter contract", () => {
       }),
     ];
     for (const candidate of cases)
-      assert.throws(() => validateVmHostAdapterReport(candidate, request));
+      assert.throws(() => adapterReport(candidate, request));
     assert.throws(() =>
-      createVmHostAdapterRequest({
+      adapterRequest({
         ...request,
         hostPath: "/host-private/base",
       }),
@@ -1737,8 +1892,8 @@ describe("VM Host Adapter contract", () => {
   });
 
   it("runs only the runner-service adapter and accepts a deterministic restore with an active overlay", async () => {
-    const request = createVmHostAdapterRequest(requestFor());
-    const report = await runVmHostAdapter({
+    const request = adapterRequest(requestFor());
+    const report = await runAdapter({
       request,
       workDirectory: mkdtempSync(join(tmpdir(), "vem-vm-host-client-")),
       environment: {
@@ -1757,8 +1912,8 @@ describe("VM Host Adapter contract", () => {
       VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "success",
       VEM_VM_HOST_ADAPTER_STATE_FILE: join(workDirectory, "state.json"),
     };
-    const start = await runVmHostAdapter({
-      request: createVmHostAdapterRequest(
+    const start = await runAdapter({
+      request: adapterRequest(
         serialSessionRequest("start-serial-session"),
       ),
       workDirectory,
@@ -1774,23 +1929,25 @@ describe("VM Host Adapter contract", () => {
       const retryStop =
         operation === "stop-serial-session" && stopAttempts++ > 0;
       const input = serialSessionRequest(operation);
-      const report = await runVmHostAdapter({
-        request: createVmHostAdapterRequest({
+      const report = await runAdapter({
+        request: adapterRequest({
           ...input,
           serialSession: {
-            ...input.serialSession,
-            serialSessionId: start.serialSession.serialSessionId,
-            sessionBindingToken: start.serialSession.sessionBindingToken,
+            ...recordValue(input.serialSession),
+            serialSessionId: recordValue(start.serialSession).serialSessionId,
+            sessionBindingToken:
+              recordValue(start.serialSession).sessionBindingToken,
             startOperationReference:
-              start.serialSession.startOperationReference,
-            deviceMappingDigest: start.serialSession.deviceMappingDigest,
+              recordValue(start.serialSession).startOperationReference,
+            deviceMappingDigest:
+              recordValue(start.serialSession).deviceMappingDigest,
             idempotencyCheck: retryStop,
           },
         }),
         workDirectory,
         environment,
         ...(operation === "inject-scanner-code"
-          ? { scannerCode: PROTECTED_SCANNER_INPUT }
+          ? { scannerCode: Buffer.from(PROTECTED_SCANNER_INPUT) }
           : {}),
       });
       assert.equal(
@@ -1799,7 +1956,8 @@ describe("VM Host Adapter contract", () => {
       );
       if (retryStop)
         assert.equal(
-          report.serialSession.simulatorCleanup.idempotencyVerified,
+          recordValue(report.serialSession.simulatorCleanup)
+            .idempotencyVerified,
           true,
         );
     }
@@ -1815,16 +1973,16 @@ describe("VM Host Adapter contract", () => {
       VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "success",
       VEM_VM_HOST_ADAPTER_STATE_FILE: statePath,
     };
-    const start = await runVmHostAdapter({
-      request: createVmHostAdapterRequest(
+    const start = await runAdapter({
+      request: adapterRequest(
         serialSessionRequest("start-serial-session"),
       ),
       workDirectory,
       environment,
     });
     const input = serialSessionRequest("inject-scanner-code");
-    const report = await runVmHostAdapter({
-      request: createVmHostAdapterRequest({
+    const report = await runAdapter({
+      request: adapterRequest({
         ...input,
         serialSession: {
           ...input.serialSession,
@@ -1839,7 +1997,7 @@ describe("VM Host Adapter contract", () => {
         ...environment,
         VEM_VM_HOST_SERIAL_CONFORMANCE_FAULT: "scanner-timeout",
       },
-      scannerCode: PROTECTED_SCANNER_INPUT,
+      scannerCode: Buffer.from(PROTECTED_SCANNER_INPUT),
     });
     assert.equal(report.result, "succeeded");
     assert.deepEqual(report.diagnostics, [{ code: "serial_scanner_timeout" }]);
@@ -1854,11 +2012,14 @@ describe("VM Host Adapter contract", () => {
     });
     const state = JSON.parse(readFileSync(statePath, "utf8"));
     assert.equal(
-      state.sessions[start.serialSession.serialSessionId].active,
+      recordValue(state.sessions[String(start.serialSession.serialSessionId)])
+        .active,
       true,
     );
     assert.equal(
-      state.sessions[start.serialSession.serialSessionId].cleanupAttemptCount,
+      recordValue(
+        state.sessions[String(start.serialSession.serialSessionId)],
+      ).cleanupAttemptCount,
       0,
     );
   });
@@ -1873,8 +2034,8 @@ describe("VM Host Adapter contract", () => {
       VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "failure",
       VEM_VM_HOST_ADAPTER_STATE_FILE: statePath,
     };
-    const start = await runVmHostAdapter({
-      request: createVmHostAdapterRequest(
+    const start = await runAdapter({
+      request: adapterRequest(
         serialSessionRequest("start-serial-session"),
       ),
       workDirectory,
@@ -1887,10 +2048,10 @@ describe("VM Host Adapter contract", () => {
     await assert.rejects(
       () =>
         runVmHostAdapter({
-          request: createVmHostAdapterRequest({
+          request: adapterRequest({
             ...input,
             serialSession: {
-              ...input.serialSession,
+              ...recordValue(input.serialSession),
               serialSessionId: start.serialSession.serialSessionId,
               sessionBindingToken: start.serialSession.sessionBindingToken,
               startOperationReference:
@@ -1900,13 +2061,15 @@ describe("VM Host Adapter contract", () => {
           }),
           workDirectory,
           environment,
-          scannerCode: PROTECTED_SCANNER_INPUT,
+          scannerCode: Buffer.from(PROTECTED_SCANNER_INPUT),
         }),
       VmHostAdapterExecutionError,
     );
     const state = JSON.parse(readFileSync(statePath, "utf8"));
     assert.equal(
-      state.sessions[start.serialSession.serialSessionId].cleanupAttemptCount,
+      recordValue(
+        state.sessions[String(start.serialSession.serialSessionId)],
+      ).cleanupAttemptCount,
       1,
     );
   });
@@ -1916,7 +2079,7 @@ describe("VM Host Adapter contract", () => {
       join(tmpdir(), "vem-vm-host-start-recovery-"),
     );
     const statePath = join(workDirectory, "state.json");
-    const request = createVmHostAdapterRequest(
+    const request = adapterRequest(
       serialSessionRequest("start-serial-session"),
     );
     const expected = deriveSerialSessionBinding({
@@ -1951,7 +2114,7 @@ describe("VM Host Adapter contract", () => {
       join(tmpdir(), "vem-vm-host-start-timeout-recovery-"),
     );
     const statePath = join(workDirectory, "state.json");
-    const request = createVmHostAdapterRequest(
+    const request = adapterRequest(
       serialSessionRequest("start-serial-session"),
     );
     const expected = deriveSerialSessionBinding({
@@ -1988,7 +2151,7 @@ describe("VM Host Adapter contract", () => {
     await assert.rejects(
       () =>
         runVmHostAdapter({
-          request: createVmHostAdapterRequest(requestFor()),
+          request: adapterRequest(requestFor()),
           workDirectory: root,
           timeoutMs: 80,
           environment: {
@@ -1999,8 +2162,9 @@ describe("VM Host Adapter contract", () => {
         }),
       (error) => {
         assert.ok(error instanceof VmHostAdapterExecutionError);
-        assert.equal(error.diagnostic.result, "timed_out");
-        assert.deepEqual(error.diagnostic.cleanup, {
+        const diagnostic = diagnosticRecord(error);
+        assert.equal(diagnostic.result, "timed_out");
+        assert.deepEqual(diagnostic.cleanup, {
           attempted: true,
           status: "completed",
           observed: {
@@ -2024,7 +2188,7 @@ describe("VM Host Adapter contract", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-vm-host-descendant-"));
     const descendantPidFile = join(root, "adapter-descendant.pid");
     await runVmHostAdapter({
-      request: createVmHostAdapterRequest(requestFor()),
+      request: adapterRequest(requestFor()),
       workDirectory: root,
       environment: {
         VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
@@ -2045,7 +2209,7 @@ describe("VM Host Adapter contract", () => {
     const signingKeyFile = join(root, "runner-ed25519.pem");
     writeFileSync(signingKeyFile, "private signing key", { mode: 0o600 });
     await runVmHostAdapter({
-      request: createVmHostAdapterRequest(requestFor()),
+      request: adapterRequest(requestFor()),
       workDirectory: root,
       environment: {
         VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
@@ -2066,7 +2230,7 @@ describe("VM Host Adapter contract", () => {
     await assert.rejects(
       () =>
         runVmHostAdapter({
-          request: createVmHostAdapterRequest(requestFor()),
+          request: adapterRequest(requestFor()),
           workDirectory: root,
           timeoutMs: 1000,
           signal: controller.signal,
@@ -2078,8 +2242,8 @@ describe("VM Host Adapter contract", () => {
         }),
       (error) =>
         error instanceof VmHostAdapterExecutionError &&
-        error.diagnostic.result === "cancelled" &&
-        error.diagnostic.cleanup.status === "completed",
+        diagnosticRecord(error).result === "cancelled" &&
+        recordValue(diagnosticRecord(error).cleanup).status === "completed",
     );
     assert.equal(readFileSync(signalFile, "utf8"), "SIGTERM\n");
   });
@@ -2254,7 +2418,7 @@ describe("VM Host Adapter contract", () => {
       await assert.rejects(
         () =>
           runVmHostAdapter({
-            request: createVmHostAdapterRequest(requestFor()),
+            request: adapterRequest(requestFor()),
             workDirectory: root,
             environment: {
               VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
@@ -2264,8 +2428,10 @@ describe("VM Host Adapter contract", () => {
           }),
         (error) =>
           error instanceof VmHostAdapterExecutionError &&
-          error.diagnostic.cleanup.status === "completed" &&
-          error.diagnostic.cleanup.observed.overlay === "removed",
+          recordValue(diagnosticRecord(error).cleanup).status === "completed" &&
+          recordValue(
+            recordValue(diagnosticRecord(error).cleanup).observed,
+          ).overlay === "removed",
       );
       assert.equal(readFileSync(cleanupFile, "utf8"), "cleanup\n");
     });
@@ -2276,7 +2442,7 @@ describe("VM Host Adapter contract", () => {
       await assert.rejects(
         () =>
           runVmHostAdapter({
-            request: createVmHostAdapterRequest(cleanInstallRequest()),
+            request: adapterRequest(cleanInstallRequest()),
             workDirectory: root,
             environment: {
               VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
@@ -2286,8 +2452,8 @@ describe("VM Host Adapter contract", () => {
           }),
         (error) =>
           error instanceof VmHostAdapterExecutionError &&
-          error.diagnostic.result === "failed" &&
-          error.diagnostic.cleanup.status === "completed",
+          diagnosticRecord(error).result === "failed" &&
+          recordValue(diagnosticRecord(error).cleanup).status === "completed",
       );
       assert.equal(readFileSync(cleanupFile, "utf8"), "cleanup\n");
     });
@@ -2299,7 +2465,7 @@ describe("VM Host Adapter contract", () => {
       const cleanupFile = join(root, "cleanup.txt");
       const operationLog = join(root, "operations.log");
       const pidFile = join(root, "adapter.pid");
-      const request = createVmHostAdapterRequest(cleanInstallRequest());
+      const request = adapterRequest(cleanInstallRequest());
       await assert.rejects(
         () =>
           runVmHostAdapter({
@@ -2318,8 +2484,8 @@ describe("VM Host Adapter contract", () => {
           }),
         (error) =>
           error instanceof VmHostAdapterExecutionError &&
-          error.diagnostic.result === "timed_out" &&
-          error.diagnostic.cleanup.status === "completed",
+          diagnosticRecord(error).result === "timed_out" &&
+          recordValue(diagnosticRecord(error).cleanup).status === "completed",
       );
       assert.equal(readFileSync(signalFile, "utf8"), "SIGTERM\n");
       assert.equal(
@@ -2474,14 +2640,6 @@ describe("VM Host Adapter contract", () => {
       const report = JSON.parse(readFileSync(out, "utf8"));
       assert.equal(existsSync(runnerSigningKeyFile), false);
       assert.equal(report.runnerEvidence.publicKey, expectedRunnerPublicKey);
-      for (const name of [
-        "start",
-        "inject",
-        "collect",
-        "firstStop",
-        "repeatedStop",
-      ]) {
-      }
       assert.equal(
         report.reports.repeatedStop.serialSession.simulatorCleanup
           .idempotencyVerified,
@@ -2489,7 +2647,7 @@ describe("VM Host Adapter contract", () => {
       );
       assert.equal(report.reports.collect.serialEvidence.records.length, 9);
       assert.deepEqual(
-        report.failureMatrix.map((entry) => entry.failureMode),
+        report.failureMatrix.map((entry: JsonRecord) => entry.failureMode),
         [
           "malformed-frame",
           "device-disconnected",
@@ -2501,13 +2659,13 @@ describe("VM Host Adapter contract", () => {
       );
       assert.equal(
         report.failureMatrix.find(
-          (entry) => entry.failureMode === "scanner-timeout",
+          (entry: JsonRecord) => entry.failureMode === "scanner-timeout",
         ).vendingCommandId,
         undefined,
       );
       assert.equal(
         report.failureMatrix.find(
-          (entry) => entry.failureMode === "scanner-timeout",
+          (entry: JsonRecord) => entry.failureMode === "scanner-timeout",
         ).source.fault.request.serialSession.saleBindings[0].vendingCommandId,
         null,
       );
@@ -2525,7 +2683,7 @@ describe("VM Host Adapter contract", () => {
       assert.equal(malformedContext.status, 1);
       for (const failureMode of ["swapped-roles", "missing-device"]) {
         const mappingFailure = report.failureMatrix.find(
-          (entry) => entry.failureMode === failureMode,
+          (entry: JsonRecord) => entry.failureMode === failureMode,
         );
         assert.equal(
           mappingFailure.operation,
@@ -2635,19 +2793,23 @@ describe("VM Host Adapter contract", () => {
         ...forgedBinding,
         startOperationReference: forgedStartReference,
       });
-      const records = collectReport.serialEvidence.records.map((record) => ({
-        ...record,
-        operationNonce:
-          record.role === "scanner"
-            ? collectRequest.serialSession.scannerInjection.operationNonce
-            : collectRequest.operationNonce,
-        sessionBindingToken: forgedBinding.sessionBindingToken,
-        saleCorrelationId:
-          record.saleCorrelationId === null
-            ? null
-            : forgedSale.saleCorrelationId,
-        saleBinding: record.saleBinding === null ? null : forgedSale,
-      }));
+      const records = collectReport.serialEvidence.records.map(
+        (record: JsonRecord) => ({
+          ...record,
+          operationNonce:
+            record.role === "scanner"
+              ? recordValue(
+                  recordValue(collectRequest.serialSession).scannerInjection,
+                ).operationNonce
+              : collectRequest.operationNonce,
+          sessionBindingToken: forgedBinding.sessionBindingToken,
+          saleCorrelationId:
+            record.saleCorrelationId === null
+              ? null
+              : forgedSale.saleCorrelationId,
+          saleBinding: record.saleBinding === null ? null : forgedSale,
+        }),
+      );
       let previousCaptureBindingDigest = null;
       for (const record of records) {
         record.captureBindingDigest = deriveSerialFrameCaptureBindingDigest({
@@ -2668,7 +2830,7 @@ describe("VM Host Adapter contract", () => {
         }),
       });
       assert.doesNotThrow(() =>
-        validateVmHostAdapterReport(collectReport, collectRequest),
+        adapterReport(collectReport, collectRequest),
       );
       assert.throws(
         () =>
@@ -2740,7 +2902,7 @@ describe("VM Host Adapter contract", () => {
           "an unparseable response message after a single-blocker readyz snapshot",
           [],
         ],
-      ]) {
+      ] as [string, string[]][]) {
         const staleReadyzSnapshot = blockedSaleOutput();
         staleReadyzSnapshot.simulatedHardwareSaleFlow.transactionEntry.responseBlockingCodes =
           responseBlockingCodes;
@@ -2758,15 +2920,19 @@ describe("VM Host Adapter contract", () => {
       }
 
       const multiBlocker = blockedSaleOutput();
-      multiBlocker.simulatedHardwareSaleFlow.daemonIpc.readyz.blockingCodes.push(
-        "NO_PAYMENT_OPTIONS",
-      );
-      multiBlocker.simulatedHardwareSaleFlow.hardwareMappingFault.readinessBlockingCodes.push(
-        "NO_PAYMENT_OPTIONS",
-      );
-      multiBlocker.simulatedHardwareSaleFlow.transactionEntry.readinessBlockingCodes.push(
-        "NO_PAYMENT_OPTIONS",
-      );
+      arrayValue(
+        recordValue(
+          recordValue(multiBlocker.simulatedHardwareSaleFlow.daemonIpc).readyz,
+        ).blockingCodes,
+      ).push("NO_PAYMENT_OPTIONS");
+      arrayValue(
+        recordValue(multiBlocker.simulatedHardwareSaleFlow.hardwareMappingFault)
+          .readinessBlockingCodes,
+      ).push("NO_PAYMENT_OPTIONS");
+      arrayValue(
+        recordValue(multiBlocker.simulatedHardwareSaleFlow.transactionEntry)
+          .readinessBlockingCodes,
+      ).push("NO_PAYMENT_OPTIONS");
       assert.throws(
         () =>
           assertBlockedSaleEvidence({
@@ -2779,7 +2945,13 @@ describe("VM Host Adapter contract", () => {
       );
 
       const unavailablePayment = blockedSaleOutput();
-      unavailablePayment.simulatedHardwareSaleFlow.transactionEntry.context.paymentOption.ready = false;
+      recordValue(
+        recordValue(
+          recordValue(
+            unavailablePayment.simulatedHardwareSaleFlow.transactionEntry,
+          ).context,
+        ).paymentOption,
+      ).ready = false;
       assert.throws(
         () =>
           assertBlockedSaleEvidence({
@@ -2792,7 +2964,9 @@ describe("VM Host Adapter contract", () => {
       );
 
       const missingContext = blockedSaleOutput();
-      missingContext.simulatedHardwareSaleFlow.transactionEntry.context = null;
+      recordValue(
+        missingContext.simulatedHardwareSaleFlow.transactionEntry,
+      ).context = null;
       assert.throws(
         () =>
           assertBlockedSaleEvidence({
@@ -2805,8 +2979,11 @@ describe("VM Host Adapter contract", () => {
       );
 
       const fabricatedContext = blockedSaleOutput();
-      fabricatedContext.simulatedHardwareSaleFlow.transactionEntry.request.slotId =
-        "invented-slot";
+      recordValue(
+        recordValue(
+          fabricatedContext.simulatedHardwareSaleFlow.transactionEntry,
+        ).request,
+      ).slotId = "invented-slot";
       assert.throws(
         () =>
           assertBlockedSaleEvidence({
@@ -2832,6 +3009,7 @@ describe("VM Host Adapter contract", () => {
       };
       const failureCase = observedMappingFailureCase({
         failureMode: "swapped-roles",
+        startRequest: requestFor("start-serial-session"),
         startReport,
         expectedDiagnosticCode: "serial_swapped_roles",
         daemonFailClosed: {
@@ -2857,6 +3035,7 @@ describe("VM Host Adapter contract", () => {
         () =>
           observedMappingFailureCase({
             failureMode: "swapped-roles",
+            startRequest: requestFor("start-serial-session"),
             startReport: { ...startReport, serialSession: null },
             expectedDiagnosticCode: "serial_swapped_roles",
             daemonFailClosed: { saleBindingCreated: false },
@@ -2944,7 +3123,7 @@ describe("VM Host Adapter contract", () => {
       const cancelFile = join(root, "cancel.txt");
       const signalFile = join(root, "signal.txt");
       let client;
-      let adapterPid;
+      let adapterPid: number | undefined;
       try {
         client = spawn(
           process.execPath,
@@ -2977,17 +3156,22 @@ describe("VM Host Adapter contract", () => {
         );
         await waitFor(() => existsSync(pidFile), "adapter did not start");
         adapterPid = Number.parseInt(readFileSync(pidFile, "utf8"), 10);
-        assert.ok(Number.isInteger(adapterPid));
+        assert.ok(adapterPid !== undefined);
+        const adapterProcessId = adapterPid;
 
         client.kill("SIGTERM");
         const [exitCode] = await once(client, "close");
         assert.notEqual(exitCode, 0);
         await waitFor(() => {
           try {
-            process.kill(adapterPid, 0);
+            process.kill(adapterProcessId, 0);
             return false;
           } catch (error) {
-            return error?.code === "ESRCH";
+            return (
+              error instanceof Error &&
+              "code" in error &&
+              error.code === "ESRCH"
+            );
           }
         }, "adapter process remained after CLI cancellation");
 
@@ -3014,7 +3198,7 @@ describe("VM Host Adapter contract", () => {
         );
       } finally {
         client?.kill("SIGKILL");
-        if (Number.isInteger(adapterPid)) {
+        if (adapterPid !== undefined) {
           try {
             process.kill(adapterPid, "SIGKILL");
           } catch {}

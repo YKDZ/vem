@@ -3716,11 +3716,17 @@ export function redactScannerCode(
   value: unknown,
   scannerCode: unknown,
 ): unknown {
-  if (typeof scannerCode !== "string" || scannerCode.length === 0)
+  const code =
+    typeof scannerCode === "string"
+      ? scannerCode
+      : Buffer.isBuffer(scannerCode)
+        ? scannerCode.toString("utf8")
+        : "";
+  if (code.length === 0)
     return structuredClone(value);
   const redact = (entry: unknown): unknown => {
     if (typeof entry === "string")
-      return entry.replaceAll(scannerCode, "[redacted-scanner-code]");
+      return entry.replaceAll(code, "[redacted-scanner-code]");
     if (Array.isArray(entry)) return entry.map((item) => redact(item));
     if (!isRecord(entry)) return entry;
     return Object.fromEntries(
@@ -3781,12 +3787,18 @@ function assertScannerCodeNotPersisted(
   directory: string,
   scannerCode: unknown,
 ): void {
-  if (typeof scannerCode !== "string" || scannerCode.length === 0) return;
+  const code =
+    typeof scannerCode === "string"
+      ? scannerCode
+      : Buffer.isBuffer(scannerCode)
+        ? scannerCode.toString("utf8")
+        : "";
+  if (code.length === 0) return;
   const visit = (path: string): void => {
     for (const entry of readdirSync(path, { withFileTypes: true })) {
       const child = join(path, entry.name);
       if (entry.isDirectory()) visit(child);
-      else if (entry.isFile() && readFileSync(child).includes(scannerCode))
+      else if (entry.isFile() && readFileSync(child).includes(code))
         throw new Error(
           "protected scanner input must not persist in adapter work directories or sidecars",
         );
@@ -4219,7 +4231,7 @@ export async function runVmHostAdapter({
   timeoutMs?: number;
   signal?: AbortSignal;
   onOperationStarted?: (operation: Record<string, unknown>) => unknown;
-  scannerCode?: Buffer;
+  scannerCode?: Buffer | string;
   allowTestAdapter?: boolean;
 }): Promise<Record<string, unknown>> {
   const testAdapterAllowed =
