@@ -441,3 +441,343 @@ impl PaymentCreationCriticalSection {
             .map_err(|error| error.to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn waiting_snapshot() -> InternalCurrentTransactionSnapshot {
+        serde_json::from_value(json!({
+            "updatedAt": "2026-08-23T00:00:00.000Z",
+            "nextAction": "wait_payment"
+        }))
+        .expect("snapshot")
+    }
+
+    fn request() -> CheckoutCreationRequest {
+        CheckoutCreationRequest {
+            payment_method: "mock".to_string(),
+            payment_provider_code: Some("mock".to_string()),
+            items: json!([{ "slotId": "A1", "quantity": 1 }]),
+            profile_snapshot: None,
+        }
+    }
+
+    async fn section() -> PaymentCreationCriticalSection {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        PaymentCreationCriticalSection::new(state)
+    }
+
+    #[tokio::test]
+    async fn sale_lease_excludes_reconfigure_and_manual_dispense() {
+        let section = section().await;
+        let sale = section.try_acquire_sale_start().expect("sale lease");
+        assert!(section.try_acquire_reconfigure().is_err());
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(150),
+                section.acquire_manual_dispense(Duration::from_secs(1)),
+            )
+            .await
+            .is_err(),
+            "manual dispense must not acquire while a sale is active"
+        );
+        drop(sale);
+        assert!(section.try_acquire_reconfigure().is_ok());
+    }
+
+    #[tokio::test]
+    async fn reconfigure_lease_blocks_sale_start_until_released() {
+        let section = section().await;
+        let binding = section
+            .try_acquire_reconfigure()
+            .expect("reconfigure lease");
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            drop(binding);
+        });
+        let sale = section
+            .acquire_sale_start(Duration::from_secs(1))
+            .await
+            .expect("sale lease after release");
+        drop(sale);
+        release.await.expect("release task");
+    }
+
+    #[tokio::test]
+    async fn reserve_recovery_marker_writes_and_upgrades_legacy_marker() {
+        let section = section().await;
+        let legacy = CheckoutCreationRecovery {
+            payment_method: "mock".to_string(),
+            payment_provider_code: Some("mock".to_string()),
+            items: json!([{ "slotId": "A1", "quantity": 1 }]),
+            profile_snapshot: None,
+            idempotency_key: "checkout:legacy".to_string(),
+            generation: String::new(),
+            planogram_version: None,
+        };
+        section
+            .state
+            .put_metadata(CHECKOUT_CREATION_RECOVERY_KEY, &legacy)
+            .await
+            .expect("seed legacy marker");
+
+        let recovery = section
+            .reserve_recovery_marker(&request(), "checkout:legacy", Some("PLAN-A".to_string()))
+            .await
+            .expect("upgrade legacy marker");
+        assert!(!recovery.generation.is_empty());
+        assert_eq!(recovery.planogram_version.as_deref(), Some("PLAN-A"));
+        let stored = section.read_recovery_marker().await.expect("marker");
+        assert_eq!(stored.unwrap().generation, recovery.generation);
+    }
+
+    #[tokio::test]
+    async fn reserve_recovery_marker_rejects_mismatched_idempotency_or_request() {
+        let section = section().await;
+        section
+            .reserve_recovery_marker(&request(), "checkout:a", Some("PLAN-A".to_string()))
+            .await
+            .expect("first marker");
+
+        let error = section
+            .reserve_recovery_marker(&request(), "checkout:b", Some("PLAN-A".to_string()))
+            .await
+            .expect_err("different key");
+        assert_eq!(error, "CHECKOUT_CREATION_RECOVERY_PENDING");
+
+        let mut other = request();
+        other.items = json!([{ "slotId": "B1", "quantity": 1 }]);
+        let error = section
+            .reserve_recovery_marker(&other, "checkout:a", Some("PLAN-A".to_string()))
+            .await
+            .expect_err("different request");
+        assert_eq!(error, "CHECKOUT_CREATION_RECOVERY_PENDING");
+    }
+
+    #[tokio::test]
+    async fn verify_recovery_owner_rejects_replaced_generation_and_planogram() {
+        let section = section().await;
+        let recovery = section
+            .reserve_recovery_marker(&request(), "checkout:owner", Some("PLAN-A".to_string()))
+            .await
+            .expect("marker");
+        let flight = section.new_flight(recovery.clone(), request());
+
+        section
+            .verify_recovery_owner(&flight, Some("PLAN-A".to_string()))
+            .await
+            .expect("owner verifies");
+
+        let mut replaced = recovery.clone();
+        replaced.generation = "generation-replaced".to_string();
+        section
+            .write_recovery_marker(&replaced)
+            .await
+            .expect("replace marker");
+        assert_eq!(
+            section
+                .verify_recovery_owner(&flight, Some("PLAN-A".to_string()))
+                .await
+                .expect_err("replaced generation"),
+            "CHECKOUT_CREATION_RECOVERY_REPLACED"
+        );
+
+        section
+            .write_recovery_marker(&recovery)
+            .await
+            .expect("restore marker");
+        assert_eq!(
+            section
+                .verify_recovery_owner(&flight, Some("PLAN-B".to_string()))
+                .await
+                .expect_err("planogram switched"),
+            "CHECKOUT_CREATION_RECOVERY_REPLACED"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_recovery_if_owner_keeps_foreign_marker() {
+        let section = section().await;
+        let recovery = section
+            .reserve_recovery_marker(&request(), "checkout:owner", None)
+            .await
+            .expect("owner marker");
+        let foreign = CheckoutCreationFlight {
+            idempotency_key: "checkout:foreign".to_string(),
+            generation: "generation-foreign".to_string(),
+            request: request(),
+            completed: Arc::new(Notify::new()),
+            participants: Arc::new(AtomicUsize::new(1)),
+            participants_drained: Arc::new(Notify::new()),
+        };
+
+        section
+            .delete_recovery_if_owner(&foreign)
+            .await
+            .expect("foreign delete is a no-op");
+        assert_eq!(
+            section
+                .read_recovery_marker()
+                .await
+                .expect("marker")
+                .unwrap()
+                .idempotency_key,
+            recovery.idempotency_key
+        );
+    }
+
+    #[tokio::test]
+    async fn clear_recovery_marker_after_terminal_only_on_terminal() {
+        let section = section().await;
+        section
+            .reserve_recovery_marker(&request(), "checkout:terminal", None)
+            .await
+            .expect("marker");
+
+        section
+            .clear_recovery_marker_after_terminal(false)
+            .await
+            .expect("active transaction keeps marker");
+        assert!(section
+            .read_recovery_marker()
+            .await
+            .expect("marker")
+            .is_some());
+
+        section
+            .clear_recovery_marker_after_terminal(true)
+            .await
+            .expect("terminal transaction clears marker");
+        assert!(section
+            .read_recovery_marker()
+            .await
+            .expect("marker")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn checkout_creation_in_flight_reflects_marker() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        assert!(
+            !PaymentCreationCriticalSection::checkout_creation_in_flight(&state)
+                .await
+                .expect("probe")
+        );
+        let section = PaymentCreationCriticalSection::new(state.clone());
+        section
+            .reserve_recovery_marker(&request(), "checkout:probe", None)
+            .await
+            .expect("marker");
+        assert!(
+            PaymentCreationCriticalSection::checkout_creation_in_flight(&state)
+                .await
+                .expect("probe")
+        );
+    }
+
+    #[tokio::test]
+    async fn owner_flight_clears_marker_on_success_and_deterministic_failure() {
+        let section = section().await;
+        let recovery = section
+            .reserve_recovery_marker(&request(), "checkout:success", None)
+            .await
+            .expect("marker");
+        let flight = section.new_flight(recovery, request());
+        section.set_active_flight(Some(flight.clone())).await;
+
+        let current = section
+            .run_owner_flight(&flight, || async { (Ok(waiting_snapshot()), true) })
+            .await
+            .expect("owner flight");
+        assert_eq!(
+            current.next_action,
+            Some(vending_core::domain::InternalCheckoutFlowAction::WaitPayment)
+        );
+        assert!(section
+            .read_recovery_marker()
+            .await
+            .expect("marker")
+            .is_none());
+        assert!(section.active_flight().await.is_none());
+
+        let recovery = section
+            .reserve_recovery_marker(&request(), "checkout:deterministic", None)
+            .await
+            .expect("marker");
+        let flight = section.new_flight(recovery, request());
+        section.set_active_flight(Some(flight.clone())).await;
+        let error = section
+            .run_owner_flight(&flight, || async {
+                (
+                    Err("BACKEND_HTTP_ERROR: 409 inventory unavailable".to_string()),
+                    true,
+                )
+            })
+            .await
+            .expect_err("deterministic failure");
+        assert!(error.contains("409"));
+        assert!(section
+            .read_recovery_marker()
+            .await
+            .expect("marker")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn owner_flight_keeps_marker_on_indeterminate_failure() {
+        let section = section().await;
+        let recovery = section
+            .reserve_recovery_marker(&request(), "checkout:backend-500", None)
+            .await
+            .expect("marker");
+        let flight = section.new_flight(recovery, request());
+        section.set_active_flight(Some(flight.clone())).await;
+
+        let error = section
+            .run_owner_flight(&flight, || async {
+                (
+                    Err("BACKEND_HTTP_ERROR: 500 internal server error".to_string()),
+                    false,
+                )
+            })
+            .await
+            .expect_err("backend 500");
+        assert!(error.contains("500"));
+        assert!(
+            section
+                .read_recovery_marker()
+                .await
+                .expect("marker")
+                .is_some(),
+            "indeterminate failure retains the durable marker"
+        );
+        assert!(section.active_flight().await.is_none());
+    }
+
+    #[test]
+    fn failure_classification_keeps_marker_for_backend_5xx() {
+        assert!(
+            !PaymentCreationCriticalSection::should_clear_recovery_marker_after_failure(
+                "BACKEND_HTTP_ERROR: 500 internal server error"
+            )
+        );
+        assert!(
+            !PaymentCreationCriticalSection::should_clear_recovery_marker_after_failure(
+                "BACKEND_HTTP_ERROR: 503 service unavailable"
+            )
+        );
+        assert!(
+            PaymentCreationCriticalSection::should_clear_recovery_marker_after_failure(
+                "BACKEND_HTTP_ERROR: 409 inventory unavailable"
+            )
+        );
+    }
+}

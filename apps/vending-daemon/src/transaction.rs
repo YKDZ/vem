@@ -1139,25 +1139,6 @@ mod tests {
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
-    #[test]
-    fn checkout_creation_keeps_recovery_marker_for_backend_5xx() {
-        assert!(
-            !PaymentCreationCriticalSection::should_clear_recovery_marker_after_failure(
-                "BACKEND_HTTP_ERROR: 500 internal server error"
-            )
-        );
-        assert!(
-            !PaymentCreationCriticalSection::should_clear_recovery_marker_after_failure(
-                "BACKEND_HTTP_ERROR: 503 service unavailable"
-            )
-        );
-        assert!(
-            PaymentCreationCriticalSection::should_clear_recovery_marker_after_failure(
-                "BACKEND_HTTP_ERROR: 409 inventory unavailable"
-            )
-        );
-    }
-
     fn transaction_snapshot_with_status(
         order_status: &str,
         next_action: &str,
