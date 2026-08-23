@@ -391,10 +391,15 @@ function traceBoundary(snapshot: JsonRecord, label: string): JsonRecord {
     !Number.isInteger(lastEntryId) ||
     (lastEntryId as number) < 0 ||
     !traceEntries.every(
-      (entry: unknown, index: number) =>
-        Number.isInteger(recordValue(entry)?.id) &&
-        (recordValue(entry).id as number) >
-          (recordValue(traceEntries[index - 1]).id as number),
+      (entry: unknown, index: number) => {
+        const id = recordValue(entry).id;
+        const previousId = recordValue(traceEntries[index - 1]).id;
+        return (
+          Number.isInteger(id) &&
+          (id as number) >
+            (Number.isInteger(previousId) ? (previousId as number) : 0)
+        );
+      },
     )
   ) {
     throw new Error(`${label} requires monotonically increasing trace ids`);

@@ -803,7 +803,7 @@ async function replaceSaleHandoff(
   return {
     previousControlPlaneSessionId,
     replacementControlPlaneSessionId: required(
-      (replacement?.replacement as JsonRecord | undefined)?.sessionId,
+      replacement?.sessionId,
       "replacement serial session id",
     ),
   };
