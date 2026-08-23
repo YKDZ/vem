@@ -4,11 +4,25 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-function getRuntimeAcceptanceReport(value) {
-  return value?.runtimeAcceptanceReport ?? null;
+type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
 }
 
-function diagnostic(code) {
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? (value as unknown[]) : [];
+}
+
+function getRuntimeAcceptanceReport(value: JsonRecord): JsonRecord | null {
+  return value?.runtimeAcceptanceReport == null
+    ? null
+    : recordValue(value.runtimeAcceptanceReport);
+}
+
+function diagnostic(code: string): JsonRecord {
   return { code };
 }
 
@@ -18,48 +32,67 @@ export function verifyWindowsNativeAudioEvidence({
   adapterReport,
   daemonCalibrationResponse,
   daemonCalibrationResponseBytes,
-}) {
-  const diagnostics = [];
+}: {
+  runId: string;
+  runtimeReport: JsonRecord;
+  adapterReport: JsonRecord;
+  daemonCalibrationResponse: JsonRecord;
+  daemonCalibrationResponseBytes: string | Buffer;
+}): JsonRecord {
+  const diagnostics: JsonRecord[] = [];
   const runtime = getRuntimeAcceptanceReport(runtimeReport);
-  const kiosk = runtime?.kioskRuntime;
-  const audio = adapterReport?.defaultAudioCapture;
-  const requestedAudio = adapterReport?.request?.audioCapture;
-  if (runtime?.result?.runtimeReady?.status !== "passed")
+  const kiosk = recordValue(runtime?.kioskRuntime);
+  const audio = recordValue(adapterReport?.defaultAudioCapture);
+  const request = recordValue(adapterReport?.request);
+  const requestedAudio = recordValue(request.audioCapture);
+  const requestedDaemonCalibration = recordValue(
+    requestedAudio.daemonCalibration,
+  );
+  const calibration = recordValue(audio.daemonCalibration);
+  const capture = recordValue(audio.capture);
+  const captureThreshold = recordValue(capture.threshold);
+  const evidence = arrayValue(adapterReport?.evidence).map((entry: unknown) =>
+    recordValue(entry),
+  );
+  const calibrationEvidence = evidence.find(
+    (entry) => entry.role === "daemon-audio-calibration-response",
+  );
+  if (
+    recordValue(recordValue(runtime?.result).runtimeReady).status !== "passed"
+  )
     diagnostics.push(diagnostic("runtime_acceptance_not_ready"));
-  if (adapterReport?.request?.runId !== runId)
+  if (request?.runId !== runId)
     diagnostics.push(diagnostic("audio_capture_run_mismatch"));
-  if (adapterReport?.request?.operation !== "capture-default-audio")
+  if (request?.operation !== "capture-default-audio")
     diagnostics.push(diagnostic("audio_capture_operation_mismatch"));
   if (
     audio?.runId !== runId ||
-    audio?.lifecycleReference !== adapterReport?.request?.lifecycleReference ||
-    audio?.captureOperationReference !==
-      adapterReport?.request?.operationReference
+    audio?.lifecycleReference !== request?.lifecycleReference ||
+    audio?.captureOperationReference !== request?.operationReference
   )
     diagnostics.push(diagnostic("audio_capture_semantic_binding_mismatch"));
-  const calibration = audio?.daemonCalibration;
   if (
-    calibration?.challenge !== requestedAudio?.daemonCalibration?.challenge ||
+    calibration?.challenge !== requestedDaemonCalibration?.challenge ||
     daemonCalibrationResponse?.challenge !==
-      requestedAudio?.daemonCalibration?.challenge
+      requestedDaemonCalibration?.challenge
   )
     diagnostics.push(diagnostic("audio_capture_challenge_mismatch"));
   if (
     !kiosk ||
     kiosk.sessionUser !== "VEMKiosk" ||
-    !Number.isInteger(kiosk.sessionId) ||
-    kiosk.sessionId < 1
+    !Number.isInteger(Number(kiosk.sessionId)) ||
+    Number(kiosk.sessionId) < 1
   )
     diagnostics.push(diagnostic("active_kiosk_session_missing"));
   if (
-    JSON.stringify(adapterReport?.request?.audioCapture?.activeKioskSession) !==
+    JSON.stringify(requestedAudio?.activeKioskSession) !==
     JSON.stringify({
       sessionUser: kiosk?.sessionUser,
       sessionId: kiosk?.sessionId,
     })
   )
     diagnostics.push(diagnostic("audio_capture_session_mismatch"));
-  if (audio?.defaultOutput?.status !== "active")
+  if (recordValue(audio?.defaultOutput).status !== "active")
     diagnostics.push(diagnostic("windows_default_output_missing"));
   const digestPattern = /^sha256:[0-9a-f]{64}$/;
   const tokenPattern =
@@ -75,63 +108,73 @@ export function verifyWindowsNativeAudioEvidence({
     "testEvidenceToken",
   ];
   const evidenceExpiresAt = Date.parse(
-    daemonCalibrationResponse?.testEvidenceExpiresAt,
+    String(daemonCalibrationResponse?.testEvidenceExpiresAt ?? ""),
   );
-  const calibrationCompletedAt = Date.parse(calibration?.completedAt);
+  const calibrationCompletedAt = Date.parse(
+    String(calibration?.completedAt ?? ""),
+  );
   if (
-    requestedAudio?.daemonCalibration?.source !== "vending_daemon_ipc" ||
-    requestedAudio?.daemonCalibration?.command !== "audio_output_calibration" ||
+    requestedDaemonCalibration?.source !== "vending_daemon_ipc" ||
+    requestedDaemonCalibration?.command !== "audio_output_calibration" ||
     calibration?.status !== "completed" ||
     calibration?.source !== "vending_daemon_ipc" ||
     calibration?.command !== "audio_output_calibration" ||
     JSON.stringify(Object.keys(daemonCalibrationResponse ?? {}).sort()) !==
       JSON.stringify(daemonResponseKeys) ||
-    !tokenPattern.test(daemonCalibrationResponse?.testEvidenceToken ?? "") ||
+    !tokenPattern.test(
+      String(daemonCalibrationResponse?.testEvidenceToken ?? ""),
+    ) ||
     !Number.isFinite(evidenceExpiresAt) ||
     !Number.isFinite(calibrationCompletedAt) ||
     evidenceExpiresAt <= calibrationCompletedAt ||
-    !digestPattern.test(daemonCalibrationResponse?.observationRevision ?? "") ||
+    !digestPattern.test(
+      String(daemonCalibrationResponse?.observationRevision ?? ""),
+    ) ||
     !Number.isInteger(daemonCalibrationResponse?.observationGeneration) ||
-    daemonCalibrationResponse.observationGeneration < 0 ||
-    !digestPattern.test(daemonCalibrationResponse?.configRevision ?? "") ||
+    Number(daemonCalibrationResponse?.observationGeneration) < 0 ||
+    !digestPattern.test(
+      String(daemonCalibrationResponse?.configRevision ?? ""),
+    ) ||
     !Number.isInteger(daemonCalibrationResponse?.configGeneration) ||
-    daemonCalibrationResponse.configGeneration < 0 ||
-    !digestPattern.test(daemonCalibrationResponse?.proposedSettingsDigest ?? "")
+    Number(daemonCalibrationResponse?.configGeneration) < 0 ||
+    !digestPattern.test(
+      String(daemonCalibrationResponse?.proposedSettingsDigest ?? ""),
+    )
   )
     diagnostics.push(diagnostic("daemon_audio_calibration_evidence_missing"));
-  const calibrationEvidence = adapterReport?.evidence?.find(
-    (entry) => entry?.role === "daemon-audio-calibration-response",
-  );
   if (
     calibration?.responseArtifact !== calibrationEvidence?.identity ||
     calibration?.responseDigest !== calibrationEvidence?.digest ||
     calibration?.responseFileName !== calibrationEvidence?.fileName
   )
     diagnostics.push(diagnostic("daemon_audio_calibration_reference_mismatch"));
-  const responseDigest =
-    typeof daemonCalibrationResponseBytes === "string"
-      ? `sha256:${createHash("sha256").update(daemonCalibrationResponseBytes).digest("hex")}`
-      : null;
+  const responseDigest = `sha256:${createHash("sha256")
+    .update(daemonCalibrationResponseBytes)
+    .digest("hex")}`;
   if (
     responseDigest !== calibrationEvidence?.digest ||
     calibrationEvidence?.identity !==
       `runtime-evidence://${responseDigest?.replace(":", "/")}`
   )
     diagnostics.push(diagnostic("daemon_audio_calibration_digest_mismatch"));
-  const capture = audio?.capture;
   if (
     !capture ||
-    capture.artifact !== adapterReport?.evidence?.[0]?.identity ||
-    capture.nonSilentFrameCount < capture.threshold?.minimumNonSilentFrames ||
-    capture.peakAbsoluteSample < capture.threshold?.minimumPeakAbsoluteSample ||
-    capture.durationMs < capture.threshold?.minimumDurationMs ||
-    capture.distinctNonSilentSampleMagnitudes <
-      capture.threshold?.minimumDistinctNonSilentSampleMagnitudes
+    capture.artifact !== evidence[0]?.identity ||
+    Number(capture.nonSilentFrameCount) <
+      Number(captureThreshold.minimumNonSilentFrames) ||
+    Number(capture.peakAbsoluteSample) <
+      Number(captureThreshold.minimumPeakAbsoluteSample) ||
+    Number(capture.durationMs) <
+      Number(captureThreshold.minimumDurationMs) ||
+    Number(capture.distinctNonSilentSampleMagnitudes) <
+      Number(captureThreshold.minimumDistinctNonSilentSampleMagnitudes)
   )
     diagnostics.push(diagnostic("default_audio_capture_silent_or_invalid"));
-  const captureStartedAt = Date.parse(capture?.startedAt);
-  const calibrationStartedAt = Date.parse(calibration?.startedAt);
-  const captureCompletedAt = Date.parse(capture?.completedAt);
+  const captureStartedAt = Date.parse(String(capture?.startedAt ?? ""));
+  const calibrationStartedAt = Date.parse(
+    String(calibration?.startedAt ?? ""),
+  );
+  const captureCompletedAt = Date.parse(String(capture?.completedAt ?? ""));
   if (
     !Number.isFinite(captureStartedAt) ||
     !Number.isFinite(calibrationStartedAt) ||
@@ -151,15 +194,15 @@ export function verifyWindowsNativeAudioEvidence({
     audioOutput: "windows_default",
     automatedCaptureScope: "windows_default_output_non_silent_pcm",
     physicalSpeakerAudibility: "hitl_required",
-    adapter: adapterReport?.adapter
+    adapter: recordValue(adapterReport?.adapter).identity
       ? {
-          identity: adapterReport.adapter.identity,
-          version: adapterReport.adapter.version,
+          identity: recordValue(adapterReport.adapter).identity,
+          version: recordValue(adapterReport.adapter).version,
         }
       : null,
     captureOperationReference:
-      adapterReport?.request?.operationReference ?? null,
-    lifecycleReference: adapterReport?.request?.lifecycleReference ?? null,
+      request?.operationReference ?? null,
+    lifecycleReference: request?.lifecycleReference ?? null,
     activeKioskSession: kiosk
       ? { sessionUser: kiosk.sessionUser, sessionId: kiosk.sessionId }
       : null,
@@ -167,7 +210,7 @@ export function verifyWindowsNativeAudioEvidence({
   };
 }
 
-function option(name) {
+function option(name: string): string {
   const index = process.argv.indexOf(name);
   if (index === -1 || !process.argv[index + 1])
     throw new Error(`${name} is required`);
