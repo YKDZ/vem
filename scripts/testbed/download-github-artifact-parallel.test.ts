@@ -19,30 +19,55 @@ const ARTIFACT = {
   expired: false,
 };
 
-function fakeResponse(headers) {
+type JsonRecord = Record<string, unknown>;
+
+type RunProcessFixture = NonNullable<
+  Parameters<typeof aria2cOnce>[0]["runProcess"]
+>;
+
+function fakeResponse(headers: Record<string, string | null>): Response {
   return {
     status: 302,
     headers: {
-      get(name) {
+      get(name: string) {
         return headers[name.toLowerCase()] ?? null;
       },
     },
-  };
+  } as unknown as Response;
 }
 
-function runProcessFixture(behavior) {
-  return async (command, args, options = {}) => {
+function runProcessFixture(
+  behavior: (
+    command: string,
+    args: string[],
+    options: {
+      cwd?: string;
+      capture?: boolean;
+      timeoutMs?: number;
+    },
+  ) => {
+    code: number | null;
+    stdout: string;
+    stderr: string;
+    timedOut?: boolean;
+  } | Promise<{
+    code: number | null;
+    stdout: string;
+    stderr: string;
+    timedOut?: boolean;
+  }>,
+): RunProcessFixture {
+  return async (command: string, args: string[], options = {}) => {
     assert.equal(typeof command, "string");
     return behavior(command, args, options);
   };
 }
 
 test("aria2cOnce splits an absolute output into --dir and --out", async () => {
-  let observedArgs = null;
-  let observedOptions = null;
+  const observed: { args?: string[]; options?: JsonRecord } = {};
   const runProcess = runProcessFixture(async (_command, args, options) => {
-    observedArgs = args;
-    observedOptions = options;
+    observed.args = args;
+    observed.options = options;
     return { code: 0, stdout: "", stderr: "" };
   });
   await aria2cOnce({
@@ -51,19 +76,20 @@ test("aria2cOnce splits an absolute output into --dir and --out", async () => {
     connections: 16,
     runProcess,
   });
-  assert.ok(observedArgs);
-  const dirIndex = observedArgs.indexOf("--dir");
-  const outIndex = observedArgs.indexOf("--out");
+  assert.ok(observed.args);
+  const dirIndex = observed.args.indexOf("--dir");
+  const outIndex = observed.args.indexOf("--out");
   assert.ok(dirIndex >= 0);
   assert.ok(outIndex >= 0);
-  assert.equal(observedArgs[dirIndex + 1], "/opt/candidate");
-  assert.equal(observedArgs[outIndex + 1], "actions-artifact.zip");
+  assert.equal(observed.args[dirIndex + 1], "/opt/candidate");
+  assert.equal(observed.args[outIndex + 1], "actions-artifact.zip");
   assert.equal(
-    observedArgs.includes("/opt/candidate/actions-artifact.zip"),
+    observed.args.includes("/opt/candidate/actions-artifact.zip"),
     false,
   );
-  assert.equal(observedOptions.capture, true);
-  assert.equal(observedOptions.timeoutMs, 120_000);
+  assert.ok(observed.options);
+  assert.equal(observed.options.capture, true);
+  assert.equal(observed.options.timeoutMs, 120_000);
 });
 
 test("parseDownloadOptions validates the download contract", () => {
@@ -173,14 +199,20 @@ test("ghArtifactUrl requires an authenticated gh token and an HTTPS location", a
     assert.equal(command, "gh");
     return { code: 0, stdout: "secret-token\n", stderr: "" };
   });
-  const fetchImpl = async (url, init) => {
+  const fetchImpl = async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ) => {
     assert.equal(
-      url,
+      input,
       "https://api.github.com/repos/hbhjt/vending-vision/actions/artifacts/42/zip",
     );
-    assert.equal(init.headers.Authorization, "Bearer secret-token");
-    assert.equal(init.redirect, "manual");
-    return fakeResponse({ location: "https://blob.example/artifact.zip" });
+    const headers = new Headers(init?.headers);
+    assert.equal(headers.get("Authorization"), "Bearer secret-token");
+    assert.equal(init?.redirect, "manual");
+    return fakeResponse({
+      location: "https://blob.example/artifact.zip",
+    });
   };
   assert.equal(
     await ghArtifactUrl({
@@ -233,7 +265,7 @@ test("downloadArtifactParallel resumes after partial attempts and verifies SHA-2
       urlFetches += 1;
       return fakeResponse({ location: "https://blob.example/artifact.zip" });
     };
-    const logs = [];
+    const logs: string[] = [];
     const result = await downloadArtifactParallel({
       repo: "hbhjt/vending-vision",
       artifactId: "42",
@@ -245,7 +277,7 @@ test("downloadArtifactParallel resumes after partial attempts and verifies SHA-2
       pollMs: 250,
       runProcess,
       fetchImpl,
-      log: (message) => logs.push(message),
+      log: (message: string) => logs.push(message),
     });
     assert.equal(aria2cCalls, 2);
     assert.equal(urlFetches, 2);
@@ -258,12 +290,12 @@ test("downloadArtifactParallel resumes after partial attempts and verifies SHA-2
   }
 });
 
-function writeFileSyncForTest(path, buffer) {
+function writeFileSyncForTest(path: string, buffer: Buffer) {
   // Deferred to keep the fixture readable without a top-level fs import alias.
   return writeFile(path, buffer);
 }
 
-async function sha256Buffer(buffer) {
+async function sha256Buffer(buffer: Buffer): Promise<string> {
   const { createHash } = await import("node:crypto");
   return createHash("sha256").update(buffer).digest("hex");
 }
