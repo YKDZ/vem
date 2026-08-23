@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import type { ChildProcess } from "node:child_process";
 import { constants, createReadStream } from "node:fs";
 import {
   access,
@@ -13,10 +14,25 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, normalize, resolve } from "node:path";
+import type { Readable } from "node:stream";
 
 import { createRuntimeProfile } from "./libvirt-runtime-profile.ts";
 
 const GiB = 1024 ** 3;
+
+function isNodeErrorCode(error: unknown, code: string): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === code
+  );
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 const REQUIRED_COMMANDS = [
   "virsh",
   "virt-install",
@@ -141,6 +157,59 @@ const RELEASE_ARTIFACTS = Object.freeze({
   domainXml: "runtime-profile.xml",
   diagnostic: "diagnostic.json",
 });
+
+interface BaselineBuildConfig {
+  schemaVersion?: unknown;
+  host: {
+    address: unknown;
+    libvirtUri: unknown;
+    lockPath: unknown;
+    largeFileRoot: unknown;
+  };
+  vm: { name: unknown; networkName: unknown; macAddress: unknown };
+  storage: {
+    baselinePath: unknown;
+    cacheDiskPath: unknown;
+    systemDiskGiB: unknown;
+    cacheDiskGiB: unknown;
+    minimumFreeGiB: unknown;
+  };
+  media: {
+    windowsIsoPath: unknown;
+    virtioWinIsoPath: unknown;
+    windowsImageIndex: unknown;
+    webView2InstallerUri: unknown;
+    runnerArchivePath: unknown;
+    runnerArchiveSha256: unknown;
+  };
+  guest: {
+    administratorPasswordFile: unknown;
+    authorizedKeysFile: unknown;
+    sshPrivateKeyFile: unknown;
+    sshUser: unknown;
+    desktopScalePercent: unknown;
+  };
+  runner: {
+    url: unknown;
+    registrationTokenProvider: { command: unknown; arguments?: unknown[] };
+    name: unknown;
+    labels: unknown[];
+  };
+  testbed: {
+    reconstructCommand: unknown;
+    admitGuestCommand: unknown;
+    guest: {
+      host: unknown;
+      user: unknown;
+      identityFile: unknown;
+      knownHostsFile: unknown;
+      stagingPath: unknown;
+      cacheRoot: unknown;
+    };
+  };
+  runtime?: { vcpus?: unknown; memoryMiB?: unknown };
+}
+
 export const BASELINE_PUBLICATION_STAGES = Object.freeze([
   "release-staging-created",
   "system-staged",
@@ -161,28 +230,28 @@ export const BASELINE_PUBLICATION_STAGES = Object.freeze([
   "current-manifest-published",
 ]);
 
-function object(value, label) {
+function object(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${label} must be an object`);
   }
-  return value;
+  return value as Record<string, unknown>;
 }
 
-function string(value, label) {
+function string(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${label} must be a non-empty string`);
   }
   return value;
 }
 
-function integer(value, label) {
-  if (!Number.isInteger(value) || value < 1) {
+function integer(value: unknown, label: string): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
     throw new Error(`${label} must be a positive integer`);
   }
   return value;
 }
 
-function absolutePath(value, label) {
+function absolutePath(value: unknown, label: string): string {
   const path = string(value, label);
   if (
     !isAbsolute(path) ||
@@ -194,7 +263,7 @@ function absolutePath(value, label) {
   return path;
 }
 
-function absoluteWindowsPath(value, label) {
+function absoluteWindowsPath(value: unknown, label: string): string {
   const path = string(value, label);
   if (!/^[A-Za-z]:\\/.test(path) || path.includes("\0")) {
     throw new Error(`${label} must be an absolute Windows path`);
@@ -202,7 +271,7 @@ function absoluteWindowsPath(value, label) {
   return path;
 }
 
-function commandArray(value, label) {
+function commandArray(value: unknown, label: string): string[] {
   if (
     !Array.isArray(value) ||
     value.length === 0 ||
@@ -214,7 +283,7 @@ function commandArray(value, label) {
   return value;
 }
 
-function hostnameOrAddress(value, label) {
+function hostnameOrAddress(value: unknown, label: string): string {
   const result = string(value, label);
   if (!/^[A-Za-z0-9][A-Za-z0-9.-]{0,253}$/.test(result)) {
     throw new Error(`${label} must be a hostname or IP address`);
@@ -222,12 +291,12 @@ function hostnameOrAddress(value, label) {
   return result;
 }
 
-function pathInside(path, root) {
+function pathInside(path: string, root: string): boolean {
   if (root === "/") return path.startsWith("/") && path !== "/";
   return path.startsWith(`${root}/`);
 }
 
-function sha256(value, label) {
+function sha256(value: unknown, label: string): string {
   const result = string(value, label).toLowerCase();
   if (!/^[a-f0-9]{64}$/.test(result)) {
     throw new Error(`${label} must be a lowercase SHA-256 digest`);
@@ -235,7 +304,7 @@ function sha256(value, label) {
   return result;
 }
 
-function releaseId(value) {
+function releaseId(value: unknown): string {
   const result = string(value, "releaseId");
   if (!/^[a-z0-9][a-z0-9-]{7,127}$/i.test(result)) {
     throw new Error("releaseId must be a portable release identifier");
@@ -243,19 +312,28 @@ function releaseId(value) {
   return result;
 }
 
-function hostIdentityMatches(address, identity) {
+function hostIdentityMatches(address: unknown, identity: unknown): boolean {
   const configured = hostnameOrAddress(address, "host.address").toLowerCase();
   const observed = object(identity, "host observation.hostIdentity");
+  const hostnameValues = Array.isArray(observed.hostnames)
+    ? (observed.hostnames as unknown[])
+    : [];
+  const addressValues = Array.isArray(observed.addresses)
+    ? (observed.addresses as unknown[])
+    : [];
+  const resolvedAddressValues = Array.isArray(
+    observed.resolvedConfiguredAddresses,
+  )
+    ? (observed.resolvedConfiguredAddresses as unknown[])
+    : [];
   const hostnames = new Set(
-    (observed.hostnames ?? []).map((value) => String(value).toLowerCase()),
+    hostnameValues.map((value) => String(value).toLowerCase()),
   );
   const addresses = new Set(
-    (observed.addresses ?? []).map((value) => String(value).toLowerCase()),
+    addressValues.map((value) => String(value).toLowerCase()),
   );
   const resolvedAddresses = new Set(
-    (observed.resolvedConfiguredAddresses ?? []).map((value) =>
-      String(value).toLowerCase(),
-    ),
+    resolvedAddressValues.map((value) => String(value).toLowerCase()),
   );
   return (
     hostnames.has(configured) ||
@@ -264,7 +342,9 @@ function hostIdentityMatches(address, identity) {
   );
 }
 
-export function validateBaselineBuildConfig(input) {
+export function validateBaselineBuildConfig(
+  input: unknown,
+): BaselineBuildConfig {
   const config = object(input, "baseline config");
   if (config.schemaVersion !== "win10-kvm-baseline/v1") {
     throw new Error("schemaVersion must be win10-kvm-baseline/v1");
@@ -413,10 +493,12 @@ export function validateBaselineBuildConfig(input) {
   absolutePath(testbedGuest.knownHostsFile, "testbed.guest.knownHostsFile");
   absoluteWindowsPath(testbedGuest.stagingPath, "testbed.guest.stagingPath");
   absoluteWindowsPath(testbedGuest.cacheRoot, "testbed.guest.cacheRoot");
-  return config;
+  return config as unknown as BaselineBuildConfig;
 }
 
-export function runtimeProfileForConfig(config) {
+export function runtimeProfileForConfig(
+  config: BaselineBuildConfig,
+): ReturnType<typeof createRuntimeProfile> {
   validateBaselineBuildConfig(config);
   return createRuntimeProfile({
     vmName: config.vm.name,
@@ -430,7 +512,9 @@ export function runtimeProfileForConfig(config) {
   });
 }
 
-export function baselinePublicationLayout(config) {
+export function baselinePublicationLayout(
+  config: BaselineBuildConfig,
+): Record<string, string> {
   validateBaselineBuildConfig(config);
   const baselinePath = config.storage.baselinePath;
   const cacheDiskPath = config.storage.cacheDiskPath;
@@ -445,7 +529,10 @@ export function baselinePublicationLayout(config) {
   };
 }
 
-export function runtimeProfileForPublishedRelease(config, id) {
+export function runtimeProfileForPublishedRelease(
+  config: BaselineBuildConfig,
+  id: unknown,
+): ReturnType<typeof createRuntimeProfile> {
   const layout = baselinePublicationLayout(config);
   const directory = resolve(layout.releaseRoot, releaseId(id));
   return createRuntimeProfile({
@@ -463,45 +550,60 @@ export function runtimeProfileForPublishedRelease(config, id) {
   });
 }
 
-export function evaluateHostPreflight(config, observed) {
+export function evaluateHostPreflight(
+  config: BaselineBuildConfig,
+  observed: unknown,
+): { ok: true } {
   validateBaselineBuildConfig(config);
-  object(observed, "host observation");
+  const observation = object(observed, "host observation");
   const profile = runtimeProfileForConfig(config);
-  if (!hostIdentityMatches(config.host.address, observed.hostIdentity)) {
+  if (!hostIdentityMatches(config.host.address, observation.hostIdentity)) {
     throw new Error(
       "host.address must identify the executing host by hostname or resolved address",
     );
   }
-  if (observed.kvmAvailable !== true) throw new Error("KVM is not available");
-  if (observed.libvirtAvailable !== true)
+  if (observation.kvmAvailable !== true) throw new Error("KVM is not available");
+  if (observation.libvirtAvailable !== true)
     throw new Error("libvirt is not available");
-  const commands = new Set(observed.commands ?? []);
+  const commands = new Set(
+    Array.isArray(observation.commands) ? observation.commands : [],
+  );
   const missing = REQUIRED_COMMANDS.filter((command) => !commands.has(command));
   if (missing.length)
     throw new Error(`missing host tools: ${missing.join(", ")}`);
   if (
-    !Number.isInteger(observed.cpuCount) ||
-    observed.cpuCount < profile.vcpus
+    typeof observation.cpuCount !== "number" ||
+    !Number.isInteger(observation.cpuCount) ||
+    observation.cpuCount < profile.vcpus
   ) {
     throw new Error(`host CPU count must satisfy ${profile.vcpus} vCPUs`);
   }
   if (
-    !Number.isInteger(observed.availableMemoryMiB) ||
-    observed.availableMemoryMiB < profile.memoryMiB
+    typeof observation.availableMemoryMiB !== "number" ||
+    !Number.isInteger(observation.availableMemoryMiB) ||
+    observation.availableMemoryMiB < profile.memoryMiB
   ) {
     throw new Error(`host memory must satisfy ${profile.memoryMiB} MiB`);
   }
-  const storage = observed.storageAvailableBytes ?? {};
-  const filesystemIds = observed.storageFilesystemIds ?? {};
-  const requestedDiskBytes = {
-    baseline: config.storage.systemDiskGiB * GiB,
-    cache: config.storage.cacheDiskGiB * GiB,
+  const storage = (
+    observation.storageAvailableBytes ?? {}
+  ) as Record<string, unknown>;
+  const filesystemIds = (
+    observation.storageFilesystemIds ?? {}
+  ) as Record<string, unknown>;
+  const requestedDiskBytes: Record<string, number> = {
+    baseline: Number(config.storage.systemDiskGiB) * GiB,
+    cache: Number(config.storage.cacheDiskGiB) * GiB,
   };
-  const filesystems = new Map();
+  const filesystems = new Map<
+    string,
+    { availableBytes: number; requestedBytes: number }
+  >();
   for (const storageKind of ["baseline", "cache"]) {
     const availableBytes = storage[storageKind];
     const filesystemId = filesystemIds[storageKind];
     if (
+      typeof availableBytes !== "number" ||
       !Number.isFinite(availableBytes) ||
       availableBytes < 0 ||
       typeof filesystemId !== "string" ||
@@ -511,7 +613,7 @@ export function evaluateHostPreflight(config, observed) {
         `host storage observation for ${storageKind} must include free bytes and a filesystem identity`,
       );
     }
-    const filesystem = filesystems.get(filesystemId) ?? {
+    const filesystem = filesystems.get(filesystemId as string) ?? {
       availableBytes,
       requestedBytes: 0,
     };
@@ -520,39 +622,45 @@ export function evaluateHostPreflight(config, observed) {
       availableBytes,
     );
     filesystem.requestedBytes += requestedDiskBytes[storageKind];
-    filesystems.set(filesystemId, filesystem);
+    filesystems.set(filesystemId as string, filesystem);
   }
   for (const [filesystemId, filesystem] of filesystems) {
     const requiredBytes =
-      filesystem.requestedBytes + config.storage.minimumFreeGiB * GiB;
+      filesystem.requestedBytes + Number(config.storage.minimumFreeGiB) * GiB;
     if (filesystem.availableBytes < requiredBytes) {
       throw new Error(
         `shared storage filesystem ${filesystemId} must provide ${requiredBytes / GiB} GiB free for requested disks plus minimum reserve`,
       );
     }
   }
-  if (observed.installationMedia?.windowsIso !== true) {
+  const installationMedia = observation.installationMedia as
+    | Record<string, unknown>
+    | undefined;
+  if (installationMedia?.windowsIso !== true) {
     throw new Error(
       "Windows installation media must be a readable regular file",
     );
   }
-  if (observed.installationMedia?.virtioWinIso !== true) {
+  if (installationMedia?.virtioWinIso !== true) {
     throw new Error(
       "VirtIO Windows driver media must be a readable regular file",
     );
   }
-  if (observed.installationMedia?.runnerArchive !== true) {
+  if (installationMedia?.runnerArchive !== true) {
     throw new Error(
       "runner archive must be a readable regular file with the configured SHA-256",
     );
   }
-  if (observed.networkActive !== true) {
+  if (observation.networkActive !== true) {
     throw new Error("configured libvirt network is not active");
   }
   return { ok: true };
 }
 
-export function parseGuestAddress(domifaddrOutput, macAddress) {
+export function parseGuestAddress(
+  domifaddrOutput: unknown,
+  macAddress: unknown,
+): string | null {
   const wanted = string(macAddress, "macAddress").toLowerCase();
   for (const line of String(domifaddrOutput).split(/\r?\n/)) {
     const fields = line.trim().split(/\s+/);
@@ -565,7 +673,7 @@ export function parseGuestAddress(domifaddrOutput, macAddress) {
   return null;
 }
 
-export function parseLibvirtVncDisplay(value) {
+export function parseLibvirtVncDisplay(value: unknown): string {
   const display = string(value, "libvirt VNC display").trim();
   const match = /^(?:(127\.0\.0\.1|localhost))?:(\d+)$/.exec(display);
   if (!match) {
@@ -574,7 +682,7 @@ export function parseLibvirtVncDisplay(value) {
   return `127.0.0.1:${match[2]}`;
 }
 
-function firstLine(stream, timeoutMs) {
+function firstLine(stream: Readable, timeoutMs: number): Promise<string> {
   return new Promise((resolveLine, rejectLine) => {
     let output = "";
     const timeout = setTimeout(() => {
@@ -587,7 +695,7 @@ function firstLine(stream, timeoutMs) {
       stream.off("end", onEnd);
       stream.off("error", onError);
     };
-    const onData = (chunk) => {
+    const onData = (chunk: Buffer) => {
       output += chunk.toString();
       const newline = output.indexOf("\n");
       if (newline === -1) return;
@@ -598,7 +706,7 @@ function firstLine(stream, timeoutMs) {
       cleanup();
       rejectLine(new Error("Xvfb exited before allocating a display"));
     };
-    const onError = (error) => {
+    const onError = (error: Error) => {
       cleanup();
       rejectLine(error);
     };
@@ -608,11 +716,14 @@ function firstLine(stream, timeoutMs) {
   });
 }
 
-function delay(milliseconds) {
+function delay(milliseconds: number): Promise<void> {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
 }
 
-function settlesWithin(promise, timeoutMs) {
+function settlesWithin(
+  promise: Promise<unknown>,
+  timeoutMs: number,
+): Promise<boolean> {
   return new Promise((resolveWait) => {
     const timeout = setTimeout(() => resolveWait(false), timeoutMs);
     void promise.then(
@@ -628,7 +739,7 @@ function settlesWithin(promise, timeoutMs) {
   });
 }
 
-function processStartTime(statValue) {
+function processStartTime(statValue: string): string {
   const closingName = statValue.lastIndexOf(")");
   if (closingName < 0) throw new Error("Linux process stat is malformed");
   const fields = statValue
@@ -642,7 +753,12 @@ function processStartTime(statValue) {
   return startTimeTicks;
 }
 
-export async function readLinuxProcessIdentity(pid) {
+export async function readLinuxProcessIdentity(pid: number): Promise<{
+  pid: number;
+  startTimeTicks: string;
+  executable: string;
+  commandLineSha256: string;
+}> {
   if (!Number.isInteger(pid) || pid < 1) {
     throw new Error("process PID must be a positive integer");
   }
@@ -660,34 +776,48 @@ export async function readLinuxProcessIdentity(pid) {
   };
 }
 
-function processIdentityShape(identity) {
+function processIdentityShape(identity: unknown): boolean {
+  const record = identity as Record<string, unknown> | null | undefined;
   return (
-    identity &&
-    Number.isInteger(identity.pid) &&
-    identity.pid > 0 &&
-    /^\d+$/.test(identity.startTimeTicks ?? "") &&
-    typeof identity.executable === "string" &&
-    isAbsolute(identity.executable) &&
-    /^[0-9a-f]{64}$/.test(identity.commandLineSha256 ?? "")
+    record !== null &&
+    typeof record === "object" &&
+    typeof record.pid === "number" &&
+    Number.isInteger(record.pid) &&
+    record.pid > 0 &&
+    /^\d+$/.test(String(record.startTimeTicks ?? "")) &&
+    typeof record.executable === "string" &&
+    isAbsolute(record.executable) &&
+    /^[0-9a-f]{64}$/.test(String(record.commandLineSha256 ?? ""))
   );
 }
 
-async function processIdentityMatches(identity) {
+async function processIdentityMatches(identity: unknown): Promise<boolean> {
   if (!processIdentityShape(identity)) return false;
+  const record = identity as {
+    pid: number;
+    startTimeTicks: string;
+    executable: string;
+    commandLineSha256: string;
+  };
   try {
-    const observed = await readLinuxProcessIdentity(identity.pid);
+    const observed = await readLinuxProcessIdentity(record.pid);
     return (
-      observed.startTimeTicks === identity.startTimeTicks &&
-      observed.executable === identity.executable &&
-      observed.commandLineSha256 === identity.commandLineSha256
+      observed.startTimeTicks === record.startTimeTicks &&
+      observed.executable === record.executable &&
+      observed.commandLineSha256 === record.commandLineSha256
     );
   } catch (error) {
-    if (error.code === "ENOENT" || error.code === "ESRCH") return false;
+    if (isNodeErrorCode(error, "ENOENT") || isNodeErrorCode(error, "ESRCH")) {
+      return false;
+    }
     throw error;
   }
 }
 
-async function waitForProcessIdentityExit(identity, timeoutMs) {
+async function waitForProcessIdentityExit(
+  identity: unknown,
+  timeoutMs: number,
+): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (!(await processIdentityMatches(identity))) return true;
@@ -697,41 +827,54 @@ async function waitForProcessIdentityExit(identity, timeoutMs) {
 }
 
 export async function terminateExactProcessIdentity(
-  identity,
-  { killTimeoutMs = 2_000, termTimeoutMs = 2_000 } = {},
-) {
+  identity: unknown,
+  {
+    killTimeoutMs = 2_000,
+    termTimeoutMs = 2_000,
+  }: { killTimeoutMs?: number; termTimeoutMs?: number } = {},
+): Promise<boolean> {
   if (!(await processIdentityMatches(identity))) return false;
+  const record = identity as {
+    pid: number;
+    startTimeTicks: string;
+    executable: string;
+    commandLineSha256: string;
+  };
   try {
-    process.kill(identity.pid, "SIGTERM");
+    process.kill(record.pid, "SIGTERM");
   } catch (error) {
-    if (error.code === "ESRCH") return false;
+    if (isNodeErrorCode(error, "ESRCH")) return false;
     throw error;
   }
   if (await waitForProcessIdentityExit(identity, termTimeoutMs)) return true;
   if (!(await processIdentityMatches(identity))) return true;
   try {
-    process.kill(identity.pid, "SIGKILL");
+    process.kill(record.pid, "SIGKILL");
   } catch (error) {
-    if (error.code === "ESRCH") return true;
+    if (isNodeErrorCode(error, "ESRCH")) return true;
     throw error;
   }
   if (!(await waitForProcessIdentityExit(identity, killTimeoutMs))) {
-    throw new Error(`process ${identity.pid} survived SIGKILL`);
+    throw new Error(`process ${record.pid} survived SIGKILL`);
   }
   return true;
 }
 
-function ownerMatches(observed, expected) {
+function ownerMatches(
+  observed: unknown,
+  expected: Record<string, unknown>,
+): boolean {
+  const record = observed as Record<string, unknown> | null | undefined;
   return (
-    observed &&
-    typeof observed === "object" &&
-    !Array.isArray(observed) &&
-    Object.keys(observed).length === Object.keys(expected).length &&
-    Object.keys(expected).every((key) => observed[key] === expected[key])
+    record !== null &&
+    typeof record === "object" &&
+    !Array.isArray(record) &&
+    Object.keys(record).length === Object.keys(expected).length &&
+    Object.keys(expected).every((key) => record[key] === expected[key])
   );
 }
 
-async function removeActivatorMetadata(metadataPath) {
+async function removeActivatorMetadata(metadataPath: string): Promise<void> {
   await rm(metadataPath, { force: true });
   await fsyncDirectory(dirname(metadataPath));
 }
@@ -740,23 +883,33 @@ export async function recoverHeadlessVncActivator({
   metadataPath,
   owner,
   termination = {},
-}) {
-  let metadata;
+}: {
+  metadataPath: unknown;
+  owner: Record<string, unknown>;
+  termination?: { killTimeoutMs?: number; termTimeoutMs?: number };
+}): Promise<{ present: boolean; recovered: boolean }> {
+  let metadata: Record<string, unknown>;
   try {
-    metadata = JSON.parse(await readFile(metadataPath, "utf8"));
+    metadata = JSON.parse(
+      await readFile(absolutePath(metadataPath, "metadataPath"), "utf8"),
+    ) as Record<string, unknown>;
   } catch (error) {
-    if (error.code === "ENOENT") return { present: false, recovered: true };
+    if (isNodeErrorCode(error, "ENOENT")) {
+      return { present: false, recovered: true };
+    }
     return { present: true, recovered: false };
   }
-  const legacy = VNC_ACTIVATOR_LEGACY_SCHEMAS.has(metadata.schemaVersion);
+  const legacy = VNC_ACTIVATOR_LEGACY_SCHEMAS.has(
+    String(metadata.schemaVersion),
+  );
   if (
     (!legacy && metadata.schemaVersion !== VNC_ACTIVATOR_METADATA_SCHEMA) ||
     !ownerMatches(metadata.owner, owner) ||
     !metadata.processes ||
-    Object.keys(metadata.processes).some(
+    Object.keys(metadata.processes as Record<string, unknown>).some(
       (role) => !VNC_ACTIVATOR_ROLES.includes(role),
     ) ||
-    Object.values(metadata.processes).some(
+    Object.values(metadata.processes as Record<string, unknown>).some(
       (identity) => !processIdentityShape(identity),
     )
   ) {
@@ -765,25 +918,25 @@ export async function recoverHeadlessVncActivator({
   if (!legacy) {
     if (
       !metadata.targets ||
-      Object.keys(metadata.targets).some(
+      Object.keys(metadata.targets as Record<string, unknown>).some(
         (role) => !VNC_ACTIVATOR_ROLES.includes(role),
       ) ||
-      Object.values(metadata.targets).some(
+      Object.values(metadata.targets as Record<string, unknown>).some(
         (identity) => !processIdentityShape(identity),
       )
     ) {
       return { present: true, recovered: false };
     }
     for (const role of ["viewer", "window-manager", "xvfb"]) {
-      const identity = metadata.targets[role];
+      const identity = (metadata.targets as Record<string, unknown>)[role];
       if (identity) await terminateExactProcessIdentity(identity, termination);
     }
   }
   for (const role of ["viewer", "window-manager", "xvfb"]) {
-    const identity = metadata.processes[role];
+    const identity = (metadata.processes as Record<string, unknown>)[role];
     if (identity) await terminateExactProcessIdentity(identity, termination);
   }
-  await removeActivatorMetadata(metadataPath);
+  await removeActivatorMetadata(absolutePath(metadataPath, "metadataPath"));
   return { present: true, recovered: true };
 }
 
@@ -792,8 +945,14 @@ export async function publishVncActivatorSupervisorIdentity({
   owner,
   pid,
   role,
-}) {
-  if (!VNC_ACTIVATOR_ROLES.includes(role)) {
+}: {
+  metadataPath: unknown;
+  owner: Record<string, unknown>;
+  pid: unknown;
+  role: unknown;
+}): Promise<Record<string, unknown>> {
+  const normalizedRole = string(role, "role");
+  if (!VNC_ACTIVATOR_ROLES.includes(normalizedRole)) {
     throw new Error("VNC activator supervisor role is invalid");
   }
   const expectedMetadataPath = resolve(
@@ -803,42 +962,49 @@ export async function publishVncActivatorSupervisorIdentity({
   if (absolutePath(metadataPath, "metadataPath") !== expectedMetadataPath) {
     throw new Error("VNC activator metadata must use its owned staging path");
   }
-  let metadata = {
+  let metadata: Record<string, unknown> = {
     schemaVersion: VNC_ACTIVATOR_METADATA_SCHEMA,
     owner,
     processes: {},
     targets: {},
   };
   try {
-    metadata = JSON.parse(await readFile(metadataPath, "utf8"));
+    metadata = JSON.parse(
+      await readFile(absolutePath(metadataPath, "metadataPath"), "utf8"),
+    ) as Record<string, unknown>;
   } catch (error) {
-    if (error.code !== "ENOENT") throw error;
+    if (!isNodeErrorCode(error, "ENOENT")) throw error;
   }
   if (
     metadata.schemaVersion !== VNC_ACTIVATOR_METADATA_SCHEMA ||
     !ownerMatches(metadata.owner, owner) ||
     !metadata.processes ||
-    Object.keys(metadata.processes).some(
+    Object.keys(metadata.processes as Record<string, unknown>).some(
       (observedRole) => !VNC_ACTIVATOR_ROLES.includes(observedRole),
     ) ||
-    Object.values(metadata.processes).some(
+    Object.values(metadata.processes as Record<string, unknown>).some(
       (identity) => !processIdentityShape(identity),
     ) ||
     !metadata.targets ||
-    Object.keys(metadata.targets).some(
+    Object.keys(metadata.targets as Record<string, unknown>).some(
       (observedRole) => !VNC_ACTIVATOR_ROLES.includes(observedRole),
     ) ||
-    Object.values(metadata.targets).some(
+    Object.values(metadata.targets as Record<string, unknown>).some(
       (identity) => !processIdentityShape(identity),
     ) ||
-    metadata.processes[role]
+    (metadata.processes as Record<string, unknown>)[normalizedRole]
   ) {
     throw new Error("VNC activator metadata cannot register this supervisor");
   }
-  const identity = await readLinuxProcessIdentity(pid);
-  await writeJsonAtomicallyDurably(metadataPath, {
+  const identity = await readLinuxProcessIdentity(
+    integer(pid, "pid"),
+  );
+  await writeJsonAtomicallyDurably(absolutePath(metadataPath, "metadataPath"), {
     ...metadata,
-    processes: { ...metadata.processes, [role]: identity },
+    processes: {
+      ...(metadata.processes as Record<string, unknown>),
+      [normalizedRole]: identity,
+    },
   });
   return identity;
 }
@@ -848,8 +1014,14 @@ export async function publishVncActivatorTargetIdentity({
   owner,
   pid,
   role,
-}) {
-  if (!VNC_ACTIVATOR_ROLES.includes(role)) {
+}: {
+  metadataPath: unknown;
+  owner: Record<string, unknown>;
+  pid: unknown;
+  role: unknown;
+}): Promise<Record<string, unknown>> {
+  const normalizedRole = string(role, "role");
+  if (!VNC_ACTIVATOR_ROLES.includes(normalizedRole)) {
     throw new Error("VNC activator target role is invalid");
   }
   const expectedMetadataPath = resolve(
@@ -859,72 +1031,105 @@ export async function publishVncActivatorTargetIdentity({
   if (absolutePath(metadataPath, "metadataPath") !== expectedMetadataPath) {
     throw new Error("VNC activator metadata must use its owned staging path");
   }
-  const metadata = JSON.parse(await readFile(metadataPath, "utf8"));
+  const metadata = JSON.parse(
+    await readFile(absolutePath(metadataPath, "metadataPath"), "utf8"),
+  ) as Record<string, unknown>;
   if (
     metadata.schemaVersion !== VNC_ACTIVATOR_METADATA_SCHEMA ||
     !ownerMatches(metadata.owner, owner) ||
-    !processIdentityShape(metadata.processes?.[role]) ||
+    !processIdentityShape(
+      (metadata.processes as Record<string, unknown> | undefined)?.[
+        normalizedRole
+      ],
+    ) ||
     !metadata.targets ||
-    metadata.targets[role]
+    (metadata.targets as Record<string, unknown>)[normalizedRole]
   ) {
     throw new Error("VNC activator metadata cannot register this target");
   }
-  const identity = await readLinuxProcessIdentity(pid);
-  await writeJsonAtomicallyDurably(metadataPath, {
+  const identity = await readLinuxProcessIdentity(integer(pid, "pid"));
+  await writeJsonAtomicallyDurably(absolutePath(metadataPath, "metadataPath"), {
     ...metadata,
-    targets: { ...metadata.targets, [role]: identity },
+    targets: {
+      ...(metadata.targets as Record<string, unknown>),
+      [normalizedRole]: identity,
+    },
   });
   return identity;
 }
 
-function encodedSupervisorValue(value) {
+function encodedSupervisorValue(value: unknown): string {
   return Buffer.from(JSON.stringify(value), "utf8").toString("base64");
 }
 
-async function registeredSupervisorIdentity(handle, metadataPath, role) {
-  const ready = await firstLine(handle.child.stdout, 10_000);
+async function registeredSupervisorIdentity(
+  handle: { child: ChildProcess },
+  metadataPath: string,
+  role: string,
+): Promise<Record<string, unknown>> {
+  const stdout = handle.child.stdout;
+  if (stdout === null) {
+    throw new Error(`${role} launch supervisor stdout is unavailable`);
+  }
+  const ready = await firstLine(stdout, 10_000);
   if (ready !== VNC_LAUNCH_SUPERVISOR_READY) {
     throw new Error(`${role} launch supervisor did not register durably`);
   }
-  const metadata = JSON.parse(await readFile(metadataPath, "utf8"));
-  const identity = metadata.processes?.[role];
+  const metadata = JSON.parse(
+    await readFile(metadataPath, "utf8"),
+  ) as Record<string, unknown>;
+  const identity = (metadata.processes as Record<string, unknown> | undefined)?.[
+    role
+  ];
   if (
     !processIdentityShape(identity) ||
-    identity.pid !== handle.child.pid ||
+    (identity as { pid?: unknown }).pid !== handle.child.pid ||
     !(await processIdentityMatches(identity))
   ) {
     throw new Error(`${role} launch supervisor identity is invalid`);
   }
-  return identity;
+  return identity as Record<string, unknown>;
 }
 
 async function registeredTargetIdentity(
-  metadataPath,
-  role,
+  metadataPath: string,
+  role: string,
   timeoutMs = 10_000,
-) {
+): Promise<Record<string, unknown>> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      const metadata = JSON.parse(await readFile(metadataPath, "utf8"));
-      const identity = metadata.targets?.[role];
+      const metadata = JSON.parse(
+        await readFile(metadataPath, "utf8"),
+      ) as Record<string, unknown>;
+      const identity = (metadata.targets as Record<string, unknown> | undefined)?.[
+        role
+      ];
       if (processIdentityShape(identity)) {
-        return identity;
+        return identity as Record<string, unknown>;
       }
     } catch (error) {
-      if (error.code !== "ENOENT") throw error;
+      if (!isNodeErrorCode(error, "ENOENT")) throw error;
     }
     await delay(25);
   }
   throw new Error(`${role} target identity was not registered durably`);
 }
 
-function releaseSupervisor(handle, timeoutMs = 2_000) {
+function releaseSupervisor(
+  handle: { child: ChildProcess },
+  timeoutMs = 2_000,
+): Promise<void> {
   return new Promise((resolveRelease, rejectRelease) => {
     const timeout = setTimeout(
       () => rejectRelease(new Error("VNC launch supervisor release timed out")),
       timeoutMs,
     );
+    if (handle.child.stdin === null) {
+      clearTimeout(timeout);
+      resolveRelease();
+      return;
+    }
     handle.child.stdin.write("start\n", (error) => {
       clearTimeout(timeout);
       if (error) {
@@ -936,9 +1141,13 @@ function releaseSupervisor(handle, timeoutMs = 2_000) {
   });
 }
 
-async function stopProcess(handle, identity, termination) {
+async function stopProcess(
+  handle: VncHandle | null | undefined,
+  identity: unknown,
+  termination: { killTimeoutMs?: number; termTimeoutMs?: number },
+): Promise<void> {
   if (!handle) return;
-  const childExit = new Promise((resolveExit) => {
+  const childExit = new Promise<void>((resolveExit) => {
     if (handle.child.exitCode !== null || handle.child.signalCode !== null) {
       resolveExit();
       return;
@@ -981,6 +1190,11 @@ async function stopProcess(handle, identity, termination) {
   void handle.completion.catch(() => undefined);
 }
 
+interface VncHandle {
+  child: ChildProcess;
+  completion: Promise<unknown>;
+}
+
 export async function startHeadlessVncActivator({
   commands = {},
   domainName,
@@ -992,9 +1206,32 @@ export async function startHeadlessVncActivator({
   runCommand,
   startProcess,
   termination = {},
-}) {
-  string(domainName, "domainName");
-  string(libvirtUri, "libvirtUri");
+}: {
+  commands?: Record<string, unknown>;
+  domainName: unknown;
+  environment?: NodeJS.ProcessEnv;
+  libvirtUri: unknown;
+  metadataPath: unknown;
+  owner: Record<string, unknown>;
+  readinessDelayMs?: number;
+  runCommand: (
+    command: string,
+    args: string[],
+    options?: unknown,
+  ) => Promise<{ stdout: unknown; stderr?: unknown }>;
+  startProcess: (
+    command: string,
+    args: string[],
+    options: Record<string, unknown>,
+  ) => VncHandle;
+  termination?: { killTimeoutMs?: number; termTimeoutMs?: number };
+}): Promise<unknown> {
+  const normalizedDomainName = string(domainName, "domainName");
+  const normalizedLibvirtUri = string(libvirtUri, "libvirtUri");
+  const normalizedMetadataPath = absolutePath(
+    metadataPath,
+    "metadataPath",
+  );
   if (typeof runCommand !== "function") {
     throw new Error("runCommand must be a function");
   }
@@ -1005,37 +1242,40 @@ export async function startHeadlessVncActivator({
     string(owner?.systemStagingPath, "owner.systemStagingPath"),
     VNC_ACTIVATOR_METADATA_FILE,
   );
-  if (absolutePath(metadataPath, "metadataPath") !== expectedMetadataPath) {
+  if (normalizedMetadataPath !== expectedMetadataPath) {
     throw new Error("VNC activator metadata must use its owned staging path");
   }
   const display = await runCommand("virsh", [
     "--connect",
-    libvirtUri,
+    normalizedLibvirtUri,
     "vncdisplay",
-    domainName,
+    normalizedDomainName,
   ]);
   const endpoint = parseLibvirtVncDisplay(display.stdout);
-  const width = commands.width ?? 1080;
-  const height = commands.height ?? 1920;
-  const xvfbCommand = commands.xvfb ?? "Xvfb";
-  const windowManagerCommand = commands.windowManager ?? "openbox";
-  const viewerCommand = commands.viewer ?? "xtigervncviewer";
+  const width = Number(commands.width ?? 1080);
+  const height = Number(commands.height ?? 1920);
+  const xvfbCommand = String(commands.xvfb ?? "Xvfb");
+  const windowManagerCommand = String(commands.windowManager ?? "openbox");
+  const viewerCommand = String(commands.viewer ?? "xtigervncviewer");
   const viewerArguments =
-    commands.viewerArguments ??
-    (commands.viewer ? [] : ["-RemoteResize=0", "-ViewOnly=1"]);
-  let xvfb;
-  let windowManager;
-  let viewer;
-  let xvfbIdentity;
-  let windowManagerIdentity;
-  let viewerIdentity;
+    Array.isArray(commands.viewerArguments)
+      ? (commands.viewerArguments as string[])
+      : commands.viewer !== undefined
+        ? []
+        : ["-RemoteResize=0", "-ViewOnly=1"];
+  let xvfb: VncHandle | null = null;
+  let windowManager: VncHandle | null = null;
+  let viewer: VncHandle | null = null;
+  let xvfbIdentity: Record<string, unknown> | null = null;
+  let windowManagerIdentity: Record<string, unknown> | null = null;
+  let viewerIdentity: Record<string, unknown> | null = null;
   let stopping = false;
-  let rejectFailure;
-  const failure = new Promise((_, reject) => {
+  let rejectFailure!: (error: Error) => void;
+  const failure = new Promise<never>((_, reject) => {
     rejectFailure = reject;
   });
   void failure.catch(() => undefined);
-  const monitor = (handle, label) => {
+  const monitor = (handle: VncHandle, label: string): void => {
     handle.child.once("exit", () => {
       if (!stopping) {
         rejectFailure(new Error(`${label} exited during VNC activation`));
@@ -1049,7 +1289,12 @@ export async function startHeadlessVncActivator({
       }
     });
   };
-  const startSupervisor = (role, command, arguments_, targetEnvironment) =>
+  const startSupervisor = (
+    role: string,
+    command: string,
+    arguments_: string[],
+    targetEnvironment: NodeJS.ProcessEnv,
+  ) =>
     startProcess(
       process.execPath,
       ["--input-type=module", "--eval", VNC_LAUNCH_SUPERVISOR_SOURCE],
@@ -1061,7 +1306,7 @@ export async function startHeadlessVncActivator({
           ),
           VEM_VNC_SUPERVISOR_MODULE: import.meta.url,
           VEM_VNC_SUPERVISOR_REGISTRATION: encodedSupervisorValue({
-            metadataPath,
+            metadataPath: normalizedMetadataPath,
             owner,
             role,
           }),
@@ -1072,8 +1317,8 @@ export async function startHeadlessVncActivator({
         },
       },
     );
-  let stopPromise;
-  const stop = () => {
+  let stopPromise: Promise<void> | undefined;
+  const stop = (): Promise<void> => {
     if (!stopPromise) {
       stopping = true;
       stopPromise = (async () => {
@@ -1081,7 +1326,7 @@ export async function startHeadlessVncActivator({
         await stopProcess(windowManager, windowManagerIdentity, termination);
         await stopProcess(xvfb, xvfbIdentity, termination);
         const recovered = await recoverHeadlessVncActivator({
-          metadataPath,
+          metadataPath: normalizedMetadataPath,
           owner,
           termination,
         });
@@ -1098,7 +1343,7 @@ export async function startHeadlessVncActivator({
       "xvfb",
       xvfbCommand,
       [
-        ...(commands.xvfbArguments ?? []),
+        ...((commands.xvfbArguments as string[] | undefined) ?? []),
         "-displayfd",
         "1",
         "-screen",
@@ -1112,30 +1357,36 @@ export async function startHeadlessVncActivator({
     monitor(xvfb, "Xvfb");
     xvfbIdentity = await registeredSupervisorIdentity(
       xvfb,
-      metadataPath,
+      normalizedMetadataPath,
       "xvfb",
     );
-    const displayLine = firstLine(xvfb.child.stdout, 10_000);
+    const xvfbStdout = xvfb.child.stdout;
+    if (xvfbStdout === null) {
+      throw new Error("Xvfb stdout stream is unavailable");
+    }
+    const displayLine = firstLine(xvfbStdout, 10_000);
     await releaseSupervisor(xvfb);
     const displayNumber = await displayLine;
     if (!/^\d+$/.test(displayNumber)) {
       throw new Error("Xvfb returned an invalid display number");
     }
-    await registeredTargetIdentity(metadataPath, "xvfb");
+    await registeredTargetIdentity(normalizedMetadataPath, "xvfb");
     windowManager = startSupervisor(
       "window-manager",
       windowManagerCommand,
-      [...(commands.windowManagerArguments ?? [])],
+      [
+        ...((commands.windowManagerArguments as string[] | undefined) ?? []),
+      ],
       { ...environment, DISPLAY: `:${displayNumber}` },
     );
     monitor(windowManager, "openbox");
     windowManagerIdentity = await registeredSupervisorIdentity(
       windowManager,
-      metadataPath,
+      normalizedMetadataPath,
       "window-manager",
     );
     await releaseSupervisor(windowManager);
-    await registeredTargetIdentity(metadataPath, "window-manager");
+    await registeredTargetIdentity(normalizedMetadataPath, "window-manager");
     viewer = startSupervisor(
       "viewer",
       viewerCommand,
@@ -1145,11 +1396,11 @@ export async function startHeadlessVncActivator({
     monitor(viewer, "TigerVNC viewer");
     viewerIdentity = await registeredSupervisorIdentity(
       viewer,
-      metadataPath,
+      normalizedMetadataPath,
       "viewer",
     );
     await releaseSupervisor(viewer);
-    await registeredTargetIdentity(metadataPath, "viewer");
+    await registeredTargetIdentity(normalizedMetadataPath, "viewer");
     await Promise.race([
       failure,
       new Promise((resolveReady) => setTimeout(resolveReady, readinessDelayMs)),
@@ -1157,7 +1408,7 @@ export async function startHeadlessVncActivator({
     return {
       endpoint,
       failure,
-      runWhileActive: (work) =>
+      runWhileActive: (work: () => unknown) =>
         Promise.race([Promise.resolve().then(work), failure]),
       stop,
     };
@@ -1167,11 +1418,11 @@ export async function startHeadlessVncActivator({
   }
 }
 
-export function readJsonWithBom(value) {
+export function readJsonWithBom(value: unknown): unknown {
   return JSON.parse(String(value).replace(/^\uFEFF/, ""));
 }
 
-async function fsyncFile(path) {
+async function fsyncFile(path: string): Promise<void> {
   const handle = await open(path, constants.O_RDONLY);
   try {
     await handle.sync();
@@ -1180,7 +1431,7 @@ async function fsyncFile(path) {
   }
 }
 
-async function fsyncDirectory(path) {
+async function fsyncDirectory(path: string): Promise<void> {
   const handle = await open(path, constants.O_RDONLY);
   try {
     await handle.sync();
@@ -1189,26 +1440,32 @@ async function fsyncDirectory(path) {
   }
 }
 
-async function writeJsonDurably(path, value) {
+async function writeJsonDurably(
+  path: string,
+  value: unknown,
+): Promise<void> {
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, {
     mode: 0o600,
   });
   await fsyncFile(path);
 }
 
-async function writeJsonAtomicallyDurably(path, value) {
+async function writeJsonAtomicallyDurably(
+  path: string,
+  value: unknown,
+): Promise<void> {
   const pendingPath = `${path}.pending-${process.pid}-${randomUUID()}`;
   await writeJsonDurably(pendingPath, value);
   await rename(pendingPath, path);
   await fsyncDirectory(dirname(path));
 }
 
-async function assertRegularFile(path, label) {
+async function assertRegularFile(path: string, label: string): Promise<void> {
   const metadata = await stat(path);
   if (!metadata.isFile()) throw new Error(`${label} must be a regular file`);
 }
 
-async function pathExists(path) {
+async function pathExists(path: string): Promise<boolean> {
   try {
     await access(path);
     return true;
@@ -1217,12 +1474,24 @@ async function pathExists(path) {
   }
 }
 
-function releasePaths(layout, id) {
+function releasePaths(
+  layout: Record<string, string>,
+  id: unknown,
+): {
+  releaseId: string;
+  directory: string;
+  cacheDirectory: string;
+  manifestPath: string;
+  systemPath: string;
+  cachePath: string;
+  domainXmlPath: string;
+  diagnosticPath: string;
+} {
   const normalizedId = releaseId(id);
   const directory = resolve(layout.systemReleaseRoot, normalizedId);
   const cacheDirectory = resolve(layout.cacheReleaseRoot, normalizedId);
   return {
-    releaseId: id,
+    releaseId: normalizedId,
     directory,
     cacheDirectory,
     manifestPath: `${directory}/release.json`,
@@ -1233,7 +1502,11 @@ function releasePaths(layout, id) {
   };
 }
 
-function releaseManifest(config, paths, profile) {
+function releaseManifest(
+  config: BaselineBuildConfig,
+  paths: ReturnType<typeof releasePaths>,
+  profile: unknown,
+): Record<string, unknown> {
   return {
     schemaVersion: RELEASE_MANIFEST_SCHEMA,
     releaseId: paths.releaseId,
@@ -1247,7 +1520,10 @@ function releaseManifest(config, paths, profile) {
   };
 }
 
-function currentManifest(config, paths) {
+function currentManifest(
+  config: BaselineBuildConfig,
+  paths: ReturnType<typeof releasePaths>,
+): Record<string, unknown> {
   return {
     schemaVersion: CURRENT_MANIFEST_SCHEMA,
     releaseId: paths.releaseId,
@@ -1266,15 +1542,23 @@ function currentManifest(config, paths) {
   };
 }
 
-async function readCompleteRelease(config, layout, id) {
+async function readCompleteRelease(
+  config: BaselineBuildConfig,
+  layout: Record<string, string>,
+  id: unknown,
+): Promise<ReturnType<typeof releasePaths> & { manifest: Record<string, unknown> }> {
   const paths = releasePaths(layout, id);
-  const manifest = JSON.parse(await readFile(paths.manifestPath, "utf8"));
+  const manifest = JSON.parse(
+    await readFile(paths.manifestPath, "utf8"),
+  ) as Record<string, unknown>;
   if (
     manifest.schemaVersion !== RELEASE_MANIFEST_SCHEMA ||
     manifest.releaseId !== paths.releaseId ||
     JSON.stringify(manifest.artifacts) !== JSON.stringify(RELEASE_ARTIFACTS) ||
-    manifest.destinations?.baselinePath !== config.storage.baselinePath ||
-    manifest.destinations?.cacheDiskPath !== config.storage.cacheDiskPath
+    (manifest.destinations as Record<string, unknown> | undefined)
+      ?.baselinePath !== config.storage.baselinePath ||
+    (manifest.destinations as Record<string, unknown> | undefined)
+      ?.cacheDiskPath !== config.storage.cacheDiskPath
   ) {
     throw new Error("published baseline release manifest is invalid");
   }
@@ -1284,15 +1568,23 @@ async function readCompleteRelease(config, layout, id) {
       [paths.cachePath, "published cache disk"],
       [paths.domainXmlPath, "published domain XML"],
       [paths.diagnosticPath, "published diagnostic"],
-    ].map(([path, label]) => assertRegularFile(path, label)),
+    ].map(([path, label]) =>
+      assertRegularFile(path as string, label as string),
+    ),
   );
   return { ...paths, manifest };
 }
 
-async function readCurrentRelease(config, layout) {
+async function readCurrentRelease(
+  config: BaselineBuildConfig,
+  layout: Record<string, string>,
+): Promise<ReturnType<typeof releasePaths> & {
+  manifest: Record<string, unknown>;
+  current: Record<string, unknown>;
+}> {
   const current = JSON.parse(
     await readFile(layout.currentManifestPath, "utf8"),
-  );
+  ) as Record<string, unknown>;
   if (current.schemaVersion !== CURRENT_MANIFEST_SCHEMA) {
     throw new Error("published baseline current manifest schema is invalid");
   }
@@ -1305,16 +1597,18 @@ async function readCurrentRelease(config, layout) {
   return { ...paths, current };
 }
 
-async function removeInterruptedPublicationFiles(layout) {
+async function removeInterruptedPublicationFiles(
+  layout: Record<string, string>,
+): Promise<void> {
   for (const releaseRoot of [
     layout.systemReleaseRoot,
     layout.cacheReleaseRoot,
   ]) {
-    let releaseEntries = [];
+    let releaseEntries: Array<import("node:fs").Dirent> = [];
     try {
       releaseEntries = await readdir(releaseRoot, { withFileTypes: true });
     } catch (error) {
-      if (error.code !== "ENOENT") throw error;
+      if (!isNodeErrorCode(error, "ENOENT")) throw error;
     }
     await Promise.all(
       releaseEntries
@@ -1345,11 +1639,19 @@ async function removeInterruptedPublicationFiles(layout) {
 }
 
 async function writeCurrentRelease(
-  config,
-  layout,
-  id,
-  { onStaged, onRenamed, syncDirectory = fsyncDirectory } = {},
-) {
+  config: BaselineBuildConfig,
+  layout: Record<string, string>,
+  id: unknown,
+  {
+    onStaged,
+    onRenamed,
+    syncDirectory = fsyncDirectory,
+  }: {
+    onStaged?: () => unknown;
+    onRenamed?: () => unknown;
+    syncDirectory?: (path: string) => Promise<void>;
+  } = {},
+): Promise<void> {
   const paths = releasePaths(layout, id);
   const pendingPath = `${layout.currentManifestPath}.pending-${process.pid}-${randomUUID()}`;
   await writeJsonDurably(pendingPath, currentManifest(config, paths));
@@ -1370,7 +1672,11 @@ const PUBLICATION_JOURNAL_PHASES = new Set([
   "current-manifest-staged",
   "current-manifest-published",
 ]);
-function publicationJournal(previousRelease, nextRelease, phase) {
+function publicationJournal(
+  previousRelease: { releaseId?: unknown } | null | undefined,
+  nextRelease: { releaseId: unknown },
+  phase: string,
+): Record<string, unknown> {
   return {
     schemaVersion: PUBLICATION_JOURNAL_SCHEMA,
     previousReleaseId: previousRelease?.releaseId ?? null,
@@ -1379,7 +1685,10 @@ function publicationJournal(previousRelease, nextRelease, phase) {
   };
 }
 
-function previousReleasePointer(previousRelease, nextRelease) {
+function previousReleasePointer(
+  previousRelease: { releaseId: unknown },
+  nextRelease: { releaseId: unknown },
+): Record<string, unknown> {
   return {
     schemaVersion: PREVIOUS_RELEASE_SCHEMA,
     previousReleaseId: previousRelease.releaseId,
@@ -1387,51 +1696,59 @@ function previousReleasePointer(previousRelease, nextRelease) {
   };
 }
 
-function validPreviousReleasePointer(value) {
+function validPreviousReleasePointer(value: unknown): boolean {
+  const record = value as Record<string, unknown> | null | undefined;
   if (
-    !value ||
-    typeof value !== "object" ||
-    value.schemaVersion !== PREVIOUS_RELEASE_SCHEMA ||
-    typeof value.previousReleaseId !== "string" ||
-    typeof value.releaseId !== "string"
+    !record ||
+    record.schemaVersion !== PREVIOUS_RELEASE_SCHEMA ||
+    typeof record.previousReleaseId !== "string" ||
+    typeof record.releaseId !== "string"
   ) {
     return false;
   }
   try {
-    releaseId(value.previousReleaseId);
-    releaseId(value.releaseId);
+    releaseId(record.previousReleaseId);
+    releaseId(record.releaseId);
     return true;
   } catch {
     return false;
   }
 }
 
-function validPublicationJournal(value) {
+function validPublicationJournal(value: unknown): boolean {
+  const record = value as Record<string, unknown> | null | undefined;
   if (
-    !value ||
-    typeof value !== "object" ||
-    value.schemaVersion !== PUBLICATION_JOURNAL_SCHEMA ||
-    (value.previousReleaseId !== null &&
-      typeof value.previousReleaseId !== "string") ||
-    typeof value.releaseId !== "string" ||
-    !PUBLICATION_JOURNAL_PHASES.has(value.phase)
+    !record ||
+    record.schemaVersion !== PUBLICATION_JOURNAL_SCHEMA ||
+    (record.previousReleaseId !== null &&
+      typeof record.previousReleaseId !== "string") ||
+    typeof record.releaseId !== "string" ||
+    !PUBLICATION_JOURNAL_PHASES.has(String(record.phase))
   ) {
     return false;
   }
   try {
-    releaseId(value.releaseId);
-    if (value.previousReleaseId !== null) releaseId(value.previousReleaseId);
+    releaseId(record.releaseId);
+    if (record.previousReleaseId !== null) {
+      releaseId(record.previousReleaseId);
+    }
     return true;
   } catch {
     return false;
   }
 }
 
-async function readPublicationJournal(layout) {
+async function readPublicationJournal(
+  layout: Record<string, string>,
+): Promise<
+  | { kind: "valid"; journal: Record<string, unknown> }
+  | { kind: "invalid" }
+  | { kind: "absent" }
+> {
   try {
     const journal = JSON.parse(
       await readFile(layout.publicationJournalPath, "utf8"),
-    );
+    ) as Record<string, unknown>;
     if (validPublicationJournal(journal)) return { kind: "valid", journal };
 
     // Release v1 wrote the same intent immediately before a definition commit.
@@ -1454,28 +1771,33 @@ async function readPublicationJournal(layout) {
     }
     return { kind: "invalid" };
   } catch (error) {
-    if (error.code === "ENOENT") return { kind: "absent" };
+    if (isNodeErrorCode(error, "ENOENT")) return { kind: "absent" };
     return { kind: "invalid" };
   }
 }
 
-async function writePublicationJournal(layout, journal) {
+async function writePublicationJournal(
+  layout: Record<string, string>,
+  journal: Record<string, unknown>,
+): Promise<void> {
   if (!validPublicationJournal(journal)) {
     throw new Error("baseline publication journal is invalid");
   }
   await writeJsonAtomicallyDurably(layout.publicationJournalPath, journal);
 }
 
-async function removePublicationJournal(layout) {
+async function removePublicationJournal(
+  layout: Record<string, string>,
+): Promise<void> {
   await rm(layout.publicationJournalPath, { force: true });
   await fsyncDirectory(dirname(layout.publicationJournalPath));
 }
 
 async function writePreviousReleasePointer(
-  layout,
-  previousRelease,
-  nextRelease,
-) {
+  layout: Record<string, string>,
+  previousRelease: { releaseId: unknown } | null,
+  nextRelease: { releaseId: unknown },
+): Promise<void> {
   if (!previousRelease) {
     await removePreviousReleasePointer(layout);
     return;
@@ -1486,7 +1808,9 @@ async function writePreviousReleasePointer(
   );
 }
 
-async function readPreviousReleasePointer(layout) {
+async function readPreviousReleasePointer(
+  layout: Record<string, string>,
+): Promise<Record<string, unknown> | null> {
   try {
     const pointer = JSON.parse(
       await readFile(layout.previousReleasePath, "utf8"),
@@ -1497,12 +1821,17 @@ async function readPreviousReleasePointer(layout) {
   }
 }
 
-async function removePreviousReleasePointer(layout) {
+async function removePreviousReleasePointer(
+  layout: Record<string, string>,
+): Promise<void> {
   await rm(layout.previousReleasePath, { force: true });
   await fsyncDirectory(dirname(layout.previousReleasePath));
 }
 
-async function removeRelease(layout, id) {
+async function removeRelease(
+  layout: Record<string, string>,
+  id: unknown,
+): Promise<void> {
   const paths = releasePaths(layout, id);
   await Promise.all([
     rm(paths.directory, { recursive: true, force: true }),
@@ -1514,12 +1843,16 @@ async function removeRelease(layout, id) {
   ]);
 }
 
-async function releaseDirectoryIds(layout) {
-  const entriesFor = async (root) => {
+async function releaseDirectoryIds(
+  layout: Record<string, string>,
+): Promise<Set<string>> {
+  const entriesFor = async (
+    root: string,
+  ): Promise<Array<import("node:fs").Dirent>> => {
     try {
       return await readdir(root, { withFileTypes: true });
     } catch (error) {
-      if (error.code === "ENOENT") return [];
+      if (isNodeErrorCode(error, "ENOENT")) return [];
       throw error;
     }
   };
@@ -1527,7 +1860,7 @@ async function releaseDirectoryIds(layout) {
     entriesFor(layout.systemReleaseRoot),
     entriesFor(layout.cacheReleaseRoot),
   ]);
-  const ids = new Set();
+  const ids = new Set<string>();
   for (const entry of [...systemEntries, ...cacheEntries]) {
     if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
     try {
@@ -1540,21 +1873,30 @@ async function releaseDirectoryIds(layout) {
   return ids;
 }
 
-async function cleanupUnselectedReleaseSidecars(config, layout, selectedId) {
+async function cleanupUnselectedReleaseSidecars(
+  config: BaselineBuildConfig,
+  layout: Record<string, string>,
+  selectedId: string | null,
+): Promise<void> {
   const ids = await releaseDirectoryIds(layout);
   for (const id of ids) {
     if (id !== selectedId) await removeRelease(layout, id);
   }
 }
 
-async function readCurrentReleaseOrNull(config, layout) {
+async function readCurrentReleaseOrNull(
+  config: BaselineBuildConfig,
+  layout: Record<string, string>,
+): Promise<Awaited<ReturnType<typeof readCurrentRelease>> | null> {
   try {
     return await readCurrentRelease(config, layout);
   } catch (error) {
-    if (error.code === "ENOENT" || error instanceof SyntaxError) return null;
+    if (isNodeErrorCode(error, "ENOENT") || error instanceof SyntaxError) {
+      return null;
+    }
     if (
       /^(published baseline (current|release) manifest|published (system|cache|domain XML|diagnostic)|releaseId must)/.test(
-        error.message,
+        errorMessage(error),
       )
     ) {
       return null;
@@ -1563,12 +1905,18 @@ async function readCurrentReleaseOrNull(config, layout) {
   }
 }
 
-async function removeInvalidCurrentManifest(layout) {
+async function removeInvalidCurrentManifest(
+  layout: Record<string, string>,
+): Promise<void> {
   await rm(layout.currentManifestPath, { force: true });
   await fsyncDirectory(dirname(layout.currentManifestPath));
 }
 
-async function readCompleteReleaseOrNull(config, layout, id) {
+async function readCompleteReleaseOrNull(
+  config: BaselineBuildConfig,
+  layout: Record<string, string>,
+  id: unknown,
+): Promise<Awaited<ReturnType<typeof readCompleteRelease>> | null> {
   try {
     return await readCompleteRelease(config, layout, id);
   } catch {
@@ -1576,7 +1924,25 @@ async function readCompleteReleaseOrNull(config, layout, id) {
   }
 }
 
-function requireDefinitionRecovery({ recoverDefinition, rollbackDefinition }) {
+type DefinitionRecovery = (
+  release: Record<string, unknown>,
+  previous: Record<string, unknown> | null,
+) => unknown;
+
+type DefinitionRollback = (
+  release: Record<string, unknown> | null,
+) => unknown;
+
+function requireDefinitionRecovery({
+  recoverDefinition,
+  rollbackDefinition,
+}: {
+  recoverDefinition?: DefinitionRecovery;
+  rollbackDefinition?: DefinitionRollback;
+}): {
+  recoverDefinition: DefinitionRecovery;
+  rollbackDefinition: DefinitionRollback;
+} {
   if (typeof recoverDefinition !== "function") {
     throw new Error(
       "incomplete baseline publication recovery requires a libvirt definition verifier",
@@ -1587,6 +1953,7 @@ function requireDefinitionRecovery({ recoverDefinition, rollbackDefinition }) {
       "incomplete baseline publication recovery requires a libvirt definition rollback",
     );
   }
+  return { recoverDefinition, rollbackDefinition };
 }
 
 async function finalizeRecoveredRelease({
@@ -1595,7 +1962,13 @@ async function finalizeRecoveredRelease({
   current,
   selected,
   removeJournal,
-}) {
+}: {
+  config: BaselineBuildConfig;
+  layout: Record<string, string>;
+  current: Awaited<ReturnType<typeof readCurrentRelease>> | null;
+  selected: Awaited<ReturnType<typeof readCompleteRelease>>;
+  removeJournal: boolean;
+}): Promise<Awaited<ReturnType<typeof readCompleteRelease>>> {
   if (!current || current.releaseId !== selected.releaseId) {
     await writeCurrentRelease(config, layout, selected.releaseId);
   }
@@ -1609,9 +1982,15 @@ async function finalizeRecoveredRelease({
 // replacement, the durable previous pointer proves the sole rollback target
 // even when the journal itself is unreadable.
 export async function recoverPublishedBaseline(
-  config,
-  { recoverDefinition, rollbackDefinition } = {},
-) {
+  config: BaselineBuildConfig,
+  {
+    recoverDefinition,
+    rollbackDefinition,
+  }: {
+    recoverDefinition?: DefinitionRecovery;
+    rollbackDefinition?: DefinitionRollback;
+  } = {},
+): Promise<Awaited<ReturnType<typeof readCompleteRelease>> | null> {
   const layout = baselinePublicationLayout(config);
   await mkdir(layout.systemReleaseRoot, { recursive: true, mode: 0o700 });
   await mkdir(layout.cacheReleaseRoot, { recursive: true, mode: 0o700 });
@@ -1631,8 +2010,11 @@ export async function recoverPublishedBaseline(
   if (journalState.kind === "absent") {
     if (current) {
       if (typeof recoverDefinition === "function") {
-        requireDefinitionRecovery({ recoverDefinition, rollbackDefinition });
-        await recoverDefinition(current, null);
+        const definitionRecovery = requireDefinitionRecovery({
+          recoverDefinition,
+          rollbackDefinition,
+        });
+        await definitionRecovery.recoverDefinition(current, null);
       }
       return finalizeRecoveredRelease({
         config,
@@ -1644,8 +2026,11 @@ export async function recoverPublishedBaseline(
     }
 
     if (pointerPrevious) {
-      requireDefinitionRecovery({ recoverDefinition, rollbackDefinition });
-      await recoverDefinition(pointerPrevious, null);
+      const definitionRecovery = requireDefinitionRecovery({
+        recoverDefinition,
+        rollbackDefinition,
+      });
+      await definitionRecovery.recoverDefinition(pointerPrevious, null);
       return finalizeRecoveredRelease({
         config,
         layout,
@@ -1665,7 +2050,10 @@ export async function recoverPublishedBaseline(
     return null;
   }
 
-  requireDefinitionRecovery({ recoverDefinition, rollbackDefinition });
+  const definitionRecovery = requireDefinitionRecovery({
+    recoverDefinition,
+    rollbackDefinition,
+  });
   if (journalState.kind === "invalid") {
     if (!current && !pointerPrevious) {
       throw new Error(
@@ -1674,19 +2062,23 @@ export async function recoverPublishedBaseline(
     }
 
     const selected = current ?? pointerPrevious;
-    const fallback =
-      current &&
-      pointerPrevious &&
-      previousPointer.releaseId === current.releaseId &&
-      pointerPrevious.releaseId !== current.releaseId
-        ? pointerPrevious
-        : null;
+    if (selected === null) {
+      throw new Error(
+        "incomplete baseline publication has no verifiable selected release",
+      );
+    }
+    let fallback: Awaited<ReturnType<typeof readCompleteRelease>> | null = null;
+    if (current !== null && pointerPrevious !== null) {
+      if (pointerPrevious.releaseId !== current.releaseId) {
+        fallback = pointerPrevious;
+      }
+    }
     try {
-      await recoverDefinition(selected, null);
+      await definitionRecovery.recoverDefinition(selected, null);
     } catch (error) {
       if (!fallback) throw error;
       try {
-        await rollbackDefinition(fallback);
+        await definitionRecovery.rollbackDefinition(fallback);
       } catch {
         throw error;
       }
@@ -1709,12 +2101,14 @@ export async function recoverPublishedBaseline(
     });
   }
 
-  const journal = journalState.kind === "valid" ? journalState.journal : null;
-  const candidate = journal
-    ? await readCompleteReleaseOrNull(config, layout, journal.releaseId)
-    : null;
+  const journal = journalState.journal;
+  const candidate = await readCompleteReleaseOrNull(
+    config,
+    layout,
+    journal.releaseId,
+  );
   const previous =
-    journal?.previousReleaseId === null || !journal
+    journal.previousReleaseId === null
       ? null
       : await readCompleteReleaseOrNull(
           config,
@@ -1734,7 +2128,7 @@ export async function recoverPublishedBaseline(
         "incomplete baseline publication has no verifiable selected release",
       );
     }
-    await rollbackDefinition(null);
+    await definitionRecovery.rollbackDefinition(null);
     if (hasCurrentManifest) await removeInvalidCurrentManifest(layout);
     await cleanupUnselectedReleaseSidecars(config, layout, null);
     await removePublicationJournal(layout);
@@ -1744,11 +2138,11 @@ export async function recoverPublishedBaseline(
 
   const fallback = selected.releaseId === journal.releaseId ? previous : null;
   try {
-    await recoverDefinition(selected, journal);
+    await definitionRecovery.recoverDefinition(selected, journal);
   } catch (error) {
     if (fallback) {
       try {
-        await rollbackDefinition(fallback);
+        await definitionRecovery.rollbackDefinition(fallback);
       } catch {
         throw error;
       }
@@ -1760,7 +2154,7 @@ export async function recoverPublishedBaseline(
         removeJournal: true,
       });
     } else if (canDiscardAll) {
-      await rollbackDefinition(null);
+      await definitionRecovery.rollbackDefinition(null);
       if (hasCurrentManifest) await removeInvalidCurrentManifest(layout);
       await cleanupUnselectedReleaseSidecars(config, layout, null);
       await removePublicationJournal(layout);
@@ -1778,7 +2172,9 @@ export async function recoverPublishedBaseline(
   });
 }
 
-export async function resolvePublishedBaselineRelease(config) {
+export async function resolvePublishedBaselineRelease(
+  config: BaselineBuildConfig,
+): Promise<Awaited<ReturnType<typeof readCompleteRelease>>> {
   const recovered = await recoverPublishedBaseline(config);
   if (!recovered) throw new Error("no published baseline release is available");
   return recovered;
@@ -1797,7 +2193,22 @@ export async function publishVerifiedBaselineRelease({
   rollbackDefinition,
   onStage = async () => {},
   syncCurrentManifestDirectory = fsyncDirectory,
-}) {
+}: {
+  config: BaselineBuildConfig;
+  releaseId?: string;
+  stagedSystemPath: unknown;
+  stagedCachePath: unknown;
+  stagedDomainXmlPath: unknown;
+  stagedDiagnosticPath: unknown;
+  profile: unknown;
+  verified: unknown;
+  commitDefinition: (paths: ReturnType<typeof releasePaths>) => unknown;
+  rollbackDefinition: (
+    release: Awaited<ReturnType<typeof readCurrentRelease>> | null,
+  ) => unknown;
+  onStage?: (stage: string) => unknown;
+  syncCurrentManifestDirectory?: (path: string) => Promise<void>;
+}): Promise<Awaited<ReturnType<typeof readCompleteRelease>>> {
   if (verified !== true)
     throw new Error("baseline verification must pass before publication");
   if (typeof commitDefinition !== "function") {
@@ -1816,9 +2227,19 @@ export async function publishVerifiedBaselineRelease({
   const stagingSuffix = `${id}-${process.pid}-${randomUUID()}`;
   const systemStagingDirectory = `${layout.systemReleaseRoot}/.staging-${stagingSuffix}`;
   const cacheStagingDirectory = `${layout.cacheReleaseRoot}/.staging-${stagingSuffix}`;
-  const sources = [
+  const sources: Array<
     [
-      stagedSystemPath,
+      string,
+      string,
+      string,
+      string,
+      string,
+      string,
+      string,
+    ]
+  > = [
+    [
+      absolutePath(stagedSystemPath, "stagedSystemPath"),
       RELEASE_ARTIFACTS.system,
       "staged system disk",
       "system-staged",
@@ -1827,7 +2248,7 @@ export async function publishVerifiedBaselineRelease({
       "system",
     ],
     [
-      stagedCachePath,
+      absolutePath(stagedCachePath, "stagedCachePath"),
       RELEASE_ARTIFACTS.cache,
       "staged cache disk",
       "cache-staged",
@@ -1836,7 +2257,7 @@ export async function publishVerifiedBaselineRelease({
       "cache",
     ],
     [
-      stagedDomainXmlPath,
+      absolutePath(stagedDomainXmlPath, "stagedDomainXmlPath"),
       RELEASE_ARTIFACTS.domainXml,
       "staged domain XML",
       "domain-xml-staged",
@@ -1845,7 +2266,7 @@ export async function publishVerifiedBaselineRelease({
       "system",
     ],
     [
-      stagedDiagnosticPath,
+      absolutePath(stagedDiagnosticPath, "stagedDiagnosticPath"),
       RELEASE_ARTIFACTS.diagnostic,
       "staged diagnostic",
       "diagnostic-staged",
@@ -1862,18 +2283,21 @@ export async function publishVerifiedBaselineRelease({
   ) {
     throw new Error(`baseline release already exists: ${id}`);
   }
-  let previousRelease = null;
+  let previousRelease: Awaited<ReturnType<typeof readCurrentRelease>> | null =
+    null;
   try {
     previousRelease = await readCurrentRelease(config, layout);
   } catch (error) {
-    if (error.code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
+    if (!isNodeErrorCode(error, "ENOENT") && !(error instanceof SyntaxError)) {
+      throw error;
+    }
   }
   await mkdir(systemStagingDirectory, { mode: 0o700 });
   await mkdir(cacheStagingDirectory, { mode: 0o700 });
   await onStage("release-staging-created");
   let definitionAttempted = false;
   let currentManifestRenamed = false;
-  let journal = null;
+  let journal: Record<string, unknown> | null = null;
   try {
     for (const [
       source,
@@ -1942,7 +2366,7 @@ export async function publishVerifiedBaselineRelease({
     await removePublicationJournal(layout);
     await removePreviousReleasePointer(layout);
     await onStage("current-manifest-published");
-    return readCompleteRelease(config, layout, id);
+    return await readCompleteRelease(config, layout, id);
   } catch (error) {
     if (!currentManifestRenamed && definitionAttempted) {
       await rollbackDefinition(previousRelease);
@@ -1962,7 +2386,10 @@ export async function publishVerifiedBaselineRelease({
   }
 }
 
-export async function assertReadableRegularFile(path, label) {
+export async function assertReadableRegularFile(
+  path: unknown,
+  label: string,
+): Promise<string> {
   const value = absolutePath(path, label);
   await access(value, constants.R_OK);
   const metadata = await stat(value);
@@ -1970,7 +2397,11 @@ export async function assertReadableRegularFile(path, label) {
   return value;
 }
 
-export async function assertFileSha256(path, expectedHash, label) {
+export async function assertFileSha256(
+  path: unknown,
+  expectedHash: unknown,
+  label: string,
+): Promise<string> {
   const value = await assertReadableRegularFile(path, label);
   const expected = sha256(expectedHash, `${label} SHA-256`);
   const actual = await new Promise((resolveHash, rejectHash) => {
