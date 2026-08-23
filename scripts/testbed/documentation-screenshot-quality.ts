@@ -8,15 +8,27 @@ import { inspectPng } from "./display-evidence.ts";
 
 const METADATA_SCHEMA = "vem-documentation-screenshot-metadata/v1";
 
-function isNonEmptyString(value) {
+type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? (value as unknown[]) : [];
+}
+
+function isNonEmptyString(value: unknown): boolean {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-function normalizeStringList(value, label) {
+function normalizeStringList(value: unknown, label: string): string[] {
   if (!Array.isArray(value) || value.length === 0) {
     throw new Error(`${label} must be a non-empty string array`);
   }
-  const normalized = [];
+  const normalized: string[] = [];
   const seen = new Set();
   for (const entry of value) {
     if (!isNonEmptyString(entry)) {
@@ -31,12 +43,15 @@ function normalizeStringList(value, label) {
   return normalized;
 }
 
-function normalizeOptionalStringList(value, label) {
+function normalizeOptionalStringList(
+  value: unknown,
+  label: string,
+): string[] | null {
   if (value == null) return null;
   if (!Array.isArray(value)) {
     throw new Error(`${label} must be an array when present`);
   }
-  const normalized = [];
+  const normalized: string[] = [];
   const seen = new Set();
   for (const entry of value) {
     if (!isNonEmptyString(entry)) {
@@ -51,12 +66,12 @@ function normalizeOptionalStringList(value, label) {
   return normalized;
 }
 
-function normalizeViewport(value) {
+function normalizeViewport(value: unknown): { width: number; height: number } {
   if (!value || typeof value !== "object") {
     throw new Error("viewport must be an object");
   }
-  const width = Number(value.width);
-  const height = Number(value.height);
+  const width = Number(recordValue(value).width);
+  const height = Number(recordValue(value).height);
   if (!Number.isInteger(width) || width < 1) {
     throw new Error("viewport width must be a positive integer");
   }
@@ -66,26 +81,31 @@ function normalizeViewport(value) {
   return { width, height };
 }
 
-function validateCommit(value) {
-  if (!/^[a-f0-9]{7,40}$/i.test(value)) {
+function validateCommit(value: unknown): string {
+  if (!/^[a-f0-9]{7,40}$/i.test(String(value))) {
     throw new Error("commit must be a git commit hash");
   }
-  return value;
+  return String(value);
 }
 
-function actualOrientation(capture) {
+function actualOrientation(capture: JsonRecord): string {
   if (capture.widthPx === capture.heightPx) return "square";
-  return capture.heightPx > capture.widthPx ? "portrait" : "landscape";
+  return Number(capture.heightPx) > Number(capture.widthPx)
+    ? "portrait"
+    : "landscape";
 }
 
-export function normalizeDocumentationScreenshotMetadata(input) {
+export function normalizeDocumentationScreenshotMetadata(
+  input: unknown,
+): JsonRecord {
   if (!input || typeof input !== "object") {
     throw new Error("documentation screenshot metadata must be an object");
   }
+  const inputRecord = recordValue(input);
   const expectedOrientation =
-    input.expectedOrientation == null
+    inputRecord.expectedOrientation == null
       ? null
-      : String(input.expectedOrientation);
+      : String(inputRecord.expectedOrientation);
   if (
     expectedOrientation !== null &&
     !["portrait", "landscape"].includes(expectedOrientation)
@@ -95,65 +115,75 @@ export function normalizeDocumentationScreenshotMetadata(input) {
     );
   }
   return {
-    id: isNonEmptyString(input.id)
-      ? input.id.trim()
+    id: isNonEmptyString(inputRecord.id)
+      ? String(inputRecord.id).trim()
       : (() => {
           throw new Error("id must be a non-empty string");
         })(),
     source:
-      input.source === "admin-ui" || input.source === "machine-runtime"
-        ? input.source
+      inputRecord.source === "admin-ui" ||
+      inputRecord.source === "machine-runtime"
+        ? inputRecord.source
         : (() => {
             throw new Error("source must be admin-ui or machine-runtime");
           })(),
-    route: isNonEmptyString(input.route)
-      ? input.route.trim()
+    route: isNonEmptyString(inputRecord.route)
+      ? String(inputRecord.route).trim()
       : (() => {
           throw new Error("route must be a non-empty string");
         })(),
-    capturedAt: isNonEmptyString(input.capturedAt)
-      ? input.capturedAt.trim()
+    capturedAt: isNonEmptyString(inputRecord.capturedAt)
+      ? String(inputRecord.capturedAt).trim()
       : (() => {
           throw new Error("capturedAt must be a non-empty string");
         })(),
     commit: validateCommit(
-      isNonEmptyString(input.commit)
-        ? input.commit.trim()
+      isNonEmptyString(inputRecord.commit)
+        ? String(inputRecord.commit).trim()
         : (() => {
             throw new Error("commit must be a non-empty string");
           })(),
     ),
     sourceCommit:
-      input.sourceCommit == null
+      inputRecord.sourceCommit == null
         ? null
         : validateCommit(
-            isNonEmptyString(input.sourceCommit)
-              ? input.sourceCommit.trim()
+            isNonEmptyString(inputRecord.sourceCommit)
+              ? String(inputRecord.sourceCommit).trim()
               : (() => {
                   throw new Error("sourceCommit must be a non-empty string");
                 })(),
           ),
-    viewport: normalizeViewport(input.viewport),
+    viewport: normalizeViewport(inputRecord.viewport),
     expectedOrientation,
-    expectedTexts: normalizeStringList(input.expectedTexts, "expectedTexts"),
+    expectedTexts: normalizeStringList(
+      inputRecord.expectedTexts,
+      "expectedTexts",
+    ),
     detectedTexts: normalizeOptionalStringList(
-      input.detectedTexts,
+      inputRecord.detectedTexts,
       "detectedTexts",
     ),
     manualReviewReason:
-      input.manualReviewReason == null
+      inputRecord.manualReviewReason == null
         ? null
-        : isNonEmptyString(input.manualReviewReason)
-          ? input.manualReviewReason.trim()
+        : isNonEmptyString(inputRecord.manualReviewReason)
+          ? String(inputRecord.manualReviewReason).trim()
           : (() => {
               throw new Error("manualReviewReason must be a non-empty string");
             })(),
   };
 }
 
-export function evaluateDocumentationScreenshot({ bytes, metadata }) {
+export function evaluateDocumentationScreenshot({
+  bytes,
+  metadata,
+}: {
+  bytes: Buffer;
+  metadata: JsonRecord;
+}): JsonRecord {
   const normalizedMetadata = normalizeDocumentationScreenshotMetadata(metadata);
-  const inspected = inspectPng(bytes);
+  const inspected = recordValue(inspectPng(bytes));
   if (!inspected.ok) {
     return {
       schemaVersion: METADATA_SCHEMA,
@@ -164,7 +194,7 @@ export function evaluateDocumentationScreenshot({ bytes, metadata }) {
     };
   }
 
-  const capture = {
+  const capture: JsonRecord = {
     format: inspected.format,
     widthPx: inspected.widthPx,
     heightPx: inspected.heightPx,
@@ -195,7 +225,15 @@ export function evaluateDocumentationScreenshot({ bytes, metadata }) {
     status = "rejected";
   }
 
-  const detectedTexts = normalizedMetadata.detectedTexts;
+  const expectedTexts = arrayValue(normalizedMetadata.expectedTexts).map(
+    (value: unknown) => String(value),
+  );
+  const detectedTexts =
+    normalizedMetadata.detectedTexts == null
+      ? null
+      : arrayValue(normalizedMetadata.detectedTexts).map((value: unknown) =>
+          String(value),
+        );
   if (status !== "rejected") {
     if (detectedTexts === null) {
       reasons.push(
@@ -203,7 +241,7 @@ export function evaluateDocumentationScreenshot({ bytes, metadata }) {
       );
       status = "manual-review";
     } else {
-      const missingTexts = normalizedMetadata.expectedTexts.filter(
+      const missingTexts = expectedTexts.filter(
         (expected) => !detectedTexts.includes(expected),
       );
       if (missingTexts.length > 0) {
@@ -237,14 +275,18 @@ export async function evaluateDocumentationScreenshotFile({
   screenshotPath,
   metadataPath,
   outputPath = null,
-}) {
+}: {
+  screenshotPath: string;
+  metadataPath: string;
+  outputPath?: string | null;
+}): Promise<JsonRecord> {
   const [bytes, metadataBytes] = await Promise.all([
     readFile(screenshotPath),
     readFile(metadataPath, "utf8"),
   ]);
   const result = evaluateDocumentationScreenshot({
     bytes,
-    metadata: JSON.parse(metadataBytes),
+    metadata: JSON.parse(metadataBytes) as JsonRecord,
   });
   if (outputPath) {
     await writeFile(outputPath, `${JSON.stringify(result, null, 2)}\n`, "utf8");
@@ -252,8 +294,10 @@ export async function evaluateDocumentationScreenshotFile({
   return result;
 }
 
-export function parseDocumentationScreenshotQualityArgs(args) {
-  const options = {};
+export function parseDocumentationScreenshotQualityArgs(
+  args: string[],
+): JsonRecord {
+  const options: JsonRecord = {};
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     const next = () => {
@@ -277,7 +321,12 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   const options = parseDocumentationScreenshotQualityArgs(
     process.argv.slice(2),
   );
-  const result = await evaluateDocumentationScreenshotFile(options);
+  const result = await evaluateDocumentationScreenshotFile({
+    screenshotPath: String(options.screenshotPath),
+    metadataPath: String(options.metadataPath),
+    outputPath:
+      options.outputPath == null ? null : String(options.outputPath),
+  });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   if (result.status === "rejected") process.exitCode = 1;
 }
