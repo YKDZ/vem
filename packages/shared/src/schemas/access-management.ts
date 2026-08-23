@@ -1,11 +1,16 @@
 import { z } from "zod";
 
+import { defineAdminEndpointContract } from "../admin-api-contract";
 import {
   adminUserStatusSchema,
   permissionCodeSchema,
   roleStatusSchema,
 } from "../enums/access";
 import { createPageResultSchema, pageQuerySchema } from "./pagination";
+
+const noPathParamsSchema = z.strictObject({});
+const noQuerySchema = z.strictObject({});
+const noBodySchema = z.strictObject({});
 
 const uniquePermissionCodesSchema = z
   .array(permissionCodeSchema)
@@ -69,6 +74,33 @@ export const adminUserPageResponseSchema = createPageResultSchema(
   adminUserResponseSchema,
 );
 
+export const adminListAdminUsersContract = defineAdminEndpointContract({
+  method: "GET",
+  path: "/admin-users",
+  pathParamsSchema: noPathParamsSchema,
+  querySchema: adminUserListQuerySchema,
+  bodySchema: noBodySchema,
+  responseSchema: adminUserPageResponseSchema,
+});
+
+export const adminCreateAdminUserContract = defineAdminEndpointContract({
+  method: "POST",
+  path: "/admin-users",
+  pathParamsSchema: noPathParamsSchema,
+  querySchema: noQuerySchema,
+  bodySchema: createAdminUserSchema,
+  responseSchema: adminUserResponseSchema,
+});
+
+export const adminUpdateAdminUserContract = defineAdminEndpointContract({
+  method: "PATCH",
+  path: "/admin-users/:id",
+  pathParamsSchema: z.strictObject({ id: z.uuid() }),
+  querySchema: noQuerySchema,
+  bodySchema: updateAdminUserSchema,
+  responseSchema: adminUserResponseSchema,
+});
+
 export const roleQuerySchema = z.strictObject({
   keyword: z.string().max(64).optional(),
   status: roleStatusSchema.optional(),
@@ -113,6 +145,42 @@ export const adminRolePageResponseSchema = createPageResultSchema(
 export const adminPermissionCodeListQuerySchema = z.strictObject({});
 export const adminPermissionCodeListResponseSchema =
   uniquePermissionCodesSchema;
+
+export const adminListRolesContract = defineAdminEndpointContract({
+  method: "GET",
+  path: "/roles",
+  pathParamsSchema: noPathParamsSchema,
+  querySchema: roleListQuerySchema,
+  bodySchema: noBodySchema,
+  responseSchema: adminRolePageResponseSchema,
+});
+
+export const adminCreateRoleContract = defineAdminEndpointContract({
+  method: "POST",
+  path: "/roles",
+  pathParamsSchema: noPathParamsSchema,
+  querySchema: noQuerySchema,
+  bodySchema: createRoleSchema,
+  responseSchema: adminRoleResponseSchema,
+});
+
+export const adminUpdateRoleContract = defineAdminEndpointContract({
+  method: "PATCH",
+  path: "/roles/:id",
+  pathParamsSchema: z.strictObject({ id: z.uuid() }),
+  querySchema: noQuerySchema,
+  bodySchema: updateRoleSchema,
+  responseSchema: adminRoleResponseSchema,
+});
+
+export const adminListPermissionCodesContract = defineAdminEndpointContract({
+  method: "GET",
+  path: "/permissions",
+  pathParamsSchema: noPathParamsSchema,
+  querySchema: adminPermissionCodeListQuerySchema,
+  bodySchema: noBodySchema,
+  responseSchema: adminPermissionCodeListResponseSchema,
+});
 
 export type AdminUserListQuery = z.infer<typeof adminUserListQuerySchema>;
 export type AdminCreateUserRequest = z.infer<typeof createAdminUserSchema>;

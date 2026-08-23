@@ -1,63 +1,45 @@
 import type { z } from "zod";
 
 import {
-  adminPermissionCodeListQuerySchema,
-  adminPermissionCodeListResponseSchema,
-  adminRolePageResponseSchema,
-  adminRoleResponseSchema,
-  createRoleSchema,
-  roleListQuerySchema,
-  updateRoleSchema,
+  adminCreateRoleContract,
+  adminListPermissionCodesContract,
+  adminListRolesContract,
+  adminUpdateRoleContract,
   type AdminRolePageResponse,
   type AdminRoleResponse,
   type PageResult,
   type PermissionCode,
 } from "@vem/shared";
 
-import { getContract, patchContract, postContract } from "./request";
+import { callAdminEndpointContract } from "./request";
 
 export type Role = AdminRoleResponse;
 export type { PageResult };
 
 export async function listRoles(
-  query?: z.input<typeof roleListQuerySchema>,
+  query?: z.input<typeof adminListRolesContract.querySchema>,
 ): Promise<AdminRolePageResponse> {
-  return await getContract(
-    "/roles",
-    roleListQuerySchema,
-    adminRolePageResponseSchema,
-    query ?? {},
-  );
+  return await callAdminEndpointContract(adminListRolesContract, {
+    query: query ?? {},
+  });
 }
 
 export async function createRole(
-  body: z.input<typeof createRoleSchema>,
+  body: z.input<typeof adminCreateRoleContract.bodySchema>,
 ): Promise<Role> {
-  return await postContract(
-    "/roles",
-    createRoleSchema,
-    adminRoleResponseSchema,
-    body,
-  );
+  return await callAdminEndpointContract(adminCreateRoleContract, { body });
 }
 
 export async function updateRole(
   id: string,
-  body: z.input<typeof updateRoleSchema>,
+  body: z.input<typeof adminUpdateRoleContract.bodySchema>,
 ): Promise<Role> {
-  return await patchContract(
-    `/roles/${id}`,
-    updateRoleSchema,
-    adminRoleResponseSchema,
+  return await callAdminEndpointContract(adminUpdateRoleContract, {
+    pathParams: { id },
     body,
-  );
+  });
 }
 
 export async function listPermissions(): Promise<PermissionCode[]> {
-  return await getContract(
-    "/permissions",
-    adminPermissionCodeListQuerySchema,
-    adminPermissionCodeListResponseSchema,
-    {},
-  );
+  return await callAdminEndpointContract(adminListPermissionCodesContract, {});
 }

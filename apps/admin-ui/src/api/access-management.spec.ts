@@ -1,6 +1,15 @@
-import { describe, expect, it, vi } from "vitest";
+import {
+  adminCreateAdminUserContract,
+  adminCreateRoleContract,
+  adminListAdminUsersContract,
+  adminListPermissionCodesContract,
+  adminListRolesContract,
+  adminUpdateAdminUserContract,
+  adminUpdateRoleContract,
+} from "@vem/shared";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { getContract, patchContract, postContract } from "@/api/request";
+import { callAdminEndpointContract } from "@/api/request";
 
 import {
   createAdminUser,
@@ -10,15 +19,21 @@ import {
 import { createRole, listPermissions, listRoles, updateRole } from "./roles";
 
 vi.mock("@/api/request", () => ({
-  getContract: vi
-    .fn()
-    .mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 20 }),
-  patchContract: vi.fn().mockResolvedValue({}),
-  postContract: vi.fn().mockResolvedValue({}),
+  callAdminEndpointContract: vi.fn().mockResolvedValue({}),
 }));
 
 describe("access management api", () => {
-  it("uses schema-bound helpers for admin user reads and writes", async () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(callAdminEndpointContract).mockResolvedValue({
+      items: [],
+      total: 0,
+      page: 1,
+      pageSize: 20,
+    });
+  });
+
+  it("uses complete shared endpoint contracts for admin user reads and writes", async () => {
     await listAdminUsers({ page: 1, pageSize: 20, status: "active" });
     await createAdminUser({
       username: "ops01",
@@ -29,27 +44,24 @@ describe("access management api", () => {
       mobile: null,
     });
 
-    expect(getContract).toHaveBeenCalledWith(
-      "/admin-users",
-      expect.any(Object),
-      expect.any(Object),
-      { page: 1, pageSize: 20, status: "active" },
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminListAdminUsersContract,
+      { query: { page: 1, pageSize: 20, status: "active" } },
     );
-    expect(postContract).toHaveBeenCalledWith(
-      "/admin-users",
-      expect.any(Object),
-      expect.any(Object),
-      expect.objectContaining({ username: "ops01" }),
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminCreateAdminUserContract,
+      { body: expect.objectContaining({ username: "ops01" }) },
     );
-    expect(patchContract).toHaveBeenCalledWith(
-      "/admin-users/550e8400-e29b-41d4-a716-446655440001",
-      expect.any(Object),
-      expect.any(Object),
-      { mobile: null },
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminUpdateAdminUserContract,
+      {
+        pathParams: { id: "550e8400-e29b-41d4-a716-446655440001" },
+        body: { mobile: null },
+      },
     );
   });
 
-  it("uses schema-bound helpers for role and permission workflows", async () => {
+  it("uses complete shared endpoint contracts for role and permission workflows", async () => {
     await listRoles({ pageSize: 50 });
     await listPermissions();
     await createRole({
@@ -61,31 +73,29 @@ describe("access management api", () => {
       permissionCodes: ["roles.write"],
     });
 
-    expect(getContract).toHaveBeenCalledWith(
-      "/roles",
-      expect.any(Object),
-      expect.any(Object),
-      { pageSize: 50 },
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminListRolesContract,
+      { query: { pageSize: 50 } },
     );
-    expect(getContract).toHaveBeenCalledWith(
-      "/permissions",
-      expect.any(Object),
-      expect.any(Object),
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminListPermissionCodesContract,
       {},
     );
-    expect(postContract).toHaveBeenCalledWith(
-      "/roles",
-      expect.any(Object),
-      expect.any(Object),
-      expect.objectContaining({
-        permissionCodes: ["adminUsers.read", "roles.write"],
-      }),
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminCreateRoleContract,
+      {
+        body: expect.objectContaining({
+          code: "ops_manager",
+          permissionCodes: ["adminUsers.read", "roles.write"],
+        }),
+      },
     );
-    expect(patchContract).toHaveBeenCalledWith(
-      "/roles/550e8400-e29b-41d4-a716-446655440002",
-      expect.any(Object),
-      expect.any(Object),
-      { permissionCodes: ["roles.write"] },
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminUpdateRoleContract,
+      {
+        pathParams: { id: "550e8400-e29b-41d4-a716-446655440002" },
+        body: { permissionCodes: ["roles.write"] },
+      },
     );
   });
 });

@@ -1,63 +1,49 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Param,
-  ParseUUIDPipe,
-  Patch,
-  Post,
-  Query,
-} from "@nestjs/common";
+import { Body, Controller, Param, Query } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import {
-  adminUserListQuerySchema,
-  createAdminUserSchema,
+  adminCreateAdminUserContract,
+  adminListAdminUsersContract,
+  adminUpdateAdminUserContract,
   type AdminCreateUserRequest,
   type AdminUpdateUserRequest,
   type AdminUserListQuery,
-  updateAdminUserSchema,
 } from "@vem/shared";
 
 import type { AuthenticatedAdmin } from "../common/request-user";
 
 import { RequirePermissions } from "../access/permissions.decorator";
 import { CurrentAdmin } from "../auth/current-admin.decorator";
-import { ZodValidationPipe } from "../common/zod-validation.pipe";
+import { AdminEndpointContract } from "../common/admin-endpoint-contract.decorator";
 import { AdminUsersService } from "./admin-users.service";
 
 @ApiTags("admin-users")
 @ApiBearerAuth()
-@Controller("admin-users")
+@Controller()
 export class AdminUsersController {
   constructor(private readonly adminUsersService: AdminUsersService) {}
 
   @RequirePermissions("adminUsers.read")
-  @Get()
-  async list(
-    @Query(new ZodValidationPipe(adminUserListQuerySchema))
-    query: AdminUserListQuery,
-  ) {
+  @AdminEndpointContract(adminListAdminUsersContract)
+  async list(@Query() query: AdminUserListQuery) {
     return await this.adminUsersService.list(query);
   }
 
   @RequirePermissions("adminUsers.write")
-  @Post()
+  @AdminEndpointContract(adminCreateAdminUserContract)
   async create(
     @CurrentAdmin() admin: AuthenticatedAdmin,
-    @Body(new ZodValidationPipe(createAdminUserSchema))
-    body: AdminCreateUserRequest,
+    @Body() body: AdminCreateUserRequest,
   ) {
     return await this.adminUsersService.create(admin.id, body);
   }
 
   @RequirePermissions("adminUsers.write")
-  @Patch(":id")
+  @AdminEndpointContract(adminUpdateAdminUserContract)
   async update(
     @CurrentAdmin() admin: AuthenticatedAdmin,
-    @Param("id", ParseUUIDPipe) id: string,
-    @Body(new ZodValidationPipe(updateAdminUserSchema))
-    body: AdminUpdateUserRequest,
+    @Param() params: { id: string },
+    @Body() body: AdminUpdateUserRequest,
   ) {
-    return await this.adminUsersService.update(admin.id, id, body);
+    return await this.adminUsersService.update(admin.id, params.id, body);
   }
 }

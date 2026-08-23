@@ -1,21 +1,13 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Param,
-  ParseUUIDPipe,
-  Patch,
-  Post,
-  Query,
-} from "@nestjs/common";
+import { Body, Controller, Param, Query } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import {
-  createRoleSchema,
-  roleListQuerySchema,
+  adminCreateRoleContract,
+  adminListPermissionCodesContract,
+  adminListRolesContract,
+  adminUpdateRoleContract,
   type AdminCreateRoleRequest,
   type AdminRoleListQuery,
   type AdminUpdateRoleRequest,
-  updateRoleSchema,
 } from "@vem/shared";
 
 import type { AuthenticatedAdmin } from "../common/request-user";
@@ -25,7 +17,7 @@ import {
   RequirePermissions,
 } from "../access/permissions.decorator";
 import { CurrentAdmin } from "../auth/current-admin.decorator";
-import { ZodValidationPipe } from "../common/zod-validation.pipe";
+import { AdminEndpointContract } from "../common/admin-endpoint-contract.decorator";
 import { RolesService } from "./roles.service";
 
 @ApiTags("roles")
@@ -35,37 +27,32 @@ export class RolesController {
   constructor(private readonly rolesService: RolesService) {}
 
   @RequireAnyPermission("roles.write", "adminUsers.write")
-  @Get("roles")
-  async list(
-    @Query(new ZodValidationPipe(roleListQuerySchema))
-    query: AdminRoleListQuery,
-  ) {
+  @AdminEndpointContract(adminListRolesContract)
+  async list(@Query() query: AdminRoleListQuery) {
     return await this.rolesService.list(query);
   }
 
   @RequirePermissions("roles.write")
-  @Post("roles")
+  @AdminEndpointContract(adminCreateRoleContract)
   async create(
     @CurrentAdmin() admin: AuthenticatedAdmin,
-    @Body(new ZodValidationPipe(createRoleSchema))
-    body: AdminCreateRoleRequest,
+    @Body() body: AdminCreateRoleRequest,
   ) {
     return await this.rolesService.create(admin.id, body);
   }
 
   @RequirePermissions("roles.write")
-  @Patch("roles/:id")
+  @AdminEndpointContract(adminUpdateRoleContract)
   async update(
     @CurrentAdmin() admin: AuthenticatedAdmin,
-    @Param("id", ParseUUIDPipe) id: string,
-    @Body(new ZodValidationPipe(updateRoleSchema))
-    body: AdminUpdateRoleRequest,
+    @Param() params: { id: string },
+    @Body() body: AdminUpdateRoleRequest,
   ) {
-    return await this.rolesService.update(admin.id, id, body);
+    return await this.rolesService.update(admin.id, params.id, body);
   }
 
   @RequirePermissions("roles.write")
-  @Get("permissions")
+  @AdminEndpointContract(adminListPermissionCodesContract)
   getPermissions() {
     return this.rolesService.getPermissionCodes();
   }

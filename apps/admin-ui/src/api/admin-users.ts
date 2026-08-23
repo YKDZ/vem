@@ -1,51 +1,41 @@
 import type { z } from "zod";
 
 import {
-  adminUserListQuerySchema,
-  adminUserPageResponseSchema,
-  adminUserResponseSchema,
-  createAdminUserSchema,
-  updateAdminUserSchema,
+  adminCreateAdminUserContract,
+  adminListAdminUsersContract,
+  adminUpdateAdminUserContract,
   type AdminUserPageResponse,
   type AdminUserResponse,
   type PageResult,
 } from "@vem/shared";
 
-import { getContract, patchContract, postContract } from "./request";
+import { callAdminEndpointContract } from "./request";
 
 export type AdminUser = AdminUserResponse;
 export type { PageResult };
 
 export async function listAdminUsers(
-  query?: z.input<typeof adminUserListQuerySchema>,
+  query?: z.input<typeof adminListAdminUsersContract.querySchema>,
 ): Promise<AdminUserPageResponse> {
-  return await getContract(
-    "/admin-users",
-    adminUserListQuerySchema,
-    adminUserPageResponseSchema,
-    query ?? {},
-  );
+  return await callAdminEndpointContract(adminListAdminUsersContract, {
+    query: query ?? {},
+  });
 }
 
 export async function createAdminUser(
-  body: z.input<typeof createAdminUserSchema>,
+  body: z.input<typeof adminCreateAdminUserContract.bodySchema>,
 ): Promise<AdminUser> {
-  return await postContract(
-    "/admin-users",
-    createAdminUserSchema,
-    adminUserResponseSchema,
+  return await callAdminEndpointContract(adminCreateAdminUserContract, {
     body,
-  );
+  });
 }
 
 export async function updateAdminUser(
   id: string,
-  body: z.input<typeof updateAdminUserSchema>,
+  body: z.input<typeof adminUpdateAdminUserContract.bodySchema>,
 ): Promise<AdminUser> {
-  return await patchContract(
-    `/admin-users/${id}`,
-    updateAdminUserSchema,
-    adminUserResponseSchema,
+  return await callAdminEndpointContract(adminUpdateAdminUserContract, {
+    pathParams: { id },
     body,
-  );
+  });
 }
