@@ -486,9 +486,18 @@ function fakeReport(
   const requestAssets = arrayValue(request.assets).map((asset: unknown) =>
     recordValue(asset),
   );
-  const requestDisplayCapture = recordValue(request.displayCapture);
-  const requestAudioCapture = recordValue(request.audioCapture);
-  const serialRequest = recordValue(request.serialSession);
+  const requestDisplayCapture =
+    request.displayCapture === null || request.displayCapture === undefined
+      ? null
+      : recordValue(request.displayCapture);
+  const requestAudioCapture =
+    request.audioCapture === null || request.audioCapture === undefined
+      ? null
+      : recordValue(request.audioCapture);
+  const serialRequest =
+    request.serialSession === null || request.serialSession === undefined
+      ? null
+      : recordValue(request.serialSession);
   const serialState = [
     "stop-serial-session",
     "cleanup",
@@ -629,8 +638,9 @@ function fakeReport(
     ],
     ...(isV2
       ? {
-          serialSession: needsSerialReport
-            ? {
+          serialSession:
+            needsSerialReport && serialRequest !== null
+              ? {
                 serialSessionId: (binding as JsonRecord).serialSessionId,
                 sessionBindingToken: (binding as JsonRecord).sessionBindingToken,
                 startOperationReference:
@@ -677,10 +687,11 @@ function fakeReport(
                       survivingSocketCount: 0,
                     }
                   : null,
-              }
-            : null,
+                }
+              : null,
           serialEvidence:
             request.operation === "collect-serial-evidence" &&
+            serialRequest !== null &&
             result === "succeeded"
               ? (() => {
                   const records = semanticRecords(request);
