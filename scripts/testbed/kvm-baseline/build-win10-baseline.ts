@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 
-import { execFile as execFileCallback, spawnSync } from "node:child_process";
+import {
+  execFile as execFileCallback,
+  spawnSync,
+  type ChildProcess,
+} from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { constants } from "node:fs";
@@ -37,6 +41,7 @@ import {
   startHeadlessVncActivator,
   validateBaselineBuildConfig,
   VNC_ACTIVATOR_METADATA_FILE,
+  type BaselineBuildConfig,
 } from "./linux-kvm-baseline.ts";
 
 const BASELINE_ROOT = new URL(".", import.meta.url);
@@ -56,8 +61,44 @@ const INTERACTIVE_DISPLAY_MAX_REARM_ATTEMPTS = 2;
 const PREPARE_VM_RUNTIME_SCRIPT =
   "C:\\ProgramData\\WindowsRuntimeBaseline\\scripts\\prepare-vm-runtime.ps1";
 
-function parseArgs(argv) {
-  const options = { execute: false };
+type ProtectedBuildConfig = BaselineBuildConfig & {
+  __secrets: { administratorPassword: unknown };
+};
+
+type CommandResult = {
+  stdout: string;
+  stderr: string;
+  failed?: boolean;
+};
+
+type ConstructionWorkspace = {
+  schemaVersion: string;
+  buildId: string;
+  vmName: string;
+  domainName: string;
+  baselinePath: string;
+  cacheDiskPath: string;
+  systemStagingPath: string;
+  cacheStagingPath: string;
+};
+
+type VirtioGpuDriverPackageIdentity = {
+  schemaVersion: string;
+  sourceDirectory: string;
+  packageSha256: string;
+  files: Array<{ path: string; sha256: string }>;
+  driverStoreFiles: Array<{ path: string; sha256: string }>;
+};
+
+type ParsedArgs = {
+  execute: boolean;
+  config: string;
+  "source-commit"?: string;
+  [key: string]: string | boolean | undefined;
+};
+
+function parseArgs(argv: string[]): ParsedArgs {
+  const options: ParsedArgs = { execute: false, config: "" };
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
     if (value === "--execute") {
@@ -71,7 +112,7 @@ function parseArgs(argv) {
   }
   if (!options.config) throw new Error("--config is required");
   if (
-    options["source-commit"] !== undefined &&
+    typeof options["source-commit"] === "string" &&
     !/^[0-9a-f]{7,64}$/i.test(options["source-commit"])
   ) {
     throw new Error("--source-commit must be a Git commit SHA");
@@ -79,7 +120,7 @@ function parseArgs(argv) {
   return options;
 }
 
-function escapeXml(value) {
+function escapeXml(value: unknown): string {
   return String(value)
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
@@ -88,29 +129,32 @@ function escapeXml(value) {
     .replaceAll("'", "&apos;");
 }
 
-function constructionWorkspace(config, buildId) {
-  const domainName = `${config.vm.name}-build-${buildId}`;
+function constructionWorkspace(
+  config: BaselineBuildConfig,
+  buildId: string,
+): ConstructionWorkspace {
+  const domainName = `${String(config.vm.name)}-build-${buildId}`;
   const systemStagingPath = join(
-    dirname(config.storage.baselinePath),
-    `.${config.vm.name}.staging-${buildId}`,
+    dirname(String(config.storage.baselinePath)),
+    `.${String(config.vm.name)}.staging-${buildId}`,
   );
   const cacheStagingPath = join(
-    dirname(config.storage.cacheDiskPath),
-    `.${config.vm.name}.cache-staging-${buildId}`,
+    dirname(String(config.storage.cacheDiskPath)),
+    `.${String(config.vm.name)}.cache-staging-${buildId}`,
   );
   return {
     schemaVersion: CONSTRUCTION_OWNER_SCHEMA,
     buildId,
-    vmName: config.vm.name,
+    vmName: String(config.vm.name),
     domainName,
-    baselinePath: config.storage.baselinePath,
-    cacheDiskPath: config.storage.cacheDiskPath,
+    baselinePath: String(config.storage.baselinePath),
+    cacheDiskPath: String(config.storage.cacheDiskPath),
     systemStagingPath,
     cacheStagingPath,
   };
 }
 
-async function syncPath(path) {
+async function syncPath(path: string): Promise<void> {
   const handle = await open(path, constants.O_RDONLY);
   try {
     await handle.sync();
@@ -119,7 +163,10 @@ async function syncPath(path) {
   }
 }
 
-async function writeConstructionOwner(path, owner) {
+async function writeConstructionOwner(
+  path: string,
+  owner: ConstructionWorkspace,
+): Promise<void> {
   const metadataPath = join(path, CONSTRUCTION_OWNER_FILE);
   await writeFile(metadataPath, `${JSON.stringify(owner, null, 2)}\n`, {
     flag: "wx",
@@ -130,9 +177,11 @@ async function writeConstructionOwner(path, owner) {
 }
 
 export async function createConstructionWorkspace(
-  config,
-  { nextBuildId = () => randomUUID().replaceAll("-", "").slice(0, 8) } = {},
-) {
+  config: BaselineBuildConfig,
+  {
+    nextBuildId = () => randomUUID().replaceAll("-", "").slice(0, 8),
+  }: { nextBuildId?: () => string } = {},
+): Promise<ConstructionWorkspace> {
   for (let attempt = 0; attempt < 16; attempt += 1) {
     const buildId = nextBuildId();
     if (!/^[0-9a-f]{8}$/.test(buildId)) {
@@ -144,7 +193,7 @@ export async function createConstructionWorkspace(
     try {
       await mkdir(owner.systemStagingPath, { mode: 0o700 });
     } catch (error) {
-      if (error.code === "EEXIST") continue;
+      if ((error as { code?: unknown })?.code === "EEXIST") continue;
       throw error;
     }
     let cacheCreated = false;
@@ -159,23 +208,30 @@ export async function createConstructionWorkspace(
       if (cacheCreated) {
         await rm(owner.cacheStagingPath, { recursive: true, force: true });
       }
-      if (error.code === "EEXIST") continue;
+      if ((error as { code?: unknown })?.code === "EEXIST") continue;
       throw error;
     }
   }
   throw new Error("could not allocate a unique construction workspace");
 }
 
-function constructionOwnerMatches(observed, expected) {
+function constructionOwnerMatches(
+  observed: unknown,
+  expected: Record<string, unknown>,
+): boolean {
+  const record = observed as Record<string, unknown> | null;
   return (
-    observed &&
-    typeof observed === "object" &&
-    Object.keys(expected).every((key) => observed[key] === expected[key]) &&
-    Object.keys(observed).length === Object.keys(expected).length
+    record !== null &&
+    typeof record === "object" &&
+    Object.keys(expected).every((key) => record[key] === expected[key]) &&
+    Object.keys(record).length === Object.keys(expected).length
   );
 }
 
-async function isOwnedConstructionDirectory(path, owner) {
+async function isOwnedConstructionDirectory(
+  path: string,
+  owner: ConstructionWorkspace,
+): Promise<boolean> {
   try {
     const metadata = await lstat(path);
     if (!metadata.isDirectory() || metadata.isSymbolicLink()) return false;
@@ -188,7 +244,10 @@ async function isOwnedConstructionDirectory(path, owner) {
   }
 }
 
-async function reclaimConstructionWorkspace(config, buildId) {
+async function reclaimConstructionWorkspace(
+  config: BaselineBuildConfig,
+  buildId: string,
+): Promise<boolean> {
   const owner = constructionWorkspace(config, buildId);
   const [systemOwned, cacheOwned] = await Promise.all([
     isOwnedConstructionDirectory(owner.systemStagingPath, owner),
@@ -207,15 +266,27 @@ async function reclaimConstructionWorkspace(config, buildId) {
   return true;
 }
 
-let activeConstructionCommandTracker = null;
+let activeConstructionCommandTracker: ReturnType<
+  typeof createConstructionCommandTracker
+> | null = null;
 
-function startExecFile(command, args, options = {}) {
-  let child;
-  const completion = new Promise((resolve, reject) => {
+function startExecFile(
+  command: string,
+  args: string[],
+  options: Record<string, unknown> = {},
+): {
+  child: ChildProcess;
+  completion: Promise<CommandResult>;
+} {
+  let child!: ChildProcess;
+  const completion = new Promise<CommandResult>((resolve, reject) => {
     child = execFileCallback(
       command,
       args,
-      { maxBuffer: 1024 * 1024, ...options },
+      {
+        maxBuffer: 1024 * 1024,
+        ...options,
+      } as Parameters<typeof execFileCallback>[2],
       (error, stdout, stderr) => {
         if (error) {
           error.stdout ??= stdout;
@@ -223,7 +294,7 @@ function startExecFile(command, args, options = {}) {
           reject(error);
           return;
         }
-        resolve({ stdout, stderr });
+        resolve({ stdout: String(stdout), stderr: String(stderr) });
       },
     );
   });
@@ -232,16 +303,38 @@ function startExecFile(command, args, options = {}) {
 
 export function createConstructionCommandTracker({
   terminationGraceMs = 2_000,
-} = {}) {
-  const inFlight = new Map();
-  let abortError = null;
-  let abortPromise = null;
+}: { terminationGraceMs?: number } = {}): {
+  abortAndWait: () => Promise<void>;
+  run: (
+    command: string,
+    args: string[],
+    options?: Record<string, unknown>,
+  ) => Promise<CommandResult>;
+  runCleanup: (
+    command: string,
+    args: string[],
+    options?: { allowFailure?: boolean },
+  ) => Promise<CommandResult>;
+  start: (
+    command: string,
+    args: string[],
+    options?: Record<string, unknown>,
+  ) => { child: ChildProcess; completion: Promise<CommandResult> };
+} {
+  const inFlight = new Map<
+    ChildProcess,
+    { child: ChildProcess; completion: Promise<CommandResult> }
+  >();
+  let abortError: Error | null = null;
+  let abortPromise: Promise<void> | null = null;
 
   const startTrackedProcess = (
-    command,
-    args,
-    { allowAfterAbort = false, ...options } = {},
-  ) => {
+    command: string,
+    args: string[],
+    { allowAfterAbort = false, ...options }: Record<string, unknown> & {
+      allowAfterAbort?: boolean;
+    } = {},
+  ): { child: ChildProcess; completion: Promise<CommandResult> } => {
     if (abortError && !allowAfterAbort) throw abortError;
     const invocation = startExecFile(command, args, options);
     inFlight.set(invocation.child, invocation);
@@ -252,7 +345,11 @@ export function createConstructionCommandTracker({
     return invocation;
   };
 
-  const runTrackedCommand = (command, args, options) => {
+  const runTrackedCommand = (
+    command: string,
+    args: string[],
+    options: Record<string, unknown> = {},
+  ): Promise<CommandResult> => {
     try {
       return startTrackedProcess(command, args, options).completion;
     } catch (error) {
@@ -260,24 +357,35 @@ export function createConstructionCommandTracker({
     }
   };
 
-  const runCleanupCommand = (command, args, { allowFailure = false } = {}) =>
+  const runCleanupCommand = (
+    command: string,
+    args: string[],
+    { allowFailure = false }: { allowFailure?: boolean } = {},
+  ): Promise<CommandResult> =>
     runTrackedCommand(command, args, { allowAfterAbort: true }).catch(
-      (error) => {
+      (error: unknown) => {
+        const err = error as { stdout?: unknown; stderr?: unknown };
         if (!allowFailure) throw error;
         return {
-          stdout: error.stdout ?? "",
-          stderr: error.stderr ?? "",
+          stdout: String(err.stdout ?? ""),
+          stderr: String(err.stderr ?? ""),
           failed: true,
         };
       },
     );
 
-  const abortAndWait = () => {
+  const abortAndWait = (): Promise<void> => {
     if (abortPromise) return abortPromise;
     abortError = new Error("construction command execution was aborted");
     const pending = [...inFlight.values()];
-    const terminate = async ({ child, completion }) => {
-      const exited = new Promise((resolveExit) => {
+    const terminate = async ({
+      child,
+      completion,
+    }: {
+      child: ChildProcess;
+      completion: Promise<CommandResult>;
+    }): Promise<void> => {
+      const exited = new Promise<void>((resolveExit) => {
         if (child.exitCode !== null || child.signalCode !== null) {
           resolveExit();
           return;
@@ -285,8 +393,8 @@ export function createConstructionCommandTracker({
         child.once("exit", resolveExit);
         child.once("error", resolveExit);
       });
-      const awaitExitWithinGrace = () =>
-        new Promise((resolveWait) => {
+      const awaitExitWithinGrace = (): Promise<boolean> =>
+        new Promise<boolean>((resolveWait) => {
           const timeout = setTimeout(
             () => resolveWait(false),
             terminationGraceMs,
@@ -328,22 +436,32 @@ export function createConstructionCommandTracker({
   };
 }
 
-function run(command, args, { allowFailure = false } = {}) {
+function run(
+  command: string,
+  args: string[],
+  { allowFailure = false }: { allowFailure?: boolean } = {},
+): Promise<CommandResult> {
   const completion = activeConstructionCommandTracker
     ? activeConstructionCommandTracker.run(command, args)
     : startExecFile(command, args).completion;
-  return completion.catch((error) => {
+  return completion.catch((error: unknown) => {
+    const err = error as {
+      code?: unknown;
+      stdout?: unknown;
+      stderr?: unknown;
+      message?: unknown;
+    };
     if (allowFailure)
       return {
-        stdout: error.stdout ?? "",
-        stderr: error.stderr ?? "",
+        stdout: String(err.stdout ?? ""),
+        stderr: String(err.stderr ?? ""),
         failed: true,
       };
     const diagnostics = [
-      error.code !== undefined ? `exit=${error.code}` : null,
-      error.stdout ? `stdout:\n${error.stdout}` : null,
-      error.stderr ? `stderr:\n${error.stderr}` : null,
-      !error.stdout && !error.stderr ? error.message : null,
+      err.code !== undefined ? `exit=${String(err.code)}` : null,
+      err.stdout ? `stdout:\n${String(err.stdout)}` : null,
+      err.stderr ? `stderr:\n${String(err.stderr)}` : null,
+      !err.stdout && !err.stderr ? String(err.message ?? "") : null,
     ]
       .filter(Boolean)
       .join("\n");
@@ -351,7 +469,7 @@ function run(command, args, { allowFailure = false } = {}) {
   });
 }
 
-async function existingParent(path) {
+async function existingParent(path: string): Promise<string> {
   let candidate = path;
   while (true) {
     try {
@@ -366,7 +484,10 @@ async function existingParent(path) {
   }
 }
 
-async function availableStorage(path) {
+async function availableStorage(path: string): Promise<{
+  availableBytes: number;
+  filesystemId: string;
+}> {
   const parent = await existingParent(path);
   const [filesystem, metadata] = await Promise.all([
     statfs(parent),
@@ -378,7 +499,7 @@ async function availableStorage(path) {
   };
 }
 
-async function readable(path) {
+async function readable(path: string): Promise<boolean> {
   try {
     await assertReadableRegularFile(path, path);
     return true;
@@ -387,7 +508,7 @@ async function readable(path) {
   }
 }
 
-async function kvmDeviceAvailable() {
+async function kvmDeviceAvailable(): Promise<boolean> {
   try {
     await access("/dev/kvm", constants.R_OK | constants.W_OK);
     return (await stat("/dev/kvm")).isCharacterDevice();
@@ -396,18 +517,20 @@ async function kvmDeviceAvailable() {
   }
 }
 
-async function collectExecutingHostIdentity(configuredAddress) {
+async function collectExecutingHostIdentity(
+  configuredAddress: string,
+): Promise<Record<string, string[]>> {
   const hostnames = new Set([hostname().toLowerCase()]);
   const fqdn = await run("hostname", ["-f"], { allowFailure: true });
   if (!fqdn.failed && fqdn.stdout.trim())
     hostnames.add(fqdn.stdout.trim().toLowerCase());
-  const addresses = new Set();
+  const addresses = new Set<string>();
   for (const entries of Object.values(networkInterfaces())) {
     for (const entry of entries ?? []) {
       if (entry.address) addresses.add(entry.address.toLowerCase());
     }
   }
-  const resolvedConfiguredAddresses = new Set(
+  const resolvedConfiguredAddresses = new Set<string>(
     (
       await lookup(configuredAddress, { all: true, verbatim: true }).catch(
         () => [],
@@ -421,24 +544,31 @@ async function collectExecutingHostIdentity(configuredAddress) {
   };
 }
 
-function commandExists(command) {
+function commandExists(command: string): boolean {
   return (
     spawnSync("sh", ["-c", `command -v ${command}`], { stdio: "ignore" })
       .status === 0
   );
 }
 
-async function collectHostObservation(config) {
+async function collectHostObservation(
+  config: BaselineBuildConfig,
+): Promise<Record<string, unknown>> {
   const profile = runtimeProfileForConfig(config);
   const commands = REQUIRED_COMMANDS.filter(commandExists);
   const network = await run(
     "virsh",
-    ["--connect", config.host.libvirtUri, "net-info", config.vm.networkName],
+    [
+      "--connect",
+      String(config.host.libvirtUri),
+      "net-info",
+      String(config.vm.networkName),
+    ],
     { allowFailure: true },
   );
   const libvirt = await run(
     "virsh",
-    ["--connect", config.host.libvirtUri, "uri"],
+    ["--connect", String(config.host.libvirtUri), "uri"],
     {
       allowFailure: true,
     },
@@ -448,11 +578,13 @@ async function collectHostObservation(config) {
     /^MemAvailable:\s+(\d+)/m.exec(memory)?.[1] ?? 0,
   );
   const [baselineStorage, cacheStorage] = await Promise.all([
-    availableStorage(config.storage.baselinePath),
-    availableStorage(config.storage.cacheDiskPath),
+    availableStorage(String(config.storage.baselinePath)),
+    availableStorage(String(config.storage.cacheDiskPath)),
   ]);
   return {
-    hostIdentity: await collectExecutingHostIdentity(config.host.address),
+    hostIdentity: await collectExecutingHostIdentity(
+      String(config.host.address),
+    ),
     kvmAvailable: await kvmDeviceAvailable(),
     libvirtAvailable: !libvirt.failed,
     commands,
@@ -467,11 +599,11 @@ async function collectHostObservation(config) {
       cache: cacheStorage.filesystemId,
     },
     installationMedia: {
-      windowsIso: await readable(config.media.windowsIsoPath),
-      virtioWinIso: await readable(config.media.virtioWinIsoPath),
+      windowsIso: await readable(String(config.media.windowsIsoPath)),
+      virtioWinIso: await readable(String(config.media.virtioWinIsoPath)),
       runnerArchive: await assertFileSha256(
-        config.media.runnerArchivePath,
-        config.media.runnerArchiveSha256,
+        String(config.media.runnerArchivePath),
+        String(config.media.runnerArchiveSha256),
         "media.runnerArchivePath",
       )
         .then(() => true)
@@ -482,7 +614,7 @@ async function collectHostObservation(config) {
   };
 }
 
-export function renderUnattendedXml(config) {
+export function renderUnattendedXml(config: ProtectedBuildConfig): string {
   const password = escapeXml(config.__secrets.administratorPassword);
   const user = escapeXml(config.guest.sshUser);
   return `<?xml version="1.0" encoding="utf-8"?>
@@ -541,7 +673,9 @@ try {
 `;
 }
 
-export function guestConfigurationFor(config) {
+export function guestConfigurationFor(
+  config: BaselineBuildConfig,
+): Record<string, unknown> {
   return {
     webView2InstallerUri: config.media.webView2InstallerUri,
     runnerArchiveFile: RUNNER_ARCHIVE_FILE,
@@ -556,8 +690,11 @@ export function guestConfigurationFor(config) {
   };
 }
 
-async function payloadFiles(root, directory = root) {
-  const files = [];
+async function payloadFiles(
+  root: string,
+  directory = root,
+): Promise<Array<{ path: string; absolutePath: string }>> {
+  const files: Array<{ path: string; absolutePath: string }> = [];
   const entries = await readdir(directory, { withFileTypes: true });
   entries.sort((left, right) => left.name.localeCompare(right.name));
   for (const entry of entries) {
@@ -577,7 +714,9 @@ async function payloadFiles(root, directory = root) {
   return files;
 }
 
-export async function createVirtioGpuDriverPackageIdentity(driverRoot) {
+export async function createVirtioGpuDriverPackageIdentity(
+  driverRoot: string,
+): Promise<VirtioGpuDriverPackageIdentity> {
   const files = await payloadFiles(driverRoot);
   for (const extension of [".inf", ".cat", ".sys"]) {
     if (!files.some(({ path }) => path.toLowerCase().endsWith(extension))) {
@@ -586,7 +725,7 @@ export async function createVirtioGpuDriverPackageIdentity(driverRoot) {
       );
     }
   }
-  const identityFiles = [];
+  const identityFiles: Array<{ path: string; sha256: string }> = [];
   for (const file of files) {
     const sha256 = createHash("sha256")
       .update(await readFile(file.absolutePath))
@@ -623,13 +762,16 @@ export async function createVirtioGpuDriverPackageIdentity(driverRoot) {
 }
 
 export async function createConfigurationMedia(
-  config,
-  stagingDirectory,
-  { runCommand = run } = {},
-) {
+  config: BaselineBuildConfig,
+  stagingDirectory: string,
+  { runCommand = run }: { runCommand?: typeof run } = {},
+): Promise<{
+  isoPath: string;
+  virtioGpuDriverIdentity: VirtioGpuDriverPackageIdentity;
+}> {
   await assertFileSha256(
-    config.media.runnerArchivePath,
-    config.media.runnerArchiveSha256,
+    String(config.media.runnerArchivePath),
+    String(config.media.runnerArchiveSha256),
     "media.runnerArchivePath",
   );
   const mediaRoot = join(stagingDirectory, "configuration-media");
@@ -639,7 +781,7 @@ export async function createConfigurationMedia(
     "-osirrox",
     "on",
     "-indev",
-    config.media.virtioWinIsoPath,
+    String(config.media.virtioWinIsoPath),
     "-extract",
     "/viogpudo/w10/amd64",
     virtioGpuDriverRoot,
@@ -660,12 +802,12 @@ export async function createConfigurationMedia(
   }
   const secrets = {
     administratorPassword: (
-      await readFile(config.guest.administratorPasswordFile, "utf8")
+    await readFile(String(config.guest.administratorPasswordFile), "utf8")
     ).trim(),
   };
   if (!secrets.administratorPassword)
     throw new Error("administrator password file must not be empty");
-  const protectedConfig = {
+  const protectedConfig: ProtectedBuildConfig = {
     ...config,
     __secrets: secrets,
   };
@@ -684,11 +826,11 @@ export async function createConfigurationMedia(
     { mode: 0o600 },
   );
   await copyFile(
-    config.guest.authorizedKeysFile,
+    String(config.guest.authorizedKeysFile),
     join(mediaRoot, "administrators_authorized_keys"),
   );
   await copyFile(
-    config.media.runnerArchivePath,
+    String(config.media.runnerArchivePath),
     join(mediaRoot, RUNNER_ARCHIVE_FILE),
   );
   const isoPath = join(stagingDirectory, "baseline-configuration.iso");
@@ -706,10 +848,13 @@ export async function createConfigurationMedia(
   return { isoPath, virtioGpuDriverIdentity };
 }
 
-async function discoverGuestAddress(config, domainName) {
+async function discoverGuestAddress(
+  config: BaselineBuildConfig,
+  domainName: string,
+): Promise<string | null> {
   const command = [
     "--connect",
-    config.host.libvirtUri,
+    String(config.host.libvirtUri),
     "domifaddr",
     domainName,
     "--source",
@@ -718,27 +863,30 @@ async function discoverGuestAddress(config, domainName) {
   const result = await run("virsh", command, { allowFailure: true });
   const fromDomainLease = result.failed
     ? null
-    : parseGuestAddress(result.stdout, config.vm.macAddress);
+    : parseGuestAddress(result.stdout, String(config.vm.macAddress));
   if (fromDomainLease) return fromDomainLease;
   const lease = await run(
     "virsh",
     [
       "--connect",
-      config.host.libvirtUri,
+      String(config.host.libvirtUri),
       "net-dhcp-leases",
-      config.vm.networkName,
+      String(config.vm.networkName),
     ],
     { allowFailure: true },
   );
   return lease.failed
     ? null
-    : parseGuestAddress(lease.stdout, config.vm.macAddress);
+    : parseGuestAddress(lease.stdout, String(config.vm.macAddress));
 }
 
-function guestSshOptions(config, knownHostsPath) {
+function guestSshOptions(
+  config: BaselineBuildConfig,
+  knownHostsPath: string,
+): string[] {
   return [
     "-i",
-    config.guest.sshPrivateKeyFile,
+    String(config.guest.sshPrivateKeyFile),
     "-o",
     `UserKnownHostsFile=${knownHostsPath}`,
     "-o",
@@ -750,20 +898,20 @@ function guestSshOptions(config, knownHostsPath) {
   ];
 }
 
-function powershellScriptLiteral(value) {
+function powershellScriptLiteral(value: unknown): string {
   return `'${String(value).replaceAll("'", "''")}'`;
 }
 
-function encodedPowerShellCommand(script) {
+function encodedPowerShellCommand(script: string): string {
   const encoded = Buffer.from(script, "utf16le").toString("base64");
   return `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encoded}`;
 }
 
-function encodedPowerShellRequest(request) {
+function encodedPowerShellRequest(request: unknown): string {
   return Buffer.from(JSON.stringify(request), "utf8").toString("base64");
 }
 
-function prepareVmRuntimeCommand(request) {
+function prepareVmRuntimeCommand(request: Record<string, unknown>): string {
   const encodedRequest = encodedPowerShellRequest(request);
   const bindings = [
     "-Mode $request.Mode",
@@ -782,7 +930,9 @@ function prepareVmRuntimeCommand(request) {
   );
 }
 
-function interactiveDisplayStatusCommand(config) {
+function interactiveDisplayStatusCommand(
+  config: BaselineBuildConfig,
+): string {
   return prepareVmRuntimeCommand({
     Mode: "GetInteractiveDisplayPreparationStatus",
     InteractiveUser: config.guest.sshUser,
@@ -792,7 +942,9 @@ function interactiveDisplayStatusCommand(config) {
   });
 }
 
-function rearmInteractiveDisplayCommand(config) {
+function rearmInteractiveDisplayCommand(
+  config: BaselineBuildConfig,
+): string {
   return prepareVmRuntimeCommand({
     Mode: "RearmInteractiveDisplay",
     InteractiveUser: config.guest.sshUser,
@@ -807,7 +959,12 @@ function verificationCommand({
   expectedVirtioGpuDriverPackageSha256,
   runnerName,
   verificationPath,
-}) {
+}: {
+  config: BaselineBuildConfig;
+  expectedVirtioGpuDriverPackageSha256: string;
+  runnerName: string;
+  verificationPath: string;
+}): string {
   const encodedRequest = encodedPowerShellRequest({
     ExpectedWidth: 1080,
     ExpectedHeight: 1920,
@@ -833,95 +990,137 @@ function verificationCommand({
   );
 }
 
-function validateInteractiveDisplayReport(report, config) {
-  if (!report || typeof report !== "object") {
+function validateInteractiveDisplayReport(
+  report: unknown,
+  config: BaselineBuildConfig,
+): Record<string, unknown> {
+  if (!report || typeof report !== "object" || Array.isArray(report)) {
     throw new Error("interactive display report is not an object");
   }
-  if (report.schemaVersion !== "win10-kvm-interactive-display/v1") {
+  const record = report as Record<string, unknown>;
+  if (record.schemaVersion !== "win10-kvm-interactive-display/v1") {
     throw new Error("interactive display report schema is invalid");
   }
   const expectedUser = new RegExp(
     `\\\\${String(config.guest.sshUser).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
     "i",
   );
-  if (!expectedUser.test(String(report.interactiveUser ?? ""))) {
+  if (!expectedUser.test(String(record.interactiveUser ?? ""))) {
     throw new Error("interactive display report belongs to an unexpected user");
   }
   if (
-    !Number.isInteger(report.interactiveSessionId) ||
-    report.interactiveSessionId < 1
+    !Number.isInteger(record.interactiveSessionId) ||
+    (record.interactiveSessionId as number) < 1
   ) {
     throw new Error(
       "interactive display report has an invalid session binding",
     );
   }
+  const desktop = record.desktop as Record<string, unknown> | undefined;
   if (
-    report.desktop?.width !== 1080 ||
-    report.desktop?.height !== 1920 ||
-    report.desktop?.scalePercent !== config.guest.desktopScalePercent
+    desktop?.width !== 1080 ||
+    desktop?.height !== 1920 ||
+    desktop?.scalePercent !== config.guest.desktopScalePercent
   ) {
     throw new Error(
       "interactive display report does not match the requested desktop",
     );
   }
   if (
-    typeof report.displayAdapter !== "string" ||
-    report.displayAdapter === ""
+    typeof record.displayAdapter !== "string" ||
+    record.displayAdapter === ""
   ) {
     throw new Error(
       "interactive display report does not identify the active display adapter",
     );
   }
-  return report;
+  return record;
 }
 
-function formatInteractiveDisplayDiagnostics(diagnostic) {
-  const status = diagnostic.status ?? {};
-  const task = status.task ?? {};
-  const state = status.state ?? {};
-  const cleanup = status.cleanup ?? {};
+function formatInteractiveDisplayDiagnostics(
+  diagnostic: Record<string, unknown>,
+): string {
+  const status = (diagnostic.status ?? {}) as Record<string, unknown>;
+  const task = (status.task ?? {}) as Record<string, unknown>;
+  const state = (status.state ?? {}) as Record<string, unknown>;
+  const cleanup = (status.cleanup ?? {}) as Record<string, unknown>;
   const parts = [
     `report=${status.reportPresent === true ? "present" : "absent"}`,
     `reportValid=${status.reportValid === true}`,
     `completionValid=${interactiveDisplayCompleted(status)}`,
-    `phase=${state.phase ?? "unknown"}`,
-    `task state=${task.state ?? "absent"}`,
-    `lastTaskResult=${task.lastTaskResult ?? "unknown"}`,
+    `phase=${String(state.phase ?? "unknown")}`,
+    `task state=${String(task.state ?? "absent")}`,
+    `lastTaskResult=${String(task.lastTaskResult ?? "unknown")}`,
     `taskRegistered=${cleanup.taskRegistered === true}`,
     `AutoAdminLogonEnabled=${cleanup.automaticLogonEnabled === true}`,
   ];
-  if (diagnostic.error) parts.push(`error=${diagnostic.error}`);
-  if (diagnostic.awaitingReboot) {
+  if (diagnostic.error) parts.push(`error=${String(diagnostic.error)}`);
+  const awaitingReboot = diagnostic.awaitingReboot as
+    | Record<string, unknown>
+    | undefined;
+  if (awaitingReboot) {
     parts.push(
-      `awaiting reboot from=${diagnostic.awaitingReboot.bootIdentity ?? "unknown"} sshDown=${diagnostic.awaitingReboot.sshWentDown === true}`,
+      `awaiting reboot from=${String(
+        awaitingReboot.bootIdentity ?? "unknown",
+      )} sshDown=${awaitingReboot.sshWentDown === true}`,
     );
   }
-  if (status.taskLogTail) parts.push(`task log=${status.taskLogTail}`);
+  if (status.taskLogTail)
+    parts.push(`task log=${String(status.taskLogTail)}`);
   return parts.join(", ");
 }
 
-function interactiveDisplayCompleted(status) {
+function interactiveDisplayCompleted(
+  status: Record<string, unknown> | undefined,
+): boolean {
+  if (status?.reportValid !== true) return false;
+  const state = status.state as Record<string, unknown> | undefined;
+  const cleanup = status.cleanup as Record<string, unknown> | undefined;
   return (
-    status?.reportValid === true &&
-    status.state?.phase === "complete" &&
+    state?.phase === "complete" &&
     status.task !== null &&
-    status.cleanup?.taskRegistered === true &&
-    status.cleanup?.automaticLogonEnabled === true
+    cleanup?.taskRegistered === true &&
+    cleanup?.automaticLogonEnabled === true
   );
 }
 
-function shouldRearmInteractiveDisplay(status, sshReadyAt, now, delayMs) {
+function shouldRearmInteractiveDisplay(
+  status: Record<string, unknown>,
+  sshReadyAt: number | null,
+  now: number,
+  delayMs: number,
+): boolean {
   if (interactiveDisplayCompleted(status)) return false;
   if (status.reportValid === true) return true;
-  if (status.state?.phase === "failed") return true;
-  if (now - sshReadyAt < delayMs) return false;
-  return !status.task || status.task.state !== "Running";
+  const state = status.state as Record<string, unknown> | undefined;
+  const task = status.task as Record<string, unknown> | undefined;
+  if (state?.phase === "failed") return true;
+  if (now - (sshReadyAt ?? 0) < delayMs) return false;
+  return !task || task.state !== "Running";
 }
 
+type InteractiveDisplayWaitOptions = {
+  displayStageTimeoutMs?: number;
+  discoverGuestAddress?: typeof discoverGuestAddress;
+  guestAvailabilityTimeoutMs?: number;
+  initialRearmDelayMs?: number;
+  maxRearmAttempts?: number;
+  now?: () => number;
+  pollIntervalMs?: number;
+  runCommand?: typeof run;
+  sleep?: (milliseconds: number) => Promise<void>;
+  timeoutMs?: number;
+};
+
+type GuestVerificationOptions = {
+  runCommand?: typeof run;
+  expectedVirtioGpuDriverPackageSha256?: string;
+} & InteractiveDisplayWaitOptions;
+
 export async function waitForInteractiveDisplayReport(
-  config,
-  domainName,
-  stagingDirectory,
+  config: BaselineBuildConfig,
+  domainName: string,
+  stagingDirectory: string,
   {
     displayStageTimeoutMs,
     discoverGuestAddress: findGuestAddress = discoverGuestAddress,
@@ -934,8 +1133,13 @@ export async function waitForInteractiveDisplayReport(
     sleep = (milliseconds) =>
       new Promise((resolve) => setTimeout(resolve, milliseconds)),
     timeoutMs,
-  } = {},
-) {
+  }: InteractiveDisplayWaitOptions = {},
+): Promise<{
+  address: string;
+  report: Record<string, unknown>;
+  sshOptions: string[];
+  target: string;
+}> {
   const localReport = join(stagingDirectory, "interactive-display-report.json");
   const knownHostsPath = join(stagingDirectory, "known_hosts");
   const availabilityStartedAt = now();
@@ -944,11 +1148,16 @@ export async function waitForInteractiveDisplayReport(
   const resolvedDisplayStageTimeoutMs =
     displayStageTimeoutMs ?? timeoutMs ?? INTERACTIVE_DISPLAY_STAGE_TIMEOUT_MS;
   let rearmAttempts = 0;
-  let sshReadyAt = null;
-  let displayStageStartedAt = null;
-  let displayStageDeadline = null;
-  let awaitingReboot = null;
-  let diagnostic = { error: "SSH has not become available" };
+  let sshReadyAt: number | null = null;
+  let displayStageStartedAt: number | null = null;
+  let displayStageDeadline: number | null = null;
+  let awaitingReboot: {
+    bootIdentity: string;
+    sshWentDown: boolean;
+  } | null = null;
+  let diagnostic: Record<string, unknown> = {
+    error: "SSH has not become available",
+  };
 
   while (true) {
     const currentTime = now();
@@ -959,7 +1168,7 @@ export async function waitForInteractiveDisplayReport(
     }
     if (displayStageDeadline !== null && currentTime >= displayStageDeadline) {
       throw new Error(
-        `interactive display preparation timed out: interactive display stage timed out after ${resolvedDisplayStageTimeoutMs} ms; first SSH readiness at ${displayStageStartedAt - availabilityStartedAt} ms; ${formatInteractiveDisplayDiagnostics(diagnostic)}`,
+        `interactive display preparation timed out: interactive display stage timed out after ${resolvedDisplayStageTimeoutMs} ms; first SSH readiness at ${(displayStageStartedAt ?? availabilityStartedAt) - availabilityStartedAt} ms; ${formatInteractiveDisplayDiagnostics(diagnostic)}`,
       );
     }
     const address = await findGuestAddress(config, domainName);
@@ -972,7 +1181,7 @@ export async function waitForInteractiveDisplayReport(
       continue;
     }
 
-    const target = `${config.guest.sshUser}@${address}`;
+    const target = `${String(config.guest.sshUser)}@${address}`;
     const sshOptions = guestSshOptions(config, knownHostsPath);
     const ssh = await runCommand("ssh", [...sshOptions, target, "exit"], {
       allowFailure: true,
@@ -1004,27 +1213,31 @@ export async function waitForInteractiveDisplayReport(
       continue;
     }
 
-    let status;
+    let status: Record<string, unknown>;
     try {
-      status = readJsonWithBom(statusResult.stdout ?? "");
+      status = readJsonWithBom(statusResult.stdout ?? "") as Record<string, unknown>;
       if (!status || typeof status !== "object") {
         throw new Error("status output is not a JSON object");
       }
       diagnostic = { status, awaitingReboot };
     } catch (error) {
+      const err = error as { message?: unknown };
       diagnostic = {
-        error: `invalid interactive display status: ${error.message}`,
+        error: `invalid interactive display status: ${String(err.message ?? "")}`,
         awaitingReboot,
       };
       await sleep(pollIntervalMs);
       continue;
     }
 
-    if (status.guestStageFailure) {
+    const guestStageFailure = status.guestStageFailure as
+      | Record<string, unknown>
+      | undefined;
+    if (guestStageFailure) {
       const message =
-        typeof status.guestStageFailure.message === "string"
-          ? status.guestStageFailure.message
-          : JSON.stringify(status.guestStageFailure);
+        typeof guestStageFailure.message === "string"
+          ? guestStageFailure.message
+          : JSON.stringify(guestStageFailure);
       throw new Error(`initial KVM guest preparation failed: ${message}`);
     }
 
@@ -1074,8 +1287,9 @@ export async function waitForInteractiveDisplayReport(
             target,
           };
         } catch (error) {
+          const err = error as { message?: unknown };
           throw new Error(
-            `interactive display report is invalid: ${error.message}`,
+            `interactive display report is invalid: ${String(err.message ?? "")}`,
           );
         }
       }
@@ -1106,7 +1320,9 @@ export async function waitForInteractiveDisplayReport(
         let rearmCompletion = null;
         if (!rearm.failed) {
           try {
-            const response = readJsonWithBom(rearm.stdout ?? "");
+            const response = readJsonWithBom(
+              rearm.stdout ?? "",
+            ) as Record<string, unknown>;
             if (interactiveDisplayCompleted(response))
               rearmCompletion = response;
           } catch {
@@ -1135,14 +1351,21 @@ export async function waitForInteractiveDisplayReport(
   }
 }
 
-function xmlAttributeEquals(element, attribute, value) {
+function xmlAttributeEquals(
+  element: string,
+  attribute: string,
+  value: unknown,
+): boolean {
   const escaped = String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`\\b${attribute}=(['\"])${escaped}\\1`).test(element);
 }
 
 // Libvirt pins each otherwise-identical QEMU USB serial device to a distinct
 // controller port. The guest verifies those ports.
-export function verifyDefinedRuntimeDevices(domainXml, profile) {
+export function verifyDefinedRuntimeDevices(
+  domainXml: unknown,
+  profile: ReturnType<typeof runtimeProfileForConfig>,
+): Record<string, unknown> {
   const xml = String(domainXml);
   const sounds = [...xml.matchAll(/<sound\b[^>]*>([\s\S]*?)<\/sound>/g)];
   const audioDevices = [...xml.matchAll(/<audio\b(?=[^>]*\btype=)[^>]*\/?>/g)];
@@ -1192,13 +1415,13 @@ export function verifyDefinedRuntimeDevices(domainXml, profile) {
 }
 
 async function verifyDefinedRuntimeDevicesForDomain(
-  config,
-  domainName,
-  profile,
-) {
+  config: BaselineBuildConfig,
+  domainName: string,
+  profile: ReturnType<typeof runtimeProfileForConfig>,
+): Promise<Record<string, unknown>> {
   const { stdout } = await run("virsh", [
     "--connect",
-    config.host.libvirtUri,
+    String(config.host.libvirtUri),
     "dumpxml",
     domainName,
   ]);
@@ -1206,18 +1429,21 @@ async function verifyDefinedRuntimeDevicesForDomain(
 }
 
 export async function waitForGuestVerification(
-  config,
-  domainName,
-  stagingDirectory,
-  dependencies = {},
-) {
+  config: BaselineBuildConfig,
+  domainName: string,
+  stagingDirectory: string,
+  dependencies: GuestVerificationOptions = {},
+): Promise<Record<string, unknown>> {
   const verificationPath =
     "C:\\ProgramData\\WindowsRuntimeBaseline\\verification.json";
   const localReport = join(stagingDirectory, "verification.json");
   const runCommand = dependencies.runCommand ?? run;
   const expectedVirtioGpuDriverPackageSha256 =
     dependencies.expectedVirtioGpuDriverPackageSha256;
-  if (!/^[0-9a-f]{64}$/.test(expectedVirtioGpuDriverPackageSha256 ?? "")) {
+  if (
+    typeof expectedVirtioGpuDriverPackageSha256 !== "string" ||
+    !/^[0-9a-f]{64}$/.test(expectedVirtioGpuDriverPackageSha256)
+  ) {
     throw new Error("expected VirtIO GPU driver package identity is required");
   }
   const interactiveDisplay = await waitForInteractiveDisplayReport(
@@ -1265,7 +1491,7 @@ if ($stageExitCode -ne 0) {
       ],
       { allowFailure: true },
     );
-    let guestFailure = null;
+    let guestFailure: string | null = null;
     if (!copied.failed) {
       guestFailure = await readFile(guestFailurePath, "utf8").catch(() => null);
     }
@@ -1311,9 +1537,9 @@ if ($stageExitCode -ne 0) {
       ],
       { allowFailure: true },
     );
-    const detail = copied.failed
-      ? null
-      : await readFile(localFailurePath, "utf8").catch(() => null);
+      const detail = copied.failed
+        ? null
+        : await readFile(localFailurePath, "utf8").catch(() => null);
     throw new Error(
       `${error instanceof Error ? error.message : String(error)}${
         detail ? `\nrunner registration failure:\n${detail}` : ""
@@ -1341,9 +1567,9 @@ if ($stageExitCode -ne 0) {
       ],
       { allowFailure: true },
     );
-    const detail = copied.failed
-      ? null
-      : await readFile(localReport, "utf8").catch(() => null);
+      const detail = copied.failed
+        ? null
+        : await readFile(localReport, "utf8").catch(() => null);
     throw new Error(
       `${error instanceof Error ? error.message : String(error)}${
         detail ? `\nguest verification report:\n${detail}` : ""
@@ -1355,19 +1581,26 @@ if ($stageExitCode -ne 0) {
     `${target}:C:/ProgramData/WindowsRuntimeBaseline/verification.json`,
     localReport,
   ]);
-  const report = readJsonWithBom(await readFile(localReport, "utf8"));
+  const report = readJsonWithBom(
+    await readFile(localReport, "utf8"),
+  ) as Record<string, unknown>;
   if (report.ok !== true)
     throw new Error("guest prerequisite verification reported failure");
   return report;
 }
 
 async function acquireRunnerRegistrationToken(
-  config,
-  { runCommand = run } = {},
-) {
+  config: BaselineBuildConfig,
+  { runCommand = run }: { runCommand?: typeof run } = {},
+): Promise<string> {
   const provider = config.runner.registrationTokenProvider;
-  const result = await runCommand(provider.command, provider.arguments ?? []);
-  const token = result.stdout.trim();
+  const result = await runCommand(
+    String(provider.command),
+    (provider.arguments as unknown[] | undefined)?.map((value) =>
+      String(value),
+    ) ?? [],
+  );
+  const token = String(result.stdout).trim();
   if (!token || /\s/.test(token)) {
     throw new Error(
       "runner registration token provider returned an invalid token",
@@ -1376,33 +1609,40 @@ async function acquireRunnerRegistrationToken(
   return token;
 }
 
-async function domainState(config) {
+async function domainState(
+  config: BaselineBuildConfig,
+): Promise<string | null> {
   const result = await run(
     "virsh",
-    ["--connect", config.host.libvirtUri, "domstate", config.vm.name],
+    [
+      "--connect",
+      String(config.host.libvirtUri),
+      "domstate",
+      String(config.vm.name),
+    ],
     { allowFailure: true },
   );
   return result.failed ? null : result.stdout.trim().toLowerCase();
 }
 
 async function destroyAndUndefine(
-  config,
-  domainName,
-  { runCommand = run } = {},
-) {
+  config: BaselineBuildConfig,
+  domainName: string,
+  { runCommand = run }: { runCommand?: typeof run } = {},
+): Promise<void> {
   await runCommand(
     "virsh",
-    ["--connect", config.host.libvirtUri, "destroy", domainName],
+    ["--connect", String(config.host.libvirtUri), "destroy", domainName],
     { allowFailure: true },
   );
   await runCommand(
     "virsh",
-    ["--connect", config.host.libvirtUri, "undefine", domainName],
+    ["--connect", String(config.host.libvirtUri), "undefine", domainName],
     { allowFailure: true },
   );
   const remaining = await runCommand("virsh", [
     "--connect",
-    config.host.libvirtUri,
+    String(config.host.libvirtUri),
     "list",
     "--all",
     "--name",
@@ -1426,11 +1666,18 @@ export function constructionCleanup({
   runCommand = run,
   stagingDirectory,
   stopActivator = async () => {},
-}) {
-  let cleanupPromise = null;
-  return () => {
+}: {
+  cacheStagingDirectory: string;
+  config: BaselineBuildConfig;
+  constructionDomain: string;
+  runCommand?: typeof run;
+  stagingDirectory: string;
+  stopActivator?: () => Promise<unknown>;
+}): () => Promise<void> {
+  let cleanupPromise: Promise<void> | null = null;
+  return (): Promise<void> => {
     if (cleanupPromise) return cleanupPromise;
-    cleanupPromise = (async () => {
+    cleanupPromise = (async (): Promise<void> => {
       await stopActivator();
       await destroyAndUndefine(config, constructionDomain, { runCommand });
       await rm(stagingDirectory, { recursive: true, force: true });
@@ -1440,24 +1687,30 @@ export function constructionCleanup({
   };
 }
 
-export async function runWithConstructionSignalCleanup({
+export async function runWithConstructionSignalCleanup<T>({
   abortInFlight = async () => {},
   cleanup,
   exitOnSignal = false,
   exitProcess = process.exit,
   work,
-}) {
-  let cleanupPromise = null;
-  let termination = null;
-  let rejectTermination;
-  const cleanupOnce = () => {
+}: {
+  abortInFlight?: () => Promise<unknown>;
+  cleanup: () => Promise<unknown>;
+  exitOnSignal?: boolean;
+  exitProcess?: (code?: number) => void;
+  work: () => Promise<T>;
+}): Promise<T> {
+  let cleanupPromise: Promise<unknown> | null = null;
+  let termination: Error | null = null;
+  let rejectTermination: (error: unknown) => void = () => {};
+  const cleanupOnce = (): Promise<unknown> => {
     if (!cleanupPromise) cleanupPromise = Promise.resolve().then(cleanup);
     return cleanupPromise;
   };
-  const terminated = new Promise((_, reject) => {
+  const terminated = new Promise<never>((_, reject) => {
     rejectTermination = reject;
   });
-  const handleSignal = (signal) => {
+  const handleSignal = (signal: NodeJS.Signals): void => {
     if (termination) return;
     termination = new Error(`construction build received ${signal}`);
     void (async () => {
@@ -1489,17 +1742,20 @@ export async function runWithConstructionSignalCleanup({
 }
 
 export async function recoverStaleConstructionDomains(
-  config,
-  { runCommand = run } = {},
-) {
+  config: BaselineBuildConfig,
+  { runCommand = run }: { runCommand?: typeof run } = {},
+): Promise<void> {
   const result = await runCommand("virsh", [
     "--connect",
-    config.host.libvirtUri,
+    String(config.host.libvirtUri),
     "list",
     "--all",
     "--name",
   ]);
-  const escapedVmName = config.vm.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escapedVmName = String(config.vm.name).replace(
+    /[.*+?^${}()|[\]\\]/g,
+    "\\$&",
+  );
   const constructionDomainPattern = new RegExp(
     `^${escapedVmName}-build-[0-9a-f]{8}$`,
   );
@@ -1516,13 +1772,17 @@ export async function recoverStaleConstructionDomains(
     remainingDomains.delete(domainName);
   }
 
-  let stagingEntries = [];
+  let stagingEntries: Array<{
+    name: string;
+    isDirectory: () => boolean;
+  }> = [];
   try {
-    stagingEntries = await readdir(dirname(config.storage.baselinePath), {
-      withFileTypes: true,
-    });
+    stagingEntries = await readdir(
+      dirname(String(config.storage.baselinePath)),
+      { withFileTypes: true },
+    );
   } catch (error) {
-    if (error.code !== "ENOENT") throw error;
+    if ((error as { code?: unknown })?.code !== "ENOENT") throw error;
   }
   const stagingPattern = new RegExp(
     `^\\.${escapedVmName}\\.staging-([0-9a-f]{8})$`,
@@ -1531,16 +1791,20 @@ export async function recoverStaleConstructionDomains(
     if (!entry.isDirectory()) continue;
     const match = stagingPattern.exec(entry.name);
     if (!match) continue;
-    const domainName = `${config.vm.name}-build-${match[1]}`;
+    const domainName = `${String(config.vm.name)}-build-${String(match[1])}`;
     if (remainingDomains.has(domainName)) continue;
     await reclaimConstructionWorkspace(config, match[1]);
   }
 }
 
-async function shutdownGuestAndWait(config, domainName, stagingDirectory) {
+async function shutdownGuestAndWait(
+  config: BaselineBuildConfig,
+  domainName: string,
+  stagingDirectory: string,
+): Promise<void> {
   const address = await discoverGuestAddress(config, domainName);
   if (!address) throw new Error("guest DHCP lease disappeared before shutdown");
-  const target = `${config.guest.sshUser}@${address}`;
+  const target = `${String(config.guest.sshUser)}@${address}`;
   await run("ssh", [
     ...guestSshOptions(config, join(stagingDirectory, "known_hosts")),
     target,
@@ -1560,20 +1824,30 @@ async function shutdownGuestAndWait(config, domainName, stagingDirectory) {
   throw new Error("guest did not shut down cleanly within five minutes");
 }
 
-async function definePublishedDomain(config, release) {
+async function definePublishedDomain(
+  config: BaselineBuildConfig,
+  release: Record<string, unknown>,
+): Promise<void> {
   await run("virsh", [
     "--connect",
-    config.host.libvirtUri,
+    String(config.host.libvirtUri),
     "define",
-    release.domainXmlPath,
+    String(release.domainXmlPath),
     "--validate",
   ]);
 }
 
-async function existingPublishedDomainUuid(config) {
+async function existingPublishedDomainUuid(
+  config: BaselineBuildConfig,
+): Promise<string | null> {
   const result = await run(
     "virsh",
-    ["--connect", config.host.libvirtUri, "domuuid", config.vm.name],
+    [
+      "--connect",
+      String(config.host.libvirtUri),
+      "domuuid",
+      String(config.vm.name),
+    ],
     { allowFailure: true },
   );
   if (result.failed) return null;
@@ -1588,28 +1862,42 @@ async function existingPublishedDomainUuid(config) {
   return uuid;
 }
 
-async function defineAndVerifyPublishedDomain(config, release) {
+async function defineAndVerifyPublishedDomain(
+  config: BaselineBuildConfig,
+  release: Record<string, unknown>,
+): Promise<void> {
   await definePublishedDomain(config, release);
   await verifyDefinedRuntimeDevicesForDomain(
     config,
-    config.vm.name,
+    String(config.vm.name),
     runtimeProfileForPublishedRelease(config, release.releaseId),
   );
 }
 
-async function rollbackPublishedDefinition(config, previousRelease) {
+async function rollbackPublishedDefinition(
+  config: BaselineBuildConfig,
+  previousRelease: Record<string, unknown> | null,
+): Promise<void> {
   if (previousRelease) {
     await defineAndVerifyPublishedDomain(config, previousRelease);
     return;
   }
   await run(
     "virsh",
-    ["--connect", config.host.libvirtUri, "undefine", config.vm.name],
+    [
+      "--connect",
+      String(config.host.libvirtUri),
+      "undefine",
+      String(config.vm.name),
+    ],
     { allowFailure: true },
   );
 }
 
-export async function buildWin10Baseline(config, options = {}) {
+export async function buildWin10Baseline(
+  config: BaselineBuildConfig,
+  options: { sourceCommit?: string; execute?: boolean; exitOnSignal?: boolean } = {},
+): Promise<unknown> {
   const commandTracker = createConstructionCommandTracker();
   const previousCommandTracker = activeConstructionCommandTracker;
   activeConstructionCommandTracker = commandTracker;
@@ -1624,9 +1912,21 @@ export async function buildWin10Baseline(config, options = {}) {
 }
 
 async function buildWin10BaselineImpl(
-  config,
-  { commandTracker, sourceCommit, execute = false, exitOnSignal = false } = {},
-) {
+  config: BaselineBuildConfig,
+  {
+    commandTracker,
+    sourceCommit,
+    execute = false,
+    exitOnSignal = false,
+  }: {
+    commandTracker: ReturnType<typeof createConstructionCommandTracker>;
+    sourceCommit?: string;
+    execute?: boolean;
+    exitOnSignal?: boolean;
+  } = {
+    commandTracker: createConstructionCommandTracker(),
+  },
+): Promise<Record<string, unknown>> {
   validateBaselineBuildConfig(config);
   if (execute) await recoverStaleConstructionDomains(config);
   const profile = runtimeProfileForConfig(config);
@@ -1643,8 +1943,12 @@ async function buildWin10BaselineImpl(
     execute,
   };
   if (!execute) return plan;
-  await mkdir(dirname(config.storage.baselinePath), { recursive: true });
-  await mkdir(dirname(config.storage.cacheDiskPath), { recursive: true });
+  await mkdir(dirname(String(config.storage.baselinePath)), {
+    recursive: true,
+  });
+  await mkdir(dirname(String(config.storage.cacheDiskPath)), {
+    recursive: true,
+  });
   const state = await domainState(config);
   if (state && state !== "shut off") {
     throw new Error(
@@ -1683,7 +1987,9 @@ async function buildWin10BaselineImpl(
   const stagedPath = join(stagingDirectory, "system.qcow2");
   const stagedCachePath = join(cacheStagingDirectory, "cache.qcow2");
   const constructionDomain = construction.domainName;
-  let vncActivator = null;
+  let vncActivator: Awaited<
+    ReturnType<typeof startHeadlessVncActivator>
+  > | null = null;
   const cleanup = constructionCleanup({
     config,
     constructionDomain,
@@ -1715,7 +2021,7 @@ async function buildWin10BaselineImpl(
             "qcow2",
             "-O",
             "qcow2",
-            publishedRelease.cachePath,
+            String(publishedRelease.cachePath),
             stagedCachePath,
           ]);
         } else {
@@ -1748,7 +2054,7 @@ async function buildWin10BaselineImpl(
           constructionXmlPath,
           renderLibvirtDomainXml(constructionProfile, {
             cdromPaths: [
-              config.media.windowsIsoPath,
+              String(config.media.windowsIsoPath),
               configurationMedia.isoPath,
             ],
           }),
@@ -1756,19 +2062,19 @@ async function buildWin10BaselineImpl(
         );
         await run("virsh", [
           "--connect",
-          config.host.libvirtUri,
+          String(config.host.libvirtUri),
           "define",
           constructionXmlPath,
         ]);
         await run("virsh", [
           "--connect",
-          config.host.libvirtUri,
+          String(config.host.libvirtUri),
           "start",
           constructionDomain,
         ]);
         vncActivator = await startHeadlessVncActivator({
           domainName: constructionDomain,
-          libvirtUri: config.host.libvirtUri,
+          libvirtUri: String(config.host.libvirtUri),
           runCommand: run,
           startProcess: commandTracker.start,
           commands: {
@@ -1806,7 +2112,7 @@ async function buildWin10BaselineImpl(
         await run("qemu-img", ["check", stagedCachePath]);
         await run("virsh", [
           "--connect",
-          config.host.libvirtUri,
+          String(config.host.libvirtUri),
           "undefine",
           constructionDomain,
         ]);

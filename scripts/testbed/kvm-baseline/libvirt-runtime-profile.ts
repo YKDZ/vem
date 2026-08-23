@@ -18,21 +18,21 @@ export const DEFAULT_RUNTIME_PROFILE = Object.freeze({
   }),
 });
 
-function requiredString(value, label) {
+function requiredString(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${label} must be a non-empty string`);
   }
   return value;
 }
 
-function positiveInteger(value, label) {
-  if (!Number.isInteger(value) || value < 1) {
+function positiveInteger(value: unknown, label: string): number {
+  if (!Number.isInteger(value) || (value as number) < 1) {
     throw new Error(`${label} must be a positive integer`);
   }
-  return value;
+  return value as number;
 }
 
-function xml(value) {
+function xml(value: unknown): string {
   return String(value)
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
@@ -41,7 +41,43 @@ function xml(value) {
     .replaceAll("'", "&apos;");
 }
 
-export function createRuntimeProfile(options) {
+export type RuntimeProfile = {
+  vmName: string;
+  vcpus: number;
+  memoryMiB: number;
+  display: {
+    width: number;
+    height: number;
+    scalePercent: number;
+    videoMemoryKiB: number;
+  };
+  serialRoles: string[];
+  serialUsbPorts: number[];
+  audio: {
+    model: "ich9";
+    defaultDevice: boolean;
+    capturePath: string;
+  };
+  disks: {
+    system: {
+      path: string;
+      target: "sda";
+      bus: "sata";
+      resettable: boolean;
+    };
+    cache: {
+      path: string;
+      target: "sdb";
+      bus: "sata";
+      persistent: boolean;
+    };
+  };
+  network: { name: string; macAddress: string };
+};
+
+export function createRuntimeProfile(
+  options: Record<string, unknown>,
+): RuntimeProfile {
   if (!options || typeof options !== "object" || Array.isArray(options)) {
     throw new Error("runtime profile options must be an object");
   }
@@ -53,25 +89,26 @@ export function createRuntimeProfile(options) {
     options.memoryMiB ?? DEFAULT_RUNTIME_PROFILE.memoryMiB,
     "memoryMiB",
   );
-  const display = {
+  const display: RuntimeProfile["display"] = {
     ...DEFAULT_RUNTIME_PROFILE.display,
     ...(options.display ?? {}),
   };
+  const displayRecord = display as Record<string, unknown>;
   for (const key of ["width", "height", "scalePercent", "videoMemoryKiB"]) {
-    positiveInteger(display[key], `display.${key}`);
+    positiveInteger(displayRecord[key], `display.${key}`);
   }
-  const serialRoles = options.serialRoles ?? [
+  const serialRoles: unknown[] = (options.serialRoles as unknown[] | undefined) ?? [
     ...DEFAULT_RUNTIME_PROFILE.serialRoles,
   ];
   if (
     !Array.isArray(serialRoles) ||
     serialRoles.length !== 2 ||
     new Set(serialRoles).size !== serialRoles.length ||
-    serialRoles.some((role) => !/^[a-z][a-z-]{1,63}$/.test(role))
+    serialRoles.some((role) => !/^[a-z][a-z-]{1,63}$/.test(String(role)))
   ) {
     throw new Error("serialRoles must contain two unique lowercase roles");
   }
-  const serialUsbPorts = options.serialUsbPorts ?? [
+  const serialUsbPorts: unknown[] = (options.serialUsbPorts as unknown[] | undefined) ?? [
     ...DEFAULT_RUNTIME_PROFILE.serialUsbPorts,
   ];
   if (
@@ -79,14 +116,20 @@ export function createRuntimeProfile(options) {
     serialUsbPorts.length !== serialRoles.length ||
     new Set(serialUsbPorts).size !== serialUsbPorts.length ||
     serialUsbPorts.some(
-      (port) => !Number.isInteger(port) || port < 1 || port > 15,
+      (port) =>
+        !Number.isInteger(port) ||
+        (port as number) < 1 ||
+        (port as number) > 15,
     )
   ) {
     throw new Error(
       "serialUsbPorts must contain two unique QEMU USB controller ports",
     );
   }
-  const audio = { ...DEFAULT_RUNTIME_PROFILE.audio, ...(options.audio ?? {}) };
+  const audio: RuntimeProfile["audio"] = {
+    ...(DEFAULT_RUNTIME_PROFILE.audio as unknown as RuntimeProfile["audio"]),
+    ...(options.audio ?? {}),
+  };
   if (audio.model !== "ich9" || audio.defaultDevice !== true) {
     throw new Error("audio must use the default ich9 device");
   }
@@ -110,8 +153,8 @@ export function createRuntimeProfile(options) {
     vcpus,
     memoryMiB,
     display,
-    serialRoles: [...serialRoles],
-    serialUsbPorts: [...serialUsbPorts],
+    serialRoles: [...serialRoles.map((role) => String(role))],
+    serialUsbPorts: [...serialUsbPorts.map((port) => Number(port))],
     audio,
     disks: {
       system: {
@@ -135,8 +178,11 @@ export function createRuntimeProfile(options) {
 }
 
 export function renderLibvirtDomainXml(
-  profile,
-  { cdromPaths = [], domainUuid = null } = {},
+  profile: RuntimeProfile,
+  { cdromPaths = [], domainUuid = null }: {
+    cdromPaths?: unknown[];
+    domainUuid?: string | null;
+  } = {},
 ) {
   if (!profile || typeof profile !== "object") {
     throw new Error("profile must be an object");
@@ -204,6 +250,6 @@ ${serial}
 `;
 }
 
-export function requiredHostMemoryBytes(profile) {
+export function requiredHostMemoryBytes(profile: RuntimeProfile): number {
   return profile.memoryMiB * MiB;
 }

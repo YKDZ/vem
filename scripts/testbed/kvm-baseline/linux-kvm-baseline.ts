@@ -158,7 +158,7 @@ const RELEASE_ARTIFACTS = Object.freeze({
   diagnostic: "diagnostic.json",
 });
 
-interface BaselineBuildConfig {
+export interface BaselineBuildConfig {
   schemaVersion?: unknown;
   host: {
     address: unknown;
@@ -1217,7 +1217,7 @@ export async function startHeadlessVncActivator({
   runCommand: (
     command: string,
     args: string[],
-    options?: unknown,
+    options?: { allowFailure?: boolean },
   ) => Promise<{ stdout: unknown; stderr?: unknown }>;
   startProcess: (
     command: string,
@@ -1225,7 +1225,12 @@ export async function startHeadlessVncActivator({
     options: Record<string, unknown>,
   ) => VncHandle;
   termination?: { killTimeoutMs?: number; termTimeoutMs?: number };
-}): Promise<unknown> {
+}): Promise<{
+  endpoint: string;
+  failure: Promise<never>;
+  runWhileActive: <T>(work: () => Promise<T> | T) => Promise<T>;
+  stop: () => Promise<void>;
+}> {
   const normalizedDomainName = string(domainName, "domainName");
   const normalizedLibvirtUri = string(libvirtUri, "libvirtUri");
   const normalizedMetadataPath = absolutePath(
@@ -1408,7 +1413,7 @@ export async function startHeadlessVncActivator({
     return {
       endpoint,
       failure,
-      runWhileActive: (work: () => unknown) =>
+      runWhileActive: <T>(work: () => Promise<T> | T) =>
         Promise.race([Promise.resolve().then(work), failure]),
       stop,
     };
