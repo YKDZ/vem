@@ -1179,7 +1179,7 @@ export async function waitForRawSerialFrame({
     throw new Error("parsedOpcode is not valid for the serial scenario");
   const deadline = Date.now() + timeoutMs;
   do {
-    const raw = readRawSerialJournal(journalPath);
+    const raw = readRawSerialJournal(String(journalPath));
     if (raw.length > 256)
       throw new Error("raw serial evidence exceeded 256 records");
     const protocolFrames = raw.filter(
@@ -1190,11 +1190,11 @@ export async function waitForRawSerialFrame({
     for (const frame of protocolFrames) {
       const expectedDirections = (
         RAW_PROTOCOL_DIRECTIONS as Record<string, string | string[]>
-      )[frame.parsedOpcode ?? ""];
+      )[String(frame.parsedOpcode ?? "")];
       const allowedDirections = Array.isArray(expectedDirections)
         ? expectedDirections
         : [expectedDirections];
-      if (!allowedDirections.includes(frame.direction)) {
+      if (!allowedDirections.includes(String(frame.direction))) {
         throw new Error(
           `${frame.parsedOpcode} has invalid serial direction ${frame.direction}`,
         );
@@ -1240,7 +1240,7 @@ function releaseSessionF0(
 ): Record<string, unknown> {
   const session = requireSession(server, input.sessionId);
   const path = adapterSessionPaths(session).releaseF0Path;
-  writeFileSync(path, `${new Date().toISOString()}\n`, {
+  writeFileSync(String(path), `${new Date().toISOString()}\n`, {
     flag: "wx",
     mode: 0o600,
   });
@@ -1303,11 +1303,13 @@ async function stopScannerBindingProbe(
     };
   } catch (error) {
     if (!isErrnoCode(error, "ESRCH")) throw error;
-    const state = JSON.parse(readFileSync(paths.statePath, "utf8"));
+    const state = JSON.parse(
+      readFileSync(String(paths.statePath), "utf8"),
+    ) as Record<string, unknown>;
     return {
       sessionId: session.id,
       scannerBindingProbe: {
-        ...state.scannerBindingProbe,
+        ...(state.scannerBindingProbe as Record<string, unknown>),
         stoppedAt: new Date().toISOString(),
         stopReason: "daemon_binding_confirmed",
         alreadyExited: true,
@@ -1322,7 +1324,7 @@ function releaseSessionF2(
 ): Record<string, unknown> {
   const session = requireSession(server, input.sessionId);
   const path = adapterSessionPaths(session).releaseF2Path;
-  writeFileSync(path, `${new Date().toISOString()}\n`, {
+  writeFileSync(String(path), `${new Date().toISOString()}\n`, {
     flag: "wx",
     mode: 0o600,
   });
@@ -1371,7 +1373,7 @@ function collectPlatformLog(
     : null;
   const paths = session ? adapterSessionPaths(session) : null;
   const logPath = paths
-    ? join(paths.directory, "platform-service-api.log")
+    ? join(String(paths.directory), "platform-service-api.log")
     : null;
   if (logPath) writeFileSync(logPath, boundedStdout, { mode: 0o600 });
   return {
@@ -1388,8 +1390,8 @@ function boundedSessionEvidence(
 ): Record<string, unknown> {
   const session = requireSession(server, input.sessionId);
   const paths = adapterSessionPaths(session);
-  const simulatorLog = existsSync(paths.logPath)
-    ? readFileSync(paths.logPath, "utf8").slice(-64 * 1024)
+  const simulatorLog = existsSync(String(paths.logPath))
+    ? readFileSync(String(paths.logPath), "utf8").slice(-64 * 1024)
     : "";
   const rawFrameLimitValue = input.rawFrameLimit;
   const rawFrameLimit =
@@ -1399,7 +1401,7 @@ function boundedSessionEvidence(
     rawFrameLimitValue <= 1_024
       ? rawFrameLimitValue
       : 64;
-  const tailFrames = readRawSerialJournal(paths.journalPath)
+  const tailFrames = readRawSerialJournal(String(paths.journalPath))
     .slice(-rawFrameLimit)
     .map((frame) => ({
       ...frame,
@@ -1483,8 +1485,8 @@ function runVirshDeviceLifecycle(
     server.options.stateRoot,
     `host-control-plane-device-${role}-${operation}-${randomUUID()}`,
   );
-  mkdirSync(paths.directory, { recursive: true, mode: 0o700 });
-  const xmlPath = join(paths.directory, `${role}-${operation}.xml`);
+  mkdirSync(String(paths.directory), { recursive: true, mode: 0o700 });
+  const xmlPath = join(String(paths.directory), `${role}-${operation}.xml`);
   writeFileSync(xmlPath, `${xml}\n`, { mode: 0o600 });
   const command =
     operation === "disconnect" ? "detach-device" : "attach-device";
@@ -1918,8 +1920,8 @@ async function abortSession(
       );
     }
   }
-  if (existsSync(paths.statePath)) {
-    const state = JSON.parse(readFileSync(paths.statePath, "utf8")) as Record<
+  if (existsSync(String(paths.statePath))) {
+    const state = JSON.parse(readFileSync(String(paths.statePath), "utf8")) as Record<
       string,
       unknown
     >;
@@ -1962,7 +1964,7 @@ async function abortSession(
       existsSync(path),
     ).length;
     state.cleanup = cleanup;
-    writeFileSync(paths.statePath, `${JSON.stringify(state, null, 2)}\n`, {
+    writeFileSync(String(paths.statePath), `${JSON.stringify(state, null, 2)}\n`, {
       mode: 0o600,
     });
   }
