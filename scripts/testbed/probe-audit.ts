@@ -29,8 +29,8 @@ const FORBIDDEN_PATTERNS = Object.freeze([
   },
 ]);
 
-function walk(directory) {
-  const found = [];
+function walk(directory: string): string[] {
+  const found: string[] = [];
   for (const name of readdirSync(directory)) {
     const path = join(directory, name);
     const entry = statSync(path);
@@ -43,8 +43,8 @@ function walk(directory) {
   return found;
 }
 
-export function auditProbeBoundaries(root) {
-  const violations = [];
+export function auditProbeBoundaries(root: string): string[] {
+  const violations: string[] = [];
   for (const path of walk(root)) {
     const source = readFileSync(path, "utf8");
     for (const rule of FORBIDDEN_PATTERNS) {
@@ -56,7 +56,7 @@ export function auditProbeBoundaries(root) {
   return violations;
 }
 
-export function assertProbeBoundaries(root) {
+export function assertProbeBoundaries(root: string): string[] {
   const violations = auditProbeBoundaries(root);
   if (violations.length > 0) {
     throw new Error(`probe boundary violations:\n${violations.join("\n")}`);
