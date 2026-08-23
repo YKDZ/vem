@@ -35,23 +35,29 @@ type LiveProductionTrackOptions = {
   checkpointTimeoutMs?: number;
   checkpointPollMs?: number;
   pollIntervalMs?: number;
-  captureDaemon: (
+  captureDaemon?: (
     stage: string,
     binding: SaleBinding | null,
   ) => Promise<JsonRecord>;
-  queryPlatform: (stage: string) => Promise<JsonRecord>;
-  startAudioCapture: (options: JsonRecord) => Promise<JsonRecord>;
-  stopAudioCapture: (options: JsonRecord) => Promise<JsonRecord>;
-  cancelAudioCapture: (options: JsonRecord) => Promise<JsonRecord>;
+  queryPlatform?: (stage: string) => Promise<JsonRecord>;
+  startAudioCapture?: (options: JsonRecord) => Promise<JsonRecord>;
+  stopAudioCapture?: (options: JsonRecord) => Promise<JsonRecord>;
+  cancelAudioCapture?: (options: JsonRecord) => Promise<unknown>;
 };
 
 type LiveProductionTrackDependencies = {
   openSidecar?: typeof openMachineUiCdpSidecar;
-  captureDaemon?: LiveProductionTrackOptions["captureDaemon"];
-  queryPlatform?: LiveProductionTrackOptions["queryPlatform"];
-  startAudioCapture?: LiveProductionTrackOptions["startAudioCapture"];
-  stopAudioCapture?: LiveProductionTrackOptions["stopAudioCapture"];
-  cancelAudioCapture?: LiveProductionTrackOptions["cancelAudioCapture"];
+  captureDaemon?: NonNullable<LiveProductionTrackOptions["captureDaemon"]>;
+  queryPlatform?: NonNullable<LiveProductionTrackOptions["queryPlatform"]>;
+  startAudioCapture?: NonNullable<
+    LiveProductionTrackOptions["startAudioCapture"]
+  >;
+  stopAudioCapture?: NonNullable<
+    LiveProductionTrackOptions["stopAudioCapture"]
+  >;
+  cancelAudioCapture?: NonNullable<
+    LiveProductionTrackOptions["cancelAudioCapture"]
+  >;
   inspectRuntime?: () => Promise<JsonRecord>;
   discoverTarget?: (options: JsonRecord) => Promise<JsonRecord>;
   createClient?: (target: JsonRecord, sidecar: JsonRecord) => CdpClient;
@@ -481,6 +487,13 @@ export async function startDelayedPickupLiveProductionTrack(
     throw new Error(
       "live track daemon/platform producers and audio lifecycle are required",
     );
+  const verifiedCaptureDaemon = captureDaemon as (
+    stage: string,
+    binding: SaleBinding | null,
+  ) => Promise<JsonRecord>;
+  const verifiedQueryPlatform = queryPlatform as (
+    stage: string,
+  ) => Promise<JsonRecord>;
 
   async function settleF1Snapshots(
     observedBinding: SaleBinding,
@@ -490,8 +503,8 @@ export async function startDelayedPickupLiveProductionTrack(
     let lastPlatform = null;
     do {
       [lastDaemon, lastPlatform] = await Promise.all([
-        captureDaemon("after_f1_before_f2", observedBinding),
-        queryPlatform("at_f1"),
+        verifiedCaptureDaemon("after_f1_before_f2", observedBinding),
+        verifiedQueryPlatform("at_f1"),
       ]);
       if (
         daemonF1Ready(lastDaemon, observedBinding) &&
@@ -512,7 +525,7 @@ export async function startDelayedPickupLiveProductionTrack(
     const deadline = Date.now() + (options.checkpointTimeoutMs ?? 30_000);
     let lastDaemon = null;
     do {
-      lastDaemon = await captureDaemon("after_f2", observedBinding);
+      lastDaemon = await verifiedCaptureDaemon("after_f2", observedBinding);
       if (daemonF2Ready(lastDaemon, observedBinding)) return lastDaemon;
       await sleep(options.checkpointPollMs ?? 250);
     } while (Date.now() < deadline);

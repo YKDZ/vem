@@ -45,24 +45,35 @@ export const REQUIRED_TRANSACTION_AUDIO_PREFERENCES = Object.freeze({
   transactionCuesEnabled: true,
 });
 
-function scannerFrame(code) {
+type JsonRecord = Record<string, unknown>;
+type HandoffRecord = JsonRecord;
+type GuestInputRecord = JsonRecord;
+type ParsedGuestFullArgs = {
+  mode: string;
+  guestInputPath: string;
+  handoffPath: string;
+  outPath: string;
+  fixtureKey: string | null;
+};
+
+function scannerFrame(code: unknown): string {
   return `${required(code, "scanner code").replace(/[\r\n]+$/u, "")}\r`;
 }
 
-function required(value, label) {
+function required(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "")
     throw new Error(`${label} is required`);
   return value.trim();
 }
 
-function windowsAbsolute(value, label) {
+function windowsAbsolute(value: unknown, label: string): string {
   const path = required(value, label);
   if (!/^[A-Za-z]:\\/.test(path) || path.includes("\0"))
     throw new Error(`${label} must be an absolute Windows path`);
   return path;
 }
 
-function localPath(path) {
+function localPath(path: string): string {
   return process.platform === "win32"
     ? path
     : resolve(
@@ -70,7 +81,7 @@ function localPath(path) {
       );
 }
 
-function readJson(path, label) {
+function readJson(path: string, label: string): JsonRecord {
   try {
     return JSON.parse(readFileSync(localPath(path), "utf8"));
   } catch (error) {
@@ -80,7 +91,7 @@ function readJson(path, label) {
   }
 }
 
-function writeJson(path, value) {
+function writeJson(path: string, value: unknown): void {
   const target = localPath(path);
   mkdirSync(dirname(target), { recursive: true });
   const temporary = `${target}.tmp-${process.pid}-${Date.now()}`;
@@ -88,7 +99,7 @@ function writeJson(path, value) {
   renameSync(temporary, target);
 }
 
-function option(args, name) {
+function option(args: string[], name: string): string {
   const index = args.indexOf(`--${name}`);
   const value = index === -1 ? undefined : args[index + 1];
   if (!value || value.startsWith("--"))
@@ -96,12 +107,12 @@ function option(args, name) {
   return value;
 }
 
-function optionalOption(args, name) {
+function optionalOption(args: string[], name: string): string | null {
   const index = args.indexOf(`--${name}`);
   return index === -1 ? null : required(args[index + 1], `--${name}`);
 }
 
-function parseArgs(args) {
+function parseArgs(args: string[]): ParsedGuestFullArgs {
   const mode = required(option(args, "mode"), "--mode");
   if (!MODES.has(mode)) throw new Error("--mode must be full");
   return {
@@ -116,7 +127,14 @@ function parseArgs(args) {
   };
 }
 
-function screenshotSink(root) {
+function screenshotSink(
+  root: string,
+): (input: {
+  bytes: Uint8Array;
+  sha256: string;
+  label: string;
+  format: string;
+}) => Promise<{ ref: string; sha256: string }> {
   mkdirSync(localPath(root), { recursive: true });
   return async ({ bytes, sha256, label, format }) => {
     const file = join(
@@ -128,28 +146,36 @@ function screenshotSink(root) {
   };
 }
 
-async function fetchJson(url, options = {}) {
+async function fetchJson(
+  url: string,
+  options: JsonRecord = {},
+): Promise<unknown> {
   const timeoutMs = options.timeoutMs ?? 30_000;
   const { timeoutMs: _timeoutMs, ...requestOptions } = options;
   const response = await fetch(url, {
     ...requestOptions,
-    signal: options.signal ?? AbortSignal.timeout(timeoutMs),
+    signal: (options.signal as AbortSignal | undefined) ??
+      AbortSignal.timeout(Number(timeoutMs)),
   });
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
     throw new Error(
-      `${options.method ?? "GET"} ${url} failed with HTTP ${response.status}: ${JSON.stringify(payload)}`,
+      `${String(options.method ?? "GET")} ${url} failed with HTTP ${response.status}: ${JSON.stringify(payload)}`,
     );
   }
   return payload;
 }
 
-async function withinDeadline(callback, label, timeoutMs = 10_000) {
-  let timer = null;
+async function withinDeadline<T>(
+  callback: () => Promise<T>,
+  label: string,
+  timeoutMs = 10_000,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
   try {
-    return await Promise.race([
+    return await Promise.race<T>([
       callback(),
-      new Promise((_, reject) => {
+      new Promise<T>((_, reject) => {
         timer = setTimeout(
           () => reject(new Error(`${label} deadline exceeded`)),
           timeoutMs,
@@ -161,9 +187,11 @@ async function withinDeadline(callback, label, timeoutMs = 10_000) {
   }
 }
 
-function daemonBaseUrl(handoff) {
+function daemonBaseUrl(handoff: HandoffRecord): string {
+  const daemon = handoff.daemon as JsonRecord | undefined;
+  const ready = daemon?.ready as JsonRecord | undefined;
   const healthzUrl = required(
-    handoff.daemon?.ready?.healthzUrl,
+    ready?.healthzUrl,
     "daemon healthzUrl",
   );
   if (!healthzUrl.endsWith("/healthz"))
@@ -171,13 +199,19 @@ function daemonBaseUrl(handoff) {
   return healthzUrl.slice(0, -"/healthz".length);
 }
 
-function daemonHeaders(handoff) {
+function daemonHeaders(handoff: HandoffRecord): JsonRecord {
+  const daemon = handoff.daemon as JsonRecord | undefined;
+  const ready = daemon?.ready as JsonRecord | undefined;
   return {
-    authorization: `Bearer ${required(handoff.daemon?.ready?.ipcToken, "daemon ipcToken")}`,
+    authorization: `Bearer ${required(ready?.ipcToken, "daemon ipcToken")}`,
   };
 }
 
-async function daemonGet(handoff, path, timeoutMs = 30_000) {
+async function daemonGet(
+  handoff: HandoffRecord,
+  path: string,
+  timeoutMs = 30_000,
+): Promise<unknown> {
   return fetchJson(`${daemonBaseUrl(handoff)}${path}`, {
     headers: daemonHeaders(handoff),
     timeoutMs,
@@ -185,13 +219,32 @@ async function daemonGet(handoff, path, timeoutMs = 30_000) {
 }
 
 export async function restoreTransactionAudioPreferences(
-  client,
-  dependencies = {},
-) {
+  client: InstanceType<typeof CdpClient>,
+  dependencies: JsonRecord = {},
+): Promise<unknown> {
   const setPreferences =
-    dependencies.setMachineUiAudioPreferences ?? setMachineUiAudioPreferences;
-  const evaluate = dependencies.evaluateExpression ?? evaluateExpression;
-  const waitForHashRoute = dependencies.waitForRoute ?? waitForRoute;
+    (dependencies.setMachineUiAudioPreferences as
+      | ((
+          client: unknown,
+          preferences: JsonRecord,
+        ) => Promise<unknown>)
+      | undefined) ?? setMachineUiAudioPreferences;
+  const evaluate =
+    (dependencies.evaluateExpression as
+      | ((
+          client: unknown,
+          expression: string,
+          options?: JsonRecord,
+        ) => Promise<unknown>)
+      | undefined) ?? evaluateExpression;
+  const waitForHashRoute =
+    (dependencies.waitForRoute as
+      | ((
+          client: unknown,
+          route: string | RegExp,
+          options?: JsonRecord,
+        ) => Promise<unknown>)
+      | undefined) ?? waitForRoute;
   const restored = await setPreferences(
     client,
     REQUIRED_TRANSACTION_AUDIO_PREFERENCES,
@@ -204,19 +257,33 @@ export async function restoreTransactionAudioPreferences(
   return restored;
 }
 
-async function prepareScannerForSale(handoff, guestInput, sessionStart) {
+async function prepareScannerForSale(
+  handoff: HandoffRecord,
+  guestInput: GuestInputRecord,
+  sessionStart: JsonRecord,
+): Promise<JsonRecord> {
   const bindingDeadline = Date.now() + 30_000;
-  let bindings = null;
+  let bindings: JsonRecord | null = null;
   while (Date.now() < bindingDeadline) {
-    bindings = await daemonGet(handoff, "/v1/hardware-bindings").catch(
-      () => null,
-    );
-    const scanner = bindings?.roles?.find((role) => role?.role === "scanner");
-    if (scanner?.ready === true && /^COM[1-9][0-9]*$/.test(scanner.currentPort))
+    bindings = (await daemonGet(
+      handoff,
+      "/v1/hardware-bindings",
+    ).catch(() => null)) as JsonRecord | null;
+    const roles = (bindings?.roles ?? []) as unknown[];
+    const scanner = roles.find(
+      (role) => (role as JsonRecord)?.role === "scanner",
+    ) as JsonRecord | undefined;
+    if (
+      scanner?.ready === true &&
+      /^COM[1-9][0-9]*$/.test(String(scanner.currentPort))
+    )
       break;
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
   }
-  const scanner = bindings?.roles?.find((role) => role?.role === "scanner");
+  const roles = (bindings?.roles ?? []) as unknown[];
+  const scanner = roles.find(
+    (role) => (role as JsonRecord)?.role === "scanner",
+  ) as JsonRecord | undefined;
   if (scanner?.ready !== true)
     throw new Error(
       `scanner binding was not ready: ${JSON.stringify(bindings)}`,
@@ -228,14 +295,20 @@ async function prepareScannerForSale(handoff, guestInput, sessionStart) {
   );
 
   const capabilityDeadline = Date.now() + 30_000;
-  let capability = null;
+  let capability: JsonRecord | null = null;
   while (Date.now() < capabilityDeadline) {
-    capability = await daemonGet(handoff, "/v1/sale-start-capability").catch(
-      () => null,
-    );
-    const paymentCode = capability?.paymentOptions?.options?.find(
-      (option) => option?.optionKey === "payment_code:mock",
-    );
+    capability = (await daemonGet(
+      handoff,
+      "/v1/sale-start-capability",
+    ).catch(() => null)) as JsonRecord | null;
+    const paymentOptions = capability?.paymentOptions as
+      | JsonRecord
+      | undefined;
+    const options = (paymentOptions?.options ?? []) as unknown[];
+    const paymentCode = options.find(
+      (option) =>
+        (option as JsonRecord)?.optionKey === "payment_code:mock",
+    ) as JsonRecord | undefined;
     if (capability?.canStartSale === true && paymentCode?.ready === true)
       return { bindings, capability };
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
@@ -245,13 +318,20 @@ async function prepareScannerForSale(handoff, guestInput, sessionStart) {
   );
 }
 
-async function controlPlaneRequest(guestInput, path, body = {}) {
+async function controlPlaneRequest(
+  guestInput: GuestInputRecord,
+  path: string,
+  body: JsonRecord = {},
+): Promise<unknown> {
+  const hostControlPlane = guestInput.hostControlPlane as
+    | JsonRecord
+    | undefined;
   const endpoint = required(
-    guestInput.hostControlPlane?.endpoint,
+    hostControlPlane?.endpoint,
     "hostControlPlane.endpoint",
   );
   const token = required(
-    guestInput.hostControlPlane?.token,
+    hostControlPlane?.token,
     "hostControlPlane.token",
   );
   return fetchJson(`${endpoint}${path}`, {
@@ -261,14 +341,18 @@ async function controlPlaneRequest(guestInput, path, body = {}) {
       "content-type": "application/json",
     },
     body: JSON.stringify(body),
-    timeoutMs: body.timeoutMs ?? 30_000,
+    timeoutMs: Number(body.timeoutMs ?? 30_000),
   });
 }
 
-async function waitForCommand(handoff, renderedSale, timeoutMs = 30_000) {
+async function waitForCommand(
+  handoff: HandoffRecord,
+  renderedSale: JsonRecord,
+  timeoutMs = 30_000,
+): Promise<JsonRecord> {
   const deadline = Date.now() + timeoutMs;
-  let lastTransaction = null;
-  let lastError = null;
+  let lastTransaction: JsonRecord | null = null;
+  let lastError: string | null = null;
   while (Date.now() < deadline) {
     const transaction = await daemonGet(
       handoff,
@@ -278,19 +362,22 @@ async function waitForCommand(handoff, renderedSale, timeoutMs = 30_000) {
       lastError = error instanceof Error ? error.message : String(error);
       return null;
     });
-    lastTransaction = transaction;
+    lastTransaction = transaction as JsonRecord | null;
+    const transactionRecord = transaction as JsonRecord | null;
+    const vending = transactionRecord?.vending as JsonRecord | undefined;
     const commandId =
-      transaction?.vending?.commandId ?? transaction?.dispenseCommandId ?? null;
+      vending?.commandId ?? transactionRecord?.dispenseCommandId ?? null;
     if (
-      transaction?.orderId === renderedSale.orderId &&
-      transaction?.paymentId === renderedSale.paymentId &&
+      transactionRecord !== null &&
+      transactionRecord?.orderId === renderedSale.orderId &&
+      transactionRecord?.paymentId === renderedSale.paymentId &&
       typeof commandId === "string" &&
       commandId
     ) {
       return {
-        orderId: transaction.orderId,
-        paymentId: transaction.paymentId,
-        orderNo: transaction.orderNo,
+        orderId: transactionRecord.orderId,
+        paymentId: transactionRecord.paymentId,
+        orderNo: transactionRecord.orderNo,
         vendingCommandId: commandId,
       };
     }
@@ -302,8 +389,8 @@ async function waitForCommand(handoff, renderedSale, timeoutMs = 30_000) {
 }
 
 async function waitForTransactionAudioSettled(
-  client,
-  orderNo,
+  client: InstanceType<typeof CdpClient>,
+  orderNo: string,
   timeoutMs = 45_000,
 ) {
   const alwaysRequiredPlaybackSuffixes = [
@@ -312,9 +399,9 @@ async function waitForTransactionAudioSettled(
   ];
   const conditionalPlaybackSuffixes = ["pickup-warning-2"];
   const deadline = Date.now() + timeoutMs;
-  let last = null;
+  let last: JsonRecord | null = null;
   while (Date.now() < deadline) {
-    last = await evaluateExpression(
+    last = (await evaluateExpression(
       client,
       `(() => {
         const prefix = ${JSON.stringify(`transaction:${orderNo}:`)};
@@ -344,28 +431,48 @@ async function waitForTransactionAudioSettled(
           ),
         };
       })()`,
-    );
+    )) as JsonRecord | null;
+    const playback = last?.playback as unknown[] | undefined;
+    const conditionalPlayback = last?.conditionalPlayback as
+      | unknown[]
+      | undefined;
+    const terminalSuccess = last?.terminalSuccess as unknown[] | undefined;
     if (
-      Array.isArray(last?.playback) &&
-      last.playback.every(
-        (entry) => entry.queued && entry.started && entry.terminal,
+      last !== null &&
+      Array.isArray(playback) &&
+      playback.every(
+        (entry) => {
+          const record = entry as JsonRecord;
+          return record.queued && record.started && record.terminal;
+        },
       ) &&
-      Array.isArray(last?.conditionalPlayback) &&
-      last.conditionalPlayback.every(
-        (entry) =>
-          (entry.queued && entry.started && entry.terminal) ||
-          last.terminalSuccess?.some(
-            (terminal) => terminal.type === "journey_transition",
-          ),
+      Array.isArray(conditionalPlayback) &&
+      conditionalPlayback.every(
+        (entry) => {
+          const record = entry as JsonRecord;
+          return (
+            (record.queued && record.started && record.terminal) ||
+            Boolean(
+              terminalSuccess?.some(
+                (terminal) =>
+                  (terminal as JsonRecord).type === "journey_transition",
+              ),
+            )
+          );
+        },
       ) &&
       last.pickupWaitingQueued === false &&
-      last.terminalSuccess?.filter(
-        (entry) => entry.type === "journey_transition",
+      terminalSuccess?.filter(
+        (terminal) =>
+          (terminal as JsonRecord).type === "journey_transition",
       ).length === 1 &&
-      last.terminalSuccess?.every(
-        (entry) => entry.type === "journey_transition",
+      terminalSuccess?.every(
+        (terminal) =>
+          (terminal as JsonRecord).type === "journey_transition",
       )
     ) {
+      if (last === null)
+        throw new Error("transaction audio trace snapshot is missing");
       return last;
     }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
@@ -376,27 +483,32 @@ async function waitForTransactionAudioSettled(
 }
 
 async function waitForPaymentCodeArm(
-  handoff,
-  renderedSale,
+  handoff: HandoffRecord,
+  renderedSale: JsonRecord,
   timeoutMs = 30_000,
-) {
+): Promise<JsonRecord> {
   const deadline = Date.now() + timeoutMs;
-  let lastTransaction = null;
+  let lastTransaction: JsonRecord | null = null;
   let consecutiveReady = 0;
   while (Date.now() < deadline) {
     const transaction = await daemonGet(
       handoff,
       "/v1/transactions/current",
     ).catch(() => null);
-    lastTransaction = transaction;
+    const transactionRecord = transaction as JsonRecord | null;
+    lastTransaction = transactionRecord;
     const ready =
-      transaction?.orderId === renderedSale.orderId &&
-      transaction?.paymentId === renderedSale.paymentId &&
-      transaction?.orderStatus === "pending_payment" &&
-      transaction?.paymentStatus === "pending" &&
-      transaction?.nextAction === "wait_payment";
+      transactionRecord?.orderId === renderedSale.orderId &&
+      transactionRecord?.paymentId === renderedSale.paymentId &&
+      transactionRecord?.orderStatus === "pending_payment" &&
+      transactionRecord?.paymentStatus === "pending" &&
+      transactionRecord?.nextAction === "wait_payment";
     consecutiveReady = ready ? consecutiveReady + 1 : 0;
-    if (consecutiveReady >= 2) return transaction;
+    if (consecutiveReady >= 2) {
+      if (transactionRecord === null)
+        throw new Error("payment-code transaction snapshot is missing");
+      return transactionRecord;
+    }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
   }
   throw new Error(
@@ -404,7 +516,9 @@ async function waitForPaymentCodeArm(
   );
 }
 
-async function readRenderedPaymentSurface(client) {
+async function readRenderedPaymentSurface(
+  client: InstanceType<typeof CdpClient>,
+): Promise<JsonRecord> {
   const hook = await evaluateExpression(
     client,
     `(() => {
@@ -417,12 +531,15 @@ async function readRenderedPaymentSurface(client) {
       } : null;
     })()`,
   );
-  if (!hook?.orderId || !hook?.paymentId || !hook?.orderNo)
+  const hookRecord = hook as JsonRecord | null;
+  if (!hookRecord?.orderId || !hookRecord?.paymentId || !hookRecord?.orderNo)
     throw new Error("required rendered customer UI payment hook is missing");
-  return hook;
+  return hookRecord;
 }
 
-async function readUiBoundary(client) {
+async function readUiBoundary(
+  client: InstanceType<typeof CdpClient>,
+): Promise<unknown> {
   return evaluateExpression(
     client,
     `(() => {
@@ -441,70 +558,65 @@ async function readUiBoundary(client) {
   );
 }
 
-async function waitForResultRoute(client, timeoutMs = 60_000) {
+async function waitForResultRoute(
+  client: InstanceType<typeof CdpClient>,
+  timeoutMs = 60_000,
+): Promise<unknown> {
   return waitForRoute(client, /^#\/(dispensing|result)/, {
     timeoutMs,
     pollMs: 250,
   });
 }
 
-async function queryPlatform(guestInput, input, outPath) {
+async function queryPlatform(
+  guestInput: GuestInputRecord,
+  input: JsonRecord,
+  outPath: string,
+): Promise<unknown> {
   const result = await controlPlaneRequest(
     guestInput,
     "/v1/platform/query",
     input,
   );
-  writeJson(outPath, result.report);
-  return result.report;
+  const resultRecord = result as JsonRecord;
+  writeJson(outPath, resultRecord.report);
+  return resultRecord.report;
 }
 
-async function waitForPlatformMovement(
-  guestInput,
-  input,
-  baselineCount,
-  outPath,
-  timeoutMs = 30_000,
-) {
-  const deadline = Date.now() + timeoutMs;
-  let last = null;
-  do {
-    last = (await controlPlaneRequest(guestInput, "/v1/platform/query", input))
-      .report;
-    if ((last?.raw?.movements ?? []).length > baselineCount) {
-      writeJson(outPath, last);
-      return last;
-    }
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
-  } while (Date.now() < deadline);
-  throw new Error(
-    `platform movement did not appear after inbound F2: ${JSON.stringify(last?.raw?.movements ?? [])}`,
-  );
-}
-
-function daemonTerminalReady(transaction, liveSale) {
+function daemonTerminalReady(
+  transaction: JsonRecord | null | undefined,
+  liveSale: JsonRecord,
+): boolean {
+  const vending = (transaction?.vending ?? {}) as JsonRecord;
   return (
     transaction?.orderId === liveSale.orderId &&
     transaction?.orderNo === liveSale.orderNo &&
-    transaction?.vending?.commandId === liveSale.vendingCommandId &&
+    vending.commandId === liveSale.vendingCommandId &&
     transaction?.orderStatus === "fulfilled" &&
-    transaction?.vending?.status === "succeeded" &&
+    vending.status === "succeeded" &&
     transaction?.nextAction === "success"
   );
 }
 
-function platformTerminalReady(report, liveSale) {
-  const order = report?.raw?.orders?.find(
-    (entry) => entry?.id === liveSale.orderId,
+function platformTerminalReady(
+  report: JsonRecord | null | undefined,
+  liveSale: JsonRecord,
+): boolean {
+  const raw = (report?.raw ?? {}) as JsonRecord;
+  const orders = (raw.orders ?? []) as unknown[];
+  const commands = (raw.commands ?? []) as unknown[];
+  const order = orders.find(
+    (entry) => (entry as JsonRecord)?.id === liveSale.orderId,
   );
-  const command = report?.raw?.commands?.find(
-    (entry) => entry?.id === liveSale.vendingCommandId,
+  const command = commands.find(
+    (entry) => (entry as JsonRecord)?.id === liveSale.vendingCommandId,
   );
   return (
-    order?.status === "fulfilled" &&
-    command?.orderId === liveSale.orderId &&
-    command?.status === "succeeded" &&
-    typeof command?.commandNo === "string" &&
-    command.commandNo.length > 0
+    (order as JsonRecord)?.status === "fulfilled" &&
+    (command as JsonRecord)?.orderId === liveSale.orderId &&
+    (command as JsonRecord)?.status === "succeeded" &&
+    typeof (command as JsonRecord)?.commandNo === "string" &&
+    String((command as JsonRecord)?.commandNo ?? "").length > 0
   );
 }
 
@@ -515,23 +627,30 @@ async function waitForTerminalSale({
   liveSale,
   outPath,
   timeoutMs = 30_000,
-}) {
+}: {
+  guestInput: GuestInputRecord;
+  handoff: HandoffRecord;
+  sessionId: string;
+  liveSale: JsonRecord;
+  outPath: string;
+  timeoutMs?: number;
+}): Promise<{ transaction: JsonRecord | null; platform: JsonRecord | null }> {
   const deadline = Date.now() + timeoutMs;
-  let lastPlatform = null;
-  let lastTransaction = null;
+  let lastPlatform: JsonRecord | null = null;
+  let lastTransaction: JsonRecord | null = null;
   do {
-    [lastTransaction, lastPlatform] = await Promise.all([
+    [lastTransaction, lastPlatform] = (await Promise.all([
       daemonGet(handoff, "/v1/transactions/current").catch(() => null),
       queryPlatform(
         guestInput,
         {
-          runId: guestInput.runId,
-          machineCode: guestInput.machineCode,
+          runId: String(guestInput.runId),
+          machineCode: String(guestInput.machineCode),
           sessionId,
         },
         outPath,
       ).catch(() => null),
-    ]);
+    ])) as [JsonRecord | null, JsonRecord | null];
     if (
       daemonTerminalReady(lastTransaction, liveSale) &&
       platformTerminalReady(lastPlatform, liveSale)
@@ -547,14 +666,17 @@ async function waitForTerminalSale({
     `sale did not reach terminal daemon/platform settlement after F2: ${JSON.stringify(
       {
         transaction: lastTransaction,
-        commands: lastPlatform?.raw?.commands ?? [],
+        commands: ((lastPlatform?.raw ?? {}) as JsonRecord).commands ?? [],
       },
     )}`,
   );
 }
 
-function daemonCheckpointFactory(handoff) {
-  return async (stage, binding) => ({
+function daemonCheckpointFactory(handoff: HandoffRecord) {
+  return async (
+    stage: string,
+    binding: JsonRecord | null,
+  ): Promise<JsonRecord> => ({
     stage,
     capturedAt: new Date().toISOString(),
     binding,
@@ -577,8 +699,22 @@ function issue17EvidenceIndex({
   daemonSnapshotPath = null,
   uiSnapshotPath = null,
   screenshotRefs = [],
-}) {
-  const index = {
+}: {
+  guestInputPath: string;
+  handoffPath: string;
+  installedSalePath: string;
+  platformBaselinePath: string;
+  platformPostPath: string;
+  delayedRoot: string;
+  liveEvidence?: JsonRecord | null;
+  controlPlaneEvidencePath?: string | null;
+  platformLogPath?: string | null;
+  audioDiagnosticsPath?: string | null;
+  daemonSnapshotPath?: string | null;
+  uiSnapshotPath?: string | null;
+  screenshotRefs?: string[];
+}): JsonRecord {
+  const index: JsonRecord = {
     guestInputPath,
     installedRuntimeHandoffPath: handoffPath,
     installedSaleReportPath: installedSalePath,
@@ -616,26 +752,29 @@ function issue17EvidenceIndex({
     },
     screenshots: screenshotRefs,
   };
-  const audioStop = liveEvidence?.audioStop;
-  for (const artifact of audioStop?.evidence ?? []) {
+  const audioStop = liveEvidence?.audioStop as JsonRecord | undefined;
+  const audioEvidence = (audioStop?.evidence ?? []) as unknown[];
+  const indexAudio = index.audio as JsonRecord;
+  for (const artifactValue of audioEvidence) {
+    const artifact = artifactValue as JsonRecord;
     const resolved = join(
-      localPath(liveEvidence.evidenceDirectory),
-      artifact.fileName,
+      localPath(String(liveEvidence?.evidenceDirectory ?? "")),
+      String(artifact.fileName),
     );
     if (artifact.role === "sale-default-audio-capture")
-      index.audio.wavPath = resolved;
+      indexAudio.wavPath = resolved;
     if (artifact.role === "sale-serial-frame-capture")
-      index.audio.rawSerialCapturePath = resolved;
+      indexAudio.rawSerialCapturePath = resolved;
   }
   return index;
 }
 
-function formatError(error) {
+function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function cleanupTimeout(label, timeoutMs) {
-  return new Promise((_, reject) => {
+function cleanupTimeout(label: string, timeoutMs: number): Promise<never> {
+  return new Promise<never>((_, reject) => {
     const timer = setTimeout(() => {
       reject(new Error(`${label} exceeded ${timeoutMs}ms cleanup deadline`));
     }, timeoutMs);
@@ -643,27 +782,30 @@ function cleanupTimeout(label, timeoutMs) {
   });
 }
 
-export async function runCleanupStep(
-  label,
-  action,
+export async function runCleanupStep<T>(
+  label: string,
+  action: () => Promise<T>,
   timeoutMs = CLEANUP_TIMEOUT_MS,
-) {
+): Promise<T> {
   try {
     return await Promise.race([action(), cleanupTimeout(label, timeoutMs)]);
   } catch (error) {
     const wrapped = new Error(`${label} failed: ${formatError(error)}`);
     wrapped.cause = error;
-    wrapped.cleanupLabel = label;
+    (wrapped as Error & { cleanupLabel?: string }).cleanupLabel = label;
     throw wrapped;
   }
 }
 
-export function combineCleanupError(primaryError, cleanupErrors) {
+export function combineCleanupError(
+  primaryError: unknown,
+  cleanupErrors: Error[],
+): unknown {
   if (cleanupErrors.length === 0) return primaryError;
   if (primaryError) {
     return new AggregateError(
       [primaryError, ...cleanupErrors],
-      `${primaryError.message}; cleanup failed: ${cleanupErrors.map((error) => error.message).join("; ")}`,
+      `${(primaryError as Error).message}; cleanup failed: ${cleanupErrors.map((error) => error.message).join("; ")}`,
     );
   }
   return new AggregateError(
@@ -672,7 +814,9 @@ export function combineCleanupError(primaryError, cleanupErrors) {
   );
 }
 
-async function runDelayedPickupGuestFull(options) {
+async function runDelayedPickupGuestFull(
+  options: ParsedGuestFullArgs,
+): Promise<JsonRecord> {
   const guestInput = readJson(options.guestInputPath, "guest input");
   const handoff = readJson(options.handoffPath, "installed runtime handoff");
   const outRoot = dirname(localPath(options.outPath));
@@ -698,13 +842,13 @@ async function runDelayedPickupGuestFull(options) {
   const audioDiagnosticsPath = join(artifactRoot, "audio-diagnostics.json");
   const daemonSnapshotPath = join(artifactRoot, "daemon-last-snapshot.json");
   const uiSnapshotPath = join(artifactRoot, "ui-last-snapshot.json");
-  const screenshotRefs = [];
-  const saleCorrelationId = `sale-correlation://${guestInput.runId.toLowerCase()}.delayed-pickup`;
-  const report = {
+  const screenshotRefs: string[] = [];
+  const saleCorrelationId = `sale-correlation://${String(guestInput.runId).toLowerCase()}.delayed-pickup`;
+  const report: JsonRecord = {
     schemaVersion: "local-testbed-delayed-pickup-native-audio/v1",
     kind: "local-testbed-delayed-pickup-native-audio",
     mode: options.mode,
-    runId: guestInput.runId,
+    runId: String(guestInput.runId),
     status: "failed",
     ok: false,
     issue16: delayedPickupIssue16ControlPlaneContract(),
@@ -726,20 +870,25 @@ async function runDelayedPickupGuestFull(options) {
       cleanup: [],
     },
   };
-  let client = null;
-  let delayedTrack = null;
-  let sessionStart = null;
-  let liveSale = null;
-  let liveEvidence = null;
-  let primaryError = null;
-  let audioCaptureId = null;
+  let client: InstanceType<typeof CdpClient> | null = null;
+  let delayedTrack: Awaited<
+    ReturnType<typeof startDelayedPickupLiveProductionTrack>
+  > | null = null;
+  let sessionStart: JsonRecord | null = null;
+  let liveSale: JsonRecord | null = null;
+  let liveEvidence: JsonRecord | null = null;
+  let primaryError: unknown = null;
+  let audioCaptureId: string | null = null;
   const audioOperationId = `audio-capture-${randomUUID()}`;
   let sessionStopped = false;
-  let sink = null;
+  let sink: Awaited<ReturnType<typeof screenshotSink>> | null = null;
   try {
+    const handoffCdp = handoff.cdp as JsonRecord;
+    const handoffMachine = handoff.machine as JsonRecord;
+    const hostControlPlane = guestInput.hostControlPlane as JsonRecord;
     const target = await discoverMachineUiTarget({
       endpoint: "http://127.0.0.1:9222",
-      expectedTargetId: handoff.cdp.targetId,
+      expectedTargetId: String(handoffCdp.targetId),
     });
     client = new CdpClient(
       rewriteWebSocketDebuggerUrl(
@@ -752,121 +901,134 @@ async function runDelayedPickupGuestFull(options) {
     await waitForRoute(client, "#/catalog", { timeoutMs: 30_000, pollMs: 250 });
     await restoreTransactionAudioPreferences(client);
     sink = screenshotSink(screenshotRoot);
-    sessionStart = await controlPlaneRequest(
+    sessionStart = (await controlPlaneRequest(
       guestInput,
       "/v1/serial-sessions/start",
       {
-        runId: guestInput.runId,
-        machineCode: guestInput.machineCode,
-        targetIdentity: guestInput.hostControlPlane.targetIdentity,
-        runtimeBase: guestInput.hostControlPlane.runtimeBaseIdentity,
+        runId: String(guestInput.runId),
+        machineCode: String(guestInput.machineCode),
+        targetIdentity: String(hostControlPlane.targetIdentity),
+        runtimeBase: String(hostControlPlane.runtimeBaseIdentity),
         saleCorrelationId,
         serialScenario: "delayed-pickup",
       },
-    );
+    )) as JsonRecord;
+    if (sessionStart === null)
+      throw new Error("serial session start returned no session");
+    const startedSession = sessionStart;
     await waitForDaemonReadyRefresh(handoff);
-    await prepareScannerForSale(handoff, guestInput, sessionStart);
-    let baselinePlatform = null;
+    await prepareScannerForSale(handoff, guestInput, startedSession);
     delayedTrack = await startDelayedPickupLiveProductionTrack(
       {
         outputRoot: delayedRoot,
-        runId: guestInput.runId,
-        lifecycleReference: `vm-lifecycle://${guestInput.runId.toLowerCase()}.local-testbed-delayed-pickup`,
-        transactionId: `transaction://${guestInput.runId.toLowerCase()}.delayed-pickup`,
+        runId: String(guestInput.runId),
+        lifecycleReference: `vm-lifecycle://${String(guestInput.runId).toLowerCase()}.local-testbed-delayed-pickup`,
+        transactionId: `transaction://${String(guestInput.runId).toLowerCase()}.delayed-pickup`,
         saleCorrelationId,
-        targetIdentity: guestInput.hostControlPlane.targetIdentity,
+        targetIdentity: String(hostControlPlane.targetIdentity),
         remote: {
           remote: "local-testbed@127.0.0.1",
           identity: "not-used",
           certificate: "not-used",
         },
         captureDaemon: daemonCheckpointFactory(handoff),
-        async queryPlatform(stage) {
-          const report = await queryPlatform(
+        async queryPlatform(stage: string) {
+          const platformReport = await queryPlatform(
             guestInput,
             {
-              runId: guestInput.runId,
-              machineCode: guestInput.machineCode,
-              sessionId: sessionStart.sessionId,
+              runId: String(guestInput.runId),
+              machineCode: String(guestInput.machineCode),
+              sessionId: startedSession.sessionId,
             },
             stage === "baseline"
               ? platformBaselinePath
               : join(delayedRoot, "platform-raw-at-f1.json"),
           );
-          if (stage === "baseline") baselinePlatform = report;
-          return report;
+          return platformReport as JsonRecord;
         },
       },
       {
         async openSidecar() {
           return {
             endpoint: "http://127.0.0.1:9222",
+            process: null,
             async close() {},
           };
         },
         async discoverTarget() {
           return discoverMachineUiTarget({
             endpoint: "http://127.0.0.1:9222",
-            expectedTargetId: handoff.cdp.targetId,
+            expectedTargetId: String(handoffCdp.targetId),
           });
         },
         async inspectRuntime() {
           return {
             machine: {
-              processId: handoff.machine.processId,
-              executablePath: handoff.machine.executablePath ?? MACHINE_PATH,
-              sessionId: handoff.machine.sessionId,
-              principal: handoff.machine.principal,
+              processId: handoffMachine.processId,
+              executablePath: handoffMachine.executablePath ?? MACHINE_PATH,
+              sessionId: handoffMachine.sessionId,
+              principal: handoffMachine.principal,
             },
             cdpListener: {
-              machineAncestorProcessId: handoff.cdp.machineAncestorProcessId,
-              sessionId: handoff.machine.sessionId,
-              principal: handoff.machine.principal,
+              machineAncestorProcessId: handoffCdp.machineAncestorProcessId,
+              sessionId: handoffMachine.sessionId,
+              principal: handoffMachine.principal,
             },
           };
         },
         readMachineSample: readInstalledMachineProductionSample,
         async startAudioCapture({ baseBinding, runtime, outPath }) {
+          const baseBindingRecord = baseBinding as JsonRecord;
           const result = await controlPlaneRequest(
             guestInput,
             "/v1/audio-captures/start",
             {
-              sessionId: sessionStart.sessionId,
-              runId: baseBinding.runId,
-              lifecycleReference: baseBinding.lifecycleReference,
-              transactionId: baseBinding.transactionId,
-              targetIdentity: guestInput.hostControlPlane.targetIdentity,
+              sessionId: startedSession.sessionId,
+              runId: String(baseBindingRecord.runId),
+              lifecycleReference: String(baseBindingRecord.lifecycleReference),
+              transactionId: String(baseBindingRecord.transactionId),
+              targetIdentity: String(hostControlPlane.targetIdentity),
               runtime,
               operationId: audioOperationId,
             },
           );
-          audioCaptureId = result.audioCaptureId;
-          writeJson(outPath, result.startReport);
-          return result.startReport;
+          const resultRecord = result as JsonRecord;
+          audioCaptureId = String(resultRecord.audioCaptureId ?? "");
+          writeJson(String(outPath), resultRecord.startReport);
+          return resultRecord.startReport as JsonRecord;
         },
         async stopAudioCapture({ binding, evidenceDirectory, outPath }) {
+          const bindingRecord = binding as JsonRecord;
           const result = await controlPlaneRequest(
             guestInput,
-            `/v1/audio-captures/${audioCaptureId}/stop`,
+            `/v1/audio-captures/${String(audioCaptureId ?? "")}/stop`,
             {
-              saleCorrelationId: binding.saleCorrelationId,
-              orderId: binding.orderId,
-              orderNo: binding.orderNo,
-              commandId: binding.commandId,
-              commandNo: binding.commandNo,
+              saleCorrelationId: bindingRecord.saleCorrelationId,
+              orderId: bindingRecord.orderId,
+              orderNo: bindingRecord.orderNo,
+              commandId: bindingRecord.commandId,
+              commandNo: bindingRecord.commandNo,
             },
           );
-          writeJson(outPath, result.stopReport);
-          mkdirSync(localPath(evidenceDirectory), { recursive: true });
-          for (const artifact of result.evidencePayloads ?? []) {
+          const resultRecord = result as JsonRecord;
+          writeJson(String(outPath), resultRecord.stopReport);
+          mkdirSync(localPath(String(evidenceDirectory)), {
+            recursive: true,
+          });
+          const payloads = (resultRecord.evidencePayloads ?? []) as unknown[];
+          for (const artifactValue of payloads) {
+            const artifact = artifactValue as JsonRecord;
             writeFileSync(
-              join(localPath(evidenceDirectory), artifact.fileName),
-              Buffer.from(artifact.bytesBase64, "base64"),
+              join(
+                localPath(String(evidenceDirectory)),
+                String(artifact.fileName),
+              ),
+              Buffer.from(String(artifact.bytesBase64), "base64"),
             );
           }
-          return result.stopReport;
+          return resultRecord.stopReport as JsonRecord;
         },
-        async cancelAudioCapture() {
+        async cancelAudioCapture(_options: JsonRecord) {
           if (!audioCaptureId)
             return controlPlaneRequest(
               guestInput,
@@ -877,7 +1039,7 @@ async function runDelayedPickupGuestFull(options) {
             );
           return controlPlaneRequest(
             guestInput,
-            `/v1/audio-captures/${audioCaptureId}/cancel`,
+            `/v1/audio-captures/${String(audioCaptureId)}/cancel`,
           );
         },
       },
@@ -911,7 +1073,7 @@ async function runDelayedPickupGuestFull(options) {
         '[data-test="payment-option"][data-payment-option-key="payment_code:mock"]:not(:disabled)',
         "#/checkout",
       ],
-    ]) {
+    ] as Array<[string, string | RegExp]>) {
       await activateVisibleSelector(client, step[0], {
         kind: "touch",
         timeoutMs: 30_000,
@@ -933,14 +1095,14 @@ async function runDelayedPickupGuestFull(options) {
         kind: "touch",
         timeoutMs: 30_000,
       });
-      paymentCodeSelected = await evaluateExpression(
+      paymentCodeSelected = Boolean(await evaluateExpression(
         client,
         `(() => {
           const option = document.querySelector(${JSON.stringify(paymentCodeSelector)});
           const submit = document.querySelector('[data-test="checkout-submit"]');
           return Boolean(option?.classList.contains('payment-option-selected') && !submit?.hasAttribute('disabled'));
         })()`,
-      );
+      ));
     }
     if (!paymentCodeSelected)
       throw new Error(
@@ -972,23 +1134,25 @@ async function runDelayedPickupGuestFull(options) {
     await waitForPaymentCodeArm(handoff, paymentSurface);
     await controlPlaneRequest(
       guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/inject`,
+      `/v1/serial-sessions/${startedSession.sessionId}/inject`,
       {
         orderId: paymentSurface.orderId,
         paymentId: paymentSurface.paymentId,
         scannerCodeBase64: Buffer.from(
           scannerFrame(
-            guestInput.fastSale?.scannerCode ?? DEFAULT_SCANNER_CODE,
+            (guestInput.fastSale as JsonRecord | undefined)?.scannerCode ??
+              DEFAULT_SCANNER_CODE,
           ),
           "utf8",
         ).toString("base64"),
       },
     );
     liveSale = await waitForCommand(handoff, paymentSurface);
+    const completedSale = liveSale;
 
     await controlPlaneRequest(
       guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/wait-frame`,
+      `/v1/serial-sessions/${startedSession.sessionId}/wait-frame`,
       {
         parsedOpcode: "VEND",
         timeoutMs: 30_000,
@@ -997,29 +1161,29 @@ async function runDelayedPickupGuestFull(options) {
     );
     await controlPlaneRequest(
       guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/release-f0`,
+      `/v1/serial-sessions/${startedSession.sessionId}/release-f0`,
     );
     await controlPlaneRequest(
       guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/wait-frame`,
+      `/v1/serial-sessions/${startedSession.sessionId}/wait-frame`,
       {
         parsedOpcode: "F0",
         timeoutMs: 30_000,
         serialScenario: "delayed-pickup",
       },
     );
-    const f1Boundary = await controlPlaneRequest(
+    const f1Boundary = (await controlPlaneRequest(
       guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/wait-frame`,
+      `/v1/serial-sessions/${startedSession.sessionId}/wait-frame`,
       {
         parsedOpcode: "F1",
         timeoutMs: 45_000,
         serialScenario: "delayed-pickup",
       },
-    );
+    )) as JsonRecord;
     await delayedTrack.observeControllerFrame(f1Boundary.frame);
-    const afterF1Ui = await readUiBoundary(client);
-    if (afterF1Ui.result?.kind === "success")
+    const afterF1Ui = (await readUiBoundary(client)) as JsonRecord;
+    if ((afterF1Ui.result as JsonRecord | undefined)?.kind === "success")
       throw new Error("UI must not show success before inbound F2");
     await captureCheckpoint(client, "after-f1-before-f2", {
       screenshot: true,
@@ -1030,31 +1194,31 @@ async function runDelayedPickupGuestFull(options) {
     });
     await controlPlaneRequest(
       guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/release-f2`,
+      `/v1/serial-sessions/${startedSession.sessionId}/release-f2`,
     );
-    const f2Boundary = await controlPlaneRequest(
+    const f2Boundary = (await controlPlaneRequest(
       guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/wait-frame`,
+      `/v1/serial-sessions/${startedSession.sessionId}/wait-frame`,
       {
         parsedOpcode: "F2",
         timeoutMs: 30_000,
         serialScenario: "delayed-pickup",
       },
-    );
+    )) as JsonRecord;
     await delayedTrack.observeControllerFrame(f2Boundary.frame);
-    const collect = await controlPlaneRequest(
+    const collect = (await controlPlaneRequest(
       guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/collect`,
+      `/v1/serial-sessions/${startedSession.sessionId}/collect`,
       {
-        orderId: liveSale.orderId,
-        paymentId: liveSale.paymentId,
-        vendingCommandId: liveSale.vendingCommandId,
+        orderId: completedSale.orderId,
+        paymentId: completedSale.paymentId,
+        vendingCommandId: completedSale.vendingCommandId,
       },
-    );
+    )) as JsonRecord;
     const terminal = await waitForTerminalSale({
       guestInput,
       handoff,
-      sessionId: sessionStart.sessionId,
+      sessionId: String(startedSession.sessionId),
       liveSale,
       outPath: platformPostPath,
       timeoutMs: 60_000,
@@ -1067,41 +1231,46 @@ async function runDelayedPickupGuestFull(options) {
       if (checkpoint?.screenshot?.ref)
         screenshotRefs.push(checkpoint.screenshot.ref);
     });
-    await waitForTransactionAudioSettled(client, liveSale.orderNo);
+    await waitForTransactionAudioSettled(
+      client,
+      String(completedSale.orderNo),
+    );
     const platformPost = terminal.platform;
-    const command = platformPost?.raw?.commands?.find(
-      (entry) => entry.id === liveSale.vendingCommandId,
+    const platformRaw = (platformPost?.raw ?? {}) as JsonRecord;
+    const platformCommands = (platformRaw.commands ?? []) as unknown[];
+    const command = platformCommands.find(
+      (entry) => (entry as JsonRecord).id === completedSale.vendingCommandId,
     );
     if (
-      typeof command?.commandNo !== "string" ||
-      command.commandNo.length === 0
+      typeof (command as JsonRecord)?.commandNo !== "string" ||
+      String((command as JsonRecord)?.commandNo ?? "").length === 0
     )
       throw new Error(
         "authoritative platform post-F2 command number is missing",
       );
     liveEvidence = await delayedTrack.finish({
-      runId: guestInput.runId,
-      lifecycleReference: `vm-lifecycle://${guestInput.runId.toLowerCase()}.local-testbed-delayed-pickup`,
-      transactionId: `transaction://${guestInput.runId.toLowerCase()}.delayed-pickup`,
+      runId: String(guestInput.runId),
+      lifecycleReference: `vm-lifecycle://${String(guestInput.runId).toLowerCase()}.local-testbed-delayed-pickup`,
+      transactionId: `transaction://${String(guestInput.runId).toLowerCase()}.delayed-pickup`,
       saleCorrelationId,
-      orderId: liveSale.orderId,
-      orderNo: liveSale.orderNo,
-      commandId: liveSale.vendingCommandId,
-      commandNo: command.commandNo,
+      orderId: completedSale.orderId,
+      orderNo: completedSale.orderNo,
+      commandId: completedSale.vendingCommandId,
+      commandNo: String((command as JsonRecord)?.commandNo ?? ""),
     });
     const controlPlaneEvidence = await controlPlaneRequest(
       guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/evidence`,
+      `/v1/serial-sessions/${startedSession.sessionId}/evidence`,
       { rawFrameLimit: 256 },
     );
     writeJson(controlPlaneEvidencePath, controlPlaneEvidence);
-    const platformLog = await controlPlaneRequest(
+    const platformLog = (await controlPlaneRequest(
       guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/platform-log`,
+      `/v1/serial-sessions/${startedSession.sessionId}/platform-log`,
       { lines: 200 },
-    );
+    )) as JsonRecord;
     writeJson(platformLogReportPath, platformLog);
-    writeFileSync(localPath(platformLogPath), platformLog.log ?? "");
+    writeFileSync(localPath(platformLogPath), String(platformLog.log ?? ""));
     report.evidence = issue17EvidenceIndex({
       guestInputPath: options.guestInputPath,
       handoffPath: options.handoffPath,
@@ -1121,11 +1290,11 @@ async function runDelayedPickupGuestFull(options) {
       schemaVersion: "installed-kiosk-sale-acceptance/v2",
       status: "passed",
       ok: true,
-      runId: guestInput.runId,
+      runId: String(guestInput.runId),
       runtimeBinding: {
         normal: handoff.machine,
         debug: {
-          targetId: handoff.cdp.targetId,
+          targetId: handoffCdp.targetId,
           machine: handoff.machine,
         },
       },
@@ -1140,27 +1309,37 @@ async function runDelayedPickupGuestFull(options) {
         collect: collect.collectReport,
       },
     });
+    const liveEvidenceRecord = liveEvidence as JsonRecord;
+    const livePaths = liveEvidenceRecord.paths as JsonRecord;
     const artifacts = collectDelayedPickupProductionEvidence({
       installedSaleReportPath: installedSalePath,
-      machineEvidencePath: liveEvidence.paths.machine,
-      daemonEvidencePath: liveEvidence.paths.daemon,
-      platformF1Path: liveEvidence.paths.platformF1,
-      audioStartReportPath: liveEvidence.paths.audioStart,
-      audioStopReportPath: liveEvidence.paths.audioStop,
+      machineEvidencePath: livePaths.machine,
+      daemonEvidencePath: livePaths.daemon,
+      platformF1Path: livePaths.platformF1,
+      audioStartReportPath: livePaths.audioStart,
+      audioStopReportPath: livePaths.audioStop,
     });
     const acceptance = verifyDelayedPickupNativeAudioProductionEvidence({
       artifacts,
-      audioEvidenceDirectory: liveEvidence.evidenceDirectory,
+      audioEvidenceDirectory: liveEvidenceRecord.evidenceDirectory,
     });
     if (acceptance.result !== "passed") {
       throw new Error(
         `delayed pickup native audio acceptance failed: ${JSON.stringify(acceptance.diagnostics)}`,
       );
     }
-    for (const artifact of liveEvidence.audioStop?.evidence ?? []) {
+    const audioStopRecord = liveEvidenceRecord.audioStop as
+      | JsonRecord
+      | undefined;
+    const audioEvidence = (audioStopRecord?.evidence ?? []) as unknown[];
+    for (const artifactValue of audioEvidence) {
+      const artifact = artifactValue as JsonRecord;
       if (artifact.role !== "sale-default-audio-capture") continue;
       rmSync(
-        join(localPath(liveEvidence.evidenceDirectory), artifact.fileName),
+        join(
+          localPath(String(liveEvidenceRecord.evidenceDirectory)),
+          String(artifact.fileName),
+        ),
         {
           force: true,
         },
@@ -1168,25 +1347,29 @@ async function runDelayedPickupGuestFull(options) {
     }
     await controlPlaneRequest(
       guestInput,
-      `/v1/serial-sessions/${sessionStart.sessionId}/stop`,
+      `/v1/serial-sessions/${startedSession.sessionId}/stop`,
       {
-        orderId: liveSale.orderId,
-        paymentId: liveSale.paymentId,
-        vendingCommandId: liveSale.vendingCommandId,
+        orderId: completedSale.orderId,
+        paymentId: completedSale.paymentId,
+        vendingCommandId: completedSale.vendingCommandId,
       },
     );
     sessionStopped = true;
     report.status = "passed";
     report.ok = true;
     report.delayedPickupNativeAudio = acceptance;
-    report.handoffSerialSessionId = sessionStart.sessionId;
+    report.handoffSerialSessionId = startedSession.sessionId;
   } catch (error) {
     primaryError = error;
   } finally {
-    const collectionErrors = report.errors.collection;
-    const cleanupErrors = report.errors.cleanup;
-    const cleanupFailures = [];
-    const collectBestEffort = async (label, callback) => {
+    const reportErrors = report.errors as JsonRecord;
+    const collectionErrors = reportErrors.collection as unknown[];
+    const cleanupErrors = reportErrors.cleanup as unknown[];
+    const cleanupFailures: Error[] = [];
+    const collectBestEffort = async (
+      label: string,
+      callback: () => Promise<unknown>,
+    ): Promise<void> => {
       try {
         await withinDeadline(callback, "collection");
       } catch (error) {
@@ -1194,23 +1377,25 @@ async function runDelayedPickupGuestFull(options) {
       }
     };
     await collectBestEffort("control-plane-evidence", async () => {
-      if (!sessionStart || liveEvidence) return;
+      const activeSession = sessionStart;
+      if (activeSession === null || liveEvidence) return;
       const controlPlaneEvidence = await controlPlaneRequest(
         guestInput,
-        `/v1/serial-sessions/${sessionStart.sessionId}/evidence`,
+        `/v1/serial-sessions/${activeSession.sessionId}/evidence`,
         { rawFrameLimit: 256 },
       );
       writeJson(controlPlaneEvidencePath, controlPlaneEvidence);
     });
     await collectBestEffort("platform-log", async () => {
-      if (!sessionStart || liveEvidence) return;
-      const platformLog = await controlPlaneRequest(
+      const activeSession = sessionStart;
+      if (activeSession === null || liveEvidence) return;
+      const platformLog = (await controlPlaneRequest(
         guestInput,
-        `/v1/serial-sessions/${sessionStart.sessionId}/platform-log`,
+        `/v1/serial-sessions/${activeSession.sessionId}/platform-log`,
         { lines: 200 },
-      );
+      )) as JsonRecord;
       writeJson(platformLogReportPath, platformLog);
-      writeFileSync(localPath(platformLogPath), platformLog.log ?? "");
+      writeFileSync(localPath(platformLogPath), String(platformLog.log ?? ""));
     });
     await collectBestEffort("daemon-snapshot", async () => {
       writeJson(daemonSnapshotPath, {
@@ -1229,7 +1414,7 @@ async function runDelayedPickupGuestFull(options) {
       );
     });
     await collectBestEffort("finally-screenshot", async () => {
-      if (!client) return;
+      if (!client || !sink) return;
       const checkpoint = await captureCheckpoint(client, "finally", {
         screenshot: true,
         screenshotSink: sink,
@@ -1253,15 +1438,15 @@ async function runDelayedPickupGuestFull(options) {
       screenshotRefs,
     });
     const cleanupFailClosed = async (
-      label,
-      callback,
+      label: string,
+      callback: () => Promise<unknown>,
       timeoutMs = CLEANUP_TIMEOUT_MS,
-    ) => {
+    ): Promise<void> => {
       try {
         await runCleanupStep(label, callback, timeoutMs);
       } catch (error) {
         cleanupErrors.push(`${label}: ${formatError(error)}`);
-        cleanupFailures.push(error);
+        cleanupFailures.push(error as Error);
       }
     };
     await cleanupFailClosed(
@@ -1301,10 +1486,11 @@ async function runDelayedPickupGuestFull(options) {
     });
     await cleanupFailClosed("serial-session", async () => {
       if (!sessionStart || sessionStopped) return;
+      const activeSession = sessionStart;
       if (liveSale) {
         await controlPlaneRequest(
           guestInput,
-          `/v1/serial-sessions/${sessionStart.sessionId}/stop`,
+          `/v1/serial-sessions/${activeSession.sessionId}/stop`,
           {
             orderId: liveSale.orderId,
             paymentId: liveSale.paymentId,
@@ -1314,13 +1500,13 @@ async function runDelayedPickupGuestFull(options) {
         ).catch(async () =>
           controlPlaneRequest(
             guestInput,
-            `/v1/serial-sessions/${sessionStart.sessionId}/abort`,
+            `/v1/serial-sessions/${activeSession.sessionId}/abort`,
           ),
         );
       } else {
         await controlPlaneRequest(
           guestInput,
-          `/v1/serial-sessions/${sessionStart.sessionId}/abort`,
+          `/v1/serial-sessions/${activeSession.sessionId}/abort`,
         );
       }
     });
@@ -1337,9 +1523,11 @@ async function runDelayedPickupGuestFull(options) {
     });
     primaryError = combineCleanupError(primaryError, cleanupFailures);
   }
-  if (report.errors.cleanup.length > 0) {
+  const reportErrors = report.errors as JsonRecord;
+  const cleanupReport = reportErrors.cleanup as unknown[];
+  if (cleanupReport.length > 0) {
     const cleanupFailure = new Error(
-      `delayed pickup native audio cleanup failed: ${report.errors.cleanup.join("; ")}`,
+      `delayed pickup native audio cleanup failed: ${cleanupReport.join("; ")}`,
     );
     primaryError = primaryError
       ? new AggregateError(
@@ -1352,14 +1540,14 @@ async function runDelayedPickupGuestFull(options) {
   }
   if (primaryError) {
     report.error = formatError(primaryError);
-    report.errors.primary =
+    reportErrors.primary =
       primaryError instanceof AggregateError &&
       primaryError.errors[0] instanceof Error
         ? formatError(primaryError.errors[0])
         : formatError(primaryError);
     report.handoffSerialSessionId = sessionStart?.sessionId ?? null;
   } else {
-    report.errors.primary = null;
+    reportErrors.primary = null;
   }
   writeJson(options.outPath, report);
   if (primaryError) throw primaryError;
