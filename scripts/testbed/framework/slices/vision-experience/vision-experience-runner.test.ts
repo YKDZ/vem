@@ -8,6 +8,8 @@ import { buildAcceptanceReport } from "../../acceptance-report.ts";
 import { createBusinessCheckRegistryV2 } from "../../business-check-registry-v2.ts";
 import { businessAssertion } from "../../observation-record.ts";
 import { createFakeTestAdapter } from "../../test-adapter.ts";
+import type { CdpTestAdapter } from "../../cdp-adapter.ts";
+import type { ProcessReplaySummary } from "../../process-replay.ts";
 import {
   sourceGarmentBindingFromGuestInput,
   main as runVisionExperienceMain,
@@ -42,6 +44,14 @@ const selectedProductSelector =
 const selectedProductRoute = `#/products/${encodeURIComponent(
   selectedCatalogKey,
 )}?variantId=${selectedVariantId}`;
+
+type JsonRecord = Record<string, unknown>;
+
+type MainDependencies = NonNullable<
+  Parameters<typeof runVisionExperienceMain>[1]
+>;
+
+type SliceRunOptions = Parameters<typeof runVisionExperienceSlice>[0];
 
 function writeVisionGuestInput(root: string): string {
   const path = join(root, "guest-input.json");
@@ -93,9 +103,11 @@ function passedVisionReport() {
   });
 }
 
-function replaySummaryFixture(overrides = {}) {
+function replaySummaryFixture(
+  overrides: JsonRecord = {},
+): ProcessReplaySummary {
   return {
-    status: "completed",
+    status: "completed" as const,
     reason: null,
     startedAt: "2026-08-21T00:00:00.000Z",
     finishedAt: "2026-08-21T00:00:01.000Z",
@@ -225,14 +237,16 @@ function observationTimelineFor(attemptId: string) {
     capturedFrameId: "frame-000042",
     capturedDigest: `sha256:${"a".repeat(64)}`,
   };
-  return [
-    [0, 3_000, "3", "preview-3a"],
-    [750, 2_250, "3", "preview-3b"],
-    [1_000, 2_000, "2", "preview-2a"],
-    [1_750, 1_250, "2", "preview-2b"],
-    [2_000, 1_000, "1", "preview-1a"],
-    [2_750, 250, "1", "preview-1b"],
-  ]
+  return (
+    [
+      [0, 3_000, "3", "preview-3a"],
+      [750, 2_250, "3", "preview-3b"],
+      [1_000, 2_000, "2", "preview-2a"],
+      [1_750, 1_250, "2", "preview-2b"],
+      [2_000, 1_000, "1", "preview-1a"],
+      [2_750, 250, "1", "preview-1b"],
+    ] as [number, number, string, string][]
+  )
     .map(([atMs, holdRemainingMs, countdownText, previewFrameHash]) => ({
       atMs,
       attemptId,
@@ -241,7 +255,7 @@ function observationTimelineFor(attemptId: string) {
       countdownText,
       previewVisible: true,
       previewFrameHash,
-    }))
+    }) as JsonRecord)
     .concat([
       {
         atMs: 3_000,
@@ -509,7 +523,8 @@ describe("visionExperience slice runner", () => {
           ["--out", outPath, "--guest-input", guestInputPath],
           {
             startVisionOwner: () => undefined,
-            createAdapter: () => adapter,
+            createAdapter: () =>
+              adapter as unknown as CdpTestAdapter,
             runSlice: async () => {
               const error = new Error(
                 "try-on-route did not become true",
@@ -563,7 +578,7 @@ describe("visionExperience slice runner", () => {
     const outPath = join(root, "vision-experience.json");
     const guestInputPath = writeVisionGuestInput(root);
     const milestones: Record<string, unknown>[] = [];
-    const adapter = fakeUiAdapter() as any;
+    const adapter = fakeUiAdapter() as unknown as CdpTestAdapter;
     const originalRun = adapter.run.bind(adapter);
     adapter.connect = async () => adapter;
     adapter.close = async () => {};
@@ -703,7 +718,8 @@ describe("visionExperience slice runner", () => {
             ],
             {
               startVisionOwner: () => undefined,
-              createAdapter: () => adapter,
+              createAdapter: () =>
+                adapter as unknown as CdpTestAdapter,
               runSlice: async () => {
                 throw new Error("try-on-route did not become true");
               },
@@ -777,7 +793,8 @@ describe("visionExperience slice runner", () => {
           ["--out", outPath, "--guest-input", guestInputPath],
           {
             startVisionOwner: () => undefined,
-            createAdapter: () => adapter,
+            createAdapter: () =>
+              adapter as unknown as CdpTestAdapter,
             runSlice: async () => {
               throw new Error("result-surface timed out");
             },
@@ -1439,7 +1456,10 @@ describe("process replay 轨道集成", () => {
   const originalReplayDir = process.env.VEM_PROCESS_REPLAY_DIR;
   const originalDegradationEnv = process.env.RUN_DEGRADATION;
 
-  function withEnv(values, callback) {
+  function withEnv(
+    values: Record<string, string | undefined>,
+    callback: () => Promise<void>,
+  ) {
     return async () => {
       for (const [key, value] of Object.entries(values)) {
         if (value === undefined) delete process.env[key];
@@ -1469,12 +1489,12 @@ describe("process replay 轨道集成", () => {
         const root = mkdtempSync(join(tmpdir(), "vem-vision-replay-on-"));
         const outPath = join(root, "vision-experience.json");
         const guestInputPath = writeVisionGuestInput(root);
-        const adapter = fakeUiAdapter() as any;
+        const adapter = fakeUiAdapter() as unknown as CdpTestAdapter;
         adapter.endpoint = "http://127.0.0.1:9222";
         adapter.connect = async () => adapter;
         adapter.close = async () => {};
         adapter.recordMilestone = () => {};
-        let capturedContext = null;
+        const capturedContext: { value?: JsonRecord } = {};
         try {
           await runVisionExperienceMain(
             [
@@ -1490,19 +1510,21 @@ describe("process replay 轨道集成", () => {
               createAdapter: () => adapter,
               runSlice: async () => passedVisionReport(),
               runReplay: async (context, operation) => {
-                capturedContext = context;
+                capturedContext.value = context as JsonRecord;
                 const result = await operation();
                 context.onSummary?.(replaySummaryFixture());
                 return result;
               },
             },
           );
-          assert.equal(capturedContext.businessSet, "visionExperience");
-          assert.equal(capturedContext.outputDirectory, "/tmp/replay");
-          assert.equal(capturedContext.endpoint, adapter.endpoint);
+          assert.ok(capturedContext.value);
+          assert.equal(capturedContext.value.businessSet, "visionExperience");
+          assert.equal(capturedContext.value.outputDirectory, "/tmp/replay");
+          assert.equal(capturedContext.value.endpoint, adapter.endpoint);
           const report = JSON.parse(readFileSync(outPath, "utf8"));
           const evidence = report.businessSets[0].supportingEvidence.find(
-            (entry) => entry.kind === "business-set-process-replay",
+            (entry: JsonRecord) =>
+              entry.kind === "business-set-process-replay",
           );
           assert.equal(evidence.summary.status, "completed");
           assert.equal(evidence.summary.framesWritten, 3);
@@ -1522,7 +1544,7 @@ describe("process replay 轨道集成", () => {
         const root = mkdtempSync(join(tmpdir(), "vem-vision-replay-off-"));
         const outPath = join(root, "vision-experience.json");
         const guestInputPath = writeVisionGuestInput(root);
-        const adapter = fakeUiAdapter() as any;
+        const adapter = fakeUiAdapter() as unknown as CdpTestAdapter;
         adapter.endpoint = "http://127.0.0.1:9222";
         adapter.connect = async () => adapter;
         adapter.close = async () => {};
@@ -1542,17 +1564,18 @@ describe("process replay 轨道集成", () => {
               startVisionOwner: () => undefined,
               createAdapter: () => adapter,
               runSlice: async () => passedVisionReport(),
-              runReplay: async () => {
+              runReplay: (async () => {
                 replayInvoked = true;
                 return passedVisionReport();
-              },
+              }) as unknown as MainDependencies["runReplay"],
             },
           );
           assert.equal(replayInvoked, false);
           const report = JSON.parse(readFileSync(outPath, "utf8"));
           assert.equal(
             report.businessSets[0].supportingEvidence.some(
-              (entry) => entry.kind === "business-set-process-replay",
+              (entry: JsonRecord) =>
+                entry.kind === "business-set-process-replay",
             ),
             false,
           );
@@ -1571,7 +1594,7 @@ describe("process replay 轨道集成", () => {
         const root = mkdtempSync(join(tmpdir(), "vem-vision-replay-fail-"));
         const outPath = join(root, "vision-experience.json");
         const guestInputPath = writeVisionGuestInput(root);
-        const adapter = fakeUiAdapter() as any;
+        const adapter = fakeUiAdapter() as unknown as CdpTestAdapter;
         adapter.endpoint = "http://127.0.0.1:9222";
         adapter.connect = async () => adapter;
         adapter.close = async () => {};
@@ -1615,7 +1638,8 @@ describe("process replay 轨道集成", () => {
           );
           const report = JSON.parse(readFileSync(outPath, "utf8"));
           const evidence = report.businessSets[0].supportingEvidence.find(
-            (entry) => entry.kind === "business-set-process-replay",
+            (entry: JsonRecord) =>
+              entry.kind === "business-set-process-replay",
           );
           assert.equal(evidence.summary.status, "completed");
         } finally {
@@ -1631,12 +1655,12 @@ describe("process replay 轨道集成", () => {
       const root = mkdtempSync(join(tmpdir(), "vem-vision-degradation-"));
       const outPath = join(root, "vision-experience.json");
       const guestInputPath = writeVisionGuestInput(root);
-      const adapter = fakeUiAdapter() as any;
+      const adapter = fakeUiAdapter() as unknown as CdpTestAdapter;
       adapter.connect = async () => adapter;
       adapter.close = async () => {};
       adapter.recordMilestone = () => {};
       let stopCalls = 0;
-      let sliceOptions = null;
+      const observedSliceOptions: { value?: JsonRecord } = {};
       try {
         await runVisionExperienceMain(
           ["--mode", "fast", "--out", outPath, "--guest-input", guestInputPath],
@@ -1646,15 +1670,17 @@ describe("process replay 轨道集成", () => {
               stopCalls += 1;
             },
             createAdapter: () => adapter,
-            runSlice: async (options) => {
-              sliceOptions = options;
+            runSlice: async (options: SliceRunOptions) => {
+              observedSliceOptions.value = options as JsonRecord;
+              assert.ok(options.stopOwner);
               await options.stopOwner();
               return passedVisionReport();
             },
           },
         );
         assert.equal(stopCalls, 1);
-        assert.equal(sliceOptions.includeDegradation, true);
+        assert.ok(observedSliceOptions.value);
+        assert.equal(observedSliceOptions.value.includeDegradation, true);
       } finally {
         rmSync(root, { recursive: true, force: true });
       }
