@@ -20,16 +20,24 @@ const DELIVERY_FILE = "vending-vision-main-artifacts.json";
 const RUNTIME_FILE = "vending-vision-windows-x86_64.zip";
 const FIXTURE_FILE = "vending-vision-test-fixtures.zip";
 
-async function sha256File(path) {
+type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+async function sha256File(path: string): Promise<string> {
   return createHash("sha256")
     .update(await readFile(path))
     .digest("hex");
 }
 
-function parseDeliveryManifest(content, commit) {
+function parseDeliveryManifest(content: string, commit: string): JsonRecord {
   let delivery;
   try {
-    delivery = JSON.parse(content);
+    delivery = JSON.parse(content) as JsonRecord;
   } catch {
     throw new Error("delivery manifest is invalid JSON");
   }
@@ -44,19 +52,24 @@ function parseDeliveryManifest(content, commit) {
   return delivery;
 }
 
-async function verifiedMember(root, delivery, kind, expectedFile) {
-  const member = delivery[kind];
+async function verifiedMember(
+  root: string,
+  delivery: JsonRecord,
+  kind: string,
+  expectedFile: string,
+): Promise<JsonRecord> {
+  const member = recordValue(delivery[kind]);
   if (
     !member ||
     member.file !== expectedFile ||
-    basename(member.file) !== member.file ||
-    !/^[a-f0-9]{64}$/.test(member.sha256) ||
+    basename(String(member.file)) !== member.file ||
+    !/^[a-f0-9]{64}$/.test(String(member.sha256)) ||
     !Number.isSafeInteger(member.bytes) ||
-    member.bytes < 0
+    Number(member.bytes) < 0
   ) {
     throw new Error(`${kind} delivery manifest member is invalid`);
   }
-  const path = join(root, member.file);
+  const path = join(root, String(member.file));
   let metadata;
   try {
     metadata = await lstat(path);
@@ -66,7 +79,7 @@ async function verifiedMember(root, delivery, kind, expectedFile) {
   if (!metadata.isFile() || metadata.isSymbolicLink()) {
     throw new Error(`${kind} delivery manifest member is not a regular file`);
   }
-  if (metadata.size !== member.bytes) {
+  if (metadata.size !== Number(member.bytes)) {
     throw new Error(`${kind} delivery manifest bytes do not match`);
   }
   const sha256 = await sha256File(path);
@@ -76,7 +89,10 @@ async function verifiedMember(root, delivery, kind, expectedFile) {
   return { path, sha256, byteSize: metadata.size };
 }
 
-async function resolveVisionArtifactPair(mainArtifactRoot, commit) {
+async function resolveVisionArtifactPair(
+  mainArtifactRoot: string,
+  commit: string,
+): Promise<{ runtime: JsonRecord; fixtures: JsonRecord }> {
   const root = resolve(mainArtifactRoot);
   const manifestPath = join(root, DELIVERY_FILE);
   let manifestMetadata;
@@ -98,8 +114,11 @@ async function resolveVisionArtifactPair(mainArtifactRoot, commit) {
   };
 }
 
-export async function writeHostConfigVisionCore(configPath, identities) {
-  const config = JSON.parse(await readFile(configPath, "utf8"));
+export async function writeHostConfigVisionCore(
+  configPath: string,
+  identities: JsonRecord,
+): Promise<void> {
+  const config = JSON.parse(await readFile(configPath, "utf8")) as JsonRecord;
   config.visionCoreArtifacts = {
     runtimeArchive: identities.runtimeArchive,
     recordedFixtureArchive: identities.recordedFixtureArchive,
@@ -114,17 +133,22 @@ export async function syncVisionArtifactPair({
   commit,
   outputRoot,
   hostConfigPath,
-}) {
+}: {
+  mainArtifactRoot: string;
+  commit: string;
+  outputRoot: string;
+  hostConfigPath: string;
+}): Promise<JsonRecord> {
   const pair = await resolveVisionArtifactPair(mainArtifactRoot, commit);
-  const identities = {};
+  const identities: JsonRecord = {};
   for (const [source, identityName, cacheDirectory] of [
     [pair.runtime, "runtimeArchive", "runtimeArchive"],
     [pair.fixtures, "recordedFixtureArchive", "recordedFixtureArchive"],
-  ]) {
+  ] as Array<[JsonRecord, string, string]>) {
     const targetDir = join(outputRoot, cacheDirectory);
     await mkdir(targetDir, { recursive: true });
-    const target = join(targetDir, `${source.sha256}.zip`);
-    await copyFile(source.path, target);
+    const target = join(targetDir, `${String(source.sha256)}.zip`);
+    await copyFile(String(source.path), target);
     identities[identityName] = {
       hostPath: target,
       sha256: source.sha256,
@@ -136,8 +160,8 @@ export async function syncVisionArtifactPair({
   return identities;
 }
 
-export function parseSyncOptions(args) {
-  const flags = new Map();
+export function parseSyncOptions(args: string[]): JsonRecord {
+  const flags = new Map<string, string | boolean>();
   const valueFlags = new Set([
     "commit",
     "output-root",
@@ -166,17 +190,17 @@ export function parseSyncOptions(args) {
   const commit = flags.get("commit");
   const outputRoot = flags.get("output-root");
   const hostConfigPath = flags.get("host-config");
-  if (!commit || !/^[a-f0-9]{40}$/.test(commit)) {
+  if (typeof commit !== "string" || !/^[a-f0-9]{40}$/.test(commit)) {
     throw new Error("--commit must be a full 40-character Git SHA");
   }
-  if (!outputRoot || !hostConfigPath) {
+  if (typeof outputRoot !== "string" || typeof hostConfigPath !== "string") {
     throw new Error("--output-root and --host-config are required");
   }
   const mainArtifactRoot = flags.get("main-artifact-root");
-  if (!flags.has("download") && !mainArtifactRoot) {
+  if (!flags.has("download") && typeof mainArtifactRoot !== "string") {
     throw new Error("--main-artifact-root or --download is required");
   }
-  if (flags.has("download") && mainArtifactRoot) {
+  if (flags.has("download") && typeof mainArtifactRoot === "string") {
     throw new Error(
       "--main-artifact-root and --download are mutually exclusive",
     );
@@ -185,35 +209,49 @@ export function parseSyncOptions(args) {
     commit,
     outputRoot: resolve(outputRoot),
     hostConfigPath: resolve(hostConfigPath),
-    mainArtifactRoot: mainArtifactRoot ? resolve(mainArtifactRoot) : null,
+    mainArtifactRoot:
+      typeof mainArtifactRoot === "string"
+        ? resolve(mainArtifactRoot)
+        : null,
     download: flags.has("download"),
-    repo: flags.get("repo") ?? "hbhjt/vending-vision",
+    repo:
+      typeof flags.get("repo") === "string"
+        ? (flags.get("repo") as string)
+        : "hbhjt/vending-vision",
   };
 }
 
-export async function main(args = process.argv.slice(2)) {
+export async function main(
+  args: string[] = process.argv.slice(2),
+): Promise<void> {
   const options = parseSyncOptions(args);
-  let mainArtifactRoot = options.mainArtifactRoot;
+  let mainArtifactRoot = options.mainArtifactRoot as string | null;
   if (options.download) {
     const archive = await downloadArtifactParallel({
-      repo: options.repo,
-      artifactName: `vending-vision-main-${options.commit}`,
-      output: join(tmpdir(), `vem-vision-main-${options.commit}.zip`),
+      repo: String(options.repo),
+      artifactName: `vending-vision-main-${String(options.commit)}`,
+      output: join(
+        tmpdir(),
+        `vem-vision-main-${String(options.commit)}.zip`,
+      ),
       connections: 16,
       maxUrlRefreshes: 60,
       pollMs: 2_000,
     });
     const staging = mkdtempSync(join(tmpdir(), "vem-vision-main-"));
-    execFileSync("unzip", ["-o", archive.path, "-d", staging], {
+    execFileSync("unzip", ["-o", String(archive.path), "-d", staging], {
       stdio: "pipe",
     });
     mainArtifactRoot = staging;
   }
+  if (!mainArtifactRoot) {
+    throw new Error("vision main artifact root is unavailable");
+  }
   const identities = await syncVisionArtifactPair({
     mainArtifactRoot,
-    commit: options.commit,
-    outputRoot: options.outputRoot,
-    hostConfigPath: options.hostConfigPath,
+    commit: String(options.commit),
+    outputRoot: String(options.outputRoot),
+    hostConfigPath: String(options.hostConfigPath),
   });
   process.stdout.write(`${JSON.stringify(identities, null, 2)}\n`);
 }
