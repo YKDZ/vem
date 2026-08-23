@@ -3954,6 +3954,174 @@ mod tests {
         assert!(root.join("active-media.json").exists());
     }
 
+    #[test]
+    fn manifest_transaction_phase_parses_every_marker() {
+        assert_eq!(
+            ManifestTransactionPhase::parse(None).expect("absent"),
+            ManifestTransactionPhase::Absent
+        );
+        assert_eq!(
+            ManifestTransactionPhase::parse(Some(b"pending replacement\n")).expect("pending"),
+            ManifestTransactionPhase::PendingReplacement
+        );
+        assert_eq!(
+            ManifestTransactionPhase::parse(Some(b"completion pending\n"))
+                .expect("completion pending"),
+            ManifestTransactionPhase::CompletionPending
+        );
+        assert_eq!(
+            ManifestTransactionPhase::parse(Some(b"completed replacement\n")).expect("completed"),
+            ManifestTransactionPhase::CompletedReplacement
+        );
+        assert!(ManifestTransactionPhase::parse(Some(b"garbage\n")).is_err());
+    }
+
+    #[test]
+    fn classify_manifest_startup_maps_every_phase_and_failure() {
+        assert_eq!(
+            classify_manifest_startup(Ok(false), Ok(None)),
+            ManifestStartupRecovery::Trust
+        );
+        for phase in [
+            b"pending replacement\n".as_slice(),
+            b"completion pending\n".as_slice(),
+            b"completed replacement\n".as_slice(),
+        ] {
+            assert_eq!(
+                classify_manifest_startup(Ok(true), Ok(Some(phase.to_vec()))),
+                ManifestStartupRecovery::Trust
+            );
+        }
+        assert_eq!(
+            classify_manifest_startup(Ok(true), Ok(Some(b"garbage\n".to_vec()))),
+            ManifestStartupRecovery::UnknownMarker
+        );
+        assert_eq!(
+            classify_manifest_startup(Ok(true), Err("read denied".to_string())),
+            ManifestStartupRecovery::MarkerReadError(
+                "read manifest transaction marker: read denied".to_string()
+            )
+        );
+        assert_eq!(
+            classify_manifest_startup(Err("inspect denied".to_string()), Ok(None)),
+            ManifestStartupRecovery::MarkerInspectionError(
+                "inspect manifest transaction marker: inspect denied".to_string()
+            )
+        );
+    }
+
+    fn seed_manifest_and_object(root: &Path, descriptor: &MediaDescriptor, bytes: &[u8]) {
+        fs::write(
+            root.join(format!("{}.bin", object_key(&descriptor.digest))),
+            bytes,
+        )
+        .expect("seed object");
+        fs::write(
+            root.join("active-media.json"),
+            serde_json::to_vec(&ActiveMediaManifest {
+                generation: "accepted".to_string(),
+                assets: vec![descriptor.clone()],
+            })
+            .expect("serialize manifest"),
+        )
+        .expect("seed manifest");
+    }
+
+    #[tokio::test]
+    async fn startup_with_completed_marker_trusts_manifest_and_removes_marker() {
+        let root = tempdir().expect("tempdir").keep();
+        let bytes = b"\x89PNG\r\n\x1a\naccepted-completed";
+        let accepted = descriptor(bytes, "image/png");
+        seed_manifest_and_object(&root, &accepted, bytes);
+        fs::write(
+            root.join(".active-media.transaction"),
+            b"completed replacement\n",
+        )
+        .expect("seed completed marker");
+
+        let cache = ManagedMediaCache::new(
+            root.clone(),
+            "http://127.0.0.1:1234",
+            Arc::new(FixtureFetcher {
+                bytes: Vec::new(),
+                content_type: "image/png".to_string(),
+            }),
+        )
+        .expect("cache");
+        assert_eq!(cache.snapshot().await.0, "accepted");
+        assert!(!cache.snapshot().await.1.is_empty());
+        assert!(!root.join(".active-media.transaction").exists());
+    }
+
+    #[tokio::test]
+    async fn startup_with_unknown_marker_bytes_fails_closed_and_inventories_objects() {
+        let root = tempdir().expect("tempdir").keep();
+        let bytes = b"\x89PNG\r\n\x1a\naccepted-unknown";
+        let accepted = descriptor(bytes, "image/png");
+        seed_manifest_and_object(&root, &accepted, bytes);
+        fs::write(root.join(".active-media.transaction"), b"garbage\n").expect("seed marker");
+
+        let cache = ManagedMediaCache::new(
+            root.clone(),
+            "http://127.0.0.1:1234",
+            Arc::new(FixtureFetcher {
+                bytes: Vec::new(),
+                content_type: "image/png".to_string(),
+            }),
+        )
+        .expect("fail-closed cache still starts for diagnostics");
+        assert!(cache.snapshot().await.0.is_empty());
+        assert!(
+            !root
+                .join(format!("{}.bin", object_key(&accepted.digest)))
+                .exists(),
+            "unclassifiable marker inventories cached objects"
+        );
+        assert!(cache
+            .reconcile_active_catalog(
+                "must-not-recover",
+                vec![descriptor(b"\x89PNG\r\n\x1a\nnew", "image/png")],
+            )
+            .await
+            .expect_err("unknown marker freezes cache")
+            .contains("unavailable"));
+        assert!(root.join("active-media.json").exists());
+    }
+
+    #[tokio::test]
+    async fn startup_with_unreadable_marker_fails_closed_and_inventories_objects() {
+        let root = tempdir().expect("tempdir").keep();
+        let bytes = b"\x89PNG\r\n\x1a\naccepted-unreadable";
+        let accepted = descriptor(bytes, "image/png");
+        seed_manifest_and_object(&root, &accepted, bytes);
+        fs::create_dir(root.join(".active-media.transaction")).expect("unreadable marker");
+
+        let cache = ManagedMediaCache::new(
+            root.clone(),
+            "http://127.0.0.1:1234",
+            Arc::new(FixtureFetcher {
+                bytes: Vec::new(),
+                content_type: "image/png".to_string(),
+            }),
+        )
+        .expect("fail-closed cache still starts for diagnostics");
+        assert!(cache.snapshot().await.0.is_empty());
+        assert!(
+            !root
+                .join(format!("{}.bin", object_key(&accepted.digest)))
+                .exists(),
+            "unreadable marker inventories cached objects"
+        );
+        assert!(cache
+            .reconcile_active_catalog(
+                "must-not-recover",
+                vec![descriptor(b"\x89PNG\r\n\x1a\nnew", "image/png")],
+            )
+            .await
+            .expect_err("unreadable marker freezes cache")
+            .contains("cannot inspect manifest transaction marker"));
+    }
+
     #[tokio::test]
     async fn shutdown_closes_owned_task_registration_before_cancellation_and_reaps_finished_tasks()
     {
