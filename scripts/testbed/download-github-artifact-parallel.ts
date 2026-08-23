@@ -27,8 +27,10 @@ const DEFAULT_MAX_URL_REFRESHES = 40;
 const DEFAULT_POLL_MS = 5_000;
 const ARIA2_RUN_TIMEOUT_MS = 120_000;
 
-export function parseDownloadOptions(args) {
-  const flags = new Map();
+type JsonRecord = Record<string, unknown>;
+
+export function parseDownloadOptions(args: string[]): JsonRecord {
+  const flags = new Map<string, string>();
   for (let index = 0; index < args.length; index += 1) {
     const token = args[index];
     if (!token.startsWith("--")) continue;
@@ -97,7 +99,20 @@ export function parseDownloadOptions(args) {
   };
 }
 
-function run(command, args, options = {}) {
+function run(
+  command: string,
+  args: string[],
+  options: {
+    cwd?: string;
+    capture?: boolean;
+    timeoutMs?: number;
+  } = {},
+): Promise<{
+  code: number | null;
+  stdout: string;
+  stderr: string;
+  timedOut?: boolean;
+}> {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
@@ -142,7 +157,12 @@ export async function ghArtifactUrl({
   artifact,
   runProcess = run,
   fetchImpl = fetch,
-}) {
+}: {
+  repo: string;
+  artifact: JsonRecord;
+  runProcess?: typeof run;
+  fetchImpl?: typeof fetch;
+}): Promise<string> {
   const tokenResult = await runProcess("gh", ["auth", "token"], {
     capture: true,
   });
@@ -174,7 +194,12 @@ export async function findArtifact({
   artifactId,
   artifactName,
   runProcess = run,
-}) {
+}: {
+  repo: string;
+  artifactId: string | null;
+  artifactName: string | null;
+  runProcess?: typeof run;
+}): Promise<JsonRecord> {
   const target = artifactId
     ? `https://api.github.com/repos/${repo}/actions/artifacts/${artifactId}`
     : `https://api.github.com/repos/${repo}/actions/artifacts?per_page=100`;
@@ -184,11 +209,15 @@ export async function findArtifact({
       `artifact lookup failed: ${listing.stderr.trim() || listing.code}`,
     );
   }
-  const parsed = JSON.parse(listing.stdout);
+  const parsed = JSON.parse(listing.stdout) as unknown;
   const artifacts = Array.isArray(parsed) ? parsed : [parsed];
   const match = artifactName
-    ? artifacts.find((candidate) => candidate.name === artifactName)
-    : artifacts.find((candidate) => candidate.id === Number(artifactId));
+    ? artifacts.find(
+        (candidate: JsonRecord) => candidate.name === artifactName,
+      )
+    : artifacts.find(
+        (candidate: JsonRecord) => candidate.id === Number(artifactId),
+      );
   if (!match) {
     throw new Error(
       artifactName
@@ -211,7 +240,12 @@ export async function aria2cOnce({
   output,
   connections,
   runProcess = run,
-}) {
+}: {
+  url: string;
+  output: string;
+  connections: number;
+  runProcess?: typeof run;
+}): Promise<Awaited<ReturnType<typeof run>>> {
   // aria2c's --out is always relative to --dir; an absolute --out would be
   // re-rooted under the process cwd and the byte-count check would loop
   // forever. Split an absolute target into --dir + basename instead.
@@ -242,7 +276,9 @@ export async function aria2cOnce({
   );
 }
 
-export async function downloadArtifactParallel(options) {
+export async function downloadArtifactParallel(
+  options: JsonRecord,
+): Promise<JsonRecord> {
   const {
     repo,
     artifactId,
@@ -255,7 +291,19 @@ export async function downloadArtifactParallel(options) {
     runProcess = run,
     fetchImpl = fetch,
     log = console.log,
-  } = options;
+  } = options as {
+    repo: string;
+    artifactId: string | null;
+    artifactName: string | null;
+    output: string;
+    connections: number;
+    maxUrlRefreshes: number;
+    expectedSha256: string | null;
+    pollMs: number;
+    runProcess?: typeof run;
+    fetchImpl?: typeof fetch;
+    log?: (message: string) => void;
+  };
   const artifact = await findArtifact({
     repo,
     artifactId,
@@ -315,7 +363,7 @@ export async function downloadArtifactParallel(options) {
   };
 }
 
-export async function sha256File(path) {
+export async function sha256File(path: string): Promise<string> {
   const digest = createHash("sha256");
   for await (const chunk of createReadStream(path)) {
     digest.update(chunk);
@@ -323,7 +371,9 @@ export async function sha256File(path) {
   return digest.digest("hex");
 }
 
-export async function main(args = process.argv.slice(2)) {
+export async function main(
+  args: string[] = process.argv.slice(2),
+): Promise<void> {
   const options = parseDownloadOptions(args);
   if (options.viaSsh) {
     throw new Error(
