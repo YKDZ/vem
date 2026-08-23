@@ -1,24 +1,20 @@
 import {
-  adminHardwareErrorPolicyListResponseSchema,
-  adminHardwareErrorPolicyResponseSchema,
+  adminListHardwareErrorPoliciesContract,
+  adminUpsertHardwareErrorPolicyContract,
   upsertHardwareErrorPolicySchema,
   type AdminHardwareErrorPolicyResponse,
 } from "@vem/shared";
 import { z } from "zod";
 
-import { getContract, postContract } from "./request";
-
-const emptyQuerySchema = z.strictObject({});
+import { callAdminEndpointContract } from "./request";
 
 export type HardwareErrorPolicy = AdminHardwareErrorPolicyResponse;
 
 export async function listHardwareErrorPolicies(): Promise<
   HardwareErrorPolicy[]
 > {
-  return await getContract(
-    "/hardware-error-policies",
-    emptyQuerySchema,
-    adminHardwareErrorPolicyListResponseSchema,
+  return await callAdminEndpointContract(
+    adminListHardwareErrorPoliciesContract,
     {},
   );
 }
@@ -26,10 +22,8 @@ export async function listHardwareErrorPolicies(): Promise<
 export async function upsertHardwareErrorPolicy(
   input: z.input<typeof upsertHardwareErrorPolicySchema>,
 ): Promise<HardwareErrorPolicy> {
-  return await postContract(
-    "/hardware-error-policies",
-    upsertHardwareErrorPolicySchema,
-    adminHardwareErrorPolicyResponseSchema,
-    input,
+  return await callAdminEndpointContract(
+    adminUpsertHardwareErrorPolicyContract,
+    { body: input },
   );
 }

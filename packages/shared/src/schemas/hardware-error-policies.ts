@@ -1,6 +1,11 @@
 import { z } from "zod";
 
+import { defineAdminEndpointContract } from "../admin-api-contract";
 import { hardwareErrorCodeSchema } from "../enums/hardware";
+
+const noPathParamsSchema = z.strictObject({});
+const noQuerySchema = z.strictObject({});
+const noBodySchema = z.strictObject({});
 
 export const upsertHardwareErrorPolicySchema = z.strictObject({
   errorCode: hardwareErrorCodeSchema.nullable(),
@@ -28,6 +33,26 @@ export const adminHardwareErrorPolicyResponseSchema = z.strictObject({
 export const adminHardwareErrorPolicyListResponseSchema = z.array(
   adminHardwareErrorPolicyResponseSchema,
 );
+
+export const adminListHardwareErrorPoliciesContract =
+  defineAdminEndpointContract({
+    method: "GET",
+    path: "/hardware-error-policies",
+    pathParamsSchema: noPathParamsSchema,
+    querySchema: noQuerySchema,
+    bodySchema: noBodySchema,
+    responseSchema: adminHardwareErrorPolicyListResponseSchema,
+  });
+
+export const adminUpsertHardwareErrorPolicyContract =
+  defineAdminEndpointContract({
+    method: "POST",
+    path: "/hardware-error-policies",
+    pathParamsSchema: noPathParamsSchema,
+    querySchema: noQuerySchema,
+    bodySchema: upsertHardwareErrorPolicySchema,
+    responseSchema: adminHardwareErrorPolicyResponseSchema,
+  });
 
 export type AdminUpsertHardwareErrorPolicyRequest = z.infer<
   typeof upsertHardwareErrorPolicySchema
