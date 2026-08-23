@@ -57,15 +57,101 @@ const OBSERVED_RUNTIME = {
   },
 };
 
-function acceptanceAdapter(overrides = {}) {
+type JsonRecord = Record<string, unknown>;
+
+type RuntimeAttestation = typeof ATTESTATION;
+type ObservedRuntime = typeof OBSERVED_RUNTIME;
+
+interface CdpMessage extends JsonRecord {
+  id?: unknown;
+  method?: unknown;
+  params?: {
+    expression?: string;
+    type?: string;
+    url?: string;
+    frame?: { url?: string };
+  };
+}
+
+type FakeWebSocketHandler = (
+  message: CdpMessage,
+  socket: FakeWebSocket,
+) => JsonRecord | null | undefined;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? (value as unknown[]) : [];
+}
+
+function cdpExpression(message: CdpMessage): string {
+  return String(message.params?.expression ?? "");
+}
+
+interface ScenarioResult extends JsonRecord {
+  execution?: JsonRecord;
+  evidence?: JsonRecord[];
+  target?: JsonRecord;
+  status?: unknown;
+  webSocketUrl?: unknown;
+  screenshots?: unknown;
+  checkpoints?: unknown;
+}
+
+function scenarioEvidence(result: ScenarioResult): JsonRecord[] {
+  return Array.isArray(result.evidence) ? result.evidence : [];
+}
+
+type SshRunOptions = Parameters<
+  NonNullable<
+    NonNullable<
+      Parameters<typeof inspectWindowsMachineUiRuntimeForTest>[1]
+    >["commandRunner"]
+  >
+>[0];
+
+type WebSocketFactoryLike = NonNullable<
+  NonNullable<ConstructorParameters<typeof CdpClient>[1]>["webSocketFactory"]
+>;
+
+type ScenarioTestOptions = Parameters<
+  typeof runVisibleMachineSaleScenarioForTest
+>[0] & {
+  webSocketFactory?: (url: string) => FakeWebSocket;
+  remoteCommandRunner?: (options?: unknown) => Promise<unknown>;
+};
+
+type TestProcessAdapter = NonNullable<
+  NonNullable<
+    Parameters<typeof runWindowsPowerShellOverSshForTest>[1]
+  >["processAdapter"]
+>;
+
+function fakeSpawn(
+  implementation: (
+    command: string,
+    args?: readonly string[],
+    options?: unknown,
+  ) => FakeChildProcess,
+): TestProcessAdapter["spawn"] {
+  return implementation as unknown as TestProcessAdapter["spawn"];
+}
+
+function acceptanceAdapter(overrides: JsonRecord = {}): JsonRecord {
   return overrides;
 }
 
-async function fakeWindowsCommandRunner() {
+async function fakeWindowsCommandRunner(): Promise<ObservedRuntime> {
   return OBSERVED_RUNTIME;
 }
 
-function runScenarioForTest(options) {
+function runScenarioForTest(
+  options: ScenarioTestOptions,
+): Promise<ScenarioResult> {
   const {
     webSocketFactory,
     remoteCommandRunner = fakeWindowsCommandRunner,
@@ -74,13 +160,19 @@ function runScenarioForTest(options) {
   return runVisibleMachineSaleScenarioForTest(scenarioOptions, {
     webSocketFactory,
     remoteCommandRunner,
-  });
+  }) as Promise<ScenarioResult>;
 }
 
 async function runInstalledRouteCompetitionScenario({
   competingRoute = null,
   touchIntervalRoute = null,
   onPaymentWindow,
+}: {
+  competingRoute?: string | null;
+  touchIntervalRoute?: string | null;
+  onPaymentWindow?: (context: {
+    setRoute: (route: string) => void;
+  }) => void;
 } = {}) {
   return withFakeHttpTargets(
     [target("machine-target", "#/catalog")],
@@ -88,11 +180,11 @@ async function runInstalledRouteCompetitionScenario({
       let route = "#/catalog";
       let activations = 0;
       let disturbanceCount = 0;
-      let externalOperation = null;
-      let cdpSocket;
-      const setRoute = (nextRoute) => {
+      let externalOperation: string | null = null;
+      let cdpSocket: FakeWebSocket | null = null;
+      const setRoute = (nextRoute: string) => {
         route = nextRoute;
-        cdpSocket.emitMessage({
+        if (cdpSocket) cdpSocket.emitMessage({
           method: "Page.navigatedWithinDocument",
           params: { url: `http://tauri.localhost/${route}` },
         });
@@ -101,7 +193,7 @@ async function runInstalledRouteCompetitionScenario({
         (message, socket) => {
           cdpSocket = socket;
           if (message.method === "Runtime.evaluate") {
-            const expression = message.params.expression;
+            const expression = cdpExpression(message);
             if (expression.includes("runtimeGenerationId")) {
               return cdpValue("runtime-generation-installed-1", message.id);
             }
@@ -197,7 +289,7 @@ async function runInstalledRouteCompetitionScenario({
           }
           if (
             message.method === "Input.dispatchTouchEvent" &&
-            message.params.type === "touchStart"
+            message.params?.type === "touchStart"
           ) {
             activations += 1;
             const nextRoute = [
@@ -221,7 +313,7 @@ async function runInstalledRouteCompetitionScenario({
           }
           if (
             message.method === "Input.dispatchTouchEvent" &&
-            message.params.type === "touchEnd" &&
+            message.params?.type === "touchEnd" &&
             activations === 6 &&
             touchIntervalRoute === "#/checkout"
           ) {
@@ -244,7 +336,7 @@ async function runInstalledRouteCompetitionScenario({
         sequenceName: "installed-route-competition",
         steps: buildInstalledKioskSaleScenarioSteps("vm-route-competition"),
         adapter: {
-          async executeExternalOperation({ operation }) {
+          async executeExternalOperation({ operation }: { operation: string }) {
             externalOperation = operation;
             const catalogRevision = "a".repeat(64);
             return {
@@ -301,6 +393,12 @@ async function runGenerationRecoveryScenario({
   restart = "process",
   activatesRouteBarrier = false,
   oldGenerationRoute = null,
+}: {
+  initialRoute?: string;
+  nextTargetRoute?: string;
+  restart?: string;
+  activatesRouteBarrier?: boolean;
+  oldGenerationRoute?: string | null;
 } = {}) {
   const targets = [target("machine-target", initialRoute)];
   return withFakeHttpTargets(targets, async (endpoint) => {
@@ -322,7 +420,7 @@ async function runGenerationRecoveryScenario({
       (message, socket) => {
         activeSocket = socket;
         if (message.method === "Runtime.evaluate") {
-          const expression = message.params.expression;
+          const expression = cdpExpression(message);
           if (expression.includes("runtimeGenerationId")) {
             if (!restarted && activated && route === "#/checkout") {
               restarted = true;
@@ -363,7 +461,7 @@ async function runGenerationRecoveryScenario({
         }
         if (
           message.method === "Input.dispatchTouchEvent" &&
-          message.params.type === "touchStart"
+          message.params?.type === "touchStart"
         ) {
           activated = true;
           route = "#/checkout";
@@ -410,7 +508,12 @@ async function runGenerationRecoveryScenario({
         },
       },
     );
-    return { result, sockets, inspections, activeSocket };
+    return {
+      result: result as ScenarioResult,
+      sockets,
+      inspections,
+      activeSocket,
+    };
   });
 }
 
@@ -487,7 +590,7 @@ describe("machine-ui-cdp-driver", () => {
     );
   });
 
-  for (const [name, targets, binding, pattern] of [
+  const discoveryCases: [string, JsonRecord[], string, RegExp][] = [
     [
       "zero strict targets",
       [
@@ -518,7 +621,8 @@ describe("machine-ui-cdp-driver", () => {
       "",
       /expectedTargetId is required/,
     ],
-  ]) {
+  ];
+  for (const [name, targets, binding, pattern] of discoveryCases) {
     it(`rejects ${name}`, async () => {
       await withFakeHttpTargets(targets, async (endpoint) => {
         await assert.rejects(
@@ -533,7 +637,7 @@ describe("machine-ui-cdp-driver", () => {
   }
 
   it("derives Windows process facts remotely and binds them to the live CDP target", async () => {
-    let invocation;
+    let invocation: SshRunOptions | undefined;
     const observed = await inspectWindowsMachineUiRuntimeForTest(
       {
         remote: "YKDZ@win10.test",
@@ -552,18 +656,19 @@ describe("machine-ui-cdp-driver", () => {
       target: target("machine-target", "#/checkout?b=2&a=1"),
     });
 
+    assert.ok(invocation);
     assert.equal(invocation.remote, "YKDZ@win10.test");
-    assert.match(invocation.script, /Get-NetTCPConnection/);
-    assert.match(invocation.script, /Win32_Process/);
-    assert.match(invocation.script, /GetOwner/);
-    assert.match(invocation.script, /machineOwner\.Domain/);
-    assert.match(invocation.script, /listenerOwner\.Domain/);
+    assert.match(String(invocation.script ?? ""), /Get-NetTCPConnection/);
+    assert.match(String(invocation.script ?? ""), /Win32_Process/);
+    assert.match(String(invocation.script ?? ""), /GetOwner/);
+    assert.match(String(invocation.script ?? ""), /machineOwner\.Domain/);
+    assert.match(String(invocation.script ?? ""), /listenerOwner\.Domain/);
     assert.equal(evidence.observed.machine.processId, 4242);
     assert.equal(evidence.observed.cdpTarget.route, "#/checkout?a=1&b=2");
   });
 
   it("passes known-host trust options through runtime inspection and its SSH command", async () => {
-    let inspectionInvocation;
+    let inspectionInvocation: SshRunOptions | undefined;
     await inspectWindowsMachineUiRuntimeForTest(
       {
         remote: "YKDZ@win10.test",
@@ -578,6 +683,7 @@ describe("machine-ui-cdp-driver", () => {
         },
       },
     );
+    assert.ok(inspectionInvocation);
     assert.equal(
       inspectionInvocation.sshKnownHostsPath,
       "/tmp/vem-known-hosts",
@@ -585,7 +691,7 @@ describe("machine-ui-cdp-driver", () => {
     assert.equal(inspectionInvocation.sshHostKeyAlias, "vem-runtime-run-180");
 
     const child = new FakeChildProcess();
-    let args;
+    let args: readonly string[] | undefined;
     const inspectionScript = buildWindowsMachineUiInspectionScript({
       machinePath: ATTESTATION.machine.executablePath,
       remoteCdpPort: 9222,
@@ -599,18 +705,19 @@ describe("machine-ui-cdp-driver", () => {
       },
       {
         processAdapter: {
-          spawn(_command, receivedArgs) {
+          spawn: fakeSpawn((_command, receivedArgs) => {
             args = receivedArgs;
             queueMicrotask(() => {
               child.stdout.emit("data", JSON.stringify(OBSERVED_RUNTIME));
               child.finish(0, null);
             });
             return child;
-          },
+          }),
         },
       },
     );
     await command;
+    assert.ok(args);
     assert.deepEqual(args.slice(0, 6), [
       "-o",
       "BatchMode=yes",
@@ -620,17 +727,26 @@ describe("machine-ui-cdp-driver", () => {
       "HostKeyAlias=vem-runtime-run-180",
     ]);
     assert.equal(args.at(-2), "-EncodedCommand");
+    const lastArg = args.at(-1);
+    assert.ok(lastArg);
     assert.equal(
-      Buffer.from(args.at(-1), "base64").toString("utf16le"),
+      Buffer.from(lastArg, "base64").toString("utf16le"),
       inspectionScript,
     );
     assert.ok(
-      `powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ${args.at(-1)}`
+      `powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ${lastArg}`
         .length < 8191,
     );
   });
 
-  for (const [name, mutate, pattern] of [
+  const mutationCases: [
+    string,
+    (
+      attestation: RuntimeAttestation,
+      observed: ObservedRuntime,
+    ) => void,
+    RegExp,
+  ][] = [
     [
       "a caller PID that does not match the remotely observed process",
       (attestation) => {
@@ -659,7 +775,8 @@ describe("machine-ui-cdp-driver", () => {
       },
       /CDP target id mismatch/,
     ],
-  ]) {
+  ];
+  for (const [name, mutate, pattern] of mutationCases) {
     it(`rejects ${name}`, () => {
       const attestation = structuredClone(ATTESTATION);
       const observed = structuredClone(OBSERVED_RUNTIME);
@@ -729,11 +846,15 @@ describe("machine-ui-cdp-driver", () => {
 
   it("rejects production acceptance transport injection before it can run", async () => {
     await assert.rejects(
-      runVisibleMachineSaleScenario({ endpoint: "http://127.0.0.1:9222" }),
+      runVisibleMachineSaleScenario({
+        endpoint: "http://127.0.0.1:9222",
+      } as unknown as Parameters<typeof runVisibleMachineSaleScenario>[0]),
       /endpoint is test-only/,
     );
     await assert.rejects(
-      runVisibleMachineSaleScenario({ remoteCommandRunner() {} }),
+      runVisibleMachineSaleScenario({
+        remoteCommandRunner() {},
+      } as unknown as Parameters<typeof runVisibleMachineSaleScenario>[0]),
       /remoteCommandRunner is test-only/,
     );
     const cli = spawnSync(
@@ -792,13 +913,13 @@ describe("machine-ui-cdp-driver", () => {
       sshKnownHostsPath: "/tmp/vem-known-hosts",
       sshHostKeyAlias: "vem-runtime-run-180",
       processAdapter: {
-        spawn(command, args, options) {
+        spawn: fakeSpawn((command, args, options) => {
           child.command = command;
           child.args = args;
           child.options = options;
           return child;
-        },
-        async waitForReady(details) {
+        }),
+        async waitForReady(details: { endpoint: string }) {
           assert.equal(details.endpoint, "http://127.0.0.1:49222");
           child.stderr.emit("data", "ssh diagnostic");
           ready = true;
@@ -833,9 +954,9 @@ describe("machine-ui-cdp-driver", () => {
         remote: "user@example.test",
         remoteCdpHost: "10.0.0.15",
         processAdapter: {
-          spawn() {
+          spawn: fakeSpawn(() => {
             throw new Error("must not spawn");
-          },
+          }),
         },
       }),
       /remote CDP tunnel host must be inspected loopback/,
@@ -848,9 +969,9 @@ describe("machine-ui-cdp-driver", () => {
         remote: "user@example.test",
         localPort: 49223,
         processAdapter: {
-          spawn() {
+          spawn: fakeSpawn(() => {
             throw new Error("ENOENT");
-          },
+          }),
         },
       }),
       /SSH tunnel spawn failed: ENOENT/,
@@ -861,13 +982,13 @@ describe("machine-ui-cdp-driver", () => {
       remote: "user@example.test",
       localPort: 49224,
       processAdapter: {
-        spawn() {
+        spawn: fakeSpawn(() => {
           queueMicrotask(() => {
             child.stderr.emit("data", "bind failed");
             child.finish(255, null);
           });
           return child;
-        },
+        }),
         waitForReady() {
           return new Promise(() => {});
         },
@@ -880,7 +1001,7 @@ describe("machine-ui-cdp-driver", () => {
     assert.throws(
       () =>
         new CdpClient("http://127.0.0.1/devtools/page/1", {
-          webSocketFactory: () => ({}),
+          webSocketFactory: (() => ({})) as unknown as WebSocketFactoryLike,
         }),
       /must use ws or wss/,
     );
@@ -895,7 +1016,8 @@ describe("machine-ui-cdp-driver", () => {
     await client.close();
 
     const emitterClient = new CdpClient("ws://127.0.0.1/devtools/page/2", {
-      webSocketFactory: () => new EventEmitter(),
+      webSocketFactory:
+        (() => new EventEmitter()) as unknown as WebSocketFactoryLike,
     });
     await assert.rejects(
       emitterClient.connect(),
@@ -947,7 +1069,7 @@ describe("machine-ui-cdp-driver", () => {
       }
       if (
         message.method === "Input.dispatchTouchEvent" &&
-        message.params.type === "touchStart"
+        message.params?.type === "touchStart"
       ) {
         return { id: message.id, error: { message: "press failed" } };
       }
@@ -962,14 +1084,20 @@ describe("machine-ui-cdp-driver", () => {
       /press failed/,
     );
     assert.deepEqual(
-      sockets[0].sent.map((message) => [message.method, message.params.type]),
+      sockets[0].sent.map((message) => [
+        message.method,
+        message.params?.type,
+      ]),
       [
         ["Runtime.evaluate", undefined],
         ["Input.dispatchTouchEvent", "touchStart"],
         ["Input.dispatchTouchEvent", "touchEnd"],
       ],
     );
-    assert.doesNotMatch(sockets[0].sent[0].params.expression, /\.click\s*\(/);
+    assert.doesNotMatch(
+      String(sockets[0].sent[0].params?.expression ?? ""),
+      /\.click\s*\(/,
+    );
     await client.close();
   });
 
@@ -1044,7 +1172,7 @@ describe("machine-ui-cdp-driver", () => {
     let scrollCalls = 0;
     const { factory, sockets } = createFakeWebSocketFactory((message) => {
       if (message.method === "Runtime.evaluate") {
-        const expression = message.params.expression;
+        const expression = cdpExpression(message);
         if (expression.includes("scrollIntoView")) {
           scrollCalls += 1;
           return cdpValue({ scrolled: true }, message.id);
@@ -1090,7 +1218,10 @@ describe("machine-ui-cdp-driver", () => {
     assert.equal(evaluateProbes, 2);
     assert.equal(scrollCalls, 1);
     assert.deepEqual(
-      sockets[0].sent.map((message) => [message.method, message.params.type]),
+      sockets[0].sent.map((message) => [
+        message.method,
+        message.params?.type,
+      ]),
       [
         ["Runtime.evaluate", undefined],
         ["Runtime.evaluate", undefined],
@@ -1102,10 +1233,10 @@ describe("machine-ui-cdp-driver", () => {
     const scrollCall = sockets[0].sent.find(
       (message) =>
         message.method === "Runtime.evaluate" &&
-        message.params.expression.includes("scrollIntoView"),
+        cdpExpression(message).includes("scrollIntoView"),
     );
     assert.ok(scrollCall);
-    assert.ok(scrollCall.params.expression.includes('block: "center"'));
+    assert.ok(String(scrollCall.params?.expression).includes('block: "center"'));
     await client.close();
   });
 
@@ -1113,7 +1244,7 @@ describe("machine-ui-cdp-driver", () => {
     let scrollCalls = 0;
     const { factory, sockets } = createFakeWebSocketFactory((message) => {
       if (message.method === "Runtime.evaluate") {
-        const expression = message.params.expression;
+        const expression = cdpExpression(message);
         if (expression.includes("scrollIntoView")) {
           scrollCalls += 1;
           return cdpValue(true, message.id);
@@ -1158,17 +1289,17 @@ describe("machine-ui-cdp-driver", () => {
     const scrollCall = sockets[0].sent.find(
       (message) =>
         message.method === "Runtime.evaluate" &&
-        message.params.expression.includes("scrollIntoView"),
+        cdpExpression(message).includes("scrollIntoView"),
     );
     assert.ok(scrollCall);
     assert.match(
-      scrollCall.params.expression,
+      String(scrollCall.params?.expression ?? ""),
       /block: "center", inline: "center"/,
     );
     assert.deepEqual(
       sockets[0].sent
         .slice(-2)
-        .map((message) => [message.method, message.params.type]),
+        .map((message) => [message.method, message.params?.type]),
       [
         ["Input.dispatchTouchEvent", "touchStart"],
         ["Input.dispatchTouchEvent", "touchEnd"],
@@ -1222,7 +1353,7 @@ describe("machine-ui-cdp-driver", () => {
   });
 
   it("executes the exact installed route-competition scenario with RegExp matchers", async () => {
-    const { result, sockets } = await runInstalledRouteCompetitionScenario();
+    const { result } = await runInstalledRouteCompetitionScenario();
 
     assert.deepEqual(result.execution, {
       planned: {
@@ -1237,25 +1368,28 @@ describe("machine-ui-cdp-driver", () => {
       },
     });
     assert.ok(
-      result.evidence.some(
+      scenarioEvidence(result).some(
         (entry) =>
           entry.type === "external-operation" &&
           entry.operation === "vision_departure" &&
           entry.routeBefore === "#/payment" &&
           entry.routeAfter === "#/payment" &&
-          entry.provenance.guestOperationId === "guest-vision_departure",
+          recordValue(entry.provenance).guestOperationId ===
+            "guest-vision_departure",
       ),
     );
-    const barrier = result.evidence.find(
+    const barrier = scenarioEvidence(result).find(
       (entry) => entry.type === "route-barrier",
     );
+    assert.ok(barrier);
     assert.equal(barrier.armedBeforeInput, true);
-    assert.equal(barrier.armBaseline.route, "#/checkout");
-    const paymentActivation = result.evidence.find(
+    assert.equal(recordValue(barrier.armBaseline).route, "#/checkout");
+    const paymentActivation = scenarioEvidence(result).find(
       (entry) =>
         entry.type === "customer-activation" &&
         entry.label === "payment submit repeat",
     );
+    assert.ok(paymentActivation);
     assert.equal(paymentActivation.routeBefore, "#/checkout");
   });
 
@@ -1265,11 +1399,12 @@ describe("machine-ui-cdp-driver", () => {
     assert.equal(inspections, 2);
     assert.equal(sockets.length, 2);
     assert.equal(
-      result.evidence.filter((entry) => entry.type === "runtime-attestation")
-        .length,
+      scenarioEvidence(result).filter(
+        (entry) => entry.type === "runtime-attestation",
+      ).length,
       2,
     );
-    assert.equal(result.target.id, "machine-target-restarted");
+    assert.equal(recordValue(result.target).id, "machine-target-restarted");
   });
 
   it("rebinds the same canonical target after its runtime generation reloads", async () => {
@@ -1279,7 +1414,7 @@ describe("machine-ui-cdp-driver", () => {
       });
     assert.equal(inspections, 2);
     assert.equal(sockets.length, 2);
-    assert.equal(result.target.id, "machine-target");
+    assert.equal(recordValue(result.target).id, "machine-target");
   });
 
   it("fails closed when a prior generation continuous capture observed a forbidden route", async () => {
@@ -1308,7 +1443,7 @@ describe("machine-ui-cdp-driver", () => {
     const { result } = await runInstalledRouteCompetitionScenario({
       onPaymentWindow: async () => {
         paymentWindowCalls += 1;
-        await new Promise((resolve) => {
+        await new Promise<void>((resolve) => {
           const timer = setInterval(() => {
             serialTimerTicks += 1;
             if (serialTimerTicks === 3) {
@@ -1324,24 +1459,27 @@ describe("machine-ui-cdp-driver", () => {
     assert.equal(paymentWindowCalls, 1);
     assert.ok(serialTimerTicks >= 3);
     assert.ok(
-      result.evidence.some(
+      scenarioEvidence(result).some(
         (entry) =>
           entry.type === "payment-window" &&
           entry.serialCompleted === true &&
           entry.postSaleStable === true,
       ),
     );
-    const paymentWindow = result.evidence.find(
+    const paymentWindow = scenarioEvidence(result).find(
       (entry) => entry.type === "payment-window",
     );
-    const [before, during, after] = paymentWindow.continuousCheckpointOrdinals;
+    assert.ok(paymentWindow);
+    const [before, during, after] = arrayValue(
+      paymentWindow.continuousCheckpointOrdinals,
+    ).map(Number);
     assert.equal(
       paymentWindow.runtimeGeneration,
       "runtime-generation-installed-1",
     );
     assert.ok(before < during && during < after);
     assert.ok(
-      result.evidence.some(
+      scenarioEvidence(result).some(
         (entry) =>
           entry.type === "checkpoint" &&
           entry.label === "continuous" &&
@@ -1389,7 +1527,7 @@ describe("machine-ui-cdp-driver", () => {
     });
 
     assert.ok(
-      result.evidence.some(
+      scenarioEvidence(result).some(
         (entry) =>
           entry.type === "payment-window" &&
           entry.serialCompleted === true &&
@@ -1437,7 +1575,7 @@ describe("machine-ui-cdp-driver", () => {
         const { factory, sockets } = createFakeWebSocketFactory(
           (message, socket) => {
             if (message.method === "Runtime.evaluate") {
-              if (message.params.expression.includes("querySelector")) {
+              if (cdpExpression(message).includes("querySelector")) {
                 return cdpValue(
                   {
                     selector: "#buy",
@@ -1456,7 +1594,7 @@ describe("machine-ui-cdp-driver", () => {
             }
             if (
               message.method === "Input.dispatchTouchEvent" &&
-              message.params.type === "touchStart"
+              message.params?.type === "touchStart"
             ) {
               route = "#/checkout";
               socket.emitMessage({
@@ -1484,7 +1622,7 @@ describe("machine-ui-cdp-driver", () => {
           continuousCapture: false,
           screenshotCheckpoints: true,
           adapter: acceptanceAdapter({
-            async screenshotSink({ sha256 }) {
+            async screenshotSink({ sha256 }: { sha256: string }) {
               return { ref: `evidence/${sha256}.png` };
             },
           }),
@@ -1504,33 +1642,43 @@ describe("machine-ui-cdp-driver", () => {
           ],
         });
 
-        const activation = result.evidence.find(
+        const activation = scenarioEvidence(result).find(
           (entry) => entry.type === "customer-activation",
         );
-        assert.equal(activation.input.method, "Input.dispatchTouchEvent");
+        assert.ok(activation);
+        assert.equal(
+          recordValue(activation.input).method,
+          "Input.dispatchTouchEvent",
+        );
         assert.equal(result.webSocketUrl, undefined);
         assert.equal(
           JSON.stringify(result).includes(screenshotBytes.toString("base64")),
           false,
         );
         assert.ok(
-          result.evidence
+          scenarioEvidence(result)
             .filter((entry) => entry.screenshot)
             .every(
               (entry) =>
-                /^[a-f0-9]{64}$/.test(entry.screenshot.sha256) &&
-                entry.screenshot.ref.startsWith("evidence/"),
+                /^[a-f0-9]{64}$/.test(
+                  String(recordValue(entry.screenshot).sha256),
+                ) &&
+                String(recordValue(entry.screenshot).ref).startsWith(
+                  "evidence/",
+                ),
             ),
         );
         assert.deepEqual(
-          result.evidence.map((entry) => entry.capturedAt),
-          [...result.evidence]
+          scenarioEvidence(result).map((entry) => entry.capturedAt),
+          [...scenarioEvidence(result)]
             .map((entry) => entry.capturedAt)
-            .sort((left, right) => left.localeCompare(right)),
+            .sort((left, right) =>
+              String(left).localeCompare(String(right)),
+            ),
         );
         assert.ok(
           sockets[0].sent.some((message) =>
-            message.method.startsWith("Input."),
+            String(message.method).startsWith("Input."),
           ),
         );
         assert.deepEqual(result.execution, {
@@ -1553,10 +1701,10 @@ describe("machine-ui-cdp-driver", () => {
     await withFakeHttpTargets(
       [target("machine-target", "#/sale")],
       async (endpoint) => {
-        const { factory, sockets } = createFakeWebSocketFactory(
+        const { factory } = createFakeWebSocketFactory(
           (message, socket) => {
             if (message.method === "Runtime.evaluate") {
-              if (message.params.expression.includes("querySelector")) {
+              if (cdpExpression(message).includes("querySelector")) {
                 return cdpValue(
                   {
                     selector: "#buy",
@@ -1571,7 +1719,7 @@ describe("machine-ui-cdp-driver", () => {
             }
             if (
               message.method === "Input.dispatchTouchEvent" &&
-              message.params.type === "touchStart"
+              message.params?.type === "touchStart"
             ) {
               socket.emitMessage({
                 method: "Page.navigatedWithinDocument",
@@ -1617,7 +1765,7 @@ describe("machine-ui-cdp-driver", () => {
         let route = "#/catalog";
         const { factory } = createFakeWebSocketFactory((message) => {
           if (message.method === "Runtime.evaluate") {
-            if (message.params.expression.includes("querySelector")) {
+            if (cdpExpression(message).includes("querySelector")) {
               return cdpValue(
                 {
                   selector: "#buy",
@@ -1635,7 +1783,7 @@ describe("machine-ui-cdp-driver", () => {
           }
           if (
             message.method === "Input.dispatchTouchEvent" &&
-            message.params.type === "touchStart"
+            message.params?.type === "touchStart"
           ) {
             route = "#/checkout";
           }
@@ -1712,15 +1860,15 @@ describe("machine-ui-cdp-driver", () => {
   });
 
   it("evaluates continuous checkpoints against the policy captured when they start", async () => {
-    let captureRequestId;
-    let captureStarted;
-    const started = new Promise((resolve) => {
+    let captureRequestId: unknown;
+    let captureStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
       captureStarted = resolve;
     });
     const { factory, sockets } = createFakeWebSocketFactory((message) => {
       if (message.method === "Runtime.evaluate") {
         captureRequestId = message.id;
-        captureStarted();
+        captureStarted?.();
         return null;
       }
       return { id: message.id, result: {} };
@@ -1730,7 +1878,11 @@ describe("machine-ui-cdp-driver", () => {
     });
     await client.connect();
 
-    let policy = {
+    let policy: {
+      epoch: number;
+      forbiddenRoutes: string[];
+      allowedRoutes: string[] | null;
+    } = {
       epoch: 0,
       forbiddenRoutes: ["/maintenance"],
       allowedRoutes: null,
@@ -1748,9 +1900,12 @@ describe("machine-ui-cdp-driver", () => {
     };
     sockets[0].emitMessage(cdpValue(identity("#/checkout"), captureRequestId));
 
-    const checkpoints = await capture.stop();
+    const checkpoints = arrayValue(await capture.stop());
     assert.equal(checkpoints.length, 1);
-    assert.equal(checkpoints[0].identity.route, "#/checkout");
+    assert.equal(
+      recordValue(recordValue(checkpoints[0]).identity).route,
+      "#/checkout",
+    );
     await client.close();
   });
 
@@ -1800,15 +1955,17 @@ describe("machine-ui-cdp-driver", () => {
       [target("machine-target", "#/sale")],
       async (endpoint) => {
         let route = "#/sale";
-        let releaseInspection;
-        let inspectionOptions;
-        let sidecarOptions;
-        const inspection = new Promise((resolve) => {
+        let releaseInspection:
+          | ((value: ObservedRuntime) => void)
+          | undefined;
+        let inspectionOptions: SshRunOptions | undefined;
+        let sidecarOptions: unknown;
+        const inspection = new Promise<ObservedRuntime>((resolve) => {
           releaseInspection = resolve;
         });
         const { factory } = createFakeWebSocketFactory((message) => {
           if (message.method === "Runtime.evaluate") {
-            if (message.params.expression.includes("querySelector")) {
+            if (cdpExpression(message).includes("querySelector")) {
               return cdpValue(
                 {
                   selector: "#buy",
@@ -1826,7 +1983,7 @@ describe("machine-ui-cdp-driver", () => {
           }
           if (
             message.method === "Input.dispatchTouchEvent" &&
-            message.params.type === "touchStart"
+            message.params?.type === "touchStart"
           ) {
             route = "#/checkout";
           }
@@ -1868,15 +2025,15 @@ describe("machine-ui-cdp-driver", () => {
             },
             async openSidecar(options) {
               sidecarOptions = options;
-              return { endpoint, async close() {} };
+              return { endpoint, process: null, async close() {} };
             },
           },
         );
         steps[0].routeAfter = "#/maintenance";
         steps.push({ type: "observation", name: "injected", route: "#/sale" });
-        releaseInspection(OBSERVED_RUNTIME);
+        releaseInspection?.(OBSERVED_RUNTIME);
 
-        const result = await running;
+        const result = (await running) as ScenarioResult;
         assert.deepEqual(result.execution, {
           planned: {
             customerActivations: 1,
@@ -1896,6 +2053,7 @@ describe("machine-ui-cdp-driver", () => {
           remoteCdpHost: "127.0.0.1",
           remoteCdpPort: 9222,
         });
+        assert.ok(inspectionOptions);
         assert.equal(
           inspectionOptions.sshKnownHostsPath,
           "/tmp/vem-known-hosts",
@@ -1979,9 +2137,9 @@ describe("machine-ui-cdp-driver", () => {
         },
         {
           processAdapter: {
-            spawn() {
+            spawn: fakeSpawn(() => {
               return child;
-            },
+            }),
           },
           shutdownTimeoutMs: 1,
         },
@@ -2016,7 +2174,7 @@ describe("machine-ui-cdp-driver", () => {
   });
 });
 
-function target(id, route) {
+function target(id: string, route: string): JsonRecord {
   return {
     id,
     url: `http://tauri.localhost/${route}`,
@@ -2024,7 +2182,7 @@ function target(id, route) {
   };
 }
 
-function identity(route) {
+function identity(route: string): JsonRecord {
   return {
     url: `http://tauri.localhost/${route}`,
     route,
@@ -2037,11 +2195,14 @@ function identity(route) {
   };
 }
 
-function cdpValue(value, id) {
+function cdpValue(value: unknown, id: unknown): JsonRecord {
   return { id, result: { result: { value } } };
 }
 
-async function withFakeHttpTargets(targets, callback) {
+async function withFakeHttpTargets<T>(
+  targets: JsonRecord[],
+  callback: (endpoint: string) => Promise<T>,
+): Promise<T> {
   const server = createServer((request, response) => {
     if (request.url !== "/json") {
       response.writeHead(404);
@@ -2051,22 +2212,27 @@ async function withFakeHttpTargets(targets, callback) {
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify(targets));
   });
-  await new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
+    server.listen(0, "127.0.0.1", () => resolve());
   });
-  const { port } = server.address();
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const { port } = address;
   try {
     return await callback(`http://127.0.0.1:${port}`);
   } finally {
-    await new Promise((resolve, reject) =>
+    await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),
     );
   }
 }
 
-function createFakeWebSocketFactory(handler, options = {}) {
-  const sockets = [];
+function createFakeWebSocketFactory(
+  handler: FakeWebSocketHandler,
+  options: { autoClose?: boolean } = {},
+): { sockets: FakeWebSocket[]; factory: (url: string) => FakeWebSocket } {
+  const sockets: FakeWebSocket[] = [];
   return {
     sockets,
     factory(url) {
@@ -2078,7 +2244,23 @@ function createFakeWebSocketFactory(handler, options = {}) {
 }
 
 class FakeWebSocket {
-  constructor(url, handler, options) {
+  url: string;
+  handler: FakeWebSocketHandler;
+  options: { autoClose?: boolean };
+  readyState: number;
+  sent: CdpMessage[];
+  closeCalls: number;
+  listeners: Map<
+    string,
+    { handler: (event: unknown) => void; once: boolean }[]
+  >;
+  sendError?: Error;
+
+  constructor(
+    url: string,
+    handler: FakeWebSocketHandler,
+    options: { autoClose?: boolean },
+  ) {
     this.url = url;
     this.handler = handler;
     this.options = options;
@@ -2092,12 +2274,18 @@ class FakeWebSocket {
     });
   }
 
-  addEventListener(type, handler, options = {}) {
+  addEventListener(
+    type: string,
+    handler: (event: unknown) => void,
+    options: { once?: boolean } = {},
+  ) {
     if (!this.listeners.has(type)) this.listeners.set(type, []);
-    this.listeners.get(type).push({ handler, once: options.once === true });
+    const entries = this.listeners.get(type) ?? [];
+    entries.push({ handler, once: options.once === true });
+    this.listeners.set(type, entries);
   }
 
-  removeEventListener(type, handler) {
+  removeEventListener(type: string, handler: (event: unknown) => void) {
     this.listeners.set(
       type,
       (this.listeners.get(type) ?? []).filter(
@@ -2106,7 +2294,7 @@ class FakeWebSocket {
     );
   }
 
-  send(raw) {
+  send(raw: string) {
     if (this.sendError) throw this.sendError;
     const message = JSON.parse(raw);
     this.sent.push(message);
@@ -2115,7 +2303,7 @@ class FakeWebSocket {
     queueMicrotask(() => this.emitMessage(response));
   }
 
-  emitMessage(message) {
+  emitMessage(message: CdpMessage) {
     this.#emit("message", { data: JSON.stringify(message) });
   }
 
@@ -2130,7 +2318,7 @@ class FakeWebSocket {
     this.#emit("close", {});
   }
 
-  #emit(type, event) {
+  #emit(type: string, event: unknown) {
     const entries = [...(this.listeners.get(type) ?? [])];
     for (const entry of entries) entry.handler(event);
     this.listeners.set(
@@ -2143,27 +2331,32 @@ class FakeWebSocket {
 class FakeStream extends EventEmitter {
   resumed = false;
 
-  resume() {
+  resume(): void {
     this.resumed = true;
   }
 }
 
 class FakeChildProcess extends EventEmitter {
+  exitCode: number | null = null;
+  killSignals: unknown[] = [];
+  stdout = new FakeStream();
+  stderr = new FakeStream();
+  command?: string;
+  args?: unknown;
+  options?: unknown;
+  onKill?: (signal: unknown) => void;
+
   constructor() {
     super();
-    this.exitCode = null;
-    this.killSignals = [];
-    this.stdout = new FakeStream();
-    this.stderr = new FakeStream();
   }
 
-  kill(signal) {
+  kill(signal: unknown): boolean {
     this.killSignals.push(signal);
     this.onKill?.(signal);
     return true;
   }
 
-  finish(code, signal) {
+  finish(code: number | null, signal: NodeJS.Signals | null): void {
     this.exitCode = code;
     this.emit("exit", code, signal);
     this.emit("close", code, signal);
