@@ -61,16 +61,98 @@ const DEFAULT_MAINTENANCE_ENTRY_ROUTES = Object.freeze(["#/catalog"]);
 const HARDWARE_READY_TIMEOUT_MS = 30_000;
 const HARDWARE_READY_POLL_MS = 500;
 
-function required(value, label) {
+type JsonRecord = Record<string, unknown>;
+type GuestInputRecord = JsonRecord;
+type HandoffRecord = JsonRecord;
+type MachineUiClientDependencies = {
+  discoverMachineUiTargetFn?: (options: {
+    endpoint?: string;
+    expectedTargetId?: unknown;
+    timeoutMs?: number;
+  }) => Promise<JsonRecord>;
+  webSocketFactory?: (url: string) => WebSocket;
+  cdpClientClass?: typeof CdpClient;
+};
+
+type RuntimeRestartDependencies = {
+  runPowerShell?: (
+    script: unknown,
+    options?: {
+      timeoutMs?: number;
+      spawnImpl?: typeof spawn;
+    },
+  ) => Promise<string>;
+  waitForDaemonReadyRefreshFn?: (
+    handoff: JsonRecord,
+    options?: unknown,
+  ) => Promise<unknown>;
+  discoverCanonicalMachineUiTargetFn?: (options: {
+    endpoint?: string;
+    timeoutMs?: number;
+  }) => Promise<JsonRecord>;
+  writeJsonFn?: (path: string, value: unknown) => void;
+};
+
+type AudioPersistenceDependencies = RuntimeRestartDependencies & {
+  daemonRequest?: (
+    handoff: HandoffRecord,
+    path: string,
+    body?: unknown,
+  ) => Promise<unknown>;
+  withUiClient?: (
+    handoff: HandoffRecord,
+    operation: (client: InstanceType<typeof CdpClient>) => Promise<unknown>,
+  ) => Promise<unknown>;
+  setUiAudioPreferences?: typeof setMachineUiAudioPreferences;
+  readUiAudioPreferences?: typeof readMachineUiAudioPreferences;
+  ensureMaintenanceExperienceTask?: typeof ensureMaintenanceExperienceTask;
+  restartRuntime?: (
+    handoff: HandoffRecord,
+    path: string,
+  ) => Promise<JsonRecord>;
+};
+
+type LocalOperationsGuestDependencies = {
+  readJson?: (path: string) => JsonRecord;
+  writeJson?: (path: string, value: unknown) => void;
+  daemonRequest?: (
+    handoff: HandoffRecord,
+    path: string,
+    body?: unknown,
+  ) => Promise<unknown>;
+  controlRequest?: (
+    input: GuestInputRecord,
+    path: string,
+    body?: JsonRecord,
+  ) => Promise<unknown>;
+  runInstalledSystemTouchKeyboardAcceptance?: (
+    ...args: unknown[]
+  ) => Promise<unknown>;
+  collectAudioPreferencePersistenceEvidence?: (
+    options: { handoff: HandoffRecord; handoffPath: string },
+    dependencies?: AudioPersistenceDependencies,
+  ) => Promise<JsonRecord>;
+  waitForSerialBoundary?: (
+    input: GuestInputRecord,
+    sessionId: string,
+    parsedOpcode: string,
+  ) => Promise<unknown>;
+  collectMaintenanceEntryEvidence?: (
+    handoff: HandoffRecord,
+    dependencies?: JsonRecord,
+  ) => Promise<JsonRecord>;
+};
+
+function required(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "")
     throw new Error(`${label} is required`);
   return value.trim();
 }
-function option(args, name) {
+function option(args: string[], name: string): string {
   const i = args.indexOf(`--${name}`);
   return required(i < 0 ? undefined : args[i + 1], `--${name}`);
 }
-function localPath(value) {
+function localPath(value: unknown): string {
   const path = required(value, "Windows path");
   return process.platform === "win32"
     ? path
@@ -78,7 +160,13 @@ function localPath(value) {
         `/mnt/${path[0].toLowerCase()}/${path.slice(3).replaceAll("\\", "/")}`,
       );
 }
-export function parseLocalOperationsGuestArgs(args) {
+export function parseLocalOperationsGuestArgs(args: string[]): {
+  mode: "full";
+  guestInputPath: string;
+  handoffPath: string;
+  outPath: string;
+  fixtureKey: string | null;
+} {
   if (option(args, "mode") !== "full") throw new Error("--mode must be full");
   return {
     mode: "full",
@@ -90,17 +178,21 @@ export function parseLocalOperationsGuestArgs(args) {
       : null,
   };
 }
-function readJson(path) {
+function readJson(path: string): JsonRecord {
   return JSON.parse(readFileSync(localPath(path), "utf8"));
 }
-function writeJson(path, value) {
+function writeJson(path: string, value: unknown): void {
   mkdirSync(dirname(localPath(path)), { recursive: true });
   writeFileSync(localPath(path), `${JSON.stringify(value, null, 2)}\n`);
 }
-async function json(url, options = {}) {
+async function json(
+  url: string,
+  options: JsonRecord = {},
+): Promise<unknown> {
   const response = await fetch(url, {
     ...options,
-    signal: options.signal ?? AbortSignal.timeout(30_000),
+    signal: (options.signal as AbortSignal | undefined) ??
+      AbortSignal.timeout(30_000),
   });
   const payload = await response.json().catch(() => null);
   if (!response.ok)
@@ -109,72 +201,101 @@ async function json(url, options = {}) {
     );
   return payload;
 }
-function daemonUrl(handoff) {
-  const url = required(handoff.daemon?.ready?.healthzUrl, "daemon healthzUrl");
+function daemonUrl(handoff: HandoffRecord): string {
+  const daemon = handoff.daemon as JsonRecord | undefined;
+  const ready = daemon?.ready as JsonRecord | undefined;
+  const url = required(ready?.healthzUrl, "daemon healthzUrl");
   if (!url.endsWith("/healthz"))
     throw new Error("daemon healthzUrl must end with /healthz");
   return url.slice(0, -"/healthz".length);
 }
-function daemon(handoff, path, body) {
+function daemon(
+  handoff: HandoffRecord,
+  path: string,
+  body?: unknown,
+): Promise<unknown> {
+  const daemon = handoff.daemon as JsonRecord | undefined;
+  const ready = daemon?.ready as JsonRecord | undefined;
   return json(`${daemonUrl(handoff)}${path}`, {
     method: body === undefined ? "GET" : "POST",
     headers: {
-      authorization: `Bearer ${required(handoff.daemon?.ready?.ipcToken, "daemon ipcToken")}`,
+      authorization: `Bearer ${required(ready?.ipcToken, "daemon ipcToken")}`,
       "content-type": "application/json",
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
 }
-function control(input, path, body = {}) {
+function control(
+  input: GuestInputRecord,
+  path: string,
+  body: JsonRecord = {},
+): Promise<unknown> {
+  const plane = input.hostControlPlane as JsonRecord | undefined;
   return json(
-    `${required(input.hostControlPlane?.endpoint, "hostControlPlane.endpoint")}${path}`,
+    `${required(plane?.endpoint, "hostControlPlane.endpoint")}${path}`,
     {
       method: "POST",
       headers: {
-        authorization: `Bearer ${required(input.hostControlPlane?.token, "hostControlPlane.token")}`,
+        authorization: `Bearer ${required(plane?.token, "hostControlPlane.token")}`,
         "content-type": "application/json",
       },
       body: JSON.stringify(body),
     },
   );
 }
-function lowerControllerBinding(snapshot) {
+function lowerControllerBinding(
+  snapshot: JsonRecord | null | undefined,
+): JsonRecord | null {
+  const roles = (snapshot?.roles ?? []) as unknown[];
   return (
-    snapshot?.roles?.find(
+    (roles.find(
       (role) =>
-        role?.role === "lower_controller" || role?.role === "lower-controller",
-    ) ?? null
+        (role as JsonRecord)?.role === "lower_controller" ||
+        (role as JsonRecord)?.role === "lower-controller",
+    ) as JsonRecord | undefined) ?? null
   );
 }
 export async function waitForLowerControllerReady(
-  handoff,
+  handoff: HandoffRecord,
   daemonRequest = daemon,
   {
     timeoutMs = HARDWARE_READY_TIMEOUT_MS,
     pollMs = HARDWARE_READY_POLL_MS,
     sleepFn = sleep,
+  }: {
+    timeoutMs?: number;
+    pollMs?: number;
+    sleepFn?: (milliseconds: number) => Promise<void>;
   } = {},
-) {
+): Promise<JsonRecord> {
   const deadline = Date.now() + timeoutMs;
-  let last = null;
+  let last: JsonRecord | null = null;
   do {
     const selfCheck = await daemonRequest(
       handoff,
       "/v1/hardware/self-check",
       {},
-    ).catch((error) => ({ error: error.message }));
+    ).catch((error) => ({
+      error: error instanceof Error ? error.message : String(error),
+    }));
     const bindings = await daemonRequest(
       handoff,
       "/v1/hardware-bindings",
-    ).catch((error) => ({ error: error.message }));
-    const lower = lowerControllerBinding(bindings);
-    last = { selfCheck, bindings, lowerController: lower };
+    ).catch((error) => ({
+      error: error instanceof Error ? error.message : String(error),
+    }));
+    const lower = lowerControllerBinding(bindings as JsonRecord | null);
+    last = {
+      selfCheck: selfCheck as JsonRecord,
+      bindings: bindings as JsonRecord,
+      lowerController: lower,
+    };
     if (
-      selfCheck?.online === true &&
-      selfCheck?.adapter === "serial" &&
+      (selfCheck as JsonRecord | null)?.online === true &&
+      (selfCheck as JsonRecord | null)?.adapter === "serial" &&
       lower?.ready === true &&
       typeof lower.currentPort === "string" &&
-      lower.currentPort === selfCheck.portPath
+      lower.currentPort === (selfCheck as JsonRecord | null)?.portPath
     ) {
       return last;
     }
@@ -184,12 +305,14 @@ export async function waitForLowerControllerReady(
     `lower controller did not become ready for local operations: ${JSON.stringify(last)}`,
   );
 }
-function boundedNumber(value, label) {
+function boundedNumber(value: unknown, label: string): number {
   const number = Number(value);
   if (!Number.isFinite(number)) throw new Error(`${label} must be finite`);
   return number;
 }
-export function normalizeAudioPreferences(value) {
+export function normalizeAudioPreferences(
+  value: JsonRecord | null | undefined,
+): JsonRecord {
   return {
     volume: Number(boundedNumber(value?.volume, "audio volume").toFixed(2)),
     cuesEnabled: Boolean(value?.cuesEnabled),
@@ -197,7 +320,10 @@ export function normalizeAudioPreferences(value) {
     transactionCuesEnabled: Boolean(value?.transactionCuesEnabled),
   };
 }
-export function audioPreferencesEqual(left, right) {
+export function audioPreferencesEqual(
+  left: JsonRecord | null | undefined,
+  right: JsonRecord | null | undefined,
+): boolean {
   const actual = normalizeAudioPreferences(left);
   const expected = normalizeAudioPreferences(right);
   return (
@@ -207,18 +333,20 @@ export function audioPreferencesEqual(left, right) {
     actual.transactionCuesEnabled === expected.transactionCuesEnabled
   );
 }
-function describeAudioPreferences(value) {
-  return JSON.stringify(normalizeAudioPreferences(value));
+function describeAudioPreferences(value: unknown): string {
+  return JSON.stringify(
+    normalizeAudioPreferences(value as JsonRecord | null | undefined),
+  );
 }
 async function waitForState(
-  label,
-  read,
-  accept,
-  describe = (value) => JSON.stringify(value),
+  label: string,
+  read: () => Promise<unknown>,
+  accept: (value: unknown) => boolean,
+  describe: (value: unknown) => string = (value) => JSON.stringify(value),
   timeoutMs = AUDIO_PREFERENCE_TIMEOUT_MS,
-) {
+): Promise<unknown> {
   const deadline = Date.now() + timeoutMs;
-  let last = null;
+  let last: unknown = null;
   do {
     last = await read();
     if (accept(last)) return last;
@@ -229,40 +357,75 @@ async function waitForState(
   );
 }
 async function waitForMatch(
-  label,
-  read,
-  expected,
+  label: string,
+  read: () => Promise<unknown>,
+  expected: JsonRecord | null | undefined,
   timeoutMs = AUDIO_PREFERENCE_TIMEOUT_MS,
-) {
+): Promise<JsonRecord> {
   return normalizeAudioPreferences(
-    await waitForState(
+    (await waitForState(
       label,
       read,
-      (last) => audioPreferencesEqual(last, expected),
+      (last) =>
+        audioPreferencesEqual(
+          last as JsonRecord | null | undefined,
+          expected,
+        ),
       describeAudioPreferences,
       timeoutMs,
-    ),
+    )) as JsonRecord | null | undefined,
   );
 }
-async function daemonRuntimeConfiguration(handoff, daemonRequest = daemon) {
+async function daemonRuntimeConfiguration(
+  handoff: HandoffRecord,
+  daemonRequest: (
+    handoff: HandoffRecord,
+    path: string,
+    body?: unknown,
+  ) => Promise<unknown> = daemon,
+): Promise<unknown> {
   return daemonRequest(handoff, "/v1/runtime-configuration");
 }
-async function readDaemonAudioPreferences(handoff, daemonRequest = daemon) {
+async function readDaemonAudioPreferences(
+  handoff: HandoffRecord,
+  daemonRequest: (
+    handoff: HandoffRecord,
+    path: string,
+    body?: unknown,
+  ) => Promise<unknown> = daemon,
+): Promise<JsonRecord> {
   const configuration = await daemonRuntimeConfiguration(
     handoff,
     daemonRequest,
   );
-  return normalizeAudioPreferences(configuration?.experience?.audio);
+  return normalizeAudioPreferences(
+    ((configuration as JsonRecord | null)?.experience as JsonRecord | undefined)
+      ?.audio as JsonRecord | undefined,
+  );
 }
-async function setDaemonAudioPreferences(handoff, preferences, daemonRequest) {
+async function setDaemonAudioPreferences(
+  handoff: HandoffRecord,
+  preferences: JsonRecord | null | undefined,
+  daemonRequest: (
+    handoff: HandoffRecord,
+    path: string,
+    body?: unknown,
+  ) => Promise<unknown>,
+): Promise<JsonRecord> {
   const configuration = await daemonRequest(
     handoff,
     "/v1/runtime-configuration/intents/audio-preferences",
     normalizeAudioPreferences(preferences),
   );
-  return normalizeAudioPreferences(configuration?.experience?.audio);
+  return normalizeAudioPreferences(
+    ((configuration as JsonRecord | null)?.experience as JsonRecord | undefined)
+      ?.audio as JsonRecord | undefined,
+  );
 }
-async function setRoute(client, route) {
+async function setRoute(
+  client: InstanceType<typeof CdpClient>,
+  route: string,
+): Promise<unknown> {
   await setCdpLocationHash(client, route);
   return waitForRoute(client, route, {
     timeoutMs: AUDIO_PREFERENCE_TIMEOUT_MS,
@@ -270,25 +433,34 @@ async function setRoute(client, route) {
     forbiddenRoutes: route.startsWith("#/maintenance") ? [] : undefined,
   });
 }
-export function maintenanceEntryRoutesForSaleView(saleView) {
-  const item = (saleView?.items ?? []).find(
+export function maintenanceEntryRoutesForSaleView(
+  saleView: JsonRecord | null | undefined,
+): string[] {
+  const items = ((saleView as JsonRecord | null)?.items ?? []) as unknown[];
+  const item = items.find(
     (candidate) =>
-      (typeof candidate?.catalogKey === "string" &&
-        candidate.catalogKey !== "") ||
-      (typeof candidate?.productId === "string" && candidate.productId !== ""),
+      (typeof (candidate as JsonRecord)?.catalogKey === "string" &&
+        String((candidate as JsonRecord)?.catalogKey ?? "") !== "") ||
+      (typeof (candidate as JsonRecord)?.productId === "string" &&
+        String((candidate as JsonRecord)?.productId ?? "") !== ""),
   );
+  const itemRecord = item as JsonRecord | undefined;
   const catalogKey =
-    typeof item?.catalogKey === "string" && item.catalogKey !== ""
-      ? item.catalogKey
-      : typeof item?.productId === "string" && item.productId !== ""
-        ? `product:${item.productId}`
+    typeof itemRecord?.catalogKey === "string" &&
+    String(itemRecord?.catalogKey ?? "") !== ""
+      ? String(itemRecord.catalogKey)
+      : typeof itemRecord?.productId === "string" &&
+          String(itemRecord?.productId ?? "") !== ""
+        ? `product:${String(itemRecord.productId)}`
         : null;
   return [
     ...DEFAULT_MAINTENANCE_ENTRY_ROUTES,
     ...(catalogKey ? [`#/products/${encodeURIComponent(catalogKey)}`] : []),
   ];
 }
-async function ensureMaintenanceExperienceTask(client) {
+async function ensureMaintenanceExperienceTask(
+  client: InstanceType<typeof CdpClient>,
+): Promise<void> {
   await setRoute(client, "#/maintenance?source=operator");
   await activateVisibleSelector(client, EXPERIENCE_TASK_SELECTOR, {
     kind: "touch",
@@ -309,11 +481,16 @@ async function ensureMaintenanceExperienceTask(client) {
           };
         })()`,
       ),
-    (value) => value?.visible === true && value?.selected === true,
+    (value) => {
+      const valueRecord = value as JsonRecord;
+      return valueRecord?.visible === true && valueRecord?.selected === true;
+    },
   );
 }
-export async function readMachineUiAudioPreferences(client) {
-  const value = await evaluateExpression(
+export async function readMachineUiAudioPreferences(
+  client: InstanceType<typeof CdpClient>,
+): Promise<JsonRecord> {
+  const value = (await evaluateExpression(
     client,
     `(() => {
       const cuesEnabled = document.querySelector(${JSON.stringify(AUDIO_SELECTORS.cuesEnabled)});
@@ -330,12 +507,16 @@ export async function readMachineUiAudioPreferences(client) {
         volume: Number(volume.value) / 100,
       };
     })()`,
-  );
+  )) as JsonRecord | null;
   if (!value)
     throw new Error("machine UI audio preference controls are unavailable");
   return normalizeAudioPreferences(value);
 }
-async function setMachineUiCheckbox(client, selector, expected) {
+async function setMachineUiCheckbox(
+  client: InstanceType<typeof CdpClient>,
+  selector: string,
+  expected: boolean,
+): Promise<void> {
   const readState = () =>
     evaluateExpression(
       client,
@@ -347,7 +528,7 @@ async function setMachineUiCheckbox(client, selector, expected) {
       })()`,
     );
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const current = await readState();
+    const current = (await readState()) as JsonRecord | null;
     if (current == null)
       throw new Error(`machine UI control is unavailable: ${selector}`);
     if (current.checked === expected && current.disabled === false) return;
@@ -355,7 +536,7 @@ async function setMachineUiCheckbox(client, selector, expected) {
       await waitForState(
         `machine UI checkbox ${selector} enabled`,
         readState,
-        (value) => value?.disabled === false,
+        (value) => (value as JsonRecord | null)?.disabled === false,
       );
     }
     await activateVisibleSelector(client, selector, {
@@ -367,7 +548,13 @@ async function setMachineUiCheckbox(client, selector, expected) {
       await waitForState(
         `machine UI checkbox ${selector}`,
         readState,
-        (value) => value?.checked === expected && value?.disabled === false,
+        (value) => {
+          const valueRecord = value as JsonRecord | null;
+          return (
+            valueRecord?.checked === expected &&
+            valueRecord?.disabled === false
+          );
+        },
       );
       return;
     } catch (error) {
@@ -375,12 +562,17 @@ async function setMachineUiCheckbox(client, selector, expected) {
     }
   }
 }
-async function setMachineUiVolumePercent(client, expectedVolume) {
+async function setMachineUiVolumePercent(
+  client: InstanceType<typeof CdpClient>,
+  expectedVolume: number,
+): Promise<void> {
   const percent = Math.round(
-    normalizeAudioPreferences({
-      ...MACHINE_AUDIO_DEFAULTS,
-      volume: expectedVolume,
-    }).volume * 100,
+    Number(
+      normalizeAudioPreferences({
+        ...MACHINE_AUDIO_DEFAULTS,
+        volume: expectedVolume,
+      }).volume,
+    ) * 100,
   );
   const readState = () =>
     evaluateExpression(
@@ -396,10 +588,14 @@ async function setMachineUiVolumePercent(client, expectedVolume) {
     const current = await waitForState(
       "machine UI volume control enabled",
       readState,
-      (value) => value != null && value.disabled === false,
+      (value) => {
+        const valueRecord = value as JsonRecord | null;
+        return valueRecord != null && valueRecord.disabled === false;
+      },
     );
-    if (current.value === percent) return;
-    const result = await evaluateExpression(
+    const currentRecord = current as JsonRecord;
+    if (currentRecord.value === percent) return;
+    const result = (await evaluateExpression(
       client,
       `(() => {
         const element = document.querySelector(${JSON.stringify(AUDIO_SELECTORS.volumePercent)});
@@ -409,13 +605,20 @@ async function setMachineUiVolumePercent(client, expectedVolume) {
         element.dispatchEvent(new Event("change", { bubbles: true }));
         return { value: Number(element.value), disabled: Boolean(element.disabled) };
       })()`,
-    );
-    if (!result) throw new Error("machine UI volume control is unavailable");
+    )) as JsonRecord | null;
+    if (!result)
+      throw new Error("machine UI volume control is unavailable");
     try {
       await waitForState(
         "machine UI volume",
         readState,
-        (value) => value?.value === percent && value?.disabled === false,
+        (value) => {
+          const valueRecord = value as JsonRecord;
+          return (
+            valueRecord?.value === percent &&
+            valueRecord?.disabled === false
+          );
+        },
       );
       return;
     } catch (error) {
@@ -423,25 +626,28 @@ async function setMachineUiVolumePercent(client, expectedVolume) {
     }
   }
 }
-export async function setMachineUiAudioPreferences(client, expected) {
+export async function setMachineUiAudioPreferences(
+  client: InstanceType<typeof CdpClient>,
+  expected: JsonRecord | null | undefined,
+): Promise<JsonRecord> {
   const target = normalizeAudioPreferences(expected);
   await ensureMaintenanceExperienceTask(client);
   await setMachineUiCheckbox(
     client,
     AUDIO_SELECTORS.cuesEnabled,
-    target.cuesEnabled,
+    Boolean(target.cuesEnabled),
   );
   await setMachineUiCheckbox(
     client,
     AUDIO_SELECTORS.presenceCuesEnabled,
-    target.presenceCuesEnabled,
+    Boolean(target.presenceCuesEnabled),
   );
   await setMachineUiCheckbox(
     client,
     AUDIO_SELECTORS.transactionCuesEnabled,
-    target.transactionCuesEnabled,
+    Boolean(target.transactionCuesEnabled),
   );
-  await setMachineUiVolumePercent(client, target.volume);
+  await setMachineUiVolumePercent(client, Number(target.volume));
   return waitForMatch(
     "machine UI audio preferences",
     () => readMachineUiAudioPreferences(client),
@@ -449,17 +655,28 @@ export async function setMachineUiAudioPreferences(client, expected) {
   );
 }
 export async function collectMaintenanceEntryEvidence(
-  handoff,
-  dependencies = {},
-) {
+  handoff: HandoffRecord,
+  dependencies: JsonRecord = {},
+): Promise<JsonRecord> {
+  const withMachineUiClientFn = dependencies.withUiClient as
+    | ((
+        runtimeHandoff: HandoffRecord,
+        operation: (client: InstanceType<typeof CdpClient>) => Promise<unknown>,
+      ) => Promise<unknown>)
+    | undefined;
   const withUiClientFn =
-    dependencies.withUiClient ??
+    withMachineUiClientFn ??
     ((runtimeHandoff, operation) =>
-      withMachineUiClient(runtimeHandoff, dependencies, operation));
-  return withUiClientFn(handoff, async (client) => {
-    const entries = [];
+      withMachineUiClient(
+        runtimeHandoff,
+        dependencies as MachineUiClientDependencies,
+        operation,
+      ));
+  return (await withUiClientFn(handoff, async (client) => {
+    const entries: unknown[] = [];
     const routes =
-      dependencies.maintenanceEntryRoutes ?? DEFAULT_MAINTENANCE_ENTRY_ROUTES;
+      (dependencies.maintenanceEntryRoutes as string[] | undefined) ??
+      DEFAULT_MAINTENANCE_ENTRY_ROUTES;
     for (const route of routes) {
       await setRoute(client, route);
       await sleep(800);
@@ -475,6 +692,7 @@ export async function collectMaintenanceEntryEvidence(
             pollMs: 150,
           },
         );
+        const activationRecord = activation as JsonRecord;
         await sleep(220);
         const currentRoute = await evaluateExpression(client, "location.hash", {
           timeoutMs: AUDIO_PREFERENCE_TIMEOUT_MS,
@@ -482,7 +700,7 @@ export async function collectMaintenanceEntryEvidence(
         attempts.push({
           attempt: index + 1,
           route: currentRoute,
-          center: activation.center,
+          center: activationRecord.center,
         });
         if (currentRoute === "#/maintenance?source=operator") {
           finalRoute = { route: currentRoute };
@@ -501,7 +719,7 @@ export async function collectMaintenanceEntryEvidence(
         );
       } catch (error) {
         throw new Error(
-          `${error.message}; attempts=${JSON.stringify(attempts)}`,
+          `${error instanceof Error ? error.message : String(error)}; attempts=${JSON.stringify(attempts)}`,
           { cause: error },
         );
       }
@@ -544,26 +762,33 @@ export async function collectMaintenanceEntryEvidence(
       });
     }
     return { entries, taskReturns };
-  });
+  })) as JsonRecord;
 }
 async function withMachineUiClient(
-  handoff,
+  handoff: HandoffRecord,
   {
     discoverMachineUiTargetFn = discoverCanonicalMachineUiTarget,
     webSocketFactory,
     cdpClientClass = CdpClient,
-  } = {},
-  operation,
-) {
-  const endpoint = required(handoff?.cdp?.endpoint, "handoff cdp endpoint");
-  const target = await discoverMachineUiTargetFn({
+  }: MachineUiClientDependencies = {},
+  operation: (
+    client: InstanceType<typeof CdpClient>,
+    target?: JsonRecord,
+  ) => Promise<unknown>,
+): Promise<unknown> {
+  const cdp = handoff?.cdp as JsonRecord | undefined;
+  const endpoint = required(cdp?.endpoint, "handoff cdp endpoint");
+  const target = (await discoverMachineUiTargetFn({
     endpoint,
-    expectedTargetId: handoff?.cdp?.targetId,
-  });
-  if (handoff?.cdp) handoff.cdp.targetId = target.id;
+    expectedTargetId: cdp?.targetId,
+  })) as JsonRecord;
+  if (cdp) cdp.targetId = target.id;
   const client = new cdpClientClass(
-    rewriteWebSocketDebuggerUrl(target.webSocketDebuggerUrl, endpoint),
-    { webSocketFactory },
+    rewriteWebSocketDebuggerUrl(
+      String(target.webSocketDebuggerUrl),
+      endpoint,
+    ),
+    { webSocketFactory: webSocketFactory as ((url: string) => WebSocket) | undefined },
   );
   await client.connect();
   await enablePageRuntime(client);
@@ -574,9 +799,15 @@ async function withMachineUiClient(
   }
 }
 async function runLocalPowerShell(
-  script,
-  { timeoutMs = AUDIO_PREFERENCE_TIMEOUT_MS, spawnImpl = spawn } = {},
-) {
+  script: unknown,
+  {
+    timeoutMs = AUDIO_PREFERENCE_TIMEOUT_MS,
+    spawnImpl = spawn,
+  }: {
+    timeoutMs?: number;
+    spawnImpl?: typeof spawn;
+  } = {},
+): Promise<string> {
   const encodedScript = Buffer.from(String(script), "utf16le").toString(
     "base64",
   );
@@ -600,10 +831,12 @@ async function runLocalPowerShell(
     stderr += String(chunk);
   });
   const result = await Promise.race([
-    new Promise((resolve, reject) => {
+    new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+      (resolve, reject) => {
       child.once("error", reject);
       child.once("close", (code, signal) => resolve({ code, signal }));
-    }),
+      },
+    ),
     sleep(timeoutMs).then(() => {
       child.kill("SIGTERM");
       throw new Error(`PowerShell timed out after ${timeoutMs}ms`);
@@ -749,59 +982,80 @@ if ($null -eq $ancestor) { throw 'listener_ancestor' }
 `.trim();
 }
 export function applyRestartedRuntimeHandoff(
-  handoff,
-  { ready, observedRuntime, target },
-) {
+  handoff: HandoffRecord,
+  {
+    ready,
+    observedRuntime,
+    target,
+  }: {
+    ready: JsonRecord;
+    observedRuntime: JsonRecord;
+    target: JsonRecord | null | undefined;
+  },
+): JsonRecord {
+  const observedDaemon = observedRuntime.daemon as JsonRecord | undefined;
+  const observedMachine = observedRuntime.machine as JsonRecord | undefined;
+  const observedCdp = observedRuntime.cdp as JsonRecord | undefined;
+  const handoffDaemon = handoff.daemon as JsonRecord | undefined;
+  const handoffMachine = handoff.machine as JsonRecord | undefined;
+  const handoffCdp = handoff.cdp as JsonRecord | undefined;
   const next = {
     ...handoff,
     daemon: {
-      ...handoff.daemon,
-      ...observedRuntime.daemon,
+      ...(handoffDaemon ?? {}),
+      ...(observedDaemon ?? {}),
       ready: { ...ready },
     },
     machine: {
-      ...handoff.machine,
-      ...observedRuntime.machine,
+      ...(handoffMachine ?? {}),
+      ...(observedMachine ?? {}),
     },
     cdp: {
-      ...handoff.cdp,
-      ...observedRuntime.cdp,
-      endpoint: observedRuntime.cdp.endpoint,
+      ...(handoffCdp ?? {}),
+      ...(observedCdp ?? {}),
+      endpoint: observedCdp?.endpoint,
       targetId: required(target?.id, "CDP target id"),
     },
   };
-  return next;
+  return next as JsonRecord;
 }
 async function refreshRestartedRuntimeHandoff(
-  handoff,
-  handoffPath,
+  handoff: HandoffRecord,
+  handoffPath: string,
   {
     previousGeneration,
-    waitForDaemonReadyRefreshFn = waitForDaemonReadyRefresh,
+    waitForDaemonReadyRefreshFn = waitForDaemonReadyRefresh as (
+      handoff: JsonRecord,
+      options?: unknown,
+    ) => Promise<unknown>,
     discoverCanonicalMachineUiTargetFn = discoverCanonicalMachineUiTarget,
     runPowerShell = runLocalPowerShell,
     writeJsonFn = writeJson,
-  } = {},
-) {
+  }: RuntimeRestartDependencies & { previousGeneration?: unknown } = {},
+): Promise<JsonRecord> {
   const baselineGeneration = required(
-    previousGeneration ?? handoff.daemon?.ready?.generation,
+    previousGeneration ??
+      ((handoff.daemon as JsonRecord | undefined)?.ready as JsonRecord | undefined)
+        ?.generation,
     "daemon ready generation before restart",
   );
-  let ready = null;
+  let ready: JsonRecord | null = null;
   const deadline = Date.now() + AUDIO_PREFERENCE_TIMEOUT_MS;
   do {
-    ready = await waitForDaemonReadyRefreshFn(handoff);
+    ready = (await waitForDaemonReadyRefreshFn(handoff)) as JsonRecord;
     if (ready.generation !== baselineGeneration) break;
     await sleep(200);
   } while (Date.now() < deadline);
   if (!ready || ready.generation === baselineGeneration) {
     throw new Error("daemon ready generation did not advance after restart");
   }
-  let target = null;
+  let target: JsonRecord | null = null;
   do {
     try {
       target = await discoverCanonicalMachineUiTargetFn({
-        endpoint: handoff?.cdp?.endpoint ?? CANONICAL_CDP_ENDPOINT,
+        endpoint:
+          String((handoff?.cdp as JsonRecord | undefined)?.endpoint ?? "") ||
+          CANONICAL_CDP_ENDPOINT,
         timeoutMs: 2_000,
       });
       break;
@@ -812,7 +1066,7 @@ async function refreshRestartedRuntimeHandoff(
   } while (Date.now() < deadline);
   const observedRuntime = JSON.parse(
     await runPowerShell(buildInstalledRuntimeObservationScript()),
-  );
+  ) as JsonRecord;
   const next = applyRestartedRuntimeHandoff(handoff, {
     ready,
     observedRuntime,
@@ -822,30 +1076,43 @@ async function refreshRestartedRuntimeHandoff(
   handoff.machine = next.machine;
   handoff.cdp = next.cdp;
   writeJsonFn(handoffPath, handoff);
+  const handoffDaemon = handoff.daemon as JsonRecord;
+  const handoffMachine = handoff.machine as JsonRecord;
+  const handoffCdp = handoff.cdp as JsonRecord;
   return {
-    ready: { ...handoff.daemon.ready },
-    machine: { ...handoff.machine },
-    daemon: { ...handoff.daemon },
-    cdp: { ...handoff.cdp },
+    ready: { ...(handoffDaemon.ready as JsonRecord) },
+    machine: { ...handoffMachine },
+    daemon: { ...handoffDaemon },
+    cdp: { ...handoffCdp },
   };
 }
 async function restartInstalledRuntime(
-  handoff,
-  handoffPath,
-  dependencies = {},
-) {
+  handoff: HandoffRecord,
+  handoffPath: string,
+  dependencies: RuntimeRestartDependencies = {},
+): Promise<JsonRecord> {
   const runPowerShell = dependencies.runPowerShell ?? runLocalPowerShell;
   const waitForDaemonReadyRefreshFn =
-    dependencies.waitForDaemonReadyRefreshFn ?? waitForDaemonReadyRefresh;
-  const readyBeforeRestart = await waitForDaemonReadyRefreshFn(handoff);
+    dependencies.waitForDaemonReadyRefreshFn ??
+    (waitForDaemonReadyRefresh as (
+      handoff: JsonRecord,
+      options?: unknown,
+    ) => Promise<unknown>);
+  const readyBeforeRestart = (await waitForDaemonReadyRefreshFn(
+    handoff,
+  )) as JsonRecord;
   await runPowerShell(
     buildInstalledRuntimeRestartScript({
-      daemonPath: handoff.daemon?.executablePath ?? CANONICAL_DAEMON_PATH,
+      daemonPath:
+        String((handoff.daemon as JsonRecord | undefined)?.executablePath ?? "") ||
+        CANONICAL_DAEMON_PATH,
       daemonDataDirectory: required(
-        handoff.daemon?.dataDirectory,
+        (handoff.daemon as JsonRecord | undefined)?.dataDirectory,
         "handoff daemon dataDirectory",
       ),
-      machinePath: handoff.machine?.executablePath ?? CANONICAL_MACHINE_PATH,
+      machinePath:
+        String((handoff.machine as JsonRecord | undefined)?.executablePath ?? "") ||
+        CANONICAL_MACHINE_PATH,
     }),
   );
   return refreshRestartedRuntimeHandoff(handoff, handoffPath, {
@@ -856,14 +1123,18 @@ async function restartInstalledRuntime(
   });
 }
 export async function collectAudioPreferencePersistenceEvidence(
-  { handoff, handoffPath },
-  dependencies = {},
-) {
+  { handoff, handoffPath }: { handoff: HandoffRecord; handoffPath: string },
+  dependencies: AudioPersistenceDependencies = {},
+): Promise<JsonRecord> {
   const daemonRequest = dependencies.daemonRequest ?? daemon;
   const withUiClientFn =
     dependencies.withUiClient ??
     ((runtimeHandoff, operation) =>
-      withMachineUiClient(runtimeHandoff, dependencies, operation));
+      withMachineUiClient(
+        runtimeHandoff,
+        dependencies as MachineUiClientDependencies,
+        operation,
+      ));
   const setUiAudioPreferences =
     dependencies.setUiAudioPreferences ?? setMachineUiAudioPreferences;
   const readUiAudioPreferences =
@@ -877,10 +1148,10 @@ export async function collectAudioPreferencePersistenceEvidence(
       restartInstalledRuntime(runtimeHandoff, path, dependencies));
   const target = { ...AUDIO_PERSISTENCE_TARGET };
   const defaults = { ...MACHINE_AUDIO_DEFAULTS };
-  let activeHandoff = handoff;
-  let restoreError = null;
+  let activeHandoff: HandoffRecord = handoff;
+  let restoreError: unknown = null;
   let customApplied = false;
-  const evidence = {
+  const evidence: JsonRecord = {
     target,
     defaults,
     preRestart: null,
@@ -910,11 +1181,12 @@ export async function collectAudioPreferencePersistenceEvidence(
       activeHandoff,
       handoffPath,
     );
+    const restartedRuntime = evidence.restartedRuntime as JsonRecord;
     activeHandoff = {
       ...activeHandoff,
-      daemon: evidence.restartedRuntime.daemon,
-      machine: evidence.restartedRuntime.machine,
-      cdp: evidence.restartedRuntime.cdp,
+      daemon: restartedRuntime.daemon,
+      machine: restartedRuntime.machine,
+      cdp: restartedRuntime.cdp,
     };
     handoff.daemon = activeHandoff.daemon;
     handoff.machine = activeHandoff.machine;
@@ -941,7 +1213,7 @@ export async function collectAudioPreferencePersistenceEvidence(
     );
     return evidence;
   } finally {
-    if (!customApplied) return;
+    if (!customApplied) return evidence;
     try {
       evidence.restoredDefaults = await withUiClientFn(
         activeHandoff,
@@ -985,114 +1257,162 @@ export async function collectAudioPreferencePersistenceEvidence(
   }
 }
 
-export function serialBoundaryWaitRequest(parsedOpcode) {
+export function serialBoundaryWaitRequest(parsedOpcode: string): JsonRecord {
   return {
     parsedOpcode,
     timeoutMs: 30_000,
   };
 }
 
-async function waitForSerialBoundary(input, sessionId, parsedOpcode) {
+async function waitForSerialBoundary(
+  input: GuestInputRecord,
+  sessionId: string,
+  parsedOpcode: string,
+): Promise<unknown> {
   return control(
     input,
     `/v1/serial-sessions/${sessionId}/wait-frame`,
     serialBoundaryWaitRequest(parsedOpcode),
   );
 }
-export function selectPlanogramSlot(saleView, fixture) {
+export function selectPlanogramSlot(
+  saleView: JsonRecord | null | undefined,
+  fixture: JsonRecord | null | undefined,
+): JsonRecord {
   const slotId = required(fixture?.slotId, "fixture.slotId");
-  const item = (saleView?.items ?? []).find(
-    (entry) => entry?.slotId === slotId,
+  const items = ((saleView as JsonRecord | null)?.items ?? []) as unknown[];
+  const item = items.find(
+    (entry) => (entry as JsonRecord)?.slotId === slotId,
   );
+  const itemRecord = item as JsonRecord | undefined;
   if (
-    !item?.inventoryId ||
+    !itemRecord?.inventoryId ||
     !saleView?.planogramVersion ||
-    !Number.isInteger(item.rowNo) ||
-    !Number.isInteger(item.cellNo)
+    !Number.isInteger(itemRecord.rowNo) ||
+    !Number.isInteger(itemRecord.cellNo)
   )
     throw new Error(`active planogram fixture slot ${slotId} is unavailable`);
   return {
     slotDisplayLabel: required(
-      item.slotDisplayLabel,
+      itemRecord.slotDisplayLabel,
       "sale-view slotDisplayLabel",
     ),
     slotId,
-    inventoryId: item.inventoryId,
+    inventoryId: itemRecord.inventoryId,
     planogramVersion: saleView.planogramVersion,
-    rowNo: item.rowNo,
-    cellNo: item.cellNo,
+    rowNo: itemRecord.rowNo,
+    cellNo: itemRecord.cellNo,
   };
 }
-export function manualDispenseFrames(beforeEvidence, afterEvidence) {
-  const beforeCount = beforeEvidence?.rawFrames?.length ?? 0;
-  return (afterEvidence?.rawFrames ?? []).slice(beforeCount);
+export function manualDispenseFrames(
+  beforeEvidence: JsonRecord | null | undefined,
+  afterEvidence: JsonRecord | null | undefined,
+): unknown[] {
+  const beforeCount =
+    (beforeEvidence?.rawFrames as unknown[] | undefined)?.length ?? 0;
+  return ((afterEvidence?.rawFrames ?? []) as unknown[]).slice(beforeCount);
 }
 
-export function localEnvironmentControlFrames(beforeEvidence, afterEvidence) {
+export function localEnvironmentControlFrames(
+  beforeEvidence: JsonRecord | null | undefined,
+  afterEvidence: JsonRecord | null | undefined,
+): unknown[] {
   return manualDispenseFrames(beforeEvidence, afterEvidence).filter(
-    (frame) => frame?.parsedOpcode === "B3",
+    (frame) => (frame as JsonRecord)?.parsedOpcode === "B3",
   );
 }
 
-export function validateLocalOperationsEvidence(report) {
+export function validateLocalOperationsEvidence(
+  report: JsonRecord | null | undefined,
+): JsonRecord {
   if (report?.schemaVersion !== SCHEMA_VERSION || report.ok !== true)
     throw new Error("local operations report is not successful");
+  const boundaries = report.boundaries as JsonRecord | undefined;
+  const planogram = report.planogram as JsonRecord | undefined;
+  const manualDispense = report.manualDispense as JsonRecord | undefined;
+  const localEnvironmentControl = report.localEnvironmentControl as
+    | JsonRecord
+    | undefined;
+  const maintenanceEntry = report.maintenanceEntry as JsonRecord | undefined;
   if (
-    report.boundaries?.daemon !== true ||
-    report.boundaries?.hardwareSelfCheck !== true ||
-    report.boundaries?.serial !== true ||
-    report.planogram?.canonical !== true
+    boundaries?.daemon !== true ||
+    boundaries?.hardwareSelfCheck !== true ||
+    boundaries?.serial !== true ||
+    planogram?.canonical !== true
   )
     throw new Error("local operations boundary evidence is incomplete");
   if (
-    report.planogram?.slotId == null ||
-    report.manualDispense?.slotId !== report.planogram.slotId
+    planogram?.slotId == null ||
+    manualDispense?.slotId !== planogram?.slotId
   )
     throw new Error("manual dispense slotId must match the planogram slotId");
   if (
-    report.manualDispense?.slotDisplayLabel == null ||
+    manualDispense?.slotDisplayLabel == null ||
     !["completed", "failed", "result_unknown"].includes(
-      report.manualDispense.outcome,
+      String(manualDispense.outcome),
     )
   )
     throw new Error("manual dispense diagnostic outcome is missing");
   if (
-    report.localEnvironmentControl?.request?.ventSpeed !== 3 ||
-    report.localEnvironmentControl?.result?.success !== true ||
-    report.localEnvironmentControl?.protocolFrame?.parsedOpcode !== "B3"
+    (localEnvironmentControl?.request as JsonRecord | undefined)?.ventSpeed !==
+      3 ||
+    (localEnvironmentControl?.result as JsonRecord | undefined)?.success !==
+      true ||
+    (localEnvironmentControl?.protocolFrame as JsonRecord | undefined)
+      ?.parsedOpcode !== "B3"
   )
     throw new Error("local environment control evidence is incomplete");
   if (
-    !Array.isArray(report.maintenanceEntry?.entries) ||
-    report.maintenanceEntry.entries.length <
+    !Array.isArray(maintenanceEntry?.entries) ||
+    (maintenanceEntry?.entries as unknown[]).length <
       DEFAULT_MAINTENANCE_ENTRY_ROUTES.length ||
-    report.maintenanceEntry.entries.some(
-      (entry) =>
-        entry?.ok !== true ||
-        typeof entry.route !== "string" ||
-        entry.finalRoute !== "#/maintenance?source=operator",
+    (maintenanceEntry?.entries as unknown[]).some(
+      (entry) => {
+        const entryRecord = entry as JsonRecord;
+        return (
+          entryRecord?.ok !== true ||
+          typeof entryRecord.route !== "string" ||
+          entryRecord.finalRoute !== "#/maintenance?source=operator"
+        );
+      },
     ) ||
     !DEFAULT_MAINTENANCE_ENTRY_ROUTES.every((route) =>
-      report.maintenanceEntry.entries.some((entry) => entry.route === route),
+      (maintenanceEntry?.entries as unknown[]).some(
+        (entry) => (entry as JsonRecord).route === route,
+      ),
     ) ||
-    !Array.isArray(report.maintenanceEntry?.taskReturns) ||
-    report.maintenanceEntry.taskReturns.length < MAINTENANCE_TASK_KEYS.length ||
-    report.maintenanceEntry.taskReturns.some(
-      (entry) =>
-        entry?.ok !== true ||
-        !MAINTENANCE_TASK_KEYS.includes(entry.task) ||
-        entry.finalRoute !== "#/catalog",
+    !Array.isArray(maintenanceEntry?.taskReturns) ||
+    (maintenanceEntry?.taskReturns as unknown[]).length <
+      MAINTENANCE_TASK_KEYS.length ||
+    (maintenanceEntry?.taskReturns as unknown[]).some(
+      (entry) => {
+        const entryRecord = entry as JsonRecord;
+        return (
+          entryRecord?.ok !== true ||
+          !MAINTENANCE_TASK_KEYS.includes(String(entryRecord.task)) ||
+          entryRecord.finalRoute !== "#/catalog"
+        );
+      },
     )
   )
     throw new Error("maintenance entry evidence is incomplete");
   return {
-    slotId: report.planogram.slotId,
-    slotDisplayLabel: report.manualDispense.slotDisplayLabel,
-    outcome: report.manualDispense.outcome,
+    slotId: planogram?.slotId,
+    slotDisplayLabel: manualDispense?.slotDisplayLabel,
+    outcome: manualDispense?.outcome,
     canonical: true,
   };
 }
-export async function runLocalOperationsGuest(options, dependencies = {}) {
+export async function runLocalOperationsGuest(
+  options: {
+    mode: string;
+    guestInputPath: string;
+    handoffPath: string;
+    outPath: string;
+    fixtureKey: string | null;
+  },
+  dependencies: LocalOperationsGuestDependencies = {},
+): Promise<JsonRecord> {
   const readJsonFn = dependencies.readJson ?? readJson;
   const writeJsonFn = dependencies.writeJson ?? writeJson;
   const daemonRequest = dependencies.daemonRequest ?? daemon;
@@ -1108,10 +1428,12 @@ export async function runLocalOperationsGuest(options, dependencies = {}) {
   const input = readJsonFn(options.guestInputPath);
   const handoff = readJsonFn(options.handoffPath);
   const runId = required(input.runId, "runId");
+  const fixtureAllocation = input.fixtureAllocation as JsonRecord | undefined;
   const fixture =
-    input.fixtureAllocation?.[options.fixtureKey ?? "localOperations"] ??
-    input.fixtureAllocation?.sale;
-  const report = {
+    fixtureAllocation?.[options.fixtureKey ?? "localOperations"] ??
+    (fixtureAllocation?.sale as JsonRecord | undefined);
+  const fixtureRecord = fixture as JsonRecord | undefined;
+  const report: JsonRecord = {
     schemaVersion: SCHEMA_VERSION,
     ok: false,
     mode: options.mode,
@@ -1127,27 +1449,30 @@ export async function runLocalOperationsGuest(options, dependencies = {}) {
     audioPreferencePersistence: null,
     maintenanceEntry: null,
   };
-  let session = null;
+  let session: JsonRecord | null = null;
   try {
-    session = await controlRequest(input, "/v1/serial-sessions/start", {
+    session = (await controlRequest(input, "/v1/serial-sessions/start", {
       runId,
       machineCode: required(input.machineCode, "machineCode"),
       targetIdentity: required(
-        input.hostControlPlane.targetIdentity,
+        (input.hostControlPlane as JsonRecord).targetIdentity,
         "hostControlPlane.targetIdentity",
       ),
       runtimeBase: required(
-        input.hostControlPlane.runtimeBaseIdentity,
+        (input.hostControlPlane as JsonRecord).runtimeBaseIdentity,
         "hostControlPlane.runtimeBaseIdentity",
       ),
       saleCorrelationId: `sale-correlation://${runId.toLowerCase()}.local-operations`,
-    });
+    })) as JsonRecord;
+    const activeSession = session as JsonRecord;
     report.handoffSerialSessionId = required(
-      session?.sessionId,
+      activeSession.sessionId,
       "local operations serial session id",
     );
-    const saleView = await daemonRequest(handoff, "/v1/sale-view");
-    const slot = selectPlanogramSlot(saleView, fixture);
+    const saleView = (await daemonRequest(handoff, "/v1/sale-view")) as
+      | JsonRecord
+      | null;
+    const slot = selectPlanogramSlot(saleView, fixtureRecord);
     report.planogram = {
       canonical: true,
       planogramVersion: slot.planogramVersion,
@@ -1157,13 +1482,14 @@ export async function runLocalOperationsGuest(options, dependencies = {}) {
       cellNo: slot.cellNo,
     };
     report.hardware = await waitForLowerControllerReady(handoff, daemonRequest);
-    report.boundaries.daemon = true;
-    report.boundaries.hardwareSelfCheck =
-      report.hardware.selfCheck?.online === true;
-    const beforeEvidence = await controlRequest(
+    const hardware = report.hardware as JsonRecord;
+    (report.boundaries as JsonRecord).daemon = true;
+    (report.boundaries as JsonRecord).hardwareSelfCheck =
+      (hardware.selfCheck as JsonRecord | undefined)?.online === true;
+    const beforeEvidence = (await controlRequest(
       input,
-      `/v1/serial-sessions/${session.sessionId}/evidence`,
-    );
+      `/v1/serial-sessions/${String(activeSession.sessionId)}/evidence`,
+    )) as JsonRecord;
     const diagnosticPromise = daemonRequest(
       handoff,
       "/v1/maintenance/manual-dispense-diagnostic",
@@ -1174,61 +1500,80 @@ export async function runLocalOperationsGuest(options, dependencies = {}) {
         timeoutSeconds: 15,
       },
     );
-    await waitForSerialBoundaryFn(input, session.sessionId, "VEND");
+    await waitForSerialBoundaryFn(
+      input,
+      String(activeSession.sessionId),
+      "VEND",
+    );
     await controlRequest(
       input,
-      `/v1/serial-sessions/${session.sessionId}/release-f0`,
+      `/v1/serial-sessions/${String(activeSession.sessionId)}/release-f0`,
     );
-    await waitForSerialBoundaryFn(input, session.sessionId, "F0");
-    await waitForSerialBoundaryFn(input, session.sessionId, "F1");
+    await waitForSerialBoundaryFn(input, String(activeSession.sessionId), "F0");
+    await waitForSerialBoundaryFn(input, String(activeSession.sessionId), "F1");
     await controlRequest(
       input,
-      `/v1/serial-sessions/${session.sessionId}/release-f2`,
+      `/v1/serial-sessions/${String(activeSession.sessionId)}/release-f2`,
     );
-    await waitForSerialBoundaryFn(input, session.sessionId, "F2");
-    const diagnostic = await diagnosticPromise;
+    await waitForSerialBoundaryFn(input, String(activeSession.sessionId), "F2");
+    const diagnostic = (await diagnosticPromise) as JsonRecord;
     report.manualDispense = {
-      ...diagnostic,
+      ...(diagnostic as JsonRecord),
       slotId: slot.slotId,
       slotDisplayLabel: slot.slotDisplayLabel,
       canonicalSlot: slot,
     };
-    const evidence = await controlRequest(
+    const evidence = (await controlRequest(
       input,
-      `/v1/serial-sessions/${session.sessionId}/evidence`,
-    );
+      `/v1/serial-sessions/${String(activeSession.sessionId)}/evidence`,
+    )) as JsonRecord;
     report.serial = evidence;
     const operationFrames = manualDispenseFrames(beforeEvidence, evidence);
-    report.serial.operationFrames = operationFrames;
-    report.boundaries.serial = ["VEND", "F0", "F1", "AF", "F2"].every(
+    (report.serial as JsonRecord).operationFrames = operationFrames;
+    (report.boundaries as JsonRecord).serial = [
+      "VEND",
+      "F0",
+      "F1",
+      "AF",
+      "F2",
+    ].every(
       (opcode) =>
-        operationFrames.some((frame) => frame?.parsedOpcode === opcode),
+        operationFrames.some(
+          (frame) => (frame as JsonRecord)?.parsedOpcode === opcode,
+        ),
     );
-    if (diagnostic.outcome !== "completed" || !report.boundaries.serial)
+    if (
+      diagnostic.outcome !== "completed" ||
+      !(report.boundaries as JsonRecord).serial
+    )
       throw new Error(
-        `manual dispense did not complete the lower-controller protocol: ${JSON.stringify({ outcome: diagnostic.outcome, frames: operationFrames.map((frame) => frame?.parsedOpcode) })}`,
+        `manual dispense did not complete the lower-controller protocol: ${JSON.stringify({ outcome: diagnostic.outcome, frames: operationFrames.map((frame) => (frame as JsonRecord)?.parsedOpcode) })}`,
       );
-    const environmentBeforeEvidence = await controlRequest(
+    const environmentBeforeEvidence = (await controlRequest(
       input,
-      `/v1/serial-sessions/${session.sessionId}/evidence`,
-    );
+      `/v1/serial-sessions/${String(activeSession.sessionId)}/evidence`,
+    )) as JsonRecord;
     const environmentResult = await daemonRequest(
       handoff,
       "/v1/maintenance/environment-control",
       { ventSpeed: 3 },
     );
-    await waitForSerialBoundaryFn(input, session.sessionId, "B3");
-    const environmentAfterEvidence = await controlRequest(
+    await waitForSerialBoundaryFn(
       input,
-      `/v1/serial-sessions/${session.sessionId}/evidence`,
+      String(activeSession.sessionId),
+      "B3",
     );
+    const environmentAfterEvidence = (await controlRequest(
+      input,
+      `/v1/serial-sessions/${String(activeSession.sessionId)}/evidence`,
+    )) as JsonRecord;
     const environmentFrames = localEnvironmentControlFrames(
       environmentBeforeEvidence,
       environmentAfterEvidence,
     );
     report.localEnvironmentControl = {
       request: { ventSpeed: 3 },
-      result: environmentResult,
+      result: environmentResult as JsonRecord,
       protocolFrame: environmentFrames.at(-1) ?? null,
       protocolFrames: environmentFrames,
     };
@@ -1236,23 +1581,22 @@ export async function runLocalOperationsGuest(options, dependencies = {}) {
       guestInput: input,
       handoff,
       handoffPath: options.handoffPath,
-      sessionId: session.sessionId,
+      sessionId: String(activeSession.sessionId),
       control: controlRequest,
       writeJsonFile: writeJsonFn,
     });
     report.serialSessionReplacement = {
-      previousControlPlaneSessionId: session.sessionId,
+      previousControlPlaneSessionId: String(activeSession.sessionId),
       replacementControlPlaneSessionId: required(
         replacement?.replacement?.sessionId,
         "local operations replacement serial session id",
       ),
     };
-    session = replacement.replacement;
-    report.handoffSerialSessionId = session.sessionId;
+    session = replacement.replacement as JsonRecord;
+    report.handoffSerialSessionId = (session as JsonRecord).sessionId;
     report.hardware = await waitForLowerControllerReady(handoff, daemonRequest);
     report.audioPreferencePersistence = await runAudioPreferencePersistence(
       {
-        input,
         handoff,
         handoffPath: options.handoffPath,
       },
