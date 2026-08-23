@@ -5,11 +5,23 @@ import { inflateSync } from "node:zlib";
 
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 
-function malformed(message) {
+type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? (value as unknown[]) : [];
+}
+
+function malformed(message: string): JsonRecord {
   return { ok: false, kind: "malformed", message };
 }
 
-function paeth(left, above, upperLeft) {
+function paeth(left: number, above: number, upperLeft: number): number {
   const prediction = left + above - upperLeft;
   const leftDistance = Math.abs(prediction - left);
   const aboveDistance = Math.abs(prediction - above);
@@ -19,16 +31,27 @@ function paeth(left, above, upperLeft) {
   return aboveDistance <= upperLeftDistance ? above : upperLeft;
 }
 
-export function inspectPng(bytes, { challenge = null } = {}) {
+export function inspectPng(
+  bytes: Buffer,
+  {
+    challenge = null,
+  }: {
+    challenge?: {
+      colorRgb?: unknown;
+      region?: JsonRecord;
+      matchingPixelCount?: unknown;
+    } | null;
+  } = {},
+): JsonRecord {
   if (
     !Buffer.isBuffer(bytes) ||
     bytes.length < 45 ||
     !bytes.subarray(0, 8).equals(PNG_SIGNATURE)
   )
     return malformed("capture must be a complete PNG buffer");
-  let width;
-  let height;
-  let colorType;
+  let width: number | undefined;
+  let height: number | undefined;
+  let colorType: number | undefined;
   let idat = Buffer.alloc(0);
   let offset = 8;
   while (offset < bytes.length) {
@@ -70,22 +93,25 @@ export function inspectPng(bytes, { challenge = null } = {}) {
   const channels = colorType === 6 ? 4 : 3;
   const stride = width * channels;
   if (challenge !== null) {
-    const { colorRgb, region } = challenge;
+    const colorRgb = arrayValue(challenge.colorRgb);
+    const region = recordValue(challenge.region);
     if (
       !Array.isArray(colorRgb) ||
       colorRgb.length !== 3 ||
-      colorRgb.some((component) => !Number.isInteger(component)) ||
+      colorRgb.some(
+        (component: unknown) => !Number.isInteger(component),
+      ) ||
       !region ||
       !Number.isInteger(region.x) ||
       !Number.isInteger(region.y) ||
       !Number.isInteger(region.width) ||
       !Number.isInteger(region.height) ||
-      region.x < 0 ||
-      region.y < 0 ||
-      region.width < 1 ||
-      region.height < 1 ||
-      region.x + region.width > width ||
-      region.y + region.height > height
+      Number(region.x) < 0 ||
+      Number(region.y) < 0 ||
+      Number(region.width) < 1 ||
+      Number(region.height) < 1 ||
+      Number(region.x) + Number(region.width) > width ||
+      Number(region.y) + Number(region.height) > height
     )
       return malformed("PNG challenge region is invalid");
   }
@@ -95,7 +121,7 @@ export function inspectPng(bytes, { challenge = null } = {}) {
   } catch {
     return malformed("PNG image data cannot be decompressed");
   }
-  if (raw.length !== height * (stride + 1))
+    if (raw.length !== height * (stride + 1))
     return malformed("PNG scanlines are invalid");
   let previous = Buffer.alloc(stride);
   const pixels = new Set();
@@ -129,13 +155,18 @@ export function inspectPng(bytes, { challenge = null } = {}) {
       if (channels === 3 || pixel[3] > 0) nonTransparentPixelCount += 1;
       if (
         challenge !== null &&
-        column >= challenge.region.x &&
-        column < challenge.region.x + challenge.region.width &&
-        row >= challenge.region.y &&
-        row < challenge.region.y + challenge.region.height &&
-        pixel[0] === challenge.colorRgb[0] &&
-        pixel[1] === challenge.colorRgb[1] &&
-        pixel[2] === challenge.colorRgb[2] &&
+        column >= Number(recordValue(challenge.region).x) &&
+        column <
+          Number(recordValue(challenge.region).x) +
+            Number(recordValue(challenge.region).width) &&
+        row >= Number(recordValue(challenge.region).y) &&
+        row <
+          Number(recordValue(challenge.region).y) +
+            Number(recordValue(challenge.region).height) &&
+        pixel[0] ===
+          Number(arrayValue(challenge.colorRgb)[0]) &&
+        pixel[1] === Number(arrayValue(challenge.colorRgb)[1]) &&
+        pixel[2] === Number(arrayValue(challenge.colorRgb)[2]) &&
         (channels === 3 || pixel[3] > 0)
       )
         matchingChallengePixelCount += 1;
@@ -167,12 +198,12 @@ export function inspectExportedDisplayCapture({
   evidence: Record<string, unknown>;
   capture: Record<string, unknown>;
   challenge?: Record<string, unknown> | null;
-}) {
-  if (!/^[a-f0-9]{64}\.png$/.test(evidence?.fileName ?? ""))
+}): JsonRecord {
+  if (!/^[a-f0-9]{64}\.png$/.test(String(evidence?.fileName ?? "")))
     throw new Error(
       "display evidence must use a digest-bound relative PNG file name",
     );
-  const bytes = readFileSync(join(directory, evidence.fileName));
+  const bytes = readFileSync(join(directory, String(evidence.fileName)));
   const digest = createHash("sha256").update(bytes).digest("hex");
   if (
     evidence.identity !== `runtime-evidence://sha256/${digest}` ||
@@ -181,7 +212,7 @@ export function inspectExportedDisplayCapture({
     throw new Error(
       "display evidence file digest does not match its logical identity",
     );
-  const inspected = inspectPng(bytes, { challenge });
+  const inspected = recordValue(inspectPng(bytes, { challenge }));
   if (!inspected.ok || inspected.nonTransparentPixelCount === 0)
     throw new Error(
       `display PNG capture is ${inspected.kind}: ${inspected.message ?? "transparent"}`,
