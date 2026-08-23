@@ -840,7 +840,9 @@ export function validateFastRouteStressSaleEvidence(
     .map((frame, index) =>
       validateProductionRawSerialFrame(frame, `raw serial frame ${index + 1}`),
     )
-    .filter((frame) => ["VEND", "F0", "F1", "F2"].includes(frame.parsedOpcode));
+    .filter((frame) =>
+      ["VEND", "F0", "F1", "F2"].includes(String(frame.parsedOpcode)),
+    );
   const protocolFrames = observedProtocolFrames.filter(
     (frame, index) =>
       index === 0 ||
@@ -900,7 +902,9 @@ export function validateFastRouteStressSaleEvidence(
     frameBoundaries[0].capturedAt,
     "host raw F0 capturedAt",
   );
-  timestamp(frameBoundaries.at(-1).capturedAt, "host raw F2 capturedAt");
+  const terminalFrame = frameBoundaries.at(-1);
+  if (!terminalFrame) throw new Error("host raw F2 frame is missing");
+  timestamp(terminalFrame.capturedAt, "host raw F2 capturedAt");
   const uiViewport = recordValue(input.uiViewport);
   if (
     uiViewport.innerWidth !== 1080 ||
@@ -938,10 +942,10 @@ export function validateFastRouteStressSaleEvidence(
       "sale-start-capability must expose a ready mock:mock payment option",
     );
   }
-  const vendBytes = protocolFrames[0].bytes;
+  const vendBytes = protocolFrames[0].bytes as Buffer;
   if (
-    vendBytes[1] !== daemonBefore.rowNo ||
-    vendBytes[2] !== daemonBefore.cellNo
+    vendBytes[1] !== Number(daemonBefore.rowNo) ||
+    vendBytes[2] !== Number(daemonBefore.cellNo)
   ) {
     throw new Error(
       "outbound serial vend frame must correlate the slot coordinates",
@@ -1300,10 +1304,12 @@ export function validateFastRouteStressSaleEvidence(
       commandId: correlatedResultTrace.commandId,
       resultKind: correlatedResultTrace.resultKind,
       rawFrames: protocolFrames
-        .filter((frame) => ["F0", "F1", "F2"].includes(frame.parsedOpcode))
-        .map((frame) => ({
+        .filter((frame: JsonRecord) =>
+          ["F0", "F1", "F2"].includes(String(frame.parsedOpcode)),
+        )
+        .map((frame: JsonRecord) => ({
           parsedOpcode: frame.parsedOpcode,
-          rawFrameHex: frame.rawFrameHex,
+          rawFrameHex: String(frame.rawFrameHex),
           capturedAt: frame.capturedAt,
           boundaryId: frame.boundaryId,
           sessionId: frame.sessionId,
@@ -1589,7 +1595,7 @@ export async function admitFreshSerialSessionForSale({
     daemonGet: get,
   });
   return {
-    serialSession: replacement,
+    serialSession: recordValue(replacement),
     hardware,
     armCreateOrderGate: () => armGate(guestInput),
     runCustomerAction: (action: () => unknown) => {
@@ -3668,7 +3674,7 @@ async function runFastRouteStressSale(
     const steps = buildFastRouteStressScenarioSteps(
       typeof options.fixtureKey === "string"
         ? catalogProductSelectorForFixture(
-            guestInput.fixtureAllocation,
+            recordValue(guestInput.fixtureAllocation),
             options.fixtureKey,
           )
         : undefined,
