@@ -1,5 +1,6 @@
 import { orderRecoveryActions } from "@vem/db";
 import {
+  type OrderDetailResponse,
   type OrderInvestigationResponse,
   type OrderRecoveryAction,
   type OrderRecoveryActionResponse,
@@ -428,4 +429,194 @@ export function toOrderInvestigationResponse(
     ).map(mapOrderStatusEvent),
   };
   return orderInvestigationResponseSchema.parse(toWireValue(response));
+}
+
+type DetailOrderRow = {
+  id: string;
+  orderNo: string;
+  machineId: string;
+  machineCode: string;
+  status: OrderDetailResponse["order"]["status"];
+  paymentState: OrderDetailResponse["order"]["paymentState"];
+  fulfillmentState: OrderDetailResponse["order"]["fulfillmentState"];
+  totalAmountCents: number;
+  currency: string;
+  paidAt: Date | null;
+  dispensedAt: Date | null;
+  canceledAt: Date | null;
+  createdAt: Date;
+};
+
+type DetailItemRow = {
+  id: string;
+  variantId: string;
+  quantity: number;
+  unitPriceCents: number;
+  productSnapshot: Record<string, unknown>;
+};
+
+type DetailPaymentRow = {
+  id: string;
+  paymentNo: string;
+  orderId: string;
+  method: OrderDetailResponse["payments"][number]["method"];
+  status: OrderDetailResponse["payments"][number]["status"];
+  amountCents: number;
+  providerTradeNo: string | null;
+  paymentUrl: string | null;
+  expiresAt: Date | null;
+  paidAt: Date | null;
+  failedReason: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+type DetailPaymentEventRow = {
+  id: string;
+  paymentId: string;
+  eventType: string;
+  providerEventId: string | null;
+  signatureValid: boolean;
+  handledAt: Date | null;
+  createdAt: Date;
+};
+
+type DetailVendingCommandRow = {
+  id: string;
+  commandNo: string;
+  orderId: string;
+  machineId: string;
+  slotId: string;
+  orderItemId: string | null;
+  commandKind: string;
+  recoveryActionId: string | null;
+  status: OrderDetailResponse["vendingCommands"][number]["status"];
+  sentAt: Date | null;
+  ackAt: Date | null;
+  resultAt: Date | null;
+  retryCount: number;
+  lastError: string | null;
+  createdAt: Date;
+};
+
+type DetailInventoryMovementRow = {
+  id: string;
+  inventoryId: string;
+  deltaQty: number;
+  reason: string;
+  orderId: string | null;
+  operatorAdminUserId: string | null;
+  note: string | null;
+  createdAt: Date;
+};
+
+type DetailOrderStatusEventRow = {
+  id: string;
+  fromStatus: OrderDetailResponse["orderStatusEvents"][number]["fromStatus"];
+  toStatus: OrderDetailResponse["orderStatusEvents"][number]["toStatus"];
+  reason: string;
+  metadata: Record<string, unknown> | null;
+  createdAt: Date;
+};
+
+function toIso(value: Date | string): string {
+  return value instanceof Date ? value.toISOString() : value;
+}
+
+function toIsoOrNull(value: Date | string | null): string | null {
+  return value === null ? null : toIso(value);
+}
+
+export function toOrderDetailResponse(input: {
+  order: DetailOrderRow;
+  items: DetailItemRow[];
+  payments: DetailPaymentRow[];
+  paymentEvents: DetailPaymentEventRow[];
+  vendingCommands: DetailVendingCommandRow[];
+  inventoryMovements: DetailInventoryMovementRow[];
+  orderStatusEvents: DetailOrderStatusEventRow[];
+}): OrderDetailResponse {
+  return {
+    order: {
+      id: input.order.id,
+      orderNo: input.order.orderNo,
+      machineId: input.order.machineId,
+      machineCode: input.order.machineCode,
+      status: input.order.status,
+      paymentState: input.order.paymentState,
+      fulfillmentState: input.order.fulfillmentState,
+      totalAmountCents: input.order.totalAmountCents,
+      currency: input.order.currency,
+      paidAt: toIsoOrNull(input.order.paidAt),
+      dispensedAt: toIsoOrNull(input.order.dispensedAt),
+      canceledAt: toIsoOrNull(input.order.canceledAt),
+      createdAt: toIso(input.order.createdAt),
+    },
+    items: input.items.map((item) => ({
+      id: item.id,
+      variantId: item.variantId,
+      quantity: item.quantity,
+      unitPriceCents: item.unitPriceCents,
+      productSnapshot: item.productSnapshot,
+    })),
+    payments: input.payments.map((payment) => ({
+      id: payment.id,
+      paymentNo: payment.paymentNo,
+      orderId: payment.orderId,
+      method: payment.method,
+      status: payment.status,
+      amountCents: payment.amountCents,
+      providerTradeNo: payment.providerTradeNo,
+      paymentUrl: payment.paymentUrl,
+      expiresAt: toIsoOrNull(payment.expiresAt),
+      paidAt: toIsoOrNull(payment.paidAt),
+      failedReason: payment.failedReason,
+      createdAt: toIso(payment.createdAt),
+      updatedAt: toIso(payment.updatedAt),
+    })),
+    paymentEvents: input.paymentEvents.map((event) => ({
+      id: event.id,
+      paymentId: event.paymentId,
+      eventType: event.eventType,
+      providerEventId: event.providerEventId,
+      signatureValid: event.signatureValid,
+      handledAt: toIsoOrNull(event.handledAt),
+      createdAt: toIso(event.createdAt),
+    })),
+    vendingCommands: input.vendingCommands.map((command) => ({
+      id: command.id,
+      commandNo: command.commandNo,
+      orderId: command.orderId,
+      machineId: command.machineId,
+      slotId: command.slotId,
+      orderItemId: command.orderItemId,
+      commandKind: command.commandKind,
+      recoveryActionId: command.recoveryActionId,
+      status: command.status,
+      sentAt: toIsoOrNull(command.sentAt),
+      ackAt: toIsoOrNull(command.ackAt),
+      resultAt: toIsoOrNull(command.resultAt),
+      retryCount: command.retryCount,
+      lastError: command.lastError,
+      createdAt: toIso(command.createdAt),
+    })),
+    inventoryMovements: input.inventoryMovements.map((movement) => ({
+      id: movement.id,
+      inventoryId: movement.inventoryId,
+      deltaQty: movement.deltaQty,
+      reason: movement.reason,
+      orderId: movement.orderId,
+      operatorAdminUserId: movement.operatorAdminUserId,
+      note: movement.note,
+      createdAt: toIso(movement.createdAt),
+    })),
+    orderStatusEvents: input.orderStatusEvents.map((event) => ({
+      id: event.id,
+      fromStatus: event.fromStatus,
+      toStatus: event.toStatus,
+      reason: event.reason,
+      metadata: event.metadata,
+      createdAt: toIso(event.createdAt),
+    })),
+  };
 }

@@ -1,13 +1,10 @@
 import type { z } from "zod";
 
 import {
-  adminOrderContractNoBodySchema,
-  adminOrderListQuerySchema,
-  adminOrderPageResponseSchema,
-  orderInvestigationResponseSchema,
-  orderRefundRequestResponseSchema,
-  orderRecoveryActionResponseSchema,
-  orderRecoveryActionSchema,
+  adminCreateOrderRecoveryActionContract,
+  adminGetOrderInvestigationContract,
+  adminListOrdersContract,
+  adminRequestOrderRefundContract,
   type AdminOrderListItemResponse,
   type OrderInvestigationResponse,
   type OrderRefundRequestResponse,
@@ -15,58 +12,50 @@ import {
   type PageResult,
 } from "@vem/shared";
 
-import { getContract, postContract } from "./request";
+import { callAdminEndpointContract } from "./request";
 
 export type Order = AdminOrderListItemResponse;
 
 export type OrderInvestigation = OrderInvestigationResponse;
 
 export type OrderRecoveryAction = z.output<
-  typeof orderRecoveryActionSchema
+  typeof adminCreateOrderRecoveryActionContract.bodySchema
 >["action"];
 export type { PageResult };
 
 export async function listOrders(
-  query?: z.input<typeof adminOrderListQuerySchema>,
+  query?: z.input<typeof adminListOrdersContract.querySchema>,
 ): Promise<PageResult<Order>> {
-  return await getContract(
-    "/orders",
-    adminOrderListQuerySchema,
-    adminOrderPageResponseSchema,
-    query ?? {},
-  );
+  return await callAdminEndpointContract(adminListOrdersContract, {
+    query: query ?? {},
+  });
 }
 
 export async function getOrderInvestigation(
   id: string,
 ): Promise<OrderInvestigation> {
-  return await getContract(
-    `/orders/${id}/investigation`,
-    adminOrderContractNoBodySchema,
-    orderInvestigationResponseSchema,
-    {},
-  );
+  return await callAdminEndpointContract(adminGetOrderInvestigationContract, {
+    pathParams: { id },
+  });
 }
 
 export async function requestRefund(
   id: string,
 ): Promise<OrderRefundRequestResponse> {
-  return await postContract(
-    `/orders/${id}/refund`,
-    adminOrderContractNoBodySchema,
-    orderRefundRequestResponseSchema,
-    {},
-  );
+  return await callAdminEndpointContract(adminRequestOrderRefundContract, {
+    pathParams: { id },
+  });
 }
 
 export async function createOrderRecoveryAction(
   id: string,
-  input: z.input<typeof orderRecoveryActionSchema>,
+  input: z.input<typeof adminCreateOrderRecoveryActionContract.bodySchema>,
 ): Promise<OrderRecoveryActionResponse> {
-  return await postContract(
-    `/orders/${id}/recovery-actions`,
-    orderRecoveryActionSchema,
-    orderRecoveryActionResponseSchema,
-    input,
+  return await callAdminEndpointContract(
+    adminCreateOrderRecoveryActionContract,
+    {
+      pathParams: { id },
+      body: input,
+    },
   );
 }

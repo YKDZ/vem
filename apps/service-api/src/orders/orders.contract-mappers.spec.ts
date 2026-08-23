@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   mapOrderRecoveryActionDtoToInsert,
+  toOrderDetailResponse,
   toOrderInvestigationResponse,
   toOrderRecoveryActionResponse,
 } from "./orders.contract-mappers";
@@ -197,5 +198,46 @@ describe("orders contract mappers", () => {
         ],
       }),
     ).toThrow();
+  });
+
+  it("projects the order detail dump through the published contract", () => {
+    const detail = toOrderDetailResponse({
+      order: {
+        id: "550e8400-e29b-41d4-a716-446655440000",
+        orderNo: "ORD-1",
+        machineId: "550e8400-e29b-41d4-a716-446655440001",
+        machineCode: "M001",
+        status: "paid",
+        paymentState: "paid",
+        fulfillmentState: "dispensing",
+        totalAmountCents: 500,
+        currency: "CNY",
+        paidAt: new Date("2026-07-05T00:00:00.000Z"),
+        dispensedAt: null,
+        canceledAt: null,
+        createdAt: new Date("2026-07-05T00:00:00.000Z"),
+      },
+      items: [
+        {
+          id: "550e8400-e29b-41d4-a716-446655440002",
+          variantId: "550e8400-e29b-41d4-a716-446655440003",
+          quantity: 1,
+          unitPriceCents: 500,
+          productSnapshot: {},
+        },
+      ],
+      payments: [],
+      paymentEvents: [],
+      vendingCommands: [],
+      inventoryMovements: [],
+      orderStatusEvents: [],
+    });
+
+    expect(detail).toMatchObject({
+      order: {
+        orderNo: "ORD-1",
+        paidAt: "2026-07-05T00:00:00.000Z",
+      },
+    });
   });
 });

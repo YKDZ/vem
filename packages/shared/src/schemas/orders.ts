@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { defineAdminEndpointContract } from "../admin-api-contract";
 import {
   orderFulfillmentStateSchema,
   orderPaymentStateSchema,
@@ -14,6 +15,9 @@ import {
 import { vendingCommandStatusSchema } from "../enums/vending";
 import { daemonIpcCheckoutFlowActionSchema } from "./daemon-ipc";
 import { createPageResultSchema, pageQuerySchema } from "./pagination";
+
+const noPathParamsSchema = z.strictObject({});
+const noQuerySchema = z.strictObject({});
 
 type MachineOrderProfileSnapshot = {
   personPresent: boolean;
@@ -377,6 +381,152 @@ export const orderInvestigationResponseSchema = z.strictObject({
   adminAuditEntries: z.array(adminAuditEntryResponseSchema),
   orderStatusEvents: z.array(adminOrderStatusEventResponseSchema),
 });
+
+export const adminOrderDetailRowSchema = z.strictObject({
+  id: z.uuid(),
+  orderNo: z.string().min(1).max(64),
+  machineId: z.uuid(),
+  machineCode: z.string().min(1).max(64),
+  status: orderStatusSchema,
+  paymentState: orderPaymentStateSchema,
+  fulfillmentState: orderFulfillmentStateSchema,
+  totalAmountCents: z.int().nonnegative(),
+  currency: z.string().min(1).max(8),
+  paidAt: z.iso.datetime().nullable(),
+  dispensedAt: z.iso.datetime().nullable(),
+  canceledAt: z.iso.datetime().nullable(),
+  createdAt: z.iso.datetime(),
+});
+
+export const adminOrderDetailItemSchema = z.strictObject({
+  id: z.uuid(),
+  variantId: z.uuid(),
+  quantity: z.int().nonnegative(),
+  unitPriceCents: z.int().nonnegative(),
+  productSnapshot: z.record(z.string(), z.unknown()),
+});
+
+export const adminOrderDetailPaymentSchema = z.strictObject({
+  id: z.uuid(),
+  paymentNo: z.string().min(1).max(64),
+  orderId: z.uuid(),
+  method: paymentMethodSchema,
+  status: paymentStatusSchema,
+  amountCents: z.int().nonnegative(),
+  providerTradeNo: z.string().max(128).nullable(),
+  paymentUrl: z.string().nullable(),
+  expiresAt: z.iso.datetime().nullable(),
+  paidAt: z.iso.datetime().nullable(),
+  failedReason: z.string().nullable(),
+  createdAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+});
+
+export const adminOrderDetailPaymentEventSchema = z.strictObject({
+  id: z.uuid(),
+  paymentId: z.uuid(),
+  eventType: z.string().min(1).max(128),
+  providerEventId: z.string().max(128).nullable(),
+  signatureValid: z.boolean(),
+  handledAt: z.iso.datetime().nullable(),
+  createdAt: z.iso.datetime(),
+});
+
+export const adminOrderDetailVendingCommandSchema = z.strictObject({
+  id: z.uuid(),
+  commandNo: z.string().min(1).max(64),
+  orderId: z.uuid(),
+  machineId: z.uuid(),
+  slotId: z.uuid(),
+  orderItemId: z.uuid().nullable(),
+  commandKind: z.string().min(1).max(64),
+  recoveryActionId: z.uuid().nullable(),
+  status: vendingCommandStatusSchema,
+  sentAt: z.iso.datetime().nullable(),
+  ackAt: z.iso.datetime().nullable(),
+  resultAt: z.iso.datetime().nullable(),
+  retryCount: z.int().nonnegative(),
+  lastError: z.string().nullable(),
+  createdAt: z.iso.datetime(),
+});
+
+export const adminOrderDetailInventoryMovementSchema = z.strictObject({
+  id: z.uuid(),
+  inventoryId: z.uuid(),
+  deltaQty: z.int(),
+  reason: z.string().min(1).max(64),
+  orderId: z.uuid().nullable(),
+  operatorAdminUserId: z.uuid().nullable(),
+  note: z.string().nullable(),
+  createdAt: z.iso.datetime(),
+});
+
+export const adminOrderDetailOrderStatusEventSchema = z.strictObject({
+  id: z.uuid(),
+  fromStatus: orderStatusSchema.nullable(),
+  toStatus: orderStatusSchema,
+  reason: z.string().min(1).max(128),
+  metadata: z.record(z.string(), z.unknown()).nullable(),
+  createdAt: z.iso.datetime(),
+});
+
+export const orderDetailResponseSchema = z.strictObject({
+  order: adminOrderDetailRowSchema,
+  items: z.array(adminOrderDetailItemSchema),
+  payments: z.array(adminOrderDetailPaymentSchema),
+  paymentEvents: z.array(adminOrderDetailPaymentEventSchema),
+  vendingCommands: z.array(adminOrderDetailVendingCommandSchema),
+  inventoryMovements: z.array(adminOrderDetailInventoryMovementSchema),
+  orderStatusEvents: z.array(adminOrderDetailOrderStatusEventSchema),
+});
+
+export type OrderDetailResponse = z.infer<typeof orderDetailResponseSchema>;
+
+export const adminListOrdersContract = defineAdminEndpointContract({
+  method: "GET",
+  path: "/orders",
+  pathParamsSchema: noPathParamsSchema,
+  querySchema: adminOrderListQuerySchema,
+  bodySchema: adminOrderContractNoBodySchema,
+  responseSchema: adminOrderPageResponseSchema,
+});
+
+export const adminGetOrderInvestigationContract = defineAdminEndpointContract({
+  method: "GET",
+  path: "/orders/:id/investigation",
+  pathParamsSchema: z.strictObject({ id: z.uuid() }),
+  querySchema: noQuerySchema,
+  bodySchema: adminOrderContractNoBodySchema,
+  responseSchema: orderInvestigationResponseSchema,
+});
+
+export const adminGetOrderDetailContract = defineAdminEndpointContract({
+  method: "GET",
+  path: "/orders/:id",
+  pathParamsSchema: z.strictObject({ id: z.uuid() }),
+  querySchema: noQuerySchema,
+  bodySchema: adminOrderContractNoBodySchema,
+  responseSchema: orderDetailResponseSchema,
+});
+
+export const adminRequestOrderRefundContract = defineAdminEndpointContract({
+  method: "POST",
+  path: "/orders/:id/refund",
+  pathParamsSchema: z.strictObject({ id: z.uuid() }),
+  querySchema: noQuerySchema,
+  bodySchema: adminOrderContractNoBodySchema,
+  responseSchema: orderRefundRequestResponseSchema,
+});
+
+export const adminCreateOrderRecoveryActionContract =
+  defineAdminEndpointContract({
+    method: "POST",
+    path: "/orders/:id/recovery-actions",
+    pathParamsSchema: z.strictObject({ id: z.uuid() }),
+    querySchema: noQuerySchema,
+    bodySchema: orderRecoveryActionSchema,
+    responseSchema: orderRecoveryActionResponseSchema,
+  });
 
 export type OrderInvestigationResponse = z.infer<
   typeof orderInvestigationResponseSchema

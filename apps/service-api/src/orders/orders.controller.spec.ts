@@ -20,13 +20,16 @@ describe("OrdersController", () => {
 
     expect(permissions).toEqual(["orders.read"]);
     await expect(
-      controller.getOrderInvestigation("550e8400-e29b-41d4-a716-446655440000", {
-        id: "admin-1",
-        username: "admin",
-        displayName: "Admin",
-        roles: [],
-        permissions: ["orders.read", "payments.read"],
-      }),
+      controller.getOrderInvestigation(
+        { id: "550e8400-e29b-41d4-a716-446655440000" },
+        {
+          id: "admin-1",
+          username: "admin",
+          displayName: "Admin",
+          roles: [],
+          permissions: ["orders.read", "payments.read"],
+        },
+      ),
     ).resolves.toBe(investigation);
     expect(ordersService.getOrderInvestigation).toHaveBeenCalledWith(
       "550e8400-e29b-41d4-a716-446655440000",
@@ -49,7 +52,7 @@ describe("OrdersController", () => {
     expect(permissions).toEqual(["orders.recover"]);
     await expect(
       controller.createRecoveryAction(
-        "550e8400-e29b-41d4-a716-446655440000",
+        { id: "550e8400-e29b-41d4-a716-446655440000" },
         {
           id: "admin-1",
           username: "admin",

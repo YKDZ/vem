@@ -1,14 +1,11 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Param,
-  ParseUUIDPipe,
-  Post,
-  Query,
-} from "@nestjs/common";
+import { Body, Controller, Param, Query } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import {
+  adminCreateOrderRecoveryActionContract,
+  adminGetOrderDetailContract,
+  adminGetOrderInvestigationContract,
+  adminListOrdersContract,
+  adminRequestOrderRefundContract,
   adminOrderContractNoBodySchema,
   orderQuerySchema,
   orderRecoveryActionSchema,
@@ -20,7 +17,8 @@ import type { AuthenticatedAdmin } from "../common/request-user";
 
 import { RequirePermissions } from "../access/permissions.decorator";
 import { CurrentAdmin } from "../auth/current-admin.decorator";
-import { ZodValidationPipe } from "../common/zod-validation.pipe";
+import { AdminEndpointContract } from "../common/admin-endpoint-contract.decorator";
+import { toOrderDetailResponse } from "./orders.contract-mappers";
 import { OrdersService } from "./orders.service";
 
 type OrderQuery = z.infer<typeof orderQuerySchema> &
@@ -28,58 +26,57 @@ type OrderQuery = z.infer<typeof orderQuerySchema> &
 
 @ApiTags("orders")
 @ApiBearerAuth()
-@Controller("orders")
+@Controller()
 export class OrdersController {
   constructor(private readonly ordersService: OrdersService) {}
 
   @RequirePermissions("orders.read")
-  @Get()
-  async listOrders(
-    @Query(
-      new ZodValidationPipe(orderQuerySchema.extend(pageQuerySchema.shape)),
-    )
-    query: OrderQuery,
-  ) {
+  @AdminEndpointContract(adminListOrdersContract)
+  async listOrders(@Query() query: OrderQuery) {
     return await this.ordersService.listOrders(query);
   }
 
   @RequirePermissions("orders.read")
-  @Get(":id/investigation")
+  @AdminEndpointContract(adminGetOrderInvestigationContract)
   async getOrderInvestigation(
-    @Param("id", ParseUUIDPipe) id: string,
+    @Param() params: { id: string },
     @CurrentAdmin() admin: AuthenticatedAdmin,
   ) {
     return await this.ordersService.getOrderInvestigation(
-      id,
+      params.id,
       admin.permissions,
     );
   }
 
   @RequirePermissions("orders.read")
-  @Get(":id")
-  async getOrderDetail(@Param("id", ParseUUIDPipe) id: string) {
-    return await this.ordersService.getOrderDetail(id);
+  @AdminEndpointContract(adminGetOrderDetailContract)
+  async getOrderDetail(@Param() params: { id: string }) {
+    return toOrderDetailResponse(
+      await this.ordersService.getOrderDetail(params.id),
+    );
   }
 
   @RequirePermissions("orders.refund")
-  @Post(":id/refund")
+  @AdminEndpointContract(adminRequestOrderRefundContract)
   async requestRefund(
-    @Param("id", ParseUUIDPipe) id: string,
+    @Param() params: { id: string },
     @CurrentAdmin() admin: AuthenticatedAdmin,
-    @Body(new ZodValidationPipe(adminOrderContractNoBodySchema))
-    _body: z.infer<typeof adminOrderContractNoBodySchema>,
+    @Body() _body: z.infer<typeof adminOrderContractNoBodySchema>,
   ) {
-    return await this.ordersService.requestMockRefund(id, admin.id);
+    return await this.ordersService.requestMockRefund(params.id, admin.id);
   }
 
   @RequirePermissions("orders.recover")
-  @Post(":id/recovery-actions")
+  @AdminEndpointContract(adminCreateOrderRecoveryActionContract)
   async createRecoveryAction(
-    @Param("id", ParseUUIDPipe) id: string,
+    @Param() params: { id: string },
     @CurrentAdmin() admin: AuthenticatedAdmin,
-    @Body(new ZodValidationPipe(orderRecoveryActionSchema))
-    body: z.infer<typeof orderRecoveryActionSchema>,
+    @Body() body: z.infer<typeof orderRecoveryActionSchema>,
   ) {
-    return await this.ordersService.createRecoveryAction(id, admin.id, body);
+    return await this.ordersService.createRecoveryAction(
+      params.id,
+      admin.id,
+      body,
+    );
   }
 }
