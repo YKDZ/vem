@@ -6,7 +6,14 @@ import {
 } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { Test } from "@nestjs/testing";
-import { mqttSigningInput, updateMachineSchema } from "@vem/shared";
+import {
+  adminMachinePlanogramVersionListResponseSchema,
+  adminSecureDecommissionResponseSchema,
+  machineClaimCodeSnapshotSchema,
+  machinePlanogramVersionSnapshotSchema,
+  mqttSigningInput,
+  updateMachineSchema,
+} from "@vem/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
@@ -2054,6 +2061,7 @@ describe("MachinesService planogram lifecycle", () => {
       acknowledgedAt: null,
       activeAt: null,
     });
+    expect(machinePlanogramVersionSnapshotSchema.parse(result)).toEqual(result);
     expect(insertVersionValues).toHaveBeenCalledWith(
       expect.objectContaining({
         machineId: machine.id,
@@ -2095,6 +2103,69 @@ describe("MachinesService planogram lifecycle", () => {
       ),
     ).rejects.toThrow(BadRequestException);
     expect(mockDb.transaction).not.toHaveBeenCalled();
+  });
+
+  it("projects the secure-decommission response through the published contract", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+      status: "offline",
+      secretHash: "scrypt:test-salt:test-digest",
+      credentialRevokedAt: null,
+      mqttSigningSecretEncryptedJson: null,
+    };
+    const command = {
+      id: "550e8400-e29b-41d4-a716-446655440022",
+      status: "succeeded",
+      deliveryPayloadJson: null,
+      deliveryAttemptCount: 0,
+    };
+    const tx = {
+      select: vi.fn().mockReturnValue({
+        from: () => ({ where: () => ({ for: async () => [machine] }) }),
+      }),
+      insert: vi
+        .fn()
+        .mockReturnValueOnce({
+          values: vi.fn().mockReturnValue({
+            returning: async () => [command],
+          }),
+        })
+        .mockReturnValueOnce({ values: async () => undefined }),
+      update: vi
+        .fn()
+        .mockReturnValueOnce({
+          set: () => ({ where: async () => undefined }),
+        })
+        .mockReturnValueOnce({
+          set: () => ({
+            where: () => ({
+              returning: async () => [
+                { ...machine, credentialRevokedAt: new Date() },
+              ],
+            }),
+          }),
+        }),
+    };
+    mockDb.transaction.mockImplementationOnce(
+      async (cb: (txArg: typeof tx) => Promise<unknown>) => await cb(tx),
+    );
+
+    const result = await service.secureDecommissionMachine(
+      machine.id,
+      "admin-1",
+    );
+
+    expect(adminSecureDecommissionResponseSchema.parse(result)).toEqual(result);
+    expect(result).toEqual(
+      expect.objectContaining({
+        machineId: machine.id,
+        machineCode: "M001",
+        decommissionCommandStatus: "succeeded",
+        deliveryAttemptCount: 0,
+        localTunnelRemoval: "denied-on-reconnect",
+      }),
+    );
   });
 
   it("returns managed media references in catalog rows", async () => {
@@ -2422,16 +2493,20 @@ describe("MachinesService planogram lifecycle", () => {
         }),
       });
 
-    await expect(
-      service.getMachinePlanogramVersions(machine.id),
-    ).resolves.toEqual(
+    const first = await service.getMachinePlanogramVersions(machine.id);
+    const second = await service.getMachinePlanogramVersions(machine.id);
+    expect(first).toEqual(
       expect.objectContaining({ activePlanogramVersion: null }),
     );
-    await expect(
-      service.getMachinePlanogramVersions(machine.id),
-    ).resolves.toEqual(
+    expect(second).toEqual(
       expect.objectContaining({ activePlanogramVersion: "PLAN-1" }),
     );
+    expect(adminMachinePlanogramVersionListResponseSchema.parse(first)).toEqual(
+      first,
+    );
+    expect(
+      adminMachinePlanogramVersionListResponseSchema.parse(second),
+    ).toEqual(second);
   });
 
   it("returns the active planogram when no published version is waiting for acknowledgement", async () => {
@@ -4327,6 +4402,7 @@ describe("MachinesService claim code lifecycle", () => {
       id: "550e8400-e29b-41d4-a716-446655440111",
       machineId: machine.id,
       verifierHash: "scrypt:test-salt:test-digest",
+      purpose: "first_claim",
       state: "locked",
       failedAttemptCount: 5,
       maxFailedAttempts: 5,
@@ -4369,6 +4445,7 @@ describe("MachinesService claim code lifecycle", () => {
         lockedAt: "2026-06-08T16:20:00.000Z",
       }),
     );
+    expect(machineClaimCodeSnapshotSchema.parse(result)).toEqual(result);
     expect(JSON.stringify(result)).not.toContain("scrypt:test-salt");
     expect(JSON.stringify(result)).not.toContain("claimCode");
   });
