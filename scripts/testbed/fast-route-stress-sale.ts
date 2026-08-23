@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { catalogProductSelectorForFixture } from "./full-workflow-fixtures.ts";
@@ -25,19 +25,48 @@ import {
 import { validateProductionRawSerialFrame } from "./qemu-usb-serial-host-adapter.ts";
 import { replaceSerialSessionAndUpdateHandoff } from "./serial-session-handoff.ts";
 
+type JsonRecord = Record<string, unknown>;
+
+interface CleanupError extends Error {
+  cleanupLabel?: string;
+  cause?: unknown;
+}
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function maybeRecord(value: unknown): JsonRecord | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : null;
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? (value as unknown[]) : [];
+}
+
 const MODES = new Set(["fast", "full"]);
 const CLEANUP_TIMEOUT_MS = 10_000;
 const CLEANUP_REQUEST_TIMEOUT_MS = 3_000;
 const PENDING_TRANSACTION_CLEANUP_TIMEOUT_MS = 15_000;
-function required(value, label) {
+function required(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${label} is required`);
   }
   return value.trim();
 }
 
-function processLiveness(processId) {
-  if (!Number.isInteger(processId) || processId < 1) return null;
+function processLiveness(processId: unknown): JsonRecord | null {
+  if (
+    typeof processId !== "number" ||
+    !Number.isInteger(processId) ||
+    processId < 1
+  ) {
+    return null;
+  }
   try {
     process.kill(processId, 0);
     return { processId, alive: true };
@@ -50,23 +79,27 @@ function processLiveness(processId) {
   }
 }
 
-function timestamp(value, label) {
-  const parsed = Date.parse(value);
+function timestamp(value: unknown, label: string): number {
+  const parsed = Date.parse(String(value));
   if (!Number.isFinite(parsed))
     throw new Error(`${label} must be an ISO timestamp`);
   return parsed;
 }
 
-function integerLike(value, label) {
+function integerLike(value: unknown, label: string): number {
   const normalized =
-    typeof value === "string" && value.trim() !== "" ? Number(value) : value;
+    typeof value === "string" && value.trim() !== ""
+      ? Number(value)
+      : typeof value === "number"
+        ? value
+        : Number.NaN;
   if (!Number.isInteger(normalized)) {
     throw new Error(`${label} must be an integer`);
   }
   return normalized;
 }
 
-function windowsAbsolute(value, label) {
+function windowsAbsolute(value: unknown, label: string): string {
   const path = required(value, label);
   if (!/^[A-Za-z]:\\/.test(path) || path.includes("\0")) {
     throw new Error(`${label} must be an absolute Windows path`);
@@ -74,7 +107,7 @@ function windowsAbsolute(value, label) {
   return path;
 }
 
-function option(args, name) {
+function option(args: string[], name: string): string {
   const index = args.indexOf(`--${name}`);
   const value = index === -1 ? undefined : args[index + 1];
   if (!value || value.startsWith("--")) {
@@ -83,14 +116,14 @@ function option(args, name) {
   return value;
 }
 
-function optionalOption(args, name) {
+function optionalOption(args: string[], name: string): string | null {
   const index = args.indexOf(`--${name}`);
   return index === -1 ? null : required(args[index + 1], `--${name}`);
 }
 
 const SCENARIOS = new Set(["route-stress", "sale-only"]);
 
-export function parseFastRouteStressSaleArgs(args) {
+export function parseFastRouteStressSaleArgs(args: string[]): JsonRecord {
   const mode = required(option(args, "mode"), "--mode");
   if (!MODES.has(mode)) throw new Error("--mode must be fast or full");
   const scenario = optionalOption(args, "scenario") ?? "route-stress";
@@ -113,7 +146,7 @@ export function parseFastRouteStressSaleArgs(args) {
 export function buildFastRouteStressScenarioSteps(
   productSelector = '[data-test="catalog-product"]',
   categorySelector = '[data-test="catalog-category"]:not(:disabled)',
-) {
+): JsonRecord[] {
   return [
     {
       type: "customer-activation",
@@ -167,36 +200,50 @@ export function buildFastRouteStressScenarioSteps(
   ];
 }
 
-export async function dispatchRepeatedPaymentTouch(client, firstActivation) {
+export async function dispatchRepeatedPaymentTouch(
+  client: unknown,
+  firstActivation: JsonRecord | null | undefined,
+): Promise<JsonRecord> {
   const originalPoint = firstActivation?.center;
-  const input = await dispatchPhysicalInput(client, originalPoint, {
+  const center = recordValue(originalPoint);
+  const input = await dispatchPhysicalInput(
+    client as Parameters<typeof dispatchPhysicalInput>[0],
+    { x: center.x, y: center.y },
+    {
     kind: "touch",
     timeoutMs: 5_000,
-  });
-  return { originalPoint: { x: originalPoint.x, y: originalPoint.y }, input };
+    },
+  );
+  return { originalPoint: { x: center.x, y: center.y }, input };
 }
 
-async function armCreateOrderGate(guestInput) {
+async function armCreateOrderGate(guestInput: JsonRecord): Promise<JsonRecord> {
   const armed = await controlPlaneRequest(
     guestInput,
     "/v1/mock-payment-create-gate/arm",
     { timeoutMs: 30_000 },
   );
+  const armedRecord = recordValue(armed);
   return {
     controlPlane: "mock-payment-create-gate",
-    armedAt: armed.armedAt,
+    armedAt: armedRecord.armedAt,
   };
 }
 
-async function waitForCreateOrderGatePending(guestInput, timeoutMs = 30_000) {
+async function waitForCreateOrderGatePending(
+  guestInput: JsonRecord,
+  timeoutMs = 30_000,
+): Promise<JsonRecord> {
   const deadline = Date.now() + timeoutMs;
   do {
     try {
-      const status = await controlPlaneRequest(
+      const status = recordValue(
+        await controlPlaneRequest(
         guestInput,
         "/v1/mock-payment-create-gate/status",
+        ),
       );
-      const pending = status?.pending;
+      const pending = maybeRecord(status.pending);
       if (
         pending?.state === "pending" &&
         typeof pending.paymentNo === "string" &&
@@ -212,68 +259,93 @@ async function waitForCreateOrderGatePending(guestInput, timeoutMs = 30_000) {
   );
 }
 
-async function releaseCreateOrderGate(guestInput, paymentNo) {
+async function releaseCreateOrderGate(
+  guestInput: JsonRecord,
+  paymentNo: unknown,
+): Promise<JsonRecord> {
   const released = await controlPlaneRequest(
     guestInput,
     "/v1/mock-payment-create-gate/release",
     { paymentNo },
   );
+  const releasedRecord = recordValue(released);
   return {
     paymentNo,
-    releasedAt: released.releasedAt,
+    releasedAt: releasedRecord.releasedAt,
   };
 }
 
-function rows(raw, key) {
-  return Array.isArray(raw?.[key]) ? raw[key] : [];
+function rows(raw: unknown, key: string): unknown[] {
+  return arrayValue(recordValue(raw)[key]);
 }
 
-function deltaRows(before, after, key) {
-  const prior = new Set(rows(before, key).map((row) => row.id));
-  return rows(after, key).filter((row) => !prior.has(row.id));
+function deltaRows(before: unknown, after: unknown, key: string): unknown[] {
+  const prior = new Set(
+    rows(before, key).map((row: unknown) => recordValue(row).id),
+  );
+  return rows(after, key).filter(
+    (row: unknown) => !prior.has(recordValue(row).id),
+  );
 }
 
-function exactlyOne(values, message) {
+function exactlyOne(values: unknown[], message: string): JsonRecord {
   if (values.length !== 1) throw new Error(message);
-  return values[0];
+  return recordValue(values[0]);
 }
 
-function matchingItem(view, identity) {
-  return rows(view, "items").find(
-    (item) =>
-      item.inventoryId === identity.inventoryId &&
-      item.slotId === identity.slotId,
-  );
+function matchingItem(
+  view: unknown,
+  identity: JsonRecord,
+): JsonRecord | undefined {
+  return rows(view, "items")
+    .map((item: unknown) => recordValue(item))
+    .find(
+      (item) =>
+        item.inventoryId === identity.inventoryId &&
+        item.slotId === identity.slotId,
+    );
 }
 
-function matchingInventory(raw, identity) {
-  return rows(raw, "inventories").find(
-    (inventory) =>
-      inventory.id === identity.inventoryId &&
-      inventory.slotId === identity.slotId,
-  );
+function matchingInventory(
+  raw: unknown,
+  identity: JsonRecord,
+): JsonRecord | undefined {
+  return rows(raw, "inventories")
+    .map((inventory: unknown) => recordValue(inventory))
+    .find(
+      (inventory) =>
+        inventory.id === identity.inventoryId &&
+        inventory.slotId === identity.slotId,
+    );
 }
 
-function matchingRowById(raw, key, id) {
-  return rows(raw, key).find((row) => row.id === id);
+function matchingRowById(
+  raw: unknown,
+  key: string,
+  id: unknown,
+): JsonRecord | undefined {
+  return rows(raw, key)
+    .map((row: unknown) => recordValue(row))
+    .find((row) => row.id === id);
 }
 
-function compactRuntimeTrace(trace, maxEntries = 64) {
-  return Array.isArray(trace) ? trace.slice(-maxEntries) : [];
+function compactRuntimeTrace(trace: unknown, maxEntries = 64): unknown[] {
+  return arrayValue(trace).slice(-maxEntries);
 }
 
-function latestTouchscreenSessionActive(entries) {
+function latestTouchscreenSessionActive(entries: unknown[]): boolean {
   for (const entry of [...entries].reverse()) {
-    if (typeof entry?.touchscreenSessionActive === "boolean") {
-      return entry.touchscreenSessionActive;
+    const record = recordValue(entry);
+    if (typeof record.touchscreenSessionActive === "boolean") {
+      return record.touchscreenSessionActive;
     }
   }
   return false;
 }
 
-export function latestVisionPresence(entries) {
+export function latestVisionPresence(entries: unknown[]): JsonRecord {
   for (const entry of [...entries].reverse()) {
-    const transitionId = String(entry?.transitionId ?? "");
+    const transitionId = String(recordValue(entry).transitionId ?? "");
     if (!transitionId.startsWith("vision:presence-")) continue;
     if (transitionId.endsWith(":welcome")) {
       return { active: true, transitionId };
@@ -285,12 +357,16 @@ export function latestVisionPresence(entries) {
   return { active: false, transitionId: null };
 }
 
-function runtimeTraceSnapshot(snapshot, label) {
+function runtimeTraceSnapshot(
+  snapshot: JsonRecord,
+  label: string,
+): JsonRecord {
+  const rawEntries = snapshot.entries;
   if (
     !snapshot ||
     typeof snapshot.runtimeGenerationId !== "string" ||
     snapshot.runtimeGenerationId.trim() === "" ||
-    !Array.isArray(snapshot.entries)
+    !Array.isArray(rawEntries)
   ) {
     throw new Error(
       `${label} requires an atomic Machine Runtime trace snapshot`,
@@ -298,57 +374,65 @@ function runtimeTraceSnapshot(snapshot, label) {
   }
   return {
     runtimeGenerationId: snapshot.runtimeGenerationId,
-    entries: snapshot.entries,
+    entries: rawEntries as unknown[],
   };
 }
 
-function traceBoundary(snapshot, label) {
+function traceBoundary(snapshot: JsonRecord, label: string): JsonRecord {
   const { entries, runtimeGenerationId } = runtimeTraceSnapshot(
     snapshot,
     label,
   );
-  if (!Array.isArray(entries)) {
+  const traceEntries = arrayValue(entries);
+  if (traceEntries.length === 0 && !Array.isArray(entries)) {
     throw new Error(
       `${label} requires an installed Machine Runtime Trace array`,
     );
   }
-  const lastEntryId = entries.at(-1)?.id ?? 0;
+  const lastEntryId = recordValue(traceEntries.at(-1)).id ?? 0;
   if (
     !Number.isInteger(lastEntryId) ||
-    lastEntryId < 0 ||
-    !entries.every(
-      (entry, index) =>
-        Number.isInteger(entry?.id) && entry.id > (entries[index - 1]?.id ?? 0),
+    (lastEntryId as number) < 0 ||
+    !traceEntries.every(
+      (entry: unknown, index: number) =>
+        Number.isInteger(recordValue(entry)?.id) &&
+        (recordValue(entry).id as number) >
+          (recordValue(traceEntries[index - 1]).id as number),
     )
   ) {
     throw new Error(`${label} requires monotonically increasing trace ids`);
   }
-  const visionPresence = latestVisionPresence(entries);
+  const visionPresence = latestVisionPresence(traceEntries);
   return {
     source: "installed_machine_runtime_trace_cdp",
     lastEntryId,
     capturedAt: new Date().toISOString(),
     runtimeGenerationId,
-    touchscreenSessionActive: latestTouchscreenSessionActive(entries),
+    touchscreenSessionActive: latestTouchscreenSessionActive(traceEntries),
     visionPresenceActive: visionPresence.active,
     visionPresenceTransitionId: visionPresence.transitionId,
   };
 }
 
-function traceEntriesAfterBoundary(snapshot, boundary, label) {
+function traceEntriesAfterBoundary(
+  snapshot: JsonRecord,
+  boundary: JsonRecord,
+  label: string,
+): unknown[] {
+  const boundaryRecord = recordValue(boundary);
   if (
-    boundary?.source !== "installed_machine_runtime_trace_cdp" ||
-    !Number.isInteger(boundary?.lastEntryId) ||
-    boundary.lastEntryId < 0 ||
-    !Number.isFinite(Date.parse(boundary?.capturedAt))
+    boundaryRecord?.source !== "installed_machine_runtime_trace_cdp" ||
+    !Number.isInteger(boundaryRecord?.lastEntryId) ||
+    (boundaryRecord.lastEntryId as number) < 0 ||
+    !Number.isFinite(Date.parse(String(boundaryRecord?.capturedAt ?? "")))
   ) {
     throw new Error(
       `${label} must retain an installed-CDP trace id boundary and capture timestamp`,
     );
   }
   if (
-    typeof boundary.runtimeGenerationId !== "string" ||
-    boundary.runtimeGenerationId.trim() === ""
+    typeof boundaryRecord.runtimeGenerationId !== "string" ||
+    boundaryRecord.runtimeGenerationId.trim() === ""
   ) {
     throw new Error(`${label} boundary requires a Machine Runtime generation`);
   }
@@ -356,25 +440,32 @@ function traceEntriesAfterBoundary(snapshot, boundary, label) {
     snapshot,
     label,
   );
-  const sameRuntime = boundary.runtimeGenerationId === runtimeGenerationId;
-  return entries.filter((entry) => {
-    if (!Number.isInteger(entry?.id) || entry.id < 1) return false;
-    if (sameRuntime) return entry.id > boundary.lastEntryId;
+  const traceEntries = arrayValue(entries);
+  const sameRuntime =
+    boundaryRecord.runtimeGenerationId === runtimeGenerationId;
+  return traceEntries.filter((entry: unknown) => {
+    const entryRecord = recordValue(entry);
+    if (!Number.isInteger(entryRecord?.id) || (entryRecord.id as number) < 1) {
+      return false;
+    }
+    if (sameRuntime) {
+      return (entryRecord.id as number) > (boundaryRecord.lastEntryId as number);
+    }
     // A trace id restarts with a recreated runtime. Its event must be newer
     // than the captured boundary; callers still verify the target semantics.
     return (
-      timestamp(entry?.at, `${label} restarted trace entry`) >
-      timestamp(boundary.capturedAt, `${label} boundary capture`)
+      timestamp(entryRecord?.at, `${label} restarted trace entry`) >
+      timestamp(boundaryRecord.capturedAt, `${label} boundary capture`)
     );
   });
 }
 
-function isCatalogRoute(route) {
+function isCatalogRoute(route: unknown): boolean {
   if (typeof route !== "string") return false;
   return route.replace(/^#/, "") === "/catalog";
 }
 
-function isCatalogOrRootLocationHash(value) {
+function isCatalogOrRootLocationHash(value: unknown): boolean {
   const hash = String(value ?? "");
   if (hash === "" || hash === "#" || hash === "#/") return true;
   if (!hash.startsWith("#/")) {
@@ -384,15 +475,15 @@ function isCatalogOrRootLocationHash(value) {
   return route.pathname.toLowerCase() === "/catalog";
 }
 
-function isCatalogLocationHash(value) {
+function isCatalogLocationHash(value: unknown): boolean {
   const hash = String(value ?? "");
   if (!hash.startsWith("#/")) return false;
   const route = new URL(hash.slice(1), "http://machine-route.invalid");
   return route.pathname.toLowerCase() === "/catalog";
 }
 
-function locationHashFromCdpUrl(value, label) {
-  let url;
+function locationHashFromCdpUrl(value: unknown, label: string): string {
+  let url: URL;
   try {
     url = new URL(String(value));
   } catch {
@@ -410,13 +501,23 @@ function locationHashFromCdpUrl(value, label) {
   return url.hash;
 }
 
-function compactPlatformBoundary(report, summary) {
-  const raw = report?.raw ?? {};
+function compactPlatformBoundary(
+  report: unknown,
+  summary: JsonRecord,
+): JsonRecord {
+  const reportRecord = recordValue(report);
+  const raw = recordValue(reportRecord.raw);
+  const orderItems = rows(raw, "orderItems").map((row: unknown) =>
+    recordValue(row),
+  );
+  const inventories = rows(raw, "inventories").map((row: unknown) =>
+    recordValue(row),
+  );
   return {
-    scope: report?.scope ?? null,
+    scope: reportRecord.scope ?? null,
     order: matchingRowById(raw, "orders", summary.orderId) ?? null,
     orderItem:
-      rows(raw, "orderItems").find(
+      orderItems.find(
         (row) =>
           row.inventoryId === summary.inventoryId &&
           row.slotId === summary.slotId,
@@ -425,17 +526,21 @@ function compactPlatformBoundary(report, summary) {
     command: matchingRowById(raw, "commands", summary.vendingCommandId) ?? null,
     movement: matchingRowById(raw, "movements", summary.movementId) ?? null,
     inventory:
-      rows(raw, "inventories").find(
+      inventories.find(
         (row) =>
           row.id === summary.inventoryId && row.slotId === summary.slotId,
       ) ?? null,
   };
 }
 
-function compactDaemonBoundary(view, summary) {
+function compactDaemonBoundary(
+  view: unknown,
+  summary: JsonRecord,
+): JsonRecord {
+  const items = rows(view, "items").map((row: unknown) => recordValue(row));
   return {
     item:
-      rows(view, "items").find(
+      items.find(
         (row) =>
           row.inventoryId === summary.inventoryId &&
           row.slotId === summary.slotId,
@@ -443,7 +548,14 @@ function compactDaemonBoundary(view, summary) {
   };
 }
 
-function compactEvidenceForReport(evidence, summary) {
+function compactEvidenceForReport(
+  evidence: JsonRecord,
+  summary: JsonRecord,
+): JsonRecord {
+  const platform = recordValue(evidence.platform);
+  const daemon = recordValue(evidence.daemon);
+  const serial = recordValue(evidence.serial);
+  const mqttMessages = arrayValue(evidence.mqttMessages);
   return {
     saleCorrelationId: evidence.saleCorrelationId,
     machineCode: evidence.machineCode,
@@ -457,48 +569,52 @@ function compactEvidenceForReport(evidence, summary) {
     uiViewport: evidence.uiViewport,
     visionDelivery: evidence.visionDelivery,
     platform: {
-      baseline: compactPlatformBoundary(evidence.platform?.baseline, summary),
-      beforeF0: compactPlatformBoundary(evidence.platform?.beforeF0, summary),
+      baseline: compactPlatformBoundary(platform.baseline, summary),
+      beforeF0: compactPlatformBoundary(platform.beforeF0, summary),
       afterF1BeforeF2: compactPlatformBoundary(
-        evidence.platform?.afterF1BeforeF2,
+        platform.afterF1BeforeF2,
         summary,
       ),
-      afterF2: compactPlatformBoundary(evidence.platform?.afterF2, summary),
+      afterF2: compactPlatformBoundary(platform.afterF2, summary),
     },
     daemon: {
-      baseline: compactDaemonBoundary(evidence.daemon?.baseline, summary),
-      beforeF0: compactDaemonBoundary(evidence.daemon?.beforeF0, summary),
+      baseline: compactDaemonBoundary(daemon.baseline, summary),
+      beforeF0: compactDaemonBoundary(daemon.beforeF0, summary),
       afterF1BeforeF2: compactDaemonBoundary(
-        evidence.daemon?.afterF1BeforeF2,
+        daemon.afterF1BeforeF2,
         summary,
       ),
-      afterF2: compactDaemonBoundary(evidence.daemon?.afterF2, summary),
+      afterF2: compactDaemonBoundary(daemon.afterF2, summary),
     },
     ui: evidence.ui,
-    mqttMessages: Array.isArray(evidence.mqttMessages)
-      ? evidence.mqttMessages.slice(-2)
-      : [],
+    mqttMessages: mqttMessages.slice(-2),
     serial: {
-      sessionId: evidence.serial?.sessionId ?? null,
-      rawFrames: Array.isArray(evidence.serial?.rawFrames)
-        ? evidence.serial.rawFrames
-            .filter((frame) =>
-              ["VEND", "F0", "F1", "F2"].includes(frame?.parsedOpcode),
-            )
-            .slice(-4)
-        : [],
+      sessionId: serial.sessionId ?? null,
+      rawFrames: arrayValue(serial.rawFrames)
+        .filter((frame: unknown) =>
+          ["VEND", "F0", "F1", "F2"].includes(
+            String(recordValue(frame).parsedOpcode ?? ""),
+          ),
+        )
+        .slice(-4),
     },
   };
 }
 
-export function validateFastRouteStressSaleEvidence(input) {
-  const baseline = input.platform?.baseline?.raw ?? {};
-  const beforeF0 = input.platform?.beforeF0?.raw ?? {};
-  const afterF1 = input.platform?.afterF1BeforeF2?.raw ?? {};
-  const afterF2 = input.platform?.afterF2?.raw ?? {};
-  const rendered = input.renderedSale ?? {};
-  const live = input.liveSale ?? {};
-  const createOrderGate = input.createOrderGate ?? {};
+export function validateFastRouteStressSaleEvidence(
+  input: JsonRecord,
+): JsonRecord {
+  const platform = recordValue(input.platform);
+  const baseline = recordValue(recordValue(platform.baseline).raw);
+  const beforeF0 = recordValue(recordValue(platform.beforeF0).raw);
+  const afterF1 = recordValue(recordValue(platform.afterF1BeforeF2).raw);
+  const afterF2 = recordValue(recordValue(platform.afterF2).raw);
+  const rendered = recordValue(input.renderedSale);
+  const live = recordValue(input.liveSale);
+  const createOrderGate = recordValue(input.createOrderGate);
+  const daemon = recordValue(input.daemon);
+  const ui = recordValue(input.ui);
+  const serial = recordValue(input.serial);
   const machineCode = required(input.machineCode, "machineCode");
   const order = exactlyOne(
     deltaRows(baseline, afterF1, "orders"),
@@ -515,12 +631,14 @@ export function validateFastRouteStressSaleEvidence(input) {
     );
   }
   const orderItem = exactlyOne(
-    rows(afterF1, "orderItems").filter((row) => row.orderId === order.id),
+    rows(afterF1, "orderItems").filter(
+      (row: unknown) => recordValue(row).orderId === order.id,
+    ),
     "expected exactly one correlated order item",
   );
   const payment = exactlyOne(
     deltaRows(baseline, afterF1, "payments").filter(
-      (row) => row.orderId === order.id,
+      (row: unknown) => recordValue(row).orderId === order.id,
     ),
     "expected exactly one correlated payment",
   );
@@ -531,7 +649,9 @@ export function validateFastRouteStressSaleEvidence(input) {
   }
   const command = exactlyOne(
     deltaRows(baseline, afterF1, "commands").filter(
-      (row) => row.orderId === order.id && row.orderItemId === orderItem.id,
+      (row: unknown) =>
+        recordValue(row).orderId === order.id &&
+        recordValue(row).orderItemId === orderItem.id,
     ),
     "expected exactly one correlated vending command",
   );
@@ -572,6 +692,11 @@ export function validateFastRouteStressSaleEvidence(input) {
       "authoritative platform payment and command facts must bind the same sale before host raw F0",
     );
   }
+  if (!beforeF0Payment || !beforeF0Command) {
+    throw new Error(
+      "authoritative pre-F0 payment and command facts are missing",
+    );
+  }
   if (
     beforeF0Payment.paymentNo !==
     required(createOrderGate.paymentNo, "create-order gate paymentNo")
@@ -588,9 +713,9 @@ export function validateFastRouteStressSaleEvidence(input) {
     slotId: orderItem.slotId,
   };
   const baselineInventory = matchingInventory(baseline, identity);
-  const daemonBefore = matchingItem(input.daemon?.beforeF0, identity);
-  const daemonMiddle = matchingItem(input.daemon?.afterF1BeforeF2, identity);
-  const daemonAfter = matchingItem(input.daemon?.afterF2, identity);
+  const daemonBefore = matchingItem(daemon.beforeF0, identity);
+  const daemonMiddle = matchingItem(daemon.afterF1BeforeF2, identity);
+  const daemonAfter = matchingItem(daemon.afterF2, identity);
   const platformBefore = matchingInventory(beforeF0, identity);
   const platformMiddle = matchingInventory(afterF1, identity);
   const platformAfter = matchingInventory(afterF2, identity);
@@ -607,10 +732,10 @@ export function validateFastRouteStressSaleEvidence(input) {
       "all temporal boundaries require the correlated slot inventory snapshot",
     );
   }
-  if (input.ui?.beforeF0?.result?.kind === "success") {
+  if (recordValue(recordValue(ui.beforeF0).result).kind === "success") {
     throw new Error("UI must not show success before inbound F0");
   }
-  if (input.ui?.afterF1BeforeF2?.result?.kind === "success") {
+  if (recordValue(recordValue(ui.afterF1BeforeF2).result).kind === "success") {
     throw new Error("UI must not show success before inbound F2");
   }
   if (
@@ -624,14 +749,15 @@ export function validateFastRouteStressSaleEvidence(input) {
     );
   }
   if (
-    daemonAfter.physicalStock - daemonMiddle.physicalStock !== -1 ||
+    Number(daemonAfter.physicalStock) - Number(daemonMiddle.physicalStock) !==
+      -1 ||
     daemonAfter.saleableStock !== daemonMiddle.saleableStock
   ) {
     throw new Error(
       "correlated daemon physical stock must decrement exactly once without double-decrementing saleable stock after inbound F2",
     );
   }
-  if (platformAfter.onHandQty - platformMiddle.onHandQty !== -1) {
+  if (Number(platformAfter.onHandQty) - Number(platformMiddle.onHandQty) !== -1) {
     throw new Error(
       "correlated platform inventory must decrement exactly once after inbound F2",
     );
@@ -655,6 +781,9 @@ export function validateFastRouteStressSaleEvidence(input) {
   const afterF2Order = matchingRowById(afterF2, "orders", order.id);
   const afterF2Payment = matchingRowById(afterF2, "payments", payment.id);
   const afterF2Command = matchingRowById(afterF2, "commands", command.id);
+  if (!afterF2Payment || !beforeF0Payment) {
+    throw new Error("authoritative post-F2 payment facts are missing");
+  }
   if (
     afterF2Payment?.orderId !== order.id ||
     afterF2Payment?.paymentNo !== createOrderGate.paymentNo ||
@@ -677,16 +806,16 @@ export function validateFastRouteStressSaleEvidence(input) {
     );
   }
   const mqtt = exactlyOne(
-    Array.isArray(input.mqttMessages) ? input.mqttMessages : [],
+    arrayValue(input.mqttMessages),
     "expected exactly one MQTT vend command",
   );
   if (
     mqtt?.topic !== `vem/machines/${machineCode}/commands/dispense` ||
-    mqtt?.payload?.machineCode !== machineCode
+    recordValue(mqtt.payload).machineCode !== machineCode
   ) {
     throw new Error("MQTT vend command must correlate the machine identity");
   }
-  const mqttPayload = mqtt?.payload?.payload;
+  const mqttPayload = recordValue(recordValue(mqtt.payload).payload);
   if (mqttPayload?.commandNo !== command.commandNo) {
     throw new Error(
       `MQTT vend command must correlate commandNo ${command.commandNo}`,
@@ -695,19 +824,18 @@ export function validateFastRouteStressSaleEvidence(input) {
   if (mqttPayload.orderNo !== order.orderNo || mqttPayload.quantity !== 1) {
     throw new Error("MQTT vend command must correlate order and quantity");
   }
+  const mqttSlot = recordValue(mqttPayload.slot);
   if (
-    integerLike(mqttPayload.slot?.rowNo, "MQTT vend slot rowNo") !==
+    integerLike(mqttSlot.rowNo, "MQTT vend slot rowNo") !==
       daemonBefore.rowNo ||
-    integerLike(mqttPayload.slot?.cellNo, "MQTT vend slot cellNo") !==
+    integerLike(mqttSlot.cellNo, "MQTT vend slot cellNo") !==
       daemonBefore.cellNo
   ) {
     throw new Error(
       "MQTT vend command must correlate the daemon slot coordinates",
     );
   }
-  const rawFrames = Array.isArray(input.serial?.rawFrames)
-    ? input.serial.rawFrames
-    : [];
+  const rawFrames = arrayValue(serial.rawFrames);
   const observedProtocolFrames = rawFrames
     .map((frame, index) =>
       validateProductionRawSerialFrame(frame, `raw serial frame ${index + 1}`),
@@ -742,7 +870,7 @@ export function validateFastRouteStressSaleEvidence(input) {
     );
   }
   const serialSessionId = required(
-    input.serial?.sessionId,
+    serial?.sessionId,
     "serial session identity",
   );
   const frameBoundaries = protocolFrames.slice(1);
@@ -773,7 +901,7 @@ export function validateFastRouteStressSaleEvidence(input) {
     "host raw F0 capturedAt",
   );
   timestamp(frameBoundaries.at(-1).capturedAt, "host raw F2 capturedAt");
-  const uiViewport = input.uiViewport ?? {};
+  const uiViewport = recordValue(input.uiViewport);
   if (
     uiViewport.innerWidth !== 1080 ||
     uiViewport.innerHeight !== 1920 ||
@@ -782,24 +910,25 @@ export function validateFastRouteStressSaleEvidence(input) {
   ) {
     throw new Error("installed UI viewport must be exactly 1080x1920");
   }
-  const saleStartCapability = input.saleStartCapability ?? {};
+  const saleStartCapability = recordValue(input.saleStartCapability);
   if (
     !Number.isInteger(saleStartCapability.revision) ||
-    saleStartCapability.revision < 1
+    (saleStartCapability.revision as number) < 1
   ) {
     throw new Error("sale-start-capability must expose a positive revision");
   }
   if (saleStartCapability.canStartSale !== true) {
     throw new Error("sale-start-capability must allow the fast sale to start");
   }
-  const mockOption = Array.isArray(saleStartCapability.paymentOptions?.options)
-    ? saleStartCapability.paymentOptions.options.find(
-        (option) =>
-          option?.optionKey === "mock:mock" &&
-          option?.providerCode === "mock" &&
-          option?.method === "mock",
-      )
-    : null;
+  const paymentOptions = recordValue(saleStartCapability.paymentOptions);
+  const mockOption = arrayValue(paymentOptions.options)
+    .map((option: unknown) => recordValue(option))
+    .find(
+      (option) =>
+        option?.optionKey === "mock:mock" &&
+        option?.providerCode === "mock" &&
+        option?.method === "mock",
+    ) ?? null;
   if (
     !mockOption ||
     mockOption.ready !== true ||
@@ -819,17 +948,18 @@ export function validateFastRouteStressSaleEvidence(input) {
     );
   }
   for (const report of [
-    input.platform?.baseline,
-    input.platform?.beforeF0,
-    input.platform?.afterF1BeforeF2,
-    input.platform?.afterF2,
+    platform.baseline,
+    platform.beforeF0,
+    platform.afterF1BeforeF2,
+    platform.afterF2,
   ]) {
+    const reportRecord = recordValue(report);
     if (
-      report?.source !== "authoritative_ephemeral_platform_database" ||
-      !Number.isFinite(Date.parse(report?.capturedAt)) ||
-      report?.scope?.machineCode !== machineCode ||
-      typeof report?.scope?.machineId !== "string" ||
-      report.scope.machineId === ""
+      reportRecord?.source !== "authoritative_ephemeral_platform_database" ||
+      !Number.isFinite(Date.parse(String(reportRecord?.capturedAt ?? ""))) ||
+      recordValue(reportRecord.scope).machineCode !== machineCode ||
+      typeof recordValue(reportRecord.scope).machineId !== "string" ||
+      String(recordValue(reportRecord.scope).machineId) === ""
     ) {
       throw new Error(
         "platform evidence must retain authoritative provenance, capturedAt, and correlated machine scope at every boundary",
@@ -838,7 +968,7 @@ export function validateFastRouteStressSaleEvidence(input) {
   }
   if (
     timestamp(
-      input.platform.beforeF0.capturedAt,
+      recordValue(platform.beforeF0).capturedAt,
       "platform payment snapshot capturedAt",
     ) > f0CapturedAt
   ) {
@@ -846,10 +976,12 @@ export function validateFastRouteStressSaleEvidence(input) {
       "platform payment snapshot must be captured no later than host raw F0",
     );
   }
-  if (!input.serial?.sessionId)
+  if (!serial?.sessionId)
     throw new Error("serial session identity is required");
-  const gateObservedAt = Date.parse(createOrderGate.pendingObservedAt);
-  const gateReleasedAt = Date.parse(createOrderGate.releasedAt);
+  const gateObservedAt = Date.parse(
+    String(createOrderGate.pendingObservedAt),
+  );
+  const gateReleasedAt = Date.parse(String(createOrderGate.releasedAt));
   if (
     !Number.isFinite(gateObservedAt) ||
     !Number.isFinite(gateReleasedAt) ||
@@ -859,8 +991,8 @@ export function validateFastRouteStressSaleEvidence(input) {
       "create-order gate must expose a pending boundary before release",
     );
   }
-  const vision = input.visionDelivery ?? {};
-  const repeatedPaymentTouch = input.repeatedPaymentTouch ?? {};
+  const vision = recordValue(input.visionDelivery);
+  const repeatedPaymentTouch = recordValue(input.repeatedPaymentTouch);
   const routeStressScenario = input.scenario !== "sale-only";
   const pendingConfirmedAt = timestamp(
     repeatedPaymentTouch.pendingConfirmedAt,
@@ -881,8 +1013,8 @@ export function validateFastRouteStressSaleEvidence(input) {
       vision.ok !== true ||
       typeof vision.eventId !== "string" ||
       vision.eventId === "" ||
-      vision.connectedRuntimeClients < 1 ||
-      vision.acceptedDeliveries < 1
+      Number(vision.connectedRuntimeClients) < 1 ||
+      Number(vision.acceptedDeliveries) < 1
     ) {
       throw new Error(
         "Vision departure requires a connected installed runtime client and accepted delivery",
@@ -908,13 +1040,13 @@ export function validateFastRouteStressSaleEvidence(input) {
       );
     }
   }
-  const continuousHash = input.continuousCdpLocationHash ?? {};
+  const continuousHash = recordValue(input.continuousCdpLocationHash);
   if (
     continuousHash.source !== "cdp_page_navigation_events_and_location_hash" ||
     continuousHash.initialHash !== "#/catalog" ||
-    !Number.isFinite(Date.parse(continuousHash.startedAt)) ||
-    !Number.isFinite(Date.parse(continuousHash.armedAt)) ||
-    !Number.isFinite(Date.parse(continuousHash.terminalAt)) ||
+    !Number.isFinite(Date.parse(String(continuousHash.startedAt))) ||
+    !Number.isFinite(Date.parse(String(continuousHash.armedAt))) ||
+    !Number.isFinite(Date.parse(String(continuousHash.terminalAt))) ||
     !Array.isArray(continuousHash.entries) ||
     continuousHash.entries.length < 2
   ) {
@@ -967,10 +1099,10 @@ export function validateFastRouteStressSaleEvidence(input) {
       "continuous CDP location.hash observation must arm on Catalog exit and end at terminal result",
     );
   }
-  const machineRuntimeTrace = input.machineRuntimeTrace ?? {};
+  const machineRuntimeTrace = recordValue(input.machineRuntimeTrace);
   if (
     machineRuntimeTrace.source !== "installed_machine_runtime_trace_cdp" ||
-    !Number.isFinite(Date.parse(machineRuntimeTrace.capturedAt)) ||
+    !Number.isFinite(Date.parse(String(machineRuntimeTrace.capturedAt))) ||
     !Array.isArray(machineRuntimeTrace.entries) ||
     typeof machineRuntimeTrace.runtimeGenerationId !== "string" ||
     machineRuntimeTrace.runtimeGenerationId.trim() === ""
@@ -983,79 +1115,91 @@ export function validateFastRouteStressSaleEvidence(input) {
     runtimeGenerationId: machineRuntimeTrace.runtimeGenerationId,
     entries: machineRuntimeTrace.entries,
   };
-  const runtimeTrace = runtimeSnapshot.entries;
+  const runtimeTrace = arrayValue(runtimeSnapshot.entries);
   const noCatalogTrace = traceEntriesAfterBoundary(
     runtimeSnapshot,
-    input.noCatalogTraceBoundary,
+    recordValue(input.noCatalogTraceBoundary),
     "no-Catalog trace boundary",
   );
   if (routeStressScenario) {
     const repeatedTouchTrace = traceEntriesAfterBoundary(
       runtimeSnapshot,
-      repeatedPaymentTouch.preDispatchTraceBoundary,
+      recordValue(repeatedPaymentTouch.preDispatchTraceBoundary),
       "repeated payment touch pre-dispatch trace boundary",
     );
-    repeatedTouch = repeatedTouchTrace.find(
-      (entry) =>
-        entry?.type === "navigation" &&
-        entry?.intentType === "customer.touch" &&
-        entry?.decision === "accepted" &&
-        entry?.reasonCode === "touchscreen_session_renewed" &&
-        entry?.id === repeatedPaymentTouch.traceEntryId,
-    );
+    repeatedTouch =
+      repeatedTouchTrace
+        .map((entry: unknown) => recordValue(entry))
+        .find(
+          (entry) =>
+            entry?.type === "navigation" &&
+            entry?.intentType === "customer.touch" &&
+            entry?.decision === "accepted" &&
+            entry?.reasonCode === "touchscreen_session_renewed" &&
+            entry?.id === repeatedPaymentTouch.traceEntryId,
+        ) ?? null;
     if (!repeatedTouch) {
       throw new Error(
         "installed runtime trace must record the repeated physical customer.touch after its pre-dispatch boundary",
       );
     }
   }
-  let guardedDeparture = null;
-  let projectionRefresh = null;
+  let guardedDeparture: JsonRecord | null = null;
+  let projectionRefresh: JsonRecord | null = null;
   if (routeStressScenario) {
     const guardedDepartureTrace = traceEntriesAfterBoundary(
       runtimeSnapshot,
-      vision.traceBoundary,
+      recordValue(vision.traceBoundary),
       "Vision departure control-request trace boundary",
     );
-    guardedDeparture = guardedDepartureTrace.find(
-      (entry) =>
-        entry.type === "navigation" &&
-        entry.intentType === "presence.departed" &&
-        /^presence-\d+:departure$/.test(entry.sourceEventId ?? "") &&
+    guardedDeparture =
+      guardedDepartureTrace
+        .map((entry: unknown) => recordValue(entry))
+        .find(
+          (entry) =>
+            entry.type === "navigation" &&
+            entry.intentType === "presence.departed" &&
+            /^presence-\d+:departure$/.test(
+              String(entry.sourceEventId ?? ""),
+            ) &&
         ["touchscreen_session_active", "active_transaction_route"].includes(
-          entry.reasonCode,
+              String(entry.reasonCode ?? ""),
         ) &&
-        entry.decision === "rejected" &&
-        entry.finalRoute !== "#/catalog",
-    );
+            entry.decision === "rejected" &&
+            entry.finalRoute !== "#/catalog",
+        ) ?? null;
     if (!guardedDeparture) {
       throw new Error(
         "installed runtime trace must contain the guarded stable Vision departure navigation effect after the control-request boundary",
       );
     }
-    projectionRefresh = runtimeTrace.find(
-      (entry) =>
-        entry?.type === "navigation" &&
-        entry?.intentType === "transaction.projection" &&
-        entry?.decision === "accepted" &&
-        ["transaction_projection", "transaction_projection_current"].includes(
-          entry?.reasonCode,
-        ) &&
-        entry?.transactionOrderNo === order.orderNo &&
-        entry?.finalRoute !== "#/catalog" &&
-        Number.isFinite(entry?.id) &&
-        Number.isFinite(guardedDeparture?.id) &&
-        entry.id > guardedDeparture.id,
-    );
+    projectionRefresh =
+      runtimeTrace
+        .map((entry: unknown) => recordValue(entry))
+        .find(
+          (entry) =>
+            entry?.type === "navigation" &&
+            entry?.intentType === "transaction.projection" &&
+            entry?.decision === "accepted" &&
+            ["transaction_projection", "transaction_projection_current"].includes(
+              String(entry?.reasonCode ?? ""),
+            ) &&
+            entry?.transactionOrderNo === order.orderNo &&
+            entry?.finalRoute !== "#/catalog" &&
+            Number.isFinite(entry?.id) &&
+            Number.isFinite(guardedDeparture?.id) &&
+            (entry.id as number) > (guardedDeparture?.id as number),
+        ) ?? null;
     if (!projectionRefresh) {
       throw new Error(
         "runtime trace must contain the real transaction projection refresh for the correlated order after Vision departure",
       );
     }
   }
-  const result = input.ui?.afterF2?.result;
+  const uiAfterF2 = recordValue(ui.afterF2);
+  const result = recordValue(uiAfterF2.result);
   if (
-    input.ui?.afterF2?.route !== "#/result/success" ||
+    uiAfterF2?.route !== "#/result/success" ||
     result?.kind !== "success" ||
     result.orderId !== order.id ||
     result.paymentId !== payment.id ||
@@ -1067,19 +1211,25 @@ export function validateFastRouteStressSaleEvidence(input) {
     );
   }
   const correlatedResultTraces = runtimeTrace.filter(
-    (entry) =>
-      entry?.type === "transaction_surface" &&
-      entry?.stage === "result" &&
-      entry?.route === "#/result/success" &&
-      entry?.orderId === order.id &&
-      entry?.paymentId === payment.id &&
-      entry?.commandId === command.id &&
-      entry?.resultKind === "success",
+    (entry: unknown) => {
+      const record = recordValue(entry);
+      return (
+        record?.type === "transaction_surface" &&
+        record?.stage === "result" &&
+        record?.route === "#/result/success" &&
+        record?.orderId === order.id &&
+        record?.paymentId === payment.id &&
+        record?.commandId === command.id &&
+        record?.resultKind === "success"
+      );
+    },
   );
-  const correlatedResultTrace = correlatedResultTraces.find((entry) => {
-    timestamp(entry?.recordedAt, "Machine Runtime Trace success recordedAt");
-    return entry.at === entry.recordedAt;
-  });
+  const correlatedResultTrace = correlatedResultTraces
+    .map((entry: unknown) => recordValue(entry))
+    .find((entry) => {
+      timestamp(entry?.recordedAt, "Machine Runtime Trace success recordedAt");
+      return entry.at === entry.recordedAt;
+    });
   if (!correlatedResultTrace) {
     throw new Error(
       "runtime trace must expose a correlated result surface with its raw timestamp",
@@ -1095,11 +1245,15 @@ export function validateFastRouteStressSaleEvidence(input) {
   const catalogNavigation = noCatalogTrace
     .slice(0, noCatalogResultIndex + 1)
     .find(
-      (entry) =>
-        entry?.type === "navigation" &&
-        (isCatalogRoute(entry.finalRoute) ||
-          isCatalogRoute(entry.decidedRoute) ||
-          isCatalogRoute(entry.targetRoute)),
+      (entry: unknown) => {
+        const record = recordValue(entry);
+        return (
+          record?.type === "navigation" &&
+          (isCatalogRoute(record.finalRoute) ||
+            isCatalogRoute(record.decidedRoute) ||
+            isCatalogRoute(record.targetRoute))
+        );
+      },
     );
   if (catalogNavigation) {
     throw new Error(
@@ -1108,7 +1262,7 @@ export function validateFastRouteStressSaleEvidence(input) {
   }
   return {
     machineCode,
-    machineId: input.platform.beforeF0.scope.machineId,
+    machineId: recordValue(recordValue(platform.beforeF0).scope).machineId,
     orderId: order.id,
     orderNo: order.orderNo,
     paymentId: payment.id,
@@ -1119,11 +1273,11 @@ export function validateFastRouteStressSaleEvidence(input) {
     inventoryId: orderItem.inventoryId,
     slotId: orderItem.slotId,
     slotDisplayLabel: daemonBefore.slotDisplayLabel,
-    protocol: protocolFrames.map((frame) => frame.parsedOpcode),
+    protocol: protocolFrames.map((frame: JsonRecord) => frame.parsedOpcode),
     daemonStockDeltaAfterF2:
-      daemonAfter.physicalStock - daemonMiddle.physicalStock,
+      Number(daemonAfter.physicalStock) - Number(daemonMiddle.physicalStock),
     platformStockDeltaAfterF2:
-      platformAfter.onHandQty - platformMiddle.onHandQty,
+      Number(platformAfter.onHandQty) - Number(platformMiddle.onHandQty),
     movementId: movement.id,
     visionEventId: vision.eventId,
     repeatedPhysicalTouchTraceId: repeatedTouch?.id ?? null,
@@ -1162,7 +1316,7 @@ export function validateFastRouteStressSaleEvidence(input) {
   };
 }
 
-function localPath(path) {
+function localPath(path: string): string {
   return process.platform === "win32"
     ? path
     : resolve(
@@ -1170,13 +1324,20 @@ function localPath(path) {
       );
 }
 
-function readJson(path, label) {
+function readJson(path: string, label: string): JsonRecord {
   return JSON.parse(readFileSync(localPath(path), "utf8"));
 }
 
-function daemonBaseUrl(handoff) {
+function writeJsonLocal(path: string, value: JsonRecord): void {
+  const target = localPath(path);
+  mkdirSync(dirname(target), { recursive: true });
+  writeFileSync(target, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function daemonBaseUrl(handoff: JsonRecord): string {
+  const ready = recordValue(recordValue(handoff.daemon).ready);
   const healthzUrl = required(
-    handoff.daemon?.ready?.healthzUrl,
+    ready.healthzUrl,
     "daemon healthzUrl",
   );
   if (!healthzUrl.endsWith("/healthz")) {
@@ -1185,13 +1346,25 @@ function daemonBaseUrl(handoff) {
   return healthzUrl.slice(0, -"/healthz".length);
 }
 
-function daemonHeaders(handoff) {
+function daemonHeaders(handoff: JsonRecord): Record<string, string> {
+  const ready = recordValue(recordValue(handoff.daemon).ready);
   return {
-    authorization: `Bearer ${required(handoff.daemon?.ready?.ipcToken, "daemon ipcToken")}`,
+    authorization: `Bearer ${required(ready.ipcToken, "daemon ipcToken")}`,
   };
 }
 
-async function fetchJson(url, options = {}) {
+interface FetchOptions {
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
+async function fetchJson(
+  url: string,
+  options: FetchOptions = {},
+): Promise<unknown> {
   const response = await fetch(url, {
     ...options,
     signal: options.signal ?? AbortSignal.timeout(options.timeoutMs ?? 30_000),
@@ -1205,7 +1378,11 @@ async function fetchJson(url, options = {}) {
   return payload;
 }
 
-export async function daemonGet(handoff, path, options = {}) {
+export async function daemonGet(
+  handoff: JsonRecord,
+  path: string,
+  options: Pick<FetchOptions, "timeoutMs" | "signal"> = {},
+): Promise<unknown> {
   return fetchJson(`${daemonBaseUrl(handoff)}${path}`, {
     headers: daemonHeaders(handoff),
     timeoutMs: options.timeoutMs,
@@ -1213,7 +1390,12 @@ export async function daemonGet(handoff, path, options = {}) {
   });
 }
 
-async function daemonPost(handoff, path, body = {}, options = {}) {
+async function daemonPost(
+  handoff: JsonRecord,
+  path: string,
+  body: JsonRecord = {},
+  options: Pick<FetchOptions, "timeoutMs" | "signal"> = {},
+): Promise<unknown> {
   return fetchJson(`${daemonBaseUrl(handoff)}${path}`, {
     method: "POST",
     headers: {
@@ -1226,11 +1408,15 @@ async function daemonPost(handoff, path, body = {}, options = {}) {
   });
 }
 
-function transactionIsActive(transaction) {
+function transactionIsActive(
+  transaction: JsonRecord | null | undefined,
+): boolean {
   return (
-    ["wait_payment", "dispensing"].includes(transaction?.nextAction) ||
+    ["wait_payment", "dispensing"].includes(
+      String(transaction?.nextAction ?? ""),
+    ) ||
     ["pending_payment", "waiting_payment", "paid", "dispensing"].includes(
-      transaction?.orderStatus,
+      String(transaction?.orderStatus ?? ""),
     )
   );
 }
@@ -1242,15 +1428,24 @@ export async function settlePendingCreateOrder({
   cancelTransaction,
   wait = sleep,
   now = () => Date.now(),
-}) {
+}: {
+  paymentNo: unknown;
+  timeoutMs?: number;
+  readTransaction: () => Promise<unknown>;
+  cancelTransaction: (transaction: JsonRecord) => Promise<unknown>;
+  wait?: (ms: number) => Promise<void>;
+  now?: () => number;
+}): Promise<JsonRecord> {
   const deadline = now() + timeoutMs;
-  let transaction = null;
+  let transaction: JsonRecord | null = null;
   while (now() < deadline) {
-    transaction = await runCleanupStep(
-      `read transaction for ${paymentNo}`,
-      readTransaction,
-      CLEANUP_REQUEST_TIMEOUT_MS,
-    ).then((result) => result.detail);
+    transaction = recordValue(
+      await runCleanupStep(
+        `read transaction for ${paymentNo}`,
+        readTransaction,
+        CLEANUP_REQUEST_TIMEOUT_MS,
+      ),
+    ).detail as JsonRecord;
     if (transaction?.paymentNo === paymentNo) break;
     await wait(100);
   }
@@ -1259,18 +1454,23 @@ export async function settlePendingCreateOrder({
       `released payment create request did not project transaction ${paymentNo}`,
     );
   }
-  if (!transactionIsActive(transaction)) return transaction;
+  if (transaction && !transactionIsActive(transaction)) return transaction;
+  if (!transaction) {
+    throw new Error(`transaction ${paymentNo} is missing before cancellation`);
+  }
   await runCleanupStep(
     `cancel transaction for ${paymentNo}`,
-    () => cancelTransaction(transaction),
+    () => cancelTransaction(transaction as JsonRecord),
     CLEANUP_REQUEST_TIMEOUT_MS,
   );
   while (now() < deadline) {
-    transaction = await runCleanupStep(
-      `read settled transaction for ${paymentNo}`,
-      readTransaction,
-      CLEANUP_REQUEST_TIMEOUT_MS,
-    ).then((result) => result.detail);
+    transaction = recordValue(
+      await runCleanupStep(
+        `read settled transaction for ${paymentNo}`,
+        readTransaction,
+        CLEANUP_REQUEST_TIMEOUT_MS,
+      ),
+    ).detail as JsonRecord;
     if (
       transaction?.paymentNo === paymentNo &&
       !transactionIsActive(transaction)
@@ -1285,39 +1485,45 @@ export async function settlePendingCreateOrder({
 }
 
 export async function waitForSaleStartReady(
-  handoff,
-  client,
+  handoff: JsonRecord,
+  client: unknown,
   timeoutMs = 30_000,
   {
     now = () => Date.now(),
     readRoute = readCdpLocationHash,
-    readCapability = (input) => daemonGet(input, "/v1/sale-start-capability"),
+    readCapability = (input: JsonRecord) =>
+      daemonGet(input, "/v1/sale-start-capability"),
     wait = sleep,
   } = {},
-) {
-  const mockPaymentOptionReady = (capability) =>
-    Array.isArray(capability?.paymentOptions?.options)
-      ? capability.paymentOptions.options.some(
-          (option) =>
-            option?.optionKey === "mock:mock" &&
-            option?.providerCode === "mock" &&
-            option?.method === "mock" &&
-            option?.ready === true &&
-            option?.disabledReason === null,
-        )
-      : false;
+): Promise<unknown> {
+  const mockPaymentOptionReady = (capability: unknown): boolean => {
+    const paymentOptions = recordValue(
+      recordValue(capability).paymentOptions,
+    );
+    return arrayValue(paymentOptions.options)
+      .map((option: unknown) => recordValue(option))
+      .some(
+        (option) =>
+          option?.optionKey === "mock:mock" &&
+          option?.providerCode === "mock" &&
+          option?.method === "mock" &&
+          option?.ready === true &&
+          option?.disabledReason === null,
+      );
+  };
   const deadline = now() + timeoutMs;
-  let stableSince = null;
-  let last = null;
+  let stableSince: number | null = null;
+  let last: unknown = null;
   while (now() < deadline) {
     const [route, capability] = await Promise.all([
       readRoute(client),
       readCapability(handoff),
     ]);
     last = { route, capability };
+    const capabilityRecord = recordValue(capability);
     if (
       route === "#/catalog" &&
-      capability?.canStartSale === true &&
+      capabilityRecord?.canStartSale === true &&
       mockPaymentOptionReady(capability)
     ) {
       stableSince ??= now();
@@ -1341,7 +1547,20 @@ export async function admitFreshSerialSessionForSale({
   armCreateOrderGate: armGate,
   writeJsonFile,
   waitForHardwareReady = waitForBusinessHardwareReady,
-}) {
+}: {
+  guestInput: JsonRecord;
+  handoff: JsonRecord;
+  handoffPath: string;
+  control: (
+    guestInput: JsonRecord,
+    path: string,
+    body?: JsonRecord,
+  ) => Promise<unknown>;
+  daemonGet: (path: string) => Promise<unknown>;
+  armCreateOrderGate: (guestInput: JsonRecord) => Promise<unknown>;
+  writeJsonFile: (path: string, value: JsonRecord) => void | Promise<void>;
+  waitForHardwareReady?: typeof waitForBusinessHardwareReady;
+}): Promise<FreshSerialAdmission> {
   if (typeof control !== "function") {
     throw new Error("fresh sale serial admission control is required");
   }
@@ -1356,25 +1575,30 @@ export async function admitFreshSerialSessionForSale({
     handoff,
     handoffPath,
     sessionId: required(
-      handoff.commissioningSerialSession?.sessionId,
+      recordValue(handoff.commissioningSerialSession).sessionId,
       "handoff commissioning serial session id",
     ),
     control,
     writeJsonFile,
   });
-  const sessionId = required(replacement.sessionId, "fresh serial session id");
-  const hardware = await waitForHardwareReady({ daemonGet: get });
+  const sessionId = required(
+    recordValue(replacement).sessionId,
+    "fresh serial session id",
+  );
+  const hardware = await waitForHardwareReady({
+    daemonGet: get,
+  });
   return {
     serialSession: replacement,
     hardware,
     armCreateOrderGate: () => armGate(guestInput),
-    runCustomerAction: (action) => {
+    runCustomerAction: (action: () => unknown) => {
       if (typeof action !== "function") {
         throw new Error("fresh sale customer action is required");
       }
       return action();
     },
-    serialRequest: (operation, body = {}) =>
+    serialRequest: (operation: string, body: JsonRecord = {}) =>
       control(
         guestInput,
         `/v1/serial-sessions/${sessionId}/${required(operation, "serial operation")}`,
@@ -1383,17 +1607,22 @@ export async function admitFreshSerialSessionForSale({
   };
 }
 
-async function waitForCommand(handoff, renderedSale, timeoutMs = 30_000) {
+async function waitForCommand(
+  handoff: JsonRecord,
+  renderedSale: JsonRecord,
+  timeoutMs = 30_000,
+): Promise<JsonRecord> {
   const deadline = Date.now() + timeoutMs;
-  let lastTransaction = null;
+  let lastTransaction: JsonRecord | null = null;
   while (Date.now() < deadline) {
-    const transaction = await daemonGet(
-      handoff,
-      "/v1/transactions/current",
-    ).catch(() => null);
+    const transaction = recordValue(
+      await daemonGet(handoff, "/v1/transactions/current").catch(() => null),
+    );
     lastTransaction = transaction;
     const commandId =
-      transaction?.vending?.commandId ?? transaction?.dispenseCommandId ?? null;
+      recordValue(transaction.vending).commandId ??
+      transaction.dispenseCommandId ??
+      null;
     if (
       transaction?.orderId === renderedSale.orderId &&
       transaction?.paymentId === renderedSale.paymentId &&
@@ -1405,7 +1634,7 @@ async function waitForCommand(handoff, renderedSale, timeoutMs = 30_000) {
         paymentId: transaction.paymentId,
         orderNo: transaction.orderNo,
         vendingCommandId: commandId,
-        vendingStatus: transaction?.vending?.status ?? null,
+        vendingStatus: recordValue(transaction.vending).status ?? null,
       };
     }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
@@ -1416,21 +1645,21 @@ async function waitForCommand(handoff, renderedSale, timeoutMs = 30_000) {
 }
 
 async function waitForSuccessfulResultSurface(
-  client,
-  expected,
+  client: unknown,
+  expected: JsonRecord,
   timeoutMs = 60_000,
-) {
+): Promise<JsonRecord> {
   const deadline = Date.now() + timeoutMs;
-  let last = null;
+  let last: JsonRecord | null = null;
   do {
-    last = await readUiBoundary(client).catch(() => null);
+    last = recordValue(await readUiBoundary(client).catch(() => null));
     if (
       last?.route === "#/result/success" &&
-      last?.result?.kind === "success" &&
-      last.result.orderId === expected.orderId &&
-      last.result.paymentId === expected.paymentId &&
-      last.result.orderNo === expected.orderNo &&
-      last.result.commandId === expected.commandId
+      recordValue(last.result).kind === "success" &&
+      recordValue(last.result).orderId === expected.orderId &&
+      recordValue(last.result).paymentId === expected.paymentId &&
+      recordValue(last.result).orderNo === expected.orderNo &&
+      recordValue(last.result).commandId === expected.commandId
     ) {
       return last;
     }
@@ -1441,26 +1670,50 @@ async function waitForSuccessfulResultSurface(
   );
 }
 
-async function readRuntimeTraceSnapshot(client) {
+async function readRuntimeTraceSnapshot(client: unknown): Promise<JsonRecord> {
   return runtimeTraceSnapshot(
-    await readMachineRuntimeTraceSnapshot(client),
+    recordValue(await readMachineRuntimeTraceSnapshot(client)),
     "Machine Runtime Trace",
   );
 }
 
-export async function startContinuousCdpLocationHashObservation(
-  client,
-  { clock = () => new Date() } = {},
-) {
-  const entries = [];
-  const startedAt = clock().toISOString();
-  let armedAt = null;
-  let terminalAt = null;
-  let terminalHash = null;
-  let stopped = false;
-  let failure = null;
+interface CdpEventClient {
+  on: (
+    event: string,
+    listener: (params: JsonRecord) => void,
+  ) => () => void;
+}
 
-  const recordHash = (method, locationHash) => {
+interface CdpLocationHashObserver extends JsonRecord {
+  assertArmed: () => void;
+  throwIfFailed: () => void;
+  finish: (expectedTerminalHash: string) => Promise<JsonRecord>;
+  snapshot: () => JsonRecord;
+  stop: () => JsonRecord;
+}
+
+interface FreshSerialAdmission extends JsonRecord {
+  serialSession: JsonRecord;
+  hardware: unknown;
+  armCreateOrderGate: () => Promise<unknown>;
+  runCustomerAction: (action: () => unknown) => unknown;
+  serialRequest: (operation: string, body?: JsonRecord) => Promise<unknown>;
+}
+
+export async function startContinuousCdpLocationHashObservation(
+  client: unknown,
+  { clock = () => new Date() }: { clock?: () => Date } = {},
+): Promise<CdpLocationHashObserver> {
+  const cdp = client as CdpEventClient;
+  const entries: JsonRecord[] = [];
+  const startedAt = clock().toISOString();
+  let armedAt: string | null = null;
+  let terminalAt: string | null = null;
+  let terminalHash: string | null = null;
+  let stopped = false;
+  let failure: Error | null = null;
+
+  const recordHash = (method: string, locationHash: string) => {
     if (stopped || failure) return;
     try {
       if (armedAt === null && isCatalogLocationHash(locationHash)) return;
@@ -1482,20 +1735,25 @@ export async function startContinuousCdpLocationHashObservation(
       failure = error instanceof Error ? error : new Error(String(error));
     }
   };
-  const recordUrl = (method, url) => {
+  const recordUrl = (method: string, url: string) => {
     try {
       recordHash(method, locationHashFromCdpUrl(url, method));
     } catch (error) {
       failure = error instanceof Error ? error : new Error(String(error));
     }
   };
-  const offWithinDocument = client.on(
+  const offWithinDocument = cdp.on(
     "Page.navigatedWithinDocument",
-    (params) => recordUrl("Page.navigatedWithinDocument", params?.url),
+    (params) =>
+      recordUrl(
+        "Page.navigatedWithinDocument",
+        String(recordValue(params).url ?? ""),
+      ),
   );
-  const offFrameNavigated = client.on("Page.frameNavigated", (params) => {
-    if (params?.frame?.parentId == null) {
-      recordUrl("Page.frameNavigated", params?.frame?.url);
+  const offFrameNavigated = cdp.on("Page.frameNavigated", (params) => {
+    const frame = recordValue(params.frame);
+    if (frame?.parentId == null) {
+      recordUrl("Page.frameNavigated", String(frame.url ?? ""));
     }
   });
   const initialHash = await readCdpLocationHash(client);
@@ -1536,8 +1794,10 @@ export async function startContinuousCdpLocationHashObservation(
     throwIfFailed() {
       if (failure) throw failure;
     },
-    async finish(expectedTerminalHash) {
-      const observedTerminalHash = await readCdpLocationHash(client);
+    async finish(expectedTerminalHash: string) {
+      const observedTerminalHash = String(
+        (await readCdpLocationHash(client)) ?? "",
+      );
       recordHash("Runtime.evaluate(location.hash)", observedTerminalHash);
       terminalAt = clock().toISOString();
       terminalHash = observedTerminalHash;
@@ -1555,31 +1815,36 @@ export async function startContinuousCdpLocationHashObservation(
   };
 }
 
-async function captureRuntimeTraceBoundary(client, label) {
+async function captureRuntimeTraceBoundary(
+  client: unknown,
+  label: string,
+): Promise<JsonRecord> {
   return traceBoundary(await readRuntimeTraceSnapshot(client), label);
 }
 
 async function waitForRepeatedCustomerTouchTrace(
-  client,
-  preDispatchTraceBoundary,
+  client: unknown,
+  preDispatchTraceBoundary: JsonRecord,
   timeoutMs = 5_000,
-) {
+): Promise<JsonRecord> {
   const deadline = Date.now() + timeoutMs;
-  let lastTrace = [];
+  let lastTrace: unknown[] = [];
   do {
     const snapshot = await readRuntimeTraceSnapshot(client);
-    lastTrace = snapshot.entries;
+    lastTrace = arrayValue(snapshot.entries);
     const touch = traceEntriesAfterBoundary(
       snapshot,
       preDispatchTraceBoundary,
       "repeated payment touch pre-dispatch trace boundary",
-    ).find(
-      (entry) =>
-        entry?.type === "navigation" &&
-        entry?.intentType === "customer.touch" &&
-        entry?.decision === "accepted" &&
-        entry?.reasonCode === "touchscreen_session_renewed",
-    );
+    )
+      .map((entry: unknown) => recordValue(entry))
+      .find(
+        (entry) =>
+          entry?.type === "navigation" &&
+          entry?.intentType === "customer.touch" &&
+          entry?.decision === "accepted" &&
+          entry?.reasonCode === "touchscreen_session_renewed",
+      );
     if (touch) return touch;
     await sleep(25);
   } while (Date.now() < deadline);
@@ -1589,35 +1854,39 @@ async function waitForRepeatedCustomerTouchTrace(
 }
 
 export async function waitForGuardedVisionDepartureTrace(
-  client,
-  traceBoundary,
+  client: unknown,
+  traceBoundary: JsonRecord,
   {
     timeoutMs = 15_000,
     readTrace = readRuntimeTraceSnapshot,
     sleepFn = sleep,
     now = () => Date.now(),
   } = {},
-) {
+): Promise<JsonRecord> {
   const deadline = now() + timeoutMs;
-  let lastTrace = [];
+  let lastTrace: unknown[] = [];
   do {
     const snapshot = await readTrace(client);
-    lastTrace = snapshot.entries;
+    lastTrace = arrayValue(snapshot.entries);
     const departure = traceEntriesAfterBoundary(
       snapshot,
       traceBoundary,
       "Vision departure control-request trace boundary",
-    ).find(
-      (entry) =>
-        entry?.type === "navigation" &&
-        entry?.intentType === "presence.departed" &&
-        /^presence-\d+:departure$/.test(entry?.sourceEventId ?? "") &&
-        entry?.decision === "rejected" &&
-        ["touchscreen_session_active", "active_transaction_route"].includes(
-          entry?.reasonCode,
-        ) &&
-        entry?.finalRoute !== "#/catalog",
-    );
+    )
+      .map((entry: unknown) => recordValue(entry))
+      .find(
+        (entry) =>
+          entry?.type === "navigation" &&
+          entry?.intentType === "presence.departed" &&
+          /^presence-\d+:departure$/.test(
+            String(entry?.sourceEventId ?? ""),
+          ) &&
+          entry?.decision === "rejected" &&
+          ["touchscreen_session_active", "active_transaction_route"].includes(
+            String(entry?.reasonCode ?? ""),
+          ) &&
+          entry?.finalRoute !== "#/catalog",
+      );
     if (departure) return departure;
     await sleepFn(25);
   } while (now() < deadline);
@@ -1627,41 +1896,47 @@ export async function waitForGuardedVisionDepartureTrace(
 }
 
 export async function waitForStableVisionArrivalTrace(
-  client,
-  traceBoundary,
+  client: unknown,
+  traceBoundary: JsonRecord,
   {
     timeoutMs = 5_000,
     readTrace = readRuntimeTraceSnapshot,
     sleepFn = sleep,
     now = () => Date.now(),
   } = {},
-) {
+): Promise<JsonRecord> {
   const deadline = now() + timeoutMs;
-  let lastTrace = [];
+  let lastTrace: unknown[] = [];
   do {
     const snapshot = await readTrace(client);
-    lastTrace = snapshot.entries;
+    lastTrace = arrayValue(snapshot.entries);
     const arrival = traceEntriesAfterBoundary(
       snapshot,
       traceBoundary,
       "Vision arrival control-request trace boundary",
-    ).find(
-      (entry) =>
-        entry?.type === "journey_transition" &&
-        /^vision:presence-\d+:welcome$/.test(entry?.transitionId ?? ""),
-    );
+    )
+      .map((entry: unknown) => recordValue(entry))
+      .find(
+        (entry) =>
+          entry?.type === "journey_transition" &&
+          /^vision:presence-\d+:welcome$/.test(
+            String(entry?.transitionId ?? ""),
+          ),
+      );
     if (arrival) return arrival;
     const activeTouchSession = traceEntriesAfterBoundary(
       snapshot,
       traceBoundary,
       "Vision arrival control-request trace boundary",
-    ).find(
-      (entry) =>
-        entry?.type === "navigation" &&
-        entry?.intentType === "customer.touch" &&
-        entry?.decision === "accepted" &&
-        entry?.reasonCode === "touchscreen_session_renewed",
-    );
+    )
+      .map((entry: unknown) => recordValue(entry))
+      .find(
+        (entry) =>
+          entry?.type === "navigation" &&
+          entry?.intentType === "customer.touch" &&
+          entry?.decision === "accepted" &&
+          entry?.reasonCode === "touchscreen_session_renewed",
+      );
     if (activeTouchSession) return activeTouchSession;
     await sleepFn(25);
   } while (now() < deadline);
@@ -1671,29 +1946,33 @@ export async function waitForStableVisionArrivalTrace(
 }
 
 export async function waitForStableVisionDepartureTransition(
-  client,
-  traceBoundary,
+  client: unknown,
+  traceBoundary: JsonRecord,
   {
     timeoutMs = 15_000,
     readTrace = readRuntimeTraceSnapshot,
     sleepFn = sleep,
     now = () => Date.now(),
   } = {},
-) {
+): Promise<JsonRecord> {
   const deadline = now() + timeoutMs;
-  let lastTrace = [];
+  let lastTrace: unknown[] = [];
   do {
     const snapshot = await readTrace(client);
-    lastTrace = snapshot.entries;
+    lastTrace = arrayValue(snapshot.entries);
     const departure = traceEntriesAfterBoundary(
       snapshot,
       traceBoundary,
       "Vision presence reset boundary",
-    ).find(
-      (entry) =>
-        entry?.type === "journey_transition" &&
-        /^vision:presence-\d+:departed$/.test(entry?.transitionId ?? ""),
-    );
+    )
+      .map((entry: unknown) => recordValue(entry))
+      .find(
+        (entry) =>
+          entry?.type === "journey_transition" &&
+          /^vision:presence-\d+:departed$/.test(
+            String(entry?.transitionId ?? ""),
+          ),
+      );
     if (departure) return departure;
     await sleepFn(25);
   } while (now() < deadline);
@@ -1702,10 +1981,11 @@ export async function waitForStableVisionDepartureTransition(
   );
 }
 
-async function readInstalledUiViewport(client) {
-  return evaluateExpression(
-    client,
-    `(() => ({
+async function readInstalledUiViewport(client: unknown): Promise<JsonRecord> {
+  return recordValue(
+    await evaluateExpression(
+      client as Parameters<typeof evaluateExpression>[0],
+      `(() => ({
       route: location.hash,
       innerWidth: window.innerWidth,
       innerHeight: window.innerHeight,
@@ -1714,12 +1994,15 @@ async function readInstalledUiViewport(client) {
       visualViewportWidth: window.visualViewport?.width ?? null,
       visualViewportHeight: window.visualViewport?.height ?? null
     }))()`,
+    ),
   );
 }
 
-async function readRenderedPaymentSurface(client) {
+async function readRenderedPaymentSurface(
+  client: unknown,
+): Promise<JsonRecord> {
   const hook = await evaluateExpression(
-    client,
+    client as Parameters<typeof evaluateExpression>[0],
     `(() => {
       const el = document.querySelector("[data-installed-kiosk-sale-payment-surface]");
       return el ? {
@@ -1731,16 +2014,18 @@ async function readRenderedPaymentSurface(client) {
       } : null;
     })()`,
   );
-  if (!hook?.orderId || !hook?.paymentId || !hook?.orderNo) {
+  const hookRecord = recordValue(hook);
+  if (!hookRecord?.orderId || !hookRecord?.paymentId || !hookRecord?.orderNo) {
     throw new Error("required rendered customer UI payment hook is missing");
   }
-  return hook;
+  return hookRecord;
 }
 
-async function readUiBoundary(client) {
-  return evaluateExpression(
-    client,
-    `(() => {
+async function readUiBoundary(client: unknown): Promise<JsonRecord> {
+  return recordValue(
+    await evaluateExpression(
+      client as Parameters<typeof evaluateExpression>[0],
+      `(() => {
       const el = document.querySelector("[data-installed-kiosk-sale-result-surface]");
       return {
         route: location.hash,
@@ -1753,22 +2038,26 @@ async function readUiBoundary(client) {
         } : null
       };
     })()`,
+    ),
   );
 }
 
 async function waitForPlatformMovement(
-  guestInput,
-  input,
-  baselineCount,
-  expected,
+  guestInput: JsonRecord,
+  input: JsonRecord,
+  baselineCount: number,
+  expected: JsonRecord,
   timeoutMs = 30_000,
-) {
+): Promise<JsonRecord> {
   const deadline = Date.now() + timeoutMs;
-  let last = null;
+  let last: JsonRecord | null = null;
   do {
-    last = (await controlPlaneRequest(guestInput, "/v1/platform/query", input))
-      .report;
-    const raw = last?.raw ?? {};
+    last = recordValue(
+      recordValue(
+        await controlPlaneRequest(guestInput, "/v1/platform/query", input),
+      ).report,
+    );
+    const raw = recordValue(last?.raw);
     const order = matchingRowById(raw, "orders", expected.orderId);
     const payment = matchingRowById(raw, "payments", expected.paymentId);
     const command = matchingRowById(raw, "commands", expected.commandId);
@@ -1792,21 +2081,24 @@ async function waitForPlatformMovement(
 }
 
 async function waitForDaemonSaleViewAfterF2(
-  handoff,
-  identity,
-  middle,
-  quantity,
+  handoff: JsonRecord,
+  identity: JsonRecord,
+  middle: JsonRecord,
+  quantity: unknown,
   timeoutMs = 30_000,
-) {
-  const expectedPhysicalStock = Math.max(0, middle.physicalStock - quantity);
+): Promise<JsonRecord> {
+  const expectedPhysicalStock = Math.max(
+    0,
+    Number(middle.physicalStock) - Number(quantity),
+  );
   const expectedSaleableStock = middle.saleableStock;
   const deadline = Date.now() + timeoutMs;
-  let last = null;
+  let last: JsonRecord | null = null;
   do {
-    last = await daemonGet(handoff, "/v1/sale-view");
+    last = recordValue(await daemonGet(handoff, "/v1/sale-view"));
     const item = matchingItem(last, identity);
     if (
-      item?.physicalStock === expectedPhysicalStock &&
+      Number(item?.physicalStock) === expectedPhysicalStock &&
       item?.saleableStock === expectedSaleableStock
     ) {
       return last;
@@ -1826,33 +2118,36 @@ async function waitForDaemonSaleViewAfterF2(
 }
 
 async function waitForBeforeF0Boundary(
-  guestInput,
-  input,
-  baselineRaw,
-  renderedSale,
-  liveSale,
-  expectedPaymentNo,
+  guestInput: JsonRecord,
+  input: JsonRecord,
+  baselineRaw: JsonRecord,
+  renderedSale: JsonRecord,
+  liveSale: JsonRecord,
+  expectedPaymentNo: unknown,
   timeoutMs = 30_000,
-) {
+): Promise<JsonRecord> {
   const baselineOrders = rows(baselineRaw, "orders").length;
   const baselinePayments = rows(baselineRaw, "payments").length;
   const baselineCommands = rows(baselineRaw, "commands").length;
   const baselineMovements = rows(baselineRaw, "movements").length;
   const deadline = Date.now() + timeoutMs;
-  let last = null;
+  let last: JsonRecord | null = null;
   do {
-    last = (await controlPlaneRequest(guestInput, "/v1/platform/query", input))
-      .report;
-    const raw = last?.raw ?? {};
-    const order = rows(raw, "orders").find(
-      (row) => row.id === renderedSale.orderId,
+    last = recordValue(
+      recordValue(
+        await controlPlaneRequest(guestInput, "/v1/platform/query", input),
+      ).report,
     );
-    const payment = rows(raw, "payments").find(
-      (row) => row.id === renderedSale.paymentId,
-    );
-    const command = rows(raw, "commands").find(
-      (row) => row.id === liveSale.vendingCommandId,
-    );
+    const raw = recordValue(last?.raw);
+    const order = rows(raw, "orders")
+      .map((row: unknown) => recordValue(row))
+      .find((row) => row.id === renderedSale.orderId);
+    const payment = rows(raw, "payments")
+      .map((row: unknown) => recordValue(row))
+      .find((row) => row.id === renderedSale.paymentId);
+    const command = rows(raw, "commands")
+      .map((row: unknown) => recordValue(row))
+      .find((row) => row.id === liveSale.vendingCommandId);
     if (
       order &&
       payment &&
@@ -1873,13 +2168,20 @@ async function waitForBeforeF0Boundary(
   );
 }
 
-function writeReport(outPath, report) {
+function writeReport(outPath: string, report: JsonRecord): void {
   const path = localPath(outPath);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(report, null, 2)}\n`);
 }
 
-function screenshotSink(outPath) {
+function screenshotSink(outPath: string): (
+  input: {
+    bytes: Uint8Array;
+    sha256: string;
+    label: string;
+    format: string;
+  },
+) => Promise<JsonRecord> {
   const root = join(
     dirname(localPath(outPath)),
     "fast-route-stress-sale-artifacts",
@@ -1895,7 +2197,12 @@ function screenshotSink(outPath) {
   };
 }
 
-function writeBoundedLogTail(sourcePath, outPath, label, maxBytes = 64 * 1024) {
+function writeBoundedLogTail(
+  sourcePath: string,
+  outPath: string,
+  label: string,
+  maxBytes = 64 * 1024,
+): JsonRecord | null {
   if (typeof sourcePath !== "string" || sourcePath === "") return null;
   try {
     const bytes = readFileSync(localPath(sourcePath));
@@ -1922,7 +2229,11 @@ function writeBoundedLogTail(sourcePath, outPath, label, maxBytes = 64 * 1024) {
   }
 }
 
-function writeTextArtifact(outPath, label, text) {
+function writeTextArtifact(
+  outPath: string,
+  label: string,
+  text: unknown,
+): JsonRecord {
   const root = join(
     dirname(localPath(outPath)),
     "fast-route-stress-sale-artifacts",
@@ -1936,11 +2247,11 @@ function writeTextArtifact(outPath, label, text) {
   };
 }
 
-function sleep(ms) {
-  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
+function sleep(ms: number): Promise<void> {
+  return new Promise<void>((resolvePromise) => setTimeout(resolvePromise, ms));
 }
 
-function serializeError(error) {
+function serializeError(error: unknown): JsonRecord {
   if (error instanceof Error) {
     return {
       name: error.name,
@@ -1951,8 +2262,8 @@ function serializeError(error) {
   return { name: "Error", message: String(error) };
 }
 
-function cleanupTimeout(label, timeoutMs) {
-  return new Promise((_, reject) => {
+function cleanupTimeout(label: string, timeoutMs: number): Promise<never> {
+  return new Promise<never>((_, reject) => {
     const timer = setTimeout(() => {
       reject(new Error(`${label} exceeded ${timeoutMs}ms cleanup deadline`));
     }, timeoutMs);
@@ -1961,10 +2272,10 @@ function cleanupTimeout(label, timeoutMs) {
 }
 
 export async function runCleanupStep(
-  label,
-  action,
+  label: string,
+  action: () => unknown | Promise<unknown>,
   timeoutMs = CLEANUP_TIMEOUT_MS,
-) {
+): Promise<JsonRecord> {
   try {
     const detail = await Promise.race([
       action(),
@@ -1972,7 +2283,7 @@ export async function runCleanupStep(
     ]);
     return { label, ok: true, detail };
   } catch (error) {
-    const wrapped = new Error(
+    const wrapped: CleanupError = new Error(
       `${label} failed: ${error instanceof Error ? error.message : String(error)}`,
     );
     wrapped.cause = error;
@@ -1981,8 +2292,11 @@ export async function runCleanupStep(
   }
 }
 
-export function combineCleanupError(primaryError, cleanupErrors) {
-  if (cleanupErrors.length === 0) return primaryError;
+export function combineCleanupError(
+  primaryError: Error | null | undefined,
+  cleanupErrors: Error[],
+): Error | null {
+  if (cleanupErrors.length === 0) return primaryError ?? null;
   if (primaryError) {
     return new AggregateError(
       [primaryError, ...cleanupErrors],
@@ -1996,20 +2310,20 @@ export function combineCleanupError(primaryError, cleanupErrors) {
 }
 
 async function collectCleanupStep(
-  cleanup,
-  cleanupErrors,
-  label,
-  action,
+  cleanup: JsonRecord[],
+  cleanupErrors: Error[],
+  label: string,
+  action: () => unknown | Promise<unknown>,
   timeoutMs = CLEANUP_TIMEOUT_MS,
-) {
+): Promise<unknown> {
   try {
     const result = await runCleanupStep(label, action, timeoutMs);
     cleanup.push(result);
     return result.detail;
   } catch (error) {
-    cleanupErrors.push(error);
+    cleanupErrors.push(error as Error);
     cleanup.push({
-      label: error.cleanupLabel ?? label,
+      label: (error as CleanupError).cleanupLabel ?? label,
       ok: false,
       error: serializeError(error),
     });
@@ -2017,7 +2331,15 @@ async function collectCleanupStep(
   }
 }
 
-export function buildFastRouteStressSaleFailureReport(input) {
+export function buildFastRouteStressSaleFailureReport(
+  input: JsonRecord,
+): JsonRecord {
+  const error = input.error;
+  const snapshots = recordValue(input.snapshots);
+  const platform = recordValue(snapshots.platform);
+  const daemon = recordValue(snapshots.daemon);
+  const logs = recordValue(input.logs);
+  const checkpoints = arrayValue(input.checkpoints);
   return {
     schemaVersion: "vem-fast-route-stress-sale/v2",
     ok: false,
@@ -2025,31 +2347,31 @@ export function buildFastRouteStressSaleFailureReport(input) {
     mode: input.mode,
     stage: input.stage,
     error:
-      input.error instanceof Error
+      error instanceof Error
         ? {
-            name: input.error.name,
-            message: input.error.message,
-            stack: String(input.error.stack ?? "").slice(0, 16 * 1024),
+            name: error.name,
+            message: error.message,
+            stack: String(error.stack ?? "").slice(0, 16 * 1024),
           }
-        : { name: "Error", message: String(input.error) },
+        : { name: "Error", message: String(error) },
     controlPlaneSessionId: input.controlPlaneSessionId ?? null,
     liveSale: input.liveSale ?? null,
     runtimeTrace: compactRuntimeTrace(input.runtimeTrace ?? [], 256),
     continuousCdpLocationHash: input.continuousCdpLocationHash ?? null,
     snapshots: {
       platform: {
-        baseline: input.snapshots?.platform?.baseline ?? null,
-        beforeF0: input.snapshots?.platform?.beforeF0 ?? null,
-        afterF1BeforeF2: input.snapshots?.platform?.afterF1BeforeF2 ?? null,
-        afterF2: input.snapshots?.platform?.afterF2 ?? null,
+        baseline: platform.baseline ?? null,
+        beforeF0: platform.beforeF0 ?? null,
+        afterF1BeforeF2: platform.afterF1BeforeF2 ?? null,
+        afterF2: platform.afterF2 ?? null,
       },
       daemon: {
-        baseline: input.snapshots?.daemon?.baseline ?? null,
-        beforeF0: input.snapshots?.daemon?.beforeF0 ?? null,
-        afterF1BeforeF2: input.snapshots?.daemon?.afterF1BeforeF2 ?? null,
-        afterF2: input.snapshots?.daemon?.afterF2 ?? null,
+        baseline: daemon.baseline ?? null,
+        beforeF0: daemon.beforeF0 ?? null,
+        afterF1BeforeF2: daemon.afterF1BeforeF2 ?? null,
+        afterF2: daemon.afterF2 ?? null,
         failureCurrentTransaction:
-          input.snapshots?.daemon?.failureCurrentTransaction ?? null,
+          daemon.failureCurrentTransaction ?? null,
       },
     },
     hostEvidence: input.hostEvidence ?? null,
@@ -2057,22 +2379,26 @@ export function buildFastRouteStressSaleFailureReport(input) {
     cleanup: input.cleanup ?? [],
     cleanupError: input.cleanupError ?? null,
     logs: {
-      daemonStdout: input.logs?.daemonStdout ?? null,
-      daemonStderr: input.logs?.daemonStderr ?? null,
-      platform: input.logs?.platform ?? null,
-      platformError: input.logs?.platformError ?? null,
-      simulator: input.logs?.simulator ?? null,
-      failureScreenshots: (input.checkpoints ?? [])
-        .map((checkpoint) => checkpoint?.screenshot?.ref)
+      daemonStdout: logs.daemonStdout ?? null,
+      daemonStderr: logs.daemonStderr ?? null,
+      platform: logs.platform ?? null,
+      platformError: logs.platformError ?? null,
+      simulator: logs.simulator ?? null,
+      failureScreenshots: checkpoints
+        .map((checkpoint: unknown) =>
+          recordValue(recordValue(checkpoint).screenshot).ref,
+        )
         .filter(Boolean),
     },
   };
 }
 
-export function buildFastRouteStressSaleSuccessReport(input) {
-  const sessionStart = input?.sessionStart;
+export function buildFastRouteStressSaleSuccessReport(
+  input: JsonRecord,
+): JsonRecord {
+  const sessionStart = recordValue(input?.sessionStart);
   const sessionId = required(
-    sessionStart?.sessionId,
+    sessionStart.sessionId,
     "successful sale serial session id",
   );
   return {
@@ -2103,19 +2429,19 @@ export function buildFastRouteStressSaleSuccessReport(input) {
 }
 
 export async function controlPlaneRequest(
-  guestInput,
-  path,
-  body = {},
-  options = {},
-) {
-  const controlPlane = guestInput.hostControlPlane;
+  guestInput: JsonRecord,
+  path: string,
+  body: JsonRecord = {},
+  options: Pick<FetchOptions, "timeoutMs" | "signal"> = {},
+): Promise<unknown> {
+  const controlPlane = recordValue(guestInput.hostControlPlane);
   if (!controlPlane?.endpoint || !controlPlane?.token) {
     throw new Error(
       "guest input is missing hostControlPlane endpoint and token",
     );
   }
   // The Linux host control plane is the runner-owned bridge to run-vm-host-adapter.ts.
-  const request = {
+  const request: FetchOptions = {
     method: "POST",
     headers: {
       authorization: `Bearer ${controlPlane.token}`,
@@ -2125,23 +2451,24 @@ export async function controlPlaneRequest(
     timeoutMs: options.timeoutMs,
     signal: options.signal,
   };
-  let lastError;
+  let lastError: unknown;
+  const requestSignal = request.signal;
   for (const retryDelayMs of [0, 100, 250]) {
     if (retryDelayMs > 0) {
-      if (request.signal?.aborted) throw request.signal.reason;
-      await new Promise((resolvePromise, reject) => {
-        let timer;
+      if (requestSignal?.aborted) throw requestSignal.reason;
+      await new Promise<void>((resolvePromise, reject) => {
+        let timer: NodeJS.Timeout;
         const finish = () => {
-          request.signal?.removeEventListener("abort", abort);
+          requestSignal?.removeEventListener("abort", abort);
           resolvePromise();
         };
         const abort = () => {
           clearTimeout(timer);
-          request.signal?.removeEventListener("abort", abort);
-          reject(request.signal.reason);
+          requestSignal?.removeEventListener("abort", abort);
+          reject(requestSignal?.reason);
         };
         timer = setTimeout(finish, retryDelayMs);
-        request.signal?.addEventListener("abort", abort, { once: true });
+        requestSignal?.addEventListener("abort", abort, { once: true });
       });
     }
     try {
@@ -2154,24 +2481,32 @@ export async function controlPlaneRequest(
   throw lastError;
 }
 
-async function collectPlatformLog(guestInput, sessionId, outPath) {
+async function collectPlatformLog(
+  guestInput: JsonRecord,
+  sessionId: unknown,
+  outPath: string,
+): Promise<JsonRecord> {
   const result = await controlPlaneRequest(
     guestInput,
     `/v1/serial-sessions/${sessionId}/platform-log`,
     { lines: 200 },
   );
+  const resultRecord = recordValue(result);
   return {
-    reference: result.reference ?? null,
-    unit: result.unit,
+    reference: resultRecord.reference ?? null,
+    unit: resultRecord.unit,
     artifact: writeTextArtifact(
       outPath,
       "platform-service-api",
-      result.log ?? "",
+      resultRecord.log ?? "",
     ),
   };
 }
 
-async function runPowerShellScript(script, label) {
+async function runPowerShellScript(
+  script: string,
+  label: string,
+): Promise<string> {
   const child = spawn(
     "powershell.exe",
     ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
@@ -2185,7 +2520,7 @@ async function runPowerShellScript(script, label) {
   child.stderr.on("data", (chunk) => {
     stderr += chunk.toString();
   });
-  const exitCode = await new Promise((resolvePromise) => {
+  const exitCode = await new Promise<number>((resolvePromise) => {
     child.once("exit", (code) => resolvePromise(code ?? 1));
   });
   if (exitCode !== 0) {
@@ -2227,11 +2562,13 @@ if ($ownedProcesses.Count -ne 0) {
   await verifyPortCanBeRebound(7892);
 }
 
-export async function ensureControlledVisionMock(controlPort) {
+export async function ensureControlledVisionMock(
+  controlPort: number,
+): Promise<JsonRecord> {
   try {
-    const status = await fetchJson(
+    const status = recordValue(await fetchJson(
       `http://127.0.0.1:${controlPort}/control/status`,
-    );
+    ));
     if (status.scenario === "controlled")
       return { child: null, started: false };
   } catch {}
@@ -2260,9 +2597,9 @@ export async function ensureControlledVisionMock(controlPort) {
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
     try {
-      const status = await fetchJson(
+      const status = recordValue(await fetchJson(
         `http://127.0.0.1:${controlPort}/control/status`,
-      );
+      ));
       if (status.scenario === "controlled") {
         return { child, started: true };
       }
@@ -2274,14 +2611,16 @@ export async function ensureControlledVisionMock(controlPort) {
   throw new Error("controlled vision mock did not become ready");
 }
 
-export async function waitForControlledVisionRuntimeClient(controlPort) {
+export async function waitForControlledVisionRuntimeClient(
+  controlPort: number,
+): Promise<JsonRecord> {
   const deadline = Date.now() + 30_000;
-  let lastStatus = null;
+  let lastStatus: JsonRecord | null = null;
   while (Date.now() < deadline) {
     try {
-      lastStatus = await fetchJson(
+      lastStatus = recordValue(await fetchJson(
         `http://127.0.0.1:${controlPort}/control/status`,
-      );
+      ));
       if (
         lastStatus.scenario === "controlled" &&
         Number(lastStatus.connectedRuntimeClients) >= 1
@@ -2296,13 +2635,16 @@ export async function waitForControlledVisionRuntimeClient(controlPort) {
   );
 }
 
-function hasChildExited(child) {
+function hasChildExited(child: ReturnType<typeof spawn>): boolean {
   return child.exitCode != null || child.signalCode != null;
 }
 
-async function waitForChildExit(child, timeoutMs) {
+async function waitForChildExit(
+  child: ReturnType<typeof spawn>,
+  timeoutMs: number,
+): Promise<boolean> {
   if (hasChildExited(child)) return true;
-  return await new Promise((resolvePromise) => {
+  return await new Promise<boolean>((resolvePromise) => {
     const timer = setTimeout(() => {
       child.off("exit", onExit);
       resolvePromise(false);
@@ -2320,16 +2662,16 @@ async function waitForChildExit(child, timeoutMs) {
   });
 }
 
-async function verifyPortCanBeRebound(port) {
+async function verifyPortCanBeRebound(port: number): Promise<void> {
   const listener = createServer();
   try {
-    await new Promise((resolvePromise, reject) => {
+    await new Promise<void>((resolvePromise, reject) => {
       listener.once("error", reject);
       listener.listen(port, "127.0.0.1", resolvePromise);
     });
   } finally {
     if (listener.listening) {
-      await new Promise((resolvePromise, reject) => {
+      await new Promise<void>((resolvePromise, reject) => {
         listener.close((error) => (error ? reject(error) : resolvePromise()));
       });
     }
@@ -2337,10 +2679,10 @@ async function verifyPortCanBeRebound(port) {
 }
 
 export async function shutdownControlledVisionMock(
-  child,
+  child: ReturnType<typeof spawn> | null,
   timeoutMs = 10_000,
   visionPort = 7892,
-) {
+): Promise<void> {
   if (!child) return;
   if (!hasChildExited(child)) {
     child.kill("SIGTERM");
@@ -2363,14 +2705,21 @@ export async function shutdownControlledVisionMock(
   }
 }
 
-async function dispatchVisionDeparture(guestInput) {
+function visionMockControlPort(guestInput: JsonRecord): number {
   const port =
-    guestInput.hostControlPlane?.visionMockControlPort ??
+    recordValue(guestInput.hostControlPlane).visionMockControlPort ??
     guestInput.visionMockControlPort;
   const controlPort = Number(port);
   if (!Number.isInteger(controlPort) || controlPort < 1) {
     throw new Error("guest input is missing vision mock control port");
   }
+  return controlPort;
+}
+
+async function dispatchVisionDeparture(
+  guestInput: JsonRecord,
+): Promise<unknown> {
+  const controlPort = visionMockControlPort(guestInput);
   // Use the controlled vision injection endpoint rather than browser-state spoofing.
   // Full guest-local URL shape: http://127.0.0.1:<port>/control/departure.
   // Regex guard anchor: vision/control/departure.
@@ -2392,14 +2741,10 @@ async function dispatchVisionDeparture(guestInput) {
   throw lastError ?? new Error("Vision departure delivery timed out");
 }
 
-async function dispatchVisionArrival(guestInput) {
-  const port =
-    guestInput.hostControlPlane?.visionMockControlPort ??
-    guestInput.visionMockControlPort;
-  const controlPort = Number(port);
-  if (!Number.isInteger(controlPort) || controlPort < 1) {
-    throw new Error("guest input is missing vision mock control port");
-  }
+async function dispatchVisionArrival(
+  guestInput: JsonRecord,
+): Promise<unknown> {
+  const controlPort = visionMockControlPort(guestInput);
   return fetchJson(`http://127.0.0.1:${controlPort}/control/presence`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -2407,10 +2752,13 @@ async function dispatchVisionArrival(guestInput) {
   });
 }
 
-async function dispatchCatalogTouchSession(client) {
-  const point = await evaluateExpression(
-    client,
-    `(() => {
+async function dispatchCatalogTouchSession(
+  client: unknown,
+): Promise<JsonRecord> {
+  const point = recordValue(
+    await evaluateExpression(
+      client as Parameters<typeof evaluateExpression>[0],
+      `(() => {
       const target =
         document.querySelector("[data-test='catalog-page']") ??
         document.body ??
@@ -2420,19 +2768,24 @@ async function dispatchCatalogTouchSession(client) {
       const y = Math.max(1, Math.min(innerHeight - 1, rect.top + Math.min(64, Math.max(16, rect.height / 2))));
       return { x, y, selector: target.getAttribute?.("data-test") ?? target.tagName };
     })()`,
+    ),
   );
   return {
     ...point,
-    input: await dispatchPhysicalInput(client, point, {
+    input: await dispatchPhysicalInput(
+      client as Parameters<typeof dispatchPhysicalInput>[0],
+      point as Parameters<typeof dispatchPhysicalInput>[1],
+      {
       kind: "touch",
       timeoutMs: 5_000,
-    }),
+      },
+    ),
   };
 }
 
 export async function waitForVisionArrivalOrTouchSession(
-  client,
-  traceBoundary,
+  client: unknown,
+  traceBoundary: JsonRecord,
   {
     waitArrival = waitForStableVisionArrivalTrace,
     dispatchTouch = dispatchCatalogTouchSession,
@@ -2440,7 +2793,7 @@ export async function waitForVisionArrivalOrTouchSession(
     arrivalTimeoutMs = 5_000,
     touchTimeoutMs = 3_000,
   } = {},
-) {
+): Promise<JsonRecord> {
   try {
     return {
       trace: await waitArrival(client, traceBoundary, {
@@ -2483,8 +2836,8 @@ export async function waitForVisionArrivalOrTouchSession(
         },
       };
     } catch (touchArrivalError) {
-      const snapshot = await readTrace(client);
-      if (latestTouchscreenSessionActive(snapshot.entries)) {
+    const snapshot = await readTrace(client);
+    if (latestTouchscreenSessionActive(arrayValue(snapshot.entries))) {
         return {
           trace: {
             type: "navigation",
@@ -2512,7 +2865,10 @@ export async function waitForVisionArrivalOrTouchSession(
   }
 }
 
-async function establishVisionPresenceForSale(guestInput, client) {
+async function establishVisionPresenceForSale(
+  guestInput: JsonRecord,
+  client: unknown,
+): Promise<JsonRecord> {
   const resetBoundary = await captureRuntimeTraceBoundary(
     client,
     "Vision presence reset boundary",
@@ -2554,8 +2910,8 @@ async function establishVisionPresenceForSale(guestInput, client) {
     };
   }
   let resetPrecondition = "existing-presence-departed";
-  let resetDelivery = await dispatchVisionDeparture(guestInput);
-  let resetTrace;
+  let resetDelivery: unknown = await dispatchVisionDeparture(guestInput);
+  let resetTrace: JsonRecord | null = null;
   try {
     resetTrace = await waitForStableVisionDepartureTransition(
       client,
@@ -2577,7 +2933,7 @@ async function establishVisionPresenceForSale(guestInput, client) {
           : String(initialDepartureError),
       resetArrivalDelivery,
       resetArrivalTrace,
-      ...(await dispatchVisionDeparture(guestInput)),
+      ...recordValue(await dispatchVisionDeparture(guestInput)),
     };
     resetTrace = await waitForStableVisionDepartureTransition(
       client,
@@ -2589,12 +2945,13 @@ async function establishVisionPresenceForSale(guestInput, client) {
     client,
     "Vision arrival control-request trace boundary",
   );
-  const delivery = await dispatchVisionArrival(guestInput);
+  const delivery = recordValue(await dispatchVisionArrival(guestInput));
   const arrivalOrTouch = await waitForVisionArrivalOrTouchSession(
     client,
     arrivalTraceBoundary,
   );
-  const trace = arrivalOrTouch.trace;
+  const arrivalOrTouchRecord = recordValue(arrivalOrTouch);
+  const trace = recordValue(arrivalOrTouchRecord.trace);
   return {
     precondition: "fresh-arrival",
     resetPrecondition,
@@ -2610,14 +2967,18 @@ async function establishVisionPresenceForSale(guestInput, client) {
   };
 }
 
-async function completeMockPayment(guestInput, paymentNo) {
+async function completeMockPayment(
+  guestInput: JsonRecord,
+  paymentNo: unknown,
+): Promise<unknown> {
+  const runtimeBootstrap = recordValue(guestInput?.runtimeBootstrap);
   const provisioningApiBaseUrl = required(
-    guestInput?.runtimeBootstrap?.provisioningApiBaseUrl,
+    runtimeBootstrap.provisioningApiBaseUrl,
     "runtimeBootstrap.provisioningApiBaseUrl",
   );
   const apiBase = provisioningApiBaseUrl.replace(/\/+$/, "");
   return fetchJson(
-    `${apiBase}/payments/mock/${encodeURIComponent(paymentNo)}/complete`,
+    `${apiBase}/payments/mock/${encodeURIComponent(String(paymentNo))}/complete`,
     {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -2629,24 +2990,37 @@ const installedOwnerOrdinarySaleDependencies = Object.freeze({
   waitForRoute,
   waitForSaleStartReady,
   readInstalledUiViewport,
-  readDaemonSaleView: (handoff) => daemonGet(handoff, "/v1/sale-view"),
-  readCurrentTransaction: (handoff, options) =>
+  readDaemonSaleView: (handoff: JsonRecord) =>
+    daemonGet(handoff, "/v1/sale-view"),
+  readCurrentTransaction: (
+    handoff: JsonRecord,
+    options: Pick<FetchOptions, "timeoutMs" | "signal"> = {},
+  ) =>
     daemonGet(handoff, "/v1/transactions/current", options),
-  readPlatform: async (guestInput, body) =>
-    (await controlPlaneRequest(guestInput, "/v1/platform/query", body)).report,
+  readPlatform: async (guestInput: JsonRecord, body: JsonRecord) =>
+    recordValue(
+      await controlPlaneRequest(guestInput, "/v1/platform/query", body),
+    ).report,
   activateVisibleSelector,
   armCreateOrderGate,
   waitForCreateOrderGatePending,
-  releaseCreateOrderGate: (guestInput, paymentNo, options) =>
+  releaseCreateOrderGate: (
+    guestInput: JsonRecord,
+    paymentNo: unknown,
+    options: Pick<FetchOptions, "timeoutMs" | "signal"> = {},
+  ) =>
     controlPlaneRequest(
       guestInput,
       "/v1/mock-payment-create-gate/release",
       { paymentNo },
       options,
-    ).then((released) => ({
-      paymentNo,
-      releasedAt: released.releasedAt,
-    })),
+    ).then((released) => {
+      const releasedRecord = recordValue(released);
+      return {
+        paymentNo,
+        releasedAt: releasedRecord.releasedAt,
+      };
+    }),
   readRenderedPaymentSurface,
   completeMockPayment,
   waitForCommand,
@@ -2658,13 +3032,22 @@ const installedOwnerOrdinarySaleDependencies = Object.freeze({
   readRuntimeTraceSnapshot,
   captureRuntimeTraceBoundary,
   startContinuousCdpLocationHashObservation,
-  serialRequest: (guestInput, sessionId, operation, body = {}) =>
+  serialRequest: (
+    guestInput: JsonRecord,
+    sessionId: unknown,
+    operation: string,
+    body: JsonRecord = {},
+  ) =>
     controlPlaneRequest(
       guestInput,
       `/v1/serial-sessions/${sessionId}/${operation}`,
       body,
     ),
-  cancelTransaction: (handoff, transaction, options) =>
+  cancelTransaction: (
+    handoff: JsonRecord,
+    transaction: JsonRecord | null | undefined,
+    options: Pick<FetchOptions, "timeoutMs" | "signal">,
+  ) =>
     fetchJson(`${daemonBaseUrl(handoff)}/v1/intents/cancel-order`, {
       method: "POST",
       headers: {
@@ -2676,14 +3059,20 @@ const installedOwnerOrdinarySaleDependencies = Object.freeze({
       }),
       ...options,
     }),
-  openCreateOrderGate: (guestInput, options) =>
+  openCreateOrderGate: (
+    guestInput: JsonRecord,
+    options: Pick<FetchOptions, "timeoutMs" | "signal"> = {},
+  ) =>
     controlPlaneRequest(
       guestInput,
       "/v1/mock-payment-create-gate/open",
       {},
       options,
     ),
-  readCreateOrderGate: (guestInput, options) =>
+  readCreateOrderGate: (
+    guestInput: JsonRecord,
+    options: Pick<FetchOptions, "timeoutMs" | "signal"> = {},
+  ) =>
     controlPlaneRequest(
       guestInput,
       "/v1/mock-payment-create-gate/status",
@@ -2692,7 +3081,9 @@ const installedOwnerOrdinarySaleDependencies = Object.freeze({
     ),
 });
 
-function boundedCleanupRequest(deadline) {
+function boundedCleanupRequest(
+  deadline: number,
+): Pick<FetchOptions, "timeoutMs" | "signal"> {
   const remaining = deadline - performance.now();
   if (remaining <= 0)
     throw new Error("ordinary sale cleanup deadline exceeded");
@@ -2704,16 +3095,16 @@ function boundedCleanupRequest(deadline) {
 }
 
 export async function waitForOrdinarySaleCleanupPoll(
-  deadline,
+  deadline: number,
   maxDelayMs = 100,
-) {
+): Promise<void> {
   const remaining = deadline - performance.now();
   if (remaining <= 0)
     throw new Error("ordinary sale cleanup deadline exceeded");
   const delayMs = Math.max(1, Math.min(maxDelayMs, Math.ceil(remaining)));
   const deadlineSignal = AbortSignal.timeout(Math.max(1, Math.ceil(remaining)));
-  await new Promise((resolvePromise, reject) => {
-    let timer;
+  await new Promise<void>((resolvePromise, reject) => {
+    let timer: NodeJS.Timeout;
     const finish = () => {
       deadlineSignal.removeEventListener("abort", abort);
       resolvePromise();
@@ -2735,12 +3126,20 @@ async function cleanupOrdinarySalePayment({
   handoff,
   deadline,
   knownPaymentNo,
-}) {
-  const status = await dependencies.readCreateOrderGate(
-    guestInput,
-    boundedCleanupRequest(deadline),
+}: {
+  dependencies: typeof installedOwnerOrdinarySaleDependencies;
+  guestInput: JsonRecord;
+  handoff: JsonRecord;
+  deadline: number;
+  knownPaymentNo: unknown;
+}): Promise<JsonRecord> {
+  const status = recordValue(
+    await dependencies.readCreateOrderGate(
+      guestInput,
+      boundedCleanupRequest(deadline),
+    ),
   );
-  const pendingPaymentNo = status?.pending?.paymentNo;
+  const pendingPaymentNo = recordValue(status.pending).paymentNo;
   if (
     typeof pendingPaymentNo === "string" &&
     pendingPaymentNo !== "" &&
@@ -2759,11 +3158,13 @@ async function cleanupOrdinarySalePayment({
         paymentNo,
         boundedCleanupRequest(deadline),
       );
-    let transaction;
+    let transaction: JsonRecord | null = null;
     do {
-      transaction = await dependencies.readCurrentTransaction(
-        handoff,
-        boundedCleanupRequest(deadline),
+      transaction = recordValue(
+        await dependencies.readCurrentTransaction(
+          handoff,
+          boundedCleanupRequest(deadline),
+        ),
       );
       if (transaction?.paymentNo === paymentNo) break;
       await waitForOrdinarySaleCleanupPoll(deadline);
@@ -2775,9 +3176,11 @@ async function cleanupOrdinarySalePayment({
         boundedCleanupRequest(deadline),
       );
       do {
-        transaction = await dependencies.readCurrentTransaction(
-          handoff,
-          boundedCleanupRequest(deadline),
+        transaction = recordValue(
+          await dependencies.readCurrentTransaction(
+            handoff,
+            boundedCleanupRequest(deadline),
+          ),
         );
         if (
           transaction?.paymentNo === paymentNo &&
@@ -2788,13 +3191,17 @@ async function cleanupOrdinarySalePayment({
       } while (true);
     }
   }
-  const opened = await dependencies.openCreateOrderGate(
-    guestInput,
-    boundedCleanupRequest(deadline),
+  const opened = recordValue(
+    await dependencies.openCreateOrderGate(
+      guestInput,
+      boundedCleanupRequest(deadline),
+    ),
   );
-  const finalStatus = await dependencies.readCreateOrderGate(
-    guestInput,
-    boundedCleanupRequest(deadline),
+  const finalStatus = recordValue(
+    await dependencies.readCreateOrderGate(
+      guestInput,
+      boundedCleanupRequest(deadline),
+    ),
   );
   if (
     opened?.state !== "open" ||
@@ -2812,12 +3219,19 @@ async function cleanupOrdinarySalePayment({
  * connected CDP client, the existing Vision owner, or the active serial
  * session. The optional dependency override is a test-owned boundary only.
  */
-export async function runInstalledOwnerOrdinarySaleCompletion(input) {
+export async function runInstalledOwnerOrdinarySaleCompletion(
+  input: JsonRecord,
+): Promise<JsonRecord> {
   const client = input?.client;
-  const guestInput = input?.guestInput;
-  const handoff = input?.handoff;
-  const serialSession = input?.serialSession;
-  if (!client || !guestInput || !handoff || !serialSession?.sessionId)
+  const guestInput = recordValue(input?.guestInput);
+  const handoff = recordValue(input?.handoff);
+  const serialSession = recordValue(input?.serialSession);
+  if (
+    !client ||
+    !input?.guestInput ||
+    !input?.handoff ||
+    !serialSession?.sessionId
+  )
     throw new Error(
       "ordinary installed-owner sale requires connected client, guest input, handoff, and active serial session",
     );
@@ -2828,6 +3242,7 @@ export async function runInstalledOwnerOrdinarySaleCompletion(input) {
   if (
     input.testCleanupTimeoutMs !== undefined &&
     (process.env.NODE_ENV !== "test" ||
+      typeof input.testCleanupTimeoutMs !== "number" ||
       !Number.isFinite(input.testCleanupTimeoutMs) ||
       input.testCleanupTimeoutMs <= 0)
   )
@@ -2836,20 +3251,25 @@ export async function runInstalledOwnerOrdinarySaleCompletion(input) {
     );
   const dependencies = {
     ...installedOwnerOrdinarySaleDependencies,
-    ...(input.testDependencies ?? {}),
+    ...recordValue(input.testDependencies),
   };
   const runId = required(guestInput.runId, "runId");
   const machineCode = required(guestInput.machineCode, "machineCode");
   const steps = buildFastRouteStressScenarioSteps(
-    input.productSelector,
-    input.categorySelector,
+    typeof input.productSelector === "string"
+      ? input.productSelector
+      : undefined,
+    typeof input.categorySelector === "string"
+      ? input.categorySelector
+      : undefined,
   );
   let gateOpened = false;
-  let pendingCreate = null;
-  let observer = null;
-  let primaryError = null;
+  let pendingCreate: JsonRecord | null = null;
+  let observer: CdpLocationHashObserver | null = null;
+  let primaryError: Error | null = null;
   try {
-    await dependencies.waitForRoute(client, "#/catalog", {
+    const cdpClient = client as Parameters<typeof waitForRoute>[0];
+    await dependencies.waitForRoute(cdpClient, "#/catalog", {
       timeoutMs: 30_000,
       pollMs: 250,
     });
@@ -2857,166 +3277,223 @@ export async function runInstalledOwnerOrdinarySaleCompletion(input) {
       handoff,
       client,
     );
-    const uiViewport = await dependencies.readInstalledUiViewport(client);
+    const uiViewport = await dependencies.readInstalledUiViewport(cdpClient);
     const baselineSaleView = await dependencies.readDaemonSaleView(handoff);
-    const baselinePlatform = await dependencies.readPlatform(guestInput, {
-      runId,
-      machineCode,
-      sessionId: serialSession.sessionId,
-    });
-    const createOrderGate = await dependencies.armCreateOrderGate(guestInput);
+    const baselinePlatform = recordValue(
+      await dependencies.readPlatform(guestInput, {
+        runId,
+        machineCode,
+        sessionId: serialSession.sessionId,
+      }),
+    );
+    const createOrderGate = recordValue(
+      await dependencies.armCreateOrderGate(guestInput),
+    );
     gateOpened = true;
     observer =
-      await dependencies.startContinuousCdpLocationHashObservation(client);
-    const noCatalogTraceBoundary =
+      await dependencies.startContinuousCdpLocationHashObservation(cdpClient);
+    const noCatalogTraceBoundary = recordValue(
       await dependencies.captureRuntimeTraceBoundary(
-        client,
+        cdpClient,
         "ordinary sale Catalog trace boundary",
-      );
+      ),
+    );
     for (const step of steps.slice(0, 4)) {
-      await dependencies.waitForRoute(client, step.routeBefore, {
+      const stepRecord = recordValue(step);
+      await dependencies.waitForRoute(cdpClient, String(stepRecord.routeBefore), {
         timeoutMs: 30_000,
         pollMs: 250,
       });
-      const activation = await dependencies.activateVisibleSelector(
-        client,
-        step.selector,
-        { kind: "touch", timeoutMs: 30_000 },
+      const activation = recordValue(
+        await dependencies.activateVisibleSelector(
+          cdpClient,
+          String(stepRecord.selector),
+          { kind: "touch", timeoutMs: 30_000 },
+        ),
       );
-      assert.match(activation.input.method, /Input\.dispatchTouchEvent/);
-      await dependencies.waitForRoute(client, step.routeAfter, {
+      assert.match(
+        String(recordValue(activation.input).method),
+        /Input\.dispatchTouchEvent/,
+      );
+      await dependencies.waitForRoute(cdpClient, String(stepRecord.routeAfter), {
         timeoutMs: 30_000,
         pollMs: 250,
       });
     }
     observer.assertArmed();
-    const submit = await dependencies.activateVisibleSelector(
-      client,
-      steps[4].selector,
-      { kind: "touch", timeoutMs: 30_000 },
+    const submit = recordValue(
+      await dependencies.activateVisibleSelector(
+        cdpClient,
+        String(recordValue(steps[4]).selector),
+        { kind: "touch", timeoutMs: 30_000 },
+      ),
     );
-    assert.match(submit.input.method, /Input\.dispatchTouchEvent/);
+    assert.match(
+      String(recordValue(submit.input).method),
+      /Input\.dispatchTouchEvent/,
+    );
     pendingCreate = await dependencies.waitForCreateOrderGatePending(
       guestInput,
       30_000,
     );
     const pendingConfirmedAt =
       pendingCreate.observedAt ?? new Date().toISOString();
-    const releasedCreateOrderGate = await dependencies.releaseCreateOrderGate(
-      guestInput,
-      pendingCreate.paymentNo,
+    const releasedCreateOrderGate = recordValue(
+      await dependencies.releaseCreateOrderGate(
+        guestInput,
+        pendingCreate.paymentNo,
+      ),
     );
-    await dependencies.waitForRoute(client, /^#\/payment/, {
+    await dependencies.waitForRoute(cdpClient, /^#\/payment/, {
       timeoutMs: 30_000,
       pollMs: 250,
     });
-    const renderedSale = await dependencies.readRenderedPaymentSurface(client);
-    const pendingTransaction =
-      await dependencies.readCurrentTransaction(handoff);
+    const renderedSale = await dependencies.readRenderedPaymentSurface(
+      cdpClient,
+    );
+    const pendingTransaction = recordValue(
+      await dependencies.readCurrentTransaction(handoff),
+    );
     if (pendingTransaction?.paymentNo !== pendingCreate.paymentNo)
       throw new Error(
         "released create-order gate paymentNo must match the current transaction",
       );
     await dependencies.completeMockPayment(guestInput, pendingCreate.paymentNo);
-    const liveSale = await dependencies.waitForCommand(handoff, renderedSale);
-    const vendBoundary = await dependencies.serialRequest(
-      guestInput,
-      serialSession.sessionId,
-      "wait-frame",
-      { parsedOpcode: "VEND", timeoutMs: 30_000 },
+    const liveSale = recordValue(
+      await dependencies.waitForCommand(handoff, renderedSale),
     );
-    const beforeF0Platform = await dependencies.waitForBeforeF0Boundary(
-      guestInput,
-      { runId, machineCode, sessionId: serialSession.sessionId },
-      baselinePlatform.raw,
-      renderedSale,
-      liveSale,
-      pendingCreate.paymentNo,
+    const vendBoundary = recordValue(
+      await dependencies.serialRequest(
+        guestInput,
+        serialSession.sessionId,
+        "wait-frame",
+        { parsedOpcode: "VEND", timeoutMs: 30_000 },
+      ),
     );
-    const beforeF0SaleView = await dependencies.readDaemonSaleView(handoff);
-    const beforeF0Ui = await dependencies.readUiBoundary(client);
-    const releaseF0 = await dependencies.serialRequest(
-      guestInput,
-      serialSession.sessionId,
-      "release-f0",
+    const beforeF0Platform = recordValue(
+      await dependencies.waitForBeforeF0Boundary(
+        guestInput,
+        { runId, machineCode, sessionId: serialSession.sessionId },
+        recordValue(baselinePlatform.raw),
+        renderedSale,
+        liveSale,
+        pendingCreate.paymentNo,
+      ),
     );
-    const f0Boundary = await dependencies.serialRequest(
-      guestInput,
-      serialSession.sessionId,
-      "wait-frame",
-      { parsedOpcode: "F0", timeoutMs: 30_000 },
+    const beforeF0SaleView = recordValue(
+      await dependencies.readDaemonSaleView(handoff),
     );
-    const f1Boundary = await dependencies.serialRequest(
-      guestInput,
-      serialSession.sessionId,
-      "wait-frame",
-      { parsedOpcode: "F1", timeoutMs: 30_000 },
+    const beforeF0Ui = await dependencies.readUiBoundary(cdpClient);
+    const releaseF0 = recordValue(
+      await dependencies.serialRequest(
+        guestInput,
+        serialSession.sessionId,
+        "release-f0",
+      ),
     );
-    const afterF1SaleView = await dependencies.readDaemonSaleView(handoff);
-    const afterF1Platform = await dependencies.readPlatform(guestInput, {
-      runId,
-      machineCode,
-      sessionId: serialSession.sessionId,
-    });
-    const afterF1Ui = await dependencies.readUiBoundary(client);
-    if (afterF1Ui.result?.kind === "success")
+    const f0Boundary = recordValue(
+      await dependencies.serialRequest(
+        guestInput,
+        serialSession.sessionId,
+        "wait-frame",
+        { parsedOpcode: "F0", timeoutMs: 30_000 },
+      ),
+    );
+    const f1Boundary = recordValue(
+      await dependencies.serialRequest(
+        guestInput,
+        serialSession.sessionId,
+        "wait-frame",
+        { parsedOpcode: "F1", timeoutMs: 30_000 },
+      ),
+    );
+    const afterF1SaleView = recordValue(
+      await dependencies.readDaemonSaleView(handoff),
+    );
+    const afterF1Platform = recordValue(
+      await dependencies.readPlatform(guestInput, {
+        runId,
+        machineCode,
+        sessionId: serialSession.sessionId,
+      }),
+    );
+    const afterF1Ui = await dependencies.readUiBoundary(cdpClient);
+    if (recordValue(afterF1Ui.result).kind === "success")
       throw new Error("UI must not show success before inbound F2");
-    const releaseF2 = await dependencies.serialRequest(
-      guestInput,
-      serialSession.sessionId,
-      "release-f2",
+    const releaseF2 = recordValue(
+      await dependencies.serialRequest(
+        guestInput,
+        serialSession.sessionId,
+        "release-f2",
+      ),
     );
-    const f2Boundary = await dependencies.serialRequest(
-      guestInput,
-      serialSession.sessionId,
-      "wait-frame",
-      { parsedOpcode: "F2", timeoutMs: 30_000 },
+    const f2Boundary = recordValue(
+      await dependencies.serialRequest(
+        guestInput,
+        serialSession.sessionId,
+        "wait-frame",
+        { parsedOpcode: "F2", timeoutMs: 30_000 },
+      ),
     );
-    const resultSurface = await dependencies.waitForSuccessfulResultSurface(
-      client,
-      {
-        orderId: renderedSale.orderId,
-        paymentId: renderedSale.paymentId,
-        orderNo: renderedSale.orderNo,
-        commandId: liveSale.vendingCommandId,
-      },
-      60_000,
+    const resultSurface = recordValue(
+      await dependencies.waitForSuccessfulResultSurface(
+        cdpClient,
+        {
+          orderId: renderedSale.orderId,
+          paymentId: renderedSale.paymentId,
+          orderNo: renderedSale.orderNo,
+          commandId: liveSale.vendingCommandId,
+        },
+        60_000,
+      ),
     );
-    const continuousCdpLocationHash = await observer.finish(
-      resultSurface.route,
+    const continuousCdpLocationHash = recordValue(
+      await observer.finish(String(resultSurface.route)),
     );
     observer = null;
-    const collect = await dependencies.serialRequest(
-      guestInput,
-      serialSession.sessionId,
-      "evidence",
+    const collect = recordValue(
+      await dependencies.serialRequest(
+        guestInput,
+        serialSession.sessionId,
+        "evidence",
+      ),
     );
-    const afterF2Platform = await dependencies.waitForPlatformMovement(
-      guestInput,
-      { runId, machineCode, sessionId: serialSession.sessionId },
-      rows(afterF1Platform.raw, "movements").length,
-      {
-        orderId: renderedSale.orderId,
-        paymentId: renderedSale.paymentId,
-        paymentNo: pendingCreate.paymentNo,
-        commandId: liveSale.vendingCommandId,
-      },
+    const afterF2Platform = recordValue(
+      await dependencies.waitForPlatformMovement(
+        guestInput,
+        { runId, machineCode, sessionId: serialSession.sessionId },
+        rows(afterF1Platform.raw, "movements").length,
+        {
+          orderId: renderedSale.orderId,
+          paymentId: renderedSale.paymentId,
+          paymentNo: pendingCreate.paymentNo,
+          commandId: liveSale.vendingCommandId,
+        },
+      ),
     );
-    const orderItem = rows(afterF2Platform.raw, "orderItems").find(
-      (row) => row.orderId === renderedSale.orderId,
-    );
+    const orderItem = rows(afterF2Platform.raw, "orderItems")
+      .map((row: unknown) => recordValue(row))
+      .find((row) => row.orderId === renderedSale.orderId);
+    if (!orderItem) {
+      throw new Error("after-F2 platform order item is missing");
+    }
     const identity = {
       inventoryId: required(orderItem?.inventoryId, "order item inventoryId"),
       slotId: required(orderItem?.slotId, "order item slotId"),
     };
     const middleItem = matchingItem(afterF1SaleView, identity);
-    const afterF2SaleView = await dependencies.waitForDaemonSaleViewAfterF2(
-      handoff,
-      identity,
-      middleItem,
-      Number(orderItem.quantity),
+    if (!middleItem) {
+      throw new Error("after-F1 daemon sale view item is missing");
+    }
+    const afterF2SaleView = recordValue(
+      await dependencies.waitForDaemonSaleViewAfterF2(
+        handoff,
+        identity,
+        middleItem,
+        Number(orderItem.quantity),
+      ),
     );
-    const runtimeTrace = await dependencies.readRuntimeTraceSnapshot(client);
+    const runtimeTrace = await dependencies.readRuntimeTraceSnapshot(cdpClient);
     const evidence = {
       scenario: "sale-only",
       saleCorrelationId:
@@ -3074,16 +3551,21 @@ export async function runInstalledOwnerOrdinarySaleCompletion(input) {
         runtimeGenerationId: runtimeTrace.runtimeGenerationId,
         entries: runtimeTrace.entries,
       },
-      mqttMessages: collect.mqtt?.messages ?? [],
+      mqttMessages: arrayValue(recordValue(collect.mqtt).messages),
       serial: {
         sessionId:
-          serialSession.binding?.serialSessionId ?? serialSession.sessionId,
-        rawFrames: collect.rawFrames ?? [],
+          recordValue(serialSession.binding).serialSessionId ??
+          serialSession.sessionId,
+        rawFrames: arrayValue(collect.rawFrames),
       },
     };
     const summary = validateFastRouteStressSaleEvidence(evidence);
-    const opened = await dependencies.openCreateOrderGate(guestInput);
-    const openStatus = await dependencies.readCreateOrderGate(guestInput);
+    const opened = recordValue(
+      await dependencies.openCreateOrderGate(guestInput),
+    );
+    const openStatus = recordValue(
+      await dependencies.readCreateOrderGate(guestInput),
+    );
     if (
       opened?.state !== "open" ||
       openStatus?.state !== "open" ||
@@ -3099,17 +3581,17 @@ export async function runInstalledOwnerOrdinarySaleCompletion(input) {
       evidence,
       summary,
       boundaries: {
-        vend: vendBoundary.frame,
+        vend: recordValue(vendBoundary.frame),
         releaseF0,
-        f0: f0Boundary.frame,
-        f1: f1Boundary.frame,
+        f0: recordValue(f0Boundary.frame),
+        f1: recordValue(f1Boundary.frame),
         releaseF2,
-        f2: f2Boundary.frame,
+        f2: recordValue(f2Boundary.frame),
       },
     };
   } catch (error) {
     primaryError = error instanceof Error ? error : new Error(String(error));
-    const cleanupErrors = [];
+    const cleanupErrors: Error[] = [];
     if (gateOpened || pendingCreate) {
       await collectCleanupStep(
         [],
@@ -3123,10 +3605,15 @@ export async function runInstalledOwnerOrdinarySaleCompletion(input) {
             knownPaymentNo: pendingCreate?.paymentNo,
             deadline:
               performance.now() +
-              (input.testCleanupTimeoutMs ??
-                PENDING_TRANSACTION_CLEANUP_TIMEOUT_MS),
+              Number(
+                input.testCleanupTimeoutMs ??
+                  PENDING_TRANSACTION_CLEANUP_TIMEOUT_MS,
+              ),
           }),
-        (input.testCleanupTimeoutMs ?? PENDING_TRANSACTION_CLEANUP_TIMEOUT_MS) +
+        Number(
+          input.testCleanupTimeoutMs ??
+            PENDING_TRANSACTION_CLEANUP_TIMEOUT_MS,
+        ) +
           1_000,
       );
     }
@@ -3136,48 +3623,50 @@ export async function runInstalledOwnerOrdinarySaleCompletion(input) {
   }
 }
 
-async function runFastRouteStressSale(options) {
+async function runFastRouteStressSale(
+  options: JsonRecord,
+): Promise<JsonRecord> {
   const routeStressScenario = options.scenario !== "sale-only";
-  let guestInput = null;
-  let handoff = null;
-  let vision = null;
-  let client = null;
+  let guestInput: JsonRecord | null = null;
+  let handoff: JsonRecord | null = null;
+  let vision: JsonRecord | null = null;
+  let client: CdpClient | null = null;
   let clientReady = false;
-  let sessionStart = null;
-  let serialAdmission = null;
-  let liveSale = null;
-  let saleStartCapability = null;
-  let uiViewport = null;
-  let baselineSaleView = null;
-  let baselinePlatform = null;
-  let beforeF0SaleView = null;
-  let beforeF0Platform = null;
-  let afterF1SaleView = null;
-  let afterF1Platform = null;
-  let afterF2SaleView = null;
-  let afterF2Platform = null;
-  let failureCurrentTransaction = null;
+  let sessionStart: JsonRecord | null = null;
+  let serialAdmission: FreshSerialAdmission | null = null;
+  let liveSale: JsonRecord | null = null;
+  let saleStartCapability: unknown = null;
+  let uiViewport: JsonRecord | null = null;
+  let baselineSaleView: JsonRecord | null = null;
+  let baselinePlatform: JsonRecord | null = null;
+  let beforeF0SaleView: JsonRecord | null = null;
+  let beforeF0Platform: JsonRecord | null = null;
+  let afterF1SaleView: JsonRecord | null = null;
+  let afterF1Platform: JsonRecord | null = null;
+  let afterF2SaleView: JsonRecord | null = null;
+  let afterF2Platform: JsonRecord | null = null;
+  let failureCurrentTransaction: JsonRecord | null = null;
   let stage = "read-input";
-  const checkpoints = [];
-  const sink = screenshotSink(options.outPath);
-  let createOrderGate = null;
-  let pendingCreate = null;
-  let noCatalogTraceBoundary = null;
-  let visionArrival = null;
-  let repeatedPaymentTouch = null;
-  let continuousCdpLocationHashObserver = null;
-  let continuousCdpLocationHash = null;
-  let successReport = null;
-  let failureReport = null;
-  let primaryError = null;
+  const checkpoints: JsonRecord[] = [];
+  const sink = screenshotSink(String(options.outPath));
+  let createOrderGate: JsonRecord | null = null;
+  let pendingCreate: JsonRecord | null = null;
+  let noCatalogTraceBoundary: JsonRecord | null = null;
+  let visionArrival: JsonRecord | null = null;
+  let repeatedPaymentTouch: JsonRecord | null = null;
+  let continuousCdpLocationHashObserver: CdpLocationHashObserver | null = null;
+  let continuousCdpLocationHash: JsonRecord | null = null;
+  let successReport: JsonRecord | null = null;
+  let failureReport: JsonRecord | null = null;
+  let primaryError: Error | null = null;
   try {
-    guestInput = readJson(options.guestInputPath, "guest input");
-    handoff = readJson(options.handoffPath, "handoff");
+    guestInput = readJson(String(options.guestInputPath), "guest input");
+    handoff = readJson(String(options.handoffPath), "handoff");
     const runId = required(guestInput.runId, "runId");
     const machineCode = required(guestInput.machineCode, "machineCode");
     let saleCorrelationId = null;
     const steps = buildFastRouteStressScenarioSteps(
-      options.fixtureKey
+      typeof options.fixtureKey === "string"
         ? catalogProductSelectorForFixture(
             guestInput.fixtureAllocation,
             options.fixtureKey,
@@ -3188,22 +3677,24 @@ async function runFastRouteStressSale(options) {
     await stopInstalledVisionOwnerForControlledMock();
     stage = "start-controlled-vision";
     vision = await ensureControlledVisionMock(
-      guestInput.hostControlPlane?.visionMockControlPort ??
-        guestInput.visionMockControlPort,
+      visionMockControlPort(guestInput),
     );
     await waitForControlledVisionRuntimeClient(
-      guestInput.hostControlPlane?.visionMockControlPort ??
-        guestInput.visionMockControlPort,
+      visionMockControlPort(guestInput),
     );
     stage = "replace-host-serial-session-before-sale";
     serialAdmission = await admitFreshSerialSessionForSale({
       guestInput,
       handoff,
-      handoffPath: options.handoffPath,
+      handoffPath: String(options.handoffPath),
       control: controlPlaneRequest,
-      daemonGet: (path) => daemonGet(handoff, path),
+      daemonGet: (path: string) => daemonGet(handoff as JsonRecord, path),
       armCreateOrderGate,
+      writeJsonFile: writeJsonLocal,
     });
+    if (!serialAdmission) {
+      throw new Error("fresh serial admission is unavailable");
+    }
     sessionStart = serialAdmission.serialSession;
     required(sessionStart.sessionId, "serial session id");
     saleCorrelationId =
@@ -3212,82 +3703,106 @@ async function runFastRouteStressSale(options) {
     stage = "connect-installed-tauri-cdp";
     const target = await discoverMachineUiTarget({
       endpoint: "http://127.0.0.1:9222",
-      expectedTargetId: handoff.cdp.targetId,
+      expectedTargetId: String(recordValue(handoff.cdp).targetId),
     });
     client = new CdpClient(
       rewriteWebSocketDebuggerUrl(
-        target.webSocketDebuggerUrl,
+        String(target.webSocketDebuggerUrl),
         "http://127.0.0.1:9222",
       ),
     );
     await client.connect();
     await enablePageRuntime(client);
     clientReady = true;
-    await waitForRoute(client, "#/catalog", { timeoutMs: 30_000, pollMs: 250 });
-    saleStartCapability = await waitForSaleStartReady(handoff, client);
-    await waitForRoute(client, "#/catalog", { timeoutMs: 30_000, pollMs: 250 });
+    const cdpClient = client;
+    await waitForRoute(cdpClient, "#/catalog", {
+      timeoutMs: 30_000,
+      pollMs: 250,
+    });
+    saleStartCapability = await waitForSaleStartReady(handoff, cdpClient);
+    await waitForRoute(cdpClient, "#/catalog", {
+      timeoutMs: 30_000,
+      pollMs: 250,
+    });
     stage = "arm-create-order-gate";
-    createOrderGate = await serialAdmission.armCreateOrderGate();
+    createOrderGate = recordValue(
+      await serialAdmission.armCreateOrderGate(),
+    );
     stage = "snapshot-baseline";
-    uiViewport = await readInstalledUiViewport(client);
-    baselineSaleView = await daemonGet(handoff, "/v1/sale-view");
-    baselinePlatform = (
-      await controlPlaneRequest(guestInput, "/v1/platform/query", {
-        runId,
-        machineCode,
-      })
-    ).report;
+    uiViewport = recordValue(await readInstalledUiViewport(cdpClient));
+    baselineSaleView = recordValue(await daemonGet(handoff, "/v1/sale-view"));
+    baselinePlatform = recordValue(
+      recordValue(
+        await controlPlaneRequest(guestInput, "/v1/platform/query", {
+          runId,
+          machineCode,
+        }),
+      ).report,
+    );
     checkpoints.push(
-      await captureCheckpoint(client, "catalog", {
+      recordValue(await captureCheckpoint(cdpClient, "catalog", {
         screenshot: true,
         screenshotSink: sink,
-      }),
+      })),
     );
     stage = "establish-stable-vision-presence";
-    visionArrival = await establishVisionPresenceForSale(guestInput, client);
+    visionArrival = recordValue(
+      await establishVisionPresenceForSale(guestInput, cdpClient),
+    );
     continuousCdpLocationHashObserver =
-      await startContinuousCdpLocationHashObservation(client);
+      await startContinuousCdpLocationHashObservation(cdpClient);
     stage = "physical-catalog-to-checkout";
     for (const step of steps.slice(0, 4)) {
-      await waitForRoute(client, step.routeBefore, {
+      const stepRecord = recordValue(step);
+      await waitForRoute(cdpClient, String(stepRecord.routeBefore), {
         timeoutMs: 30_000,
         pollMs: 250,
       });
       // activateVisibleSelector hard-fails unless the UI action is dispatched via
       // the real Chrome DevTools Input.dispatchTouchEvent path.
-      const activation = await serialAdmission.runCustomerAction(() =>
-        activateVisibleSelector(client, step.selector, {
-          kind: step.inputKind,
-          timeoutMs: 30_000,
-        }),
+      const activation = recordValue(
+        await serialAdmission.runCustomerAction(() =>
+          activateVisibleSelector(cdpClient, String(stepRecord.selector), {
+            kind: String(stepRecord.inputKind) === "mouse" ? "mouse" : "touch",
+            timeoutMs: 30_000,
+          }),
+        ),
       );
-      assert.match(activation.input.method, /Input\.dispatchTouchEvent/);
-      await waitForRoute(client, step.routeAfter, {
+      assert.match(
+        String(recordValue(activation.input).method),
+        /Input\.dispatchTouchEvent/,
+      );
+      await waitForRoute(cdpClient, String(stepRecord.routeAfter), {
         timeoutMs: 30_000,
         pollMs: 250,
       });
-      if (step.name === "catalog product") {
+      if (stepRecord.name === "catalog product") {
         continuousCdpLocationHashObserver.assertArmed();
         noCatalogTraceBoundary = await captureRuntimeTraceBoundary(
-          client,
+          cdpClient,
           "no-Catalog trace boundary",
         );
       }
     }
-    await waitForRoute(client, "#/checkout", {
+    await waitForRoute(cdpClient, "#/checkout", {
       timeoutMs: 30_000,
       pollMs: 250,
     });
     stage = "wait-create-order-pending-boundary";
-    let firstSubmit = null;
+    let firstSubmit: JsonRecord | null = null;
     for (let attempt = 0; attempt < 3 && !pendingCreate; attempt += 1) {
-      firstSubmit = await serialAdmission.runCustomerAction(() =>
-        activateVisibleSelector(client, steps[4].selector, {
-          kind: "touch",
-          timeoutMs: 30_000,
-        }),
+      firstSubmit = recordValue(
+        await serialAdmission.runCustomerAction(() =>
+          activateVisibleSelector(cdpClient, String(recordValue(steps[4]).selector), {
+            kind: "touch",
+            timeoutMs: 30_000,
+          }),
+        ),
       );
-      assert.match(firstSubmit.input.method, /Input\.dispatchTouchEvent/);
+      assert.match(
+        String(recordValue(firstSubmit.input).method),
+        /Input\.dispatchTouchEvent/,
+      );
       pendingCreate = await waitForCreateOrderGatePending(
         guestInput,
         attempt === 2 ? 30_000 : 2_000,
@@ -3299,7 +3814,7 @@ async function runFastRouteStressSale(options) {
       );
     const pendingConfirmedAt = new Date().toISOString();
     let releaseRequestedAt = new Date().toISOString();
-    let visionDelivery = {
+    let visionDelivery: JsonRecord = {
       scenario: "sale-only",
       skippedReason: "route_stress_not_requested",
       arrival: visionArrival,
@@ -3316,30 +3831,32 @@ async function runFastRouteStressSale(options) {
     };
     if (routeStressScenario) {
       stage = "vision-departure-during-create-order";
-      const visionDepartureTraceBoundary = await captureRuntimeTraceBoundary(
-        client,
-        "Vision departure control-request trace boundary",
+      const visionDepartureTraceBoundary = recordValue(
+        await captureRuntimeTraceBoundary(
+          cdpClient,
+          "Vision departure control-request trace boundary",
+        ),
       );
       const visionRequestedAt = new Date().toISOString();
-      let visionDeliveryResult;
+      let visionDeliveryResult: unknown;
       try {
         visionDeliveryResult = await dispatchVisionDeparture(guestInput);
       } catch {
-        await shutdownControlledVisionMock(vision?.child).catch(
+        await shutdownControlledVisionMock(
+          (vision?.child as ReturnType<typeof spawn> | null) ?? null,
+        ).catch(
           () => undefined,
         );
         vision = await ensureControlledVisionMock(
-          guestInput.hostControlPlane?.visionMockControlPort ??
-            guestInput.visionMockControlPort,
+          visionMockControlPort(guestInput),
         );
         await waitForControlledVisionRuntimeClient(
-          guestInput.hostControlPlane?.visionMockControlPort ??
-            guestInput.visionMockControlPort,
+          visionMockControlPort(guestInput),
         );
         visionDeliveryResult = await dispatchVisionDeparture(guestInput);
       }
       visionDelivery = {
-        ...visionDeliveryResult,
+        ...recordValue(visionDeliveryResult),
         scenario: "route-stress",
         arrival: visionArrival,
         traceBoundary: visionDepartureTraceBoundary,
@@ -3350,16 +3867,23 @@ async function runFastRouteStressSale(options) {
         client,
         visionDepartureTraceBoundary,
       );
-      const preDispatchTraceBoundary = await captureRuntimeTraceBoundary(
-        client,
-        "repeated payment touch pre-dispatch trace boundary",
+      const preDispatchTraceBoundary = recordValue(
+        await captureRuntimeTraceBoundary(
+          client,
+          "repeated payment touch pre-dispatch trace boundary",
+        ),
       );
-      const secondSubmit = await serialAdmission.runCustomerAction(() =>
-        dispatchRepeatedPaymentTouch(client, firstSubmit),
+      const secondSubmit = recordValue(
+        await serialAdmission.runCustomerAction(() =>
+          dispatchRepeatedPaymentTouch(cdpClient, firstSubmit),
+        ),
       );
-      assert.match(secondSubmit.input.method, /Input\.dispatchTouchEvent/);
+      assert.match(
+        String(recordValue(secondSubmit.input).method),
+        /Input\.dispatchTouchEvent/,
+      );
       const repeatedTouchTrace = await waitForRepeatedCustomerTouchTrace(
-        client,
+        cdpClient,
         preDispatchTraceBoundary,
       );
       releaseRequestedAt = new Date().toISOString();
@@ -3375,26 +3899,24 @@ async function runFastRouteStressSale(options) {
       releaseRequestedAt = new Date().toISOString();
       repeatedPaymentTouch.releaseRequestedAt = releaseRequestedAt;
     }
-    const releasedCreateOrderGate = await releaseCreateOrderGate(
-      guestInput,
-      pendingCreate.paymentNo,
+    const releasedCreateOrderGate = recordValue(
+      await releaseCreateOrderGate(guestInput, pendingCreate.paymentNo),
     );
-    await waitForRoute(client, /^#\/payment/, {
+    await waitForRoute(cdpClient, /^#\/payment/, {
       timeoutMs: 30_000,
       pollMs: 250,
     });
     checkpoints.push(
-      await captureCheckpoint(client, "payment-creation", {
+      recordValue(await captureCheckpoint(cdpClient, "payment-creation", {
         screenshot: true,
         screenshotSink: sink,
-      }),
+      })),
     );
     stage = "read-rendered-payment-surface";
-    const renderedSale = await readRenderedPaymentSurface(client);
+    const renderedSale = await readRenderedPaymentSurface(cdpClient);
     stage = "read-pending-transaction";
-    const pendingTransaction = await daemonGet(
-      handoff,
-      "/v1/transactions/current",
+    const pendingTransaction = recordValue(
+      await daemonGet(handoff, "/v1/transactions/current"),
     );
     if (pendingTransaction?.paymentNo !== pendingCreate.paymentNo) {
       throw new Error(
@@ -3403,115 +3925,145 @@ async function runFastRouteStressSale(options) {
     }
     stage = "complete-mock-payment";
     await completeMockPayment(guestInput, pendingCreate.paymentNo);
-    liveSale = await waitForCommand(handoff, renderedSale);
+    liveSale = recordValue(await waitForCommand(handoff, renderedSale));
     stage = "snapshot-before-f0";
-    const vendBoundary = await serialAdmission.serialRequest("wait-frame", {
-      parsedOpcode: "VEND",
-      timeoutMs: 30_000,
-    });
-    beforeF0Platform = await waitForBeforeF0Boundary(
-      guestInput,
-      {
-        runId,
-        machineCode,
-        sessionId: sessionStart.sessionId,
-      },
-      baselinePlatform.raw,
-      renderedSale,
-      liveSale,
-      pendingCreate.paymentNo,
-    );
-    beforeF0SaleView = await daemonGet(handoff, "/v1/sale-view");
-    const beforeF0Ui = await readUiBoundary(client);
-    checkpoints.push(
-      await captureCheckpoint(client, "before-f0-active", {
-        screenshot: true,
-        screenshotSink: sink,
+    const vendBoundary = recordValue(
+      await serialAdmission.serialRequest("wait-frame", {
+        parsedOpcode: "VEND",
+        timeoutMs: 30_000,
       }),
     );
-    const releaseF0 = await serialAdmission.serialRequest("release-f0");
+    beforeF0Platform = recordValue(
+      await waitForBeforeF0Boundary(
+        guestInput,
+        {
+          runId,
+          machineCode,
+          sessionId: sessionStart.sessionId,
+        },
+        recordValue(baselinePlatform.raw),
+        renderedSale,
+        liveSale,
+        pendingCreate.paymentNo,
+      ),
+    );
+    beforeF0SaleView = recordValue(await daemonGet(handoff, "/v1/sale-view"));
+    const beforeF0Ui = await readUiBoundary(cdpClient);
+    checkpoints.push(
+      recordValue(await captureCheckpoint(cdpClient, "before-f0-active", {
+        screenshot: true,
+        screenshotSink: sink,
+      })),
+    );
+    const releaseF0 = recordValue(
+      await serialAdmission.serialRequest("release-f0"),
+    );
     stage = "wait-inbound-f0";
-    const f0Boundary = await serialAdmission.serialRequest("wait-frame", {
-      parsedOpcode: "F0",
-      timeoutMs: 30_000,
-    });
+    const f0Boundary = recordValue(
+      await serialAdmission.serialRequest("wait-frame", {
+        parsedOpcode: "F0",
+        timeoutMs: 30_000,
+      }),
+    );
     stage = "wait-inbound-f1";
-    const f1Boundary = await serialAdmission.serialRequest("wait-frame", {
-      parsedOpcode: "F1",
-      timeoutMs: 30_000,
-    });
+    const f1Boundary = recordValue(
+      await serialAdmission.serialRequest("wait-frame", {
+        parsedOpcode: "F1",
+        timeoutMs: 30_000,
+      }),
+    );
     stage = "snapshot-after-f1-before-f2";
-    afterF1SaleView = await daemonGet(handoff, "/v1/sale-view");
-    afterF1Platform = (
-      await controlPlaneRequest(guestInput, "/v1/platform/query", {
-        runId,
-        machineCode,
-        sessionId: sessionStart.sessionId,
-      })
-    ).report;
-    const afterF1Ui = await readUiBoundary(client);
-    if (afterF1Ui.result?.kind === "success") {
+    afterF1SaleView = recordValue(await daemonGet(handoff, "/v1/sale-view"));
+    afterF1Platform = recordValue(
+      recordValue(
+        await controlPlaneRequest(guestInput, "/v1/platform/query", {
+          runId,
+          machineCode,
+          sessionId: sessionStart.sessionId,
+        }),
+      ).report,
+    );
+    const afterF1Ui = await readUiBoundary(cdpClient);
+    if (recordValue(afterF1Ui.result).kind === "success") {
       throw new Error("UI must not show success before inbound F2");
     }
     checkpoints.push(
-      await captureCheckpoint(client, "after-f1-before-f2", {
+      recordValue(await captureCheckpoint(cdpClient, "after-f1-before-f2", {
         screenshot: true,
         screenshotSink: sink,
-      }),
+      })),
     );
     stage = "release-and-wait-inbound-f2";
-    const releaseF2 = await serialAdmission.serialRequest("release-f2");
-    const f2Boundary = await serialAdmission.serialRequest("wait-frame", {
-      parsedOpcode: "F2",
-      timeoutMs: 30_000,
-    });
-    stage = "wait-success-result";
-    const resultSurface = await waitForSuccessfulResultSurface(
-      client,
-      {
-        orderId: renderedSale.orderId,
-        paymentId: renderedSale.paymentId,
-        orderNo: renderedSale.orderNo,
-        commandId: liveSale.vendingCommandId,
-      },
-      60_000,
+    const releaseF2 = recordValue(
+      await serialAdmission.serialRequest("release-f2"),
     );
-    continuousCdpLocationHash = await continuousCdpLocationHashObserver.finish(
-      resultSurface.route,
-    );
-    checkpoints.push(
-      await captureCheckpoint(client, "result", {
-        screenshot: true,
-        screenshotSink: sink,
+    const f2Boundary = recordValue(
+      await serialAdmission.serialRequest("wait-frame", {
+        parsedOpcode: "F2",
+        timeoutMs: 30_000,
       }),
     );
+    stage = "wait-success-result";
+    const resultSurface = recordValue(
+      await waitForSuccessfulResultSurface(
+        cdpClient,
+        {
+          orderId: renderedSale.orderId,
+          paymentId: renderedSale.paymentId,
+          orderNo: renderedSale.orderNo,
+          commandId: liveSale.vendingCommandId,
+        },
+        60_000,
+      ),
+    );
+    continuousCdpLocationHash = recordValue(
+      await continuousCdpLocationHashObserver.finish(
+        String(resultSurface.route),
+      ),
+    );
+    checkpoints.push(
+      recordValue(await captureCheckpoint(cdpClient, "result", {
+        screenshot: true,
+        screenshotSink: sink,
+      })),
+    );
     stage = "collect-raw-serial-evidence";
-    const collect = await serialAdmission.serialRequest("evidence");
-    afterF2Platform = await waitForPlatformMovement(
-      guestInput,
-      {
-        runId,
-        machineCode,
-        sessionId: sessionStart.sessionId,
-      },
-      rows(afterF1Platform.raw, "movements").length,
-      {
-        orderId: renderedSale.orderId,
-        paymentId: renderedSale.paymentId,
-        paymentNo: pendingCreate.paymentNo,
-        commandId: liveSale.vendingCommandId,
-      },
+    const collect = recordValue(
+      await serialAdmission.serialRequest("evidence"),
     );
-    const terminalRaw = afterF2Platform.raw ?? {};
-    const terminalOrderItem = rows(terminalRaw, "orderItems").find(
-      (row) => row.orderId === renderedSale.orderId,
+    afterF2Platform = recordValue(
+      await waitForPlatformMovement(
+        guestInput,
+        {
+          runId,
+          machineCode,
+          sessionId: sessionStart.sessionId,
+        },
+        rows(afterF1Platform.raw, "movements").length,
+        {
+          orderId: renderedSale.orderId,
+          paymentId: renderedSale.paymentId,
+          paymentNo: pendingCreate.paymentNo,
+          commandId: liveSale.vendingCommandId,
+        },
+      ),
     );
+    const terminalRaw = recordValue(afterF2Platform.raw);
+    const terminalOrderItem = rows(terminalRaw, "orderItems")
+      .map((row: unknown) => recordValue(row))
+      .find((row) => row.orderId === renderedSale.orderId);
+    if (!terminalOrderItem) {
+      throw new Error("terminal order item is missing");
+    }
     const terminalIdentity = {
       inventoryId: required(
         terminalOrderItem?.inventoryId,
         "terminal order item inventoryId",
       ),
-      slotId: required(terminalOrderItem?.slotId, "terminal order item slotId"),
+      slotId: required(
+        terminalOrderItem?.slotId,
+        "terminal order item slotId",
+      ),
     };
     const terminalQuantity = Number(terminalOrderItem?.quantity);
     if (!Number.isInteger(terminalQuantity) || terminalQuantity < 1) {
@@ -3519,24 +4071,31 @@ async function runFastRouteStressSale(options) {
         `terminal order item quantity is invalid: ${JSON.stringify(terminalOrderItem)}`,
       );
     }
-    const terminalMiddleItem = matchingItem(afterF1SaleView, terminalIdentity);
+    const terminalMiddleItem = matchingItem(
+      afterF1SaleView as JsonRecord,
+      terminalIdentity,
+    );
     if (!terminalMiddleItem) {
       throw new Error(
         `daemon sale-view is missing the terminal order item before F2: ${JSON.stringify(terminalIdentity)}`,
       );
     }
-    afterF2SaleView = await waitForDaemonSaleViewAfterF2(
-      handoff,
-      terminalIdentity,
-      terminalMiddleItem,
-      terminalQuantity,
+    afterF2SaleView = recordValue(
+      await waitForDaemonSaleViewAfterF2(
+        handoff,
+        terminalIdentity,
+        terminalMiddleItem,
+        terminalQuantity,
+      ),
     );
     const afterF2Ui = resultSurface;
-    const runtimeTrace = await readRuntimeTraceSnapshot(client);
-    const platformLog = await collectPlatformLog(
-      guestInput,
-      sessionStart.sessionId,
-      options.outPath,
+    const runtimeTrace = await readRuntimeTraceSnapshot(cdpClient);
+    const platformLog = recordValue(
+      await collectPlatformLog(
+        guestInput,
+        sessionStart.sessionId,
+        String(options.outPath),
+      ),
     );
     const evidence = {
       scenario: options.scenario,
@@ -3581,20 +4140,22 @@ async function runFastRouteStressSale(options) {
         afterF1BeforeF2: afterF1Ui,
         afterF2: afterF2Ui,
       },
-      mqttMessages: collect.mqtt?.messages ?? [],
+      mqttMessages: arrayValue(recordValue(collect.mqtt).messages),
       serial: {
-        sessionId: sessionStart.binding.serialSessionId,
-        rawFrames: collect.rawFrames ?? [],
+        sessionId:
+          recordValue(sessionStart.binding).serialSessionId ??
+          sessionStart.sessionId,
+        rawFrames: arrayValue(collect.rawFrames),
       },
     };
     const summary = validateFastRouteStressSaleEvidence(evidence);
     stage = "stop-host-serial-session";
-    const stop = await serialAdmission.serialRequest("stop", {
+    await serialAdmission.serialRequest("stop", {
       orderId: liveSale.orderId,
       paymentId: liveSale.paymentId,
       vendingCommandId: liveSale.vendingCommandId,
     });
-    const stopRepeat = await serialAdmission.serialRequest("stop", {
+    await serialAdmission.serialRequest("stop", {
       orderId: liveSale.orderId,
       paymentId: liveSale.paymentId,
       vendingCommandId: liveSale.vendingCommandId,
@@ -3611,78 +4172,93 @@ async function runFastRouteStressSale(options) {
       liveSale,
       summary,
       boundaries: {
-        vend: vendBoundary.frame,
+        vend: recordValue(vendBoundary.frame),
         releaseF0,
-        f0: f0Boundary.frame,
-        f1: f1Boundary.frame,
+        f0: recordValue(f0Boundary.frame),
+        f1: recordValue(f1Boundary.frame),
         releaseF2,
-        f2: f2Boundary.frame,
+        f2: recordValue(f2Boundary.frame),
       },
       evidence: compactEvidenceForReport(evidence, summary),
       runtimeTrace: compactRuntimeTrace(runtimeTrace.entries),
       checkpoints,
       logs: {
-        daemonProcess: processLiveness(handoff?.daemon?.processId),
+        daemonProcess: processLiveness(
+          recordValue(handoff.daemon).processId,
+        ),
         daemonStdout: writeBoundedLogTail(
-          handoff?.daemon?.logs?.stdout,
-          options.outPath,
+          String(
+            recordValue(recordValue(handoff.daemon).logs).stdout ?? "",
+          ),
+          String(options.outPath),
           "daemon-stdout",
         ),
         daemonStderr: writeBoundedLogTail(
-          handoff?.daemon?.logs?.stderr,
-          options.outPath,
+          String(
+            recordValue(recordValue(handoff.daemon).logs).stderr ?? "",
+          ),
+          String(options.outPath),
           "daemon-stderr",
         ),
         platform: platformLog.artifact,
         milestones: checkpoints.map((checkpoint) => ({
           label: checkpoint.label,
-          route: checkpoint.identity.route,
-          screenshot: checkpoint.screenshot?.ref ?? null,
+          route: recordValue(checkpoint.identity).route,
+          screenshot:
+            recordValue(checkpoint.screenshot).ref ?? null,
         })),
       },
     });
   } catch (error) {
     primaryError = error instanceof Error ? error : new Error(String(error));
     failureCurrentTransaction = handoff
-      ? await daemonGet(handoff, "/v1/transactions/current").catch(
-          (transactionError) => ({
+      ? recordValue(
+          await daemonGet(handoff, "/v1/transactions/current").catch(
+            (transactionError) => ({
             evidenceError:
               transactionError instanceof Error
                 ? transactionError.message
                 : String(transactionError),
-          }),
+            }),
+          ),
         )
       : null;
-    const failureCheckpoints = [...checkpoints];
+    const failureCheckpoints: JsonRecord[] = [...checkpoints];
     if (clientReady) {
-      const failure = await captureCheckpoint(client, `failure-${stage}`, {
+      const failure = recordValue(
+        await captureCheckpoint(client as CdpClient, `failure-${stage}`, {
         screenshot: true,
         screenshotSink: sink,
-      }).catch(() => null);
+        }).catch(() => null),
+      );
       if (failure) failureCheckpoints.push(failure);
     }
     const runtimeTrace = clientReady
-      ? await readRuntimeTraceSnapshot(client).catch(() => ({
-          runtimeGenerationId: null,
-          entries: [],
-        }))
+      ? recordValue(
+          await readRuntimeTraceSnapshot(client as CdpClient).catch(() => ({
+            runtimeGenerationId: null,
+            entries: [],
+          })),
+        )
       : { runtimeGenerationId: null, entries: [] };
     continuousCdpLocationHash =
       continuousCdpLocationHash ??
       continuousCdpLocationHashObserver?.snapshot() ??
       null;
-    const platformLog =
+    const platformLog: JsonRecord | null =
       guestInput && sessionStart
-        ? await collectPlatformLog(
-            guestInput,
-            sessionStart.sessionId,
-            options.outPath,
-          ).catch((platformError) => ({
-            error:
-              platformError instanceof Error
-                ? platformError.message
-                : String(platformError),
-          }))
+        ? recordValue(
+            await collectPlatformLog(
+              guestInput,
+              sessionStart.sessionId,
+              String(options.outPath),
+            ).catch((platformError) => ({
+              error:
+                platformError instanceof Error
+                  ? platformError.message
+                  : String(platformError),
+            })),
+          )
         : null;
     const hostEvidence =
       guestInput && sessionStart
@@ -3725,26 +4301,34 @@ async function runFastRouteStressSale(options) {
       checkpoints: failureCheckpoints,
       logs: {
         daemonStdout: writeBoundedLogTail(
-          handoff?.daemon?.logs?.stdout,
-          options.outPath,
+          String(
+            recordValue(recordValue(handoff?.daemon).logs).stdout ?? "",
+          ),
+          String(options.outPath),
           "daemon-stdout",
         ),
         daemonStderr: writeBoundedLogTail(
-          handoff?.daemon?.logs?.stderr,
-          options.outPath,
+          String(
+            recordValue(recordValue(handoff?.daemon).logs).stderr ?? "",
+          ),
+          String(options.outPath),
           "daemon-stderr",
         ),
         platform: platformLog?.artifact ?? null,
         platformError: platformLog?.error ?? null,
-        simulator: hostEvidence?.references?.simulatorLog ?? null,
+        simulator:
+          recordValue(recordValue(hostEvidence).references).simulatorLog ??
+          null,
       },
     });
     failureReport = report;
   }
 
-  const cleanup = [];
-  const cleanupErrors = [];
+  const cleanup: JsonRecord[] = [];
+  const cleanupErrors: Error[] = [];
   if (guestInput && createOrderGate) {
+    const activeGuest = guestInput;
+    const activeHandoff = handoff;
     const cleanupPaymentNo =
       pendingCreate?.paymentNo ?? failureCurrentTransaction?.paymentNo ?? null;
     if (pendingCreate?.paymentNo) {
@@ -3752,7 +4336,7 @@ async function runFastRouteStressSale(options) {
         cleanup,
         cleanupErrors,
         "release pending create gate",
-        () => releaseCreateOrderGate(guestInput, pendingCreate.paymentNo),
+        () => releaseCreateOrderGate(activeGuest, pendingCreate.paymentNo),
         CLEANUP_REQUEST_TIMEOUT_MS + 1_000,
       );
     }
@@ -3766,12 +4350,12 @@ async function runFastRouteStressSale(options) {
           settlePendingCreateOrder({
             paymentNo: cleanupPaymentNo,
             readTransaction: () =>
-              daemonGet(handoff, "/v1/transactions/current", {
+              daemonGet(activeHandoff as JsonRecord, "/v1/transactions/current", {
                 timeoutMs: CLEANUP_REQUEST_TIMEOUT_MS,
               }),
-            cancelTransaction: (active) =>
+            cancelTransaction: (active: JsonRecord) =>
               daemonPost(
-                handoff,
+                activeHandoff as JsonRecord,
                 "/v1/intents/cancel-order",
                 { orderNo: required(active?.orderNo, "active orderNo") },
                 { timeoutMs: CLEANUP_REQUEST_TIMEOUT_MS },
@@ -3786,7 +4370,7 @@ async function runFastRouteStressSale(options) {
       "reopen payment create gate",
       () =>
         controlPlaneRequest(
-          guestInput,
+          activeGuest,
           "/v1/mock-payment-create-gate/open",
           {},
           { timeoutMs: CLEANUP_REQUEST_TIMEOUT_MS },
@@ -3799,21 +4383,23 @@ async function runFastRouteStressSale(options) {
       "verify payment create gate",
       async () => {
         const status = await controlPlaneRequest(
-          guestInput,
+          activeGuest,
           "/v1/mock-payment-create-gate/status",
           {},
           { timeoutMs: CLEANUP_REQUEST_TIMEOUT_MS },
         );
+        const openedRecord = recordValue(opened);
+        const statusRecord = recordValue(status);
         if (
-          opened?.state !== "open" ||
-          status?.state !== "open" ||
-          status?.pending !== null
+          openedRecord?.state !== "open" ||
+          statusRecord?.state !== "open" ||
+          statusRecord?.pending !== null
         ) {
           throw new Error(
             "payment create gate did not return to open with no pending payment",
           );
         }
-        return { opened, status };
+        return { opened: openedRecord, status: statusRecord };
       },
       CLEANUP_REQUEST_TIMEOUT_MS + 1_000,
     );
@@ -3826,7 +4412,7 @@ async function runFastRouteStressSale(options) {
             guestInput,
             `/v1/serial-sessions/${sessionStart.sessionId}/abort`,
           );
-          if (result?.aborted !== true) {
+          if (recordValue(result).aborted !== true) {
             throw new Error(
               "serial session abort did not confirm inactive state",
             );
@@ -3835,15 +4421,16 @@ async function runFastRouteStressSale(options) {
         }),
       );
     } catch (error) {
-      cleanupErrors.push(error);
+      cleanupErrors.push(error as Error);
       cleanup.push({
-        label: error.cleanupLabel ?? "abort serial session",
+        label: (error as CleanupError).cleanupLabel ?? "abort serial session",
         ok: false,
         error: serializeError(error),
       });
     }
   }
   if (client) {
+    const connectedClient = client;
     if (continuousCdpLocationHashObserver) {
       try {
         cleanup.push(
@@ -3853,10 +4440,10 @@ async function runFastRouteStressSale(options) {
           ),
         );
       } catch (error) {
-        cleanupErrors.push(error);
+        cleanupErrors.push(error as Error);
         cleanup.push({
           label:
-            error.cleanupLabel ??
+            (error as CleanupError).cleanupLabel ??
             "stop continuous CDP location.hash observation",
           ok: false,
           error: serializeError(error),
@@ -3866,14 +4453,14 @@ async function runFastRouteStressSale(options) {
     try {
       cleanup.push(
         await runCleanupStep("close CDP client", async () => {
-          await client.close();
+          await connectedClient.close();
           return { closed: true };
         }),
       );
     } catch (error) {
-      cleanupErrors.push(error);
+      cleanupErrors.push(error as Error);
       cleanup.push({
-        label: error.cleanupLabel ?? "close CDP client",
+        label: (error as CleanupError).cleanupLabel ?? "close CDP client",
         ok: false,
         error: serializeError(error),
       });
@@ -3884,16 +4471,19 @@ async function runFastRouteStressSale(options) {
       await runCleanupStep(
         "stop controlled vision mock",
         async () => {
-          await shutdownControlledVisionMock(vision?.child);
+          await shutdownControlledVisionMock(
+            (vision?.child as ReturnType<typeof spawn> | null) ?? null,
+          );
           return { stopped: true, port: 7892 };
         },
         20_000,
       ),
     );
   } catch (error) {
-    cleanupErrors.push(error);
+    cleanupErrors.push(error as Error);
     cleanup.push({
-      label: error.cleanupLabel ?? "stop controlled vision mock",
+      label:
+        (error as CleanupError).cleanupLabel ?? "stop controlled vision mock",
       ok: false,
       error: serializeError(error),
     });
@@ -3940,11 +4530,14 @@ async function runFastRouteStressSale(options) {
     } else {
       failureReport.cleanupError = serializeError(finalError);
     }
-    writeReport(options.outPath, failureReport);
+    writeReport(String(options.outPath), failureReport);
     throw finalError;
   }
 
-  writeReport(options.outPath, successReport);
+  if (!successReport) {
+    throw new Error("fast route stress sale success report is missing");
+  }
+  writeReport(String(options.outPath), successReport);
   return successReport;
 }
 
