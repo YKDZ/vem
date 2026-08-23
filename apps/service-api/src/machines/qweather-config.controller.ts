@@ -3,7 +3,6 @@ import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import {
   adminGetQweatherConfigContract,
   adminUpdateQweatherConfigContract,
-  updateQweatherConfigSchema,
   type UpdateQweatherConfigInput,
 } from "@vem/shared";
 
@@ -12,7 +11,6 @@ import type { AuthenticatedAdmin } from "../common/request-user";
 import { RequirePermissions } from "../access/permissions.decorator";
 import { CurrentAdmin } from "../auth/current-admin.decorator";
 import { AdminEndpointContract } from "../common/admin-endpoint-contract.decorator";
-import { ZodValidationPipe } from "../common/zod-validation.pipe";
 import { QweatherConfigService } from "./qweather-config.service";
 
 @ApiTags("qweather-config")
@@ -31,8 +29,7 @@ export class QweatherConfigController {
   @AdminEndpointContract(adminUpdateQweatherConfigContract)
   async updateConfig(
     @CurrentAdmin() admin: AuthenticatedAdmin,
-    @Body(new ZodValidationPipe(updateQweatherConfigSchema))
-    body: UpdateQweatherConfigInput,
+    @Body() body: UpdateQweatherConfigInput,
   ) {
     return await this.config.update(admin.id, body);
   }

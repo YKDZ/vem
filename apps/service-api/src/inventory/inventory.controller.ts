@@ -15,7 +15,6 @@ import type { AuthenticatedAdmin } from "../common/request-user";
 import { RequirePermissions } from "../access/permissions.decorator";
 import { CurrentAdmin } from "../auth/current-admin.decorator";
 import { AdminEndpointContract } from "../common/admin-endpoint-contract.decorator";
-import { ZodValidationPipe } from "../common/zod-validation.pipe";
 import { InventoryService } from "./inventory.service";
 
 type InventoryQuery = z.infer<typeof adminListInventoriesContract.querySchema>;
@@ -33,10 +32,7 @@ export class InventoryController {
 
   @RequirePermissions("inventory.read")
   @AdminEndpointContract(adminListInventoriesContract)
-  async listInventories(
-    @Query(new ZodValidationPipe(adminListInventoriesContract.querySchema))
-    query: InventoryQuery,
-  ) {
+  async listInventories(@Query() query: InventoryQuery) {
     return await this.inventoryService.listInventories(query);
   }
 
@@ -44,8 +40,7 @@ export class InventoryController {
   @AdminEndpointContract(adminCreateInventoryContract)
   async createInventory(
     @CurrentAdmin() admin: AuthenticatedAdmin,
-    @Body(new ZodValidationPipe(createInventorySchema))
-    body: CreateInventoryInput,
+    @Body() body: CreateInventoryInput,
   ) {
     return await this.inventoryService.createInventory(admin.id, body);
   }
@@ -54,20 +49,14 @@ export class InventoryController {
   @AdminEndpointContract(adminAdjustInventoryContract)
   async adjust(
     @CurrentAdmin() admin: AuthenticatedAdmin,
-    @Body(new ZodValidationPipe(adjustInventorySchema))
-    body: AdjustInventoryInput,
+    @Body() body: AdjustInventoryInput,
   ) {
     return await this.inventoryService.adjust(admin.id, body);
   }
 
   @RequirePermissions("inventory.read")
   @AdminEndpointContract(adminListInventoryMovementsContract)
-  async listMovements(
-    @Query(
-      new ZodValidationPipe(adminListInventoryMovementsContract.querySchema),
-    )
-    query: PageQueryInput,
-  ) {
+  async listMovements(@Query() query: PageQueryInput) {
     return await this.inventoryService.listMovements(query);
   }
 }

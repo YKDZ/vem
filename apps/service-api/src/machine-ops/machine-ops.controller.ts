@@ -51,25 +51,16 @@ export class MachineOpsController {
   @RequirePermissions("machineOps.write")
   @AdminEndpointContract(adminRequestMachineLogExportContract)
   async requestLogExport(
-    @Param(
-      new ZodValidationPipe(
-        adminRequestMachineLogExportContract.pathParamsSchema,
-      ),
-    )
-    params: { machineId: string },
+    @Param() params: { machineId: string },
     @CurrentAdmin() admin: AuthenticatedAdmin,
-    @Body(new ZodValidationPipe(adminMachineContractNoBodySchema))
-    _body: z.infer<typeof adminMachineContractNoBodySchema>,
+    @Body() _body: z.infer<typeof adminMachineContractNoBodySchema>,
   ) {
     return this.machineOpsService.requestLogExport(params.machineId, admin.id);
   }
 
   @RequirePermissions("machineOps.read")
   @AdminEndpointContract(adminListMachineOpsContract)
-  async listOps(
-    @Query(new ZodValidationPipe(adminMachineOpsListQuerySchema))
-    query: AdminMachineOpsListQuery,
-  ) {
+  async listOps(@Query() query: AdminMachineOpsListQuery) {
     return this.machineOpsService.listAllOps(query.machineId);
   }
 

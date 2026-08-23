@@ -13,7 +13,6 @@ import type { AuthenticatedAdmin } from "../common/request-user";
 import { RequirePermissions } from "../access/permissions.decorator";
 import { CurrentAdmin } from "../auth/current-admin.decorator";
 import { AdminEndpointContract } from "../common/admin-endpoint-contract.decorator";
-import { ZodValidationPipe } from "../common/zod-validation.pipe";
 import { MaintenanceWorkOrdersService } from "./maintenance-work-orders.service";
 
 @ApiTags("maintenance-work-orders")
@@ -25,8 +24,7 @@ export class MaintenanceWorkOrdersController {
   @RequirePermissions("maintenanceWorkOrders.read")
   @AdminEndpointContract(adminListMaintenanceWorkOrdersContract)
   async list(
-    @Query(new ZodValidationPipe(adminMaintenanceWorkOrderListQuerySchema))
-    query: z.infer<typeof adminMaintenanceWorkOrderListQuerySchema>,
+    @Query() query: z.infer<typeof adminMaintenanceWorkOrderListQuerySchema>,
   ) {
     return this.service.list(query);
   }
@@ -34,15 +32,9 @@ export class MaintenanceWorkOrdersController {
   @RequirePermissions("maintenanceWorkOrders.write")
   @AdminEndpointContract(adminResolveMaintenanceWorkOrderContract)
   async resolve(
-    @Param(
-      new ZodValidationPipe(
-        adminResolveMaintenanceWorkOrderContract.pathParamsSchema,
-      ),
-    )
-    params: { id: string },
+    @Param() params: { id: string },
     @CurrentAdmin() admin: AuthenticatedAdmin,
-    @Body(new ZodValidationPipe(adminMaintenanceWorkOrderResolveRequestSchema))
-    body: z.infer<typeof adminMaintenanceWorkOrderResolveRequestSchema>,
+    @Body() body: z.infer<typeof adminMaintenanceWorkOrderResolveRequestSchema>,
   ) {
     return this.service.resolve(params.id, admin.id, body);
   }

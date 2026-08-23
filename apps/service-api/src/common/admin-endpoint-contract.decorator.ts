@@ -17,7 +17,9 @@ import {
 
 import { ADMIN_RESPONSE_CONTRACT } from "./admin-response-contract.decorator";
 
-export const ADMIN_ENDPOINT_CONTRACT = Symbol("admin-endpoint-contract");
+export const ADMIN_ENDPOINT_CONTRACT: unique symbol = Symbol(
+  "admin-endpoint-contract",
+);
 
 type AnyAdminEndpointContract = AdminApiEndpointContract<
   "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
@@ -72,8 +74,16 @@ export class AdminContractRequestValidationInterceptor implements NestIntercepto
         file?: unknown;
       }
     >();
-    parseOrReject(contract.pathParamsSchema, request.params, "path");
-    parseOrReject(contract.querySchema, request.query, "query");
+    const parsedPath = parseOrReject(
+      contract.pathParamsSchema,
+      request.params,
+      "path",
+    );
+    const parsedQuery = parseOrReject(
+      contract.querySchema,
+      request.query,
+      "query",
+    );
     if (contract.path === "/media-assets/try-on-garments" && !request.file) {
       if (isRecord(request.body) && Object.keys(request.body).length > 0) {
         throw new BadRequestException("TRY_ON_GARMENT_MULTIPART_INVALID");
@@ -86,7 +96,15 @@ export class AdminContractRequestValidationInterceptor implements NestIntercepto
       ? { ...(isRecord(request.body) ? request.body : {}), file: request.file }
       : (request.body ?? {});
     try {
-      parseOrReject(contract.bodySchema, body, "body");
+      const parsedBody = parseOrReject(contract.bodySchema, body, "body");
+      // The decorator is the single request validation point. Write parsed
+      // values back so handlers receive the contract's output shape without a
+      // second zod pipe re-parsing the same boundary.
+      replaceRequestProperty(request, "params", parsedPath);
+      replaceRequestProperty(request, "query", parsedQuery);
+      if (!request.file) {
+        replaceRequestProperty(request, "body", parsedBody);
+      }
     } catch (error) {
       if (contract.path === "/media-assets/try-on-garments") {
         throw new BadRequestException("TRY_ON_GARMENT_MULTIPART_INVALID");
@@ -108,6 +126,21 @@ function parseOrReject(schema: z.ZodType, value: unknown, location: string) {
       )
       .join("; "),
   );
+}
+
+function replaceRequestProperty(
+  request: Request,
+  key: "params" | "query" | "body",
+  value: unknown,
+) {
+  // Express exposes query (and sometimes params) through getter-only
+  // properties, so plain assignment is not reliable.
+  Object.defineProperty(request, key, {
+    value,
+    writable: true,
+    configurable: true,
+    enumerable: true,
+  });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
