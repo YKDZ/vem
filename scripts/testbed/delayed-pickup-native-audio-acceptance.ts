@@ -19,16 +19,36 @@ import {
   validateSaleAudioCaptureReport,
 } from "./sale-audio-capture-host-adapter.ts";
 
-function diagnostic(code, detail = null) {
+type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? (value as unknown[]) : [];
+}
+
+function diagnostic(code: string, detail: JsonRecord | null = null): JsonRecord {
   return detail === null ? { code } : { code, detail };
 }
 
-function readArtifact(path, label) {
+function readArtifact(
+  path: string,
+  label: string,
+): {
+  path: string;
+  value: JsonRecord;
+  sha256: string;
+  byteLength: number;
+} {
   const absolutePath = resolve(path);
   const bytes = readFileSync(absolutePath);
   let value;
   try {
-    value = JSON.parse(bytes.toString("utf8"));
+    value = JSON.parse(bytes.toString("utf8")) as JsonRecord;
   } catch {
     throw new Error(`${label} must be JSON`);
   }
@@ -40,30 +60,36 @@ function readArtifact(path, label) {
   };
 }
 
-function collectDiagnostics(target, ...sources) {
+function collectDiagnostics(
+  target: JsonRecord[],
+  ...sources: Array<unknown[] | null | undefined>
+): void {
   for (const source of sources)
-    for (const entry of source ?? []) target.push(entry);
+    for (const entry of source ?? []) target.push(recordValue(entry));
 }
 
-function one(values, label) {
+function one(values: unknown, label: string): JsonRecord {
   if (!Array.isArray(values) || values.length !== 1)
     throw new Error(`${label} must contain exactly one record`);
-  return values[0];
+  return recordValue(values[0]);
 }
 
-function deriveSerialSaleBinding(serial) {
-  const collect = serial?.reports?.collect;
+function deriveSerialSaleBinding(serial: JsonRecord): JsonRecord {
+  const reports = recordValue(serial.reports);
+  const collect = recordValue(reports.collect);
+  const request = recordValue(collect.request);
+  const serialSession = recordValue(request.serialSession);
   if (
-    collect?.request?.operation !== "collect-serial-evidence" ||
+    request?.operation !== "collect-serial-evidence" ||
     collect.result !== "succeeded"
   )
     throw new Error("installed sale serial collect report is missing");
   const correlationId = one(
-    collect.request.serialSession?.saleCorrelationIds,
+    serialSession?.saleCorrelationIds,
     "serial sale correlations",
   );
   const sale = one(
-    collect.request.serialSession?.saleBindings,
+    serialSession?.saleBindings,
     "serial sale bindings",
   );
   if (
@@ -76,18 +102,21 @@ function deriveSerialSaleBinding(serial) {
   return { correlationId, sale };
 }
 
-function canonicalRuntime(_installedSale, machineEvidence) {
-  const runtime = machineEvidence?.runtime;
+function canonicalRuntime(
+  _installedSale: unknown,
+  machineEvidence: JsonRecord,
+): JsonRecord {
+  const runtime = recordValue(machineEvidence?.runtime);
   if (
     machineEvidence?.schemaVersion !== "machine-production-evidence/v2" ||
     runtime?.source !== "windows_process_and_live_cdp_client" ||
     !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(
-      runtime?.observedAt ?? "",
+      String(runtime?.observedAt ?? ""),
     ) ||
     !Number.isSafeInteger(runtime.processId) ||
-    runtime.processId < 1 ||
+    Number(runtime.processId) < 1 ||
     !Number.isSafeInteger(runtime.sessionId) ||
-    runtime.sessionId < 1 ||
+    Number(runtime.sessionId) < 1 ||
     ![
       runtime.executablePath,
       runtime.principal,
@@ -110,8 +139,8 @@ function canonicalRuntime(_installedSale, machineEvidence) {
   );
 }
 
-function evidencePath(installedSale, name) {
-  const path = installedSale?.evidence?.[name];
+function evidencePath(installedSale: JsonRecord, name: string): string {
+  const path = recordValue(installedSale.evidence)[name];
   if (typeof path !== "string" || path.length === 0)
     throw new Error(`installed sale evidence.${name} is missing`);
   return path;
@@ -124,7 +153,14 @@ export function collectDelayedPickupProductionEvidence({
   platformF1Path,
   audioStartReportPath,
   audioStopReportPath,
-}) {
+}: {
+  installedSaleReportPath: string;
+  machineEvidencePath: string;
+  daemonEvidencePath: string;
+  platformF1Path: string;
+  audioStartReportPath: string;
+  audioStopReportPath: string;
+}): JsonRecord {
   const installedSale = readArtifact(
     installedSaleReportPath,
     "installed sale report",
@@ -164,78 +200,109 @@ export function verifyDelayedPickupNativeAudioProductionEvidence({
   artifacts,
   audioEvidenceDirectory,
   timing = DEFAULT_DELAYED_PICKUP_TIMING,
-}) {
-  const diagnostics = [];
-  const runId = artifacts.installedSale.value.runId;
+}: {
+  artifacts: JsonRecord;
+  audioEvidenceDirectory: string;
+  timing?: Parameters<typeof analyzeDelayedPickupControllerFrames>[2];
+}): JsonRecord {
+  const diagnostics: JsonRecord[] = [];
+  const installedSaleArtifact = recordValue(artifacts.installedSale);
+  const machineArtifact = recordValue(artifacts.machine);
+  const platformBaselineArtifact = recordValue(artifacts.platformBaseline);
+  const platformF1Artifact = recordValue(artifacts.platformF1);
+  const platformPostArtifact = recordValue(artifacts.platformPost);
+  const serialArtifact = recordValue(artifacts.serial);
+  const audioStartArtifact = recordValue(artifacts.audioStart);
+  const audioStopArtifact = recordValue(artifacts.audioStop);
+  const installedSaleValue = recordValue(installedSaleArtifact.value);
+  const machineValue = recordValue(machineArtifact.value);
+  const platformBaselineValue = recordValue(platformBaselineArtifact.value);
+  const platformF1Value = recordValue(platformF1Artifact.value);
+  const platformPostValue = recordValue(platformPostArtifact.value);
+  const serialValue = recordValue(serialArtifact.value);
+  const audioStartValue = recordValue(audioStartArtifact.value);
+  const audioStopValue = recordValue(audioStopArtifact.value);
+  const runId = String(installedSaleValue.runId);
   const platform = analyzeAuthoritativePlatformEvidence({
     runId,
-    baseline: artifacts.platformBaseline.value,
-    atF1: artifacts.platformF1.value,
-    postF2: artifacts.platformPost.value,
+    baseline: platformBaselineValue,
+    atF1: platformF1Value,
+    postF2: platformPostValue,
   });
-  collectDiagnostics(diagnostics, platform.diagnostics);
-  let serialBinding = null;
-  let runtime = null;
+  const platformBinding = recordValue(platform.binding);
+  collectDiagnostics(diagnostics, arrayValue(platform.diagnostics));
+  let serialBinding: JsonRecord | null = null;
+  let runtime: JsonRecord | null = null;
   try {
-    serialBinding = deriveSerialSaleBinding(artifacts.serial.value);
+    serialBinding = deriveSerialSaleBinding(serialValue);
   } catch (error) {
     diagnostics.push(
       diagnostic("installed_serial_sale_binding_invalid", {
-        message: error.message,
+        message: error instanceof Error ? error.message : String(error),
       }),
     );
   }
   try {
     runtime = canonicalRuntime(
-      artifacts.installedSale.value,
-      artifacts.machine.value,
+      installedSaleValue,
+      machineValue,
     );
   } catch (error) {
     diagnostics.push(
       diagnostic("installed_runtime_handoff_invalid", {
-        message: error.message,
+        message: error instanceof Error ? error.message : String(error),
       }),
     );
   }
-  const stopRequest = artifacts.audioStop.value?.request;
+  const stopRequest = recordValue(audioStopValue).request;
+  const stopRequestRecord = recordValue(stopRequest);
+  const serialBindingSale = recordValue(serialBinding?.sale);
   const expectedBinding =
-    platform.binding && serialBinding
+    platformBinding && serialBinding
       ? {
           runId,
-          lifecycleReference: stopRequest?.lifecycleReference,
-          transactionId: stopRequest?.transactionId,
+          lifecycleReference: stopRequestRecord?.lifecycleReference,
+          transactionId: stopRequestRecord?.transactionId,
           saleCorrelationId: serialBinding.correlationId,
-          orderId: platform.binding.orderId,
-          orderNo: platform.binding.orderNo,
-          commandId: platform.binding.commandId,
-          commandNo: platform.binding.commandNo,
+          orderId: platformBinding.orderId,
+          orderNo: platformBinding.orderNo,
+          commandId: platformBinding.commandId,
+          commandNo: platformBinding.commandNo,
         }
       : null;
   if (
     !expectedBinding ||
-    serialBinding?.sale.orderId !== platform.binding?.orderId ||
-    serialBinding?.sale.paymentId !== platform.binding?.paymentId ||
-    serialBinding?.sale.vendingCommandId !== platform.binding?.commandId
+    serialBindingSale.orderId !== platformBinding?.orderId ||
+    serialBindingSale.paymentId !== platformBinding?.paymentId ||
+    serialBindingSale.vendingCommandId !== platformBinding?.commandId
   )
     diagnostics.push(diagnostic("cross_producer_sale_binding_invalid"));
 
-  let audioCapture = null;
+  let audioCapture: JsonRecord | null = null;
   if (expectedBinding && runtime) {
     try {
-      const start = validateSaleAudioCaptureReport(
-        artifacts.audioStart.value,
-        artifacts.audioStart.value.request,
+      const start = recordValue(
+        validateSaleAudioCaptureReport(
+          audioStartValue,
+          recordValue(audioStartValue).request,
+        ),
+      );
+      const startRequest = recordValue(start.request);
+      const startCaptureSession = recordValue(start.captureSession);
+      const stopRequestRecord = recordValue(stopRequest);
+      const stopCaptureSession = recordValue(
+        stopRequestRecord.captureSession,
       );
       if (
-        start.request.phase !== "start" ||
-        start.request.runId !== runId ||
-        start.request.lifecycleReference !==
+        startRequest.phase !== "start" ||
+        startRequest.runId !== runId ||
+        startRequest.lifecycleReference !==
           expectedBinding.lifecycleReference ||
-        start.request.transactionId !== expectedBinding.transactionId ||
-        JSON.stringify(start.request.runtime) !== JSON.stringify(runtime) ||
-        stopRequest?.phase !== "stop" ||
-        JSON.stringify(stopRequest.runtime) !== JSON.stringify(runtime) ||
-        JSON.stringify(stopRequest.sale) !==
+        startRequest.transactionId !== expectedBinding.transactionId ||
+        JSON.stringify(startRequest.runtime) !== JSON.stringify(runtime) ||
+        stopRequestRecord?.phase !== "stop" ||
+        JSON.stringify(stopRequestRecord.runtime) !== JSON.stringify(runtime) ||
+        JSON.stringify(stopRequestRecord.sale) !==
           JSON.stringify({
             saleCorrelationId: expectedBinding.saleCorrelationId,
             orderId: expectedBinding.orderId,
@@ -243,62 +310,74 @@ export function verifyDelayedPickupNativeAudioProductionEvidence({
             commandId: expectedBinding.commandId,
             commandNo: expectedBinding.commandNo,
           }) ||
-        stopRequest.captureSession?.captureSessionId !==
-          start.captureSession.captureSessionId ||
-        stopRequest.captureSession?.startOperationReference !==
-          start.captureSession.startOperationReference ||
-        stopRequest.captureSession?.startedAt !== start.captureSession.startedAt
+        stopCaptureSession?.captureSessionId !==
+          startCaptureSession.captureSessionId ||
+        stopCaptureSession?.startOperationReference !==
+          startCaptureSession.startOperationReference ||
+        stopCaptureSession?.startedAt !== startCaptureSession.startedAt
       )
         throw new Error("sale audio start/stop lifecycle binding is invalid");
-      audioCapture = inspectCompletedSaleAudioCapture({
-        report: artifacts.audioStop.value,
-        request: stopRequest,
-        directory: resolve(audioEvidenceDirectory),
-      });
+      audioCapture = recordValue(
+        inspectCompletedSaleAudioCapture({
+          report: audioStopValue,
+          request: stopRequestRecord,
+          directory: resolve(audioEvidenceDirectory),
+        }),
+      );
     } catch (error) {
       diagnostics.push(
-        diagnostic("sale_audio_capture_invalid", { message: error.message }),
+        diagnostic("sale_audio_capture_invalid", {
+          message: error instanceof Error ? error.message : String(error),
+        }),
       );
     }
   }
 
-  const controller =
+  const controller: JsonRecord =
     expectedBinding && audioCapture
-      ? analyzeDelayedPickupControllerFrames(
-          audioCapture.serial,
-          expectedBinding,
-          timing,
+      ? recordValue(
+          analyzeDelayedPickupControllerFrames(
+            recordValue(audioCapture.serial),
+            expectedBinding,
+            timing,
+          ),
         )
       : {
           diagnostics: [diagnostic("production_serial_capture_missing")],
           events: null,
         };
-  const ui =
+  const ui: JsonRecord =
     expectedBinding && runtime
-      ? analyzeDelayedPickupUiEvidence(
-          artifacts.machine.value,
-          expectedBinding,
-          runtime,
+      ? recordValue(
+          analyzeDelayedPickupUiEvidence(
+            machineValue,
+            expectedBinding,
+            runtime,
+          ),
         )
       : {
           diagnostics: [diagnostic("canonical_machine_cdp_evidence_missing")],
           firstBySurface: {},
         };
-  const trace =
+  const trace: JsonRecord =
     expectedBinding && runtime
-      ? analyzeDelayedPickupRuntimeTrace(
-          artifacts.machine.value,
-          expectedBinding,
-          runtime,
-          timing,
+      ? recordValue(
+          analyzeDelayedPickupRuntimeTrace(
+            machineValue,
+            expectedBinding,
+            runtime,
+            timing,
+          ),
         )
       : { diagnostics: [diagnostic("runtime_trace_missing")], cues: {} };
-  const daemon =
+  const daemon: JsonRecord =
     expectedBinding && platform.binding
-      ? analyzeDaemonFulfillmentStoreEvidence(
-          artifacts.daemon.value,
-          expectedBinding,
-          platform.binding,
+      ? recordValue(
+          analyzeDaemonFulfillmentStoreEvidence(
+            recordValue(recordValue(artifacts.daemon).value),
+            expectedBinding,
+            platformBinding,
+          ),
         )
       : {
           diagnostics: [
@@ -308,52 +387,74 @@ export function verifyDelayedPickupNativeAudioProductionEvidence({
         };
   collectDiagnostics(
     diagnostics,
-    controller.diagnostics,
-    ui.diagnostics,
-    trace.diagnostics,
-    daemon.diagnostics,
+    arrayValue(controller.diagnostics),
+    arrayValue(ui.diagnostics),
+    arrayValue(trace.diagnostics),
+    arrayValue(daemon.diagnostics),
   );
-  let cueWindows = null;
+  let cueWindows: JsonRecord | null = null;
+  const controllerEvents = recordValue(controller.events);
+  const traceCues = recordValue(trace.cues);
+  const controllerF0 = recordValue(controllerEvents.f0);
+  const controllerF2 = recordValue(controllerEvents.f2);
   if (audioCapture && controller.events) {
-    const capture = audioCapture.report.capture;
-    const captureStart = Date.parse(capture.startedAt);
-    const captureEnd = Date.parse(capture.completedAt);
+    const capture = recordValue(recordValue(audioCapture.report).capture);
+    const captureStart = Date.parse(String(capture.startedAt));
+    const captureEnd = Date.parse(String(capture.completedAt));
     if (
-      captureStart >= controller.events.f0.atMs ||
-      captureEnd <= controller.events.f2.atMs
+      captureStart >= Number(controllerF0.atMs) ||
+      captureEnd <= Number(controllerF2.atMs)
     )
       diagnostics.push(diagnostic("sale_audio_capture_does_not_cover_sale"));
-    cueWindows = correlateDelayedPickupCueWindows({
-      captureBytes: audioCapture.wavBytes,
-      captureStartedAt: capture.startedAt,
-      captureCompletedAt: capture.completedAt,
-      cues: trace.cues,
-      clockOffsetMs:
-        Date.parse(trace.cues?.dispense_succeeded?.journey?.at ?? "") -
-        controller.events.f2.atMs,
-    });
-    collectDiagnostics(diagnostics, cueWindows.diagnostics);
+    cueWindows = recordValue(
+      correlateDelayedPickupCueWindows({
+        captureBytes: audioCapture.wavBytes as Buffer,
+        captureStartedAt: capture.startedAt,
+        captureCompletedAt: capture.completedAt,
+        cues: traceCues,
+        clockOffsetMs:
+          Date.parse(
+            String(
+              recordValue(
+                recordValue(traceCues.dispense_succeeded).journey,
+              ).at ?? "",
+            ),
+          ) - Number(controllerF2.atMs),
+      }),
+    );
+    collectDiagnostics(diagnostics, arrayValue(cueWindows.diagnostics));
   } else diagnostics.push(diagnostic("audio_cue_window_missing_or_empty"));
   if (
     controller.events &&
     !pickupCueWithinPickupPhase({
-      playback: trace.cues?.pickup_started?.started,
-      controller: controller.events,
+      playback: recordValue(recordValue(traceCues.pickup_started).started),
+      controller: controllerEvents,
       clockOffsetMs:
-        Date.parse(trace.cues?.dispense_succeeded?.journey?.at ?? "") -
-        controller.events.f2.atMs,
-      toleranceMs: timing.controllerTimingToleranceMs,
+        Date.parse(
+          String(
+            recordValue(
+              recordValue(traceCues.dispense_succeeded).journey,
+            ).at ?? "",
+          ),
+        ) - Number(controllerF2.atMs),
+      toleranceMs: Number(timing.controllerTimingToleranceMs),
     })
   ) {
     diagnostics.push(diagnostic("pickup_playback_outside_pickup_phase"));
   }
 
   const compactSources = Object.fromEntries(
-    Object.entries(artifacts).map(([name, artifact]) => [
-      name,
-      { sha256: artifact.sha256, byteLength: artifact.byteLength },
-    ]),
-  );
+    Object.entries(artifacts).map(([name, artifact]) => {
+      const artifactRecord = recordValue(artifact);
+      return [
+        name,
+        {
+          sha256: artifactRecord.sha256,
+          byteLength: artifactRecord.byteLength,
+        },
+      ];
+    }),
+  ) as JsonRecord;
   return {
     schemaVersion: "delayed-pickup-native-audio-production-acceptance/v3",
     kind: "delayed-pickup-native-audio-production-acceptance",
@@ -364,18 +465,21 @@ export function verifyDelayedPickupNativeAudioProductionEvidence({
     controller: {
       timing: controller.timing ?? null,
       cueStartLatencyMs: Object.fromEntries(
-        Object.entries(trace.cues ?? {}).map(([label, cue]) => [
+        Object.entries(traceCues).map(([label, cue]) => [
           label,
-          cue.startLatencyMs ?? null,
+          recordValue(cue).startLatencyMs ?? null,
         ]),
       ),
-      pickupPlaybackStartedAt: trace.cues?.pickup_started?.started?.at ?? null,
+      pickupPlaybackStartedAt:
+        recordValue(recordValue(traceCues.pickup_started).started).at ?? null,
       frameCounts: audioCapture
         ? Object.fromEntries(
             ["f0", "e5", "f1", "af", "f2"].map((code) => [
               code.toUpperCase(),
-              audioCapture.serial.frames.filter(
-                (frame) => String(frame.bytesHex).toLowerCase() === `55${code}`,
+              arrayValue(recordValue(audioCapture.serial).frames).filter(
+                (frame: unknown) =>
+                  String(recordValue(frame).bytesHex).toLowerCase() ===
+                  `55${code}`,
               ).length,
             ]),
           )
