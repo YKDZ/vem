@@ -1,6 +1,7 @@
+import { adminListAuditLogsContract } from "@vem/shared";
 import { describe, expect, it, vi } from "vitest";
 
-import { getContract } from "@/api/request";
+import { callAdminEndpointContract, getContract } from "@/api/request";
 
 import { listAuditLogs } from "./audit";
 import {
@@ -11,6 +12,7 @@ import {
 } from "./dashboard";
 
 vi.mock("@/api/request", () => ({
+  callAdminEndpointContract: vi.fn().mockResolvedValue({}),
   getContract: vi.fn().mockResolvedValue({}),
 }));
 
@@ -18,11 +20,9 @@ describe("admin read api contracts", () => {
   it("parses audit log page responses through the shared contract", async () => {
     await listAuditLogs({ resourceType: "order", page: 2 });
 
-    expect(getContract).toHaveBeenCalledWith(
-      "/audit-logs",
-      expect.any(Object),
-      expect.any(Object),
-      { resourceType: "order", page: 2 },
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminListAuditLogsContract,
+      { query: { resourceType: "order", page: 2 } },
     );
   });
 

@@ -1,6 +1,10 @@
 import { z } from "zod";
 
+import { defineAdminEndpointContract } from "../admin-api-contract";
 import { createPageResultSchema, pageQuerySchema } from "./pagination";
+
+const noPathParamsSchema = z.strictObject({});
+const noBodySchema = z.strictObject({});
 
 export const auditLogQuerySchema = z.object({
   adminUserId: z.uuid().optional(),
@@ -31,6 +35,15 @@ export const auditLogResponseSchema = z.strictObject({
 export const auditLogPageResponseSchema = createPageResultSchema(
   auditLogResponseSchema,
 );
+
+export const adminListAuditLogsContract = defineAdminEndpointContract({
+  method: "GET",
+  path: "/audit-logs",
+  pathParamsSchema: noPathParamsSchema,
+  querySchema: auditLogListQuerySchema,
+  bodySchema: noBodySchema,
+  responseSchema: auditLogPageResponseSchema,
+});
 
 export type AuditLogListQuery = z.infer<typeof auditLogListQuerySchema>;
 export type AuditLogResponse = z.infer<typeof auditLogResponseSchema>;

@@ -1,25 +1,21 @@
 import type { z } from "zod";
 
 import {
-  auditLogListQuerySchema,
-  auditLogPageResponseSchema,
+  adminListAuditLogsContract,
   type AuditLogPageResponse,
   type AuditLogResponse,
   type PageResult,
 } from "@vem/shared";
 
-import { getContract } from "./request";
+import { callAdminEndpointContract } from "./request";
 
 export type AuditLog = AuditLogResponse;
 export type { PageResult };
 
 export async function listAuditLogs(
-  query?: z.input<typeof auditLogListQuerySchema>,
+  query?: z.input<typeof adminListAuditLogsContract.querySchema>,
 ): Promise<AuditLogPageResponse> {
-  return await getContract(
-    "/audit-logs",
-    auditLogListQuerySchema,
-    auditLogPageResponseSchema,
-    query ?? {},
-  );
+  return await callAdminEndpointContract(adminListAuditLogsContract, {
+    query: query ?? {},
+  });
 }
