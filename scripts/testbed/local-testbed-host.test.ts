@@ -12,6 +12,18 @@ import {
   stopDomainBeforeReconstruction,
 } from "./local-testbed-host.ts";
 
+type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? (value as unknown[]) : [];
+}
+
 const ROOT = "/var/lib/vem-testbed";
 const PATHS = Object.freeze({
   baselineSystem: `${ROOT}/releases/release-0001/system.qcow2`,
@@ -85,6 +97,7 @@ describe("tracked local testbed host lifecycle", () => {
       [PATHS.overlay, `${PATHS.overlay}.pending`],
     );
     const create = plan.find((step) => step.command === "qemu-img");
+    assert.ok(create);
     assert.deepEqual(create.args, [
       "create",
       "-f",
@@ -99,7 +112,9 @@ describe("tracked local testbed host lifecycle", () => {
       plan.some(
         (step) =>
           step.type === "remove-file" &&
-          [PATHS.baselineSystem, PATHS.cacheDisk].includes(step.path),
+          ([PATHS.baselineSystem, PATHS.cacheDisk] as string[]).includes(
+            String(step.path),
+          ),
       ),
       false,
     );
@@ -124,10 +139,10 @@ describe("tracked local testbed host lifecycle", () => {
       plan
         .filter((step) =>
           ["destroy-domain", "undefine-domain", "start-domain"].includes(
-            step.type,
+            String(step.type),
           ),
         )
-        .map((step) => step.args.at(-1)),
+        .map((step) => arrayValue(step.args).at(-1)),
       [
         "win10-runtime-testbed",
         "win10-runtime-testbed",
@@ -141,13 +156,20 @@ describe("tracked local testbed host lifecycle", () => {
   });
 
   it("uses generic libvirt ACPI shutdown before bounded polling and only destroys a still-running domain", async () => {
-    const operations = [];
+    const operations: unknown[] = [];
     const states = ["running\n", "shut off\n"];
     const result = await stopDomainBeforeReconstruction(config(), {
       domainDefined: true,
-      runCommand: async (command, args) => operations.push([command, args]),
-      runCaptureCommand: async () => ({ stdout: states.shift() }),
-      sleep: async () => operations.push(["sleep"]),
+      runCommand: async (command: string, args: string[]) => {
+        operations.push([command, args]);
+      },
+      runCaptureCommand: async (): Promise<{
+        stdout: string;
+        stderr: string;
+      }> => ({ stdout: states.shift() ?? "", stderr: "" }),
+      sleep: async () => {
+        operations.push(["sleep"]);
+      },
     });
     assert.deepEqual(result, { stoppedBy: "acpi" });
     assert.deepEqual(operations, [
@@ -158,12 +180,16 @@ describe("tracked local testbed host lifecycle", () => {
       ["sleep"],
     ]);
 
-    const fallbackOperations = [];
+    const fallbackOperations: unknown[] = [];
     const fallback = await stopDomainBeforeReconstruction(config(), {
       domainDefined: true,
-      runCommand: async (command, args) =>
-        fallbackOperations.push([command, args]),
-      runCaptureCommand: async () => ({ stdout: "running\n" }),
+      runCommand: async (command: string, args: string[]) => {
+        fallbackOperations.push([command, args]);
+      },
+      runCaptureCommand: async (): Promise<{
+        stdout: string;
+        stderr: string;
+      }> => ({ stdout: "running\n", stderr: "" }),
       sleep: async () => {},
       now: (() => {
         let tick = 0;
@@ -176,22 +202,29 @@ describe("tracked local testbed host lifecycle", () => {
       ["--connect", "qemu:///system", "destroy", "win10-runtime-testbed"],
     ]);
 
-    const missingOperations = [];
+    const missingOperations: unknown[] = [];
     assert.deepEqual(
       await stopDomainBeforeReconstruction(config(), {
         domainDefined: false,
-        runCommand: async (...args) => missingOperations.push(args),
+        runCommand: async (...args: unknown[]) => {
+          missingOperations.push(args);
+        },
       }),
       { stoppedBy: "absent" },
     );
     assert.deepEqual(missingOperations, []);
 
-    const shutOffOperations = [];
+    const shutOffOperations: unknown[] = [];
     assert.deepEqual(
       await stopDomainBeforeReconstruction(config(), {
         domainDefined: true,
-        runCommand: async (...args) => shutOffOperations.push(args),
-        runCaptureCommand: async () => ({ stdout: "shut off\n" }),
+        runCommand: async (...args: unknown[]) => {
+          shutOffOperations.push(args);
+        },
+        runCaptureCommand: async (): Promise<{
+          stdout: string;
+          stderr: string;
+        }> => ({ stdout: "shut off\n", stderr: "" }),
       }),
       { stoppedBy: "shut-off" },
     );
@@ -221,9 +254,9 @@ describe("tracked local testbed host lifecycle", () => {
       config: config(),
       guestInputPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
       runId: "display-proof",
-      hostNow: "2026-07-20T11:00:00.000Z",
+      hostNow: new Date("2026-07-20T11:00:00.000Z"),
     });
-    assert.match(admission[1].input, /CurrentHorizontalResolution/);
+    assert.match(String(admission[1].input), /CurrentHorizontalResolution/);
   });
 
   it("prepares the published domain audio output for the unprivileged QEMU process", async () => {
@@ -246,59 +279,69 @@ describe("tracked local testbed host lifecycle", () => {
       config: config(),
       guestInputPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
       runId: "run-15",
-      hostNow: "2026-07-20T11:00:00.000Z",
+      hostNow: new Date("2026-07-20T11:00:00.000Z"),
     });
     assert.equal(plan[0].type, "assert-guest-input");
     assert.equal(plan[1].type, "assert-interactive-display");
     assert.equal(plan[2].type, "synchronize-clock");
-    assert.match(plan[2].input, /2026-07-20T11:00:00\.000Z/);
-    assert.match(plan[2].input, /Stop-Service -Name W32Time/);
+    assert.match(String(plan[2].input), /2026-07-20T11:00:00\.000Z/);
+    assert.match(String(plan[2].input), /Stop-Service -Name W32Time/);
     assert.match(
-      plan[2].input,
+      String(plan[2].input),
       /Set-Service -Name W32Time -StartupType Disabled/,
     );
-    assert.match(plan[2].input, /Set-Date/);
+    assert.match(String(plan[2].input), /Set-Date/);
     assert.equal(plan.length, 3);
     assert.match(
-      plan[0].args.at(-1),
+      String(arrayValue(plan[0].args).at(-1)),
       /^powershell -NoProfile -NonInteractive -EncodedCommand /,
     );
-    assert.match(plan[0].input, /Get-Content[^\n]+-Encoding UTF8/);
-    assert.match(plan[0].input, /\$guestDocument\.schemaVersion/);
-    assert.doesNotMatch(plan[0].input, /\$input\s*=/);
+    assert.match(String(plan[0].input), /Get-Content[^\n]+-Encoding UTF8/);
+    assert.match(String(plan[0].input), /\$guestDocument\.schemaVersion/);
+    assert.doesNotMatch(String(plan[0].input), /\$input\s*=/);
     assert.match(
-      plan[1].args.at(-1),
+      String(arrayValue(plan[1].args).at(-1)),
       /^powershell -NoProfile -NonInteractive -EncodedCommand /,
     );
-    assert.doesNotMatch(plan[1].input, /interactive-display-report\.json/);
-    assert.match(plan[1].input, /CurrentHorizontalResolution/);
-    assert.match(plan[1].input, /CurrentVerticalResolution/);
-    assert.match(plan[1].input, /VEN_1AF4&DEV_1050/);
-    assert.match(plan[1].input, /PNPDeviceID -like/);
-    assert.match(plan[1].input, /PCI\\VEN_1AF4&DEV_1050\*/);
-    assert.doesNotMatch(plan[1].input, /PNPDeviceID -match/);
-    assert.match(plan[1].input, /ConfigManagerErrorCode/);
+    assert.doesNotMatch(
+      String(plan[1].input),
+      /interactive-display-report\.json/,
+    );
+    assert.match(String(plan[1].input), /CurrentHorizontalResolution/);
+    assert.match(String(plan[1].input), /CurrentVerticalResolution/);
+    assert.match(String(plan[1].input), /VEN_1AF4&DEV_1050/);
+    assert.match(String(plan[1].input), /PNPDeviceID -like/);
+    assert.match(String(plan[1].input), /PCI\\VEN_1AF4&DEV_1050\*/);
+    assert.doesNotMatch(String(plan[1].input), /PNPDeviceID -match/);
+    assert.match(String(plan[1].input), /ConfigManagerErrorCode/);
     assert.equal(plan[1].type, "assert-interactive-display");
     assert.ok(
-      plan[1].args.at(-1).length <= 8191,
+      String(arrayValue(plan[1].args).at(-1)).length <= 8191,
       "display admission must fit the Windows command-line boundary",
     );
     assert.equal(
-      plan[0].path,
+      String(plan[0].path),
       "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
     );
     assert.equal(plan[1].type, "assert-interactive-display");
-    assert.equal(plan.at(-1).type, "synchronize-clock");
-    const operations = [];
+    const lastPlanStep = plan.at(-1);
+    assert.ok(lastPlanStep);
+    assert.equal(lastPlanStep.type, "synchronize-clock");
+    const operations: string[] = [];
     await assert.rejects(
       executeHostAdmissionPlan(plan, {
-        runCommand: async (command, args, _stdin, input) => {
+        runCommand: async (
+          command: string,
+          args: string[],
+          _stdin?: string | Buffer,
+          input?: unknown,
+        ) => {
           operations.push(command);
           assert.match(
-            args.at(-1),
+            String(args.at(-1)),
             /^powershell -NoProfile -NonInteractive -EncodedCommand /,
           );
-          assert.match(input, /guest input/);
+          assert.match(String(input), /guest input/);
           throw new Error("guest input missing");
         },
       }),
@@ -320,19 +363,19 @@ describe("tracked local testbed host lifecycle", () => {
         https: "http://proxy.example.test:8080",
         noProxy: "localhost,127.0.0.1",
       },
-    });
+    } as unknown as Parameters<typeof buildHostAdmissionPlan>[0]);
     assert.equal(plan.length, 3);
     assert.equal(
       plan.some((step) => step.type === "restart-runner-and-await-listener"),
       false,
     );
     assert.equal(plan[1].type, "assert-interactive-display");
-    assert.doesNotMatch(plan[1].input, /C:\\actions-runner/);
-    assert.doesNotMatch(plan[1].input, /actions\.runner/);
-    assert.doesNotMatch(plan[1].input, /Listening for Jobs/);
-    assert.doesNotMatch(plan[1].input, /Runner\.Listener/);
+    assert.doesNotMatch(String(plan[1].input), /C:\\actions-runner/);
+    assert.doesNotMatch(String(plan[1].input), /actions\.runner/);
+    assert.doesNotMatch(String(plan[1].input), /Listening for Jobs/);
+    assert.doesNotMatch(String(plan[1].input), /Runner\.Listener/);
     assert.doesNotMatch(
-      plan[1].input,
+      String(plan[1].input),
       /runner-admission|listenerMarker|serviceName|diagnosticLog/,
     );
   });
@@ -343,19 +386,24 @@ describe("tracked local testbed host lifecycle", () => {
       guestInputPath: "C:\\ProgramData\\VEM\\testbed\\guest-input.json",
       runId: "run-15",
     });
-    const operations = [];
+    const operations: string[] = [];
     const result = await executeHostAdmissionPlan(plan, {
-      runCommand: async (command) => {
+      runCommand: async (command: string) => {
         operations.push(command);
       },
-      runCaptureCommand: async (command, args, _stdin, input) => {
+      runCaptureCommand: async (
+        command: string,
+        args: string[],
+        _stdin?: string | Buffer,
+        input?: unknown,
+      ) => {
         operations.push(command);
         assert.match(
-          args.at(-1),
+          String(args.at(-1)),
           /^powershell -NoProfile -NonInteractive -EncodedCommand /,
         );
-        if (!input.includes("CurrentHorizontalResolution")) {
-          return { stdout: "ok\n" };
+        if (!String(input).includes("CurrentHorizontalResolution")) {
+          return { stdout: "ok\n", stderr: "" };
         }
         return {
           stdout: `${JSON.stringify({
@@ -367,10 +415,14 @@ describe("tracked local testbed host lifecycle", () => {
             sessionId: 2,
             source: "live_video_controller",
           })}\n`,
+          stderr: "",
         };
       },
     });
-    assert.equal(result.displayAdmissionProof.widthPx, 1080);
+    assert.equal(
+      recordValue(result.displayAdmissionProof).widthPx,
+      1080,
+    );
     assert.equal(result.runnerAdmission, undefined);
     assert.deepEqual(operations, ["ssh", "ssh", "ssh"]);
   });
