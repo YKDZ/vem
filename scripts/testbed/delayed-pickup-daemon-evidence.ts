@@ -1,14 +1,17 @@
 const CHECKPOINTS = new Set(["before_f0", "after_f1_before_f2", "after_f2"]);
 
-function psLiteral(value) {
+function psLiteral(value: unknown): string {
   return `'${String(value).replaceAll("'", "''")}'`;
 }
 
 export function buildDaemonFulfillmentStoreCheckpointScript({
   stage,
   binding,
-}) {
-  if (!CHECKPOINTS.has(stage))
+}: {
+  stage: unknown;
+  binding: unknown;
+}): string {
+  if (!CHECKPOINTS.has(String(stage)))
     throw new Error("daemon evidence checkpoint stage is invalid");
   const bindingJson = JSON.stringify(binding);
   return String.raw`
@@ -33,7 +36,10 @@ $binding = ${psLiteral(bindingJson)} | ConvertFrom-Json
 `.trim();
 }
 
-export function createDaemonFulfillmentStoreEvidence(binding, checkpoints) {
+export function createDaemonFulfillmentStoreEvidence(
+  binding: Record<string, unknown>,
+  checkpoints: unknown[],
+): Record<string, unknown> {
   if (!Array.isArray(checkpoints))
     throw new Error("daemon fulfillment checkpoints are required");
   return {

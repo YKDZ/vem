@@ -2,6 +2,16 @@ import { writeFileSync } from "node:fs";
 
 import { evaluateExpression } from "./machine-ui-cdp-driver.ts";
 
+type JsonRecord = Record<string, unknown>;
+type MachineUiClient = {
+  send: (
+    method: string,
+    params?: unknown,
+    options?: { timeoutMs?: number },
+  ) => Promise<unknown>;
+  observeIdentity: () => Promise<JsonRecord>;
+};
+
 const REQUIRED_SURFACES = new Set([
   "ordinary_warning",
   "urgent_warning",
@@ -9,9 +19,9 @@ const REQUIRED_SURFACES = new Set([
 ]);
 
 export async function readInstalledMachineProductionSample(
-  client,
-  options = {},
-) {
+  client: MachineUiClient,
+  options: Record<string, unknown> = {},
+): Promise<unknown> {
   return evaluateExpression(
     client,
     `(() => {
@@ -36,7 +46,10 @@ export async function readInstalledMachineProductionSample(
 export async function observeInstalledMachineRuntime({
   client,
   inspectRuntime,
-}) {
+}: {
+  client: MachineUiClient;
+  inspectRuntime: () => Promise<Record<string, unknown>>;
+}): Promise<Record<string, unknown>> {
   if (!client || typeof client.observeIdentity !== "function")
     throw new Error("connected production CDP client is required");
   if (typeof inspectRuntime !== "function")
@@ -45,13 +58,13 @@ export async function observeInstalledMachineRuntime({
     inspectRuntime(),
     client.observeIdentity(),
   ]);
-  const machine = windows?.machine;
-  const listener = windows?.cdpListener;
+  const machine = (windows?.machine ?? {}) as Record<string, unknown>;
+  const listener = (windows?.cdpListener ?? {}) as Record<string, unknown>;
   if (
     !Number.isSafeInteger(machine?.processId) ||
-    machine.processId < 1 ||
+    (machine.processId as number) < 1 ||
     !Number.isSafeInteger(machine?.sessionId) ||
-    machine.sessionId < 1 ||
+    (machine.sessionId as number) < 1 ||
     typeof machine?.executablePath !== "string" ||
     typeof machine?.principal !== "string" ||
     listener?.machineAncestorProcessId !== machine.processId ||
@@ -79,7 +92,20 @@ export async function startDelayedPickupMachineEvidenceCapture({
   intervalMs = 100,
   readSample = readInstalledMachineProductionSample,
   onSample,
-}) {
+}: {
+  client: MachineUiClient;
+  inspectRuntime: () => Promise<Record<string, unknown>>;
+  intervalMs?: number;
+  readSample?: (
+    client: MachineUiClient,
+    options: Record<string, unknown>,
+  ) => Promise<unknown>;
+  onSample?: (sample: Record<string, unknown>) => Promise<void> | void;
+}): Promise<{
+  runtime: Record<string, unknown>;
+  cancel: () => Promise<void>;
+  stop: (binding: Record<string, unknown>) => Promise<Record<string, unknown>>;
+}> {
   if (!client) throw new Error("installed canonical CDP client is required");
   if (!Number.isInteger(intervalMs) || intervalMs < 25 || intervalMs > 1_000)
     throw new Error("machine evidence interval must be 25 through 1000ms");
@@ -88,21 +114,21 @@ export async function startDelayedPickupMachineEvidenceCapture({
     inspectRuntime,
   });
   const captureStartedAt = new Date().toISOString();
-  const uiObservations = [];
-  let runtimeTrace = [];
+  const uiObservations: Array<Record<string, unknown>> = [];
+  let runtimeTrace: unknown[] = [];
   let stopped = false;
-  let timer = null;
-  let active = Promise.resolve();
-  let failure = null;
-  let finalizing = null;
-  let finalizeMode = null;
+  let timer: ReturnType<typeof setInterval> | null = null;
+  let active: Promise<void> = Promise.resolve();
+  let failure: unknown = null;
+  let finalizing: Promise<Record<string, unknown> | undefined> | null = null;
+  let finalizeMode: "cancel" | "stop" | null = null;
 
-  async function recordSample(sample) {
+  async function recordSample(sample: Record<string, unknown>): Promise<void> {
     if (!sample || !Array.isArray(sample.runtimeTrace))
       throw new Error("installed Machine production sample is invalid");
     if (typeof onSample === "function") await onSample(sample);
-    runtimeTrace = sample.runtimeTrace;
-    if (REQUIRED_SURFACES.has(sample.surface)) {
+    runtimeTrace = sample.runtimeTrace as unknown[];
+    if (REQUIRED_SURFACES.has(String(sample.surface))) {
       if (sample.route !== "#/dispensing")
         throw new Error("installed Machine DOM sale binding is invalid");
       if (!uiObservations.some((entry) => entry.surface === sample.surface))
@@ -120,10 +146,12 @@ export async function startDelayedPickupMachineEvidenceCapture({
     }
   }
 
-  async function poll() {
+  async function poll(): Promise<void> {
     if (stopped || failure) return;
     try {
-      await recordSample(await readSample(client, { timeoutMs: 5_000 }));
+      await recordSample(
+        (await readSample(client, { timeoutMs: 5_000 })) as JsonRecord,
+      );
     } catch (error) {
       failure = error;
       stopped = true;
@@ -134,18 +162,22 @@ export async function startDelayedPickupMachineEvidenceCapture({
     }
   }
 
-  function schedule() {
+  function schedule(): void {
     timer = setInterval(() => {
       active = active.then(poll);
     }, intervalMs);
   }
 
-  async function finalize(mode, binding = null) {
+  async function finalize(
+    mode: "cancel" | "stop",
+    binding: Record<string, unknown> | null = null,
+  ): Promise<Record<string, unknown> | undefined> {
     if (finalizing) {
       if (mode === "cancel" || finalizeMode === "cancel")
         return finalizing.catch(() => undefined);
       return finalizing.then((value) => {
         if (mode === "stop") return value;
+        return undefined;
       });
     }
     finalizeMode = mode;
@@ -157,15 +189,19 @@ export async function startDelayedPickupMachineEvidenceCapture({
     finalizing = active.then(async () => {
       if (mode === "cancel") return undefined;
       if (failure) throw failure;
-      await recordSample(await readSample(client, { timeoutMs: 5_000 }));
-      for (const observation of uiObservations)
+      await recordSample(
+        (await readSample(client, { timeoutMs: 5_000 })) as JsonRecord,
+      );
+      for (const observation of uiObservations) {
+        const observedSale = observation.observedSale as Record<string, unknown>;
         for (const name of ["orderId", "orderNo", "commandId", "commandNo"])
-          if (observation.observedSale[name] !== binding?.[name])
+          if (observedSale[name] !== binding?.[name])
             throw new Error("installed Machine DOM sale binding is invalid");
+      }
       return {
         schemaVersion: "machine-production-evidence/v2",
         source: "installed_canonical_machine_cdp",
-        binding: { ...binding },
+        binding: binding ? { ...binding } : null,
         runtime: { ...runtime },
         captureStartedAt,
         captureCompletedAt: new Date().toISOString(),
@@ -183,13 +219,19 @@ export async function startDelayedPickupMachineEvidenceCapture({
     async cancel() {
       await finalize("cancel");
     },
-    async stop(binding) {
-      return finalize("stop", binding);
+    async stop(binding: Record<string, unknown>) {
+      const finalized = await finalize("stop", binding);
+      if (finalized === undefined)
+        throw new Error("machine evidence capture stopped without evidence");
+      return finalized;
     },
   };
 }
 
-export function writeDelayedPickupMachineEvidence(path, evidence) {
+export function writeDelayedPickupMachineEvidence(
+  path: string,
+  evidence: unknown,
+): void {
   writeFileSync(path, `${JSON.stringify(evidence, null, 2)}\n`, {
     mode: 0o600,
   });

@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 
 import { createDaemonFulfillmentStoreEvidence } from "./delayed-pickup-daemon-evidence.ts";
 import {
+  readInstalledMachineProductionSample,
   startDelayedPickupMachineEvidenceCapture,
   writeDelayedPickupMachineEvidence,
 } from "./delayed-pickup-machine-evidence.ts";
@@ -18,34 +19,60 @@ import {
 const MACHINE_PATH = "C:\\VEM\\bringup\\machine.exe";
 const CLOSE_TIMEOUT_MS = 10_000;
 
-function required(value, label) {
+type JsonRecord = Record<string, unknown>;
+type SaleBinding = Record<string, unknown>;
+type MachineRuntime = Record<string, unknown>;
+
+type LiveProductionTrackOptions = {
+  outputRoot: string;
+  runId: string;
+  lifecycleReference: string;
+  transactionId: string;
+  saleCorrelationId: string;
+  targetIdentity?: string;
+  cdpEndpoint?: string;
+  remote: JsonRecord;
+  checkpointTimeoutMs?: number;
+  checkpointPollMs?: number;
+  pollIntervalMs?: number;
+  captureDaemon: (
+    stage: string,
+    binding: SaleBinding | null,
+  ) => Promise<JsonRecord>;
+  queryPlatform: (stage: string) => Promise<JsonRecord>;
+  startAudioCapture: (options: JsonRecord) => Promise<JsonRecord>;
+  stopAudioCapture: (options: JsonRecord) => Promise<JsonRecord>;
+  cancelAudioCapture: (options: JsonRecord) => Promise<JsonRecord>;
+};
+
+type LiveProductionTrackDependencies = {
+  openSidecar?: typeof openMachineUiCdpSidecar;
+  captureDaemon?: LiveProductionTrackOptions["captureDaemon"];
+  queryPlatform?: LiveProductionTrackOptions["queryPlatform"];
+  startAudioCapture?: LiveProductionTrackOptions["startAudioCapture"];
+  stopAudioCapture?: LiveProductionTrackOptions["stopAudioCapture"];
+  cancelAudioCapture?: LiveProductionTrackOptions["cancelAudioCapture"];
+  inspectRuntime?: () => Promise<JsonRecord>;
+  discoverTarget?: (options: JsonRecord) => Promise<JsonRecord>;
+  createClient?: (target: JsonRecord, sidecar: JsonRecord) => CdpClient;
+  enableRuntime?: (client: CdpClient) => Promise<unknown>;
+  readMachineSample?: typeof readInstalledMachineProductionSample;
+};
+
+function required(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() !== value || value.length === 0)
     throw new Error(`${label} is required`);
   return value;
 }
 
-function writeJson(path, value) {
+function writeJson(path: string, value: unknown): void {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
 }
 
-function audioRuntimeArgs(runtime) {
-  return [
-    "--machine-process-id",
-    String(runtime.processId),
-    "--machine-executable-path",
-    runtime.executablePath,
-    "--interactive-principal",
-    runtime.principal,
-    "--interactive-session-id",
-    String(runtime.sessionId),
-    "--cdp-target-id",
-    runtime.cdpTargetId,
-    "--cdp-session-id",
-    runtime.cdpSessionId,
-  ];
-}
-
-function observedSaleBinding(base, sample) {
+function observedSaleBinding(
+  base: SaleBinding,
+  sample: JsonRecord | undefined,
+): SaleBinding {
   const observed = {
     ...base,
     orderId: sample?.orderId,
@@ -53,12 +80,16 @@ function observedSaleBinding(base, sample) {
     commandId: sample?.commandId,
     commandNo: sample?.commandNo,
   };
+  const observedRecord = observed as JsonRecord;
   for (const name of ["orderId", "orderNo", "commandId", "commandNo"])
-    required(observed[name], `observed Machine ${name}`);
+    required(observedRecord[name], `observed Machine ${name}`);
   return observed;
 }
 
-function sameBinding(left, right) {
+function sameBinding(
+  left: SaleBinding | null | undefined,
+  right: SaleBinding | null | undefined,
+): boolean {
   return [
     "runId",
     "lifecycleReference",
@@ -71,31 +102,38 @@ function sameBinding(left, right) {
   ].every((name) => left?.[name] === right?.[name]);
 }
 
-function bindCheckpoint(checkpoint, binding) {
-  return { ...checkpoint, binding: { ...binding } };
+function bindCheckpoint(
+  checkpoint: unknown,
+  binding: SaleBinding,
+): JsonRecord {
+  return {
+    ...(checkpoint as JsonRecord),
+    binding: { ...binding },
+  };
 }
 
-function normalizeObservedFrameHex(frame) {
+function normalizeObservedFrameHex(frame: unknown): string | null {
+  const record = frame as JsonRecord | undefined;
   const value =
-    typeof frame?.rawFrameHex === "string"
-      ? frame.rawFrameHex
-      : frame?.bytesHex;
+    typeof record?.rawFrameHex === "string"
+      ? record.rawFrameHex
+      : record?.bytesHex;
   const normalized = String(value ?? "").toLowerCase();
   return /^[0-9a-f]+$/.test(normalized) ? normalized : null;
 }
 
-function sleep(milliseconds) {
+function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolvePromise) =>
     setTimeout(resolvePromise, milliseconds),
   );
 }
 
-function formatError(error) {
+function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function cleanupTimeout(label, timeoutMs) {
-  return new Promise((_, reject) => {
+function cleanupTimeout(label: string, timeoutMs: number): Promise<never> {
+  return new Promise<never>((_, reject) => {
     const timer = setTimeout(() => {
       reject(new Error(`${label} exceeded ${timeoutMs}ms cleanup deadline`));
     }, timeoutMs);
@@ -103,13 +141,17 @@ function cleanupTimeout(label, timeoutMs) {
   });
 }
 
-async function runCloseStep(label, action, timeoutMs = CLOSE_TIMEOUT_MS) {
+async function runCloseStep(
+  label: string,
+  action: () => Promise<unknown>,
+  timeoutMs = CLOSE_TIMEOUT_MS,
+): Promise<unknown> {
   try {
     return await Promise.race([action(), cleanupTimeout(label, timeoutMs)]);
   } catch (error) {
     const wrapped = new Error(`${label} failed: ${formatError(error)}`);
     wrapped.cause = error;
-    wrapped.cleanupLabel = label;
+    (wrapped as Error & { cleanupLabel?: string }).cleanupLabel = label;
     throw wrapped;
   }
 }
@@ -119,8 +161,13 @@ async function captureSurvivingRuntimeEvidence({
   client,
   sidecar,
   inspectRuntime,
-}) {
-  const evidence = {
+}: {
+  runtime: MachineRuntime | null;
+  client: CdpClient | null;
+  sidecar: { endpoint: string };
+  inspectRuntime: (() => Promise<unknown>) | null;
+}): Promise<JsonRecord> {
+  const evidence: JsonRecord = {
     capturedAt: new Date().toISOString(),
     runtime: runtime ? { ...runtime } : null,
     sidecarEndpoint: sidecar?.endpoint ?? null,
@@ -142,7 +189,7 @@ async function captureSurvivingRuntimeEvidence({
   if (client && typeof client.observeIdentity === "function") {
     try {
       evidence.cdpIdentity = await Promise.race([
-        client.observeIdentity({ timeoutMs: 2_000 }),
+        client.observeIdentity(),
         cleanupTimeout("cdp identity evidence", 2_000),
       ]);
     } catch (error) {
@@ -161,21 +208,34 @@ async function closeResourcesOrThrow({
   sidecar,
   runtime,
   inspectRuntime,
-}) {
-  const cleanupFailures = [];
-  const settleStep = async (label, action) => {
+}: {
+  machineCapture: Awaited<
+    ReturnType<typeof startDelayedPickupMachineEvidenceCapture>
+  > | null;
+  cancelAudio: () => Promise<unknown>;
+  client: CdpClient | null;
+  sidecar: { endpoint: string; close: () => Promise<void> };
+  runtime: MachineRuntime | null;
+  inspectRuntime: (() => Promise<unknown>) | null;
+}): Promise<void> {
+  const cleanupFailures: Error[] = [];
+  const settleStep = async (
+    label: string,
+    action: () => Promise<unknown>,
+  ): Promise<void> => {
     try {
       await runCloseStep(label, action);
     } catch (error) {
+      const err = error as Error & { survivingEvidence?: unknown };
       const evidence = await captureSurvivingRuntimeEvidence({
         runtime,
         client,
         sidecar,
         inspectRuntime,
       });
-      error.message = `${error.message}; surviving process/session evidence: ${JSON.stringify(evidence)}`;
-      error.survivingEvidence = evidence;
-      cleanupFailures.push(error);
+      err.message = `${err.message}; surviving process/session evidence: ${JSON.stringify(evidence)}`;
+      err.survivingEvidence = evidence;
+      cleanupFailures.push(err);
     }
   };
   await Promise.all([
@@ -200,85 +260,121 @@ async function closeResourcesOrThrow({
   }
 }
 
-function daemonF1Ready(daemon, binding) {
-  const transaction = daemon?.transaction;
-  const vending = transaction?.vending;
+function daemonF1Ready(
+  daemon: JsonRecord | null | undefined,
+  binding: SaleBinding,
+): boolean {
+  const transaction = (daemon?.transaction ?? {}) as JsonRecord;
+  const vending = (transaction?.vending ?? {}) as JsonRecord;
+  const pickupReminder = (vending?.pickupReminder ?? {}) as
+    | JsonRecord
+    | undefined;
   const pickupCompleted =
-    vending?.fulfillmentProgressStage === "pickup_completed" ||
-    vending?.pickupReminder?.stage === "pickup_completed";
+    vending.fulfillmentProgressStage === "pickup_completed" ||
+    pickupReminder?.stage === "pickup_completed";
   return (
-    transaction?.orderNo === binding.orderNo &&
-    vending?.commandNo === binding.commandNo &&
-    transaction?.nextAction === "dispensing" &&
-    transaction?.orderStatus !== "fulfilled" &&
-    vending?.status !== "succeeded" &&
-    vending?.status !== "failed" &&
+    transaction.orderNo === binding.orderNo &&
+    vending.commandNo === binding.commandNo &&
+    transaction.nextAction === "dispensing" &&
+    transaction.orderStatus !== "fulfilled" &&
+    vending.status !== "succeeded" &&
+    vending.status !== "failed" &&
     pickupCompleted
   );
 }
 
-function daemonF2Ready(daemon, binding) {
-  const transaction = daemon?.transaction;
+function daemonF2Ready(
+  daemon: JsonRecord | null | undefined,
+  binding: SaleBinding,
+): boolean {
+  const transaction = (daemon?.transaction ?? {}) as JsonRecord;
+  const vending = (transaction?.vending ?? {}) as JsonRecord;
   return (
-    transaction?.orderNo === binding.orderNo &&
-    transaction?.vending?.commandNo === binding.commandNo &&
-    transaction?.nextAction === "success" &&
-    transaction?.orderStatus === "fulfilled" &&
-    transaction?.vending?.status === "succeeded"
+    transaction.orderNo === binding.orderNo &&
+    vending.commandNo === binding.commandNo &&
+    transaction.nextAction === "success" &&
+    transaction.orderStatus === "fulfilled" &&
+    vending.status === "succeeded"
   );
 }
 
-function platformF1Ready(platform, binding) {
-  const raw = platform?.raw;
-  const order = raw?.orders?.find(
+function platformF1Ready(
+  platform: JsonRecord | null | undefined,
+  binding: SaleBinding,
+): boolean {
+  const raw = (platform?.raw ?? {}) as JsonRecord;
+  const orders = (raw.orders ?? []) as unknown[];
+  const payments = (raw.payments ?? []) as unknown[];
+  const commands = (raw.commands ?? []) as unknown[];
+  const movements = (raw.movements ?? []) as unknown[];
+  const order = orders.find(
     (entry) =>
-      entry?.id === binding.orderId && entry?.orderNo === binding.orderNo,
+      (entry as JsonRecord)?.id === binding.orderId &&
+      (entry as JsonRecord)?.orderNo === binding.orderNo,
   );
-  const payment = raw?.payments?.find(
-    (entry) => entry?.orderId === binding.orderId,
+  const payment = payments.find(
+    (entry) => (entry as JsonRecord)?.orderId === binding.orderId,
   );
-  const command = raw?.commands?.find(
+  const command = commands.find(
     (entry) =>
-      entry?.id === binding.commandId &&
-      entry?.orderId === binding.orderId &&
-      entry?.commandNo === binding.commandNo,
+      (entry as JsonRecord)?.id === binding.commandId &&
+      (entry as JsonRecord)?.orderId === binding.orderId &&
+      (entry as JsonRecord)?.commandNo === binding.commandNo,
   );
-  const movements = raw?.movements?.filter(
-    (entry) => entry?.commandNo === binding.commandNo,
+  const saleMovements = movements.filter(
+    (entry) => (entry as JsonRecord)?.commandNo === binding.commandNo,
   );
   return (
-    order?.status === "paid" &&
-    order?.fulfillmentState === "awaiting_fulfillment" &&
-    payment?.status === "succeeded" &&
+    (order as JsonRecord)?.status === "paid" &&
+    (order as JsonRecord)?.fulfillmentState === "awaiting_fulfillment" &&
+    (payment as JsonRecord)?.status === "succeeded" &&
     new Set(["pending", "sent", "acknowledged", "dispensing"]).has(
-      command?.status,
+      String((command as JsonRecord)?.status),
     ) &&
-    movements?.length === 0
+    saleMovements.length === 0
   );
 }
 
 export async function waitForStablePlatformInventoryBaseline(
-  queryPlatform,
-  { timeoutMs = 10_000, pollMs = 250, sleepFn = sleep } = {},
-) {
+  queryPlatform: (stage: string) => Promise<JsonRecord | null>,
+  {
+    timeoutMs = 10_000,
+    pollMs = 250,
+    sleepFn = sleep,
+  }: {
+    timeoutMs?: number;
+    pollMs?: number;
+    sleepFn?: (milliseconds: number) => Promise<void>;
+  } = {},
+): Promise<JsonRecord> {
   const deadline = Date.now() + timeoutMs;
-  let previous = null;
+  let previous: string | null = null;
   let stableReads = 0;
-  let snapshot = null;
+  let snapshot: JsonRecord | null = null;
   do {
     snapshot = await queryPlatform("baseline");
+    const raw = (snapshot?.raw ?? {}) as JsonRecord;
+    const inventories = (raw.inventories ?? []) as unknown[];
     const inventory = JSON.stringify(
-      [...(snapshot?.raw?.inventories ?? [])].sort((left, right) =>
-        String(left?.id).localeCompare(String(right?.id)),
+      [...inventories].sort((left, right) =>
+        String((left as JsonRecord)?.id).localeCompare(
+          String((right as JsonRecord)?.id),
+        ),
       ),
     );
     stableReads = inventory === previous ? stableReads + 1 : 1;
     previous = inventory;
-    if (stableReads >= 3) return snapshot;
+    if (stableReads >= 3) {
+      if (snapshot === null)
+        throw new Error("platform inventory baseline snapshot is missing");
+      return snapshot;
+    }
     await sleepFn(pollMs);
   } while (Date.now() < deadline);
   throw new Error(
-    `platform inventory baseline did not stabilize: ${JSON.stringify(snapshot?.raw?.inventories ?? null)}`,
+    `platform inventory baseline did not stabilize: ${JSON.stringify(
+      ((snapshot?.raw ?? {}) as JsonRecord).inventories ?? null,
+    )}`,
   );
 }
 
@@ -297,9 +393,17 @@ export function delayedPickupIssue16ControlPlaneContract() {
 }
 
 export async function startDelayedPickupLiveProductionTrack(
-  options,
-  dependencies = {},
-) {
+  options: LiveProductionTrackOptions,
+  dependencies: LiveProductionTrackDependencies = {},
+): Promise<{
+  runtime: MachineRuntime;
+  paths: Record<string, string>;
+  evidenceDirectory: string;
+  issue16: Readonly<JsonRecord>;
+  observeControllerFrame: (frame: unknown) => Promise<void>;
+  finish: (finalBinding: SaleBinding) => Promise<JsonRecord>;
+  close: () => Promise<void>;
+}> {
   const root = resolve(options.outputRoot);
   const evidenceDirectory = join(root, "host-default-audio");
   mkdirSync(evidenceDirectory, { recursive: true, mode: 0o700 });
@@ -321,26 +425,29 @@ export async function startDelayedPickupLiveProductionTrack(
   };
   const sidecar = await (dependencies.openSidecar ?? openMachineUiCdpSidecar)({
     endpoint: options.cdpEndpoint,
-    remote: options.remote.remote,
-    sshPort: options.remote.sshPort,
-    identityFile: options.remote.identity,
-    certificateFile: options.remote.certificate,
-    sshKnownHostsPath: options.remote.sshKnownHostsPath,
-    sshHostKeyAlias: options.remote.sshHostKeyAlias,
+    remote: String(options.remote.remote ?? ""),
+    sshPort: Number(options.remote.sshPort ?? undefined),
+    identityFile: String(options.remote.identity ?? ""),
+    certificateFile: String(options.remote.certificate ?? ""),
+    sshKnownHostsPath: String(options.remote.sshKnownHostsPath ?? ""),
+    sshHostKeyAlias: String(options.remote.sshHostKeyAlias ?? ""),
     sshArgs: ["-o", "ProxyCommand=none"],
     remoteCdpPort: 9222,
   });
-  let client;
-  let machineCapture;
-  let audioStart;
+  let client: CdpClient | null = null;
+  let machineCapture: Awaited<
+    ReturnType<typeof startDelayedPickupMachineEvidenceCapture>
+  > | null = null;
+  let audioStart: JsonRecord | null = null;
   let audioStopped = false;
   let audioCancelled = false;
-  let binding = null;
-  let latestMachineBinding = null;
-  let f1Promise = null;
-  let f2Promise = null;
-  let f1Platform = null;
-  const daemonCheckpoints = [];
+  let binding: SaleBinding | null = null;
+  let latestMachineBinding: SaleBinding | null = null;
+  let f1Promise: Promise<{ daemon: JsonRecord; platform: JsonRecord }> | null =
+    null;
+  let f2Promise: Promise<JsonRecord> | null = null;
+  let f1Platform: JsonRecord | null = null;
+  const daemonCheckpoints: JsonRecord[] = [];
   const captureDaemon = dependencies.captureDaemon ?? options.captureDaemon;
   const queryPlatform = dependencies.queryPlatform ?? options.queryPlatform;
   const startAudioCapture =
@@ -349,8 +456,21 @@ export async function startDelayedPickupLiveProductionTrack(
     dependencies.stopAudioCapture ?? options.stopAudioCapture;
   const cancelAudioCapture =
     dependencies.cancelAudioCapture ?? options.cancelAudioCapture;
-  const inspectRuntimeNow =
-    dependencies.inspectRuntime ?? inspectWindowsMachineUiRuntime;
+  const inspectRuntimeNow: (options: JsonRecord) => Promise<JsonRecord> = (
+    dependencies.inspectRuntime ?? inspectWindowsMachineUiRuntime
+  ) as (options: JsonRecord) => Promise<JsonRecord>;
+  const inspectRuntime = (): Promise<JsonRecord> =>
+    inspectRuntimeNow({
+      remote: options.remote.remote as string | undefined,
+      sshPort: options.remote.sshPort as number | undefined,
+      identityFile: options.remote.identity as string | undefined,
+      certificateFile: options.remote.certificate as string | undefined,
+      sshKnownHostsPath: options.remote.sshKnownHostsPath as string | undefined,
+      sshHostKeyAlias: options.remote.sshHostKeyAlias as string | undefined,
+      sshArgs: ["-o", "ProxyCommand=none"],
+      remoteCdpPort: 9222,
+      expectedMachinePath: MACHINE_PATH,
+    });
   if (
     typeof captureDaemon !== "function" ||
     typeof queryPlatform !== "function" ||
@@ -362,7 +482,9 @@ export async function startDelayedPickupLiveProductionTrack(
       "live track daemon/platform producers and audio lifecycle are required",
     );
 
-  async function settleF1Snapshots(observedBinding) {
+  async function settleF1Snapshots(
+    observedBinding: SaleBinding,
+  ): Promise<{ daemon: JsonRecord; platform: JsonRecord }> {
     const deadline = Date.now() + (options.checkpointTimeoutMs ?? 30_000);
     let lastDaemon = null;
     let lastPlatform = null;
@@ -384,7 +506,9 @@ export async function startDelayedPickupLiveProductionTrack(
     );
   }
 
-  async function settleF2Snapshot(observedBinding) {
+  async function settleF2Snapshot(
+    observedBinding: SaleBinding,
+  ): Promise<JsonRecord> {
     const deadline = Date.now() + (options.checkpointTimeoutMs ?? 30_000);
     let lastDaemon = null;
     do {
@@ -397,23 +521,28 @@ export async function startDelayedPickupLiveProductionTrack(
     );
   }
 
-  async function captureF1(observedBinding) {
+  async function captureF1(
+    observedBinding: SaleBinding,
+  ): Promise<{ daemon: JsonRecord; platform: JsonRecord }> {
     if (f1Promise) return f1Promise;
     if (!observedBinding)
       throw new Error(
         "live Machine F1 control-plane barrier arrived before sale binding was observed",
       );
-    binding = observedBinding;
-    f1Promise = settleF1Snapshots(binding).then(({ daemon, platform }) => {
-      daemonCheckpoints.push(bindCheckpoint(daemon, binding));
+    const activeBinding = observedBinding;
+    binding = activeBinding;
+    f1Promise = settleF1Snapshots(activeBinding).then(
+      ({ daemon, platform }) => {
+      daemonCheckpoints.push(bindCheckpoint(daemon, activeBinding));
       f1Platform = platform;
       writeJson(paths.platformF1, platform);
       return { daemon, platform };
-    });
+      },
+    );
     return f1Promise;
   }
 
-  async function captureF2(observedBinding) {
+  async function captureF2(observedBinding: SaleBinding): Promise<JsonRecord> {
     if (f2Promise) return f2Promise;
     if (!f1Promise)
       throw new Error(
@@ -425,11 +554,12 @@ export async function startDelayedPickupLiveProductionTrack(
       );
     if (binding && !sameBinding(binding, observedBinding))
       throw new Error("live Machine F2 binding differs from F1 sale binding");
-    binding = observedBinding;
+    const activeBinding = observedBinding;
+    binding = activeBinding;
     f2Promise = f1Promise
-      .then(() => settleF2Snapshot(binding))
+      .then(() => settleF2Snapshot(activeBinding))
       .then((daemon) => {
-        daemonCheckpoints.push(bindCheckpoint(daemon, binding));
+        daemonCheckpoints.push(bindCheckpoint(daemon, activeBinding));
         return daemon;
       });
     return f2Promise;
@@ -455,18 +585,7 @@ export async function startDelayedPickupLiveProductionTrack(
     });
     machineCapture = await startDelayedPickupMachineEvidenceCapture({
       client,
-      inspectRuntime: () =>
-        inspectRuntimeNow({
-          remote: options.remote.remote,
-          sshPort: options.remote.sshPort,
-          identityFile: options.remote.identity,
-          certificateFile: options.remote.certificate,
-          sshKnownHostsPath: options.remote.sshKnownHostsPath,
-          sshHostKeyAlias: options.remote.sshHostKeyAlias,
-          sshArgs: ["-o", "ProxyCommand=none"],
-          remoteCdpPort: 9222,
-          expectedMachinePath: MACHINE_PATH,
-        }),
+      inspectRuntime,
       intervalMs: options.pollIntervalMs ?? 100,
       readSample: dependencies.readMachineSample,
       async onSample(sample) {
@@ -485,8 +604,11 @@ export async function startDelayedPickupLiveProductionTrack(
       evidenceDirectory,
       outPath: paths.audioStart,
     });
+    const captureSession = audioStart?.captureSession as
+      | JsonRecord
+      | undefined;
     if (
-      !Number.isFinite(Date.parse(audioStart?.captureSession?.startedAt ?? ""))
+      !Number.isFinite(Date.parse(String(captureSession?.startedAt ?? "")))
     )
       throw new Error(
         "host default-audio capture did not report a valid start timestamp",
@@ -521,13 +643,17 @@ export async function startDelayedPickupLiveProductionTrack(
           throw new Error("live F2 producer checkpoint was not observed");
         await f1Promise;
         await f2Promise;
+        if (machineCapture === null)
+          throw new Error(
+            "machine evidence capture was not started before finish",
+          );
         const machineEvidence = await machineCapture.stop(binding);
         writeDelayedPickupMachineEvidence(paths.machine, machineEvidence);
         daemonCheckpoints[0] = bindCheckpoint(daemonCheckpoints[0], binding);
         daemonCheckpoints.sort(
           (left, right) =>
-            Date.parse(left.capturedAt ?? "") -
-            Date.parse(right.capturedAt ?? ""),
+            Date.parse(String(left.capturedAt ?? "")) -
+            Date.parse(String(right.capturedAt ?? "")),
         );
         const daemonEvidence = createDaemonFulfillmentStoreEvidence(
           binding,
@@ -562,18 +688,7 @@ export async function startDelayedPickupLiveProductionTrack(
           runtime: machineCapture?.runtime ?? runtime,
           client,
           sidecar,
-          inspectRuntime: async () =>
-            inspectRuntimeNow({
-              remote: options.remote.remote,
-              sshPort: options.remote.sshPort,
-              identityFile: options.remote.identity,
-              certificateFile: options.remote.certificate,
-              sshKnownHostsPath: options.remote.sshKnownHostsPath,
-              sshHostKeyAlias: options.remote.sshHostKeyAlias,
-              sshArgs: ["-o", "ProxyCommand=none"],
-              remoteCdpPort: 9222,
-              expectedMachinePath: MACHINE_PATH,
-            }),
+          inspectRuntime,
           cancelAudio: async () => {
             if (audioStopped || audioCancelled || !audioStart) return;
             await cancelAudioCapture({
@@ -598,18 +713,7 @@ export async function startDelayedPickupLiveProductionTrack(
         runtime: machineCapture?.runtime ?? null,
         client,
         sidecar,
-        inspectRuntime: async () =>
-          inspectRuntimeNow({
-            remote: options.remote.remote,
-            sshPort: options.remote.sshPort,
-            identityFile: options.remote.identity,
-            certificateFile: options.remote.certificate,
-            sshKnownHostsPath: options.remote.sshKnownHostsPath,
-            sshHostKeyAlias: options.remote.sshHostKeyAlias,
-            sshArgs: ["-o", "ProxyCommand=none"],
-            remoteCdpPort: 9222,
-            expectedMachinePath: MACHINE_PATH,
-          }),
+        inspectRuntime,
         cancelAudio: async () => {
           if (audioStopped || audioCancelled || !audioStart) return;
           await cancelAudioCapture({
