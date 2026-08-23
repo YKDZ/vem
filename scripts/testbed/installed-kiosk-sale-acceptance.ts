@@ -1954,11 +1954,11 @@ export async function runInstalledKioskSaleAcceptanceCli(
       const liveEvidencePaths = liveEvidence.paths as JsonRecord;
       const artifacts = collectDelayedPickupProductionEvidence({
         installedSaleReportPath: handoffPath,
-        machineEvidencePath: liveEvidencePaths.machine,
-        daemonEvidencePath: liveEvidencePaths.daemon,
-        platformF1Path: liveEvidencePaths.platformF1,
-        audioStartReportPath: liveEvidencePaths.audioStart,
-        audioStopReportPath: liveEvidencePaths.audioStop,
+        machineEvidencePath: String(liveEvidencePaths.machine),
+        daemonEvidencePath: String(liveEvidencePaths.daemon),
+        platformF1Path: String(liveEvidencePaths.platformF1),
+        audioStartReportPath: String(liveEvidencePaths.audioStart),
+        audioStopReportPath: String(liveEvidencePaths.audioStop),
       });
       const delayedAcceptance =
         verifyDelayedPickupNativeAudioProductionEvidence({

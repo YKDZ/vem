@@ -1144,8 +1144,8 @@ export function buildHostLocalServiceApiEnvironment(
     MACHINE_API_BASE_URL: `http://${options.hostPrivateAddress}:26849/api`,
     PAYMENT_WEBHOOK_BASE_URL: `http://${options.hostPrivateAddress}:26849`,
     PAYMENT_MOCK_ENABLED: "true",
-    PAYMENT_MOCK_PROVIDER_CREATE_GATE_PATH: createOrderGate.statePath,
-    PAYMENT_MOCK_PROVIDER_QUERY_FAULT_PATH: queryFault.statePath,
+    PAYMENT_MOCK_PROVIDER_CREATE_GATE_PATH: String(createOrderGate.statePath),
+    PAYMENT_MOCK_PROVIDER_QUERY_FAULT_PATH: String(queryFault.statePath),
     CORS_ORIGINS: [
       "http://127.0.0.1:1420",
       "http://tauri.localhost",
@@ -1518,8 +1518,8 @@ export async function prepareInstallationOwnedPaymentProvider({
 }): Promise<Record<string, unknown>> {
   const resolvedFixturePath = installationFixturePath(fixturePath);
   const fixture = validateInstallationOwnedAlipaySandboxFixture(
-    await readFixture(resolvedFixturePath),
-  ) as Record<string, unknown>;
+    (await readFixture(resolvedFixturePath)) as Record<string, unknown> | null,
+  );
   const providerConfig = (fixture.providerConfig ??
     {}) as Record<string, unknown>;
   const channelPolicy = (fixture.channelPolicy ?? {}) as {
@@ -2789,9 +2789,9 @@ async function reconstruct(
     "utf8",
   );
   const createOrderGate = paymentMockCreateGatePaths(options.stateRoot);
-  await mkdir(dirname(createOrderGate.statePath), { recursive: true });
+  await mkdir(dirname(String(createOrderGate.statePath)), { recursive: true });
   await writeFile(
-    createOrderGate.statePath,
+    String(createOrderGate.statePath),
     `${JSON.stringify({ state: "open" })}\n`,
     "utf8",
   );
