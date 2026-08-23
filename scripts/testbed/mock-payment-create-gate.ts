@@ -9,14 +9,22 @@ import {
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 
-function required(value, label) {
+type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function required(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${label} is required`);
   }
   return value.trim();
 }
 
-export function paymentMockCreateGatePaths(stateRoot) {
+export function paymentMockCreateGatePaths(stateRoot: unknown): JsonRecord {
   const statePath = join(
     resolve(required(stateRoot, "stateRoot")),
     "fast-route",
@@ -28,7 +36,7 @@ export function paymentMockCreateGatePaths(stateRoot) {
   });
 }
 
-export function paymentMockQueryFaultPaths(stateRoot) {
+export function paymentMockQueryFaultPaths(stateRoot: unknown): JsonRecord {
   const statePath = join(
     resolve(required(stateRoot, "stateRoot")),
     "fast-route",
@@ -37,7 +45,10 @@ export function paymentMockQueryFaultPaths(stateRoot) {
   return Object.freeze({ statePath });
 }
 
-export function replaceJsonFileAtomically(path, value) {
+export function replaceJsonFileAtomically(
+  path: unknown,
+  value: JsonRecord,
+): string {
   const statePath = resolve(required(path, "path"));
   const directory = dirname(statePath);
   const temporaryPath = join(
@@ -59,24 +70,33 @@ export function replaceJsonFileAtomically(path, value) {
   return statePath;
 }
 
-export function writePaymentMockCreateGateState(stateRoot, value) {
+export function writePaymentMockCreateGateState(
+  stateRoot: unknown,
+  value: JsonRecord,
+): JsonRecord {
   const gate = paymentMockCreateGatePaths(stateRoot);
   replaceJsonFileAtomically(gate.statePath, value);
   if (value?.state === "open" || value?.state === "hold") {
-    rmSync(gate.pendingPath, { force: true });
+    rmSync(String(gate.pendingPath), { force: true });
   }
   return gate;
 }
 
-export function readPaymentMockCreateGateStatus(stateRoot) {
+export function readPaymentMockCreateGateStatus(
+  stateRoot: unknown,
+): JsonRecord {
   const gate = paymentMockCreateGatePaths(stateRoot);
-  const readJson = (path) =>
-    existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : null;
-  const state = readJson(gate.statePath);
-  const pending = readJson(gate.pendingPath);
+  const readJson = (path: string): JsonRecord | null =>
+    existsSync(path)
+      ? (JSON.parse(readFileSync(path, "utf8")) as JsonRecord)
+      : null;
+  const state = readJson(String(gate.statePath));
+  const pending = readJson(String(gate.pendingPath));
   return {
     state: typeof state?.state === "string" ? state.state : "open",
-    timeoutMs: Number.isInteger(state?.timeoutMs) ? state.timeoutMs : null,
+    timeoutMs: Number.isInteger(state?.timeoutMs)
+      ? state?.timeoutMs
+      : null,
     pending:
       pending?.state === "pending" &&
       typeof pending.paymentNo === "string" &&
@@ -90,16 +110,24 @@ export function readPaymentMockCreateGateStatus(stateRoot) {
   };
 }
 
-export function writePaymentMockQueryFaultState(stateRoot, value) {
+export function writePaymentMockQueryFaultState(
+  stateRoot: unknown,
+  value: JsonRecord,
+): JsonRecord {
   const fault = paymentMockQueryFaultPaths(stateRoot);
   replaceJsonFileAtomically(fault.statePath, value);
   return fault;
 }
 
-export function readPaymentMockQueryFaultStatus(stateRoot) {
+export function readPaymentMockQueryFaultStatus(
+  stateRoot: unknown,
+): JsonRecord {
   const fault = paymentMockQueryFaultPaths(stateRoot);
-  if (!existsSync(fault.statePath)) return { state: "open", paymentNo: null };
-  const state = JSON.parse(readFileSync(fault.statePath, "utf8"));
+  if (!existsSync(String(fault.statePath)))
+    return { state: "open", paymentNo: null };
+  const state = recordValue(
+    JSON.parse(readFileSync(String(fault.statePath), "utf8")),
+  );
   return {
     state: state?.state === "fail" ? "fail" : "open",
     paymentNo: typeof state?.paymentNo === "string" ? state.paymentNo : null,
