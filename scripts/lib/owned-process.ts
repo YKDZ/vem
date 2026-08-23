@@ -4,29 +4,59 @@ const TERMINATE_GRACE_MS = 200;
 const KILL_GRACE_MS = 500;
 const POLL_MS = 10;
 
-function sleep(milliseconds) {
+type StreamMode = "ignore" | "pipe";
+
+export interface StartOwnedProcessOptions {
+  deadlineMs: number;
+  env?: NodeJS.ProcessEnv;
+  stdio?: [StreamMode, StreamMode, StreamMode];
+}
+
+type ExitOutcome =
+  | { error: Error }
+  | { status: number | null; signal: NodeJS.Signals | null };
+
+export interface OwnedProcess {
+  child: ReturnType<typeof spawn>;
+  terminate: () => Promise<void>;
+  wait: () => Promise<{ status: number | null; signal: NodeJS.Signals | null }>;
+}
+
+function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-function processGroupExists(processGroupId) {
+function processGroupExists(processGroupId: number): boolean {
   try {
     process.kill(-processGroupId, 0);
     return true;
   } catch (error) {
-    if (error.code === "ESRCH") return false;
+    if (isNodeErrorWithCode(error, "ESRCH")) return false;
     throw error;
   }
 }
 
-function signalProcessGroup(processGroupId, signal) {
+function signalProcessGroup(processGroupId: number, signal: NodeJS.Signals): void {
   try {
     process.kill(-processGroupId, signal);
   } catch (error) {
-    if (error.code !== "ESRCH") throw error;
+    if (!isNodeErrorWithCode(error, "ESRCH")) throw error;
   }
 }
 
-async function waitForProcessGroupExit(processGroupId, milliseconds) {
+function isNodeErrorWithCode(error: unknown, code: string): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === code
+  );
+}
+
+async function waitForProcessGroupExit(
+  processGroupId: number,
+  milliseconds: number,
+): Promise<boolean> {
   const deadline = Date.now() + milliseconds;
   do {
     if (!processGroupExists(processGroupId)) return true;
@@ -35,7 +65,7 @@ async function waitForProcessGroupExit(processGroupId, milliseconds) {
   return !processGroupExists(processGroupId);
 }
 
-async function terminateProcessGroup(processGroupId) {
+async function terminateProcessGroup(processGroupId: number): Promise<void> {
   signalProcessGroup(processGroupId, "SIGTERM");
   if (await waitForProcessGroupExit(processGroupId, TERMINATE_GRACE_MS)) return;
   signalProcessGroup(processGroupId, "SIGKILL");
@@ -44,10 +74,14 @@ async function terminateProcessGroup(processGroupId) {
 }
 
 export function startOwnedProcess(
-  binary,
-  args,
-  { deadlineMs, env, stdio = ["ignore", "pipe", "pipe"] },
-) {
+  binary: string,
+  args: readonly string[],
+  {
+    deadlineMs,
+    env,
+    stdio = ["ignore", "pipe", "pipe"],
+  }: StartOwnedProcessOptions,
+): OwnedProcess {
   if (process.platform === "win32") {
     throw new Error(
       "owned external process execution is unavailable on Windows without a bounded tree owner",
@@ -58,12 +92,12 @@ export function startOwnedProcess(
   }
   const child = spawn(binary, args, { detached: true, env, stdio });
   let deadlineExceeded = false;
-  let termination;
-  const exited = new Promise((resolve) => {
+  let termination: Promise<void> | undefined;
+  const exited = new Promise<ExitOutcome>((resolve) => {
     child.once("error", (error) => resolve({ error }));
-    child.once("exit", (status, signal) => resolve({ signal, status }));
+    child.once("exit", (status, signal) => resolve({ status, signal }));
   });
-  const terminate = () => {
+  const terminate = (): Promise<void> => {
     clearTimeout(timer);
     if (child.pid === undefined) return Promise.resolve();
     if (!termination) {
@@ -87,7 +121,7 @@ export function startOwnedProcess(
         await terminate();
         throw new Error(`command exceeded its ${deadlineMs}ms deadline`);
       }
-      if (result.error) throw result.error;
+      if ("error" in result) throw result.error;
       if (child.pid !== undefined && processGroupExists(child.pid)) {
         await terminate();
         throw new Error("command left descendant processes running");
@@ -97,11 +131,18 @@ export function startOwnedProcess(
   };
 }
 
+export interface RunOwnedCommandOptions {
+  deadlineMs: number;
+  env?: NodeJS.ProcessEnv;
+  input?: string;
+  maximumOutputBytes: number;
+}
+
 export async function runOwnedCommand(
-  binary,
-  args,
-  { deadlineMs, env, input, maximumOutputBytes },
-) {
+  binary: string,
+  args: readonly string[],
+  { deadlineMs, env, input, maximumOutputBytes }: RunOwnedCommandOptions,
+): Promise<string> {
   if (!Number.isSafeInteger(maximumOutputBytes) || maximumOutputBytes <= 0) {
     throw new Error("command output bound must be a positive integer");
   }
@@ -110,27 +151,35 @@ export async function runOwnedCommand(
     env,
     stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
   });
-  const stdout = [];
-  const stderr = [];
+  const stdout: Buffer[] = [];
+  const stderr: Buffer[] = [];
   let stdoutSize = 0;
   let stderrSize = 0;
   let outputExceeded = false;
-  const collect = (chunks, kind) => (chunk) => {
-    if (outputExceeded) return;
-    if (kind === "stdout") stdoutSize += chunk.byteLength;
-    else stderrSize += chunk.byteLength;
-    if (stdoutSize > maximumOutputBytes || stderrSize > maximumOutputBytes) {
-      outputExceeded = true;
-      void owned.terminate();
-      return;
-    }
-    chunks.push(Buffer.from(chunk));
-  };
+  const collect =
+    (chunks: Buffer[], kind: "stdout" | "stderr") =>
+    (chunk: Buffer): void => {
+      if (outputExceeded) return;
+      if (kind === "stdout") stdoutSize += chunk.byteLength;
+      else stderrSize += chunk.byteLength;
+      if (stdoutSize > maximumOutputBytes || stderrSize > maximumOutputBytes) {
+        outputExceeded = true;
+        void owned.terminate();
+        return;
+      }
+      chunks.push(Buffer.from(chunk));
+    };
+  if (owned.child.stdout === null || owned.child.stderr === null) {
+    owned.terminate();
+    throw new Error("owned command did not expose stdout or stderr pipes");
+  }
   owned.child.stdout.on("data", collect(stdout, "stdout"));
   owned.child.stderr.on("data", collect(stderr, "stderr"));
-  if (input !== undefined) owned.child.stdin.end(input);
+  if (input !== undefined && owned.child.stdin !== null) {
+    owned.child.stdin.end(input);
+  }
 
-  let result;
+  let result: Awaited<ReturnType<OwnedProcess["wait"]>>;
   try {
     result = await owned.wait();
   } catch (error) {

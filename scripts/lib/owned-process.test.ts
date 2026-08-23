@@ -12,22 +12,30 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 
-import { runOwnedCommand } from "./owned-process.mjs";
+import { runOwnedCommand } from "./owned-process.ts";
 
-const temporaryRoots = [];
+const temporaryRoots: string[] = [];
 
 afterEach(() => {
   while (temporaryRoots.length > 0) {
-    rmSync(temporaryRoots.pop(), { recursive: true, force: true });
+    const root = temporaryRoots.pop();
+    if (root !== undefined) rmSync(root, { recursive: true, force: true });
   }
 });
 
-function processExists(pid) {
+function processExists(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    if (error.code === "ESRCH") return false;
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "ESRCH"
+    ) {
+      return false;
+    }
     throw error;
   }
 }
