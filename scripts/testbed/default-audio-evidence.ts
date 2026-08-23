@@ -9,11 +9,19 @@ export const DEFAULT_AUDIO_THRESHOLD = Object.freeze({
   minimumDistinctNonSilentSampleMagnitudes: 2,
 });
 
-function malformed(message) {
+type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function malformed(message: string): JsonRecord {
   return { ok: false, kind: "malformed", message };
 }
 
-function sampleMagnitude(bytes, offset, bits) {
+function sampleMagnitude(bytes: Buffer, offset: number, bits: number): number {
   if (bits === 8) return Math.abs(bytes.readUInt8(offset) - 128);
   if (bits === 16) return Math.abs(bytes.readInt16LE(offset));
   if (bits === 24) {
@@ -23,7 +31,7 @@ function sampleMagnitude(bytes, offset, bits) {
   return Math.abs(bytes.readInt32LE(offset));
 }
 
-function parseWavPcm(bytes) {
+function parseWavPcm(bytes: Buffer): JsonRecord {
   if (!Buffer.isBuffer(bytes) || bytes.length < 44)
     return malformed("capture must be a complete RIFF/WAV buffer");
   if (
@@ -94,10 +102,18 @@ function parseWavPcm(bytes) {
 }
 
 function inspectParsedWavPcm(
-  parsed,
-  threshold,
-  { startMs = 0, endMs = null, label = null } = {},
-) {
+  parsed: JsonRecord,
+  threshold: JsonRecord,
+  {
+    startMs = 0,
+    endMs = null,
+    label = null,
+  }: {
+    startMs?: number;
+    endMs?: number | null;
+    label?: string | null;
+  } = {},
+): JsonRecord {
   if (!parsed.ok) return parsed;
   const normalizedStartMs = Number.isFinite(startMs) ? Math.max(0, startMs) : 0;
   const normalizedEndMs =
@@ -108,13 +124,15 @@ function inspectParsedWavPcm(
         : null;
   const startFrame = Math.max(
     0,
-    Math.floor((normalizedStartMs / 1_000) * parsed.sampleRateHz),
+    Math.floor(
+      (normalizedStartMs / 1_000) * Number(parsed.sampleRateHz),
+    ),
   );
   const unclampedEndFrame =
     normalizedEndMs === null
-      ? parsed.frameCount
-      : Math.ceil((normalizedEndMs / 1_000) * parsed.sampleRateHz);
-  const endFrame = Math.min(parsed.frameCount, unclampedEndFrame);
+      ? Number(parsed.frameCount)
+      : Math.ceil((normalizedEndMs / 1_000) * Number(parsed.sampleRateHz));
+  const endFrame = Math.min(Number(parsed.frameCount), unclampedEndFrame);
   if (endFrame <= startFrame)
     return malformed("WAV inspection window must span at least one frame");
   let peakAbsoluteSample = 0;
@@ -122,31 +140,36 @@ function inspectParsedWavPcm(
   const nonSilentSampleMagnitudes = new Set();
   for (let frame = startFrame; frame < endFrame; frame += 1) {
     let framePeak = 0;
-    for (let channel = 0; channel < parsed.channels; channel += 1)
+    for (
+      let channel = 0;
+      channel < Number(parsed.channels);
+      channel += 1
+    )
       framePeak = Math.max(
         framePeak,
         sampleMagnitude(
-          parsed.data,
-          frame * parsed.blockAlign + channel * parsed.bytesPerSample,
-          parsed.bits,
+          parsed.data as Buffer,
+          frame * Number(parsed.blockAlign) +
+            channel * Number(parsed.bytesPerSample),
+          Number(parsed.bits),
         ),
       );
     peakAbsoluteSample = Math.max(peakAbsoluteSample, framePeak);
-    if (framePeak >= threshold.minimumPeakAbsoluteSample) {
+    if (framePeak >= Number(threshold.minimumPeakAbsoluteSample)) {
       nonSilentFrameCount += 1;
       nonSilentSampleMagnitudes.add(framePeak);
     }
   }
   const frameCount = endFrame - startFrame;
-  const durationMs = (frameCount / parsed.sampleRateHz) * 1_000;
+  const durationMs = (frameCount / Number(parsed.sampleRateHz)) * 1_000;
   return {
     ok: true,
     kind:
-      nonSilentFrameCount >= threshold.minimumNonSilentFrames &&
-      peakAbsoluteSample >= threshold.minimumPeakAbsoluteSample &&
-      durationMs >= threshold.minimumDurationMs &&
+      nonSilentFrameCount >= Number(threshold.minimumNonSilentFrames) &&
+      peakAbsoluteSample >= Number(threshold.minimumPeakAbsoluteSample) &&
+      durationMs >= Number(threshold.minimumDurationMs) &&
       nonSilentSampleMagnitudes.size >=
-        threshold.minimumDistinctNonSilentSampleMagnitudes
+        Number(threshold.minimumDistinctNonSilentSampleMagnitudes)
         ? "passed"
         : "silent",
     label,
@@ -163,27 +186,32 @@ function inspectParsedWavPcm(
     window: {
       startMs: normalizedStartMs,
       endMs:
-        normalizedEndMs ?? (parsed.frameCount / parsed.sampleRateHz) * 1_000,
+        normalizedEndMs ??
+        (Number(parsed.frameCount) / Number(parsed.sampleRateHz)) * 1_000,
     },
   };
 }
 
-export function inspectWavPcm(bytes, threshold = DEFAULT_AUDIO_THRESHOLD) {
+export function inspectWavPcm(
+  bytes: Buffer,
+  threshold: JsonRecord = DEFAULT_AUDIO_THRESHOLD,
+): JsonRecord {
   const parsed = parseWavPcm(bytes);
   return inspectParsedWavPcm(parsed, threshold);
 }
 
 export function inspectWavPcmWindows(
-  bytes,
-  windows,
-  threshold = DEFAULT_AUDIO_THRESHOLD,
-) {
+  bytes: Buffer,
+  windows: JsonRecord[],
+  threshold: JsonRecord = DEFAULT_AUDIO_THRESHOLD,
+): JsonRecord[] {
   const parsed = parseWavPcm(bytes);
-  return windows.map((window) =>
+  return windows.map((window: JsonRecord) =>
     inspectParsedWavPcm(parsed, threshold, {
-      startMs: window?.startMs,
-      endMs: window?.endMs,
-      label: window?.label ?? null,
+      startMs: Number(window?.startMs),
+      endMs:
+        window?.endMs == null ? null : Number(window?.endMs),
+      label: window?.label == null ? null : String(window?.label),
     }),
   );
 }
@@ -192,12 +220,16 @@ export function inspectExportedDefaultAudioCapture({
   directory,
   evidence,
   capture,
-}) {
-  if (!/^[a-f0-9]{64}\.wav$/.test(evidence?.fileName ?? ""))
+}: {
+  directory: string;
+  evidence: JsonRecord;
+  capture: JsonRecord;
+}): JsonRecord {
+  if (!/^[a-f0-9]{64}\.wav$/.test(String(evidence?.fileName ?? "")))
     throw new Error(
       "default audio evidence must use a digest-bound relative WAV file name",
     );
-  const bytes = readFileSync(join(directory, evidence.fileName));
+  const bytes = readFileSync(join(directory, String(evidence.fileName)));
   const digest = createHash("sha256").update(bytes).digest("hex");
   if (
     evidence.identity !== `runtime-evidence://sha256/${digest}` ||
@@ -206,7 +238,9 @@ export function inspectExportedDefaultAudioCapture({
     throw new Error(
       "default audio evidence file digest does not match its logical identity",
     );
-  const inspected = inspectWavPcm(bytes, capture.threshold);
+  const inspected = recordValue(
+    inspectWavPcm(bytes, recordValue(capture.threshold)),
+  );
   if (!inspected.ok || inspected.kind !== "passed")
     throw new Error(
       `default audio PCM capture is ${inspected.kind}: ${inspected.message ?? "below threshold"}`,
