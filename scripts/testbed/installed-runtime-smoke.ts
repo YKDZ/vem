@@ -24,12 +24,25 @@ const LOOPBACK_FETCH_ATTEMPTS = 9;
 const LOOPBACK_FETCH_RETRY_MS = 250;
 const TAURI_DOCUMENT_READY_TIMEOUT_MS = 30_000;
 
-function sleep(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
 }
 
-async function fetchLoopbackWithRetry(fetchImpl, url, options, label) {
-  let lastError;
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function fetchLoopbackWithRetry(
+  fetchImpl: typeof fetch,
+  url: string,
+  options: RequestInit,
+  label: string,
+): Promise<Response> {
+  let lastError: unknown;
   for (let attempt = 1; attempt <= LOOPBACK_FETCH_ATTEMPTS; attempt += 1) {
     try {
       return await fetchImpl(url, options);
@@ -46,21 +59,26 @@ async function fetchLoopbackWithRetry(fetchImpl, url, options, label) {
   );
 }
 
-function required(value, label) {
+function required(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${label} is required`);
   }
   return value.trim();
 }
 
-function positiveInteger(value, label) {
-  if (!Number.isSafeInteger(value) || value < 1) {
+function positiveInteger(value: unknown, label: string): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
     throw new Error(`${label} must be a positive integer`);
   }
-  return value;
+  return parsed;
 }
 
-function canonicalWindowsPath(value, expected, label) {
+function canonicalWindowsPath(
+  value: unknown,
+  expected: string,
+  label: string,
+): string {
   const path = required(value, label).replaceAll("/", "\\");
   if (path.toLowerCase() !== expected.toLowerCase()) {
     throw new Error(`${label} must be ${expected}`);
@@ -68,7 +86,12 @@ function canonicalWindowsPath(value, expected, label) {
   return expected;
 }
 
-function loopbackUrl(value, label, expectedPort, expectedPath) {
+function loopbackUrl(
+  value: unknown,
+  label: string,
+  expectedPort: number | null,
+  expectedPath: string,
+): string {
   const url = new URL(required(value, label));
   if (
     url.protocol !== "http:" ||
@@ -82,10 +105,11 @@ function loopbackUrl(value, label, expectedPort, expectedPath) {
   return url.toString().replace(/\/$/, "");
 }
 
-export function declaredInstalledRuntimeTracks(mode) {
-  if (!MODES.has(mode))
+export function declaredInstalledRuntimeTracks(mode: unknown): string[] {
+  const normalizedMode = String(mode);
+  if (!MODES.has(normalizedMode))
     throw new Error("installed runtime mode must be fast or full");
-  return mode === "fast"
+  return normalizedMode === "fast"
     ? [...BASE_TRACKS]
     : [
         ...BASE_TRACKS,
@@ -94,23 +118,24 @@ export function declaredInstalledRuntimeTracks(mode) {
       ];
 }
 
-export function validateInstalledRuntimeEvidence(value) {
-  if (value?.schemaVersion !== "vem-installed-runtime-handoff/v1") {
+export function validateInstalledRuntimeEvidence(value: unknown): JsonRecord {
+  const input = recordValue(value);
+  if (input?.schemaVersion !== "vem-installed-runtime-handoff/v1") {
     throw new Error("installed runtime handoff schema is invalid");
   }
-  const machineCode = required(value.machineCode, "machineCode");
-  if (
-    value.claim?.status !== "provisioned" ||
-    value.claim?.machineCode !== machineCode
-  ) {
+  const machineCode = required(input.machineCode, "machineCode");
+  const claim = recordValue(input.claim);
+  if (claim?.status !== "provisioned" || claim?.machineCode !== machineCode) {
     throw new Error(
       "installed runtime handoff must prove the clean claim result",
     );
   }
+  const daemon = recordValue(input.daemon);
+  const daemonService = recordValue(daemon.service);
   const daemonRuntimeMode =
-    value.daemon?.service?.name === "VemVendingDaemon"
+    daemonService.name === "VemVendingDaemon"
       ? "windows_service"
-      : value.daemon?.console === true
+      : daemon.console === true
         ? "console_process"
         : null;
   if (!daemonRuntimeMode) {
@@ -118,25 +143,28 @@ export function validateInstalledRuntimeEvidence(value) {
       "installed runtime handoff must declare a daemon service owner",
     );
   }
-  const principal = required(value.machine?.principal, "machine principal");
+  const machine = recordValue(input.machine);
+  const principal = required(machine.principal, "machine principal");
+  const daemonReady = recordValue(daemon.ready);
   const healthzUrl = loopbackUrl(
-    value.daemon.ready?.healthzUrl,
+    daemonReady.healthzUrl,
     "daemon healthzUrl",
     null,
     "/healthz",
   );
   const readyzUrl = loopbackUrl(
-    value.daemon.ready?.readyzUrl,
+    daemonReady.readyzUrl,
     "daemon readyzUrl",
-    new URL(healthzUrl).port,
+    Number(new URL(healthzUrl).port),
     "/readyz",
   );
   const machineProcessId = positiveInteger(
-    value.machine.processId,
+    machine.processId,
     "machine processId",
   );
+  const cdp = recordValue(input.cdp);
   const machineAncestorProcessId = positiveInteger(
-    value.cdp?.machineAncestorProcessId,
+    cdp.machineAncestorProcessId,
     "CDP machineAncestorProcessId",
   );
   if (machineAncestorProcessId !== machineProcessId) {
@@ -145,23 +173,23 @@ export function validateInstalledRuntimeEvidence(value) {
     );
   }
   return {
-    schemaVersion: value.schemaVersion,
+    schemaVersion: input.schemaVersion,
     machineCode,
     claim: { status: "provisioned", machineCode },
     daemon: {
       executablePath: canonicalWindowsPath(
-        value.daemon.executablePath,
+        daemon.executablePath,
         CANONICAL_DAEMON,
         "daemon executablePath",
       ),
-      processId: positiveInteger(value.daemon.processId, "daemon processId"),
+      processId: positiveInteger(daemon.processId, "daemon processId"),
       runtimeMode: daemonRuntimeMode,
       service:
         daemonRuntimeMode === "windows_service"
           ? {
               name: "VemVendingDaemon",
               status: required(
-                value.daemon.service?.status,
+                daemonService.status,
                 "daemon service status",
               ),
             }
@@ -169,24 +197,24 @@ export function validateInstalledRuntimeEvidence(value) {
       ready: {
         healthzUrl,
         readyzUrl,
-        ipcToken: required(value.daemon.ready?.ipcToken, "daemon ipcToken"),
+        ipcToken: required(daemonReady.ipcToken, "daemon ipcToken"),
       },
     },
     machine: {
       executablePath: canonicalWindowsPath(
-        value.machine.executablePath,
+        machine.executablePath,
         CANONICAL_MACHINE,
         "machine executablePath",
       ),
       processId: machineProcessId,
-      sessionId: positiveInteger(value.machine.sessionId, "machine sessionId"),
+      sessionId: positiveInteger(machine.sessionId, "machine sessionId"),
       principal,
     },
     cdp: {
-      endpoint: loopbackUrl(value.cdp?.endpoint, "CDP endpoint", 9222),
-      targetId: required(value.cdp?.targetId, "CDP targetId"),
+      endpoint: loopbackUrl(cdp.endpoint, "CDP endpoint", 9222, ""),
+      targetId: required(cdp.targetId, "CDP targetId"),
       listenerProcessId: positiveInteger(
-        value.cdp?.listenerProcessId,
+        cdp.listenerProcessId,
         "CDP listenerProcessId",
       ),
       machineAncestorProcessId,
@@ -199,42 +227,61 @@ export async function runInstalledRuntimeSmoke({
   evidence,
   fetchImpl = globalThis.fetch,
   webSocketFactory,
-}) {
+}: {
+  mode: unknown;
+  evidence: unknown;
+  fetchImpl?: typeof fetch;
+  webSocketFactory?: unknown;
+}): Promise<JsonRecord> {
   const tracks = declaredInstalledRuntimeTracks(mode);
   const runtime = validateInstalledRuntimeEvidence(evidence);
-  const retryingFetch = (url, options) =>
-    fetchLoopbackWithRetry(fetchImpl, url, options, "installed runtime probe");
-  const healthResponse = await retryingFetch(runtime.daemon.ready.healthzUrl, {
+  const runtimeDaemon = recordValue(runtime.daemon);
+  const runtimeDaemonReady = recordValue(runtimeDaemon.ready);
+  const runtimeCdp = recordValue(runtime.cdp);
+  const retryingFetch: typeof fetch = (input, init) =>
+    fetchLoopbackWithRetry(
+      fetchImpl,
+      String(input),
+      init ?? {},
+      "installed runtime probe",
+    );
+  const healthResponse = await retryingFetch(
+    String(runtimeDaemonReady.healthzUrl),
+    {
     headers: {
-      authorization: `Bearer ${runtime.daemon.ready.ipcToken}`,
+      authorization: `Bearer ${runtimeDaemonReady.ipcToken}`,
     },
-  });
+    },
+  );
   if (!healthResponse.ok) {
     throw new Error(
       `production daemon health failed with HTTP ${healthResponse.status}`,
     );
   }
-  const health = await healthResponse.json();
+  const health = recordValue(await healthResponse.json());
   if (
     !["healthy", "degraded", "offline", "maintenance", "starting"].includes(
-      health?.status,
+      String(health?.status),
     ) ||
     !health.process ||
     !Array.isArray(health.components)
   ) {
     throw new Error("production daemon health snapshot is invalid");
   }
-  const readyResponse = await retryingFetch(runtime.daemon.ready.readyzUrl, {
+  const readyResponse = await retryingFetch(
+    String(runtimeDaemonReady.readyzUrl),
+    {
     headers: {
-      authorization: `Bearer ${runtime.daemon.ready.ipcToken}`,
+      authorization: `Bearer ${runtimeDaemonReady.ipcToken}`,
     },
-  });
+    },
+  );
   if (!readyResponse.ok) {
     throw new Error(
       `production daemon readiness failed with HTTP ${readyResponse.status}`,
     );
   }
-  const readiness = await readyResponse.json();
+  const readiness = recordValue(await readyResponse.json());
   if (
     readiness?.ready !== true ||
     !Array.isArray(readiness.blockingCodes) ||
@@ -243,24 +290,28 @@ export async function runInstalledRuntimeSmoke({
     throw new Error("production daemon did not become ready after claim");
   }
   const target = await discoverMachineUiTarget({
-    endpoint: runtime.cdp.endpoint,
-    expectedTargetId: runtime.cdp.targetId,
+    endpoint: String(runtimeCdp.endpoint),
+    expectedTargetId: String(runtimeCdp.targetId),
     fetchImpl: retryingFetch,
   });
   const client = new CdpClient(
     rewriteWebSocketDebuggerUrl(
-      target.webSocketDebuggerUrl,
-      runtime.cdp.endpoint,
+      String(target.webSocketDebuggerUrl),
+      String(runtimeCdp.endpoint),
     ),
-    { webSocketFactory },
+    {
+      webSocketFactory: webSocketFactory as NonNullable<
+        ConstructorParameters<typeof CdpClient>[1]
+      >["webSocketFactory"],
+    },
   );
   try {
     await client.connect();
     await enablePageRuntime(client);
     const deadline = Date.now() + TAURI_DOCUMENT_READY_TIMEOUT_MS;
-    let identity;
+    let identity: JsonRecord;
     do {
-      identity = await captureDomIdentity(client);
+      identity = recordValue(await captureDomIdentity(client));
       if (identity.readyState === "complete") break;
       await sleep(100);
     } while (Date.now() < deadline);
@@ -275,16 +326,16 @@ export async function runInstalledRuntimeSmoke({
       declaredTracks: tracks,
       completedTracks: tracks,
       daemon: {
-        executablePath: runtime.daemon.executablePath,
-        processId: runtime.daemon.processId,
-        runtimeMode: runtime.daemon.runtimeMode,
+        executablePath: runtimeDaemon.executablePath,
+        processId: runtimeDaemon.processId,
+        runtimeMode: runtimeDaemon.runtimeMode,
         ready: true,
         healthStatus: health.status,
       },
       machine: runtime.machine,
       tauri: {
         targetId: target.id,
-        listenerProcessId: runtime.cdp.listenerProcessId,
+        listenerProcessId: runtimeCdp.listenerProcessId,
         route: identity.route,
         readyState: identity.readyState,
         domHash: mode === "full" ? identity.domHash : null,
@@ -295,13 +346,13 @@ export async function runInstalledRuntimeSmoke({
   }
 }
 
-function option(args, name) {
+function option(args: string[], name: string): string {
   const index = args.indexOf(`--${name}`);
   const value = index >= 0 ? args[index + 1] : undefined;
   return required(value, `--${name}`);
 }
 
-async function main() {
+async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const mode = option(args, "mode");
   const evidencePath = option(args, "evidence");
@@ -309,7 +360,7 @@ async function main() {
   if (!isAbsolute(evidencePath) || !isAbsolute(out)) {
     throw new Error("--evidence and --out must be absolute paths");
   }
-  const evidence = JSON.parse(await readFile(evidencePath, "utf8"));
+  const evidence = JSON.parse(await readFile(evidencePath, "utf8")) as JsonRecord;
   const result = await runInstalledRuntimeSmoke({ mode, evidence });
   await writeFile(out, `${JSON.stringify(result, null, 2)}\n`, "utf8");
   process.stdout.write(`${JSON.stringify(result)}\n`);
