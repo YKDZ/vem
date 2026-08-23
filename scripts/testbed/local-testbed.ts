@@ -69,38 +69,12 @@ const RETAINED_CACHE_CONTRACT = Object.freeze([
   "D:\\runtime-cache\\v1\\acceptance-inputs",
   "D:\\runtime-cache\\v1\\powershell",
 ]);
-const REQUIRED_SERVICE_API_ENV_KEYS = Object.freeze([
-  "NODE_ENV",
-  "DATABASE_URL",
-  "JWT_SECRET",
-  "JWT_REFRESH_SECRET",
-  "MACHINE_JWT_SECRET",
-  "MACHINE_CREDENTIAL_ENCRYPTION_KEY",
-  "MACHINE_CLAIM_LOOKUP_HMAC_KEY",
-  "MACHINE_CLAIM_CODE_TTL_SECONDS",
-  "CORS_ORIGINS",
-  "MQTT_URL",
-  "MACHINE_MQTT_URL",
-  "MQTT_USERNAME",
-  "MQTT_PASSWORD",
-  "PAYMENT_MOCK_ENABLED",
-  "PAYMENT_MOCK_PROVIDER_CREATE_GATE_PATH",
-  "PAYMENT_MOCK_PROVIDER_QUERY_FAULT_PATH",
-  "PAYMENT_WEBHOOK_BASE_URL",
-  "MACHINE_API_BASE_URL",
-  "MEDIA_ASSET_STORAGE_ROOT",
-  "PAYMENT_CONFIG_ENCRYPTION_KEY",
-  "BOOTSTRAP_ADMIN_USERNAME",
-  "BOOTSTRAP_ADMIN_PASSWORD",
-  "SERVICE_HOST",
-  "SERVICE_PORT",
-]);
-
-export function categoryKeyForFixtureProduct(product) {
+export function categoryKeyForFixtureProduct(product: unknown): string {
+  const record = product as { category?: unknown; name?: unknown } | null;
   return (
     topCategoryKeyForCatalogItem({
-      categoryName: product?.category ?? null,
-      productName: product?.name ?? null,
+      categoryName: record?.category != null ? String(record.category) : null,
+      productName: record?.name != null ? String(record.name) : null,
     }) ?? "other"
   );
 }
@@ -137,20 +111,33 @@ const LOWER_CONTROLLER_SIM_SOURCE_PATHS = Object.freeze([
   "crates/vending-core/Cargo.toml",
 ]);
 
-function required(value, label) {
+function isNodeErrorCode(error: unknown, code: string): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === code
+  );
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function required(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${label} is required`);
   }
   return value.trim();
 }
 
-function absolute(value, label) {
+function absolute(value: unknown, label: string): string {
   const path = required(value, label);
   if (!isAbsolute(path)) throw new Error(`${label} must be absolute`);
   return resolve(path);
 }
 
-function commandArray(value, label) {
+function commandArray(value: unknown, label: string): string[] {
   if (
     !Array.isArray(value) ||
     value.length === 0 ||
@@ -164,7 +151,11 @@ function commandArray(value, label) {
   return value;
 }
 
-function trackedHostCommand(value, action, label) {
+function trackedHostCommand(
+  value: unknown,
+  action: string,
+  label: string,
+): string[] {
   const command = commandArray(value, label);
   if (
     !["node", "nodejs"].includes(basename(command[0])) ||
@@ -178,7 +169,7 @@ function trackedHostCommand(value, action, label) {
   return command;
 }
 
-function windowsAbsolute(value, label) {
+function windowsAbsolute(value: unknown, label: string): string {
   const path = required(value, label);
   if (!/^[A-Za-z]:\\/.test(path) || path.includes("\0")) {
     throw new Error(`${label} must be an absolute Windows path`);
@@ -186,7 +177,11 @@ function windowsAbsolute(value, label) {
   return path;
 }
 
-function option(args, name, optional = false) {
+function option(
+  args: string[],
+  name: string,
+  optional = false,
+): string | undefined {
   const index = args.indexOf(`--${name}`);
   if (index === -1) {
     if (optional) return undefined;
@@ -198,8 +193,14 @@ function option(args, name, optional = false) {
   return value;
 }
 
-export function validateHostPrivateAddress(hostPrivateAddress) {
-  if (isIP(hostPrivateAddress) !== 4 || hostPrivateAddress.startsWith("127.")) {
+export function validateHostPrivateAddress(
+  hostPrivateAddress: unknown,
+): string {
+  if (
+    typeof hostPrivateAddress !== "string" ||
+    isIP(hostPrivateAddress) !== 4 ||
+    hostPrivateAddress.startsWith("127.")
+  ) {
     throw new Error(
       "--host-private-address must be a non-loopback IPv4 address",
     );
@@ -207,8 +208,31 @@ export function validateHostPrivateAddress(hostPrivateAddress) {
   return hostPrivateAddress;
 }
 
-export function parseOptions(args) {
-  const command = args[0];
+export function parseOptions(
+  args: string[],
+):
+  | {
+      command: string;
+      workspace: string;
+      stateRoot: string;
+      baselineContract: string;
+      hostPrivateAddress: string;
+      out: string;
+      dryRun: boolean;
+      runId: string;
+    }
+  | {
+      command: string;
+      workspace: string;
+      stateRoot: string;
+      baselineContract: string;
+      hostPrivateAddress: string;
+      out: string;
+      dryRun: boolean;
+      mode: string;
+      runId: string;
+    } {
+  const command = args[0] ?? "";
   if (!new Set(["reconstruct", "refresh-host-runtime"]).has(command)) {
     throw new Error(
       "usage: local-testbed.ts reconstruct|refresh-host-runtime ...",
@@ -236,7 +260,7 @@ export function parseOptions(args) {
     };
   }
   const mode = option(args, "mode");
-  if (!MODES.has(mode))
+  if (mode === undefined || !MODES.has(mode))
     throw new Error("--mode must be fast, full, or clear_cache");
   return {
     ...common,
@@ -245,35 +269,53 @@ export function parseOptions(args) {
   };
 }
 
-export function validateBaselineContract(contract) {
+interface BaselineContract {
+  schemaVersion?: unknown;
+  releaseId?: unknown;
+  destinations?: Record<string, unknown>;
+  artifacts?: Record<string, unknown>;
+  testbed?: {
+    reconstructCommand?: unknown;
+    admitGuestCommand?: unknown;
+    guest?: Record<string, unknown>;
+  };
+}
+
+export function validateBaselineContract(
+  contract: unknown,
+): BaselineContract {
   if (!contract || typeof contract !== "object" || Array.isArray(contract)) {
     throw new Error("baseline contract must be an object");
   }
-  if (contract.schemaVersion !== "win10-kvm-baseline-current/v1") {
+  const record = contract as Record<string, unknown>;
+  if (record.schemaVersion !== "win10-kvm-baseline-current/v1") {
     throw new Error(
       "baseline contract must be the published win10-kvm-baseline-current/v1 manifest",
     );
   }
-  if (!/^[a-z0-9][a-z0-9-]{7,127}$/i.test(contract.releaseId ?? "")) {
+  if (!/^[a-z0-9][a-z0-9-]{7,127}$/i.test(String(record.releaseId ?? ""))) {
     throw new Error("published baseline contract releaseId is invalid");
   }
-  if (!contract.destinations || !contract.artifacts || !contract.testbed) {
+  if (!record.destinations || !record.artifacts || !record.testbed) {
     throw new Error(
       "published baseline contract must include destinations, artifacts, and testbed",
     );
   }
   for (const [container, keys] of [
-    [contract.destinations, ["baselinePath", "cacheDiskPath"]],
     [
-      contract.artifacts,
+      record.destinations as Record<string, unknown>,
+      ["baselinePath", "cacheDiskPath"],
+    ],
+    [
+      record.artifacts as Record<string, unknown>,
       ["systemPath", "cachePath", "domainXmlPath", "diagnosticPath"],
     ],
-  ]) {
+  ] as Array<[Record<string, unknown>, string[]]>) {
     for (const key of keys) {
       absolute(container[key], `baseline contract ${key}`);
     }
   }
-  const binding = contract.testbed;
+  const binding = record.testbed as Record<string, unknown>;
   trackedHostCommand(
     binding.reconstructCommand,
     "reconstruct",
@@ -287,6 +329,7 @@ export function validateBaselineContract(contract) {
   if (!binding.guest || typeof binding.guest !== "object") {
     throw new Error("baseline contract guest is required");
   }
+  const guest = binding.guest as Record<string, unknown>;
   for (const key of [
     "host",
     "user",
@@ -295,38 +338,42 @@ export function validateBaselineContract(contract) {
     "stagingPath",
     "cacheRoot",
   ]) {
-    required(binding.guest[key], `baseline contract guest.${key}`);
+    required(guest[key], `baseline contract guest.${key}`);
   }
-  if (binding.guest.user !== "VEMKiosk") {
+  if (guest.user !== "VEMKiosk") {
     throw new Error(
       "baseline contract guest.user must be the production machine user VEMKiosk",
     );
   }
-  if (!/^[A-Za-z0-9][A-Za-z0-9.-]{0,253}$/.test(binding.guest.host)) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9.-]{0,253}$/.test(String(guest.host))) {
     throw new Error(
       "baseline contract guest.host must be a hostname or IP address",
     );
   }
   if (
-    !isAbsolute(binding.guest.identityFile) ||
-    !isAbsolute(binding.guest.knownHostsFile)
+    !isAbsolute(String(guest.identityFile)) ||
+    !isAbsolute(String(guest.knownHostsFile))
   ) {
     throw new Error("baseline contract SSH files must be absolute");
   }
   windowsAbsolute(
-    binding.guest.stagingPath,
+    guest.stagingPath,
     "baseline contract guest.stagingPath",
   );
-  windowsAbsolute(binding.guest.cacheRoot, "baseline contract guest.cacheRoot");
-  return contract;
+  windowsAbsolute(guest.cacheRoot, "baseline contract guest.cacheRoot");
+  return contract as BaselineContract;
 }
 
-function baselineInteractiveUserPasswordPath(contract) {
-  const guest = contract.testbed.guest;
+function baselineInteractiveUserPasswordPath(
+  contract: BaselineContract,
+): string {
+  const guest = contract.testbed?.guest ?? {};
   const passwordPath =
-    guest.interactiveUserPasswordFile ??
-    guest.administratorPasswordFile ??
-    join(dirname(guest.identityFile), "administrator-password");
+    guest.interactiveUserPasswordFile !== undefined
+      ? String(guest.interactiveUserPasswordFile)
+      : guest.administratorPasswordFile !== undefined
+        ? String(guest.administratorPasswordFile)
+        : join(dirname(String(guest.identityFile)), "administrator-password");
   if (!isAbsolute(passwordPath)) {
     throw new Error(
       "baseline contract guest interactive user password file must be absolute",
@@ -335,7 +382,9 @@ function baselineInteractiveUserPasswordPath(contract) {
   return passwordPath;
 }
 
-async function readBaselineInteractiveUserPassword(contract) {
+async function readBaselineInteractiveUserPassword(
+  contract: BaselineContract,
+): Promise<string> {
   const password = (
     await readFile(baselineInteractiveUserPasswordPath(contract), "utf8")
   ).replace(/\r?\n$/, "");
@@ -345,11 +394,10 @@ async function readBaselineInteractiveUserPassword(contract) {
   return password;
 }
 
-async function loadFixture() {
-  return (await loadFixtureDocument()).fixture;
-}
-
-function fixtureIdentityFromRaw(raw) {
+function fixtureIdentityFromRaw(raw: string): {
+  schemaVersion: string;
+  sha256: string;
+} {
   const seedSource = readFileSync(
     new URL("./local-testbed.ts", import.meta.url),
   );
@@ -363,35 +411,61 @@ function fixtureIdentityFromRaw(raw) {
   };
 }
 
-async function loadFixtureDocument() {
+async function loadFixtureDocument(): Promise<{
+  fixture: {
+    schemaVersion: unknown;
+    products: Array<Record<string, unknown>>;
+    slots: Array<Record<string, unknown>>;
+    source?: unknown;
+  };
+  identity: ReturnType<typeof fixtureIdentityFromRaw>;
+}> {
   const raw = await readFile(FIXTURE_PATH, "utf8");
-  const fixture = JSON.parse(raw);
+  const fixture = JSON.parse(raw) as {
+    schemaVersion?: unknown;
+    products?: unknown;
+  };
   if (
     fixture.schemaVersion !== "vem-local-testbed-catalog/v1" ||
     !Array.isArray(fixture.products)
   ) {
     throw new Error("local testbed catalog fixture is invalid");
   }
-  const rows = new Set(fixture.products.map((product) => product.sourceRow));
+  const products = Array.isArray(fixture.products)
+    ? (fixture.products as Array<Record<string, unknown>>)
+    : [];
+  const rows = new Set(products.map((product) => product.sourceRow));
   if (fixture.products.length !== 44 || rows.size !== fixture.products.length) {
     throw new Error(
       "local testbed catalog must contain the 44 normalized spreadsheet rows",
     );
   }
-  return { fixture, identity: fixtureIdentityFromRaw(raw) };
+  return {
+    fixture: fixture as {
+      schemaVersion: unknown;
+      products: Array<Record<string, unknown>>;
+      slots: Array<Record<string, unknown>>;
+      source?: unknown;
+    },
+    identity: fixtureIdentityFromRaw(raw),
+  };
 }
 
-function commandLine(command, args, extra = {}) {
-  return { command, args: args.map(String), ...extra };
+function commandLine(
+  command: string,
+  args: string[],
+  extra: Record<string, unknown> = {},
+): CommandStep {
+  return { command, args: args.map(String), ...extra } as CommandStep;
 }
 
-function renderNodeExecutable(command) {
+function renderNodeExecutable(command: string): string {
   if (!["node", "nodejs"].includes(basename(command))) return command;
   if (!isAbsolute(command) || existsSync(command)) return command;
   return process.execPath;
 }
 
-function runtimeBaseIdentity(contract) {
+function runtimeBaseIdentity(contract: BaselineContract): string {
   return `runtime-base://sha256/${createHash("sha256")
     .update(
       JSON.stringify({
@@ -403,15 +477,18 @@ function runtimeBaseIdentity(contract) {
     .digest("hex")}`;
 }
 
-function runtimeTargetIdentity(contract) {
+function runtimeTargetIdentity(contract: BaselineContract): string {
   return `vm-target://${String(contract.releaseId).toLowerCase()}`;
 }
 
-function baselineContractDigest(contract) {
+function baselineContractDigest(contract: unknown): string {
   return `sha256:${createHash("sha256").update(JSON.stringify(contract)).digest("hex")}`;
 }
 
-function workflowIdentity(options, contract) {
+function workflowIdentity(
+  options: ReconstructOptions,
+  contract: BaselineContract,
+): Record<string, unknown> {
   const baselineDigest = baselineContractDigest(contract);
   const runtimeBase = runtimeBaseIdentity(contract);
   return {
@@ -427,12 +504,15 @@ function workflowIdentity(options, contract) {
   };
 }
 
-function parseJsonLine(stdout, label) {
+function parseJsonLine(stdout: unknown, label: string): unknown {
   const trimmed = String(stdout ?? "").trim();
   if (trimmed.length === 0) {
     throw new Error(`${label} did not emit JSON`);
   }
   const lastLine = trimmed.split(/\r?\n/).at(-1);
+  if (lastLine === undefined) {
+    throw new Error(`${label} emitted malformed JSON`);
+  }
   try {
     return JSON.parse(lastLine);
   } catch {
@@ -440,20 +520,43 @@ function parseJsonLine(stdout, label) {
   }
 }
 
-function renderPublishedCommand(command, options, contract) {
-  const guest = contract.testbed.guest;
-  const replacements = {
+interface ReconstructOptions {
+  command: string;
+  workspace: string;
+  stateRoot: string;
+  baselineContract: string;
+  hostPrivateAddress: string;
+  out: string;
+  dryRun: boolean;
+  runId: string;
+  mode?: string;
+}
+
+interface CommandStep {
+  command: string;
+  args: string[];
+  env?: NodeJS.ProcessEnv;
+  [key: string]: unknown;
+}
+
+function renderPublishedCommand(
+  command: string[],
+  options: ReconstructOptions,
+  contract: BaselineContract,
+): CommandStep {
+  const guest = contract.testbed?.guest ?? {};
+  const replacements: Record<string, string> = {
     repository: options.workspace,
     runId: options.runId,
     hostPrivateAddress: options.hostPrivateAddress,
-    systemPath: contract.artifacts.systemPath,
-    cachePath: contract.artifacts.cachePath,
-    domainXmlPath: contract.artifacts.domainXmlPath,
-    guestHost: guest.host,
-    guestUser: guest.user,
-    identityFile: guest.identityFile,
-    knownHostsFile: guest.knownHostsFile,
-    guestStagingPath: guest.stagingPath,
+    systemPath: String(contract.artifacts?.systemPath ?? ""),
+    cachePath: String(contract.artifacts?.cachePath ?? ""),
+    domainXmlPath: String(contract.artifacts?.domainXmlPath ?? ""),
+    guestHost: String(guest.host ?? ""),
+    guestUser: String(guest.user ?? ""),
+    identityFile: String(guest.identityFile ?? ""),
+    knownHostsFile: String(guest.knownHostsFile ?? ""),
+    guestStagingPath: String(guest.stagingPath ?? ""),
   };
   const rendered = command.map((part) =>
     Object.entries(replacements).reduce(
@@ -468,26 +571,32 @@ function renderPublishedCommand(command, options, contract) {
       `baseline testbed command has an unknown placeholder: ${unresolved}`,
     );
   }
-  return commandLine(renderNodeExecutable(rendered[0]), rendered.slice(1));
+  const executable = rendered[0];
+  if (executable === undefined) {
+    throw new Error("baseline testbed command is empty");
+  }
+  return commandLine(renderNodeExecutable(executable), rendered.slice(1));
 }
 
-function backendComposeFile(options) {
+function backendComposeFile(options: ReconstructOptions): string {
   return join(options.workspace, "apps/service-api/docker-compose.yml");
 }
 
-function backendComposeEnvFile(options) {
+function backendComposeEnvFile(options: ReconstructOptions): string {
   return join(options.stateRoot, "backend.compose.env");
 }
 
-function backendComposeOverrideFile(options) {
+function backendComposeOverrideFile(options: ReconstructOptions): string {
   return join(options.stateRoot, "backend.compose.override.yml");
 }
 
-function quoteComposeEnv(value) {
+function quoteComposeEnv(value: unknown): string {
   return String(value).replaceAll("\\", "\\\\").replaceAll("\n", "\\n");
 }
 
-export function buildBackendComposeEnvironment(options) {
+export function buildBackendComposeEnvironment(
+  options: ReconstructOptions,
+): Record<string, string> {
   return {
     POSTGRES_DB: LOCAL_TESTBED_POSTGRES_DB,
     POSTGRES_USER: LOCAL_TESTBED_POSTGRES_USER,
@@ -516,11 +625,13 @@ export function buildBackendComposeEnvironment(options) {
   };
 }
 
-function containerStatePath(...parts) {
+function containerStatePath(...parts: string[]): string {
   return [SERVICE_API_CONTAINER_STATE_ROOT, ...parts].join("/");
 }
 
-export function buildComposeServiceApiEnvironment(options) {
+export function buildComposeServiceApiEnvironment(
+  options: ReconstructOptions,
+): Record<string, string> {
   return {
     ...buildHostLocalServiceApiEnvironment(options),
     DATABASE_URL: `postgresql://${LOCAL_TESTBED_POSTGRES_USER}:${LOCAL_TESTBED_POSTGRES_PASSWORD}@postgres:5432/${LOCAL_TESTBED_POSTGRES_DB}`,
@@ -538,23 +649,27 @@ export function buildComposeServiceApiEnvironment(options) {
   };
 }
 
-export function renderBackendComposeEnv(options) {
+export function renderBackendComposeEnv(
+  options: ReconstructOptions,
+): string {
   return `${Object.entries(buildBackendComposeEnvironment(options))
     .map(([name, value]) => `${name}=${quoteComposeEnv(value)}`)
     .join("\n")}\n`;
 }
 
-function yamlString(value) {
+function yamlString(value: unknown): string {
   return JSON.stringify(String(value));
 }
 
-function renderYamlEnvironment(values) {
+function renderYamlEnvironment(values: Record<string, string>): string {
   return Object.entries(values)
     .map(([name, value]) => `      ${name}: ${yamlString(value)}`)
     .join("\n");
 }
 
-export function renderBackendComposeOverride(options) {
+export function renderBackendComposeOverride(
+  options: ReconstructOptions,
+): string {
   return `services:
   postgres:
     container_name: ${SERVICE_NAMES.postgres}
@@ -576,7 +691,9 @@ ${renderYamlEnvironment(buildComposeServiceApiEnvironment(options))}
 `;
 }
 
-export async function writeBackendComposeFiles(options) {
+export async function writeBackendComposeFiles(
+  options: ReconstructOptions,
+): Promise<void> {
   await Promise.all([
     writeFile(backendComposeEnvFile(options), renderBackendComposeEnv(options)),
     writeFile(
@@ -586,7 +703,10 @@ export async function writeBackendComposeFiles(options) {
   ]);
 }
 
-export function buildBackendComposeCommand(options, args) {
+export function buildBackendComposeCommand(
+  options: ReconstructOptions,
+  args: string[],
+): CommandStep {
   return commandLine("docker", [
     "compose",
     "--env-file",
@@ -601,7 +721,7 @@ export function buildBackendComposeCommand(options, args) {
   ]);
 }
 
-function buildLegacyBackendResourceCleanupCommand() {
+function buildLegacyBackendResourceCleanupCommand(): CommandStep {
   return commandLine("sh", [
     "-c",
     [
@@ -611,15 +731,19 @@ function buildLegacyBackendResourceCleanupCommand() {
   ]);
 }
 
-export function buildReconstructionPlan(options, contract) {
+export function buildReconstructionPlan(
+  options: ReconstructOptions,
+  contract: BaselineContract,
+): CommandStep[] {
   const state = options.stateRoot;
-  const binding = contract.testbed;
+  const binding = contract.testbed ?? {};
+  const guest = binding.guest ?? {};
   const sshArgs = [
     "-i",
-    binding.guest.identityFile,
+    String(guest.identityFile),
     "-o",
-    `UserKnownHostsFile=${binding.guest.knownHostsFile}`,
-    `${binding.guest.user}@${binding.guest.host}`,
+    `UserKnownHostsFile=${String(guest.knownHostsFile)}`,
+    `${String(guest.user)}@${String(guest.host)}`,
   ];
   return [
     buildBackendComposeCommand(options, [
@@ -628,7 +752,11 @@ export function buildReconstructionPlan(options, contract) {
       "--volumes",
     ]),
     buildLegacyBackendResourceCleanupCommand(),
-    renderPublishedCommand(binding.reconstructCommand, options, contract),
+    renderPublishedCommand(
+      binding.reconstructCommand as string[],
+      options,
+      contract,
+    ),
     buildBackendComposeCommand(options, ["up", "-d", "postgres", "mqtt"]),
     commandLine("pnpm", [
       "turbo",
@@ -646,28 +774,37 @@ export function buildReconstructionPlan(options, contract) {
     }),
     commandLine("ssh", [
       ...sshArgs,
-      `powershell -NoProfile -Command \"New-Item -ItemType Directory -Force -Path (Split-Path -Parent '${binding.guest.stagingPath}') | Out-Null\"`,
+      `powershell -NoProfile -Command \"New-Item -ItemType Directory -Force -Path (Split-Path -Parent '${String(guest.stagingPath)}') | Out-Null\"`,
     ]),
     commandLine("scp", [
       "-i",
-      binding.guest.identityFile,
+      String(guest.identityFile),
       "-o",
-      `UserKnownHostsFile=${binding.guest.knownHostsFile}`,
+      `UserKnownHostsFile=${String(guest.knownHostsFile)}`,
       join(state, "guest-input.json"),
-      `${binding.guest.user}@${binding.guest.host}:${binding.guest.stagingPath}`,
+      `${String(guest.user)}@${String(guest.host)}:${String(guest.stagingPath)}`,
     ]),
     (() => {
       const guestAdmission = renderPublishedCommand(
-        binding.admitGuestCommand,
+        binding.admitGuestCommand as string[],
         options,
         contract,
       );
-      return commandLine(guestAdmission.command, [...guestAdmission.args]);
+      const guestAdmissionCommand = guestAdmission.command as string;
+      const guestAdmissionArgs = guestAdmission.args as string[];
+      return commandLine(guestAdmissionCommand, guestAdmissionArgs);
     })(),
   ];
 }
 
-async function sourceFilesUnder(root, relativeDirectory, listDirectory) {
+async function sourceFilesUnder(
+  root: string,
+  relativeDirectory: string,
+  listDirectory: (
+    path: string,
+    options: { withFileTypes: true },
+  ) => Promise<Array<import("node:fs").Dirent>>,
+): Promise<string[]> {
   const directory = join(root, relativeDirectory);
   const entries = await listDirectory(directory, { withFileTypes: true });
   const files = [];
@@ -686,7 +823,10 @@ async function sourceFilesUnder(root, relativeDirectory, listDirectory) {
   return files;
 }
 
-async function buildDirectoryIdentity(workspace, relativeDirectory) {
+async function buildDirectoryIdentity(
+  workspace: string,
+  relativeDirectory: string,
+): Promise<{ byteSize: number; fileCount: number; sha256: string }> {
   const files = await sourceFilesUnder(workspace, relativeDirectory, readdir);
   const members = await Promise.all(
     files.map(async (path) => {
@@ -717,7 +857,9 @@ async function buildDirectoryIdentity(workspace, relativeDirectory) {
   };
 }
 
-async function observeAdminUiDelivery(indexBytes) {
+async function observeAdminUiDelivery(
+  indexBytes: Buffer,
+): Promise<unknown> {
   const server = createServer((request, response) => {
     if (request.method !== "GET" || request.url !== "/") {
       response.writeHead(404).end();
@@ -730,9 +872,9 @@ async function observeAdminUiDelivery(indexBytes) {
     response.end(indexBytes);
   });
   try {
-    await new Promise((resolvePromise, reject) => {
+    await new Promise<void>((resolvePromise, reject) => {
       server.once("error", reject);
-      server.listen(0, "127.0.0.1", resolvePromise);
+      server.listen(0, "127.0.0.1", () => resolvePromise());
     });
     const address = server.address();
     if (!address || typeof address === "string") {
@@ -754,14 +896,17 @@ async function observeAdminUiDelivery(indexBytes) {
   } finally {
     server.closeAllConnections();
     if (server.listening) {
-      await new Promise((resolvePromise, reject) =>
+      await new Promise<void>((resolvePromise, reject) =>
         server.close((error) => (error ? reject(error) : resolvePromise())),
       );
     }
   }
 }
 
-export async function buildBackendAcceptanceIdentity(workspace, health) {
+export async function buildBackendAcceptanceIdentity(
+  workspace: unknown,
+  health: { database?: unknown; mqtt?: unknown },
+): Promise<Record<string, unknown>> {
   const root = absolute(workspace, "workspace");
   if (health?.database !== "ok" || health?.mqtt !== "connected") {
     throw new Error("local testbed Service API runtime health is invalid");
@@ -795,9 +940,18 @@ export async function buildBackendAcceptanceIdentity(workspace, health) {
 }
 
 export async function lowerControllerSimSourceFingerprint(
-  workspace,
-  { listDirectory = readdir, readSource = readFile } = {},
-) {
+  workspace: unknown,
+  {
+    listDirectory = readdir,
+    readSource = readFile,
+  }: {
+    listDirectory?: (
+      path: string,
+      options: { withFileTypes: true },
+    ) => Promise<Array<import("node:fs").Dirent>>;
+    readSource?: (path: string) => Promise<Uint8Array>;
+  } = {},
+): Promise<string> {
   const root = absolute(workspace, "workspace");
   const sourceFiles = [
     ...LOWER_CONTROLLER_SIM_SOURCE_PATHS,
@@ -818,20 +972,30 @@ export async function lowerControllerSimSourceFingerprint(
   return digest.digest("hex");
 }
 
-export function lowerControllerSimCacheLayout(options, sourceDigest) {
-  if (!/^[a-f0-9]{64}$/.test(sourceDigest ?? "")) {
+export function lowerControllerSimCacheLayout(
+  options: ReconstructOptions,
+  sourceDigest: unknown,
+): {
+  sourceDigest: string;
+  root: string;
+  targetDirectory: string;
+  binaryPath: string;
+  successMarkerPath: string;
+} {
+  if (!/^[a-f0-9]{64}$/.test(String(sourceDigest ?? ""))) {
     throw new Error(
       "lower-controller simulator source digest must be a SHA-256 hex string",
     );
   }
+  const resolvedDigest = String(sourceDigest ?? "");
   const root = join(
     absolute(options.stateRoot, "stateRoot"),
     HOST_SIMULATOR_CACHE_DIRECTORY,
-    sourceDigest,
+    resolvedDigest,
   );
   const targetDirectory = join(root, "target");
   return {
-    sourceDigest,
+    sourceDigest: resolvedDigest,
     root,
     targetDirectory,
     binaryPath: join(targetDirectory, "debug", "lower-controller-sim"),
@@ -839,8 +1003,8 @@ export function lowerControllerSimCacheLayout(options, sourceDigest) {
   };
 }
 
-function isValidCacheDigest(value) {
-  return LOWER_CONTROLLER_SIM_CACHE_DIRECTORY_NAME.test(value);
+function isValidCacheDigest(value: unknown): boolean {
+  return LOWER_CONTROLLER_SIM_CACHE_DIRECTORY_NAME.test(String(value ?? ""));
 }
 
 async function removeOutdatedLowerControllerSimCaches({
@@ -848,7 +1012,15 @@ async function removeOutdatedLowerControllerSimCaches({
   stateRoot,
   listDirectory = readdir,
   removeDirectory = rm,
-}) {
+}: {
+  layout: ReturnType<typeof lowerControllerSimCacheLayout>;
+  stateRoot: unknown;
+  listDirectory?: (
+    path: string,
+    options: { withFileTypes: true },
+  ) => Promise<Array<import("node:fs").Dirent>>;
+  removeDirectory?: typeof rm;
+}): Promise<void> {
   const cacheRoot = join(
     absolute(stateRoot, "stateRoot"),
     HOST_SIMULATOR_CACHE_DIRECTORY,
@@ -856,7 +1028,7 @@ async function removeOutdatedLowerControllerSimCaches({
   try {
     await access(cacheRoot, constants.F_OK);
   } catch (error) {
-    if (error.code === "ENOENT") return;
+    if (isNodeErrorCode(error, "ENOENT")) return;
     throw error;
   }
   const entries = await listDirectory(cacheRoot, { withFileTypes: true });
@@ -881,7 +1053,23 @@ export async function ensureLowerControllerSimCached({
   sourceDigest,
   pruneCaches = true,
   dependencies = {},
-}) {
+}: {
+  options: ReconstructOptions;
+  sourceDigest?: string;
+  pruneCaches?: boolean;
+  dependencies?: {
+    listDirectory?: (
+      path: string,
+      options: { withFileTypes: true },
+    ) => Promise<Array<import("node:fs").Dirent>>;
+    removeDirectory?: typeof rm;
+    isExecutable?: (path: string) => Promise<boolean>;
+    markerPresent?: (path: string) => Promise<boolean>;
+    ensureDirectory?: typeof mkdir;
+    runCommand?: typeof run;
+    publishMarker?: typeof writeFile;
+  };
+}): Promise<Record<string, unknown>> {
   const resolvedSourceDigest =
     sourceDigest ??
     (await lowerControllerSimSourceFingerprint(
@@ -941,7 +1129,9 @@ export async function ensureLowerControllerSimCached({
   return { ...layout, cache: "miss" };
 }
 
-export function buildHostLocalServiceApiEnvironment(options) {
+export function buildHostLocalServiceApiEnvironment(
+  options: ReconstructOptions,
+): Record<string, string> {
   const createOrderGate = paymentMockCreateGatePaths(options.stateRoot);
   const queryFault = paymentMockQueryFaultPaths(options.stateRoot);
   return {
@@ -987,21 +1177,25 @@ export {
 } from "./mock-payment-create-gate.ts";
 
 function mergeCommandEnvironment(
-  explicitEnvironment,
-  baseEnvironment = process.env,
-) {
-  const merged = {};
+  explicitEnvironment: Record<string, unknown>,
+  baseEnvironment: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  const merged: Record<string, string> = {};
   for (const name of COMMAND_ENV_PASSTHROUGH) {
     const value = baseEnvironment[name];
     if (typeof value === "string" && value.length > 0) merged[name] = value;
   }
-  return { ...merged, ...explicitEnvironment };
+  const mergedExplicit: Record<string, string> = {};
+  for (const [name, value] of Object.entries(explicitEnvironment)) {
+    mergedExplicit[name] = String(value);
+  }
+  return { ...merged, ...mergedExplicit };
 }
 
 export function buildMigrationEnvironment(
-  options,
-  { baseEnvironment = process.env } = {},
-) {
+  options: ReconstructOptions,
+  { baseEnvironment = process.env }: { baseEnvironment?: NodeJS.ProcessEnv } = {},
+): Record<string, string> {
   return {
     ...mergeCommandEnvironment(
       buildHostLocalServiceApiEnvironment(options),
@@ -1014,7 +1208,9 @@ export function buildMigrationEnvironment(
   };
 }
 
-export function buildServiceApiComposePlan(options) {
+export function buildServiceApiComposePlan(
+  options: ReconstructOptions,
+): CommandStep[] {
   return [
     buildBackendComposeCommand(options, ["rm", "-sf", "service-api"]),
     buildBackendComposeCommand(options, [
@@ -1026,18 +1222,19 @@ export function buildServiceApiComposePlan(options) {
   ];
 }
 
-function baselineDomainName(contract) {
-  const command = contract?.testbed?.reconstructCommand;
-  const index = Array.isArray(command) ? command.indexOf("--domain-name") : -1;
+function baselineDomainName(contract: BaselineContract): string {
+  const command = contract.testbed?.reconstructCommand;
+  const commandParts = Array.isArray(command) ? command : [];
+  const index = commandParts.indexOf("--domain-name");
   return required(
-    index >= 0 ? command[index + 1] : null,
+    index >= 0 ? commandParts[index + 1] : null,
     "baseline domain name",
   );
 }
 
 export function buildHostControlPlaneUnitPlan(
-  options,
-  contract,
+  options: ReconstructOptions,
+  contract: BaselineContract,
   {
     lowerControllerSimPath = join(
       options.workspace,
@@ -1049,7 +1246,7 @@ export function buildHostControlPlaneUnitPlan(
       )
       .digest("hex"),
   } = {},
-) {
+): CommandStep[] {
   const unit = `${HOST_CONTROL_PLANE_UNIT}.service`;
   const adapterPath = join(
     options.workspace,
@@ -1099,16 +1296,20 @@ export function buildHostControlPlaneUnitPlan(
   ];
 }
 
-function baselineLibvirtUri(contract) {
-  const command = contract?.testbed?.reconstructCommand;
-  const index = Array.isArray(command) ? command.indexOf("--libvirt-uri") : -1;
+function baselineLibvirtUri(contract: BaselineContract): string {
+  const command = contract.testbed?.reconstructCommand;
+  const commandParts = Array.isArray(command) ? command : [];
+  const index = commandParts.indexOf("--libvirt-uri");
   return required(
-    index >= 0 ? command[index + 1] : null,
+    index >= 0 ? commandParts[index + 1] : null,
     "baseline libvirt uri",
   );
 }
 
-export function buildHeadlessVncActivatorUnitPlan(options, contract) {
+export function buildHeadlessVncActivatorUnitPlan(
+  options: ReconstructOptions,
+  contract: BaselineContract,
+): CommandStep[] {
   const unit = `${HEADLESS_VNC_ACTIVATOR_UNIT}.service`;
   return [
     commandLine("sudo", ["systemctl", "stop", unit]),
@@ -1135,7 +1336,15 @@ export function buildHeadlessVncActivatorUnitPlan(options, contract) {
   ];
 }
 
-function run(command, args, options = {}) {
+function run(
+  command: string,
+  args: string[],
+  options: {
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+    stdio?: import("node:child_process").StdioOptions;
+  } = {},
+): Promise<ReturnType<typeof spawn>> {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
@@ -1150,7 +1359,14 @@ function run(command, args, options = {}) {
   });
 }
 
-function runCapture(command, args, options = {}) {
+function runCapture(
+  command: string,
+  args: string[],
+  options: {
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+  } = {},
+): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
@@ -1180,7 +1396,11 @@ function runCapture(command, args, options = {}) {
   });
 }
 
-export function interpretServiceApiJournalCapture(input) {
+export function interpretServiceApiJournalCapture(input: {
+  ok?: unknown;
+  stdout?: unknown;
+  error?: unknown;
+}): { kind: "unavailable" | "journal"; text: string } {
   if (input.ok === true) {
     const stdout = String(input.stdout ?? "");
     if (stdout.length === 0) {
@@ -1202,7 +1422,7 @@ export function interpretServiceApiJournalCapture(input) {
   };
 }
 
-async function waitForPostgres() {
+async function waitForPostgres(): Promise<void> {
   let consecutiveReadyChecks = 0;
   for (let attempt = 0; attempt < 60; attempt += 1) {
     try {
@@ -1229,16 +1449,20 @@ async function waitForPostgres() {
   throw new Error("local testbed Postgres did not become ready");
 }
 
-async function requestJson(baseUrl, path, options = {}) {
+async function requestJson(
+  baseUrl: unknown,
+  path: unknown,
+  options: { method?: unknown; token?: unknown; body?: unknown } = {},
+): Promise<unknown> {
   const response = await fetch(`${baseUrl}${path}`, {
-    method: options.method ?? "GET",
+    method: String(options.method ?? "GET"),
     headers: {
       "content-type": "application/json",
       ...(options.token ? { authorization: `Bearer ${options.token}` } : {}),
     },
     body: options.body ? JSON.stringify(options.body) : undefined,
   });
-  const payload = await response.json();
+  const payload = (await response.json()) as { code?: unknown; data?: unknown };
   if (!response.ok || payload?.code !== 0) {
     throw new Error(
       `${options.method ?? "GET"} ${path} failed: ${JSON.stringify(payload)}`,
@@ -1248,8 +1472,8 @@ async function requestJson(baseUrl, path, options = {}) {
 }
 
 function installationFixturePath(
-  fixturePath = process.env[INSTALLATION_ALIPAY_SANDBOX_FIXTURE_ENV],
-) {
+  fixturePath: unknown = process.env[INSTALLATION_ALIPAY_SANDBOX_FIXTURE_ENV],
+): string {
   if (typeof fixturePath !== "string" || fixturePath.trim() === "") {
     throw new Error(
       `${INSTALLATION_ALIPAY_SANDBOX_FIXTURE_ENV} must identify the host-owned Alipay sandbox fixture`,
@@ -1258,14 +1482,16 @@ function installationFixturePath(
   return absolute(fixturePath, INSTALLATION_ALIPAY_SANDBOX_FIXTURE_ENV);
 }
 
-function validateAlipayFixtureChannels(fixture) {
-  const channels = fixture?.channelPolicy?.channels;
+function validateAlipayFixtureChannels(
+  fixture: { channelPolicy?: { channels?: unknown } },
+): void {
+  const channels = fixture.channelPolicy?.channels;
   if (
     !Array.isArray(channels) ||
     !["qr_code:alipay", "payment_code:alipay"].every((channelKey) =>
       channels.some(
-        (channel) =>
-          channel?.channelKey === channelKey && channel?.enabled === true,
+        (channel: { channelKey?: unknown; enabled?: unknown }) =>
+          channel.channelKey === channelKey && channel.enabled === true,
       ),
     )
   ) {
@@ -1280,24 +1506,40 @@ export async function prepareInstallationOwnedPaymentProvider({
   fixturePath,
   readFixture = async (path) => JSON.parse(await readFile(path, "utf8")),
   request = requestJson,
-}) {
+}: {
+  baseUrl: unknown;
+  fixturePath?: unknown;
+  readFixture?: (path: string) => Promise<unknown>;
+  request?: (
+    baseUrl: unknown,
+    path: unknown,
+    options: Record<string, unknown>,
+  ) => Promise<unknown>;
+}): Promise<Record<string, unknown>> {
   const resolvedFixturePath = installationFixturePath(fixturePath);
   const fixture = validateInstallationOwnedAlipaySandboxFixture(
     await readFixture(resolvedFixturePath),
-  );
+  ) as Record<string, unknown>;
+  const providerConfig = (fixture.providerConfig ??
+    {}) as Record<string, unknown>;
+  const channelPolicy = (fixture.channelPolicy ?? {}) as {
+    channels?: unknown;
+  };
   validateAlipayFixtureChannels(fixture);
-  const login = await request(baseUrl, "/auth/login", {
+  const login = (await request(baseUrl, "/auth/login", {
     method: "POST",
     body: {
       username: LOCAL_TESTBED_ADMIN_USERNAME,
       password: LOCAL_TESTBED_ADMIN_PASSWORD,
     },
-  });
+  })) as { accessToken?: unknown } | null;
   const token = required(
     login?.accessToken,
     "host preparation admin access token",
   );
-  const providers = await request(baseUrl, "/payments/providers", { token });
+  const providers = (await request(baseUrl, "/payments/providers", {
+    token,
+  })) as Array<{ code?: unknown; id?: unknown }> | null;
   const alipay = Array.isArray(providers)
     ? providers.find((provider) => provider?.code === "alipay")
     : null;
@@ -1307,21 +1549,28 @@ export async function prepareInstallationOwnedPaymentProvider({
     token,
     body: { status: "enabled" },
   });
-  const config = await request(baseUrl, "/payments/provider-configs", {
+  const config = (await request(baseUrl, "/payments/provider-configs", {
     method: "POST",
     token,
-    body: fixture.providerConfig,
-  });
+    body: providerConfig,
+  })) as { id?: unknown } | null;
   await request(baseUrl, "/payments/channel-policy", {
     method: "PUT",
     token,
-    body: fixture.channelPolicy,
+    body: channelPolicy,
   });
-  const publicConfig = fixture.providerConfig.publicConfigJson;
+  const publicConfig = (providerConfig.publicConfigJson ??
+    {}) as { mode?: unknown; gatewayUrl?: unknown; keyType?: unknown };
   const providerConfigId = required(config?.id, "Alipay provider config id");
-  const configured = await request(baseUrl, "/payments/provider-configs", {
+  const configured = (await request(baseUrl, "/payments/provider-configs", {
     token,
-  });
+  })) as
+    | Array<{
+        id?: unknown;
+        providerCode?: unknown;
+        publicConfigJson?: { mode?: unknown; gatewayUrl?: unknown; keyType?: unknown };
+      }>
+    | null;
   const projection = Array.isArray(configured)
     ? configured.find((entry) => entry?.id === providerConfigId)
     : null;
@@ -1339,9 +1588,9 @@ export async function prepareInstallationOwnedPaymentProvider({
     identity: {
       providerCode: "alipay",
       providerConfigId,
-      appId: required(fixture.providerConfig.appId, "Alipay appId"),
+      appId: required(providerConfig.appId, "Alipay appId"),
       merchantNo: required(
-        fixture.providerConfig.merchantNo,
+        providerConfig.merchantNo,
         "Alipay merchantNo",
       ),
       mode: publicConfig.mode,
@@ -1355,7 +1604,9 @@ export async function prepareInstallationOwnedPaymentProvider({
   };
 }
 
-function testbedTryOnGarmentAsset(template = "tshirt_short_sleeve") {
+function testbedTryOnGarmentAsset(
+  template = "tshirt_short_sleeve",
+): { fileName: string; contentType: string; buffer: Buffer } {
   const longSleeve = template === "tshirt_long_sleeve";
   return {
     fileName: longSleeve
@@ -1368,7 +1619,7 @@ function testbedTryOnGarmentAsset(template = "tshirt_short_sleeve") {
   };
 }
 
-function crc32(buffer) {
+function crc32(buffer: Buffer): number {
   let crc = 0xffffffff;
   for (const byte of buffer) {
     crc ^= byte;
@@ -1379,7 +1630,7 @@ function crc32(buffer) {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-function pngChunk(type, payload) {
+function pngChunk(type: string, payload: Buffer): Buffer {
   const typeBuffer = Buffer.from(type, "ascii");
   const chunk = Buffer.alloc(12 + payload.length);
   chunk.writeUInt32BE(payload.length, 0);
@@ -1392,7 +1643,11 @@ function pngChunk(type, payload) {
   return chunk;
 }
 
-function createRgbaPng(width, height, pixel) {
+function createRgbaPng(
+  width: number,
+  height: number,
+  pixel: (x: number, y: number, width: number, height: number) => number[],
+): Buffer {
   const header = Buffer.alloc(13);
   header.writeUInt32BE(width, 0);
   header.writeUInt32BE(height, 4);
@@ -1422,7 +1677,13 @@ function createRgbaPng(width, height, pixel) {
   ]);
 }
 
-function createProductFixturePng({ background, accent }) {
+function createProductFixturePng({
+  background,
+  accent,
+}: {
+  background: number[];
+  accent: number[];
+}): Buffer {
   return createRgbaPng(240, 240, (x, y, width, height) => {
     const inAccentBand = x > width * 0.12 && x < width * 0.22;
     const inProductBlock =
@@ -1496,9 +1757,15 @@ const TESTBED_PRODUCT_DISPLAY_IMAGE_FIXTURES = Object.freeze({
   T恤: "tshirts",
 });
 
-function testbedProductDisplayImageAsset(category) {
-  const fixtureKey = TESTBED_PRODUCT_DISPLAY_IMAGE_FIXTURES[category];
-  const buffer = TESTBED_MEDIA_FIXTURES.productDisplayImages[category];
+function testbedProductDisplayImageAsset(
+  category: string,
+): { fileName: string; contentType: string; buffer: Buffer } {
+  const fixtureKey = (
+    TESTBED_PRODUCT_DISPLAY_IMAGE_FIXTURES as Record<string, string>
+  )[category];
+  const buffer = (
+    TESTBED_MEDIA_FIXTURES.productDisplayImages as Record<string, Buffer>
+  )[category];
   if (!fixtureKey || !buffer) {
     throw new Error(
       `local testbed has no product display image fixture for ${category}`,
@@ -1511,40 +1778,52 @@ function testbedProductDisplayImageAsset(category) {
   };
 }
 
-async function uploadMultipartFile(baseUrl, path, options) {
+async function uploadMultipartFile(
+  baseUrl: unknown,
+  path: unknown,
+  options: Record<string, unknown>,
+): Promise<unknown> {
+  const buffer = options.buffer as Buffer;
+  const contentType = String(options.contentType);
+  const fileName = String(options.fileName);
+  const token = options.token;
   const form = new FormData();
   form.set(
     "file",
-    new Blob([options.buffer], { type: options.contentType }),
-    options.fileName,
+    new Blob([new Uint8Array(buffer)], { type: contentType }),
+    fileName,
   );
   const response = await fetch(`${baseUrl}${path}`, {
     method: "POST",
     headers: {
-      ...(options.token ? { authorization: `Bearer ${options.token}` } : {}),
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
     },
     body: form,
   });
-  const payload = await response.json();
+  const payload = (await response.json()) as { code?: unknown; data?: unknown };
   if (!response.ok || payload?.code !== 0) {
     throw new Error(`POST ${path} failed: ${JSON.stringify(payload)}`);
   }
   return payload.data;
 }
 
-async function waitForApi(baseUrl) {
+async function waitForApi(
+  baseUrl: unknown,
+): Promise<{ database: string; mqtt: string }> {
   for (let attempt = 0; attempt < 60; attempt += 1) {
     try {
       const response = await fetch(`${baseUrl}/health`);
-      const payload = await response.json();
+      const payload = (await response.json()) as {
+        data?: { database?: unknown; mqtt?: unknown };
+      };
       if (
         response.ok &&
         payload?.data?.database === "ok" &&
         payload?.data?.mqtt === "connected"
       ) {
         return {
-          database: payload.data.database,
-          mqtt: payload.data.mqtt,
+          database: String(payload.data?.database),
+          mqtt: String(payload.data?.mqtt),
         };
       }
     } catch {}
@@ -1553,7 +1832,10 @@ async function waitForApi(baseUrl) {
   throw new Error("local testbed Service API did not become ready");
 }
 
-async function waitForHostControlPlane(endpoint, token) {
+async function waitForHostControlPlane(
+  endpoint: unknown,
+  token: unknown,
+): Promise<void> {
   for (let attempt = 0; attempt < 60; attempt += 1) {
     try {
       const response = await fetch(`${endpoint}/healthz`, {
@@ -1566,7 +1848,10 @@ async function waitForHostControlPlane(endpoint, token) {
   throw new Error("local testbed host control plane did not become ready");
 }
 
-async function serviceApiFailure(error, options = null) {
+async function serviceApiFailure(
+  error: unknown,
+  options: ReconstructOptions | null = null,
+): Promise<Error> {
   let log = {
     kind: "unavailable",
     text: "docker compose logs was not attempted",
@@ -1580,7 +1865,10 @@ async function serviceApiFailure(error, options = null) {
         "200",
         "service-api",
       ]);
-      const result = await runCapture(command.command, command.args);
+      const result = await runCapture(
+        command.command as string,
+        command.args as string[],
+      );
       log = interpretServiceApiJournalCapture({
         ok: true,
         stdout: result.stdout,
@@ -1596,10 +1884,13 @@ async function serviceApiFailure(error, options = null) {
     log.kind === "journal"
       ? `--- local Service API compose log ---\n${log.text}`
       : `--- local Service API compose log unavailable ---\n${log.text}`;
-  return new Error(`${error.message}\n${suffix}`);
+  return new Error(`${errorMessage(error)}\n${suffix}`);
 }
 
-export function guestSourceGarmentPublicPath(asset) {
+export function guestSourceGarmentPublicPath(asset: {
+  id?: unknown;
+  managedReference?: unknown;
+}): string {
   if (typeof asset?.id !== "string" || asset.id.length === 0) {
     throw new Error("try-on garment upload asset id is required");
   }
@@ -1622,52 +1913,97 @@ export async function seedThroughSupportedApis({
   hostPrivateAddress,
   request = requestJson,
   upload = uploadMultipartFile,
-}) {
-  const login = await request(baseUrl, "/auth/login", {
+}: {
+  baseUrl: unknown;
+  fixture: {
+    products: Array<Record<string, unknown>>;
+    slots: Array<Record<string, unknown>>;
+  };
+  hostPrivateAddress: unknown;
+  request?: (
+    baseUrl: unknown,
+    path: unknown,
+    options: Record<string, unknown>,
+  ) => Promise<unknown>;
+  upload?: (
+    baseUrl: unknown,
+    path: unknown,
+    options: Record<string, unknown>,
+  ) => Promise<unknown>;
+}): Promise<Record<string, unknown>> {
+  const asRecord = (value: unknown): Record<string, unknown> =>
+    value && typeof value === "object"
+      ? (value as Record<string, unknown>)
+      : {};
+  const asRecordArray = (
+    value: unknown,
+  ): Array<Record<string, unknown>> =>
+    Array.isArray(value) ? (value as Array<Record<string, unknown>>) : [];
+  const login = asRecord(
+    await request(baseUrl, "/auth/login", {
     method: "POST",
     body: {
       username: LOCAL_TESTBED_ADMIN_USERNAME,
       password: LOCAL_TESTBED_ADMIN_PASSWORD,
     },
-  });
+    }),
+  );
   const token = login.accessToken;
-  const tryOnGarmentAsset = await upload(
-    baseUrl,
-    "/media-assets/try-on-garments",
-    {
+  const tryOnGarmentAsset = asRecord(
+    await upload(
+      baseUrl,
+      "/media-assets/try-on-garments",
+      {
       token,
       ...testbedTryOnGarmentAsset(),
-    },
+      },
+    ),
   );
-  const longTryOnGarmentAsset = await upload(
-    baseUrl,
-    "/media-assets/try-on-garments",
-    {
+  const longTryOnGarmentAsset = asRecord(
+    await upload(
+      baseUrl,
+      "/media-assets/try-on-garments",
+      {
       token,
       ...testbedTryOnGarmentAsset("tshirt_long_sleeve"),
-    },
+      },
+    ),
   );
-  const productDisplayAssetsByCategory = new Map();
+  const productDisplayAssetsByCategory = new Map<
+    string,
+    Record<string, unknown>
+  >();
   for (const category of Object.keys(TESTBED_PRODUCT_DISPLAY_IMAGE_FIXTURES)) {
     productDisplayAssetsByCategory.set(
       category,
-      await upload(baseUrl, "/media-assets/product-display-images", {
-        token,
-        ...testbedProductDisplayImageAsset(category),
-      }),
+      asRecord(
+        await upload(baseUrl, "/media-assets/product-display-images", {
+          token,
+          ...testbedProductDisplayImageAsset(category),
+        }),
+      ),
     );
   }
-  const products = [];
+  interface SeededProduct {
+    sourceRow?: unknown;
+    category?: unknown;
+    name?: unknown;
+    size?: unknown;
+    product: Record<string, unknown>;
+    variant: Record<string, unknown>;
+    displayImageAsset: Record<string, unknown>;
+  }
+  const products: SeededProduct[] = [];
   for (const [index, entry] of fixture.products.entries()) {
     const displayImageAsset = productDisplayAssetsByCategory.get(
-      entry.category,
+      String(entry.category),
     );
     if (!displayImageAsset) {
       throw new Error(
         `local testbed fixture product category has no display image asset: ${entry.category}`,
       );
     }
-    const product = await request(baseUrl, "/products", {
+    const product = asRecord(await request(baseUrl, "/products", {
       method: "POST",
       token,
       body: {
@@ -1677,8 +2013,8 @@ export async function seedThroughSupportedApis({
         status: "active",
         sortOrder: index,
       },
-    });
-    const variant = await request(baseUrl, "/product-variants", {
+    }));
+    const variant = asRecord(await request(baseUrl, "/product-variants", {
       method: "POST",
       token,
       body: {
@@ -1691,10 +2027,17 @@ export async function seedThroughSupportedApis({
             ?.priceCents ?? 5900,
         status: "active",
       },
+    }));
+    products.push({
+      ...entry,
+      product,
+      variant,
+      displayImageAsset,
     });
-    products.push({ ...entry, product, variant, displayImageAsset });
   }
-  const providers = await request(baseUrl, "/payments/providers", { token });
+  const providers = asRecordArray(
+    await request(baseUrl, "/payments/providers", { token }),
+  );
   const mockProvider = providers.find((provider) => provider.code === "mock");
   if (!mockProvider) {
     throw new Error("Service API test payment provider is missing");
@@ -1706,7 +2049,7 @@ export async function seedThroughSupportedApis({
       status: "enabled",
     },
   });
-  const machine = await request(baseUrl, "/machines", {
+  const machine = asRecord(await request(baseUrl, "/machines", {
     method: "POST",
     token,
     body: {
@@ -1714,22 +2057,28 @@ export async function seedThroughSupportedApis({
       name: "Local Windows Runtime Testbed",
       locationLabel: "testbed host",
     },
-  });
+  }));
   await request(baseUrl, `/machines/${machine.id}`, {
     method: "PATCH",
     token,
     body: { status: "online" },
   });
-  const seededSlots = [];
+  const seededSlots: Array<{
+    slot: Record<string, unknown>;
+    product: SeededProduct;
+    machineSlot: Record<string, unknown>;
+    inventory: Record<string, unknown>;
+  }> = [];
   for (const fixtureSlot of fixture.slots) {
-    const slot = {
+    const slot: Record<string, unknown> = {
       ...fixtureSlot,
-      onHandQty: Math.min(fixtureSlot.onHandQty, fixtureSlot.capacity),
+      onHandQty: Math.min(
+        Number(fixtureSlot.onHandQty),
+        Number(fixtureSlot.capacity),
+      ),
     };
-    const machineSlot = await request(
-      baseUrl,
-      `/machines/${machine.id}/slots`,
-      {
+    const machineSlot = asRecord(
+      await request(baseUrl, `/machines/${machine.id}/slots`, {
         method: "POST",
         token,
         body: {
@@ -1738,10 +2087,17 @@ export async function seedThroughSupportedApis({
           capacity: slot.capacity,
           status: "enabled",
         },
-      },
+      }),
     );
-    const product = products.find((item) => item.sourceRow === slot.sourceRow);
-    const inventory = await request(baseUrl, "/inventories", {
+    const product = products.find(
+      (item) => item.sourceRow === slot.sourceRow,
+    );
+    if (product === undefined) {
+      throw new Error(
+        `local testbed fixture slot has no product: ${String(slot.sourceRow)}`,
+      );
+    }
+    const inventory = asRecord(await request(baseUrl, "/inventories", {
       method: "POST",
       token,
       body: {
@@ -1753,7 +2109,7 @@ export async function seedThroughSupportedApis({
         lowStockThreshold: slot.lowStockThreshold,
         note: "local testbed deterministic fixture",
       },
-    });
+    }));
     seededSlots.push({ slot, product, machineSlot, inventory });
   }
   const recommendationBase = seededSlots.find(
@@ -1776,7 +2132,7 @@ export async function seedThroughSupportedApis({
   const recommendationVariants = [];
   const planogramSeededSlots = [...seededSlots];
   for (const definition of VISION_RECOMMENDATION_VARIANTS) {
-    const variant = await request(baseUrl, "/product-variants", {
+    const variant = asRecord(await request(baseUrl, "/product-variants", {
       method: "POST",
       token,
       body: {
@@ -1787,11 +2143,9 @@ export async function seedThroughSupportedApis({
         priceCents: recommendationBase.slot.priceCents,
         status: "active",
       },
-    });
-    const machineSlot = await request(
-      baseUrl,
-      `/machines/${machine.id}/slots`,
-      {
+    }));
+    const machineSlot = asRecord(
+      await request(baseUrl, `/machines/${machine.id}/slots`, {
         method: "POST",
         token,
         body: {
@@ -1800,9 +2154,9 @@ export async function seedThroughSupportedApis({
           capacity: recommendationBase.slot.capacity,
           status: "enabled",
         },
-      },
+      }),
     );
-    const inventory = await request(baseUrl, "/inventories", {
+    const inventory = asRecord(await request(baseUrl, "/inventories", {
       method: "POST",
       token,
       body: {
@@ -1814,7 +2168,7 @@ export async function seedThroughSupportedApis({
         lowStockThreshold: recommendationBase.slot.lowStockThreshold,
         note: "local testbed vision recommendation fixture",
       },
-    });
+    }));
     const slot = {
       ...recommendationBase.slot,
       rowNo: definition.rowNo,
@@ -1841,8 +2195,12 @@ export async function seedThroughSupportedApis({
       onHandQty: recommendationBase.slot.onHandQty,
     });
   }
-  const createGarment = async (sourceMediaAssetId, template, colorLabel) => {
-    const draft = await request(baseUrl, "/try-on-garments", {
+  const createGarment = async (
+    sourceMediaAssetId: unknown,
+    template: unknown,
+    colorLabel: unknown,
+  ): Promise<Record<string, unknown>> => {
+    const draft = asRecord(await request(baseUrl, "/try-on-garments", {
       method: "POST",
       token,
       body: {
@@ -1851,7 +2209,7 @@ export async function seedThroughSupportedApis({
         sourceMediaAssetId,
         template,
       },
-    });
+    }));
     for (const action of ["confirmation", "activation"]) {
       await request(baseUrl, `/try-on-garments/${draft.id}/${action}`, {
         method: "POST",
@@ -1873,15 +2231,19 @@ export async function seedThroughSupportedApis({
   );
   const shortVariant = recommendationVariants[0];
   const longVariant = recommendationVariants[1];
-  const tryOnGarment = await request(
-    baseUrl,
-    `/try-on-garments/${shortDraft.id}/variant-associations`,
-    { method: "PUT", token, body: { variantIds: [shortVariant.variantId] } },
+  const tryOnGarment = asRecord(
+    await request(
+      baseUrl,
+      `/try-on-garments/${shortDraft.id}/variant-associations`,
+      { method: "PUT", token, body: { variantIds: [shortVariant.variantId] } },
+    ),
   );
-  const longTryOnGarment = await request(
-    baseUrl,
-    `/try-on-garments/${longDraft.id}/variant-associations`,
-    { method: "PUT", token, body: { variantIds: [longVariant.variantId] } },
+  const longTryOnGarment = asRecord(
+    await request(
+      baseUrl,
+      `/try-on-garments/${longDraft.id}/variant-associations`,
+      { method: "PUT", token, body: { variantIds: [longVariant.variantId] } },
+    ),
   );
   const planogramVersion = "LOCAL-TESTBED-V1";
   await request(baseUrl, `/machines/${machine.id}/planogram-versions`, {
@@ -1913,11 +2275,13 @@ export async function seedThroughSupportedApis({
       ),
     },
   });
-  const claim = await request(baseUrl, `/machines/${machine.id}/claim-codes`, {
-    method: "POST",
-    token,
-    body: { purpose: "first_claim" },
-  });
+  const claim = asRecord(
+    await request(baseUrl, `/machines/${machine.id}/claim-codes`, {
+      method: "POST",
+      token,
+      body: { purpose: "first_claim" },
+    }),
+  );
   const productMedia = ["socks", "underwear", "tshirts"].map((categoryKey) => {
     const seededSlot = seededSlots.find(
       (entry) => categoryKeyForFixtureProduct(entry.product) === categoryKey,
@@ -2003,57 +2367,81 @@ export async function seedThroughSupportedApis({
   };
 }
 
-async function stopServiceApiUnit(options) {
+async function stopServiceApiUnit(options: ReconstructOptions): Promise<void> {
   const stop = buildServiceApiComposePlan(options)[0];
-  await run(stop.command, stop.args, { stdio: "ignore" }).catch(
+  await run(stop.command as string, stop.args as string[], { stdio: "ignore" }).catch(
     () => undefined,
   );
 }
 
-async function startServiceApiUnit(options) {
+async function startServiceApiUnit(options: ReconstructOptions): Promise<void> {
   const start = buildServiceApiComposePlan(options).at(-1);
-  await run(start.command, start.args, { cwd: options.workspace });
+  if (start === undefined) throw new Error("service API start plan is empty");
+  await run(start.command as string, start.args as string[], {
+    cwd: options.workspace,
+  });
 }
 
-async function stopHostControlPlaneUnit(options, contract) {
+async function stopHostControlPlaneUnit(
+  options: ReconstructOptions,
+  contract: BaselineContract,
+): Promise<void> {
   const [stop, reset] = buildHostControlPlaneUnitPlan(options, contract);
-  await run(stop.command, stop.args, { stdio: "ignore" }).catch(
+  await run(stop.command as string, stop.args as string[], { stdio: "ignore" }).catch(
     () => undefined,
   );
-  await run(reset.command, reset.args, { stdio: "ignore" }).catch(
+  await run(reset.command as string, reset.args as string[], { stdio: "ignore" }).catch(
     () => undefined,
   );
 }
 
 async function startHostControlPlaneUnit(
-  options,
-  contract,
-  lowerControllerSimPath,
-  token,
-) {
+  options: ReconstructOptions,
+  contract: BaselineContract,
+  lowerControllerSimPath: string,
+  token?: unknown,
+): Promise<void> {
   const start = buildHostControlPlaneUnitPlan(options, contract, {
     lowerControllerSimPath,
-    ...(token ? { token } : {}),
+    ...(token ? { token: String(token) } : {}),
   }).at(-1);
-  await run(start.command, start.args, { cwd: options.workspace });
+  if (start === undefined) {
+    throw new Error("host control plane start plan is empty");
+  }
+  await run(start.command as string, start.args as string[], {
+    cwd: options.workspace,
+  });
 }
 
-async function stopHeadlessVncActivatorUnit(options, contract) {
+async function stopHeadlessVncActivatorUnit(
+  options: ReconstructOptions,
+  contract: BaselineContract,
+): Promise<void> {
   const [stop, reset] = buildHeadlessVncActivatorUnitPlan(options, contract);
-  await run(stop.command, stop.args, { stdio: "ignore" }).catch(
+  await run(stop.command as string, stop.args as string[], { stdio: "ignore" }).catch(
     () => undefined,
   );
-  await run(reset.command, reset.args, { stdio: "ignore" }).catch(
+  await run(reset.command as string, reset.args as string[], { stdio: "ignore" }).catch(
     () => undefined,
   );
 }
 
-async function startHeadlessVncActivatorUnit(options, contract) {
+async function startHeadlessVncActivatorUnit(
+  options: ReconstructOptions,
+  contract: BaselineContract,
+): Promise<void> {
   const start = buildHeadlessVncActivatorUnitPlan(options, contract).at(-1);
-  await run(start.command, start.args, { cwd: options.workspace });
+  if (start === undefined) {
+    throw new Error("headless VNC activator start plan is empty");
+  }
+  await run(start.command as string, start.args as string[], {
+    cwd: options.workspace,
+  });
 }
 
-export function buildRefreshHostRuntimePlan(options) {
+export function buildRefreshHostRuntimePlan(
+  options: ReconstructOptions,
+): CommandStep[] {
   return [
     buildBackendComposeCommand(options, ["up", "-d", "postgres", "mqtt"]),
     commandLine("pnpm", [
@@ -2073,51 +2461,58 @@ export function buildRefreshHostRuntimePlan(options) {
 }
 
 export function validateRefreshGuestInput(
-  input,
-  options,
-  expectedFixtureIdentity,
-) {
+  input: unknown,
+  options: ReconstructOptions,
+  expectedFixtureIdentity: { sha256?: unknown },
+): Record<string, unknown> {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     throw new Error("existing guest input must be an object");
   }
-  if (input.schemaVersion !== "vem-local-testbed-guest-input/v1") {
+  const record = input as Record<string, unknown>;
+  if (record.schemaVersion !== "vem-local-testbed-guest-input/v1") {
     throw new Error("existing guest input schemaVersion is invalid");
   }
   if (
-    typeof input.machineCode !== "string" ||
-    typeof input.claimCode !== "string" ||
-    !input.fixtureAllocation ||
-    typeof input.fixtureAllocation !== "object" ||
-    !input.hostControlPlane ||
-    typeof input.hostControlPlane !== "object" ||
-    typeof input.hostControlPlane.token !== "string" ||
-    input.hostControlPlane.token.length === 0
+    typeof record.machineCode !== "string" ||
+    typeof record.claimCode !== "string" ||
+    !record.fixtureAllocation ||
+    typeof record.fixtureAllocation !== "object" ||
+    !record.hostControlPlane ||
+    typeof record.hostControlPlane !== "object" ||
+    typeof (record.hostControlPlane as Record<string, unknown>).token !==
+      "string" ||
+    String(
+      (record.hostControlPlane as Record<string, unknown>).token,
+    ).length === 0
   ) {
     throw new Error(
       "existing guest input must retain machine, claim, fixture, and host control plane token",
     );
   }
   const endpoint = `http://${options.hostPrivateAddress}:${HOST_CONTROL_PLANE_PORT}`;
-  if (input.hostControlPlane.endpoint !== endpoint) {
+  if (
+    (record.hostControlPlane as Record<string, unknown>).endpoint !== endpoint
+  ) {
     throw new Error(
       "existing guest input host control plane endpoint is invalid",
     );
   }
   if (
     expectedFixtureIdentity &&
-    input.fixtureIdentity?.sha256 !== expectedFixtureIdentity.sha256
+    (record.fixtureIdentity as { sha256?: unknown } | undefined)?.sha256 !==
+      expectedFixtureIdentity.sha256
   ) {
     throw new Error("existing guest input fixture identity is stale");
   }
-  return input;
+  return record;
 }
 
 export function refreshGuestInputForRun(
-  input,
-  runId,
-  paymentProvider,
-  interactiveUserPassword,
-) {
+  input: Record<string, unknown>,
+  runId: unknown,
+  paymentProvider?: unknown,
+  interactiveUserPassword?: unknown,
+): Record<string, unknown> {
   return {
     ...input,
     runId: required(runId, "--run-id"),
@@ -2133,7 +2528,12 @@ export async function reprepareGuestInputForRefresh({
   runId,
   baseUrl,
   preparePaymentProvider = prepareInstallationOwnedPaymentProvider,
-}) {
+}: {
+  input: Record<string, unknown>;
+  runId: unknown;
+  baseUrl: unknown;
+  preparePaymentProvider?: typeof prepareInstallationOwnedPaymentProvider;
+}): Promise<Record<string, unknown>> {
   const paymentProvider = await preparePaymentProvider({ baseUrl });
   return refreshGuestInputForRun(input, runId, paymentProvider);
 }
@@ -2146,61 +2546,94 @@ export async function refreshPlatformFixtureForRun({
   request = requestJson,
   upload = uploadMultipartFile,
   seedPlatform = seedThroughSupportedApis,
-}) {
-  const login = await request(baseUrl, "/auth/login", {
+}: {
+  input: Record<string, unknown>;
+  runId?: unknown;
+  baseUrl: unknown;
+  fixture: {
+    products: Array<Record<string, unknown>>;
+    slots: Array<Record<string, unknown>>;
+  };
+  hostPrivateAddress: unknown;
+  request?: (
+    baseUrl: unknown,
+    path: unknown,
+    options: Record<string, unknown>,
+  ) => Promise<unknown>;
+  upload?: typeof uploadMultipartFile;
+  seedPlatform?: typeof seedThroughSupportedApis;
+}): Promise<Record<string, unknown>> {
+  const asRecord = (value: unknown): Record<string, unknown> =>
+    value && typeof value === "object"
+      ? (value as Record<string, unknown>)
+      : {};
+  const login = asRecord(await request(baseUrl, "/auth/login", {
     method: "POST",
     body: {
       username: LOCAL_TESTBED_ADMIN_USERNAME,
       password: LOCAL_TESTBED_ADMIN_PASSWORD,
     },
-  });
+  }));
   const token = login.accessToken;
-  const machinesPage = await request(baseUrl, "/machines?page=1&pageSize=100", {
-    token,
-  });
-  const existingMachine = (machinesPage.items ?? []).find(
+  const machinesPage = asRecord(
+    await request(baseUrl, "/machines?page=1&pageSize=100", {
+      token,
+    }),
+  );
+  const existingMachine = (
+    Array.isArray(machinesPage.items)
+      ? (machinesPage.items as Array<Record<string, unknown>>)
+      : []
+  ).find(
     (machine) => machine.code === input.machineCode,
   );
   if (existingMachine) return input;
 
-  const seeded = await seedPlatform({
+  const seeded = asRecord(await seedPlatform({
     baseUrl,
     fixture,
     hostPrivateAddress,
     request,
     upload,
-  });
+  }));
   return {
     ...input,
-    fixtureAllocation: allocateFullWorkflowFixtures(seeded.slots),
-    claimCode: seeded.claim.claimCode,
-    machineCode: seeded.machine.code,
+    fixtureAllocation: allocateFullWorkflowFixtures(
+      seeded.slots as Array<Record<string, unknown>>,
+    ),
+    claimCode: (seeded.claim as Record<string, unknown>).claimCode,
+    machineCode: (seeded.machine as Record<string, unknown>).code,
     planogramVersion: seeded.planogramVersion,
     visionAcceptance: seeded.visionAcceptance,
   };
 }
 
-async function stageExistingGuestInput(options, contract) {
-  const guest = contract.testbed.guest;
+async function stageExistingGuestInput(
+  options: ReconstructOptions,
+  contract: BaselineContract,
+): Promise<void> {
+  const guest = contract.testbed?.guest ?? {};
   const ssh = [
     "-i",
-    guest.identityFile,
+    String(guest.identityFile),
     "-o",
-    `UserKnownHostsFile=${guest.knownHostsFile}`,
+    `UserKnownHostsFile=${String(guest.knownHostsFile)}`,
   ];
   await run("ssh", [
     ...ssh,
-    `${guest.user}@${guest.host}`,
-    `powershell -NoProfile -Command \"New-Item -ItemType Directory -Force -Path (Split-Path -Parent '${guest.stagingPath}') | Out-Null\"`,
+    `${String(guest.user)}@${String(guest.host)}`,
+    `powershell -NoProfile -Command \"New-Item -ItemType Directory -Force -Path (Split-Path -Parent '${String(guest.stagingPath)}') | Out-Null\"`,
   ]);
   await run("scp", [
     ...ssh,
     join(options.stateRoot, "guest-input.json"),
-    `${guest.user}@${guest.host}:${guest.stagingPath}`,
+    `${String(guest.user)}@${String(guest.host)}:${String(guest.stagingPath)}`,
   ]);
 }
 
-export async function refreshHostRuntime(options) {
+export async function refreshHostRuntime(
+  options: ReconstructOptions,
+): Promise<Record<string, unknown>> {
   const [contract, fixtureDocument] = await Promise.all([
     readFile(options.baselineContract, "utf8")
       .then(JSON.parse)
@@ -2289,12 +2722,12 @@ export async function refreshHostRuntime(options) {
   await startHostControlPlaneUnit(
     options,
     contract,
-    hostSimulator.binaryPath,
-    guestInput.hostControlPlane.token,
+    String(hostSimulator.binaryPath),
+    (guestInput.hostControlPlane as Record<string, unknown>).token,
   );
   await waitForHostControlPlane(
-    guestInput.hostControlPlane.endpoint,
-    guestInput.hostControlPlane.token,
+    (guestInput.hostControlPlane as Record<string, unknown>).endpoint,
+    (guestInput.hostControlPlane as Record<string, unknown>).token,
   );
   await stageExistingGuestInput(options, contract);
   const finishedAt = new Date().toISOString();
@@ -2306,7 +2739,10 @@ export async function refreshHostRuntime(options) {
       machineCode: guestInput.machineCode,
       claimCode: guestInput.claimCode,
       fixtureAllocation: guestInput.fixtureAllocation,
-      hostControlPlane: { endpoint: guestInput.hostControlPlane.endpoint },
+      hostControlPlane: {
+        endpoint: (guestInput.hostControlPlane as Record<string, unknown>)
+          .endpoint,
+      },
     },
     hostSimulator: {
       cache: hostSimulator.cache,
@@ -2330,7 +2766,9 @@ export async function refreshHostRuntime(options) {
   };
 }
 
-async function reconstruct(options) {
+async function reconstruct(
+  options: ReconstructOptions & { mode: string },
+): Promise<Record<string, unknown>> {
   const [contract, fixtureDocument] = await Promise.all([
     readFile(options.baselineContract, "utf8")
       .then(JSON.parse)
@@ -2371,31 +2809,40 @@ async function reconstruct(options) {
   await stopServiceApiUnit(options);
   await stopHostControlPlaneUnit(options, contract);
   await stopHeadlessVncActivatorUnit(options, contract);
-  await run(plan[0].command, plan[0].args, { stdio: "ignore" }).catch(
+  await run(plan[0].command, plan[0].args, {
+    stdio: "ignore",
+  }).catch(
     () => undefined,
   );
-  await run(plan[1].command, plan[1].args, { stdio: "ignore" }).catch(
+  await run(plan[1].command, plan[1].args, {
+    stdio: "ignore",
+  }).catch(
     () => undefined,
   );
   try {
     const hostSimulator = await ensureLowerControllerSimCached({ options });
     const reconstructionStartedAt = new Date().toISOString();
-    const reconstructHost = await runCapture(plan[2].command, plan[2].args, {
-      cwd: options.workspace,
-    });
+    const reconstructHost = await runCapture(
+      plan[2].command,
+      plan[2].args,
+      { cwd: options.workspace },
+    );
     const reconstructionFinishedAt = new Date().toISOString();
     const reconstructHostResult = parseJsonLine(
       reconstructHost.stdout,
       "host reconstruction",
-    );
+    ) as Record<string, unknown>;
     await startHeadlessVncActivatorUnit(options, contract);
-    await run(plan[3].command, plan[3].args, { cwd: options.workspace });
+    await run(plan[3].command, plan[3].args, {
+      cwd: options.workspace,
+    });
     await waitForPostgres();
-    for (const step of plan.slice(4, 6))
+    for (const step of plan.slice(4, 6)) {
       await run(step.command, step.args, {
         cwd: options.workspace,
         env: step.env,
       });
+    }
     await startServiceApiUnit(options);
     const apiBaseUrl = "http://127.0.0.1:26849/api";
     let serviceApiHealth;
@@ -2407,18 +2854,18 @@ async function reconstruct(options) {
     await startHostControlPlaneUnit(
       options,
       contract,
-      hostSimulator.binaryPath,
+      String(hostSimulator.binaryPath),
     );
-    let seeded;
+    let seeded: Record<string, unknown>;
     let paymentProvider;
     const interactiveUserPassword =
       await readBaselineInteractiveUserPassword(contract);
     try {
-      seeded = await seedThroughSupportedApis({
+      seeded = (await seedThroughSupportedApis({
         baseUrl: apiBaseUrl,
         fixture,
         hostPrivateAddress: options.hostPrivateAddress,
-      });
+      })) as Record<string, unknown>;
       paymentProvider = await prepareInstallationOwnedPaymentProvider({
         baseUrl: apiBaseUrl,
       });
@@ -2460,9 +2907,11 @@ async function reconstruct(options) {
       },
       paymentProvider,
       fixtureIdentity: fixtureDocument.identity,
-      fixtureAllocation: allocateFullWorkflowFixtures(seeded.slots),
-      claimCode: seeded.claim.claimCode,
-      machineCode: seeded.machine.code,
+      fixtureAllocation: allocateFullWorkflowFixtures(
+        seeded.slots as Array<Record<string, unknown>>,
+      ),
+      claimCode: (seeded.claim as Record<string, unknown>).claimCode,
+      machineCode: (seeded.machine as Record<string, unknown>).code,
       planogramVersion: seeded.planogramVersion,
       interactiveUser: "VEMKiosk",
       interactiveUserPassword,
@@ -2474,15 +2923,26 @@ async function reconstruct(options) {
       guestInputRaw,
       "utf8",
     );
-    for (const step of plan.slice(6, -1))
-      await run(step.command, step.args, { cwd: options.workspace });
+    for (const step of plan.slice(6, -1)) {
+      await run(step.command, step.args, {
+        cwd: options.workspace,
+      });
+    }
     const admitGuest = plan.at(-1);
+    if (admitGuest === undefined) {
+      throw new Error("host admission plan step is missing");
+    }
     const admissionStartedAt = new Date().toISOString();
-    const admitHost = await runCapture(admitGuest.command, admitGuest.args, {
-      cwd: options.workspace,
-    });
+    const admitHost = await runCapture(
+      admitGuest.command,
+      admitGuest.args,
+      { cwd: options.workspace },
+    );
     const admissionFinishedAt = new Date().toISOString();
-    const admitHostResult = parseJsonLine(admitHost.stdout, "host admission");
+    const admitHostResult = parseJsonLine(
+      admitHost.stdout,
+      "host admission",
+    ) as Record<string, unknown>;
     const result = {
       schemaVersion: "vem-local-testbed-reconstruction/v1",
       mode: options.mode,
@@ -2493,13 +2953,13 @@ async function reconstruct(options) {
       fixture: {
         source: fixture.source,
         productCount: fixture.products.length,
-        slots: seeded.slots,
+        slots: seeded.slots as Array<Record<string, unknown>>,
       },
       guestInput: {
         sha256: `sha256:${createHash("sha256").update(guestInputRaw).digest("hex")}`,
-        machineCode: seeded.machine.code,
+        machineCode: (seeded.machine as Record<string, unknown>).code,
         planogramVersion: seeded.planogramVersion,
-        bootstrapPath: contract.testbed.guest.stagingPath,
+        bootstrapPath: String(contract.testbed?.guest?.stagingPath ?? ""),
         fixtureIdentity: fixtureDocument.identity,
       },
       runtimeTestbed: {
@@ -2524,11 +2984,13 @@ async function reconstruct(options) {
           binaryPath: hostSimulator.binaryPath,
         },
         guest: {
-          remote: `${contract.testbed.guest.user}@${contract.testbed.guest.host}`,
-          host: contract.testbed.guest.host,
-          user: contract.testbed.guest.user,
-          identityFile: contract.testbed.guest.identityFile,
-          knownHostsFile: contract.testbed.guest.knownHostsFile,
+          remote: `${String(contract.testbed?.guest?.user ?? "")}@${String(contract.testbed?.guest?.host ?? "")}`,
+          host: String(contract.testbed?.guest?.host ?? ""),
+          user: String(contract.testbed?.guest?.user ?? ""),
+          identityFile: String(contract.testbed?.guest?.identityFile ?? ""),
+          knownHostsFile: String(
+            contract.testbed?.guest?.knownHostsFile ?? "",
+          ),
           handoffPath: GUEST_HANDOFF_PATH,
           smokePath: GUEST_SMOKE_PATH,
           visionMockControlPort: GUEST_VISION_MOCK_CONTROL_PORT,
@@ -2589,7 +3051,7 @@ async function main() {
   const result =
     options.command === "refresh-host-runtime"
       ? await refreshHostRuntime(options)
-      : await reconstruct(options);
+      : await reconstruct(options as ReconstructOptions & { mode: string });
   await mkdir(dirname(options.out), { recursive: true });
   await writeFile(options.out, `${JSON.stringify(result, null, 2)}\n`, "utf8");
   process.stdout.write(`${JSON.stringify(result)}\n`);
