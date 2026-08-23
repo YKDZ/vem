@@ -18,7 +18,19 @@ import {
   VmHostAdapterExecutionError,
 } from "./vm-host-adapter-contract.ts";
 
-const CAPABILITIES_BY_OPERATION = {
+type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? (value as unknown[]) : [];
+}
+
+const CAPABILITIES_BY_OPERATION: Record<string, string[]> = {
   "clean-install": [
     "clean-install",
     "disposable-overlay",
@@ -84,22 +96,27 @@ const CAPABILITIES_BY_OPERATION = {
   cancel: ["cancellation", "cleanup"],
 };
 
-function readOption(name, { optional = false } = {}) {
+function readOption(name: string): string {
   const index = process.argv.indexOf(name);
   if (index === -1 || !process.argv[index + 1]) {
-    if (optional) return null;
     throw new Error(`${name} is required`);
   }
   return process.argv[index + 1];
 }
 
-function readOptions(name) {
+function readOptionalOption(name: string): string | null {
+  const index = process.argv.indexOf(name);
+  if (index === -1 || !process.argv[index + 1]) return null;
+  return process.argv[index + 1];
+}
+
+function readOptions(name: string): string[] {
   return process.argv.flatMap((value, index) =>
     value === name && process.argv[index + 1] ? [process.argv[index + 1]] : [],
   );
 }
 
-function assetFromIdentity(role, identity) {
+function assetFromIdentity(role: string, identity: string): JsonRecord {
   const pattern =
     role === "approved-runtime-base"
       ? /^runtime-base:\/\/sha256\/([a-f0-9]{64})$/
@@ -109,7 +126,7 @@ function assetFromIdentity(role, identity) {
   return { role, identity, digest: `sha256:${match[1]}` };
 }
 
-function assetsForOperation(operation) {
+function assetsForOperation(operation: string): JsonRecord[] {
   if (operation === "clean-install") {
     return [
       assetFromIdentity("runtime-image", readOption("--runtime-image")),
@@ -124,7 +141,7 @@ function assetsForOperation(operation) {
   ];
 }
 
-function audioCaptureForOperation(operation) {
+function audioCaptureForOperation(operation: string): JsonRecord | null {
   if (operation !== "capture-default-audio") return null;
   const sessionId = Number(readOption("--active-kiosk-session-id"));
   if (!Number.isInteger(sessionId) || sessionId < 1)
@@ -149,7 +166,7 @@ function audioCaptureForOperation(operation) {
   };
 }
 
-function displayCaptureForOperation(operation) {
+function displayCaptureForOperation(operation: string): JsonRecord | null {
   if (operation !== "capture-display") return null;
   const sessionId = Number(readOption("--active-kiosk-session-id"));
   if (!Number.isInteger(sessionId) || sessionId < 1)
@@ -159,9 +176,7 @@ function displayCaptureForOperation(operation) {
     throw new Error(
       "--tauri-route must be a strict tauri.localhost hash route",
     );
-  const rawChallenge = readOption("--visual-challenge-json", {
-    optional: true,
-  });
+  const rawChallenge = readOptionalOption("--visual-challenge-json");
   let visualChallenge;
   if (rawChallenge) {
     try {
@@ -193,9 +208,9 @@ function displayCaptureForOperation(operation) {
   };
 }
 
-function protectedScannerCode(operation) {
+function protectedScannerCode(operation: string): Buffer | undefined {
   if (operation !== "inject-scanner-code") return undefined;
-  const fromFile = readOption("--scanner-code-file", { optional: true });
+  const fromFile = readOptionalOption("--scanner-code-file");
   if (!fromFile || process.argv.includes("--scanner-code-stdin"))
     throw new Error(
       "inject-scanner-code requires exactly one protected scanner input: --scanner-code-file",
@@ -227,7 +242,7 @@ function protectedScannerCode(operation) {
   }
 }
 
-function sessionBindingFromOptions() {
+function sessionBindingFromOptions(): JsonRecord {
   return {
     serialSessionId: readOption("--serial-session-id"),
     sessionBindingToken: readOption("--session-binding-token"),
@@ -236,7 +251,10 @@ function sessionBindingFromOptions() {
   };
 }
 
-function scannerInjectionFromOptions(operation, scannerCode) {
+function scannerInjectionFromOptions(
+  operation: string,
+  scannerCode: Buffer | undefined,
+): JsonRecord | null {
   if (operation === "inject-scanner-code")
     return {
       operationNonce: null,
@@ -254,7 +272,10 @@ function scannerInjectionFromOptions(operation, scannerCode) {
   };
 }
 
-function serialSessionForOperation(operation, scannerCode) {
+function serialSessionForOperation(
+  operation: string,
+  scannerCode: Buffer | undefined,
+): JsonRecord | null {
   if (
     ![
       "start-serial-session",
@@ -303,7 +324,7 @@ function serialSessionForOperation(operation, scannerCode) {
   };
 }
 
-function assertActiveRuntimeOperation(operation) {
+function assertActiveRuntimeOperation(operation: string): void {
   if (["clean-install", "capture-approved-base"].includes(operation)) {
     throw new Error(
       `${operation} is retired from the active VM runtime adapter`,
@@ -311,7 +332,7 @@ function assertActiveRuntimeOperation(operation) {
   }
 }
 
-async function main() {
+async function main(): Promise<void> {
   const cancellation = new AbortController();
   const abort = () => cancellation.abort();
   process.on("SIGINT", abort);
@@ -327,9 +348,9 @@ async function main() {
   const runId = readOption("--run-id");
   const targetIdentity = readOption("--target-identity");
   const out = readOption("--out");
-  const lifecycleReferenceOverride = readOption("--lifecycle-reference", {
-    optional: true,
-  });
+  const lifecycleReferenceOverride = readOptionalOption(
+    "--lifecycle-reference",
+  );
   const nonce = `op-${randomBytes(16).toString("hex")}`;
   const lifecycleSeed = createHash("sha256")
     .update(`${runId}\n${targetIdentity}`)
@@ -339,8 +360,12 @@ async function main() {
   const audioCapture = audioCaptureForOperation(operation);
   const scannerCode = protectedScannerCode(operation);
   const serialSession = serialSessionForOperation(operation, scannerCode);
-  if (serialSession?.scannerInjection?.operationNonce === null)
-    serialSession.scannerInjection.operationNonce = nonce;
+  if (
+    serialSession &&
+    recordValue(serialSession.scannerInjection).operationNonce === null
+  ) {
+    (serialSession.scannerInjection as JsonRecord).operationNonce = nonce;
+  }
   const request = createVmHostAdapterRequest({
     contractVersion: VM_HOST_ADAPTER_CONTRACT_VERSION,
     schemaVersion: "vem-vm-host-adapter-request/v2",
@@ -374,9 +399,11 @@ async function main() {
         scannerCode,
       });
       if (operation === "capture-default-audio") {
-        const calibrationEvidence = report.evidence.find(
-          (entry) => entry.role === "daemon-audio-calibration-response",
-        );
+        const calibrationEvidence = arrayValue(report.evidence)
+          .map((entry: unknown) => recordValue(entry))
+          .find(
+            (entry) => entry.role === "daemon-audio-calibration-response",
+          );
         if (!calibrationEvidence)
           throw new Error("daemon calibration response evidence is missing");
         const source = join(
@@ -384,7 +411,7 @@ async function main() {
           "evidence",
           runId,
           nonce,
-          calibrationEvidence.fileName,
+          String(calibrationEvidence.fileName),
         );
         const responseOut = readOption("--daemon-calibration-response-out");
         mkdirSync(dirname(responseOut), { recursive: true });
