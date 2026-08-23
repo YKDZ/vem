@@ -1,29 +1,36 @@
-function diagnostic(code, detail = null) {
-  return detail === null ? { code } : { code, detail };
+type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
 }
 
-function timestamp(value) {
-  const parsed = Date.parse(value);
+function timestamp(value: unknown): number | null {
+  const parsed = Date.parse(String(value));
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function requiredString(value, label) {
+function requiredString(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${label} is required`);
   }
   return value.trim();
 }
 
-function assertArray(value, label) {
+function assertArray(value: unknown, label: string): unknown[] {
   if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
   return value;
 }
 
-function ensureMonotonicTrace(trace) {
+function ensureMonotonicTrace(trace: JsonRecord[]): void {
   let previousId = 0;
   let previousAt = -Infinity;
   for (const [index, entry] of trace.entries()) {
-    if (!Number.isSafeInteger(entry?.id) || entry.id <= previousId) {
+    if (
+      !Number.isSafeInteger(entry?.id) ||
+      (entry.id as number) <= previousId
+    ) {
       throw new Error(`runtimeTrace[${index}] id must be strictly increasing`);
     }
     const at = timestamp(entry?.at);
@@ -32,17 +39,20 @@ function ensureMonotonicTrace(trace) {
         `runtimeTrace[${index}] at must be a canonical increasing timestamp`,
       );
     }
-    previousId = entry.id;
+    previousId = entry.id as number;
     previousAt = at;
   }
 }
 
-function checkpointsByLabel(checkpoints) {
-  const byLabel = new Map();
+function checkpointsByLabel(checkpoints: JsonRecord[]): Map<string, JsonRecord> {
+  const byLabel = new Map<string, JsonRecord>();
   for (const checkpoint of checkpoints) {
     const label = requiredString(checkpoint?.label, "checkpoint.label");
     if (byLabel.has(label)) throw new Error(`duplicate checkpoint ${label}`);
-    if (!Number.isSafeInteger(checkpoint?.traceId) || checkpoint.traceId < 0) {
+    if (
+      !Number.isSafeInteger(checkpoint?.traceId) ||
+      Number(checkpoint.traceId) < 0
+    ) {
       throw new Error(
         `checkpoint ${label} traceId must be a non-negative integer`,
       );
@@ -52,37 +62,57 @@ function checkpointsByLabel(checkpoints) {
   return byLabel;
 }
 
-function traceUpTo(trace, traceId) {
-  return trace.filter((entry) => Number(entry?.id) <= traceId);
-}
-
-function traceBetween(trace, startExclusive, endInclusive) {
+function traceBetween(
+  trace: JsonRecord[],
+  startExclusive: number,
+  endInclusive: number,
+): JsonRecord[] {
   return trace.filter(
     (entry) =>
       Number(entry?.id) > startExclusive && Number(entry?.id) <= endInclusive,
   );
 }
 
-function welcomeStartsBetween(trace, startExclusive, endInclusive) {
+function welcomeStartsBetween(
+  trace: JsonRecord[],
+  startExclusive: number,
+  endInclusive: number,
+): JsonRecord[] {
   return welcomeStarts(traceBetween(trace, startExclusive, endInclusive));
 }
 
-function audioLifecycle(trace, transitionId) {
+interface AudioLifecycle {
+  all: JsonRecord[];
+  queued: JsonRecord[];
+  started: JsonRecord[];
+  terminal: JsonRecord[];
+}
+
+function audioLifecycle(
+  trace: JsonRecord[],
+  transitionId: string,
+): AudioLifecycle {
   const entries = trace.filter((entry) => entry?.transitionId === transitionId);
   return {
     all: entries,
-    queued: entries.filter((entry) => entry?.type === "audio_queued"),
-    started: entries.filter((entry) => entry?.type === "audio_started"),
-    terminal: entries.filter((entry) => entry?.type === "audio_terminal"),
+    queued: entries.filter(
+      (entry: JsonRecord) => entry?.type === "audio_queued",
+    ),
+    started: entries.filter(
+      (entry: JsonRecord) => entry?.type === "audio_started",
+    ),
+    terminal: entries.filter(
+      (entry: JsonRecord) => entry?.type === "audio_terminal",
+    ),
   };
 }
 
 function assertLifecycleOnce(
-  trace,
-  transitionId,
-  label,
-  allowedTerminalOutcomes = ["completed"],
-) {
+  trace: JsonRecord[],
+  transitionId: string,
+  label: string,
+  allowedTerminalOutcomes: string[] = ["completed"],
+): { queued: JsonRecord; started: JsonRecord; terminal: JsonRecord } {
   const lifecycle = audioLifecycle(trace, transitionId);
   if (
     lifecycle.queued.length !== 1 ||
@@ -100,7 +130,9 @@ function assertLifecycleOnce(
   ) {
     throw new Error(`${label} audio request correlation is invalid`);
   }
-  if (!allowedTerminalOutcomes.includes(terminal.outcome)) {
+  if (
+    !allowedTerminalOutcomes.includes(String(terminal.outcome ?? ""))
+  ) {
     throw new Error(
       `${label} audio terminal outcome must be ${allowedTerminalOutcomes.join(" or ")}`,
     );
@@ -108,7 +140,7 @@ function assertLifecycleOnce(
   return { queued, started, terminal };
 }
 
-function assertDetectedCueWindow(window) {
+function assertDetectedCueWindow(window: JsonRecord): JsonRecord {
   const transitionId = requiredString(
     window?.transitionId,
     "audio.cueWindow.transitionId",
@@ -116,12 +148,12 @@ function assertDetectedCueWindow(window) {
   if (window?.kind !== "detected") {
     throw new Error(`audio cue window ${transitionId} was not detected`);
   }
-  const capture = window?.capture;
+  const capture = recordValue(window?.capture);
   if (
     !Number.isInteger(capture?.nonSilentFrameCount) ||
-    capture.nonSilentFrameCount <= 0 ||
+    Number(capture.nonSilentFrameCount) <= 0 ||
     !Number.isInteger(capture?.peakAbsoluteSample) ||
-    capture.peakAbsoluteSample <= 0
+    Number(capture.peakAbsoluteSample) <= 0
   ) {
     throw new Error(
       `audio cue window ${transitionId} has no non-silent capture`,
@@ -137,7 +169,7 @@ function assertDetectedCueWindow(window) {
   return { transitionId, capture };
 }
 
-function expectedStableEdgeId(transitionId) {
+function expectedStableEdgeId(transitionId: string): string {
   const match = /^vision:presence-(\d+):(welcome|departed)$/.exec(
     requiredString(transitionId, "presence transitionId"),
   );
@@ -146,16 +178,16 @@ function expectedStableEdgeId(transitionId) {
   return `presence-${match[1]}:${match[2] === "welcome" ? "arrival" : "departure"}`;
 }
 
-function b3Speed(frame) {
+function b3Speed(frame: JsonRecord | null | undefined): number | null {
   const match = /^55b3(0[0-4])$/i.exec(String(frame?.rawFrameHex ?? ""));
   return match ? Number.parseInt(match[1], 16) : null;
 }
 
 function assertAutomaticVentEvidence(
-  automaticVent,
-  initialTransitionId,
-  departureTransitionId,
-) {
+  automaticVent: JsonRecord,
+  initialTransitionId: string,
+  departureTransitionId: string,
+): number[] {
   const protocolFrames = assertArray(
     automaticVent?.protocolFrames,
     "automaticVent.protocolFrames",
@@ -167,8 +199,13 @@ function assertAutomaticVentEvidence(
     speeds[0] !== 3 ||
     speeds[1] !== 0 ||
     protocolFrames.some(
-      (frame, index) =>
-        frame?.parsedOpcode !== "B3" || b3Speed(frame) !== speeds[index],
+      (frame: unknown, index: number) => {
+        const frameRecord = recordValue(frame);
+        return (
+          frameRecord?.parsedOpcode !== "B3" ||
+          b3Speed(frameRecord) !== Number(speeds[index])
+        );
+      },
     )
   ) {
     throw new Error(
@@ -176,13 +213,13 @@ function assertAutomaticVentEvidence(
     );
   }
   const frameTimes = protocolFrames.map((frame) =>
-    timestamp(frame?.capturedAt),
+    timestamp(recordValue(frame).capturedAt),
   );
   if (
     frameTimes.some((value) => value === null) ||
-    frameTimes[1] - frameTimes[0] < 5_000 ||
+    (frameTimes[1] as number) - (frameTimes[0] as number) < 5_000 ||
     !Number.isFinite(automaticVent?.guardElapsedMs) ||
-    automaticVent.guardElapsedMs < 5_000
+    Number(automaticVent.guardElapsedMs) < 5_000
   ) {
     throw new Error("automatic B3 guard evidence is incomplete");
   }
@@ -190,58 +227,64 @@ function assertAutomaticVentEvidence(
     automaticVent?.edgeCorrelation,
     "automaticVent.edgeCorrelation",
   );
-  const expected = [
+  const expected: Array<[string, string, number]> = [
     [expectedStableEdgeId(initialTransitionId), initialTransitionId, 3],
     [expectedStableEdgeId(departureTransitionId), departureTransitionId, 0],
   ];
   if (
     edgeCorrelation.length !== expected.length ||
     expected.some(
-      ([edgeId, transitionId, speed], index) =>
-        edgeCorrelation[index]?.edgeId !== edgeId ||
-        edgeCorrelation[index]?.transitionId !== transitionId ||
-        edgeCorrelation[index]?.speed !== speed ||
-        edgeCorrelation[index]?.frame?.rawFrameHex !==
-          protocolFrames[index]?.rawFrameHex,
+      ([edgeId, transitionId, speed]: [string, string, number], index: number) =>
+        recordValue(edgeCorrelation[index]).edgeId !== edgeId ||
+        recordValue(edgeCorrelation[index]).transitionId !== transitionId ||
+        recordValue(edgeCorrelation[index]).speed !== speed ||
+        recordValue(recordValue(edgeCorrelation[index]).frame).rawFrameHex !==
+          recordValue(protocolFrames[index]).rawFrameHex,
     )
   ) {
     throw new Error("automatic B3 stable-edge correlation is incomplete");
   }
-  const precedence = automaticVent?.adminPrecedence;
+  const precedence = recordValue(automaticVent?.adminPrecedence);
+  const duplicateSameEdge = recordValue(precedence?.duplicateSameEdge);
+  const precedenceFrame = recordValue(precedence?.frame);
   if (
     typeof precedence?.commandNo !== "string" ||
     precedence.commandNo.trim() === "" ||
     precedence?.requestedSpeed !== 3 ||
     precedence?.resultStatus !== "succeeded" ||
-    precedence?.duplicateSameEdge?.edgeId !== expected[0][0] ||
-    precedence?.duplicateSameEdge?.outcome !== "deduplicated" ||
-    precedence?.frame?.parsedOpcode !== "B3" ||
-    b3Speed(precedence.frame) !== 3 ||
-    timestamp(precedence.frame?.capturedAt) === null
+    duplicateSameEdge?.edgeId !== expected[0][0] ||
+    duplicateSameEdge?.outcome !== "deduplicated" ||
+    precedenceFrame?.parsedOpcode !== "B3" ||
+    b3Speed(precedenceFrame) !== 3 ||
+    timestamp(precedenceFrame?.capturedAt) === null
   ) {
     throw new Error("automatic B3 Admin precedence evidence is incomplete");
   }
-  const adminFrameTime = timestamp(precedence.frame.capturedAt);
+  const adminFrameTime = timestamp(precedenceFrame.capturedAt);
   if (
-    adminFrameTime - frameTimes[0] < 5_000 ||
-    frameTimes[1] - adminFrameTime < 5_000
+    (adminFrameTime as number) - (frameTimes[0] as number) < 5_000 ||
+    (frameTimes[1] as number) - (adminFrameTime as number) < 5_000
   ) {
     throw new Error("automatic B3 guard evidence is incomplete");
   }
-  return speeds;
+  return speeds.map((speed: unknown) => Number(speed));
 }
 
-function startedEntries(trace) {
+function startedEntries(trace: JsonRecord[]): JsonRecord[] {
   return trace.filter((entry) => entry?.type === "audio_started");
 }
 
-function welcomeStarts(trace) {
+function welcomeStarts(trace: JsonRecord[]): JsonRecord[] {
   return startedEntries(trace).filter((entry) =>
     String(entry?.transitionId ?? "").endsWith(":welcome"),
   );
 }
 
-function validateCategoryScenario(trace, checkpoints, scenario) {
+function validateCategoryScenario(
+  trace: JsonRecord[],
+  checkpoints: Map<string, JsonRecord>,
+  scenario: JsonRecord,
+): JsonRecord {
   const key = requiredString(scenario?.key, "categoryScenario.key");
   const transitionId = requiredString(
     scenario?.transitionId,
@@ -276,13 +319,15 @@ function validateCategoryScenario(trace, checkpoints, scenario) {
   if (lifecycle.started.message !== "native") {
     throw new Error(`category ${key} must start through native playback`);
   }
-  if (lifecycle.started.id > detailCheckpoint.traceId) {
+  if (
+    Number(lifecycle.started.id) > Number(detailCheckpoint.traceId)
+  ) {
     throw new Error(`category ${key} introduction started too late`);
   }
   const duplicateStarts = traceBetween(
     trace,
-    entryCheckpoint.traceId,
-    checkoutCheckpoint.traceId,
+    Number(entryCheckpoint.traceId),
+    Number(checkoutCheckpoint.traceId),
   ).filter(
     (entry) =>
       entry?.type === "audio_started" &&
@@ -294,8 +339,8 @@ function validateCategoryScenario(trace, checkpoints, scenario) {
   }
   const delayedProductSelection = traceBetween(
     trace,
-    entryCheckpoint.traceId,
-    checkoutCheckpoint.traceId,
+    Number(entryCheckpoint.traceId),
+    Number(checkoutCheckpoint.traceId),
   ).find(
     (entry) =>
       entry?.type === "audio_started" &&
@@ -315,7 +360,14 @@ function validateCategoryScenario(trace, checkpoints, scenario) {
   };
 }
 
-export function validatePresenceAndAudioAcceptanceEvidence(acceptance) {
+export function validatePresenceAndAudioAcceptanceEvidence(
+  acceptance: JsonRecord,
+): JsonRecord {
+  const boundaries = recordValue(acceptance.boundaries);
+  const audio = recordValue(acceptance.audio);
+  const capture = recordValue(audio.capture);
+  const scenario = recordValue(acceptance.scenario);
+  const welcome = recordValue(scenario.welcome);
   if (
     acceptance?.schemaVersion !==
       "presence-and-audio-production-acceptance/v1" ||
@@ -324,9 +376,9 @@ export function validatePresenceAndAudioAcceptanceEvidence(acceptance) {
     throw new Error("presence and audio acceptance did not pass");
   }
   if (
-    acceptance?.boundaries?.vision !== "controlled_mock_protocol" ||
-    acceptance?.boundaries?.cdp !== "installed_canonical_machine_cdp" ||
-    acceptance?.boundaries?.audio !== "windows_default_output_capture"
+    boundaries?.vision !== "controlled_mock_protocol" ||
+    boundaries?.cdp !== "installed_canonical_machine_cdp" ||
+    boundaries?.audio !== "windows_default_output_capture"
   ) {
     throw new Error("presence and audio boundaries are incomplete");
   }
@@ -336,46 +388,46 @@ export function validatePresenceAndAudioAcceptanceEvidence(acceptance) {
   ) {
     throw new Error("presence and audio diagnostics must be empty");
   }
-  const audio = acceptance?.audio ?? {};
   if (
     audio.source !== "windows_default_output" ||
-    !Number.isInteger(audio.capture?.nonSilentFrameCount) ||
-    audio.capture.nonSilentFrameCount <= 0 ||
-    !Number.isInteger(audio.capture?.peakAbsoluteSample) ||
-    audio.capture.peakAbsoluteSample <= 0
+    !Number.isInteger(capture.nonSilentFrameCount) ||
+    Number(capture.nonSilentFrameCount) <= 0 ||
+    !Number.isInteger(capture.peakAbsoluteSample) ||
+    Number(capture.peakAbsoluteSample) <= 0
   ) {
     throw new Error("presence and audio native capture is incomplete");
   }
-  const cueWindows = assertArray(audio.cueWindows, "audio.cueWindows").map(
-    assertDetectedCueWindow,
-  );
-  const trace = assertArray(acceptance.runtimeTrace, "runtimeTrace");
+  const cueWindows = assertArray(
+    audio.cueWindows,
+    "audio.cueWindows",
+  ).map((entry: unknown) => assertDetectedCueWindow(recordValue(entry)));
+  const trace = assertArray(
+    acceptance.runtimeTrace,
+    "runtimeTrace",
+  ).map((entry: unknown) => recordValue(entry));
   ensureMonotonicTrace(trace);
   const checkpoints = checkpointsByLabel(
-    assertArray(acceptance.checkpoints, "checkpoints"),
+    assertArray(acceptance.checkpoints, "checkpoints").map((entry: unknown) =>
+      recordValue(entry),
+    ),
   );
-  const scenario = acceptance?.scenario ?? {};
 
   const initialTransitionId = requiredString(
-    scenario?.welcome?.initialTransitionId,
+    welcome?.initialTransitionId,
     "scenario.welcome.initialTransitionId",
   );
-  const initialFenceTraceId = Number(scenario?.welcome?.initialFenceTraceId);
-  const duplicateFenceTraceId = Number(
-    scenario?.welcome?.duplicateFenceTraceId,
-  );
-  const transientFenceTraceId = Number(
-    scenario?.welcome?.transientFenceTraceId,
-  );
+  const initialFenceTraceId = Number(welcome?.initialFenceTraceId);
+  const duplicateFenceTraceId = Number(welcome?.duplicateFenceTraceId);
+  const transientFenceTraceId = Number(welcome?.transientFenceTraceId);
   const rearmedTransitionId = requiredString(
-    scenario?.welcome?.rearmedTransitionId,
+    welcome?.rearmedTransitionId,
     "scenario.welcome.rearmedTransitionId",
   );
   const departureTransitionId = requiredString(
-    scenario?.welcome?.departureTransitionId,
+    welcome?.departureTransitionId,
     "scenario.welcome.departureTransitionId",
   );
-  const rearmedFenceTraceId = Number(scenario?.welcome?.rearmedFenceTraceId);
+  const rearmedFenceTraceId = Number(welcome?.rearmedFenceTraceId);
   const stableCheckpoint = checkpoints.get("stable-arrival-settled");
   const transientCheckpoint = checkpoints.get("transient-empty-recovered");
   const duplicateApproachCheckpoint = checkpoints.get(
@@ -407,17 +459,19 @@ export function validatePresenceAndAudioAcceptanceEvidence(acceptance) {
     "initial welcome",
     ["completed", "stopped"],
   );
-  if (initialLifecycle.started.id > stableCheckpoint.traceId) {
+  if (
+    Number(initialLifecycle.started.id) > Number(stableCheckpoint.traceId)
+  ) {
     throw new Error("stable arrival did not start welcome before settling");
   }
   const initialWindow = welcomeStartsBetween(
     trace,
     initialFenceTraceId,
-    stableCheckpoint.traceId,
+    Number(stableCheckpoint.traceId),
   );
   if (
     initialWindow.length !== 1 ||
-    initialWindow[0]?.id !== initialLifecycle.started.id
+    Number(initialWindow[0]?.id) !== Number(initialLifecycle.started.id)
   ) {
     throw new Error("initial welcome did not use a fresh presence fence");
   }
@@ -425,7 +479,7 @@ export function validatePresenceAndAudioAcceptanceEvidence(acceptance) {
     welcomeStartsBetween(
       trace,
       duplicateFenceTraceId,
-      duplicateApproachCheckpoint.traceId,
+      Number(duplicateApproachCheckpoint.traceId),
     ).length !== 0
   ) {
     throw new Error("duplicate initial approach incorrectly replayed welcome");
@@ -433,7 +487,7 @@ export function validatePresenceAndAudioAcceptanceEvidence(acceptance) {
   const transientWelcomeStarts = welcomeStartsBetween(
     trace,
     transientFenceTraceId,
-    transientCheckpoint.traceId,
+    Number(transientCheckpoint.traceId),
   );
   if (transientWelcomeStarts.length !== 0) {
     throw new Error("transient empty incorrectly rearmed welcome");
@@ -443,7 +497,10 @@ export function validatePresenceAndAudioAcceptanceEvidence(acceptance) {
       entry?.type === "journey_transition" &&
       entry?.transitionId === departureTransitionId,
   );
-  if (!departureEvent || departureEvent.id > departureCheckpoint.traceId) {
+  if (
+    !departureEvent ||
+    Number(departureEvent.id) > Number(departureCheckpoint.traceId)
+  ) {
     throw new Error("sustained empty departure transition is missing");
   }
   const rearmedLifecycle = assertLifecycleOnce(
@@ -452,25 +509,34 @@ export function validatePresenceAndAudioAcceptanceEvidence(acceptance) {
     "rearmed welcome",
     ["completed", "stopped"],
   );
-  if (rearmedLifecycle.started.id <= departureCheckpoint.traceId) {
+  if (
+    Number(rearmedLifecycle.started.id) <=
+    Number(departureCheckpoint.traceId)
+  ) {
     throw new Error("rearmed welcome started before sustained departure");
   }
-  if (rearmedLifecycle.started.id > rearmedCheckpoint.traceId) {
+  if (
+    Number(rearmedLifecycle.started.id) > Number(rearmedCheckpoint.traceId)
+  ) {
     throw new Error("new arrival did not replay welcome after sustained empty");
   }
   const rearmedWindow = welcomeStartsBetween(
     trace,
     rearmedFenceTraceId,
-    rearmedCheckpoint.traceId,
+    Number(rearmedCheckpoint.traceId),
   );
   if (
     rearmedWindow.length !== 1 ||
-    rearmedWindow[0]?.id !== rearmedLifecycle.started.id
+    Number(rearmedWindow[0]?.id) !== Number(rearmedLifecycle.started.id)
   ) {
     throw new Error("rearmed welcome did not use a fresh presence fence");
   }
   if (
-    welcomeStartsBetween(trace, initialFenceTraceId, rearmedCheckpoint.traceId)
+    welcomeStartsBetween(
+      trace,
+      initialFenceTraceId,
+      Number(rearmedCheckpoint.traceId),
+    )
       .length !== 2
   ) {
     throw new Error("welcome played an unexpected number of times");
@@ -479,7 +545,9 @@ export function validatePresenceAndAudioAcceptanceEvidence(acceptance) {
   const categories = assertArray(
     scenario?.categories,
     "scenario.categories",
-  ).map((entry) => validateCategoryScenario(trace, checkpoints, entry));
+  ).map((entry: unknown) =>
+    validateCategoryScenario(trace, checkpoints, recordValue(entry)),
+  );
   const supportedCategoryKeys = assertArray(
     scenario?.supportedCategoryKeys,
     "scenario.supportedCategoryKeys",
@@ -520,7 +588,7 @@ export function validatePresenceAndAudioAcceptanceEvidence(acceptance) {
     );
   }
   const automaticVentSpeeds = assertAutomaticVentEvidence(
-    acceptance?.automaticVent,
+    recordValue(acceptance.automaticVent),
     initialTransitionId,
     departureTransitionId,
   );
