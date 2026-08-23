@@ -21,11 +21,31 @@ import {
   validateFullWorkflowEvidenceUploadFiles,
 } from "./full-workflow-evidence-manifest.ts";
 
-function sha256(content) {
+type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? (value as unknown[]) : [];
+}
+
+function sha256(content: Buffer): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
-function statIdentity(stat) {
+function statIdentity(stat: {
+  dev: unknown;
+  ino: unknown;
+  mode: unknown;
+  nlink: unknown;
+  size: unknown;
+  mtimeNs: unknown;
+  ctimeNs: unknown;
+}): string {
   return [
     stat.dev,
     stat.ino,
@@ -37,11 +57,15 @@ function statIdentity(stat) {
   ].join(":");
 }
 
-function inodeIdentity(stat) {
+function inodeIdentity(stat: {
+  dev: unknown;
+  ino: unknown;
+  mode: unknown;
+}): string {
   return [stat.dev, stat.ino, stat.mode].join(":");
 }
 
-function snapshotRegular(path, label) {
+function snapshotRegular(path: string, label: string): JsonRecord {
   const before = lstatSync(path, { bigint: true });
   if (before.isSymbolicLink() || !before.isFile())
     throw new Error(`${label} must be a regular non-linked file: ${path}`);
@@ -57,8 +81,12 @@ function snapshotRegular(path, label) {
   };
 }
 
-function assertSnapshot(snapshot, expected, label) {
-  const current = snapshotRegular(snapshot.path, label);
+function assertSnapshot(
+  snapshot: JsonRecord,
+  expected: JsonRecord | null | undefined,
+  label: string,
+): void {
+  const current = snapshotRegular(String(snapshot.path), label);
   if (
     current.identity !== snapshot.identity ||
     current.byteLength !== snapshot.byteLength ||
@@ -72,7 +100,7 @@ function assertSnapshot(snapshot, expected, label) {
     );
 }
 
-function filesRecursively(root, prefix = "") {
+function filesRecursively(root: string, prefix = ""): string[] {
   return readdirSync(join(root, prefix), { withFileTypes: true }).flatMap(
     (entry) => {
       const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
@@ -92,7 +120,7 @@ function filesRecursively(root, prefix = "") {
   );
 }
 
-function fsyncDirectory(path) {
+function fsyncDirectory(path: string): void {
   // Windows directory publication is a single MoveFile operation. Node does
   // not provide a portable directory handle that FlushFileBuffers accepts.
   if (process.platform === "win32") return;
@@ -104,7 +132,7 @@ function fsyncDirectory(path) {
   }
 }
 
-function publishDirectoryNoReplace(source, destination) {
+function publishDirectoryNoReplace(source: string, destination: string): void {
   if (process.platform !== "win32")
     throw new Error(
       "exclusive evidence bundle directory publication is unsupported on this platform",
@@ -114,7 +142,7 @@ function publishDirectoryNoReplace(source, destination) {
   renameSync(source, destination);
 }
 
-function validateOptions(options) {
+function validateOptions(options: JsonRecord): void {
   for (const [name, value] of Object.entries(options)) {
     if (name === "allowIncomplete") continue;
     if (typeof value !== "string" || !isAbsolute(value))
@@ -122,15 +150,22 @@ function validateOptions(options) {
   }
 }
 
-function readRegularJson(path, label) {
+function readRegularJson(
+  path: string,
+  label: string,
+): { path: string; raw: Buffer; value: JsonRecord } {
   const stat = lstatSync(path);
   if (stat.isSymbolicLink() || !stat.isFile())
     throw new Error(`${label} must be a regular non-linked file: ${path}`);
   const raw = readFileSync(path);
-  return { path, raw, value: JSON.parse(raw.toString("utf8")) };
+  return {
+    path,
+    raw,
+    value: JSON.parse(raw.toString("utf8")) as JsonRecord,
+  };
 }
 
-function incompleteFileLimit(kind) {
+function incompleteFileLimit(kind: string): number | null {
   if (kind === "reports" || kind === "supportingEvidence")
     return EVIDENCE_LIMITS.reportPerFileBytes;
   if (kind === "screenshots") return EVIDENCE_LIMITS.screenshotPerFileBytes;
@@ -138,88 +173,106 @@ function incompleteFileLimit(kind) {
   return null;
 }
 
-export function createFullWorkflowEvidenceBundle(options, dependencies = {}) {
+export function createFullWorkflowEvidenceBundle(
+  options: JsonRecord,
+  dependencies: JsonRecord = {},
+): JsonRecord {
   validateOptions(options);
-  const manifestPath = resolve(options.manifestPath);
-  const summaryPath = resolve(options.summaryPath);
-  const smokePath = resolve(options.smokePath);
-  const bundleRoot = resolve(options.bundleRoot);
+  const manifestPath = resolve(String(options.manifestPath));
+  const summaryPath = resolve(String(options.summaryPath));
+  const smokePath = resolve(String(options.smokePath));
+  const bundleRoot = resolve(String(options.bundleRoot));
   const allowIncomplete = options.allowIncomplete === true;
   if (existsSync(bundleRoot))
     throw new Error(`evidence bundle destination exists: ${bundleRoot}`);
 
-  const { manifestFile, summaryFile } = allowIncomplete
+  const readFiles = allowIncomplete
     ? {
         manifestFile: readRegularJson(manifestPath, "evidence manifest"),
         summaryFile: readRegularJson(summaryPath, "workflow summary"),
       }
     : validateFullWorkflowEvidenceUploadFiles(manifestPath, summaryPath);
+  const manifestFile = recordValue(readFiles.manifestFile);
+  const summaryFile = recordValue(readFiles.summaryFile);
+  const manifestFileRaw = manifestFile.raw as Buffer;
+  const summaryFileRaw = summaryFile.raw as Buffer;
   if (allowIncomplete) {
-    const binding = summaryFile.value?.evidenceInventory;
+    const binding = recordValue(
+      recordValue(summaryFile.value).evidenceInventory,
+    );
+    const manifestFileValue = recordValue(binding.manifestFile);
     if (
       typeof binding?.reportPath !== "string" ||
-      resolve(binding.reportPath) !== manifestPath ||
-      binding?.manifestFile?.byteLength !== manifestFile.raw.byteLength ||
-      binding?.manifestFile?.sha256 !== sha256(manifestFile.raw)
+      resolve(String(binding.reportPath)) !== manifestPath ||
+      manifestFileValue?.byteLength !== manifestFileRaw.byteLength ||
+      manifestFileValue?.sha256 !== sha256(manifestFileRaw)
     ) {
       throw new Error(
         "workflow summary does not bind the incomplete evidence manifest",
       );
     }
   }
-  const manifest = manifestFile.value;
-  const declared = new Map();
+  const manifest = recordValue(manifestFile.value);
+  const declared = new Map<string, JsonRecord>();
   let declaredBytes = 0;
-  for (const file of Array.isArray(manifest.files) ? manifest.files : []) {
+  for (const file of arrayValue(manifest.files).map((value: unknown) =>
+    recordValue(value),
+  )) {
     try {
-      const path = resolve(file.path);
-      const perFileLimit = incompleteFileLimit(file.kind);
+      const path = resolve(String(file.path));
+      const perFileLimit = incompleteFileLimit(String(file.kind));
       if (declared.has(path))
         throw new Error(`duplicate evidence source path: ${path}`);
       if (
-        !isAbsolute(file.path) ||
+        !isAbsolute(String(file.path)) ||
         perFileLimit === null ||
         !Number.isInteger(file.byteLength) ||
-        file.byteLength < 0 ||
-        file.byteLength > perFileLimit ||
-        !/^[a-f0-9]{64}$/.test(file.sha256 ?? "") ||
-        declaredBytes + file.byteLength > EVIDENCE_LIMITS.totalBytes
+        Number(file.byteLength) < 0 ||
+        Number(file.byteLength) > perFileLimit ||
+        !/^[a-f0-9]{64}$/.test(String(file.sha256 ?? "")) ||
+        declaredBytes + Number(file.byteLength) > EVIDENCE_LIMITS.totalBytes
       ) {
         throw new Error(`invalid bounded evidence record: ${file.path}`);
       }
       if (allowIncomplete) {
         const actual = snapshotRegular(path, "incomplete evidence source");
         if (
-          actual.byteLength !== file.byteLength ||
+          actual.byteLength !== Number(file.byteLength) ||
           actual.sha256 !== file.sha256
         ) {
           continue;
         }
       }
       declared.set(path, file);
-      declaredBytes += file.byteLength;
+      declaredBytes += Number(file.byteLength);
     } catch (error) {
       if (!allowIncomplete) throw error;
     }
   }
 
-  const metadata = [
+  const metadata: Array<[string, string]> = [
     [summaryPath, "metadata/full-workflow-tracks.json"],
     [manifestPath, "metadata/full-workflow-evidence-manifest.json"],
     [smokePath, "metadata/installed-runtime-smoke.json"],
   ];
-  const members = [
+  const members: Array<{
+    source: string;
+    target: string;
+    expected: JsonRecord | null;
+  }> = [
     ...metadata.map(([source, target]) => ({ source, target, expected: null })),
-    ...[...declared.entries()].map(([source, expected], index) => ({
+    ...[...declared.entries()].map(([source, expected], index: number) => ({
       source,
-      target: `evidence/${String(index).padStart(4, "0")}-${expected.sha256}${extname(source).toLowerCase()}`,
+      target: `evidence/${String(index).padStart(4, "0")}-${String(
+        expected.sha256,
+      )}${extname(source).toLowerCase()}`,
       expected,
     })),
   ];
   if (new Set(members.map(({ target }) => target)).size !== members.length)
     throw new Error("evidence bundle member names collide");
 
-  const snapshots = new Map();
+  const snapshots = new Map<string, JsonRecord>();
   for (const member of members) {
     const snapshot = snapshotRegular(member.source, "evidence bundle source");
     if (
@@ -233,10 +286,12 @@ export function createFullWorkflowEvidenceBundle(options, dependencies = {}) {
     snapshots.set(member.source, snapshot);
   }
   if (
-    snapshots.get(manifestPath).byteLength !== manifestFile.raw.byteLength ||
-    snapshots.get(manifestPath).sha256 !== sha256(manifestFile.raw) ||
-    snapshots.get(summaryPath).byteLength !== summaryFile.raw.byteLength ||
-    snapshots.get(summaryPath).sha256 !== sha256(summaryFile.raw)
+    Number(snapshots.get(manifestPath)?.byteLength) !==
+      manifestFileRaw.byteLength ||
+    snapshots.get(manifestPath)?.sha256 !== sha256(manifestFileRaw) ||
+    Number(snapshots.get(summaryPath)?.byteLength) !==
+      summaryFileRaw.byteLength ||
+    snapshots.get(summaryPath)?.sha256 !== sha256(summaryFileRaw)
   )
     throw new Error("validated evidence metadata changed before bundling");
 
@@ -244,10 +299,15 @@ export function createFullWorkflowEvidenceBundle(options, dependencies = {}) {
   mkdirSync(parent, { recursive: true });
   const staging = mkdtempSync(join(parent, ".bundle-stage-"));
   const copyFile =
-    dependencies.copyFile ??
-    ((source, destination) => copyFileSync(source, destination));
+    (dependencies.copyFile as
+      | ((source: string, destination: string, index: number) => void)
+      | undefined) ??
+    ((source: string, destination: string) =>
+      copyFileSync(source, destination));
   const publishDirectory =
-    dependencies.publishDirectory ?? publishDirectoryNoReplace;
+    (dependencies.publishDirectory as
+      | ((source: string, destination: string) => void)
+      | undefined) ?? publishDirectoryNoReplace;
   let published = false;
   let publishedIdentity = null;
   try {
@@ -259,9 +319,11 @@ export function createFullWorkflowEvidenceBundle(options, dependencies = {}) {
         destination,
         "staged evidence bundle member",
       );
-      const expected = member.expected ?? snapshots.get(member.source);
+      const expected =
+        member.expected ?? snapshots.get(member.source) ?? null;
+      if (!expected) throw new Error("staged evidence snapshot is missing");
       if (
-        staged.byteLength !== expected.byteLength ||
+        Number(staged.byteLength) !== Number(expected.byteLength) ||
         staged.sha256 !== expected.sha256
       )
         throw new Error(
@@ -269,12 +331,15 @@ export function createFullWorkflowEvidenceBundle(options, dependencies = {}) {
         );
     }
 
-    for (const member of members)
+    for (const member of members) {
+      const sourceSnapshot = snapshots.get(member.source);
+      if (!sourceSnapshot) throw new Error("evidence source snapshot is missing");
       assertSnapshot(
-        snapshots.get(member.source),
+        sourceSnapshot,
         member.expected,
         "evidence bundle source",
       );
+    }
     const expectedPaths = members.map(({ target }) => target).sort();
     const actualPaths = filesRecursively(staging).sort();
     if (JSON.stringify(actualPaths) !== JSON.stringify(expectedPaths))
@@ -284,9 +349,11 @@ export function createFullWorkflowEvidenceBundle(options, dependencies = {}) {
         join(staging, member.target),
         "staged evidence bundle member",
       );
-      const expected = member.expected ?? snapshots.get(member.source);
+      const expected =
+        member.expected ?? snapshots.get(member.source) ?? null;
+      if (!expected) throw new Error("staged evidence snapshot is missing");
       if (
-        staged.byteLength !== expected.byteLength ||
+        Number(staged.byteLength) !== Number(expected.byteLength) ||
         staged.sha256 !== expected.sha256
       )
         throw new Error(
@@ -326,7 +393,7 @@ export function createFullWorkflowEvidenceBundle(options, dependencies = {}) {
   }
 }
 
-function main(args) {
+function main(args: string[]): void {
   const allowIncomplete = args.includes("--allow-incomplete");
   const positional = args.filter((arg) => arg !== "--allow-incomplete");
   if (
