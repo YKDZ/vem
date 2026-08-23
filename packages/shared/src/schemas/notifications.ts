@@ -117,6 +117,24 @@ export const notificationReadResponseSchema = z.strictObject({
   updatedAt: z.iso.datetime(),
 });
 
+export const adminListNotificationsContract = defineAdminEndpointContract({
+  method: "GET",
+  path: "/notifications",
+  pathParamsSchema: noPathParamsSchema,
+  querySchema: adminNotificationListQuerySchema,
+  bodySchema: noBodySchema,
+  responseSchema: adminNotificationPageResponseSchema,
+});
+
+export const adminMarkNotificationReadContract = defineAdminEndpointContract({
+  method: "POST",
+  path: "/notifications/:id/read",
+  pathParamsSchema: z.strictObject({ id: z.uuid() }),
+  querySchema: noQuerySchema,
+  bodySchema: notificationAdminNoBodySchema,
+  responseSchema: notificationReadResponseSchema,
+});
+
 export type UpsertNotificationTargetInput = z.infer<
   typeof upsertNotificationTargetSchema
 >;

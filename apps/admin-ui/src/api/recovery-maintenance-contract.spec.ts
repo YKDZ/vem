@@ -1,4 +1,7 @@
-import { adminResolveMaintenanceWorkOrderContract } from "@vem/shared";
+import {
+  adminMarkNotificationReadContract,
+  adminResolveMaintenanceWorkOrderContract,
+} from "@vem/shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -70,11 +73,9 @@ describe("recovery and maintenance admin api contracts", () => {
         },
       },
     );
-    expect(postContract).toHaveBeenCalledWith(
-      "/notifications/550e8400-e29b-41d4-a716-446655440003/read",
-      expect.any(Object),
-      expect.any(Object),
-      {},
+    expect(callAdminEndpointContract).toHaveBeenCalledWith(
+      adminMarkNotificationReadContract,
+      { pathParams: { id: "550e8400-e29b-41d4-a716-446655440003" } },
     );
   });
 
