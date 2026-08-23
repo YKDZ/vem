@@ -7,7 +7,7 @@ import { extname, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { TextDecoder } from "node:util";
 
-import { isStructurallyValidPng } from "../lib/png-structure.mjs";
+import { isStructurallyValidPng } from "../lib/png-structure.ts";
 
 const DEFAULT_ROOT = resolve(import.meta.dirname, "../..");
 const BINARY_ALLOWLIST_NAME = "hard-cutover-binary-allowlist.json";

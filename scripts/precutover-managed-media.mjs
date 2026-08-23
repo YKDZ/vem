@@ -5,7 +5,7 @@ import { linkSync, lstatSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { isStructurallyValidPng } from "./lib/png-structure.mjs";
+import { isStructurallyValidPng } from "./lib/png-structure.ts";
 
 const RECEIPT_SCHEMA = "vem.precutover.managed-media.v1";
 const DIGEST_RE = /^sha256:[a-f0-9]{64}$/;

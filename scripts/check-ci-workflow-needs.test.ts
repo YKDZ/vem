@@ -3,7 +3,15 @@ import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { parse } from "yaml";
 
-function missingNeeds(workflow) {
+interface WorkflowJob {
+  needs?: string | string[];
+}
+
+interface WorkflowDocument {
+  jobs?: Record<string, WorkflowJob>;
+}
+
+function missingNeeds(workflow: WorkflowDocument): string[] {
   const jobs = workflow.jobs ?? {};
   return Object.entries(jobs).flatMap(([jobName, job]) => {
     const needs = Array.isArray(job.needs)

@@ -7,7 +7,7 @@ import { describe, it } from "node:test";
 import {
   assertNoLegacyEffectiveConfigReferences,
   findLegacyEffectiveConfigReferences,
-} from "./check-effective-config-hard-migration.mjs";
+} from "./check-effective-config-hard-migration.ts";
 
 const guardPaths = [
   "apps/vending-daemon",

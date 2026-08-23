@@ -8,7 +8,7 @@ const CRC32_TABLE = Uint32Array.from({ length: 256 }, (_, value) => {
   return crc >>> 0;
 });
 
-function crc32(...buffers) {
+function crc32(...buffers: Buffer[]): number {
   let crc = 0xffffffff;
   for (const buffer of buffers) {
     for (const byte of buffer) {
@@ -18,7 +18,7 @@ function crc32(...buffers) {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-export function isStructurallyValidPng(bytes) {
+export function isStructurallyValidPng(bytes: unknown): boolean {
   if (
     !Buffer.isBuffer(bytes) ||
     bytes.length < PNG_SIGNATURE.length ||

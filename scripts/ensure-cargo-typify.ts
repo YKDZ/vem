@@ -1,10 +1,18 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
+import { spawn, type StdioOptions } from "node:child_process";
 
 const expectedVersion = "cargo-typify 0.7.0";
 
-function run(command, args, options = {}) {
+function run(
+  command: string,
+  args: string[],
+  options: {
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+    stdio?: StdioOptions;
+  } = {},
+): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd ?? process.cwd(),
@@ -29,7 +37,7 @@ function run(command, args, options = {}) {
   });
 }
 
-function capture(command, args) {
+function capture(command: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: process.cwd(),
@@ -37,10 +45,10 @@ function capture(command, args) {
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
     });
-    const stdout = [];
-    const stderr = [];
-    child.stdout.on("data", (chunk) => stdout.push(chunk));
-    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    child.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk));
+    child.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk));
     child.on("error", reject);
     child.on("exit", (code, signal) => {
       if (code === 0) {
@@ -61,7 +69,7 @@ function capture(command, args) {
   });
 }
 
-async function cargoTypifyVersion() {
+async function cargoTypifyVersion(): Promise<string | null> {
   try {
     return await capture("cargo", ["typify", "--version"]);
   } catch {

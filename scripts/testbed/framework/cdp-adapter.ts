@@ -16,7 +16,7 @@ import {
   visionV2CapturedFrameSchema,
   visionV2ResultAdjustedMessageSchema,
 } from "../../../packages/shared/src/schemas/vision-v2.ts";
-import { isStructurallyValidPng } from "../../lib/png-structure.mjs";
+import { isStructurallyValidPng } from "../../lib/png-structure.ts";
 import {
   isSensitiveEvidenceKey,
   redactSensitiveEvidenceText,

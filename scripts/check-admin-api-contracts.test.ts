@@ -10,9 +10,24 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
-import { checkAdminApiContracts } from "./check-admin-api-contracts.mjs";
+import { checkAdminApiContracts } from "./check-admin-api-contracts.ts";
 
-function withFixture(files, callback) {
+interface AdditionEscapeHatchCase {
+  name: string;
+  addition: string;
+  expected: RegExp;
+}
+
+interface MutationEscapeHatchCase {
+  name: string;
+  mutate: (source: string) => string;
+  expected: RegExp;
+}
+
+function withFixture<T>(
+  files: Record<string, string>,
+  callback: (root: string) => T,
+): T {
   const root = mkdtempSync(join(tmpdir(), "vem-admin-contracts-"));
   try {
     for (const [path, content] of Object.entries(files)) {
@@ -80,7 +95,7 @@ describe("admin api contract guard", () => {
   const tryOnFixture = (
     providerDecorator = "AdminEndpointContract",
     caller = true,
-  ) => ({
+  ): Record<string, string> => ({
     "packages/shared/src/schemas/try-on-garments.ts": `
       const z = { strictObject: () => ({}) };
       const defineAdminEndpointContract = (value) => value;
@@ -420,7 +435,7 @@ describe("admin api contract guard", () => {
   });
 
   it("rejects global transport aliases and dynamic imports in migration API files", () => {
-    const escapeHatches = [
+    const escapeHatches: AdditionEscapeHatchCase[] = [
       {
         name: "globalThis destructuring",
         addition: "\nconst { fetch: globalTransport } = globalThis;\n",
@@ -466,7 +481,7 @@ describe("admin api contract guard", () => {
   });
 
   it("rejects every file-level migration transport escape hatch", () => {
-    const escapeHatches = [
+    const escapeHatches: MutationEscapeHatchCase[] = [
       {
         name: "local-shadowed, globalThis, and window fetch",
         mutate: (source) =>
@@ -892,8 +907,13 @@ describe("admin api contract guard", () => {
 
   it("rejects a provider controller that is not registered by a Nest module", () => {
     const files = tryOnFixture();
-    delete files["apps/service-api/src/media-assets/media-assets.module.ts"];
-    withFixture(files, (root) => {
+    const withoutMediaAssetsModule: Record<string, string> = {};
+    for (const [path, content] of Object.entries(files)) {
+      if (path !== "apps/service-api/src/media-assets/media-assets.module.ts") {
+        withoutMediaAssetsModule[path] = content;
+      }
+    }
+    withFixture(withoutMediaAssetsModule, (root) => {
       const result = checkAdminApiContracts({ root });
       assert.equal(result.ok, false);
       assert.match(

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { assertCustomerPaymentCopy } from "./check-machine-customer-payment-copy.mjs";
+import { assertCustomerPaymentCopy } from "./check-machine-customer-payment-copy.ts";
 
 describe("Machine customer payment copy boundary", () => {
   it("rejects environment-specific customer text and accepts production-safe copy", () => {

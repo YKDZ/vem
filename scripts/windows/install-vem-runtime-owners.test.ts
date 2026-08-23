@@ -5,7 +5,30 @@ import test from "node:test";
 
 const installerPath = "scripts/windows/install-vem-runtime-owners.ps1";
 
-function source(path) {
+interface OwnerHarnessOutput {
+  schemaVersion: string;
+  manifest: {
+    owners: {
+      daemon: { name: string; arguments: string[] };
+      machineUi: { trigger: string };
+      vision: { trigger: string };
+    };
+    acl: unknown[];
+  };
+  daemonDataDirectory: string;
+  machineLauncher: string;
+  visionLauncher: string;
+  registeredTasks: Array<{
+    trigger: { kind: string };
+    principal: { UserId: string };
+  }>;
+  missingPasswordRejected: boolean;
+  aclCalls: string[];
+  scCalls: string[];
+  registryWrites: Array<{ name: string }>;
+}
+
+function source(path: string): string {
   return readFileSync(path, "utf8");
 }
 
@@ -89,7 +112,7 @@ test("owner installer writes one manifest through its public PowerShell entrypoi
     { encoding: "utf8" },
   );
   assert.equal(result.status, 0, result.stderr || result.stdout);
-  const output = JSON.parse(result.stdout);
+  const output = JSON.parse(result.stdout) as OwnerHarnessOutput;
   assert.equal(output.schemaVersion, "vem-runtime-owners-harness/v3");
   assert.equal(output.manifest.owners.daemon.name, "VemVendingDaemon");
   assert.deepEqual(output.manifest.owners.daemon.arguments, [

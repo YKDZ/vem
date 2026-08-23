@@ -10,7 +10,7 @@ import {
   validateAdminProxyHealth,
   validateDigestPinnedImage,
   validatePaymentWebhookBaseUrl,
-} from "./backend-deployment-validation.mjs";
+} from "./backend-deployment-validation.ts";
 
 const LONG_SECRET_A =
   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -21,7 +21,11 @@ const LONG_SECRET_C =
 const LONG_SECRET_D =
   "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
 
-function option(args, name, fallback) {
+function option(
+  args: string[],
+  name: string,
+  fallback: string | null,
+): string | null {
   const index = args.indexOf(name);
   if (index === -1) return fallback;
   const value = args[index + 1];
@@ -30,20 +34,25 @@ function option(args, name, fallback) {
   return value;
 }
 
-function hasFlag(args, name) {
+function hasFlag(args: string[], name: string): boolean {
   return args.includes(name);
 }
 
-function required(value, name) {
+function required(value: string | null | undefined, name: string): string {
   if (!value) throw new Error(`${name} is required`);
   return value;
 }
 
-function randomPort(base) {
+function randomPort(base: number): number {
   return base + randomInt(1_000);
 }
 
-function runWith(exec, command, args, options = {}) {
+function runWith(
+  exec: typeof execFileSync,
+  command: string,
+  args: string[],
+  options: { quiet?: boolean } = {},
+): string {
   const output = exec(command, args, {
     encoding: "utf8",
     stdio: options.quiet ? ["ignore", "pipe", "pipe"] : "inherit",
@@ -56,19 +65,23 @@ export function backendComposeSmokeEnv({
   adminUiImage,
   ports = {},
   volumePrefix = "vem-backend-smoke",
-} = {}) {
+}: {
+  serviceApiImage?: string | null;
+  adminUiImage?: string | null;
+  ports?: Partial<{ serviceApi: number; adminUi: number; mqtt: number }>;
+  volumePrefix?: string;
+} = {}): Record<string, string> {
   const serviceApiPort = ports.serviceApi ?? randomPort(33_000);
   const adminPort = ports.adminUi ?? randomPort(34_000);
   const mqttPort = ports.mqtt ?? randomPort(36_000);
   const paymentWebhookBaseUrl = "https://payments.example";
-  validateDigestPinnedImage(
-    required(serviceApiImage, "serviceApiImage"),
+  const resolvedServiceApiImage = required(
+    serviceApiImage,
     "serviceApiImage",
   );
-  validateDigestPinnedImage(
-    required(adminUiImage, "adminUiImage"),
-    "adminUiImage",
-  );
+  const resolvedAdminUiImage = required(adminUiImage, "adminUiImage");
+  validateDigestPinnedImage(resolvedServiceApiImage, "serviceApiImage");
+  validateDigestPinnedImage(resolvedAdminUiImage, "adminUiImage");
   validatePaymentWebhookBaseUrl(paymentWebhookBaseUrl);
   return {
     POSTGRES_DATA_SOURCE: `${volumePrefix}-postgres-data`,
@@ -80,8 +93,8 @@ export function backendComposeSmokeEnv({
     POSTGRES_PASSWORD: "postgres-password",
     MQTT_USERNAME: "vem",
     MQTT_PASSWORD: "mqtt-password",
-    SERVICE_API_IMAGE: serviceApiImage,
-    ADMIN_UI_IMAGE: adminUiImage,
+    SERVICE_API_IMAGE: resolvedServiceApiImage,
+    ADMIN_UI_IMAGE: resolvedAdminUiImage,
     JWT_SECRET: LONG_SECRET_A,
     JWT_REFRESH_SECRET: LONG_SECRET_B,
     BOOTSTRAP_ADMIN_PASSWORD: "admin-password",
@@ -97,7 +110,11 @@ export function backendComposeSmokeEnv({
   };
 }
 
-function writeEnvFile(path, values, write = writeFileSync) {
+function writeEnvFile(
+  path: string,
+  values: Record<string, string>,
+  write: typeof writeFileSync = writeFileSync,
+): void {
   write(
     path,
     `${Object.entries(values)
@@ -106,36 +123,79 @@ function writeEnvFile(path, values, write = writeFileSync) {
   );
 }
 
-export function composeCommand({ project, envFile, composeFile }) {
+export function composeCommand({
+  project,
+  envFile,
+  composeFile,
+}: {
+  project: string;
+  envFile: string;
+  composeFile: string;
+}): string[] {
   return ["compose", "-p", project, "--env-file", envFile, "-f", composeFile];
 }
 
-export function targetHostComposeCommand({ envFile, composeFile }) {
+export function targetHostComposeCommand({
+  envFile,
+  composeFile,
+}: {
+  envFile: string;
+  composeFile: string;
+}): string[] {
   return ["compose", "--env-file", envFile, "-f", composeFile];
 }
 
+interface SmokeIo {
+  execFileSync?: typeof execFileSync;
+  writeFileSync?: typeof writeFileSync;
+  mkdtempSync?: typeof mkdtempSync;
+  rmSync?: typeof rmSync;
+  stdout?: NodeJS.WriteStream;
+}
+
+export interface BackendComposeSmokeResult {
+  schemaVersion: string;
+  ok: boolean;
+  project: string;
+  composeFile: string;
+  checks: {
+    postgres: string;
+    mqtt: string;
+    serviceApi: string;
+    adminUiProxy: string;
+  };
+}
+
 export async function runBackendComposeSmoke(
-  args = process.argv.slice(2),
-  env = process.env,
-  io = {},
-) {
+  args: string[] = process.argv.slice(2),
+  env: NodeJS.ProcessEnv = process.env,
+  io: SmokeIo = {},
+): Promise<BackendComposeSmokeResult> {
   const exec = io.execFileSync ?? execFileSync;
   const write = io.writeFileSync ?? writeFileSync;
   const mkdtemp = io.mkdtempSync ?? mkdtempSync;
   const rm = io.rmSync ?? rmSync;
   const stdout = io.stdout ?? process.stdout;
-  const run = (command, commandArgs, options) =>
-    runWith(exec, command, commandArgs, options);
+  const run = (
+    command: string,
+    commandArgs: string[],
+    options?: { quiet?: boolean },
+  ): string => runWith(exec, command, commandArgs, options);
   const serviceApiImage = option(
     args,
     "--service-api-image",
-    env.SERVICE_API_IMAGE,
+    env.SERVICE_API_IMAGE ?? null,
   );
-  const adminUiImage = option(args, "--admin-ui-image", env.ADMIN_UI_IMAGE);
+  const adminUiImage = option(
+    args,
+    "--admin-ui-image",
+    env.ADMIN_UI_IMAGE ?? null,
+  );
   const composeFile = resolve(
-    option(args, "--compose", "apps/service-api/docker-compose.yml"),
+    option(args, "--compose", null) ??
+      "apps/service-api/docker-compose.yml",
   );
-  const timeoutSeconds = option(args, "--timeout-seconds", "240");
+  const timeoutSeconds = option(args, "--timeout-seconds", null) ?? "240";
   const keep = hasFlag(args, "--keep");
   const project =
     option(args, "--project", null) ??
@@ -159,7 +219,7 @@ export async function runBackendComposeSmoke(
       "--wait-timeout",
       timeoutSeconds,
     ]);
-    const container = (service) =>
+    const container = (service: string): string =>
       run("docker", [...compose, "ps", "-q", service], { quiet: true });
     const serviceApiContainer = container("service-api");
     const adminUiContainer = container("admin-ui");

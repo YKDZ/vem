@@ -32,7 +32,7 @@ const forbiddenPatterns = [
   /provisioning\/profile-cache-summary/i,
 ];
 
-function walk(path, files) {
+function walk(path: string, files: string[]): void {
   for (const entry of readdirSync(path, { withFileTypes: true })) {
     if (entry.isDirectory()) {
       if (!ignoredDirectories.has(entry.name))
@@ -43,14 +43,20 @@ function walk(path, files) {
   }
 }
 
-export function findLegacyEffectiveConfigReferences({ root = ".", paths }) {
-  const files = [];
+export function findLegacyEffectiveConfigReferences({
+  root = ".",
+  paths,
+}: {
+  root?: string;
+  paths: string[];
+}): string[] {
+  const files: string[] = [];
   for (const path of paths) walk(join(root, path), files);
 
   return files.flatMap((path) => {
     if (
       relative(root, path) ===
-      "scripts/check-effective-config-hard-migration.mjs"
+      "scripts/check-effective-config-hard-migration.ts"
     ) {
       return [];
     }
@@ -61,7 +67,10 @@ export function findLegacyEffectiveConfigReferences({ root = ".", paths }) {
   });
 }
 
-export function assertNoLegacyEffectiveConfigReferences(options) {
+export function assertNoLegacyEffectiveConfigReferences(options: {
+  root?: string;
+  paths: string[];
+}): void {
   const findings = findLegacyEffectiveConfigReferences(options);
   if (findings.length > 0) {
     throw new Error(

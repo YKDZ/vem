@@ -16,18 +16,18 @@ import {
   backendComposeSmokeEnv,
   composeCommand,
   targetHostComposeCommand,
-} from "./backend-compose-smoke.mjs";
+} from "./backend-compose-smoke.ts";
 import {
   validateBackendReleaseSet,
   validateAdminProxyHealth,
   validateDigestPinnedImage,
   validatePaymentWebhookBaseUrl,
-} from "./backend-deployment-validation.mjs";
+} from "./backend-deployment-validation.ts";
 import {
   imageNames,
   registryBuildArgs,
   validateCommit as validatePublishCommit,
-} from "./publish-backend-images.mjs";
+} from "./publish-backend-images.ts";
 
 const commit = "0123456789abcdef0123456789abcdef01234567";
 const composePath = new URL(
@@ -61,7 +61,7 @@ function backendEnv(overrides = {}) {
   };
 }
 
-function writeEnvFile(path, values) {
+function writeEnvFile(path: string, values: Record<string, string>): void {
   writeFileSync(
     path,
     `${Object.entries(values)
@@ -70,8 +70,8 @@ function writeEnvFile(path, values) {
   );
 }
 
-function dockerComposeConfig(envFile) {
-  return execFileSync(
+function dockerComposeConfig(envFile: string): string {
+  const output = execFileSync(
     "docker",
     ["compose", "--env-file", envFile, "-f", composePath.pathname, "config"],
     {
@@ -80,6 +80,7 @@ function dockerComposeConfig(envFile) {
       stdio: ["ignore", "pipe", "pipe"],
     },
   );
+  return output;
 }
 
 function dockerComposeSkipReason() {

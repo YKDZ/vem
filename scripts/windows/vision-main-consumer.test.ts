@@ -1,16 +1,15 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const modulePath = "scripts/windows/vision-main-artifacts.psm1";
-const resolverPath = "scripts/windows/get-vision-main-artifacts.ps1";
 const installerPath = "scripts/windows/install-vision-main-artifact.ps1";
 const powershell51Paths = [
   "scripts/windows/vision-main-consumer.windows-harness.ps1",
   "scripts/testbed/run-local-testbed-guest.ps1",
 ];
 
-function source(path) {
+function source(path: string): string {
   return readFileSync(path, "utf8");
 }
 

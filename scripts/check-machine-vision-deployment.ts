@@ -1,12 +1,18 @@
 import { existsSync, readFileSync } from "node:fs";
 
-const checks = [];
+interface Check {
+  name: string;
+  passed: boolean;
+  detail: string;
+}
 
-function addCheck(name, passed, detail) {
+const checks: Check[] = [];
+
+function addCheck(name: string, passed: boolean, detail: string): void {
   checks.push({ name, passed, detail });
 }
 
-function readText(path) {
+function readText(path: string): string {
   return existsSync(path) ? readFileSync(path, "utf8") : "";
 }
 

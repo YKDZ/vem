@@ -6,7 +6,7 @@ const environmentCopyPattern = /sandbox|testbed|沙箱|测试环境/i;
 const customerChunkPattern =
   /^(?:Catalog|Checkout|Payment|Dispensing|Result|ProductDetail|Home)View-.*\.js$/;
 
-export function assertCustomerPaymentCopy(text, label) {
+export function assertCustomerPaymentCopy(text: string, label: string): void {
   if (environmentCopyPattern.test(text)) {
     throw new Error(
       `${label} contains provider environment vocabulary in customer payment copy`,
@@ -14,7 +14,7 @@ export function assertCustomerPaymentCopy(text, label) {
   }
 }
 
-async function filesBelow(root) {
+async function filesBelow(root: string): Promise<string[]> {
   const entries = await readdir(root, { withFileTypes: true });
   const files = [];
   for (const entry of entries) {
@@ -48,13 +48,22 @@ export async function checkMachineCustomerPaymentCopy(
   }
 
   const assetsRoot = resolve(repoRoot, "apps/machine/dist/assets");
-  let builtFiles = [];
+  let builtFiles: string[] = [];
   try {
     builtFiles = (await filesBelow(assetsRoot)).filter((path) =>
       customerChunkPattern.test(basename(path)),
     );
   } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "ENOENT"
+    ) {
+      builtFiles = [];
+    } else {
+      throw error;
+    }
   }
   for (const path of builtFiles) {
     assertCustomerPaymentCopy(

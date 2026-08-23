@@ -1,6 +1,6 @@
 import { inflateSync } from "node:zlib";
 
-import { isStructurallyValidPng } from "../../../../lib/png-structure.mjs";
+import { isStructurallyValidPng } from "../../../../lib/png-structure.ts";
 
 const PALETTE = {
   leftSleeve: [255, 0, 0],

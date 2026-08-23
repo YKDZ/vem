@@ -21,7 +21,70 @@ const CONTRACT_FIELDS = [
   "responseSchema",
 ];
 
-function pathExists(root, path) {
+interface ContractDefinition {
+  path: string;
+  values: Record<string, ts.Expression>;
+  invalidSchemaFields: Set<string>;
+}
+
+interface ContractEntry {
+  method: string;
+  path: string;
+  providerMethod: string;
+  callerPath?: string;
+  callerMethods?: string[];
+  schemaReferences?: Record<string, string[] | undefined>;
+}
+
+interface ContractManifest {
+  name: string;
+  path: string;
+  slice: string;
+  controllerPaths: string[];
+  callerPaths: string[];
+  contracts: Record<string, ContractEntry>;
+}
+
+interface ProviderCall {
+  path: string;
+  method: string;
+  contract?: string;
+  controller?: string;
+}
+
+interface NetworkCall {
+  path: string;
+  method?: string;
+  entry: string;
+  contract?: string;
+}
+
+interface CoverageResult {
+  failures: string[];
+  callerHits: string[];
+  providerHits: string[];
+  bareRouteFailures: string[];
+}
+
+interface CoverageContext {
+  definitions: Map<string, ContractDefinition>;
+  providers: ProviderCall[];
+  registered: Set<string>;
+}
+
+interface CheckResult {
+  ok: boolean;
+  checks: Array<{ name: string; passed: boolean; detail: string }>;
+  failures: string[];
+  coverage: Record<string, CoverageResult>;
+  backlog: {
+    adminBareRoutes: string[];
+    legacyHelperModules: string[];
+  };
+  manifests: string[];
+}
+
+function pathExists(root: string, path: string): boolean {
   try {
     return statSync(join(root, path)).isFile();
   } catch {
@@ -29,7 +92,7 @@ function pathExists(root, path) {
   }
 }
 
-function directoryExists(root, path) {
+function directoryExists(root: string, path: string): boolean {
   try {
     return statSync(join(root, path)).isDirectory();
   } catch {
@@ -37,11 +100,11 @@ function directoryExists(root, path) {
   }
 }
 
-function readText(root, path) {
+function readText(root: string, path: string): string {
   return readFileSync(join(root, path), "utf8");
 }
 
-function listFiles(root, directory) {
+function listFiles(root: string, directory: string): string[] {
   if (!directoryExists(root, directory)) return [];
   const absoluteDirectory = join(root, directory);
   const files = [];
@@ -57,7 +120,7 @@ function listFiles(root, directory) {
   return files.sort();
 }
 
-function parseTypeScript(path, source) {
+function parseTypeScript(path: string, source: string): ts.SourceFile {
   return ts.createSourceFile(
     path,
     source,
@@ -67,11 +130,13 @@ function parseTypeScript(path, source) {
   );
 }
 
-function stringLiteralValue(value) {
+function stringLiteralValue(value: ts.Expression | undefined): string | undefined {
   return value && ts.isStringLiteral(value) ? value.text : undefined;
 }
 
-function arrayOfStringLiterals(node) {
+function arrayOfStringLiterals(
+  node: ts.Expression | undefined,
+): string[] | undefined {
   if (!node || !ts.isArrayLiteralExpression(node)) return undefined;
   const values = [];
   for (const element of node.elements) {
@@ -82,29 +147,36 @@ function arrayOfStringLiterals(node) {
   return values;
 }
 
-function objectLiteralRecord(node) {
+function objectLiteralRecord(
+  node: ts.Expression | undefined,
+): Record<string, ts.Expression> | undefined {
   if (!node || !ts.isObjectLiteralExpression(node)) return undefined;
-  const record = {};
+  const record: Record<string, ts.Expression> = {};
   for (const property of node.properties) {
-    const name =
-      ts.isPropertyAssignment(property) ||
-      ts.isShorthandPropertyAssignment(property)
-        ? ts.isIdentifier(property.name)
+    let name: string | undefined;
+    let value: ts.Expression;
+    if (ts.isShorthandPropertyAssignment(property)) {
+      name = property.name.text;
+      value = property.name;
+    } else if (ts.isPropertyAssignment(property)) {
+      name =
+        ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)
           ? property.name.text
-          : ts.isStringLiteral(property.name)
-            ? property.name.text
-            : undefined
-        : undefined;
+          : undefined;
+      value = property.initializer;
+    } else {
+      continue;
+    }
     if (!name) continue;
-    record[name] = ts.isShorthandPropertyAssignment(property)
-      ? property.name
-      : property.initializer;
+    record[name] = value;
   }
   return record;
 }
 
-function topLevelVariableInitializers(file) {
-  const found = [];
+function topLevelVariableInitializers(
+  file: ts.SourceFile,
+): Array<{ name: string; initializer: ts.Expression }> {
+  const found: Array<{ name: string; initializer: ts.Expression }> = [];
   file.forEachChild((statement) => {
     if (!ts.isVariableStatement(statement)) return;
     for (const declaration of statement.declarationList.declarations) {
@@ -120,7 +192,10 @@ function topLevelVariableInitializers(file) {
   return found;
 }
 
-function callWithIdentifier(expression, helperName) {
+function callWithIdentifier(
+  expression: ts.Expression,
+  helperName: string,
+): ts.Expression | undefined {
   if (
     !ts.isCallExpression(expression) ||
     !ts.isIdentifier(expression.expression) ||
@@ -132,7 +207,7 @@ function callWithIdentifier(expression, helperName) {
   return expression.arguments[0];
 }
 
-function isUnknownSchemaExpression(expression) {
+function isUnknownSchemaExpression(expression: ts.Expression): boolean {
   if (
     ts.isCallExpression(expression) &&
     ts.isPropertyAccessExpression(expression.expression) &&
@@ -147,8 +222,10 @@ function isUnknownSchemaExpression(expression) {
   );
 }
 
-function contractDefinitions(root) {
-  const definitions = new Map();
+function contractDefinitions(
+  root: string,
+): Map<string, ContractDefinition> {
+  const definitions = new Map<string, ContractDefinition>();
   for (const path of listFiles(root, SHARED_SCHEMA_DIRECTORY)) {
     const source = readText(root, path);
     const file = parseTypeScript(path, source);
@@ -160,7 +237,7 @@ function contractDefinitions(root) {
       if (!argument) continue;
       const values = objectLiteralRecord(argument);
       if (!values) continue;
-      const invalidSchemaFields = new Set();
+      const invalidSchemaFields = new Set<string>();
       for (const field of [
         "pathParamsSchema",
         "querySchema",
@@ -177,8 +254,8 @@ function contractDefinitions(root) {
   return definitions;
 }
 
-function manifestEntries(root) {
-  const manifests = [];
+function manifestEntries(root: string): ContractManifest[] {
+  const manifests: ContractManifest[] = [];
   for (const path of listFiles(root, SHARED_SCHEMA_DIRECTORY)) {
     const source = readText(root, path);
     const file = parseTypeScript(path, source);
@@ -202,7 +279,7 @@ function manifestEntries(root) {
       ) {
         throw new Error(`invalid admin contract manifest: ${path}#${name}`);
       }
-      const contracts = {};
+      const contracts: Record<string, ContractEntry> = {};
       for (const [contractName, entryExpression] of Object.entries(
         contractsRecord,
       )) {
@@ -255,11 +332,13 @@ function manifestEntries(root) {
   return manifests;
 }
 
-function decoratorsOf(node) {
+function decoratorsOf(node: ts.Node): readonly ts.Decorator[] {
   return ts.canHaveDecorators(node) ? (ts.getDecorators(node) ?? []) : [];
 }
 
-function decoratorCall(decorator) {
+function decoratorCall(
+  decorator: ts.Decorator,
+): { name: string; argument?: string } | undefined {
   const expression = decorator.expression;
   if (!ts.isCallExpression(expression)) return undefined;
   const callee = expression.expression;
@@ -274,16 +353,20 @@ function decoratorCall(decorator) {
   };
 }
 
-function decoratedMethods(root, directory, decoratorName) {
-  const methods = [];
+function decoratedMethods(
+  root: string,
+  directory: string,
+  decoratorName: string,
+): ProviderCall[] {
+  const methods: ProviderCall[] = [];
   for (const path of listFiles(root, directory)) {
     if (!path.endsWith(".controller.ts")) continue;
     const file = parseTypeScript(path, readText(root, path));
-    const visit = (node) => {
+    const visit = (node: ts.Node): void => {
       if (ts.isMethodDeclaration(node) && ts.isIdentifier(node.name)) {
         for (const decorator of decoratorsOf(node)) {
           const call = decoratorCall(decorator);
-          if (call?.name !== decoratorName) continue;
+          if (!call || call.name !== decoratorName) continue;
           methods.push({
             path,
             method: node.name.text,
@@ -299,7 +382,7 @@ function decoratedMethods(root, directory, decoratorName) {
   return methods;
 }
 
-function enclosingClassName(node) {
+function enclosingClassName(node: ts.Node): string | undefined {
   let current = node.parent;
   while (current) {
     if (ts.isClassDeclaration(current) && current.name) {
@@ -310,12 +393,12 @@ function enclosingClassName(node) {
   return undefined;
 }
 
-function registeredControllers(root) {
-  const registered = new Set();
+function registeredControllers(root: string): Set<string> {
+  const registered = new Set<string>();
   for (const path of listFiles(root, "apps/service-api/src")) {
     if (!path.endsWith(".module.ts")) continue;
     const file = parseTypeScript(path, readText(root, path));
-    const visit = (node) => {
+    const visit = (node: ts.Node): void => {
       if (ts.isDecorator(node)) {
         const expression = node.expression;
         if (
@@ -347,9 +430,12 @@ function registeredControllers(root) {
   return registered;
 }
 
-function requestImportBindings(file) {
-  const named = new Map();
-  const namespaces = new Set();
+function requestImportBindings(file: ts.SourceFile): {
+  named: Map<string, string>;
+  namespaces: Set<string>;
+} {
+  const named = new Map<string, string>();
+  const namespaces = new Set<string>();
   file.forEachChild((node) => {
     if (
       !ts.isImportDeclaration(node) ||
@@ -376,7 +462,14 @@ function requestImportBindings(file) {
   return { named, namespaces };
 }
 
-function isTransparentWrapper(node) {
+function isTransparentWrapper(
+  node: ts.Node,
+): node is
+  | ts.ParenthesizedExpression
+  | ts.AsExpression
+  | ts.TypeAssertion
+  | ts.NonNullExpression
+  | ts.SatisfiesExpression {
   return (
     ts.isParenthesizedExpression(node) ||
     ts.isAsExpression(node) ||
@@ -386,14 +479,14 @@ function isTransparentWrapper(node) {
   );
 }
 
-function unwrapTransparentExpression(expression) {
+function unwrapTransparentExpression(expression: ts.Expression): ts.Expression {
   let current = expression;
   while (isTransparentWrapper(current)) current = current.expression;
   return current;
 }
 
-function isAllowedRequestNamespaceUse(identifier) {
-  let current = identifier;
+function isAllowedRequestNamespaceUse(identifier: ts.Identifier): boolean {
+  let current: ts.Node = identifier;
   const property = current.parent;
   if (
     !ts.isPropertyAccessExpression(property) ||
@@ -411,8 +504,8 @@ function isAllowedRequestNamespaceUse(identifier) {
   );
 }
 
-function isAllowedNamedContractUse(identifier) {
-  let current = identifier;
+function isAllowedNamedContractUse(identifier: ts.Identifier): boolean {
+  let current: ts.Node = identifier;
   while (current.parent && isTransparentWrapper(current.parent)) {
     current = current.parent;
   }
@@ -421,7 +514,7 @@ function isAllowedNamedContractUse(identifier) {
   );
 }
 
-function isDeclarationOrImportIdentifier(identifier) {
+function isDeclarationOrImportIdentifier(identifier: ts.Identifier): boolean {
   const parent = identifier.parent;
   return (
     (ts.isImportClause(parent) && parent.name === identifier) ||
@@ -436,8 +529,8 @@ function isDeclarationOrImportIdentifier(identifier) {
   );
 }
 
-function isTypeOnlyUsage(identifier) {
-  let current = identifier;
+function isTypeOnlyUsage(identifier: ts.Identifier): boolean {
+  let current: ts.Node = identifier;
   while (current.parent) {
     if (ts.isTypeNode(current.parent)) return true;
     if (
@@ -451,7 +544,7 @@ function isTypeOnlyUsage(identifier) {
   return false;
 }
 
-function isForbiddenMigrationRuntimeIdentifier(node) {
+function isForbiddenMigrationRuntimeIdentifier(node: ts.Node): boolean {
   return (
     ts.isIdentifier(node) &&
     ["fetch", "globalThis", "window"].includes(node.text) &&
@@ -461,13 +554,16 @@ function isForbiddenMigrationRuntimeIdentifier(node) {
   );
 }
 
-function checkMigrationApiImportAllowlist(root, paths) {
-  const failures = [];
+function checkMigrationApiImportAllowlist(
+  root: string,
+  paths: string[],
+): string[] {
+  const failures: string[] = [];
   for (const path of paths) {
     if (!pathExists(root, path)) continue;
     const file = parseTypeScript(path, readText(root, path));
-    const requestNamespaces = new Set();
-    const requestNamedContracts = new Set();
+    const requestNamespaces = new Set<string>();
+    const requestNamedContracts = new Set<string>();
     file.forEachChild((node) => {
       if (
         !ts.isImportDeclaration(node) ||
@@ -525,7 +621,7 @@ function checkMigrationApiImportAllowlist(root, paths) {
       }
     });
 
-    const visit = (node) => {
+    const visit = (node: ts.Node): void => {
       if (
         ts.isIdentifier(node) &&
         requestNamespaces.has(node.text) &&
@@ -548,7 +644,10 @@ function checkMigrationApiImportAllowlist(root, paths) {
           `migration API named contract misuse: ${path} uses ${node.text} outside direct callAdminEndpointContract`,
         );
       }
-      if (isForbiddenMigrationRuntimeIdentifier(node)) {
+      if (
+        ts.isIdentifier(node) &&
+        isForbiddenMigrationRuntimeIdentifier(node)
+      ) {
         failures.push(
           `migration API network entry denied: ${path} uses ${node.text}`,
         );
@@ -566,8 +665,8 @@ function checkMigrationApiImportAllowlist(root, paths) {
   return failures;
 }
 
-function importedNetworkBindings(file) {
-  const bindings = new Map();
+function importedNetworkBindings(file: ts.SourceFile): Map<string, string> {
+  const bindings = new Map<string, string>();
   file.forEachChild((node) => {
     if (
       !ts.isImportDeclaration(node) ||
@@ -610,9 +709,9 @@ function importedNetworkBindings(file) {
   return bindings;
 }
 
-function declaredValueNames(file) {
-  const names = new Set();
-  const addBindingName = (binding) => {
+function declaredValueNames(file: ts.SourceFile): Set<string> {
+  const names = new Set<string>();
+  const addBindingName = (binding: ts.BindingName): void => {
     if (ts.isIdentifier(binding)) names.add(binding.text);
     if (
       ts.isObjectBindingPattern(binding) ||
@@ -623,7 +722,7 @@ function declaredValueNames(file) {
       }
     }
   };
-  const visit = (node) => {
+  const visit = (node: ts.Node): void => {
     if (
       ts.isImportDeclaration(node) &&
       node.importClause &&
@@ -655,8 +754,8 @@ function declaredValueNames(file) {
   return names;
 }
 
-function propertyAccessPath(expression) {
-  const names = [];
+function propertyAccessPath(expression: ts.Expression): string[] | undefined {
+  const names: string[] = [];
   let current = unwrapTransparentExpression(expression);
   while (
     ts.isPropertyAccessExpression(current) ||
@@ -680,11 +779,11 @@ function propertyAccessPath(expression) {
 }
 
 function migrationNetworkEntry(
-  expression,
-  requestBindings,
-  importedBindings,
-  declaredNames,
-) {
+  expression: ts.Expression,
+  requestBindings: { named: Map<string, string>; namespaces: Set<string> },
+  importedBindings: Map<string, string>,
+  declaredNames: Set<string>,
+): string | undefined {
   const path = propertyAccessPath(expression);
   if (!path) return undefined;
   const [root, ...properties] = path;
@@ -707,15 +806,18 @@ function migrationNetworkEntry(
   return undefined;
 }
 
-function migrationNetworkCalls(root, paths) {
-  const calls = [];
+function migrationNetworkCalls(root: string, paths: string[]): NetworkCall[] {
+  const calls: NetworkCall[] = [];
   for (const path of paths) {
     if (!pathExists(root, path)) continue;
     const file = parseTypeScript(path, readText(root, path));
     const requestBindings = requestImportBindings(file);
     const importedBindings = importedNetworkBindings(file);
     const declaredNames = declaredValueNames(file);
-    const visit = (node, enclosingFunction) => {
+    const visit = (
+      node: ts.Node,
+      enclosingFunction: string | undefined,
+    ): void => {
       let currentFunction = enclosingFunction;
       if (
         (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node)) &&
@@ -732,15 +834,19 @@ function migrationNetworkCalls(root, paths) {
           declaredNames,
         );
         if (entry) {
+          const contractArgument =
+            entry === "callAdminEndpointContract" &&
+            node.arguments.length > 0
+              ? unwrapTransparentExpression(node.arguments[0])
+              : undefined;
           calls.push({
             path,
             method: currentFunction,
             entry,
             contract:
-              entry === "callAdminEndpointContract" &&
-              node.arguments.length > 0 &&
-              ts.isIdentifier(unwrapTransparentExpression(node.arguments[0]))
-                ? unwrapTransparentExpression(node.arguments[0]).text
+              contractArgument !== undefined &&
+              ts.isIdentifier(contractArgument)
+                ? contractArgument.text
                 : undefined,
           });
         }
@@ -752,7 +858,7 @@ function migrationNetworkCalls(root, paths) {
   return calls;
 }
 
-function isStaticallyDead(node) {
+function isStaticallyDead(node: ts.Node): boolean {
   let current = node;
   while (current.parent) {
     const parent = current.parent;
@@ -769,7 +875,7 @@ function isStaticallyDead(node) {
   return false;
 }
 
-function isAfterUnconditionalExit(node, parent) {
+function isAfterUnconditionalExit(node: ts.Node, parent: ts.Node): boolean {
   if (!ts.isBlock(parent)) return false;
   const statement = findContainingStatement(node, parent);
   if (!statement) return false;
@@ -782,13 +888,16 @@ function isAfterUnconditionalExit(node, parent) {
     );
 }
 
-function findContainingStatement(node, block) {
+function findContainingStatement(
+  node: ts.Node,
+  block: ts.Block,
+): ts.Statement | undefined {
   let current = node;
   while (current && current.parent !== block) current = current.parent;
   return current && ts.isStatement(current) ? current : undefined;
 }
 
-function isDescendantOf(node, ancestor) {
+function isDescendantOf(node: ts.Node, ancestor: ts.Node): boolean {
   let current = node;
   while (current) {
     if (current === ancestor) return true;
@@ -797,16 +906,19 @@ function isDescendantOf(node, ancestor) {
   return false;
 }
 
-function checkMigratedProviderBareRoutes(root, manifest) {
-  const failures = [];
+function checkMigratedProviderBareRoutes(
+  root: string,
+  manifest: ContractManifest,
+): string[] {
+  const failures: string[] = [];
   for (const path of manifest.controllerPaths) {
     if (!pathExists(root, path)) continue;
     const file = parseTypeScript(path, readText(root, path));
-    const visit = (node) => {
+    const visit = (node: ts.Node): void => {
       if (ts.isMethodDeclaration(node) && ts.isIdentifier(node.name)) {
         const decoratorNames = decoratorsOf(node)
           .map((decorator) => decoratorCall(decorator)?.name)
-          .filter(Boolean);
+          .filter((name): name is string => name !== undefined);
         const hasRoute = decoratorNames.some((name) =>
           ROUTE_DECORATORS.has(name),
         );
@@ -825,8 +937,15 @@ function checkMigratedProviderBareRoutes(root, manifest) {
   return failures;
 }
 
-function findExportedCallerFunction(file, methodName) {
-  let found;
+function findExportedCallerFunction(
+  file: ts.SourceFile,
+  methodName: string,
+): ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression | undefined {
+  let found:
+    | ts.FunctionDeclaration
+    | ts.ArrowFunction
+    | ts.FunctionExpression
+    | undefined;
   file.forEachChild((statement) => {
     if (found) return;
     if (ts.isFunctionDeclaration(statement)) {
@@ -860,12 +979,18 @@ function findExportedCallerFunction(file, methodName) {
   return found;
 }
 
-function zInputTypeQueryReference(typeNode) {
-  const type = unwrapTransparentExpression(typeNode);
+function zInputTypeQueryReference(
+  typeNode: ts.TypeNode,
+):
+  | { kind: "schema"; name: string }
+  | { kind: "contractBody"; contract: string }
+  | undefined {
+  let type = typeNode;
+  while (ts.isParenthesizedTypeNode(type)) type = type.type;
   if (!ts.isTypeReferenceNode(type) || type.typeArguments?.length !== 1) {
     return undefined;
   }
-  const typeName = type.typeName;
+  const typeName: ts.Node = type.typeName;
   const isZInput =
     (ts.isQualifiedName(typeName) &&
       ts.isIdentifier(typeName.left) &&
@@ -878,20 +1003,22 @@ function zInputTypeQueryReference(typeNode) {
   if (!isZInput) return undefined;
   const argument = type.typeArguments[0];
   if (!ts.isTypeQueryNode(argument)) return undefined;
-  if (ts.isIdentifier(argument.exprName)) {
-    return { kind: "schema", name: argument.exprName.text };
+  const exprName: ts.Node = argument.exprName;
+  if (ts.isIdentifier(exprName)) {
+    return { kind: "schema", name: exprName.text };
   }
   if (
-    (ts.isPropertyAccessExpression(argument.exprName) &&
-      ts.isIdentifier(argument.exprName.expression) &&
-      argument.exprName.name.text === "bodySchema") ||
-    (ts.isQualifiedName(argument.exprName) &&
-      ts.isIdentifier(argument.exprName.left) &&
-      argument.exprName.right.text === "bodySchema")
+    (ts.isPropertyAccessExpression(exprName) &&
+      ts.isIdentifier(exprName.expression) &&
+      exprName.name.text === "bodySchema") ||
+    (ts.isQualifiedName(exprName) &&
+      ts.isIdentifier(exprName.left) &&
+      exprName.right.text === "bodySchema")
   ) {
-    const contract = ts.isPropertyAccessExpression(argument.exprName)
-      ? argument.exprName.expression
-      : argument.exprName.left;
+    const contract = ts.isPropertyAccessExpression(exprName)
+      ? exprName.expression
+      : exprName.left;
+    if (!ts.isIdentifier(contract)) return undefined;
     return {
       kind: "contractBody",
       contract: contract.text,
@@ -901,12 +1028,12 @@ function zInputTypeQueryReference(typeNode) {
 }
 
 function checkCallerWriteBodySchema(
-  file,
-  methodName,
-  contractName,
-  bodySchemaIdentifier,
-) {
-  const failures = [];
+  file: ts.SourceFile,
+  methodName: string,
+  contractName: string,
+  bodySchemaIdentifier: string,
+): string[] {
+  const failures: string[] = [];
   const fn = findExportedCallerFunction(file, methodName);
   if (!fn) return failures;
   for (const parameter of fn.parameters) {
@@ -936,10 +1063,14 @@ function checkCallerWriteBodySchema(
   return failures;
 }
 
-function checkContractSliceCoverage(root, manifest, context) {
-  const failures = [];
-  const callerHits = [];
-  const providerHits = [];
+function checkContractSliceCoverage(
+  root: string,
+  manifest: ContractManifest,
+  context: CoverageContext,
+): CoverageResult {
+  const failures: string[] = [];
+  const callerHits: string[] = [];
+  const providerHits: string[] = [];
   const { definitions, providers, registered } = context;
   const migrationCalls = migrationNetworkCalls(root, manifest.callerPaths);
 
@@ -991,10 +1122,10 @@ function checkContractSliceCoverage(root, manifest, context) {
           if (
             field in definition.values &&
             (!ts.isIdentifier(expression) ||
-              !expectedReferences.includes(expression.text))
+              !(expectedReferences ?? []).includes(expression.text))
           ) {
             failures.push(
-              `${manifest.slice} contract definition schema drift: ${name} ${field} expected ${expectedReferences.join(" or ")}`,
+              `${manifest.slice} contract definition schema drift: ${name} ${field} expected ${(expectedReferences ?? []).join(" or ")}`,
             );
           }
         }
@@ -1019,10 +1150,13 @@ function checkContractSliceCoverage(root, manifest, context) {
     }
 
     if (entry.callerPath && entry.callerMethods) {
+      const callerPath = entry.callerPath;
+      const callerMethods = entry.callerMethods;
       const callerNetworkCalls = migrationCalls.filter(
         (candidate) =>
-          candidate.path === entry.callerPath &&
-          entry.callerMethods.includes(candidate.method),
+          candidate.path === callerPath &&
+          candidate.method !== undefined &&
+          callerMethods.includes(candidate.method),
       );
       const matchingCalls = callerNetworkCalls.filter(
         (candidate) =>
@@ -1057,11 +1191,13 @@ function checkContractSliceCoverage(root, manifest, context) {
       definition &&
       ts.isIdentifier(definition.values.bodySchema)
     ) {
+      const callerPath = entry.callerPath;
+      const callerMethods = entry.callerMethods;
       const callerFile = parseTypeScript(
-        entry.callerPath,
-        readText(root, entry.callerPath),
+        callerPath,
+        readText(root, callerPath),
       );
-      for (const methodName of entry.callerMethods) {
+      for (const methodName of callerMethods) {
         failures.push(
           ...checkCallerWriteBodySchema(
             callerFile,
@@ -1079,20 +1215,23 @@ function checkContractSliceCoverage(root, manifest, context) {
   return { failures, callerHits, providerHits, bareRouteFailures };
 }
 
-function uncoveredAdminBareRoutes(root, manifests) {
+function uncoveredAdminBareRoutes(
+  root: string,
+  manifests: ContractManifest[],
+): string[] {
   const lockedControllers = new Set(
     manifests.flatMap((manifest) => manifest.controllerPaths),
   );
-  const uncovered = [];
+  const uncovered: string[] = [];
   for (const path of listFiles(root, "apps/service-api/src")) {
     if (!path.endsWith(".controller.ts")) continue;
     if (lockedControllers.has(path)) continue;
     const file = parseTypeScript(path, readText(root, path));
-    const visit = (node) => {
+    const visit = (node: ts.Node): void => {
       if (ts.isMethodDeclaration(node) && ts.isIdentifier(node.name)) {
         const decoratorNames = decoratorsOf(node)
           .map((decorator) => decoratorCall(decorator)?.name)
-          .filter(Boolean);
+          .filter((name): name is string => name !== undefined);
         const hasRoute = decoratorNames.some((name) =>
           ROUTE_DECORATORS.has(name),
         );
@@ -1109,11 +1248,14 @@ function uncoveredAdminBareRoutes(root, manifests) {
   return uncovered.sort();
 }
 
-function uncoveredLegacyCallerModules(root, manifests) {
+function uncoveredLegacyCallerModules(
+  root: string,
+  manifests: ContractManifest[],
+): string[] {
   const lockedCallers = new Set(
     manifests.flatMap((manifest) => manifest.callerPaths),
   );
-  const uncovered = [];
+  const uncovered: string[] = [];
   for (const path of listFiles(root, ADMIN_API_DIRECTORY)) {
     if (path.endsWith(".spec.ts") || EXCLUDED_API_FILES.has(path)) continue;
     if (lockedCallers.has(path)) continue;
@@ -1131,9 +1273,9 @@ function uncoveredLegacyCallerModules(root, manifests) {
   return uncovered.sort();
 }
 
-export function checkAdminApiContracts(options = {}) {
+export function checkAdminApiContracts(options: { root?: string } = {}): CheckResult {
   const root = options.root ?? process.cwd();
-  const failures = [];
+  const failures: string[] = [];
   const manifests = manifestEntries(root);
   const definitions = contractDefinitions(root);
   const providers = decoratedMethods(
@@ -1142,8 +1284,8 @@ export function checkAdminApiContracts(options = {}) {
     "AdminEndpointContract",
   );
   const registered = registeredControllers(root);
-  const coverage = {};
-  const checks = [];
+  const coverage: Record<string, CoverageResult> = {};
+  const checks: Array<{ name: string; passed: boolean; detail: string }> = [];
 
   for (const manifest of manifests) {
     const result = checkContractSliceCoverage(root, manifest, {
@@ -1175,7 +1317,7 @@ export function checkAdminApiContracts(options = {}) {
   };
 }
 
-function printResult(result) {
+function printResult(result: CheckResult): void {
   for (const check of result.checks) {
     const mark = check.passed ? "ok" : "not ok";
     console.log(`${mark} - ${check.name}: ${check.detail}`);

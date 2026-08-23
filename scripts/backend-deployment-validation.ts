@@ -3,7 +3,10 @@ const DIGEST_PINNED_IMAGE_RE =
 const FULL_SOURCE_COMMIT_RE = /^[a-f0-9]{40}$/;
 const SHA256_RE = /^sha256:[a-f0-9]{64}$/;
 
-export function validateDigestPinnedImage(value, name = "image") {
+export function validateDigestPinnedImage(
+  value: string,
+  name = "image",
+): string {
   if (!DIGEST_PINNED_IMAGE_RE.test(value)) {
     throw new Error(
       `${name} must be a digest-pinned image reference in the form <image>@sha256:<64hex>`,
@@ -16,16 +19,24 @@ export function validateBackendReleaseSet({
   vemSourceCommit,
   serviceApi,
   adminUi,
-}) {
+}: {
+  vemSourceCommit: string;
+  serviceApi?: BackendReleaseComponent;
+  adminUi?: BackendReleaseComponent;
+}): {
+  vemSourceCommit: string;
+  serviceApi?: BackendReleaseComponent;
+  adminUi?: BackendReleaseComponent;
+} {
   if (!FULL_SOURCE_COMMIT_RE.test(vemSourceCommit)) {
     throw new Error("VEM source commit must be a full lowercase Git commit");
   }
   for (const [name, component] of [
     ["Service API", serviceApi],
     ["Admin UI", adminUi],
-  ]) {
-    validateDigestPinnedImage(component?.image, `${name} image`);
-    if (!SHA256_RE.test(component?.provenanceSha256)) {
+  ] as Array<[string, BackendReleaseComponent | undefined]>) {
+    validateDigestPinnedImage(component?.image ?? "", `${name} image`);
+    if (!SHA256_RE.test(component?.provenanceSha256 ?? "")) {
       throw new Error(`${name} provenance must be a SHA-256 digest`);
     }
     if (component?.sourceCommit !== vemSourceCommit) {
@@ -37,8 +48,8 @@ export function validateBackendReleaseSet({
   return { vemSourceCommit, serviceApi, adminUi };
 }
 
-export function validatePaymentWebhookBaseUrl(value) {
-  let parsed;
+export function validatePaymentWebhookBaseUrl(value: string): string {
+  let parsed: URL;
   try {
     parsed = new URL(value);
   } catch {
@@ -53,10 +64,23 @@ export function validatePaymentWebhookBaseUrl(value) {
   return value;
 }
 
-export function validateAdminProxyHealth(raw) {
-  let body;
+interface BackendReleaseComponent {
+  image: string;
+  provenanceSha256: string;
+  sourceCommit: string;
+}
+
+interface AdminHealthBody {
+  data?: {
+    database?: string;
+    mqtt?: string;
+  };
+}
+
+export function validateAdminProxyHealth(raw: string): AdminHealthBody {
+  let body: AdminHealthBody;
   try {
-    body = JSON.parse(raw);
+    body = JSON.parse(raw) as AdminHealthBody;
   } catch {
     throw new Error("Admin UI API proxy did not return JSON");
   }
