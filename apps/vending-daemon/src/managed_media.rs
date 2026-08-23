@@ -38,6 +38,78 @@ const CLEANUP_BATCH_SIZE: usize = 32;
 const DOWNLOAD_WORKERS: usize = 4;
 const VERIFY_BUFFER_BYTES: usize = 64 * 1024;
 
+/// The durable phases of a Managed Media Manifest Transaction, encoded in the
+/// on-disk `.active-media.transaction` marker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ManifestTransactionPhase {
+    /// No marker exists: the current manifest is the clean committed state.
+    Absent,
+    /// The replacement intent was recorded and synced before the atomic swap.
+    PendingReplacement,
+    /// The manifest swap and its directory sync completed; the completed
+    /// label has not been recorded yet.
+    CompletionPending,
+    /// The completed label was recorded; marker removal is post-commit GC.
+    CompletedReplacement,
+}
+
+impl ManifestTransactionPhase {
+    pub(crate) const PENDING_REPLACEMENT_MARKER: &'static [u8] = b"pending replacement\n";
+    pub(crate) const COMPLETION_PENDING_MARKER: &'static [u8] = b"completion pending\n";
+    pub(crate) const COMPLETED_REPLACEMENT_MARKER: &'static [u8] = b"completed replacement\n";
+
+    pub(crate) fn parse(marker: Option<&[u8]>) -> Result<Self, Vec<u8>> {
+        match marker {
+            None => Ok(Self::Absent),
+            Some(Self::PENDING_REPLACEMENT_MARKER) => Ok(Self::PendingReplacement),
+            Some(Self::COMPLETION_PENDING_MARKER) => Ok(Self::CompletionPending),
+            Some(Self::COMPLETED_REPLACEMENT_MARKER) => Ok(Self::CompletedReplacement),
+            Some(other) => Err(other.to_vec()),
+        }
+    }
+}
+
+/// What startup does after classifying the transaction marker. The manifest
+/// is always one complete atomically-replaced state, so every recognized
+/// phase trusts the last manifest; only unclassifiable or unreadable markers
+/// fail closed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ManifestStartupRecovery {
+    /// Adopt the last manifest, GC the cache to its interest set, and remove
+    /// any leftover transaction marker.
+    Trust,
+    /// Unrecognized marker bytes: adopt no manifest, GC all cached objects,
+    /// and mark the cache unavailable.
+    UnknownMarker,
+    /// The marker could not be read: adopt no manifest, GC all cached objects,
+    /// and mark the cache unavailable.
+    MarkerReadError(String),
+    /// The marker's existence could not be inspected: adopt no manifest, leave
+    /// cached objects untouched for diagnosis, and mark the cache unavailable.
+    MarkerInspectionError(String),
+}
+
+pub(crate) fn classify_manifest_startup(
+    marker_present: Result<bool, String>,
+    marker_bytes: Result<Option<Vec<u8>>, String>,
+) -> ManifestStartupRecovery {
+    match marker_present {
+        Err(error) => ManifestStartupRecovery::MarkerInspectionError(format!(
+            "inspect manifest transaction marker: {error}"
+        )),
+        Ok(false) => ManifestStartupRecovery::Trust,
+        Ok(true) => match marker_bytes {
+            Err(error) => ManifestStartupRecovery::MarkerReadError(format!(
+                "read manifest transaction marker: {error}"
+            )),
+            Ok(bytes) => match ManifestTransactionPhase::parse(bytes.as_deref()) {
+                Ok(_) => ManifestStartupRecovery::Trust,
+                Err(_) => ManifestStartupRecovery::UnknownMarker,
+            },
+        },
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaDescriptor {
@@ -574,51 +646,32 @@ impl ManagedMediaCache {
         let root = root.into();
         fs::create_dir_all(&root).map_err(|error| format!("create media cache: {error}"))?;
         let transaction = root.join(".active-media.transaction");
-        let (marker_present, marker_metadata_error) =
-            match manifest_directory_sync.transaction_marker_present(&transaction) {
-                Ok(present) => (present, None),
-                Err(error) => (false, Some(error)),
-            };
-        let (transaction_left_behind, completed_transaction_error) = if marker_present {
-            match fs::read(&transaction) {
-                Ok(phase) if phase == b"completed replacement\n" => (false, None),
-                Ok(phase)
-                    if phase == b"pending replacement\n" || phase == b"completion pending\n" =>
-                {
-                    // A crash between the pending marker and the completed
-                    // phase can leave an atomically-replaced valid manifest.
-                    // The manifest is always one complete state, so recovery
-                    // trusts it and lets the next reconciliation supersede it;
-                    // incomplete media objects are still rejected per-asset.
-                    (false, None)
-                }
-                Ok(_) => (true, None),
-                Err(error) => (
-                    true,
-                    Some(format!("read manifest transaction marker: {error}")),
-                ),
-            }
-        } else {
-            (false, None)
+        let marker_present = manifest_directory_sync.transaction_marker_present(&transaction);
+        let marker_bytes = match &marker_present {
+            Ok(true) => fs::read(&transaction)
+                .map(Some)
+                .map_err(|error| format!("read manifest transaction marker: {error}")),
+            Ok(false) | Err(_) => Ok(None),
         };
-        let persisted = (!transaction_left_behind
-            && marker_metadata_error.is_none()
-            && completed_transaction_error.is_none())
-        .then(|| fs::read(root.join("active-media.json")).ok())
-        .flatten()
-        .and_then(|bytes| serde_json::from_slice::<ActiveMediaManifest>(&bytes).ok())
-        .and_then(|manifest| {
-            (!manifest.generation.trim().is_empty())
-                .then_some(manifest)
-                .and_then(|manifest| {
-                    normalize_interest_set(manifest.assets)
-                        .ok()
-                        .map(|interest| ActiveMediaManifest {
-                            generation: manifest.generation,
-                            assets: interest.candidates,
-                        })
-                })
-        });
+        let recovery = classify_manifest_startup(marker_present.clone(), marker_bytes);
+        let trust_manifest = matches!(recovery, ManifestStartupRecovery::Trust);
+        let skip_inventory = matches!(recovery, ManifestStartupRecovery::MarkerInspectionError(_));
+        let persisted = trust_manifest
+            .then(|| fs::read(root.join("active-media.json")).ok())
+            .flatten()
+            .and_then(|bytes| serde_json::from_slice::<ActiveMediaManifest>(&bytes).ok())
+            .and_then(|manifest| {
+                (!manifest.generation.trim().is_empty())
+                    .then_some(manifest)
+                    .and_then(|manifest| {
+                        normalize_interest_set(manifest.assets)
+                            .ok()
+                            .map(|interest| ActiveMediaManifest {
+                                generation: manifest.generation,
+                                assets: interest.candidates,
+                            })
+                    })
+            });
         // Inventory cache data during recovery.  A cache object without a
         // current valid manifest is never a recoverable source of truth.
         let allowed = persisted
@@ -631,7 +684,7 @@ impl ManagedMediaCache {
                     .collect::<HashSet<_>>()
             })
             .unwrap_or_default();
-        if marker_metadata_error.is_none() {
+        if !skip_inventory {
             if let Ok(entries) = fs::read_dir(&root) {
                 for entry in entries.flatten() {
                     let path = entry.path();
@@ -704,21 +757,26 @@ impl ManagedMediaCache {
                 }
             })
             .unwrap_or_default();
-        if marker_present && transaction_left_behind == false {
+        if marker_present.as_ref().is_ok_and(|present| *present) && trust_manifest {
             // A recovered pending-phase marker was only evidence of an
             // interrupted durable write; the manifest itself is authoritative.
             // Clear it so the next reconciliation starts from a clean state.
             let _ = fs::remove_file(&transaction);
         }
-        if let Some(error) = marker_metadata_error.or(completed_transaction_error) {
-            initial_state.fatal_error = Some(format!(
-                "managed media cache cannot inspect manifest transaction marker; cache is unavailable: {error}"
-            ));
-        } else if transaction_left_behind {
-            initial_state.fatal_error = Some(
-                "managed media cache has an incomplete manifest transaction; cache is unavailable"
-                    .to_string(),
-            );
+        match &recovery {
+            ManifestStartupRecovery::Trust => {}
+            ManifestStartupRecovery::UnknownMarker => {
+                initial_state.fatal_error = Some(
+                    "managed media cache has an incomplete manifest transaction; cache is unavailable"
+                        .to_string(),
+                );
+            }
+            ManifestStartupRecovery::MarkerReadError(error)
+            | ManifestStartupRecovery::MarkerInspectionError(error) => {
+                initial_state.fatal_error = Some(format!(
+                    "managed media cache cannot inspect manifest transaction marker; cache is unavailable: {error}"
+                ));
+            }
         }
         let cache = Self {
             root: Arc::new(root),
@@ -1356,7 +1414,11 @@ impl ManagedMediaCache {
             }
         };
         let transaction = self.root.join(".active-media.transaction");
-        write_durable(&transaction, b"pending replacement\n").map_err(|error| {
+        write_durable(
+            &transaction,
+            ManifestTransactionPhase::PENDING_REPLACEMENT_MARKER,
+        )
+        .map_err(|error| {
             ManifestPersistenceError::ordinary(format!(
                 "manifest persistence: write transaction marker: {error}"
             ))
@@ -1422,7 +1484,10 @@ impl ManagedMediaCache {
         // pending marker.  A failed completion flush can therefore never
         // erase the only evidence needed to fail closed after a failed
         // rollback; successful restart recognizes this completed phase.
-        if let Err(error) = write_durable(&transaction, b"completion pending\n") {
+        if let Err(error) = write_durable(
+            &transaction,
+            ManifestTransactionPhase::COMPLETION_PENDING_MARKER,
+        ) {
             drop(commit);
             return self
                 .rollback_manifest(
@@ -1444,7 +1509,10 @@ impl ManagedMediaCache {
                 )
                 .await;
         }
-        if let Err(error) = write_durable(&transaction, b"completed replacement\n") {
+        if let Err(error) = write_durable(
+            &transaction,
+            ManifestTransactionPhase::COMPLETED_REPLACEMENT_MARKER,
+        ) {
             // The pending phase is already directory durable.  Do not remove
             // it or roll back an accepted replacement if merely recording the
             // completed label fails; startup will fail closed on pending.
