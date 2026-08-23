@@ -5,7 +5,19 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-function option(args, name) {
+type JsonRecord = Record<string, unknown>;
+
+function recordValue(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? (value as unknown[]) : [];
+}
+
+function option(args: string[], name: string): string {
   const index = args.indexOf(`--${name}`);
   const value = index >= 0 ? args[index + 1] : null;
   if (!value || value.startsWith("--"))
@@ -13,8 +25,8 @@ function option(args, name) {
   return value;
 }
 
-function repeatableOption(args, name) {
-  const values = [];
+function repeatableOption(args: string[], name: string): string[] {
+  const values: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
     if (args[index] !== `--${name}`) continue;
     values.push(option(args.slice(index), name));
@@ -23,7 +35,15 @@ function repeatableOption(args, name) {
   return values;
 }
 
-function run(command, args, options = {}) {
+function run(
+  command: string,
+  args: string[],
+  options: {
+    cwd?: string;
+    capture?: boolean;
+    allowed?: number[];
+  } = {},
+): Promise<{ code: number; stdout: string }> {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
@@ -33,14 +53,17 @@ function run(command, args, options = {}) {
     child.stdout?.on("data", (chunk) => (stdout += chunk));
     child.once("error", reject);
     child.once("exit", (code) => {
-      if (code === 0 || options.allowed?.includes(code)) {
-        resolvePromise({ code, stdout });
+      if (
+        code !== null &&
+        (code === 0 || options.allowed?.includes(code))
+      ) {
+        resolvePromise({ code: code ?? -1, stdout });
       } else reject(new Error(`${command} exited with ${code}`));
     });
   });
 }
 
-export function parseTriggerOptions(args) {
+export function parseTriggerOptions(args: string[]): JsonRecord {
   if (args[0] !== "run") {
     throw new Error("usage: runtime-testbed-trigger.ts run --mode ...");
   }
@@ -64,47 +87,60 @@ export function parseTriggerOptions(args) {
   return { mode, focus, commit, config: resolve(config), out: resolve(out) };
 }
 
-async function main() {
+async function main(): Promise<void> {
   const options = parseTriggerOptions(process.argv.slice(2));
-  const hostConfig = JSON.parse(await readFile(options.config, "utf8"));
+  const hostConfig = JSON.parse(
+    await readFile(String(options.config), "utf8"),
+  ) as JsonRecord;
   if (hostConfig.schemaVersion !== "vem-runtime-testbed-host/v1") {
     throw new Error("invalid runtime testbed host config");
   }
-  const dirty = await run("git", ["status", "--porcelain"], { capture: true });
-  if (dirty.stdout.trim()) throw new Error("initiating worktree must be clean");
+  const dirty = recordValue(
+    await run("git", ["status", "--porcelain"], { capture: true }),
+  );
+  if (String(dirty.stdout).trim())
+    throw new Error("initiating worktree must be clean");
   await run("git", ["cat-file", "-e", `${options.commit}^{commit}`]);
-  await run("git", ["init", "--bare", hostConfig.mirrorPath]);
+  await run("git", ["init", "--bare", String(hostConfig.mirrorPath)]);
   await run("git", [
     "push",
     "--force",
-    hostConfig.mirrorPath,
+    String(hostConfig.mirrorPath),
     `${options.commit}:refs/vem/requests/${options.commit}`,
   ]);
-  const result = await run(
+  const result = recordValue(
+    await run(
     process.execPath,
     [
       new URL("./runtime-testbed-orchestrator.ts", import.meta.url).pathname,
       "run",
       "--mode",
-      options.mode,
-      ...options.focus.flatMap((name) => ["--focus", name]),
+      String(options.mode),
+      ...arrayValue(options.focus).flatMap((name) => [
+        "--focus",
+        String(name),
+      ]),
       "--commit",
-      options.commit,
+      String(options.commit),
       "--config",
-      options.config,
+      String(options.config),
     ],
-    { capture: true, allowed: [1, 2, 75] },
+      { capture: true, allowed: [1, 2, 75] },
+    ),
   );
-  const line = result.stdout.trim().split(/\r?\n/).at(-1);
-  const callerResult = JSON.parse(line);
-  await mkdir(dirname(options.out), { recursive: true });
+  const line = String(result.stdout).trim().split(/\r?\n/).at(-1);
+  if (line === undefined) {
+    throw new Error("runtime testbed trigger produced no caller result");
+  }
+  const callerResult = JSON.parse(line) as JsonRecord;
+  await mkdir(dirname(String(options.out)), { recursive: true });
   await writeFile(
-    options.out,
+    String(options.out),
     `${JSON.stringify(callerResult, null, 2)}\n`,
     "utf8",
   );
   process.stdout.write(`${JSON.stringify(callerResult)}\n`);
-  process.exitCode = result.code;
+  process.exitCode = Number(result.code);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
