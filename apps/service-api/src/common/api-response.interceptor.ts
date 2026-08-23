@@ -46,7 +46,7 @@ export class ApiResponseInterceptor<T> implements NestInterceptor<
     return next.handle().pipe(
       map((data) => {
         const responseData = contract
-          ? parseAdminApiResponse(contract, data)
+          ? parseAdminApiResponse(contract, toWireValue(data))
           : data;
         return {
           code: 0,
@@ -56,4 +56,15 @@ export class ApiResponseInterceptor<T> implements NestInterceptor<
       }),
     );
   }
+}
+
+function toWireValue(value: unknown): unknown {
+  if (value instanceof Date) return value.toISOString();
+  if (Array.isArray(value)) return value.map((item) => toWireValue(item));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, child]) => [key, toWireValue(child)]),
+    );
+  }
+  return value;
 }

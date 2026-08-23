@@ -2,8 +2,10 @@ import type { CallHandler, ExecutionContext } from "@nestjs/common";
 
 import { Reflector } from "@nestjs/core";
 import { adminProductDisplayImageUploadContract } from "@vem/shared";
+import { defineAdminEndpointContract } from "@vem/shared";
 import { firstValueFrom, of } from "rxjs";
 import { describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 import { ApiResponseInterceptor } from "./api-response.interceptor";
 
@@ -46,5 +48,42 @@ describe("ApiResponseInterceptor", () => {
         } as CallHandler),
       ),
     ).rejects.toThrow();
+  });
+
+  it("validates the wire representation of Date fields, not the in-memory object", async () => {
+    const contract = defineAdminEndpointContract({
+      method: "GET",
+      path: "/machines/:id",
+      pathParamsSchema: z.strictObject({}),
+      querySchema: z.strictObject({}),
+      bodySchema: z.strictObject({}),
+      responseSchema: z.strictObject({
+        id: z.string(),
+        createdAt: z.iso.datetime(),
+      }),
+    });
+    const reflector = {
+      get: vi.fn().mockReturnValue(contract),
+    } as unknown as Reflector;
+    const interceptor = new ApiResponseInterceptor(reflector);
+
+    await expect(
+      firstValueFrom(
+        interceptor.intercept(context, {
+          handle: () =>
+            of({
+              id: "machine-1",
+              createdAt: new Date("2026-07-05T00:00:00.000Z"),
+            }),
+        } as CallHandler),
+      ),
+    ).resolves.toEqual({
+      code: 0,
+      message: "ok",
+      data: {
+        id: "machine-1",
+        createdAt: "2026-07-05T00:00:00.000Z",
+      },
+    });
   });
 });
