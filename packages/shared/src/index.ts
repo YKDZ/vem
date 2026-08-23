@@ -1,4 +1,5 @@
 export * from "./admin-api-contract";
+export * from "./admin-contract-manifest";
 export * from "./enums/access";
 export * from "./enums/catalog";
 export * from "./enums/hardware";

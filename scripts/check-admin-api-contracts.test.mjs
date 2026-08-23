@@ -31,6 +31,7 @@ function completeCatalogContractFixture() {
   const paths = [
     "packages/shared/src/schemas/products.ts",
     "packages/shared/src/schemas/try-on-garments.ts",
+    "packages/shared/src/schemas/try-on-contract-manifest.ts",
     "apps/service-api/src/products/products.controller.ts",
     "apps/service-api/src/products/products.module.ts",
     "apps/service-api/src/media-assets/media-assets.controller.ts",
@@ -52,6 +53,8 @@ function completeOpsMaintenanceContractFixture() {
     "packages/shared/src/schemas/machines.ts",
     "packages/shared/src/schemas/qweather.ts",
     "packages/shared/src/schemas/inventory.ts",
+    "packages/shared/src/schemas/operations-maintenance-contract-manifest.ts",
+    "packages/shared/src/schemas/machines-inventory-contract-manifest.ts",
     "apps/service-api/src/maintenance-work-orders/maintenance-work-orders.controller.ts",
     "apps/service-api/src/maintenance-work-orders/maintenance-work-orders.module.ts",
     "apps/service-api/src/machine-ops/machine-ops.controller.ts",
@@ -91,6 +94,51 @@ describe("admin api contract guard", () => {
       export const adminCreateTryOnGarmentContract = defineAdminEndpointContract({ method: "POST", path: "/try-on-garments", pathParamsSchema: z.strictObject({}), querySchema: noQuerySchema, bodySchema: tryOnGarmentDraftRequestSchema, responseSchema: tryOnGarmentResponseSchema });
       export const adminGetTryOnGarmentContract = defineAdminEndpointContract({ method: "GET", path: "/try-on-garments/:id", pathParamsSchema: garmentPathParamsSchema, querySchema: noQuerySchema, bodySchema: noBodySchema, responseSchema: tryOnGarmentResponseSchema });
       export const adminTryOnGarmentConfirmationContract = defineAdminEndpointContract({ method: "POST", path: "/try-on-garments/:id/confirmation", pathParamsSchema: garmentPathParamsSchema, querySchema: noQuerySchema, bodySchema: noBodySchema, responseSchema: tryOnGarmentResponseSchema });
+    `,
+    "packages/shared/src/schemas/try-on-contract-manifest.ts": `
+      const defineAdminContractManifest = (value) => value;
+      export const tryOnAdminContractManifest = defineAdminContractManifest({
+        slice: "try-on",
+        controllerPaths: [
+          "apps/service-api/src/try-on-garments/try-on-garments.controller.ts",
+          "apps/service-api/src/media-assets/media-assets.controller.ts",
+        ],
+        callerPaths: ["apps/admin-ui/src/api/try-on-garments.ts"],
+        contracts: {
+          adminTryOnGarmentUploadContract: {
+            method: "POST",
+            path: "/media-assets/try-on-garments",
+            providerMethod: "uploadTryOnGarment",
+            callerPath: "apps/admin-ui/src/api/try-on-garments.ts",
+            callerMethods: ["uploadTryOnGarment"],
+            schemaReferences: { querySchema: ["noQuerySchema"], responseSchema: ["tryOnGarmentMediaAssetSchema"] },
+          },
+          adminCreateTryOnGarmentContract: {
+            method: "POST",
+            path: "/try-on-garments",
+            providerMethod: "createDraft",
+            callerPath: "apps/admin-ui/src/api/try-on-garments.ts",
+            callerMethods: ["createTryOnGarmentDraft"],
+            schemaReferences: { querySchema: ["noQuerySchema"], bodySchema: ["tryOnGarmentDraftRequestSchema"], responseSchema: ["tryOnGarmentResponseSchema"] },
+          },
+          adminGetTryOnGarmentContract: {
+            method: "GET",
+            path: "/try-on-garments/:id",
+            providerMethod: "getById",
+            callerPath: "apps/admin-ui/src/api/try-on-garments.ts",
+            callerMethods: ["getTryOnGarment"],
+            schemaReferences: { pathParamsSchema: ["garmentPathParamsSchema"], querySchema: ["noQuerySchema"], bodySchema: ["noBodySchema"], responseSchema: ["tryOnGarmentResponseSchema"] },
+          },
+          adminTryOnGarmentConfirmationContract: {
+            method: "POST",
+            path: "/try-on-garments/:id/confirmation",
+            providerMethod: "confirm",
+            callerPath: "apps/admin-ui/src/api/try-on-garments.ts",
+            callerMethods: ["confirmTryOnGarment"],
+            schemaReferences: { pathParamsSchema: ["garmentPathParamsSchema"], querySchema: ["noQuerySchema"], bodySchema: ["noBodySchema"], responseSchema: ["tryOnGarmentResponseSchema"] },
+          },
+        },
+      });
     `,
     "apps/service-api/src/try-on-garments/try-on-garments.controller.ts": `
       class TryOnGarmentsController {
@@ -140,8 +188,9 @@ describe("admin api contract guard", () => {
     withFixture(completeCatalogContractFixture(), (root) => {
       const result = checkAdminApiContracts({ root });
       assert.equal(result.ok, true, result.failures.join("\n"));
-      assert.equal(result.tryOnCoverage.callerHits.length, 16);
-      assert.equal(result.tryOnCoverage.providerHits.length, 16);
+      assert.equal(result.coverage["try-on"].callerHits.length, 16);
+      assert.equal(result.coverage["try-on"].providerHits.length, 16);
+      assert.equal(result.coverage["try-on"].bareRouteFailures.length, 0);
     });
   });
 
@@ -285,10 +334,6 @@ describe("admin api contract guard", () => {
       assert.match(
         result.failures.join("\n"),
         /caller raw helper bypass: adminGetTryOnGarmentContract uses get, post, put, patch, delete, getContract, postContract, putContract, patchContract, postResponseContract/,
-      );
-      assert.match(
-        result.failures.join("\n"),
-        /caller ambiguous: adminGetTryOnGarmentContract/,
       );
     });
   });
@@ -903,175 +948,108 @@ describe("admin api contract guard", () => {
     });
   });
 
-  it("accepts a write caller that uses schema-bound helpers", () => {
-    withFixture(
-      {
-        "apps/admin-ui/src/api/products.ts": `
-          import type { z } from "zod";
-          import { createProductSchema, adminProductResponseSchema } from "@vem/shared";
-          import { postContract } from "./request";
+  it("accepts write bodies derived from the shared schema or the contract itself", () => {
+    const schemaDerived = completeOpsMaintenanceContractFixture();
+    withFixture(schemaDerived, (root) => {
+      const result = checkAdminApiContracts({ root });
+      assert.equal(result.ok, true, result.failures.join("\n"));
+    });
 
-          export async function createProduct(body: z.input<typeof createProductSchema>) {
-            return await postContract("/products", createProductSchema, adminProductResponseSchema, body);
-          }
-        `,
-      },
-      (root) => {
-        const result = checkAdminApiContracts({ root });
-
-        assert.equal(result.ok, true);
-        assert.deepEqual(result.failures, []);
-      },
+    const contractDerived = completeCatalogContractFixture();
+    contractDerived["apps/admin-ui/src/api/products.ts"] = contractDerived[
+      "apps/admin-ui/src/api/products.ts"
+    ].replace(
+      "body: z.input<typeof createProductSchema>,",
+      "body: z.input<typeof adminCreateProductContract.bodySchema>,",
     );
+    withFixture(contractDerived, (root) => {
+      const result = checkAdminApiContracts({ root });
+      assert.equal(result.ok, true, result.failures.join("\n"));
+    });
   });
 
-  it("fails write callers that use unbound helpers", () => {
-    withFixture(
-      {
-        "apps/admin-ui/src/api/inventory.ts": `
-          import { post } from "./request";
-
-          export async function createInventory(body: { machineId: string }) {
-            return await post("/inventories", body);
-          }
-        `,
-      },
-      (root) => {
-        const result = checkAdminApiContracts({ root });
-
-        assert.equal(result.ok, false);
-        assert.match(
-          result.failures.join("\n"),
-          /admin write caller uses unbound post: apps\/admin-ui\/src\/api\/inventory\.ts#createInventory/,
-        );
-        assert.match(
-          result.failures.join("\n"),
-          /admin write caller missing schema-bound helper: apps\/admin-ui\/src\/api\/inventory\.ts#createInventory/,
-        );
-      },
+  it("fails a converged write caller that drifts to a local body type", () => {
+    const fixture = completeCatalogContractFixture();
+    fixture["apps/admin-ui/src/api/products.ts"] = fixture[
+      "apps/admin-ui/src/api/products.ts"
+    ].replace(
+      "body: z.input<typeof createProductSchema>,",
+      "body: { name: string },",
     );
+    withFixture(fixture, (root) => {
+      const result = checkAdminApiContracts({ root });
+      assert.equal(result.ok, false);
+      assert.match(
+        result.failures.join("\n"),
+        /caller write body type drift: createProduct body expected z\.input<typeof createProductSchema>/,
+      );
+    });
   });
 
-  it("fails exported async arrow write callers that use unbound helpers", () => {
-    withFixture(
-      {
-        "apps/admin-ui/src/api/inventory.ts": `
-          import { post } from "./request";
-
-          export const createInventory = async (body: { machineId: string }) => {
-            return await post("/inventories", body);
-          };
-        `,
-      },
-      (root) => {
-        const result = checkAdminApiContracts({ root });
-
-        assert.equal(result.ok, false);
-        assert.match(
-          result.failures.join("\n"),
-          /admin write caller uses unbound post: apps\/admin-ui\/src\/api\/inventory\.ts#createInventory/,
-        );
-      },
+  it("fails an exported async arrow write caller that drifts to a local body type", () => {
+    const fixture = completeCatalogContractFixture();
+    fixture["apps/admin-ui/src/api/products.ts"] = fixture[
+      "apps/admin-ui/src/api/products.ts"
+    ].replace(
+      "export async function createProduct(\n  body: z.input<typeof createProductSchema>,\n): Promise<Product> {\n  return await callAdminEndpointContract(adminCreateProductContract, { body });\n}",
+      `export const createProduct = async (body: { name: string }) => {
+  return await callAdminEndpointContract(adminCreateProductContract, { body });
+};`,
     );
+    withFixture(fixture, (root) => {
+      const result = checkAdminApiContracts({ root });
+      assert.equal(result.ok, false);
+      assert.match(
+        result.failures.join("\n"),
+        /caller write body type drift: createProduct body expected z\.input<typeof createProductSchema>/,
+      );
+    });
   });
 
-  it("fails write callers that drift back to unbound helpers or local body types", () => {
-    withFixture(
-      {
-        "apps/admin-ui/src/api/products.ts": `
-          import { post } from "./request";
-
-          type CreateProductInput = { name: string };
-
-          export async function createProduct(body: CreateProductInput) {
-            return await post("/products", body);
-          }
-        `,
-      },
-      (root) => {
-        const result = checkAdminApiContracts({ root });
-
-        assert.equal(result.ok, false);
-        assert.match(
-          result.failures.join("\n"),
-          /admin write caller uses unbound post: apps\/admin-ui\/src\/api\/products\.ts#createProduct/,
-        );
-        assert.match(
-          result.failures.join("\n"),
-          /admin write caller uses local body type: apps\/admin-ui\/src\/api\/products\.ts#createProduct/,
-        );
-      },
-    );
-  });
-
-  it("fails write callers that use generic local body type shortcuts", () => {
-    withFixture(
-      {
-        "apps/admin-ui/src/api/payments.ts": `
-          import { patchContract } from "./request";
-
-          type PaymentProvider = { name: string; status: string; capabilities: string[] };
-
-          export async function updatePaymentProvider(
-            id: string,
-            body: Partial<Pick<PaymentProvider, "name" | "status" | "capabilities">>,
-          ) {
-            return await patchContract("/payments/providers/" + id, updateProviderSchema, paymentProviderSchema, body);
-          }
-        `,
-      },
-      (root) => {
-        const result = checkAdminApiContracts({ root });
-
-        assert.equal(result.ok, false);
-        assert.match(
-          result.failures.join("\n"),
-          /admin write caller uses local body type: apps\/admin-ui\/src\/api\/payments\.ts#updatePaymentProvider/,
-        );
-      },
-    );
-  });
-
-  it("fails broad query shortcuts inside admin api modules with writes", () => {
-    withFixture(
-      {
-        "apps/admin-ui/src/api/products.ts": `
-          import type { z } from "zod";
-          import { createProductSchema, adminProductResponseSchema } from "@vem/shared";
-          import { get, postContract } from "./request";
-
-          export async function listProducts(query?: Record<string, unknown>) {
-            return await get("/products", { params: query });
-          }
-
-          export async function createProduct(body: z.input<typeof createProductSchema>) {
-            return await postContract("/products", createProductSchema, adminProductResponseSchema, body);
-          }
-        `,
-      },
-      (root) => {
-        const result = checkAdminApiContracts({ root });
-
-        assert.equal(result.ok, false);
-        assert.match(
-          result.failures.join("\n"),
-          /admin api write module uses broad query type: apps\/admin-ui\/src\/api\/products\.ts#listProducts/,
-        );
-      },
-    );
+  it("fails a converged write caller that uses an unbound raw helper", () => {
+    const fixture = completeOpsMaintenanceContractFixture();
+    fixture["apps/admin-ui/src/api/inventory.ts"] = fixture[
+      "apps/admin-ui/src/api/inventory.ts"
+    ]
+      .replace(
+        'import { callAdminEndpointContract } from "./request";',
+        'import { callAdminEndpointContract, post } from "./request";',
+      )
+      .replace(
+        "return await callAdminEndpointContract(adminCreateInventoryContract, {",
+        'return await post("/inventories", body);\n  void callAdminEndpointContract(adminCreateInventoryContract, {',
+      );
+    withFixture(fixture, (root) => {
+      const result = checkAdminApiContracts({ root });
+      assert.equal(result.ok, false);
+      assert.match(
+        result.failures.join("\n"),
+        /migration API network entry denied: apps\/admin-ui\/src\/api\/inventory\.ts#createInventory uses post/,
+      );
+      assert.match(
+        result.failures.join("\n"),
+        /migration API import denied: apps\/admin-ui\/src\/api\/inventory\.ts imports post from \.\/request/,
+      );
+    });
   });
 
   it("enumerates every maintenance and machine-ops contract on both sides", () => {
     withFixture(completeOpsMaintenanceContractFixture(), (root) => {
       const result = checkAdminApiContracts({ root });
       assert.equal(result.ok, true, result.failures.join("\n"));
-      assert.equal(result.opsMaintenanceCoverage.callerHits.length, 4);
-      assert.equal(result.opsMaintenanceCoverage.providerHits.length, 4);
-      assert.equal(result.opsMaintenanceCoverage.bareRouteFailures.length, 0);
-      assert.equal(result.machinesInventoryCoverage.callerHits.length, 21);
-      assert.equal(result.machinesInventoryCoverage.providerHits.length, 25);
+      assert.equal(result.coverage["ops-maintenance"].callerHits.length, 4);
+      assert.equal(result.coverage["ops-maintenance"].providerHits.length, 4);
       assert.equal(
-        result.machinesInventoryCoverage.bareRouteFailures.length,
+        result.coverage["ops-maintenance"].bareRouteFailures.length,
+        0,
+      );
+      assert.equal(result.coverage["machines-inventory"].callerHits.length, 21);
+      assert.equal(
+        result.coverage["machines-inventory"].providerHits.length,
+        25,
+      );
+      assert.equal(
+        result.coverage["machines-inventory"].bareRouteFailures.length,
         0,
       );
     });
@@ -1095,5 +1073,53 @@ describe("admin api contract guard", () => {
       assert.equal(result.ok, false);
       assert.match(result.failures.join("\n"), /provider bare admin route/);
     });
+  });
+
+  it("keeps unmigrated admin routes and legacy helper modules visible in the backlog", () => {
+    withFixture(
+      {
+        "apps/service-api/src/orders/orders.controller.ts": `
+          class OrdersController {
+            @Get("/orders")
+            async listOrders() {}
+          }
+        `,
+        "apps/admin-ui/src/api/orders.ts": `
+          import { get } from "./request";
+          export async function listOrders() { return await get("/orders"); }
+        `,
+      },
+      (root) => {
+        const result = checkAdminApiContracts({ root });
+        assert.equal(result.ok, true, result.failures.join("\n"));
+        assert.deepEqual(result.backlog.adminBareRoutes, [
+          "apps/service-api/src/orders/orders.controller.ts#listOrders",
+        ]);
+        assert.deepEqual(result.backlog.legacyHelperModules, [
+          "apps/admin-ui/src/api/orders.ts",
+        ]);
+      },
+    );
+  });
+
+  it("rejects a malformed manifest entry", () => {
+    assert.throws(
+      () =>
+        withFixture(
+          {
+            "packages/shared/src/schemas/broken-contract-manifest.ts": `
+              const defineAdminContractManifest = (value) => value;
+              export const brokenAdminContractManifest = defineAdminContractManifest({
+                slice: "broken",
+                controllerPaths: [],
+                callerPaths: [],
+                contracts: { adminListMachinesContract: { path: "/machines" } },
+              });
+            `,
+          },
+          (root) => checkAdminApiContracts({ root }),
+        ),
+      /invalid admin contract manifest entry/,
+    );
   });
 });

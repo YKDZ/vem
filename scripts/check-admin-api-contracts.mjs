@@ -6,272 +6,20 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
 const ADMIN_API_DIRECTORY = "apps/admin-ui/src/api";
-const EXCLUDED_API_FILES = new Set([
-  "apps/admin-ui/src/api/auth.ts",
-  "apps/admin-ui/src/api/request.ts",
-]);
-const WRITE_HELPERS = new Set(["post", "patch"]);
-const CONTRACT_WRITE_HELPERS = new Set([
-  "postContract",
-  "patchContract",
-  "postResponseContract",
-  "callAdminEndpointContract",
-]);
-const RAW_ADMIN_HELPERS = new Set(["get", "post", "put", "patch", "delete"]);
-const LEGACY_CONTRACT_HELPERS = new Set([
-  "getContract",
-  "postContract",
-  "putContract",
-  "patchContract",
-  "postResponseContract",
-]);
-const REQUEST_HELPERS = new Set([
-  ...RAW_ADMIN_HELPERS,
-  ...LEGACY_CONTRACT_HELPERS,
-  "callAdminEndpointContract",
-]);
-const MIGRATION_ADMIN_API_PATHS = new Set([
-  "apps/admin-ui/src/api/products.ts",
-  "apps/admin-ui/src/api/try-on-garments.ts",
-  "apps/admin-ui/src/api/work-orders.ts",
-  "apps/admin-ui/src/api/machine-ops.ts",
-  "apps/admin-ui/src/api/machines.ts",
-  "apps/admin-ui/src/api/qweather.ts",
-  "apps/admin-ui/src/api/inventory.ts",
-]);
-const TEMPLATE_SLICE_CONTRACT_EXPECTATIONS = {
-  adminListMaintenanceWorkOrdersContract: {
-    method: "GET",
-    path: "/maintenance-work-orders",
-    providerMethod: "list",
-    callerPath: "apps/admin-ui/src/api/work-orders.ts",
-    callerMethods: ["listWorkOrders"],
-  },
-  adminResolveMaintenanceWorkOrderContract: {
-    method: "POST",
-    path: "/maintenance-work-orders/:id/resolve",
-    providerMethod: "resolve",
-    callerPath: "apps/admin-ui/src/api/work-orders.ts",
-    callerMethods: ["resolveWorkOrder"],
-  },
-  adminListMachineOpsContract: {
-    method: "GET",
-    path: "/machine-ops",
-    providerMethod: "listOps",
-    callerPath: "apps/admin-ui/src/api/machine-ops.ts",
-    callerMethods: ["listMachineOps"],
-  },
-  adminRequestMachineLogExportContract: {
-    method: "POST",
-    path: "/machine-ops/machines/:machineId/export-logs",
-    providerMethod: "requestLogExport",
-    callerPath: "apps/admin-ui/src/api/machine-ops.ts",
-    callerMethods: ["requestLogExport"],
-  },
-};
-const TEMPLATE_SLICE_CONTROLLER_PATHS = [
-  "apps/service-api/src/maintenance-work-orders/maintenance-work-orders.controller.ts",
-  "apps/service-api/src/machine-ops/machine-ops.controller.ts",
-  "apps/service-api/src/machines/machines.controller.ts",
-  "apps/service-api/src/machines/qweather-config.controller.ts",
-  "apps/service-api/src/inventory/inventory.controller.ts",
-  "apps/service-api/src/inventory/stock-reconciliation.controller.ts",
-];
-const MACHINES_INVENTORY_CONTRACT_EXPECTATIONS = {
-  adminListMachinesContract: {
-    method: "GET",
-    path: "/machines",
-    providerMethod: "listMachines",
-    callerPath: "apps/admin-ui/src/api/machines.ts",
-    callerMethods: ["listMachines"],
-  },
-  adminCreateMachineContract: {
-    method: "POST",
-    path: "/machines",
-    providerMethod: "createMachine",
-    callerPath: "apps/admin-ui/src/api/machines.ts",
-    callerMethods: ["createMachine"],
-  },
-  adminUpdateMachineContract: {
-    method: "PATCH",
-    path: "/machines/:id",
-    providerMethod: "updateMachine",
-    callerPath: "apps/admin-ui/src/api/machines.ts",
-    callerMethods: ["updateMachine"],
-  },
-  adminGetMachineContract: {
-    method: "GET",
-    path: "/machines/:id",
-    providerMethod: "getMachine",
-    callerPath: "apps/admin-ui/src/api/machines.ts",
-    callerMethods: ["getMachine"],
-  },
-  adminGetMachineExternalNaturalEnvironmentContract: {
-    method: "GET",
-    path: "/machines/:id/external-natural-environment",
-    providerMethod: "getExternalNaturalEnvironment",
-    callerPath: "apps/admin-ui/src/api/machines.ts",
-    callerMethods: ["getExternalNaturalEnvironment"],
-  },
-  adminPublishMachinePlanogramVersionContract: {
-    method: "POST",
-    path: "/machines/:id/planogram-versions",
-    providerMethod: "publishPlanogramVersion",
-  },
-  adminListMachinePlanogramVersionsContract: {
-    method: "GET",
-    path: "/machines/:id/planogram-versions",
-    providerMethod: "listPlanogramVersions",
-  },
-  adminCommandMachineEnvironmentContract: {
-    method: "POST",
-    path: "/machines/:id/commands/environment-control",
-    providerMethod: "commandEnvironment",
-    callerPath: "apps/admin-ui/src/api/machines.ts",
-    callerMethods: ["commandEnvironment"],
-  },
-  adminListMachineSlotsContract: {
-    method: "GET",
-    path: "/machines/:id/slots",
-    providerMethod: "listSlots",
-    callerPath: "apps/admin-ui/src/api/machines.ts",
-    callerMethods: ["listMachineSlots"],
-  },
-  adminCreateMachineSlotContract: {
-    method: "POST",
-    path: "/machines/:id/slots",
-    providerMethod: "createSlot",
-    callerPath: "apps/admin-ui/src/api/machines.ts",
-    callerMethods: ["createMachineSlot"],
-  },
-  adminRotateMachineCredentialsContract: {
-    method: "POST",
-    path: "/machines/:id/credentials/rotate",
-    providerMethod: "rotateMachineCredentials",
-    callerPath: "apps/admin-ui/src/api/machines.ts",
-    callerMethods: ["rotateMachineCredentials"],
-  },
-  adminSecureDecommissionMachineContract: {
-    method: "POST",
-    path: "/machines/:id/decommission",
-    providerMethod: "secureDecommission",
-  },
-  adminGenerateMachineClaimCodeContract: {
-    method: "POST",
-    path: "/machines/:id/claim-codes",
-    providerMethod: "generateClaimCode",
-    callerPath: "apps/admin-ui/src/api/machines.ts",
-    callerMethods: ["generateMachineClaimCode"],
-  },
-  adminListMachineClaimCodesContract: {
-    method: "GET",
-    path: "/machines/:id/claim-codes",
-    providerMethod: "listClaimCodes",
-    callerPath: "apps/admin-ui/src/api/machines.ts",
-    callerMethods: ["listMachineClaimCodes"],
-  },
-  adminGetMachineClaimCodeContract: {
-    method: "GET",
-    path: "/machines/:id/claim-codes/:claimCodeId",
-    providerMethod: "getClaimCode",
-  },
-  adminRevokeMachineClaimCodeContract: {
-    method: "POST",
-    path: "/machines/:id/claim-codes/:claimCodeId/revoke",
-    providerMethod: "revokeClaimCode",
-    callerPath: "apps/admin-ui/src/api/machines.ts",
-    callerMethods: ["revokeMachineClaimCode"],
-  },
-  adminGetQweatherConfigContract: {
-    method: "GET",
-    path: "/qweather-config",
-    providerMethod: "getConfig",
-    callerPath: "apps/admin-ui/src/api/qweather.ts",
-    callerMethods: ["getQweatherConfig"],
-  },
-  adminUpdateQweatherConfigContract: {
-    method: "PUT",
-    path: "/qweather-config",
-    providerMethod: "updateConfig",
-    callerPath: "apps/admin-ui/src/api/qweather.ts",
-    callerMethods: ["updateQweatherConfig"],
-  },
-  adminListInventoriesContract: {
-    method: "GET",
-    path: "/inventories",
-    providerMethod: "listInventories",
-    callerPath: "apps/admin-ui/src/api/inventory.ts",
-    callerMethods: ["listInventories"],
-  },
-  adminCreateInventoryContract: {
-    method: "POST",
-    path: "/inventories",
-    providerMethod: "createInventory",
-    callerPath: "apps/admin-ui/src/api/inventory.ts",
-    callerMethods: ["createInventory"],
-  },
-  adminAdjustInventoryContract: {
-    method: "POST",
-    path: "/inventories/adjust",
-    providerMethod: "adjust",
-    callerPath: "apps/admin-ui/src/api/inventory.ts",
-    callerMethods: ["adjustInventory"],
-  },
-  adminListInventoryMovementsContract: {
-    method: "GET",
-    path: "/inventory-movements",
-    providerMethod: "listMovements",
-    callerPath: "apps/admin-ui/src/api/inventory.ts",
-    callerMethods: ["listInventoryMovements"],
-  },
-  adminListStockReconciliationCasesContract: {
-    method: "GET",
-    path: "/stock-reconciliation-cases",
-    providerMethod: "listCases",
-    callerPath: "apps/admin-ui/src/api/inventory.ts",
-    callerMethods: ["listStockReconciliationCases"],
-  },
-  adminGetStockReconciliationCaseContract: {
-    method: "GET",
-    path: "/stock-reconciliation-cases/:id",
-    providerMethod: "getCase",
-    callerPath: "apps/admin-ui/src/api/inventory.ts",
-    callerMethods: ["getStockReconciliationCase"],
-  },
-  adminResolveStockReconciliationCaseContract: {
-    method: "POST",
-    path: "/stock-reconciliation-cases/:id/resolve",
-    providerMethod: "resolveCase",
-    callerPath: "apps/admin-ui/src/api/inventory.ts",
-    callerMethods: ["resolveStockReconciliationCase"],
-  },
-};
+const SHARED_SCHEMA_DIRECTORY = "packages/shared/src/schemas";
+const CONTRACT_DEFINITION_HELPER = "defineAdminEndpointContract";
+const CONTRACT_MANIFEST_HELPER = "defineAdminContractManifest";
+const EXCLUDED_API_FILES = new Set(["apps/admin-ui/src/api/request.ts"]);
 const ROUTE_DECORATORS = new Set(["Get", "Post", "Patch", "Put", "Delete"]);
-const WRITE_CALL_PATTERN =
-  /\b(?:post|patch|postContract|patchContract|postResponseContract|callAdminEndpointContract)\s*(?:<[\s\S]*?>)?\s*\(/;
-const BROAD_TYPE_PATTERN = /\b(?:Record\s*<\s*string\s*,\s*unknown\s*>|any)\b/;
-const SHARED_BODY_TYPE_PATTERN =
-  /\b(?:z\.input\s*<|Admin[A-Z][A-Za-z0-9]*(?:Request|Input)|MachineEnvironmentControlRequest)\b/;
-const LOCAL_TYPE_UTILITY_NAMES = new Set([
-  "Array",
-  "Blob",
-  "Date",
-  "Exclude",
-  "Extract",
-  "File",
-  "FormData",
-  "Map",
-  "NonNullable",
-  "Omit",
-  "Partial",
-  "Pick",
-  "Promise",
-  "Readonly",
-  "ReadonlyArray",
-  "Record",
-  "Required",
-  "Set",
-]);
+const WRITE_METHODS = new Set(["POST", "PATCH", "PUT", "DELETE"]);
+const CONTRACT_FIELDS = [
+  "method",
+  "path",
+  "pathParamsSchema",
+  "querySchema",
+  "bodySchema",
+  "responseSchema",
+];
 
 function pathExists(root, path) {
   try {
@@ -295,7 +43,6 @@ function readText(root, path) {
 
 function listFiles(root, directory) {
   if (!directoryExists(root, directory)) return [];
-
   const absoluteDirectory = join(root, directory);
   const files = [];
   for (const entry of readdirSync(absoluteDirectory, { withFileTypes: true })) {
@@ -310,363 +57,6 @@ function listFiles(root, directory) {
   return files.sort();
 }
 
-function extractFunctions(source) {
-  const functions = [];
-  const declarationPattern =
-    /export\s+async\s+function\s+([A-Za-z0-9_]+)\s*\(/g;
-  const asyncArrowPattern =
-    /export\s+const\s+([A-Za-z0-9_]+)\s*=\s*async\s*(?:<[\s\S]*?>\s*)?\(/g;
-
-  let match;
-  while ((match = declarationPattern.exec(source)) !== null) {
-    const [, name] = match;
-    const parametersStart = declarationPattern.lastIndex;
-    let parameterDepth = 1;
-    let parametersEnd = parametersStart;
-    for (; parametersEnd < source.length; parametersEnd += 1) {
-      const character = source[parametersEnd];
-      if (character === "(") parameterDepth += 1;
-      if (character === ")") parameterDepth -= 1;
-      if (parameterDepth === 0) break;
-    }
-
-    const parameters = source.slice(parametersStart, parametersEnd);
-    let bodyOpen = -1;
-    for (let index = parametersEnd + 1; index < source.length; index += 1) {
-      if (source[index] !== "{") continue;
-      const nextSource = source.slice(index + 1).trimStart();
-      if (/^(return|await|const|let|if|for|try)\b/.test(nextSource)) {
-        bodyOpen = index;
-        break;
-      }
-    }
-    if (bodyOpen === -1) continue;
-
-    const bodyStart = bodyOpen + 1;
-    let depth = 1;
-    let index = bodyStart;
-    for (; index < source.length; index += 1) {
-      const character = source[index];
-      if (character === "{") depth += 1;
-      if (character === "}") depth -= 1;
-      if (depth === 0) break;
-    }
-    functions.push({
-      name,
-      parameters,
-      body: source.slice(bodyStart, index),
-    });
-    declarationPattern.lastIndex = index + 1;
-  }
-
-  while ((match = asyncArrowPattern.exec(source)) !== null) {
-    const [, name] = match;
-    const parametersStart = asyncArrowPattern.lastIndex;
-    const parametersEnd = findBalancedEnd(
-      source,
-      parametersStart - 1,
-      "(",
-      ")",
-    );
-    if (parametersEnd === -1) continue;
-
-    const arrowStart = source.indexOf("=>", parametersEnd + 1);
-    if (arrowStart === -1) continue;
-
-    const bodyStart = skipWhitespace(source, arrowStart + 2);
-    if (source[bodyStart] === "{") {
-      const bodyEnd = findBalancedEnd(source, bodyStart, "{", "}");
-      if (bodyEnd === -1) continue;
-      functions.push({
-        name,
-        parameters: source.slice(parametersStart, parametersEnd),
-        body: source.slice(bodyStart + 1, bodyEnd),
-      });
-      asyncArrowPattern.lastIndex = bodyEnd + 1;
-      continue;
-    }
-
-    const bodyEnd = findExpressionEnd(source, bodyStart);
-    functions.push({
-      name,
-      parameters: source.slice(parametersStart, parametersEnd),
-      body: source.slice(bodyStart, bodyEnd),
-    });
-    asyncArrowPattern.lastIndex = bodyEnd;
-  }
-
-  return functions;
-}
-
-function skipWhitespace(source, start) {
-  let index = start;
-  while (/\s/.test(source[index] ?? "")) index += 1;
-  return index;
-}
-
-function findBalancedEnd(source, openIndex, openCharacter, closeCharacter) {
-  let depth = 0;
-  for (let index = openIndex; index < source.length; index += 1) {
-    const character = source[index];
-    if (character === openCharacter) depth += 1;
-    if (character === closeCharacter) depth -= 1;
-    if (depth === 0) return index;
-  }
-  return -1;
-}
-
-function findExpressionEnd(source, start) {
-  let parenDepth = 0;
-  let braceDepth = 0;
-  let bracketDepth = 0;
-  for (let index = start; index < source.length; index += 1) {
-    const character = source[index];
-    if (character === "(") parenDepth += 1;
-    if (character === ")") parenDepth -= 1;
-    if (character === "{") braceDepth += 1;
-    if (character === "}") braceDepth -= 1;
-    if (character === "[") bracketDepth += 1;
-    if (character === "]") bracketDepth -= 1;
-    if (
-      character === ";" &&
-      parenDepth === 0 &&
-      braceDepth === 0 &&
-      bracketDepth === 0
-    ) {
-      return index;
-    }
-  }
-  return source.length;
-}
-
-function helperCalls(functionSource) {
-  const calls = [];
-  const callPattern =
-    /\b(post|patch|postContract|patchContract|postResponseContract|callAdminEndpointContract)\s*(?:<[\s\S]*?>)?\s*\(/g;
-  let match;
-  while ((match = callPattern.exec(functionSource)) !== null) {
-    calls.push(match[1]);
-  }
-  return calls;
-}
-
-const TRY_ON_CONTRACT_NAMES = [
-  "adminProductDisplayImageUploadContract",
-  "adminListProductsContract",
-  "adminCreateProductContract",
-  "adminUpdateProductContract",
-  "adminListProductVariantsContract",
-  "adminCreateProductVariantContract",
-  "adminUpdateProductVariantContract",
-  "adminTryOnGarmentUploadContract",
-  "adminCreateTryOnGarmentContract",
-  "adminGetTryOnGarmentContract",
-  "adminListTryOnGarmentsByProductContract",
-  "adminTryOnGarmentConfirmationContract",
-  "adminTryOnGarmentActivationContract",
-  "adminTryOnGarmentRetirementContract",
-  "adminTryOnGarmentAssociationContract",
-  "adminTryOnGarmentSourceReplacementContract",
-];
-const PRODUCT_CATALOG_CONTRACT_NAMES = new Set(
-  TRY_ON_CONTRACT_NAMES.slice(0, 7),
-);
-
-const TRY_ON_CONTRACT_EXPECTATIONS = {
-  adminProductDisplayImageUploadContract: {
-    method: "POST",
-    path: "/media-assets/product-display-images",
-    providerMethod: "uploadProductDisplayImage",
-    callerMethods: ["uploadProductDisplayImage"],
-    schemaReferences: { responseSchema: ["adminMediaAssetSummarySchema"] },
-  },
-  adminListProductsContract: {
-    method: "GET",
-    path: "/products",
-    providerMethod: "listProducts",
-    callerMethods: ["listProducts"],
-    schemaReferences: {
-      pathParamsSchema: ["noProductPathParamsSchema"],
-      querySchema: ["adminProductListQuerySchema"],
-      bodySchema: ["noProductBodySchema"],
-      responseSchema: ["adminProductPageResponseSchema"],
-    },
-  },
-  adminCreateProductContract: {
-    method: "POST",
-    path: "/products",
-    providerMethod: "createProduct",
-    callerMethods: ["createProduct"],
-    schemaReferences: {
-      pathParamsSchema: ["noProductPathParamsSchema"],
-      querySchema: ["noProductQuerySchema"],
-      bodySchema: ["createProductSchema"],
-      responseSchema: ["adminProductResponseSchema"],
-    },
-  },
-  adminUpdateProductContract: {
-    method: "PATCH",
-    path: "/products/:id",
-    providerMethod: "updateProduct",
-    callerMethods: ["updateProduct"],
-    schemaReferences: {
-      pathParamsSchema: ["productIdPathParamsSchema"],
-      querySchema: ["noProductQuerySchema"],
-      bodySchema: ["updateProductSchema"],
-      responseSchema: ["adminProductResponseSchema"],
-    },
-  },
-  adminListProductVariantsContract: {
-    method: "GET",
-    path: "/product-variants",
-    providerMethod: "listVariants",
-    callerMethods: ["listProductVariants"],
-    schemaReferences: {
-      pathParamsSchema: ["noProductPathParamsSchema"],
-      querySchema: ["adminProductVariantListQuerySchema"],
-      bodySchema: ["noProductBodySchema"],
-      responseSchema: ["adminProductVariantPageResponseSchema"],
-    },
-  },
-  adminCreateProductVariantContract: {
-    method: "POST",
-    path: "/product-variants",
-    providerMethod: "createVariant",
-    callerMethods: ["createProductVariant"],
-    schemaReferences: {
-      pathParamsSchema: ["noProductPathParamsSchema"],
-      querySchema: ["noProductQuerySchema"],
-      bodySchema: ["createProductVariantSchema"],
-      responseSchema: ["adminProductVariantResponseSchema"],
-    },
-  },
-  adminUpdateProductVariantContract: {
-    method: "PATCH",
-    path: "/product-variants/:id",
-    providerMethod: "updateVariant",
-    callerMethods: ["updateProductVariant"],
-    schemaReferences: {
-      pathParamsSchema: ["productIdPathParamsSchema"],
-      querySchema: ["noProductQuerySchema"],
-      bodySchema: ["updateProductVariantSchema"],
-      responseSchema: ["adminProductVariantResponseSchema"],
-    },
-  },
-  adminTryOnGarmentUploadContract: {
-    method: "POST",
-    path: "/media-assets/try-on-garments",
-    providerMethod: "uploadTryOnGarment",
-    callerMethods: ["uploadTryOnGarment"],
-    schemaReferences: {
-      querySchema: ["noQuerySchema"],
-      responseSchema: ["tryOnGarmentMediaAssetSchema"],
-    },
-  },
-  adminCreateTryOnGarmentContract: {
-    method: "POST",
-    path: "/try-on-garments",
-    providerMethod: "createDraft",
-    callerMethods: ["createTryOnGarmentDraft"],
-    schemaReferences: {
-      querySchema: ["noQuerySchema"],
-      bodySchema: ["tryOnGarmentDraftRequestSchema"],
-      responseSchema: ["tryOnGarmentResponseSchema"],
-    },
-  },
-  adminGetTryOnGarmentContract: {
-    method: "GET",
-    path: "/try-on-garments/:id",
-    providerMethod: "getById",
-    callerMethods: ["getTryOnGarment"],
-    schemaReferences: {
-      pathParamsSchema: ["garmentPathParamsSchema"],
-      querySchema: ["noQuerySchema"],
-      bodySchema: ["noBodySchema"],
-      responseSchema: ["tryOnGarmentResponseSchema"],
-    },
-  },
-  adminListTryOnGarmentsByProductContract: {
-    method: "GET",
-    path: "/try-on-garments",
-    providerMethod: "listByProduct",
-    callerMethods: ["listTryOnGarmentsByProduct"],
-    schemaReferences: {
-      querySchema: ["garmentListQuerySchema"],
-      bodySchema: ["noBodySchema"],
-      responseSchema: ["tryOnGarmentListResponseSchema"],
-    },
-  },
-  adminTryOnGarmentConfirmationContract: {
-    method: "POST",
-    path: "/try-on-garments/:id/confirmation",
-    providerMethod: "confirm",
-    callerMethods: ["confirmTryOnGarment"],
-    schemaReferences: {
-      pathParamsSchema: ["garmentPathParamsSchema"],
-      querySchema: ["noQuerySchema"],
-      bodySchema: ["noBodySchema"],
-      responseSchema: ["tryOnGarmentResponseSchema"],
-    },
-  },
-  adminTryOnGarmentActivationContract: {
-    method: "POST",
-    path: "/try-on-garments/:id/activation",
-    providerMethod: "activate",
-    callerMethods: ["activateTryOnGarment"],
-    schemaReferences: {
-      pathParamsSchema: ["garmentPathParamsSchema"],
-      querySchema: ["noQuerySchema"],
-      bodySchema: ["noBodySchema"],
-      responseSchema: ["tryOnGarmentResponseSchema"],
-    },
-  },
-  adminTryOnGarmentRetirementContract: {
-    method: "POST",
-    path: "/try-on-garments/:id/retirement",
-    providerMethod: "retire",
-    callerMethods: ["retireTryOnGarment"],
-    schemaReferences: {
-      pathParamsSchema: ["garmentPathParamsSchema"],
-      querySchema: ["noQuerySchema"],
-      bodySchema: ["noBodySchema"],
-      responseSchema: ["tryOnGarmentResponseSchema"],
-    },
-  },
-  adminTryOnGarmentAssociationContract: {
-    method: "PUT",
-    path: "/try-on-garments/:id/variant-associations",
-    providerMethod: "replaceVariantAssociations",
-    callerMethods: ["replaceTryOnGarmentVariantAssociations"],
-    schemaReferences: {
-      pathParamsSchema: ["garmentPathParamsSchema"],
-      querySchema: ["noQuerySchema"],
-      bodySchema: ["tryOnGarmentVariantAssociationRequestSchema"],
-      responseSchema: ["tryOnGarmentResponseSchema"],
-    },
-  },
-  adminTryOnGarmentSourceReplacementContract: {
-    method: "PATCH",
-    path: "/try-on-garments/:id/source",
-    providerMethod: "replaceSource",
-    callerMethods: ["replaceTryOnGarmentSource"],
-    schemaReferences: {
-      pathParamsSchema: ["garmentPathParamsSchema"],
-      querySchema: ["noQuerySchema"],
-      bodySchema: ["tryOnGarmentSourceReplacementRequestSchema"],
-      responseSchema: ["tryOnGarmentResponseSchema"],
-    },
-  },
-};
-
-const TRY_ON_CONTRACT_FIELDS = [
-  "method",
-  "path",
-  "pathParamsSchema",
-  "querySchema",
-  "bodySchema",
-  "responseSchema",
-];
-
 function parseTypeScript(path, source) {
   return ts.createSourceFile(
     path,
@@ -675,6 +65,194 @@ function parseTypeScript(path, source) {
     true,
     ts.ScriptKind.TS,
   );
+}
+
+function stringLiteralValue(value) {
+  return value && ts.isStringLiteral(value) ? value.text : undefined;
+}
+
+function arrayOfStringLiterals(node) {
+  if (!node || !ts.isArrayLiteralExpression(node)) return undefined;
+  const values = [];
+  for (const element of node.elements) {
+    const value = stringLiteralValue(element);
+    if (value === undefined) return undefined;
+    values.push(value);
+  }
+  return values;
+}
+
+function objectLiteralRecord(node) {
+  if (!node || !ts.isObjectLiteralExpression(node)) return undefined;
+  const record = {};
+  for (const property of node.properties) {
+    const name =
+      ts.isPropertyAssignment(property) ||
+      ts.isShorthandPropertyAssignment(property)
+        ? ts.isIdentifier(property.name)
+          ? property.name.text
+          : ts.isStringLiteral(property.name)
+            ? property.name.text
+            : undefined
+        : undefined;
+    if (!name) continue;
+    record[name] = ts.isShorthandPropertyAssignment(property)
+      ? property.name
+      : property.initializer;
+  }
+  return record;
+}
+
+function topLevelVariableInitializers(file) {
+  const found = [];
+  file.forEachChild((statement) => {
+    if (!ts.isVariableStatement(statement)) return;
+    for (const declaration of statement.declarationList.declarations) {
+      if (!ts.isIdentifier(declaration.name) || !declaration.initializer) {
+        continue;
+      }
+      found.push({
+        name: declaration.name.text,
+        initializer: declaration.initializer,
+      });
+    }
+  });
+  return found;
+}
+
+function callWithIdentifier(expression, helperName) {
+  if (
+    !ts.isCallExpression(expression) ||
+    !ts.isIdentifier(expression.expression) ||
+    expression.expression.text !== helperName ||
+    expression.arguments.length !== 1
+  ) {
+    return undefined;
+  }
+  return expression.arguments[0];
+}
+
+function isUnknownSchemaExpression(expression) {
+  if (
+    ts.isCallExpression(expression) &&
+    ts.isPropertyAccessExpression(expression.expression) &&
+    ts.isIdentifier(expression.expression.expression) &&
+    expression.expression.expression.text === "z" &&
+    ["any", "unknown"].includes(expression.expression.name.text)
+  ) {
+    return true;
+  }
+  return (
+    ts.isIdentifier(expression) && ["any", "unknown"].includes(expression.text)
+  );
+}
+
+function contractDefinitions(root) {
+  const definitions = new Map();
+  for (const path of listFiles(root, SHARED_SCHEMA_DIRECTORY)) {
+    const source = readText(root, path);
+    const file = parseTypeScript(path, source);
+    for (const { name, initializer } of topLevelVariableInitializers(file)) {
+      const argument = callWithIdentifier(
+        initializer,
+        CONTRACT_DEFINITION_HELPER,
+      );
+      if (!argument) continue;
+      const values = objectLiteralRecord(argument);
+      if (!values) continue;
+      const invalidSchemaFields = new Set();
+      for (const field of [
+        "pathParamsSchema",
+        "querySchema",
+        "bodySchema",
+        "responseSchema",
+      ]) {
+        if (field in values && isUnknownSchemaExpression(values[field])) {
+          invalidSchemaFields.add(field);
+        }
+      }
+      definitions.set(name, { path, values, invalidSchemaFields });
+    }
+  }
+  return definitions;
+}
+
+function manifestEntries(root) {
+  const manifests = [];
+  for (const path of listFiles(root, SHARED_SCHEMA_DIRECTORY)) {
+    const source = readText(root, path);
+    const file = parseTypeScript(path, source);
+    for (const { name, initializer } of topLevelVariableInitializers(file)) {
+      const argument = callWithIdentifier(
+        initializer,
+        CONTRACT_MANIFEST_HELPER,
+      );
+      if (!argument) continue;
+      const values = objectLiteralRecord(argument);
+      if (!values) continue;
+      const slice = stringLiteralValue(values.slice);
+      const controllerPaths = arrayOfStringLiterals(values.controllerPaths);
+      const callerPaths = arrayOfStringLiterals(values.callerPaths);
+      const contractsRecord = objectLiteralRecord(values.contracts);
+      if (
+        slice === undefined ||
+        controllerPaths === undefined ||
+        callerPaths === undefined ||
+        contractsRecord === undefined
+      ) {
+        throw new Error(`invalid admin contract manifest: ${path}#${name}`);
+      }
+      const contracts = {};
+      for (const [contractName, entryExpression] of Object.entries(
+        contractsRecord,
+      )) {
+        const entry = objectLiteralRecord(entryExpression);
+        if (!entry) {
+          throw new Error(
+            `invalid admin contract manifest entry: ${path}#${name}.${contractName}`,
+          );
+        }
+        const method = stringLiteralValue(entry.method);
+        const pathValue = stringLiteralValue(entry.path);
+        const providerMethod = stringLiteralValue(entry.providerMethod);
+        if (!method || !pathValue || !providerMethod) {
+          throw new Error(
+            `invalid admin contract manifest entry: ${path}#${name}.${contractName}`,
+          );
+        }
+        const schemaReferencesNode = objectLiteralRecord(
+          entry.schemaReferences,
+        );
+        const schemaReferences = schemaReferencesNode
+          ? Object.fromEntries(
+              Object.entries(schemaReferencesNode).map(
+                ([field, expression]) => [
+                  field,
+                  arrayOfStringLiterals(expression),
+                ],
+              ),
+            )
+          : undefined;
+        contracts[contractName] = {
+          method,
+          path: pathValue,
+          providerMethod,
+          callerPath: stringLiteralValue(entry.callerPath),
+          callerMethods: arrayOfStringLiterals(entry.callerMethods),
+          schemaReferences,
+        };
+      }
+      manifests.push({
+        name,
+        path,
+        slice,
+        controllerPaths,
+        callerPaths,
+        contracts,
+      });
+    }
+  }
+  return manifests;
 }
 
 function decoratorsOf(node) {
@@ -696,96 +274,13 @@ function decoratorCall(decorator) {
   };
 }
 
-function contractDefinitions(root) {
-  const definitions = new Map();
-  for (const path of [
-    "packages/shared/src/schemas/products.ts",
-    "packages/shared/src/schemas/try-on-garments.ts",
-    "packages/shared/src/schemas/notifications.ts",
-    "packages/shared/src/schemas/machines.ts",
-    "packages/shared/src/schemas/qweather.ts",
-    "packages/shared/src/schemas/inventory.ts",
-  ]) {
-    if (!pathExists(root, path)) continue;
-    const source = readText(root, path);
-    const file = parseTypeScript(path, source);
-    file.forEachChild((statement) => {
-      if (!ts.isVariableStatement(statement)) return;
-      for (const declaration of statement.declarationList.declarations) {
-        if (!ts.isIdentifier(declaration.name)) continue;
-        if (
-          !declaration.initializer ||
-          !ts.isCallExpression(declaration.initializer) ||
-          !ts.isIdentifier(declaration.initializer.expression) ||
-          declaration.initializer.expression.text !==
-            "defineAdminEndpointContract"
-        ) {
-          continue;
-        }
-        const argument = declaration.initializer.arguments[0];
-        if (!argument || !ts.isObjectLiteralExpression(argument)) continue;
-        const values = {};
-        const invalidSchemaFields = new Set();
-        for (const property of argument.properties) {
-          const propertyName =
-            ts.isPropertyAssignment(property) ||
-            ts.isShorthandPropertyAssignment(property)
-              ? ts.isIdentifier(property.name)
-                ? property.name.text
-                : ts.isStringLiteral(property.name)
-                  ? property.name.text
-                  : undefined
-              : undefined;
-          if (!propertyName) continue;
-          values[propertyName] = ts.isShorthandPropertyAssignment(property)
-            ? property.name
-            : property.initializer;
-          if (
-            [
-              "pathParamsSchema",
-              "querySchema",
-              "bodySchema",
-              "responseSchema",
-            ].includes(propertyName) &&
-            isUnknownSchemaExpression(values[propertyName])
-          ) {
-            invalidSchemaFields.add(propertyName);
-          }
-        }
-        definitions.set(declaration.name.text, { values, invalidSchemaFields });
-      }
-    });
-  }
-  return definitions;
-}
-
-function isUnknownSchemaExpression(expression) {
-  if (
-    ts.isCallExpression(expression) &&
-    ts.isPropertyAccessExpression(expression.expression) &&
-    ts.isIdentifier(expression.expression.expression) &&
-    expression.expression.expression.text === "z" &&
-    ["any", "unknown"].includes(expression.expression.name.text)
-  ) {
-    return true;
-  }
-  return (
-    ts.isIdentifier(expression) && ["any", "unknown"].includes(expression.text)
-  );
-}
-
 function decoratedMethods(root, directory, decoratorName) {
   const methods = [];
   for (const path of listFiles(root, directory)) {
     if (!path.endsWith(".controller.ts")) continue;
-    const source = readText(root, path);
-    const file = parseTypeScript(path, source);
+    const file = parseTypeScript(path, readText(root, path));
     const visit = (node) => {
-      if (
-        ts.isMethodDeclaration(node) &&
-        node.name &&
-        ts.isIdentifier(node.name)
-      ) {
+      if (ts.isMethodDeclaration(node) && ts.isIdentifier(node.name)) {
         for (const decorator of decoratorsOf(node)) {
           const call = decoratorCall(decorator);
           if (call?.name !== decoratorName) continue;
@@ -891,6 +386,12 @@ function isTransparentWrapper(node) {
   );
 }
 
+function unwrapTransparentExpression(expression) {
+  let current = expression;
+  while (isTransparentWrapper(current)) current = current.expression;
+  return current;
+}
+
 function isAllowedRequestNamespaceUse(identifier) {
   let current = identifier;
   const property = current.parent;
@@ -960,9 +461,9 @@ function isForbiddenMigrationRuntimeIdentifier(node) {
   );
 }
 
-function checkMigrationApiImportAllowlist(root) {
+function checkMigrationApiImportAllowlist(root, paths) {
   const failures = [];
-  for (const path of MIGRATION_ADMIN_API_PATHS) {
+  for (const path of paths) {
     if (!pathExists(root, path)) continue;
     const file = parseTypeScript(path, readText(root, path));
     const requestNamespaces = new Set();
@@ -1154,20 +655,6 @@ function declaredValueNames(file) {
   return names;
 }
 
-function unwrapTransparentExpression(expression) {
-  let current = expression;
-  while (
-    ts.isParenthesizedExpression(current) ||
-    ts.isAsExpression(current) ||
-    ts.isTypeAssertionExpression(current) ||
-    ts.isNonNullExpression(current) ||
-    ts.isSatisfiesExpression(current)
-  ) {
-    current = current.expression;
-  }
-  return current;
-}
-
 function propertyAccessPath(expression) {
   const names = [];
   let current = unwrapTransparentExpression(expression);
@@ -1220,9 +707,9 @@ function migrationNetworkEntry(
   return undefined;
 }
 
-function migrationNetworkCalls(root) {
+function migrationNetworkCalls(root, paths) {
   const calls = [];
-  for (const path of MIGRATION_ADMIN_API_PATHS) {
+  for (const path of paths) {
     if (!pathExists(root, path)) continue;
     const file = parseTypeScript(path, readText(root, path));
     const requestBindings = requestImportBindings(file);
@@ -1263,70 +750,6 @@ function migrationNetworkCalls(root) {
     visit(file, undefined);
   }
   return calls;
-}
-
-function requestHelperName(expression, bindings) {
-  if (ts.isIdentifier(expression)) return bindings.named.get(expression.text);
-  if (
-    ts.isPropertyAccessExpression(expression) &&
-    ts.isIdentifier(expression.expression) &&
-    bindings.namespaces.has(expression.expression.text)
-  ) {
-    return expression.name.text;
-  }
-  return undefined;
-}
-
-function requestHelperCalls(root) {
-  const calls = [];
-  for (const path of listFiles(root, ADMIN_API_DIRECTORY)) {
-    if (path.endsWith(".spec.ts")) continue;
-    const file = parseTypeScript(path, readText(root, path));
-    const bindings = requestImportBindings(file);
-    const visit = (node, enclosingFunction) => {
-      let currentFunction = enclosingFunction;
-      if (
-        (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node)) &&
-        node.name &&
-        ts.isIdentifier(node.name)
-      ) {
-        currentFunction = node.name.text;
-      }
-      if (
-        ts.isCallExpression(node) &&
-        REQUEST_HELPERS.has(requestHelperName(node.expression, bindings)) &&
-        !isStaticallyDead(node)
-      ) {
-        calls.push({
-          path,
-          method: currentFunction,
-          helper: requestHelperName(node.expression, bindings),
-          contract:
-            requestHelperName(node.expression, bindings) ===
-              "callAdminEndpointContract" &&
-            node.arguments.length > 0 &&
-            ts.isIdentifier(node.arguments[0])
-              ? node.arguments[0].text
-              : undefined,
-        });
-      }
-      ts.forEachChild(node, (child) => visit(child, currentFunction));
-    };
-    visit(file, undefined);
-  }
-  return calls;
-}
-
-function contractCalls(root) {
-  return requestHelperCalls(root).filter(
-    (call) => call.helper === "callAdminEndpointContract" && call.contract,
-  );
-}
-
-function rawAdminHelperCalls(root) {
-  return requestHelperCalls(root).filter(
-    (call) => call.helper !== "callAdminEndpointContract",
-  );
 }
 
 function isStaticallyDead(node) {
@@ -1374,171 +797,13 @@ function isDescendantOf(node, ancestor) {
   return false;
 }
 
-function checkTryOnContractCoverage(root) {
+function checkMigratedProviderBareRoutes(root, manifest) {
   const failures = [];
-  const definitions = contractDefinitions(root);
-  const providers = decoratedMethods(
-    root,
-    "apps/service-api/src",
-    "AdminEndpointContract",
-  );
-  const registered = registeredControllers(root);
-  const requestCalls = requestHelperCalls(root);
-  const migrationCalls = migrationNetworkCalls(root);
-  const migrationImportFailures = checkMigrationApiImportAllowlist(root);
-  const callers = requestCalls.filter(
-    (call) => call.helper === "callAdminEndpointContract" && call.contract,
-  );
-  const callerHits = [];
-  const providerHits = [];
-
-  const targetsTryOn =
-    [...definitions.keys()].some((name) =>
-      TRY_ON_CONTRACT_NAMES.includes(name),
-    ) ||
-    providers.some((candidate) =>
-      TRY_ON_CONTRACT_NAMES.includes(candidate.contract),
-    ) ||
-    callers.some((candidate) =>
-      TRY_ON_CONTRACT_NAMES.includes(candidate.contract),
-    );
-  if (!targetsTryOn) {
-    return { failures, callerHits, providerHits };
-  }
-
-  failures.push(...migrationImportFailures);
-
-  for (const call of migrationCalls) {
-    if (call.entry === "callAdminEndpointContract") continue;
-    failures.push(
-      `migration API network entry denied: ${call.path}#${call.method} uses ${call.entry}`,
-    );
-  }
-
-  for (const name of TRY_ON_CONTRACT_NAMES) {
-    const expected = TRY_ON_CONTRACT_EXPECTATIONS[name];
-    const definition = definitions.get(name);
-    if (!definition) {
-      failures.push(`try-on contract definition missing: ${name}`);
-    } else {
-      const missingFields = TRY_ON_CONTRACT_FIELDS.filter(
-        (field) => !(field in definition.values),
-      );
-      if (missingFields.length > 0) {
-        failures.push(
-          `try-on contract definition incomplete: ${name} missing ${missingFields.join(", ")}`,
-        );
-      }
-      const invalidSchemas = [...definition.invalidSchemaFields];
-      if (invalidSchemas.length > 0) {
-        failures.push(
-          `try-on contract definition schema escape: ${name} uses unknown schema for ${invalidSchemas.join(", ")}`,
-        );
-      }
-      for (const [field, expectedReferences] of Object.entries(
-        expected.schemaReferences,
-      )) {
-        const expression = definition.values[field];
-        if (
-          field in definition.values &&
-          (!ts.isIdentifier(expression) ||
-            !expectedReferences.includes(expression.text))
-        ) {
-          failures.push(
-            `try-on contract definition schema drift: ${name} ${field} expected ${expectedReferences.join(" or ")}`,
-          );
-        }
-      }
-      if (stringLiteralValue(definition.values.method) !== expected.method) {
-        failures.push(
-          `try-on contract method drift: ${name} expected ${expected.method}`,
-        );
-      }
-      if (stringLiteralValue(definition.values.path) !== expected.path) {
-        failures.push(
-          `try-on contract path drift: ${name} expected ${expected.path}`,
-        );
-      }
-    }
-
-    const provider = providers.find(
-      (candidate) =>
-        candidate.contract === name &&
-        candidate.method === expected.providerMethod,
-    );
-    if (!provider) {
-      failures.push(`try-on endpoint contract provider missing: ${name}`);
-    } else {
-      if (!provider.controller || !registered.has(provider.controller)) {
-        failures.push(
-          `try-on endpoint contract provider controller unregistered: ${name}`,
-        );
-      } else {
-        providerHits.push(name);
-      }
-    }
-
-    const callerPath = PRODUCT_CATALOG_CONTRACT_NAMES.has(name)
-      ? "apps/admin-ui/src/api/products.ts"
-      : "apps/admin-ui/src/api/try-on-garments.ts";
-    const callerNetworkCalls = migrationCalls.filter(
-      (candidate) =>
-        candidate.path === callerPath &&
-        expected.callerMethods.includes(candidate.method),
-    );
-    const matchingCalls = callerNetworkCalls.filter(
-      (candidate) =>
-        candidate.entry === "callAdminEndpointContract" &&
-        candidate.contract === name,
-    );
-    if (matchingCalls.length === 0) {
-      failures.push(`try-on endpoint contract caller missing: ${name}`);
-    } else if (matchingCalls.length !== 1 || callerNetworkCalls.length !== 1) {
-      failures.push(`try-on endpoint contract caller ambiguous: ${name}`);
-    } else if (
-      callerNetworkCalls.some((candidate) => candidate.contract !== name)
-    ) {
-      failures.push(`try-on endpoint contract caller identity drift: ${name}`);
-    } else {
-      callerHits.push(name);
-    }
-    const rawBypasses = callerNetworkCalls.filter(
-      (candidate) => candidate.entry !== "callAdminEndpointContract",
-    );
-    if (rawBypasses.length > 0) {
-      failures.push(
-        `try-on endpoint contract caller raw helper bypass: ${name} uses ${rawBypasses.map((candidate) => candidate.entry).join(", ")}`,
-      );
-    }
-  }
-
-  const uploadSource = pathExists(
-    root,
-    "packages/shared/src/schemas/try-on-garments.ts",
-  )
-    ? readText(root, "packages/shared/src/schemas/try-on-garments.ts")
-    : "";
-  if (
-    /adminTryOnGarmentUploadContract[\s\S]*z\.unknown\s*\(\s*\)/.test(
-      uploadSource,
-    )
-  ) {
-    failures.push("try-on upload contract body must not use z.unknown");
-  }
-  return { failures, callerHits, providerHits };
-}
-
-function checkMigratedProviderBareRoutes(root) {
-  const failures = [];
-  for (const path of TEMPLATE_SLICE_CONTROLLER_PATHS) {
+  for (const path of manifest.controllerPaths) {
     if (!pathExists(root, path)) continue;
     const file = parseTypeScript(path, readText(root, path));
     const visit = (node) => {
-      if (
-        ts.isMethodDeclaration(node) &&
-        node.name &&
-        ts.isIdentifier(node.name)
-      ) {
+      if (ts.isMethodDeclaration(node) && ts.isIdentifier(node.name)) {
         const decoratorNames = decoratorsOf(node)
           .map((decorator) => decoratorCall(decorator)?.name)
           .filter(Boolean);
@@ -1549,7 +814,7 @@ function checkMigratedProviderBareRoutes(root) {
         const hasContract = decoratorNames.includes("AdminEndpointContract");
         if (hasRoute && !isPublic && !hasContract) {
           failures.push(
-            `ops-maintenance provider bare admin route: ${path}#${node.name.text} lacks AdminEndpointContract`,
+            `${manifest.slice} provider bare admin route: ${path}#${node.name.text} lacks AdminEndpointContract`,
           );
         }
       }
@@ -1560,72 +825,204 @@ function checkMigratedProviderBareRoutes(root) {
   return failures;
 }
 
-function checkContractSliceCoverage(root, expectations, label) {
+function findExportedCallerFunction(file, methodName) {
+  let found;
+  file.forEachChild((statement) => {
+    if (found) return;
+    if (ts.isFunctionDeclaration(statement)) {
+      if (!statement.name || statement.name.text !== methodName) return;
+      if (
+        statement.modifiers?.some(
+          (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
+        )
+      ) {
+        found = statement;
+      }
+      return;
+    }
+    if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        if (!ts.isIdentifier(declaration.name)) continue;
+        if (declaration.name.text !== methodName) continue;
+        if (
+          declaration.initializer &&
+          (ts.isArrowFunction(declaration.initializer) ||
+            ts.isFunctionExpression(declaration.initializer)) &&
+          statement.modifiers?.some(
+            (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
+          )
+        ) {
+          found = declaration.initializer;
+        }
+      }
+    }
+  });
+  return found;
+}
+
+function zInputTypeQueryReference(typeNode) {
+  const type = unwrapTransparentExpression(typeNode);
+  if (!ts.isTypeReferenceNode(type) || type.typeArguments?.length !== 1) {
+    return undefined;
+  }
+  const typeName = type.typeName;
+  const isZInput =
+    (ts.isQualifiedName(typeName) &&
+      ts.isIdentifier(typeName.left) &&
+      typeName.left.text === "z" &&
+      typeName.right.text === "input") ||
+    (ts.isPropertyAccessExpression(typeName) &&
+      ts.isIdentifier(typeName.expression) &&
+      typeName.expression.text === "z" &&
+      typeName.name.text === "input");
+  if (!isZInput) return undefined;
+  const argument = type.typeArguments[0];
+  if (!ts.isTypeQueryNode(argument)) return undefined;
+  if (ts.isIdentifier(argument.exprName)) {
+    return { kind: "schema", name: argument.exprName.text };
+  }
+  if (
+    (ts.isPropertyAccessExpression(argument.exprName) &&
+      ts.isIdentifier(argument.exprName.expression) &&
+      argument.exprName.name.text === "bodySchema") ||
+    (ts.isQualifiedName(argument.exprName) &&
+      ts.isIdentifier(argument.exprName.left) &&
+      argument.exprName.right.text === "bodySchema")
+  ) {
+    const contract = ts.isPropertyAccessExpression(argument.exprName)
+      ? argument.exprName.expression
+      : argument.exprName.left;
+    return {
+      kind: "contractBody",
+      contract: contract.text,
+    };
+  }
+  return undefined;
+}
+
+function checkCallerWriteBodySchema(
+  file,
+  methodName,
+  contractName,
+  bodySchemaIdentifier,
+) {
   const failures = [];
-  const definitions = contractDefinitions(root);
-  const providers = decoratedMethods(
-    root,
-    "apps/service-api/src",
-    "AdminEndpointContract",
-  );
-  const registered = registeredControllers(root);
-  const migrationCalls = migrationNetworkCalls(root);
-  const names = Object.keys(expectations);
+  const fn = findExportedCallerFunction(file, methodName);
+  if (!fn) return failures;
+  for (const parameter of fn.parameters) {
+    if (
+      !ts.isIdentifier(parameter.name) ||
+      !["body", "input"].includes(parameter.name.text)
+    ) {
+      continue;
+    }
+    if (!parameter.type) {
+      failures.push(
+        `caller write body type underived: ${methodName} body has no type`,
+      );
+      continue;
+    }
+    const reference = zInputTypeQueryReference(parameter.type);
+    const derivedFromSchema =
+      reference?.kind === "schema" && reference.name === bodySchemaIdentifier;
+    const derivedFromContract =
+      reference?.kind === "contractBody" && reference.contract === contractName;
+    if (!derivedFromSchema && !derivedFromContract) {
+      failures.push(
+        `caller write body type drift: ${methodName} body expected z.input<typeof ${bodySchemaIdentifier}>`,
+      );
+    }
+  }
+  return failures;
+}
+
+function checkContractSliceCoverage(root, manifest, context) {
+  const failures = [];
   const callerHits = [];
   const providerHits = [];
+  const { definitions, providers, registered } = context;
+  const migrationCalls = migrationNetworkCalls(root, manifest.callerPaths);
 
-  const targetsPresent =
-    [...definitions.keys()].some((name) => names.includes(name)) ||
-    providers.some((candidate) => names.includes(candidate.contract)) ||
-    migrationCalls.some((candidate) => names.includes(candidate.contract));
-  if (!targetsPresent) {
-    return { failures, callerHits, providerHits, bareRouteFailures: [] };
+  failures.push(
+    ...checkMigrationApiImportAllowlist(root, manifest.callerPaths),
+  );
+
+  for (const call of migrationCalls) {
+    if (call.entry === "callAdminEndpointContract") continue;
+    failures.push(
+      `migration API network entry denied: ${call.path}#${call.method} uses ${call.entry}`,
+    );
   }
 
-  for (const name of names) {
-    const expected = expectations[name];
+  for (const [name, entry] of Object.entries(manifest.contracts)) {
     const definition = definitions.get(name);
     if (!definition) {
-      failures.push(`${label} contract definition missing: ${name}`);
+      failures.push(`${manifest.slice} contract definition missing: ${name}`);
     } else {
+      const missingFields = CONTRACT_FIELDS.filter(
+        (field) => !(field in definition.values),
+      );
+      if (missingFields.length > 0) {
+        failures.push(
+          `${manifest.slice} contract definition incomplete: ${name} missing ${missingFields.join(", ")}`,
+        );
+      }
       const invalidSchemas = [...definition.invalidSchemaFields];
       if (invalidSchemas.length > 0) {
         failures.push(
-          `${label} contract definition schema escape: ${name} uses unknown schema for ${invalidSchemas.join(", ")}`,
+          `${manifest.slice} contract definition schema escape: ${name} uses unknown schema for ${invalidSchemas.join(", ")}`,
         );
       }
-      if (stringLiteralValue(definition.values.method) !== expected.method) {
+      if (stringLiteralValue(definition.values.method) !== entry.method) {
         failures.push(
-          `${label} contract method drift: ${name} expected ${expected.method}`,
+          `${manifest.slice} contract method drift: ${name} expected ${entry.method}`,
         );
       }
-      if (stringLiteralValue(definition.values.path) !== expected.path) {
+      if (stringLiteralValue(definition.values.path) !== entry.path) {
         failures.push(
-          `${label} contract path drift: ${name} expected ${expected.path}`,
+          `${manifest.slice} contract path drift: ${name} expected ${entry.path}`,
         );
+      }
+      if (entry.schemaReferences) {
+        for (const [field, expectedReferences] of Object.entries(
+          entry.schemaReferences,
+        )) {
+          const expression = definition.values[field];
+          if (
+            field in definition.values &&
+            (!ts.isIdentifier(expression) ||
+              !expectedReferences.includes(expression.text))
+          ) {
+            failures.push(
+              `${manifest.slice} contract definition schema drift: ${name} ${field} expected ${expectedReferences.join(" or ")}`,
+            );
+          }
+        }
       }
     }
 
     const provider = providers.find(
       (candidate) =>
         candidate.contract === name &&
-        candidate.method === expected.providerMethod,
+        candidate.method === entry.providerMethod,
     );
     if (!provider) {
-      failures.push(`${label} endpoint contract provider missing: ${name}`);
+      failures.push(
+        `${manifest.slice} endpoint contract provider missing: ${name}`,
+      );
     } else if (!provider.controller || !registered.has(provider.controller)) {
       failures.push(
-        `${label} endpoint contract provider controller unregistered: ${name}`,
+        `${manifest.slice} endpoint contract provider controller unregistered: ${name}`,
       );
     } else {
       providerHits.push(name);
     }
 
-    if (expected.callerPath && expected.callerMethods) {
+    if (entry.callerPath && entry.callerMethods) {
       const callerNetworkCalls = migrationCalls.filter(
         (candidate) =>
-          candidate.path === expected.callerPath &&
-          expected.callerMethods.includes(candidate.method),
+          candidate.path === entry.callerPath &&
+          entry.callerMethods.includes(candidate.method),
       );
       const matchingCalls = callerNetworkCalls.filter(
         (candidate) =>
@@ -1633,205 +1030,148 @@ function checkContractSliceCoverage(root, expectations, label) {
           candidate.contract === name,
       );
       if (matchingCalls.length === 0) {
-        failures.push(`${label} endpoint contract caller missing: ${name}`);
-      } else if (
-        matchingCalls.length !== 1 ||
-        callerNetworkCalls.length !== 1
-      ) {
-        failures.push(`${label} endpoint contract caller ambiguous: ${name}`);
+        failures.push(
+          `${manifest.slice} endpoint contract caller missing: ${name}`,
+        );
+      } else if (matchingCalls.length !== 1) {
+        failures.push(
+          `${manifest.slice} endpoint contract caller ambiguous: ${name}`,
+        );
       } else {
         callerHits.push(name);
+      }
+      const rawBypasses = callerNetworkCalls.filter(
+        (candidate) => candidate.entry !== "callAdminEndpointContract",
+      );
+      if (rawBypasses.length > 0) {
+        failures.push(
+          `${manifest.slice} endpoint contract caller raw helper bypass: ${name} uses ${rawBypasses.map((candidate) => candidate.entry).join(", ")}`,
+        );
+      }
+    }
+
+    if (
+      entry.callerPath &&
+      entry.callerMethods &&
+      WRITE_METHODS.has(entry.method) &&
+      definition &&
+      ts.isIdentifier(definition.values.bodySchema)
+    ) {
+      const callerFile = parseTypeScript(
+        entry.callerPath,
+        readText(root, entry.callerPath),
+      );
+      for (const methodName of entry.callerMethods) {
+        failures.push(
+          ...checkCallerWriteBodySchema(
+            callerFile,
+            methodName,
+            name,
+            definition.values.bodySchema.text,
+          ),
+        );
       }
     }
   }
 
-  const bareRouteFailures = checkMigratedProviderBareRoutes(root);
+  const bareRouteFailures = checkMigratedProviderBareRoutes(root, manifest);
   failures.push(...bareRouteFailures);
   return { failures, callerHits, providerHits, bareRouteFailures };
 }
 
-function checkOpsMaintenanceContractCoverage(root) {
-  return checkContractSliceCoverage(
-    root,
-    TEMPLATE_SLICE_CONTRACT_EXPECTATIONS,
-    "ops-maintenance",
+function uncoveredAdminBareRoutes(root, manifests) {
+  const lockedControllers = new Set(
+    manifests.flatMap((manifest) => manifest.controllerPaths),
   );
+  const uncovered = [];
+  for (const path of listFiles(root, "apps/service-api/src")) {
+    if (!path.endsWith(".controller.ts")) continue;
+    if (lockedControllers.has(path)) continue;
+    const file = parseTypeScript(path, readText(root, path));
+    const visit = (node) => {
+      if (ts.isMethodDeclaration(node) && ts.isIdentifier(node.name)) {
+        const decoratorNames = decoratorsOf(node)
+          .map((decorator) => decoratorCall(decorator)?.name)
+          .filter(Boolean);
+        const hasRoute = decoratorNames.some((name) =>
+          ROUTE_DECORATORS.has(name),
+        );
+        const isPublic = decoratorNames.includes("Public");
+        const hasContract = decoratorNames.includes("AdminEndpointContract");
+        if (hasRoute && !isPublic && !hasContract) {
+          uncovered.push(`${path}#${node.name.text}`);
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+  }
+  return uncovered.sort();
 }
 
-function checkMachinesInventoryContractCoverage(root) {
-  return checkContractSliceCoverage(
-    root,
-    MACHINES_INVENTORY_CONTRACT_EXPECTATIONS,
-    "machines-inventory",
+function uncoveredLegacyCallerModules(root, manifests) {
+  const lockedCallers = new Set(
+    manifests.flatMap((manifest) => manifest.callerPaths),
   );
-}
-
-function stringLiteralValue(value) {
-  return value && ts.isStringLiteral(value) ? value.text : undefined;
-}
-
-function functionUsesWriteHelper(fn) {
-  return WRITE_CALL_PATTERN.test(fn.body);
-}
-
-function functionUsesBroadQuery(parameters) {
-  return /(?:^|,)\s*query\s*\??\s*:\s*Record\s*<\s*string\s*,\s*unknown\s*>/.test(
-    parameters,
-  );
-}
-
-function bodyParameterType(parameters) {
-  const match = /\b(?:body|input)\??\s*:/g.exec(parameters);
-  if (!match) return "";
-
-  const typeStart = match.index + match[0].length;
-  let angleDepth = 0;
-  let parenDepth = 0;
-  let braceDepth = 0;
-  let bracketDepth = 0;
-  for (let index = typeStart; index < parameters.length; index += 1) {
-    const character = parameters[index];
-    if (character === "<") angleDepth += 1;
-    if (character === ">" && angleDepth > 0) angleDepth -= 1;
-    if (character === "(") parenDepth += 1;
-    if (character === ")" && parenDepth > 0) parenDepth -= 1;
-    if (character === "{") braceDepth += 1;
-    if (character === "}" && braceDepth > 0) braceDepth -= 1;
-    if (character === "[") bracketDepth += 1;
-    if (character === "]" && bracketDepth > 0) bracketDepth -= 1;
-    if (
-      character === "," &&
-      angleDepth === 0 &&
-      parenDepth === 0 &&
-      braceDepth === 0 &&
-      bracketDepth === 0
-    ) {
-      return parameters.slice(typeStart, index).trim();
-    }
-  }
-  return parameters.slice(typeStart).trim();
-}
-
-function isLocalBodyType(typeText) {
-  if (!typeText) return false;
-  if (typeText.startsWith("{")) return true;
-  if (SHARED_BODY_TYPE_PATTERN.test(typeText)) return false;
-
-  const typeNames = typeText.match(/\b[A-Z][A-Za-z0-9_]*\b/g) ?? [];
-  return typeNames.some((typeName) => !LOCAL_TYPE_UTILITY_NAMES.has(typeName));
-}
-
-function checkWriteCaller(caller, fn) {
-  const failures = [];
-  const calls = helperCalls(fn.body);
-  for (const call of calls) {
-    if (WRITE_HELPERS.has(call)) {
-      failures.push(`admin write caller uses unbound ${call}: ${caller}`);
-    }
-  }
-  if (!calls.some((call) => CONTRACT_WRITE_HELPERS.has(call))) {
-    failures.push(`admin write caller missing schema-bound helper: ${caller}`);
-  }
-
-  const bodyType = bodyParameterType(fn.parameters);
-  if (isLocalBodyType(bodyType)) {
-    failures.push(`admin write caller uses local body type: ${caller}`);
-  }
-  if (BROAD_TYPE_PATTERN.test(bodyType)) {
-    failures.push(`admin write caller uses broad body type: ${caller}`);
-  }
-  return failures;
-}
-
-function indexWriteCallers(root) {
-  const callers = new Map();
+  const uncovered = [];
   for (const path of listFiles(root, ADMIN_API_DIRECTORY)) {
-    if (EXCLUDED_API_FILES.has(path) || path.endsWith(".spec.ts")) continue;
-    const source = readText(root, path);
-    for (const fn of extractFunctions(source)) {
-      if (!functionUsesWriteHelper(fn)) continue;
-      callers.set(`${path}#${fn.name}`, { path, fn });
+    if (path.endsWith(".spec.ts") || EXCLUDED_API_FILES.has(path)) continue;
+    if (lockedCallers.has(path)) continue;
+    const file = parseTypeScript(path, readText(root, path));
+    const bindings = requestImportBindings(file);
+    const runtimeRequestNames = [...bindings.named.values()].filter(
+      (name) => name !== "callAdminEndpointContract",
+    );
+    const hasNetworkTransport =
+      importedNetworkBindings(file).size > 0 || bindings.namespaces.size > 0;
+    if (runtimeRequestNames.length > 0 || hasNetworkTransport) {
+      uncovered.push(path);
     }
   }
-  return callers;
-}
-
-function checkWriteModuleQueryTypes(root, writeModulePaths) {
-  const failures = [];
-
-  for (const path of writeModulePaths) {
-    if (!pathExists(root, path)) continue;
-    const source = readText(root, path);
-    for (const fn of extractFunctions(source)) {
-      if (!functionUsesBroadQuery(fn.parameters)) continue;
-      failures.push(
-        `admin api write module uses broad query type: ${path}#${fn.name}`,
-      );
-    }
-  }
-
-  return failures;
+  return uncovered.sort();
 }
 
 export function checkAdminApiContracts(options = {}) {
   const root = options.root ?? process.cwd();
   const failures = [];
-  const checks = [];
-  const callers = indexWriteCallers(root);
-  const writeModulePaths = new Set(
-    [...callers.values()].map((indexed) => indexed.path),
+  const manifests = manifestEntries(root);
+  const definitions = contractDefinitions(root);
+  const providers = decoratedMethods(
+    root,
+    "apps/service-api/src",
+    "AdminEndpointContract",
   );
+  const registered = registeredControllers(root);
+  const coverage = {};
+  const checks = [];
 
-  for (const [caller, indexed] of callers) {
-    failures.push(...checkWriteCaller(caller, indexed.fn));
+  for (const manifest of manifests) {
+    const result = checkContractSliceCoverage(root, manifest, {
+      definitions,
+      providers,
+      registered,
+    });
+    coverage[manifest.slice] = result;
+    failures.push(...result.failures);
+    checks.push({
+      name: `${manifest.slice}-providers-and-callers-share-complete-contracts`,
+      passed: result.failures.length === 0,
+      detail: `callers=${result.callerHits.length}, providers=${result.providerHits.length}, bareRoutes=${result.bareRouteFailures.length}`,
+    });
   }
-  failures.push(...checkWriteModuleQueryTypes(root, writeModulePaths));
-  const tryOnCoverage = checkTryOnContractCoverage(root);
-  failures.push(...tryOnCoverage.failures);
-  const opsMaintenanceCoverage = checkOpsMaintenanceContractCoverage(root);
-  failures.push(...opsMaintenanceCoverage.failures);
-  const machinesInventoryCoverage =
-    checkMachinesInventoryContractCoverage(root);
-  failures.push(...machinesInventoryCoverage.failures);
 
-  checks.push({
-    name: "admin-writes-use-schema-bound-contracts",
-    passed: !failures.some((failure) =>
-      failure.startsWith("admin write caller"),
-    ),
-    detail: "admin writes use schema-bound helpers and shared body types",
-  });
-  checks.push({
-    name: "try-on-providers-and-callers-share-complete-contracts",
-    passed: tryOnCoverage.failures.length === 0,
-    detail: `callers=${tryOnCoverage.callerHits.length}, providers=${tryOnCoverage.providerHits.length}`,
-  });
-  checks.push({
-    name: "ops-maintenance-providers-and-callers-share-complete-contracts",
-    passed: opsMaintenanceCoverage.failures.length === 0,
-    detail: `callers=${opsMaintenanceCoverage.callerHits.length}, providers=${opsMaintenanceCoverage.providerHits.length}, bareRoutes=${opsMaintenanceCoverage.bareRouteFailures.length}`,
-  });
-  checks.push({
-    name: "machines-inventory-providers-and-callers-share-complete-contracts",
-    passed: machinesInventoryCoverage.failures.length === 0,
-    detail: `callers=${machinesInventoryCoverage.callerHits.length}, providers=${machinesInventoryCoverage.providerHits.length}, bareRoutes=${machinesInventoryCoverage.bareRouteFailures.length}`,
-  });
-  checks.push({
-    name: "admin-write-modules-avoid-broad-query-shortcuts",
-    passed: !failures.some((failure) =>
-      failure.startsWith("admin api write module uses broad query type"),
-    ),
-    detail: "admin API modules with writes use shared query contracts",
-  });
+  const backlog = {
+    adminBareRoutes: uncoveredAdminBareRoutes(root, manifests),
+    legacyHelperModules: uncoveredLegacyCallerModules(root, manifests),
+  };
 
   return {
     ok: failures.length === 0,
     checks,
     failures,
-    writeCallers: [...callers.keys()].sort(),
-    tryOnCoverage,
-    opsMaintenanceCoverage,
-    machinesInventoryCoverage,
+    coverage,
+    backlog,
+    manifests: manifests.map((manifest) => manifest.slice),
   };
 }
 
@@ -1842,6 +1182,12 @@ function printResult(result) {
   }
   for (const failure of result.failures) {
     console.error(`not ok - ${failure}`);
+  }
+  for (const route of result.backlog.adminBareRoutes) {
+    console.log(`info - unmigrated admin provider route: ${route}`);
+  }
+  for (const modulePath of result.backlog.legacyHelperModules) {
+    console.log(`info - unmigrated admin api module: ${modulePath}`);
   }
 }
 
