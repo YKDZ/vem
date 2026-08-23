@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
   lstatSync,
@@ -8,7 +8,6 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { isIP } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
 
 import { inspectExportedDefaultAudioCapture } from "./default-audio-evidence.ts";
@@ -25,16 +24,11 @@ const TARGET_IDENTITY = /^vm-target:\/\/[a-z0-9][a-z0-9.-]{0,127}$/;
 const OPERATION_NONCE = /^op-[a-f0-9]{16,64}$/;
 const OPERATION_REFERENCE = /^vm-operation:\/\/op-[a-f0-9]{16,64}$/;
 const LIFECYCLE_REFERENCE = /^vm-lifecycle:\/\/[a-z0-9][a-z0-9.-]{2,127}$/;
-const SERIAL_SESSION_ID = /^serial-session:\/\/sha256-[a-f0-9]{64}$/;
-const SERIAL_SESSION_BINDING_TOKEN =
-  /^serial-session-binding:\/\/sha256-[a-f0-9]{64}$/;
 const SHA256_DIGEST = /^sha256:[a-f0-9]{64}$/;
 const LOGICAL_IDENTITY =
   /^[a-z][a-z0-9-]{0,31}:\/\/[a-z0-9][a-z0-9._:@-]{0,191}$/;
 const SEMVER = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-const UUID =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const AUDIO_ENCODING = new Set([
   "pcm_u8",
   "pcm_s16le",
@@ -78,7 +72,7 @@ export const VM_HOST_ADAPTER_CAPABILITIES = new Set([
   "cleanup",
 ]);
 
-const REQUIRED_CAPABILITY_BY_OPERATION = {
+const REQUIRED_CAPABILITY_BY_OPERATION: Record<string, string> = {
   "clean-install": "clean-install",
   "capture-approved-base": "approved-base-capture",
   "restore-approved-base": "approved-base-restore",
@@ -93,7 +87,7 @@ const REQUIRED_CAPABILITY_BY_OPERATION = {
   cancel: "cancellation",
 };
 
-const REQUIRED_ASSET_ROLES_BY_OPERATION = {
+const REQUIRED_ASSET_ROLES_BY_OPERATION: Record<string, string[]> = {
   "clean-install": ["runtime-image", "runtime-bootstrap"],
   "capture-approved-base": ["runtime-image"],
   "restore-approved-base": ["approved-runtime-base"],
@@ -108,7 +102,7 @@ const REQUIRED_ASSET_ROLES_BY_OPERATION = {
   cancel: ["approved-runtime-base", "runtime-image"],
 };
 
-const REQUIRED_CAPABILITIES_BY_SERIAL_OPERATION = {
+const REQUIRED_CAPABILITIES_BY_SERIAL_OPERATION: Record<string, string[]> = {
   "start-serial-session": [
     "serial-session",
     "serial:lower-controller",
@@ -173,7 +167,9 @@ const SALE_CORRELATION_ID =
 const BUSINESS_IDENTIFIER = /^[a-zA-Z0-9][a-zA-Z0-9._:@-]{2,191}$/;
 
 export class VmHostAdapterContractError extends Error {
-  constructor(issues) {
+  readonly issues: Array<{ path: string; message: string }>;
+
+  constructor(issues: Array<{ path: string; message: string }>) {
     super(
       `invalid VM Host Adapter contract: ${issues.map((entry) => `${entry.path} ${entry.message}`).join("; ")}`,
     );
@@ -183,22 +179,33 @@ export class VmHostAdapterContractError extends Error {
 }
 
 export class VmHostAdapterExecutionError extends Error {
-  constructor(message, diagnostic) {
+  readonly diagnostic: unknown;
+
+  constructor(message: string, diagnostic: unknown) {
     super(message);
     this.name = "VmHostAdapterExecutionError";
     this.diagnostic = diagnostic;
   }
 }
 
-function issue(issues, path, message) {
+function issue(
+  issues: Array<{ path: string; message: string }>,
+  path: string,
+  message: string,
+): void {
   issues.push({ path, message });
 }
 
-function isRecord(value) {
+function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function assertExactKeys(value, keys, path, issues) {
+function assertExactKeys(
+  value: unknown,
+  keys: string[],
+  path: string,
+  issues: Array<{ path: string; message: string }>,
+): boolean {
   if (!isRecord(value)) {
     issue(issues, path, "must be an object");
     return false;
@@ -213,7 +220,11 @@ function assertExactKeys(value, keys, path, issues) {
   return true;
 }
 
-function assertNoHostReference(value, path, issues) {
+function assertNoHostReference(
+  value: unknown,
+  path: string,
+  issues: Array<{ path: string; message: string }>,
+): void {
   if (typeof value !== "string") return;
   if (
     /(?:^|[^a-z0-9-])\/(?:mnt|home|tmp|var|opt|users)(?:\/|$)|(?:^|[^a-z0-9-])[a-z]:[\\/]|\\\\|retired-host:\/\//i.test(
@@ -228,7 +239,11 @@ function assertNoHostReference(value, path, issues) {
   }
 }
 
-function assertLogicalIdentity(value, path, issues) {
+function assertLogicalIdentity(
+  value: unknown,
+  path: string,
+  issues: Array<{ path: string; message: string }>,
+): void {
   if (
     typeof value !== "string" ||
     (!LOGICAL_IDENTITY.test(value) &&
@@ -241,57 +256,67 @@ function assertLogicalIdentity(value, path, issues) {
   assertNoHostReference(value, path, issues);
 }
 
-function assertAsset(asset, index, issues, pathPrefix = "assets") {
+function assertAsset(
+  asset: unknown,
+  index: number,
+  issues: Array<{ path: string; message: string }>,
+  pathPrefix = "assets",
+): void {
   const path = `${pathPrefix}[${index}]`;
   if (!assertExactKeys(asset, ["role", "identity", "digest"], path, issues))
     return;
+  const record = asset as Record<string, unknown>;
   if (
-    typeof asset.role !== "string" ||
-    !/^[a-z][a-z0-9-]{0,63}$/.test(asset.role)
+    typeof record.role !== "string" ||
+    !/^[a-z][a-z0-9-]{0,63}$/.test(record.role)
   ) {
     issue(issues, `${path}.role`, "must be a logical asset role");
   }
   const identityPattern =
-    asset.role === "approved-runtime-base"
+    record.role === "approved-runtime-base"
       ? RUNTIME_BASE_IDENTITY
       : ASSET_IDENTITY;
   const identity =
-    typeof asset.identity === "string"
-      ? asset.identity.match(identityPattern)
+    typeof record.identity === "string"
+      ? record.identity.match(identityPattern)
       : null;
   if (!identity)
     issue(
       issues,
       `${path}.identity`,
-      asset.role === "approved-runtime-base"
+      record.role === "approved-runtime-base"
         ? "must be a runtime-base SHA-256 identity"
         : "must be a runtime-asset SHA-256 identity",
     );
   if (
-    typeof asset.digest !== "string" ||
-    !/^sha256:[a-f0-9]{64}$/.test(asset.digest)
+    typeof record.digest !== "string" ||
+    !/^sha256:[a-f0-9]{64}$/.test(record.digest)
   ) {
     issue(issues, `${path}.digest`, "must be a lowercase SHA-256 digest");
-  } else if (identity && identity[1] !== asset.digest.slice(7)) {
+  } else if (identity && identity[1] !== String(record.digest).slice(7)) {
     issue(
       issues,
       path,
       "identity and digest must name the same immutable asset",
     );
   }
-  assertNoHostReference(asset.identity, `${path}.identity`, issues);
+  assertNoHostReference(record.identity, `${path}.identity`, issues);
 }
 
-function assertUniqueRoles(entries, path, issues) {
-  const roles = new Set();
-  entries.forEach((entry, index) => {
-    if (roles.has(entry?.role))
+function assertUniqueRoles(
+  entries: Array<Record<string, unknown>>,
+  path: string,
+  issues: Array<{ path: string; message: string }>,
+): void {
+  const roles = new Set<string>();
+  entries.forEach((entry: Record<string, unknown>, index: number) => {
+    if (roles.has(String(entry?.role)))
       issue(issues, `${path}[${index}].role`, "must not be duplicated");
-    roles.add(entry?.role);
+    roles.add(String(entry?.role));
   });
 }
 
-function sameValues(left, right) {
+function sameValues(left: unknown, right: unknown): boolean {
   return (
     Array.isArray(left) &&
     Array.isArray(right) &&
@@ -300,7 +325,7 @@ function sameValues(left, right) {
   );
 }
 
-function sameAssets(left, right) {
+function sameAssets(left: unknown, right: unknown): boolean {
   return (
     Array.isArray(left) &&
     Array.isArray(right) &&
@@ -314,15 +339,17 @@ function sameAssets(left, right) {
   );
 }
 
-function isV2Request(request) {
+function isV2Request(
+  request: Record<string, unknown> | null | undefined,
+): boolean {
   return request?.schemaVersion === REQUEST_SCHEMA_VERSION;
 }
 
-function isSerialSessionOperation(operation) {
-  return SERIAL_SESSION_OPERATIONS.has(operation);
+function isSerialSessionOperation(operation: unknown): boolean {
+  return SERIAL_SESSION_OPERATIONS.has(String(operation));
 }
 
-function sha256(value) {
+function sha256(value: string | Buffer | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
@@ -340,7 +367,7 @@ export function createScannerCodeDescriptor(
   };
 }
 
-function normalizeScannerInput(scannerCode) {
+function normalizeScannerInput(scannerCode: unknown): Buffer {
   if (Buffer.isBuffer(scannerCode)) return Buffer.from(scannerCode);
   if (typeof scannerCode === "string") return Buffer.from(scannerCode, "utf8");
   throw new Error("scanner input must be a string or Buffer");
@@ -350,19 +377,32 @@ export function deriveSerialFrameCaptureBindingDigest({
   request,
   record,
   previousCaptureBindingDigest = null,
-}) {
-  const frame = record?.capturedFrame ?? {};
-  const sale = record?.saleBinding;
+}: {
+  request?: Record<string, unknown>;
+  record?: Record<string, unknown>;
+  previousCaptureBindingDigest?: string | null;
+}): string {
+  const frame = (record?.capturedFrame ?? {}) as Record<string, unknown>;
+  const sale = record?.saleBinding as Record<string, unknown> | undefined;
   const material = {
     schemaVersion: "vem-serial-frame-capture-binding/v1",
     runId: request?.runId ?? null,
     lifecycleReference: request?.lifecycleReference ?? null,
-    targetIdentity: request?.target?.identity ?? null,
+    targetIdentity:
+      (request?.target as Record<string, unknown> | undefined)?.identity ?? null,
     operationReference: request?.operationReference ?? null,
-    serialSessionId: request?.serialSession?.serialSessionId ?? null,
-    sessionBindingToken: request?.serialSession?.sessionBindingToken ?? null,
-    deviceMappingDigest: request?.serialSession?.deviceMappingDigest ?? null,
-    operationEvidence: request?.serialSession?.operationEvidence ?? null,
+    serialSessionId:
+      (request?.serialSession as Record<string, unknown> | undefined)
+        ?.serialSessionId ?? null,
+    sessionBindingToken:
+      (request?.serialSession as Record<string, unknown> | undefined)
+        ?.sessionBindingToken ?? null,
+    deviceMappingDigest:
+      (request?.serialSession as Record<string, unknown> | undefined)
+        ?.deviceMappingDigest ?? null,
+    operationEvidence:
+      (request?.serialSession as Record<string, unknown> | undefined)
+        ?.operationEvidence ?? null,
     saleCorrelationId: record?.saleCorrelationId ?? null,
     orderId: sale?.orderId ?? null,
     paymentId: sale?.paymentId ?? null,
@@ -381,17 +421,32 @@ export function deriveSerialFrameCaptureBindingDigest({
   return `sha256:${sha256(JSON.stringify(material))}`;
 }
 
-export function deriveSerialEvidenceCaptureChainDigest({ request, records }) {
+export function deriveSerialEvidenceCaptureChainDigest({
+  request,
+  records,
+}: {
+  request?: Record<string, unknown>;
+  records?: unknown;
+}): string {
   const material = {
     schemaVersion: "vem-serial-evidence-capture-chain/v1",
     runId: request?.runId ?? null,
     lifecycleReference: request?.lifecycleReference ?? null,
-    targetIdentity: request?.target?.identity ?? null,
+    targetIdentity:
+      (request?.target as Record<string, unknown> | undefined)?.identity ?? null,
     operationReference: request?.operationReference ?? null,
-    serialSessionId: request?.serialSession?.serialSessionId ?? null,
-    sessionBindingToken: request?.serialSession?.sessionBindingToken ?? null,
-    deviceMappingDigest: request?.serialSession?.deviceMappingDigest ?? null,
-    operationEvidence: request?.serialSession?.operationEvidence ?? null,
+    serialSessionId:
+      (request?.serialSession as Record<string, unknown> | undefined)
+        ?.serialSessionId ?? null,
+    sessionBindingToken:
+      (request?.serialSession as Record<string, unknown> | undefined)
+        ?.sessionBindingToken ?? null,
+    deviceMappingDigest:
+      (request?.serialSession as Record<string, unknown> | undefined)
+        ?.deviceMappingDigest ?? null,
+    operationEvidence:
+      (request?.serialSession as Record<string, unknown> | undefined)
+        ?.operationEvidence ?? null,
     captureBindingDigests: Array.isArray(records)
       ? records.map((record) => record?.captureBindingDigest ?? null)
       : null,
@@ -404,7 +459,12 @@ export function deriveSerialSessionBinding({
   lifecycleReference,
   targetIdentity,
   startOperationReference,
-}) {
+}: {
+  runId: unknown;
+  lifecycleReference: unknown;
+  targetIdentity: unknown;
+  startOperationReference: unknown;
+}): { serialSessionId: string; sessionBindingToken: string } {
   const input = [
     "vem-vm-host-adapter-serial-session/v2",
     runId,
@@ -418,7 +478,9 @@ export function deriveSerialSessionBinding({
   };
 }
 
-export function deriveSerialDeviceMappingDigest(deviceMappings) {
+export function deriveSerialDeviceMappingDigest(
+  deviceMappings: Array<Record<string, unknown>>,
+): string {
   const canonical = deviceMappings.map((mapping) => ({
     role: mapping?.role,
     guestDeviceIdentity: mapping?.guestDeviceIdentity,
@@ -429,7 +491,11 @@ export function deriveSerialDeviceMappingDigest(deviceMappings) {
   return `sha256:${sha256(JSON.stringify(canonical))}`;
 }
 
-function assertGuestUsbTopology(value, path, issues) {
+function assertGuestUsbTopology(
+  value: unknown,
+  path: string,
+  issues: Array<{ path: string; message: string }>,
+): void {
   if (
     !assertExactKeys(
       value,
@@ -439,35 +505,47 @@ function assertGuestUsbTopology(value, path, issues) {
     )
   )
     return;
+  const record = value as Record<string, unknown>;
   if (
-    typeof value.alias !== "string" ||
-    !/^serial-(?:lower-controller|scanner)$/.test(value.alias)
+    typeof record.alias !== "string" ||
+    !/^serial-(?:lower-controller|scanner)$/.test(record.alias)
   )
     issue(
       issues,
       `${path}.alias`,
       "must identify a supported libvirt serial role",
     );
-  if (!Number.isInteger(value.targetPort) || value.targetPort < 0)
+  if (
+    typeof record.targetPort !== "number" ||
+    !Number.isInteger(record.targetPort) ||
+    record.targetPort < 0
+  )
     issue(
       issues,
       `${path}.targetPort`,
       "must be a non-negative libvirt target port",
     );
-  if (!Number.isInteger(value.usbBus) || value.usbBus < 0)
+  if (
+    typeof record.usbBus !== "number" ||
+    !Number.isInteger(record.usbBus) ||
+    record.usbBus < 0
+  )
     issue(issues, `${path}.usbBus`, "must be a non-negative libvirt USB bus");
   if (
-    typeof value.usbPort !== "string" ||
-    !/^\d+(?:\.\d+)*$/.test(value.usbPort)
+    typeof record.usbPort !== "string" ||
+    !/^\d+(?:\.\d+)*$/.test(record.usbPort)
   )
     issue(issues, `${path}.usbPort`, "must be a libvirt USB address port");
 }
 
-function expectedSerialBinding(request, session) {
+function expectedSerialBinding(
+  request: Record<string, unknown>,
+  session: Record<string, unknown>,
+): { serialSessionId: string; sessionBindingToken: string } {
   return deriveSerialSessionBinding({
     runId: request.runId,
     lifecycleReference: request.lifecycleReference,
-    targetIdentity: request.target.identity,
+    targetIdentity: (request.target as Record<string, unknown>).identity,
     startOperationReference:
       request.operation === "start-serial-session"
         ? request.operationReference
@@ -475,7 +553,12 @@ function expectedSerialBinding(request, session) {
   });
 }
 
-function assertScannerInjection(injection, path, request, issues) {
+function assertScannerInjection(
+  injection: unknown,
+  path: string,
+  request: Record<string, unknown>,
+  issues: Array<{ path: string; message: string }>,
+): void {
   if (
     !assertExactKeys(
       injection,
@@ -490,24 +573,26 @@ function assertScannerInjection(injection, path, request, issues) {
     )
   )
     return;
+  const record = injection as Record<string, unknown>;
   if (
-    typeof injection.operationNonce !== "string" ||
-    !OPERATION_NONCE.test(injection.operationNonce)
+    typeof record.operationNonce !== "string" ||
+    !OPERATION_NONCE.test(record.operationNonce)
   )
     issue(issues, `${path}.operationNonce`, "must be an operation nonce");
-  if (!SHA256_DIGEST.test(injection.scannerCodeDigest ?? ""))
+  if (!SHA256_DIGEST.test(String(record.scannerCodeDigest ?? "")))
     issue(issues, `${path}.scannerCodeDigest`, "must be a SHA-256 digest");
   if (
-    !Number.isInteger(injection.scannerCodeByteLength) ||
-    injection.scannerCodeByteLength < 1 ||
-    injection.scannerCodeByteLength > 256
+    typeof record.scannerCodeByteLength !== "number" ||
+    !Number.isInteger(record.scannerCodeByteLength) ||
+    record.scannerCodeByteLength < 1 ||
+    record.scannerCodeByteLength > 256
   )
     issue(
       issues,
       `${path}.scannerCodeByteLength`,
       "must be a bounded scanner input byte length",
     );
-  if (!SCANNER_CODE_SUFFIX.test(injection.scannerCodeSuffix ?? ""))
+  if (!SCANNER_CODE_SUFFIX.test(String(record.scannerCodeSuffix ?? "")))
     issue(
       issues,
       `${path}.scannerCodeSuffix`,
@@ -515,7 +600,7 @@ function assertScannerInjection(injection, path, request, issues) {
     );
   if (
     request.operation === "inject-scanner-code" &&
-    injection.operationNonce !== request.operationNonce
+    record.operationNonce !== request.operationNonce
   )
     issue(
       issues,
@@ -524,13 +609,18 @@ function assertScannerInjection(injection, path, request, issues) {
     );
 }
 
-function assertSerialSessionRequest(session, request, issues) {
+function assertSerialSessionRequest(
+  session: unknown,
+  request: Record<string, unknown>,
+  issues: Array<{ path: string; message: string }>,
+): void {
   if (!isV2Request(request)) return;
+  const sessionRecord = session as Record<string, unknown> | null;
   const carriesSession =
     isSerialSessionOperation(request.operation) ||
-    ["cleanup", "cancel"].includes(request.operation);
+    ["cleanup", "cancel"].includes(String(request.operation));
   if (!carriesSession) {
-    if (session !== null)
+    if (sessionRecord !== null)
       issue(
         issues,
         "request.serialSession",
@@ -538,7 +628,7 @@ function assertSerialSessionRequest(session, request, issues) {
       );
     return;
   }
-  if (session === null) {
+  if (sessionRecord === null) {
     if (isSerialSessionOperation(request.operation))
       issue(
         issues,
@@ -549,7 +639,7 @@ function assertSerialSessionRequest(session, request, issues) {
   }
   if (
     !assertExactKeys(
-      session,
+      sessionRecord,
       [
         "serialSessionId",
         "sessionBindingToken",
@@ -567,7 +657,7 @@ function assertSerialSessionRequest(session, request, issues) {
     )
   )
     return;
-  if (!sameValues(session.deviceRoles, SERIAL_DEVICE_ROLES))
+  if (!sameValues(sessionRecord.deviceRoles, SERIAL_DEVICE_ROLES))
     issue(
       issues,
       "request.serialSession.deviceRoles",
@@ -581,7 +671,7 @@ function assertSerialSessionRequest(session, request, issues) {
       "startOperationReference",
       "deviceMappingDigest",
     ])
-      if (session[key] !== null)
+      if (sessionRecord[key] !== null)
         issue(
           issues,
           `request.serialSession.${key}`,
@@ -589,25 +679,25 @@ function assertSerialSessionRequest(session, request, issues) {
         );
   } else {
     const isRecoveryCleanup =
-      ["cleanup", "cancel"].includes(request.operation) &&
-      session.deviceMappingDigest === null;
-    const expected = expectedSerialBinding(request, session);
+      ["cleanup", "cancel"].includes(String(request.operation)) &&
+      sessionRecord.deviceMappingDigest === null;
+    const expected = expectedSerialBinding(request, sessionRecord);
     if (
-      typeof session.startOperationReference !== "string" ||
-      !OPERATION_REFERENCE.test(session.startOperationReference)
+      typeof sessionRecord.startOperationReference !== "string" ||
+      !OPERATION_REFERENCE.test(sessionRecord.startOperationReference)
     )
       issue(
         issues,
         "request.serialSession.startOperationReference",
         "must identify the start operation",
       );
-    if (session.serialSessionId !== expected.serialSessionId)
+    if (sessionRecord.serialSessionId !== expected.serialSessionId)
       issue(
         issues,
         "request.serialSession.serialSessionId",
         "must be derived from this run lifecycle target and start operation",
       );
-    if (session.sessionBindingToken !== expected.sessionBindingToken)
+    if (sessionRecord.sessionBindingToken !== expected.sessionBindingToken)
       issue(
         issues,
         "request.serialSession.sessionBindingToken",
@@ -615,7 +705,7 @@ function assertSerialSessionRequest(session, request, issues) {
       );
     if (
       !isRecoveryCleanup &&
-      !SHA256_DIGEST.test(session.deviceMappingDigest ?? "")
+      !SHA256_DIGEST.test(String(sessionRecord.deviceMappingDigest ?? ""))
     )
       issue(
         issues,
@@ -626,9 +716,9 @@ function assertSerialSessionRequest(session, request, issues) {
   const usesInjection = [
     "inject-scanner-code",
     "collect-serial-evidence",
-  ].includes(request.operation);
+  ].includes(String(request.operation));
   if (usesInjection) {
-    if (session.scannerInjection === null)
+    if (sessionRecord.scannerInjection === null)
       issue(
         issues,
         "request.serialSession.scannerInjection",
@@ -636,19 +726,21 @@ function assertSerialSessionRequest(session, request, issues) {
       );
     else
       assertScannerInjection(
-        session.scannerInjection,
+        sessionRecord.scannerInjection,
         "request.serialSession.scannerInjection",
         request,
         issues,
       );
-  } else if (session.scannerInjection !== null)
+  } else if (sessionRecord.scannerInjection !== null)
     issue(
       issues,
       "request.serialSession.scannerInjection",
       "must be null for this operation",
     );
   if (request.operation === "collect-serial-evidence") {
-    const evidence = session.operationEvidence;
+    const evidence = sessionRecord.operationEvidence as
+      | Record<string, unknown>
+      | null;
     if (
       !assertExactKeys(
         evidence,
@@ -658,10 +750,10 @@ function assertSerialSessionRequest(session, request, issues) {
       )
     ) {
       // Exact-key diagnostics are sufficient when this object is malformed.
-    } else {
+    } else if (evidence !== null) {
       if (
         !/^serial-runner-challenge:\/\/sha256-[a-f0-9]{64}$/.test(
-          evidence.runnerChallenge ?? "",
+          String(evidence.runnerChallenge ?? ""),
         )
       )
         issue(
@@ -670,7 +762,7 @@ function assertSerialSessionRequest(session, request, issues) {
           "must be a runner-created serial challenge",
         );
       for (const key of ["startReportDigest", "injectReportDigest"])
-        if (!SHA256_DIGEST.test(evidence[key] ?? ""))
+        if (!SHA256_DIGEST.test(String(evidence[key] ?? "")))
           issue(
             issues,
             `request.serialSession.operationEvidence.${key}`,
@@ -678,15 +770,15 @@ function assertSerialSessionRequest(session, request, issues) {
           );
     }
   } else if (
-    !["cleanup", "cancel"].includes(request.operation) &&
-    session.operationEvidence !== null
+    !["cleanup", "cancel"].includes(String(request.operation)) &&
+    sessionRecord.operationEvidence !== null
   )
     issue(
       issues,
       "request.serialSession.operationEvidence",
       "must be null outside serial evidence collection",
     );
-  if (!Array.isArray(session.saleCorrelationIds))
+  if (!Array.isArray(sessionRecord.saleCorrelationIds))
     issue(
       issues,
       "request.serialSession.saleCorrelationIds",
@@ -694,7 +786,8 @@ function assertSerialSessionRequest(session, request, issues) {
     );
   else {
     const seen = new Set();
-    session.saleCorrelationIds.forEach((value, index) => {
+    (sessionRecord.saleCorrelationIds as unknown[]).forEach(
+      (value: unknown, index: number) => {
       if (typeof value !== "string" || !SALE_CORRELATION_ID.test(value))
         issue(
           issues,
@@ -708,15 +801,16 @@ function assertSerialSessionRequest(session, request, issues) {
           "must not be duplicated",
         );
       seen.add(value);
-    });
-    if (session.saleCorrelationIds.length === 0)
+      },
+    );
+    if ((sessionRecord.saleCorrelationIds as unknown[]).length === 0)
       issue(
         issues,
         "request.serialSession.saleCorrelationIds",
         "must bind at least one logical sale correlation identity",
       );
   }
-  if (!Array.isArray(session.saleBindings))
+  if (!Array.isArray(sessionRecord.saleBindings))
     issue(
       issues,
       "request.serialSession.saleBindings",
@@ -726,10 +820,11 @@ function assertSerialSessionRequest(session, request, issues) {
     const bindingsRequired = [
       "inject-scanner-code",
       "collect-serial-evidence",
-    ].includes(request.operation);
+    ].includes(String(request.operation));
     if (
       bindingsRequired &&
-      session.saleBindings.length !== session.saleCorrelationIds?.length
+      (sessionRecord.saleBindings as unknown[]).length !==
+        (sessionRecord.saleCorrelationIds as unknown[])?.length
     )
       issue(
         issues,
@@ -738,14 +833,15 @@ function assertSerialSessionRequest(session, request, issues) {
       );
     if (
       request.operation === "start-serial-session" &&
-      session.saleBindings.length !== 0
+      (sessionRecord.saleBindings as unknown[]).length !== 0
     )
       issue(
         issues,
         "request.serialSession.saleBindings",
         "must be empty before the scanner sale creates business identifiers",
       );
-    session.saleBindings.forEach((binding, index) => {
+    (sessionRecord.saleBindings as unknown[]).forEach(
+      (binding: unknown, index: number) => {
       const path = `request.serialSession.saleBindings[${index}]`;
       if (
         !assertExactKeys(
@@ -756,7 +852,11 @@ function assertSerialSessionRequest(session, request, issues) {
         )
       )
         return;
-      if (binding.saleCorrelationId !== session.saleCorrelationIds?.[index])
+      const bindingRecord = binding as Record<string, unknown>;
+      if (
+        bindingRecord.saleCorrelationId !==
+        (sessionRecord.saleCorrelationIds as unknown[])?.[index]
+      )
         issue(
           issues,
           `${path}.saleCorrelationId`,
@@ -767,19 +867,20 @@ function assertSerialSessionRequest(session, request, issues) {
           !(
             request.operation !== "collect-serial-evidence" &&
             key === "vendingCommandId" &&
-            binding[key] === null
+            bindingRecord[key] === null
           ) &&
-          (typeof binding[key] !== "string" ||
-            !BUSINESS_IDENTIFIER.test(binding[key]))
+          (typeof bindingRecord[key] !== "string" ||
+            !BUSINESS_IDENTIFIER.test(bindingRecord[key]))
         )
           issue(
             issues,
             `${path}.${key}`,
             "must be a concrete observed business identifier",
           );
-    });
+      },
+    );
   }
-  if (typeof session.idempotencyCheck !== "boolean")
+  if (typeof sessionRecord.idempotencyCheck !== "boolean")
     issue(
       issues,
       "request.serialSession.idempotencyCheck",
@@ -787,7 +888,7 @@ function assertSerialSessionRequest(session, request, issues) {
     );
   else if (
     request.operation !== "stop-serial-session" &&
-    session.idempotencyCheck
+    sessionRecord.idempotencyCheck
   )
     issue(
       issues,
@@ -796,7 +897,12 @@ function assertSerialSessionRequest(session, request, issues) {
     );
 }
 
-function assertSerialSessionMapping(mapping, index, guestMappings, issues) {
+function assertSerialSessionMapping(
+  mapping: unknown,
+  index: number,
+  guestMappings: Array<Record<string, unknown>>,
+  issues: Array<{ path: string; message: string }>,
+): void {
   const path = `report.serialSession.deviceMappings[${index}]`;
   if (
     !assertExactKeys(
@@ -814,33 +920,38 @@ function assertSerialSessionMapping(mapping, index, guestMappings, issues) {
     )
   )
     return;
-  if (!SERIAL_DEVICE_ROLES.includes(mapping.role))
+  const record = mapping as Record<string, unknown>;
+  if (!SERIAL_DEVICE_ROLES.includes(String(record.role)))
     issue(issues, `${path}.role`, "must be a supported serial role");
   for (const key of [
     "guestDeviceIdentity",
     "simulatorProcessIdentity",
     "simulatorSocketIdentity",
   ])
-    assertLogicalIdentity(mapping[key], `${path}.${key}`, issues);
+    assertLogicalIdentity(record[key], `${path}.${key}`, issues);
   assertGuestUsbTopology(
-    mapping.guestUsbTopology,
+    record.guestUsbTopology,
     `${path}.guestUsbTopology`,
     issues,
   );
-  if (!new Set(["connected", "disconnected"]).has(mapping.connectionState))
+  if (
+    !new Set(["connected", "disconnected"]).has(
+      String(record.connectionState),
+    )
+  )
     issue(
       issues,
       `${path}.connectionState`,
       "must be connected or disconnected",
     );
   const guestMapping = guestMappings.find(
-    (entry) => entry?.role === mapping.role,
+    (entry) => entry?.role === record.role,
   );
   if (
     !guestMapping ||
-    guestMapping.guestDeviceIdentity !== mapping.guestDeviceIdentity ||
+    guestMapping.guestDeviceIdentity !== record.guestDeviceIdentity ||
     JSON.stringify(guestMapping.guestUsbTopology) !==
-      JSON.stringify(mapping.guestUsbTopology)
+      JSON.stringify(record.guestUsbTopology)
   )
     issue(
       issues,
@@ -849,7 +960,12 @@ function assertSerialSessionMapping(mapping, index, guestMappings, issues) {
     );
 }
 
-function assertSemanticRecord(record, index, request, issues) {
+function assertSemanticRecord(
+  record: unknown,
+  index: number,
+  request: Record<string, unknown>,
+  issues: Array<{ path: string; message: string }>,
+): void {
   const path = `report.serialEvidence.records[${index}]`;
   if (
     !assertExactKeys(
@@ -873,9 +989,10 @@ function assertSemanticRecord(record, index, request, issues) {
     )
   )
     return;
-  if (!SALE_EVIDENCE_ROLES.has(record.role))
+  const recordValue = record as Record<string, unknown>;
+  if (!SALE_EVIDENCE_ROLES.has(String(recordValue.role)))
     issue(issues, `${path}.role`, "must be a supported serial evidence role");
-  if (!SHA256_DIGEST.test(record.captureBindingDigest ?? ""))
+  if (!SHA256_DIGEST.test(String(recordValue.captureBindingDigest ?? "")))
     issue(
       issues,
       `${path}.captureBindingDigest`,
@@ -883,36 +1000,54 @@ function assertSemanticRecord(record, index, request, issues) {
     );
   if (
     assertExactKeys(
-      record.capturedFrame,
+      recordValue.capturedFrame,
       ["source", "sequence", "digest", "byteLength"],
       `${path}.capturedFrame`,
       issues,
     )
   ) {
-    if (record.capturedFrame.source !== "guest-serial-session")
+    if (
+      (recordValue.capturedFrame as Record<string, unknown>).source !==
+      "guest-serial-session"
+    )
       issue(
         issues,
         `${path}.capturedFrame.source`,
         "must be captured from the guest serial session, not a synthetic sidecar",
       );
     if (
-      !Number.isInteger(record.capturedFrame.sequence) ||
-      record.capturedFrame.sequence < 1
+      typeof (recordValue.capturedFrame as Record<string, unknown>).sequence !==
+        "number" ||
+      !Number.isInteger(
+        (recordValue.capturedFrame as Record<string, unknown>).sequence,
+      ) ||
+      Number((recordValue.capturedFrame as Record<string, unknown>).sequence) < 1
     )
       issue(
         issues,
         `${path}.capturedFrame.sequence`,
         "must be a positive frame sequence",
       );
-    if (!SHA256_DIGEST.test(record.capturedFrame.digest ?? ""))
+    if (
+      !SHA256_DIGEST.test(
+        String(
+          (recordValue.capturedFrame as Record<string, unknown>).digest ?? "",
+        ),
+      )
+    )
       issue(
         issues,
         `${path}.capturedFrame.digest`,
         "must be a SHA-256 frame digest",
       );
     if (
-      !Number.isInteger(record.capturedFrame.byteLength) ||
-      record.capturedFrame.byteLength < 1
+      typeof (recordValue.capturedFrame as Record<string, unknown>)
+        .byteLength !== "number" ||
+      !Number.isInteger(
+        (recordValue.capturedFrame as Record<string, unknown>).byteLength,
+      ) ||
+      Number((recordValue.capturedFrame as Record<string, unknown>).byteLength) <
+        1
     )
       issue(
         issues,
@@ -920,27 +1055,37 @@ function assertSemanticRecord(record, index, request, issues) {
         "must be a positive frame byte length",
       );
   }
-  const expectedSaleBinding = request.serialSession.saleBindings?.find(
-    (binding) => binding.saleCorrelationId === record.saleCorrelationId,
+  const requestSerialSession = request.serialSession as Record<string, unknown>;
+  const expectedSaleBinding = (
+    requestSerialSession.saleBindings as Array<Record<string, unknown>> | undefined
+  )?.find(
+    (binding) => binding.saleCorrelationId === recordValue.saleCorrelationId,
   );
-  if (record.saleCorrelationId === null) {
-    if (record.saleBinding !== null)
+  if (recordValue.saleCorrelationId === null) {
+    if (recordValue.saleBinding !== null)
       issue(issues, `${path}.saleBinding`, "must be null when no sale applies");
   } else if (
-    JSON.stringify(record.saleBinding) !== JSON.stringify(expectedSaleBinding)
+    JSON.stringify(recordValue.saleBinding) !==
+    JSON.stringify(expectedSaleBinding)
   )
     issue(
       issues,
       `${path}.saleBinding`,
       "must bind the observed order, payment, and vending command for this sale",
     );
-  if (record.sessionBindingToken !== request.serialSession.sessionBindingToken)
+  if (
+    recordValue.sessionBindingToken !==
+    requestSerialSession.sessionBindingToken
+  )
     issue(
       issues,
       `${path}.sessionBindingToken`,
       "must bind the serial session token",
     );
-  if (record.deviceMappingDigest !== request.serialSession.deviceMappingDigest)
+  if (
+    recordValue.deviceMappingDigest !==
+    requestSerialSession.deviceMappingDigest
+  )
     issue(
       issues,
       `${path}.deviceMappingDigest`,
@@ -953,14 +1098,14 @@ function assertSemanticRecord(record, index, request, issues) {
     "dispense-ack",
     "dispense-result",
   ]);
-  if (record.role === "lower-controller") {
-    if (!lowerEvents.has(record.event))
+  if (recordValue.role === "lower-controller") {
+    if (!lowerEvents.has(String(recordValue.event)))
       issue(
         issues,
         `${path}.event`,
         "must be a required lower-controller semantic event",
       );
-    if (record.operationNonce !== request.operationNonce)
+    if (recordValue.operationNonce !== request.operationNonce)
       issue(
         issues,
         `${path}.operationNonce`,
@@ -971,17 +1116,19 @@ function assertSemanticRecord(record, index, request, issues) {
       "scannerCodeByteLength",
       "scannerCodeSuffix",
     ])
-      if (record[key] !== null)
+      if (recordValue[key] !== null)
         issue(
           issues,
           `${path}.${key}`,
           "must be null for lower-controller evidence",
         );
-    const isDispense = record.event.startsWith("dispense-");
+    const isDispense = String(recordValue.event).startsWith("dispense-");
     if (isDispense) {
       if (
-        !request.serialSession.saleCorrelationIds.includes(
-          record.saleCorrelationId,
+        !(
+          requestSerialSession.saleCorrelationIds as unknown[]
+        ).includes(
+          recordValue.saleCorrelationId,
         )
       )
         issue(
@@ -989,17 +1136,19 @@ function assertSemanticRecord(record, index, request, issues) {
           `${path}.saleCorrelationId`,
           "must bind a requested sale correlation identity",
         );
-    } else if (record.saleCorrelationId !== null)
+    } else if (recordValue.saleCorrelationId !== null)
       issue(
         issues,
         `${path}.saleCorrelationId`,
         "must be null when no sale correlation applies",
       );
-  } else if (record.role === "scanner") {
-    if (record.event !== "scanner-injection")
+  } else if (recordValue.role === "scanner") {
+    if (recordValue.event !== "scanner-injection")
       issue(issues, `${path}.event`, "must be scanner-injection");
-    const injection = request.serialSession.scannerInjection;
-    if (record.operationNonce !== injection?.operationNonce)
+    const injection = requestSerialSession.scannerInjection as
+      | Record<string, unknown>
+      | undefined;
+    if (recordValue.operationNonce !== injection?.operationNonce)
       issue(
         issues,
         `${path}.operationNonce`,
@@ -1010,15 +1159,15 @@ function assertSemanticRecord(record, index, request, issues) {
       "scannerCodeByteLength",
       "scannerCodeSuffix",
     ])
-      if (record[key] !== injection?.[key])
+      if (recordValue[key] !== injection?.[key])
         issue(
           issues,
           `${path}.${key}`,
           "must bind the protected scanner input descriptor",
         );
     if (
-      !request.serialSession.saleCorrelationIds.includes(
-        record.saleCorrelationId,
+      !(requestSerialSession.saleCorrelationIds as unknown[]).includes(
+        recordValue.saleCorrelationId,
       )
     )
       issue(
@@ -1029,7 +1178,7 @@ function assertSemanticRecord(record, index, request, issues) {
   } else {
     if (
       !new Set(["payment-request", "payment-ack", "payment-result"]).has(
-        record.event,
+        String(recordValue.event),
       )
     )
       issue(
@@ -1037,7 +1186,7 @@ function assertSemanticRecord(record, index, request, issues) {
         `${path}.event`,
         "must be a required payment semantic event",
       );
-    if (record.operationNonce !== request.operationNonce)
+    if (recordValue.operationNonce !== request.operationNonce)
       issue(
         issues,
         `${path}.operationNonce`,
@@ -1048,11 +1197,11 @@ function assertSemanticRecord(record, index, request, issues) {
       "scannerCodeByteLength",
       "scannerCodeSuffix",
     ])
-      if (record[key] !== null)
+      if (recordValue[key] !== null)
         issue(issues, `${path}.${key}`, "must be null for payment evidence");
     if (
-      !request.serialSession.saleCorrelationIds.includes(
-        record.saleCorrelationId,
+      !(requestSerialSession.saleCorrelationIds as unknown[]).includes(
+        recordValue.saleCorrelationId,
       )
     )
       issue(
@@ -1063,10 +1212,14 @@ function assertSemanticRecord(record, index, request, issues) {
   }
 }
 
-function assertSerialEvidence(report, request, issues) {
+function assertSerialEvidence(
+  report: Record<string, unknown>,
+  request: Record<string, unknown>,
+  issues: Array<{ path: string; message: string }>,
+): void {
   if (!isV2Request(request)) return;
-  const evidence = report.serialEvidence;
-  if (request.operation !== "collect-serial-evidence") {
+  const evidence = report.serialEvidence as Record<string, unknown> | null;
+  if (String(request.operation) !== "collect-serial-evidence") {
     if (evidence !== null)
       issue(
         issues,
@@ -1100,12 +1253,14 @@ function assertSerialEvidence(report, request, issues) {
     )
   )
     return;
+  if (evidence === null) return;
+  const requestSerialSession = request.serialSession as Record<string, unknown>;
   for (const key of [
     "serialSessionId",
     "sessionBindingToken",
     "deviceMappingDigest",
   ])
-    if (evidence[key] !== request.serialSession[key])
+    if (evidence[key] !== requestSerialSession[key])
       issue(
         issues,
         `report.serialEvidence.${key}`,
@@ -1113,40 +1268,43 @@ function assertSerialEvidence(report, request, issues) {
       );
   if (
     JSON.stringify(evidence.operationEvidence) !==
-    JSON.stringify(request.serialSession.operationEvidence)
+    JSON.stringify(requestSerialSession.operationEvidence)
   )
     issue(
       issues,
       "report.serialEvidence.operationEvidence",
       "must retain the runner-held operation evidence references",
     );
-  if (!Array.isArray(evidence.records)) {
+  const records = evidence.records as unknown[];
+  if (!Array.isArray(records)) {
     issue(issues, "report.serialEvidence.records", "must be an array");
     return;
   }
-  evidence.records.forEach((record, index) =>
+  records.forEach((record: unknown, index: number) =>
     assertSemanticRecord(record, index, request, issues),
   );
-  let previousCaptureBindingDigest = null;
-  evidence.records.forEach((record, index) => {
+  let previousCaptureBindingDigest: string | null = null;
+  records.forEach((record: unknown, index: number) => {
+    const recordValue = record as Record<string, unknown>;
     const expectedCaptureBindingDigest = deriveSerialFrameCaptureBindingDigest({
       request,
-      record,
+      record: recordValue,
       previousCaptureBindingDigest,
     });
-    if (record?.captureBindingDigest !== expectedCaptureBindingDigest)
+    if (recordValue.captureBindingDigest !== expectedCaptureBindingDigest)
       issue(
         issues,
         `report.serialEvidence.records[${index}].captureBindingDigest`,
         "must immutably bind the run, sale, and raw serial frame at capture",
       );
-    previousCaptureBindingDigest = record?.captureBindingDigest ?? null;
+    previousCaptureBindingDigest =
+      (recordValue.captureBindingDigest as string | undefined) ?? null;
   });
   if (
     evidence.captureChainDigest !==
     deriveSerialEvidenceCaptureChainDigest({
       request,
-      records: evidence.records,
+      records,
     })
   )
     issue(
@@ -1154,30 +1312,39 @@ function assertSerialEvidence(report, request, issues) {
       "report.serialEvidence.captureChainDigest",
       "must commit the complete immutable serial capture chain",
     );
-  const capturedFrameSequences = new Set();
+  const capturedFrameSequences = new Set<number>();
   let previousFrameSequence = 0;
-  evidence.records.forEach((record, index) => {
-    const sequence = record?.capturedFrame?.sequence;
-    if (!Number.isInteger(sequence) || sequence < 1) return;
-    if (capturedFrameSequences.has(sequence))
+  records.forEach((record: unknown, index: number) => {
+    const recordValue = record as Record<string, unknown>;
+    const capturedFrame = recordValue.capturedFrame as
+      | Record<string, unknown>
+      | undefined;
+    const sequence = capturedFrame?.sequence;
+    if (!Number.isInteger(sequence) || (sequence as number) < 1) return;
+    if (capturedFrameSequences.has(sequence as number))
       issue(
         issues,
         `report.serialEvidence.records[${index}].capturedFrame.sequence`,
         "must be globally unique across serial evidence",
       );
-    if (sequence <= previousFrameSequence)
+    if ((sequence as number) <= previousFrameSequence)
       issue(
         issues,
         `report.serialEvidence.records[${index}].capturedFrame.sequence`,
         "must be strictly increasing in evidence order",
       );
-    capturedFrameSequences.add(sequence);
-    previousFrameSequence = sequence;
+    capturedFrameSequences.add(sequence as number);
+    previousFrameSequence = sequence as number;
   });
   const lowerEvents = new Set(
-    evidence.records
-      .filter((record) => record?.role === "lower-controller")
-      .map((record) => record?.event),
+    records
+      .filter(
+        (record) =>
+          (record as Record<string, unknown>)?.role === "lower-controller",
+      )
+      .map((record) =>
+        String((record as Record<string, unknown>)?.event ?? ""),
+      ),
   );
   for (const event of [
     "handshake",
@@ -1193,9 +1360,10 @@ function assertSerialEvidence(report, request, issues) {
         `must include lower-controller ${event}`,
       );
   if (
-    !evidence.records.some(
+    !records.some(
       (record) =>
-        record?.role === "scanner" && record?.event === "scanner-injection",
+        (record as Record<string, unknown>).role === "scanner" &&
+        (record as Record<string, unknown>).event === "scanner-injection",
     )
   )
     issue(
@@ -1203,7 +1371,9 @@ function assertSerialEvidence(report, request, issues) {
       "report.serialEvidence.records",
       "must include scanner injection evidence",
     );
-  for (const saleCorrelationId of request.serialSession.saleCorrelationIds) {
+  const saleCorrelationIds =
+    requestSerialSession.saleCorrelationIds as unknown[];
+  for (const saleCorrelationId of saleCorrelationIds) {
     const requiredEvents = [
       "scanner:scanner-injection",
       "payment:payment-request",
@@ -1213,12 +1383,15 @@ function assertSerialEvidence(report, request, issues) {
       "lower-controller:dispense-ack",
       "lower-controller:dispense-result",
     ];
-    const recordsForSale = evidence.records.filter(
-      (record) => record?.saleCorrelationId === saleCorrelationId,
+    const recordsForSale = records.filter(
+      (record) =>
+        (record as Record<string, unknown>).saleCorrelationId ===
+        saleCorrelationId,
     );
-    const eventsForSale = recordsForSale.map(
-      (record) => `${record.role}:${record.event}`,
-    );
+    const eventsForSale = recordsForSale.map((record) => {
+      const recordValue = record as Record<string, unknown>;
+      return `${String(recordValue.role)}:${String(recordValue.event)}`;
+    });
     for (const event of requiredEvents) {
       const eventCount = eventsForSale.filter(
         (value) => value === event,
@@ -1245,7 +1418,11 @@ function assertSerialEvidence(report, request, issues) {
   }
 }
 
-function assertSerialSessionReport(report, request, issues) {
+function assertSerialSessionReport(
+  report: Record<string, unknown>,
+  request: Record<string, unknown>,
+  issues: Array<{ path: string; message: string }>,
+): void {
   if (!isV2Request(request)) return;
   const expectsSession =
     isSerialSessionOperation(request.operation) ||
@@ -1259,7 +1436,7 @@ function assertSerialSessionReport(report, request, issues) {
       );
     return;
   }
-  const session = report.serialSession;
+  const session = report.serialSession as Record<string, unknown> | null;
   if (report.result !== "succeeded" && session === null) return;
   if (
     !assertExactKeys(
@@ -1279,12 +1456,14 @@ function assertSerialSessionReport(report, request, issues) {
     )
   )
     return;
+  if (session === null) return;
   const expected = expectedSerialBinding(
     request,
-    request.serialSession ?? session,
+    (request.serialSession as Record<string, unknown> | null) ?? session,
   );
+  const expectedBinding = expected as Record<string, unknown>;
   for (const key of ["serialSessionId", "sessionBindingToken"])
-    if (session[key] !== expected[key])
+    if (session[key] !== expectedBinding[key])
       issue(
         issues,
         `report.serialSession.${key}`,
@@ -1293,7 +1472,8 @@ function assertSerialSessionReport(report, request, issues) {
   const expectedStartReference =
     request.operation === "start-serial-session"
       ? request.operationReference
-      : request.serialSession?.startOperationReference;
+      : (request.serialSession as Record<string, unknown> | undefined)
+          ?.startOperationReference;
   if (session.startOperationReference !== expectedStartReference)
     issue(
       issues,
@@ -1303,7 +1483,7 @@ function assertSerialSessionReport(report, request, issues) {
   const expectedState =
     request.operation === "stop-serial-session"
       ? "stopped"
-      : ["cleanup", "cancel"].includes(request.operation)
+      : ["cleanup", "cancel"].includes(String(request.operation))
         ? "cleaned"
         : "active";
   if (session.state !== expectedState)
@@ -1312,20 +1492,25 @@ function assertSerialSessionReport(report, request, issues) {
       "report.serialSession.state",
       `must be ${expectedState} for this operation`,
     );
-  if (!Array.isArray(session.deviceMappings))
+  const deviceMappings = session.deviceMappings as unknown[];
+  const guest = report.guest as Record<string, unknown> | undefined;
+  const guestDeviceMappings = (guest?.deviceMappings as unknown[] | undefined) ?? [];
+  if (!Array.isArray(deviceMappings))
     issue(issues, "report.serialSession.deviceMappings", "must be an array");
   else {
-    session.deviceMappings.forEach((mapping, index) =>
+    deviceMappings.forEach((mapping: unknown, index: number) =>
       assertSerialSessionMapping(
         mapping,
         index,
-        report.guest?.deviceMappings ?? [],
+        guestDeviceMappings as Array<Record<string, unknown>>,
         issues,
       ),
     );
     if (
       !sameValues(
-        session.deviceMappings.map((mapping) => mapping?.role),
+        deviceMappings.map((mapping) =>
+          (mapping as Record<string, unknown>)?.role,
+        ),
         SERIAL_DEVICE_ROLES,
       )
     )
@@ -1336,15 +1521,18 @@ function assertSerialSessionReport(report, request, issues) {
       );
     const expectedConnection =
       expectedState === "active" ? "connected" : "disconnected";
-    for (const mapping of session.deviceMappings)
-      if (mapping?.connectionState !== expectedConnection)
+    for (const mapping of deviceMappings)
+      if (
+        (mapping as Record<string, unknown>)?.connectionState !==
+        expectedConnection
+      )
         issue(
           issues,
           "report.serialSession.deviceMappings",
           `must be ${expectedConnection} for this state`,
         );
     const derivedDigest = deriveSerialDeviceMappingDigest(
-      session.deviceMappings,
+      deviceMappings as Array<Record<string, unknown>>,
     );
     if (session.deviceMappingDigest !== derivedDigest)
       issue(
@@ -1354,8 +1542,11 @@ function assertSerialSessionReport(report, request, issues) {
       );
     if (
       request.operation !== "start-serial-session" &&
-      request.serialSession?.deviceMappingDigest !== null &&
-      session.deviceMappingDigest !== request.serialSession?.deviceMappingDigest
+      (request.serialSession as Record<string, unknown> | undefined)
+        ?.deviceMappingDigest !== null &&
+      session.deviceMappingDigest !==
+        (request.serialSession as Record<string, unknown> | undefined)
+          ?.deviceMappingDigest
     )
       issue(
         issues,
@@ -1364,7 +1555,9 @@ function assertSerialSessionReport(report, request, issues) {
       );
   }
   if (request.operation === "inject-scanner-code") {
-    const acknowledgement = session.scannerAcknowledgement;
+    const acknowledgement = session.scannerAcknowledgement as
+      | Record<string, unknown>
+      | null;
     if (
       !assertExactKeys(
         acknowledgement,
@@ -1379,15 +1572,17 @@ function assertSerialSessionReport(report, request, issues) {
       )
     ) {
       // Exact-key diagnostics are sufficient when this object is malformed.
-    } else {
+    } else if (acknowledgement !== null) {
+      const requestSerialSession = request.serialSession as Record<string, unknown>;
+      const scannerInjection = requestSerialSession.scannerInjection as
+        | Record<string, unknown>
+        | undefined;
       for (const key of [
         "scannerCodeDigest",
         "scannerCodeByteLength",
         "scannerCodeSuffix",
       ])
-        if (
-          acknowledgement[key] !== request.serialSession.scannerInjection?.[key]
-        )
+        if (acknowledgement[key] !== scannerInjection?.[key])
           issue(
             issues,
             `report.serialSession.scannerAcknowledgement.${key}`,
@@ -1406,11 +1601,13 @@ function assertSerialSessionReport(report, request, issues) {
       "report.serialSession.scannerAcknowledgement",
       "must be null outside scanner injection",
     );
-  const needsCleanup = ["stop-serial-session", "cleanup", "cancel"].includes(
-    request.operation,
-  );
+  const needsCleanup = [
+    "stop-serial-session",
+    "cleanup",
+    "cancel",
+  ].includes(String(request.operation));
   if (needsCleanup) {
-    const cleanup = session.simulatorCleanup;
+    const cleanup = session.simulatorCleanup as Record<string, unknown> | null;
     const detailedCleanup =
       Object.hasOwn(cleanup ?? {}, "termination") ||
       Object.hasOwn(cleanup ?? {}, "errors");
@@ -1429,10 +1626,10 @@ function assertSerialSessionReport(report, request, issues) {
       )
     ) {
       // Exact-key diagnostics are sufficient when this object is malformed.
-    } else {
+    } else if (cleanup !== null) {
       if (
         !Number.isInteger(cleanup.cleanupAttemptCount) ||
-        cleanup.cleanupAttemptCount < 1
+        (cleanup.cleanupAttemptCount as number) < 1
       )
         issue(
           issues,
@@ -1444,7 +1641,7 @@ function assertSerialSessionReport(report, request, issues) {
         cleanup.survivingSocketCount !== 0 ||
         (detailedCleanup &&
           (!Array.isArray(cleanup.errors) ||
-            cleanup.errors.length !== 0 ||
+            (cleanup.errors as unknown[]).length !== 0 ||
             !Array.isArray(cleanup.termination)))
       )
         issue(
@@ -1454,10 +1651,10 @@ function assertSerialSessionReport(report, request, issues) {
         );
       const requiresIdempotencyProof =
         request.operation === "stop-serial-session" &&
-        request.serialSession.idempotencyCheck;
+        (request.serialSession as Record<string, unknown>).idempotencyCheck;
       if (
         requiresIdempotencyProof &&
-        (cleanup.cleanupAttemptCount < 2 ||
+        ((cleanup.cleanupAttemptCount as number) < 2 ||
           cleanup.idempotencyVerified !== true)
       )
         issue(
@@ -1480,7 +1677,11 @@ function assertSerialSessionReport(report, request, issues) {
     );
 }
 
-function assertTimestamp(value, path, issues) {
+function assertTimestamp(
+  value: unknown,
+  path: string,
+  issues: Array<{ path: string; message: string }>,
+): void {
   if (
     typeof value !== "string" ||
     !ISO_TIMESTAMP.test(value) ||
@@ -1491,12 +1692,17 @@ function assertTimestamp(value, path, issues) {
   }
 }
 
-function assertActiveKioskSession(value, path, issues) {
+function assertActiveKioskSession(
+  value: unknown,
+  path: string,
+  issues: Array<{ path: string; message: string }>,
+): void {
   if (!assertExactKeys(value, ["sessionUser", "sessionId"], path, issues))
     return;
-  if (value.sessionUser !== "VEMKiosk")
+  const record = value as Record<string, unknown>;
+  if (record.sessionUser !== "VEMKiosk")
     issue(issues, `${path}.sessionUser`, "must bind the VEMKiosk session");
-  if (!Number.isInteger(value.sessionId) || value.sessionId < 1)
+  if (!Number.isInteger(record.sessionId) || (record.sessionId as number) < 1)
     issue(
       issues,
       `${path}.sessionId`,
@@ -1504,9 +1710,13 @@ function assertActiveKioskSession(value, path, issues) {
     );
 }
 
-function assertTauriRoute(value, path, issues) {
+function assertTauriRoute(
+  value: unknown,
+  path: string,
+  issues: Array<{ path: string; message: string }>,
+): void {
   try {
-    const url = new URL(value);
+    const url = new URL(String(value));
     if (
       url.protocol === "http:" &&
       url.host === "tauri.localhost" &&
@@ -1517,17 +1727,26 @@ function assertTauriRoute(value, path, issues) {
   issue(issues, path, "must be a strict tauri.localhost hash route");
 }
 
-function assertCdpTargetId(value, path, issues) {
+function assertCdpTargetId(
+  value: unknown,
+  path: string,
+  issues: Array<{ path: string; message: string }>,
+): void {
   if (typeof value !== "string" || !/^[A-Za-z0-9._:-]{8,256}$/.test(value))
     issue(issues, path, "must be a non-empty CDP target id");
 }
 
-function assertVisualChallenge(value, path, issues) {
+function assertVisualChallenge(
+  value: unknown,
+  path: string,
+  issues: Array<{ path: string; message: string }>,
+): void {
   if (!assertExactKeys(value, ["token", "colorRgb", "region"], path, issues))
     return;
+  const record = value as Record<string, unknown>;
   if (
-    typeof value.token !== "string" ||
-    !/^[a-f0-9]{32,128}$/.test(value.token)
+    typeof record.token !== "string" ||
+    !/^[a-f0-9]{32,128}$/.test(record.token)
   )
     issue(
       issues,
@@ -1535,34 +1754,37 @@ function assertVisualChallenge(value, path, issues) {
       "must be a high-entropy visual challenge token",
     );
   if (
-    !Array.isArray(value.colorRgb) ||
-    value.colorRgb.length !== 3 ||
-    value.colorRgb.some(
+    !Array.isArray(record.colorRgb) ||
+    (record.colorRgb as unknown[]).length !== 3 ||
+    (record.colorRgb as unknown[]).some(
       (component) =>
-        !Number.isInteger(component) || component < 0 || component > 255,
+        !Number.isInteger(component) ||
+        (component as number) < 0 ||
+        (component as number) > 255,
     ) ||
-    value.colorRgb.every((component) => component === 0)
+    (record.colorRgb as unknown[]).every((component) => component === 0)
   )
     issue(issues, `${path}.colorRgb`, "must be a non-black RGB triplet");
   if (
     !assertExactKeys(
-      value.region,
+      record.region,
       ["x", "y", "width", "height"],
       `${path}.region`,
       issues,
     )
   )
     return;
+  const region = record.region as Record<string, unknown>;
   for (const key of ["x", "y", "width", "height"])
-    if (!Number.isInteger(value.region[key]))
+    if (!Number.isInteger(region[key]))
       issue(issues, `${path}.region.${key}`, "must be an integer");
   if (
-    value.region.x < 0 ||
-    value.region.y < 0 ||
-    value.region.width < 8 ||
-    value.region.height < 8 ||
-    value.region.x + value.region.width > 1080 ||
-    value.region.y + value.region.height > 1920
+    (region.x as number) < 0 ||
+    (region.y as number) < 0 ||
+    (region.width as number) < 8 ||
+    (region.height as number) < 8 ||
+    (region.x as number) + (region.width as number) > 1080 ||
+    (region.y as number) + (region.height as number) > 1920
   )
     issue(
       issues,
@@ -1571,7 +1793,11 @@ function assertVisualChallenge(value, path, issues) {
     );
 }
 
-function assertDisplayCaptureRequest(value, path, issues) {
+function assertDisplayCaptureRequest(
+  value: unknown,
+  path: string,
+  issues: Array<{ path: string; message: string }>,
+): void {
   if (
     !assertExactKeys(
       value,
@@ -1581,21 +1807,26 @@ function assertDisplayCaptureRequest(value, path, issues) {
     )
   )
     return;
+  const record = value as Record<string, unknown>;
   assertActiveKioskSession(
-    value.activeKioskSession,
+    record.activeKioskSession,
     `${path}.activeKioskSession`,
     issues,
   );
-  assertTauriRoute(value.tauriRoute, `${path}.tauriRoute`, issues);
-  assertCdpTargetId(value.cdpTargetId, `${path}.cdpTargetId`, issues);
+  assertTauriRoute(record.tauriRoute, `${path}.tauriRoute`, issues);
+  assertCdpTargetId(record.cdpTargetId, `${path}.cdpTargetId`, issues);
   assertVisualChallenge(
-    value.visualChallenge,
+    record.visualChallenge,
     `${path}.visualChallenge`,
     issues,
   );
 }
 
-function assertAudioCaptureRequest(value, path, issues) {
+function assertAudioCaptureRequest(
+  value: unknown,
+  path: string,
+  issues: Array<{ path: string; message: string }>,
+): void {
   if (
     !assertExactKeys(
       value,
@@ -1605,40 +1836,42 @@ function assertAudioCaptureRequest(value, path, issues) {
     )
   )
     return;
-  if (value.schemaVersion !== "vm-default-audio-capture-request/v2")
+  const record = value as Record<string, unknown>;
+  if (record.schemaVersion !== "vm-default-audio-capture-request/v2")
     issue(
       issues,
       `${path}.schemaVersion`,
       "must be vm-default-audio-capture-request/v2",
     );
   assertActiveKioskSession(
-    value.activeKioskSession,
+    record.activeKioskSession,
     `${path}.activeKioskSession`,
     issues,
   );
   if (
     assertExactKeys(
-      value.daemonCalibration,
+      record.daemonCalibration,
       ["source", "command", "challenge"],
       `${path}.daemonCalibration`,
       issues,
     )
   ) {
-    if (value.daemonCalibration.source !== "vending_daemon_ipc")
+    const calibration = record.daemonCalibration as Record<string, unknown>;
+    if (calibration.source !== "vending_daemon_ipc")
       issue(
         issues,
         `${path}.daemonCalibration.source`,
         "must require the daemon IPC audio path",
       );
-    if (value.daemonCalibration.command !== "audio_output_calibration")
+    if (calibration.command !== "audio_output_calibration")
       issue(
         issues,
         `${path}.daemonCalibration.command`,
         "must use the daemon calibration command",
       );
     if (
-      typeof value.daemonCalibration.challenge !== "string" ||
-      !/^[a-f0-9]{32,128}$/.test(value.daemonCalibration.challenge)
+      typeof calibration.challenge !== "string" ||
+      !/^[a-f0-9]{32,128}$/.test(calibration.challenge)
     )
       issue(
         issues,
@@ -1648,7 +1881,7 @@ function assertAudioCaptureRequest(value, path, issues) {
   }
   if (
     assertExactKeys(
-      value.threshold,
+      record.threshold,
       [
         "minimumPeakAbsoluteSample",
         "minimumNonSilentFrames",
@@ -1659,20 +1892,30 @@ function assertAudioCaptureRequest(value, path, issues) {
       issues,
     )
   ) {
+    const threshold = record.threshold as Record<string, unknown>;
     for (const key of [
       "minimumPeakAbsoluteSample",
       "minimumNonSilentFrames",
       "minimumDurationMs",
       "minimumDistinctNonSilentSampleMagnitudes",
     ]) {
-      if (!Number.isInteger(value.threshold[key]) || value.threshold[key] <= 0)
+      if (
+        !Number.isInteger(threshold[key]) ||
+        (threshold[key] as number) <= 0
+      )
         issue(issues, `${path}.threshold.${key}`, "must be a positive integer");
     }
   }
 }
 
-function assertAudioCaptureResult(value, request, report, issues) {
+function assertAudioCaptureResult(
+  value: unknown,
+  request: Record<string, unknown>,
+  report: Record<string, unknown>,
+  issues: Array<{ path: string; message: string }>,
+): void {
   const path = "report.defaultAudioCapture";
+  const record = value as Record<string, unknown>;
   if (request.operation !== "capture-default-audio") {
     if (value !== null)
       issue(issues, path, "must be null outside capture-default-audio");
@@ -1705,34 +1948,51 @@ function assertAudioCaptureResult(value, request, report, issues) {
     )
   )
     return;
-  if (value.schemaVersion !== "vm-default-audio-capture-result/v2")
+  const captureOperationReference = record.captureOperationReference;
+  const audioCapture = request.audioCapture as
+    | Record<string, unknown>
+    | undefined;
+  const requestedActiveKioskSession = audioCapture?.activeKioskSession;
+  const requestedCalibration = audioCapture?.daemonCalibration as
+    | Record<string, unknown>
+    | undefined;
+  const requestedThreshold = audioCapture?.threshold;
+  const defaultOutput = record.defaultOutput as Record<string, unknown>;
+  const daemonCalibration = record.daemonCalibration as Record<string, unknown>;
+  const capture = record.capture as Record<string, unknown>;
+  const captureThreshold = capture.threshold as
+    | Record<string, unknown>
+    | undefined;
+  const reportEvidence = (report.evidence as unknown[] | undefined) ?? [];
+  const reportAdapter = report.adapter as Record<string, unknown> | undefined;
+  if (record.schemaVersion !== "vm-default-audio-capture-result/v2")
     issue(
       issues,
       `${path}.schemaVersion`,
       "must be vm-default-audio-capture-result/v2",
     );
-  if (value.runId !== request.runId)
+  if (record.runId !== request.runId)
     issue(issues, `${path}.runId`, "must bind the adapter run identity");
-  if (value.lifecycleReference !== request.lifecycleReference)
+  if (record.lifecycleReference !== request.lifecycleReference)
     issue(
       issues,
       `${path}.lifecycleReference`,
       "must bind the active overlay lifecycle",
     );
-  if (value.captureOperationReference !== request.operationReference)
+  if (captureOperationReference !== request.operationReference)
     issue(
       issues,
       `${path}.captureOperationReference`,
       "must bind the capture operation",
     );
   assertActiveKioskSession(
-    value.activeKioskSession,
+    record.activeKioskSession,
     `${path}.activeKioskSession`,
     issues,
   );
   if (
-    JSON.stringify(value.activeKioskSession) !==
-    JSON.stringify(request.audioCapture?.activeKioskSession)
+    JSON.stringify(record.activeKioskSession) !==
+    JSON.stringify(requestedActiveKioskSession)
   )
     issue(
       issues,
@@ -1741,7 +2001,7 @@ function assertAudioCaptureResult(value, request, report, issues) {
     );
   if (
     !assertExactKeys(
-      value.defaultOutput,
+      defaultOutput,
       ["status"],
       `${path}.defaultOutput`,
       issues,
@@ -1749,7 +2009,7 @@ function assertAudioCaptureResult(value, request, report, issues) {
   ) {
     return;
   }
-  if (value.defaultOutput.status !== "active")
+  if (defaultOutput.status !== "active")
     issue(
       issues,
       `${path}.defaultOutput.status`,
@@ -1757,7 +2017,7 @@ function assertAudioCaptureResult(value, request, report, issues) {
     );
   if (
     assertExactKeys(
-      value.daemonCalibration,
+      daemonCalibration,
       [
         "status",
         "source",
@@ -1773,19 +2033,19 @@ function assertAudioCaptureResult(value, request, report, issues) {
       issues,
     )
   ) {
-    if (value.daemonCalibration.status !== "completed")
+    if (daemonCalibration.status !== "completed")
       issue(
         issues,
         `${path}.daemonCalibration.status`,
         "must attest a completed daemon calibration",
       );
     if (
-      value.daemonCalibration.source !==
-        request.audioCapture?.daemonCalibration?.source ||
-      value.daemonCalibration.command !==
-        request.audioCapture?.daemonCalibration?.command ||
-      value.daemonCalibration.challenge !==
-        request.audioCapture?.daemonCalibration?.challenge
+      daemonCalibration.source !==
+        requestedCalibration?.source ||
+      daemonCalibration.command !==
+        requestedCalibration?.command ||
+      daemonCalibration.challenge !==
+        requestedCalibration?.challenge
     )
       issue(
         issues,
@@ -1793,33 +2053,39 @@ function assertAudioCaptureResult(value, request, report, issues) {
         "must match the requested daemon calibration",
       );
     assertTimestamp(
-      value.daemonCalibration.startedAt,
+      daemonCalibration.startedAt,
       `${path}.daemonCalibration.startedAt`,
       issues,
     );
     assertTimestamp(
-      value.daemonCalibration.completedAt,
+      daemonCalibration.completedAt,
       `${path}.daemonCalibration.completedAt`,
       issues,
     );
     if (
-      !EVIDENCE_IDENTITY.test(value.daemonCalibration.responseArtifact ?? "") ||
-      !SHA256_DIGEST.test(value.daemonCalibration.responseDigest ?? "") ||
-      value.daemonCalibration.responseArtifact !==
-        `runtime-evidence://${value.daemonCalibration.responseDigest?.replace(":", "/")}`
+      !EVIDENCE_IDENTITY.test(
+        String(daemonCalibration.responseArtifact ?? ""),
+      ) ||
+      !SHA256_DIGEST.test(String(daemonCalibration.responseDigest ?? "")) ||
+      daemonCalibration.responseArtifact !==
+        `runtime-evidence://${String(
+          daemonCalibration.responseDigest ?? "",
+        ).replace(":", "/")}`
     )
       issue(
         issues,
         `${path}.daemonCalibration.responseArtifact`,
         "must bind the separately persisted raw daemon response",
       );
-    const responseEvidence = report.evidence?.find(
-      (entry) => entry?.role === "daemon-audio-calibration-response",
-    );
+    const responseEvidence = reportEvidence.find(
+      (entry) =>
+        (entry as Record<string, unknown>)?.role ===
+        "daemon-audio-calibration-response",
+    ) as Record<string, unknown> | undefined;
     if (
-      value.daemonCalibration.responseArtifact !== responseEvidence?.identity ||
-      value.daemonCalibration.responseDigest !== responseEvidence?.digest ||
-      value.daemonCalibration.responseFileName !== responseEvidence?.fileName
+      daemonCalibration.responseArtifact !== responseEvidence?.identity ||
+      daemonCalibration.responseDigest !== responseEvidence?.digest ||
+      daemonCalibration.responseFileName !== responseEvidence?.fileName
     )
       issue(
         issues,
@@ -1829,7 +2095,7 @@ function assertAudioCaptureResult(value, request, report, issues) {
   }
   if (
     !assertExactKeys(
-      value.capture,
+      capture,
       [
         "source",
         "adapterIdentity",
@@ -1852,27 +2118,30 @@ function assertAudioCaptureResult(value, request, report, issues) {
     )
   )
     return;
-  if (!AUDIO_CAPTURE_SOURCE.test(value.capture.source ?? ""))
+  if (!AUDIO_CAPTURE_SOURCE.test(String(capture.source ?? "")))
     issue(
       issues,
       `${path}.capture.source`,
       "must be a non-empty, lowercase hyphenated capture source",
     );
-  if (value.capture.adapterIdentity !== report.adapter?.identity)
+  if (capture.adapterIdentity !== reportAdapter?.identity)
     issue(
       issues,
       `${path}.capture.adapterIdentity`,
       "must bind the capture to the reporting host adapter",
     );
-  if (value.capture.artifact !== report.evidence?.[0]?.identity)
+  if (
+    capture.artifact !==
+    (reportEvidence[0] as Record<string, unknown> | undefined)?.identity
+  )
     issue(
       issues,
       `${path}.capture.artifact`,
       "must bind the exported default-audio-capture evidence artifact",
     );
-  if (value.capture.format !== "wav_pcm")
+  if (capture.format !== "wav_pcm")
     issue(issues, `${path}.capture.format`, "must be wav_pcm");
-  if (!AUDIO_ENCODING.has(value.capture.encoding))
+  if (!AUDIO_ENCODING.has(String(capture.encoding)))
     issue(
       issues,
       `${path}.capture.encoding`,
@@ -1889,7 +2158,7 @@ function assertAudioCaptureResult(value, request, report, issues) {
     const minimum = ["nonSilentFrameCount", "peakAbsoluteSample"].includes(key)
       ? 0
       : 1;
-    if (!Number.isInteger(value.capture[key]) || value.capture[key] < minimum)
+    if (!Number.isInteger(capture[key]) || (capture[key] as number) < minimum)
       issue(
         issues,
         `${path}.capture.${key}`,
@@ -1897,8 +2166,8 @@ function assertAudioCaptureResult(value, request, report, issues) {
       );
   }
   if (
-    !Number.isFinite(value.capture.durationMs) ||
-    value.capture.durationMs <= 0
+    !Number.isFinite(capture.durationMs) ||
+    (capture.durationMs as number) <= 0
   )
     issue(
       issues,
@@ -1906,8 +2175,8 @@ function assertAudioCaptureResult(value, request, report, issues) {
       "must be a positive finite PCM duration",
     );
   if (
-    JSON.stringify(value.capture.threshold) !==
-    JSON.stringify(request.audioCapture?.threshold)
+    JSON.stringify(captureThreshold) !==
+    JSON.stringify(requestedThreshold)
   )
     issue(
       issues,
@@ -1915,29 +2184,34 @@ function assertAudioCaptureResult(value, request, report, issues) {
       "must use the requested non-silence threshold",
     );
   if (
-    value.capture.nonSilentFrameCount <
-      value.capture.threshold?.minimumNonSilentFrames ||
-    value.capture.peakAbsoluteSample <
-      value.capture.threshold?.minimumPeakAbsoluteSample ||
-    value.capture.durationMs < value.capture.threshold?.minimumDurationMs ||
-    value.capture.distinctNonSilentSampleMagnitudes <
-      value.capture.threshold?.minimumDistinctNonSilentSampleMagnitudes
+    (capture.nonSilentFrameCount as number) <
+      Number(captureThreshold?.minimumNonSilentFrames) ||
+    (capture.peakAbsoluteSample as number) <
+      Number(captureThreshold?.minimumPeakAbsoluteSample) ||
+    (capture.durationMs as number) <
+      Number(captureThreshold?.minimumDurationMs) ||
+    (capture.distinctNonSilentSampleMagnitudes as number) <
+      Number(captureThreshold?.minimumDistinctNonSilentSampleMagnitudes)
   )
     issue(
       issues,
       `${path}.capture`,
       "must contain non-silent frames above the declared threshold",
     );
-  assertTimestamp(value.capture.startedAt, `${path}.capture.startedAt`, issues);
+  assertTimestamp(capture.startedAt, `${path}.capture.startedAt`, issues);
   assertTimestamp(
-    value.capture.completedAt,
+    capture.completedAt,
     `${path}.capture.completedAt`,
     issues,
   );
-  const started = Date.parse(value.capture.startedAt);
-  const calibrationStarted = Date.parse(value.daemonCalibration?.startedAt);
-  const calibrationCompleted = Date.parse(value.daemonCalibration?.completedAt);
-  const completed = Date.parse(value.capture.completedAt);
+  const started = Date.parse(String(capture.startedAt ?? ""));
+  const calibrationStarted = Date.parse(
+    String(daemonCalibration?.startedAt ?? ""),
+  );
+  const calibrationCompleted = Date.parse(
+    String(daemonCalibration?.completedAt ?? ""),
+  );
+  const completed = Date.parse(String(capture.completedAt ?? ""));
   if (
     Number.isFinite(started) &&
     Number.isFinite(calibrationStarted) &&
@@ -1956,8 +2230,14 @@ function assertAudioCaptureResult(value, request, report, issues) {
     );
 }
 
-function assertDisplayCaptureResult(value, request, report, issues) {
+function assertDisplayCaptureResult(
+  value: unknown,
+  request: Record<string, unknown>,
+  report: Record<string, unknown>,
+  issues: Array<{ path: string; message: string }>,
+): void {
   const path = "report.displayCapture";
+  const record = value as Record<string, unknown>;
   if (request.operation !== "capture-display") {
     if (value !== null)
       issue(issues, path, "must be null outside capture-display");
@@ -1989,61 +2269,74 @@ function assertDisplayCaptureResult(value, request, report, issues) {
     )
   )
     return;
-  if (value.schemaVersion !== "vm-display-capture-result/v1")
+  const captureOperationReference = record.captureOperationReference;
+  const displayCapture = request.displayCapture as
+    | Record<string, unknown>
+    | undefined;
+  const foregroundKiosk = record.foregroundKiosk as Record<string, unknown>;
+  const cdpProbe = record.cdpProbe as Record<string, unknown>;
+  const visualChallenge = record.visualChallenge as Record<string, unknown>;
+  const capture = record.capture as Record<string, unknown>;
+  const visualChallengeRegion = visualChallenge.region as
+    | Record<string, unknown>
+    | undefined;
+  const reportEvidence = (report.evidence as unknown[] | undefined) ?? [];
+  const reportAdapter = report.adapter as Record<string, unknown> | undefined;
+  if (record.schemaVersion !== "vm-display-capture-result/v1")
     issue(
       issues,
       `${path}.schemaVersion`,
       "must be vm-display-capture-result/v1",
     );
-  if (value.runId !== request.runId)
+  if (record.runId !== request.runId)
     issue(issues, `${path}.runId`, "must bind the adapter run identity");
-  if (value.lifecycleReference !== request.lifecycleReference)
+  if (record.lifecycleReference !== request.lifecycleReference)
     issue(
       issues,
       `${path}.lifecycleReference`,
       "must bind the active overlay lifecycle",
     );
-  if (value.captureOperationReference !== request.operationReference)
+  if (captureOperationReference !== request.operationReference)
     issue(
       issues,
       `${path}.captureOperationReference`,
       "must bind the capture operation",
     );
   assertActiveKioskSession(
-    value.activeKioskSession,
+    record.activeKioskSession,
     `${path}.activeKioskSession`,
     issues,
   );
   if (
-    JSON.stringify(value.activeKioskSession) !==
-    JSON.stringify(request.displayCapture?.activeKioskSession)
+    JSON.stringify(record.activeKioskSession) !==
+    JSON.stringify(displayCapture?.activeKioskSession)
   )
     issue(
       issues,
       `${path}.activeKioskSession`,
       "must match the requested active kiosk session",
     );
-  assertTauriRoute(value.tauriRoute, `${path}.tauriRoute`, issues);
-  if (value.tauriRoute !== request.displayCapture?.tauriRoute)
+  assertTauriRoute(record.tauriRoute, `${path}.tauriRoute`, issues);
+  if (record.tauriRoute !== displayCapture?.tauriRoute)
     issue(issues, `${path}.tauriRoute`, "must bind the requested kiosk route");
-  assertCdpTargetId(value.cdpTargetId, `${path}.cdpTargetId`, issues);
-  if (value.cdpTargetId !== request.displayCapture?.cdpTargetId)
+  assertCdpTargetId(record.cdpTargetId, `${path}.cdpTargetId`, issues);
+  if (record.cdpTargetId !== displayCapture?.cdpTargetId)
     issue(issues, `${path}.cdpTargetId`, "must bind the requested CDP target");
   if (
     assertExactKeys(
-      value.foregroundKiosk,
+      foregroundKiosk,
       ["activeKioskSession", "tauriRoute", "cdpTargetId", "visible"],
       `${path}.foregroundKiosk`,
       issues,
     )
   ) {
     if (
-      JSON.stringify(value.foregroundKiosk.activeKioskSession) !==
-        JSON.stringify(request.displayCapture?.activeKioskSession) ||
-      value.foregroundKiosk.tauriRoute !== request.displayCapture?.tauriRoute ||
-      value.foregroundKiosk.cdpTargetId !==
-        request.displayCapture?.cdpTargetId ||
-      value.foregroundKiosk.visible !== true
+      JSON.stringify(foregroundKiosk.activeKioskSession) !==
+        JSON.stringify(displayCapture?.activeKioskSession) ||
+      foregroundKiosk.tauriRoute !== displayCapture?.tauriRoute ||
+      foregroundKiosk.cdpTargetId !==
+        displayCapture?.cdpTargetId ||
+      foregroundKiosk.visible !== true
     )
       issue(
         issues,
@@ -2053,7 +2346,7 @@ function assertDisplayCaptureResult(value, request, report, issues) {
   }
   if (
     assertExactKeys(
-      value.cdpProbe,
+      cdpProbe,
       [
         "endpoint",
         "targetId",
@@ -2067,32 +2360,35 @@ function assertDisplayCaptureResult(value, request, report, issues) {
       issues,
     )
   ) {
-    if (value.cdpProbe.endpoint !== "http://127.0.0.1:9222/json")
+    if (cdpProbe.endpoint !== "http://127.0.0.1:9222/json")
       issue(
         issues,
         `${path}.cdpProbe.endpoint`,
         "must use the local WebView CDP endpoint",
       );
-    if (value.cdpProbe.targetUrl !== value.tauriRoute)
+    if (cdpProbe.targetUrl !== record.tauriRoute)
       issue(
         issues,
         `${path}.cdpProbe.targetUrl`,
         "must bind the captured route",
       );
-    if (value.cdpProbe.targetId !== value.cdpTargetId)
+    if (cdpProbe.targetId !== record.cdpTargetId)
       issue(
         issues,
         `${path}.cdpProbe.targetId`,
         "must bind the foreground CDP target",
       );
-    if (value.cdpProbe.appVisible !== true)
+    if (cdpProbe.appVisible !== true)
       issue(
         issues,
         `${path}.cdpProbe.appVisible`,
         "must prove #app is visible",
       );
     for (const key of ["appTextLength", "domNodeCount"])
-      if (!Number.isInteger(value.cdpProbe[key]) || value.cdpProbe[key] < 1)
+      if (
+        !Number.isInteger(cdpProbe[key]) ||
+        (cdpProbe[key] as number) < 1
+      )
         issue(
           issues,
           `${path}.cdpProbe.${key}`,
@@ -2101,7 +2397,7 @@ function assertDisplayCaptureResult(value, request, report, issues) {
   }
   if (
     assertExactKeys(
-      value.visualChallenge,
+      visualChallenge,
       ["token", "colorRgb", "region", "matchingPixelCount"],
       `${path}.visualChallenge`,
       issues,
@@ -2109,19 +2405,19 @@ function assertDisplayCaptureResult(value, request, report, issues) {
   ) {
     assertVisualChallenge(
       {
-        token: value.visualChallenge.token,
-        colorRgb: value.visualChallenge.colorRgb,
-        region: value.visualChallenge.region,
+        token: visualChallenge.token,
+        colorRgb: visualChallenge.colorRgb,
+        region: visualChallengeRegion,
       },
       `${path}.visualChallenge`,
       issues,
     );
     if (
       JSON.stringify({
-        token: value.visualChallenge.token,
-        colorRgb: value.visualChallenge.colorRgb,
-        region: value.visualChallenge.region,
-      }) !== JSON.stringify(request.displayCapture?.visualChallenge)
+        token: visualChallenge.token,
+        colorRgb: visualChallenge.colorRgb,
+        region: visualChallengeRegion,
+      }) !== JSON.stringify(displayCapture?.visualChallenge)
     )
       issue(
         issues,
@@ -2129,18 +2425,18 @@ function assertDisplayCaptureResult(value, request, report, issues) {
         "must bind the requested visual challenge",
       );
     const requiredPixels =
-      value.visualChallenge.region?.width *
-      value.visualChallenge.region?.height;
+      Number(visualChallengeRegion?.width) *
+      Number(visualChallengeRegion?.height);
     if (
-      !Number.isInteger(value.visualChallenge.matchingPixelCount) ||
-      value.visualChallenge.matchingPixelCount !== requiredPixels
+      !Number.isInteger(visualChallenge.matchingPixelCount) ||
+      visualChallenge.matchingPixelCount !== requiredPixels
     )
       issue(
         issues,
         `${path}.visualChallenge.matchingPixelCount`,
         "must prove every requested challenge pixel was visible in the framebuffer",
       );
-    if (value.cdpProbe?.challengeToken !== value.visualChallenge.token)
+    if (cdpProbe?.challengeToken !== visualChallenge.token)
       issue(
         issues,
         `${path}.cdpProbe.challengeToken`,
@@ -2149,7 +2445,7 @@ function assertDisplayCaptureResult(value, request, report, issues) {
   }
   if (
     !assertExactKeys(
-      value.capture,
+      capture,
       [
         "source",
         "adapterIdentity",
@@ -2168,28 +2464,31 @@ function assertDisplayCaptureResult(value, request, report, issues) {
   )
     return;
   const expectedDisplaySource =
-    report.adapter?.identity === "vm-host-adapter://deterministic-fake@1.0.0"
+    reportAdapter?.identity === "vm-host-adapter://deterministic-fake@1.0.0"
       ? "contract-test-generated-png"
       : "platform-framebuffer";
-  if (value.capture.source !== expectedDisplaySource)
+  if (capture.source !== expectedDisplaySource)
     issue(
       issues,
       `${path}.capture.source`,
       `must be ${expectedDisplaySource} for this adapter`,
     );
-  if (value.capture.adapterIdentity !== report.adapter?.identity)
+  if (capture.adapterIdentity !== reportAdapter?.identity)
     issue(
       issues,
       `${path}.capture.adapterIdentity`,
       "must bind the capture to the reporting host adapter",
     );
-  if (value.capture.artifact !== report.evidence?.[0]?.identity)
+  if (
+    capture.artifact !==
+    (reportEvidence[0] as Record<string, unknown> | undefined)?.identity
+  )
     issue(
       issues,
       `${path}.capture.artifact`,
       "must bind the exported display-capture evidence artifact",
     );
-  if (value.capture.format !== "png")
+  if (capture.format !== "png")
     issue(issues, `${path}.capture.format`, "must be png");
   for (const key of [
     "widthPx",
@@ -2198,32 +2497,33 @@ function assertDisplayCaptureResult(value, request, report, issues) {
     "nonTransparentPixelCount",
     "distinctPixelCount",
   ]) {
-    if (!Number.isInteger(value.capture[key]) || value.capture[key] < 1)
+    if (!Number.isInteger(capture[key]) || (capture[key] as number) < 1)
       issue(
         issues,
         `${path}.capture.${key}`,
         "must be a positive decoded PNG measurement",
       );
   }
-  if (value.capture.widthPx !== 1080 || value.capture.heightPx !== 1920)
+  if (capture.widthPx !== 1080 || capture.heightPx !== 1920)
     issue(
       issues,
       `${path}.capture`,
       "must be an exact 1080x1920 kiosk framebuffer capture",
     );
   if (
-    !Number.isFinite(value.capture.nonTransparentPixelRatio) ||
-    value.capture.nonTransparentPixelRatio < 0.95 ||
-    value.capture.nonTransparentPixelRatio > 1 ||
-    value.capture.nonTransparentPixelRatio !==
-      value.capture.nonTransparentPixelCount / value.capture.pixelCount
+    !Number.isFinite(capture.nonTransparentPixelRatio) ||
+    (capture.nonTransparentPixelRatio as number) < 0.95 ||
+    (capture.nonTransparentPixelRatio as number) > 1 ||
+    capture.nonTransparentPixelRatio !==
+      (capture.nonTransparentPixelCount as number) /
+        (capture.pixelCount as number)
   )
     issue(
       issues,
       `${path}.capture.nonTransparentPixelRatio`,
       "must prove at least 95% decoded non-transparent framebuffer content",
     );
-  if (value.capture.distinctPixelCount < 256)
+  if ((capture.distinctPixelCount as number) < 256)
     issue(
       issues,
       `${path}.capture.distinctPixelCount`,
@@ -2231,7 +2531,11 @@ function assertDisplayCaptureResult(value, request, report, issues) {
     );
 }
 
-function assertCleanupObservation(observed, path, issues) {
+function assertCleanupObservation(
+  observed: unknown,
+  path: string,
+  issues: Array<{ path: string; message: string }>,
+): void {
   if (
     !assertExactKeys(
       observed,
@@ -2241,13 +2545,18 @@ function assertCleanupObservation(observed, path, issues) {
     )
   )
     return;
+  const record = observed as Record<string, unknown>;
   for (const key of ["overlay", "runDirectory"]) {
-    if (!new Set(["present", "removed", "unknown"]).has(observed[key]))
+    if (
+      !new Set(["present", "removed", "unknown"]).has(
+        String(record[key] ?? ""),
+      )
+    )
       issue(issues, `${path}.${key}`, "must be a supported observed state");
   }
   if (
     !new Set(["not-mounted", "mounted", "removed", "unknown"]).has(
-      observed.bootstrapMedia,
+      String(record.bootstrapMedia ?? ""),
     )
   )
     issue(
@@ -2257,13 +2566,17 @@ function assertCleanupObservation(observed, path, issues) {
     );
 }
 
-function isPostCleanupIdempotentCapture(request, report) {
-  const observed = report.cleanup?.observed;
+function isPostCleanupIdempotentCapture(
+  request: Record<string, unknown>,
+  report: Record<string, unknown>,
+): boolean {
+  const cleanup = report.cleanup as Record<string, unknown> | undefined;
+  const observed = cleanup?.observed as Record<string, unknown> | undefined;
   return (
     request.operation === "capture-approved-base" &&
     report.result === "succeeded" &&
-    report.cleanup?.status === "completed" &&
-    report.cleanup?.overlayDisposition === "removed" &&
+    cleanup?.status === "completed" &&
+    cleanup?.overlayDisposition === "removed" &&
     observed?.overlay === "removed" &&
     observed?.runDirectory === "removed" &&
     observed?.bootstrapMedia === "removed"
@@ -2271,14 +2584,15 @@ function isPostCleanupIdempotentCapture(request, report) {
 }
 
 function assertSanitizedDiagnostic(
-  diagnostic,
-  index,
-  issues,
+  diagnostic: unknown,
+  index: number,
+  issues: Array<{ path: string; message: string }>,
   pathPrefix = "report.diagnostics",
-) {
+): void {
   const path = `${pathPrefix}[${index}]`;
   if (!assertExactKeys(diagnostic, ["code"], path, issues)) return;
-  if (!SANITIZED_DIAGNOSTIC_CODES.has(diagnostic.code))
+  const record = diagnostic as Record<string, unknown>;
+  if (!SANITIZED_DIAGNOSTIC_CODES.has(String(record.code)))
     issue(
       issues,
       `${path}.code`,
@@ -2286,7 +2600,8 @@ function assertSanitizedDiagnostic(
     );
 }
 
-function requestEcho(request) {
+function requestEcho(request: Record<string, unknown>): Record<string, unknown> {
+  const target = request.target as Record<string, unknown>;
   return {
     contractVersion: request.contractVersion,
     runId: request.runId,
@@ -2295,15 +2610,21 @@ function requestEcho(request) {
     operationReference: request.operationReference,
     lifecycleReference: request.lifecycleReference,
     cancelOperationReference: request.cancelOperationReference,
-    targetIdentity: request.target.identity,
+    targetIdentity: target.identity,
     displayCapture: request.displayCapture,
     audioCapture: request.audioCapture,
-    requestedCapabilities: [...request.requestedCapabilities],
+    requestedCapabilities: [
+      ...(request.requestedCapabilities as unknown[] | undefined ?? []),
+    ],
     ...(isV2Request(request) ? { serialSession: request.serialSession } : {}),
   };
 }
 
-function reconstructRequest(request) {
+function reconstructRequest(
+  request: Record<string, unknown>,
+): Record<string, unknown> {
+  const target = request.target as Record<string, unknown> | undefined;
+  const assets = request.assets as unknown[] | undefined;
   return {
     contractVersion: request.contractVersion,
     schemaVersion: request.schemaVersion,
@@ -2314,38 +2635,46 @@ function reconstructRequest(request) {
     operationReference: request.operationReference,
     lifecycleReference: request.lifecycleReference,
     cancelOperationReference: request.cancelOperationReference,
-    target: { identity: request.target?.identity },
+    target: { identity: target?.identity },
     displayCapture: request.displayCapture,
     audioCapture: request.audioCapture,
-    assets: request.assets?.map((asset) => ({
-      role: asset?.role,
-      identity: asset?.identity,
-      digest: asset?.digest,
-    })),
-    requestedCapabilities: [...(request.requestedCapabilities ?? [])],
+    assets: assets?.map((asset) => {
+      const record = asset as Record<string, unknown>;
+      return {
+        role: record?.role,
+        identity: record?.identity,
+        digest: record?.digest,
+      };
+    }),
+    requestedCapabilities: [
+      ...((request.requestedCapabilities as unknown[] | undefined) ?? []),
+    ],
     ...(isV2Request(request) ? { serialSession: request.serialSession } : {}),
   };
 }
 
-function lifecycleSourceAsset(request) {
+function lifecycleSourceAsset(
+  request: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const assets = (request.assets as Array<Record<string, unknown>> | undefined) ?? [];
   if (
     request.operation === "clean-install" ||
     request.operation === "capture-approved-base"
   )
-    return request.assets.find((asset) => asset.role === "runtime-image");
-  if (["cleanup", "cancel"].includes(request.operation))
+    return assets.find((asset) => asset.role === "runtime-image");
+  if (["cleanup", "cancel"].includes(String(request.operation)))
     return (
-      request.assets.find((asset) => asset.role === "runtime-image") ??
-      request.assets.find((asset) => asset.role === "approved-runtime-base")
+      assets.find((asset) => asset.role === "runtime-image") ??
+      assets.find((asset) => asset.role === "approved-runtime-base")
     );
-  return request.assets.find((asset) => asset.role === "approved-runtime-base");
+  return assets.find((asset) => asset.role === "approved-runtime-base");
 }
 
 export function validateVmHostAdapterRequest(
   input: unknown,
 ): Record<string, unknown> {
-  const request = structuredClone(input);
-  const issues = [];
+  const request = structuredClone(input) as Record<string, unknown>;
+  const issues: Array<{ path: string; message: string }> = [];
   assertExactKeys(
     request,
     [
@@ -2374,7 +2703,7 @@ export function validateVmHostAdapterRequest(
     issue(issues, "request.schemaVersion", `must be ${REQUEST_SCHEMA_VERSION}`);
   if (request.kind !== "vm-host-adapter-request")
     issue(issues, "request.kind", "must be vm-host-adapter-request");
-  if (!VM_HOST_ADAPTER_OPERATIONS.has(request.operation))
+  if (!VM_HOST_ADAPTER_OPERATIONS.has(String(request.operation)))
     issue(issues, "request.operation", "must be a supported operation");
   if (isSerialSessionOperation(request.operation) && !isV2Request(request))
     issue(
@@ -2398,7 +2727,7 @@ export function validateVmHostAdapterRequest(
     );
   if (
     request.operationReference !== `vm-operation://${request.operationNonce}` ||
-    !OPERATION_REFERENCE.test(request.operationReference ?? "")
+    !OPERATION_REFERENCE.test(String(request.operationReference ?? ""))
   )
     issue(
       issues,
@@ -2435,9 +2764,10 @@ export function validateVmHostAdapterRequest(
   if (isV2Request(request) || isSerialSessionOperation(request.operation))
     assertSerialSessionRequest(request.serialSession, request, issues);
   if (assertExactKeys(request.target, ["identity"], "request.target", issues)) {
+    const target = request.target as Record<string, unknown>;
     if (
-      typeof request.target.identity !== "string" ||
-      !TARGET_IDENTITY.test(request.target.identity)
+      typeof target.identity !== "string" ||
+      !TARGET_IDENTITY.test(target.identity)
     )
       issue(
         issues,
@@ -2446,7 +2776,7 @@ export function validateVmHostAdapterRequest(
       );
     else
       assertNoHostReference(
-        request.target.identity,
+        target.identity,
         "request.target.identity",
         issues,
       );
@@ -2477,16 +2807,20 @@ export function validateVmHostAdapterRequest(
       "must be null outside capture-display",
     );
   }
-  if (!Array.isArray(request.assets) || request.assets.length === 0)
+  const assets = request.assets as unknown[] | undefined;
+  if (!Array.isArray(assets) || assets.length === 0)
     issue(issues, "request.assets", "must contain immutable operation assets");
   else {
-    request.assets.forEach((asset, index) => assertAsset(asset, index, issues));
-    assertUniqueRoles(request.assets, "request.assets", issues);
-    if (["cleanup", "cancel"].includes(request.operation)) {
-      const base = request.assets.find(
+    const assetRecords = assets as Array<Record<string, unknown>>;
+    assetRecords.forEach((asset: unknown, index: number) =>
+      assertAsset(asset, index, issues),
+    );
+    assertUniqueRoles(assetRecords, "request.assets", issues);
+    if (["cleanup", "cancel"].includes(String(request.operation))) {
+      const base = assetRecords.find(
         (asset) => asset.role === "approved-runtime-base",
       );
-      const runtimeImage = request.assets.find(
+      const runtimeImage = assetRecords.find(
         (asset) => asset.role === "runtime-image",
       );
       if (
@@ -2504,7 +2838,7 @@ export function validateVmHostAdapterRequest(
   }
   if (
     !Array.isArray(request.requestedCapabilities) ||
-    request.requestedCapabilities.length === 0
+    (request.requestedCapabilities as unknown[]).length === 0
   )
     issue(
       issues,
@@ -2512,9 +2846,10 @@ export function validateVmHostAdapterRequest(
       "must contain requested capabilities",
     );
   else {
-    const seen = new Set();
-    request.requestedCapabilities.forEach((capability, index) => {
-      if (!VM_HOST_ADAPTER_CAPABILITIES.has(capability))
+    const seen = new Set<unknown>();
+    (request.requestedCapabilities as unknown[]).forEach(
+      (capability: unknown, index: number) => {
+      if (!VM_HOST_ADAPTER_CAPABILITIES.has(String(capability)))
         issue(
           issues,
           `request.requestedCapabilities[${index}]`,
@@ -2527,9 +2862,10 @@ export function validateVmHostAdapterRequest(
           "must not be duplicated",
         );
       seen.add(capability);
-    });
+      },
+    );
     const requiredCapability =
-      REQUIRED_CAPABILITY_BY_OPERATION[request.operation];
+      REQUIRED_CAPABILITY_BY_OPERATION[String(request.operation)];
     if (requiredCapability && !seen.has(requiredCapability))
       issue(
         issues,
@@ -2537,7 +2873,7 @@ export function validateVmHostAdapterRequest(
         `must include ${requiredCapability}`,
       );
     for (const capability of REQUIRED_CAPABILITIES_BY_SERIAL_OPERATION[
-      request.operation
+      String(request.operation)
     ] ?? [])
       if (!seen.has(capability))
         issue(
@@ -2547,18 +2883,27 @@ export function validateVmHostAdapterRequest(
         );
   }
   const requiredRoles =
-    REQUIRED_ASSET_ROLES_BY_OPERATION[request.operation] ?? [];
+    REQUIRED_ASSET_ROLES_BY_OPERATION[String(request.operation)] ?? [];
   const hasRequiredRole =
     request.operation === "cleanup" || request.operation === "cancel"
       ? requiredRoles.some((role) =>
-          request.assets?.some((asset) => asset?.role === role),
+          (assets as Array<Record<string, unknown>> | undefined)?.some(
+            (asset) => asset?.role === role,
+          ),
         )
       : requiredRoles.every((role) =>
-          request.assets?.some((asset) => asset?.role === role),
+          (assets as Array<Record<string, unknown>> | undefined)?.some(
+            (asset) => asset?.role === role,
+          ),
         );
   if (!hasRequiredRole) {
     for (const role of requiredRoles) {
-      if (request.assets?.some((asset) => asset?.role === role)) continue;
+      if (
+        (assets as Array<Record<string, unknown>> | undefined)?.some(
+          (asset) => asset?.role === role,
+        )
+      )
+        continue;
       issue(issues, "request.assets", `must include ${role}`);
       if (request.operation === "cleanup" || request.operation === "cancel")
         break;
@@ -2580,7 +2925,29 @@ export function validateVmHostAdapterReport(
 ): Record<string, unknown> {
   const report = structuredClone(input) as Record<string, unknown>;
   const request = validateVmHostAdapterRequest(requestInput);
-  const issues = [];
+  const issues: Array<{ path: string; message: string }> = [];
+  const adapter = report.adapter as Record<string, unknown>;
+  const requestEchoValue = report.request as Record<string, unknown>;
+  const observed = report.observed as Record<string, unknown>;
+  const guest = report.guest as Record<string, unknown>;
+  const timestamps = report.timestamps as Record<string, unknown>;
+  const cleanup = report.cleanup as Record<string, unknown>;
+  const negotiatedCapabilities = report.negotiatedCapabilities as unknown[];
+  const completedOperations = report.completedOperations as unknown[];
+  const consumedAssets = report.consumedAssets as unknown[];
+  const evidence = report.evidence as unknown[];
+  const diagnostics = report.diagnostics as unknown[];
+  const serialSession = report.serialSession as Record<string, unknown> | null;
+  const serialEvidence = report.serialEvidence as Record<string, unknown> | null;
+  const displayCapture = report.displayCapture as Record<string, unknown> | null;
+  const defaultAudioCapture = report.defaultAudioCapture as
+    | Record<string, unknown>
+    | null;
+  const requestAssets = (request.assets as unknown[] | undefined) ?? [];
+  const requestedCapabilities =
+    (request.requestedCapabilities as unknown[] | undefined) ?? [];
+  const requestTargetIdentity = (request.target as Record<string, unknown>)
+    .identity;
   assertExactKeys(
     report,
     [
@@ -2614,36 +2981,36 @@ export function validateVmHostAdapterReport(
     issue(issues, "report.kind", "must be vm-host-adapter-report");
   if (
     assertExactKeys(
-      report.adapter,
+      adapter,
       ["identity", "version", "contractVersion"],
-      "report.adapter",
+      "adapter",
       issues,
     )
   ) {
     assertLogicalIdentity(
-      report.adapter.identity,
-      "report.adapter.identity",
+      adapter.identity,
+      "adapter.identity",
       issues,
     );
     if (
-      typeof report.adapter.version !== "string" ||
-      !SEMVER.test(report.adapter.version)
+      typeof adapter.version !== "string" ||
+      !SEMVER.test(adapter.version)
     )
       issue(
         issues,
-        "report.adapter.version",
+        "adapter.version",
         "must be a strict semantic version",
       );
-    if (report.adapter.contractVersion !== CONTRACT_VERSION)
+    if (adapter.contractVersion !== CONTRACT_VERSION)
       issue(
         issues,
-        "report.adapter.contractVersion",
+        "adapter.contractVersion",
         `must be ${CONTRACT_VERSION}`,
       );
   }
   if (
     assertExactKeys(
-      report.request,
+      requestEchoValue,
       [
         "contractVersion",
         "runId",
@@ -2658,79 +3025,79 @@ export function validateVmHostAdapterReport(
         "requestedCapabilities",
         ...(isV2Request(request) ? ["serialSession"] : []),
       ],
-      "report.request",
+      "requestEchoValue",
       issues,
     )
   ) {
     for (const [key, expected] of Object.entries(requestEcho(request))) {
-      if (JSON.stringify(report.request[key]) !== JSON.stringify(expected))
-        issue(issues, `report.request.${key}`, "does not match request");
+      if (JSON.stringify(requestEchoValue[key]) !== JSON.stringify(expected))
+        issue(issues, `requestEchoValue.${key}`, "does not match request");
     }
   }
-  if (!TERMINAL_RESULTS.has(report.result))
+  if (!TERMINAL_RESULTS.has(String(report.result)))
     issue(issues, "report.result", "must be a supported terminal result");
-  if (!Array.isArray(report.negotiatedCapabilities))
-    issue(issues, "report.negotiatedCapabilities", "must be an array");
+  if (!Array.isArray(negotiatedCapabilities))
+    issue(issues, "negotiatedCapabilities", "must be an array");
   else {
-    const requested = new Set(request.requestedCapabilities);
+    const requested = new Set(requestedCapabilities);
     const seen = new Set();
-    report.negotiatedCapabilities.forEach((capability, index) => {
+    negotiatedCapabilities.forEach((capability, index) => {
       if (!requested.has(capability))
         issue(
           issues,
-          `report.negotiatedCapabilities[${index}]`,
+          `negotiatedCapabilities[${index}]`,
           "was not requested",
         );
       if (seen.has(capability))
         issue(
           issues,
-          `report.negotiatedCapabilities[${index}]`,
+          `negotiatedCapabilities[${index}]`,
           "must not be duplicated",
         );
       seen.add(capability);
     });
     if (
       report.result === "succeeded" &&
-      !seen.has(REQUIRED_CAPABILITY_BY_OPERATION[request.operation])
+      !seen.has(REQUIRED_CAPABILITY_BY_OPERATION[String(request.operation)])
     )
       issue(
         issues,
-        "report.negotiatedCapabilities",
+        "negotiatedCapabilities",
         "must include the completed operation capability",
       );
     if (
       report.result === "succeeded" &&
-      request.requestedCapabilities.some((capability) => !seen.has(capability))
+      requestedCapabilities.some((capability) => !seen.has(capability))
     )
       issue(
         issues,
-        "report.negotiatedCapabilities",
+        "negotiatedCapabilities",
         "must include the complete requested capability set for a successful operation",
       );
   }
-  if (!Array.isArray(report.completedOperations))
-    issue(issues, "report.completedOperations", "must be an array");
+  if (!Array.isArray(completedOperations))
+    issue(issues, "completedOperations", "must be an array");
   else if (
     report.result === "succeeded" &&
-    !sameValues(report.completedOperations, [request.operation])
+    !sameValues(completedOperations, [request.operation])
   )
     issue(
       issues,
-      "report.completedOperations",
+      "completedOperations",
       "must contain only the requested completed operation",
     );
   else if (
     report.result !== "succeeded" &&
-    report.completedOperations.length !== 0
+    completedOperations.length !== 0
   )
     issue(
       issues,
-      "report.completedOperations",
+      "completedOperations",
       "must be empty when the operation did not succeed",
     );
   if (
     assertExactKeys(
-      report.observed,
+      observed,
       [
         "vmIdentity",
         "targetBinding",
@@ -2738,45 +3105,46 @@ export function validateVmHostAdapterReport(
         "overlayIdentity",
         "firmwareMode",
       ],
-      "report.observed",
+      "observed",
       issues,
     )
   ) {
     assertLogicalIdentity(
-      report.observed.vmIdentity,
-      "report.observed.vmIdentity",
+      observed.vmIdentity,
+      "observed.vmIdentity",
       issues,
     );
     assertLogicalIdentity(
-      report.observed.baseIdentity,
-      "report.observed.baseIdentity",
+      observed.baseIdentity,
+      "observed.baseIdentity",
       issues,
     );
     assertLogicalIdentity(
-      report.observed.overlayIdentity,
-      "report.observed.overlayIdentity",
+      observed.overlayIdentity,
+      "observed.overlayIdentity",
       issues,
     );
     if (
       assertExactKeys(
-        report.observed.targetBinding,
+        observed.targetBinding,
         ["relation", "targetIdentity"],
-        "report.observed.targetBinding",
+        "observed.targetBinding",
         issues,
       )
     ) {
-      if (report.observed.targetBinding.relation !== "host-target-mapping/v1")
+      const targetBinding = observed.targetBinding as Record<string, unknown>;
+      if (targetBinding.relation !== "host-target-mapping/v1")
         issue(
           issues,
-          "report.observed.targetBinding.relation",
+          "observed.targetBinding.relation",
           "must attest the documented host target mapping",
         );
       if (
-        report.observed.targetBinding.targetIdentity !== request.target.identity
+        targetBinding.targetIdentity !== requestTargetIdentity
       )
         issue(
           issues,
-          "report.observed.targetBinding.targetIdentity",
+          "observed.targetBinding.targetIdentity",
           "does not bind the observed VM to the requested target",
         );
     }
@@ -2784,48 +3152,52 @@ export function validateVmHostAdapterReport(
     if (
       observedSource &&
       request.operation !== "capture-approved-base" &&
-      report.observed.baseIdentity !== observedSource.identity
+      observed.baseIdentity !== observedSource.identity
     )
       issue(
         issues,
-        "report.observed.baseIdentity",
+        "observed.baseIdentity",
         "does not match the requested operation source asset",
       );
-    if (!new Set(["bios", "uefi"]).has(report.observed.firmwareMode))
-      issue(issues, "report.observed.firmwareMode", "must attest bios or uefi");
+    if (!new Set(["bios", "uefi"]).has(String(observed.firmwareMode)))
+      issue(issues, "observed.firmwareMode", "must attest bios or uefi");
   }
-  if (!Array.isArray(report.consumedAssets))
-    issue(issues, "report.consumedAssets", "must be an array");
+  if (!Array.isArray(consumedAssets))
+    issue(issues, "consumedAssets", "must be an array");
   else {
-    report.consumedAssets.forEach((asset, index) =>
-      assertAsset(asset, index, issues, "report.consumedAssets"),
+    consumedAssets.forEach((asset: unknown, index: number) =>
+      assertAsset(asset, index, issues, "consumedAssets"),
     );
-    assertUniqueRoles(report.consumedAssets, "report.consumedAssets", issues);
-    if (!sameAssets(report.consumedAssets, request.assets))
+    assertUniqueRoles(
+      consumedAssets as Array<Record<string, unknown>>,
+      "consumedAssets",
+      issues,
+    );
+    if (!sameAssets(consumedAssets, requestAssets))
       issue(
         issues,
-        "report.consumedAssets",
+        "consumedAssets",
         "must exactly match requested immutable assets",
       );
   }
   if (
     assertExactKeys(
-      report.guest,
+      guest,
       ["deviceMappings", "defaultAudioIdentity"],
-      "report.guest",
+      "guest",
       issues,
     )
   ) {
     assertLogicalIdentity(
-      report.guest.defaultAudioIdentity,
-      "report.guest.defaultAudioIdentity",
+      guest.defaultAudioIdentity,
+      "guest.defaultAudioIdentity",
       issues,
     );
-    if (!Array.isArray(report.guest.deviceMappings))
-      issue(issues, "report.guest.deviceMappings", "must be an array");
+    if (!Array.isArray(guest.deviceMappings))
+      issue(issues, "guest.deviceMappings", "must be an array");
     else {
-      report.guest.deviceMappings.forEach((mapping, index) => {
-        const path = `report.guest.deviceMappings[${index}]`;
+      guest.deviceMappings.forEach((mapping, index) => {
+        const path = `guest.deviceMappings[${index}]`;
         if (
           !assertExactKeys(
             mapping,
@@ -2849,12 +3221,12 @@ export function validateVmHostAdapterReport(
         );
       });
       assertUniqueRoles(
-        report.guest.deviceMappings,
-        "report.guest.deviceMappings",
+        guest.deviceMappings,
+        "guest.deviceMappings",
         issues,
       );
       const mappings = new Set(
-        report.guest.deviceMappings.map((mapping) => mapping?.role),
+        guest.deviceMappings.map((mapping) => mapping?.role),
       );
       for (const [capability, role] of [
         ["serial:lower-controller", "lower-controller"],
@@ -2862,38 +3234,39 @@ export function validateVmHostAdapterReport(
       ]) {
         if (
           report.result === "succeeded" &&
-          request.requestedCapabilities.includes(capability) &&
+          requestedCapabilities.includes(capability) &&
           !mappings.has(role)
         )
-          issue(issues, "report.guest.deviceMappings", `must include ${role}`);
+          issue(issues, "guest.deviceMappings", `must include ${role}`);
       }
     }
   }
   assertSerialSessionReport(report, request, issues);
   assertSerialEvidence(report, request, issues);
-  if (!Array.isArray(report.evidence))
-    issue(issues, "report.evidence", "must be an array");
+  if (!Array.isArray(evidence))
+    issue(issues, "evidence", "must be an array");
   else {
-    report.evidence.forEach((entry, index) => {
-      const path = `report.evidence[${index}]`;
+    evidence.forEach((entry: unknown, index: number) => {
+      const entryRecord = entry as Record<string, unknown>;
+      const path = `evidence[${index}]`;
       const entryKeys =
-        entry?.role === "display-capture" ||
-        entry?.role === "default-audio-capture" ||
-        entry?.role === "daemon-audio-calibration-response"
+        entryRecord?.role === "display-capture" ||
+        entryRecord?.role === "default-audio-capture" ||
+        entryRecord?.role === "daemon-audio-calibration-response"
           ? ["role", "identity", "digest", "fileName"]
           : ["role", "identity", "digest"];
-      if (!assertExactKeys(entry, entryKeys, path, issues)) return;
+      if (!assertExactKeys(entryRecord, entryKeys, path, issues)) return;
       if (
         !new Set([
           "display-capture",
           "default-audio-capture",
           "daemon-audio-calibration-response",
-        ]).has(entry.role)
+        ]).has(String(entryRecord.role))
       )
         issue(issues, `${path}.role`, "must be a supported evidence role");
       const identity =
-        typeof entry.identity === "string"
-          ? entry.identity.match(EVIDENCE_IDENTITY)
+        typeof entryRecord.identity === "string"
+          ? entryRecord.identity.match(EVIDENCE_IDENTITY)
           : null;
       if (!identity)
         issue(
@@ -2902,28 +3275,30 @@ export function validateVmHostAdapterReport(
           "must be a content-addressed evidence identity",
         );
       if (
-        typeof entry.digest !== "string" ||
-        !/^sha256:[a-f0-9]{64}$/.test(entry.digest)
+        typeof entryRecord.digest !== "string" ||
+        !/^sha256:[a-f0-9]{64}$/.test(entryRecord.digest)
       )
         issue(issues, `${path}.digest`, "must be a lowercase SHA-256 digest");
-      else if (identity && identity[1] !== entry.digest.slice(7))
+      else if (identity && identity[1] !== entryRecord.digest.slice(7))
         issue(issues, path, "identity and digest must name the same evidence");
       if (
-        entry.role === "display-capture" ||
-        entry.role === "default-audio-capture" ||
-        entry.role === "daemon-audio-calibration-response"
+        entryRecord.role === "display-capture" ||
+        entryRecord.role === "default-audio-capture" ||
+        entryRecord.role === "daemon-audio-calibration-response"
       ) {
-        const expectedFileName = `${entry.digest?.slice(7)}.`;
+        const expectedFileName = `${String(entryRecord.digest ?? "").slice(7)}.`;
         const extension =
-          entry.role === "display-capture"
+          entryRecord.role === "display-capture"
             ? "png"
-            : entry.role === "default-audio-capture"
+            : entryRecord.role === "default-audio-capture"
               ? "wav"
               : "json";
         if (
-          typeof entry.fileName !== "string" ||
-          !new RegExp(`^[a-f0-9]{64}\\.${extension}$`).test(entry.fileName) ||
-          !entry.fileName.startsWith(expectedFileName)
+          typeof entryRecord.fileName !== "string" ||
+          !new RegExp(`^[a-f0-9]{64}\\.${extension}$`).test(
+            entryRecord.fileName,
+          ) ||
+          !entryRecord.fileName.startsWith(expectedFileName)
         )
           issue(
             issues,
@@ -2932,7 +3307,11 @@ export function validateVmHostAdapterReport(
           );
       }
     });
-    assertUniqueRoles(report.evidence, "report.evidence", issues);
+    assertUniqueRoles(
+      evidence as Array<Record<string, unknown>>,
+      "evidence",
+      issues,
+    );
     const expectedEvidenceRoles =
       request.operation === "capture-display"
         ? ["display-capture"]
@@ -2943,72 +3322,75 @@ export function validateVmHostAdapterReport(
       expectedEvidenceRoles &&
       report.result === "succeeded" &&
       (!sameValues(
-        report.evidence.map((entry) => entry?.role),
+        evidence.map((entry) => (entry as Record<string, unknown>)?.role),
         expectedEvidenceRoles,
       ) ||
-        !sameValues(report.completedOperations, [request.operation]))
+        !sameValues(completedOperations, [request.operation]))
     )
       issue(
         issues,
-        "report.evidence",
+        "evidence",
         "must be produced only by its completed capture operation",
       );
-    if (!expectedEvidenceRoles && report.evidence.length !== 0)
+    if (!expectedEvidenceRoles && evidence.length !== 0)
       issue(
         issues,
-        "report.evidence",
+        "evidence",
         "must be empty before or after non-capture operations",
       );
   }
   if (
     assertExactKeys(
-      report.timestamps,
+      timestamps,
       ["startedAt", "completedAt"],
-      "report.timestamps",
+      "timestamps",
       issues,
     )
   ) {
     assertTimestamp(
-      report.timestamps.startedAt,
-      "report.timestamps.startedAt",
+      timestamps.startedAt,
+      "timestamps.startedAt",
       issues,
     );
     assertTimestamp(
-      report.timestamps.completedAt,
-      "report.timestamps.completedAt",
+      timestamps.completedAt,
+      "timestamps.completedAt",
       issues,
     );
     if (
-      Date.parse(report.timestamps.completedAt) <
-      Date.parse(report.timestamps.startedAt)
+      Date.parse(String(timestamps.completedAt ?? "")) <
+      Date.parse(String(timestamps.startedAt ?? ""))
     )
-      issue(issues, "report.timestamps", "must be ordered");
+      issue(issues, "timestamps", "must be ordered");
   }
-  assertDisplayCaptureResult(report.displayCapture, request, report, issues);
-  assertAudioCaptureResult(report.defaultAudioCapture, request, report, issues);
+  assertDisplayCaptureResult(displayCapture, request, report, issues);
+  assertAudioCaptureResult(defaultAudioCapture, request, report, issues);
   if (
     assertExactKeys(
-      report.cleanup,
+      cleanup,
       ["status", "overlayDisposition", "observed"],
-      "report.cleanup",
+      "cleanup",
       issues,
     )
   ) {
     assertCleanupObservation(
-      report.cleanup.observed,
-      "report.cleanup.observed",
+      cleanup.observed,
+      "cleanup.observed",
       issues,
     );
-    const state = `${report.cleanup.status}/${report.cleanup.overlayDisposition}`;
+    const state = `${cleanup.status}/${cleanup.overlayDisposition}`;
+    const cleanupObservedValue = cleanup.observed as
+      | Record<string, unknown>
+      | undefined;
     const cleaned =
-      report.cleanup.observed?.overlay === "removed" &&
-      report.cleanup.observed?.runDirectory === "removed" &&
-      report.cleanup.observed?.bootstrapMedia === "removed";
+      cleanupObservedValue?.overlay === "removed" &&
+      cleanupObservedValue?.runDirectory === "removed" &&
+      cleanupObservedValue?.bootstrapMedia === "removed";
     const active =
-      report.cleanup.observed?.overlay === "present" &&
-      report.cleanup.observed?.runDirectory === "present" &&
+      cleanupObservedValue?.overlay === "present" &&
+      cleanupObservedValue?.runDirectory === "present" &&
       ["not-mounted", "mounted"].includes(
-        report.cleanup.observed?.bootstrapMedia,
+        String(cleanupObservedValue?.bootstrapMedia),
       );
     const completedCaptureAfterCleanup = isPostCleanupIdempotentCapture(
       request,
@@ -3016,208 +3398,236 @@ export function validateVmHostAdapterReport(
     );
     const expected =
       report.result === "failed" ||
-      ["cleanup", "cancel"].includes(request.operation)
+      ["cleanup", "cancel"].includes(String(request.operation))
         ? "completed/removed with observed removal"
         : "not-run/active with observed active resources";
     if (
       (report.result === "failed" ||
-        ["cleanup", "cancel"].includes(request.operation)) &&
+        ["cleanup", "cancel"].includes(String(request.operation))) &&
       (state !== "completed/removed" || !cleaned)
     )
       issue(
         issues,
-        "report.cleanup",
+        "cleanup",
         `must be ${expected} for this lifecycle operation`,
       );
     if (
       report.result !== "failed" &&
-      !["cleanup", "cancel"].includes(request.operation) &&
+      !["cleanup", "cancel"].includes(String(request.operation)) &&
       !completedCaptureAfterCleanup &&
       (state !== "not-run/active" || !active)
     )
       issue(
         issues,
-        "report.cleanup",
+        "cleanup",
         request.operation === "capture-approved-base"
           ? "must be not-run/active with observed active resources or completed/removed with observed removal for an idempotent capture"
           : `must be ${expected} for this lifecycle operation`,
       );
   }
-  if (!Array.isArray(report.diagnostics))
-    issue(issues, "report.diagnostics", "must be an array");
+  if (!Array.isArray(diagnostics))
+    issue(issues, "diagnostics", "must be an array");
   else
-    report.diagnostics.forEach((diagnostic, index) =>
+    diagnostics.forEach((diagnostic: unknown, index: number) =>
       assertSanitizedDiagnostic(diagnostic, index, issues),
     );
   if (issues.length > 0) throw new VmHostAdapterContractError(issues);
+  const observedTargetBinding = observed.targetBinding as Record<string, unknown>;
+  const cleanupObserved = cleanup.observed as Record<string, unknown>;
+  const serialSessionDeviceMappings =
+    (serialSession?.deviceMappings as unknown[] | undefined) ?? [];
+  const serialSessionScannerAcknowledgement = serialSession
+    ?.scannerAcknowledgement as Record<string, unknown> | null | undefined;
+  const serialSessionSimulatorCleanup = serialSession
+    ?.simulatorCleanup as Record<string, unknown> | null | undefined;
+  const serialEvidenceRecords =
+    (serialEvidence?.records as unknown[] | undefined) ?? [];
   return {
     contractVersion: report.contractVersion,
     schemaVersion: report.schemaVersion,
     kind: report.kind,
     adapter: {
-      identity: report.adapter.identity,
-      version: report.adapter.version,
-      contractVersion: report.adapter.contractVersion,
+      identity: adapter.identity,
+      version: adapter.version,
+      contractVersion: adapter.contractVersion,
     },
     request: requestEcho(request),
     result: report.result,
-    negotiatedCapabilities: [...report.negotiatedCapabilities],
-    completedOperations: [...report.completedOperations],
+    negotiatedCapabilities: [...negotiatedCapabilities],
+    completedOperations: [...completedOperations],
     observed: {
-      vmIdentity: report.observed.vmIdentity,
+      vmIdentity: observed.vmIdentity,
       targetBinding: {
-        relation: report.observed.targetBinding.relation,
-        targetIdentity: report.observed.targetBinding.targetIdentity,
+        relation: observedTargetBinding.relation,
+        targetIdentity: observedTargetBinding.targetIdentity,
       },
-      baseIdentity: report.observed.baseIdentity,
-      overlayIdentity: report.observed.overlayIdentity,
-      firmwareMode: report.observed.firmwareMode,
+      baseIdentity: observed.baseIdentity,
+      overlayIdentity: observed.overlayIdentity,
+      firmwareMode: observed.firmwareMode,
     },
-    consumedAssets: report.consumedAssets.map((asset) => ({
-      role: asset.role,
-      identity: asset.identity,
-      digest: asset.digest,
-    })),
+    consumedAssets: consumedAssets.map((asset) => {
+      const assetRecord = asset as Record<string, unknown>;
+      return {
+        role: assetRecord.role,
+        identity: assetRecord.identity,
+        digest: assetRecord.digest,
+      };
+    }),
     guest: {
-      deviceMappings: report.guest.deviceMappings.map((mapping) => ({
-        role: mapping.role,
-        guestDeviceIdentity: mapping.guestDeviceIdentity,
-        guestUsbTopology: mapping.guestUsbTopology,
-      })),
-      defaultAudioIdentity: report.guest.defaultAudioIdentity,
+      deviceMappings: (guest.deviceMappings as unknown[]).map(
+        (mapping: unknown) => {
+          const mappingRecord = mapping as Record<string, unknown>;
+          return {
+            role: mappingRecord.role,
+            guestDeviceIdentity: mappingRecord.guestDeviceIdentity,
+            guestUsbTopology: mappingRecord.guestUsbTopology,
+          };
+        },
+      ),
+      defaultAudioIdentity: guest.defaultAudioIdentity,
     },
-    evidence: report.evidence.map((entry) => ({
-      role: entry.role,
-      identity: entry.identity,
-      digest: entry.digest,
-      ...([
-        "display-capture",
-        "default-audio-capture",
-        "daemon-audio-calibration-response",
-      ].includes(entry.role)
-        ? { fileName: entry.fileName }
-        : {}),
-    })),
+    evidence: evidence.map((entry) => {
+      const entryRecord = entry as Record<string, unknown>;
+      return {
+        role: entryRecord.role,
+        identity: entryRecord.identity,
+        digest: entryRecord.digest,
+        ...([
+          "display-capture",
+          "default-audio-capture",
+          "daemon-audio-calibration-response",
+        ].includes(String(entryRecord.role))
+          ? { fileName: entryRecord.fileName }
+          : {}),
+      };
+    }),
     timestamps: {
-      startedAt: report.timestamps.startedAt,
-      completedAt: report.timestamps.completedAt,
+      startedAt: timestamps.startedAt,
+      completedAt: timestamps.completedAt,
     },
-    displayCapture: report.displayCapture,
-    defaultAudioCapture: report.defaultAudioCapture,
+    displayCapture: displayCapture,
+    defaultAudioCapture: defaultAudioCapture,
     cleanup: {
-      status: report.cleanup.status,
-      overlayDisposition: report.cleanup.overlayDisposition,
+      status: cleanup.status,
+      overlayDisposition: cleanup.overlayDisposition,
       observed: {
-        overlay: report.cleanup.observed.overlay,
-        runDirectory: report.cleanup.observed.runDirectory,
-        bootstrapMedia: report.cleanup.observed.bootstrapMedia,
+        overlay: cleanupObserved.overlay,
+        runDirectory: cleanupObserved.runDirectory,
+        bootstrapMedia: cleanupObserved.bootstrapMedia,
       },
     },
-    diagnostics: report.diagnostics.map((diagnostic) => ({
-      code: diagnostic.code,
+    diagnostics: diagnostics.map((diagnostic) => ({
+      code: (diagnostic as Record<string, unknown>).code,
     })),
     ...(isV2Request(request)
       ? {
           serialSession:
-            report.serialSession === null
+            serialSession === null
               ? null
               : {
-                  serialSessionId: report.serialSession.serialSessionId,
-                  sessionBindingToken: report.serialSession.sessionBindingToken,
+                  serialSessionId: serialSession.serialSessionId,
+                  sessionBindingToken: serialSession.sessionBindingToken,
                   startOperationReference:
-                    report.serialSession.startOperationReference,
-                  deviceMappingDigest: report.serialSession.deviceMappingDigest,
-                  state: report.serialSession.state,
-                  deviceMappings: report.serialSession.deviceMappings.map(
-                    (mapping) => ({
-                      role: mapping.role,
-                      guestDeviceIdentity: mapping.guestDeviceIdentity,
-                      guestUsbTopology: mapping.guestUsbTopology,
-                      simulatorProcessIdentity:
-                        mapping.simulatorProcessIdentity,
-                      simulatorSocketIdentity: mapping.simulatorSocketIdentity,
-                      connectionState: mapping.connectionState,
-                    }),
+                    serialSession.startOperationReference,
+                  deviceMappingDigest: serialSession.deviceMappingDigest,
+                  state: serialSession.state,
+                  deviceMappings: serialSessionDeviceMappings.map(
+                    (mapping: unknown) => {
+                      const mappingRecord = mapping as Record<string, unknown>;
+                      return {
+                        role: mappingRecord.role,
+                        guestDeviceIdentity: mappingRecord.guestDeviceIdentity,
+                        guestUsbTopology: mappingRecord.guestUsbTopology,
+                        simulatorProcessIdentity:
+                          mappingRecord.simulatorProcessIdentity,
+                        simulatorSocketIdentity:
+                          mappingRecord.simulatorSocketIdentity,
+                        connectionState: mappingRecord.connectionState,
+                      };
+                    },
                   ),
                   scannerAcknowledgement:
-                    report.serialSession.scannerAcknowledgement === null
+                    serialSessionScannerAcknowledgement == null
                       ? null
                       : {
                           scannerCodeDigest:
-                            report.serialSession.scannerAcknowledgement
+                            serialSessionScannerAcknowledgement
                               .scannerCodeDigest,
                           scannerCodeByteLength:
-                            report.serialSession.scannerAcknowledgement
+                            serialSessionScannerAcknowledgement
                               .scannerCodeByteLength,
                           scannerCodeSuffix:
-                            report.serialSession.scannerAcknowledgement
+                            serialSessionScannerAcknowledgement
                               .scannerCodeSuffix,
                           accepted:
-                            report.serialSession.scannerAcknowledgement
+                            serialSessionScannerAcknowledgement
                               .accepted,
                         },
                   simulatorCleanup:
-                    report.serialSession.simulatorCleanup === null
+                    serialSessionSimulatorCleanup == null
                       ? null
                       : {
                           cleanupAttemptCount:
-                            report.serialSession.simulatorCleanup
+                            serialSessionSimulatorCleanup
                               .cleanupAttemptCount,
                           idempotencyVerified:
-                            report.serialSession.simulatorCleanup
+                            serialSessionSimulatorCleanup
                               .idempotencyVerified,
                           survivingProcessCount:
-                            report.serialSession.simulatorCleanup
+                            serialSessionSimulatorCleanup
                               .survivingProcessCount,
                           survivingSocketCount:
-                            report.serialSession.simulatorCleanup
+                            serialSessionSimulatorCleanup
                               .survivingSocketCount,
                           ...(Object.hasOwn(
-                            report.serialSession.simulatorCleanup,
+                            serialSessionSimulatorCleanup,
                             "termination",
                           )
                             ? {
                                 termination:
-                                  report.serialSession.simulatorCleanup
+                                  serialSessionSimulatorCleanup
                                     .termination,
                               }
                             : {}),
                           ...(Object.hasOwn(
-                            report.serialSession.simulatorCleanup,
+                            serialSessionSimulatorCleanup,
                             "errors",
                           )
                             ? {
                                 errors:
-                                  report.serialSession.simulatorCleanup.errors,
+                                  serialSessionSimulatorCleanup.errors,
                               }
                             : {}),
                         },
                 },
           serialEvidence:
-            report.serialEvidence === null
+            serialEvidence === null
               ? null
               : {
-                  serialSessionId: report.serialEvidence.serialSessionId,
+                  serialSessionId: serialEvidence.serialSessionId,
                   sessionBindingToken:
-                    report.serialEvidence.sessionBindingToken,
+                    serialEvidence.sessionBindingToken,
                   deviceMappingDigest:
-                    report.serialEvidence.deviceMappingDigest,
-                  operationEvidence: report.serialEvidence.operationEvidence,
-                  captureChainDigest: report.serialEvidence.captureChainDigest,
-                  records: report.serialEvidence.records.map((record) => ({
-                    role: record.role,
-                    event: record.event,
-                    operationNonce: record.operationNonce,
-                    sessionBindingToken: record.sessionBindingToken,
-                    deviceMappingDigest: record.deviceMappingDigest,
-                    scannerCodeDigest: record.scannerCodeDigest,
-                    scannerCodeByteLength: record.scannerCodeByteLength,
-                    scannerCodeSuffix: record.scannerCodeSuffix,
-                    saleCorrelationId: record.saleCorrelationId,
-                    saleBinding: record.saleBinding,
-                    capturedFrame: record.capturedFrame,
-                    captureBindingDigest: record.captureBindingDigest,
-                  })),
+                    serialEvidence.deviceMappingDigest,
+                  operationEvidence: serialEvidence.operationEvidence,
+                  captureChainDigest: serialEvidence.captureChainDigest,
+                  records: serialEvidenceRecords.map((record: unknown) => {
+                    const recordValue = record as Record<string, unknown>;
+                    return {
+                      role: recordValue.role,
+                      event: recordValue.event,
+                      operationNonce: recordValue.operationNonce,
+                      sessionBindingToken: recordValue.sessionBindingToken,
+                      deviceMappingDigest: recordValue.deviceMappingDigest,
+                      scannerCodeDigest: recordValue.scannerCodeDigest,
+                      scannerCodeByteLength: recordValue.scannerCodeByteLength,
+                      scannerCodeSuffix: recordValue.scannerCodeSuffix,
+                      saleCorrelationId: recordValue.saleCorrelationId,
+                      saleBinding: recordValue.saleBinding,
+                      capturedFrame: recordValue.capturedFrame,
+                      captureBindingDigest: recordValue.captureBindingDigest,
+                    };
+                  }),
                 },
         }
       : {}),
@@ -3232,9 +3642,17 @@ export function createVmHostAdapterDiagnostic({
   completedAt,
   cleanup,
   scannerCode,
-}) {
+}: {
+  request: unknown;
+  result: unknown;
+  code: unknown;
+  startedAt: unknown;
+  completedAt: unknown;
+  cleanup: Record<string, unknown> | null | undefined;
+  scannerCode?: unknown;
+}): Record<string, unknown> {
   const request = validateVmHostAdapterRequest(requestInput);
-  const diagnostic = {
+  const diagnostic: Record<string, unknown> = {
     schemaVersion: DIAGNOSTIC_SCHEMA_VERSION,
     kind: "vm-host-adapter-diagnostic",
     request: requestEcho(request),
@@ -3243,39 +3661,47 @@ export function createVmHostAdapterDiagnostic({
     diagnostics: [{ code }],
     cleanup,
   };
-  const issues = [];
+  const issues: Array<{ path: string; message: string }> = [];
   assertExactKeys(
     diagnostic.cleanup,
     ["attempted", "status", "observed"],
     "diagnostic.cleanup",
     issues,
   );
-  if (!new Set(["failed", "timed_out", "cancelled"]).has(result))
+  if (!new Set(["failed", "timed_out", "cancelled"]).has(String(result)))
     issue(issues, "diagnostic.result", "must be a failed terminal result");
   assertTimestamp(startedAt, "diagnostic.timestamps.startedAt", issues);
   assertTimestamp(completedAt, "diagnostic.timestamps.completedAt", issues);
-  if (Date.parse(completedAt) < Date.parse(startedAt))
-    issue(issues, "diagnostic.timestamps", "must be ordered");
-  if (!SANITIZED_DIAGNOSTIC_CODES.has(code))
-    issue(issues, "diagnostic.diagnostics[0].code", "must be allowlisted");
   if (
-    typeof cleanup?.attempted !== "boolean" ||
-    !new Set(["completed", "failed", "not-required"]).has(cleanup?.status)
+    Date.parse(String(completedAt ?? "")) < Date.parse(String(startedAt ?? ""))
+  )
+    issue(issues, "diagnostic.timestamps", "must be ordered");
+  if (!SANITIZED_DIAGNOSTIC_CODES.has(String(code)))
+    issue(issues, "diagnostic.diagnostics[0].code", "must be allowlisted");
+  const cleanupRecord = cleanup as Record<string, unknown> | undefined;
+  if (
+    typeof cleanupRecord?.attempted !== "boolean" ||
+    !new Set(["completed", "failed", "not-required"]).has(
+      String(cleanupRecord?.status),
+    )
   )
     issue(issues, "diagnostic.cleanup", "must be a sanitized cleanup outcome");
   assertCleanupObservation(
-    cleanup?.observed,
+    cleanupRecord?.observed,
     "diagnostic.cleanup.observed",
     issues,
   );
+  const observed = cleanupRecord?.observed as
+    | Record<string, unknown>
+    | undefined;
   const observedRemoval =
-    cleanup?.observed?.overlay === "removed" &&
-    cleanup?.observed?.runDirectory === "removed" &&
-    cleanup?.observed?.bootstrapMedia === "removed";
+    observed?.overlay === "removed" &&
+    observed?.runDirectory === "removed" &&
+    observed?.bootstrapMedia === "removed";
   if (
-    (cleanup?.status === "completed" &&
-      (!cleanup?.attempted || !observedRemoval)) ||
-    (cleanup?.status === "not-required" && cleanup?.attempted)
+    (cleanupRecord?.status === "completed" &&
+      (!cleanupRecord?.attempted || !observedRemoval)) ||
+    (cleanupRecord?.status === "not-required" && cleanupRecord?.attempted)
   )
     issue(
       issues,
@@ -3283,16 +3709,19 @@ export function createVmHostAdapterDiagnostic({
       "must truthfully bind its status to observed cleanup state",
     );
   if (issues.length > 0) throw new VmHostAdapterContractError(issues);
-  return redactScannerCode(diagnostic, scannerCode);
+  return redactScannerCode(diagnostic, scannerCode) as Record<string, unknown>;
 }
 
-export function redactScannerCode(value, scannerCode) {
+export function redactScannerCode(
+  value: unknown,
+  scannerCode: unknown,
+): unknown {
   if (typeof scannerCode !== "string" || scannerCode.length === 0)
     return structuredClone(value);
-  const redact = (entry) => {
+  const redact = (entry: unknown): unknown => {
     if (typeof entry === "string")
       return entry.replaceAll(scannerCode, "[redacted-scanner-code]");
-    if (Array.isArray(entry)) return entry.map(redact);
+    if (Array.isArray(entry)) return entry.map((item) => redact(item));
     if (!isRecord(entry)) return entry;
     return Object.fromEntries(
       Object.entries(entry).map(([key, item]) => [key, redact(item)]),
@@ -3301,7 +3730,7 @@ export function redactScannerCode(value, scannerCode) {
   return redact(value);
 }
 
-function adapterExecutable(environment) {
+function adapterExecutable(environment: NodeJS.ProcessEnv): string {
   const value = String(environment.VEM_VM_HOST_ADAPTER ?? "").trim();
   if (!value)
     throw new Error(
@@ -3310,7 +3739,7 @@ function adapterExecutable(environment) {
   return value;
 }
 
-function evidenceExportDirectory(value) {
+function evidenceExportDirectory(value: unknown): string {
   const directory = String(value ?? "").trim();
   if (!isAbsolute(directory))
     throw new Error(
@@ -3323,14 +3752,18 @@ function scopedEvidenceExportDirectory({
   request,
   environment,
   evidenceDirectory,
-}) {
+}: {
+  request: Record<string, unknown>;
+  environment: NodeJS.ProcessEnv;
+  evidenceDirectory?: string;
+}): string {
   const base = evidenceExportDirectory(
     evidenceDirectory ?? environment.VEM_VM_HOST_EVIDENCE_EXPORT_DIR,
   );
   const scope = join(
     resolve(base),
-    request.runId,
-    request.operationReference.slice("vm-operation://".length),
+    String(request.runId),
+    String(request.operationReference).slice("vm-operation://".length),
   );
   if (
     !scope.startsWith(
@@ -3344,9 +3777,12 @@ function scopedEvidenceExportDirectory({
   return scope;
 }
 
-function assertScannerCodeNotPersisted(directory, scannerCode) {
+function assertScannerCodeNotPersisted(
+  directory: string,
+  scannerCode: unknown,
+): void {
   if (typeof scannerCode !== "string" || scannerCode.length === 0) return;
-  const visit = (path) => {
+  const visit = (path: string): void => {
     for (const entry of readdirSync(path, { withFileTypes: true })) {
       const child = join(path, entry.name);
       if (entry.isDirectory()) visit(child);
@@ -3359,7 +3795,7 @@ function assertScannerCodeNotPersisted(directory, scannerCode) {
   try {
     if (lstatSync(directory).isDirectory()) visit(directory);
   } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
+    if ((error as { code?: unknown })?.code !== "ENOENT") throw error;
   }
 }
 
@@ -3368,21 +3804,26 @@ function inspectExportedDaemonCalibrationResponse({
   evidence,
   calibration,
   request,
-}) {
+}: {
+  directory: string;
+  evidence: Record<string, unknown>;
+  calibration: Record<string, unknown>;
+  request: Record<string, unknown>;
+}): Record<string, unknown> {
   if (!evidence || evidence.role !== "daemon-audio-calibration-response")
     throw new Error("daemon calibration response evidence is missing");
-  const path = join(directory, evidence.fileName);
+  const path = join(directory, String(evidence.fileName ?? ""));
   const bytes = readFileSync(path);
   const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
   if (
-    digest !== evidence.digest ||
+    digest !== String(evidence.digest ?? "") ||
     evidence.identity !== `runtime-evidence://${digest.replace(":", "/")}` ||
     calibration.responseArtifact !== evidence.identity ||
     calibration.responseDigest !== evidence.digest ||
     calibration.responseFileName !== evidence.fileName
   )
     throw new Error("daemon calibration response digest binding is invalid");
-  const response = JSON.parse(bytes.toString("utf8"));
+  const response = JSON.parse(bytes.toString("utf8")) as Record<string, unknown>;
   const responseKeys = [
     "challenge",
     "configGeneration",
@@ -3393,12 +3834,20 @@ function inspectExportedDaemonCalibrationResponse({
     "testEvidenceExpiresAt",
     "testEvidenceToken",
   ];
-  const evidenceExpiresAt = Date.parse(response.testEvidenceExpiresAt);
-  const calibrationCompletedAt = Date.parse(calibration.completedAt);
+  const evidenceExpiresAt = Date.parse(
+    String(response.testEvidenceExpiresAt ?? ""),
+  );
+  const calibrationCompletedAt = Date.parse(
+    String(calibration.completedAt ?? ""),
+  );
+  const audioCapture = request.audioCapture as Record<string, unknown>;
+  const requestedCalibration = audioCapture.daemonCalibration as
+    | Record<string, unknown>
+    | undefined;
   if (
     JSON.stringify(Object.keys(response).sort()) !==
       JSON.stringify(responseKeys) ||
-    response.challenge !== request.audioCapture.daemonCalibration.challenge ||
+    response.challenge !== requestedCalibration?.challenge ||
     typeof response.testEvidenceToken !== "string" ||
     !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
       response.testEvidenceToken,
@@ -3406,20 +3855,20 @@ function inspectExportedDaemonCalibrationResponse({
     !Number.isFinite(evidenceExpiresAt) ||
     !Number.isFinite(calibrationCompletedAt) ||
     evidenceExpiresAt <= calibrationCompletedAt ||
-    !SHA256_DIGEST.test(response.observationRevision ?? "") ||
+    !SHA256_DIGEST.test(String(response.observationRevision ?? "")) ||
     !Number.isInteger(response.observationGeneration) ||
-    response.observationGeneration < 0 ||
-    !SHA256_DIGEST.test(response.configRevision ?? "") ||
+    (response.observationGeneration as number) < 0 ||
+    !SHA256_DIGEST.test(String(response.configRevision ?? "")) ||
     !Number.isInteger(response.configGeneration) ||
-    response.configGeneration < 0 ||
-    !SHA256_DIGEST.test(response.proposedSettingsDigest ?? "")
+    (response.configGeneration as number) < 0 ||
+    !SHA256_DIGEST.test(String(response.proposedSettingsDigest ?? ""))
   )
     throw new Error("raw daemon calibration response is invalid");
   return response;
 }
 
-function processGroupExists(child) {
-  if (!Number.isInteger(child.pid)) return false;
+function processGroupExists(child: ChildProcess): boolean {
+  if (child.pid === undefined || !Number.isInteger(child.pid)) return false;
   try {
     process.kill(-child.pid, 0);
     return true;
@@ -3428,8 +3877,11 @@ function processGroupExists(child) {
   }
 }
 
-function signalProcessGroup(child, signal) {
-  if (!Number.isInteger(child.pid)) return;
+function signalProcessGroup(
+  child: ChildProcess,
+  signal: NodeJS.Signals,
+): void {
+  if (child.pid === undefined || !Number.isInteger(child.pid)) return;
   try {
     process.kill(-child.pid, signal);
   } catch {
@@ -3438,7 +3890,7 @@ function signalProcessGroup(child, signal) {
   }
 }
 
-function adapterEnvironment(environment) {
+function adapterEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return Object.fromEntries(
     Object.entries(environment).filter(
       ([name]) =>
@@ -3449,24 +3901,24 @@ function adapterEnvironment(environment) {
   );
 }
 
-function terminateWindowsProcessTree(child) {
+function terminateWindowsProcessTree(child: ChildProcess): Promise<void> {
   if (!Number.isInteger(child.pid)) return Promise.resolve();
-  return new Promise((resolve) => {
+  return new Promise<void>((resolve) => {
     const taskkill = spawn(
       "taskkill",
       ["/pid", String(child.pid), "/t", "/f"],
       { stdio: "ignore", windowsHide: true },
     );
-    taskkill.once("error", resolve);
-    taskkill.once("close", resolve);
+    taskkill.once("error", () => resolve());
+    taskkill.once("close", () => resolve());
   });
 }
 
-function wait(milliseconds) {
+function wait(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-async function terminate(child) {
+async function terminate(child: ChildProcess): Promise<void> {
   if (process.platform === "win32") {
     await terminateWindowsProcessTree(child);
     return;
@@ -3481,6 +3933,15 @@ async function terminate(child) {
   while (processGroupExists(child)) await wait(20);
 }
 
+type AdapterInvocationOutcome = {
+  result: string;
+  code: string;
+  startedAt: string;
+  completedAt: string;
+  report: Record<string, unknown> | null;
+  detail?: string;
+};
+
 async function invokeAdapter({
   request,
   workDirectory,
@@ -3491,29 +3952,43 @@ async function invokeAdapter({
   onStarted,
   scannerCode,
   allowTestAdapter,
-}) {
+}: {
+  request: Record<string, unknown>;
+  workDirectory: string;
+  environment: NodeJS.ProcessEnv;
+  timeoutMs: number;
+  signal?: AbortSignal;
+  onInterrupted?: (reason: string) => unknown;
+  onStarted?: (operation: Record<string, unknown>) => unknown;
+  scannerCode?: Buffer | string;
+  allowTestAdapter: boolean;
+}): Promise<AdapterInvocationOutcome> {
   const executable = adapterExecutable(environment);
+  const operationReference = String(request.operationReference);
   const requestPath = join(
     workDirectory,
-    `${request.operationReference.slice("vm-operation://".length)}.request.json`,
+    `${operationReference.slice("vm-operation://".length)}.request.json`,
   );
   const reportPath = join(
     workDirectory,
-    `${request.operationReference.slice("vm-operation://".length)}.report.json`,
+    `${operationReference.slice("vm-operation://".length)}.report.json`,
   );
   const scannerInputPath =
     scannerCode === undefined
       ? null
       : join(
           workDirectory,
-          `${request.operationReference.slice("vm-operation://".length)}.scanner-input`,
+          `${operationReference.slice("vm-operation://".length)}.scanner-input`,
         );
   const startedAt = new Date().toISOString();
   writeFileSync(requestPath, `${JSON.stringify(request)}\n`, { mode: 0o600 });
-  if (scannerInputPath)
+  if (scannerInputPath && scannerCode !== undefined)
     writeFileSync(scannerInputPath, scannerCode, { mode: 0o600, flag: "wx" });
   try {
-    const outcome = await new Promise((resolve) => {
+    const outcome = await new Promise<{
+      code: number | null;
+      reason: string | null;
+    }>((resolve) => {
       const command = executable.endsWith(".ts")
         ? process.execPath
         : executable;
@@ -3549,17 +4024,17 @@ async function invokeAdapter({
         },
       });
       onStarted?.(request);
-      let reason = null;
+      let reason: string | null = null;
       let settled = false;
-      let termination = null;
-      const finish = (outcome) => {
+      let termination: Promise<void> | null = null;
+      const finish = (value: { code: number | null; reason: string | null }) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         signal?.removeEventListener("abort", onAbort);
-        resolve(outcome);
+        resolve(value);
       };
-      const terminateFor = (nextReason) => {
+      const terminateFor = (nextReason: string): Promise<void> => {
         reason ??= nextReason;
         termination ??= Promise.resolve(onInterrupted?.(reason))
           .catch(() => undefined)
@@ -3582,7 +4057,7 @@ async function invokeAdapter({
         reason ??= "failed";
         finish({ code: null, reason });
       });
-      child.on("close", (code) => {
+      child.on("close", (code: number | null) => {
         if (termination) {
           void termination.then(() => finish({ code, reason }));
           return;
@@ -3607,15 +4082,16 @@ async function invokeAdapter({
         completedAt,
         report: null,
       };
-    let report;
+    let report: Record<string, unknown>;
     try {
       report = validateVmHostAdapterReport(
         JSON.parse(readFileSync(reportPath, "utf8")),
         request,
       );
+      const reportAdapter = report.adapter as Record<string, unknown>;
       if (
         !allowTestAdapter &&
-        report.adapter.identity === "vm-host-adapter://deterministic-fake@1.0.0"
+        reportAdapter.identity === "vm-host-adapter://deterministic-fake@1.0.0"
       )
         throw new Error(
           "deterministic fake adapter is restricted to contract unit tests",
@@ -3630,13 +4106,17 @@ async function invokeAdapter({
         report: null,
       };
     }
+    const firstDiagnostic = (
+      report.diagnostics as unknown[] | undefined
+    )?.[0] as Record<string, unknown> | undefined;
     return {
-      result: report.result,
-      code:
-        report.diagnostics[0]?.code ??
-        (report.result === "succeeded"
-          ? "adapter_completed"
-          : `adapter_${report.result}`),
+      result: String(report.result),
+      code: String(
+        firstDiagnostic?.code ??
+          (String(report.result) === "succeeded"
+            ? "adapter_completed"
+            : `adapter_${String(report.result)}`),
+      ),
       startedAt,
       completedAt,
       report,
@@ -3648,11 +4128,14 @@ async function invokeAdapter({
   }
 }
 
-function serialSessionForRecovery(request) {
-  if (request.serialSession === null) return null;
+function serialSessionForRecovery(
+  request: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const serialSession = request.serialSession as Record<string, unknown> | null;
+  if (serialSession === null) return null;
   if (request.operation !== "start-serial-session") {
     return {
-      ...request.serialSession,
+      ...serialSession,
       scannerInjection: null,
       idempotencyCheck: false,
     };
@@ -3660,7 +4143,7 @@ function serialSessionForRecovery(request) {
   const binding = deriveSerialSessionBinding({
     runId: request.runId,
     lifecycleReference: request.lifecycleReference,
-    targetIdentity: request.target.identity,
+    targetIdentity: (request.target as Record<string, unknown>).identity,
     startOperationReference: request.operationReference,
   });
   return {
@@ -3671,14 +4154,16 @@ function serialSessionForRecovery(request) {
     deviceMappingDigest: null,
     deviceRoles: [...SERIAL_DEVICE_ROLES],
     scannerInjection: null,
-    saleCorrelationIds: [...request.serialSession.saleCorrelationIds],
-    saleBindings: structuredClone(request.serialSession.saleBindings),
+    saleCorrelationIds: [
+      ...(serialSession.saleCorrelationIds as unknown[]),
+    ],
+    saleBindings: structuredClone(serialSession.saleBindings),
     operationEvidence: null,
     idempotencyCheck: false,
   };
 }
 
-function cleanupRequestFor(request) {
+function cleanupRequestFor(request: Record<string, unknown>): Record<string, unknown> {
   const nonce = `op-${randomBytes(16).toString("hex")}`;
   return createVmHostAdapterRequest({
     ...request,
@@ -3697,7 +4182,7 @@ function cleanupRequestFor(request) {
   });
 }
 
-function cancelRequestFor(request) {
+function cancelRequestFor(request: Record<string, unknown>): Record<string, unknown> {
   const nonce = `op-${randomBytes(16).toString("hex")}`;
   return createVmHostAdapterRequest({
     ...request,
@@ -3744,15 +4229,16 @@ export async function runVmHostAdapter({
   if (request.operation === "inject-scanner-code") {
     const scannerInput = normalizeScannerInput(scannerCode);
     const descriptor = createScannerCodeDescriptor(scannerInput);
+    const serialSession = request.serialSession as Record<string, unknown>;
+    const scannerInjection = serialSession.scannerInjection as
+      | Record<string, unknown>
+      | undefined;
     if (
       JSON.stringify(descriptor) !==
       JSON.stringify({
-        scannerCodeDigest:
-          request.serialSession.scannerInjection.scannerCodeDigest,
-        scannerCodeByteLength:
-          request.serialSession.scannerInjection.scannerCodeByteLength,
-        scannerCodeSuffix:
-          request.serialSession.scannerInjection.scannerCodeSuffix,
+        scannerCodeDigest: scannerInjection?.scannerCodeDigest,
+        scannerCodeByteLength: scannerInjection?.scannerCodeByteLength,
+        scannerCodeSuffix: scannerInjection?.scannerCodeSuffix,
       })
     )
       throw new Error(
@@ -3775,15 +4261,11 @@ export async function runVmHostAdapter({
     request.operation === "capture-default-audio"
       ? scopedEvidenceExportDirectory({
           request,
-          workDirectory,
           environment,
           evidenceDirectory,
         })
       : null;
-  if (
-    request.operation === "capture-display" ||
-    request.operation === "capture-default-audio"
-  )
+  if (scopedEvidenceDirectory)
     mkdirSync(scopedEvidenceDirectory, { recursive: true, mode: 0o700 });
   mkdirSync(adapterWorkDirectory, { recursive: true, mode: 0o700 });
   const adapterEnvironment = {
@@ -3793,8 +4275,8 @@ export async function runVmHostAdapter({
       ? { VEM_VM_HOST_EVIDENCE_EXPORT_DIR: scopedEvidenceDirectory }
       : {}),
   };
-  let cancellation;
-  const cancelInFlightOperation = async () => {
+  let cancellation: AdapterInvocationOutcome | undefined;
+  const cancelInFlightOperation = async (): Promise<AdapterInvocationOutcome> => {
     if (cancellation) return cancellation;
     cancellation = await invokeAdapter({
       request: cancelRequestFor(request),
@@ -3807,7 +4289,7 @@ export async function runVmHostAdapter({
     });
     return cancellation;
   };
-  let outcome = await invokeAdapter({
+  let outcome: AdapterInvocationOutcome = await invokeAdapter({
     request,
     workDirectory: adapterWorkDirectory,
     environment: adapterEnvironment,
@@ -3830,31 +4312,62 @@ export async function runVmHostAdapter({
   }
   if (
     outcome.result === "succeeded" &&
-    ["capture-display", "capture-default-audio"].includes(request.operation)
+    ["capture-display", "capture-default-audio"].includes(
+      String(request.operation),
+    )
   ) {
     try {
-      const evidence = outcome.report.evidence[0];
-      if (request.operation === "capture-display")
-        inspectExportedDisplayCapture({
-          directory: scopedEvidenceDirectory,
-          evidence,
-          capture: outcome.report.displayCapture.capture,
-          challenge: outcome.report.displayCapture.visualChallenge,
-        });
-      else
-        inspectExportedDefaultAudioCapture({
-          directory: scopedEvidenceDirectory,
-          evidence,
-          capture: outcome.report.defaultAudioCapture.capture,
-        });
-      if (request.operation === "capture-default-audio") {
-        const calibrationEvidence = outcome.report.evidence.find(
-          (entry) => entry.role === "daemon-audio-calibration-response",
+      const report = outcome.report;
+      if (report === null)
+        throw new Error(
+          "VM Host Adapter succeeded without a report",
         );
+      const evidenceDirectory = scopedEvidenceDirectory;
+      if (evidenceDirectory === null)
+        throw new Error(
+          "capture operations require a runner-owned evidence export directory",
+        );
+      const reportRecord = report as Record<string, unknown>;
+      const reportEvidence = reportRecord.evidence as unknown[];
+      const displayCapture = reportRecord.displayCapture as
+        | Record<string, unknown>
+        | undefined;
+      const defaultAudioCapture = reportRecord.defaultAudioCapture as
+        | Record<string, unknown>
+        | undefined;
+      const evidence = reportEvidence[0] as Record<string, unknown>;
+      if (request.operation === "capture-display") {
+        if (displayCapture === undefined)
+          throw new Error(
+            "display capture result is missing its capture section",
+          );
+        inspectExportedDisplayCapture({
+          directory: evidenceDirectory,
+          evidence,
+          capture: displayCapture.capture as Record<string, unknown>,
+          challenge: displayCapture.visualChallenge as Record<string, unknown>,
+        });
+      } else {
+        if (defaultAudioCapture === undefined)
+          throw new Error(
+            "default audio capture result is missing its capture section",
+          );
+        inspectExportedDefaultAudioCapture({
+          directory: evidenceDirectory,
+          evidence,
+          capture: defaultAudioCapture.capture as Record<string, unknown>,
+        });
+      }
+      if (request.operation === "capture-default-audio") {
+        const calibrationEvidence = reportEvidence.find(
+          (entry) =>
+            (entry as Record<string, unknown>).role ===
+            "daemon-audio-calibration-response",
+        ) as Record<string, unknown>;
         inspectExportedDaemonCalibrationResponse({
-          directory: scopedEvidenceDirectory,
+          directory: evidenceDirectory,
           evidence: calibrationEvidence,
-          calibration: outcome.report.defaultAudioCapture.daemonCalibration,
+          calibration: defaultAudioCapture?.daemonCalibration as Record<string, unknown>,
           request,
         });
       }
@@ -3867,8 +4380,12 @@ export async function runVmHostAdapter({
       };
     }
   }
-  if (outcome.result === "succeeded") return outcome.report;
-  let cleanup = {
+  if (outcome.result === "succeeded") {
+    if (outcome.report === null)
+      throw new Error("VM Host Adapter succeeded without a report");
+    return outcome.report;
+  }
+  let cleanup: Record<string, unknown> = {
     attempted: false,
     status: "not-required",
     observed: {
@@ -3879,7 +4396,10 @@ export async function runVmHostAdapter({
   };
   const requiresCancellation =
     outcome.result === "timed_out" || outcome.result === "cancelled";
-  let cancellationOutcome = null;
+  let cancellationOutcome: {
+    result: string;
+    report: Record<string, unknown> | null;
+  } | null = null;
   if (requiresCancellation) {
     try {
       cancellationOutcome = await cancelInFlightOperation();
@@ -3887,7 +4407,10 @@ export async function runVmHostAdapter({
       cancellationOutcome = { result: "failed", report: null };
     }
   }
-  let recovery;
+  let recovery: {
+    result: string;
+    report: Record<string, unknown> | null;
+  };
   try {
     recovery = await invokeAdapter({
       request: cleanupRequestFor(request),
@@ -3901,10 +4424,14 @@ export async function runVmHostAdapter({
   } catch {
     recovery = { result: "failed", report: null };
   }
+  const recoveryReport = recovery.report as Record<string, unknown> | null;
+  const recoveryCleanup = recoveryReport?.cleanup as
+    | Record<string, unknown>
+    | undefined;
   const recovered =
     recovery.result === "succeeded" &&
-    recovery.report?.cleanup.status === "completed" &&
-    recovery.report.cleanup.overlayDisposition === "removed";
+    recoveryCleanup?.status === "completed" &&
+    recoveryCleanup?.overlayDisposition === "removed";
   cleanup = {
     attempted: true,
     status:
@@ -3912,11 +4439,12 @@ export async function runVmHostAdapter({
       recovered
         ? "completed"
         : "failed",
-    observed: recovery.report?.cleanup.observed ?? {
-      overlay: "unknown",
-      runDirectory: "unknown",
-      bootstrapMedia: "unknown",
-    },
+    observed: (recoveryCleanup?.observed as Record<string, unknown> | undefined) ??
+      {
+        overlay: "unknown",
+        runDirectory: "unknown",
+        bootstrapMedia: "unknown",
+      },
   };
   const diagnostic = createVmHostAdapterDiagnostic({
     request,

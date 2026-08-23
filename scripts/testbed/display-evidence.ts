@@ -162,6 +162,11 @@ export function inspectExportedDisplayCapture({
   evidence,
   capture,
   challenge = null,
+}: {
+  directory: string;
+  evidence: Record<string, unknown>;
+  capture: Record<string, unknown>;
+  challenge?: Record<string, unknown> | null;
 }) {
   if (!/^[a-f0-9]{64}\.png$/.test(evidence?.fileName ?? ""))
     throw new Error(
