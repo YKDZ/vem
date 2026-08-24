@@ -287,18 +287,16 @@ export function selectBusinessChecks({
   registry?: readonly BusinessCheckDescriptor[];
 }): BusinessCheckDescriptor[] {
   if (!Array.isArray(focus)) throw new Error("focus must be an array");
-  if (mode === "full") {
-    if (focus.length > 0)
-      throw new Error("--focus is only valid with --mode fast");
-    return registry.filter((descriptor) => descriptor.fullRequired);
-  }
-  if (mode !== "fast")
+  if (mode !== "fast" && mode !== "full")
     throw new Error("business check mode must be fast or full");
   const selected = new Set(focus);
   for (const name of selected) {
     if (!businessCheckByName(name, registry)) {
       throw new Error(`unknown business check set: ${name}`);
     }
+  }
+  if (mode === "full" && selected.size === 0) {
+    return registry.filter((descriptor) => descriptor.fullRequired);
   }
   return registry.filter((descriptor) =>
     selected.size > 0 ? selected.has(descriptor.name) : descriptor.core,

@@ -121,7 +121,7 @@ describe("runtime business-check registry", () => {
     );
   });
 
-  it("deduplicates focused fast selection in registry order and rejects it for full", () => {
+  it("deduplicates focused selection in registry order for fast and full", () => {
     assert.deepEqual(
       selectBusinessChecks({
         mode: "fast",
@@ -133,9 +133,11 @@ describe("runtime business-check registry", () => {
       () => selectBusinessChecks({ mode: "fast", focus: ["oldScanner"] }),
       /unknown business check set: oldScanner/,
     );
-    assert.throws(
-      () => selectBusinessChecks({ mode: "full", focus: ["sale"] }),
-      /--focus is only valid with --mode fast/,
+    assert.deepEqual(
+      selectBusinessChecks({ mode: "full", focus: ["startup"] }).map(
+        (descriptor) => descriptor.name,
+      ),
+      ["startup"],
     );
   });
 
@@ -156,6 +158,12 @@ describe("runtime business-check registry", () => {
     });
     assert.deepEqual(
       selectBusinessChecks({ mode: "fast", focus: ["startup"] }).map(
+        (descriptor) => descriptor.name,
+      ),
+      ["startup"],
+    );
+    assert.deepEqual(
+      selectBusinessChecks({ mode: "full", focus: ["startup"] }).map(
         (descriptor) => descriptor.name,
       ),
       ["startup"],

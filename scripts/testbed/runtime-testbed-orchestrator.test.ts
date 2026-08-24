@@ -13,9 +13,11 @@ import {
   materializeVisionCoreArtifactSnapshot,
   parseOrchestratorOptions,
   powerShellFocusArgument,
+  reconstructedAcceptancePasses,
   stageGuestInputs,
   summarizeGuestBusinessFailures,
   validateHostConfig,
+  waitForGuestReboot,
 } from "./runtime-testbed-orchestrator.ts";
 import { parseTriggerOptions } from "./runtime-testbed-trigger.ts";
 
@@ -142,20 +144,35 @@ describe("runtime testbed scheduler contract", () => {
       ]).focus,
       ["sale", "sale"],
     );
-    assert.throws(
-      () =>
-        parseOrchestratorOptions([
-          "run",
-          "--mode",
-          "full",
-          "--focus",
-          "sale",
-          "--commit",
-          sha,
-          "--config",
-          "/etc/vem/testbed.json",
-        ]),
-      /--focus is only valid with --mode fast/,
+    assert.deepEqual(
+      parseOrchestratorOptions([
+        "run",
+        "--mode",
+        "full",
+        "--focus",
+        "startup",
+        "--commit",
+        sha,
+        "--config",
+        "/etc/vem/testbed.json",
+      ]).focus,
+      ["startup"],
+    );
+    assert.deepEqual(
+      parseTriggerOptions([
+        "run",
+        "--mode",
+        "full",
+        "--focus",
+        "startup",
+        "--commit",
+        sha,
+        "--config",
+        "/etc/vem/testbed.json",
+        "--out",
+        "/tmp/result.json",
+      ]).focus,
+      ["startup"],
     );
     assert.throws(
       () =>
@@ -170,7 +187,7 @@ describe("runtime testbed scheduler contract", () => {
           "--config",
           "/etc/vem/testbed.json",
         ]),
-      /--focus is only valid with --mode fast/,
+      /--focus is only valid with --mode fast or full/,
     );
     assert.throws(
       () =>
@@ -187,7 +204,7 @@ describe("runtime testbed scheduler contract", () => {
           "--out",
           "/tmp/result.json",
         ]),
-      /--focus is only valid with --mode fast/,
+      /--focus is only valid with --mode fast or full/,
     );
   });
 
@@ -209,7 +226,7 @@ describe("runtime testbed scheduler contract", () => {
     };
     assert.equal(
       guestAcceptanceExecuteCommand(base),
-      `& 'C:\\source\\run-local-testbed-guest.ps1' -Mode 'fast' -Commit '${sha}' -Pass 1`,
+      `& 'C:\\source\\run-local-testbed-guest.ps1' -Mode 'fast' -Commit '${sha}' -Pass 1 -StartupPhase 'single'`,
     );
     const withReplay = guestAcceptanceExecuteCommand({
       ...base,
@@ -226,7 +243,7 @@ describe("runtime testbed scheduler contract", () => {
       withReplay,
       /\$env:VEM_PROCESS_REPLAY_DIR = 'C:\\ProgramData\\VEM\\testbed\\process-replay-pass-1'; /,
     );
-    assert.match(withReplay, /-Pass 1$/);
+    assert.match(withReplay, /-Pass 1 -StartupPhase 'single'$/);
     const withScenarios = guestAcceptanceExecuteCommand({
       ...base,
       guestEnvironment: [
@@ -236,6 +253,70 @@ describe("runtime testbed scheduler contract", () => {
     });
     assert.match(withScenarios, /^\$env:RUN_MANUAL = '1'; /);
     assert.match(withScenarios, /\$env:RUN_DEPARTURE = '1'; /);
+    assert.match(
+      guestAcceptanceExecuteCommand({
+        ...base,
+        mode: "full",
+        startupPhase: "prepare_reboot",
+      }),
+      /-StartupPhase 'prepare_reboot'$/,
+    );
+  });
+
+  it("waits for a reboot disconnect before accepting the reconnected guest", async () => {
+    const observations = [true, true, false, false, true];
+    let now = 0;
+    await waitForGuestReboot({
+      probe: async () => observations.shift() ?? true,
+      now: () => now,
+      sleep: async (milliseconds) => {
+        now += milliseconds;
+      },
+      pollMs: 10,
+      disconnectTimeoutMs: 50,
+      readyTimeoutMs: 50,
+    });
+    assert.deepEqual(observations, []);
+  });
+
+  it("rejects a reboot that never disconnects the old Windows boot", async () => {
+    let now = 0;
+    await assert.rejects(
+      waitForGuestReboot({
+        probe: async () => true,
+        now: () => now,
+        sleep: async (milliseconds) => {
+          now += milliseconds;
+        },
+        pollMs: 10,
+        disconnectTimeoutMs: 30,
+        readyTimeoutMs: 30,
+      }),
+      /did not disconnect/,
+    );
+  });
+
+  it("runs full acceptance as prepare, real reboot, then resume", () => {
+    const source = readFileSync(
+      new URL("./runtime-testbed-orchestrator.ts", import.meta.url),
+      "utf8",
+    );
+    const prepare = source.indexOf('await runGuestPhase("prepare_reboot")');
+    const reboot = source.indexOf(
+      "await rebootGuestAfterOwnerInstall",
+      prepare,
+    );
+    const resume = source.indexOf(
+      'await runGuestPhase("resume_reboot")',
+      reboot,
+    );
+    assert.ok(prepare >= 0 && prepare < reboot && reboot < resume);
+  });
+
+  it("uses one reconstructed pass for focused full and two for release full", () => {
+    assert.equal(reconstructedAcceptancePasses("full", ["startup"]), 1);
+    assert.equal(reconstructedAcceptancePasses("full", []), 2);
+    assert.equal(reconstructedAcceptancePasses("fast", ["startup"]), 1);
   });
 
   it("tells the guest which reconstructed pass owns the runtime build", () => {

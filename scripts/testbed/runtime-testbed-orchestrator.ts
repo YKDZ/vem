@@ -125,8 +125,14 @@ const GUEST_TRANSFER_MAX_TIMEOUT_MS = 30 * 60_000;
 const GUEST_FAST_EXECUTION_TIMEOUT_MS = 15 * 60_000;
 const GUEST_FAST_ADDITIONAL_FOCUS_TIMEOUT_MS = 5 * 60_000;
 const GUEST_FULL_EXECUTION_TIMEOUT_MS = 45 * 60_000;
+const GUEST_REBOOT_DISCONNECT_TIMEOUT_MS = 2 * 60_000;
+const GUEST_REBOOT_READY_TIMEOUT_MS = 5 * 60_000;
+const GUEST_REBOOT_POLL_MS = 2_000;
+const GUEST_REBOOT_PROBE_TIMEOUT_MS = 20_000;
 const WINDOWS_REMOTE_COMMAND_MAX_CHARS = 8_000;
 const GUEST_ACCEPTANCE_INPUT_CACHE = "D:\\runtime-cache\\v1\\acceptance-inputs";
+
+type GuestStartupPhase = "single" | "prepare_reboot" | "resume_reboot";
 
 function required(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "") {
@@ -180,6 +186,13 @@ export function guestAcceptanceExecutionBudget({
     selectedSets,
     timeoutLabel: `guest acceptance execution; mode=${mode}; budgetMs=${timeoutMs}; selectedSets=${selectedSets.join(",")}`,
   };
+}
+
+export function reconstructedAcceptancePasses(
+  mode: string,
+  focus: string[] = [],
+): number {
+  return mode === "full" && focus.length === 0 ? 2 : 1;
 }
 
 function artifactFile(
@@ -278,8 +291,8 @@ export function parseOrchestratorOptions(args: string[]): OrchestratorOptions {
     throw new Error("--commit must be a full 40-character Git SHA");
   }
   const focus = repeatableOption(args, "focus");
-  if (mode !== "fast" && focus.length > 0) {
-    throw new Error("--focus is only valid with --mode fast");
+  if (mode === "clear_cache" && focus.length > 0) {
+    throw new Error("--focus is only valid with --mode fast or full");
   }
   return {
     ...common,
@@ -708,6 +721,105 @@ function sshArguments(guest: JsonRecord): string[] {
 
 function scpArguments(guest: JsonRecord): string[] {
   return ["-O", ...sshArguments(guest)];
+}
+
+export async function waitForGuestReboot({
+  probe,
+  sleep = (milliseconds: number) =>
+    new Promise<void>((resolvePromise) =>
+      setTimeout(resolvePromise, milliseconds),
+    ),
+  now = Date.now,
+  pollMs = GUEST_REBOOT_POLL_MS,
+  disconnectTimeoutMs = GUEST_REBOOT_DISCONNECT_TIMEOUT_MS,
+  readyTimeoutMs = GUEST_REBOOT_READY_TIMEOUT_MS,
+}: {
+  probe: () => Promise<boolean>;
+  sleep?: (milliseconds: number) => Promise<void>;
+  now?: () => number;
+  pollMs?: number;
+  disconnectTimeoutMs?: number;
+  readyTimeoutMs?: number;
+}): Promise<void> {
+  if (
+    ![pollMs, disconnectTimeoutMs, readyTimeoutMs].every(
+      (value) => Number.isSafeInteger(value) && value > 0,
+    )
+  ) {
+    throw new Error("guest reboot wait durations must be positive integers");
+  }
+  const waitForState = async (
+    expectedReady: boolean,
+    timeoutMs: number,
+    failure: string,
+  ): Promise<void> => {
+    const deadline = now() + timeoutMs;
+    while (true) {
+      if ((await probe()) === expectedReady) return;
+      const remaining = deadline - now();
+      if (remaining <= 0) throw new Error(failure);
+      await sleep(Math.min(pollMs, remaining));
+    }
+  };
+  await waitForState(
+    false,
+    disconnectTimeoutMs,
+    "Windows guest did not disconnect for the requested reboot",
+  );
+  await waitForState(
+    true,
+    readyTimeoutMs,
+    "Windows guest SSH did not become ready after reboot",
+  );
+}
+
+async function rebootGuestAfterOwnerInstall({
+  remote,
+  ssh,
+}: {
+  remote: string;
+  ssh: string[];
+}): Promise<void> {
+  try {
+    await runProcess(
+      "ssh",
+      [...ssh, remote, "shutdown.exe", "/r", "/t", "0", "/f"],
+      {
+        timeoutMs: GUEST_SETUP_TIMEOUT_MS,
+        timeoutLabel: "guest reboot request after runtime owner installation",
+      },
+    );
+  } catch (error) {
+    const processError = error as ProcessError;
+    if (processError.command !== "ssh" || processError.exitCode !== 255) {
+      throw error;
+    }
+  }
+  const probe = async (): Promise<boolean> => {
+    try {
+      await runProcess(
+        "ssh",
+        [
+          ...ssh,
+          remote,
+          "powershell.exe",
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          "exit 0",
+        ],
+        {
+          stdio: "ignore",
+          timeoutMs: GUEST_REBOOT_PROBE_TIMEOUT_MS,
+          timeoutLabel: "guest reboot SSH probe",
+        },
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  await waitForGuestReboot({ probe });
 }
 
 function encodedPowerShell(script: string): string {
@@ -1206,6 +1318,7 @@ export function guestAcceptanceExecuteCommand({
   pass,
   focusArgument,
   guestEnvironment = [],
+  startupPhase = "single",
 }: {
   guestScript: string;
   mode: string;
@@ -1213,6 +1326,7 @@ export function guestAcceptanceExecuteCommand({
   pass: number;
   focusArgument: string;
   guestEnvironment?: Array<{ name: string; value: string }>;
+  startupPhase?: GuestStartupPhase;
 }): string {
   const environmentPrefix = guestEnvironment
     .map(
@@ -1220,7 +1334,7 @@ export function guestAcceptanceExecuteCommand({
         `$env:${entry.name} = '${entry.value.replaceAll("'", "''")}'; `,
     )
     .join("");
-  return `${environmentPrefix}& '${guestScript.replaceAll("'", "''")}' -Mode '${mode}' -Commit '${commit}' -Pass ${pass}${focusArgument}`;
+  return `${environmentPrefix}& '${guestScript.replaceAll("'", "''")}' -Mode '${mode}' -Commit '${commit}' -Pass ${pass}${focusArgument} -StartupPhase '${startupPhase}'`;
 }
 
 const GUEST_SCENARIO_ENV_KEYS = [
@@ -1361,49 +1475,70 @@ async function stageAndRunGuest({
       (name) => ({ name, value: "1" }),
     ),
   ];
-  const execute = guestAcceptanceExecuteCommand({
-    guestScript,
-    mode,
-    commit,
-    pass,
-    focusArgument,
-    guestEnvironment,
-  });
-  const invokePowerShell7 = [
-    `$pwsh = 'D:\\runtime-cache\\v1\\powershell\\7.4.6\\pwsh.exe'`,
-    `& $pwsh -NoProfile -EncodedCommand '${encodedPowerShell(execute)}'`,
-    "exit $LASTEXITCODE",
-  ].join("\n");
+  const runGuestPhase = async (
+    startupPhase: GuestStartupPhase,
+  ): Promise<void> => {
+    const execute = guestAcceptanceExecuteCommand({
+      guestScript,
+      mode,
+      commit,
+      pass,
+      focusArgument,
+      guestEnvironment,
+      startupPhase,
+    });
+    const invokePowerShell7 = [
+      `$pwsh = 'D:\\runtime-cache\\v1\\powershell\\7.4.6\\pwsh.exe'`,
+      `& $pwsh -NoProfile -EncodedCommand '${encodedPowerShell(execute)}'`,
+      "exit $LASTEXITCODE",
+    ].join("\n");
+    try {
+      await runProcess(
+        "ssh",
+        [
+          ...ssh,
+          remote,
+          "powershell.exe",
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-EncodedCommand",
+          encodedPowerShell(invokePowerShell7),
+        ],
+        {
+          timeoutMs: executionBudget.timeoutMs,
+          timeoutLabel: executionBudget.timeoutLabel,
+        },
+      );
+    } catch (error) {
+      const processError = error as ProcessError;
+      if (
+        !(
+          (processError.command === "ssh" || processError.command === "scp") &&
+          (processError.exitCode === 255 || processError.timedOut === true)
+        )
+      ) {
+        processError.businessFailure = true;
+      }
+      throw processError;
+    }
+  };
   let guestError: ProcessError | null = null;
   let transportError: ProcessError | null = null;
   try {
-    await runProcess(
-      "ssh",
-      [
-        ...ssh,
-        remote,
-        "powershell.exe",
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-EncodedCommand",
-        encodedPowerShell(invokePowerShell7),
-      ],
-      {
-        timeoutMs: executionBudget.timeoutMs,
-        timeoutLabel: executionBudget.timeoutLabel,
-      },
-    );
+    if (mode === "full") {
+      await runGuestPhase("prepare_reboot");
+      await rebootGuestAfterOwnerInstall({ remote, ssh });
+      await runGuestPhase("resume_reboot");
+    } else {
+      await runGuestPhase("single");
+    }
   } catch (error) {
     const processError = error as ProcessError;
-    if (
-      (processError.command === "ssh" || processError.command === "scp") &&
-      (processError.exitCode === 255 || processError.timedOut === true)
-    ) {
-      transportError = processError;
-    } else {
+    if (processError.businessFailure === true) {
       guestError = processError;
-      guestError.businessFailure = true;
+    } else {
+      transportError = processError;
     }
   }
   const evidence = join(runRoot, "compact", `pass-${pass}`);
@@ -1577,7 +1712,8 @@ async function executeRun(
       readFileSync(config.baselineContract, "utf8"),
     ) as GuestContract;
     const currentFixtureIdentity = fixtureIdentityForWorkspace(workspace);
-    const passes = mode === "full" ? 2 : 1;
+    const releaseFullAcceptance = mode === "full" && focus.length === 0;
+    const passes = reconstructedAcceptancePasses(mode, focus);
     let passOneVisionCoreSnapshot: VisionCorePreparation | null = null;
     let passOneGuestVisionCoreIdentity: string | null = null;
     for (let pass = 1; pass <= passes; pass += 1) {
@@ -1689,7 +1825,7 @@ async function executeRun(
         { reuse: true },
       );
       if (
-        mode === "full" &&
+        releaseFullAcceptance &&
         pass === 2 &&
         !identicalVisionCoreArtifactSnapshot(
           passOneVisionCoreSnapshot,
@@ -1698,7 +1834,7 @@ async function executeRun(
       ) {
         throw new Error("full pass 2 Vision core input drifted from pass 1");
       }
-      if (mode === "full" && pass === 1) {
+      if (releaseFullAcceptance && pass === 1) {
         passOneVisionCoreSnapshot = visionCoreInputs;
         await writeJson(
           join(root, "vision-core-input-pass-1.json"),
@@ -1742,10 +1878,10 @@ async function executeRun(
       ) {
         throw new Error("guest validated Vision core identity is invalid");
       }
-      if (mode === "full" && pass === 1) {
+      if (releaseFullAcceptance && pass === 1) {
         passOneGuestVisionCoreIdentity = guestCoreIdentity;
       } else if (
-        mode === "full" &&
+        releaseFullAcceptance &&
         guestCoreIdentity !== passOneGuestVisionCoreIdentity
       ) {
         throw new Error(
@@ -1753,7 +1889,7 @@ async function executeRun(
         );
       }
     }
-    if (mode === "full") {
+    if (releaseFullAcceptance) {
       await update({ phase: "stability-gate" });
       const passA = await findFile(
         join(compact, "pass-1"),

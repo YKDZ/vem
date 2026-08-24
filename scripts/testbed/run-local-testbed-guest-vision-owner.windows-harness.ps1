@@ -17,6 +17,8 @@ try {
   $script:runtimeRoot = "C:\ProgramData\VEM"
   $script:daemonDataRoot = "C:\ProgramData\VEM\vending-daemon"
   $script:deploymentRoot = "C:\VEM\bringup"
+  $script:Commit = "a" * 40
+  $script:Pass = 1
   New-Item -ItemType Directory -Force -Path "$repoRoot\scripts\windows", $runtimeRoot, $daemonDataRoot, $deploymentRoot | Out-Null
   @'
 @{} | ConvertTo-Json -Compress
@@ -33,22 +35,36 @@ try {
   ).Value
   $startFunction = [regex]::Match(
     $guestScript,
-    '(?s)function Start-TestbedInstalledRuntimeOwners \{.*?\r?\n\}\r?\n\r?\nfunction Stop-TestbedCanonicalVision'
+    '(?s)function Install-TestbedRuntimeOwnersForAcceptance \{.*?\r?\n\}\r?\n\r?\nfunction Stop-TestbedCanonicalVision'
+  ).Value
+  $preparationFunctions = [regex]::Match(
+    $guestScript,
+    '(?s)function Write-TestbedStartupPreparation\(.*?\r?\n\}\r?\n\r?\nfunction Clear-TestbedLegacyRuntimeOwnersForStartup'
   ).Value
   Assert-True (-not [string]::IsNullOrWhiteSpace($evidenceFunctions)) "could not extract installed owner evidence functions"
   Assert-True (-not [string]::IsNullOrWhiteSpace($startFunction)) "could not extract installed owner start function"
+  Assert-True (-not [string]::IsNullOrWhiteSpace($preparationFunctions)) "could not extract startup preparation functions"
   $evidenceFunctions = $evidenceFunctions.Replace('$PSScriptRoot', '$guestScriptRoot')
   Invoke-Expression ($evidenceFunctions -replace '\r?\nfunction Invoke-InstalledTauriRouteAdmission$', '')
   Invoke-Expression ($startFunction -replace '\r?\nfunction Stop-TestbedCanonicalVision$', '')
+  Invoke-Expression ($preparationFunctions -replace '\r?\nfunction Clear-TestbedLegacyRuntimeOwnersForStartup$', '')
 
   function Write-TestbedPhase([string]$Name) {}
+  function Require-Path([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "missing harness path: $Path" }
+  }
+  function New-TestbedCanonicalUtcTimestamp { return "2026-08-24T12:00:01.000Z" }
   function Install-TestbedStartupVisionArtifact([object]$GuestInput) {}
   function Clear-TestbedLegacyRuntimeOwnersForStartup {}
   function Get-TestbedKioskPassword([object]$GuestInput) { return "harness-password" }
   function Start-Service { param([string]$Name) }
   function Wait-RuntimeReady { return [pscustomobject]@{ ready = [pscustomobject]@{} } }
   function Initialize-TestbedHardwareBindings {}
-  function Start-ScheduledTask { param([string]$TaskName) }
+  $global:VisionOwnerHarnessTaskStarts = [Collections.Generic.List[string]]::new()
+  function Start-ScheduledTask {
+    param([string]$TaskName)
+    $global:VisionOwnerHarnessTaskStarts.Add($TaskName) | Out-Null
+  }
   function Invoke-InstalledTauriRouteAdmission { param([string]$Endpoint) }
   function Wait-InstalledTauriRoute([string]$ExpectedRoute) {
     return [pscustomobject]@{ url = "http://tauri.localhost/#/catalog" }
@@ -132,6 +148,44 @@ try {
   Assert-True ([int]$baseline.visionEvidence.processId -eq 5900) "baseline observer did not select the listener-owning Vision main"
   Assert-True ([int]$baseline.readiness.vision.processCount -eq 1) "startup readiness counted Vision fork workers as owners"
   Assert-True ([int]$baseline.readiness.vision.workerCount -eq 2) "startup readiness omitted Vision fork-worker evidence"
+  Assert-True ($global:VisionOwnerHarnessTaskStarts.Count -eq 2) "manual startup adapter did not start exact-two interactive owners"
+  $manualTaskStartCount = $global:VisionOwnerHarnessTaskStarts.Count
+  Get-TestbedInstalledRuntimeOwnerState `
+    -OwnerManifest ([pscustomobject]@{ schemaVersion = "vem-runtime-owners/v1" }) `
+    -OwnerClaim $null `
+    -RuntimeReady ([pscustomobject]@{ ready = [pscustomobject]@{} }) `
+    -MachinePath ([IO.Path]::GetFullPath("C:\VEM\bringup\machine.exe")) | Out-Null
+  Assert-True ($global:VisionOwnerHarnessTaskStarts.Count -eq $manualTaskStartCount) "post-reboot observation started an interactive owner"
+  $rebootObservationTaskStartCount = $global:VisionOwnerHarnessTaskStarts.Count - $manualTaskStartCount
+
+  $ownerManifestPath = Join-Path $runtimeRoot "runtime-owners\owner-manifest.json"
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ownerManifestPath) | Out-Null
+  $ownerManifest = [pscustomobject]@{
+    schemaVersion = "vem-runtime-owners/v1"
+    installedAt = "2026-08-24T12:00:00.0000000Z"
+  }
+  $ownerManifest | ConvertTo-Json | Set-Content -LiteralPath $ownerManifestPath -Encoding utf8
+  $preparationPath = Join-Path $root "startup-preparation.json"
+  $preparationGuestInput = [pscustomobject]@{ runId = "RUN-STARTUP"; machineCode = "VEM-VM-01" }
+  Write-TestbedStartupPreparation `
+    -Path $preparationPath `
+    -GuestInput $preparationGuestInput `
+    -OwnerManifest $ownerManifest `
+    -Claim ([pscustomobject]@{ status = "provisioned"; machineCode = "VEM-VM-01" }) `
+    -CommissioningSerialSession ([pscustomobject]@{ sessionId = "serial-1" }) `
+    -RemovedUndeclaredCaches @("D:\runtime-cache\v1\stale") | Out-Null
+  $preparationRoundTrip = Read-TestbedStartupPreparation $preparationPath $preparationGuestInput
+  Assert-True ($preparationRoundTrip.ownerManifest.schemaVersion -eq "vem-runtime-owners/v1") "startup preparation did not preserve owner identity"
+  Assert-True ([string]$preparationRoundTrip.state.machineCode -eq "VEM-VM-01") "startup preparation did not preserve machine identity"
+  $ownerManifest.installedAt = "2026-08-24T12:00:02.0000000Z"
+  $ownerManifest | ConvertTo-Json | Set-Content -LiteralPath $ownerManifestPath -Encoding utf8
+  $ownerManifestTamperRejected = $false
+  try {
+    Read-TestbedStartupPreparation $preparationPath $preparationGuestInput | Out-Null
+  } catch {
+    $ownerManifestTamperRejected = $_.Exception.Message -match "changed across the acceptance reboot"
+  }
+  Assert-True $ownerManifestTamperRejected "startup preparation accepted a replaced owner manifest"
 
   foreach ($case in @(
     @{ name = "second listener"; processes = @($machine, $main, $workerOne); listeners = @($listener, [pscustomobject]@{ LocalAddress = "127.0.0.1"; LocalPort = 7892; OwningProcess = 7920 }) },
@@ -150,7 +204,7 @@ try {
     Assert-True (-not [string]::IsNullOrWhiteSpace($failure)) "baseline observer accepted $($case.name)"
   }
 
-  [ordered]@{ schemaVersion = "vem-baseline-vision-owner-harness/v1"; mainProcessId = 5900; processCount = [int]$baseline.readiness.vision.processCount; workerCount = [int]$baseline.readiness.vision.workerCount } | ConvertTo-Json -Compress
+  [ordered]@{ schemaVersion = "vem-baseline-vision-owner-harness/v1"; mainProcessId = 5900; processCount = [int]$baseline.readiness.vision.processCount; workerCount = [int]$baseline.readiness.vision.workerCount; manualTaskStartCount = $manualTaskStartCount; rebootObservationTaskStartCount = $rebootObservationTaskStartCount; preparationRoundTrip = $true; ownerManifestTamperRejected = $ownerManifestTamperRejected } | ConvertTo-Json -Compress
 } finally {
   if ($createdCDrive) { Remove-PSDrive -Name C -Force -ErrorAction SilentlyContinue }
   Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue

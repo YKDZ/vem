@@ -2242,12 +2242,12 @@ describe("Windows D cache contract", () => {
       /Stop-TestbedScannerBindingProbe \$guestInput \$commissioningSerialSession/,
     );
     const ownerFunction = guest.match(
-      /function Start-TestbedInstalledRuntimeOwners \{[\s\S]*?\n\}/,
+      /function Install-TestbedRuntimeOwnersForAcceptance \{[\s\S]*?\n\}/,
     )?.[0];
     assert.ok(ownerFunction);
     assert.match(
       ownerFunction,
-      /if \(\$ClaimBeforeInteractiveOwners\) \{[\s\S]*\$ownerClaim = Invoke-Claim \$GuestInput[\s\S]*restart-claimed-installed-runtime-owner[\s\S]*Restart-TestbedDaemonServiceOwner \$DaemonPath[\s\S]*\$runtimeReady = Wait-RuntimeReady[\s\S]*\}[\s\S]*Write-TestbedPhase "bind-installed-owner-hardware"[\s\S]*Initialize-TestbedHardwareBindings[\s\S]*\$runtimeReady = Wait-RuntimeReady/,
+      /if \(\$ClaimRuntimeOwner\) \{[\s\S]*\$ownerClaim = Invoke-Claim \$GuestInput[\s\S]*restart-claimed-installed-runtime-owner[\s\S]*Restart-TestbedDaemonServiceOwner \$DaemonPath[\s\S]*\$runtimeReady = Wait-RuntimeReady[\s\S]*\}[\s\S]*Write-TestbedPhase "bind-installed-owner-hardware"[\s\S]*Initialize-TestbedHardwareBindings[\s\S]*\$runtimeReady = Wait-RuntimeReady/,
     );
     assert.match(
       ownerFunction,
@@ -2379,6 +2379,10 @@ describe("Windows D cache contract", () => {
       mainProcessId: 5900,
       processCount: 1,
       workerCount: 2,
+      manualTaskStartCount: 2,
+      rebootObservationTaskStartCount: 0,
+      preparationRoundTrip: true,
+      ownerManifestTamperRejected: true,
     });
   });
 
@@ -2448,7 +2452,11 @@ describe("Windows D cache contract", () => {
     );
     assert.match(
       guest,
-      /-ClaimBeforeInteractiveOwners:\(\$Mode -eq "full" -or -not \$isWarmFastRun\)/,
+      /-ClaimBeforeInteractiveOwners:\(-not \$isWarmFastRun\)/,
+    );
+    assert.match(
+      guest,
+      /\$StartupPhase -eq "prepare_reboot"[\s\S]*Install-TestbedRuntimeOwnersForAcceptance[\s\S]*-ClaimRuntimeOwner/,
     );
     assert.match(
       guest,

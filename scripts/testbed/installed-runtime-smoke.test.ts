@@ -269,6 +269,19 @@ describe("installed production runtime smoke", () => {
     );
     assert.match(guest, /lastTaskResult = \$machineTaskResult/);
     assert.match(guest, /Get-TestbedStartupModeEvidence \$sessionId \$Probe/);
+    assert.match(
+      guest,
+      /ValidateSet\("single", "prepare_reboot", "resume_reboot"\)/,
+    );
+    assert.match(guest, /vem-local-testbed-startup-preparation\/v1/);
+    assert.match(
+      guest,
+      /\$StartupPhase -eq "prepare_reboot"[\s\S]*Write-TestbedStartupPreparation[\s\S]*exit 0/,
+    );
+    assert.match(
+      guest,
+      /\$StartupPhase -eq "resume_reboot"[\s\S]*Read-TestbedStartupPreparation[\s\S]*Get-TestbedInstalledRuntimeOwnerState/,
+    );
     assert.match(guest, /Unregister-ScheduledTask -TaskName \$taskSpec\.Name/);
     assert.doesNotMatch(guest, /\$daemonProcess = Start-Process/);
     assert.doesNotMatch(

@@ -78,8 +78,8 @@ export function parseTriggerOptions(args: string[]): JsonRecord {
     throw new Error("--config and --out must be absolute paths");
   }
   const focus = repeatableOption(args, "focus");
-  if (mode !== "fast" && focus.length > 0) {
-    throw new Error("--focus is only valid with --mode fast");
+  if (mode === "clear_cache" && focus.length > 0) {
+    throw new Error("--focus is only valid with --mode fast or full");
   }
   return { mode, focus, commit, config: resolve(config), out: resolve(out) };
 }

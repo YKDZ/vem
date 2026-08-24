@@ -3,10 +3,17 @@ param(
   [string]$Commit,
   [ValidateRange(1, 2)][int]$Pass = 1,
   [string[]]$Focus = @(),
-  [string]$GuestInputPath = "C:\ProgramData\VEM\testbed\guest-input.json"
+  [string]$GuestInputPath = "C:\ProgramData\VEM\testbed\guest-input.json",
+  [ValidateSet("single", "prepare_reboot", "resume_reboot")][string]$StartupPhase = "single"
 )
 
 $ErrorActionPreference = "Stop"
+if ($Mode -eq "full" -and $StartupPhase -eq "single") {
+  throw "full acceptance must run prepare_reboot and resume_reboot around a real Windows reboot"
+}
+if ($Mode -ne "full" -and $StartupPhase -ne "single") {
+  throw "$Mode acceptance does not support startup phase $StartupPhase"
+}
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 Set-Location -LiteralPath $repoRoot
 $cacheRoot = "D:\runtime-cache\v1"
@@ -652,6 +659,78 @@ function Get-TestbedKioskPassword([object]$GuestInput) {
   return [string]$winlogon.DefaultPassword
 }
 
+function Write-TestbedStartupPreparation(
+  [string]$Path,
+  [object]$GuestInput,
+  [object]$OwnerManifest,
+  [object]$Claim,
+  [object]$CommissioningSerialSession,
+  [string[]]$RemovedUndeclaredCaches
+) {
+  if ($OwnerManifest.schemaVersion -ne "vem-runtime-owners/v1") {
+    throw "runtime owner manifest is invalid before reboot"
+  }
+  $state = [ordered]@{
+    schemaVersion = "vem-local-testbed-startup-preparation/v1"
+    mode = "full"
+    commit = $Commit
+    pass = $Pass
+    runId = [string]$GuestInput.runId
+    machineCode = [string]$GuestInput.machineCode
+    ownerManifestPath = Join-Path $runtimeRoot "runtime-owners\owner-manifest.json"
+    ownerManifestInstalledAt = $OwnerManifest.installedAt
+    claim = $Claim
+    commissioningSerialSession = $CommissioningSerialSession
+    removedUndeclaredCaches = @($RemovedUndeclaredCaches)
+    preparedAt = New-TestbedCanonicalUtcTimestamp
+  }
+  $temporaryPath = "$Path.$([Guid]::NewGuid().ToString('N')).tmp"
+  try {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) | Out-Null
+    [IO.File]::WriteAllText(
+      $temporaryPath,
+      (($state | ConvertTo-Json -Depth 12) + "`n"),
+      [Text.UTF8Encoding]::new($false)
+    )
+    Move-Item -LiteralPath $temporaryPath -Destination $Path -Force -ErrorAction Stop
+  } finally {
+    Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+  }
+  return $state
+}
+
+function Read-TestbedStartupPreparation(
+  [string]$Path,
+  [object]$GuestInput
+) {
+  Require-Path $Path
+  $state = Get-Content -Raw -LiteralPath $Path -Encoding UTF8 | ConvertFrom-Json
+  if ($state.schemaVersion -ne "vem-local-testbed-startup-preparation/v1" -or
+    $state.mode -ne "full" -or
+    [string]$state.commit -ne $Commit -or
+    [int]$state.pass -ne $Pass -or
+    [string]$state.runId -ne [string]$GuestInput.runId -or
+    [string]$state.machineCode -ne [string]$GuestInput.machineCode) {
+    throw "startup preparation does not match the requested full acceptance pass"
+  }
+  $ownerManifestPath = Join-Path $runtimeRoot "runtime-owners\owner-manifest.json"
+  if ([string]$state.ownerManifestPath -ine $ownerManifestPath) {
+    throw "startup preparation owner manifest path is invalid"
+  }
+  Require-Path $ownerManifestPath
+  $ownerManifest = Get-Content -Raw -LiteralPath $ownerManifestPath -Encoding UTF8 | ConvertFrom-Json
+  $preparedOwnerInstalledAt = [DateTimeOffset]$state.ownerManifestInstalledAt
+  $observedOwnerInstalledAt = [DateTimeOffset]$ownerManifest.installedAt
+  if ($ownerManifest.schemaVersion -ne "vem-runtime-owners/v1" -or
+    $observedOwnerInstalledAt.UtcDateTime -ne $preparedOwnerInstalledAt.UtcDateTime) {
+    throw "runtime owner manifest changed across the acceptance reboot"
+  }
+  return [ordered]@{
+    state = $state
+    ownerManifest = $ownerManifest
+  }
+}
+
 function Clear-TestbedLegacyRuntimeOwnersForStartup {
   foreach ($scope in @("Process", "User", "Machine")) {
     [Environment]::SetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", $null, $scope)
@@ -900,12 +979,11 @@ function Get-TestbedStartupModeEvidence([int]$SessionId, [object]$Probe) {
   }
 }
 
-function Start-TestbedInstalledRuntimeOwners {
+function Install-TestbedRuntimeOwnersForAcceptance {
   param(
     [object]$GuestInput,
     [string]$DaemonPath,
-    [string]$MachinePath,
-    [switch]$ClaimBeforeInteractiveOwners
+    [switch]$ClaimRuntimeOwner
   )
   Write-TestbedPhase "install-startup-vision"
   Install-TestbedStartupVisionArtifact $GuestInput | Out-Null
@@ -927,7 +1005,7 @@ function Start-TestbedInstalledRuntimeOwners {
   Start-Service -Name "VemVendingDaemon" -ErrorAction Stop
   $runtimeReady = Wait-RuntimeReady
   $ownerClaim = $null
-  if ($ClaimBeforeInteractiveOwners) {
+  if ($ClaimRuntimeOwner) {
     Write-TestbedPhase "claim-installed-runtime-owner"
     $ownerClaim = Invoke-Claim $GuestInput
     if (-not [bool]$ownerClaim.restartRequested) { throw "clean Runtime Bootstrap claim did not request the required daemon owner restart" }
@@ -938,9 +1016,22 @@ function Start-TestbedInstalledRuntimeOwners {
   Write-TestbedPhase "bind-installed-owner-hardware"
   Initialize-TestbedHardwareBindings
   $runtimeReady = Wait-RuntimeReady
-  Write-TestbedPhase "start-installed-interactive-owners"
-  Start-ScheduledTask -TaskName "VEMVisionRuntime" -ErrorAction Stop
-  Start-ScheduledTask -TaskName "VEMMachineUI" -ErrorAction Stop
+  return [ordered]@{
+    ownerManifest = $ownerManifest
+    claim = $ownerClaim
+    runtimeReady = $runtimeReady
+  }
+}
+
+function Get-TestbedInstalledRuntimeOwnerState {
+  param(
+    [object]$OwnerManifest,
+    [object]$OwnerClaim,
+    [object]$RuntimeReady,
+    [string]$MachinePath
+  )
+  Write-TestbedPhase "observe-installed-interactive-owners"
+  $runtimeReady = if ($null -eq $RuntimeReady) { Wait-RuntimeReady } else { $RuntimeReady }
   Write-TestbedPhase "admit-installed-tauri-catalog"
   Invoke-InstalledTauriRouteAdmission "http://127.0.0.1:9222"
   $target = Wait-InstalledTauriRoute "#/catalog"
@@ -949,17 +1040,38 @@ function Start-TestbedInstalledRuntimeOwners {
   $visionEvidence = Wait-TestbedVisionRuntimeEvidence 30
   $probeRaw = & (Join-Path $repoRoot "scripts\windows\probe-vem-runtime.ps1") -RequireHealthy
   $probe = $probeRaw | ConvertFrom-Json
-  $readiness = Convert-TestbedStartupProbeToReadiness $probe $ownerManifest $machineEvidence $visionEvidence $route
+  $readiness = Convert-TestbedStartupProbeToReadiness $probe $OwnerManifest $machineEvidence $visionEvidence $route
   return [ordered]@{
     readiness = $readiness
-    ownerManifest = $ownerManifest
+    ownerManifest = $OwnerManifest
     probe = $probe
-    claim = $ownerClaim
+    claim = $OwnerClaim
     runtimeReady = $runtimeReady
     machineEvidence = $machineEvidence
     visionEvidence = $visionEvidence
     target = $target
   }
+}
+
+function Start-TestbedInstalledRuntimeOwners {
+  param(
+    [object]$GuestInput,
+    [string]$DaemonPath,
+    [string]$MachinePath,
+    [switch]$ClaimBeforeInteractiveOwners
+  )
+  $installed = Install-TestbedRuntimeOwnersForAcceptance `
+    -GuestInput $GuestInput `
+    -DaemonPath $DaemonPath `
+    -ClaimRuntimeOwner:$ClaimBeforeInteractiveOwners
+  Write-TestbedPhase "start-installed-interactive-owners"
+  Start-ScheduledTask -TaskName "VEMVisionRuntime" -ErrorAction Stop
+  Start-ScheduledTask -TaskName "VEMMachineUI" -ErrorAction Stop
+  return Get-TestbedInstalledRuntimeOwnerState `
+    -OwnerManifest $installed.ownerManifest `
+    -OwnerClaim $installed.claim `
+    -RuntimeReady $installed.runtimeReady `
+    -MachinePath $MachinePath
 }
 
 function Stop-TestbedCanonicalVision([string]$AppDirectory, [string]$ConfigurationPath) {
@@ -1120,13 +1232,43 @@ $validatedVisionCore = Get-TestbedProvisionedVisionCoreArtifact $guestInput
 if ($null -eq $guestInput.workflowIdentity) { throw "workflow identity is missing from local testbed guest input" }
 $guestInput.workflowIdentity | Add-Member -NotePropertyName visionCore -NotePropertyValue $validatedVisionCore.identity -Force
 Write-TestbedGuestInputAtomically $GuestInputPath $guestInput
+$handoffPath = Join-Path $handoffRoot "installed-runtime-handoff.json"
+$startupPreparationPath = Join-Path $handoffRoot "startup-preparation.json"
+$daemonPath = Join-Path $deploymentRoot "vending-daemon.exe"
+$machineExecutablePath = Join-Path $deploymentRoot "machine.exe"
+$claim = $null
+$commissioningSerialSession = $null
+$removedUndeclaredCaches = @()
+$runtimeReady = $null
+$startupState = $null
+
+if ($StartupPhase -eq "resume_reboot") {
+  Write-TestbedPhase "resume-after-reboot"
+  $preparation = Read-TestbedStartupPreparation $startupPreparationPath $guestInput
+  $claim = $preparation.state.claim
+  if ($claim.status -ne "provisioned" -or [string]$claim.machineCode -ne [string]$guestInput.machineCode) {
+    throw "startup preparation claim is not the provisioned machine"
+  }
+  $commissioningSerialSession = $preparation.state.commissioningSerialSession
+  if ([string]::IsNullOrWhiteSpace([string]$commissioningSerialSession.sessionId)) {
+    throw "startup preparation is missing the commissioning serial session"
+  }
+  $removedUndeclaredCaches = @($preparation.state.removedUndeclaredCaches)
+  Write-TestbedPhase "rediscover-simulated-hardware-after-reboot"
+  Write-TestbedSerialDiscoveryAdapter
+  $runtimeReady = Wait-RuntimeReady
+  Initialize-TestbedHardwareBindings
+  $runtimeReady = Wait-RuntimeReady
+  $startupState = Get-TestbedInstalledRuntimeOwnerState `
+    -OwnerManifest $preparation.ownerManifest `
+    -OwnerClaim $claim `
+    -RuntimeReady $runtimeReady `
+    -MachinePath $machineExecutablePath
+} else {
 if ($Mode -in @("fast", "full")) {
   Clear-TestbedVisionProcesses $guestInput
 }
 Write-TestbedPhase "bootstrap"
-$handoffPath = Join-Path $handoffRoot "installed-runtime-handoff.json"
-$claim = $null
-$commissioningSerialSession = $null
 $isWarmFastRun = $Mode -eq "fast" -and (Test-Path -LiteralPath $handoffPath -PathType Leaf)
 if ($isWarmFastRun) {
   Require-Path $handoffPath
@@ -1147,9 +1289,9 @@ if ($Mode -eq "fast" -and -not $isWarmFastRun) {
   Write-TestbedPhase "cold-fast-bootstrap"
 }
 
-$machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
-if (-not [string]::IsNullOrWhiteSpace($machinePath)) {
-  $env:Path = "$machinePath;$env:Path"
+$machineEnvironmentPath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+if (-not [string]::IsNullOrWhiteSpace($machineEnvironmentPath)) {
+  $env:Path = "$machineEnvironmentPath;$env:Path"
 }
 
 New-Item -ItemType Directory -Force -Path $deploymentRoot, $daemonDataRoot, $handoffRoot | Out-Null
@@ -1320,11 +1462,9 @@ $guestInput.workflowIdentity | Add-Member -NotePropertyName runtimeArtifacts -No
 $guestInput.workflowIdentity | Add-Member -NotePropertyName pass -NotePropertyValue $Pass -Force
 $guestInput | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $GuestInputPath -Encoding utf8
 Write-TestbedPhase "deploy-runtime"
-$daemonPath = Join-Path $deploymentRoot "vending-daemon.exe"
-$machinePath = Join-Path $deploymentRoot "machine.exe"
 Stop-TestbedInstalledRuntimeBeforeDeployment
 Copy-Item -LiteralPath $daemonSource -Destination $daemonPath -Force
-Copy-Item -LiteralPath $machineSource -Destination $machinePath -Force
+Copy-Item -LiteralPath $machineSource -Destination $machineExecutablePath -Force
 Copy-Item -LiteralPath $webViewLoaderSource -Destination (Join-Path $deploymentRoot "WebView2Loader.dll") -Force
 Write-TestbedPhase "start-simulated-hardware"
 $commissioningSerialSession = Start-TestbedCommissioningSerialSession $guestInput
@@ -1332,15 +1472,36 @@ Write-TestbedSerialDiscoveryAdapter
 if ($Mode -eq "full" -or -not $isWarmFastRun) {
   $guestInput.runtimeBootstrap | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runtimeRoot "runtime-bootstrap.json") -Encoding utf8
 }
+if ($StartupPhase -eq "prepare_reboot") {
+  $installed = Install-TestbedRuntimeOwnersForAcceptance `
+    -GuestInput $guestInput `
+    -DaemonPath $daemonPath `
+    -ClaimRuntimeOwner
+  $claim = $installed.claim
+  Stop-TestbedScannerBindingProbe $guestInput $commissioningSerialSession
+  $preparation = Write-TestbedStartupPreparation `
+    -Path $startupPreparationPath `
+    -GuestInput $guestInput `
+    -OwnerManifest $installed.ownerManifest `
+    -Claim $claim `
+    -CommissioningSerialSession $commissioningSerialSession `
+    -RemovedUndeclaredCaches $removedUndeclaredCaches
+  Write-TestbedPhase "ready-for-reboot"
+  $preparation | ConvertTo-Json -Depth 12 | Write-Output
+  exit 0
+}
 $startupState = Start-TestbedInstalledRuntimeOwners `
   -GuestInput $guestInput `
   -DaemonPath $daemonPath `
-  -MachinePath $machinePath `
-  -ClaimBeforeInteractiveOwners:($Mode -eq "full" -or -not $isWarmFastRun)
+  -MachinePath $machineExecutablePath `
+  -ClaimBeforeInteractiveOwners:(-not $isWarmFastRun)
 if ($null -ne $startupState.claim) {
   $claim = $startupState.claim
 }
-Stop-TestbedScannerBindingProbe $guestInput $commissioningSerialSession
+}
+if ($StartupPhase -eq "single") {
+  Stop-TestbedScannerBindingProbe $guestInput $commissioningSerialSession
+}
 Write-TestbedPhase "wait-bound-runtime-ready"
 $runtimeReady = Wait-RuntimeReady
 $target = $startupState.target
